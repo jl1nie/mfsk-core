@@ -6,6 +6,22 @@
 //! All heavy lifting is delegated to generic code in [`crate::core`]; this
 //! module mainly wires the trait impls and provides decode / synth entry
 //! points.
+//!
+//! ## Quick example
+//!
+//! ```no_run
+//! use mfsk_core::ft4::decode::decode_frame;
+//! use mfsk_core::msg::wsjt77::unpack77;
+//!
+//! # let audio: Vec<i16> = vec![];
+//! // `audio` is 90_000 i16 samples at 12 kHz (7.5 s slot).
+//! for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100) {
+//!     if let Some(text) = unpack77(&r.message77) {
+//!         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
+//!                  r.freq_hz, r.dt_sec, r.snr_db, text);
+//!     }
+//! }
+//! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc174_91;

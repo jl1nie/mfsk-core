@@ -121,6 +121,34 @@
 //! | `osd-deep`    |          | OSD-3 fallback on AP decodes (extra CPU)     |
 //! | `eq-fallback` |          | Non-EQ fallback inside `EqMode::Adaptive`    |
 //!
+//! ## Library stack
+//!
+//! ```text
+//!          ┌─────────────────────────────────────────────────────┐
+//!          │      ft8   ft4   fst4   wspr   jt9   jt65   …       │  per-protocol ZSTs
+//!          │        (each implements Protocol + FrameLayout)      │  (feature-gated)
+//!          └─────────────┬─────────────────┬─────────────────────┘
+//!                        │                 │
+//!               ┌────────▼────────┐  ┌─────▼──────┐
+//!               │       msg       │  │    fec     │  shared codecs
+//!               │  Wsjt77 · Jt72  │  │ LDPC · RS  │  behind traits
+//!               │  Wspr50  · Hash │  │ ConvFano   │
+//!               └────────┬────────┘  └─────┬──────┘
+//!                        │                 │
+//!                    ┌───▼─────────────────▼───┐
+//!                    │          core           │  Protocol trait, DSP
+//!                    │ sync · llr · equalize · │  (resample / GFSK /
+//!                    │  pipeline · tx · dsp    │   downsample / subtract)
+//!                    └─────────────────────────┘
+//! ```
+//!
+//! Each protocol declares its slot length, tone count, Gray map,
+//! Costas / sync pattern, FEC codec and message codec at compile time
+//! via the [`Protocol`] trait. The generic code in [`core`] —
+//! coarse sync, fine sync, LLR computation, LDPC / RS / convolutional
+//! decode, GFSK synthesis — works for any type that satisfies the
+//! trait.
+//!
 //! ## Quick start
 //!
 //! ```toml
@@ -129,15 +157,42 @@
 //! mfsk-core = { version = "0.1", features = ["ft8", "ft4"] }
 //! ```
 //!
-//! ```no_run
+//! Round-trip a synthesised FT8 frame through the decoder:
+//!
+//! ```
 //! # #[cfg(feature = "ft8")] {
-//! use mfsk_core::ft8::{Ft8, decode::{decode_frame, DecodeDepth}};
-//! let audio: Vec<i16> = /* 12 kHz PCM, 15 s */ vec![];
-//! let results = decode_frame(&audio, 100.0, 3000.0, 1.5, None,
-//!                            DecodeDepth::BpAllOsd, 200);
-//! for r in results {
-//!     println!("{:?} Hz  dt={:?}  SNR={:?}", r.freq_hz, r.dt_sec, r.snr_db);
+//! use mfsk_core::ft8::{
+//!     decode::{decode_frame, DecodeDepth},
+//!     wave_gen::{message_to_tones, tones_to_i16},
+//! };
+//! use mfsk_core::msg::wsjt77::{pack77, unpack77};
+//!
+//! // 1. Pack a standard FT8 message and synthesise 12 kHz i16 PCM.
+//! //    The synth produces just the transmitted frame (~12.64 s);
+//! //    pad to the full 15 s slot with the signal starting at 0.5 s.
+//! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
+//! let tones = message_to_tones(&msg77);
+//! let frame = tones_to_i16(&tones, /* freq */ 1500.0, /* amp */ 20_000);
+//!
+//! let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
+//! let start = (0.5 * 12_000.0) as usize;
+//! for (i, &s) in frame.iter().enumerate() {
+//!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
+//!
+//! // 2. Decode it back across the full FT8 band.
+//! let results = decode_frame(
+//!     &audio,
+//!     /* freq_min */ 100.0,
+//!     /* freq_max */ 3_000.0,
+//!     /* sync_min */ 1.0,
+//!     /* freq_hint */ None,
+//!     DecodeDepth::BpAllOsd,
+//!     /* max_cand */ 50,
+//! );
+//! assert!(!results.is_empty(), "roundtrip must decode");
+//! let text = unpack77(&results[0].message77).expect("unpack");
+//! assert_eq!(text, "CQ JA1ABC PM95");
 //! # }
 //! ```
 

@@ -16,17 +16,28 @@ use rustfft::FftPlanner;
 use super::Jt65;
 use super::sync_pattern::JT65_SYNC_POSITIONS;
 
+/// Precomputed per-time-step FFT magnitudes-squared used by the
+/// coarse (freq × time) search. Each entry `mags_sqr[t * n_freq + f]`
+/// is the squared magnitude of FFT bin `f` at time step `t`.
 pub struct Spectrogram {
+    /// Row-major `(n_time, n_freq)` grid of `|FFT[k]|²` values.
     pub mags_sqr: Vec<f32>,
+    /// Number of time steps (rows).
     pub n_time: usize,
+    /// Number of frequency bins per row (`nsps / 2`).
     pub n_freq: usize,
+    /// Step size between rows, in samples (`nsps / 4`).
     pub t_step: usize,
+    /// FFT window size in samples.
     pub nsps: usize,
+    /// Frequency resolution in Hz per bin.
     pub df: f32,
+    /// Average noise power per bin — used to normalise scores.
     pub noise_per_bin: f32,
 }
 
 impl Spectrogram {
+    /// Build the spectrogram from `audio` at quarter-symbol time steps.
     pub fn build(audio: &[f32], sample_rate: u32) -> Self {
         let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
         let t_step = nsps / 4;
@@ -81,27 +92,43 @@ impl Spectrogram {
         }
     }
 
+    /// Fetch the squared FFT magnitude at time step `t`, bin `f`.
     #[inline]
     pub fn get(&self, t: usize, f: usize) -> f32 {
         self.mags_sqr[t * self.n_freq + f]
     }
 }
 
+/// One candidate surviving the coarse (freq × time) sync search.
 #[derive(Clone, Copy, Debug)]
 pub struct SyncCandidate {
+    /// Sample index where symbol 0 is estimated to start.
     pub start_sample: usize,
+    /// Base-tone (tone 0) frequency in Hz.
     pub freq_hz: f32,
+    /// Normalised sync score, `sync_pwr / (sync_pwr + noise_floor)`.
+    /// Larger = better; [`DEFAULT_SCORE_THRESHOLD`] is the minimum
+    /// worth handing to a decode attempt.
     pub score: f32,
 }
 
+/// Conservative minimum sync score below which candidates are
+/// unlikely to yield a successful decode.
 pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
 
+/// Search-window parameters for [`coarse_search`].
 #[derive(Clone, Copy, Debug)]
 pub struct SearchParams {
+    /// Lower edge of the frequency search band, Hz.
     pub freq_min_hz: f32,
+    /// Upper edge of the frequency search band, Hz.
     pub freq_max_hz: f32,
+    /// ± this many symbol times around the nominal start sample are
+    /// tested as candidate frame starts.
     pub time_tolerance_symbols: u32,
+    /// Minimum candidate score (normalised); see [`SyncCandidate::score`].
     pub score_threshold: f32,
+    /// Maximum number of candidates returned, best-score first.
     pub max_candidates: usize,
 }
 
@@ -137,6 +164,9 @@ pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) ->
     sync_pwr / (sync_pwr + noise_floor)
 }
 
+/// Build a spectrogram of `audio` and return the best-scoring
+/// (start_sample, freq_hz) candidates for a JT65 frame within
+/// the search window specified by `params`.
 pub fn coarse_search(
     audio: &[f32],
     sample_rate: u32,
@@ -147,6 +177,9 @@ pub fn coarse_search(
     coarse_search_on_spec(&spec, sample_rate, nominal_start_sample, params)
 }
 
+/// Like [`coarse_search`] but takes a pre-built [`Spectrogram`] —
+/// useful when the same audio buffer is scanned under multiple
+/// parameter sets.
 pub fn coarse_search_on_spec(
     spec: &Spectrogram,
     sample_rate: u32,

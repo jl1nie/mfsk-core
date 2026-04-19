@@ -20,6 +20,33 @@
 //! The zero-sized [`Ft8`] type implements the generic
 //! [`crate::core::Protocol`] trait so downstream pipeline code (shared with
 //! FT4, FT2, FST4) can dispatch on `P: Protocol` at compile time.
+//!
+//! ## Quick example
+//!
+//! Decode the top-scoring message in a 15-second slot:
+//!
+//! ```no_run
+//! use mfsk_core::ft8::decode::{decode_frame, DecodeDepth};
+//! use mfsk_core::msg::wsjt77::unpack77;
+//!
+//! # let audio: Vec<i16> = vec![];
+//! // `audio` is 180_000 i16 samples at 12 kHz (15 s, slot-aligned).
+//! let results = decode_frame(
+//!     &audio,
+//!     /* freq_min */ 100.0,
+//!     /* freq_max */ 3_000.0,
+//!     /* sync_min */ 1.0,
+//!     /* freq_hint */ None,
+//!     DecodeDepth::BpAllOsd,
+//!     /* max_cand */ 200,
+//! );
+//! for r in &results {
+//!     if let Some(text) = unpack77(&r.message77) {
+//!         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
+//!                  r.freq_hz, r.dt_sec, r.snr_db, text);
+//!     }
+//! }
+//! ```
 
 pub mod decode;
 pub mod downsample;

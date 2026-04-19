@@ -164,21 +164,26 @@ pub struct ApHint {
 }
 
 impl ApHint {
+    /// Construct an empty `ApHint` — no fields pre-filled.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Pre-fill the first callsign (`CALL1` in a standard FT8 message).
     pub fn with_call1(mut self, call: &str) -> Self {
         self.call1 = Some(call.to_string());
         self
     }
+    /// Pre-fill the second callsign (`CALL2`).
     pub fn with_call2(mut self, call: &str) -> Self {
         self.call2 = Some(call.to_string());
         self
     }
+    /// Pre-fill the 4-character Maidenhead grid.
     pub fn with_grid(mut self, grid: &str) -> Self {
         self.grid = Some(grid.to_string());
         self
     }
+    /// Pre-fill the signal report (e.g. `"-12"`, `"R+05"`, `"73"`).
     pub fn with_report(mut self, rpt: &str) -> Self {
         self.report = Some(rpt.to_string());
         self

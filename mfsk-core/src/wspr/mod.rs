@@ -15,6 +15,19 @@
 //! scaffolding, FEC codec, message codec) are shared with the other modes.
 //! This module provides the [`Wspr`] ZST plus WSPR-specific TX/RX helpers
 //! that handle the interleaver and sync-bit embedding.
+//!
+//! ## Quick example
+//!
+//! ```no_run
+//! use mfsk_core::wspr::decode::decode_scan_default;
+//!
+//! # let audio: Vec<f32> = vec![];
+//! // `audio` is ~1.44M f32 samples at 12 kHz (120 s slot).
+//! for r in decode_scan_default(&audio, 12_000) {
+//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
+//!              r.freq_hz, r.start_sample, r.message);
+//! }
+//! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano;

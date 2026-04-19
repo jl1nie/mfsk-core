@@ -23,6 +23,39 @@
 //! References:
 //! - WSJT-X `lib/jt65sim.f90`, `lib/setup65.f90`, `lib/interleave63.f90`,
 //!   `lib/graycode65.f90`, `lib/wrapkarn.c`
+//!
+//! ## Quick example
+//!
+//! ```no_run
+//! use mfsk_core::jt65::decode_scan_default;
+//!
+//! # let audio: Vec<f32> = vec![];
+//! // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).
+//! for r in decode_scan_default(&audio, 12_000) {
+//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
+//!              r.freq_hz, r.start_sample, r.message);
+//! }
+//! ```
+//!
+//! ## Erasure-aware decode
+//!
+//! For very weak signals, JT65 benefits from feeding per-symbol
+//! confidence into Reed-Solomon as *erasures*. Each erasure lets RS
+//! correct one more symbol than the hard-error bound
+//! (`2·errors + erasures ≤ 51`). Use [`decode_at_with_erasures`]:
+//!
+//! ```no_run
+//! use mfsk_core::jt65::decode_at_with_erasures;
+//!
+//! # let audio: Vec<f32> = vec![];
+//! # let (start_sample, freq_hz) = (0, 1270.0);
+//! // Try 0 → 8 → 16 → 24 → 32 erasures in order; return the first
+//! // budget that unpacks into a valid message.
+//! let msg = decode_at_with_erasures(
+//!     &audio, 12_000, start_sample, freq_hz,
+//!     &[0, 8, 16, 24, 32],
+//! );
+//! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Rs63_12;
