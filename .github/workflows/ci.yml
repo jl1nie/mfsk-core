@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # Core: build + full test suite on the "full" feature set.
+  # This is the single must-pass job; everything else is narrower
+  # verification.
+  # ───────────────────────────────────────────────────────────────
+  test:
+    name: Test (features = full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (full)
+        run: cargo build -p mfsk-core --features full --release
+
+      - name: Test (full)
+        run: cargo test -p mfsk-core --features full --release
+
+      - name: Test (FST4 gated roundtrip)
+        env:
+          RUN_FST4_ROUNDTRIP: "1"
+        run: cargo test -p mfsk-core --features full --release synth_decode_roundtrip_cq_ja1abc
+
+  # ───────────────────────────────────────────────────────────────
+  # Feature matrix: every single-protocol feature must compile on
+  # its own (no-default-features + exactly one protocol). Catches
+  # cross-feature dependencies that only show up when a particular
+  # combination is disabled.
+  # ───────────────────────────────────────────────────────────────
+  feature-matrix:
+    name: Build (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""           # no features at all — foundation-only
+          - "ft8"
+          - "ft4"
+          - "fst4"
+          - "wspr"
+          - "jt9"
+          - "jt65"
+          - "full"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            cargo build -p mfsk-core --no-default-features --release
+          else
+            cargo build -p mfsk-core --no-default-features --features "${{ matrix.features }}" --release
+          fi
+
+  # ───────────────────────────────────────────────────────────────
+  # mfsk-ffi: cdylib build + C++ driver (encode/decode for every
+  # protocol + multi-threaded stress). Doesn't publish to crates.io
+  # but is the real ABI that C/C++/Kotlin consumers link against,
+  # so regressions here need catching.
+  # ───────────────────────────────────────────────────────────────
+  ffi:
+    name: mfsk-ffi + C++ driver
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build mfsk-ffi
+        run: cargo build -p mfsk-ffi --release
+
+      - name: Run C++ driver (default + multi-thread tests)
+        run: bash mfsk-ffi/examples/cpp_smoke/build.sh
+
+      - name: Run C++ driver (including gated FST4 roundtrip)
+        env:
+          RUN_FST4_ROUNDTRIP: "1"
+        run: |
+          cd mfsk-ffi/examples/cpp_smoke
+          ./cpp_smoke
+
+  # ───────────────────────────────────────────────────────────────
+  # rustdoc: catches broken intra-doc links and missing-example
+  # compile failures. The --no-deps limits doc generation to our
+  # own crate (not the full dep tree).
+  # ───────────────────────────────────────────────────────────────
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs (features = full)
+        run: cargo doc -p mfsk-core --features full --no-deps
+
+  # ───────────────────────────────────────────────────────────────
+  # cargo publish dry-run: catches crates.io-specific issues
+  # (missing metadata, path deps without version, oversized
+  # tarball) before the real publish workflow tries to upload.
+  # ───────────────────────────────────────────────────────────────
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Dry run
+        run: cargo publish -p mfsk-core --dry-run

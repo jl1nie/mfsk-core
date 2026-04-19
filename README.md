@@ -1,5 +1,10 @@
 # mfsk-core
 
+[![CI](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml/badge.svg)](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/mfsk-core.svg)](https://crates.io/crates/mfsk-core)
+[![docs.rs](https://img.shields.io/docsrs/mfsk-core)](https://docs.rs/mfsk-core)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+
 Pure-Rust library for **WSJT-family digital amateur-radio modes** — a
 single crate that implements FT8, FT4, FST4, WSPR, JT9 and JT65
 decode / encode / synthesis on top of a small set of shared
