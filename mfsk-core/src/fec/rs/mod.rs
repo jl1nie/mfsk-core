@@ -28,8 +28,8 @@
 //! `encode` path packs a bit-level 72-bit info into 378 codeword bits
 //! (63 × 6 bits), and `decode_soft` always returns `None` because
 //! Reed-Solomon needs hard symbols rather than bit LLRs. The real
-//! RS entry points are [`Rs63_12::encode_symbols`] /
-//! [`Rs63_12::decode_symbols`] (and the JT65-specific reversed-layout
+//! RS entry points are [`Rs63_12::encode_native`] /
+//! [`Rs63_12::decode_native`] (and the JT65-specific reversed-layout
 //! variants). The FecCodec impl exists so `Rs63_12` can be named as
 //! a `Protocol::Fec` associated type; callers that want to actually
 //! decode JT65 should go through `jt65-core`'s decode helpers rather
@@ -176,7 +176,7 @@ impl Rs63_12 {
         self.decode_native_erasures(data, &[])
     }
 
-    /// Like [`decode_native`] but also accepts a list of **erasure
+    /// Like [`Self::decode_native`] but also accepts a list of **erasure
     /// positions** (symbol indices 0..=62 in the native codeword
     /// layout that the caller has flagged as unreliable). Each
     /// erasure lets RS correct one more symbol than the
@@ -465,7 +465,7 @@ impl Rs63_12 {
     /// reversed; 51..=62 = data reversed). The positions are
     /// translated to the native Karn layout (identity mapping
     /// `native = NN − 1 − wsjt` for both halves) before entering
-    /// [`decode_native_erasures`].
+    /// [`Self::decode_native_erasures`].
     pub fn decode_jt65_erasures(
         &self,
         recd0: &[u8; Self::N_SYMBOLS],

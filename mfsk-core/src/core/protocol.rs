@@ -85,7 +85,7 @@ pub trait ModulationParams: Copy + Default + 'static {
 ///
 /// FT8 has three identical blocks (positions 0/36/72, same Costas-7 pattern);
 /// FT4 has four *different* blocks (positions 0/33/66/99, each a permutation
-/// of [0,1,2,3]). The trait is shaped to accommodate both.
+/// of `[0,1,2,3]`). The trait is shaped to accommodate both.
 #[derive(Copy, Clone, Debug)]
 pub struct SyncBlock {
     /// Symbol index (0-based) where this block starts.

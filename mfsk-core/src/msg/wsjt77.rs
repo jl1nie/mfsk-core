@@ -678,7 +678,7 @@ fn write_bits(msg: &mut [u8; 77], start: usize, len: usize, val: u32) {
     }
 }
 
-/// Pack a callsign into a 28-bit token (inverse of [`unpack28`]).
+/// Pack a callsign into a 28-bit token (inverse of `unpack28`).
 ///
 /// Supports `"DE"`, `"QRZ"`, `"CQ"`, and standard 1–6 character callsigns
 /// whose 3rd character (1-indexed) is a digit (e.g. `"JQ1QSO"`, `"3Y0Z"`).

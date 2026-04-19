@@ -79,7 +79,7 @@ pub fn decode_at(
 /// reasonable default is `&[0, 8, 16, 24, 32]`: zero-erasure first
 /// (fastest when the channel is clean) and then growing erasure
 /// budgets for lower-SNR signals. Returns the first decode that
-/// unpacks into a valid [`Jt72Message`].
+/// unpacks into a valid [`crate::msg::jt72::Jt72Message`].
 pub fn decode_at_with_erasures(
     audio: &[f32],
     sample_rate: u32,

@@ -7,7 +7,7 @@
 //!
 //! Ported from WSJT-X `sync8.f90` + `sync8d.f90`; generalised so the same
 //! code handles FT8 (3 identical Costas-7 blocks) and FT4 (4 different
-//! Costas-4 blocks) by iterating over [`FrameLayout::SYNC_BLOCKS`].
+//! Costas-4 blocks) by iterating over `FrameLayout::SYNC_BLOCKS`.
 
 use super::Protocol;
 use num_complex::Complex;

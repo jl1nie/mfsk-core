@@ -28,7 +28,7 @@ pub fn data_chunks<P: Protocol>() -> Vec<(usize, usize)> {
 
 /// Convert an LDPC codeword (MSB-first per symbol group) into the `N_SYMBOLS`
 /// tone-index sequence. Sync blocks are slotted into their positions from
-/// [`Protocol::SYNC_BLOCKS`]; data symbols consume `BITS_PER_SYMBOL` codeword
+/// `Protocol::SYNC_BLOCKS`; data symbols consume `BITS_PER_SYMBOL` codeword
 /// bits each, passed through the Gray map.
 ///
 /// Panics if `cw.len() < total_data_symbols × BITS_PER_SYMBOL`.

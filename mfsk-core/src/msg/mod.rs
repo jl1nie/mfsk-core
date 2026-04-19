@@ -29,7 +29,7 @@ use crate::core::{DecodeContext, MessageCodec, MessageFields};
 /// WSJT 77-bit message codec used by FT8, FT4, FT2 and FST4.
 ///
 /// Pure wrapper around the free functions in [`wsjt77`], implementing the
-/// generic [`mfsk_core::core::MessageCodec`] trait so pipeline code can
+/// generic [`crate::MessageCodec`] trait so pipeline code can
 /// consume messages without knowing which concrete protocol produced them.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Wsjt77Message;

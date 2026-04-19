@@ -1,5 +1,5 @@
 //! FT8-tuned wrapper around the generic downsampler in
-//! [`crate::core::dsp::downsample`].
+//! [`mod@crate::core::dsp::downsample`].
 //!
 //! Keeps the pre-existing `crate::ft8::downsample::{downsample, downsample_simple,
 //! build_fft_cache}` signatures so existing callers (`decode.rs`, WASM glue,

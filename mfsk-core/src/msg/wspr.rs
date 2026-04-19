@@ -273,7 +273,7 @@ pub fn unpack_grid(ngrid_full: u32) -> Option<(String, i32)> {
 
 /// Pack a Type-1 WSPR message (callsign + 4-char grid + power in dBm) into
 /// 50 bits, stored MSB-first across a 50-element `[u8; 50]` of 0/1 values —
-/// the form required by [`mfsk_core::fec::ConvFano::encode`].
+/// the form required by [`crate::fec::ConvFano`]'s encode path.
 pub fn pack_type1(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]> {
     if !POWERS.contains(&power_dbm) {
         return None;

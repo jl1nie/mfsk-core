@@ -2,7 +2,7 @@
 //! Ported from WSJT-X ldpc_174_91_c_parity.f90.
 //! All indices are 0-based (Fortran source uses 1-based).
 
-/// MN[bit][0..3] — check-node indices (0-based, range 0..82) for each of the 174 bits.
+/// `MN[bit][0..3]` — check-node indices (0-based, range 0..82) for each of the 174 bits.
 /// Every bit participates in exactly 3 check equations.
 pub const MN: [[u8; 3]; 174] = [
     [15, 44, 72],
@@ -181,7 +181,7 @@ pub const MN: [[u8; 3]; 174] = [
     [41, 48, 56],
 ];
 
-/// NM[check][0..7] — bit indices (0-based, range 0..173) for each of the 83 check nodes.
+/// `NM[check][0..7]` — bit indices (0-based, range 0..173) for each of the 83 check nodes.
 /// `255` is a sentinel for unused slots; use `NRW[check]` to know the valid count.
 pub const NM: [[u8; 7]; 83] = [
     [  3, 30, 58, 90, 91, 95,152],
@@ -269,7 +269,7 @@ pub const NM: [[u8; 7]; 83] = [
     [ 16, 41, 74,128,169,171,255],
 ];
 
-/// NRW[check] — number of valid (non-padding) bit entries in `NM[check]`.
+/// `NRW[check]` — number of valid (non-padding) bit entries in `NM[check]`.
 pub const NRW: [u8; 83] = [
     7, 6, 6, 6, 7, 6, 7, 6, 6, 7, 6, 6, 7, 7, 6, 6,
     6, 7, 6, 7, 6, 7, 6, 6, 6, 7, 6, 6, 6, 7, 6, 6,

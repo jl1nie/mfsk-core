@@ -20,7 +20,7 @@ use super::Jt65;
 
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
-/// de-interleaved), ready for [`Rs63_12::decode_jt65`].
+/// de-interleaved), ready for [`crate::fec::Rs63_12::decode_jt65`].
 pub fn demodulate_aligned(
     audio: &[f32],
     sample_rate: u32,

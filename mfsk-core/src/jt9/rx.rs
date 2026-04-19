@@ -40,7 +40,7 @@ const LLR_CLAMP: f32 = 20.0;
 
 /// Demodulate 85 channel symbols from aligned audio and produce 206
 /// deinterleaved bit LLRs ready for
-/// [`ConvFano232::decode_soft`](mfsk_core::fec::ConvFano232).
+/// [`ConvFano232::decode_soft`](crate::fec::ConvFano232).
 ///
 /// Convention: positive LLR ⇒ bit 0 is more likely.
 pub fn demodulate_aligned(
