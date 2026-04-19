@@ -6,10 +6,10 @@
 
 use std::f32::consts::PI;
 
-use mfsk_core::ft4::decode::{ApHint, DecodeResult, decode_frame, decode_sniper_ap};
-use mfsk_core::ft4::encode;
 use mfsk_core::core::equalize::EqMode;
 use mfsk_core::core::{MessageCodec, MessageFields};
+use mfsk_core::ft4::decode::{ApHint, DecodeResult, decode_frame, decode_sniper_ap};
+use mfsk_core::ft4::encode;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;
@@ -22,7 +22,10 @@ struct Lcg {
 }
 impl Lcg {
     fn new(seed: u64) -> Self {
-        Self { s: seed.wrapping_add(1), spare: None }
+        Self {
+            s: seed.wrapping_add(1),
+            spare: None,
+        }
     }
     fn next(&mut self) -> u64 {
         self.s = self
@@ -113,6 +116,9 @@ fn ft4_snr_sweep_basic_vs_ap() {
                 ok_a += 1;
             }
         }
-        println!("  {:>3} dB   {:>3}/{}     {:>3}/{}", snr, ok_b, SEEDS, ok_a, SEEDS);
+        println!(
+            "  {:>3} dB   {:>3}/{}     {:>3}/{}",
+            snr, ok_b, SEEDS, ok_a, SEEDS
+        );
     }
 }

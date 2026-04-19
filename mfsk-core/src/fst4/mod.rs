@@ -1,15 +1,16 @@
-//! # fst4-core
+//! # `fst4` — FST4-60A decoder and synthesiser
 //!
-//! FST4 protocol implementation on top of the generic mfsk-* stack.
-//! Trait surface, frame layout, Costas positions, DSP routing, and
-//! LDPC(240, 101) + CRC-24 codec ([`crate::fec::Ldpc240_101`]) are all
-//! wired. The 77-bit message layer is shared verbatim with FT8/FT4.
+//! FST4 is a weak-signal slow-speed mode used for EME / troposcatter /
+//! LF-MF propagation experiments. This module targets the **FST4-60A**
+//! sub-mode (60-second T/R period, minimum tone spacing). Trait surface,
+//! frame layout, Costas positions, DSP routing, and LDPC(240, 101) +
+//! CRC-24 codec ([`crate::fec::Ldpc240_101`]) are all wired. The 77-bit
+//! message layer is shared verbatim with FT8 / FT4.
 //!
 //! ## Covered sub-mode
 //!
-//! This crate ships the **FST4-60A** (60-second T/R period, minimum
-//! tone spacing) sub-mode as [`Fst4s60`]. Other sub-modes (FST4-15,
-//! -30, -120, -300, -900, -1800) differ only in
+//! This module ships the **FST4-60A** sub-mode as [`Fst4s60`]. Other
+//! sub-modes (FST4-15, -30, -120, -300, -900, -1800) differ only in
 //! [`ModulationParams::NSPS`] / `SYMBOL_DT` / `TONE_SPACING_HZ` and
 //! can be added as additional ZSTs using the same trait impl pattern.
 //!
@@ -80,11 +81,26 @@ const FST4_SYNC_A: [u8; 8] = [0, 1, 3, 2, 1, 0, 2, 3];
 const FST4_SYNC_B: [u8; 8] = [2, 3, 1, 0, 3, 2, 0, 1];
 
 const FST4_SYNC_BLOCKS: [SyncBlock; 5] = [
-    SyncBlock { start_symbol: 0, pattern: &FST4_SYNC_A },
-    SyncBlock { start_symbol: 38, pattern: &FST4_SYNC_B },
-    SyncBlock { start_symbol: 76, pattern: &FST4_SYNC_A },
-    SyncBlock { start_symbol: 114, pattern: &FST4_SYNC_B },
-    SyncBlock { start_symbol: 152, pattern: &FST4_SYNC_A },
+    SyncBlock {
+        start_symbol: 0,
+        pattern: &FST4_SYNC_A,
+    },
+    SyncBlock {
+        start_symbol: 38,
+        pattern: &FST4_SYNC_B,
+    },
+    SyncBlock {
+        start_symbol: 76,
+        pattern: &FST4_SYNC_A,
+    },
+    SyncBlock {
+        start_symbol: 114,
+        pattern: &FST4_SYNC_B,
+    },
+    SyncBlock {
+        start_symbol: 152,
+        pattern: &FST4_SYNC_A,
+    },
 ];
 
 #[cfg(test)]
@@ -95,9 +111,7 @@ mod tests {
     fn fst4s60_trait_surface() {
         assert_eq!(<Fst4s60 as ModulationParams>::NTONES, 4);
         assert_eq!(<Fst4s60 as ModulationParams>::NSPS, 3_840);
-        assert!(
-            (<Fst4s60 as ModulationParams>::SYMBOL_DT - 0.32).abs() < 1e-6,
-        );
+        assert!((<Fst4s60 as ModulationParams>::SYMBOL_DT - 0.32).abs() < 1e-6,);
         assert_eq!(<Fst4s60 as FrameLayout>::N_SYMBOLS, 160);
         assert_eq!(<Fst4s60 as FrameLayout>::N_DATA, 120);
         assert_eq!(<Fst4s60 as FrameLayout>::N_SYNC, 40);

@@ -1,6 +1,4 @@
-//! # jt9-core
-//!
-//! JT9 protocol implementation on top of the `mfsk-*` stack.
+//! # `jt9` — JT9 decoder and synthesiser
 //!
 //! JT9 is a 9-FSK mode (8 data tones + 1 sync tone at tone 0) with
 //! a 60-second slot, plain FSK shaping, convolutional r=½ K=32 FEC
@@ -32,7 +30,7 @@ pub mod tx;
 
 pub use interleave::{deinterleave, deinterleave_llrs, interleave};
 pub use rx::demodulate_aligned;
-pub use search::{coarse_search, SearchParams, SyncCandidate};
+pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{JT9_ISYNC, JT9_SYNC_BLOCKS, JT9_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
@@ -161,9 +159,7 @@ mod tests {
         assert_eq!(<Jt9 as ModulationParams>::NTONES, 9);
         assert_eq!(<Jt9 as ModulationParams>::BITS_PER_SYMBOL, 3);
         assert_eq!(<Jt9 as ModulationParams>::NSPS, 6912);
-        assert!(
-            (<Jt9 as ModulationParams>::SYMBOL_DT - 0.576).abs() < 1e-3,
-        );
+        assert!((<Jt9 as ModulationParams>::SYMBOL_DT - 0.576).abs() < 1e-3,);
         assert_eq!(<Jt9 as FrameLayout>::N_SYMBOLS, 85);
         assert_eq!(<Jt9 as FrameLayout>::N_SYNC, 16);
         assert_eq!(<Jt9 as FrameLayout>::N_DATA, 69);

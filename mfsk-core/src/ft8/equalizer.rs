@@ -27,8 +27,8 @@ pub fn equalize_local(cs: &mut [[Complex<f32>; 8]; 79]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::params::{COSTAS, COSTAS_POS};
+    use super::*;
     use std::f32::consts::PI;
 
     #[test]
@@ -51,7 +51,10 @@ mod tests {
         for sym in 0..79 {
             for t in 0..8 {
                 let ratio = cs[sym][t].norm() / orig[sym][t].norm().max(1e-10);
-                assert!((ratio - 1.0).abs() < 0.1, "sym={sym} t={t}: ratio={ratio:.3}");
+                assert!(
+                    (ratio - 1.0).abs() < 0.1,
+                    "sym={sym} t={t}: ratio={ratio:.3}"
+                );
             }
         }
     }
@@ -68,14 +71,22 @@ mod tests {
         let mags_before: Vec<f32> = (0..8).map(|t| cs[40][t].norm()).collect();
         let mean_before = mags_before.iter().sum::<f32>() / 8.0;
         let cv_before = {
-            let v = mags_before.iter().map(|&m| (m - mean_before).powi(2)).sum::<f32>() / 8.0;
+            let v = mags_before
+                .iter()
+                .map(|&m| (m - mean_before).powi(2))
+                .sum::<f32>()
+                / 8.0;
             v.sqrt() / mean_before
         };
         equalize_local(&mut cs);
         let mags_after: Vec<f32> = (0..8).map(|t| cs[40][t].norm()).collect();
         let mean_after = mags_after.iter().sum::<f32>() / 8.0;
         let cv_after = {
-            let v = mags_after.iter().map(|&m| (m - mean_after).powi(2)).sum::<f32>() / 8.0;
+            let v = mags_after
+                .iter()
+                .map(|&m| (m - mean_after).powi(2))
+                .sum::<f32>()
+                / 8.0;
             v.sqrt() / mean_after
         };
         assert!(cv_after < cv_before);
@@ -96,7 +107,10 @@ mod tests {
         for t in 1..7 {
             let phase_diff = (cs[40][t].arg() - ref_phase).abs();
             let phase_diff = phase_diff.min(2.0 * PI - phase_diff);
-            assert!(phase_diff < 0.15, "tone {t}: phase diff={phase_diff:.3} rad");
+            assert!(
+                phase_diff < 0.15,
+                "tone {t}: phase diff={phase_diff:.3} rad"
+            );
         }
     }
 }

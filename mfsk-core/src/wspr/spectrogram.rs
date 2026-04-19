@@ -140,8 +140,8 @@ pub fn score_candidate(spec: &Spectrogram, t_row: usize, base_bin: usize) -> f32
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::synthesize_type1;
+    use super::*;
 
     #[test]
     fn spec_matches_direct_demod() {
@@ -150,8 +150,7 @@ mod tests {
         // that clean synthesis scores highest at the true alignment
         // (bin ≈ 1024, t_row = 0) among a small neighbourhood.
         let freq = 1500.0;
-        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3)
-            .expect("synth");
+        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3).expect("synth");
         let spec = Spectrogram::build(&audio, 12_000);
         assert!(spec.n_time > 0);
         assert_eq!(spec.n_freq, 4096);

@@ -1,12 +1,12 @@
-//! # mfsk-core
+//! # `core` — protocol traits, DSP, sync, pipeline
 //!
 //! Generic MFSK (M-ary frequency-shift-keying) primitives for WSJT-family
 //! amateur-radio digital modes (FT8, FT4, FT2, FST4, JT9, JT65, WSPR).
 //!
-//! The crate defines *protocol traits* whose associated constants describe
+//! This module defines *protocol traits* whose associated constants describe
 //! modulation / frame / FEC / message-codec parameters, plus generic pipeline
-//! code parameterised by those traits. Concrete protocol crates (`ft8-core`,
-//! `ft4-core`, …) provide zero-sized types that implement the traits — all
+//! code parameterised by those traits. Per-protocol modules ([`crate::ft8`],
+//! [`crate::ft4`], …) provide zero-sized types that implement the traits — all
 //! dispatch is monomorphised, so there is no runtime cost vs. hand-written
 //! per-protocol code.
 //!
@@ -22,11 +22,10 @@
 //!
 //! ## Re-export layout
 //!
-//! ```text
-//! mfsk_core
-//! ├── protocol   — trait hierarchy
-//! └── (future) dsp / sync / llr / pipeline
-//! ```
+//! Commonly-used types (`Protocol`, `ModulationParams`, `FrameLayout`,
+//! `FecCodec`, `MessageCodec`, `ProtocolId`, `SyncMode`, `SyncBlock`,
+//! `DecodeContext`, `FecOpts`, `FecResult`, `MessageFields`) are also
+//! re-exported at the crate root for ergonomics.
 
 pub mod dsp;
 pub mod equalize;

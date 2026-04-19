@@ -146,8 +146,9 @@ impl Rs63_12 {
             let feedback = self.index_of[(info[i] ^ bb[0]) as usize];
             if feedback != A0 {
                 for j in 1..Self::NROOTS {
-                    bb[j] ^= self.alpha_to
-                        [Self::modnn(feedback as u32 + self.genpoly[Self::NROOTS - j] as u32) as usize];
+                    bb[j] ^= self.alpha_to[Self::modnn(
+                        feedback as u32 + self.genpoly[Self::NROOTS - j] as u32,
+                    ) as usize];
                 }
             }
             // Shift bb left by one.
@@ -209,8 +210,8 @@ impl Rs63_12 {
                 if s[i] == 0 {
                     s[i] = recd[j];
                 } else {
-                    let sidx = self.index_of[s[i] as usize] as u32
-                        + (Self::FCR + i as u32) * Self::PRIM;
+                    let sidx =
+                        self.index_of[s[i] as usize] as u32 + (Self::FCR + i as u32) * Self::PRIM;
                     s[i] = recd[j] ^ self.alpha_to[Self::modnn(sidx) as usize];
                 }
             }
@@ -250,8 +251,7 @@ impl Rs63_12 {
                 for j in (1..=i + 1).rev() {
                     let tmp = self.index_of[lambda[j - 1] as usize];
                     if tmp != A0 {
-                        lambda[j] ^=
-                            self.alpha_to[Self::modnn(u + tmp as u32) as usize];
+                        lambda[j] ^= self.alpha_to[Self::modnn(u + tmp as u32) as usize];
                     }
                 }
             }
@@ -362,8 +362,8 @@ impl Rs63_12 {
             let mut tmp: u8 = 0;
             for j in 0..=i {
                 if s[i - j] != A0 && lambda_idx[j] != A0 {
-                    tmp ^= self.alpha_to
-                        [Self::modnn(s[i - j] as u32 + lambda_idx[j] as u32) as usize];
+                    tmp ^=
+                        self.alpha_to[Self::modnn(s[i - j] as u32 + lambda_idx[j] as u32) as usize];
                 }
             }
             omega[i] = self.index_of[tmp as usize];
@@ -375,11 +375,12 @@ impl Rs63_12 {
             let mut num1: u8 = 0;
             for i in (0..=deg_omega).rev() {
                 if omega[i] != A0 {
-                    num1 ^= self.alpha_to
-                        [Self::modnn(omega[i] as u32 + (i as u32) * root[j]) as usize];
+                    num1 ^=
+                        self.alpha_to[Self::modnn(omega[i] as u32 + (i as u32) * root[j]) as usize];
                 }
             }
-            let num2 = self.alpha_to[Self::modnn(root[j] * (Self::FCR - 1) + Self::NN as u32) as usize];
+            let num2 =
+                self.alpha_to[Self::modnn(root[j] * (Self::FCR - 1) + Self::NN as u32) as usize];
 
             // den = λ_prime(X^{-1}) — formal derivative, odd-indexed terms.
             let mut den: u8 = 0;
@@ -387,8 +388,9 @@ impl Rs63_12 {
             let mut i = end as i32;
             while i >= 0 {
                 if lambda_idx[i as usize + 1] != A0 {
-                    den ^= self.alpha_to
-                        [Self::modnn(lambda_idx[i as usize + 1] as u32 + (i as u32) * root[j]) as usize];
+                    den ^= self.alpha_to[Self::modnn(
+                        lambda_idx[i as usize + 1] as u32 + (i as u32) * root[j],
+                    ) as usize];
                 }
                 i -= 2;
             }
@@ -553,7 +555,10 @@ mod tests {
         for x in 1u8..=62 {
             let lg = rs.index_of[x as usize];
             assert_ne!(lg, A0, "log of {x} is A0");
-            assert_eq!(rs.alpha_to[lg as usize], x, "alpha_to[index_of[{x}]] != {x}");
+            assert_eq!(
+                rs.alpha_to[lg as usize], x,
+                "alpha_to[index_of[{x}]] != {x}"
+            );
         }
     }
 
@@ -587,7 +592,10 @@ mod tests {
         let info: [u8; 12] = [5, 17, 29, 41, 53, 62, 1, 13, 25, 37, 49, 61];
         let mut cw = rs.encode_native(&info);
         // Flip 25 scattered symbols, each by a different nonzero value.
-        let positions = [0, 3, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 1, 4, 7];
+        let positions = [
+            0, 3, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 1,
+            4, 7,
+        ];
         // Pick a nonzero XOR value (1..=31) so every flip really is an
         // error — a 0x40 XOR masked down to 0 is a no-op and would
         // reduce the effective error count.

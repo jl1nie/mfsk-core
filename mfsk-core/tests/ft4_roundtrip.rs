@@ -6,8 +6,8 @@
 //! LDPC, message codec) is correct end-to-end, the first decoded message
 //! should equal the input bit-for-bit.
 
-use mfsk_core::ft4::{Ft4, decode, encode};
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
+use mfsk_core::ft4::{Ft4, decode, encode};
 
 const NSPS: usize = <Ft4 as ModulationParams>::NSPS as usize; // 576
 const NN: usize = <Ft4 as FrameLayout>::N_SYMBOLS as usize; // 103
@@ -66,7 +66,10 @@ fn encode_decode_clean_signal_1000hz() {
     let text = codec
         .unpack(&got.message77, &ctx)
         .expect("unpack returns a valid text");
-    assert!(text.contains("CQ") && text.contains("JA1ABC"), "text = '{text}'");
+    assert!(
+        text.contains("CQ") && text.contains("JA1ABC"),
+        "text = '{text}'"
+    );
 }
 
 #[test]

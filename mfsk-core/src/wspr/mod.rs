@@ -1,7 +1,7 @@
-//! # wspr-core
+//! # `wspr` — WSPR decoder and synthesiser
 //!
-//! WSPR (Weak Signal Propagation Reporter) implementation on the generic
-//! `mfsk-*` stack. Unlike FT8/FT4/FST4, WSPR uses:
+//! WSPR (Weak Signal Propagation Reporter) is a very-weak-signal propagation
+//! beacon mode. Unlike FT8 / FT4 / FST4, WSPR uses:
 //!
 //! * **4-FSK at 1.4648 Hz** tone spacing, 162 symbols over ~110.6 s
 //! * **Convolutional r=1/2 K=32** with Fano sequential decoder
@@ -12,10 +12,9 @@
 //!   correlating every symbol's LSB against the known vector.
 //!
 //! All protocol-invariant pieces (FFT/downsample DSP, generic pipeline
-//! scaffolding, FEC codec, message codec) are borrowed from `mfsk-core`,
-//! `mfsk-fec`, and `mfsk-msg`. This crate provides the `Wspr` ZST that
-//! ties them together plus WSPR-specific TX/RX helpers that handle the
-//! interleaver and sync-bit embedding.
+//! scaffolding, FEC codec, message codec) are shared with the other modes.
+//! This module provides the [`Wspr`] ZST plus WSPR-specific TX/RX helpers
+//! that handle the interleaver and sync-bit embedding.
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano;
@@ -28,9 +27,9 @@ pub mod spectrogram;
 pub mod sync_vector;
 pub mod tx;
 
-pub use decode::{decode_at, WsprDecode};
+pub use decode::{WsprDecode, decode_at};
 pub use rx::demodulate_aligned;
-pub use search::{coarse_search, SearchParams, SyncCandidate};
+pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_vector::WSPR_SYNC_VECTOR;
 pub use tx::{synthesize_audio, synthesize_type1};
 
@@ -174,9 +173,7 @@ pub fn encode_channel_symbols(info_bits: &[u8; 50]) -> [u8; 162] {
 /// Real decoders would first demodulate the 4-FSK tones, extract the
 /// data-bit LLR per symbol, then de-interleave. This function is the
 /// last mile of that pipeline and the entry point we exercise in tests.
-pub fn decode_from_deinterleaved_llrs(
-    data_llrs: &[f32; 162],
-) -> Option<crate::msg::WsprMessage> {
+pub fn decode_from_deinterleaved_llrs(data_llrs: &[f32; 162]) -> Option<crate::msg::WsprMessage> {
     use crate::core::{FecCodec, FecOpts, MessageCodec};
 
     let codec = ConvFano;
@@ -199,7 +196,10 @@ mod tests {
         assert_eq!(<Wspr as FrameLayout>::N_SYMBOLS, 162);
         assert_eq!(<Wspr as FrameLayout>::T_SLOT_S, 120.0);
         match <Wspr as FrameLayout>::SYNC_MODE {
-            SyncMode::Interleaved { sync_bit_pos, vector } => {
+            SyncMode::Interleaved {
+                sync_bit_pos,
+                vector,
+            } => {
                 assert_eq!(sync_bit_pos, 0);
                 assert_eq!(vector.len(), 162);
             }
@@ -234,14 +234,19 @@ mod tests {
 
     #[test]
     fn roundtrip_k1abc_fn42_37() {
-        use crate::msg::{wspr::pack_type1, WsprMessage};
+        use crate::msg::{WsprMessage, wspr::pack_type1};
 
         let info_bits = pack_type1("K1ABC", "FN42", 37).expect("pack");
         let symbols = encode_channel_symbols(&info_bits);
 
         // Verify the sync vector LSB is reproduced.
         for i in 0..162 {
-            assert_eq!(symbols[i] & 1, WSPR_SYNC_VECTOR[i], "sync LSB mismatch at {}", i);
+            assert_eq!(
+                symbols[i] & 1,
+                WSPR_SYNC_VECTOR[i],
+                "sync LSB mismatch at {}",
+                i
+            );
             assert!(symbols[i] < 4);
         }
 

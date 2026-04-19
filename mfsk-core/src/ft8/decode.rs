@@ -8,12 +8,15 @@ pub use super::equalizer::EqMode;
 use super::{
     downsample::{build_fft_cache, downsample},
     equalizer,
-    ldpc::{bp::bp_decode, osd::{osd_decode, osd_decode_deep, osd_decode_deep4}},
+    ldpc::{
+        bp::bp_decode,
+        osd::{osd_decode, osd_decode_deep, osd_decode_deep4},
+    },
     llr::{compute_llr, compute_snr_db, symbol_spectra, sync_quality},
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
     subtract::subtract_signal_weighted,
-    sync::{coarse_sync, fine_sync_power_split, refine_candidate, SyncCandidate},
+    sync::{SyncCandidate, coarse_sync, fine_sync_power_split, refine_candidate},
     wave_gen::message_to_tones,
 };
 
@@ -69,9 +72,9 @@ impl DecodeStrictness {
             (Self::Normal, 4) => 30,
             (Self::Normal, _) => 29,
             // Deep: previous defaults — maximum sensitivity
-            (Self::Deep,   3) => 30,
-            (Self::Deep,   4) => 36,
-            (Self::Deep,   _) => 40,
+            (Self::Deep, 3) => 30,
+            (Self::Deep, 4) => 36,
+            (Self::Deep, _) => 40,
         }
     }
 
@@ -81,19 +84,23 @@ impl DecodeStrictness {
     ///   - REPORT AP at -18 dB: 15% FP rate with old thresholds (30/36)
     pub fn ap_max_errors(self, locked_bits: usize) -> u32 {
         match (self, locked_bits >= 55) {
-            (Self::Strict, true)  => 20,
+            (Self::Strict, true) => 20,
             (Self::Strict, false) => 24,
-            (Self::Normal, true)  => 25,
+            (Self::Normal, true) => 25,
             (Self::Normal, false) => 30,
             // Deep: previous defaults
-            (Self::Deep,   true)  => 30,
-            (Self::Deep,   false) => 36,
+            (Self::Deep, true) => 30,
+            (Self::Deep, false) => 36,
         }
     }
 
     /// Minimum coarse-sync score to enter OSD fallback.
     pub fn osd_score_min(self) -> f32 {
-        match self { Self::Strict => 3.0, Self::Normal => 2.2, Self::Deep => 2.0 }
+        match self {
+            Self::Strict => 3.0,
+            Self::Normal => 2.2,
+            Self::Deep => 2.0,
+        }
     }
 }
 
@@ -157,14 +164,30 @@ pub struct ApHint {
 }
 
 impl ApHint {
-    pub fn new() -> Self { Self::default() }
-    pub fn with_call1(mut self, call: &str) -> Self { self.call1 = Some(call.to_string()); self }
-    pub fn with_call2(mut self, call: &str) -> Self { self.call2 = Some(call.to_string()); self }
-    pub fn with_grid(mut self, grid: &str) -> Self { self.grid = Some(grid.to_string()); self }
-    pub fn with_report(mut self, rpt: &str) -> Self { self.report = Some(rpt.to_string()); self }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_call1(mut self, call: &str) -> Self {
+        self.call1 = Some(call.to_string());
+        self
+    }
+    pub fn with_call2(mut self, call: &str) -> Self {
+        self.call2 = Some(call.to_string());
+        self
+    }
+    pub fn with_grid(mut self, grid: &str) -> Self {
+        self.grid = Some(grid.to_string());
+        self
+    }
+    pub fn with_report(mut self, rpt: &str) -> Self {
+        self.report = Some(rpt.to_string());
+        self
+    }
 
     /// Returns true if any a-priori information is available.
-    pub fn has_info(&self) -> bool { self.call1.is_some() || self.call2.is_some() }
+    pub fn has_info(&self) -> bool {
+        self.call1.is_some() || self.call2.is_some()
+    }
 
     /// Build AP mask and LLR overrides for the 174-bit LDPC codeword.
     ///
@@ -193,16 +216,17 @@ impl ApHint {
         };
 
         if let Some(ref c1) = self.call1 {
-            set_call_bits(c1, 0);   // bits 0–28
+            set_call_bits(c1, 0); // bits 0–28
         }
         if let Some(ref c2) = self.call2 {
-            set_call_bits(c2, 29);  // bits 29–57
+            set_call_bits(c2, 29); // bits 29–57
         }
 
         // Lock grid field (bits 58–73: ir=0 + 15-bit grid) if known
         if let Some(ref grid) = self.grid {
             if let Some(igrid) = super::message::pack_grid4(grid) {
-                mask[58] = true; ap_llr[58] = -apmag; // ir=0
+                mask[58] = true;
+                ap_llr[58] = -apmag; // ir=0
                 for i in 0..15 {
                     let bit = ((igrid >> (14 - i)) & 1) as u8;
                     mask[59 + i] = true;
@@ -215,13 +239,14 @@ impl ApHint {
         if let Some(ref rpt) = self.report {
             // Type 1: igrid values for special responses
             let igrid_val: Option<u32> = match rpt.as_str() {
-                "RRR"  => Some(32_400 + 2),
+                "RRR" => Some(32_400 + 2),
                 "RR73" => Some(32_400 + 3),
-                "73"   => Some(32_400 + 4),
+                "73" => Some(32_400 + 4),
                 _ => None,
             };
             if let Some(igrid) = igrid_val {
-                mask[58] = true; ap_llr[58] = -apmag; // ir=0
+                mask[58] = true;
+                ap_llr[58] = -apmag; // ir=0
                 for i in 0..15 {
                     let bit = ((igrid >> (14 - i)) & 1) as u8;
                     mask[59 + i] = true;
@@ -233,9 +258,12 @@ impl ApHint {
         // Lock message type i3=1 (Type 1 standard) if any call is known
         if self.has_info() {
             // bits 74-76 = i3 = 001 (Type 1)
-            mask[74] = true; ap_llr[74] = -apmag; // bit=0
-            mask[75] = true; ap_llr[75] = -apmag; // bit=0
-            mask[76] = true; ap_llr[76] = apmag;  // bit=1
+            mask[74] = true;
+            ap_llr[74] = -apmag; // bit=0
+            mask[75] = true;
+            ap_llr[75] = -apmag; // bit=0
+            mask[76] = true;
+            ap_llr[76] = apmag; // bit=1
         }
 
         (mask, ap_llr)
@@ -266,7 +294,20 @@ pub fn decode_frame(
     depth: DecodeDepth,
     max_cand: usize,
 ) -> Vec<DecodeResult> {
-    decode_frame_inner(audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, DecodeStrictness::Normal, &[], EqMode::Off, None).0
+    decode_frame_inner(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        freq_hint,
+        depth,
+        max_cand,
+        DecodeStrictness::Normal,
+        &[],
+        EqMode::Off,
+        None,
+    )
+    .0
 }
 
 /// Like [`decode_frame`] but also returns the 192k-point FFT cache for
@@ -282,7 +323,19 @@ pub fn decode_frame_with_cache(
     depth: DecodeDepth,
     max_cand: usize,
 ) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_inner(audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, DecodeStrictness::Normal, &[], EqMode::Off, None)
+    decode_frame_inner(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        freq_hint,
+        depth,
+        max_cand,
+        DecodeStrictness::Normal,
+        &[],
+        EqMode::Off,
+        None,
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -330,8 +383,8 @@ fn process_candidate(
     };
 
     let try_decode = |cs: &[[num_complex::Complex<f32>; 8]; 79],
-                       use_ap: bool|
-                       -> Option<DecodeResult> {
+                      use_ap: bool|
+     -> Option<DecodeResult> {
         let llr_set = compute_llr(cs);
 
         let llr_variants: &[(&[f32; LDPC_N], u8)] = match depth {
@@ -363,10 +416,10 @@ fn process_candidate(
         }
 
         // OSD fallback
-        if depth == DecodeDepth::BpAllOsd
-            && nsync >= 12 && cand.score >= osd_score_min
-        {
-            let freq_dup = known.iter().any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
+        if depth == DecodeDepth::BpAllOsd && nsync >= 12 && cand.score >= osd_score_min {
+            let freq_dup = known
+                .iter()
+                .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
             if !freq_dup {
                 let osd_depth: u8 = if nsync >= 18 { 3 } else { 2 };
                 for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
@@ -377,7 +430,9 @@ fn process_candidate(
                     };
                     if let Some(osd) = osd_result {
                         let max_errors = strictness.osd_max_errors(osd_depth);
-                        if osd.hard_errors >= max_errors { continue; }
+                        if osd.hard_errors >= max_errors {
+                            continue;
+                        }
                         let itone = message_to_tones(&osd.message77);
                         let snr_db = compute_snr_db(cs, &itone);
                         return Some(DecodeResult {
@@ -398,7 +453,9 @@ fn process_candidate(
                     for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
                         if let Some(osd4) = osd_decode_deep4(llr_osd, 30) {
                             let max_errors = strictness.osd_max_errors(4);
-                            if osd4.hard_errors >= max_errors { continue; }
+                            if osd4.hard_errors >= max_errors {
+                                continue;
+                            }
                             let itone = message_to_tones(&osd4.message77);
                             let snr_db = compute_snr_db(cs, &itone);
                             return Some(DecodeResult {
@@ -425,9 +482,7 @@ fn process_candidate(
         if use_ap {
             if let Some(ap) = ap_hint {
                 if ap.has_info() {
-                    let apmag = llr_set.llra.iter()
-                        .map(|v| v.abs())
-                        .fold(0.0f32, f32::max) * 1.01;
+                    let apmag = llr_set.llra.iter().map(|v| v.abs()).fold(0.0f32, f32::max) * 1.01;
 
                     // Build multiple AP configurations (deepest first)
                     let mut ap_passes: Vec<(ApHint, u8)> = Vec::new();
@@ -469,31 +524,40 @@ fn process_candidate(
                             }
 
                             // Helper: validate AP decode result
-                            let check_result = |msg77: [u8; 77], hard_errors: u32| -> Option<DecodeResult> {
-                                if hard_errors >= max_errors { return None; }
-                                let text = super::message::unpack77(&msg77)?;
-                                if !super::message::is_plausible_message(&text) { return None; }
-                                // Verify AP-locked callsigns appear in decoded message
-                                let upper = text.to_uppercase();
-                                if let Some(ref c1) = ap_cfg.call1 {
-                                    if !upper.contains(&c1.to_uppercase()) { return None; }
-                                }
-                                if let Some(ref c2) = ap_cfg.call2 {
-                                    if !upper.contains(&c2.to_uppercase()) { return None; }
-                                }
-                                let itone = message_to_tones(&msg77);
-                                let snr_db = compute_snr_db(cs, &itone);
-                                Some(DecodeResult {
-                                    message77: msg77,
-                                    freq_hz: cand.freq_hz,
-                                    dt_sec: refined.dt_sec,
-                                    hard_errors,
-                                    sync_score: refined.score,
-                                    pass: *pass_id,
-                                    sync_cv,
-                                    snr_db,
-                                })
-                            };
+                            let check_result =
+                                |msg77: [u8; 77], hard_errors: u32| -> Option<DecodeResult> {
+                                    if hard_errors >= max_errors {
+                                        return None;
+                                    }
+                                    let text = super::message::unpack77(&msg77)?;
+                                    if !super::message::is_plausible_message(&text) {
+                                        return None;
+                                    }
+                                    // Verify AP-locked callsigns appear in decoded message
+                                    let upper = text.to_uppercase();
+                                    if let Some(ref c1) = ap_cfg.call1 {
+                                        if !upper.contains(&c1.to_uppercase()) {
+                                            return None;
+                                        }
+                                    }
+                                    if let Some(ref c2) = ap_cfg.call2 {
+                                        if !upper.contains(&c2.to_uppercase()) {
+                                            return None;
+                                        }
+                                    }
+                                    let itone = message_to_tones(&msg77);
+                                    let snr_db = compute_snr_db(cs, &itone);
+                                    Some(DecodeResult {
+                                        message77: msg77,
+                                        freq_hz: cand.freq_hz,
+                                        dt_sec: refined.dt_sec,
+                                        hard_errors,
+                                        sync_score: refined.score,
+                                        pass: *pass_id,
+                                        sync_cv,
+                                        snr_db,
+                                    })
+                                };
 
                             // AP + BP
                             if let Some(bp) = bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER) {
@@ -576,12 +640,20 @@ fn decode_frame_inner(
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
-        .filter_map(|cand| process_candidate(cand, audio, &fft_cache, depth, strictness, known, eq_mode, None))
+        .filter_map(|cand| {
+            process_candidate(
+                cand, audio, &fft_cache, depth, strictness, known, eq_mode, None,
+            )
+        })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let raw: Vec<DecodeResult> = candidates
         .iter()
-        .filter_map(|cand| process_candidate(cand, audio, &fft_cache, depth, strictness, known, eq_mode, None))
+        .filter_map(|cand| {
+            process_candidate(
+                cand, audio, &fft_cache, depth, strictness, known, eq_mode, None,
+            )
+        })
         .collect();
 
     // Deduplicate: preserve first occurrence; drop messages already in `known`.
@@ -633,9 +705,12 @@ pub fn decode_frame_subtract(
     for &factor in passes {
         let (new, _) = decode_frame_inner(
             &residual,
-            freq_min, freq_max,
+            freq_min,
+            freq_max,
             sync_min * factor,
-            freq_hint, depth, max_cand,
+            freq_hint,
+            depth,
+            max_cand,
             strictness,
             &all_results,
             EqMode::Off,
@@ -692,9 +767,12 @@ pub fn decode_frame_subtract_with_known(
 
         let (new, _) = decode_frame_inner(
             &residual,
-            freq_min, freq_max,
+            freq_min,
+            freq_max,
             sync_min * factor,
-            freq_hint, depth, max_cand,
+            freq_hint,
+            depth,
+            max_cand,
             strictness,
             &all_results,
             EqMode::Off,
@@ -812,7 +890,15 @@ pub fn decode_sniper_sic(
     }
 
     // Pass 2: re-decode residual with relaxed sync_min to catch the target.
-    let pass2 = decode_sniper_inner(&residual, target_freq, depth, max_cand, eq_mode, ap_hint, 0.6);
+    let pass2 = decode_sniper_inner(
+        &residual,
+        target_freq,
+        depth,
+        max_cand,
+        eq_mode,
+        ap_hint,
+        0.6,
+    );
 
     // Merge, deduplicating by message77.
     let mut results = pass1;
@@ -836,7 +922,14 @@ fn decode_sniper_inner(
     let freq_min = (target_freq - 250.0).max(100.0);
     let freq_max = (target_freq + 250.0).min(5900.0);
 
-    let candidates = coarse_sync(audio, freq_min, freq_max, sync_min, Some(target_freq), max_cand);
+    let candidates = coarse_sync(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        Some(target_freq),
+        max_cand,
+    );
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -846,12 +939,34 @@ fn decode_sniper_inner(
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
-        .filter_map(|cand| process_candidate(cand, audio, &fft_cache, depth, DecodeStrictness::Normal, &[], eq_mode, ap_hint))
+        .filter_map(|cand| {
+            process_candidate(
+                cand,
+                audio,
+                &fft_cache,
+                depth,
+                DecodeStrictness::Normal,
+                &[],
+                eq_mode,
+                ap_hint,
+            )
+        })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let raw: Vec<DecodeResult> = candidates
         .iter()
-        .filter_map(|cand| process_candidate(cand, audio, &fft_cache, depth, DecodeStrictness::Normal, &[], eq_mode, ap_hint))
+        .filter_map(|cand| {
+            process_candidate(
+                cand,
+                audio,
+                &fft_cache,
+                depth,
+                DecodeStrictness::Normal,
+                &[],
+                eq_mode,
+                ap_hint,
+            )
+        })
         .collect();
 
     let mut results: Vec<DecodeResult> = Vec::new();
@@ -901,7 +1016,8 @@ mod tests {
                 audio_f32[start + i] = s;
             }
         }
-        let audio: Vec<i16> = audio_f32.iter()
+        let audio: Vec<i16> = audio_f32
+            .iter()
             .map(|&s| (s * 20000.0).clamp(-32767.0, 32767.0) as i16)
             .collect();
 

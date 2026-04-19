@@ -6,11 +6,13 @@
 
 use std::f32::consts::PI;
 
-use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
 use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
 use mfsk_core::core::sync::{coarse_sync, refine_candidate};
-use mfsk_core::core::{FecCodec, FecOpts, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol};
+use mfsk_core::core::{
+    FecCodec, FecOpts, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
+};
+use mfsk_core::ft4::{Ft4, encode};
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;
@@ -22,7 +24,10 @@ struct Lcg {
 }
 impl Lcg {
     fn new(seed: u64) -> Self {
-        Self { s: seed.wrapping_add(1), spare: None }
+        Self {
+            s: seed.wrapping_add(1),
+            spare: None,
+        }
     }
     fn next(&mut self) -> u64 {
         self.s = self
@@ -112,12 +117,16 @@ fn why_does_neg16db_fail() {
 
     let ds_rate = 12_000.0 / <Ft4 as ModulationParams>::NDOWN as f32;
     let fft_cache = build_fft_cache(&audio, &mfsk_core::ft4::decode::FT4_DOWNSAMPLE);
-    let cd0 = downsample_cached(&fft_cache, truth_cand.freq_hz, &mfsk_core::ft4::decode::FT4_DOWNSAMPLE);
+    let cd0 = downsample_cached(
+        &fft_cache,
+        truth_cand.freq_hz,
+        &mfsk_core::ft4::decode::FT4_DOWNSAMPLE,
+    );
 
     for &steps in &[32i32, 48, 64] {
         let refined = refine_candidate::<Ft4>(&cd0, truth_cand, steps);
-        let i0 = ((refined.dt_sec + <Ft4 as FrameLayout>::TX_START_OFFSET_S) * ds_rate)
-            .round() as usize;
+        let i0 =
+            ((refined.dt_sec + <Ft4 as FrameLayout>::TX_START_OFFSET_S) * ds_rate).round() as usize;
         let cs = symbol_spectra::<Ft4>(&cd0, i0);
         let nsync = sync_quality::<Ft4>(&cs);
         eprintln!(

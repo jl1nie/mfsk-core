@@ -74,8 +74,8 @@ pub fn tones_to_i16(itone: &[u8; NN], f0: f32, amplitude_i16: i16) -> Vec<i16> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::params::NSPS;
+    use super::*;
 
     /// Round-trip: generate a waveform and verify it decodes back to the same
     /// tone sequence (structural smoke-test only — no full decode).
@@ -103,7 +103,8 @@ mod tests {
         for offset in [0usize, 36, 72] {
             for (i, &c) in COSTAS.iter().enumerate() {
                 assert_eq!(
-                    itone[offset + i], c as u8,
+                    itone[offset + i],
+                    c as u8,
                     "Costas mismatch at symbol {}",
                     offset + i
                 );
@@ -122,7 +123,7 @@ mod tests {
     /// Encode → decode round-trip via the full ft8-core pipeline (raw bits).
     #[test]
     fn encode_decode_roundtrip() {
-        use super::super::decode::{decode_frame, DecodeDepth};
+        use super::super::decode::{DecodeDepth, decode_frame};
 
         // Build a known message (all bits = 1 is unlikely to collide with anything).
         let msg = [1u8; MSG_BITS];
@@ -162,16 +163,16 @@ mod tests {
     /// and verifies WSJT-X CRC compatibility (77-bit CRC, not 96-bit).
     #[test]
     fn callsign_roundtrip() {
-        use super::super::decode::{decode_frame, DecodeDepth};
+        use super::super::decode::{DecodeDepth, decode_frame};
         use super::super::message::{pack77, unpack77};
 
         let cases: &[(&str, &str, &str, &str)] = &[
-            ("CQ",     "JA1ABC", "PM95", "CQ JA1ABC PM95"),
-            ("JA1ABC", "W1AW",   "-15",  "JA1ABC W1AW -15"),
-            ("W1AW",   "JA1ABC", "R-15", "W1AW JA1ABC R-15"),
-            ("JA1ABC", "W1AW",   "RR73", "JA1ABC W1AW RR73"),
-            ("W1AW",   "JA1ABC", "73",   "W1AW JA1ABC 73"),
-            ("CQ",     "3Y0Z",   "JD34", "CQ 3Y0Z JD34"),
+            ("CQ", "JA1ABC", "PM95", "CQ JA1ABC PM95"),
+            ("JA1ABC", "W1AW", "-15", "JA1ABC W1AW -15"),
+            ("W1AW", "JA1ABC", "R-15", "W1AW JA1ABC R-15"),
+            ("JA1ABC", "W1AW", "RR73", "JA1ABC W1AW RR73"),
+            ("W1AW", "JA1ABC", "73", "W1AW JA1ABC 73"),
+            ("CQ", "3Y0Z", "JD34", "CQ 3Y0Z JD34"),
         ];
 
         for &(call1, call2, report, expected) in cases {
@@ -180,8 +181,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("pack77 failed: {call1} {call2} {report}"));
 
             // 2. Verify pack → unpack consistency (no audio)
-            let text = unpack77(&msg77)
-                .unwrap_or_else(|| panic!("unpack77 failed for: {expected}"));
+            let text =
+                unpack77(&msg77).unwrap_or_else(|| panic!("unpack77 failed for: {expected}"));
             assert_eq!(text, expected, "pack/unpack mismatch");
 
             // 3. Full encode → decode with audio
@@ -199,7 +200,10 @@ mod tests {
 
             let decoded = unpack77(&results[0].message77)
                 .unwrap_or_else(|| panic!("unpack decoded bits failed for: {expected}"));
-            assert_eq!(decoded, expected, "full roundtrip mismatch for: {call1} {call2} {report}");
+            assert_eq!(
+                decoded, expected,
+                "full roundtrip mismatch for: {call1} {call2} {report}"
+            );
         }
     }
 }

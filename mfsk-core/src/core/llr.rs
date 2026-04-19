@@ -108,7 +108,11 @@ fn normalize_bmet(bmet: &mut [f32]) {
     let mean = bmet.iter().sum::<f32>() / n;
     let mean_sq = bmet.iter().map(|&x| x * x).sum::<f32>() / n;
     let var = mean_sq - mean * mean;
-    let sig = if var > 0.0 { var.sqrt() } else { mean_sq.sqrt() };
+    let sig = if var > 0.0 {
+        var.sqrt()
+    } else {
+        mean_sq.sqrt()
+    };
     if sig > 0.0 {
         bmet.iter_mut().for_each(|x| *x /= sig);
     }

@@ -272,7 +272,10 @@ mod tests {
         conv_encode(&data, nbits, &mut coded);
 
         // Perfect LLRs: +8 for bit=0, -8 for bit=1.
-        let llrs: Vec<f32> = coded.iter().map(|&b| if b == 0 { 8.0 } else { -8.0 }).collect();
+        let llrs: Vec<f32> = coded
+            .iter()
+            .map(|&b| if b == 0 { 8.0 } else { -8.0 })
+            .collect();
         let bm = build_branch_metrics(&llrs, 0.0, 16.0);
         let res = fano_decode(&bm, nbits, 17, 10_000);
 

@@ -132,7 +132,9 @@ mod tests {
             .filter_map(|r| unpack77(&r.message77))
             .collect();
         assert!(
-            texts.iter().any(|t| t.contains("JA1ABC") && t.contains("PM95")),
+            texts
+                .iter()
+                .any(|t| t.contains("JA1ABC") && t.contains("PM95")),
             "expected to recover 'JA1ABC PM95', got {:?}",
             texts
         );

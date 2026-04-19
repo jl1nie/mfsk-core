@@ -15,11 +15,29 @@
  * (or encode call) drives.
  */
 typedef enum MfskProtocol {
+    /**
+     * FT8 — 15 s slot, 8-GFSK, LDPC(174,91), 77-bit WSJT message.
+     */
     MFSK_PROTOCOL_FT8 = 0,
+    /**
+     * FT4 — 7.5 s slot, 4-GFSK, LDPC(174,91), 77-bit WSJT message.
+     */
     MFSK_PROTOCOL_FT4 = 1,
+    /**
+     * WSPR — 120 s slot, 4-FSK, convolutional r=½ K=32 + Fano, 50-bit payload.
+     */
     MFSK_PROTOCOL_WSPR = 2,
+    /**
+     * JT9 — 60 s slot, 9-FSK, convolutional r=½ K=32 + Fano, 72-bit JT message.
+     */
     MFSK_PROTOCOL_JT9 = 3,
+    /**
+     * JT65 — 60 s slot, 65-FSK, Reed-Solomon(63,12) over GF(2⁶), 72-bit JT message.
+     */
     MFSK_PROTOCOL_JT65 = 4,
+    /**
+     * FST4-60A — 60 s slot, 4-GFSK, LDPC(240,101) + CRC-24, 77-bit WSJT message.
+     */
     MFSK_PROTOCOL_FST4S60 = 5,
 } MfskProtocol;
 
@@ -30,10 +48,32 @@ typedef enum MfskProtocol {
  * [`mfsk_last_error`] for a human-readable description.
  */
 typedef enum MfskStatus {
+    /**
+     * Success.
+     */
     MFSK_STATUS_OK = 0,
+    /**
+     * A caller-supplied argument was invalid (null pointer to a
+     * non-optional arg, out-of-range size, malformed string, etc.).
+     */
     MFSK_STATUS_INVALID_ARG = -1,
+    /**
+     * The supplied protocol tag is not recognised or not supported
+     * by this build (e.g. FST4 in a build that was compiled without
+     * the `fst4` feature would report this at decode / encode time).
+     */
     MFSK_STATUS_UNKNOWN_PROTOCOL = -2,
+    /**
+     * The decoder ran without a fatal error but produced no results;
+     * the message list is empty. Used by some encode helpers to
+     * signal that the message could not be packed into the protocol
+     * payload (e.g. unsupported callsign format).
+     */
     MFSK_STATUS_DECODE_FAILED = -3,
+    /**
+     * Internal error: an invariant of the Rust implementation was
+     * violated (e.g. a `Box::from_raw` got a bad pointer). Always a bug.
+     */
     MFSK_STATUS_INTERNAL = -4,
 } MfskStatus;
 
@@ -101,8 +141,19 @@ typedef struct MfskMessageList {
  * [`mfsk_samples_free`] when done reading.
  */
 typedef struct MfskSamples {
+    /**
+     * Contiguous f32 PCM at the protocol's native sample rate
+     * (12 000 Hz for all currently-supported modes). Owned by the
+     * list; free with [`mfsk_samples_free`].
+     */
     float *samples;
+    /**
+     * Number of f32 entries in `samples`.
+     */
     uintptr_t len;
+    /**
+     * Internal: total allocation (reserved for future growth).
+     */
     uintptr_t _cap;
 } MfskSamples;
 
@@ -159,9 +210,38 @@ void mfsk_message_list_free(struct MfskMessageList *list);
 void mfsk_samples_free(struct MfskSamples *s);
 
 /**
- * Decode one slot of f32 PCM audio at `sample_rate` Hz (non-12 kHz
- * input is resampled internally). Writes zero-or-more messages into
- * `out`. Dispatches to the right backend by protocol tag.
+ * Decode one slot of f32 PCM audio.
+ *
+ * The protocol to decode is whichever was passed to
+ * [`mfsk_decoder_new`]; the sample duration is implicit in the
+ * protocol's slot length (FT8 = 15 s, FT4 = 7.5 s, FST4-60A / JT9 /
+ * JT65 = 60 s, WSPR = 120 s). The audio must already be aligned to
+ * the slot boundary — this function does not search for sync outside
+ * the slot. Non-12 kHz input is linearly resampled to 12 000 Hz
+ * internally.
+ *
+ * On success, `out` is filled with the list of decoded messages
+ * (may be empty). The caller owns the list and must release it with
+ * [`mfsk_message_list_free`].
+ *
+ * Samples should be scaled to roughly ±1.0 (full-scale sine = 1.0).
+ *
+ * # Parameters
+ *
+ * - `dec` — decoder handle from [`mfsk_decoder_new`].
+ * - `samples` — pointer to `n_samples` `f32` PCM values, slot-aligned.
+ * - `n_samples` — number of samples in `samples`.
+ * - `sample_rate` — sample rate of `samples` in Hz (commonly 12000,
+ *   48000, or 44100). Must be ≥ 8000 Hz.
+ * - `out` — pointer to a caller-allocated `MfskMessageList` that is
+ *   either zero-initialised or previously freed via
+ *   [`mfsk_message_list_free`].
+ *
+ * # Returns
+ *
+ * [`MfskStatus::Ok`] on success (including zero decodes). On failure
+ * returns an error status and `out` is left unchanged; consult
+ * [`mfsk_last_error`] for details.
  *
  * # Safety
  *
@@ -177,7 +257,12 @@ enum MfskStatus mfsk_decode_f32(const struct MfskDecoder *dec,
                                 struct MfskMessageList *out);
 
 /**
- * Decode one slot of 16-bit PCM audio at `sample_rate` Hz.
+ * Decode one slot of 16-bit signed PCM audio.
+ *
+ * Identical to [`mfsk_decode_f32`] but takes interleaved `i16`
+ * samples (the direct output of most ADCs and WAV files). Full-scale
+ * input is `±32767`. See [`mfsk_decode_f32`] for parameter semantics,
+ * return values, and slot-alignment requirements.
  *
  * # Safety
  *

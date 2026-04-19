@@ -29,7 +29,7 @@ use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use super::{Wspr, WSPR_SYNC_VECTOR};
+use super::{WSPR_SYNC_VECTOR, Wspr};
 
 /// Per-symbol 4-tone magnitudes at a hypothesised alignment.
 ///
@@ -99,7 +99,10 @@ pub fn extract_tone_magnitudes(
     } else {
         1.0
     };
-    Some(ToneMagnitudes { mags, noise_power_est })
+    Some(ToneMagnitudes {
+        mags,
+        noise_power_est,
+    })
 }
 
 /// Convert per-symbol tone magnitudes to 162 data-bit LLRs using the
@@ -193,8 +196,8 @@ pub fn demodulate_aligned(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::tx::synthesize_audio;
+    use super::*;
 
     #[test]
     fn recovers_llr_sign_noise_free() {
@@ -213,9 +216,19 @@ mod tests {
         for i in 0..162 {
             let expect_positive = (i & 1) == 0;
             if expect_positive {
-                assert!(llrs[i] > 0.0, "symbol {} LLR should be > 0, got {}", i, llrs[i]);
+                assert!(
+                    llrs[i] > 0.0,
+                    "symbol {} LLR should be > 0, got {}",
+                    i,
+                    llrs[i]
+                );
             } else {
-                assert!(llrs[i] < 0.0, "symbol {} LLR should be < 0, got {}", i, llrs[i]);
+                assert!(
+                    llrs[i] < 0.0,
+                    "symbol {} LLR should be < 0, got {}",
+                    i,
+                    llrs[i]
+                );
             }
         }
     }

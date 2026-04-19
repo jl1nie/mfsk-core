@@ -73,18 +73,21 @@ pub fn equalize_local<P: Protocol>(cs: &mut [Complex<f32>]) {
     }
 
     // Noise variance from the scatter of observations around the per-tone mean.
-    let (total_var, count) = obs
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| !o.is_empty())
-        .fold((0.0f32, 0usize), |(v, n), (t, obs_t)| {
+    let (total_var, count) = obs.iter().enumerate().filter(|(_, o)| !o.is_empty()).fold(
+        (0.0f32, 0usize),
+        |(v, n), (t, obs_t)| {
             let mean = pilots[t];
             (
                 v + obs_t.iter().map(|o| (*o - mean).norm_sqr()).sum::<f32>(),
                 n + obs_t.len(),
             )
-        });
-    let noise_var = if count > 0 { total_var / count as f32 } else { 1.0 };
+        },
+    );
+    let noise_var = if count > 0 {
+        total_var / count as f32
+    } else {
+        1.0
+    };
 
     // Regularise by median pilot power × 0.3 (prevents over-correction at low SNR).
     let mut powers: Vec<f32> = pilots.iter().map(|p| p.norm_sqr()).collect();

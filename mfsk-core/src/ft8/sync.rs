@@ -143,7 +143,11 @@ mod tests {
     #[test]
     fn refine_candidate_double_silence_no_panic() {
         let cd0 = vec![Complex::new(0.0f32, 0.0); 3200];
-        let cand = SyncCandidate { freq_hz: 1000.0, dt_sec: 0.0, score: 1.0 };
+        let cand = SyncCandidate {
+            freq_hz: 1000.0,
+            dt_sec: 0.0,
+            score: 1.0,
+        };
         let detail = refine_candidate_double(&cd0, &cand, 5);
         assert!(detail.drift_dt_sec.is_finite());
     }

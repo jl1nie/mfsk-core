@@ -3,8 +3,10 @@
 //! methods (not the concrete free functions) so that future genericised
 //! pipeline code is guaranteed to work when driven by `<P: Protocol>`.
 
+use mfsk_core::core::{
+    FecCodec, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
+};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::core::{FecCodec, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol};
 
 /// Associated constants should match the canonical WSJT-X values from
 /// `ft8-core::params`. The plain-number assertions below read as a spec and
@@ -15,7 +17,10 @@ fn ft8_associated_constants() {
     assert_eq!(<Ft8 as ModulationParams>::BITS_PER_SYMBOL, 3);
     assert_eq!(<Ft8 as ModulationParams>::NSPS, 1920);
     assert!(((<Ft8 as ModulationParams>::SYMBOL_DT) - 0.16).abs() < 1e-6);
-    assert_eq!(<Ft8 as ModulationParams>::GRAY_MAP, &[0, 1, 3, 2, 5, 6, 4, 7]);
+    assert_eq!(
+        <Ft8 as ModulationParams>::GRAY_MAP,
+        &[0, 1, 3, 2, 5, 6, 4, 7]
+    );
     assert_eq!(<Ft8 as ModulationParams>::GFSK_BT, 2.0);
     assert_eq!(<Ft8 as ModulationParams>::GFSK_HMOD, 1.0);
     assert_eq!(<Ft8 as ModulationParams>::NFFT_PER_SYMBOL_FACTOR, 2);
@@ -82,7 +87,10 @@ fn ft8_message_and_fec_round_trip() {
     assert_eq!(&codeword[..91], &info91[..]); // systematic
 
     // Decode from "perfect" soft LLRs: ±8.0 per bit → BP converges on iter 0.
-    let llr: Vec<f32> = codeword.iter().map(|&b| if b == 1 { 8.0 } else { -8.0 }).collect();
+    let llr: Vec<f32> = codeword
+        .iter()
+        .map(|&b| if b == 1 { 8.0 } else { -8.0 })
+        .collect();
     let result = fec
         .decode_soft(&llr, &mfsk_core::core::FecOpts::default())
         .expect("BP converges with perfect LLR");

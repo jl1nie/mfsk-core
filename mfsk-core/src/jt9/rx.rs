@@ -21,9 +21,9 @@ use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
+use super::Jt9;
 use super::interleave::deinterleave_llrs;
 use super::sync_pattern::JT9_ISYNC;
-use super::Jt9;
 
 /// Inverse Gray code on 3-bit values.
 #[inline]
@@ -110,16 +110,20 @@ pub fn demodulate_aligned(
                 let data_bits = inv_gray3(tone);
                 let p = mags[tone as usize] * mags[tone as usize];
                 if data_bits & mask == 0 {
-                    if p > max0 { max0 = p; }
+                    if p > max0 {
+                        max0 = p;
+                    }
                 } else {
-                    if p > max1 { max1 = p; }
+                    if p > max1 {
+                        max1 = p;
+                    }
                 }
             }
             llr3[bit_pos] = max0 - max1; // normalised below
         }
 
         // Place at indices 3j..3j+3 in the 207-bit frame.
-        llrs207[3 * j]     = llr3[0];
+        llrs207[3 * j] = llr3[0];
         llrs207[3 * j + 1] = llr3[1];
         llrs207[3 * j + 2] = llr3[2];
         j += 1;
@@ -147,8 +151,8 @@ pub fn demodulate_aligned(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::tx::synthesize_standard;
+    use super::*;
     use crate::core::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::{Jt72Codec, Jt72Message};
@@ -164,8 +168,8 @@ mod tests {
     #[test]
     fn synth_decode_roundtrip_cq_k1abc_fn42() {
         let freq = 1500.0;
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3)
-            .expect("pack+synth");
+        let audio =
+            synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack+synth");
         let llrs = demodulate_aligned(&audio, 12_000, 0, freq);
 
         let codec = ConvFano232;
@@ -181,7 +185,11 @@ mod tests {
             .unpack(&payload, &DecodeContext::default())
             .expect("unpack");
         match msg {
-            Jt72Message::Standard { call1, call2, grid_or_report } => {
+            Jt72Message::Standard {
+                call1,
+                call2,
+                grid_or_report,
+            } => {
                 assert_eq!(call1, "CQ");
                 assert_eq!(call2, "K1ABC");
                 assert_eq!(grid_or_report, "FN42");

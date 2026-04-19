@@ -74,9 +74,8 @@ pub fn subtract_tones(
     // cos / sin are near-orthogonal over the full frame so the closed-form
     // per-component projection matches the joint solve to floating-point
     // precision.
-    let (num_a, num_b, den_a, den_b) = (0..len).fold(
-        (0.0f32, 0.0f32, 0.0f32, 0.0f32),
-        |(na, nb, da, db), i| {
+    let (num_a, num_b, den_a, den_b) =
+        (0..len).fold((0.0f32, 0.0f32, 0.0f32, 0.0f32), |(na, nb, da, db), i| {
             let rx = audio[start + i] as f32;
             (
                 na + rx * w_cos[i],
@@ -84,11 +83,18 @@ pub fn subtract_tones(
                 da + w_cos[i] * w_cos[i],
                 db + w_sin[i] * w_sin[i],
             )
-        },
-    );
+        });
 
-    let a = if den_a > f32::EPSILON { num_a / den_a } else { 0.0 };
-    let b = if den_b > f32::EPSILON { num_b / den_b } else { 0.0 };
+    let a = if den_a > f32::EPSILON {
+        num_a / den_a
+    } else {
+        0.0
+    };
+    let b = if den_b > f32::EPSILON {
+        num_b / den_b
+    } else {
+        0.0
+    };
 
     for i in 0..len {
         let sub = gain * (a * w_cos[i] + b * w_sin[i]);

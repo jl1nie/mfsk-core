@@ -64,7 +64,12 @@ pub fn synthesize_type1(
 ) -> Option<Vec<f32>> {
     let info = crate::msg::wspr::pack_type1(callsign, grid, power_dbm)?;
     let symbols = super::encode_channel_symbols(&info);
-    Some(synthesize_audio(&symbols, sample_rate, base_freq_hz, amplitude))
+    Some(synthesize_audio(
+        &symbols,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    ))
 }
 
 #[cfg(test)]
@@ -81,11 +86,15 @@ mod tests {
 
     #[test]
     fn synthesizes_valid_message() {
-        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, 1500.0, 0.3)
-            .expect("valid message");
+        let audio =
+            synthesize_type1("K1ABC", "FN42", 37, 12_000, 1500.0, 0.3).expect("valid message");
         assert_eq!(audio.len(), 8192 * 162);
         // Basic sanity: peak amplitude close to the requested level.
         let peak = audio.iter().cloned().fold(0.0f32, f32::max);
-        assert!(peak > 0.28 && peak < 0.32, "peak amplitude out of range: {}", peak);
+        assert!(
+            peak > 0.28 && peak < 0.32,
+            "peak amplitude out of range: {}",
+            peak
+        );
     }
 }

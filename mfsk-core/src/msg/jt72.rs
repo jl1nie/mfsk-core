@@ -59,11 +59,7 @@ pub enum Jt72Message {
     /// A message whose fields decode but don't fit the standard
     /// pattern yet (compound callsign prefix/suffix, free text).
     /// Raw integer fields are exposed for callers that want to dig in.
-    Unsupported {
-        nc1: u32,
-        nc2: u32,
-        ng: u32,
-    },
+    Unsupported { nc1: u32, nc2: u32, ng: u32 },
 }
 
 impl fmt::Display for Jt72Message {
@@ -154,8 +150,12 @@ pub fn pack_call(call: &str) -> Option<u32> {
 
     // Validate slot alphabets.
     let n = [
-        nchar(tmp[0])?, nchar(tmp[1])?, nchar(tmp[2])?,
-        nchar(tmp[3])?, nchar(tmp[4])?, nchar(tmp[5])?,
+        nchar(tmp[0])?,
+        nchar(tmp[1])?,
+        nchar(tmp[2])?,
+        nchar(tmp[3])?,
+        nchar(tmp[4])?,
+        nchar(tmp[5])?,
     ];
     // Slot 0: letter/digit/space (0..=36)
     // Slot 1: letter/digit (0..=35)
@@ -540,7 +540,11 @@ mod tests {
         let words = pack_standard("CQ", "K1ABC", "FN42").expect("pack CQ");
         let m = unpack(&words);
         match m {
-            Jt72Message::Standard { call1, call2, grid_or_report } => {
+            Jt72Message::Standard {
+                call1,
+                call2,
+                grid_or_report,
+            } => {
                 assert_eq!(call1, "CQ");
                 assert_eq!(call2, "K1ABC");
                 assert_eq!(grid_or_report, "FN42");

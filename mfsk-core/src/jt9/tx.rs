@@ -16,9 +16,9 @@ use core::f32::consts::TAU;
 use crate::core::{FecCodec, ModulationParams};
 use crate::fec::ConvFano232;
 
+use super::Jt9;
 use super::interleave::interleave;
 use super::sync_pattern::JT9_ISYNC;
-use super::Jt9;
 
 /// Gray-map a 3-bit value: `n ^ (n >> 1)`.
 #[inline]
@@ -118,7 +118,12 @@ pub fn synthesize_standard(
         *bit = (word >> bit_in_word) & 1;
     }
     let tones = encode_channel_symbols(&info_bits);
-    Some(synthesize_audio(&tones, sample_rate, base_freq_hz, amplitude))
+    Some(synthesize_audio(
+        &tones,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    ))
 }
 
 #[cfg(test)]
@@ -134,7 +139,11 @@ mod tests {
         // sync positions. (All-zero info might produce a few accidental
         // tone-0 data symbols — but in practice with Gray mapping and
         // convolutional expansion the count lands on exactly 16.)
-        assert!(sync_count >= 16, "expected >=16 sync tones, got {}", sync_count);
+        assert!(
+            sync_count >= 16,
+            "expected >=16 sync tones, got {}",
+            sync_count
+        );
     }
 
     #[test]
@@ -157,8 +166,8 @@ mod tests {
 
     #[test]
     fn synthesize_standard_message_ok() {
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1500.0, 0.3)
-            .expect("pack + synth");
+        let audio =
+            synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1500.0, 0.3).expect("pack + synth");
         assert_eq!(audio.len(), 6912 * 85);
     }
 }

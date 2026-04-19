@@ -38,10 +38,7 @@ fn inflate_llr(v: Vec<f32>) -> [f32; LDPC_N] {
 }
 
 /// Compute 8-tone complex spectra for all 79 FT8 symbols.
-pub fn symbol_spectra(
-    cd0: &[Complex<f32>],
-    i_start: usize,
-) -> Box<[[Complex<f32>; 8]; 79]> {
+pub fn symbol_spectra(cd0: &[Complex<f32>], i_start: usize) -> Box<[[Complex<f32>; 8]; 79]> {
     let flat = crate::core::llr::symbol_spectra::<Ft8>(cd0, i_start);
     let mut out: Box<[[Complex<f32>; 8]; 79]> =
         vec![[Complex::new(0.0, 0.0); 8]; 79].try_into().unwrap();

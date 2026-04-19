@@ -15,10 +15,10 @@ use core::f32::consts::TAU;
 use crate::core::ModulationParams;
 use crate::fec::Rs63_12;
 
+use super::Jt65;
 use super::gray::gray6;
 use super::interleave::interleave;
 use super::sync_pattern::JT65_NPRC;
-use super::Jt65;
 
 /// Encode a 12-symbol info payload into 126 channel tones
 /// (values 0 or 2..=65 where 0 = sync, 2..=65 = data + 2).
@@ -86,7 +86,12 @@ pub fn synthesize_standard(
 ) -> Option<Vec<f32>> {
     let words = crate::msg::jt72::pack_standard(call1, call2, grid_or_report)?;
     let tones = encode_channel_symbols(&words);
-    Some(synthesize_audio(&tones, sample_rate, base_freq_hz, amplitude))
+    Some(synthesize_audio(
+        &tones,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    ))
 }
 
 #[cfg(test)]
@@ -112,8 +117,8 @@ mod tests {
 
     #[test]
     fn synthesize_standard_message_ok() {
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
-            .expect("pack + synth");
+        let audio =
+            synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3).expect("pack + synth");
         assert_eq!(audio.len(), 4460 * 126);
     }
 }

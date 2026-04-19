@@ -1,4 +1,4 @@
-//! # mfsk-msg
+//! # `msg` — message-layer codecs and callsign hash table
 //!
 //! Message-layer codecs for WSJT-family digital modes.
 //!
@@ -53,7 +53,11 @@ impl MessageCodec for Wsjt77Message {
         let report = if let Some(g) = &fields.grid {
             g.clone()
         } else if let Some(r) = fields.report {
-            if r >= 0 { format!("+{:02}", r) } else { format!("{:03}", r) }
+            if r >= 0 {
+                format!("+{:02}", r)
+            } else {
+                format!("{:03}", r)
+            }
         } else {
             return None;
         };

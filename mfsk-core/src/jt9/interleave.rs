@@ -100,7 +100,11 @@ mod tests {
         }
         deinterleave_llrs(&mut interleaved_llrs);
         for i in 0..FRAME {
-            let expected = if (((i * 11 + 5) & 1) as u8) == 0 { 4.0 } else { -4.0 };
+            let expected = if (((i * 11 + 5) & 1) as u8) == 0 {
+                4.0
+            } else {
+                -4.0
+            };
             assert_eq!(interleaved_llrs[i], expected, "pos {i}");
         }
     }

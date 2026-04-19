@@ -1,4 +1,4 @@
-//! # mfsk-fec
+//! # `fec` — forward-error-correction codecs
 //!
 //! Forward-error-correction codecs shared across WSJT-family protocols.
 //!
@@ -25,6 +25,6 @@ pub use ldpc::Ldpc174_91;
 pub use ldpc240_101::Ldpc240_101;
 pub use rs::Rs63_12;
 
-// Re-export the FecCodec trait so downstream crates don't need to pull
-// mfsk_core in separately for common FEC work.
+// Re-export the FecCodec trait so callers can name it via [`crate::fec::FecCodec`]
+// alongside the concrete codec types.
 pub use crate::core::FecCodec;

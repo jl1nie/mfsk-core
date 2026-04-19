@@ -146,11 +146,15 @@ pub fn process_candidate_ap<P: Protocol>(
 
         // ── Plain BP first, in case the signal is already clear ────────
         for (llr, pass_id) in &variants {
-            let bp_opts = FecOpts { bp_max_iter: 30, osd_depth: 0, ap_mask: None };
+            let bp_opts = FecOpts {
+                bp_max_iter: 30,
+                osd_depth: 0,
+                ap_mask: None,
+            };
             if let Some(r) = fec.decode_soft(llr, &bp_opts) {
-                if let Some(res) = finalise_result::<P>(
-                    &r, cand, &refined, sync_cv, *pass_id, cs_ref, None, &fec,
-                ) {
+                if let Some(res) =
+                    finalise_result::<P>(&r, cand, &refined, sync_cv, *pass_id, cs_ref, None, &fec)
+                {
                     return Some(res);
                 }
             }
@@ -178,8 +182,14 @@ pub fn process_candidate_ap<P: Protocol>(
                         if let Some(r) = fec.decode_soft(llr, &ap_opts) {
                             if r.hard_errors < max_errors {
                                 if let Some(res) = finalise_result::<P>(
-                                    &r, cand, &refined, sync_cv, pass_id, cs_ref,
-                                    Some(&ap_cfg), &fec,
+                                    &r,
+                                    cand,
+                                    &refined,
+                                    sync_cv,
+                                    pass_id,
+                                    cs_ref,
+                                    Some(&ap_cfg),
+                                    &fec,
                                 ) {
                                     return Some(res);
                                 }
@@ -204,8 +214,14 @@ pub fn process_candidate_ap<P: Protocol>(
                                 if let Some(r) = fec.decode_soft(llr, &osd_opts) {
                                     if r.hard_errors < max_errors {
                                         if let Some(res) = finalise_result::<P>(
-                                            &r, cand, &refined, sync_cv, pass_id,
-                                            cs_ref, Some(&ap_cfg), &fec,
+                                            &r,
+                                            cand,
+                                            &refined,
+                                            sync_cv,
+                                            pass_id,
+                                            cs_ref,
+                                            Some(&ap_cfg),
+                                            &fec,
                                         ) {
                                             return Some(res);
                                         }
@@ -318,8 +334,14 @@ pub fn decode_sniper_ap<P: Protocol>(
 ) -> Vec<DecodeResult> {
     let freq_min = (target_freq - search_hz).max(100.0);
     let freq_max = (target_freq + search_hz).min(5_900.0);
-    let candidates =
-        coarse_sync::<P>(audio, freq_min, freq_max, sync_min, Some(target_freq), max_cand);
+    let candidates = coarse_sync::<P>(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        Some(target_freq),
+        max_cand,
+    );
     if candidates.is_empty() {
         return Vec::new();
     }

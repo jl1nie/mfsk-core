@@ -8,10 +8,10 @@
 
 use std::time::Instant;
 
-use mfsk_core::ft4::decode::{ApHint, decode_sniper_ap};
-use mfsk_core::ft4::encode;
 use mfsk_core::core::equalize::EqMode;
 use mfsk_core::core::{MessageCodec, MessageFields};
+use mfsk_core::ft4::decode::{ApHint, decode_sniper_ap};
+use mfsk_core::ft4::encode;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;
@@ -22,7 +22,9 @@ struct Lcg {
 }
 impl Lcg {
     fn new(seed: u64) -> Self {
-        Self { s: seed.wrapping_add(1) }
+        Self {
+            s: seed.wrapping_add(1),
+        }
     }
     fn next(&mut self) -> u64 {
         self.s = self

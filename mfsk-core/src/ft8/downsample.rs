@@ -51,8 +51,8 @@ pub fn downsample_simple(audio: &[i16], f0: f32) -> Vec<Complex<f32>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::params::NMAX;
+    use super::*;
 
     const NFFT2: usize = 3_200;
 

@@ -13,10 +13,10 @@ use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
+use super::Jt65;
 use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
-use super::Jt65;
 
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
@@ -158,8 +158,8 @@ fn demodulate_aligned_with_confidence_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::tx::synthesize_standard;
+    use super::*;
     use crate::core::{DecodeContext, MessageCodec};
     use crate::fec::Rs63_12;
     use crate::msg::{Jt72Codec, Jt72Message};
@@ -167,8 +167,8 @@ mod tests {
     #[test]
     fn synth_decode_roundtrip_cq_k1abc_fn42() {
         let freq = 1270.0;
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3)
-            .expect("pack+synth");
+        let audio =
+            synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack+synth");
         let received = demodulate_aligned(&audio, 12_000, 0, freq).expect("demod");
         let rs = Rs63_12::new();
         let (info, nerr) = rs.decode_jt65(&received).expect("clean decode");
@@ -186,7 +186,11 @@ mod tests {
             .unpack(&payload, &DecodeContext::default())
             .expect("unpack");
         match msg {
-            Jt72Message::Standard { call1, call2, grid_or_report } => {
+            Jt72Message::Standard {
+                call1,
+                call2,
+                grid_or_report,
+            } => {
                 assert_eq!(call1, "CQ");
                 assert_eq!(call2, "K1ABC");
                 assert_eq!(grid_or_report, "FN42");

@@ -1,12 +1,11 @@
-//! # ft4-core
+//! # `ft4` — FT4 decoder and synthesiser
 //!
-//! FT4 protocol implementation on top of `mfsk-core` / `mfsk-fec` / `mfsk-msg`.
-//!
-//! FT4 shares the LDPC(174,91) code and WSJT 77-bit message payload with FT8;
-//! only the modulation parameters (4-FSK, 20.833 baud), frame layout (four
-//! 4-symbol Costas arrays at symbols 0/33/66/99) and DSP ratios differ. All
-//! heavy lifting is delegated to generic code in `mfsk-core`; this crate
-//! mainly wires the trait impls and provides a minimal decode entry point.
+//! FT4 shares the LDPC(174, 91) code and WSJT 77-bit message payload with FT8;
+//! only the modulation parameters (4-GFSK at 20.833 baud), frame layout (four
+//! 4-symbol Costas arrays at symbols 0 / 33 / 66 / 99) and DSP ratios differ.
+//! All heavy lifting is delegated to generic code in [`crate::core`]; this
+//! module mainly wires the trait impls and provides decode / synth entry
+//! points.
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc174_91;
@@ -61,8 +60,20 @@ const FT4_COSTAS_C: [u8; 4] = [2, 3, 1, 0];
 const FT4_COSTAS_D: [u8; 4] = [3, 2, 0, 1];
 
 const FT4_SYNC_BLOCKS: [SyncBlock; 4] = [
-    SyncBlock { start_symbol: 0, pattern: &FT4_COSTAS_A },
-    SyncBlock { start_symbol: 33, pattern: &FT4_COSTAS_B },
-    SyncBlock { start_symbol: 66, pattern: &FT4_COSTAS_C },
-    SyncBlock { start_symbol: 99, pattern: &FT4_COSTAS_D },
+    SyncBlock {
+        start_symbol: 0,
+        pattern: &FT4_COSTAS_A,
+    },
+    SyncBlock {
+        start_symbol: 33,
+        pattern: &FT4_COSTAS_B,
+    },
+    SyncBlock {
+        start_symbol: 66,
+        pattern: &FT4_COSTAS_C,
+    },
+    SyncBlock {
+        start_symbol: 99,
+        pattern: &FT4_COSTAS_D,
+    },
 ];

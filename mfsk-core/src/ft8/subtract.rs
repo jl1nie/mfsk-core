@@ -35,9 +35,9 @@ pub fn subtract_signal_weighted(audio: &mut Vec<i16>, result: &DecodeResult, gai
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::decode::{DecodeDepth, DecodeStrictness};
     use super::super::wave_gen::{message_to_tones, tones_to_i16};
+    use super::*;
 
     #[test]
     fn subtract_reduces_power() {

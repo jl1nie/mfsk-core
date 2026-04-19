@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Lightweight local fence: format + quick compile check.
+# Heavy tests + clippy run in CI (~50 s), not here — keeping this hook
+# fast means developers actually leave it enabled.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "==> cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "==> cargo check -p mfsk-core --features full"
+cargo check -p mfsk-core --features full
+
+echo "==> cargo check -p mfsk-ffi"
+cargo check -p mfsk-ffi
+
+echo "==> pre-commit OK"

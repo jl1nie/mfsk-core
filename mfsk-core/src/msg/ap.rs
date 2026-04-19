@@ -11,7 +11,7 @@
 //! Type-1 messages use the same `call1 / call2 / grid-or-report / i3` field
 //! positions — so `ApHint` lives in the protocol-agnostic message layer.
 
-use super::wsjt77::{pack28, pack_grid4};
+use super::wsjt77::{pack_grid4, pack28};
 
 /// A Priori information to bias decoding.
 #[derive(Debug, Clone, Default)]

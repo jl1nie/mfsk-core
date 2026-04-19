@@ -112,8 +112,12 @@ fn unpack28(n28: u32) -> String {
     let i5 = (n / 27) as usize;
     let i6 = (n % 27) as usize;
 
-    if i1 >= C1.len() || i2 >= C2.len() || i3 >= C3.len()
-        || i4 >= C4.len() || i5 >= C4.len() || i6 >= C4.len()
+    if i1 >= C1.len()
+        || i2 >= C2.len()
+        || i3 >= C3.len()
+        || i4 >= C4.len()
+        || i5 >= C4.len()
+        || i6 >= C4.len()
     {
         return "?????".to_string();
     }
@@ -219,7 +223,7 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
                 // Format: b28 b28 b10 b5
                 let n28a = read_bits(msg, 0, 28);
                 let n28b = read_bits(msg, 28, 28);
-                let n5   = read_bits(msg, 66, 5);
+                let n5 = read_bits(msg, 66, 5);
                 let irpt = 2 * n5 as i32 - 30;
                 let crpt = if irpt >= 0 {
                     format!("+{:02}", irpt)
@@ -242,11 +246,11 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
         // ── Type 1 / 2: standard or /P message ───────────────────────────
         1 | 2 => {
             // Format: b28 b1 b28 b1 b1 b15 b3
-            let n28a  = read_bits(msg, 0, 28);
-            let ipa   = msg[28] & 1;
-            let n28b  = read_bits(msg, 29, 28);
-            let ipb   = msg[57] & 1;
-            let ir    = msg[58] & 1;
+            let n28a = read_bits(msg, 0, 28);
+            let ipa = msg[28] & 1;
+            let n28b = read_bits(msg, 29, 28);
+            let ipb = msg[57] & 1;
+            let ir = msg[58] & 1;
             let igrid = read_bits(msg, 59, 15);
 
             let mut c1 = unpack28(n28a);
@@ -272,7 +276,9 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
                     4 => "73".to_string(),
                     n => {
                         let mut isnr = n as i32 - 35;
-                        if isnr > 50 { isnr -= 101; }
+                        if isnr > 50 {
+                            isnr -= 101;
+                        }
                         let sign = if isnr >= 0 { "+" } else { "" };
                         if ir == 1 {
                             format!("R{}{:02}", sign, isnr)
@@ -293,9 +299,9 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
         // ── Type 3: ARRL RTTY Contest ─────────────────────────────────────
         3 => {
             // Format: b1 b28 b28 b1 b3 b13 b3
-            let _itu  = msg[0] & 1;
-            let n28a  = read_bits(msg, 1, 28);
-            let n28b  = read_bits(msg, 29, 28);
+            let _itu = msg[0] & 1;
+            let n28a = read_bits(msg, 1, 28);
+            let n28b = read_bits(msg, 29, 28);
             let c1 = unpack28(n28a);
             let c2 = unpack28(n28b);
             Some(format!("{} {} [RTTY]", c1, c2))
@@ -304,10 +310,10 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
         // ── Type 4: one non-standard call + 12-bit hash ───────────────────
         4 => {
             // Format: b12 b58 b1 b2 b1 (b3 = i3)
-            let n58   = read_bits_u64(msg, 12, 58);
+            let n58 = read_bits_u64(msg, 12, 58);
             let iflip = msg[70] & 1;
-            let nrpt  = read_bits(msg, 71, 2);
-            let icq   = msg[73] & 1;
+            let nrpt = read_bits(msg, 71, 2);
+            let icq = msg[73] & 1;
 
             // Decode 11-char non-standard callsign from 58-bit base-38 number
             let mut n = n58;
@@ -362,8 +368,8 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
                 // DXpedition: CALL1 RR73; CALL2 <hash10> REPORT
                 let n28a = read_bits(msg, 0, 28);
                 let n28b = read_bits(msg, 28, 28);
-                let n10  = read_bits(msg, 56, 10);
-                let n5   = read_bits(msg, 66, 5);
+                let n10 = read_bits(msg, 56, 10);
+                let n5 = read_bits(msg, 66, 5);
                 let irpt = 2 * n5 as i32 - 30;
                 let crpt = if irpt >= 0 {
                     format!("+{:02}", irpt)
@@ -388,11 +394,11 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
         },
 
         1 | 2 => {
-            let n28a  = read_bits(msg, 0, 28);
-            let ipa   = msg[28] & 1;
-            let n28b  = read_bits(msg, 29, 28);
-            let ipb   = msg[57] & 1;
-            let ir    = msg[58] & 1;
+            let n28a = read_bits(msg, 0, 28);
+            let ipa = msg[28] & 1;
+            let n28b = read_bits(msg, 29, 28);
+            let ipb = msg[57] & 1;
+            let ir = msg[58] & 1;
             let igrid = read_bits(msg, 59, 15);
 
             let mut c1 = unpack28_h(n28a, ht);
@@ -417,7 +423,9 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
                     4 => "73".to_string(),
                     n => {
                         let mut isnr = n as i32 - 35;
-                        if isnr > 50 { isnr -= 101; }
+                        if isnr > 50 {
+                            isnr -= 101;
+                        }
                         let sign = if isnr >= 0 { "+" } else { "" };
                         if ir == 1 {
                             format!("R{}{:02}", sign, isnr)
@@ -436,20 +444,20 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
         }
 
         3 => {
-            let _itu  = msg[0] & 1;
-            let n28a  = read_bits(msg, 1, 28);
-            let n28b  = read_bits(msg, 29, 28);
+            let _itu = msg[0] & 1;
+            let n28a = read_bits(msg, 1, 28);
+            let n28b = read_bits(msg, 29, 28);
             let c1 = unpack28_h(n28a, ht);
             let c2 = unpack28_h(n28b, ht);
             Some(format!("{} {} [RTTY]", c1, c2))
         }
 
         4 => {
-            let n12   = read_bits(msg, 0, 12);
-            let n58   = read_bits_u64(msg, 12, 58);
+            let n12 = read_bits(msg, 0, 12);
+            let n58 = read_bits_u64(msg, 12, 58);
             let iflip = msg[70] & 1;
-            let nrpt  = read_bits(msg, 71, 2);
-            let icq   = msg[73] & 1;
+            let nrpt = read_bits(msg, 71, 2);
+            let icq = msg[73] & 1;
 
             let mut n = n58;
             let mut buf = [b' '; 11];
@@ -508,7 +516,9 @@ pub fn is_standard_callsign(call: &str) -> bool {
     };
 
     let b = base.as_bytes();
-    if b.is_empty() || b.len() > 6 { return false; }
+    if b.is_empty() || b.len() > 6 {
+        return false;
+    }
 
     // Find the boundary: part2 starts with a digit followed by letters
     // Scan from right to find the digit that starts part2
@@ -523,15 +533,24 @@ pub fn is_standard_callsign(call: &str) -> bool {
             }
         }
     }
-    let split = match split { Some(s) => s, None => return false };
+    let split = match split {
+        Some(s) => s,
+        None => return false,
+    };
 
     let part1 = &b[..split];
     let part2 = &b[split..]; // [0-9][A-Z]{0,3}
 
     // Validate part2: digit + 0-3 uppercase letters
-    if part2.is_empty() || !part2[0].is_ascii_digit() { return false; }
-    if part2.len() > 4 { return false; }
-    if !part2[1..].iter().all(|c| c.is_ascii_uppercase()) { return false; }
+    if part2.is_empty() || !part2[0].is_ascii_digit() {
+        return false;
+    }
+    if part2.len() > 4 {
+        return false;
+    }
+    if !part2[1..].iter().all(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
 
     // Validate part1: [A-Z]{0,2} | [A-Z][0-9] | [0-9][A-Z]
     match part1.len() {
@@ -541,7 +560,7 @@ pub fn is_standard_callsign(call: &str) -> bool {
             let (a, b) = (part1[0], part1[1]);
             (a.is_ascii_uppercase() && b.is_ascii_uppercase()) // [A-Z][A-Z]
             || (a.is_ascii_uppercase() && b.is_ascii_digit())  // [A-Z][0-9]
-            || (a.is_ascii_digit() && b.is_ascii_uppercase())  // [0-9][A-Z]
+            || (a.is_ascii_digit() && b.is_ascii_uppercase()) // [0-9][A-Z]
         }
         _ => false,
     }
@@ -557,7 +576,9 @@ pub fn is_standard_callsign(call: &str) -> bool {
 /// - suffix: 1-4 uppercase letters (1x1 special stations have 1 letter)
 fn is_base_callsign(s: &str) -> bool {
     let b = s.as_bytes();
-    if b.len() < 2 || b.len() > 7 { return false; }
+    if b.len() < 2 || b.len() > 7 {
+        return false;
+    }
 
     // Find the rightmost digit followed by only letters — that's the
     // separating digit between prefix and suffix.
@@ -577,9 +598,15 @@ fn is_base_callsign(s: &str) -> bool {
     let suffix = &b[split + 1..];
 
     // Prefix: 1-3 chars, alphanumeric, at least one letter
-    if prefix.is_empty() || prefix.len() > 3 { return false; }
-    if !prefix.iter().all(|c| c.is_ascii_alphanumeric()) { return false; }
-    if !prefix.iter().any(|c| c.is_ascii_alphabetic()) { return false; }
+    if prefix.is_empty() || prefix.len() > 3 {
+        return false;
+    }
+    if !prefix.iter().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    if !prefix.iter().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
 
     // Suffix: 1-4 uppercase letters
     suffix.len() <= 4 && suffix.iter().all(|c| c.is_ascii_uppercase())
@@ -597,7 +624,9 @@ fn is_base_callsign(s: &str) -> bool {
 ///    - At least one side must be a valid base callsign; the other must be
 ///      a short modifier (1-3 alphanumeric chars).
 pub fn is_valid_callsign(call: &str) -> bool {
-    if is_standard_callsign(call) { return true; }
+    if is_standard_callsign(call) {
+        return true;
+    }
 
     let parts: Vec<&str> = call.split('/').collect();
     match parts.len() {
@@ -607,9 +636,11 @@ pub fn is_valid_callsign(call: &str) -> bool {
             let a_base = is_base_callsign(a);
             let b_base = is_base_callsign(b);
             // Short modifier: 1-3 alphanumeric chars (P, M, MM, AM, QRP, 1, etc.)
-            let a_mod = !a.is_empty() && a.len() <= 3
+            let a_mod = !a.is_empty()
+                && a.len() <= 3
                 && a.as_bytes().iter().all(|c| c.is_ascii_alphanumeric());
-            let b_mod = !b.is_empty() && b.len() <= 3
+            let b_mod = !b.is_empty()
+                && b.len() <= 3
                 && b.as_bytes().iter().all(|c| c.is_ascii_alphanumeric());
 
             (a_base && b_mod) || (a_mod && b_base) || (a_base && b_base)
@@ -626,7 +657,9 @@ pub fn is_valid_callsign(call: &str) -> bool {
 /// set.  Special tokens (CQ, reports, grids, hash placeholders) are skipped.
 pub fn is_plausible_message(text: &str) -> bool {
     let words: Vec<&str> = text.split_whitespace().collect();
-    if words.is_empty() { return false; }
+    if words.is_empty() {
+        return false;
+    }
 
     // Contest/DXpedition markers — trust the unpack result
     if text.contains("[FD]") || text.contains("[RTTY]") || text.contains("RR73;") {
@@ -635,28 +668,41 @@ pub fn is_plausible_message(text: &str) -> bool {
 
     for (idx, &w) in words.iter().enumerate() {
         // Known non-callsign tokens
-        if matches!(w, "CQ" | "DE" | "QRZ" | "RRR" | "RR73" | "73"
-            | "R" | "" | "DX") { continue; }
+        if matches!(
+            w,
+            "CQ" | "DE" | "QRZ" | "RRR" | "RR73" | "73" | "R" | "" | "DX"
+        ) {
+            continue;
+        }
         // "CQ NNN" compound tokens
-        if w.starts_with("CQ") { continue; }
+        if w.starts_with("CQ") {
+            continue;
+        }
         // CQ activity suffix: token right after CQ, all uppercase ≤4 chars
         // e.g., POTA, SOTA, NA, EU (unpack28 directional CQ, C4 alphabet)
-        if idx == 1 && words[0] == "CQ"
-            && w.len() <= 4 && w.bytes().all(|b| b.is_ascii_uppercase()) {
+        if idx == 1 && words[0] == "CQ" && w.len() <= 4 && w.bytes().all(|b| b.is_ascii_uppercase())
+        {
             continue;
         }
         // Hash placeholder
-        if w.starts_with('<') && w.ends_with('>') { continue; }
+        if w.starts_with('<') && w.ends_with('>') {
+            continue;
+        }
         // Reports: R+NN, R-NN, +NN, -NN
-        if w.starts_with("R+") || w.starts_with("R-") { continue; }
+        if w.starts_with("R+") || w.starts_with("R-") {
+            continue;
+        }
         if (w.starts_with('+') || w.starts_with('-')) && w[1..].parse::<i32>().is_ok() {
             continue;
         }
         // 4-char grid locator
         if w.len() == 4 {
             let b = w.as_bytes();
-            if b[0].is_ascii_uppercase() && b[1].is_ascii_uppercase()
-                && b[2].is_ascii_digit() && b[3].is_ascii_digit() {
+            if b[0].is_ascii_uppercase()
+                && b[1].is_ascii_uppercase()
+                && b[2].is_ascii_digit()
+                && b[3].is_ascii_digit()
+            {
                 continue;
             }
         }
@@ -688,9 +734,9 @@ fn write_bits(msg: &mut [u8; 77], start: usize, len: usize, val: u32) {
 pub fn pack28(call: &str) -> Option<u32> {
     let call = call.trim();
     match call {
-        "DE"  => return Some(0),
+        "DE" => return Some(0),
         "QRZ" => return Some(1),
-        "CQ"  => return Some(2),
+        "CQ" => return Some(2),
         _ => {}
     }
 
@@ -700,13 +746,17 @@ pub fn pack28(call: &str) -> Option<u32> {
         if !suffix.is_empty() {
             // Numeric suffix: "CQ 001" - "CQ 999"
             if let Ok(n) = suffix.parse::<u32>() {
-                if n <= 999 { return Some(3 + n); }
+                if n <= 999 {
+                    return Some(3 + n);
+                }
             }
             // Directional suffix: "CQ POTA", "CQ DX", etc. (1-4 uppercase letters)
             let sb = suffix.as_bytes();
             if sb.len() <= 4 && sb.iter().all(|c| c.is_ascii_uppercase()) {
                 let mut buf = [b' '; 4];
-                for (i, &b) in sb.iter().enumerate() { buf[i] = b; }
+                for (i, &b) in sb.iter().enumerate() {
+                    buf[i] = b;
+                }
                 let i1 = C4.iter().position(|&c| c == buf[0])?;
                 let i2 = C4.iter().position(|&c| c == buf[1])?;
                 let i3 = C4.iter().position(|&c| c == buf[2])?;
@@ -733,7 +783,9 @@ pub fn pack28(call: &str) -> Option<u32> {
         // Digit at position 2 — shift right by 1 so digit lands at position 3
         buf[0] = b' ';
         for (i, &b) in bytes.iter().enumerate() {
-            if i + 1 < 6 { buf[i + 1] = b.to_ascii_uppercase(); }
+            if i + 1 < 6 {
+                buf[i + 1] = b.to_ascii_uppercase();
+            }
         }
     } else {
         return None; // Cannot form a valid 6-char callsign
@@ -751,20 +803,25 @@ pub fn pack28(call: &str) -> Option<u32> {
     let i5 = C4.iter().position(|&c| c == buf[4])?;
     let i6 = C4.iter().position(|&c| c == buf[5])?;
 
-    let n = ((((i1 as u32 * 36 + i2 as u32) * 10 + i3 as u32) * 27
-        + i4 as u32) * 27 + i5 as u32) * 27 + i6 as u32;
+    let n = ((((i1 as u32 * 36 + i2 as u32) * 10 + i3 as u32) * 27 + i4 as u32) * 27 + i5 as u32)
+        * 27
+        + i6 as u32;
     Some(NTOKENS + MAX22 + n)
 }
 
 /// Pack a 4-character Maidenhead grid locator into a 15-bit index.
 pub fn pack_grid4(grid: &str) -> Option<u32> {
     let g = grid.as_bytes();
-    if g.len() != 4 { return None; }
+    if g.len() != 4 {
+        return None;
+    }
     let j1 = g[0].to_ascii_uppercase().wrapping_sub(b'A') as u32;
     let j2 = g[1].to_ascii_uppercase().wrapping_sub(b'A') as u32;
     let j3 = g[2].wrapping_sub(b'0') as u32;
     let j4 = g[3].wrapping_sub(b'0') as u32;
-    if j1 > 17 || j2 > 17 || j3 > 9 || j4 > 9 { return None; }
+    if j1 > 17 || j2 > 17 || j3 > 9 || j4 > 9 {
+        return None;
+    }
     Some(((j1 * 18 + j2) * 10 + j3) * 10 + j4)
 }
 
@@ -778,13 +835,13 @@ pub fn pack77_type1(call1: &str, call2: &str, grid: &str) -> Option<[u8; 77]> {
     let igrid = pack_grid4(grid)?;
 
     let mut msg = [0u8; 77];
-    write_bits(&mut msg, 0, 28, n28a);      // call1 (bits 0–27)
+    write_bits(&mut msg, 0, 28, n28a); // call1 (bits 0–27)
     // ipa = 0 (bit 28) — already zero
-    write_bits(&mut msg, 29, 28, n28b);     // call2 (bits 29–56)
+    write_bits(&mut msg, 29, 28, n28b); // call2 (bits 29–56)
     // ipb = 0 (bit 57) — already zero
     // ir  = 0 (bit 58) — already zero
-    write_bits(&mut msg, 59, 15, igrid);    // grid  (bits 59–73)
-    write_bits(&mut msg, 74, 3, 1);         // i3=1  (bits 74–76)
+    write_bits(&mut msg, 59, 15, igrid); // grid  (bits 59–73)
+    write_bits(&mut msg, 74, 3, 1); // i3=1  (bits 74–76)
     Some(msg)
 }
 
@@ -831,9 +888,13 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
             (0u8, report)
         };
         let snr: i32 = num_str.parse().ok()?;
-        if snr < -50 || snr > 49 { return None; }
+        if snr < -50 || snr > 49 {
+            return None;
+        }
         let mut isnr = snr + 35;
-        if isnr < 0 { isnr += 101; }
+        if isnr < 0 {
+            isnr += 101;
+        }
         (MAX_GRID4 + isnr as u32, r_prefix)
     };
 
@@ -842,9 +903,9 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
     // ipa = 0 (bit 28)
     write_bits(&mut msg, 29, 28, n28b);
     // ipb = 0 (bit 57)
-    msg[58] = ir;                               // ir (bit 58)
+    msg[58] = ir; // ir (bit 58)
     write_bits(&mut msg, 59, 15, igrid);
-    write_bits(&mut msg, 74, 3, 1);             // i3=1
+    write_bits(&mut msg, 74, 3, 1); // i3=1
     Some(msg)
 }
 
@@ -868,16 +929,15 @@ fn write_bits_u64(msg: &mut [u8; 77], start: usize, len: usize, val: u64) {
 /// ```text
 /// [12-bit hash][58-bit base-38 nonstd][1-bit iflip][2-bit nrpt][1-bit icq][3-bit i3=4]
 /// ```
-pub fn pack77_type4(
-    nonstd: &str,
-    std_call: &str,
-    report: &str,
-    is_cq: bool,
-) -> Option<[u8; 77]> {
+pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> Option<[u8; 77]> {
     let nonstd = nonstd.trim().to_ascii_uppercase();
     let nb = nonstd.as_bytes();
-    if nb.is_empty() || nb.len() > 11 { return None; }
-    if !nb.iter().all(|c| C38.contains(c)) { return None; }
+    if nb.is_empty() || nb.len() > 11 {
+        return None;
+    }
+    if !nb.iter().all(|c| C38.contains(c)) {
+        return None;
+    }
 
     // Encode non-standard callsign as 58-bit base-38 number
     let mut n58: u64 = 0;
@@ -912,17 +972,21 @@ pub fn pack77_type4(
     // iflip: 0 = <hash> nonstd, 1 = nonstd <hash>
     // When std_call packs via pack28, place hash first (iflip=0).
     // Otherwise nonstd first (iflip=1).
-    let iflip: u8 = if is_cq || pack28(std_call).is_some() { 0 } else { 1 };
+    let iflip: u8 = if is_cq || pack28(std_call).is_some() {
+        0
+    } else {
+        1
+    };
 
     let icq: u8 = if is_cq { 1 } else { 0 };
 
     let mut msg = [0u8; 77];
-    write_bits(&mut msg, 0, 12, n12);           // 12-bit hash (bits 0-11)
-    write_bits_u64(&mut msg, 12, 58, n58);      // 58-bit base-38 (bits 12-69)
-    msg[70] = iflip;                             // iflip (bit 70)
-    write_bits(&mut msg, 71, 2, nrpt);          // nrpt (bits 71-72)
-    msg[73] = icq;                               // icq (bit 73)
-    write_bits(&mut msg, 74, 3, 4);             // i3=4 (bits 74-76)
+    write_bits(&mut msg, 0, 12, n12); // 12-bit hash (bits 0-11)
+    write_bits_u64(&mut msg, 12, 58, n58); // 58-bit base-38 (bits 12-69)
+    msg[70] = iflip; // iflip (bit 70)
+    write_bits(&mut msg, 71, 2, nrpt); // nrpt (bits 71-72)
+    msg[73] = icq; // icq (bit 73)
+    write_bits(&mut msg, 74, 3, 4); // i3=4 (bits 74-76)
     Some(msg)
 }
 
@@ -940,7 +1004,9 @@ pub fn pack77_type4(
 pub fn pack77_free_text(text: &str) -> Option<[u8; 77]> {
     let text = text.to_ascii_uppercase();
     let bytes = text.as_bytes();
-    if bytes.is_empty() || bytes.len() > 13 { return None; }
+    if bytes.is_empty() || bytes.len() > 13 {
+        return None;
+    }
 
     // Pad to 13 characters with trailing spaces
     let mut padded = [b' '; 13];
@@ -983,7 +1049,7 @@ mod tests {
     fn hex_to_msg77(hex: &str) -> [u8; 77] {
         assert_eq!(hex.len(), 20, "need exactly 20 hex chars (10 bytes)");
         let bytes: Vec<u8> = (0..10)
-            .map(|i| u8::from_str_radix(&hex[2*i..2*i+2], 16).unwrap())
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
             .collect();
         let mut msg = [0u8; 77];
         for (j, bit) in msg.iter_mut().enumerate() {
@@ -1022,7 +1088,8 @@ mod tests {
             let n = pack28(call).unwrap_or_else(|| panic!("pack28 failed for {call}"));
             let decoded = unpack28(n);
             assert_eq!(
-                decoded, call.trim(),
+                decoded,
+                call.trim(),
                 "roundtrip mismatch for {call}: got {decoded}"
             );
         }
@@ -1080,8 +1147,8 @@ mod tests {
 
     #[test]
     fn standard_callsign_edge_cases() {
-        assert!(is_standard_callsign("SY2XHO"));    // SY prefix (Greece)
-        assert!(is_standard_callsign("8I9NIH"));    // 8I prefix
+        assert!(is_standard_callsign("SY2XHO")); // SY prefix (Greece)
+        assert!(is_standard_callsign("8I9NIH")); // 8I prefix
     }
 
     #[test]
@@ -1092,30 +1159,30 @@ mod tests {
         assert!(is_valid_callsign("W1AW"));
         assert!(is_valid_callsign("W1AW/P"));
         assert!(is_valid_callsign("JM1VWQ/R"));
-        assert!(is_valid_callsign("W1A"));       // 1x1 special event
+        assert!(is_valid_callsign("W1A")); // 1x1 special event
     }
 
     #[test]
     fn valid_callsign_nonstandard() {
         // Type 4: CEPT, area indicators, long prefixes
-        assert!(is_valid_callsign("JL1NIE/1"));   // area indicator
-        assert!(is_valid_callsign("JL1NIE/P"));   // portable (also standard)
-        assert!(is_valid_callsign("F/JA1ABC"));   // CEPT prefix
+        assert!(is_valid_callsign("JL1NIE/1")); // area indicator
+        assert!(is_valid_callsign("JL1NIE/P")); // portable (also standard)
+        assert!(is_valid_callsign("F/JA1ABC")); // CEPT prefix
         assert!(is_valid_callsign("ZS6/JA1ABC")); // country/call
-        assert!(is_valid_callsign("JR9ECD/P"));   // portable
-        assert!(is_valid_callsign("3DA0WPX"));    // 7-char call (3-char prefix)
+        assert!(is_valid_callsign("JR9ECD/P")); // portable
+        assert!(is_valid_callsign("3DA0WPX")); // 7-char call (3-char prefix)
         assert!(is_valid_callsign("JA1ABC/QRP")); // QRP modifier
     }
 
     #[test]
     fn valid_callsign_rejected() {
-        assert!(!is_valid_callsign("NFW/0811"));   // no valid base call on either side
-        assert!(!is_valid_callsign("ABCDEF"));     // no digit
+        assert!(!is_valid_callsign("NFW/0811")); // no valid base call on either side
+        assert!(!is_valid_callsign("ABCDEF")); // no digit
         assert!(!is_valid_callsign(""));
-        assert!(!is_valid_callsign("A"));          // too short
-        assert!(!is_valid_callsign("HELLO+WORLD"));// non-C38 characters
-        assert!(!is_valid_callsign("123"));        // no letter suffix
-        assert!(!is_valid_callsign("//////"));     // nonsense
+        assert!(!is_valid_callsign("A")); // too short
+        assert!(!is_valid_callsign("HELLO+WORLD")); // non-C38 characters
+        assert!(!is_valid_callsign("123")); // no letter suffix
+        assert!(!is_valid_callsign("//////")); // nonsense
     }
 
     #[test]
@@ -1169,8 +1236,14 @@ mod tests {
         // Non-standard + hashed, no report
         let msg = pack77_type4("JL1NIE/1", "JA1ABC", "", false).expect("pack failed");
         let text = unpack77(&msg).expect("unpack failed");
-        assert!(text.contains("JL1NIE/1"), "should contain non-std call: {text}");
-        assert!(text.contains("<...>"), "should contain hash placeholder: {text}");
+        assert!(
+            text.contains("JL1NIE/1"),
+            "should contain non-std call: {text}"
+        );
+        assert!(
+            text.contains("<...>"),
+            "should contain hash placeholder: {text}"
+        );
 
         // Non-standard + hashed, with 73
         let msg = pack77_type4("JR9ECD/P", "W1AW", "73", false).expect("pack failed");
@@ -1197,16 +1270,28 @@ mod tests {
 
         // unpack WITHOUT hash table → shows <...>
         let text_no_ht = unpack77(&msg).expect("unpack failed");
-        assert!(text_no_ht.contains("<...>"), "without hash table: {text_no_ht}");
-        assert!(text_no_ht.contains("JL1NIE/1"), "without hash table: {text_no_ht}");
+        assert!(
+            text_no_ht.contains("<...>"),
+            "without hash table: {text_no_ht}"
+        );
+        assert!(
+            text_no_ht.contains("JL1NIE/1"),
+            "without hash table: {text_no_ht}"
+        );
 
         // unpack WITH hash table → resolves <JA1ABC>
         let text_ht = unpack77_with_hash(&msg, &ht).expect("unpack failed");
-        assert!(text_ht.contains("<JA1ABC>"), "with hash table should resolve: {text_ht}");
+        assert!(
+            text_ht.contains("<JA1ABC>"),
+            "with hash table should resolve: {text_ht}"
+        );
         assert!(text_ht.contains("JL1NIE/1"), "with hash table: {text_ht}");
 
         // Verify the resolved message passes plausibility
-        assert!(is_plausible_message(&text_ht), "resolved message should be plausible: {text_ht}");
+        assert!(
+            is_plausible_message(&text_ht),
+            "resolved message should be plausible: {text_ht}"
+        );
     }
 
     #[test]

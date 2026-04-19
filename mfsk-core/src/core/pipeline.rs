@@ -146,7 +146,11 @@ pub fn process_candidate_basic<P: Protocol>(
         };
 
         let fec = P::Fec::default();
-        let bp_opts = FecOpts { bp_max_iter: 30, osd_depth: 0, ap_mask: None };
+        let bp_opts = FecOpts {
+            bp_max_iter: 30,
+            osd_depth: 0,
+            ap_mask: None,
+        };
 
         for (llr, pass_id) in &variants {
             if let Some(r) = fec.decode_soft(llr, &bp_opts) {
@@ -166,11 +170,11 @@ pub fn process_candidate_basic<P: Protocol>(
             }
         }
 
-        if depth == DecodeDepth::BpAllOsd
-            && nsync >= 12
-            && cand.score >= strictness.osd_score_min()
+        if depth == DecodeDepth::BpAllOsd && nsync >= 12 && cand.score >= strictness.osd_score_min()
         {
-            let freq_dup = known.iter().any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
+            let freq_dup = known
+                .iter()
+                .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
             if !freq_dup {
                 let osd_depth: u8 = if nsync >= 18 { 3 } else { 2 };
                 let osd_opts = FecOpts {
@@ -312,7 +316,11 @@ fn crc24(bits: &[u8]) -> u32 {
     }
     let n = bits.len().saturating_sub(25);
     for i in 0..=n {
-        r[24] = if i + 25 <= bits.len() { bits[i + 24] & 1 } else { 0 };
+        r[24] = if i + 25 <= bits.len() {
+            bits[i + 24] & 1
+        } else {
+            0
+        };
         if r[0] != 0 {
             for (rv, pv) in r.iter_mut().zip(POLY.iter()) {
                 *rv ^= *pv;
@@ -348,7 +356,6 @@ fn crc14(data: &[u8]) -> u16 {
     }
     crc
 }
-
 
 // ──────────────────────────────────────────────────────────────────────────
 // Frame-level entry points
@@ -509,4 +516,3 @@ pub fn decode_frame_subtract<P: Protocol>(
 
     all_results
 }
-

@@ -20,12 +20,19 @@
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ProtocolId {
+    /// FT8 — 15 s slot, 8-FSK, LDPC(174,91), 77-bit message.
     Ft8 = 0,
+    /// FT4 — 7.5 s slot, 4-FSK, LDPC(174,91), 77-bit message.
     Ft4 = 1,
+    /// FT2 (experimental / contest variant).
     Ft2 = 2,
+    /// FST4 — 60 s slot, 4-FSK, LDPC(240,101) + CRC-24, 77-bit message.
     Fst4 = 3,
+    /// JT65 — 60 s slot, 65-tone FSK, Reed-Solomon(63,12), 72-bit message.
     Jt65 = 4,
+    /// JT9 — 60 s slot, 9-FSK, convolutional r=½ K=32 + Fano, 72-bit message.
     Jt9 = 5,
+    /// WSPR — 120 s slot, 4-FSK, convolutional r=½ K=32 + Fano, 50-bit message.
     Wspr = 6,
 }
 

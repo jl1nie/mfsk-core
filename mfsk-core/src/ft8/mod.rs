@@ -1,6 +1,9 @@
-//! # ft8-core
+//! # `ft8` — FT8 decoder and synthesiser
 //!
-//! Pure-Rust FT8 decoder library.
+//! FT8 is the most widely-used WSJT-family mode: 15-second slots,
+//! 8-GFSK modulation at 6.25 baud (= 160 ms / symbol), LDPC(174, 91)
+//! + CRC-14 inside a 77-bit WSJT message, and three Costas-7 sync
+//! blocks at positions 0 / 36 / 72.
 //!
 //! ## Sample rate
 //!
@@ -18,18 +21,18 @@
 //! [`crate::core::Protocol`] trait so downstream pipeline code (shared with
 //! FT4, FT2, FST4) can dispatch on `P: Protocol` at compile time.
 
-pub mod params;
-pub mod ldpc;
-pub mod downsample;
-pub mod sync;
-pub mod llr;
-pub mod wave_gen;
-pub mod subtract;
-pub mod equalizer;
 pub mod decode;
-pub mod message;
+pub mod downsample;
+pub mod equalizer;
 pub mod hash_table;
+pub mod ldpc;
+pub mod llr;
+pub mod message;
+pub mod params;
 pub mod resample;
+pub mod subtract;
+pub mod sync;
+pub mod wave_gen;
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc174_91;
@@ -96,7 +99,16 @@ const FT8_COSTAS: [u8; 7] = {
 
 /// FT8 has three identical Costas arrays at symbols 0 / 36 / 72.
 const FT8_SYNC_BLOCKS: [SyncBlock; 3] = [
-    SyncBlock { start_symbol: 0, pattern: &FT8_COSTAS },
-    SyncBlock { start_symbol: 36, pattern: &FT8_COSTAS },
-    SyncBlock { start_symbol: 72, pattern: &FT8_COSTAS },
+    SyncBlock {
+        start_symbol: 0,
+        pattern: &FT8_COSTAS,
+    },
+    SyncBlock {
+        start_symbol: 36,
+        pattern: &FT8_COSTAS,
+    },
+    SyncBlock {
+        start_symbol: 72,
+        pattern: &FT8_COSTAS,
+    },
 ];

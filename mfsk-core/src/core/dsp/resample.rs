@@ -53,7 +53,11 @@ pub fn resample_f32_to_12k(samples: &[f32], src_rate: u32) -> Vec<i16> {
 
     // Find peak amplitude
     let peak = samples.iter().fold(0.0f64, |m, &s| m.max((s as f64).abs()));
-    let scale = if peak > SILENCE_FLOOR { TARGET_PEAK / peak } else { 1.0 };
+    let scale = if peak > SILENCE_FLOOR {
+        TARGET_PEAK / peak
+    } else {
+        1.0
+    };
 
     let ratio = TARGET_RATE / src_rate as f64;
     let out_len = (samples.len() as f64 * ratio).ceil() as usize;

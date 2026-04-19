@@ -16,8 +16,8 @@ use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use super::sync_pattern::JT9_SYNC_POSITIONS;
 use super::Jt9;
+use super::sync_pattern::JT9_SYNC_POSITIONS;
 
 /// One-symbol-FFT spectrogram, reusable across many candidate scores.
 pub struct Spectrogram {
@@ -220,21 +220,24 @@ pub fn coarse_search_on_spec(
             }
         }
     }
-    out.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(params.max_candidates);
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::synthesize_standard;
+    use super::*;
 
     #[test]
     fn coarse_search_finds_clean_signal() {
         let freq = 1500.0;
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3)
-            .expect("synth");
+        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
         let cands = coarse_search(&audio, 12_000, 0, &SearchParams::default());
         assert!(!cands.is_empty(), "expected at least one candidate");
         let best = cands[0];

@@ -6,7 +6,7 @@
 
 use crate::msg::WsprMessage;
 
-use super::search::{coarse_search, SearchParams};
+use super::search::{SearchParams, coarse_search};
 use super::{decode_from_deinterleaved_llrs, demodulate_aligned};
 
 /// One successful WSPR decode.
@@ -61,8 +61,7 @@ pub fn decode_scan(
         let dup = seen.iter().any(|prev| {
             prev.message == d.message
                 && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
-                && (prev.start_sample as i64 - d.start_sample as i64).abs()
-                    <= TIME_DEDUP_SAMPLES
+                && (prev.start_sample as i64 - d.start_sample as i64).abs() <= TIME_DEDUP_SAMPLES
         });
         if !dup {
             seen.push(d);
@@ -85,8 +84,7 @@ fn deinterleave_llrs(llrs: &mut [f32; 162]) {
     while p < 162 {
         // Inline the bit-reverse-8 to avoid exposing a pub helper.
         let i64 = i as u64;
-        let j = ((((i64 * 0x8020_0802u64) & 0x0884_4221_10u64)
-            .wrapping_mul(0x0101_0101_01u64))
+        let j = ((((i64 * 0x8020_0802u64) & 0x0884_4221_10u64).wrapping_mul(0x0101_0101_01u64))
             >> 32) as u8 as usize;
         if j < 162 {
             tmp[p as usize] = llrs[j];
@@ -99,16 +97,16 @@ fn deinterleave_llrs(llrs: &mut [f32; 162]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::synthesize_type1;
     use super::super::search::SearchParams;
+    use super::super::synthesize_type1;
+    use super::*;
     use crate::msg::WsprMessage;
 
     #[test]
     fn synth_decode_roundtrip_k1abc_fn42_37() {
         let freq = 1500.0;
-        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3)
-            .expect("valid message");
+        let audio =
+            synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3).expect("valid message");
         let r = decode_at(&audio, 12_000, 0, freq).expect("decode");
         assert_eq!(
             r.message,
@@ -123,8 +121,7 @@ mod tests {
     #[test]
     fn scan_recovers_message_without_freq_hint() {
         let freq = 1500.0;
-        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3)
-            .expect("synth");
+        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3).expect("synth");
         let decodes = decode_scan(
             &audio,
             12_000,
@@ -153,8 +150,8 @@ mod tests {
         use std::f32::consts::PI;
 
         let freq = 1500.0;
-        let mut audio = synthesize_type1("K9AN", "EN50", 33, 12_000, freq, 0.5)
-            .expect("valid message");
+        let mut audio =
+            synthesize_type1("K9AN", "EN50", 33, 12_000, freq, 0.5).expect("valid message");
 
         // Deterministic "noise": superposition of a handful of off-tone
         // sinusoids plus a pseudorandom dither. This is a cheap AWGN

@@ -261,10 +261,7 @@ pub fn unpack_grid(ngrid_full: u32) -> Option<(String, i32)> {
     grid[2] = CHAR37[ln2 as usize];
     grid[1] = CHAR37[(10 + la1) as usize];
     grid[3] = CHAR37[la2 as usize];
-    Some((
-        core::str::from_utf8(&grid).ok()?.to_string(),
-        ntype,
-    ))
+    Some((core::str::from_utf8(&grid).ok()?.to_string(), ntype))
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -316,7 +313,11 @@ fn apply_prefix(nprefix: u32, base_call: &str) -> Option<String> {
         if nc <= 9 {
             Some(format!("{}/{}", base_call, (b'0' + nc as u8) as char))
         } else if nc <= 35 {
-            Some(format!("{}/{}", base_call, (b'A' + (nc - 10) as u8) as char))
+            Some(format!(
+                "{}/{}",
+                base_call,
+                (b'A' + (nc - 10) as u8) as char
+            ))
         } else if nc <= 125 {
             let d1 = (nc - 26) / 10;
             let d2 = (nc - 26) % 10;
@@ -474,7 +475,11 @@ mod tests {
         let bits = pack_type1("K9AN", "EN50", 33).expect("pack");
         let m = unpack(&bits).expect("unpack");
         match m {
-            WsprMessage::Type1 { callsign, grid, power_dbm } => {
+            WsprMessage::Type1 {
+                callsign,
+                grid,
+                power_dbm,
+            } => {
                 assert_eq!(callsign, "K9AN");
                 assert_eq!(grid, "EN50");
                 assert_eq!(power_dbm, 33);

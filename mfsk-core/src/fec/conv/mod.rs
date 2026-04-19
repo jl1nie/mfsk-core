@@ -197,7 +197,10 @@ mod tests {
         codec.encode(&info, &mut cw);
 
         // Perfect LLRs.
-        let llr: Vec<f32> = cw.iter().map(|&b| if b == 0 { 8.0 } else { -8.0 }).collect();
+        let llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 8.0 } else { -8.0 })
+            .collect();
         let r = codec
             .decode_soft(&llr, &FecOpts::default())
             .expect("perfect LLRs must decode");
@@ -214,7 +217,10 @@ mod tests {
         }
         let mut cw = vec![0u8; 206];
         codec.encode(&info, &mut cw);
-        let llr: Vec<f32> = cw.iter().map(|&b| if b == 0 { 8.0 } else { -8.0 }).collect();
+        let llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 8.0 } else { -8.0 })
+            .collect();
         let r = codec
             .decode_soft(&llr, &FecOpts::default())
             .expect("perfect LLRs must decode");
@@ -228,7 +234,10 @@ mod tests {
         let info: Vec<u8> = (0..72).map(|i| i as u8 & 1).collect();
         let mut cw = vec![0u8; 206];
         codec.encode(&info, &mut cw);
-        let mut llr: Vec<f32> = cw.iter().map(|&b| if b == 0 { 6.0 } else { -6.0 }).collect();
+        let mut llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 6.0 } else { -6.0 })
+            .collect();
         for &pos in &[3usize, 17, 42, 91, 155, 199] {
             llr[pos] = -llr[pos] * 0.3;
         }
@@ -245,7 +254,10 @@ mod tests {
         let mut cw = vec![0u8; 162];
         codec.encode(&info, &mut cw);
         // Strong LLRs.
-        let mut llr: Vec<f32> = cw.iter().map(|&b| if b == 0 { 6.0 } else { -6.0 }).collect();
+        let mut llr: Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 0 { 6.0 } else { -6.0 })
+            .collect();
         // Flip 5 LLRs to the wrong side with lower magnitude — simulates noise
         // on a handful of coded bits.
         for &pos in &[3usize, 17, 42, 91, 155] {

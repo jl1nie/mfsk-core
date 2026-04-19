@@ -23,8 +23,8 @@
 
 use crate::core::ModulationParams;
 
-use super::spectrogram::{score_candidate, Spectrogram};
 use super::Wspr;
+use super::spectrogram::{Spectrogram, score_candidate};
 
 /// A candidate WSPR alignment, ranked by its sync-vector correlation.
 #[derive(Clone, Copy, Debug)]
@@ -146,21 +146,24 @@ pub fn coarse_search_on_spec(
         }
     }
 
-    out.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(params.max_candidates);
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::synthesize_type1;
+    use super::*;
 
     #[test]
     fn finds_aligned_tone_at_nominal_anchor() {
         let freq = 1500.0;
-        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3)
-            .expect("synth");
+        let audio = synthesize_type1("K1ABC", "FN42", 37, 12_000, freq, 0.3).expect("synth");
         let params = SearchParams::default();
         let cands = coarse_search(&audio, 12_000, 0, &params);
         assert!(!cands.is_empty(), "should find at least one candidate");
@@ -182,8 +185,7 @@ mod tests {
         // Synthesise a full WSPR frame plus 3 symbols of leading silence.
         let freq = 1500.0;
         let mut audio = vec![0f32; 3 * 8192];
-        let body =
-            synthesize_type1("K9AN", "EN50", 33, 12_000, freq, 0.3).expect("synth");
+        let body = synthesize_type1("K9AN", "EN50", 33, 12_000, freq, 0.3).expect("synth");
         audio.extend_from_slice(&body);
 
         let params = SearchParams::default();
@@ -192,7 +194,8 @@ mod tests {
         assert!(!cands.is_empty(), "expected candidates with offset signal");
         let best = cands[0];
         assert_eq!(
-            best.start_sample, 3 * 8192,
+            best.start_sample,
+            3 * 8192,
             "best candidate should land at 3-symbol offset"
         );
     }

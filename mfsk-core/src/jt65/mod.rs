@@ -1,8 +1,7 @@
-//! # jt65-core
+//! # `jt65` — JT65 decoder and synthesiser
 //!
-//! JT65 protocol implementation on the `mfsk-*` stack.
-//!
-//! JT65 uses:
+//! JT65 is the classic EME (moonbounce) / weak-signal mode that
+//! WSJT-X inherited from the original WSJT. It uses:
 //! - **65-FSK** modulation (1 sync tone at index 0 + 64 data tones
 //!   at indices 2..=65; index 1 is unused). Plain FSK, no GFSK.
 //! - **RS(63, 12) over GF(2^6)** for error correction (51 parity
@@ -39,9 +38,7 @@ pub mod tx;
 pub use gray::{gray6, inv_gray6};
 pub use interleave::{deinterleave, interleave};
 pub use rx::{demodulate_aligned, demodulate_aligned_with_confidence};
-pub use sync_pattern::{
-    JT65_DATA_POSITIONS, JT65_NPRC, JT65_SYNC_BLOCKS, JT65_SYNC_POSITIONS,
-};
+pub use sync_pattern::{JT65_DATA_POSITIONS, JT65_NPRC, JT65_SYNC_BLOCKS, JT65_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
 /// Top-level: decode a JT65 signal at a known (start_sample, base_freq)
@@ -269,23 +266,15 @@ mod tests {
         // Clean synth gets decoded by plain `decode_at`; erasure path
         // is a strict superset so it should also work (trying 0 first).
         let freq = 1270.0;
-        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3)
-            .expect("synth");
-        let msg = decode_at_with_erasures(
-            &audio,
-            12_000,
-            0,
-            freq,
-            &[0, 8, 16, 24, 32],
-        )
-        .expect("erasure-aware path must decode clean synth");
+        let audio = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("synth");
+        let msg = decode_at_with_erasures(&audio, 12_000, 0, freq, &[0, 8, 16, 24, 32])
+            .expect("erasure-aware path must decode clean synth");
         assert!(matches!(
             msg,
             Jt72Message::Standard { ref call1, ref call2, ref grid_or_report }
                 if call1 == "CQ" && call2 == "K1ABC" && grid_or_report == "FN42"
         ));
     }
-
 
     #[test]
     fn jt65_trait_surface() {

@@ -53,8 +53,8 @@ fn upsample(audio_12k: &[i16], target_rate: u32) -> Vec<i16> {
         let idx = src_pos as usize;
         let frac = src_pos - idx as f64;
         if idx + 1 < audio_12k.len() {
-            let v = audio_12k[idx] as f64
-                + (audio_12k[idx + 1] as f64 - audio_12k[idx] as f64) * frac;
+            let v =
+                audio_12k[idx] as f64 + (audio_12k[idx + 1] as f64 - audio_12k[idx] as f64) * frac;
             out.push(v.round() as i16);
         } else if idx < audio_12k.len() {
             out.push(audio_12k[idx]);

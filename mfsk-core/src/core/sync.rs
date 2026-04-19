@@ -139,7 +139,11 @@ pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
         }
     }
 
-    Spectrogram { n_freq: d.nh1, n_time: d.nhsym, data }
+    Spectrogram {
+        n_freq: d.nh1,
+        n_time: d.nhsym,
+        data,
+    }
 }
 
 /// Coarse sync: search audio for candidate frames.
@@ -213,7 +217,11 @@ pub fn coarse_sync<P: Protocol>(
                 let t_tail: f32 = t_blocks[1..].iter().sum();
                 let t0_tail: f32 = t0_blocks[1..].iter().sum();
                 let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
-                let sync_tail = if t0_tail_ref > 0.0 { t_tail / t0_tail_ref } else { 0.0 };
+                let sync_tail = if t0_tail_ref > 0.0 {
+                    t_tail / t0_tail_ref
+                } else {
+                    0.0
+                };
                 sync_all.max(sync_tail)
             } else {
                 sync_all
@@ -254,8 +262,12 @@ pub fn coarse_sync<P: Protocol>(
     };
     let base = pct(&red);
     let base2 = pct(&red2);
-    for r in red.iter_mut() { *r /= base; }
-    for r in red2.iter_mut() { *r /= base2; }
+    for r in red.iter_mut() {
+        *r /= base;
+    }
+    for r in red2.iter_mut() {
+        *r /= base2;
+    }
 
     let mut cands: Vec<SyncCandidate> = Vec::new();
     let mut order: Vec<usize> = (0..n_freq).collect();
@@ -373,7 +385,8 @@ pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: usize) -> f32 {
 /// Per-block Costas correlation powers for diagnostics and the FT8 double-sync.
 pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: usize) -> Vec<f32> {
     let d = SyncDims::of::<P>();
-    P::SYNC_MODE.blocks()
+    P::SYNC_MODE
+        .blocks()
         .iter()
         .map(|block| {
             let csync = make_costas_ref(block.pattern, d.ds_spb);
@@ -405,8 +418,7 @@ pub fn refine_candidate<P: Protocol>(
     search_steps: i32,
 ) -> SyncCandidate {
     let d = SyncDims::of::<P>();
-    let nominal_i0 =
-        ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
+    let nominal_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
     let (best_i0, best_score) = (-search_steps..=search_steps)
         .map(|delta| {
             let i0 = (nominal_i0 + delta).max(0) as usize;
@@ -461,8 +473,7 @@ pub fn refine_candidate_double<P: Protocol>(
     let csync_first = make_costas_ref(first.pattern, d.ds_spb);
     let csync_last = make_costas_ref(last.pattern, d.ds_spb);
 
-    let nominal_i0 =
-        ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
+    let nominal_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
 
     let best_for = |pattern: &[u8], csync: &[Vec<Complex<f32>>], block_start: u32| {
         let _ = pattern;

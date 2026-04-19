@@ -5,7 +5,7 @@
 //! GFSK with BT = 1.0 and 320 ms symbols.
 
 use super::Fst4s60;
-use crate::core::dsp::gfsk::{synth_f32, synth_i16, GfskCfg};
+use crate::core::dsp::gfsk::{GfskCfg, synth_f32, synth_i16};
 use crate::core::{FecCodec, FrameLayout, ModulationParams};
 use crate::fec::Ldpc240_101;
 
