@@ -98,8 +98,8 @@ impl Rs63_12 {
         // Generator polynomial g(x) = Π (x − α^(FCR + i)·PRIM) for i=0..NROOTS.
         let mut genpoly = [0u8; Self::NROOTS + 1];
         genpoly[0] = 1;
-        let mut root = Self::FCR * Self::PRIM;
         for i in 0..Self::NROOTS {
+            let root = Self::FCR * Self::PRIM + i as u32 * Self::PRIM;
             genpoly[i + 1] = 1;
             // Multiply by (x + α^root). In the poly loop below, j descends.
             for j in (1..=i).rev() {
@@ -113,7 +113,6 @@ impl Rs63_12 {
             // genpoly[0] is always nonzero at this stage.
             let idx = Self::modnn(index_of[genpoly[0] as usize] as u32 + root);
             genpoly[0] = alpha_to[idx as usize];
-            root += Self::PRIM;
         }
         // Convert genpoly to index form for faster encoding.
         for g in genpoly.iter_mut() {
@@ -291,7 +290,7 @@ impl Rs63_12 {
                 }
                 // With erasures the BM invariant becomes
                 // 2·el ≤ r + no_eras − 1.
-                if 2 * el <= r as i32 + no_eras as i32 - 1 {
+                if 2 * el < r as i32 + no_eras as i32 {
                     el = r as i32 + no_eras as i32 - el;
                     for i in 0..=Self::NROOTS {
                         b[i] = if lambda[i] == 0 {
@@ -422,7 +421,7 @@ impl Rs63_12 {
     /// just 1 itself, so iprim = 1. Computed generically for clarity.
     fn find_iprim() -> u32 {
         let mut iprim: u32 = 1;
-        while iprim % Self::PRIM != 0 {
+        while !iprim.is_multiple_of(Self::PRIM) {
             iprim += Self::NN as u32;
         }
         iprim / Self::PRIM

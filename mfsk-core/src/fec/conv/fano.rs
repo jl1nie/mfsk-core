@@ -79,24 +79,13 @@ pub fn build_branch_metrics(llrs: &[f32], bias: f32, scale: f32) -> Vec<[i32; 2]
         .collect()
 }
 
+#[derive(Default)]
 struct Node {
     encstate: u32,
     gamma: i64, // path metric, accumulated
     metrics: [i32; 4],
     tm: [i32; 2],
     i: u8, // 0 or 1 — which hypothesis we're currently exploring
-}
-
-impl Default for Node {
-    fn default() -> Self {
-        Self {
-            encstate: 0,
-            gamma: 0,
-            metrics: [0; 4],
-            tm: [0; 2],
-            i: 0,
-        }
-    }
 }
 
 /// Outcome of a Fano decode.

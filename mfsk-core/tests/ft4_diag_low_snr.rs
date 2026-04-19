@@ -76,7 +76,7 @@ fn make_slot(msg: &[u8; 77], snr_db: f32, seed: u64) -> Vec<i16> {
 #[test]
 #[ignore]
 fn why_does_neg16db_fail() {
-    let codec = mfsk_core::msg::Wsjt77Message::default();
+    let codec = mfsk_core::msg::Wsjt77Message;
     let msg = {
         let bits = codec
             .pack(&MessageFields {

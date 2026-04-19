@@ -85,15 +85,15 @@ impl ApHint {
         }
 
         // Bits 58–73: grid or response field (15-bit value + 1-bit ir flag).
-        if let Some(ref grid) = self.grid {
-            if let Some(igrid) = pack_grid4(grid) {
-                mask[58] = 1;
-                values[58] = 0; // ir=0
-                for i in 0..15 {
-                    let bit = ((igrid >> (14 - i)) & 1) as u8;
-                    mask[59 + i] = 1;
-                    values[59 + i] = bit;
-                }
+        if let Some(ref grid) = self.grid
+            && let Some(igrid) = pack_grid4(grid)
+        {
+            mask[58] = 1;
+            values[58] = 0; // ir=0
+            for i in 0..15 {
+                let bit = ((igrid >> (14 - i)) & 1) as u8;
+                mask[59 + i] = 1;
+                values[59 + i] = bit;
             }
         }
         if let Some(ref rpt) = self.report {

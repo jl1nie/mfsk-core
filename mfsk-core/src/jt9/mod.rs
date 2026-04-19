@@ -1,8 +1,8 @@
 //! # `jt9` — JT9 decoder and synthesiser
 //!
-//! JT9 is a 9-FSK mode (8 data tones + 1 sync tone at tone 0) with
+//! JT9 is a 9-FSK mode (8 data tones plus 1 sync tone at tone 0) with
 //! a 60-second slot, plain FSK shaping, convolutional r=½ K=32 FEC
-//! + Fano decoding, and the 72-bit JT message payload shared with
+//! with Fano decoding, and the 72-bit JT message payload shared with
 //! JT65. Since the FEC polynomials are identical to WSPR's
 //! (`crate::fec::conv::fano::POLY1`/`POLY2`), the Fano decoder body
 //! is reused unchanged via [`crate::fec::ConvFano232`] — only the

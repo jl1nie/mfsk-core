@@ -1,7 +1,7 @@
-/// Linear-interpolation resampler: arbitrary input rate → 12 000 Hz.
-///
-/// Used at the decode entry point so the rest of the pipeline can
-/// assume a fixed 12 000 Hz sample rate.
+//! Linear-interpolation resampler: arbitrary input rate → 12 000 Hz.
+//!
+//! Used at the decode entry point so the rest of the pipeline can
+//! assume a fixed 12 000 Hz sample rate.
 
 const TARGET_RATE: f64 = 12_000.0;
 

@@ -18,7 +18,7 @@ const SLOT_SAMPLES: usize = 90_000;
 /// Pack a standard CQ message via the WSJT 77-bit codec so the payload
 /// unpacks to a valid string (arbitrary 1/0 bits fail `unpack77`).
 fn pack_cq(call: &str, grid: &str) -> [u8; 77] {
-    let codec = mfsk_core::msg::Wsjt77Message::default();
+    let codec = mfsk_core::msg::Wsjt77Message;
     let bits = codec
         .pack(&MessageFields {
             call1: Some("CQ".into()),
@@ -61,7 +61,7 @@ fn encode_decode_clean_signal_1000hz() {
         .expect("no result matches transmitted payload");
     // Verify the decoded payload also unpacks to the expected human-readable
     // text — confirms the full trait chain (FEC → MessageCodec::unpack).
-    let codec = mfsk_core::msg::Wsjt77Message::default();
+    let codec = mfsk_core::msg::Wsjt77Message;
     let ctx = mfsk_core::core::DecodeContext::default();
     let text = codec
         .unpack(&got.message77, &ctx)

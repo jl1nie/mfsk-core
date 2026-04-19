@@ -44,7 +44,7 @@ impl Lcg {
 }
 
 fn pack_cq(call: &str, grid: &str) -> [u8; 77] {
-    let codec = mfsk_core::msg::Wsjt77Message::default();
+    let codec = mfsk_core::msg::Wsjt77Message;
     let bits = codec
         .pack(&MessageFields {
             call1: Some("CQ".into()),

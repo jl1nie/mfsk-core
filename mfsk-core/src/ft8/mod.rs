@@ -2,7 +2,7 @@
 //!
 //! FT8 is the most widely-used WSJT-family mode: 15-second slots,
 //! 8-GFSK modulation at 6.25 baud (= 160 ms / symbol), LDPC(174, 91)
-//! + CRC-14 inside a 77-bit WSJT message, and three Costas-7 sync
+//! with CRC-14 inside a 77-bit WSJT message, and three Costas-7 sync
 //! blocks at positions 0 / 36 / 72.
 //!
 //! ## Sample rate

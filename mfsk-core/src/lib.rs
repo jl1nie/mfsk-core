@@ -141,6 +141,27 @@
 //! # }
 //! ```
 
+// Several clippy lints fight with the style of this crate:
+//
+// - `too_many_arguments` triggers on inner FEC / DSP helpers that are
+//   one-to-one ports of Fortran subroutines; splitting them into
+//   "smaller" functions would just obscure the correspondence with
+//   the upstream algorithm.
+// - `needless_range_loop` flags `for i in 0..N` loops that index into
+//   fixed-size arrays. Algorithmic code ported from WSJT-X reads more
+//   clearly with the index variable in scope (sync pattern iteration,
+//   LDPC check-node passes, Reed-Solomon syndrome computation), so
+//   the .iter().enumerate() form is not always an improvement.
+// - `unusual_byte_groupings` trips on magic constants where the digit
+//   grouping encodes a bit-layout meaning (WSPR bit-reversal constants,
+//   LDPC generator polynomial byte boundaries). Normalising the
+//   grouping would obscure the intent.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::needless_range_loop,
+    clippy::unusual_byte_groupings
+)]
+
 pub mod core;
 pub mod fec;
 pub mod msg;

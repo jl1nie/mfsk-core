@@ -296,7 +296,7 @@ fn push_wsjt77(
 
 fn push_ft4(r: &ft4::DecodeResult, vec: &mut Vec<MfskMessage>) {
     use mfsk_core::MessageCodec;
-    let codec = mfsk_core::msg::Wsjt77Message::default();
+    let codec = mfsk_core::msg::Wsjt77Message;
     let ctx = mfsk_core::DecodeContext::default();
     let text = codec.unpack(&r.message77, &ctx).unwrap_or_default();
     vec.push(MfskMessage {
@@ -506,7 +506,7 @@ fn decode_i16_wsjt77(
             // it like FT4/FT8 at the message-unpack step since the payload
             // is also 77-bit WSJT.
             use mfsk_core::MessageCodec;
-            let codec = mfsk_core::msg::Wsjt77Message::default();
+            let codec = mfsk_core::msg::Wsjt77Message;
             let ctx = mfsk_core::DecodeContext::default();
             for r in fst4::decode_frame(audio, 100.0, 3_000.0, 0.8, 30) {
                 let text = codec.unpack(&r.message77, &ctx).unwrap_or_default();
@@ -628,6 +628,10 @@ pub unsafe extern "C" fn mfsk_encode_ft8(
 }
 
 /// Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM.
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_encode_ft4(
     call1: *const c_char,
@@ -696,6 +700,10 @@ pub unsafe extern "C" fn mfsk_encode_fst4s60(
 }
 
 /// Synthesise a Type-1 WSPR message (`call grid power_dbm`).
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_encode_wspr(
     call: *const c_char,
@@ -724,6 +732,10 @@ pub unsafe extern "C" fn mfsk_encode_wspr(
 }
 
 /// Synthesise a standard JT9 message at `freq_hz`.
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_encode_jt9(
     call1: *const c_char,
@@ -754,6 +766,10 @@ pub unsafe extern "C" fn mfsk_encode_jt9(
 }
 
 /// Synthesise a standard JT65 message at `freq_hz`.
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_encode_jt65(
     call1: *const c_char,

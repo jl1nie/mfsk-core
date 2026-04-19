@@ -11,6 +11,31 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
+  # Formatting + clippy lint gate. Fast fail so the heavier matrix
+  # jobs don't burn runner minutes on a branch that wouldn't pass
+  # the style fence anyway.
+  # ───────────────────────────────────────────────────────────────
+  lint:
+    name: rustfmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -- -D warnings
+        run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
+
+  # ───────────────────────────────────────────────────────────────
   # Core: build + full test suite on the "full" feature set.
   # This is the single must-pass job; everything else is narrower
   # verification.

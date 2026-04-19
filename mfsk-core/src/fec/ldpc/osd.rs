@@ -701,7 +701,7 @@ fn osd_decode_impl(llr: &[f32; LDPC_N], ndeep: u8, k4_limit: usize) -> Option<Os
     let mut best: Option<([u8; LDPC_K], [u8; LDPC_N], f32)> = None;
 
     let mut update_best = |decoded: [u8; LDPC_K], cw: [u8; LDPC_N], wd: f32| {
-        let improve = best.as_ref().map_or(true, |(_, _, bd)| wd < *bd);
+        let improve = best.as_ref().is_none_or(|(_, _, bd)| wd < *bd);
         if improve {
             best = Some((decoded, cw, wd));
         }

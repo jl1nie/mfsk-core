@@ -223,15 +223,15 @@ impl ApHint {
         }
 
         // Lock grid field (bits 58–73: ir=0 + 15-bit grid) if known
-        if let Some(ref grid) = self.grid {
-            if let Some(igrid) = super::message::pack_grid4(grid) {
-                mask[58] = true;
-                ap_llr[58] = -apmag; // ir=0
-                for i in 0..15 {
-                    let bit = ((igrid >> (14 - i)) & 1) as u8;
-                    mask[59 + i] = true;
-                    ap_llr[59 + i] = if bit == 1 { apmag } else { -apmag };
-                }
+        if let Some(ref grid) = self.grid
+            && let Some(igrid) = super::message::pack_grid4(grid)
+        {
+            mask[58] = true;
+            ap_llr[58] = -apmag; // ir=0
+            for i in 0..15 {
+                let bit = ((igrid >> (14 - i)) & 1) as u8;
+                mask[59 + i] = true;
+                ap_llr[59 + i] = if bit == 1 { apmag } else { -apmag };
             }
         }
 
@@ -479,101 +479,99 @@ fn process_candidate(
         //   pass 6: call2 only (original)
         //   pass 7: CQ + call2 (locks ~61 bits for CQ messages)
         //   pass 8: call1 + call2 (locks ~61 bits for directed messages)
-        if use_ap {
-            if let Some(ap) = ap_hint {
-                if ap.has_info() {
-                    let apmag = llr_set.llra.iter().map(|v| v.abs()).fold(0.0f32, f32::max) * 1.01;
+        if use_ap
+            && let Some(ap) = ap_hint
+            && ap.has_info()
+        {
+            let apmag = llr_set.llra.iter().map(|v| v.abs()).fold(0.0f32, f32::max) * 1.01;
 
-                    // Build multiple AP configurations (deepest first)
-                    let mut ap_passes: Vec<(ApHint, u8)> = Vec::new();
+            // Build multiple AP configurations (deepest first)
+            let mut ap_passes: Vec<(ApHint, u8)> = Vec::new();
 
-                    // Pass 9/10/11: full 77-bit lock (call1+call2+response)
-                    // Equivalent to WSJT-X a4/a5/a6 for QSO in progress
-                    if ap.call1.is_some() && ap.call2.is_some() {
-                        for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
-                            let ap_full = ap.clone().with_report(rpt);
-                            ap_passes.push((ap_full, pid));
+            // Pass 9/10/11: full 77-bit lock (call1+call2+response)
+            // Equivalent to WSJT-X a4/a5/a6 for QSO in progress
+            if ap.call1.is_some() && ap.call2.is_some() {
+                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
+                    let ap_full = ap.clone().with_report(rpt);
+                    ap_passes.push((ap_full, pid));
+                }
+            }
+
+            // Pass 7: CQ + call2 (expect "CQ DXCALL GRID", ~61 bits)
+            if ap.call2.is_some() && ap.call1.is_none() {
+                let ap7 = ap.clone().with_call1("CQ");
+                ap_passes.push((ap7, 7));
+            }
+
+            // Pass 8: mycall + call2 (~61 bits)
+            if ap.call1.is_some() && ap.call2.is_some() {
+                ap_passes.push((ap.clone(), 8));
+            }
+
+            // Pass 6: call2 only (~33 bits, fallback)
+            ap_passes.push((ap.clone(), 6));
+
+            for (ap_cfg, pass_id) in &ap_passes {
+                let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
+                let locked_bits = ap_mask.iter().filter(|&&m| m).count();
+                let max_errors: u32 = strictness.ap_max_errors(locked_bits);
+
+                for &(base_llr, _) in llr_variants {
+                    let mut llr_ap = *base_llr;
+                    for i in 0..LDPC_N {
+                        if ap_mask[i] {
+                            llr_ap[i] = ap_llr_override[i];
                         }
                     }
 
-                    // Pass 7: CQ + call2 (expect "CQ DXCALL GRID", ~61 bits)
-                    if ap.call2.is_some() && ap.call1.is_none() {
-                        let ap7 = ap.clone().with_call1("CQ");
-                        ap_passes.push((ap7, 7));
+                    // Helper: validate AP decode result
+                    let check_result =
+                        |msg77: [u8; 77], hard_errors: u32| -> Option<DecodeResult> {
+                            if hard_errors >= max_errors {
+                                return None;
+                            }
+                            let text = super::message::unpack77(&msg77)?;
+                            if !super::message::is_plausible_message(&text) {
+                                return None;
+                            }
+                            // Verify AP-locked callsigns appear in decoded message
+                            let upper = text.to_uppercase();
+                            if let Some(ref c1) = ap_cfg.call1
+                                && !upper.contains(&c1.to_uppercase())
+                            {
+                                return None;
+                            }
+                            if let Some(ref c2) = ap_cfg.call2
+                                && !upper.contains(&c2.to_uppercase())
+                            {
+                                return None;
+                            }
+                            let itone = message_to_tones(&msg77);
+                            let snr_db = compute_snr_db(cs, &itone);
+                            Some(DecodeResult {
+                                message77: msg77,
+                                freq_hz: cand.freq_hz,
+                                dt_sec: refined.dt_sec,
+                                hard_errors,
+                                sync_score: refined.score,
+                                pass: *pass_id,
+                                sync_cv,
+                                snr_db,
+                            })
+                        };
+
+                    // AP + BP
+                    if let Some(bp) = bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER)
+                        && let Some(r) = check_result(bp.message77, bp.hard_errors)
+                    {
+                        return Some(r);
                     }
-
-                    // Pass 8: mycall + call2 (~61 bits)
-                    if ap.call1.is_some() && ap.call2.is_some() {
-                        ap_passes.push((ap.clone(), 8));
-                    }
-
-                    // Pass 6: call2 only (~33 bits, fallback)
-                    ap_passes.push((ap.clone(), 6));
-
-                    for (ap_cfg, pass_id) in &ap_passes {
-                        let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
-                        let locked_bits = ap_mask.iter().filter(|&&m| m).count();
-                        let max_errors: u32 = strictness.ap_max_errors(locked_bits);
-
-                        for &(base_llr, _) in llr_variants {
-                            let mut llr_ap = *base_llr;
-                            for i in 0..LDPC_N {
-                                if ap_mask[i] {
-                                    llr_ap[i] = ap_llr_override[i];
-                                }
-                            }
-
-                            // Helper: validate AP decode result
-                            let check_result =
-                                |msg77: [u8; 77], hard_errors: u32| -> Option<DecodeResult> {
-                                    if hard_errors >= max_errors {
-                                        return None;
-                                    }
-                                    let text = super::message::unpack77(&msg77)?;
-                                    if !super::message::is_plausible_message(&text) {
-                                        return None;
-                                    }
-                                    // Verify AP-locked callsigns appear in decoded message
-                                    let upper = text.to_uppercase();
-                                    if let Some(ref c1) = ap_cfg.call1 {
-                                        if !upper.contains(&c1.to_uppercase()) {
-                                            return None;
-                                        }
-                                    }
-                                    if let Some(ref c2) = ap_cfg.call2 {
-                                        if !upper.contains(&c2.to_uppercase()) {
-                                            return None;
-                                        }
-                                    }
-                                    let itone = message_to_tones(&msg77);
-                                    let snr_db = compute_snr_db(cs, &itone);
-                                    Some(DecodeResult {
-                                        message77: msg77,
-                                        freq_hz: cand.freq_hz,
-                                        dt_sec: refined.dt_sec,
-                                        hard_errors,
-                                        sync_score: refined.score,
-                                        pass: *pass_id,
-                                        sync_cv,
-                                        snr_db,
-                                    })
-                                };
-
-                            // AP + BP
-                            if let Some(bp) = bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER) {
-                                if let Some(r) = check_result(bp.message77, bp.hard_errors) {
-                                    return Some(r);
-                                }
-                            }
-                            // AP + OSD fallback
-                            if depth == DecodeDepth::BpAllOsd {
-                                if let Some(osd) = osd_decode_deep(&llr_ap, 2) {
-                                    if let Some(r) = check_result(osd.message77, osd.hard_errors) {
-                                        return Some(r);
-                                    }
-                                }
-                            }
-                        }
+                    // AP + OSD fallback
+                    if depth == DecodeDepth::BpAllOsd
+                        && let Some(osd) = osd_decode_deep(&llr_ap, 2)
+                        && let Some(r) = check_result(osd.message77, osd.hard_errors)
+                    {
+                        return Some(r);
                     }
                 }
             }

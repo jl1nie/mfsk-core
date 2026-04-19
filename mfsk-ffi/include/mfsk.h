@@ -291,6 +291,10 @@ enum MfskStatus mfsk_encode_ft8(const char *call1,
 
 /**
  * Synthesise a standard FT4 message at `freq_hz`. 12 kHz f32 PCM.
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
  */
 enum MfskStatus mfsk_encode_ft4(const char *call1,
                                 const char *call2,
@@ -313,6 +317,10 @@ enum MfskStatus mfsk_encode_fst4s60(const char *call1,
 
 /**
  * Synthesise a Type-1 WSPR message (`call grid power_dbm`).
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
  */
 enum MfskStatus mfsk_encode_wspr(const char *call,
                                  const char *grid,
@@ -322,6 +330,10 @@ enum MfskStatus mfsk_encode_wspr(const char *call,
 
 /**
  * Synthesise a standard JT9 message at `freq_hz`.
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
  */
 enum MfskStatus mfsk_encode_jt9(const char *call1,
                                 const char *call2,
@@ -331,6 +343,10 @@ enum MfskStatus mfsk_encode_jt9(const char *call1,
 
 /**
  * Synthesise a standard JT65 message at `freq_hz`.
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
  */
 enum MfskStatus mfsk_encode_jt65(const char *call1,
                                  const char *call2,

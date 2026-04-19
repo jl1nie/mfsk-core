@@ -143,7 +143,7 @@ pub fn pack_call(call: &str) -> Option<u32> {
 
     // Uppercase.
     for t in tmp.iter_mut() {
-        if (b'a'..=b'z').contains(t) {
+        if t.is_ascii_lowercase() {
             *t -= b'a' - b'A';
         }
     }
@@ -266,19 +266,17 @@ pub fn pack_grid_or_report(s: &str) -> Option<u32> {
         "RRR" => Some(NGBASE + 63),
         "73" => Some(NGBASE + 64),
         other => {
-            if let Some(rest) = other.strip_prefix('-') {
-                if let Ok(n) = rest.parse::<i32>() {
-                    if (1..=30).contains(&n) {
-                        return Some(NGBASE + 1 + n as u32);
-                    }
-                }
+            if let Some(rest) = other.strip_prefix('-')
+                && let Ok(n) = rest.parse::<i32>()
+                && (1..=30).contains(&n)
+            {
+                return Some(NGBASE + 1 + n as u32);
             }
-            if let Some(rest) = other.strip_prefix("R-") {
-                if let Ok(n) = rest.parse::<i32>() {
-                    if (1..=30).contains(&n) {
-                        return Some(NGBASE + 31 + n as u32);
-                    }
-                }
+            if let Some(rest) = other.strip_prefix("R-")
+                && let Ok(n) = rest.parse::<i32>()
+                && (1..=30).contains(&n)
+            {
+                return Some(NGBASE + 31 + n as u32);
             }
             pack_grid4_plain(other)
         }
@@ -312,7 +310,7 @@ pub fn unpack_grid(ng: u32) -> String {
         // long = (dlong_int + 180) / 2 (integer division).
         // To recover a valid grid letter/digit, step by 2° per sub.
         let fl = long / 10;
-        let sl = (long % 10) / 1; // each step is 2° long = 1 sub step
+        let sl = long % 10; // each step is 2° long = 1 sub step
         let fla = lat / 10;
         let sla = lat % 10;
         let mut g = [0u8; 4];
@@ -508,7 +506,7 @@ mod tests {
 
     #[test]
     fn codec_trait_roundtrip() {
-        let codec = Jt72Message_::default();
+        let codec = Jt72Message_;
         let fields = MessageFields {
             call1: Some("K1ABC".into()),
             call2: Some("JA1ABC".into()),

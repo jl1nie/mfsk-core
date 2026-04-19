@@ -515,9 +515,8 @@ mod tests {
             b
         };
         // Should not produce Type 1 — either None or Type 2/3.
-        match unpack(&bits) {
-            Some(WsprMessage::Type1 { .. }) => panic!("shouldn't be Type 1"),
-            _ => {} // Type 2/3 or None is fine
+        if let Some(WsprMessage::Type1 { .. }) = unpack(&bits) {
+            panic!("shouldn't be Type 1");
         }
     }
 

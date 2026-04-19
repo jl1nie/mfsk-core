@@ -745,10 +745,10 @@ pub fn pack28(call: &str) -> Option<u32> {
         let suffix = suffix.trim();
         if !suffix.is_empty() {
             // Numeric suffix: "CQ 001" - "CQ 999"
-            if let Ok(n) = suffix.parse::<u32>() {
-                if n <= 999 {
-                    return Some(3 + n);
-                }
+            if let Ok(n) = suffix.parse::<u32>()
+                && n <= 999
+            {
+                return Some(3 + n);
             }
             // Directional suffix: "CQ POTA", "CQ DX", etc. (1-4 uppercase letters)
             let sb = suffix.as_bytes();
@@ -888,7 +888,7 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
             (0u8, report)
         };
         let snr: i32 = num_str.parse().ok()?;
-        if snr < -50 || snr > 49 {
+        if !(-50..=49).contains(&snr) {
             return None;
         }
         let mut isnr = snr + 35;

@@ -160,7 +160,7 @@ mod tests {
         let best_score = score_candidate(&spec, true_t, true_bin);
         // Nearby neighbours should all score lower.
         for dt in [-2i32, -1, 1, 2] {
-            if let Some(t) = (true_t as i32 + dt).try_into().ok() {
+            if let Ok(t) = (true_t as i32 + dt).try_into() {
                 let s = score_candidate(&spec, t, true_bin);
                 assert!(s < best_score, "dt={} scored {} >= {}", dt, s, best_score);
             }

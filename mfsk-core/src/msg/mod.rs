@@ -73,10 +73,10 @@ impl MessageCodec for Wsjt77Message {
 
         // Prefer the hash-aware path when the caller threaded a table through
         // `DecodeContext`; fall back to the placeholder-emitting variant.
-        if let Some(any) = ctx.callsign_hash_table.as_ref() {
-            if let Some(ht) = any.downcast_ref::<CallsignHashTable>() {
-                return wsjt77::unpack77_with_hash(&buf, ht);
-            }
+        if let Some(any) = ctx.callsign_hash_table.as_ref()
+            && let Some(ht) = any.downcast_ref::<CallsignHashTable>()
+        {
+            return wsjt77::unpack77_with_hash(&buf, ht);
         }
         wsjt77::unpack77(&buf)
     }

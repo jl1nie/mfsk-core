@@ -20,7 +20,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
 
 /// Subtract a decoded FT8 signal from `audio` in-place (full amplitude).
 #[inline]
-pub fn subtract_signal(audio: &mut Vec<i16>, result: &DecodeResult) {
+pub fn subtract_signal(audio: &mut [i16], result: &DecodeResult) {
     subtract_signal_weighted(audio, result, 1.0);
 }
 
@@ -28,7 +28,7 @@ pub fn subtract_signal(audio: &mut Vec<i16>, result: &DecodeResult) {
 /// subtraction; `gain < 1.0` partial subtraction to hedge against channel
 /// variation that would otherwise leave a negative residual.
 #[inline]
-pub fn subtract_signal_weighted(audio: &mut Vec<i16>, result: &DecodeResult, gain: f32) {
+pub fn subtract_signal_weighted(audio: &mut [i16], result: &DecodeResult, gain: f32) {
     let tones = message_to_tones(&result.message77);
     subtract_tones(audio, &tones, result.freq_hz, result.dt_sec, gain, &FT8_CFG);
 }
@@ -64,7 +64,6 @@ mod tests {
             snr_db: 0.0,
         };
 
-        let mut audio = audio;
         subtract_signal(&mut audio, &result);
 
         let power_after: f32 =

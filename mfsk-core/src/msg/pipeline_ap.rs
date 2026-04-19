@@ -151,12 +151,11 @@ pub fn process_candidate_ap<P: Protocol>(
                 osd_depth: 0,
                 ap_mask: None,
             };
-            if let Some(r) = fec.decode_soft(llr, &bp_opts) {
-                if let Some(res) =
+            if let Some(r) = fec.decode_soft(llr, &bp_opts)
+                && let Some(res) =
                     finalise_result::<P>(&r, cand, &refined, sync_cv, *pass_id, cs_ref, None, &fec)
-                {
-                    return Some(res);
-                }
+            {
+                return Some(res);
             }
         }
 
@@ -166,22 +165,54 @@ pub fn process_candidate_ap<P: Protocol>(
         // refined peak) was measured to deliver zero threshold
         // improvement at 5× runtime — the -18 dB floor is LLR-dominated,
         // not timing-dominated. See snr_sweep bench history 2026-04-18.
-        if let Some(hint) = ap_hint {
-            if hint.has_info() {
-                for (ap_cfg, pass_id) in ap_passes(hint) {
-                    let (mask, values) = ap_bits_for::<P>(&ap_cfg);
-                    let locked = mask.iter().filter(|&&m| m != 0).count();
-                    let max_errors = ap_max_errors(strictness, locked);
+        if let Some(hint) = ap_hint
+            && hint.has_info()
+        {
+            for (ap_cfg, pass_id) in ap_passes(hint) {
+                let (mask, values) = ap_bits_for::<P>(&ap_cfg);
+                let locked = mask.iter().filter(|&&m| m != 0).count();
+                let max_errors = ap_max_errors(strictness, locked);
 
-                    for (llr, _) in &variants {
-                        let ap_opts = FecOpts {
-                            bp_max_iter: 30,
-                            osd_depth: 0,
-                            ap_mask: Some((&mask, &values)),
-                        };
-                        if let Some(r) = fec.decode_soft(llr, &ap_opts) {
-                            if r.hard_errors < max_errors {
-                                if let Some(res) = finalise_result::<P>(
+                for (llr, _) in &variants {
+                    let ap_opts = FecOpts {
+                        bp_max_iter: 30,
+                        osd_depth: 0,
+                        ap_mask: Some((&mask, &values)),
+                    };
+                    if let Some(r) = fec.decode_soft(llr, &ap_opts)
+                        && r.hard_errors < max_errors
+                        && let Some(res) = finalise_result::<P>(
+                            &r,
+                            cand,
+                            &refined,
+                            sync_cv,
+                            pass_id,
+                            cs_ref,
+                            Some(&ap_cfg),
+                            &fec,
+                        )
+                    {
+                        return Some(res);
+                    }
+                    if depth == DecodeDepth::BpAllOsd {
+                        // Default is depth-2 only (matches FT8's AP path).
+                        // `osd-deep` feature enables the depth-3 fallback
+                        // under heavy AP locks — ~0.5 dB threshold gain
+                        // at ~25% extra runtime.
+                        #[cfg(feature = "osd-deep")]
+                        let depths: &[u32] = if locked >= 55 { &[2, 3] } else { &[2] };
+                        #[cfg(not(feature = "osd-deep"))]
+                        let depths: &[u32] = &[2];
+                        let _ = locked;
+                        for &od in depths {
+                            let osd_opts = FecOpts {
+                                bp_max_iter: 30,
+                                osd_depth: od,
+                                ap_mask: Some((&mask, &values)),
+                            };
+                            if let Some(r) = fec.decode_soft(llr, &osd_opts)
+                                && r.hard_errors < max_errors
+                                && let Some(res) = finalise_result::<P>(
                                     &r,
                                     cand,
                                     &refined,
@@ -190,43 +221,9 @@ pub fn process_candidate_ap<P: Protocol>(
                                     cs_ref,
                                     Some(&ap_cfg),
                                     &fec,
-                                ) {
-                                    return Some(res);
-                                }
-                            }
-                        }
-                        if depth == DecodeDepth::BpAllOsd {
-                            // Default is depth-2 only (matches FT8's AP path).
-                            // `osd-deep` feature enables the depth-3 fallback
-                            // under heavy AP locks — ~0.5 dB threshold gain
-                            // at ~25% extra runtime.
-                            #[cfg(feature = "osd-deep")]
-                            let depths: &[u32] = if locked >= 55 { &[2, 3] } else { &[2] };
-                            #[cfg(not(feature = "osd-deep"))]
-                            let depths: &[u32] = &[2];
-                            let _ = locked;
-                            for &od in depths {
-                                let osd_opts = FecOpts {
-                                    bp_max_iter: 30,
-                                    osd_depth: od,
-                                    ap_mask: Some((&mask, &values)),
-                                };
-                                if let Some(r) = fec.decode_soft(llr, &osd_opts) {
-                                    if r.hard_errors < max_errors {
-                                        if let Some(res) = finalise_result::<P>(
-                                            &r,
-                                            cand,
-                                            &refined,
-                                            sync_cv,
-                                            pass_id,
-                                            cs_ref,
-                                            Some(&ap_cfg),
-                                            &fec,
-                                        ) {
-                                            return Some(res);
-                                        }
-                                    }
-                                }
+                                )
+                            {
+                                return Some(res);
                             }
                         }
                     }
@@ -258,15 +255,15 @@ fn finalise_result<P: Protocol>(
     // where the FEC happened to accept with the bits clamped.
     if let Some(ap) = ap_cfg {
         let upper = text.to_uppercase();
-        if let Some(ref c1) = ap.call1 {
-            if !upper.contains(&c1.to_uppercase()) {
-                return None;
-            }
+        if let Some(ref c1) = ap.call1
+            && !upper.contains(&c1.to_uppercase())
+        {
+            return None;
         }
-        if let Some(ref c2) = ap.call2 {
-            if !upper.contains(&c2.to_uppercase()) {
-                return None;
-            }
+        if let Some(ref c2) = ap.call2
+            && !upper.contains(&c2.to_uppercase())
+        {
+            return None;
         }
     }
 

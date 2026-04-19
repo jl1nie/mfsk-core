@@ -99,8 +99,8 @@ fn demodulate_aligned_with_confidence_inner(
     _base_freq_hz: f32,
     nsps: usize,
     base_bin: usize,
-    buf: &mut Vec<Complex<f32>>,
-    scratch: &mut Vec<Complex<f32>>,
+    buf: &mut [Complex<f32>],
+    scratch: &mut [Complex<f32>],
     fft: &dyn rustfft::Fft<f32>,
 ) -> Option<([u8; 63], [f32; 63])> {
     // Walk 126 symbol windows. Data positions (NPRC[i] == 0) each get
