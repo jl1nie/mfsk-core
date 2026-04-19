@@ -17,6 +17,19 @@
 //! References:
 //! - WSJT-X `lib/jt9_decode.f90`, `lib/jt9sync.f90`, `lib/conv232.f90`,
 //!   `lib/fano232.f90`, `lib/interleave9.f90`
+//!
+//! ## Quick example
+//!
+//! ```no_run
+//! use mfsk_core::jt9::decode_scan_default;
+//!
+//! # let audio: Vec<f32> = vec![];
+//! // `audio` is 720_000 f32 samples at 12 kHz (60 s slot).
+//! for r in decode_scan_default(&audio, 12_000) {
+//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
+//!              r.freq_hz, r.start_sample, r.message);
+//! }
+//! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;

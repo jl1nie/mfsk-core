@@ -18,6 +18,21 @@
 //!
 //! - K1JT et al., "The FST4 and FST4W Protocols", QEX 2021
 //! - WSJT-X `lib/fst4/` — `fst4_params.f90`, `genfst4.f90`
+//!
+//! ## Quick example
+//!
+//! ```no_run
+//! use mfsk_core::fst4::decode::decode_frame;
+//! use mfsk_core::msg::wsjt77::unpack77;
+//!
+//! # let audio: Vec<i16> = vec![];
+//! // `audio` is 720_000 i16 samples at 12 kHz (60 s FST4-60A slot).
+//! for r in decode_frame(&audio, 100.0, 3_000.0, 0.8, /* max_cand */ 30) {
+//!     if let Some(text) = unpack77(&r.message77) {
+//!         println!("{:7.1} Hz  dt={:+.2} s  {}", r.freq_hz, r.dt_sec, text);
+//!     }
+//! }
+//! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc240_101;
