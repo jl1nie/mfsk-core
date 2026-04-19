@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 — (unreleased, initial crates.io publish)
+## 0.1.0 — 2026-04-19
 
 Initial release. Consolidates nine previously-separate workspace
 crates from the `jl1nie/webft8` project into a single `mfsk-core`
