@@ -1,0 +1,34 @@
+[package]
+name        = "mfsk-core"
+version     = "0.1.0"
+edition     = "2024"
+license     = "GPL-3.0-or-later"
+description = "Pure-Rust library for WSJT-family digital amateur-radio modes (FT8/FT4/FST4/WSPR/JT9/JT65): protocol traits, DSP, FEC codecs, message codecs, decoders and synthesisers — unified behind a zero-cost generic abstraction."
+repository  = "https://github.com/jl1nie/mfsk-core"
+readme      = "../README.md"
+keywords    = ["wsjt", "ft8", "amateur-radio", "dsp", "ldpc"]
+categories  = ["science", "encoding", "multimedia::audio"]
+
+[features]
+default     = ["ft8", "ft4", "parallel"]
+full        = ["ft8", "ft4", "fst4", "wspr", "jt9", "jt65"]
+ft8         = []
+ft4         = []
+fst4        = []
+wspr        = []
+jt9         = []
+jt65        = []
+parallel    = ["dep:rayon"]
+osd-deep    = []
+eq-fallback = []
+
+[dependencies]
+num-complex = "0.4"
+rustfft     = "6"
+crc         = "3"
+rayon       = { version = "1", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("ft8","ft4","fst4","wspr","jt9","jt65","parallel","osd-deep","eq-fallback","full"))',
+] }

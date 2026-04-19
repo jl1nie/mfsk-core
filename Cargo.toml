@@ -1,0 +1,3 @@
+[workspace]
+members  = ["mfsk-core", "mfsk-ffi"]
+resolver = "2"
