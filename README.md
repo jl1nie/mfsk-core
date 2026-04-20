@@ -183,6 +183,16 @@ See `mfsk-ffi/examples/cpp_smoke/` for an end-to-end driver test
 (including multi-threaded usage) and `mfsk-ffi/examples/kotlin_jni/`
 for an Android/JNI skeleton.
 
+## Architecture & ABI reference
+
+For a deeper look at the design — trait hierarchy with worked
+examples, shared DSP / sync / LLR / pipeline primitives, the C ABI
+memory model, Kotlin/Android scaffolding — see the library
+reference:
+
+- **English:** [`docs/LIBRARY.md`](docs/LIBRARY.md)
+- **日本語:** [`docs/LIBRARY.ja.md`](docs/LIBRARY.ja.md)
+
 ## Status
 
 `0.1.x` — API is deliberately not frozen. Breaking changes follow
