@@ -20,6 +20,11 @@ pub mod ldpc;
 pub mod ldpc240_101;
 pub mod rs;
 
+#[cfg(feature = "q65")]
+pub mod qra;
+#[cfg(feature = "q65")]
+pub mod qra15_65_64;
+
 pub use conv::{ConvFano, ConvFano232};
 pub use ldpc::Ldpc174_91;
 pub use ldpc240_101::Ldpc240_101;

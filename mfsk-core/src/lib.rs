@@ -239,6 +239,9 @@ pub mod jt9;
 #[cfg(feature = "jt65")]
 pub mod jt65;
 
+#[cfg(feature = "q65")]
+pub mod q65;
+
 // Flatten commonly-used types to the crate root.
 pub use crate::core::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
