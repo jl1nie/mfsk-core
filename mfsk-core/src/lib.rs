@@ -1,8 +1,8 @@
 //! # mfsk-core
 //!
 //! Pure-Rust library for **WSJT-family digital amateur-radio modes**:
-//! FT8, FT4, FST4, WSPR, JT9, JT65. Decode, encode, and synthesis in a
-//! single crate.
+//! FT8, FT4, FST4, WSPR, JT9, JT65 and Q65-30A. Decode, encode, and
+//! synthesis in a single crate.
 //!
 //! ## Why this exists
 //!
@@ -26,12 +26,13 @@
 //!   LDPC and sync machinery for a different modulation / FEC /
 //!   message recipe.
 //!
-//! Each of the six protocols here shares roughly 80 % of its signal
-//! path with at least one sibling: 8-GFSK demodulation, soft-decision
-//! LDPC / convolutional / Reed-Solomon decoding, 77-bit WSJT message
-//! packing, spectrogram-based sync search. In the Fortran codebase
-//! that commonality is expressed by copy-and-paste between per-mode
-//! source files; here it is expressed by a small set of traits.
+//! Each of the seven protocols here shares roughly 80 % of its signal
+//! path with at least one sibling: 8-GFSK / FSK demodulation, soft-
+//! decision LDPC / convolutional / Reed-Solomon / QRA decoding,
+//! 77- / 72- / 50-bit WSJT message packing, spectrogram-based sync
+//! search. In the Fortran codebase that commonality is expressed by
+//! copy-and-paste between per-mode source files; here it is expressed
+//! by a small set of traits.
 //!
 //! ## The abstraction
 //!
@@ -99,12 +100,14 @@
 //! - [`core`] — protocol traits, DSP (resample / downsample / GFSK /
 //!   subtract), sync, LLR, equaliser, pipeline driver.
 //! - [`fec`] — LDPC(174, 91), LDPC(240, 101), convolutional r=½ K=32
-//!   + Fano, Reed-Solomon(63, 12) over GF(2⁶).
-//! - [`msg`] — 77-bit WSJT, 72-bit JT, 50-bit WSPR message codecs
-//!   + callsign hash table.
-//! - [`ft8`] / [`ft4`] / [`fst4`] / [`wspr`] / [`jt9`] / [`jt65`] —
-//!   per-protocol ZSTs, decoders and synthesisers. Each is gated
-//!   behind a feature of the same name.
+//!   Fano, Reed-Solomon(63, 12) over GF(2⁶), and the QRA(15, 65)
+//!   over GF(2⁶) Q-ary RA codec used by Q65 (belief-propagation
+//!   decoder via Walsh-Hadamard messages).
+//! - [`msg`] — 77-bit WSJT, 72-bit JT, 50-bit WSPR and Q65 message
+//!   codecs + callsign hash table.
+//! - [`ft8`] / [`ft4`] / [`fst4`] / [`wspr`] / [`jt9`] / [`jt65`] /
+//!   [`q65`] — per-protocol ZSTs, decoders and synthesisers. Each is
+//!   gated behind a feature of the same name.
 //!
 //! ## Feature flags
 //!
@@ -116,7 +119,8 @@
 //! | `wspr`        |          | WSPR (120 s, 4-FSK, conv r=½ K=32 + Fano)    |
 //! | `jt9`         |          | JT9 (60 s, 9-FSK, conv r=½ K=32 + Fano)      |
 //! | `jt65`        |          | JT65 (60 s, 65-FSK, RS(63,12))               |
-//! | `full`        |          | Aggregate of ft8/ft4/fst4/wspr/jt9/jt65      |
+//! | `q65`         |          | Q65-30A (30 s, 65-FSK, QRA(15,65) GF(64))    |
+//! | `full`        |          | Aggregate of all seven protocols             |
 //! | `parallel`    | yes      | Rayon-parallel candidate processing          |
 //! | `osd-deep`    |          | OSD-3 fallback on AP decodes (extra CPU)     |
 //! | `eq-fallback` |          | Non-EQ fallback inside `EqMode::Adaptive`    |
