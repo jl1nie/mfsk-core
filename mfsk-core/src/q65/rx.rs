@@ -24,7 +24,8 @@ use rustfft::FftPlanner;
 use crate::core::ModulationParams;
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
-use crate::msg::q65::unpack_symbols_to_bits77;
+use crate::msg::ApHint;
+use crate::msg::q65::{ap_hint_to_q65_mask, unpack_symbols_to_bits77};
 
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
@@ -130,6 +131,40 @@ pub fn decode_at_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Q65Decode> {
+    decode_at_inner::<P>(audio, sample_rate, start_sample, base_freq_hz, None)
+}
+
+/// Like [`decode_at_for`] but biases the QRA decoder with an AP
+/// hint — typically a known callsign pair or "CQ" expectation.
+///
+/// Empirically gains 2–4 dB at threshold for Q65-30A and is the
+/// dominant mechanism that makes 6 m / 70 cm EME workable. The
+/// hint is converted to the Q65-specific 13-symbol GF(64) mask via
+/// [`ap_hint_to_q65_mask`] and applied to the depunctured intrinsics
+/// before BP.
+pub fn decode_at_with_ap_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    ap_hint: &ApHint,
+) -> Option<Q65Decode> {
+    decode_at_inner::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        Some(ap_hint),
+    )
+}
+
+fn decode_at_inner<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    ap_hint: Option<&ApHint>,
+) -> Option<Q65Decode> {
     use crate::core::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -139,10 +174,18 @@ pub fn decode_at_for<P: ModulationParams>(
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
 
-    // QRA + CRC decode.
+    // QRA + CRC decode, optionally biased by the AP hint.
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
-    let iterations = codec.decode(&intrinsics, &mut info_syms, 50).ok()?;
+    let iterations = match ap_hint {
+        Some(hint) if hint.has_info() => {
+            let (mask, syms) = ap_hint_to_q65_mask(hint);
+            codec
+                .decode_with_ap(&intrinsics, &mut info_syms, 50, &mask, &syms)
+                .ok()?
+        }
+        _ => codec.decode(&intrinsics, &mut info_syms, 50).ok()?,
+    };
 
     // 13 GF(64) symbols → 77-bit Wsjt77 → human-readable.
     let bits77 = unpack_symbols_to_bits77(&info_syms);
@@ -166,6 +209,17 @@ pub fn decode_at(
     decode_at_for::<Q65a30>(audio, sample_rate, start_sample, base_freq_hz)
 }
 
+/// Q65-30A convenience wrapper for [`decode_at_with_ap_for`].
+pub fn decode_at_with_ap(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    ap_hint: &ApHint,
+) -> Option<Q65Decode> {
+    decode_at_with_ap_for::<Q65a30>(audio, sample_rate, start_sample, base_freq_hz, ap_hint)
+}
+
 /// Scan an audio buffer for Q65 frames in sub-mode `P` within the
 /// search window: runs [`super::search::coarse_search_for`] and tries
 /// [`decode_at_for`] on each candidate in score order, collapsing
@@ -177,12 +231,48 @@ pub fn decode_scan_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
 ) -> Vec<Q65Decode> {
+    decode_scan_inner::<P>(audio, sample_rate, nominal_start_sample, params, None)
+}
+
+/// AP-biased version of [`decode_scan_for`]. Same coarse search; each
+/// candidate is decoded with the AP hint applied, which lifts the
+/// effective decode threshold by 2–4 dB on Q65-30A and is essential
+/// for EME on 6 m and above.
+pub fn decode_scan_with_ap_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    ap_hint: &ApHint,
+) -> Vec<Q65Decode> {
+    decode_scan_inner::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Some(ap_hint),
+    )
+}
+
+fn decode_scan_inner<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    ap_hint: Option<&ApHint>,
+) -> Vec<Q65Decode> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Q65Decode> = Vec::new();
     for c in cands {
-        let Some(decode) = decode_at_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz) else {
+        let decode = match ap_hint {
+            Some(hint) if hint.has_info() => {
+                decode_at_with_ap_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz, hint)
+            }
+            _ => decode_at_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz),
+        };
+        let Some(decode) = decode else {
             continue;
         };
         let dup = seen.iter().any(|prev| {
@@ -205,6 +295,17 @@ pub fn decode_scan(
     params: &super::search::SearchParams,
 ) -> Vec<Q65Decode> {
     decode_scan_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params)
+}
+
+/// Q65-30A convenience wrapper for [`decode_scan_with_ap_for`].
+pub fn decode_scan_with_ap(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    ap_hint: &ApHint,
+) -> Vec<Q65Decode> {
+    decode_scan_with_ap_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params, ap_hint)
 }
 
 /// Convenience: scan for Q65-30A with default search parameters

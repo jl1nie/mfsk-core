@@ -20,6 +20,7 @@
 //! correct `CRC_BITS = 12` for Q65 (the CRC-12 lives at the FEC
 //! layer; see [`crate::fec::qra::Q65Codec`]).
 
+use super::ap::ApHint;
 use super::wsjt77;
 use super::{CallsignHashTable, Wsjt77Message};
 use crate::core::{DecodeContext, MessageCodec, MessageFields};
@@ -49,6 +50,43 @@ pub fn pack77_to_symbols(bits77: &[u8; 77]) -> [i32; 13] {
     }
     out[12] = last << 1;
     out
+}
+
+/// Convert a 77-bit [`ApHint`] into the 13-symbol GF(64) `(mask,
+/// values)` pair that the QRA decoder's masking step
+/// (`_q65_mask` in the C reference) consumes.
+///
+/// The hint is first projected to the 77-bit Wsjt77 layout via
+/// [`ApHint::build_bits`]. We then extend it to 78 bits — the
+/// padding bit (LSB of symbol 12) is always 0 in a valid Q65
+/// transmission, so we lock it whenever the hint carries any AP
+/// information at all (matching WSJT-X iaptype=1/2/3, which fix
+/// `apmask(75:78) = 1`).
+///
+/// Pack-into-symbols layout matches [`pack77_to_symbols`]: 12 × 6
+/// bits + 1 × 5 bits left-shifted by one with the LSB acting as
+/// the padding slot.
+pub fn ap_hint_to_q65_mask(hint: &ApHint) -> ([i32; 13], [i32; 13]) {
+    let (mut mask77, mut values77) = hint.build_bits(77);
+    // Extend to 78 bits, locking the padding bit (= 0) whenever any
+    // AP info is present.
+    let lock_padding = if hint.has_info() { 1 } else { 0 };
+    mask77.push(lock_padding);
+    values77.push(0);
+
+    let mut mask_syms = [0_i32; 13];
+    let mut value_syms = [0_i32; 13];
+    for i in 0..13 {
+        let mut m = 0_i32;
+        let mut v = 0_i32;
+        for b in 0..6 {
+            m = (m << 1) | (mask77[6 * i + b] & 1) as i32;
+            v = (v << 1) | (values77[6 * i + b] & 1) as i32;
+        }
+        mask_syms[i] = m;
+        value_syms[i] = v;
+    }
+    (mask_syms, value_syms)
 }
 
 /// Inverse of [`pack77_to_symbols`]: extract a 77-bit WSJT message
@@ -199,5 +237,77 @@ mod tests {
     fn payload_and_crc_bit_widths() {
         assert_eq!(<Q65Message as MessageCodec>::PAYLOAD_BITS, 77);
         assert_eq!(<Q65Message as MessageCodec>::CRC_BITS, 12);
+    }
+
+    #[test]
+    fn ap_hint_empty_yields_no_locked_symbols() {
+        // An empty hint (no calls / grid / report) must produce an
+        // all-zero mask — the decoder should fall back to plain BP.
+        let hint = ApHint::new();
+        let (mask, values) = ap_hint_to_q65_mask(&hint);
+        assert_eq!(mask, [0; 13], "empty hint must mask nothing");
+        assert_eq!(values, [0; 13], "empty hint values irrelevant but zeroed");
+    }
+
+    #[test]
+    fn ap_hint_with_call1_locks_first_29_bits() {
+        // ApHint with call1 = "CQ" sets bits 0..29 known. Mapped
+        // into 13 symbols, that means: full 6-bit mask on syms
+        // 0..3, then the top 5 bits of sym 4 (29 = 4*6 + 5).
+        let hint = ApHint::new().with_call1("CQ");
+        let (mask, _) = ap_hint_to_q65_mask(&hint);
+        assert_eq!(mask[0], 0x3F, "sym 0 must be fully locked (bits 0..6)");
+        assert_eq!(mask[1], 0x3F, "sym 1 must be fully locked (bits 6..12)");
+        assert_eq!(mask[2], 0x3F, "sym 2 must be fully locked (bits 12..18)");
+        assert_eq!(mask[3], 0x3F, "sym 3 must be fully locked (bits 18..24)");
+        // sym 4: bits 24..30, only bits 24..29 known (5 of 6).
+        assert_eq!(mask[4], 0b111110, "sym 4 must lock its top 5 bits");
+        assert_eq!(mask[5], 0, "sym 5 (bits 30..36) untouched without call2");
+    }
+
+    #[test]
+    fn ap_hint_padding_bit_is_locked_when_info_present() {
+        // Whenever AP info exists, the padding bit (LSB of sym 12)
+        // must be locked to 0 — matches WSJT-X's apmask(75:78) = 1
+        // pattern in q65_ap.f90 iaptype 1/2.
+        let hint = ApHint::new().with_call1("CQ");
+        let (mask, values) = ap_hint_to_q65_mask(&hint);
+        assert_eq!(mask[12] & 1, 1, "sym 12 LSB (= padding bit) must be locked");
+        assert_eq!(values[12] & 1, 0, "padding bit value must be 0");
+    }
+
+    #[test]
+    fn ap_hint_round_trip_preserves_known_bits() {
+        // Build a hint, convert to symbols, and verify the resulting
+        // (mask, value) pair on the same payload as the encoder
+        // produces matches the locked positions.
+        let fields = MessageFields {
+            call1: Some("CQ".to_string()),
+            call2: Some("K1ABC".to_string()),
+            grid: Some("FN42".to_string()),
+            ..Default::default()
+        };
+        let bits77 = Q65Message.pack(&fields).expect("pack");
+        let bits77_arr: [u8; 77] = bits77.try_into().expect("77-bit length");
+        let encoded_syms = pack77_to_symbols(&bits77_arr);
+
+        let hint = ApHint::new()
+            .with_call1("CQ")
+            .with_call2("K1ABC")
+            .with_grid("FN42");
+        let (mask, values) = ap_hint_to_q65_mask(&hint);
+
+        // Wherever the mask is non-zero, the locked bits must agree
+        // with the encoded symbols.
+        for k in 0..13 {
+            let m = mask[k];
+            let v = values[k];
+            let actual = encoded_syms[k];
+            assert_eq!(
+                v & m,
+                actual & m,
+                "sym {k}: AP value {v:06b} mismatches encoded {actual:06b} under mask {m:06b}"
+            );
+        }
     }
 }

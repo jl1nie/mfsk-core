@@ -18,8 +18,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use mfsk_core::q65::decode_scan;
+use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::{Q65a60, decode_scan, decode_scan_with_ap, decode_scan_with_ap_for};
 
 /// Minimal WAV reader for WSJT-X's exact format: RIFF/WAVE header,
 /// `fmt ` chunk = PCM (1 channel, 12 kHz, 16-bit), `data` chunk =
@@ -55,13 +56,14 @@ fn read_wsjtx_wav(path: &Path) -> Option<Vec<f32>> {
     Some(out)
 }
 
-fn samples_dir() -> Option<PathBuf> {
+fn samples_dir(rel: &str) -> Option<PathBuf> {
     // Tests run from `mfsk-core/mfsk-core/`; the WSJT-X tree is at
     // `mfsk-core/../WSJT-X/`. Use `CARGO_MANIFEST_DIR` so the lookup
     // is independent of the caller's working directory.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let dir = Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65/30A_Ionoscatter_6m")
+        .join("../../WSJT-X/samples/Q65")
+        .join(rel)
         .canonicalize()
         .ok()?;
     if dir.is_dir() { Some(dir) } else { None }
@@ -69,7 +71,7 @@ fn samples_dir() -> Option<PathBuf> {
 
 #[test]
 fn ionoscatter_6m_samples_yield_some_decode() {
-    let Some(dir) = samples_dir() else {
+    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
         eprintln!(
             "skipping: WSJT-X sample tree not found at ../../WSJT-X/samples/Q65/30A_Ionoscatter_6m/"
         );
@@ -101,6 +103,14 @@ fn ionoscatter_6m_samples_yield_some_decode() {
         max_candidates: 32,
     };
 
+    // Try a few common AP guesses on each recording. Without knowing
+    // the actual exchange, "CQ" is the most common starting hint
+    // (most ionoscatter signals are calling CQ).
+    let hints = [
+        ("plain", ApHint::new()),
+        ("CQ", ApHint::new().with_call1("CQ")),
+    ];
+
     for path in &entries {
         let audio = match read_wsjtx_wav(path) {
             Some(a) => a,
@@ -110,30 +120,120 @@ fn ionoscatter_6m_samples_yield_some_decode() {
             }
         };
         total += 1;
-        let decodes = decode_scan(&audio, 12_000, nominal_mid, &params);
-        let names: Vec<String> = decodes.iter().map(|d| d.message.clone()).collect();
-        println!(
-            "{}: {} decode(s) → {names:?}",
-            path.file_name().unwrap().to_string_lossy(),
-            decodes.len()
-        );
-        if !decodes.is_empty() {
+        let mut hit = false;
+        for (label, hint) in &hints {
+            let decodes = if hint.has_info() {
+                decode_scan_with_ap(&audio, 12_000, nominal_mid, &params, hint)
+            } else {
+                decode_scan(&audio, 12_000, nominal_mid, &params)
+            };
+            let names: Vec<String> = decodes.iter().map(|d| d.message.clone()).collect();
+            println!(
+                "{} [{label}]: {} decode(s) → {names:?}",
+                path.file_name().unwrap().to_string_lossy(),
+                decodes.len()
+            );
+            if !decodes.is_empty() {
+                hit = true;
+            }
+        }
+        if hit {
             decoded_at_least_one += 1;
         }
     }
 
     // Real-world ionoscatter signals exhibit Doppler spread, multi-
-    // path fading, and may sit close to the noise floor. Q65's AP
-    // (a-priori) and fast-fading metrics in WSJT-X help recover them
-    // — those paths are not yet ported here, so we do NOT insist on
-    // any specific decode rate. The test runs to validate that:
+    // path fading, and may sit close to the noise floor. Q65's
+    // fast-fading metric in WSJT-X helps with that; that path is
+    // not yet ported here, so we do NOT insist on any specific
+    // decode rate. The test runs to validate that:
     //   - .wav reading succeeds,
     //   - decode_scan runs to completion without crashing on real
     //     audio,
     //   - the printed table can be inspected to track real-world
     //     fidelity as the receiver evolves.
     eprintln!(
-        "[info] {decoded_at_least_one}/{total} WSJT-X Q65-30A reference recordings produced \
-         at least one decode (AP + fast-fading paths not yet ported; cf. q65.c)"
+        "[info] {decoded_at_least_one}/{total} WSJT-X Q65-30A ionoscatter recordings \
+         produced at least one decode (fast-fading path not yet ported)"
     );
+}
+
+#[test]
+fn eme_6m_sample_yields_decode_with_ap() {
+    // Q65-60A 6 m EME recording. With the AP path active we
+    // should be able to recover at least one of the typical
+    // call/CQ patterns even from this real-world weak signal.
+    let Some(dir) = samples_dir("60A_EME_6m") else {
+        eprintln!("skipping: WSJT-X 6m EME sample tree not found");
+        return;
+    };
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "WSJT-X 6m EME sample dir contains no .wav files"
+    );
+
+    // The 60A frame can begin anywhere in a 60 s slot — wide tol.
+    let nominal_mid = 12_000 * 30; // 30 s into the 60 s slot
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    };
+
+    // The 210106_1621.wav recording captures W7GJ working multiple
+    // stations on 6 m EME (W7GJ is a well-known prolific 6 m EME
+    // operator). Try the empty hint plus a hint locking call1 =
+    // W7GJ (matching the actual exchange).
+    let hints = [
+        ("plain", ApHint::new()),
+        ("W7GJ ??", ApHint::new().with_call1("W7GJ")),
+    ];
+
+    let mut plain_count = 0usize;
+    let mut ap_count = 0usize;
+    for path in &entries {
+        let audio = match read_wsjtx_wav(path) {
+            Some(a) => a,
+            None => continue,
+        };
+        for (label, hint) in &hints {
+            use mfsk_core::q65::decode_scan_for;
+            let decodes = if hint.has_info() {
+                decode_scan_with_ap_for::<Q65a60>(&audio, 12_000, nominal_mid, &params, hint)
+            } else {
+                decode_scan_for::<Q65a60>(&audio, 12_000, nominal_mid, &params)
+            };
+            let names: Vec<String> = decodes.iter().map(|d| d.message.clone()).collect();
+            println!(
+                "{} [{label}]: {} decode(s) → {names:?}",
+                path.file_name().unwrap().to_string_lossy(),
+                decodes.len()
+            );
+            if hint.has_info() {
+                ap_count += decodes.len();
+            } else {
+                plain_count += decodes.len();
+            }
+        }
+    }
+    // 6 m EME has the lowest Doppler spread in the EME band lineup,
+    // so the AWGN-only metric already does a respectable job on
+    // strong-ish signals — the published 210106_1621.wav reference
+    // typically yields several W7GJ exchanges on first scan. We
+    // require at least one decode to land via the plain or AP
+    // path so a regression in the receive chain trips this test.
+    assert!(
+        plain_count + ap_count > 0,
+        "6m EME reference recording produced no decodes via either \
+         plain or AP — regression in the Q65-60A receive chain"
+    );
+    eprintln!("[info] 6m EME: plain {plain_count} decode(s), AP {ap_count} decode(s)");
 }

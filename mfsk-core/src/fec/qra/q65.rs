@@ -167,6 +167,51 @@ impl Q65Codec {
         msg: &mut [i32],
         max_iters: u32,
     ) -> Result<u32, Q65DecodeError> {
+        self.decode_inner(intrinsics, msg, max_iters, None)
+    }
+
+    /// Q65 decode with **a-priori** information.
+    ///
+    /// `ap_mask` (length [`Self::msg_len`]) carries the 6-bit "which
+    /// bits are known" mask per user info symbol; `ap_symbols` holds
+    /// the corresponding known GF(64) values (the bits where
+    /// `ap_mask[k]` is 0 are ignored). Call
+    /// [`crate::msg::q65::ap_hint_to_q65_mask`] to convert from a
+    /// human-readable [`crate::msg::ApHint`].
+    ///
+    /// AP masking is applied to the depunctured intrinsics
+    /// **before** BP — the same `_q65_mask` step the C reference
+    /// uses. CRC verification on success is unchanged.
+    pub fn decode_with_ap(
+        &mut self,
+        intrinsics: &[f32],
+        msg: &mut [i32],
+        max_iters: u32,
+        ap_mask: &[i32],
+        ap_symbols: &[i32],
+    ) -> Result<u32, Q65DecodeError> {
+        assert_eq!(
+            ap_mask.len(),
+            self.msg_len(),
+            "decode_with_ap: ap_mask length"
+        );
+        assert_eq!(
+            ap_symbols.len(),
+            self.msg_len(),
+            "decode_with_ap: ap_symbols length"
+        );
+        self.decode_inner(intrinsics, msg, max_iters, Some((ap_mask, ap_symbols)))
+    }
+
+    /// Shared implementation for [`Self::decode`] and
+    /// [`Self::decode_with_ap`].
+    fn decode_inner(
+        &mut self,
+        intrinsics: &[f32],
+        msg: &mut [i32],
+        max_iters: u32,
+        ap: Option<(&[i32], &[i32])>,
+    ) -> Result<u32, Q65DecodeError> {
         let n_k_user = self.msg_len();
         let n_chan = self.channel_len();
         let big_m = self.code.M;
@@ -200,6 +245,27 @@ impl Q65Codec {
                 self.ix[info_bytes..info_bytes + big_m].copy_from_slice(uniform);
                 self.ix[info_bytes + big_m..info_bytes + 2 * big_m].copy_from_slice(uniform);
                 self.ix[info_bytes + 2 * big_m..].copy_from_slice(&intrinsics[info_bytes..]);
+            }
+        }
+
+        // Stage 1.5: apply AP mask if any. For each of the n_k_user
+        // info symbols with non-zero mask, zero out probabilities for
+        // GF(M) values that disagree with the known bits, then
+        // re-normalise. Mirrors `_q65_mask` in q65.c.
+        if let Some((ap_mask, ap_symbols)) = ap {
+            for k in 0..n_k_user {
+                let smask = ap_mask[k];
+                if smask == 0 {
+                    continue;
+                }
+                let xk = ap_symbols[k];
+                let row = &mut self.ix[big_m * k..big_m * (k + 1)];
+                for kk in 0..big_m {
+                    if (kk as i32 ^ xk) & smask != 0 {
+                        row[kk] = 0.0;
+                    }
+                }
+                pdmath::norm(row);
             }
         }
 
@@ -362,6 +428,87 @@ mod tests {
             .decode(&intrinsics, &mut decoded, 50)
             .expect("clean zero decode must succeed");
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn decode_with_ap_zero_mask_matches_plain_decode() {
+        // An all-zero AP mask should be a no-op: decode_with_ap and
+        // decode must produce the same result on the same input.
+        let mut codec_a = Q65Codec::new(&QRA15_65_64_IRR_E23);
+        let mut codec_b = Q65Codec::new(&QRA15_65_64_IRR_E23);
+
+        let msg: Vec<i32> = (0..13).map(|i| (i * 7 + 11) % 64).collect();
+        let mut channel = vec![0_i32; 63];
+        codec_a.encode(&msg, &mut channel);
+
+        let intrinsics = perfect_intrinsics(&channel, 64);
+        let mut decoded_plain = vec![0_i32; 13];
+        let mut decoded_ap = vec![0_i32; 13];
+        let zero_mask = [0_i32; 13];
+        let zero_syms = [0_i32; 13];
+
+        codec_a.decode(&intrinsics, &mut decoded_plain, 50).unwrap();
+        codec_b
+            .decode_with_ap(&intrinsics, &mut decoded_ap, 50, &zero_mask, &zero_syms)
+            .unwrap();
+        assert_eq!(decoded_plain, decoded_ap);
+        assert_eq!(decoded_plain, msg);
+    }
+
+    #[test]
+    fn decode_with_ap_full_mask_locks_to_known_message() {
+        // A fully-known AP mask (every bit locked) should decode
+        // immediately even with a uniform intrinsic — BP has nothing
+        // left to figure out. This pins the AP mask wiring without
+        // relying on the noise channel.
+        let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
+        let msg: Vec<i32> = (0..13).map(|i| (i * 13 + 5) % 64).collect();
+
+        // Use the encoded channel to construct the intrinsic so the
+        // parity rows are consistent with the message.
+        let mut channel = vec![0_i32; 63];
+        codec.encode(&msg, &mut channel);
+        let intrinsics = perfect_intrinsics(&channel, 64);
+
+        let full_mask = [0x3F_i32; 13];
+        let mut decoded = vec![0_i32; 13];
+        let iters = codec
+            .decode_with_ap(&intrinsics, &mut decoded, 50, &full_mask, &msg)
+            .expect("full-mask decode must succeed");
+        assert_eq!(decoded, msg);
+        assert!(iters < 5, "fully-locked decode should converge fast");
+    }
+
+    #[test]
+    fn decode_with_wrong_ap_never_yields_wrong_message() {
+        // Lying to the AP layer must NEVER cause the codec to return
+        // the lie as a "valid" decode. Acceptable outcomes are:
+        //   - Err(_)               : decoder rejected outright
+        //   - Ok with the truth    : the parity constraints pulled
+        //     BP back to the real codeword despite the wrong hint
+        //     (pd_norm graciously falls back to uniform when AP
+        //     zeroes every value the intrinsic favoured)
+        // A wrong-message Ok would be a silent corruption — we test
+        // explicitly that this never happens.
+        let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
+        let msg: Vec<i32> = (0..13).map(|i| (i * 11 + 1) % 64).collect();
+        let mut channel = vec![0_i32; 63];
+        codec.encode(&msg, &mut channel);
+        let intrinsics = perfect_intrinsics(&channel, 64);
+
+        let mask = [0x3F_i32; 13];
+        let mut wrong_syms = msg.clone();
+        wrong_syms[0] = (msg[0] + 1) % 64;
+
+        let mut decoded = vec![0_i32; 13];
+        let result = codec.decode_with_ap(&intrinsics, &mut decoded, 50, &mask, &wrong_syms);
+        match result {
+            Err(_) => {}
+            Ok(_) => assert_eq!(
+                decoded, msg,
+                "wrong AP must not produce a wrong-message Ok decode"
+            ),
+        }
     }
 
     #[test]

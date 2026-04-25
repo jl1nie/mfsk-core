@@ -26,11 +26,16 @@
 //! - **Tone-spacing letter** A–E: spacing = baud × 2^(letter-1)
 //!   (controls bandwidth / Doppler tolerance).
 //!
-//! Currently only **Q65-30A** ([`Q65a30`]) is wired — 30 s T/R, A
-//! tone spacing (3.333 Hz). Other sub-modes can be added by mirroring
-//! the `Q65a30` ZST with different `NSPS` / `TONE_SPACING_HZ`
-//! constants while sharing every other piece (sync pattern, FEC,
-//! message codec).
+//! Currently wired sub-modes: **Q65-30A** ([`Q65a30`]) for
+//! terrestrial weak-signal work plus the EME band lineup
+//! [`Q65a60`] / [`Q65b60`] / [`Q65c60`] / [`Q65d60`] / [`Q65e60`]
+//! (60 s T/R with tone-spacing multipliers ×1, ×2, ×4, ×8, ×16).
+//! Generic `synthesize_standard_for<P>`, `decode_at_for<P>`,
+//! `decode_scan_for<P>` helpers pick up the right NSPS / tone
+//! spacing from the type parameter; `decode_at_with_ap_for<P>` /
+//! `decode_scan_with_ap_for<P>` accept an [`crate::msg::ApHint`]
+//! that biases the QRA decoder with known call-sign / report
+//! information and lifts the effective decode threshold by ~2 dB.
 //!
 //! References:
 //! - WSJT-X `lib/qra/q65/q65.f90`, `lib/qra/q65/q65.c`,
@@ -46,7 +51,10 @@ pub mod sync_pattern;
 pub mod tx;
 
 pub use protocol::{Q65Fec, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
-pub use rx::{Q65Decode, decode_at, decode_scan, decode_scan_default};
+pub use rx::{
+    Q65Decode, decode_at, decode_at_for, decode_at_with_ap, decode_at_with_ap_for, decode_scan,
+    decode_scan_default, decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for,
+};
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};

@@ -181,7 +181,9 @@ carries its own Quick example:
   — `decode_scan_default` + `decode_at_with_erasures` (for low SNR)
 - [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
   — `decode_scan_default` (Q65-30A); generic `decode_scan_for<P>`
-  for any wired sub-mode including the Q65-60A‥E EME variants
+  for any wired sub-mode including the Q65-60A‥E EME variants;
+  `decode_scan_with_ap` / `decode_scan_with_ap_for<P>` for AP-biased
+  decoding (~2 dB threshold gain when call signs are known)
 
 ## C / C++ / Kotlin
 
@@ -212,7 +214,10 @@ reference:
 
 `0.1.x` — API is deliberately not frozen. Breaking changes follow
 cargo-style minor bumps (`0.1 → 0.2`). Algorithm correctness is
-covered by ~210 tests across the workspace, including end-to-end
-synth → decode roundtrips for every protocol and an AWGN sensitivity
+covered by ~230 tests across the workspace, including end-to-end
+synth → decode roundtrips for every protocol, an AWGN sensitivity
 sweep that confirms Q65-30A hits its WSJT-X-published −24 dB
-threshold.
+threshold, an AP-vs-plain comparison that shows the expected ~2 dB
+gain from a-priori call sign information, and a real 6 m EME
+recording (W7GJ exchanges from the WSJT-X reference set) that the
+AWGN-only path already decodes successfully.
