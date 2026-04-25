@@ -38,29 +38,35 @@ use super::sync_pattern::Q65_SYNC_POSITIONS;
 fn default_es_no_metric() -> f32 {
     let eb_no_db = 2.8_f32;
     let eb_no = 10.0_f32.powf(eb_no_db / 10.0);
-    let nm = <Q65a30 as ModulationParams>::BITS_PER_SYMBOL as f32;
+    // BITS_PER_SYMBOL is 6 for every Q65 sub-mode.
+    let nm = 6.0_f32;
     let rate = 15.0 / 65.0;
     nm * rate * eb_no
 }
 
 /// Extract a `M=64 × N=63` matrix of squared FFT-bin amplitudes for
-/// the data symbols of an aligned Q65 frame.
+/// the data symbols of an aligned Q65 frame in sub-mode `P`.
 ///
 /// Layout: `out[64 * k + t]` is the squared amplitude observed for
 /// data tone `t` (0..64) at data-symbol position `k` (0..63).
 /// Returns `None` if `audio` does not span the full 85-symbol frame
 /// at the requested `(start_sample, base_freq_hz)`.
-fn extract_data_energies(
+fn extract_data_energies<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Vec<f32>> {
-    let nsps = (sample_rate as f32 * <Q65a30 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
+    // Sub-mode tone-spacing multiplier in FFT bins. For sub-mode A
+    // tone spacing == bin width so this is 1; for B/C/D/E it is
+    // 2/4/8/16. The bin-to-tone mapping below scales accordingly.
+    let bins_per_tone = (P::TONE_SPACING_HZ / df).round() as usize;
 
-    if start_sample + 85 * nsps > audio.len() || base_bin + 65 > nsps / 2 {
+    let highest_bin = base_bin + 64 * bins_per_tone;
+    if start_sample + 85 * nsps > audio.len() || highest_bin >= nsps / 2 {
         return None;
     }
 
@@ -84,10 +90,11 @@ fn extract_data_energies(
         }
         fft.process_with_scratch(&mut buf, &mut scratch);
         // Q65 data tones are 1..=64 (tone 0 is reserved for sync).
-        // The 6-bit symbol value `s` is on bin `base_bin + 1 + s`.
+        // The 6-bit symbol value `s` is on bin
+        // `base_bin + (s + 1) * bins_per_tone`.
         let row = &mut energies[64 * k..64 * (k + 1)];
         for tone in 0..64 {
-            let bin = base_bin + 1 + tone;
+            let bin = base_bin + (tone + 1) * bins_per_tone;
             row[tone] = buf[bin].norm_sqr();
         }
         k += 1;
@@ -109,14 +116,15 @@ pub struct Q65Decode {
     pub iterations: u32,
 }
 
-/// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`.
+/// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
+/// for sub-mode `P`.
 ///
 /// Performs FFT-per-symbol, builds intrinsic probability distributions
 /// via the Bessel metric, runs QRA belief propagation, verifies the
 /// CRC-12, and unpacks the recovered 77-bit Wsjt77 message. Returns
 /// `None` if the buffer is too short, BP fails to converge, the CRC
 /// rejects the result, or the unpack fails.
-pub fn decode_at(
+pub fn decode_at_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -125,7 +133,7 @@ pub fn decode_at(
     use crate::core::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
-    let energies = extract_data_energies(audio, sample_rate, start_sample, base_freq_hz)?;
+    let energies = extract_data_energies::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
 
     // Energies → intrinsic probability distributions over GF(64).
     let mut intrinsics = vec![0.0_f32; 64 * 63];
@@ -148,22 +156,33 @@ pub fn decode_at(
     })
 }
 
-/// Scan an audio buffer for Q65 frames within the search window:
-/// runs [`super::search::coarse_search`] and tries [`decode_at`] on
-/// each candidate in score order, collapsing duplicate decodes
-/// (same message, frequency within ±4 Hz, start sample within ±1
-/// symbol).
-pub fn decode_scan(
+/// Q65-30A convenience wrapper for [`decode_at_for`].
+pub fn decode_at(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<Q65Decode> {
+    decode_at_for::<Q65a30>(audio, sample_rate, start_sample, base_freq_hz)
+}
+
+/// Scan an audio buffer for Q65 frames in sub-mode `P` within the
+/// search window: runs [`super::search::coarse_search_for`] and tries
+/// [`decode_at_for`] on each candidate in score order, collapsing
+/// duplicate decodes (same message, frequency within ±4 Hz, start
+/// sample within ±1 symbol).
+pub fn decode_scan_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
 ) -> Vec<Q65Decode> {
-    let nsps = (sample_rate as f32 * <Q65a30 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let cands = super::search::coarse_search(audio, sample_rate, nominal_start_sample, params);
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let cands =
+        super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Q65Decode> = Vec::new();
     for c in cands {
-        let Some(decode) = decode_at(audio, sample_rate, c.start_sample, c.freq_hz) else {
+        let Some(decode) = decode_at_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz) else {
             continue;
         };
         let dup = seen.iter().any(|prev| {
@@ -178,7 +197,18 @@ pub fn decode_scan(
     seen
 }
 
-/// Convenience: scan with default search parameters from sample 0.
+/// Q65-30A convenience wrapper for [`decode_scan_for`].
+pub fn decode_scan(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+) -> Vec<Q65Decode> {
+    decode_scan_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params)
+}
+
+/// Convenience: scan for Q65-30A with default search parameters
+/// from sample 0.
 pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Q65Decode> {
     decode_scan(
         audio,

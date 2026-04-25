@@ -119,7 +119,7 @@
 //! | `wspr`        |          | WSPR (120 s, 4-FSK, conv r=½ K=32 + Fano)    |
 //! | `jt9`         |          | JT9 (60 s, 9-FSK, conv r=½ K=32 + Fano)      |
 //! | `jt65`        |          | JT65 (60 s, 65-FSK, RS(63,12))               |
-//! | `q65`         |          | Q65-30A (30 s, 65-FSK, QRA(15,65) GF(64))    |
+//! | `q65`         |          | Q65-30A + Q65-60A‥E (65-FSK, QRA(15,65) GF(64)) |
 //! | `full`        |          | Aggregate of all seven protocols             |
 //! | `parallel`    | yes      | Rayon-parallel candidate processing          |
 //! | `osd-deep`    |          | OSD-3 fallback on AP decodes (extra CPU)     |

@@ -1,12 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Q65-30A protocol marker + trait wiring.
+//! Q65 protocol markers + trait wiring.
 //!
-//! [`Q65a30`] is the first (and currently only) Q65 sub-mode wired up:
-//! 30-second T/R period, A tone-spacing (= baud × 1 = 3.333 Hz). Other
-//! sub-modes vary along two orthogonal axes — T/R period (15/30/60/
-//! 120/300 s, controlling `NSPS`) and tone-spacing letter A–E
-//! (multipliers 1/2/4/8/16, controlling `TONE_SPACING_HZ`) — and can be
-//! added later by mirroring the constants below.
+//! Each Q65 sub-mode is exposed as its own zero-sized type. Sub-modes
+//! vary along two orthogonal axes (per `q65params.f90`):
+//!
+//! - **T/R period** (15 / 30 / 60 / 120 / 300 s) — controls `NSPS`.
+//! - **Tone-spacing letter** A / B / C / D / E — controls
+//!   `TONE_SPACING_HZ` via `baud × 2^(letter − 1)` multipliers
+//!   (×1, ×2, ×4, ×8, ×16).
+//!
+//! All sub-modes share the same FEC, sync layout, message format and
+//! tone numbering — only NSPS and tone spacing change. The wired
+//! sub-modes:
+//!
+//! | ZST          | T/R   | spacing      | typical use                     |
+//! |--------------|-------|--------------|---------------------------------|
+//! | [`Q65a30`]   | 30 s  | 3.333 Hz     | terrestrial HF/VHF, ionoscatter |
+//! | [`Q65a60`]   | 60 s  | 1.667 Hz     | 6 m EME                         |
+//! | [`Q65b60`]   | 60 s  | 3.333 Hz     | 70 cm – 23 cm EME               |
+//! | [`Q65c60`]   | 60 s  | 6.667 Hz     | microwave EME                   |
+//! | [`Q65d60`]   | 60 s  | 13.33 Hz     | 5.7 / 10 GHz EME                |
+//! | [`Q65e60`]   | 60 s  | 26.67 Hz     | extreme Doppler / wide spread   |
+//!
+//! Adding a new sub-mode is a one-line invocation of the
+//! [`q65_submode!`](q65_submode) macro.
 
 use crate::core::{
     FecCodec, FecOpts, FecResult, FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode,
@@ -16,49 +33,6 @@ use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::Q65Message;
 
 use super::sync_pattern::Q65_SYNC_BLOCKS;
-
-/// Q65-30A: 30-second T/R period, sub-mode A (tone spacing = baud).
-///
-/// - 65-tone FSK (1 sync + 64 data tones), plain (no GFSK shaping).
-/// - 3600 samples / symbol at 12 kHz → baud ≈ 3.333 Hz, frame ≈ 25.5 s
-///   inside the 30 s slot.
-/// - QRA(15, 65) over GF(64) + CRC-12, two CRC symbols punctured →
-///   13 user info symbols on transmit, 63 channel symbols on the air.
-/// - 22 distributed sync symbols (always tone 0) at fixed positions.
-/// - 77-bit WSJT message ([`Q65Message`]) padded with one zero bit
-///   to match the 13 × 6 = 78-bit FEC information field.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct Q65a30;
-
-impl ModulationParams for Q65a30 {
-    /// 65 = 1 sync tone (index 0) + 64 data tones (indices 1..=64).
-    /// Q65 has no skipped tone (unlike JT65, which leaves index 1
-    /// unused and so reports `NTONES = 66`).
-    const NTONES: u32 = 65;
-    const BITS_PER_SYMBOL: u32 = 6;
-
-    /// 3600 samples/symbol at 12 kHz → 0.300 s/symbol, baud 3.333 Hz.
-    /// Per `q65params.f90`, this is the value for the 30 s T/R period.
-    const NSPS: u32 = 3600;
-    const SYMBOL_DT: f32 = 3600.0 / 12_000.0;
-    /// Sub-mode A multiplier is 1× the baud, so spacing == baud.
-    const TONE_SPACING_HZ: f32 = 12_000.0 / 3600.0; // ≈ 3.333 Hz
-
-    /// QRA encodes / decodes at the *symbol* level — there is no
-    /// channel-side Gray map. An identity table satisfies the trait
-    /// invariant `GRAY_MAP.len() == NTONES`.
-    const GRAY_MAP: &'static [u8] = &IDENTITY_65;
-
-    /// Plain FSK — Q65 does not Gaussian-shape its tones.
-    const GFSK_BT: f32 = 0.0;
-    const GFSK_HMOD: f32 = 1.0;
-
-    const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
-    const NSTEP_PER_SYMBOL: u32 = 2;
-    /// Decimate to 4 kHz baseband — comfortably wider than the
-    /// 65 × 3.333 Hz ≈ 217 Hz Q65-30A occupancy.
-    const NDOWN: u32 = 3;
-}
 
 const IDENTITY_65: [u8; 65] = {
     let mut m = [0u8; 65];
@@ -70,30 +44,119 @@ const IDENTITY_65: [u8; 65] = {
     m
 };
 
-impl FrameLayout for Q65a30 {
-    const N_DATA: u32 = 63;
-    const N_SYNC: u32 = 22;
-    const N_SYMBOLS: u32 = 85;
-    const N_RAMP: u32 = 0;
-    const SYNC_MODE: SyncMode = SyncMode::Block(&Q65_SYNC_BLOCKS);
+/// Define a Q65 sub-mode ZST with its `ModulationParams`,
+/// `FrameLayout` and `Protocol` impls. All sub-modes share NTONES,
+/// BITS_PER_SYMBOL, sync pattern, FEC, message codec, and the 22
+/// sync / 63 data symbol layout — only NSPS (driven by T/R period)
+/// and TONE_SPACING_HZ (driven by sub-mode letter) differ.
+macro_rules! q65_submode {
+    (
+        $(#[$attr:meta])*
+        $name:ident,
+        nsps = $nsps:literal,
+        spacing_mult = $mult:literal,
+        tr_period_s = $period:literal,
+    ) => {
+        $(#[$attr])*
+        #[derive(Copy, Clone, Debug, Default)]
+        pub struct $name;
 
-    /// 30-second slot.
-    const T_SLOT_S: f32 = 30.0;
-    /// Q65 transmits ~25.5 s into a 30 s slot; the canonical
-    /// nominal start offset is 1.0 s (matches WSJT-X's Q65 timing).
-    const TX_START_OFFSET_S: f32 = 1.0;
+        impl ModulationParams for $name {
+            const NTONES: u32 = 65;
+            const BITS_PER_SYMBOL: u32 = 6;
+            const NSPS: u32 = $nsps;
+            const SYMBOL_DT: f32 = ($nsps as f32) / 12_000.0;
+            /// Tone spacing = baud × multiplier where baud = 12000 / NSPS.
+            const TONE_SPACING_HZ: f32 = (12_000.0 / ($nsps as f32)) * ($mult as f32);
+            const GRAY_MAP: &'static [u8] = &IDENTITY_65;
+            /// Plain FSK — Q65 does not Gaussian-shape its tones.
+            const GFSK_BT: f32 = 0.0;
+            const GFSK_HMOD: f32 = 1.0;
+            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
+            const NSTEP_PER_SYMBOL: u32 = 2;
+            /// 4 kHz baseband (12000 / 3) — wider than every Q65
+            /// sub-mode's worst-case occupancy of 65 × 26.67 Hz =
+            /// 1733 Hz (Q65-?E).
+            const NDOWN: u32 = 3;
+        }
+
+        impl FrameLayout for $name {
+            const N_DATA: u32 = 63;
+            const N_SYNC: u32 = 22;
+            const N_SYMBOLS: u32 = 85;
+            const N_RAMP: u32 = 0;
+            const SYNC_MODE: SyncMode = SyncMode::Block(&Q65_SYNC_BLOCKS);
+            const T_SLOT_S: f32 = $period as f32;
+            /// 1.0 s start offset matches WSJT-X's Q65 slot timing.
+            const TX_START_OFFSET_S: f32 = 1.0;
+        }
+
+        impl Protocol for $name {
+            type Fec = Q65Fec;
+            type Msg = Q65Message;
+            const ID: ProtocolId = ProtocolId::Q65;
+        }
+    };
 }
 
-impl Protocol for Q65a30 {
-    /// QRA-based codec: see [`Q65Fec`] for the trait stub and
-    /// [`Q65Codec`] for the real symbol-level decoder used by the
-    /// q65 receive pipeline.
-    type Fec = Q65Fec;
-    /// 77-bit WSJT message (shared with FT8/FT4/FST4); the Q65-
-    /// specific 13 × 6 → 78-bit symbol packing happens in the
-    /// protocol's tx / rx code, not in the message codec.
-    type Msg = Q65Message;
-    const ID: ProtocolId = ProtocolId::Q65;
+q65_submode! {
+    /// Q65-30A: 30 s T/R period, sub-mode A (tone spacing = baud
+    /// × 1 = 3.333 Hz). The most common terrestrial Q65 mode; suits
+    /// HF and VHF ionoscatter / weak-signal QSOs.
+    Q65a30,
+    nsps = 3600,
+    spacing_mult = 1,
+    tr_period_s = 30,
+}
+
+q65_submode! {
+    /// Q65-60A: 60 s T/R period, sub-mode A (tone spacing = baud
+    /// × 1 = 1.667 Hz). Typical for **6 m EME** — narrow spacing
+    /// keeps the signal inside the residual Doppler at low VHF.
+    Q65a60,
+    nsps = 7200,
+    spacing_mult = 1,
+    tr_period_s = 60,
+}
+
+q65_submode! {
+    /// Q65-60B: 60 s T/R period, sub-mode B (tone spacing = baud
+    /// × 2 = 3.333 Hz). Typical for **70 cm and 23 cm EME** where
+    /// Doppler is wider than at 6 m but still moderate.
+    Q65b60,
+    nsps = 7200,
+    spacing_mult = 2,
+    tr_period_s = 60,
+}
+
+q65_submode! {
+    /// Q65-60C: 60 s T/R period, sub-mode C (tone spacing = baud
+    /// × 4 = 6.667 Hz). Microwave EME (~3 GHz) where Doppler
+    /// spread starts to dominate.
+    Q65c60,
+    nsps = 7200,
+    spacing_mult = 4,
+    tr_period_s = 60,
+}
+
+q65_submode! {
+    /// Q65-60D: 60 s T/R period, sub-mode D (tone spacing = baud
+    /// × 8 = 13.33 Hz). Used for **5.7 / 10 GHz EME** where lunar
+    /// libration spreads tones by tens of Hz.
+    Q65d60,
+    nsps = 7200,
+    spacing_mult = 8,
+    tr_period_s = 60,
+}
+
+q65_submode! {
+    /// Q65-60E: 60 s T/R period, sub-mode E (tone spacing = baud
+    /// × 16 = 26.67 Hz). Extreme-Doppler / wide-spread channels;
+    /// useful at 24 GHz and above or for fast aircraft scatter.
+    Q65e60,
+    nsps = 7200,
+    spacing_mult = 16,
+    tr_period_s = 60,
 }
 
 /// FecCodec stub for Q65 — present so [`Q65a30`] can satisfy the
@@ -169,6 +232,85 @@ mod tests {
             (spacing - 12_000.0 / 3600.0).abs() < 1e-3,
             "Q65-30A tone spacing must be 12000/3600 ≈ 3.333 Hz, got {spacing}"
         );
+    }
+
+    #[test]
+    fn eme_submode_constants_match_q65params_f90() {
+        // q65params.f90 maps T/R → NSPS and letter → spacing
+        // multiplier 2^(letter − 1). Spot-check each EME sub-mode's
+        // NSPS = 7200 and tone spacing = (12000/7200) × multiplier.
+        let baud_60 = 12_000.0 / 7200.0; // 1.667 Hz
+        for (name, spacing, mult) in [
+            ("Q65-60A", <Q65a60 as ModulationParams>::TONE_SPACING_HZ, 1),
+            ("Q65-60B", <Q65b60 as ModulationParams>::TONE_SPACING_HZ, 2),
+            ("Q65-60C", <Q65c60 as ModulationParams>::TONE_SPACING_HZ, 4),
+            ("Q65-60D", <Q65d60 as ModulationParams>::TONE_SPACING_HZ, 8),
+            ("Q65-60E", <Q65e60 as ModulationParams>::TONE_SPACING_HZ, 16),
+        ] {
+            let expected = baud_60 * mult as f32;
+            assert!(
+                (spacing - expected).abs() < 1e-3,
+                "{name} spacing {spacing} != expected {expected}"
+            );
+        }
+        // All 60 s sub-modes share NSPS = 7200.
+        assert_eq!(<Q65a60 as ModulationParams>::NSPS, 7200);
+        assert_eq!(<Q65b60 as ModulationParams>::NSPS, 7200);
+        assert_eq!(<Q65c60 as ModulationParams>::NSPS, 7200);
+        assert_eq!(<Q65d60 as ModulationParams>::NSPS, 7200);
+        assert_eq!(<Q65e60 as ModulationParams>::NSPS, 7200);
+        // …and a 60-second slot.
+        assert_eq!(<Q65a60 as FrameLayout>::T_SLOT_S, 60.0);
+        assert_eq!(<Q65e60 as FrameLayout>::T_SLOT_S, 60.0);
+    }
+
+    #[test]
+    fn all_q65_submodes_share_frame_layout() {
+        // Every Q65 sub-mode MUST share the same frame structure so
+        // that the generic tx/rx code can switch between them on the
+        // type parameter alone (only timing / spacing changes).
+        for (name, n_data, n_sync, n_symbols) in [
+            (
+                "Q65a30",
+                <Q65a30 as FrameLayout>::N_DATA,
+                <Q65a30 as FrameLayout>::N_SYNC,
+                <Q65a30 as FrameLayout>::N_SYMBOLS,
+            ),
+            (
+                "Q65a60",
+                <Q65a60 as FrameLayout>::N_DATA,
+                <Q65a60 as FrameLayout>::N_SYNC,
+                <Q65a60 as FrameLayout>::N_SYMBOLS,
+            ),
+            (
+                "Q65b60",
+                <Q65b60 as FrameLayout>::N_DATA,
+                <Q65b60 as FrameLayout>::N_SYNC,
+                <Q65b60 as FrameLayout>::N_SYMBOLS,
+            ),
+            (
+                "Q65c60",
+                <Q65c60 as FrameLayout>::N_DATA,
+                <Q65c60 as FrameLayout>::N_SYNC,
+                <Q65c60 as FrameLayout>::N_SYMBOLS,
+            ),
+            (
+                "Q65d60",
+                <Q65d60 as FrameLayout>::N_DATA,
+                <Q65d60 as FrameLayout>::N_SYNC,
+                <Q65d60 as FrameLayout>::N_SYMBOLS,
+            ),
+            (
+                "Q65e60",
+                <Q65e60 as FrameLayout>::N_DATA,
+                <Q65e60 as FrameLayout>::N_SYNC,
+                <Q65e60 as FrameLayout>::N_SYMBOLS,
+            ),
+        ] {
+            assert_eq!(n_data, 63, "{name} N_DATA");
+            assert_eq!(n_sync, 22, "{name} N_SYNC");
+            assert_eq!(n_symbols, 85, "{name} N_SYMBOLS");
+        }
     }
 
     #[test]

@@ -63,19 +63,23 @@ pub fn encode_channel_symbols(bits77: &[u8; 77]) -> [u8; 85] {
     tones
 }
 
-/// Synthesise Q65-30A audio from the 85-tone vector.
+/// Synthesise Q65 audio from the 85-tone vector for sub-mode `P`.
 ///
 /// `base_freq_hz` is the frequency of tone 0 (the sync tone). Each
 /// tone is emitted as a continuous-phase sinusoid for one symbol
 /// duration. Plain FSK — no GFSK shaping, matching `q65sim.f90`.
-pub fn synthesize_audio(
+///
+/// The sub-mode type parameter controls `NSPS` (T/R period) and
+/// `TONE_SPACING_HZ`; everything else (sync layout, tone numbering,
+/// FEC) is shared across all Q65 sub-modes.
+pub fn synthesize_audio_for<P: ModulationParams>(
     tones: &[u8; 85],
     sample_rate: u32,
     base_freq_hz: f32,
     amplitude: f32,
 ) -> Vec<f32> {
-    let nsps = (sample_rate as f32 * <Q65a30 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let tone_spacing = <Q65a30 as ModulationParams>::TONE_SPACING_HZ;
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let tone_spacing = P::TONE_SPACING_HZ;
     let mut out = Vec::with_capacity(nsps * 85);
     let mut phase = 0.0_f32;
     for &sym in tones {
@@ -95,9 +99,20 @@ pub fn synthesize_audio(
     out
 }
 
-/// One-shot helper: pack a standard `<call1> <call2> <grid_or_report>`
-/// Wsjt77 message and synthesise the Q65-30A audio.
-pub fn synthesize_standard(
+/// Q65-30A convenience wrapper for [`synthesize_audio_for`] — kept
+/// as the simplest API for the most common terrestrial Q65 sub-mode.
+pub fn synthesize_audio(
+    tones: &[u8; 85],
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+) -> Vec<f32> {
+    synthesize_audio_for::<Q65a30>(tones, sample_rate, base_freq_hz, amplitude)
+}
+
+/// Pack a standard `<call1> <call2> <grid_or_report>` Wsjt77 message
+/// and synthesise the Q65 audio for sub-mode `P`.
+pub fn synthesize_standard_for<P: ModulationParams>(
     call1: &str,
     call2: &str,
     grid_or_report: &str,
@@ -107,12 +122,31 @@ pub fn synthesize_standard(
 ) -> Option<Vec<f32>> {
     let bits = wsjt77::pack77(call1, call2, grid_or_report)?;
     let tones = encode_channel_symbols(&bits);
-    Some(synthesize_audio(
+    Some(synthesize_audio_for::<P>(
         &tones,
         sample_rate,
         base_freq_hz,
         amplitude,
     ))
+}
+
+/// Q65-30A convenience wrapper for [`synthesize_standard_for`].
+pub fn synthesize_standard(
+    call1: &str,
+    call2: &str,
+    grid_or_report: &str,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+) -> Option<Vec<f32>> {
+    synthesize_standard_for::<Q65a30>(
+        call1,
+        call2,
+        grid_or_report,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    )
 }
 
 #[cfg(test)]

@@ -30,11 +30,11 @@ pub struct Spectrogram {
 }
 
 impl Spectrogram {
-    /// Build the spectrogram from `audio`. Time step = `nsps / 2`
-    /// (match Q65a30's `NSTEP_PER_SYMBOL = 2`); frequency resolution
-    /// = `sample_rate / nsps` ≈ tone spacing.
-    pub fn build(audio: &[f32], sample_rate: u32) -> Self {
-        let nsps = (sample_rate as f32 * <Q65a30 as ModulationParams>::SYMBOL_DT).round() as usize;
+    /// Build the spectrogram from `audio` for Q65 sub-mode `P`. Time
+    /// step = `nsps / 2` (match `NSTEP_PER_SYMBOL = 2`); frequency
+    /// resolution = `sample_rate / nsps` ≈ tone spacing.
+    pub fn build_for<P: ModulationParams>(audio: &[f32], sample_rate: u32) -> Self {
+        let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
         let t_step = nsps / 2;
         let n_freq = nsps / 2;
         if audio.len() < nsps || t_step == 0 {
@@ -87,6 +87,11 @@ impl Spectrogram {
             df: sample_rate as f32 / nsps as f32,
             noise_per_bin: noise_per_bin.max(1e-6),
         }
+    }
+
+    /// Q65-30A convenience wrapper for [`Self::build_for`].
+    pub fn build(audio: &[f32], sample_rate: u32) -> Self {
+        Self::build_for::<Q65a30>(audio, sample_rate)
     }
 
     #[inline]
@@ -151,22 +156,32 @@ pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) ->
     sync_pwr / (sync_pwr + noise_floor)
 }
 
-/// Build a spectrogram and find the top sync candidates inside the
-/// search window.
+/// Build a spectrogram for Q65 sub-mode `P` and find the top sync
+/// candidates inside the search window.
+pub fn coarse_search_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+) -> Vec<SyncCandidate> {
+    let spec = Spectrogram::build_for::<P>(audio, sample_rate);
+    coarse_search_on_spec_for::<P>(&spec, sample_rate, nominal_start_sample, params)
+}
+
+/// Q65-30A convenience wrapper for [`coarse_search_for`].
 pub fn coarse_search(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
-    let spec = Spectrogram::build(audio, sample_rate);
-    coarse_search_on_spec(&spec, sample_rate, nominal_start_sample, params)
+    coarse_search_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params)
 }
 
-/// Same as [`coarse_search`] but accepts a pre-built spectrogram —
-/// useful when the same audio is scanned under multiple parameter
+/// Same as [`coarse_search_for`] but accepts a pre-built spectrogram
+/// — useful when the same audio is scanned under multiple parameter
 /// sets.
-pub fn coarse_search_on_spec(
+pub fn coarse_search_on_spec_for<P: ModulationParams>(
     spec: &Spectrogram,
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -175,9 +190,14 @@ pub fn coarse_search_on_spec(
     if spec.n_time == 0 {
         return Vec::new();
     }
-    let nsps = (sample_rate as f32 * <Q65a30 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let rows_per_symbol = 2_usize;
+    // For wider sub-modes (B/C/D/E) the highest data tone sits
+    // 64 × bins_per_tone above the sync bin instead of just 64
+    // bins; we need that much headroom in the spectrogram before
+    // we will accept a candidate base bin.
+    let bins_per_tone = (P::TONE_SPACING_HZ / df).round() as usize;
 
     let t_span_rows = params.time_tolerance_symbols as i64 * rows_per_symbol as i64;
     let nominal_row = (nominal_start_sample / spec.t_step) as i64;
@@ -199,8 +219,9 @@ pub fn coarse_search_on_spec(
             continue;
         }
         for fb in fmin_bin..=fmax_bin {
-            // Tone 64 (highest data tone) sits at base_bin + 64.
-            if fb < 0 || (fb as usize) + 65 > spec.n_freq {
+            // Tone 64 (highest data tone) sits at base_bin + 64 *
+            // bins_per_tone for the active sub-mode.
+            if fb < 0 || (fb as usize) + 64 * bins_per_tone + 1 > spec.n_freq {
                 continue;
             }
             let score = score_candidate(spec, row, fb as usize);
@@ -220,6 +241,16 @@ pub fn coarse_search_on_spec(
     });
     out.truncate(params.max_candidates);
     out
+}
+
+/// Q65-30A convenience wrapper for [`coarse_search_on_spec_for`].
+pub fn coarse_search_on_spec(
+    spec: &Spectrogram,
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+) -> Vec<SyncCandidate> {
+    coarse_search_on_spec_for::<Q65a30>(spec, sample_rate, nominal_start_sample, params)
 }
 
 #[cfg(test)]

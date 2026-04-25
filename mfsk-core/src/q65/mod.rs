@@ -45,7 +45,7 @@ pub mod search;
 pub mod sync_pattern;
 pub mod tx;
 
-pub use protocol::{Q65Fec, Q65a30};
+pub use protocol::{Q65Fec, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
 pub use rx::{Q65Decode, decode_at, decode_scan, decode_scan_default};
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};

@@ -98,6 +98,7 @@ License matches upstream: **GPL-3.0-or-later**.
 | JT9        | 60 s   | Convolutional r=½ K=32 + Fano     | 72 bit  | 16 distributed slots   | `jt9`   |
 | JT65       | 60 s   | Reed-Solomon(63, 12) GF(2⁶)       | 72 bit  | 63 distributed slots   | `jt65`  |
 | Q65-30A    | 30 s   | QRA(15, 65) GF(2⁶) + CRC-12       | 77 bit  | 22 distributed slots   | `q65`   |
+| Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
 
 ## Modules
 
@@ -110,7 +111,13 @@ License matches upstream: **GPL-3.0-or-later**.
   50-bit (`Wspr50Message`) and Q65 (`Q65Message`, 77-bit ↔ 13-symbol
   packing helpers) message codecs; callsign hash table.
 - `mfsk_core::{ft8, ft4, fst4, wspr, jt9, jt65, q65}` — per-protocol
-  ZSTs, decoders and synthesisers (each feature-gated).
+  ZSTs, decoders and synthesisers (each feature-gated). The `q65`
+  module exposes one ZST per wired sub-mode — `Q65a30` for
+  terrestrial work, plus `Q65a60` / `Q65b60` / `Q65c60` / `Q65d60` /
+  `Q65e60` for EME at 6 m through 10 GHz+ — with generic
+  `synthesize_standard_for<P>` / `decode_at_for<P>` / `decode_scan_for<P>`
+  helpers that pick the right NSPS and tone spacing from the type
+  parameter.
 
 ## Features
 
@@ -173,7 +180,8 @@ carries its own Quick example:
 - [`mfsk_core::jt65`](https://docs.rs/mfsk-core/latest/mfsk_core/jt65/)
   — `decode_scan_default` + `decode_at_with_erasures` (for low SNR)
 - [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
-  — `decode_scan_default` (Q65-30A; QRA + CRC-12 soft-decision FEC)
+  — `decode_scan_default` (Q65-30A); generic `decode_scan_for<P>`
+  for any wired sub-mode including the Q65-60A‥E EME variants
 
 ## C / C++ / Kotlin
 
