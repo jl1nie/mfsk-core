@@ -16,12 +16,16 @@ pub mod ap;
 pub mod hash_table;
 pub mod jt72;
 pub mod pipeline_ap;
+#[cfg(feature = "q65")]
+pub mod q65;
 pub mod wsjt77;
 pub mod wspr;
 
 pub use ap::ApHint;
 pub use hash_table::CallsignHashTable;
 pub use jt72::{Jt72Codec, Jt72Message};
+#[cfg(feature = "q65")]
+pub use q65::Q65Message;
 pub use wspr::{Wspr50Message, WsprMessage};
 
 use crate::core::{DecodeContext, MessageCodec, MessageFields};

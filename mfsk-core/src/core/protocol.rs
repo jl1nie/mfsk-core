@@ -34,6 +34,10 @@ pub enum ProtocolId {
     Jt9 = 5,
     /// WSPR — 120 s slot, 4-FSK, convolutional r=½ K=32 + Fano, 50-bit message.
     Wspr = 6,
+    /// Q65 — 65-tone FSK, QRA(15,65) over GF(64), 77-bit Wsjt77 message.
+    /// Multiple T/R-period × tone-spacing variants share this tag at the
+    /// FFI level; the protocol-layer ZST disambiguates.
+    Q65 = 7,
 }
 
 /// Baseband modulation parameters (tones, symbol rate, Gray mapping, Gaussian

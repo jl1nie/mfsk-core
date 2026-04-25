@@ -39,4 +39,14 @@
 //! - Joe Taylor K1JT, "The Q65 Protocol for Weak-Signal
 //!   Communication", QEX 2022.
 
-// Submodules added in subsequent tasks.
+pub mod protocol;
+pub mod rx;
+pub mod search;
+pub mod sync_pattern;
+pub mod tx;
+
+pub use protocol::{Q65Fec, Q65a30};
+pub use rx::{Q65Decode, decode_at, decode_scan, decode_scan_default};
+pub use search::{SearchParams, SyncCandidate, coarse_search};
+pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
+pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};

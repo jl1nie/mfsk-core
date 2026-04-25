@@ -214,19 +214,28 @@ impl QraCode {
     /// probability distributions, assuming non-coherent M-FSK
     /// reception in AWGN.
     ///
-    /// `rsq.len()` and `pix.len()` must both equal `M * N`. The
-    /// symbol-`k` row occupies `pix[M*k .. M*(k+1)]`. Returns the
-    /// estimated noise standard deviation `σ̂`, useful as a quality
-    /// indicator.
+    /// `n_symbols` is the number of observed channel symbols — this
+    /// matches the C reference's `qra_mfskbesselmetric(..., N, ...)`
+    /// call shape, where `N` is passed in rather than read off the
+    /// code, because Q65 punctures 2 symbols off the codeword and so
+    /// observes `N - 2 = 63` symbols, not the underlying code's
+    /// `N = 65`. Both `pix` and `rsq` must have length `M * n_symbols`,
+    /// laid out row-major: symbol-`k` data sits in
+    /// `[M * k .. M * (k+1)]`.
+    ///
+    /// Returns the estimated noise standard deviation `σ̂`.
     ///
     /// The metric is calibrated for `Es/No = es_no_metric` (linear,
-    /// not dB). Calling code commonly uses a fixed value (~2.8 dB
-    /// linearised) chosen to optimise mean WER — Q65 follows the
-    /// same convention.
-    pub fn mfsk_bessel_metric(&self, pix: &mut [f32], rsq: &[f32], es_no_metric: f32) -> f32 {
+    /// not dB). Q65 uses ~2.8 dB linearised, scaled by `m * R`.
+    pub fn mfsk_bessel_metric(
+        &self,
+        pix: &mut [f32],
+        rsq: &[f32],
+        n_symbols: usize,
+        es_no_metric: f32,
+    ) -> f32 {
         let big_m = self.M;
-        let big_n = self.N;
-        let nsamples = big_m * big_n;
+        let nsamples = big_m * n_symbols;
         assert_eq!(pix.len(), nsamples, "mfsk_bessel_metric: pix length");
         assert_eq!(rsq.len(), nsamples, "mfsk_bessel_metric: rsq length");
 
@@ -240,7 +249,7 @@ impl QraCode {
         let sigmaest = (rsum / (1.0 + es_no_metric / big_m as f32) / 2.0).sqrt();
         let cmetric = (2.0 * es_no_metric).sqrt() / sigmaest;
 
-        for k in 0..big_n {
+        for k in 0..n_symbols {
             let row = &mut pix[big_m * k..big_m * (k + 1)];
             ioapprox(row, cmetric);
             pdmath::norm(row);

@@ -258,5 +258,7 @@ pub use crate::ft8::Ft8;
 pub use crate::jt9::Jt9;
 #[cfg(feature = "jt65")]
 pub use crate::jt65::Jt65;
+#[cfg(feature = "q65")]
+pub use crate::q65::Q65a30;
 #[cfg(feature = "wspr")]
 pub use crate::wspr::Wspr;
