@@ -125,6 +125,45 @@
 //! | `osd-deep`    |          | OSD-3 fallback on AP decodes (extra CPU)     |
 //! | `eq-fallback` |          | Non-EQ fallback inside `EqMode::Adaptive`    |
 //!
+//! ## Runtime registry
+//!
+//! [`PROTOCOLS`] is a `&'static [ProtocolMeta]` listing every
+//! `Protocol` impl wired into the current build. Each entry carries
+//! the protocol's id, display name, and every constant the trait
+//! surface exposes (modulation / frame / FEC / message). Use it
+//! when a UI layer or FFI bridge needs to enumerate "what does this
+//! build support?" without hardcoding its own list:
+//!
+//! ```
+//! # use mfsk_core::PROTOCOLS;
+//! for p in PROTOCOLS {
+//!     println!("{}: {} tones × {} bits, {} s slot",
+//!              p.name, p.ntones, p.bits_per_symbol, p.t_slot_s);
+//! }
+//! ```
+//!
+//! [`by_id`] / [`by_name`] / [`for_protocol_id`] cover the common
+//! lookup patterns. All six Q65 sub-modes (Q65-30A, Q65-60A‥E)
+//! appear as distinct registry entries because their NSPS and tone
+//! spacing differ; they share `ProtocolId::Q65` because the FFI
+//! protocol tag is family-level.
+//!
+//! ## Trait surface verification
+//!
+//! `tests/protocol_invariants.rs` runs a single generic
+//! `assert_protocol_invariants::<P: Protocol>` over every wired ZST
+//! (FT8 / FT4 / FST4 / WSPR / JT9 / JT65 plus all six Q65 sub-modes
+//! — 11 in total). It pins 17 trait-level invariants:
+//! `2^BITS_PER_SYMBOL ≤ NTONES`, `SYMBOL_DT × 12000 == NSPS`,
+//! `N_SYMBOLS == N_DATA + N_SYNC`, sync-mode self-consistency,
+//! `FecCodec::K ≥ MessageCodec::PAYLOAD_BITS`, and so on. Adding a
+//! new `Protocol` impl is a one-line registry edit + a one-line
+//! test invocation; the same generic body proves the new ZST's
+//! constants are internally consistent without any per-protocol
+//! glue. Drift between trait doc and implementation is caught
+//! mechanically — the work that landed Q65 surfaced one such
+//! discrepancy in `GRAY_MAP` and fixed it in the same pass.
+//!
 //! ## Library stack
 //!
 //! ```text
