@@ -214,8 +214,12 @@ examples, shared DSP / sync / LLR / pipeline primitives, the C ABI
 memory model, Kotlin/Android scaffolding — see the library
 reference:
 
-- **English:** [`docs/LIBRARY.md`](docs/LIBRARY.md)
-- **日本語:** [`docs/LIBRARY.ja.md`](docs/LIBRARY.ja.md)
+<!-- Absolute URLs so the links resolve from both GitHub and the
+     crates.io README renderer (which otherwise rewrites
+     "docs/LIBRARY.md" to mfsk-core/docs/... — see workspace
+     layout: docs/ lives at the repo root, not under the crate). -->
+- **English:** [`docs/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/LIBRARY.md)
+- **日本語:** [`docs/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/LIBRARY.ja.md)
 
 ## Status
 
