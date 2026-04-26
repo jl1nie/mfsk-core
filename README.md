@@ -183,7 +183,14 @@ carries its own Quick example:
   — `decode_scan_default` (Q65-30A); generic `decode_scan_for<P>`
   for any wired sub-mode including the Q65-60A‥E EME variants;
   `decode_scan_with_ap` / `decode_scan_with_ap_for<P>` for AP-biased
-  decoding (~2 dB threshold gain when call signs are known)
+  decoding (~2 dB threshold gain when call signs are known); and
+  `decode_scan_fading_for<P>` for the fast-fading metric (Gaussian
+  / Lorentzian channel models) that recovers 5–8 dB on Doppler-spread
+  channels — required for microwave EME at 5.7 / 10 / 24 GHz; and
+  `decode_scan_with_ap_list_for<P>` (paired with `standard_qso_codewords`)
+  for BP-free template matching against the full WSJT-X "AP list"
+  of standard exchanges (~3 dB threshold gain when the callsign pair
+  is known up-front)
 
 ## C / C++ / Kotlin
 
@@ -214,10 +221,12 @@ reference:
 
 `0.1.x` — API is deliberately not frozen. Breaking changes follow
 cargo-style minor bumps (`0.1 → 0.2`). Algorithm correctness is
-covered by ~230 tests across the workspace, including end-to-end
+covered by ~250 tests across the workspace, including end-to-end
 synth → decode roundtrips for every protocol, an AWGN sensitivity
 sweep that confirms Q65-30A hits its WSJT-X-published −24 dB
 threshold, an AP-vs-plain comparison that shows the expected ~2 dB
-gain from a-priori call sign information, and a real 6 m EME
-recording (W7GJ exchanges from the WSJT-X reference set) that the
-AWGN-only path already decodes successfully.
+gain from a-priori call sign information, an AP-list (template
+matching) comparison that decodes 6/6 frames at SNR −25 dB where
+plain BP fails 0/6, a real 6 m EME recording (W7GJ exchanges from
+the WSJT-X reference set), and a real 10 GHz EME recording that
+the fast-fading metric is required to decode.

@@ -306,6 +306,110 @@ impl Q65Codec {
     }
 }
 
+/// Minimum codeword log-likelihood used by [`Q65Codec::decode_with_codeword_list`]
+/// to reject false matches; mirrors `Q65_LLH_THRESHOLD` from `q65.c`.
+/// The threshold is adjusted by `ln(N/3)` for an `N`-codeword list to
+/// keep the false-decode rate roughly constant as the list grows.
+pub const Q65_LLH_THRESHOLD: f32 = -260.0;
+
+/// Q65 list-decoding primitives — sit alongside the BP decoder in
+/// [`Q65Codec`] and implement the WSJT-X "full AP list" path
+/// (`q65_decode_fullaplist`). Useful when the application has no QSO
+/// context: caller pre-generates a set of candidate codewords (e.g.
+/// every standard exchange involving a known callsign pair) and the
+/// decoder selects the one that fits the soft observations best,
+/// without BP.
+impl Q65Codec {
+    /// Compute the floor-clamped log-likelihood of the soft
+    /// observations `intrinsics` under a single hard-decision
+    /// codeword candidate.
+    ///
+    /// `intrinsics` must be `M * channel_len()` long (same shape the
+    /// BP decoder consumes — 64 × 63 for Q65). `codeword` must be
+    /// `channel_len()` long with each entry in `0..M`.
+    ///
+    /// Returns `Σ_k log(max(intrinsic[k][codeword[k]], 1e-36))`.
+    /// A perfect match approaches 0; everything else is negative.
+    pub fn check_codeword_llh(&self, intrinsics: &[f32], codeword: &[i32]) -> f32 {
+        let big_m = self.code.M;
+        let n_chan = self.channel_len();
+        assert_eq!(
+            intrinsics.len(),
+            big_m * n_chan,
+            "check_codeword_llh: intrinsics length"
+        );
+        assert_eq!(
+            codeword.len(),
+            n_chan,
+            "check_codeword_llh: codeword length"
+        );
+
+        let mut t = 0.0_f32;
+        for k in 0..n_chan {
+            let sym = codeword[k] as usize;
+            debug_assert!(sym < big_m, "codeword[{k}] = {sym} out of range");
+            let mut x = intrinsics[big_m * k + sym];
+            if x < 1.0e-36 {
+                x = 1.0e-36;
+            }
+            t += x.ln();
+        }
+        t
+    }
+
+    /// List-decode: among `candidates`, pick the codeword with the
+    /// highest log-likelihood under `intrinsics`, provided that
+    /// likelihood exceeds the size-adjusted
+    /// [`Q65_LLH_THRESHOLD`]. Returns `Some((index, info_symbols))`
+    /// on success — `info_symbols` is the recovered 13 GF(64)
+    /// information vector, taken from the first `msg_len()` entries
+    /// of the winning candidate (since each candidate is a full
+    /// systematic Q65 codeword the user info sits in the leading
+    /// channel symbols).
+    ///
+    /// Equivalent of `q65_decode_fullaplist` in the C reference. The
+    /// CRC check that the BP path performs is implicit here: every
+    /// candidate is a properly-encoded Q65 codeword, so its CRC is
+    /// correct by construction.
+    pub fn decode_with_codeword_list(
+        &self,
+        intrinsics: &[f32],
+        candidates: &[[i32; 63]],
+    ) -> Option<(usize, [i32; 13])> {
+        if candidates.is_empty() {
+            return None;
+        }
+        let n_chan = self.channel_len();
+        debug_assert_eq!(
+            n_chan, 63,
+            "list-decode helper currently assumes Q65 channel length 63"
+        );
+        let n_user = self.msg_len();
+        debug_assert_eq!(n_user, 13, "list-decode assumes Q65 msg_len == 13");
+
+        // Adjust threshold to keep false-decode rate independent of
+        // list size. WSJT-X derives this as Q65_LLH_THRESHOLD +
+        // ln(N/3).
+        let threshold = Q65_LLH_THRESHOLD + (candidates.len() as f32 / 3.0).ln();
+        let mut best_llh = threshold;
+        let mut best_idx: Option<usize> = None;
+
+        for (i, cw) in candidates.iter().enumerate() {
+            let llh = self.check_codeword_llh(intrinsics, cw);
+            if llh > best_llh {
+                best_llh = llh;
+                best_idx = Some(i);
+            }
+        }
+
+        let idx = best_idx?;
+        let cw = &candidates[idx];
+        let mut info = [0_i32; 13];
+        info.copy_from_slice(&cw[..n_user]);
+        Some((idx, info))
+    }
+}
+
 /// CRC-6 over a sequence of 6-bit GF(64) symbols.
 ///
 /// Generator polynomial g(x) = x^6 + x + 1, processed LSB-first. Bit-

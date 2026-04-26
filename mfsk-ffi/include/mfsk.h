@@ -39,6 +39,13 @@ typedef enum MfskProtocol {
      * FST4-60A — 60 s slot, 4-GFSK, LDPC(240,101) + CRC-24, 77-bit WSJT message.
      */
     MFSK_PROTOCOL_FST4S60 = 5,
+    /**
+     * Q65-30A — 30 s slot, 65-FSK, QRA(15,65) over GF(64), 77-bit WSJT message.
+     * Other Q65 sub-modes (60A..60E for EME) are reachable via
+     * the dedicated `mfsk_q65_*` function family with a
+     * [`MfskQ65SubMode`] parameter.
+     */
+    MFSK_PROTOCOL_Q65A30 = 6,
 } MfskProtocol;
 
 /**
@@ -76,6 +83,61 @@ typedef enum MfskStatus {
      */
     MFSK_STATUS_INTERNAL = -4,
 } MfskStatus;
+
+/**
+ * Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
+ * family. All sub-modes share the same FEC, sync layout and
+ * message format — only the T/R period and tone spacing change.
+ *
+ * Picked from the type-level `Q65a30 / Q65a60 / Q65b60 / Q65c60 /
+ * Q65d60 / Q65e60` ZSTs in `mfsk_core::q65`.
+ */
+typedef enum MfskQ65SubMode {
+    /**
+     * Q65-30A — 30 s slot, ×1 spacing. Terrestrial weak-signal
+     * HF/VHF and ionoscatter; the most common Q65 sub-mode.
+     */
+    MFSK_Q65_SUB_MODE_A30 = 0,
+    /**
+     * Q65-60A — 60 s slot, ×1 spacing. 6 m EME.
+     */
+    MFSK_Q65_SUB_MODE_A60 = 1,
+    /**
+     * Q65-60B — 60 s slot, ×2 spacing. 70 cm / 23 cm EME.
+     */
+    MFSK_Q65_SUB_MODE_B60 = 2,
+    /**
+     * Q65-60C — 60 s slot, ×4 spacing. ~3 GHz microwave EME.
+     */
+    MFSK_Q65_SUB_MODE_C60 = 3,
+    /**
+     * Q65-60D — 60 s slot, ×8 spacing. 5.7 / 10 GHz EME (libration
+     * spread requires the fast-fading metric).
+     */
+    MFSK_Q65_SUB_MODE_D60 = 4,
+    /**
+     * Q65-60E — 60 s slot, ×16 spacing. 24 GHz+ / extreme spread.
+     */
+    MFSK_Q65_SUB_MODE_E60 = 5,
+} MfskQ65SubMode;
+
+/**
+ * Channel-spread fading model used by `mfsk_q65_decode_fading`.
+ * Matches the Gaussian / Lorentzian calibration tables shipped
+ * with WSJT-X.
+ */
+typedef enum MfskQ65FadingModel {
+    /**
+     * Gaussian-spread channel — fits libration-limited EME and
+     * most AWGN-with-jitter scenarios.
+     */
+    MFSK_Q65_FADING_MODEL_GAUSSIAN = 0,
+    /**
+     * Lorentzian-spread channel — heavier tails; fits some
+     * ionoscatter / meteor-burst signatures.
+     */
+    MFSK_Q65_FADING_MODEL_LORENTZIAN = 1,
+} MfskQ65FadingModel;
 
 /**
  * Opaque decoder handle. Construct with [`mfsk_decoder_new`], release
@@ -353,6 +415,105 @@ enum MfskStatus mfsk_encode_jt65(const char *call1,
                                  const char *grid_or_report,
                                  float freq_hz,
                                  struct MfskSamples *out);
+
+/**
+ * Synthesise a standard Q65 message at `freq_hz` for the requested
+ * sub-mode. 12 kHz f32 PCM. The 30 s vs 60 s slot duration and tone
+ * spacing follow the Q65 spec; the FEC and message format are
+ * shared across every sub-mode.
+ *
+ * # Safety
+ *
+ * See [`mfsk_encode_ft8`].
+ */
+enum MfskStatus mfsk_encode_q65(enum MfskQ65SubMode submode,
+                                const char *call1,
+                                const char *call2,
+                                const char *grid_or_report,
+                                float freq_hz,
+                                struct MfskSamples *out);
+
+/**
+ * Plain AWGN Q65 scan-and-decode for any sub-mode. The default
+ * strategy — every other `mfsk_q65_decode_*` function trades
+ * computational cost or extra inputs for a few dB of threshold gain
+ * against this baseline.
+ *
+ * # Safety
+ *
+ * `samples` must point to `n_samples` valid `f32` values.
+ * `out` must point to a writable [`MfskMessageList`]; pair with
+ * [`mfsk_message_list_free`] when done.
+ */
+enum MfskStatus mfsk_q65_decode(enum MfskQ65SubMode submode,
+                                const float *samples,
+                                uintptr_t n_samples,
+                                uint32_t sample_rate,
+                                struct MfskMessageList *out);
+
+/**
+ * AP-biased Q65 scan-and-decode. Up to four optional hints
+ * (`call1`, `call2`, `grid`, `report`) — each may be NULL when
+ * unknown. Lifts the effective decode threshold by ~2 dB when the
+ * supplied hints are correct.
+ *
+ * # Safety
+ *
+ * As [`mfsk_q65_decode`]. The four hint strings, when non-NULL,
+ * must be NUL-terminated UTF-8.
+ */
+enum MfskStatus mfsk_q65_decode_with_ap(enum MfskQ65SubMode submode,
+                                        const float *samples,
+                                        uintptr_t n_samples,
+                                        uint32_t sample_rate,
+                                        const char *ap_call1,
+                                        const char *ap_call2,
+                                        const char *ap_grid,
+                                        const char *ap_report,
+                                        struct MfskMessageList *out);
+
+/**
+ * Fast-fading Q65 scan-and-decode. Recovers the 5–8 dB the AWGN
+ * Bessel front end loses on Doppler-spread channels — required for
+ * microwave EME at 5.7 GHz / 10 GHz / 24 GHz. `b90_ts` is the
+ * spread bandwidth × symbol period (typical: 0.05 = near-AWGN,
+ * 1.0 = moderate, 5.0+ = severe). `model` chooses the calibration
+ * shape.
+ *
+ * # Safety
+ *
+ * As [`mfsk_q65_decode`].
+ */
+enum MfskStatus mfsk_q65_decode_fading(enum MfskQ65SubMode submode,
+                                       const float *samples,
+                                       uintptr_t n_samples,
+                                       uint32_t sample_rate,
+                                       float b90_ts,
+                                       enum MfskQ65FadingModel fading_model,
+                                       struct MfskMessageList *out);
+
+/**
+ * AP-list (template-matching) Q65 scan-and-decode. Builds the
+ * standard 206-codeword candidate set internally from
+ * `(my_call, his_call, his_grid)` and picks the matching exchange,
+ * if any. `his_grid` may be NULL or empty to skip the two
+ * grid-bearing templates. Yields ~3 dB threshold gain over plain
+ * BP when the truth is in the candidate set.
+ *
+ * # Safety
+ *
+ * As [`mfsk_q65_decode`]. `my_call` and `his_call` must be
+ * NUL-terminated UTF-8 strings; `his_grid` may be NULL or
+ * NUL-terminated UTF-8.
+ */
+enum MfskStatus mfsk_q65_decode_with_ap_list(enum MfskQ65SubMode submode,
+                                             const float *samples,
+                                             uintptr_t n_samples,
+                                             uint32_t sample_rate,
+                                             const char *my_call,
+                                             const char *his_call,
+                                             const char *his_grid,
+                                             struct MfskMessageList *out);
 
 /**
  * Library version, major.minor.patch packed into a 32-bit integer (8

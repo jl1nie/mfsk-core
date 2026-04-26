@@ -4,7 +4,7 @@ version     = "0.1.0"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 publish     = false
-description = "C ABI for mfsk-core — exposes WSJT-family (FT8/FT4/FST4/WSPR/JT9/JT65) decoders and synthesisers to C/C++/Kotlin via a cbindgen-generated mfsk.h header."
+description = "C ABI for mfsk-core — exposes WSJT-family (FT8/FT4/FST4/WSPR/JT9/JT65/Q65) decoders and synthesisers to C/C++/Kotlin via a cbindgen-generated mfsk.h header."
 
 [lib]
 name       = "mfsk"

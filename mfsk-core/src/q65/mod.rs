@@ -36,6 +36,16 @@
 //! `decode_scan_with_ap_for<P>` accept an [`crate::msg::ApHint`]
 //! that biases the QRA decoder with known call-sign / report
 //! information and lifts the effective decode threshold by ~2 dB.
+//! `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` use the
+//! fast-fading metric ([`crate::fec::qra::intrinsics_fast_fading`])
+//! that recovers the 5–8 dB the AWGN Bessel front end loses to
+//! Doppler-spread channels — required for microwave EME (libration
+//! spread ≥10 Hz at 5.7 GHz and above).
+//! `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`
+//! run BP-free **template matching** against a candidate codeword
+//! list (typically built with [`standard_qso_codewords`]) — the
+//! mfsk-core port of `q65_decode_fullaplist`. Useful when the
+//! application has a known callsign pair but no QSO context.
 //!
 //! References:
 //! - WSJT-X `lib/qra/q65/q65.f90`, `lib/qra/q65/q65.c`,
@@ -44,17 +54,24 @@
 //! - Joe Taylor K1JT, "The Q65 Protocol for Weak-Signal
 //!   Communication", QEX 2022.
 
+pub mod ap_list;
 pub mod protocol;
 pub mod rx;
 pub mod search;
 pub mod sync_pattern;
 pub mod tx;
 
+pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 pub use protocol::{Q65Fec, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
 pub use rx::{
-    Q65Decode, decode_at, decode_at_for, decode_at_with_ap, decode_at_with_ap_for, decode_scan,
-    decode_scan_default, decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for,
+    Q65Decode, decode_at, decode_at_fading_for, decode_at_for, decode_at_with_ap,
+    decode_at_with_ap_for, decode_at_with_ap_list_for, decode_scan, decode_scan_default,
+    decode_scan_fading_for, decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for,
+    decode_scan_with_ap_list_for,
 };
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
-pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
+pub use tx::{
+    encode_channel_symbols, synthesize_audio, synthesize_audio_for, synthesize_standard,
+    synthesize_standard_for,
+};

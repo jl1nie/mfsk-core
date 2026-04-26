@@ -2,11 +2,20 @@
 //!
 //! # Overview
 //!
-//! Exposes FT8 / FT4 / WSPR / JT9 / JT65 decoders and synthesisers
-//! behind a small opaque-handle C API that C++ and Kotlin consumers
-//! (Android JNI via a thin shim) can link against. cbindgen generates
-//! `include/mfsk.h` on every build; see `examples/cpp_smoke` for a
-//! round-trip demo that exercises every protocol through the ABI.
+//! Exposes FT8 / FT4 / FST4 / WSPR / JT9 / JT65 / Q65 decoders and
+//! synthesisers behind a small opaque-handle C API that C++ and
+//! Kotlin consumers (Android JNI via a thin shim) can link against.
+//! cbindgen generates `include/mfsk.h` on every build; see
+//! `examples/cpp_smoke` for a round-trip demo that exercises every
+//! protocol through the ABI.
+//!
+//! Q65 has six sub-modes (Q65-30A for terrestrial, Q65-60A‥60E for
+//! the EME band lineup) and four decoder strategies (AWGN Bessel,
+//! AP-biased BP, fast-fading metric, AP-list template matching).
+//! The simple `mfsk_decoder_new(MFSK_PROTOCOL_Q65A30)` path covers
+//! the most common terrestrial Q65 case; the dedicated
+//! `mfsk_q65_*` function family exposes every sub-mode and every
+//! strategy.
 //!
 //! # Memory ownership
 //!
@@ -74,6 +83,50 @@ pub enum MfskProtocol {
     Jt65 = 4,
     /// FST4-60A — 60 s slot, 4-GFSK, LDPC(240,101) + CRC-24, 77-bit WSJT message.
     Fst4s60 = 5,
+    /// Q65-30A — 30 s slot, 65-FSK, QRA(15,65) over GF(64), 77-bit WSJT message.
+    /// Other Q65 sub-modes (60A..60E for EME) are reachable via
+    /// the dedicated `mfsk_q65_*` function family with a
+    /// [`MfskQ65SubMode`] parameter.
+    Q65a30 = 6,
+}
+
+/// Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
+/// family. All sub-modes share the same FEC, sync layout and
+/// message format — only the T/R period and tone spacing change.
+///
+/// Picked from the type-level `Q65a30 / Q65a60 / Q65b60 / Q65c60 /
+/// Q65d60 / Q65e60` ZSTs in `mfsk_core::q65`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MfskQ65SubMode {
+    /// Q65-30A — 30 s slot, ×1 spacing. Terrestrial weak-signal
+    /// HF/VHF and ionoscatter; the most common Q65 sub-mode.
+    A30 = 0,
+    /// Q65-60A — 60 s slot, ×1 spacing. 6 m EME.
+    A60 = 1,
+    /// Q65-60B — 60 s slot, ×2 spacing. 70 cm / 23 cm EME.
+    B60 = 2,
+    /// Q65-60C — 60 s slot, ×4 spacing. ~3 GHz microwave EME.
+    C60 = 3,
+    /// Q65-60D — 60 s slot, ×8 spacing. 5.7 / 10 GHz EME (libration
+    /// spread requires the fast-fading metric).
+    D60 = 4,
+    /// Q65-60E — 60 s slot, ×16 spacing. 24 GHz+ / extreme spread.
+    E60 = 5,
+}
+
+/// Channel-spread fading model used by `mfsk_q65_decode_fading`.
+/// Matches the Gaussian / Lorentzian calibration tables shipped
+/// with WSJT-X.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MfskQ65FadingModel {
+    /// Gaussian-spread channel — fits libration-limited EME and
+    /// most AWGN-with-jitter scenarios.
+    Gaussian = 0,
+    /// Lorentzian-spread channel — heavier tails; fits some
+    /// ionoscatter / meteor-burst signatures.
+    Lorentzian = 1,
 }
 
 /// Status / error code returned by every fallible `mfsk_*` call.
@@ -417,6 +470,11 @@ pub unsafe extern "C" fn mfsk_decode_f32(
                 mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
             decode_jt65_aligned(&audio, out)
         }
+        MfskProtocol::Q65a30 => {
+            let audio =
+                mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
+            decode_q65_default(&audio, out)
+        }
     }
 }
 
@@ -458,7 +516,7 @@ pub unsafe extern "C" fn mfsk_decode_i16(
             };
             decode_i16_wsjt77(inner_ref.protocol, &audio, out)
         }
-        MfskProtocol::Wspr | MfskProtocol::Jt9 | MfskProtocol::Jt65 => {
+        MfskProtocol::Wspr | MfskProtocol::Jt9 | MfskProtocol::Jt65 | MfskProtocol::Q65a30 => {
             // These backends consume f32 natively; convert.
             let audio: Vec<f32> = if sample_rate == 12_000 {
                 slice_i16.iter().map(|&s| s as f32 / 32768.0).collect()
@@ -469,6 +527,7 @@ pub unsafe extern "C" fn mfsk_decode_i16(
                 MfskProtocol::Wspr => decode_wspr(&audio, out),
                 MfskProtocol::Jt9 => decode_jt9_aligned(&audio, out),
                 MfskProtocol::Jt65 => decode_jt65_aligned(&audio, out),
+                MfskProtocol::Q65a30 => decode_q65_default(&audio, out),
                 _ => unreachable!(),
             }
         }
@@ -560,6 +619,149 @@ fn decode_jt65_aligned(audio: &[f32], out: &mut MfskMessageList) -> MfskStatus {
     }
     finalise(vec, out);
     MfskStatus::Ok
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Q65 helpers (sub-mode dispatch + decoded-message push)
+// ──────────────────────────────────────────────────────────────────────────
+
+fn push_q65_decode(d: &mfsk_core::q65::Q65Decode, vec: &mut Vec<MfskMessage>) {
+    push_simple(
+        d.freq_hz,
+        d.start_sample as f32 / 12_000.0,
+        d.message.clone(),
+        vec,
+    );
+}
+
+/// Wide search params used by every `mfsk_q65_*` decode entry point —
+/// matches the Rust-side defaults that work across both terrestrial
+/// Q65-30A and EME 60A‥E recordings.
+fn q65_default_search() -> mfsk_core::q65::SearchParams {
+    mfsk_core::q65::SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    }
+}
+
+/// Q65a30 default scan (used by the generic-handle path).
+fn decode_q65_default(audio: &[f32], out: &mut MfskMessageList) -> MfskStatus {
+    let mut vec: Vec<MfskMessage> = Vec::new();
+    for d in mfsk_core::q65::decode_scan_default(audio, 12_000) {
+        push_q65_decode(&d, &mut vec);
+    }
+    finalise(vec, out);
+    MfskStatus::Ok
+}
+
+/// Slot midpoint sample index for a sub-mode (used as the nominal
+/// search anchor for sub-modes other than Q65-30A).
+fn q65_nominal_mid(submode: MfskQ65SubMode) -> usize {
+    let slot_s = match submode {
+        MfskQ65SubMode::A30 => 30,
+        _ => 60,
+    };
+    12_000 * slot_s / 2
+}
+
+/// Plain-AWGN sub-mode-aware scan. Dispatches at runtime to the
+/// right `decode_scan_for::<Q65*>` generic in `mfsk_core::q65`.
+fn q65_scan_for(submode: MfskQ65SubMode, audio: &[f32]) -> Vec<mfsk_core::q65::Q65Decode> {
+    use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for};
+    let params = q65_default_search();
+    let mid = q65_nominal_mid(submode);
+    match submode {
+        MfskQ65SubMode::A30 => decode_scan_for::<Q65a30>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::A60 => decode_scan_for::<Q65a60>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::B60 => decode_scan_for::<Q65b60>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::C60 => decode_scan_for::<Q65c60>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::D60 => decode_scan_for::<Q65d60>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::E60 => decode_scan_for::<Q65e60>(audio, 12_000, mid, &params),
+    }
+}
+
+fn q65_scan_with_ap_for(
+    submode: MfskQ65SubMode,
+    audio: &[f32],
+    hint: &mfsk_core::msg::ApHint,
+) -> Vec<mfsk_core::q65::Q65Decode> {
+    use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_with_ap_for};
+    let params = q65_default_search();
+    let mid = q65_nominal_mid(submode);
+    match submode {
+        MfskQ65SubMode::A30 => decode_scan_with_ap_for::<Q65a30>(audio, 12_000, mid, &params, hint),
+        MfskQ65SubMode::A60 => decode_scan_with_ap_for::<Q65a60>(audio, 12_000, mid, &params, hint),
+        MfskQ65SubMode::B60 => decode_scan_with_ap_for::<Q65b60>(audio, 12_000, mid, &params, hint),
+        MfskQ65SubMode::C60 => decode_scan_with_ap_for::<Q65c60>(audio, 12_000, mid, &params, hint),
+        MfskQ65SubMode::D60 => decode_scan_with_ap_for::<Q65d60>(audio, 12_000, mid, &params, hint),
+        MfskQ65SubMode::E60 => decode_scan_with_ap_for::<Q65e60>(audio, 12_000, mid, &params, hint),
+    }
+}
+
+fn q65_scan_fading_for(
+    submode: MfskQ65SubMode,
+    audio: &[f32],
+    b90_ts: f32,
+    model: mfsk_core::fec::qra::FadingModel,
+) -> Vec<mfsk_core::q65::Q65Decode> {
+    use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_fading_for};
+    let params = q65_default_search();
+    let mid = q65_nominal_mid(submode);
+    match submode {
+        MfskQ65SubMode::A30 => {
+            decode_scan_fading_for::<Q65a30>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+        MfskQ65SubMode::A60 => {
+            decode_scan_fading_for::<Q65a60>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+        MfskQ65SubMode::B60 => {
+            decode_scan_fading_for::<Q65b60>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+        MfskQ65SubMode::C60 => {
+            decode_scan_fading_for::<Q65c60>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+        MfskQ65SubMode::D60 => {
+            decode_scan_fading_for::<Q65d60>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+        MfskQ65SubMode::E60 => {
+            decode_scan_fading_for::<Q65e60>(audio, 12_000, mid, &params, b90_ts, model, None)
+        }
+    }
+}
+
+fn q65_scan_with_ap_list_for(
+    submode: MfskQ65SubMode,
+    audio: &[f32],
+    candidates: &[[i32; 63]],
+) -> Vec<mfsk_core::q65::Q65Decode> {
+    use mfsk_core::q65::{
+        Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_with_ap_list_for,
+    };
+    let params = q65_default_search();
+    let mid = q65_nominal_mid(submode);
+    match submode {
+        MfskQ65SubMode::A30 => {
+            decode_scan_with_ap_list_for::<Q65a30>(audio, 12_000, mid, &params, candidates)
+        }
+        MfskQ65SubMode::A60 => {
+            decode_scan_with_ap_list_for::<Q65a60>(audio, 12_000, mid, &params, candidates)
+        }
+        MfskQ65SubMode::B60 => {
+            decode_scan_with_ap_list_for::<Q65b60>(audio, 12_000, mid, &params, candidates)
+        }
+        MfskQ65SubMode::C60 => {
+            decode_scan_with_ap_list_for::<Q65c60>(audio, 12_000, mid, &params, candidates)
+        }
+        MfskQ65SubMode::D60 => {
+            decode_scan_with_ap_list_for::<Q65d60>(audio, 12_000, mid, &params, candidates)
+        }
+        MfskQ65SubMode::E60 => {
+            decode_scan_with_ap_list_for::<Q65e60>(audio, 12_000, mid, &params, candidates)
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -796,6 +998,303 @@ pub unsafe extern "C" fn mfsk_encode_jt65(
         return MfskStatus::InvalidArg;
     };
     finalise_samples(pcm, unsafe { &mut *out });
+    MfskStatus::Ok
+}
+
+/// Synthesise a standard Q65 message at `freq_hz` for the requested
+/// sub-mode. 12 kHz f32 PCM. The 30 s vs 60 s slot duration and tone
+/// spacing follow the Q65 spec; the FEC and message format are
+/// shared across every sub-mode.
+///
+/// # Safety
+///
+/// See [`mfsk_encode_ft8`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_encode_q65(
+    submode: MfskQ65SubMode,
+    call1: *const c_char,
+    call2: *const c_char,
+    grid_or_report: *const c_char,
+    freq_hz: f32,
+    out: *mut MfskSamples,
+) -> MfskStatus {
+    use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, synthesize_standard_for};
+
+    let Ok(c1) = cstr_to_str(call1) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Ok(c2) = cstr_to_str(call2) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Ok(gr) = cstr_to_str(grid_or_report) else {
+        return MfskStatus::InvalidArg;
+    };
+    if out.is_null() {
+        set_error("mfsk_encode_q65: null out");
+        return MfskStatus::InvalidArg;
+    }
+    let pcm_opt = match submode {
+        MfskQ65SubMode::A30 => synthesize_standard_for::<Q65a30>(c1, c2, gr, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::A60 => synthesize_standard_for::<Q65a60>(c1, c2, gr, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::B60 => synthesize_standard_for::<Q65b60>(c1, c2, gr, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::C60 => synthesize_standard_for::<Q65c60>(c1, c2, gr, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::D60 => synthesize_standard_for::<Q65d60>(c1, c2, gr, 12_000, freq_hz, 0.3),
+        MfskQ65SubMode::E60 => synthesize_standard_for::<Q65e60>(c1, c2, gr, 12_000, freq_hz, 0.3),
+    };
+    let Some(pcm) = pcm_opt else {
+        set_error("Q65 synth failed (bad pack)");
+        return MfskStatus::InvalidArg;
+    };
+    finalise_samples(pcm, unsafe { &mut *out });
+    MfskStatus::Ok
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Q65 decode entry points (4 strategies × 6 sub-modes)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Helper used by the four `mfsk_q65_decode_*` functions to validate
+/// their input pointers and lift the audio buffer to a 12 kHz f32
+/// slice. Returns `Err(status)` if anything is wrong with the input.
+unsafe fn q65_prepare_audio(
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    out: *mut MfskMessageList,
+    fn_name: &'static str,
+) -> Result<Vec<f32>, MfskStatus> {
+    if samples.is_null() || out.is_null() {
+        set_error(format!("{fn_name}: null buffer pointer"));
+        return Err(MfskStatus::InvalidArg);
+    }
+    let slice_f32 = unsafe { slice::from_raw_parts(samples, n_samples) };
+    let audio: Vec<f32> = if sample_rate == 12_000 {
+        slice_f32.to_vec()
+    } else {
+        mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate)
+    };
+    Ok(audio)
+}
+
+/// Plain AWGN Q65 scan-and-decode for any sub-mode. The default
+/// strategy — every other `mfsk_q65_decode_*` function trades
+/// computational cost or extra inputs for a few dB of threshold gain
+/// against this baseline.
+///
+/// # Safety
+///
+/// `samples` must point to `n_samples` valid `f32` values.
+/// `out` must point to a writable [`MfskMessageList`]; pair with
+/// [`mfsk_message_list_free`] when done.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_decode(
+    submode: MfskQ65SubMode,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    out: *mut MfskMessageList,
+) -> MfskStatus {
+    let audio =
+        match unsafe { q65_prepare_audio(samples, n_samples, sample_rate, out, "mfsk_q65_decode") }
+        {
+            Ok(a) => a,
+            Err(s) => return s,
+        };
+    let out = unsafe { &mut *out };
+    let mut vec: Vec<MfskMessage> = Vec::new();
+    for d in q65_scan_for(submode, &audio) {
+        push_q65_decode(&d, &mut vec);
+    }
+    finalise(vec, out);
+    MfskStatus::Ok
+}
+
+/// AP-biased Q65 scan-and-decode. Up to four optional hints
+/// (`call1`, `call2`, `grid`, `report`) — each may be NULL when
+/// unknown. Lifts the effective decode threshold by ~2 dB when the
+/// supplied hints are correct.
+///
+/// # Safety
+///
+/// As [`mfsk_q65_decode`]. The four hint strings, when non-NULL,
+/// must be NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_decode_with_ap(
+    submode: MfskQ65SubMode,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    ap_call1: *const c_char,
+    ap_call2: *const c_char,
+    ap_grid: *const c_char,
+    ap_report: *const c_char,
+    out: *mut MfskMessageList,
+) -> MfskStatus {
+    let audio = match unsafe {
+        q65_prepare_audio(
+            samples,
+            n_samples,
+            sample_rate,
+            out,
+            "mfsk_q65_decode_with_ap",
+        )
+    } {
+        Ok(a) => a,
+        Err(s) => return s,
+    };
+    let out = unsafe { &mut *out };
+
+    // Build the AP hint from optional NUL-terminated strings.
+    let mut hint = mfsk_core::msg::ApHint::new();
+    let mut maybe_attach = |p: *const c_char,
+                            f: fn(mfsk_core::msg::ApHint, &str) -> mfsk_core::msg::ApHint|
+     -> Result<(), MfskStatus> {
+        if p.is_null() {
+            return Ok(());
+        }
+        let s = cstr_to_str(p)?;
+        if !s.is_empty() {
+            // Builder consumes by value, so we replace via temporary.
+            hint = f(std::mem::take(&mut hint), s);
+        }
+        Ok(())
+    };
+    if let Err(st) = maybe_attach(ap_call1, |h, s| h.with_call1(s)) {
+        return st;
+    }
+    if let Err(st) = maybe_attach(ap_call2, |h, s| h.with_call2(s)) {
+        return st;
+    }
+    if let Err(st) = maybe_attach(ap_grid, |h, s| h.with_grid(s)) {
+        return st;
+    }
+    if let Err(st) = maybe_attach(ap_report, |h, s| h.with_report(s)) {
+        return st;
+    }
+
+    let mut vec: Vec<MfskMessage> = Vec::new();
+    let decodes = if hint.has_info() {
+        q65_scan_with_ap_for(submode, &audio, &hint)
+    } else {
+        // Empty hint → fall through to the plain path so callers
+        // don't need to special-case it.
+        q65_scan_for(submode, &audio)
+    };
+    for d in decodes {
+        push_q65_decode(&d, &mut vec);
+    }
+    finalise(vec, out);
+    MfskStatus::Ok
+}
+
+/// Fast-fading Q65 scan-and-decode. Recovers the 5–8 dB the AWGN
+/// Bessel front end loses on Doppler-spread channels — required for
+/// microwave EME at 5.7 GHz / 10 GHz / 24 GHz. `b90_ts` is the
+/// spread bandwidth × symbol period (typical: 0.05 = near-AWGN,
+/// 1.0 = moderate, 5.0+ = severe). `model` chooses the calibration
+/// shape.
+///
+/// # Safety
+///
+/// As [`mfsk_q65_decode`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_decode_fading(
+    submode: MfskQ65SubMode,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    b90_ts: f32,
+    fading_model: MfskQ65FadingModel,
+    out: *mut MfskMessageList,
+) -> MfskStatus {
+    let audio = match unsafe {
+        q65_prepare_audio(
+            samples,
+            n_samples,
+            sample_rate,
+            out,
+            "mfsk_q65_decode_fading",
+        )
+    } {
+        Ok(a) => a,
+        Err(s) => return s,
+    };
+    let out = unsafe { &mut *out };
+    let model = match fading_model {
+        MfskQ65FadingModel::Gaussian => mfsk_core::fec::qra::FadingModel::Gaussian,
+        MfskQ65FadingModel::Lorentzian => mfsk_core::fec::qra::FadingModel::Lorentzian,
+    };
+    let mut vec: Vec<MfskMessage> = Vec::new();
+    for d in q65_scan_fading_for(submode, &audio, b90_ts, model) {
+        push_q65_decode(&d, &mut vec);
+    }
+    finalise(vec, out);
+    MfskStatus::Ok
+}
+
+/// AP-list (template-matching) Q65 scan-and-decode. Builds the
+/// standard 206-codeword candidate set internally from
+/// `(my_call, his_call, his_grid)` and picks the matching exchange,
+/// if any. `his_grid` may be NULL or empty to skip the two
+/// grid-bearing templates. Yields ~3 dB threshold gain over plain
+/// BP when the truth is in the candidate set.
+///
+/// # Safety
+///
+/// As [`mfsk_q65_decode`]. `my_call` and `his_call` must be
+/// NUL-terminated UTF-8 strings; `his_grid` may be NULL or
+/// NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_q65_decode_with_ap_list(
+    submode: MfskQ65SubMode,
+    samples: *const f32,
+    n_samples: usize,
+    sample_rate: u32,
+    my_call: *const c_char,
+    his_call: *const c_char,
+    his_grid: *const c_char,
+    out: *mut MfskMessageList,
+) -> MfskStatus {
+    let audio = match unsafe {
+        q65_prepare_audio(
+            samples,
+            n_samples,
+            sample_rate,
+            out,
+            "mfsk_q65_decode_with_ap_list",
+        )
+    } {
+        Ok(a) => a,
+        Err(s) => return s,
+    };
+    let out = unsafe { &mut *out };
+    let Ok(mc) = cstr_to_str(my_call) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Ok(hc) = cstr_to_str(his_call) else {
+        return MfskStatus::InvalidArg;
+    };
+    let hg = if his_grid.is_null() {
+        ""
+    } else {
+        match cstr_to_str(his_grid) {
+            Ok(s) => s,
+            Err(st) => return st,
+        }
+    };
+
+    let candidates = mfsk_core::q65::standard_qso_codewords(mc, hc, hg);
+    if candidates.is_empty() {
+        set_error("mfsk_q65_decode_with_ap_list: candidate set empty (bad calls?)");
+        finalise(Vec::new(), out);
+        return MfskStatus::DecodeFailed;
+    }
+
+    let mut vec: Vec<MfskMessage> = Vec::new();
+    for d in q65_scan_with_ap_list_for(submode, &audio, &candidates) {
+        push_q65_decode(&d, &mut vec);
+    }
+    finalise(vec, out);
     MfskStatus::Ok
 }
 

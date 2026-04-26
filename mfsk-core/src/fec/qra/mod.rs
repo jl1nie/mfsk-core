@@ -19,6 +19,10 @@
 //! - [`npfwht`] — non-binary Walsh-Hadamard transform of size M.
 //! - [`code`]   — generic [`QraCode`] encoder + BP decoder, parameterised
 //!   on a code description ([`QraCodeDesc`]).
+//! - [`fast_fading`] / [`fading_tables`] — Doppler-spread-aware
+//!   intrinsic-probability metric (Gaussian + Lorentzian models) that
+//!   replaces the AWGN Bessel front end on heavily faded channels
+//!   such as microwave EME.
 //! - Concrete codes live in their own modules outside this one
 //!   ([`super::qra15_65_64`] for `qra15_65_64_irr_e23`, the Q65 code).
 //!
@@ -28,9 +32,12 @@
 //! integration in WSJT-X `lib/qra/q65/`.
 
 pub mod code;
+pub mod fading_tables;
+pub mod fast_fading;
 pub mod npfwht;
 pub mod pdmath;
 pub mod q65;
 
 pub use code::{DecoderScratch, ExtrinsicResult, QraCode, QraCodeType};
-pub use q65::{Q65Codec, Q65DecodeError};
+pub use fast_fading::{FadingModel, FastFadingState, esnodb_fast_fading, intrinsics_fast_fading};
+pub use q65::{Q65_LLH_THRESHOLD, Q65Codec, Q65DecodeError};
