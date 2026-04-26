@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-04-26
+
+Patch release with no code changes — README hot-fix only.
+
+The 0.2.0 README's `docs/LIBRARY.{md,ja.md}` links resolved to
+`github.com/jl1nie/mfsk-core/blob/HEAD/mfsk-core/docs/LIBRARY.*`
+when crates.io rendered the README, which is 404 because `docs/`
+lives at the workspace root (the crate's
+`readme = "../README.md"` pulls the workspace README in). Switched
+both links to absolute `https://github.com/.../blob/main/docs/...`
+URLs so they resolve from both crates.io and direct GitHub viewing.
+
 ## 0.2.0 — 2026-04-26
 
 The Q65 wave: complete the WSJT-X Q65 family (terrestrial Q65-30A
