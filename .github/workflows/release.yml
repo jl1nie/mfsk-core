@@ -44,10 +44,14 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to crates.io
+      - name: Publish to crates.io (--features full)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p mfsk-core
+        # Mirrors ci.yml's publish-dry-run: use --features full so the
+        # in-package verification compile exercises every feature-gated
+        # module (FT8/FT4/FST4/WSPR/JT9/JT65/Q65). Source is the same
+        # either way; this just makes the verification more stringent.
+        run: cargo publish -p mfsk-core --features full
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
