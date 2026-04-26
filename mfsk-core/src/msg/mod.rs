@@ -88,4 +88,15 @@ impl MessageCodec for Wsjt77Message {
         }
         wsjt77::unpack77(&buf)
     }
+
+    /// Wsjt77 reserves info bits 77..91 for a CRC-14. The FEC layer
+    /// passes a `91`-bit slice through this verifier; we delegate to
+    /// `crate::fec::ldpc::check_crc14`. Pipelines built on
+    /// `Ldpc174_91` (FT8 / FT4 / FST4) thread
+    /// `Wsjt77Message::verify_info` into [`FecOpts::verify_info`] so
+    /// CRC-failed BP candidates are rejected before reaching the
+    /// caller.
+    fn verify_info(info: &[u8]) -> bool {
+        crate::fec::ldpc::check_crc14(info)
+    }
 }

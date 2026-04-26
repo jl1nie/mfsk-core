@@ -555,8 +555,12 @@ pub struct OsdResult {
 /// - ndeep=3: + order-3 (121,667 total)
 ///
 /// Higher order recovers weaker signals at the cost of runtime.
-pub fn osd_decode_deep(llr: &[f32; LDPC_N], ndeep: u8) -> Option<OsdResult> {
-    osd_decode_impl(llr, ndeep, LDPC_K)
+pub fn osd_decode_deep(
+    llr: &[f32; LDPC_N],
+    ndeep: u8,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
+    osd_decode_impl(llr, ndeep, LDPC_K, verify)
 }
 
 /// OSD order-4 decode with Top-K LLR pruning.
@@ -569,8 +573,12 @@ pub fn osd_decode_deep(llr: &[f32; LDPC_N], ndeep: u8) -> Option<OsdResult> {
 /// that order-3 misses.
 ///
 /// Recommended k4_limit: 30 (empirically chosen).
-pub fn osd_decode_deep4(llr: &[f32; LDPC_N], k4_limit: usize) -> Option<OsdResult> {
-    osd_decode_impl(llr, 4, k4_limit)
+pub fn osd_decode_deep4(
+    llr: &[f32; LDPC_N],
+    k4_limit: usize,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
+    osd_decode_impl(llr, 4, k4_limit, verify)
 }
 
 /// OSD order-2 decode (default).
@@ -581,12 +589,23 @@ pub fn osd_decode_deep4(llr: &[f32; LDPC_N], k4_limit: usize) -> Option<OsdResul
 /// single-bit flips and all C(91,2) = 4,095 two-bit flips.
 /// Returns the minimum-weighted CRC-passing codeword, or `None` if none passes.
 pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
-    osd_decode_impl(llr, 2, LDPC_K)
+    // Default OSD path keeps the original Wsjt77/CRC-14 behaviour
+    // when called without a verifier — JT8/FT4 callers that want a
+    // different verifier go through `osd_decode_deep` /
+    // `osd_decode_deep4` directly.
+    osd_decode_impl(llr, 2, LDPC_K, Some(check_crc14))
 }
 
 /// `k4_limit`: upper bound (exclusive) on bit indices used in the order-4
-/// extension.  For ndeep < 4 this parameter is ignored.
-fn osd_decode_impl(llr: &[f32; LDPC_N], ndeep: u8, k4_limit: usize) -> Option<OsdResult> {
+/// extension.  For ndeep < 4 this parameter is ignored. `verify` is
+/// the parity-converged candidate filter; pass `Some(check_crc14)` for
+/// Wsjt77 protocols and `None` to accept any parity-converged result.
+fn osd_decode_impl(
+    llr: &[f32; LDPC_N],
+    ndeep: u8,
+    k4_limit: usize,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
     // ── Step 1: sort bit indices by |LLR| descending ─────────────────────
     let mut perm = [0usize; LDPC_N];
     for i in 0..LDPC_N {
@@ -681,10 +700,16 @@ fn osd_decode_impl(llr: &[f32; LDPC_N], ndeep: u8, k4_limit: usize) -> Option<Os
         for col in 0..LDPC_N {
             c[perm[col]] = cp[col];
         }
-        // CRC check on first LDPC_K bits.
+        // Optional verifier on the first LDPC_K bits. With `None`,
+        // OSD accepts any parity-valid candidate (the FEC layer's
+        // job here is to find the maximum-likelihood codeword; the
+        // application is free to drop integrity-bearing semantics
+        // through `MessageCodec::verify_info`).
         let mut decoded = [0u8; LDPC_K];
         decoded.copy_from_slice(&c[..LDPC_K]);
-        if !check_crc14(&decoded) {
+        if let Some(f) = verify
+            && !f(&decoded)
+        {
             return None;
         }
         // Weighted Hamming distance.

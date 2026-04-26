@@ -142,6 +142,7 @@ fn why_does_neg16db_fail() {
             bp_max_iter: 30,
             osd_depth: 3,
             ap_mask: Some((&mask, &values)),
+            verify_info: Some(<<Ft4 as Protocol>::Msg as MessageCodec>::verify_info),
         };
         for (name, llr) in [
             ("a", &llr_set.llra),

@@ -150,6 +150,7 @@ pub fn process_candidate_ap<P: Protocol>(
                 bp_max_iter: 30,
                 osd_depth: 0,
                 ap_mask: None,
+                verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
             };
             if let Some(r) = fec.decode_soft(llr, &bp_opts)
                 && let Some(res) =
@@ -178,6 +179,7 @@ pub fn process_candidate_ap<P: Protocol>(
                         bp_max_iter: 30,
                         osd_depth: 0,
                         ap_mask: Some((&mask, &values)),
+                        verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
                     };
                     if let Some(r) = fec.decode_soft(llr, &ap_opts)
                         && r.hard_errors < max_errors
@@ -209,6 +211,9 @@ pub fn process_candidate_ap<P: Protocol>(
                                 bp_max_iter: 30,
                                 osd_depth: od,
                                 ap_mask: Some((&mask, &values)),
+                                verify_info: Some(
+                                    <P::Msg as crate::core::MessageCodec>::verify_info,
+                                ),
                             };
                             if let Some(r) = fec.decode_soft(llr, &osd_opts)
                                 && r.hard_errors < max_errors

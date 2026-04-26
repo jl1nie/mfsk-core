@@ -209,6 +209,16 @@ pub struct FecOpts<'a> {
     /// duration of this decode — typical usage builds a `Vec<u8>` from an
     /// `ApHint` and borrows into `FecOpts` for a single `decode_soft` call.
     pub ap_mask: Option<(&'a [u8], &'a [u8])>,
+    /// Optional integrity verifier called when the FEC reaches a
+    /// parity-converged candidate. Returning `false` rejects the
+    /// candidate and BP keeps iterating; returning `true` accepts.
+    /// `None` accepts unconditionally — appropriate for FEC users
+    /// whose message codec carries no inline integrity field.
+    ///
+    /// Typical use: pipeline code threads `<P::Msg as
+    /// MessageCodec>::verify_info` here so that, e.g., FT8/FT4/FST4
+    /// reject parity-only candidates whose CRC-14 doesn't pass.
+    pub verify_info: Option<fn(&[u8]) -> bool>,
 }
 
 impl<'a> Default for FecOpts<'a> {
@@ -217,6 +227,7 @@ impl<'a> Default for FecOpts<'a> {
             bp_max_iter: 30,
             osd_depth: 0,
             ap_mask: None,
+            verify_info: None,
         }
     }
 }
@@ -287,6 +298,25 @@ pub trait MessageCodec: Default + 'static {
     /// unpacked representation. `ctx` carries side information such as the
     /// callsign-hash table.
     fn unpack(&self, payload: &[u8], ctx: &DecodeContext) -> Option<Self::Unpacked>;
+
+    /// Verify the integrity of post-FEC info bits. The FEC layer
+    /// invokes this when a candidate codeword satisfies parity:
+    /// returning `true` accepts the codeword; returning `false`
+    /// causes the FEC to keep iterating.
+    ///
+    /// Default: accept unconditionally — appropriate for codecs whose
+    /// message format carries no inline integrity field (e.g.
+    /// [`crate::msg::PacketBytesMessage`] in `uvpacket`).
+    ///
+    /// CRC-bearing codecs override this. For example,
+    /// [`crate::msg::Wsjt77Message`] verifies the CRC-14 stored in
+    /// info bits 77..91. The associated-function (no `&self`) shape
+    /// keeps the verifier compatible with the function-pointer field
+    /// on [`FecOpts::verify_info`].
+    fn verify_info(info: &[u8]) -> bool {
+        let _ = info;
+        true
+    }
 }
 
 /// Generic input to `MessageCodec::pack` — protocol-specific codecs accept

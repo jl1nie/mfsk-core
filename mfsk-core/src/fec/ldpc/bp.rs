@@ -38,7 +38,14 @@ pub fn crc14(data: &[u8]) -> u16 {
 /// Verify CRC-14 for a 91-bit decoded word (77 msg + 14 CRC).
 /// Packs bits into 12 bytes (big-endian, MSB first), zeros the CRC field,
 /// computes CRC-14, then compares with the stored CRC bits.
-pub fn check_crc14(decoded: &[u8; LDPC_K]) -> bool {
+///
+/// Accepts any `&[u8]` slice; lengths other than [`LDPC_K`] (= 91) are
+/// rejected so the function is suitable as a `MessageCodec::verify_info`
+/// implementation passed through `FecOpts::verify_info`.
+pub fn check_crc14(decoded: &[u8]) -> bool {
+    if decoded.len() != LDPC_K {
+        return false;
+    }
     let mut bytes = [0u8; 12];
     for (i, &bit) in decoded[..77].iter().enumerate() {
         let byte_idx = i / 8;
@@ -70,15 +77,27 @@ pub struct BpResult {
 
 /// Log-domain Belief-Propagation decode.
 ///
-/// `llr[i]` follows the convention: positive = bit likely 1, negative = bit likely 0.
-/// `ap_mask`: optional slice where `true` means the bit LLR is trusted as-is
-///   (a-priori known bit — used for AP-assisted decoding passes in WSJT-X).
+/// `llr[i]` follows the convention: positive = bit likely 1, negative
+/// = bit likely 0. `ap_mask`: optional slice where `true` means the
+/// bit LLR is trusted as-is (a-priori known bit — used for AP-assisted
+/// decoding passes in WSJT-X).
 ///
-/// Returns `Some(BpResult)` on success (CRC passes), `None` on failure.
+/// `verify` is an optional integrity check applied to each parity-
+/// converged candidate. When `Some`, BP keeps iterating past a
+/// parity-only convergence whose verification fails (mirroring how
+/// CRC-aware codecs behave under noise that leaves multiple valid
+/// codewords near the LLR estimate). When `None`, BP returns on first
+/// parity convergence — the right behaviour for codecs whose message
+/// codec carries no internal integrity field (e.g.
+/// [`crate::msg::PacketBytesMessage`] in `uvpacket`).
+///
+/// Returns `Some(BpResult)` once parity (and any verifier) accepts a
+/// candidate, `None` if the iteration limit is exhausted first.
 pub fn bp_decode(
     llr: &[f32; LDPC_N],
     ap_mask: Option<&[bool; LDPC_N]>,
     max_iter: u32,
+    verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<BpResult> {
     let mut tov = [[0f32; NCW]; LDPC_N];
     let mut toc = [[0f32; 7]; LDPC_M];
@@ -122,7 +141,14 @@ pub fn bp_decode(
         if ncheck == 0 {
             let mut decoded = [0u8; LDPC_K];
             decoded.copy_from_slice(&cw[..LDPC_K]);
-            if check_crc14(&decoded) {
+            // No verifier → accept any parity-converged candidate.
+            // With a verifier (e.g. CRC-14 for Wsjt77 protocols) →
+            // accept only when the verifier returns true.
+            let accept = match verify {
+                Some(f) => f(&decoded),
+                None => true,
+            };
+            if accept {
                 let hard_errors = cw
                     .iter()
                     .zip(llr.iter())
@@ -195,7 +221,7 @@ mod tests {
     #[test]
     fn decode_perfect_llr_all_zeros() {
         let llr = [10.0f32; 174];
-        let _result = bp_decode(&llr, None, 30);
+        let _result = bp_decode(&llr, None, 30, None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use super::{
     downsample::{build_fft_cache, downsample},
     equalizer,
     ldpc::{
-        bp::bp_decode,
+        bp::{bp_decode, check_crc14},
         osd::{osd_decode, osd_decode_deep, osd_decode_deep4},
     },
     llr::{compute_llr, compute_snr_db, symbol_spectra, sync_quality},
@@ -404,7 +404,7 @@ fn process_candidate(
 
         // BP decode (no AP)
         for &(llr, pass_id) in llr_variants {
-            if let Some(bp) = bp_decode(llr, None, BP_MAX_ITER) {
+            if let Some(bp) = bp_decode(llr, None, BP_MAX_ITER, Some(check_crc14)) {
                 let itone = message_to_tones(&bp.message77);
                 let snr_db = compute_snr_db(cs, &itone);
                 return Some(DecodeResult {
@@ -429,7 +429,7 @@ fn process_candidate(
                 let osd_depth: u8 = if nsync >= 18 { 3 } else { 2 };
                 for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
                     let osd_result = if osd_depth == 3 {
-                        osd_decode_deep(llr_osd, 3)
+                        osd_decode_deep(llr_osd, 3, Some(check_crc14))
                     } else {
                         osd_decode(llr_osd)
                     };
@@ -456,7 +456,7 @@ fn process_candidate(
                 // k4_limit=30 → C(30,4)=27,405 extra candidates at depth-3 cost.
                 if nsync >= 18 {
                     for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
-                        if let Some(osd4) = osd_decode_deep4(llr_osd, 30) {
+                        if let Some(osd4) = osd_decode_deep4(llr_osd, 30, Some(check_crc14)) {
                             let max_errors = strictness.osd_max_errors(4);
                             if osd4.hard_errors >= max_errors {
                                 continue;
@@ -566,14 +566,15 @@ fn process_candidate(
                         };
 
                     // AP + BP
-                    if let Some(bp) = bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER)
+                    if let Some(bp) =
+                        bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER, Some(check_crc14))
                         && let Some(r) = check_result(bp.message77, bp.hard_errors)
                     {
                         return Some(r);
                     }
                     // AP + OSD fallback
                     if depth == DecodeDepth::BpAllOsd
-                        && let Some(osd) = osd_decode_deep(&llr_ap, 2)
+                        && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
                         && let Some(r) = check_result(osd.message77, osd.hard_errors)
                     {
                         return Some(r);

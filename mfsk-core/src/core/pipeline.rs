@@ -14,7 +14,7 @@ use super::equalize::{EqMode, equalize_local};
 use super::llr::{compute_llr, compute_snr_db, symbol_spectra, sync_quality};
 use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
 use super::tx::codeword_to_itone;
-use super::{FecCodec, FecOpts, Protocol};
+use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 use num_complex::Complex;
 
 /// FFT cache for the initial large forward transform; reusable across passes.
@@ -150,6 +150,12 @@ pub fn process_candidate_basic<P: Protocol>(
             bp_max_iter: 30,
             osd_depth: 0,
             ap_mask: None,
+            // Thread the protocol's message-codec verifier so CRC-bearing
+            // protocols (FT8/FT4/FST4 → Wsjt77 → CRC-14) keep their
+            // existing reject-on-CRC-fail behaviour. uvpacket-style
+            // codecs that override `verify_info = |_| true` accept any
+            // parity-converged candidate.
+            verify_info: Some(<P::Msg as MessageCodec>::verify_info),
         };
 
         for (llr, pass_id) in &variants {
@@ -181,6 +187,7 @@ pub fn process_candidate_basic<P: Protocol>(
                     bp_max_iter: 30,
                     osd_depth: osd_depth as u32,
                     ap_mask: None,
+                    verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                 };
                 for (llr, _) in &variants {
                     if let Some(r) = fec.decode_soft(llr, &osd_opts) {
@@ -208,6 +215,7 @@ pub fn process_candidate_basic<P: Protocol>(
                         bp_max_iter: 30,
                         osd_depth: 4,
                         ap_mask: None,
+                        verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                     };
                     for (llr, _) in &variants {
                         if let Some(r) = fec.decode_soft(llr, &osd4_opts) {

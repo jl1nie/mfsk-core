@@ -84,7 +84,7 @@ impl FecCodec for Ldpc174_91 {
             None => None,
         };
 
-        if let Some(r) = bp_decode(&llr_arr, ap_mask, opts.bp_max_iter) {
+        if let Some(r) = bp_decode(&llr_arr, ap_mask, opts.bp_max_iter, opts.verify_info) {
             let mut info = vec![0u8; LDPC_K];
             info[..77].copy_from_slice(&r.message77);
             info[77..].copy_from_slice(&r.codeword[77..LDPC_K]);
@@ -100,9 +100,9 @@ impl FecCodec for Ldpc174_91 {
         }
 
         let r = if opts.osd_depth >= 4 {
-            osd_decode_deep4(&llr_arr, 30)?
+            osd_decode_deep4(&llr_arr, 30, opts.verify_info)?
         } else {
-            osd_decode_deep(&llr_arr, opts.osd_depth.min(3) as u8)?
+            osd_decode_deep(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info)?
         };
         let mut info = vec![0u8; LDPC_K];
         info[..77].copy_from_slice(&r.message77);
