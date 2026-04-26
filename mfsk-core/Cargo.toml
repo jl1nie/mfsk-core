@@ -1,12 +1,12 @@
 [package]
 name        = "mfsk-core"
-version     = "0.1.0"
+version     = "0.2.0"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
-description = "Pure-Rust library for WSJT-family digital amateur-radio modes (FT8/FT4/FST4/WSPR/JT9/JT65): protocol traits, DSP, FEC codecs, message codecs, decoders and synthesisers — unified behind a zero-cost generic abstraction."
+description = "Pure-Rust library for WSJT-family digital amateur-radio modes (FT8/FT4/FST4/WSPR/JT9/JT65/Q65): protocol traits, DSP, FEC codecs, message codecs, decoders and synthesisers — unified behind a zero-cost generic abstraction."
 repository  = "https://github.com/jl1nie/mfsk-core"
 readme      = "../README.md"
-keywords    = ["wsjt", "ft8", "amateur-radio", "dsp", "ldpc"]
+keywords    = ["wsjt", "ft8", "q65", "amateur-radio", "dsp"]
 categories  = ["science", "encoding", "multimedia::audio"]
 
 [features]

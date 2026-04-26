@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.2.0 — 2026-04-26
+
+The Q65 wave: complete the WSJT-X Q65 family (terrestrial Q65-30A
+plus EME Q65-60A‥E), expose all four Q65 decoder strategies through
+the C ABI, and validate the trait surface end-to-end with a generic
+checker plus a runtime registry. ~330 tests across the workspace
+(up from ~230 at 0.1.0).
+
+### Added — Q65 weak-signal decoder family complete
+
+- `fec::qra::fast_fading` + `fading_tables` modules port
+  `q65_intrinsics_fastfading`, `q65_esnodb_fastfading`,
+  `fadengauss.c` and `fadenlorentz.c` from WSJT-X. Decodes the
+  10 GHz EME reference recording (60D, VK7MO ↔ K6QPV) where the
+  AWGN Bessel front end fails.
+- `q65::ap_list::standard_qso_codewords` + `Q65Codec::decode_with_codeword_list`
+  port `q65_decode_fullaplist` and `q65_set_list.f90` (the WSJT-X
+  206-codeword "full AP list"). At SNR −25 dB (1 dB below the
+  published Q65-30A threshold), AP-list decodes 6/6 frames where
+  plain BP fails 0/6.
+- New entry-point families in `q65::rx`, generic over the sub-mode
+  ZST: `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` and
+  `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`.
+
+### Added — Q65 reaches C/C++/Kotlin via `mfsk-ffi`
+
+- New `MfskProtocol::Q65a30 = 6` enum variant routes Q65-30A through
+  the generic-handle path (`mfsk_decoder_new` + `mfsk_decode_f32`).
+- Dedicated `mfsk_q65_decode{,_with_ap,_fading,_with_ap_list}`
+  function family takes a `MfskQ65SubMode` parameter
+  (`A30 / A60 / B60 / C60 / D60 / E60`) and reaches every sub-mode
+  with every decoder strategy. New `MfskQ65FadingModel` enum
+  (`Gaussian / Lorentzian`) for the fast-fading entry point.
+- `mfsk_encode_q65` synthesises any sub-mode from
+  `(call1, call2, grid_or_report)`.
+- `mfsk-ffi` remains `publish = false` — consumers clone the
+  workspace and `cargo build -p mfsk-ffi`.
+
+### Added — Trait surface verified end-to-end
+
+- New `mfsk_core::PROTOCOLS` static + `ProtocolMeta` struct +
+  `by_id` / `by_name` / `for_protocol_id` lookup helpers
+  (`mfsk-core/src/registry.rs`). Lets UI layers and FFI bridges
+  enumerate the wired protocols at runtime; all six Q65 sub-modes
+  appear as distinct entries (different NSPS / tone spacing) sharing
+  `ProtocolId::Q65`.
+- New `tests/protocol_invariants.rs` runs a single generic
+  `assert_protocol_invariants::<P: Protocol>` against every wired
+  ZST (FT8, FT4, FST4, WSPR, JT9, JT65, plus all six Q65 sub-modes
+  — 11 in total) checking 17 trait-level invariants per ZST.
+  Cross-checks every `PROTOCOLS` entry against its ZST through a
+  separate code path so registry typos are caught.
+
+### Changed
+
+- `ModulationParams::GRAY_MAP` doc contract loosened from
+  `len() == NTONES` to `len() ∈ [2^BITS_PER_SYMBOL, NTONES]` to
+  match the actual range across protocols (JT9 trims its map to
+  the 8 data tones; JT65 / Q65 extend with identity over the sync
+  slots). Surfaced by the new invariants test.
+- README + `docs/LIBRARY.{md,ja.md}` extended with new sections on
+  Q65 decoder-strategy selection (when to use AWGN vs AP vs
+  fast-fading vs AP-list) and on the runtime registry / invariants
+  test.
+
+### CI
+
+- Heavy synthetic SNR / AP / fast-fading sweeps gated with
+  `#[ignore = "slow: ..."]`; local `cargo test` skips them in
+  debug mode (10+ min → seconds), CI runs them in release mode via
+  `--include-ignored` (~10 s total).
+
 ## 0.1.0 — 2026-04-19
 
 Initial release. Consolidates nine previously-separate workspace

@@ -176,5 +176,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Dry run
-        run: cargo publish -p mfsk-core --dry-run
+      - name: Dry run (--features full)
+        # Run the dry-run with every protocol feature enabled so a
+        # feature-gated module that fails to compile in isolation
+        # still trips this gate before the real publish step.
+        run: cargo publish -p mfsk-core --features full --dry-run
