@@ -20,7 +20,7 @@
 //! ZST, add one line to the [`PROTOCOLS`] slice using the
 //! `protocol_meta!` macro:
 //!
-//! ```ignore
+//! ```text
 //! protocol_meta!("Pretty-Name", MyProtocolZst),
 //! ```
 //!
@@ -36,7 +36,14 @@
 //! protocol tag is family-level. [`by_id`] returns *all* entries
 //! sharing a given id, so a Q65 lookup yields six metadata records.
 
-use crate::{FecCodec, FrameLayout, MessageCodec, ModulationParams, Protocol, ProtocolId};
+// These imports look unused when *every* protocol feature is off
+// (the `protocol_meta!` invocations that consume them all gate on a
+// feature). Suppress the lint so `--no-default-features` builds stay
+// clean under `-D warnings`.
+#[allow(unused_imports)]
+use crate::{FecCodec, FrameLayout, MessageCodec, ModulationParams, Protocol};
+
+use crate::ProtocolId;
 
 /// Compile-time metadata describing one wired protocol.
 ///
@@ -90,6 +97,8 @@ pub struct ProtocolMeta {
 /// All fields are read out of the trait constants, so any
 /// per-protocol divergence between the macro invocation and the
 /// type's actual constants is impossible by construction.
+#[allow(unused_macros)] // dead under --no-default-features when every
+// protocol-feature gate evaluates to false.
 macro_rules! protocol_meta {
     ($name:literal, $ty:ty) => {
         ProtocolMeta {
