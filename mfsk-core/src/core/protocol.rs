@@ -38,6 +38,10 @@ pub enum ProtocolId {
     /// Multiple T/R-period × tone-spacing variants share this tag at the
     /// FFI level; the protocol-layer ZST disambiguates.
     Q65 = 7,
+    /// UvPacket — 4-FSK GFSK packet protocol for AFSK-on-SSB at U/VHF
+    /// (multipath fading channels). Variable-byte payload, no UTC slot.
+    /// Multiple baud-rate variants share this tag.
+    UvPacket = 8,
 }
 
 /// Baseband modulation parameters (tones, symbol rate, Gray mapping, Gaussian

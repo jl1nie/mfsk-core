@@ -552,7 +552,8 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
             | ProtocolId::Jt65
             | ProtocolId::Jt9
             | ProtocolId::Wspr
-            | ProtocolId::Q65 => {}
+            | ProtocolId::Q65
+            | ProtocolId::UvPacket => {}
         }
         let _ = name;
     }
