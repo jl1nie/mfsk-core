@@ -62,7 +62,15 @@ pub trait ModulationParams: Copy + Default + 'static {
     const TONE_SPACING_HZ: f32;
 
     /// Gray-code map: `GRAY_MAP[tone_index]` returns the NATURAL-bit pattern
-    /// for that tone. Length must equal `NTONES`.
+    /// for that tone. The map covers at least the data alphabet
+    /// (`2^BITS_PER_SYMBOL` entries) and at most the full tone set
+    /// (`NTONES` entries). Protocols whose sync tones are part of
+    /// the data alphabet (FT8 / FT4 / FST4 / WSPR) have
+    /// `len() == NTONES == 2^BITS_PER_SYMBOL`; protocols that
+    /// reserve additional sync-only tones (JT9, JT65, Q65) either
+    /// trim the map to the data alphabet (JT9: 8 entries for 9
+    /// tones) or extend it with identity over the sync slots
+    /// (JT65 / Q65). Pinned by `tests/protocol_invariants.rs`.
     const GRAY_MAP: &'static [u8];
 
     // ── GFSK shaping ────────────────────────────────────────────────────

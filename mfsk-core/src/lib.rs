@@ -246,11 +246,14 @@ pub mod jt65;
 #[cfg(feature = "q65")]
 pub mod q65;
 
+pub mod registry;
+
 // Flatten commonly-used types to the crate root.
 pub use crate::core::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
     ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
 };
+pub use crate::registry::{PROTOCOLS, ProtocolMeta, by_id, by_name, for_protocol_id};
 
 #[cfg(feature = "fst4")]
 pub use crate::fst4::Fst4s60;
