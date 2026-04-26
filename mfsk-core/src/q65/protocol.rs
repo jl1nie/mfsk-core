@@ -23,7 +23,7 @@
 //! | [`Q65e60`]   | 60 s  | 26.67 Hz     | extreme Doppler / wide spread   |
 //!
 //! Adding a new sub-mode is a one-line invocation of the
-//! [`q65_submode!`](q65_submode) macro.
+//! `q65_submode!` macro defined further down in this file.
 
 use crate::core::{
     FecCodec, FecOpts, FecResult, FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode,

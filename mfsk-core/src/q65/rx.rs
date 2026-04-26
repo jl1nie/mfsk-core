@@ -9,7 +9,7 @@
 //! 2. Skip the 22 sync slots; for the 63 data slots, snapshot the 64
 //!    data-tone bin energies (`base_bin + 1 ..= base_bin + 64`).
 //! 3. Convert energies → per-symbol probability distributions over
-//!    GF(64) via [`QraCode::mfsk_bessel_metric`].
+//!    GF(64) via [`crate::fec::qra::QraCode::mfsk_bessel_metric`].
 //! 4. Run [`Q65Codec::decode`] (BP + CRC verify) — recover the 13
 //!    info symbols.
 //! 5. Re-pack to 77 bits and unpack via the Wsjt77 message codec.

@@ -17,8 +17,9 @@
 //! - [`pdmath`] — probability-vector arithmetic (init, normalise,
 //!   pointwise multiply / divide, hard decision).
 //! - [`npfwht`] — non-binary Walsh-Hadamard transform of size M.
-//! - [`code`]   — generic [`QraCode`] encoder + BP decoder, parameterised
-//!   on a code description ([`QraCodeDesc`]).
+//! - [`code`]   — generic [`QraCode`] encoder + BP decoder, with the
+//!   code description (parity-check matrix, alphabet, dimensions)
+//!   carried inside the [`QraCode`] struct itself.
 //! - [`fast_fading`] / [`fading_tables`] — Doppler-spread-aware
 //!   intrinsic-probability metric (Gaussian + Lorentzian models) that
 //!   replaces the AWGN Bessel front end on heavily faded channels

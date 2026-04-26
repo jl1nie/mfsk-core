@@ -271,7 +271,8 @@ impl QraCode {
     /// distributions — pass them together with `pix` to
     /// [`Self::map_decode`] for the final hard decision.
     ///
-    /// `scratch` must come from [`DecoderScratch::for_code(self)`].
+    /// `scratch` must come from [`DecoderScratch::for_code`] applied
+    /// to the same code instance.
     pub fn extrinsic(
         &self,
         pex: &mut [f32],
