@@ -94,6 +94,7 @@ fn hit(results: &[DecodeResult], truth: &[u8; 77]) -> bool {
 }
 
 #[test]
+#[ignore = "slow: 8 SNR × 10 seeds; minutes in debug, seconds in release. CI runs via --include-ignored."]
 fn ft4_snr_sweep_basic_vs_ap() {
     let msg = pack_cq("JA1ABC", "PM95");
     let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");

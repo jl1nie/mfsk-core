@@ -28,8 +28,8 @@ jobs:
       # commit's push, but a tag push can arrive separately (e.g.
       # created from the web UI). Cheap insurance against shipping
       # broken code.
-      - name: Verify tests pass
-        run: cargo test -p mfsk-core --features full --release
+      - name: Verify tests pass (including slow sweeps)
+        run: cargo test -p mfsk-core --features full --release -- --include-ignored
 
       # The tag version must match Cargo.toml's version field. Fail
       # fast if someone tags `v0.2.0` while Cargo.toml still says
@@ -54,7 +54,7 @@ jobs:
         with:
           generate_release_notes: true
           body: |
-            Published to crates.io as [`mfsk-core v${{ github.ref_name }}`](https://crates.io/crates/mfsk-core).
+            Published to crates.io as [`mfsk-core ${{ github.ref_name }}`](https://crates.io/crates/mfsk-core).
 
             Release notes are auto-generated from merged PRs; see the crate's
             [CHANGELOG.md](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md)

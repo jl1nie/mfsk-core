@@ -55,8 +55,13 @@ jobs:
       - name: Build (full)
         run: cargo build -p mfsk-core --features full --release
 
-      - name: Test (full)
-        run: cargo test -p mfsk-core --features full --release
+      # `--include-ignored` makes the heavy synthetic SNR / AP / fast-
+      # fading sweeps (marked `#[ignore = "slow: ..."]`) and the
+      # diagnostic perf tests run as part of CI. They're skipped by
+      # default for local `cargo test` because debug-mode runs take
+      # 10+ minutes; in release CI mode they finish in a few minutes.
+      - name: Test (full, including slow sweeps)
+        run: cargo test -p mfsk-core --features full --release -- --include-ignored
 
       - name: Test (FST4 gated roundtrip)
         env:

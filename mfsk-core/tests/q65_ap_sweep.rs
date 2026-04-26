@@ -90,6 +90,7 @@ fn hit(decodes: &[Q65Decode], expected: &str) -> bool {
 }
 
 #[test]
+#[ignore = "slow: SNR × seed sweep; minutes in debug, tens of seconds in release. CI runs via --include-ignored."]
 fn q65_30a_ap_sweep_call1_call2() {
     let expected = "CQ K1ABC FN42";
     let freq = 1500.0;
