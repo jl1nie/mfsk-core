@@ -12,6 +12,34 @@
 //! positions — so `ApHint` lives in the protocol-agnostic message layer.
 
 use super::wsjt77::{pack_grid4, pack28};
+use crate::core::MessageCodec;
+
+/// Marker trait for `MessageCodec`s whose information-bit layout matches the
+/// 77-bit Wsjt77 family field positions (call1 at 0..28, call2 at 29..57,
+/// grid at 58..73, message-type i3 at 74..76). Used to gate the
+/// callsign/grid-based [`ApHint`] AP path to compatible protocols.
+///
+/// Implementing this trait is an assertion that the codec's bit layout is
+/// byte-for-byte equivalent to [`crate::msg::Wsjt77Message`] for the first 77
+/// bits — the AP module reads / writes those positions directly. Codecs with
+/// different layouts (e.g. [`crate::msg::PacketBytesMessage`]'s 4-bit length
+/// field at bits 0..3) must NOT implement this trait; they need their own AP
+/// design.
+///
+/// Sealed: only the `mfsk-core` crate may implement.
+pub trait WsjtApCompatible: MessageCodec + sealed::Sealed {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+impl sealed::Sealed for super::Wsjt77Message {}
+impl WsjtApCompatible for super::Wsjt77Message {}
+
+#[cfg(feature = "q65")]
+impl sealed::Sealed for super::Q65Message {}
+#[cfg(feature = "q65")]
+impl WsjtApCompatible for super::Q65Message {}
 
 /// A Priori information to bias decoding.
 #[derive(Debug, Clone, Default)]

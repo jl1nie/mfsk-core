@@ -351,7 +351,7 @@ fn push_ft4(r: &ft4::DecodeResult, vec: &mut Vec<MfskMessage>) {
     use mfsk_core::MessageCodec;
     let codec = mfsk_core::msg::Wsjt77Message;
     let ctx = mfsk_core::DecodeContext::default();
-    let text = codec.unpack(&r.message77, &ctx).unwrap_or_default();
+    let text = codec.unpack(r.message77(), &ctx).unwrap_or_default();
     vec.push(MfskMessage {
         freq_hz: r.freq_hz,
         dt_sec: r.dt_sec,
@@ -568,7 +568,7 @@ fn decode_i16_wsjt77(
             let codec = mfsk_core::msg::Wsjt77Message;
             let ctx = mfsk_core::DecodeContext::default();
             for r in fst4::decode_frame(audio, 100.0, 3_000.0, 0.8, 30) {
-                let text = codec.unpack(&r.message77, &ctx).unwrap_or_default();
+                let text = codec.unpack(r.message77(), &ctx).unwrap_or_default();
                 vec.push(MfskMessage {
                     freq_hz: r.freq_hz,
                     dt_sec: r.dt_sec,

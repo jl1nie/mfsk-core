@@ -1,9 +1,16 @@
-/// Ordered Statistics Decoding (OSD) fallback for LDPC (174, 91).
-///
-/// Ported from WSJT-X osd174_91.f90.  Uses ndeep=1: tests the order-0
-/// hard-decision candidate plus all 91 single-bit flips of the most
-/// reliable basis (MRB), returning the minimum-weight CRC-passing codeword.
+//! Ordered Statistics Decoding (OSD), generic over [`LdpcParams`].
+//!
+//! Originally ported from WSJT-X `osd174_91.f90`. Phase 0c-B
+//! generalised the algorithm so [`super::Ldpc174_91`] and
+//! [`super::Ldpc240_101`] share a single implementation; the matrix
+//! shape comes from `P` at compile time. The non-generic
+//! [`osd_decode`] / [`osd_decode_deep`] / [`osd_decode_deep4`]
+//! entry points pin `P = Ldpc174_91Params` for FT8's bespoke decode
+//! path which calls them directly via `super::ft8::ldpc`'s re-export
+//! façade.
+
 use super::bp::check_crc14;
+use super::params::{Ldpc174_91Params, LdpcParams};
 use super::{LDPC_K, LDPC_N};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -14,7 +21,11 @@ use super::{LDPC_K, LDPC_N};
 /// Full systematic generator G[row][col]:
 ///   col <  91 → G[row][col] = (row == col) as u8   (identity block)
 ///   col >= 91 → G[row][col] = GEN_PARITY[col-91][row]
-const GEN_PARITY: [[u8; 91]; 83] = [
+///
+/// Visible to the sibling [`super::params`] module so the generic
+/// [`super::params::LdpcParams::gen_parity`] accessor can return
+/// these bytes without copying.
+pub(super) const GEN_PARITY: [[u8; 91]; 83] = [
     [
         1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0,
         0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1,
@@ -518,20 +529,29 @@ const GEN_PARITY: [[u8; 91]; 83] = [
 // ────────────────────────────────────────────────────────────────────────────
 // Systematic encoder
 
+/// Generic systematic encode. `info.len() == P::K`, `cw.len() == P::N`.
+/// `cw[..K] = info`; `cw[K..N]` filled from [`LdpcParams::gen_parity`].
+pub fn ldpc_encode_generic<P: LdpcParams>(info: &[u8], cw: &mut [u8]) {
+    debug_assert_eq!(info.len(), P::K, "info length must equal P::K");
+    debug_assert_eq!(cw.len(), P::N, "cw length must equal P::N");
+    cw[..P::K].copy_from_slice(info);
+    for j in 0..P::M {
+        let mut p = 0u8;
+        for k in 0..P::K {
+            p ^= P::gen_parity(j, k) & info[k];
+        }
+        cw[P::K + j] = p;
+    }
+}
+
 /// Encode 91 information bits into a 174-bit LDPC(174,91) codeword.
 ///
-/// The code is systematic: `codeword[0..91] = info`, and the parity bits
-/// `codeword[91..174]` are computed from `GEN_PARITY`.
+/// Systematic: `codeword[0..91] = info`, parity bits `codeword[91..174]`
+/// from [`GEN_PARITY`]. Backward-compat wrapper around
+/// [`ldpc_encode_generic`] pinned to [`Ldpc174_91Params`].
 pub fn ldpc_encode(info: &[u8; LDPC_K]) -> [u8; LDPC_N] {
     let mut cw = [0u8; LDPC_N];
-    cw[..LDPC_K].copy_from_slice(info);
-    for (j, row) in GEN_PARITY.iter().enumerate() {
-        let mut p = 0u8;
-        for (k, &g) in row.iter().enumerate() {
-            p ^= g & info[k];
-        }
-        cw[LDPC_K + j] = p;
-    }
+    ldpc_encode_generic::<Ldpc174_91Params>(info.as_slice(), cw.as_mut_slice());
     cw
 }
 
@@ -539,16 +559,24 @@ pub fn ldpc_encode(info: &[u8; LDPC_K]) -> [u8; LDPC_N] {
 // Public API
 
 /// Output of a successful OSD decode.
+///
+/// `info` and `codeword` are heap-allocated so the struct can serve
+/// any [`LdpcParams`]'s K / N. `message77` exposes the leading 77
+/// bits as a fixed-size array for legacy Wsjt77-family callers.
 pub struct OsdResult {
-    /// Decoded 77-bit message payload (individual bits, 0 or 1).
+    /// Leading 77 info bits (Wsjt77 message field). Same content as
+    /// `info[..77]` — duplicated for callers that take fixed-size
+    /// references.
     pub message77: [u8; 77],
-    /// Full 174-bit codeword (hard decisions, original bit ordering).
-    pub codeword: [u8; LDPC_N],
+    /// Full systematic info (length `P::K`).
+    pub info: Vec<u8>,
+    /// Full codeword (length `P::N`, original bit ordering).
+    pub codeword: Vec<u8>,
     /// Number of hard errors (bits where hard decision disagrees with LLR sign).
     pub hard_errors: u32,
 }
 
-/// OSD with configurable order (ndeep).
+/// OSD with configurable order — pinned to LDPC(174, 91).
 ///
 /// - ndeep=1: order-0 + order-1 (92 candidates)
 /// - ndeep=2: + order-2 (4,187 total)
@@ -560,10 +588,10 @@ pub fn osd_decode_deep(
     ndeep: u8,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_impl(llr, ndeep, LDPC_K, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ndeep, LDPC_K, verify)
 }
 
-/// OSD order-4 decode with Top-K LLR pruning.
+/// OSD order-4 decode with Top-K LLR pruning — pinned to LDPC(174, 91).
 ///
 /// Runs the standard order-3 search (all 91 MRB bits) plus an order-4
 /// extension limited to the `k4_limit` *least* reliable MRB bits.
@@ -578,10 +606,11 @@ pub fn osd_decode_deep4(
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_impl(llr, 4, k4_limit, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 4, k4_limit, verify)
 }
 
-/// OSD order-2 decode (default).
+/// OSD order-2 decode (default) — pinned to LDPC(174, 91) with the
+/// legacy implicit `check_crc14` verifier.
 ///
 /// Sorts bits by |LLR| reliability, builds the permuted systematic generator,
 /// performs GF(2) Gaussian elimination to isolate the 91 most reliable basis
@@ -589,28 +618,32 @@ pub fn osd_decode_deep4(
 /// single-bit flips and all C(91,2) = 4,095 two-bit flips.
 /// Returns the minimum-weighted CRC-passing codeword, or `None` if none passes.
 pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
-    // Default OSD path keeps the original Wsjt77/CRC-14 behaviour
-    // when called without a verifier — JT8/FT4 callers that want a
-    // different verifier go through `osd_decode_deep` /
-    // `osd_decode_deep4` directly.
-    osd_decode_impl(llr, 2, LDPC_K, Some(check_crc14))
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14))
 }
 
-/// `k4_limit`: upper bound (exclusive) on bit indices used in the order-4
-/// extension.  For ndeep < 4 this parameter is ignored. `verify` is
-/// the parity-converged candidate filter; pass `Some(check_crc14)` for
-/// Wsjt77 protocols and `None` to accept any parity-converged result.
-fn osd_decode_impl(
-    llr: &[f32; LDPC_N],
+/// Generic OSD with configurable order, parameterised over [`LdpcParams`].
+///
+/// `ndeep`: search depth (1..=4). `k4_limit`: upper bound (exclusive)
+/// on bit indices used in the order-4 extension; ignored when
+/// `ndeep < 4`. `verify`: parity-converged candidate filter; pass
+/// `Some(check_crc)` for codecs whose info bits include an inline
+/// integrity field, `None` to accept any parity-valid candidate.
+///
+/// Algorithm identical to the WSJT-X reference; only the working
+/// buffer shapes are runtime-sized to accommodate either LDPC code.
+pub fn osd_decode_generic<P: LdpcParams>(
+    llr: &[f32],
     ndeep: u8,
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    // ── Step 1: sort bit indices by |LLR| descending ─────────────────────
-    let mut perm = [0usize; LDPC_N];
-    for i in 0..LDPC_N {
-        perm[i] = i;
-    }
+    debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
+
+    let n = P::N;
+    let k = P::K;
+
+    // ── Step 1: sort bit indices by |LLR| descending ────────────────
+    let mut perm: Vec<usize> = (0..n).collect();
     perm.sort_unstable_by(|&a, &b| {
         llr[b]
             .abs()
@@ -618,49 +651,48 @@ fn osd_decode_impl(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // ── Step 2: build permuted generator matrix G'[91][174] ──────────────
+    // ── Step 2: build permuted generator matrix G'[K][N] (flat) ─────
     // G[row][col] in original space:
-    //   col <  91 → identity: G[row][col] = (row == col) as u8
-    //   col >= 91 → parity:   G[row][col] = GEN_PARITY[col-91][row]
-    // G'[row][col] = G[row][perm[col]]
-    let mut g = [[0u8; LDPC_N]; LDPC_K];
-    for row in 0..LDPC_K {
-        for col in 0..LDPC_N {
+    //   col <  K → identity: G[row][col] = (row == col) as u8
+    //   col >= K → parity:   G[row][col] = gen_parity(col - K, row)
+    // Flat index: g[row * n + col].
+    let mut g: Vec<u8> = vec![0u8; k * n];
+    for row in 0..k {
+        for col in 0..n {
             let j = perm[col];
-            g[row][col] = if j < LDPC_K {
+            g[row * n + col] = if j < k {
                 (row == j) as u8
             } else {
-                GEN_PARITY[j - LDPC_K][row]
+                P::gen_parity(j - k, row)
             };
         }
     }
 
-    // ── Step 3: GF(2) Gaussian elimination (RREF, no column swaps) ───────
-    // After this, the matrix is in reduced row echelon form.
-    // pivot_col[r] = column where row r has its leading 1.
-    let mut pivot_col = [0usize; LDPC_K];
+    // ── Step 3: GF(2) Gaussian elimination (RREF, no column swaps) ──
+    let mut pivot_col: Vec<usize> = vec![0; k];
     let mut pivot_row = 0usize;
 
-    for col in 0..LDPC_N {
-        if pivot_row >= LDPC_K {
+    for col in 0..n {
+        if pivot_row >= k {
             break;
         }
-        // Find a row with a 1 in this column.
-        let found = (pivot_row..LDPC_K).find(|&r| g[r][col] != 0);
+        let mut found: Option<usize> = None;
+        for r in pivot_row..k {
+            if g[r * n + col] != 0 {
+                found = Some(r);
+                break;
+            }
+        }
         if let Some(r) = found {
-            // Swap rows r ↔ pivot_row.
             if r != pivot_row {
-                for c in 0..LDPC_N {
-                    let tmp = g[r][c];
-                    g[r][c] = g[pivot_row][c];
-                    g[pivot_row][c] = tmp;
+                for c in 0..n {
+                    g.swap(r * n + c, pivot_row * n + c);
                 }
             }
-            // Eliminate this column from all other rows.
-            for r2 in 0..LDPC_K {
-                if r2 != pivot_row && g[r2][col] != 0 {
-                    for c in 0..LDPC_N {
-                        g[r2][c] ^= g[pivot_row][c];
+            for r2 in 0..k {
+                if r2 != pivot_row && g[r2 * n + col] != 0 {
+                    for c in 0..n {
+                        g[r2 * n + c] ^= g[pivot_row * n + c];
                     }
                 }
             }
@@ -669,52 +701,43 @@ fn osd_decode_impl(
         }
     }
 
-    if pivot_row < LDPC_K {
+    if pivot_row < k {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     }
 
-    // ── Step 4: hard decisions on MRB bits ──────────────────────────────
-    // MRB position r in original space = perm[pivot_col[r]].
-    let mut mrb = [0u8; LDPC_K];
-    for r in 0..LDPC_K {
+    // ── Step 4: hard decisions on MRB bits ──────────────────────────
+    let mut mrb: Vec<u8> = vec![0u8; k];
+    for r in 0..k {
         let orig = perm[pivot_col[r]];
         mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
     }
 
-    // ── Step 5: encode order-0 candidate ────────────────────────────────
-    // c_perm[col] = XOR of mrb[r] * g[r][col] for all r.
-    let mut c_perm = [0u8; LDPC_N];
-    for r in 0..LDPC_K {
+    // ── Step 5: encode order-0 candidate ────────────────────────────
+    let mut c_perm: Vec<u8> = vec![0u8; n];
+    for r in 0..k {
         if mrb[r] == 1 {
-            for col in 0..LDPC_N {
-                c_perm[col] ^= g[r][col];
+            for col in 0..n {
+                c_perm[col] ^= g[r * n + col];
             }
         }
     }
 
-    // Helper: unpack permuted codeword → original ordering, check CRC,
-    // compute weighted distance.  Returns (decoded91, codeword, weight).
-    let try_candidate = |cp: &[u8; LDPC_N]| -> Option<([u8; LDPC_K], [u8; LDPC_N], f32)> {
-        // Unpermute.
-        let mut c = [0u8; LDPC_N];
-        for col in 0..LDPC_N {
+    // Helper: unpermute, verify, compute weighted distance.
+    // Returned tuples carry full Vec<u8>'s for both info and codeword
+    // so any P::K / P::N works.
+    let try_candidate = |cp: &[u8]| -> Option<(Vec<u8>, Vec<u8>, f32)> {
+        let mut c = vec![0u8; n];
+        for col in 0..n {
             c[perm[col]] = cp[col];
         }
-        // Optional verifier on the first LDPC_K bits. With `None`,
-        // OSD accepts any parity-valid candidate (the FEC layer's
-        // job here is to find the maximum-likelihood codeword; the
-        // application is free to drop integrity-bearing semantics
-        // through `MessageCodec::verify_info`).
-        let mut decoded = [0u8; LDPC_K];
-        decoded.copy_from_slice(&c[..LDPC_K]);
+        let decoded = c[..k].to_vec();
         if let Some(f) = verify
             && !f(&decoded)
         {
             return None;
         }
-        // Weighted Hamming distance.
         let mut wd = 0.0f32;
-        for col in 0..LDPC_N {
+        for col in 0..n {
             let hard = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
             if cp[col] != hard {
                 wd += llr[perm[col]].abs();
@@ -723,9 +746,8 @@ fn osd_decode_impl(
         Some((decoded, c, wd))
     };
 
-    let mut best: Option<([u8; LDPC_K], [u8; LDPC_N], f32)> = None;
-
-    let mut update_best = |decoded: [u8; LDPC_K], cw: [u8; LDPC_N], wd: f32| {
+    let mut best: Option<(Vec<u8>, Vec<u8>, f32)> = None;
+    let mut update_best = |decoded: Vec<u8>, cw: Vec<u8>, wd: f32| {
         let improve = best.as_ref().is_none_or(|(_, _, bd)| wd < *bd);
         if improve {
             best = Some((decoded, cw, wd));
@@ -737,25 +759,27 @@ fn osd_decode_impl(
         update_best(d, cw, wd);
     }
 
-    // Orders 1..ndeep: flip 1, 2, … ndeep MRB bits.
-    for k1 in 0..LDPC_K {
-        // c1 = c_perm XOR g[k1]
-        let mut c1 = c_perm;
-        for col in 0..LDPC_N {
-            c1[col] ^= g[k1][col];
+    // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. Reuse buffers
+    // across iterations to avoid per-candidate Vec allocs.
+    let mut c1 = vec![0u8; n];
+    let mut c2 = vec![0u8; n];
+    let mut c3 = vec![0u8; n];
+    let mut c4 = vec![0u8; n];
+    for k1 in 0..k {
+        c1.copy_from_slice(&c_perm);
+        for col in 0..n {
+            c1[col] ^= g[k1 * n + col];
         }
-        // Order-1
         if let Some((d, cw, wd)) = try_candidate(&c1) {
             update_best(d, cw, wd);
         }
         if ndeep < 2 {
             continue;
         }
-        // Order-2: flip a second bit k2 > k1
-        for k2 in (k1 + 1)..LDPC_K {
-            let mut c2 = c1;
-            for col in 0..LDPC_N {
-                c2[col] ^= g[k2][col];
+        for k2 in (k1 + 1)..k {
+            c2.copy_from_slice(&c1);
+            for col in 0..n {
+                c2[col] ^= g[k2 * n + col];
             }
             if let Some((d, cw, wd)) = try_candidate(&c2) {
                 update_best(d, cw, wd);
@@ -763,23 +787,19 @@ fn osd_decode_impl(
             if ndeep < 3 {
                 continue;
             }
-            // Order-3: flip a third bit k3 > k2
-            for k3 in (k2 + 1)..LDPC_K {
-                let mut c3 = c2;
-                for col in 0..LDPC_N {
-                    c3[col] ^= g[k3][col];
+            for k3 in (k2 + 1)..k {
+                c3.copy_from_slice(&c2);
+                for col in 0..n {
+                    c3[col] ^= g[k3 * n + col];
                 }
                 if let Some((d, cw, wd)) = try_candidate(&c3) {
                     update_best(d, cw, wd);
                 }
-                // Order-4: flip a fourth bit k4 > k3, restricted to k4 < k4_limit.
-                // Errors cluster in low-|LLR| (high index) bits; limiting k4_limit
-                // to ~30 gives C(30,4)≈27k candidates at depth-3 cost.
                 if ndeep >= 4 && k3 + 1 < k4_limit {
-                    for k4 in (k3 + 1)..k4_limit.min(LDPC_K) {
-                        let mut c4 = c3;
-                        for col in 0..LDPC_N {
-                            c4[col] ^= g[k4][col];
+                    for k4 in (k3 + 1)..k4_limit.min(k) {
+                        c4.copy_from_slice(&c3);
+                        for col in 0..n {
+                            c4[col] ^= g[k4 * n + col];
                         }
                         if let Some((d, cw, wd)) = try_candidate(&c4) {
                             update_best(d, cw, wd);
@@ -790,19 +810,21 @@ fn osd_decode_impl(
         }
     }
 
-    // ── Step 6: return best ───────────────────────────────────────────────
+    // ── Step 6: return best ─────────────────────────────────────────
     let (decoded, codeword, _) = best?;
-    let hard_errors = codeword
-        .iter()
-        .zip(llr.iter())
-        .filter(|&(&b, &l)| (b == 1) != (l > 0.0))
-        .count() as u32;
+    let mut hard_errors = 0u32;
+    for i in 0..n {
+        if (codeword[i] == 1) != (llr[i] > 0.0) {
+            hard_errors += 1;
+        }
+    }
     let mut message77 = [0u8; 77];
     message77.copy_from_slice(&decoded[..77]);
     Some(OsdResult {
         message77,
-        hard_errors,
+        info: decoded,
         codeword,
+        hard_errors,
     })
 }
 

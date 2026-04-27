@@ -75,21 +75,10 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: usize) -> Vec<
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Ordered list of data chunks: `(first_data_symbol, chunk_len_in_symbols)`.
-///
-/// FT8: 2 chunks `[(7, 29), (43, 29)]`. FT4: 3 chunks `[(4, 29), (37, 29), (70, 29)]`.
-fn data_chunks<P: Protocol>() -> Vec<(usize, usize)> {
-    let blocks = P::SYNC_MODE.blocks();
-    let mut chunks = Vec::with_capacity(blocks.len().saturating_sub(1));
-    for i in 0..blocks.len().saturating_sub(1) {
-        let after = blocks[i].start_symbol as usize + blocks[i].pattern.len();
-        let before_next = blocks[i + 1].start_symbol as usize;
-        if before_next > after {
-            chunks.push((after, before_next - after));
-        }
-    }
-    chunks
-}
+// Data-chunk layout (slots between / around sync blocks) is shared
+// with the TX side; reuse [`crate::core::tx::data_chunks`] so any
+// frame layout the encoder honours is decoded the same way.
+use crate::core::tx::data_chunks;
 
 /// Decompose `i` into `nsym` base-`ntones` digits, most significant first.
 #[inline]

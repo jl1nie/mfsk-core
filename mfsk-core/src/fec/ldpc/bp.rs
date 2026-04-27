@@ -1,10 +1,23 @@
-//! Belief-Propagation (log-domain) decoder for the LDPC (174, 91) code.
-//! Ported from WSJT-X bpdecode174_91.f90.
+//! Belief-Propagation (log-domain) decoder, generic over [`LdpcParams`].
+//!
+//! Originally ported from WSJT-X `bpdecode174_91.f90`. Phase 0c-B
+//! generalised the algorithm so [`Ldpc174_91`](super::Ldpc174_91) and
+//! [`Ldpc240_101`](super::Ldpc240_101) share a single implementation;
+//! the matrix shape comes from `P` at compile time.
+//!
+//! For backward compatibility (FT8's bespoke decode path goes through
+//! [`bp_decode`] directly), this module also exposes a non-generic
+//! [`bp_decode`] that pins `P = Ldpc174_91Params` — same behaviour as
+//! before, just routed through the generic body.
+//!
+//! [`Ldpc174_91`]: super::Ldpc174_91
+//! [`Ldpc240_101`]: super::Ldpc240_101
 
-use super::tables::{MN, NM, NRW};
-use super::{LDPC_K, LDPC_M, LDPC_N};
+use super::params::{Ldpc174_91Params, LdpcParams};
+use super::{LDPC_K, LDPC_N};
 
-/// Number of check nodes per bit (constant in this code).
+/// Column weight (variable-node degree). Both LDPC codes in this
+/// crate are uniform with `NCW = 3`.
 const NCW: usize = 3;
 
 /// Clamped atanh to avoid ±∞ near the boundaries.
@@ -39,9 +52,9 @@ pub fn crc14(data: &[u8]) -> u16 {
 /// Packs bits into 12 bytes (big-endian, MSB first), zeros the CRC field,
 /// computes CRC-14, then compares with the stored CRC bits.
 ///
-/// Accepts any `&[u8]` slice; lengths other than [`LDPC_K`] (= 91) are
-/// rejected so the function is suitable as a `MessageCodec::verify_info`
-/// implementation passed through `FecOpts::verify_info`.
+/// Accepts any `&[u8]` slice; lengths other than 91 are rejected so the
+/// function is suitable as a `MessageCodec::verify_info` implementation
+/// passed through `FecOpts::verify_info`.
 pub fn check_crc14(decoded: &[u8]) -> bool {
     if decoded.len() != LDPC_K {
         return false;
@@ -64,50 +77,76 @@ pub fn check_crc14(decoded: &[u8]) -> bool {
 }
 
 /// Output of a successful BP decode.
+///
+/// `info` is the systematic prefix (length `P::K`); `codeword` is the
+/// full decoded codeword (length `P::N`). Both are heap-allocated so
+/// the struct can serve any [`LdpcParams`] without const-generic
+/// gymnastics. `message77` exposes the leading 77 bits as a fixed-size
+/// array for the Wsjt77-family ergonomics that pre-existing FT8 code
+/// relies on; uvpacket-class callers ignore it and read `info`.
 pub struct BpResult {
-    /// Decoded 77-bit message payload.
+    /// Leading 77 info bits (Wsjt77 message field). Same content as
+    /// `info[..77]` — duplicated here for callers that take fixed-size
+    /// references.
     pub message77: [u8; 77],
-    /// Full 174-bit codeword (hard decisions).
-    pub codeword: [u8; LDPC_N],
+    /// Full systematic info (length `P::K`).
+    pub info: Vec<u8>,
+    /// Full codeword bits (length `P::N`).
+    pub codeword: Vec<u8>,
     /// Number of hard errors (bits where hard decision disagrees with LLR sign).
     pub hard_errors: u32,
     /// Number of BP iterations executed.
     pub iterations: u32,
 }
 
-/// Log-domain Belief-Propagation decode.
+/// Generic log-domain Belief-Propagation decode.
 ///
-/// `llr[i]` follows the convention: positive = bit likely 1, negative
-/// = bit likely 0. `ap_mask`: optional slice where `true` means the
-/// bit LLR is trusted as-is (a-priori known bit — used for AP-assisted
-/// decoding passes in WSJT-X).
+/// `llr.len()` and (if present) `ap_mask.len()` must equal `P::N`.
 ///
 /// `verify` is an optional integrity check applied to each parity-
 /// converged candidate. When `Some`, BP keeps iterating past a
 /// parity-only convergence whose verification fails (mirroring how
 /// CRC-aware codecs behave under noise that leaves multiple valid
 /// codewords near the LLR estimate). When `None`, BP returns on first
-/// parity convergence — the right behaviour for codecs whose message
-/// codec carries no internal integrity field (e.g.
-/// [`crate::msg::PacketBytesMessage`] in `uvpacket`).
-///
-/// Returns `Some(BpResult)` once parity (and any verifier) accepts a
-/// candidate, `None` if the iteration limit is exhausted first.
-pub fn bp_decode(
-    llr: &[f32; LDPC_N],
-    ap_mask: Option<&[bool; LDPC_N]>,
+/// parity convergence — appropriate for codecs whose message codec
+/// carries no internal integrity field.
+pub fn bp_decode_generic<P: LdpcParams>(
+    llr: &[f32],
+    ap_mask: Option<&[bool]>,
     max_iter: u32,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<BpResult> {
-    let mut tov = [[0f32; NCW]; LDPC_N];
-    let mut toc = [[0f32; 7]; LDPC_M];
-    let mut tanhtoc = [[0f32; 7]; LDPC_M];
-    let mut zn = [0f32; LDPC_N];
-    let mut cw = [0u8; LDPC_N];
+    debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
+    if let Some(m) = ap_mask {
+        debug_assert_eq!(m.len(), P::N, "ap_mask length must equal P::N");
+    }
 
-    for j in 0..LDPC_M {
-        for i in 0..NRW[j] as usize {
-            toc[j][i] = llr[NM[j][i] as usize];
+    let n = P::N;
+    let m_checks = P::M;
+    let k = P::K;
+    let max_row = P::MAX_ROW;
+
+    // Heap-allocated working buffers. Sizes:
+    //   tov     : N * NCW   (≤ 720 bytes for ldpc240_101)
+    //   toc     : M * MAX_ROW
+    //   tanhtoc : M * MAX_ROW
+    //   zn      : N
+    //   cw      : N
+    // For both codes the total stays under 8 KB — negligible vs the
+    // 30+ BP iterations of inner-loop arithmetic.
+    let mut tov = vec![0f32; n * NCW];
+    let mut toc = vec![0f32; m_checks * max_row];
+    let mut tanhtoc = vec![0f32; m_checks * max_row];
+    let mut zn = vec![0f32; n];
+    let mut cw = vec![0u8; n];
+
+    // Initial messages: each check node receives the raw LLR for the
+    // bits it tests.
+    for j in 0..m_checks {
+        let nrw_j = P::nrw(j) as usize;
+        for i in 0..nrw_j {
+            let bit = P::nm(j, i) as usize;
+            toc[j * max_row + i] = llr[bit];
         }
     }
 
@@ -115,49 +154,61 @@ pub fn bp_decode(
     let mut nclast = 0u32;
 
     for iter in 0..=max_iter {
-        for i in 0..LDPC_N {
-            let ap = ap_mask.is_some_and(|m| m[i]);
+        // Variable-node update: zn = llr + Σ tov, except AP-locked
+        // bits hold their LLR fixed.
+        for i in 0..n {
+            let ap = ap_mask.is_some_and(|mm| mm[i]);
             if !ap {
-                let sum_tov: f32 = tov[i].iter().sum();
-                zn[i] = llr[i] + sum_tov;
+                let mut sum = 0.0f32;
+                for k_ in 0..NCW {
+                    sum += tov[i * NCW + k_];
+                }
+                zn[i] = llr[i] + sum;
             } else {
                 zn[i] = llr[i];
             }
         }
 
-        for i in 0..LDPC_N {
+        // Hard decisions.
+        for i in 0..n {
             cw[i] = if zn[i] > 0.0 { 1 } else { 0 };
         }
 
+        // Count parity-violating checks.
         let mut ncheck = 0u32;
-        for i in 0..LDPC_M {
-            let n = NRW[i] as usize;
-            let parity: u8 = NM[i][..n].iter().map(|&b| cw[b as usize]).sum::<u8>() % 2;
+        for i in 0..m_checks {
+            let nrw_i = P::nrw(i) as usize;
+            let mut parity = 0u8;
+            for s in 0..nrw_i {
+                parity ^= cw[P::nm(i, s) as usize];
+            }
             if parity != 0 {
                 ncheck += 1;
             }
         }
 
         if ncheck == 0 {
-            let mut decoded = [0u8; LDPC_K];
-            decoded.copy_from_slice(&cw[..LDPC_K]);
+            let mut decoded = vec![0u8; k];
+            decoded.copy_from_slice(&cw[..k]);
             // No verifier → accept any parity-converged candidate.
-            // With a verifier (e.g. CRC-14 for Wsjt77 protocols) →
-            // accept only when the verifier returns true.
+            // With a verifier (e.g. CRC-14/24 length-dispatched in
+            // Wsjt77Message::verify_info) → accept only on true.
             let accept = match verify {
                 Some(f) => f(&decoded),
                 None => true,
             };
             if accept {
-                let hard_errors = cw
-                    .iter()
-                    .zip(llr.iter())
-                    .filter(|&(&b, &l)| (b == 1) != (l > 0.0))
-                    .count() as u32;
+                let mut hard_errors = 0u32;
+                for i in 0..n {
+                    if (cw[i] == 1) != (llr[i] > 0.0) {
+                        hard_errors += 1;
+                    }
+                }
                 let mut message77 = [0u8; 77];
                 message77.copy_from_slice(&decoded[..77]);
                 return Some(BpResult {
                     message77,
+                    info: decoded,
                     codeword: cw,
                     hard_errors,
                     iterations: iter,
@@ -165,6 +216,7 @@ pub fn bp_decode(
             }
         }
 
+        // Stall detector: same heuristic as the WSJT-X reference.
         if iter > 0 {
             if ncheck < nclast {
                 ncnt = 0;
@@ -177,41 +229,67 @@ pub fn bp_decode(
         }
         nclast = ncheck;
 
-        for j in 0..LDPC_M {
-            for i in 0..NRW[j] as usize {
-                let ibj = NM[j][i] as usize;
+        // Check-to-variable message update (extrinsic info).
+        for j in 0..m_checks {
+            let nrw_j = P::nrw(j) as usize;
+            for i in 0..nrw_j {
+                let ibj = P::nm(j, i) as usize;
                 let mut msg = zn[ibj];
+                let mn_ibj = P::mn(ibj);
                 for kk in 0..NCW {
-                    if MN[ibj][kk] as usize == j {
-                        msg -= tov[ibj][kk];
+                    if mn_ibj[kk] as usize == j {
+                        msg -= tov[ibj * NCW + kk];
                     }
                 }
-                toc[j][i] = msg;
+                toc[j * max_row + i] = msg;
             }
         }
 
-        for i in 0..LDPC_M {
-            for k in 0..NRW[i] as usize {
-                tanhtoc[i][k] = (-toc[i][k] / 2.0).tanh();
+        // tanh half-message cache.
+        for i in 0..m_checks {
+            let nrw_i = P::nrw(i) as usize;
+            for k_ in 0..nrw_i {
+                tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
             }
         }
 
-        for j in 0..LDPC_N {
-            for k in 0..NCW {
-                let ichk = MN[j][k] as usize;
-                let n = NRW[ichk] as usize;
-                let tmn: f32 = NM[ichk][..n]
-                    .iter()
-                    .zip(tanhtoc[ichk][..n].iter())
-                    .filter(|&(&b, _)| b as usize != j)
-                    .map(|(_, &t)| t)
-                    .product();
-                tov[j][k] = 2.0 * platanh(-tmn);
+        // Variable-to-check message update.
+        for j in 0..n {
+            let mn_j = P::mn(j);
+            for k_ in 0..NCW {
+                let ichk = mn_j[k_] as usize;
+                let nrw_ichk = P::nrw(ichk) as usize;
+                let mut tmn = 1.0f32;
+                for s in 0..nrw_ichk {
+                    let bit = P::nm(ichk, s) as usize;
+                    if bit != j {
+                        tmn *= tanhtoc[ichk * max_row + s];
+                    }
+                }
+                tov[j * NCW + k_] = 2.0 * platanh(-tmn);
             }
         }
     }
 
     None
+}
+
+/// Backward-compatible LDPC(174,91) BP decode — pins
+/// [`bp_decode_generic`] to [`Ldpc174_91Params`]. Used by FT8's
+/// bespoke decode loop (which still consumes the shared LDPC
+/// implementation through `super::ft8::ldpc`'s re-export façade).
+///
+/// `llr[i]` follows the convention: positive = bit likely 1, negative
+/// = bit likely 0. `ap_mask[i] = true` means the bit's LLR is
+/// AP-locked and not updated by BP.
+pub fn bp_decode(
+    llr: &[f32; LDPC_N],
+    ap_mask: Option<&[bool; LDPC_N]>,
+    max_iter: u32,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<BpResult> {
+    let ap_slice: Option<&[bool]> = ap_mask.map(|a| a.as_slice());
+    bp_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ap_slice, max_iter, verify)
 }
 
 #[cfg(test)]

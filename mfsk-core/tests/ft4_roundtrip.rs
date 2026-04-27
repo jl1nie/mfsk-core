@@ -57,14 +57,14 @@ fn encode_decode_clean_signal_1000hz() {
     );
     let got = results
         .iter()
-        .find(|r| r.message77 == msg)
+        .find(|r| r.message77() == msg)
         .expect("no result matches transmitted payload");
     // Verify the decoded payload also unpacks to the expected human-readable
     // text — confirms the full trait chain (FEC → MessageCodec::unpack).
     let codec = mfsk_core::msg::Wsjt77Message;
     let ctx = mfsk_core::core::DecodeContext::default();
     let text = codec
-        .unpack(&got.message77, &ctx)
+        .unpack(got.message77(), &ctx)
         .expect("unpack returns a valid text");
     assert!(
         text.contains("CQ") && text.contains("JA1ABC"),
@@ -78,7 +78,7 @@ fn encode_decode_mid_band_1500hz() {
     let audio = build_slot(&msg, 1500.0, 20_000);
     let results = decode::decode_frame(&audio, 1200.0, 1800.0, 1.0, 50);
     assert!(!results.is_empty());
-    assert!(results.iter().any(|r| r.message77 == msg));
+    assert!(results.iter().any(|r| r.message77() == msg));
 }
 
 #[test]

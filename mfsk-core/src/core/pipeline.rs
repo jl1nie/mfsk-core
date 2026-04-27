@@ -67,11 +67,18 @@ impl DecodeStrictness {
     }
 }
 
-/// One successfully decoded message. Protocol-agnostic; the 77-bit payload
-/// assumption is shared by FT8 / FT4 / FT2 / FST4.
+/// One successfully decoded message. Protocol-agnostic.
+///
+/// `info` carries the FEC's K information bits — for LDPC(174,91) that's 91
+/// bits (77 message + 14 CRC for Wsjt77-family), for LDPC(240,101) that's 101
+/// bits (77 message + 24 CRC for FST4), for uvpacket it's 91 bits with the
+/// `PacketBytesMessage` layout (4-bit length + 80-bit payload + 7-bit CRC-7).
+/// The pipeline is agnostic to the layout; `MessageCodec::unpack` /
+/// `MessageCodec::verify_info` interpret it per-protocol.
 #[derive(Debug, Clone)]
 pub struct DecodeResult {
-    pub message77: [u8; 77],
+    /// FEC-decoded information bits; length = `<P::Fec as FecCodec>::K`.
+    pub info: Box<[u8]>,
     pub freq_hz: f32,
     pub dt_sec: f32,
     pub hard_errors: u32,
@@ -81,6 +88,18 @@ pub struct DecodeResult {
     /// stable channels, elevated under QSB or fading.
     pub sync_cv: f32,
     pub snr_db: f32,
+}
+
+impl DecodeResult {
+    /// Slice the leading 77 message bits — the convention shared by every
+    /// Wsjt77-family protocol (FT8 / FT4 / FT2 / FST4 / Q65). For uvpacket
+    /// this still returns a 77-bit slice, but its interpretation is
+    /// uvpacket-specific (length code + bytes + CRC fragment).
+    ///
+    /// Panics if `info` is shorter than 77 bits.
+    pub fn message77(&self) -> &[u8] {
+        &self.info[..77]
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -134,7 +153,13 @@ pub fn process_candidate_basic<P: Protocol>(
     let _ = ntones;
     let _ = n_sym;
     let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
-        let llr_set = compute_llr::<P>(cs);
+        let mut llr_set = compute_llr::<P>(cs);
+        // RX half of the optional bit interleaver: if the protocol
+        // declares an interleave table, permute each LLR vector from
+        // channel-bit order into codeword-bit order before BP/OSD.
+        // No-op for protocols with `CODEWORD_INTERLEAVE = None`
+        // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
+        deinterleave_llr_set::<P>(&mut llr_set);
         let variants = match depth {
             DecodeDepth::Bp => vec![(&llr_set.llra, 0u8)],
             DecodeDepth::BpAll | DecodeDepth::BpAllOsd => vec![
@@ -160,11 +185,10 @@ pub fn process_candidate_basic<P: Protocol>(
 
         for (llr, pass_id) in &variants {
             if let Some(r) = fec.decode_soft(llr, &bp_opts) {
-                let msg77: [u8; 77] = r.info[..77].try_into().ok()?;
-                let itone = encode_tones_for_snr::<P>(&msg77, &fec);
+                let itone = encode_tones_for_snr::<P>(&r.info, &fec);
                 let snr_db = compute_snr_db::<P>(cs, &itone);
                 return Some(DecodeResult {
-                    message77: msg77,
+                    info: r.info.into_boxed_slice(),
                     freq_hz: cand.freq_hz,
                     dt_sec: refined.dt_sec,
                     hard_errors: r.hard_errors,
@@ -194,11 +218,10 @@ pub fn process_candidate_basic<P: Protocol>(
                         if r.hard_errors >= strictness.osd_max_errors(osd_depth) {
                             continue;
                         }
-                        let msg77: [u8; 77] = r.info[..77].try_into().ok()?;
-                        let itone = encode_tones_for_snr::<P>(&msg77, &fec);
+                        let itone = encode_tones_for_snr::<P>(&r.info, &fec);
                         let snr_db = compute_snr_db::<P>(cs, &itone);
                         return Some(DecodeResult {
-                            message77: msg77,
+                            info: r.info.into_boxed_slice(),
                             freq_hz: cand.freq_hz,
                             dt_sec: refined.dt_sec,
                             hard_errors: r.hard_errors,
@@ -222,11 +245,10 @@ pub fn process_candidate_basic<P: Protocol>(
                             if r.hard_errors >= strictness.osd_max_errors(4) {
                                 continue;
                             }
-                            let msg77: [u8; 77] = r.info[..77].try_into().ok()?;
-                            let itone = encode_tones_for_snr::<P>(&msg77, &fec);
+                            let itone = encode_tones_for_snr::<P>(&r.info, &fec);
                             let snr_db = compute_snr_db::<P>(cs, &itone);
                             return Some(DecodeResult {
-                                message77: msg77,
+                                info: r.info.into_boxed_slice(),
                                 freq_hz: cand.freq_hz,
                                 dt_sec: refined.dt_sec,
                                 hard_errors: r.hard_errors,
@@ -262,107 +284,43 @@ pub fn process_candidate_basic<P: Protocol>(
     }
 }
 
-/// Re-encode the decoded 77-bit payload (plus its protocol-specific
-/// CRC) back into tones for SNR estimation. Uses the protocol's
-/// `Fec` for the code-level encode and `P::SYNC_MODE.blocks()` /
-/// `P::GRAY_MAP` for the tone layout.
-///
-/// Supports the two info-layouts rs-ft8n ships today, selected by
-/// `P::Fec::K`:
-/// - **91-bit** (`K=91`): 77 msg + CRC-14 — FT8, FT4.
-/// - **101-bit** (`K=101`): 77 msg + CRC-24 — FST4.
-///
-/// For any other K the helper falls back to "msg + zeros" which
-/// still produces a valid codeword but with a broken CRC. That's a
-/// fine approximation for SNR computation (amplitudes dominate);
-/// real decodes still validate the CRC upstream.
-fn encode_tones_for_snr<P: Protocol>(msg77: &[u8; 77], fec: &P::Fec) -> Vec<u8> {
-    let k = P::Fec::K;
-    let mut info = vec![0u8; k];
-    info[..77].copy_from_slice(msg77);
-    match k {
-        91 => {
-            let mut bytes = [0u8; 12];
-            for (i, &bit) in msg77.iter().enumerate() {
-                bytes[i / 8] |= (bit & 1) << (7 - i % 8);
-            }
-            let crc = crc14(&bytes);
-            for i in 0..14 {
-                info[77 + i] = ((crc >> (13 - i)) & 1) as u8;
-            }
-        }
-        101 => {
-            // Same convention as `check_crc24`: run crc24 over the
-            // 101-bit word with the CRC slot zeroed.
-            let mut with_zero = vec![0u8; 101];
-            with_zero[..77].copy_from_slice(msg77);
-            let crc = crc24(&with_zero);
-            for i in 0..24 {
-                info[77 + i] = ((crc >> (23 - i)) & 1) as u8;
-            }
-        }
-        _ => {
-            // Unknown layout — leave the tail zero. Only SNR is at
-            // stake; decode correctness already verified upstream.
-        }
+/// Deinterleave each of the four LLR variants from channel-bit order to
+/// codeword-bit order, in place. No-op when
+/// [`P::CODEWORD_INTERLEAVE`](crate::core::FrameLayout::CODEWORD_INTERLEAVE)
+/// is `None` — every existing protocol stays bit-identical.
+fn deinterleave_llr_set<P: Protocol>(set: &mut crate::core::llr::LlrSet) {
+    if let Some(table) = P::CODEWORD_INTERLEAVE {
+        deinterleave_llr_vec(&mut set.llra, table);
+        deinterleave_llr_vec(&mut set.llrb, table);
+        deinterleave_llr_vec(&mut set.llrc, table);
+        deinterleave_llr_vec(&mut set.llrd, table);
     }
+}
+
+/// `llr[INTERLEAVE[j]] = channel_llr[j]` — inverse of the TX-side
+/// permutation. Allocates one temporary `Vec<f32>` per call (per LLR
+/// variant); the cost is tiny next to BP/OSD.
+fn deinterleave_llr_vec(llr: &mut [f32], table: &[u16]) {
+    debug_assert_eq!(llr.len(), table.len(), "interleave table length must match LLR length");
+    let original: Vec<f32> = llr.to_vec();
+    for j in 0..llr.len() {
+        llr[table[j] as usize] = original[j];
+    }
+}
+
+/// Re-encode FEC info bits back into tones for SNR estimation.
+///
+/// Phase A reduced this to a 3-line helper: `r.info[..]` already
+/// carries the K-bit info the FEC produced, including any CRC bits
+/// that `MessageCodec::verify_info` already accepted. Feeding it
+/// straight back into `fec.encode` reproduces the same codeword as
+/// the previous "extract msg77 → recompute CRC → encode" path —
+/// bit-identical because verifier acceptance enforces
+/// `info[77..K] == crc(info[..77])` at the moment of acceptance.
+fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
     let mut cw = vec![0u8; P::Fec::N];
-    fec.encode(&info, &mut cw);
+    fec.encode(info, &mut cw);
     codeword_to_itone::<P>(&cw)
-}
-
-/// Local CRC-24 for FST4 SNR re-encoding. Matches
-/// `mfsk_core::fec::ldpc240_101::crc24` — duplicated here to keep the
-/// dep graph acyclic.
-fn crc24(bits: &[u8]) -> u32 {
-    const POLY: [u8; 25] = [
-        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1,
-    ];
-    let mut r = [0u8; 25];
-    for (i, slot) in r.iter_mut().enumerate() {
-        *slot = if i < bits.len() { bits[i] & 1 } else { 0 };
-    }
-    let n = bits.len().saturating_sub(25);
-    for i in 0..=n {
-        r[24] = if i + 25 <= bits.len() {
-            bits[i + 24] & 1
-        } else {
-            0
-        };
-        if r[0] != 0 {
-            for (rv, pv) in r.iter_mut().zip(POLY.iter()) {
-                *rv ^= *pv;
-            }
-        }
-        let first = r[0];
-        for k in 0..24 {
-            r[k] = r[k + 1];
-        }
-        r[24] = first;
-    }
-    let mut v = 0u32;
-    for &b in &r[..24] {
-        v = (v << 1) | (b as u32);
-    }
-    v
-}
-
-/// Local duplicate of the CRC-14 used by all LDPC(174,91)-based WSJT modes.
-/// Keeping it inline in pipeline.rs avoids a cross-crate circular dep on
-/// mfsk-fec, which depends on mfsk-core.
-fn crc14(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for &byte in data {
-        for i in (0..8).rev() {
-            let bit = (byte >> i) & 1;
-            let msb = (crc >> 13) & 1;
-            crc = ((crc << 1) | bit as u16) & 0x3FFF;
-            if msb != 0 {
-                crc ^= 0x2757;
-            }
-        }
-    }
-    crc
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -427,7 +385,7 @@ pub fn decode_frame<P: Protocol>(
 
     let mut results: Vec<DecodeResult> = Vec::new();
     for r in raw {
-        if !results.iter().any(|x| x.message77 == r.message77) {
+        if !results.iter().any(|x| x.info == r.info) {
             results.push(r);
         }
     }
@@ -507,8 +465,8 @@ pub fn decode_frame_subtract<P: Protocol>(
 
         let mut deduped: Vec<DecodeResult> = Vec::new();
         for r in new {
-            if !all_results.iter().any(|k| k.message77 == r.message77)
-                && !deduped.iter().any(|x| x.message77 == r.message77)
+            if !all_results.iter().any(|k| k.info == r.info)
+                && !deduped.iter().any(|x| x.info == r.info)
             {
                 deduped.push(r);
             }
@@ -516,7 +474,7 @@ pub fn decode_frame_subtract<P: Protocol>(
 
         for r in &deduped {
             let gain = if r.sync_cv > 0.3 { 0.5 } else { 1.0 };
-            let tones = encode_tones_for_snr::<P>(&r.message77, &fec);
+            let tones = encode_tones_for_snr::<P>(&r.info, &fec);
             subtract_tones(&mut residual, &tones, r.freq_hz, r.dt_sec, gain, sub_cfg);
         }
         all_results.extend(deduped);

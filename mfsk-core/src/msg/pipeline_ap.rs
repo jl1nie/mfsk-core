@@ -20,7 +20,7 @@ use crate::core::tx::codeword_to_itone;
 use crate::core::{FecCodec, FecOpts, Protocol};
 use num_complex::Complex;
 
-use super::ap::ApHint;
+use super::ap::{ApHint, WsjtApCompatible};
 use super::wsjt77::{is_plausible_message, unpack77};
 
 /// Upper bound on hard_errors for AP-assisted decodes, graded by the number
@@ -40,7 +40,14 @@ fn ap_max_errors(strictness: DecodeStrictness, locked_bits: usize) -> u32 {
 /// Build one AP configuration: derive the mask/values bit vectors from a
 /// hint for this protocol's codeword length. Convenience for callers that
 /// want to try several hint shapes (full lock, partial lock, …).
-pub fn ap_bits_for<P: Protocol>(hint: &ApHint) -> (Vec<u8>, Vec<u8>) {
+///
+/// Bound on [`WsjtApCompatible`] keeps callers honest: the hint encodes
+/// callsign / grid / report at fixed Wsjt77 bit positions and is meaningless
+/// for protocols whose info layout differs (e.g. uvpacket / PacketBytes).
+pub fn ap_bits_for<P: Protocol>(hint: &ApHint) -> (Vec<u8>, Vec<u8>)
+where
+    P::Msg: WsjtApCompatible,
+{
     hint.build_bits(P::Fec::N)
 }
 
@@ -71,6 +78,11 @@ pub fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
 /// Decode a single candidate with AP hints. Returns the first successful
 /// AP pass, or falls back to a plain BP/OSD decode (no AP) to catch
 /// already-clear signals.
+///
+/// `P::Msg: WsjtApCompatible` gates this function to protocols whose
+/// 77-bit message layout matches the Wsjt77 family — `ApHint` writes
+/// call1/call2/grid bits at hardcoded positions that would be nonsense
+/// for a different layout.
 pub fn process_candidate_ap<P: Protocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
@@ -81,7 +93,10 @@ pub fn process_candidate_ap<P: Protocol>(
     refine_steps: i32,
     sync_q_min: u32,
     ap_hint: Option<&ApHint>,
-) -> Option<DecodeResult> {
+) -> Option<DecodeResult>
+where
+    P::Msg: WsjtApCompatible,
+{
     let ds_rate = 12_000.0 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
 
@@ -272,24 +287,20 @@ fn finalise_result<P: Protocol>(
         }
     }
 
-    // Re-encode to compute a WSJT-X compatible SNR.
-    let mut info = vec![0u8; 91];
-    info[..77].copy_from_slice(&msg77);
-    let mut bytes = [0u8; 12];
-    for (i, &bit) in msg77.iter().enumerate() {
-        bytes[i / 8] |= (bit & 1) << (7 - i % 8);
-    }
-    let crc = crc14_local(&bytes);
-    for i in 0..14 {
-        info[77 + i] = ((crc >> (13 - i)) & 1) as u8;
-    }
+    // Re-encode to compute a WSJT-X compatible SNR. After Phase A the
+    // FEC's `r.info` already carries the K-bit info (message + CRC bits
+    // that `MessageCodec::verify_info` already accepted), so feeding it
+    // straight back through `fec.encode` reproduces the same codeword as
+    // the previous "extract msg77 → recompute CRC → encode" path —
+    // bit-identical because verifier acceptance enforces
+    // `info[77..K] == crc(info[..77])` at the moment of acceptance.
     let mut cw = vec![0u8; P::Fec::N];
-    fec.encode(&info, &mut cw);
+    fec.encode(&fec_result.info, &mut cw);
     let itone = codeword_to_itone::<P>(&cw);
     let snr_db = compute_snr_db::<P>(cs, &itone);
 
     Some(DecodeResult {
-        message77: msg77,
+        info: fec_result.info.clone().into_boxed_slice(),
         freq_hz: cand.freq_hz,
         dt_sec: refined.dt_sec,
         hard_errors: fec_result.hard_errors,
@@ -300,25 +311,12 @@ fn finalise_result<P: Protocol>(
     })
 }
 
-/// CRC-14 (poly 0x2757) — duplicated locally to avoid a cross-crate dep on
-/// `mfsk-fec::ldpc::crc14`. Kept small to stay inline-friendly.
-fn crc14_local(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for &byte in data {
-        for i in (0..8).rev() {
-            let bit = (byte >> i) & 1;
-            let msb = (crc >> 13) & 1;
-            crc = ((crc << 1) | bit as u16) & 0x3FFF;
-            if msb != 0 {
-                crc ^= 0x2757;
-            }
-        }
-    }
-    crc
-}
-
 /// Sniper-mode decode with AP hints: search within `±search_hz` of
 /// `target_freq`, with optional AP bit-locking applied per candidate.
+///
+/// `P::Msg: WsjtApCompatible` mirrors [`process_candidate_ap`]'s bound:
+/// the underlying AP path writes to Wsjt77 bit positions and only makes
+/// sense for protocols whose 77-bit message field shares that layout.
 #[allow(clippy::too_many_arguments)]
 pub fn decode_sniper_ap<P: Protocol>(
     audio: &[i16],
@@ -333,7 +331,10 @@ pub fn decode_sniper_ap<P: Protocol>(
     refine_steps: i32,
     sync_q_min: u32,
     ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
+) -> Vec<DecodeResult>
+where
+    P::Msg: WsjtApCompatible,
+{
     let freq_min = (target_freq - search_hz).max(100.0);
     let freq_max = (target_freq + search_hz).min(5_900.0);
     let candidates = coarse_sync::<P>(
@@ -363,7 +364,7 @@ pub fn decode_sniper_ap<P: Protocol>(
             sync_q_min,
             ap_hint,
         ) {
-            let new = !results.iter().any(|x| x.message77 == r.message77);
+            let new = !results.iter().any(|x| x.info == r.info);
             if new {
                 results.push(r);
                 // Early-exit: in sniper+AP mode we're hunting ONE target.

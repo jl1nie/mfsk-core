@@ -28,7 +28,8 @@
 //! # let audio: Vec<i16> = vec![];
 //! // `audio` is 720_000 i16 samples at 12 kHz (60 s FST4-60A slot).
 //! for r in decode_frame(&audio, 100.0, 3_000.0, 0.8, /* max_cand */ 30) {
-//!     if let Some(text) = unpack77(&r.message77) {
+//!     let msg77: &[u8; 77] = r.message77().try_into().unwrap();
+//!     if let Some(text) = unpack77(msg77) {
 //!         println!("{:7.1} Hz  dt={:+.2} s  {}", r.freq_hz, r.dt_sec, text);
 //!     }
 //! }

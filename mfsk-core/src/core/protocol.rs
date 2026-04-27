@@ -184,6 +184,30 @@ pub trait FrameLayout: Copy + Default + 'static {
     /// of the first frame symbol — the "dt = 0" reference point used by
     /// sync, signal subtraction, and DT reporting. FT8 = 0.5, FT4 = 0.5.
     const TX_START_OFFSET_S: f32;
+
+    /// Optional bit interleaver: permutation table such that
+    /// `cw[CODEWORD_INTERLEAVE[j]]` is the codeword bit transmitted at
+    /// **channel-bit position** `j`. Length must equal
+    /// `<Self as Protocol>::Fec::N` when `Some`.
+    ///
+    /// `None` (default) means the codeword bits flow into the channel in
+    /// natural order — what FT8 / FT4 / FST4 / WSPR / JT9 / JT65 / Q65
+    /// all do, since their existing FECs and operating channels make
+    /// burst-error tolerance a non-issue (or it's handled inside the FEC,
+    /// as Q65's QRA does symbol-level dispersion).
+    ///
+    /// `Some(table)` is for codecs targeting **time-selective fading**
+    /// channels where a deep fade null can wipe out consecutive channel
+    /// bits. The interleaver spreads consecutive codeword bits across the
+    /// frame so the same fade null hits scattered codeword bits, which
+    /// soft-decision LDPC handles well. uvpacket uses a stride-25
+    /// polynomial interleaver: `INTERLEAVE[j] = (7 * j) mod 174` (the
+    /// modular inverse of stride 25, since 25 × 7 ≡ 1 mod 174).
+    ///
+    /// Both [`crate::core::tx::codeword_to_itone`] and the pipeline's
+    /// LLR-deinterleave step honour this constant; protocols that
+    /// override get TX/RX symmetry for free.
+    const CODEWORD_INTERLEAVE: Option<&'static [u16]> = None;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

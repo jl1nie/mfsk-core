@@ -89,14 +89,22 @@ impl MessageCodec for Wsjt77Message {
         wsjt77::unpack77(&buf)
     }
 
-    /// Wsjt77 reserves info bits 77..91 for a CRC-14. The FEC layer
-    /// passes a `91`-bit slice through this verifier; we delegate to
-    /// `crate::fec::ldpc::check_crc14`. Pipelines built on
-    /// `Ldpc174_91` (FT8 / FT4 / FST4) thread
-    /// `Wsjt77Message::verify_info` into [`FecOpts::verify_info`] so
-    /// CRC-failed BP candidates are rejected before reaching the
-    /// caller.
+    /// Wsjt77 reserves the trailing K-77 info bits for a CRC. Two
+    /// flavours coexist in the WSJT-X family: FT8 / FT4 / FT2 use
+    /// LDPC(174, 91) with a 14-bit CRC at bits 77..91, while FST4
+    /// uses LDPC(240, 101) with a 24-bit CRC at bits 77..101.
+    /// Both share the same Wsjt77 77-bit message field; only the
+    /// CRC width differs by FEC pairing. We length-dispatch on the
+    /// `info` slice the FEC layer passes through here:
+    ///
+    /// - 91 → [`crate::fec::ldpc::check_crc14`]
+    /// - 101 → [`crate::fec::ldpc240_101::check_crc24`]
+    /// - other → reject (no Wsjt77-compatible CRC for that K)
     fn verify_info(info: &[u8]) -> bool {
-        crate::fec::ldpc::check_crc14(info)
+        match info.len() {
+            91 => crate::fec::ldpc::check_crc14(info),
+            101 => crate::fec::ldpc240_101::check_crc24(info),
+            _ => false,
+        }
     }
 }

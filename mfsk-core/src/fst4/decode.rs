@@ -129,7 +129,10 @@ mod tests {
         );
         let texts: Vec<String> = results
             .iter()
-            .filter_map(|r| unpack77(&r.message77))
+            .filter_map(|r| {
+                let msg77: &[u8; 77] = r.message77().try_into().ok()?;
+                unpack77(msg77)
+            })
             .collect();
         assert!(
             texts

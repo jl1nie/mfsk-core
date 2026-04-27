@@ -99,7 +99,7 @@ fn ft4_sniper_ap_wallclock() {
             let results = decode_sniper_ap(&audio, 1000.0, 30, EqMode::Adaptive, Some(&ap));
             let dt = t0.elapsed();
             times.push(dt);
-            if results.iter().any(|r| r.message77 == msg) {
+            if results.iter().any(|r| r.message77() == msg) {
                 decoded += 1;
             }
         }

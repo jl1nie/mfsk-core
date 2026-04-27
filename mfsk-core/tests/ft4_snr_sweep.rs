@@ -90,7 +90,7 @@ fn make_slot(msg77: &[u8; 77], freq_hz: f32, snr_db: f32, seed: u64) -> Vec<i16>
 }
 
 fn hit(results: &[DecodeResult], truth: &[u8; 77]) -> bool {
-    results.iter().any(|r| &r.message77 == truth)
+    results.iter().any(|r| r.message77() == truth.as_slice())
 }
 
 #[test]

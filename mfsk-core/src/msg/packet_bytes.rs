@@ -12,19 +12,54 @@
 //! ```text
 //! bits  0 ..  4 : length code (4 bits) = (actual_length - 1)
 //! bits  4 .. 84 : 10 bytes × 8 = 80 bits, MSB-first per byte
-//! bits 84 .. 91 : 7 bits of zero padding (sent as zero, ignored on unpack)
+//! bits 84 .. 91 : CRC-7 over bits 0..84 (poly x^7 + x^3 + 1, 0x09)
 //! ```
 //!
 //! Length codes 0..=9 encode payload byte counts 1..=10. Codes 10..=15
 //! are reserved and cause [`MessageCodec::unpack`] to return `None`.
+//! The CRC-7 occupies the trailing 7 bits and is verified both on
+//! [`MessageCodec::unpack`] and as the in-FEC `verify_info` integrity
+//! check (BP rejects mid-iteration on CRC-7 fail). Polynomial
+//! `x^7 + x^3 + 1` (0x09) — the SD-card standard CRC-7. Hamming
+//! distance ≥ 3 over the 84-bit input; combined with LDPC's already-low
+//! post-FEC BER this drops false-decode rate by ~2 orders of magnitude
+//! versus the naive "always accept" verifier.
 //!
 //! [`MessageCodec::Unpacked = Vec<u8>`] — the codec's `unpack`
-//! returns the payload bytes only (length field stripped).
+//! returns the payload bytes only (length and CRC fields stripped).
 
 use crate::core::{DecodeContext, MessageCodec, MessageFields};
 
 /// Maximum payload length in bytes per frame.
 pub const MAX_PAYLOAD_BYTES: usize = 10;
+
+/// Number of head bits (length + payload) covered by the CRC.
+const HEAD_BITS: usize = 84;
+/// CRC-7 generator polynomial (`x^7 + x^3 + 1` = 0b1001001 = 0x09 in
+/// the standard SD-card form). Uses the leading `x^7` term implicitly;
+/// the value below is the 7-bit polynomial without the high bit.
+const CRC7_POLY: u8 = 0x09;
+
+/// CRC-7 over `bits` (one bit per byte, LSB), MSB-first bit order.
+///
+/// Returns the 7-bit CRC value (top 7 bits of the final shift register
+/// `<< 1`). Mirrors the canonical WSJT bit-buffer CRC pattern: shift in
+/// each input bit at the LSB of an 8-bit register, XOR the polynomial
+/// when the bit shifted out at position 7 is set.
+fn crc7(bits: &[u8]) -> u8 {
+    let mut crc: u8 = 0;
+    for &bit in bits {
+        let in_bit = bit & 1;
+        let top = (crc >> 6) & 1;
+        crc = ((crc << 1) | in_bit) & 0x7F;
+        if top ^ in_bit != 0 {
+            // Standard CRC-7 step: XOR the 7-bit poly when the bit
+            // about to overflow XOR'd with the incoming bit is 1.
+            crc ^= CRC7_POLY;
+        }
+    }
+    crc & 0x7F
+}
 
 /// Variable-length byte-payload codec. See module docs for the bit
 /// layout.
@@ -36,13 +71,12 @@ impl MessageCodec for PacketBytesMessage {
 
     /// 91 information bits matching `Ldpc174_91`'s K. Of those, 4 bits
     /// are length, 80 bits are up to 10 bytes of payload, and the
-    /// final 7 bits are zero padding.
+    /// final 7 bits are a CRC-7 over the head 84 bits.
     const PAYLOAD_BITS: u32 = 91;
-    /// CRC-12 protects the payload at the FEC layer (handled by the
-    /// underlying QRA codec when used with Q65; for `uvpacket` the
-    /// frame's LDPC(174,91) FEC + the pack-time length sanity check
-    /// take the place of a separate CRC, so this codec advertises 0).
-    const CRC_BITS: u32 = 0;
+    /// CRC-7 trailing the payload — `x^7 + x^3 + 1` over bits 0..84.
+    /// The 7-bit CRC sits at info bits 84..91. See [`crc7`] /
+    /// [`Self::verify_info`].
+    const CRC_BITS: u32 = 7;
 
     fn pack(&self, fields: &MessageFields) -> Option<Vec<u8>> {
         // The codec is byte-oriented: callers pass payload via the
@@ -58,7 +92,7 @@ impl MessageCodec for PacketBytesMessage {
         for i in 0..4 {
             out[i] = (len_code >> (3 - i)) & 1;
         }
-        // 88 bits of payload (11 bytes), MSB first per byte. Bytes
+        // 80 bits of payload (10 bytes max), MSB first per byte. Bytes
         // beyond `len` are zero-padded.
         for byte_idx in 0..MAX_PAYLOAD_BYTES {
             let b = if byte_idx < bytes.len() {
@@ -70,11 +104,20 @@ impl MessageCodec for PacketBytesMessage {
                 out[4 + byte_idx * 8 + bit] = (b >> (7 - bit)) & 1;
             }
         }
+        // CRC-7 over bits 0..84 in the trailing 7 bits.
+        let crc = crc7(&out[..HEAD_BITS]);
+        for i in 0..7 {
+            out[HEAD_BITS + i] = (crc >> (6 - i)) & 1;
+        }
         Some(out)
     }
 
     fn unpack(&self, payload: &[u8], _ctx: &DecodeContext) -> Option<Self::Unpacked> {
         if payload.len() != Self::PAYLOAD_BITS as usize {
+            return None;
+        }
+        // Verify CRC-7 first — rejects garbage that survived BP parity.
+        if !Self::verify_info(payload) {
             return None;
         }
         // Length: 4 bits, big-endian, encodes (len - 1) in 0..=10.
@@ -96,6 +139,21 @@ impl MessageCodec for PacketBytesMessage {
             out.push(b);
         }
         Some(out)
+    }
+
+    /// Verify the CRC-7 trailer. Called by the FEC layer (BP / OSD)
+    /// to reject parity-converged candidates whose CRC doesn't match —
+    /// substantially reduces uvpacket false-decode rate.
+    fn verify_info(info: &[u8]) -> bool {
+        if info.len() != Self::PAYLOAD_BITS as usize {
+            return false;
+        }
+        let computed = crc7(&info[..HEAD_BITS]);
+        let mut received: u8 = 0;
+        for &b in &info[HEAD_BITS..(HEAD_BITS + 7)] {
+            received = (received << 1) | (b & 1);
+        }
+        computed == received
     }
 }
 
@@ -185,13 +243,71 @@ mod tests {
         // Sanity-check the bit layout. Single-byte payload 0xAA:
         //   length code = 0 (encodes 1 byte) → 4 bits of 0
         //   byte 0 = 0xAA = 0b10101010 → bits[4..12] = 1,0,1,0,1,0,1,0
-        //   remaining 80 bits = zero-padded
+        //   bits[12..84] = zero-padded payload tail
+        //   bits[84..91] = CRC-7 over bits[..84]
         let bits = pack(b"\xAA").expect("pack 0xAA");
         assert_eq!(bits.len(), 91);
         assert_eq!(&bits[0..4], &[0, 0, 0, 0], "length code");
         assert_eq!(&bits[4..12], &[1, 0, 1, 0, 1, 0, 1, 0], "byte 0 bits");
-        for &b in &bits[12..] {
-            assert_eq!(b, 0, "trailing pad must be zero");
+        for &b in &bits[12..84] {
+            assert_eq!(b, 0, "payload tail must be zero");
         }
+        // CRC-7 of bits[..84] must match what the codec wrote at [84..91].
+        let computed = crc7(&bits[..84]);
+        let mut stored: u8 = 0;
+        for &b in &bits[84..91] {
+            stored = (stored << 1) | (b & 1);
+        }
+        assert_eq!(stored, computed, "trailer must hold the CRC-7 of the head");
+    }
+
+    #[test]
+    fn unpack_rejects_bit_flip_in_payload() {
+        // A single bit flip anywhere in the head (length + payload)
+        // must invalidate the CRC-7 and cause unpack to return None,
+        // demonstrating the integrity check is wired correctly.
+        let mut bits = pack(b"hello").expect("pack");
+        // Flip a bit in the middle of the payload.
+        bits[20] ^= 1;
+        assert!(
+            unpack(&bits).is_none(),
+            "single bit flip must fail CRC-7 verification"
+        );
+    }
+
+    #[test]
+    fn unpack_rejects_bit_flip_in_crc() {
+        // A bit flip in the CRC-7 trailer alone must also fail.
+        let mut bits = pack(b"hi").expect("pack");
+        bits[88] ^= 1;
+        assert!(
+            unpack(&bits).is_none(),
+            "bit flip in CRC trailer must fail verification"
+        );
+    }
+
+    #[test]
+    fn verify_info_accepts_valid_pack_output() {
+        // Every output of `pack` must satisfy `verify_info` — it's the
+        // codec's own integrity contract that the FEC layer relies on.
+        for payload in [b"x".as_slice(), b"hello", b"\x00\x01\x02\x03\x04"] {
+            let bits = pack(payload).expect("pack");
+            assert!(
+                PacketBytesMessage::verify_info(&bits),
+                "verify_info must accept a fresh pack() output for {:?}",
+                payload
+            );
+        }
+    }
+
+    #[test]
+    fn verify_info_rejects_wrong_length() {
+        // The verifier is wired through `FecOpts::verify_info` and
+        // sees a slice whose length the FEC controls. Any length other
+        // than 91 must reject — guards against accidental misuse from
+        // a different FEC.
+        assert!(!PacketBytesMessage::verify_info(&[0u8; 90]));
+        assert!(!PacketBytesMessage::verify_info(&[0u8; 92]));
+        assert!(!PacketBytesMessage::verify_info(&[0u8; 0]));
     }
 }
