@@ -484,7 +484,8 @@ AP 対応版は `msg::pipeline_ap` に配置 (AP hint 構築が
 | `jt9`         | off        | JT9 ZST、decode                                             |
 | `jt65`        | off        | JT65 ZST、decode (+ 消失対応 RS)                            |
 | `q65`         | off        | Q65-30A + Q65-60A‥E ZST、4 デコード戦略、synth              |
-| `full`        | off        | 全 7 プロトコルの集約                                        |
+| `uvpacket`    | off        | UvPacket150 / 300 / 600 / 1200 ZST、バイトペイロード TX/RX  |
+| `full`        | off        | 全 8 プロトコル系統の集約                                    |
 | `parallel`    | on         | パイプラインで rayon `par_iter` (WASM は無効化)              |
 | `osd-deep`    | off        | AP ≥55 bit ロック時に OSD-3 フォールバック追加              |
 | `eq-fallback` | off        | `EqMode::Adaptive` が EQ 失敗時に非 EQ にフォールバック      |
@@ -849,6 +850,10 @@ Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
 | Q65-60C          | 60 s       | 65     | 85       | 6.667 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (~3 GHz EME) |
 | Q65-60D          | 60 s       | 65     | 85       | 13.33 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (5.7 / 10 GHz EME) |
 | Q65-60E          | 60 s       | 65     | 85       | 26.67 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (24 GHz+、強拡散) |
+| UvPacket150      | n/a (パケット) | 4  | 99       | 150 Hz     | LDPC(174, 91) + CRC-7 | 1–10 B | 2×Costas-4 + interleave | 実装済 (移動 U/VHF SSB、弱信号) |
+| UvPacket300      | n/a (パケット) | 4  | 99       | 300 Hz     | (同)                  | 1–10 B | (同)          | 実装済 (典型的 U/VHF SSB)        |
+| UvPacket600      | n/a (パケット) | 4  | 99       | 600 Hz     | (同)                  | 1–10 B | (同)          | 実装済 (クリーンな U/VHF SSB)    |
+| UvPacket1200     | n/a (パケット) | 4  | 99       | 1200 Hz    | (同)                  | 1–10 B | (同)          | 実装済 (FM データチャネル、約 1.2 kbps net) |
 
 FST4 は FT8 の LDPC(174, 91) ではなく LDPC(240, 101) + 24 bit CRC を
 用いる別の符号系で、`fec::ldpc240_101` として実装している。
@@ -885,6 +890,168 @@ repeat-accumulate 符号で、Walsh-Hadamard メッセージにより確率
 トーン間隔 (×1, ×2, ×4, ×8, ×16) のみが異なる。§3 の 4 つの
 並列デコード戦略 (AWGN BP, AP-biased BP, fast-fading metric,
 AP-list テンプレート照合) はすべて同じ QRA codec を利用する。
+
+## 11. uvpacket — モチベーション例
+
+本書はここまで `mfsk-core` を WSJT-X の Rust ポートとして扱って
+きた: 既存プロトコル群 (FT8 / FT4 / FST4 / WSPR / JT9 / JT65 /
+Q65) は WSJT-X 側で固定されているので、ライブラリの価値は
+**WSJT-X が動かない環境で動かすこと** にある。uvpacket は逆向きの
+ユースケース — このコードベース内で新規にプロトコル系統を設計
+し、§2 の抽象化が「WSJT-X 既存構造の単なる再パッケージング」では
+なく「新しい MFSK プロトコルを乗せられる土台」であることを示す
+worked example である。同時に、移動 / ポータブル U/VHF 運用での
+短ペイロードパケット転送 — WSJT-X のスロット同期前提モードでは
+形が合わず、APRS / 9k6 パケットには bit 単位 FEC が無いという、
+アマチュアデータの実需要のギャップを埋める役割も持つ。
+
+### 11.1 uvpacket が必要な理由 — 埋めたいギャップ
+
+| 運用者が求める能力                       | FT8 / FT4 | APRS 1k2/9k6 | uvpacket |
+|------------------------------------------|-----------|--------------|----------|
+| 任意バイト列の送信 (定義済フィールドではない) | ✗   | ✓            | ✓        |
+| 任意時刻に送信、UTC スロット不要         | ✗         | ✓            | ✓        |
+| 移動マルチパスフェージング下で生存       | 部分的    | ✗            | ✓        |
+| 同一チャネルで複数局送信                 | ✓         | 部分的       | ✓        |
+| 受信側ソフト判定 FEC                     | ✓         | ✗            | ✓        |
+| ≥ 1 kbps net スループット                | ✗         | ✓ (9k6)      | ✓ (1200) |
+
+WSJT 系は電離層伝搬の弱信号用途向けに調整されている: 15–60 秒
+スロット、コールサイン / グリッド / レポートの定型フィールド、
+ペイロード CRC 以外のフレーム整合性タグ無し。APRS はバイト列を
+送れて連続運用できるが、AX.25 framing + FM emphasis のみで bit
+レベル FEC が無く、U/VHF 移動速度での deep fade 一発でフレーム
+全損する。uvpacket は中間: WSJT 流のソフト判定 LDPC + interleaver
+を使いつつ、短フレーム・パケット形・スロット無し・バイト
+ペイロード・多重信号対応。
+
+### 11.2 チャネル前提
+
+uvpacket が想定する **U/VHF 移動 / ポータブル運用** での主要な
+劣化要因:
+
+- **時間選択性 Rayleigh fading**: U/VHF のマルチパス遅延広がりは
+  小さい (μs クラス) ので 3 kHz 音声帯域に対して **周波数フラット**
+  — 帯域全体が 1 つの複素ゲイン `h(t)` で fade する。エンベロープ
+  `|h(t)|` は Rayleigh 分布、fade 時間スケールは Doppler 周波数で
+  決まる。144 MHz / 50 km/h で Doppler ≈ 6.7 Hz、コヒーレンス時間
+  ≈ 150 ms — 遅いサブモードで複数シンボルを飲み込む長さ。
+- **バースト型エラー**: fade null はランダム bit 破壊ではなく
+  *連続シンボル* を潰す。AWGN 想定の FEC (素の LDPC) ではエラーが
+  集中するため復号失敗する。
+- **同一帯域の複数同時送信**: FT8 チャネルのように、3 kHz の音声
+  passband で多数の局が異なる音声中心周波数を共有する。受信機は
+  sliding-window coarse search を回し、各信号を並列復号する必要が
+  ある。
+
+### 11.3 設計選択
+
+LDPC + フラットフェージングを成立させる 3 機構:
+
+**ビットインターリーバ — `UVPACKET_INTERLEAVE`**: 174 bit LDPC
+符号語を stride-25 多項式置換 (`channel_bit[j] = codeword[(7·j) mod 174]`)
+で並べ替えてから 4-FSK シンボルにマップする。連続符号語 bit は
+チャネル位置で 25 離れて配置され、B 個連続のチャネルビット損失は
+逆置換後に符号語上で stride 7 (mod 174) で散らばる。UvPacket150
+で 50 ms の fade null (≈ 7.5 シンボル ≈ 14 channel bits) は、
+174 bit 符号語上の 14 個別位置に分散 — ソフト判定 LDPC の訂正
+能力範囲に収まる。
+
+**2 個の Costas-4 同期ブロック**: フレーム頭 (symbol 0) と中央
+(symbol 47)。フレーム頭の fade null は中央ブロックを残し、逆も
+同様で `coarse_sync` のロックを支援する。
+
+**サブモードレートラダー**: 4 サブモードが共通 (FEC, message
+codec, interleaver, sync layout) で NSPS / トーン間隔のみ異なる。
+最遅は弱信号耐性とスループットを交換、最速は SSB BW を超える代わり
+に FM データチャネルの広帯域を活用する。
+
+| ZST              | Baud  | トーン Δf | 音声 BW  | 正味レート| フレーム | チャネル       |
+|------------------|-------|-----------|----------|-----------|----------|----------------|
+| `UvPacket150`    |   150 |    150 Hz |   600 Hz |   150 bps |   660 ms | 弱信号 SSB     |
+| `UvPacket300`    |   300 |    300 Hz |  1200 Hz |   300 bps |   330 ms | 典型的 SSB     |
+| `UvPacket600`    |   600 |    600 Hz |  2400 Hz |   600 bps |   165 ms | クリーン SSB   |
+| `UvPacket1200`   |  1200 |   1200 Hz |  4800 Hz |  1.2 kbps |    83 ms | FM データ      |
+
+12 kHz 音声パイプラインの実用上限は ~1200 baud 付近で、それ以上
+は Nyquist がトーン分離を奪い始める。「数 kbps」を狙う場合は
+広サンプル (24 / 48 kHz) または高次変調 (PSK / QAM) が必要 —
+本プロトコルの範囲外。
+
+### 11.4 実装が再利用するもの
+
+プロトコル全体は `mfsk-core/src/uvpacket/` に収まる:
+
+```text
+src/uvpacket/
+├── mod.rs           -- モジュール docstring + 公開 re-export
+├── protocol.rs      -- ZST、uvpacket_submode! マクロ、INTERLEAVE 表
+├── sync_pattern.rs  -- 2× Costas-4 同期ブロック配置
+├── tx.rs            -- bytes → info → LDPC → tones (codeword_to_itone 利用)
+├── rx.rs            -- audio → pipeline::decode_frame → 型付バイト列
+└── chain.rs         -- > 10 byte ペイロード用フレーム連結
+```
+
+それ以外は共有インフラから引く:
+
+- **FEC**: `fec::Ldpc174_91` (FT8 / FT4 と同じ LDPC、新規 FEC 不要)。
+- **メッセージ codec**: `msg::PacketBytesMessage` (4 bit 長 + 80 bit
+  ペイロード + 7 bit CRC-7); `verify_info` が BP 段で CRC を実行する
+  ので spurious decode は反復途中で棄却される。
+- **DSP frontend**: `core::sync::coarse_sync<P>`、
+  `core::dsp::downsample`、`core::llr::compute_llr<P>` — すべて
+  Protocol trait 上で generic。
+- **デコーダ**: `pipeline::decode_frame::<P>` は uvpacket 専用コード
+  パスを持たず、sync → downsample → LLR → BP/OSD を回すだけ。
+  interleave は `core::tx::codeword_to_itone` (TX 側) と
+  `pipeline::deinterleave_llr_set` (RX 側) が
+  `FrameLayout::CODEWORD_INTERLEAVE` 定数経由で取り扱う。
+- **合成**: `core::dsp::gfsk::synth_f32` — FT4 と同じ GFSK shaping。
+
+実際に新規追加するのは: `INTERLEAVE` 表 (10 行の `const fn`)、
+2 ブロック同期配置 (5 行)、`uvpacket_submode!` マクロ呼び出し
+(4 × 8 行)、サブモード ZST + trait 実装 (マクロが処理)、複数
+フレームペイロード用 `chain` モジュールのみ。TX 経路は 80 行、
+RX 経路は 100 行で、本質的には「`pipeline::decode_frame` を呼んで
+各結果を `PacketBytesMessage::unpack` する」ことに尽きる。
+
+### 11.5 Headless 動作のクイックスタート
+
+```rust
+# #[cfg(feature = "uvpacket")] {
+use mfsk_core::uvpacket::{
+    UvPacket600, decode_frame, synthesize_packet,
+};
+
+// TX: 5 byte ペイロードを 1500 Hz / 600 baud で 12 kHz f32 PCM に合成
+let pcm_f32 = synthesize_packet::<UvPacket600>(b"hello", 1500.0, 0.5)
+    .expect("payload fits in one frame");
+let mut audio: Vec<i16> = pcm_f32
+    .iter()
+    .map(|&s| (s * 20_000.0) as i16)
+    .collect();
+audio.resize(12_000, 0); // 1 秒バッファに pad
+
+// RX: 100..3000 Hz を sliding-window でスキャン
+let frames = decode_frame::<UvPacket600>(
+    &audio, 100.0, 3_000.0, /* sync_min */ 1.0, /* max_cand */ 50,
+);
+assert_eq!(frames[0].payload, b"hello");
+# }
+```
+
+`tests/uvpacket_roundtrip.rs` が 4 サブモードについてこれを E2E で
+回し、AWGN at moderate SNR、5 Hz Doppler Rayleigh fading、
+UvPacket150 用 2 Hz slow-fade、フレーム頭 50 ms バーストヌルを
+カバーする。中央同期 + interleaver が設計通りに効くかを実測する
+シナリオである。
+
+### 11.6 詳細
+
+- [`docs/UVPACKET.ja.md`](UVPACKET.ja.md) — 実装ディープダイブ:
+  インターリーバの数学、Costas 配置の選択理由、チャネルモデル
+  導出、フェージングテスト方法論、12 kHz 音声パイプライン下で
+  正味 1.2 kbps を超えようとして当たった限界。
 
 ## ライセンス
 

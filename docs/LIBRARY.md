@@ -511,7 +511,8 @@ construction is 77-bit specific.
 | `jt9`         | off     | JT9 ZST, decode                                              |
 | `jt65`        | off     | JT65 ZST, decode (+ erasure-aware RS)                        |
 | `q65`         | off     | Q65-30A + Q65-60A‥E ZSTs, four decode strategies, synth      |
-| `full`        | off     | Aggregate of all seven protocols                              |
+| `uvpacket`    | off     | UvPacket150 / 300 / 600 / 1200 ZSTs, byte-payload TX & RX    |
+| `full`        | off     | Aggregate of all eight protocol families                      |
 | `parallel`    | on      | Enables rayon `par_iter` in pipeline (no-op under WASM)       |
 | `osd-deep`    | off     | Adds OSD-3 fallback to AP decodes under ≥55-bit lock          |
 | `eq-fallback` | off     | Lets `EqMode::Adaptive` fall back to non-EQ when EQ fails     |
@@ -860,6 +861,10 @@ Full build instructions in `mfsk-ffi/examples/kotlin_jni/README.md`.
 | Q65-60C    | 60 s   | 65    | 85      | 6.667 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (~3 GHz EME) |
 | Q65-60D    | 60 s   | 65    | 85      | 13.33 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (5.7 / 10 GHz EME) |
 | Q65-60E    | 60 s   | 65    | 85      | 26.67 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (24 GHz+, extreme spread) |
+| UvPacket150  | n/a (packet) | 4 | 99   | 150 Hz   | LDPC(174, 91) + CRC-7 | 1–10 B | 2×Costas-4 + interleave | implemented (mobile U/VHF SSB, weak) |
+| UvPacket300  | n/a (packet) | 4 | 99   | 300 Hz   | (same)           | 1–10 B | (same)    | implemented (typical U/VHF SSB)      |
+| UvPacket600  | n/a (packet) | 4 | 99   | 600 Hz   | (same)           | 1–10 B | (same)    | implemented (clean U/VHF SSB)        |
+| UvPacket1200 | n/a (packet) | 4 | 99   | 1200 Hz  | (same)           | 1–10 B | (same)    | implemented (FM data channel, ≈1.2 kbps net) |
 
 FST4 does not share FT8's LDPC(174, 91); it uses a separate
 LDPC(240, 101) + 24-bit CRC, implemented as `fec::ldpc240_101`.
@@ -899,6 +904,173 @@ the same FEC + sync layout + 77-bit message; only `NSPS`
 between them. The four parallel decoder strategies introduced in
 §3 (AWGN BP, AP-biased BP, fast-fading metric, AP-list template
 matching) all share the same QRA codec under the hood.
+
+## 11. uvpacket — motivating worked example
+
+Most of this document treats `mfsk-core` as a Rust port of WSJT-X:
+the protocols (FT8 / FT4 / FST4 / WSPR / JT9 / JT65 / Q65) are
+fixed by the existing reference implementation, and the value-add
+is making them run somewhere WSJT-X cannot. uvpacket is the
+opposite use case — a brand-new protocol family designed inside
+this codebase to demonstrate that the abstractions in §2 are not
+just convenient repackaging of WSJT-X but a foundation that can
+host new MFSK protocols. It also fills a real gap in amateur
+data: short-payload packet transport over mobile / portable
+U/VHF radios, where WSJT-X's slot-locked weak-signal modes are
+the wrong shape and APRS / 9k6 packet has no built-in burst-error
+tolerance.
+
+### 11.1 Why uvpacket exists — the gap it fills
+
+| Capability the operator wants            | FT8 / FT4 | APRS 1k2/9k6 | uvpacket |
+|------------------------------------------|-----------|--------------|----------|
+| Send arbitrary bytes (not pre-defined fields) | ✗  | ✓            | ✓        |
+| Run any time, no UTC slot                | ✗         | ✓            | ✓        |
+| Survive mobile multipath fading          | partial   | ✗            | ✓        |
+| Multiple senders share one channel       | ✓         | partial      | ✓        |
+| Soft-decision FEC on the receiver        | ✓         | ✗            | ✓        |
+| ≥ 1 kbps net throughput                  | ✗         | ✓ (9k6)      | ✓ (1200) |
+
+WSJT-family modes are tuned for the ionospheric weak-signal use
+case: 15-second to 60-second slots, callsign / grid / report
+fields, no per-frame integrity tag beyond the payload-level CRC.
+APRS gives you bytes and runs continuously, but its AX.25 framing
+plus FM emphasis lacks any form of bit-level FEC — a single deep
+fade at U/VHF mobile speeds drops the whole frame. uvpacket sits
+in the middle: WSJT-style soft-decision LDPC + interleaver, but
+short-frame packet-shaped, no slot, byte payload, multi-signal
+ready.
+
+### 11.2 Channel assumptions
+
+uvpacket is engineered for **U/VHF mobile / portable operation**.
+The dominant impairments at those bands are:
+
+- **Time-selective Rayleigh fading**: the multipath delay spread
+  at U/VHF is small (μs-class) compared to a 3 kHz audio channel,
+  so the channel is **frequency-flat** — the entire SSB / FM
+  passband fades together as one complex gain `h(t)`. The
+  envelope `|h(t)|` follows a Rayleigh distribution; the time
+  scale of fades is set by Doppler. At 144 MHz / 50 km/h vehicle
+  speed, Doppler is ~6.7 Hz so coherence time is ~150 ms — long
+  enough to swallow several symbols at the slower sub-modes.
+- **Burst-shaped errors**: a fade null does not corrupt random
+  bits — it kills *consecutive* symbols. Forward-error correction
+  designed for AWGN (e.g. plain LDPC) fails on this distribution
+  because the errors cluster.
+- **Multiple concurrent transmitters in the same band**: like
+  FT8 channels, dozens of stations share a 3 kHz audio passband
+  on different audio centre frequencies. The receiver must run
+  a sliding-window coarse search and decode every distinct signal
+  in parallel.
+
+### 11.3 Design choices
+
+Three mechanisms work together to make the LDPC + flat-fading
+combination viable:
+
+**Bit interleaver — `UVPACKET_INTERLEAVE`** &mdash; the 174 LDPC
+codeword bits go through a stride-25 polynomial permutation
+(`channel_bit[j] = codeword[(7·j) mod 174]`) before they hit the
+4-FSK symbol mapper. Consecutive codeword bits land 25 channel
+positions apart, so a burst of B consecutive corrupted channel
+bits decoheres into B sparse codeword-bit losses at stride 7
+(modulo 174). For a 50 ms fade null at UvPacket150 (≈ 7.5
+symbols ≈ 14 channel bits) those 14 losses scatter across 14
+distinct codeword positions out of 174 &mdash; sparse enough
+for soft-decision LDPC to correct.
+
+**Two Costas-4 sync blocks** &mdash; one at frame head (symbol 0),
+one at mid-frame (symbol 47). A fade null at the start of the
+frame still leaves the mid-frame block intact for
+`coarse_sync` to lock onto, and vice versa.
+
+**Sub-mode rate ladder** &mdash; four sub-modes share everything
+(FEC, message codec, interleaver, sync layout) and differ only in
+NSPS / tone spacing. The slowest variant trades throughput for
+weak-signal resilience; the fastest drops below SSB-fit but
+exploits the wider audio bandwidth available on FM data channels.
+
+| ZST              | Baud  | Tone Δf | Audio BW | Net rate | Frame   | Channel        |
+|------------------|-------|---------|----------|----------|---------|----------------|
+| `UvPacket150`    |   150 |  150 Hz |  600 Hz  |  150 bps |  660 ms | weak SSB       |
+| `UvPacket300`    |   300 |  300 Hz | 1200 Hz  |  300 bps |  330 ms | typical SSB    |
+| `UvPacket600`    |   600 |  600 Hz | 2400 Hz  |  600 bps |  165 ms | clean SSB      |
+| `UvPacket1200`   |  1200 | 1200 Hz | 4800 Hz  |  1.2 kbps|   83 ms | FM data        |
+
+The 12 kHz audio pipeline caps practical baud at ~1200 before
+Nyquist starts cutting tone separation. Higher rates would
+require either a wider sample rate (24 / 48 kHz) or higher-order
+modulation (PSK / QAM) — out of scope for this protocol.
+
+### 11.4 What the implementation reuses
+
+The whole protocol fits in `mfsk-core/src/uvpacket/`:
+
+```text
+src/uvpacket/
+├── mod.rs           -- module docs + public re-exports
+├── protocol.rs      -- ZSTs, uvpacket_submode! macro, INTERLEAVE table
+├── sync_pattern.rs  -- 2× Costas-4 sync block layout
+├── tx.rs            -- bytes → info → LDPC → tones (uses codeword_to_itone)
+├── rx.rs            -- audio → pipeline::decode_frame → typed bytes
+└── chain.rs         -- multi-frame chaining for >10-byte payloads
+```
+
+It pulls everything else from the shared infrastructure:
+
+- **FEC**: `fec::Ldpc174_91` (the same FT8 / FT4 LDPC, no new FEC needed).
+- **Message codec**: `msg::PacketBytesMessage` (4-bit length + 80-bit payload + 7-bit CRC-7); `verify_info` runs the CRC at the BP layer so spurious decodes are rejected mid-iteration.
+- **DSP frontend**: `core::sync::coarse_sync<P>`, `core::dsp::downsample`, `core::llr::compute_llr<P>` — all generic over the protocol trait.
+- **Decoder**: `pipeline::decode_frame::<P>` runs sync → downsample → LLR → BP/OSD with no uvpacket-specific code paths. The interleave is honoured by `core::tx::codeword_to_itone` (TX side) and `pipeline::deinterleave_llr_set` (RX side) via the `FrameLayout::CODEWORD_INTERLEAVE` constant.
+- **Synthesis**: `core::dsp::gfsk::synth_f32` — same GFSK shaping FT4 uses.
+
+The only genuinely new pieces are: the `INTERLEAVE` table (10 lines
+of `const fn`), the two-Costas-block sync layout (5 lines), the
+four `uvpacket_submode!` invocations (4 × 8 lines), the per-sub-mode
+ZST + trait impls (handled by the macro), and the `chain` module
+for multi-frame payloads. The TX path is 80 lines; the RX path
+is 100 lines and is essentially "call `pipeline::decode_frame` then
+unpack each result through `PacketBytesMessage::unpack`".
+
+### 11.5 Headless quick start
+
+```rust
+# #[cfg(feature = "uvpacket")] {
+use mfsk_core::uvpacket::{
+    UvPacket600, decode_frame, synthesize_packet,
+};
+
+// TX: 5-byte payload at 1500 Hz, 600 baud → 12 kHz f32 PCM
+let pcm_f32 = synthesize_packet::<UvPacket600>(b"hello", 1500.0, 0.5)
+    .expect("payload fits in one frame");
+let mut audio: Vec<i16> = pcm_f32
+    .iter()
+    .map(|&s| (s * 20_000.0) as i16)
+    .collect();
+audio.resize(12_000, 0); // 1 s buffer
+
+// RX: scan 100..3000 Hz for any uvpacket frame
+let frames = decode_frame::<UvPacket600>(
+    &audio, 100.0, 3_000.0, /* sync_min */ 1.0, /* max_cand */ 50,
+);
+assert_eq!(frames[0].payload, b"hello");
+# }
+```
+
+`tests/uvpacket_roundtrip.rs` exercises this end-to-end across
+all four sub-modes including AWGN at moderate SNR, a 5 Hz Doppler
+Rayleigh-fading channel, a 2 Hz slow-fade case for UvPacket150,
+and a head-end burst-null scenario that confirms the mid-frame
+sync + interleaver actually buy what the design claims.
+
+### 11.6 Further reading
+
+- [`docs/UVPACKET.md`](UVPACKET.md) — implementation deep dive:
+  the interleaver math, Costas placement choice, channel-model
+  derivation, fading test methodology, and the limits we hit
+  trying to push net rate beyond 1.2 kbps in a 12 kHz audio
+  pipeline.
 
 ## License
 
