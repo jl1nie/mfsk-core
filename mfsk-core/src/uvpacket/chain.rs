@@ -141,14 +141,9 @@ impl PartialChain {
 
     fn try_finalise(&self) -> Option<Vec<u8>> {
         let end_seq = self.end_seen_at?;
-        for i in 0..=end_seq {
-            if self.received[i].is_none() {
-                return None;
-            }
-        }
         let mut out = Vec::new();
         for i in 0..=end_seq {
-            out.extend_from_slice(self.received[i].as_ref().unwrap());
+            out.extend_from_slice(self.received[i].as_ref()?);
         }
         Some(out)
     }
