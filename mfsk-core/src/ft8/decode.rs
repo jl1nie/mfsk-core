@@ -607,42 +607,59 @@ fn process_candidate(
             }
         }
 
-        // Multi-pass AP (similar to WSJT-X a1..a7)
-        // Try progressively deeper AP configurations:
-        //   pass 6: call2 only (original)
-        //   pass 7: CQ + call2 (locks ~61 bits for CQ messages)
-        //   pass 8: call1 + call2 (locks ~61 bits for directed messages)
-        if use_ap
-            && let Some(ap) = ap_hint
-            && ap.has_info()
-        {
+        // Multi-pass AP (mirrors WSJT-X ft8b.f90 ipass 5..8 / iaptype 1..6).
+        // The loop fires whenever the caller supplies *any* `ApHint` (even
+        // an empty one) — passing `None` still skips AP entirely so the
+        // legacy `decode_frame` non-AP path stays bit-for-bit identical.
+        //
+        // Passes (deepest → shallowest, deepest tried first):
+        //   pass  9/10/11: call1 + call2 + RRR/RR73/73 (full 77-bit lock,
+        //                  iaptype 4/5/6)
+        //   pass  8: call1 + call2 (~61 bits, iaptype 3)
+        //   pass  7: CQ + call2 (auto-CQ when only call2 is known)
+        //   pass  6: ap as-supplied (call2 only / fallback, iaptype 2)
+        //   pass 12: blind CQ — `with_call1("CQ")` only, locks bits 0–28
+        //            + i3=001. Mirrors WSJT-X iaptype 1 (ipass 5) which
+        //            runs unconditionally when `lapon=true`. Surfaces
+        //            unknown stations actively calling CQ even when the
+        //            caller has no operator-context hint.
+        if use_ap && let Some(ap) = ap_hint {
             let apmag = llr_set.llra.iter().map(|v| v.abs()).fold(0.0f32, f32::max) * 1.01;
 
             // Build multiple AP configurations (deepest first)
             let mut ap_passes: Vec<(ApHint, u8)> = Vec::new();
 
-            // Pass 9/10/11: full 77-bit lock (call1+call2+response)
-            // Equivalent to WSJT-X a4/a5/a6 for QSO in progress
-            if ap.call1.is_some() && ap.call2.is_some() {
-                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
-                    let ap_full = ap.clone().with_report(rpt);
-                    ap_passes.push((ap_full, pid));
+            // Operator-context passes only when the caller actually
+            // supplied call1/call2/grid/report info.
+            if ap.has_info() {
+                // Pass 9/10/11: full 77-bit lock (call1+call2+response)
+                if ap.call1.is_some() && ap.call2.is_some() {
+                    for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
+                        let ap_full = ap.clone().with_report(rpt);
+                        ap_passes.push((ap_full, pid));
+                    }
                 }
+
+                // Pass 7: CQ + call2 (expect "CQ DXCALL GRID", ~61 bits)
+                if ap.call2.is_some() && ap.call1.is_none() {
+                    let ap7 = ap.clone().with_call1("CQ");
+                    ap_passes.push((ap7, 7));
+                }
+
+                // Pass 8: mycall + call2 (~61 bits)
+                if ap.call1.is_some() && ap.call2.is_some() {
+                    ap_passes.push((ap.clone(), 8));
+                }
+
+                // Pass 6: ap as-supplied (~33 bits, fallback)
+                ap_passes.push((ap.clone(), 6));
             }
 
-            // Pass 7: CQ + call2 (expect "CQ DXCALL GRID", ~61 bits)
-            if ap.call2.is_some() && ap.call1.is_none() {
-                let ap7 = ap.clone().with_call1("CQ");
-                ap_passes.push((ap7, 7));
-            }
-
-            // Pass 8: mycall + call2 (~61 bits)
-            if ap.call1.is_some() && ap.call2.is_some() {
-                ap_passes.push((ap.clone(), 8));
-            }
-
-            // Pass 6: call2 only (~33 bits, fallback)
-            ap_passes.push((ap.clone(), 6));
+            // Pass 12: blind-CQ (WSJT-X iaptype 1). Always tried whenever
+            // AP is enabled, regardless of whether `ap` carries operator
+            // context. `check_result` will reject decodes whose unpacked
+            // text doesn't contain "CQ", so phantoms can't leak through.
+            ap_passes.push((ApHint::new().with_call1("CQ"), 12));
 
             for (ap_cfg, pass_id) in &ap_passes {
                 let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
