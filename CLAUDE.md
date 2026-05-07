@@ -56,6 +56,26 @@ cargo build --release --bin <bin>
     90    # capture seconds (optional, default 90)
 ```
 
+## Test fixture paths
+
+Never hardcode absolute paths like `/home/ubuntu/...` or `/Users/...`
+for test inputs. AI assistants tend to "fix" path failures by
+translating to whichever local environment they happen to run in
+(commit `119657a` flipped `/home/minoru/` → `/home/ubuntu/`), which
+just relocates the bug.
+
+- **In-repo assets**: use the `asset_path!` macro from
+  `mfsk-core/tests/common/mod.rs` (integration tests) or
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/../embedded-poc/assets/<f>")`
+  (unit tests under `src/`). Vendor the file under
+  `embedded-poc/assets/` if it's not already there — the FT8 / JT9
+  reference recordings already live there.
+- **Out-of-tree user-machine assets** (e.g. the full WSJT-X tarball):
+  `option_env!("WSJTX_SAMPLES_DIR")` and skip cleanly when unset.
+- **Diagnostic output paths** (test writes a WAV for human inspection):
+  `/tmp/...` literals are fine — the human-in-the-loop step assumes a
+  known location. Don't replace these with `tempfile`.
+
 ## Memory
 
 - `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the
