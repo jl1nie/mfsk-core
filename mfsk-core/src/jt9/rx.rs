@@ -211,7 +211,10 @@ mod diag_tests {
     #[test]
     #[ignore]
     fn test_decode_at_golden_alignment() {
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             return;
         }
@@ -257,7 +260,10 @@ mod diag_tests {
     #[test]
     #[ignore]
     fn rx_aligned_sweep_all_golden() {
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             eprintln!("WAV not found");
             return;
@@ -327,7 +333,10 @@ mod diag_tests {
 #[ignore]
 #[allow(clippy::collapsible_if)]
 fn freq_sweep_1224hz() {
-    let path = std::path::Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/130418_1742.wav"
+    ));
     if !path.exists() {
         return;
     }
@@ -365,7 +374,10 @@ fn freq_sweep_1224hz() {
 #[ignore]
 #[allow(clippy::collapsible_if)]
 fn wide_freq_time_sweep() {
-    let path = std::path::Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/130418_1742.wav"
+    ));
     if !path.exists() {
         return;
     }

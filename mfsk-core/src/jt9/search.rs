@@ -269,7 +269,10 @@ mod diag_tests {
     #[test]
     #[ignore]
     fn jt9_coarse_diag() {
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             eprintln!("WAV not found");
             return;

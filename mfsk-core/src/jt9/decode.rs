@@ -120,7 +120,10 @@ mod gate_diag {
     #[test]
     #[ignore]
     fn probe_missing_goldens() {
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             eprintln!("skipping — sample not found");
             return;

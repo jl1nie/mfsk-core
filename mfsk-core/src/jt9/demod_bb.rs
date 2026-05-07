@@ -269,7 +269,10 @@ mod sync_diag {
     #[test]
     #[ignore]
     fn print_sync_scores_dense() {
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             eprintln!("WAV not found");
             return;
@@ -395,7 +398,10 @@ mod sync_diag {
         }
 
         // 3) Now do same for WAV at 1346 Hz, best position
-        let wav_path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let wav_path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !wav_path.exists() {
             eprintln!("WAV not found");
             return;
@@ -548,7 +554,10 @@ mod sync_diag {
         use crate::fec::{ConvFano232, FecCodec};
         use crate::msg::Jt72Codec;
 
-        let path = Path::new("/home/ubuntu/src/WSJT-X/samples/JT9/130418_1742.wav");
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
         if !path.exists() {
             eprintln!("WAV not found");
             return;
