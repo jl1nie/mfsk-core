@@ -91,20 +91,31 @@ const GOLDEN: &[Golden] = &[
         freq_hz: 1346.0,
         dt_sec: WAV_PRE_ROLL_SEC + 0.1, // 1.01
     },
+    // Two more signals confirmed via JTDX 2026-05-08 (the original 5-entry
+    // table understated the busy-band content of this slot).
+    Golden {
+        msg: "G7CNF N4HFA EL89",
+        freq_hz: 1461.0,
+        dt_sec: WAV_PRE_ROLL_SEC + 0.0, // 0.91
+    },
+    Golden {
+        msg: "JA1KAU PD0JAC -23",
+        freq_hz: 1505.0,
+        dt_sec: WAV_PRE_ROLL_SEC + 1.2, // 2.11
+    },
 ];
 
 const FREQ_TOL_HZ: f32 = 4.0;
 const DT_TOL_SEC: f32 = 0.5; // ≈ 1 symbol; covers ⅛-sym lag grid + slot-offset uncertainty
 
-// Recall is 5/5 on this golden as of 2026-05-08 (six source-faithful fixes
-// landed under issue #19 — see memory/project_jt9_wsjtx_recall.md).
-//
-// Note: `decode_scan` also produces a 6th decode `G7CNF N4HFA EL89` at
-// ~1460.7 Hz that is outside the 5-entry golden table. Pending
-// JTDX-side verification on whether this is a real signal WSJT-X also
-// catches (→ extend GOLDEN) or a phantom (→ investigate). The test
-// only asserts hits == GOLDEN.len(), so the extra decode does not
-// affect pass/fail.
+// Recall is 7/7 on this golden as of 2026-05-08. Six source-faithful
+// fixes under issue #19 lifted recall from 1/5 to 5/5 (see
+// memory/project_jt9_wsjtx_recall.md); JTDX cross-check on the same
+// WAV (2026-05-08) confirmed two additional real signals beyond the
+// original 5-entry table — `G7CNF N4HFA EL89` @ 1461 Hz and
+// `JA1KAU PD0JAC -23` @ 1505 Hz — both of which `decode_scan` already
+// surfaces. The freq_max in `params` was bumped from 1500 → 1550 Hz
+// to bring the 1505 Hz signal inside the search band.
 #[test]
 fn jt9_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
@@ -122,7 +133,7 @@ fn jt9_wsjtx_sample_recall_vs_golden() {
     // stays at default.
     let params = SearchParams {
         freq_min_hz: 1050.0,
-        freq_max_hz: 1500.0,
+        freq_max_hz: 1550.0,
         time_tolerance_symbols: 3,
         score_threshold: 0.05,
         max_candidates: 200,
