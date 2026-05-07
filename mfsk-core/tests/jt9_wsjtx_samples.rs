@@ -48,7 +48,7 @@ fn read_wsjtx_wav_f32(path: &Path) -> Option<Vec<f32>> {
 fn sample_path() -> Option<PathBuf> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/JT9/130418_1742.wav")
+        .join("../embedded-poc/assets/130418_1742.wav")
         .canonicalize()
         .ok()?;
     if p.is_file() { Some(p) } else { None }
@@ -96,15 +96,21 @@ const GOLDEN: &[Golden] = &[
 const FREQ_TOL_HZ: f32 = 4.0;
 const DT_TOL_SEC: f32 = 0.5; // ≈ 1 symbol; covers ⅛-sym lag grid + slot-offset uncertainty
 
+// Recall is 5/5 on this golden as of 2026-05-08 (six source-faithful fixes
+// landed under issue #19 — see memory/project_jt9_wsjtx_recall.md).
+//
+// Note: `decode_scan` also produces a 6th decode `G7CNF N4HFA EL89` at
+// ~1460.7 Hz that is outside the 5-entry golden table. Pending
+// JTDX-side verification on whether this is a real signal WSJT-X also
+// catches (→ extend GOLDEN) or a phantom (→ investigate). The test
+// only asserts hits == GOLDEN.len(), so the extra decode does not
+// affect pass/fail.
 #[test]
-#[ignore = "JT9 host path 2/5 against WSJT-X golden after packgrid fix \
-            (EM41 + 73 hit; IO75 / CN84 / IO82 still miss — wrong-codeword \
-            in ng field at busy bands) — run with `cargo test -- --ignored` \
-            to track repair"]
 fn jt9_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
         eprintln!(
-            "skipping: WSJT-X JT9 sample not found at ../../WSJT-X/samples/JT9/130418_1742.wav"
+            "skipping: vendored JT9 sample not found at \
+             embedded-poc/assets/130418_1742.wav"
         );
         return;
     };
