@@ -4,9 +4,9 @@
 //!
 //! The 8-entry golden in [`WSJTX_GOLDEN`] is what WSJT-X normal mode
 //! produces with **a-priori decoding disabled** (the canonical
-//! reproducible reference). The companion AP-on regression
-//! (`ft8_qso3_apon_recall.rs`) gates a different superset and is
-//! marked `#[ignore]` until AP-list (ft8b.f90 ipass 5..8) is ported.
+//! reproducible reference). A companion AP-on regression will be
+//! added when AP-list (ft8b.f90 ipass 5..8) is ported — tracked in
+//! https://github.com/jl1nie/mfsk-core/issues/31.
 //!
 //! Run:
 //! ```sh
