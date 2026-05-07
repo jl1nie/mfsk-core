@@ -14,27 +14,85 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  publish:
-    name: Publish to crates.io + GitHub release
+  # ── Gate 1 ─────────────────────────────────────────────────────────
+  # Wait for the CI workflow that already ran on this commit (when it
+  # was pushed to main) to finish, and refuse to publish if it didn't
+  # pass. This is the gate that v0.5.10 was missing — the
+  # feature-matrix job was red on main but the tag still went out to
+  # crates.io because release.yml didn't look at CI status.
+  #
+  # We deliberately do NOT add a tag trigger to ci.yml — that would
+  # re-run the entire matrix on every release for no new signal (the
+  # SHA is identical to what main already tested). Instead we query
+  # the existing run via the Checks API.
+  wait-for-ci:
+    name: Wait for CI on this commit
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # for creating the GitHub release
+    steps:
+      - name: Poll CI workflow status for ${{ github.sha }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ref = context.sha;
+            const workflowName = 'CI';
+            const intervalMs = 20_000;
+            const timeoutMs = 30 * 60 * 1000;  // 30 min cap
+            const start = Date.now();
+            let lastReport = '';
+
+            while (Date.now() - start < timeoutMs) {
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head_sha: ref,
+                event: 'push',
+                per_page: 100,
+              });
+              const ciRuns = data.workflow_runs.filter(r => r.name === workflowName);
+
+              if (ciRuns.length === 0) {
+                // No CI run yet for this SHA. Most likely the tag was
+                // pushed before the main-push CI scheduler picked up
+                // the commit (rare, but possible on a fast tag-after-
+                // merge sequence). Keep waiting up to the timeout.
+                if (lastReport !== 'none') {
+                  core.info(`No '${workflowName}' run yet for ${ref}; waiting...`);
+                  lastReport = 'none';
+                }
+              } else {
+                const failed = ciRuns.filter(r =>
+                  r.status === 'completed' && r.conclusion !== 'success' && r.conclusion !== 'skipped');
+                if (failed.length > 0) {
+                  const msg = failed.map(r => `${r.conclusion}: ${r.html_url}`).join('\n  ');
+                  core.setFailed(`CI failure on ${ref}; refusing to publish:\n  ${msg}`);
+                  return;
+                }
+                const pending = ciRuns.filter(r => r.status !== 'completed');
+                if (pending.length === 0) {
+                  const urls = ciRuns.map(r => r.html_url).join(', ');
+                  core.info(`All ${ciRuns.length} CI run(s) succeeded on ${ref}: ${urls}`);
+                  return;
+                }
+                const report = pending.map(r => `${r.status}: ${r.html_url}`).join(', ');
+                if (report !== lastReport) {
+                  core.info(`Waiting on ${pending.length} CI run(s): ${report}`);
+                  lastReport = report;
+                }
+              }
+              await new Promise(r => setTimeout(r, intervalMs));
+            }
+            core.setFailed(`Timed out (30 min) waiting for CI on ${ref}`);
+
+  # ── Gate 2 ─────────────────────────────────────────────────────────
+  # Tag must be reachable from main and the version embedded in the
+  # tag must match `mfsk-core/Cargo.toml`. Cheap; runs in parallel
+  # with the CI wait.
+  verify-tag:
+    name: Verify tag
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      # Tag must be reachable from main. ci.yml has already validated
-      # every commit that landed on main (PRs gated by main
-      # protection); refusing to publish a tag that points outside
-      # main is enough to catch the "tagged a feature branch by
-      # mistake" scenario without re-running the full test suite (the
-      # 0.4.1 release added the embedded port and the slow-sweep
-      # re-run there cost ~3 min per release for zero new signal).
       - name: Verify tag is reachable from main
         run: |
           set -euo pipefail
@@ -58,48 +116,17 @@ jobs:
             exit 1
           fi
 
-      - name: Publish mfsk-core to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # mfsk-core is the only crate we publish to crates.io.
-        # `mfsk-ffi` and `mfsk-ffi-ft8` both `publish = false` —
-        # they are binary deliverables (the cbindgen-generated `.h`
-        # + the staticlib), distributed via the GitHub release
-        # tarballs attached below. Keeps the crates.io index
-        # focused on the actual library consumers depend on.
-        run: cargo publish -p mfsk-core --features full
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          body: |
-            Published to crates.io as [`mfsk-core ${{ github.ref_name }}`](https://crates.io/crates/mfsk-core).
-
-            Release notes are auto-generated from merged PRs; see the crate's
-            [CHANGELOG.md](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md)
-            for curated release notes.
-
-            **Prebuilt `mfsk-ffi-ft8` binaries** (FT8 C ABI) are attached
-            below for users who want to drop the decoder into a non-Rust
-            project without setting up the cross-toolchain themselves —
-            see [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
-            for the integration guide.
-
-  # ── mfsk-ffi-ft8 prebuilt binaries ─────────────────────────────────
-  #
-  # Attach `libmfsk_ft8.{a,so,dylib}` + `mfsk_ft8.h` to the GitHub
-  # release so non-Rust C/C++ users can drop the FT8 decoder into an
-  # ESP-IDF / desktop project without installing the +esp toolchain.
-  # All three jobs upload to the same release as the `publish` job's
-  # `softprops/action-gh-release@v2` (idempotent append).
-
-  release-ffi-host:
-    name: mfsk-ffi-ft8 — host (linux-x86_64)
-    needs: publish
+  # ── Gate 3a-c ──────────────────────────────────────────────────────
+  # Build all three mfsk-ffi-ft8 binaries BEFORE crates.io publish so
+  # a cross-toolchain failure doesn't leave the release set in a
+  # half-published state (the previous workflow had `release-ffi-*
+  # needs: publish`, which meant a broken xtensa build came after
+  # crates.io was already updated, with no rollback). Each job uploads
+  # its tarball as a workflow artifact; the publish job downloads all
+  # three and attaches them to a single GitHub release.
+  build-ffi-host:
+    name: Build mfsk-ffi-ft8 — linux-x86_64
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -117,17 +144,15 @@ jobs:
           cp mfsk-ffi-ft8/README.md          "$PKG"/ 2>/dev/null || true
           cp mfsk-ffi-ft8/tests/c_smoke/smoke.c "$PKG"/
           tar -czvf "$PKG".tar.gz "$PKG"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: mfsk-ffi-ft8-*-linux-x86_64.tar.gz
-          fail_on_unmatched_files: true
+          name: ffi-host
+          path: mfsk-ffi-ft8-*-linux-x86_64.tar.gz
+          if-no-files-found: error
 
-  release-ffi-esp32:
-    name: mfsk-ffi-ft8 — Xtensa ESP32 (`libmfsk_ft8.a`)
-    needs: publish
+  build-ffi-esp32:
+    name: Build mfsk-ffi-ft8 — Xtensa ESP32
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install Xtensa Rust toolchain (+esp)
@@ -160,17 +185,15 @@ jobs:
           cp mfsk-ffi-ft8/include/mfsk_ft8.h "$PKG"/include/
           cp mfsk-ffi-ft8/README.md          "$PKG"/ 2>/dev/null || true
           tar -czvf "$PKG".tar.gz "$PKG"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: mfsk-ffi-ft8-*-esp32-xtensa.tar.gz
-          fail_on_unmatched_files: true
+          name: ffi-esp32
+          path: mfsk-ffi-ft8-*-esp32-xtensa.tar.gz
+          if-no-files-found: error
 
-  release-ffi-esp32s3:
-    name: mfsk-ffi-ft8 — Xtensa ESP32-S3 (`libmfsk_ft8.a`)
-    needs: publish
+  build-ffi-esp32s3:
+    name: Build mfsk-ffi-ft8 — Xtensa ESP32-S3
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Install Xtensa Rust toolchain (+esp)
@@ -199,7 +222,65 @@ jobs:
           cp mfsk-ffi-ft8/include/mfsk_ft8.h "$PKG"/include/
           cp mfsk-ffi-ft8/README.md          "$PKG"/ 2>/dev/null || true
           tar -czvf "$PKG".tar.gz "$PKG"
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: mfsk-ffi-ft8-*-esp32s3-xtensa.tar.gz
+          name: ffi-esp32s3
+          path: mfsk-ffi-ft8-*-esp32s3-xtensa.tar.gz
+          if-no-files-found: error
+
+  # ── Publish ───────────────────────────────────────────────────────
+  # Runs only after every gate above is green: CI passed on this SHA,
+  # tag verification succeeded, and all three FFI binaries built. Then
+  # we cargo publish, create a single GitHub release, and attach the
+  # FFI tarballs in one shot — no more idempotent-append racing across
+  # four jobs.
+  publish:
+    name: Publish to crates.io + GitHub release
+    runs-on: ubuntu-latest
+    needs: [wait-for-ci, verify-tag, build-ffi-host, build-ffi-esp32, build-ffi-esp32s3]
+    permissions:
+      contents: write   # for creating the GitHub release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download FFI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ffi-artifacts
+          merge-multiple: true
+
+      - name: Publish mfsk-core to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # mfsk-core is the only crate we publish to crates.io.
+        # `mfsk-ffi` and `mfsk-ffi-ft8` both `publish = false` —
+        # they are binary deliverables (the cbindgen-generated `.h`
+        # + the staticlib), distributed via the GitHub release
+        # tarballs attached below. Keeps the crates.io index
+        # focused on the actual library consumers depend on.
+        run: cargo publish -p mfsk-core --features full
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ffi-artifacts/*.tar.gz
           fail_on_unmatched_files: true
+          body: |
+            Published to crates.io as [`mfsk-core ${{ github.ref_name }}`](https://crates.io/crates/mfsk-core).
+
+            Release notes are auto-generated from merged PRs; see the crate's
+            [CHANGELOG.md](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md)
+            for curated release notes.
+
+            **Prebuilt `mfsk-ffi-ft8` binaries** (FT8 C ABI) are attached
+            below for users who want to drop the decoder into a non-Rust
+            project without setting up the cross-toolchain themselves —
+            see [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
+            for the integration guide.
