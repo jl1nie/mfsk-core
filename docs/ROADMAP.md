@@ -1,15 +1,25 @@
-# Roadmap (post-0.5.11)
+# Roadmap (post-0.5.12)
 
 ## Context
 
-0.5.11 closed JT9 issue #19 (recall 1/5 → 5/5 via 6 source-faithful WSJT-X
-fixes) and merged 3 contributor PRs (FT4 SIC, FT4/FST4 depth+strictness,
-FT8 wide-band AP). The next two threads of work — confirmed with the
-user — are:
+0.5.12 closed FT8 AP-list issue #31 (iaptype-1 / blind-CQ pass added,
+`ft8_qso3_apon_recall` regression test landed) and bundled three
+0.5.11-shipping correctness fixes — most critically #26 (FT8 phase-2
+SIC was running on un-subtracted residual; weak signals masked by
+known strong ones stayed masked). Also re-locked JT9 recall at 7/7
+after JTDX cross-check expanded the original 5-entry golden, and
+restored FT4 GFSK BT=1.0 / NFILT=1400 to WSJT-X parity (#27, #28).
 
-1. Lock the remaining host-side protocol goldens (FST4 #23, JT65 #24)
+Three threads of work — confirmed with the user — for the next 3-month
+horizon:
+
+1. **Close the AP-on value loop** — issue #40 (host coarse-sync
+   candidate gap) blocks the just-shipped AP iaptype-1 from surfacing
+   any of the 6 JTDX-confirmed AP-on extras on `qso3_busy.wav`. Until
+   #40 closes the AP work has no measurable real-WAV effect.
+2. Lock the remaining host-side protocol goldens (FST4 #23, JT65 #24)
    using the same WSJT-X-source-faithful methodology that closed JT9.
-2. Take `embedded-poc/m5stack-s3-app` from its current state (LCD-rendered
+3. Take `embedded-poc/m5stack-s3-app` from its current state (LCD-rendered
    WAV-fed FT8 demo; Phase 0/0.5/3 done) to a complete mountain-top FT8
    QSO transceiver controller (Phase 1/2/4/5/6 + TX keying).
 
@@ -23,7 +33,60 @@ User-confirmed scope decisions:
   QSO FSM + ADIF), not just an RX spotter. Phased delivery: v0.6 = RX
   spotter useful in field, v0.7 = full QSO controller.
 
-## Phase A — Host protocol golden lockdowns
+## Phase A — Host AP value loop + protocol golden lockdowns
+
+### A0. Host coarse-sync candidate gap (#40) — small / medium, **highest priority**
+
+The FT8 AP iaptype-1 pass landed in 0.5.12 (#31, PR #39) but currently
+catches **0/6** of the JTDX-confirmed AP-on extras on `qso3_busy.wav`.
+Root cause is upstream of AP: `decode_frame_with_ap` (host wide-band)
+misses the underlying coarse-sync candidates at 1196 / 244 / 472 / 2039
+Hz that `decode_block` (embedded path) and JTDX both pick up, so the
+AP loop in `process_candidate` has nothing to rescue. Until A0 closes,
+the 0.5.12 AP work has no measurable real-WAV effect — that's why this
+sits ahead of A1/A2.
+
+Approach: bisect what makes the two host pipelines diverge on the same
+WAV at the same `sync_min`. Likely suspects (in rough priority):
+
+- `coarse_sync` algorithm differences: `src/ft8/sync.rs` (host) vs
+  `decode_block.rs` per-tone DFT path. Compare candidate count, score
+  thresholding, NMS behaviour.
+- `refine_fine::refine_fine_3stage` (host-only) — WSJT-X-faithful 3-stage
+  filter intentionally rejects birdie phantoms above 2 kHz; the gate
+  may be cutting real signals too. `decode.rs:464–486` is the call site.
+- `nsync ≤ 6` early-return in `process_candidate` (`decode.rs:493`)
+  vs whatever the embedded path uses at the same stage.
+
+Tools to reuse:
+- `tests/ft8_qso3_apon_recall.rs` — already has the AP-on / AP-off
+  diff harness. Add a third pass that prints all coarse_sync candidates
+  pre-`process_candidate` with their scores so the divergence is visible.
+- `JTDX_EXTRAS_HARD_FLOOR` constant (currently `0`) is the seam: each
+  candidate the host starts catching, raise the floor toward 6.
+
+Estimate: 3-7 days of investigation. Outcome: floor at 6 (matching JTDX
+recall on this WAV), or root-cause documented as deliberate divergence
+with separate on-air WAV showing the host-path advantage.
+
+### A0'. `decode_block_with_ap` for embedded — medium, follow-on
+
+Host AP work doesn't help mountain-top runs until embedded gets AP
+too. `decode_block.rs:2376` currently passes `None` to `bp_decode`.
+Symmetric port of the host pass-5..12 multi-pass loop into the
+embedded pow-of-2 FFT pipeline. Shape mirrors `decode_frame_with_ap` →
+`process_candidate`, but without the rustfft dependency. Files:
+
+- `mfsk-core/src/ft8/decode_block.rs` — add `decode_block_with_ap` /
+  `_with_ap_options` paralleling `decode_frame_with_ap` /
+  `decode_frame_with_ap_full`.
+- `mfsk-core/tests/ft8_qso3_apon_recall.rs` — add a sibling
+  `decode_block_with_ap` arm so the same WAV regression covers both
+  paths.
+- New issue to file (not yet open).
+
+Estimate: 1 week after A0 (depends on understanding the coarse-sync
+divergence first — A0 may inform the embedded port).
 
 ### A1. FST4-60A golden (#23) — small / medium
 
@@ -193,32 +256,51 @@ spotter.
 ```
 Now           +1m           +2m           +3m
  │             │             │             │
- A1 FST4─┐    A2 JT65──┐     │             │
- (3-5d)  │    (1-2w)   │     │             │
-         │             │     │             │
- B1 UAC live audio ────┼     │             │
- (~2w)   │             │     │             │
-         │             │     │             │
-         B2 log+buttons┐     │             │
-         (~1w)         │     │             │
-                     v0.6    │             │
-                       │     │             │
-                       B3 CI-V (~2w) ┐     │
-                       │             │     │
-                       │             B4 QSO+TX (~3w) ┐
-                       │             │             v0.7
- C1 embedded-CI        │             │             │
- (in parallel, ~2d)    │             │             │
-                       │             │             │
+ A0 host coarse-sync gap ┐   │             │
+ (3-7d, blocking 0.5.12  │   │             │
+  AP work value)         │   │             │
+                         │   │             │
+ A0' decode_block_with_ap│   │             │
+ (~1w, after A0)         │   │             │
+         │               │   │             │
+         A1 FST4─┐   A2 JT65──┐             │
+         (3-5d)  │   (1-2w)   │             │
+                 │            │             │
+ B1 UAC live audio ───────────┼             │
+ (~2w, in parallel with A)    │             │
+                 │            │             │
+                 B2 log+buttons┐            │
+                 (~1w)         │            │
+                              v0.6          │
+                               │            │
+                               B3 CI-V (~2w) ┐
+                               │             │
+                               │             B4 QSO+TX (~3w) ┐
+                               │             │             v0.7
+ C1 embedded-CI                │             │             │
+ (in parallel, ~2d)            │             │             │
+                               │             │             │
  C2 reproducible release (~1d, opportunistic)
  C3 s3-app artifact (with v0.6)
 ```
 
-A1 + A2 in Phase A are independent of Phase B and can run in parallel
-when there's host-side context-switching headroom.
+A0 sits at the front because the AP iaptype-1 pass shipped in 0.5.12
+has no measurable effect on real WAVs until it closes. A1 + A2 in
+Phase A are independent of Phase B and can run in parallel when
+there's host-side context-switching headroom.
 
 ## Verification per phase
 
+- **A0 host coarse-sync gap**: `cargo test --release -p mfsk-core
+  --features full --test ft8_qso3_apon_recall -- --nocapture` ⇒
+  `JTDX AP-on extras: 6/6 hit`, then raise `JTDX_EXTRAS_HARD_FLOOR`
+  to 6. Bonus: the AP-off baseline of `decode_frame_with_ap` matches
+  `decode_block`'s 7/8 against the WSJT-X canonical golden.
+- **A0' embedded AP**: `cargo test --release -p mfsk-core --features
+  full --test ft8_qso3_apon_recall` (with the new
+  `decode_block_with_ap` arm enabled) ⇒ same JTDX extras coverage on
+  the embedded path. Optionally re-flash M5Stack S3 with a slot
+  containing operator-context QSO and visually confirm AP rescues.
 - **A1 FST4-60A**: `cargo test --release -p mfsk-core --features full
   --test fst4_wsjtx_samples` (no `--ignored`, the test stops being
   ignored) ⇒ recall locked.
@@ -240,11 +322,18 @@ when there's host-side context-switching headroom.
 ## Critical file paths
 
 Host-side (Phase A):
+- `mfsk-core/src/ft8/sync.rs` + `mfsk-core/src/ft8/decode_block.rs`
+  (A0 — coarse-sync algorithm comparison)
+- `mfsk-core/src/ft8/refine_fine.rs` (A0 — phantom-filter gate audit)
+- `mfsk-core/tests/ft8_qso3_apon_recall.rs::JTDX_EXTRAS_HARD_FLOOR`
+  (A0 progress seam — grow toward 6 as candidates start surviving)
+- `mfsk-core/src/ft8/decode.rs::process_candidate` (A0' — port the
+  multi-pass AP loop into the embedded `decode_block_*` family)
 - `mfsk-core/tests/fst4_wsjtx_samples.rs` (existing, `#[ignore]`d)
 - `mfsk-core/src/fst4/decode.rs` ⇔ `WSJT-X/lib/fst4_decode.f90`
 - `mfsk-core/src/jt65/{mod,rx,decode}.rs` ⇔ `WSJT-X/lib/jt65_decode.f90`
 - `mfsk-core/src/jt9/decode.rs::gate_diag::probe_missing_goldens`
-  (template for FST4 / JT65 probe patterns)
+  (template for FST4 / JT65 / FT8-coarse-sync probe patterns)
 
 Embedded app (Phase B):
 - `embedded-poc/m5stack-s3-app/src/{uac,civ,adif,qso,buttons,flash_log}.rs`
