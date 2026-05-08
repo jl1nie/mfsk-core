@@ -487,7 +487,12 @@ fn process_candidate(
     let cand_owned = refined.clone();
     let cand: &SyncCandidate = &cand_owned;
 
-    let i_start = ((refined.dt_sec + 0.5) * 200.0).round() as usize;
+    // Signed: candidates whose actual TX started before the slot's nominal
+    // start (dt_sec < -0.5) map to negative i_start. The downstream
+    // `symbol_spectra` / `fine_sync_power_*` calls use the WSJT-X-faithful
+    // all-or-nothing per-symbol boundary check; saturating to 0 here used
+    // to silently misalign the symbol grid for negative-dt candidates.
+    let i_start = ((refined.dt_sec + 0.5) * 200.0).round() as i32;
     let cs_raw = symbol_spectra(&cd0, i_start);
     let nsync = sync_quality(&cs_raw);
     if nsync <= 6 {

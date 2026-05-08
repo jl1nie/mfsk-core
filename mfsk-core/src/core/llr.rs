@@ -78,7 +78,14 @@ pub fn descramble_info<P: super::Protocol>(info: &mut [u8]) {
 /// by 1/1000 (matching WSJT-X).
 ///
 /// `i_start` is the sample index in `cd0` of the first symbol, from fine sync.
-pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: usize) -> Vec<Complex<f32>> {
+/// Signed to support candidates whose dt < -0.5 s (signal starts before the
+/// cd0 window — first sync block is partially or wholly truncated, but later
+/// blocks may still be valid). WSJT-X `ft8b.f90:155-157` boundary policy is
+/// all-or-nothing per symbol: when any of the `ds_spb` samples for a symbol
+/// would fall outside `cd0`, that symbol's window is zero-filled (rather
+/// than partially read). Per-element bounds checking lets edge symbols pull
+/// extra signal energy and shifts the LLR sign pattern away from WSJT-X.
+pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Complex<f32>> {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let ds_spb = (P::NSPS / P::NDOWN) as usize;
@@ -88,15 +95,18 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: usize) -> Vec<
 
     let mut cs = vec![Complex::new(0.0f32, 0.0); n_sym * ntones];
     let mut buf = vec![Complex::new(0.0f32, 0.0); ds_spb];
+    let np2 = cd0.len() as i32;
 
     for k in 0..n_sym {
-        let i1 = i_start + k * ds_spb;
-        for (j, b) in buf.iter_mut().enumerate() {
-            *b = if i1 + j < cd0.len() {
-                cd0[i1 + j]
-            } else {
-                Complex::new(0.0, 0.0)
-            };
+        let i1 = i_start + (k * ds_spb) as i32;
+        if i1 >= 0 && i1 + ds_spb as i32 <= np2 {
+            for (j, b) in buf.iter_mut().enumerate() {
+                *b = cd0[(i1 as usize) + j];
+            }
+        } else {
+            for b in buf.iter_mut() {
+                *b = Complex::new(0.0, 0.0);
+            }
         }
         fft.process(&mut buf);
         for (t, bin) in buf.iter().take(ntones).enumerate() {

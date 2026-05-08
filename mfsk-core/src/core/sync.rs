@@ -474,20 +474,26 @@ pub fn make_costas_ref(pattern: &[u8], ds_spb: usize) -> Vec<Vec<Complex<f32>>> 
 }
 
 /// Correlate a single Costas block starting at sample `array_start` in `cd0`.
+/// `array_start` is signed so callers can pass an `i_start` derived from a
+/// candidate with negative `dt_sec` (signal that started before the cd0
+/// window). WSJT-X `sync8d.f90:43-45` policy: if any of the `ds_spb` samples
+/// would fall outside `cd0`, the block contributes 0 (rather than partially
+/// summing).
 pub fn score_costas_block(
     cd0: &[Complex<f32>],
     csync: &[Vec<Complex<f32>>],
     ds_spb: usize,
-    array_start: usize,
+    array_start: i32,
 ) -> f32 {
-    let np2 = cd0.len();
+    let np2 = cd0.len() as i32;
     csync
         .iter()
         .enumerate()
         .map(|(k, ref_tone)| {
-            let start = array_start + k * ds_spb;
-            if start + ds_spb <= np2 {
-                cd0[start..start + ds_spb]
+            let start = array_start + (k * ds_spb) as i32;
+            if start >= 0 && start + ds_spb as i32 <= np2 {
+                let s0 = start as usize;
+                cd0[s0..s0 + ds_spb]
                     .iter()
                     .zip(ref_tone.iter())
                     .map(|(&s, &r)| s * r.conj())
@@ -501,19 +507,19 @@ pub fn score_costas_block(
 }
 
 /// Sum of Costas correlation powers across all sync blocks.
-pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: usize) -> f32 {
+pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> f32 {
     fine_sync_power_per_block::<P>(cd0, i0).into_iter().sum()
 }
 
 /// Per-block Costas correlation powers for diagnostics and the FT8 double-sync.
-pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: usize) -> Vec<f32> {
+pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> Vec<f32> {
     let d = SyncDims::of::<P>();
     P::SYNC_MODE
         .blocks()
         .iter()
         .map(|block| {
             let csync = make_costas_ref(block.pattern, d.ds_spb);
-            let start = i0 + block.start_symbol as usize * d.ds_spb;
+            let start = i0 + (block.start_symbol as usize * d.ds_spb) as i32;
             score_costas_block(cd0, &csync, d.ds_spb, start)
         })
         .collect()
@@ -544,22 +550,17 @@ pub fn refine_candidate<P: Protocol>(
     let nominal_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
     let (best_i0, best_score) = (-search_steps..=search_steps)
         .map(|delta| {
-            let i0 = (nominal_i0 + delta).max(0) as usize;
+            let i0 = nominal_i0 + delta;
             let score = fine_sync_power::<P>(cd0, i0);
             (i0, score)
         })
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-        .unwrap_or((0, 0.0));
+        .unwrap_or((nominal_i0, 0.0));
 
     // Parabolic sub-sample refinement around the integer peak.
-    let frac = if best_i0 >= 1 {
-        let y_neg = fine_sync_power::<P>(cd0, best_i0 - 1);
-        let y_pos = fine_sync_power::<P>(cd0, best_i0 + 1);
-        let (f, _) = parabolic_peak(y_neg, best_score, y_pos);
-        f
-    } else {
-        0.0
-    };
+    let y_neg = fine_sync_power::<P>(cd0, best_i0 - 1);
+    let y_pos = fine_sync_power::<P>(cd0, best_i0 + 1);
+    let (frac, _) = parabolic_peak(y_neg, best_score, y_pos);
 
     SyncCandidate {
         freq_hz: candidate.freq_hz,
@@ -600,28 +601,24 @@ pub fn refine_candidate_double<P: Protocol>(
 
     let best_for = |pattern: &[u8], csync: &[Vec<Complex<f32>>], block_start: u32| {
         let _ = pattern;
+        let block_off = (block_start as usize * d.ds_spb) as i32;
         let (best_i0, _) = (-search_steps..=search_steps)
             .map(|delta| {
-                let i0 = (nominal_i0 + delta).max(0) as usize;
-                let off = i0 + block_start as usize * d.ds_spb;
+                let i0 = nominal_i0 + delta;
+                let off = i0 + block_off;
                 (i0, score_costas_block(cd0, csync, d.ds_spb, off))
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .unwrap_or((nominal_i0.max(0) as usize, 0.0));
+            .unwrap_or((nominal_i0, 0.0));
         // Parabolic sub-sample
-        let frac = if best_i0 > 0 {
-            let off_neg = (best_i0 - 1) + block_start as usize * d.ds_spb;
-            let off_0 = best_i0 + block_start as usize * d.ds_spb;
-            let off_pos = (best_i0 + 1) + block_start as usize * d.ds_spb;
-            let (f, _) = parabolic_peak(
-                score_costas_block(cd0, csync, d.ds_spb, off_neg),
-                score_costas_block(cd0, csync, d.ds_spb, off_0),
-                score_costas_block(cd0, csync, d.ds_spb, off_pos),
-            );
-            f
-        } else {
-            0.0
-        };
+        let off_neg = (best_i0 - 1) + block_off;
+        let off_0 = best_i0 + block_off;
+        let off_pos = (best_i0 + 1) + block_off;
+        let (frac, _) = parabolic_peak(
+            score_costas_block(cd0, csync, d.ds_spb, off_neg),
+            score_costas_block(cd0, csync, d.ds_spb, off_0),
+            score_costas_block(cd0, csync, d.ds_spb, off_pos),
+        );
         (best_i0, frac)
     };
 
@@ -632,7 +629,7 @@ pub fn refine_candidate_double<P: Protocol>(
     let dt_c = best_i0_c as f32 / d.ds_rate + frac_c / d.ds_rate - P::TX_START_OFFSET_S;
     let drift_dt_sec = dt_c - dt_a;
 
-    let avg_i0 = ((best_i0_a + best_i0_c) as f32 * 0.5).round() as usize;
+    let avg_i0 = ((best_i0_a + best_i0_c) as f32 * 0.5).round() as i32;
     let per_block_scores = fine_sync_power_per_block::<P>(cd0, avg_i0);
     let total: f32 = per_block_scores.iter().sum();
 

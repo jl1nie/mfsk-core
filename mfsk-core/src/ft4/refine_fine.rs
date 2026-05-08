@@ -77,13 +77,10 @@ fn score_at<P: Protocol>(
     for (start_sym, csync) in blocks_costas {
         let twiddled = twiddle_ref(csync, df_hz, ds_rate);
         let off = i0 + (*start_sym as i32) * ds_spb as i32;
-        if off < 0 {
-            // Refuse correlations that would dip into negative samples
-            // — caller's coarse pass already excluded grossly-misaligned
-            // candidates, so this is a safety floor.
-            continue;
-        }
-        total += score_costas_block(cd0, &twiddled, ds_spb, off as usize);
+        // `score_costas_block` zero-fills any block whose samples fall
+        // outside cd0 (matching WSJT-X `sync8d.f90:43-45`), so negative
+        // `off` is safe to pass through.
+        total += score_costas_block(cd0, &twiddled, ds_spb, off);
     }
     total
 }

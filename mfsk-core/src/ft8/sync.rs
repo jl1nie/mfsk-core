@@ -57,13 +57,13 @@ pub fn compute_spectra(audio: &[i16]) -> crate::core::sync::Spectrogram {
 }
 
 #[inline]
-pub fn fine_sync_power(cd0: &[Complex<f32>], i0: usize) -> f32 {
+pub fn fine_sync_power(cd0: &[Complex<f32>], i0: i32) -> f32 {
     crate::core::sync::fine_sync_power::<Ft8>(cd0, i0)
 }
 
 /// Backwards-compatible tuple form: (array_1, array_2, array_3).
 #[inline]
-pub fn fine_sync_power_split(cd0: &[Complex<f32>], i0: usize) -> (f32, f32, f32) {
+pub fn fine_sync_power_split(cd0: &[Complex<f32>], i0: i32) -> (f32, f32, f32) {
     let scores = crate::core::sync::fine_sync_power_per_block::<Ft8>(cd0, i0);
     (
         scores.first().copied().unwrap_or(0.0),

@@ -47,7 +47,14 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 }
 
 /// Compute 8-tone complex spectra for all 79 FT8 symbols.
-pub fn symbol_spectra(cd0: &[Complex<f32>], i_start: usize) -> Box<[[Cmplx<f32>; 8]; 79]> {
+///
+/// `i_start` is signed: candidates whose `dt_sec < -0.5` map to negative
+/// `i_start`, which the WSJT-X-faithful boundary check inside
+/// [`crate::core::llr::symbol_spectra`] handles by zero-filling out-of-bounds
+/// symbol windows. Saturating to 0 (the previous behaviour) silently
+/// misaligned the symbol grid by `|i_start|` samples and dropped real
+/// negative-dt decodes such as `qso3_busy.wav` CQ F5RXL @ -0.78 s.
+pub fn symbol_spectra(cd0: &[Complex<f32>], i_start: i32) -> Box<[[Cmplx<f32>; 8]; 79]> {
     let flat = crate::core::llr::symbol_spectra::<Ft8>(cd0, i_start);
     let mut out: Box<[[Cmplx<f32>; 8]; 79]> =
         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
