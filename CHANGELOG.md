@@ -1,5 +1,107 @@
 # Changelog
 
+## 0.5.12 — FT8 SIC correctness, FT4 WSJT-X parity, JT9 7/7, AP iaptype-1
+
+Drop-in upgrade for everyone on 0.5.11 — non-breaking, no API
+removals, no behaviour changes for callers that don't opt into the
+new AP entrypoint. Bundles three correctness fixes that ship in
+0.5.11 as known bugs, plus the AP-list close-out for issue
+[#31](https://github.com/jl1nie/mfsk-core/issues/31).
+
+### Fixed (high-severity)
+
+- **FT8 phase-2 SIC subtracts caller-supplied `known` signals**
+  ([#26](https://github.com/jl1nie/mfsk-core/pull/26)). The
+  `decode_frame_subtract_with_known` /
+  `decode_frame_subtract_with_known_and_ap` paths added the caller's
+  Phase-1 results to the dedup list but never subtracted them from
+  the residual — so every Pass-1 / Pass-2 SIC iteration ran on the
+  original audio with the strong known signals still in place,
+  defeating the entire purpose of the pipelined Phase-1 → Phase-2
+  architecture. Weak signals masked by known strong ones stayed
+  masked. Introduced in `48b1f37` and shipped in 0.5.10 / 0.5.11.
+  Fix: after Pass 0 (which still uses the precomputed FFT against
+  the original audio so Phase-1-missed signals can surface), all
+  caller-supplied `known` results are subtracted from the residual
+  before Pass 1 begins, with a `residual_dirty` flag that keeps
+  the FFT-cache reuse correct.
+
+### Fixed
+
+- **FT4 GFSK `BT = 1.0` and subtract `NFILT = 1400`**
+  ([#27](https://github.com/jl1nie/mfsk-core/pull/27)) — WSJT-X
+  parity. `FT4_GFSK.bt`, `FT4_SUBTRACT.gfsk.bt`, and `Ft4::GFSK_BT`
+  were uniformly `2.0` (the FT8 value); WSJT-X
+  `lib/ft4/gen_ft4wave.f90` calls `gfsk_pulse(1.0, tt)` and
+  `lib/ft4/subtractft4.f90` declares `bt=1.0`. Same file declares
+  `nfilt=1400` (≈58 ms half-window at 12 kHz); we had `lpf_half=2000`
+  (= FT8's NFILT=4000 misapplied to FT4). Self-cancellation residual
+  remains tight because the encoder/subtractor sides stay aligned —
+  just at the correct value now. Test power-ratio accumulators
+  promoted to `f64` to remove a `f32` precision drift that made the
+  ratio non-deterministic at large slot lengths.
+- **FT4 / FST4 `_with_options` accept `freq_hint: Option<f32>`**
+  ([#28](https://github.com/jl1nie/mfsk-core/pull/28)). PR #21's
+  `_with_options` variants silently dropped the `freq_hint`
+  parameter, breaking the "`_with_options` is a strict superset of
+  its non-options sibling + depth + strictness" invariant the rest
+  of the API follows. Restored on the three drift sites
+  (`ft4::decode_frame_with_cache_and_options`,
+  `ft4::decode_frame_subtract_with_options`,
+  `fst4::decode_frame_with_cache_and_options`) and forwarded into
+  the pipeline.
+
+### Added
+
+- **FT8 AP iaptype-1 (blind CQ) decode pass** + `ft8_qso3_apon_recall`
+  test — closes [#31](https://github.com/jl1nie/mfsk-core/issues/31)
+  ([#39](https://github.com/jl1nie/mfsk-core/pull/39)). The AP loop
+  in `ft8::decode::process_candidate` now always tries an
+  `ApHint::new().with_call1("CQ")` configuration (locks bits 0–28
+  + i3=001, the WSJT-X `lib/ft8/ft8b.f90` ipass=5 / iaptype=1
+  pattern) whenever the caller passes `Some(&ApHint)`, in addition
+  to the existing operator-context passes (iaptypes 2..6 / passes
+  6/7/8/9/10/11). `decode_frame` (legacy non-AP) keeps calling
+  through with `ap_hint = None` and stays bit-for-bit identical.
+  The new integration test under `tests/ft8_qso3_apon_recall.rs`
+  drives `decode_frame_with_ap` twice on the vendored
+  `qso3_busy.wav` (once `None`, once with `mycall=K1JT,
+  hiscall=HA0DU`) and gates on the strict-superset invariant from
+  the issue's acceptance criteria, plus six JTDX-captured AP-on
+  extras tracked behind a `JTDX_EXTRAS_HARD_FLOOR` seam that grows
+  as the host-vs-embedded coarse-sync parity gap (filed as
+  [#40](https://github.com/jl1nie/mfsk-core/issues/40)) closes.
+
+### Improved
+
+- **JT9 recall locked at 7/7** (was 5/5 in 0.5.10 / 0.5.11)
+  ([#38](https://github.com/jl1nie/mfsk-core/pull/38)). JTDX
+  cross-check on the `samples/JT9/130418_1742.wav` golden surfaced
+  two real signals beyond the original 5-entry table —
+  `G7CNF N4HFA EL89` @ 1461 Hz and `JA1KAU PD0JAC -23` @ 1505 Hz —
+  both already produced by `decode_scan` once `freq_max_hz` was
+  bumped from 1500 to 1550 Hz. The 0.5.11 release-window CHANGELOG
+  said "5/5 restored" and the test was `#[ignore]`'d behind a
+  stale "JT9 host path 2/5" message; both are corrected. The test
+  now runs on CI (vendored asset, `#[ignore]` removed) so any
+  recall regression below 7/7 is caught at PR time.
+- **CI release pipeline** ([#30](https://github.com/jl1nie/mfsk-core/pull/30))
+  — gates the crates.io publish on the full CI matrix and builds
+  the FFI artifacts before publishing so embedded-build breakages
+  can't sneak past again.
+- **Test-fixture path hygiene** ([#29](https://github.com/jl1nie/mfsk-core/pull/29),
+  [#36](https://github.com/jl1nie/mfsk-core/pull/36),
+  [#37](https://github.com/jl1nie/mfsk-core/pull/37)). Replaced
+  every hardcoded `/home/ubuntu/...` test fixture path with
+  `concat!(env!("CARGO_MANIFEST_DIR"), …)` resolution. Vendored the
+  WSJT-X `samples/FT8/210703_133430.wav`,
+  `samples/JT9/130418_1742.wav`, and the `jl1nie/RustFT8`
+  on-air recordings (`191111_110130.wav`, `191111_110200.wav`)
+  under `embedded-poc/assets/` so CI runners and contributor
+  checkouts actually exercise the recall tests instead of silently
+  `return`ing from `if !path.exists()` guards. CLAUDE.md documents
+  the convention going forward.
+
 ## 0.5.11 — embedded-build hotfix on top of 0.5.10
 
 `mfsk-core` 0.5.10 published cleanly to crates.io (the `--features full`

@@ -1,6 +1,6 @@
 [package]
 name        = "mfsk-ffi-ft8"
-version     = "0.5.11"
+version     = "0.5.12"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 publish     = false
@@ -53,7 +53,7 @@ embedded-fixed-point = [
 embedded-runtime = []
 
 [dependencies]
-mfsk-core = { path = "../mfsk-core", version = "0.5.11", default-features = false }
+mfsk-core = { path = "../mfsk-core", version = "0.5.12", default-features = false }
 
 [build-dependencies]
 cbindgen = "0.29"
