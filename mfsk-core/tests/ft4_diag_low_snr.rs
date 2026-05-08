@@ -126,7 +126,7 @@ fn why_does_neg16db_fail() {
     for &steps in &[32i32, 48, 64] {
         let refined = refine_candidate::<Ft4>(&cd0, truth_cand, steps);
         let i0 =
-            ((refined.dt_sec + <Ft4 as FrameLayout>::TX_START_OFFSET_S) * ds_rate).round() as usize;
+            ((refined.dt_sec + <Ft4 as FrameLayout>::TX_START_OFFSET_S) * ds_rate).round() as i32;
         let cs = symbol_spectra::<Ft4>(&cd0, i0);
         let nsync = sync_quality::<Ft4>(&cs);
         eprintln!(

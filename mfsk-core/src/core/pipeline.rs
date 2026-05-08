@@ -160,11 +160,11 @@ pub fn process_candidate_basic<P: Protocol>(
     // time-only `refine_candidate` path; FT8 has its own 3-stage
     // refine wired separately in `ft8/decode.rs`.
     #[cfg(feature = "ft4")]
-    let (refined, i_start) = if P::ID == super::ProtocolId::Ft4 {
+    let (refined, i_start): (SyncCandidate, i32) = if P::ID == super::ProtocolId::Ft4 {
         let s4 = crate::ft4::refine_fine::sync4d_refine::<P>(&cd0, cand);
         let df_hz = s4.freq_hz - cand.freq_hz;
         cd0 = crate::ft4::refine_fine::freq_shift_cd0(&cd0, df_hz, ds_rate);
-        let i_start = s4.i0.max(0) as usize;
+        let i_start: i32 = s4.i0;
         let refined = SyncCandidate {
             freq_hz: s4.freq_hz,
             dt_sec: (s4.i0 as f32) / ds_rate - tx_start,
@@ -173,13 +173,13 @@ pub fn process_candidate_basic<P: Protocol>(
         (refined, i_start)
     } else {
         let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as usize;
+        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
         (refined, i_start)
     };
     #[cfg(not(feature = "ft4"))]
-    let (refined, i_start) = {
+    let (refined, i_start): (SyncCandidate, i32) = {
         let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as usize;
+        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
         (refined, i_start)
     };
 
