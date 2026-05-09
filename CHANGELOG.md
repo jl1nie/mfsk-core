@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.6.1 — host/embedded per-candidate pipeline unification
+
+Non-breaking patch. After v0.6.0 unified the FT8 coarse-sync path,
+the *per-candidate* decode body still diverged: host's
+`process_candidate` (decode.rs) ran a hand-written eager-LLR + BP +
+OSD + AP staircase; embedded's `process_candidates_with`
+(decode_block.rs) ran a lazy-LLR staircase with tighter sync gates.
+On busy bands (e.g. `qso3_busy.wav`), embedded `decode_block` caught
+16/18 of the JTDX golden but host `decode_frame_with_ap` only 14/18.
+
+This patch extracts a shared `process_one_candidate_inner` from
+`process_candidates_with` and routes the host pipeline through it.
+Both paths now run the *exact same* LLR / BP / OSD / AP staircase
+on the per-candidate cs spectra. The remaining 14-vs-16 gap on this
+WAV is upstream of the inner — the cs-source itself differs (host
+`core::llr::symbol_spectra(cd0, i_start)` vs embedded
+`fill_symbol_spectra(audio, freq, dt, mask)`) and is tracked as a
+separate refactor.
+
+### Added (host f32 only — `#[cfg(feature = "fft-rustfft")]`)
+
+- `decode_block_with_ap(audio, freq_min, freq_max, sync_min, depth,
+  max_cand, ap_hint) -> Vec<DecodeResult>`. AP-aware variant of
+  `decode_block`; mirrors its behaviour exactly when
+  `ap_hint = None` and runs the full WSJT-X iaptype loop (5..12)
+  per candidate when `Some(&ap)`. Preferred entry point for
+  mountain-top apps that want full AP rescue from a single call.
+- `decode_block_with_ap_tuned(...with bp_max_iter + strictness)` —
+  same with runtime-tunable BP iterations and strictness.
+
+Embedded fixed-point builds (`#[cfg(feature = "fixed-point")]`)
+keep their existing iaptype-1-only hardcoded path; full AP for that
+build is deferred — `apmag = max(|llra|)*1.01` is f32-domain and
+`ApHint::build_ap` heap pressure exceeds Core2 stage-3 budget.
+
+### Changed (internal — non-breaking)
+
+- Embedded OSD pass IDs shifted: 4/5/6/7 → 14/15/16/17, freeing the
+  WSJT-X-canonical 5..12 range for the AP iaptype loop. Pre-flight
+  grep confirmed no in-tree test gates on `pass == N` for `N ≥ 4`;
+  out-of-tree consumers reading `DecodeResult::pass` for OSD-decoded
+  results need to read 14/15/16/17 instead of 4/5/6/7.
+- Host `process_candidate` body shrinks ~250 lines → delegate to the
+  unified inner. Outer prelude (downsample, fine_refine_3stage,
+  symbol_spectra, nsync gate, EqMode cs choice) preserved.
+- The unified inner emits one decode per candidate after running
+  `unpack77` + plausibility gate (the embedded path's behaviour).
+  Old host path was lenient — it returned any CRC-converged
+  77-bit codeword without unpacking. The change is what tightens
+  busy-band recall vs host's old behaviour, but means
+  *synthesised-with-arbitrary-bits* round-trip tests need a real
+  FT8 message; updated 5 affected tests to use
+  `pack77("CQ", "JA1ABC", "PM95")`.
+
+### Improved
+
+- Host `decode_frame_with_ap` and `decode_frame_subtract_with_ap`
+  now share the WSJT-X-faithful staircase with `decode_block`. The
+  qso3_busy.wav 14-vs-16 gap on the JTDX golden is structurally
+  closed for everything *post* coarse-sync; only the cs-source
+  divergence remains.
+
+### Internal
+
+- New private `process_one_candidate_inner` in `decode_block.rs`
+  (`pub(super)`-visible to the FT8 module). Generic over `LlrT` so
+  it serves both f32 (host + embedded f32-rustfft) and Q3i8
+  (embedded fixed-point) builds with bit-identical behaviour when
+  `ap_hint = None`.
+- `process_candidates_with` collapsed into
+  `process_candidates_with_ap` (the same body now takes
+  `Option<&ApHint>`); call sites passing `None` are bit-identical to
+  the prior shape.
+
 ## 0.6.0 — FT8 sync consolidation, refactor audit, AP iaptype 2
 
 **Breaking** — bundled refactor that closes #40, #46, #48, and most of
