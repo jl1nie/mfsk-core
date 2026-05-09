@@ -1,4 +1,49 @@
-# Roadmap (post-0.5.12)
+# Roadmap (post-0.6.0)
+
+## v0.6.0 status (shipped, 2026-05-09)
+
+Bundled refactor + AP iaptype 2 release. Closes:
+
+- **#40** (host wide-band coarse-sync candidate gap) — host
+  `decode_frame_with_ap` now routes through `decode_block::coarse_sync`
+  + the i_start-as-i32 fix; AP-off recall on `qso3_busy.wav` 5/8 → 7/8
+  (matches WSJT-X parity).
+- **#46** (sync consolidation PR) — `ft8::sync::coarse_sync` removed;
+  `decode_block::coarse_sync` + `compute_spectrogram` graduate to public
+  API.
+- **#48 step B** (FT8 sync routes through decode_block).
+- **#49 cat A** (WAV-loader test consolidation, 14 dupes → 4 helpers).
+- **#49 cat B** (`ft8::sync` thin wrappers deleted).
+- **#49 cat C** (`#[doc(hidden)]` graduation for items embedded
+  consumers + FFI already depend on).
+
+A0 / A0' from the earlier roadmap are the carry-overs:
+
+- **A0** = #40 — closed by v0.6.0.
+- **A0'** = `decode_block_with_ap` — **deferred**. The 5 missing
+  JTDX-extras on `qso3_busy.wav` sit upstream of AP (host coarse-sync
+  doesn't surface the candidates at -18 dB), so adding an embedded AP
+  loop now would ship code without measurable user-visible improvement
+  on the reference WAV. Revisit when a WAV surfaces where the gap is
+  actually post-coarse-sync, or when the embedded port grows operator
+  context (m5stack-s3-app Phase 4). New issue to file when that day
+  comes.
+
+Open follow-ups for 0.6.x patches and 0.7.0:
+
+- **#48 option A** — `Protocol::Sync` associated type for type-system
+  enforcement against future protocol-sync drift. Scoped out of v0.6.0
+  (8 protocols + 2 macros + embedded feature matrix; benefit is
+  speculative for non-FT8 protocols). Tracked separately.
+- **#49 cat D** — `core::sync::coarse_sync<P>` `NotFt8` marker bound.
+  Subsumed structurally by Phase 4 dispatch in v0.6.0; the doc note
+  ("FT8 should not use this") is the practical backstop until #48
+  option A lands.
+- **#23 / #24** (FST4 / JT65 golden lockdowns), **#25** (MSK144), and
+  Phase B (m5stack-s3-app) remain on the original roadmap; v0.6.0 did
+  not touch them.
+
+# Roadmap (legacy, written for post-0.5.12)
 
 ## Context
 
