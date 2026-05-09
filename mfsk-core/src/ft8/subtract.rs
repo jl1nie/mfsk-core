@@ -161,12 +161,17 @@ mod tests {
     #[test]
     fn subtract_reveals_hidden_signal() {
         use super::super::decode::decode_frame_subtract;
+        use super::super::message::pack77;
 
-        let msg_strong = [0u8; 77];
+        // Two valid FT8 standard messages (the inner's unpack77 +
+        // plausibility gate inside `process_one_candidate_inner`
+        // requires real-shape codewords; v0.6.1 host redirect through
+        // the inner inherits embedded's strictness).
+        let msg_strong = pack77("CQ", "JA1ABC", "PM95").expect("pack77 strong");
         let itone_s = message_to_tones(&msg_strong);
         let strong = tones_to_i16(&itone_s, 1000.0, 20_000);
 
-        let msg_weak = [1u8; 77];
+        let msg_weak = pack77("W1AW", "JA1ABC", "73").expect("pack77 weak");
         let itone_w = message_to_tones(&msg_weak);
         let weak = tones_to_i16(&itone_w, 1500.0, 3_000);
 

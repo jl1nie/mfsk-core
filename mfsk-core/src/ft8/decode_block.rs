@@ -1636,9 +1636,7 @@ pub fn decode_block<S: AudioSample>(
         depth,
         max_cand,
         DEFAULT_BP_MAX_ITER,
-        #[cfg(feature = "fft-rustfft")]
         None,
-        #[cfg(feature = "fft-rustfft")]
         DecodeStrictness::Normal,
     )
 }
@@ -2531,8 +2529,8 @@ fn process_candidates_tuned_with_ap<S: AudioSample>(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
-    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -2548,9 +2546,7 @@ fn process_candidates_tuned_with_ap<S: AudioSample>(
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask);
         },
-        #[cfg(feature = "fft-rustfft")]
         ap_hint,
-        #[cfg(feature = "fft-rustfft")]
         strictness,
     )
 }
@@ -2718,8 +2714,8 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     bp_max_iter: u32,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
     mut fill: F,
-    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
-    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -2766,9 +2762,7 @@ where
             bp_max_iter,
             &mut bp_scratch,
             &results,
-            #[cfg(feature = "fft-rustfft")]
             ap_hint,
-            #[cfg(feature = "fft-rustfft")]
             strictness,
             0.0,
         ) {
@@ -2803,7 +2797,9 @@ const WSJTX_NHARDERRORS_MAX: u32 = 36;
 ///   when `ap_hint` is `None`.
 /// - `sync_cv` is the Costas-array power CV (host computes it for QSB
 ///   gain attenuation; embedded passes 0.0).
-fn process_one_candidate_inner(
+#[allow(clippy::too_many_arguments)]
+#[allow(unused_variables)] // ap_hint / strictness only used under #[cfg(feature = "fft-rustfft")]
+pub(super) fn process_one_candidate_inner(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
     cand: &SyncCandidate,
     refined_dt: f32,
@@ -2815,8 +2811,8 @@ fn process_one_candidate_inner(
         LlrT,
     >,
     known: &[DecodeResult],
-    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
-    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
     sync_cv: f32,
 ) -> Option<DecodeResult> {
     // ── Staircase: cheap → deeper → OSD ─────────────────────────

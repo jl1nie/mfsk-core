@@ -148,12 +148,19 @@ mod tests {
     }
 
     /// Encode → decode round-trip via the full ft8-core pipeline (raw bits).
+    /// Uses a valid FT8 standard message so the unpack77 + plausibility
+    /// gate inside `process_one_candidate_inner` accepts the decoded
+    /// codeword. (The old host pipeline emitted any CRC-converged
+    /// codeword without unpack/plausibility checks; the inner unifies
+    /// host with embedded by tightening to embedded's behaviour, so an
+    /// arbitrary `[1u8; 77]` payload no longer round-trips.)
     #[test]
     fn encode_decode_roundtrip() {
         use super::super::decode::{DecodeDepth, decode_frame};
+        use super::super::message::pack77;
 
-        // Build a known message (all bits = 1 is unlikely to collide with anything).
-        let msg = [1u8; MSG_BITS];
+        // Build a valid FT8 standard message ("CQ JA1ABC PM95").
+        let msg = pack77("CQ", "JA1ABC", "PM95").expect("pack77");
         let itone = message_to_tones(&msg);
 
         // Strong noiseless signal at 1000 Hz.

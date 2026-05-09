@@ -9,6 +9,16 @@ use mfsk_core::ft8::decode::{DecodeDepth, decode_frame};
 use mfsk_core::ft8::params::{MSG_BITS, NMAX};
 use mfsk_core::ft8::resample::{resample_f32_to_12k, resample_to_12k};
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_f32};
+use mfsk_core::msg::wsjt77::pack77;
+
+/// Valid FT8 standard message used by all resample round-trip tests.
+/// Post v0.6.1 the host pipeline routes through
+/// `decode_block::process_one_candidate_inner` which gates on a
+/// successful unpack77 + plausibility check, so an arbitrary
+/// `[1u8; 77]` no longer round-trips. Use a real message instead.
+fn test_msg() -> [u8; 77] {
+    pack77("CQ", "JA1ABC", "PM95").expect("pack77")
+}
 
 /// Generate a 12 kHz FT8 frame with signal + AWGN noise.
 fn make_noisy_frame(msg: &[u8; 77], freq: f32, snr_db: f32) -> Vec<i16> {
@@ -65,7 +75,8 @@ fn upsample(audio_12k: &[i16], target_rate: u32) -> Vec<i16> {
 
 #[test]
 fn resample_decode_48k_weak_signal() {
-    let msg = [1u8; MSG_BITS];
+    let _ = MSG_BITS;
+    let msg = test_msg();
     let audio_12k = make_noisy_frame(&msg, 1000.0, -18.0);
 
     let audio_48k = upsample(&audio_12k, 48000);
@@ -90,7 +101,8 @@ fn resample_decode_48k_weak_signal() {
 
 #[test]
 fn resample_f32_decode_48k_weak_signal() {
-    let msg = [1u8; MSG_BITS];
+    let _ = MSG_BITS;
+    let msg = test_msg();
     let audio_12k_i16 = make_noisy_frame(&msg, 1000.0, -18.0);
     let audio_48k_i16 = upsample(&audio_12k_i16, 48000);
     let audio_48k_f32: Vec<f32> = audio_48k_i16.iter().map(|&s| s as f32 / 32768.0).collect();
@@ -116,7 +128,8 @@ fn resample_f32_decode_48k_weak_signal() {
 
 #[test]
 fn resample_decode_44100_weak_signal() {
-    let msg = [1u8; MSG_BITS];
+    let _ = MSG_BITS;
+    let msg = test_msg();
     let audio_12k = make_noisy_frame(&msg, 1000.0, -18.0);
 
     let audio_44k = upsample(&audio_12k, 44100);

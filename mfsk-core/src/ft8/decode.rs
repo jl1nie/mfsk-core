@@ -14,16 +14,11 @@ pub use super::equalizer::EqMode;
 use super::{
     downsample::{build_fft_cache, downsample},
     equalizer,
-    ldpc::{
-        bp::{bp_decode, check_crc14},
-        osd::{osd_decode, osd_decode_deep, osd_decode_deep4},
-    },
-    llr::{compute_llr, compute_snr_db, symbol_spectra, sync_quality},
+    llr::{symbol_spectra, sync_quality},
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
     subtract::subtract_signal_weighted,
     sync::SyncCandidate,
-    wave_gen::message_to_tones,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -458,7 +453,7 @@ fn process_candidate(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
 ) -> Option<DecodeResult> {
-    let osd_score_min = strictness.osd_score_min();
+    let _ = strictness; // used inside try_decode via the inner
     let (mut cd0, _) = downsample(audio, cand.freq_hz, Some(fft_cache));
 
     // WSJT-X 3-stage fine refinement (ft8b.f90:104-150). Validates
@@ -484,8 +479,6 @@ fn process_candidate(
             *c *= rot;
         }
     }
-    let cand_owned = refined.clone();
-    let cand: &SyncCandidate = &cand_owned;
 
     // Signed: candidates whose actual TX started before the slot's nominal
     // start (dt_sec < -0.5) map to negative i_start. The downstream
@@ -512,246 +505,32 @@ fn process_candidate(
         }
     };
 
-    let try_decode = |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79],
-                      use_ap: bool|
-     -> Option<DecodeResult> {
-        let llr_set = compute_llr(cs);
-
-        let llr_variants: &[(&[f32; LDPC_N], u8)] = match depth {
-            DecodeDepth::Bp => &[(&llr_set.llra, 0)],
-            DecodeDepth::BpAll | DecodeDepth::BpAllOsd => &[
-                (&llr_set.llra, 0),
-                (&llr_set.llrb, 1),
-                (&llr_set.llrc, 2),
-                (&llr_set.llrd, 3),
-            ],
+    // Per-candidate decode delegated to the unified inner — same
+    // staircase + OSD + AP loop the embedded `decode_block` path
+    // uses (decode_block.rs::process_one_candidate_inner). The
+    // host's outer prelude (downsample → fine_refine_3stage →
+    // symbol_spectra → nsync gate → sync_cv → EqMode cs choice)
+    // stays here; only the per-candidate decode body delegates.
+    let try_decode =
+        |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79], _use_ap: bool| -> Option<DecodeResult> {
+            let mut bp_scratch = crate::fec::ldpc::bp::BpScratch::<
+                crate::fec::ldpc::params::Ldpc174_91Params,
+                f32,
+            >::new();
+            crate::ft8::decode_block::process_one_candidate_inner(
+                cs,
+                &refined,
+                refined.dt_sec,
+                nsync,
+                depth,
+                BP_MAX_ITER,
+                &mut bp_scratch,
+                known,
+                ap_hint,
+                strictness,
+                sync_cv,
+            )
         };
-
-        // BP decode (no AP). WSJT-X ft8b.f90:422 gates `nharderrors > 36`
-        // before accepting — high-hard-error CRC passes are the dominant
-        // phantom source on busy bands. Match the threshold faithfully
-        // so qso3_busy phantoms (W1FC / WM3PEN / XE2X at f > 2 kHz) get
-        // dropped instead of leaking through.
-        const WSJTX_NHARDERRORS_MAX: u32 = 36;
-        for &(llr, pass_id) in llr_variants {
-            if let Some(bp) = bp_decode(llr, None, BP_MAX_ITER, Some(check_crc14)) {
-                if bp.hard_errors > WSJTX_NHARDERRORS_MAX {
-                    continue;
-                }
-                let itone = message_to_tones(&bp.message77);
-                let snr_db = compute_snr_db(cs, &itone);
-                return Some(DecodeResult {
-                    message77: bp.message77,
-                    freq_hz: cand.freq_hz,
-                    dt_sec: refined.dt_sec,
-                    hard_errors: bp.hard_errors,
-                    sync_score: refined.score,
-                    pass: pass_id,
-                    sync_cv,
-                    snr_db,
-                });
-            }
-        }
-
-        // OSD fallback
-        if depth == DecodeDepth::BpAllOsd && nsync >= 12 && cand.score >= osd_score_min {
-            let freq_dup = known
-                .iter()
-                .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
-            if !freq_dup {
-                let osd_depth: u8 = if nsync >= 18 { 3 } else { 2 };
-                for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
-                    let osd_result = if osd_depth == 3 {
-                        osd_decode_deep(llr_osd, 3, Some(check_crc14))
-                    } else {
-                        osd_decode(llr_osd)
-                    };
-                    if let Some(osd) = osd_result {
-                        let max_errors = strictness.osd_max_errors(osd_depth);
-                        if osd.hard_errors >= max_errors {
-                            continue;
-                        }
-                        let itone = message_to_tones(&osd.message77);
-                        let snr_db = compute_snr_db(cs, &itone);
-                        return Some(DecodeResult {
-                            message77: osd.message77,
-                            freq_hz: cand.freq_hz,
-                            dt_sec: refined.dt_sec,
-                            hard_errors: osd.hard_errors,
-                            sync_score: refined.score,
-                            pass: if osd_depth == 3 { 5 } else { 4 },
-                            sync_cv,
-                            snr_db,
-                        });
-                    }
-                }
-                // OSD depth-4 (Top-K pruning): same sync gate as depth-3.
-                // k4_limit=30 → C(30,4)=27,405 extra candidates at depth-3 cost.
-                if nsync >= 18 {
-                    for llr_osd in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
-                        if let Some(osd4) = osd_decode_deep4(llr_osd, 30, Some(check_crc14)) {
-                            let max_errors = strictness.osd_max_errors(4);
-                            if osd4.hard_errors >= max_errors {
-                                continue;
-                            }
-                            let itone = message_to_tones(&osd4.message77);
-                            let snr_db = compute_snr_db(cs, &itone);
-                            return Some(DecodeResult {
-                                message77: osd4.message77,
-                                freq_hz: cand.freq_hz,
-                                dt_sec: refined.dt_sec,
-                                hard_errors: osd4.hard_errors,
-                                sync_score: refined.score,
-                                pass: 13,
-                                sync_cv,
-                                snr_db,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // Multi-pass AP (mirrors WSJT-X ft8b.f90 ipass 5..8 / iaptype 1..6).
-        // The loop fires whenever the caller supplies *any* `ApHint` (even
-        // an empty one) — passing `None` still skips AP entirely so the
-        // legacy `decode_frame` non-AP path stays bit-for-bit identical.
-        //
-        // Passes (deepest → shallowest, deepest tried first):
-        //   pass  9/10/11: call1 + call2 + RRR/RR73/73 (full 77-bit lock,
-        //                  iaptype 4/5/6)
-        //   pass  8: call1 + call2 (~61 bits, iaptype 3)
-        //   pass  7: CQ + call2 (auto-CQ when only call2 is known)
-        //   pass  6: ap as-supplied (call2 only / fallback, iaptype 2)
-        //   pass 12: blind CQ — `with_call1("CQ")` only, locks bits 0–28
-        //            + i3=001. Mirrors WSJT-X iaptype 1 (ipass 5) which
-        //            runs unconditionally when `lapon=true`. Surfaces
-        //            unknown stations actively calling CQ even when the
-        //            caller has no operator-context hint.
-        if use_ap && let Some(ap) = ap_hint {
-            let apmag = llr_set.llra.iter().map(|v| v.abs()).fold(0.0f32, f32::max) * 1.01;
-
-            // Build multiple AP configurations (deepest first)
-            let mut ap_passes: Vec<(ApHint, u8)> = Vec::new();
-
-            // Operator-context passes only when the caller actually
-            // supplied call1/call2/grid/report info.
-            if ap.has_info() {
-                // Pass 9/10/11: full 77-bit lock (call1+call2+response)
-                if ap.call1.is_some() && ap.call2.is_some() {
-                    for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
-                        let ap_full = ap.clone().with_report(rpt);
-                        ap_passes.push((ap_full, pid));
-                    }
-                }
-
-                // Pass 7: CQ + call2 (expect "CQ DXCALL GRID", ~61 bits)
-                if ap.call2.is_some() && ap.call1.is_none() {
-                    let ap7 = ap.clone().with_call1("CQ");
-                    ap_passes.push((ap7, 7));
-                }
-
-                // Pass 8: mycall + call2 (~61 bits)
-                if ap.call1.is_some() && ap.call2.is_some() {
-                    ap_passes.push((ap.clone(), 8));
-                }
-
-                // Pass 6: ap as-supplied (~33 bits, fallback)
-                ap_passes.push((ap.clone(), 6));
-
-                // Pass 5: mycall only (~32 bits, WSJT-X iaptype 2 —
-                // "MyCall ??? ???"). Locks call1 + i3=001 without forcing
-                // call2/grid — rescues decodes addressed to mycall whose
-                // sender is *not* the call2 in operator context. Critical
-                // for catching follow-up replies in busy bands; JTDX uses
-                // iaptype 2 to land entries like "K1JT HA5WA 73" that pass
-                // 8 (mycall + HA0DU) cannot reach. Only triggered when
-                // call1 is set; otherwise iaptype 1 (blind CQ, pass 12)
-                // covers the unconstrained shape.
-                if ap.call1.is_some() {
-                    let mut ap5 = ApHint::new();
-                    if let Some(ref c1) = ap.call1 {
-                        ap5 = ap5.with_call1(c1);
-                    }
-                    ap_passes.push((ap5, 5));
-                }
-            }
-
-            // Pass 12: blind-CQ (WSJT-X iaptype 1). Always tried whenever
-            // AP is enabled, regardless of whether `ap` carries operator
-            // context. `check_result` will reject decodes whose unpacked
-            // text doesn't contain "CQ", so phantoms can't leak through.
-            ap_passes.push((ApHint::new().with_call1("CQ"), 12));
-
-            for (ap_cfg, pass_id) in &ap_passes {
-                let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
-                let locked_bits = ap_mask.iter().filter(|&&m| m).count();
-                let max_errors: u32 = strictness.ap_max_errors(locked_bits);
-
-                for &(base_llr, _) in llr_variants {
-                    let mut llr_ap = *base_llr;
-                    for i in 0..LDPC_N {
-                        if ap_mask[i] {
-                            llr_ap[i] = ap_llr_override[i];
-                        }
-                    }
-
-                    // Helper: validate AP decode result
-                    let check_result =
-                        |msg77: [u8; 77], hard_errors: u32| -> Option<DecodeResult> {
-                            if hard_errors >= max_errors {
-                                return None;
-                            }
-                            let text = super::message::unpack77(&msg77)?;
-                            if !super::message::is_plausible_message(&text) {
-                                return None;
-                            }
-                            // Verify AP-locked callsigns appear in decoded message
-                            let upper = text.to_uppercase();
-                            if let Some(ref c1) = ap_cfg.call1
-                                && !upper.contains(&c1.to_uppercase())
-                            {
-                                return None;
-                            }
-                            if let Some(ref c2) = ap_cfg.call2
-                                && !upper.contains(&c2.to_uppercase())
-                            {
-                                return None;
-                            }
-                            let itone = message_to_tones(&msg77);
-                            let snr_db = compute_snr_db(cs, &itone);
-                            Some(DecodeResult {
-                                message77: msg77,
-                                freq_hz: cand.freq_hz,
-                                dt_sec: refined.dt_sec,
-                                hard_errors,
-                                sync_score: refined.score,
-                                pass: *pass_id,
-                                sync_cv,
-                                snr_db,
-                            })
-                        };
-
-                    // AP + BP
-                    if let Some(bp) =
-                        bp_decode(&llr_ap, Some(&ap_mask), BP_MAX_ITER, Some(check_crc14))
-                        && let Some(r) = check_result(bp.message77, bp.hard_errors)
-                    {
-                        return Some(r);
-                    }
-                    // AP + OSD fallback
-                    if depth == DecodeDepth::BpAllOsd
-                        && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
-                        && let Some(r) = check_result(osd.message77, osd.hard_errors)
-                    {
-                        return Some(r);
-                    }
-                }
-            }
-        }
-
-        None
-    };
 
     match eq_mode {
         EqMode::Off => try_decode(&cs_raw, true),
