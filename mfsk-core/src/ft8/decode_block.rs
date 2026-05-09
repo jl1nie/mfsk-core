@@ -1665,9 +1665,7 @@ pub fn decode_block_tuned<S: AudioSample>(
         depth,
         max_cand,
         bp_max_iter,
-        #[cfg(feature = "fft-rustfft")]
         None,
-        #[cfg(feature = "fft-rustfft")]
         DecodeStrictness::Normal,
     )
 }
@@ -2513,9 +2511,7 @@ pub fn process_candidates_tuned<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
-        #[cfg(feature = "fft-rustfft")]
         None,
-        #[cfg(feature = "fft-rustfft")]
         DecodeStrictness::Normal,
     )
 }
@@ -2664,7 +2660,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     basis_im: &mut [i16],
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
-    process_candidates_with(
+    process_candidates_with_ap(
         audio,
         cands,
         depth,
@@ -2695,6 +2691,8 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
                 basis_im,
             );
         },
+        None,
+        DecodeStrictness::Normal,
     )
 }
 
