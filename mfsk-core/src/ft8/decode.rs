@@ -14,10 +14,10 @@ pub use super::equalizer::EqMode;
 use super::{
     downsample::{build_fft_cache, downsample},
     equalizer,
-    llr::{symbol_spectra, sync_quality},
+    llr::sync_quality,
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
-    subtract::subtract_signal_weighted,
+    subtract::subtract_signal_lpf,
     sync::SyncCandidate,
 };
 
@@ -480,17 +480,11 @@ fn process_candidate(
         }
     }
 
-    // Signed: candidates whose actual TX started before the slot's nominal
-    // start (dt_sec < -0.5) map to negative i_start. The downstream
-    // `symbol_spectra` / `fine_sync_power_*` calls use the WSJT-X-faithful
-    // all-or-nothing per-symbol boundary check; saturating to 0 here used
-    // to silently misalign the symbol grid for negative-dt candidates.
+    // sync_cv from cd0 + i_start (Costas correlation power CV).
+    // cd0 is at the refined-carrier baseband (the freq-shift above
+    // brought any non-zero `delf_hz` to 0), so fixed-tone Costas
+    // references in `fine_sync_power_per_block` align correctly.
     let i_start = ((refined.dt_sec + 0.5) * 200.0).round() as i32;
-    let cs_raw = symbol_spectra(&cd0, i_start);
-    let nsync = sync_quality(&cs_raw);
-    if nsync <= 6 {
-        return None;
-    }
     let sync_cv = {
         let scores = crate::core::sync::fine_sync_power_per_block::<crate::ft8::Ft8>(&cd0, i_start);
         let sa = scores.first().copied().unwrap_or(0.0);
@@ -504,6 +498,35 @@ fn process_candidate(
             0.0
         }
     };
+    drop(cd0);
+    // cs from 12 kHz audio directly via `fill_symbol_spectra` —
+    // matches embedded `decode_block`'s per-symbol-region DFT exactly.
+    // The cd0+symbol_spectra path host used pre-0.6.2 produced
+    // numerically-different cs values that lost ~3 entries on
+    // qso3_busy.wav vs decode_block (CQ EA2BFM, KD2UGC F6GCP,
+    // K1BZM EA3CJ). Rewiring to fill_symbol_spectra closes that gap.
+    let mut cs_raw: alloc::boxed::Box<[[crate::core::scalar::Cmplx<f32>; 8]; 79]> =
+        alloc::vec![[crate::core::scalar::Cmplx::<f32>::default(); 8]; 79]
+            .try_into()
+            .unwrap();
+    crate::ft8::decode_block::fill_symbol_spectra(
+        &mut cs_raw,
+        audio,
+        refined.freq_hz,
+        refined.dt_sec,
+        crate::ft8::decode_block::SymMask::SyncOnly,
+    );
+    crate::ft8::decode_block::fill_symbol_spectra(
+        &mut cs_raw,
+        audio,
+        refined.freq_hz,
+        refined.dt_sec,
+        crate::ft8::decode_block::SymMask::DataOnly,
+    );
+    let nsync = sync_quality(&cs_raw);
+    if nsync <= 6 {
+        return None;
+    }
 
     // Per-candidate decode delegated to the unified inner — same
     // staircase + OSD + AP loop the embedded `decode_block` path
@@ -743,12 +766,15 @@ pub fn decode_frame_subtract_with_ap(
                 continue;
             }
             // Sequential subtract — clean residual for next candidate.
-            // QSB-aware partial gain: if the Costas-array power CV is
-            // high the channel is time-varying and the amplitude
-            // estimate is less accurate; halve the gain to avoid
-            // over-subtraction artefacts.
-            let sub_gain = qsb_partial_gain(r.sync_cv);
-            subtract_signal_weighted(&mut residual, &r, sub_gain);
+            // Use the WSJT-X-style channel-aware LPF subtract (matches
+            // `decode_block::decode_block_multipass`'s sequential
+            // subtract). The simple constant-amplitude
+            // `subtract_signal_weighted` underused the residual on
+            // busy bands, leaving Pass-1 coarse_sync unable to surface
+            // weaker neighbours like KD2UGC F6GCP / CQ EA2BFM /
+            // K1BZM EA3CJ on qso3_busy.wav (the 3 entries embedded
+            // catches but host couldn't pre-0.6.2).
+            subtract_signal_lpf(&mut residual, &r);
             all_results.push(r);
         }
     }
@@ -901,8 +927,7 @@ fn decode_frame_subtract_with_known_and_ap_inner(
         // successive interference cancellation.
         if i == 0 {
             for r in known {
-                let sub_gain = qsb_partial_gain(r.sync_cv);
-                subtract_signal_weighted(&mut residual, r, sub_gain);
+                subtract_signal_lpf(&mut residual, r);
             }
             if !known.is_empty() {
                 residual_dirty = true;
@@ -910,8 +935,7 @@ fn decode_frame_subtract_with_known_and_ap_inner(
         }
 
         for r in &new {
-            let sub_gain = qsb_partial_gain(r.sync_cv);
-            subtract_signal_weighted(&mut residual, r, sub_gain);
+            subtract_signal_lpf(&mut residual, r);
         }
         if !new.is_empty() {
             residual_dirty = true;
@@ -1037,23 +1061,6 @@ pub fn decode_sniper_ap(
 /// This is particularly effective when 2–3 stronger stations reside within the
 /// 500 Hz BPF window alongside the target.  Falls back to a single-pass result
 /// when no interferers are found (zero extra cost).
-/// Pick the partial-subtraction gain for QSB-affected hits: 0.5 if
-/// `sync_cv > 0.3`, else 1.0.
-///
-/// Written as `1.0 - 0.5 * (cond as f32)` instead of the obvious
-/// `if cond { 0.5 } else { 1.0 }` to dodge an Xtensa Rust 1.95.0.0
-/// LLVM bug (instruction-selection SIGSEGV on the `[2 x float]
-/// [1.0, 0.5]` constant pool that LLVM materialises for the
-/// f32-valued select). The arithmetic form keeps the two constants
-/// as immediates (or at least in separate single-element pools) and
-/// LLVM lowers it to a normal compare + multiply + subtract on the
-/// Xtensa FPU.
-#[inline]
-fn qsb_partial_gain(sync_cv: f32) -> f32 {
-    let qsb = (sync_cv > 0.3) as u32 as f32;
-    1.0 - 0.5 * qsb
-}
-
 pub fn decode_sniper_sic(
     audio: &[i16],
     target_freq: f32,
@@ -1070,9 +1077,7 @@ pub fn decode_sniper_sic(
     let mut subtracted = false;
     for r in &pass1 {
         if (r.freq_hz - target_freq).abs() > 25.0 {
-            // QSB gate: partial subtraction for time-varying channels.
-            let gain = qsb_partial_gain(r.sync_cv);
-            subtract_signal_weighted(&mut residual, r, gain);
+            subtract_signal_lpf(&mut residual, r);
             subtracted = true;
         }
     }
