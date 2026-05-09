@@ -26,9 +26,7 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-#[cfg(feature = "fft-rustfft")]
-use super::decode::{ApHint, DecodeStrictness};
-use super::decode::{DecodeDepth, DecodeResult};
+use super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
 use super::llr::sync_quality;
 use super::message::unpack77;
 use super::params::{COSTAS, COSTAS_POS, DEFAULT_BP_MAX_ITER, LDPC_N, NMAX, NN, NSPS, NTONES};
@@ -1638,6 +1636,10 @@ pub fn decode_block<S: AudioSample>(
         depth,
         max_cand,
         DEFAULT_BP_MAX_ITER,
+        #[cfg(feature = "fft-rustfft")]
+        None,
+        #[cfg(feature = "fft-rustfft")]
+        DecodeStrictness::Normal,
     )
 }
 
@@ -1662,6 +1664,71 @@ pub fn decode_block_tuned<S: AudioSample>(
         depth,
         max_cand,
         bp_max_iter,
+        #[cfg(feature = "fft-rustfft")]
+        None,
+        #[cfg(feature = "fft-rustfft")]
+        DecodeStrictness::Normal,
+    )
+}
+
+/// AP-aware variant of [`decode_block`]. Mirrors `decode_block`'s
+/// behaviour exactly when `ap_hint = None`; with `Some(&ap)` runs
+/// the full WSJT-X iaptype loop (5..12) per candidate after Steps 1-3
+/// (BP staircase + OSD) all fail. Host `fft-rustfft` build only —
+/// embedded fixed-point keeps its existing iaptype-1-only path.
+///
+/// Used by host `decode_frame_with_ap` after the v0.6.1 redirect, and
+/// by mountain-top apps that want full AP rescue from a single entry
+/// point. New in 0.6.1.
+#[cfg(feature = "fft-rustfft")]
+#[allow(clippy::too_many_arguments)]
+pub fn decode_block_with_ap<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    ap_hint: Option<&ApHint>,
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        DEFAULT_BP_MAX_ITER,
+        ap_hint,
+        DecodeStrictness::Normal,
+    )
+}
+
+/// Variant of [`decode_block_with_ap`] that accepts runtime
+/// `bp_max_iter` and `strictness`. New in 0.6.1.
+#[cfg(feature = "fft-rustfft")]
+#[allow(clippy::too_many_arguments)]
+pub fn decode_block_with_ap_tuned<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        bp_max_iter,
+        ap_hint,
+        strictness,
     )
 }
 
@@ -1687,6 +1754,8 @@ fn decode_block_multipass<S: AudioSample>(
     depth: DecodeDepth,
     max_cand: usize,
     bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
@@ -1736,12 +1805,14 @@ fn decode_block_multipass<S: AudioSample>(
         #[cfg(not(feature = "std"))]
         let trace = false;
         for cand in pass2 {
-            let single_results = process_candidates_tuned(
+            let single_results = process_candidates_tuned_with_ap(
                 work.as_slice(),
                 alloc::vec![cand],
                 depth,
                 DEFAULT_Q_THRESH,
                 bp_max_iter,
+                ap_hint,
+                strictness,
             );
             for r in single_results {
                 if all.iter().any(|x| x.message77 == r.message77) {
@@ -2024,7 +2095,10 @@ fn recompute_snr_xsnr2(
 
 /// Embedded path: single-pass `decode_block` (matches the previous
 /// production behaviour, no subtract). Host-only `fft-rustfft` adds
-/// the multipass driver.
+/// the multipass driver. `_ap_hint` and `_strictness` parameters are
+/// accepted for signature parity with the host variant but ignored
+/// here — embedded fixed-point keeps its existing iaptype-1-only
+/// hardcoded plumbing (full AP deferred to 0.7.x).
 #[cfg(not(feature = "fft-rustfft"))]
 #[allow(clippy::too_many_arguments)]
 fn decode_block_multipass<S: AudioSample>(
@@ -2035,6 +2109,8 @@ fn decode_block_multipass<S: AudioSample>(
     depth: DecodeDepth,
     max_cand: usize,
     bp_max_iter: u32,
+    _ap_hint: Option<&ApHint>,
+    _strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
     let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
@@ -2430,11 +2506,39 @@ pub fn process_candidates_tuned<S: AudioSample>(
     q_thresh: u32,
     bp_max_iter: u32,
 ) -> Vec<DecodeResult> {
+    process_candidates_tuned_with_ap(
+        audio,
+        cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        #[cfg(feature = "fft-rustfft")]
+        None,
+        #[cfg(feature = "fft-rustfft")]
+        DecodeStrictness::Normal,
+    )
+}
+
+/// AP-aware variant of [`process_candidates_tuned`]. When
+/// `ap_hint = None` and `strictness = Normal`, behaviour is bit-
+/// identical to `process_candidates_tuned`. Internal helper for the
+/// `decode_block_with_ap` driver and host's redirected
+/// `process_candidate`.
+#[allow(clippy::too_many_arguments)]
+fn process_candidates_tuned_with_ap<S: AudioSample>(
+    audio: &[S],
+    cands: Vec<RefinedCandidate>,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
+    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
             .try_into()
             .unwrap();
-    process_candidates_with(
+    process_candidates_with_ap(
         audio,
         cands,
         depth,
@@ -2444,6 +2548,10 @@ pub fn process_candidates_tuned<S: AudioSample>(
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask);
         },
+        #[cfg(feature = "fft-rustfft")]
+        ap_hint,
+        #[cfg(feature = "fft-rustfft")]
+        strictness,
     )
 }
 
@@ -2598,7 +2706,11 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
 /// caller-provided). `cs_scratch` is the per-symbol-spectra working
 /// buffer that hot loops (BP / LLR / sync_quality) read from — see
 /// [`process_candidates_into_with_cs_scratch`] for the rationale.
-fn process_candidates_with<S: AudioSample, F>(
+/// Per-candidate driver — dt is already parabolically refined by
+/// coarse_sync. AP-aware: pass `ap_hint = None` for the legacy
+/// non-AP behaviour (bit-identical to the pre-0.6.1 shape).
+#[allow(clippy::too_many_arguments)]
+fn process_candidates_with_ap<S: AudioSample, F>(
     _audio: &[S],
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
@@ -2606,6 +2718,8 @@ fn process_candidates_with<S: AudioSample, F>(
     bp_max_iter: u32,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
     mut fill: F,
+    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
+    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -2653,9 +2767,9 @@ where
             &mut bp_scratch,
             &results,
             #[cfg(feature = "fft-rustfft")]
-            None,
+            ap_hint,
             #[cfg(feature = "fft-rustfft")]
-            DecodeStrictness::Normal,
+            strictness,
             0.0,
         ) {
             results.push(r);
