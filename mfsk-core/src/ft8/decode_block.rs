@@ -932,6 +932,8 @@ fn coarse_sync_inner(
     #[cfg(feature = "std")]
     let t_score = std::time::Instant::now();
 
+    const MLAG: i32 = 10;
+
     // Per-bin peak + 40-percentile noise floor.
     let mut red = vec![0.0f32; n_freq];
     for fi in 0..n_freq {
@@ -945,8 +947,6 @@ fn coarse_sync_inner(
         let pct_idx = (0.40 * n_freq as f32) as usize;
         sorted[pct_idx.min(n_freq - 1)].max(f32::EPSILON)
     };
-
-    const MLAG: i32 = 10;
 
     let mut cands: Vec<SyncCandidate> = Vec::new();
     for fi in 0..n_freq {
@@ -995,9 +995,12 @@ fn coarse_sync_inner(
             // WSJT-X sync8.f90 emits at most 2 candidates per freq:
             // one from `red` (narrow ±MLAG window) and one from `red2`
             // (full ±jz window) when the peak lags differ. We don't
-            // run two windows separately, but the `picked` greedy NMS
-            // with cap 2 produces the same upper bound. Allowing more
-            // (the previous 8) inflated phantom counts on busy slots.
+            // run two windows separately; the `picked` greedy NMS with
+            // cap 2 produces equivalent recall on `qso3_busy.wav` —
+            // empirically verified during the v0.6.2 plan (a
+            // dual-window prototype produced identical 16/18 JTDX
+            // hit, so the additional separate normalization wasn't
+            // worth the code volume). Dropped from 0.6.2 scope.
             if picked.len() >= 2 {
                 break;
             }

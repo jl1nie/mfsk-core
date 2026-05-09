@@ -216,7 +216,13 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
 /// the deferred A0' work). This test measures what the multipass
 /// host pipeline catches; `JTDX_EXTRAS_HARD_FLOOR_MULTIPASS` is the
 /// floor for it.
-const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 1;
+// Multipass floor — bumped 1 → 5 in 0.6.2 after the host
+// `decode_frame_subtract_with_ap` driver was rewired to use
+// `subtract_signal_lpf` (matching `decode_block`'s WSJT-X-faithful
+// channel-aware subtract). Cleaner residual surfaces 4 of the 5
+// missing JTDX-extras at coarse-sync stage 1 of pass 1; only K1BZM
+// DK8NE -19 (deepest) remains beyond reach without a wider AP-list.
+const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 5;
 
 #[test]
 fn qso3_apon_subtract_jtdx_extras_diag() {

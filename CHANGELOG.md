@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.6.2 — host pipeline matches embedded subtract + cs-source
+
+Non-breaking patch. After v0.6.1 unified the per-candidate inner,
+the host pipeline still diverged from embedded `decode_block` on
+two upstream axes: the cs spectra source (host computed cs from
+cd0, embedded fills from 12 kHz audio) and the SIC subtract
+function (host used a constant-amplitude weighted subtract,
+embedded uses WSJT-X-style channel-aware LPF subtract). Both
+divergences are eliminated in 0.6.2; host now matches embedded
+bit-for-bit on the cs values it feeds the unified inner.
+
+### Improved
+
+- **Host `decode_frame_subtract_with_ap` recall on busy bands.** On
+  `qso3_busy.wav` AP-on with operator context (`mycall=K1JT`,
+  `hiscall=HA0DU`):
+  - **14 → 18 decodes** total.
+  - **JTDX-extras coverage 1/6 → 5/6.** Surfaces CQ EA2BFM,
+    KD2UGC F6GCP, K1BZM EA3CJ on top of the F5RXL CQ already
+    caught in 0.6.1. The single remaining miss
+    (K1BZM DK8NE -19) requires a wider AP-list / callsign hash
+    table — out of scope for this patch.
+- **Host single-pass `decode_frame_with_ap`** unchanged at 14/18
+  (single-pass doesn't benefit from the improved subtract).
+- **Embedded `decode_block`** unchanged at 16/18 (the changes touch
+  only the host driver path).
+
+### Changed (internal — non-breaking)
+
+- `ft8::decode::process_candidate` — cs-source rewired from
+  `symbol_spectra(cd0, i_start)` to `fill_symbol_spectra(audio,
+  refined.freq_hz, refined.dt_sec, SyncOnly+DataOnly)`, matching
+  embedded's per-symbol-region DFT directly on 12 kHz audio. cd0
+  still used for `fine_refine_3stage` and `sync_cv` computation.
+- `decode_frame_subtract_with_ap`,
+  `decode_frame_subtract_with_known_and_ap_inner`, and
+  `decode_sniper_sic` — sequential subtract switched from
+  `subtract_signal_weighted` (constant amplitude × QSB-aware
+  partial gain) to `subtract_signal_lpf` (WSJT-X-style channel-
+  aware LPF subtract, matching `decode_block_multipass`).
+
+### Removed (technically breaking, in practice no consumers)
+
+- `mfsk_core::ft8::subtract::subtract_signal` — was a thin wrapper
+  around `subtract_signal_weighted(audio, result, 1.0)`. No
+  in-tree, embedded-poc, or mfsk-ffi-ft8 callers (verified via
+  `grep`).
+- `mfsk_core::ft8::subtract::subtract_signal_weighted` — replaced
+  everywhere by `subtract_signal_lpf` (which doesn't accept a
+  partial gain — the QSB-aware attenuation it provided is no
+  longer needed since LPF subtract handles channel variation
+  natively).
+- `mfsk_core::ft8::llr::symbol_spectra` — removed; was only used
+  by `process_candidate` which now calls
+  `decode_block::fill_symbol_spectra` directly. The protocol-
+  generic `core::llr::symbol_spectra::<P>` (used by FT4 / JT9 /
+  uvpacket / WSPR pipelines) is untouched.
+- `qsb_partial_gain` (private) — only consumer was the now-removed
+  weighted subtract.
+
+The removed `subtract_signal*` and `symbol_spectra` items had no
+out-of-tree callers in the workspace; the FT8 subtract public
+surface is now `subtract_signal_lpf` + `refine_signal_freq`.
+
+### Deferred / scoped out
+
+- **Embedded recall++** beyond 16/18 on `qso3_busy.wav`. The
+  remaining 2 misses (K1BZM DK8NE -19, WA2FZW DL5AXX -15) are
+  intrinsically below `decode_block::coarse_sync`'s sync-min
+  threshold even at sync_min=0.5 / max_cand=200; a WSJT-X-faithful
+  dual-window NMS prototype was tried during the v0.6.2 plan but
+  produced identical 16/18 hit count, so it wasn't worth the code
+  volume. Surfacing those entries needs either a different sync
+  algorithm or a wider AP-list — both deferred.
+- **Embedded fixed-point AP** support (apmag in Q3i8) — still
+  tracked for 0.7.x.
+
+### Test floor changes
+
+- `tests/ft8_qso3_apon_recall.rs::JTDX_EXTRAS_HARD_FLOOR_MULTIPASS`:
+  1 → **5** (locks in the host multipass recall jump).
+
 ## 0.6.1 — host/embedded per-candidate pipeline unification
 
 Non-breaking patch. After v0.6.0 unified the FT8 coarse-sync path,
