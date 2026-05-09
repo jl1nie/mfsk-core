@@ -903,35 +903,75 @@ pub fn decode_frame_subtract_with_ap(
     strictness: DecodeStrictness,
     ap_hint: Option<&ApHint>,
 ) -> Vec<DecodeResult> {
+    // **WSJT-X-faithful** 3-pass + sequential SIC, mirroring the
+    // structure of `decode_block::decode_block_multipass` (the embedded
+    // path) which is a faithful port of `lib/ft8/ft8b.f90:432-437`.
+    //
+    // Two changes from the pre-v0.6.0 host implementation:
+    //
+    // 1. **Fixed `sync_min` across all 3 passes** (was 1.0 / 0.75 / 0.5).
+    //    Progressive relaxation lets phantoms slip through later passes
+    //    when SIC artefacts dominate the residual; WSJT-X holds the
+    //    threshold and skips later passes when no new decodes come out.
+    //
+    // 2. **Sequential subtract within each pass** (was batch-after-pass).
+    //    Each accepted decode immediately subtracts from the residual so
+    //    the *next* candidate in the same pass sees a cleaner spectrum.
+    //    This is what surfaces -13 to -18 dB signals sitting beneath
+    //    strong neighbours (the JTDX-extras shape on `qso3_busy.wav`).
+    //    Without sequential subtract, all candidates in a pass see the
+    //    same raw residual and weak signals stay masked.
+    //
+    // Pass termination matches WSJT-X: pass 2 skips when pass 1 returned
+    // 0 decodes; pass 3 skips when pass 2 returned no NEW decodes.
+    let _ = freq_hint;
+
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
 
-    let passes: &[f32] = &[1.0, 0.75, 0.5];
-
-    for &factor in passes {
-        let (new, _) = decode_frame_inner(
-            &residual,
-            freq_min,
-            freq_max,
-            sync_min * factor,
-            freq_hint,
-            depth,
-            max_cand,
-            strictness,
-            &all_results,
-            EqMode::Off,
-            None,
-            ap_hint,
-        );
-
-        for r in &new {
-            // QSB gate: if Costas-array power CV > 0.3 the channel is time-varying
-            // and the amplitude estimate is less accurate — use half gain to avoid
-            // over-subtraction artefacts that would corrupt later passes.
-            let sub_gain = qsb_partial_gain(r.sync_cv);
-            subtract_signal_weighted(&mut residual, r, sub_gain);
+    let mut prev_total: usize = 0;
+    for ipass in 0..3 {
+        if ipass >= 1 && all_results.len() == prev_total {
+            break;
         }
-        all_results.extend(new);
+        prev_total = all_results.len();
+
+        let spec = crate::ft8::decode_block::compute_spectrogram(&residual, freq_max);
+        let candidates =
+            crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+        drop(spec);
+        if candidates.is_empty() {
+            continue;
+        }
+
+        let fft_cache = build_fft_cache(&residual);
+        for cand in &candidates {
+            let r = match process_candidate(
+                cand,
+                &residual,
+                &fft_cache,
+                depth,
+                strictness,
+                &all_results,
+                EqMode::Off,
+                ap_hint,
+            ) {
+                Some(r) => r,
+                None => continue,
+            };
+            // Dedup against earlier passes' accepted decodes.
+            if all_results.iter().any(|x| x.message77 == r.message77) {
+                continue;
+            }
+            // Sequential subtract — clean residual for next candidate.
+            // QSB-aware partial gain: if the Costas-array power CV is
+            // high the channel is time-varying and the amplitude
+            // estimate is less accurate; halve the gain to avoid
+            // over-subtraction artefacts.
+            let sub_gain = qsb_partial_gain(r.sync_cv);
+            subtract_signal_weighted(&mut residual, &r, sub_gain);
+            all_results.push(r);
+        }
     }
 
     all_results

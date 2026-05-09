@@ -40,7 +40,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth, decode_frame_with_ap};
+use mfsk_core::ft8::decode::{
+    ApHint, DecodeDepth, DecodeStrictness, decode_frame_subtract_with_ap, decode_frame_with_ap,
+};
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -203,5 +205,72 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
         "AP-on decode count {} exceeds ceiling {} (phantom regression?)",
         ap_on.len(),
         MAX_TOTAL_DECODES,
+    );
+}
+
+/// Diagnostic — same JTDX extras coverage check, but using
+/// `decode_frame_subtract_with_ap` (host 3-pass + SIC + AP). The 5
+/// remaining JTDX extras at -13 to -19 dB sit beneath strong
+/// neighbours; SIC reveals them. Embedded `decode_block_multipass`
+/// has the equivalent 3-pass + SIC built in (without AP — that's
+/// the deferred A0' work). This test measures what the multipass
+/// host pipeline catches; `JTDX_EXTRAS_HARD_FLOOR_MULTIPASS` is the
+/// floor for it.
+const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 1;
+
+#[test]
+fn qso3_apon_subtract_jtdx_extras_diag() {
+    let slot = load_wav_i16(Path::new(QSO3_PATH));
+    let ap = ApHint::new().with_call1(MYCALL).with_call2(HISCALL);
+
+    let decoded = decode_frame_subtract_with_ap(
+        &slot,
+        100.0,
+        3000.0,
+        1.3,
+        None,
+        DecodeDepth::BpAllOsd,
+        50,
+        DecodeStrictness::Normal,
+        Some(&ap),
+    );
+    let messages: BTreeSet<String> = decoded
+        .iter()
+        .filter_map(|r| unpack77(&r.message77))
+        .collect();
+
+    println!(
+        "\nqso3 AP-on **subtract** (mycall={MYCALL}, hiscall={HISCALL}) — {} decode(s):",
+        messages.len()
+    );
+    for m in &messages {
+        println!("  {}", m);
+    }
+
+    let extras_hit: Vec<&str> = JTDX_AP_ON_EXTRAS
+        .iter()
+        .copied()
+        .filter(|g| messages.contains(*g))
+        .collect();
+    let extras_missing: Vec<&str> = JTDX_AP_ON_EXTRAS
+        .iter()
+        .copied()
+        .filter(|g| !messages.contains(*g))
+        .collect();
+    println!(
+        "\n  JTDX AP-on extras (multipass): {}/{} hit (floor {})",
+        extras_hit.len(),
+        JTDX_AP_ON_EXTRAS.len(),
+        JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
+    );
+    if !extras_missing.is_empty() {
+        println!("  not yet caught: {:?}", extras_missing);
+    }
+    assert!(
+        extras_hit.len() >= JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
+        "JTDX AP-on multipass coverage regressed: {}/{} below floor {}",
+        extras_hit.len(),
+        JTDX_AP_ON_EXTRAS.len(),
+        JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
     );
 }
