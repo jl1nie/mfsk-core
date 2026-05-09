@@ -26,6 +26,8 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
+#[cfg(feature = "fft-rustfft")]
+use super::decode::{ApHint, DecodeStrictness};
 use super::decode::{DecodeDepth, DecodeResult};
 use super::llr::sync_quality;
 use super::message::unpack77;
@@ -2650,6 +2652,11 @@ where
             bp_max_iter,
             &mut bp_scratch,
             &results,
+            #[cfg(feature = "fft-rustfft")]
+            None,
+            #[cfg(feature = "fft-rustfft")]
+            DecodeStrictness::Normal,
+            0.0,
         ) {
             results.push(r);
         }
@@ -2663,18 +2670,25 @@ where
 /// reject above this and fall through to the next BP variant.
 const WSJTX_NHARDERRORS_MAX: u32 = 36;
 
-/// Per-candidate decode core — runs the LLR-staircase + OSD fallback
-/// on a *fully-filled* `cs_scratch`. Shared between the embedded
-/// `process_candidates_with` driver (above) and the host
-/// `process_candidate` redirect (decode.rs, post-0.6.1). Returns
-/// `Some(DecodeResult)` on first success (Step 1 / 2 / 3 in order),
-/// `None` on full failure.
+/// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
+/// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
+/// between the embedded `process_candidates_with` driver (above) and
+/// the host `process_candidate` redirect (decode.rs, post-0.6.1).
+/// Returns `Some(DecodeResult)` on first success (Step 1, 2, 3, or 4
+/// in order), `None` on full failure.
 ///
 /// Caller responsibilities:
 /// - `cs_scratch` filled with all 79 symbols × 8 tones (data + sync).
 /// - `q = sync_quality(cs_scratch)` already computed and gated.
 /// - `refined_dt` carries the parabolically-refined `dt_sec`.
 /// - `known` is the dedup list (in-progress + prior-pass results).
+/// - `ap_hint` is `None` for AP-off (embedded default); `Some(_)` to
+///   activate Step 4 AP iaptype loop. `#[cfg(feature = "fft-rustfft")]`
+///   only — embedded fixed-point builds always pass `None`.
+/// - `strictness` controls the per-iaptype `nharderrors` cap; ignored
+///   when `ap_hint` is `None`.
+/// - `sync_cv` is the Costas-array power CV (host computes it for QSB
+///   gain attenuation; embedded passes 0.0).
 fn process_one_candidate_inner(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
     cand: &SyncCandidate,
@@ -2687,6 +2701,9 @@ fn process_one_candidate_inner(
         LlrT,
     >,
     known: &[DecodeResult],
+    #[cfg(feature = "fft-rustfft")] ap_hint: Option<&ApHint>,
+    #[cfg(feature = "fft-rustfft")] strictness: DecodeStrictness,
+    sync_cv: f32,
 ) -> Option<DecodeResult> {
     // ── Staircase: cheap → deeper → OSD ─────────────────────────
     //
@@ -2810,6 +2827,132 @@ fn process_one_candidate_inner(
         }
     }
 
+    // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
+    // Mirrors WSJT-X ft8b.f90 ipass 5..12 — runs only if Steps 1-3 all
+    // failed and the caller supplied an `ap_hint`. Embedded fixed-point
+    // builds always pass `ap_hint = None` so this entire block
+    // constant-folds away.
+    //
+    // Iaptype priority (deepest-first, mirroring decode.rs:634-684):
+    //   9/10/11 (call1+call2+RRR/RR73/73 → full 77-bit lock)
+    //   7 (CQ + call2)
+    //   8 (call1+call2 → ~61 bits)
+    //   6 (ap as-supplied → ~33 bits)
+    //   5 (mycall only → ~32 bits, WSJT-X iaptype 2)
+    //   12 (blind CQ → always tried last, WSJT-X iaptype 1)
+    #[cfg(feature = "fft-rustfft")]
+    if accepted.is_none()
+        && let Some(ap) = ap_hint
+    {
+        let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
+        let apmag = llr_full_f32
+            .llra
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f32, f32::max)
+            * 1.01;
+        let llr_variants: [&[f32; LDPC_N]; 4] = [
+            &llr_full_f32.llra,
+            &llr_full_f32.llrb,
+            &llr_full_f32.llrc,
+            &llr_full_f32.llrd,
+        ];
+
+        let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();
+        if ap.has_info() {
+            if ap.call1.is_some() && ap.call2.is_some() {
+                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
+                    let ap_full = ap.clone().with_report(rpt);
+                    ap_passes.push((ap_full, pid));
+                }
+            }
+            if ap.call2.is_some() && ap.call1.is_none() {
+                let ap7 = ap.clone().with_call1("CQ");
+                ap_passes.push((ap7, 7));
+            }
+            if ap.call1.is_some() && ap.call2.is_some() {
+                ap_passes.push((ap.clone(), 8));
+            }
+            ap_passes.push((ap.clone(), 6));
+            if ap.call1.is_some() {
+                let mut ap5 = ApHint::new();
+                if let Some(ref c1) = ap.call1 {
+                    ap5 = ap5.with_call1(c1);
+                }
+                ap_passes.push((ap5, 5));
+            }
+        }
+        // Pass 12: blind-CQ (WSJT-X iaptype 1) — always tried.
+        ap_passes.push((ApHint::new().with_call1("CQ"), 12));
+
+        'ap_outer: for (ap_cfg, pass_id) in &ap_passes {
+            let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
+            let locked_bits = ap_mask.iter().filter(|&&m| m).count();
+            let max_errors: u32 = strictness.ap_max_errors(locked_bits);
+
+            for &base_llr in &llr_variants {
+                let mut llr_ap = *base_llr;
+                for i in 0..LDPC_N {
+                    if ap_mask[i] {
+                        llr_ap[i] = ap_llr_override[i];
+                    }
+                }
+                // Inline AP-result validator: hard-error gate, unpack,
+                // plausibility, locked-call substring check.
+                let validate = |msg77: [u8; 77], hard_errors: u32| -> bool {
+                    if hard_errors >= max_errors {
+                        return false;
+                    }
+                    let Some(text) = unpack77(&msg77) else {
+                        return false;
+                    };
+                    if !crate::msg::wsjt77::is_plausible_message(&text) {
+                        return false;
+                    }
+                    let upper = text.to_uppercase();
+                    if let Some(ref c1) = ap_cfg.call1
+                        && !upper.contains(&c1.to_uppercase())
+                    {
+                        return false;
+                    }
+                    if let Some(ref c2) = ap_cfg.call2
+                        && !upper.contains(&c2.to_uppercase())
+                    {
+                        return false;
+                    }
+                    true
+                };
+
+                // AP + BP
+                if let Some(bp) = crate::fec::ldpc::bp::bp_decode(
+                    &llr_ap,
+                    Some(&ap_mask),
+                    bp_max_iter,
+                    Some(check_crc14),
+                ) && validate(bp.message77, bp.hard_errors)
+                {
+                    accepted = Some((bp, *pass_id));
+                    break 'ap_outer;
+                }
+                // AP + OSD-Deep fallback (BpAllOsd only)
+                if depth == DecodeDepth::BpAllOsd
+                    && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
+                    && validate(osd.message77, osd.hard_errors)
+                {
+                    let bp = crate::fec::ldpc::bp::BpResult {
+                        message77: osd.message77,
+                        info: osd.info,
+                        codeword: vec![0u8; LDPC_N],
+                        hard_errors: osd.hard_errors,
+                        iterations: 0,
+                    };
+                    accepted = Some((bp, *pass_id));
+                    break 'ap_outer;
+                }
+            }
+        }
+    }
+
     let (bp, pass_id) = accepted?;
     let text = unpack77(&bp.message77)?;
     // Plausibility filter — reject CRC-passing-but-garbage
@@ -2832,7 +2975,7 @@ fn process_one_candidate_inner(
         hard_errors: bp.hard_errors,
         sync_score: cand.score,
         pass: pass_id,
-        sync_cv: 0.0,
+        sync_cv,
         snr_db,
     })
 }
