@@ -86,14 +86,44 @@ turbofish the generic).
   helpers (`load_wav_i16` / `load_wav_f32` strict + `_opt` soft) in
   `tests/common/mod.rs`. Net 342 lines deleted.
 
+### Fixed (additional)
+
+- **Host `decode_frame_subtract_with_ap` is now WSJT-X-faithful**.
+  Mirrors the structure of `decode_block::decode_block_multipass` (which
+  is a faithful port of `lib/ft8/ft8b.f90:432-437`). Two changes from
+  pre-v0.6.0:
+  1. **Fixed `sync_min` across all 3 passes** (was sync_min × {1.0, 0.75, 0.5}).
+     Progressive relaxation lets phantoms slip through later passes when
+     SIC artefacts dominate the residual.
+  2. **Sequential subtract within each pass** (was batch-after-pass).
+     Each accepted decode immediately subtracts so the next candidate
+     in the same pass sees a cleaner residual.
+
+  Pass termination matches WSJT-X (skip pass 2 when pass 1 returned 0;
+  skip pass 3 when pass 2 returned no NEW). No recall change on the
+  qso3_busy.wav reference (the host's remaining 14/18 vs embedded's
+  16/18 gap on that WAV is structurally downstream — see "Known
+  limitation" below) but materially more faithful in shape and will
+  matter on WAVs where SIC artefact phantoms differ.
+
 ### Deferred
 
-- `decode_block_with_ap` (ROADMAP A0') — additive code that adds an AP
-  loop to the embedded path. Designed but not shipped in 0.6.0; the
-  qso3_busy.wav recall gap that motivates it is upstream of AP (coarse-
-  sync misses the candidates), so shipping it here would be code without
-  a measurable user-visible improvement on the test WAV. Revisit when a
-  WAV surfaces where the gap is actually post-coarse-sync.
+- `decode_block_with_ap` (ROADMAP A0' / "AP-on extras parity"). The
+  remaining 2-entry gap between embedded `decode_block` (16/18 of the
+  JTDX 18-entry golden on `qso3_busy.wav`) and host `decode_frame*`
+  (14/18) is **inside the per-candidate processing** —
+  `process_candidates_tuned` (decode_block's path) and
+  `process_candidate` (decode.rs's path) are separate decoder pipelines
+  with different LLR / BP staircase / sync_quality gates, and the 3
+  extra decodes embedded catches (KD2UGC F6GCP, CQ EA2BFM, K1BZM EA3CJ)
+  pass `process_candidates_tuned`'s gates but not `process_candidate`'s.
+
+  Unifying the two pipelines is a non-trivial refactor (the embedded
+  path is fixed-point-aware, the host path uses f32 throughout) — it's
+  a 0.7.0-class change. Tracked for that release. v0.6.0 ships with
+  the host pipeline structurally aligned to the WSJT-X-faithful
+  multipass shape (above) but with the per-candidate processing still
+  on the host-specific code path.
 - `Protocol::Sync` associated-type (#48 option A) — full type-system
   enforcement against future protocol-sync drift. Scoped out: the blast
   radius is every `impl Protocol` site + the embedded feature matrix,
