@@ -22,30 +22,7 @@ mod common;
 
 const QSO_WAVS: &[&str] = common::REAL_QSO_WAVS;
 
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("read wav");
-    assert_eq!(&bytes[0..4], b"RIFF");
-    let mut i = 12usize;
-    let mut data_off = 0usize;
-    let mut data_len = 0usize;
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-        i += 8;
-        if id == b"data" {
-            data_off = i;
-            data_len = len;
-        }
-        i += len;
-        if len % 2 == 1 {
-            i += 1;
-        }
-    }
-    bytes[data_off..data_off + data_len]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 #[test]
 #[ignore = "sweep: ~30 s. --include-ignored to run."]

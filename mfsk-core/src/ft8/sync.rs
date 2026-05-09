@@ -14,7 +14,7 @@
 //! protocol-generic [`crate::core::sync`] module — they have not
 //! shown the busy-band recall gap that motivated the coarse-sync
 //! consolidation, so the wrappers stay until either #49 cat B
-//! decides to delete them or option A ([`Protocol::Sync`] associated
+//! decides to delete them or option A (`Protocol::Sync` associated
 //! type, post-0.6.0) absorbs them.
 
 use super::Ft8;

@@ -14,8 +14,6 @@
 
 #![cfg(feature = "q65")]
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use mfsk_core::fec::qra::FadingModel;
@@ -26,39 +24,10 @@ use mfsk_core::q65::{
     decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for,
 };
 
-/// Minimal WAV reader for WSJT-X's exact format: RIFF/WAVE header,
-/// `fmt ` chunk = PCM (1 channel, 12 kHz, 16-bit), `data` chunk =
-/// little-endian i16 samples. Anything else returns `None`.
-fn read_wsjtx_wav(path: &Path) -> Option<Vec<f32>> {
-    let mut file = File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    // Locate the `data` chunk after the standard 44-byte RIFF header.
-    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    // Confirm fmt chunk advertises mono / 12 kHz / 16-bit PCM.
-    if &bytes[12..16] != b"fmt " {
-        return None;
-    }
-    let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let bits = u16::from_le_bytes([bytes[34], bytes[35]]);
-    if channels != 1 || sample_rate != 12_000 || bits != 16 {
-        return None;
-    }
-    if &bytes[36..40] != b"data" {
-        return None;
-    }
-    let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let data = &bytes[44..44 + data_len.min(bytes.len() - 44)];
-    let mut out = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
-        let s = i16::from_le_bytes([chunk[0], chunk[1]]);
-        out.push(s as f32 / 32_768.0);
-    }
-    Some(out)
-}
+#[allow(dead_code)]
+mod common;
+
+use common::load_wav_f32_opt as read_wsjtx_wav;
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
     // Tests run from `mfsk-core/mfsk-core/`; the WSJT-X tree is at
@@ -196,7 +165,7 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
         "WSJT-X Q65-30A sample dir contains no .wav files"
     );
 
-    let audios: Vec<Vec<f32>> = paths.iter().filter_map(|p| read_wsjtx_wav(p)).collect();
+    let audios: Vec<Vec<f32>> = paths.iter().filter_map(read_wsjtx_wav).collect();
     assert!(
         !audios.is_empty(),
         "no readable WAVs in WSJT-X Q65-30A ionoscatter sample dir"

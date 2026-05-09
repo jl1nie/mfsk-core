@@ -31,46 +31,7 @@ mod common;
 /// [`common::REAL_QSO_WAVS`] for provenance and bit-identity notes.
 const QSO_WAVS: &[&str] = common::REAL_QSO_WAVS;
 
-/// Minimal RIFF/WAVE loader — parses the standard `fmt ` + `data`
-/// chunks and returns mono i16 samples. Bails on anything but
-/// 12 kHz / mono / 16-bit PCM.
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("read wav");
-    assert_eq!(&bytes[0..4], b"RIFF");
-    assert_eq!(&bytes[8..12], b"WAVE");
-    let mut i = 12usize;
-    let mut sample_rate = 0u32;
-    let mut bits = 0u16;
-    let mut channels = 0u16;
-    let mut data_off = 0usize;
-    let mut data_len = 0usize;
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-        i += 8;
-        if id == b"fmt " {
-            channels = u16::from_le_bytes(bytes[i + 2..i + 4].try_into().unwrap());
-            sample_rate = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap());
-            bits = u16::from_le_bytes(bytes[i + 14..i + 16].try_into().unwrap());
-        } else if id == b"data" {
-            data_off = i;
-            data_len = len;
-        }
-        i += len;
-        // Chunks are word-aligned.
-        if len % 2 == 1 {
-            i += 1;
-        }
-    }
-    assert_eq!(channels, 1, "expected mono");
-    assert_eq!(sample_rate, 12_000, "expected 12 kHz");
-    assert_eq!(bits, 16, "expected 16-bit PCM");
-    let samples = &bytes[data_off..data_off + data_len];
-    samples
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 fn quantize_to_i8(slot: &[i16]) -> Vec<i8> {
     slot.iter().map(|&s| (s >> 8) as i8).collect()

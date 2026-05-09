@@ -32,29 +32,7 @@ const PROBE_FREQS: &[(f32, &str)] = &[
     (2039.0, "JTDX extras band"),
 ];
 
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("WAV present");
-    assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF/WAV file");
-    let mut i = 12usize;
-    let (mut data_off, mut data_len) = (0usize, 0usize);
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-        i += 8;
-        if id == b"data" {
-            data_off = i;
-            data_len = len;
-        }
-        i += len;
-        if len % 2 == 1 {
-            i += 1;
-        }
-    }
-    bytes[data_off..data_off + data_len.min(bytes.len() - data_off)]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 fn print_near(label: &str, cands: &[SyncCandidate], target_hz: f32, win_hz: f32) {
     let mut hits: Vec<&SyncCandidate> = cands

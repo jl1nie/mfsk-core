@@ -8,8 +8,9 @@
 #![cfg(feature = "q65")]
 
 use std::f32::consts::TAU;
-use std::fs::File;
-use std::io::Read;
+#[allow(dead_code)]
+mod common;
+use common::load_wav_f32_opt as read_wsjtx_wav;
 use std::path::{Path, PathBuf};
 
 use mfsk_core::fec::qra::Q65Codec;
@@ -221,35 +222,6 @@ fn ap_list_threshold_scales_with_list_size() {
 }
 
 // ─── WSJT-X 6 m EME reference (optional) ─────────────────────────────
-
-fn read_wsjtx_wav(path: &Path) -> Option<Vec<f32>> {
-    let mut file = File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    if &bytes[12..16] != b"fmt " {
-        return None;
-    }
-    let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let bits = u16::from_le_bytes([bytes[34], bytes[35]]);
-    if channels != 1 || sample_rate != 12_000 || bits != 16 {
-        return None;
-    }
-    if &bytes[36..40] != b"data" {
-        return None;
-    }
-    let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let data = &bytes[44..44 + data_len.min(bytes.len() - 44)];
-    let mut out = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
-        let s = i16::from_le_bytes([chunk[0], chunk[1]]);
-        out.push(s as f32 / 32_768.0);
-    }
-    Some(out)
-}
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;

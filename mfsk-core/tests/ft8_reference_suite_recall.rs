@@ -80,37 +80,7 @@ const ENTRIES: &[Entry] = &[
     ),
 ];
 
-fn load_wav_i16(path: &Path) -> Option<Vec<i16>> {
-    let bytes = std::fs::read(path).ok()?;
-    if &bytes[0..4] != b"RIFF" {
-        return None;
-    }
-    let mut i = 12usize;
-    let mut data_off = 0usize;
-    let mut data_len = 0usize;
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().ok()?) as usize;
-        i += 8;
-        if id == b"data" {
-            data_off = i;
-            data_len = len;
-        }
-        i += len;
-        if len % 2 == 1 {
-            i += 1;
-        }
-    }
-    if data_off == 0 {
-        return None;
-    }
-    Some(
-        bytes[data_off..data_off + data_len.min(bytes.len() - data_off)]
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-            .collect(),
-    )
-}
+use common::load_wav_i16_opt as load_wav_i16;
 
 #[test]
 #[ignore = "reference recall + wall-clock; run with --include-ignored"]

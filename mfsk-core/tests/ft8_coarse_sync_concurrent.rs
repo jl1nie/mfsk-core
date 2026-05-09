@@ -44,29 +44,7 @@ const FREQ_MAX: f32 = 3_000.0;
 const FREQ_MID: f32 = 1_550.0;
 const SYNC_MIN: f32 = 1.0;
 
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("read wav");
-    assert_eq!(&bytes[0..4], b"RIFF");
-    assert_eq!(&bytes[8..12], b"WAVE");
-    let mut i = 12usize;
-    let mut data_off = 0usize;
-    let mut data_len = 0usize;
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len =
-            u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
-        if id == b"data" {
-            data_off = i + 8;
-            data_len = len;
-            break;
-        }
-        i += 8 + len;
-    }
-    bytes[data_off..data_off + data_len]
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 fn cands_eq(a: &[SyncCandidate], b: &[SyncCandidate]) -> bool {
     if a.len() != b.len() {
