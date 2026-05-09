@@ -658,6 +658,23 @@ fn process_candidate(
 
                 // Pass 6: ap as-supplied (~33 bits, fallback)
                 ap_passes.push((ap.clone(), 6));
+
+                // Pass 5: mycall only (~32 bits, WSJT-X iaptype 2 —
+                // "MyCall ??? ???"). Locks call1 + i3=001 without forcing
+                // call2/grid — rescues decodes addressed to mycall whose
+                // sender is *not* the call2 in operator context. Critical
+                // for catching follow-up replies in busy bands; JTDX uses
+                // iaptype 2 to land entries like "K1JT HA5WA 73" that pass
+                // 8 (mycall + HA0DU) cannot reach. Only triggered when
+                // call1 is set; otherwise iaptype 1 (blind CQ, pass 12)
+                // covers the unconstrained shape.
+                if ap.call1.is_some() {
+                    let mut ap5 = ApHint::new();
+                    if let Some(ref c1) = ap.call1 {
+                        ap5 = ap5.with_call1(c1);
+                    }
+                    ap_passes.push((ap5, 5));
+                }
             }
 
             // Pass 12: blind-CQ (WSJT-X iaptype 1). Always tried whenever
