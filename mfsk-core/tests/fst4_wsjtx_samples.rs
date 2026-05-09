@@ -5,40 +5,14 @@
 
 #![cfg(all(feature = "fst4", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use mfsk_core::fst4::decode::decode_frame;
 use mfsk_core::msg::wsjt77::unpack77;
 
-fn read_wsjtx_wav_i16(path: &Path) -> Option<Vec<i16>> {
-    let mut file = File::open(path).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    if &bytes[12..16] != b"fmt " {
-        return None;
-    }
-    let channels = u16::from_le_bytes([bytes[22], bytes[23]]);
-    let sample_rate = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-    let bits = u16::from_le_bytes([bytes[34], bytes[35]]);
-    if channels != 1 || sample_rate != 12_000 || bits != 16 {
-        return None;
-    }
-    if &bytes[36..40] != b"data" {
-        return None;
-    }
-    let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
-    let data = &bytes[44..44 + data_len.min(bytes.len() - 44)];
-    let mut out = Vec::with_capacity(data.len() / 2);
-    for chunk in data.chunks_exact(2) {
-        out.push(i16::from_le_bytes([chunk[0], chunk[1]]));
-    }
-    Some(out)
-}
+#[allow(dead_code)]
+mod common;
+use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path() -> Option<PathBuf> {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;

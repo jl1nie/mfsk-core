@@ -18,14 +18,7 @@ mod common;
 
 const QSO_WAVS: &[&str] = common::REAL_QSO_WAVS;
 
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("read wav");
-    let payload = &bytes[44..];
-    payload
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 #[test]
 #[ignore = "diagnostic — run with --include-ignored --nocapture"]

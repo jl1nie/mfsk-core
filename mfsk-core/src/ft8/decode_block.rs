@@ -26,7 +26,7 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use super::decode::{DecodeDepth, DecodeResult};
+use super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
 use super::llr::sync_quality;
 use super::message::unpack77;
 use super::params::{COSTAS, COSTAS_POS, DEFAULT_BP_MAX_ITER, LDPC_N, NMAX, NN, NSPS, NTONES};
@@ -236,9 +236,13 @@ pub type SpecCell = u16;
 #[cfg(feature = "fixed-point")]
 const FP_SPEC_SHIFT: u32 = 12;
 
-/// Power spectrogram. **Internal type exposed for benching only —
-/// do not depend on the layout.**
-#[doc(hidden)]
+/// Power spectrogram emitted by [`compute_spectrogram`] and consumed
+/// by [`coarse_sync`] / [`coarse_sync_with_allsum`]. The struct is
+/// public so embedded consumers (`embedded-shared::dual_core` and
+/// the M5Stack apps) can hold a [`Spectrogram`] across the
+/// stage-1/stage-2 boundary; layout fields are publicly readable.
+///
+/// Public as of v0.6 (#49 cat C, was previously `#[doc(hidden)]`).
 pub struct Spectrogram {
     /// Number of positive-frequency bins kept. Always ≤ NFFT_SPEC/2.
     /// We crop above the band of interest so a 8192-pt spectrogram on
@@ -313,8 +317,10 @@ impl Spectrogram {
 /// range. Bins above that are discarded — saves ~half the heap on
 /// ESP32 (4 MB PSRAM ceiling).
 ///
-/// **Pub for benchmarking only — do not depend on it.**
-#[doc(hidden)]
+/// Public as of v0.6 (#48): `compute_spectrogram` is the canonical
+/// FT8 spectrogram builder for both the embedded path and the host
+/// `decode_frame*` pipeline (the latter routes coarse-sync through
+/// this module after #46 / #48 step B).
 #[cfg(not(feature = "fixed-point"))]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
@@ -379,7 +385,6 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 /// an empty spectrogram. We compute the slot's peak once and shift
 /// the i16 input left enough to reach ~ ¼ of i16 range, leaving
 /// headroom for FFT growth in tone-rich slots.
-#[doc(hidden)]
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     use crate::core::fft::default_planner_16;
@@ -536,13 +541,15 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
 
-/// Costas-array correlation search across the spectrogram. Matches
-/// the host `core::sync::coarse_sync` shape but reads bins by
-/// fractional offset (`tone_step_bins ≈ 4.267` at NFFT_SPEC=8192,
-/// rounded to nearest integer).
+/// Costas-array correlation search across the spectrogram. Mirrors
+/// WSJT-X `lib/ft8/sync8.f90` — 16-bin sliding-window allsum noise
+/// estimator with `tone_step_bins = 2.0` exactly at NFFT_SPEC=3840.
 ///
-/// **Pub for benchmarking only — do not depend on it.**
-#[doc(hidden)]
+/// Public as of v0.6 (#48): this is now the canonical FT8 coarse-sync
+/// for both the embedded port and the host `decode_frame*` pipeline.
+/// `core::sync::coarse_sync<Ft8>` is no longer reachable from FT8 code
+/// paths; that generic function stays in place for FT4 / FST4 / JT9 /
+/// Q65 / WSPR / uvpacket.
 pub fn coarse_sync(
     spec: &Spectrogram,
     freq_min: f32,
@@ -565,9 +572,10 @@ pub fn coarse_sync(
 /// (`data[fi * spec.n_time + m]`), same length
 /// ([`coarse_allsum_len`]).
 ///
-/// **Pub for benchmarking + the embedded port only — do not depend
-/// on it from host code.**
-#[doc(hidden)]
+/// Public as of v0.6 (#49 cat C): the embedded port (`m5stack-core2`,
+/// `m5stack-s3`, `m5stack-s3-app`) and `mfsk-ffi-ft8` both build the
+/// allsum incrementally during slot capture and pass it back here, so
+/// this is a stable public surface — not a benchmark-only escape hatch.
 pub fn coarse_sync_with_allsum(
     spec: &Spectrogram,
     freq_min: f32,
@@ -924,6 +932,8 @@ fn coarse_sync_inner(
     #[cfg(feature = "std")]
     let t_score = std::time::Instant::now();
 
+    const MLAG: i32 = 10;
+
     // Per-bin peak + 40-percentile noise floor.
     let mut red = vec![0.0f32; n_freq];
     for fi in 0..n_freq {
@@ -937,8 +947,6 @@ fn coarse_sync_inner(
         let pct_idx = (0.40 * n_freq as f32) as usize;
         sorted[pct_idx.min(n_freq - 1)].max(f32::EPSILON)
     };
-
-    const MLAG: i32 = 10;
 
     let mut cands: Vec<SyncCandidate> = Vec::new();
     for fi in 0..n_freq {
@@ -987,9 +995,12 @@ fn coarse_sync_inner(
             // WSJT-X sync8.f90 emits at most 2 candidates per freq:
             // one from `red` (narrow ±MLAG window) and one from `red2`
             // (full ±jz window) when the peak lags differ. We don't
-            // run two windows separately, but the `picked` greedy NMS
-            // with cap 2 produces the same upper bound. Allowing more
-            // (the previous 8) inflated phantom counts on busy slots.
+            // run two windows separately; the `picked` greedy NMS with
+            // cap 2 produces equivalent recall on `qso3_busy.wav` —
+            // empirically verified during the v0.6.2 plan (a
+            // dual-window prototype produced identical 16/18 JTDX
+            // hit, so the additional separate normalization wasn't
+            // worth the code volume). Dropped from 0.6.2 scope.
             if picked.len() >= 2 {
                 break;
             }
@@ -1628,6 +1639,8 @@ pub fn decode_block<S: AudioSample>(
         depth,
         max_cand,
         DEFAULT_BP_MAX_ITER,
+        None,
+        DecodeStrictness::Normal,
     )
 }
 
@@ -1652,6 +1665,69 @@ pub fn decode_block_tuned<S: AudioSample>(
         depth,
         max_cand,
         bp_max_iter,
+        None,
+        DecodeStrictness::Normal,
+    )
+}
+
+/// AP-aware variant of [`decode_block`]. Mirrors `decode_block`'s
+/// behaviour exactly when `ap_hint = None`; with `Some(&ap)` runs
+/// the full WSJT-X iaptype loop (5..12) per candidate after Steps 1-3
+/// (BP staircase + OSD) all fail. Host `fft-rustfft` build only —
+/// embedded fixed-point keeps its existing iaptype-1-only path.
+///
+/// Used by host `decode_frame_with_ap` after the v0.6.1 redirect, and
+/// by mountain-top apps that want full AP rescue from a single entry
+/// point. New in 0.6.1.
+#[cfg(feature = "fft-rustfft")]
+#[allow(clippy::too_many_arguments)]
+pub fn decode_block_with_ap<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    ap_hint: Option<&ApHint>,
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        DEFAULT_BP_MAX_ITER,
+        ap_hint,
+        DecodeStrictness::Normal,
+    )
+}
+
+/// Variant of [`decode_block_with_ap`] that accepts runtime
+/// `bp_max_iter` and `strictness`. New in 0.6.1.
+#[cfg(feature = "fft-rustfft")]
+#[allow(clippy::too_many_arguments)]
+pub fn decode_block_with_ap_tuned<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        bp_max_iter,
+        ap_hint,
+        strictness,
     )
 }
 
@@ -1677,6 +1753,8 @@ fn decode_block_multipass<S: AudioSample>(
     depth: DecodeDepth,
     max_cand: usize,
     bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
@@ -1726,12 +1804,14 @@ fn decode_block_multipass<S: AudioSample>(
         #[cfg(not(feature = "std"))]
         let trace = false;
         for cand in pass2 {
-            let single_results = process_candidates_tuned(
+            let single_results = process_candidates_tuned_with_ap(
                 work.as_slice(),
                 alloc::vec![cand],
                 depth,
                 DEFAULT_Q_THRESH,
                 bp_max_iter,
+                ap_hint,
+                strictness,
             );
             for r in single_results {
                 if all.iter().any(|x| x.message77 == r.message77) {
@@ -2014,7 +2094,10 @@ fn recompute_snr_xsnr2(
 
 /// Embedded path: single-pass `decode_block` (matches the previous
 /// production behaviour, no subtract). Host-only `fft-rustfft` adds
-/// the multipass driver.
+/// the multipass driver. `_ap_hint` and `_strictness` parameters are
+/// accepted for signature parity with the host variant but ignored
+/// here — embedded fixed-point keeps its existing iaptype-1-only
+/// hardcoded plumbing (full AP deferred to 0.7.x).
 #[cfg(not(feature = "fft-rustfft"))]
 #[allow(clippy::too_many_arguments)]
 fn decode_block_multipass<S: AudioSample>(
@@ -2025,6 +2108,8 @@ fn decode_block_multipass<S: AudioSample>(
     depth: DecodeDepth,
     max_cand: usize,
     bp_max_iter: u32,
+    _ap_hint: Option<&ApHint>,
+    _strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
     let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
@@ -2065,6 +2150,17 @@ fn fine_refine_pass1<S: AudioSample>(
 }
 
 /// Embedded build path — preserve the original (no fine refine) shape.
+///
+/// Attempted in 0.6.3 via `fill_symbol_spectra` iteration at
+/// 41 (freq, dt) probe points per candidate, but the per-symbol
+/// DFT cost (~6900 DFTs/cand × 30 cand × 1920-sample DFT ≈ 200k
+/// DFTs/slot) tripped the FreeRTOS task watchdog after ~5 s of
+/// uninterrupted compute on S3 LX7 — fundamentally too heavy
+/// without the host's 192k FFT shortcut. Reverted to NO-OP. A
+/// proper embedded fine_refine needs cd0 built via FIR decimate
+/// (3:1 → 4:1 → 5:1, integer ratios, ~30 ms total) followed by
+/// `refine_fine_3stage` on the 200 Hz baseband — deferred to a
+/// future patch (estimate: ~150 lines for the FIR decimator).
 #[cfg(not(feature = "fft-rustfft"))]
 fn fine_refine_pass1<S: AudioSample>(
     _audio: &[S],
@@ -2204,10 +2300,10 @@ fn refine_candidates<S: AudioSample>(
 /// Variant of [`refine_candidates`] that uses caller-provided basis
 /// scratch (forwards to `symbol_spectra_direct_into`).
 ///
-/// **Pub for benchmarking + manually-staged callers** (e.g.
-/// m5stack-core2 main.rs which logs per-stage wall-clock).
+/// Public as of v0.6 (#49 cat C): used by the embedded
+/// `embedded-shared::dual_core` worker to keep the basis scratch
+/// allocated in internal DRAM across stages.
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 pub fn refine_candidates_into<S: AudioSample>(
     audio: &[S],
     cands: Vec<SyncCandidate>,
@@ -2340,11 +2436,18 @@ where
 /// (embedded integer pipeline; recall-equivalent to Q11i16 with half
 /// the BP scratch — Issue #15 Phase 1 validated 2026-05-03), `f32`
 /// otherwise (host / FPU targets). Both go through the same generic
-/// NMS implementation in `fec::ldpc::bp`. The Q11i16 type still lives
-/// in `core::scalar` for manual use / tests, but is no longer wired
-/// into a built-in feature.
+/// NMS implementation in `fec::ldpc::bp`.
+///
+/// **0.6.3**: switched embedded LlrT from `Q3i8` (i8, ±16 range, 1/8
+/// resolution) to `Q11i16` (i16, ±16 range, 1/2048 resolution). The
+/// Q3i8 quantization step (~0.875 LLR units between codes) was the
+/// dominant recall ceiling on Xtensa builds — host fixed-point +
+/// rustfft hit 16/18 with f32, 9/18 with Q3i8, on `qso3_busy.wav`.
+/// Q11i16's 1/2048 resolution recovers most of that gap (target
+/// embedded recall: 6/18 → ~10/18). Cost: BP scratch doubles from
+/// ~6 KB to ~12 KB, still inside S3 / Core2 internal-DRAM budget.
 #[cfg(feature = "fixed-point")]
-type LlrT = crate::core::scalar::Q3i8;
+type LlrT = crate::core::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point"))]
 type LlrT = f32;
 
@@ -2420,11 +2523,37 @@ pub fn process_candidates_tuned<S: AudioSample>(
     q_thresh: u32,
     bp_max_iter: u32,
 ) -> Vec<DecodeResult> {
+    process_candidates_tuned_with_ap(
+        audio,
+        cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        None,
+        DecodeStrictness::Normal,
+    )
+}
+
+/// AP-aware variant of [`process_candidates_tuned`]. When
+/// `ap_hint = None` and `strictness = Normal`, behaviour is bit-
+/// identical to `process_candidates_tuned`. Internal helper for the
+/// `decode_block_with_ap` driver and host's redirected
+/// `process_candidate`.
+#[allow(clippy::too_many_arguments)]
+fn process_candidates_tuned_with_ap<S: AudioSample>(
+    audio: &[S],
+    cands: Vec<RefinedCandidate>,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
             .try_into()
             .unwrap();
-    process_candidates_with(
+    process_candidates_with_ap(
         audio,
         cands,
         depth,
@@ -2434,6 +2563,8 @@ pub fn process_candidates_tuned<S: AudioSample>(
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask);
         },
+        ap_hint,
+        strictness,
     )
 }
 
@@ -2504,8 +2635,10 @@ pub fn process_candidates_into_tuned<S: AudioSample>(
 /// LLR / BP run on it, then dropped — letting the BP / LLR hot loops
 /// read `cs` from internal DRAM (~5–10× faster than PSRAM on Xtensa
 /// LX6/LX7). Provide a `static mut` array in `.bss` for max win.
+///
+/// Public as of v0.6 (#49 cat C): used by the embedded
+/// `embedded-shared::dual_core::stage3_split` worker.
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
     audio: &[S],
     cands: Vec<RefinedCandidate>,
@@ -2531,8 +2664,9 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
 /// a runtime `bp_max_iter`. This is the entry point used by the
 /// embedded `dual_core::stage3_split` worker so LX6 / LX7 binaries
 /// can dial the BP cap without rebuilding `mfsk-core`.
+///
+/// Public as of v0.6 (#49 cat C).
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     audio: &[S],
@@ -2544,7 +2678,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     basis_im: &mut [i16],
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
-    process_candidates_with(
+    process_candidates_with_ap(
         audio,
         cands,
         depth,
@@ -2575,6 +2709,8 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
                 basis_im,
             );
         },
+        None,
+        DecodeStrictness::Normal,
     )
 }
 
@@ -2585,7 +2721,11 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
 /// caller-provided). `cs_scratch` is the per-symbol-spectra working
 /// buffer that hot loops (BP / LLR / sync_quality) read from — see
 /// [`process_candidates_into_with_cs_scratch`] for the rationale.
-fn process_candidates_with<S: AudioSample, F>(
+/// Per-candidate driver — dt is already parabolically refined by
+/// coarse_sync. AP-aware: pass `ap_hint = None` for the legacy
+/// non-AP behaviour (bit-identical to the pre-0.6.1 shape).
+#[allow(clippy::too_many_arguments)]
+fn process_candidates_with_ap<S: AudioSample, F>(
     _audio: &[S],
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
@@ -2593,6 +2733,8 @@ fn process_candidates_with<S: AudioSample, F>(
     bp_max_iter: u32,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
     mut fill: F,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -2600,7 +2742,6 @@ where
     // dt is already parabolically refined by coarse_sync; no grid here.
 
     let mut results: Vec<DecodeResult> = Vec::new();
-    let q_thr = q_thresh;
     // BP scratch pool — instantiated once and reused across all
     // candidates × all 5 BP calls per candidate. Eliminates the
     // ~12 KB-per-call `tlsf_malloc` traffic that dominated stage-3
@@ -2627,139 +2768,306 @@ where
         // Saves an additional 56 DFTs / candidate.
         fill(cs_scratch, &cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
-        if q <= q_thr {
+        if q <= q_thresh {
             continue;
         }
         fill(cs_scratch, &cand, SymMask::DataOnly);
-        let refined_dt = cand.dt_sec;
-
-        // ── Staircase: cheap → deeper → OSD ─────────────────────────
-        //
-        // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that
-        //    decode at all decode here; the rest fall through.
-        // 2) Full compute_llr (nsym=1+2+3) → Bp on all 4 variants
-        //    (a/b/c/d).
-        // 3) OSD-1 / OSD-3 fallback gated on sync_quality.
-        //
-        // `BpAll` and `BpAllOsd` enable the deeper stages; plain
-        // `Bp` stops after step 1.
-        let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
-        // WSJT-X ft8b.f90:422 — `nharderrors > 36` rejects the BP variant
-        // and falls through to the next one. Phantoms on busy bands tend
-        // to be CRC-pass / high-hard-error decodes; matching this gate
-        // closes the dominant phantom hole in qso3_busy.
-        const WSJTX_NHARDERRORS_MAX: u32 = 36;
-
-        // Step 1: fast llra. The LLR / BP scalar is selected at compile
-        // time via `fixed-point` (Q3i8) or default (f32) — see the
-        // `LlrT` definition above. Both go through the *same* generic
-        // NMS implementation, bit-identical AWGN behaviour by design.
-        let llr_a_fast: super::llr::LlrSet<LlrT> = super::llr::compute_llr_fast(cs_scratch);
-        let bp_step1 = bp_step_select::<LlrT>(
-            &mut bp_scratch,
-            &llr_a_fast.llra,
+        if let Some(r) = process_one_candidate_inner(
+            cs_scratch,
+            &cand,
+            cand.dt_sec,
+            q,
+            depth,
             bp_max_iter,
-            Some(check_crc14),
-        );
-        if let Some(bp) = bp_step1
+            &mut bp_scratch,
+            &results,
+            ap_hint,
+            strictness,
+            0.0,
+        ) {
+            results.push(r);
+        }
+    }
+
+    results
+}
+
+/// WSJT-X-faithful nharderrors gate (ft8b.f90:422). High hard-error
+/// CRC-pass decodes are the dominant phantom source on busy bands;
+/// reject above this and fall through to the next BP variant.
+const WSJTX_NHARDERRORS_MAX: u32 = 36;
+
+/// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
+/// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
+/// between the embedded `process_candidates_with` driver (above) and
+/// the host `process_candidate` redirect (decode.rs, post-0.6.1).
+/// Returns `Some(DecodeResult)` on first success (Step 1, 2, 3, or 4
+/// in order), `None` on full failure.
+///
+/// Caller responsibilities:
+/// - `cs_scratch` filled with all 79 symbols × 8 tones (data + sync).
+/// - `q = sync_quality(cs_scratch)` already computed and gated.
+/// - `refined_dt` carries the parabolically-refined `dt_sec`.
+/// - `known` is the dedup list (in-progress + prior-pass results).
+/// - `ap_hint` is `None` for AP-off (embedded default); `Some(_)` to
+///   activate Step 4 AP iaptype loop. `#[cfg(feature = "fft-rustfft")]`
+///   only — embedded fixed-point builds always pass `None`.
+/// - `strictness` controls the per-iaptype `nharderrors` cap; ignored
+///   when `ap_hint` is `None`.
+/// - `sync_cv` is the Costas-array power CV (host computes it for QSB
+///   gain attenuation; embedded passes 0.0).
+#[allow(clippy::too_many_arguments)]
+#[allow(unused_variables)] // ap_hint / strictness only used under #[cfg(feature = "fft-rustfft")]
+pub(super) fn process_one_candidate_inner(
+    cs_scratch: &[[Cmplx<f32>; 8]; 79],
+    cand: &SyncCandidate,
+    refined_dt: f32,
+    q: u32,
+    depth: DecodeDepth,
+    bp_max_iter: u32,
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
+    known: &[DecodeResult],
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+    sync_cv: f32,
+) -> Option<DecodeResult> {
+    // ── Staircase: cheap → deeper → OSD ─────────────────────────
+    //
+    // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that
+    //    decode at all decode here; the rest fall through.
+    // 2) Full compute_llr (nsym=1+2+3) → Bp on all 4 variants
+    //    (a/b/c/d).
+    // 3) OSD-1 / OSD-3 fallback gated on sync_quality.
+    //
+    // `BpAll` and `BpAllOsd` enable the deeper stages; plain
+    // `Bp` stops after step 1.
+    let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
+
+    // Step 1: fast llra. The LLR / BP scalar is selected at compile
+    // time via `fixed-point` (Q3i8) or default (f32) — see the
+    // `LlrT` definition above. Both go through the *same* generic
+    // NMS implementation, bit-identical AWGN behaviour by design.
+    let llr_a_fast: super::llr::LlrSet<LlrT> = super::llr::compute_llr_fast(cs_scratch);
+    let bp_step1 =
+        bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
+    if let Some(bp) = bp_step1
+        && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+    {
+        accepted = Some((bp, 0));
+    }
+
+    // Step 2: deeper-LLR variants. Lazy + LLR-shared with Step 1.
+    //
+    // **Variant a is skipped** — Step 1 already ran BP on the
+    // identical input (`compute_llr_fast` and `compute_llr`
+    // produce bit-identical `llra`, since nsym=1 work doesn't
+    // depend on `max_nsym`). Re-running it would be guaranteed
+    // failure.
+    //
+    // **Variant d reuses** Step 1's `llr_a_fast.llrd` — same
+    // nsym=1 derivation, costs zero LLR work.
+    //
+    // **Variants b / c are lazy-computed**: only pay the nsym=2
+    // work if d failed, and only pay the heavy nsym=3 work
+    // (~80 % of `compute_llr`) if both d and b also failed.
+    // Order chosen by ascending compute cost — same number of BP
+    // calls as the old variant loop in the worst case, far fewer
+    // in the typical case where any earlier variant decodes.
+    if accepted.is_none() && matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd) {
+        // Variant d: free reuse of Step 1's llrd.
+        let bp_d =
+            bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_d
             && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
         {
-            accepted = Some((bp, 0));
+            accepted = Some((bp, 3));
         }
-
-        // Step 2: deeper-LLR variants. Lazy + LLR-shared with Step 1.
-        //
-        // **Variant a is skipped** — Step 1 already ran BP on the
-        // identical input (`compute_llr_fast` and `compute_llr`
-        // produce bit-identical `llra`, since nsym=1 work doesn't
-        // depend on `max_nsym`). Re-running it would be guaranteed
-        // failure.
-        //
-        // **Variant d reuses** Step 1's `llr_a_fast.llrd` — same
-        // nsym=1 derivation, costs zero LLR work.
-        //
-        // **Variants b / c are lazy-computed**: only pay the nsym=2
-        // work if d failed, and only pay the heavy nsym=3 work
-        // (~80 % of `compute_llr`) if both d and b also failed.
-        // Order chosen by ascending compute cost — same number of BP
-        // calls as the old variant loop in the worst case, far fewer
-        // in the typical case where any earlier variant decodes.
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd) {
-            // Variant d: free reuse of Step 1's llrd.
-            let bp_d = bp_step_select::<LlrT>(
-                &mut bp_scratch,
-                &llr_a_fast.llrd,
-                bp_max_iter,
-                Some(check_crc14),
-            );
-            if let Some(bp) = bp_d
+        // Variant b: lazy nsym=2 only.
+        if accepted.is_none() {
+            let llrb_arr: [LlrT; LDPC_N] = super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+            let bp_b =
+                bp_step_select::<LlrT>(bp_scratch, &llrb_arr, bp_max_iter, Some(check_crc14));
+            if let Some(bp) = bp_b
                 && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
             {
-                accepted = Some((bp, 3));
-            }
-            // Variant b: lazy nsym=2 only.
-            if accepted.is_none() {
-                let llrb_arr: [LlrT; LDPC_N] =
-                    super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
-                let bp_b = bp_step_select::<LlrT>(
-                    &mut bp_scratch,
-                    &llrb_arr,
-                    bp_max_iter,
-                    Some(check_crc14),
-                );
-                if let Some(bp) = bp_b
-                    && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-                {
-                    accepted = Some((bp, 1));
-                }
-            }
-            // Variant c: lazy nsym=3 (the expensive one).
-            if accepted.is_none() {
-                let llrc_arr: [LlrT; LDPC_N] =
-                    super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
-                let bp_c = bp_step_select::<LlrT>(
-                    &mut bp_scratch,
-                    &llrc_arr,
-                    bp_max_iter,
-                    Some(check_crc14),
-                );
-                if let Some(bp) = bp_c
-                    && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-                {
-                    accepted = Some((bp, 2));
-                }
+                accepted = Some((bp, 1));
             }
         }
+        // Variant c: lazy nsym=3 (the expensive one).
+        if accepted.is_none() {
+            let llrc_arr: [LlrT; LDPC_N] = super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+            let bp_c =
+                bp_step_select::<LlrT>(bp_scratch, &llrc_arr, bp_max_iter, Some(check_crc14));
+            if let Some(bp) = bp_c
+                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            {
+                accepted = Some((bp, 2));
+            }
+        }
+    }
 
-        // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
-        // OSD operates on `&[f32]` directly — independent of the
-        // `LlrT` choice — so we compute a fresh f32 LLR bundle here.
-        // Only fires when Steps 1+2 BP failed and `q >= 12`, so the
-        // extra compute_llr is cheap relative to the OSD work itself.
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
-            let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
-            for (llr, pid) in [
-                (&llr_full_f32.llra, 4u8),
-                (&llr_full_f32.llrb, 5),
-                (&llr_full_f32.llrc, 6),
-                (&llr_full_f32.llrd, 7),
-            ] {
-                let osd = if q >= 18 {
-                    osd_decode_deep(llr, 3, Some(check_crc14))
-                } else {
-                    osd_decode(llr)
+    // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
+    // OSD operates on `&[f32]` directly — independent of the
+    // `LlrT` choice — so we compute a fresh f32 LLR bundle here.
+    // Only fires when Steps 1+2 BP failed and `q >= 12`, so the
+    // extra compute_llr is cheap relative to the OSD work itself.
+    if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
+        let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
+        // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
+        // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
+        // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
+        // frees 5..12 for the AP loop being plumbed into this same
+        // function in 0.6.1 (decode_block_with_ap path).
+        for (llr, pid) in [
+            (&llr_full_f32.llra, 14u8),
+            (&llr_full_f32.llrb, 15),
+            (&llr_full_f32.llrc, 16),
+            (&llr_full_f32.llrd, 17),
+        ] {
+            let osd = if q >= 18 {
+                osd_decode_deep(llr, 3, Some(check_crc14))
+            } else {
+                osd_decode(llr)
+            };
+            if let Some(osd) = osd {
+                // Mirror the BP-variant `nharderrors > 36` cycle
+                // gate (ft8b.f90:422) on the OSD path. WSJT-X's
+                // OSD itself returns CRC-pass codewords with
+                // negated `nhardmin` on CRC fail (osd174_91:290),
+                // but we apply the same upper bound to the
+                // hard-error count so high-error CRC-luck
+                // codewords don't pass through OSD either.
+                if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
+                    continue;
+                }
+                let bp = crate::fec::ldpc::bp::BpResult {
+                    message77: osd.message77,
+                    info: osd.info,
+                    codeword: vec![0u8; LDPC_N],
+                    hard_errors: osd.hard_errors,
+                    iterations: 0,
                 };
-                if let Some(osd) = osd {
-                    // Mirror the BP-variant `nharderrors > 36` cycle
-                    // gate (ft8b.f90:422) on the OSD path. WSJT-X's
-                    // OSD itself returns CRC-pass codewords with
-                    // negated `nhardmin` on CRC fail (osd174_91:290),
-                    // but we apply the same upper bound to the
-                    // hard-error count so high-error CRC-luck
-                    // codewords don't pass through OSD either.
-                    if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
-                        continue;
+                accepted = Some((bp, pid));
+                break;
+            }
+        }
+    }
+
+    // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
+    // Mirrors WSJT-X ft8b.f90 ipass 5..12 — runs only if Steps 1-3 all
+    // failed and the caller supplied an `ap_hint`. Embedded fixed-point
+    // builds always pass `ap_hint = None` so this entire block
+    // constant-folds away.
+    //
+    // Iaptype priority (deepest-first, mirroring decode.rs:634-684):
+    //   9/10/11 (call1+call2+RRR/RR73/73 → full 77-bit lock)
+    //   7 (CQ + call2)
+    //   8 (call1+call2 → ~61 bits)
+    //   6 (ap as-supplied → ~33 bits)
+    //   5 (mycall only → ~32 bits, WSJT-X iaptype 2)
+    //   12 (blind CQ → always tried last, WSJT-X iaptype 1)
+    #[cfg(feature = "fft-rustfft")]
+    if accepted.is_none()
+        && let Some(ap) = ap_hint
+    {
+        let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
+        let apmag = llr_full_f32
+            .llra
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0f32, f32::max)
+            * 1.01;
+        let llr_variants: [&[f32; LDPC_N]; 4] = [
+            &llr_full_f32.llra,
+            &llr_full_f32.llrb,
+            &llr_full_f32.llrc,
+            &llr_full_f32.llrd,
+        ];
+
+        let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();
+        if ap.has_info() {
+            if ap.call1.is_some() && ap.call2.is_some() {
+                for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
+                    let ap_full = ap.clone().with_report(rpt);
+                    ap_passes.push((ap_full, pid));
+                }
+            }
+            if ap.call2.is_some() && ap.call1.is_none() {
+                let ap7 = ap.clone().with_call1("CQ");
+                ap_passes.push((ap7, 7));
+            }
+            if ap.call1.is_some() && ap.call2.is_some() {
+                ap_passes.push((ap.clone(), 8));
+            }
+            ap_passes.push((ap.clone(), 6));
+            if ap.call1.is_some() {
+                let mut ap5 = ApHint::new();
+                if let Some(ref c1) = ap.call1 {
+                    ap5 = ap5.with_call1(c1);
+                }
+                ap_passes.push((ap5, 5));
+            }
+        }
+        // Pass 12: blind-CQ (WSJT-X iaptype 1) — always tried.
+        ap_passes.push((ApHint::new().with_call1("CQ"), 12));
+
+        'ap_outer: for (ap_cfg, pass_id) in &ap_passes {
+            let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
+            let locked_bits = ap_mask.iter().filter(|&&m| m).count();
+            let max_errors: u32 = strictness.ap_max_errors(locked_bits);
+
+            for &base_llr in &llr_variants {
+                let mut llr_ap = *base_llr;
+                for i in 0..LDPC_N {
+                    if ap_mask[i] {
+                        llr_ap[i] = ap_llr_override[i];
                     }
+                }
+                // Inline AP-result validator: hard-error gate, unpack,
+                // plausibility, locked-call substring check.
+                let validate = |msg77: [u8; 77], hard_errors: u32| -> bool {
+                    if hard_errors >= max_errors {
+                        return false;
+                    }
+                    let Some(text) = unpack77(&msg77) else {
+                        return false;
+                    };
+                    if !crate::msg::wsjt77::is_plausible_message(&text) {
+                        return false;
+                    }
+                    let upper = text.to_uppercase();
+                    if let Some(ref c1) = ap_cfg.call1
+                        && !upper.contains(&c1.to_uppercase())
+                    {
+                        return false;
+                    }
+                    if let Some(ref c2) = ap_cfg.call2
+                        && !upper.contains(&c2.to_uppercase())
+                    {
+                        return false;
+                    }
+                    true
+                };
+
+                // AP + BP
+                if let Some(bp) = crate::fec::ldpc::bp::bp_decode(
+                    &llr_ap,
+                    Some(&ap_mask),
+                    bp_max_iter,
+                    Some(check_crc14),
+                ) && validate(bp.message77, bp.hard_errors)
+                {
+                    accepted = Some((bp, *pass_id));
+                    break 'ap_outer;
+                }
+                // AP + OSD-Deep fallback (BpAllOsd only)
+                if depth == DecodeDepth::BpAllOsd
+                    && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
+                    && validate(osd.message77, osd.hard_errors)
+                {
                     let bp = crate::fec::ldpc::bp::BpResult {
                         message77: osd.message77,
                         info: osd.info,
@@ -2767,44 +3075,38 @@ where
                         hard_errors: osd.hard_errors,
                         iterations: 0,
                     };
-                    accepted = Some((bp, pid));
-                    break;
+                    accepted = Some((bp, *pass_id));
+                    break 'ap_outer;
                 }
             }
         }
-
-        let Some((bp, pass_id)) = accepted else {
-            continue;
-        };
-        let Some(text) = unpack77(&bp.message77) else {
-            continue;
-        };
-        // Plausibility filter — reject CRC-passing-but-garbage
-        // messages. With max_cand=200 × 4 LLR variants × OSD,
-        // CRC-14's 1/16384 false-positive rate produces ~1-2 random
-        // strings per slot. Same filter the host wide-band path
-        // uses (`decode_frame::process_candidate`).
-        if !crate::msg::wsjt77::is_plausible_message(&text) {
-            continue;
-        }
-        if results.iter().any(|r| r.message77 == bp.message77) {
-            continue;
-        }
-        let itone = message_to_tones(&bp.message77);
-        let snr_db = super::llr::compute_snr_db(cs_scratch, &itone);
-        results.push(DecodeResult {
-            message77: bp.message77,
-            freq_hz: cand.freq_hz,
-            dt_sec: refined_dt,
-            hard_errors: bp.hard_errors,
-            sync_score: cand.score,
-            pass: pass_id,
-            sync_cv: 0.0,
-            snr_db,
-        });
     }
 
-    results
+    let (bp, pass_id) = accepted?;
+    let text = unpack77(&bp.message77)?;
+    // Plausibility filter — reject CRC-passing-but-garbage
+    // messages. With max_cand=200 × 4 LLR variants × OSD,
+    // CRC-14's 1/16384 false-positive rate produces ~1-2 random
+    // strings per slot. Same filter the host wide-band path
+    // uses (`decode_frame::process_candidate`).
+    if !crate::msg::wsjt77::is_plausible_message(&text) {
+        return None;
+    }
+    if known.iter().any(|r| r.message77 == bp.message77) {
+        return None;
+    }
+    let itone = message_to_tones(&bp.message77);
+    let snr_db = super::llr::compute_snr_db(cs_scratch, &itone);
+    Some(DecodeResult {
+        message77: bp.message77,
+        freq_hz: cand.freq_hz,
+        dt_sec: refined_dt,
+        hard_errors: bp.hard_errors,
+        sync_score: cand.score,
+        pass: pass_id,
+        sync_cv,
+        snr_db,
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

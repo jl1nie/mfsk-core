@@ -40,7 +40,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth, decode_frame_with_ap};
+use mfsk_core::ft8::decode::{
+    ApHint, DecodeDepth, DecodeStrictness, decode_frame_subtract_with_ap, decode_frame_with_ap,
+};
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -84,21 +86,28 @@ const JTDX_AP_ON_EXTRAS: &[&str] = &[
     "K1BZM EA3CJ JN01",  // -12 dB, separate QSO context
 ];
 
-/// Hard recall floor on `JTDX_AP_ON_EXTRAS`. Currently `0` because
-/// `decode_frame_with_ap` (host wide-band path) misses the
-/// underlying coarse-sync candidates at 1196 / 244 / 472 / 2039 Hz
-/// that `decode_block` (embedded path) and JTDX both catch. AP
-/// runs in `process_candidate` only on candidates that survive
-/// coarse-sync + fine-refine, so the AP plumbing cannot recover
-/// decodes whose candidates were filtered upstream — this is a
-/// host-vs-embedded coarse-sync parity gap, not an AP-list bug,
-/// and is tracked separately as a follow-up to #31.
+/// Hard recall floor on `JTDX_AP_ON_EXTRAS`. Issue #40 (host
+/// wide-band coarse-sync candidate gap) closed the *negative-dt*
+/// half of the divergence: `process_candidate` was casting
+/// `i_start = ((refined.dt_sec + 0.5) * 200.0) as usize`, saturating
+/// to 0 for any candidate whose actual TX started before the slot's
+/// nominal start. CQ F5RXL @ -0.78 s had `i_start = -54` collapse to
+/// 0, silently misaligning the symbol grid by ~1.75 symbols and
+/// dropping the decode entirely. After the fix (i32 with WSJT-X
+/// all-or-nothing boundary check, matching
+/// `decode_block::fill_symbol_spectra_via_cd0`), single-pass host
+/// AP-off recovers 7/8 of the WSJT-X golden — same as the embedded
+/// `decode_block` path — and AP-on surfaces the F5RXL CQ via
+/// iaptype-1 blind-CQ (1/6 JTDX extras).
 ///
-/// When the parity gap closes, raise this floor toward
-/// `JTDX_AP_ON_EXTRAS.len()` and the test will start gating the
-/// fix-forward. Until then the test reports JTDX coverage as
-/// informational diagnostics.
-const JTDX_EXTRAS_HARD_FLOOR: usize = 0;
+/// The remaining 5 JTDX extras (CQ EA2BFM, K1JT HA5WA, K1BZM DK8NE,
+/// KD2UGC F6GCP, K1BZM EA3CJ) sit beneath strong neighbours on the
+/// raw spectrum and JTDX rescues them via multi-pass SIC + AP — the
+/// host equivalent is `decode_frame_subtract_with_ap`, which this
+/// test deliberately does *not* exercise (we want the apon test to
+/// gate the single-pass `decode_frame_with_ap` invariant). A
+/// separate test for the multi-pass form is the obvious follow-up.
+const JTDX_EXTRAS_HARD_FLOOR: usize = 1;
 
 /// Cap on total output. AP-on adds passes 5..12; we expect a few
 /// extra decodes but not a flood. Set generously so the test
@@ -106,30 +115,7 @@ const JTDX_EXTRAS_HARD_FLOOR: usize = 0;
 /// on legitimate AP-on extras.
 const MAX_TOTAL_DECODES: usize = 35;
 
-fn load_wav_i16(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("WAV present");
-    assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF/WAV file");
-    let mut i = 12usize;
-    let (mut data_off, mut data_len) = (0usize, 0usize);
-    while i + 8 <= bytes.len() {
-        let id = &bytes[i..i + 4];
-        let len = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-        i += 8;
-        if id == b"data" {
-            data_off = i;
-            data_len = len;
-        }
-        i += len;
-        if len % 2 == 1 {
-            i += 1;
-        }
-    }
-    assert!(data_off > 0, "no data chunk in WAV");
-    bytes[data_off..data_off + data_len.min(bytes.len() - data_off)]
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
+use common::load_wav_i16;
 
 fn decode_set(audio: &[i16], ap: Option<&ApHint>) -> BTreeSet<String> {
     decode_frame_with_ap(
@@ -203,19 +189,13 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
     if !extras_missing.is_empty() {
         println!("  not yet caught: {:?}", extras_missing);
     }
-    // `>=` against a const that is `0` today reads as a tautology to
-    // clippy, but the const is the seam we tighten as the parity gap
-    // closes — silence the absurd-comparison lint here intentionally.
-    #[allow(clippy::absurd_extreme_comparisons)]
-    {
-        assert!(
-            extras_hit.len() >= JTDX_EXTRAS_HARD_FLOOR,
-            "JTDX AP-on coverage regressed: {}/{} below floor {}",
-            extras_hit.len(),
-            JTDX_AP_ON_EXTRAS.len(),
-            JTDX_EXTRAS_HARD_FLOOR,
-        );
-    }
+    assert!(
+        extras_hit.len() >= JTDX_EXTRAS_HARD_FLOOR,
+        "JTDX AP-on coverage regressed: {}/{} below floor {}",
+        extras_hit.len(),
+        JTDX_AP_ON_EXTRAS.len(),
+        JTDX_EXTRAS_HARD_FLOOR,
+    );
 
     // 3. Phantom ceiling — AP must not turn the decoder into a noise
     //    generator. Set generously so legitimate AP-on extras don't
@@ -225,5 +205,78 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
         "AP-on decode count {} exceeds ceiling {} (phantom regression?)",
         ap_on.len(),
         MAX_TOTAL_DECODES,
+    );
+}
+
+/// Diagnostic — same JTDX extras coverage check, but using
+/// `decode_frame_subtract_with_ap` (host 3-pass + SIC + AP). The 5
+/// remaining JTDX extras at -13 to -19 dB sit beneath strong
+/// neighbours; SIC reveals them. Embedded `decode_block_multipass`
+/// has the equivalent 3-pass + SIC built in (without AP — that's
+/// the deferred A0' work). This test measures what the multipass
+/// host pipeline catches; `JTDX_EXTRAS_HARD_FLOOR_MULTIPASS` is the
+/// floor for it.
+// Multipass floor — bumped 1 → 5 in 0.6.2 after the host
+// `decode_frame_subtract_with_ap` driver was rewired to use
+// `subtract_signal_lpf` (matching `decode_block`'s WSJT-X-faithful
+// channel-aware subtract). Cleaner residual surfaces 4 of the 5
+// missing JTDX-extras at coarse-sync stage 1 of pass 1; only K1BZM
+// DK8NE -19 (deepest) remains beyond reach without a wider AP-list.
+const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 5;
+
+#[test]
+fn qso3_apon_subtract_jtdx_extras_diag() {
+    let slot = load_wav_i16(Path::new(QSO3_PATH));
+    let ap = ApHint::new().with_call1(MYCALL).with_call2(HISCALL);
+
+    let decoded = decode_frame_subtract_with_ap(
+        &slot,
+        100.0,
+        3000.0,
+        1.3,
+        None,
+        DecodeDepth::BpAllOsd,
+        50,
+        DecodeStrictness::Normal,
+        Some(&ap),
+    );
+    let messages: BTreeSet<String> = decoded
+        .iter()
+        .filter_map(|r| unpack77(&r.message77))
+        .collect();
+
+    println!(
+        "\nqso3 AP-on **subtract** (mycall={MYCALL}, hiscall={HISCALL}) — {} decode(s):",
+        messages.len()
+    );
+    for m in &messages {
+        println!("  {}", m);
+    }
+
+    let extras_hit: Vec<&str> = JTDX_AP_ON_EXTRAS
+        .iter()
+        .copied()
+        .filter(|g| messages.contains(*g))
+        .collect();
+    let extras_missing: Vec<&str> = JTDX_AP_ON_EXTRAS
+        .iter()
+        .copied()
+        .filter(|g| !messages.contains(*g))
+        .collect();
+    println!(
+        "\n  JTDX AP-on extras (multipass): {}/{} hit (floor {})",
+        extras_hit.len(),
+        JTDX_AP_ON_EXTRAS.len(),
+        JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
+    );
+    if !extras_missing.is_empty() {
+        println!("  not yet caught: {:?}", extras_missing);
+    }
+    assert!(
+        extras_hit.len() >= JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
+        "JTDX AP-on multipass coverage regressed: {}/{} below floor {}",
+        extras_hit.len(),
+        JTDX_AP_ON_EXTRAS.len(),
+        JTDX_EXTRAS_HARD_FLOOR_MULTIPASS,
     );
 }

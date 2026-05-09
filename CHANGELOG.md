@@ -1,5 +1,291 @@
 # Changelog
 
+## 0.6.2 — host pipeline matches embedded subtract + cs-source
+
+Non-breaking patch. After v0.6.1 unified the per-candidate inner,
+the host pipeline still diverged from embedded `decode_block` on
+two upstream axes: the cs spectra source (host computed cs from
+cd0, embedded fills from 12 kHz audio) and the SIC subtract
+function (host used a constant-amplitude weighted subtract,
+embedded uses WSJT-X-style channel-aware LPF subtract). Both
+divergences are eliminated in 0.6.2; host now matches embedded
+bit-for-bit on the cs values it feeds the unified inner.
+
+### Improved
+
+- **Host `decode_frame_subtract_with_ap` recall on busy bands.** On
+  `qso3_busy.wav` AP-on with operator context (`mycall=K1JT`,
+  `hiscall=HA0DU`):
+  - **14 → 18 decodes** total.
+  - **JTDX-extras coverage 1/6 → 5/6.** Surfaces CQ EA2BFM,
+    KD2UGC F6GCP, K1BZM EA3CJ on top of the F5RXL CQ already
+    caught in 0.6.1. The single remaining miss
+    (K1BZM DK8NE -19) requires a wider AP-list / callsign hash
+    table — out of scope for this patch.
+- **Host single-pass `decode_frame_with_ap`** unchanged at 14/18
+  (single-pass doesn't benefit from the improved subtract).
+- **Embedded `decode_block`** unchanged at 16/18 (the changes touch
+  only the host driver path).
+
+### Changed (internal — non-breaking)
+
+- `ft8::decode::process_candidate` — cs-source rewired from
+  `symbol_spectra(cd0, i_start)` to `fill_symbol_spectra(audio,
+  refined.freq_hz, refined.dt_sec, SyncOnly+DataOnly)`, matching
+  embedded's per-symbol-region DFT directly on 12 kHz audio. cd0
+  still used for `fine_refine_3stage` and `sync_cv` computation.
+- `decode_frame_subtract_with_ap`,
+  `decode_frame_subtract_with_known_and_ap_inner`, and
+  `decode_sniper_sic` — sequential subtract switched from
+  `subtract_signal_weighted` (constant amplitude × QSB-aware
+  partial gain) to `subtract_signal_lpf` (WSJT-X-style channel-
+  aware LPF subtract, matching `decode_block_multipass`).
+
+### Removed (technically breaking, in practice no consumers)
+
+- `mfsk_core::ft8::subtract::subtract_signal` — was a thin wrapper
+  around `subtract_signal_weighted(audio, result, 1.0)`. No
+  in-tree, embedded-poc, or mfsk-ffi-ft8 callers (verified via
+  `grep`).
+- `mfsk_core::ft8::subtract::subtract_signal_weighted` — replaced
+  everywhere by `subtract_signal_lpf` (which doesn't accept a
+  partial gain — the QSB-aware attenuation it provided is no
+  longer needed since LPF subtract handles channel variation
+  natively).
+- `mfsk_core::ft8::llr::symbol_spectra` — removed; was only used
+  by `process_candidate` which now calls
+  `decode_block::fill_symbol_spectra` directly. The protocol-
+  generic `core::llr::symbol_spectra::<P>` (used by FT4 / JT9 /
+  uvpacket / WSPR pipelines) is untouched.
+- `qsb_partial_gain` (private) — only consumer was the now-removed
+  weighted subtract.
+
+The removed `subtract_signal*` and `symbol_spectra` items had no
+out-of-tree callers in the workspace; the FT8 subtract public
+surface is now `subtract_signal_lpf` + `refine_signal_freq`.
+
+### Deferred / scoped out
+
+- **Embedded recall++** beyond 16/18 on `qso3_busy.wav`. The
+  remaining 2 misses (K1BZM DK8NE -19, WA2FZW DL5AXX -15) are
+  intrinsically below `decode_block::coarse_sync`'s sync-min
+  threshold even at sync_min=0.5 / max_cand=200; a WSJT-X-faithful
+  dual-window NMS prototype was tried during the v0.6.2 plan but
+  produced identical 16/18 hit count, so it wasn't worth the code
+  volume. Surfacing those entries needs either a different sync
+  algorithm or a wider AP-list — both deferred.
+- **Embedded fixed-point AP** support (apmag in Q3i8) — still
+  tracked for 0.7.x.
+
+### Test floor changes
+
+- `tests/ft8_qso3_apon_recall.rs::JTDX_EXTRAS_HARD_FLOOR_MULTIPASS`:
+  1 → **5** (locks in the host multipass recall jump).
+
+## 0.6.1 — host/embedded per-candidate pipeline unification
+
+Non-breaking patch. After v0.6.0 unified the FT8 coarse-sync path,
+the *per-candidate* decode body still diverged: host's
+`process_candidate` (decode.rs) ran a hand-written eager-LLR + BP +
+OSD + AP staircase; embedded's `process_candidates_with`
+(decode_block.rs) ran a lazy-LLR staircase with tighter sync gates.
+On busy bands (e.g. `qso3_busy.wav`), embedded `decode_block` caught
+16/18 of the JTDX golden but host `decode_frame_with_ap` only 14/18.
+
+This patch extracts a shared `process_one_candidate_inner` from
+`process_candidates_with` and routes the host pipeline through it.
+Both paths now run the *exact same* LLR / BP / OSD / AP staircase
+on the per-candidate cs spectra. The remaining 14-vs-16 gap on this
+WAV is upstream of the inner — the cs-source itself differs (host
+`core::llr::symbol_spectra(cd0, i_start)` vs embedded
+`fill_symbol_spectra(audio, freq, dt, mask)`) and is tracked as a
+separate refactor.
+
+### Added (host f32 only — `#[cfg(feature = "fft-rustfft")]`)
+
+- `decode_block_with_ap(audio, freq_min, freq_max, sync_min, depth,
+  max_cand, ap_hint) -> Vec<DecodeResult>`. AP-aware variant of
+  `decode_block`; mirrors its behaviour exactly when
+  `ap_hint = None` and runs the full WSJT-X iaptype loop (5..12)
+  per candidate when `Some(&ap)`. Preferred entry point for
+  mountain-top apps that want full AP rescue from a single call.
+- `decode_block_with_ap_tuned(...with bp_max_iter + strictness)` —
+  same with runtime-tunable BP iterations and strictness.
+
+Embedded fixed-point builds (`#[cfg(feature = "fixed-point")]`)
+keep their existing iaptype-1-only hardcoded path; full AP for that
+build is deferred — `apmag = max(|llra|)*1.01` is f32-domain and
+`ApHint::build_ap` heap pressure exceeds Core2 stage-3 budget.
+
+### Changed (internal — non-breaking)
+
+- Embedded OSD pass IDs shifted: 4/5/6/7 → 14/15/16/17, freeing the
+  WSJT-X-canonical 5..12 range for the AP iaptype loop. Pre-flight
+  grep confirmed no in-tree test gates on `pass == N` for `N ≥ 4`;
+  out-of-tree consumers reading `DecodeResult::pass` for OSD-decoded
+  results need to read 14/15/16/17 instead of 4/5/6/7.
+- Host `process_candidate` body shrinks ~250 lines → delegate to the
+  unified inner. Outer prelude (downsample, fine_refine_3stage,
+  symbol_spectra, nsync gate, EqMode cs choice) preserved.
+- The unified inner emits one decode per candidate after running
+  `unpack77` + plausibility gate (the embedded path's behaviour).
+  Old host path was lenient — it returned any CRC-converged
+  77-bit codeword without unpacking. The change is what tightens
+  busy-band recall vs host's old behaviour, but means
+  *synthesised-with-arbitrary-bits* round-trip tests need a real
+  FT8 message; updated 5 affected tests to use
+  `pack77("CQ", "JA1ABC", "PM95")`.
+
+### Improved
+
+- Host `decode_frame_with_ap` and `decode_frame_subtract_with_ap`
+  now share the WSJT-X-faithful staircase with `decode_block`. The
+  qso3_busy.wav 14-vs-16 gap on the JTDX golden is structurally
+  closed for everything *post* coarse-sync; only the cs-source
+  divergence remains.
+
+### Internal
+
+- New private `process_one_candidate_inner` in `decode_block.rs`
+  (`pub(super)`-visible to the FT8 module). Generic over `LlrT` so
+  it serves both f32 (host + embedded f32-rustfft) and Q3i8
+  (embedded fixed-point) builds with bit-identical behaviour when
+  `ap_hint = None`.
+- `process_candidates_with` collapsed into
+  `process_candidates_with_ap` (the same body now takes
+  `Option<&ApHint>`); call sites passing `None` are bit-identical to
+  the prior shape.
+
+## 0.6.0 — FT8 sync consolidation, refactor audit, AP iaptype 2
+
+**Breaking** — bundled refactor that closes #40, #46, #48, and most of
+the #49 cat A / B / C audit. After v0.6.0 the FT8 sync path has a single
+WSJT-X-faithful implementation (`decode_block::coarse_sync`) and the
+"`ft8::sync` namespace" wrappers that drifted in #40 are gone. The user-
+visible behaviour change for callers already on 0.5.12 is small —
+`freq_hint: Option<f32>` becomes a no-op on FT8 wide-band paths, and the
+`ft8::sync` thin-wrapper functions are removed (out-of-tree callers must
+turbofish the generic).
+
+### Removed
+
+- `mfsk_core::ft8::sync::coarse_sync` (#46) — was already a one-line
+  trampoline. Use `mfsk_core::ft8::decode_block::{compute_spectrogram,
+  coarse_sync}` directly:
+  ```rust
+  // before (0.5.12)
+  let cands = mfsk_core::ft8::sync::coarse_sync(&audio, 200.0, 2800.0, 1.3, None, 50);
+  // after (0.6.0)
+  let spec = mfsk_core::ft8::decode_block::compute_spectrogram(&audio, 2800.0);
+  let cands = mfsk_core::ft8::decode_block::coarse_sync(&spec, 200.0, 2800.0, 1.3, 50);
+  ```
+- `mfsk_core::ft8::sync::{compute_spectra, fine_sync_power,
+  fine_sync_power_split, refine_candidate, refine_candidate_double}`
+  (#49 cat B). All five were one-line wrappers around
+  `mfsk_core::core::sync::*::<Ft8>` — call the generic directly.
+
+### Changed (behaviour, signatures unchanged)
+
+- **`freq_hint: Option<f32>`** on every `decode_frame*` and
+  `decode_sniper*` is silently ignored. `decode_block::coarse_sync` does
+  not honour candidate-score promotion; sniper paths
+  (`decode_sniper_ap`) constrain `freq_min`/`freq_max` ±250 Hz around
+  `target_freq` so the loss is contained.
+- **`symbol_spectra` / `score_costas_block` / `fine_sync_power*` /
+  `refine_candidate*` take `i32` for sample-index parameters** (#40 / #45).
+  The host wide-band path was casting `i_start = ((dt+0.5)*200) as
+  usize`, saturating any negative-dt candidate to 0 and silently
+  misaligning the symbol grid by ~1.75 symbols. Threading `i32` through
+  with WSJT-X all-or-nothing per-symbol boundary checks (= the same
+  behaviour `decode_block::fill_symbol_spectra_via_cd0` already had) lifts
+  host AP-off recall on `qso3_busy.wav` from 5/8 → **7/8** (matches the
+  embedded `decode_block`). Out-of-tree callers of these
+  `core::sync` / `core::llr` / `ft4::refine_fine` functions need to update
+  their callsites to pass `i32`.
+
+### Added
+
+- **AP iaptype 2 — mycall-only lock** (`ft8::decode::process_candidate`).
+  Mirrors WSJT-X `lib/ft8/ft8b.f90` "MyCall ??? ???" pass: locks bits
+  0–28 + i3=001 (~32 bits) without forcing call2 / grid. Triggered as
+  a new pass (id 5) whenever `ApHint::call1` is set; surfaces follow-up
+  replies whose sender isn't the call2 in operator context. JTDX uses
+  this iaptype to land entries that pass 8 (mycall + dxcall) cannot
+  reach. `check_result` already rejects decodes whose unpacked text
+  doesn't contain the AP-locked call1, so iaptype 2 cannot leak phantoms.
+
+### Improved
+
+- **FT8 host wide-band recall on busy bands**. `qso3_busy.wav`:
+  WSJT-X 8-entry golden 5/8 → 7/8 (CQ F5RXL IN94 -3 dB now decodes; 3
+  phantoms above 2 kHz eliminated). JTDX 18-entry golden 13/18 → 16/18.
+  AP-on JTDX-extras 0/6 → 1/6.
+
+### Public API graduation (non-breaking)
+
+- `decode_block::coarse_sync` and `compute_spectrogram` graduate from
+  `#[doc(hidden)]` to officially public — they are the canonical FT8
+  surface, not benchmarking aids (#48 step B).
+- `decode_block::Spectrogram`, `coarse_sync_with_allsum`,
+  `coarse_allsum_len`, `precompute_coarse_allsum` /
+  `precompute_coarse_allsum_into`, `refine_candidates_into`,
+  `process_candidates_into_with_cs_scratch` /
+  `_with_cs_scratch_tuned` graduate as well — embedded consumers
+  (`embedded-shared::dual_core` / M5Stack apps) and `mfsk-ffi-ft8` were
+  already depending on them; the disclaimer wasn't accurate (#49 cat C).
+
+### Internal
+
+- **WAV-loader test consolidation** (#49 cat A). 14 near-duplicate
+  RIFF/WAVE parsers across `tests/ft8_*`, `tests/q65_*`, `tests/fst4_*`,
+  `tests/wspr_*`, `tests/ft4_*`, `tests/jt9_*` collapse into four
+  helpers (`load_wav_i16` / `load_wav_f32` strict + `_opt` soft) in
+  `tests/common/mod.rs`. Net 342 lines deleted.
+
+### Fixed (additional)
+
+- **Host `decode_frame_subtract_with_ap` is now WSJT-X-faithful**.
+  Mirrors the structure of `decode_block::decode_block_multipass` (which
+  is a faithful port of `lib/ft8/ft8b.f90:432-437`). Two changes from
+  pre-v0.6.0:
+  1. **Fixed `sync_min` across all 3 passes** (was sync_min × {1.0, 0.75, 0.5}).
+     Progressive relaxation lets phantoms slip through later passes when
+     SIC artefacts dominate the residual.
+  2. **Sequential subtract within each pass** (was batch-after-pass).
+     Each accepted decode immediately subtracts so the next candidate
+     in the same pass sees a cleaner residual.
+
+  Pass termination matches WSJT-X (skip pass 2 when pass 1 returned 0;
+  skip pass 3 when pass 2 returned no NEW). No recall change on the
+  qso3_busy.wav reference (the host's remaining 14/18 vs embedded's
+  16/18 gap on that WAV is structurally downstream — see "Known
+  limitation" below) but materially more faithful in shape and will
+  matter on WAVs where SIC artefact phantoms differ.
+
+### Deferred
+
+- `decode_block_with_ap` (ROADMAP A0' / "AP-on extras parity"). The
+  remaining 2-entry gap between embedded `decode_block` (16/18 of the
+  JTDX 18-entry golden on `qso3_busy.wav`) and host `decode_frame*`
+  (14/18) is **inside the per-candidate processing** —
+  `process_candidates_tuned` (decode_block's path) and
+  `process_candidate` (decode.rs's path) are separate decoder pipelines
+  with different LLR / BP staircase / sync_quality gates, and the 3
+  extra decodes embedded catches (KD2UGC F6GCP, CQ EA2BFM, K1BZM EA3CJ)
+  pass `process_candidates_tuned`'s gates but not `process_candidate`'s.
+
+  Unifying the two pipelines is a non-trivial refactor (the embedded
+  path is fixed-point-aware, the host path uses f32 throughout) — it's
+  a 0.7.0-class change. Tracked for that release. v0.6.0 ships with
+  the host pipeline structurally aligned to the WSJT-X-faithful
+  multipass shape (above) but with the per-candidate processing still
+  on the host-specific code path.
+- `Protocol::Sync` associated-type (#48 option A) — full type-system
+  enforcement against future protocol-sync drift. Scoped out: the blast
+  radius is every `impl Protocol` site + the embedded feature matrix,
+  for benefit that's speculative for non-FT8 protocols (none have shown
+  drift in 18 months post-fork). Tracked in #48.
+
 ## 0.5.12 — FT8 SIC correctness, FT4 WSJT-X parity, JT9 7/7, AP iaptype-1
 
 Drop-in upgrade for everyone on 0.5.11 — non-breaking, no API

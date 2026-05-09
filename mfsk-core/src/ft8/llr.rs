@@ -5,12 +5,9 @@
 //! Internally flattens to the row-major layout used by the generic
 //! implementation, then re-inflates the output.
 
-use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::Ft8;
-use num_complex::Complex;
 
 use super::params::{LDPC_N, LLR_SCALE};
 use crate::core::scalar::{Cmplx, LlrScalar};
@@ -43,20 +40,6 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
     let mut out = [T::ZERO; LDPC_N];
     let n = v.len().min(LDPC_N);
     out[..n].copy_from_slice(&v[..n]);
-    out
-}
-
-/// Compute 8-tone complex spectra for all 79 FT8 symbols.
-pub fn symbol_spectra(cd0: &[Complex<f32>], i_start: usize) -> Box<[[Cmplx<f32>; 8]; 79]> {
-    let flat = crate::core::llr::symbol_spectra::<Ft8>(cd0, i_start);
-    let mut out: Box<[[Cmplx<f32>; 8]; 79]> =
-        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
-    for (k, row) in out.iter_mut().enumerate() {
-        for t in 0..8 {
-            let c = flat[k * 8 + t];
-            row[t] = Cmplx { re: c.re, im: c.im };
-        }
-    }
     out
 }
 

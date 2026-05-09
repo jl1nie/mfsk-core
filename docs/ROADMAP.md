@@ -1,4 +1,130 @@
-# Roadmap (post-0.5.12)
+# Roadmap (post-0.6.2)
+
+## v0.6.2 status (in flight, 2026-05-10)
+
+Cumulative `v0.6.0` + `v0.6.1` + `v0.6.2` shipped as one release.
+Headline numbers (all on `qso3_busy.wav`):
+
+- Host AP-off recall: **7/8** WSJT-X golden, **16/18** JTDX golden
+  (`decode_block` path).
+- Host AP-on multipass: **18 decodes total / 5 of 6 JTDX-extras**
+  (was 1/6 pre-0.6.2 because `decode_frame_subtract_with_ap` had been
+  using `subtract_signal_weighted` instead of the WSJT-X-faithful
+  `subtract_signal_lpf`).
+- Embedded S3 (M5StickC Plus2-S3, fixed-point + `esp-dsp`):
+  **6/18 + 1 bonus = 7 total** in **~1.19 s** post-SlotEnd.
+
+### What landed across 0.6.0 → 0.6.2
+
+- **0.6.0**: FT8 sync consolidation (`decode_block::coarse_sync` is
+  canonical, `ft8::sync::coarse_sync` removed); `#40` host
+  wide-band coarse-sync gap closed via `i_start as i32` + WSJT-X
+  all-or-nothing boundary; `#46` / `#48 step B` / `#49 cat A-C`.
+- **0.6.1**: per-candidate inner unification —
+  `process_one_candidate_inner` is shared between the host
+  `process_candidate` body and `decode_block::run`. New public
+  `decode_block_with_ap[_tuned]` entries; AP iaptype loop reachable
+  from embedded as Step 4 of the inner. Embedded OSD pass IDs
+  migrated 4-7 → 14-17 to free 5..12 for AP.
+- **0.6.2**: host cs-source unified onto `fill_symbol_spectra`
+  (drops the cd0 + `ft8::llr::symbol_spectra` divergence); host SIC
+  switched to `subtract_signal_lpf`; dead-code removal
+  (`subtract_signal_weighted`, `subtract_signal`,
+  `qsb_partial_gain`, `ft8::llr::symbol_spectra`); embedded
+  `LlrT` Q3i8 → **Q11i16** (i8 → i16, ~16× LLR resolution; ship
+  recall +1 entry, post-SlotEnd 1.341 s → 1.191 s); fixed-point
+  build repair (broken since 0.6.1 by an internal call-site rename).
+
+### Embedded fine_refine attempt postmortem (deferred)
+
+Two paths were tried during 0.6.2 to lift embedded recall toward
+the JTDX-extra band:
+
+1. **Per-symbol DFT iteration** via `fill_symbol_spectra` per
+   candidate — projected ~100 ms, actually >5 s blocked compute
+   (200k+ × 1920-sample DFTs per slot), tripping the FreeRTOS Task
+   Watchdog.
+2. **`cd0` complex-baseband via cascaded esp-dsp FIR decimate**
+   (3:1 → 4:1 → 5:1 = 60:1) — solved the compute side but hit a
+   PSRAM bandwidth ceiling (~80 MB/s on S3 OCT mode means ~1 s
+   just for memory traffic for 15 candidates; further alignment
+   requirements, scratch fragmentation, lazy-alloc TLSF corruption
+   were all incidental).
+
+Honest read: embedded recall stays at **7/18** until either an
+i16-throughout FIR refine path or a streaming chunk-processing
+refactor lands. Both are out of scope for a 0.6.x patch — defer
+to a 0.7.x design pass.
+
+### Open follow-ups for 0.6.x patches and 0.7.0
+
+- **#48 option A** — `Protocol::Sync` associated type for
+  type-system enforcement against future protocol-sync drift.
+  Scoped out of v0.6.x (8 protocols + 2 macros + embedded feature
+  matrix; benefit is speculative for non-FT8 protocols).
+- **#49 cat D** — `core::sync::coarse_sync<P>` `NotFt8` marker
+  bound. Subsumed structurally by Phase 4 dispatch in v0.6.0; the
+  doc note ("FT8 should not use this") is the practical backstop
+  until #48 option A lands.
+- **#23 / #24 / #25** (FST4 / JT65 / MSK144 lockdowns), and
+  m5stack-s3-app Phase B (QSO FSM + TX picker UI integration)
+  remain on the original roadmap; v0.6.x did not touch them.
+- **Embedded fine_refine** — new tracking issue to file: design
+  i16-throughout streaming FIR cd0 path so that `fine_refine_pass1`
+  can run on S3 within slot budget without a PSRAM round-trip per
+  candidate.
+- **A0'** = `decode_block_with_ap` reachable from the embedded
+  bench — landed as Step 4 in `process_one_candidate_inner` in
+  0.6.1; the 5 missing JTDX-extras on `qso3_busy.wav` still sit
+  upstream of AP (host coarse-sync surfaces them only with
+  `subtract_signal_lpf` multipass — a host-side win, not embedded).
+  Revisit when an embedded-only WAV surfaces where the gap is
+  post-coarse-sync.
+
+## v0.6.0 status (shipped, 2026-05-09)
+
+Bundled refactor + AP iaptype 2 release. Closes:
+
+- **#40** (host wide-band coarse-sync candidate gap) — host
+  `decode_frame_with_ap` now routes through `decode_block::coarse_sync`
+  + the i_start-as-i32 fix; AP-off recall on `qso3_busy.wav` 5/8 → 7/8
+  (matches WSJT-X parity).
+- **#46** (sync consolidation PR) — `ft8::sync::coarse_sync` removed;
+  `decode_block::coarse_sync` + `compute_spectrogram` graduate to public
+  API.
+- **#48 step B** (FT8 sync routes through decode_block).
+- **#49 cat A** (WAV-loader test consolidation, 14 dupes → 4 helpers).
+- **#49 cat B** (`ft8::sync` thin wrappers deleted).
+- **#49 cat C** (`#[doc(hidden)]` graduation for items embedded
+  consumers + FFI already depend on).
+
+A0 / A0' from the earlier roadmap are the carry-overs:
+
+- **A0** = #40 — closed by v0.6.0.
+- **A0'** = `decode_block_with_ap` — **deferred**. The 5 missing
+  JTDX-extras on `qso3_busy.wav` sit upstream of AP (host coarse-sync
+  doesn't surface the candidates at -18 dB), so adding an embedded AP
+  loop now would ship code without measurable user-visible improvement
+  on the reference WAV. Revisit when a WAV surfaces where the gap is
+  actually post-coarse-sync, or when the embedded port grows operator
+  context (m5stack-s3-app Phase 4). New issue to file when that day
+  comes.
+
+Open follow-ups for 0.6.x patches and 0.7.0:
+
+- **#48 option A** — `Protocol::Sync` associated type for type-system
+  enforcement against future protocol-sync drift. Scoped out of v0.6.0
+  (8 protocols + 2 macros + embedded feature matrix; benefit is
+  speculative for non-FT8 protocols). Tracked separately.
+- **#49 cat D** — `core::sync::coarse_sync<P>` `NotFt8` marker bound.
+  Subsumed structurally by Phase 4 dispatch in v0.6.0; the doc note
+  ("FT8 should not use this") is the practical backstop until #48
+  option A lands.
+- **#23 / #24** (FST4 / JT65 golden lockdowns), **#25** (MSK144), and
+  Phase B (m5stack-s3-app) remain on the original roadmap; v0.6.0 did
+  not touch them.
+
+# Roadmap (legacy, written for post-0.5.12)
 
 ## Context
 

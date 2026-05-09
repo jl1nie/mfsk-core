@@ -108,7 +108,7 @@ where
 
     let cd0 = downsample_cached(fft_cache, cand.freq_hz, ds_cfg);
     let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-    let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as usize;
+    let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
     let cs_raw = symbol_spectra::<P>(&cd0, i_start);
     let nsync = sync_quality::<P>(&cs_raw);
     if nsync <= sync_q_min {

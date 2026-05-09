@@ -7,7 +7,7 @@
 //! subtracts it in place so weaker signals become decodable.
 
 use super::{decode::DecodeResult, wave_gen::message_to_tones};
-use crate::core::dsp::subtract::{GfskParams, SubtractCfg, subtract_tones, subtract_tones_lpf};
+use crate::core::dsp::subtract::{GfskParams, SubtractCfg, subtract_tones_lpf};
 
 /// FT8 subtract configuration: 12 kHz sample rate, 6.25 Hz tone spacing,
 /// 1920 samples/symbol, frame origin at 0.5 s, GFSK pulse shaping
@@ -29,28 +29,18 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
     }),
 };
 
-/// Subtract a decoded FT8 signal from `audio` in-place (full amplitude).
-#[inline]
-pub fn subtract_signal(audio: &mut [i16], result: &DecodeResult) {
-    subtract_signal_weighted(audio, result, 1.0);
-}
-
-/// Subtract a decoded FT8 signal with a fractional gain. `gain = 1.0` is full
-/// subtraction; `gain < 1.0` partial subtraction to hedge against channel
-/// variation that would otherwise leave a negative residual.
-#[inline]
-pub fn subtract_signal_weighted(audio: &mut [i16], result: &DecodeResult, gain: f32) {
-    let tones = message_to_tones(&result.message77);
-    subtract_tones(audio, &tones, result.freq_hz, result.dt_sec, gain, &FT8_CFG);
-}
-
 /// WSJT-X-style channel-aware subtract for FT8. Wraps
 /// [`crate::core::dsp::subtract::subtract_tones_lpf`] with the FT8 cfg
-/// and `lpf_half = 2000` matching WSJT-X NFILT=4000.
+/// and `lpf_half = 2000` matching WSJT-X NFILT=4000. The canonical
+/// FT8 subtract entry point as of v0.6.2 — both the host
+/// `decode_frame_subtract*` driver and the embedded
+/// `decode_block_multipass` driver call this for every accepted
+/// decode in their sequential-subtract loop.
 ///
-/// Use this on real-WAV decodes after [`refine_signal_freq`] to get
-/// near-clean signal removal. Falls back to a no-op when audio is
-/// shorter than the FT8 frame.
+/// Pre-v0.6.2 the host path used a constant-amplitude
+/// `subtract_signal_weighted` (with QSB-aware partial gain) which
+/// underused the residual on busy bands; see the v0.6.2 CHANGELOG
+/// for the recall delta this rewire produced on `qso3_busy.wav`.
 pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
     let tones = message_to_tones(&result.message77);
     subtract_tones_lpf(audio, &tones, result.freq_hz, result.dt_sec, &FT8_CFG, 2000);
@@ -60,13 +50,13 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
 /// for the carrier that maximises the LS amplitude of the GFSK reference
 /// against `audio`. Returns the refined frequency.
 ///
-/// Use this before [`subtract_signal`] / [`subtract_signal_weighted`]
-/// when the input is a real-WAV decode (not a self-synthesised signal).
-/// mfsk-core's coarse_sync reports carriers on a 2.93 Hz bin grid; real
-/// signals routinely sit ±0.5..3 Hz off-bin and the resulting phase
-/// drift over the 12.7 s frame defeats the constant-amplitude LS in
-/// `subtract_tones`. Empirical: refines CQ F5RXL on qso3_busy from
-/// 1198 → 1196.8 Hz, |amp| jumps 3.6 → 16.2 (~4.5×).
+/// Use this before [`subtract_signal_lpf`] when the input is a
+/// real-WAV decode (not a self-synthesised signal). mfsk-core's
+/// coarse_sync reports carriers on a 2.93 Hz bin grid; real signals
+/// routinely sit ±0.5..3 Hz off-bin and the resulting phase drift
+/// over the 12.7 s frame defeats the LS estimate inside
+/// `subtract_tones_lpf`. Empirical: refines CQ F5RXL on qso3_busy
+/// from 1198 → 1196.8 Hz, |amp| jumps 3.6 → 16.2 (~4.5×).
 ///
 /// Cost: ~50 GFSK reference builds × ~150 k samples each. On host f32
 /// this is a few ms per signal — call once per decoded result rather
@@ -115,7 +105,7 @@ mod tests {
             snr_db: 0.0,
         };
 
-        subtract_signal(&mut audio, &result);
+        subtract_signal_lpf(&mut audio, &result);
 
         let power_after: f32 =
             audio.iter().map(|&s| (s as f32).powi(2)).sum::<f32>() / audio.len() as f32;
@@ -149,7 +139,7 @@ mod tests {
             sync_cv: 0.0,
             snr_db: 0.0,
         };
-        subtract_signal(&mut audio, &result);
+        subtract_signal_lpf(&mut audio, &result);
 
         let power_after: f32 = audio.iter().map(|&s| (s as f32).powi(2)).sum::<f32>();
         assert!(
@@ -161,12 +151,17 @@ mod tests {
     #[test]
     fn subtract_reveals_hidden_signal() {
         use super::super::decode::decode_frame_subtract;
+        use super::super::message::pack77;
 
-        let msg_strong = [0u8; 77];
+        // Two valid FT8 standard messages (the inner's unpack77 +
+        // plausibility gate inside `process_one_candidate_inner`
+        // requires real-shape codewords; v0.6.1 host redirect through
+        // the inner inherits embedded's strictness).
+        let msg_strong = pack77("CQ", "JA1ABC", "PM95").expect("pack77 strong");
         let itone_s = message_to_tones(&msg_strong);
         let strong = tones_to_i16(&itone_s, 1000.0, 20_000);
 
-        let msg_weak = [1u8; 77];
+        let msg_weak = pack77("W1AW", "JA1ABC", "73").expect("pack77 weak");
         let itone_w = message_to_tones(&msg_weak);
         let weak = tones_to_i16(&itone_w, 1500.0, 3_000);
 
