@@ -2611,7 +2611,6 @@ where
     // dt is already parabolically refined by coarse_sync; no grid here.
 
     let mut results: Vec<DecodeResult> = Vec::new();
-    let q_thr = q_thresh;
     // BP scratch pool — instantiated once and reused across all
     // candidates × all 5 BP calls per candidate. Eliminates the
     // ~12 KB-per-call `tlsf_malloc` traffic that dominated stage-3
@@ -2638,189 +2637,204 @@ where
         // Saves an additional 56 DFTs / candidate.
         fill(cs_scratch, &cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
-        if q <= q_thr {
+        if q <= q_thresh {
             continue;
         }
         fill(cs_scratch, &cand, SymMask::DataOnly);
-        let refined_dt = cand.dt_sec;
-
-        // ── Staircase: cheap → deeper → OSD ─────────────────────────
-        //
-        // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that
-        //    decode at all decode here; the rest fall through.
-        // 2) Full compute_llr (nsym=1+2+3) → Bp on all 4 variants
-        //    (a/b/c/d).
-        // 3) OSD-1 / OSD-3 fallback gated on sync_quality.
-        //
-        // `BpAll` and `BpAllOsd` enable the deeper stages; plain
-        // `Bp` stops after step 1.
-        let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
-        // WSJT-X ft8b.f90:422 — `nharderrors > 36` rejects the BP variant
-        // and falls through to the next one. Phantoms on busy bands tend
-        // to be CRC-pass / high-hard-error decodes; matching this gate
-        // closes the dominant phantom hole in qso3_busy.
-        const WSJTX_NHARDERRORS_MAX: u32 = 36;
-
-        // Step 1: fast llra. The LLR / BP scalar is selected at compile
-        // time via `fixed-point` (Q3i8) or default (f32) — see the
-        // `LlrT` definition above. Both go through the *same* generic
-        // NMS implementation, bit-identical AWGN behaviour by design.
-        let llr_a_fast: super::llr::LlrSet<LlrT> = super::llr::compute_llr_fast(cs_scratch);
-        let bp_step1 = bp_step_select::<LlrT>(
-            &mut bp_scratch,
-            &llr_a_fast.llra,
+        if let Some(r) = process_one_candidate_inner(
+            cs_scratch,
+            &cand,
+            cand.dt_sec,
+            q,
+            depth,
             bp_max_iter,
-            Some(check_crc14),
-        );
-        if let Some(bp) = bp_step1
-            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-        {
-            accepted = Some((bp, 0));
+            &mut bp_scratch,
+            &results,
+        ) {
+            results.push(r);
         }
-
-        // Step 2: deeper-LLR variants. Lazy + LLR-shared with Step 1.
-        //
-        // **Variant a is skipped** — Step 1 already ran BP on the
-        // identical input (`compute_llr_fast` and `compute_llr`
-        // produce bit-identical `llra`, since nsym=1 work doesn't
-        // depend on `max_nsym`). Re-running it would be guaranteed
-        // failure.
-        //
-        // **Variant d reuses** Step 1's `llr_a_fast.llrd` — same
-        // nsym=1 derivation, costs zero LLR work.
-        //
-        // **Variants b / c are lazy-computed**: only pay the nsym=2
-        // work if d failed, and only pay the heavy nsym=3 work
-        // (~80 % of `compute_llr`) if both d and b also failed.
-        // Order chosen by ascending compute cost — same number of BP
-        // calls as the old variant loop in the worst case, far fewer
-        // in the typical case where any earlier variant decodes.
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd) {
-            // Variant d: free reuse of Step 1's llrd.
-            let bp_d = bp_step_select::<LlrT>(
-                &mut bp_scratch,
-                &llr_a_fast.llrd,
-                bp_max_iter,
-                Some(check_crc14),
-            );
-            if let Some(bp) = bp_d
-                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-            {
-                accepted = Some((bp, 3));
-            }
-            // Variant b: lazy nsym=2 only.
-            if accepted.is_none() {
-                let llrb_arr: [LlrT; LDPC_N] =
-                    super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
-                let bp_b = bp_step_select::<LlrT>(
-                    &mut bp_scratch,
-                    &llrb_arr,
-                    bp_max_iter,
-                    Some(check_crc14),
-                );
-                if let Some(bp) = bp_b
-                    && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-                {
-                    accepted = Some((bp, 1));
-                }
-            }
-            // Variant c: lazy nsym=3 (the expensive one).
-            if accepted.is_none() {
-                let llrc_arr: [LlrT; LDPC_N] =
-                    super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
-                let bp_c = bp_step_select::<LlrT>(
-                    &mut bp_scratch,
-                    &llrc_arr,
-                    bp_max_iter,
-                    Some(check_crc14),
-                );
-                if let Some(bp) = bp_c
-                    && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-                {
-                    accepted = Some((bp, 2));
-                }
-            }
-        }
-
-        // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
-        // OSD operates on `&[f32]` directly — independent of the
-        // `LlrT` choice — so we compute a fresh f32 LLR bundle here.
-        // Only fires when Steps 1+2 BP failed and `q >= 12`, so the
-        // extra compute_llr is cheap relative to the OSD work itself.
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
-            let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
-            // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
-            // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
-            // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
-            // frees 5..12 for the AP loop being plumbed into this same
-            // function in 0.6.1 (decode_block_with_ap path).
-            for (llr, pid) in [
-                (&llr_full_f32.llra, 14u8),
-                (&llr_full_f32.llrb, 15),
-                (&llr_full_f32.llrc, 16),
-                (&llr_full_f32.llrd, 17),
-            ] {
-                let osd = if q >= 18 {
-                    osd_decode_deep(llr, 3, Some(check_crc14))
-                } else {
-                    osd_decode(llr)
-                };
-                if let Some(osd) = osd {
-                    // Mirror the BP-variant `nharderrors > 36` cycle
-                    // gate (ft8b.f90:422) on the OSD path. WSJT-X's
-                    // OSD itself returns CRC-pass codewords with
-                    // negated `nhardmin` on CRC fail (osd174_91:290),
-                    // but we apply the same upper bound to the
-                    // hard-error count so high-error CRC-luck
-                    // codewords don't pass through OSD either.
-                    if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
-                        continue;
-                    }
-                    let bp = crate::fec::ldpc::bp::BpResult {
-                        message77: osd.message77,
-                        info: osd.info,
-                        codeword: vec![0u8; LDPC_N],
-                        hard_errors: osd.hard_errors,
-                        iterations: 0,
-                    };
-                    accepted = Some((bp, pid));
-                    break;
-                }
-            }
-        }
-
-        let Some((bp, pass_id)) = accepted else {
-            continue;
-        };
-        let Some(text) = unpack77(&bp.message77) else {
-            continue;
-        };
-        // Plausibility filter — reject CRC-passing-but-garbage
-        // messages. With max_cand=200 × 4 LLR variants × OSD,
-        // CRC-14's 1/16384 false-positive rate produces ~1-2 random
-        // strings per slot. Same filter the host wide-band path
-        // uses (`decode_frame::process_candidate`).
-        if !crate::msg::wsjt77::is_plausible_message(&text) {
-            continue;
-        }
-        if results.iter().any(|r| r.message77 == bp.message77) {
-            continue;
-        }
-        let itone = message_to_tones(&bp.message77);
-        let snr_db = super::llr::compute_snr_db(cs_scratch, &itone);
-        results.push(DecodeResult {
-            message77: bp.message77,
-            freq_hz: cand.freq_hz,
-            dt_sec: refined_dt,
-            hard_errors: bp.hard_errors,
-            sync_score: cand.score,
-            pass: pass_id,
-            sync_cv: 0.0,
-            snr_db,
-        });
     }
 
     results
+}
+
+/// WSJT-X-faithful nharderrors gate (ft8b.f90:422). High hard-error
+/// CRC-pass decodes are the dominant phantom source on busy bands;
+/// reject above this and fall through to the next BP variant.
+const WSJTX_NHARDERRORS_MAX: u32 = 36;
+
+/// Per-candidate decode core — runs the LLR-staircase + OSD fallback
+/// on a *fully-filled* `cs_scratch`. Shared between the embedded
+/// `process_candidates_with` driver (above) and the host
+/// `process_candidate` redirect (decode.rs, post-0.6.1). Returns
+/// `Some(DecodeResult)` on first success (Step 1 / 2 / 3 in order),
+/// `None` on full failure.
+///
+/// Caller responsibilities:
+/// - `cs_scratch` filled with all 79 symbols × 8 tones (data + sync).
+/// - `q = sync_quality(cs_scratch)` already computed and gated.
+/// - `refined_dt` carries the parabolically-refined `dt_sec`.
+/// - `known` is the dedup list (in-progress + prior-pass results).
+fn process_one_candidate_inner(
+    cs_scratch: &[[Cmplx<f32>; 8]; 79],
+    cand: &SyncCandidate,
+    refined_dt: f32,
+    q: u32,
+    depth: DecodeDepth,
+    bp_max_iter: u32,
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
+    known: &[DecodeResult],
+) -> Option<DecodeResult> {
+    // ── Staircase: cheap → deeper → OSD ─────────────────────────
+    //
+    // 1) Bp(llra) on the fast nsym=1 LLR. Most candidates that
+    //    decode at all decode here; the rest fall through.
+    // 2) Full compute_llr (nsym=1+2+3) → Bp on all 4 variants
+    //    (a/b/c/d).
+    // 3) OSD-1 / OSD-3 fallback gated on sync_quality.
+    //
+    // `BpAll` and `BpAllOsd` enable the deeper stages; plain
+    // `Bp` stops after step 1.
+    let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
+
+    // Step 1: fast llra. The LLR / BP scalar is selected at compile
+    // time via `fixed-point` (Q3i8) or default (f32) — see the
+    // `LlrT` definition above. Both go through the *same* generic
+    // NMS implementation, bit-identical AWGN behaviour by design.
+    let llr_a_fast: super::llr::LlrSet<LlrT> = super::llr::compute_llr_fast(cs_scratch);
+    let bp_step1 =
+        bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
+    if let Some(bp) = bp_step1
+        && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+    {
+        accepted = Some((bp, 0));
+    }
+
+    // Step 2: deeper-LLR variants. Lazy + LLR-shared with Step 1.
+    //
+    // **Variant a is skipped** — Step 1 already ran BP on the
+    // identical input (`compute_llr_fast` and `compute_llr`
+    // produce bit-identical `llra`, since nsym=1 work doesn't
+    // depend on `max_nsym`). Re-running it would be guaranteed
+    // failure.
+    //
+    // **Variant d reuses** Step 1's `llr_a_fast.llrd` — same
+    // nsym=1 derivation, costs zero LLR work.
+    //
+    // **Variants b / c are lazy-computed**: only pay the nsym=2
+    // work if d failed, and only pay the heavy nsym=3 work
+    // (~80 % of `compute_llr`) if both d and b also failed.
+    // Order chosen by ascending compute cost — same number of BP
+    // calls as the old variant loop in the worst case, far fewer
+    // in the typical case where any earlier variant decodes.
+    if accepted.is_none() && matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd) {
+        // Variant d: free reuse of Step 1's llrd.
+        let bp_d =
+            bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_d
+            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        {
+            accepted = Some((bp, 3));
+        }
+        // Variant b: lazy nsym=2 only.
+        if accepted.is_none() {
+            let llrb_arr: [LlrT; LDPC_N] = super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+            let bp_b =
+                bp_step_select::<LlrT>(bp_scratch, &llrb_arr, bp_max_iter, Some(check_crc14));
+            if let Some(bp) = bp_b
+                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            {
+                accepted = Some((bp, 1));
+            }
+        }
+        // Variant c: lazy nsym=3 (the expensive one).
+        if accepted.is_none() {
+            let llrc_arr: [LlrT; LDPC_N] = super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+            let bp_c =
+                bp_step_select::<LlrT>(bp_scratch, &llrc_arr, bp_max_iter, Some(check_crc14));
+            if let Some(bp) = bp_c
+                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            {
+                accepted = Some((bp, 2));
+            }
+        }
+    }
+
+    // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
+    // OSD operates on `&[f32]` directly — independent of the
+    // `LlrT` choice — so we compute a fresh f32 LLR bundle here.
+    // Only fires when Steps 1+2 BP failed and `q >= 12`, so the
+    // extra compute_llr is cheap relative to the OSD work itself.
+    if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
+        let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
+        // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
+        // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
+        // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
+        // frees 5..12 for the AP loop being plumbed into this same
+        // function in 0.6.1 (decode_block_with_ap path).
+        for (llr, pid) in [
+            (&llr_full_f32.llra, 14u8),
+            (&llr_full_f32.llrb, 15),
+            (&llr_full_f32.llrc, 16),
+            (&llr_full_f32.llrd, 17),
+        ] {
+            let osd = if q >= 18 {
+                osd_decode_deep(llr, 3, Some(check_crc14))
+            } else {
+                osd_decode(llr)
+            };
+            if let Some(osd) = osd {
+                // Mirror the BP-variant `nharderrors > 36` cycle
+                // gate (ft8b.f90:422) on the OSD path. WSJT-X's
+                // OSD itself returns CRC-pass codewords with
+                // negated `nhardmin` on CRC fail (osd174_91:290),
+                // but we apply the same upper bound to the
+                // hard-error count so high-error CRC-luck
+                // codewords don't pass through OSD either.
+                if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
+                    continue;
+                }
+                let bp = crate::fec::ldpc::bp::BpResult {
+                    message77: osd.message77,
+                    info: osd.info,
+                    codeword: vec![0u8; LDPC_N],
+                    hard_errors: osd.hard_errors,
+                    iterations: 0,
+                };
+                accepted = Some((bp, pid));
+                break;
+            }
+        }
+    }
+
+    let (bp, pass_id) = accepted?;
+    let text = unpack77(&bp.message77)?;
+    // Plausibility filter — reject CRC-passing-but-garbage
+    // messages. With max_cand=200 × 4 LLR variants × OSD,
+    // CRC-14's 1/16384 false-positive rate produces ~1-2 random
+    // strings per slot. Same filter the host wide-band path
+    // uses (`decode_frame::process_candidate`).
+    if !crate::msg::wsjt77::is_plausible_message(&text) {
+        return None;
+    }
+    if known.iter().any(|r| r.message77 == bp.message77) {
+        return None;
+    }
+    let itone = message_to_tones(&bp.message77);
+    let snr_db = super::llr::compute_snr_db(cs_scratch, &itone);
+    Some(DecodeResult {
+        message77: bp.message77,
+        freq_hz: cand.freq_hz,
+        dt_sec: refined_dt,
+        hard_errors: bp.hard_errors,
+        sync_score: cand.score,
+        pass: pass_id,
+        sync_cv: 0.0,
+        snr_db,
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
