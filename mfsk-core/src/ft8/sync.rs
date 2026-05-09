@@ -1,14 +1,21 @@
-//! FT8 synchronisation — public entry points for the host decode
+//! FT8 synchronisation — fine-sync helpers for the host decode
 //! pipeline (`decode_frame*` in `decode.rs`).
 //!
-//! Signatures preserve the pre-refactor shape so out-of-tree callers
-//! keep working unchanged. Internals route through the WSJT-X-faithful
-//! [`crate::ft8::decode_block`] port for [`coarse_sync`] (closes #40
-//! — the protocol-generic [`crate::core::sync`] coarse-sync mis-
-//! estimates the noise floor on busy FT8 bands), and through
-//! [`crate::core::sync`] for the remaining fine-sync helpers.
-
-use alloc::vec::Vec;
+//! `coarse_sync` no longer lives here — as of v0.6.0 the FT8 coarse-
+//! sync stage is owned exclusively by [`crate::ft8::decode_block`]
+//! (the WSJT-X `sync8.f90`-faithful port that already serves the
+//! embedded path). The legacy thin wrapper that forwarded to
+//! [`crate::core::sync::coarse_sync<crate::ft8::Ft8>`] was removed in
+//! #48 step B; `decode.rs` now calls
+//! [`crate::ft8::decode_block::compute_spectrogram`] +
+//! [`crate::ft8::decode_block::coarse_sync`] directly.
+//!
+//! The remaining fine-sync helpers are still thin wrappers over the
+//! protocol-generic [`crate::core::sync`] module — they have not
+//! shown the busy-band recall gap that motivated the coarse-sync
+//! consolidation, so the wrappers stay until either #49 cat B
+//! decides to delete them or option A ([`Protocol::Sync`] associated
+//! type, post-0.6.0) absorbs them.
 
 use super::Ft8;
 use num_complex::Complex;
@@ -40,36 +47,6 @@ impl From<GenericFineSyncDetail> for FineSyncDetail {
             drift_dt_sec: g.drift_dt_sec,
         }
     }
-}
-
-#[inline]
-pub fn coarse_sync(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    _freq_hint: Option<f32>,
-    max_cand: usize,
-) -> Vec<SyncCandidate> {
-    // Route through decode_block's WSJT-X-faithful sync8.f90 port
-    // (closes #40). The protocol-generic core::sync::coarse_sync<Ft8>
-    // computed the noise reference from same-time-slot non-Costas
-    // tones, which over-estimates the floor on busy bands
-    // (qso3_busy.wav lost 3 of 8 goldens including CQ F5RXL IN94 at
-    // -3 dB SNR per #40) and under-estimates above 2 kHz (3 phantoms
-    // above 2 kHz on the same WAV). decode_block uses the WSJT-X
-    // 16-bin sliding-window allsum estimator that fixes both, at the
-    // cost of building a Spectrogram first (one extra NFFT_SPEC=3840
-    // FFT pass — same NFFT as before, just consolidated into a
-    // reusable spec instead of recomputed per-candidate scoring loop).
-    //
-    // `freq_hint` is currently dropped — decode_block::coarse_sync
-    // doesn't honour candidate-score promotion. The sniper paths that
-    // use it (decode_sniper_ap) already restrict freq_min/max to a
-    // ±250 Hz band around target_freq, so the loss is small. Tracked
-    // as a follow-up.
-    let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
-    crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand)
 }
 
 #[inline]
@@ -132,13 +109,6 @@ mod tests {
         let cd0 = vec![Complex::new(0.0f32, 0.0); 3200];
         let sync = fine_sync_power(&cd0, 0);
         assert_eq!(sync, 0.0);
-    }
-
-    #[test]
-    fn coarse_sync_on_silence_returns_empty_or_low() {
-        let audio = vec![0i16; 15 * 12000];
-        let cands = coarse_sync(&audio, 200.0, 2800.0, 1.0, None, 100);
-        assert!(cands.len() <= 100);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use super::{
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
     subtract::subtract_signal_weighted,
-    sync::{SyncCandidate, coarse_sync, fine_sync_power_split, refine_candidate},
+    sync::{SyncCandidate, fine_sync_power_split, refine_candidate},
     wave_gen::message_to_tones,
 };
 
@@ -785,7 +785,15 @@ fn decode_frame_inner(
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
     ap_hint: Option<&ApHint>,
 ) -> (Vec<DecodeResult>, Vec<num_complex::Complex<f32>>) {
-    let candidates = coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand);
+    // `freq_hint` is intentionally not forwarded — the WSJT-X-faithful
+    // decode_block::coarse_sync (the only FT8 coarse-sync after the v0.6
+    // consolidation in #48) does not honour candidate-score promotion.
+    // Sniper paths in this file constrain freq_min/freq_max around the
+    // target instead, so the loss is contained.
+    let _ = freq_hint;
+    let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
+    let candidates =
+        crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
     // Build (or clone) the FFT cache exactly once. The cache is needed both
     // when there are no candidates (early return) and when running BP/OSD
     // per candidate, so do it before the early-exit branch to avoid a
@@ -1270,14 +1278,14 @@ fn decode_sniper_inner(
     let freq_min = (target_freq - 250.0).max(100.0);
     let freq_max = (target_freq + 250.0).min(5900.0);
 
-    let candidates = coarse_sync(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        Some(target_freq),
-        max_cand,
-    );
+    // Sniper-mode: freq_hint (=target_freq) used to promote candidates
+    // near the target via the legacy core::sync::coarse_sync path. After
+    // the v0.6 consolidation in #48, decode_block::coarse_sync does not
+    // honour hints; the ±250 Hz freq_min/freq_max band above does most
+    // of the work the hint used to.
+    let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
+    let candidates =
+        crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
     if candidates.is_empty() {
         return Vec::new();
     }

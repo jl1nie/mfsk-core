@@ -219,6 +219,15 @@ pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
 /// Matches the sync shape of the protocol's `SYNC_BLOCKS`. Returns up to
 /// `max_cand` candidates, sorted by score (best first); if `freq_hint` is
 /// supplied, nearby candidates are promoted.
+///
+/// **FT8 callers should not use this function.** As of v0.6 (#48), FT8
+/// coarse-sync is owned by [`crate::ft8::decode_block::coarse_sync`],
+/// which uses the WSJT-X `sync8.f90`-faithful 16-bin sliding-window
+/// allsum noise estimator instead of the same-time-slot non-Costas
+/// reference this generic function uses. The generic function stays
+/// for FT4 / FST4 / JT9 / Q65 / WSPR / uvpacket where the busy-band
+/// recall gap that motivated the FT8 swap (see #40) has not been
+/// observed.
 pub fn coarse_sync<P: Protocol>(
     audio: &[i16],
     freq_min: f32,
