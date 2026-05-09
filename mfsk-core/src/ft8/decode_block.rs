@@ -313,8 +313,10 @@ impl Spectrogram {
 /// range. Bins above that are discarded — saves ~half the heap on
 /// ESP32 (4 MB PSRAM ceiling).
 ///
-/// **Pub for benchmarking only — do not depend on it.**
-#[doc(hidden)]
+/// Public as of v0.6 (#48): `compute_spectrogram` is the canonical
+/// FT8 spectrogram builder for both the embedded path and the host
+/// `decode_frame*` pipeline (the latter routes coarse-sync through
+/// this module after #46 / #48 step B).
 #[cfg(not(feature = "fixed-point"))]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
@@ -379,7 +381,6 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 /// an empty spectrogram. We compute the slot's peak once and shift
 /// the i16 input left enough to reach ~ ¼ of i16 range, leaving
 /// headroom for FFT growth in tone-rich slots.
-#[doc(hidden)]
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
     use crate::core::fft::default_planner_16;
@@ -536,13 +537,15 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
 
-/// Costas-array correlation search across the spectrogram. Matches
-/// the host `core::sync::coarse_sync` shape but reads bins by
-/// fractional offset (`tone_step_bins ≈ 4.267` at NFFT_SPEC=8192,
-/// rounded to nearest integer).
+/// Costas-array correlation search across the spectrogram. Mirrors
+/// WSJT-X `lib/ft8/sync8.f90` — 16-bin sliding-window allsum noise
+/// estimator with `tone_step_bins = 2.0` exactly at NFFT_SPEC=3840.
 ///
-/// **Pub for benchmarking only — do not depend on it.**
-#[doc(hidden)]
+/// Public as of v0.6 (#48): this is now the canonical FT8 coarse-sync
+/// for both the embedded port and the host `decode_frame*` pipeline.
+/// `core::sync::coarse_sync<Ft8>` is no longer reachable from FT8 code
+/// paths; that generic function stays in place for FT4 / FST4 / JT9 /
+/// Q65 / WSPR / uvpacket.
 pub fn coarse_sync(
     spec: &Spectrogram,
     freq_min: f32,
