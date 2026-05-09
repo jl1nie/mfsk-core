@@ -2749,11 +2749,16 @@ where
         // extra compute_llr is cheap relative to the OSD work itself.
         if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
             let llr_full_f32: super::llr::LlrSet<f32> = super::llr::compute_llr(cs_scratch);
+            // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
+            // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
+            // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
+            // frees 5..12 for the AP loop being plumbed into this same
+            // function in 0.6.1 (decode_block_with_ap path).
             for (llr, pid) in [
-                (&llr_full_f32.llra, 4u8),
-                (&llr_full_f32.llrb, 5),
-                (&llr_full_f32.llrc, 6),
-                (&llr_full_f32.llrd, 7),
+                (&llr_full_f32.llra, 14u8),
+                (&llr_full_f32.llrb, 15),
+                (&llr_full_f32.llrc, 16),
+                (&llr_full_f32.llrd, 17),
             ] {
                 let osd = if q >= 18 {
                     osd_decode_deep(llr, 3, Some(check_crc14))
