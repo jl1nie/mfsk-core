@@ -236,9 +236,13 @@ pub type SpecCell = u16;
 #[cfg(feature = "fixed-point")]
 const FP_SPEC_SHIFT: u32 = 12;
 
-/// Power spectrogram. **Internal type exposed for benching only —
-/// do not depend on the layout.**
-#[doc(hidden)]
+/// Power spectrogram emitted by [`compute_spectrogram`] and consumed
+/// by [`coarse_sync`] / [`coarse_sync_with_allsum`]. The struct is
+/// public so embedded consumers (`embedded-shared::dual_core` and
+/// the M5Stack apps) can hold a [`Spectrogram`] across the
+/// stage-1/stage-2 boundary; layout fields are publicly readable.
+///
+/// Public as of v0.6 (#49 cat C, was previously `#[doc(hidden)]`).
 pub struct Spectrogram {
     /// Number of positive-frequency bins kept. Always ≤ NFFT_SPEC/2.
     /// We crop above the band of interest so a 8192-pt spectrogram on
@@ -568,9 +572,10 @@ pub fn coarse_sync(
 /// (`data[fi * spec.n_time + m]`), same length
 /// ([`coarse_allsum_len`]).
 ///
-/// **Pub for benchmarking + the embedded port only — do not depend
-/// on it from host code.**
-#[doc(hidden)]
+/// Public as of v0.6 (#49 cat C): the embedded port (`m5stack-core2`,
+/// `m5stack-s3`, `m5stack-s3-app`) and `mfsk-ffi-ft8` both build the
+/// allsum incrementally during slot capture and pass it back here, so
+/// this is a stable public surface — not a benchmark-only escape hatch.
 pub fn coarse_sync_with_allsum(
     spec: &Spectrogram,
     freq_min: f32,
@@ -2207,10 +2212,10 @@ fn refine_candidates<S: AudioSample>(
 /// Variant of [`refine_candidates`] that uses caller-provided basis
 /// scratch (forwards to `symbol_spectra_direct_into`).
 ///
-/// **Pub for benchmarking + manually-staged callers** (e.g.
-/// m5stack-core2 main.rs which logs per-stage wall-clock).
+/// Public as of v0.6 (#49 cat C): used by the embedded
+/// `embedded-shared::dual_core` worker to keep the basis scratch
+/// allocated in internal DRAM across stages.
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 pub fn refine_candidates_into<S: AudioSample>(
     audio: &[S],
     cands: Vec<SyncCandidate>,
@@ -2507,8 +2512,10 @@ pub fn process_candidates_into_tuned<S: AudioSample>(
 /// LLR / BP run on it, then dropped — letting the BP / LLR hot loops
 /// read `cs` from internal DRAM (~5–10× faster than PSRAM on Xtensa
 /// LX6/LX7). Provide a `static mut` array in `.bss` for max win.
+///
+/// Public as of v0.6 (#49 cat C): used by the embedded
+/// `embedded-shared::dual_core::stage3_split` worker.
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
     audio: &[S],
     cands: Vec<RefinedCandidate>,
@@ -2534,8 +2541,9 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
 /// a runtime `bp_max_iter`. This is the entry point used by the
 /// embedded `dual_core::stage3_split` worker so LX6 / LX7 binaries
 /// can dial the BP cap without rebuilding `mfsk-core`.
+///
+/// Public as of v0.6 (#49 cat C).
 #[cfg(feature = "fixed-point")]
-#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     audio: &[S],
