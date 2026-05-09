@@ -22,7 +22,7 @@ use super::{
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
     subtract::subtract_signal_weighted,
-    sync::{SyncCandidate, fine_sync_power_split, refine_candidate},
+    sync::SyncCandidate,
     wave_gen::message_to_tones,
 };
 
@@ -498,11 +498,11 @@ fn process_candidate(
     if nsync <= 6 {
         return None;
     }
-    // Drop the now-unused single-stage refine helper.
-    let _ = refine_candidate;
-
     let sync_cv = {
-        let (sa, sb, sc) = fine_sync_power_split(&cd0, i_start);
+        let scores = crate::core::sync::fine_sync_power_per_block::<crate::ft8::Ft8>(&cd0, i_start);
+        let sa = scores.first().copied().unwrap_or(0.0);
+        let sb = scores.get(1).copied().unwrap_or(0.0);
+        let sc = scores.get(2).copied().unwrap_or(0.0);
         let mean = (sa + sb + sc) / 3.0;
         if mean > f32::EPSILON {
             let sq = (sa - mean).powi(2) + (sb - mean).powi(2) + (sc - mean).powi(2);
