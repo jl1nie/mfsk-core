@@ -537,12 +537,12 @@ fn process_candidate(
     let try_decode =
         |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79], _use_ap: bool| -> Option<DecodeResult> {
             // BpScratch must be parameterised on the same LlrT the
-            // inner uses. decode_block defines `type LlrT = Q3i8`
+            // inner uses. decode_block defines `type LlrT = Q11i16`
             // under `feature = "fixed-point"`, `f32` otherwise — match.
             #[cfg(feature = "fixed-point")]
             let mut bp_scratch = crate::fec::ldpc::bp::BpScratch::<
                 crate::fec::ldpc::params::Ldpc174_91Params,
-                crate::core::scalar::Q3i8,
+                crate::core::scalar::Q11i16,
             >::new();
             #[cfg(not(feature = "fixed-point"))]
             let mut bp_scratch = crate::fec::ldpc::bp::BpScratch::<

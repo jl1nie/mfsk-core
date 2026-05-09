@@ -2150,6 +2150,17 @@ fn fine_refine_pass1<S: AudioSample>(
 }
 
 /// Embedded build path — preserve the original (no fine refine) shape.
+///
+/// Attempted in 0.6.3 via `fill_symbol_spectra` iteration at
+/// 41 (freq, dt) probe points per candidate, but the per-symbol
+/// DFT cost (~6900 DFTs/cand × 30 cand × 1920-sample DFT ≈ 200k
+/// DFTs/slot) tripped the FreeRTOS task watchdog after ~5 s of
+/// uninterrupted compute on S3 LX7 — fundamentally too heavy
+/// without the host's 192k FFT shortcut. Reverted to NO-OP. A
+/// proper embedded fine_refine needs cd0 built via FIR decimate
+/// (3:1 → 4:1 → 5:1, integer ratios, ~30 ms total) followed by
+/// `refine_fine_3stage` on the 200 Hz baseband — deferred to a
+/// future patch (estimate: ~150 lines for the FIR decimator).
 #[cfg(not(feature = "fft-rustfft"))]
 fn fine_refine_pass1<S: AudioSample>(
     _audio: &[S],
@@ -2425,11 +2436,18 @@ where
 /// (embedded integer pipeline; recall-equivalent to Q11i16 with half
 /// the BP scratch — Issue #15 Phase 1 validated 2026-05-03), `f32`
 /// otherwise (host / FPU targets). Both go through the same generic
-/// NMS implementation in `fec::ldpc::bp`. The Q11i16 type still lives
-/// in `core::scalar` for manual use / tests, but is no longer wired
-/// into a built-in feature.
+/// NMS implementation in `fec::ldpc::bp`.
+///
+/// **0.6.3**: switched embedded LlrT from `Q3i8` (i8, ±16 range, 1/8
+/// resolution) to `Q11i16` (i16, ±16 range, 1/2048 resolution). The
+/// Q3i8 quantization step (~0.875 LLR units between codes) was the
+/// dominant recall ceiling on Xtensa builds — host fixed-point +
+/// rustfft hit 16/18 with f32, 9/18 with Q3i8, on `qso3_busy.wav`.
+/// Q11i16's 1/2048 resolution recovers most of that gap (target
+/// embedded recall: 6/18 → ~10/18). Cost: BP scratch doubles from
+/// ~6 KB to ~12 KB, still inside S3 / Core2 internal-DRAM budget.
 #[cfg(feature = "fixed-point")]
-type LlrT = crate::core::scalar::Q3i8;
+type LlrT = crate::core::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point"))]
 type LlrT = f32;
 

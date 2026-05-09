@@ -95,6 +95,12 @@ pub fn run() -> ! {
         let wav_idx = slot.wav_idx;
         let n_pass1 = pass1.len();
 
+        // (fine_refine attempted via fill_symbol_spectra iteration in
+        // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
+        // to 200k+ per-symbol DFTs per slot. Reverted; ship recall
+        // stays at 6/18 on qso3_busy.wav until a cd0-via-FIR-decimate
+        // refine lands.)
+
         // The audio gate around pass2/stage3 was added to silence the
         // DMA-underrun buzz the user heard during BP work, but the
         // *resume* transition produced a much harsher click — the
