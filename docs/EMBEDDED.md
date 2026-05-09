@@ -16,6 +16,12 @@ embedded-friendly integer path **with no duplicated code**:
   (`f32` on host; `Q14i16` for embedded cs storage).
 - [`core::scalar::LlrScalar`] — LLR scalar with wide-accumulator
   type (`f32` on host; `Q11i16` with i32 wide for embedded BP).
+  As of 0.6.2 the embedded LLR scalar is `Q11i16` again (i16,
+  1/2048 resolution); the `Q3i8` (i8, 1/8) variant evaluated
+  during the 0.5.x line was rolled back when real-S3 testing on
+  `qso3_busy.wav` showed +1 entry recall (XE2X HA2NP RR73) and a
+  faster post-SlotEnd time (1.341 s → 1.191 s) under Q11i16
+  despite the doubled scalar width.
 - [`core::scalar::Cmplx<S>`] — generic complex over a `SpecScalar`,
   `repr(C)` layout-compatible with `num_complex::Complex`.
 - `compute_llr_generic<P, S, T>`, `compute_snr_db_generic<P, S>`,
@@ -85,11 +91,11 @@ those off and pick the embedded baseline:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.5", default-features = false, features = [
+mfsk-core = { version = "0.6", default-features = false, features = [
     "alloc",            # Vec / Box / String — required for decode
     "ft8",              # FT8 protocol glue
     "fft-extern",       # caller supplies the FFT backend
-    "fixed-point",      # u16 spec + i16 DFT + Q3i8 LLR + i16 NMS BP
+    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + i16 NMS BP
     # Optional:
     # "profile-coarse",            # always-on stage-2 sub-stage timing
 ] }
@@ -115,7 +121,7 @@ Feature reference:
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
 | `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn. | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
-| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q3i8 LLR + integer NMS BP. | Any embedded target — recall-equivalent to the host f32 path with halved PSRAM bandwidth and ~6 KB BP scratch. |
+| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. | Any embedded target — recall-close to the host f32 path with halved PSRAM bandwidth on the spec/DFT side. (The `Q3i8` LLR variant tested through 0.5.x was reverted in 0.6.2 after real-S3 testing showed Q11i16 added back +1 entry recall and ran faster despite the wider scalar — see §"Architecture".) |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
 
 ## The two extern Rust contracts
@@ -208,7 +214,7 @@ embedded.
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)` | `ft8::decode_block::Spectrogram` |
 | DFT basis | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `fill_symbol_spectra_into` |
 | Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (manual via `core::scalar`) | f32 unbounded; Q14 ±2 | `core::scalar::Cmplx` |
-| LLR | f32 (host) or Q3i8 (`fixed-point`) | f32 unbounded; Q3 ±16, 1/8 LSB | `core::scalar::LlrScalar` |
+| LLR | f32 (host) or Q11i16 (`fixed-point`) | f32 unbounded; Q11 ±16, 1/2048 LSB | `core::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## Using from C / C++ / non-Rust ESP-IDF projects (`mfsk-ffi-ft8`)
@@ -527,18 +533,43 @@ verified bit-identical via `cmp` 2026-05-04). `qso1` / `qso2` are
 informational on-air captures — useful as breadth but not formal
 reference.
 
-| WAV | S3 LX7 post-SlotEnd (0.5.5) | decoded |
+| WAV | S3 LX7 post-SlotEnd (0.6.2) | decoded |
 |---|---:|---:|
-| qso1 (mid-band)                        | **1.01 s** | 3 |
-| qso2 (mid-band)                        | **1.58 s** | 3 |
-| **qso3 busy band (WSJT-X reference)**  | **1.28 s** | **6 / 18 JTDX** |
+| qso1 (mid-band)                        | (informational) | 3 |
+| qso2 (mid-band)                        | (informational) | 3 |
+| **qso3 busy band (WSJT-X reference)**  | **≈ 1.19 s** | **6 / 18 JTDX + 1 bonus = 7** |
 
-Recall on the 0.5.5 LX7 ship config (`pass1=30 max_cand=15 q=6 BP=30`,
-`nstep-half` feature, rectangular pre-FFT window). qso3 set: F5RXL,
-W1FC F5BZB, A92EE F5PSR, WM3PEN EA6VQ, N1JFU EA6EE, K1JT HA0DU. The
-remaining JTDX-confirmed signals are bounded by the absence of
-`fine_refine_pass1`'s 192k-FFT cd0 chain on Xtensa (structural ceiling,
-not a tuning miss).
+Recall on the 0.6.2 LX7 ship config (`pass1=30 max_cand=15
+q_thresh=DEFAULT_Q_THRESH BP=DEFAULT_BP_MAX_ITER`, Q11i16 LLR scalar,
+rectangular pre-FFT window). The 0.6.2 step lifted recall from 6 →
+**7 total** (XE2X HA2NP RR73 recovered) and trimmed post-SlotEnd
+from 1.341 s → 1.191 s after switching the embedded LLR scalar
+back to Q11i16. The remaining 12 JTDX-confirmed signals are bounded
+by the absence of `fine_refine_pass1`'s 192k-FFT cd0 chain on
+Xtensa — see "Embedded fine_refine ceiling" below.
+
+### Embedded fine_refine ceiling (0.6.2 status)
+
+Two paths to lift embedded recall toward the JTDX-extra band were
+tried during 0.6.2 development; both bottomed on the same fact:
+
+1. **Per-symbol DFT iteration** (`fill_symbol_spectra` per cand)
+   was projected at ~100 ms but actually exceeded 5 s of blocked
+   compute — 200k+ × 1920-sample DFTs per slot — and tripped the
+   FreeRTOS Task Watchdog.
+2. **`cd0` complex-baseband via cascaded `esp-dsp` FIR decimate**
+   (3:1 → 4:1 → 5:1 = 60:1) solved the compute side but ran into
+   a PSRAM bandwidth ceiling: ~80 MB/s on S3 OCT mode means ~1 s
+   just for the memory traffic to feed 15 candidates' worth of
+   cd0 builds. `dsps_fird_init_f32`'s 16-byte alignment
+   requirement, scratch fragmentation, and TLSF heap corruption
+   from lazy alloc inside the decode loop were all incidental.
+
+Embedded recall therefore stays at 7 total on `qso3_busy.wav`
+until either an i16-throughout streaming FIR cd0 path or a
+chunk-processing refactor lands. Both are out of scope for a
+0.6.x patch; tracking under a future `decode_block_with_fine_refine`
+issue.
 
 Earlier 0.5.4-era figures here had qso3 = 7 callsigns on a 13-truth
 list at 0.707 s with Hann window + the now-fixed embedded path; the

@@ -80,7 +80,7 @@ for the data-flow diagram.
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.5", features = ["ft8", "ft4"] }
+mfsk-core = { version = "0.6", features = ["ft8", "ft4"] }
 ```
 
 ## Attribution
@@ -175,7 +175,7 @@ and per-mode performance characterisation.
 | `parallel`    | ✓       | Rayon-parallel candidate processing          |
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
-| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q3i8 LLR + integer NMS BP |
+| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP |
 | `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (host has `MFSK_PROFILE_COARSE` env var alternative) |
 
 ## Quick example
@@ -240,7 +240,7 @@ carries its own Quick example:
 The `mfsk-ffi` sibling crate in this repository builds a
 `libmfsk.{so,a,dylib}` + `mfsk.h` (via `cbindgen`) that exposes the
 same decoder and synthesiser surface through an opaque-handle C ABI.
-It is not published to crates.io — consumers clone this repo and run:
+`mfsk-ffi` is not published to crates.io — consumers clone this repo and run:
 
 ```
 cargo build -p mfsk-ffi --release
@@ -275,7 +275,7 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   isolation + the embedded `alloc + ft8 + fft-extern + fixed-point`
   preset, the C++ driver against `mfsk-ffi`, rustdoc with `-D warnings`,
   and a `cargo publish --dry-run` for `mfsk-core`.
-- **Release**: tag-driven (`v0.5.x`). Pushing a tag that matches
+- **Release**: tag-driven (`v0.6.x`). Pushing a tag that matches
   `mfsk-core/Cargo.toml::version` and is reachable from `main`
   triggers `release.yml`, which publishes to crates.io and cuts a
   GitHub release with auto-generated notes. Embedded `mfsk-ffi-ft8`
@@ -310,19 +310,37 @@ reference:
 
 ## Status
 
-`0.5.x` — API is deliberately not frozen. Breaking changes follow
-cargo-style minor bumps (`0.4 → 0.5`). The 0.4.x line landed the
+`0.6.x` — API is deliberately not frozen. Breaking changes follow
+cargo-style minor bumps (`0.5 → 0.6`). The 0.5.x line landed the
 embedded baseline (`no_std + alloc`, pluggable FFT backend,
-caller-buffer TX APIs); 0.5.0 ships the first end-to-end real-audio
-embedded port. Latest M5StickS3 (Xtensa LX7) ship config decodes
-**6 / 18 JTDX-golden FT8 callsigns** on the WSJT-X-distributed busy-band
-reference (`samples/FT8/210703_133430.wav`) in **~1.3 s post-SlotEnd**
-via the streaming pipeline (FFT overlapped with capture). M5Stack
-Core2 (LX6) on the same WAV ~2.8 s. See
+caller-buffer TX APIs) and the first end-to-end real-audio embedded
+port. The **0.6.x line consolidates the FT8 sync + per-candidate
+pipeline**: host (`decode_frame*`) and embedded (`decode_block`) now
+share `decode_block::coarse_sync` (WSJT-X `sync8.f90`-faithful 16-bin
+allsum estimator) and a unified `process_one_candidate_inner` for the
+LLR / BP / OSD / AP staircase. See `CHANGELOG.md` for the full per-
+release breakdown.
+
+Latest M5StickS3 (Xtensa LX7) ship config decodes **6 / 18 JTDX-golden
+FT8 callsigns + 1 bonus = 7 total** on the WSJT-X-distributed busy-band
+reference (`samples/FT8/210703_133430.wav`) in **~1.19 s post-SlotEnd**
+via the streaming pipeline (FFT overlapped with capture). The 0.6.2
+LLR migration (`Q3i8 → Q11i16`, double-width but better precision under
+esp-dsp i16 spectrogram noise) added one entry (XE2X HA2NP RR73) over
+the 0.5.x baseline. M5Stack Core2 (LX6) on the same WAV ~2.8 s. See
 [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
-for the integration contract and 0.5.5's runtime BP / `nstep-half`
-tuning knobs; `embedded-poc/m5stack-{s3,core2}/` are the working
-example binaries.
+for the integration contract, runtime BP / `nstep-half` tuning knobs,
+and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
+without 192k FFT — investigated and deferred);
+`embedded-poc/m5stack-{s3,core2}/` are the working example binaries.
+
+Host AP-on multipass recall on the same WAV is materially higher.
+After 0.6.2's host pipeline catch-up (cs-source unification +
+`subtract_signal_lpf` matching `decode_block_multipass`),
+`decode_frame_subtract_with_ap` produces **18 decodes** including
+**5 / 6 of the JTDX AP-on extras** (was 1 / 6 pre-0.6.2). The single
+remaining AP-on extra (K1BZM DK8NE -19 dB) needs a wider AP-list /
+callsign hash table — out of 0.6.x scope.
 
 Algorithm correctness is covered by the workspace test suite:
 end-to-end synth → decode roundtrips for every protocol, an AWGN
@@ -373,12 +391,20 @@ tree is present at the expected sibling path):
 
 #### What's solid
 
-- **FT8** — synth → decode round-trip 157 / 157 lib tests, real
-  WSJT-X reference (`210703_133430.wav`) JTDX-golden recall 6 / 18
-  on the embedded LX7 ship config (host f32 builds get more, but
-  the published numbers track the constrained M5StickS3 deployment).
-  AP-hint biasing is exposed on both the narrow-band (`decode_sniper_ap`)
-  and wide-band (`decode_frame_with_ap`) paths.
+- **FT8** — synth → decode round-trip lib tests green, real WSJT-X
+  reference (`210703_133430.wav`):
+  - **WSJT-X 8-entry golden: 7 / 8** (host `decode_frame_with_ap` and
+    embedded `decode_block` both, post-0.6.0 sync consolidation +
+    `i_start as i32` fix).
+  - **JTDX 18-entry golden: 16 / 18** (`decode_block`).
+  - **Host AP-on multipass JTDX-extras: 5 / 6** (was 1 / 6 pre-0.6.2)
+    via `decode_frame_subtract_with_ap` after the cs-source +
+    `subtract_signal_lpf` unification.
+  - **Embedded S3 fixed-point: 6 / 18 + 1 bonus = 7 total** in
+    ~1.19 s post-SlotEnd. AP-hint biasing exposed on the narrow-band
+    (`decode_sniper_ap`), wide-band single-pass (`decode_frame_with_ap`),
+    multipass (`decode_frame_subtract_with_ap`) and embedded
+    (`decode_block_with_ap`, new in 0.6.1) paths.
 - **WSPR** — 8 / 8 WSJT-X golden, ~0.88 s end-to-end on a desktop
   build. Sub-bin demod + 2-pass subtract+re-coarse + OSD-2 fallback +
   Type-3 phantom filter.

@@ -15,7 +15,11 @@ DSP / FEC パイプライン全体が **scalar trait** 化されており、
 - [`core::scalar::SpecScalar`] — スペクトログラム / DFT 出力 scalar
   (ホスト: `f32`; 組み込み cs 格納: `Q14i16`)
 - [`core::scalar::LlrScalar`] — wide-accumulator 型を含む LLR scalar
-  (ホスト: `f32`; 組み込み BP: `Q11i16` + i32 wide)
+  (ホスト: `f32`; 組み込み BP: `Q11i16` + i32 wide)。0.6.2 で組込
+  LLR scalar は `Q11i16` (i16, 1/2048 解像度) に統一。0.5.x で評価
+  していた `Q3i8` (i8, 1/8) は実機 S3 の `qso3_busy.wav` で Q11i16
+  が recall +1 件 (XE2X HA2NP RR73) かつ post-SlotEnd 1.341 s →
+  1.191 s で高速だったためロールバック
 - [`core::scalar::Cmplx<S>`] — `SpecScalar` 上の generic 複素数。
   `repr(C)` で `num_complex::Complex` とレイアウト互換。
 - `compute_llr_generic<P, S, T>`, `compute_snr_db_generic<P, S>`,
@@ -80,11 +84,11 @@ shim は将来の作業です。
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.5", default-features = false, features = [
+mfsk-core = { version = "0.6", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode で必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # FFT backend は呼び出し側提供
-    "fixed-point",      # u16 spec + i16 DFT + Q3i8 LLR + i16 NMS BP
+    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + i16 NMS BP
     # 任意:
     # "profile-coarse",            # stage-2 サブステージ常時計測
 ] }
@@ -109,7 +113,7 @@ Feature 一覧:
 | `alloc` | `extern crate alloc` + Vec / Box | 全 decode パス |
 | `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn 経由で FFT backend | 組み込み全般 |
 | `fft-rustfft` | rustfft を FFT backend | ホスト専用 |
-| `fixed-point` | u16 spec + i16 内部 DFT + Q3i8 LLR + i16 NMS BP の組み込み整数パイプライン | どの組み込みでも。host f32 と recall 同等で PSRAM 帯域半減、BP scratch ~6 KB |
+| `fixed-point` | u16 spec + i16 内部 DFT + Q11i16 LLR + i16 NMS BP の組み込み整数パイプライン | どの組み込みでも。host f32 にほぼ recall を揃えつつ spec/DFT 側で PSRAM 帯域半減。0.5.x で評価していた `Q3i8` LLR は 0.6.2 で実機 S3 検証時に Q11i16 が +1 件 recall でしかも高速だったためロールバック (上記「アーキテクチャ」を参照) |
 | `profile-coarse` | coarse_sync サブステージ計測を常時出力 | 診断専用 |
 
 ## 2 つの extern Rust 契約
@@ -200,7 +204,7 @@ PSRAM に流れます。複数 decode 呼び出しを跨いで保持してくだ
 | spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)` | `ft8::decode_block::Spectrogram` |
 | DFT 基底 | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `fill_symbol_spectra_into` |
 | シンボル cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (manual via `core::scalar`) | f32 制限なし、Q14 ±2 | `core::scalar::Cmplx` |
-| LLR | f32 (ホスト) または Q3i8 (`fixed-point`) | f32 制限なし、Q3 ±16, 1/8 LSB | `core::scalar::LlrScalar` |
+| LLR | f32 (ホスト) または Q11i16 (`fixed-point`) | f32 制限なし、Q11 ±16, 1/2048 LSB | `core::scalar::LlrScalar` |
 | BP メッセージ | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## C / C++ / 非 Rust ESP-IDF プロジェクトから使う (`mfsk-ffi-ft8`)
@@ -425,15 +429,37 @@ pace で push、WAV 完了 notify ごとに 1 slot decode する構成で計測�
 informational な実 QSO キャプチャで、breadth として有用だが
 公式 reference ではない。
 
-| WAV | 結果 | Core2 LX6 post-SlotEnd | S3 LX7 post-SlotEnd |
-|---|---|---:|---:|
-| qso1 (mid-band, 3 局)                | 3/3 ✓ | **1.303 s** | **0.574 s** |
-| qso2 (mid-band, 5 局)                | 5/5 ✓ | **0.632 s** | **0.370 s** |
-| **qso3 busy band (WSJT-X リファレンス)** | 7/7 ✓ | **1.434 s** | **0.707 s** |
+| WAV | 結果 (0.6.2) | S3 LX7 post-SlotEnd |
+|---|---|---:|
+| qso1 (mid-band)                      | 3 局 (informational) | — |
+| qso2 (mid-band)                      | 3 局 (informational) | — |
+| **qso3 busy band (WSJT-X リファレンス、JTDX golden 18 entry)** | **6/18 + 1 bonus = 7 件** | **≈ 1.19 s** |
 
-embedded budget (PASS1=30, max_cand=15, BpAll, q=12, OSD off) での
-recall: 両 chip 通算 15/15 callsign 復号、`N1PJT` -18.2 dB、`OH3NIV` /
-`LZ1JZ` -17.9 / -18.0 dB 等の弱信号も含む。phantom 無し。
+0.6.2 で組込 LLR scalar を Q11i16 に戻したことで qso3 recall が 6 →
+**7 件** (XE2X HA2NP RR73 復活)、post-SlotEnd 1.341 s → 1.191 s に
+高速化。残り 12 件の JTDX-confirmed 信号は `fine_refine_pass1` 相当
+の 192k-FFT cd0 chain を Xtensa で動かせていないことに起因する
+構造的限界 — 下記「embedded fine_refine の天井」参照。
+
+### embedded fine_refine の天井 (0.6.2 status)
+
+0.6.2 開発中に embedded recall を JTDX-extra 帯まで持ち上げる経路を
+2 通り試したが、いずれも同じ事実に行き当たった:
+
+1. **per-symbol DFT iteration** (`fill_symbol_spectra` を候補毎に
+   呼ぶ): 見積 ~100 ms に対し実測で 5 s 超 — slot あたり
+   200k+ × 1920-sample DFT が走り、FreeRTOS Task Watchdog が trip。
+2. **`cd0` 複素ベースバンドを `esp-dsp` カスケード FIR で生成**
+   (3:1 → 4:1 → 5:1 = 60:1): 計算量側は解決したが、PSRAM 帯域
+   ~80 MB/s (S3 OCT mode) の天井に当たる — 15 候補分の cd0 を
+   PSRAM 経由で構築するとメモリ転送だけで ~1 s。`dsps_fird_init_f32`
+   の 16 byte alignment 要件、scratch 断片化、decode loop 内
+   lazy alloc による TLSF heap 破壊などは付随的。
+
+このため embedded ship recall は当面 7 件で固定。i16-throughout
+streaming FIR cd0 path もしくは chunk-processing リファクタが
+入るまで動かない。0.6.x patch 範囲外、将来の
+`decode_block_with_fine_refine` issue で追跡予定。
 
 ### WSJT-X リファレンスでの host wide-band 比較
 

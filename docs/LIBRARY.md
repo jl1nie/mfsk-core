@@ -533,15 +533,28 @@ constants for each — `ft8::downsample::FT8_CFG`,
 ### Sync (`mfsk_core::core::sync`)
 
 * `coarse_sync::<P>(audio, freq_min, freq_max, …)` — UTC-aligned 2D
-  peak search over `P::SYNC_MODE.blocks()`.
+  peak search over `P::SYNC_MODE.blocks()` for non-FT8 protocols.
 * `refine_candidate::<P>(cd0, cand, search_steps)` — integer-sample
   scan + parabolic sub-sample interpolation.
 * `make_costas_ref(pattern, ds_spb)` / `score_costas_block(...)` — raw
   correlation helpers exposed for diagnostics and custom pipelines.
 
+> **FT8 routes through `decode_block::coarse_sync` exclusively.**
+> As of 0.6.0 the FT8 host pipeline uses
+> `mfsk_core::ft8::decode_block::coarse_sync` (graduated to public
+> API alongside `compute_spectrogram`) — the older
+> `ft8::sync::coarse_sync` thin wrapper has been removed. Calling
+> `core::sync::coarse_sync::<Ft8>` is still the right path for
+> hand-rolled non-default usage but the high-level
+> `ft8::decode::decode_frame*` entry points all dispatch via
+> `decode_block::coarse_sync`. See §10 for the FT8-specific notes.
+
 ### LLR (`mfsk_core::core::llr`)
 
-* `symbol_spectra::<P>(cd0, i_start)` — per-symbol FFT bins.
+* `symbol_spectra::<P>(cd0, i_start)` — per-symbol FFT bins (generic
+  path; FT8 callers should prefer
+  `ft8::decode_block::fill_symbol_spectra` which avoids the
+  intermediate `cd0` allocation).
 * `compute_llr::<P>(cs)` — four WSJT-style LLR variants (a/b/c/d).
 * `sync_quality::<P>(cs)` — hard-decision sync symbol count.
 
@@ -554,11 +567,36 @@ constants for each — `ft8::downsample::FT8_CFG`,
 ### Pipeline (`mfsk_core::core::pipeline`)
 
 * `decode_frame::<P>(...)` — coarse sync → parallel process_candidate → dedupe.
-* `decode_frame_subtract::<P>(...)` — 3-pass SIC driver.
+* `decode_frame_subtract::<P>(...)` — 3-pass SIC driver. The SIC step
+  uses `subtract_signal_lpf` (WSJT-X-style channel-aware subtract)
+  as of 0.6.2; the previous `subtract_signal_weighted` /
+  `qsb_partial_gain` path has been removed.
 * `process_candidate_basic::<P>(...)` — single-candidate BP+OSD.
 
 AP-aware variants live in `msg::pipeline_ap` because AP hint
 construction is 77-bit specific.
+
+### FT8 block-decoder entry points (`mfsk_core::ft8::decode_block`)
+
+The FT8 module exposes a parallel set of entries on top of the
+shared pipeline, sharing one `process_one_candidate_inner` body
+between host and embedded callers (added in 0.6.1). All variants
+operate on the same audio + spectrogram inputs and differ only in
+which inner steps they enable:
+
+* `decode_block` / `decode_block_tuned` — pass-1 BP only.
+* `decode_block_with_ap` / `decode_block_with_ap_tuned` — pass-1 BP
+  followed by the WSJT-X AP iaptype loop (1–12) for any candidate
+  whose pass-1 step missed but whose sync quality crosses
+  `q_thresh`. New in 0.6.1.
+* `decode_block_into[_tuned]` — `_into`-style variants that take
+  caller-owned scratch and return decoded frames into a passed-in
+  `Vec`. Used by the embedded port to avoid per-slot allocation.
+* `coarse_sync` / `coarse_sync_with_allsum` — the FT8 sync grid
+  itself (graduated to public API in 0.6.0).
+* `fill_symbol_spectra` / `fill_symbol_spectra_into` — per-symbol
+  FFT extraction directly from audio (replaces the cd0 +
+  `core::llr::symbol_spectra` two-step that older code used).
 
 ## 5. Feature flags
 
@@ -580,7 +618,7 @@ construction is 77-bit specific.
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.1", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.6", features = ["ft8", "ft4", "wspr"] }
 ```
 
 Pull in only the protocol features you need; the examples below

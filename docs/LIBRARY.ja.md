@@ -508,15 +508,25 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 ### Sync (`mfsk_core::core::sync`)
 
 * `coarse_sync::<P>(audio, freq_min, freq_max, …)` — UTC 整列 2D
-  ピーク探索、`P::SYNC_MODE.blocks()` を走査
+  ピーク探索、`P::SYNC_MODE.blocks()` を走査 (FT8 以外向け)
 * `refine_candidate::<P>(cd0, cand, search_steps)` — 整数サンプル
   スキャン + 放物線サブサンプル補間
 * `make_costas_ref(pattern, ds_spb)` / `score_costas_block(...)` —
   診断・カスタムパイプライン用の生相関ヘルパー
 
+> **FT8 は `decode_block::coarse_sync` のみを経由する。**
+> 0.6.0 以降、FT8 ホストパイプラインは
+> `mfsk_core::ft8::decode_block::coarse_sync` (`compute_spectrogram`
+> とともに公開 API に昇格) を使う。旧 `ft8::sync::coarse_sync` の
+> 薄ラッパは削除済。`core::sync::coarse_sync::<Ft8>` を直接呼び
+> 出すパスは残しているが、`ft8::decode::decode_frame*` 系の高レベル
+> エントリは全て `decode_block::coarse_sync` を経由する。詳細は §10。
+
 ### LLR (`mfsk_core::core::llr`)
 
 * `symbol_spectra::<P>(cd0, i_start)` — シンボル単位 FFT bin
+  (汎用パス。FT8 では中間 `cd0` を割り当てない
+  `ft8::decode_block::fill_symbol_spectra` を推奨)
 * `compute_llr::<P>(cs)` — WSJT 式 4 バリアント LLR (a/b/c/d)
 * `sync_quality::<P>(cs)` — 硬判定 sync シンボル一致数
 
@@ -529,11 +539,34 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 ### Pipeline (`mfsk_core::core::pipeline`)
 
 * `decode_frame::<P>(...)` — coarse sync → 並列 process_candidate → dedupe
-* `decode_frame_subtract::<P>(...)` — 3-pass SIC ドライバ
+* `decode_frame_subtract::<P>(...)` — 3-pass SIC ドライバ。0.6.2 で
+  SIC ステップは `subtract_signal_lpf` (WSJT-X 式 channel-aware
+  subtract) に統一。旧 `subtract_signal_weighted` /
+  `qsb_partial_gain` 系は削除済
 * `process_candidate_basic::<P>(...)` — 候補単体の BP+OSD
 
 AP 対応版は `msg::pipeline_ap` に配置 (AP hint 構築が
 77-bit 形式に依存するため)。
+
+### FT8 ブロックデコーダのエントリ (`mfsk_core::ft8::decode_block`)
+
+FT8 モジュールは共有パイプラインの上に並列のエントリ群を持ち、
+ホスト・組込で同じ `process_one_candidate_inner` 本体を共有する
+(0.6.1 で導入)。入力は同じで、内側のどのステップを有効にするかが
+違うだけ:
+
+* `decode_block` / `decode_block_tuned` — pass-1 BP のみ
+* `decode_block_with_ap` / `decode_block_with_ap_tuned` — pass-1 BP
+  に続き、`q_thresh` を超える sync quality の候補に対して WSJT-X
+  AP iaptype ループ (1–12) を回す。0.6.1 新規
+* `decode_block_into[_tuned]` — 呼出側 scratch を受け取る `_into`
+  形式、結果は渡された `Vec` に書き込む。組込ポートで slot 毎の
+  alloc を避けるために使用
+* `coarse_sync` / `coarse_sync_with_allsum` — FT8 sync grid 本体
+  (0.6.0 で公開 API 昇格)
+* `fill_symbol_spectra` / `fill_symbol_spectra_into` — 音声から
+  直接シンボル毎 FFT を抽出 (旧コードの cd0 +
+  `core::llr::symbol_spectra` 二段経路を置換)
 
 ## 5. Feature flags
 
@@ -555,7 +588,7 @@ AP 対応版は `msg::pipeline_ap` に配置 (AP hint 構築が
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.1", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.6", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコルのフィーチャーだけ有効にすれば十分。以下では複数を
