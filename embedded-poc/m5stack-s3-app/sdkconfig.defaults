@@ -21,18 +21,19 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 
 # ── Bluetooth (BLE only, NimBLE host) ────────────────────────────────
-# IC-705 CI-V を BLE GATT (K7MDL2 方式) で叩くため central として動作。
-# Bluedroid ではなく NimBLE を選択 — RAM 使用量が小さく、esp32-nimble
-# クレートが薄くラップしている。
-CONFIG_BT_ENABLED=y
-CONFIG_BT_BLE_ENABLED=y
-CONFIG_BT_BLUEDROID_ENABLED=n
-CONFIG_BT_NIMBLE_ENABLED=y
-# Central のみ。peripheral / observer / broadcaster は不要。
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# Phase 0.6 で WiFi STA + decode_pipeline thread (32KB stack) を同時に
+# 動かすと内部 DRAM が足りず pthread create が OOM panic する。BLE は
+# Phase 2 (CI-V central) でしか使わないので Phase 0.6 検証中は無効化、
+# Phase 2 着手時に再有効化する。
+# (元設定: CONFIG_BT_ENABLED=y / NIMBLE central)
+CONFIG_BT_ENABLED=n
+# CONFIG_BT_BLE_ENABLED=y
+# CONFIG_BT_BLUEDROID_ENABLED=n
+# CONFIG_BT_NIMBLE_ENABLED=y
+# CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+# CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+# CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 
 # ── Networking ───────────────────────────────────────────────────────
 # Phase 0.6: WiFi STA + UDP socket — IC-705 が USB-OTG を占有すると
@@ -45,10 +46,9 @@ CONFIG_LWIP_TCP_ENABLED=y
 CONFIG_LWIP_UDP_ENABLED=y
 
 # ── USB Host (UAC capture) ───────────────────────────────────────────
-# IC-705 の USB Audio Class endpoint を ESP32-S3 USB-OTG host で受ける。
-# Phase 1 の最大ブロッカ。recipe.c (espressif/esp_usb_audio) を Rust
-# 経由で叩く。
-CONFIG_USB_HOST_ENABLED=y
+# Phase 1 で有効化 (recipe.c port 時)。Phase 0.6 では DRAM 節約のため
+# 無効化 — WiFi STA + decode_pipeline が同時に動く余地を確保。
+CONFIG_USB_HOST_ENABLED=n
 
 # ── PSRAM (Octal 8 MB) ────────────────────────────────────────────────
 CONFIG_SPIRAM=y

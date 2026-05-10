@@ -73,10 +73,17 @@ pub fn run_log_panel(
     // ── ES8311 codec init via the same I2C bus, then drop the I2C
     //    handle (codec keeps its config; we won't touch its registers
     //    again at runtime). I2S setup follows.
-    if let Some(i2c_drv) = i2c.as_mut() {
-        if let Err(e) = crate::audio::init_es8311(i2c_drv) {
-            log::warn!("ES8311 init failed (audio disabled): {e:#}");
-        } else {
+    //
+    // Phase 0.6 mode: DRAM 不足で decode_pipeline を skip しているので
+    // 流す audio がない。`audio_thread` も spawn しない (= speaker から
+    // qso3 WAV が鳴り続ける問題を回避)。Phase 4 demo (cfg.toml 不在) の
+    // ときだけ初期化する。
+    let phase_0_6_mode = !env!("WIFI_SSID").is_empty();
+    if !phase_0_6_mode {
+        if let Some(i2c_drv) = i2c.as_mut() {
+            if let Err(e) = crate::audio::init_es8311(i2c_drv) {
+                log::warn!("ES8311 init failed (audio disabled): {e:#}");
+            } else {
             // Build the I2S TX channel. Pin assignment matches
             // M5Unified's `_speaker_enabled_cb_sticks3` board config:
             //   MCK = 18, BCK = 17, WS = 15, DATA OUT = 14.
@@ -126,6 +133,9 @@ pub fn run_log_panel(
                 Err(e) => log::warn!("I2S TX init failed: {e:?}"),
             }
         }
+        }
+    } else {
+        log::info!("audio thread skipped (Phase 0.6 mode: speaker muted)");
     }
     drop(i2c);
 
@@ -212,7 +222,11 @@ pub fn run_log_panel(
     let mut last_tx_seq: u32 = 0;
     loop {
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
-        log::info!("alive tick={tick} free_heap={heap}");
+        // 100 ms ループ毎に log すると 10 行/秒 = UDP/LCD が文字で溢れる。
+        // 5 秒に 1 行 (= 50 ticks) に間引く。
+        if tick % 50 == 0 {
+            log::info!("alive tick={tick} free_heap={heap}");
+        }
 
         // ── status bar + heap update from UI state. We refresh the
         //    status struct here so the UTC / heap stay current even

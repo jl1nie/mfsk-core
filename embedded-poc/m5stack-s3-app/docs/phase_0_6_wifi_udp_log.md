@@ -63,9 +63,15 @@ cp cfg-sample.toml cfg.toml
 [wifi]
 ssid = "<家 / dev 環境の SSID>"
 psk = "<password>"
-pc_ip = "255.255.255.255"   # broadcast (LAN 全 PC が listener で受け取れる)
+pc_ip = "auto"   # DHCP で付与された subnet broadcast (例 192.168.1.255) を runtime 計算
 port = 9999
 ```
+
+`pc_ip` の値:
+- `"auto"` (推奨): DHCP の IP/mask から directed subnet broadcast を runtime
+  計算 (limited broadcast `255.255.255.255` より router/AP で drop されにくい)
+- `"255.255.255.255"`: limited broadcast (シンプルな LAN なら動く)
+- `"192.168.x.y"`: PC 個別 unicast (最も確実、ただし PC IP 固定が前提)
 
 `git status` で `cfg.toml` が **untracked** として出ることを必ず確認
 (tracked になっていたら `.gitignore` が効いてない)。
@@ -95,32 +101,70 @@ cargo build --release
 
 ### 4. 動作確認
 
-期待される log 系列 (USB-CDC / PC UDP の両方):
+期待される log 系列 (USB-CDC / PC UDP の両方、Phase 0.6 mode):
 
 ```
 === mfsk-core-m5stack-s3-app boot ===
 phase 4 + 0.6: QSO FSM + WiFi UDP log
-WiFi STA up: 192.168.x.x ch=Some(N)
-UDP log sink up → 255.255.255.255:9999
-[QSO] CALL: CQ JL1NIE PM95
-WAV[0] p1=30 dec=7
+WiFi STA up: 192.168.x.x/24 (gw 192.168.x.1, bcast 192.168.x.255) ch=Some(N)
+UDP log sink up → 192.168.x.255:9999
+decode_pipeline skipped (Phase 0.6 mode: WiFi takes DRAM that decoder needs)
+alive tick=0 free_heap=8514004
+alive tick=50 free_heap=8513884
+alive tick=100 free_heap=8513688
 ...
 ```
 
+(`WIFI_SSID` 設定有り = Phase 0.6 mode。decode_pipeline は走らないが、
+`alive tick` heartbeat が 5 sec 間隔で UDP に流れる。WSL2 host で
+`nc -lu 9999` で受信できれば成功。)
+
 USB ケーブルを抜く (= IC-705 USB host 接続を simulate) → PC 側 UDP
-listener にログが**流れ続ける** ことを確認。
+listener にログが**流れ続ける** ことを確認 (mirrored networking 設定済の
+WSL2 にも届く)。
 
-## 合否基準
+## 合否基準 (Phase 0.6 mode = WiFi 有効)
 
-- [ ] WiFi STA IP が log の "WiFi STA up:" 行に表示される
-- [ ] decode pipeline / FSM ログが UDP 経路で PC に到達 (USB-CDC 切断
-      しても継続)
-- [ ] BLE NimBLE が同時動作可能 (WiFi 起動後も BLE 関連 panic 無し)。
-      現状の `civ.rs` は scaffold だが crate は依存に入っているので
-      coex の効果はこの段階で確認できる
+- [x] WiFi STA IP が log の "WiFi STA up:" 行に表示される (実機 192.168.1.38/24 で確認済 2026-05-11)
+- [x] UDP sink up ログが出る (192.168.1.255:9999 で確認済)
+- [x] panic / abort ゼロ、heap 安定 (~8.5 MB free 維持)
+- [ ] **WSL2 mirrored networking 設定後**、`nc -lu 9999` で boot 行 +
+      `alive tick=...` 5 sec heartbeat が PC に到達
+- [ ] USB ケーブル disconnect 後も UDP log 継続 (= Phase 1 UAC で IC-705
+      が USB-OTG を占有しても log 経路が生きる証明)
 - [ ] `cfg.toml` が `git status` で untracked のまま (tracked にならない)
-- [ ] `WIFI_SSID` を空にして build → boot しても crash せず "WIFI_SSID
-      empty" log だけ出て継続
+
+(BLE coexistence と FT8 decode は Phase 0.6 では verify しない —
+DRAM 不足で同居不可、Phase 0.7+ で memory architecture 見直し時に再検証)
+
+## 重要: WiFi 有効時は decode_pipeline を skip する
+
+**実機検証で判明 (2026-05-11)**: ESP32-S3 の内部 DRAM (~161 KB) は
+WiFi static buffers (~80 KB) + decode_pipeline thread tree (main 32 KB
++ dsp_worker + stage1_inc 16 KB + wav_sim) + 静的 `BASIS_RE/IM`
+(60 KB×2) を同時に詰めると `xTaskCreatePinnedToCore failed: -1`
+(stage1_inc spawn 失敗) で panic する。BASIS は cache/DMA 制約で PSRAM
+に移せない (decoder が動かなくなる)。
+
+`main.rs` の挙動:
+- `WIFI_SSID` 空 (cfg.toml 不在) → Phase 4 demo: decode_pipeline 起動、
+  qso3 WAV ループ + auto-CQ FSM
+- `WIFI_SSID` 設定あり → Phase 0.6 mode: decode_pipeline skip、WiFi +
+  UDP log + display heartbeat のみ。FT8 decode は走らない
+
+これは「**WiFi UDP log** が動くこと」を Phase 0.6 で先に確立する判断。
+両者 coexist は Phase 0.7+ で memory architecture の設計見直しが要る
+(static BASIS を thread-local 動的確保 + WiFi static buffer を sdkconfig
+で削るなど)。
+
+## sdkconfig: BT / USB Host も一時無効化
+
+DRAM 確保の余地を作るため `sdkconfig.defaults` で:
+- `CONFIG_BT_ENABLED=n` (NimBLE central は Phase 2 で再有効化)
+- `CONFIG_USB_HOST_ENABLED=n` (Phase 1 UAC で再有効化)
+
+Phase 1 着手時に上記を `=y` に戻して UAC 実装、coexistence は実機で
+要再検証。BT は Phase 2 で。
 
 ## 既知の限界 (Phase 0.7+ で対処)
 

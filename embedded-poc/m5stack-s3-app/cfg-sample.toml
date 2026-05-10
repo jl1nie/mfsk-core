@@ -15,9 +15,13 @@
 ssid = "your-ssid-here"
 psk = "your-passphrase-here"
 
-# Where to send UDP log datagrams. `255.255.255.255` = LAN broadcast,
-# any PC on the same subnet running `nc -lu <port>` will receive.
-# Set a unicast IPv4 if you want to avoid broadcasting (e.g. in a
-# noisy network).
-pc_ip = "255.255.255.255"
+# Where to send UDP log datagrams.
+# - "auto" (default) → directed subnet broadcast computed from DHCP
+#   (e.g. ip=192.168.1.42/24 → 192.168.1.255). More reliable than
+#   limited broadcast since routers/APs often drop 255.255.255.255 for
+#   power-save reasons but pass directed-broadcast through.
+# - "255.255.255.255" → limited broadcast (works on simple LANs).
+# - "192.168.x.y"     → unicast to a specific PC (most reliable; PC
+#   IP must be stable).
+pc_ip = "auto"
 port = 9999

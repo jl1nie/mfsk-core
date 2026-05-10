@@ -12,6 +12,7 @@
 use anyhow::{anyhow, Result};
 use esp_idf_hal::modem::WifiModemPeripheral;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 
 /// Live WiFi STA handle. Drop ends the WiFi association (and any sockets
@@ -19,6 +20,11 @@ use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWif
 pub struct WifiHandle {
     _wifi: BlockingWifi<EspWifi<'static>>,
     pub ip: std::net::Ipv4Addr,
+    /// Directed subnet broadcast (`ip | ~mask`). Preferred over
+    /// limited broadcast `255.255.255.255` because some APs and
+    /// routers drop the limited form for power-save / multicast
+    /// suppression but pass directed-broadcast through.
+    pub subnet_broadcast: std::net::Ipv4Addr,
 }
 
 /// Connect to one specific SSID. Blocks until DHCP returns an IP or
@@ -26,6 +32,7 @@ pub struct WifiHandle {
 pub fn connect_sta<M>(
     modem: M,
     sysloop: EspSystemEventLoop,
+    nvs: Option<EspDefaultNvsPartition>,
     ssid: &str,
     psk: &str,
 ) -> Result<WifiHandle>
@@ -36,7 +43,10 @@ where
         return Err(anyhow!("WIFI_SSID empty — cfg.toml missing or [wifi].ssid blank"));
     }
 
-    let esp_wifi = EspWifi::new(modem, sysloop.clone(), None)?;
+    // NVS が `Some` だと PHY 校正データを `phy_init/cal` キーにキャッシュ
+    // できる (boot 高速化 + DRAM 節約)。`None` だと毎回フルキャリブで
+    // "NVS has not been initialized" エラーが出る。
+    let esp_wifi = EspWifi::new(modem, sysloop.clone(), nvs)?;
     let mut wifi = BlockingWifi::wrap(esp_wifi, sysloop)?;
 
     // First-pass scan to learn the channel (skips ~250 ms of brute
@@ -64,7 +74,30 @@ where
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
     let ip = ip_info.ip;
-    log::info!("WiFi STA up: {} ch={:?}", ip, channel);
 
-    Ok(WifiHandle { _wifi: wifi, ip })
+    // Compute the directed subnet broadcast from CIDR mask. Bits not
+    // covered by the prefix are flipped on, so e.g. 192.168.1.42 /24
+    // → 192.168.1.255.
+    let prefix = ip_info.subnet.mask.0;
+    let mask_u32 = if prefix == 0 {
+        0
+    } else if prefix >= 32 {
+        u32::MAX
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let ip_u32: u32 = u32::from_be_bytes(ip.octets());
+    let bcast_u32 = ip_u32 | !mask_u32;
+    let subnet_broadcast = std::net::Ipv4Addr::from(bcast_u32.to_be_bytes());
+
+    log::info!(
+        "WiFi STA up: {}/{} (gw {}, bcast {}) ch={:?}",
+        ip, prefix, ip_info.subnet.gateway, subnet_broadcast, channel
+    );
+
+    Ok(WifiHandle {
+        _wifi: wifi,
+        ip,
+        subnet_broadcast,
+    })
 }

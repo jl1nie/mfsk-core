@@ -23,6 +23,7 @@ mod wifi;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::LevelFilter;
 
 use crate::log_sink::{FanoutLogger, LogFanout};
@@ -58,22 +59,44 @@ fn main() -> ! {
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
     if !WIFI_SSID.is_empty() {
         let sysloop = EspSystemEventLoop::take().expect("sysloop");
-        match wifi::connect_sta(peripherals.modem, sysloop, WIFI_SSID, WIFI_PSK) {
+        // NVS partition は WiFi の PHY 校正データを永続化するのに必要。
+        // 取得失敗 (= partition 不在) でも `None` で WiFi 自体は動くが、
+        // 毎 boot フルキャリブになるので少し遅くなる + DRAM 食う。
+        let nvs = EspDefaultNvsPartition::take().ok();
+        match wifi::connect_sta(peripherals.modem, sysloop, nvs, WIFI_SSID, WIFI_PSK) {
             Ok(handle) => {
-                let target = format!("{UDP_LOG_TARGET}:{UDP_LOG_PORT}")
-                    .parse::<std::net::SocketAddr>();
-                match target {
-                    Ok(addr) => match udp_log::UdpLogSink::new(addr) {
-                        Ok(sink) => {
-                            if let Ok(mut slot) = FANOUT.udp.try_lock() {
-                                *slot = Some(sink);
-                            }
-                            FANOUT.drain_staging_to_udp();
-                            log::info!("UDP log sink up → {addr}");
+                // `pc_ip = "auto"` (or empty) → use the directed
+                // subnet broadcast learned from DHCP. Otherwise treat
+                // UDP_LOG_TARGET as a literal IPv4 (unicast or
+                // 255.255.255.255). Subnet-broadcast is the safer
+                // default since routers/APs often drop limited
+                // broadcast but pass directed-broadcast through.
+                let target_ip: std::net::IpAddr = if UDP_LOG_TARGET.is_empty()
+                    || UDP_LOG_TARGET == "auto"
+                {
+                    std::net::IpAddr::V4(handle.subnet_broadcast)
+                } else {
+                    match UDP_LOG_TARGET.parse() {
+                        Ok(ip) => ip,
+                        Err(e) => {
+                            log::warn!(
+                                "UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); using subnet bcast"
+                            );
+                            std::net::IpAddr::V4(handle.subnet_broadcast)
                         }
-                        Err(e) => log::warn!("UDP socket bind failed: {e}"),
-                    },
-                    Err(e) => log::warn!("UDP target parse failed: {e}"),
+                    }
+                };
+                let port: u16 = UDP_LOG_PORT.parse().unwrap_or(9999);
+                let addr = std::net::SocketAddr::new(target_ip, port);
+                match udp_log::UdpLogSink::new(addr) {
+                    Ok(sink) => {
+                        if let Ok(mut slot) = FANOUT.udp.try_lock() {
+                            *slot = Some(sink);
+                        }
+                        FANOUT.drain_staging_to_udp();
+                        log::info!("UDP log sink up → {addr}");
+                    }
+                    Err(e) => log::warn!("UDP socket bind failed: {e}"),
                 }
                 #[allow(static_mut_refs)]
                 unsafe {
@@ -86,12 +109,27 @@ fn main() -> ! {
         log::info!("WIFI_SSID empty (no cfg.toml) — UDP log disabled");
     }
 
-    // 別スレッドで decode pipeline を走らせる。デコード結果は log::info!
-    // → FanoutLogger 経由で LCD scroll panel + UDP に流れる。
-    std::thread::Builder::new()
-        .stack_size(32 * 1024)
-        .spawn(|| decode_pipeline::run())
-        .expect("spawn decode pipeline");
+    // decode_pipeline を spawn するか否か:
+    //   - WiFi 有効時 (WIFI_SSID 設定): WiFi 静的バッファ + decode_pipeline
+    //     の thread stack 群 (main 24KB + dsp_worker + stage1_inc 16KB +
+    //     wav_sim) + BASIS_RE/IM 静的 DRAM (60KB×2) を全部内部 DRAM 161KB
+    //     に詰めようとして OOM (Phase 0.6 検証で xTaskCreatePinnedToCore=-1
+    //     を実測)。BASIS は移動不可 (cache/DMA 制約、ユーザ指摘) なので
+    //     Phase 0.6 検証モードでは decode_pipeline 自体を skip する。
+    //   - WiFi 無効時 (cfg.toml 不在): Phase 4 demo として decode_pipeline
+    //     を起動する (BT も sdkconfig で無効化済み)。
+    if WIFI_SSID.is_empty() {
+        let pipeline_spawn = std::thread::Builder::new()
+            .stack_size(32 * 1024)
+            .spawn(|| decode_pipeline::run());
+        if let Err(e) = pipeline_spawn {
+            log::error!("decode_pipeline spawn failed ({e})");
+        }
+    } else {
+        log::info!(
+            "decode_pipeline skipped (Phase 0.6 mode: WiFi takes DRAM that decoder needs)"
+        );
+    }
 
     // メインタスクは LCD render loop (返らない)。modem は WiFi が
     // consume するので Peripherals 全体は move 不可 — 必要なフィールド
