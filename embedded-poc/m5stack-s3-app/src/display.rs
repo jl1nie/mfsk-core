@@ -18,9 +18,10 @@ use embedded_graphics::{
 use display_interface_spi::SPIInterface;
 use esp_idf_hal::{
     delay::Ets,
-    gpio::{AnyIOPin, PinDriver},
-    peripherals::Peripherals,
-    spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    gpio::{AnyIOPin, PinDriver, Pins},
+    i2c::I2C1,
+    i2s::I2S0,
+    spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI3},
     units::FromValueType,
 };
 use mipidsi::{models::ST7789, options::ColorInversion, Builder};
@@ -37,8 +38,9 @@ const TX_REGION_H: u32 = 14;
 
 /// LCD bring-up + 永続描画ループ。**戻らない**。
 ///
-/// `Peripherals` を all-take し、SPI2 + LCD 関連 GPIO + 内蔵 ES8311
-/// codec を遠ざけて初期化、`fanout.lcd` を 1 秒間隔で flush する。
+/// 個別 peripherals (i2c1 / i2s0 / spi3 / pins) を受け取って所有する。
+/// `Peripherals` 全体を取らないのは Phase 0.6 で `peripherals.modem`
+/// を WiFi が先に consume するため (partial-move エラー回避)。
 ///
 /// 実装メモ:
 /// - SPI clock 40 MHz。歪んだら 26 MHz 等に下げる。
@@ -46,14 +48,16 @@ const TX_REGION_H: u32 = 14;
 ///   `display_offset` を panel 実装に合わせる。M5StickS3 の 135x240 は
 ///   実機で (52, 40) または (40, 53) のどちらか。一回 flash して縞 or
 ///   ずれを観察して調整する。
-pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! {
+pub fn run_log_panel(
+    i2c1: I2C1<'static>,
+    i2s0: I2S0<'static>,
+    spi3: SPI3<'static>,
+    pins: Pins,
+    fanout: &'static LogFanout,
+) -> ! {
     // ── PMIC: M5PM1 経由で LCD 電源 ON。これを欠くと SPI/GPIO が完璧でも
     //   panel は永久に黒。M5GFX board_M5StickS3 と同シーケンス。
-    let mut i2c = match crate::pmic::init_lcd_power(
-        peripherals.i2c1,
-        peripherals.pins.gpio47,
-        peripherals.pins.gpio48,
-    ) {
+    let mut i2c = match crate::pmic::init_lcd_power(i2c1, pins.gpio47, pins.gpio48) {
         Ok(d) => Some(d),
         Err(e) => {
             log::error!("PMIC init failed: {e:#}");
@@ -62,7 +66,7 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
     };
 
     // Backlight ON (gpio38、PMIC 電源 ON 後に有効化)
-    let mut bl = PinDriver::output(peripherals.pins.gpio38).expect("BL gpio38");
+    let mut bl = PinDriver::output(pins.gpio38).expect("BL gpio38");
     bl.set_high().ok();
     core::mem::forget(bl);
 
@@ -99,12 +103,12 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
                 StdGpioConfig::default(),
             );
             match I2sDriver::new_std_tx(
-                peripherals.i2s0,
+                i2s0,
                 &i2s_cfg,
-                peripherals.pins.gpio17,         // BCLK
-                peripherals.pins.gpio14,         // DOUT (S3 → codec)
-                Some(peripherals.pins.gpio18),   // MCLK
-                peripherals.pins.gpio15,         // WS / LRCK
+                pins.gpio17,         // BCLK
+                pins.gpio14,         // DOUT (S3 → codec)
+                Some(pins.gpio18),   // MCLK
+                pins.gpio15,         // WS / LRCK
             ) {
                 Ok(i2s) => {
                     // Lift the PMIC PA enable line *before* the audio
@@ -127,19 +131,19 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
 
     // ── SPI3 host (M5GFX が SPI3_HOST を使用)。SPI2 ではない。
     let driver = SpiDriver::new(
-        peripherals.spi3,
-        peripherals.pins.gpio40, // SCK
-        peripherals.pins.gpio39, // MOSI
+        spi3,
+        pins.gpio40, // SCK
+        pins.gpio39, // MOSI
         Option::<AnyIOPin>::None,
         &SpiDriverConfig::new(),
     )
     .expect("SPI3 driver");
     let spi_cfg = SpiConfig::new().baudrate(40_u32.MHz().into());
-    let spi_dev = SpiDeviceDriver::new(driver, Some(peripherals.pins.gpio41), &spi_cfg)
+    let spi_dev = SpiDeviceDriver::new(driver, Some(pins.gpio41), &spi_cfg)
         .expect("SPI device (CS=41)");
 
-    let dc = PinDriver::output(peripherals.pins.gpio45).expect("DC gpio45");
-    let rst = PinDriver::output(peripherals.pins.gpio21).expect("RST gpio21");
+    let dc = PinDriver::output(pins.gpio45).expect("DC gpio45");
+    let rst = PinDriver::output(pins.gpio21).expect("RST gpio21");
 
     let di = SPIInterface::new(spi_dev, dc);
 

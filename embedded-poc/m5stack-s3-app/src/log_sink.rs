@@ -1,4 +1,4 @@
-//! Log fanout: console + LCD scroll panel + flash file.
+//! Log fanout: console + LCD scroll panel + flash file + UDP datagram.
 //!
 //! 動機: USB-OTG host モード中 (= IC-705 接続中) はシリアルコンソールが
 //! 物理的に使えない。電源を切って USB ケーブルを母艦 PC に挿し直さない
@@ -7,10 +7,13 @@
 //!   log::info!(...) ──► [Fanout]
 //!                         ├─ EspLogger (USB-CDC、生きていれば)
 //!                         ├─ LcdPanel  (mipidsi に常時 12 行の scroll)
-//!                         └─ FlashLog  (/littlefs/run.log に append)
+//!                         ├─ FlashLog  (/littlefs/run.log に append)
+//!                         └─ UdpLog    (Phase 0.6、WiFi UDP 経由 PC へ)
 //!
 //! どれか落ちても残りは継続。LCD/Flash が初期化前に呼ばれた `log::info!`
-//! は内部 staging buffer に貯めておき、初期化後に flush する。
+//! は内部 staging buffer に貯めておき、初期化後に flush する。UDP も
+//! WiFi associate が終わるまでは sink 不在 (= staging に貯まる)、関連
+//! 後に `drain_staging_to_udp` で吐き出す。
 
 use core::fmt::Write as _;
 
@@ -90,10 +93,15 @@ pub trait FlashLog: Send {
 /// Fanout sink — `log::Log` 実装。
 pub struct LogFanout {
     pub lcd: Mutex<CriticalSectionRawMutex, LcdPanel>,
-    /// LCD/Flash 未初期化期間のステージング。
+    /// LCD/Flash/UDP 未初期化期間のステージング。WiFi associate が
+    /// 完了するまでの 2-3 秒に呼ばれた `log::info!` を貯めておき、
+    /// `drain_staging_to_udp` で UDP に吐き出す経路で使う。
     pub staging: Mutex<CriticalSectionRawMutex, Deque<LogLine, STAGING_LINES>>,
     /// Flash sink (Phase 5 に近い形で確立)。`Option` で boot 時に late-bind。
     pub flash: Mutex<CriticalSectionRawMutex, Option<&'static mut dyn FlashLog>>,
+    /// UDP sink (Phase 0.6)。WiFi associate 後に
+    /// `*FANOUT.udp.lock() = Some(UdpLogSink::new(..)?)` で登録。
+    pub udp: Mutex<CriticalSectionRawMutex, Option<crate::udp_log::UdpLogSink>>,
 }
 
 impl LogFanout {
@@ -102,6 +110,7 @@ impl LogFanout {
             lcd: Mutex::new(LcdPanel::new()),
             staging: Mutex::new(Deque::new()),
             flash: Mutex::new(None),
+            udp: Mutex::new(None),
         }
     }
 
@@ -111,17 +120,7 @@ impl LogFanout {
         if let Ok(mut lcd) = self.lcd.try_lock() {
             lcd.push(line);
         } else if let Ok(mut staging) = self.staging.try_lock() {
-            let mut s: LogLine = String::new();
-            let truncated = if line.len() > LINE_MAX {
-                &line[..LINE_MAX]
-            } else {
-                line
-            };
-            let _ = s.push_str(truncated);
-            if staging.is_full() {
-                let _ = staging.pop_front();
-            }
-            let _ = staging.push_back(s);
+            self.staging_push(&mut staging, line);
         }
         // Flash: 同様。Mutex を握れない最悪ケースは drop (boot シーケンス
         // 中の竞合のみ想定で、運用時は lock 競合は起きない)。
@@ -129,6 +128,50 @@ impl LogFanout {
             if let Some(sink) = flash.as_deref_mut() {
                 sink.write_line(line);
             }
+        }
+        // UDP: best-effort datagram。sink 未登録 (WiFi 未接続) なら
+        // staging に積んで後で `drain_staging_to_udp` で吐く。lock を
+        // 取れない場合は黙って落とす (= 排他で詰まらせない)。
+        match self.udp.try_lock() {
+            Ok(udp) => match udp.as_ref() {
+                Some(sink) => sink.send_line(line),
+                None => {
+                    if let Ok(mut staging) = self.staging.try_lock() {
+                        self.staging_push(&mut staging, line);
+                    }
+                }
+            },
+            Err(_) => {}
+        }
+    }
+
+    fn staging_push(
+        &self,
+        staging: &mut Deque<LogLine, STAGING_LINES>,
+        line: &str,
+    ) {
+        let mut s: LogLine = String::new();
+        let truncated = if line.len() > LINE_MAX {
+            &line[..LINE_MAX]
+        } else {
+            line
+        };
+        let _ = s.push_str(truncated);
+        if staging.is_full() {
+            let _ = staging.pop_front();
+        }
+        let _ = staging.push_back(s);
+    }
+
+    /// WiFi 関連後に呼ぶ。staging の蓄積行を UDP に流す。staging は
+    /// LCD-pre-init とも兼用 (= UDP-pre-init で積まれた行が混じる)
+    /// が、頻度的に問題にならないので分けない。
+    pub fn drain_staging_to_udp(&self) {
+        let Ok(udp_guard) = self.udp.try_lock() else { return };
+        let Some(sink) = udp_guard.as_ref() else { return };
+        let Ok(mut staging) = self.staging.try_lock() else { return };
+        while let Some(line) = staging.pop_front() {
+            sink.send_line(&line);
         }
     }
 }

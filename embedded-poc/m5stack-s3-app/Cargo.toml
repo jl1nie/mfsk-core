@@ -61,6 +61,9 @@ display-interface-spi = "0.5"
 
 [build-dependencies]
 embuild = "0.33"
+# Phase 0.6: parse `cfg.toml` (WiFi credentials + UDP log target) at
+# build time. Gitignored — see `cfg-sample.toml`.
+toml = "0.8"
 
 # esp-dsp は decode 経路 (`embedded_shared::esp_dsp_fft`) が前提とする。
 # 兄弟クレートと同じ component 取り込み。

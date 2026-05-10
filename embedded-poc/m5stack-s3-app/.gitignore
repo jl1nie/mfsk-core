@@ -1,0 +1,4 @@
+# Build-time WiFi credentials and UDP log target. Created locally by
+# the developer per `cfg-sample.toml`; never committed.
+cfg.toml
+cfg.toml-*

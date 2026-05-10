@@ -1,0 +1,23 @@
+# m5stack-s3-app build-time configuration template.
+#
+# Copy this file to `cfg.toml` (gitignored — never commit) and fill in
+# real credentials for your dev environment. `build.rs` reads cfg.toml
+# at compile time and injects values via `cargo:rustc-env=`, so any
+# change requires a rebuild.
+#
+# Field absence falls back to: empty SSID (= WiFi init skipped),
+# 255.255.255.255:9999 broadcast for UDP log target.
+
+[wifi]
+# Home / dev WiFi SSID. Leave the entire [wifi] section out (or set
+# `ssid = ""`) to disable WiFi entirely — the binary still boots, but
+# UDP log is unavailable and only USB-CDC + LCD sinks are active.
+ssid = "your-ssid-here"
+psk = "your-passphrase-here"
+
+# Where to send UDP log datagrams. `255.255.255.255` = LAN broadcast,
+# any PC on the same subnet running `nc -lu <port>` will receive.
+# Set a unicast IPv4 if you want to avoid broadcasting (e.g. in a
+# noisy network).
+pc_ip = "255.255.255.255"
+port = 9999

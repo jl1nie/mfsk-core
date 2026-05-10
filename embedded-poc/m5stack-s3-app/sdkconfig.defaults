@@ -35,10 +35,14 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 
 # ── Networking ───────────────────────────────────────────────────────
-# WiFi/IP は MVP では不要。Phase 5 以降で QSO 即時 push が要るなら有効化。
-CONFIG_ESP_WIFI_ENABLED=n
-CONFIG_LWIP_TCP_ENABLED=n
-CONFIG_LWIP_UDP_ENABLED=n
+# Phase 0.6: WiFi STA + UDP socket — IC-705 が USB-OTG を占有すると
+# `espflash monitor` が物理的に塞がるので、UART/LCD と並列に UDP
+# datagram で PC に log を吐く独立経路が必要。BLE (NimBLE) との coex は
+# esp-idf default の software coex で動く想定 — 干渉が出たら
+# `CONFIG_ESP_COEX_*` を調整 (Phase 0.6 実機検証で確認)。
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_LWIP_TCP_ENABLED=y
+CONFIG_LWIP_UDP_ENABLED=y
 
 # ── USB Host (UAC capture) ───────────────────────────────────────────
 # IC-705 の USB Audio Class endpoint を ESP32-S3 USB-OTG host で受ける。
