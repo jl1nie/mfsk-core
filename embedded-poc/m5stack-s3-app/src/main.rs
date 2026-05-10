@@ -49,6 +49,7 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
     log::info!("phase 4 + 0.6: QSO FSM + WiFi UDP log");
+    log::info!("build-stamp 2026-05-11-cdc-gate");
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 

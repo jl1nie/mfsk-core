@@ -215,12 +215,20 @@ impl log::Log for FanoutLogger {
         // UART にも吐き出す (EspLogger を init していないので自前で)。
         // C-side ESP_LOG のタイムスタンプ付きフォーマットには合わせず、
         // Rust 側ログは簡素に。
-        println!(
-            "{} {}: {}",
-            level_short(record.level()),
-            record.target(),
-            record.args()
-        );
+        //
+        // USB-CDC (USB-Serial-JTAG) host が切れている間に println! すると
+        // VFS 層で TX FIFO 待ちに永久 block して FanoutLogger 自体が
+        // freeze する (Phase 0.6 検証で確認、2026-05-11)。Phase 1 (USB host
+        // モード) でも CDC 端末が消えるので必須対策。SOF が来てる間だけ
+        // stdout に流す。
+        if unsafe { esp_idf_svc::sys::usb_serial_jtag_is_connected() } {
+            println!(
+                "{} {}: {}",
+                level_short(record.level()),
+                record.target(),
+                record.args()
+            );
+        }
     }
 
     fn flush(&self) {}
