@@ -65,6 +65,12 @@ pub struct UiState {
     decoded: heapless::Vec<DecodedRow, 16>,
     waterfall: heapless::Deque<WfLine, WF_DEPTH>,
     pub status: StatusInfo,
+    /// QSO FSM intent line — formatted by `qso::format_tx_line`.
+    /// Empty until the first auto-CQ fires.
+    tx_line: String<48>,
+    /// Bumped each time `tx_line` changes so the display loop can
+    /// repaint the TX strip independent of the WF / decode list.
+    tx_seq: AtomicU32,
     /// Bumped by writers when state changes; readers compare against
     /// their last-rendered seq to skip the LCD push when nothing new.
     /// `AtomicU32` so the dirty check itself doesn't need the mutex.
@@ -87,6 +93,8 @@ impl UiState {
                 utc_sod: None,
                 free_heap_kb: 0,
             },
+            tx_line: String::new(),
+            tx_seq: AtomicU32::new(0),
             dirty_seq: AtomicU32::new(0),
             wf_push_seq: AtomicU32::new(0),
         }
@@ -167,6 +175,27 @@ impl UiState {
     pub fn update_status(&mut self, f: impl FnOnce(&mut StatusInfo)) {
         f(&mut self.status);
         self.bump();
+    }
+
+    /// Replace the TX-line text. Truncates silently if `s` overflows
+    /// 48 chars (the strip is ~22 cols at 6-px font width).
+    pub fn set_tx_line(&mut self, s: &str) {
+        self.tx_line.clear();
+        for ch in s.chars() {
+            if self.tx_line.push(ch).is_err() {
+                break;
+            }
+        }
+        self.tx_seq.fetch_add(1, Ordering::AcqRel);
+        self.bump();
+    }
+
+    pub fn tx_line(&self) -> &str {
+        self.tx_line.as_str()
+    }
+
+    pub fn tx_seq(&self) -> u32 {
+        self.tx_seq.load(Ordering::Acquire)
     }
 }
 

@@ -17,7 +17,13 @@ use mfsk_ft8::mfsk_ft8_basis_scratch_len;
 
 use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 
+use crate::qso::{self, QsoManager, QsoState};
 use crate::ui::state::{DecodedRow, UI};
+
+/// Phase 4 dry-run: own callsign + Maidenhead grid burned into the
+/// build. Phase 6 will replace this with `/littlefs/config.toml`.
+const MY_CALL: &str = "JL1NIE";
+const MY_GRID: &str = "PM95";
 
 /// 開発用 WAV (qso3_busy のみ単独ループ — UI 構築用に最も多くのデコード結果を出す)。
 static QSO_WAVS: &[&[u8]] = &[
@@ -65,7 +71,15 @@ pub fn run() -> ! {
         .spawn(move || wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t))
         .expect("spawn wf drainer");
 
-    log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz)");
+    log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)");
+
+    // QSO FSM (Phase 4 dry-run). auto-CQ kicks off immediately so the
+    // very first slot already has a TX intent painted; no decode in
+    // qso3_busy.wav contains "JL1NIE" so the FSM stays in Calling and
+    // exercises the retry → reset → re-CQ loop visibly on the LCD.
+    let mut qso = QsoManager::new(MY_CALL, MY_GRID);
+    let initial = qso.call_cq(None);
+    push_tx_line(&qso, Some(&initial));
 
     let mut slot_seq: u32 = 0;
     loop {
@@ -157,6 +171,9 @@ pub fn run() -> ! {
         // Push every CRC-passing decode to the UI ring. WF rows are
         // streamed separately by the `wf_drain` task at per-pair
         // cadence (~80 ms) so this loop only handles decode results.
+        // The QSO FSM is also fed here so its state matches the slot
+        // boundary (first message → state advance → retry budget).
+        let mut had_response_this_slot = false;
         if let Ok(mut ui) = UI.lock() {
             for r in results.iter() {
                 if let Some(text) = unpack77(&r.message77) {
@@ -175,13 +192,14 @@ pub fn run() -> ! {
                     let cell_scale = (1u32 << FP_SPEC_SHIFT) as f32;
                     let calibrated_snr =
                         mfsk_core::ft8::decode_block::xsnr2_db_simple(&spec.spec, r, cell_scale);
+                    let snr_i8 = calibrated_snr.round().clamp(-128.0, 127.0) as i8;
                     // `first_seq` is provisionally `slot_seq`; if the
                     // msg is already in the ring `push_decode` will
                     // overwrite this with the existing entry's seq so
                     // recurring callsigns don't re-flash the highlight.
                     let row = DecodedRow {
                         df_hz: r.freq_hz.round().clamp(0.0, 65_535.0) as u16,
-                        snr_db: calibrated_snr.round().clamp(-128.0, 127.0) as i8,
+                        snr_db: snr_i8,
                         hard_errors: r.hard_errors.min(255) as u8,
                         msg,
                         slot_seq,
@@ -192,9 +210,39 @@ pub fn run() -> ! {
                         "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
                         r.freq_hz, calibrated_snr, r.snr_db, text
                     );
+                    // Feed the FSM. SNR set first so an in-band reply
+                    // ("JL1NIE W1AW FN31") gets reported with the
+                    // correct rx_snr → tx_report.
+                    qso.set_rx_snr(snr_i8);
+                    if qso.process_message(&text).is_some() {
+                        had_response_this_slot = true;
+                    }
                 }
             }
         }
+
+        // Slot boundary. If no decode addressed us, retry — and if the
+        // retry budget is gone, the FSM resets to Idle and we
+        // immediately re-CQ so the dry-run keeps animating between
+        // states instead of parking in Idle indefinitely.
+        if !had_response_this_slot && qso.state != QsoState::Idle {
+            let _ = qso.on_period_end();
+        }
+        if qso.state == QsoState::Idle {
+            qso.call_cq(None);
+        }
+        let intent = qso.next_tx();
+        push_tx_line(&qso, intent.as_ref());
+    }
+}
+
+/// Format the FSM's current intent and push it to the UI thread. Also
+/// echoed to the log so headless captures still record QSO state.
+fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
+    let line = qso::format_tx_line(qso, intent);
+    log::info!("[QSO] {}", line.as_str());
+    if let Ok(mut ui) = UI.lock() {
+        ui.set_tx_line(line.as_str());
     }
 }
 

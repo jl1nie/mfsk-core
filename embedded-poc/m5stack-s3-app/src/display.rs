@@ -174,10 +174,9 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
     // Paint the TX placeholder strip once (refreshed per redraw cycle).
     let tx_bg = Rgb565::new(0, 0, 8);
 
-    // Paint the TX placeholder strip once at boot. Phase 4 (QSO FSM)
-    // will repaint it from a dedicated dirty-seq when there's actual
-    // TX intent text to show; for Phase 3 it's a static "TX: ---"
-    // and full-frame repainting it every 100 ms was just adding load.
+    // Paint the TX strip once at boot with a placeholder. The decode
+    // pipeline thread later repaints this region whenever the QSO FSM
+    // updates `UiState::tx_line` (tx_seq bump triggers redraw below).
     Rectangle::new(
         Point::new(0, TX_REGION_Y),
         Size::new(crate::board::LCD_WIDTH as u32, TX_REGION_H),
@@ -186,7 +185,7 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
     .draw(&mut display)
     .ok();
     Text::with_baseline(
-        "TX: ---",
+        "IDLE: ---",
         Point::new(2, TX_REGION_Y + 2),
         tx_style,
         Baseline::Top,
@@ -206,6 +205,7 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
     // when the user expects continuous flow.
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
+    let mut last_tx_seq: u32 = 0;
     loop {
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
         log::info!("alive tick={tick} free_heap={heap}");
@@ -218,6 +218,8 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
         let wf_snapshot: heapless::Vec<crate::ui::state::WfLine, { crate::ui::state::WF_DEPTH }>;
         let decoded_fp;
         let wf_seq;
+        let tx_seq;
+        let tx_line_snapshot: heapless::String<48>;
         {
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
@@ -228,6 +230,14 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
                 .collect::<heapless::Vec<_, 16>>();
             wf_snapshot = ui.waterfall_iter().cloned().collect();
             wf_seq = ui.wf_push_seq();
+            tx_seq = ui.tx_seq();
+            let mut buf: heapless::String<48> = heapless::String::new();
+            for ch in ui.tx_line().chars() {
+                if buf.push(ch).is_err() {
+                    break;
+                }
+            }
+            tx_line_snapshot = buf;
             // Fingerprint the decoded ring by (count, max_slot_seq) so
             // we re-render only when a slot completes — not on every
             // per-pair WF tick that bumped the global dirty_seq.
@@ -259,10 +269,35 @@ pub fn run_log_panel(peripherals: Peripherals, fanout: &'static LogFanout) -> ! 
             last_decoded_fp = decoded_fp;
         }
 
+        // TX line: repaint when the QSO FSM bumps `tx_seq`. Cheap
+        // (single 14-px-tall strip) so we always do a fresh wipe + draw.
+        if tx_seq != last_tx_seq {
+            Rectangle::new(
+                Point::new(0, TX_REGION_Y),
+                Size::new(crate::board::LCD_WIDTH as u32, TX_REGION_H),
+            )
+            .into_styled(PrimitiveStyle::with_fill(tx_bg))
+            .draw(&mut display)
+            .ok();
+            let text = if tx_line_snapshot.is_empty() {
+                "IDLE: ---"
+            } else {
+                tx_line_snapshot.as_str()
+            };
+            Text::with_baseline(
+                text,
+                Point::new(2, TX_REGION_Y + 2),
+                tx_style,
+                Baseline::Top,
+            )
+            .draw(&mut display)
+            .ok();
+            last_tx_seq = tx_seq;
+        }
+
         // Phase 0.5 boot-time log scroll has been retired now that
         // the WF region is live. UART log path stays via FanoutLogger.
         let _ = fanout;
-        let _ = (tx_bg, tx_style); // painted once at boot above
 
         std::thread::sleep(std::time::Duration::from_millis(100));
         tick = tick.wrapping_add(1);
