@@ -55,7 +55,7 @@ echo "[flash-monitor] running 'espflash flash --monitor' under pty for ${DURATIO
 # stdin from /dev/null        : monitor will not block on input.
 timeout --foreground "$DURATION" \
     script -qfc \
-        "espflash flash --monitor --port '$PORT' -T '$PARTITIONS' '$ELF'" \
+        "espflash flash --monitor --port '$PORT' --partition-table '$PARTITIONS' '$ELF'" \
         "$LOG" \
         </dev/null \
     || true
