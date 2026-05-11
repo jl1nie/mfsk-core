@@ -65,6 +65,14 @@ embuild = "0.33"
 # build time. Gitignored — see `cfg-sample.toml`.
 toml = "0.8"
 
+# sdkconfig.gen.defaults は build.rs が CARGO_MANIFEST_DIR 絶対パスで
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME を吐く動的ファイル (gitignored)。
+# 初回ビルド前に bootstrap-sdkconfig.sh を一度実行する必要がある
+# (cargo の build-script 順序上、esp-idf-sys が我々の build.rs より
+# 先に走るため自動 chicken-and-egg 解決ができない)。
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
+
 # esp-dsp は decode 経路 (`embedded_shared::esp_dsp_fft`) が前提とする。
 # 兄弟クレートと同じ component 取り込み。
 [[package.metadata.esp-idf-sys.extra_components]]

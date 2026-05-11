@@ -14,7 +14,12 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="/home/minoru/src/mfsk-core/embedded-poc/m5stack-s3-app/partitions.csv"
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME は build.rs が生成する
+# `sdkconfig.gen.defaults` (Cargo.toml の esp_idf_sdkconfig_defaults
+# 経由でマージ) で絶対パスを埋め込む。ESP-IDF は CSV パスを CMake
+# build dir 基準で解決するため絶対パス必須 — 開発機ごとに $HOME が
+# 違うので静的にコミットできない (旧コミット 119657a の二の舞回避)。
+# 初回ビルド前に `./bootstrap-sdkconfig.sh` を実行すること。
 
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
