@@ -26,9 +26,14 @@ use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 
-/// Per-core BASIS scratch (main side). 60 KB × 2, internal DRAM.
+/// Per-core BASIS scratch. 60 KB × 4, internal DRAM `.bss`. Phase 0.7:
+/// both pairs live here so rx_wavsim keeps a single static allocation
+/// strategy; only the m5stack-s3-app runtime heap-allocates so it can
+/// skip the 120 KB worker pair in WiFi mode.
 static mut BASIS_RE: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
 static mut BASIS_IM: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
+static mut BASIS_RE_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
+static mut BASIS_IM_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -100,7 +105,10 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
 
     esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
 
-    dual_core::init();
+    #[allow(static_mut_refs)]
+    unsafe {
+        dual_core::init(BASIS_RE_C1.as_mut_ptr(), BASIS_IM_C1.as_mut_ptr());
+    }
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
     let spec_q = pipeline::create_spec_queue(2);

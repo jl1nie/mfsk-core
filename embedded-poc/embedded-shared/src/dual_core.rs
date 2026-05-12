@@ -15,9 +15,13 @@
 //!
 //! ## Memory
 //!
-//! Worker has its own Q15 basis scratch (`BASIS_RE_C1` / `BASIS_IM_C1`,
-//! 60 KB each, internal DRAM `.bss`) so the esp-dsp asm dot product
-//! stays at 1 cycle/sample. Total internal DRAM: 120 KB, unchanged.
+//! Worker uses a Q15 basis scratch pair (60 KB each, internal DRAM) so
+//! the esp-dsp asm dot product stays at 1 cycle/sample. Phase 0.7: the
+//! caller owns these buffers and hands their raw pointers to `init`,
+//! letting WiFi-mode boot skip the 120 KB allocation entirely. The
+//! pointers must reference 16-byte-aligned `BASIS_SCRATCH_LEN`-element
+//! `i16` buffers in internal DRAM (`MALLOC_CAP_INTERNAL`) for the asm
+//! kernel to hit its 1 cycle/sample target.
 //!
 //! ## Safety
 //!
@@ -53,9 +57,26 @@ const QUEUE_SEND_TO_BACK: i32 = 0;
 const QUEUE_TYPE_BASE: u8 = 0;
 const PORT_MAX_DELAY: u32 = u32::MAX;
 
-/// Worker-side basis scratch (60 KB each, internal DRAM).
-static mut BASIS_RE_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
+/// Worker-side basis scratch pointers — set once by `init`, then read
+/// only by `worker_main`. The `xTaskCreatePinnedToCore` call in `init`
+/// is the release barrier that publishes the stores to the worker core.
+struct BasisPtrCell(UnsafeCell<*mut i16>);
+unsafe impl Sync for BasisPtrCell {}
+impl BasisPtrCell {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(ptr::null_mut()))
+    }
+    fn get(&self) -> *mut i16 {
+        unsafe { *self.0.get() }
+    }
+    /// SAFETY: only call from `init` before the worker is spawned.
+    unsafe fn set(&self, p: *mut i16) {
+        unsafe { *self.0.get() = p };
+    }
+}
+
+static BASIS_RE_C1: BasisPtrCell = BasisPtrCell::new();
+static BASIS_IM_C1: BasisPtrCell = BasisPtrCell::new();
 
 enum Job {
     Pass2 {
@@ -174,16 +195,19 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 max_cand,
             } => {
                 let audio_slice = unsafe { core::slice::from_raw_parts(audio, audio_len) };
-                #[allow(static_mut_refs)]
-                let result = unsafe {
-                    refine_candidates_into(
-                        audio_slice,
-                        cands,
-                        max_cand,
-                        &mut BASIS_RE_C1,
-                        &mut BASIS_IM_C1,
-                    )
+                let basis_re = unsafe {
+                    core::slice::from_raw_parts_mut(BASIS_RE_C1.get(), BASIS_SCRATCH_LEN)
                 };
+                let basis_im = unsafe {
+                    core::slice::from_raw_parts_mut(BASIS_IM_C1.get(), BASIS_SCRATCH_LEN)
+                };
+                let result = refine_candidates_into(
+                    audio_slice,
+                    cands,
+                    max_cand,
+                    basis_re,
+                    basis_im,
+                );
                 let raw = Box::into_raw(Box::new(result));
                 unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
             }
@@ -198,6 +222,12 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 next_idx,
             } => {
                 let audio_slice = unsafe { core::slice::from_raw_parts(audio, audio_len) };
+                let basis_re = unsafe {
+                    core::slice::from_raw_parts_mut(BASIS_RE_C1.get(), BASIS_SCRATCH_LEN)
+                };
+                let basis_im = unsafe {
+                    core::slice::from_raw_parts_mut(BASIS_IM_C1.get(), BASIS_SCRATCH_LEN)
+                };
                 #[allow(static_mut_refs)]
                 let result = unsafe {
                     drain_stage3_queue(
@@ -208,8 +238,8 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                         depth,
                         q_thresh,
                         bp_max_iter,
-                        &mut BASIS_RE_C1,
-                        &mut BASIS_IM_C1,
+                        basis_re,
+                        basis_im,
                         &mut CS_SCRATCH_WORKER,
                     )
                 };
@@ -244,8 +274,19 @@ fn current_core() -> i32 {
 /// Spawn the persistent worker task on APP_CPU and create dispatch
 /// queues. Call once at startup, after `link_patches()`,
 /// `EspLogger::initialize_default()`, and `esp_dsp_fft::prewarm()`.
-pub fn init() {
+///
+/// `re_c1` / `im_c1` must each point to a 16-byte-aligned
+/// `BASIS_SCRATCH_LEN`-element `i16` buffer in internal DRAM
+/// (`MALLOC_CAP_INTERNAL`). The buffers are owned by the caller for
+/// program lifetime and must not be touched once `init` returns — the
+/// worker takes exclusive access.
+pub fn init(re_c1: *mut i16, im_c1: *mut i16) {
+    assert!(!re_c1.is_null() && !im_c1.is_null(), "BASIS ptr null");
+    assert_eq!(re_c1 as usize & 0xF, 0, "BASIS RE not 16-byte aligned");
+    assert_eq!(im_c1 as usize & 0xF, 0, "BASIS IM not 16-byte aligned");
     unsafe {
+        BASIS_RE_C1.set(re_c1);
+        BASIS_IM_C1.set(im_c1);
         JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
         PASS2_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<RefinedCandidate>>()));
         STAGE3_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<DecodeResult>>()));

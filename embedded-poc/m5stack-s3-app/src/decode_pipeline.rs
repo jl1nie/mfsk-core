@@ -11,7 +11,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
-use mfsk_core::ft8::decode_block::{BASIS_SCRATCH_LEN, DEFAULT_Q_THRESH, NFFT_SPEC};
+use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
+
+#[allow(unused_imports)]
+use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 use mfsk_core::msg::wsjt77::unpack77;
 use mfsk_ft8::mfsk_ft8_basis_scratch_len;
 
@@ -30,17 +33,27 @@ static QSO_WAVS: &[&[u8]] = &[
     include_bytes!("../../assets/qso3_busy.wav"),
 ];
 
-/// Per-core BASIS scratch (main side)。60 KB × 2、内部 DRAM 配置。
-static mut BASIS_RE: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
 /// 別スレッドから呼ぶ。返らない。
-pub fn run() -> ! {
+///
+/// Phase 0.7: caller owns the 4 BASIS buffers (main + worker, RE/IM
+/// each). The buffers must be 16-byte aligned, `BASIS_SCRATCH_LEN`
+/// `i16`s long, and live in internal DRAM (`MALLOC_CAP_INTERNAL`).
+/// `main.rs` heap-allocates them in decode mode and skips the alloc in
+/// WiFi mode, so the 120 KB worker pair is no longer a static cost.
+pub fn run(
+    basis_re_main: &'static mut [i16],
+    basis_im_main: &'static mut [i16],
+    basis_re_c1: *mut i16,
+    basis_im_c1: *mut i16,
+) -> ! {
     let need = mfsk_ft8_basis_scratch_len();
-    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
+    assert!(basis_re_main.len() >= need, "BASIS RE main too small");
+    assert!(basis_im_main.len() >= need, "BASIS IM main too small");
+    assert_eq!(basis_re_main.len(), BASIS_SCRATCH_LEN);
+    assert_eq!(basis_im_main.len(), BASIS_SCRATCH_LEN);
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
@@ -48,7 +61,7 @@ pub fn run() -> ! {
     }
 
     esp_dsp_fft::prewarm(NFFT_SPEC);
-    dual_core::init();
+    dual_core::init(basis_re_c1, basis_im_c1);
 
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
@@ -125,30 +138,24 @@ pub fn run() -> ! {
         // texture; the click was an alarm.
         // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
 
-        #[allow(static_mut_refs)]
-        let pass2 = unsafe {
-            dual_core::pass2_split(
-                &slot.audio,
-                pass1,
-                MAX_CAND,
-                &mut BASIS_RE,
-                &mut BASIS_IM,
-            )
-        };
+        let pass2 = dual_core::pass2_split(
+            &slot.audio,
+            pass1,
+            MAX_CAND,
+            basis_re_main,
+            basis_im_main,
+        );
 
         let depth = DecodeDepth::BpAll;
-        #[allow(static_mut_refs)]
-        let results = unsafe {
-            dual_core::stage3_split(
-                &slot.audio,
-                pass2,
-                depth,
-                DEFAULT_Q_THRESH,
-                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-                &mut BASIS_RE,
-                &mut BASIS_IM,
-            )
-        };
+        let results = dual_core::stage3_split(
+            &slot.audio,
+            pass2,
+            depth,
+            DEFAULT_Q_THRESH,
+            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            basis_re_main,
+            basis_im_main,
+        );
 
         log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
