@@ -26,6 +26,10 @@ use esp_idf_hal::{
 };
 use mipidsi::{models::ST7789, options::ColorInversion, Builder};
 
+use esp_idf_svc::nvs::{EspNvs, NvsDefault};
+
+use crate::boot_mode::{self, BootMode};
+use crate::buttons::{Buttons, Event as ButtonEvent, Key};
 use crate::log_sink::LogFanout;
 use crate::ui::{decoded_list, state::UI, status_bar, waterfall};
 
@@ -54,6 +58,8 @@ pub fn run_log_panel(
     spi3: SPI3<'static>,
     pins: Pins,
     fanout: &'static LogFanout,
+    nvs: EspNvs<NvsDefault>,
+    mode: BootMode,
 ) -> ! {
     // ── PMIC: M5PM1 経由で LCD 電源 ON。これを欠くと SPI/GPIO が完璧でも
     //   panel は永久に黒。M5GFX board_M5StickS3 と同シーケンス。
@@ -78,8 +84,10 @@ pub fn run_log_panel(
     // 流す audio がない。`audio_thread` も spawn しない (= speaker から
     // qso3 WAV が鳴り続ける問題を回避)。Phase 4 demo (cfg.toml 不在) の
     // ときだけ初期化する。
-    let phase_0_6_mode = !env!("WIFI_SSID").is_empty();
-    if !phase_0_6_mode {
+    // BootMode::Wifi では decode_pipeline 不在 → 流す audio もないので
+    // codec/I2S/audio thread を skip。Decode mode のときだけ初期化。
+    let wifi_mode = mode == BootMode::Wifi;
+    if !wifi_mode {
         if let Some(i2c_drv) = i2c.as_mut() {
             if let Err(e) = crate::audio::init_es8311(i2c_drv) {
                 log::warn!("ES8311 init failed (audio disabled): {e:#}");
@@ -135,7 +143,7 @@ pub fn run_log_panel(
         }
         }
     } else {
-        log::info!("audio thread skipped (Phase 0.6 mode: speaker muted)");
+        log::info!("audio thread skipped (BootMode::Wifi: speaker muted)");
     }
     drop(i2c);
 
@@ -198,8 +206,19 @@ pub fn run_log_panel(
     .into_styled(PrimitiveStyle::with_fill(tx_bg))
     .draw(&mut display)
     .ok();
+    // Mode label paints in the TX strip at boot. Decode mode's QSO FSM
+    // will overwrite this within the first slot; WiFi mode keeps it
+    // (no FSM). KEY2 long-press (2 s) flips and restarts.
+    let mode_line: heapless::String<22> = {
+        let mut s: heapless::String<22> = heapless::String::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut s,
+            format_args!("Mode: {} hold K2→flip", mode.label()),
+        );
+        s
+    };
     Text::with_baseline(
-        "IDLE: ---",
+        mode_line.as_str(),
         Point::new(2, TX_REGION_Y + 2),
         tx_style,
         Baseline::Top,
@@ -220,7 +239,26 @@ pub fn run_log_panel(
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
+    // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
+    // KEY2 (= 2 s) flips boot mode and restarts; KEY1 is reserved for
+    // the boot-time invert override (already consumed at boot).
+    let mut buttons = Buttons::init();
     loop {
+        buttons.poll();
+        if let Some(ev) = buttons.take_event() {
+            match ev {
+                ButtonEvent::LongPress(Key::Key2) => {
+                    log::info!("KEY2 long-press → boot_mode flip");
+                    boot_mode::flip_and_restart(&nvs, mode);
+                }
+                ButtonEvent::LongPress(Key::Key1) => {
+                    log::info!("KEY1 long-press (no action wired yet)");
+                }
+                ButtonEvent::ShortPress(k) => {
+                    log::info!("button short-press: {k:?}");
+                }
+            }
+        }
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
         // 100 ms ループ毎に log すると 10 行/秒 = UDP/LCD が文字で溢れる。
         // 5 秒に 1 行 (= 50 ticks) に間引く。Phase 0.7a: 内部 DRAM 残量も
