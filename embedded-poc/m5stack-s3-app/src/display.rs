@@ -223,9 +223,23 @@ pub fn run_log_panel(
     loop {
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
         // 100 ms ループ毎に log すると 10 行/秒 = UDP/LCD が文字で溢れる。
-        // 5 秒に 1 行 (= 50 ticks) に間引く。
+        // 5 秒に 1 行 (= 50 ticks) に間引く。Phase 0.7a: 内部 DRAM 残量も
+        // 出す。BASIS heap-alloc 化が効いているか確認するため (decode mode
+        // で BASIS alloc 前後の差分 ~120 KB を runtime 値で読みたい)。
         if tick % 50 == 0 {
-            log::info!("alive tick={tick} free_heap={heap}");
+            let internal = unsafe {
+                esp_idf_svc::sys::heap_caps_get_free_size(
+                    esp_idf_svc::sys::MALLOC_CAP_INTERNAL | esp_idf_svc::sys::MALLOC_CAP_8BIT,
+                )
+            };
+            let internal_largest = unsafe {
+                esp_idf_svc::sys::heap_caps_get_largest_free_block(
+                    esp_idf_svc::sys::MALLOC_CAP_INTERNAL | esp_idf_svc::sys::MALLOC_CAP_8BIT,
+                )
+            };
+            log::info!(
+                "alive tick={tick} free_heap={heap} internal={internal} largest={internal_largest}"
+            );
         }
 
         // ── status bar + heap update from UI state. We refresh the

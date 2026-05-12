@@ -24,9 +24,46 @@ mod wifi;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sys::{
+    heap_caps_aligned_alloc, heap_caps_get_free_size, heap_caps_get_largest_free_block,
+    MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL,
+};
 use log::LevelFilter;
+use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 
 use crate::log_sink::{FanoutLogger, LogFanout};
+
+/// Probe internal DRAM. Phase 0.7: called pre/post BASIS alloc to
+/// confirm the heap accounting matches the ~123 KB delta the static
+/// `.bss` version reserved at boot.
+fn log_free_internal(label: &str) {
+    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    let free = unsafe { heap_caps_get_free_size(caps) };
+    let largest = unsafe { heap_caps_get_largest_free_block(caps) };
+    log::info!("[mem] {label} free_internal={free} largest={largest}");
+}
+
+/// Allocate a 16-byte-aligned `BASIS_SCRATCH_LEN`-element `i16` buffer
+/// in internal DRAM and return it as a `'static mut` slice. Panics on
+/// alloc failure or alignment violation — both indicate the heap is
+/// too fragmented for the asm dot product to hit 1 cycle/sample, which
+/// would silently regress wall-clock 2× rather than fail loud.
+fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
+    const BYTES: usize = BASIS_SCRATCH_LEN * core::mem::size_of::<i16>();
+    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    let raw = unsafe { heap_caps_aligned_alloc(16, BYTES, caps) } as *mut i16;
+    assert!(!raw.is_null(), "BASIS {label} alloc failed ({BYTES} B internal DRAM)");
+    assert_eq!(
+        raw as usize & 0xF,
+        0,
+        "BASIS {label} not 16-byte aligned (asm dot product would degrade 2×)"
+    );
+    // Zero-init to match the static `.bss` baseline.
+    unsafe {
+        core::ptr::write_bytes(raw, 0, BASIS_SCRATCH_LEN);
+        core::slice::from_raw_parts_mut(raw, BASIS_SCRATCH_LEN)
+    }
+}
 
 static FANOUT: LogFanout = LogFanout::new();
 static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, LevelFilter::Info);
@@ -49,7 +86,7 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
     log::info!("phase 4 + 0.6: QSO FSM + WiFi UDP log");
-    log::info!("build-stamp 2026-05-11-cdc-gate");
+    log::info!("build-stamp 2026-05-13-phase07a-basis-heap");
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
@@ -120,15 +157,38 @@ fn main() -> ! {
     //   - WiFi 無効時 (cfg.toml 不在): Phase 4 demo として decode_pipeline
     //     を起動する (BT も sdkconfig で無効化済み)。
     if WIFI_SSID.is_empty() {
+        // Phase 0.7a: BASIS は heap_caps_aligned_alloc で内部 DRAM に確保
+        // (旧 .bss 配置と同等)。WiFi mode で skip するためだけにこの分岐に
+        // 移している — 静的版から見て [mem] 行の差分が ~123 KB なら成功。
+        log_free_internal("pre-basis-alloc");
+        let basis_re_main = alloc_basis_dram("RE_main");
+        let basis_im_main = alloc_basis_dram("IM_main");
+        let basis_re_c1 = alloc_basis_dram("RE_c1");
+        let basis_im_c1 = alloc_basis_dram("IM_c1");
+        log_free_internal("post-basis-alloc");
+        // Worker pair: hand a raw pointer to `dual_core::init` (called
+        // inside `decode_pipeline::run`). The slice references end at
+        // this scope; the worker thread reconstructs slices from the
+        // raw pointers. `*mut` isn't `Send` so cross the thread
+        // boundary as `usize` (same pattern as the `wf_q` drainer).
+        let re_c1_addr = basis_re_c1.as_mut_ptr() as usize;
+        let im_c1_addr = basis_im_c1.as_mut_ptr() as usize;
         let pipeline_spawn = std::thread::Builder::new()
             .stack_size(32 * 1024)
-            .spawn(|| decode_pipeline::run());
+            .spawn(move || {
+                decode_pipeline::run(
+                    basis_re_main,
+                    basis_im_main,
+                    re_c1_addr as *mut i16,
+                    im_c1_addr as *mut i16,
+                )
+            });
         if let Err(e) = pipeline_spawn {
             log::error!("decode_pipeline spawn failed ({e})");
         }
     } else {
         log::info!(
-            "decode_pipeline skipped (Phase 0.6 mode: WiFi takes DRAM that decoder needs)"
+            "decode_pipeline skipped (Phase 0.7a: WiFi mode — BASIS alloc skipped, 120 KB DRAM free for WiFi)"
         );
     }
 

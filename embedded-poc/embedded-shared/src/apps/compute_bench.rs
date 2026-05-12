@@ -24,10 +24,16 @@ const PASS1_LIMIT: usize = 30;
 
 const SLOT_LEN: usize = 180_000;
 
-/// Q15 basis scratch — internal DRAM `.bss`. Main side; worker side
-/// lives in `dual_core.rs`.
+/// Q15 basis scratch — internal DRAM `.bss`. Phase 0.7: both the main
+/// pair (consumed locally) and the worker pair (passed to
+/// `dual_core::init`) live here so this bench keeps a single static
+/// allocation strategy. The m5stack-s3-app runtime moved these to
+/// `heap_caps_aligned_alloc` so it can skip the 120 KB allocation in
+/// WiFi mode; the bench has no such mode-switch need.
 static mut BASIS_RE: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
 static mut BASIS_IM: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
+static mut BASIS_RE_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
+static mut BASIS_IM_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -79,7 +85,10 @@ pub fn run(target_name: &str, qso_wavs: &'static [(&'static str, &'static [u8])]
     esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
     log::info!("FFT twiddle tables pre-warmed");
 
-    dual_core::init();
+    #[allow(static_mut_refs)]
+    unsafe {
+        dual_core::init(BASIS_RE_C1.as_mut_ptr(), BASIS_IM_C1.as_mut_ptr());
+    }
 
     // max_cand sweep — host PASS1×max_cand sweep at PASS1=75 showed
     // identical 15/22 truth recall for max_cand ∈ {15, 20, 30}; only
