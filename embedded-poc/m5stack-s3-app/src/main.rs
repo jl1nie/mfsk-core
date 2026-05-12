@@ -5,6 +5,7 @@
 mod adif;
 mod audio;
 mod board;
+mod boot_mode;
 mod buttons;
 mod civ;
 mod decode_pipeline;
@@ -36,7 +37,7 @@ use crate::log_sink::{FanoutLogger, LogFanout};
 /// Probe internal DRAM. Phase 0.7: called pre/post BASIS alloc to
 /// confirm the heap accounting matches the ~123 KB delta the static
 /// `.bss` version reserved at boot.
-fn log_free_internal(label: &str) {
+pub fn log_free_internal(label: &str) {
     let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     let free = unsafe { heap_caps_get_free_size(caps) };
     let largest = unsafe { heap_caps_get_largest_free_block(caps) };
@@ -48,7 +49,7 @@ fn log_free_internal(label: &str) {
 /// alloc failure or alignment violation — both indicate the heap is
 /// too fragmented for the asm dot product to hit 1 cycle/sample, which
 /// would silently regress wall-clock 2× rather than fail loud.
-fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
+pub fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
     const BYTES: usize = BASIS_SCRATCH_LEN * core::mem::size_of::<i16>();
     let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     let raw = unsafe { heap_caps_aligned_alloc(16, BYTES, caps) } as *mut i16;
@@ -85,23 +86,33 @@ fn main() -> ! {
     LOGGER.install();
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
-    log::info!("phase 4 + 0.6: QSO FSM + WiFi UDP log");
-    log::info!("build-stamp 2026-05-13-phase07a-basis-heap");
+    log::info!("phase 0.7c: runtime boot-mode (NVS + KEY1 override + KEY2 long-press)");
+    log::info!("build-stamp 2026-05-13-phase07c-bootmode");
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
-    // ── Phase 0.6: WiFi STA + UDP log sink. WIFI_SSID 空なら skip
-    //   (cfg.toml 不在 = log は USB-CDC + LCD のみ)。失敗時は warn
-    //   だけ出して続行 — boot 完走 > log 経路。`_wifi` は drop されると
-    //   association が切れるので static slot に保持。
+    // NVS は (a) WiFi PHY calibration (b) boot_mode flag の 2 用途で
+    // 共有。partition take は process 1 回しか通らないので、ここで
+    // 取って両方に clone で渡す。
+    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
+    let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
+    let mode = boot_mode::determine(&nvs);
+    log::info!("boot_mode: {} (stored + KEY1 override)", mode.label());
+
+    // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
+    //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)
+    //   失敗時は warn だけ出して続行 — boot 完走 > log 経路。
+    //   `_wifi` は drop されると association が切れるので static slot に保持。
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
-    if !WIFI_SSID.is_empty() {
+    let wifi_should_start = mode == boot_mode::BootMode::Wifi && !WIFI_SSID.is_empty();
+    if mode == boot_mode::BootMode::Wifi && WIFI_SSID.is_empty() {
+        log::warn!(
+            "boot_mode=WIFI but WIFI_SSID empty (no cfg.toml) — running WiFi-mode shell without STA; flip via KEY2 to return to DECODE"
+        );
+    }
+    if wifi_should_start {
         let sysloop = EspSystemEventLoop::take().expect("sysloop");
-        // NVS partition は WiFi の PHY 校正データを永続化するのに必要。
-        // 取得失敗 (= partition 不在) でも `None` で WiFi 自体は動くが、
-        // 毎 boot フルキャリブになるので少し遅くなる + DRAM 食う。
-        let nvs = EspDefaultNvsPartition::take().ok();
-        match wifi::connect_sta(peripherals.modem, sysloop, nvs, WIFI_SSID, WIFI_PSK) {
+        match wifi::connect_sta(peripherals.modem, sysloop, Some(nvs_part.clone()), WIFI_SSID, WIFI_PSK) {
             Ok(handle) => {
                 // `pc_ip = "auto"` (or empty) → use the directed
                 // subnet broadcast learned from DHCP. Otherwise treat
@@ -143,63 +154,44 @@ fn main() -> ! {
             }
             Err(e) => log::warn!("WiFi STA failed: {e:#} — UDP log disabled"),
         }
-    } else {
-        log::info!("WIFI_SSID empty (no cfg.toml) — UDP log disabled");
     }
 
-    // decode_pipeline を spawn するか否か:
-    //   - WiFi 有効時 (WIFI_SSID 設定): WiFi 静的バッファ + decode_pipeline
-    //     の thread stack 群 (main 24KB + dsp_worker + stage1_inc 16KB +
-    //     wav_sim) + BASIS_RE/IM 静的 DRAM (60KB×2) を全部内部 DRAM 161KB
-    //     に詰めようとして OOM (Phase 0.6 検証で xTaskCreatePinnedToCore=-1
-    //     を実測)。BASIS は移動不可 (cache/DMA 制約、ユーザ指摘) なので
-    //     Phase 0.6 検証モードでは decode_pipeline 自体を skip する。
-    //   - WiFi 無効時 (cfg.toml 不在): Phase 4 demo として decode_pipeline
-    //     を起動する (BT も sdkconfig で無効化済み)。
-    if WIFI_SSID.is_empty() {
-        // Phase 0.7a: BASIS は heap_caps_aligned_alloc で内部 DRAM に確保
-        // (旧 .bss 配置と同等)。WiFi mode で skip するためだけにこの分岐に
-        // 移している — 静的版から見て [mem] 行の差分が ~123 KB なら成功。
-        log_free_internal("pre-basis-alloc");
-        let basis_re_main = alloc_basis_dram("RE_main");
-        let basis_im_main = alloc_basis_dram("IM_main");
-        let basis_re_c1 = alloc_basis_dram("RE_c1");
-        let basis_im_c1 = alloc_basis_dram("IM_c1");
-        log_free_internal("post-basis-alloc");
-        // Worker pair: hand a raw pointer to `dual_core::init` (called
-        // inside `decode_pipeline::run`). The slice references end at
-        // this scope; the worker thread reconstructs slices from the
-        // raw pointers. `*mut` isn't `Send` so cross the thread
-        // boundary as `usize` (same pattern as the `wf_q` drainer).
-        let re_c1_addr = basis_re_c1.as_mut_ptr() as usize;
-        let im_c1_addr = basis_im_c1.as_mut_ptr() as usize;
+    // decode_pipeline を spawn するか否か: NVS-stored boot mode で決定。
+    //   - BootMode::Decode: BASIS heap alloc (120 KB) + decode_pipeline +
+    //     stage1_inc + dsp_worker + wav_sim を起動
+    //   - BootMode::Wifi: BASIS alloc skip、WiFi STA + UDP log のみ。
+    //     Internal DRAM ~120 KB が WiFi 用に空く
+    if mode == boot_mode::BootMode::Decode {
+        // Phase 0.7c: BASIS の `heap_caps_aligned_alloc` は thread の中で
+        // 行う。0.7c で NVS が常時 init されるようになり pre-alloc free が
+        // 234 KB に下がった結果、main で先に BASIS を取ると largest free
+        // が 31 KB まで縮み 32 KB thread stack の確保が ENOMEM になる。
+        // 順序を逆にして spawn 先で alloc すれば spawn 時点で largest が
+        // 139 KB 確保できるので安全。BASIS の DRAM 配置要件は満たす。
+        log_free_internal("pre-thread-spawn");
         let pipeline_spawn = std::thread::Builder::new()
             .stack_size(32 * 1024)
-            .spawn(move || {
-                decode_pipeline::run(
-                    basis_re_main,
-                    basis_im_main,
-                    re_c1_addr as *mut i16,
-                    im_c1_addr as *mut i16,
-                )
-            });
+            .spawn(|| decode_pipeline::run());
         if let Err(e) = pipeline_spawn {
             log::error!("decode_pipeline spawn failed ({e})");
         }
     } else {
         log::info!(
-            "decode_pipeline skipped (Phase 0.7a: WiFi mode — BASIS alloc skipped, 120 KB DRAM free for WiFi)"
+            "decode_pipeline skipped (BootMode::Wifi — BASIS alloc skipped, 120 KB internal DRAM free for WiFi)"
         );
     }
 
     // メインタスクは LCD render loop (返らない)。modem は WiFi が
     // consume するので Peripherals 全体は move 不可 — 必要なフィールド
-    // (i2c1 / i2s0 / spi3 / pins) を個別に渡す。
+    // (i2c1 / i2s0 / spi3 / pins) を個別に渡す。NVS handle は KEY2
+    // long-press 時の flip_and_restart に使う。
     display::run_log_panel(
         peripherals.i2c1,
         peripherals.i2s0,
         peripherals.spi3,
         peripherals.pins,
         &FANOUT,
+        nvs,
+        mode,
     )
 }

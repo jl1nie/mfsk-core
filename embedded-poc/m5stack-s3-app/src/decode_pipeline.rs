@@ -38,22 +38,26 @@ const MAX_CAND: usize = 15;
 
 /// 別スレッドから呼ぶ。返らない。
 ///
-/// Phase 0.7: caller owns the 4 BASIS buffers (main + worker, RE/IM
-/// each). The buffers must be 16-byte aligned, `BASIS_SCRATCH_LEN`
-/// `i16`s long, and live in internal DRAM (`MALLOC_CAP_INTERNAL`).
-/// `main.rs` heap-allocates them in decode mode and skips the alloc in
-/// WiFi mode, so the 120 KB worker pair is no longer a static cost.
-pub fn run(
-    basis_re_main: &'static mut [i16],
-    basis_im_main: &'static mut [i16],
-    basis_re_c1: *mut i16,
-    basis_im_c1: *mut i16,
-) -> ! {
+/// Phase 0.7c: BASIS buffers (60 KB × 4) are allocated **inside this
+/// thread** instead of main, because the thread's 32 KB stack must be
+/// reserved while the largest free DRAM block is still ~139 KB. If
+/// main allocated BASIS first the post-alloc largest dropped to
+/// ~31 KB and `pthread_create` for this thread returned ENOMEM. The
+/// per-pair lifetime is the same as the program; the buffers are
+/// never freed (`heap_caps_aligned_alloc` + Box::leak via slice
+/// `'static mut`).
+pub fn run() -> ! {
     let need = mfsk_ft8_basis_scratch_len();
-    assert!(basis_re_main.len() >= need, "BASIS RE main too small");
-    assert!(basis_im_main.len() >= need, "BASIS IM main too small");
-    assert_eq!(basis_re_main.len(), BASIS_SCRATCH_LEN);
-    assert_eq!(basis_im_main.len(), BASIS_SCRATCH_LEN);
+    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
+
+    crate::log_free_internal("pre-basis-alloc");
+    let basis_re_main = crate::alloc_basis_dram("RE_main");
+    let basis_im_main = crate::alloc_basis_dram("IM_main");
+    let basis_re_c1 = crate::alloc_basis_dram("RE_c1");
+    let basis_im_c1 = crate::alloc_basis_dram("IM_c1");
+    crate::log_free_internal("post-basis-alloc");
+    let basis_re_c1_ptr = basis_re_c1.as_mut_ptr();
+    let basis_im_c1_ptr = basis_im_c1.as_mut_ptr();
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
@@ -61,7 +65,7 @@ pub fn run(
     }
 
     esp_dsp_fft::prewarm(NFFT_SPEC);
-    dual_core::init(basis_re_c1, basis_im_c1);
+    dual_core::init(basis_re_c1_ptr, basis_im_c1_ptr);
 
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
