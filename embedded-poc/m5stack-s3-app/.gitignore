@@ -1,3 +1,10 @@
+/target/
+/.embuild/
+Cargo.lock
+
+# Per-session device captures via flash-monitor.sh / cat /dev/ttyACM0.
+/logs/
+
 # Build-time WiFi credentials and UDP log target. Created locally by
 # the developer per `cfg-sample.toml`; never committed.
 cfg.toml
