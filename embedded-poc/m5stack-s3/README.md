@@ -67,8 +67,9 @@ qso3 < 1.0 s に届けば Phase 4 (coarse_sync MAC 化) と Phase 5 (LX7
 - **dual_core dispatch + Phase E2 race**: LX6 で再現する worker tail
   経路の失敗が S3 でも出る可能性が高い。`rx_wavsim` は sequential
   per-half on main を継承して 7/7 信頼運用する。
-- **rx-skeleton (I2S PDM 実 RX)**: m5stack-core2 と同じく cross-build
-  状況が unverified。S3 用 PDM mic ピン assign / I2S driver 設定は別
-  検討。
-- **README の Files セクション** は m5stack-core2 と同じ構成 — 重複
-  検出時に共通化を検討する。
+- **live RX path**: 本クレートは compute bench 専用。実 RX は
+  `embedded-poc/m5stack-s3-app` に集約済み（旧 `rx-skeleton` stub は
+  2026-05-13 撤去、Core2 統合は #61 で吸収予定）。
+- **README の Files セクション** は本クレートでは省略（兄弟クレート
+  m5stack-core2 README にある table と同じ構成になる想定）。共通化は
+  [`docs/CLEANUP_2026_05.md`](../../docs/CLEANUP_2026_05.md) の δ で扱う。
