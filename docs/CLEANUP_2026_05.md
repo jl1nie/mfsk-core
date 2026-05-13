@@ -27,9 +27,9 @@ Each later stage assumes the earlier stages have landed:
   refactor lands on stable narrative ground.
 - ε is the only week-scale item; γ/β/δ are 1–3 days each.
 
-## γ — scaffolding cleanup (this PR)
+## γ — scaffolding cleanup
 
-**Done 2026-05-13.**
+**Done 2026-05-13 (PR #66).**
 
 - Removed `embedded-poc/m5stack-core2/src/bin/rx_skeleton.rs` and
   `embedded-poc/m5stack-s3/src/bin/rx_skeleton.rs` — both 257-line
@@ -51,77 +51,194 @@ Deferred (touched only if hardware bring-up reveals churn):
 - `embedded-poc/scripts/{flash-monitor.sh,udp-log-listen.sh}` —
   both actively used per CLAUDE.md, keep.
 
-## β — feature flag / cfg cleanup (weekend)
+## β — feature flag / cfg cleanup
 
-Survey targets (all `mfsk-core/src/`):
+**Done 2026-05-13. β.5 in PR #67; β.1–4 audited, no findings.**
 
-1. **`fft-extern` vs `fft-rustfft`** — scattered across decode_block.
-   List every `#[cfg(feature = "fft-rustfft")]` /
-   `#[cfg(feature = "fft-extern")]` site and confirm both branches
-   are reachable from a live build target. Anything that's only
-   reachable from a retired path (e.g. m5stack-core2 dual_core
-   diag) can collapse.
-2. **`fixed-point` × `fft-rustfft` combinations** — four-way matrix
-   (`{fixed-point, !fixed-point} × {fft-rustfft, !fft-rustfft}`).
-   Verify each cell has at least one production caller. The host
-   `(fixed-point, fft-rustfft)` cell is the one where
-   `process_candidates_into_with_cs_scratch_tuned` takes
-   `basis_re`/`basis_im` parameters but routes through the cd0
-   path (no basis precompute) — addressed in β.5.
-3. **`profile-coarse` / `nstep-half`** — confirm both are still on
-   the embedded-rx preset; if one has been folded into core
-   behaviour, drop the cfg gate.
-4. **`parallel`** — host-only rayon path. Verify the workspace
-   still builds it; the `cfg(feature = "parallel")` branches in
-   `mfsk-core/src/ft8/decode.rs` (search the file for
-   `#[cfg(feature = "parallel")]`) flagged as inactive code in
-   recent diagnostics — confirm they're still reachable from a
-   live preset.
-5. **Compiler-visible dead code** carrying over from γ. Re-grep
-   after β touches anything else; line numbers drift quickly.
-   - `fn recompute_nsync` in `mfsk-core/src/ft8/decode_block.rs`
-     — `#[warn(dead_code)]`
-   - `fn recompute_snr_xsnr2` in the same file — same warning
-   - `const ALLSUM_WIN` in
-     `embedded-poc/embedded-shared/src/stage1_inc.rs`
-   - `process_candidates_into_with_cs_scratch_tuned` body — the
-     `basis_re` / `basis_im` parameters are unused under the host
-     fft-rustfft cfg branch (look for `_basis_re`/`_basis_im`
-     warning suggestions in
-     `cargo check --features fft-rustfft,fixed-point`).
+### β.5 compiler-visible dead code (code change)
 
-Acceptance for β:
+Landed in PR #67. Cleared all four warnings under
+`cargo check --features fft-rustfft,fixed-point`:
 
-- `cargo build` with each documented preset (`embedded-rx`,
-  default host, host + fft-rustfft + uvpacket) finishes with zero
-  warnings on the touched files.
-- Surviving cfg gates are guarded by `#[cfg(...)]` only when both
-  branches actively ship.
+- `fn recompute_nsync`, `fn recompute_snr_xsnr2` in
+  `mfsk-core/src/ft8/decode_block.rs` — cfg tightened from
+  `feature = "fft-rustfft"` to
+  `all(feature = "fft-rustfft", not(feature = "fixed-point"))`,
+  matching the only caller (`retain_mut` block that needs the
+  xsnr2/xbase post-process, f32-only).
+- `const ALLSUM_WIN` in
+  `embedded-poc/embedded-shared/src/stage1_inc.rs` — removed.
+  Leftover from a Phase E2 per-half allsum draft; siblings
+  (`ALLSUM_FREQ_*`) are still in use.
+- `basis_re` / `basis_im` parameters of
+  `process_candidates_into_with_cs_scratch_tuned` — referenced
+  via `let _ = &basis_re;` under `#[cfg(feature = "fft-rustfft")]`
+  to mark intent (signature stays for embedded callers).
 
-## δ — documentation sync (after β)
+### β.1–4 cfg audit results (no code change required)
 
-1. `docs/ROADMAP.md` — currently mixes 0.6.0/0.6.1/0.6.2 status
-   with the original post-0.5.12 plan. After β stabilises the
-   feature surface, condense the legacy section and update
-   "Open follow-ups" to reference the current issue set
-   (#23, #24, #58, #61, #63, #64, #65).
-2. `README.md` (root) — verify the badges / build commands match
-   the post-β feature set.
-3. `docs/LIBRARY.{md,ja.md}` — cross-check the §3 Q65 "four
-   decoder strategies" table (AWGN / AP-hint / fast-fading /
-   AP-list) against the actual rx.rs / decode.rs entry points.
-   Post-PR #53 we standardised "AP-hint BP" terminology; the
-   strategy table and the Q65 FFI-overview block (search for
-   `mfsk_q65_decode_with_ap` in LIBRARY.ja.md) should both use
-   that wording.
-4. Embedded `CLAUDE.md` files (`m5stack-core2`, `m5stack-s3`,
-   `m5stack-s3-app`, `embedded-shared` if it grows one) —
-   factor out the duplicated "espup / export-esp.sh / espflash"
-   one-time-setup section to a single shared CLAUDE.md at
+Surveyed every `#[cfg(feature = …)]` site against the four-cell
+build matrix `{fixed-point, !fixed-point} × {fft-rustfft, fft-extern}`.
+All four cells produce zero warnings with the relevant
+`cargo check --features …` invocation:
+
+| cell | features | status |
+|---|---|---|
+| host f32 (default) | `fft-rustfft` | clean |
+| host fixed-point bench | `fft-rustfft, fixed-point` | clean |
+| embedded f32 (unused in production) | `fft-extern` | clean |
+| embedded ship | `fft-extern, fixed-point` | clean |
+
+cfg gate counts by feature (2026-05-13 sweep):
+
+- `fft-rustfft` / `fft-extern`: ~67 sites across mfsk-core. Every
+  branch reachable from at least one live cell above.
+- `fixed-point`: ~32 sites in `decode.rs` + `decode_block.rs`. All
+  branches live.
+- `nstep-half`: 4 sites in `mfsk-core/src/ft8/params.rs` and
+  `decode_block.rs` (symmetric `#[cfg(not(feature = "nstep-half"))]`
+  / `#[cfg(feature = "nstep-half")]` pairs). Embedded preset
+  enables it; default host stays on WSJT-X-faithful NSPS/4.
+- `parallel`: 5 sites in `mfsk-core/src/core/pipeline.rs`. Default
+  features enable it; both branches reachable.
+- `profile-coarse`: read via `cfg!(feature = …)` macro at runtime
+  in `decode_block.rs` (search the file for
+  `cfg!(feature = "profile-coarse")`), not via `#[cfg]` gating —
+  intentional, the feature wires `MFSK_PROFILE_COARSE` env-var
+  fallback for embedded.
+
+No dead cfg branches found. Acceptance criteria met.
+
+## δ — documentation sync
+
+**Status: planned for weekend session.**
+
+Five sub-tasks, can be done in any order (no internal dependencies):
+
+### δ.1 ROADMAP refresh
+
+`docs/ROADMAP.md` currently mixes 0.6.2 ("in flight") status,
+0.6.0 status, and a legacy post-0.5.12 plan. Refresh after γ/β
+landed:
+
+1. Move 0.6.2 from "in flight" to "shipped" (released
+   2026-05-08 per memory, plus the 0.6.x post-merge sweep in
+   #53/#60/#62/#66/#67 cleared 2026-05-13).
+2. Compress the legacy post-0.5.12 section — only items still
+   relevant carry forward. **A0 is closed** (#40, since 0.6.0);
+   **A0'** for embedded AP loop shipped as Step 4 of
+   `process_one_candidate_inner` in 0.6.1; the remaining
+   `decode_block_with_ap` symmetric port is a new issue (none
+   filed yet — file under δ.1 if pursued).
+3. Update "Open follow-ups" section to the current issue set:
+   - **#23** FST4-60A golden lockdown (Phase A1, still open)
+   - **#24** JT65 golden + erasure-metadata path (Phase A2)
+   - **#25** MSK144 (community invitation, out of 3-month plan)
+   - **#58** D-1 redundant compute_llr (low-priority profile)
+   - **#61** Core2→S3 unification (weekend hardware work)
+   - **#63** WSJT-X-faithful OSD precoding (host-only,
+     correctness, deprioritised)
+   - **#64** decode_block_multipass fft_cache hoist (host perf
+     follow-up to #60)
+   - **#65** SyncOnly+DataOnly cd0 share (host perf nice-to-have)
+4. Add a "Cleanup 2026-05" section pointing at this doc so the
+   ROADMAP captures γ/β shipped + δ/ε pending.
+
+### δ.2 Root README badge / build commands
+
+`README.md` (root) — verify:
+
+- Crate version badge reads 0.6.2.
+- Build commands in the quick-start use the post-β feature
+  presets that actually exist (`default`, `embedded-rx`,
+  `full`). No stale references to retired features.
+- `embedded-poc/` example commands point at `m5stack-s3-app`
+  (current production), not `m5stack-core2/m5stack-s3` (the
+  compute-bench crates).
+
+### δ.3 LIBRARY.{md,ja.md} terminology cross-check
+
+PR #53 standardised "AP-hint BP" in the LIBRARY.md / LIBRARY.ja.md
+strategy tables, but a 2026-05-13 sweep shows two known carry-over
+sites that this stage needs to finish:
+
+- `mfsk-core/src/q65/rx.rs` — the `decode_scan_with_ap_for`
+  docstring (currently at line ~516; grep for the function name)
+  opens with "AP-biased version of [`decode_scan_for`]" — update
+  the wording to "AP-hint variant of [`decode_scan_for`]" or
+  similar to match the rest of the doc set.
+- `README.md:228` (root) — quick-start references
+  `decode_scan_with_ap*` as "AP-biased".
+
+Plus broader verification across the doc set:
+
+- §3 Q65 "four decoder strategies" table reads
+  `AWGN / AP-hint / fast-fading / AP-list` everywhere (done in
+  #53; verify nothing slipped back).
+- §3 narrative paragraphs after the table use **AP-hint BP**
+  (not bare "AP", not "AP-biased BP" — verify).
+- Q65 FFI block in LIBRARY.ja.md (search for
+  `mfsk_q65_decode_with_ap`) has the matching "AP-hint BP"
+  inline annotation.
+- Re-grep after touching the two known sites:
+  ```sh
+  grep -rn 'AP-biased\|AP biased\|AP-bias' \
+    mfsk-core/ mfsk-ffi/ mfsk-ffi-ft8/ embedded-poc/ docs/ README.md \
+    --exclude=CLEANUP_2026_05.md
+  ```
+  Expected output: zero hits in source/docs, optional historical
+  notes in commit-message-like context only.
+
+### δ.4 Embedded CLAUDE.md consolidation
+
+Two crate-level CLAUDE.md files exist:
+`embedded-poc/m5stack-core2/CLAUDE.md` and
+`embedded-poc/m5stack-s3/CLAUDE.md`. Both duplicate the
+"one-time setup" section (espup install, export-esp.sh,
+~/.espressif, ~/.cargo/bin/espflash) and the
+"trouble we've already debugged" list.
+
+Refactor:
+
+1. Create `embedded-poc/CLAUDE.md` containing the shared
+   one-time setup + the cross-board debug list (LX6 vs LX7
+   differences moved here as a comparison table).
+2. Trim each crate's CLAUDE.md to crate-specific notes only:
+   board name, target triple, `cargo build` invocation, any
+   board-specific gotchas (PSRAM mode, opt-level rationale).
+3. Add a header pointer in each crate CLAUDE.md to the shared
    `embedded-poc/CLAUDE.md`.
-5. Per-source-file docstrings citing retired paths
-   (`subtract_signal_weighted`, `qsb_partial_gain`, etc. — already
-   removed in 0.6.2 per ROADMAP) — grep and update.
+4. `embedded-poc/m5stack-s3-app/` currently has no CLAUDE.md — add
+   one (production crate; weekend Core2 work will likely need it).
+   `embedded-poc/embedded-shared/` similarly — add a stub pointing
+   at the shared doc.
+
+### δ.5 Source-file docstring grep for retired paths
+
+Per the 0.6.2 ROADMAP, several APIs were removed:
+`subtract_signal_weighted`, `qsb_partial_gain`,
+`ft8::llr::symbol_spectra`, `ft8::sync::coarse_sync` (the host
+wrapper). Grep across the workspace for any remaining mention
+and either delete the reference or note "removed in 0.6.2":
+
+```sh
+grep -rn 'subtract_signal_weighted\|qsb_partial_gain\|ft8::llr::symbol_spectra\|ft8::sync::coarse_sync' mfsk-core/ mfsk-ffi/ mfsk-ffi-ft8/ embedded-poc/ docs/ README.md
+```
+
+Hand-evaluate each hit. Real removals are dead references that
+should be deleted; intentional "historical note" mentions (e.g.
+ROADMAP entries) stay but get a date stamp.
+
+### Acceptance for δ
+
+- `cargo doc --no-deps --all-features` builds with no broken
+  cross-references.
+- ROADMAP "Open follow-ups" lists exactly the issues currently
+  open with `state:open` filter.
+- No instance of "AP" without "-hint" or "-list" qualifier
+  outside intentional historical context.
+- Each embedded crate CLAUDE.md is < 50 lines (down from current
+  150+) with the bulk in `embedded-poc/CLAUDE.md`.
 
 ## ε — decode_block.rs restructure (week-scale)
 
@@ -156,7 +273,7 @@ Acceptance for ε:
 
 - No behavioural change. WSJT-X golden recall on qso3_busy holds.
 - File-level git churn is contained to `decode_block/` directory;
-  external API (#[doc(hidden)] entries we still need to expose)
+  external API (`#[doc(hidden)]` entries we still need to expose)
   unchanged.
 - Build size unchanged within ±2 KB on the embedded preset.
 
