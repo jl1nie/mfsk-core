@@ -104,8 +104,9 @@ Acceptance for β:
 3. `docs/LIBRARY.{md,ja.md}` — cross-check the §3 "four decoder
    strategies" table against the actual rx.rs / decode.rs entry
    points (post-PR #53 we standardised "AP-hint BP" terminology,
-   so the table examples and the FFI table at LIBRARY.ja.md:857
-   should both use that wording).
+   so the strategy table and the FFI-overview block — search for
+   `mfsk_q65_decode_with_ap` in LIBRARY.ja.md — should both use
+   that wording).
 4. Embedded `CLAUDE.md` files (`m5stack-core2`, `m5stack-s3`,
    `m5stack-s3-app`, `embedded-shared` if it grows one) —
    factor out the duplicated "espup / export-esp.sh / espflash"
