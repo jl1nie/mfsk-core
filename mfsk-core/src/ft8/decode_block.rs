@@ -2930,24 +2930,23 @@ pub(super) fn process_one_candidate_inner(
             // OSD depth dispatch — mfsk-core terminology.
             //
             // `osd_decode_deep(_, N, _)` tries MRB error patterns of
-            // weight 1..N. `osd_decode` is order-1 basic. There has
-            // never been a depth-2 path here; the OSD-1/3 split was
-            // the original design at f118a64.
+            // weight 0..N. `osd_decode` is a thin wrapper that calls
+            // `osd_decode_generic(_, 2, _, _)` — i.e. ndeep=2, orders
+            // 0+1+2 = 4,187 patterns. The current split is
+            // ndeep=2 (q<18) vs ndeep=3 (q≥18, ~121,667 patterns)
+            // and has been since f118a64 introduced this function.
             //
-            // WSJT-X parity gap (see #59): `ft8b.f90` calls
-            // `osd174_91(..., norder=2, ...)` for all FT8 candidates,
-            // which inside that subroutine dispatches to
-            // `nord=1 + npre1=1` — order-1 search PLUS a precoding
+            // WSJT-X comparison (see #59, #63): `ft8b.f90` always
+            // calls `osd174_91(..., norder=2, ...)` for FT8, which
+            // inside that subroutine dispatches to `nord=1 + npre1=1`
+            // — order-1 MRB search (~91 patterns) PLUS a precoding
             // rule (test error patterns derived from G matrix
-            // columns). mfsk-core implements pure MRB-order-N search
-            // with no precoding, so:
-            //   - q ≥ 18: we run nord=3 (much more aggressive than
-            //     WSJT-X's nord=1; we catch some signals WSJT-X
-            //     misses).
-            //   - q < 18: we run nord=1 basic; WSJT-X's nord=1+npre1
-            //     may catch a marginal signal we miss. Filed as a
-            //     separate parity feature (precoding implementation),
-            //     not a regression.
+            // columns, ~hundreds more). mfsk-core has no precoding
+            // implementation, but compensates with much larger raw
+            // pattern counts: ndeep=2 / ndeep=3 are each well above
+            // WSJT-X's pattern budget. The two decoders may catch
+            // structurally different signals at the margin; that
+            // comparison is open (#63).
             let osd = if q >= 18 {
                 osd_decode_deep(llr, 3, Some(check_crc14))
             } else {
