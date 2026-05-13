@@ -294,7 +294,7 @@ on `main` plus the merged-δ-PR-#70 view:
 | 1647–2287 | ~640 | `decode_block` / `_tuned` / `_with_ap*` entry points + two `decode_block_multipass` variants + two `fine_refine_pass1` variants + `xsnr2_db_simple` + `decode_block_into*` |
 | 2288–2524 | ~235 | `refine_candidates*` + `sync_quality_block0` + `bp_step_select` |
 | 2525–2838 | ~314 | `process_candidates*` family (`_tuned`, `_with_ap`, `_into*`, `_with_cs_scratch*`) |
-| 2841–3170 | ~330 | `process_one_candidate_inner` — the host + embedded shared per-cand LLR → BP → OSD → AP staircase + the OSD dispatch (#63's seam target) |
+| 2839–3170 | ~332 | `process_one_candidate_inner` (starts 2841) plus the `WSJTX_NHARDERRORS_MAX` constant at 2839 the moved body depends on — the host + embedded shared per-cand LLR → BP → OSD → AP staircase + the OSD dispatch (#63's seam target) |
 | 3171–3517 | ~350 | `#[cfg(test)]` tests |
 
 External callers (out of `mfsk-core`) reach into
@@ -377,9 +377,12 @@ PR time, not on the final phase.
   `coarse_sync_inner`) to `decode_block/coarse_sync.rs`.
 - Parent re-exports `pub use coarse_sync::*;` (entire family is
   reached from `ft8/decode.rs` + `core/sync.rs` doc-link).
-- Update intra-doc-links in `fec/ldpc/bp.rs:577`,
-  `core/sync.rs:224`, `ft8/decode.rs:626`, `ft8/sync.rs:8` to
-  point at the new submodule path.
+- Verify the intra-doc-links in `fec/ldpc/bp.rs:577`,
+  `core/sync.rs:224`, `ft8/decode.rs:626`, `ft8/sync.rs:8` still
+  resolve via the parent's `pub use` re-export — they should keep
+  pointing at the public facade
+  (`crate::ft8::decode_block::coarse_sync`), not at the internal
+  submodule path, so future re-layouts don't break the links.
 - **Acceptance**: `cargo test --release --test
   ft8_qso3_apon_recall` green with all-AP-off goldens (7/8
   WSJT-X, 16/18 JTDX) and all-AP-on goldens (5/6 JTDX extras)
@@ -396,7 +399,7 @@ PR time, not on the final phase.
   function bodies under different cfg combinations. Move them as
   a single block to avoid splitting one combination across files.
 - Verify the PR #60 `fft_cache` hoist scope still works after
-  the module split — the hoist relies on a `pub(super)` lifetime
+  the module split — the hoist relies on a `pub(super)` visibility
   shared with the call site; after the move, `pub(super)` now
   means "the new submodule", which is the same scope.
 - **Risk**: the 4-cell build matrix (`{fixed-point, !fixed-point}
