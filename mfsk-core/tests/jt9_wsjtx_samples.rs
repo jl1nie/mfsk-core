@@ -1,31 +1,24 @@
 //! JT9 real-world signal validation against the WSJT-X sample
-//! recording shipped under `WSJT-X/samples/JT9/130418_1742.wav`
+//! recording vendored under `embedded-poc/assets/130418_1742.wav`
 //! (12 kHz mono PCM-16, 60 s — one full JT9 slot).
-//!
-//! Skipped when the WSJT-X tree is not present at the expected
-//! sibling path.
 //!
 //! Counterpart to `q65_wsjtx_samples.rs` and `ft4_wsjtx_samples.rs`.
 
 #![cfg(all(feature = "jt9", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mfsk_core::jt9::decode_scan;
 use mfsk_core::jt9::search::SearchParams;
 
 #[allow(dead_code)]
 mod common;
-use common::load_wav_f32_opt as read_wsjtx_wav_f32;
+use common::load_wav_f32 as read_wsjtx_wav_f32;
 
-fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../embedded-poc/assets/130418_1742.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
-}
+const SAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../embedded-poc/assets/130418_1742.wav"
+);
 
 struct Golden {
     msg: &'static str,
@@ -91,15 +84,7 @@ const DT_TOL_SEC: f32 = 0.5; // ≈ 1 symbol; covers ⅛-sym lag grid + slot-off
 // to bring the 1505 Hz signal inside the search band.
 #[test]
 fn jt9_wsjtx_sample_recall_vs_golden() {
-    let Some(path) = sample_path() else {
-        eprintln!(
-            "skipping: vendored JT9 sample not found at \
-             embedded-poc/assets/130418_1742.wav"
-        );
-        return;
-    };
-
-    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
 
     // Default SearchParams is 1400..1600 Hz which excludes every
     // golden tone (1119..1346 Hz). Widen the band; everything else

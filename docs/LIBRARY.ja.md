@@ -170,7 +170,7 @@ mfsk_core
 ├── jt65/             JT65 ZST + decode (+ 消失対応 RS)
 └── q65/              Q65 ファミリ — 6 sub-mode ZST + decode + synth
     ├── protocol.rs     q65_submode! マクロ (Q65a30..Q65e60 ZST 生成)
-    ├── rx.rs           4 つのデコード戦略 (AWGN / AP / fast-fading / AP-list)
+    ├── rx.rs           4 つのデコード戦略 (AWGN / AP-hint / fast-fading / AP-list)
     ├── ap_list.rs      standard_qso_codewords — full AP-list 候補生成
     ├── tx.rs           65-FSK 合成器 (sub-mode 対応)
     ├── search.rs       22 シンボル Costas-block coarse 検索

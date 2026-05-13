@@ -180,7 +180,7 @@ mfsk_core
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS)
 └── q65/              Q65 family — 6 sub-mode ZSTs + decode + synth
     ├── protocol.rs     q65_submode! macro emitting Q65a30 .. Q65e60 ZSTs
-    ├── rx.rs           4 decoder strategies (AWGN / AP / fast-fading / AP-list)
+    ├── rx.rs           4 decoder strategies (AWGN / AP-hint / fast-fading / AP-list)
     ├── ap_list.rs      standard_qso_codewords — full AP-list candidate generator
     ├── tx.rs           65-FSK synthesiser (sub-mode-aware)
     ├── search.rs       coarse 22-symbol Costas-block search
