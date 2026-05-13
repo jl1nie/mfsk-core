@@ -10,18 +10,6 @@ rust-version = "1.82"
 name = "mfsk-core-m5stack-core2"
 harness = false # disable cargo's built-in test harness
 
-# Real-time RX skeleton. Pairs the existing baked-WAV compute bench
-# (above) with a placeholder I2S PDM capture loop + 15 s decode
-# trigger that exercises the `mfsk_ft8_stream_*` ABI end-to-end.
-# **Cross-build status: untested at the time of writing** — see
-# `src/bin/rx_skeleton.rs` header for what the reader is expected to
-# verify on real hardware. Built only when explicitly named:
-#   cargo build --release --bin rx-skeleton
-[[bin]]
-name = "rx-skeleton"
-path = "src/bin/rx_skeleton.rs"
-harness = false
-
 # WAV-fed streaming RX bench. Validates the stream wrapper +
 # dual-core decode pipeline end-to-end without needing a real I2S
 # PDM mic — the `wav_sim` task pumps baked QSO WAVs into the ring
