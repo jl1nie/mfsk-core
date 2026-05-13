@@ -1887,7 +1887,12 @@ fn decode_block_multipass<S: AudioSample>(
 /// Hard-decision sync count (= WSJT-X `ft8b.f90:163-176` nsync) read
 /// from the pass-1 spectrogram at the result's refined (freq, dt).
 /// 21-bit upper bound (3 sync blocks × 7 Costas positions).
-#[cfg(feature = "fft-rustfft")]
+///
+/// Only the host f32 build calls this — `recompute_snr_xsnr2` /
+/// `recompute_nsync` use the `xsnr2/xbase` formulation which is
+/// f32-only (see the `#[cfg(not(feature = "fixed-point"))]` caller
+/// at line ~1877).
+#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 fn recompute_nsync(
     result: &DecodeResult,
     spec: &Spectrogram,
@@ -2068,7 +2073,11 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
 /// convention) maps directly into a WSJT-X-compatible dB number.
 ///
 /// Falls back to `-24 dB` if the ratio degenerates.
-#[cfg(feature = "fft-rustfft")]
+///
+/// f32-only — fixed-point spectrograms quantise to u16, putting noise
+/// cells at zero and breaking the `log10` baseline; see the comment
+/// block at the `retain_mut` caller for the full rationale.
+#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 fn recompute_snr_xsnr2(
     result: &DecodeResult,
     spec: &Spectrogram,
@@ -2699,6 +2708,15 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     basis_im: &mut [i16],
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
+    // Host fft-rustfft path doesn't need the basis buffers — cs is
+    // built via the cd0 32-pt FFT instead. The parameters stay in
+    // the signature so embedded callers (no fft-rustfft) get the
+    // same shape; reference them here to silence unused warnings.
+    #[cfg(feature = "fft-rustfft")]
+    {
+        let _ = &basis_re;
+        let _ = &basis_im;
+    }
     process_candidates_with_ap(
         audio,
         cands,

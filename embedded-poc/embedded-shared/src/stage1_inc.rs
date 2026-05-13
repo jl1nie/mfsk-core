@@ -50,7 +50,6 @@ const TARGET_PEAK: i32 = (NFFT_SPEC * 2) as i32;
 const ALLSUM_FREQ_MIN: f32 = 100.0;
 const ALLSUM_FREQ_MAX: f32 = 3_000.0;
 const ALLSUM_FREQ_MID: f32 = 0.5 * (ALLSUM_FREQ_MIN + ALLSUM_FREQ_MAX);
-const ALLSUM_WIN: usize = 2 * NTONES;
 
 fn n_freq_for(max_freq_hz: f32) -> usize {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
