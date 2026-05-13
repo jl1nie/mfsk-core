@@ -1085,7 +1085,7 @@ pub fn symbol_spectra_direct<S: AudioSample>(
 ) -> Box<[[Cmplx<f32>; 8]; 79]> {
     let mut out: Box<[[Cmplx<f32>; 8]; 79]> =
         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
-    fill_symbol_spectra(&mut out, audio, freq_hz, dt_sec, sym_mask);
+    fill_symbol_spectra(&mut out, audio, freq_hz, dt_sec, sym_mask, None);
     out
 }
 
@@ -1156,14 +1156,19 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     freq_hz: f32,
     dt_sec: f32,
     mask: SymMask,
+    fft_cache: Option<&[Complex<f32>]>,
 ) {
-    fill_symbol_spectra_via_cd0(out, audio, freq_hz, dt_sec, mask);
+    fill_symbol_spectra_via_cd0(out, audio, freq_hz, dt_sec, mask, fft_cache);
 }
 
 /// Embedded fallback (no `fft-rustfft` available — Xtensa cannot run
 /// the 192k cd0 FFT). Reverts to the rectangular-window per-tone DFT
 /// for non-fixed-point builds; the fixed-point variant has its own
 /// basis-precompute path in `fill_symbol_spectra_into`.
+///
+/// The `fft_cache` parameter is accepted for API parity with the
+/// `fft-rustfft` variant but ignored — there is no 192k FFT to skip
+/// on this path.
 #[doc(hidden)]
 #[cfg(all(not(feature = "fft-rustfft"), not(feature = "fixed-point")))]
 pub fn fill_symbol_spectra<S: AudioSample>(
@@ -1172,7 +1177,9 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     freq_hz: f32,
     dt_sec: f32,
     mask: SymMask,
+    fft_cache: Option<&[Complex<f32>]>,
 ) {
+    let _ = fft_cache;
     fill_symbol_spectra_generic::<f32, S>(out, audio, freq_hz, dt_sec, mask);
 }
 
@@ -1186,10 +1193,11 @@ pub fn fill_symbol_spectra<S: AudioSample>(
 ///   cs(0:7,k) = csymb(1:8) / 1e3
 /// enddo
 /// ```
-/// Per-call cost: one 192k forward FFT (~5 ms host) + one 3.2k inverse
-/// FFT + 79 × 32-pt FFT. Optimisation (cache the 192k FFT across
-/// candidates of the same slot) is left to the caller pipeline; for now
-/// the simple version is built per call.
+/// Per-call cost: 79 × 32-pt FFT + (one 192k forward FFT only if the
+/// caller did not supply `fft_cache`) + one 3.2k inverse FFT.
+/// Passing `Some(cache)` from the multipass driver (the cache built
+/// once per slot in `decode_frame_inner`) skips the 192k forward FFT
+/// per candidate — ~5 ms saved × 30+ candidates × 3 passes.
 #[cfg(feature = "fft-rustfft")]
 fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     out: &mut [[Cmplx<f32>; 8]; 79],
@@ -1197,16 +1205,27 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     freq_hz: f32,
     dt_sec: f32,
     mask: SymMask,
+    fft_cache: Option<&[Complex<f32>]>,
 ) {
     use rustfft::FftPlanner;
     extern crate alloc;
 
     // S → i16 conversion (no-op when S=i16 already). Per-call alloc
-    // — wasteful when cand-loop calls this 30+ times per slot, but
-    // simplifies the API. A future refactor can hoist a cached
-    // `Vec<i16>` + `fft_cache` to the multipass driver.
-    let audio_i16: alloc::vec::Vec<i16> = audio.iter().map(|s| s.to_i16()).collect();
-    let (cd0, _) = crate::ft8::downsample::downsample(&audio_i16, freq_hz, None);
+    // — still wasteful when cand-loop calls this 30+ times per slot.
+    // See #55 (perf-B) for the caller-buffer hoist. Skipped entirely
+    // when `fft_cache` is supplied (the slot-cache path doesn't need
+    // the audio bytes — only the precomputed forward FFT).
+    let cd0 = match fft_cache {
+        Some(cache) => crate::core::dsp::downsample::downsample_cached(
+            cache,
+            freq_hz,
+            &crate::ft8::downsample::FT8_CFG,
+        ),
+        None => {
+            let audio_i16: alloc::vec::Vec<i16> = audio.iter().map(|s| s.to_i16()).collect();
+            crate::ft8::downsample::downsample(&audio_i16, freq_hz, None).0
+        }
+    };
 
     // ibest in cd0 sample units (200 sps). dt_sec is offset from
     // TX_START_OFFSET_S = 0.5 s; cd0[0] corresponds to slot t=0,
@@ -1399,7 +1418,9 @@ pub fn fill_symbol_spectra<S: AudioSample>(
     freq_hz: f32,
     dt_sec: f32,
     mask: SymMask,
+    fft_cache: Option<&[Complex<f32>]>,
 ) {
+    let _ = fft_cache;
     fill_symbol_spectra_generic::<f32, S>(out, audio, freq_hz, dt_sec, mask);
 }
 
@@ -2561,7 +2582,7 @@ fn process_candidates_tuned_with_ap<S: AudioSample>(
         bp_max_iter,
         &mut cs_scratch,
         |cs, cand, mask| {
-            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask);
+            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
         },
         ap_hint,
         strictness,
@@ -2693,7 +2714,9 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
             #[cfg(feature = "fft-rustfft")]
             {
                 // basis_{re,im} unused on this path — borrow nothing.
-                fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask);
+                // fft_cache=None here because process_candidates_into_tuned
+                // is the embedded entry, not the slot-cache pipeline.
+                fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
             }
             // Embedded fixed-point (no fft-rustfft): keep the
             // basis-precompute + dot-product path — no 192k FFT
