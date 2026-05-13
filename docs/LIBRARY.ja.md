@@ -121,7 +121,7 @@ Q65 は WSPR では試されなかった軸で trait 面を試す材料になっ
    生成するため、sub-mode ごとのコード重複は無い。
 4. **4 つの並列なデコード戦略**: 同一 FEC フレームに対し正当に
    選び得る受信経路が 4 通り存在するのは Q65 が初めて — plain AWGN
-   BP、AP-biased BP、fast-fading metric、AP-list テンプレート照合。
+   BP、AP-hint BP、fast-fading metric、AP-list テンプレート照合。
    §3 で詳述する。各戦略は sub-mode ZST に対して generic な
    別個のエントリポイント関数として共存し、内部の FEC と
    メッセージコーデックは共有する。
@@ -400,7 +400,7 @@ generic である。
 | 状況                                                  | 戦略                       | エントリポイント                                              | 閾値ゲイン       |
 |-------------------------------------------------------|----------------------------|---------------------------------------------------------------|------------------|
 | デフォルト — チャネル特性 / メッセージ未知            | AWGN Bessel + BP           | `decode_at_for<P>` / `decode_scan_for<P>`                     | 基準             |
-| コールサイン or レポート既知、地上波チャネル          | AP-biased BP               | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB            |
+| コールサイン or レポート既知、地上波チャネル          | AP-hint BP               | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB            |
 | ドップラー拡散チャネル (≥10 Hz、microwave EME)        | Fast-fading metric + BP    | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>`       | 拡散時 5–8 dB    |
 | コールペア既知、QSO 文脈無し、地上波                  | AP-list テンプレート照合   | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>` | ~3 dB |
 
@@ -408,7 +408,7 @@ generic である。
 Bessel-I0 metric で確率ベクトル化し、QRA 符号上で非二進 belief
 propagation を実行する。加法ガウスノイズに近いチャネルで安全に動く。
 
-**AP-biased BP** は BP 開始前に既知の情報ビット位置で intrinsic
+**AP-hint BP** は BP 開始前に既知の情報ビット位置で intrinsic
 確率ベクトルをクランプする。正しい hint は BP の収束点を真値側に
 寄せ、誤った hint は誤デコードよりも収束失敗を引き起こす傾向が
 ある (CRC が残りを捕捉する)。`mfsk_core::msg::ApHint` の builder
@@ -854,7 +854,7 @@ MfskStatus        mfsk_encode_q65(MfskQ65SubMode submode,
 MfskStatus        mfsk_q65_decode(MfskQ65SubMode, ...);              // AWGN
 MfskStatus        mfsk_q65_decode_with_ap(MfskQ65SubMode, ...,
                                   const char* ap_call1, ap_call2,
-                                  ap_grid, ap_report, ...);          // AP-biased BP
+                                  ap_grid, ap_report, ...);          // AP-hint BP
 MfskStatus        mfsk_q65_decode_fading(MfskQ65SubMode, ...,
                                   float b90_ts,
                                   MfskQ65FadingModel, ...);          // fast-fading
@@ -971,7 +971,7 @@ repeat-accumulate 符号で、Walsh-Hadamard メッセージにより確率
 実送信する。実装した 6 sub-mode は同じ FEC + 同期配置 + 77 bit
 メッセージを共有し、`NSPS` (30 s vs 60 s スロット) と
 トーン間隔 (×1, ×2, ×4, ×8, ×16) のみが異なる。§3 の 4 つの
-並列デコード戦略 (AWGN BP, AP-biased BP, fast-fading metric,
+並列デコード戦略 (AWGN BP, AP-hint BP, fast-fading metric,
 AP-list テンプレート照合) はすべて同じ QRA codec を利用する。
 
 ### 10.1 スコープ境界: 応用例としての `uvpacket`
@@ -1013,7 +1013,7 @@ uvpacket が汎用 TX/RX パイプラインを bypass するため、
 テスト** を同時に出荷しました:
 
 - **Q65 ファミリ拡張 — *positive* probe**。trait 表面を非バイナリ
-  符号 (QRA over GF(2⁶)) と 4 並列デコード戦略 (AWGN / AP /
+  符号 (QRA over GF(2⁶)) と 4 並列デコード戦略 (AWGN / AP-hint /
   fast-fading / AP-list) まで押し広げて、形が崩れないことを確認
   した。`Protocol` / `ModulationParams` / `FrameLayout` /
   `FecCodec` / `MessageCodec` の各層が、1 つのマクロから生やした

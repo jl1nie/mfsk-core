@@ -128,7 +128,7 @@ exercise:
 4. **Four parallel decoder strategies** — Q65 is the first protocol
    in the library where the receiver chain has multiple legitimate
    paths through the same FEC. They are listed in §3:
-   plain AWGN BP, AP-biased BP, fast-fading metric, and AP-list
+   plain AWGN BP, AP-hint BP, fast-fading metric, and AP-list
    template matching. Each is a distinct entry-point function
    generic over the sub-mode ZST; the underlying FEC and message
    codec are shared.
@@ -418,7 +418,7 @@ sub-mode ZST.
 | When                                               | Strategy                  | Entry point                                                   | Threshold gain |
 |----------------------------------------------------|---------------------------|---------------------------------------------------------------|----------------|
 | Default — unknown channel, unknown content         | AWGN Bessel + BP          | `decode_at_for<P>` / `decode_scan_for<P>`                     | baseline       |
-| Known callsign(s) or report, terrestrial channel   | AP-biased BP              | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB          |
+| Known callsign(s) or report, terrestrial channel   | AP-hint BP              | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB          |
 | Doppler-spread channel (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>`       | 5–8 dB on spread channels |
 | Known call pair, no QSO context, terrestrial       | AP-list template matching | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>` | ~3 dB          |
 
@@ -427,7 +427,7 @@ become probability vectors via the Bessel-I0 metric, then non-binary
 belief propagation runs on the QRA code. Falls back gracefully on
 any channel reasonably close to additive Gaussian noise.
 
-**AP-biased BP** clamps the intrinsic probability vectors at known
+**AP-hint BP** clamps the intrinsic probability vectors at known
 information-bit positions before BP. A correct hint shifts the BP
 fixed-point closer to the truth; a wrong hint typically fails to
 converge rather than misdecoding (the CRC catches what's left).
@@ -987,7 +987,7 @@ channel symbols actually transmitted. Six wired sub-modes share
 the same FEC + sync layout + 77-bit message; only `NSPS`
 (30-s vs 60-s slot) and tone spacing (×1, ×2, ×4, ×8, ×16) differ
 between them. The four parallel decoder strategies introduced in
-§3 (AWGN BP, AP-biased BP, fast-fading metric, AP-list template
+§3 (AWGN BP, AP-hint BP, fast-fading metric, AP-list template
 matching) all share the same QRA codec under the hood.
 
 ### 10.1 Scope boundary: `uvpacket` as an applied example
@@ -1031,7 +1031,7 @@ trait abstractions, in opposite directions:
 
 - **Q65 family expansion — *positive* probe.** Pushed the trait
   surface to a non-binary code (QRA over GF(2⁶)) and four parallel
-  decoder strategies (AWGN / AP / fast-fading / AP-list) without
+  decoder strategies (AWGN / AP-hint / fast-fading / AP-list) without
   bending the trait shape. The `Protocol` / `ModulationParams` /
   `FrameLayout` / `FecCodec` / `MessageCodec` layers carried
   through unchanged for six sub-modes generated from one macro.
