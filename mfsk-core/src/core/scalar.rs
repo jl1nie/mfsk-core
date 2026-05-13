@@ -423,6 +423,24 @@ impl SpecScalar for Q14i16 {
 /// `unsafe` casts plus the five wrapper functions; `SpecScalar`-bound
 /// helper methods that were previously inherent now live on the
 /// [`ComplexSpec`] extension trait below.
+///
+/// ## Naming convention
+///
+/// `Cmplx<S>` and `num_complex::Complex<S>` are the same type via
+/// this alias, but the two names are used to signal intent:
+///
+/// - **`Cmplx<S>`** for mfsk-core's spec-scalar storage —
+///   per-symbol spectra (cs), LLR inputs, sync-quality buffers.
+///   The `S: SpecScalar` bound is enforced by the [`ComplexSpec`]
+///   trait's `impl` block, so methods like `norm_sqr_wide`
+///   only resolve when the scalar choice is one mfsk-core
+///   understands (`f32`, `Q14i16`, `Q11i16`).
+///
+/// - **`Complex<f32>`** (directly from `num_complex`) for vanilla
+///   DSP buffers — FFT input/output, the 192 k cd0 cache,
+///   per-symbol rotators, anything that exists only as raw signal
+///   processing scratch. These have no `SpecScalar` semantics
+///   and stay agnostic to mfsk-core's storage typing.
 pub type Cmplx<S> = num_complex::Complex<S>;
 
 /// `SpecScalar`-aware extension methods on [`Cmplx`] / `Complex<S>`.
