@@ -58,9 +58,10 @@ Survey targets (all `mfsk-core/src/`):
 2. **`fixed-point` × `fft-rustfft` combinations** — four-way matrix
    (`{fixed-point, !fixed-point} × {fft-rustfft, !fft-rustfft}`).
    Verify each cell has at least one production caller. The host
-   `(fixed-point, fft-rustfft)` cell is the one with the
-   `fill_symbol_spectra_into` wrapper that warns
-   `_basis_re`/`_basis_im` unused — likely dead.
+   `(fixed-point, fft-rustfft)` cell is the one where
+   `process_candidates_into_with_cs_scratch_tuned` takes
+   `basis_re`/`basis_im` parameters but routes through the cd0
+   path (no basis precompute) — addressed in β.5.
 3. **`profile-coarse` / `nstep-half`** — confirm both are still on
    the embedded-rx preset; if one has been folded into core
    behaviour, drop the cfg gate.
@@ -77,10 +78,11 @@ Survey targets (all `mfsk-core/src/`):
    - `fn recompute_snr_xsnr2` in the same file — same warning
    - `const ALLSUM_WIN` in
      `embedded-poc/embedded-shared/src/stage1_inc.rs`
-   - `process_candidates_into_tuned` body — the `basis_re` /
-     `basis_im` parameters are unused under the host fft-rustfft
-     cfg branch (look for `_basis_re`/`_basis_im` warning suggestions
-     in `cargo check --features fft-rustfft,fixed-point`).
+   - `process_candidates_into_with_cs_scratch_tuned` body — the
+     `basis_re` / `basis_im` parameters are unused under the host
+     fft-rustfft cfg branch (look for `_basis_re`/`_basis_im`
+     warning suggestions in
+     `cargo check --features fft-rustfft,fixed-point`).
 
 Acceptance for β:
 
