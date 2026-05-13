@@ -2927,6 +2927,24 @@ pub(super) fn process_one_candidate_inner(
             (&llr_full_f32.llrc, 16),
             (&llr_full_f32.llrd, 17),
         ] {
+            // OSD depth dispatch — mfsk-core terminology.
+            //
+            // `osd_decode_deep(_, N, _)` tries MRB error patterns of
+            // weight 0..=N (inclusive). `osd_decode` is a thin wrapper for
+            // `osd_decode_generic(_, 2, _, _)` (ndeep=2). The
+            // ndeep=2/3 split has been the design since f118a64.
+            //
+            // **WSJT-X-faithfulness deviation (see #63).** ft8b.f90
+            // always calls `osd174_91(..., norder=2, ...)` for FT8,
+            // which dispatches to `nord=1 + npre1=1` — order-1 MRB
+            // search **plus** a precoding rule (test error patterns
+            // derived from G matrix columns; osd174_91.f90:230-289).
+            // mfsk-core has no precoding implementation; the bumped
+            // ndeep here was chosen as a simpler stand-in. Whether
+            // pattern-count compensation actually covers the
+            // structurally-distinct patterns WSJT-X's precoding
+            // generates is an open question. #63 tracks restoring
+            // strict WSJT-X behaviour (nord=1 + npre1).
             let osd = if q >= 18 {
                 osd_decode_deep(llr, 3, Some(check_crc14))
             } else {
