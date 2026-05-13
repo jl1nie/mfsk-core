@@ -330,9 +330,6 @@ fn freq_sweep_1224hz() {
         env!("CARGO_MANIFEST_DIR"),
         "/../embedded-poc/assets/130418_1742.wav"
     ));
-    if !path.exists() {
-        return;
-    }
     let bytes = std::fs::read(path).unwrap();
     let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
     let audio: Vec<f32> = bytes[44..44 + dl]
@@ -371,9 +368,6 @@ fn wide_freq_time_sweep() {
         env!("CARGO_MANIFEST_DIR"),
         "/../embedded-poc/assets/130418_1742.wav"
     ));
-    if !path.exists() {
-        return;
-    }
     let bytes = std::fs::read(path).unwrap();
     let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
     let audio: Vec<f32> = bytes[44..44 + dl]
