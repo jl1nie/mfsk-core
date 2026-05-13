@@ -7,6 +7,12 @@ intermediate cleanup so the integration starts on a tidy base.
 
 ## Stages and ordering
 
+The Greek-letter labels match the original proposal in conversation
+(α dead-code / β feature-cfg / γ scaffold / δ docs / ε restructure).
+α was folded into β.5 (compiler-visible dead code), and the
+execution order is γ-first because scaffolding cleanup unblocks
+the others — hence the non-alphabetical sequence below.
+
 ```
 γ ──→ β ──→ δ ──→ ε
 (scaffolding) (feature/cfg) (docs sync) (decode_block.rs restructure)
