@@ -225,7 +225,7 @@ carries its own Quick example:
 - [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
   — `decode_scan_default` (Q65-30A); generic `decode_scan_for<P>`
   for any wired sub-mode including the Q65-60A‥E EME variants;
-  `decode_scan_with_ap` / `decode_scan_with_ap_for<P>` for AP-biased
+  `decode_scan_with_ap` / `decode_scan_with_ap_for<P>` for AP-hint
   decoding (~2 dB threshold gain when call signs are known); and
   `decode_scan_fading_for<P>` for the fast-fading metric (Gaussian
   / Lorentzian channel models) that recovers 5–8 dB on Doppler-spread
@@ -332,7 +332,11 @@ the 0.5.x baseline. M5Stack Core2 (LX6) on the same WAV ~2.8 s. See
 for the integration contract, runtime BP / `nstep-half` tuning knobs,
 and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
 without 192k FFT — investigated and deferred);
-`embedded-poc/m5stack-{s3,core2}/` are the working example binaries.
+`embedded-poc/m5stack-s3-app/` is the production FT8 controller
+crate (LCD UI + QSO FSM + WiFi-UDP log streaming);
+`embedded-poc/m5stack-{s3,core2}/` are compute-bench crates kept
+for performance regression tracking (Core2 fold-in into the S3
+dual-core pipeline is tracked in [#61](https://github.com/jl1nie/mfsk-core/issues/61)).
 
 Host AP-on multipass recall on the same WAV is materially higher.
 After 0.6.2's host pipeline catch-up (cs-source unification +

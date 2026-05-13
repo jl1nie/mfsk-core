@@ -513,7 +513,7 @@ pub fn decode_scan_for<P: ModulationParams>(
     decode_scan_inner::<P>(audio, sample_rate, nominal_start_sample, params, None)
 }
 
-/// AP-biased version of [`decode_scan_for`]. Same coarse search; each
+/// AP-hint variant of [`decode_scan_for`]. Same coarse search; each
 /// candidate is decoded with the AP hint applied, which lifts the
 /// effective decode threshold by 2–4 dB on Q65-30A and is essential
 /// for EME on 6 m and above.

@@ -542,8 +542,9 @@ pub fn decode_frame_subtract<P: Protocol>(
             // `if cond { 0.5 } else { 1.0 }` to dodge an Xtensa Rust
             // 1.95.0.0 LLVM instruction-selection SIGSEGV on the
             // `[2 x float] [1.0, 0.5]` constant pool the select form
-            // generates. See `crate::ft8::decode::qsb_partial_gain`
-            // for the same workaround applied to the FT8 SIC path.
+            // generates. The FT8 SIC path used the same workaround
+            // until 0.6.2 retired `qsb_partial_gain` along with
+            // `subtract_signal_weighted`.
             let qsb = (r.sync_cv > 0.3) as u32 as f32;
             let gain = 1.0 - 0.5 * qsb;
             // `r.info` is post-descramble (FT4 only); re-apply the rvec
