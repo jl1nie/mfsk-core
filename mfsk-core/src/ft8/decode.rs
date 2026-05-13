@@ -1411,7 +1411,7 @@ mod tests {
         audio[off..off + n_sig].copy_from_slice(&buf[..n_sig]);
 
         // Phase 1: decode A. We need a real DecodeResult (with proper sync_cv,
-        // freq_hz, dt_sec) so subtract_signal_weighted can reconstruct A.
+        // freq_hz, dt_sec) so the SIC path can reconstruct A.
         let phase1 = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BpAllOsd, 50);
         let known_results: Vec<DecodeResult> = phase1
             .iter()

@@ -452,7 +452,7 @@ enum MfskStatus mfsk_q65_decode(enum MfskQ65SubMode submode,
                                 struct MfskMessageList *out);
 
 /**
- * AP-biased Q65 scan-and-decode. Up to four optional hints
+ * AP-hint Q65 scan-and-decode. Up to four optional hints
  * (`call1`, `call2`, `grid`, `report`) — each may be NULL when
  * unknown. Lifts the effective decode threshold by ~2 dB when the
  * supplied hints are correct.

@@ -11,7 +11,7 @@
 //!
 //! Q65 has six sub-modes (Q65-30A for terrestrial, Q65-60A‥60E for
 //! the EME band lineup) and four decoder strategies (AWGN Bessel,
-//! AP-biased BP, fast-fading metric, AP-list template matching).
+//! AP-hint BP, fast-fading metric, AP-list template matching).
 //! The simple `mfsk_decoder_new(MFSK_PROTOCOL_Q65A30)` path covers
 //! the most common terrestrial Q65 case; the dedicated
 //! `mfsk_q65_*` function family exposes every sub-mode and every
@@ -1109,7 +1109,7 @@ pub unsafe extern "C" fn mfsk_q65_decode(
     MfskStatus::Ok
 }
 
-/// AP-biased Q65 scan-and-decode. Up to four optional hints
+/// AP-hint Q65 scan-and-decode. Up to four optional hints
 /// (`call1`, `call2`, `grid`, `report`) — each may be NULL when
 /// unknown. Lifts the effective decode threshold by ~2 dB when the
 /// supplied hints are correct.
