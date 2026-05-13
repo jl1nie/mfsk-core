@@ -83,6 +83,17 @@ Currently open GitHub issues (state:open as of 2026-05-14):
   (perf follow-up to #60, which landed the single-pass hoist).
 - **#65** — share `cd0` between SyncOnly + DataOnly
   `fill_symbol_spectra` calls (host perf nice-to-have).
+- **#72** — `DecodeStrictness` duplicate definition + uncalibrated
+  `core::pipeline` copy for FT4/FST4 (either tighten the public
+  API or honour the *"can re-tune later"* promise). Schedule
+  after ε.7 pub-map tighten.
+- **#73** — `EqMode::Adaptive` has collapsed into `EqMode::Local`
+  in the AP-list path; restore the non-EQ fallback or drop the
+  variant. Schedule after ε.
+- **#74** — `DecodeDepth::Bp` (cheapest staircase) has no known
+  in-tree caller beyond smoke tests; survey downstream C consumers
+  before retiring. Schedule after ε.5 (which already touches the
+  LLR / BP / OSD staircase).
 
 Carry-overs from the post-0.5.12 plan that have since closed:
 
