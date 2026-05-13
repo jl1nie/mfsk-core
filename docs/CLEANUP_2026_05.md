@@ -183,7 +183,7 @@ Plus broader verification across the doc set:
 - Re-grep after touching the two known sites:
   ```sh
   grep -rn 'AP-biased\|AP biased\|AP-bias' \
-    mfsk-core/ docs/ README.md mfsk-ffi/ \
+    mfsk-core/ mfsk-ffi/ mfsk-ffi-ft8/ embedded-poc/ docs/ README.md \
     --exclude=CLEANUP_2026_05.md
   ```
   Expected output: zero hits in source/docs, optional historical
@@ -208,10 +208,10 @@ Refactor:
    board-specific gotchas (PSRAM mode, opt-level rationale).
 3. Add a header pointer in each crate CLAUDE.md to the shared
    `embedded-poc/CLAUDE.md`.
-4. `m5stack-s3-app/` currently has no CLAUDE.md — add one
-   (production crate; weekend Core2 work will likely need it).
-   `embedded-shared/` similarly — add a stub pointing at the
-   shared doc.
+4. `embedded-poc/m5stack-s3-app/` currently has no CLAUDE.md — add
+   one (production crate; weekend Core2 work will likely need it).
+   `embedded-poc/embedded-shared/` similarly — add a stub pointing
+   at the shared doc.
 
 ### δ.5 Source-file docstring grep for retired paths
 
