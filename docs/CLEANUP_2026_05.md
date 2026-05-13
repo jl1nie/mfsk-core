@@ -400,9 +400,12 @@ PR time, not on the final phase.
   shared with the call site; after the move, `pub(super)` now
   means "the new submodule", which is the same scope.
 - **Risk**: the 4-cell build matrix (`{fixed-point, !fixed-point}
-  × {fft-rustfft, fft-extern}`) must all stay clean. Run
-  `cargo check --features fft-rustfft,fixed-point` and
-  `--features fft-extern,fixed-point` locally before pushing.
+  × {fft-rustfft, fft-extern}`) must all stay clean. Run all four
+  `cargo check` combinations locally before pushing:
+    - `cargo check --features fft-rustfft`
+    - `cargo check --features fft-rustfft,fixed-point`
+    - `cargo check --features fft-extern`
+    - `cargo check --features fft-extern,fixed-point`
 - **Acceptance**: every β build-matrix cell builds clean; qso3
   recall unchanged.
 
