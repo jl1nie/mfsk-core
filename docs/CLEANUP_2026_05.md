@@ -287,14 +287,14 @@ on `main` plus the merged-δ-PR-#70 view:
 
 | range | lines | content |
 |---|---|---|
-| 1–244 | ~245 | module doc / `use` / constants (`NFFT_SPEC`, `NSTEP`, `DEFAULT_Q_THRESH`, `BASIS_SCRATCH_LEN`, …) |
+| 1–244 | ~245 | module doc / `use` / constants (`NFFT_SPEC`, `NSTEP`, `DEFAULT_Q_THRESH`, …) |
 | 246–552 | ~310 | `Spectrogram` struct + `compute_spectrogram` (`fft-rustfft` and `fft-extern` variants) |
 | 553–1079 | ~525 | `coarse_sync` family (`_with_allsum`, `precompute_coarse_allsum*`, `fill_coarse_allsum`, `coarse_sync_inner`) |
 | 1080–1645 | ~565 | `fill_symbol_spectra` family + `SymMask` enum + `symbol_spectra_direct*` + `BASIS_SCRATCH_LEN` body |
 | 1647–2287 | ~640 | `decode_block` / `_tuned` / `_with_ap*` entry points + two `decode_block_multipass` variants + two `fine_refine_pass1` variants + `xsnr2_db_simple` + `decode_block_into*` |
-| 2288–2496 | ~210 | `refine_candidates*` + `sync_quality_block0` + `bp_step_select` |
-| 2535–2838 | ~305 | `process_candidates*` family (`_tuned`, `_with_ap`, `_into*`, `_with_cs_scratch*`) |
-| 2839–3170 | ~330 | `process_one_candidate_inner` — the host + embedded shared per-cand LLR → BP → OSD → AP staircase + the OSD dispatch (#63's seam target) |
+| 2288–2524 | ~235 | `refine_candidates*` + `sync_quality_block0` + `bp_step_select` |
+| 2525–2838 | ~314 | `process_candidates*` family (`_tuned`, `_with_ap`, `_into*`, `_with_cs_scratch*`) |
+| 2841–3170 | ~330 | `process_one_candidate_inner` — the host + embedded shared per-cand LLR → BP → OSD → AP staircase + the OSD dispatch (#63's seam target) |
 | 3171–3517 | ~350 | `#[cfg(test)]` tests |
 
 External callers (out of `mfsk-core`) reach into
@@ -437,7 +437,7 @@ faithful precoding work tractable.
   ```
 
 - `process_one_candidate_inner` upgrades from `pub(super)` to
-  `pub(crate)` — host `ft8/decode.rs:561` calls it, and after the
+  `pub(crate)` — host `ft8/decode.rs:563` calls it, and after the
   move "super" becomes `decode_block::per_candidate` which the
   host module cannot reach directly.
 - Existing 4-LLR-variant loop (`llra/b/c/d` × pass-IDs 14/15/16/17)
