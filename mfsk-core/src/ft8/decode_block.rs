@@ -2930,7 +2930,7 @@ pub(super) fn process_one_candidate_inner(
             // OSD depth dispatch — mfsk-core terminology.
             //
             // `osd_decode_deep(_, N, _)` tries MRB error patterns of
-            // weight 0..N. `osd_decode` is a thin wrapper for
+            // weight 0..=N (inclusive). `osd_decode` is a thin wrapper for
             // `osd_decode_generic(_, 2, _, _)` (ndeep=2). The
             // ndeep=2/3 split has been the design since f118a64.
             //
