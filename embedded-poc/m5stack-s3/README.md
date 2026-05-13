@@ -70,5 +70,6 @@ qso3 < 1.0 s に届けば Phase 4 (coarse_sync MAC 化) と Phase 5 (LX7
 - **live RX path**: 本クレートは compute bench 専用。実 RX は
   `embedded-poc/m5stack-s3-app` に集約済み（旧 `rx-skeleton` stub は
   2026-05-13 撤去、Core2 統合は #61 で吸収予定）。
-- **README の Files セクション** は m5stack-core2 と同じ構成 — 重複
-  検出時に共通化を検討する。
+- **README の Files セクション** は本クレートでは省略（兄弟クレート
+  m5stack-core2 README にある table と同じ構成になる想定）。`docs/CLEANUP_2026_05.md`
+  の δ で共通化を扱う。

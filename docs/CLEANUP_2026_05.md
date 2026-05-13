@@ -66,13 +66,22 @@ Survey targets (all `mfsk-core/src/`):
    the embedded-rx preset; if one has been folded into core
    behaviour, drop the cfg gate.
 4. **`parallel`** — host-only rayon path. Verify the workspace
-   still builds it; if not, the inactive-code diagnostic at
-   decode.rs:655/1170 will keep firing.
-5. **Compiler-visible dead code** carrying over from γ:
-   - `recompute_nsync` (decode_block.rs:1891) — `#[warn(dead_code)]`
-   - `recompute_snr_xsnr2` (decode_block.rs:2072) — same
-   - `ALLSUM_WIN` const (embedded-shared/stage1_inc.rs:53)
-   - Unused `basis_re`/`basis_im` parameters (decode_block.rs:2698–2699)
+   still builds it; the `cfg(feature = "parallel")` branches in
+   `mfsk-core/src/ft8/decode.rs` (search the file for
+   `#[cfg(feature = "parallel")]`) flagged as inactive code in
+   recent diagnostics — confirm they're still reachable from a
+   live preset.
+5. **Compiler-visible dead code** carrying over from γ. Re-grep
+   after β touches anything else; line numbers drift quickly.
+   - `fn recompute_nsync` in `mfsk-core/src/ft8/decode_block.rs`
+     — `#[warn(dead_code)]`
+   - `fn recompute_snr_xsnr2` in the same file — same warning
+   - `const ALLSUM_WIN` in
+     `embedded-poc/embedded-shared/src/stage1_inc.rs`
+   - `process_candidates_into_tuned` body — the `basis_re` /
+     `basis_im` parameters are unused under the host fft-rustfft
+     cfg branch (look for `_basis_re`/`_basis_im` warning suggestions
+     in `cargo check --features fft-rustfft,fixed-point`).
 
 Acceptance for β:
 
