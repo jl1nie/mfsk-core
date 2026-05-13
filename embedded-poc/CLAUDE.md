@@ -77,9 +77,11 @@ is what the user types under tee / piped redirection.
 - **wrong toolchain (`error: toolchain 'esp' is not installed`)**
   — reinstall via `espup install`. Don't try to use stable Rust here.
 - **`tlsf_malloc` heap corruption mid-sweep** — known bug when
-  `decode_block` is called directly (see memory
-  `project_decode_block_embedded.md` item 2). Production
-  bench main.rs replicates the D pattern manually.
+  `decode_block` is called directly from a long-running bench
+  loop; allocator state gets corrupted partway through. Production
+  bench `main.rs` works around it by inlining the per-iteration
+  steps (the "D pattern") instead of calling `decode_block` as a
+  single function.
 - **"Segment … has not changed, skipping write"** — re-flashing
   the same ELF finishes in ~5 s but the chip still runs the
   previous binary. Touch a source file (e.g. bump a `log::info!`

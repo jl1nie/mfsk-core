@@ -25,8 +25,7 @@ Xtensa-LX7 toolchain notes and the LX6/LX7 comparison table.
   `println!` to USB-Serial-JTAG VFS blocks indefinitely after
   the host releases the CDC endpoint. Gate on
   `usb_serial_jtag_is_connected()`; see commit `8b46f4e` for
-  the fix and `project_m5stick_s3_app.md` memory for the
-  validation procedure.
+  the fix.
 - **`cfg.toml` (WiFi creds) is gitignored** — `cfg-sample.toml`
   is the committed template (wifikey2 convention).
 - **WiFi UDP log sink target**: aterm-class APs drop subnet
@@ -34,9 +33,9 @@ Xtensa-LX7 toolchain notes and the LX6/LX7 comparison table.
   silently fail. Switch to unicast PC IP if heartbeat doesn't
   arrive.
 - **WSL2 PC listener** needs a Hyper-V firewall rule for inbound
-  UDP 9999 (mirrored-mode default blocks it); see
-  `project_m5stick_s3_app.md` memory for the exact PowerShell
-  invocation.
+  UDP 9999 (mirrored-mode default blocks it). The exact
+  `New-NetFirewallHyperVRule` invocation is captured in the
+  Phase 0.6 commit log (search `git log --grep "Phase 0.6"`).
 
 ## Status (2026-05-14)
 

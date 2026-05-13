@@ -20,9 +20,10 @@ overrides.
 ## Crate-specific gotchas
 
 - **`tlsf_malloc` heap corruption mid-sweep** — `decode_block`
-  called directly trips a known TLSF heap bug; production main.rs
-  replicates the D pattern manually. Background in memory
-  `project_decode_block_embedded.md` item 2.
+  called directly from a long-running bench loop trips a known
+  TLSF heap bug. Production `main.rs` works around it by inlining
+  the per-iteration steps (the "D pattern") instead of calling
+  `decode_block` as a single function.
 - **`release.opt-level`** must stay `1`. `s` / `z` trigger an
   Xtensa-Rust LLVM regression on f32-select patterns; see the
   arithmetic-form workaround in `mfsk-core::core::pipeline` (FT4 SIC).
