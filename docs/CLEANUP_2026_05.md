@@ -158,20 +158,31 @@ landed:
 
 ### δ.3 LIBRARY.{md,ja.md} terminology cross-check
 
-After PR #53 standardised "AP-hint BP" terminology, sweep
-`docs/LIBRARY.md` and `docs/LIBRARY.ja.md` to confirm:
+PR #53 standardised "AP-hint BP" in the LIBRARY.md / LIBRARY.ja.md
+strategy tables, but a 2026-05-13 sweep shows two known carry-over
+sites that this stage needs to finish:
+
+- `mfsk-core/src/q65/rx.rs:516` — `decode_scan_for` docstring
+  still says "AP-biased version of ...".
+- `README.md:228` (root) — quick-start references
+  `decode_scan_with_ap*` as "AP-biased".
+
+Plus broader verification across the doc set:
 
 - §3 Q65 "four decoder strategies" table reads
-  `AWGN / AP-hint / fast-fading / AP-list` everywhere
-  (already done in #53, just verify).
+  `AWGN / AP-hint / fast-fading / AP-list` everywhere (done in
+  #53; verify nothing slipped back).
 - §3 narrative paragraphs after the table use **AP-hint BP**
-  (not bare "AP", not "AP-biased BP" — already done in #53).
+  (not bare "AP", not "AP-biased BP" — verify).
 - Q65 FFI block in LIBRARY.ja.md (search for
   `mfsk_q65_decode_with_ap`) has the matching "AP-hint BP"
   inline annotation.
-- Q65 module documentation in `mfsk-core/src/q65/rx.rs` (the
-  source file that drives §3's "rx.rs 4 decoder strategies"
-  description) uses the same wording.
+- Re-grep after touching the two known sites:
+  ```sh
+  grep -rn 'AP-biased\|AP biased\|AP-bias' mfsk-core/ docs/ README.md mfsk-ffi/
+  ```
+  Expected output: zero hits in source/docs, optional historical
+  notes in commit-message-like context only.
 
 ### δ.4 Embedded CLAUDE.md consolidation
 
@@ -206,7 +217,7 @@ wrapper). Grep across the workspace for any remaining mention
 and either delete the reference or note "removed in 0.6.2":
 
 ```sh
-grep -rn 'subtract_signal_weighted\|qsb_partial_gain\|ft8::llr::symbol_spectra\|ft8::sync::coarse_sync' mfsk-core/ embedded-poc/ docs/ README.md
+grep -rn 'subtract_signal_weighted\|qsb_partial_gain\|ft8::llr::symbol_spectra\|ft8::sync::coarse_sync' mfsk-core/ mfsk-ffi/ mfsk-ffi-ft8/ embedded-poc/ docs/ README.md
 ```
 
 Hand-evaluate each hit. Real removals are dead references that
