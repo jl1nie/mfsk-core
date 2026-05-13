@@ -162,8 +162,11 @@ PR #53 standardised "AP-hint BP" in the LIBRARY.md / LIBRARY.ja.md
 strategy tables, but a 2026-05-13 sweep shows two known carry-over
 sites that this stage needs to finish:
 
-- `mfsk-core/src/q65/rx.rs:516` — `decode_scan_for` docstring
-  still says "AP-biased version of ...".
+- `mfsk-core/src/q65/rx.rs` — the `decode_scan_with_ap_for`
+  docstring (currently at line ~516; grep for the function name)
+  opens with "AP-biased version of [`decode_scan_for`]" — update
+  the wording to "AP-hint variant of [`decode_scan_for`]" or
+  similar to match the rest of the doc set.
 - `README.md:228` (root) — quick-start references
   `decode_scan_with_ap*` as "AP-biased".
 
@@ -179,7 +182,9 @@ Plus broader verification across the doc set:
   inline annotation.
 - Re-grep after touching the two known sites:
   ```sh
-  grep -rn 'AP-biased\|AP biased\|AP-bias' mfsk-core/ docs/ README.md mfsk-ffi/
+  grep -rn 'AP-biased\|AP biased\|AP-bias' \
+    mfsk-core/ docs/ README.md mfsk-ffi/ \
+    --exclude=CLEANUP_2026_05.md
   ```
   Expected output: zero hits in source/docs, optional historical
   notes in commit-message-like context only.
