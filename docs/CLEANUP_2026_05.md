@@ -8,9 +8,8 @@ intermediate cleanup so the integration starts on a tidy base.
 ## Stages and ordering
 
 ```
-γ (scaffolding cleanup) ─┐
-                         ├─→ β (feature/cfg cleanup) ─→ δ (docs sync) ─→ ε (decode_block.rs restructure)
-γ ───────────────────────┘
+γ ──→ β ──→ δ ──→ ε
+(scaffolding) (feature/cfg) (docs sync) (decode_block.rs restructure)
 ```
 
 Each later stage assumes the earlier stages have landed:
@@ -125,8 +124,9 @@ Restructure goals (not yet committed to as design):
 
 1. Split per pipeline stage —
    `decode_block/{spectrogram, coarse_sync, fill_symbol_spectra,
-   process_candidates}.rs`. Keep `decode_block::run` as the public
-   facade.
+   process_candidates}.rs`. Keep `decode_block` (the existing public
+   entry function in `mfsk-core/src/ft8/decode_block.rs`) as the
+   facade after the split.
 2. Collapse the public-but-`#[doc(hidden)]` API surface — many
    "pub for benchmarking only" items leaked because they were
    reached by tests across module boundaries. After γ/β the set
