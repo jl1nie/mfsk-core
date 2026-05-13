@@ -10,7 +10,6 @@
 //! for is "does cfg.toml carry credentials" — actual mode choice is
 //! now data, not code. Users in the field can flip without a host.
 
-use core::ffi::CStr;
 
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
@@ -130,11 +129,4 @@ pub fn flip_and_restart(nvs: &EspNvs<NvsDefault>, current: BootMode) -> ! {
     }
     #[allow(unreachable_code)]
     loop {}
-}
-
-// Silence the unused-import warning when `boot_mode` is depended on
-// from main without exercising the CStr path (kept for future ID API).
-#[allow(dead_code)]
-fn _cstr_keepalive() -> &'static CStr {
-    c""
 }
