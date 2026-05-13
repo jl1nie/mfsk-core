@@ -515,6 +515,7 @@ fn process_candidate(
         refined.freq_hz,
         refined.dt_sec,
         crate::ft8::decode_block::SymMask::SyncOnly,
+        Some(fft_cache),
     );
     crate::ft8::decode_block::fill_symbol_spectra(
         &mut cs_raw,
@@ -522,6 +523,7 @@ fn process_candidate(
         refined.freq_hz,
         refined.dt_sec,
         crate::ft8::decode_block::SymMask::DataOnly,
+        Some(fft_cache),
     );
     let nsync = sync_quality(&cs_raw);
     if nsync <= 6 {
