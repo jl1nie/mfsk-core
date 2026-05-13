@@ -2930,23 +2930,21 @@ pub(super) fn process_one_candidate_inner(
             // OSD depth dispatch — mfsk-core terminology.
             //
             // `osd_decode_deep(_, N, _)` tries MRB error patterns of
-            // weight 0..N. `osd_decode` is a thin wrapper that calls
-            // `osd_decode_generic(_, 2, _, _)` — i.e. ndeep=2, orders
-            // 0+1+2 = 4,187 patterns. The current split is
-            // ndeep=2 (q<18) vs ndeep=3 (q≥18, ~121,667 patterns)
-            // and has been since f118a64 introduced this function.
+            // weight 0..N. `osd_decode` is a thin wrapper for
+            // `osd_decode_generic(_, 2, _, _)` (ndeep=2). The
+            // ndeep=2/3 split has been the design since f118a64.
             //
-            // WSJT-X comparison (see #59, #63): `ft8b.f90` always
-            // calls `osd174_91(..., norder=2, ...)` for FT8, which
-            // inside that subroutine dispatches to `nord=1 + npre1=1`
-            // — order-1 MRB search (~91 patterns) PLUS a precoding
-            // rule (test error patterns derived from G matrix
-            // columns, ~hundreds more). mfsk-core has no precoding
-            // implementation, but compensates with much larger raw
-            // pattern counts: ndeep=2 / ndeep=3 are each well above
-            // WSJT-X's pattern budget. The two decoders may catch
-            // structurally different signals at the margin; that
-            // comparison is open (#63).
+            // **WSJT-X-faithfulness deviation (see #63).** ft8b.f90
+            // always calls `osd174_91(..., norder=2, ...)` for FT8,
+            // which dispatches to `nord=1 + npre1=1` — order-1 MRB
+            // search **plus** a precoding rule (test error patterns
+            // derived from G matrix columns; osd174_91.f90:230-289).
+            // mfsk-core has no precoding implementation; the bumped
+            // ndeep here was chosen as a simpler stand-in. Whether
+            // pattern-count compensation actually covers the
+            // structurally-distinct patterns WSJT-X's precoding
+            // generates is an open question. #63 tracks restoring
+            // strict WSJT-X behaviour (nord=1 + npre1).
             let osd = if q >= 18 {
                 osd_decode_deep(llr, 3, Some(check_crc14))
             } else {
