@@ -33,7 +33,7 @@ use super::params::{COSTAS, COSTAS_POS, DEFAULT_BP_MAX_ITER, LDPC_N, NMAX, NN, N
 use super::wave_gen::message_to_tones;
 #[cfg(not(feature = "fixed-point"))]
 use crate::core::fft::default_planner;
-use crate::core::scalar::Cmplx;
+use crate::core::scalar::{Cmplx, ComplexSpec};
 use crate::core::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
 use crate::fec::ldpc::osd::{osd_decode, osd_decode_deep};

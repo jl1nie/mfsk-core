@@ -15,7 +15,7 @@ use num_traits::Float;
 
 use super::Protocol;
 use crate::core::fft::default_planner;
-use crate::core::scalar::{Cmplx, LlrScalar, SpecScalar, complex_slice_as_cmplx_f32};
+use crate::core::scalar::{Cmplx, ComplexSpec, LlrScalar, SpecScalar};
 
 // ──────────────────────────────────────────────────────────────────────────
 // LLR bundle
@@ -85,7 +85,7 @@ pub fn descramble_info<P: super::Protocol>(info: &mut [u8]) {
 /// would fall outside `cd0`, that symbol's window is zero-filled (rather
 /// than partially read). Per-element bounds checking lets edge symbols pull
 /// extra signal energy and shifts the LLR sign pattern away from WSJT-X.
-pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Complex<f32>> {
+pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cmplx<f32>> {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let ds_spb = (P::NSPS / P::NDOWN) as usize;
@@ -93,7 +93,10 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Co
     let mut planner = default_planner();
     let fft = planner.plan_forward(ds_spb);
 
-    let mut cs = vec![Complex::new(0.0f32, 0.0); n_sym * ntones];
+    // cs is spec-scalar storage (`Cmplx<f32>`); buf is an FFT scratch
+    // (`Complex<f32>`) — the alias makes them the same machine type
+    // but the naming preserves the semantic distinction.
+    let mut cs: Vec<Cmplx<f32>> = vec![Cmplx::new(0.0f32, 0.0); n_sym * ntones];
     let mut buf = vec![Complex::new(0.0f32, 0.0); ds_spb];
     let np2 = cd0.len() as i32;
 
@@ -164,19 +167,21 @@ fn normalize_bmet(bmet: &mut [f32]) {
 /// `llra`/`llrd` (the BP-only path) should use [`compute_llr_fast`]
 /// instead — it caps at nsym=1 and skips the heavy nsym=2/3 loops.
 ///
-/// The `Complex<f32>` cs API is a layout-compatible wrapper around
+/// The `Cmplx<f32>` (= `Complex<f32>` via the type alias in
+/// `core::scalar`) cs entry is a thin convenience wrapper around
 /// the generic `compute_llr_generic` — use the generic form when
-/// the caller already holds [`Cmplx<S>`] storage.
-pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Complex<f32>]) -> LlrSet<T> {
-    compute_llr_generic::<P, f32, T>(complex_slice_as_cmplx_f32(cs), P::LLR_NSYM_MAX as usize)
+/// the caller already holds [`Cmplx<S>`] storage for some other
+/// `S: SpecScalar` (e.g. `Q14i16` on the embedded fixed-point path).
+pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
+    compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize)
 }
 
 /// Same as [`compute_llr`] but stops at nsym=1. `llrb`/`llrc` come
 /// back zero-filled. Use when the caller will only ever read
 /// `llra` (or `llrd`), e.g. embedded `decode_block` with
 /// `DecodeDepth::Bp`. ~5× faster than the full computation.
-pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Complex<f32>]) -> LlrSet<T> {
-    compute_llr_generic::<P, f32, T>(complex_slice_as_cmplx_f32(cs), 1)
+pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
+    compute_llr_generic::<P, f32, T>(cs, 1)
 }
 
 /// Compute the unnormalised, unscaled bit-metric arrays for ONE
@@ -386,8 +391,8 @@ pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
 /// NTONES/2) mod NTONES]|²` (tone on the "opposite side" of the comb).
 /// SNR_dB = `10·log10(sig/noi − 1) − 27` clamped to −24 dB floor (WSJT-X
 /// convention, applied per-tone bandwidth → 2500 Hz reference).
-pub fn compute_snr_db<P: Protocol>(cs: &[Complex<f32>], itone: &[u8]) -> f32 {
-    compute_snr_db_generic::<P, f32>(complex_slice_as_cmplx_f32(cs), itone)
+pub fn compute_snr_db<P: Protocol>(cs: &[Cmplx<f32>], itone: &[u8]) -> f32 {
+    compute_snr_db_generic::<P, f32>(cs, itone)
 }
 
 /// Same as [`compute_snr_db`] but generic over the [`SpecScalar`]
@@ -418,8 +423,8 @@ pub fn compute_snr_db_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone
 /// Hard-decision sync quality — count sync symbols whose dominant tone
 /// matches the protocol's Costas pattern. Range is 0..N_SYNC; callers
 /// typically threshold on this.
-pub fn sync_quality<P: Protocol>(cs: &[Complex<f32>]) -> u32 {
-    sync_quality_generic::<P, f32>(complex_slice_as_cmplx_f32(cs))
+pub fn sync_quality<P: Protocol>(cs: &[Cmplx<f32>]) -> u32 {
+    sync_quality_generic::<P, f32>(cs)
 }
 
 /// Generic version of [`sync_quality`]. Accepts any [`Cmplx<S>`]

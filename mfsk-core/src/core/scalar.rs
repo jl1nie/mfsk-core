@@ -414,105 +414,70 @@ impl SpecScalar for Q14i16 {
     }
 }
 
-/// Complex sample with both components in scalar type `S`. Replaces
-/// `num_complex::Complex<f32>` for the embedded path's cs spectra
-/// once Phase 2 of the i16 migration lands; for now (Phase 2 step
-/// 1) this type is defined but call sites still use `Complex<f32>`.
+/// Complex sample with both components in scalar type `S`.
 ///
-/// Field order matches `num_complex::Complex` so a `Cmplx<f32>` is
-/// layout-compatible with `Complex<f32>` (`#[repr(C)]` on both) —
-/// the conversion helpers in this module turn that into a zero-cost
-/// view rather than a copy.
-#[repr(C)]
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
-pub struct Cmplx<S: SpecScalar> {
-    pub re: S,
-    pub im: S,
-}
-
-/// Reinterpret `&[Complex<f32>]` as `&[Cmplx<f32>]` without copying.
+/// Alias for `num_complex::Complex<S>` — the two types are
+/// structurally identical (`#[repr(C)] { re: S, im: S }`) and pre-0.7
+/// the codebase kept them as separate types with hand-written
+/// layout-compat casts. Collapsing to an alias eliminated five
+/// `unsafe` casts plus the five wrapper functions; `SpecScalar`-bound
+/// helper methods that were previously inherent now live on the
+/// [`ComplexSpec`] extension trait below.
 ///
-/// Both types are `#[repr(C)]` with two consecutive `f32` fields in
-/// the same order, so a slice of one points at the same bytes as a
-/// slice of the other. The unit test `cmplx_layout_compat_with_num_complex`
-/// in this module confirms `size_of` and `align_of` agree.
-#[inline]
-pub fn complex_slice_as_cmplx_f32(s: &[num_complex::Complex<f32>]) -> &[Cmplx<f32>] {
-    // SAFETY: layout-compatible types per the comment above.
-    unsafe { core::slice::from_raw_parts(s.as_ptr() as *const Cmplx<f32>, s.len()) }
-}
+/// ## Naming convention
+///
+/// `Cmplx<S>` and `num_complex::Complex<S>` are the same type via
+/// this alias, but the two names are used to signal intent:
+///
+/// - **`Cmplx<S>`** for mfsk-core's spec-scalar storage —
+///   per-symbol spectra (cs), LLR inputs, sync-quality buffers.
+///   The `S: SpecScalar` bound is enforced by the [`ComplexSpec`]
+///   trait's `impl` block, so methods like `norm_sqr_wide`
+///   only resolve when the scalar choice is one mfsk-core
+///   understands (`f32`, `Q14i16`, `Q11i16`).
+///
+/// - **`Complex<f32>`** (directly from `num_complex`) for vanilla
+///   DSP buffers — FFT input/output, the 192 k cd0 cache,
+///   per-symbol rotators, anything that exists only as raw signal
+///   processing scratch. These have no `SpecScalar` semantics
+///   and stay agnostic to mfsk-core's storage typing.
+pub type Cmplx<S> = num_complex::Complex<S>;
 
-/// Mutable counterpart of [`complex_slice_as_cmplx_f32`]. Used at the
-/// fill_symbol_spectra boundary so the existing rustfft / esp-dsp
-/// inner loops keep writing through `Complex<f32>` while the cs
-/// storage owned by callers is `Cmplx<f32>`.
-#[inline]
-pub fn cmplx_f32_slice_as_complex_mut(s: &mut [Cmplx<f32>]) -> &mut [num_complex::Complex<f32>] {
-    // SAFETY: layout-compatible types.
-    unsafe {
-        core::slice::from_raw_parts_mut(s.as_mut_ptr() as *mut num_complex::Complex<f32>, s.len())
-    }
-}
-
-/// Reinterpret a `&mut [[Cmplx<f32>; N]; M]` as `&mut [[Complex<f32>;
-/// N]; M]`. Used inside fill_symbol_spectra to keep the existing
-/// `Complex<f32>` rotator inner loops while callers hold cs in
-/// `Cmplx<f32>` storage.
-#[inline]
-pub fn cmplx_f32_2d_as_complex_mut<const N: usize, const M: usize>(
-    s: &mut [[Cmplx<f32>; N]; M],
-) -> &mut [[num_complex::Complex<f32>; N]; M] {
-    // SAFETY: layout-compatible types nested into fixed-size arrays.
-    unsafe { &mut *(s as *mut [[Cmplx<f32>; N]; M] as *mut [[num_complex::Complex<f32>; N]; M]) }
-}
-
-/// Const-context variant of [`cmplx_f32_2d_as_complex_mut`].
-#[inline]
-pub fn cmplx_f32_2d_as_complex<const N: usize, const M: usize>(
-    s: &[[Cmplx<f32>; N]; M],
-) -> &[[num_complex::Complex<f32>; N]; M] {
-    // SAFETY: layout-compatible types.
-    unsafe { &*(s as *const [[Cmplx<f32>; N]; M] as *const [[num_complex::Complex<f32>; N]; M]) }
-}
-
-/// Reverse of [`cmplx_f32_2d_as_complex_mut`]: cast a 2D
-/// `&mut [[Complex<f32>; N]; M]` (e.g. a stack-built test fixture)
-/// to `&mut [[Cmplx<f32>; N]; M]` so it can be passed to functions
-/// post-Phase-2 that take the Cmplx-typed argument.
-#[inline]
-pub fn complex_f32_2d_as_cmplx_mut<const N: usize, const M: usize>(
-    s: &mut [[num_complex::Complex<f32>; N]; M],
-) -> &mut [[Cmplx<f32>; N]; M] {
-    // SAFETY: layout-compatible types.
-    unsafe { &mut *(s as *mut [[num_complex::Complex<f32>; N]; M] as *mut [[Cmplx<f32>; N]; M]) }
-}
-
-impl<S: SpecScalar> Cmplx<S> {
-    #[inline]
-    pub const fn new(re: S, im: S) -> Self {
-        Self { re, im }
-    }
-
+/// `SpecScalar`-aware extension methods on [`Cmplx`] / `Complex<S>`.
+///
+/// Lives on a trait (rather than inherent on `Cmplx`) because `Cmplx`
+/// is an alias for an upstream type — `impl` blocks on aliases aren't
+/// allowed. Import this trait wherever `.norm_sqr_wide()` /
+/// `.norm_sqr_f32()` / `.norm_f32()` is called on a `Cmplx<S>`.
+pub trait ComplexSpec<S: SpecScalar> {
     /// `|z|²` in the wide accumulator type. For `f32` this returns
     /// `f32`; for `Q14i16` it returns `i32` raw — divide by `2^28`
     /// to recover the f32 magnitude squared (see
     /// [`SpecScalar::wide_to_f32`]).
-    #[inline]
-    pub fn norm_sqr_wide(self) -> S::Wide {
-        S::norm_sqr_wide(self.re, self.im)
-    }
+    fn norm_sqr_wide(self) -> S::Wide;
 
     /// `|z|²` as `f32` (lossy for `Q14i16`, but the SNR / sync_quality
     /// paths only need an ordering-correct float).
-    #[inline]
-    pub fn norm_sqr_f32(self) -> f32 {
-        S::wide_to_f32(self.norm_sqr_wide())
-    }
+    fn norm_sqr_f32(self) -> f32;
 
     /// `|z|` as `f32`. Convenience for places that already use
     /// `Complex::norm()`.
+    fn norm_f32(self) -> f32;
+}
+
+impl<S: SpecScalar> ComplexSpec<S> for Cmplx<S> {
     #[inline]
-    pub fn norm_f32(self) -> f32 {
+    fn norm_sqr_wide(self) -> S::Wide {
+        S::norm_sqr_wide(self.re, self.im)
+    }
+
+    #[inline]
+    fn norm_sqr_f32(self) -> f32 {
+        S::wide_to_f32(self.norm_sqr_wide())
+    }
+
+    #[inline]
+    fn norm_f32(self) -> f32 {
         // Compute via the wide product so f32 quantisation noise on
         // small magnitudes doesn't compound.
         let n2 = self.norm_sqr_f32();
