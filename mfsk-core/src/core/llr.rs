@@ -167,9 +167,11 @@ fn normalize_bmet(bmet: &mut [f32]) {
 /// `llra`/`llrd` (the BP-only path) should use [`compute_llr_fast`]
 /// instead — it caps at nsym=1 and skips the heavy nsym=2/3 loops.
 ///
-/// The `Complex<f32>` cs API is a layout-compatible wrapper around
+/// The `Cmplx<f32>` (= `Complex<f32>` via the type alias in
+/// `core::scalar`) cs entry is a thin convenience wrapper around
 /// the generic `compute_llr_generic` — use the generic form when
-/// the caller already holds [`Cmplx<S>`] storage.
+/// the caller already holds [`Cmplx<S>`] storage for some other
+/// `S: SpecScalar` (e.g. `Q14i16` on the embedded fixed-point path).
 pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize)
 }
