@@ -13,7 +13,6 @@ use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
-#[allow(unused_imports)]
 use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 use mfsk_core::msg::wsjt77::unpack77;
 use mfsk_ft8::mfsk_ft8_basis_scratch_len;

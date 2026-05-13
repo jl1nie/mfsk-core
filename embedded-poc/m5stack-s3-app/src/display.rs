@@ -209,8 +209,8 @@ pub fn run_log_panel(
     // Mode label paints in the TX strip at boot. Decode mode's QSO FSM
     // will overwrite this within the first slot; WiFi mode keeps it
     // (no FSM). KEY2 long-press (2 s) flips and restarts.
-    let mode_line: heapless::String<22> = {
-        let mut s: heapless::String<22> = heapless::String::new();
+    let mode_line: heapless::String<32> = {
+        let mut s: heapless::String<32> = heapless::String::new();
         let _ = core::fmt::Write::write_fmt(
             &mut s,
             format_args!("Mode: {} hold K2→flip", mode.label()),
