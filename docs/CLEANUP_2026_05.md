@@ -107,12 +107,13 @@ Acceptance for β:
    (#23, #24, #58, #61, #63, #64, #65).
 2. `README.md` (root) — verify the badges / build commands match
    the post-β feature set.
-3. `docs/LIBRARY.{md,ja.md}` — cross-check the §3 "four decoder
-   strategies" table against the actual rx.rs / decode.rs entry
-   points (post-PR #53 we standardised "AP-hint BP" terminology,
-   so the strategy table and the FFI-overview block — search for
-   `mfsk_q65_decode_with_ap` in LIBRARY.ja.md — should both use
-   that wording).
+3. `docs/LIBRARY.{md,ja.md}` — cross-check the §3 Q65 "four
+   decoder strategies" table (AWGN / AP-hint / fast-fading /
+   AP-list) against the actual rx.rs / decode.rs entry points.
+   Post-PR #53 we standardised "AP-hint BP" terminology; the
+   strategy table and the Q65 FFI-overview block (search for
+   `mfsk_q65_decode_with_ap` in LIBRARY.ja.md) should both use
+   that wording.
 4. Embedded `CLAUDE.md` files (`m5stack-core2`, `m5stack-s3`,
    `m5stack-s3-app`, `embedded-shared` if it grows one) —
    factor out the duplicated "espup / export-esp.sh / espflash"
@@ -131,16 +132,16 @@ fill_symbol_spectra family, process_candidates*, and OSD dispatch.
 
 Restructure goals (not yet committed to as design):
 
-1. Split per pipeline stage. Convert the current single-file
-   module to a directory module:
-   - `mfsk-core/src/ft8/decode_block.rs` → `mfsk-core/src/ft8/decode_block/mod.rs`
-   - Per-stage submodules:
+1. Split per pipeline stage using the Edition 2018+ module
+   layout (no `mod.rs`):
+   - `mfsk-core/src/ft8/decode_block.rs` stays as the parent
+     module file and keeps the public `decode_block` entry
+     function as the facade — external callers see no API change.
+   - Per-stage submodules live in a new sibling directory:
      `mfsk-core/src/ft8/decode_block/spectrogram.rs`,
      `mfsk-core/src/ft8/decode_block/coarse_sync.rs`,
      `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs`,
      `mfsk-core/src/ft8/decode_block/process_candidates.rs`.
-   - Keep the existing public `decode_block` entry function in
-     `mod.rs` as the facade so external callers see no API change.
 2. Collapse the public-but-`#[doc(hidden)]` API surface — many
    "pub for benchmarking only" items leaked because they were
    reached by tests across module boundaries. After γ/β the set
