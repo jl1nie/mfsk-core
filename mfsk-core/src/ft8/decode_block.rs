@@ -2927,6 +2927,27 @@ pub(super) fn process_one_candidate_inner(
             (&llr_full_f32.llrc, 16),
             (&llr_full_f32.llrd, 17),
         ] {
+            // OSD depth dispatch — mfsk-core terminology.
+            //
+            // `osd_decode_deep(_, N, _)` tries MRB error patterns of
+            // weight 1..N. `osd_decode` is order-1 basic. There has
+            // never been a depth-2 path here; the OSD-1/3 split was
+            // the original design at f118a64.
+            //
+            // WSJT-X parity gap (see #59): `ft8b.f90` calls
+            // `osd174_91(..., norder=2, ...)` for all FT8 candidates,
+            // which inside that subroutine dispatches to
+            // `nord=1 + npre1=1` — order-1 search PLUS a precoding
+            // rule (test error patterns derived from G matrix
+            // columns). mfsk-core implements pure MRB-order-N search
+            // with no precoding, so:
+            //   - q ≥ 18: we run nord=3 (much more aggressive than
+            //     WSJT-X's nord=1; we catch some signals WSJT-X
+            //     misses).
+            //   - q < 18: we run nord=1 basic; WSJT-X's nord=1+npre1
+            //     may catch a marginal signal we miss. Filed as a
+            //     separate parity feature (precoding implementation),
+            //     not a regression.
             let osd = if q >= 18 {
                 osd_decode_deep(llr, 3, Some(check_crc14))
             } else {
