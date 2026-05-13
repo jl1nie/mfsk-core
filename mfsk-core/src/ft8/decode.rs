@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 pub use super::equalizer::EqMode;
 use super::{
-    downsample::{build_fft_cache, downsample},
+    downsample::build_fft_cache,
     equalizer,
     llr::sync_quality,
     message::pack28,
@@ -454,7 +454,14 @@ fn process_candidate(
     ap_hint: Option<&ApHint>,
 ) -> Option<DecodeResult> {
     let _ = strictness; // used inside try_decode via the inner
-    let (mut cd0, _) = downsample(audio, cand.freq_hz, Some(fft_cache));
+    // Use `downsample_cached` directly so the FT8 wrapper's
+    // `cache.to_vec()` clone (~3 MB) on the `Some(_)` branch is
+    // bypassed — same pattern as `fill_symbol_spectra_via_cd0`.
+    let mut cd0 = crate::core::dsp::downsample::downsample_cached(
+        fft_cache,
+        cand.freq_hz,
+        &crate::ft8::downsample::FT8_CFG,
+    );
 
     // WSJT-X 3-stage fine refinement (ft8b.f90:104-150). Validates
     // freq snap to ±0.5 Hz grid + dt to integer 200 Hz step before
