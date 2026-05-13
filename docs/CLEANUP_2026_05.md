@@ -125,11 +125,16 @@ fill_symbol_spectra family, process_candidates*, and OSD dispatch.
 
 Restructure goals (not yet committed to as design):
 
-1. Split per pipeline stage —
-   `decode_block/{spectrogram, coarse_sync, fill_symbol_spectra,
-   process_candidates}.rs`. Keep `decode_block` (the existing public
-   entry function in `mfsk-core/src/ft8/decode_block.rs`) as the
-   facade after the split.
+1. Split per pipeline stage. Convert the current single-file
+   module to a directory module:
+   - `mfsk-core/src/ft8/decode_block.rs` → `mfsk-core/src/ft8/decode_block/mod.rs`
+   - Per-stage submodules:
+     `mfsk-core/src/ft8/decode_block/spectrogram.rs`,
+     `mfsk-core/src/ft8/decode_block/coarse_sync.rs`,
+     `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs`,
+     `mfsk-core/src/ft8/decode_block/process_candidates.rs`.
+   - Keep the existing public `decode_block` entry function in
+     `mod.rs` as the facade so external callers see no API change.
 2. Collapse the public-but-`#[doc(hidden)]` API surface — many
    "pub for benchmarking only" items leaked because they were
    reached by tests across module boundaries. After γ/β the set
