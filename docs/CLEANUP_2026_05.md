@@ -277,6 +277,347 @@ Acceptance for ε:
   unchanged.
 - Build size unchanged within ±2 KB on the embedded preset.
 
+### ε.0 — Pre-flight survey (2026-05-14)
+
+Investigation snapshot used to derive the split below. Re-verify
+before code lands if anything in `decode_block.rs` shifts between
+now and ε start.
+
+**Current section map of `mfsk-core/src/ft8/decode_block.rs`**
+(3517 lines on `docs/roadmap-add-72-74` @ commit `27425cf`):
+
+| Lines        | Block                                                                  | Notes                                                                                                  |
+|--------------|------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| 21-50        | crate imports                                                          | Forward-deps on `super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness}`                 |
+| 52-112       | `AudioSample` trait + `i16`/`i8` impls                                 | Public utility, no stage affinity                                                                      |
+| 114-214      | Constants + runtime tunables (`NFFT_SPEC`, `NSTEP`, `RATIO_EPS`, `SYNC_LAG_S`, `NMS_ALPHA`, `DEFAULT_Q_THRESH`, `LlrT` alias) | Shared across all stages; `nstep-half` cfg lives here                                                  |
+| 217-322      | `Spectrogram` struct + impls (host f32 / embedded i16 variants)        | Public; crosses every stage boundary                                                                   |
+| 324-548      | `compute_spectrogram` (host + embedded cfg-split)                      | **Stage A**, pub                                                                                       |
+| 553-1077     | `coarse_sync` family + `fill_coarse_allsum` + `coarse_sync_inner`      | **Stage B**, pub for {`coarse_sync`, `coarse_sync_with_allsum`, `coarse_allsum_len`, `precompute_coarse_allsum`, `precompute_coarse_allsum_into`} |
+| 1079-1645    | symbol-spectra family (`symbol_spectra_direct{,_into}`, `SymMask`, all `fill_symbol_spectra{,_generic,_into,_into_generic}` cfg-split, `BASIS_SCRATCH_LEN`) | **Stage C**, `#[doc(hidden)] pub` — used by `decode.rs` + `embedded-shared`                            |
+| 1647-1893    | Public entry points (`decode_block{,_tuned,_with_ap,_with_ap_tuned}`) + `decode_block_multipass` (host f32 path) | Façade — kept at parent module                                                                         |
+| 1895-2154    | `recompute_nsync`, `xsnr2_db_simple`, `recompute_snr_xsnr2`            | SNR helpers — wedged into the `decode_block_multipass` body in source order                            |
+| 2131-2210    | Embedded `decode_block_multipass` + `fine_refine_pass1` (cfg-split)    | Embedded path                                                                                          |
+| 2213-2286    | `decode_block_into{,_tuned}` (fixed-point)                             | Façade — kept at parent module                                                                         |
+| 2288-2434    | `pass1_limit`, `RefinedCandidate`, `refine_candidates{,_into,_with}`   | **Stage D**, pub for `RefinedCandidate` + `refine_candidates_into`                                     |
+| 2443-2477    | `sync_quality_block0` + `LlrT` cfg alias                               | Shared helper                                                                                          |
+| 2495-2532    | `bp_step_select` (host / embedded cfg-split)                           | Shared helper                                                                                          |
+| 2534-2837    | `process_candidates*` family (8 entry points)                          | **Stage E**, `#[doc(hidden)] pub` — `process_candidates_into_with_cs_scratch_tuned` is the embedded API |
+| 2862-3171    | `process_one_candidate_inner` (Step 1 BP llra → Step 2 BP llrd/b/c → **Step 3 OSD** → Step 4 AP iaptype loop) | Per-candidate inner. **OSD seam target.**                                                              |
+| 3173-end     | `#[cfg(test)] mod tests`                                               | Inline unit tests                                                                                      |
+
+**External callers of `decode_block::*` (must stay reachable):**
+
+- `mfsk-core/src/ft8/decode.rs` — `compute_spectrogram`,
+  `coarse_sync`, `fill_symbol_spectra`, `SymMask`.
+- `mfsk-core/src/ft8/baseline.rs` — `Spectrogram`.
+- `mfsk-core/src/core/sync.rs`, `mfsk-core/src/ft8/{sync,llr}.rs`
+  — doc-link references only (no `use`).
+- `mfsk-core/tests/*` — `decode_block`, `DEFAULT_Q_THRESH`,
+  `precompute_coarse_allsum`, `coarse_sync_with_allsum`,
+  `compute_spectrogram`, `BASIS_SCRATCH_LEN`.
+- `embedded-poc/embedded-shared/src/{dual_core,pipeline,stage1_inc,apps/*}.rs`
+  — `coarse_sync`, `coarse_sync_with_allsum`,
+  `process_candidates_into_with_cs_scratch_tuned`,
+  `refine_candidates_into`, `RefinedCandidate`, `Spectrogram`,
+  `BASIS_SCRATCH_LEN`, `NFFT_SPEC`, `compute_spectrogram`,
+  `DEFAULT_Q_THRESH`.
+- `embedded-poc/m5stack-{core2,s3,s3-app}/*` — `BASIS_SCRATCH_LEN`,
+  `DEFAULT_Q_THRESH`, `NFFT_SPEC`, `xsnr2_db_simple`.
+
+Implication: nothing on the external-caller list can change its
+fully-qualified path. The parent `decode_block.rs` must
+`pub use` every item above so call sites stay byte-identical.
+
+### ε.1 — File layout (committed)
+
+Edition 2018+ module layout (no `mod.rs`); parent stays as
+`mfsk-core/src/ft8/decode_block.rs`, submodules live under
+`mfsk-core/src/ft8/decode_block/`:
+
+| File                                       | Approx. lines | Contains                                                                                                    |
+|--------------------------------------------|--------------:|-------------------------------------------------------------------------------------------------------------|
+| `decode_block.rs` (parent / façade)        |       ~700    | `use` re-exports, public entry points (`decode_block{,_tuned,_with_ap,_with_ap_tuned,_into,_into_tuned}`), `decode_block_multipass` (host f32 + embedded cfg-split), `#[cfg(test)] mod tests` |
+| `decode_block/params.rs`                   |       ~100    | All constants + `nstep-half` cfg + `LlrT` cfg alias + runtime tunables (`ratio_eps`, `sync_lag_s`, `pass1_limit`) |
+| `decode_block/audio_sample.rs`             |        ~60    | `AudioSample` trait + `i16` / `i8` impls                                                                    |
+| `decode_block/spectrogram.rs`              |       ~270    | `Spectrogram` struct + impls + `compute_spectrogram` (cfg-split host/embedded)                              |
+| `decode_block/coarse_sync.rs`              |       ~530    | Stage B family (`coarse_sync`, `coarse_sync_with_allsum`, `coarse_allsum_len`, `precompute_coarse_allsum{,_into}`, `fill_coarse_allsum`, `coarse_sync_inner`) |
+| `decode_block/fill_symbol_spectra.rs`      |       ~570    | Stage C family — every `symbol_spectra_*` and `fill_symbol_spectra*` cfg variant + `SymMask` + `BASIS_SCRATCH_LEN` + `fill_symbol_spectra_via_cd0` |
+| `decode_block/refine_candidates.rs`        |       ~200    | Stage D family + `RefinedCandidate` + `sync_quality_block0` + `fine_refine_pass1` (cfg-split)               |
+| `decode_block/snr.rs`                      |       ~190    | `xsnr2_db_simple`, `recompute_nsync`, `recompute_snr_xsnr2` (host f32 only)                                 |
+| `decode_block/process_candidates.rs`       |       ~310    | Stage E family (8 entry points) + `bp_step_select` + `WSJTX_NHARDERRORS_MAX` + the internal `process_candidates_tuned_with_ap` / `process_candidates_with_ap` drivers |
+| `decode_block/process_one.rs`              |       ~250    | `process_one_candidate_inner` with **Step 3 swapped for `osd_strategy::decode`** (see ε.2)                  |
+| `decode_block/osd_strategy.rs`             |        ~80    | OSD seam — see ε.2                                                                                          |
+
+Estimated total: ~3260 lines vs current 3517. The ~250-line drop
+comes from import dedup + dropping the `#[cfg(feature = "...")]`
+duplication where the cfg-split body collapses to one cfg-gated
+file. **It is fine if this number ends up larger** — the
+acceptance bar is parity, not LOC reduction.
+
+Inside the parent file, the **only** items are:
+
+```rust
+mod audio_sample;
+mod coarse_sync;
+mod fill_symbol_spectra;
+mod osd_strategy;
+mod params;
+mod process_candidates;
+mod process_one;
+mod refine_candidates;
+mod snr;
+mod spectrogram;
+
+pub use audio_sample::AudioSample;
+pub use coarse_sync::{
+    coarse_allsum_len, coarse_sync, coarse_sync_with_allsum,
+    precompute_coarse_allsum, precompute_coarse_allsum_into,
+};
+pub use fill_symbol_spectra::{
+    fill_symbol_spectra, fill_symbol_spectra_generic, fill_symbol_spectra_into,
+    fill_symbol_spectra_into_generic, symbol_spectra_direct, symbol_spectra_direct_into,
+    BASIS_SCRATCH_LEN, SymMask,
+};
+pub use params::{DEFAULT_Q_THRESH, NFFT_SPEC};
+pub use process_candidates::{
+    process_candidates, process_candidates_into, process_candidates_into_tuned,
+    process_candidates_into_with_cs_scratch, process_candidates_into_with_cs_scratch_tuned,
+    process_candidates_tuned,
+};
+pub use refine_candidates::{refine_candidates_into, sync_quality_block0, RefinedCandidate};
+pub use snr::xsnr2_db_simple;
+pub use spectrogram::{compute_spectrogram, Spectrogram};
+
+// Façade entry points (definitions, not re-exports — see ε.3
+// for why these stay at the parent file).
+pub fn decode_block<S: AudioSample>(...) -> Vec<DecodeResult> { ... }
+// ... decode_block_tuned, decode_block_with_ap, decode_block_with_ap_tuned,
+//     decode_block_into, decode_block_into_tuned, decode_block_multipass (private),
+//     #[cfg(test)] mod tests
+```
+
+### ε.2 — OSD strategy seam (the seam #63 hooks)
+
+Current shape — `process_one_candidate_inner` Step 3
+(`decode_block.rs:2958-3016`):
+
+```rust
+if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
+    let llr_full_f32: LlrSet<f32> = compute_llr(cs_scratch);
+    for (llr, pid) in [(&llra, 14u8), (&llrb, 15), (&llrc, 16), (&llrd, 17)] {
+        let osd = if q >= 18 {
+            osd_decode_deep(llr, 3, Some(check_crc14))    // ndeep=3
+        } else {
+            osd_decode(llr)                                // ndeep=2
+        };
+        if let Some(osd) = osd { /* accept with pid */ }
+    }
+}
+```
+
+Why this is the right seam: PR #62 documented that WSJT-X
+`osd174_91.f90:230-289` always calls `nord=1 + npre1=1` —
+order-1 MRB **plus** precoding patterns derived from `G`-matrix
+columns — and mfsk-core has no precoding implementation. The
+ndeep-2/3 dispatch above is the local stand-in. #63 is the
+issue to swap this for the strict path; ε's contribution is
+to widen the door so #63 doesn't have to touch
+`process_one_candidate_inner` again.
+
+Proposed `decode_block/osd_strategy.rs` interface:
+
+```rust
+//! OSD fallback strategy seam (Step 3 of process_one_candidate_inner).
+//!
+//! Two implementations:
+//! - [`HostDeepDispatch`] (current behaviour): ndeep=2 when q<18,
+//!   ndeep=3 when q≥18, applied to all four llra/b/c/d.
+//! - [`WsjtxFaithful`] (#63 placeholder): `nord=1 + npre1=1` —
+//!   not yet implemented; ε ships only the trait.
+
+use crate::fec::ldpc::bp::BpResult;
+use crate::fec::ldpc::osd::{osd_decode, osd_decode_deep};
+use crate::ft8::llr::LlrSet;
+use crate::ft8::params::LDPC_N;
+
+/// Result of an OSD attempt — same shape `process_one_candidate_inner`
+/// stuffs into its `accepted` slot, including the pass-ID byte so the
+/// caller doesn't have to remember the 14/15/16/17 mapping.
+pub struct OsdHit {
+    pub bp: BpResult,
+    pub pass_id: u8,
+}
+
+/// Step 3 trait. `try_decode` runs over the four LLR variants
+/// in `llr_set` and returns the first acceptance, or `None`.
+///
+/// `q` is the symbol-level sync quality (`sync_quality` value
+/// after stage 3 refill, range 0..=21) — implementations may
+/// use it to dispatch between cheap and deep search.
+pub trait OsdStrategy {
+    fn try_decode(&self, llr_set: &LlrSet<f32>, q: u32) -> Option<OsdHit>;
+}
+
+/// Current behaviour (matches v0.6.2). ndeep=2/3 split on q,
+/// applied to all four llra/b/c/d. Pass-ID 14/15/16/17.
+pub struct HostDeepDispatch;
+
+impl OsdStrategy for HostDeepDispatch { /* extracted from Step 3 */ }
+
+/// #63 target. **Stub only** in ε — returns `None`. The actual
+/// `nord=1 + npre1=1` implementation lands when #63 is picked up;
+/// keeping the type here means the trait surface stops moving
+/// before that work begins.
+#[cfg(feature = "fft-rustfft")]
+pub struct WsjtxFaithful;
+
+#[cfg(feature = "fft-rustfft")]
+impl OsdStrategy for WsjtxFaithful {
+    fn try_decode(&self, _llr_set: &LlrSet<f32>, _q: u32) -> Option<OsdHit> {
+        None  // #63 fills this in
+    }
+}
+
+/// Default for the current `process_one_candidate_inner` call site.
+/// `WsjtxFaithful` is opt-in via a runtime knob in #63.
+pub fn default_strategy() -> &'static dyn OsdStrategy {
+    &HostDeepDispatch
+}
+```
+
+`process_one_candidate_inner` Step 3 becomes:
+
+```rust
+if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
+    let llr_full_f32 = compute_llr(cs_scratch);
+    if let Some(hit) = osd_strategy::default_strategy().try_decode(&llr_full_f32, q) {
+        accepted = Some((hit.bp, hit.pass_id));
+    }
+}
+```
+
+Design constraints honoured:
+
+- **No behavioural change in ε.** `default_strategy()` returns
+  `HostDeepDispatch`, which is bit-identical to the inline
+  Step 3 code (same LLR set, same dispatch, same pass-IDs).
+  Golden recall holds by construction.
+- **Static dispatch is fine.** The trait stays object-safe and
+  uses `&dyn` here because there is exactly one call site and
+  swapping at runtime (per #63) is the future flexibility we
+  want. If profiling shows the vtable matters we can switch to
+  a generic later — but Step 3 only fires when q≥12 + BP
+  failed, so it's a cold path.
+- **No new `pub` surface.** `osd_strategy` is `pub(crate)` from
+  the parent `decode_block`; #63 will decide whether to
+  re-export the trait when it ships its runtime knob.
+
+### ε.3 — Why the façade entry points stay at the parent file
+
+`decode_block`, `decode_block_tuned`, `decode_block_with_ap{,_tuned}`,
+`decode_block_into{,_tuned}`, and the private
+`decode_block_multipass` form one coherent unit that wires every
+stage together. Moving them into a submodule (e.g.
+`decode_block/entry.rs`) would force a `pub use` chain through the
+parent for every public entry, which is exactly the kind of
+re-export ceremony Rust 2018+ inline modules let us avoid.
+Keeping them at the parent also keeps `#[cfg(test)] mod tests`
+co-located with the only function the tests actually call into.
+
+### ε.4 — Submodule visibility map
+
+The split rule: **submodules expose to siblings via `pub(super)`
+where re-exports aren't needed**, and the parent uses `pub use`
+only for items the external caller survey above flagged.
+
+| Submodule item                                                                                                                                                                              | Visibility            | Reason                                                  |
+|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------|---------------------------------------------------------|
+| `Spectrogram`, `compute_spectrogram`, `coarse_sync*`, `precompute_coarse_allsum*`, `coarse_allsum_len`, `fill_symbol_spectra*`, `symbol_spectra_direct*`, `SymMask`, `BASIS_SCRATCH_LEN`, `RefinedCandidate`, `refine_candidates_into`, `sync_quality_block0`, `process_candidates*` family, `xsnr2_db_simple`, `AudioSample`, `NFFT_SPEC`, `DEFAULT_Q_THRESH` | `pub` (re-exported)   | On external-caller survey list                          |
+| `fill_coarse_allsum`, `coarse_sync_inner`, `fill_symbol_spectra_via_cd0`, `refine_candidates_with`, `pass1_limit`, `bp_step_select`, `WSJTX_NHARDERRORS_MAX`                                 | `pub(super)`          | Only called from sibling modules; never pub             |
+| `recompute_nsync`, `recompute_snr_xsnr2`                                                                                                                                                    | `pub(super)`          | Only called from `decode_block_multipass`               |
+| `process_candidates_tuned_with_ap`, `process_candidates_with_ap`                                                                                                                            | `pub(super)`          | Only called from sibling `process_candidates::*`        |
+| `osd_strategy::OsdStrategy`, `osd_strategy::HostDeepDispatch`, `osd_strategy::default_strategy`                                                                                              | `pub(super)`          | Used by `process_one`; not re-exported until #63        |
+| `process_one_candidate_inner`                                                                                                                                                               | `pub(super)`          | Already `pub(super)` today; stays the same              |
+| `params::LlrT`, `params::ratio_eps`, `params::sync_lag_s`                                                                                                                                   | `pub(super)`          | Shared scalar / runtime tunables                        |
+
+**`pub`-but-`#[doc(hidden)]` items kept verbatim:** every
+`#[doc(hidden)]` entry in the survey continues to be
+`#[doc(hidden)] pub` after ε. We are not relitigating which
+items deserve to be in the documented surface — that is a
+separate decision (#72 / #74 follow-ups). ε is mechanical.
+
+**Items that could become `pub(crate)` later but stay `pub`
+for ε:** `symbol_spectra_direct`, `symbol_spectra_direct_into`,
+`process_candidates`, `process_candidates_tuned` — the external
+caller survey did not surface a non-`decode_block.rs` user, but
+they are part of the historically-stable surface that
+`#[doc(hidden)] pub` exists to keep cheap. Re-classify under #72.
+
+### ε.5 — Sequenced execution plan
+
+Designed so each step is a self-contained PR that compiles + tests
+green on its own. Numbered steps map to commit boundaries; the
+whole sequence is one Issue + one PR thread.
+
+0. **ε.0 (this section)** — design doc ratified. **Already
+   shipped in the δ docs sync sweep.** No code touched.
+1. **ε.1** — Move `params`, `audio_sample`, `spectrogram` into
+   submodules. Smallest, most independent piece; touches no
+   logic. Updates `pub use` chain at parent. CI: `cargo check`
+   on every feature row of the cfg matrix, `cargo test`,
+   `cargo test --features fixed-point`, Core2 +
+   S3 `cargo build --release` (no flash needed).
+2. **ε.2** — Extract `coarse_sync`. Largest single move
+   (~530 lines) but logically isolated. Same CI gates.
+3. **ε.3** — Extract `fill_symbol_spectra`. Big cfg matrix
+   here (fft-rustfft × fixed-point × generic-Sc); careful that
+   every `#[cfg(...)]` arm still has a path through.
+4. **ε.4** — Extract `refine_candidates` + `snr`.
+5. **ε.5** — Extract `process_candidates` (the 8-entry-point
+   family) and the `bp_step_select` helper.
+6. **ε.6** — Extract `process_one` (split out
+   `process_one_candidate_inner`).
+7. **ε.7** — Land `osd_strategy.rs` with `HostDeepDispatch` as
+   the only inhabitant; refactor Step 3 to dispatch through it.
+   **Golden recall must be byte-identical** before and after
+   (qso3_busy AP-off 7/8, AP-on 5/6 extras; full reference
+   suite). This is the step that creates the seam #63 will
+   later fill with `WsjtxFaithful`.
+8. **ε.8** — Pub-map tighten (the items currently `pub` only
+   because they were reached cross-module — re-classify per
+   §ε.4). Coordinate with #72 if that lands first.
+
+`ε.2`-`ε.7` are each one-day moves; the full sequence is
+estimated at 5-6 working days plus regression runs. **Each
+step must hold:**
+
+- `cargo test` green on host (default feature set).
+- `cargo test --features fixed-point` green.
+- `cargo check --no-default-features --features <every-row>`
+  green across the cfg matrix (`fft-rustfft` × `fixed-point` ×
+  `nstep-half`).
+- Core2 + S3 `cargo build --release` green.
+- WSJT-X reference recall: qso3_busy AP-off ≥ 7/8 host, no
+  regression in JTDX-extras count, embedded recall unchanged.
+- Build-size delta < ±2 KB on the embedded preset
+  (`embedded-poc/m5stack-s3` release).
+
+### ε.6 — Pre-flight checklist for the implementer
+
+Before starting ε.1 in code:
+
+- [ ] Confirm `#61` (Core2 → S3 fold-in) is either merged or on
+  a branch that won't conflict with `decode_block/` directory
+  creation.
+- [ ] Branch from `main` not the active δ branch.
+- [ ] Snapshot `cargo test` baseline output to `logs/epsilon-baseline.txt`
+  so each step can diff against it.
+- [ ] Snapshot Core2 + S3 build-size baselines
+  (`ls -l target/.../release/*.elf`) for the ±2 KB acceptance check.
+- [ ] Open one tracking Issue ("ε decode_block.rs restructure"); each
+  step in §ε.5 is one commit on a single PR off that issue.
+
 ## Out of scope for this cleanup
 
 - Implementing #61 (Core2→S3 unification) — wait for weekend

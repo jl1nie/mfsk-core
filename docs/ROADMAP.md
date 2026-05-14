@@ -74,8 +74,12 @@ Currently open GitHub issues (state:open as of 2026-05-14):
 - **#58** — coalesce redundant `compute_llr` between Step 3 (OSD)
   and Step 4 (AP) in `decode_block`. Low-priority host perf.
 - **#61** — fold `m5stack-core2` into the S3 dual-core pipeline
-  and retire the Core2 crate. Weekend hardware bring-up
-  (2026-05-17/18) per `docs/CLEANUP_2026_05.md` (ε prerequisite).
+  and retire the Core2 crate. Implementation plan ratified
+  2026-05-15 — see `docs/CORE2_FOLD_IN.md`. Phases 1-2 (lib
+  extraction + `Board` trait) can land before the weekend;
+  phases 3-5 (LX6 board impl + hardware bring-up) are the
+  2026-05-17/18 window. ε prerequisite per
+  `docs/CLEANUP_2026_05.md`.
 - **#63** — WSJT-X-faithful OSD `npre1` precoding for host
   `BpAllOsd`; reduces false positives. Deprioritised — see PR #62
   for the design note documenting the current parity gap.
@@ -150,7 +154,7 @@ this section.
 
 `docs/CLEANUP_2026_05.md` tracks a four-stage post-0.6.2 tidy-up
 (γ scaffolding → β feature/cfg → δ docs sync → ε `decode_block.rs`
-restructure). Status as of 2026-05-14:
+restructure). Status as of 2026-05-15:
 
 - **γ** Done 2026-05-13 (PR #66). Retired
   `embedded-poc/m5stack-{core2,s3}/src/bin/rx_skeleton.rs`.
@@ -158,11 +162,15 @@ restructure). Status as of 2026-05-14:
   cleared; `Cmplx` unified with `num_complex::Complex` via type
   alias (−5 `unsafe` cast wrappers); cfg-matrix audit confirms
   every fixed-point × fft-{rustfft,extern} cell builds clean.
-- **δ** Documentation sync — current sweep.
+- **δ** Documentation sync done 2026-05-15. Latest pass added the
+  ε detailed design (`docs/CLEANUP_2026_05.md` §ε.0-ε.6) and the
+  Core2 fold-in implementation plan (`docs/CORE2_FOLD_IN.md`).
 - **ε** `decode_block.rs` restructure into a `decode_block/`
   submodule directory + OSD strategy seam for `#63` precoding.
-  Week-scale; intentionally sequenced after the weekend hardware
-  bring-up for `#61` (Core2 → S3 unification) so the two refactors
+  Detailed design ratified 2026-05-14 (`docs/CLEANUP_2026_05.md`
+  §ε.0-ε.6). Week-scale; intentionally sequenced after the
+  weekend hardware bring-up for `#61` (Core2 → S3 unification,
+  plan in `docs/CORE2_FOLD_IN.md`) so the two refactors
   do not collide.
 
 # Roadmap (legacy, written for post-0.5.12)
