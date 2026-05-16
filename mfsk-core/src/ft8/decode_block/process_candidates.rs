@@ -17,7 +17,6 @@
 //! ε.5 of the `docs/CLEANUP_2026_05.md` `decode_block` split.
 
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
@@ -38,7 +37,8 @@ use super::types::{
 use crate::core::scalar::{Cmplx, ComplexSpec};
 use crate::core::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
-use crate::fec::ldpc::osd::{osd_decode, osd_decode_deep};
+#[cfg(feature = "fft-rustfft")]
+use crate::fec::ldpc::osd::osd_decode_deep;
 
 #[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
 use super::fill_symbol_spectra::fill_symbol_spectra_into;
@@ -1258,7 +1258,7 @@ where
 /// WSJT-X-faithful nharderrors gate (ft8b.f90:422). High hard-error
 /// CRC-pass decodes are the dominant phantom source on busy bands;
 /// reject above this and fall through to the next BP variant.
-const WSJTX_NHARDERRORS_MAX: u32 = 36;
+pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
 
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
 /// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
@@ -1376,69 +1376,11 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     }
 
     // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
-    // OSD operates on `&[f32]` directly — independent of the
-    // `LlrT` choice — so we compute a fresh f32 LLR bundle here.
-    // Only fires when Steps 1+2 BP failed and `q >= 12`, so the
-    // extra compute_llr is cheap relative to the OSD work itself.
-    if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
-        let llr_full_f32: super::super::llr::LlrSet<f32> =
-            super::super::llr::compute_llr(cs_scratch);
-        // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
-        // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
-        // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
-        // frees 5..12 for the AP loop being plumbed into this same
-        // function in 0.6.1 (decode_block_with_ap path).
-        for (llr, pid) in [
-            (&llr_full_f32.llra, 14u8),
-            (&llr_full_f32.llrb, 15),
-            (&llr_full_f32.llrc, 16),
-            (&llr_full_f32.llrd, 17),
-        ] {
-            // OSD depth dispatch — mfsk-core terminology.
-            //
-            // `osd_decode_deep(_, N, _)` tries MRB error patterns of
-            // weight 0..=N (inclusive). `osd_decode` is a thin wrapper for
-            // `osd_decode_generic(_, 2, _, _)` (ndeep=2). The
-            // ndeep=2/3 split has been the design since f118a64.
-            //
-            // **WSJT-X-faithfulness deviation (see #63).** ft8b.f90
-            // always calls `osd174_91(..., norder=2, ...)` for FT8,
-            // which dispatches to `nord=1 + npre1=1` — order-1 MRB
-            // search **plus** a precoding rule (test error patterns
-            // derived from G matrix columns; osd174_91.f90:230-289).
-            // mfsk-core has no precoding implementation; the bumped
-            // ndeep here was chosen as a simpler stand-in. Whether
-            // pattern-count compensation actually covers the
-            // structurally-distinct patterns WSJT-X's precoding
-            // generates is an open question. #63 tracks restoring
-            // strict WSJT-X behaviour (nord=1 + npre1).
-            let osd = if q >= 18 {
-                osd_decode_deep(llr, 3, Some(check_crc14))
-            } else {
-                osd_decode(llr)
-            };
-            if let Some(osd) = osd {
-                // Mirror the BP-variant `nharderrors > 36` cycle
-                // gate (ft8b.f90:422) on the OSD path. WSJT-X's
-                // OSD itself returns CRC-pass codewords with
-                // negated `nhardmin` on CRC fail (osd174_91:290),
-                // but we apply the same upper bound to the
-                // hard-error count so high-error CRC-luck
-                // codewords don't pass through OSD either.
-                if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
-                    continue;
-                }
-                let bp = crate::fec::ldpc::bp::BpResult {
-                    message77: osd.message77,
-                    info: osd.info,
-                    codeword: vec![0u8; LDPC_N],
-                    hard_errors: osd.hard_errors,
-                    iterations: 0,
-                };
-                accepted = Some((bp, pid));
-                break;
-            }
-        }
+    // The actual dispatch — including the WSJT-X-faithfulness
+    // deviation #63 tracks restoring — lives in `super::osd_strategy`
+    // so #63 can patch it without touching the rest of this function.
+    if accepted.is_none() {
+        accepted = super::osd_strategy::try_fallback(cs_scratch, depth, q);
     }
 
     // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
@@ -1557,7 +1499,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                     let bp = crate::fec::ldpc::bp::BpResult {
                         message77: osd.message77,
                         info: osd.info,
-                        codeword: vec![0u8; LDPC_N],
+                        codeword: alloc::vec![0u8; LDPC_N],
                         hard_errors: osd.hard_errors,
                         iterations: 0,
                     };
