@@ -23,6 +23,17 @@ esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys.git" }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 
+[features]
+# `usb-serial-jtag` gates calls to `esp_idf_svc::sys::usb_serial_jtag_is_connected()`
+# in `log_sink::FanoutLogger::log`. The function only exists on the S3
+# (native USB-Serial-JTAG controller); classic ESP32 (Core2) uses an
+# external CP2104 USB-UART bridge that has no equivalent connect probe,
+# so the Core2 app crate sets `default-features = false` and accepts an
+# unconditional `println!` to UART instead. Default on so the s3-app
+# stays unchanged.
+default = ["usb-serial-jtag"]
+usb-serial-jtag = []
+
 [dependencies]
 log = "0.4"
 anyhow = "1"

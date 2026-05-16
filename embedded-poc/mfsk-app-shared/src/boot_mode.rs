@@ -111,6 +111,15 @@ pub fn determine(nvs: &EspNvs<NvsDefault>, override_pin: i32) -> BootMode {
     }
 }
 
+/// Same as `determine` but without a boot-time GPIO override. Used by
+/// boards that have no usable physical override button (M5Stack Core2
+/// has touch + AXP192 power button only — no plain GPIO). Mode is
+/// purely the stored NVS value; flip path is whatever the board crate
+/// wires up at runtime (touch event, serial cmd, etc.).
+pub fn determine_no_override(nvs: &EspNvs<NvsDefault>) -> BootMode {
+    read(nvs)
+}
+
 /// Persist the new mode and reboot. Returns `!`. Logs and skips reboot
 /// if the NVS write fails — better to keep the device alive in the
 /// previous mode than to brick on a flash-wear failure.

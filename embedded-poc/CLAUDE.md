@@ -55,7 +55,7 @@ is what the user types under tee / piped redirection.
 |---|---|---|
 | Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` |
 | Bench bin | `mfsk-core-m5stack-core2` | `mfsk-core-m5stack-s3` |
-| Production app | (none — Core2 fold-in is `#61`) | `m5stack-s3-app` (FT8 controller) |
+| Production app | `m5stack-core2-app` (`#61` Phase 2) | `m5stack-s3-app` (FT8 controller) |
 | PSRAM mode | (default) | Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 — set `_MODE_QUAD=y` |
 | Internal DRAM | ~280 KB usable | ~512 KB |
 | Port enumeration | `/dev/ttyACM0` | `/dev/ttyACM0` (USB-Serial-JTAG, native S3); `/dev/ttyUSB0` (CP210x bridge on some boards) |
@@ -103,6 +103,12 @@ is what the user types under tee / piped redirection.
   `board`) + `main.rs` orchestration + `decode_pipeline.rs` (still
   here in Phase 1 since it owns the heap_caps BASIS alloc; carved
   out only if Phase 2 reveals a clean cut).
+- **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
+  (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
+  HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's
+  ILI9341 model in landscape), no buttons (Core2 touch deferred),
+  no audio (decode pipeline fed by `wav_sim`). See its `CLAUDE.md`
+  for the Core2-specific bring-up sequence and SPI baud caveat.
 - **`mfsk-app-shared/`** — board-agnostic app logic (Issue #61
   Phase 1). QSO FSM, time sync, TX picker, SNR norm, NVS boot
   mode, log fanout (`LogFanout` / `FanoutLogger`), WiFi STA +

@@ -221,7 +221,17 @@ impl log::Log for FanoutLogger {
         // freeze する (Phase 0.6 検証で確認、2026-05-11)。Phase 1 (USB host
         // モード) でも CDC 端末が消えるので必須対策。SOF が来てる間だけ
         // stdout に流す。
-        if unsafe { esp_idf_svc::sys::usb_serial_jtag_is_connected() } {
+        //
+        // `usb_serial_jtag_is_connected` は S3 の native USB-Serial-JTAG
+        // 専用 API — 古典 ESP32 (Core2) には存在しない。Core2 は外付け
+        // CP2104 UART bridge を使うので feature flag で無効化し、
+        // unconditional println に fallback する (失敗モードが S3 とは
+        // 別物 — CP2104 切断時の TX block は ESP32 から見えない)。
+        #[cfg(feature = "usb-serial-jtag")]
+        let usb_ok = unsafe { esp_idf_svc::sys::usb_serial_jtag_is_connected() };
+        #[cfg(not(feature = "usb-serial-jtag"))]
+        let usb_ok = true;
+        if usb_ok {
             println!(
                 "{} {}: {}",
                 level_short(record.level()),
