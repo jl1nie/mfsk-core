@@ -1,9 +1,0 @@
-[2026-05-02T00:40:57Z INFO ] 🚀 A new version of espflash is available: v4.4.0
-[2026-05-02T00:40:57Z INFO ] Serial port: '/dev/ttyACM0'
-[2026-05-02T00:40:57Z INFO ] Connecting...
-[2026-05-02T00:40:58Z INFO ] Using flash stub
-Error: espflash::timeout
-
-  × Error while connecting to device
-  ╰─▶ Timeout while running command
-

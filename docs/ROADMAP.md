@@ -74,8 +74,19 @@ Currently open GitHub issues (state:open as of 2026-05-14):
 - **#58** — coalesce redundant `compute_llr` between Step 3 (OSD)
   and Step 4 (AP) in `decode_block`. Low-priority host perf.
 - **#61** — fold `m5stack-core2` into the S3 dual-core pipeline
-  and retire the Core2 crate. Weekend hardware bring-up
-  (2026-05-17/18) per `docs/CLEANUP_2026_05.md` (ε prerequisite).
+  and retire the Core2 bench crate. **Done 2026-05-16** across 3
+  commits on `feat/61-mfsk-app-shared`:
+  - Phase 1 carved `embedded-poc/mfsk-app-shared/` out of
+    `m5stack-s3-app/` (QSO FSM / time sync / TX picker / SNR norm /
+    NVS boot mode / log fanout / WiFi+UDP / UI data + draw).
+  - Phase 2 added `embedded-poc/m5stack-core2-app/` as the Core2
+    sibling consumer (AXP192 PMIC, ILI9342C LCD via mipidsi
+    ILI9341 model rotated to landscape, wav_sim audio, no buttons).
+    Verified on Core2 hardware: 7/8 decodes per slot from
+    `qso3_busy.wav`, 400 alive ticks, stable heap.
+  - Phase 3 retired the bench crate `embedded-poc/m5stack-core2/`;
+    its sweep logs live in git history (recoverable via
+    `git show HEAD~3:embedded-poc/m5stack-core2/logs/<file>`).
 - **#63** — WSJT-X-faithful OSD `npre1` precoding for host
   `BpAllOsd`; reduces false positives. Deprioritised — see PR #62
   for the design note documenting the current parity gap.

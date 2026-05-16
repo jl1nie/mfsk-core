@@ -54,8 +54,8 @@ is what the user types under tee / piped redirection.
 | | M5Stack Core2 (LX6) | M5StickS3 / S3-app (LX7) |
 |---|---|---|
 | Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` |
-| Bench bin | `mfsk-core-m5stack-core2` | `mfsk-core-m5stack-s3` |
-| Production app | `m5stack-core2-app` (`#61` Phase 2) | `m5stack-s3-app` (FT8 controller) |
+| Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` |
+| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller) |
 | PSRAM mode | (default) | Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 — set `_MODE_QUAD=y` |
 | Internal DRAM | ~280 KB usable | ~512 KB |
 | Port enumeration | `/dev/ttyACM0` | `/dev/ttyACM0` (USB-Serial-JTAG, native S3); `/dev/ttyUSB0` (CP210x bridge on some boards) |
@@ -92,11 +92,10 @@ is what the user types under tee / piped redirection.
 
 ## Crates under `embedded-poc/`
 
-- **`m5stack-core2/`** — Core2 LX6 compute bench. Decoder-only,
-  no UI. Fold-in into the S3 dual-core pipeline is tracked under
-  `#61`; weekend hardware bring-up.
 - **`m5stack-s3/`** — S3 LX7 compute bench. Decoder-only,
-  WAV-fed `rx_wavsim` is the primary driver.
+  WAV-fed `rx_wavsim` is the primary driver. (The Core2 sibling
+  bench was retired in `#61` Phase 3 — `m5stack-core2-app` covers
+  the equivalent wav_sim path in a production-app shape.)
 - **`m5stack-s3-app/`** — production FT8 controller (LCD UI +
   QSO FSM + WiFi UDP log streaming + ES8311 audio + planned UAC).
   Bin crate: HW drivers (`audio` / `display` / `pmic` / `buttons` /
@@ -115,8 +114,8 @@ is what the user types under tee / piped redirection.
   UDP datagram sink, UI data structures + `embedded-graphics`
   draw routines, ADIF + flash log placeholders. Shared/board
   boundary is **data flow** (channels + shared state mutex), not
-  callbacks — no traits cross the boundary. The Core2-variant
-  app crate (Phase 2 of #61) will be the second consumer.
+  callbacks — no traits cross the boundary. Consumed by both
+  `m5stack-s3-app` and `m5stack-core2-app`.
 - **`embedded-shared/`** — `no_std` decode-pipeline crate shared
   between the bench / app crates. Streaming pipeline, dual-core
   dispatch, resamplers, BASIS scratch helpers. Distinct from

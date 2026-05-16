@@ -6,28 +6,36 @@ cross-crate workflow that's easy to forget between sessions.
 
 ## Embedded targets
 
-### `embedded-poc/m5stack-core2`
+The active production crates are `embedded-poc/m5stack-s3-app/` (S3 LX7)
+and `embedded-poc/m5stack-core2-app/` (Core2 LX6). Each has its own
+`CLAUDE.md` covering board-specific bring-up; this section captures the
+shared workflow that's easy to forget between sessions.
 
-Real hardware: M5Stack Core2 (ESP32-D0WD-V3, Xtensa LX6, 8 MB PSRAM).
-
-- **Build & flash via `espflash`**, not host cargo. The `.cargo/config.toml`
-  in that crate sets `runner = "espflash flash --monitor"`, so the user's
-  workflow is:
+- **Build & flash via `espflash`**, not host cargo. Both crates'
+  `.cargo/config.toml` set `runner = "espflash flash --monitor"`, so the
+  basic user workflow is:
   ```sh
-  cd embedded-poc/m5stack-core2
-  cargo run --release          # builds + flashes + opens serial monitor
+  cd embedded-poc/m5stack-s3-app   # or m5stack-core2-app
+  cargo run --release              # builds + flashes + opens serial monitor
   ```
-- The `+esp` Rust toolchain (Xtensa fork, espup-installed) is selected by
-  `rust-toolchain.toml`. Host (`cargo check`/`build`) uses `xtensa-esp32-espidf`
-  per `.cargo/config.toml`.
-- `cargo check` from inside the crate is enough to validate code changes
-  without flashing (~50 s with prebuilt esp-idf).
-- Logs from the device land in `embedded-poc/m5stack-core2/logs/` —
-  user has been capturing per-config sweep output there.
-- The user has been actively flashing this throughout the
-  decode_block-embedded work; do NOT assume "host check is enough" when
-  changing main.rs or anything that affects the bench output. Offer to
-  let the user flash and capture the new log.
+  In practice, for capturing per-session logs to a file, use
+  `embedded-poc/scripts/flash-monitor.sh` (see next section) instead of
+  the bare runner.
+- The `+esp` Rust toolchain (Xtensa fork, espup-installed) is selected
+  by each crate's `rust-toolchain.toml`. Target triple per
+  `.cargo/config.toml`: `xtensa-esp32-espidf` for Core2 (LX6),
+  `xtensa-esp32s3-espidf` for S3 (LX7).
+- `cargo check` from inside each crate validates code changes without
+  flashing (~30-50 s with prebuilt esp-idf).
+- Logs from the device land in `embedded-poc/<crate>/logs/` — user has
+  been capturing per-session sweep output there.
+- The user actively flashes both boards during embedded work; do NOT
+  assume "host check is enough" when changing `src/main.rs` or anything
+  that affects the runtime path. Offer to flash and capture a new log.
+- The compute-bench crate `embedded-poc/m5stack-s3/` still exists for
+  S3-only decoder timing sweeps. The Core2 bench (`m5stack-core2/`) was
+  retired in `#61` Phase 3 — `m5stack-core2-app` covers the same
+  wav_sim decode path in a production-app shape.
 
 ## Capturing logs from a flashed device (ESP32 / S3)
 
@@ -48,12 +56,12 @@ foot-guns this script avoids:
 
 ```sh
 source ~/export-esp.sh
-cd embedded-poc/m5stack-s3   # or m5stack-core2
+cd embedded-poc/m5stack-s3-app   # or m5stack-s3, m5stack-core2-app
 cargo build --release --bin <bin>
 ../scripts/flash-monitor.sh \
-    target/xtensa-esp32s3-espidf/release/<bin> \
+    target/<triple>/release/<bin> \
     logs/<bin>_<tag>_$(date +%Y-%m-%d).log \
-    90    # capture seconds (optional, default 90)
+    90    # capture seconds (optional, default 90; use ≥120 for fresh Core2 flashes — 1.3 MB binary takes ~55 s to write)
 ```
 
 ## Test fixture paths
@@ -81,4 +89,5 @@ just relocates the bug.
 - `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the
   per-conversation auto-memory. `project_decode_block_embedded.md` is the
   authoritative log of the embedded-port performance journey — read it
-  before touching `decode_block` or m5stack-core2/main.rs.
+  before touching `decode_block` or either of the production app crates
+  (`m5stack-s3-app`, `m5stack-core2-app`).
