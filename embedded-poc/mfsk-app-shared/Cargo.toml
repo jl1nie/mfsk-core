@@ -1,0 +1,44 @@
+[package]
+name = "mfsk-app-shared"
+version = "0.1.0"
+authors = ["Minoru Tomobe <minoru.tomobe@gmail.com>"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.82"
+
+# Board-agnostic library for the M5Stack FT8 controller apps. Consumed
+# by `m5stack-s3-app` (and later `m5stack-core2-app`, per issue #61).
+# Boundary: this crate owns pure-logic + esp-idf-svc-only code (QSO FSM,
+# time sync, TX picker, SNR calibration, NVS boot-mode, log fanout,
+# WiFi + UDP, UI data structures + draw routines). Board crates own
+# peripheral drivers (LCD, codec, PMIC, buttons) and `main.rs`.
+#
+# No traits cross this boundary in Phase 1 — communication between
+# shared and board code is via mpsc channels and shared state (e.g.
+# `ui::state::UiState` mutex). Traits will be introduced only when
+# Phase 2 (Core2 app) reveals a genuine cross-boundary callback need.
+
+[patch.crates-io]
+esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys.git" }
+esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
+esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
+
+[features]
+# `usb-serial-jtag` gates calls to `esp_idf_svc::sys::usb_serial_jtag_is_connected()`
+# in `log_sink::FanoutLogger::log`. The function only exists on the S3
+# (native USB-Serial-JTAG controller); classic ESP32 (Core2) uses an
+# external CP2104 USB-UART bridge that has no equivalent connect probe,
+# so the Core2 app crate sets `default-features = false` and accepts an
+# unconditional `println!` to UART instead. Default on so the s3-app
+# stays unchanged.
+default = ["usb-serial-jtag"]
+usb-serial-jtag = []
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+esp-idf-hal = "0.46"
+embassy-sync = "0.7"
+heapless = "0.8"
+embedded-graphics = "0.8"

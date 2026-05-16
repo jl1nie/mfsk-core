@@ -1,0 +1,74 @@
+[package]
+name = "mfsk-core-m5stack-core2-app"
+version = "0.1.0"
+authors = ["Minoru Tomobe <minoru.tomobe@gmail.com>"]
+edition = "2021"
+resolver = "2"
+rust-version = "1.82"
+
+# M5Stack Core2 (ESP32 LX6) FT8 controller — sibling of `m5stack-s3-app`
+# sharing `mfsk-app-shared` for board-agnostic QSO FSM / UI / WiFi /
+# log fanout. This crate owns Core2-specific HW drivers only:
+# AXP192 PMIC, ILI9342C LCD (treated as ILI9341 via mipidsi), and the
+# wav_sim feed of the decode pipeline (no PDM mic bring-up in Phase 2).
+# Touch (FT6336U) is deferred to a follow-up; boot mode is purely the
+# stored NVS value with no boot-time GPIO override.
+
+[[bin]]
+name = "mfsk-core-m5stack-core2-app"
+harness = false
+
+[profile.release]
+# Same LLVM workaround stance as sibling crates — opt-level=1 dodges
+# the f32-select regression in `mfsk-core::core::pipeline`, keeps the
+# ELF debuggable.
+opt-level = 1
+
+[profile.dev]
+debug = true
+opt-level = 1
+
+[patch.crates-io]
+esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys.git" }
+esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
+esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+esp-idf-hal = "0.46"
+embassy-time = { version = "0.5", features = ["generic-queue-8"] }
+embassy-sync = "0.7"
+heapless = "0.8"
+num-complex = { version = "0.4", default-features = false }
+
+# mfsk-core / FFI: same feature set as the sibling app + bench crates.
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
+
+embedded-shared = { path = "../embedded-shared" }
+# Core2 has no native USB-Serial-JTAG — disable that feature so
+# `log_sink.rs` falls back to unconditional UART println (see the
+# shared crate's feature comment). Default-features off, then opt in
+# to nothing else (the crate has no other optional knobs in Phase 2).
+mfsk-app-shared = { path = "../mfsk-app-shared", default-features = false }
+
+embedded-graphics = "0.8"
+mipidsi = "0.8"
+display-interface-spi = "0.5"
+
+[build-dependencies]
+embuild = "0.33"
+toml = "0.8"
+
+# Mirror the s3-app pattern: build.rs writes sdkconfig.gen.defaults with
+# this checkout's absolute partition CSV path; run
+# `./bootstrap-sdkconfig.sh` once on a fresh clone.
+[package.metadata.esp-idf-sys]
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp-dsp", version = "^1.4" }
+bindings_header = "../bindings.h"
+bindings_module = "esp_dsp"

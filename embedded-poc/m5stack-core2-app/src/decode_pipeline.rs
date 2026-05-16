@@ -1,0 +1,193 @@
+//! WAV-fed decode pipeline for Core2 (Phase 2).
+//!
+//! Cribbed verbatim from `m5stack-s3-app/src/decode_pipeline.rs` — all
+//! the heavy lifting is in `embedded_shared` and `mfsk_app_shared`,
+//! which are board-agnostic. The only board-specific touch points are
+//! `crate::log_free_internal` and `crate::alloc_basis_dram` (defined
+//! in this crate's `main.rs`); structurally identical to the S3
+//! sibling so the two pipelines stay in lockstep.
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use mfsk_core::core::sync::SyncCandidate;
+use mfsk_core::ft8::decode::DecodeDepth;
+use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
+
+use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
+use mfsk_core::msg::wsjt77::unpack77;
+use mfsk_ft8::mfsk_ft8_basis_scratch_len;
+
+use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
+
+use mfsk_app_shared::qso::{self, QsoManager, QsoState};
+use mfsk_app_shared::ui::state::{DecodedRow, UI};
+
+const MY_CALL: &str = "JL1NIE";
+const MY_GRID: &str = "PM95";
+
+/// Same single-WAV loop as the S3 sibling — qso3_busy is the most
+/// decode-dense reference we have, gives the UI a steady feed for
+/// human-eyeball verification.
+static QSO_WAVS: &[&[u8]] = &[
+    include_bytes!("../../assets/qso3_busy.wav"),
+];
+
+const PASS1_LIMIT: usize = 30;
+const MAX_CAND: usize = 15;
+
+/// Spawn target. Returns `!`. BASIS DRAM allocation happens inside
+/// this thread (not in main) so the per-thread 32 KB stack reservation
+/// doesn't fight the 60 KB × 4 BASIS allocs for the largest free
+/// internal-DRAM block — same lesson the S3 app learned in Phase 0.7c.
+pub fn run() -> ! {
+    let need = mfsk_ft8_basis_scratch_len();
+    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
+
+    crate::log_free_internal("pre-basis-alloc");
+    let basis_re_main = crate::alloc_basis_dram("RE_main");
+    let basis_im_main = crate::alloc_basis_dram("IM_main");
+    let basis_re_c1 = crate::alloc_basis_dram("RE_c1");
+    let basis_im_c1 = crate::alloc_basis_dram("IM_c1");
+    crate::log_free_internal("post-basis-alloc");
+    let basis_re_c1_ptr = basis_re_c1.as_mut_ptr();
+    let basis_im_c1_ptr = basis_im_c1.as_mut_ptr();
+
+    // wav_sim (4) / stage1_inc (3) より高い優先度。
+    unsafe {
+        esp_idf_svc::sys::vTaskPrioritySet(core::ptr::null_mut(), 6);
+    }
+
+    esp_dsp_fft::prewarm(NFFT_SPEC);
+    dual_core::init(basis_re_c1_ptr, basis_im_c1_ptr);
+
+    let chunk_q = pipeline::create_chunk_queue(4);
+    let slot_q = pipeline::create_slot_queue(2);
+    let spec_q = pipeline::create_spec_queue(2);
+    let wf_q = pipeline::create_wf_queue(8);
+    stage1_inc::spawn_with_wf(chunk_q, slot_q, spec_q, Some(wf_q));
+    wav_sim::spawn(QSO_WAVS, chunk_q);
+
+    let wf_q_addr = wf_q as usize;
+    std::thread::Builder::new()
+        .stack_size(4 * 1024)
+        .spawn(move || wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t))
+        .expect("spawn wf drainer");
+
+    log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, core2-app phase 2)");
+
+    let mut qso = QsoManager::new(MY_CALL, MY_GRID);
+    let initial = qso.call_cq(None);
+    push_tx_line(&qso, Some(&initial));
+
+    let mut slot_seq: u32 = 0;
+    loop {
+        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
+        let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
+            &spec.spec,
+            100.0,
+            3_000.0,
+            1.0,
+            PASS1_LIMIT,
+            &spec.allsum_head,
+            &spec.allsum_tail,
+        );
+
+        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
+        let wav_idx = slot.wav_idx;
+        let n_pass1 = pass1.len();
+
+        let pass2 = dual_core::pass2_split(
+            &slot.audio,
+            pass1,
+            MAX_CAND,
+            basis_re_main,
+            basis_im_main,
+        );
+
+        let depth = DecodeDepth::BpAll;
+        let results = dual_core::stage3_split(
+            &slot.audio,
+            pass2,
+            depth,
+            DEFAULT_Q_THRESH,
+            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            basis_re_main,
+            basis_im_main,
+        );
+
+        log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
+        slot_seq = slot_seq.wrapping_add(1);
+
+        for r in results.iter() {
+            mfsk_app_shared::time_sync::record_decode_dt(r.dt_sec);
+        }
+        mfsk_app_shared::time_sync::finalize_slot();
+        if let Some(off) = mfsk_app_shared::time_sync::slot_dt_offset() {
+            log::info!(
+                "  median DT = {:+.3} s ({} slots)",
+                off,
+                mfsk_app_shared::time_sync::slots_finalised()
+            );
+        }
+
+        let mut had_response_this_slot = false;
+        if let Ok(mut ui) = UI.lock() {
+            for r in results.iter() {
+                if let Some(text) = unpack77(&r.message77) {
+                    let mut msg: heapless::String<22> = heapless::String::new();
+                    let take = text.len().min(msg.capacity());
+                    let _ = msg.push_str(&text[..take]);
+                    const FP_SPEC_SHIFT: u32 = 12;
+                    let cell_scale = (1u32 << FP_SPEC_SHIFT) as f32;
+                    let calibrated_snr =
+                        mfsk_core::ft8::decode_block::xsnr2_db_simple(&spec.spec, r, cell_scale);
+                    let snr_i8 = calibrated_snr.round().clamp(-128.0, 127.0) as i8;
+                    let row = DecodedRow {
+                        df_hz: r.freq_hz.round().clamp(0.0, 65_535.0) as u16,
+                        snr_db: snr_i8,
+                        hard_errors: r.hard_errors.min(255) as u8,
+                        msg,
+                        slot_seq,
+                        first_seq: slot_seq,
+                    };
+                    ui.push_decode(row);
+                    log::info!(
+                        "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
+                        r.freq_hz, calibrated_snr, r.snr_db, text
+                    );
+                    qso.set_rx_snr(snr_i8);
+                    if qso.process_message(&text).is_some() {
+                        had_response_this_slot = true;
+                    }
+                }
+            }
+        }
+
+        if !had_response_this_slot && qso.state != QsoState::Idle {
+            let _ = qso.on_period_end();
+        }
+        if qso.state == QsoState::Idle {
+            qso.call_cq(None);
+        }
+        let intent = qso.next_tx();
+        push_tx_line(&qso, intent.as_ref());
+    }
+}
+
+fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
+    let line = qso::format_tx_line(qso, intent);
+    log::info!("[QSO] {}", line.as_str());
+    if let Ok(mut ui) = UI.lock() {
+        ui.set_tx_line(line.as_str());
+    }
+}
+
+fn wf_drain(wf_q: esp_idf_svc::sys::QueueHandle_t) -> ! {
+    loop {
+        let tick = pipeline::recv_box::<pipeline::WfTick>(wf_q);
+        if let Ok(mut ui) = UI.lock() {
+            ui.push_waterfall(tick.row);
+        }
+    }
+}

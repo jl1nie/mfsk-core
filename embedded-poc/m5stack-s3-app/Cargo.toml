@@ -47,6 +47,12 @@ mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features
 # 共有 embedded glue (streaming buffer / esp_dsp_fft / dual_core / Q3i8 LLR)
 embedded-shared = { path = "../embedded-shared" }
 
+# Board-agnostic app logic (QSO FSM, time sync, TX picker, SNR norm,
+# NVS boot mode, log fanout, WiFi + UDP, UI data + draw routines).
+# Issue #61: this crate is shared with the future `m5stack-core2-app`
+# variant so the only differences live in this bin's HW drivers.
+mfsk-app-shared = { path = "../mfsk-app-shared" }
+
 # UI 描画。Slint / LVGL は依存サイズと整数性能の点で見送り。
 embedded-graphics = "0.8"
 mipidsi = "0.8"

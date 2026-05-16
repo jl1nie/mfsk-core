@@ -54,8 +54,8 @@ is what the user types under tee / piped redirection.
 | | M5Stack Core2 (LX6) | M5StickS3 / S3-app (LX7) |
 |---|---|---|
 | Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` |
-| Bench bin | `mfsk-core-m5stack-core2` | `mfsk-core-m5stack-s3` |
-| Production app | (none — Core2 fold-in is `#61`) | `m5stack-s3-app` (FT8 controller) |
+| Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` |
+| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller) |
 | PSRAM mode | (default) | Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 — set `_MODE_QUAD=y` |
 | Internal DRAM | ~280 KB usable | ~512 KB |
 | Port enumeration | `/dev/ttyACM0` | `/dev/ttyACM0` (USB-Serial-JTAG, native S3); `/dev/ttyUSB0` (CP210x bridge on some boards) |
@@ -92,16 +92,37 @@ is what the user types under tee / piped redirection.
 
 ## Crates under `embedded-poc/`
 
-- **`m5stack-core2/`** — Core2 LX6 compute bench. Decoder-only,
-  no UI. Fold-in into the S3 dual-core pipeline is tracked under
-  `#61`; weekend hardware bring-up.
 - **`m5stack-s3/`** — S3 LX7 compute bench. Decoder-only,
-  WAV-fed `rx_wavsim` is the primary driver.
+  WAV-fed `rx_wavsim` is the primary driver. (The Core2 sibling
+  bench was retired in `#61` Phase 3 — `m5stack-core2-app` covers
+  the equivalent wav_sim path in a production-app shape.)
 - **`m5stack-s3-app/`** — production FT8 controller (LCD UI +
   QSO FSM + WiFi UDP log streaming + ES8311 audio + planned UAC).
-- **`embedded-shared/`** — `no_std` crate shared between the
-  bench / app crates. Streaming pipeline, dual-core dispatch,
-  resamplers, BASIS scratch helpers.
+  Bin crate: HW drivers (`audio` / `display` / `pmic` / `buttons` /
+  `board`) + `main.rs` orchestration + `decode_pipeline.rs` (still
+  here in Phase 1 since it owns the heap_caps BASIS alloc; carved
+  out only if Phase 2 reveals a clean cut).
+- **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
+  (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
+  HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's
+  ILI9341 model in landscape), no buttons (Core2 touch deferred),
+  no audio (decode pipeline fed by `wav_sim`). See its `CLAUDE.md`
+  for the Core2-specific bring-up sequence and SPI baud caveat.
+- **`mfsk-app-shared/`** — board-agnostic app logic (Issue #61
+  Phase 1). QSO FSM, time sync, TX picker, SNR norm, NVS boot
+  mode, log fanout (`LogFanout` / `FanoutLogger`), WiFi STA +
+  UDP datagram sink, UI data structures + `embedded-graphics`
+  draw routines, ADIF + flash log placeholders. Shared/board
+  boundary is **data flow** (channels + shared state mutex), not
+  callbacks — no traits cross the boundary. Consumed by both
+  `m5stack-s3-app` and `m5stack-core2-app`.
+- **`embedded-shared/`** — `no_std` decode-pipeline crate shared
+  between the bench / app crates. Streaming pipeline, dual-core
+  dispatch, resamplers, BASIS scratch helpers. Distinct from
+  `mfsk-app-shared`: this is the decoder-level shared layer
+  (FFT planner / dual_core / stage1_inc), while
+  `mfsk-app-shared` is the controller-level shared layer (QSO /
+  UI / WiFi). Both are board-agnostic.
 - **`idf-component/`** — esp-idf component shim that wraps
   `mfsk-ffi-ft8` so C-only ESP-IDF projects can pull the FT8
   decoder in without writing Rust glue.
