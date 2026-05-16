@@ -21,11 +21,18 @@
 // ── Submodule layout (`docs/CLEANUP_2026_05.md` ε) ──────────────────────────
 //
 // `decode_block.rs` is the parent / facade for a per-stage submodule
-// tree. ε.1 carved out `types.rs`; ε.2 carved `spectrogram.rs`; ε.3
-// carved `coarse_sync.rs`; ε.4 carved `fill_symbol_spectra.rs`; ε.5
-// carved `process_candidates.rs`. ε.6 will follow with osd_strategy.
+// tree carved out by `docs/CLEANUP_2026_05.md` ε:
+//   ε.1 types  · ε.2 spectrogram  · ε.3 coarse_sync
+//   ε.4 fill_symbol_spectra  · ε.5 process_candidates
+//   ε.6 osd_strategy (the WSJT-X-faithful precoding hook for #63)
+//
+// `process_candidates` and `osd_strategy` are siblings; the rest of
+// the tree is stage-shaped (spectrogram → coarse_sync →
+// fill_symbol_spectra → per-candidate processing). The parent file
+// owns only module declarations + re-exports + tests.
 mod coarse_sync;
 mod fill_symbol_spectra;
+mod osd_strategy;
 mod process_candidates;
 mod spectrogram;
 mod types;
