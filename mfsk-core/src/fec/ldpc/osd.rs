@@ -624,6 +624,287 @@ pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14))
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// WSJT-X-faithful npre1 OSD (issue #63)
+
+/// Sliding window of trailing-parity bits the `npre1` gate inspects.
+/// Mirrors WSJT-X `osd174_91.f90:147` `nt = 40` for FT8 ndeep=2.
+const NPRE1_PARITY_WINDOW: usize = 40;
+
+/// Maximum tolerated partial parity-error count for the `npre1` gate.
+/// Mirrors WSJT-X `osd174_91.f90:148` `ntheta = 10` for FT8 ndeep=2.
+/// Candidates whose parity-error count in the first `NPRE1_PARITY_WINDOW`
+/// parity bits — plus the info-bit-flip count of the test pattern — exceed
+/// this threshold are rejected without the expensive full encode + CRC
+/// check.
+const NPRE1_GATE: u32 = 10;
+
+/// WSJT-X-faithful `nord=1 + npre1=1` OSD decode (issue #63).
+///
+/// Mirrors `osd174_91.f90` with ndeep=2 — the FT8 default that
+/// `ft8b.f90:405` dispatches to. Enumerates the same 4,186 weight-2
+/// anchored-pair patterns our [`osd_decode`] does (order-1 baseline +
+/// npre1 pair-anchor), but applies WSJT-X's `ntheta=10` early-reject
+/// gate on partial parity-error count so only ~165 algebraically
+/// plausible patterns reach the full encode + CRC verify.
+///
+/// **False-positive filter.** Pure brute-force `osd_decode` (ndeep=2)
+/// occasionally returns CRC-luck codewords at high `nharderrors` — on
+/// `qso3_busy.wav` it surfaces two confirmed phantoms (`N1API F2VX 73`
+/// at 30 hard errors / -24 dB and `CQ EA2BFM IN83` at 31 / -24 dB).
+/// These have parity errors spread broadly across all 83 parity bits,
+/// so they trip the `ntheta=10` gate before reaching CRC and never
+/// surface from this variant. Real low-SNR signals preserve the
+/// algebraic structure of their parity bits and pass the gate.
+///
+/// The pattern enumeration matches WSJT-X line-for-line:
+///   - Outer `iflag` walks from K-1 down to 0 (the 91 single-bit-flip
+///     baseline patterns).
+///   - Inner `n1` walks from `iflag` down to 0; when `n1 < iflag` the
+///     pattern flips two MRB bits (`iflag`, `n1`) — the npre1
+///     pair-anchor extension.
+///   - The parity-error vector for the `n1 < iflag` case is computed
+///     incrementally as `e2 = e2sub XOR g[n1, k..n]`, mirroring
+///     `osd174_91:203`.
+///
+/// Returns `None` if no CRC-passing candidate is found.
+pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
+    type P = Ldpc174_91Params;
+    let n = <P as LdpcParams>::N;
+    let k = <P as LdpcParams>::K;
+
+    // ── Step 1: sort bit indices by |LLR| descending ────────────────
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_unstable_by(|&a, &b| {
+        llr[b]
+            .abs()
+            .partial_cmp(&llr[a].abs())
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    // ── Step 2: build permuted generator matrix G'[K][N] (flat) ─────
+    let mut g: Vec<u8> = vec![0u8; k * n];
+    for row in 0..k {
+        for col in 0..n {
+            let j = perm[col];
+            g[row * n + col] = if j < k {
+                (row == j) as u8
+            } else {
+                <P as LdpcParams>::gen_parity(j - k, row)
+            };
+        }
+    }
+
+    // ── Step 3: GF(2) Gaussian elimination (RREF, no column swaps) ──
+    let mut pivot_col: Vec<usize> = vec![0; k];
+    let mut pivot_row = 0usize;
+    for col in 0..n {
+        if pivot_row >= k {
+            break;
+        }
+        let mut found: Option<usize> = None;
+        for r in pivot_row..k {
+            if g[r * n + col] != 0 {
+                found = Some(r);
+                break;
+            }
+        }
+        if let Some(r) = found {
+            if r != pivot_row {
+                for c in 0..n {
+                    g.swap(r * n + c, pivot_row * n + c);
+                }
+            }
+            for r2 in 0..k {
+                if r2 != pivot_row && g[r2 * n + col] != 0 {
+                    for c in 0..n {
+                        g[r2 * n + c] ^= g[pivot_row * n + c];
+                    }
+                }
+            }
+            pivot_col[pivot_row] = col;
+            pivot_row += 1;
+        }
+    }
+    if pivot_row < k {
+        return None; // degenerate; should not happen with a valid LDPC code
+    }
+
+    // ── Step 4: hard decisions on MRB bits (= m0 in WSJT-X) ─────────
+    let mut m0: Vec<u8> = vec![0u8; k];
+    for r in 0..k {
+        let orig = perm[pivot_col[r]];
+        m0[r] = if llr[orig] > 0.0 { 1 } else { 0 };
+    }
+
+    // Hard decisions in permuted space (= hdec(indices) in WSJT-X).
+    let mut hdec_perm: Vec<u8> = vec![0u8; n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+    }
+    // |LLR| in permuted space — caches the cost of unpermuting per
+    // candidate. WSJT-X stores this as `absrx(indices)`.
+    let mut absrx_perm: Vec<f32> = vec![0.0f32; n];
+    for col in 0..n {
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    // ── Step 5: encode order-0 candidate (= c0 in WSJT-X) ───────────
+    let mut c_perm: Vec<u8> = vec![0u8; n];
+    for r in 0..k {
+        if m0[r] == 1 {
+            for col in 0..n {
+                c_perm[col] ^= g[r * n + col];
+            }
+        }
+    }
+
+    // Unpermute + CRC-verify helper. Returns the unpermuted codeword
+    // plus its `info[..k]` slice; `None` if CRC fails.
+    let try_candidate = |cp: &[u8]| -> Option<(Vec<u8>, Vec<u8>)> {
+        let mut c = vec![0u8; n];
+        for col in 0..n {
+            c[perm[col]] = cp[col];
+        }
+        let decoded = c[..k].to_vec();
+        if !check_crc14(&decoded) {
+            return None;
+        }
+        Some((decoded, c))
+    };
+
+    // Best-so-far tracked as (decoded, codeword, dd). `best_dd` mirrors
+    // the third tuple field so the per-iteration gate check stays a
+    // plain f32 compare — avoids the closure-captures-mut-best borrow
+    // tangle and reads cleanly at the call sites below.
+    let mut best: Option<(Vec<u8>, Vec<u8>, f32)> = None;
+    let mut best_dd = f32::INFINITY;
+
+    // Order-0 baseline. Weighted distance: number of positions where
+    // c_perm differs from hdec_perm weighted by |LLR|. For c_perm
+    // (encoded from m0 = hdec_perm[..k]) the info portion has zero
+    // contribution; only parity bits may differ.
+    {
+        let mut wd = 0.0f32;
+        for col in k..n {
+            if c_perm[col] != hdec_perm[col] {
+                wd += absrx_perm[col];
+            }
+        }
+        if let Some((d, cw)) = try_candidate(&c_perm) {
+            best_dd = wd;
+            best = Some((d, cw, wd));
+        }
+    }
+
+    // Reusable scratch.
+    let mut ce_iflag = vec![0u8; n];
+    let mut e2sub = vec![0u8; n - k]; // parity error pattern, n1=iflag case
+    let mut e2 = vec![0u8; n - k]; // ditto, n1<iflag case
+    let mut ce_pair = vec![0u8; n];
+    let nt = NPRE1_PARITY_WINDOW.min(n - k);
+
+    // ── Step 6: WSJT-X `do iorder=1, nord=1 + npre1=1` enumeration ──
+    for iflag in (0..k).rev() {
+        // Baseline n1=iflag: single-bit flip at MRB position iflag.
+        // ce_iflag = c_perm XOR row(iflag) of G.
+        ce_iflag.copy_from_slice(&c_perm);
+        for col in 0..n {
+            ce_iflag[col] ^= g[iflag * n + col];
+        }
+        // e2sub = ce_iflag[k..n] XOR hdec_perm[k..n] = parity-error pattern.
+        for j in 0..(n - k) {
+            e2sub[j] = ce_iflag[k + j] ^ hdec_perm[k + j];
+        }
+        // Gate: parity-error count in first `nt` parity bits, plus
+        // 1 for the iflag info-bit flip. WSJT-X `osd174_91:200`.
+        let mut parity_err: u32 = 0;
+        for j in 0..nt {
+            parity_err += e2sub[j] as u32;
+        }
+        // d1 is the info-bit contribution to weighted distance: only
+        // iflag was flipped, so d1 = absrx_perm[iflag].
+        let d1 = absrx_perm[iflag];
+
+        // Gate as WSJT-X-faithful `parity_err + 1 <= NPRE1_GATE`
+        // (the +1 is the iflag info-bit flip count) — algebraically
+        // identical to `parity_err < NPRE1_GATE` and silences clippy.
+        if parity_err < NPRE1_GATE {
+            let mut parity_wd = 0.0f32;
+            for j in 0..(n - k) {
+                if e2sub[j] == 1 {
+                    parity_wd += absrx_perm[k + j];
+                }
+            }
+            let dd = d1 + parity_wd;
+            if dd < best_dd
+                && let Some((d, cw)) = try_candidate(&ce_iflag)
+            {
+                best_dd = dd;
+                best = Some((d, cw, dd));
+            }
+        }
+
+        // npre1 pair-anchor inner loop: n1 = iflag-1 .. 0.
+        // Each iteration XOR-extends e2sub by g[n1, k..n] (linearity)
+        // to skip the full re-encode for the gate-check step.
+        for n1 in (0..iflag).rev() {
+            for j in 0..(n - k) {
+                e2[j] = e2sub[j] ^ g[n1 * n + (k + j)];
+            }
+            let mut parity_err_pair: u32 = 0;
+            for j in 0..nt {
+                parity_err_pair += e2[j] as u32;
+            }
+            // +2 for the two info-bit flips (iflag + n1). WSJT-X
+            // `osd174_91:204`.
+            if parity_err_pair + 2 > NPRE1_GATE {
+                continue;
+            }
+
+            // Gate passed — do the full encode.
+            // ce_pair = ce_iflag XOR row(n1) of G.
+            ce_pair.copy_from_slice(&ce_iflag);
+            for col in 0..n {
+                ce_pair[col] ^= g[n1 * n + col];
+            }
+            let mut parity_wd_pair = 0.0f32;
+            for j in 0..(n - k) {
+                if e2[j] == 1 {
+                    parity_wd_pair += absrx_perm[k + j];
+                }
+            }
+            // Pair weighted distance: d1 (iflag info) + absrx_perm[n1]
+            // (n1 info — always differs from hdec since we flipped it)
+            // + parity contribution. WSJT-X `osd174_91:212`.
+            let dd = d1 + absrx_perm[n1] + parity_wd_pair;
+            if dd < best_dd
+                && let Some((d, cw)) = try_candidate(&ce_pair)
+            {
+                best_dd = dd;
+                best = Some((d, cw, dd));
+            }
+        }
+    }
+
+    // ── Step 7: return best ─────────────────────────────────────────
+    let (decoded, codeword, _) = best?;
+    let mut hard_errors = 0u32;
+    for i in 0..n {
+        if (codeword[i] == 1) != (llr[i] > 0.0) {
+            hard_errors += 1;
+        }
+    }
+    let mut message77 = [0u8; 77];
+    message77.copy_from_slice(&decoded[..77]);
+    Some(OsdResult {
+        message77,
+        info: decoded,
+        codeword,
+        hard_errors,
+    })
+}
+
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
 ///
 /// `ndeep`: search depth (1..=4). `k4_limit`: upper bound (exclusive)
@@ -841,6 +1122,62 @@ mod tests {
         let llr = [0.0f32; LDPC_N];
         // The all-zero codeword may or may not pass CRC; just check no panic.
         let _ = osd_decode(&llr);
+    }
+
+    /// Smoke: `osd_decode_npre1` on all-zero LLR returns `None` or a
+    /// codeword without panicking — same minimum-viable contract as
+    /// `osd_decode`.
+    #[test]
+    fn npre1_zero_llr_no_panic() {
+        let llr = [0.0f32; LDPC_N];
+        let _ = osd_decode_npre1(&llr);
+    }
+
+    /// Round-trip: a well-conditioned LLR derived from a known
+    /// CRC-valid info word should decode back to the same info via
+    /// `osd_decode_npre1`. The order-0 candidate (encode of hard
+    /// decisions) is exactly the input codeword on this clean LLR, so
+    /// the algorithm only needs to validate CRC and return — exercises
+    /// permutation + RREF + try_candidate without touching the
+    /// npre1 enumeration path.
+    #[test]
+    fn npre1_decodes_clean_codeword() {
+        use super::super::bp::crc14;
+        // Build a CRC-valid 91-bit info: a fixed 77-bit payload + its
+        // CRC-14 in bits 77..91. `check_crc14` packs the 77-bit field
+        // into 12 bytes (big-endian, MSB-first) — replicate the same
+        // packing here to compute the expected CRC.
+        let mut info_with_crc = [0u8; LDPC_K];
+        for i in 0..77 {
+            info_with_crc[i] = ((i * 13 + 7) & 1) as u8;
+        }
+        let mut bytes = [0u8; 12];
+        for (i, &bit) in info_with_crc[..77].iter().enumerate() {
+            bytes[i / 8] |= (bit & 1) << (7 - (i % 8));
+        }
+        let crc = crc14(&bytes);
+        for j in 0..14 {
+            info_with_crc[77 + j] = ((crc >> (13 - j)) & 1) as u8;
+        }
+        // Sanity: `check_crc14` accepts our hand-rolled info.
+        assert!(
+            check_crc14(&info_with_crc),
+            "test CRC packing must round-trip"
+        );
+        let cw = ldpc_encode(&info_with_crc);
+        // Make a strong-confidence LLR: positive for cw=1 bits, negative
+        // for cw=0 — magnitude well above any noise floor.
+        let mut llr = [0.0f32; LDPC_N];
+        for i in 0..LDPC_N {
+            llr[i] = if cw[i] == 1 { 4.0 } else { -4.0 };
+        }
+        let osd = osd_decode_npre1(&llr).expect("clean LLR must decode");
+        assert_eq!(
+            &osd.info[..91],
+            &info_with_crc[..],
+            "decoded info bits must match the encoded input"
+        );
+        assert_eq!(osd.hard_errors, 0, "clean LLR has zero hard errors");
     }
 
     /// Verify that ldpc_encode produces codewords that satisfy ALL 83 parity
