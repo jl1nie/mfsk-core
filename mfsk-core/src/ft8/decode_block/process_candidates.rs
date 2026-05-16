@@ -282,23 +282,70 @@ fn decode_block_multipass<S: AudioSample>(
     // sync8 spectrogram). This is critical: feeding xsig from a
     // different chain (e.g. cd0 downsampled per-symbol DFT) loses
     // the calibration.
+    //
+    // **WSJT-X post-decode validity gates (#63).** Mirrors
+    // `ft8b.f90:422-459`:
+    //   - msg-type `i3 / n3` validity (lines 425-428)
+    //   - `unpack77` success (line 430)
+    //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
+    // The xsnr gate has to run on the RAW (un-clamped) `xsnr2` because
+    // both WSJT-X (line 460) and our previous attempt clamp the value
+    // to -24 dB for display *after* the gate. Clamping first would
+    // collapse every "below floor" result to exactly -24, dead-letter
+    // the `xsnr < -24.0` test, and let exactly the phantoms the gate
+    // was designed to catch slip through (= the qso3_busy phantoms
+    // named in issue #63's body).
+    //
     // xsnr2/xbase post-process is f32-only. Fixed-point Spectrogram
     // cells are quantised post `>> FP_SPEC_SHIFT`, putting many noise
     // cells at u16 zero — `fit_baseline`'s `log10(p.max(1e-30))` then
     // produces sbase ≈ -250 dB and xsnr2 explodes. The original
     // adjacent-tone SNR from `process_candidates_into` (compute_snr_db)
     // is already on a sensible scale, so leave it untouched on the
-    // fixed-point path. late bail (`xsnr<-24 && nsync≤10`) likewise
-    // f32-only here; on qso3_busy it had no effect in any case.
+    // fixed-point path; the msg-type / unpack77 / nsync gates also
+    // run only on the f32 path (the fixed-point pipeline doesn't
+    // surface OSD-pass results, so the phantom set doesn't apply).
     #[cfg(not(feature = "fixed-point"))]
     if let Some((sbase, spec)) = sbase_and_spec {
         let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
         let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
         let nsps_steps = (NSPS / NSTEP) as f32;
         all.retain_mut(|r| {
-            r.snr_db = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
+            // All-zero message77 reject (ft8b.f90:423). LDPC linearity:
+            // encode(0) = 0, and CRC-14 of all-zero info bits is zero,
+            // so an "all-zero codeword" survives both the BP and OSD
+            // staircases by CRC-luck. Rejecting it here matches WSJT-X.
+            if r.message77.iter().all(|&b| b == 0) {
+                return false;
+            }
+            // msg-type validity (ft8b.f90:425-428). Bits 71..73 = n3,
+            // 74..76 = i3 (MSB first) — matches the offsets `unpack77`
+            // reads at `msg/wsjt77.rs:236-237`.
+            let m = &r.message77;
+            let bit3 = |off: usize| -> u8 { (m[off] << 2) | (m[off + 1] << 1) | m[off + 2] };
+            let n3 = bit3(71);
+            let i3 = bit3(74);
+            if i3 > 5 || (i3 == 0 && n3 > 6) {
+                return false;
+            }
+            if i3 == 0 && n3 == 2 {
+                return false;
+            }
+            // unpack77 success (ft8b.f90:430).
+            if crate::msg::wsjt77::unpack77(&r.message77).is_none() {
+                return false;
+            }
+            // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
+            // The clamp here MUST happen after the gate test — see the
+            // function-level comment on `recompute_snr_xsnr2` for why
+            // the pre-clamp ordering used to dead-letter the gate.
+            let raw_snr = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
             let nsync = recompute_nsync(r, &spec, df, tstep, nsps_steps);
-            !(nsync <= 10 && r.snr_db < -24.0)
+            if nsync <= 10 && raw_snr < -24.0 {
+                return false;
+            }
+            r.snr_db = raw_snr.max(-24.0);
+            true
         });
     }
     #[cfg(feature = "fixed-point")]
@@ -537,11 +584,15 @@ fn recompute_snr_xsnr2(
     let sbase_db_compensated = sbase[bin] + 10.0 * cell_scale.log10();
     let xbase = 10f32.powf(0.1 * (sbase_db_compensated - 40.0));
     let arg = xsig / xbase / 3.0e6 - 1.0;
-    if arg <= 0.1 {
-        return -24.0;
-    }
-    let snr = 10.0 * arg.log10() - 27.0;
-    snr.max(-24.0)
+    // WSJT-X `ft8b.f90:445-454`: default `xsnr2 = 0.001` if the
+    // ratio degenerates, then `xsnr2_db = 10·log10(xsnr2) - 27`
+    // → -57 dB. Caller (`retain_mut` in `decode_block_multipass`)
+    // applies the `xsnr < -24` gate against this raw value BEFORE
+    // clamping it to the -24 dB display floor; the previous
+    // `snr.max(-24.0)` here pre-clamped and made the gate fire only
+    // for arithmetic underflow, not for "degenerate signal" cases.
+    let xsnr2 = if arg > 0.1 { arg } else { 0.001 };
+    10.0 * xsnr2.log10() - 27.0
 }
 
 /// Embedded path: single-pass `decode_block` (matches the previous
