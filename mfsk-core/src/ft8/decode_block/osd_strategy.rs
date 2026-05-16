@@ -5,17 +5,17 @@
 //! for `BpAllOsd` depth at sufficient `sync_quality`. Computes a
 //! fresh f32 LLR bundle for the candidate (OSD operates on f32
 //! regardless of the embedded fixed-point `LlrT`), walks the four
-//! LLR variants (a/b/c/d) through the WSJT-X-faithful `nord=1 + npre1=1`
-//! decoder ([`osd_decode_npre1`]), and applies the
+//! LLR variants (a/b/c/d) through the WSJT-X-faithful OSD entry
+//! ([`osd_decode_npre1`] for low-`q` candidates, [`osd_decode_npre1_npre2`]
+//! for `q >= Q_NDEEP3_THRESHOLD`), and applies the
 //! `nharderrors > 36` cycle gate to weed out high-error CRC-luck
 //! codewords.
 //!
 //! ε.6 of the `docs/CLEANUP_2026_05.md` `decode_block` split. As of
-//! issue **#63** this module hosts the WSJT-X-faithful precoding
-//! dispatch — `try_fallback` now matches `ft8b.f90:405`'s hard-coded
-//! `norder=2` (= `nord=1 + npre1=1`) regardless of `q`. The hook
-//! point that ε.6 carved out is now load-bearing for #63's
-//! `osd_decode_npre1` (no longer pure brute-force ndeep=2/3).
+//! issue **#63** this module hosts the WSJT-X-faithful OSD dispatch
+//! — the q-conditional split mirrors `osd174_91.f90`'s ndeep=2/3
+//! dispatch table, replacing the previous mfsk-core-specific
+//! brute-force ndeep=2/3 split (`osd_decode` / `osd_decode_deep`).
 
 use alloc::vec;
 
@@ -24,7 +24,15 @@ use super::super::params::LDPC_N;
 use super::process_candidates::WSJTX_NHARDERRORS_MAX;
 use crate::core::scalar::Cmplx;
 use crate::fec::ldpc::bp::BpResult;
-use crate::fec::ldpc::osd::osd_decode_npre1;
+use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
+
+/// `sync_quality` threshold for dispatching to the heavier WSJT-X
+/// ndeep=3 entry ([`osd_decode_npre1_npre2`]) instead of ndeep=2
+/// ([`osd_decode_npre1`]). Mirrors the pre-#63 dispatch's
+/// `q >= 18` split between `osd_decode_deep(_, 3, _)` and
+/// `osd_decode(_)` (ndeep=2), now with WSJT-X-faithful internals on
+/// both sides.
+const Q_NDEEP3_THRESHOLD: u32 = 18;
 
 /// Pass-ID range emitted by the OSD fallback (`14..=17` mirrors the
 /// llr-variant order `a/b/c/d` — see the post-0.6.1 pass-ID layout
@@ -67,21 +75,21 @@ pub(super) fn try_fallback(
         (&llr_full_f32.llrc, PASS_ID_OSD_A + 2),
         (&llr_full_f32.llrd, PASS_ID_OSD_A + 3),
     ] {
-        // WSJT-X-faithful `nord=1 + npre1=1` dispatch — matches
-        // `ft8b.f90:405`'s hard-coded `norder=2` (which inside
-        // `osd174_91` runs the npre1 precoding rule).
+        // WSJT-X-faithful OSD dispatch (issue #63). Mirrors WSJT-X's
+        // ndeep=2/3 split: ndeep=2 (= nord=1 + npre1=1, ~165 patterns
+        // post-gate) for the default `q < 18` candidates; ndeep=3
+        // (= ndeep=2 + npre2 weight-3 anchored pairs via a ntau=14
+        // hash table) for cleaner candidates that justify the extra
+        // 64 KB hash-table build.
         //
-        // Issue #63 swapped the previous q-conditional split
-        // (`osd_decode_deep(_, 3, _)` for q≥18 / un-gated
-        // `osd_decode` ndeep=2 otherwise) for this single call —
-        // both old paths over-enumerated relative to WSJT-X and
-        // surfaced CRC-luck phantoms at `nharderrors >= 25` that
-        // the npre1 gate's `ntheta=10` parity-error filter rejects.
-        //
-        // `osd_decode_npre1` carries its own implicit `check_crc14`
-        // verifier (mirrors WSJT-X's `nbadcrc` gate inside the
-        // subroutine), so no `Some(check_crc14)` argument here.
-        let osd = osd_decode_npre1(llr);
+        // Both entries carry implicit `check_crc14` verifiers (mirror
+        // WSJT-X's `nbadcrc` gate inside `osd174_91`), so no
+        // `Some(check_crc14)` argument.
+        let osd = if q >= Q_NDEEP3_THRESHOLD {
+            osd_decode_npre1_npre2(llr)
+        } else {
+            osd_decode_npre1(llr)
+        };
         if let Some(osd) = osd {
             // Mirror the BP-variant `nharderrors > 36` cycle gate
             // (ft8b.f90:422) on the OSD path. WSJT-X's OSD itself

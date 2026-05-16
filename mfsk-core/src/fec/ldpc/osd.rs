@@ -625,55 +625,87 @@ pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// WSJT-X-faithful npre1 OSD (issue #63)
+// WSJT-X-faithful OSD (issue #63) — shared scaffolding for ndeep=2 (npre1)
+// and ndeep=3 (npre1 + npre2).
 
 /// Sliding window of trailing-parity bits the `npre1` gate inspects.
-/// Mirrors WSJT-X `osd174_91.f90:147` `nt = 40` for FT8 ndeep=2.
+/// Mirrors WSJT-X `osd174_91.f90:147` `nt = 40`. Same value for ndeep=2
+/// and ndeep=3 dispatch.
 const NPRE1_PARITY_WINDOW: usize = 40;
 
-/// Maximum tolerated partial parity-error count for the `npre1` gate.
-/// Mirrors WSJT-X `osd174_91.f90:148` `ntheta = 10` for FT8 ndeep=2.
-/// Candidates whose parity-error count in the first `NPRE1_PARITY_WINDOW`
-/// parity bits — plus the info-bit-flip count of the test pattern — exceed
-/// this threshold are rejected without the expensive full encode + CRC
-/// check.
-const NPRE1_GATE: u32 = 10;
+/// Maximum tolerated partial parity-error count for the `npre1` gate
+/// at WSJT-X ndeep=2 dispatch. Mirrors `osd174_91.f90:148`
+/// `ntheta = 10`. Candidates whose parity-error count in the first
+/// `NPRE1_PARITY_WINDOW` parity bits — plus the info-bit-flip count
+/// of the test pattern — exceed this are rejected without the
+/// expensive full encode + CRC check.
+const NPRE1_GATE_NDEEP2: u32 = 10;
 
-/// WSJT-X-faithful `nord=1 + npre1=1` OSD decode (issue #63).
-///
-/// Mirrors `osd174_91.f90` with ndeep=2 — the FT8 default that
-/// `ft8b.f90:405` dispatches to. Enumerates the same 4,186 weight-2
-/// anchored-pair patterns our [`osd_decode`] does (order-1 baseline +
-/// npre1 pair-anchor), but applies WSJT-X's `ntheta=10` early-reject
-/// gate on partial parity-error count so only ~165 algebraically
-/// plausible patterns reach the full encode + CRC verify.
-///
-/// **False-positive filter.** Pure brute-force `osd_decode` (ndeep=2)
-/// occasionally returns CRC-luck codewords at high `nharderrors` — on
-/// `qso3_busy.wav` it surfaces two confirmed phantoms (`N1API F2VX 73`
-/// at 30 hard errors / -24 dB and `CQ EA2BFM IN83` at 31 / -24 dB).
-/// These have parity errors spread broadly across all 83 parity bits,
-/// so they trip the `ntheta=10` gate before reaching CRC and never
-/// surface from this variant. Real low-SNR signals preserve the
-/// algebraic structure of their parity bits and pass the gate.
-///
-/// The pattern enumeration matches WSJT-X line-for-line:
-///   - Outer `iflag` walks from K-1 down to 0 (the 91 single-bit-flip
-///     baseline patterns).
-///   - Inner `n1` walks from `iflag` down to 0; when `n1 < iflag` the
-///     pattern flips two MRB bits (`iflag`, `n1`) — the npre1
-///     pair-anchor extension.
-///   - The parity-error vector for the `n1 < iflag` case is computed
-///     incrementally as `e2 = e2sub XOR g[n1, k..n]`, mirroring
-///     `osd174_91:203`.
-///
-/// Returns `None` if no CRC-passing candidate is found.
-pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
-    type P = Ldpc174_91Params;
-    let n = <P as LdpcParams>::N;
-    let k = <P as LdpcParams>::K;
+/// Same as [`NPRE1_GATE_NDEEP2`] but for WSJT-X ndeep=3 dispatch
+/// (`osd174_91.f90:154`). ndeep=3 loosens the gate to 12 because it
+/// composes with the `npre2` second-stage pass that mops up patterns
+/// the looser gate lets through.
+const NPRE1_GATE_NDEEP3: u32 = 12;
 
-    // ── Step 1: sort bit indices by |LLR| descending ────────────────
+/// Hash-key width for the `npre2` second-stage pre-processing rule.
+/// Mirrors WSJT-X `osd174_91.f90:155` `ntau = 14` for FT8 ndeep=3.
+/// 2^14 = 16,384 hash buckets; 4,095 (i1, i2) entries spread across
+/// them.
+const NPRE2_NTAU: usize = 14;
+
+/// Shared OSD scaffolding extracted from `osd_decode_npre1` so the
+/// ndeep=3 entry `osd_decode_npre1_npre2` can reuse it. Holds the
+/// permutation + RREF generator + hard-decision projections + the
+/// order-0 codeword that every WSJT-X-faithful OSD pass needs.
+struct OsdSetup {
+    perm: Vec<usize>,
+    /// Flat `LDPC_K × LDPC_N` RREF permuted generator
+    /// (`g[row * LDPC_N + col]`).
+    g: Vec<u8>,
+    /// Hard decisions in permuted space (= `hdec(indices)` in WSJT-X).
+    hdec_perm: Vec<u8>,
+    /// `|LLR|` in permuted space (= `absrx(indices)` in WSJT-X).
+    absrx_perm: Vec<f32>,
+    /// Order-0 codeword (= `c0 = encode(m0)`) in permuted space.
+    c_perm: Vec<u8>,
+}
+
+/// Best-so-far accumulator. Tracked separately from the closure
+/// pattern to avoid the borrow tangle that bit the first npre1 impl.
+struct OsdBest {
+    /// `(info, full codeword)` of the best candidate so far, or `None`
+    /// if no CRC-valid candidate has been found.
+    state: Option<(Vec<u8>, Vec<u8>)>,
+    /// Weighted distance of the best candidate, or `+infinity` when
+    /// `state` is `None`.
+    dd: f32,
+}
+
+impl OsdBest {
+    fn new() -> Self {
+        Self {
+            state: None,
+            dd: f32::INFINITY,
+        }
+    }
+
+    fn maybe_update(&mut self, decoded: Vec<u8>, cw: Vec<u8>, dd: f32) {
+        if dd < self.dd {
+            self.dd = dd;
+            self.state = Some((decoded, cw));
+        }
+    }
+}
+
+/// LDPC(174, 91) setup: permute bits by `|LLR|` descending, build the
+/// permuted RREF generator, project the hard decisions into permuted
+/// space, and encode the order-0 candidate. Returns `None` if the
+/// Gaussian elimination is degenerate (shouldn't happen for valid
+/// LDPC codes).
+fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
+    let n = LDPC_N;
+    let k = LDPC_K;
+
     let mut perm: Vec<usize> = (0..n).collect();
     perm.sort_unstable_by(|&a, &b| {
         llr[b]
@@ -682,7 +714,6 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
             .unwrap_or(core::cmp::Ordering::Equal)
     });
 
-    // ── Step 2: build permuted generator matrix G'[K][N] (flat) ─────
     let mut g: Vec<u8> = vec![0u8; k * n];
     for row in 0..k {
         for col in 0..n {
@@ -690,12 +721,11 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
             g[row * n + col] = if j < k {
                 (row == j) as u8
             } else {
-                <P as LdpcParams>::gen_parity(j - k, row)
+                <Ldpc174_91Params as LdpcParams>::gen_parity(j - k, row)
             };
         }
     }
 
-    // ── Step 3: GF(2) Gaussian elimination (RREF, no column swaps) ──
     let mut pivot_col: Vec<usize> = vec![0; k];
     let mut pivot_row = 0usize;
     for col in 0..n {
@@ -727,29 +757,22 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
         }
     }
     if pivot_row < k {
-        return None; // degenerate; should not happen with a valid LDPC code
+        return None;
     }
 
-    // ── Step 4: hard decisions on MRB bits (= m0 in WSJT-X) ─────────
     let mut m0: Vec<u8> = vec![0u8; k];
     for r in 0..k {
         let orig = perm[pivot_col[r]];
         m0[r] = if llr[orig] > 0.0 { 1 } else { 0 };
     }
 
-    // Hard decisions in permuted space (= hdec(indices) in WSJT-X).
     let mut hdec_perm: Vec<u8> = vec![0u8; n];
-    for col in 0..n {
-        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
-    }
-    // |LLR| in permuted space — caches the cost of unpermuting per
-    // candidate. WSJT-X stores this as `absrx(indices)`.
     let mut absrx_perm: Vec<f32> = vec![0.0f32; n];
     for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
         absrx_perm[col] = llr[perm[col]].abs();
     }
 
-    // ── Step 5: encode order-0 candidate (= c0 in WSJT-X) ───────────
     let mut c_perm: Vec<u8> = vec![0u8; n];
     for r in 0..k {
         if m0[r] == 1 {
@@ -759,138 +782,302 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
         }
     }
 
-    // Unpermute + CRC-verify helper. Returns the unpermuted codeword
-    // plus its `info[..k]` slice; `None` if CRC fails.
-    let try_candidate = |cp: &[u8]| -> Option<(Vec<u8>, Vec<u8>)> {
-        let mut c = vec![0u8; n];
-        for col in 0..n {
-            c[perm[col]] = cp[col];
-        }
-        let decoded = c[..k].to_vec();
-        if !check_crc14(&decoded) {
-            return None;
-        }
-        Some((decoded, c))
-    };
+    Some(OsdSetup {
+        perm,
+        g,
+        hdec_perm,
+        absrx_perm,
+        c_perm,
+    })
+}
 
-    // Best-so-far tracked as (decoded, codeword, dd). `best_dd` mirrors
-    // the third tuple field so the per-iteration gate check stays a
-    // plain f32 compare — avoids the closure-captures-mut-best borrow
-    // tangle and reads cleanly at the call sites below.
-    let mut best: Option<(Vec<u8>, Vec<u8>, f32)> = None;
-    let mut best_dd = f32::INFINITY;
+/// Un-permute a candidate codeword and CRC-verify it. Returns the
+/// unpermuted full codeword + its first-`K` info slice, or `None` if
+/// CRC fails.
+fn try_candidate_ldpc174_91(perm: &[usize], cp: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let n = LDPC_N;
+    let k = LDPC_K;
+    let mut c = vec![0u8; n];
+    for col in 0..n {
+        c[perm[col]] = cp[col];
+    }
+    let decoded = c[..k].to_vec();
+    if !check_crc14(&decoded) {
+        return None;
+    }
+    Some((decoded, c))
+}
 
-    // Order-0 baseline. Weighted distance: number of positions where
-    // c_perm differs from hdec_perm weighted by |LLR|. For c_perm
-    // (encoded from m0 = hdec_perm[..k]) the info portion has zero
-    // contribution; only parity bits may differ.
+/// Run the WSJT-X `nord=1 + npre1=1` pass against the given
+/// [`OsdSetup`], updating [`OsdBest`] with any improvement.
+///
+/// `ntheta` selects which dispatch's gate threshold to apply
+/// (10 for ndeep=2, 12 for ndeep=3 — see [`NPRE1_GATE_NDEEP2`] /
+/// [`NPRE1_GATE_NDEEP3`]).
+///
+/// Mirrors `osd174_91.f90:179-228`. Also handles the order-0
+/// baseline so callers don't need a separate "try order-0 first"
+/// step — re-trying order-0 inside a multi-pass driver is harmless
+/// (idempotent).
+fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
+    let n = LDPC_N;
+    let k = LDPC_K;
+    let nt = NPRE1_PARITY_WINDOW.min(n - k);
+
+    // Order-0 baseline.
     {
         let mut wd = 0.0f32;
         for col in k..n {
-            if c_perm[col] != hdec_perm[col] {
-                wd += absrx_perm[col];
+            if setup.c_perm[col] != setup.hdec_perm[col] {
+                wd += setup.absrx_perm[col];
             }
         }
-        if let Some((d, cw)) = try_candidate(&c_perm) {
-            best_dd = wd;
-            best = Some((d, cw, wd));
+        if wd < best.dd
+            && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &setup.c_perm)
+        {
+            best.maybe_update(d, cw, wd);
         }
     }
 
-    // Reusable scratch.
     let mut ce_iflag = vec![0u8; n];
-    let mut e2sub = vec![0u8; n - k]; // parity error pattern, n1=iflag case
-    let mut e2 = vec![0u8; n - k]; // ditto, n1<iflag case
+    let mut e2sub = vec![0u8; n - k];
+    let mut e2 = vec![0u8; n - k];
     let mut ce_pair = vec![0u8; n];
-    let nt = NPRE1_PARITY_WINDOW.min(n - k);
 
-    // ── Step 6: WSJT-X `do iorder=1, nord=1 + npre1=1` enumeration ──
     for iflag in (0..k).rev() {
-        // Baseline n1=iflag: single-bit flip at MRB position iflag.
-        // ce_iflag = c_perm XOR row(iflag) of G.
-        ce_iflag.copy_from_slice(&c_perm);
+        ce_iflag.copy_from_slice(&setup.c_perm);
         for col in 0..n {
-            ce_iflag[col] ^= g[iflag * n + col];
+            ce_iflag[col] ^= setup.g[iflag * n + col];
         }
-        // e2sub = ce_iflag[k..n] XOR hdec_perm[k..n] = parity-error pattern.
         for j in 0..(n - k) {
-            e2sub[j] = ce_iflag[k + j] ^ hdec_perm[k + j];
+            e2sub[j] = ce_iflag[k + j] ^ setup.hdec_perm[k + j];
         }
-        // Gate: parity-error count in first `nt` parity bits, plus
-        // 1 for the iflag info-bit flip. WSJT-X `osd174_91:200`.
         let mut parity_err: u32 = 0;
         for j in 0..nt {
             parity_err += e2sub[j] as u32;
         }
-        // d1 is the info-bit contribution to weighted distance: only
-        // iflag was flipped, so d1 = absrx_perm[iflag].
-        let d1 = absrx_perm[iflag];
+        let d1 = setup.absrx_perm[iflag];
 
-        // Gate as WSJT-X-faithful `parity_err + 1 <= NPRE1_GATE`
-        // (the +1 is the iflag info-bit flip count) — algebraically
-        // identical to `parity_err < NPRE1_GATE` and silences clippy.
-        if parity_err < NPRE1_GATE {
+        // n1 = iflag baseline. WSJT-X gate is `parity_err + 1 <= ntheta`
+        // (the +1 accounts for the iflag info-bit flip); written as
+        // `parity_err < ntheta` to silence clippy::int_plus_one.
+        if parity_err < ntheta {
             let mut parity_wd = 0.0f32;
             for j in 0..(n - k) {
                 if e2sub[j] == 1 {
-                    parity_wd += absrx_perm[k + j];
+                    parity_wd += setup.absrx_perm[k + j];
                 }
             }
             let dd = d1 + parity_wd;
-            if dd < best_dd
-                && let Some((d, cw)) = try_candidate(&ce_iflag)
+            if dd < best.dd
+                && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_iflag)
             {
-                best_dd = dd;
-                best = Some((d, cw, dd));
+                best.maybe_update(d, cw, dd);
             }
         }
 
-        // npre1 pair-anchor inner loop: n1 = iflag-1 .. 0.
-        // Each iteration XOR-extends e2sub by g[n1, k..n] (linearity)
-        // to skip the full re-encode for the gate-check step.
+        // n1 < iflag pair-anchor. e2 derived incrementally as
+        // `e2sub XOR g[n1, k..n]` — WSJT-X `osd174_91:203`.
         for n1 in (0..iflag).rev() {
             for j in 0..(n - k) {
-                e2[j] = e2sub[j] ^ g[n1 * n + (k + j)];
+                e2[j] = e2sub[j] ^ setup.g[n1 * n + (k + j)];
             }
             let mut parity_err_pair: u32 = 0;
             for j in 0..nt {
                 parity_err_pair += e2[j] as u32;
             }
-            // +2 for the two info-bit flips (iflag + n1). WSJT-X
-            // `osd174_91:204`.
-            if parity_err_pair + 2 > NPRE1_GATE {
+            // +2 for the two info-bit flips (iflag + n1).
+            if parity_err_pair + 2 > ntheta {
                 continue;
             }
-
-            // Gate passed — do the full encode.
-            // ce_pair = ce_iflag XOR row(n1) of G.
             ce_pair.copy_from_slice(&ce_iflag);
             for col in 0..n {
-                ce_pair[col] ^= g[n1 * n + col];
+                ce_pair[col] ^= setup.g[n1 * n + col];
             }
             let mut parity_wd_pair = 0.0f32;
             for j in 0..(n - k) {
                 if e2[j] == 1 {
-                    parity_wd_pair += absrx_perm[k + j];
+                    parity_wd_pair += setup.absrx_perm[k + j];
                 }
             }
-            // Pair weighted distance: d1 (iflag info) + absrx_perm[n1]
-            // (n1 info — always differs from hdec since we flipped it)
-            // + parity contribution. WSJT-X `osd174_91:212`.
-            let dd = d1 + absrx_perm[n1] + parity_wd_pair;
-            if dd < best_dd
-                && let Some((d, cw)) = try_candidate(&ce_pair)
+            let dd = d1 + setup.absrx_perm[n1] + parity_wd_pair;
+            if dd < best.dd
+                && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_pair)
             {
-                best_dd = dd;
-                best = Some((d, cw, dd));
+                best.maybe_update(d, cw, dd);
             }
         }
     }
+}
 
-    // ── Step 7: return best ─────────────────────────────────────────
-    let (decoded, codeword, _) = best?;
+/// Hash table for the `npre2` pass. Maps an `ntau`-bit key
+/// (XOR of two G columns, restricted to the first ntau parity rows)
+/// to the chain of `(i1, i2)` MRB index pairs whose generator
+/// difference yields that key.
+///
+/// Backed by three flat vecs (`fp` head-per-bucket, `pairs`/`next`
+/// chained list). Mirrors WSJT-X `boxit91` (`osd174_91.f90:336-370`).
+struct OsdNpre2Table {
+    /// Per-hash-bucket head index into `pairs` (or `-1` = empty).
+    fp: Vec<i32>,
+    /// Chained `(i1, i2)` entries; `next[idx]` is the chained next or
+    /// `-1` to terminate the bucket's chain.
+    pairs: Vec<(u8, u8)>,
+    next: Vec<i32>,
+}
+
+impl OsdNpre2Table {
+    fn new(ntau: usize) -> Self {
+        let buckets = 1usize << ntau;
+        Self {
+            fp: vec![-1; buckets],
+            pairs: Vec::new(),
+            next: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, key: usize, i1: u8, i2: u8) {
+        let idx = self.pairs.len() as i32;
+        self.pairs.push((i1, i2));
+        self.next.push(-1);
+        if self.fp[key] == -1 {
+            self.fp[key] = idx;
+        } else {
+            let mut cur = self.fp[key] as usize;
+            while self.next[cur] != -1 {
+                cur = self.next[cur] as usize;
+            }
+            self.next[cur] = idx;
+        }
+    }
+
+    /// Iterate over `(i1, i2)` pairs registered at `key`, in
+    /// insertion order. Mirrors WSJT-X `fetchit91` chain traversal.
+    fn iter_pairs(&self, key: usize) -> impl Iterator<Item = (u8, u8)> + '_ {
+        let mut cur = self.fp[key];
+        core::iter::from_fn(move || {
+            if cur < 0 {
+                None
+            } else {
+                let entry = self.pairs[cur as usize];
+                cur = self.next[cur as usize];
+                Some(entry)
+            }
+        })
+    }
+}
+
+/// Build the [`OsdNpre2Table`] for `ntau`-bit XOR of all C(K, 2)
+/// MRB column pairs. Insertion order matches WSJT-X
+/// (`i1` from K-1 down to 0, `i2` from `i1-1` down to 0) so the
+/// chain traversal in [`OsdNpre2Table::iter_pairs`] yields candidates
+/// in the same sequence WSJT-X explores them.
+fn build_npre2_table(setup: &OsdSetup, ntau: usize) -> OsdNpre2Table {
+    let n = LDPC_N;
+    let k = LDPC_K;
+    let mut table = OsdNpre2Table::new(ntau);
+    for i1 in (0..k).rev() {
+        for i2 in (0..i1).rev() {
+            let mut key: usize = 0;
+            for j in 0..ntau {
+                let bit = setup.g[i1 * n + (k + j)] ^ setup.g[i2 * n + (k + j)];
+                if bit != 0 {
+                    key |= 1 << (ntau - 1 - j);
+                }
+            }
+            table.insert(key, i1 as u8, i2 as u8);
+        }
+    }
+    table
+}
+
+/// Run the WSJT-X `npre2 = 1` pass (`osd174_91.f90:230-289`) against
+/// the given [`OsdSetup`], updating [`OsdBest`] with any improvement.
+///
+/// For each MRB outer pattern (nord=1, so each `iflag` flip) and
+/// each near-by perturbation `r2pat = e2sub XOR single-bit[i2]`
+/// (`i2 = 0..=ntau`), look up which MRB pairs `(in1, in2)` produce a
+/// G-column XOR matching `r2pat` in the precomputed table. Each match
+/// yields a weight-3 candidate `me = m0 XOR misub XOR bit[in1] XOR
+/// bit[in2]`; encode, weighted-distance, CRC-verify, update best.
+///
+/// The `sum(mi) < nord+npre1+npre2 = 3` guard skips matches whose
+/// `in1` / `in2` overlap with `iflag` (would degenerate the
+/// "weight-3 pattern" requirement).
+fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
+    let n = LDPC_N;
+    let k = LDPC_K;
+    let table = build_npre2_table(setup, ntau);
+
+    let mut ce_misub = vec![0u8; n];
+    let mut e2sub = vec![0u8; n - k];
+    let mut ce_test = vec![0u8; n];
+
+    for iflag in (0..k).rev() {
+        ce_misub.copy_from_slice(&setup.c_perm);
+        for col in 0..n {
+            ce_misub[col] ^= setup.g[iflag * n + col];
+        }
+        for j in 0..(n - k) {
+            e2sub[j] = ce_misub[k + j] ^ setup.hdec_perm[k + j];
+        }
+
+        // Pack first `ntau` bits of e2sub into a base key.
+        let mut base_key: usize = 0;
+        for j in 0..ntau {
+            if e2sub[j] != 0 {
+                base_key |= 1 << (ntau - 1 - j);
+            }
+        }
+
+        // i2 = 0 → r2pat = e2sub (no perturbation); i2 = 1..=ntau →
+        // flip parity bit (i2-1).
+        for i2 in 0..=ntau {
+            let key = if i2 == 0 {
+                base_key
+            } else {
+                base_key ^ (1 << (ntau - i2))
+            };
+
+            for (in1, in2) in table.iter_pairs(key) {
+                let in1_u = in1 as usize;
+                let in2_u = in2 as usize;
+                // Threshold: sum(mi) >= nord + npre1 + npre2 = 3.
+                // mi has bits at iflag, in1, in2; skip if any pair
+                // overlaps (degenerates to weight-1 or weight-2).
+                if iflag == in1_u || iflag == in2_u || in1_u == in2_u {
+                    continue;
+                }
+
+                ce_test.copy_from_slice(&ce_misub);
+                for col in 0..n {
+                    ce_test[col] ^= setup.g[in1_u * n + col] ^ setup.g[in2_u * n + col];
+                }
+
+                let mut dd = 0.0f32;
+                for col in 0..n {
+                    if ce_test[col] != setup.hdec_perm[col] {
+                        dd += setup.absrx_perm[col];
+                    }
+                }
+                if dd < best.dd
+                    && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_test)
+                {
+                    best.maybe_update(d, cw, dd);
+                }
+            }
+        }
+    }
+}
+
+/// Build an [`OsdResult`] from a populated [`OsdBest`] and the raw
+/// (un-permuted) `llr`. Used by both `osd_decode_npre1` and
+/// `osd_decode_npre1_npre2` to factor out the message77 / hard_errors
+/// computation.
+fn osd_result_from_best(llr: &[f32; LDPC_N], best: OsdBest) -> Option<OsdResult> {
+    let (decoded, codeword) = best.state?;
     let mut hard_errors = 0u32;
-    for i in 0..n {
+    for i in 0..LDPC_N {
         if (codeword[i] == 1) != (llr[i] > 0.0) {
             hard_errors += 1;
         }
@@ -903,6 +1090,76 @@ pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
         codeword,
         hard_errors,
     })
+}
+
+/// WSJT-X-faithful `nord=1 + npre1=1` OSD decode (issue #63).
+///
+/// Mirrors `osd174_91.f90` with ndeep=2 — the FT8 default that
+/// `ft8b.f90:405` dispatches to. Enumerates the same 4,186 weight-2
+/// anchored-pair patterns our [`osd_decode`] does (order-1 baseline +
+/// npre1 pair-anchor), but applies WSJT-X's `ntheta=10` early-reject
+/// gate on partial parity-error count so only ~165 algebraically
+/// plausible patterns reach the full encode + CRC verify.
+///
+/// **False-positive filter.** Pure brute-force `osd_decode` (ndeep=2)
+/// occasionally returns CRC-luck codewords at high `nharderrors` — on
+/// `qso3_busy.wav` it surfaces two confirmed phantoms (`N1API F2VX 73`
+/// at 30 hard errors / -24 dB and `CQ EA2BFM IN83` at 31 / -24 dB).
+/// These have parity errors spread broadly across all 83 parity bits,
+/// so they trip the `ntheta=10` gate before reaching CRC and never
+/// surface from this variant. Real low-SNR signals preserve the
+/// algebraic structure of their parity bits and pass the gate.
+///
+/// The pattern enumeration matches WSJT-X line-for-line:
+///   - Outer `iflag` walks from K-1 down to 0 (the 91 single-bit-flip
+///     baseline patterns).
+///   - Inner `n1` walks from `iflag` down to 0; when `n1 < iflag` the
+///     pattern flips two MRB bits (`iflag`, `n1`) — the npre1
+///     pair-anchor extension.
+///   - The parity-error vector for the `n1 < iflag` case is computed
+///     incrementally as `e2 = e2sub XOR g[n1, k..n]`, mirroring
+///     `osd174_91:203`.
+///
+/// Returns `None` if no CRC-passing candidate is found.
+pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
+    let setup = osd_setup_ldpc174_91(llr)?;
+    let mut best = OsdBest::new();
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+    osd_result_from_best(llr, best)
+}
+
+/// WSJT-X-faithful `nord=1 + npre1=1 + npre2=1` OSD decode
+/// (= ndeep=3 dispatch).
+///
+/// Strictly extends [`osd_decode_npre1`]: runs the same npre1 pass
+/// with a slightly looser `ntheta=12` gate (vs ndeep=2's 10), then
+/// follows with the `npre2` second-stage pre-processing rule
+/// (`osd174_91.f90:230-289`). npre2 explores weight-3 patterns that
+/// the nord=1 search misses by looking up MRB-pair G-column XORs in a
+/// `ntau=14` hash table, then anchoring on each (in1, in2) pair whose
+/// generator difference cancels the parity-error vector of the test
+/// pattern.
+///
+/// Pattern count vs other entries:
+///
+/// | entry | ndeep | raw patterns | post-gate (~) |
+/// |---|---:|---:|---:|
+/// | [`osd_decode`] | 2 | 4,186 | 4,186 (no gate) |
+/// | [`osd_decode_deep`] | 3 | 121,667 | 121,667 (no gate) |
+/// | [`osd_decode_npre1`] | 2 | 4,186 | ~165 |
+/// | this | 3 | ~127,000 | ~165 + ~few-thousand npre2 |
+///
+/// Caller dispatch typically routes higher-`q` (cleaner) candidates
+/// to ndeep=3 since the npre2 pass costs a 64 KB hash-table build
+/// up-front; not worth it on every candidate.
+pub fn osd_decode_npre1_npre2(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
+    let setup = osd_setup_ldpc174_91(llr)?;
+    let mut best = OsdBest::new();
+    // ndeep=3 uses ntheta=12 (vs ndeep=2's 10) — looser gate because
+    // the npre2 pass below picks up patterns this would have rejected.
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP3);
+    osd_npre2_pass(&setup, &mut best, NPRE2_NTAU);
+    osd_result_from_best(llr, best)
 }
 
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
@@ -1131,6 +1388,45 @@ mod tests {
     fn npre1_zero_llr_no_panic() {
         let llr = [0.0f32; LDPC_N];
         let _ = osd_decode_npre1(&llr);
+    }
+
+    /// Smoke: `osd_decode_npre1_npre2` on all-zero LLR. Same contract
+    /// as the npre1 entry — also exercises the 64 KB hash-table build
+    /// path without panic.
+    #[test]
+    fn npre1_npre2_zero_llr_no_panic() {
+        let llr = [0.0f32; LDPC_N];
+        let _ = osd_decode_npre1_npre2(&llr);
+    }
+
+    /// Clean-LLR round-trip via the ndeep=3 entry. Order-0 (= encode
+    /// of MRB hard decisions) is exactly the input codeword, so this
+    /// also serves as a sanity check that the npre1 → npre2 pass
+    /// sequence doesn't accidentally overwrite the order-0 best with
+    /// a worse-distance candidate.
+    #[test]
+    fn npre1_npre2_decodes_clean_codeword() {
+        use super::super::bp::crc14;
+        let mut info_with_crc = [0u8; LDPC_K];
+        for i in 0..77 {
+            info_with_crc[i] = ((i * 13 + 7) & 1) as u8;
+        }
+        let mut bytes = [0u8; 12];
+        for (i, &bit) in info_with_crc[..77].iter().enumerate() {
+            bytes[i / 8] |= (bit & 1) << (7 - (i % 8));
+        }
+        let crc = crc14(&bytes);
+        for j in 0..14 {
+            info_with_crc[77 + j] = ((crc >> (13 - j)) & 1) as u8;
+        }
+        let cw = ldpc_encode(&info_with_crc);
+        let mut llr = [0.0f32; LDPC_N];
+        for i in 0..LDPC_N {
+            llr[i] = if cw[i] == 1 { 4.0 } else { -4.0 };
+        }
+        let osd = osd_decode_npre1_npre2(&llr).expect("clean LLR must decode");
+        assert_eq!(&osd.info[..91], &info_with_crc[..]);
+        assert_eq!(osd.hard_errors, 0);
     }
 
     /// Round-trip: a well-conditioned LLR derived from a known
