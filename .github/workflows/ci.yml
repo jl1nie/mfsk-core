@@ -35,6 +35,93 @@ concurrency:
 
 jobs:
   # ───────────────────────────────────────────────────────────────
+  # Path-filter pre-pass — works out which slow-sweep matrix entries
+  # in `test:` actually need to run on this PR. Sweeps are decoder
+  # characterisation tests (SNR sensitivity curves, real-QSO recall
+  # regression) and only catch regressions when source under the
+  # protocol's own tree (or the shared core / fec / msg / lib /
+  # Cargo.toml / build.rs / CI yaml itself) actually changes.
+  #
+  # Pre-this-filter every PR ran every sweep — the 6-PR ε refactor
+  # burned ~30 min of CI on sweeps that couldn't possibly have
+  # regressed because not one byte under decoder src had moved.
+  #
+  # Behaviour:
+  #   - `push` to main: ALL sweeps run unconditionally
+  #     (post-merge regression safety net).
+  #   - `pull_request`: a sweep matrix entry runs only if its
+  #     `changes` output flag is true.
+  #
+  # The `default` suite always runs (cross-cutting; covers every
+  # protocol's non-ignored tests + lint-equivalent compile failures).
+  # ───────────────────────────────────────────────────────────────
+  changes:
+    name: path filter
+    runs-on: ubuntu-latest
+    outputs:
+      ft8: ${{ steps.filter.outputs.ft8 }}
+      q65: ${{ steps.filter.outputs.q65 }}
+      uvpacket: ${{ steps.filter.outputs.uvpacket }}
+      catchall: ${{ steps.filter.outputs.catchall }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            ft8:
+              - '.github/workflows/**'
+              - 'mfsk-core/Cargo.toml'
+              - 'mfsk-core/build.rs'
+              - 'mfsk-core/src/lib.rs'
+              - 'mfsk-core/src/core/**'
+              - 'mfsk-core/src/fec/**'
+              - 'mfsk-core/src/msg/**'
+              - 'mfsk-core/src/ft8/**'
+              - 'mfsk-core/tests/ft8_*'
+              - 'mfsk-core/tests/common/**'
+            q65:
+              - '.github/workflows/**'
+              - 'mfsk-core/Cargo.toml'
+              - 'mfsk-core/build.rs'
+              - 'mfsk-core/src/lib.rs'
+              - 'mfsk-core/src/core/**'
+              - 'mfsk-core/src/fec/**'
+              - 'mfsk-core/src/msg/**'
+              - 'mfsk-core/src/q65/**'
+              - 'mfsk-core/tests/q65_*'
+              - 'mfsk-core/tests/common/**'
+            uvpacket:
+              - '.github/workflows/**'
+              - 'mfsk-core/Cargo.toml'
+              - 'mfsk-core/build.rs'
+              - 'mfsk-core/src/lib.rs'
+              - 'mfsk-core/src/core/**'
+              - 'mfsk-core/src/fec/**'
+              - 'mfsk-core/src/uvpacket/**'
+              - 'mfsk-core/tests/uvpacket_*'
+              - 'mfsk-core/tests/common/**'
+            catchall:
+              - '.github/workflows/**'
+              - 'mfsk-core/Cargo.toml'
+              - 'mfsk-core/build.rs'
+              - 'mfsk-core/src/lib.rs'
+              - 'mfsk-core/src/core/**'
+              - 'mfsk-core/src/fec/**'
+              - 'mfsk-core/src/msg/**'
+              - 'mfsk-core/src/ft4/**'
+              - 'mfsk-core/src/fst4/**'
+              - 'mfsk-core/src/jt9/**'
+              - 'mfsk-core/src/jt65/**'
+              - 'mfsk-core/src/wspr/**'
+              - 'mfsk-core/src/uvpacket/**'
+              - 'mfsk-core/tests/ft4_*'
+              - 'mfsk-core/tests/fst4_*'
+              - 'mfsk-core/tests/ldpc_min_sum*'
+              - 'mfsk-core/tests/common/**'
+
+  # ───────────────────────────────────────────────────────────────
   # Formatting + clippy lint gate. Fast fail so the heavier matrix
   # jobs don't burn runner minutes on a branch that wouldn't pass
   # the style fence anyway.
@@ -60,37 +147,146 @@ jobs:
         run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
 
   # ───────────────────────────────────────────────────────────────
-  # Core: build + full test suite on the "full" feature set.
-  # This is the single must-pass job; everything else is narrower
-  # verification.
+  # Core test suite on the "full" feature set, split into 5 parallel
+  # matrix jobs to keep wall-clock CI time under ~10 min:
+  #
+  #   default          — every non-ignored test (lib + integration)
+  #                      across every protocol. Cross-cutting coverage.
+  #   ft8 sweeps       — ft8_*  #[ignore]'d slow integration sweeps.
+  #   q65 sweeps       — q65_*  #[ignore]'d slow integration sweeps.
+  #   uvpacket sweeps  — uvpacket_*  #[ignore]'d integration sweeps.
+  #   lib + ft4 / fst4 / FST4 gated — small / catch-all bucket:
+  #     * lib #[ignore]'d tests (jt9 demod/decode/search/softsym,
+  #       uvpacket::puncture AWGN sweeps)
+  #     * ldpc_min_sum AWGN sweep (integration)
+  #     * ft4_diag_low_snr / ft4_timing_budget
+  #     * fst4_wsjtx_samples #[ignore]
+  #     * env-gated FST4 60-s roundtrip (the heaviest single test)
+  #
+  # Pre-split this was one ~22 min job — `Test (features = full)`
+  # dominated the wall-clock and stalled every stacked-PR merge
+  # cascade. The split trades 4× repeated cargo metadata + a partial
+  # cold-cache build (Swatinem amortises across runs) for ~12 min off
+  # the slowest-job ceiling.
   # ───────────────────────────────────────────────────────────────
   test:
-    name: Test (features = full)
+    name: Test (${{ matrix.suite.name }})
+    needs: changes
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          # `changes_key` selects which output of the `changes` job
+          # gates this suite. `always` opts out of the gate entirely
+          # (the default suite runs every PR for cross-cutting
+          # coverage).
+          - name: default
+            kind: default
+            changes_key: always
+          - name: ft8 sweeps
+            kind: ignored-integration
+            globs: "ft8_*"
+            changes_key: ft8
+          - name: q65 sweeps
+            kind: ignored-integration
+            globs: "q65_*"
+            changes_key: q65
+          - name: uvpacket sweeps
+            kind: ignored-integration
+            globs: "uvpacket_*"
+            changes_key: uvpacket
+          - name: lib + ft4 / fst4 / FST4 gated
+            kind: catchall
+            globs: "ft4_* fst4_* ldpc_min_sum"
+            changes_key: catchall
     steps:
       - uses: actions/checkout@v4
 
+      - name: Gate (paths-filter + main-push override)
+        id: gate
+        env:
+          CHANGES_KEY: ${{ matrix.suite.changes_key }}
+          EVENT_NAME: ${{ github.event_name }}
+          FT8: ${{ needs.changes.outputs.ft8 }}
+          Q65: ${{ needs.changes.outputs.q65 }}
+          UVPACKET: ${{ needs.changes.outputs.uvpacket }}
+          CATCHALL: ${{ needs.changes.outputs.catchall }}
+        # Push events on main (post-merge) always run every sweep for
+        # regression catch. Pull-request events only run the sweep
+        # when the matching paths-filter flag is true. `always` opts
+        # the matrix entry out of the gate.
+        run: |
+          set -e
+          should_run=false
+          if [ "$EVENT_NAME" = "push" ]; then
+            should_run=true
+          elif [ "$CHANGES_KEY" = "always" ]; then
+            should_run=true
+          else
+            case "$CHANGES_KEY" in
+              ft8)      [ "$FT8" = "true" ]      && should_run=true ;;
+              q65)      [ "$Q65" = "true" ]      && should_run=true ;;
+              uvpacket) [ "$UVPACKET" = "true" ] && should_run=true ;;
+              catchall) [ "$CATCHALL" = "true" ] && should_run=true ;;
+            esac
+          fi
+          echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
+          if [ "$should_run" = "false" ]; then
+            echo "::notice::Skipping suite '${{ matrix.suite.name }}' — no relevant source changes on this PR."
+          fi
+
       - name: Install Rust (stable)
+        if: steps.gate.outputs.should_run == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
+        if: steps.gate.outputs.should_run == 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Build (full)
+        if: steps.gate.outputs.should_run == 'true'
         run: cargo build -p mfsk-core --features full --release
 
-      # `--include-ignored` makes the heavy synthetic SNR / AP / fast-
-      # fading sweeps (marked `#[ignore = "slow: ..."]`) and the
-      # diagnostic perf tests run as part of CI. They're skipped by
-      # default for local `cargo test` because debug-mode runs take
-      # 10+ minutes; in release CI mode they finish in a few minutes.
-      - name: Test (full, including slow sweeps)
-        run: cargo test -p mfsk-core --features full --release -- --include-ignored
-
-      - name: Test (FST4 gated roundtrip)
+      - name: Run suite
+        if: steps.gate.outputs.should_run == 'true'
         env:
-          RUN_FST4_ROUNDTRIP: "1"
-        run: cargo test -p mfsk-core --features full --release synth_decode_roundtrip_cq_ja1abc
+          SUITE_KIND: ${{ matrix.suite.kind }}
+          SUITE_GLOBS: ${{ matrix.suite.globs }}
+        # The `default` suite runs every non-ignored test (lib +
+        # integration) across every protocol — no substring filter so
+        # cargo test runs the lot. The `ignored-integration` suites
+        # use multiple `--test <name>` flags to scope cargo down to
+        # the integration test binaries that own the matching slow
+        # sweeps, then `-- --ignored` to run *only* the #[ignore]'d
+        # functions in those binaries (the non-ignored ones already
+        # ran in the `default` suite — no double coverage). The
+        # `catchall` suite also picks up `--lib -- --ignored` (jt9 +
+        # uvpacket::puncture src-level sweeps) and the env-gated FST4
+        # roundtrip.
+        run: |
+          set -euo pipefail
+          case "$SUITE_KIND" in
+            default)
+              cargo test -p mfsk-core --features full --release
+              ;;
+            ignored-integration|catchall)
+              test_args=""
+              for pat in $SUITE_GLOBS; do
+                for f in mfsk-core/tests/$pat.rs; do
+                  [ -f "$f" ] || continue
+                  test_args="$test_args --test $(basename "$f" .rs)"
+                done
+              done
+              if [ -n "$test_args" ]; then
+                cargo test -p mfsk-core --features full --release $test_args -- --ignored
+              fi
+              if [ "$SUITE_KIND" = "catchall" ]; then
+                cargo test -p mfsk-core --features full --release --lib -- --ignored
+                RUN_FST4_ROUNDTRIP=1 cargo test -p mfsk-core --features full --release synth_decode_roundtrip_cq_ja1abc
+              fi
+              ;;
+          esac
 
   # ───────────────────────────────────────────────────────────────
   # Feature matrix: every single-protocol feature must compile on
