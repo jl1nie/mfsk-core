@@ -222,7 +222,14 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
 // channel-aware subtract). Cleaner residual surfaces 4 of the 5
 // missing JTDX-extras at coarse-sync stage 1 of pass 1; only K1BZM
 // DK8NE -19 (deepest) remains beyond reach without a wider AP-list.
-const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 5;
+// Stepped back to 4 in 0.6.3: `OSD_HARDERRORS_MAX = 22` filters
+// `CQ EA2BFM IN83` (one of the multipass extras) on the OSD pass
+// because its `hard_errors = 31` puts it in the CRC-luck zone for
+// non-AP candidates. AP context could in principle legitimise it,
+// but the gate operates on the raw OSD output before AP rescoring,
+// so the dropout is intentional. The other 4 extras (CQ F5RXL IN94,
+// KD2UGC F6GCP, K1BZM EA3CJ, the 4 in 0.6.2) are unaffected.
+const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 4;
 
 #[test]
 fn qso3_apon_subtract_jtdx_extras_diag() {

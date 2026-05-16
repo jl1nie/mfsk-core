@@ -88,8 +88,14 @@ Currently open GitHub issues (state:open as of 2026-05-14):
     its sweep logs live in git history (recoverable via
     `git show HEAD~3:embedded-poc/m5stack-core2/logs/<file>`).
 - **#63** — WSJT-X-faithful OSD `npre1` precoding for host
-  `BpAllOsd`; reduces false positives. Deprioritised — see PR #62
-  for the design note documenting the current parity gap.
+  `BpAllOsd`. **Done in 0.6.3** across PRs #86 (npre1, ndeep=2),
+  #87 (npre2, ndeep=3 dispatch), #88 (4 missing post-OSD validity
+  gates from `ft8b.f90:422-459` + nsync/xsnr clamp-ordering fix).
+  Plus an empirically-tuned `OSD_HARDERRORS_MAX = 22` ceiling on
+  the OSD path (mfsk-core-specific deviation from WSJT-X's universal
+  36) that eliminates the qso3_busy phantoms `npre1`/`npre2` alone
+  did not filter. See `CHANGELOG.md` 0.6.3 entry for the
+  WSJT-X-faithfulness / phantom-elimination trade-off rationale.
 - **#64** — hoist `fft_cache` through host `decode_block_multipass`
   (perf follow-up to #60, which landed the single-pass hoist).
 - **#65** — share `cd0` between SyncOnly + DataOnly
@@ -150,7 +156,7 @@ this section.
 
 `docs/CLEANUP_2026_05.md` tracks a four-stage post-0.6.2 tidy-up
 (γ scaffolding → β feature/cfg → δ docs sync → ε `decode_block.rs`
-restructure). Status as of 2026-05-14:
+restructure). **All four stages done as of 2026-05-17 (= 0.6.3):**
 
 - **γ** Done 2026-05-13 (PR #66). Retired
   `embedded-poc/m5stack-{core2,s3}/src/bin/rx_skeleton.rs`.
@@ -158,12 +164,14 @@ restructure). Status as of 2026-05-14:
   cleared; `Cmplx` unified with `num_complex::Complex` via type
   alias (−5 `unsafe` cast wrappers); cfg-matrix audit confirms
   every fixed-point × fft-{rustfft,extern} cell builds clean.
-- **δ** Documentation sync — current sweep.
-- **ε** `decode_block.rs` restructure into a `decode_block/`
-  submodule directory + OSD strategy seam for `#63` precoding.
-  Week-scale; intentionally sequenced after the weekend hardware
-  bring-up for `#61` (Core2 → S3 unification) so the two refactors
-  do not collide.
+- **δ** Done 2026-05-14 (PR #70). ROADMAP refresh + AP-hint
+  terminology cross-check + CLAUDE.md consolidation.
+- **ε** Done 2026-05-17 across 6 stacked PRs (#77 types, #83
+  spectrogram, #79 coarse_sync, #80 fill_symbol_spectra, #81
+  process_candidates, #82 osd_strategy). `decode_block.rs` carved
+  from 3,517 lines into 7 sibling submodules; the OSD-strategy
+  seam ε.6 carved out is now load-bearing for #63's
+  WSJT-X-faithful `npre1`/`npre2` dispatch (also shipped in 0.6.3).
 
 # Roadmap (legacy, written for post-0.5.12)
 
