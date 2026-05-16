@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.6.3 — `decode_block.rs` per-stage split + WSJT-X-faithful OSD
+
+Non-breaking patch. Two interleaved storylines:
+
+1. **Structural** — `mfsk-core/src/ft8/decode_block.rs` (3,517 lines)
+   carved into a 7-sibling submodule tree (`docs/CLEANUP_2026_05.md`
+   ε plan, shipped as PRs #77 / #83 / #79 / #80 / #81 / #82). Pure
+   refactor, zero behaviour change.
+2. **OSD WSJT-X faithfulness** — `osd_strategy::try_fallback` (the
+   host BpAllOsd Step-3 hook ε.6 carved out) rewired from mfsk-core's
+   pre-existing brute-force `osd_decode` (ndeep=2, 4,186 patterns) /
+   `osd_decode_deep(_, 3, _)` (ndeep=3, ~121k patterns) dispatch to
+   the WSJT-X-faithful `nord=1 + npre1=1` (ndeep=2) /
+   `+ npre2=1, ntau=14` (ndeep=3) entries, plus the 4 missing
+   `ft8b.f90:422-459` post-decode validity gates and one
+   `nsync<=10 && xsnr<-24` clamp-ordering bug fix. Issue #63.
+
+### Improved
+
+- **OSD pattern coverage reduced by ~25-700×** without WSJT-X /
+  JTDX golden regression. New `osd_decode_npre1` (ndeep=2, ~165
+  post-gate patterns) replaces the brute-force `osd_decode` on the
+  FT8 OSD path; new `osd_decode_npre1_npre2` (ndeep=3, npre1 + a
+  16,384-bucket `ntau=14` G-column XOR hash table) replaces
+  `osd_decode_deep(_, 3, _)`. Both are WSJT-X line-for-line ports
+  of `osd174_91.f90` with their `ntheta=10` / `ntheta=12`
+  early-reject gates intact.
+- **Four missing post-OSD validity gates** ported from
+  `ft8b.f90:422-459`: all-zero codeword reject, message-type
+  validity (`i3 > 5 || (i3==0 && n3 > 6)`), quirky free-text reject
+  (`i3==0 && n3==2`), `unpack77` success guard. Applied in the
+  `decode_block_multipass` retain_mut on host f32 (fixed-point
+  doesn't surface OSD-pass results).
+- **`nsync<=10 && xsnr<-24` gate clamp-ordering fix**.
+  `recompute_snr_xsnr2` used to pre-clamp its return to `>= -24 dB`
+  before the gate could test it — the source comment "on qso3_busy
+  it had no effect in any case" already flagged the dead-letter.
+  Function now returns raw xsnr; caller gates first, then clamps for
+  display. Matches WSJT-X bit-for-bit on the order of operations.
+- **Three `qso3_busy.wav` OSD CRC-luck phantoms eliminated**
+  (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25, `CQ EA2BFM IN83`
+  e=31). The npre1 / npre2 / WSJT-X post-OSD gates all failed to
+  filter these because their `nsync >= 13` puts them above
+  `ft8b.f90:456`'s bail-out — they would also surface from WSJT-X
+  proper at the same `max_cand=60` / `q_thresh=0.8` settings.
+  mfsk-core adds an OSD-pass-specific `hard_errors > 22` ceiling
+  (`OSD_HARDERRORS_MAX` in `decode_block/osd_strategy.rs`) that
+  matches the empirical phantom boundary — `OSD_HARDERRORS_MAX` is
+  the only mfsk-core-specific deviation from WSJT-X in this
+  release (WSJT-X uses 36 universally; we restrict to 22 only on
+  the OSD path because BP can legitimately produce e=20 cases like
+  `N1PJT HB9CQK -10`).
+- **WSJT-X 8-entry recall on `qso3_busy.wav`**: 7/8 maintained.
+- **JTDX 18-entry recall** on `qso3_busy.wav`: **13/18** (was 16/18
+  pre-0.6.3 — the dropped 3 are exactly the phantoms above; the
+  JTDX golden inadvertently included them).
+- **AP-on multipass extras** on `qso3_busy.wav`: **4/6** (was 5/6
+  pre-0.6.3 — `CQ EA2BFM IN83` no longer surfaces because the OSD
+  gate rejects it pre-AP rescore).
+
+### Changed (internal — non-breaking)
+
+- **`decode_block.rs` per-stage split.** Single 3,517-line file
+  carved into 7 sibling submodules. Zero behaviour change.
+  External callers see the same public paths via re-exports.
+
+  | file | lines | role |
+  |---|---:|---|
+  | `decode_block.rs` | 416 | parent / facade |
+  | `decode_block/types.rs` | 184 | audio sample + tunables |
+  | `decode_block/spectrogram.rs` | 357 | `Spectrogram` + `compute_spectrogram` |
+  | `decode_block/coarse_sync.rs` | 537 | Costas search + allsum |
+  | `decode_block/fill_symbol_spectra.rs` | 601 | per-symbol DFT family |
+  | `decode_block/process_candidates.rs` | 1,596 | engine + facade impls |
+  | `decode_block/osd_strategy.rs` | 117 | OSD dispatch (`#63` hook) |
+- **OSD scaffolding shared across ndeep=2 and ndeep=3.** New
+  private `osd_setup_ldpc174_91` / `osd_npre1_pass` /
+  `osd_result_from_best` helpers factor the WSJT-X-faithful setup /
+  enumeration / result assembly so the ndeep=3 entry reuses them
+  zero-cost and ndeep≥4 (nord-2/3/4 outer loop) can land later on
+  the same scaffold.
+
+### Added (public API — additive, FT8)
+
+- `mfsk_core::fec::ldpc::osd::osd_decode_npre1(llr) -> Option<OsdResult>`
+  — WSJT-X ndeep=2 entry. Replaces internal use of `osd_decode` on
+  the FT8 OSD path; `osd_decode` stays for callers that prefer
+  brute-force ndeep=2.
+- `mfsk_core::fec::ldpc::osd::osd_decode_npre1_npre2(llr) -> Option<OsdResult>`
+  — WSJT-X ndeep=3 entry. Replaces internal use of
+  `osd_decode_deep(_, 3, _)` on the FT8 OSD path.
+
+### Hardware (embedded)
+
+- **Issue #61 closed.** `embedded-poc/m5stack-core2/` bench crate
+  retired; new `embedded-poc/m5stack-core2-app/` consumes the new
+  `embedded-poc/mfsk-app-shared/` carve-out (shared with
+  `m5stack-s3-app`). Three-phase sequence in PR #76: Phase 1
+  carve-out, Phase 2 Core2 app crate, Phase 3 bench retirement.
+  Verified on M5StickS3 (S3 LX7, 7/8 golden) and M5Stack Core2
+  (LX6, 7/8 per-slot from `qso3_busy.wav` via `wav_sim`, 400 alive
+  ticks, stable heap).
+
+### Infra
+
+- **CI `Test (features = full)` job split into 5 parallel matrix
+  entries** (#85). Old single ~22 min job → `Test (default)` +
+  `Test (ft8 sweeps)` + `Test (q65 sweeps)` + `Test (uvpacket
+  sweeps)` + `Test (lib + ft4 / fst4 / FST4 gated)`. Wall-clock
+  ~10 min on a touch-everything PR.
+- **`dorny/paths-filter@v3` gate** on the sweep matrix entries
+  (#85). PRs that don't touch decoder source (`src/{ft8,fec,msg,
+  core}/`, `Cargo.toml`, `.github/workflows/`) skip the slow sweep
+  jobs entirely — ~3 min total for refactor / doc / embedded-poc-only
+  PRs. Push to main always runs every sweep (post-merge regression
+  safety net).
+
 ## 0.6.2 — host pipeline matches embedded subtract + cs-source
 
 Non-breaking patch. After v0.6.1 unified the per-candidate inner,

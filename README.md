@@ -332,11 +332,15 @@ the 0.5.x baseline. M5Stack Core2 (LX6) on the same WAV ~2.8 s. See
 for the integration contract, runtime BP / `nstep-half` tuning knobs,
 and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
 without 192k FFT — investigated and deferred);
-`embedded-poc/m5stack-s3-app/` is the production FT8 controller
-crate (LCD UI + QSO FSM + WiFi-UDP log streaming);
-`embedded-poc/m5stack-{s3,core2}/` are compute-bench crates kept
-for performance regression tracking (Core2 fold-in into the S3
-dual-core pipeline is tracked in [#61](https://github.com/jl1nie/mfsk-core/issues/61)).
+`embedded-poc/m5stack-s3-app/` and `embedded-poc/m5stack-core2-app/`
+are the production FT8 controller crates (LCD UI + QSO FSM +
+WiFi-UDP log streaming) — both consume the board-agnostic
+`embedded-poc/mfsk-app-shared/` (carved out as part of
+[#61](https://github.com/jl1nie/mfsk-core/issues/61), closed in
+0.6.3). `embedded-poc/m5stack-s3/` is the remaining decoder-only
+compute-bench crate for S3 timing-regression tracking; the matching
+Core2 bench was retired in #61 Phase 3 (M5Stack Core2 timing is
+now measured through `m5stack-core2-app` itself).
 
 Host AP-on multipass recall on the same WAV is materially higher.
 After 0.6.2's host pipeline catch-up (cs-source unification +

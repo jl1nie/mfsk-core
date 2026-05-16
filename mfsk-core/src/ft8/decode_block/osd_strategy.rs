@@ -21,7 +21,6 @@ use alloc::vec;
 
 use super::super::decode::DecodeDepth;
 use super::super::params::LDPC_N;
-use super::process_candidates::WSJTX_NHARDERRORS_MAX;
 use crate::core::scalar::Cmplx;
 use crate::fec::ldpc::bp::BpResult;
 use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
@@ -33,6 +32,34 @@ use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
 /// `osd_decode(_)` (ndeep=2), now with WSJT-X-faithful internals on
 /// both sides.
 const Q_NDEEP3_THRESHOLD: u32 = 18;
+
+/// OSD-specific `nharderrors` ceiling. mfsk-core-specific deviation
+/// from WSJT-X's universal `WSJTX_NHARDERRORS_MAX = 36`
+/// (`ft8b.f90:422`): we tighten the gate to 22 *only* for OSD-pass
+/// codewords (BP variants still use the looser 36 in
+/// `process_one_candidate_inner`).
+///
+/// **Why this isn't WSJT-X-faithful but worth the deviation.** OSD
+/// CRC-luck phantoms surface at the boundary where the encoded
+/// candidate disagrees with `hdec` in 25–36 bits and happens to pass
+/// CRC-14 (~1 in 16,384 random shot). On `qso3_busy.wav` this surfaces
+/// 3 fixed phantoms (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25,
+/// `CQ EA2BFM IN83` e=31) that all of #86's npre1, #87's npre2, and
+/// #88's WSJT-X post-OSD gates failed to filter because their
+/// `nsync >= 13` puts them above WSJT-X's `nsync <= 10` bail-out.
+///
+/// Empirically on the same WAV no legitimate signal surfaces from OSD
+/// (`pass >= 14`) with `hard_errors > 22` — real low-SNR signals that
+/// BP can't decode but OSD recovers all land at e ≤ 16 here. The
+/// gate doesn't touch BP variants 0–3 (which can legitimately produce
+/// e=20 cases like `N1PJT HB9CQK -10` on `qso3_busy`), only the
+/// OSD-pass codewords this module emits.
+///
+/// Trade-off: a borderline real signal needing OSD with e=23..36 on
+/// some other reference WAV would be dropped here. Reference-suite
+/// regression on the WSJT-X-distributed FT8 / FT4 / JT9 / WSPR /
+/// FST4 / Q65 samples did not surface any such case in 0.6.3.
+const OSD_HARDERRORS_MAX: u32 = 22;
 
 /// Pass-ID range emitted by the OSD fallback (`14..=17` mirrors the
 /// llr-variant order `a/b/c/d` — see the post-0.6.1 pass-ID layout
@@ -91,16 +118,11 @@ pub(super) fn try_fallback(
             osd_decode_npre1(llr)
         };
         if let Some(osd) = osd {
-            // Mirror the BP-variant `nharderrors > 36` cycle gate
-            // (ft8b.f90:422) on the OSD path. WSJT-X's OSD itself
-            // returns CRC-pass codewords with negated `nhardmin` on
-            // CRC fail (osd174_91:290), but we apply the same upper
-            // bound to the hard-error count so high-error CRC-luck
-            // codewords don't pass through OSD either. With npre1's
-            // `ntheta=10` gate already filtering the most egregious
-            // CRC-luck cases this is a belt-and-braces guard against
-            // any survivor of both filters.
-            if osd.hard_errors > WSJTX_NHARDERRORS_MAX {
+            // OSD-specific tightened ceiling at 22 (vs WSJT-X's
+            // universal 36 in BP). See [`OSD_HARDERRORS_MAX`]'s
+            // docstring for the WSJT-X-deviation rationale and the
+            // qso3_busy phantom-elimination data.
+            if osd.hard_errors > OSD_HARDERRORS_MAX {
                 continue;
             }
             let bp = BpResult {
