@@ -60,13 +60,49 @@ jobs:
         run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
 
   # ───────────────────────────────────────────────────────────────
-  # Core: build + full test suite on the "full" feature set.
-  # This is the single must-pass job; everything else is narrower
-  # verification.
+  # Core test suite on the "full" feature set, split into 5 parallel
+  # matrix jobs to keep wall-clock CI time under ~10 min:
+  #
+  #   default          — every non-ignored test (lib + integration)
+  #                      across every protocol. Cross-cutting coverage.
+  #   ft8 sweeps       — ft8_*  #[ignore]'d slow integration sweeps.
+  #   q65 sweeps       — q65_*  #[ignore]'d slow integration sweeps.
+  #   uvpacket sweeps  — uvpacket_*  #[ignore]'d integration sweeps.
+  #   lib + ft4 / fst4 / FST4 gated — small / catch-all bucket:
+  #     * lib #[ignore]'d tests (jt9 demod/decode/search/softsym,
+  #       uvpacket::puncture AWGN sweeps)
+  #     * ldpc_min_sum AWGN sweep (integration)
+  #     * ft4_diag_low_snr / ft4_timing_budget
+  #     * fst4_wsjtx_samples #[ignore]
+  #     * env-gated FST4 60-s roundtrip (the heaviest single test)
+  #
+  # Pre-split this was one ~22 min job — `Test (features = full)`
+  # dominated the wall-clock and stalled every stacked-PR merge
+  # cascade. The split trades 4× repeated cargo metadata + a partial
+  # cold-cache build (Swatinem amortises across runs) for ~12 min off
+  # the slowest-job ceiling.
   # ───────────────────────────────────────────────────────────────
   test:
-    name: Test (features = full)
+    name: Test (${{ matrix.suite.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - name: default
+            kind: default
+          - name: ft8 sweeps
+            kind: ignored-integration
+            globs: "ft8_*"
+          - name: q65 sweeps
+            kind: ignored-integration
+            globs: "q65_*"
+          - name: uvpacket sweeps
+            kind: ignored-integration
+            globs: "uvpacket_*"
+          - name: lib + ft4 / fst4 / FST4 gated
+            kind: catchall
+            globs: "ft4_* fst4_* ldpc_min_sum"
     steps:
       - uses: actions/checkout@v4
 
@@ -79,18 +115,44 @@ jobs:
       - name: Build (full)
         run: cargo build -p mfsk-core --features full --release
 
-      # `--include-ignored` makes the heavy synthetic SNR / AP / fast-
-      # fading sweeps (marked `#[ignore = "slow: ..."]`) and the
-      # diagnostic perf tests run as part of CI. They're skipped by
-      # default for local `cargo test` because debug-mode runs take
-      # 10+ minutes; in release CI mode they finish in a few minutes.
-      - name: Test (full, including slow sweeps)
-        run: cargo test -p mfsk-core --features full --release -- --include-ignored
-
-      - name: Test (FST4 gated roundtrip)
+      - name: Run suite
         env:
-          RUN_FST4_ROUNDTRIP: "1"
-        run: cargo test -p mfsk-core --features full --release synth_decode_roundtrip_cq_ja1abc
+          SUITE_KIND: ${{ matrix.suite.kind }}
+          SUITE_GLOBS: ${{ matrix.suite.globs }}
+        # The `default` suite runs every non-ignored test (lib +
+        # integration) across every protocol — no substring filter so
+        # cargo test runs the lot. The `ignored-integration` suites
+        # use multiple `--test <name>` flags to scope cargo down to
+        # the integration test binaries that own the matching slow
+        # sweeps, then `-- --ignored` to run *only* the #[ignore]'d
+        # functions in those binaries (the non-ignored ones already
+        # ran in the `default` suite — no double coverage). The
+        # `catchall` suite also picks up `--lib -- --ignored` (jt9 +
+        # uvpacket::puncture src-level sweeps) and the env-gated FST4
+        # roundtrip.
+        run: |
+          set -euo pipefail
+          case "$SUITE_KIND" in
+            default)
+              cargo test -p mfsk-core --features full --release
+              ;;
+            ignored-integration|catchall)
+              test_args=""
+              for pat in $SUITE_GLOBS; do
+                for f in mfsk-core/tests/$pat.rs; do
+                  [ -f "$f" ] || continue
+                  test_args="$test_args --test $(basename "$f" .rs)"
+                done
+              done
+              if [ -n "$test_args" ]; then
+                cargo test -p mfsk-core --features full --release $test_args -- --ignored
+              fi
+              if [ "$SUITE_KIND" = "catchall" ]; then
+                cargo test -p mfsk-core --features full --release --lib -- --ignored
+                RUN_FST4_ROUNDTRIP=1 cargo test -p mfsk-core --features full --release synth_decode_roundtrip_cq_ja1abc
+              fi
+              ;;
+          esac
 
   # ───────────────────────────────────────────────────────────────
   # Feature matrix: every single-protocol feature must compile on
