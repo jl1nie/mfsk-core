@@ -2,25 +2,14 @@
 
 #![allow(dead_code)]
 
-mod adif;
 mod audio;
 mod board;
-mod boot_mode;
 mod buttons;
 mod civ;
 mod decode_pipeline;
 mod display;
-mod flash_log;
-mod log_sink;
 mod pmic;
-mod qso;
-mod snr_norm;
-mod time_sync;
-mod tx_picker;
 mod uac;
-mod udp_log;
-mod ui;
-mod wifi;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -32,7 +21,10 @@ use esp_idf_svc::sys::{
 use log::LevelFilter;
 use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 
-use crate::log_sink::{FanoutLogger, LogFanout};
+use mfsk_app_shared::boot_mode;
+use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
+use mfsk_app_shared::udp_log;
+use mfsk_app_shared::wifi;
 
 /// Probe internal DRAM. Phase 0.7: called pre/post BASIS alloc to
 /// confirm the heap accounting matches the ~123 KB delta the static
@@ -96,7 +88,7 @@ fn main() -> ! {
     // 取って両方に clone で渡す。
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
-    let mode = boot_mode::determine(&nvs);
+    let mode = boot_mode::determine(&nvs, board::BTN_A_PIN);
     log::info!("boot_mode: {} (stored + KEY1 override)", mode.label());
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:

@@ -28,10 +28,10 @@ use mipidsi::{models::ST7789, options::ColorInversion, Builder};
 
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
-use crate::boot_mode::{self, BootMode};
 use crate::buttons::{Buttons, Event as ButtonEvent, Key};
-use crate::log_sink::LogFanout;
-use crate::ui::{decoded_list, state::UI, status_bar, waterfall};
+use mfsk_app_shared::boot_mode::{self, BootMode};
+use mfsk_app_shared::log_sink::LogFanout;
+use mfsk_app_shared::ui::{decoded_list, state::UI, status_bar, waterfall};
 
 /// 1 行高 (FONT_6X10)。
 pub const LINE_H: u16 = 10;
@@ -285,7 +285,7 @@ pub fn run_log_panel(
         //    when no new decodes land.
         let status_snapshot;
         let decoded_snapshot;
-        let wf_snapshot: heapless::Vec<crate::ui::state::WfLine, { crate::ui::state::WF_DEPTH }>;
+        let wf_snapshot: heapless::Vec<mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }>;
         let decoded_fp;
         let wf_seq;
         let tx_seq;
@@ -327,7 +327,7 @@ pub fn run_log_panel(
         // `wf_push_seq` so the redraw still fires after the ring
         // saturates at WF_DEPTH (= ~8 s into runtime).
         if wf_seq != last_wf_seq {
-            let wf_refs: heapless::Vec<&crate::ui::state::WfLine, { crate::ui::state::WF_DEPTH }> =
+            let wf_refs: heapless::Vec<&mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }> =
                 wf_snapshot.iter().collect();
             waterfall::render(&mut display, &wf_refs).ok();
             last_wf_seq = wf_seq;

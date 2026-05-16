@@ -77,32 +77,34 @@ pub fn write(nvs: &EspNvs<NvsDefault>, mode: BootMode) -> Result<(), esp_idf_svc
     nvs.set_str(NVS_KEY, mode.as_str())
 }
 
-/// Quick poll of KEY1 (active-low, pull-up enabled) at boot. Returns
-/// true if the user is holding KEY1 down during the first ~500 ms,
-/// which the caller treats as "invert the stored mode for this boot
-/// only, without writing NVS". The momentary read is fine because the
+/// Quick poll of the override button (active-low, pull-up enabled) at
+/// boot. Returns true if held during the first ~20 ms, which the
+/// caller treats as "invert the stored mode for this boot only,
+/// without writing NVS". The momentary read is fine because the
 /// stored mode is what persists; this is a one-shot override.
-pub fn key1_held_at_boot() -> bool {
+///
+/// `gpio_pin` is the board's KEY1/BtnA pin (the board crate passes
+/// `board::BTN_A_PIN`; on Core2 this will be a different GPIO).
+pub fn override_held_at_boot(gpio_pin: i32) -> bool {
     use esp_idf_svc::sys::{gpio_get_level, gpio_pullup_en, gpio_set_direction, GPIO_MODE_DEF_INPUT};
-    let pin = crate::board::BTN_A_PIN;
     unsafe {
-        gpio_set_direction(pin, GPIO_MODE_DEF_INPUT);
-        gpio_pullup_en(pin);
+        gpio_set_direction(gpio_pin, GPIO_MODE_DEF_INPUT);
+        gpio_pullup_en(gpio_pin);
     }
     // Settle pull-up. KEY1 is active-low; level 0 = pressed.
     esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
-    let pressed = unsafe { gpio_get_level(pin) } == 0;
+    let pressed = unsafe { gpio_get_level(gpio_pin) } == 0;
     if pressed {
         log::info!("KEY1 held at boot — inverting stored mode for this boot");
     }
     pressed
 }
 
-/// Decide the boot mode: stored NVS value, optionally inverted by
-/// KEY1-held override.
-pub fn determine(nvs: &EspNvs<NvsDefault>) -> BootMode {
+/// Decide the boot mode: stored NVS value, optionally inverted by a
+/// KEY1-held override. The board crate passes its own button pin.
+pub fn determine(nvs: &EspNvs<NvsDefault>, override_pin: i32) -> BootMode {
     let stored = read(nvs);
-    if key1_held_at_boot() {
+    if override_held_at_boot(override_pin) {
         stored.flipped()
     } else {
         stored

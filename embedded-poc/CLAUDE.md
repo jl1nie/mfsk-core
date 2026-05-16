@@ -99,9 +99,25 @@ is what the user types under tee / piped redirection.
   WAV-fed `rx_wavsim` is the primary driver.
 - **`m5stack-s3-app/`** — production FT8 controller (LCD UI +
   QSO FSM + WiFi UDP log streaming + ES8311 audio + planned UAC).
-- **`embedded-shared/`** — `no_std` crate shared between the
-  bench / app crates. Streaming pipeline, dual-core dispatch,
-  resamplers, BASIS scratch helpers.
+  Bin crate: HW drivers (`audio` / `display` / `pmic` / `buttons` /
+  `board`) + `main.rs` orchestration + `decode_pipeline.rs` (still
+  here in Phase 1 since it owns the heap_caps BASIS alloc; carved
+  out only if Phase 2 reveals a clean cut).
+- **`mfsk-app-shared/`** — board-agnostic app logic (Issue #61
+  Phase 1). QSO FSM, time sync, TX picker, SNR norm, NVS boot
+  mode, log fanout (`LogFanout` / `FanoutLogger`), WiFi STA +
+  UDP datagram sink, UI data structures + `embedded-graphics`
+  draw routines, ADIF + flash log placeholders. Shared/board
+  boundary is **data flow** (channels + shared state mutex), not
+  callbacks — no traits cross the boundary. The Core2-variant
+  app crate (Phase 2 of #61) will be the second consumer.
+- **`embedded-shared/`** — `no_std` decode-pipeline crate shared
+  between the bench / app crates. Streaming pipeline, dual-core
+  dispatch, resamplers, BASIS scratch helpers. Distinct from
+  `mfsk-app-shared`: this is the decoder-level shared layer
+  (FFT planner / dual_core / stage1_inc), while
+  `mfsk-app-shared` is the controller-level shared layer (QSO /
+  UI / WiFi). Both are board-agnostic.
 - **`idf-component/`** — esp-idf component shim that wraps
   `mfsk-ffi-ft8` so C-only ESP-IDF projects can pull the FT8
   decoder in without writing Rust glue.

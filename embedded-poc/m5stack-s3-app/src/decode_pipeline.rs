@@ -19,8 +19,8 @@ use mfsk_ft8::mfsk_ft8_basis_scratch_len;
 
 use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 
-use crate::qso::{self, QsoManager, QsoState};
-use crate::ui::state::{DecodedRow, UI};
+use mfsk_app_shared::qso::{self, QsoManager, QsoState};
+use mfsk_app_shared::ui::state::{DecodedRow, UI};
 
 /// Phase 4 dry-run: own callsign + Maidenhead grid burned into the
 /// build. Phase 6 will replace this with `/littlefs/config.toml`.
@@ -168,14 +168,14 @@ pub fn run() -> ! {
         // offset relative to the band consensus — used by Phase 4
         // QSO FSM as a fallback time source when no GPS is wired.
         for r in results.iter() {
-            crate::time_sync::record_decode_dt(r.dt_sec);
+            mfsk_app_shared::time_sync::record_decode_dt(r.dt_sec);
         }
-        crate::time_sync::finalize_slot();
-        if let Some(off) = crate::time_sync::slot_dt_offset() {
+        mfsk_app_shared::time_sync::finalize_slot();
+        if let Some(off) = mfsk_app_shared::time_sync::slot_dt_offset() {
             log::info!(
                 "  median DT = {:+.3} s ({} slots)",
                 off,
-                crate::time_sync::slots_finalised()
+                mfsk_app_shared::time_sync::slots_finalised()
             );
         }
         // Push every CRC-passing decode to the UI ring. WF rows are
