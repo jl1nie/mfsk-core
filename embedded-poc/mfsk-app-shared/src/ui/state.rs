@@ -98,6 +98,14 @@ pub struct UiState {
     /// menu render path can read without taking the QSO lock.
     /// Toggled together with the FSM field by the menu activate path.
     pub auto_cq_enabled: bool,
+    /// Cursor over the decoded-list (Phase 1.7.2). `None` = no
+    /// selection (display loop won't draw a cursor); `Some(i)` =
+    /// highlight row `i` (0 = newest visible, increases toward older).
+    /// BtnB short outside the menu advances; BtnA short calls
+    /// `qso::call_station(dx)` after parsing the row's msg text.
+    /// Cleared when the underlying decode ring shrinks below `i` or
+    /// the user enters the menu.
+    pub selected_decode_idx: Option<u8>,
     /// Bumped when any menu / operation field above changes so the
     /// display loop repaints the overlay even when WF / decode aren't
     /// updating.
@@ -124,6 +132,7 @@ impl UiState {
             current_band_idx: 4, // 20m default
             current_df_hz: 0,
             auto_cq_enabled: false,
+            selected_decode_idx: None,
             menu_seq: AtomicU32::new(0),
         }
     }
@@ -137,6 +146,48 @@ impl UiState {
 
     pub fn menu_seq(&self) -> u32 {
         self.menu_seq.load(Ordering::Acquire)
+    }
+
+    /// Advance the decoded-list cursor. Wraps `[0, decoded_len)` so
+    /// the user can cycle through the visible rows. No-op when the
+    /// list is empty.
+    pub fn cycle_decode_cursor(&mut self) {
+        if self.decoded.is_empty() {
+            self.selected_decode_idx = None;
+            self.bump_menu();
+            return;
+        }
+        let len = self.decoded.len() as u8;
+        self.selected_decode_idx = Some(match self.selected_decode_idx {
+            None => 0,
+            Some(i) if i + 1 >= len => 0,
+            Some(i) => i + 1,
+        });
+        self.bump_menu();
+    }
+
+    /// Return the message text of the currently-selected decode row,
+    /// or None if no cursor / out-of-range. Used by display.rs to
+    /// call `qso::call_station` after parsing the DX callsign out.
+    pub fn selected_decode_msg(&self) -> Option<&str> {
+        let i = self.selected_decode_idx? as usize;
+        // decoded ring is newest-LAST; cursor 0 = newest.
+        let len = self.decoded.len();
+        if i >= len {
+            return None;
+        }
+        let actual = len - 1 - i;
+        self.decoded.get(actual).map(|r| r.msg.as_str())
+    }
+
+    /// Clear the decoded-list cursor (e.g. when the menu opens or a
+    /// QSO is initiated). Bumps `menu_seq` so the render path drops
+    /// the highlight glyph.
+    pub fn clear_decode_cursor(&mut self) {
+        if self.selected_decode_idx.is_some() {
+            self.selected_decode_idx = None;
+            self.bump_menu();
+        }
     }
 
     /// Push a fresh decode. Dedupes by `msg` — if the message text

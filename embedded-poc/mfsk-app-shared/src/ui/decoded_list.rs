@@ -51,12 +51,29 @@ pub fn render<D>(display: &mut D, rows: &[DecodedRow]) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    render_with_cursor(display, rows, None)
+}
+
+/// Phase 1.7.2: render variant that overlays a cursor on the
+/// `selected_idx`-th row (0 = newest). User picks a peer this way
+/// and BtnA calls `qso::call_station(dx)` on the highlighted row.
+pub fn render_with_cursor<D>(
+    display: &mut D,
+    rows: &[DecodedRow],
+    selected_idx: Option<u8>,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
     let bg = Rgb565::BLACK;
     let fg = Rgb565::WHITE;
     let warn = Rgb565::CSS_ORANGE;
     // First-seen-this-slot highlight: dim cyan band.
     let new_bg = Rgb565::new(2, 14, 12);
     let new_fg = Rgb565::WHITE;
+    // Cursor highlight (peer-selection band, Phase 1.7.2): magenta-ish.
+    let cur_bg = Rgb565::new(20, 0, 12);
+    let cur_fg = Rgb565::WHITE;
 
     let n = rows.len();
     let take = n.min(ROWS);
@@ -76,16 +93,21 @@ where
         // visible slot. Recurring callsigns (re-decoded each slot of
         // a `wav_sim` loop) carry an older `first_seq` and stay plain.
         let is_new = row.first_seq == latest_seq;
-        let row_bg = if is_new { new_bg } else { bg };
+        // Cursor (selection for QSO) takes visual precedence over
+        // "new" highlighting.
+        let is_selected = selected_idx == Some(i as u8);
+        let (row_bg, row_fg) = if is_selected {
+            (cur_bg, cur_fg)
+        } else if is_new {
+            (new_bg, new_fg)
+        } else if row.hard_errors >= 24 {
+            (bg, warn)
+        } else {
+            (bg, fg)
+        };
         let style = MonoTextStyleBuilder::new()
             .font(&FONT_6X10)
-            .text_color(if is_new {
-                new_fg
-            } else if row.hard_errors >= 24 {
-                warn
-            } else {
-                fg
-            })
+            .text_color(row_fg)
             .background_color(row_bg)
             .build();
 

@@ -52,6 +52,93 @@ const TX_REGION_H: u32 = 14;
 ///   `display_offset` を panel 実装に合わせる。M5StickS3 の 135x240 は
 ///   実機で (52, 40) または (40, 53) のどちらか。一回 flash して縞 or
 ///   ずれを観察して調整する。
+/// Parse the DX callsign out of a decoded FT8 message text. Returns
+/// the call we should `qso.call_station()` for when the user picks
+/// this row from the decoded list.
+///
+/// FT8 message conventions:
+/// - `CQ JL1NIE PM95` → DX = `JL1NIE` (skip CQ)
+/// - `CQ DX JL1NIE PM95` → DX = `JL1NIE` (skip CQ + directional)
+/// - `JL1NIE W1AW FN31` → DX = `JL1NIE` (first call, the one being
+///   addressed — selecting this row means "I want to call JL1NIE who
+///   W1AW is currently working")
+///
+/// 2-char directionals after CQ: DX, NA, SA, EU, AF, AS, OC, JA, US.
+/// Returns None when no token looks like a callsign (must have at
+/// least one digit + length ≥ 3).
+fn extract_dx_call(text: &str) -> Option<heapless::String<11>> {
+    let toks: heapless::Vec<&str, 8> = text.split_whitespace().take(8).collect();
+    if toks.is_empty() {
+        return None;
+    }
+    const DIRECTIONALS: &[&str] =
+        &["DX", "NA", "SA", "EU", "AF", "AS", "OC", "JA", "US", "POTA"];
+    let start_idx = if toks[0].eq_ignore_ascii_case("CQ") {
+        if toks.len() >= 2 && DIRECTIONALS.iter().any(|d| d.eq_ignore_ascii_case(toks[1])) {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    let raw = toks.get(start_idx)?;
+    // Basic callsign sanity: ≥3 chars, contains at least one digit.
+    if raw.len() < 3 || !raw.chars().any(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut s: heapless::String<11> = heapless::String::new();
+    for ch in raw.chars().take(11) {
+        if s.push(ch.to_ascii_uppercase()).is_err() {
+            break;
+        }
+    }
+    Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_dx_call;
+
+    #[test]
+    fn cq_message() {
+        assert_eq!(
+            extract_dx_call("CQ JL1NIE PM95").map(|s| s.as_str().to_string()),
+            Some("JL1NIE".to_string())
+        );
+    }
+
+    #[test]
+    fn cq_dx_directional() {
+        assert_eq!(
+            extract_dx_call("CQ DX W1AW FN31").map(|s| s.as_str().to_string()),
+            Some("W1AW".to_string())
+        );
+    }
+
+    #[test]
+    fn response_chain() {
+        // We're picking the call the *responder* is addressing.
+        assert_eq!(
+            extract_dx_call("JL1NIE W1AW FN31").map(|s| s.as_str().to_string()),
+            Some("JL1NIE".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_returns_none() {
+        assert!(extract_dx_call("").is_none());
+    }
+
+    #[test]
+    fn lowercase_handled() {
+        assert_eq!(
+            extract_dx_call("cq jl1nie pm95").map(|s| s.as_str().to_string()),
+            Some("JL1NIE".to_string())
+        );
+    }
+}
+
 pub fn run_log_panel(
     i2c1: I2C1<'static>,
     i2s0: I2S0<'static>,
@@ -405,7 +492,8 @@ pub fn run_log_panel(
     // and a `len()`-based check would freeze the WF redraw exactly
     // when the user expects continuous flow.
     let mut last_wf_seq: u32 = u32::MAX;
-    let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
+    let mut last_decoded_fp_with_cursor: (usize, u32, Option<u8>) =
+        (usize::MAX, u32::MAX, None);
     let mut last_tx_seq: u32 = 0;
     let mut last_menu_seq: u32 = u32::MAX;
     // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
@@ -438,6 +526,7 @@ pub fn run_log_panel(
                         // boot-mode flip semantic so the cycle is still
                         // navigable via KEY2 long-press.
                         if let Ok(mut ui) = UI.lock() {
+                            ui.clear_decode_cursor();
                             menu::toggle_visible(&mut ui);
                         }
                         log::info!("menu: opened via BtnB long-press");
@@ -449,6 +538,64 @@ pub fn run_log_panel(
                 (ButtonEvent::ShortPress(Key::Key2), true) => {
                     if let Ok(mut ui) = UI.lock() {
                         menu::next_item(&mut ui);
+                    }
+                }
+                (ButtonEvent::ShortPress(Key::Key2), false) => {
+                    // Browse mode (menu hidden): advance the cursor
+                    // through the decoded list. User-requested
+                    // (2026-05-17: "毎回メニュ選ぶのではなく decode 局を
+                    // 選択するのが自然") — natural FT8 workflow is to
+                    // pick a peer's CQ from the list and call them.
+                    if let Ok(mut ui) = UI.lock() {
+                        ui.cycle_decode_cursor();
+                    }
+                }
+                (ButtonEvent::ShortPress(Key::Key1), false) => {
+                    // BtnA short outside the menu: if a decoded row is
+                    // highlighted, parse it for the DX callsign and
+                    // hand it to the QSO FSM via call_station. This
+                    // transitions the FSM Idle → Calling, the next
+                    // slot's TX scheduler will then synth + play.
+                    let msg = {
+                        let ui = match UI.lock() {
+                            Ok(g) => g,
+                            Err(_) => continue,
+                        };
+                        ui.selected_decode_msg().map(|s| {
+                            let mut buf: heapless::String<22> = heapless::String::new();
+                            for ch in s.chars() {
+                                if buf.push(ch).is_err() {
+                                    break;
+                                }
+                            }
+                            buf
+                        })
+                    };
+                    let Some(msg) = msg else {
+                        log::info!("BtnA: no decoded row selected — ignoring");
+                        continue;
+                    };
+                    let Some(dx) = extract_dx_call(msg.as_str()) else {
+                        log::warn!(
+                            "BtnA: couldn't parse DX call from '{}' — ignoring",
+                            msg.as_str()
+                        );
+                        continue;
+                    };
+                    if let Ok(mut q) = qso.lock() {
+                        let intent = q.call_station(dx.as_str());
+                        log::info!(
+                            "BtnA: calling '{}' → TX intent '{}'",
+                            dx.as_str(),
+                            intent.formatted().as_str()
+                        );
+                    }
+                    // Clear cursor + ensure auto_cq is on so the next
+                    // slot actually fires the TX. (call_station moves
+                    // the FSM to Calling state; the TX scheduler reads
+                    // next_tx() which is unconditional once non-Idle.)
+                    if let Ok(mut ui) = UI.lock() {
+                        ui.clear_decode_cursor();
                     }
                 }
                 (ButtonEvent::ShortPress(Key::Key1), true) => {
@@ -491,9 +638,6 @@ pub fn run_log_panel(
                 (ButtonEvent::LongPress(Key::Key1), _) => {
                     log::info!("KEY1 long-press (no action wired yet)");
                 }
-                (ButtonEvent::ShortPress(k), false) => {
-                    log::info!("button short-press: {k:?} (menu hidden, ignored)");
-                }
             }
         }
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
@@ -529,6 +673,7 @@ pub fn run_log_panel(
         let tx_line_snapshot: heapless::String<48>;
         // (visible, selected, band_idx, df_hz, auto_cq, seq)
         let menu_snapshot: (bool, u8, u8, u16, bool, u32);
+        let selected_decode_idx: Option<u8>;
         {
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
@@ -548,6 +693,7 @@ pub fn run_log_panel(
                 ui.auto_cq_enabled,
                 ui.menu_seq(),
             );
+            selected_decode_idx = ui.selected_decode_idx;
             let mut buf: heapless::String<48> = heapless::String::new();
             for ch in ui.tx_line().chars() {
                 if buf.push(ch).is_err() {
@@ -587,7 +733,7 @@ pub fn run_log_panel(
             // next iteration so the overlay's residual pixels go away.
             if !menu_snapshot.0 {
                 last_wf_seq = u32::MAX;
-                last_decoded_fp = (usize::MAX, u32::MAX);
+                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None);
             }
             last_menu_seq = menu_seq;
         }
@@ -602,10 +748,17 @@ pub fn run_log_panel(
             last_wf_seq = wf_seq;
         }
 
-        // Decoded list: redraw only when a new slot's results landed.
-        if decoded_fp != last_decoded_fp {
-            decoded_list::render(&mut display, &decoded_snapshot).ok();
-            last_decoded_fp = decoded_fp;
+        // Decoded list: redraw when a new slot's results landed OR
+        // when the user moved the cursor.
+        let decoded_fp_with_cursor = (decoded_fp.0, decoded_fp.1, selected_decode_idx);
+        if decoded_fp_with_cursor != last_decoded_fp_with_cursor {
+            decoded_list::render_with_cursor(
+                &mut display,
+                &decoded_snapshot,
+                selected_decode_idx,
+            )
+            .ok();
+            last_decoded_fp_with_cursor = decoded_fp_with_cursor;
         }
 
         // TX line: repaint when the QSO FSM bumps `tx_seq`. Cheap
