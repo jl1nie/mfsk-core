@@ -12,6 +12,8 @@
 pub mod downsample;
 pub mod fft_15;
 pub mod fft_mixed_3840;
+pub mod fft_mixed_3840_sc16;
+pub mod fft_sc16_r2;
 pub mod gfsk;
 pub mod resample;
 pub mod subtract;
