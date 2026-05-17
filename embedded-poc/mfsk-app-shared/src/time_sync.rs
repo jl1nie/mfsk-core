@@ -130,10 +130,31 @@ pub fn slots_finalised() -> u32 {
 /// `take_bootstrap_slot_shift_12k`.
 static BOOTSTRAP_SLOT_SHIFT_12K: AtomicI32 = AtomicI32::new(0);
 
+/// Count of slots where coarse_sync emitted at least one pass1
+/// candidate (i.e. any signal-shaped energy in band). Increments
+/// every call to `set_bootstrap_slot_shift_12k`. Used by the menu
+/// UX to gate Auto-DF: chicken-and-egg avoidance for the case where
+/// `slots_finalised` (= confirmed BP-passing decodes) stays at 0
+/// because the band is misaligned or weak. `slots_observed` lets the
+/// UI say "ok, sync is at least running" after 2-3 slots even when
+/// no full decode has landed yet.
+static SLOTS_OBSERVED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// Producer side (decode_pipeline). Overwrites any prior unread value
-/// — the most recent slot's estimate is always the freshest.
+/// — the most recent slot's estimate is always the freshest. Also
+/// increments `SLOTS_OBSERVED` so the UX layer can know how many
+/// coarse_sync windows have run.
 pub fn set_bootstrap_slot_shift_12k(samples: i32) {
     BOOTSTRAP_SLOT_SHIFT_12K.store(samples, Ordering::Release);
+    SLOTS_OBSERVED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// How many slots have run coarse_sync since boot. Climbs every
+/// ~15 s once the audio source is producing samples. UX gate for
+/// Auto-DF: typically allow after `slots_observed() >= 2` so the
+/// shift estimator has had a chance to settle.
+pub fn slots_observed() -> u32 {
+    SLOTS_OBSERVED.load(Ordering::Acquire)
 }
 
 /// Consumer side (audio capture thread). Returns the current shift

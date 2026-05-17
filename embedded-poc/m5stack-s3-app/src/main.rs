@@ -211,20 +211,14 @@ fn main() -> ! {
             );
         }
         boot_mode::BootMode::Acoustic => {
-            // Phase 1.5-Stick: 同じ source-spawn pattern を audio capture
-            // に流用。pipeline thread が BASIS alloc → stage1_inc を
-            // 起こしてから audio::set_chunk_q(chunk_q) で audio side に
-            // queue handle を渡す。capture_thread は display.rs 側で
-            // I2S RX 起動後に spawn 済みで、CHUNK_Q_ADDR が wired される
-            // まで sample drop で待つ (UAC と同じ race window 処理)。
-            //
-            // **Init 順序**: BLE CI-V を **先に** 起こす — BLEDevice::take()
-            // が BT controller 初期化で内部 DRAM 30 KB を reserve する。
-            // pipeline thread → BASIS 120 KB alloc を先にやると残飯で
-            // BT init が malloc fail する (2026-05-17 検証で実証)。
-            if let Err(e) = civ::start() {
-                log::error!("BLE CI-V start failed: {e:#}");
-            }
+            // Phase 1.5-Stick: pure RX mode (mic capture → decode
+            // pipeline). **No BLE** — adding civ::start() here pushes
+            // BASIS 120 KB + BT controller 30 KB past the internal
+            // DRAM ceiling (2026-05-17 verify: 4th BASIS alloc IM_c1
+            // returns null, panic). BLE coexistence with decode lives
+            // in BootMode::Qso, which trades audio-thread complexity
+            // (bidir I2S) for the radio control surface. Acoustic
+            // stays as the lightweight diagnostic / Phase 1.5 demo.
             log_free_internal("pre-thread-spawn");
             let pipeline_spawn = std::thread::Builder::new()
                 .stack_size(32 * 1024)

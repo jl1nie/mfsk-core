@@ -611,17 +611,42 @@ pub fn run_log_panel(
                             log::info!("menu: band → {label} ({hz} Hz)");
                         },
                         find_df: &mut || {
-                            // Phase 1.7 first cut: returns the 1500 Hz
-                            // centre default until the occupancy map is
-                            // populated from the live spectrogram. The
-                            // TX scheduler will recompute this anyway
-                            // right before each TX cycle.
+                            // Phase 1.7-Stick gate: DF hunt requires the
+                            // slot-boundary sync to have had a chance to
+                            // run at least a couple of times (user:
+                            // "一度同期するまでは DF ハントしてはダメ").
+                            // A misaligned slot makes "quiet 50 Hz
+                            // windows" meaningless because they're
+                            // just the time-domain gaps between TX
+                            // bursts observed through the offset.
                             //
-                            // TODO Phase 1.7.1: wire occupancy ingest
-                            // from decode_pipeline so this hook returns
-                            // the actually-quietest 50 Hz window.
+                            // We use `slots_observed` (coarse_sync ran)
+                            // rather than `slots_finalised` (confirmed
+                            // BP decode) — the latter is 0 forever in
+                            // weak / misaligned bands and creates a
+                            // chicken-and-egg. After 2 observed slots
+                            // (~30 s) the shift estimator has a
+                            // baseline regardless of whether any full
+                            // decode has landed.
+                            let observed = mfsk_app_shared::time_sync::slots_observed();
+                            let confirmed = mfsk_app_shared::time_sync::slots_finalised();
+                            if observed < 2 {
+                                log::info!(
+                                    "menu: find_df → SYNCING (observed={observed} confirmed={confirmed})"
+                                );
+                                return 0; // sentinel → menu renders "---"
+                            }
+                            // Sync window big enough. For Phase 1.7
+                            // first cut still return 1500 Hz default;
+                            // occupancy-map ingest from the live
+                            // spectrogram (real per-bin energy → 50 Hz
+                            // quietest window) is the immediate next
+                            // task — landing the wiring only touches
+                            // this hook.
                             let df = 1500u16;
-                            log::info!("menu: find_df → {df} Hz (occupancy not yet wired)");
+                            log::info!(
+                                "menu: find_df → {df} Hz (observed={observed} confirmed={confirmed}; occupancy stub)"
+                            );
                             df
                         },
                         set_auto_cq: &mut |on: bool| {

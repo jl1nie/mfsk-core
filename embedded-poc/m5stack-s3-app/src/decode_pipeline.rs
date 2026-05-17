@@ -227,25 +227,35 @@ where
         slot_seq = slot_seq.wrapping_add(1);
 
         // Bootstrap slot-boundary auto-sync (Acoustic / UAC live paths).
-        // Compute median DT over pass1 candidates — they exist even when
-        // 0 results pass full decode, so this is the cold-start signal
-        // (User: "山頂にはWiFi無い" → NTP は使えない、self-sync 必須)。
-        // Median is robust to spurious candidates from intermod/noise.
-        // wav_sim path keeps the value at 0 (canonical slot alignment
-        // already correct); only live audio sources read this via
-        // `time_sync::take_bootstrap_slot_shift_12k`.
+        // Compute median DT over the **top-N highest-score pass1
+        // candidates** — these are the strongest 3-Costas pattern hits,
+        // which is a clean sync source. The full pass1 (up to MAX_CAND
+        // = 30) gets capped at the limit and is polluted by noise-
+        // driven candidates with random DTs; using all of them makes
+        // the median jitter even when real signals are present (User:
+        // "dec で同期は難しい。3 costas だけでやるべきでは？" — the
+        // Costas score in pass1 is exactly that 3-Costas correlation,
+        // no need to wait for full BP decode).
+        const SYNC_TOP_N: usize = 3;
         if !pass1_dts.is_empty() {
-            let mut dts = pass1_dts.clone();
+            // pass1 from coarse_sync is already sorted by score desc.
+            let take = pass1_dts.len().min(SYNC_TOP_N);
+            let mut dts: Vec<f32> = pass1_dts.iter().take(take).copied().collect();
             dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
             let median = dts[dts.len() / 2];
-            // FT8 slot is 15 s; clamp shift to ±5 s so a one-off
-            // outlier (e.g. wrap-around aliased candidate) can't break
-            // alignment. 5 s × 12000 = 60_000 samples.
-            let raw_samples = (median * 12000.0).round() as i32;
+            // Apply a damping factor (0.5) on the per-slot correction
+            // — full-DT shift was observed to diverge: shrinking slot
+            // [1] by the full -0.673s makes slot[1] capture only the
+            // tail of real_slot_1, coarse_sync detects a partial
+            // signal and reports a similar -0.6s offset → infinite
+            // loop. Damped 0.5 trades convergence speed (~3-4 slots
+            // instead of 1) for stability. Clamp ±5 s to reject
+            // outliers that wrap aliasing might generate.
+            let raw_samples = (median * 12000.0 * 0.5).round() as i32;
             let clamped = raw_samples.clamp(-60_000, 60_000);
             mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(clamped);
             log::info!(
-                "  auto-sync: median pass1 DT={:+.3}s → next slot shift {:+} samples (clamped from {:+})",
+                "  auto-sync: top-{take} pass1 DT median={:+.3}s → next slot shift {:+} samples (damped 0.5, clamped from {:+})",
                 median, clamped, raw_samples
             );
         }
