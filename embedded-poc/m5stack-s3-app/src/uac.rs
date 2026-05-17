@@ -305,6 +305,15 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     // releasing them would mean the IDF driver thinks the device is
     // streaming forever (next RxConnected would race against a stuck
     // alt-setting). Stop + close before bubbling the error.
+    // Reset stats for the new session so the 1 Hz throughput log
+    // reflects the current device, not accumulated bytes from a
+    // previous attach (Gemini PR #98 r3 review). `Relaxed` since
+    // no concurrent reader exists at this point — the new reader
+    // is about to spawn below.
+    RX_BYTES.store(0, Ordering::Relaxed);
+    RX_PACKETS.store(0, Ordering::Relaxed);
+    RX_ERRORS.store(0, Ordering::Relaxed);
+
     let handle_wrapped = DeviceHandle(handle);
     if let Err(e) = std::thread::Builder::new()
         .stack_size(READER_TASK_STACK)
@@ -409,6 +418,11 @@ fn reader_thread(handle: DeviceHandle) {
     } else {
         log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
     }
+    // Release the dedup gate so a future RxConnected (re-plug or
+    // power cycle) can re-take it (Gemini PR #98 r3 review).
+    // Without this the gate stays set after the reader exits and
+    // every subsequent attach gets ignored, requiring a reboot.
+    READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
 }
 
 /// App task body. Consumes driver events from the channel; on first
