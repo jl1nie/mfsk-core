@@ -336,12 +336,12 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
             // same bin per the FP_SPEC_SHIFT comment) cap at u16::MAX
             // instead of wrapping to a tiny value. Gemini PR #83 + #100
             // review.
-            let mag2_a = ((a_re.unsigned_abs().pow(2) + a_im.unsigned_abs().pow(2))
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32);
-            let mag2_b = ((b_re.unsigned_abs().pow(2) + b_im.unsigned_abs().pow(2))
-                >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32);
+            let aru = a_re.unsigned_abs();
+            let aiu = a_im.unsigned_abs();
+            let bru = b_re.unsigned_abs();
+            let biu = b_im.unsigned_abs();
+            let mag2_a = ((aru * aru + aiu * aiu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
+            let mag2_b = ((bru * bru + biu * biu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
             data[row_a + k] = mag2_a as u16;
             data[row_b + k] = mag2_b as u16;
         }
@@ -361,8 +361,9 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
             // Same `unsigned_abs` square + saturating `.min(u16::MAX
             // as u32)` pattern as the demux loop above. Gemini PR #83
             // + #100 review.
-            let mag2 = ((re.unsigned_abs().pow(2) + im.unsigned_abs().pow(2)) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32);
+            let ru = re.unsigned_abs();
+            let iu = im.unsigned_abs();
+            let mag2 = ((ru * ru + iu * iu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
             data[row_base + i] = mag2 as u16;
         }
     }
