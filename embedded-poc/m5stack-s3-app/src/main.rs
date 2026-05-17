@@ -93,13 +93,19 @@ fn main() -> ! {
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)
+    //   - mode == Uac (UAC host install で USB-Serial-JTAG console が
+    //     detach されるため、UDP 経路を必ず up させる。SSID 空でも
+    //     試行はせずに warn のみ — UAC 機能は console なし fallback で
+    //     継続)
     //   失敗時は warn だけ出して続行 — boot 完走 > log 経路。
     //   `_wifi` は drop されると association が切れるので static slot に保持。
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
-    let wifi_should_start = mode == boot_mode::BootMode::Wifi && !WIFI_SSID.is_empty();
-    if mode == boot_mode::BootMode::Wifi && WIFI_SSID.is_empty() {
+    let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
+    let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
+    if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(
-            "boot_mode=WIFI but WIFI_SSID empty (no cfg.toml) — running WiFi-mode shell without STA; flip via KEY2 to return to DECODE"
+            "boot_mode={} but WIFI_SSID empty (no cfg.toml) — UDP log unavailable; serial console is also gone in UAC mode (USB-Serial-JTAG detached on usb_host_install)",
+            mode.label()
         );
     }
     if wifi_should_start {
@@ -148,29 +154,45 @@ fn main() -> ! {
         }
     }
 
-    // decode_pipeline を spawn するか否か: NVS-stored boot mode で決定。
+    // decode_pipeline / UAC host を spawn するか否か: boot mode で決定。
     //   - BootMode::Decode: BASIS heap alloc (120 KB) + decode_pipeline +
-    //     stage1_inc + dsp_worker + wav_sim を起動
-    //   - BootMode::Wifi: BASIS alloc skip、WiFi STA + UDP log のみ。
-    //     Internal DRAM ~120 KB が WiFi 用に空く
-    if mode == boot_mode::BootMode::Decode {
-        // Phase 0.7c: BASIS の `heap_caps_aligned_alloc` は thread の中で
-        // 行う。0.7c で NVS が常時 init されるようになり pre-alloc free が
-        // 234 KB に下がった結果、main で先に BASIS を取ると largest free
-        // が 31 KB まで縮み 32 KB thread stack の確保が ENOMEM になる。
-        // 順序を逆にして spawn 先で alloc すれば spawn 時点で largest が
-        // 139 KB 確保できるので安全。BASIS の DRAM 配置要件は満たす。
-        log_free_internal("pre-thread-spawn");
-        let pipeline_spawn = std::thread::Builder::new()
-            .stack_size(32 * 1024)
-            .spawn(|| decode_pipeline::run());
-        if let Err(e) = pipeline_spawn {
-            log::error!("decode_pipeline spawn failed ({e})");
+    //     stage1_inc + dsp_worker + wav_sim
+    //   - BootMode::Wifi:   pipeline skip、WiFi STA + UDP のみ
+    //   - BootMode::Uac:    pipeline skip (#32 で UAC ringbuf に差し替えて
+    //     再 spawn 予定)、USB host stack を install。#30 段階では
+    //     uac_host_install + driver event callback まで。実際の device
+    //     open / streaming は #31 以降。
+    match mode {
+        boot_mode::BootMode::Decode => {
+            // Phase 0.7c: BASIS の `heap_caps_aligned_alloc` は thread の中で
+            // 行う。0.7c で NVS が常時 init されるようになり pre-alloc free が
+            // 234 KB に下がった結果、main で先に BASIS を取ると largest free
+            // が 31 KB まで縮み 32 KB thread stack の確保が ENOMEM になる。
+            // 順序を逆にして spawn 先で alloc すれば spawn 時点で largest が
+            // 139 KB 確保できるので安全。BASIS の DRAM 配置要件は満たす。
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| decode_pipeline::run());
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline spawn failed ({e})");
+            }
         }
-    } else {
-        log::info!(
-            "decode_pipeline skipped (BootMode::Wifi — BASIS alloc skipped, 120 KB internal DRAM free for WiFi)"
-        );
+        boot_mode::BootMode::Wifi => {
+            log::info!(
+                "decode_pipeline skipped (BootMode::Wifi — BASIS alloc skipped, 120 KB internal DRAM free for WiFi)"
+            );
+        }
+        boot_mode::BootMode::Uac => {
+            log::info!(
+                "decode_pipeline skipped (BootMode::Uac #30 — pipeline rejoin lands in #32 with UAC ringbuf source)"
+            );
+            log_free_internal("pre-uac-host-install");
+            if let Err(e) = uac::start_host() {
+                log::error!("UAC host start failed: {e:#}");
+            }
+            log_free_internal("post-uac-host-install");
+        }
     }
 
     // メインタスクは LCD render loop (返らない)。modem は WiFi が
