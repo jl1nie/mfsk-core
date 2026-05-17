@@ -20,6 +20,13 @@ const NVS_KEY: &str = "boot_mode";
 pub enum BootMode {
     Decode,
     Wifi,
+    /// Phase 1 (#30 onward, m5stack-s3-app only): USB-OTG host で
+    /// IC-705 を UAC class device として認識し audio capture。
+    /// `usb_host_install()` を呼んだ瞬間に USB-Serial-JTAG が detach
+    /// されるため、UDP log 経路を必ず up させる (main.rs dispatch arm
+    /// 側で WiFi STA 起動を強制)。Core2 など USB-OTG host を持たない
+    /// 板では選んでも no-op (board crate 側でフォールバック)。
+    Uac,
 }
 
 impl BootMode {
@@ -27,6 +34,7 @@ impl BootMode {
         match self {
             BootMode::Decode => "decode",
             BootMode::Wifi => "wifi",
+            BootMode::Uac => "uac",
         }
     }
 
@@ -34,13 +42,22 @@ impl BootMode {
         match self {
             BootMode::Decode => "DECODE",
             BootMode::Wifi => "WIFI",
+            BootMode::Uac => "UAC",
         }
     }
 
+    /// 3-mode cycle: Decode → Wifi → Uac → Decode → ...
+    /// KEY2 long-press from `flip_and_restart` walks the cycle one
+    /// step at a time. Boot-time KEY1 override
+    /// (`override_held_at_boot`) also calls `flipped()` once, so a
+    /// single KEY1-held boot from e.g. Decode lands in Wifi (same as
+    /// the old 2-mode behaviour for the Decode↔Wifi pair); cycle
+    /// past Wifi by long-pressing KEY2 in the running app.
     pub fn flipped(self) -> Self {
         match self {
             BootMode::Decode => BootMode::Wifi,
-            BootMode::Wifi => BootMode::Decode,
+            BootMode::Wifi => BootMode::Uac,
+            BootMode::Uac => BootMode::Decode,
         }
     }
 }
@@ -59,6 +76,7 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
     match nvs.get_str(NVS_KEY, &mut buf) {
         Ok(Some(s)) if s == "wifi" => BootMode::Wifi,
         Ok(Some(s)) if s == "decode" => BootMode::Decode,
+        Ok(Some(s)) if s == "uac" => BootMode::Uac,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");
             BootMode::Decode
