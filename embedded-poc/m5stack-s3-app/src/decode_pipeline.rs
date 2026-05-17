@@ -22,10 +22,12 @@ use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 use mfsk_app_shared::qso::{self, QsoManager, QsoState};
 use mfsk_app_shared::ui::state::{DecodedRow, UI};
 
-/// Phase 4 dry-run: own callsign + Maidenhead grid burned into the
-/// build. Phase 6 will replace this with `/littlefs/config.toml`.
-const MY_CALL: &str = "JL1NIE";
-const MY_GRID: &str = "PM95";
+/// Fallback identity if the caller doesn't provide a shared QSO
+/// instance. Used by `run()` (wav_sim test path) only — production
+/// modes pass `qso` via `run_with_source_qso`. Empty in production
+/// means cfg.toml didn't supply MY_CALL.
+const MY_CALL: &str = env!("MY_CALL");
+const MY_GRID: &str = env!("MY_GRID");
 
 /// 開発用 WAV (qso3_busy のみ単独ループ — UI 構築用に最も多くのデコード結果を出す)。
 static QSO_WAVS: &[&[u8]] = &[
@@ -65,6 +67,22 @@ pub fn run() -> ! {
 /// never freed (`heap_caps_aligned_alloc` + Box::leak via slice
 /// `'static mut`).
 pub fn run_with_source<F>(source_spawn: F) -> !
+where
+    F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
+{
+    // Back-compat shim — wav_sim path uses a local FSM, no shared
+    // QSO ownership needed.
+    run_with_source_qso(source_spawn, None)
+}
+
+/// Variant that accepts a shared `QsoManager` so the FSM state is
+/// the same one the TX scheduler (or capture_tx_thread) reads.
+/// `BootMode::Qso` and other production modes call this directly;
+/// `BootMode::Decode` (wav_sim) uses [`run_with_source`].
+pub fn run_with_source_qso<F>(
+    source_spawn: F,
+    qso_shared: Option<std::sync::Arc<std::sync::Mutex<QsoManager>>>,
+) -> !
 where
     F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
 {
@@ -114,13 +132,28 @@ where
 
     log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)");
 
-    // QSO FSM (Phase 4 dry-run). auto-CQ kicks off immediately so the
-    // very first slot already has a TX intent painted; no decode in
-    // qso3_busy.wav contains "JL1NIE" so the FSM stays in Calling and
-    // exercises the retry → reset → re-CQ loop visibly on the LCD.
-    let mut qso = QsoManager::new(MY_CALL, MY_GRID);
-    let initial = qso.call_cq(None);
-    push_tx_line(&qso, Some(&initial));
+    // QSO FSM. Production modes (Acoustic / Qso) pass a shared
+    // `Arc<Mutex<QsoManager>>` so the TX scheduler / menu UI see the
+    // same state. Back-compat (wav_sim) creates a local one with
+    // auto-CQ pre-enabled so the dry-run loop keeps animating.
+    let qso: std::sync::Arc<std::sync::Mutex<QsoManager>> = qso_shared.unwrap_or_else(|| {
+        let mut q = QsoManager::new(MY_CALL, MY_GRID);
+        q.set_auto_cq(true); // wav_sim test: keep TX strip lively
+        std::sync::Arc::new(std::sync::Mutex::new(q))
+    });
+    // Initial CQ if configured + auto-CQ on.
+    {
+        let mut q = qso.lock().expect("qso lock");
+        if q.auto_cq_enabled
+            && !q.my_call.is_empty()
+            && q.state == QsoState::Idle
+        {
+            let initial = q.call_cq(None);
+            push_tx_line(&q, Some(&initial));
+        } else {
+            push_tx_line(&q, None);
+        }
+    }
 
     let mut slot_seq: u32 = 0;
     loop {
@@ -277,9 +310,11 @@ where
                     // Feed the FSM. SNR set first so an in-band reply
                     // ("JL1NIE W1AW FN31") gets reported with the
                     // correct rx_snr → tx_report.
-                    qso.set_rx_snr(snr_i8);
-                    if qso.process_message(&text).is_some() {
-                        had_response_this_slot = true;
+                    if let Ok(mut q) = qso.lock() {
+                        q.set_rx_snr(snr_i8);
+                        if q.process_message(&text).is_some() {
+                            had_response_this_slot = true;
+                        }
                     }
                 }
             }
@@ -289,14 +324,24 @@ where
         // retry budget is gone, the FSM resets to Idle and we
         // immediately re-CQ so the dry-run keeps animating between
         // states instead of parking in Idle indefinitely.
-        if !had_response_this_slot && qso.state != QsoState::Idle {
-            let _ = qso.on_period_end();
+        // Slot boundary processing on the shared FSM. Lock once, do
+        // all the state updates, then release before the next iter's
+        // expensive decode work runs (so TX scheduler / menu UX aren't
+        // starved while BP iterations chew on the next slot).
+        if let Ok(mut q) = qso.lock() {
+            if !had_response_this_slot && q.state != QsoState::Idle {
+                let _ = q.on_period_end();
+            }
+            // Auto-CQ re-arm only if the gate allows and we have an
+            // identity. Production paths leave auto_cq_enabled `false`
+            // by default so the FSM doesn't TX until the user opts in
+            // from the menu.
+            if q.state == QsoState::Idle && q.auto_cq_enabled && !q.my_call.is_empty() {
+                q.call_cq(None);
+            }
+            let intent = q.next_tx();
+            push_tx_line(&q, intent.as_ref());
         }
-        if qso.state == QsoState::Idle {
-            qso.call_cq(None);
-        }
-        let intent = qso.next_tx();
-        push_tx_line(&qso, intent.as_ref());
     }
 }
 

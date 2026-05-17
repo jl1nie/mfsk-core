@@ -200,15 +200,23 @@ pub fn run_log_panel(
             log::info!("audio path skipped (BootMode::CivTest: BLE-only bring-up)");
         }
         BootMode::Qso => {
-            // Phase 1.7-Stick: same I2S RX (mic capture) as Acoustic.
-            // TX synth + scheduler will be wired in a follow-up commit
-            // (separate I2S TX path requires i2s1 controller or driver
-            // swap; for now Qso mode shares the Acoustic RX path so
-            // the QSO FSM has live decodes to act on).
+            // Phase 1.7.1-Stick: I2S full-duplex on i2s0. ES8311 ADC +
+            // DAC simultaneously enabled (init_es8311_capture sets up
+            // the mic path; the speaker path piggybacks the same MCLK
+            // clock chain since codec is in MCLK=BCLK mode). The
+            // bidirectional driver lets a single thread (capture_tx_thread)
+            // alternate RX read iterations and TX synth play — no need
+            // for i2s1 or driver swap.
             if let Some(i2c_drv) = i2c.as_mut() {
                 if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
-                    log::warn!("ES8311 mic-mode init failed (Qso RX disabled): {e:#}");
+                    log::warn!("ES8311 mic-mode init failed (Qso disabled): {e:#}");
                 } else {
+                    // Speaker amp enable so the TX synth side actually
+                    // drives the audio out the speaker (mic input via
+                    // ADC stays unaffected).
+                    if let Err(e) = crate::audio::pa_enable(i2c_drv) {
+                        log::warn!("PA enable failed: {e:#}");
+                    }
                     use esp_idf_hal::i2s::{
                         config::{
                             ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
@@ -222,24 +230,28 @@ pub fn run_log_panel(
                         StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
                         StdGpioConfig::default(),
                     );
-                    match I2sDriver::new_std_rx(
+                    // bidir constructor: (port, cfg, bclk, din, dout, mclk, ws)
+                    // — din = codec→S3 (GPIO 16), dout = S3→codec (GPIO 14).
+                    match I2sDriver::new_std_bidir(
                         i2s0,
                         &i2s_cfg,
                         pins.gpio17,
                         pins.gpio16,
+                        pins.gpio14,
                         Some(pins.gpio18),
                         pins.gpio15,
                     ) {
                         Ok(i2s) => {
+                            let qso_clone = qso.clone();
                             if let Err(e) = std::thread::Builder::new()
-                                .stack_size(6 * 1024)
-                                .name("audio_cap".into())
-                                .spawn(move || crate::audio::capture_thread(i2s))
+                                .stack_size(8 * 1024)
+                                .name("audio_capt_tx".into())
+                                .spawn(move || crate::audio::capture_tx_thread(i2s, qso_clone))
                             {
-                                log::error!("Qso capture spawn failed: {e}");
+                                log::error!("Qso capture+tx spawn failed: {e}");
                             }
                         }
-                        Err(e) => log::warn!("Qso I2S RX init failed: {e:?}"),
+                        Err(e) => log::warn!("Qso I2S bidir init failed: {e:?}"),
                     }
                 }
             }

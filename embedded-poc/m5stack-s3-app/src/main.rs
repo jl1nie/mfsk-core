@@ -248,22 +248,27 @@ fn main() -> ! {
             log_free_internal("post-civ-only-start");
         }
         boot_mode::BootMode::Qso => {
-            // Phase 1.7-Stick: Acoustic capture (Phase 1.5) + BLE CI-V
-            // (Phase 2) + TX synth (Phase 1.6) + QSO FSM + menu UX.
-            // Init order: civ FIRST so BLEDevice::take() reserves BT
-            // controller heap before BASIS 120 KB alloc. Memory budget
-            // is tight — if BASIS 4th alloc fails, fall back to
-            // BootMode::TxTest or BootMode::Acoustic separately.
+            // Phase 1.7.1-Stick: Acoustic capture (Phase 1.5) + BLE
+            // CI-V (Phase 2) + TX synth (Phase 1.6) + QSO FSM + menu
+            // UX, all sharing one `Arc<Mutex<QsoManager>>`. capture_tx_thread
+            // (display.rs) owns the bidir I2S; pipeline consumes the
+            // same FSM so decode → process_message updates state the
+            // TX side reads back. Init order: civ first (BT controller
+            // heap before BASIS alloc).
             if let Err(e) = civ::start() {
                 log::error!("BLE CI-V start failed: {e:#}");
             }
             log_free_internal("pre-thread-spawn");
+            let qso_for_pipeline = qso.clone();
             let pipeline_spawn = std::thread::Builder::new()
                 .stack_size(32 * 1024)
-                .spawn(|| {
-                    decode_pipeline::run_with_source(|chunk_q| {
-                        audio::set_chunk_q(chunk_q);
-                    })
+                .spawn(move || {
+                    decode_pipeline::run_with_source_qso(
+                        |chunk_q| {
+                            audio::set_chunk_q(chunk_q);
+                        },
+                        Some(qso_for_pipeline),
+                    )
                 });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Qso) spawn failed ({e})");

@@ -23,7 +23,7 @@ use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box};
 use esp_idf_hal::{
     delay::TickType,
     i2c::I2cDriver,
-    i2s::{I2sDriver, I2sRx, I2sTx},
+    i2s::{I2sBiDir, I2sDriver, I2sRx, I2sTx},
 };
 use esp_idf_svc::sys;
 use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
@@ -492,5 +492,274 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
             last_log = now;
             last_bytes = bytes;
         }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Phase 1.7.1-Stick: combined RX + TX I/O for BootMode::Qso
+// ════════════════════════════════════════════════════════════════════
+//
+// Single-thread owner of `I2sDriver<I2sBiDir>` (single i2s0 controller
+// with both RX and TX channels enabled — ES8311 codec supports
+// simultaneous ADC + DAC; pins BCLK 17 / MCLK 18 / LRCK 15 shared,
+// codec DIN 16 = RX side, codec DOUT 14 = TX side).
+//
+// Loop priority: TX first, RX second.
+// - When the QSO FSM has a pending TxIntent and auto_cq permits, we
+//   PTT-on + synth + write (~12.6 s blocking). RX DMA keeps streaming
+//   into the IDF ringbuf during TX; we don't read it, so the ringbuf
+//   overflows and oldest data is silently dropped — that's fine since
+//   the audio we'd capture during our own TX is leakage from the
+//   speaker into the mic (unwanted feedback anyway). After TX, the
+//   first few RX reads catch the post-TX moment.
+// - Otherwise we do one RX read iteration (4 KB / 21 ms) and push the
+//   resampled L-channel to the decode pipeline's chunk queue. The
+//   self-sync bootstrap (Phase 1.5) re-aligns any slot drift caused
+//   by the TX gap.
+//
+// AUDIO_GATE is used as the "don't push samples to decode pipeline"
+// flag during TX: capture_thread + capture_tx_thread both honour it
+// (the read still happens to drain the ringbuf, but the chunk push
+// is suppressed). tx_scheduler / Phase 1.6 also flip the gate around
+// each TX bracket; doing it again here is idempotent.
+
+pub fn capture_tx_thread(
+    mut i2s: I2sDriver<'static, I2sBiDir>,
+    qso: std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
+) -> ! {
+    unsafe {
+        sys::vTaskPrioritySet(core::ptr::null_mut(), 8);
+    }
+    i2s.rx_enable().expect("I2S rx_enable");
+    i2s.tx_enable().expect("I2S tx_enable");
+    log::info!("audio capture+tx: bidir I2S up (RX 48k stereo + TX 48k stereo on i2s0)");
+
+    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
+    let mut resampler = LinearResamplerI16To12k::new(48_000);
+    let mut left_scratch: Box<[i16; CAPTURE_BUFFER_BYTES / 4]> =
+        Box::new([0i16; CAPTURE_BUFFER_BYTES / 4]);
+    let mut dst_scratch: Box<[i16; 512]> = Box::new([0i16; 512]);
+    let mut chunk: Vec<i16> = Vec::with_capacity(CHUNK_LEN);
+    let mut slot_samples: usize = 0;
+    let mut slot_end_target: usize = CAPTURE_SLOT_SAMPLES_12K;
+    let mut wav_idx: usize = 0;
+    let mut last_log = std::time::Instant::now();
+    let mut last_bytes: u32 = 0;
+    // BLE pair grace — civ::start spawns its own ble_thread which takes
+    // 5-15 s to scan + pair to IC-705; without this delay our first
+    // call_cq could fire before set_ptt has a working CI-V link.
+    let bring_up_grace = std::time::Instant::now() + std::time::Duration::from_secs(10);
+
+    // TX-side scratch (48k stereo i16): 240 12k mono samples × 4 ZOH
+    // × stereo × 2 bytes = 3 840 bytes. Reused per write_all call.
+    const TX_IN_CHUNK: usize = 240;
+    const TX_OUT_BYTES_PER_IN: usize = 16;
+    let mut tx_out: Box<[u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]> =
+        Box::new([0u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]);
+
+    loop {
+        // ── TX priority check ─────────────────────────────────────
+        let intent_opt = if std::time::Instant::now() >= bring_up_grace {
+            tx_scheduler_pick_intent(&qso)
+        } else {
+            None
+        };
+        if let Some(intent) = intent_opt {
+            do_tx_cycle(&mut i2s, &qso, &intent, &mut tx_out[..]);
+            // Reset capture state — the gap in RX during ~12.6 s TX
+            // makes any in-flight resample / slot accumulator stale.
+            // Drop partial chunk; next slot will start fresh, self-sync
+            // (Phase 1.5 bootstrap_slot_shift_12k) realigns within 1-2
+            // slots from the FSM's CQ/Reply spacing.
+            chunk.clear();
+            slot_samples = 0;
+            slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
+            resampler = LinearResamplerI16To12k::new(48_000);
+            continue;
+        }
+
+        // ── RX iteration (same shape as capture_thread) ───────────
+        let bytes_read = match i2s.read(&mut buf[..], TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
+            Ok(n) => n,
+            Err(e) => {
+                CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                log::warn!("audio capture+tx: i2s read err {e:?}");
+                continue;
+            }
+        };
+        if bytes_read == 0 {
+            continue;
+        }
+        // AUDIO_GATE: when false (e.g. just before/during TX), drain
+        // the read but don't push to the decode pipeline.
+        if !AUDIO_GATE.load(Ordering::Acquire) {
+            continue;
+        }
+        CAPTURE_BYTES.fetch_add(bytes_read as u32, Ordering::Relaxed);
+        CAPTURE_PACKETS.fetch_add(1, Ordering::Relaxed);
+
+        let stereo_samples = bytes_read / 4;
+        debug_assert!(stereo_samples <= left_scratch.len());
+        for i in 0..stereo_samples {
+            let off = i * 4;
+            left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
+        }
+
+        let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
+        if chunk_q_addr == 0 {
+            continue;
+        }
+        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+
+        let mut src_offset = 0usize;
+        while src_offset < stereo_samples {
+            let (consumed, produced) = resampler.process(
+                &left_scratch[src_offset..stereo_samples],
+                &mut dst_scratch[..],
+            );
+            for &s in &dst_scratch[..produced] {
+                chunk.push(s);
+                if chunk.len() >= CHUNK_LEN {
+                    let to_send = core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
+                    send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                    slot_samples += CHUNK_LEN;
+                    if slot_samples >= slot_end_target {
+                        send_box(
+                            chunk_q,
+                            Box::new(ChunkMsg::SlotEnd {
+                                wav_idx,
+                                total_samples: slot_samples,
+                            }),
+                        );
+                        let shift =
+                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        let next_target = (CAPTURE_SLOT_SAMPLES_12K as i32 + shift)
+                            .max(60_000) as usize;
+                        slot_end_target = next_target;
+                        wav_idx = wav_idx.wrapping_add(1);
+                        slot_samples = 0;
+                    }
+                }
+            }
+            if consumed == 0 && produced == 0 {
+                break;
+            }
+            src_offset += consumed;
+        }
+
+        let now = std::time::Instant::now();
+        if now.duration_since(last_log).as_secs() >= 1 {
+            let bytes = CAPTURE_BYTES.load(Ordering::Relaxed);
+            let bps = bytes.wrapping_sub(last_bytes);
+            log::info!("audio capture+tx tick: {bps} B/s rx (slot={slot_samples}/12k)");
+            last_log = now;
+            last_bytes = bytes;
+        }
+    }
+}
+
+/// Pull the next TX intent if one is pending. Mirrors the same logic
+/// as `tx_scheduler::scheduler_thread` so the auto-CQ behaviour is
+/// identical between BootMode::TxTest (RX-less scheduler) and
+/// BootMode::Qso (combined thread).
+fn tx_scheduler_pick_intent(
+    qso: &std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
+) -> Option<mfsk_app_shared::qso::TxIntent> {
+    let q = qso.lock().ok()?;
+    let auto_cq = q.auto_cq_enabled;
+    let intent = q.next_tx();
+    if intent.is_some() {
+        return intent;
+    }
+    if auto_cq && q.state == mfsk_app_shared::qso::QsoState::Idle {
+        drop(q);
+        let mut q = qso.lock().ok()?;
+        return Some(q.call_cq(None));
+    }
+    None
+}
+
+/// One full TX cycle: PTT bracket + synth + write to the bidir I2S TX
+/// side. Blocks ~12.6 s. After this returns, the caller should reset
+/// its capture / resampler state (RX gap during TX leaves stale data).
+fn do_tx_cycle(
+    i2s: &mut I2sDriver<'static, I2sBiDir>,
+    qso: &std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
+    intent: &mfsk_app_shared::qso::TxIntent,
+    tx_out: &mut [u8],
+) {
+    use esp_idf_svc::hal::delay::FreeRtos;
+    use mfsk_core::ft8::message::pack77;
+
+    let df_hz = mfsk_app_shared::ui::state::UI
+        .lock()
+        .ok()
+        .map(|u| u.current_df_hz)
+        .unwrap_or(0);
+    let df_hz = if df_hz == 0 { 1500u16 } else { df_hz };
+
+    let formatted = intent.formatted();
+    log::info!(
+        "audio TX: firing → '{}' @ {df_hz} Hz",
+        formatted.as_str()
+    );
+
+    let msg77 = match pack77(intent.call1.as_str(), intent.call2.as_str(), intent.report.as_str()) {
+        Some(m) => m,
+        None => {
+            log::warn!("audio TX: pack77 failed, skipping slot");
+            return;
+        }
+    };
+
+    // Mute decode pipeline ingestion + key TX.
+    AUDIO_GATE.store(false, Ordering::Release);
+    crate::civ::set_ptt(true);
+    FreeRtos::delay_ms(100);
+
+    let samples = match crate::tx::synthesize_message77(&msg77, df_hz as f32) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("audio TX: synth failed: {e:#}");
+            crate::civ::set_ptt(false);
+            AUDIO_GATE.store(true, Ordering::Release);
+            return;
+        }
+    };
+
+    // Stream 12 kHz mono → 48 kHz stereo 4× ZOH chunks via I2S TX.
+    const IN_CHUNK: usize = 240;
+    const OUT_PER_IN: usize = 16;
+    let t_start = std::time::Instant::now();
+    for chunk in samples.chunks(IN_CHUNK) {
+        let mut o = 0;
+        for &s in chunk {
+            let b = s.to_le_bytes();
+            for _ in 0..4 {
+                tx_out[o] = b[0];
+                tx_out[o + 1] = b[1];
+                tx_out[o + 2] = b[0];
+                tx_out[o + 3] = b[1];
+                o += 4;
+            }
+        }
+        let nbytes = chunk.len() * OUT_PER_IN;
+        if let Err(e) = i2s.write_all(&tx_out[..nbytes], TickType::new_millis(500).ticks()) {
+            log::warn!("audio TX: i2s write err {e:?}");
+            break;
+        }
+    }
+    log::info!(
+        "audio TX: complete in {:?} ({} samples)",
+        t_start.elapsed(),
+        samples.len()
+    );
+
+    crate::civ::set_ptt(false);
+    AUDIO_GATE.store(true, Ordering::Release);
+
+    // Advance FSM (retry counter / Idle reset).
+    if let Ok(mut q) = qso.lock() {
+        let _ = q.on_period_end();
     }
 }
