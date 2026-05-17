@@ -379,8 +379,19 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             let a_im = (yk_im - yn_im) >> 1;
             let b_re = (yk_im + yn_im) >> 1;
             let b_im = (yn_re - yk_re) >> 1;
-            let mag2_a = ((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT;
-            let mag2_b = ((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT;
+            // mag² saturate at u16::MAX. Wrapping `as u16` (the
+            // pre-Phase 1.7.7b behaviour) was a real bug: very strong
+            // co-channel bins overflowed u16 after `>> FP_SPEC_SHIFT`
+            // and aliased to a tiny residue, making strong stations
+            // *invisible* to `coarse_sync`. Caught while tracing the
+            // host vs embedded NSTEP divergence — the host fixed-point
+            // path already saturates (`spectrogram.rs::compute_spectrogram`
+            // mag2 sites). Matching it here keeps the two paths
+            // algorithmically identical.
+            let mag2_a = (((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
+            let mag2_b = (((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
             spec[row_a + k] = mag2_a as u16;
             spec[row_b + k] = mag2_b as u16;
         }

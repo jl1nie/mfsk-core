@@ -46,14 +46,26 @@ fft-extern   = ["alloc"]
 # sweep). The Q11i16 scalar type still exists in `core::scalar` for
 # manual use / comparison, but no built-in feature wires it into the
 # decode hot loop anymore.
-fixed-point  = []
+#
+# **`fixed-point` implies `nstep-half`** (Phase 1.7.7b, 2026-05-17).
+# The two were independent features for historical reasons but are
+# always co-enabled on every embedded target — and host fixed-point
+# builds *must* use the same NSTEP if they want to simulate embedded
+# faithfully. Decoupling them silently gave host fixed-point a
+# different time-grid (NSTEP=NSPS/4 vs embedded NSPS/2) and made
+# `decode_block_into` produce a completely different spec /
+# coarse_sync ranking / pass1 candidates from S3 wav_sim (e.g. 4 vs 7
+# decodes on qso3_busy single-pass). Coupling them removes the trap.
+fixed-point  = ["nstep-half"]
 
 # Halve coarse_sync time-axis resolution (NSTEP = NSPS/2 instead of
 # NSPS/4 = WSJT-X reference). Embedded targets enable this — at NSPS/4
 # the spec memory and stage-1 FFT count both double, which exceeds
 # the LX7 post-SlotEnd budget. NSPS/2 was the embedded baseline up
 # through 0.5.4 and is what `embedded-shared/stage1_inc` already
-# emits. host stays on the WSJT-faithful NSPS/4 default.
+# emits. Host f32 path stays on the WSJT-faithful NSPS/4 default;
+# host fixed-point inherits this via the `fixed-point` -> `nstep-half`
+# dep so it can simulate embedded byte-for-byte.
 nstep-half   = []
 
 # Always-on coarse_sync sub-stage profiling. Same output as setting

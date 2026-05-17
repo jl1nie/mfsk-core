@@ -25,18 +25,6 @@ use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_H
 #[cfg(not(feature = "fixed-point"))]
 use crate::core::fft::default_planner;
 
-// Hann window table for the fixed-point `compute_spectrogram`.
-// Cached at first use — the table is constant in shape and length
-// (NSPS = 1920), so recomputing 1920 `cos()` per call (= per
-// multipass pass) was wasted work on every decode. Gemini PR #83
-// review. `OnceLock` requires `std`; `fixed-point` builds also
-// enable `std` (the embedded path uses `stage1_inc` which has its
-// own cached table), so this is safe.
-#[cfg(all(feature = "fixed-point", feature = "std"))]
-use std::sync::OnceLock;
-#[cfg(all(feature = "fixed-point", feature = "std"))]
-static HANN_NSPS: OnceLock<[i16; NSPS]> = OnceLock::new();
-
 /// Spectrogram cell type. f32 (4 bytes) by default; u16 (2 bytes)
 /// under `fixed-point` — magnitude squared right-shifted by
 /// `FP_SPEC_SHIFT` to fit u16. `Spectrogram::power` returns f32 in
@@ -227,6 +215,17 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     // Pre-scale gain: shift left so the audio peak lands at
     // `2 × NFFT` (so after `log2(NFFT)` stages of /2 the post-FFT
     // peak still has a usable mantissa of ~2).
+    //
+    // **Scan window**: full slot (`audio.len().min(NMAX)`). The
+    // embedded `stage1_inc` peaks only the first 1 s of audio because
+    // it locks `shift` once at the streaming consumer's earliest
+    // legal moment (incremental FFT can't wait for the slot tail).
+    // That's a streaming **implementation constraint**, not a
+    // separately-correct algorithm; host has the full slot in hand
+    // and uses it. For typical WSJT-X reference WAVs the peak lives
+    // in the first second anyway (FT8 signals start at +0.5 s), so
+    // the two converge on the same `shift` in practice — verified
+    // on qso3_busy.wav (peak 1540 in first 12 k = full-slot peak).
     let target_peak: i32 = (NFFT_SPEC * 2) as i32;
     let mut peak_abs: i32 = 1;
     let n_scan = audio.len().min(NMAX);
@@ -282,59 +281,12 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     let n_pairs = n_time / 2;
     let n_odd = n_time & 1;
 
-    // Hann window (Q15). Even though NFFT=3840 makes tone_step_bins
-    // an exact 2.0, leaving the bare i16 spectrum un-windowed lost
-    // ~half the WSJT-X-golden recall in regression — the rect-window
-    // -13 dB sidelobes apparently leak between the *adjacent slot's*
-    // signals, not just the cross-tone neighbours we predicted, and
-    // the auto-gain shift on i16 amplifies that leakage. Keep Hann
-    // here (it's also what stage1_inc already does on embedded).
-    //
-    // Cached in `HANN_NSPS` on `std` builds: the window is constant
-    // in shape + length (NSPS = 1920), so recomputing the 1920
-    // `cos()` calls per `compute_spectrogram` (= per multipass pass)
-    // burned cycles on every decode. `OnceLock` is std-only so the
-    // no_std fixed-point path keeps the per-call recompute — that
-    // path runs on Xtensa anyway, and the embedded production
-    // pipeline routes via `stage1_inc` which has its own cached
-    // Hann (per the comment immediately above). Gemini PR #83 + #101
-    // review.
-    #[cfg(feature = "std")]
-    let hann_cached = HANN_NSPS.get_or_init(|| {
-        let mut table = [0i16; NSPS];
-        for n in 0..NSPS {
-            let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
-            let w = 0.5 - 0.5 * phase.cos();
-            table[n] = (w * 32767.0) as i16;
-        }
-        table
-    });
-    #[cfg(not(feature = "std"))]
-    let hann_local = {
-        let mut table = [0i16; NSPS];
-        for n in 0..NSPS {
-            let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
-            let w = 0.5 - 0.5 * phase.cos();
-            table[n] = (w * 32767.0) as i16;
-        }
-        table
-    };
-    #[cfg(feature = "std")]
-    let hann: &[i16; NSPS] = hann_cached;
-    #[cfg(not(feature = "std"))]
-    let hann: &[i16; NSPS] = &hann_local;
     // **Rectangular window** — matches `embedded-shared::stage1_inc`
-    // verbatim. Earlier the host path windowed with Hann (cached in
-    // `HANN_NSPS` above) "for parity with stage1_inc" but stage1_inc
-    // had already switched to rectangular at the NFFT=3840 migration
-    // (see `embedded-shared/src/stage1_inc.rs:338`). The drift caused
-    // host `decode_block_into` to lose 2 weak decodes that the
-    // embedded S3 wav_sim baseline finds (XE2X, K1JT on qso3_busy.wav).
-    // The Hann coherent gain 0.5 ≈ -6 dB SNR penalty + 2-bin mainlobe
-    // spread is what cost the recall — at integer tone alignment
-    // (tone_step_bins = 2.0 exactly) the rectangular sidelobes don't
-    // leak onto adjacent FT8 tones, so the window provides no benefit.
-    let _ = hann; // silence unused warning when std cache is built
+    // verbatim. At NFFT=3840 the FT8 tone spacing falls on integer
+    // bins (`tone_step_bins = 6.25 / (12000/3840) = 2.0`), so the
+    // rectangular sidelobes don't leak onto adjacent tones; Hann's
+    // coherent gain 0.5 (≈ -6 dB SNR penalty) + 2-bin mainlobe spread
+    // would be pure cost.
     let pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         for (k, c) in buf.iter_mut().enumerate() {
             let re = if k < NSPS && ia_a + k < audio.len() {
@@ -386,6 +338,14 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
             // same bin per the FP_SPEC_SHIFT comment) cap at u16::MAX
             // instead of wrapping to a tiny value. Gemini PR #83 + #100
             // review.
+            // mag² saturate at u16::MAX. Wrapping `as u16` (the
+            // pre-Phase 1.7.7b behaviour on the embedded path) was a
+            // real bug: very-strong-bin energy overflowed u16 after
+            // `>> FP_SPEC_SHIFT` and aliased to a tiny residue, hiding
+            // strong stations from `coarse_sync`. Both host fixed-point
+            // here and `embedded-shared::stage1_inc` saturate now.
+            // Use `unsigned_abs` so the squares stay in u32 with a bit
+            // to spare for the sum, then `.min(u16::MAX as u32)`.
             let aru = a_re.unsigned_abs();
             let aiu = a_im.unsigned_abs();
             let bru = b_re.unsigned_abs();
@@ -394,6 +354,13 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
             let mag2_b = ((bru * bru + biu * biu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
             data[row_a + k] = mag2_a as u16;
             data[row_b + k] = mag2_b as u16;
+            #[cfg(feature = "std")]
+            if jj == 0 && (k == 64 || k == 823) {
+                eprintln!(
+                    "[host spec] pair0 k={k}: yk=({},{}) yn=({},{}) a=({},{}) b=({},{}) mag2_a={mag2_a} mag2_b={mag2_b}",
+                    yk_re, yk_im, yn_re, yn_im, a_re, a_im, b_re, b_im
+                );
+            }
         }
     }
 
@@ -408,9 +375,7 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         for i in 0..n_freq {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
-            // Same `unsigned_abs` square + saturating `.min(u16::MAX
-            // as u32)` pattern as the demux loop above. Gemini PR #83
-            // + #100 review.
+            // Same saturating mag² pattern as the demux loop above.
             let ru = re.unsigned_abs();
             let iu = im.unsigned_abs();
             let mag2 = ((ru * ru + iu * iu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
