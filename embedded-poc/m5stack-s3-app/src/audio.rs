@@ -293,41 +293,50 @@ pub fn set_chunk_q(q: sys::QueueHandle_t) {
     log::info!("audio capture: chunk_q wired (addr={:#x})", q as usize);
 }
 
-/// Extend the existing ES8311 DAC init with ADC mic-mode registers.
-/// Caller must have run [`init_es8311`] first (powers up the CSM and
-/// configures MCLK=BCLK). This function adds:
+/// Standalone ES8311 ADC mic-mode init. Verbatim port of M5Unified's
+/// `_microphone_enabled_cb_sticks3` for board_M5StickS3 (sequence at
+/// `M5Unified.cpp` master branch, 2026-05-17 fetch). **Do NOT call
+/// [`init_es8311`] first** — this sequence starts with a soft RESET
+/// + CSM power-on and configures the codec purely for mic capture
+/// (skips the DAC-only registers 0x12 / 0x13 that the speaker init
+/// writes; reg 0x01=0xBA differs from speaker's 0xB5 to engage the
+/// ADC clock path).
 ///
-/// - reg 0x14 PGA: MIC1 single-ended at +12 dB
-/// - reg 0x15 ADC DPF + noise gate: off
-/// - reg 0x16 ADC HPF time constant: default
-/// - reg 0x17 ADC volume: 0 dB (0xBF)
-/// - reg 0x09 ADC OSR: 32 (matches DAC OSR)
-/// - reg 0x0A ADC HPF: bypass (we want raw signal, FT8 has no DC offset
-///   issue at 1500 Hz)
-/// - reg 0x0E ADC powerup
+/// Register meanings:
+/// - 0x00 0x80: RESET + CSM POWER ON
+/// - 0x01 0xBA: CLOCK_MANAGER, MCLK = BCLK (mic-mode variant)
+/// - 0x02 0x18: CLOCK_MANAGER, MULT_PRE = 3
+/// - 0x0D 0x01: SYSTEM, power up analog
+/// - 0x0E 0x02: SYSTEM, enable analog PGA + ADC modulator
+/// - 0x14 0x10: ADC_REG14, Mic1p-Mic1n differential, PGA gain MIN
+/// - 0x17 0xFF: ADC_REG17, ADC volume MAXGAIN
+/// - 0x1C 0x6A: ADC_REG1C, EQ bypass + DC offset cancel
 ///
-/// Values are taken from the espressif `esp_codec_dev` reference
-/// driver's mic-init path; tested working on Espressif's own ES8311
-/// dev kits. Untested on M5StickS3 — first-flash output will say
-/// whether the mic actually produces non-zero samples, and gain may
-/// need bumping (reg 0x14) if speech-volume audio comes through at
-/// near-zero amplitude.
+/// If captured signal amplitude is too low, the next knob is the
+/// PGA gain in reg 0x14 (raise the low nibble 0x10 → 0x1F for higher
+/// gain). If clipping, lower ADC volume reg 0x17.
 pub fn init_es8311_capture(i2c: &mut I2cDriver) -> Result<()> {
+    // M5StickS3 PA enable line off (codec speaker stays silent during
+    // mic capture; otherwise the speaker amp would howl any leaked
+    // signal back to the mic).
+    let _ = pmic_bit_off(i2c, 0x11, 1 << 3);
     let mic_seq: &[(u8, u8)] = &[
-        (0x14, 0x1A), // PGA: MIC1 single-ended, +12 dB (bits 4:0 = 0b11010 = +18 dB? see datasheet)
-        (0x15, 0x40), // ADC DPF off, noise gate off
-        (0x16, 0x00), // ADC HPF time const = 0
-        (0x17, 0xBF), // ADC volume = 0 dB (0xBF nominal)
-        (0x09, 0x00), // ADC OSR low byte
-        (0x0A, 0x00), // ADC HPF disabled (FT8 doesn't need HPF)
-        (0x0E, 0x02), // ADC powerup: enable ADC analog + digital
-        (0x44, 0x08), // DAC->ADC selector: keep DAC out separate
+        (0x00, 0x80),
+        (0x01, 0xBA),
+        (0x02, 0x18),
+        (0x0D, 0x01),
+        (0x0E, 0x02),
+        (0x14, 0x10),
+        (0x17, 0xFF),
+        (0x1C, 0x6A),
     ];
     for &(reg, val) in mic_seq {
         i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT)
             .with_context(|| format!("ES8311 mic reg 0x{reg:02X} write failed"))?;
     }
-    log::info!("ES8311 ADC mic-mode init OK (PGA +12dB, ADC vol 0dB, HPF bypass)");
+    log::info!(
+        "ES8311 ADC mic-mode init OK (M5Unified-port: MCLK=BCLK 0xBA, Mic1 diff, vol MAX, EQ bypass)"
+    );
     Ok(())
 }
 
@@ -357,23 +366,28 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
         "audio capture: streaming I2S RX (48 kHz stereo → L extract → 12 kHz mono, prio 8)"
     );
 
-    let mut buf = [0u8; CAPTURE_BUFFER_BYTES];
+    // Move big buffers to heap so the thread stack stays under 6 KB
+    // (internal DRAM is tight after BASIS + stage1_inc + dual_core —
+    // 8 KB stack spawn OOMs during bring-up).
+    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
     let mut resampler = LinearResamplerI16To12k::new(48_000);
-    // L-channel scratch — max bytes_read / 4 mono samples per read.
-    let mut left_scratch = [0i16; CAPTURE_BUFFER_BYTES / 4];
-    // Resampled output staging. 48k→12k = 4:1, so ~256 samples per
-    // 4 KB read. Doubled for resampler rounding headroom.
-    let mut dst_scratch = [0i16; 512];
+    let mut left_scratch: Box<[i16; CAPTURE_BUFFER_BYTES / 4]> =
+        Box::new([0i16; CAPTURE_BUFFER_BYTES / 4]);
+    let mut dst_scratch: Box<[i16; 512]> = Box::new([0i16; 512]);
     // Per-chunk accumulator. Flushed at CHUNK_LEN (1200 samples =
     // 100 ms @ 12 kHz, matches wav_sim and UAC).
     let mut chunk: Vec<i16> = Vec::with_capacity(CHUNK_LEN);
     let mut slot_samples: usize = 0;
+    // Mutable slot target — adjusted by one-shot bootstrap shift via
+    // `time_sync::take_bootstrap_slot_shift_12k` at each SlotEnd so
+    // the next slot aligns with the band's actual TX cadence.
+    let mut slot_end_target: usize = CAPTURE_SLOT_SAMPLES_12K;
     let mut wav_idx: usize = 0;
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
 
     loop {
-        let bytes_read = match i2s.read(&mut buf, TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
+        let bytes_read = match i2s.read(&mut buf[..], TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
             Ok(n) => n,
             Err(e) => {
                 CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
@@ -415,7 +429,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
         while src_offset < stereo_samples {
             let (consumed, produced) = resampler.process(
                 &left_scratch[src_offset..stereo_samples],
-                &mut dst_scratch,
+                &mut dst_scratch[..],
             );
             for &s in &dst_scratch[..produced] {
                 chunk.push(s);
@@ -426,7 +440,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
                     );
                     send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
                     slot_samples += CHUNK_LEN;
-                    if slot_samples >= CAPTURE_SLOT_SAMPLES_12K {
+                    if slot_samples >= slot_end_target {
                         send_box(
                             chunk_q,
                             Box::new(ChunkMsg::SlotEnd {
@@ -434,6 +448,23 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
                                 total_samples: slot_samples,
                             }),
                         );
+                        // Consume the latest bootstrap shift hint
+                        // from decode_pipeline (pass1 candidate DT
+                        // median). Apply once as a one-shot adjustment
+                        // to the next slot length; the producer side
+                        // posts 0 in steady state so this is idempotent.
+                        let shift =
+                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        let next_target = (CAPTURE_SLOT_SAMPLES_12K as i32 + shift)
+                            .max(60_000) // never < 5 s (sanity)
+                            as usize;
+                        if shift != 0 {
+                            log::info!(
+                                "audio capture: applying slot shift {:+} samples (next slot = {} samples)",
+                                shift, next_target
+                            );
+                        }
+                        slot_end_target = next_target;
                         wav_idx = wav_idx.wrapping_add(1);
                         slot_samples = 0;
                     }

@@ -145,9 +145,10 @@ pub fn run_log_panel(
             // channel 抽出 + 48k→12k linear resample。Speaker PA は
             // 起こさない (mic 単独でハウリング回避)。
             if let Some(i2c_drv) = i2c.as_mut() {
-                if let Err(e) = crate::audio::init_es8311(i2c_drv) {
-                    log::warn!("ES8311 base init failed (capture disabled): {e:#}");
-                } else if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
+                // init_es8311_capture does its own RESET + power-on
+                // (M5Unified canonical mic sequence); do NOT call
+                // init_es8311 first or DAC bits will fight the ADC path.
+                if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
                     log::warn!("ES8311 mic-mode init failed (capture disabled): {e:#}");
                 } else {
                     use esp_idf_hal::i2s::{
@@ -178,11 +179,13 @@ pub fn run_log_panel(
                         pins.gpio15,         // WS / LRCK
                     ) {
                         Ok(i2s) => {
-                            std::thread::Builder::new()
-                                .stack_size(8 * 1024)
+                            if let Err(e) = std::thread::Builder::new()
+                                .stack_size(6 * 1024)
                                 .name("audio_cap".into())
                                 .spawn(move || crate::audio::capture_thread(i2s))
-                                .expect("spawn capture thread");
+                            {
+                                log::error!("spawn capture thread failed: {e} — audio path dead");
+                            }
                         }
                         Err(e) => log::warn!("I2S RX init failed: {e:?}"),
                     }

@@ -149,6 +149,11 @@ where
         let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
         let wav_idx = slot.wav_idx;
         let n_pass1 = pass1.len();
+        // Snapshot pass1 DTs before pass2_split moves the vector.
+        // Used below for the bootstrap auto-sync after the decode is
+        // done so live audio sources can correct their slot boundary
+        // even when 0 decodes pass full BP.
+        let pass1_dts: Vec<f32> = pass1.iter().map(|c| c.dt_sec).collect();
 
         // (fine_refine attempted via fill_symbol_spectra iteration in
         // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
@@ -187,6 +192,30 @@ where
 
         log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
+
+        // Bootstrap slot-boundary auto-sync (Acoustic / UAC live paths).
+        // Compute median DT over pass1 candidates — they exist even when
+        // 0 results pass full decode, so this is the cold-start signal
+        // (User: "山頂にはWiFi無い" → NTP は使えない、self-sync 必須)。
+        // Median is robust to spurious candidates from intermod/noise.
+        // wav_sim path keeps the value at 0 (canonical slot alignment
+        // already correct); only live audio sources read this via
+        // `time_sync::take_bootstrap_slot_shift_12k`.
+        if !pass1_dts.is_empty() {
+            let mut dts = pass1_dts.clone();
+            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            let median = dts[dts.len() / 2];
+            // FT8 slot is 15 s; clamp shift to ±5 s so a one-off
+            // outlier (e.g. wrap-around aliased candidate) can't break
+            // alignment. 5 s × 12000 = 60_000 samples.
+            let raw_samples = (median * 12000.0).round() as i32;
+            let clamped = raw_samples.clamp(-60_000, 60_000);
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(clamped);
+            log::info!(
+                "  auto-sync: median pass1 DT={:+.3}s → next slot shift {:+} samples (clamped from {:+})",
+                median, clamped, raw_samples
+            );
+        }
 
         // Feed every result's DT into the slot's median estimator,
         // then finalise. The estimate is the device's local-clock

@@ -100,13 +100,12 @@ fn main() -> ! {
     //   失敗時は warn だけ出して続行 — boot 完走 > log 経路。
     //   `_wifi` は drop されると association が切れるので static slot に保持。
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
-    // Acoustic mode は USB-Serial-JTAG が生きているので console は使える
-    // が、UDP log があった方が capture stats (throughput / errors) を
-    // 監視しやすいので WiFi を併設する。SSID 無くても warn のみで続行。
-    let needs_wifi = matches!(
-        mode,
-        boot_mode::BootMode::Wifi | boot_mode::BootMode::Acoustic | boot_mode::BootMode::Uac
-    );
+    // Acoustic mode は USB-Serial-JTAG が生きているので console は使える。
+    // 当初 UDP log のため WiFi 起動したが、WiFi 試行後の residual alloc が
+    // capture thread spawn の OOM 原因 (2026-05-17 bring-up 実機検証) なので
+    // Acoustic は WiFi 起動しない方針。UAC は USB-Serial-JTAG 奪われるので
+    // UDP 必須、Wifi mode は WiFi が主目的。
+    let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(
