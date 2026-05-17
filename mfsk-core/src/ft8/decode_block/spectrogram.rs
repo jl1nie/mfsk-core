@@ -326,8 +326,22 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
             let a_im = (yk_im - yn_im) >> 1;
             let b_re = (yk_im + yn_im) >> 1;
             let b_im = (yn_re - yk_re) >> 1;
-            let mag2_a = ((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT;
-            let mag2_b = ((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT;
+            // Square via `unsigned_abs` to dodge the `i32` overflow at
+            // `(-32768)² + (-32768)² = 2^31`, which doesn't fit in i32
+            // (panic in debug, wrap to negative in release). Squaring as
+            // `u32` keeps the sum in 2^31 with one bit to spare —
+            // `>> FP_SPEC_SHIFT` (= 12) lands in u32.
+            // `.min(u16::MAX as u32)` then saturates the u16 cast so
+            // extremely-strong signals (two coincident tones at the
+            // same bin per the FP_SPEC_SHIFT comment) cap at u16::MAX
+            // instead of wrapping to a tiny value. Gemini PR #83 + #100
+            // review.
+            let mag2_a = ((a_re.unsigned_abs().pow(2) + a_im.unsigned_abs().pow(2))
+                >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
+            let mag2_b = ((b_re.unsigned_abs().pow(2) + b_im.unsigned_abs().pow(2))
+                >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
             data[row_a + k] = mag2_a as u16;
             data[row_b + k] = mag2_b as u16;
         }
@@ -344,7 +358,11 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         for i in 0..n_freq {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
-            let mag2 = ((re * re + im * im) as u32) >> FP_SPEC_SHIFT;
+            // Same `unsigned_abs` square + saturating `.min(u16::MAX
+            // as u32)` pattern as the demux loop above. Gemini PR #83
+            // + #100 review.
+            let mag2 = ((re.unsigned_abs().pow(2) + im.unsigned_abs().pow(2)) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
             data[row_base + i] = mag2 as u16;
         }
     }
