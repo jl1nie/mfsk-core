@@ -36,9 +36,14 @@ use crate::core::scalar::Cmplx;
 // `collect::<Vec<i16>>()` that allocated ~360 KB × 30 cand × 3 pass
 // = ~32 MB of allocator traffic per slot (Gemini PR #80 review).
 // Only the `fft-rustfft` path uses this (embedded `fft-extern` path
-// doesn't build `fill_symbol_spectra_via_cd0` at all), so the
-// `thread_local!` requirement on `std` is satisfied.
-#[cfg(feature = "fft-rustfft")]
+// doesn't build `fill_symbol_spectra_via_cd0` at all). The
+// `feature = "std"` part of the cfg is **redundant in practice** —
+// `fft-rustfft` already implies `std` via the Cargo.toml feature
+// closure (`fft-rustfft = ["std", "dep:rustfft"]`) — but spelling
+// it out documents the runtime requirement at the use site and
+// hardens against a future feature-graph edit that loosens that
+// implication (Gemini PR #100 review).
+#[cfg(all(feature = "fft-rustfft", feature = "std"))]
 std::thread_local! {
     static AUDIO_I16_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
