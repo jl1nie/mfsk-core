@@ -462,9 +462,14 @@ fn reader_thread(handle: DeviceHandle) {
             left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
         }
 
-        // Push the chunk_q handle once per loop iteration so a late
-        // pipeline init doesn't drop early packets — the gate just
-        // accumulates samples + emits no chunks until wired.
+        // Load the chunk_q handle each loop iteration so the reader
+        // gracefully bridges the gap between USB enumeration and
+        // decode_pipeline init. While the gate is unwired we just
+        // drop the current read buffer (lossy by design — the race
+        // window is bounded by how fast pipeline thread can spawn +
+        // alloc BASIS, ~200 ms). Gemini PR #99 review fixed the
+        // earlier "accumulates samples" wording which contradicted
+        // the actual `continue`.
         let chunk_q_addr = CHUNK_Q_ADDR.load(Ordering::Acquire);
         if chunk_q_addr == 0 {
             continue;
