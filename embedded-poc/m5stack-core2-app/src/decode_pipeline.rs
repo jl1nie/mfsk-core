@@ -41,17 +41,21 @@ const MAX_CAND: usize = 15;
 /// doesn't fight the 60 KB × 4 BASIS allocs for the largest free
 /// internal-DRAM block — same lesson the S3 app learned in Phase 0.7c.
 pub fn run() -> ! {
-    let need = mfsk_ft8_basis_scratch_len();
-    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
-
-    crate::log_free_internal("pre-basis-alloc");
-    let basis_re_main = crate::alloc_basis_dram("RE_main");
-    let basis_im_main = crate::alloc_basis_dram("IM_main");
-    let basis_re_c1 = crate::alloc_basis_dram("RE_c1");
-    let basis_im_c1 = crate::alloc_basis_dram("IM_c1");
-    crate::log_free_internal("post-basis-alloc");
-    let basis_re_c1_ptr = basis_re_c1.as_mut_ptr();
-    let basis_im_c1_ptr = basis_im_c1.as_mut_ptr();
+    // Phase 1.7.7-Stick: BASIS scratch retired — `mfsk-core` now uses
+    // Goertzel (zero internal-DRAM scratch) for both pass-2 and
+    // stage-3 cs builds. The 4 × 30 KB = 120 KB internal DRAM that
+    // used to live here is now free for other Core2 features (touch
+    // / WiFi / etc.); see m5stack-s3-app/src/decode_pipeline.rs for
+    // the parent rationale.
+    let _ = mfsk_ft8_basis_scratch_len();
+    let _ = BASIS_SCRATCH_LEN;
+    crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
+    let basis_re_main: &'static mut [i16] =
+        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_im_main: &'static mut [i16] =
+        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_re_c1_ptr: *mut i16 = core::ptr::null_mut();
+    let basis_im_c1_ptr: *mut i16 = core::ptr::null_mut();
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
