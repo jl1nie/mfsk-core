@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.6.4 — Goertzel per-symbol DFT (drop BASIS 120 KB internal-DRAM scratch)
+
+Non-breaking minor — the embedded path's per-symbol DFT moves from
+the BASIS sin/cos-table dot product to a generalised Goertzel
+recursion. Same math (`Σ x[n] exp(-jωn)` for each FT8 tone), **zero
+caller-provided scratch**, +0.16..+0.63 dB SNR improvement (f32
+Goertzel has more precision than the pre-existing Q15 BASIS dot
+product).
+
+The 120 KB internal-DRAM win unblocks downstream embedded work that
+couldn't fit alongside BASIS — most immediately, M5StickS3 Qso-mode
+I2S bidirectional DMA descriptor allocation (`i2s_alloc_dma_desc:
+allocate DMA buffer failed` on pre-0.6.4 firmwares).
+
+### Added
+
+- **`fill_symbol_spectra_goertzel`** (public): generalised
+  Goertzel recursion for per-symbol DFT. Drop-in for
+  `fill_symbol_spectra_into` on the `not(fft-rustfft)` (embedded)
+  path. Sample-outer / tone-inner loop ordering for FPU pipeline
+  parallelism on Xtensa LX6/LX7 — measured S3 stage3 1.47 s
+  (matches BASIS asm dot-product speed) with zero internal-DRAM
+  scratch.
+
+### Changed
+
+- **`process_candidates_into_with_cs_scratch_tuned`** and
+  **`refine_candidates_into`**: the `not(fft-rustfft)` (embedded)
+  branch now calls `fill_symbol_spectra_goertzel` instead of
+  `fill_symbol_spectra_into`. Per-cell output is mathematically
+  equivalent. Function signatures unchanged — BASIS scratch args
+  still accepted for API back-compat with embedded callers
+  (`embedded-shared::dual_core::stage3_split` /
+  `pass2_split` thread them through). The args are ignored on the
+  new path; will be removed in 0.7.0.
+
+### Fixed
+
+- **`fixed-point` now implies `nstep-half`**. The two features were
+  independent in `[features]` but always co-enabled on every
+  embedded target. Decoupling silently gave host `fixed-point`
+  builds NSTEP=NSPS/4 while embedded used NSPS/2 — a completely
+  different time-grid that made `host decode_block_into` produce a
+  different decoded set than the embedded path on busy bands (e.g.
+  4 decodes vs 7 on qso3_busy.wav). Coupling fixes the host-as-
+  embedded-simulator contract.
+- **`Plan3840Sc16`** (`core::dsp::fft_mixed_3840_sc16`): import
+  `num_traits::Float` under `#[cfg(not(feature = "std"))]` so
+  `f32::round()` at the i16 clamp resolves on `no_std` builds.
+  Phase 1.7.7a follow-up — fixed the `Build (ft8)` / `Build (wspr)`
+  / `Build (alloc ft8 fft-extern fixed-point)` CI matrix entries
+  that had regressed.
+
+### Deprecated (will remove in 0.7.0)
+
+- `BASIS_SCRATCH_LEN`, `fill_symbol_spectra_into`,
+  `symbol_spectra_direct_into`, `fill_symbol_spectra_into_generic`,
+  `mfsk_ft8_basis_scratch_len` (FFI export). Superseded by
+  `fill_symbol_spectra_goertzel` + zero-scratch call sites. Kept
+  through 0.6.x for downstream `mfsk-ffi-ft8` consumers; the
+  `dual_core::{init, pass2_split, stage3_split}` BASIS scratch args
+  drop at the same time.
+
+### Other notes
+
+- Bundled `mfsk-ffi-ft8` from 0.6.3 to 0.6.4 (workspace-internal
+  version tracking; the crate is `publish = false` — distributed
+  via GitHub Releases, not crates.io).
+- Phase 1.7.7 host validation tests (`tests/ft8_goertzel_vs_basis`,
+  `tests/ft8_decode_block_fixed_point_baseline`) ship in this
+  release as regression guards.
+
 ## 0.6.3 — `decode_block.rs` per-stage split + WSJT-X-faithful OSD
 
 Non-breaking patch. Two interleaved storylines:
