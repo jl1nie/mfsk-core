@@ -107,8 +107,12 @@ fn main() -> ! {
     // 取って両方に clone で渡す。
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
-    let mode = boot_mode::determine(&nvs, board::BTN_A_PIN);
-    log::info!("boot_mode: {} (stored + KEY1 override)", mode.label());
+    let _stored = boot_mode::determine(&nvs, board::BTN_A_PIN);
+    // TEMP 2026-05-17: force Acoustic for live-band sync + decode
+    // verify after the text-color UI overhaul. Revert before merging
+    // — restore `let mode = _stored;`.
+    let mode = boot_mode::BootMode::Acoustic;
+    log::info!("boot_mode: {} (TEMP force-override, live mic test)", mode.label());
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)

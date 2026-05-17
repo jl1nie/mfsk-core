@@ -19,7 +19,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
-use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box};
+use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box, try_recv_box};
 use esp_idf_hal::{
     delay::TickType,
     i2c::I2cDriver,
@@ -294,12 +294,52 @@ const CAPTURE_SLOT_SAMPLES_12K: usize = 180_000;
 /// changes to coarse_sync required.
 pub static SYNC_RESET_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Trigger a manual slot-boundary reset from the display loop / menu
-/// path. Capture thread sees this on its next iteration, emits an
-/// immediate SlotEnd to flush whatever's in flight, and starts fresh.
-/// The first SlotEnd after this point sets the slot reference.
-pub fn reset_slot_boundary() {
+/// Monotonically incremented every time `reset_slot_boundary` accepts
+/// a BtnA press. Phase 1.7.4-Stick decode_pipeline reads this to detect
+/// "the user pressed BtnA — drop my high-water-mark DT lock" without
+/// taking a second atomic flag. Wraps after 4G presses (fine for any
+/// realistic operator session).
+pub static SYNC_RESET_GEN: AtomicU32 = AtomicU32::new(0);
+
+/// `reset_slot_boundary` debounce — milliseconds since boot of the
+/// last successful sync-mark trigger. Subsequent presses within
+/// `SYNC_MARK_DEBOUNCE_MS` are silently dropped so the user can't
+/// inadvertently reset the slot every iteration of the polling
+/// loop (~100 ms cadence) which would prevent a full slot from
+/// accumulating. Stored as ms-since-boot to fit in u32 (xtensa has
+/// no 64-bit atomic intrinsics).
+static LAST_SYNC_MARK_MS: AtomicU32 = AtomicU32::new(0);
+/// Hardware-bounce protection only — was 2 s but that suppressed
+/// legitimate re-sync attempts the operator made just after a slot
+/// boundary, with the next accepted press landing ~2 s late. 200 ms
+/// is well above any KEY1 GPIO bouncing window (< 1 ms typical) and
+/// well below the FT8 slot period (15 s) so legitimate sync attempts
+/// are never rejected.
+const SYNC_MARK_DEBOUNCE_MS: u32 = 200;
+
+/// Trigger a manual slot-boundary reset from the display loop /
+/// menu path. Capture thread sees this on its next iteration and
+/// restarts slot accumulation. Returns `true` if the mark was
+/// accepted (state changed) or `false` if it was suppressed by the
+/// debounce window. The caller uses the return value to drive
+/// instant UI feedback ("SYNC SET, wait for next slot").
+pub fn reset_slot_boundary() -> bool {
+    // ms-since-boot — esp_timer_get_time returns us; truncate to ms
+    // then to u32 (wraps after 49 days, fine for this purpose).
+    let now_ms = (unsafe { sys::esp_timer_get_time() } / 1000) as u32;
+    let last = LAST_SYNC_MARK_MS.load(Ordering::Acquire);
+    if last != 0 && now_ms.wrapping_sub(last) < SYNC_MARK_DEBOUNCE_MS {
+        log::info!(
+            "audio: sync mark suppressed (debounce {} ms < {} ms)",
+            now_ms.wrapping_sub(last),
+            SYNC_MARK_DEBOUNCE_MS
+        );
+        return false;
+    }
+    LAST_SYNC_MARK_MS.store(now_ms, Ordering::Release);
     SYNC_RESET_PENDING.store(true, Ordering::Release);
+    SYNC_RESET_GEN.fetch_add(1, Ordering::AcqRel);
+    true
 }
 
 /// Wire the chunk queue handle. Called from
@@ -469,15 +509,32 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     let mut last_bytes: u32 = 0;
 
     loop {
-        // Phase 1.7.3 manual sync mark — user pressed BtnA at the
-        // moment they heard the FT8 slot start. Reset our slot
-        // accounting so the next SlotEnd fires 15 s later, aligned
-        // with the band. The in-flight chunk is dropped (whatever
-        // partial audio was buffered is no longer slot-relevant).
+        // Phase 1.7.4-Stick coordinated reset protocol (2026-05-17).
+        // BtnA pressed — atomically realign capture+stage1_inc+
+        // shift-atomic so the next slot decoded is clean (no
+        // pre-/post-BtnA audio bleed, no stale auto-sync shift).
         if SYNC_RESET_PENDING.swap(false, Ordering::AcqRel) {
+            let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
+            let mut drained = 0usize;
+            if chunk_q_addr != 0 {
+                let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+                // 1. Drop any stale pre-BtnA Samples still in flight
+                //    (chunk_q depth 4 = up to ~400 ms backlog).
+                while let Some(_stale) = try_recv_box::<ChunkMsg>(chunk_q) {
+                    drained += 1;
+                }
+                // 2. Clear stale auto-sync shift posted by
+                //    decode_pipeline for the now-discarded slot
+                //    transition.
+                let _ = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                // 3. Signal stage1_inc to discard its in-progress
+                //    spec — otherwise the half-built accumulator
+                //    would merge with post-reset audio.
+                send_box(chunk_q, Box::new(ChunkMsg::SlotResetMark));
+            }
             log::info!(
-                "audio capture: manual sync mark — resetting slot timing (was {} samples into slot)",
-                slot_samples
+                "audio capture: SYNC_RESET applied (drained {} chunks, was {} samples into slot)",
+                drained, slot_samples
             );
             chunk.clear();
             slot_samples = 0;
@@ -553,8 +610,14 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
                         // posts 0 in steady state so this is idempotent.
                         let shift =
                             mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        // shift is signed, capped at ±2400 samples
+                        // (±0.2 s) by decode_pipeline so the slot
+                        // length always lands in [177_600, 182_400],
+                        // i.e. stage1_inc still completes pair 91
+                        // (177_600-sample requirement) and truncates
+                        // safely on the lengthen side.
                         let next_target = (CAPTURE_SLOT_SAMPLES_12K as i32 + shift)
-                            .max(60_000) // never < 5 s (sanity)
+                            .clamp(60_000, 200_000)
                             as usize;
                         if shift != 0 {
                             log::info!(
@@ -686,12 +749,23 @@ pub fn capture_tx_thread(
         Box::new([0u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]);
 
     loop {
-        // Phase 1.7.3 manual sync mark (user pressed BtnA at slot
-        // start). Same logic as capture_thread; shared static flag.
+        // Phase 1.7.4-Stick coordinated reset (mirrors capture_thread).
+        // Drain pre-BtnA chunks + clear stale shift + signal stage1_inc
+        // before resetting local capture state.
         if SYNC_RESET_PENDING.swap(false, Ordering::AcqRel) {
+            let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
+            let mut drained = 0usize;
+            if chunk_q_addr != 0 {
+                let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+                while let Some(_stale) = try_recv_box::<ChunkMsg>(chunk_q) {
+                    drained += 1;
+                }
+                let _ = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                send_box(chunk_q, Box::new(ChunkMsg::SlotResetMark));
+            }
             log::info!(
-                "audio capture+tx: manual sync mark — reset slot (was {} samples in)",
-                slot_samples
+                "audio capture+tx: SYNC_RESET applied (drained {} chunks, was {} samples in)",
+                drained, slot_samples
             );
             chunk.clear();
             slot_samples = 0;

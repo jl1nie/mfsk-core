@@ -106,6 +106,20 @@ pub struct UiState {
     /// Cleared when the underlying decode ring shrinks below `i` or
     /// the user enters the menu.
     pub selected_decode_idx: Option<u8>,
+    /// True between the operator's BtnA sync-mark press and the
+    /// first coarse_sync emit that proves the new slot was captured.
+    /// Display loop uses this to flash "SYNC SET — wait next slot"
+    /// in the TX strip so the user gets instant feedback instead of
+    /// silently mashing BtnA waiting for a state change.
+    pub sync_mark_pending: bool,
+    /// Most-recent slot index that decode_pipeline finished processing.
+    /// decoded_list compares row.slot_seq against this for the "GREEN
+    /// = current slot" highlight — using the max slot_seq of visible
+    /// rows alone marks ALL retained rows green when no new decodes
+    /// arrive for a while (user-observed 2026-05-17 bug: "毎回すべて
+    /// 緑、audio 止めても緑"). With this watermark, rows whose
+    /// slot_seq is older than `latest_slot_seq` drop back to white.
+    pub latest_slot_seq: u32,
     /// Bumped when any menu / operation field above changes so the
     /// display loop repaints the overlay even when WF / decode aren't
     /// updating.
@@ -133,6 +147,8 @@ impl UiState {
             current_df_hz: 0,
             auto_cq_enabled: false,
             selected_decode_idx: None,
+            sync_mark_pending: false,
+            latest_slot_seq: 0,
             menu_seq: AtomicU32::new(0),
         }
     }

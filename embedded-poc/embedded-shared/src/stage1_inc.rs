@@ -181,20 +181,28 @@ pub fn spawn_with_wf(
     // stack); 12 KB has measured ~3 KB headroom on the busiest
     // qso3_busy slot. If a future feature pushes the worker frame
     // deeper, bump this back to 16 KB and revisit the BLE config.
+    // Phase 1.7.5-Stick (2026-05-17): prio 6 (above dual_core 5) so
+    // stage1_inc can preempt dsp_worker briefly when Samples arrive
+    // during BP. Without this, BP for slot N (running on dsp_worker
+    // prio 5, same core 1) starves stage1_inc's FFT for slot N+1 →
+    // SpecBundle[N+1] late → BP[N+1] cascades. Each Samples chunk
+    // costs ~7-14 ms of preemption per 100 ms = ≤14% of core 1's BP
+    // time. BP finishes ~50 ms later as a result, well worth it for
+    // the steady-state pipeline.
     let r = unsafe {
         xTaskCreatePinnedToCore(
             Some(worker_main),
             c"stage1_inc".as_ptr(),
             12288,
             ctx_ptr,
-            3, // below dual_core (5) and wav_sim (4)
+            6, // above dual_core (5) — preempts BP briefly per chunk
             ptr::null_mut(),
             1, // APP_CPU
         )
     };
     assert_eq!(r, PD_PASS, "xTaskCreatePinnedToCore(stage1_inc) failed: {r}");
     log::info!(
-        "stage1_inc: spawned (APP_CPU prio 3); n_time={} n_pairs={} n_freq={}",
+        "stage1_inc: spawned (APP_CPU prio 6 — preempts dsp_worker); n_time={} n_pairs={} n_freq={}",
         N_TIME,
         N_PAIRS,
         n_freq
@@ -214,8 +222,20 @@ extern "C" fn worker_main(arg: *mut c_void) {
             ChunkMsg::SlotEnd { wav_idx, total_samples } => {
                 finalize_slot(ctx, wav_idx, total_samples);
             }
+            ChunkMsg::SlotResetMark => {
+                reset_in_progress(ctx);
+            }
         }
     }
+}
+
+/// Silent reset — operator BtnA mid-slot. Discard the partially-
+/// filled in-progress spec/audio without emitting a Slot or
+/// SpecBundle (no consumer downstream would benefit from the
+/// half-built spec). Phase 1.7.4-Stick (2026-05-17).
+fn reset_in_progress(ctx: &mut WorkerCtx) {
+    ctx.cur = SlotInProgress::new(ctx.n_freq, ctx.head_n_freq, ctx.tail_n_freq);
+    log::info!("stage1_inc: SlotResetMark — discarded in-progress spec");
 }
 
 fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {

@@ -51,30 +51,42 @@ pub fn render<D>(display: &mut D, rows: &[DecodedRow]) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    render_with_cursor(display, rows, None)
+    // Compatibility shim: fall back to "max slot_seq among visible
+    // rows" (legacy semantic). Newer callers pass an explicit
+    // `latest_slot_seq` via `render_with_cursor` so rows go back to
+    // white when no new decode arrives.
+    render_with_cursor(display, rows, None, None)
 }
 
 /// Phase 1.7.2: render variant that overlays a cursor on the
 /// `selected_idx`-th row (0 = newest). User picks a peer this way
 /// and BtnA calls `qso::call_station(dx)` on the highlighted row.
+///
+/// `latest_slot_seq`: pipeline-side watermark of the most-recent
+/// slot processed. When provided, rows with `slot_seq == watermark`
+/// render GREEN ("current slot"); older rows render WHITE.
+/// When `None`, falls back to "max slot_seq among visible rows".
 pub fn render_with_cursor<D>(
     display: &mut D,
     rows: &[DecodedRow],
     selected_idx: Option<u8>,
+    latest_slot_seq: Option<u32>,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    // Operator-requested 2026-05-17 final simplification: black bg
+    // always (native panel contrast max), distinguish via text color
+    // only.
+    //   green text  = appeared in CURRENT slot (recent — regardless
+    //                 of whether the same callsign appeared earlier)
+    //   white text  = carried over from earlier slot (not heard this
+    //                 cycle)
+    //   orange text = BtnB cursor selection (callable target)
     let bg = Rgb565::BLACK;
     let fg = Rgb565::WHITE;
-    // First-seen-this-slot highlight: dim cyan band. Tells operator
-    // which callsigns appeared THIS slot vs are carried over from
-    // earlier (per user request "新規に入ったデコード局も知りたい").
-    let new_bg = Rgb565::new(2, 14, 12);
-    let new_fg = Rgb565::WHITE;
-    // Cursor highlight (peer-selection band, Phase 1.7.2): magenta-ish.
-    let cur_bg = Rgb565::new(20, 0, 12);
-    let cur_fg = Rgb565::WHITE;
+    let current_fg = Rgb565::GREEN;
+    let cur_fg = Rgb565::CSS_ORANGE;
 
     let n = rows.len();
     let take = n.min(ROWS);
@@ -83,41 +95,44 @@ where
     // the most-recently-updated lands at the *top* of the region.
     let visible: heapless::Vec<&DecodedRow, ROWS> = rows[start..].iter().rev().collect();
 
-    // Highlight rows whose first observation is the latest slot.
-    let latest_seq = visible.iter().map(|r| r.slot_seq).max().unwrap_or(0);
+    // GREEN = "appeared in pipeline's CURRENT slot". If caller passes
+    // the pipeline watermark, use that — otherwise fall back to the
+    // legacy "max slot_seq among visible rows" (which makes every
+    // row green when no new decodes arrive).
+    let latest_seq = latest_slot_seq
+        .unwrap_or_else(|| visible.iter().map(|r| r.slot_seq).max().unwrap_or(0));
 
     for (i, row) in visible.iter().enumerate() {
         let y = ORIGIN_Y + (i as i32) * ROW_PX as i32;
         let row_y_text = y + 3; // 3 px top padding inside the row band
 
-        // "New" = the row's *first* observation is in the current
-        // visible slot. Recurring callsigns (re-decoded each slot of
-        // a `wav_sim` loop) carry an older `first_seq` and stay plain.
-        let is_new = row.first_seq == latest_seq;
-        // Cursor (selection for QSO) takes visual precedence over
-        // "new" highlighting. hard_errors-based orange tint dropped
-        // 2026-05-17 (user: "ハードデコードは SNR みれば分かる" — the
-        // SNR column already conveys decode quality; the orange tint
-        // was redundant noise).
+        // "Current slot" = the row was last detected in the latest
+        // visible slot, even if the same callsign appeared in earlier
+        // slots too (operator semantics 2026-05-17: focus is "did I
+        // hear this station this cycle?" not "first time ever").
+        // Cursor takes visual precedence — it's the actionable row.
+        let is_current_slot = row.slot_seq == latest_seq;
         let is_selected = selected_idx == Some(i as u8);
-        let (row_bg, row_fg) = if is_selected {
-            (cur_bg, cur_fg)
-        } else if is_new {
-            (new_bg, new_fg)
+        let row_fg = if is_selected {
+            cur_fg
+        } else if is_current_slot {
+            current_fg
         } else {
-            (bg, fg)
+            fg
         };
         let style = MonoTextStyleBuilder::new()
             .font(&FONT_6X10)
             .text_color(row_fg)
-            .background_color(row_bg)
+            .background_color(bg)
             .build();
 
-        // Paint the row band first so the right-margin gap (after the
-        // text) gets the highlight too. Tiny single-row wipe (135 ×
-        // 16 = 2160 px) — well under the flicker threshold.
+        // Paint the row band black first so the right-margin gap
+        // (after the text) is uniformly clean. Tiny single-row wipe
+        // (135 × 16 = 2160 px) — well under the flicker threshold.
+        // Background is always black now; distinction is text-color
+        // only.
         Rectangle::new(Point::new(0, y), Size::new(135, ROW_PX))
-            .into_styled(PrimitiveStyle::with_fill(row_bg))
+            .into_styled(PrimitiveStyle::with_fill(bg))
             .draw(display)?;
 
         let mut s: String<32> = String::new();

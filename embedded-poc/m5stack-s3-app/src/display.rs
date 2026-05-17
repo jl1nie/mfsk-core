@@ -492,11 +492,14 @@ pub fn run_log_panel(
     // and a `len()`-based check would freeze the WF redraw exactly
     // when the user expects continuous flow.
     let mut last_wf_seq: u32 = u32::MAX;
-    let mut last_decoded_fp_with_cursor: (usize, u32, Option<u8>) =
-        (usize::MAX, u32::MAX, None);
-    // tx strip fingerprint: (tx_seq, sync_state); changes on either
-    // QSO state update or sync established/lost.
-    let mut last_tx_fp: (u32, bool) = (u32::MAX, false);
+    // (decoded_count, max_slot_seq, cursor_idx, latest_slot_seq_watermark)
+    let mut last_decoded_fp_with_cursor: (usize, u32, Option<u8>, u32) =
+        (usize::MAX, u32::MAX, None, u32::MAX);
+    // tx strip fingerprint: (tx_seq, sync_state, sync_mark_pending).
+    // Changes on QSO state update, sync established/lost, or BtnA
+    // mark/clear.
+    let mut last_tx_fp: (u32, bool, bool) = (u32::MAX, false, false);
+    let mut last_observed_at_mark: u32 = 0;
     let mut last_menu_seq: u32 = u32::MAX;
     // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
     // KEY2 (= 2 s) flips boot mode and restarts; KEY1 is reserved for
@@ -580,10 +583,20 @@ pub fn run_log_panel(
                         // when they hear a new slot start; capture
                         // thread resets its slot counter and the next
                         // SlotEnd fires 15 s later aligned with band.
-                        crate::audio::reset_slot_boundary();
-                        log::info!(
-                            "BtnA: no row selected → manual slot-sync mark issued"
-                        );
+                        // Debounce in reset_slot_boundary suppresses
+                        // accidental double-taps (≤ 2 s window).
+                        let accepted = crate::audio::reset_slot_boundary();
+                        if accepted {
+                            if let Ok(mut ui) = UI.lock() {
+                                ui.sync_mark_pending = true;
+                                ui.bump_menu(); // force TX strip repaint
+                            }
+                            log::info!(
+                                "BtnA: no row selected → manual slot-sync mark issued"
+                            );
+                        } else {
+                            log::info!("BtnA: sync mark suppressed (debounce)");
+                        }
                         continue;
                     };
                     let Some(dx) = extract_dx_call(msg.as_str()) else {
@@ -710,6 +723,8 @@ pub fn run_log_panel(
         // (visible, selected, band_idx, df_hz, auto_cq, seq)
         let menu_snapshot: (bool, u8, u8, u16, bool, u32);
         let selected_decode_idx: Option<u8>;
+        let sync_mark_pending_snapshot: bool;
+        let latest_slot_seq_snapshot: u32;
         {
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
@@ -730,6 +745,8 @@ pub fn run_log_panel(
                 ui.menu_seq(),
             );
             selected_decode_idx = ui.selected_decode_idx;
+            sync_mark_pending_snapshot = ui.sync_mark_pending;
+            latest_slot_seq_snapshot = ui.latest_slot_seq;
             let mut buf: heapless::String<48> = heapless::String::new();
             for ch in ui.tx_line().chars() {
                 if buf.push(ch).is_err() {
@@ -769,7 +786,7 @@ pub fn run_log_panel(
             // next iteration so the overlay's residual pixels go away.
             if !menu_snapshot.0 {
                 last_wf_seq = u32::MAX;
-                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None);
+                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None, u32::MAX);
             }
             last_menu_seq = menu_seq;
         }
@@ -785,27 +802,48 @@ pub fn run_log_panel(
         }
 
         // Decoded list: redraw when a new slot's results landed OR
-        // when the user moved the cursor.
-        let decoded_fp_with_cursor = (decoded_fp.0, decoded_fp.1, selected_decode_idx);
+        // when the user moved the cursor OR when latest_slot_seq
+        // advanced (= rows that were "current" before are now stale
+        // → repaint from GREEN to WHITE).
+        let decoded_fp_with_cursor = (
+            decoded_fp.0,
+            decoded_fp.1,
+            selected_decode_idx,
+            latest_slot_seq_snapshot,
+        );
         if decoded_fp_with_cursor != last_decoded_fp_with_cursor {
             decoded_list::render_with_cursor(
                 &mut display,
                 &decoded_snapshot,
                 selected_decode_idx,
+                Some(latest_slot_seq_snapshot),
             )
             .ok();
             last_decoded_fp_with_cursor = decoded_fp_with_cursor;
         }
 
-        // TX line: repaint when the QSO FSM bumps `tx_seq` OR when
-        // the sync state changes (no-sync → synced transition swaps
-        // the user-facing prompt vs the QSO state line). Pre-sync we
-        // show "SYNC: BtnA at slot start" to teach the user what to
-        // do; once `slots_observed >= 1` we hand the strip back to
-        // the QSO FSM's tx_line (CALL / RPT / 73 / IDLE).
+        // TX line: 3-way priority — sync prompt > sync-mark
+        // acknowledgement > QSO FSM state.
+        // - sync_mark_pending: instant feedback after BtnA press
+        //   ("SYNC SET — wait next slot"), cleared once a fresh
+        //   coarse_sync emit lands (observed_now bumps).
+        // - !sync_state (observed == 0): show "SYNC: A at slot start"
+        //   teaching the user the entry path.
+        // - synced: show the QSO FSM's tx_line (CALL / RPT / 73 / IDLE).
         let observed_now = mfsk_app_shared::time_sync::slots_observed();
         let sync_state = observed_now > 0;
-        let tx_fp = (tx_seq, sync_state);
+        // Auto-clear sync_mark_pending once a new slot's coarse_sync
+        // has emitted post-mark. `last_observed_at_mark` watermark:
+        // we record observed_now when sync_mark_pending was set;
+        // when it advances beyond that watermark, the mark is "done"
+        // and we drop the flag.
+        if sync_mark_pending_snapshot && observed_now > last_observed_at_mark {
+            if let Ok(mut ui) = UI.lock() {
+                ui.sync_mark_pending = false;
+                ui.bump_menu();
+            }
+        }
+        let tx_fp = (tx_seq, sync_state, sync_mark_pending_snapshot);
         if tx_fp != last_tx_fp {
             Rectangle::new(
                 Point::new(0, TX_REGION_Y),
@@ -814,7 +852,9 @@ pub fn run_log_panel(
             .into_styled(PrimitiveStyle::with_fill(tx_bg))
             .draw(&mut display)
             .ok();
-            let text = if !sync_state {
+            let text = if sync_mark_pending_snapshot {
+                "SYNC SET — wait slot"
+            } else if !sync_state {
                 "SYNC: A at slot start"
             } else if tx_line_snapshot.is_empty() {
                 "IDLE: ---"
@@ -830,6 +870,11 @@ pub fn run_log_panel(
             .draw(&mut display)
             .ok();
             last_tx_fp = tx_fp;
+            // Snapshot observed_now whenever we paint the "SET" text
+            // so the next coarse_sync emit is detected as advancement.
+            if sync_mark_pending_snapshot {
+                last_observed_at_mark = observed_now;
+            }
         }
 
         // Phase 0.5 boot-time log scroll has been retired now that

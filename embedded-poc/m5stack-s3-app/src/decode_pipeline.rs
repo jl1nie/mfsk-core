@@ -156,6 +156,24 @@ where
     }
 
     let mut slot_seq: u32 = 0;
+    // Phase 1.7.4-Stick v3 (2026-05-17): global-clock-anchored sync.
+    //
+    // S3 codec sample clock is rock-stable (ppm-level drift) and is
+    // therefore the global clock. Once we've locked the phase via
+    // (1) BtnA coarse + (2) the highest-N slot's median DT, every
+    // subsequent slot is exactly 180_000 samples = 15 s apart with
+    // zero per-slot feedback. The auto-sync loop's only job is to
+    // apply a ONE-SHOT correction when a better reference (higher N)
+    // appears.
+    //
+    // The phase correction is always non-negative (= LENGTHEN current
+    // slot, never SHORTEN) because stage1_inc requires the full 180 k
+    // samples to complete all 92 FFT pairs. For negative DT we apply
+    // (15 s + DT) — i.e. skip forward by ~one slot period — sacrificing
+    // one slot's decode in exchange for clean alignment afterwards.
+    let mut best_n: usize = 0;
+    let mut sync_gen_observed: u32 = crate::audio::SYNC_RESET_GEN
+        .load(core::sync::atomic::Ordering::Acquire);
     loop {
         // 広帯域受信 (200..3000 Hz)。phantom (qso3_busy で 3/7 件) は
         // UI に "?" 付きで表示するが、QSO FSM / TX picker は
@@ -225,46 +243,77 @@ where
 
         log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
+        // Publish to UiState so decoded_list renders GREEN only for
+        // rows whose `slot_seq == latest_slot_seq` — fixes the
+        // "all rows green forever after audio stops" UI bug.
+        if let Ok(mut ui) = UI.lock() {
+            ui.latest_slot_seq = slot_seq;
+            ui.bump_menu();
+        }
 
-        // Bootstrap slot-boundary auto-sync. Two-tier source priority:
+        // Phase 1.7.4-Stick v3 global-clock-anchor auto-sync (2026-05-17).
         //
-        // 1. If THIS slot produced confirmed BP decodes, use the median
-        //    DT of those decoded results — high confidence, BP-verified
-        //    alignment (user note 2026-05-17: "一度成功した DT 値に固定
-        //    してアップデートしていないのでは" — pre-fix we only ever
-        //    used raw pass1 candidates even after good decodes landed).
-        //
-        // 2. Else (no decode this slot), fall back to the median of
-        //    the top-3 highest-score pass1 candidates — the strongest
-        //    3-Costas correlation hits. Cleaner than the full pass1
-        //    (which is capped at MAX_CAND = 30 and includes noise).
-        //
-        // Damping 0.5 in either source — full-DT shift was observed
-        // to diverge (shrinking slot[1] by full DT makes slot[1]
-        // capture only the tail, coarse_sync re-reports same offset).
-        // ±5 s clamp catches wrap-around outliers.
-        const SYNC_TOP_N: usize = 3;
-        let confirmed_dt: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
-        let sync_source: Option<(f32, &'static str)> = if !confirmed_dt.is_empty() {
-            let mut dts = confirmed_dt.clone();
-            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            Some((dts[dts.len() / 2], "decoded"))
-        } else if !pass1_dts.is_empty() {
-            let take = pass1_dts.len().min(SYNC_TOP_N);
-            let mut dts: Vec<f32> = pass1_dts.iter().take(take).copied().collect();
-            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            Some((dts[dts.len() / 2], "pass1-top3"))
-        } else {
-            None
-        };
-        if let Some((median, src)) = sync_source {
-            let raw_samples = (median * 12000.0 * 0.5).round() as i32;
-            let clamped = raw_samples.clamp(-60_000, 60_000);
-            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(clamped);
+        // BtnA-gen check happens HERE (just before HWM update), not at
+        // top of loop. The previous-iteration top-of-loop check missed
+        // resets that landed while we were blocked in `recv_box`, so
+        // the first post-BtnA decode would set HWM then have it cleared
+        // on the next iteration — undoing the lock.
+        let cur_gen = crate::audio::SYNC_RESET_GEN
+            .load(core::sync::atomic::Ordering::Acquire);
+        if cur_gen != sync_gen_observed {
             log::info!(
-                "  auto-sync ({src}): median DT={:+.3}s → next slot shift {:+} samples (damped 0.5)",
-                median, clamped
+                "  auto-sync: BtnA generation {sync_gen_observed} → {cur_gen}, HWM cleared (was best_n={best_n})"
             );
+            best_n = 0;
+            sync_gen_observed = cur_gen;
+        }
+
+        // pass1 candidates from a noise slot are random — never use as
+        // sync source.
+        let _ = pass1_dts;
+        let n_dec = results.len();
+        let post_sync = mfsk_app_shared::time_sync::slots_finalised() > 0 || n_dec > 0;
+        // |DT| < ALIGN_OK_SEC → already within FT8 ±2.5 s tolerance
+        //   AND well inside stage1_inc's tolerance for shorten without
+        //   losing pair 91 (= 177_600 samples needed). Post shift=0.
+        // |DT| ≥ ALIGN_OK_SEC → post a SIGNED shift, capped at
+        //   ±MAX_SHIFT_SAMPLES so:
+        //   * +shift (lengthen): stage1_inc truncates tail, full spec ✓
+        //   * -shift (shorten): slot still ≥ 177_600 samples → pair 91
+        //     just barely completes → full 92/92 spec ✓
+        //   Larger drifts converge over several HWM-update slots.
+        const ALIGN_OK_SEC: f32 = 0.05;
+        const MAX_SHIFT_SAMPLES: i32 = 2400; // ±0.2 s — pair 91 still completes
+        if n_dec > best_n {
+            let mut dts: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
+            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            let median = dts[dts.len() / 2];
+            let shift_samples: i32 = if median.abs() < ALIGN_OK_SEC {
+                0
+            } else {
+                (median * 12000.0).round() as i32
+            };
+            let shift_samples = shift_samples.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES);
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift_samples);
+            log::info!(
+                "  auto-sync (HWM update N={n_dec}>{best_n}): median DT={:+.3}s → {:+} samples (capped ±{}s)",
+                median, shift_samples,
+                MAX_SHIFT_SAMPLES as f32 / 12000.0
+            );
+            best_n = n_dec;
+        } else if post_sync {
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
+            if n_dec > 0 {
+                log::info!(
+                    "  auto-sync (hold): N={n_dec} ≤ best_n={best_n}, shift=0 (no overwrite)"
+                );
+            } else {
+                log::info!(
+                    "  auto-sync (frozen): no decode this slot, shift=0 (best_n={best_n} held)"
+                );
+            }
+        } else {
+            log::info!("  auto-sync (cold): no source — BtnA required");
         }
 
         // Feed every result's DT into the slot's median estimator,
