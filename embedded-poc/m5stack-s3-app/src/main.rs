@@ -108,11 +108,12 @@ fn main() -> ! {
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
     let _stored = boot_mode::determine(&nvs, board::BTN_A_PIN);
-    // TEMP 2026-05-17: force Acoustic for live-band sync + decode
-    // verify after the text-color UI overhaul. Revert before merging
-    // — restore `let mode = _stored;`.
-    let mode = boot_mode::BootMode::Acoustic;
-    log::info!("boot_mode: {} (TEMP force-override, live mic test)", mode.label());
+    // TEMP 2026-05-17: force Decode (= wav_sim, BootMode::Decode)
+    // to establish baseline decode count on qso3_busy.wav for the
+    // Phase 1.7.7 BASIS vs SPEC LOOKUP comparison. Revert to
+    // `let mode = _stored;` before merging upstream.
+    let mode = boot_mode::BootMode::Decode;
+    log::info!("boot_mode: {} (TEMP force-override, Phase 1.7.7 baseline)", mode.label());
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)

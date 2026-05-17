@@ -1230,6 +1230,45 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     )
 }
 
+/// Caller-provided **fill closure** variant of
+/// `process_candidates_into_with_cs_scratch_tuned`. The closure
+/// builds the per-candidate per-mask `cs_scratch` entries instead of
+/// the default `fill_symbol_spectra(_into)` path. Used by host
+/// research / regression tests to compare alternative pass-2 fill
+/// algorithms (Phase 1.7.7-Stick: spec-lookup + DT phase correction
+/// vs BASIS dot product).
+///
+/// The closure signature is
+/// `FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask)` —
+/// fill only the cells matching `mask` (block-0 sync, block-1/2 sync,
+/// data symbols) using the caller's preferred algorithm.
+#[allow(clippy::too_many_arguments)]
+pub fn process_candidates_into_with_cs_scratch_tuned_with_fill<S, F>(
+    audio: &[S],
+    cands: Vec<RefinedCandidate>,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
+    fill: F,
+) -> Vec<DecodeResult>
+where
+    S: AudioSample,
+    F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
+{
+    process_candidates_with_ap(
+        audio,
+        cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        cs_scratch,
+        fill,
+        None,
+        DecodeStrictness::Normal,
+    )
+}
+
 /// Common body of `process_candidates` / `process_candidates_into`
 /// / `process_candidates_into_with_cs_scratch` — the BP staircase
 /// logic is identical between them; only the per-candidate
