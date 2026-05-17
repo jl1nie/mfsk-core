@@ -8,6 +8,12 @@ USB-CDC freeze caveats); see also
 [`embedded-poc/CLAUDE.md`](../CLAUDE.md) for the shared
 Xtensa-LX7 toolchain notes and the LX6/LX7 comparison table.
 
+**Operator manual** (build / flash / `cfg.toml` / `BootMode` cycle /
+UI / QSO workflow / troubleshooting) lives at
+[`docs/MANUAL_M5STICKS3.md`](../../docs/MANUAL_M5STICKS3.md). When
+end-user behaviour changes (new boot mode, new menu, new troubleshooting
+entry) update that file, not this one.
+
 ## Crate-specific knobs
 
 - **Target triple**: `xtensa-esp32s3-espidf`.
