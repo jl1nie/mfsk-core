@@ -35,7 +35,26 @@ static QSO_WAVS: &[&[u8]] = &[
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
-/// 別スレッドから呼ぶ。返らない。
+/// `BootMode::Decode` entry — runs the decode pipeline with the
+/// baked `QSO_WAVS` playlist as the audio source (via `wav_sim`).
+/// Thin wrapper around [`run_with_source`].
+pub fn run() -> ! {
+    run_with_source(|chunk_q| wav_sim::spawn(QSO_WAVS, chunk_q));
+}
+
+/// Source-agnostic entry. Allocates BASIS scratch, brings up
+/// `esp_dsp_fft` + `dual_core`, creates the chunk / slot / spec / wf
+/// queues, spawns `stage1_inc` + `wf_drain`, calls `source_spawn`
+/// (which must spawn the task that pushes `ChunkMsg::Samples` +
+/// `ChunkMsg::SlotEnd` into the chunk queue), then runs the decode
+/// loop. Never returns.
+///
+/// `Decode` mode passes `|q| wav_sim::spawn(QSO_WAVS, q)`.
+/// `Uac` mode passes `|q| uac::set_chunk_q(q)` — the UAC reader
+/// thread is already running by then and starts pushing once it
+/// sees the queue handle land in its static slot. The closure runs
+/// **after** `stage1_inc` is up so the source's first push doesn't
+/// race against an unprimed consumer.
 ///
 /// Phase 0.7c: BASIS buffers (60 KB × 4) are allocated **inside this
 /// thread** instead of main, because the thread's 32 KB stack must be
@@ -45,7 +64,10 @@ const MAX_CAND: usize = 15;
 /// per-pair lifetime is the same as the program; the buffers are
 /// never freed (`heap_caps_aligned_alloc` + Box::leak via slice
 /// `'static mut`).
-pub fn run() -> ! {
+pub fn run_with_source<F>(source_spawn: F) -> !
+where
+    F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
+{
     let need = mfsk_ft8_basis_scratch_len();
     assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
 
@@ -74,7 +96,10 @@ pub fn run() -> ! {
     // that the oldest ticks are simply dropped (try_send_box).
     let wf_q = pipeline::create_wf_queue(8);
     stage1_inc::spawn_with_wf(chunk_q, slot_q, spec_q, Some(wf_q));
-    wav_sim::spawn(QSO_WAVS, chunk_q);
+    // The source closure (wav_sim for `Decode`, UAC-reader hookup
+    // for `Uac`) spawns its task here, after stage1_inc is up so
+    // the first push doesn't race the consumer.
+    source_spawn(chunk_q);
 
     // Spawn a tiny drainer that forwards WfTicks to the shared
     // `UiState::waterfall` ring. Lives in its own thread so the

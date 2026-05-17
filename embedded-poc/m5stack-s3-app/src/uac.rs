@@ -53,11 +53,13 @@
 //! - [ ] disconnect/reconnect polish (#35)
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
 
 use anyhow::{Result, anyhow};
+use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box};
 use esp_idf_svc::sys;
+use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
 
 /// Newtype around the IDF `uac_host_device_handle_t` (`*mut uac_interface`)
 /// to assert thread-safety for the `move` into the reader thread. The
@@ -183,6 +185,33 @@ impl Drop for ReaderActiveGuard {
         READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
     }
 }
+
+/// Chunk queue handle the reader thread pushes decimated 12 kHz mono
+/// samples into. Set by [`set_chunk_q`] from the `decode_pipeline`'s
+/// source-spawn closure (`run_with_source(|q| uac::set_chunk_q(q))`).
+/// Stored as `usize` because `QueueHandle_t` is `*mut QueueDefinition`
+/// which isn't `Sync` by default; reader thread re-casts on each use.
+/// `0` = not yet wired (reader logs + drops samples until decode pipeline
+/// reaches the source-spawn step).
+static CHUNK_Q_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// Wire the chunk queue handle. Called once from
+/// `decode_pipeline::run_with_source`'s source-spawn closure in the
+/// pipeline thread, before the decode loop blocks on `recv_box`.
+pub fn set_chunk_q(q: sys::QueueHandle_t) {
+    CHUNK_Q_ADDR.store(q as usize, Ordering::Release);
+    log::info!("uac: chunk_q wired (addr={:#x})", q as usize);
+}
+
+/// `SlotEnd` cadence in 12 kHz mono samples. Same as `wav_sim`'s
+/// `SLOT_SAMPLES` — 180_000 = 15 s @ 12 kHz, one FT8 slot. UAC
+/// streams continuously so the reader synthesizes the slot boundary
+/// from the post-resample sample count. **No wall-clock alignment**
+/// in #32 — the slot is bound by sample count, not by UTC :00/:15/:30/:45.
+/// Real wall-clock alignment lands with the NTP-fed time_sync hook in
+/// #34 verification (decode DT will then read as offset from the
+/// midpoint of whatever 15 s window the reader happened to start in).
+const SLOT_SAMPLES_12K: usize = 180_000;
 
 /// Driver event callback. Invoked by the UAC class-driver background
 /// task on every `RX_CONNECTED` / `TX_CONNECTED` notification (i.e.
@@ -352,15 +381,32 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     Ok(())
 }
 
-/// Reader thread body. Polls `uac_host_device_read` in a tight loop,
-/// updates the stats atomics, logs throughput every ~1 s. The data
-/// is **dropped on the floor** for #31; #32 will replace the inner
-/// of the loop with the 48 k stereo → 12 k mono resample + decoder
-/// push chain.
+/// Reader thread body. Polls `uac_host_device_read` for raw
+/// 48 kHz/stereo/16-bit iso IN packets, extracts the left channel,
+/// resamples to 12 kHz mono via `LinearResamplerI16To12k`, and pushes
+/// `CHUNK_LEN`-sized chunks into the decode pipeline's chunk queue
+/// (with `SlotEnd` every `SLOT_SAMPLES_12K` samples).
+///
+/// Counts iso IN throughput in `RX_BYTES` / `RX_PACKETS` / `RX_ERRORS`
+/// and logs a 1 Hz status line.
 fn reader_thread(handle: DeviceHandle) {
     // RAII: clears READER_ACTIVE on any exit path including panic.
     let _gate = ReaderActiveGuard;
     let mut buf = [0u8; READER_BUFFER_BYTES];
+    let mut resampler = LinearResamplerI16To12k::new(STREAM_SAMPLE_FREQ_HZ);
+    // L-channel scratch (one device_read worth of mono samples). At
+    // 4 KB raw / stereo i16, max = 1024 mono samples per read.
+    let mut left_scratch = [0i16; READER_BUFFER_BYTES / 4];
+    // Resampled output staging. Sized for at most one read's worth
+    // of input → ~256 output samples at 48k→12k (4:1). Doubled for
+    // headroom against the resampler's per-call rounding.
+    let mut dst_scratch = [0i16; 512];
+    // Per-chunk accumulator. Filled to exactly `CHUNK_LEN` (1200,
+    // = 100 ms @ 12 kHz, matching wav_sim) before flushing.
+    let mut chunk: Vec<i16> = Vec::with_capacity(CHUNK_LEN);
+    // Per-slot sample count. SlotEnd emitted every SLOT_SAMPLES_12K.
+    let mut slot_samples: usize = 0;
+    let mut wav_idx: usize = 0;
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
     loop {
@@ -391,16 +437,86 @@ fn reader_thread(handle: DeviceHandle) {
             log::error!("uac: device_read err={err:#x}, reader exiting");
             break;
         }
-        if bytes_read > 0 {
-            // RX_BYTES uses `fetch_add` which wraps on AtomicU32
-            // overflow (~4 GB ≈ 6 h of streaming). xtensa-esp32s3
-            // has no 64-bit atomic intrinsics. The wrap is harmless
-            // for the 1 Hz delta computation below — `wrapping_sub`
-            // on the u32 values gives the correct per-second window
-            // even across the boundary.
-            RX_BYTES.fetch_add(bytes_read, Ordering::Relaxed);
-            RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+        if bytes_read == 0 {
+            // 0-byte read = timeout-with-no-data (rare); skip the
+            // resample / push pipeline and continue.
+            continue;
         }
+        // RX_BYTES uses `fetch_add` which wraps on AtomicU32 overflow
+        // (~4 GB ≈ 6 h of streaming). xtensa-esp32s3 has no 64-bit
+        // atomic intrinsics. The wrap is harmless for the 1 Hz delta
+        // computation below — `wrapping_sub` on the u32 values gives
+        // the correct per-second window even across the boundary.
+        RX_BYTES.fetch_add(bytes_read, Ordering::Relaxed);
+        RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+
+        // Decode interleaved stereo i16 → take left channel only.
+        // bytes_read is always a multiple of 4 (stereo i16) per the
+        // IDF driver's frame alignment. left_scratch is sized for
+        // the max bytes_read / 4 case so the slice can't overflow.
+        let stereo_samples = (bytes_read as usize) / 4;
+        debug_assert!(stereo_samples <= left_scratch.len());
+        for i in 0..stereo_samples {
+            let off = i * 4;
+            // i16 LE, little-endian (USB Audio Class default).
+            left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
+        }
+
+        // Load the chunk_q handle each loop iteration so the reader
+        // gracefully bridges the gap between USB enumeration and
+        // decode_pipeline init. While the gate is unwired we just
+        // drop the current read buffer (lossy by design — the race
+        // window is bounded by how fast pipeline thread can spawn +
+        // alloc BASIS, ~200 ms). Gemini PR #99 review fixed the
+        // earlier "accumulates samples" wording which contradicted
+        // the actual `continue`.
+        let chunk_q_addr = CHUNK_Q_ADDR.load(Ordering::Acquire);
+        if chunk_q_addr == 0 {
+            continue;
+        }
+        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+
+        // Feed the resampler in a loop until the input is drained.
+        // process() returns (consumed, produced); if consumed < input
+        // we loop back with the unconsumed tail.
+        let mut src_offset = 0usize;
+        while src_offset < stereo_samples {
+            let (consumed, produced) = resampler.process(
+                &left_scratch[src_offset..stereo_samples],
+                &mut dst_scratch,
+            );
+            for &s in &dst_scratch[..produced] {
+                chunk.push(s);
+                if chunk.len() >= CHUNK_LEN {
+                    let to_send = core::mem::replace(
+                        &mut chunk,
+                        Vec::with_capacity(CHUNK_LEN),
+                    );
+                    send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                    slot_samples += CHUNK_LEN;
+                    if slot_samples >= SLOT_SAMPLES_12K {
+                        send_box(
+                            chunk_q,
+                            Box::new(ChunkMsg::SlotEnd {
+                                wav_idx,
+                                total_samples: slot_samples,
+                            }),
+                        );
+                        wav_idx = wav_idx.wrapping_add(1);
+                        slot_samples = 0;
+                    }
+                }
+            }
+            // Defensive: if process() makes zero progress (shouldn't,
+            // given the input is non-empty), break to avoid an
+            // infinite loop. Pull the un-resampled tail to the next
+            // call's left_scratch start by shifting.
+            if consumed == 0 && produced == 0 {
+                break;
+            }
+            src_offset += consumed;
+        }
+
         // 1 Hz throughput log. `Instant::now()` is the FreeRTOS tick
         // count under the hood — sub-microsecond cost.
         let now = std::time::Instant::now();
@@ -414,7 +530,7 @@ fn reader_thread(handle: DeviceHandle) {
             // we care about here (anything well below ~190 kB/s
             // suggests packet drops or wrong stream config).
             log::info!(
-                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err)"
+                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err / slot={slot_samples}/12k)"
             );
             last_log = now;
             last_bytes = bytes;
