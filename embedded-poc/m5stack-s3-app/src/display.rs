@@ -80,70 +80,121 @@ pub fn run_log_panel(
     //    handle (codec keeps its config; we won't touch its registers
     //    again at runtime). I2S setup follows.
     //
-    // Phase 0.6 mode: DRAM 不足で decode_pipeline を skip しているので
-    // 流す audio がない。`audio_thread` も spawn しない (= speaker から
-    // qso3 WAV が鳴り続ける問題を回避)。Phase 4 demo (cfg.toml 不在) の
-    // ときだけ初期化する。
-    // BootMode::Wifi では decode_pipeline 不在 → 流す audio もないので
-    // codec/I2S/audio thread を skip。Decode mode のときだけ初期化。
-    let wifi_mode = mode == BootMode::Wifi;
-    if !wifi_mode {
-        if let Some(i2c_drv) = i2c.as_mut() {
-            if let Err(e) = crate::audio::init_es8311(i2c_drv) {
-                log::warn!("ES8311 init failed (audio disabled): {e:#}");
-            } else {
-            // Build the I2S TX channel. Pin assignment matches
-            // M5Unified's `_speaker_enabled_cb_sticks3` board config:
-            //   MCK = 18, BCK = 17, WS = 15, DATA OUT = 14.
-            //   (`reference_m5stick_s3_pinout.md` had 14 / 16 swapped
-            //    before — M5Unified is canonical.)
-            // Stereo at 44.1 kHz to match the upstream board init —
-            // the codec is in `MCLK=BCLK` mode (see audio.rs reg 0x01),
-            // so it derives all internal clocks from BCLK regardless.
-            use esp_idf_hal::i2s::{
-                config::{
-                    ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple, SlotMode,
-                    StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
-                },
-                I2sDriver,
-            };
-            // 48 kHz stereo so the qso3 mono 12 kHz source upsamples
-            // by an integer 4× (zero-order hold) without resample
-            // artefacts. ES8311 sits in MCLK=BCLK mode (reg 0x01=0xB5)
-            // and follows whatever rate the I2S master generates.
-            let i2s_cfg = StdConfig::new(
-                I2sConfig::default(),
-                StdClkConfig::new(48_000, ClockSource::Pll160M, MclkMultiple::M256),
-                StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
-                StdGpioConfig::default(),
-            );
-            match I2sDriver::new_std_tx(
-                i2s0,
-                &i2s_cfg,
-                pins.gpio17,         // BCLK
-                pins.gpio14,         // DOUT (S3 → codec)
-                Some(pins.gpio18),   // MCLK
-                pins.gpio15,         // WS / LRCK
-            ) {
-                Ok(i2s) => {
-                    // Lift the PMIC PA enable line *before* the audio
-                    // thread starts streaming so the first samples
-                    // hit a powered amp.
-                    if let Err(e) = crate::audio::pa_enable(i2c_drv) {
-                        log::warn!("PA enable failed: {e:#}");
+    // Mode-dependent audio path:
+    //   Decode    → I2S TX (qso3_busy WAV playback to speaker, demo)
+    //   Acoustic  → I2S RX (mic capture to decode_pipeline, Phase 1.5)
+    //   Wifi      → skip (no audio, DRAM dedicated to WiFi)
+    //   Uac       → skip (audio comes from USB host stack, not codec)
+    //
+    // 板の pins struct は partial-move を許さないので、各 mode 内で
+    // 必要な gpio フィールドだけ参照する (audio path は gpio14/15/17/18、
+    // LCD path は gpio38/39/40/41/45/21 を後段で使用)。
+    match mode {
+        BootMode::Decode => {
+            if let Some(i2c_drv) = i2c.as_mut() {
+                if let Err(e) = crate::audio::init_es8311(i2c_drv) {
+                    log::warn!("ES8311 init failed (audio disabled): {e:#}");
+                } else {
+                    // Build the I2S TX channel. Pin assignment matches
+                    // M5Unified's `_speaker_enabled_cb_sticks3` board
+                    // config: MCK = 18, BCK = 17, WS = 15, DOUT = 14.
+                    // 48 kHz stereo so the qso3 mono 12 kHz source
+                    // upsamples by 4× (zero-order hold). ES8311 in
+                    // MCLK=BCLK mode (reg 0x01=0xB5) follows whatever
+                    // rate the I2S master generates.
+                    use esp_idf_hal::i2s::{
+                        config::{
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
+                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                        },
+                        I2sDriver,
+                    };
+                    let i2s_cfg = StdConfig::new(
+                        I2sConfig::default(),
+                        StdClkConfig::new(48_000, ClockSource::Pll160M, MclkMultiple::M256),
+                        StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
+                        StdGpioConfig::default(),
+                    );
+                    match I2sDriver::new_std_tx(
+                        i2s0,
+                        &i2s_cfg,
+                        pins.gpio17,         // BCLK
+                        pins.gpio14,         // DOUT (S3 → codec)
+                        Some(pins.gpio18),   // MCLK
+                        pins.gpio15,         // WS / LRCK
+                    ) {
+                        Ok(i2s) => {
+                            if let Err(e) = crate::audio::pa_enable(i2c_drv) {
+                                log::warn!("PA enable failed: {e:#}");
+                            }
+                            static QSO3: &[u8] = include_bytes!("../../assets/qso3_busy.wav");
+                            std::thread::Builder::new()
+                                .stack_size(8 * 1024)
+                                .spawn(move || crate::audio::audio_thread(i2s, QSO3))
+                                .expect("spawn audio thread");
+                        }
+                        Err(e) => log::warn!("I2S TX init failed: {e:?}"),
                     }
-                    static QSO3: &[u8] = include_bytes!("../../assets/qso3_busy.wav");
-                    std::thread::Builder::new()
-                        .stack_size(8 * 1024)
-                        .spawn(move || crate::audio::audio_thread(i2s, QSO3))
-                        .expect("spawn audio thread");
                 }
-                Err(e) => log::warn!("I2S TX init failed: {e:?}"),
             }
         }
+        BootMode::Acoustic => {
+            // Phase 1.5-Stick: ES8311 ADC mode + I2S RX。Decode path と
+            // 同じ I2S clock 設定 (48 kHz stereo / MCLK=BCLK mode) を
+            // 使う — codec 側 init 差分を最小化、capture thread 側で L
+            // channel 抽出 + 48k→12k linear resample。Speaker PA は
+            // 起こさない (mic 単独でハウリング回避)。
+            if let Some(i2c_drv) = i2c.as_mut() {
+                if let Err(e) = crate::audio::init_es8311(i2c_drv) {
+                    log::warn!("ES8311 base init failed (capture disabled): {e:#}");
+                } else if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
+                    log::warn!("ES8311 mic-mode init failed (capture disabled): {e:#}");
+                } else {
+                    use esp_idf_hal::i2s::{
+                        config::{
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
+                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                        },
+                        I2sDriver,
+                    };
+                    let i2s_cfg = StdConfig::new(
+                        I2sConfig::default(),
+                        StdClkConfig::new(48_000, ClockSource::Pll160M, MclkMultiple::M256),
+                        StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
+                        StdGpioConfig::default(),
+                    );
+                    // Codec DOUT → S3 DIN: M5Unified canonical wiring
+                    // is GPIO 16 (= board.rs ES8311_DIN constant; the
+                    // M5StickS3 official docs page lists DOUT = GPIO 14
+                    // / DIN = GPIO 16 from codec perspective, so for
+                    // S3 RX we pick up codec DOUT which connects to S3
+                    // via GPIO 16).
+                    match I2sDriver::new_std_rx(
+                        i2s0,
+                        &i2s_cfg,
+                        pins.gpio17,         // BCLK
+                        pins.gpio16,         // DIN (codec → S3)
+                        Some(pins.gpio18),   // MCLK
+                        pins.gpio15,         // WS / LRCK
+                    ) {
+                        Ok(i2s) => {
+                            std::thread::Builder::new()
+                                .stack_size(8 * 1024)
+                                .name("audio_cap".into())
+                                .spawn(move || crate::audio::capture_thread(i2s))
+                                .expect("spawn capture thread");
+                        }
+                        Err(e) => log::warn!("I2S RX init failed: {e:?}"),
+                    }
+                }
+            }
         }
-    } else {
-        log::info!("audio thread skipped (BootMode::Wifi: speaker muted)");
+        BootMode::Wifi => {
+            log::info!("audio path skipped (BootMode::Wifi: speaker muted, mic idle)");
+        }
+        BootMode::Uac => {
+            log::info!("audio path skipped (BootMode::Uac: audio via USB host stack)");
+        }
     }
     drop(i2c);
 

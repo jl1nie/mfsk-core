@@ -20,6 +20,15 @@ const NVS_KEY: &str = "boot_mode";
 pub enum BootMode {
     Decode,
     Wifi,
+    /// Phase 1.5-Stick (m5stack-s3-app only, 2026-05-17 pivot): 内蔵
+    /// MEMS mic → ES8311 ADC mode → I2S RX → decode_pipeline。M5StickS3
+    /// で UAC が hardware-blocked なので、IC-705 SPEAKER OUT を acoustic
+    /// に拾う demo path。USB-Serial-JTAG は奪われないので serial console
+    /// は生きるが、UDP log があると診断楽なので main.rs dispatch arm 側
+    /// で WiFi STA は up させる (失敗しても続行)。Core2 / CoreS3 では
+    /// 内蔵 mic 構成が違うので board crate 側でフォールバック (Core2 に
+    /// mic なし、CoreS3 は ES7210)。
+    Acoustic,
     /// Phase 1 (#30 onward, m5stack-s3-app only): USB-OTG host で
     /// IC-705 を UAC class device として認識し audio capture。
     /// `usb_host_install()` を呼んだ瞬間に USB-Serial-JTAG が detach
@@ -43,6 +52,7 @@ impl BootMode {
         match self {
             BootMode::Decode => "decode",
             BootMode::Wifi => "wifi",
+            BootMode::Acoustic => "acoustic",
             BootMode::Uac => "uac",
         }
     }
@@ -51,11 +61,12 @@ impl BootMode {
         match self {
             BootMode::Decode => "DECODE",
             BootMode::Wifi => "WIFI",
+            BootMode::Acoustic => "ACOUSTIC",
             BootMode::Uac => "UAC",
         }
     }
 
-    /// 3-mode cycle: Decode → Wifi → Uac → Decode → ...
+    /// 4-mode cycle: Decode → Wifi → Acoustic → Uac → Decode → ...
     /// KEY2 long-press from `flip_and_restart` walks the cycle one
     /// step at a time. Boot-time KEY1 override
     /// (`override_held_at_boot`) also calls `flipped()` once, so a
@@ -65,7 +76,8 @@ impl BootMode {
     pub fn flipped(self) -> Self {
         match self {
             BootMode::Decode => BootMode::Wifi,
-            BootMode::Wifi => BootMode::Uac,
+            BootMode::Wifi => BootMode::Acoustic,
+            BootMode::Acoustic => BootMode::Uac,
             BootMode::Uac => BootMode::Decode,
         }
     }
@@ -85,6 +97,7 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
     match nvs.get_str(NVS_KEY, &mut buf) {
         Ok(Some(s)) if s == "wifi" => BootMode::Wifi,
         Ok(Some(s)) if s == "decode" => BootMode::Decode,
+        Ok(Some(s)) if s == "acoustic" => BootMode::Acoustic,
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");

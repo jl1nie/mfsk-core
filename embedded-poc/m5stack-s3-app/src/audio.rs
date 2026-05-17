@@ -16,14 +16,17 @@
 //! speaker sounding correct at 12 kHz / 16-bit / mono. Full register
 //! map at <https://docs.m5stack.com> ES8311 datasheet.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
+use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box};
 use esp_idf_hal::{
     delay::TickType,
     i2c::I2cDriver,
-    i2s::{I2sDriver, I2sTx},
+    i2s::{I2sDriver, I2sRx, I2sTx},
 };
+use esp_idf_svc::sys;
+use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
 
 /// Audio playback gate. `true` (default) = stream WAV samples,
 /// `false` = emit silence. The decode pipeline flips this off
@@ -231,6 +234,232 @@ pub fn audio_thread(mut i2s: I2sDriver<'static, I2sTx>, wav: &'static [u8]) -> !
         }
         if let Err(e) = i2s.write_all(&out, TickType::new_millis(500).ticks()) {
             log::warn!("audio: i2s write err {e:?}");
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Phase 1.5-Stick: ES8311 ADC mode + I2S RX acoustic capture
+// ════════════════════════════════════════════════════════════════════
+//
+// IC-705 SPEAKER OUT を M5StickS3 内蔵 MEMS mic → ES8311 ADC → I2S RX
+// で拾い、decode_pipeline の chunk queue に流す。BootMode::Acoustic で
+// 起動した時のみ有効。UAC path (uac.rs) と shape を揃えてあるので、
+// 将来 CoreS3 経由で UAC が動いたあとも acoustic path は demo として
+// 残せる。
+//
+// Sample rate: I2S を 48 kHz stereo で回し、L channel 抽出 → 48k→12k
+// linear resample (UAC と同じ pattern, LinearResamplerI16To12k)。
+// ES8311 は MCLK=BCLK mode (reg 0x01=0xB5) なので codec は I2S master
+// が生成する rate に追従する。stereo にしているのは codec が単一 mic
+// なので L=R 同値だが、I2sStdSlotConfig::philips_slot_default
+// (DataBitWidth::Bits16, SlotMode::Stereo) が既存 TX path と全く同じで、
+// codec 側 init 差分を最小化できるため。
+
+/// Chunk queue handle the capture thread pushes 12 kHz mono samples
+/// into. Set by [`set_chunk_q`] from the `decode_pipeline`'s
+/// source-spawn closure (`run_with_source(|q| audio::set_chunk_q(q))`).
+/// `0` = not yet wired (capture loops + drops samples until pipeline
+/// reaches the source-spawn step).
+static CAPTURE_CHUNK_Q_ADDR: AtomicUsize = AtomicUsize::new(0);
+
+/// Stats for the 1 Hz throughput log.
+static CAPTURE_BYTES: AtomicU32 = AtomicU32::new(0);
+static CAPTURE_PACKETS: AtomicU32 = AtomicU32::new(0);
+static CAPTURE_ERRORS: AtomicU32 = AtomicU32::new(0);
+
+/// 48 kHz stereo i16 = 192_000 B/s. Buffer 4 KB = ~21 ms; matches the
+/// UAC reader's choice for the same reason (disconnect latency budget
+/// vs ringbuf overhead).
+const CAPTURE_BUFFER_BYTES: usize = 4096;
+
+/// I2S RX timeout — 100 ms ≈ half an FT8 symbol. ES8311 always streams
+/// once started, so a timeout means the DMA pipeline is stuck (e.g.
+/// codec init failure). Logged but not fatal; the loop retries.
+const CAPTURE_READ_TIMEOUT_MS: u32 = 100;
+
+/// `SlotEnd` cadence in 12 kHz mono samples. Same as `wav_sim`'s
+/// `SLOT_SAMPLES` and `uac::SLOT_SAMPLES_12K` — 180_000 = 15 s @ 12 kHz.
+/// Wall-clock alignment isn't done here; decode DT reads as offset from
+/// the midpoint of whatever 15 s window the capture happened to start
+/// in (same as the UAC path).
+const CAPTURE_SLOT_SAMPLES_12K: usize = 180_000;
+
+/// Wire the chunk queue handle. Called from
+/// `decode_pipeline::run_with_source`'s source-spawn closure in the
+/// pipeline thread, before the decode loop blocks on `recv_box`.
+pub fn set_chunk_q(q: sys::QueueHandle_t) {
+    CAPTURE_CHUNK_Q_ADDR.store(q as usize, Ordering::Release);
+    log::info!("audio capture: chunk_q wired (addr={:#x})", q as usize);
+}
+
+/// Extend the existing ES8311 DAC init with ADC mic-mode registers.
+/// Caller must have run [`init_es8311`] first (powers up the CSM and
+/// configures MCLK=BCLK). This function adds:
+///
+/// - reg 0x14 PGA: MIC1 single-ended at +12 dB
+/// - reg 0x15 ADC DPF + noise gate: off
+/// - reg 0x16 ADC HPF time constant: default
+/// - reg 0x17 ADC volume: 0 dB (0xBF)
+/// - reg 0x09 ADC OSR: 32 (matches DAC OSR)
+/// - reg 0x0A ADC HPF: bypass (we want raw signal, FT8 has no DC offset
+///   issue at 1500 Hz)
+/// - reg 0x0E ADC powerup
+///
+/// Values are taken from the espressif `esp_codec_dev` reference
+/// driver's mic-init path; tested working on Espressif's own ES8311
+/// dev kits. Untested on M5StickS3 — first-flash output will say
+/// whether the mic actually produces non-zero samples, and gain may
+/// need bumping (reg 0x14) if speech-volume audio comes through at
+/// near-zero amplitude.
+pub fn init_es8311_capture(i2c: &mut I2cDriver) -> Result<()> {
+    let mic_seq: &[(u8, u8)] = &[
+        (0x14, 0x1A), // PGA: MIC1 single-ended, +12 dB (bits 4:0 = 0b11010 = +18 dB? see datasheet)
+        (0x15, 0x40), // ADC DPF off, noise gate off
+        (0x16, 0x00), // ADC HPF time const = 0
+        (0x17, 0xBF), // ADC volume = 0 dB (0xBF nominal)
+        (0x09, 0x00), // ADC OSR low byte
+        (0x0A, 0x00), // ADC HPF disabled (FT8 doesn't need HPF)
+        (0x0E, 0x02), // ADC powerup: enable ADC analog + digital
+        (0x44, 0x08), // DAC->ADC selector: keep DAC out separate
+    ];
+    for &(reg, val) in mic_seq {
+        i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT)
+            .with_context(|| format!("ES8311 mic reg 0x{reg:02X} write failed"))?;
+    }
+    log::info!("ES8311 ADC mic-mode init OK (PGA +12dB, ADC vol 0dB, HPF bypass)");
+    Ok(())
+}
+
+/// Capture thread body. Pumps `I2sDriver<I2sRx>` at the configured
+/// I2S rate (callers must construct with the same 48 kHz stereo
+/// settings used for TX so the codec's MCLK=BCLK clock chain matches),
+/// extracts left channel, resamples 48 k → 12 k mono via
+/// `LinearResamplerI16To12k`, and pushes `CHUNK_LEN`-sized chunks into
+/// the decode pipeline's chunk queue (with `SlotEnd` every
+/// `CAPTURE_SLOT_SAMPLES_12K` samples).
+///
+/// Counts I2S RX throughput in `CAPTURE_BYTES` / `CAPTURE_PACKETS` /
+/// `CAPTURE_ERRORS` and logs a 1 Hz status line. Same shape as
+/// `uac::reader_thread` so the diagnostic flow is identical between
+/// the acoustic and UAC paths.
+pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
+    // Bump priority above the dual_core worker (= 5) and stage1_inc
+    // (= 3) so stage 3 BP can't starve the I2S DMA refill. Same
+    // rationale as `audio_thread` (priority 8 — between dual_core
+    // worker and watchdog).
+    unsafe {
+        sys::vTaskPrioritySet(core::ptr::null_mut(), 8);
+    }
+
+    i2s.rx_enable().expect("I2S rx_enable");
+    log::info!(
+        "audio capture: streaming I2S RX (48 kHz stereo → L extract → 12 kHz mono, prio 8)"
+    );
+
+    let mut buf = [0u8; CAPTURE_BUFFER_BYTES];
+    let mut resampler = LinearResamplerI16To12k::new(48_000);
+    // L-channel scratch — max bytes_read / 4 mono samples per read.
+    let mut left_scratch = [0i16; CAPTURE_BUFFER_BYTES / 4];
+    // Resampled output staging. 48k→12k = 4:1, so ~256 samples per
+    // 4 KB read. Doubled for resampler rounding headroom.
+    let mut dst_scratch = [0i16; 512];
+    // Per-chunk accumulator. Flushed at CHUNK_LEN (1200 samples =
+    // 100 ms @ 12 kHz, matches wav_sim and UAC).
+    let mut chunk: Vec<i16> = Vec::with_capacity(CHUNK_LEN);
+    let mut slot_samples: usize = 0;
+    let mut wav_idx: usize = 0;
+    let mut last_log = std::time::Instant::now();
+    let mut last_bytes: u32 = 0;
+
+    loop {
+        let bytes_read = match i2s.read(&mut buf, TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
+            Ok(n) => n,
+            Err(e) => {
+                CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                log::warn!("audio capture: i2s read err {e:?}");
+                continue;
+            }
+        };
+        if bytes_read == 0 {
+            // Timeout-with-no-data; the DMA pipeline is normally
+            // never idle once the codec is streaming, so 0 likely
+            // means codec init didn't take. Keep looping; the 1 Hz
+            // log will show bytes=0 and flag the issue.
+            continue;
+        }
+        CAPTURE_BYTES.fetch_add(bytes_read as u32, Ordering::Relaxed);
+        CAPTURE_PACKETS.fetch_add(1, Ordering::Relaxed);
+
+        // Decode interleaved stereo i16 → take left channel only.
+        // bytes_read should always be a multiple of 4 (stereo i16)
+        // given the philips_slot_default(Bits16, Stereo) config.
+        let stereo_samples = (bytes_read) / 4;
+        debug_assert!(stereo_samples <= left_scratch.len());
+        for i in 0..stereo_samples {
+            let off = i * 4;
+            left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
+        }
+
+        // Wait for the decode_pipeline to populate the chunk queue.
+        // Until then drop samples — bounded race window (~200 ms
+        // pipeline init), same as the UAC path.
+        let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
+        if chunk_q_addr == 0 {
+            continue;
+        }
+        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+
+        // Feed the resampler in a loop until input drained.
+        let mut src_offset = 0usize;
+        while src_offset < stereo_samples {
+            let (consumed, produced) = resampler.process(
+                &left_scratch[src_offset..stereo_samples],
+                &mut dst_scratch,
+            );
+            for &s in &dst_scratch[..produced] {
+                chunk.push(s);
+                if chunk.len() >= CHUNK_LEN {
+                    let to_send = core::mem::replace(
+                        &mut chunk,
+                        Vec::with_capacity(CHUNK_LEN),
+                    );
+                    send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                    slot_samples += CHUNK_LEN;
+                    if slot_samples >= CAPTURE_SLOT_SAMPLES_12K {
+                        send_box(
+                            chunk_q,
+                            Box::new(ChunkMsg::SlotEnd {
+                                wav_idx,
+                                total_samples: slot_samples,
+                            }),
+                        );
+                        wav_idx = wav_idx.wrapping_add(1);
+                        slot_samples = 0;
+                    }
+                }
+            }
+            if consumed == 0 && produced == 0 {
+                break;
+            }
+            src_offset += consumed;
+        }
+
+        // 1 Hz throughput log. Expected ~192_000 B/s for fully
+        // streaming codec. < 50 kB/s suggests codec init didn't
+        // engage the ADC path; 0 B/s means the I2S RX channel
+        // itself isn't running.
+        let now = std::time::Instant::now();
+        if now.duration_since(last_log).as_secs() >= 1 {
+            let bytes = CAPTURE_BYTES.load(Ordering::Relaxed);
+            let packets = CAPTURE_PACKETS.load(Ordering::Relaxed);
+            let errors = CAPTURE_ERRORS.load(Ordering::Relaxed);
+            let bps = bytes.wrapping_sub(last_bytes);
+            log::info!(
+                "audio capture tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err / slot={slot_samples}/12k)"
+            );
+            last_log = now;
+            last_bytes = bytes;
         }
     }
 }

@@ -100,7 +100,13 @@ fn main() -> ! {
     //   失敗時は warn だけ出して続行 — boot 完走 > log 経路。
     //   `_wifi` は drop されると association が切れるので static slot に保持。
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
-    let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
+    // Acoustic mode は USB-Serial-JTAG が生きているので console は使える
+    // が、UDP log があった方が capture stats (throughput / errors) を
+    // 監視しやすいので WiFi を併設する。SSID 無くても warn のみで続行。
+    let needs_wifi = matches!(
+        mode,
+        boot_mode::BootMode::Wifi | boot_mode::BootMode::Acoustic | boot_mode::BootMode::Uac
+    );
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(
@@ -182,6 +188,25 @@ fn main() -> ! {
             log::info!(
                 "decode_pipeline skipped (BootMode::Wifi — BASIS alloc skipped, 120 KB internal DRAM free for WiFi)"
             );
+        }
+        boot_mode::BootMode::Acoustic => {
+            // Phase 1.5-Stick: 同じ source-spawn pattern を audio capture
+            // に流用。pipeline thread が BASIS alloc → stage1_inc を
+            // 起こしてから audio::set_chunk_q(chunk_q) で audio side に
+            // queue handle を渡す。capture_thread は display.rs 側で
+            // I2S RX 起動後に spawn 済みで、CHUNK_Q_ADDR が wired される
+            // まで sample drop で待つ (UAC と同じ race window 処理)。
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| {
+                    decode_pipeline::run_with_source(|chunk_q| {
+                        audio::set_chunk_q(chunk_q);
+                    })
+                });
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Acoustic) spawn failed ({e})");
+            }
         }
         boot_mode::BootMode::Uac => {
             // Spawn the decode pipeline FIRST. The thread allocates
