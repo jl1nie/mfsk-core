@@ -159,6 +159,15 @@ static RX_BYTES: AtomicU32 = AtomicU32::new(0);
 static RX_PACKETS: AtomicU32 = AtomicU32::new(0);
 static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
 
+/// Gate against spawning multiple readers when the IDF driver fires
+/// `RxConnected` more than once for the same physical attach (e.g.
+/// IC-705 advertises both an RX and TX interface and the driver may
+/// reissue events on alt-setting changes). Set on first successful
+/// `handle_rx_connected` and never cleared in #31 — #35 will reset
+/// it on `DISCONNECTED` so re-plug works without a reboot.
+static READER_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Driver event callback. Invoked by the UAC class-driver background
 /// task on every `RX_CONNECTED` / `TX_CONNECTED` notification (i.e.
 /// every time an audio streaming interface enumerates).
@@ -339,20 +348,29 @@ fn reader_thread(handle: DeviceHandle) {
             )
         };
         if err != sys::ESP_OK as sys::esp_err_t {
+            // ESP_ERR_TIMEOUT is a routine ringbuf-empty signal (the
+            // 100 ms timeout fires when the IDF driver hasn't yet
+            // received a fresh iso IN frame). NOT a reason to exit
+            // (Gemini PR #98 review). Just continue the loop.
+            if err == sys::ESP_ERR_TIMEOUT as sys::esp_err_t {
+                continue;
+            }
             RX_ERRORS.fetch_add(1, Ordering::Relaxed);
-            // #35: distinguish recoverable timeouts from terminal
-            // disconnects. For #31, any error exits — `BootMode::Uac`
-            // is sticky-until-reboot so silent reader death is at
-            // least observable in the next UDP log tick (rx=0B/s).
+            // Other errors (INVALID_STATE on disconnect, INVALID_ARG,
+            // ringbuf failures) are terminal — exit so #35 can swap in
+            // a proper detect+reset path. `BootMode::Uac` is
+            // sticky-until-reboot so silent reader death is at least
+            // observable in the next UDP log tick (rx=0B/s).
             log::error!("uac: device_read err={err:#x}, reader exiting");
             break;
         }
         if bytes_read > 0 {
-            // RX_BYTES uses saturating add at the AtomicU32 boundary:
-            // xtensa has no 64-bit atomics, and u32 wraps at ~4 GB
-            // ≈ 6 hours of streaming. The wrap is harmless for the
-            // 1 Hz delta computation below (also u32) — `wrapping_sub`
-            // gives the correct per-second window in all cases.
+            // RX_BYTES uses `fetch_add` which wraps on AtomicU32
+            // overflow (~4 GB ≈ 6 h of streaming). xtensa-esp32s3
+            // has no 64-bit atomic intrinsics. The wrap is harmless
+            // for the 1 Hz delta computation below — `wrapping_sub`
+            // on the u32 values gives the correct per-second window
+            // even across the boundary.
             RX_BYTES.fetch_add(bytes_read, Ordering::Relaxed);
             RX_PACKETS.fetch_add(1, Ordering::Relaxed);
         }
@@ -403,8 +421,31 @@ fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
     while let Ok(event) = rx.recv() {
         match event {
             DriverEvent::RxConnected { addr, iface_num } => {
+                // Dedup: the IDF driver re-fires `RxConnected` on alt-
+                // setting transitions and (per Gemini PR #98 review)
+                // on multi-interface devices, which would spawn
+                // additional reader threads racing the first on
+                // device_start. compare_exchange wins atomically;
+                // losers just log and drop the event.
+                if READER_ACTIVE
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    log::info!(
+                        "uac: ignoring duplicate RxConnected addr={addr} iface={iface_num} (reader already active)"
+                    );
+                    continue;
+                }
                 if let Err(e) = handle_rx_connected(addr, iface_num) {
                     log::error!("uac: RxConnected handler failed: {e:#}");
+                    // Release the gate so a future re-attach can retry
+                    // (e.g. IC-705 power cycle during bring-up).
+                    READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
                 }
             }
             DriverEvent::TxConnected { addr, iface_num } => {
