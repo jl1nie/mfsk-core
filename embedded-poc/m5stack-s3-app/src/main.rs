@@ -184,9 +184,27 @@ fn main() -> ! {
             );
         }
         boot_mode::BootMode::Uac => {
-            log::info!(
-                "decode_pipeline skipped (BootMode::Uac #30 — pipeline rejoin lands in #32 with UAC ringbuf source)"
-            );
+            // Spawn the decode pipeline FIRST. The thread allocates
+            // BASIS scratch (~120 KB internal DRAM, same as Decode
+            // mode), brings up stage1_inc + wf_drain, then calls the
+            // source-spawn closure with the chunk_q — that's where
+            // UAC gets wired in via `uac::set_chunk_q`. The reader
+            // thread (spawned later by `uac::start_host` →
+            // `app_task::handle_rx_connected` on first `RxConnected`)
+            // holds samples until `CHUNK_Q_ADDR` is populated; lossy
+            // by design (a few hundred ms of audio drops while
+            // pipeline init races UAC enumeration).
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| {
+                    decode_pipeline::run_with_source(|chunk_q| {
+                        uac::set_chunk_q(chunk_q);
+                    })
+                });
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Uac) spawn failed ({e})");
+            }
             log_free_internal("pre-uac-host-install");
             if let Err(e) = uac::start_host() {
                 log::error!("UAC host start failed: {e:#}");
