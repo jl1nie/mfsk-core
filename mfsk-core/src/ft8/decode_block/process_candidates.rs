@@ -1547,10 +1547,15 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                     && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
                     && validate(osd.message77, osd.hard_errors)
                 {
+                    // Reuse `osd.codeword` — `OsdResult` already
+                    // carries the decoded bits; the previous
+                    // `vec![0; LDPC_N]` was both wasteful and dropped
+                    // the real codeword on the floor (Gemini PR #86
+                    // review).
                     let bp = crate::fec::ldpc::bp::BpResult {
                         message77: osd.message77,
                         info: osd.info,
-                        codeword: alloc::vec![0u8; LDPC_N],
+                        codeword: osd.codeword,
                         hard_errors: osd.hard_errors,
                         iterations: 0,
                     };
