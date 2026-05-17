@@ -335,9 +335,15 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     // that call registers `device_event_cb` for the new handle, after
     // which a fast DISCONNECT (e.g. cable yanked mid-bringup) would
     // race against the reset and have its `true` silently dropped.
-    // Resetting now is safe: the previous session's callback was
-    // unregistered at its `device_close`, so it cannot fire across
-    // the boundary.
+    // Resetting now is safe because (1) `app_task` processes
+    // `DriverEvent`s sequentially on the mpsc channel, so the previous
+    // session's DISCONNECTED callback finished firing before this
+    // RxConnected was dispatched, and (2) the `READER_ACTIVE` gate
+    // guarantees the previous `reader_thread` has fully exited before
+    // we re-enter `handle_rx_connected` (Gemini PR #107 review —
+    // the older "callback unregistered at device_close" rationale was
+    // incorrect since the disconnect cleanup path explicitly skips
+    // `device_close`).
     READER_STOP_REQUESTED.store(false, Ordering::Release);
     let dev_config = sys::uac::uac_host_device_config_t {
         addr,
