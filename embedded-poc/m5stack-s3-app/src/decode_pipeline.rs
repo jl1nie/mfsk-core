@@ -172,6 +172,15 @@ where
     // (15 s + DT) — i.e. skip forward by ~one slot period — sacrificing
     // one slot's decode in exchange for clean alignment afterwards.
     let mut best_n: usize = 0;
+    // Phase 1.7.6 tiered drift detection state (2026-05-17):
+    //   drift_streak  — number of consecutive slots whose median DT
+    //                   exceeds DRIFT_STREAK_SEC with the same sign
+    //                   AND N ≥ 2. Resets on sign flip, |DT| below
+    //                   threshold, or N < 2. ≥ 3 fires Tier-2 reset.
+    //   last_drift_sign — sign of the previous qualifying slot's DT
+    //                   (+1 / -1; 0 = none).
+    let mut drift_streak: u8 = 0;
+    let mut last_drift_sign: i8 = 0;
     let mut sync_gen_observed: u32 = crate::audio::SYNC_RESET_GEN
         .load(core::sync::atomic::Ordering::Acquire);
     loop {
@@ -284,15 +293,27 @@ where
         //   Larger drifts converge over several HWM-update slots.
         const ALIGN_OK_SEC: f32 = 0.05;
         const MAX_SHIFT_SAMPLES: i32 = 2400; // ±0.2 s — pair 91 still completes
-        // Drift detection (Phase 1.7.6, 2026-05-17): once HWM is
-        // locked, if a slot decodes ≥ DRIFT_MIN_N stations with
-        // |median DT| > DRIFT_TRIGGER_SEC, treat it as cumulative
-        // drift past FT8 tolerance and RESET the HWM so this slot
-        // becomes the new reference. N ≥ 2 gate avoids a noisy
-        // single-station outlier triggering a false reset.
-        const DRIFT_TRIGGER_SEC: f32 = 0.5;
-        const DRIFT_MIN_N: usize = 2;
-        // Pre-compute median once (used by both drift check and HWM update).
+        // Tiered drift detection (Phase 1.7.6 Strategy D, 2026-05-17):
+        //
+        // Tier 1 — HIGH-TRUST IMMEDIATE: a slot more trustworthy than
+        //   the current lock (N > best_n) with statistical confidence
+        //   (N ≥ 3) and clear drift (|DT| > 0.5 s) triggers immediate
+        //   reset. Catches "band peaks reveal drift" within one slot.
+        //
+        // Tier 2 — PERSISTENCE SAFETY-NET: even on a quiet band
+        //   where Tier 1 never fires, 3 consecutive slots with N ≥ 2
+        //   showing |DT| > 0.3 s in the SAME sign direction trigger
+        //   reset. Same-sign requirement rejects bidirectional noise
+        //   (random outliers cancel). Catches slow PPM-level drift
+        //   that accumulates beyond FT8 tolerance over time.
+        //
+        // Either tier resets best_n=0; the subsequent HWM-update
+        // path then re-locks using THIS slot's median.
+        const TIER1_DT_SEC: f32 = 0.5;
+        const TIER1_MIN_N: usize = 3;
+        const TIER2_DT_SEC: f32 = 0.3;
+        const TIER2_MIN_N: usize = 2;
+        const TIER2_STREAK: u8 = 3;
         let median: Option<f32> = if n_dec > 0 {
             let mut dts: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
             dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
@@ -300,15 +321,54 @@ where
         } else {
             None
         };
-        if best_n > 0 && n_dec >= DRIFT_MIN_N {
+        let mut drift_reset_fired = false;
+        // Tier 1
+        if best_n > 0 && n_dec > best_n && n_dec >= TIER1_MIN_N {
             if let Some(m) = median {
-                if m.abs() > DRIFT_TRIGGER_SEC {
+                if m.abs() > TIER1_DT_SEC {
                     log::info!(
-                        "  auto-sync: DRIFT detected (median DT={:+.3}s > ±{DRIFT_TRIGGER_SEC}s, N={n_dec}≥{DRIFT_MIN_N}), HWM reset (was best_n={best_n})",
+                        "  auto-sync: DRIFT Tier-1 (median DT={:+.3}s > ±{TIER1_DT_SEC}s, N={n_dec}>{best_n}≥{TIER1_MIN_N}), HWM reset",
                         m
                     );
                     best_n = 0;
+                    drift_reset_fired = true;
+                    drift_streak = 0;
+                    last_drift_sign = 0;
                 }
+            }
+        }
+        // Tier 2 (persistence) — update streak regardless of Tier 1
+        // outcome so the counter stays current; only fire reset if
+        // Tier 1 didn't already.
+        if !drift_reset_fired {
+            if let Some(m) = median {
+                if n_dec >= TIER2_MIN_N && m.abs() > TIER2_DT_SEC {
+                    let sign = if m >= 0.0 { 1i8 } else { -1i8 };
+                    if last_drift_sign == sign {
+                        drift_streak = drift_streak.saturating_add(1);
+                    } else {
+                        drift_streak = 1;
+                        last_drift_sign = sign;
+                    }
+                    if drift_streak >= TIER2_STREAK && best_n > 0 {
+                        log::info!(
+                            "  auto-sync: DRIFT Tier-2 ({} slots |DT|>±{TIER2_DT_SEC}s same sign, latest DT={:+.3}s N={n_dec}), HWM reset",
+                            drift_streak, m
+                        );
+                        best_n = 0;
+                        drift_streak = 0;
+                        last_drift_sign = 0;
+                    }
+                } else {
+                    // Slot doesn't meet Tier 2 streak criteria
+                    // (|DT| too small OR N too small) → break streak.
+                    drift_streak = 0;
+                    last_drift_sign = 0;
+                }
+            } else {
+                // 0 decodes — no DT measurement, break streak.
+                drift_streak = 0;
+                last_drift_sign = 0;
             }
         }
         if n_dec > best_n {
