@@ -304,9 +304,16 @@ reference:
   [English `docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
   / [日本語 `docs/EMBEDDED.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.ja.md)
   — generic-scalar architecture (one codebase for f32 host and
-  fixed-point embedded), feature-flag map, FFT / dot-product extern
-  contracts, BASIS scratch placement, Q-format reference, Core2 perf
-  ballpark + footprint.
+  fixed-point embedded), feature-flag map, FFT-extern contract,
+  Goertzel per-symbol DFT (zero-scratch, 0.6.4+) with BASIS
+  deprecation, Q-format reference, full `mfsk-ffi-ft8` C ABI
+  tutorial (streaming + ESP-IDF component layout), performance
+  benchmark, streaming RX pipeline, binary footprint.
+- **M5StickS3 FT8 controller manual:**
+  [English `docs/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md)
+  / [日本語 `docs/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.ja.md)
+  — build / flash / `cfg.toml` / `BootMode` cycle / UI / QSO
+  workflow / troubleshooting.
 
 ## Status
 
@@ -318,8 +325,15 @@ port. The **0.6.x line consolidates the FT8 sync + per-candidate
 pipeline**: host (`decode_frame*`) and embedded (`decode_block`) now
 share `decode_block::coarse_sync` (WSJT-X `sync8.f90`-faithful 16-bin
 allsum estimator) and a unified `process_one_candidate_inner` for the
-LLR / BP / OSD / AP staircase. See `CHANGELOG.md` for the full per-
-release breakdown.
+LLR / BP / OSD / AP staircase. **0.6.3** added WSJT-X-faithful OSD
+`npre1`/`npre2` precoding (#63) and carved `decode_block.rs` into
+six stage submodules (ε refactor). **0.6.4** (Phase 1.7.7-Stick)
+replaced the BASIS Q15 dot-product per-symbol DFT with a Goertzel
+recursion that needs **zero scratch** — freeing 120 KB of internal
+DRAM on dual-core S3 (which unblocks M5StickS3 Qso-mode I2S
+bidirectional DMA) and improving SNR by **+0.16..+0.63 dB** on
+real-silicon decodes. See `CHANGELOG.md` for the full per-release
+breakdown.
 
 Latest M5StickS3 (Xtensa LX7) ship config decodes **6 / 18 JTDX-golden
 FT8 callsigns + 1 bonus = 7 total** on the WSJT-X-distributed busy-band

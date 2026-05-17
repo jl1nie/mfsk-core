@@ -1,13 +1,13 @@
-# Roadmap (post-0.6.2)
+# Roadmap (post-0.6.4)
 
-## v0.6.2 status (shipped, 2026-05-10)
+## Current line (0.6.x) — shipped through 0.6.4 (2026-05-18)
 
-Cumulative `v0.6.0` + `v0.6.1` + `v0.6.2` shipped as one release via PR #50
-(commit `ba067fd`, crates.io `mfsk-core@0.6.2` / `mfsk-ffi-ft8@0.6.2`).
-The 2026-05-13 post-merge sweep (`#53`, `#60`, `#62`, `#66`, `#67`, `#68`,
-`#69`) closed the documentation / dead-code follow-ups against this bundle
-without bumping the crate version. See `docs/CLEANUP_2026_05.md` for the
-γ/β/δ/ε cleanup plan that drove that sweep.
+The 0.6 line shipped in four cuts: a bundled `v0.6.0` + `v0.6.1` + `v0.6.2`
+via PR #50 (2026-05-10), then `v0.6.3` (2026-05-17, PR #89 — WSJT-X-faithful
+OSD precoding + the ε `decode_block` split), then `v0.6.4` (2026-05-18,
+PR #104 — Phase 1.7.7-Stick Goertzel migration). The cleanup-2026-05
+γ/β/δ/ε plan landed end-to-end across these cuts; see
+`docs/CLEANUP_2026_05.md` (historical) for the original prescription.
 Headline numbers (all on `qso3_busy.wav`):
 
 - Host AP-off recall: **7/8** WSJT-X golden, **16/18** JTDX golden
@@ -16,8 +16,66 @@ Headline numbers (all on `qso3_busy.wav`):
   (was 1/6 pre-0.6.2 because `decode_frame_subtract_with_ap` had been
   using `subtract_signal_weighted` instead of the WSJT-X-faithful
   `subtract_signal_lpf`).
-- Embedded S3 (M5StickC Plus2-S3, fixed-point + `esp-dsp`):
-  **6/18 + 1 bonus = 7 total** in **~1.19 s** post-SlotEnd.
+- Embedded S3 (M5StickS3, fixed-point + `esp-dsp` + Goertzel):
+  **6/18 + 1 bonus = 7 total** in **~1.19 s** post-SlotEnd, with
+  **+0.16..+0.63 dB SNR improvement** over the BASIS-era 0.5.x
+  baseline (Phase 1.7.7-Stick Goertzel migration).
+- Embedded internal-DRAM use: BASIS scratch dropped (120 KB freed
+  on dual-core), unblocking M5StickS3 Qso-mode bidirectional I2S
+  DMA allocation.
+
+### What landed in 0.6.4 (2026-05-18)
+
+- **Phase 1.7.7-Stick Goertzel migration** (PR #104, commit `5501a2f`).
+  The per-symbol DFT in `fill_symbol_spectra` switched from the
+  precomputed Q15 `BASIS` table + esp-dsp ASM `dsps_dotprod_s16_ae32`
+  dot product to a generalised Goertzel recursion
+  (`fill_symbol_spectra_goertzel`) — 2-tap IIR per (sym, tone) with
+  3 f32 state values on the stack, zero scratch, zero extern symbols.
+  Sample-outer / tone-inner loop interleave lets LLVM unroll the
+  constant `NTONES=8` inner loop so 8 independent dependent chains
+  run through the FPU pipeline in parallel; result is stage-3
+  wall-clock equivalent to BASIS (~1.4 s on S3 `qso3_busy.wav`) with
+  **+0.16..+0.63 dB SNR improvement** (f32 Goertzel beats Q15 BASIS
+  precision).
+- **`fixed-point` ⇒ `nstep-half` coupling** (commit `dfc0cd5`).
+  The two features were always co-enabled on every embedded target
+  in practice; decoupling silently gave host fixed-point builds a
+  different NSTEP grid than the embedded path, making host validation
+  diverge from real-silicon behaviour. Now `fixed-point` implies
+  `nstep-half`.
+- **mag² saturation fix** in `compute_spectrogram` (same commit).
+- **Internal-DRAM saving**: ~60 KB BASIS scratch × 2 (re/im) × 2
+  cores = **120 KB freed** on M5StickS3, which is exactly what the
+  Qso-mode bidirectional I2S DMA descriptor needs. Qso mode now
+  boots cleanly on first try.
+
+The legacy BASIS code path (`fill_symbol_spectra_into` and the
+`mfsk_core_dot_q15_i32` extern symbol) and the `basis_re`/`basis_im`
+scratch arguments on `mfsk_ft8_decode_i16` remain for back-compat
+with 0.5.x callers, scheduled for removal in 0.7.0.
+
+### What landed in 0.6.3 (2026-05-17)
+
+- **WSJT-X-faithful OSD precoding** (#63, PRs #86 + #87 + #88).
+  `npre1` (ndeep=2) + `npre2` (ndeep=3) dispatch + 4 missing
+  post-OSD validity gates from `ft8b.f90:422-459` + nsync/xsnr
+  clamp-ordering fix, plus an empirically-tuned
+  `OSD_HARDERRORS_MAX = 22` ceiling on the OSD path
+  (mfsk-core-specific deviation from WSJT-X's universal 36) that
+  eliminates the qso3_busy phantoms `npre1`/`npre2` alone did not
+  filter. See `CHANGELOG.md` 0.6.3 entry for the
+  WSJT-X-faithfulness / phantom-elimination trade-off rationale.
+- **ε `decode_block.rs` restructure** — 6 stacked PRs (#77 types,
+  #83 spectrogram, #79 coarse_sync, #80 fill_symbol_spectra, #81
+  process_candidates, #82 osd_strategy). 3,517 lines → 423-line
+  parent + 6 stage submodules. The OSD-strategy seam ε.6 carved
+  out is load-bearing for #63's WSJT-X-faithful `npre1`/`npre2`
+  dispatch.
+- **#61 Core2 fold-in** (PR #76) — `mfsk-app-shared` carve-out +
+  `m5stack-core2-app` sibling + retirement of the standalone Core2
+  bench. Both production apps now share board-agnostic QSO FSM /
+  UI / WiFi / NVS / log fanout.
 
 ### What landed across 0.6.0 → 0.6.2
 
@@ -63,7 +121,7 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-05-14):
+Currently open GitHub issues (state:open as of 2026-05-18):
 
 - **#23** — FST4-60A golden lockdown (host); FST4-15 / FST4W
   stretch. Carried forward from the post-0.5.12 "Phase A1".
@@ -73,33 +131,38 @@ Currently open GitHub issues (state:open as of 2026-05-14):
   not on the 3-month roadmap.
 - **#58** — coalesce redundant `compute_llr` between Step 3 (OSD)
   and Step 4 (AP) in `decode_block`. Low-priority host perf.
-- **#61** — fold `m5stack-core2` into the S3 dual-core pipeline
-  and retire the Core2 bench crate. **Done 2026-05-16** across 3
-  commits on `feat/61-mfsk-app-shared`:
-  - Phase 1 carved `embedded-poc/mfsk-app-shared/` out of
-    `m5stack-s3-app/` (QSO FSM / time sync / TX picker / SNR norm /
-    NVS boot mode / log fanout / WiFi+UDP / UI data + draw).
-  - Phase 2 added `embedded-poc/m5stack-core2-app/` as the Core2
-    sibling consumer (AXP192 PMIC, ILI9342C LCD via mipidsi
-    ILI9341 model rotated to landscape, wav_sim audio, no buttons).
-    Verified on Core2 hardware: 7/8 decodes per slot from
-    `qso3_busy.wav`, 400 alive ticks, stable heap.
-  - Phase 3 retired the bench crate `embedded-poc/m5stack-core2/`;
-    its sweep logs live in git history (recoverable via
-    `git show HEAD~3:embedded-poc/m5stack-core2/logs/<file>`).
-- **#63** — WSJT-X-faithful OSD `npre1` precoding for host
-  `BpAllOsd`. **Done in 0.6.3** across PRs #86 (npre1, ndeep=2),
-  #87 (npre2, ndeep=3 dispatch), #88 (4 missing post-OSD validity
-  gates from `ft8b.f90:422-459` + nsync/xsnr clamp-ordering fix).
-  Plus an empirically-tuned `OSD_HARDERRORS_MAX = 22` ceiling on
-  the OSD path (mfsk-core-specific deviation from WSJT-X's universal
-  36) that eliminates the qso3_busy phantoms `npre1`/`npre2` alone
-  did not filter. See `CHANGELOG.md` 0.6.3 entry for the
-  WSJT-X-faithfulness / phantom-elimination trade-off rationale.
 - **#64** — hoist `fft_cache` through host `decode_block_multipass`
   (perf follow-up to #60, which landed the single-pass hoist).
 - **#65** — share `cd0` between SyncOnly + DataOnly
   `fill_symbol_spectra` calls (host perf nice-to-have).
+- **#72** — `DecodeStrictness` duplicate definition + uncalibrated
+  copy for FT4 / FST4. API hygiene; pick one definition and remove
+  the duplicate.
+- **#73** — `EqMode::Adaptive` has collapsed into `EqMode::Local`
+  in practice. Either restore the distinct fallback behaviour or
+  drop the variant.
+- **#74** — `DecodeDepth::Bp` is the cheapest staircase rung;
+  confirm there is a real caller before keeping it.
+
+Closed during the 0.6.x line (kept here as recent context, not as
+open work):
+
+- **#40** host wide-band coarse-sync candidate gap — closed by
+  v0.6.0; AP-off recall on `qso3_busy.wav` 5/8 → 7/8.
+- **#46** sync consolidation PR — closed by v0.6.0
+  (`decode_block::coarse_sync` + `compute_spectrogram` graduate to
+  public API).
+- **#61** fold `m5stack-core2` into the S3 dual-core pipeline +
+  retire the Core2 bench crate — closed in 0.6.3 (PR #76, 3-phase
+  series: `mfsk-app-shared` carve-out → `m5stack-core2-app` sibling
+  → bench retirement). Verified on Core2 hardware: 7/8 decodes per
+  slot from `qso3_busy.wav`, 400 alive ticks, stable heap.
+- **#63** WSJT-X-faithful OSD `npre1` precoding — closed in 0.6.3.
+  See *What landed in 0.6.3* above.
+- **#105** EMBEDDED.md rewrite — closed (different approach: kept
+  the deep library-consumer technical depth of the pre-PR #103 doc
+  and refreshed it for the 0.6.4 ship, instead of the proposed
+  150-line nav doc).
 
 Carry-overs from the post-0.5.12 plan that have since closed:
 
@@ -130,48 +193,14 @@ Architectural notes that did not graduate to issues:
   `docs/CLEANUP_2026_05.md`) so the seam exists to hook a
   streaming alternative onto.
 
-## v0.6.0 status (shipped, 2026-05-09)
-
-Bundled refactor + AP iaptype 2 release. Closes:
-
-- **#40** (host wide-band coarse-sync candidate gap) — host
-  `decode_frame_with_ap` now routes through `decode_block::coarse_sync`
-  + the i_start-as-i32 fix; AP-off recall on `qso3_busy.wav` 5/8 → 7/8
-  (matches WSJT-X parity).
-- **#46** (sync consolidation PR) — `ft8::sync::coarse_sync` removed;
-  `decode_block::coarse_sync` + `compute_spectrogram` graduate to public
-  API.
-- **#48 step B** (FT8 sync routes through decode_block).
-- **#49 cat A** (WAV-loader test consolidation, 14 dupes → 4 helpers).
-- **#49 cat B** (`ft8::sync` thin wrappers deleted).
-- **#49 cat C** (`#[doc(hidden)]` graduation for items embedded
-  consumers + FFI already depend on).
-
-A0 / A0' (host coarse-sync gap and `decode_block_with_ap`) from the
-earlier roadmap were the carry-overs at the time of the v0.6.0 cut;
-the master Open follow-ups list above (under v0.6.2 status) supersedes
-this section.
-
 ## Cleanup 2026-05
 
-`docs/CLEANUP_2026_05.md` tracks a four-stage post-0.6.2 tidy-up
-(γ scaffolding → β feature/cfg → δ docs sync → ε `decode_block.rs`
-restructure). **All four stages done as of 2026-05-17 (= 0.6.3):**
-
-- **γ** Done 2026-05-13 (PR #66). Retired
-  `embedded-poc/m5stack-{core2,s3}/src/bin/rx_skeleton.rs`.
-- **β** Done 2026-05-13 (PR #67 + #69). Compiler-visible dead code
-  cleared; `Cmplx` unified with `num_complex::Complex` via type
-  alias (−5 `unsafe` cast wrappers); cfg-matrix audit confirms
-  every fixed-point × fft-{rustfft,extern} cell builds clean.
-- **δ** Done 2026-05-14 (PR #70). ROADMAP refresh + AP-hint
-  terminology cross-check + CLAUDE.md consolidation.
-- **ε** Done 2026-05-17 across 6 stacked PRs (#77 types, #83
-  spectrogram, #79 coarse_sync, #80 fill_symbol_spectra, #81
-  process_candidates, #82 osd_strategy). `decode_block.rs` carved
-  from 3,517 lines into 7 sibling submodules; the OSD-strategy
-  seam ε.6 carved out is now load-bearing for #63's
-  WSJT-X-faithful `npre1`/`npre2` dispatch (also shipped in 0.6.3).
+γ / β / δ / ε all landed in 0.6.3 (last stage PRs #77 + #83 + #79 +
+#80 + #81 + #82 carved `decode_block.rs` from 3,517 lines into a
+423-line parent + 6 stage submodules). See
+[`docs/CLEANUP_2026_05.md`](CLEANUP_2026_05.md) (HISTORICAL) for the
+original four-stage plan; the per-stage acceptance-criteria template
+documented there is reused for future cleanup waves.
 
 # Roadmap (legacy, written for post-0.5.12)
 
@@ -306,15 +335,30 @@ and `embedded-shared` resampler API are the seams shared across both.
 
 ## Quick file-path index
 
-- Host FT8 reference: `mfsk-core/src/ft8/decode_block.rs` (canonical
-  coarse-sync + per-candidate inner), `mfsk-core/src/ft8/decode.rs`
-  (host `decode_frame*` family + `refine_fine` gate).
+- Host FT8 reference (post-ε split, 0.6.3):
+  `mfsk-core/src/ft8/decode_block.rs` (423-line parent / facade),
+  `mfsk-core/src/ft8/decode_block/types.rs` (audio sample +
+  tunables), `…/spectrogram.rs` (`Spectrogram` +
+  `compute_spectrogram`), `…/coarse_sync.rs` (Costas search +
+  allsum), `…/fill_symbol_spectra.rs` (per-symbol DFT family —
+  **`fill_symbol_spectra_goertzel` is the current path; the
+  BASIS `fill_symbol_spectra_into` is back-compat only,
+  removed in 0.7.0**), `…/process_candidates.rs` (engine +
+  facade impls), `…/osd_strategy.rs` (OSD dispatch, #63 hook).
+  Host `decode_frame*` family + `refine_fine` gate:
+  `mfsk-core/src/ft8/decode.rs`.
 - Probe templates: `mfsk-core/src/jt9/decode.rs::gate_diag::probe_missing_goldens`.
 - Protocol-specific: `mfsk-core/src/fst4/decode.rs` ⇔
   `WSJT-X/lib/fst4_decode.f90`; `mfsk-core/src/jt65/{mod,rx,decode}.rs`
   ⇔ `WSJT-X/lib/jt65_decode.f90`.
-- Embedded app: `embedded-poc/m5stack-s3-app/src/{uac,civ,adif,qso,buttons,flash_log}.rs`
-  (current state per the section above);
-  `embedded-poc/m5stack-s3-app/src/decode_pipeline.rs` (Phase 1
-  UAC integration site).
+- Embedded shared layers (board-agnostic):
+  `embedded-poc/embedded-shared/src/{pipeline,dual_core,stage1_inc,esp_dsp_fft}.rs`
+  (decoder layer), `embedded-poc/mfsk-app-shared/src/{qso,wifi,log_sink,boot_mode,ui/}`
+  (controller layer).
+- Embedded apps: `embedded-poc/m5stack-s3-app/src/{uac,civ,qso,audio,buttons,flash_log}.rs`
+  (M5StickS3, demo / acoustic fallback per Phase B-Stick);
+  `embedded-poc/m5stack-core2-app/src/` (Core2 sibling,
+  wav_sim only).
+- User manual: [`docs/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md)
+  ([JA](MANUAL_M5STICKS3.ja.md)).
 - Infra: `.github/workflows/{ci,release}.yml`.
