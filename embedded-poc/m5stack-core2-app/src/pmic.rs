@@ -98,9 +98,12 @@ pub fn init_lcd_power<'d>(
 
     // ── Enable all power outputs (M5Unified Core2 default) ───────────
     //   bit0 DCDC1 / bit1 DCDC3 / bit2 LDO2 / bit3 LDO3 / bit4 DCDC2 /
-    //   bit6 EXTEN. 0xFF == every rail on except the reserved bit5.
-    write_reg(&mut i2c, REG_POWER_OUT_CTL, 0xFF)?;
-    log::info!("AXP192 power outputs enabled (reg 0x12=0xFF)");
+    //   bit6 EXTEN. bit5 + bit7 reserved per AXP192 datasheet; the
+    //   previous 0xFF wrote `1` into both reserved bits. Switch to the
+    //   intended bit mask 0x5F (bits 0,1,2,3,4,6) so the reserved
+    //   bits stay 0. Gemini PR #76 review.
+    write_reg(&mut i2c, REG_POWER_OUT_CTL, 0x5F)?;
+    log::info!("AXP192 power outputs enabled (reg 0x12=0x5F)");
 
     // Settle the rails before driving the LCD reset.
     FreeRtos::delay_ms(20);

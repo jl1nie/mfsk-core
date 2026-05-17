@@ -87,7 +87,15 @@ fn main() -> ! {
     log::info!("boot_mode: {} (NVS-only on Core2)", mode.label());
 
     // ── WiFi STA + UDP log sink — same path as the s3-app sibling. ──
-    static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
+    // `_wifi_slot` is a local `mut Option<WifiHandle>` (not `static
+    // mut`) because `main` never returns: the eventual
+    // `display::run_log_panel` call below is `-> !`, so the local
+    // outlives every consumer of the WiFi handle. Avoids the
+    // `unsafe { static mut ... }` block + `allow(static_mut_refs)`
+    // that the s3-app sibling needs (s3 cycles modes via reboot, but
+    // Core2 stays in one mode for the life of the binary). Gemini PR
+    // #76 review.
+    let mut _wifi_slot: Option<wifi::WifiHandle> = None;
     let wifi_should_start = mode == boot_mode::BootMode::Wifi && !WIFI_SSID.is_empty();
     if mode == boot_mode::BootMode::Wifi && WIFI_SSID.is_empty() {
         log::warn!(
@@ -125,10 +133,7 @@ fn main() -> ! {
                     }
                     Err(e) => log::warn!("UDP socket bind failed: {e}"),
                 }
-                #[allow(static_mut_refs)]
-                unsafe {
-                    WIFI_SLOT = Some(handle);
-                }
+                _wifi_slot = Some(handle);
             }
             Err(e) => log::warn!("WiFi STA failed: {e:#} — UDP log disabled"),
         }

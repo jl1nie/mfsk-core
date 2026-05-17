@@ -75,6 +75,7 @@ pub(super) const PASS_ID_OSD_A: u8 = 14;
 /// .or_else(|| osd_strategy::try_fallback(...))`).
 pub(super) fn try_fallback(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
+    precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
     depth: DecodeDepth,
     q: u32,
 ) -> Option<(BpResult, u8)> {
@@ -83,10 +84,22 @@ pub(super) fn try_fallback(
     }
 
     // OSD operates on `&[f32]` directly — independent of the embedded
-    // `LlrT` choice — so we compute a fresh f32 LLR bundle here. Only
-    // fires when Steps 1+2 BP failed and `q >= 12`, so the extra
-    // compute_llr is cheap relative to the OSD work itself.
-    let llr_full_f32: super::super::llr::LlrSet<f32> = super::super::llr::compute_llr(cs_scratch);
+    // `LlrT` choice. The caller (`process_one_candidate_inner`)
+    // may pass a pre-computed LLR via `precomputed_llr` so the same
+    // bundle gets reused for both OSD here and the AP loop after —
+    // saves one full `compute_llr` (the nsym=3 LLR is the expensive
+    // one) when both paths fire on the same candidate (Gemini PR #81
+    // review). If `precomputed_llr` is `None` we compute locally
+    // (embedded path with no AP, or callers that haven't been
+    // updated).
+    let owned_llr_storage;
+    let llr_full_f32: &super::super::llr::LlrSet<f32> = match precomputed_llr {
+        Some(llr) => llr,
+        None => {
+            owned_llr_storage = super::super::llr::compute_llr(cs_scratch);
+            &owned_llr_storage
+        }
+    };
 
     // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
     // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,

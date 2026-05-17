@@ -34,22 +34,28 @@ use crate::core::scalar::Cmplx;
 // `Vec<i16>` capacity is grown once per thread and reused across
 // every per-candidate call — replaces the previous per-call
 // `collect::<Vec<i16>>()` that allocated ~360 KB × 30 cand × 3 pass
-// = ~32 MB of allocator traffic per slot (Gemini PR #80 review).
-//
-// Gated on `fft-rustfft` only — matching the usage site's gate in
-// `fill_symbol_spectra_via_cd0`. `fft-rustfft` implies `std` per the
-// Cargo.toml feature closure (`fft-rustfft = ["std", "dep:rustfft"]`)
-// so `std::thread_local!` always resolves on this path. An earlier
-// amend tried to add an explicit `feature = "std"` part for
-// documentation, but Gemini PR #100 r3 pointed out that asymmetry
-// (definition `all(fft-rustfft, std)`, usage `fft-rustfft` only)
-// would break compilation if fft-rustfft were ever enabled without
-// std. Keep the gates symmetric.
+// = ~32 MB of allocator traffic per slot (Gemini PR #80 / #100
+// review). Gated on `fft-rustfft` only — matches the usage site's
+// gate; `fft-rustfft` implies `std` via the Cargo.toml feature
+// closure (`fft-rustfft = ["std", "dep:rustfft"]`).
 #[cfg(feature = "fft-rustfft")]
 std::thread_local! {
     static AUDIO_I16_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
 }
+
+// 32-pt rustfft plan cached at first use. The size is constant
+// (per-symbol DFT in `fill_symbol_spectra_via_cd0`), so building a
+// fresh `FftPlanner` + `plan_fft_forward(32)` per candidate just
+// re-allocates the same twiddle tables (~30 cand × 3 pass = 90 plans
+// per slot). Gemini PR #80 review. `OnceLock` is `Sync` so the same
+// `Arc<dyn Fft>` is shared across all decoder threads; rustfft
+// `Fft::process` is thread-safe (no internal mutable state — it
+// works on the caller's scratch buffer).
+#[cfg(feature = "fft-rustfft")]
+use std::sync::OnceLock;
+#[cfg(feature = "fft-rustfft")]
+static SYMBOL_FFT_32: OnceLock<alloc::sync::Arc<dyn rustfft::Fft<f32>>> = OnceLock::new();
 
 // ── Per-symbol direct DFT (no FFT cache) ────────────────────────────────────
 
@@ -234,8 +240,17 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     // so the first symbol starts at sample (0.5 + dt) × 200.
     let ibest = ((TX_START_OFFSET_S + dt_sec) * 200.0).round() as i32;
 
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(32);
+    // FFT planner + 32-pt plan are constant (size never changes
+    // here); building them inside the candidate loop allocates fresh
+    // twiddle tables per call. Cache once at first use — Gemini PR
+    // #80 review. `Arc<dyn Fft>` is what `plan_fft_forward` returns;
+    // each call here just clones the Arc (~10 ns refcount bump).
+    let fft = SYMBOL_FFT_32
+        .get_or_init(|| {
+            let mut planner = FftPlanner::<f32>::new();
+            planner.plan_fft_forward(32)
+        })
+        .clone();
     let mut buf = [Complex::new(0.0_f32, 0.0); 32];
 
     // WSJT-X scales `cs = csymb / 1e3` (ft8b.f90:159). The /1e3 is

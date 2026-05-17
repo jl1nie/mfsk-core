@@ -208,7 +208,16 @@ pub fn run_log_panel(
         let tx_seq;
         let tx_line_snapshot: heapless::String<48>;
         {
-            let mut ui = UI.lock().expect("UI mutex poisoned");
+            // Skip this render iteration if the UI mutex is poisoned
+            // (i.e. another thread panicked while holding it). Matches
+            // the non-panicking `if let Ok(mut ui) = ...` pattern used
+            // in `decode_pipeline.rs` — keeps the render loop alive
+            // through transient cross-thread panics instead of taking
+            // the main task down with it. Gemini PR #76 review.
+            let Ok(mut ui) = UI.lock() else {
+                log::warn!("UI mutex poisoned — skipping render frame");
+                continue;
+            };
             ui.status.free_heap_kb = (heap / 1024) as u32;
             status_snapshot = ui.status.clone();
             decoded_snapshot = ui

@@ -467,11 +467,18 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
             t += t_stride;
         }
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    // Median via O(N) `select_nth_unstable_by` instead of a full
+    // O(N log N) sort — only the middle element matters here, the
+    // pivot ordering inside the partition is irrelevant. Gemini PR
+    // #81 review.
     let median = if samples.is_empty() {
         0.0
     } else {
-        samples[samples.len() / 2]
+        let mid = samples.len() / 2;
+        samples.select_nth_unstable_by(mid, |a, b| {
+            a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+        });
+        samples[mid]
     };
     let xbase = median * cell_scale;
     if xbase <= 0.0 || !xbase.is_finite() {
@@ -1251,11 +1258,26 @@ where
     // dt is already parabolically refined by coarse_sync; no grid here.
 
     let mut results: Vec<DecodeResult> = Vec::new();
-    // BP scratch pool — instantiated once and reused across all
-    // candidates × all 5 BP calls per candidate. Eliminates the
-    // ~12 KB-per-call `tlsf_malloc` traffic that dominated stage-3
-    // non-DFT cost on Core2 (~50–100 ms / qso). See
-    // `mfsk_core::fec::ldpc::bp::BpScratch`.
+    // BP scratch pool — instantiated once per call to this function
+    // and reused across this call's `cands` × all 5 BP calls per
+    // candidate. Eliminates the ~12 KB-per-BP-call `tlsf_malloc`
+    // traffic that dominated stage-3 non-DFT cost on Core2
+    // (~50–100 ms / qso). See `mfsk_core::fec::ldpc::bp::BpScratch`.
+    //
+    // **Caveat (Gemini PR #81 review, deferred follow-up):** the
+    // host multipass driver in `decode_block_multipass` (line ~250)
+    // calls `process_candidates_tuned_with_ap` ONCE PER CANDIDATE
+    // with a 1-element `vec![cand]` per call, so this scratch is
+    // actually re-allocated on every outer-loop iteration. Lifting
+    // it up to the `decode_block_multipass` loop scope is the right
+    // fix but needs propagating the `LlrT` generic + `&mut
+    // BpScratch` through two wrapping layers
+    // (`process_candidates_tuned_with_ap` → `process_candidates_with_ap`);
+    // tracked as a separate refactor. The non-multipass callers
+    // (`process_candidates_tuned` etc., line 1031) pass multi-cand
+    // vecs so they ALREADY get the documented reuse benefit; the
+    // comment as written was misleading only for the multipass
+    // entry, not for the function itself.
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     for (cand, cs_box, _q_block0) in cands {
@@ -1421,12 +1443,34 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         }
     }
 
+    // Pre-compute the nsym=3 LLR once if BOTH the OSD fallback AND
+    // the AP loop will run on this candidate — both stages use the
+    // same `compute_llr(cs_scratch)` output and recomputing it twice
+    // is the dominant per-candidate cost when OSD fails into AP
+    // (Gemini PR #81 review). Gate: `accepted.is_none()` (Steps 1-2
+    // failed), `depth = BpAllOsd`, `q >= 12` (OSD will fire), and
+    // `ap_hint.is_some()` (AP will follow on OSD failure). On the
+    // embedded path `ap_hint` is always `None`, so this entire
+    // pre-compute is constant-folded away.
+    #[cfg(feature = "fft-rustfft")]
+    let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = if accepted.is_none()
+        && matches!(depth, DecodeDepth::BpAllOsd)
+        && q >= 12
+        && ap_hint.is_some()
+    {
+        Some(super::super::llr::compute_llr(cs_scratch))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "fft-rustfft"))]
+    let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = None;
+
     // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
     // The actual dispatch — including the WSJT-X-faithfulness
     // deviation #63 tracks restoring — lives in `super::osd_strategy`
     // so #63 can patch it without touching the rest of this function.
     if accepted.is_none() {
-        accepted = super::osd_strategy::try_fallback(cs_scratch, depth, q);
+        accepted = super::osd_strategy::try_fallback(cs_scratch, prefetched_llr.as_ref(), depth, q);
     }
 
     // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
@@ -1446,8 +1490,12 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     if accepted.is_none()
         && let Some(ap) = ap_hint
     {
+        // Reuse the pre-computed LLR from above if it ran; otherwise
+        // compute fresh. The unwrap_or_else only fires when the
+        // pre-compute gate was `false` (BpAll with no OSD) but AP
+        // still ran somehow — defensive, but not the dominant path.
         let llr_full_f32: super::super::llr::LlrSet<f32> =
-            super::super::llr::compute_llr(cs_scratch);
+            prefetched_llr.unwrap_or_else(|| super::super::llr::compute_llr(cs_scratch));
         let apmag = llr_full_f32
             .llra
             .iter()

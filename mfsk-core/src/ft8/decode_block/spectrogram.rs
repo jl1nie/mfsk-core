@@ -25,6 +25,18 @@ use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_H
 #[cfg(not(feature = "fixed-point"))]
 use crate::core::fft::default_planner;
 
+// Hann window table for the fixed-point `compute_spectrogram`.
+// Cached at first use — the table is constant in shape and length
+// (NSPS = 1920), so recomputing 1920 `cos()` per call (= per
+// multipass pass) was wasted work on every decode. Gemini PR #83
+// review. `OnceLock` requires `std`; `fixed-point` builds also
+// enable `std` (the embedded path uses `stage1_inc` which has its
+// own cached table), so this is safe.
+#[cfg(all(feature = "fixed-point", feature = "std"))]
+use std::sync::OnceLock;
+#[cfg(all(feature = "fixed-point", feature = "std"))]
+static HANN_NSPS: OnceLock<[i16; NSPS]> = OnceLock::new();
+
 /// Spectrogram cell type. f32 (4 bytes) by default; u16 (2 bytes)
 /// under `fixed-point` — magnitude squared right-shifted by
 /// `FP_SPEC_SHIFT` to fit u16. `Spectrogram::power` returns f32 in
@@ -277,12 +289,40 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     // signals, not just the cross-tone neighbours we predicted, and
     // the auto-gain shift on i16 amplifies that leakage. Keep Hann
     // here (it's also what stage1_inc already does on embedded).
-    let mut hann = [0i16; NSPS];
-    for n in 0..NSPS {
-        let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
-        let w = 0.5 - 0.5 * phase.cos();
-        hann[n] = (w * 32767.0) as i16;
-    }
+    //
+    // Cached in `HANN_NSPS` on `std` builds: the window is constant
+    // in shape + length (NSPS = 1920), so recomputing the 1920
+    // `cos()` calls per `compute_spectrogram` (= per multipass pass)
+    // burned cycles on every decode. `OnceLock` is std-only so the
+    // no_std fixed-point path keeps the per-call recompute — that
+    // path runs on Xtensa anyway, and the embedded production
+    // pipeline routes via `stage1_inc` which has its own cached
+    // Hann (per the comment immediately above). Gemini PR #83 + #101
+    // review.
+    #[cfg(feature = "std")]
+    let hann_cached = HANN_NSPS.get_or_init(|| {
+        let mut table = [0i16; NSPS];
+        for n in 0..NSPS {
+            let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
+            let w = 0.5 - 0.5 * phase.cos();
+            table[n] = (w * 32767.0) as i16;
+        }
+        table
+    });
+    #[cfg(not(feature = "std"))]
+    let hann_local = {
+        let mut table = [0i16; NSPS];
+        for n in 0..NSPS {
+            let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
+            let w = 0.5 - 0.5 * phase.cos();
+            table[n] = (w * 32767.0) as i16;
+        }
+        table
+    };
+    #[cfg(feature = "std")]
+    let hann: &[i16; NSPS] = hann_cached;
+    #[cfg(not(feature = "std"))]
+    let hann: &[i16; NSPS] = &hann_local;
     let pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         for (k, c) in buf.iter_mut().enumerate() {
             let re = if k < NSPS && ia_a + k < audio.len() {
