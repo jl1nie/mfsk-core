@@ -426,10 +426,15 @@ fn coarse_sync_inner(
             .fold(0.0f32, f32::max);
     }
     let base = {
+        // 40th-percentile noise floor: `select_nth_unstable_by` is O(N)
+        // average vs the previous full-sort's O(N log N). Pivot
+        // ordering inside the percentile isn't load-bearing
+        // (downstream only uses `red[pct_idx]` as a normaliser), so
+        // unstable selection is fine. Gemini PR #79 review.
         let mut sorted = red.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let pct_idx = (0.40 * n_freq as f32) as usize;
-        sorted[pct_idx.min(n_freq - 1)].max(f32::EPSILON)
+        let pct_idx = ((0.40 * n_freq as f32) as usize).min(n_freq - 1);
+        sorted.select_nth_unstable_by(pct_idx, |a, b| a.partial_cmp(b).unwrap());
+        sorted[pct_idx].max(f32::EPSILON)
     };
 
     let mut cands: Vec<SyncCandidate> = Vec::new();

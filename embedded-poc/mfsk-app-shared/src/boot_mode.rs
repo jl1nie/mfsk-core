@@ -104,10 +104,27 @@ pub fn write(nvs: &EspNvs<NvsDefault>, mode: BootMode) -> Result<(), esp_idf_svc
 /// `gpio_pin` is the board's KEY1/BtnA pin (the board crate passes
 /// `board::BTN_A_PIN`; on Core2 this will be a different GPIO).
 pub fn override_held_at_boot(gpio_pin: i32) -> bool {
-    use esp_idf_svc::sys::{gpio_get_level, gpio_pullup_en, gpio_set_direction, GPIO_MODE_DEF_INPUT};
-    unsafe {
-        gpio_set_direction(gpio_pin, GPIO_MODE_DEF_INPUT);
-        gpio_pullup_en(gpio_pin);
+    use esp_idf_svc::sys::{
+        ESP_OK, GPIO_MODE_DEF_INPUT, gpio_get_level, gpio_pullup_en, gpio_set_direction,
+    };
+    // Check both gpio_set_direction + gpio_pullup_en return codes —
+    // silent failure would mean a floating input + a default-mode
+    // boot regardless of what the user pressed. Log + fall through
+    // returning `false` so the stored mode wins; better than
+    // pretending the button worked. Gemini PR #76 review.
+    let dir_err = unsafe { gpio_set_direction(gpio_pin, GPIO_MODE_DEF_INPUT) };
+    if dir_err != ESP_OK {
+        log::warn!(
+            "KEY1 gpio_set_direction(pin={gpio_pin}) failed err={dir_err:#x} — override disabled"
+        );
+        return false;
+    }
+    let pull_err = unsafe { gpio_pullup_en(gpio_pin) };
+    if pull_err != ESP_OK {
+        log::warn!(
+            "KEY1 gpio_pullup_en(pin={gpio_pin}) failed err={pull_err:#x} — override disabled"
+        );
+        return false;
     }
     // Settle pull-up. KEY1 is active-low; level 0 = pressed.
     esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
