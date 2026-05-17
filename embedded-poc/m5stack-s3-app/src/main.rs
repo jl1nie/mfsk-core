@@ -10,6 +10,7 @@ mod decode_pipeline;
 mod display;
 mod pmic;
 mod tx;
+mod tx_scheduler;
 mod uac;
 
 use esp_idf_hal::peripherals::Peripherals;
@@ -69,6 +70,8 @@ const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PSK: &str = env!("WIFI_PSK");
 const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
 const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
+const MY_CALL: &str = env!("MY_CALL");
+const MY_GRID: &str = env!("MY_GRID");
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
@@ -80,7 +83,22 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
     log::info!("phase 0.7c: runtime boot-mode (NVS + KEY1 override + KEY2 long-press)");
-    log::info!("build-stamp 2026-05-13-phase07c-bootmode");
+    log::info!("build-stamp 2026-05-17-phase17-qso");
+
+    // Global QSO FSM instance. Empty MY_CALL keeps the FSM Idle so
+    // the TX scheduler / auto-CQ stays a no-op until cfg.toml provides
+    // a real callsign. Wrapped in Arc<Mutex> for the scheduler /
+    // decode_pipeline shared writes.
+    let qso = std::sync::Arc::new(std::sync::Mutex::new(
+        mfsk_app_shared::qso::QsoManager::new(MY_CALL, MY_GRID),
+    ));
+    if MY_CALL.is_empty() {
+        log::warn!(
+            "[station] cfg.toml MY_CALL empty — QSO FSM disabled, TX scheduler stays idle"
+        );
+    } else {
+        log::info!("[station] {} / {} (from cfg.toml)", MY_CALL, MY_GRID);
+    }
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
@@ -304,5 +322,6 @@ fn main() -> ! {
         &FANOUT,
         nvs,
         mode,
+        qso,
     )
 }

@@ -60,6 +60,7 @@ pub fn run_log_panel(
     fanout: &'static LogFanout,
     nvs: EspNvs<NvsDefault>,
     mode: BootMode,
+    qso: std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
 ) -> ! {
     // ── PMIC: M5PM1 経由で LCD 電源 ON。これを欠くと SPI/GPIO が完璧でも
     //   panel は永久に黒。M5GFX board_M5StickS3 と同シーケンス。
@@ -279,8 +280,16 @@ pub fn run_log_panel(
                             if let Err(e) = crate::audio::pa_enable(i2c_drv) {
                                 log::warn!("PA enable failed: {e:#}");
                             }
-                            if let Err(e) = crate::tx::start_test_loop(i2s) {
-                                log::error!("tx test loop spawn failed: {e:#}");
+                            // Phase 1.7-Stick: tx_scheduler replaces the
+                            // standalone test loop. It owns the I2S TX
+                            // driver and pulls TxIntent from the shared
+                            // QSO FSM each slot. With no RX in TxTest
+                            // mode the FSM only sees auto-CQ; replies
+                            // come once we move to BootMode::Qso with
+                            // I2S full-duplex (Phase 1.7.1).
+                            let qso_clone = qso.clone();
+                            if let Err(e) = crate::tx_scheduler::spawn(i2s, qso_clone) {
+                                log::error!("tx_scheduler spawn failed: {e:#}");
                             }
                         }
                         Err(e) => log::warn!("I2S TX init failed: {e:?}"),
@@ -457,10 +466,9 @@ pub fn run_log_panel(
                             df
                         },
                         set_auto_cq: &mut |on: bool| {
-                            // QSO FSM lives in mfsk-app-shared; the QSO
-                            // mutex is held by the TX scheduler (Phase
-                            // 1.7 next commit). For now we only update
-                            // the UiState mirror; scheduler reads it.
+                            if let Ok(mut q) = qso.lock() {
+                                q.set_auto_cq(on);
+                            }
                             log::info!("menu: auto_cq → {}", if on { "ON" } else { "OFF" });
                         },
                     };
