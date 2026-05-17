@@ -26,6 +26,15 @@ pub enum BootMode {
     /// されるため、UDP log 経路を必ず up させる (main.rs dispatch arm
     /// 側で WiFi STA 起動を強制)。Core2 など USB-OTG host を持たない
     /// 板では選んでも no-op (board crate 側でフォールバック)。
+    ///
+    /// **M5StickS3 警告 (2026-05-17 hardware verification)**:
+    /// M5StickS3 は ESP32-S3 silicon としては host 対応だが、board 自体
+    /// に VBUS source 回路 / USB-C ID pin 配線 / host 電源 IC が無く、
+    /// `usb_host_install()` が hang する。実機検証は M5Stack CoreS3
+    /// (AXP2101 + AW9523B) または Espressif ESP32-S3-USB-OTG dev kit
+    /// 待ち。M5StickS3 で Uac を選ぶと黒画面で固まるため、KEY1-held
+    /// cold boot (`flipped()` で Decode へ戻す) で復帰。詳細は memory
+    /// `project_m5stick_s3_no_usb_host`。
     Uac,
 }
 
