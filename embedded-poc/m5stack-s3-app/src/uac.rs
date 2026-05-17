@@ -77,10 +77,13 @@ extern "C" fn driver_event_cb(
 }
 
 /// USB host event-pump body. Blocks indefinitely on
-/// `usb_host_lib_handle_events`; on `NO_CLIENTS` we free any leftover
-/// devices so a unplug+replug sequence enumerates cleanly. `ALL_FREE`
-/// is a notification that uninstall would now be safe — we never
-/// uninstall (BootMode::Uac is sticky until reboot) so it's ignored.
+/// `usb_host_lib_handle_events`. Returned `event_flags` are
+/// intentionally ignored: `NO_CLIENTS` only fires when all class
+/// drivers (= our UAC driver) have been uninstalled — never in our
+/// sticky-install model — and `ALL_FREE` is only useful when
+/// preparing to uninstall the host library, which we also never do.
+/// Device hot-plug events surface through the class driver's own
+/// callback ([`driver_event_cb`]), not these flags.
 fn usb_events_task() {
     // `portMAX_DELAY` is a C macro (not bound by bindgen). FreeRTOS on
     // ESP-IDF defines `TickType_t` as `u32` so the all-ones value =
@@ -104,13 +107,7 @@ fn usb_events_task() {
             esp_idf_svc::hal::delay::FreeRtos::delay_ms(50);
             continue;
         }
-        if event_flags & sys::USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS != 0 {
-            log::info!("uac: USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS — free_all");
-            unsafe { sys::usb_host_device_free_all() };
-        }
-        if event_flags & sys::USB_HOST_LIB_EVENT_FLAGS_ALL_FREE != 0 {
-            log::info!("uac: USB_HOST_LIB_EVENT_FLAGS_ALL_FREE (ignored — sticky install)");
-        }
+        let _ = event_flags;
     }
     log::error!("uac: usb_events_task exiting — host stack gone");
 }
@@ -180,6 +177,14 @@ pub fn start_host() -> Result<()> {
     };
     let err = unsafe { sys::uac::uac_host_install(&uac_config as *const _) };
     if err != sys::ESP_OK as sys::esp_err_t {
+        // Roll back the host stack so the controller doesn't sit half-
+        // up. `usb_host_uninstall` returns ESP_ERR_INVALID_STATE if any
+        // client is still installed (won't apply here — the UAC client
+        // didn't register) but we tolerate the err either way; the
+        // pump task will see INVALID_STATE on its next handle_events
+        // call and exit cleanly.
+        let _ = unsafe { sys::usb_host_uninstall() };
+        log::info!("uac: rolled back usb_host_install after uac_host_install failure");
         return Err(anyhow!("uac_host_install failed (err={err:#x})"));
     }
 
