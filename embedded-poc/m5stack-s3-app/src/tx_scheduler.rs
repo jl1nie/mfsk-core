@@ -122,7 +122,11 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
         // Build the 77-bit message. pack77 wants 3 string args
         // (call1, call2, report) — TxIntent stores them separately,
         // and `formatted()` is for display only. Use the raw fields.
-        let msg77 = match pack77(intent.call1.as_str(), intent.call2.as_str(), intent.report.as_str()) {
+        let msg77 = match pack77(
+            intent.call1.as_str(),
+            intent.call2.as_str(),
+            intent.report.as_str(),
+        ) {
             Some(m) => m,
             None => {
                 log::warn!(

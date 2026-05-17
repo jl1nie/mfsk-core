@@ -71,8 +71,7 @@ fn extract_dx_call(text: &str) -> Option<heapless::String<11>> {
     if toks.is_empty() {
         return None;
     }
-    const DIRECTIONALS: &[&str] =
-        &["DX", "NA", "SA", "EU", "AF", "AS", "OC", "JA", "US", "POTA"];
+    const DIRECTIONALS: &[&str] = &["DX", "NA", "SA", "EU", "AF", "AS", "OC", "JA", "US", "POTA"];
     let start_idx = if toks[0].eq_ignore_ascii_case("CQ") {
         if toks.len() >= 2 && DIRECTIONALS.iter().any(|d| d.eq_ignore_ascii_case(toks[1])) {
             2
@@ -192,8 +191,8 @@ pub fn run_log_panel(
                     // rate the I2S master generates.
                     use esp_idf_hal::i2s::{
                         config::{
-                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
-                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple, SlotMode,
+                            StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
                         },
                         I2sDriver,
                     };
@@ -206,10 +205,10 @@ pub fn run_log_panel(
                     match I2sDriver::new_std_tx(
                         i2s0,
                         &i2s_cfg,
-                        pins.gpio17,         // BCLK
-                        pins.gpio14,         // DOUT (S3 → codec)
-                        Some(pins.gpio18),   // MCLK
-                        pins.gpio15,         // WS / LRCK
+                        pins.gpio17,       // BCLK
+                        pins.gpio14,       // DOUT (S3 → codec)
+                        Some(pins.gpio18), // MCLK
+                        pins.gpio15,       // WS / LRCK
                     ) {
                         Ok(i2s) => {
                             if let Err(e) = crate::audio::pa_enable(i2c_drv) {
@@ -241,8 +240,8 @@ pub fn run_log_panel(
                 } else {
                     use esp_idf_hal::i2s::{
                         config::{
-                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
-                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple, SlotMode,
+                            StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
                         },
                         I2sDriver,
                     };
@@ -261,10 +260,10 @@ pub fn run_log_panel(
                     match I2sDriver::new_std_rx(
                         i2s0,
                         &i2s_cfg,
-                        pins.gpio17,         // BCLK
-                        pins.gpio16,         // DIN (codec → S3)
-                        Some(pins.gpio18),   // MCLK
-                        pins.gpio15,         // WS / LRCK
+                        pins.gpio17,       // BCLK
+                        pins.gpio16,       // DIN (codec → S3)
+                        Some(pins.gpio18), // MCLK
+                        pins.gpio15,       // WS / LRCK
                     ) {
                         Ok(i2s) => {
                             if let Err(e) = std::thread::Builder::new()
@@ -306,8 +305,8 @@ pub fn run_log_panel(
                     }
                     use esp_idf_hal::i2s::{
                         config::{
-                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
-                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple, SlotMode,
+                            StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
                         },
                         I2sDriver,
                     };
@@ -354,8 +353,8 @@ pub fn run_log_panel(
                 } else {
                     use esp_idf_hal::i2s::{
                         config::{
-                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
-                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple, SlotMode,
+                            StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
                         },
                         I2sDriver,
                     };
@@ -368,10 +367,10 @@ pub fn run_log_panel(
                     match I2sDriver::new_std_tx(
                         i2s0,
                         &i2s_cfg,
-                        pins.gpio17,         // BCLK
-                        pins.gpio14,         // DOUT (S3 → codec)
-                        Some(pins.gpio18),   // MCLK
-                        pins.gpio15,         // WS / LRCK
+                        pins.gpio17,       // BCLK
+                        pins.gpio14,       // DOUT (S3 → codec)
+                        Some(pins.gpio18), // MCLK
+                        pins.gpio15,       // WS / LRCK
                     ) {
                         Ok(i2s) => {
                             // PA enable so the synthesised tones hit
@@ -412,8 +411,8 @@ pub fn run_log_panel(
     )
     .expect("SPI3 driver");
     let spi_cfg = SpiConfig::new().baudrate(40_u32.MHz().into());
-    let spi_dev = SpiDeviceDriver::new(driver, Some(pins.gpio41), &spi_cfg)
-        .expect("SPI device (CS=41)");
+    let spi_dev =
+        SpiDeviceDriver::new(driver, Some(pins.gpio41), &spi_cfg).expect("SPI device (CS=41)");
 
     let dc = PinDriver::output(pins.gpio45).expect("DC gpio45");
     let rst = PinDriver::output(pins.gpio21).expect("RST gpio21");
@@ -512,11 +511,7 @@ pub fn run_log_panel(
             // KEY2 long-press still does boot-mode flip (legacy path
             // for diagnostic mode switching). BtnA/BtnB short-presses
             // outside the menu remain no-ops for now.
-            let menu_visible_now = UI
-                .lock()
-                .ok()
-                .map(|u| u.menu_visible)
-                .unwrap_or(false);
+            let menu_visible_now = UI.lock().ok().map(|u| u.menu_visible).unwrap_or(false);
             match (ev, menu_visible_now) {
                 (ButtonEvent::LongPress(Key::Key2), _) => {
                     if menu_visible_now {
@@ -591,9 +586,7 @@ pub fn run_log_panel(
                                 ui.sync_mark_pending = true;
                                 ui.bump_menu(); // force TX strip repaint
                             }
-                            log::info!(
-                                "BtnA: no row selected → manual slot-sync mark issued"
-                            );
+                            log::info!("BtnA: no row selected → manual slot-sync mark issued");
                         } else {
                             log::info!("BtnA: sync mark suppressed (debounce)");
                         }
@@ -715,7 +708,10 @@ pub fn run_log_panel(
         //    when no new decodes land.
         let status_snapshot;
         let decoded_snapshot;
-        let wf_snapshot: heapless::Vec<mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }>;
+        let wf_snapshot: heapless::Vec<
+            mfsk_app_shared::ui::state::WfLine,
+            { mfsk_app_shared::ui::state::WF_DEPTH },
+        >;
         let decoded_fp;
         let wf_seq;
         let tx_seq;
@@ -729,10 +725,7 @@ pub fn run_log_panel(
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
             status_snapshot = ui.status.clone();
-            decoded_snapshot = ui
-                .decoded_iter()
-                .cloned()
-                .collect::<heapless::Vec<_, 16>>();
+            decoded_snapshot = ui.decoded_iter().cloned().collect::<heapless::Vec<_, 16>>();
             wf_snapshot = ui.waterfall_iter().cloned().collect();
             wf_seq = ui.wf_push_seq();
             tx_seq = ui.tx_seq();
@@ -795,8 +788,10 @@ pub fn run_log_panel(
         // `wf_push_seq` so the redraw still fires after the ring
         // saturates at WF_DEPTH (= ~8 s into runtime).
         if wf_seq != last_wf_seq {
-            let wf_refs: heapless::Vec<&mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }> =
-                wf_snapshot.iter().collect();
+            let wf_refs: heapless::Vec<
+                &mfsk_app_shared::ui::state::WfLine,
+                { mfsk_app_shared::ui::state::WF_DEPTH },
+            > = wf_snapshot.iter().collect();
             waterfall::render(&mut display, &wf_refs).ok();
             last_wf_seq = wf_seq;
         }

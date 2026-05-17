@@ -243,7 +243,10 @@ async fn run_session() -> Result<()> {
             if let Some(name) = data.name() {
                 let name_str = core::str::from_utf8(name).unwrap_or("");
                 if name_str.starts_with("ICOM") || name_str.starts_with("IC-705") {
-                    log::info!("civ: found IC-705 by name: '{name_str}' addr={:?}", dev.addr());
+                    log::info!(
+                        "civ: found IC-705 by name: '{name_str}' addr={:?}",
+                        dev.addr()
+                    );
                     return Some(*dev);
                 }
             }
@@ -371,8 +374,14 @@ async fn run_session() -> Result<()> {
         let target = PTT_TARGET.load(Ordering::Acquire);
         if last_ptt_sent != Some(target) {
             let frame = [
-                PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR,
-                0x1C, 0x00, if target { 0x01 } else { 0x00 }, POST,
+                PRE,
+                PRE,
+                CIV_IC705_ADDR,
+                CIV_CTRL_ADDR,
+                0x1C,
+                0x00,
+                if target { 0x01 } else { 0x00 },
+                POST,
             ];
             if let Err(e) = characteristic.write_value(&frame, false).await {
                 log::warn!("civ: PTT write failed: {e:?}");
@@ -389,8 +398,17 @@ async fn run_session() -> Result<()> {
         if freq_target != 0 && last_freq_sent != Some(freq_target) {
             let bcd = freq_to_bcd_le(freq_target);
             let frame = [
-                PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR,
-                0x05, bcd[0], bcd[1], bcd[2], bcd[3], bcd[4], POST,
+                PRE,
+                PRE,
+                CIV_IC705_ADDR,
+                CIV_CTRL_ADDR,
+                0x05,
+                bcd[0],
+                bcd[1],
+                bcd[2],
+                bcd[3],
+                bcd[4],
+                POST,
             ];
             if let Err(e) = characteristic.write_value(&frame, false).await {
                 log::warn!("civ: set_freq write failed: {e:?}");
@@ -407,7 +425,17 @@ async fn run_session() -> Result<()> {
             // Only USB-DATA narrow is implemented; future variants add
             // their own subcommand bytes here.
             let frame = if mode_target == MODE_USB_DATA {
-                [PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR, 0x06, 0x01, 0x01, 0x02, POST]
+                [
+                    PRE,
+                    PRE,
+                    CIV_IC705_ADDR,
+                    CIV_CTRL_ADDR,
+                    0x06,
+                    0x01,
+                    0x01,
+                    0x02,
+                    POST,
+                ]
             } else {
                 log::warn!("civ: unknown MODE_TARGET 0x{mode_target:02X}, skipping");
                 last_mode_sent = Some(mode_target);
@@ -425,10 +453,7 @@ async fn run_session() -> Result<()> {
         // a supplementary time source — `time_sync` still falls back
         // on self-sync from coarse_sync DT median).
         if last_gps_query.elapsed() >= Duration::from_secs(30) {
-            let frame = [
-                PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR,
-                0x23, 0x00, POST,
-            ];
+            let frame = [PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR, 0x23, 0x00, POST];
             if let Err(e) = characteristic.write_value(&frame, false).await {
                 log::warn!("civ: GPS query write failed: {e:?}");
             }

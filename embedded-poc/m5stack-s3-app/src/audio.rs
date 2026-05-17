@@ -19,7 +19,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
-use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box, try_recv_box};
+use embedded_shared::pipeline::{send_box, try_recv_box, ChunkMsg, CHUNK_LEN};
 use esp_idf_hal::{
     delay::TickType,
     i2c::I2cDriver,
@@ -458,9 +458,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     while CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire) == 0 {
         FreeRtos::delay_ms(10);
         if wait_start.elapsed().as_secs() >= 10 {
-            log::warn!(
-                "audio capture: chunk_q still unset after 10 s — enabling I2S anyway"
-            );
+            log::warn!("audio capture: chunk_q still unset after 10 s — enabling I2S anyway");
             break;
         }
     }
@@ -470,9 +468,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     );
 
     i2s.rx_enable().expect("I2S rx_enable");
-    log::info!(
-        "audio capture: streaming I2S RX (48 kHz stereo → L extract → 12 kHz mono, prio 8)"
-    );
+    log::info!("audio capture: streaming I2S RX (48 kHz stereo → L extract → 12 kHz mono, prio 8)");
 
     // Move big buffers to heap so the thread stack stays under 6 KB
     // (internal DRAM is tight after BASIS + stage1_inc + dual_core —
@@ -534,7 +530,8 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
             }
             log::info!(
                 "audio capture: SYNC_RESET applied (drained {} chunks, was {} samples into slot)",
-                drained, slot_samples
+                drained,
+                slot_samples
             );
             chunk.clear();
             slot_samples = 0;
@@ -542,7 +539,10 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
             resampler = LinearResamplerI16To12k::new(48_000);
         }
 
-        let bytes_read = match i2s.read(&mut buf[..], TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
+        let bytes_read = match i2s.read(
+            &mut buf[..],
+            TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks(),
+        ) {
             Ok(n) => n,
             Err(e) => {
                 CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
@@ -589,10 +589,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
             for &s in &dst_scratch[..produced] {
                 chunk.push(s);
                 if chunk.len() >= CHUNK_LEN {
-                    let to_send = core::mem::replace(
-                        &mut chunk,
-                        Vec::with_capacity(CHUNK_LEN),
-                    );
+                    let to_send = core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
                     send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
                     slot_samples += CHUNK_LEN;
                     if slot_samples >= slot_end_target {
@@ -608,8 +605,7 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
                         // median). Apply once as a one-shot adjustment
                         // to the next slot length; the producer side
                         // posts 0 in steady state so this is idempotent.
-                        let shift =
-                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        let shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
                         // shift is signed, capped at ±2400 samples
                         // (±0.2 s) by decode_pipeline so the slot
                         // length always lands in [177_600, 182_400],
@@ -700,9 +696,7 @@ pub fn capture_tx_thread(
     while CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire) == 0 {
         FreeRtos::delay_ms(10);
         if wait_start.elapsed().as_secs() >= 10 {
-            log::warn!(
-                "audio capture+tx: chunk_q still unset after 10 s — enabling I2S anyway"
-            );
+            log::warn!("audio capture+tx: chunk_q still unset after 10 s — enabling I2S anyway");
             break;
         }
     }
@@ -765,7 +759,8 @@ pub fn capture_tx_thread(
             }
             log::info!(
                 "audio capture+tx: SYNC_RESET applied (drained {} chunks, was {} samples in)",
-                drained, slot_samples
+                drained,
+                slot_samples
             );
             chunk.clear();
             slot_samples = 0;
@@ -794,7 +789,10 @@ pub fn capture_tx_thread(
         }
 
         // ── RX iteration (same shape as capture_thread) ───────────
-        let bytes_read = match i2s.read(&mut buf[..], TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
+        let bytes_read = match i2s.read(
+            &mut buf[..],
+            TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks(),
+        ) {
             Ok(n) => n,
             Err(e) => {
                 CAPTURE_ERRORS.fetch_add(1, Ordering::Relaxed);
@@ -846,10 +844,9 @@ pub fn capture_tx_thread(
                                 total_samples: slot_samples,
                             }),
                         );
-                        let shift =
-                            mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
-                        let next_target = (CAPTURE_SLOT_SAMPLES_12K as i32 + shift)
-                            .max(60_000) as usize;
+                        let shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
+                        let next_target =
+                            (CAPTURE_SLOT_SAMPLES_12K as i32 + shift).max(60_000) as usize;
                         slot_end_target = next_target;
                         wav_idx = wav_idx.wrapping_add(1);
                         slot_samples = 0;
@@ -914,12 +911,13 @@ fn do_tx_cycle(
     let df_hz = if df_hz == 0 { 1500u16 } else { df_hz };
 
     let formatted = intent.formatted();
-    log::info!(
-        "audio TX: firing → '{}' @ {df_hz} Hz",
-        formatted.as_str()
-    );
+    log::info!("audio TX: firing → '{}' @ {df_hz} Hz", formatted.as_str());
 
-    let msg77 = match pack77(intent.call1.as_str(), intent.call2.as_str(), intent.report.as_str()) {
+    let msg77 = match pack77(
+        intent.call1.as_str(),
+        intent.call2.as_str(),
+        intent.report.as_str(),
+    ) {
         Some(m) => m,
         None => {
             log::warn!("audio TX: pack77 failed, skipping slot");

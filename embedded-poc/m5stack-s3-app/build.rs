@@ -35,8 +35,8 @@ fn main() {
     let (ssid, psk, pc_ip, port, my_call, my_grid) = if cfg_path.exists() {
         let txt = std::fs::read_to_string(&cfg_path)
             .unwrap_or_else(|e| panic!("read {}: {}", cfg_path.display(), e));
-        let v: toml::Value = toml::from_str(&txt)
-            .unwrap_or_else(|e| panic!("parse {}: {}", cfg_path.display(), e));
+        let v: toml::Value =
+            toml::from_str(&txt).unwrap_or_else(|e| panic!("parse {}: {}", cfg_path.display(), e));
         let wifi = v
             .get("wifi")
             .and_then(|t| t.as_table())

@@ -7,9 +7,7 @@
 //!
 //! Active-low with internal pull-up; `pressed = level == 0`.
 
-use esp_idf_svc::sys::{
-    gpio_get_level, gpio_pullup_en, gpio_set_direction, GPIO_MODE_DEF_INPUT,
-};
+use esp_idf_svc::sys::{gpio_get_level, gpio_pullup_en, gpio_set_direction, GPIO_MODE_DEF_INPUT};
 
 use crate::board::{BTN_A_PIN, BTN_B_PIN};
 

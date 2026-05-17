@@ -47,7 +47,10 @@ pub fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
     const BYTES: usize = BASIS_SCRATCH_LEN * core::mem::size_of::<i16>();
     let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     let raw = unsafe { heap_caps_aligned_alloc(16, BYTES, caps) } as *mut i16;
-    assert!(!raw.is_null(), "BASIS {label} alloc failed ({BYTES} B internal DRAM)");
+    assert!(
+        !raw.is_null(),
+        "BASIS {label} alloc failed ({BYTES} B internal DRAM)"
+    );
     assert_eq!(
         raw as usize & 0xF,
         0,
@@ -93,9 +96,7 @@ fn main() -> ! {
         mfsk_app_shared::qso::QsoManager::new(MY_CALL, MY_GRID),
     ));
     if MY_CALL.is_empty() {
-        log::warn!(
-            "[station] cfg.toml MY_CALL empty — QSO FSM disabled, TX scheduler stays idle"
-        );
+        log::warn!("[station] cfg.toml MY_CALL empty — QSO FSM disabled, TX scheduler stays idle");
     } else {
         log::info!("[station] {} / {} (from cfg.toml)", MY_CALL, MY_GRID);
     }
@@ -107,13 +108,8 @@ fn main() -> ! {
     // 取って両方に clone で渡す。
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
-    let _stored = boot_mode::determine(&nvs, board::BTN_A_PIN);
-    // TEMP 2026-05-17: force Decode (= wav_sim, BootMode::Decode)
-    // to establish baseline decode count on qso3_busy.wav for the
-    // Phase 1.7.7 BASIS vs SPEC LOOKUP comparison. Revert to
-    // `let mode = _stored;` before merging upstream.
-    let mode = boot_mode::BootMode::Decode;
-    log::info!("boot_mode: {} (TEMP force-override, Phase 1.7.7 baseline)", mode.label());
+    let mode = boot_mode::determine(&nvs, board::BTN_A_PIN);
+    log::info!("boot_mode: {}", mode.label());
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)
@@ -142,7 +138,13 @@ fn main() -> ! {
     }
     if wifi_should_start {
         let sysloop = EspSystemEventLoop::take().expect("sysloop");
-        match wifi::connect_sta(peripherals.modem, sysloop, Some(nvs_part.clone()), WIFI_SSID, WIFI_PSK) {
+        match wifi::connect_sta(
+            peripherals.modem,
+            sysloop,
+            Some(nvs_part.clone()),
+            WIFI_SSID,
+            WIFI_PSK,
+        ) {
             Ok(handle) => {
                 // `pc_ip = "auto"` (or empty) → use the directed
                 // subnet broadcast learned from DHCP. Otherwise treat
@@ -225,13 +227,11 @@ fn main() -> ! {
             // (bidir I2S) for the radio control surface. Acoustic
             // stays as the lightweight diagnostic / Phase 1.5 demo.
             log_free_internal("pre-thread-spawn");
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(|| {
-                    decode_pipeline::run_with_source(|chunk_q| {
-                        audio::set_chunk_q(chunk_q);
-                    })
-                });
+            let pipeline_spawn = std::thread::Builder::new().stack_size(32 * 1024).spawn(|| {
+                decode_pipeline::run_with_source(|chunk_q| {
+                    audio::set_chunk_q(chunk_q);
+                })
+            });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Acoustic) spawn failed ({e})");
             }
@@ -259,16 +259,17 @@ fn main() -> ! {
             }
             log_free_internal("pre-thread-spawn");
             let qso_for_pipeline = qso.clone();
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(move || {
-                    decode_pipeline::run_with_source_qso(
-                        |chunk_q| {
-                            audio::set_chunk_q(chunk_q);
-                        },
-                        Some(qso_for_pipeline),
-                    )
-                });
+            let pipeline_spawn =
+                std::thread::Builder::new()
+                    .stack_size(32 * 1024)
+                    .spawn(move || {
+                        decode_pipeline::run_with_source_qso(
+                            |chunk_q| {
+                                audio::set_chunk_q(chunk_q);
+                            },
+                            Some(qso_for_pipeline),
+                        )
+                    });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Qso) spawn failed ({e})");
             }
@@ -296,13 +297,11 @@ fn main() -> ! {
             // by design (a few hundred ms of audio drops while
             // pipeline init races UAC enumeration).
             log_free_internal("pre-thread-spawn");
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(|| {
-                    decode_pipeline::run_with_source(|chunk_q| {
-                        uac::set_chunk_q(chunk_q);
-                    })
-                });
+            let pipeline_spawn = std::thread::Builder::new().stack_size(32 * 1024).spawn(|| {
+                decode_pipeline::run_with_source(|chunk_q| {
+                    uac::set_chunk_q(chunk_q);
+                })
+            });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Uac) spawn failed ({e})");
             }

@@ -72,7 +72,7 @@ pub fn synthesize_message77(msg77: &[u8; 77], f0_hz: f32) -> Result<Vec<i16>> {
 /// rationale (DMA underrun headroom vs ringbuf overhead).
 pub fn play(i2s: &mut I2sDriver<'static, I2sTx>, samples_12k: &[i16]) -> Result<()> {
     const IN_CHUNK: usize = 240; // 20 ms @ 12 kHz
-    // 4× ZOH × stereo (L=R) × i16 = 16 bytes per input sample
+                                 // 4× ZOH × stereo (L=R) × i16 = 16 bytes per input sample
     const OUT_BYTES_PER_IN: usize = 16;
     let mut out = vec![0u8; IN_CHUNK * OUT_BYTES_PER_IN];
     for chunk in samples_12k.chunks(IN_CHUNK) {
