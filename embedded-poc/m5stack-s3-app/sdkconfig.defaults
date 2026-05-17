@@ -51,9 +51,18 @@ CONFIG_LWIP_TCP_ENABLED=y
 CONFIG_LWIP_UDP_ENABLED=y
 
 # ── USB Host (UAC capture) ───────────────────────────────────────────
-# Phase 1 で有効化 (recipe.c port 時)。Phase 0.6 では DRAM 節約のため
-# 無効化 — WiFi STA + decode_pipeline が同時に動く余地を確保。
-CONFIG_USB_HOST_ENABLED=n
+# Phase 1: IC-705 audio capture via espressif/usb_host_uac 1.4.x
+# (managed component pulled in via Cargo.toml extra_components). Host
+# stack を常時 link し、runtime には `BootMode::Uac` でのみ
+# `uac_host_install()` を呼ぶ。Host driver は ~20-30 KB DRAM を常時
+# 消費する (BootMode::Decode/Wifi でも) が、boot-time mode dispatch
+# で機能切り替えする方が field UX として簡潔。
+#
+# 注意: USB host を install すると USB-Serial-JTAG endpoint が
+# auto-detach され、`println!` 系の console は USB 経路から消える。
+# `BootMode::Uac` では WiFi STA + UDP log を必ず up させること
+# (main.rs dispatch arm 側で強制)。
+CONFIG_USB_HOST_ENABLED=y
 
 # ── PSRAM (Octal 8 MB) ────────────────────────────────────────────────
 CONFIG_SPIRAM=y
