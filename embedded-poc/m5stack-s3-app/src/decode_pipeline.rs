@@ -30,9 +30,7 @@ const MY_CALL: &str = env!("MY_CALL");
 const MY_GRID: &str = env!("MY_GRID");
 
 /// 開発用 WAV (qso3_busy のみ単独ループ — UI 構築用に最も多くのデコード結果を出す)。
-static QSO_WAVS: &[&[u8]] = &[
-    include_bytes!("../../assets/qso3_busy.wav"),
-];
+static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
@@ -86,17 +84,28 @@ pub fn run_with_source_qso<F>(
 where
     F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
 {
-    let need = mfsk_ft8_basis_scratch_len();
-    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
-
-    crate::log_free_internal("pre-basis-alloc");
-    let basis_re_main = crate::alloc_basis_dram("RE_main");
-    let basis_im_main = crate::alloc_basis_dram("IM_main");
-    let basis_re_c1 = crate::alloc_basis_dram("RE_c1");
-    let basis_im_c1 = crate::alloc_basis_dram("IM_c1");
-    crate::log_free_internal("post-basis-alloc");
-    let basis_re_c1_ptr = basis_re_c1.as_mut_ptr();
-    let basis_im_c1_ptr = basis_im_c1.as_mut_ptr();
+    // Phase 1.7.7-Stick: BASIS scratch retired — `mfsk-core` now uses
+    // Goertzel (zero internal-DRAM scratch) for both pass-2
+    // (`refine_candidates_into`) and stage-3
+    // (`process_candidates_into_with_cs_scratch_tuned`) cs builds.
+    // The 4 × 30 KB = 120 KB internal DRAM that used to live here
+    // (one `BASIS_SCRATCH_LEN` i16 buffer per (re/im, main/worker
+    // dual_core)) is now free for Qso-mode I2S bidir DMA descriptors
+    // (the `i2s_alloc_dma_desc` largest=7680 KB requirement that
+    // tripped on the old layout).
+    //
+    // `dual_core::pass2_split` / `stage3_split` and `dual_core::init`
+    // still take `basis_re` / `basis_im` slice / pointer parameters
+    // for API compat — they're unused inside mfsk-core but threaded
+    // through the dispatcher boilerplate. Pass empty slices / null
+    // pointers; mfsk-core no longer dereferences them.
+    let _ = mfsk_ft8_basis_scratch_len();
+    let _ = BASIS_SCRATCH_LEN;
+    crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
+    let basis_re_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_im_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_re_c1_ptr: *mut i16 = core::ptr::null_mut();
+    let basis_im_c1_ptr: *mut i16 = core::ptr::null_mut();
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
@@ -130,7 +139,9 @@ where
         .spawn(move || wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t))
         .expect("spawn wf drainer");
 
-    log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)");
+    log::info!(
+        "decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)"
+    );
 
     // QSO FSM. Production modes (Acoustic / Qso) pass a shared
     // `Arc<Mutex<QsoManager>>` so the TX scheduler / menu UI see the
@@ -144,10 +155,7 @@ where
     // Initial CQ if configured + auto-CQ on.
     {
         let mut q = qso.lock().expect("qso lock");
-        if q.auto_cq_enabled
-            && !q.my_call.is_empty()
-            && q.state == QsoState::Idle
-        {
+        if q.auto_cq_enabled && !q.my_call.is_empty() && q.state == QsoState::Idle {
             let initial = q.call_cq(None);
             push_tx_line(&q, Some(&initial));
         } else {
@@ -181,8 +189,8 @@ where
     //                   (+1 / -1; 0 = none).
     let mut drift_streak: u8 = 0;
     let mut last_drift_sign: i8 = 0;
-    let mut sync_gen_observed: u32 = crate::audio::SYNC_RESET_GEN
-        .load(core::sync::atomic::Ordering::Acquire);
+    let mut sync_gen_observed: u32 =
+        crate::audio::SYNC_RESET_GEN.load(core::sync::atomic::Ordering::Acquire);
     loop {
         // 広帯域受信 (200..3000 Hz)。phantom (qso3_busy で 3/7 件) は
         // UI に "?" 付きで表示するが、QSO FSM / TX picker は
@@ -231,13 +239,10 @@ where
         // texture; the click was an alarm.
         // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
 
-        let pass2 = dual_core::pass2_split(
-            &slot.audio,
-            pass1,
-            MAX_CAND,
-            basis_re_main,
-            basis_im_main,
-        );
+        let t_pass2 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        let pass2 =
+            dual_core::pass2_split(&slot.audio, pass1, MAX_CAND, basis_re_main, basis_im_main);
+        let t_stage3 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
         let depth = DecodeDepth::BpAll;
         let results = dual_core::stage3_split(
@@ -249,8 +254,15 @@ where
             basis_re_main,
             basis_im_main,
         );
+        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
-        log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
+        log::info!(
+            "WAV[{wav_idx}] p1={n_pass1} dec={} pass2={}us stage3={}us total={}us",
+            results.len(),
+            t_stage3 - t_pass2,
+            t_done - t_stage3,
+            t_done - t_pass2
+        );
         slot_seq = slot_seq.wrapping_add(1);
         // Publish to UiState so decoded_list renders GREEN only for
         // rows whose `slot_seq == latest_slot_seq` — fixes the
@@ -267,8 +279,7 @@ where
         // resets that landed while we were blocked in `recv_box`, so
         // the first post-BtnA decode would set HWM then have it cleared
         // on the next iteration — undoing the lock.
-        let cur_gen = crate::audio::SYNC_RESET_GEN
-            .load(core::sync::atomic::Ordering::Acquire);
+        let cur_gen = crate::audio::SYNC_RESET_GEN.load(core::sync::atomic::Ordering::Acquire);
         if cur_gen != sync_gen_observed {
             log::info!(
                 "  auto-sync: BtnA generation {sync_gen_observed} → {cur_gen}, HWM cleared (was best_n={best_n})"
@@ -293,22 +304,22 @@ where
         //   Larger drifts converge over several HWM-update slots.
         const ALIGN_OK_SEC: f32 = 0.05;
         const MAX_SHIFT_SAMPLES: i32 = 2400; // ±0.2 s — pair 91 still completes
-        // Tiered drift detection (Phase 1.7.6 Strategy D, 2026-05-17):
-        //
-        // Tier 1 — HIGH-TRUST IMMEDIATE: a slot more trustworthy than
-        //   the current lock (N > best_n) with statistical confidence
-        //   (N ≥ 3) and clear drift (|DT| > 0.5 s) triggers immediate
-        //   reset. Catches "band peaks reveal drift" within one slot.
-        //
-        // Tier 2 — PERSISTENCE SAFETY-NET: even on a quiet band
-        //   where Tier 1 never fires, 3 consecutive slots with N ≥ 2
-        //   showing |DT| > 0.3 s in the SAME sign direction trigger
-        //   reset. Same-sign requirement rejects bidirectional noise
-        //   (random outliers cancel). Catches slow PPM-level drift
-        //   that accumulates beyond FT8 tolerance over time.
-        //
-        // Either tier resets best_n=0; the subsequent HWM-update
-        // path then re-locks using THIS slot's median.
+                                             // Tiered drift detection (Phase 1.7.6 Strategy D, 2026-05-17):
+                                             //
+                                             // Tier 1 — HIGH-TRUST IMMEDIATE: a slot more trustworthy than
+                                             //   the current lock (N > best_n) with statistical confidence
+                                             //   (N ≥ 3) and clear drift (|DT| > 0.5 s) triggers immediate
+                                             //   reset. Catches "band peaks reveal drift" within one slot.
+                                             //
+                                             // Tier 2 — PERSISTENCE SAFETY-NET: even on a quiet band
+                                             //   where Tier 1 never fires, 3 consecutive slots with N ≥ 2
+                                             //   showing |DT| > 0.3 s in the SAME sign direction trigger
+                                             //   reset. Same-sign requirement rejects bidirectional noise
+                                             //   (random outliers cancel). Catches slow PPM-level drift
+                                             //   that accumulates beyond FT8 tolerance over time.
+                                             //
+                                             // Either tier resets best_n=0; the subsequent HWM-update
+                                             // path then re-locks using THIS slot's median.
         const TIER1_DT_SEC: f32 = 0.5;
         const TIER1_MIN_N: usize = 3;
         const TIER2_DT_SEC: f32 = 0.3;
@@ -456,7 +467,10 @@ where
                     ui.push_decode(row);
                     log::info!(
                         "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
-                        r.freq_hz, calibrated_snr, r.snr_db, text
+                        r.freq_hz,
+                        calibrated_snr,
+                        r.snr_db,
+                        text
                     );
                     // Feed the FSM. SNR set first so an in-band reply
                     // ("JL1NIE W1AW FN31") gets reported with the

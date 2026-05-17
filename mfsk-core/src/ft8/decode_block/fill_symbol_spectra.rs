@@ -617,6 +617,101 @@ pub fn fill_symbol_spectra_into_generic<Sc: crate::core::scalar::SpecScalar, S: 
     }
 }
 
+/// Per-symbol DFT via **generalised Goertzel** — drop-in for
+/// `fill_symbol_spectra_into` (the cfg-gated `fixed-point`-only BASIS
+/// dot-product variant) with **zero caller-provided scratch**.
+///
+/// Same output (`Σ x[n] exp(-jωn)` for each tone at `ω = 2π·f/Fs`
+/// across NSPS=1920 samples), produced via a 2-tap IIR recursion
+/// instead of the BASIS sin/cos dot-product. Saves the 60 KB × 2
+/// (re/im) × 2 (dual_core) = 120 KB internal-DRAM basis scratch on
+/// embedded — the whole point of Phase 1.7.7-Stick.
+///
+/// Algorithm (per `(sym, tone)`):
+/// ```text
+/// ω      = 2π · tone_freq / Fs
+/// coeff  = 2·cos(ω)
+/// s[-2] = s[-1] = 0
+/// for n in 0..NSPS:
+///     s[n] = x[i0 + sym·NSPS + n] + coeff·s[n-1] - s[n-2]
+/// X(ω)   = s[N-1] - exp(-jω)·s[N-2]
+///        = (s_prev - cos(ω)·s_prev2) + j·sin(ω)·s_prev2
+/// ```
+/// Per-(sym, tone) state = 3 f32 values; per-call all-tones state =
+/// `[f32; NTONES] × 2 = 64 B` on the stack.
+///
+/// **Loop order**: sample-outer / tone-inner. The 8 Goertzel
+/// recursions for one symbol are independent (no cross-tone deps);
+/// nesting tones inside the sample loop lets LLVM unroll the
+/// `NTONES = 8` constant-bound inner and issue all 8 independent
+/// dependent chains into the FPU pipeline at once. On Xtensa LX6/LX7
+/// where `fmul` has a 3-4 cycle latency but 1 cycle throughput, this
+/// hides the per-chain latency for a ~2× speedup over the
+/// per-tone-outer layout. The sample fetch is also done once per
+/// `n` instead of `NTONES × NSPS` times — 8× less audio-buffer
+/// traffic, friendlier to the LX7 L1.
+///
+/// **Numerics**: f32 internal arithmetic. Host validation on
+/// qso3_busy.wav (`ft8_goertzel_vs_basis.rs`) shows recall 7/7 vs
+/// BASIS Q15 and per-station SNR +0.0..+0.6 dB (f32's extra precision
+/// over Q15 helps the weakest decodes).
+pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
+    out: &mut [[Cmplx<f32>; 8]; 79],
+    audio: &[S],
+    freq_hz: f32,
+    dt_sec: f32,
+    mask: SymMask,
+) {
+    let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
+    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
+
+    // Per-tone constants — 8 tones × 3 f32 = 96 B on the stack.
+    let mut cos_w = [0.0_f32; NTONES];
+    let mut sin_w = [0.0_f32; NTONES];
+    let mut coeff = [0.0_f32; NTONES];
+    for tone in 0..NTONES {
+        let tone_freq = freq_hz + (tone as f32) * TONE_SPACING_HZ;
+        let omega = two_pi_over_fs * tone_freq;
+        cos_w[tone] = omega.cos();
+        sin_w[tone] = omega.sin();
+        coeff[tone] = 2.0 * cos_w[tone];
+    }
+
+    for sym in 0..NN {
+        if !sym_in_mask(sym, mask) {
+            continue;
+        }
+        let sym_start = i0 + (sym as i64) * (NSPS as i64);
+        // 8 independent recursion states.
+        let mut s_prev = [0.0_f32; NTONES];
+        let mut s_prev2 = [0.0_f32; NTONES];
+
+        for n in 0..NSPS {
+            let idx = sym_start + n as i64;
+            let sample = if idx >= 0 && (idx as usize) < audio.len() {
+                audio[idx as usize].to_i16() as f32
+            } else {
+                0.0
+            };
+            // NTONES=8 is `const`; LLVM unrolls this and the 8
+            // resulting fmul/fadd/fsub chains run independently — the
+            // Xtensa FPU's pipeline absorbs ~all of the per-chain
+            // latency in parallel.
+            for tone in 0..NTONES {
+                let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
+                s_prev2[tone] = s_prev[tone];
+                s_prev[tone] = s;
+            }
+        }
+
+        for tone in 0..NTONES {
+            let re = s_prev[tone] - cos_w[tone] * s_prev2[tone];
+            let im = sin_w[tone] * s_prev2[tone];
+            out[sym][tone] = Cmplx { re, im };
+        }
+    }
+}
+
 /// Heap-allocating sibling of [`symbol_spectra_direct`] that uses a
 /// caller-provided basis scratch (passed through to
 /// [`fill_symbol_spectra_into`]). Only the fixed-point variant is

@@ -28,6 +28,8 @@ use super::super::message::unpack77;
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER, LDPC_N, NSPS, NTONES};
 use super::super::wave_gen::message_to_tones;
 use super::coarse_sync::coarse_sync;
+#[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
+use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
 use super::fill_symbol_spectra::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
 use super::spectrogram::{Spectrogram, compute_spectrogram};
 use super::types::{
@@ -816,15 +818,22 @@ pub fn refine_candidates_into<S: AudioSample>(
     basis_re: &mut [i16],
     basis_im: &mut [i16],
 ) -> Vec<RefinedCandidate> {
+    // Phase 1.7.7-Stick: BASIS scratch is no longer consumed —
+    // pass-2 now uses Goertzel (zero scratch) for its SyncBlock0
+    // cs build, matching the stage-3 fill change. The args stay
+    // for API compat with embedded callers (`dual_core::pass2_split`)
+    // until Stage B drops them entirely.
+    use super::super::params::NN;
+    use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
+    let _ = &basis_re;
+    let _ = &basis_im;
     refine_candidates_with(cands, max_cand, |c| {
-        symbol_spectra_direct_into(
-            audio,
-            c.freq_hz,
-            c.dt_sec,
-            SymMask::SyncBlock0,
-            basis_re,
-            basis_im,
-        )
+        let mut cs: alloc::boxed::Box<[[Cmplx<f32>; 8]; NN]> =
+            alloc::vec![[Cmplx::<f32>::default(); 8]; NN]
+                .try_into()
+                .unwrap();
+        fill_symbol_spectra_goertzel(&mut cs, audio, c.freq_hz, c.dt_sec, SymMask::SyncBlock0);
+        cs
     })
 }
 
@@ -1187,11 +1196,14 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     // built via the cd0 32-pt FFT instead. The parameters stay in
     // the signature so embedded callers (no fft-rustfft) get the
     // same shape; reference them here to silence unused warnings.
-    #[cfg(feature = "fft-rustfft")]
-    {
-        let _ = &basis_re;
-        let _ = &basis_im;
-    }
+    // Phase 1.7.7-Stick: BASIS scratch is no longer used on either
+    // path. Host fft-rustfft uses cd0 (no scratch); embedded now uses
+    // Goertzel (no scratch). The `basis_re` / `basis_im` parameters
+    // are kept in the signature for API compatibility with embedded
+    // callers (`embedded-shared::dual_core::stage3_split`) that still
+    // thread them through; Stage B of the migration drops them entirely.
+    let _ = &basis_re;
+    let _ = &basis_im;
     process_candidates_with_ap(
         audio,
         cands,
@@ -1200,30 +1212,23 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         bp_max_iter,
         cs_scratch,
         |cs, cand, mask| {
-            // Host fft-rustfft: use the cd0-based 32-pt FFT cs builder
-            // (= ft8b.f90:154-161). Same path as host f32. fixed-point
-            // with rustfft (= host) gets WSJT-X-faithful cs construction
-            // identical to the f32 build.
+            // Host fft-rustfft: cd0-based 32-pt FFT cs builder (=
+            // ft8b.f90:154-161). WSJT-X-faithful; out-of-band signals
+            // suppressed by the downsample's edge-tapered filter.
             #[cfg(feature = "fft-rustfft")]
             {
-                // basis_{re,im} unused on this path — borrow nothing.
                 // fft_cache=None here because process_candidates_into_tuned
                 // is the embedded entry, not the slot-cache pipeline.
                 fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
             }
-            // Embedded fixed-point (no fft-rustfft): keep the
-            // basis-precompute + dot-product path — no 192k FFT
-            // available on Xtensa.
+            // Embedded (no fft-rustfft): f32 Goertzel recursion with
+            // sample-outer / tone-inner loop ordering so the 8 per-tone
+            // dependent chains run independently through the Xtensa
+            // FPU pipeline (see `fill_symbol_spectra_goertzel` doc).
+            // Zero scratch — replaces the BASIS 60 KB × 2 (re/im) × 2
+            // (dual_core) = 120 KB internal-DRAM allocation.
             #[cfg(not(feature = "fft-rustfft"))]
-            fill_symbol_spectra_into(
-                cs,
-                audio,
-                cand.freq_hz,
-                cand.dt_sec,
-                mask,
-                basis_re,
-                basis_im,
-            );
+            fill_symbol_spectra_goertzel(cs, audio, cand.freq_hz, cand.dt_sec, mask);
         },
         None,
         DecodeStrictness::Normal,
