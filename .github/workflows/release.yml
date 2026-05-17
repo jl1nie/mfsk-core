@@ -161,6 +161,18 @@ jobs:
           default: true
           buildtargets: esp32
           ldproxy: false
+        # The action wraps `espup install`, which queries
+        # api.github.com/repos/esp-rs/rust-build/releases/latest for
+        # the toolchain version. Without auth this hits the 60 req/h
+        # unauthenticated GitHub API limit shared across the runner's
+        # IP pool — easy to lose the race when the s3 sibling job
+        # consumed a slot a few seconds earlier (v0.6.5 release run
+        # 26005313390 hit this and the publish job got skipped until
+        # `gh run rerun --failed` re-ran the lost job in a fresh
+        # window). Passing the auto-injected workflow token bumps
+        # the limit to 5000 req/h, making the race deterministic.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - uses: Swatinem/rust-cache@v2
       - name: Build static lib for xtensa-esp32-espidf
         # The +esp toolchain ships rust-src but no precompiled core
@@ -202,6 +214,12 @@ jobs:
           default: true
           buildtargets: esp32s3
           ldproxy: false
+        # Same GitHub-API rate-limit story as the esp32 sibling job
+        # above — pass the workflow token to bump from 60 to 5000
+        # req/h. Without this the two jobs race for the same per-IP
+        # unauthenticated budget and one of them loses periodically.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - uses: Swatinem/rust-cache@v2
       - name: Build static lib for xtensa-esp32s3-espidf
         # See the esp32 job for why `-Z build-std=...` is needed.
