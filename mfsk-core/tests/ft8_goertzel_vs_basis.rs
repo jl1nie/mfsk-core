@@ -27,18 +27,13 @@ use mfsk_core::core::scalar::Cmplx;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
     BASIS_SCRATCH_LEN, DEFAULT_Q_THRESH, RefinedCandidate, SymMask, coarse_sync_with_allsum,
-    compute_spectrogram, fill_symbol_spectra_into, precompute_coarse_allsum,
-    process_candidates_into_with_cs_scratch_tuned_with_fill, sync_quality_block0,
+    compute_spectrogram, fill_symbol_spectra_goertzel, fill_symbol_spectra_into,
+    precompute_coarse_allsum, process_candidates_into_with_cs_scratch_tuned_with_fill,
+    sync_quality_block0,
 };
-use mfsk_core::ft8::params::{DEFAULT_BP_MAX_ITER, NSPS, NTONES};
+use mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER;
 use mfsk_core::msg::wsjt77::unpack77;
-use num_complex::Complex;
 use std::collections::BTreeSet;
-
-const NN: usize = 79;
-const SAMPLE_RATE_HZ: f32 = 12_000.0;
-const TONE_SPACING_HZ: f32 = 6.25;
-const TX_START_OFFSET_S: f32 = 0.5;
 
 macro_rules! asset_path {
     ($asset:literal) => {
@@ -71,85 +66,13 @@ fn load_wav_i16(path: &str) -> Vec<i16> {
         .collect()
 }
 
-fn sym_in_mask(sym: usize, mask: SymMask) -> bool {
-    let in_block_a = sym < 7;
-    let in_block_b = (36..43).contains(&sym);
-    let in_block_c = (72..79).contains(&sym);
-    let is_sync = in_block_a || in_block_b || in_block_c;
-    match mask {
-        SymMask::SyncOnly => is_sync,
-        SymMask::SyncBlock0 => in_block_a,
-        SymMask::NotBlock0 => !in_block_a,
-        SymMask::DataOnly => !is_sync,
-        SymMask::SyncBlocks12 => in_block_b || in_block_c,
-    }
-}
-
-/// Goertzel-based fill_symbol_spectra. f32 internal arithmetic for
-/// host validation (embedded port will use i32/Q15 to match the
-/// existing BASIS scalar class — that's a separate concern, see the
-/// embedded follow-up task).
-///
-/// The recursion:
-///   ω = 2π · tone_freq / Fs
-///   s[n] = x[n] + 2cos(ω) · s[n-1] - s[n-2]   (initial s=0)
-///
-/// After NSPS samples, the bin output is:
-///   X(ω) = s[N-1] - exp(-jω) · s[N-2]
-///        = (s_prev - cos(ω)·s_prev2) + j·sin(ω)·s_prev2
-///
-/// Equivalent to `Σ x[n] exp(-jωn)` — exactly what
-/// `fill_symbol_spectra_into` computes via BASIS dot product, so
-/// per-cell output is mathematically identical (modulo f32 vs Q15
-/// rounding noise).
-fn fill_symbol_spectra_goertzel(
-    out: &mut [[Cmplx<f32>; 8]; 79],
-    audio: &[i16],
-    freq_hz: f32,
-    dt_sec: f32,
-    mask: SymMask,
-) {
-    let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
-    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
-
-    // Precompute per-tone constants (cheap — 8 tones × 3 floats).
-    let mut coeff = [0.0_f32; NTONES];
-    let mut cos_w = [0.0_f32; NTONES];
-    let mut sin_w = [0.0_f32; NTONES];
-    for tone in 0..NTONES {
-        let tone_freq = freq_hz + tone as f32 * TONE_SPACING_HZ;
-        let omega = two_pi_over_fs * tone_freq;
-        cos_w[tone] = omega.cos();
-        sin_w[tone] = omega.sin();
-        coeff[tone] = 2.0 * cos_w[tone];
-    }
-
-    for sym in 0..NN {
-        if !sym_in_mask(sym, mask) {
-            continue;
-        }
-        let sym_start = i0 + (sym as i64) * (NSPS as i64);
-        for tone in 0..NTONES {
-            let mut s_prev: f32 = 0.0;
-            let mut s_prev2: f32 = 0.0;
-            let c = coeff[tone];
-            for n in 0..NSPS {
-                let idx = sym_start + n as i64;
-                let sample = if idx >= 0 && (idx as usize) < audio.len() {
-                    audio[idx as usize] as f32
-                } else {
-                    0.0
-                };
-                let s = sample + c * s_prev - s_prev2;
-                s_prev2 = s_prev;
-                s_prev = s;
-            }
-            let re = s_prev - cos_w[tone] * s_prev2;
-            let im = sin_w[tone] * s_prev2;
-            out[sym][tone] = Complex::new(re, im);
-        }
-    }
-}
+// The Goertzel fill kernel under test is the actual library function
+// `mfsk_core::ft8::decode_block::fill_symbol_spectra_goertzel`,
+// imported at the top of this file — NOT a local re-implementation.
+// (Earlier drafts of this test defined a local copy of the algorithm,
+// which made the regression guard tautological: it would only catch
+// bugs in the local copy, not in the library impl. Gemini PR #104
+// review caught the duplication; the local copy is now removed.)
 
 fn refine_pub<F>(
     cands: Vec<mfsk_core::core::sync::SyncCandidate>,
