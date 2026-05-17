@@ -143,8 +143,18 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      - name: cargo clippy -- -D warnings
-        run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
+      # `-D clippy::perf` escalates the perf group from warn to deny on
+      # top of the default `-D warnings`. Catches mechanical perf
+      # antipatterns (`clippy::useless_vec`, `redundant_allocation`,
+      # `or_fun_call` allocating inside `unwrap_or`, `manual_memcpy`,
+      # etc.) as a CI gate so we don't accumulate them between Gemini
+      # reviews. main as of 2026-05-17 has 0 warnings under this group;
+      # this PR fences in that property going forward. See
+      # `~/.claude/projects/.../memory/feedback_pre_pr_self_review.md`
+      # for the human-side checklist that catches what clippy can't
+      # (e.g. `vec![0; LDPC_N]` in a hot loop — perf group misses this).
+      - name: cargo clippy -- -D warnings -D clippy::perf
+        run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings -D clippy::perf
 
   # ───────────────────────────────────────────────────────────────
   # Core test suite on the "full" feature set, split into parallel
