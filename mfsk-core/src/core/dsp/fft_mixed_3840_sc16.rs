@@ -20,6 +20,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use num_complex::{Complex, Complex32};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use super::fft_15::fft_15;
 use super::fft_sc16_r2::{bit_rev_sc16, fft2r_sc16, gen_w_r2_sc16};
