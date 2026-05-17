@@ -29,6 +29,28 @@ use super::super::params::{COSTAS, COSTAS_POS, NN, NSPS, NTONES};
 use super::types::{AudioSample, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
 use crate::core::scalar::Cmplx;
 
+// Thread-local scratch for the `S -> i16` conversion in
+// `fill_symbol_spectra_via_cd0`'s `fft_cache=None` branch. The
+// `Vec<i16>` capacity is grown once per thread and reused across
+// every per-candidate call — replaces the previous per-call
+// `collect::<Vec<i16>>()` that allocated ~360 KB × 30 cand × 3 pass
+// = ~32 MB of allocator traffic per slot (Gemini PR #80 review).
+//
+// Gated on `fft-rustfft` only — matching the usage site's gate in
+// `fill_symbol_spectra_via_cd0`. `fft-rustfft` implies `std` per the
+// Cargo.toml feature closure (`fft-rustfft = ["std", "dep:rustfft"]`)
+// so `std::thread_local!` always resolves on this path. An earlier
+// amend tried to add an explicit `feature = "std"` part for
+// documentation, but Gemini PR #100 r3 pointed out that asymmetry
+// (definition `all(fft-rustfft, std)`, usage `fft-rustfft` only)
+// would break compilation if fft-rustfft were ever enabled without
+// std. Keep the gates symmetric.
+#[cfg(feature = "fft-rustfft")]
+std::thread_local! {
+    static AUDIO_I16_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+}
+
 // ── Per-symbol direct DFT (no FFT cache) ────────────────────────────────────
 
 /// Compute the 79 × 8 complex tone spectra for one candidate by
@@ -187,21 +209,24 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     use rustfft::FftPlanner;
     extern crate alloc;
 
-    // S → i16 conversion (no-op when S=i16 already). Per-call alloc
-    // — still wasteful when cand-loop calls this 30+ times per slot.
-    // See #55 (perf-B) for the caller-buffer hoist. Skipped entirely
-    // when `fft_cache` is supplied (the slot-cache path doesn't need
-    // the audio bytes — only the precomputed forward FFT).
+    // S → i16 conversion (no-op when S=i16 already). Hoisted into a
+    // thread-local Vec so we don't re-allocate ~360 KB per candidate
+    // (the cand loop calls this ~30 cand × 3 pass = 90 times per slot
+    // in the multipass driver). Skipped entirely when `fft_cache` is
+    // supplied (the slot-cache path doesn't touch the audio bytes —
+    // only the precomputed forward FFT). Gemini PR #80 review.
     let cd0 = match fft_cache {
         Some(cache) => crate::core::dsp::downsample::downsample_cached(
             cache,
             freq_hz,
             &crate::ft8::downsample::FT8_CFG,
         ),
-        None => {
-            let audio_i16: alloc::vec::Vec<i16> = audio.iter().map(|s| s.to_i16()).collect();
-            crate::ft8::downsample::downsample(&audio_i16, freq_hz, None).0
-        }
+        None => AUDIO_I16_SCRATCH.with_borrow_mut(|buf| {
+            buf.clear();
+            buf.reserve(audio.len());
+            buf.extend(audio.iter().map(|s| s.to_i16()));
+            crate::ft8::downsample::downsample(buf.as_slice(), freq_hz, None).0
+        }),
     };
 
     // ibest in cd0 sample units (200 sps). dt_sec is offset from
