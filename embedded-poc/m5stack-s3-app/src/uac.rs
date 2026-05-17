@@ -86,13 +86,14 @@ const UAC_DRIVER_TASK_CORE: sys::BaseType_t = 0;
 /// + sender state and any future device-cleanup paths.
 const APP_TASK_STACK: usize = 4096;
 
-/// `uac_reader` task stack. 8 KB: 4 KB for the `READER_BUFFER_BYTES`
+/// `uac_reader` task stack. 10 KB: 4 KB for the `READER_BUFFER_BYTES`
 /// stack array, the rest for the function's frame, `Instant`, the
-/// format machinery for the 1 Hz log line, and the IDF
-/// `uac_host_device_read` call's own stack usage (Gemini PR #98
-/// caught the original 4 KB sizing as identical to the buffer →
-/// guaranteed stack overflow as soon as the first frame ran).
-const READER_TASK_STACK: usize = 8192;
+/// format machinery for the 1 Hz log line (Rust's `format_args!` +
+/// `write!` chain is surprisingly stack-heavy on Xtensa), and the
+/// IDF `uac_host_device_read` call's own stack usage. Earlier sizes
+/// at 4 KB (= buffer alone) and 8 KB both flagged by Gemini PR #98
+/// as tight; 10 KB gives the log path real headroom.
+const READER_TASK_STACK: usize = 10240;
 
 /// Read buffer size per `uac_host_device_read` call. 4 KB = 1024
 /// stereo i16 samples = ~21 ms at 48 kHz stereo — short enough that
@@ -162,11 +163,26 @@ static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// Gate against spawning multiple readers when the IDF driver fires
 /// `RxConnected` more than once for the same physical attach (e.g.
 /// IC-705 advertises both an RX and TX interface and the driver may
-/// reissue events on alt-setting changes). Set on first successful
-/// `handle_rx_connected` and never cleared in #31 — #35 will reset
-/// it on `DISCONNECTED` so re-plug works without a reboot.
+/// reissue events on alt-setting changes). Set by `app_task` via
+/// `compare_exchange` before spawning the reader; released either
+/// (a) explicitly on `handle_rx_connected` failure or
+/// (b) automatically via [`ReaderActiveGuard`] when the reader thread
+/// exits (normal exit, error exit, or panic).
 static READER_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// RAII guard that releases [`READER_ACTIVE`] on drop. Held by
+/// `reader_thread` for its entire lifetime so the gate gets reset
+/// even on panic — without the guard a panic in the read /
+/// resample / push chain would leave the gate stuck `true` and
+/// every subsequent `RxConnected` would be ignored until reboot
+/// (Gemini PR #98 r4 review).
+struct ReaderActiveGuard;
+impl Drop for ReaderActiveGuard {
+    fn drop(&mut self) {
+        READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 
 /// Driver event callback. Invoked by the UAC class-driver background
 /// task on every `RX_CONNECTED` / `TX_CONNECTED` notification (i.e.
@@ -342,6 +358,8 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
 /// of the loop with the 48 k stereo → 12 k mono resample + decoder
 /// push chain.
 fn reader_thread(handle: DeviceHandle) {
+    // RAII: clears READER_ACTIVE on any exit path including panic.
+    let _gate = ReaderActiveGuard;
     let mut buf = [0u8; READER_BUFFER_BYTES];
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
@@ -418,11 +436,9 @@ fn reader_thread(handle: DeviceHandle) {
     } else {
         log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
     }
-    // Release the dedup gate so a future RxConnected (re-plug or
-    // power cycle) can re-take it (Gemini PR #98 r3 review).
-    // Without this the gate stays set after the reader exits and
-    // every subsequent attach gets ignored, requiring a reboot.
-    READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    // `_gate: ReaderActiveGuard` is dropped here, clearing
+    // READER_ACTIVE so the next RxConnected can re-take the gate
+    // (Gemini PR #98 r3 + r4 review — RAII so panic also clears).
 }
 
 /// App task body. Consumes driver events from the channel; on first
