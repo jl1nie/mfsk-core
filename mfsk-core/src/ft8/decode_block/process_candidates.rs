@@ -311,30 +311,20 @@ fn decode_block_multipass<S: AudioSample>(
         let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
         let nsps_steps = (NSPS / NSTEP) as f32;
         all.retain_mut(|r| {
-            // All-zero message77 reject (ft8b.f90:423). LDPC linearity:
-            // encode(0) = 0, and CRC-14 of all-zero info bits is zero,
-            // so an "all-zero codeword" survives both the BP and OSD
-            // staircases by CRC-luck. Rejecting it here matches WSJT-X.
-            if r.message77.iter().all(|&b| b == 0) {
-                return false;
-            }
-            // msg-type validity (ft8b.f90:425-428). Bits 71..73 = n3,
-            // 74..76 = i3 (MSB first) — matches the offsets `unpack77`
-            // reads at `msg/wsjt77.rs:236-237`.
-            let m = &r.message77;
-            let bit3 = |off: usize| -> u8 { (m[off] << 2) | (m[off + 1] << 1) | m[off + 2] };
-            let n3 = bit3(71);
-            let i3 = bit3(74);
-            if i3 > 5 || (i3 == 0 && n3 > 6) {
-                return false;
-            }
-            if i3 == 0 && n3 == 2 {
-                return false;
-            }
-            // unpack77 success (ft8b.f90:430).
-            if crate::msg::wsjt77::unpack77(&r.message77).is_none() {
-                return false;
-            }
+            // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
+            // gates are intentionally omitted here: every `DecodeResult`
+            // in `all` came through `process_one_candidate_inner`,
+            // which already rejects via `unpack77(&bp.message77)?` (line
+            // ~1565). `unpack77` returns `None` for all-zero messages
+            // (i3=0 n3=0 → free text → empty string → None) and for
+            // every invalid i3/n3 combination (`i3 > 5` falls through
+            // the outer match's `_ => None`; `i3=0 n3=2` falls through
+            // the inner match's `_ => None`). Repeating those checks
+            // here just paid for a second `unpack77` call per result
+            // (Gemini PR #88 review). The xsnr2 gate stays — it needs
+            // the raw-pre-clamp value that `process_one_candidate_inner`
+            // can't compute (no sbase / spec at that scope).
+
             // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
             // The clamp here MUST happen after the gate test — see the
             // function-level comment on `recompute_snr_xsnr2` for why
@@ -584,14 +574,19 @@ fn recompute_snr_xsnr2(
     let sbase_db_compensated = sbase[bin] + 10.0 * cell_scale.log10();
     let xbase = 10f32.powf(0.1 * (sbase_db_compensated - 40.0));
     let arg = xsig / xbase / 3.0e6 - 1.0;
-    // WSJT-X `ft8b.f90:445-454`: default `xsnr2 = 0.001` if the
-    // ratio degenerates, then `xsnr2_db = 10·log10(xsnr2) - 27`
-    // → -57 dB. Caller (`retain_mut` in `decode_block_multipass`)
-    // applies the `xsnr < -24` gate against this raw value BEFORE
-    // clamping it to the -24 dB display floor; the previous
-    // `snr.max(-24.0)` here pre-clamped and made the gate fire only
-    // for arithmetic underflow, not for "degenerate signal" cases.
-    let xsnr2 = if arg > 0.1 { arg } else { 0.001 };
+    // WSJT-X `ft8b.f90:445-454`: `xsnr2 = max(0.001, xsig/xbase/3e6 - 1)`
+    // then `xsnr2_db = 10·log10(xsnr2) - 27` → floors at -57 dB.
+    // Caller (`retain_mut` in `decode_block_multipass`) applies the
+    // `xsnr < -24` gate against this raw value BEFORE clamping it to
+    // the -24 dB display floor; the previous `snr.max(-24.0)` here
+    // pre-clamped and made the gate fire only for arithmetic
+    // underflow, not for "degenerate signal" cases.
+    //
+    // The previous form `if arg > 0.1 { arg } else { 0.001 }` was an
+    // mfsk-core-specific deviation: at `arg = 0.1` the result jumped
+    // from ~-37 dB straight to -57 dB (Gemini PR #88 review). WSJT-X
+    // is continuous from -57 dB upward via the simple `max`.
+    let xsnr2 = arg.max(0.001);
     10.0 * xsnr2.log10() - 27.0
 }
 
