@@ -284,20 +284,45 @@ where
         //   Larger drifts converge over several HWM-update slots.
         const ALIGN_OK_SEC: f32 = 0.05;
         const MAX_SHIFT_SAMPLES: i32 = 2400; // ±0.2 s — pair 91 still completes
-        if n_dec > best_n {
+        // Drift detection (Phase 1.7.6, 2026-05-17): once HWM is
+        // locked, if a slot decodes ≥ DRIFT_MIN_N stations with
+        // |median DT| > DRIFT_TRIGGER_SEC, treat it as cumulative
+        // drift past FT8 tolerance and RESET the HWM so this slot
+        // becomes the new reference. N ≥ 2 gate avoids a noisy
+        // single-station outlier triggering a false reset.
+        const DRIFT_TRIGGER_SEC: f32 = 0.5;
+        const DRIFT_MIN_N: usize = 2;
+        // Pre-compute median once (used by both drift check and HWM update).
+        let median: Option<f32> = if n_dec > 0 {
             let mut dts: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
             dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            let median = dts[dts.len() / 2];
-            let shift_samples: i32 = if median.abs() < ALIGN_OK_SEC {
+            Some(dts[dts.len() / 2])
+        } else {
+            None
+        };
+        if best_n > 0 && n_dec >= DRIFT_MIN_N {
+            if let Some(m) = median {
+                if m.abs() > DRIFT_TRIGGER_SEC {
+                    log::info!(
+                        "  auto-sync: DRIFT detected (median DT={:+.3}s > ±{DRIFT_TRIGGER_SEC}s, N={n_dec}≥{DRIFT_MIN_N}), HWM reset (was best_n={best_n})",
+                        m
+                    );
+                    best_n = 0;
+                }
+            }
+        }
+        if n_dec > best_n {
+            let med = median.expect("n_dec > 0 implies median is Some");
+            let shift_samples: i32 = if med.abs() < ALIGN_OK_SEC {
                 0
             } else {
-                (median * 12000.0).round() as i32
+                (med * 12000.0).round() as i32
             };
             let shift_samples = shift_samples.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES);
             mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift_samples);
             log::info!(
                 "  auto-sync (HWM update N={n_dec}>{best_n}): median DT={:+.3}s → {:+} samples (capped ±{}s)",
-                median, shift_samples,
+                med, shift_samples,
                 MAX_SHIFT_SAMPLES as f32 / 12000.0
             );
             best_n = n_dec;
