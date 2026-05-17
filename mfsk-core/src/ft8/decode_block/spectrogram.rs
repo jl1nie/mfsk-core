@@ -290,12 +290,17 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     // the auto-gain shift on i16 amplifies that leakage. Keep Hann
     // here (it's also what stage1_inc already does on embedded).
     //
-    // Cached in `HANN_NSPS`: the window is constant in shape and
-    // length (NSPS = 1920), so recomputing the 1920 `cos()` calls
-    // per `compute_spectrogram` (= per multipass pass) burned cycles
-    // on every decode. Initialised once at first use. Gemini PR #83
+    // Cached in `HANN_NSPS` on `std` builds: the window is constant
+    // in shape + length (NSPS = 1920), so recomputing the 1920
+    // `cos()` calls per `compute_spectrogram` (= per multipass pass)
+    // burned cycles on every decode. `OnceLock` is std-only so the
+    // no_std fixed-point path keeps the per-call recompute — that
+    // path runs on Xtensa anyway, and the embedded production
+    // pipeline routes via `stage1_inc` which has its own cached
+    // Hann (per the comment immediately above). Gemini PR #83 + #101
     // review.
-    let hann = HANN_NSPS.get_or_init(|| {
+    #[cfg(feature = "std")]
+    let hann_cached = HANN_NSPS.get_or_init(|| {
         let mut table = [0i16; NSPS];
         for n in 0..NSPS {
             let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
@@ -304,6 +309,20 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         }
         table
     });
+    #[cfg(not(feature = "std"))]
+    let hann_local = {
+        let mut table = [0i16; NSPS];
+        for n in 0..NSPS {
+            let phase = 2.0 * core::f32::consts::PI * (n as f32) / (NSPS as f32);
+            let w = 0.5 - 0.5 * phase.cos();
+            table[n] = (w * 32767.0) as i16;
+        }
+        table
+    };
+    #[cfg(feature = "std")]
+    let hann: &[i16; NSPS] = hann_cached;
+    #[cfg(not(feature = "std"))]
+    let hann: &[i16; NSPS] = &hann_local;
     let pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         for (k, c) in buf.iter_mut().enumerate() {
             let re = if k < NSPS && ia_a + k < audio.len() {
