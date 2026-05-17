@@ -217,11 +217,11 @@ where
         let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
         let wav_idx = slot.wav_idx;
         let n_pass1 = pass1.len();
-        // Snapshot pass1 DTs before pass2_split moves the vector.
-        // Used below for the bootstrap auto-sync after the decode is
-        // done so live audio sources can correct their slot boundary
-        // even when 0 decodes pass full BP.
-        let pass1_dts: Vec<f32> = pass1.iter().map(|c| c.dt_sec).collect();
+        // Auto-sync uses `results` median (post BP), not pass1 — pass1
+        // candidates from a noise slot are random and would mis-anchor
+        // the slot phase. Gemini PR #103 review removed the no-op
+        // `pass1.iter().map(c.dt_sec).collect()` allocation that was
+        // immediately discarded below.
 
         // (fine_refine attempted via fill_symbol_spectra iteration in
         // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
@@ -288,9 +288,6 @@ where
             sync_gen_observed = cur_gen;
         }
 
-        // pass1 candidates from a noise slot are random — never use as
-        // sync source.
-        let _ = pass1_dts;
         let n_dec = results.len();
         let post_sync = mfsk_app_shared::time_sync::slots_finalised() > 0 || n_dec > 0;
         // |DT| < ALIGN_OK_SEC → already within FT8 ±2.5 s tolerance

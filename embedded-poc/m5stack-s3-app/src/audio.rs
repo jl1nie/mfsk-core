@@ -845,8 +845,13 @@ pub fn capture_tx_thread(
                             }),
                         );
                         let shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
-                        let next_target =
-                            (CAPTURE_SLOT_SAMPLES_12K as i32 + shift).max(60_000) as usize;
+                        // Match `capture_thread` clamp bounds — both ends
+                        // matter: `.max(60_000)` was wrong for very-large
+                        // positive shifts (would defer SlotEnd past the
+                        // FT8 window). Gemini PR #103 review.
+                        let next_target = (CAPTURE_SLOT_SAMPLES_12K as i32 + shift)
+                            .clamp(60_000, 200_000)
+                            as usize;
                         slot_end_target = next_target;
                         wav_idx = wav_idx.wrapping_add(1);
                         slot_samples = 0;
