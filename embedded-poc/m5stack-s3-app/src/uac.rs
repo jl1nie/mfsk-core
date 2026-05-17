@@ -192,6 +192,15 @@ pub fn start_host() -> Result<()> {
                 "uac: usb_host_lib_unblock before rollback returned err={unblock_err:#x}"
             );
         }
+        // Race window: unblock wakes the pump task but the task still
+        // has to return from `handle_events`, loop, and re-enter
+        // `handle_events` (which then sees INVALID_STATE) before we
+        // call `uninstall`. Without this delay the uninstall lands
+        // while the task is mid-iteration and fails with
+        // INVALID_STATE, tripping the "inconsistent state" error log
+        // path even in the normal-failure case. 20 ms is far more than
+        // the pump needs to round-trip a single handle_events call.
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
             log::error!(
