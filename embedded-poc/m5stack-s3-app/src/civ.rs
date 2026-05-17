@@ -48,7 +48,7 @@
 //!   thread boundary — keeps the audio capture loop responsive even
 //!   if BLE stalls.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -118,6 +118,22 @@ pub static BLE_STATE: AtomicU8 = AtomicU8::new(0);
 /// valid GPS position (cmd 0x23 0x00 response).
 pub static GPS_UTC_OFFSET_US: AtomicI32 = AtomicI32::new(i32::MIN);
 
+/// Pending IC-705 VFO frequency in Hz. `0` = no pending change.
+/// Set by `set_freq_hz` from the menu (band selection); consumed
+/// by the BLE command loop's edge detector (writes cmd 0x05 only
+/// when target ≠ last_sent). Phase 1.7-Stick (2026-05-17).
+pub static FREQ_TARGET_HZ: AtomicU32 = AtomicU32::new(0);
+
+/// Pending IC-705 mode selector. Encoded as a small enum:
+///   0xFF = no pending change
+///   0x01 = USB-DATA narrow (cmd 0x06 0x01 0x01 0x02)
+/// Extend with more variants as needed. Mode is sticky in the radio
+/// so we typically set this once per session start.
+pub static MODE_TARGET: AtomicU8 = AtomicU8::new(0xFF);
+
+/// Mode sentinel: IC-705 USB-DATA narrow (FT8 standard).
+pub const MODE_USB_DATA: u8 = 0x01;
+
 /// Pairing-state bits (set from notification handler, polled by the
 /// pairing routine). Bit 0 = 0x61 acked, bit 1 = 0x62 acked,
 /// bit 2 = 0x63 acked, bit 3 = 0x64 grant received.
@@ -170,6 +186,20 @@ pub fn start() -> Result<()> {
 /// corresponding CI-V command. Safe to call from any thread.
 pub fn set_ptt(on: bool) {
     PTT_TARGET.store(on, Ordering::Release);
+}
+
+/// Set the IC-705 VFO frequency. Triggers a CI-V cmd 0x05 write on
+/// the next BLE loop iteration (~100 ms latency). Pass the target
+/// in **Hz** (e.g. 14_074_000 for 20m FT8). Safe from any thread.
+pub fn set_freq_hz(hz: u32) {
+    FREQ_TARGET_HZ.store(hz, Ordering::Release);
+}
+
+/// Set the IC-705 mode + filter (USB-DATA narrow for FT8). Sends
+/// CI-V cmd 0x06 0x01 0x01 0x02. Idempotent — sent once when the
+/// target differs from the last-sent value. Safe from any thread.
+pub fn set_mode_data_usb() {
+    MODE_TARGET.store(MODE_USB_DATA, Ordering::Release);
 }
 
 // ── Background thread ────────────────────────────────────────────────
@@ -333,6 +363,8 @@ async fn run_session() -> Result<()> {
 
     let mut last_gps_query = std::time::Instant::now() - Duration::from_secs(60);
     let mut last_ptt_sent: Option<bool> = None;
+    let mut last_freq_sent: Option<u32> = None;
+    let mut last_mode_sent: Option<u8> = None;
 
     loop {
         // PTT — track edges and send the corresponding CI-V command.
@@ -348,6 +380,44 @@ async fn run_session() -> Result<()> {
                 log::info!("civ: PTT → {}", if target { "ON" } else { "OFF" });
                 last_ptt_sent = Some(target);
                 PTT_ACTUAL.store(target, Ordering::Release);
+            }
+        }
+
+        // Freq — IC-705 cmd 0x05 with 5-byte little-endian BCD.
+        // 0 = sentinel "no pending", skip until menu pushes a value.
+        let freq_target = FREQ_TARGET_HZ.load(Ordering::Acquire);
+        if freq_target != 0 && last_freq_sent != Some(freq_target) {
+            let bcd = freq_to_bcd_le(freq_target);
+            let frame = [
+                PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR,
+                0x05, bcd[0], bcd[1], bcd[2], bcd[3], bcd[4], POST,
+            ];
+            if let Err(e) = characteristic.write_value(&frame, false).await {
+                log::warn!("civ: set_freq write failed: {e:?}");
+            } else {
+                log::info!("civ: set_freq → {} Hz", freq_target);
+                last_freq_sent = Some(freq_target);
+            }
+        }
+
+        // Mode — IC-705 cmd 0x06 0x01 (set mode + filter, USB-DATA).
+        // Sentinel 0xFF = no pending; we only support USB-DATA for now.
+        let mode_target = MODE_TARGET.load(Ordering::Acquire);
+        if mode_target != 0xFF && last_mode_sent != Some(mode_target) {
+            // Only USB-DATA narrow is implemented; future variants add
+            // their own subcommand bytes here.
+            let frame = if mode_target == MODE_USB_DATA {
+                [PRE, PRE, CIV_IC705_ADDR, CIV_CTRL_ADDR, 0x06, 0x01, 0x01, 0x02, POST]
+            } else {
+                log::warn!("civ: unknown MODE_TARGET 0x{mode_target:02X}, skipping");
+                last_mode_sent = Some(mode_target);
+                continue;
+            };
+            if let Err(e) = characteristic.write_value(&frame, false).await {
+                log::warn!("civ: set_mode write failed: {e:?}");
+            } else {
+                log::info!("civ: set_mode → USB-DATA narrow");
+                last_mode_sent = Some(mode_target);
             }
         }
 
@@ -410,6 +480,48 @@ fn notify_handler(data: &[u8]) {
         if data[4] == 0x1C && data[5] == 0x00 && data.len() == 8 {
             PTT_ACTUAL.store(data[6] != 0, Ordering::Release);
         }
+    }
+}
+
+/// Encode a frequency in Hz as IC-705 CI-V cmd-0x05 5-byte
+/// little-endian BCD (Binary-Coded Decimal). Each byte packs two
+/// decimal digits as `(hi << 4) | lo`; byte 0 is the lowest-order
+/// digit pair (1s + 10s), byte 4 is the highest (100M + 1G Hz).
+/// Algorithm matches `rs-ft8n/ft8-web/www/cat.js:340-350` verbatim.
+fn freq_to_bcd_le(hz: u32) -> [u8; 5] {
+    let mut bcd = [0u8; 5];
+    let mut f = hz;
+    for byte in &mut bcd {
+        let lo = (f % 10) as u8;
+        f /= 10;
+        let hi = (f % 10) as u8;
+        f /= 10;
+        *byte = (hi << 4) | lo;
+    }
+    bcd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn freq_bcd_20m_ft8() {
+        // 14_074_000 Hz → byte 0 = 1s + 10s = 00, byte 1 = 100s + 1k = 40,
+        // byte 2 = 10k + 100k = 07, byte 3 = 1M + 10M = 14, byte 4 = 100M+1G = 00.
+        assert_eq!(freq_to_bcd_le(14_074_000), [0x00, 0x40, 0x07, 0x14, 0x00]);
+    }
+
+    #[test]
+    fn freq_bcd_40m_ft8() {
+        // 7_074_000 Hz
+        assert_eq!(freq_to_bcd_le(7_074_000), [0x00, 0x40, 0x07, 0x07, 0x00]);
+    }
+
+    #[test]
+    fn freq_bcd_2m_ft8() {
+        // 144_174_000 Hz
+        assert_eq!(freq_to_bcd_le(144_174_000), [0x00, 0x40, 0x17, 0x44, 0x01]);
     }
 }
 

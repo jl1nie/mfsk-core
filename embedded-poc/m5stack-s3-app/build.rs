@@ -30,7 +30,9 @@ fn main() {
     let cfg_path = manifest_dir.join("cfg.toml");
     println!("cargo:rerun-if-changed={}", cfg_path.display());
 
-    let (ssid, psk, pc_ip, port) = if cfg_path.exists() {
+    // cfg.toml schema (extended Phase 1.7 with [station] section for
+    // operator callsign + grid; build still succeeds with empty values).
+    let (ssid, psk, pc_ip, port, my_call, my_grid) = if cfg_path.exists() {
         let txt = std::fs::read_to_string(&cfg_path)
             .unwrap_or_else(|e| panic!("read {}: {}", cfg_path.display(), e));
         let v: toml::Value = toml::from_str(&txt)
@@ -59,13 +61,28 @@ fn main() {
             .and_then(|p| p.as_integer())
             .map(|p| p as u16)
             .unwrap_or(9999);
-        (ssid, psk, pc_ip, port)
+        // [station] section is optional — empty defaults mean the QSO
+        // FSM stays Idle (won't TX) until a real call/grid is provided.
+        let station = v.get("station").and_then(|t| t.as_table());
+        let my_call = station
+            .and_then(|s| s.get("call"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let my_grid = station
+            .and_then(|s| s.get("grid"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        (ssid, psk, pc_ip, port, my_call, my_grid)
     } else {
         (
             String::new(),
             String::new(),
             "255.255.255.255".to_string(),
             9999u16,
+            String::new(),
+            String::new(),
         )
     };
 
@@ -73,4 +90,6 @@ fn main() {
     println!("cargo:rustc-env=WIFI_PSK={psk}");
     println!("cargo:rustc-env=UDP_LOG_TARGET={pc_ip}");
     println!("cargo:rustc-env=UDP_LOG_PORT={port}");
+    println!("cargo:rustc-env=MY_CALL={my_call}");
+    println!("cargo:rustc-env=MY_GRID={my_grid}");
 }

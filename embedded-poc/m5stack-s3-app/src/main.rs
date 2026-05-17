@@ -9,6 +9,7 @@ mod civ;
 mod decode_pipeline;
 mod display;
 mod pmic;
+mod tx;
 mod uac;
 
 use esp_idf_hal::peripherals::Peripherals;
@@ -105,6 +106,9 @@ fn main() -> ! {
     // capture thread spawn の OOM 原因 (2026-05-17 bring-up 実機検証) なので
     // Acoustic は WiFi 起動しない方針。UAC は USB-Serial-JTAG 奪われるので
     // UDP 必須、Wifi mode は WiFi が主目的。
+    // TxTest needs no WiFi (BLE only for PTT). Uac needs WiFi for
+    // UDP log path (USB-Serial-JTAG detaches on host install). Wifi
+    // mode is the dev/log mode itself.
     let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
@@ -224,6 +228,39 @@ fn main() -> ! {
                 log::error!("BLE CI-V start failed: {e:#}");
             }
             log_free_internal("post-civ-only-start");
+        }
+        boot_mode::BootMode::Qso => {
+            // Phase 1.7-Stick: Acoustic capture (Phase 1.5) + BLE CI-V
+            // (Phase 2) + TX synth (Phase 1.6) + QSO FSM + menu UX.
+            // Init order: civ FIRST so BLEDevice::take() reserves BT
+            // controller heap before BASIS 120 KB alloc. Memory budget
+            // is tight — if BASIS 4th alloc fails, fall back to
+            // BootMode::TxTest or BootMode::Acoustic separately.
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| {
+                    decode_pipeline::run_with_source(|chunk_q| {
+                        audio::set_chunk_q(chunk_q);
+                    })
+                });
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Qso) spawn failed ({e})");
+            }
+        }
+        boot_mode::BootMode::TxTest => {
+            // Phase 1.6-Stick bring-up: BLE (PTT) + TX synth (CQ test
+            // loop) のみ。decode pipeline skip = BASIS 不要 = BT
+            // controller + NimBLE + I2S TX + 12 kHz mono synth buf
+            // (300 KB PSRAM) が全部 fit。display.rs が I2S TX 駆動
+            // + tx::start_test_loop を spawn する。
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("post-civ-tx-start");
         }
         boot_mode::BootMode::Uac => {
             // Spawn the decode pipeline FIRST. The thread allocates

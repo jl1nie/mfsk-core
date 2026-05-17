@@ -63,6 +63,12 @@ pub struct QsoManager {
     pub rx_snr: i8,
     pub retry_count: u8,
     pub cq_suffix: String<8>,
+    /// Auto-CQ gate (Phase 1.7-Stick, 2026-05-17). When `false`, the
+    /// TX scheduler skips firing fresh CQ at slot boundary; existing
+    /// in-progress QSOs (Calling/Report/Final states) still advance
+    /// — only the Idle → Calling auto-transition is gated.
+    /// Toggled from the menu UI; persisted in NVS as `"auto_cq"`.
+    pub auto_cq_enabled: bool,
 }
 
 impl QsoManager {
@@ -82,7 +88,14 @@ impl QsoManager {
             rx_snr: -10,
             retry_count: 0,
             cq_suffix: String::new(),
+            auto_cq_enabled: false,
         }
+    }
+
+    /// Toggle the auto-CQ gate. Returns the new state.
+    pub fn set_auto_cq(&mut self, on: bool) -> bool {
+        self.auto_cq_enabled = on;
+        on
     }
 
     pub fn set_rx_snr(&mut self, snr: i8) {

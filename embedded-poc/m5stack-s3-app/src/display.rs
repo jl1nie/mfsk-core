@@ -198,6 +198,96 @@ pub fn run_log_panel(
         BootMode::CivTest => {
             log::info!("audio path skipped (BootMode::CivTest: BLE-only bring-up)");
         }
+        BootMode::Qso => {
+            // Phase 1.7-Stick: same I2S RX (mic capture) as Acoustic.
+            // TX synth + scheduler will be wired in a follow-up commit
+            // (separate I2S TX path requires i2s1 controller or driver
+            // swap; for now Qso mode shares the Acoustic RX path so
+            // the QSO FSM has live decodes to act on).
+            if let Some(i2c_drv) = i2c.as_mut() {
+                if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
+                    log::warn!("ES8311 mic-mode init failed (Qso RX disabled): {e:#}");
+                } else {
+                    use esp_idf_hal::i2s::{
+                        config::{
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
+                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                        },
+                        I2sDriver,
+                    };
+                    let i2s_cfg = StdConfig::new(
+                        I2sConfig::default(),
+                        StdClkConfig::new(48_000, ClockSource::Pll160M, MclkMultiple::M256),
+                        StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
+                        StdGpioConfig::default(),
+                    );
+                    match I2sDriver::new_std_rx(
+                        i2s0,
+                        &i2s_cfg,
+                        pins.gpio17,
+                        pins.gpio16,
+                        Some(pins.gpio18),
+                        pins.gpio15,
+                    ) {
+                        Ok(i2s) => {
+                            if let Err(e) = std::thread::Builder::new()
+                                .stack_size(6 * 1024)
+                                .name("audio_cap".into())
+                                .spawn(move || crate::audio::capture_thread(i2s))
+                            {
+                                log::error!("Qso capture spawn failed: {e}");
+                            }
+                        }
+                        Err(e) => log::warn!("Qso I2S RX init failed: {e:?}"),
+                    }
+                }
+            }
+        }
+        BootMode::TxTest => {
+            // Phase 1.6-Stick: ES8311 DAC + I2S TX → tx::start_test_loop。
+            // Decode mode と同じ I2S TX 設定 (48 kHz stereo, codec
+            // MCLK=BCLK mode, GPIO 17/14/18/15) を再利用、出力先だけ
+            // qso3_busy WAV から FT8 synth tones に切り替え。
+            if let Some(i2c_drv) = i2c.as_mut() {
+                if let Err(e) = crate::audio::init_es8311(i2c_drv) {
+                    log::warn!("ES8311 init failed (TX disabled): {e:#}");
+                } else {
+                    use esp_idf_hal::i2s::{
+                        config::{
+                            ClockSource, Config as I2sConfig, DataBitWidth, MclkMultiple,
+                            SlotMode, StdClkConfig, StdConfig, StdGpioConfig, StdSlotConfig,
+                        },
+                        I2sDriver,
+                    };
+                    let i2s_cfg = StdConfig::new(
+                        I2sConfig::default(),
+                        StdClkConfig::new(48_000, ClockSource::Pll160M, MclkMultiple::M256),
+                        StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo),
+                        StdGpioConfig::default(),
+                    );
+                    match I2sDriver::new_std_tx(
+                        i2s0,
+                        &i2s_cfg,
+                        pins.gpio17,         // BCLK
+                        pins.gpio14,         // DOUT (S3 → codec)
+                        Some(pins.gpio18),   // MCLK
+                        pins.gpio15,         // WS / LRCK
+                    ) {
+                        Ok(i2s) => {
+                            // PA enable so the synthesised tones hit
+                            // a powered amp — same as the WAV demo.
+                            if let Err(e) = crate::audio::pa_enable(i2c_drv) {
+                                log::warn!("PA enable failed: {e:#}");
+                            }
+                            if let Err(e) = crate::tx::start_test_loop(i2s) {
+                                log::error!("tx test loop spawn failed: {e:#}");
+                            }
+                        }
+                        Err(e) => log::warn!("I2S TX init failed: {e:?}"),
+                    }
+                }
+            }
+        }
         BootMode::Uac => {
             log::info!("audio path skipped (BootMode::Uac: audio via USB host stack)");
         }

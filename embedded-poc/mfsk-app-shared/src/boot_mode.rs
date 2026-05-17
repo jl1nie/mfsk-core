@@ -37,6 +37,21 @@ pub enum BootMode {
     /// 確認するための一時 mode。共存 (Acoustic + BLE) が安定したら
     /// 削除候補。
     CivTest,
+    /// Phase 1.6-Stick bring-up only (2026-05-17): FT8 TX synthesis
+    /// via ES8311 DAC + I2S TX → built-in speaker → IC-705 microphone
+    /// (acoustic VOX). CI-V PTT bracketing via BLE. **decode pipeline
+    /// OFF** (BASIS 120 KB は不要 — RX 側は別 mode へ)。test loop が
+    /// 30 秒おきに `CQ JL1NIE PM95` を 12.6 s TX。on-air に乗ったか
+    /// は別 receiver (WSJT-X etc.) で確認。
+    TxTest,
+    /// Phase 1.7-Stick (2026-05-17): full QSO operation = Acoustic
+    /// RX capture (Phase 1.5) + BLE CI-V (Phase 2) + TX synth (Phase
+    /// 1.6) + QSO FSM + menu UX (band select, auto-DF, CQ enable).
+    /// Memory is tight (BASIS 120 KB + BLE 30 KB internal); if BASIS
+    /// IM_c1 fails to alloc, the boot crashes — fallback is to use
+    /// `Acoustic` (no TX) or `TxTest` (no RX) separately. CoreS3
+    /// (Phase B-Core) is the long-term canonical platform for QSO.
+    Qso,
     /// Phase 1 (#30 onward, m5stack-s3-app only): USB-OTG host で
     /// IC-705 を UAC class device として認識し audio capture。
     /// `usb_host_install()` を呼んだ瞬間に USB-Serial-JTAG が detach
@@ -62,6 +77,8 @@ impl BootMode {
             BootMode::Wifi => "wifi",
             BootMode::Acoustic => "acoustic",
             BootMode::CivTest => "civtest",
+            BootMode::TxTest => "txtest",
+            BootMode::Qso => "qso",
             BootMode::Uac => "uac",
         }
     }
@@ -72,6 +89,8 @@ impl BootMode {
             BootMode::Wifi => "WIFI",
             BootMode::Acoustic => "ACOUSTIC",
             BootMode::CivTest => "CIVTEST",
+            BootMode::TxTest => "TXTEST",
+            BootMode::Qso => "QSO",
             BootMode::Uac => "UAC",
         }
     }
@@ -88,7 +107,9 @@ impl BootMode {
             BootMode::Decode => BootMode::Wifi,
             BootMode::Wifi => BootMode::Acoustic,
             BootMode::Acoustic => BootMode::CivTest,
-            BootMode::CivTest => BootMode::Uac,
+            BootMode::CivTest => BootMode::TxTest,
+            BootMode::TxTest => BootMode::Qso,
+            BootMode::Qso => BootMode::Uac,
             BootMode::Uac => BootMode::Decode,
         }
     }
@@ -110,6 +131,8 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
         Ok(Some(s)) if s == "decode" => BootMode::Decode,
         Ok(Some(s)) if s == "acoustic" => BootMode::Acoustic,
         Ok(Some(s)) if s == "civtest" => BootMode::CivTest,
+        Ok(Some(s)) if s == "txtest" => BootMode::TxTest,
+        Ok(Some(s)) if s == "qso" => BootMode::Qso,
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");

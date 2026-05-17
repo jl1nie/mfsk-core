@@ -25,3 +25,19 @@ psk = "your-passphrase-here"
 #   IP must be stable).
 pc_ip = "auto"
 port = 9999
+
+[station]
+# Operator callsign + Maidenhead grid (4-character) used by the QSO
+# FSM (Phase 1.7-Stick) when constructing CQ / report / 73 messages.
+# Empty defaults leave the FSM in Idle (auto-CQ menu toggle becomes
+# a no-op until both fields are filled and the binary is reflashed).
+# On-device text entry is intentionally not supported — re-edit
+# cfg.toml + rebuild is the canonical workflow (UX rationale:
+# 2-button entry of a full callsign is painful, and mis-typed
+# callsigns risk wrong-call QRM).
+#
+# Examples:
+#   call = "JL1NIE"
+#   grid = "PM95"
+call = ""
+grid = ""
