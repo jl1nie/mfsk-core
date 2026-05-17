@@ -98,6 +98,10 @@ fn usb_events_task() {
             if err == sys::ESP_ERR_INVALID_STATE as sys::esp_err_t {
                 break;
             }
+            // 他の error は理屈上発生しないが、起きた時 0 delay で tight
+            // loop すると UDP log を埋め尽くす + lower-prio task を starve
+            // する。50 ms sleep を挟んで recoverable 系を吸収する。
+            esp_idf_svc::hal::delay::FreeRtos::delay_ms(50);
             continue;
         }
         if event_flags & sys::USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS != 0 {
@@ -140,11 +144,26 @@ pub fn start_host() -> Result<()> {
 
     // Spawn the events pump. std::thread runs FreeRTOS task underneath
     // via esp-idf-hal pthread shim; 4 KB stack covers the trivial loop.
-    std::thread::Builder::new()
+    // If spawn fails after `usb_host_install` succeeded the host stack
+    // is installed but no one is pumping `usb_host_lib_handle_events`,
+    // leaving the controller in a half-up state. Roll back with
+    // `usb_host_uninstall` so a subsequent BootMode flip (or even
+    // re-entry on retry) finds a clean baseline.
+    if let Err(e) = std::thread::Builder::new()
         .stack_size(USB_EVENTS_TASK_STACK)
         .name("usb_events".into())
         .spawn(usb_events_task)
-        .map_err(|e| anyhow!("usb_events_task spawn failed: {e}"))?;
+    {
+        let uninstall_err = unsafe { sys::usb_host_uninstall() };
+        if uninstall_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!(
+                "uac: usb_host_uninstall after spawn failure also failed (err={uninstall_err:#x}); host stack left in inconsistent state"
+            );
+        } else {
+            log::info!("uac: rolled back usb_host_install after spawn failure");
+        }
+        return Err(anyhow!("usb_events_task spawn failed: {e}"));
+    }
     log::info!("uac: usb_events_task spawned (stack={USB_EVENTS_TASK_STACK} B)");
 
     // UAC class driver: background-task mode (driver pumps its own
