@@ -278,7 +278,7 @@ WiFi  → UDP log (every log::info! line)
 ### Why Goertzel (Phase 1.7.7-Stick)
 
 The previous pipeline allocated 4 × 30 KB internal-DRAM `BASIS` sin/cos
-scratch buffers for the per-symbol DFT (60 KB × 2 re/im × 2 dual_core
+scratch buffers for the per-symbol DFT (30 KB × 2 re/im × 2 dual_core
 workers = 120 KB). On Qso mode the I2S bidir DMA descriptor could not
 find a large-enough contiguous internal chunk and the mode failed to
 init with `i2s_alloc_dma_desc: allocate DMA buffer failed`.

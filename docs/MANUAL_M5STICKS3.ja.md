@@ -270,7 +270,7 @@ WiFi  → UDP log (`log::info!` 各行)
 ### なぜ Goertzel か (Phase 1.7.7-Stick)
 
 旧パイプラインは per-symbol DFT 用に 4 × 30 KB の internal-DRAM
-`BASIS` sin/cos スクラッチを確保していた (60 KB × 2 re/im × 2
+`BASIS` sin/cos スクラッチを確保していた (30 KB × 2 re/im × 2
 dual_core worker = 120 KB)。Qso mode で I2S bidir DMA descriptor が
 内部 DRAM の連続大ブロックを確保できず、
 `i2s_alloc_dma_desc: allocate DMA buffer failed` で起動失敗していた。

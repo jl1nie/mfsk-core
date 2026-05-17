@@ -213,7 +213,7 @@ BASIS 比 SNR +0.16..+0.63 dB 改善** (f32 Goertzel は Q15 BASIS
 ループのホットデータなので、fast 内部 SRAM (DRAM) に置く必要が
 ある — PSRAM だとカーネルが定格 throughput の ~30 % に落ちる。
 
-何故引退させるか: 内部 DRAM 60 KB / 軸 × 2 軸 × 2 core = **120 KB
+何故引退させるか: 内部 DRAM 30 KB / 軸 × 2 軸 × 2 core = **120 KB
 の内部 DRAM** がまさに M5StickS3 Qso モードの双方向 I2S DMA
 descriptor が割当てたい量。ボードの空き連続内部チャンクが両者を
 満たせず、Qso モード起動が `i2s_alloc_dma_desc: allocate DMA
@@ -237,8 +237,8 @@ int16_t *basis = heap_caps_malloc(BASIS_SCRATCH_LEN * sizeof(int16_t),
                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 ```
 
-60 KB の素の `malloc` リクエストは ESP-IDF のデフォルトルーティング
-では暗黙に PSRAM に乗り、これが slow ケース。新規統合ではこの問題
+30 KB 軸 1 本ぶんの素の `malloc` リクエストは ESP-IDF のデフォルト
+ルーティングでは暗黙に PSRAM に乗り、これが slow ケース。新規統合ではこの問題
 を考える必要なし — Goertzel パスを呼んで decoder には何も alloc
 させない。
 
@@ -425,10 +425,12 @@ void on_i2s_chunk(const int16_t *samples, size_t n) {
 // Decode タスク: UTC スロット境界毎 15 秒間隔で発火
 void on_slot_boundary(void) {
     if (mfsk_ft8_stream_buffered_samples(g_stream) < 168000) return;
-    mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
+    size_t n = mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
 
     MfskFt8ResultList results = {0};
-    mfsk_ft8_decode_i16(g_slot, 180000,
+    mfsk_ft8_decode_i16(g_slot, n,        // 180000 ではなく n。ring が
+                                          // 満杯でなければ peek は短く
+                                          // 返してくる。
                         200.0f, 3000.0f, 1.0f, 30,
                         MFSK_FT8_DEPTH_BP_ALL,
                         NULL, NULL,       // Goertzel

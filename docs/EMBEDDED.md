@@ -221,7 +221,7 @@ the esp-dsp ASM kernel). The table is the dot-product inner-loop hot
 data, so it has to live in fast internal SRAM (DRAM) — not PSRAM —
 or the kernel drops to ~30 % of rated throughput.
 
-Why this is being retired: the 60 KB of internal DRAM per axis ×
+Why this is being retired: the 30 KB of internal DRAM per axis ×
 2 axes × 2 cores = **120 KB of internal DRAM** was exactly what the
 M5StickS3 Qso-mode bidirectional I2S DMA descriptor needs to
 allocate. The board's free contiguous internal chunk could not
@@ -247,8 +247,8 @@ int16_t *basis = heap_caps_malloc(BASIS_SCRATCH_LEN * sizeof(int16_t),
                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 ```
 
-A plain `malloc` of 60 KB silently lands in PSRAM under ESP-IDF's
-default routing, which is the slow case. New integrations should
+A plain `malloc` of either 30 KB axis silently lands in PSRAM under
+ESP-IDF's default routing, which is the slow case. New integrations should
 not need to think about this — call the Goertzel path and let the
 decoder allocate nothing.
 
@@ -437,10 +437,12 @@ void on_i2s_chunk(const int16_t *samples, size_t n) {
 // Decode task: fires every 15 s on UTC slot boundary
 void on_slot_boundary(void) {
     if (mfsk_ft8_stream_buffered_samples(g_stream) < 168000) return;
-    mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
+    size_t n = mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
 
     MfskFt8ResultList results = {0};
-    mfsk_ft8_decode_i16(g_slot, 180000,
+    mfsk_ft8_decode_i16(g_slot, n,        // n, not 180000 — peek may
+                                          // return fewer if the ring
+                                          // isn't yet full.
                         200.0f, 3000.0f, 1.0f, 30,
                         MFSK_FT8_DEPTH_BP_ALL,
                         NULL, NULL,       // Goertzel
