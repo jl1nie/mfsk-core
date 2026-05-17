@@ -90,6 +90,30 @@ just relocates the bug.
   `/tmp/...` literals are fine — the human-in-the-loop step assumes a
   known location. Don't replace these with `tempfile`.
 
+## Releases — go through CD, never `cargo publish` locally
+
+`mfsk-core` ships to crates.io via `.github/workflows/release.yml`,
+triggered by a `vX.Y.Z` tag push. The workflow gates the publish on
+the CI for the same commit going green (`wait-for-ci` job), then
+runs `cargo publish -p mfsk-core --features full` + builds the
+`mfsk-ffi-ft8` FFI artifacts + creates the GitHub release with
+attached tarballs.
+
+**Do not `cargo publish` from a local clone.** crates.io publishes
+are irreversible — once a version is up, you cannot unpublish
+(yank exists but blocks new dependents while existing dependents
+keep using the broken version). A local publish bypasses the CI
+gate that this whole workflow exists to enforce; even if your
+local SHA happens to be CI-green, future releases get sloppier
+when "just publish locally" is in the playbook. Push the tag and
+let CD do it.
+
+Sequence:
+1. Merge release PR into `main`.
+2. `git checkout main && git pull`.
+3. `git tag vX.Y.Z <merge-sha>` then `git push origin vX.Y.Z`.
+4. Watch the Actions tab for the `Release` workflow.
+
 ## Memory
 
 - `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the
