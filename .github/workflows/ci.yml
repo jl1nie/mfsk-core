@@ -147,27 +147,48 @@ jobs:
         run: cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
 
   # ───────────────────────────────────────────────────────────────
-  # Core test suite on the "full" feature set, split into 5 parallel
-  # matrix jobs to keep wall-clock CI time under ~10 min:
+  # Core test suite on the "full" feature set, split into parallel
+  # matrix jobs to keep wall-clock CI time low. Two tiers within the
+  # `#[ignore]`'d sweep buckets:
   #
-  #   default          — every non-ignored test (lib + integration)
-  #                      across every protocol. Cross-cutting coverage.
-  #   ft8 sweeps       — ft8_*  #[ignore]'d slow integration sweeps.
-  #   q65 sweeps       — q65_*  #[ignore]'d slow integration sweeps.
-  #   uvpacket sweeps  — uvpacket_*  #[ignore]'d integration sweeps.
-  #   lib + ft4 / fst4 / FST4 gated — small / catch-all bucket:
-  #     * lib #[ignore]'d tests (jt9 demod/decode/search/softsym,
-  #       uvpacket::puncture AWGN sweeps)
-  #     * ldpc_min_sum AWGN sweep (integration)
-  #     * ft4_diag_low_snr / ft4_timing_budget
-  #     * fst4_wsjtx_samples #[ignore]
-  #     * env-gated FST4 60-s roundtrip (the heaviest single test)
+  #   recall tier         — load-bearing regression protection. Runs
+  #                         on every PR matching the path filter
+  #                         (current ft8/catchall recall hooks:
+  #                         `ft8_decode_block_real_qso`,
+  #                         `ft8_reference_suite_recall`,
+  #                         `fst4_wsjtx_samples`).
+  #   characterization    — SNR sensitivity curves, depth/pass1 sweeps,
+  #                         coarse-sync probes / concurrency stress,
+  #                         and similar diagnostic-only tests. Run on
+  #                         `push` to main and on PRs carrying the
+  #                         `run-full-sweep` label, but skipped on
+  #                         regular PRs (caught post-merge, revert if
+  #                         broken). This is the wall-clock saving:
+  #                         a typical ESP32-related PR touching
+  #                         `mfsk-core/src/ft8/**` no longer spends
+  #                         ~10 min on the characterization sweep on
+  #                         every push.
   #
-  # Pre-split this was one ~22 min job — `Test (features = full)`
-  # dominated the wall-clock and stalled every stacked-PR merge
-  # cascade. The split trades 4× repeated cargo metadata + a partial
-  # cold-cache build (Swatinem amortises across runs) for ~12 min off
-  # the slowest-job ceiling.
+  # The non-ignored recall tests (qso3 apoff/apon/jtdx, all of
+  # ft4/q65/uvpacket roundtrips + wsjtx_samples, protocol_invariants,
+  # jt9/wspr wsjtx_samples) already run in the `default` suite — they
+  # do not need a separate matrix entry.
+  #
+  # Behaviour gate per matrix entry:
+  #   - `changes_key: always`            — always runs.
+  #   - `changes_key: <name>`            — runs when paths-filter
+  #                                        `<name>` is true OR on push
+  #                                        to main.
+  #   - `push_only: true` (+ changes_key) — runs on push to main, on
+  #                                        PRs with `run-full-sweep`
+  #                                        label, otherwise skipped
+  #                                        (even when the filter would
+  #                                        otherwise gate it in).
+  #
+  # Pre-this-split a regular `mfsk-core/src/ft8/**` PR ran ~10 min of
+  # characterization on top of the recall floor. With this split, the
+  # PR runs only the ~2 min recall tier; the characterization sweep
+  # runs once post-merge.
   # ───────────────────────────────────────────────────────────────
   test:
     name: Test (${{ matrix.suite.name }})
@@ -180,60 +201,124 @@ jobs:
           # `changes_key` selects which output of the `changes` job
           # gates this suite. `always` opts out of the gate entirely
           # (the default suite runs every PR for cross-cutting
-          # coverage).
+          # coverage). `push_only: true` skips on regular PRs and
+          # only runs on push-to-main or when the PR carries the
+          # `run-full-sweep` label.
           - name: default
             kind: default
             changes_key: always
-          - name: ft8 sweeps
+            push_only: false
+          # FT8 recall protection (real-QSO regression + WSJT-X
+          # reference WAV recall across all distributed samples).
+          # Cheap enough to keep on every ft8-relevant PR.
+          - name: ft8 recall
             kind: ignored-integration
-            globs: "ft8_*"
+            globs: "ft8_decode_block_real_qso ft8_reference_suite_recall"
             changes_key: ft8
+            push_only: false
+          # FT8 characterization — SNR curves, depth/pass1 sweeps,
+          # coarse-sync probe + concurrency stress. Push-only.
+          - name: ft8 characterization
+            kind: ignored-integration
+            globs: "ft8_coarse_sync_concurrent ft8_decode_block_coarse_diag ft8_decode_block_depth_sweep ft8_decode_block_pass1_sweep ft8_decode_block_snr_sweep ft8_qso3_coarse_sync_probe"
+            changes_key: ft8
+            push_only: true
+          # Q65 sweeps are all characterization (ap_list, ap_sweep,
+          # fast_fading, snr_sweep). Recall protection sits in the
+          # non-ignored `q65_roundtrip` / `q65_eme_submodes` /
+          # `q65_wsjtx_samples` which already run in default.
           - name: q65 sweeps
             kind: ignored-integration
             globs: "q65_*"
             changes_key: q65
+            push_only: true
+          # uvpacket sweeps are characterization (per_modes_sweep,
+          # pi4_dqpsk_eq, ssb_channel, fm_channel, ldpc_direct,
+          # snr_calibration). Recall in `uvpacket_multichannel` is
+          # non-ignored and covered by default.
           - name: uvpacket sweeps
             kind: ignored-integration
             globs: "uvpacket_*"
             changes_key: uvpacket
-          - name: lib + ft4 / fst4 / FST4 gated
-            kind: catchall
-            globs: "ft4_* fst4_* ldpc_min_sum"
+            push_only: true
+          # catchall recall — FST4 WSJT-X reference WAV recall.
+          - name: catchall recall
+            kind: ignored-integration
+            globs: "fst4_wsjtx_samples"
             changes_key: catchall
+            push_only: false
+          # catchall characterization — FT4 SNR/timing sweeps,
+          # ldpc_min_sum AWGN sweep, lib-level #[ignore] tests
+          # (jt9 demod/decode/search/softsym + uvpacket::puncture
+          # AWGN sweeps), env-gated FST4 60-s roundtrip.
+          - name: catchall characterization
+            kind: catchall
+            globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget ldpc_min_sum"
+            changes_key: catchall
+            push_only: true
     steps:
       - uses: actions/checkout@v4
 
-      - name: Gate (paths-filter + main-push override)
+      - name: Gate (paths-filter + main-push + tier override)
         id: gate
         env:
           CHANGES_KEY: ${{ matrix.suite.changes_key }}
+          PUSH_ONLY: ${{ matrix.suite.push_only }}
           EVENT_NAME: ${{ github.event_name }}
           FT8: ${{ needs.changes.outputs.ft8 }}
           Q65: ${{ needs.changes.outputs.q65 }}
           UVPACKET: ${{ needs.changes.outputs.uvpacket }}
           CATCHALL: ${{ needs.changes.outputs.catchall }}
-        # Push events on main (post-merge) always run every sweep for
-        # regression catch. Pull-request events only run the sweep
-        # when the matching paths-filter flag is true. `always` opts
-        # the matrix entry out of the gate.
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        # Two-stage gate.
+        #
+        # Stage 1 — should this suite run at all on this event?
+        #   - `push` to main: yes (post-merge regression net).
+        #   - `pull_request`: only if `PUSH_ONLY != true` OR the PR
+        #     carries the `run-full-sweep` label (manual opt-in for
+        #     when you want the heavy characterization sweep verified
+        #     before merge — e.g. for a behavioural change you want
+        #     the SNR curve on).
+        #
+        # Stage 2 — does this suite's paths-filter say it's relevant?
+        #   - `changes_key: always`: yes, unconditionally (default
+        #     suite is cross-cutting).
+        #   - On push events: yes, all sweeps run (skip the filter so
+        #     post-merge always sees the full picture).
+        #   - Otherwise: gate on the named `changes` output.
         run: |
           set -e
           should_run=false
+          tier_gate_ok=false
           if [ "$EVENT_NAME" = "push" ]; then
-            should_run=true
-          elif [ "$CHANGES_KEY" = "always" ]; then
-            should_run=true
-          else
-            case "$CHANGES_KEY" in
-              ft8)      [ "$FT8" = "true" ]      && should_run=true ;;
-              q65)      [ "$Q65" = "true" ]      && should_run=true ;;
-              uvpacket) [ "$UVPACKET" = "true" ] && should_run=true ;;
-              catchall) [ "$CATCHALL" = "true" ] && should_run=true ;;
-            esac
+            tier_gate_ok=true
+          elif [ "$PUSH_ONLY" != "true" ]; then
+            tier_gate_ok=true
+          elif echo "$PR_LABELS" | grep -q '"run-full-sweep"'; then
+            tier_gate_ok=true
+            echo "::notice::run-full-sweep label set — running push_only suite '${{ matrix.suite.name }}' on this PR."
+          fi
+          if [ "$tier_gate_ok" = "true" ]; then
+            if [ "$EVENT_NAME" = "push" ]; then
+              should_run=true
+            elif [ "$CHANGES_KEY" = "always" ]; then
+              should_run=true
+            else
+              case "$CHANGES_KEY" in
+                ft8)      [ "$FT8" = "true" ]      && should_run=true ;;
+                q65)      [ "$Q65" = "true" ]      && should_run=true ;;
+                uvpacket) [ "$UVPACKET" = "true" ] && should_run=true ;;
+                catchall) [ "$CATCHALL" = "true" ] && should_run=true ;;
+              esac
+            fi
           fi
           echo "should_run=$should_run" >> "$GITHUB_OUTPUT"
           if [ "$should_run" = "false" ]; then
-            echo "::notice::Skipping suite '${{ matrix.suite.name }}' — no relevant source changes on this PR."
+            if [ "$PUSH_ONLY" = "true" ] && [ "$EVENT_NAME" = "pull_request" ]; then
+              echo "::notice::Skipping push-only suite '${{ matrix.suite.name }}' on PR (add 'run-full-sweep' label to force)."
+            else
+              echo "::notice::Skipping suite '${{ matrix.suite.name }}' — no relevant source changes on this PR."
+            fi
           fi
 
       - name: Install Rust (stable)
