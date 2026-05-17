@@ -791,21 +791,28 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
     })
 }
 
-/// Un-permute a candidate codeword and CRC-verify it. Returns the
-/// unpermuted full codeword + its first-`K` info slice, or `None` if
-/// CRC fails.
-fn try_candidate_ldpc174_91(perm: &[usize], cp: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let n = LDPC_N;
-    let k = LDPC_K;
-    let mut c = vec![0u8; n];
-    for col in 0..n {
-        c[perm[col]] = cp[col];
+/// Un-permute a candidate codeword into the caller-provided
+/// `c_unperm` scratch buffer and CRC-verify it. Returns the
+/// unpermuted full codeword + its first-`K` info slice as fresh
+/// `Vec`s on CRC pass, or `None` if CRC fails (no allocation on
+/// the fail path).
+///
+/// Caller provides the scratch buffer so it can be reused across
+/// the ~4186 invocations a single OSD candidate triggers — heap
+/// churn on each call was the dominant per-candidate cost before
+/// this refactor (Gemini PR #86 review).
+fn try_candidate_ldpc174_91(
+    perm: &[usize],
+    cp: &[u8],
+    c_unperm: &mut [u8; LDPC_N],
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    for col in 0..LDPC_N {
+        c_unperm[perm[col]] = cp[col];
     }
-    let decoded = c[..k].to_vec();
-    if !check_crc14(&decoded) {
+    if !check_crc14(&c_unperm[..LDPC_K]) {
         return None;
     }
-    Some((decoded, c))
+    Some((c_unperm[..LDPC_K].to_vec(), c_unperm.to_vec()))
 }
 
 /// Run the WSJT-X `nord=1 + npre1=1` pass against the given
@@ -824,6 +831,19 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
     let k = LDPC_K;
     let nt = NPRE1_PARITY_WINDOW.min(n - k);
 
+    // Fixed-size scratch buffers: hoist allocations out of the per-
+    // candidate hot loop (Gemini PR #87 review). `LDPC_N` / `LDPC_K`
+    // are `const`, so `[T; N]` lives on the stack with no allocator
+    // round-trip.
+    let mut ce_iflag = [0u8; LDPC_N];
+    let mut e2sub = [0u8; LDPC_N - LDPC_K];
+    let mut e2 = [0u8; LDPC_N - LDPC_K];
+    let mut ce_pair = [0u8; LDPC_N];
+    // Caller-provided buffer for try_candidate_ldpc174_91 — shared
+    // across every CRC try in this pass (Gemini PR #86 review,
+    // ~4186 calls/candidate previously each allocating their own Vec).
+    let mut c_unperm = [0u8; LDPC_N];
+
     // Order-0 baseline.
     {
         let mut wd = 0.0f32;
@@ -833,16 +853,12 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
             }
         }
         if wd < best.dd
-            && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &setup.c_perm)
+            && let Some((d, cw)) =
+                try_candidate_ldpc174_91(&setup.perm, &setup.c_perm, &mut c_unperm)
         {
             best.maybe_update(d, cw, wd);
         }
     }
-
-    let mut ce_iflag = vec![0u8; n];
-    let mut e2sub = vec![0u8; n - k];
-    let mut e2 = vec![0u8; n - k];
-    let mut ce_pair = vec![0u8; n];
 
     for iflag in (0..k).rev() {
         ce_iflag.copy_from_slice(&setup.c_perm);
@@ -870,7 +886,8 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
             }
             let dd = d1 + parity_wd;
             if dd < best.dd
-                && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_iflag)
+                && let Some((d, cw)) =
+                    try_candidate_ldpc174_91(&setup.perm, &ce_iflag, &mut c_unperm)
             {
                 best.maybe_update(d, cw, dd);
             }
@@ -902,7 +919,8 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
             }
             let dd = d1 + setup.absrx_perm[n1] + parity_wd_pair;
             if dd < best.dd
-                && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_pair)
+                && let Some((d, cw)) =
+                    try_candidate_ldpc174_91(&setup.perm, &ce_pair, &mut c_unperm)
             {
                 best.maybe_update(d, cw, dd);
             }
@@ -936,19 +954,18 @@ impl OsdNpre2Table {
         }
     }
 
+    /// Head insertion: O(1) per insert. The previous implementation
+    /// traversed the chain to find the tail (O(L) per insert), which
+    /// dominated `build_npre2_table` for keys with long chains. To
+    /// keep WSJT-X iteration order under `iter_pairs`, the build loop
+    /// in [`build_npre2_table`] inserts entries in **reverse** of the
+    /// original tail-insert order — head-insert then naturally yields
+    /// the same traversal sequence. (Gemini PR #87 review.)
     fn insert(&mut self, key: usize, i1: u8, i2: u8) {
         let idx = self.pairs.len() as i32;
         self.pairs.push((i1, i2));
-        self.next.push(-1);
-        if self.fp[key] == -1 {
-            self.fp[key] = idx;
-        } else {
-            let mut cur = self.fp[key] as usize;
-            while self.next[cur] != -1 {
-                cur = self.next[cur] as usize;
-            }
-            self.next[cur] = idx;
-        }
+        self.next.push(self.fp[key]);
+        self.fp[key] = idx;
     }
 
     /// Iterate over `(i1, i2)` pairs registered at `key`, in
@@ -968,23 +985,49 @@ impl OsdNpre2Table {
 }
 
 /// Build the [`OsdNpre2Table`] for `ntau`-bit XOR of all C(K, 2)
-/// MRB column pairs. Insertion order matches WSJT-X
-/// (`i1` from K-1 down to 0, `i2` from `i1-1` down to 0) so the
-/// chain traversal in [`OsdNpre2Table::iter_pairs`] yields candidates
-/// in the same sequence WSJT-X explores them.
+/// MRB column pairs.
+///
+/// Two perf optimisations vs the WSJT-X-faithful tail-insert / reverse-
+/// loop reference (Gemini PR #87 review):
+///
+/// 1. **row_keys pre-compute.** Each row's `ntau`-bit parity key is
+///    independent of the pairing inner loop. Hoist the per-row bit
+///    pack into a `LDPC_K`-length scratch (~1.4 KB on the stack for
+///    ntau=14 → `u16`), reducing the inner-loop work from O(K² · ntau)
+///    to O(K · ntau + K²). `ntau <= 14` per WSJT-X constraints — fits
+///    in `u16` with one bit to spare.
+///
+/// 2. **Forward loops paired with head-insert in
+///    [`OsdNpre2Table::insert`].** The original reverse outer/inner +
+///    tail-insert yielded a specific iteration order under
+///    [`OsdNpre2Table::iter_pairs`]. Forward outer/inner + head-insert
+///    yields the *same* order (head-insert reverses, forward loop
+///    reverses again — net no change), so candidates surface in the
+///    same sequence WSJT-X explores them. Preserves any tie-break
+///    parity with the reference implementation.
 fn build_npre2_table(setup: &OsdSetup, ntau: usize) -> OsdNpre2Table {
     let n = LDPC_N;
     let k = LDPC_K;
     let mut table = OsdNpre2Table::new(ntau);
-    for i1 in (0..k).rev() {
-        for i2 in (0..i1).rev() {
-            let mut key: usize = 0;
-            for j in 0..ntau {
-                let bit = setup.g[i1 * n + (k + j)] ^ setup.g[i2 * n + (k + j)];
-                if bit != 0 {
-                    key |= 1 << (ntau - 1 - j);
-                }
+
+    let mut row_keys = [0u16; LDPC_K];
+    for i in 0..k {
+        let mut rk: u16 = 0;
+        // Hoist `i * n + k` out of the j loop — Gemini PR #96 minor
+        // perf nit. `g` is row-major LDPC_K × LDPC_N, row i parity
+        // section starts at `row_base + k`.
+        let row_base = i * n;
+        for j in 0..ntau {
+            if setup.g[row_base + k + j] != 0 {
+                rk |= 1u16 << (ntau - 1 - j);
             }
+        }
+        row_keys[i] = rk;
+    }
+
+    for i1 in 0..k {
+        for i2 in 0..i1 {
+            let key = (row_keys[i1] ^ row_keys[i2]) as usize;
             table.insert(key, i1 as u8, i2 as u8);
         }
     }
@@ -1009,9 +1052,13 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
     let k = LDPC_K;
     let table = build_npre2_table(setup, ntau);
 
-    let mut ce_misub = vec![0u8; n];
-    let mut e2sub = vec![0u8; n - k];
-    let mut ce_test = vec![0u8; n];
+    // Same fixed-size scratch + caller-provided unperm buffer pattern
+    // as `osd_npre1_pass` — see that function's hoist for rationale
+    // (Gemini PR #86 / #87 review).
+    let mut ce_misub = [0u8; LDPC_N];
+    let mut e2sub = [0u8; LDPC_N - LDPC_K];
+    let mut ce_test = [0u8; LDPC_N];
+    let mut c_unperm = [0u8; LDPC_N];
 
     for iflag in (0..k).rev() {
         ce_misub.copy_from_slice(&setup.c_perm);
@@ -1061,7 +1108,8 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
                     }
                 }
                 if dd < best.dd
-                    && let Some((d, cw)) = try_candidate_ldpc174_91(&setup.perm, &ce_test)
+                    && let Some((d, cw)) =
+                        try_candidate_ldpc174_91(&setup.perm, &ce_test, &mut c_unperm)
                 {
                     best.maybe_update(d, cw, dd);
                 }
