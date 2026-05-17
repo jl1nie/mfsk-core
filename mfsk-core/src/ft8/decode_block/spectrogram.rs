@@ -323,20 +323,30 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
     let hann: &[i16; NSPS] = hann_cached;
     #[cfg(not(feature = "std"))]
     let hann: &[i16; NSPS] = &hann_local;
+    // **Rectangular window** — matches `embedded-shared::stage1_inc`
+    // verbatim. Earlier the host path windowed with Hann (cached in
+    // `HANN_NSPS` above) "for parity with stage1_inc" but stage1_inc
+    // had already switched to rectangular at the NFFT=3840 migration
+    // (see `embedded-shared/src/stage1_inc.rs:338`). The drift caused
+    // host `decode_block_into` to lose 2 weak decodes that the
+    // embedded S3 wav_sim baseline finds (XE2X, K1JT on qso3_busy.wav).
+    // The Hann coherent gain 0.5 ≈ -6 dB SNR penalty + 2-bin mainlobe
+    // spread is what cost the recall — at integer tone alignment
+    // (tone_step_bins = 2.0 exactly) the rectangular sidelobes don't
+    // leak onto adjacent FT8 tones, so the window provides no benefit.
+    let _ = hann; // silence unused warning when std cache is built
     let pack = |buf: &mut [Complex<i16>], ia_a: usize, ia_b: Option<usize>| {
         for (k, c) in buf.iter_mut().enumerate() {
             let re = if k < NSPS && ia_a + k < audio.len() {
                 let raw = audio[ia_a + k].to_i16() as i32;
-                let scaled = (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32);
-                ((scaled * hann[k] as i32) >> 15) as i16
+                (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
             } else {
                 0
             };
             let im = match ia_b {
                 Some(ia_b) if k < NSPS && ia_b + k < audio.len() => {
                     let raw = audio[ia_b + k].to_i16() as i32;
-                    let scaled = (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32);
-                    ((scaled * hann[k] as i32) >> 15) as i16
+                    (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
                 }
                 _ => 0,
             };
