@@ -248,17 +248,17 @@ ROADMAP entries) stay but get a date stamp.
 
 **Done 2026-05-17 across 6 stacked PRs.** Shipped in 0.6.3.
 Final shape (from `mfsk-core/src/ft8/decode_block.rs` original
-3,517 lines → 416 line parent + 6 stage submodules):
+3,517 lines → 423 line parent + 6 stage submodules):
 
   | file | lines | role | PR |
   |---|---:|---|---|
-  | `decode_block.rs` | 416 | parent / facade | — |
+  | `decode_block.rs` | 423 | parent / facade | — |
   | `decode_block/types.rs` | 184 | audio sample + tunables | #77 |
   | `decode_block/spectrogram.rs` | 357 | `Spectrogram` + `compute_spectrogram` | #83 (re-opened #78) |
   | `decode_block/coarse_sync.rs` | 537 | Costas search + allsum | #79 |
   | `decode_block/fill_symbol_spectra.rs` | 601 | per-symbol DFT family | #80 |
-  | `decode_block/process_candidates.rs` | 1,596 | engine + facade impls | #81 |
-  | `decode_block/osd_strategy.rs` | 117 | OSD dispatch (`#63` hook) | #82 |
+  | `decode_block/process_candidates.rs` | 1,589 | engine + facade impls | #81 |
+  | `decode_block/osd_strategy.rs` | 139 | OSD dispatch (`#63` hook) | #82 |
 
 ε.6's OSD-strategy seam is now load-bearing for issue #63's
 WSJT-X-faithful OSD work (also 0.6.3).

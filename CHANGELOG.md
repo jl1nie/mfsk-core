@@ -68,13 +68,13 @@ Non-breaking patch. Two interleaved storylines:
 
   | file | lines | role |
   |---|---:|---|
-  | `decode_block.rs` | 416 | parent / facade |
+  | `decode_block.rs` | 423 | parent / facade |
   | `decode_block/types.rs` | 184 | audio sample + tunables |
   | `decode_block/spectrogram.rs` | 357 | `Spectrogram` + `compute_spectrogram` |
   | `decode_block/coarse_sync.rs` | 537 | Costas search + allsum |
   | `decode_block/fill_symbol_spectra.rs` | 601 | per-symbol DFT family |
-  | `decode_block/process_candidates.rs` | 1,596 | engine + facade impls |
-  | `decode_block/osd_strategy.rs` | 117 | OSD dispatch (`#63` hook) |
+  | `decode_block/process_candidates.rs` | 1,589 | engine + facade impls |
+  | `decode_block/osd_strategy.rs` | 139 | OSD dispatch (`#63` hook) |
 - **OSD scaffolding shared across ndeep=2 and ndeep=3.** New
   private `osd_setup_ldpc174_91` / `osd_npre1_pass` /
   `osd_result_from_best` helpers factor the WSJT-X-faithful setup /
