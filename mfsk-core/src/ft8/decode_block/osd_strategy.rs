@@ -17,10 +17,7 @@
 //! dispatch table, replacing the previous mfsk-core-specific
 //! brute-force ndeep=2/3 split (`osd_decode` / `osd_decode_deep`).
 
-use alloc::vec;
-
 use super::super::decode::DecodeDepth;
-use super::super::params::LDPC_N;
 use crate::core::scalar::Cmplx;
 use crate::fec::ldpc::bp::BpResult;
 use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
@@ -125,10 +122,14 @@ pub(super) fn try_fallback(
             if osd.hard_errors > OSD_HARDERRORS_MAX {
                 continue;
             }
+            // Reuse `osd.codeword` instead of allocating a fresh
+            // zero vec — `OsdResult` already carries the actual
+            // decoded codeword bits, which the previous `vec![0; N]`
+            // dropped on the floor (Gemini PR #86 review).
             let bp = BpResult {
                 message77: osd.message77,
                 info: osd.info,
-                codeword: vec![0u8; LDPC_N],
+                codeword: osd.codeword,
                 hard_errors: osd.hard_errors,
                 iterations: 0,
             };
