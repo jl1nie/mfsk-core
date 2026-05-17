@@ -80,6 +80,28 @@ pub struct UiState {
     /// 100-row ring is full — `Deque::len()` plateaus at WF_DEPTH and
     /// is therefore not a usable trigger after the first ~8 seconds.
     wf_push_seq: AtomicU32,
+
+    // ── Phase 1.7-Stick operation state (menu UX + QSO config) ─────
+    /// Modal menu visibility — when true, display overlay paints the
+    /// menu box on top of the WF region and BtnB/BtnA events route to
+    /// `MenuState::handle_event` instead of the legacy boot-mode flip.
+    pub menu_visible: bool,
+    /// Currently-highlighted menu item (0..MENU_ITEM_COUNT-1).
+    pub menu_selected: u8,
+    /// Index into the 11-band preset table (`ui::menu::BANDS`).
+    /// Persisted in NVS as `"last_band_idx"`. Default 4 = 20m FT8.
+    pub current_band_idx: u8,
+    /// Last auto-DF result in Hz (200..2700). 0 = no DF chosen yet
+    /// (TX scheduler falls back to 1500 Hz default in that case).
+    pub current_df_hz: u16,
+    /// Auto-CQ master gate — mirrors `qso::auto_cq_enabled` so the
+    /// menu render path can read without taking the QSO lock.
+    /// Toggled together with the FSM field by the menu activate path.
+    pub auto_cq_enabled: bool,
+    /// Bumped when any menu / operation field above changes so the
+    /// display loop repaints the overlay even when WF / decode aren't
+    /// updating.
+    menu_seq: AtomicU32,
 }
 
 impl UiState {
@@ -97,7 +119,24 @@ impl UiState {
             tx_seq: AtomicU32::new(0),
             dirty_seq: AtomicU32::new(0),
             wf_push_seq: AtomicU32::new(0),
+            menu_visible: false,
+            menu_selected: 0,
+            current_band_idx: 4, // 20m default
+            current_df_hz: 0,
+            auto_cq_enabled: false,
+            menu_seq: AtomicU32::new(0),
         }
+    }
+
+    /// Bump the menu_seq watermark so the display loop knows to
+    /// repaint the overlay. Call from menu setters / toggles.
+    pub fn bump_menu(&self) {
+        self.menu_seq.fetch_add(1, Ordering::AcqRel);
+        self.bump();
+    }
+
+    pub fn menu_seq(&self) -> u32 {
+        self.menu_seq.load(Ordering::Acquire)
     }
 
     /// Push a fresh decode. Dedupes by `msg` — if the message text

@@ -180,4 +180,80 @@ impl OccupancyMap {
         // 高いほど良い。
         -2.0 * energy_pen - 1.0 * decode_pen - same_parity_pen + center_bonus
     }
+
+    /// Phase 1.7-Stick auto-DF picker — pick the quietest 50 Hz window
+    /// (5 bins at 10 Hz spacing) in the centre of the audio band
+    /// [400, 2400] Hz. Scoring: **max** energy within window (worst-case
+    /// rather than mean — a single strong tone makes the whole 50 Hz
+    /// window unusable). Ignores decode_count entirely — a busy band
+    /// is one we want to *avoid*, not gravitate towards.
+    ///
+    /// Returns the window centre frequency in Hz. Caller can pass this
+    /// straight to `tx::synthesize_message77(.., df_hz)`.
+    ///
+    /// The OccupancyMap must have been `ingest_slot_energy`'d for at
+    /// least one slot, otherwise all bins read zero and the picker
+    /// just returns the 1500 Hz centre default.
+    pub fn find_clear_df(&self, parity: Parity) -> u16 {
+        const WINDOW_BINS: usize = 5; // 5 × 10 Hz = 50 Hz
+        const SCAN_LO_BIN: usize = (400 - BIN_BASE_HZ as usize) / BIN_HZ as usize; // 20
+        const SCAN_HI_BIN: usize = (2400 - BIN_BASE_HZ as usize) / BIN_HZ as usize; // 220
+        let p = parity as usize;
+        // Empty-energy fallback: return 1500 Hz centre.
+        let total: f32 = self.energy_norm[p].iter().sum();
+        if total < f32::EPSILON {
+            return 1500;
+        }
+        let mut best_score: f32 = f32::INFINITY;
+        let mut best_bin: usize = (1500 - BIN_BASE_HZ) as usize / BIN_HZ as usize;
+        for start in SCAN_LO_BIN..=(SCAN_HI_BIN.saturating_sub(WINDOW_BINS)) {
+            // Worst (max) energy in window — most-occupied bin defines
+            // the window's noise floor for our purposes.
+            let win_max = self.energy_norm[p][start..start + WINDOW_BINS]
+                .iter()
+                .fold(0.0_f32, |a, &b| a.max(b));
+            if win_max < best_score {
+                best_score = win_max;
+                best_bin = start;
+            }
+        }
+        // Window centre: start + WINDOW_BINS/2 bins from the base.
+        BIN_BASE_HZ + (best_bin as u16 + (WINDOW_BINS as u16) / 2) * BIN_HZ
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_clear_df_empty_returns_centre() {
+        let map = OccupancyMap::new();
+        // No energy ingested → fallback to 1500 Hz.
+        assert_eq!(map.find_clear_df(Parity::Even), 1500);
+    }
+
+    #[test]
+    fn find_clear_df_avoids_busy_bins() {
+        let mut map = OccupancyMap::new();
+        // Crank energy at 1500 Hz (bin 130) heavily; scan should
+        // pick a window elsewhere.
+        let mut mags = [0.0f32; NUM_BINS];
+        for i in 120..140 {
+            mags[i] = 100.0; // 1400..1600 Hz fully occupied
+        }
+        map.ingest_slot_energy(Parity::Even, &mags, 1.0);
+        // Force one slot's worth of EMA to commit.
+        for _ in 0..10 {
+            map.ingest_slot_energy(Parity::Even, &mags, 1.0);
+        }
+        let df = map.find_clear_df(Parity::Even);
+        // Result must be outside [1400, 1600].
+        assert!(
+            df < 1400 || df > 1600,
+            "find_clear_df returned {df} which overlaps the busy 1400..1600 Hz band"
+        );
+        // And must still be in the legal scan range.
+        assert!((400..=2400).contains(&df));
+    }
 }

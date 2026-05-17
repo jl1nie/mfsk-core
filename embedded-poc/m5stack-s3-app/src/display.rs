@@ -31,7 +31,7 @@ use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 use crate::buttons::{Buttons, Event as ButtonEvent, Key};
 use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::log_sink::LogFanout;
-use mfsk_app_shared::ui::{decoded_list, state::UI, status_bar, waterfall};
+use mfsk_app_shared::ui::{decoded_list, menu, state::UI, status_bar, waterfall};
 
 /// 1 行高 (FONT_6X10)。
 pub const LINE_H: u16 = 10;
@@ -386,6 +386,7 @@ pub fn run_log_panel(
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
+    let mut last_menu_seq: u32 = u32::MAX;
     // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
     // KEY2 (= 2 s) flips boot mode and restarts; KEY1 is reserved for
     // the boot-time invert override (already consumed at boot).
@@ -393,16 +394,85 @@ pub fn run_log_panel(
     loop {
         buttons.poll();
         if let Some(ev) = buttons.take_event() {
-            match ev {
-                ButtonEvent::LongPress(Key::Key2) => {
-                    log::info!("KEY2 long-press → boot_mode flip");
-                    boot_mode::flip_and_restart(&nvs, mode);
+            // Phase 1.7-Stick: route to menu when visible; otherwise
+            // KEY2 long-press still does boot-mode flip (legacy path
+            // for diagnostic mode switching). BtnA/BtnB short-presses
+            // outside the menu remain no-ops for now.
+            let menu_visible_now = UI
+                .lock()
+                .ok()
+                .map(|u| u.menu_visible)
+                .unwrap_or(false);
+            match (ev, menu_visible_now) {
+                (ButtonEvent::LongPress(Key::Key2), _) => {
+                    if menu_visible_now {
+                        // Close menu (don't flip boot mode while menu open).
+                        if let Ok(mut ui) = UI.lock() {
+                            menu::toggle_visible(&mut ui);
+                        }
+                        log::info!("menu: closed via BtnB long-press");
+                    } else if mode == BootMode::Qso || mode == BootMode::Acoustic {
+                        // Open menu only in modes that have RX + control
+                        // surface to act on. Other modes keep the legacy
+                        // boot-mode flip semantic so the cycle is still
+                        // navigable via KEY2 long-press.
+                        if let Ok(mut ui) = UI.lock() {
+                            menu::toggle_visible(&mut ui);
+                        }
+                        log::info!("menu: opened via BtnB long-press");
+                    } else {
+                        log::info!("KEY2 long-press → boot_mode flip");
+                        boot_mode::flip_and_restart(&nvs, mode);
+                    }
                 }
-                ButtonEvent::LongPress(Key::Key1) => {
+                (ButtonEvent::ShortPress(Key::Key2), true) => {
+                    if let Ok(mut ui) = UI.lock() {
+                        menu::next_item(&mut ui);
+                    }
+                }
+                (ButtonEvent::ShortPress(Key::Key1), true) => {
+                    // Activate selected item. The closures below are
+                    // intentionally tiny — they bridge between the
+                    // board-agnostic menu module and the s3-app crate's
+                    // civ / tx_picker code.
+                    let mut actions = menu::MenuActions {
+                        set_band: &mut |idx: u8| {
+                            let (hz, label) = menu::BANDS[idx as usize];
+                            crate::civ::set_freq_hz(hz);
+                            crate::civ::set_mode_data_usb();
+                            log::info!("menu: band → {label} ({hz} Hz)");
+                        },
+                        find_df: &mut || {
+                            // Phase 1.7 first cut: returns the 1500 Hz
+                            // centre default until the occupancy map is
+                            // populated from the live spectrogram. The
+                            // TX scheduler will recompute this anyway
+                            // right before each TX cycle.
+                            //
+                            // TODO Phase 1.7.1: wire occupancy ingest
+                            // from decode_pipeline so this hook returns
+                            // the actually-quietest 50 Hz window.
+                            let df = 1500u16;
+                            log::info!("menu: find_df → {df} Hz (occupancy not yet wired)");
+                            df
+                        },
+                        set_auto_cq: &mut |on: bool| {
+                            // QSO FSM lives in mfsk-app-shared; the QSO
+                            // mutex is held by the TX scheduler (Phase
+                            // 1.7 next commit). For now we only update
+                            // the UiState mirror; scheduler reads it.
+                            log::info!("menu: auto_cq → {}", if on { "ON" } else { "OFF" });
+                        },
+                    };
+                    if let Ok(mut ui) = UI.lock() {
+                        menu::activate(&mut ui, &mut actions);
+                    }
+                }
+                (ButtonEvent::LongPress(Key::Key1), _) => {
                     log::info!("KEY1 long-press (no action wired yet)");
                 }
-                ButtonEvent::ShortPress(k) => {
-                    log::info!("button short-press: {k:?}");
+                (ButtonEvent::ShortPress(k), false) => {
+                    log::info!("button short-press: {k:?} (menu hidden, ignored)");
                 }
             }
         }
@@ -437,6 +507,8 @@ pub fn run_log_panel(
         let wf_seq;
         let tx_seq;
         let tx_line_snapshot: heapless::String<48>;
+        // (visible, selected, band_idx, df_hz, auto_cq, seq)
+        let menu_snapshot: (bool, u8, u8, u16, bool, u32);
         {
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
@@ -448,6 +520,14 @@ pub fn run_log_panel(
             wf_snapshot = ui.waterfall_iter().cloned().collect();
             wf_seq = ui.wf_push_seq();
             tx_seq = ui.tx_seq();
+            menu_snapshot = (
+                ui.menu_visible,
+                ui.menu_selected,
+                ui.current_band_idx,
+                ui.current_df_hz,
+                ui.auto_cq_enabled,
+                ui.menu_seq(),
+            );
             let mut buf: heapless::String<48> = heapless::String::new();
             for ch in ui.tx_line().chars() {
                 if buf.push(ch).is_err() {
@@ -469,6 +549,28 @@ pub fn run_log_panel(
         // Status bar refreshes every loop tick (cheap; no leading
         // wipe in the renderer so it doesn't flicker).
         status_bar::render(&mut display, &status_snapshot).ok();
+
+        // Menu overlay — render after WF/decoded so it paints on top.
+        // Tracking last menu_seq to avoid redraw when nothing changed.
+        let menu_seq = menu_snapshot.5;
+        if menu_seq != last_menu_seq {
+            menu::render(
+                &mut display,
+                menu_snapshot.0,
+                menu_snapshot.1,
+                menu_snapshot.2,
+                menu_snapshot.3,
+                menu_snapshot.4,
+            )
+            .ok();
+            // When menu closes, force a full re-render of WF + decoded
+            // next iteration so the overlay's residual pixels go away.
+            if !menu_snapshot.0 {
+                last_wf_seq = u32::MAX;
+                last_decoded_fp = (usize::MAX, u32::MAX);
+            }
+            last_menu_seq = menu_seq;
+        }
 
         // Waterfall: streams at per-pair cadence. Trigger on
         // `wf_push_seq` so the redraw still fires after the ring
