@@ -178,15 +178,20 @@ pub fn start_host() -> Result<()> {
     let err = unsafe { sys::uac::uac_host_install(&uac_config as *const _) };
     if err != sys::ESP_OK as sys::esp_err_t {
         // Roll back the host stack so the controller doesn't sit half-
-        // up. Mirror the spawn-failure rollback above: check the
-        // uninstall result so a "host stack left in inconsistent state"
-        // condition surfaces in the log rather than being silently
-        // hidden behind an unconditional "rolled back" message.
-        // `usb_host_uninstall` returns ESP_ERR_INVALID_STATE if any
-        // client is still installed (shouldn't apply here — the UAC
-        // client didn't register) or if the events pump task is still
-        // mid-handle_events; either way the pump task will then see
-        // INVALID_STATE on its next call and exit cleanly.
+        // up. The events pump task is already spawned and blocked in
+        // `usb_host_lib_handle_events(FOREVER, ..)` at this point, so
+        // calling `usb_host_uninstall` straight away tends to trip
+        // `ESP_ERR_INVALID_STATE`. Call `usb_host_lib_unblock` first
+        // to wake the pump (which then sees INVALID_STATE on its next
+        // handle_events call and exits cleanly) before the uninstall.
+        // Mirror the spawn-failure rollback's err-checked logging so a
+        // "host stack left in inconsistent state" condition surfaces.
+        let unblock_err = unsafe { sys::usb_host_lib_unblock() };
+        if unblock_err != sys::ESP_OK as sys::esp_err_t {
+            log::warn!(
+                "uac: usb_host_lib_unblock before rollback returned err={unblock_err:#x}"
+            );
+        }
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
             log::error!(
