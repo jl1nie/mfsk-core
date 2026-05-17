@@ -226,37 +226,44 @@ where
         log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
 
-        // Bootstrap slot-boundary auto-sync (Acoustic / UAC live paths).
-        // Compute median DT over the **top-N highest-score pass1
-        // candidates** — these are the strongest 3-Costas pattern hits,
-        // which is a clean sync source. The full pass1 (up to MAX_CAND
-        // = 30) gets capped at the limit and is polluted by noise-
-        // driven candidates with random DTs; using all of them makes
-        // the median jitter even when real signals are present (User:
-        // "dec で同期は難しい。3 costas だけでやるべきでは？" — the
-        // Costas score in pass1 is exactly that 3-Costas correlation,
-        // no need to wait for full BP decode).
+        // Bootstrap slot-boundary auto-sync. Two-tier source priority:
+        //
+        // 1. If THIS slot produced confirmed BP decodes, use the median
+        //    DT of those decoded results — high confidence, BP-verified
+        //    alignment (user note 2026-05-17: "一度成功した DT 値に固定
+        //    してアップデートしていないのでは" — pre-fix we only ever
+        //    used raw pass1 candidates even after good decodes landed).
+        //
+        // 2. Else (no decode this slot), fall back to the median of
+        //    the top-3 highest-score pass1 candidates — the strongest
+        //    3-Costas correlation hits. Cleaner than the full pass1
+        //    (which is capped at MAX_CAND = 30 and includes noise).
+        //
+        // Damping 0.5 in either source — full-DT shift was observed
+        // to diverge (shrinking slot[1] by full DT makes slot[1]
+        // capture only the tail, coarse_sync re-reports same offset).
+        // ±5 s clamp catches wrap-around outliers.
         const SYNC_TOP_N: usize = 3;
-        if !pass1_dts.is_empty() {
-            // pass1 from coarse_sync is already sorted by score desc.
+        let confirmed_dt: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
+        let sync_source: Option<(f32, &'static str)> = if !confirmed_dt.is_empty() {
+            let mut dts = confirmed_dt.clone();
+            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            Some((dts[dts.len() / 2], "decoded"))
+        } else if !pass1_dts.is_empty() {
             let take = pass1_dts.len().min(SYNC_TOP_N);
             let mut dts: Vec<f32> = pass1_dts.iter().take(take).copied().collect();
             dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            let median = dts[dts.len() / 2];
-            // Apply a damping factor (0.5) on the per-slot correction
-            // — full-DT shift was observed to diverge: shrinking slot
-            // [1] by the full -0.673s makes slot[1] capture only the
-            // tail of real_slot_1, coarse_sync detects a partial
-            // signal and reports a similar -0.6s offset → infinite
-            // loop. Damped 0.5 trades convergence speed (~3-4 slots
-            // instead of 1) for stability. Clamp ±5 s to reject
-            // outliers that wrap aliasing might generate.
+            Some((dts[dts.len() / 2], "pass1-top3"))
+        } else {
+            None
+        };
+        if let Some((median, src)) = sync_source {
             let raw_samples = (median * 12000.0 * 0.5).round() as i32;
             let clamped = raw_samples.clamp(-60_000, 60_000);
             mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(clamped);
             log::info!(
-                "  auto-sync: top-{take} pass1 DT median={:+.3}s → next slot shift {:+} samples (damped 0.5, clamped from {:+})",
-                median, clamped, raw_samples
+                "  auto-sync ({src}): median DT={:+.3}s → next slot shift {:+} samples (damped 0.5)",
+                median, clamped
             );
         }
 

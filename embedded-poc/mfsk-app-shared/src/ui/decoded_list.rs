@@ -67,8 +67,9 @@ where
 {
     let bg = Rgb565::BLACK;
     let fg = Rgb565::WHITE;
-    let warn = Rgb565::CSS_ORANGE;
-    // First-seen-this-slot highlight: dim cyan band.
+    // First-seen-this-slot highlight: dim cyan band. Tells operator
+    // which callsigns appeared THIS slot vs are carried over from
+    // earlier (per user request "新規に入ったデコード局も知りたい").
     let new_bg = Rgb565::new(2, 14, 12);
     let new_fg = Rgb565::WHITE;
     // Cursor highlight (peer-selection band, Phase 1.7.2): magenta-ish.
@@ -94,14 +95,15 @@ where
         // a `wav_sim` loop) carry an older `first_seq` and stay plain.
         let is_new = row.first_seq == latest_seq;
         // Cursor (selection for QSO) takes visual precedence over
-        // "new" highlighting.
+        // "new" highlighting. hard_errors-based orange tint dropped
+        // 2026-05-17 (user: "ハードデコードは SNR みれば分かる" — the
+        // SNR column already conveys decode quality; the orange tint
+        // was redundant noise).
         let is_selected = selected_idx == Some(i as u8);
         let (row_bg, row_fg) = if is_selected {
             (cur_bg, cur_fg)
         } else if is_new {
             (new_bg, new_fg)
-        } else if row.hard_errors >= 24 {
-            (bg, warn)
         } else {
             (bg, fg)
         };
@@ -125,9 +127,8 @@ where
         let msg = row.msg.as_str();
         let msg_take = msg.len().min(msg_room.saturating_sub(1));
         let _ = s.push_str(&msg[..msg_take]);
-        if row.hard_errors >= 24 {
-            let _ = s.push('!');
-        }
+        // Trailing `!` for hard_errors >= 24 dropped 2026-05-17 —
+        // SNR column already conveys decode quality (user request).
         Text::with_baseline(s.as_str(), Point::new(0, row_y_text), style, Baseline::Top)
             .draw(display)?;
     }

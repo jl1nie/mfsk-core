@@ -494,7 +494,9 @@ pub fn run_log_panel(
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp_with_cursor: (usize, u32, Option<u8>) =
         (usize::MAX, u32::MAX, None);
-    let mut last_tx_seq: u32 = 0;
+    // tx strip fingerprint: (tx_seq, sync_state); changes on either
+    // QSO state update or sync established/lost.
+    let mut last_tx_fp: (u32, bool) = (u32::MAX, false);
     let mut last_menu_seq: u32 = u32::MAX;
     // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
     // KEY2 (= 2 s) flips boot mode and restarts; KEY1 is reserved for
@@ -795,9 +797,16 @@ pub fn run_log_panel(
             last_decoded_fp_with_cursor = decoded_fp_with_cursor;
         }
 
-        // TX line: repaint when the QSO FSM bumps `tx_seq`. Cheap
-        // (single 14-px-tall strip) so we always do a fresh wipe + draw.
-        if tx_seq != last_tx_seq {
+        // TX line: repaint when the QSO FSM bumps `tx_seq` OR when
+        // the sync state changes (no-sync → synced transition swaps
+        // the user-facing prompt vs the QSO state line). Pre-sync we
+        // show "SYNC: BtnA at slot start" to teach the user what to
+        // do; once `slots_observed >= 1` we hand the strip back to
+        // the QSO FSM's tx_line (CALL / RPT / 73 / IDLE).
+        let observed_now = mfsk_app_shared::time_sync::slots_observed();
+        let sync_state = observed_now > 0;
+        let tx_fp = (tx_seq, sync_state);
+        if tx_fp != last_tx_fp {
             Rectangle::new(
                 Point::new(0, TX_REGION_Y),
                 Size::new(crate::board::LCD_WIDTH as u32, TX_REGION_H),
@@ -805,7 +814,9 @@ pub fn run_log_panel(
             .into_styled(PrimitiveStyle::with_fill(tx_bg))
             .draw(&mut display)
             .ok();
-            let text = if tx_line_snapshot.is_empty() {
+            let text = if !sync_state {
+                "SYNC: A at slot start"
+            } else if tx_line_snapshot.is_empty() {
                 "IDLE: ---"
             } else {
                 tx_line_snapshot.as_str()
@@ -818,7 +829,7 @@ pub fn run_log_panel(
             )
             .draw(&mut display)
             .ok();
-            last_tx_seq = tx_seq;
+            last_tx_fp = tx_fp;
         }
 
         // Phase 0.5 boot-time log scroll has been retired now that

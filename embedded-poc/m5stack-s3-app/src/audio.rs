@@ -333,10 +333,32 @@ pub fn set_chunk_q(q: sys::QueueHandle_t) {
 /// PGA gain in reg 0x14 (raise the low nibble 0x10 → 0x1F for higher
 /// gain). If clipping, lower ADC volume reg 0x17.
 pub fn init_es8311_capture(i2c: &mut I2cDriver) -> Result<()> {
+    use esp_idf_svc::hal::delay::FreeRtos;
     // M5StickS3 PA enable line off (codec speaker stays silent during
     // mic capture; otherwise the speaker amp would howl any leaked
     // signal back to the mic).
     let _ = pmic_bit_off(i2c, 0x11, 1 << 3);
+
+    // **Disable → settle → enable** init pattern. ES8311 is a
+    // standalone IC on the I2C bus — S3 reset doesn't reset the
+    // codec, so the previous boot's register state persists across
+    // reboot. User-observed 2026-05-17: "一度リブートすると二度と
+    // 同期しない" = first boot's mic-mode init works, second boot the
+    // codec is in some weird half-configured state and the writes
+    // don't all take. M5Unified's mic enable_cb pairs with a
+    // disable_cb that powers down the analog stage first; by always
+    // running disable→enable on init we get a clean starting state
+    // regardless of what the previous run left behind.
+    let disable_seq: &[(u8, u8)] = &[
+        (0x0D, 0xFC), // SYSTEM: power down analog
+        (0x0E, 0x6A), // SYSTEM
+        (0x00, 0x00), // RESET / CSM POWER DOWN
+    ];
+    for &(reg, val) in disable_seq {
+        let _ = i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT);
+    }
+    FreeRtos::delay_ms(20); // analog settle after power-down
+
     let mic_seq: &[(u8, u8)] = &[
         (0x00, 0x80),
         (0x01, 0xBA),
@@ -347,12 +369,18 @@ pub fn init_es8311_capture(i2c: &mut I2cDriver) -> Result<()> {
         (0x17, 0xFF),
         (0x1C, 0x6A),
     ];
-    for &(reg, val) in mic_seq {
+    // 10 ms after RESET (write[0]) before the rest of the sequence so
+    // the CSM is fully up — observed empirical, datasheet recommends
+    // ≥ 5 ms after CSM_RESET deassertion.
+    i2c.write(ES8311_ADDR, &[mic_seq[0].0, mic_seq[0].1], I2C_TIMEOUT)
+        .with_context(|| format!("ES8311 mic reg 0x{:02X} write failed", mic_seq[0].0))?;
+    FreeRtos::delay_ms(10);
+    for &(reg, val) in &mic_seq[1..] {
         i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT)
             .with_context(|| format!("ES8311 mic reg 0x{reg:02X} write failed"))?;
     }
     log::info!(
-        "ES8311 ADC mic-mode init OK (M5Unified-port: MCLK=BCLK 0xBA, Mic1 diff, vol MAX, EQ bypass)"
+        "ES8311 ADC mic-mode init OK (M5Unified-port: disable→settle→enable, MCLK=BCLK 0xBA, Mic1 diff, vol MAX, EQ bypass)"
     );
     Ok(())
 }
@@ -410,6 +438,20 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     // (internal DRAM is tight after BASIS + stage1_inc + dual_core —
     // 8 KB stack spawn OOMs during bring-up).
     let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
+
+    // ES8311 ADC + PGA settling. The codec takes ~250 ms after
+    // rx_enable to produce stable samples — first slot's worth of
+    // audio is a noisy AGC ramp + transient PGA artefacts which
+    // makes the WF's first 1-2 slots look visibly wrong (user-observed
+    // 2026-05-17: "1st/2nd の WF だけおかしい"). Drain reads into the
+    // heap-allocated buf so we don't stack-overflow (a 4 KB local
+    // array tipped the thread over its 6 KB stack limit — 2026-05-17).
+    log::info!("audio capture: codec settling drain (~250 ms)");
+    let settle_start = std::time::Instant::now();
+    while settle_start.elapsed().as_millis() < 250 {
+        let _ = i2s.read(&mut buf[..], TickType::new_millis(50).ticks());
+    }
+    log::info!("audio capture: settling done, starting normal capture");
     let mut resampler = LinearResamplerI16To12k::new(48_000);
     let mut left_scratch: Box<[i16; CAPTURE_BUFFER_BYTES / 4]> =
         Box::new([0i16; CAPTURE_BUFFER_BYTES / 4]);
@@ -610,6 +652,17 @@ pub fn capture_tx_thread(
     log::info!("audio capture+tx: bidir I2S up (RX 48k stereo + TX 48k stereo on i2s0)");
 
     let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
+    // Codec settling drain (same rationale as capture_thread): ~250 ms
+    // of ES8311 ADC AGC / PGA transients dropped before normal capture
+    // resumes. Reuses heap-allocated `buf` to avoid the 4 KB stack
+    // overflow that a local settle_buf caused.
+    log::info!("audio capture+tx: codec settling drain (~250 ms)");
+    let settle_start = std::time::Instant::now();
+    while settle_start.elapsed().as_millis() < 250 {
+        let _ = i2s.read(&mut buf[..], TickType::new_millis(50).ticks());
+    }
+    log::info!("audio capture+tx: settling done, starting normal capture");
+
     let mut resampler = LinearResamplerI16To12k::new(48_000);
     let mut left_scratch: Box<[i16; CAPTURE_BUFFER_BYTES / 4]> =
         Box::new([0i16; CAPTURE_BUFFER_BYTES / 4]);
