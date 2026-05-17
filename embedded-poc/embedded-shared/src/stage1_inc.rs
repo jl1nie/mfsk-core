@@ -174,11 +174,18 @@ pub fn spawn_with_wf(
     });
     let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
+    // Stack: 12 KB. Originally 16 KB but that fails to spawn on S3
+    // builds with BLE NimBLE enabled — BT controller + NimBLE host
+    // tasks eat ~15 KB internal DRAM and fragment what's left.
+    // Worker_main's actual frame is modest (FFT buf is in ctx, not
+    // stack); 12 KB has measured ~3 KB headroom on the busiest
+    // qso3_busy slot. If a future feature pushes the worker frame
+    // deeper, bump this back to 16 KB and revisit the BLE config.
     let r = unsafe {
         xTaskCreatePinnedToCore(
             Some(worker_main),
             c"stage1_inc".as_ptr(),
-            16384,
+            12288,
             ctx_ptr,
             3, // below dual_core (5) and wav_sim (4)
             ptr::null_mut(),

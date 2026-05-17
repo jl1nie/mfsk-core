@@ -195,6 +195,14 @@ fn main() -> ! {
             // queue handle を渡す。capture_thread は display.rs 側で
             // I2S RX 起動後に spawn 済みで、CHUNK_Q_ADDR が wired される
             // まで sample drop で待つ (UAC と同じ race window 処理)。
+            //
+            // **Init 順序**: BLE CI-V を **先に** 起こす — BLEDevice::take()
+            // が BT controller 初期化で内部 DRAM 30 KB を reserve する。
+            // pipeline thread → BASIS 120 KB alloc を先にやると残飯で
+            // BT init が malloc fail する (2026-05-17 検証で実証)。
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
             log_free_internal("pre-thread-spawn");
             let pipeline_spawn = std::thread::Builder::new()
                 .stack_size(32 * 1024)
@@ -206,6 +214,16 @@ fn main() -> ! {
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Acoustic) spawn failed ({e})");
             }
+        }
+        boot_mode::BootMode::CivTest => {
+            // Phase 2-Stick bring-up: BLE のみ起動、decode pipeline は
+            // skip。BASIS 120 KB 不要なので BT controller + NimBLE が
+            // 余裕で fit する。IC-705 pairing + CI-V command 動作確認用。
+            // display loop は audio/pipeline 無しで LCD だけ更新。
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("post-civ-only-start");
         }
         boot_mode::BootMode::Uac => {
             // Spawn the decode pipeline FIRST. The thread allocates

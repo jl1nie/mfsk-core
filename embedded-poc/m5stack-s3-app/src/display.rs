@@ -195,6 +195,9 @@ pub fn run_log_panel(
         BootMode::Wifi => {
             log::info!("audio path skipped (BootMode::Wifi: speaker muted, mic idle)");
         }
+        BootMode::CivTest => {
+            log::info!("audio path skipped (BootMode::CivTest: BLE-only bring-up)");
+        }
         BootMode::Uac => {
             log::info!("audio path skipped (BootMode::Uac: audio via USB host stack)");
         }
