@@ -80,6 +80,50 @@ pub struct UiState {
     /// 100-row ring is full — `Deque::len()` plateaus at WF_DEPTH and
     /// is therefore not a usable trigger after the first ~8 seconds.
     wf_push_seq: AtomicU32,
+
+    // ── Phase 1.7-Stick operation state (menu UX + QSO config) ─────
+    /// Modal menu visibility — when true, display overlay paints the
+    /// menu box on top of the WF region and BtnB/BtnA events route to
+    /// `MenuState::handle_event` instead of the legacy boot-mode flip.
+    pub menu_visible: bool,
+    /// Currently-highlighted menu item (0..MENU_ITEM_COUNT-1).
+    pub menu_selected: u8,
+    /// Index into the 11-band preset table (`ui::menu::BANDS`).
+    /// Persisted in NVS as `"last_band_idx"`. Default 4 = 20m FT8.
+    pub current_band_idx: u8,
+    /// Last auto-DF result in Hz (200..2700). 0 = no DF chosen yet
+    /// (TX scheduler falls back to 1500 Hz default in that case).
+    pub current_df_hz: u16,
+    /// Auto-CQ master gate — mirrors `qso::auto_cq_enabled` so the
+    /// menu render path can read without taking the QSO lock.
+    /// Toggled together with the FSM field by the menu activate path.
+    pub auto_cq_enabled: bool,
+    /// Cursor over the decoded-list (Phase 1.7.2). `None` = no
+    /// selection (display loop won't draw a cursor); `Some(i)` =
+    /// highlight row `i` (0 = newest visible, increases toward older).
+    /// BtnB short outside the menu advances; BtnA short calls
+    /// `qso::call_station(dx)` after parsing the row's msg text.
+    /// Cleared when the underlying decode ring shrinks below `i` or
+    /// the user enters the menu.
+    pub selected_decode_idx: Option<u8>,
+    /// True between the operator's BtnA sync-mark press and the
+    /// first coarse_sync emit that proves the new slot was captured.
+    /// Display loop uses this to flash "SYNC SET — wait next slot"
+    /// in the TX strip so the user gets instant feedback instead of
+    /// silently mashing BtnA waiting for a state change.
+    pub sync_mark_pending: bool,
+    /// Most-recent slot index that decode_pipeline finished processing.
+    /// decoded_list compares row.slot_seq against this for the "GREEN
+    /// = current slot" highlight — using the max slot_seq of visible
+    /// rows alone marks ALL retained rows green when no new decodes
+    /// arrive for a while (user-observed 2026-05-17 bug: "毎回すべて
+    /// 緑、audio 止めても緑"). With this watermark, rows whose
+    /// slot_seq is older than `latest_slot_seq` drop back to white.
+    pub latest_slot_seq: u32,
+    /// Bumped when any menu / operation field above changes so the
+    /// display loop repaints the overlay even when WF / decode aren't
+    /// updating.
+    menu_seq: AtomicU32,
 }
 
 impl UiState {
@@ -97,6 +141,68 @@ impl UiState {
             tx_seq: AtomicU32::new(0),
             dirty_seq: AtomicU32::new(0),
             wf_push_seq: AtomicU32::new(0),
+            menu_visible: false,
+            menu_selected: 0,
+            current_band_idx: 4, // 20m default
+            current_df_hz: 0,
+            auto_cq_enabled: false,
+            selected_decode_idx: None,
+            sync_mark_pending: false,
+            latest_slot_seq: 0,
+            menu_seq: AtomicU32::new(0),
+        }
+    }
+
+    /// Bump the menu_seq watermark so the display loop knows to
+    /// repaint the overlay. Call from menu setters / toggles.
+    pub fn bump_menu(&self) {
+        self.menu_seq.fetch_add(1, Ordering::AcqRel);
+        self.bump();
+    }
+
+    pub fn menu_seq(&self) -> u32 {
+        self.menu_seq.load(Ordering::Acquire)
+    }
+
+    /// Advance the decoded-list cursor. Wraps `[0, decoded_len)` so
+    /// the user can cycle through the visible rows. No-op when the
+    /// list is empty.
+    pub fn cycle_decode_cursor(&mut self) {
+        if self.decoded.is_empty() {
+            self.selected_decode_idx = None;
+            self.bump_menu();
+            return;
+        }
+        let len = self.decoded.len() as u8;
+        self.selected_decode_idx = Some(match self.selected_decode_idx {
+            None => 0,
+            Some(i) if i + 1 >= len => 0,
+            Some(i) => i + 1,
+        });
+        self.bump_menu();
+    }
+
+    /// Return the message text of the currently-selected decode row,
+    /// or None if no cursor / out-of-range. Used by display.rs to
+    /// call `qso::call_station` after parsing the DX callsign out.
+    pub fn selected_decode_msg(&self) -> Option<&str> {
+        let i = self.selected_decode_idx? as usize;
+        // decoded ring is newest-LAST; cursor 0 = newest.
+        let len = self.decoded.len();
+        if i >= len {
+            return None;
+        }
+        let actual = len - 1 - i;
+        self.decoded.get(actual).map(|r| r.msg.as_str())
+    }
+
+    /// Clear the decoded-list cursor (e.g. when the menu opens or a
+    /// QSO is initiated). Bumps `menu_seq` so the render path drops
+    /// the highlight glyph.
+    pub fn clear_decode_cursor(&mut self) {
+        if self.selected_decode_idx.is_some() {
+            self.selected_decode_idx = None;
+            self.bump_menu();
         }
     }
 

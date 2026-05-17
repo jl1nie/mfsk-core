@@ -52,12 +52,12 @@
 //! - [ ] verification on hardware (#33-#34)
 //! - [ ] disconnect/reconnect polish (#35)
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::OnceLock;
 
-use anyhow::{Result, anyhow};
-use embedded_shared::pipeline::{CHUNK_LEN, ChunkMsg, send_box};
+use anyhow::{anyhow, Result};
+use embedded_shared::pipeline::{send_box, ChunkMsg, CHUNK_LEN};
 use esp_idf_svc::sys;
 use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
 
@@ -170,8 +170,7 @@ static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// (a) explicitly on `handle_rx_connected` failure or
 /// (b) automatically via [`ReaderActiveGuard`] when the reader thread
 /// exits (normal exit, error exit, or panic).
-static READER_ACTIVE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static READER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// RAII guard that releases [`READER_ACTIVE`] on drop. Held by
 /// `reader_thread` for its entire lifetime so the gate gets reset
@@ -310,8 +309,7 @@ fn usb_events_task() {
     const FOREVER: sys::TickType_t = sys::TickType_t::MAX;
     loop {
         let mut event_flags: u32 = 0;
-        let err =
-            unsafe { sys::usb_host_lib_handle_events(FOREVER, &mut event_flags as *mut u32) };
+        let err = unsafe { sys::usb_host_lib_handle_events(FOREVER, &mut event_flags as *mut u32) };
         if err != sys::ESP_OK as sys::esp_err_t {
             log::error!("uac: usb_host_lib_handle_events err={err:#x}");
             if err == sys::ESP_ERR_INVALID_STATE as sys::esp_err_t {
@@ -364,7 +362,9 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
         // Best-effort close; if it fails we can't do much beyond logging.
         let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
         if close_err != sys::ESP_OK as sys::esp_err_t {
-            log::error!("uac: device_close after device_start failure also failed err={close_err:#x}");
+            log::error!(
+                "uac: device_close after device_start failure also failed err={close_err:#x}"
+            );
         }
         return Err(anyhow!(
             "uac_host_device_start failed err={err:#x} (config 48k/stereo/16b — IC-705 should support this; check the device descriptor in UDP log)"
@@ -400,10 +400,14 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
         let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
         let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
         if stop_err != sys::ESP_OK as sys::esp_err_t {
-            log::error!("uac: device_stop after reader spawn failure also failed err={stop_err:#x}");
+            log::error!(
+                "uac: device_stop after reader spawn failure also failed err={stop_err:#x}"
+            );
         }
         if close_err != sys::ESP_OK as sys::esp_err_t {
-            log::error!("uac: device_close after reader spawn failure also failed err={close_err:#x}");
+            log::error!(
+                "uac: device_close after reader spawn failure also failed err={close_err:#x}"
+            );
         } else {
             log::info!("uac: rolled back device_open + device_start after reader spawn failure");
         }
@@ -527,17 +531,12 @@ fn reader_thread(handle: DeviceHandle) {
         // we loop back with the unconsumed tail.
         let mut src_offset = 0usize;
         while src_offset < stereo_samples {
-            let (consumed, produced) = resampler.process(
-                &left_scratch[src_offset..stereo_samples],
-                &mut dst_scratch,
-            );
+            let (consumed, produced) =
+                resampler.process(&left_scratch[src_offset..stereo_samples], &mut dst_scratch);
             for &s in &dst_scratch[..produced] {
                 chunk.push(s);
                 if chunk.len() >= CHUNK_LEN {
-                    let to_send = core::mem::replace(
-                        &mut chunk,
-                        Vec::with_capacity(CHUNK_LEN),
-                    );
+                    let to_send = core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
                     send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
                     slot_samples += CHUNK_LEN;
                     if slot_samples >= SLOT_SAMPLES_12K {

@@ -26,19 +26,33 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 
 # ── Bluetooth (BLE only, NimBLE host) ────────────────────────────────
-# Phase 0.6 で WiFi STA + decode_pipeline thread (32KB stack) を同時に
-# 動かすと内部 DRAM が足りず pthread create が OOM panic する。BLE は
-# Phase 2 (CI-V central) でしか使わないので Phase 0.6 検証中は無効化、
-# Phase 2 着手時に再有効化する。
-# (元設定: CONFIG_BT_ENABLED=y / NIMBLE central)
-CONFIG_BT_ENABLED=n
-# CONFIG_BT_BLE_ENABLED=y
-# CONFIG_BT_BLUEDROID_ENABLED=n
-# CONFIG_BT_NIMBLE_ENABLED=y
-# CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
-# CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
-# CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# Phase 2-Stick (2026-05-17): CI-V via BLE to IC-705 (esp32-nimble
+# central). M5StickS3 が USB host できない hardware 制約のため、IC-705
+# 制御は BLE GATT に集約 (K7MDL2 reference protocol)。
+# BootMode::Acoustic / Decode で BLE スタックを起動、PTT 制御 +
+# GPS UTC supplement 取得 + (将来) S-meter / band 同期 etc.
+# NimBLE central のみ (peripheral / observer / broadcaster は無効) で
+# DRAM footprint 最小化。Acoustic mode は WiFi off にしてあるので net
+# +40 KB (BLE) - 80 KB (WiFi) = -40 KB の総増減。
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Push NimBLE host allocations to PSRAM so internal DRAM stays for
+# the audio capture + stage1_inc workers (stage1_inc spawn fails on
+# pre-BLE-baseline if internal largest drops below 16 KB; PSRAM
+# placement frees ~10-15 KB internal).
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# Trim NimBLE task stack to the central-only minimum (4 KB instead
+# of the default 5 KB) — we don't run peripheral / GATT server work.
+CONFIG_BT_NIMBLE_TASK_STACK_SIZE=4096
+# Trim controller resources for the single-link CI-V central use.
+CONFIG_BTDM_CTRL_BLE_MAX_CONN=1
 
 # ── Networking ───────────────────────────────────────────────────────
 # Phase 0.6: WiFi STA + UDP socket — IC-705 が USB-OTG を占有すると

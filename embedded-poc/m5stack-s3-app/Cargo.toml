@@ -58,12 +58,11 @@ embedded-graphics = "0.8"
 mipidsi = "0.8"
 display-interface-spi = "0.5"
 
-# BLE central — Phase 2 で wire-up。Phase 0 の cargo check 段階では
-# クレートを依存に入れるだけ。実際の使用は src/civ.rs で。
-# esp32-nimble は esp-idf-svc 0.52 系と組み合わせる際のバージョン整合
-# がやや狭い。インストール時に lock 解決が失敗するようなら一時的に
-# コメントアウトして Phase 2 着手時に再評価。
-# esp32-nimble = "0.10"
+# BLE central for IC-705 CI-V (Phase 2-Stick, 2026-05-17 wire-up).
+# esp32-nimble 0.12 supports BLE central + write-without-response +
+# notification subscriptions (ble_client.rs upstream example). Pairs
+# with the sdkconfig BLE block (CONFIG_BT_NIMBLE_ROLE_CENTRAL=y).
+esp32-nimble = "0.12"
 
 [build-dependencies]
 embuild = "0.33"

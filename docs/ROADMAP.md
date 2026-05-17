@@ -197,40 +197,98 @@ hints; the live worklist is the **Open follow-ups** section above.
 - **A3** FST4-15 / FST4W — `#23` "stretch", deferred indefinitely
   (no user demand; FST4-60A is the dominant terrestrial sub-mode).
 
-## Phase B — m5stack-s3-app
+## Phase B — embedded controller line
 
-Per `embedded-poc/m5stack-s3-app/CLAUDE.md` (and the Phase 0..6
-markers in module doc-comments), current state as of 2026-05-13:
+**2026-05-17 pivot**: Phase 1 UAC hardware verification confirmed
+**M5StickS3 cannot do USB host** (board lacks VBUS source circuit, ID
+pin wiring, host power switch IC — silicon supports it, board doesn't
+wire for it). Phase B splits in two:
+
+- **Phase B-Stick** — `m5stack-s3-app`, demoted to **demo / acoustic
+  fallback** path. Frozen at Phase 1.5; Phases 1 (UAC), 2 (BLE CI-V),
+  5 (ADIF), 6 (buttons), TX keying all roll forward to Phase B-Core.
+- **Phase B-Core** — `m5stack-cores3-app` (NEW crate), the **main
+  production controller**. M5Stack CoreS3 has AXP2101 PMIC + AW9523B
+  I/O expander (BUS_OUT_EN pin 1 controls VBUS boost for host mode),
+  so UAC is viable.
+
+Pattern: Phase B-Core reuses the `mfsk-app-shared` + `embedded-shared`
+sibling-crate carve-out proven by `m5stack-core2-app` (Issue #61 Phase
+2). See memory `project_m5stick_s3_no_usb_host` for the hardware
+diagnosis, and `~/.claude/plans/happy-honking-globe.md` for the pivot
+plan.
+
+### Phase B-Stick — m5stack-s3-app (DEMO / FALLBACK)
+
+Per `embedded-poc/m5stack-s3-app/CLAUDE.md` and the Phase 0..6 markers
+in module doc-comments:
 
 - **Phase 0 / 0.5 / 3** — Done. LCD bring-up, WAV-fed pipeline,
   4-region UI (status / waterfall / decoded list / TX strip).
 - **Phase 4** — QSO FSM dry-run done (auto-CQ visible on LCD,
   `qso.rs` ~360 lines, 8 host-side unit tests). No TX audio
-  synthesis yet (parked behind Phase 1 UAC per user judgement —
-  speaker output is a stopgap, real path is USB UAC OUT to the
-  radio).
+  synthesis on Stick (rolled forward to Phase B-Core).
 - **Phase 0.6 / 0.7** — Done. WiFi UDP log streaming (UART /
   LCD / UDP fanout) + USB-CDC freeze fix (`println!` gated on
   `usb_serial_jtag_is_connected`) + runtime boot-mode selector
   (NVS + KEY2 long-press) for WiFi / decoder coexistence.
-- **Phase 1 UAC** — Pending. `uac.rs` is still a doc placeholder;
-  port `espressif/esp_usb_audio` via `esp-idf-svc` bindings,
-  drain a 12 kHz sample ring into `decode_pipeline.rs`. 48 → 12
-  kHz resample reuses the Q32 linear resampler from
-  `mfsk-ffi-ft8/src/stream.rs`.
-- **Phase 2 BLE CI-V** — Pending. `civ.rs` comment-only stub;
-  uncomment `esp32-nimble` in `Cargo.toml`, implement central
-  pairing with the IC-705 BLE service + K7MDL2 framing.
-- **Phase 5 ADIF / Phase 6 buttons** — Pending. `flash_log.rs`
-  (littlefs mount / rotate / dump), `adif.rs` (append-only
-  `/qso.adi`), `buttons.rs` (GPIO 11/12 IRQ + Monitor/Cursor/
-  QSO-prep/Menu mode FSM).
-- **TX keying** — Pending. Pair with Phase 2 (`civ::set_ptt`)
-  and Phase 1 (TX audio synth to UAC OUT endpoint).
+- **Phase 1 (UAC)** — ❌ **Not viable on Stick hardware**. The UAC
+  code that shipped via PRs #29-#35 + #102 (`uac.rs` ~445 lines,
+  managed-component bindings, board-agnostic) remains in-tree as
+  canonical reference; lifted to `m5stack-cores3-app` in
+  Phase 0-Core, then hoisted into `mfsk-app-shared` in
+  Phase 1.5-Core after dual-board verification.
+- **Phase 1.5 (Acoustic capture)** — Pending. Internal MEMS mic via
+  ES8311 ADC mode → I2S RX → existing `LinearResamplerI16To12k` →
+  `decode_pipeline::run_with_source`. IC-705 SPEAKER OUT picked up
+  acoustically; no cable / dongle. Acceptable SNR penalty (~5-10 dB,
+  FT8 floor is -21 dB). Adds `BootMode::Acoustic` between `Wifi`
+  and `Uac` in the boot-mode cycle. Tracked as task #47.
+- **Phases 2 / 5 / 6 / TX keying** — Rolled forward to Phase B-Core.
+  Stick stays frozen at Phase 1.5 once that lands.
 
-Sequencing not committed beyond "Phase 1 UAC next".
-`mfsk-ffi-ft8/src/stream.rs::mfsk_ft8_stream_*` and
-`embedded-shared` resampler API are the seams.
+### Phase B-Core — m5stack-cores3-app (MAIN TARGET, NEW)
+
+Hardware: **M5Stack CoreS3** (full variant with 500 mAh battery +
+GC0308 camera + LTR-553 proximity + BMI270 IMU). CoreS3 SE (cheaper
+sensor-stripped variant) deferred until that hardware is procured;
+when needed, gated behind `cfg(feature = "cores3_se")` in the same
+crate.
+
+Status: planned. Brings up after CoreS3 unit arrives.
+
+- **Phase 0-Core** (task #48) — Crate skeleton: board.rs (ILI9342C
+  SPI pins, I2C0 for AXP2101 + AW9523B + FT6336U, USB-OTG fixed
+  GPIO 19/20, ES7210 audio pins), pmic.rs (AXP2101 + AW9523B init,
+  distinct from S3-app's M5PM1 and Core2-app's AXP192), display.rs
+  (ILI9342C via mipidsi — Core2-app pattern), main.rs orchestration,
+  decode_pipeline.rs thin wrapper. Workspace member added.
+- **Phase 1-Core** (task #49) — UAC: clone `uac.rs` from s3-app
+  verbatim; pmic.rs drives **AW9523B P1 (BUS_OUT_EN) HIGH** before
+  `usb_host_install()` (omission = floating VBUS = floating host
+  capability). BootMode::Uac dispatch arm.
+- **Phase 1-Verify** (tasks #33 / #34) — 1500 Hz tone injection from
+  IC-705 → FT8 candidate appears in decoded list; then live antenna
+  → end-to-end RX confirmed.
+- **Phase 1.5-Core** (task #50) — Hoist `uac.rs` into
+  `mfsk-app-shared` (gated `cfg(feature = "uac")`); both s3-app and
+  cores3-app consume via shared. Deferred until Phase 1-Verify
+  passes (no premature abstraction).
+- **Phase 2-Core** — BLE CI-V to IC-705. Same `civ.rs` work that
+  was queued on s3-app; CoreS3 also has BLE.
+- **Phase 5-Core** — ADIF (`flash_log.rs` + `adif.rs`). Crate-agnostic;
+  could be hoisted to `mfsk-app-shared` from day 1.
+- **Phase 6-Core** (task #51) — FT6336U capacitive touch driver
+  (CoreS3 base has no physical buttons beyond Power). Replaces the
+  Stick `buttons.rs` paradigm with touch zones (menu / decoded-list
+  tap-to-select / TX-strip tap-to-send).
+- **Phase 7-Core** — TX keying (paired with Phase 2-Core
+  `civ::set_ptt` + Phase 1-Core TX audio synth to UAC OUT endpoint).
+
+Sequencing: B-Stick Phase 1.5 (acoustic) starts immediately as a
+parallel demo while CoreS3 hardware is procured. B-Core Phase 0 starts
+the moment CoreS3 lands on the bench. `mfsk-ffi-ft8/src/stream.rs::mfsk_ft8_stream_*`
+and `embedded-shared` resampler API are the seams shared across both.
 
 ## Phase C — Quality / infra
 

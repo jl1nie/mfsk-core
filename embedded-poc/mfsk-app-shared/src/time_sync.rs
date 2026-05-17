@@ -96,3 +96,69 @@ pub fn slot_dt_offset() -> Option<f32> {
 pub fn slots_finalised() -> u32 {
     SLOT_FINALISED_COUNT.load(Ordering::Acquire).max(0) as u32
 }
+
+// ────────────────────────────────────────────────────────────────
+// Bootstrap slot-boundary auto-sync for live audio sources (UAC /
+// Acoustic). wav_sim doesn't use this — its slot boundaries are
+// wav-defined and already aligned. NTP is also not used (山頂運用 /
+// off-grid: no WiFi). Self-sync via raw coarse_sync candidate DT
+// is the only realistic time source.
+//
+// Flow:
+//   - decode_pipeline computes median DT from pass1 candidates after
+//     each coarse_sync (raw, not confirmed decodes — gives a signal
+//     even when 0 decodes happen yet, which is the cold-start case).
+//   - It writes the corresponding sample-count offset via
+//     `set_bootstrap_slot_shift_12k`.
+//   - The audio source (capture_thread for ES8311 mic /
+//     UAC reader_thread for IC-705 USB) reads + clears via
+//     `take_bootstrap_slot_shift_12k` at SlotEnd time and lengthens
+//     / shortens the next slot by that many samples.
+//   - One pass through this loop is usually enough to align (within
+//     ±50 ms); subsequent slots see median DT ≈ 0 and the shift goes
+//     to zero, so the mechanism is idempotent in steady state.
+//
+// FT8 slot-shift convention:
+//   median DT > 0 → signal arrived LATER than our slot's TX_START
+//                 → our slot started TOO EARLY
+//                 → lengthen NEXT slot by +DT samples to catch up
+//   median DT < 0 → our slot started TOO LATE → shorten next slot.
+
+/// Sample-count adjustment to add to the next slot boundary (12 kHz
+/// units). Positive = next slot lasts longer than the nominal 15 s,
+/// negative = shorter. Reset to 0 after the consumer reads it via
+/// `take_bootstrap_slot_shift_12k`.
+static BOOTSTRAP_SLOT_SHIFT_12K: AtomicI32 = AtomicI32::new(0);
+
+/// Count of slots where coarse_sync emitted at least one pass1
+/// candidate (i.e. any signal-shaped energy in band). Increments
+/// every call to `set_bootstrap_slot_shift_12k`. Used by the menu
+/// UX to gate Auto-DF: chicken-and-egg avoidance for the case where
+/// `slots_finalised` (= confirmed BP-passing decodes) stays at 0
+/// because the band is misaligned or weak. `slots_observed` lets the
+/// UI say "ok, sync is at least running" after 2-3 slots even when
+/// no full decode has landed yet.
+static SLOTS_OBSERVED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Producer side (decode_pipeline). Overwrites any prior unread value
+/// — the most recent slot's estimate is always the freshest. Also
+/// increments `SLOTS_OBSERVED` so the UX layer can know how many
+/// coarse_sync windows have run.
+pub fn set_bootstrap_slot_shift_12k(samples: i32) {
+    BOOTSTRAP_SLOT_SHIFT_12K.store(samples, Ordering::Release);
+    SLOTS_OBSERVED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// How many slots have run coarse_sync since boot. Climbs every
+/// ~15 s once the audio source is producing samples. UX gate for
+/// Auto-DF: typically allow after `slots_observed() >= 2` so the
+/// shift estimator has had a chance to settle.
+pub fn slots_observed() -> u32 {
+    SLOTS_OBSERVED.load(Ordering::Acquire)
+}
+
+/// Consumer side (audio capture thread). Returns the current shift
+/// and clears it atomically. Call at SlotEnd time.
+pub fn take_bootstrap_slot_shift_12k() -> i32 {
+    BOOTSTRAP_SLOT_SHIFT_12K.swap(0, Ordering::AcqRel)
+}

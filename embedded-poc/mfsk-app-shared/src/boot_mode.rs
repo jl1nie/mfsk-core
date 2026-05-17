@@ -20,12 +20,53 @@ const NVS_KEY: &str = "boot_mode";
 pub enum BootMode {
     Decode,
     Wifi,
+    /// Phase 1.5-Stick (m5stack-s3-app only, 2026-05-17 pivot): 内蔵
+    /// MEMS mic → ES8311 ADC mode → I2S RX → decode_pipeline。M5StickS3
+    /// で UAC が hardware-blocked なので、IC-705 SPEAKER OUT を acoustic
+    /// に拾う demo path。USB-Serial-JTAG は奪われないので serial console
+    /// は生きるが、UDP log があると診断楽なので main.rs dispatch arm 側
+    /// で WiFi STA は up させる (失敗しても続行)。Core2 / CoreS3 では
+    /// 内蔵 mic 構成が違うので board crate 側でフォールバック (Core2 に
+    /// mic なし、CoreS3 は ES7210)。
+    Acoustic,
+    /// Phase 2-Stick bring-up only (2026-05-17): BLE CI-V scanning +
+    /// pairing + GATT command exchange, **decode pipeline OFF**.
+    /// BASIS 120 KB / stage1_inc / dual_core を spawn しないので
+    /// BT controller + NimBLE host が ample DRAM を持って動ける。
+    /// 単独で IC-705 pairing → set_ptt / GPS query が通ることを
+    /// 確認するための一時 mode。共存 (Acoustic + BLE) が安定したら
+    /// 削除候補。
+    CivTest,
+    /// Phase 1.6-Stick bring-up only (2026-05-17): FT8 TX synthesis
+    /// via ES8311 DAC + I2S TX → built-in speaker → IC-705 microphone
+    /// (acoustic VOX). CI-V PTT bracketing via BLE. **decode pipeline
+    /// OFF** (BASIS 120 KB は不要 — RX 側は別 mode へ)。test loop が
+    /// 30 秒おきに `CQ JL1NIE PM95` を 12.6 s TX。on-air に乗ったか
+    /// は別 receiver (WSJT-X etc.) で確認。
+    TxTest,
+    /// Phase 1.7-Stick (2026-05-17): full QSO operation = Acoustic
+    /// RX capture (Phase 1.5) + BLE CI-V (Phase 2) + TX synth (Phase
+    /// 1.6) + QSO FSM + menu UX (band select, auto-DF, CQ enable).
+    /// Memory is tight (BASIS 120 KB + BLE 30 KB internal); if BASIS
+    /// IM_c1 fails to alloc, the boot crashes — fallback is to use
+    /// `Acoustic` (no TX) or `TxTest` (no RX) separately. CoreS3
+    /// (Phase B-Core) is the long-term canonical platform for QSO.
+    Qso,
     /// Phase 1 (#30 onward, m5stack-s3-app only): USB-OTG host で
     /// IC-705 を UAC class device として認識し audio capture。
     /// `usb_host_install()` を呼んだ瞬間に USB-Serial-JTAG が detach
     /// されるため、UDP log 経路を必ず up させる (main.rs dispatch arm
     /// 側で WiFi STA 起動を強制)。Core2 など USB-OTG host を持たない
     /// 板では選んでも no-op (board crate 側でフォールバック)。
+    ///
+    /// **M5StickS3 警告 (2026-05-17 hardware verification)**:
+    /// M5StickS3 は ESP32-S3 silicon としては host 対応だが、board 自体
+    /// に VBUS source 回路 / USB-C ID pin 配線 / host 電源 IC が無く、
+    /// `usb_host_install()` が hang する。実機検証は M5Stack CoreS3
+    /// (AXP2101 + AW9523B) または Espressif ESP32-S3-USB-OTG dev kit
+    /// 待ち。M5StickS3 で Uac を選ぶと黒画面で固まるため、KEY1-held
+    /// cold boot (`flipped()` で Decode へ戻す) で復帰。詳細は memory
+    /// `project_m5stick_s3_no_usb_host`。
     Uac,
 }
 
@@ -34,6 +75,10 @@ impl BootMode {
         match self {
             BootMode::Decode => "decode",
             BootMode::Wifi => "wifi",
+            BootMode::Acoustic => "acoustic",
+            BootMode::CivTest => "civtest",
+            BootMode::TxTest => "txtest",
+            BootMode::Qso => "qso",
             BootMode::Uac => "uac",
         }
     }
@@ -42,11 +87,15 @@ impl BootMode {
         match self {
             BootMode::Decode => "DECODE",
             BootMode::Wifi => "WIFI",
+            BootMode::Acoustic => "ACOUSTIC",
+            BootMode::CivTest => "CIVTEST",
+            BootMode::TxTest => "TXTEST",
+            BootMode::Qso => "QSO",
             BootMode::Uac => "UAC",
         }
     }
 
-    /// 3-mode cycle: Decode → Wifi → Uac → Decode → ...
+    /// 4-mode cycle: Decode → Wifi → Acoustic → Uac → Decode → ...
     /// KEY2 long-press from `flip_and_restart` walks the cycle one
     /// step at a time. Boot-time KEY1 override
     /// (`override_held_at_boot`) also calls `flipped()` once, so a
@@ -56,7 +105,11 @@ impl BootMode {
     pub fn flipped(self) -> Self {
         match self {
             BootMode::Decode => BootMode::Wifi,
-            BootMode::Wifi => BootMode::Uac,
+            BootMode::Wifi => BootMode::Acoustic,
+            BootMode::Acoustic => BootMode::CivTest,
+            BootMode::CivTest => BootMode::TxTest,
+            BootMode::TxTest => BootMode::Qso,
+            BootMode::Qso => BootMode::Uac,
             BootMode::Uac => BootMode::Decode,
         }
     }
@@ -76,6 +129,10 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
     match nvs.get_str(NVS_KEY, &mut buf) {
         Ok(Some(s)) if s == "wifi" => BootMode::Wifi,
         Ok(Some(s)) if s == "decode" => BootMode::Decode,
+        Ok(Some(s)) if s == "acoustic" => BootMode::Acoustic,
+        Ok(Some(s)) if s == "civtest" => BootMode::CivTest,
+        Ok(Some(s)) if s == "txtest" => BootMode::TxTest,
+        Ok(Some(s)) if s == "qso" => BootMode::Qso,
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");

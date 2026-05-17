@@ -32,6 +32,14 @@ pub enum ChunkMsg {
         wav_idx: usize,
         total_samples: usize,
     },
+    /// **Silent reset** — discard in-progress spec/audio without
+    /// emitting a Slot or SpecBundle. Sent by `audio::capture_thread`
+    /// when the operator presses BtnA (manual slot-sync mark). The
+    /// previous in-progress slot may contain mixed pre-/post-BtnA
+    /// audio that would produce a misleading DT estimate if decoded,
+    /// so we throw it away silently and start fresh from the very
+    /// next `Samples` chunk. Phase 1.7.4-Stick (2026-05-17).
+    SlotResetMark,
 }
 
 /// Spectrogram + per-half allsums, sent by stage1_inc as soon as the
@@ -138,6 +146,27 @@ pub fn try_send_box<T>(q: QueueHandle_t, boxed: Box<T>) -> Result<(), Box<T>> {
         // pointer or rejects without storing it; on rejection we still
         // own `raw` and rebox to drop on the caller's side.
         Err(unsafe { Box::from_raw(raw) })
+    }
+}
+
+/// Non-blocking receive — returns `Some(box)` if a message was
+/// pending, `None` if the queue was empty. Used by capture_thread's
+/// BtnA-reset path to drain stale pre-reset chunks before signalling
+/// stage1_inc to discard its in-progress spec.
+pub fn try_recv_box<T>(q: QueueHandle_t) -> Option<Box<T>> {
+    let mut raw: *mut T = ptr::null_mut();
+    let r = unsafe {
+        xQueueReceive(
+            q,
+            (&mut raw as *mut *mut T) as *mut core::ffi::c_void,
+            0,
+        )
+    };
+    if r == PD_PASS {
+        debug_assert!(!raw.is_null());
+        Some(unsafe { Box::from_raw(raw) })
+    } else {
+        None
     }
 }
 

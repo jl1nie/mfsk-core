@@ -9,6 +9,8 @@ mod civ;
 mod decode_pipeline;
 mod display;
 mod pmic;
+mod tx;
+mod tx_scheduler;
 mod uac;
 
 use esp_idf_hal::peripherals::Peripherals;
@@ -45,7 +47,10 @@ pub fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
     const BYTES: usize = BASIS_SCRATCH_LEN * core::mem::size_of::<i16>();
     let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     let raw = unsafe { heap_caps_aligned_alloc(16, BYTES, caps) } as *mut i16;
-    assert!(!raw.is_null(), "BASIS {label} alloc failed ({BYTES} B internal DRAM)");
+    assert!(
+        !raw.is_null(),
+        "BASIS {label} alloc failed ({BYTES} B internal DRAM)"
+    );
     assert_eq!(
         raw as usize & 0xF,
         0,
@@ -68,6 +73,8 @@ const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PSK: &str = env!("WIFI_PSK");
 const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
 const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
+const MY_CALL: &str = env!("MY_CALL");
+const MY_GRID: &str = env!("MY_GRID");
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
@@ -79,7 +86,20 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
     log::info!("phase 0.7c: runtime boot-mode (NVS + KEY1 override + KEY2 long-press)");
-    log::info!("build-stamp 2026-05-13-phase07c-bootmode");
+    log::info!("build-stamp 2026-05-17-phase17-qso");
+
+    // Global QSO FSM instance. Empty MY_CALL keeps the FSM Idle so
+    // the TX scheduler / auto-CQ stays a no-op until cfg.toml provides
+    // a real callsign. Wrapped in Arc<Mutex> for the scheduler /
+    // decode_pipeline shared writes.
+    let qso = std::sync::Arc::new(std::sync::Mutex::new(
+        mfsk_app_shared::qso::QsoManager::new(MY_CALL, MY_GRID),
+    ));
+    if MY_CALL.is_empty() {
+        log::warn!("[station] cfg.toml MY_CALL empty — QSO FSM disabled, TX scheduler stays idle");
+    } else {
+        log::info!("[station] {} / {} (from cfg.toml)", MY_CALL, MY_GRID);
+    }
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
@@ -89,7 +109,7 @@ fn main() -> ! {
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
     let mode = boot_mode::determine(&nvs, board::BTN_A_PIN);
-    log::info!("boot_mode: {} (stored + KEY1 override)", mode.label());
+    log::info!("boot_mode: {}", mode.label());
 
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)
@@ -100,6 +120,14 @@ fn main() -> ! {
     //   失敗時は warn だけ出して続行 — boot 完走 > log 経路。
     //   `_wifi` は drop されると association が切れるので static slot に保持。
     static mut WIFI_SLOT: Option<wifi::WifiHandle> = None;
+    // Acoustic mode は USB-Serial-JTAG が生きているので console は使える。
+    // 当初 UDP log のため WiFi 起動したが、WiFi 試行後の residual alloc が
+    // capture thread spawn の OOM 原因 (2026-05-17 bring-up 実機検証) なので
+    // Acoustic は WiFi 起動しない方針。UAC は USB-Serial-JTAG 奪われるので
+    // UDP 必須、Wifi mode は WiFi が主目的。
+    // TxTest needs no WiFi (BLE only for PTT). Uac needs WiFi for
+    // UDP log path (USB-Serial-JTAG detaches on host install). Wifi
+    // mode is the dev/log mode itself.
     let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
@@ -110,7 +138,13 @@ fn main() -> ! {
     }
     if wifi_should_start {
         let sysloop = EspSystemEventLoop::take().expect("sysloop");
-        match wifi::connect_sta(peripherals.modem, sysloop, Some(nvs_part.clone()), WIFI_SSID, WIFI_PSK) {
+        match wifi::connect_sta(
+            peripherals.modem,
+            sysloop,
+            Some(nvs_part.clone()),
+            WIFI_SSID,
+            WIFI_PSK,
+        ) {
             Ok(handle) => {
                 // `pc_ip = "auto"` (or empty) → use the directed
                 // subnet broadcast learned from DHCP. Otherwise treat
@@ -183,6 +217,74 @@ fn main() -> ! {
                 "decode_pipeline skipped (BootMode::Wifi — BASIS alloc skipped, 120 KB internal DRAM free for WiFi)"
             );
         }
+        boot_mode::BootMode::Acoustic => {
+            // Phase 1.5-Stick: pure RX mode (mic capture → decode
+            // pipeline). **No BLE** — adding civ::start() here pushes
+            // BASIS 120 KB + BT controller 30 KB past the internal
+            // DRAM ceiling (2026-05-17 verify: 4th BASIS alloc IM_c1
+            // returns null, panic). BLE coexistence with decode lives
+            // in BootMode::Qso, which trades audio-thread complexity
+            // (bidir I2S) for the radio control surface. Acoustic
+            // stays as the lightweight diagnostic / Phase 1.5 demo.
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new().stack_size(32 * 1024).spawn(|| {
+                decode_pipeline::run_with_source(|chunk_q| {
+                    audio::set_chunk_q(chunk_q);
+                })
+            });
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Acoustic) spawn failed ({e})");
+            }
+        }
+        boot_mode::BootMode::CivTest => {
+            // Phase 2-Stick bring-up: BLE のみ起動、decode pipeline は
+            // skip。BASIS 120 KB 不要なので BT controller + NimBLE が
+            // 余裕で fit する。IC-705 pairing + CI-V command 動作確認用。
+            // display loop は audio/pipeline 無しで LCD だけ更新。
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("post-civ-only-start");
+        }
+        boot_mode::BootMode::Qso => {
+            // Phase 1.7.1-Stick: Acoustic capture (Phase 1.5) + BLE
+            // CI-V (Phase 2) + TX synth (Phase 1.6) + QSO FSM + menu
+            // UX, all sharing one `Arc<Mutex<QsoManager>>`. capture_tx_thread
+            // (display.rs) owns the bidir I2S; pipeline consumes the
+            // same FSM so decode → process_message updates state the
+            // TX side reads back. Init order: civ first (BT controller
+            // heap before BASIS alloc).
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("pre-thread-spawn");
+            let qso_for_pipeline = qso.clone();
+            let pipeline_spawn =
+                std::thread::Builder::new()
+                    .stack_size(32 * 1024)
+                    .spawn(move || {
+                        decode_pipeline::run_with_source_qso(
+                            |chunk_q| {
+                                audio::set_chunk_q(chunk_q);
+                            },
+                            Some(qso_for_pipeline),
+                        )
+                    });
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Qso) spawn failed ({e})");
+            }
+        }
+        boot_mode::BootMode::TxTest => {
+            // Phase 1.6-Stick bring-up: BLE (PTT) + TX synth (CQ test
+            // loop) のみ。decode pipeline skip = BASIS 不要 = BT
+            // controller + NimBLE + I2S TX + 12 kHz mono synth buf
+            // (300 KB PSRAM) が全部 fit。display.rs が I2S TX 駆動
+            // + tx::start_test_loop を spawn する。
+            if let Err(e) = civ::start() {
+                log::error!("BLE CI-V start failed: {e:#}");
+            }
+            log_free_internal("post-civ-tx-start");
+        }
         boot_mode::BootMode::Uac => {
             // Spawn the decode pipeline FIRST. The thread allocates
             // BASIS scratch (~120 KB internal DRAM, same as Decode
@@ -195,13 +297,11 @@ fn main() -> ! {
             // by design (a few hundred ms of audio drops while
             // pipeline init races UAC enumeration).
             log_free_internal("pre-thread-spawn");
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(|| {
-                    decode_pipeline::run_with_source(|chunk_q| {
-                        uac::set_chunk_q(chunk_q);
-                    })
-                });
+            let pipeline_spawn = std::thread::Builder::new().stack_size(32 * 1024).spawn(|| {
+                decode_pipeline::run_with_source(|chunk_q| {
+                    uac::set_chunk_q(chunk_q);
+                })
+            });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Uac) spawn failed ({e})");
             }
@@ -225,5 +325,6 @@ fn main() -> ! {
         &FANOUT,
         nvs,
         mode,
+        qso,
     )
 }

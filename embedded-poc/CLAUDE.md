@@ -51,17 +51,22 @@ is what the user types under tee / piped redirection.
 
 ## LX6 (Core2) vs LX7 (S3) — comparison table
 
-| | M5Stack Core2 (LX6) | M5StickS3 / S3-app (LX7) |
-|---|---|---|
-| Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` |
-| Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` |
-| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller) |
-| PSRAM mode | (default) | Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 — set `_MODE_QUAD=y` |
-| Internal DRAM | ~280 KB usable | ~512 KB |
-| Port enumeration | `/dev/ttyACM0` | `/dev/ttyACM0` (USB-Serial-JTAG, native S3); `/dev/ttyUSB0` (CP210x bridge on some boards) |
-| SIMD | None | PIE (auto-picked by `esp-dsp` at build); no hand-written intrinsics |
-| `release.opt-level` | `1` | `1` (shared Xtensa-Rust LLVM regression on `s`/`z` with f32-select patterns — `core::pipeline` ships an arithmetic-form workaround) |
-| `SPIRAM_MALLOC_ALWAYSINTERNAL` | n/a | `4096` (mandatory for dual-core; `16384` drains internal DRAM with cs Box × 2 workers → tlsf corruption) |
+| | M5Stack Core2 (LX6) | M5StickS3 / S3-app (LX7) | M5Stack CoreS3 / CoreS3-app (LX7) |
+|---|---|---|---|
+| Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` | `xtensa-esp32s3-espidf` |
+| Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` | (none; reuses s3 bench if needed) |
+| Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller, **demo / Phase 1.5 acoustic**) | `m5stack-cores3-app` (FT8 controller, **main UAC target**, planned) |
+| PMIC | AXP192 (0x34) | M5PM1 (0x6E) | AXP2101 + AW9523B I/O expander (0x58); **AW9523B P1 = BUS_OUT_EN for USB host** |
+| Flash / PSRAM | 16 MB / 8 MB (default) | 8 MB / 8 MB Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 | 16 MB / 8 MB **Quad** (`CONFIG_SPIRAM_MODE_QUAD=y`) |
+| Internal DRAM | ~280 KB usable | ~512 KB | ~512 KB |
+| USB host capable | No (no USB peripheral; flashes via CP210x UART) | **No** (silicon yes, board no — no VBUS source, ID pin unwired, see memory `project_m5stick_s3_no_usb_host`) | **Yes** — AXP2101 + AW9523B BUS_OUT_EN drives VBUS boost |
+| Port enumeration | `/dev/ttyACM0` (CP2104) | `/dev/ttyACM0` (USB-Serial-JTAG, native S3) | `/dev/ttyACM0` (USB-Serial-JTAG via CH9102 bridge on CoreS3) |
+| SIMD | None | PIE (auto-picked by `esp-dsp` at build); no hand-written intrinsics | PIE (same as S3) |
+| LCD | ILI9342C 320×240 landscape | ST7789P3 135×240 portrait | ILI9342C 320×240 landscape (same as Core2) + FT6336U capacitive touch |
+| Audio codec | none | ES8311 (mono mic + speaker amp) | ES7210 (dual mic) + AW88298 speaker amp |
+| Buttons / input | none (touch deferred Phase 2.5) | KEY1 / KEY2 GPIO 11/12 | none (touch FT6336U via I2C, Phase 6-Core) |
+| `release.opt-level` | `1` | `1` (shared Xtensa-Rust LLVM regression on `s`/`z` with f32-select patterns — `core::pipeline` ships an arithmetic-form workaround) | `1` (same) |
+| `SPIRAM_MALLOC_ALWAYSINTERNAL` | n/a | `4096` (mandatory for dual-core; `16384` drains internal DRAM with cs Box × 2 workers → tlsf corruption) | `4096` (same dual-core constraint) |
 
 ## Trouble we've already debugged (cross-board)
 
@@ -96,12 +101,21 @@ is what the user types under tee / piped redirection.
   WAV-fed `rx_wavsim` is the primary driver. (The Core2 sibling
   bench was retired in `#61` Phase 3 — `m5stack-core2-app` covers
   the equivalent wav_sim path in a production-app shape.)
-- **`m5stack-s3-app/`** — production FT8 controller (LCD UI +
-  QSO FSM + WiFi UDP log streaming + ES8311 audio + planned UAC).
-  Bin crate: HW drivers (`audio` / `display` / `pmic` / `buttons` /
-  `board`) + `main.rs` orchestration + `decode_pipeline.rs` (still
-  here in Phase 1 since it owns the heap_caps BASIS alloc; carved
-  out only if Phase 2 reveals a clean cut).
+- **`m5stack-s3-app/`** — M5StickS3 FT8 controller (LCD UI + QSO
+  FSM + WiFi UDP log streaming + ES8311 audio). **Repositioned
+  2026-05-17 as demo / acoustic-fallback path** after Phase 1 UAC
+  hardware verification confirmed M5StickS3 board cannot do USB
+  host (see memory `project_m5stick_s3_no_usb_host`). UAC code
+  (`uac.rs` ~445 lines) is board-agnostic and stays as canonical
+  reference for the CoreS3 lift in Phase 0-Core. Phase 1.5 (planned)
+  adds internal MEMS-mic acoustic capture as the Stick demo path.
+- **`m5stack-cores3-app/`** — M5Stack CoreS3 FT8 controller (LX7,
+  **main production target**, planned 2026-05-17 onward). Same
+  `mfsk-app-shared` consumer pattern as core2-app. Distinguishing
+  HW: AXP2101 PMIC + AW9523B I/O expander (P1 = BUS_OUT_EN drives
+  VBUS boost — must be HIGH before `usb_host_install()`), ILI9342C
+  LCD with FT6336U capacitive touch, ES7210 dual-mic codec. See
+  Phase B-Core in `docs/ROADMAP.md` for the work breakdown.
 - **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
   (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
   HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's

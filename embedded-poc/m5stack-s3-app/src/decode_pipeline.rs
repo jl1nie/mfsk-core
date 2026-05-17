@@ -22,15 +22,15 @@ use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 use mfsk_app_shared::qso::{self, QsoManager, QsoState};
 use mfsk_app_shared::ui::state::{DecodedRow, UI};
 
-/// Phase 4 dry-run: own callsign + Maidenhead grid burned into the
-/// build. Phase 6 will replace this with `/littlefs/config.toml`.
-const MY_CALL: &str = "JL1NIE";
-const MY_GRID: &str = "PM95";
+/// Fallback identity if the caller doesn't provide a shared QSO
+/// instance. Used by `run()` (wav_sim test path) only — production
+/// modes pass `qso` via `run_with_source_qso`. Empty in production
+/// means cfg.toml didn't supply MY_CALL.
+const MY_CALL: &str = env!("MY_CALL");
+const MY_GRID: &str = env!("MY_GRID");
 
 /// 開発用 WAV (qso3_busy のみ単独ループ — UI 構築用に最も多くのデコード結果を出す)。
-static QSO_WAVS: &[&[u8]] = &[
-    include_bytes!("../../assets/qso3_busy.wav"),
-];
+static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
@@ -68,17 +68,44 @@ pub fn run_with_source<F>(source_spawn: F) -> !
 where
     F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
 {
-    let need = mfsk_ft8_basis_scratch_len();
-    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
+    // Back-compat shim — wav_sim path uses a local FSM, no shared
+    // QSO ownership needed.
+    run_with_source_qso(source_spawn, None)
+}
 
-    crate::log_free_internal("pre-basis-alloc");
-    let basis_re_main = crate::alloc_basis_dram("RE_main");
-    let basis_im_main = crate::alloc_basis_dram("IM_main");
-    let basis_re_c1 = crate::alloc_basis_dram("RE_c1");
-    let basis_im_c1 = crate::alloc_basis_dram("IM_c1");
-    crate::log_free_internal("post-basis-alloc");
-    let basis_re_c1_ptr = basis_re_c1.as_mut_ptr();
-    let basis_im_c1_ptr = basis_im_c1.as_mut_ptr();
+/// Variant that accepts a shared `QsoManager` so the FSM state is
+/// the same one the TX scheduler (or capture_tx_thread) reads.
+/// `BootMode::Qso` and other production modes call this directly;
+/// `BootMode::Decode` (wav_sim) uses [`run_with_source`].
+pub fn run_with_source_qso<F>(
+    source_spawn: F,
+    qso_shared: Option<std::sync::Arc<std::sync::Mutex<QsoManager>>>,
+) -> !
+where
+    F: FnOnce(esp_idf_svc::sys::QueueHandle_t),
+{
+    // Phase 1.7.7-Stick: BASIS scratch retired — `mfsk-core` now uses
+    // Goertzel (zero internal-DRAM scratch) for both pass-2
+    // (`refine_candidates_into`) and stage-3
+    // (`process_candidates_into_with_cs_scratch_tuned`) cs builds.
+    // The 4 × 30 KB = 120 KB internal DRAM that used to live here
+    // (one `BASIS_SCRATCH_LEN` i16 buffer per (re/im, main/worker
+    // dual_core)) is now free for Qso-mode I2S bidir DMA descriptors
+    // (the `i2s_alloc_dma_desc` largest=7680 KB requirement that
+    // tripped on the old layout).
+    //
+    // `dual_core::pass2_split` / `stage3_split` and `dual_core::init`
+    // still take `basis_re` / `basis_im` slice / pointer parameters
+    // for API compat — they're unused inside mfsk-core but threaded
+    // through the dispatcher boilerplate. Pass empty slices / null
+    // pointers; mfsk-core no longer dereferences them.
+    let _ = mfsk_ft8_basis_scratch_len();
+    let _ = BASIS_SCRATCH_LEN;
+    crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
+    let basis_re_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_im_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_re_c1_ptr: *mut i16 = core::ptr::null_mut();
+    let basis_im_c1_ptr: *mut i16 = core::ptr::null_mut();
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
@@ -112,17 +139,58 @@ where
         .spawn(move || wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t))
         .expect("spawn wf drainer");
 
-    log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)");
+    log::info!(
+        "decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, build=v0.6.2)"
+    );
 
-    // QSO FSM (Phase 4 dry-run). auto-CQ kicks off immediately so the
-    // very first slot already has a TX intent painted; no decode in
-    // qso3_busy.wav contains "JL1NIE" so the FSM stays in Calling and
-    // exercises the retry → reset → re-CQ loop visibly on the LCD.
-    let mut qso = QsoManager::new(MY_CALL, MY_GRID);
-    let initial = qso.call_cq(None);
-    push_tx_line(&qso, Some(&initial));
+    // QSO FSM. Production modes (Acoustic / Qso) pass a shared
+    // `Arc<Mutex<QsoManager>>` so the TX scheduler / menu UI see the
+    // same state. Back-compat (wav_sim) creates a local one with
+    // auto-CQ pre-enabled so the dry-run loop keeps animating.
+    let qso: std::sync::Arc<std::sync::Mutex<QsoManager>> = qso_shared.unwrap_or_else(|| {
+        let mut q = QsoManager::new(MY_CALL, MY_GRID);
+        q.set_auto_cq(true); // wav_sim test: keep TX strip lively
+        std::sync::Arc::new(std::sync::Mutex::new(q))
+    });
+    // Initial CQ if configured + auto-CQ on.
+    {
+        let mut q = qso.lock().expect("qso lock");
+        if q.auto_cq_enabled && !q.my_call.is_empty() && q.state == QsoState::Idle {
+            let initial = q.call_cq(None);
+            push_tx_line(&q, Some(&initial));
+        } else {
+            push_tx_line(&q, None);
+        }
+    }
 
     let mut slot_seq: u32 = 0;
+    // Phase 1.7.4-Stick v3 (2026-05-17): global-clock-anchored sync.
+    //
+    // S3 codec sample clock is rock-stable (ppm-level drift) and is
+    // therefore the global clock. Once we've locked the phase via
+    // (1) BtnA coarse + (2) the highest-N slot's median DT, every
+    // subsequent slot is exactly 180_000 samples = 15 s apart with
+    // zero per-slot feedback. The auto-sync loop's only job is to
+    // apply a ONE-SHOT correction when a better reference (higher N)
+    // appears.
+    //
+    // The phase correction is always non-negative (= LENGTHEN current
+    // slot, never SHORTEN) because stage1_inc requires the full 180 k
+    // samples to complete all 92 FFT pairs. For negative DT we apply
+    // (15 s + DT) — i.e. skip forward by ~one slot period — sacrificing
+    // one slot's decode in exchange for clean alignment afterwards.
+    let mut best_n: usize = 0;
+    // Phase 1.7.6 tiered drift detection state (2026-05-17):
+    //   drift_streak  — number of consecutive slots whose median DT
+    //                   exceeds DRIFT_STREAK_SEC with the same sign
+    //                   AND N ≥ 2. Resets on sign flip, |DT| below
+    //                   threshold, or N < 2. ≥ 3 fires Tier-2 reset.
+    //   last_drift_sign — sign of the previous qualifying slot's DT
+    //                   (+1 / -1; 0 = none).
+    let mut drift_streak: u8 = 0;
+    let mut last_drift_sign: i8 = 0;
+    let mut sync_gen_observed: u32 =
+        crate::audio::SYNC_RESET_GEN.load(core::sync::atomic::Ordering::Acquire);
     loop {
         // 広帯域受信 (200..3000 Hz)。phantom (qso3_busy で 3/7 件) は
         // UI に "?" 付きで表示するが、QSO FSM / TX picker は
@@ -149,6 +217,11 @@ where
         let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
         let wav_idx = slot.wav_idx;
         let n_pass1 = pass1.len();
+        // Auto-sync uses `results` median (post BP), not pass1 — pass1
+        // candidates from a noise slot are random and would mis-anchor
+        // the slot phase. Gemini PR #103 review removed the no-op
+        // `pass1.iter().map(c.dt_sec).collect()` allocation that was
+        // immediately discarded below.
 
         // (fine_refine attempted via fill_symbol_spectra iteration in
         // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
@@ -166,13 +239,10 @@ where
         // texture; the click was an alarm.
         // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
 
-        let pass2 = dual_core::pass2_split(
-            &slot.audio,
-            pass1,
-            MAX_CAND,
-            basis_re_main,
-            basis_im_main,
-        );
+        let t_pass2 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        let pass2 =
+            dual_core::pass2_split(&slot.audio, pass1, MAX_CAND, basis_re_main, basis_im_main);
+        let t_stage3 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
         let depth = DecodeDepth::BpAll;
         let results = dual_core::stage3_split(
@@ -184,9 +254,160 @@ where
             basis_re_main,
             basis_im_main,
         );
+        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
-        log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
+        log::info!(
+            "WAV[{wav_idx}] p1={n_pass1} dec={} pass2={}us stage3={}us total={}us",
+            results.len(),
+            t_stage3 - t_pass2,
+            t_done - t_stage3,
+            t_done - t_pass2
+        );
         slot_seq = slot_seq.wrapping_add(1);
+        // Publish to UiState so decoded_list renders GREEN only for
+        // rows whose `slot_seq == latest_slot_seq` — fixes the
+        // "all rows green forever after audio stops" UI bug.
+        if let Ok(mut ui) = UI.lock() {
+            ui.latest_slot_seq = slot_seq;
+            ui.bump_menu();
+        }
+
+        // Phase 1.7.4-Stick v3 global-clock-anchor auto-sync (2026-05-17).
+        //
+        // BtnA-gen check happens HERE (just before HWM update), not at
+        // top of loop. The previous-iteration top-of-loop check missed
+        // resets that landed while we were blocked in `recv_box`, so
+        // the first post-BtnA decode would set HWM then have it cleared
+        // on the next iteration — undoing the lock.
+        let cur_gen = crate::audio::SYNC_RESET_GEN.load(core::sync::atomic::Ordering::Acquire);
+        if cur_gen != sync_gen_observed {
+            log::info!(
+                "  auto-sync: BtnA generation {sync_gen_observed} → {cur_gen}, HWM cleared (was best_n={best_n})"
+            );
+            best_n = 0;
+            sync_gen_observed = cur_gen;
+        }
+
+        let n_dec = results.len();
+        let post_sync = mfsk_app_shared::time_sync::slots_finalised() > 0 || n_dec > 0;
+        // |DT| < ALIGN_OK_SEC → already within FT8 ±2.5 s tolerance
+        //   AND well inside stage1_inc's tolerance for shorten without
+        //   losing pair 91 (= 177_600 samples needed). Post shift=0.
+        // |DT| ≥ ALIGN_OK_SEC → post a SIGNED shift, capped at
+        //   ±MAX_SHIFT_SAMPLES so:
+        //   * +shift (lengthen): stage1_inc truncates tail, full spec ✓
+        //   * -shift (shorten): slot still ≥ 177_600 samples → pair 91
+        //     just barely completes → full 92/92 spec ✓
+        //   Larger drifts converge over several HWM-update slots.
+        const ALIGN_OK_SEC: f32 = 0.05;
+        const MAX_SHIFT_SAMPLES: i32 = 2400; // ±0.2 s — pair 91 still completes
+                                             // Tiered drift detection (Phase 1.7.6 Strategy D, 2026-05-17):
+                                             //
+                                             // Tier 1 — HIGH-TRUST IMMEDIATE: a slot more trustworthy than
+                                             //   the current lock (N > best_n) with statistical confidence
+                                             //   (N ≥ 3) and clear drift (|DT| > 0.5 s) triggers immediate
+                                             //   reset. Catches "band peaks reveal drift" within one slot.
+                                             //
+                                             // Tier 2 — PERSISTENCE SAFETY-NET: even on a quiet band
+                                             //   where Tier 1 never fires, 3 consecutive slots with N ≥ 2
+                                             //   showing |DT| > 0.3 s in the SAME sign direction trigger
+                                             //   reset. Same-sign requirement rejects bidirectional noise
+                                             //   (random outliers cancel). Catches slow PPM-level drift
+                                             //   that accumulates beyond FT8 tolerance over time.
+                                             //
+                                             // Either tier resets best_n=0; the subsequent HWM-update
+                                             // path then re-locks using THIS slot's median.
+        const TIER1_DT_SEC: f32 = 0.5;
+        const TIER1_MIN_N: usize = 3;
+        const TIER2_DT_SEC: f32 = 0.3;
+        const TIER2_MIN_N: usize = 2;
+        const TIER2_STREAK: u8 = 3;
+        let median: Option<f32> = if n_dec > 0 {
+            let mut dts: Vec<f32> = results.iter().map(|r| r.dt_sec).collect();
+            dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+            Some(dts[dts.len() / 2])
+        } else {
+            None
+        };
+        let mut drift_reset_fired = false;
+        // Tier 1
+        if best_n > 0 && n_dec > best_n && n_dec >= TIER1_MIN_N {
+            if let Some(m) = median {
+                if m.abs() > TIER1_DT_SEC {
+                    log::info!(
+                        "  auto-sync: DRIFT Tier-1 (median DT={:+.3}s > ±{TIER1_DT_SEC}s, N={n_dec}>{best_n}≥{TIER1_MIN_N}), HWM reset",
+                        m
+                    );
+                    best_n = 0;
+                    drift_reset_fired = true;
+                    drift_streak = 0;
+                    last_drift_sign = 0;
+                }
+            }
+        }
+        // Tier 2 (persistence) — update streak regardless of Tier 1
+        // outcome so the counter stays current; only fire reset if
+        // Tier 1 didn't already.
+        if !drift_reset_fired {
+            if let Some(m) = median {
+                if n_dec >= TIER2_MIN_N && m.abs() > TIER2_DT_SEC {
+                    let sign = if m >= 0.0 { 1i8 } else { -1i8 };
+                    if last_drift_sign == sign {
+                        drift_streak = drift_streak.saturating_add(1);
+                    } else {
+                        drift_streak = 1;
+                        last_drift_sign = sign;
+                    }
+                    if drift_streak >= TIER2_STREAK && best_n > 0 {
+                        log::info!(
+                            "  auto-sync: DRIFT Tier-2 ({} slots |DT|>±{TIER2_DT_SEC}s same sign, latest DT={:+.3}s N={n_dec}), HWM reset",
+                            drift_streak, m
+                        );
+                        best_n = 0;
+                        drift_streak = 0;
+                        last_drift_sign = 0;
+                    }
+                } else {
+                    // Slot doesn't meet Tier 2 streak criteria
+                    // (|DT| too small OR N too small) → break streak.
+                    drift_streak = 0;
+                    last_drift_sign = 0;
+                }
+            } else {
+                // 0 decodes — no DT measurement, break streak.
+                drift_streak = 0;
+                last_drift_sign = 0;
+            }
+        }
+        if n_dec > best_n {
+            let med = median.expect("n_dec > 0 implies median is Some");
+            let shift_samples: i32 = if med.abs() < ALIGN_OK_SEC {
+                0
+            } else {
+                (med * 12000.0).round() as i32
+            };
+            let shift_samples = shift_samples.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES);
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift_samples);
+            log::info!(
+                "  auto-sync (HWM update N={n_dec}>{best_n}): median DT={:+.3}s → {:+} samples (capped ±{}s)",
+                med, shift_samples,
+                MAX_SHIFT_SAMPLES as f32 / 12000.0
+            );
+            best_n = n_dec;
+        } else if post_sync {
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
+            if n_dec > 0 {
+                log::info!(
+                    "  auto-sync (hold): N={n_dec} ≤ best_n={best_n}, shift=0 (no overwrite)"
+                );
+            } else {
+                log::info!(
+                    "  auto-sync (frozen): no decode this slot, shift=0 (best_n={best_n} held)"
+                );
+            }
+        } else {
+            log::info!("  auto-sync (cold): no source — BtnA required");
+        }
 
         // Feed every result's DT into the slot's median estimator,
         // then finalise. The estimate is the device's local-clock
@@ -243,14 +464,19 @@ where
                     ui.push_decode(row);
                     log::info!(
                         "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
-                        r.freq_hz, calibrated_snr, r.snr_db, text
+                        r.freq_hz,
+                        calibrated_snr,
+                        r.snr_db,
+                        text
                     );
                     // Feed the FSM. SNR set first so an in-band reply
                     // ("JL1NIE W1AW FN31") gets reported with the
                     // correct rx_snr → tx_report.
-                    qso.set_rx_snr(snr_i8);
-                    if qso.process_message(&text).is_some() {
-                        had_response_this_slot = true;
+                    if let Ok(mut q) = qso.lock() {
+                        q.set_rx_snr(snr_i8);
+                        if q.process_message(&text).is_some() {
+                            had_response_this_slot = true;
+                        }
                     }
                 }
             }
@@ -260,14 +486,24 @@ where
         // retry budget is gone, the FSM resets to Idle and we
         // immediately re-CQ so the dry-run keeps animating between
         // states instead of parking in Idle indefinitely.
-        if !had_response_this_slot && qso.state != QsoState::Idle {
-            let _ = qso.on_period_end();
+        // Slot boundary processing on the shared FSM. Lock once, do
+        // all the state updates, then release before the next iter's
+        // expensive decode work runs (so TX scheduler / menu UX aren't
+        // starved while BP iterations chew on the next slot).
+        if let Ok(mut q) = qso.lock() {
+            if !had_response_this_slot && q.state != QsoState::Idle {
+                let _ = q.on_period_end();
+            }
+            // Auto-CQ re-arm only if the gate allows and we have an
+            // identity. Production paths leave auto_cq_enabled `false`
+            // by default so the FSM doesn't TX until the user opts in
+            // from the menu.
+            if q.state == QsoState::Idle && q.auto_cq_enabled && !q.my_call.is_empty() {
+                q.call_cq(None);
+            }
+            let intent = q.next_tx();
+            push_tx_line(&q, intent.as_ref());
         }
-        if qso.state == QsoState::Idle {
-            qso.call_cq(None);
-        }
-        let intent = qso.next_tx();
-        push_tx_line(&qso, intent.as_ref());
     }
 }
 

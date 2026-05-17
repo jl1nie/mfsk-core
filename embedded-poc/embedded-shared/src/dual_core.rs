@@ -275,15 +275,14 @@ fn current_core() -> i32 {
 /// queues. Call once at startup, after `link_patches()`,
 /// `EspLogger::initialize_default()`, and `esp_dsp_fft::prewarm()`.
 ///
-/// `re_c1` / `im_c1` must each point to a 16-byte-aligned
-/// `BASIS_SCRATCH_LEN`-element `i16` buffer in internal DRAM
-/// (`MALLOC_CAP_INTERNAL`). The buffers are owned by the caller for
-/// program lifetime and must not be touched once `init` returns — the
-/// worker takes exclusive access.
+/// `re_c1` / `im_c1` are legacy BASIS scratch pointers — unused
+/// since Phase 1.7.7-Stick (mfsk-core now uses Goertzel for both
+/// pass-2 and stage-3 cs builds, zero scratch). Pass null; the
+/// stored fields are kept only for ABI shape compatibility with
+/// the in-tree closures that still bind them via
+/// `BASIS_{RE,IM}_C1.set()`. A follow-up commit drops these
+/// fields and the arg.
 pub fn init(re_c1: *mut i16, im_c1: *mut i16) {
-    assert!(!re_c1.is_null() && !im_c1.is_null(), "BASIS ptr null");
-    assert_eq!(re_c1 as usize & 0xF, 0, "BASIS RE not 16-byte aligned");
-    assert_eq!(im_c1 as usize & 0xF, 0, "BASIS IM not 16-byte aligned");
     unsafe {
         BASIS_RE_C1.set(re_c1);
         BASIS_IM_C1.set(im_c1);

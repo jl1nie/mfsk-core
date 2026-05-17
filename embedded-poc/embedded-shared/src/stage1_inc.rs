@@ -174,20 +174,35 @@ pub fn spawn_with_wf(
     });
     let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
 
+    // Stack: 12 KB. Originally 16 KB but that fails to spawn on S3
+    // builds with BLE NimBLE enabled — BT controller + NimBLE host
+    // tasks eat ~15 KB internal DRAM and fragment what's left.
+    // Worker_main's actual frame is modest (FFT buf is in ctx, not
+    // stack); 12 KB has measured ~3 KB headroom on the busiest
+    // qso3_busy slot. If a future feature pushes the worker frame
+    // deeper, bump this back to 16 KB and revisit the BLE config.
+    // Phase 1.7.5-Stick (2026-05-17): prio 6 (above dual_core 5) so
+    // stage1_inc can preempt dsp_worker briefly when Samples arrive
+    // during BP. Without this, BP for slot N (running on dsp_worker
+    // prio 5, same core 1) starves stage1_inc's FFT for slot N+1 →
+    // SpecBundle[N+1] late → BP[N+1] cascades. Each Samples chunk
+    // costs ~7-14 ms of preemption per 100 ms = ≤14% of core 1's BP
+    // time. BP finishes ~50 ms later as a result, well worth it for
+    // the steady-state pipeline.
     let r = unsafe {
         xTaskCreatePinnedToCore(
             Some(worker_main),
             c"stage1_inc".as_ptr(),
-            16384,
+            12288,
             ctx_ptr,
-            3, // below dual_core (5) and wav_sim (4)
+            6, // above dual_core (5) — preempts BP briefly per chunk
             ptr::null_mut(),
             1, // APP_CPU
         )
     };
     assert_eq!(r, PD_PASS, "xTaskCreatePinnedToCore(stage1_inc) failed: {r}");
     log::info!(
-        "stage1_inc: spawned (APP_CPU prio 3); n_time={} n_pairs={} n_freq={}",
+        "stage1_inc: spawned (APP_CPU prio 6 — preempts dsp_worker); n_time={} n_pairs={} n_freq={}",
         N_TIME,
         N_PAIRS,
         n_freq
@@ -207,8 +222,20 @@ extern "C" fn worker_main(arg: *mut c_void) {
             ChunkMsg::SlotEnd { wav_idx, total_samples } => {
                 finalize_slot(ctx, wav_idx, total_samples);
             }
+            ChunkMsg::SlotResetMark => {
+                reset_in_progress(ctx);
+            }
         }
     }
+}
+
+/// Silent reset — operator BtnA mid-slot. Discard the partially-
+/// filled in-progress spec/audio without emitting a Slot or
+/// SpecBundle (no consumer downstream would benefit from the
+/// half-built spec). Phase 1.7.4-Stick (2026-05-17).
+fn reset_in_progress(ctx: &mut WorkerCtx) {
+    ctx.cur = SlotInProgress::new(ctx.n_freq, ctx.head_n_freq, ctx.tail_n_freq);
+    log::info!("stage1_inc: SlotResetMark — discarded in-progress spec");
 }
 
 fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {
@@ -352,8 +379,19 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             let a_im = (yk_im - yn_im) >> 1;
             let b_re = (yk_im + yn_im) >> 1;
             let b_im = (yn_re - yk_re) >> 1;
-            let mag2_a = ((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT;
-            let mag2_b = ((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT;
+            // mag² saturate at u16::MAX. Wrapping `as u16` (the
+            // pre-Phase 1.7.7b behaviour) was a real bug: very strong
+            // co-channel bins overflowed u16 after `>> FP_SPEC_SHIFT`
+            // and aliased to a tiny residue, making strong stations
+            // *invisible* to `coarse_sync`. Caught while tracing the
+            // host vs embedded NSTEP divergence — the host fixed-point
+            // path already saturates (`spectrogram.rs::compute_spectrogram`
+            // mag2 sites). Matching it here keeps the two paths
+            // algorithmically identical.
+            let mag2_a = (((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
+            let mag2_b = (((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32);
             spec[row_a + k] = mag2_a as u16;
             spec[row_b + k] = mag2_b as u16;
         }

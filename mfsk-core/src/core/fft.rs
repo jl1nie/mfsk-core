@@ -198,14 +198,10 @@ mod rustfft_backend_i16 {
                 .map(|c| Complex32::new(c.re as f32, c.im as f32))
                 .collect();
             self.inner.process(&mut tmp);
-            // Match `dsps_fft2r_sc16` total gain: per-butterfly `>>1`
-            // for log2(N) stages = total `1/N` (NOT `1/sqrt(N)` —
-            // sqrt(N) leaves single-tone bins ~sqrt(N)× over esp-dsp
-            // and clamps to i16_MAX for any signal pre-scaled to MSBs
-            // by `compute_spectrogram`'s auto-gain). Per-stage rounding
-            // noise still isn't modelled here; the auto-gain pre-scale
-            // keeps that error well below the signal level so a flat
-            // 1/N is good enough for the AWGN sweep.
+            // Generic fallback: per-stage /2 total /N (correct for
+            // pure radix-2 sizes used by AWGN-sweep tests). The
+            // 3840-pt FT8 spectrogram path takes the dedicated
+            // mixed-radix sc16 adapter below.
             let n = tmp.len() as f32;
             let scale = 1.0 / n;
             for (dst, src) in buf.iter_mut().zip(tmp.iter()) {
@@ -224,13 +220,47 @@ mod rustfft_backend_i16 {
         }
     }
 
+    /// Phase 1.7.7a host adapter for the 3840-pt FT8 spectrogram FFT.
+    /// Bit-exact match to embedded `MixedRadix3840Sc16Fft` (esp-dsp
+    /// 256-pt sc16 + f32 PFA), via the software port in
+    /// `core::dsp::fft_mixed_3840_sc16::Plan3840Sc16`.
+    ///
+    /// Without this adapter `RustFft16Adapter` ran a single rustfft
+    /// 3840-pt + flat `1/N` scaling — mathematically the same DFT
+    /// but with completely different per-stage quantisation error
+    /// than embedded. The mismatch caused weak-signal recall to
+    /// diverge between host `compute_spectrogram` (fixed-point) and
+    /// the S3 wav_sim baseline (host 3 vs embedded 7 on qso3_busy).
+    struct MixedRadix3840Sc16Adapter {
+        plan: crate::core::dsp::fft_mixed_3840_sc16::Plan3840Sc16,
+    }
+
+    impl Fft16 for MixedRadix3840Sc16Adapter {
+        fn process(&self, buf: &mut [Complex<i16>]) {
+            self.plan.process(buf);
+        }
+        fn len(&self) -> usize {
+            3840
+        }
+    }
+
     impl FftPlanner16 for RustFftPlanner16 {
         fn plan_forward(&mut self, len: usize) -> Box<dyn Fft16> {
+            if len == 3840 {
+                return Box::new(MixedRadix3840Sc16Adapter {
+                    plan: crate::core::dsp::fft_mixed_3840_sc16::Plan3840Sc16::new(),
+                });
+            }
             Box::new(RustFft16Adapter {
                 inner: self.inner.plan_fft_forward(len),
             })
         }
         fn plan_inverse(&mut self, len: usize) -> Box<dyn Fft16> {
+            assert_ne!(
+                len, 3840,
+                "inverse 3840-pt sc16 FFT not implemented \
+                 (FT8 spectrogram path is forward only)"
+            );
             Box::new(RustFft16Adapter {
                 inner: self.inner.plan_fft_inverse(len),
             })
