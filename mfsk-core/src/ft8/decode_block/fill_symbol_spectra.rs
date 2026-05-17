@@ -35,15 +35,17 @@ use crate::core::scalar::Cmplx;
 // every per-candidate call — replaces the previous per-call
 // `collect::<Vec<i16>>()` that allocated ~360 KB × 30 cand × 3 pass
 // = ~32 MB of allocator traffic per slot (Gemini PR #80 review).
-// Only the `fft-rustfft` path uses this (embedded `fft-extern` path
-// doesn't build `fill_symbol_spectra_via_cd0` at all). The
-// `feature = "std"` part of the cfg is **redundant in practice** —
-// `fft-rustfft` already implies `std` via the Cargo.toml feature
-// closure (`fft-rustfft = ["std", "dep:rustfft"]`) — but spelling
-// it out documents the runtime requirement at the use site and
-// hardens against a future feature-graph edit that loosens that
-// implication (Gemini PR #100 review).
-#[cfg(all(feature = "fft-rustfft", feature = "std"))]
+//
+// Gated on `fft-rustfft` only — matching the usage site's gate in
+// `fill_symbol_spectra_via_cd0`. `fft-rustfft` implies `std` per the
+// Cargo.toml feature closure (`fft-rustfft = ["std", "dep:rustfft"]`)
+// so `std::thread_local!` always resolves on this path. An earlier
+// amend tried to add an explicit `feature = "std"` part for
+// documentation, but Gemini PR #100 r3 pointed out that asymmetry
+// (definition `all(fft-rustfft, std)`, usage `fft-rustfft` only)
+// would break compilation if fft-rustfft were ever enabled without
+// std. Keep the gates symmetric.
+#[cfg(feature = "fft-rustfft")]
 std::thread_local! {
     static AUDIO_I16_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
