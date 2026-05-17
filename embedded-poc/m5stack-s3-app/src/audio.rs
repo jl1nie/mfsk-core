@@ -470,10 +470,16 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     i2s.rx_enable().expect("I2S rx_enable");
     log::info!("audio capture: streaming I2S RX (48 kHz stereo → L extract → 12 kHz mono, prio 8)");
 
-    // Move big buffers to heap so the thread stack stays under 6 KB
-    // (internal DRAM is tight after BASIS + stage1_inc + dual_core —
-    // 8 KB stack spawn OOMs during bring-up).
-    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
+    // Move big buffers to heap so the thread stack stays under 6 KB.
+    // `Box::new([0u8; N])` materialises the array on the stack first
+    // and then moves it to the heap — for N = 4 KB on a 6 KB stack
+    // that's nearly all of the budget consumed transiently. Route via
+    // `vec!.into_boxed_slice().try_into()` so the buffer is allocated
+    // directly on the heap, no stack hit. Gemini PR #103 MEDIUM.
+    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = vec![0u8; CAPTURE_BUFFER_BYTES]
+        .into_boxed_slice()
+        .try_into()
+        .expect("CAPTURE_BUFFER_BYTES sizes match");
 
     // ES8311 ADC + PGA settling. The codec takes ~250 ms after
     // rx_enable to produce stable samples — first slot's worth of
@@ -708,7 +714,13 @@ pub fn capture_tx_thread(
     i2s.tx_enable().expect("I2S tx_enable");
     log::info!("audio capture+tx: bidir I2S up (RX 48k stereo + TX 48k stereo on i2s0)");
 
-    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = Box::new([0u8; CAPTURE_BUFFER_BYTES]);
+    // Same heap-direct allocation as `capture_thread` — avoid the
+    // stack-then-move pattern of `Box::new([0; N])`. Gemini PR #103
+    // MEDIUM.
+    let mut buf: Box<[u8; CAPTURE_BUFFER_BYTES]> = vec![0u8; CAPTURE_BUFFER_BYTES]
+        .into_boxed_slice()
+        .try_into()
+        .expect("CAPTURE_BUFFER_BYTES sizes match");
     // Codec settling drain (same rationale as capture_thread): ~250 ms
     // of ES8311 ADC AGC / PGA transients dropped before normal capture
     // resumes. Reuses heap-allocated `buf` to avoid the 4 KB stack
@@ -737,10 +749,15 @@ pub fn capture_tx_thread(
 
     // TX-side scratch (48k stereo i16): 240 12k mono samples × 4 ZOH
     // × stereo × 2 bytes = 3 840 bytes. Reused per write_all call.
+    // Heap-direct (vec! ... into_boxed_slice ... try_into) to avoid
+    // the stack-first materialise pattern of `Box::new([0; N])`.
     const TX_IN_CHUNK: usize = 240;
     const TX_OUT_BYTES_PER_IN: usize = 16;
     let mut tx_out: Box<[u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]> =
-        Box::new([0u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]);
+        vec![0u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]
+            .into_boxed_slice()
+            .try_into()
+            .expect("TX_IN_CHUNK sizes match");
 
     loop {
         // Phase 1.7.4-Stick coordinated reset (mirrors capture_thread).

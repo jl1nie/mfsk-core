@@ -42,10 +42,13 @@ use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
 use crate::fec::ldpc::osd::osd_decode_deep;
 
-#[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
-use super::fill_symbol_spectra::fill_symbol_spectra_into;
-#[cfg(feature = "fixed-point")]
-use super::fill_symbol_spectra::symbol_spectra_direct_into;
+// Phase 1.7.7-Stick: `fill_symbol_spectra_into` / `symbol_spectra_direct_into`
+// (BASIS-based per-symbol DFT) are no longer used by this module — both
+// `refine_candidates_into` (pass-2) and the embedded branch of
+// `process_candidates_into_with_cs_scratch_tuned` (stage-3) now call
+// `fill_symbol_spectra_goertzel` instead. The BASIS symbols stay public
+// from `fill_symbol_spectra.rs` for `mfsk-ffi-ft8` ABI back-compat until
+// the 0.7.0 cleanup.
 
 // ── Public entry ────────────────────────────────────────────────────────────
 
@@ -827,6 +830,15 @@ pub fn refine_candidates_into<S: AudioSample>(
     use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
     let _ = &basis_re;
     let _ = &basis_im;
+    // NB (Gemini PR #103 MEDIUM): one cs Box per cand-iter = one 5 KB
+    // heap alloc per pass1 candidate (up to 30/slot on embedded).
+    // Total transient PSRAM use is ~150 KB, not catastrophic, but the
+    // alloc churn fragments the TLSF allocator in long-running
+    // sessions. Reusing a single Box across the closure invocations
+    // needs `refine_candidates_with` to expose a scratch parameter
+    // — refactor deferred to the same 0.7.0 cleanup that drops the
+    // BASIS API entirely (the heap is no longer the bottleneck so
+    // the win is marginal vs the API churn).
     refine_candidates_with(cands, max_cand, |c| {
         let mut cs: alloc::boxed::Box<[[Cmplx<f32>; 8]; NN]> =
             alloc::vec![[Cmplx::<f32>::default(); 8]; NN]

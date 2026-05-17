@@ -74,7 +74,10 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
         // we rely on the FSM's per-slot state and the fact that auto-CQ
         // fires immediately when next_tx() exposes an intent.
         let maybe_intent = {
-            let q = match qso.lock() {
+            // Mutable lock — the auto-CQ branch may call `call_cq()`
+            // (Gemini PR #103 MEDIUM: reuse the lock instead of
+            // drop+reacquire to avoid the Idle race).
+            let mut q = match qso.lock() {
                 Ok(g) => g,
                 Err(e) => {
                     log::error!("tx_scheduler: qso lock poisoned: {e}");
@@ -90,11 +93,11 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
             let intent = q.next_tx();
             if intent.is_none() && auto_cq && q.state == mfsk_app_shared::qso::QsoState::Idle {
                 // Synthesise a fresh CQ by transitioning Idle → Calling.
-                drop(q);
-                let mut q = match qso.lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
+                // Reuse the existing MutexGuard rather than dropping and
+                // re-acquiring — `q` already has mutable access and the
+                // drop/reacquire opens a tiny window where another task
+                // can see Idle and start its own transition.
+                // Gemini PR #103 MEDIUM.
                 Some(q.call_cq(None))
             } else {
                 intent

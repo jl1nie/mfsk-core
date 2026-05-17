@@ -237,14 +237,24 @@ async fn run_session() -> Result<()> {
         .interval(100)
         .window(99)
         .start(ble_device, 20_000, |dev, data| {
-            // Match either by name prefix or by advertised service.
-            // IC-705 sometimes advertises with only the local name
-            // present and the 128-bit service in the scan response.
+            // Primary match: advertised service UUID — robust against
+            // user-renamed devices and identifies the radio by its
+            // CI-V GATT service rather than display name. Fall back
+            // to name prefix for radios that put the 128-bit UUID in
+            // the scan response only and not the advertisement
+            // (some IC-705 firmware versions). Gemini PR #103 MEDIUM.
+            if data.is_advertising_service(&IC705_SERVICE_UUID) {
+                log::info!(
+                    "civ: found IC-705 by service UUID, addr={:?}",
+                    dev.addr()
+                );
+                return Some(*dev);
+            }
             if let Some(name) = data.name() {
                 let name_str = core::str::from_utf8(name).unwrap_or("");
                 if name_str.starts_with("ICOM") || name_str.starts_with("IC-705") {
                     log::info!(
-                        "civ: found IC-705 by name: '{name_str}' addr={:?}",
+                        "civ: found IC-705 by name fallback: '{name_str}' addr={:?}",
                         dev.addr()
                     );
                     return Some(*dev);
@@ -364,7 +374,15 @@ async fn run_session() -> Result<()> {
     BLE_STATE.store(4, Ordering::Release);
     log::info!("civ: ready — entering command loop");
 
-    let mut last_gps_query = std::time::Instant::now() - Duration::from_secs(60);
+    // `Instant::now() - Duration` panics if Duration > uptime. This
+    // runs during civ init, so uptime is well under 60 s on first
+    // boot. `checked_sub` returns `None` on underflow; falling back
+    // to `Instant::now()` (= "queried right now") just defers the
+    // first query by 60 s, which is the intended cadence anyway.
+    // Gemini PR #103 HIGH.
+    let mut last_gps_query = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(60))
+        .unwrap_or_else(std::time::Instant::now);
     let mut last_ptt_sent: Option<bool> = None;
     let mut last_freq_sent: Option<u32> = None;
     let mut last_mode_sent: Option<u8> = None;
@@ -482,15 +500,23 @@ fn notify_handler(data: &[u8]) {
     // Pairing responses: `FE F1 00 <code> [data] FD`
     if data[0] == PRE && data[1] == 0xF1 && data[2] == 0x00 {
         let code = data[3];
-        let mut bits = PAIR_STATE.load(Ordering::Acquire);
-        match code {
-            0x61 => bits |= 0b0001,
-            0x62 => bits |= 0b0010,
-            0x63 => bits |= 0b0100,
-            0x64 => bits |= 0b1000,
-            other => log::warn!("civ: unknown pairing notify 0x{other:02X}"),
+        // `fetch_or` to avoid a load → modify → store race when two
+        // pairing notifications arrive in quick succession (BLE GATT
+        // can dispatch concurrently on different tasks).
+        // Gemini PR #103 MEDIUM.
+        let bit: u8 = match code {
+            0x61 => 0b0001,
+            0x62 => 0b0010,
+            0x63 => 0b0100,
+            0x64 => 0b1000,
+            other => {
+                log::warn!("civ: unknown pairing notify 0x{other:02X}");
+                0
+            }
+        };
+        if bit != 0 {
+            PAIR_STATE.fetch_or(bit, Ordering::Release);
         }
-        PAIR_STATE.store(bits, Ordering::Release);
         return;
     }
 
@@ -553,8 +579,15 @@ mod tests {
 /// Parse a CI-V GPS response (cmd 0x23 0x00). Payload layout follows
 /// the K7MDL2 reference: 27-byte variant (with altitude/heading) or
 /// 23-byte variant (without). UTC BCD fields live at the end.
-/// On a valid parse, computes the offset from local monotonic time
-/// and pushes it to `GPS_UTC_OFFSET_US`.
+///
+/// **Placeholder semantics** (Gemini PR #103 MEDIUM): on a valid parse,
+/// stores **only the seconds-of-minute** component into
+/// `GPS_UTC_OFFSET_US` (as `ss * 1_000_000` µs), NOT a real offset
+/// from the local monotonic clock. The name `_OFFSET_US` anticipates
+/// the proper wire-up to `mfsk_app_shared::time_sync`, which lands
+/// when the QSO FSM grows wall-clock awareness; until then no
+/// downstream consumer reads this value as an offset — self-sync
+/// remains primary for slot alignment.
 fn parse_gps_utc(frame: &[u8]) {
     // Strip the 6-byte header and trailing FD.
     if frame.len() < 8 {
