@@ -1,11 +1,26 @@
-//! USB Audio Class host capture — Phase 1 host install (#30).
+//! USB Audio Class host capture — Phase 1 iso IN streaming (#30 + #31).
 //!
 //! `start_host()` installs the ESP-IDF USB host stack + the
 //! `espressif/usb_host_uac` class driver, registers a driver event
-//! callback that logs hot-plug events, and spawns a dedicated thread
-//! that pumps `usb_host_lib_handle_events()`. Opening a device and
-//! pulling iso IN packets lands in #31; the resample + push to the
-//! decoder ringbuf lands in #32.
+//! callback that forwards hot-plug events to an app task, spawns the
+//! USB events pump, and falls through. From there:
+//!
+//! - **driver_event_cb** (class-driver task ctx) pushes `RxConnected` /
+//!   `TxConnected` onto a `std::sync::mpsc::channel`.
+//! - **app_task** (`uac_app`, std::thread) consumes events; on the first
+//!   `RxConnected` it calls `uac_host_device_open` + `uac_host_device_start`
+//!   with the IC-705's fixed `48 kHz / stereo / 16-bit` config and
+//!   spawns the reader thread.
+//! - **reader_thread** (`uac_reader`, std::thread) polls
+//!   `uac_host_device_read` into a 4 KB stack buffer, accumulates stats,
+//!   and logs `bytes/packets/errors` to UDP every ~1 s.
+//!
+//! The reader currently **drops the samples on the floor** after counting
+//! them. Wiring the bytes into the resample + decoder push chain lands
+//! in #32 (replace the inner of `reader_thread` with the
+//! 48 k stereo → 12 k mono pipeline). Disconnect / reconnect polish is
+//! #35 (reader exits on any read error and the device handle leaks —
+//! acceptable for #31 since `BootMode::Uac` is sticky until reboot).
 //!
 //! ## 接続方式 (確定済)
 //!
@@ -31,14 +46,29 @@
 //! ## 進捗
 //!
 //! - [x] managed component + bindings (#29)
-//! - [x] host install + hot-plug callback (#30, このファイル)
-//! - [ ] iso IN streaming (#31)
+//! - [x] host install + hot-plug callback (#30)
+//! - [x] iso IN streaming + stats logging (#31, このファイル)
 //! - [ ] 48 kHz stereo → 12 kHz mono resampler + ringbuf → decode (#32)
 //! - [ ] verification on hardware (#33-#34)
 //! - [ ] disconnect/reconnect polish (#35)
 
-use anyhow::{anyhow, Result};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Sender, channel};
+
+use anyhow::{Result, anyhow};
 use esp_idf_svc::sys;
+
+/// Newtype around the IDF `uac_host_device_handle_t` (`*mut uac_interface`)
+/// to assert thread-safety for the `move` into the reader thread. The
+/// IDF UAC driver documents the handle as safe to call from any task
+/// once `uac_host_device_start` returns ESP_OK.
+struct DeviceHandle(sys::uac::uac_host_device_handle_t);
+// SAFETY: per usb_host_uac docs, the handle is opaque to callers and
+// the IDF synchronises internal state. We never mutate the pointer or
+// dereference its target on the Rust side — every use goes through
+// `uac_host_device_*` IDF calls.
+unsafe impl Send for DeviceHandle {}
 
 /// USB host event-pump task stack — modest budget; the loop just
 /// blocks on `usb_host_lib_handle_events` and dispatches flags.
@@ -51,59 +81,187 @@ const UAC_DRIVER_TASK_STACK: usize = 4096;
 const UAC_DRIVER_TASK_PRIORITY: usize = 5;
 const UAC_DRIVER_TASK_CORE: sys::BaseType_t = 0;
 
+/// `uac_app` task stack. Just runs `recv()` → device_open/start →
+/// spawn reader. 4 KB is overkill but keeps headroom for the OnceLock
+/// + sender state and any future device-cleanup paths.
+const APP_TASK_STACK: usize = 4096;
+
+/// `uac_reader` task stack. 10 KB: 4 KB for the `READER_BUFFER_BYTES`
+/// stack array, the rest for the function's frame, `Instant`, the
+/// format machinery for the 1 Hz log line (Rust's `format_args!` +
+/// `write!` chain is surprisingly stack-heavy on Xtensa), and the
+/// IDF `uac_host_device_read` call's own stack usage. Earlier sizes
+/// at 4 KB (= buffer alone) and 8 KB both flagged by Gemini PR #98
+/// as tight; 10 KB gives the log path real headroom.
+const READER_TASK_STACK: usize = 10240;
+
+/// Read buffer size per `uac_host_device_read` call. 4 KB = 1024
+/// stereo i16 samples = ~21 ms at 48 kHz stereo — short enough that
+/// disconnect detection latency stays under one FT8 symbol period
+/// (160 ms), large enough that we're not paying ring-buffer overhead
+/// per-sample. #32 may tune this once the resample chain is wired
+/// (FT8 symbol-block sized chunks reduce intermediate buffering).
+const READER_BUFFER_BYTES: usize = 4096;
+
+/// Read call timeout — short enough that a disconnect surfaces quickly
+/// (we currently exit the reader on any non-OK return; #35 will
+/// distinguish recoverable from terminal errors), long enough that
+/// the loop doesn't poll-spin when the IDF ringbuf is briefly empty.
+/// 100 ms ≈ half an FT8 symbol period; matches the audio_player
+/// reference example's default.
+const READER_READ_TIMEOUT_MS: u32 = 100;
+
+/// IC-705 USB Audio stream config. Fixed by the IC-705 firmware;
+/// the device descriptor reports a single supported alt-setting at
+/// 48 kHz stereo 16-bit. Embedded 16 kHz path mentioned in early
+/// design notes does not exist on this radio.
+const STREAM_CHANNELS: u8 = 2;
+const STREAM_BIT_RESOLUTION: u8 = 16;
+const STREAM_SAMPLE_FREQ_HZ: u32 = 48_000;
+
+/// Class-driver-side ringbuf the IDF code copies iso IN packets into
+/// before `uac_host_device_read` drains them. Sized for ~85 ms of
+/// audio (48 k × stereo × 2 B × 0.085 ≈ 16 KB) — plenty of slack for
+/// us to lag a render frame without losing packets.
+const STREAM_BUFFER_BYTES: u32 = 16 * 1024;
+
+/// Threshold the IDF driver uses to decide when to fire `RX_DONE`
+/// callbacks. Half the buffer is the canonical setting from the
+/// audio_player reference. We don't currently consume the callback
+/// (the reader polls), so this only affects how the IDF schedules
+/// internal copies; tuning it doesn't change our latency budget.
+const STREAM_BUFFER_THRESHOLD: u32 = STREAM_BUFFER_BYTES / 2;
+
+/// Hot-plug event reified for cross-task delivery. Driver events are
+/// translated by `driver_event_cb` (which runs in the class-driver
+/// background task context and can't block) into one of these and
+/// pushed onto the channel that `app_task` reads.
+#[derive(Debug, Clone, Copy)]
+enum DriverEvent {
+    /// A streaming-IN interface enumerated on `addr.iface_num`.
+    /// We open + start the first RxConnected we see; subsequent ones
+    /// (e.g. multi-channel devices) are logged but ignored for #31.
+    RxConnected { addr: u8, iface_num: u8 },
+    /// A streaming-OUT interface enumerated. IC-705 exposes one for
+    /// CW/mod injection; we don't use it for FT8 RX.
+    TxConnected { addr: u8, iface_num: u8 },
+}
+
+/// Sender half of the driver→app channel. Populated by `start_host`
+/// before `uac_host_install` registers the callback. `OnceLock`
+/// (not `OnceCell`) so the C callback context can safely read it.
+static EVENT_SENDER: OnceLock<Sender<DriverEvent>> = OnceLock::new();
+
+/// Stats counters maintained by the reader thread. Read once per
+/// second by the same thread for the UDP log line. Atomics
+/// (`Relaxed`) so a future inspector (e.g. LCD overlay) can sample
+/// them lock-free.
+static RX_BYTES: AtomicU32 = AtomicU32::new(0);
+static RX_PACKETS: AtomicU32 = AtomicU32::new(0);
+static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
+
+/// Gate against spawning multiple readers when the IDF driver fires
+/// `RxConnected` more than once for the same physical attach (e.g.
+/// IC-705 advertises both an RX and TX interface and the driver may
+/// reissue events on alt-setting changes). Set by `app_task` via
+/// `compare_exchange` before spawning the reader; released either
+/// (a) explicitly on `handle_rx_connected` failure or
+/// (b) automatically via [`ReaderActiveGuard`] when the reader thread
+/// exits (normal exit, error exit, or panic).
+static READER_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// RAII guard that releases [`READER_ACTIVE`] on drop. Held by
+/// `reader_thread` for its entire lifetime so the gate gets reset
+/// even on panic — without the guard a panic in the read /
+/// resample / push chain would leave the gate stuck `true` and
+/// every subsequent `RxConnected` would be ignored until reboot
+/// (Gemini PR #98 r4 review).
+struct ReaderActiveGuard;
+impl Drop for ReaderActiveGuard {
+    fn drop(&mut self) {
+        READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Driver event callback. Invoked by the UAC class-driver background
 /// task on every `RX_CONNECTED` / `TX_CONNECTED` notification (i.e.
 /// every time an audio streaming interface enumerates).
 ///
-/// #30 scope: just log the event so we can see IC-705 enumeration over
-/// UDP. #31 will replace the body with "push a Connect message onto
-/// the app channel so the app task can `uac_host_device_open` +
-/// `uac_host_device_start`".
+/// Runs in the class-driver task context — must not block / allocate
+/// significantly. We forward to the app task via the mpsc channel
+/// (lock-free for the single-producer case) and return.
 extern "C" fn driver_event_cb(
     addr: u8,
     iface_num: u8,
     event: sys::uac::uac_host_driver_event_t,
     _arg: *mut core::ffi::c_void,
 ) {
-    let kind = match event {
-        sys::uac::uac_host_driver_event_t_UAC_HOST_DRIVER_EVENT_RX_CONNECTED => "RX_CONNECTED",
-        sys::uac::uac_host_driver_event_t_UAC_HOST_DRIVER_EVENT_TX_CONNECTED => "TX_CONNECTED",
+    let driver_event = match event {
+        sys::uac::uac_host_driver_event_t_UAC_HOST_DRIVER_EVENT_RX_CONNECTED => {
+            DriverEvent::RxConnected { addr, iface_num }
+        }
+        sys::uac::uac_host_driver_event_t_UAC_HOST_DRIVER_EVENT_TX_CONNECTED => {
+            DriverEvent::TxConnected { addr, iface_num }
+        }
         other => {
             log::warn!("uac: unknown driver event addr={addr} iface={iface_num} raw={other}");
             return;
         }
     };
-    log::info!("uac: driver event addr={addr} iface={iface_num} kind={kind}");
+    log::info!("uac: driver event {driver_event:?}");
+    if let Some(sender) = EVENT_SENDER.get() {
+        if let Err(e) = sender.send(driver_event) {
+            log::error!("uac: app channel send failed (app_task gone): {e}");
+        }
+    } else {
+        log::error!("uac: driver event before EVENT_SENDER init — dropped {driver_event:?}");
+    }
+}
+
+/// Device-level event callback. Set in `uac_host_device_config_t` at
+/// `uac_host_device_open` time, fires on `RX_DONE` / `TX_DONE` /
+/// `TRANSFER_ERROR` / `DRIVER_EVENT_DISCONNECTED`. #31 only logs
+/// these — the reader thread polls `uac_host_device_read` rather
+/// than waiting on the callback. #35 will use `DISCONNECTED` here
+/// to signal the reader to stop and clean up the handle.
+extern "C" fn device_event_cb(
+    _handle: sys::uac::uac_host_device_handle_t,
+    event: sys::uac::uac_host_device_event_t,
+    _arg: *mut core::ffi::c_void,
+) {
+    let kind = match event {
+        sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_RX_DONE => "RX_DONE",
+        sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_TX_DONE => "TX_DONE",
+        sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_TRANSFER_ERROR => "TRANSFER_ERROR",
+        sys::uac::uac_host_device_event_t_UAC_HOST_DRIVER_EVENT_DISCONNECTED => "DISCONNECTED",
+        other => {
+            log::warn!("uac: unknown device event raw={other}");
+            return;
+        }
+    };
+    // RX_DONE is the high-frequency one (every ~10 ms once streaming);
+    // logging it would saturate UDP. Suppress, log only the other
+    // three which are exceptional.
+    if event != sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_RX_DONE {
+        log::info!("uac: device event {kind}");
+    }
 }
 
 /// USB host event-pump body. Blocks indefinitely on
 /// `usb_host_lib_handle_events`. Returned `event_flags` are
-/// intentionally ignored: `NO_CLIENTS` only fires when all class
-/// drivers (= our UAC driver) have been uninstalled — never in our
-/// sticky-install model — and `ALL_FREE` is only useful when
-/// preparing to uninstall the host library, which we also never do.
-/// Device hot-plug events surface through the class driver's own
-/// callback ([`driver_event_cb`]), not these flags.
+/// intentionally ignored (see PR #92 review history for why).
 fn usb_events_task() {
-    // `portMAX_DELAY` is a C macro (not bound by bindgen). FreeRTOS on
-    // ESP-IDF defines `TickType_t` as `u32` so the all-ones value =
-    // "block indefinitely until an event arrives" — exactly what we want.
     const FOREVER: sys::TickType_t = sys::TickType_t::MAX;
     loop {
         let mut event_flags: u32 = 0;
-        let err = unsafe {
-            sys::usb_host_lib_handle_events(FOREVER, &mut event_flags as *mut u32)
-        };
+        let err =
+            unsafe { sys::usb_host_lib_handle_events(FOREVER, &mut event_flags as *mut u32) };
         if err != sys::ESP_OK as sys::esp_err_t {
-            // ESP_ERR_TIMEOUT は portMAX_DELAY では発生しないはず。
-            // INVALID_STATE = host stack 未インストール → loop 即抜けるべき。
             log::error!("uac: usb_host_lib_handle_events err={err:#x}");
             if err == sys::ESP_ERR_INVALID_STATE as sys::esp_err_t {
                 break;
             }
-            // 他の error は理屈上発生しないが、起きた時 0 delay で tight
-            // loop すると UDP log を埋め尽くす + lower-prio task を starve
-            // する。50 ms sleep を挟んで recoverable 系を吸収する。
             esp_idf_svc::hal::delay::FreeRtos::delay_ms(50);
             continue;
         }
@@ -112,22 +270,249 @@ fn usb_events_task() {
     log::error!("uac: usb_events_task exiting — host stack gone");
 }
 
+/// Convert a `(addr, iface_num)` `RxConnected` into an open + started
+/// UAC device + reader thread. Returns the device handle on success
+/// (currently unused — the handle moves into the reader thread; #35
+/// will need a way to signal it on disconnect).
+fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
+    log::info!("uac: opening device addr={addr} iface={iface_num}");
+    let dev_config = sys::uac::uac_host_device_config_t {
+        addr,
+        iface_num,
+        buffer_size: STREAM_BUFFER_BYTES,
+        buffer_threshold: STREAM_BUFFER_THRESHOLD,
+        callback: Some(device_event_cb),
+        callback_arg: core::ptr::null_mut(),
+    };
+    let mut handle: sys::uac::uac_host_device_handle_t = core::ptr::null_mut();
+    let err = unsafe {
+        sys::uac::uac_host_device_open(
+            &dev_config as *const _,
+            &mut handle as *mut sys::uac::uac_host_device_handle_t,
+        )
+    };
+    if err != sys::ESP_OK as sys::esp_err_t {
+        return Err(anyhow!(
+            "uac_host_device_open(addr={addr}, iface={iface_num}) failed err={err:#x}"
+        ));
+    }
+    log::info!("uac: device opened, starting stream {STREAM_CHANNELS}ch / {STREAM_BIT_RESOLUTION}b / {STREAM_SAMPLE_FREQ_HZ}Hz");
+
+    let stream_config = sys::uac::uac_host_stream_config_t {
+        channels: STREAM_CHANNELS,
+        bit_resolution: STREAM_BIT_RESOLUTION,
+        sample_freq: STREAM_SAMPLE_FREQ_HZ,
+        flags: 0,
+    };
+    let err = unsafe { sys::uac::uac_host_device_start(handle, &stream_config as *const _) };
+    if err != sys::ESP_OK as sys::esp_err_t {
+        // Best-effort close; if it fails we can't do much beyond logging.
+        let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
+        if close_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_close after device_start failure also failed err={close_err:#x}");
+        }
+        return Err(anyhow!(
+            "uac_host_device_start failed err={err:#x} (config 48k/stereo/16b — IC-705 should support this; check the device descriptor in UDP log)"
+        ));
+    }
+
+    // Reader spawn failure rollback: device_open + device_start
+    // succeeded, so the handle owns USB resources; bail without
+    // releasing them would mean the IDF driver thinks the device is
+    // streaming forever (next RxConnected would race against a stuck
+    // alt-setting). Stop + close before bubbling the error.
+    // Reset stats for the new session so the 1 Hz throughput log
+    // reflects the current device, not accumulated bytes from a
+    // previous attach (Gemini PR #98 r3 review). `Relaxed` since
+    // no concurrent reader exists at this point — the new reader
+    // is about to spawn below.
+    RX_BYTES.store(0, Ordering::Relaxed);
+    RX_PACKETS.store(0, Ordering::Relaxed);
+    RX_ERRORS.store(0, Ordering::Relaxed);
+
+    let handle_wrapped = DeviceHandle(handle);
+    if let Err(e) = std::thread::Builder::new()
+        .stack_size(READER_TASK_STACK)
+        .name("uac_reader".into())
+        .spawn(move || reader_thread(handle_wrapped))
+    {
+        let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
+        let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
+        if stop_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_stop after reader spawn failure also failed err={stop_err:#x}");
+        }
+        if close_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_close after reader spawn failure also failed err={close_err:#x}");
+        } else {
+            log::info!("uac: rolled back device_open + device_start after reader spawn failure");
+        }
+        return Err(anyhow!("uac_reader spawn failed: {e}"));
+    }
+    log::info!("uac: reader thread spawned");
+    Ok(())
+}
+
+/// Reader thread body. Polls `uac_host_device_read` in a tight loop,
+/// updates the stats atomics, logs throughput every ~1 s. The data
+/// is **dropped on the floor** for #31; #32 will replace the inner
+/// of the loop with the 48 k stereo → 12 k mono resample + decoder
+/// push chain.
+fn reader_thread(handle: DeviceHandle) {
+    // RAII: clears READER_ACTIVE on any exit path including panic.
+    let _gate = ReaderActiveGuard;
+    let mut buf = [0u8; READER_BUFFER_BYTES];
+    let mut last_log = std::time::Instant::now();
+    let mut last_bytes: u32 = 0;
+    loop {
+        let mut bytes_read: u32 = 0;
+        let err = unsafe {
+            sys::uac::uac_host_device_read(
+                handle.0,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &mut bytes_read as *mut u32,
+                READER_READ_TIMEOUT_MS,
+            )
+        };
+        if err != sys::ESP_OK as sys::esp_err_t {
+            // ESP_ERR_TIMEOUT is a routine ringbuf-empty signal (the
+            // 100 ms timeout fires when the IDF driver hasn't yet
+            // received a fresh iso IN frame). NOT a reason to exit
+            // (Gemini PR #98 review). Just continue the loop.
+            if err == sys::ESP_ERR_TIMEOUT as sys::esp_err_t {
+                continue;
+            }
+            RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+            // Other errors (INVALID_STATE on disconnect, INVALID_ARG,
+            // ringbuf failures) are terminal — exit so #35 can swap in
+            // a proper detect+reset path. `BootMode::Uac` is
+            // sticky-until-reboot so silent reader death is at least
+            // observable in the next UDP log tick (rx=0B/s).
+            log::error!("uac: device_read err={err:#x}, reader exiting");
+            break;
+        }
+        if bytes_read > 0 {
+            // RX_BYTES uses `fetch_add` which wraps on AtomicU32
+            // overflow (~4 GB ≈ 6 h of streaming). xtensa-esp32s3
+            // has no 64-bit atomic intrinsics. The wrap is harmless
+            // for the 1 Hz delta computation below — `wrapping_sub`
+            // on the u32 values gives the correct per-second window
+            // even across the boundary.
+            RX_BYTES.fetch_add(bytes_read, Ordering::Relaxed);
+            RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+        }
+        // 1 Hz throughput log. `Instant::now()` is the FreeRTOS tick
+        // count under the hood — sub-microsecond cost.
+        let now = std::time::Instant::now();
+        if now.duration_since(last_log).as_secs() >= 1 {
+            let bytes = RX_BYTES.load(Ordering::Relaxed);
+            let packets = RX_PACKETS.load(Ordering::Relaxed);
+            let errors = RX_ERRORS.load(Ordering::Relaxed);
+            let bps = bytes.wrapping_sub(last_bytes);
+            // 48 k × stereo × 2 B = 192_000 B/s expected for a fully-
+            // streaming IC-705. The throughput delta is the diagnostic
+            // we care about here (anything well below ~190 kB/s
+            // suggests packet drops or wrong stream config).
+            log::info!(
+                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err)"
+            );
+            last_log = now;
+            last_bytes = bytes;
+        }
+    }
+    // Cleanup before exit so the IDF driver state matches reality —
+    // without this a re-enumeration (next IC-705 plug) finds the
+    // device already "started" in the driver's bookkeeping and
+    // `device_start` returns INVALID_STATE on the second attempt
+    // (Gemini PR #98 review). Best-effort: if stop or close fails we
+    // can't do much beyond log.
+    let stop_err = unsafe { sys::uac::uac_host_device_stop(handle.0) };
+    if stop_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: device_stop on reader exit failed err={stop_err:#x}");
+    }
+    let close_err = unsafe { sys::uac::uac_host_device_close(handle.0) };
+    if close_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: device_close on reader exit failed err={close_err:#x}");
+    } else {
+        log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
+    }
+    // `_gate: ReaderActiveGuard` is dropped here, clearing
+    // READER_ACTIVE so the next RxConnected can re-take the gate
+    // (Gemini PR #98 r3 + r4 review — RAII so panic also clears).
+}
+
+/// App task body. Consumes driver events from the channel; on first
+/// `RxConnected` opens the device + starts the stream + spawns the
+/// reader. Subsequent `RxConnected` events (e.g. a hub adds another
+/// audio device, or IC-705 re-enumerates after a USB reset) are
+/// re-handled — #35 will refine this to detect "same device returned"
+/// vs "new device" and clean up the previous handle.
+fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
+    while let Ok(event) = rx.recv() {
+        match event {
+            DriverEvent::RxConnected { addr, iface_num } => {
+                // Dedup: the IDF driver re-fires `RxConnected` on alt-
+                // setting transitions and (per Gemini PR #98 review)
+                // on multi-interface devices, which would spawn
+                // additional reader threads racing the first on
+                // device_start. compare_exchange wins atomically;
+                // losers just log and drop the event.
+                if READER_ACTIVE
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    log::info!(
+                        "uac: ignoring duplicate RxConnected addr={addr} iface={iface_num} (reader already active)"
+                    );
+                    continue;
+                }
+                if let Err(e) = handle_rx_connected(addr, iface_num) {
+                    log::error!("uac: RxConnected handler failed: {e:#}");
+                    // Release the gate so a future re-attach can retry
+                    // (e.g. IC-705 power cycle during bring-up).
+                    READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+                }
+            }
+            DriverEvent::TxConnected { addr, iface_num } => {
+                log::info!(
+                    "uac: TX_CONNECTED addr={addr} iface={iface_num} — ignored (RX only for FT8)"
+                );
+            }
+        }
+    }
+    log::error!("uac: app_task exiting — driver event channel closed");
+}
+
 /// Install the USB host stack + the UAC class driver. Returns once
 /// both are running in their respective background tasks; the caller
 /// (main.rs UAC dispatch arm) falls through to the display loop.
 pub fn start_host() -> Result<()> {
+    // Set up the driver→app channel BEFORE installing the class
+    // driver — `driver_event_cb` may fire as soon as `uac_host_install`
+    // returns (an IC-705 already plugged in would enumerate immediately).
+    let (tx, rx) = channel::<DriverEvent>();
+    EVENT_SENDER
+        .set(tx)
+        .map_err(|_| anyhow!("uac: EVENT_SENDER double init — start_host called twice?"))?;
+    std::thread::Builder::new()
+        .stack_size(APP_TASK_STACK)
+        .name("uac_app".into())
+        .spawn(move || app_task(rx))
+        .map_err(|e| anyhow!("uac_app spawn failed: {e}"))?;
+    log::info!("uac: app_task spawned (stack={APP_TASK_STACK} B)");
+
     log::info!("uac: installing USB host stack");
     let host_config = sys::usb_host_config_t {
         skip_phy_setup: false,
         root_port_unpowered: false,
         intr_flags: sys::ESP_INTR_FLAG_LEVEL1 as i32,
         enum_filter_cb: None,
-        // peripheral_map = 0 → default peripheral (S3 has only one
-        // USB-OTG controller so this is unambiguous).
         peripheral_map: 0,
-        // Zero-init custom FIFO triggers the kconfig-bias default
-        // (RX-heavy for host class drivers). Sufficient for iso IN
-        // capture; we are not a high-bandwidth bulk consumer.
         fifo_settings_custom: sys::usb_host_config_t__bindgen_ty_1 {
             nptx_fifo_lines: 0,
             ptx_fifo_lines: 0,
@@ -139,13 +524,6 @@ pub fn start_host() -> Result<()> {
         return Err(anyhow!("usb_host_install failed (err={err:#x})"));
     }
 
-    // Spawn the events pump. std::thread runs FreeRTOS task underneath
-    // via esp-idf-hal pthread shim; 4 KB stack covers the trivial loop.
-    // If spawn fails after `usb_host_install` succeeded the host stack
-    // is installed but no one is pumping `usb_host_lib_handle_events`,
-    // leaving the controller in a half-up state. Roll back with
-    // `usb_host_uninstall` so a subsequent BootMode flip (or even
-    // re-entry on retry) finds a clean baseline.
     if let Err(e) = std::thread::Builder::new()
         .stack_size(USB_EVENTS_TASK_STACK)
         .name("usb_events".into())
@@ -163,9 +541,6 @@ pub fn start_host() -> Result<()> {
     }
     log::info!("uac: usb_events_task spawned (stack={USB_EVENTS_TASK_STACK} B)");
 
-    // UAC class driver: background-task mode (driver pumps its own
-    // event queue + invokes our callback). The callback is light —
-    // logs only in #30 — so the default priority is fine.
     log::info!("uac: installing UAC class driver");
     let uac_config = sys::uac::uac_host_driver_config_t {
         create_background_task: true,
@@ -177,29 +552,11 @@ pub fn start_host() -> Result<()> {
     };
     let err = unsafe { sys::uac::uac_host_install(&uac_config as *const _) };
     if err != sys::ESP_OK as sys::esp_err_t {
-        // Roll back the host stack so the controller doesn't sit half-
-        // up. The events pump task is already spawned and blocked in
-        // `usb_host_lib_handle_events(FOREVER, ..)` at this point, so
-        // calling `usb_host_uninstall` straight away tends to trip
-        // `ESP_ERR_INVALID_STATE`. Call `usb_host_lib_unblock` first
-        // to wake the pump (which then sees INVALID_STATE on its next
-        // handle_events call and exits cleanly) before the uninstall.
-        // Mirror the spawn-failure rollback's err-checked logging so a
-        // "host stack left in inconsistent state" condition surfaces.
+        // Rollback: unblock events pump, wait for settle, uninstall host stack.
         let unblock_err = unsafe { sys::usb_host_lib_unblock() };
         if unblock_err != sys::ESP_OK as sys::esp_err_t {
-            log::warn!(
-                "uac: usb_host_lib_unblock before rollback returned err={unblock_err:#x}"
-            );
+            log::warn!("uac: usb_host_lib_unblock before rollback returned err={unblock_err:#x}");
         }
-        // Race window: unblock wakes the pump task but the task still
-        // has to return from `handle_events`, loop, and re-enter
-        // `handle_events` (which then sees INVALID_STATE) before we
-        // call `uninstall`. Without this delay the uninstall lands
-        // while the task is mid-iteration and fails with
-        // INVALID_STATE, tripping the "inconsistent state" error log
-        // path even in the normal-failure case. 20 ms is far more than
-        // the pump needs to round-trip a single handle_events call.
         esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
