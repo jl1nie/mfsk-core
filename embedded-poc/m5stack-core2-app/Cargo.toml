@@ -70,5 +70,5 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
 
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp-dsp", version = "^1.4" }
-bindings_header = "../bindings.h"
+bindings_header = "../bindings_dsp.h"
 bindings_module = "esp_dsp"

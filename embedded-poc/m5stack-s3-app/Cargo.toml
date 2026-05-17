@@ -80,10 +80,13 @@ toml = "0.8"
 esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
 
 # esp-dsp は decode 経路 (`embedded_shared::esp_dsp_fft`) が前提とする。
-# 兄弟クレートと同じ component 取り込み。
+# 兄弟クレートと同じ component 取り込み。bindings_header は per-component
+# に分割済 — 共有 bindings.h を 2 つの extra_components が指していた頃は
+# `esp_dsp` / `uac` 両 module に同じ symbol 一式が生えてしまっていた
+# (PR #91 Gemini review 指摘)。
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp-dsp", version = "^1.4" }
-bindings_header = "../bindings.h"
+bindings_header = "../bindings_dsp.h"
 bindings_module = "esp_dsp"
 
 # Phase 1: UAC host capture from IC-705. 1.4.0 で ESP32-S3 + PSRAM 構成
@@ -95,5 +98,5 @@ bindings_module = "esp_dsp"
 # `host/class/uac/usb_host_uac/examples/audio_player/main/main.c`。
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/usb_host_uac", version = "^1.4" }
-bindings_header = "../bindings.h"
+bindings_header = "../bindings_uac.h"
 bindings_module = "uac"
