@@ -430,10 +430,15 @@ fn coarse_sync_inner(
         // average vs the previous full-sort's O(N log N). Pivot
         // ordering inside the percentile isn't load-bearing
         // (downstream only uses `red[pct_idx]` as a normaliser), so
-        // unstable selection is fine. Gemini PR #79 review.
+        // unstable selection is fine. `unwrap_or(Ordering::Equal)`
+        // for NaN safety — matches the same pattern at
+        // `process_candidates.rs` xsnr2_db_simple median.
+        // Gemini PR #79 + #101 review.
         let mut sorted = red.clone();
         let pct_idx = ((0.40 * n_freq as f32) as usize).min(n_freq - 1);
-        sorted.select_nth_unstable_by(pct_idx, |a, b| a.partial_cmp(b).unwrap());
+        sorted.select_nth_unstable_by(pct_idx, |a, b| {
+            a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+        });
         sorted[pct_idx].max(f32::EPSILON)
     };
 
