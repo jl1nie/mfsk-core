@@ -37,10 +37,23 @@ Xtensa-LX7 toolchain notes and the LX6/LX7 comparison table.
   `New-NetFirewallHyperVRule` invocation is captured in the
   Phase 0.6 commit log (search `git log --grep "Phase 0.6"`).
 
-## Status (2026-05-14)
+## Status (2026-05-17 pivot — demo / acoustic-fallback role)
 
-Phase 0 / 0.5 / 3 / 4 / 0.6 / 0.7 shipped on `main`. Next is
-Phase 1 (USB UAC host capture from IC-705); after that
-Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6 (buttons), and
-TX keying close the v0.7 transceiver-controller goal. See
-`docs/ROADMAP.md` Phase B for the full phasing.
+Phase 0 / 0.5 / 3 / 4 / 0.6 / 0.7 shipped on `main`. Phase 1 UAC
+hardware verification confirmed **M5StickS3 cannot do USB host**
+(board lacks VBUS source circuit, ID pin wiring, host power switch
+IC; see memory `project_m5stick_s3_no_usb_host`). This crate is
+repositioned as the **demo / acoustic-fallback** path:
+
+- **Phase 1.5 (next, task #47)**: internal MEMS mic via ES8311 ADC
+  mode → I2S RX → `decode_pipeline::run_with_source`. Picks up
+  IC-705 SPEAKER OUT acoustically; no cable / dongle required. Adds
+  `BootMode::Acoustic` between `Wifi` and `Uac` in the boot cycle.
+- **Phase 1 (UAC), Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6
+  (buttons), TX keying**: rolled forward to `m5stack-cores3-app`
+  (Phase B-Core in `docs/ROADMAP.md`).
+
+The `uac.rs` module (~445 lines) stays in-tree as canonical
+reference; it's cloned verbatim into `m5stack-cores3-app` in Phase
+0-Core, then hoisted into `mfsk-app-shared` in Phase 1.5-Core after
+dual-board verification.
