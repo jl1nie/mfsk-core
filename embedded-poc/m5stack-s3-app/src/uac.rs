@@ -189,15 +189,17 @@ impl Drop for ReaderActiveGuard {
 /// `DRIVER_EVENT_DISCONNECTED` (USB cable unplug, IC-705 power off,
 /// VBUS sag). The reader thread polls this at the top of every loop
 /// iteration and exits cleanly — disconnect latency = at most one
-/// `READER_READ_TIMEOUT_MS` (100 ms) instead of waiting for the next
+/// `READER_READ_TIMEOUT_MS` instead of waiting for the next
 /// `device_read` to fail. Also lets the reader's cleanup path skip
 /// `device_stop` / `device_close` (the IDF driver already
 /// invalidated the handle when DISCONNECTED fired) so the post-
 /// disconnect cleanup doesn't log spurious `INVALID_ARG` errors.
 ///
-/// Reset by [`handle_rx_connected`] at the start of a new session so
+/// Reset by [`handle_rx_connected`] at the start of a new session,
+/// before `uac_host_device_open` registers the device callback, so
 /// a stale `true` from a previous attach can't kill the freshly-
-/// spawned reader on its first iteration.
+/// spawned reader on its first iteration and a fresh DISCONNECT
+/// firing during open isn't silently dropped by the reset.
 static READER_STOP_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -329,6 +331,14 @@ fn usb_events_task() {
 /// will need a way to signal it on disconnect).
 fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     log::info!("uac: opening device addr={addr} iface={iface_num}");
+    // Clear any stale stop-request BEFORE `uac_host_device_open` —
+    // that call registers `device_event_cb` for the new handle, after
+    // which a fast DISCONNECT (e.g. cable yanked mid-bringup) would
+    // race against the reset and have its `true` silently dropped.
+    // Resetting now is safe: the previous session's callback was
+    // unregistered at its `device_close`, so it cannot fire across
+    // the boundary.
+    READER_STOP_REQUESTED.store(false, Ordering::Release);
     let dev_config = sys::uac::uac_host_device_config_t {
         addr,
         iface_num,
@@ -384,12 +394,6 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     RX_BYTES.store(0, Ordering::Relaxed);
     RX_PACKETS.store(0, Ordering::Relaxed);
     RX_ERRORS.store(0, Ordering::Relaxed);
-
-    // Clear any stale stop-request from a previous attach (#35).
-    // The previous session's `device_event_cb` may have set this if
-    // the device was unplugged before the reader noticed; we don't
-    // want it tripping the fresh reader on its first iteration.
-    READER_STOP_REQUESTED.store(false, Ordering::Release);
 
     let handle_wrapped = DeviceHandle(handle);
     if let Err(e) = std::thread::Builder::new()
@@ -453,8 +457,8 @@ fn reader_thread(handle: DeviceHandle) {
     loop {
         // Top-of-loop disconnect check (#35). `device_event_cb` sets
         // the flag immediately on DISCONNECTED; we exit on the next
-        // iteration (≤ READER_READ_TIMEOUT_MS = 100 ms latency)
-        // rather than waiting for the failing read to surface.
+        // iteration (≤ `READER_READ_TIMEOUT_MS` latency) rather than
+        // waiting for the failing read to surface.
         if READER_STOP_REQUESTED.load(Ordering::Acquire) {
             log::info!("uac: reader exiting — DISCONNECTED signaled by device_event_cb");
             disconnect_triggered = true;
@@ -592,8 +596,16 @@ fn reader_thread(handle: DeviceHandle) {
     //   the handle is still nominally valid; explicit stop + close
     //   releases the IDF state so a re-enumeration takes a clean path.
     //
+    // Re-consult the atomic at cleanup time so a DISCONNECT that
+    // fired between the top-of-loop check and a later break (read
+    // error, chunk-push failure, slot-push failure) still routes
+    // to the skip path. Without this, DISCONNECT racing a chunk
+    // push would still emit the spurious INVALID_ARG logs.
+    //
     // Either way `_gate: ReaderActiveGuard` drops below to release
     // `READER_ACTIVE` so the next RxConnected can re-take it.
+    let disconnect_triggered =
+        disconnect_triggered || READER_STOP_REQUESTED.load(Ordering::Acquire);
     if disconnect_triggered {
         log::info!(
             "uac: reader_thread cleanup (disconnect path — skipping device_stop/close, IDF already invalidated handle)"
