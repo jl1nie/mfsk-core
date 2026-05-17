@@ -4,10 +4,13 @@
 
 Non-breaking minor — the embedded path's per-symbol DFT moves from
 the BASIS sin/cos-table dot product to a generalised Goertzel
-recursion. Same math (`Σ x[n] exp(-jωn)` for each FT8 tone), **zero
-caller-provided scratch**, +0.16..+0.63 dB SNR improvement (f32
-Goertzel has more precision than the pre-existing Q15 BASIS dot
-product).
+recursion. Same **magnitude** as the DFT bin
+`|Σ x[n] exp(-jωn)|` for each FT8 tone — the complex output
+differs by a fixed phase rotation per the standard generalised-
+Goertzel `s[N-1] - exp(-jω)·s[N-2]` extraction, but FT8 downstream
+consumes `|cs|²` so the rotation is irrelevant. **Zero caller-
+provided scratch**, +0.16..+0.63 dB SNR improvement (f32 Goertzel
+has more precision than the pre-existing Q15 BASIS dot product).
 
 The 120 KB internal-DRAM win unblocks downstream embedded work that
 couldn't fit alongside BASIS — most immediately, M5StickS3 Qso-mode
@@ -17,12 +20,16 @@ allocate DMA buffer failed` on pre-0.6.4 firmwares).
 ### Added
 
 - **`fill_symbol_spectra_goertzel`** (public): generalised
-  Goertzel recursion for per-symbol DFT. Drop-in for
-  `fill_symbol_spectra_into` on the `not(fft-rustfft)` (embedded)
-  path. Sample-outer / tone-inner loop ordering for FPU pipeline
-  parallelism on Xtensa LX6/LX7 — measured S3 stage3 1.47 s
-  (matches BASIS asm dot-product speed) with zero internal-DRAM
-  scratch.
+  Goertzel recursion for per-symbol DFT. Output-compatible with
+  `fill_symbol_spectra_into` at the `cs: &mut [[Cmplx<f32>; 8]; 79]`
+  level — modulo the phase rotation noted above — so downstream
+  `sync_quality` / LLR / BP / OSD consume it without changes. **Call
+  signature is shorter, not identical**: the BASIS `basis_re` /
+  `basis_im` scratch slice arguments go away (5 args vs 7),
+  reflecting the zero-scratch property. Sample-outer / tone-inner
+  loop ordering for FPU pipeline parallelism on Xtensa LX6/LX7 —
+  measured S3 stage3 1.47 s (matches BASIS asm dot-product speed)
+  with zero internal-DRAM scratch.
 
 ### Changed
 
@@ -62,6 +69,16 @@ allocate DMA buffer failed` on pre-0.6.4 firmwares).
   through 0.6.x for downstream `mfsk-ffi-ft8` consumers; the
   `dual_core::{init, pass2_split, stage3_split}` BASIS scratch args
   drop at the same time.
+
+The `#[deprecated]` attribute itself is not added in this release —
+applying it would trip the workspace-wide `-D warnings` CI gate via
+the still-extant internal callers (FFI shim, embedded apps,
+regression tests, plus the BASIS-internal `fill_symbol_spectra_into
+→ ..._into_generic → symbol_spectra_direct_into` chain). The
+attribute lands in the same 0.7.0 commit that drops the symbols,
+with the call-site removals as the gating prep work. Until then
+this CHANGELOG entry and the public-API doc comments are the
+authoritative deprecation notice.
 
 ### Other notes
 
