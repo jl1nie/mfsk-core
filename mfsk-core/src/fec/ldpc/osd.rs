@@ -1013,8 +1013,12 @@ fn build_npre2_table(setup: &OsdSetup, ntau: usize) -> OsdNpre2Table {
     let mut row_keys = [0u16; LDPC_K];
     for i in 0..k {
         let mut rk: u16 = 0;
+        // Hoist `i * n + k` out of the j loop — Gemini PR #96 minor
+        // perf nit. `g` is row-major LDPC_K × LDPC_N, row i parity
+        // section starts at `row_base + k`.
+        let row_base = i * n;
         for j in 0..ntau {
-            if setup.g[i * n + (k + j)] != 0 {
+            if setup.g[row_base + k + j] != 0 {
                 rk |= 1u16 << (ntau - 1 - j);
             }
         }
