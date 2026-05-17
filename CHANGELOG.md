@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.5 — crates.io surface refresh (M5StickS3 FT8 controller PoC)
+
+Non-functional patch. Refreshes the project's discoverable surface
+on crates.io and docs.rs to reflect that the embedded port is no
+longer aspirational:
+
+- `mfsk-core/Cargo.toml` `description` rewritten to lead with the
+  working `embedded-poc/m5stack-s3-app` M5StickS3 FT8 controller
+  (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM, ~1.2 s
+  post-SlotEnd decode on Xtensa LX7).
+- `mfsk-ffi-ft8/Cargo.toml` `description` notes M5StickS3 end-to-end
+  verification.
+- `mfsk-core/src/lib.rs` "Why this exists" gains a fourth bullet
+  for the handheld-controller use case, with cross-links to the
+  M5StickS3 source crate and `docs/MANUAL_M5STICKS3.md`.
+- `README.md` opens with a hero photo of the device decoding five
+  real on-air FT8 callsigns from a single 15 s slot
+  (`docs/assets/m5sticks3-ft8-decode.jpg`).
+
+Zero behaviour change vs 0.6.4 — no source code modifications, no
+new features, no bug fixes. Pure metadata + docs.
+
 ## 0.6.4 — Goertzel per-symbol DFT (drop BASIS 120 KB internal-DRAM scratch)
 
 Non-breaking minor — the embedded path's per-symbol DFT moves from

@@ -1,10 +1,10 @@
 [package]
 name        = "mfsk-ffi-ft8"
-version     = "0.6.4"
+version     = "0.6.5"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 publish     = false
-description = "Embedded-friendly C ABI for the FT8 decoder slice of mfsk-core. Pairs with esp-idf / RP2040 / Cortex-M C/C++ projects via a static library + cbindgen-generated header. **Distributed as prebuilt binaries on GitHub Releases (linux-x86_64, esp32-xtensa, esp32s3-xtensa); not on crates.io** — same `publish = false` policy as the host `mfsk-ffi` shim."
+description = "Embedded-friendly C ABI for the FT8 decoder slice of mfsk-core. Pairs with esp-idf / RP2040 / Cortex-M C/C++ projects via a static library + cbindgen-generated header. Verified end-to-end on M5StickS3 via the in-tree embedded-poc/m5stack-s3-app FT8 controller. **Distributed as prebuilt binaries on GitHub Releases (linux-x86_64, esp32-xtensa, esp32s3-xtensa); not on crates.io** — same `publish = false` policy as the host `mfsk-ffi` shim."
 
 [lib]
 name       = "mfsk_ft8"

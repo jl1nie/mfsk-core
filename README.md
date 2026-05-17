@@ -1,5 +1,13 @@
 # mfsk-core
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/jl1nie/mfsk-core/main/docs/assets/m5sticks3-ft8-decode.jpg"
+       alt="M5StickS3 running embedded-poc/m5stack-s3-app — five real on-air FT8 decodes from a single 15 s slot, IDLE FSM waiting for the operator to pick a callsign"
+       width="360">
+</p>
+
+<p align="center"><i>M5StickS3 running <code>embedded-poc/m5stack-s3-app</code> — five real on-air FT8 decodes from a single 15 s slot, QSO FSM idle waiting for the operator to pick a callsign. See <a href="docs/MANUAL_M5STICKS3.md">docs/MANUAL_M5STICKS3.md</a>.</i></p>
+
 [![CI](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml/badge.svg)](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mfsk-core.svg)](https://crates.io/crates/mfsk-core)
 [![docs.rs](https://img.shields.io/docsrs/mfsk-core)](https://docs.rs/mfsk-core)
@@ -9,7 +17,12 @@ Pure-Rust library for **WSJT-family digital amateur-radio modes** — a
 single crate that implements FT8, FT4, FST4, WSPR, JT9, JT65 and
 Q65-30A decode / encode / synthesis on top of a small set of shared
 primitives (DSP, sync correlation, LLR, LDPC / convolutional /
-Reed-Solomon / QRA FEC, message codecs).
+Reed-Solomon / QRA FEC, message codecs). The
+[`embedded-poc/m5stack-s3-app`](embedded-poc/m5stack-s3-app/) crate
+shipped with the source tree is a **working M5StickS3 FT8 controller**
+running the same library on Xtensa LX7 — LCD UI, BLE CI-V to IC-705,
+acoustic mic capture, QSO FSM. The image above is one of its decode
+slots.
 
 ## Why this exists
 

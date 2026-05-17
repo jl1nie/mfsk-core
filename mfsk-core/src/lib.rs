@@ -22,6 +22,14 @@
 //! - in a **headless Rust application** (skimmer, monitoring station,
 //!   remote SDR front end) that wants async I/O and safe memory
 //!   handling,
+//! - on a **handheld embedded controller** like
+//!   [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app)
+//!   — a working M5StickS3 FT8 controller (LCD UI, BLE CI-V to
+//!   IC-705, acoustic mic capture, QSO FSM) running this library on
+//!   Xtensa LX7 + esp-dsp + the Goertzel per-symbol DFT, decoding
+//!   real on-air signals in ~1.2 s post-SlotEnd; see
+//!   [`docs/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md)
+//!   for build / flash / operation,
 //! - or as the core of a **new protocol experiment** that reuses FT8's
 //!   LDPC and sync machinery for a different modulation / FEC /
 //!   message recipe.
