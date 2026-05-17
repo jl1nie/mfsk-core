@@ -285,6 +285,23 @@ const CAPTURE_READ_TIMEOUT_MS: u32 = 100;
 /// in (same as the UAC path).
 const CAPTURE_SLOT_SAMPLES_12K: usize = 180_000;
 
+/// Phase 1.7.3-Stick manual sync bootstrap (2026-05-17). User
+/// listens to the radio audio and taps BtnA when they hear the FT8
+/// slot start; that resets capture_thread's slot timing so the
+/// next SlotEnd fires exactly 15 s later, aligned with the band.
+/// From there the existing DT median (Phase 1.5 self-sync) handles
+/// fine refinement. Cheap operator-in-the-loop sync, no algorithmic
+/// changes to coarse_sync required.
+pub static SYNC_RESET_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Trigger a manual slot-boundary reset from the display loop / menu
+/// path. Capture thread sees this on its next iteration, emits an
+/// immediate SlotEnd to flush whatever's in flight, and starts fresh.
+/// The first SlotEnd after this point sets the slot reference.
+pub fn reset_slot_boundary() {
+    SYNC_RESET_PENDING.store(true, Ordering::Release);
+}
+
 /// Wire the chunk queue handle. Called from
 /// `decode_pipeline::run_with_source`'s source-spawn closure in the
 /// pipeline thread, before the decode loop blocks on `recv_box`.
@@ -353,6 +370,7 @@ pub fn init_es8311_capture(i2c: &mut I2cDriver) -> Result<()> {
 /// `uac::reader_thread` so the diagnostic flow is identical between
 /// the acoustic and UAC paths.
 pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
+    use esp_idf_svc::hal::delay::FreeRtos;
     // Bump priority above the dual_core worker (= 5) and stage1_inc
     // (= 3) so stage 3 BP can't starve the I2S DMA refill. Same
     // rationale as `audio_thread` (priority 8 — between dual_core
@@ -360,6 +378,28 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     unsafe {
         sys::vTaskPrioritySet(core::ptr::null_mut(), 8);
     }
+
+    // Phase 1.7.3-Stick fix: wait for the decode_pipeline thread to
+    // finish BASIS alloc + stage1_inc spawn + chunk_q registration
+    // BEFORE we enable I2S RX. Otherwise the ~1 s of audio captured
+    // during pipeline init was being silently dropped (CHUNK_Q_ADDR
+    // == 0 → samples not pushed), which gave the user-visible "first
+    // slot of WF is dark" + first slot decode misalignment.
+    log::info!("audio capture: waiting for chunk_q registration before I2S RX enable");
+    let wait_start = std::time::Instant::now();
+    while CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire) == 0 {
+        FreeRtos::delay_ms(10);
+        if wait_start.elapsed().as_secs() >= 10 {
+            log::warn!(
+                "audio capture: chunk_q still unset after 10 s — enabling I2S anyway"
+            );
+            break;
+        }
+    }
+    log::info!(
+        "audio capture: chunk_q wait done ({} ms), enabling I2S RX",
+        wait_start.elapsed().as_millis()
+    );
 
     i2s.rx_enable().expect("I2S rx_enable");
     log::info!(
@@ -387,6 +427,22 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
     let mut last_bytes: u32 = 0;
 
     loop {
+        // Phase 1.7.3 manual sync mark — user pressed BtnA at the
+        // moment they heard the FT8 slot start. Reset our slot
+        // accounting so the next SlotEnd fires 15 s later, aligned
+        // with the band. The in-flight chunk is dropped (whatever
+        // partial audio was buffered is no longer slot-relevant).
+        if SYNC_RESET_PENDING.swap(false, Ordering::AcqRel) {
+            log::info!(
+                "audio capture: manual sync mark — resetting slot timing (was {} samples into slot)",
+                slot_samples
+            );
+            chunk.clear();
+            slot_samples = 0;
+            slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
+            resampler = LinearResamplerI16To12k::new(48_000);
+        }
+
         let bytes_read = match i2s.read(&mut buf[..], TickType::new_millis(CAPTURE_READ_TIMEOUT_MS.into()).ticks()) {
             Ok(n) => n,
             Err(e) => {
@@ -527,9 +583,28 @@ pub fn capture_tx_thread(
     mut i2s: I2sDriver<'static, I2sBiDir>,
     qso: std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
 ) -> ! {
+    use esp_idf_svc::hal::delay::FreeRtos;
     unsafe {
         sys::vTaskPrioritySet(core::ptr::null_mut(), 8);
     }
+    // Phase 1.7.3-Stick fix: same chunk_q wait pattern as
+    // capture_thread (Acoustic). Prevents the pipeline-init race
+    // that was silently dropping the first ~1 s of audio.
+    log::info!("audio capture+tx: waiting for chunk_q registration before I2S bidir enable");
+    let wait_start = std::time::Instant::now();
+    while CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire) == 0 {
+        FreeRtos::delay_ms(10);
+        if wait_start.elapsed().as_secs() >= 10 {
+            log::warn!(
+                "audio capture+tx: chunk_q still unset after 10 s — enabling I2S anyway"
+            );
+            break;
+        }
+    }
+    log::info!(
+        "audio capture+tx: chunk_q wait done ({} ms), enabling I2S",
+        wait_start.elapsed().as_millis()
+    );
     i2s.rx_enable().expect("I2S rx_enable");
     i2s.tx_enable().expect("I2S tx_enable");
     log::info!("audio capture+tx: bidir I2S up (RX 48k stereo + TX 48k stereo on i2s0)");
@@ -558,6 +633,19 @@ pub fn capture_tx_thread(
         Box::new([0u8; TX_IN_CHUNK * TX_OUT_BYTES_PER_IN]);
 
     loop {
+        // Phase 1.7.3 manual sync mark (user pressed BtnA at slot
+        // start). Same logic as capture_thread; shared static flag.
+        if SYNC_RESET_PENDING.swap(false, Ordering::AcqRel) {
+            log::info!(
+                "audio capture+tx: manual sync mark — reset slot (was {} samples in)",
+                slot_samples
+            );
+            chunk.clear();
+            slot_samples = 0;
+            slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
+            resampler = LinearResamplerI16To12k::new(48_000);
+        }
+
         // ── TX priority check ─────────────────────────────────────
         let intent_opt = if std::time::Instant::now() >= bring_up_grace {
             tx_scheduler_pick_intent(&qso)

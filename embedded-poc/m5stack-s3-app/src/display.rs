@@ -572,7 +572,16 @@ pub fn run_log_panel(
                         })
                     };
                     let Some(msg) = msg else {
-                        log::info!("BtnA: no decoded row selected — ignoring");
+                        // No decode row selected — interpret BtnA as
+                        // a manual slot-sync mark (Phase 1.7.3-Stick).
+                        // User listens to FT8 audio, presses A exactly
+                        // when they hear a new slot start; capture
+                        // thread resets its slot counter and the next
+                        // SlotEnd fires 15 s later aligned with band.
+                        crate::audio::reset_slot_boundary();
+                        log::info!(
+                            "BtnA: no row selected → manual slot-sync mark issued"
+                        );
                         continue;
                     };
                     let Some(dx) = extract_dx_call(msg.as_str()) else {
