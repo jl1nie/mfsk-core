@@ -186,6 +186,22 @@ impl Drop for ReaderActiveGuard {
     }
 }
 
+/// Set by [`device_event_cb`] when the IDF driver fires
+/// `DRIVER_EVENT_DISCONNECTED` (USB cable unplug, IC-705 power off,
+/// VBUS sag). The reader thread polls this at the top of every loop
+/// iteration and exits cleanly — disconnect latency = at most one
+/// `READER_READ_TIMEOUT_MS` (100 ms) instead of waiting for the next
+/// `device_read` to fail. Also lets the reader's cleanup path skip
+/// `device_stop` / `device_close` (the IDF driver already
+/// invalidated the handle when DISCONNECTED fired) so the post-
+/// disconnect cleanup doesn't log spurious `INVALID_ARG` errors.
+///
+/// Reset by [`handle_rx_connected`] at the start of a new session so
+/// a stale `true` from a previous attach can't kill the freshly-
+/// spawned reader on its first iteration.
+static READER_STOP_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Chunk queue handle the reader thread pushes decimated 12 kHz mono
 /// samples into. Set by [`set_chunk_q`] from the `decode_pipeline`'s
 /// source-spawn closure (`run_with_source(|q| uac::set_chunk_q(q))`).
@@ -275,6 +291,16 @@ extern "C" fn device_event_cb(
     if event != sys::uac::uac_host_device_event_t_UAC_HOST_DEVICE_EVENT_RX_DONE {
         log::info!("uac: device event {kind}");
     }
+    // Disconnect signal: the IDF driver invalidates the handle after
+    // this callback returns, so any pending `device_read` will fail.
+    // Setting the flag lets the reader thread exit on its next loop
+    // iteration (≤ 100 ms latency) instead of waiting for the failing
+    // read to surface — and lets the reader skip the
+    // `device_stop` / `device_close` cleanup since the IDF already
+    // released the underlying state (#35 disconnect polish).
+    if event == sys::uac::uac_host_device_event_t_UAC_HOST_DRIVER_EVENT_DISCONNECTED {
+        READER_STOP_REQUESTED.store(true, Ordering::Release);
+    }
 }
 
 /// USB host event-pump body. Blocks indefinitely on
@@ -359,6 +385,12 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     RX_PACKETS.store(0, Ordering::Relaxed);
     RX_ERRORS.store(0, Ordering::Relaxed);
 
+    // Clear any stale stop-request from a previous attach (#35).
+    // The previous session's `device_event_cb` may have set this if
+    // the device was unplugged before the reader noticed; we don't
+    // want it tripping the fresh reader on its first iteration.
+    READER_STOP_REQUESTED.store(false, Ordering::Release);
+
     let handle_wrapped = DeviceHandle(handle);
     if let Err(e) = std::thread::Builder::new()
         .stack_size(READER_TASK_STACK)
@@ -409,7 +441,21 @@ fn reader_thread(handle: DeviceHandle) {
     let mut wav_idx: usize = 0;
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
+    // Track whether we exited via DISCONNECTED so the cleanup path
+    // can skip the redundant `device_stop` / `device_close` calls
+    // (#35) — the IDF driver already invalidated the handle at
+    // callback time, so calling them just logs spurious INVALID_ARG.
+    let mut disconnect_triggered = false;
     loop {
+        // Top-of-loop disconnect check (#35). `device_event_cb` sets
+        // the flag immediately on DISCONNECTED; we exit on the next
+        // iteration (≤ READER_READ_TIMEOUT_MS = 100 ms latency)
+        // rather than waiting for the failing read to surface.
+        if READER_STOP_REQUESTED.load(Ordering::Acquire) {
+            log::info!("uac: reader exiting — DISCONNECTED signaled by device_event_cb");
+            disconnect_triggered = true;
+            break;
+        }
         let mut bytes_read: u32 = 0;
         let err = unsafe {
             sys::uac::uac_host_device_read(
@@ -536,21 +582,34 @@ fn reader_thread(handle: DeviceHandle) {
             last_bytes = bytes;
         }
     }
-    // Cleanup before exit so the IDF driver state matches reality —
-    // without this a re-enumeration (next IC-705 plug) finds the
-    // device already "started" in the driver's bookkeeping and
-    // `device_start` returns INVALID_STATE on the second attempt
-    // (Gemini PR #98 review). Best-effort: if stop or close fails we
-    // can't do much beyond log.
-    let stop_err = unsafe { sys::uac::uac_host_device_stop(handle.0) };
-    if stop_err != sys::ESP_OK as sys::esp_err_t {
-        log::error!("uac: device_stop on reader exit failed err={stop_err:#x}");
-    }
-    let close_err = unsafe { sys::uac::uac_host_device_close(handle.0) };
-    if close_err != sys::ESP_OK as sys::esp_err_t {
-        log::error!("uac: device_close on reader exit failed err={close_err:#x}");
+    // Cleanup paths differ by exit reason (#35):
+    //
+    // - Disconnect-triggered exit: the IDF driver already invalidated
+    //   the handle when DISCONNECTED fired in `device_event_cb`.
+    //   Calling `device_stop` / `device_close` on the invalidated
+    //   handle returns INVALID_ARG/STATE — harmless but it would log
+    //   confusing errors. Skip.
+    // - Read-error exit (terminal non-TIMEOUT error from device_read):
+    //   the handle is still nominally valid; explicit stop + close
+    //   releases the IDF state so a re-enumeration takes a clean path.
+    //
+    // Either way `_gate: ReaderActiveGuard` drops below to release
+    // `READER_ACTIVE` so the next RxConnected can re-take it.
+    if disconnect_triggered {
+        log::info!(
+            "uac: reader_thread cleanup (disconnect path — skipping device_stop/close, IDF already invalidated handle)"
+        );
     } else {
-        log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
+        let stop_err = unsafe { sys::uac::uac_host_device_stop(handle.0) };
+        if stop_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_stop on reader exit failed err={stop_err:#x}");
+        }
+        let close_err = unsafe { sys::uac::uac_host_device_close(handle.0) };
+        if close_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_close on reader exit failed err={close_err:#x}");
+        } else {
+            log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
+        }
     }
     // `_gate: ReaderActiveGuard` is dropped here, clearing
     // READER_ACTIVE so the next RxConnected can re-take the gate
