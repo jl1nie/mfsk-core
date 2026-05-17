@@ -85,3 +85,15 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
 remote_component = { name = "espressif/esp-dsp", version = "^1.4" }
 bindings_header = "../bindings.h"
 bindings_module = "esp_dsp"
+
+# Phase 1: UAC host capture from IC-705. 1.4.0 で ESP32-S3 + PSRAM 構成
+# 対応 + driver task の任意コア配置が確定 (旧版は PSRAM 有効時に driver
+# task stack が壊れる既知問題があった)。bindings_module = "uac" で
+# `esp_idf_sys::uac::*` に `uac_host_install` / `uac_host_device_open` /
+# `uac_host_device_start` / `uac_host_device_read` などが生える。
+# reference example は esp-usb 上流の
+# `host/class/uac/usb_host_uac/examples/audio_player/main/main.c`。
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/usb_host_uac", version = "^1.4" }
+bindings_header = "../bindings.h"
+bindings_module = "uac"
