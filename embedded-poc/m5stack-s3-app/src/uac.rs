@@ -86,11 +86,13 @@ const UAC_DRIVER_TASK_CORE: sys::BaseType_t = 0;
 /// + sender state and any future device-cleanup paths.
 const APP_TASK_STACK: usize = 4096;
 
-/// `uac_reader` task stack. 4 KB covers the 4 KB read buffer (on the
-/// stack), `Instant`, the format machinery for the 1 Hz log line.
-/// PSRAM-backed when needed via the IDF pthread shim's default
-/// allocation, but the inner loop runs entirely in internal DRAM.
-const READER_TASK_STACK: usize = 4096;
+/// `uac_reader` task stack. 8 KB: 4 KB for the `READER_BUFFER_BYTES`
+/// stack array, the rest for the function's frame, `Instant`, the
+/// format machinery for the 1 Hz log line, and the IDF
+/// `uac_host_device_read` call's own stack usage (Gemini PR #98
+/// caught the original 4 KB sizing as identical to the buffer →
+/// guaranteed stack overflow as soon as the first frame ran).
+const READER_TASK_STACK: usize = 8192;
 
 /// Read buffer size per `uac_host_device_read` call. 4 KB = 1024
 /// stereo i16 samples = ~21 ms at 48 kHz stereo — short enough that
@@ -289,12 +291,29 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
         ));
     }
 
+    // Reader spawn failure rollback: device_open + device_start
+    // succeeded, so the handle owns USB resources; bail without
+    // releasing them would mean the IDF driver thinks the device is
+    // streaming forever (next RxConnected would race against a stuck
+    // alt-setting). Stop + close before bubbling the error.
     let handle_wrapped = DeviceHandle(handle);
-    std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .stack_size(READER_TASK_STACK)
         .name("uac_reader".into())
         .spawn(move || reader_thread(handle_wrapped))
-        .map_err(|e| anyhow!("uac_reader spawn failed: {e}"))?;
+    {
+        let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
+        let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
+        if stop_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_stop after reader spawn failure also failed err={stop_err:#x}");
+        }
+        if close_err != sys::ESP_OK as sys::esp_err_t {
+            log::error!("uac: device_close after reader spawn failure also failed err={close_err:#x}");
+        } else {
+            log::info!("uac: rolled back device_open + device_start after reader spawn failure");
+        }
+        return Err(anyhow!("uac_reader spawn failed: {e}"));
+    }
     log::info!("uac: reader thread spawned");
     Ok(())
 }
@@ -356,7 +375,22 @@ fn reader_thread(handle: DeviceHandle) {
             last_bytes = bytes;
         }
     }
-    log::error!("uac: reader_thread exiting — handle leaked (cleanup in #35)");
+    // Cleanup before exit so the IDF driver state matches reality —
+    // without this a re-enumeration (next IC-705 plug) finds the
+    // device already "started" in the driver's bookkeeping and
+    // `device_start` returns INVALID_STATE on the second attempt
+    // (Gemini PR #98 review). Best-effort: if stop or close fails we
+    // can't do much beyond log.
+    let stop_err = unsafe { sys::uac::uac_host_device_stop(handle.0) };
+    if stop_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: device_stop on reader exit failed err={stop_err:#x}");
+    }
+    let close_err = unsafe { sys::uac::uac_host_device_close(handle.0) };
+    if close_err != sys::ESP_OK as sys::esp_err_t {
+        log::error!("uac: device_close on reader exit failed err={close_err:#x}");
+    } else {
+        log::info!("uac: reader_thread cleanup complete (device stopped + closed)");
+    }
 }
 
 /// App task body. Consumes driver events from the channel; on first
