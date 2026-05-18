@@ -21,7 +21,13 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
   (host は `f32`、embedded cs 格納は `Q14i16`)。
 - [`core::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
   (host は `f32`、組込 BP は **`Q11i16` + i32 wide accumulator**、
-  0.6.2 以降。0.5.x までは `Q3i8` だった)。
+  0.6.2 以降。0.5.x までは `Q3i8` だった)。拡張の動機は host
+  fixed-point + rustfft sweep の結果: `qso3_busy.wav` に対し f32 は
+  16/18 取れたが `Q3i8` の ~0.875 LLR 量子化ステップが Xtensa 上の
+  recall 天井を決め 9/18 まで落ちた — DSP 側ではなく LLR 解像度が
+  ボトルネックだった。`Q11i16` (~1/2048 LSB、BP scratch ~6 KB →
+  ~12 KB、S3 / Core2 内蔵 DRAM 予算内) で host とのギャップの大半
+  を回復。`Q3i8` 型は比較経路用に `core::scalar` に残置。
 - [`core::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
   0.6.3 (cleanup β.5) 以降は `num_complex::Complex<S>` の type
   alias、組込整数パスと host f32 パスで同じ複素演算実装を共有。
@@ -53,10 +59,10 @@ piece が共通なので次の候補) を追加するのは FT4 専用シンボ�
 
 | Target | MCU | Backend | Status |
 |---|---|---|---|
-| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp ASM + LX7 PIE SIMD (`esp-dsp` build 時自動) | **本番コントローラ** — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。 |
-| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **診断 / セカンドボード verifier** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証。外部 I/O (mic、speaker、BLE) は保留 — HW spec 未定。 |
+| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp ASM + LX7 PIE SIMD (`esp-dsp` build 時自動) | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く USB-OTG host が成立しないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
+| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 (0.6.3) で retired、wav_sim 経路はこの app crate に統合済み。) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **タイミング回帰 bench** — `embedded-poc/m5stack-s3/`、缶詰 WAV 入力に対し `decode_block` を走らせ per-stage timing sweep。エンドユーザ向けではない。 |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (P1 の BUS_OUT_EN が VBUS boost 駆動) | esp-dsp ASM + PIE SIMD | **計画** — `embedded-poc/m5stack-cores3-app/` (未作成)。M5StickS3 に無い VBUS 源回路を持つので、IC-705 への USB-Host audio class はここで実装。HW 未調達。`docs/ROADMAP.md` Phase B-Core 参照。 |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (P1 の BUS_OUT_EN が VBUS boost 駆動) | esp-dsp ASM + PIE SIMD | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/` (未作成)。M5StickS3 に無い VBUS 源回路を持つので、IC-705 への USB-Host audio class はここで実装する。HW bring-up 進行中、ファーム出荷日未定。`docs/ROADMAP.md` Phase B-Core 参照。 |
 
 ### その他のターゲット — 検証済 vs 願望
 
@@ -66,7 +72,7 @@ piece が共通なので次の候補) を追加するのは FT4 専用シンボ�
 | Target | `cargo build` clean | FFT shim 提供 | HW テスト済 |
 |---|---|---|---|
 | `xtensa-esp32-espidf` | ✅ | ✅ esp-dsp (Core2) | ✅ qso1/2/3 sweep |
-| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + 計画中 CoreS3-app) | ✅ qso1/2/3 sweep |
+| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + CoreS3-app bring-up 中、Phase B-Core) | ✅ qso1/2/3 sweep |
 | `thumbv8m.main-none-eabihf` (RP2350 Cortex-M33) | ✅ | ❌ 候補: pico-sdk-rs 経由 CMSIS-DSP | ❌ |
 | `riscv32imac-unknown-none-elf` (RP2350 Hazard3) | ✅ | ❌ DSP ライブラリ無し、FFT は `microfft` | ❌ |
 | `thumbv7em-none-eabihf` (Cortex-M4F / M7) | 未試行 | ❌ 候補: CMSIS-DSP `arm_*_q15` | ❌ |
@@ -121,7 +127,7 @@ Feature リファレンス:
 | `alloc` | `extern crate alloc` + Vec / Box。 | 全 decode パス。 |
 | `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn (i16 用 `_planner16` も) 経由の FFT バックエンド。 | 任意の組込ターゲット。 |
 | `fft-rustfft` | rustfft を FFT バックエンドに。 | Host 専用。 |
-| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。 | 任意の組込ターゲット — host f32 パスと recall 等価、PSRAM 帯域半減、~6 KB BP scratch。 |
+| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で `Q11i16` に拡張。`Q3i8` 型は比較経路用に `core::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
 | `nstep-half` | spectrogram カラムレートを NSTEP = NSPS/2 (WSJT-X 忠実な NSPS/4 でなく)。 | `fixed-point` で自動有効。host ビルドで組込パスを明示的に simulate する以外では独立に enable しない。 |
 | `parallel` | Rayon 並列 candidate 処理。 | Host 専用。組込では常に off (`std::thread` 無し)。 |
 | `profile-coarse` | coarse_sync sub-stage timing を常時 stderr 出力。 | 診断専用。 |
@@ -249,7 +255,7 @@ int16_t *basis = heap_caps_malloc(BASIS_SCRATCH_LEN * sizeof(int16_t),
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`、0.6.4 以降飽和 | `ft8::decode_block::spectrogram::Spectrogram` |
 | DFT basis (BASIS パス) | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `ft8::decode_block::fill_symbol_spectra` |
 | Symbol cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (`fixed-point`) | f32 無制限、Q14 ±2 | `core::scalar::Cmplx` (`num_complex::Complex` の type alias) |
-| LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) | `core::scalar::LlrScalar` |
+| LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `core::scalar` に比較経路用として残置) | `core::scalar::LlrScalar` |
 | BP messages | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## C / C++ / 非 Rust ESP-IDF プロジェクトからの利用 (`mfsk-ffi-ft8`)
@@ -264,8 +270,10 @@ ESP-IDF (or RP2040 / Cortex-M) プロジェクトから組込 FT8 デコーダ
 2 種類の libc レイヤを混ぜる toolchain weirdness 無く C から
 ドロップイン link 可能。
 
-**ESP32 Core2 上で end-to-end 検証済** (現在は引退した
-`m5stack-core2` bench): 別経路の `ffi_smoke_one` が
+**ESP32 Core2 上で end-to-end 検証済** (本来は開発専用の独立
+コンピュート bench `embedded-poc/m5stack-core2/` で実施 — この
+bench は #61 Phase 3 (0.6.3) で retired、wav_sim 経路は production-
+app 形態の `embedded-poc/m5stack-core2-app/` に統合された): 別経路の `ffi_smoke_one` が
 `mfsk_ft8_decode_i16` (C ABI) を direct-Rust `decode_one` パスと
 同じ baked WAV に対し呼んで同一 recall — qso1 (3 / 3)、qso2
 (5 / 5)、**qso3 busy band (7 / 7)**。caller-managed BASIS scratch
@@ -587,10 +595,14 @@ PCM、各 ≈ 360 KB)、`rx-wavsim` ストリーミング bench がリアルタ�
 `cmp` で 2026-05-04 bit 一致確認)。`qso1` / `qso2` はオンエア
 オリジナル録音 — 幅としては有用だが正式リファレンスではない。
 
-下の S3 LX7 数値は
-`embedded-poc/m5stack-s3/logs/s3_063_q11i16_v2_2026-05-09.log`
-(0.6.3 Q11i16 ship)。0.6.4 Goertzel は同じ wall-clock を保ちつつ
-同じ decode で +0.16..+0.63 dB SNR を追加。
+下の S3 LX7 数値は 0.6.3 Q11i16 ship sweep の計測値
+(`embedded-poc/m5stack-s3/logs/` に 2026-05-09 開発実行として archive
+されていたが raw log file は repo に保存されておらず、0.6.2 → 0.6.3
+の Q3i8 → Q11i16 移行 phase log
+`logs/s3_phaseA..C_q3i8_2026-05-04.log` 等のみ残置)。0.6.4 Goertzel
+は同じ wall-clock を保ちつつ同じ decode で +0.16..+0.63 dB SNR を
+追加。0.6.5 firmware での再測定が、0.6.3 OSD tightening が embedded
+側数値を動かしていないかの確認には適切。
 
 | WAV | S3 LX7 post-SlotEnd | decoded |
 |---|---:|---:|
@@ -750,8 +762,8 @@ baked WAV asset (1.08 MB) と同梱 esp-idf ランタイムを引くと、
 おおよそ **150–200 KB** 貢献。IRAM/DRAM 合計値には esp-idf が
 含まれており、ライブラリ本体は IRAM 要求なし、Phase 1.7.7 以降は
 **内部 DRAM scratch 要求も無し**。スロットあたり working set
-合計: ~120 KB cs Box × 1 + ~360 KB spectrogram (PSRAM) + ~6 KB
-BP scratch (Q11i16)。素の ESP32 (PSRAM なし) では 320 KB SRAM で
+合計: ~120 KB cs Box × 1 + ~360 KB spectrogram (PSRAM) + ~12 KB
+BP scratch (Q11i16、0.6.2 以降。0.5.x の Q3i8 期は ~6 KB だった)。素の ESP32 (PSRAM なし) では 320 KB SRAM で
 spectrogram を回せない — 本番向け WAV 入力に対し組込パスは PSRAM
 必須。
 

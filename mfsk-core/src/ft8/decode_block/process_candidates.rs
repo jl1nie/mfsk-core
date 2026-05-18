@@ -958,20 +958,26 @@ where
     count
 }
 
-/// LLR / BP scalar for the hot loop. `Q3i8` under `fixed-point`
-/// (embedded integer pipeline; recall-equivalent to Q11i16 with half
-/// the BP scratch — Issue #15 Phase 1 validated 2026-05-03), `f32`
-/// otherwise (host / FPU targets). Both go through the same generic
-/// NMS implementation in `fec::ldpc::bp`.
+/// LLR / BP scalar for the hot loop. `Q11i16` (i16, ±16 range,
+/// 1/2048 resolution, ~12 KB BP scratch on FT8 LDPC(174,91)) under
+/// `fixed-point` (embedded integer pipeline); `f32` otherwise
+/// (host / FPU targets). Both go through the same generic NMS
+/// implementation in `fec::ldpc::bp`.
 ///
-/// **0.6.3**: switched embedded LlrT from `Q3i8` (i8, ±16 range, 1/8
-/// resolution) to `Q11i16` (i16, ±16 range, 1/2048 resolution). The
-/// Q3i8 quantization step (~0.875 LLR units between codes) was the
-/// dominant recall ceiling on Xtensa builds — host fixed-point +
-/// rustfft hit 16/18 with f32, 9/18 with Q3i8, on `qso3_busy.wav`.
-/// Q11i16's 1/2048 resolution recovers most of that gap (target
-/// embedded recall: 6/18 → ~10/18). Cost: BP scratch doubles from
-/// ~6 KB to ~12 KB, still inside S3 / Core2 internal-DRAM budget.
+/// LlrT history:
+/// - 0.5.x: `Q3i8` (i8, ±16, ~1/8 LSB resolution, ~6 KB BP scratch).
+///   Issue #15 Phase 1 host-only sweep (2026-05-03) initially read
+///   as recall-equivalent to `Q11i16`.
+/// - 0.6.2 / 0.6.3: switched to `Q11i16`. The wider real-silicon
+///   LX7 sweep showed the Q3i8 quantization step (~0.875 LLR units
+///   between codes) was the dominant recall ceiling on Xtensa
+///   builds — host fixed-point + rustfft hit 16/18 with f32 but
+///   only 9/18 with Q3i8 on `qso3_busy.wav`. `Q11i16`'s 1/2048
+///   resolution recovers most of that gap (target embedded recall:
+///   6/18 → ~10/18). Cost: BP scratch doubles from ~6 KB to ~12 KB,
+///   still inside the S3 / Core2 internal-DRAM budget.
+///
+/// `Q3i8` stays in `core::scalar` for the comparison path.
 #[cfg(feature = "fixed-point")]
 type LlrT = crate::core::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point"))]
@@ -1434,7 +1440,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
 
     // Step 1: fast llra. The LLR / BP scalar is selected at compile
-    // time via `fixed-point` (Q3i8) or default (f32) — see the
+    // time via `fixed-point` (Q11i16) or default (f32) — see the
     // `LlrT` definition above. Both go through the *same* generic
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =

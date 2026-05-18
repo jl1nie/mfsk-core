@@ -37,15 +37,21 @@ fft-rustfft  = ["std", "dep:rustfft"]
 fft-extern   = ["alloc"]
 
 # Embedded integer pipeline: u16 spectrogram + i16 internal DFT +
-# Q3i8 LLR + integer NMS BP. Off by default — host stays bit-identical
-# to the existing f32 path. Embedded targets turn this on for halved
-# PSRAM bandwidth and 6 KB BP scratch (vs the f32 default).
+# Q11i16 LLR + integer NMS BP. Off by default — host stays
+# bit-identical to the existing f32 path. Embedded targets turn this
+# on for halved PSRAM bandwidth and ~12 KB BP scratch (vs the f32
+# default).
 #
-# Phase 1 validation (2026-05-03): Q3i8 is recall-equivalent to the
-# previously-shipped Q11i16 LLR variant (host + LX6 implementation
-# sweep). The Q11i16 scalar type still exists in `core::scalar` for
-# manual use / comparison, but no built-in feature wires it into the
-# decode hot loop anymore.
+# LLR-format history: 0.5.x used Q3i8 (i8, ±16, ~1/8 LSB, ~6 KB BP
+# scratch). A brief 2026-05-04 cleanup read host sweeps as Q3i8 ≈
+# Q11i16 equivalent, but the wider LX7 sweep in 0.6.3
+# (`mfsk-core/src/ft8/decode_block/process_candidates.rs` doc comment)
+# showed Q3i8's quantization step was the recall ceiling on Xtensa:
+# host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32
+# but only 9/18 with Q3i8. The active hot-loop type has been Q11i16
+# (i16, ±16, ~1/2048 LSB, ~12 KB BP scratch) since the LlrScalar
+# trait unification in `a6425ee` (2026-05-02, shipped 0.6.2). Q3i8
+# stays in `core::scalar` for the comparison path.
 #
 # **`fixed-point` implies `nstep-half`** (Phase 1.7.7b, 2026-05-17).
 # The two were independent features for historical reasons but are

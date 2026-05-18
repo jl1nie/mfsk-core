@@ -37,9 +37,14 @@ Five development / diagnostic modes round out the set:
 - **TxTest** — synthesises a 1500 Hz FT8 tone on I2S TX for verifying
   the speaker / audio cable path without needing a real signal.
 - **Uac** — USB-Host audio class. **Cannot run on M5StickS3 hardware**
-  (board lacks VBUS source + ID pin); see `docs/EMBEDDED.md` for the
-  CoreS3 successor path. The mode is present so the codebase boots
-  for shared verification work.
+  (board lacks VBUS source + ID pin). The successor path is
+  M5Stack CoreS3, which has AXP2101 + AW9523B for proper USB-OTG
+  host mode — see `docs/EMBEDDED.md` *What we test* (CoreS3 row)
+  and `docs/ROADMAP.md` Phase B-Core (2026-05-17 pivot; hardware
+  bring-up in progress, no firmware ship date yet). The Uac mode
+  is present in `m5stack-s3-app` so the codebase boots for shared
+  verification work — on StickS3 it exits cleanly with a "USB-OTG
+  host not supported on this board" log line.
 
 ---
 

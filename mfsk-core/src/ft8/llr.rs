@@ -16,9 +16,13 @@ pub use crate::core::llr::LlrSet as GenericLlrSet;
 
 /// FT8 LLR bundle: four fixed-length (174-bit) variants. Generic over
 /// the [`LlrScalar`] storage; defaults to `f32` for backward
-/// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The `Q3i8` instantiation
-/// (`LlrSet<Q3i8>`) feeds the integer-only NMS BP under the
-/// `fixed-point` feature.
+/// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The `Q11i16`
+/// instantiation (`LlrSet<Q11i16>`) feeds the integer-only NMS BP
+/// under the `fixed-point` feature since 0.6.2 (the 0.5.x line used
+/// `LlrSet<Q3i8>`; `Q3i8` stays in `core::scalar` for the comparison
+/// path — see
+/// [`crate::ft8::decode_block::process_candidates`] LlrT docs for
+/// the rationale).
 pub struct LlrSet<T: LlrScalar = f32> {
     pub llra: [T; LDPC_N],
     pub llrb: [T; LDPC_N],
@@ -44,9 +48,9 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 }
 
 /// Compute soft LLRs from complex symbol spectra. Generic over the
-/// LLR scalar `T` (`f32` host path, `Q3i8` under `fixed-point`).
-/// cs storage stays `Complex<f32>`-typed for source compat; the
-/// internal `compute_llr_generic` consumes a layout-cast
+/// LLR scalar `T` (`f32` host path, `Q11i16` under `fixed-point`
+/// since 0.6.2). cs storage stays `Complex<f32>`-typed for source
+/// compat; the internal `compute_llr_generic` consumes a layout-cast
 /// `&[Cmplx<f32>]` view via `flatten_cs`.
 pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);

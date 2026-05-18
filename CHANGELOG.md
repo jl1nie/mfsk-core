@@ -1076,9 +1076,15 @@ set are unaffected):
 
 - Retired: `relaxed-recall` (now a runtime parameter — see
   `q_thresh` above), `fixed-point-llr` and `llr-i8` (folded into
-  `fixed-point`; the integer pipeline now always uses `Q3i8` LLR,
-  which Phase 1 of issue #15 confirmed is recall-equivalent to
-  `Q11i16` with half the BP scratch), `fixed-point-coarse-i32`
+  `fixed-point`; the integer pipeline used `Q3i8` LLR at this point,
+  which Phase 1 of issue #15 confirmed was host-recall-equivalent to
+  `Q11i16` with half the BP scratch — **superseded in 0.6.2 / 0.6.3**:
+  the wider real-silicon LX7 sweep showed Q3i8's quantization step
+  was actually the recall ceiling on Xtensa (host f32 16/18 vs
+  Q3i8 9/18 on `qso3_busy.wav`), and the active scalar moved back
+  to `Q11i16`; see 0.6.2 entry below and
+  `mfsk-core/src/ft8/decode_block/process_candidates.rs` LlrT docs),
+  `fixed-point-coarse-i32`
   (only useful on FPU-less targets we don't currently ship for —
   hurts on LX6/LX7), `fixed-point-bp` (alias for `fixed-point-llr`),
   `fixed-point-cs` (placeholder, never wired up), `osd-deep` and
@@ -1092,7 +1098,11 @@ set are unaffected):
   `full`.
 
 The `Q11i16` scalar type itself stays in `core::scalar` for manual /
-test use — only the built-in feature wiring is gone.
+test use — only the built-in feature wiring is gone. (Note: the
+Q11i16 wiring was restored in 0.6.2 once the real-silicon sweep
+contradicted the host-only Phase 1 reading. `Q3i8` is the type that
+now lives "only in `core::scalar` for manual / test use" — the two
+swapped roles. See the rewritten note above.)
 
 ### Embedded (`embedded-poc/`)
 

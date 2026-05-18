@@ -188,7 +188,7 @@ and per-mode performance characterisation.
 | `parallel`    | ✓       | Rayon-parallel candidate processing          |
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
-| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP |
+| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP (see *Status* below for the Q3i8 → Q11i16 step taken in 0.6.3 for recall) |
 | `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (host has `MFSK_PROFILE_COARSE` env var alternative) |
 
 ## Quick example
@@ -330,8 +330,11 @@ reference:
 
 ## Status
 
-`0.6.x` — API is deliberately not frozen. Breaking changes follow
-cargo-style minor bumps (`0.5 → 0.6`). The 0.5.x line landed the
+**Current line: `0.6.x`** (latest tag `v0.6.5`, 2026-05-18) — API
+is deliberately not frozen. Breaking changes follow cargo-style minor
+bumps (`0.5 → 0.6`). See `CHANGELOG.md` for the per-release breakdown;
+the line history below explains what each series brought in. The
+0.5.x line landed the
 embedded baseline (`no_std + alloc`, pluggable FFT backend,
 caller-buffer TX APIs) and the first end-to-end real-audio embedded
 port. The **0.6.x line consolidates the FT8 sync + per-candidate
@@ -351,10 +354,25 @@ breakdown.
 Latest M5StickS3 (Xtensa LX7) ship config decodes **6 / 18 JTDX-golden
 FT8 callsigns + 1 bonus = 7 total** on the WSJT-X-distributed busy-band
 reference (`samples/FT8/210703_133430.wav`) in **~1.19 s post-SlotEnd**
-via the streaming pipeline (FFT overlapped with capture). The 0.6.2
-LLR migration (`Q3i8 → Q11i16`, double-width but better precision under
-esp-dsp i16 spectrogram noise) added one entry (XE2X HA2NP RR73) over
-the 0.5.x baseline. M5Stack Core2 (LX6) on the same WAV ~2.8 s. See
+via the streaming pipeline (FFT overlapped with capture). (These
+embedded recall + wall-clock numbers were last formally measured
+during the 0.6.2 → 0.6.3 Q11i16 ship sweep — `wav_sim` re-run on
+0.6.5 firmware is the right way to confirm whether 0.6.3's host-side
+OSD CRC-luck phantom drop applies to the embedded path. 0.6.3
+CHANGELOG only re-verified the WSJT-X 8-entry golden at 7/8 on
+embedded.) The
+embedded LLR scalar settled on `Q11i16` after a two-step path:
+0.5.x's Phase 1 used `Q3i8` (i8, ±16, ~1/8 LSB) and a 2026-05-04
+host sweep initially read as Q3i8-equivalent. The wider real-silicon
+LX7 sweep done in 0.6.3 then showed Q3i8's ~0.875-LLR quantization
+step was the dominant recall ceiling on Xtensa — host fixed-point +
+rustfft hit 16/18 with f32 but only 9/18 with Q3i8 on this WAV. The
+`Q11i16` widening (i16, ±16, ~1/2048 LSB, BP scratch doubled from
+~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM budget)
+recovered most of that gap and added one entry (XE2X HA2NP RR73)
+on this WAV vs the 0.5.x baseline. `Q3i8` is preserved in
+`core::scalar` for the comparison path. M5Stack Core2 (LX6) on the
+same WAV ~2.8 s. See
 [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
 for the integration contract, runtime BP / `nstep-half` tuning knobs,
 and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
@@ -416,10 +434,10 @@ tree is present at the expected sibling path):
   [#24](https://github.com/jl1nie/mfsk-core/issues/24).
 - **FST4** — only the FST4-60A long-period variant is wired (sample
   duration / Costas layout for FST4-15 / FST4W are out of scope of
-  the 0.5.x line). Recall against `samples/FST4/210115_0058.wav` is
+  the 0.5.x line, still out of scope as of 0.6.x). Recall against `samples/FST4/210115_0058.wav` is
   not yet locked by a golden harness — tracked in
   [#23](https://github.com/jl1nie/mfsk-core/issues/23).
-- **MSK144** — not implemented in 0.5.x. The decode path needs a
+- **MSK144** — not implemented (out of scope of the 0.5.x line and still as of 0.6.x). The decode path needs a
   different correlator geometry from the rest of the FT/JT/Q-family
   decoders this crate is built around. Tracked in
   [#25](https://github.com/jl1nie/mfsk-core/issues/25).
@@ -431,12 +449,19 @@ tree is present at the expected sibling path):
   - **WSJT-X 8-entry golden: 7 / 8** (host `decode_frame_with_ap` and
     embedded `decode_block` both, post-0.6.0 sync consolidation +
     `i_start as i32` fix).
-  - **JTDX 18-entry golden: 16 / 18** (`decode_block`).
-  - **Host AP-on multipass JTDX-extras: 5 / 6** (was 1 / 6 pre-0.6.2)
+  - **JTDX 18-entry golden: 13 / 18** (`decode_block`). Peaked at
+    16/18 in 0.6.2; 0.6.3's WSJT-X-faithful OSD `npre1`/`npre2`
+    precoding + `OSD_HARDERRORS_MAX = 22` ceiling identified 3 of
+    those as CRC-luck phantoms and dropped them. The 13/18 is true
+    positives only.
+  - **Host AP-on multipass JTDX-extras: 4 / 6** (was 1 / 6 pre-0.6.2,
+    5 / 6 in 0.6.2, 4 / 6 in 0.6.3 after the same phantom drop)
     via `decode_frame_subtract_with_ap` after the cs-source +
     `subtract_signal_lpf` unification.
   - **Embedded S3 fixed-point: 6 / 18 + 1 bonus = 7 total** in
-    ~1.19 s post-SlotEnd. AP-hint biasing exposed on the narrow-band
+    ~1.19 s post-SlotEnd (last formally measured during the 0.6.2 →
+    0.6.3 Q11i16 ship sweep — see *Status* above for re-measurement
+    status). AP-hint biasing exposed on the narrow-band
     (`decode_sniper_ap`), wide-band single-pass (`decode_frame_with_ap`),
     multipass (`decode_frame_subtract_with_ap`) and embedded
     (`decode_block_with_ap`, new in 0.6.1) paths.

@@ -1,28 +1,68 @@
-# Roadmap (post-0.6.4)
+# Roadmap (post-0.6.5)
 
-## Current line (0.6.x) — shipped through 0.6.4 (2026-05-18)
+## Current line (0.6.x) — shipped through 0.6.5 (2026-05-18)
 
 The 0.6 line shipped in four cuts: a bundled `v0.6.0` + `v0.6.1` + `v0.6.2`
 via PR #50 (2026-05-10), then `v0.6.3` (2026-05-17, PR #89 — WSJT-X-faithful
 OSD precoding + the ε `decode_block` split), then `v0.6.4` (2026-05-18,
-PR #104 — Phase 1.7.7-Stick Goertzel migration). The cleanup-2026-05
+PR #104 — Phase 1.7.7-Stick Goertzel migration), and finally `v0.6.5`
+(2026-05-18, PR #108 — crates.io surface refresh; no behaviour change).
+The cleanup-2026-05
 γ/β/δ/ε plan landed end-to-end across these cuts; see
 `docs/CLEANUP_2026_05.md` (historical) for the original prescription.
 Headline numbers (all on `qso3_busy.wav`):
 
-- Host AP-off recall: **7/8** WSJT-X golden, **16/18** JTDX golden
-  (`decode_block` path).
-- Host AP-on multipass: **18 decodes total / 5 of 6 JTDX-extras**
-  (was 1/6 pre-0.6.2 because `decode_frame_subtract_with_ap` had been
-  using `subtract_signal_weighted` instead of the WSJT-X-faithful
-  `subtract_signal_lpf`).
+- Host AP-off recall: **7/8** WSJT-X golden, **13/18** JTDX golden
+  (`decode_block` path). The JTDX number peaked at 16/18 in 0.6.2
+  but 0.6.3's WSJT-X-faithful OSD `npre1`/`npre2` precoding +
+  `OSD_HARDERRORS_MAX = 22` ceiling identified 3 of those as
+  CRC-luck phantoms and dropped them — the 13/18 is true positives
+  only. See 0.6.3 CHANGELOG entry for the
+  faithfulness-vs-recall trade-off rationale.
+- Host AP-on multipass: **17 decodes total / 4 of 6 JTDX-extras**
+  on the `decode_frame_subtract_with_ap` path (also lost one
+  CRC-luck phantom in 0.6.3 — 5/6 → 4/6). The path had been
+  stuck at 1/6 pre-0.6.2 because it used `subtract_signal_weighted`
+  instead of the WSJT-X-faithful `subtract_signal_lpf`; 0.6.2
+  unified onto the LPF path → 5/6, then 0.6.3 trimmed the
+  CRC-luck phantom to 4/6 true positives.
 - Embedded S3 (M5StickS3, fixed-point + `esp-dsp` + Goertzel):
   **6/18 + 1 bonus = 7 total** in **~1.19 s** post-SlotEnd, with
   **+0.16..+0.63 dB SNR improvement** over the BASIS-era 0.5.x
-  baseline (Phase 1.7.7-Stick Goertzel migration).
+  baseline (Phase 1.7.7-Stick Goertzel migration). The 6/18+1=7
+  embedded decode count was last formally measured in the 0.6.2 →
+  0.6.3 Q11i16 ship sweep; 0.6.3's host-side OSD tightening was
+  not re-measured on embedded (no embedded log captured post-0.6.3
+  in `embedded-poc/m5stack-s3/logs/`). Treat as the last-confirmed
+  number, not a re-measured 0.6.5 figure — `wav_sim` re-run is
+  needed to confirm whether the host phantom drop applies to the
+  embedded path as well. The `~1.19 s` post-SlotEnd is similarly
+  the 0.6.3 measurement (CHANGELOG 0.6.3 "Verified on M5StickS3
+  S3 LX7, 7/8 golden" only confirms the WSJT-X 8-set, not the
+  JTDX 18-set or the wall-clock).
 - Embedded internal-DRAM use: BASIS scratch dropped (120 KB freed
   on dual-core), unblocking M5StickS3 Qso-mode bidirectional I2S
   DMA allocation.
+
+### What landed in 0.6.5 (2026-05-18)
+
+Non-functional crates.io / docs.rs surface refresh — no source code
+modifications, no new features, no bug fixes vs 0.6.4. The embedded
+port is no longer aspirational, and the discoverable surface had to
+catch up:
+
+- **`mfsk-core/Cargo.toml` `description`** rewritten to lead with
+  the working `embedded-poc/m5stack-s3-app` M5StickS3 FT8 controller
+  (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM, ~1.2 s
+  post-SlotEnd decode on Xtensa LX7).
+- **`mfsk-ffi-ft8/Cargo.toml` `description`** notes M5StickS3
+  end-to-end verification.
+- **`mfsk-core/src/lib.rs` "Why this exists"** gains a fourth
+  bullet for the handheld-controller use case, with cross-links to
+  the M5StickS3 source crate and `docs/MANUAL_M5STICKS3.md`.
+- **`README.md`** opens with a hero photo of the device decoding
+  five real on-air FT8 callsigns from a single 15 s slot
+  (`docs/assets/m5sticks3-ft8-decode.jpg`).
 
 ### What landed in 0.6.4 (2026-05-18)
 
