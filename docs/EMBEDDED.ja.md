@@ -21,7 +21,7 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
   (host は `f32`、embedded cs 格納は `Q14i16`)。
 - [`core::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
   (host は `f32`、組込 BP は **`Q11i16` + i32 wide accumulator**、
-  0.6.2 以降。0.5.x までは `Q3i8` だった)。拡張の動機は host
+  0.6.2 以降。0.5.x までは `Q3i8` だった。拡張の動機は host
   fixed-point + rustfft sweep (pre-0.6.3 計測 — 0.6.3 の OSD
   tightening で f32 host recall は 16/18 → 13/18 に CRC-luck
   phantom 3 件分下がる前) の結果: `qso3_busy.wav` に対し f32 は
@@ -33,7 +33,7 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
   ただし実機 embedded の上乗せは 1 件のみ (6/18 → 7 total) —
   残る host gap は LLR scalar ではなく組込パイプラインの他要素
   (NSTEP-half、coarse-sync 簡略化、`fine_refine_pass1` 無し) が
-  律速。`Q3i8` 型は比較経路用に `core::scalar` に残置。
+  律速。`Q3i8` 型は比較経路用に `core::scalar` に残置)。
 - [`core::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
   0.6.3 (cleanup β.5) 以降は `num_complex::Complex<S>` の type
   alias、組込整数パスと host f32 パスで同じ複素演算実装を共有。
