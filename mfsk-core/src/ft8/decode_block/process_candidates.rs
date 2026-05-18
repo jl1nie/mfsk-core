@@ -976,11 +976,14 @@ where
 ///   number later dropped to 13/18 in 0.6.3 when OSD tightening
 ///   removed 3 CRC-luck phantoms; the Q3i8-vs-f32 gap that
 ///   motivated the widening was measured before that). `Q11i16`'s
-///   1/2048 resolution recovers most of the gap on real silicon:
-///   embedded recall went 6/18 → 6/18 + 1 bonus = 7 total (not
-///   the ~10/18 that the host sweep had projected — the embedded
-///   pipeline lost some of the win to its own NSTEP-half /
-///   coarse-sync simplifications). Cost: BP scratch doubles from
+///   1/2048 resolution closes the LLR-resolution gap fully on
+///   host (host fixed-point reaches f32-equivalent recall), but
+///   on real silicon the embedded gain is only 1 entry — embedded
+///   recall went 6/18 → 6/18 + 1 bonus = 7 total (XE2X HA2NP RR73),
+///   not the ~10/18 the host sweep had projected. The remaining
+///   headroom is blocked by other parts of the embedded pipeline
+///   (NSTEP-half, coarse-sync simplifications, no `fine_refine_pass1`),
+///   not by the LLR scalar itself. Cost: BP scratch doubles from
 ///   ~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM
 ///   budget.
 ///

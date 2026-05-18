@@ -369,8 +369,13 @@ step was the dominant recall ceiling on Xtensa — host fixed-point +
 rustfft hit 16/18 with f32 but only 9/18 with Q3i8 on this WAV. The
 `Q11i16` widening (i16, ±16, ~1/2048 LSB, BP scratch doubled from
 ~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM budget)
-recovered most of that gap and added one entry (XE2X HA2NP RR73)
-on this WAV vs the 0.5.x baseline. `Q3i8` is preserved in
+removed the LLR-resolution bottleneck. The recovery is asymmetric:
+on host `Q11i16` reaches f32-equivalent recall (16/18 ≈ 16/18, full
+gap close); on real-silicon embedded the gain is one entry
+(6/18 → 6/18 + 1 bonus = 7 total, XE2X HA2NP RR73), with the
+remaining headroom blocked by other parts of the embedded pipeline
+(NSTEP-half, coarse-sync simplifications, no `fine_refine_pass1`).
+`Q3i8` is preserved in
 `core::scalar` for the comparison path. M5Stack Core2 (LX6) on the
 same WAV ~2.8 s. See
 [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)

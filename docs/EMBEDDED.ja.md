@@ -28,8 +28,12 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
   16/18 取れたが `Q3i8` の ~0.875 LLR 量子化ステップが Xtensa 上の
   recall 天井を決め 9/18 まで落ちた — DSP 側ではなく LLR 解像度が
   ボトルネックだった。`Q11i16` (~1/2048 LSB、BP scratch ~6 KB →
-  ~12 KB、S3 / Core2 内蔵 DRAM 予算内) で host とのギャップの大半
-  を回復。`Q3i8` 型は比較経路用に `core::scalar` に残置。
+  ~12 KB、S3 / Core2 内蔵 DRAM 予算内) で解像度律速を解消、host
+  fixed-point recall は f32 同等まで到達 (完全に gap close)。
+  ただし実機 embedded の上乗せは 1 件のみ (6/18 → 7 total) —
+  残る host gap は LLR scalar ではなく組込パイプラインの他要素
+  (NSTEP-half、coarse-sync 簡略化、`fine_refine_pass1` 無し) が
+  律速。`Q3i8` 型は比較経路用に `core::scalar` に残置。
 - [`core::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
   0.6.3 (cleanup β.5) 以降は `num_complex::Complex<S>` の type
   alias、組込整数パスと host f32 パスで同じ複素演算実装を共有。

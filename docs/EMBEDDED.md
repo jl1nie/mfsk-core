@@ -29,9 +29,14 @@ embedded-friendly integer path **with no duplicated code**:
   it from 16/18 → 13/18):
   rustfft + f32 hit 16/18 while `Q3i8`'s ~0.875-LLR quantization
   step dropped that to 9/18, so the recall ceiling on Xtensa was
-  the LLR resolution, not anything DSP-side. `Q11i16` recovers most
-  of the host gap (BP scratch doubles from ~6 KB to ~12 KB, still
-  inside the S3 / Core2 internal-DRAM budget). `Q3i8` stays in
+  the LLR resolution, not anything DSP-side. `Q11i16` removes the
+  resolution bottleneck and brings host fixed-point recall up to
+  f32-equivalent (full gap close); on real-silicon embedded the
+  gain is only 1 entry (6/18 → 7 total) — the rest of the host gap
+  is blocked by other parts of the embedded pipeline (NSTEP-half,
+  coarse-sync simplifications, no `fine_refine_pass1`), not by the
+  LLR scalar. BP scratch doubles from ~6 KB to ~12 KB, still inside
+  the S3 / Core2 internal-DRAM budget. `Q3i8` stays in
   `core::scalar` for the comparison path).
 - [`core::scalar::Cmplx<S>`] — generic complex over a `SpecScalar`.
   As of 0.6.3 (cleanup β.5) this is a type alias for
