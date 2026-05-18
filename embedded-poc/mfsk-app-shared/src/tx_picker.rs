@@ -22,21 +22,7 @@ pub const BIN_BASE_HZ: u16 = 200;
 pub const GUARD_HZ: u16 = 50;
 pub const HISTORY_SLOTS: usize = 10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Parity {
-    Even,
-    Odd,
-}
-
-impl Parity {
-    pub fn from_slot_index(slot: u32) -> Self {
-        if slot % 2 == 0 {
-            Parity::Even
-        } else {
-            Parity::Odd
-        }
-    }
-}
+pub use crate::parity::Parity;
 
 #[derive(Debug, Clone)]
 pub struct TxCandidate {

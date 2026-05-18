@@ -10,6 +10,7 @@ pub mod adif;
 pub mod boot_mode;
 pub mod flash_log;
 pub mod log_sink;
+pub mod parity;
 pub mod qso;
 pub mod snr_norm;
 pub mod time_sync;

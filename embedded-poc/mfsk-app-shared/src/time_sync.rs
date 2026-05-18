@@ -22,6 +22,8 @@
 use core::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
+use crate::parity::Parity;
+
 /// Maximum decodes-per-slot we'll keep for the median computation.
 /// qso3_busy peaks at ~7 on M5StickS3 / ship config, so 50 leaves
 /// >7× headroom for a more aggressive build.
@@ -161,4 +163,86 @@ pub fn slots_observed() -> u32 {
 /// and clears it atomically. Call at SlotEnd time.
 pub fn take_bootstrap_slot_shift_12k() -> i32 {
     BOOTSTRAP_SLOT_SHIFT_12K.swap(0, Ordering::AcqRel)
+}
+
+// ────────────────────────────────────────────────────────────────
+// Capture-slot index + parity (issue #110).
+//
+// Published by the audio source (capture_thread / wav_sim driver /
+// TxTest 15 s timer) at each slot boundary. Read by the TX scheduler
+// to decide whether to fire in this slot (parity match) and how much
+// time is left in the slot (TX must complete within 15 s).
+//
+// `wav_idx` is the audio-source canonical slot counter — same value
+// that ends up in `embedded_shared::pipeline::SpecBundle.wav_idx`
+// and `Slot.wav_idx`. Using one counter for both audio framing and
+// FSM gating guarantees the FSM's notion of "peer's slot" matches
+// the audio that actually fed the decode.
+//
+// Stored together behind a `Mutex` because Xtensa LX6 / LX7 don't
+// expose lock-free 64-bit atomics — and we need the (wav_idx,
+// start_us) pair to be torn-read-free anyway. Contention is trivial:
+// producer writes once per 15 s slot boundary, consumer reads once
+// per 100 ms scheduler poll.
+//
+// `None` = not yet published (cold boot). Readers return `None` so
+// the TX scheduler skips this iteration rather than firing on parity
+// bit 0 of an undefined counter.
+
+static CAPTURE_SLOT: Mutex<Option<(u32, i64)>> = Mutex::new(None);
+
+/// Audio source side. Call once per slot boundary, AT slot START
+/// (i.e. when capture of the new slot's audio begins). `wav_idx` is
+/// the slot identifier that will travel with this slot's audio
+/// through stage1_inc → SpecBundle/Slot → decode. `now_mono_us` is
+/// `esp_timer_get_time()` (or equivalent monotonic μs).
+pub fn publish_capture_slot(wav_idx: u32, now_mono_us: i64) {
+    if let Ok(mut g) = CAPTURE_SLOT.lock() {
+        *g = Some((wav_idx, now_mono_us));
+    }
+}
+
+/// Current capture slot's `wav_idx`, or `None` before the audio
+/// source has published any boundary.
+pub fn current_capture_wav_idx() -> Option<u32> {
+    CAPTURE_SLOT.lock().ok().and_then(|g| g.map(|(w, _)| w))
+}
+
+/// Parity of the current capture slot. `None` before first publish.
+pub fn current_capture_parity() -> Option<Parity> {
+    current_capture_wav_idx().map(Parity::from_slot_index)
+}
+
+/// Microseconds elapsed since the current capture slot started.
+/// Clamped to `>= 0` in case the monotonic clock somehow regresses
+/// (it doesn't on esp-idf, but defensive). `None` before first publish.
+pub fn time_into_capture_slot_us(now_mono_us: i64) -> Option<i64> {
+    CAPTURE_SLOT
+        .lock()
+        .ok()
+        .and_then(|g| g.map(|(_, start)| (now_mono_us - start).max(0)))
+}
+
+/// Atomic combined read of `(wav_idx, time_into_slot_us)`. Callers
+/// that need *both* values to refer to the same slot (e.g. the TX
+/// scheduler's parity + launch-deadline check) must use this instead
+/// of pairing `current_capture_wav_idx()` with
+/// `time_into_capture_slot_us()` — the two-call form holds the
+/// mutex twice and races with `publish_capture_slot()` if a slot
+/// boundary crosses between them, yielding `(slot N, time_into_N+1)`.
+/// `None` before the audio source has published any boundary.
+pub fn current_capture_info(now_mono_us: i64) -> Option<(u32, i64)> {
+    CAPTURE_SLOT
+        .lock()
+        .ok()
+        .and_then(|g| g.map(|(w, start)| (w, (now_mono_us - start).max(0))))
+}
+
+/// Test-only reset. The statics persist for the whole process so
+/// each test case starts uninitialised.
+#[cfg(test)]
+pub fn reset_capture_slot_for_test() {
+    if let Ok(mut g) = CAPTURE_SLOT.lock() {
+        *g = None;
+    }
 }

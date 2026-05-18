@@ -472,9 +472,25 @@ where
                     // Feed the FSM. SNR set first so an in-band reply
                     // ("JL1NIE W1AW FN31") gets reported with the
                     // correct rx_snr → tx_report.
+                    //
+                    // `rx_slot = wav_idx` decouples peer-parity locking
+                    // from "current slot when decode finished" — even
+                    // if BP spilled into the next slot, the FSM still
+                    // attributes the message to the slot whose audio
+                    // it came from (issue #110).
+                    //
+                    // `parity_lock_ok` gates the lock on bootstrap
+                    // convergence: when DT is still wandering, our
+                    // wav_idx parity may not match the band yet, and
+                    // locking would freeze us to the wrong parity for
+                    // the whole QSO.
+                    let parity_lock_ok =
+                        mfsk_app_shared::parity::framing_settled_for_parity_lock();
                     if let Ok(mut q) = qso.lock() {
                         q.set_rx_snr(snr_i8);
-                        if q.process_message(&text).is_some() {
+                        if q.process_message(&text, wav_idx as u32, parity_lock_ok)
+                            .is_some()
+                        {
                             had_response_this_slot = true;
                         }
                     }
@@ -507,8 +523,6 @@ where
     }
 }
 
-/// Format the FSM's current intent and push it to the UI thread. Also
-/// echoed to the log so headless captures still record QSO state.
 fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
     let line = qso::format_tx_line(qso, intent);
     log::info!("[QSO] {}", line.as_str());

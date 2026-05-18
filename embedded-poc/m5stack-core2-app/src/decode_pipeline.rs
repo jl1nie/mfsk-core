@@ -161,7 +161,16 @@ pub fn run() -> ! {
                         r.freq_hz, calibrated_snr, r.snr_db, text
                     );
                     qso.set_rx_snr(snr_i8);
-                    if qso.process_message(&text).is_some() {
+                    // See `m5stack-s3-app/src/decode_pipeline.rs` for
+                    // the rx_slot / parity_lock_ok rationale (issue #110).
+                    // Core2's wav_sim path uses the same wav_idx counter,
+                    // so the gate is identical.
+                    let parity_lock_ok =
+                        mfsk_app_shared::parity::framing_settled_for_parity_lock();
+                    if qso
+                        .process_message(&text, wav_idx as u32, parity_lock_ok)
+                        .is_some()
+                    {
                         had_response_this_slot = true;
                     }
                 }

@@ -15,6 +15,8 @@
 use core::fmt::Write as _;
 use heapless::String;
 
+use crate::parity::Parity;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QsoState {
     Idle,
@@ -69,6 +71,17 @@ pub struct QsoManager {
     /// — only the Idle → Calling auto-transition is gated.
     /// Toggled from the menu UI; persisted in NVS as `"auto_cq"`.
     pub auto_cq_enabled: bool,
+    /// Confirmed peer TX-slot parity. Locked on the first
+    /// state-advancing decode for which the caller passes
+    /// `parity_lock_ok = true` (= bootstrap_slot_shift has converged
+    /// — see issue #110). Cleared by `reset()`; preserved across
+    /// retries within the same QSO.
+    pub peer_parity: Option<Parity>,
+    /// Self TX parity. Locked on the first own TX completion
+    /// (`record_self_tx`). Used as a fallback when `peer_parity` is
+    /// still unknown so that successive own-CQ retries don't drift
+    /// between even/odd slots.
+    pub self_tx_parity: Option<Parity>,
 }
 
 impl QsoManager {
@@ -89,6 +102,8 @@ impl QsoManager {
             retry_count: 0,
             cq_suffix: String::new(),
             auto_cq_enabled: false,
+            peer_parity: None,
+            self_tx_parity: None,
         }
     }
 
@@ -109,6 +124,87 @@ impl QsoManager {
         self.tx_report.clear();
         self.rx_report.clear();
         self.retry_count = 0;
+        // Parity locks are per-QSO; the next QSO may be with a peer
+        // on the opposite slot.
+        self.peer_parity = None;
+        self.self_tx_parity = None;
+    }
+
+    /// Preferred TX slot parity for the next own transmission.
+    ///
+    /// Precedence:
+    ///   1. `opposite(peer_parity)` — primary case, set as soon as
+    ///      we've cleanly decoded a peer message addressed to us.
+    ///   2. `self_tx_parity` — same-QSO continuation when peer_parity
+    ///      is still unlocked (e.g. peer transmitted but framing was
+    ///      not yet settled when we processed the decode).
+    ///   3. `None` — fresh cold-boot CQ. Caller may fire on any slot;
+    ///      that slot's parity then becomes `self_tx_parity` via
+    ///      `record_self_tx`.
+    pub fn preferred_tx_parity(&self) -> Option<Parity> {
+        if let Some(p) = self.peer_parity {
+            return Some(p.opposite());
+        }
+        self.self_tx_parity
+    }
+
+    /// Audio-side callback after a TX cycle completes. Locks
+    /// `self_tx_parity` if not already set, so that subsequent
+    /// retransmissions in this QSO stick to the same slot parity even
+    /// while peer_parity remains unknown.
+    pub fn record_self_tx(&mut self, tx_slot: u32) {
+        if self.self_tx_parity.is_none() {
+            self.self_tx_parity = Some(Parity::from_slot_index(tx_slot));
+        }
+    }
+
+    /// Atomic next-TX pick, parity- and auto-CQ-aware. Returns the
+    /// `TxIntent` to fire iff one is pending (or `auto_cq_enabled` and
+    /// we're Idle) AND the supplied `cur_par` matches our preferred TX
+    /// parity. Returns `None` otherwise.
+    ///
+    /// Doing the parity check inside this method (rather than at each
+    /// caller after `next_tx()`) lets the FSM evaluate
+    /// `preferred_tx_parity()` against the **freshly transitioned**
+    /// state if the auto-CQ branch fires — important because the
+    /// `Idle → Calling` transition itself might affect
+    /// `self_tx_parity` later. It also removes the duplicate
+    /// orchestration block that was sitting in both
+    /// `audio::tx_scheduler_pick_intent` and `tx_scheduler::scheduler_thread`.
+    ///
+    /// `cur_par` is the parity of the slot the caller intends to TX in;
+    /// the caller is responsible for both bracketing this with the
+    /// launch-deadline check (`parity::TX_LAUNCH_DEADLINE_US`) and
+    /// pairing it with the matching `wav_idx` for later
+    /// `record_self_tx`. `current_capture_info` is the right source
+    /// for that pair.
+    pub fn pick_tx_intent(&mut self, cur_par: Parity) -> Option<TxIntent> {
+        let intent = self.next_tx().or_else(|| {
+            if self.auto_cq_enabled && self.state == QsoState::Idle {
+                Some(self.call_cq(None))
+            } else {
+                None
+            }
+        })?;
+        // `None` from preferred_tx_parity = fresh cold-boot CQ — fire
+        // in any slot; that slot becomes self_tx_parity via the
+        // caller's subsequent `record_self_tx`.
+        let our_par = self.preferred_tx_parity().unwrap_or(cur_par);
+        if cur_par == our_par {
+            Some(intent)
+        } else {
+            None
+        }
+    }
+
+    /// Combined post-TX hook: lock `self_tx_parity` to the slot we
+    /// just transmitted in (sticky for the rest of this QSO) AND
+    /// advance the per-period FSM (retry counter / Idle reset).
+    /// Single lock acquisition for callers that hold a
+    /// `Mutex<QsoManager>`.
+    pub fn finish_self_tx(&mut self, tx_slot: u32) {
+        self.record_self_tx(tx_slot);
+        let _ = self.on_period_end();
     }
 
     /// Begin calling CQ. Returns the TxIntent for the upcoming slot.
@@ -136,7 +232,21 @@ impl QsoManager {
 
     /// Process a decoded message. Returns Some(TxIntent) if the FSM
     /// wants to transmit in response.
-    pub fn process_message(&mut self, text: &str) -> Option<TxIntent> {
+    ///
+    /// `rx_slot` is the `wav_idx` of the audio slot the message was
+    /// captured from (= `SpecBundle.wav_idx`). When the message drives
+    /// a state transition AND `parity_lock_ok` is `true`, `peer_parity`
+    /// is locked to `rx_slot & 1`. `parity_lock_ok` should be `false`
+    /// during the bootstrap_slot_shift convergence window (see
+    /// `parity::SAFE_DT_THRESHOLD_SEC`) — state transitions and retry
+    /// counters still advance normally, but parity stays unlocked
+    /// until a later clean decode.
+    pub fn process_message(
+        &mut self,
+        text: &str,
+        rx_slot: u32,
+        parity_lock_ok: bool,
+    ) -> Option<TxIntent> {
         if self.my_call.is_empty() {
             return None;
         }
@@ -149,12 +259,24 @@ impl QsoManager {
         if words.len() < 2 {
             return None;
         }
-        match self.state {
+        let result = match self.state {
             QsoState::Idle => self.on_idle(&words),
             QsoState::Calling => self.on_calling(&words),
             QsoState::Report => self.on_report(&words),
             QsoState::Final => self.on_final(&words),
+        };
+        // Lock peer_parity only when (a) the decode actually drove a
+        // state transition (= `result.is_some()` OR we landed in Idle
+        // via Final's 73 handler) AND (b) the caller signalled that
+        // slot framing is settled enough to trust `rx_slot`.
+        // We use `result.is_some()` as the "addressed to us" proxy
+        // for non-Final transitions; for Final → Idle (73 received),
+        // the FSM has just completed and parity will be cleared on
+        // next reset anyway, so no lock needed.
+        if parity_lock_ok && self.peer_parity.is_none() && result.is_some() {
+            self.peer_parity = Some(Parity::from_slot_index(rx_slot));
         }
+        result
     }
 
     /// Slot end with no relevant response. Returns retry intent or None
@@ -436,12 +558,19 @@ mod tests {
         assert_eq!(m.state, QsoState::Calling);
     }
 
+    /// Helper: process_message with parity-lock disabled. Most legacy
+    /// tests don't care about parity; they exercise the protocol state
+    /// machine in isolation.
+    fn pm(m: &mut QsoManager, text: &str) -> Option<TxIntent> {
+        m.process_message(text, 0, false)
+    }
+
     #[test]
     fn responder_grid_triggers_report() {
         let mut m = mgr();
         m.call_cq(None);
         m.set_rx_snr(-7);
-        let tx = m.process_message("JL1NIE W1AW FN31").unwrap();
+        let tx = pm(&mut m, "JL1NIE W1AW FN31").unwrap();
         assert_eq!(m.state, QsoState::Report);
         assert_eq!(tx.formatted().as_str(), "W1AW JL1NIE -07");
     }
@@ -450,9 +579,9 @@ mod tests {
     fn report_to_rr73() {
         let mut m = mgr();
         m.call_cq(None);
-        m.process_message("JL1NIE W1AW FN31");
+        pm(&mut m, "JL1NIE W1AW FN31");
         // They send R-12 confirming our report
-        let tx = m.process_message("JL1NIE W1AW R-12").unwrap();
+        let tx = pm(&mut m, "JL1NIE W1AW R-12").unwrap();
         assert_eq!(m.state, QsoState::Final);
         assert_eq!(tx.formatted().as_str(), "W1AW JL1NIE RR73");
     }
@@ -461,9 +590,9 @@ mod tests {
     fn final_to_idle_on_73() {
         let mut m = mgr();
         m.call_cq(None);
-        m.process_message("JL1NIE W1AW FN31");
-        m.process_message("JL1NIE W1AW R-12");
-        let tx = m.process_message("JL1NIE W1AW 73");
+        pm(&mut m, "JL1NIE W1AW FN31");
+        pm(&mut m, "JL1NIE W1AW R-12");
+        let tx = pm(&mut m, "JL1NIE W1AW 73");
         assert!(tx.is_none());
         assert_eq!(m.state, QsoState::Idle);
     }
@@ -473,7 +602,7 @@ mod tests {
         let mut m = mgr();
         m.call_cq(None);
         // Two random stations QSOing — must not affect us
-        assert!(m.process_message("AA1AA BB2BB FN42").is_none());
+        assert!(pm(&mut m, "AA1AA BB2BB FN42").is_none());
         assert_eq!(m.state, QsoState::Calling);
     }
 
@@ -495,7 +624,7 @@ mod tests {
     fn report_directly_skips_grid() {
         let mut m = mgr();
         m.call_cq(None);
-        let tx = m.process_message("JL1NIE W1AW -15").unwrap();
+        let tx = pm(&mut m, "JL1NIE W1AW -15").unwrap();
         assert_eq!(m.state, QsoState::Report);
         assert_eq!(tx.formatted().as_str(), "W1AW JL1NIE R-15");
     }
@@ -505,7 +634,7 @@ mod tests {
         let mut m = mgr();
         // Someone calls us while we're idle (e.g., we just booted)
         m.set_rx_snr(3);
-        let tx = m.process_message("JL1NIE W1AW FN31").unwrap();
+        let tx = pm(&mut m, "JL1NIE W1AW FN31").unwrap();
         assert_eq!(m.state, QsoState::Report);
         assert_eq!(tx.formatted().as_str(), "W1AW JL1NIE +03");
     }
@@ -518,5 +647,170 @@ mod tests {
         let intent = m.next_tx();
         let line = format_tx_line(&m, intent.as_ref());
         assert_eq!(line.as_str(), "CALL: CQ JL1NIE PM95 [1/5]");
+    }
+
+    // ── Slot-parity tests (issue #110) ────────────────────────────
+
+    #[test]
+    fn parity_unlocked_at_boot() {
+        let m = mgr();
+        assert!(m.peer_parity.is_none());
+        assert!(m.self_tx_parity.is_none());
+        assert!(m.preferred_tx_parity().is_none());
+    }
+
+    #[test]
+    fn peer_parity_locks_on_clean_decode_in_calling() {
+        let mut m = mgr();
+        m.call_cq(None);
+        // Peer answers from an ODD slot (rx_slot = 7), framing settled.
+        let tx = m
+            .process_message("JL1NIE W1AW FN31", 7, true)
+            .expect("state advances");
+        assert_eq!(m.state, QsoState::Report);
+        assert_eq!(m.peer_parity, Some(Parity::Odd));
+        // Our TX should now be gated to EVEN.
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Even));
+        let _ = tx;
+    }
+
+    #[test]
+    fn peer_parity_locks_on_unsolicited_call_in_idle() {
+        let mut m = mgr();
+        m.set_rx_snr(3);
+        m.process_message("JL1NIE W1AW FN31", 4, true)
+            .expect("idle accepts unsolicited call");
+        assert_eq!(m.peer_parity, Some(Parity::Even));
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Odd));
+    }
+
+    #[test]
+    fn peer_parity_stays_locked_to_rx_slot_when_decode_spills() {
+        // Issue #110's core invariant: even if `process_message` is
+        // called LATE (during the slot after the one the audio came
+        // from), `peer_parity` reflects the audio's slot, not "now".
+        let mut m = mgr();
+        m.call_cq(None);
+        // Peer transmitted in slot 5 (ODD). Decode finished in slot 6
+        // — but we pass rx_slot = 5 (the SpecBundle.wav_idx).
+        m.process_message("JL1NIE W1AW FN31", 5, true)
+            .expect("state advances");
+        assert_eq!(m.peer_parity, Some(Parity::Odd));
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Even));
+    }
+
+    #[test]
+    fn peer_parity_does_not_lock_when_framing_unsettled() {
+        let mut m = mgr();
+        m.call_cq(None);
+        // parity_lock_ok = false (bootstrap_slot_shift not yet converged).
+        m.process_message("JL1NIE W1AW FN31", 5, false)
+            .expect("state still advances");
+        assert_eq!(m.state, QsoState::Report);
+        assert!(m.peer_parity.is_none(), "must NOT lock during bootstrap");
+        // Next clean decode (e.g. R-12 confirming our report) locks it.
+        m.process_message("JL1NIE W1AW R-12", 7, true)
+            .expect("report → final");
+        assert_eq!(m.peer_parity, Some(Parity::Odd));
+        // Our final 73 should go to Even.
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Even));
+    }
+
+    #[test]
+    fn peer_parity_does_not_lock_on_unrelated_decode() {
+        let mut m = mgr();
+        m.call_cq(None);
+        // Random QSO between two other stations — must not lock parity.
+        assert!(m.process_message("AA1AA BB2BB FN42", 3, true).is_none());
+        assert!(m.peer_parity.is_none());
+    }
+
+    #[test]
+    fn record_self_tx_locks_only_first_call() {
+        let mut m = mgr();
+        m.call_cq(None);
+        m.record_self_tx(4);
+        assert_eq!(m.self_tx_parity, Some(Parity::Even));
+        // Second call must NOT flip parity — sticky for the QSO.
+        m.record_self_tx(7);
+        assert_eq!(m.self_tx_parity, Some(Parity::Even));
+    }
+
+    #[test]
+    fn preferred_tx_parity_precedence() {
+        let mut m = mgr();
+        // No peer, no self → None (fresh cold CQ may use any slot).
+        assert!(m.preferred_tx_parity().is_none());
+        // Self TX locked first → that parity wins.
+        m.record_self_tx(3);
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Odd));
+        // Once peer_parity lands, it OVERRIDES self_tx_parity — we
+        // adapt to the peer's actual slot rather than perpetuating an
+        // arbitrary cold-boot choice.
+        m.peer_parity = Some(Parity::Odd);
+        assert_eq!(m.preferred_tx_parity(), Some(Parity::Even));
+    }
+
+    #[test]
+    fn reset_clears_both_parities() {
+        let mut m = mgr();
+        m.peer_parity = Some(Parity::Even);
+        m.self_tx_parity = Some(Parity::Odd);
+        m.reset();
+        assert!(m.peer_parity.is_none());
+        assert!(m.self_tx_parity.is_none());
+    }
+
+    // ── pick_tx_intent coverage (gemini PR #112 MEDIUM consolidation) ──
+
+    #[test]
+    fn pick_tx_intent_auto_cq_idle_fires_on_any_parity_when_unlocked() {
+        let mut m = mgr();
+        m.auto_cq_enabled = true;
+        // No peer_parity, no self_tx_parity → preferred = None →
+        // accept whichever slot we're polled in.
+        let i = m.pick_tx_intent(Parity::Even);
+        assert!(i.is_some());
+        assert_eq!(m.state, QsoState::Calling);
+    }
+
+    #[test]
+    fn pick_tx_intent_no_auto_cq_idle_returns_none() {
+        let mut m = mgr();
+        m.auto_cq_enabled = false;
+        // No next_tx pending AND auto_cq disabled AND state == Idle.
+        assert!(m.pick_tx_intent(Parity::Even).is_none());
+        assert_eq!(m.state, QsoState::Idle);
+    }
+
+    #[test]
+    fn pick_tx_intent_parity_mismatch_skips() {
+        let mut m = mgr();
+        m.auto_cq_enabled = true;
+        m.peer_parity = Some(Parity::Even); // → prefer Odd
+        // Polled on Even → parity mismatch, expect None and state
+        // unchanged (auto-CQ does fire `call_cq()` which transitions
+        // Idle → Calling regardless; the gate is on the parity match
+        // for the *returned* intent only).
+        assert!(m.pick_tx_intent(Parity::Even).is_none());
+    }
+
+    #[test]
+    fn pick_tx_intent_parity_match_returns_intent() {
+        let mut m = mgr();
+        m.auto_cq_enabled = true;
+        m.peer_parity = Some(Parity::Even); // → prefer Odd
+        let i = m.pick_tx_intent(Parity::Odd);
+        assert!(i.is_some());
+    }
+
+    #[test]
+    fn finish_self_tx_records_parity_and_advances_period() {
+        let mut m = mgr();
+        m.call_cq(None); // Calling, retry_count = 0
+        m.finish_self_tx(3); // Odd slot
+        assert_eq!(m.self_tx_parity, Some(Parity::Odd));
+        // on_period_end should have advanced retry counter.
+        assert_eq!(m.retry_count, 1);
     }
 }
