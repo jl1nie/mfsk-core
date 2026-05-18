@@ -16,13 +16,14 @@ pub use crate::core::llr::LlrSet as GenericLlrSet;
 
 /// FT8 LLR bundle: four fixed-length (174-bit) variants. Generic over
 /// the [`LlrScalar`] storage; defaults to `f32` for backward
-/// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The `Q11i16`
-/// instantiation (`LlrSet<Q11i16>`) feeds the integer-only NMS BP
-/// under the `fixed-point` feature since 0.6.2 (the 0.5.x line used
-/// `LlrSet<Q3i8>`; `Q3i8` stays in `core::scalar` for the comparison
-/// path — see
-/// [`crate::ft8::decode_block::process_candidates`] LlrT docs for
-/// the rationale).
+/// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The
+/// [`crate::core::scalar::Q11i16`] instantiation (`LlrSet<Q11i16>`)
+/// feeds the integer-only NMS BP under the `fixed-point` feature
+/// since 0.6.2 — the 0.5.x line used `LlrSet<Q3i8>`
+/// ([`crate::core::scalar::Q3i8`] stays in `core::scalar` for the
+/// comparison path). The Q3i8 ↔ Q11i16 rationale is in
+/// `CHANGELOG.md` 0.5.4 + 0.6.2 / 0.6.3 entries and in
+/// `docs/EMBEDDED.md`'s `LlrScalar` section.
 pub struct LlrSet<T: LlrScalar = f32> {
     pub llra: [T; LDPC_N],
     pub llrb: [T; LDPC_N],
