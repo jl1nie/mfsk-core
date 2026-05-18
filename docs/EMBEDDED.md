@@ -22,7 +22,22 @@ embedded-friendly integer path **with no duplicated code**:
   (`f32` on host; `Q14i16` for embedded cs storage).
 - [`core::scalar::LlrScalar`] — LLR scalar with wide-accumulator
   type (`f32` on host; **`Q11i16` with i32 wide accumulator** for
-  embedded BP, since 0.6.2 — was `Q3i8` in 0.5.x).
+  embedded BP, since 0.6.2 — was `Q3i8` in 0.5.x. The widening
+  was driven by the host f32-vs-`Q3i8` sweep on `qso3_busy.wav`
+  taken pre-0.6.3 (i.e. before the 0.6.3 OSD-tightening that
+  later dropped 3 CRC-luck phantoms from f32 host recall, taking
+  it from 16/18 → 13/18):
+  rustfft + f32 hit 16/18 while `Q3i8`'s ~0.875-LLR quantization
+  step dropped that to 9/18, so the recall ceiling on Xtensa was
+  the LLR resolution, not anything DSP-side. `Q11i16` removes the
+  resolution bottleneck and brings host fixed-point recall up to
+  f32-equivalent (full gap close); on real-silicon embedded the
+  gain is only 1 entry (6/18 → 7 total) — the rest of the host gap
+  is blocked by other parts of the embedded pipeline (NSTEP-half,
+  coarse-sync simplifications, no `fine_refine_pass1`), not by the
+  LLR scalar. BP scratch doubles from ~6 KB to ~12 KB, still inside
+  the S3 / Core2 internal-DRAM budget. `Q3i8` stays in
+  `core::scalar` for the comparison path).
 - [`core::scalar::Cmplx<S>`] — generic complex over a `SpecScalar`.
   As of 0.6.3 (cleanup β.5) this is a type alias for
   `num_complex::Complex<S>`, so the embedded integer path and the
@@ -58,9 +73,9 @@ in the trait layer.
 | Target | MCU | Backend | Status |
 |---|---|---|---|
 | **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp ASM + LX7 PIE SIMD (auto-picked by `esp-dsp` at build) | **Production controller** — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + acoustic mic + WiFi UDP log). |
-| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — confirmed by `espflash board-info`: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`. **Not** an ESP32-S2 (LX7, single-core, no BT) or S3. | esp-dsp ASM (`dsps_dotprod_s16_ae32`, `dsps_fft2r_*`) | **Diagnostic / second-board verifier** — `embedded-poc/m5stack-core2-app/` runs the same `decode_block` against the baked `wav_sim` audio loop on LX6 to cross-validate the `mfsk-app-shared` API. External I/O (mic, speaker, BLE) is deferred — hardware spec TBD. |
+| **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — confirmed by `espflash board-info`: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`. **Not** an ESP32-S2 (LX7, single-core, no BT) or S3. | esp-dsp ASM (`dsps_dotprod_s16_ae32`, `dsps_fft2r_*`) | **Production app (`wav_sim` only)** — `embedded-poc/m5stack-core2-app/` runs the same `decode_block` against the baked `wav_sim` audio loop on LX6 to cross-validate the `mfsk-app-shared` API. Classic ESP32 has no USB peripheral, so live mic / speaker / USB-Host paths are not on the table for this board — Core2's role is the second-board LX6 verifier for the shared QSO FSM. (The original standalone Core2 compute bench `embedded-poc/m5stack-core2/` was retired in #61 Phase 3 once this app crate covered the same wav_sim path in production-app shape.) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **Timing-regression bench** — `embedded-poc/m5stack-s3/`, drives `decode_block` against canned WAV inputs for per-stage timing sweeps. Not for end users. |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (BUS_OUT_EN on P1 drives VBUS boost) | esp-dsp ASM + PIE SIMD | **Planned** — `embedded-poc/m5stack-cores3-app/` (not yet created). The board has the VBUS source circuit M5StickS3 lacks, so true USB-Host audio class to IC-705 lands here. Hardware not yet acquired. See `docs/ROADMAP.md` Phase B-Core. |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (BUS_OUT_EN on P1 drives VBUS boost) | esp-dsp ASM + PIE SIMD | **Main UAC controller target** (Phase B-Core, 2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/` (not yet created). M5StickS3 cannot do USB-OTG host (no VBUS source circuit), so it was repositioned as the **demo / acoustic-fallback** board and the live USB Audio Class path to IC-705 lands on CoreS3 instead. Hardware bring-up in progress; no firmware ship date yet. See `docs/ROADMAP.md` Phase B-Core. |
 
 ### Other targets — what's verified vs aspirational
 
@@ -70,7 +85,7 @@ The `fft-extern` contract is *designed* to be target-portable, and
 | Target | `cargo build` clean | FFT shim shipped | Hardware-tested |
 |---|---|---|---|
 | `xtensa-esp32-espidf` | ✅ | ✅ esp-dsp (Core2) | ✅ qso1/2/3 sweep |
-| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + planned CoreS3-app) | ✅ qso1/2/3 sweep |
+| `xtensa-esp32s3-espidf` | ✅ | ✅ esp-dsp (S3 bench + S3-app + CoreS3-app bring-up, Phase B-Core) | ✅ qso1/2/3 sweep |
 | `thumbv8m.main-none-eabihf` (RP2350 Cortex-M33) | ✅ | ❌ candidates: CMSIS-DSP via pico-sdk-rs | ❌ |
 | `riscv32imac-unknown-none-elf` (RP2350 Hazard3) | ✅ | ❌ no DSP library; `microfft` for FFT | ❌ |
 | `thumbv7em-none-eabihf` (Cortex-M4F / M7) | not tried | ❌ candidates: CMSIS-DSP `arm_*_q15` | ❌ |
@@ -128,7 +143,7 @@ Feature reference:
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
 | `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner16`). | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
-| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. | Any embedded target — recall-equivalent to the host f32 path with halved PSRAM bandwidth and ~6 KB BP scratch. |
+| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `core::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
 | `parallel` | Rayon-parallel candidate processing. | Host only. Always off on embedded (no `std::thread`). |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
@@ -259,7 +274,7 @@ decoder allocate nothing.
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`, saturated since 0.6.4 | `ft8::decode_block::spectrogram::Spectrogram` |
 | DFT basis (BASIS path) | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `ft8::decode_block::fill_symbol_spectra` |
 | Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `core::scalar::Cmplx` (type alias for `num_complex::Complex`) |
-| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB | `core::scalar::LlrScalar` |
+| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `core::scalar` for the comparison path) | `core::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## Using from C / C++ / non-Rust ESP-IDF projects (`mfsk-ffi-ft8`)
@@ -274,8 +289,11 @@ feature so the resulting `libmfsk_ft8.a` doesn't carry Rust's `std`
 runtime — drop-in linkable from C without the toolchain weirdness
 that would come from mixing two libc layers.
 
-**Verified end-to-end on ESP32 Core2** (the now-retired
-`m5stack-core2` bench): a separate `ffi_smoke_one` path called
+**Verified end-to-end on ESP32 Core2** (originally on the
+`embedded-poc/m5stack-core2/` standalone compute bench — a
+development-only timing harness, retired in #61 Phase 3 (0.6.3)
+once `embedded-poc/m5stack-core2-app/` covered the same wav_sim
+path in production-app shape): a separate `ffi_smoke_one` path called
 `mfsk_ft8_decode_i16` (C ABI) on the same baked WAVs as the
 direct-Rust `decode_one` path and got identical recall — qso1
 (3 / 3), qso2 (5 / 5), **qso3 busy band (7 / 7)**. With
@@ -603,10 +621,14 @@ verified bit-identical via `cmp` 2026-05-04). `qso1` / `qso2` are
 informational on-air captures — useful as breadth but not formal
 reference.
 
-S3 LX7 numbers below are from
-`embedded-poc/m5stack-s3/logs/s3_063_q11i16_v2_2026-05-09.log`
-(0.6.3 Q11i16 ship); 0.6.4 Goertzel preserves these wall-clocks and
-adds +0.16..+0.63 dB SNR on the same decodes.
+S3 LX7 numbers below are from the 0.6.3 Q11i16 ship sweep
+(`embedded-poc/m5stack-s3/logs/` archived development run on
+2026-05-09; the raw log file was not preserved in the repo —
+only the 0.6.2 → 0.6.3 Q3i8 → Q11i16 phase logs remain under
+`logs/s3_phaseA..C_q3i8_2026-05-04.log` etc.). 0.6.4 Goertzel
+preserves these wall-clocks and adds +0.16..+0.63 dB SNR on the
+same decodes; re-measuring on 0.6.5 firmware is the right way to
+confirm post-0.6.3 OSD-tightening did not move the embedded numbers.
 
 | WAV | S3 LX7 post-SlotEnd | decoded |
 |---|---:|---:|
@@ -772,7 +794,7 @@ contributes roughly **150–200 KB** of flash text. The IRAM/DRAM
 totals shown include esp-idf — the library proper has no IRAM
 requirement and, post-Phase 1.7.7, **no internal-DRAM scratch
 requirement** at all. Total per-slot working set: ~120 KB cs Box ×
-1 + ~360 KB spectrogram (PSRAM) + ~6 KB BP scratch (Q11i16). Bare
+1 + ~360 KB spectrogram (PSRAM) + ~12 KB BP scratch (Q11i16 since 0.6.2; was ~6 KB on Q3i8 in 0.5.x). Bare
 ESP32 (no PSRAM) cannot run the spectrogram in 320 KB SRAM — PSRAM
 is required for the embedded path on production-grade WAV inputs.
 

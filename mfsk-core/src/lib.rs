@@ -132,7 +132,7 @@
 //! | `parallel`    | yes      | Rayon-parallel candidate processing          |
 //! | `fft-rustfft` | yes      | Default host FFT backend (`rustfft`, requires `std`) |
 //! | `fft-extern`  |          | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl |
-//! | `fixed-point` |          | Embedded integer pipeline: u16 spec + i16 DFT + Q3i8 LLR + integer NMS BP |
+//! | `fixed-point` |          | Embedded integer pipeline: u16 spec + i16 DFT + Q11i16 LLR + integer NMS BP |
 //! | `profile-coarse` |       | Always-on coarse_sync sub-stage profiling               |
 //!
 //! ## Runtime registry
