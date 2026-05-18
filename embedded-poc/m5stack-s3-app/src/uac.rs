@@ -559,6 +559,17 @@ fn reader_thread(handle: DeviceHandle) {
                         );
                         wav_idx = wav_idx.wrapping_add(1);
                         slot_samples = 0;
+                        // Issue #110: publish capture-slot boundary for
+                        // any TX scheduler running in this BootMode.
+                        // BootMode::Uac is currently RX-only on the
+                        // S3 board, but published unconditionally to
+                        // keep the slot index live in case downstream
+                        // logging / TX wiring is added.
+                        let now_us = unsafe { sys::esp_timer_get_time() };
+                        mfsk_app_shared::time_sync::publish_capture_slot(
+                            wav_idx as u32,
+                            now_us,
+                        );
                     }
                 }
             }

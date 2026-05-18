@@ -51,7 +51,17 @@ pub fn spawn(i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManager>>) -> Res
     Ok(())
 }
 
+/// Issue #110: matches `audio::TX_LAUNCH_DEADLINE_US`.
+const TX_LAUNCH_DEADLINE_US: i64 = 1_300_000;
+/// FT8 slot length in μs. Used by the TxTest path to drive synthetic
+/// capture-slot publications without a real audio source.
+const SLOT_LEN_US: i64 = 15_000_000;
+
 fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManager>>) {
+    use esp_idf_svc::sys::esp_timer_get_time;
+    use mfsk_app_shared::parity::Parity;
+    use mfsk_app_shared::time_sync;
+
     // Prio above stage1_inc/dual_core so the I2S DMA refill doesn't
     // starve during BP — same rationale as audio_thread (Phase 1.5
     // capture_thread used prio 8 for the same reason).
@@ -66,13 +76,46 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
     // BLE pair grace — same 10 s window the Phase 1.6 test loop used.
     FreeRtos::delay_ms(10_000);
 
+    // TxTest mode has no RX-side audio thread to publish capture-slot
+    // boundaries, so we synthesise them here from the monotonic clock.
+    // Picking wav_idx 0 at the moment auto-CQ goes live is fine —
+    // there's no peer to phase against in TxTest, and once a real
+    // QSO scenario runs (Qso/Acoustic mode) the audio thread is the
+    // authoritative publisher.
+    let mut synth_wav_idx: u32 = 0;
+    let mut synth_slot_start_us: i64 = unsafe { esp_timer_get_time() };
+    time_sync::publish_capture_slot(synth_wav_idx, synth_slot_start_us);
+
     loop {
+        // ── Synthetic slot tick ───────────────────────────────────
+        let now_us = unsafe { esp_timer_get_time() };
+        if now_us - synth_slot_start_us >= SLOT_LEN_US {
+            synth_wav_idx = synth_wav_idx.wrapping_add(1);
+            synth_slot_start_us += SLOT_LEN_US;
+            time_sync::publish_capture_slot(synth_wav_idx, synth_slot_start_us);
+        }
         // Poll cadence: 100 ms is fast enough to catch any slot-boundary
         // TX trigger within one FT8 symbol period. Not aligned to slot
         // start yet — `time_sync::bootstrap_slot_shift` would let us
         // schedule precisely against the band's slot cadence; for now
         // we rely on the FSM's per-slot state and the fact that auto-CQ
         // fires immediately when next_tx() exposes an intent.
+        // ── Parity + launch-window gate (issue #110) ──────────────
+        // Computed BEFORE we acquire the QSO lock so we don't hold
+        // the FSM mutex while doing the cheap parity arithmetic.
+        let Some(cur_slot) = time_sync::current_capture_wav_idx() else {
+            FreeRtos::delay_ms(100);
+            continue;
+        };
+        match time_sync::time_into_capture_slot_us(now_us) {
+            Some(i) if i <= TX_LAUNCH_DEADLINE_US => {}
+            _ => {
+                FreeRtos::delay_ms(100);
+                continue;
+            }
+        }
+        let cur_par = Parity::from_slot_index(cur_slot);
+
         let maybe_intent = {
             // Mutable lock — the auto-CQ branch may call `call_cq()`
             // (Gemini PR #103 MEDIUM: reuse the lock instead of
@@ -91,7 +134,10 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
             // the next_tx() intent — auto_cq only gates the cold-start
             // Idle → Calling auto-transition.
             let intent = q.next_tx();
-            if intent.is_none() && auto_cq && q.state == mfsk_app_shared::qso::QsoState::Idle {
+            let intent = if intent.is_none()
+                && auto_cq
+                && q.state == mfsk_app_shared::qso::QsoState::Idle
+            {
                 // Synthesise a fresh CQ by transitioning Idle → Calling.
                 // Reuse the existing MutexGuard rather than dropping and
                 // re-acquiring — `q` already has mutable access and the
@@ -101,7 +147,13 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
                 Some(q.call_cq(None))
             } else {
                 intent
-            }
+            };
+            // Parity check INSIDE the lock so preferred_tx_parity sees
+            // the freshly set Calling state.
+            intent.and_then(|i| {
+                let our_par = q.preferred_tx_parity().unwrap_or(cur_par);
+                if cur_par == our_par { Some(i) } else { None }
+            })
         };
 
         let Some(intent) = maybe_intent else {
@@ -181,8 +233,11 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
 
         // Advance the FSM — if the peer didn't reply during our TX
         // slot, `on_period_end` increments the retry counter (or
-        // resets to Idle when budget is exhausted).
+        // resets to Idle when budget is exhausted). Also lock
+        // self_tx_parity to the slot we just transmitted in
+        // (issue #110) — sticky for the rest of this QSO.
         if let Ok(mut q) = qso.lock() {
+            q.record_self_tx(cur_slot);
             let _ = q.on_period_end();
         }
 
