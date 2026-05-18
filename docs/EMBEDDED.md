@@ -23,7 +23,10 @@ embedded-friendly integer path **with no duplicated code**:
 - [`core::scalar::LlrScalar`] — LLR scalar with wide-accumulator
   type (`f32` on host; **`Q11i16` with i32 wide accumulator** for
   embedded BP, since 0.6.2 — was `Q3i8` in 0.5.x. The widening
-  was driven by the host f32-vs-`Q3i8` sweep on `qso3_busy.wav`:
+  was driven by the host f32-vs-`Q3i8` sweep on `qso3_busy.wav`
+  taken pre-0.6.3 (i.e. before the 0.6.3 OSD-tightening that
+  later dropped 3 CRC-luck phantoms from f32 host recall, taking
+  it from 16/18 → 13/18):
   rustfft + f32 hit 16/18 while `Q3i8`'s ~0.875-LLR quantization
   step dropped that to 9/18, so the recall ceiling on Xtensa was
   the LLR resolution, not anything DSP-side. `Q11i16` recovers most

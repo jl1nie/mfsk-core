@@ -971,11 +971,18 @@ where
 /// - 0.6.2 / 0.6.3: switched to `Q11i16`. The wider real-silicon
 ///   LX7 sweep showed the Q3i8 quantization step (~0.875 LLR units
 ///   between codes) was the dominant recall ceiling on Xtensa
-///   builds — host fixed-point + rustfft hit 16/18 with f32 but
-///   only 9/18 with Q3i8 on `qso3_busy.wav`. `Q11i16`'s 1/2048
-///   resolution recovers most of that gap (target embedded recall:
-///   6/18 → ~10/18). Cost: BP scratch doubles from ~6 KB to ~12 KB,
-///   still inside the S3 / Core2 internal-DRAM budget.
+///   builds — pre-0.6.3 host fixed-point + rustfft hit 16/18 with
+///   f32 but only 9/18 with Q3i8 on `qso3_busy.wav` (the host f32
+///   number later dropped to 13/18 in 0.6.3 when OSD tightening
+///   removed 3 CRC-luck phantoms; the Q3i8-vs-f32 gap that
+///   motivated the widening was measured before that). `Q11i16`'s
+///   1/2048 resolution recovers most of the gap on real silicon:
+///   embedded recall went 6/18 → 6/18 + 1 bonus = 7 total (not
+///   the ~10/18 that the host sweep had projected — the embedded
+///   pipeline lost some of the win to its own NSTEP-half /
+///   coarse-sync simplifications). Cost: BP scratch doubles from
+///   ~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM
+///   budget.
 ///
 /// `Q3i8` stays in `core::scalar` for the comparison path.
 #[cfg(feature = "fixed-point")]

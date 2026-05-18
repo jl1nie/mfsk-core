@@ -22,7 +22,9 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 - [`core::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
   (host は `f32`、組込 BP は **`Q11i16` + i32 wide accumulator**、
   0.6.2 以降。0.5.x までは `Q3i8` だった)。拡張の動機は host
-  fixed-point + rustfft sweep の結果: `qso3_busy.wav` に対し f32 は
+  fixed-point + rustfft sweep (pre-0.6.3 計測 — 0.6.3 の OSD
+  tightening で f32 host recall は 16/18 → 13/18 に CRC-luck
+  phantom 3 件分下がる前) の結果: `qso3_busy.wav` に対し f32 は
   16/18 取れたが `Q3i8` の ~0.875 LLR 量子化ステップが Xtensa 上の
   recall 天井を決め 9/18 まで落ちた — DSP 側ではなく LLR 解像度が
   ボトルネックだった。`Q11i16` (~1/2048 LSB、BP scratch ~6 KB →
