@@ -484,7 +484,8 @@ where
                     // wav_idx parity may not match the band yet, and
                     // locking would freeze us to the wrong parity for
                     // the whole QSO.
-                    let parity_lock_ok = framing_settled_for_parity_lock();
+                    let parity_lock_ok =
+                        mfsk_app_shared::parity::framing_settled_for_parity_lock();
                     if let Ok(mut q) = qso.lock() {
                         q.set_rx_snr(snr_i8);
                         if q.process_message(&text, wav_idx as u32, parity_lock_ok)
@@ -520,25 +521,6 @@ where
             push_tx_line(&q, intent.as_ref());
         }
     }
-}
-
-/// Format the FSM's current intent and push it to the UI thread. Also
-/// echoed to the log so headless captures still record QSO state.
-/// Issue #110 gate: only let the QSO FSM lock `peer_parity` once
-/// bootstrap_slot_shift has converged enough that our `wav_idx`
-/// parity is trustworthy. Returns `false` during the first ~2 slots
-/// after boot / BtnA re-sync, AND on any slot whose median DT is
-/// outside the safe window.
-fn framing_settled_for_parity_lock() -> bool {
-    use mfsk_app_shared::parity::{FRAMING_MIN_SLOTS_OBSERVED, SAFE_DT_THRESHOLD_SEC};
-    use mfsk_app_shared::time_sync;
-
-    if time_sync::slots_observed() < FRAMING_MIN_SLOTS_OBSERVED {
-        return false;
-    }
-    time_sync::slot_dt_offset()
-        .map(|dt| dt.abs() < SAFE_DT_THRESHOLD_SEC)
-        .unwrap_or(false)
 }
 
 fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {

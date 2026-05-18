@@ -49,3 +49,33 @@ pub const FRAMING_MIN_SLOTS_OBSERVED: u32 = 2;
 /// TxTest schedulers both gate `time_into_capture_slot_us` ≤ this
 /// before firing TX.
 pub const TX_LAUNCH_DEADLINE_US: i64 = 1_300_000;
+
+/// Issue #110 gate: is the framing-self-sync settled enough to trust
+/// `wav_idx` parity for `QsoManager::process_message`'s
+/// `parity_lock_ok` argument? Two conditions, both required:
+///
+/// 1. `time_sync::slots_observed() >= FRAMING_MIN_SLOTS_OBSERVED` —
+///    the bootstrap_slot_shift estimator has had ≥2 passes to
+///    converge.
+/// 2. `time_sync::slot_dt_offset()` is finite and below
+///    `SAFE_DT_THRESHOLD_SEC` — the slot we measured DT for is
+///    aligned closely enough that a decode landing inside it can be
+///    unambiguously attributed to its parity (not the adjacent
+///    slot).
+///
+/// Returns `false` during the first ~2 slots after boot / BtnA
+/// re-sync AND on any slot whose median DT is outside the safe
+/// window. Board-agnostic — depends only on `time_sync` global
+/// state, so both `m5stack-s3-app` and `m5stack-core2-app` (and any
+/// future board crate) consume the same function instead of
+/// duplicating it in each `decode_pipeline.rs`.
+pub fn framing_settled_for_parity_lock() -> bool {
+    use crate::time_sync;
+
+    if time_sync::slots_observed() < FRAMING_MIN_SLOTS_OBSERVED {
+        return false;
+    }
+    time_sync::slot_dt_offset()
+        .map(|dt| dt.abs() < SAFE_DT_THRESHOLD_SEC)
+        .unwrap_or(false)
+}

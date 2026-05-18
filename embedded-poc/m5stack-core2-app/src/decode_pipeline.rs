@@ -165,7 +165,8 @@ pub fn run() -> ! {
                     // the rx_slot / parity_lock_ok rationale (issue #110).
                     // Core2's wav_sim path uses the same wav_idx counter,
                     // so the gate is identical.
-                    let parity_lock_ok = framing_settled_for_parity_lock();
+                    let parity_lock_ok =
+                        mfsk_app_shared::parity::framing_settled_for_parity_lock();
                     if qso
                         .process_message(&text, wav_idx as u32, parity_lock_ok)
                         .is_some()
@@ -185,19 +186,6 @@ pub fn run() -> ! {
         let intent = qso.next_tx();
         push_tx_line(&qso, intent.as_ref());
     }
-}
-
-/// Same as the s3-app helper — see issue #110.
-fn framing_settled_for_parity_lock() -> bool {
-    use mfsk_app_shared::parity::{FRAMING_MIN_SLOTS_OBSERVED, SAFE_DT_THRESHOLD_SEC};
-    use mfsk_app_shared::time_sync;
-
-    if time_sync::slots_observed() < FRAMING_MIN_SLOTS_OBSERVED {
-        return false;
-    }
-    time_sync::slot_dt_offset()
-        .map(|dt| dt.abs() < SAFE_DT_THRESHOLD_SEC)
-        .unwrap_or(false)
 }
 
 fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
