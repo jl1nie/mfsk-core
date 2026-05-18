@@ -223,6 +223,21 @@ pub fn time_into_capture_slot_us(now_mono_us: i64) -> Option<i64> {
         .and_then(|g| g.map(|(_, start)| (now_mono_us - start).max(0)))
 }
 
+/// Atomic combined read of `(wav_idx, time_into_slot_us)`. Callers
+/// that need *both* values to refer to the same slot (e.g. the TX
+/// scheduler's parity + launch-deadline check) must use this instead
+/// of pairing `current_capture_wav_idx()` with
+/// `time_into_capture_slot_us()` — the two-call form holds the
+/// mutex twice and races with `publish_capture_slot()` if a slot
+/// boundary crosses between them, yielding `(slot N, time_into_N+1)`.
+/// `None` before the audio source has published any boundary.
+pub fn current_capture_info(now_mono_us: i64) -> Option<(u32, i64)> {
+    CAPTURE_SLOT
+        .lock()
+        .ok()
+        .and_then(|g| g.map(|(w, start)| (w, (now_mono_us - start).max(0))))
+}
+
 /// Test-only reset. The statics persist for the whole process so
 /// each test case starts uninitialised.
 #[cfg(test)]

@@ -42,3 +42,10 @@ pub const SAFE_DT_THRESHOLD_SEC: f32 = 1.5;
 /// One bootstrap pass is normally enough to align (within ±50 ms);
 /// two gives us a re-check sample.
 pub const FRAMING_MIN_SLOTS_OBSERVED: u32 = 2;
+
+/// Issue #110: must finish PTT + synth + I2S write inside the slot.
+/// Budget: 15 s slot − ~12.6 s frame − 100 ms PTT settle − 1 s
+/// safety margin ≈ 1.3 s window from capture-slot start. Audio +
+/// TxTest schedulers both gate `time_into_capture_slot_us` ≤ this
+/// before firing TX.
+pub const TX_LAUNCH_DEADLINE_US: i64 = 1_300_000;

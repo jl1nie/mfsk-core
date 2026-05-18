@@ -51,15 +51,13 @@ pub fn spawn(i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManager>>) -> Res
     Ok(())
 }
 
-/// Issue #110: matches `audio::TX_LAUNCH_DEADLINE_US`.
-const TX_LAUNCH_DEADLINE_US: i64 = 1_300_000;
 /// FT8 slot length in μs. Used by the TxTest path to drive synthetic
 /// capture-slot publications without a real audio source.
 const SLOT_LEN_US: i64 = 15_000_000;
 
 fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManager>>) {
     use esp_idf_svc::sys::esp_timer_get_time;
-    use mfsk_app_shared::parity::Parity;
+    use mfsk_app_shared::parity::{Parity, TX_LAUNCH_DEADLINE_US};
     use mfsk_app_shared::time_sync;
 
     // Prio above stage1_inc/dual_core so the I2S DMA refill doesn't
@@ -101,61 +99,31 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
         // we rely on the FSM's per-slot state and the fact that auto-CQ
         // fires immediately when next_tx() exposes an intent.
         // ── Parity + launch-window gate (issue #110) ──────────────
-        // Computed BEFORE we acquire the QSO lock so we don't hold
-        // the FSM mutex while doing the cheap parity arithmetic.
-        let Some(cur_slot) = time_sync::current_capture_wav_idx() else {
+        // Atomic (slot, time_into_slot) read so the two values can't
+        // straddle a boundary (gemini PR #112 MEDIUM —
+        // `current_capture_info` takes the time_sync mutex once).
+        let Some((cur_slot, into_us)) = time_sync::current_capture_info(now_us) else {
             FreeRtos::delay_ms(100);
             continue;
         };
-        match time_sync::time_into_capture_slot_us(now_us) {
-            Some(i) if i <= TX_LAUNCH_DEADLINE_US => {}
-            _ => {
-                FreeRtos::delay_ms(100);
-                continue;
-            }
+        if into_us > TX_LAUNCH_DEADLINE_US {
+            FreeRtos::delay_ms(100);
+            continue;
         }
         let cur_par = Parity::from_slot_index(cur_slot);
 
-        let maybe_intent = {
-            // Mutable lock — the auto-CQ branch may call `call_cq()`
-            // (Gemini PR #103 MEDIUM: reuse the lock instead of
-            // drop+reacquire to avoid the Idle race).
-            let mut q = match qso.lock() {
-                Ok(g) => g,
-                Err(e) => {
-                    log::error!("tx_scheduler: qso lock poisoned: {e}");
-                    FreeRtos::delay_ms(1000);
-                    continue;
-                }
-            };
-            let auto_cq = q.auto_cq_enabled;
-            // For Idle state, only fire CQ when auto_cq is enabled.
-            // For mid-QSO states (Calling/Report/Final), always honour
-            // the next_tx() intent — auto_cq only gates the cold-start
-            // Idle → Calling auto-transition.
-            let intent = q.next_tx();
-            let intent = if intent.is_none()
-                && auto_cq
-                && q.state == mfsk_app_shared::qso::QsoState::Idle
-            {
-                // Synthesise a fresh CQ by transitioning Idle → Calling.
-                // Reuse the existing MutexGuard rather than dropping and
-                // re-acquiring — `q` already has mutable access and the
-                // drop/reacquire opens a tiny window where another task
-                // can see Idle and start its own transition.
-                // Gemini PR #103 MEDIUM.
-                Some(q.call_cq(None))
-            } else {
-                intent
-            };
-            // Parity check INSIDE the lock so preferred_tx_parity sees
-            // the freshly set Calling state.
-            intent.and_then(|i| {
-                let our_par = q.preferred_tx_parity().unwrap_or(cur_par);
-                if cur_par == our_par { Some(i) } else { None }
-            })
+        // Auto-CQ + parity check inside `QsoManager::pick_tx_intent`
+        // — single FSM lock, no Idle race, no duplicated orchestration
+        // with `audio::tx_scheduler_pick_intent` (gemini PR #112
+        // MEDIUM, building on gemini PR #103 MEDIUM).
+        let maybe_intent = match qso.lock() {
+            Ok(mut q) => q.pick_tx_intent(cur_par),
+            Err(e) => {
+                log::error!("tx_scheduler: qso lock poisoned: {e}");
+                FreeRtos::delay_ms(1000);
+                continue;
+            }
         };
-
         let Some(intent) = maybe_intent else {
             FreeRtos::delay_ms(100);
             continue;
@@ -231,14 +199,12 @@ fn scheduler_thread(mut i2s: I2sDriver<'static, I2sTx>, qso: Arc<Mutex<QsoManage
         crate::civ::set_ptt(false);
         crate::audio::AUDIO_GATE.store(true, std::sync::atomic::Ordering::Release);
 
-        // Advance the FSM — if the peer didn't reply during our TX
-        // slot, `on_period_end` increments the retry counter (or
-        // resets to Idle when budget is exhausted). Also lock
-        // self_tx_parity to the slot we just transmitted in
-        // (issue #110) — sticky for the rest of this QSO.
+        // Single qso-lock acquisition for both post-TX hooks: lock
+        // self_tx_parity to the slot we just transmitted in (sticky
+        // for the rest of this QSO, issue #110) AND advance the FSM
+        // (retry counter / Idle reset when budget exhausted).
         if let Ok(mut q) = qso.lock() {
-            q.record_self_tx(cur_slot);
-            let _ = q.on_period_end();
+            q.finish_self_tx(cur_slot);
         }
 
         // Small slot gap so we don't immediately retransmit if FSM

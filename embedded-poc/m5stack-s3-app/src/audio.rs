@@ -803,13 +803,7 @@ pub fn capture_tx_thread(
             None
         };
         if let Some((intent, tx_slot)) = intent_opt {
-            do_tx_cycle(&mut i2s, &qso, &intent, &mut tx_out[..]);
-            // Issue #110: lock self_tx_parity to the slot we just
-            // transmitted in. First call sets it; subsequent calls in
-            // the same QSO are no-ops (sticky).
-            if let Ok(mut q) = qso.lock() {
-                q.record_self_tx(tx_slot);
-            }
+            do_tx_cycle(&mut i2s, &qso, &intent, tx_slot, &mut tx_out[..]);
             // Reset capture state — the gap in RX during ~12.6 s TX
             // makes any in-flight resample / slot accumulator stale.
             // Drop partial chunk; next slot will start fresh, self-sync
@@ -915,54 +909,39 @@ pub fn capture_tx_thread(
     }
 }
 
-/// Issue #110: must finish PTT + synth + I2S write inside the slot.
-/// Budget: 15 s slot − ~12.6 s frame − 100 ms PTT settle − 1 s safety
-/// margin ≈ 1.3 s window from slot start.
-const TX_LAUNCH_DEADLINE_US: i64 = 1_300_000;
-
 /// Pull the next TX intent if one is pending AND the current capture
 /// slot's parity matches our preferred TX parity AND we're still
-/// early enough in the slot to fit a full FT8 frame. Mirrors the same
-/// logic as `tx_scheduler::scheduler_thread` so the auto-CQ behaviour
-/// is identical between BootMode::TxTest (RX-less scheduler) and
-/// BootMode::Qso (combined thread).
+/// early enough in the slot to fit a full FT8 frame. Thin wrapper
+/// around `QsoManager::pick_tx_intent` that adds the audio-side
+/// slot bookkeeping (atomic `(slot, time_into_slot)` read +
+/// `TX_LAUNCH_DEADLINE_US` gate). Mirrors `tx_scheduler::scheduler_thread`
+/// so the auto-CQ behaviour is identical between BootMode::TxTest
+/// (RX-less scheduler) and BootMode::Qso (combined thread).
 ///
-/// Returns `(intent, slot_idx)` so the caller can record_self_tx with
-/// the correct slot after the TX completes.
+/// Returns `(intent, slot_idx)` so the caller can pair `record_self_tx`
+/// with the correct slot after the TX completes.
 fn tx_scheduler_pick_intent(
     qso: &std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
 ) -> Option<(mfsk_app_shared::qso::TxIntent, u32)> {
-    use mfsk_app_shared::parity::Parity;
+    use mfsk_app_shared::parity::{Parity, TX_LAUNCH_DEADLINE_US};
     use mfsk_app_shared::time_sync;
 
-    // Parity / launch-window gate. Skip silently before the audio
-    // source has published any capture slot (cold boot first slot).
-    let cur_slot = time_sync::current_capture_wav_idx()?;
+    // Atomic (slot, time_into_slot) read — `current_capture_info`
+    // takes the mutex once so the two values can't straddle a
+    // boundary (gemini PR #112 MEDIUM). Skip silently before the
+    // audio source has published any capture slot (cold boot first
+    // slot).
     let now_us = unsafe { sys::esp_timer_get_time() };
-    let into_us = time_sync::time_into_capture_slot_us(now_us)?;
+    let (cur_slot, into_us) = time_sync::current_capture_info(now_us)?;
     if into_us > TX_LAUNCH_DEADLINE_US {
         return None;
     }
     let cur_par = Parity::from_slot_index(cur_slot);
 
-    let mut q = qso.lock().ok()?;
-    let auto_cq = q.auto_cq_enabled;
-    let intent = q.next_tx();
-    let intent = if intent.is_some() {
-        intent
-    } else if auto_cq && q.state == mfsk_app_shared::qso::QsoState::Idle {
-        Some(q.call_cq(None))
-    } else {
-        None
-    }?;
-
-    // Parity check. `None` from preferred_tx_parity means fresh cold-
-    // boot CQ — accept any slot; that slot becomes self_tx_parity via
-    // record_self_tx after the TX completes.
-    let our_par = q.preferred_tx_parity().unwrap_or(cur_par);
-    if cur_par != our_par {
-        return None;
-    }
+    // Parity check + auto-CQ orchestration happen inside the FSM lock
+    // (`QsoManager::pick_tx_intent`) so `preferred_tx_parity()` sees
+    // any freshly transitioned state from the auto-CQ branch.
+    let intent = qso.lock().ok()?.pick_tx_intent(cur_par)?;
     Some((intent, cur_slot))
 }
 
@@ -973,6 +952,7 @@ fn do_tx_cycle(
     i2s: &mut I2sDriver<'static, I2sBiDir>,
     qso: &std::sync::Arc<std::sync::Mutex<mfsk_app_shared::qso::QsoManager>>,
     intent: &mfsk_app_shared::qso::TxIntent,
+    tx_slot: u32,
     tx_out: &mut [u8],
 ) {
     use esp_idf_svc::hal::delay::FreeRtos;
@@ -1046,8 +1026,11 @@ fn do_tx_cycle(
     crate::civ::set_ptt(false);
     AUDIO_GATE.store(true, Ordering::Release);
 
-    // Advance FSM (retry counter / Idle reset).
+    // Single qso-lock acquisition for both post-TX hooks (gemini PR
+    // #112 MEDIUM): lock self_tx_parity to the slot we just
+    // transmitted in (sticky for the rest of this QSO, issue #110)
+    // AND advance the FSM (retry counter / Idle reset).
     if let Ok(mut q) = qso.lock() {
-        let _ = q.on_period_end();
+        q.finish_self_tx(tx_slot);
     }
 }
