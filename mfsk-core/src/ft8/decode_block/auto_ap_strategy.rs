@@ -174,6 +174,20 @@ where
     const AUTO_AP_PASS1_LIMIT: usize = 200;
     let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, AUTO_AP_PASS1_LIMIT);
     drop(spec);
+    // Skip coarse-sync candidates that sit at the (freq, dt) of an
+    // already-decoded signal — those have already been processed by
+    // the standard 3-pass driver and emerged with a decode; re-running
+    // them under auto-AP just wastes BP work. Tolerance matches the
+    // `subtract_signal_lpf` footprint roughly: ±3 Hz frequency, ±0.5 s
+    // dt. Gemini PR #118 medium-priority optimisation.
+    let cands: alloc::vec::Vec<_> = cands
+        .into_iter()
+        .filter(|c| {
+            !existing
+                .iter()
+                .any(|r| (r.freq_hz - c.freq_hz).abs() < 3.0 && (r.dt_sec - c.dt_sec).abs() < 0.5)
+        })
+        .collect();
     let cands = fine_refine_pass1(audio, cands);
     // Use a generous max_cand for auto-AP — the standard multipass
     // already truncated to `max_cand` (typically 60) by block-0 q,
@@ -184,46 +198,53 @@ where
     let auto_ap_max_cand = max_cand.saturating_mul(4).max(200);
     let refined: Vec<RefinedCandidate> = refine_candidates(audio, cands, auto_ap_max_cand);
 
+    // Per-callsign batch processing. Gemini PR #118 high-priority
+    // optimisation: passing one (cand, callsign) pair at a time
+    // re-allocates `BpScratch` (~12 KB) on every invocation; batching
+    // all remaining candidates per callsign reuses the BpScratch
+    // inside `process_candidates_tuned_with_ap`'s inner loop and
+    // improves cache locality. Candidates that decode are removed
+    // from `remaining` so subsequent callsigns don't re-attempt them
+    // (semantically equivalent to the original `break` once a
+    // (cand, callsign) pair succeeded).
+    let mut remaining: Vec<RefinedCandidate> = refined;
     let mut out: Vec<DecodeResult> = Vec::new();
-    for cand in &refined {
-        for callsign in &callsigns {
-            // Skip if this candidate would re-decode an existing
-            // message — early in the per-callsign loop, this is a
-            // weak filter; the per-result dedup below is the strict
-            // check.
-            let ap = ApHint::new().with_call1(callsign);
-            let single: Vec<RefinedCandidate> = alloc::vec![clone_refined(cand)];
-            let single_results = process_candidates_tuned_with_ap(
-                audio,
-                single,
-                depth,
-                DEFAULT_Q_THRESH,
-                bp_max_iter,
-                Some(&ap),
-                strictness,
-            );
-            let mut accepted_one = false;
-            for mut r in single_results {
-                if existing.iter().any(|x| x.message77 == r.message77)
-                    || out.iter().any(|x| x.message77 == r.message77)
-                {
-                    continue;
-                }
-                // Auto-AP-specific tightened hard_errors gate. See
-                // [`AUTO_AP_HARDERRORS_MAX`].
-                if r.hard_errors > AUTO_AP_HARDERRORS_MAX {
-                    continue;
-                }
-                r.pass = PASS_ID_AUTO_AP;
-                out.push(r);
-                accepted_one = true;
+    for callsign in &callsigns {
+        if remaining.is_empty() {
+            break;
+        }
+        let ap = ApHint::new().with_call1(callsign);
+        let batch: Vec<RefinedCandidate> = remaining.iter().map(clone_refined).collect();
+        let batch_results = process_candidates_tuned_with_ap(
+            audio,
+            batch,
+            depth,
+            DEFAULT_Q_THRESH,
+            bp_max_iter,
+            Some(&ap),
+            strictness,
+        );
+        for mut r in batch_results {
+            if existing.iter().any(|x| x.message77 == r.message77)
+                || out.iter().any(|x| x.message77 == r.message77)
+            {
+                continue;
             }
-            if accepted_one {
-                // First success for this candidate — stop trying more
-                // callsigns. Each candidate decodes to at most one
-                // codeword.
-                break;
+            // Auto-AP-specific tightened hard_errors gate. See
+            // [`AUTO_AP_HARDERRORS_MAX`].
+            if r.hard_errors > AUTO_AP_HARDERRORS_MAX {
+                continue;
             }
+            // Remove the candidate that produced this result from
+            // future callsign attempts (each candidate decodes to at
+            // most one codeword).
+            if let Some(pos) = remaining.iter().position(|c| {
+                (c.0.freq_hz - r.freq_hz).abs() < 0.1 && (c.0.dt_sec - r.dt_sec).abs() < 0.01
+            }) {
+                remaining.remove(pos);
+            }
+            r.pass = PASS_ID_AUTO_AP;
+            out.push(r);
         }
     }
     out
