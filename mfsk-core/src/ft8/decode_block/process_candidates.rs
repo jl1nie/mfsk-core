@@ -1146,6 +1146,10 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
 /// Lets a caller (e.g. auto-AP) reuse the same `RefinedCandidate`
 /// values across multiple AP-hint iterations without per-call
 /// `Vec::clone` + `Box::new` allocation churn.
+///
+/// Only used by `auto_ap_strategy` (fft-rustfft host research path);
+/// gated to match.
+#[cfg(feature = "fft-rustfft")]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
     audio: &[S],
