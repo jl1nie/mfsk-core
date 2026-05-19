@@ -280,6 +280,38 @@ fn decode_block_multipass<S: AudioSample>(
         }
     }
 
+    // Issue #117: auto-AP iaptype-2 rescue. After the 3-pass driver
+    // settles, take the callsigns we already decoded in this slot
+    // and feed them back as AP mycall candidates against a fresh
+    // coarse-sync pass. Recovers weak signals like K1BZM DK8NE @244 Hz
+    // -19 dB on `qso3_busy.wav` whose 28-bit caller-callsign
+    // constraint brings BP into convergence but which no operator-
+    // supplied AP context exists to seed.
+    //
+    // Gated to `BpAllOsd` host research config inside
+    // `auto_ap_strategy::run` — embedded ship (`BpAll` +
+    // fixed-point) returns an empty vec without doing any work.
+    {
+        let auto_ap_decodes = super::auto_ap_strategy::run(
+            audio,
+            freq_min,
+            freq_max,
+            sync_min,
+            max_cand,
+            &all,
+            depth,
+            bp_max_iter,
+            strictness,
+        );
+        for r in auto_ap_decodes {
+            if all.iter().any(|x| x.message77 == r.message77) {
+                continue;
+            }
+            crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
+            all.push(r);
+        }
+    }
+
     // Replace each result's snr_db with WSJT-X xsnr2 (pre-subtract
     // spectrogram + baseline). `xsig` is read directly from the
     // captured pass-1 spectrogram at each tone position, so xsig
@@ -634,7 +666,7 @@ fn decode_block_multipass<S: AudioSample>(
 /// embedded paths skip this for compute reasons (cache is 1.5 MB,
 /// 192k FFT is not in our embedded planner).
 #[cfg(feature = "fft-rustfft")]
-fn fine_refine_pass1<S: AudioSample>(
+pub(super) fn fine_refine_pass1<S: AudioSample>(
     audio: &[S],
     cands: alloc::vec::Vec<crate::core::sync::SyncCandidate>,
 ) -> alloc::vec::Vec<crate::core::sync::SyncCandidate> {
@@ -672,7 +704,7 @@ fn fine_refine_pass1<S: AudioSample>(
 /// `refine_fine_3stage` on the 200 Hz baseband — deferred to a
 /// future patch (estimate: ~150 lines for the FIR decimator).
 #[cfg(not(feature = "fft-rustfft"))]
-fn fine_refine_pass1<S: AudioSample>(
+pub(super) fn fine_refine_pass1<S: AudioSample>(
     _audio: &[S],
     cands: alloc::vec::Vec<crate::core::sync::SyncCandidate>,
 ) -> alloc::vec::Vec<crate::core::sync::SyncCandidate> {
@@ -766,7 +798,7 @@ pub fn decode_block_into_tuned<S: AudioSample>(
 /// 1.0 s at PASS1=75). Override per-call via `MFSK_PASS1_LIMIT`
 /// when std is enabled.
 const PASS1_LIMIT_DEFAULT: usize = 30;
-fn pass1_limit() -> usize {
+pub(super) fn pass1_limit() -> usize {
     #[cfg(feature = "std")]
     {
         if let Ok(s) = std::env::var("MFSK_PASS1_LIMIT")
@@ -797,7 +829,7 @@ pub type RefinedCandidate = (SyncCandidate, Box<[[Cmplx<f32>; 8]; 79]>, u32);
 /// full 21-symbol `sync_quality` after filling blocks 1, 2 and uses
 /// that for its `q > 6` gate; the per-cand sort here is just for
 /// truncating to `max_cand`.
-fn refine_candidates<S: AudioSample>(
+pub(super) fn refine_candidates<S: AudioSample>(
     audio: &[S],
     cands: Vec<SyncCandidate>,
     max_cand: usize,
@@ -1082,7 +1114,7 @@ pub fn process_candidates_tuned<S: AudioSample>(
 /// `decode_block_with_ap` driver and host's redirected
 /// `process_candidate`.
 #[allow(clippy::too_many_arguments)]
-fn process_candidates_tuned_with_ap<S: AudioSample>(
+pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     audio: &[S],
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
