@@ -87,7 +87,7 @@ fn ft4_sniper_ap_wallclock() {
 
     eprintln!("\nFT4 decode_sniper_ap single-call wall-clock (3 seeds/SNR):");
     eprintln!("  FT4 slot length = 7.5 s (budget for WASM single-thread)");
-    eprintln!("  (EQ=Adaptive, max_cand=30, DecodeDepth=BpAllOsd)");
+    eprintln!("  (EQ=Local, max_cand=30, DecodeDepth=BpAllOsd)");
     eprintln!("   SNR    avg      min      max    status");
 
     for snr in [-4, -10, -14, -16, -18] {
@@ -96,7 +96,7 @@ fn ft4_sniper_ap_wallclock() {
         for seed in 0..3u64 {
             let audio = make_slot(&msg, snr as f32, 0xBEEF + seed);
             let t0 = Instant::now();
-            let results = decode_sniper_ap(&audio, 1000.0, 30, EqMode::Adaptive, Some(&ap));
+            let results = decode_sniper_ap(&audio, 1000.0, 30, EqMode::Local, Some(&ap));
             let dt = t0.elapsed();
             times.push(dt);
             if results.iter().any(|r| r.message77() == msg) {

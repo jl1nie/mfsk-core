@@ -178,8 +178,8 @@ pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
 
 /// Same as [`compute_llr`] but stops at nsym=1. `llrb`/`llrc` come
 /// back zero-filled. Use when the caller will only ever read
-/// `llra` (or `llrd`), e.g. embedded `decode_block` with
-/// `DecodeDepth::Bp`. ~5× faster than the full computation.
+/// `llra` (or `llrd`), e.g. Step 1 of the BP staircase. ~5× faster
+/// than the full computation.
 pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     compute_llr_generic::<P, f32, T>(cs, 1)
 }

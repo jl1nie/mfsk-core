@@ -39,14 +39,15 @@ typedef enum MfskFt8Status {
 /**
  * Mirrors `mfsk_core::ft8::decode::DecodeDepth`. The deeper levels
  * trade decode time for recall on busy bands.
+ *
+ * Discriminant `0` is intentionally unassigned — the legacy
+ * `Bp` (single-metric) rung was retired in 0.7.0 (issue #74).
+ * Existing C callers passing `1` / `2` remain valid; passing `0`
+ * is now rejected by `map_depth` and surfaces as a caller bug.
  */
 typedef enum MfskFt8Depth {
   /**
-   * `Bp(llra)` only — fast nsym=1 LLR + one BP run per candidate.
-   */
-  MFSK_FT8_DEPTH_BP = 0,
-  /**
-   * Above + four full LLR variants on candidates that fail Bp.
+   * Four full LLR variants + BP run per candidate.
    */
   MFSK_FT8_DEPTH_BP_ALL = 1,
   /**

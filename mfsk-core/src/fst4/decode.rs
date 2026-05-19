@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn decode_frame_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 60 * 1000]; // 60 s of silence
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn decode_frame_with_cache_and_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 60 * 1000]; // 60 s of silence
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,
