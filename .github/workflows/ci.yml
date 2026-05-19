@@ -59,6 +59,7 @@ jobs:
     name: path filter
     runs-on: ubuntu-latest
     outputs:
+      src: ${{ steps.filter.outputs.src }}
       ft8: ${{ steps.filter.outputs.ft8 }}
       q65: ${{ steps.filter.outputs.q65 }}
       uvpacket: ${{ steps.filter.outputs.uvpacket }}
@@ -70,6 +71,24 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
+            # `src` is the docs-only escape hatch (issue #113). True when
+            # any compilation-relevant input changed. False on pure
+            # docs/CHANGELOG/README/rustdoc-only PRs, which lets the
+            # Build/Test/C++ matrix skip while rustfmt+clippy, rustdoc,
+            # and publish-dry-run still run as the doc-surface gate.
+            # `Cargo.lock` is in because `cargo update` legitimately
+            # changes what gets compiled.
+            src:
+              - '.github/workflows/**'
+              - 'Cargo.lock'
+              - 'mfsk-core/Cargo.toml'
+              - 'mfsk-core/build.rs'
+              - 'mfsk-core/src/**'
+              - 'mfsk-core/tests/**'
+              - 'mfsk-core/examples/**'
+              - 'mfsk-core/benches/**'
+              - 'mfsk-ffi/**'
+              - 'mfsk-ffi-ft8/**'
             ft8:
               - '.github/workflows/**'
               - 'mfsk-core/Cargo.toml'
@@ -214,9 +233,13 @@ jobs:
           # coverage). `push_only: true` skips on regular PRs and
           # only runs on push-to-main or when the PR carries the
           # `run-full-sweep` label.
+          # `src` gate (issue #113): default suite still covers every
+          # protocol's non-ignored tests, but is skipped entirely on
+          # docs-only PRs (README / CHANGELOG / docs/** / rustdoc) since
+          # the inputs to the compiler/test binaries did not move.
           - name: default
             kind: default
-            changes_key: always
+            changes_key: src
             push_only: false
           # FT8 recall protection (real-QSO regression + WSJT-X
           # reference WAV recall across all distributed samples).
@@ -275,6 +298,7 @@ jobs:
           CHANGES_KEY: ${{ matrix.suite.changes_key }}
           PUSH_ONLY: ${{ matrix.suite.push_only }}
           EVENT_NAME: ${{ github.event_name }}
+          SRC: ${{ needs.changes.outputs.src }}
           FT8: ${{ needs.changes.outputs.ft8 }}
           Q65: ${{ needs.changes.outputs.q65 }}
           UVPACKET: ${{ needs.changes.outputs.uvpacket }}
@@ -315,6 +339,7 @@ jobs:
               should_run=true
             else
               case "$CHANGES_KEY" in
+                src)      [ "$SRC" = "true" ]      && should_run=true ;;
                 ft8)      [ "$FT8" = "true" ]      && should_run=true ;;
                 q65)      [ "$Q65" = "true" ]      && should_run=true ;;
                 uvpacket) [ "$UVPACKET" = "true" ] && should_run=true ;;
@@ -391,6 +416,11 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   feature-matrix:
     name: Build (${{ matrix.features }})
+    needs: changes
+    # Skip on docs-only PRs (issue #113). On push to main, always run
+    # as a post-merge safety net even if the merge commit only touched
+    # docs (defensive — a rebase could surface a regression).
+    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -434,6 +464,10 @@ jobs:
   # ───────────────────────────────────────────────────────────────
   ffi:
     name: mfsk-ffi + C++ driver
+    needs: changes
+    # Skip on docs-only PRs (issue #113); see feature-matrix for the
+    # push-to-main rationale.
+    if: github.event_name == 'push' || needs.changes.outputs.src == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
