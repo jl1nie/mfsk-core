@@ -116,7 +116,7 @@ authoritative deprecation notice.
 Non-breaking patch. Two interleaved storylines:
 
 1. **Structural** — `mfsk-core/src/ft8/decode_block.rs` (3,517 lines)
-   carved into a 7-sibling submodule tree (`docs/CLEANUP_2026_05.md`
+   carved into a 7-sibling submodule tree (`docs/historical/CLEANUP_2026_05.md`
    ε plan, shipped as PRs #77 / #83 / #79 / #80 / #81 / #82). Pure
    refactor, zero behaviour change.
 2. **OSD WSJT-X faithfulness** — `osd_strategy::try_fallback` (the
