@@ -165,7 +165,15 @@ const DF_TOL_HZ: f32 = 5.0;
 
 use common::load_wav_i16;
 
+// JTDX-aggressive recall is a research-ceiling guard, not a ship-config
+// budget check (uses BpAllOsd + sync_min=0.8 + max_cand=60 — ~34 s
+// wall-clock per run in release). `ft8_qso3_apoff_recall.rs` already
+// covers the production-host budget against the WSJT-X golden floor.
+// Run explicitly when investigating aggressive-recall regressions:
+//   cargo test --release --features full --test ft8_qso3_jtdx_recall \
+//       -- --ignored
 #[test]
+#[ignore = "research-ceiling regression — run manually, not on CI"]
 fn qso3_apoff_meets_jtdx_recall_floor() {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
     // Host f32 keeps OSD on (host has compute headroom — used for
