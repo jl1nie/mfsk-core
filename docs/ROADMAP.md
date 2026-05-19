@@ -9,7 +9,7 @@ PR #104 — Phase 1.7.7-Stick Goertzel migration), and finally `v0.6.5`
 (2026-05-18, PR #108 — crates.io surface refresh; no behaviour change).
 The cleanup-2026-05
 γ/β/δ/ε plan landed end-to-end across these cuts; see
-`docs/CLEANUP_2026_05.md` (historical) for the original prescription.
+`docs/historical/CLEANUP_2026_05.md` (historical) for the original prescription.
 Headline numbers (all on `qso3_busy.wav`):
 
 - Host AP-off recall: **7/8** WSJT-X golden, **13/18** JTDX golden
@@ -184,37 +184,23 @@ Currently open GitHub issues (state:open as of 2026-05-18):
 - **#74** — `DecodeDepth::Bp` is the cheapest staircase rung;
   confirm there is a real caller before keeping it.
 
-Closed during the 0.6.x line (kept here as recent context, not as
-open work):
+Closed during the 0.6.x line (compact context table — for full
+prose, see the closed issue / linked PR / `git log`):
 
-- **#40** host wide-band coarse-sync candidate gap — closed by
-  v0.6.0; AP-off recall on `qso3_busy.wav` 5/8 → 7/8.
-- **#46** sync consolidation PR — closed by v0.6.0
-  (`decode_block::coarse_sync` + `compute_spectrogram` graduate to
-  public API).
-- **#61** fold `m5stack-core2` into the S3 dual-core pipeline +
-  retire the Core2 bench crate — closed in 0.6.3 (PR #76, 3-phase
-  series: `mfsk-app-shared` carve-out → `m5stack-core2-app` sibling
-  → bench retirement). Verified on Core2 hardware: 7/8 decodes per
-  slot from `qso3_busy.wav`, 400 alive ticks, stable heap.
-- **#63** WSJT-X-faithful OSD `npre1` precoding — closed in 0.6.3.
-  See *What landed in 0.6.3* above.
-- **#105** EMBEDDED.md rewrite — closed (different approach: kept
-  the deep library-consumer technical depth of the pre-PR #103 doc
-  and refreshed it for the 0.6.4 ship, instead of the proposed
-  150-line nav doc).
+| ref | summary | closed in |
+|---|---|---|
+| #40 | host wide-band coarse-sync candidate gap (AP-off recall 5/8 → 7/8) | v0.6.0 |
+| #46 | sync consolidation — `decode_block::coarse_sync` + `compute_spectrogram` public | v0.6.0 |
+| A0' | `decode_block_with_ap` as Step 4 of `process_one_candidate_inner` | v0.6.1 |
+| #61 | fold `m5stack-core2` into S3 dual-core; retire Core2 bench (PR #76) | 0.6.3 |
+| #63 | WSJT-X-faithful OSD `npre1`/`npre2` precoding (see "What landed in 0.6.3") | 0.6.3 |
+| #105 | EMBEDDED.md rewrite (kept deep tech ref, refreshed for 0.6.4) | 0.6.4 |
 
-Carry-overs from the post-0.5.12 plan that have since closed:
-
-- **A0** (`#40` host wide-band coarse-sync gap) — closed by v0.6.0.
-- **A0'** (`decode_block_with_ap` embedded reach) — landed in
-  v0.6.1 as Step 4 of `process_one_candidate_inner`. The
-  `decode_block_with_ap` symmetric public entry exists but the
-  5 missing JTDX-extras on `qso3_busy.wav` sit upstream of AP
-  (host coarse-sync surfaces them only with `subtract_signal_lpf`
-  multipass — a host-side win, not embedded). No new issue filed
-  yet; revisit when an embedded-only WAV surfaces where the gap is
-  post-coarse-sync.
+The 5 remaining JTDX AP-on extras on `qso3_busy.wav` that surface
+only with `subtract_signal_lpf` multipass are a host-side win
+(coarse-sync upstream of AP); no embedded issue filed yet —
+revisit when an embedded-only WAV exhibits a post-coarse-sync
+gap.
 
 Architectural notes that did not graduate to issues:
 
@@ -230,7 +216,7 @@ Architectural notes that did not graduate to issues:
   cd0 path so `fine_refine_pass1` can run on S3 within slot budget
   without a PSRAM round-trip per candidate. No issue filed yet;
   prerequisite is the ε `decode_block` restructure (see
-  `docs/CLEANUP_2026_05.md`) so the seam exists to hook a
+  `docs/historical/CLEANUP_2026_05.md`) so the seam exists to hook a
   streaming alternative onto.
 
 ## Cleanup 2026-05
@@ -238,7 +224,7 @@ Architectural notes that did not graduate to issues:
 γ / β / δ / ε all landed in 0.6.3 (last stage PRs #77 + #83 + #79 +
 #80 + #81 + #82 carved `decode_block.rs` from 3,517 lines into a
 423-line parent + 6 stage submodules). See
-[`docs/CLEANUP_2026_05.md`](CLEANUP_2026_05.md) (HISTORICAL) for the
+[`docs/historical/CLEANUP_2026_05.md`](historical/CLEANUP_2026_05.md) (HISTORICAL) for the
 original four-stage plan; the per-stage acceptance-criteria template
 documented there is reused for future cleanup waves.
 
@@ -251,8 +237,8 @@ hints; the live worklist is the **Open follow-ups** section above.
 
 ## Phase A — Host protocol golden lockdowns
 
-- **A0** (`#40` host coarse-sync gap) and **A0'** (`decode_block_with_ap`)
-  closed in v0.6.0 / v0.6.1 respectively.
+(A0 / A0' both closed in v0.6.x — see the closed-issues table above.)
+
 - **A1** FST4-60A (`#23`) — `tests/fst4_wsjtx_samples.rs` is `#[ignore]`d
   with "decode_frame returns 0 messages"; root-cause line-walk of
   `WSJT-X/lib/fst4_decode.f90` against `mfsk-core/src/fst4/decode.rs`

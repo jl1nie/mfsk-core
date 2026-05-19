@@ -646,7 +646,18 @@ field-realistic settings.
 
 - **0.3.0**: design abandoned after honest AFSK1200 / AX.25
   comparison showed it ~5–10 × faster on clean channels for the
-  signed-QSL payload.
+  signed-QSL payload. For a 214-byte payload (JSON 126 B +
+  Base64 sig 88 B):
+
+  | Transport                  | Channel rate | Net rate  | 214 B airtime |
+  |----------------------------|-------------:|----------:|--------------:|
+  | AX.25 / AFSK 1200          |     1200 bps | ~1100 bps | ~2 s + TXDELAY 0.5 s |
+  | UvPacket300 (LDPC + chain) |      600 bps |  ~200 bps | ~10 s |
+  | UvPacket150 (LDPC + chain) |      300 bps |  ~100 bps | ~18 s |
+
+  The order-of-magnitude airtime cost only pays off on channels
+  AFSK 1200 cannot deliver (Rayleigh fade, mountain / portable
+  weak SSB) — "drop-in AFSK replacement" was the wrong framing.
 - **0.3.1 Phase 1**: 4-GFSK at h = 0.5. Phase 2 found
   `sinc(0.5) ≈ 0.637` left adjacent tones non-orthogonal under
   non-coherent detection (textbook condition is h ≥ 1).
