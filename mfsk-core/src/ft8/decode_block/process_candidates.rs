@@ -1129,6 +1129,39 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
             .unwrap();
     process_candidates_with_ap(
         audio,
+        &cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        &mut cs_scratch,
+        |cs, cand, mask| {
+            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
+        },
+        ap_hint,
+        strictness,
+    )
+}
+
+/// Slice-borrow variant of [`process_candidates_tuned_with_ap`].
+/// Lets a caller (e.g. auto-AP) reuse the same `RefinedCandidate`
+/// values across multiple AP-hint iterations without per-call
+/// `Vec::clone` + `Box::new` allocation churn.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
+    audio: &[S],
+    cands: &[RefinedCandidate],
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
+    let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
+        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
+            .try_into()
+            .unwrap();
+    process_candidates_with_ap(
+        audio,
         cands,
         depth,
         q_thresh,
@@ -1266,7 +1299,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     let _ = &basis_im;
     process_candidates_with_ap(
         audio,
-        cands,
+        &cands,
         depth,
         q_thresh,
         bp_max_iter,
@@ -1323,7 +1356,7 @@ where
 {
     process_candidates_with_ap(
         audio,
-        cands,
+        &cands,
         depth,
         q_thresh,
         bp_max_iter,
@@ -1347,7 +1380,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn process_candidates_with_ap<S: AudioSample, F>(
     _audio: &[S],
-    cands: Vec<RefinedCandidate>,
+    cands: &[RefinedCandidate],
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
@@ -1384,15 +1417,16 @@ where
     // entry, not for the function itself.
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
-    for (cand, cs_box, _q_block0) in cands {
+    for (cand, cs_box, _q_block0) in cands.iter() {
         // Stage cs into the caller's scratch (typically internal DRAM
         // on Xtensa) so the LLR / BP / sync_quality hot loops below
-        // read from fast memory. The PSRAM-resident `cs_box` is
-        // dropped immediately after the copy. Cost: ~60 µs (5 KB at
-        // ~80 MB/s OCT PSRAM read on S3) vs many-hundred-µs gains in
-        // BP iter loop.
-        *cs_scratch = *cs_box;
-        drop(cs_box);
+        // read from fast memory. Cost: ~60 µs (5 KB at ~80 MB/s OCT
+        // PSRAM read on S3) vs many-hundred-µs gains in BP iter loop.
+        // Slice-borrow form (PR #118 round-2): caller keeps ownership
+        // of `cs_box`, enabling auto-AP to reuse the same refined
+        // candidates across multiple callsigns without per-candidate
+        // Box reallocation.
+        *cs_scratch = **cs_box;
         // Two-step fill: sync blocks first, gate by full sync_quality,
         // then fill data symbols only for survivors. Saves the 58 ×
         // 8 = 464 data-symbol DFTs on every candidate that fails the
@@ -1401,15 +1435,15 @@ where
         // already populated it via `symbol_spectra_direct_into` on
         // `SyncBlock0`, and that data survives in `cs_scratch` here.
         // Saves an additional 56 DFTs / candidate.
-        fill(cs_scratch, &cand, SymMask::SyncBlocks12);
+        fill(cs_scratch, cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
         if q <= q_thresh {
             continue;
         }
-        fill(cs_scratch, &cand, SymMask::DataOnly);
+        fill(cs_scratch, cand, SymMask::DataOnly);
         if let Some(r) = process_one_candidate_inner(
             cs_scratch,
-            &cand,
+            cand,
             cand.dt_sec,
             q,
             depth,

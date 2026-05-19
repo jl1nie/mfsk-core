@@ -34,7 +34,6 @@
 #![cfg(feature = "fft-rustfft")]
 
 extern crate alloc;
-use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -42,7 +41,7 @@ use alloc::vec::Vec;
 use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
 use super::coarse_sync::coarse_sync;
 use super::process_candidates::{
-    RefinedCandidate, fine_refine_pass1, process_candidates_tuned_with_ap, refine_candidates,
+    RefinedCandidate, fine_refine_pass1, process_candidates_tuned_with_ap_ref, refine_candidates,
 };
 use super::spectrogram::compute_spectrogram;
 use super::types::{AudioSample, DEFAULT_Q_THRESH};
@@ -202,11 +201,16 @@ where
     // optimisation: passing one (cand, callsign) pair at a time
     // re-allocates `BpScratch` (~12 KB) on every invocation; batching
     // all remaining candidates per callsign reuses the BpScratch
-    // inside `process_candidates_tuned_with_ap`'s inner loop and
+    // inside `process_candidates_tuned_with_ap_ref`'s inner loop and
     // improves cache locality. Candidates that decode are removed
     // from `remaining` so subsequent callsigns don't re-attempt them
     // (semantically equivalent to the original `break` once a
     // (cand, callsign) pair succeeded).
+    //
+    // Round-2 follow-up: the slice-borrow `_ref` entrypoint lets us
+    // pass `&remaining` directly, eliminating the per-callsign
+    // `clone_refined` (one ~5 KB `Box` per candidate × per callsign)
+    // allocation churn flagged by Gemini.
     let mut remaining: Vec<RefinedCandidate> = refined;
     let mut out: Vec<DecodeResult> = Vec::new();
     for callsign in &callsigns {
@@ -214,10 +218,9 @@ where
             break;
         }
         let ap = ApHint::new().with_call1(callsign);
-        let batch: Vec<RefinedCandidate> = remaining.iter().map(clone_refined).collect();
-        let batch_results = process_candidates_tuned_with_ap(
+        let batch_results = process_candidates_tuned_with_ap_ref(
             audio,
-            batch,
+            &remaining,
             depth,
             DEFAULT_Q_THRESH,
             bp_max_iter,
@@ -248,16 +251,6 @@ where
         }
     }
     out
-}
-
-/// `RefinedCandidate` doesn't derive `Clone` (boxed cs_scratch is
-/// large and the auto-derive isn't worth the size in regular code
-/// paths). Here we deliberately clone to feed
-/// `process_candidates_tuned_with_ap` per-callsign without restructuring
-/// its signature.
-fn clone_refined(c: &RefinedCandidate) -> RefinedCandidate {
-    let cs_clone: Box<[[crate::core::scalar::Cmplx<f32>; 8]; 79]> = Box::new(*c.1);
-    (c.0.clone(), cs_clone, c.2)
 }
 
 #[cfg(test)]
