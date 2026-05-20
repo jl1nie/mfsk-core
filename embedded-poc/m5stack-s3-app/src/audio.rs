@@ -770,6 +770,26 @@ pub fn capture_tx_thread(
             .try_into()
             .expect("TX_IN_CHUNK sizes match");
 
+    // Demo-mode state (Phase 1.7.8-Stick). When `UiState::demo_mode_enabled`
+    // is true the loop ignores mic samples and reads the baked qso3 WAV
+    // instead, simultaneously streaming the same WAV out the speaker so
+    // the operator gets a deterministic decode demo when ambient
+    // conditions kill the live WebFT8→mic path. TX intent is skipped
+    // (no PTT key) — see plan `generic-yawning-honey.md` §5 for the
+    // audio-layer-override rationale.
+    //
+    // The 44-byte slice skips qso3_busy.wav's RIFF/fmt/data header
+    // (the file is canonical 12 kHz mono i16 LE — same format the
+    // chunk_q expects, so no resample needed for the decoder feed).
+    // For TX we still do 4× zero-order-hold upsample to 48 kHz stereo,
+    // identical to `audio_thread` (Decode-mode WAV playback). The
+    // -18 dBFS digital attenuation (`s >> 3`) likewise matches.
+    let demo_pcm: &'static [u8] = {
+        let wav = crate::decode_pipeline::QSO_WAVS[0];
+        if wav.len() > 44 { &wav[44..] } else { wav }
+    };
+    let mut demo_cursor_bytes: usize = 0;
+
     loop {
         // Phase 1.7.4-Stick coordinated reset (mirrors capture_thread).
         // Drain pre-BtnA chunks + clear stale shift + signal stage1_inc
@@ -796,8 +816,20 @@ pub fn capture_tx_thread(
             resampler = LinearResamplerI16To12k::new(48_000);
         }
 
+        // ── Snapshot demo flag once per iteration ─────────────────
+        // Two reads of this flag would race against a mid-iteration
+        // toggle (benign — user can't toggle within ~21 ms — but
+        // single-read is cleaner).
+        let demo_on = mfsk_app_shared::ui::state::UI
+            .lock()
+            .ok()
+            .map(|u| u.demo_mode_enabled)
+            .unwrap_or(false);
+
         // ── TX priority check ─────────────────────────────────────
-        let intent_opt = if std::time::Instant::now() >= bring_up_grace {
+        // Demo mode: skip — audio layer overrides synth with WAV and
+        // PTT must not key (no actual TX during demo).
+        let intent_opt = if !demo_on && std::time::Instant::now() >= bring_up_grace {
             tx_scheduler_pick_intent(&qso)
         } else {
             None
@@ -832,12 +864,110 @@ pub fn capture_tx_thread(
             continue;
         }
         // AUDIO_GATE: when false (e.g. just before/during TX), drain
-        // the read but don't push to the decode pipeline.
-        if !AUDIO_GATE.load(Ordering::Acquire) {
+        // the read but don't push to the decode pipeline. Demo mode
+        // bypasses the gate — we own the TX path entirely.
+        if !demo_on && !AUDIO_GATE.load(Ordering::Acquire) {
             continue;
         }
         CAPTURE_BYTES.fetch_add(bytes_read as u32, Ordering::Relaxed);
         CAPTURE_PACKETS.fetch_add(1, Ordering::Relaxed);
+
+        let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
+        if chunk_q_addr == 0 {
+            continue;
+        }
+        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+
+        // ── Demo-mode branch: WAV in / WAV out ────────────────────
+        // Use the I2S read's duration as pacing (already ~21 ms for
+        // a full ~4 KB stereo read), substitute WAV samples in both
+        // directions:
+        //   - chunk_q: push 12 kHz mono samples direct from WAV
+        //     (no resample — qso3_busy.wav is canonical 12 kHz mono)
+        //   - I2S TX: 4× zero-order hold upsample to 48 kHz stereo,
+        //     -18 dBFS attenuation (`s >> 3`) — same as `audio_thread`
+        //     (Decode mode). TODO: extract shared helper once the
+        //     gate-envelope / loop-fade features land in this path.
+        if demo_on {
+            let stereo_samples = bytes_read / 4;
+            // 48 k → 12 k decimation factor = 4, so the equivalent
+            // 12 k mono count is stereo_samples / 4.
+            let mut demo_samples_remaining = stereo_samples / 4;
+            while demo_samples_remaining > 0 {
+                let batch = demo_samples_remaining.min(TX_IN_CHUNK);
+                let mut tx_o = 0usize;
+                for _ in 0..batch {
+                    if demo_cursor_bytes + 2 > demo_pcm.len() {
+                        demo_cursor_bytes = 0;
+                    }
+                    let s = i16::from_le_bytes([
+                        demo_pcm[demo_cursor_bytes],
+                        demo_pcm[demo_cursor_bytes + 1],
+                    ]);
+                    demo_cursor_bytes += 2;
+
+                    // Decoder feed (raw 12 k mono).
+                    chunk.push(s);
+                    if chunk.len() >= CHUNK_LEN {
+                        let to_send =
+                            core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
+                        send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                        slot_samples += CHUNK_LEN;
+                        if slot_samples >= slot_end_target {
+                            send_box(
+                                chunk_q,
+                                Box::new(ChunkMsg::SlotEnd {
+                                    wav_idx,
+                                    total_samples: slot_samples,
+                                }),
+                            );
+                            // Demo path doesn't drift (cursor wraps the
+                            // WAV cleanly), so always restore the
+                            // canonical slot length. Skip the shift
+                            // consumption that the mic path applies —
+                            // any pending shift was for the mic timing.
+                            slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
+                            wav_idx = wav_idx.wrapping_add(1);
+                            slot_samples = 0;
+                            // Don't publish capture_slot in demo mode —
+                            // TX scheduler is gated above anyway, and
+                            // posting a slot here would compete with
+                            // the wall-clock real slot when demo flips
+                            // off.
+                        }
+                    }
+
+                    // TX side: 4× ZOH stereo i16 with -18 dBFS attn.
+                    let attn = (s >> 3).to_le_bytes();
+                    for _ in 0..4 {
+                        tx_out[tx_o] = attn[0];
+                        tx_out[tx_o + 1] = attn[1];
+                        tx_out[tx_o + 2] = attn[0];
+                        tx_out[tx_o + 3] = attn[1];
+                        tx_o += 4;
+                    }
+                }
+                if let Err(e) = i2s
+                    .write_all(&tx_out[..tx_o], TickType::new_millis(500).ticks())
+                {
+                    log::warn!("demo: i2s tx write err {e:?}");
+                }
+                demo_samples_remaining -= batch;
+            }
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_log).as_secs() >= 1 {
+                let bytes = CAPTURE_BYTES.load(Ordering::Relaxed);
+                let bps = bytes.wrapping_sub(last_bytes);
+                log::info!(
+                    "audio capture+tx (DEMO): {bps} B/s rx (slot={slot_samples}/12k, cursor={demo_cursor_bytes}/{})",
+                    demo_pcm.len()
+                );
+                last_log = now;
+                last_bytes = bytes;
+            }
+            continue;
+        }
 
         let stereo_samples = bytes_read / 4;
         debug_assert!(stereo_samples <= left_scratch.len());
@@ -845,12 +975,6 @@ pub fn capture_tx_thread(
             let off = i * 4;
             left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
         }
-
-        let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
-        if chunk_q_addr == 0 {
-            continue;
-        }
-        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
 
         let mut src_offset = 0usize;
         while src_offset < stereo_samples {

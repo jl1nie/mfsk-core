@@ -98,6 +98,13 @@ pub struct UiState {
     /// menu render path can read without taking the QSO lock.
     /// Toggled together with the FSM field by the menu activate path.
     pub auto_cq_enabled: bool,
+    /// Qso-mode demo toggle (BtnA long-press). When true, the audio
+    /// layer swaps both decoder input and speaker output for the
+    /// baked-in `qso3_busy.wav` and TX is suppressed — gives a
+    /// deterministic decode demo when ambient acoustic conditions
+    /// kill the live WebFT8-to-mic path. Reset to false at boot;
+    /// not persisted to NVS.
+    pub demo_mode_enabled: bool,
     /// Cursor over the decoded-list (Phase 1.7.2). `None` = no
     /// selection (display loop won't draw a cursor); `Some(i)` =
     /// highlight row `i` (0 = newest visible, increases toward older).
@@ -146,6 +153,7 @@ impl UiState {
             current_band_idx: 4, // 20m default
             current_df_hz: 0,
             auto_cq_enabled: false,
+            demo_mode_enabled: false,
             selected_decode_idx: None,
             sync_mark_pending: false,
             latest_slot_seq: 0,
@@ -158,6 +166,16 @@ impl UiState {
     pub fn bump_menu(&self) {
         self.menu_seq.fetch_add(1, Ordering::AcqRel);
         self.bump();
+    }
+
+    /// Toggle the Qso-mode demo flag. Returns the new value so the
+    /// caller can log / branch on it without re-locking. Bumps the
+    /// menu watermark so the button-strip + title row repaint with
+    /// the DEMO indicator.
+    pub fn toggle_demo_mode(&mut self) -> bool {
+        self.demo_mode_enabled = !self.demo_mode_enabled;
+        self.bump_menu();
+        self.demo_mode_enabled
     }
 
     pub fn menu_seq(&self) -> u32 {

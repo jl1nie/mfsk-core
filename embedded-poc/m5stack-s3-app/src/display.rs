@@ -497,7 +497,7 @@ pub fn run_log_panel(
     // tx strip fingerprint: (tx_seq, sync_state, sync_mark_pending).
     // Changes on QSO state update, sync established/lost, or BtnA
     // mark/clear.
-    let mut last_tx_fp: (u32, bool, bool) = (u32::MAX, false, false);
+    let mut last_tx_fp: (u32, bool, bool, bool) = (u32::MAX, false, false, false);
     let mut last_observed_at_mark: u32 = 0;
     let mut last_menu_seq: u32 = u32::MAX;
     // Phase 0.7c: poll KEY1/KEY2 here on the 100 ms cadence. Long-press
@@ -599,6 +599,22 @@ pub fn run_log_panel(
                         );
                         continue;
                     };
+                    // Demo-mode guard: TX is fully suppressed at the
+                    // audio layer (capture_tx_thread overrides synth
+                    // tones with WAV), so initiating a call has no
+                    // audible effect. Surface that explicitly to the
+                    // log instead of silently advancing the FSM.
+                    let demo_on = UI.lock().ok().map(|u| u.demo_mode_enabled).unwrap_or(false);
+                    if demo_on {
+                        log::info!(
+                            "BtnA: call_station('{}') skipped — TX disabled in demo mode",
+                            dx.as_str()
+                        );
+                        if let Ok(mut ui) = UI.lock() {
+                            ui.clear_decode_cursor();
+                        }
+                        continue;
+                    }
                     if let Ok(mut q) = qso.lock() {
                         let intent = q.call_station(dx.as_str());
                         log::info!(
@@ -677,8 +693,35 @@ pub fn run_log_panel(
                         menu::activate(&mut ui, &mut actions);
                     }
                 }
-                (ButtonEvent::LongPress(Key::Key1), _) => {
-                    log::info!("KEY1 long-press (no action wired yet)");
+                (ButtonEvent::LongPress(Key::Key1), menu_open) => {
+                    // Phase 1.7.8-Stick: BtnA long-press toggles a
+                    // Qso-mode-only "demo mode" that swaps mic / TX
+                    // for the baked qso3_busy.wav (deterministic decode
+                    // backup when ambient acoustic conditions kill the
+                    // live WebFT8→mic path). In other modes the stub
+                    // stays log-only.
+                    if menu_open {
+                        log::info!("KEY1 long-press ignored (menu open)");
+                    } else if mode == BootMode::Qso {
+                        let new_state = match UI.lock() {
+                            Ok(mut ui) => ui.toggle_demo_mode(),
+                            Err(_) => {
+                                log::warn!("KEY1 long-press: UI lock poisoned");
+                                continue;
+                            }
+                        };
+                        // Realign the decoder slot boundary to the WAV
+                        // grid (or back to real time on toggle-off).
+                        // Same debounce path the no-row-selected BtnA
+                        // short-press uses.
+                        let _ = crate::audio::reset_slot_boundary();
+                        log::info!(
+                            "KEY1 long-press → demo_mode {}",
+                            if new_state { "ON" } else { "OFF" }
+                        );
+                    } else {
+                        log::info!("KEY1 long-press (no action wired in this BootMode)");
+                    }
                 }
             }
         }
@@ -721,6 +764,7 @@ pub fn run_log_panel(
         let selected_decode_idx: Option<u8>;
         let sync_mark_pending_snapshot: bool;
         let latest_slot_seq_snapshot: u32;
+        let demo_mode_snapshot: bool;
         {
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
@@ -740,6 +784,7 @@ pub fn run_log_panel(
             selected_decode_idx = ui.selected_decode_idx;
             sync_mark_pending_snapshot = ui.sync_mark_pending;
             latest_slot_seq_snapshot = ui.latest_slot_seq;
+            demo_mode_snapshot = ui.demo_mode_enabled;
             let mut buf: heapless::String<48> = heapless::String::new();
             for ch in ui.tx_line().chars() {
                 if buf.push(ch).is_err() {
@@ -838,7 +883,12 @@ pub fn run_log_panel(
                 ui.bump_menu();
             }
         }
-        let tx_fp = (tx_seq, sync_state, sync_mark_pending_snapshot);
+        let tx_fp = (
+            tx_seq,
+            sync_state,
+            sync_mark_pending_snapshot,
+            demo_mode_snapshot,
+        );
         if tx_fp != last_tx_fp {
             Rectangle::new(
                 Point::new(0, TX_REGION_Y),
@@ -847,7 +897,14 @@ pub fn run_log_panel(
             .into_styled(PrimitiveStyle::with_fill(tx_bg))
             .draw(&mut display)
             .ok();
-            let text = if sync_mark_pending_snapshot {
+            // Demo mode overrides the FSM-driven TX strip entirely —
+            // TX is suppressed at the audio layer, so showing
+            // "IDLE / CALL / RPT" would be misleading. The "TX OFF"
+            // suffix spells out the consequence for the operator at
+            // a glance even when "DEMO" alone is ambiguous.
+            let text = if demo_mode_snapshot {
+                "DEMO MODE — TX OFF"
+            } else if sync_mark_pending_snapshot {
                 "SYNC SET — wait slot"
             } else if !sync_state {
                 "SYNC: A at slot start"
