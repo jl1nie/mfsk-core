@@ -785,8 +785,9 @@ pub fn capture_tx_thread(
     // identical to `audio_thread` (Decode-mode WAV playback). The
     // -18 dBFS digital attenuation (`s >> 3`) likewise matches.
     let demo_pcm: &'static [u8] = {
+        const WAV_HEADER_SIZE: usize = 44;
         let wav = crate::decode_pipeline::QSO_WAVS[0];
-        if wav.len() > 44 { &wav[44..] } else { wav }
+        if wav.len() > WAV_HEADER_SIZE { &wav[WAV_HEADER_SIZE..] } else { &[] }
     };
     let mut demo_cursor_bytes: usize = 0;
 
@@ -888,8 +889,8 @@ pub fn capture_tx_thread(
         //     -18 dBFS attenuation (`s >> 3`) — same as `audio_thread`
         //     (Decode mode). TODO: extract shared helper once the
         //     gate-envelope / loop-fade features land in this path.
+        let stereo_samples = bytes_read / 4;
         if demo_on {
-            let stereo_samples = bytes_read / 4;
             // 48 k → 12 k decimation factor = 4, so the equivalent
             // 12 k mono count is stereo_samples / 4.
             let mut demo_samples_remaining = stereo_samples / 4;
@@ -969,7 +970,6 @@ pub fn capture_tx_thread(
             continue;
         }
 
-        let stereo_samples = bytes_read / 4;
         debug_assert!(stereo_samples <= left_scratch.len());
         for i in 0..stereo_samples {
             let off = i * 4;

@@ -604,16 +604,15 @@ pub fn run_log_panel(
                     // tones with WAV), so initiating a call has no
                     // audible effect. Surface that explicitly to the
                     // log instead of silently advancing the FSM.
-                    let demo_on = UI.lock().ok().map(|u| u.demo_mode_enabled).unwrap_or(false);
-                    if demo_on {
-                        log::info!(
-                            "BtnA: call_station('{}') skipped — TX disabled in demo mode",
-                            dx.as_str()
-                        );
-                        if let Ok(mut ui) = UI.lock() {
+                    if let Ok(mut ui) = UI.lock() {
+                        if ui.demo_mode_enabled {
+                            log::info!(
+                                "BtnA: call_station('{}') skipped — TX disabled in demo mode",
+                                dx.as_str()
+                            );
                             ui.clear_decode_cursor();
+                            continue;
                         }
-                        continue;
                     }
                     if let Ok(mut q) = qso.lock() {
                         let intent = q.call_station(dx.as_str());
