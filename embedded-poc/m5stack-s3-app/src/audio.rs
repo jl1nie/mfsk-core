@@ -95,6 +95,59 @@ pub fn init_es8311(i2c: &mut I2cDriver) -> Result<()> {
     Ok(())
 }
 
+/// Combined ADC+DAC init for QSO bidir mode (mic capture + speaker output
+/// simultaneously). Uses reg 0x01=0xBF (= 0xB5 speaker | 0xBA mic) to
+/// engage both the DAC and ADC internal clock paths. A single reset +
+/// settle avoids the order-dependency of calling the two single-direction
+/// inits in sequence (each starts with a soft RESET that wipes the other's
+/// register writes).
+pub fn init_es8311_bidir(i2c: &mut I2cDriver) -> Result<()> {
+    use esp_idf_svc::hal::delay::FreeRtos;
+    // Configure PMIC GPIO3 as push-pull output (same sequence as
+    // init_es8311). init_es8311_capture skips this because Acoustic mode
+    // never enables PA; init_es8311_bidir needs it for demo + TX synth.
+    pmic_bit_off(i2c, 0x16, 1 << 3)?; // GPIO3 = GPIO function (not alt)
+    pmic_bit_on(i2c, 0x10, 1 << 3)?;  // GPIO3 = output direction
+    pmic_bit_off(i2c, 0x13, 1 << 3)?; // push-pull
+    pmic_bit_off(i2c, 0x11, 1 << 3)?; // output LOW (PA off until play)
+    // Disable → settle → enable (same rationale as init_es8311_capture).
+    let disable_seq: &[(u8, u8)] = &[
+        (0x0D, 0xFC),
+        (0x0E, 0x6A),
+        (0x00, 0x00),
+    ];
+    for &(reg, val) in disable_seq {
+        let _ = i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT);
+    }
+    FreeRtos::delay_ms(20);
+    // Full bidir register set.
+    // 0x01=0xBF: OR of 0xB5 (DAC clock path) and 0xBA (ADC clock path)
+    // so both internal clock chains are active simultaneously.
+    let seq: &[(u8, u8)] = &[
+        (0x00, 0x80), // RESET + CSM power on
+        (0x01, 0xBF), // CLOCK_MANAGER: MCLK=BCLK, ADC+DAC clocks
+        (0x02, 0x18), // CLOCK_MANAGER: MULT_PRE=3
+        (0x0D, 0x01), // SYSTEM: power up analog
+        (0x0E, 0x02), // SYSTEM: enable PGA + ADC modulator
+        (0x12, 0x00), // SYSTEM: power up DAC
+        (0x13, 0x10), // SYSTEM: enable HP drive output
+        (0x14, 0x10), // ADC: Mic1 differential, PGA gain MIN
+        (0x17, 0xFF), // ADC volume: MAX
+        (0x1C, 0x6A), // ADC: EQ bypass + DC offset cancel
+        (0x32, 0xA9), // DAC volume: ~-22 dB
+        (0x37, 0x08), // DAC: bypass equalizer
+    ];
+    i2c.write(ES8311_ADDR, &[seq[0].0, seq[0].1], I2C_TIMEOUT)
+        .with_context(|| format!("ES8311 bidir reg 0x{:02X} write failed", seq[0].0))?;
+    FreeRtos::delay_ms(10); // wait for CSM after RESET
+    for &(reg, val) in &seq[1..] {
+        i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT)
+            .with_context(|| format!("ES8311 bidir reg 0x{reg:02X} write failed"))?;
+    }
+    log::info!("ES8311 bidir init OK (0x01=0xBF, ADC+DAC clocks, mic+speaker)");
+    Ok(())
+}
+
 /// Drive the speaker amplifier's enable pin (PMIC GPIO3 high). Call
 /// this once just before starting playback; pair with [`pa_disable`]
 /// when the audio thread shuts down.
@@ -922,11 +975,11 @@ pub fn capture_tx_thread(
                                     total_samples: slot_samples,
                                 }),
                             );
-                            // Demo path doesn't drift (cursor wraps the
-                            // WAV cleanly), so always restore the
-                            // canonical slot length. Skip the shift
-                            // consumption that the mic path applies —
-                            // any pending shift was for the mic timing.
+                            // Reset cursor to WAV start on every slot
+                            // boundary so each 15-s slot decodes the
+                            // same audio (WAV is 180079 samples ≠ 180000
+                            // — without reset the slot/WAV grids drift).
+                            demo_cursor_bytes = 0;
                             slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
                             wav_idx = wav_idx.wrapping_add(1);
                             slot_samples = 0;
@@ -1020,6 +1073,16 @@ pub fn capture_tx_thread(
                 break;
             }
             src_offset += consumed;
+        }
+
+        // Silence TX DMA so stale demo-mode audio doesn't loop after
+        // demo is toggled off. In normal mode the only TX output is the
+        // synth FT8 tone written by do_tx_cycle; between TX bursts the
+        // speaker must be silent.
+        let silence_len = (stereo_samples * 4).min(tx_out.len());
+        tx_out[..silence_len].fill(0);
+        if let Err(e) = i2s.write_all(&tx_out[..silence_len], TickType::new_millis(500).ticks()) {
+            log::warn!("audio capture+tx: i2s tx silence err {e:?}");
         }
 
         let now = std::time::Instant::now();

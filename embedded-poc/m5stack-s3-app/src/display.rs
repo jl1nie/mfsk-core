@@ -294,12 +294,12 @@ pub fn run_log_panel(
             // alternate RX read iterations and TX synth play — no need
             // for i2s1 or driver swap.
             if let Some(i2c_drv) = i2c.as_mut() {
-                if let Err(e) = crate::audio::init_es8311_capture(i2c_drv) {
-                    log::warn!("ES8311 mic-mode init failed (Qso disabled): {e:#}");
+                if let Err(e) = crate::audio::init_es8311_bidir(i2c_drv) {
+                    log::warn!("ES8311 bidir init failed (Qso disabled): {e:#}");
                 } else {
-                    // Speaker amp enable so the TX synth side actually
-                    // drives the audio out the speaker (mic input via
-                    // ADC stays unaffected).
+                    // PA on — init_es8311_bidir leaves PA off to avoid
+                    // power-up howl; enable here so demo + TX synth both
+                    // drive the speaker.
                     if let Err(e) = crate::audio::pa_enable(i2c_drv) {
                         log::warn!("PA enable failed: {e:#}");
                     }
