@@ -76,7 +76,7 @@ pub fn decode_frame(
     )
 }
 
-/// Decode one FT4 slot with explicit `depth` knob.
+/// Decode one FT4 slot with an explicit `depth` knob.
 ///
 /// Mirrors [`crate::ft8::decode::decode_frame`]'s `depth` parameter.
 /// FT4's per-candidate strictness is hardcoded to `Normal` — the
