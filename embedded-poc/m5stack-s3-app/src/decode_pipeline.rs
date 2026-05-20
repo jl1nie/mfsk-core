@@ -30,7 +30,9 @@ const MY_CALL: &str = env!("MY_CALL");
 const MY_GRID: &str = env!("MY_GRID");
 
 /// 開発用 WAV (qso3_busy のみ単独ループ — UI 構築用に最も多くのデコード結果を出す)。
-static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
+/// `pub(crate)` so the Qso-mode demo path in `display.rs::capture_tx_thread`
+/// can reference the same baked bytes without a second `include_bytes!`.
+pub(crate) static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;

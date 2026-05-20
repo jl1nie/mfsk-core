@@ -61,10 +61,18 @@ pub enum MenuItem {
     FindDf,
     /// Toggle auto-CQ master gate on the QSO FSM.
     AutoCq,
+    /// Persist the next boot mode to NVS and restart. Lets the user
+    /// switch from Acoustic ↔ Qso ↔ … without the 3-reboot KEY dance.
+    NextMode,
 }
 
-pub const MENU_ITEMS: &[MenuItem] = &[MenuItem::Band, MenuItem::FindDf, MenuItem::AutoCq];
-pub const MENU_ITEM_COUNT: u8 = 3;
+pub const MENU_ITEMS: &[MenuItem] = &[
+    MenuItem::Band,
+    MenuItem::FindDf,
+    MenuItem::AutoCq,
+    MenuItem::NextMode,
+];
+pub const MENU_ITEM_COUNT: u8 = 4;
 
 /// Compact representation of a single menu entry's display row.
 fn item_label(item: MenuItem) -> &'static str {
@@ -72,6 +80,7 @@ fn item_label(item: MenuItem) -> &'static str {
         MenuItem::Band => "Band:",
         MenuItem::FindDf => "FindDF:",
         MenuItem::AutoCq => "AutoCQ:",
+        MenuItem::NextMode => "Mode→:",
     }
 }
 
@@ -90,6 +99,11 @@ pub struct MenuActions<'a> {
     /// (the menu already toggled `auto_cq_enabled` in UiState; this
     /// callback also propagates to the QSO FSM and NVS).
     pub set_auto_cq: &'a mut dyn FnMut(bool),
+    /// Called when the user activates NextMode. Implementation should
+    /// persist the next boot mode to NVS and restart (via
+    /// `boot_mode::flip_and_restart`). The callback returns `!` so
+    /// the device reboots before the menu can repaint.
+    pub next_mode: &'a mut dyn FnMut(),
 }
 
 /// Advance the highlighted item. Caller already holds the UI mutex.
@@ -123,6 +137,13 @@ pub fn activate(ui: &mut super::state::UiState, actions: &mut MenuActions<'_>) {
             ui.auto_cq_enabled = !ui.auto_cq_enabled;
             (actions.set_auto_cq)(ui.auto_cq_enabled);
         }
+        MenuItem::NextMode => {
+            // Persist next boot mode + restart. The callback never
+            // returns (`!`), so bump_menu below is unreachable — the
+            // device reboots before the menu repaints.
+            (actions.next_mode)();
+            // Fallback (unreachable in practice): just drop it.
+        }
     }
     ui.bump_menu();
 }
@@ -135,13 +156,13 @@ pub fn activate(ui: &mut super::state::UiState, actions: &mut MenuActions<'_>) {
 /// pipeline writes). No-op when `visible == false`.
 ///
 /// Layout (LCD 135×240, menu top-right of WF region):
-/// - origin (32, 16), size 100×54 px
+/// - origin (32, 16), size 100×68 px
 /// - background fill: dark blue (Rgb565::new(0,0,8))
 /// - border: white 1-px
-/// - 3 rows × 14-px tall, cursor `>` in column 0 of selected row
+/// - 4 rows × 14-px tall, cursor `>` in column 0 of selected row
 ///
-/// `M: Mutability` const param distinguishes peekable values stored
-/// in UiState (band, df, autocq) from item-specific dynamic strings.
+/// `next_mode_label` is the label of the boot mode the device would
+/// switch to if the NextMode item is activated (e.g. `"QSO"`).
 pub fn render<D, E>(
     display: &mut D,
     visible: bool,
@@ -149,6 +170,7 @@ pub fn render<D, E>(
     band_idx: u8,
     df_hz: u16,
     auto_cq: bool,
+    next_mode_label: &str,
 ) -> Result<(), E>
 where
     D: DrawTarget<Color = Rgb565, Error = E>,
@@ -157,7 +179,7 @@ where
         return Ok(());
     }
     const ORIGIN: Point = Point::new(32, 16);
-    const SIZE: Size = Size::new(100, 54);
+    const SIZE: Size = Size::new(100, 68);
     const ROW_H: i32 = 14;
 
     // Background + border.
@@ -194,8 +216,18 @@ where
         &mut autocq_line,
         format_args!(" AutoCQ: {}", if auto_cq { "ON" } else { "OFF" }),
     );
+    let mut mode_line: heapless::String<16> = heapless::String::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut mode_line,
+        format_args!(" Mode→:{next_mode_label}"),
+    );
 
-    let rows: [&str; 3] = [band_line.as_str(), df_line.as_str(), autocq_line.as_str()];
+    let rows: [&str; 4] = [
+        band_line.as_str(),
+        df_line.as_str(),
+        autocq_line.as_str(),
+        mode_line.as_str(),
+    ];
 
     for (i, text) in rows.iter().enumerate() {
         let y = ORIGIN.y + 2 + (i as i32) * ROW_H;

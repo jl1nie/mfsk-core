@@ -293,14 +293,18 @@ in module doc-comments:
   canonical reference; lifted to `m5stack-cores3-app` in
   Phase 0-Core, then hoisted into `mfsk-app-shared` in
   Phase 1.5-Core after dual-board verification.
-- **Phase 1.5 (Acoustic capture)** — Pending. Internal MEMS mic via
-  ES8311 ADC mode → I2S RX → existing `LinearResamplerI16To12k` →
-  `decode_pipeline::run_with_source`. IC-705 SPEAKER OUT picked up
-  acoustically; no cable / dongle. Acceptable SNR penalty (~5-10 dB,
-  FT8 floor is -21 dB). Adds `BootMode::Acoustic` between `Wifi`
-  and `Uac` in the boot-mode cycle. Tracked as task #47.
+- **Phase 1.5 (Acoustic capture)** — ✅ Done (Phase 1.7.1-Stick).
+  ES8311 ADC mic-mode → I2S RX → `LinearResamplerI16To12k` →
+  `decode_pipeline::run_with_source`. `BootMode::Acoustic` added to
+  the NVS cycle; live on `main`.
+- **Phase 1.7 (QSO mode bidir I2S + demo toggle)** — ✅ Done. PR
+  #121 adds a BtnA-long-press demo mode inside `BootMode::Qso`:
+  audio source switches from mic to baked-in `qso3_busy.wav`,
+  speaker plays back the WAV, TX scheduler is suppressed, LCD shows
+  `DEMO MODE — TX OFF`. Deterministic demo safety net when ambient
+  acoustic conditions kill the live WebFT8-to-mic path.
 - **Phases 2 / 5 / 6 / TX keying** — Rolled forward to Phase B-Core.
-  Stick stays frozen at Phase 1.5 once that lands.
+  Stick frozen after Phase 1.7 demo toggle.
 
 ### Phase B-Core — m5stack-cores3-app (MAIN TARGET, NEW)
 

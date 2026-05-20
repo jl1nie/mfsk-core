@@ -95,6 +95,59 @@ pub fn init_es8311(i2c: &mut I2cDriver) -> Result<()> {
     Ok(())
 }
 
+/// Combined ADC+DAC init for QSO bidir mode (mic capture + speaker output
+/// simultaneously). Uses reg 0x01=0xBF (= 0xB5 speaker | 0xBA mic) to
+/// engage both the DAC and ADC internal clock paths. A single reset +
+/// settle avoids the order-dependency of calling the two single-direction
+/// inits in sequence (each starts with a soft RESET that wipes the other's
+/// register writes).
+pub fn init_es8311_bidir(i2c: &mut I2cDriver) -> Result<()> {
+    use esp_idf_svc::hal::delay::FreeRtos;
+    // Configure PMIC GPIO3 as push-pull output (same sequence as
+    // init_es8311). init_es8311_capture skips this because Acoustic mode
+    // never enables PA; init_es8311_bidir needs it for demo + TX synth.
+    pmic_bit_off(i2c, 0x16, 1 << 3)?; // GPIO3 = GPIO function (not alt)
+    pmic_bit_on(i2c, 0x10, 1 << 3)?;  // GPIO3 = output direction
+    pmic_bit_off(i2c, 0x13, 1 << 3)?; // push-pull
+    pmic_bit_off(i2c, 0x11, 1 << 3)?; // output LOW (PA off until play)
+    // Disable → settle → enable (same rationale as init_es8311_capture).
+    let disable_seq: &[(u8, u8)] = &[
+        (0x0D, 0xFC),
+        (0x0E, 0x6A),
+        (0x00, 0x00),
+    ];
+    for &(reg, val) in disable_seq {
+        let _ = i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT);
+    }
+    FreeRtos::delay_ms(20);
+    // Full bidir register set.
+    // 0x01=0xBF: OR of 0xB5 (DAC clock path) and 0xBA (ADC clock path)
+    // so both internal clock chains are active simultaneously.
+    let seq: &[(u8, u8)] = &[
+        (0x00, 0x80), // RESET + CSM power on
+        (0x01, 0xBF), // CLOCK_MANAGER: MCLK=BCLK, ADC+DAC clocks
+        (0x02, 0x18), // CLOCK_MANAGER: MULT_PRE=3
+        (0x0D, 0x01), // SYSTEM: power up analog
+        (0x0E, 0x02), // SYSTEM: enable PGA + ADC modulator
+        (0x12, 0x00), // SYSTEM: power up DAC
+        (0x13, 0x10), // SYSTEM: enable HP drive output
+        (0x14, 0x10), // ADC: Mic1 differential, PGA gain MIN
+        (0x17, 0xFF), // ADC volume: MAX
+        (0x1C, 0x6A), // ADC: EQ bypass + DC offset cancel
+        (0x32, 0xA9), // DAC volume: ~-22 dB
+        (0x37, 0x08), // DAC: bypass equalizer
+    ];
+    i2c.write(ES8311_ADDR, &[seq[0].0, seq[0].1], I2C_TIMEOUT)
+        .with_context(|| format!("ES8311 bidir reg 0x{:02X} write failed", seq[0].0))?;
+    FreeRtos::delay_ms(10); // wait for CSM after RESET
+    for &(reg, val) in &seq[1..] {
+        i2c.write(ES8311_ADDR, &[reg, val], I2C_TIMEOUT)
+            .with_context(|| format!("ES8311 bidir reg 0x{reg:02X} write failed"))?;
+    }
+    log::info!("ES8311 bidir init OK (0x01=0xBF, ADC+DAC clocks, mic+speaker)");
+    Ok(())
+}
+
 /// Drive the speaker amplifier's enable pin (PMIC GPIO3 high). Call
 /// this once just before starting playback; pair with [`pa_disable`]
 /// when the audio thread shuts down.
@@ -770,6 +823,27 @@ pub fn capture_tx_thread(
             .try_into()
             .expect("TX_IN_CHUNK sizes match");
 
+    // Demo-mode state (Phase 1.7.8-Stick). When `UiState::demo_mode_enabled`
+    // is true the loop ignores mic samples and reads the baked qso3 WAV
+    // instead, simultaneously streaming the same WAV out the speaker so
+    // the operator gets a deterministic decode demo when ambient
+    // conditions kill the live WebFT8→mic path. TX intent is skipped
+    // (no PTT key) — see plan `generic-yawning-honey.md` §5 for the
+    // audio-layer-override rationale.
+    //
+    // The 44-byte slice skips qso3_busy.wav's RIFF/fmt/data header
+    // (the file is canonical 12 kHz mono i16 LE — same format the
+    // chunk_q expects, so no resample needed for the decoder feed).
+    // For TX we still do 4× zero-order-hold upsample to 48 kHz stereo,
+    // identical to `audio_thread` (Decode-mode WAV playback). The
+    // -18 dBFS digital attenuation (`s >> 3`) likewise matches.
+    let demo_pcm: &'static [u8] = {
+        const WAV_HEADER_SIZE: usize = 44;
+        let wav = crate::decode_pipeline::QSO_WAVS[0];
+        if wav.len() > WAV_HEADER_SIZE { &wav[WAV_HEADER_SIZE..] } else { &[] }
+    };
+    let mut demo_cursor_bytes: usize = 0;
+
     loop {
         // Phase 1.7.4-Stick coordinated reset (mirrors capture_thread).
         // Drain pre-BtnA chunks + clear stale shift + signal stage1_inc
@@ -796,8 +870,20 @@ pub fn capture_tx_thread(
             resampler = LinearResamplerI16To12k::new(48_000);
         }
 
+        // ── Snapshot demo flag once per iteration ─────────────────
+        // Two reads of this flag would race against a mid-iteration
+        // toggle (benign — user can't toggle within ~21 ms — but
+        // single-read is cleaner).
+        let demo_on = mfsk_app_shared::ui::state::UI
+            .lock()
+            .ok()
+            .map(|u| u.demo_mode_enabled)
+            .unwrap_or(false);
+
         // ── TX priority check ─────────────────────────────────────
-        let intent_opt = if std::time::Instant::now() >= bring_up_grace {
+        // Demo mode: skip — audio layer overrides synth with WAV and
+        // PTT must not key (no actual TX during demo).
+        let intent_opt = if !demo_on && std::time::Instant::now() >= bring_up_grace {
             tx_scheduler_pick_intent(&qso)
         } else {
             None
@@ -832,25 +918,116 @@ pub fn capture_tx_thread(
             continue;
         }
         // AUDIO_GATE: when false (e.g. just before/during TX), drain
-        // the read but don't push to the decode pipeline.
-        if !AUDIO_GATE.load(Ordering::Acquire) {
+        // the read but don't push to the decode pipeline. Demo mode
+        // bypasses the gate — we own the TX path entirely.
+        if !demo_on && !AUDIO_GATE.load(Ordering::Acquire) {
             continue;
         }
         CAPTURE_BYTES.fetch_add(bytes_read as u32, Ordering::Relaxed);
         CAPTURE_PACKETS.fetch_add(1, Ordering::Relaxed);
-
-        let stereo_samples = bytes_read / 4;
-        debug_assert!(stereo_samples <= left_scratch.len());
-        for i in 0..stereo_samples {
-            let off = i * 4;
-            left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
-        }
 
         let chunk_q_addr = CAPTURE_CHUNK_Q_ADDR.load(Ordering::Acquire);
         if chunk_q_addr == 0 {
             continue;
         }
         let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+
+        // ── Demo-mode branch: WAV in / WAV out ────────────────────
+        // Use the I2S read's duration as pacing (already ~21 ms for
+        // a full ~4 KB stereo read), substitute WAV samples in both
+        // directions:
+        //   - chunk_q: push 12 kHz mono samples direct from WAV
+        //     (no resample — qso3_busy.wav is canonical 12 kHz mono)
+        //   - I2S TX: 4× zero-order hold upsample to 48 kHz stereo,
+        //     -18 dBFS attenuation (`s >> 3`) — same as `audio_thread`
+        //     (Decode mode). TODO: extract shared helper once the
+        //     gate-envelope / loop-fade features land in this path.
+        let stereo_samples = bytes_read / 4;
+        if demo_on {
+            // 48 k → 12 k decimation factor = 4, so the equivalent
+            // 12 k mono count is stereo_samples / 4.
+            let mut demo_samples_remaining = stereo_samples / 4;
+            while demo_samples_remaining > 0 {
+                let batch = demo_samples_remaining.min(TX_IN_CHUNK);
+                let mut tx_o = 0usize;
+                for _ in 0..batch {
+                    if demo_cursor_bytes + 2 > demo_pcm.len() {
+                        demo_cursor_bytes = 0;
+                    }
+                    let s = i16::from_le_bytes([
+                        demo_pcm[demo_cursor_bytes],
+                        demo_pcm[demo_cursor_bytes + 1],
+                    ]);
+                    demo_cursor_bytes += 2;
+
+                    // Decoder feed (raw 12 k mono).
+                    chunk.push(s);
+                    if chunk.len() >= CHUNK_LEN {
+                        let to_send =
+                            core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
+                        send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                        slot_samples += CHUNK_LEN;
+                        if slot_samples >= slot_end_target {
+                            send_box(
+                                chunk_q,
+                                Box::new(ChunkMsg::SlotEnd {
+                                    wav_idx,
+                                    total_samples: slot_samples,
+                                }),
+                            );
+                            // Reset cursor to WAV start on every slot
+                            // boundary so each 15-s slot decodes the
+                            // same audio (WAV is 180079 samples ≠ 180000
+                            // — without reset the slot/WAV grids drift).
+                            demo_cursor_bytes = 0;
+                            slot_end_target = CAPTURE_SLOT_SAMPLES_12K;
+                            wav_idx = wav_idx.wrapping_add(1);
+                            slot_samples = 0;
+                            // Don't publish capture_slot in demo mode —
+                            // TX scheduler is gated above anyway, and
+                            // posting a slot here would compete with
+                            // the wall-clock real slot when demo flips
+                            // off.
+                        }
+                    }
+
+                    // TX side: 4× ZOH stereo i16 with -18 dBFS attn.
+                    let attn = (s >> 3).to_le_bytes();
+                    for _ in 0..4 {
+                        tx_out[tx_o] = attn[0];
+                        tx_out[tx_o + 1] = attn[1];
+                        tx_out[tx_o + 2] = attn[0];
+                        tx_out[tx_o + 3] = attn[1];
+                        tx_o += 4;
+                    }
+                }
+                if let Err(e) = i2s
+                    .write_all(&tx_out[..tx_o], TickType::new_millis(500).ticks())
+                {
+                    log::warn!("demo: i2s tx write err {e:?}");
+                }
+                demo_samples_remaining -= batch;
+            }
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_log).as_secs() >= 1 {
+                let bytes = CAPTURE_BYTES.load(Ordering::Relaxed);
+                let bps = bytes.wrapping_sub(last_bytes);
+                log::info!(
+                    "audio capture+tx (DEMO): {bps} B/s rx (slot={slot_samples}/12k, cursor={demo_cursor_bytes}/{})",
+                    demo_pcm.len()
+                );
+                last_log = now;
+                last_bytes = bytes;
+            }
+            continue;
+        }
+
+        debug_assert!(stereo_samples <= left_scratch.len());
+        for i in 0..stereo_samples {
+            let off = i * 4;
+            left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
+        }
 
         let mut src_offset = 0usize;
         while src_offset < stereo_samples {
@@ -896,6 +1073,16 @@ pub fn capture_tx_thread(
                 break;
             }
             src_offset += consumed;
+        }
+
+        // Silence TX DMA so stale demo-mode audio doesn't loop after
+        // demo is toggled off. In normal mode the only TX output is the
+        // synth FT8 tone written by do_tx_cycle; between TX bursts the
+        // speaker must be silent.
+        let silence_len = (stereo_samples * 4).min(tx_out.len());
+        tx_out[..silence_len].fill(0);
+        if let Err(e) = i2s.write_all(&tx_out[..silence_len], TickType::new_millis(500).ticks()) {
+            log::warn!("audio capture+tx: i2s tx silence err {e:?}");
         }
 
         let now = std::time::Instant::now();
