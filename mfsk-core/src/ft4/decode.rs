@@ -15,7 +15,8 @@ use crate::core::equalize::EqMode;
 use crate::core::pipeline::{self, FftCache};
 use crate::msg::pipeline_ap;
 
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
+use crate::core::pipeline::DecodeStrictness;
+pub use crate::core::pipeline::{DecodeDepth, DecodeResult};
 pub use crate::msg::ApHint;
 
 /// FT4 downsample configuration: 12 kHz → ~666.7 Hz baseband, covering four
@@ -71,23 +72,16 @@ pub fn decode_frame(
         sync_min,
         None,
         DecodeDepth::BpAllOsd,
-        DecodeStrictness::Normal,
         max_cand,
     )
 }
 
-/// Decode one FT4 slot with explicit `depth` + `strictness` knobs.
+/// Decode one FT4 slot with an explicit `depth` knob.
 ///
-/// Mirrors [`crate::ft8::decode::decode_frame`]'s `depth` parameter and
-/// adds the `strictness` axis (which FT8's public shim hardcodes to
-/// [`DecodeStrictness::Normal`]). Useful for matching WSJT-X's
-/// Fast / Normal / Deep menu in downstream applications:
-///
-/// | WSJT-X menu | depth        | strictness |
-/// |---|---|---|
-/// | Fast        | `Bp`         | `Strict`   |
-/// | Normal      | `BpAll`      | `Normal`   |
-/// | Deep        | `BpAllOsd`   | `Deep`     |
+/// Mirrors [`crate::ft8::decode::decode_frame`]'s `depth` parameter.
+/// FT4's per-candidate strictness is hardcoded to `Normal` — the
+/// FT4-specific re-tune of the FT8-calibrated thresholds never landed
+/// and no caller exercised the `Strict` / `Deep` rungs (issue #72).
 ///
 /// `freq_hint` is the same as in `ft8::decode::decode_frame`: when
 /// `Some(f)`, narrows the coarse-sync to candidates near `f` ± a few Hz.
@@ -99,7 +93,6 @@ pub fn decode_frame_with_options(
     sync_min: f32,
     freq_hint: Option<f32>,
     depth: DecodeDepth,
-    strictness: DecodeStrictness,
     max_cand: usize,
 ) -> Vec<DecodeResult> {
     pipeline::decode_frame::<Ft4>(
@@ -111,7 +104,7 @@ pub fn decode_frame_with_options(
         freq_hint,
         depth,
         max_cand,
-        strictness,
+        DecodeStrictness::Normal,
         EqMode::Off,
         REFINE_STEPS,
         SYNC_Q_MIN,
@@ -134,17 +127,12 @@ pub fn decode_frame_with_cache(
         sync_min,
         None,
         DecodeDepth::BpAllOsd,
-        DecodeStrictness::Normal,
         max_cand,
     )
 }
 
-/// Same as [`decode_frame_with_cache`] but with explicit `depth` +
-/// `strictness` knobs (see [`decode_frame_with_options`]).
-///
-/// Added per Gemini's review on PR #21 (Tier 1.3) so callers driving
-/// pipelined subtraction can match the Fast / Normal / Deep menu
-/// without going through the legacy hardcoded shim.
+/// Same as [`decode_frame_with_cache`] but with an explicit `depth` knob
+/// (see [`decode_frame_with_options`]).
 ///
 /// `freq_hint`: when `Some(f)`, narrows the coarse-sync to candidates
 /// near `f`. Pass `None` for full-band scan. Mirrors
@@ -156,7 +144,6 @@ pub fn decode_frame_with_cache_and_options(
     sync_min: f32,
     freq_hint: Option<f32>,
     depth: DecodeDepth,
-    strictness: DecodeStrictness,
     max_cand: usize,
 ) -> (Vec<DecodeResult>, FftCache) {
     pipeline::decode_frame::<Ft4>(
@@ -168,7 +155,7 @@ pub fn decode_frame_with_cache_and_options(
         freq_hint,
         depth,
         max_cand,
-        strictness,
+        DecodeStrictness::Normal,
         EqMode::Off,
         REFINE_STEPS,
         SYNC_Q_MIN,
@@ -190,17 +177,12 @@ pub fn decode_frame_subtract(
         sync_min,
         None,
         DecodeDepth::BpAllOsd,
-        DecodeStrictness::Normal,
         max_cand,
     )
 }
 
-/// Same as [`decode_frame_subtract`] but with explicit `depth` +
-/// `strictness` knobs (see [`decode_frame_with_options`]).
-///
-/// Added per Gemini's review on PR #21 (Tier 1.3) so SIC callers can
-/// match the Fast / Normal / Deep menu without going through the
-/// legacy hardcoded shim.
+/// Same as [`decode_frame_subtract`] but with an explicit `depth` knob
+/// (see [`decode_frame_with_options`]).
 ///
 /// `freq_hint`: when `Some(f)`, narrows the coarse-sync to candidates
 /// near `f`. Pass `None` for full-band scan. Mirrors
@@ -212,7 +194,6 @@ pub fn decode_frame_subtract_with_options(
     sync_min: f32,
     freq_hint: Option<f32>,
     depth: DecodeDepth,
-    strictness: DecodeStrictness,
     max_cand: usize,
 ) -> Vec<DecodeResult> {
     pipeline::decode_frame_subtract::<Ft4>(
@@ -225,7 +206,7 @@ pub fn decode_frame_subtract_with_options(
         freq_hint,
         depth,
         max_cand,
-        strictness,
+        DecodeStrictness::Normal,
         REFINE_STEPS,
         SYNC_Q_MIN,
     )
@@ -245,24 +226,18 @@ pub fn decode_sniper_ap(
         audio,
         target_freq,
         DecodeDepth::BpAllOsd,
-        DecodeStrictness::Normal,
         max_cand,
         eq_mode,
         ap_hint,
     )
 }
 
-/// Same as [`decode_sniper_ap`] but with explicit `depth` +
-/// `strictness` knobs (see [`decode_frame_with_options`]).
-///
-/// Added per Gemini's review on PR #21 (Tier 1.3) so sniper + AP
-/// callers can match the Fast / Normal / Deep menu without going
-/// through the legacy hardcoded shim.
+/// Same as [`decode_sniper_ap`] but with an explicit `depth` knob
+/// (see [`decode_frame_with_options`]).
 pub fn decode_sniper_ap_with_options(
     audio: &[i16],
     target_freq: f32,
     depth: DecodeDepth,
-    strictness: DecodeStrictness,
     max_cand: usize,
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
@@ -283,7 +258,7 @@ pub fn decode_sniper_ap_with_options(
         0.5,
         depth,
         max_cand,
-        strictness,
+        DecodeStrictness::Normal,
         eq_mode,
         REFINE_STEPS,
         // Halve the sync-quality gate for AP: locked bits carry the
@@ -298,81 +273,44 @@ mod tests {
     use super::*;
 
     /// Compile-time check that `decode_frame_with_options` accepts every
-    /// combination of `DecodeDepth` × `DecodeStrictness`. No actual
-    /// decoding happens — empty audio returns no candidates fast — but
-    /// this guards against future signature drift.
+    /// `DecodeDepth` rung. No actual decoding happens — empty audio
+    /// returns no candidates fast — but this guards against future
+    /// signature drift.
     #[test]
     fn decode_frame_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500]; // 7.5 s of silence at 12 kHz
         for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            for &strict in &[
-                DecodeStrictness::Strict,
-                DecodeStrictness::Normal,
-                DecodeStrictness::Deep,
-            ] {
-                let _ =
-                    decode_frame_with_options(&empty, 100.0, 3000.0, 1.0, None, depth, strict, 5);
-            }
+            let _ = decode_frame_with_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
         }
     }
 
     /// Compile-time check that `decode_frame_with_cache_and_options`
-    /// accepts every combination of `DecodeDepth` × `DecodeStrictness`.
+    /// accepts every `DecodeDepth` rung.
     #[test]
     fn decode_frame_with_cache_and_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
         for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            for &strict in &[
-                DecodeStrictness::Strict,
-                DecodeStrictness::Normal,
-                DecodeStrictness::Deep,
-            ] {
-                let _ = decode_frame_with_cache_and_options(
-                    &empty, 100.0, 3000.0, 1.0, None, depth, strict, 5,
-                );
-            }
+            let _ = decode_frame_with_cache_and_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
         }
     }
 
     /// Compile-time check that `decode_frame_subtract_with_options`
-    /// accepts every combination of `DecodeDepth` × `DecodeStrictness`.
+    /// accepts every `DecodeDepth` rung.
     #[test]
     fn decode_frame_subtract_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
         for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            for &strict in &[
-                DecodeStrictness::Strict,
-                DecodeStrictness::Normal,
-                DecodeStrictness::Deep,
-            ] {
-                let _ = decode_frame_subtract_with_options(
-                    &empty, 100.0, 3000.0, 1.0, None, depth, strict, 5,
-                );
-            }
+            let _ = decode_frame_subtract_with_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
         }
     }
 
     /// Compile-time check that `decode_sniper_ap_with_options` accepts
-    /// every combination of `DecodeDepth` × `DecodeStrictness`.
+    /// every `DecodeDepth` rung.
     #[test]
     fn decode_sniper_ap_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
         for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            for &strict in &[
-                DecodeStrictness::Strict,
-                DecodeStrictness::Normal,
-                DecodeStrictness::Deep,
-            ] {
-                let _ = decode_sniper_ap_with_options(
-                    &empty,
-                    1500.0,
-                    depth,
-                    strict,
-                    5,
-                    EqMode::Off,
-                    None,
-                );
-            }
+            let _ = decode_sniper_ap_with_options(&empty, 1500.0, depth, 5, EqMode::Off, None);
         }
     }
 }

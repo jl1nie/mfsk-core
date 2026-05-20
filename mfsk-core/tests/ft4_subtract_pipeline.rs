@@ -14,7 +14,7 @@
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::decode::decode_frame_with_options;
-use mfsk_core::ft4::decode::{DecodeDepth, DecodeStrictness, decode_frame};
+use mfsk_core::ft4::decode::{DecodeDepth, decode_frame};
 use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
@@ -92,7 +92,6 @@ fn subtract_reveals_hidden_ft4_signal() {
         0.5,
         None,
         DecodeDepth::BpAllOsd,
-        DecodeStrictness::Deep,
         5,
     );
     let saw_weak = pass2.iter().any(|r| r.message77() == weak);
