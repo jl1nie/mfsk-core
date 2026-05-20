@@ -43,7 +43,7 @@ entry) update that file, not this one.
   `New-NetFirewallHyperVRule` invocation is captured in the
   Phase 0.6 commit log (search `git log --grep "Phase 0.6"`).
 
-## Status (2026-05-17 pivot — demo / acoustic-fallback role)
+## Status (2026-05-21 — demo / acoustic-fallback, frozen after Phase 1.7)
 
 Phase 0 / 0.5 / 3 / 4 / 0.6 / 0.7 shipped on `main`. Phase 1 UAC
 hardware verification confirmed **M5StickS3 cannot do USB host**
@@ -51,13 +51,19 @@ hardware verification confirmed **M5StickS3 cannot do USB host**
 IC; see memory `project_m5stick_s3_no_usb_host`). This crate is
 repositioned as the **demo / acoustic-fallback** path:
 
-- **Phase 1.5 (next, task #47)**: internal MEMS mic via ES8311 ADC
-  mode → I2S RX → `decode_pipeline::run_with_source`. Picks up
-  IC-705 SPEAKER OUT acoustically; no cable / dongle required. Adds
-  `BootMode::Acoustic` between `Wifi` and `Uac` in the boot cycle.
+- **Phase 1.5 (Acoustic) — ✅ done**: ES8311 ADC mic-mode → I2S RX →
+  `LinearResamplerI16To12k` → `decode_pipeline::run_with_source`.
+  `BootMode::Acoustic` added to the NVS cycle. Live on `main`.
+- **Phase 1.7 (QSO bidir I2S + demo toggle) — ✅ done**: BtnA
+  long-press in `BootMode::Qso` toggles `demo_mode_enabled`; the
+  audio thread substitutes `qso3_busy.wav` for both the decoder's
+  chunk feed and the speaker output. On `feat/demo-mode-qso`, PR #121.
+- **Phase 1.7.8 (NextMode menu item) — ✅ done**: 4th menu item
+  lets the user switch boot mode from within the menu overlay (no
+  3-reboot KEY dance). On `feat/demo-mode-qso` (same PR #121 branch).
 - **Phase 1 (UAC), Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6
   (buttons), TX keying**: rolled forward to `m5stack-cores3-app`
-  (Phase B-Core in `docs/ROADMAP.md`).
+  (Phase B-Core in `docs/ROADMAP.md`). **Stick frozen after 1.7.8.**
 
 The `uac.rs` module (~445 lines) stays in-tree as canonical
 reference; it's cloned verbatim into `m5stack-cores3-app` in Phase
