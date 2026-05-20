@@ -1,0 +1,48 @@
+# M5Stack Core2 FT8 controller — sdkconfig defaults.
+#
+# Mirror of the sibling `m5stack-s3-app/sdkconfig.defaults` with three
+# Core2-specific deltas:
+#   1. SPIRAM_MODE_QUAD (Core2 uses Quad PSRAM, S3 is Octal).
+#   2. No USB host (Core2 ESP32 LX6 has no USB-OTG hardware — IC-705
+#      capture path is S3-only).
+#   3. Flash size 16 MB (Core2 ships 16 MB on both v1.0 and v1.1).
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+
+# ── Flash + partition table ──────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME is written by build.rs /
+# bootstrap-sdkconfig.sh with the absolute path to this crate's
+# partitions.csv (CMake resolves the path from its build dir, so the
+# absolute form is mandatory). Run `./bootstrap-sdkconfig.sh` once
+# before the first build on a fresh clone.
+
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# ── Bluetooth (off in Phase 2) ───────────────────────────────────────
+# CI-V over BLE is a Phase 2.5+ item, same as on the S3 sibling.
+CONFIG_BT_ENABLED=n
+
+# ── Networking ───────────────────────────────────────────────────────
+# WiFi STA + UDP datagram log sink — same role as on the S3 sibling.
+# Without USB-OTG on Core2 the UDP path is the only off-device log
+# besides UART, so it matters more here.
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_LWIP_TCP_ENABLED=y
+CONFIG_LWIP_UDP_ENABLED=y
+
+# ── PSRAM (Quad 8 MB) ─────────────────────────────────────────────────
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Mandatory for dual-core decode: keeps allocations ≤4096 B in internal
+# DRAM, preventing TLSF heap corruption when stage-3 cs Box buffers
+# are placed in internal DRAM by both worker cores simultaneously.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# ── esp-dsp FFT — 8192 twiddle table ─────────────────────────────────
+CONFIG_DSP_MAX_FFT_SIZE_8192=y

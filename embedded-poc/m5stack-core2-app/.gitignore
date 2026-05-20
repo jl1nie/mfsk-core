@@ -13,3 +13,5 @@ cfg.toml-*
 # build.rs / bootstrap-sdkconfig.sh が CARGO_MANIFEST_DIR の絶対パスで
 # CONFIG_PARTITION_TABLE_CUSTOM_FILENAME を埋め込む生成ファイル。
 sdkconfig.gen.defaults
+
+components_esp32.lock
