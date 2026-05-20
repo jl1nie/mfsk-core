@@ -5,3 +5,8 @@ Cargo.lock
 # build.rs / bootstrap-sdkconfig.sh が CARGO_MANIFEST_DIR の絶対パスで
 # CONFIG_PARTITION_TABLE_CUSTOM_FILENAME を埋め込む生成ファイル。
 sdkconfig.gen.defaults
+
+# Per-session bench captures (see flash-monitor.sh)
+/logs/
+
+components_esp32.lock

@@ -4,3 +4,13 @@ Cargo.lock
 .idea/
 .vscode/
 *.swp
+
+# Non-standard build artifact dirs from benchmark runs
+/target_i8/
+/target_q11/
+
+# Ad-hoc development logs (device-capture logs live in embedded-poc/*/logs/)
+/logs/
+
+# Serena language-server tool config (personal dev tool, like .idea/)
+/.serena/
