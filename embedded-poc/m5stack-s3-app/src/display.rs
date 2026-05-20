@@ -688,6 +688,10 @@ pub fn run_log_panel(
                             }
                             log::info!("menu: auto_cq → {}", if on { "ON" } else { "OFF" });
                         },
+                        next_mode: &mut || {
+                            log::info!("menu: next_mode → {} (flip + restart)", mode.flipped().label());
+                            boot_mode::flip_and_restart(&nvs, mode);
+                        },
                     };
                     if let Ok(mut ui) = UI.lock() {
                         menu::activate(&mut ui, &mut actions);
@@ -818,6 +822,7 @@ pub fn run_log_panel(
                 menu_snapshot.2,
                 menu_snapshot.3,
                 menu_snapshot.4,
+                mode.flipped().label(),
             )
             .ok();
             // When menu closes, force a full re-render of WF + decoded
