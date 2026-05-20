@@ -147,8 +147,8 @@ where
     for (cs_ref, _used_eq) in try_order {
         let cs_ref: &[Complex<f32>] = cs_ref;
         let llr_set = compute_llr::<P, f32>(cs_ref);
-        let variants: Vec<(&Vec<f32>, u8)> = vec![
-            (&llr_set.llra, 0),
+        let variants = [
+            (&llr_set.llra, 0u8),
             (&llr_set.llrb, 1),
             (&llr_set.llrc, 2),
             (&llr_set.llrd, 3),

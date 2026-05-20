@@ -215,7 +215,7 @@ pub fn process_candidate_basic<P: Protocol>(
         // No-op for protocols with `CODEWORD_INTERLEAVE = None`
         // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
         deinterleave_llr_set::<P>(&mut llr_set);
-        let variants = vec![
+        let variants = [
             (&llr_set.llra, 0u8),
             (&llr_set.llrb, 1),
             (&llr_set.llrc, 2),
