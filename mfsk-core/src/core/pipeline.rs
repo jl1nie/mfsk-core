@@ -28,10 +28,12 @@ use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 pub type FftCache = Vec<Complex<f32>>;
 
 /// Decoding depth: which LLR variants to attempt and whether to use OSD.
+///
+/// The single-variant `Bp` rung (llra-only, no all-variants pass) was retired
+/// in 0.7.0 — no production caller was found by issue #74, and the cheapest
+/// staircase step never functioned as a power-budget escape hatch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DecodeDepth {
-    /// Belief-propagation only, using the llra metric (fast).
-    Bp,
     /// BP across all four LLR variants (a, b, c, d).
     BpAll,
     /// BP on all variants, then OSD fallback when BP fails.
@@ -213,15 +215,12 @@ pub fn process_candidate_basic<P: Protocol>(
         // No-op for protocols with `CODEWORD_INTERLEAVE = None`
         // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
         deinterleave_llr_set::<P>(&mut llr_set);
-        let variants = match depth {
-            DecodeDepth::Bp => vec![(&llr_set.llra, 0u8)],
-            DecodeDepth::BpAll | DecodeDepth::BpAllOsd => vec![
-                (&llr_set.llra, 0),
-                (&llr_set.llrb, 1),
-                (&llr_set.llrc, 2),
-                (&llr_set.llrd, 3),
-            ],
-        };
+        let variants = [
+            (&llr_set.llra, 0u8),
+            (&llr_set.llrb, 1),
+            (&llr_set.llrc, 2),
+            (&llr_set.llrd, 3),
+        ];
 
         let fec = P::Fec::default();
         let bp_opts = FecOpts {
@@ -333,14 +332,6 @@ pub fn process_candidate_basic<P: Protocol>(
             let mut cs_eq = cs_raw.clone();
             equalize_local::<P>(&mut cs_eq);
             decode(&cs_eq)
-        }
-        EqMode::Adaptive => {
-            let mut cs_eq = cs_raw.clone();
-            equalize_local::<P>(&mut cs_eq);
-            if let Some(r) = decode(&cs_eq) {
-                return Some(r);
-            }
-            decode(&cs_raw)
         }
     }
 }

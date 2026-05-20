@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn decode_frame_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500]; // 7.5 s of silence at 12 kHz
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,
@@ -321,7 +321,7 @@ mod tests {
     #[test]
     fn decode_frame_with_cache_and_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn decode_frame_subtract_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn decode_sniper_ap_with_options_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
             for &strict in &[
                 DecodeStrictness::Strict,
                 DecodeStrictness::Normal,

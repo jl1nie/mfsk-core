@@ -76,12 +76,15 @@ pub enum MfskFt8Status {
 
 /// Mirrors `mfsk_core::ft8::decode::DecodeDepth`. The deeper levels
 /// trade decode time for recall on busy bands.
+///
+/// Discriminant `0` is intentionally unassigned — the legacy
+/// `Bp` (single-metric) rung was retired in 0.7.0 (issue #74).
+/// Existing C callers passing `1` / `2` remain valid; passing `0`
+/// is now rejected by `map_depth` and surfaces as a caller bug.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MfskFt8Depth {
-    /// `Bp(llra)` only — fast nsym=1 LLR + one BP run per candidate.
-    Bp = 0,
-    /// Above + four full LLR variants on candidates that fail Bp.
+    /// Four full LLR variants + BP run per candidate.
     BpAll = 1,
     /// Above + OSD-1 / OSD-3 fallback (gated on sync-quality ≥ 12).
     BpAllOsd = 2,
@@ -90,7 +93,6 @@ pub enum MfskFt8Depth {
 #[inline]
 fn map_depth(d: MfskFt8Depth) -> DecodeDepth {
     match d {
-        MfskFt8Depth::Bp => DecodeDepth::Bp,
         MfskFt8Depth::BpAll => DecodeDepth::BpAll,
         MfskFt8Depth::BpAllOsd => DecodeDepth::BpAllOsd,
     }

@@ -130,9 +130,9 @@ where
 
     let fec = P::Fec::default();
 
-    // Prepare EQ / non-EQ views of the symbol spectra. EqMode::Adaptive
-    // is "EQ-only" — matches FT8's historical single-path approach.
-    // The non-EQ fallback (~1/20 extra decodes at -18 dB) was retired
+    // Prepare EQ / non-EQ views of the symbol spectra. The AP-list
+    // path is EQ-only (matches FT8's historical single-path approach);
+    // the non-EQ fallback (~1/20 extra decodes at -18 dB) was retired
     // because it doubled per-candidate cost for marginal gain.
     let cs_eq = {
         let mut v = cs_raw.clone();
@@ -141,21 +141,18 @@ where
     };
     let try_order: &[(&[Complex<f32>], bool)] = match eq_mode {
         EqMode::Off => &[(&cs_raw, false)],
-        EqMode::Local | EqMode::Adaptive => &[(&cs_eq, true)],
+        EqMode::Local => &[(&cs_eq, true)],
     };
 
     for (cs_ref, _used_eq) in try_order {
         let cs_ref: &[Complex<f32>] = cs_ref;
         let llr_set = compute_llr::<P, f32>(cs_ref);
-        let variants: Vec<(&Vec<f32>, u8)> = match depth {
-            DecodeDepth::Bp => vec![(&llr_set.llra, 0)],
-            DecodeDepth::BpAll | DecodeDepth::BpAllOsd => vec![
-                (&llr_set.llra, 0),
-                (&llr_set.llrb, 1),
-                (&llr_set.llrc, 2),
-                (&llr_set.llrd, 3),
-            ],
-        };
+        let variants = [
+            (&llr_set.llra, 0u8),
+            (&llr_set.llrb, 1),
+            (&llr_set.llrc, 2),
+            (&llr_set.llrd, 3),
+        ];
 
         // ── Plain BP first, in case the signal is already clear ────────
         for (llr, pass_id) in &variants {

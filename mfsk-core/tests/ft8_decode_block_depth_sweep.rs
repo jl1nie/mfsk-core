@@ -46,7 +46,7 @@ fn ft8_decode_depth_sweep() {
     );
     println!("  {}", "─".repeat(75));
 
-    for depth in [DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+    for depth in [DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
         let mut per_truth = Vec::new();
         let mut per_total = Vec::new();
         let mut per_ms = Vec::new();

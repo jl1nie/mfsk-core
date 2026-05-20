@@ -21,14 +21,19 @@ use super::Protocol;
 use num_complex::Complex;
 
 /// Equaliser operating mode.
+///
+/// `Adaptive` (try-EQ-then-non-EQ two-pass) was retired in 0.7.0 —
+/// the AP-list path in `msg::pipeline_ap` had already collapsed it
+/// into `Local`, and the documented "~1/20 extra decodes at -18 dB"
+/// payoff didn't justify the 2× per-candidate cost (issue #73).
+/// Callers that want the historical two-pass behaviour should
+/// invoke the decoder twice explicitly with `Local` then `Off`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EqMode {
     /// No equalisation (passthrough).
     Off,
     /// Per-signal equalisation using local Costas pilot tones.
     Local,
-    /// Try without EQ first; fall back to EQ only if BP decode fails.
-    Adaptive,
 }
 
 /// Apply local (per-signal) Wiener equalisation to a flat symbol-spectra

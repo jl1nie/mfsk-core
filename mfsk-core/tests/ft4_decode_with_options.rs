@@ -48,7 +48,7 @@ fn every_depth_strictness_combo_decodes_clean_signal() {
     let audio = synth_slot(&msg, 1500.0, 25_000);
 
     let mut decoded_text = None;
-    for depth in [DecodeDepth::Bp, DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
+    for depth in [DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
         for strictness in [
             DecodeStrictness::Strict,
             DecodeStrictness::Normal,

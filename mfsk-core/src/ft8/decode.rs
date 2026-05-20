@@ -29,10 +29,13 @@ use super::{
 pub type FftCache = Vec<num_complex::Complex<f32>>;
 
 /// Decoding depth: which LLR sets and passes to attempt.
+///
+/// `Bp` (single-metric, no all-variants pass) was retired in 0.7.0 —
+/// no production consumer was found by issue #74, and the cheapest
+/// staircase rung wasn't a power-budget escape hatch (embedded ship
+/// runs `BpAll` end-to-end inside the slot budget already).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DecodeDepth {
-    /// Belief-propagation only, using nsym=1 metrics (fast).
-    Bp,
     /// BP with all four metric variants (a, b, c, d).
     BpAll,
     /// BP (all four variants) then OSD order-1 fallback when BP fails.
@@ -580,14 +583,6 @@ fn process_candidate(
             equalizer::equalize_local(&mut cs_eq);
             try_decode(&cs_eq, true)
         }
-        EqMode::Adaptive => {
-            let mut cs_eq = cs_raw.clone();
-            equalizer::equalize_local(&mut cs_eq);
-            if let Some(r) = try_decode(&cs_eq, true) {
-                return Some(r);
-            }
-            try_decode(&cs_raw, true)
-        }
     }
 }
 
@@ -1055,7 +1050,7 @@ pub fn decode_sniper_eq(
 /// let ap = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
 /// let results = decode_sniper_ap(
 ///     &audio, 1000.0, DecodeDepth::BpAllOsd, 20,
-///     EqMode::Adaptive, Some(&ap),
+///     EqMode::Local, Some(&ap),
 /// );
 /// ```
 pub fn decode_sniper_ap(
@@ -1285,7 +1280,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::Bp,
+            DecodeDepth::BpAll,
             DecodeStrictness::Normal,
             10,
             None,
@@ -1322,7 +1317,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::Bp,
+            DecodeDepth::BpAll,
             10,
             DecodeStrictness::Normal,
             None,
@@ -1335,7 +1330,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::Bp,
+            DecodeDepth::BpAll,
             10,
             DecodeStrictness::Normal,
             Some(&ap),
@@ -1358,7 +1353,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::Bp,
+            DecodeDepth::BpAll,
             10,
             DecodeStrictness::Normal,
             &known,
@@ -1373,7 +1368,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::Bp,
+            DecodeDepth::BpAll,
             10,
             DecodeStrictness::Normal,
             &known,
@@ -1485,7 +1480,7 @@ mod tests {
     #[test]
     fn silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::Bp, 10);
+        let results = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BpAll, 10);
         assert!(results.is_empty(), "silence should decode nothing");
     }
 
@@ -1493,7 +1488,7 @@ mod tests {
     #[test]
     fn sniper_silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_sniper(&audio, 1000.0, DecodeDepth::Bp, 10);
+        let results = decode_sniper(&audio, 1000.0, DecodeDepth::BpAll, 10);
         assert!(results.is_empty());
     }
 

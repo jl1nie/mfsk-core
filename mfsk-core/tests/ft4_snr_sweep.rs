@@ -100,7 +100,7 @@ fn ft4_snr_sweep_basic_vs_ap() {
     let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 
     println!("\n=== FT4 SNR sweep ({SEEDS} seeds/SNR) ===");
-    println!("  SNR    basic    AP(EQ=Adaptive)");
+    println!("  SNR    basic    AP(EQ=Local)");
 
     for snr in [-4, -6, -8, -10, -12, -14, -16, -18] {
         let mut ok_b = 0;
@@ -111,7 +111,7 @@ fn ft4_snr_sweep_basic_vs_ap() {
                 ok_b += 1;
             }
             if hit(
-                &decode_sniper_ap(&audio, 1000.0, 30, EqMode::Adaptive, Some(&ap)),
+                &decode_sniper_ap(&audio, 1000.0, 30, EqMode::Local, Some(&ap)),
                 &msg,
             ) {
                 ok_a += 1;
