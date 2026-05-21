@@ -37,6 +37,22 @@ pub(crate) static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
+// Phase C (2026-05-21) — last sample index Goertzel reads for a
+// candidate, used to decide whether the audio captured so far
+// covers the candidate's full window. Matches
+// `fill_symbol_spectra_goertzel`:
+//   i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round()
+//   end = i0 + NN * NSPS
+const PHC_NSPS: i64 = 1_920;
+const PHC_SAMPLE_RATE_HZ: f32 = 12_000.0;
+const PHC_TX_START_OFFSET_S: f32 = 1.0;
+const PHC_NN: i64 = 79;
+
+fn audio_end_for(dt_sec: f32) -> usize {
+    let i0 = ((PHC_TX_START_OFFSET_S + dt_sec) * PHC_SAMPLE_RATE_HZ).round() as i64;
+    (i0 + PHC_NN * PHC_NSPS).max(0) as usize
+}
+
 /// `BootMode::Decode` entry — runs the decode pipeline with the
 /// baked `QSO_WAVS` playlist as the audio source (via `wav_sim`).
 /// Thin wrapper around [`run_with_source`].
@@ -201,6 +217,7 @@ where
         // 実測: 200..2000 で phantom 0 だが 2 kHz 超の real (qso1/qso2 R6WA)
         // を逃す → ユーザを "聞こえてる気"にさせない方が大事。
         let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
+        let t_post_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
         let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
             &spec.spec,
             100.0,
@@ -210,15 +227,64 @@ where
             &spec.allsum_head,
             &spec.allsum_tail,
         );
+        let t_coarse_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
         // Don't drop the spec yet — `xsnr2_db_simple` reads it after
         // stage 3 completes to recompute SNR free of the per-block
         // auto-gain bias `compute_snr_db` carries. Spec is ~360 KB
         // for the slot, lives in PSRAM, dropped at the end of this
         // loop iteration.
 
+        // Phase C (2026-05-21): partition pass1 by required audio
+        // window and run pass-2 + stage-3 on the "ready" half during
+        // the remaining audio-tail window (typically ~120-150 ms
+        // after coarse_sync completes, before SlotEnd). For
+        // qso3_busy and most live slots, candidates' dt_sec sits
+        // inside ±0.5 s → all of pass1 lands in `ready` →
+        // post-SlotEnd work shrinks to roughly Slot-recv latency only.
+        let n_pass1 = pass1.len();
+        let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+
+        // Snapshot captured by stage1_inc at SpecBundle emit time
+        // (≥ pair 91's 177 600-sample requirement). Avoids a race
+        // against the next slot's `finalize_slot` that a shared
+        // atomic would have introduced.
+        let snap_fill = spec.audio_fill;
+        let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
+            pass1.into_iter().partition(|c| audio_end_for(c.dt_sec) <= snap_fill);
+        let n_ready = ready.len();
+        let n_deferred = deferred.len();
+
+        let mut results = if !ready.is_empty() {
+            // SAFETY: same lifetime as `spec.audio_fill_atom` — the
+            // backing Vec heap allocation survives `mem::replace` in
+            // stage1_inc and remains valid until the matching `Slot`
+            // arrives on `slot_q` and is dropped. Workers read only
+            // `partial_audio[0..snap_fill]`; stage1_inc writes only
+            // to indices ≥ snap_fill (disjoint).
+            let partial_audio: &[i16] = unsafe {
+                core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
+            };
+            let p2 = dual_core::pass2_split(
+                partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
+            );
+            dual_core::stage3_split(
+                partial_audio,
+                p2,
+                DecodeDepth::BpAll,
+                DEFAULT_Q_THRESH,
+                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+                basis_re_main,
+                basis_im_main,
+            )
+        } else {
+            Vec::new()
+        };
+        let t_early_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+
         let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
         let wav_idx = slot.wav_idx;
-        let n_pass1 = pass1.len();
+        let t_slot_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+
         // Auto-sync uses `results` median (post BP), not pass1 — pass1
         // candidates from a noise slot are random and would mis-anchor
         // the slot phase. Gemini PR #103 review removed the no-op
@@ -241,29 +307,58 @@ where
         // texture; the click was an alarm.
         // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
 
-        let t_pass2 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let pass2 =
-            dual_core::pass2_split(&slot.audio, pass1, MAX_CAND, basis_re_main, basis_im_main);
-        let t_stage3 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        let depth = DecodeDepth::BpAll;
-        let results = dual_core::stage3_split(
-            &slot.audio,
-            pass2,
-            depth,
-            DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            basis_re_main,
-            basis_im_main,
-        );
+        // Late path: only runs when some candidates couldn't fit in
+        // the SpecBundle audio snapshot (high positive dt_sec; rare
+        // in practice). Uses the full Slot audio.
+        if !deferred.is_empty() {
+            let p2 = dual_core::pass2_split(
+                &slot.audio, deferred, MAX_CAND, basis_re_main, basis_im_main,
+            );
+            let late = dual_core::stage3_split(
+                &slot.audio,
+                p2,
+                DecodeDepth::BpAll,
+                DEFAULT_Q_THRESH,
+                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+                basis_re_main,
+                basis_im_main,
+            );
+            results.extend(late);
+        }
         let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
+        // Phase-C breakdown: the speculative `early` path may straddle
+        // SlotEnd. `slot.slotend_us` is stage1_inc's exact SlotEnd
+        // timestamp, so we can decompose the early run into
+        //   tail_use = work done before SlotEnd (the win)
+        //   post_early = work spent after SlotEnd inside the early path
+        // and quote the absolute post-SlotEnd latency that the user
+        // actually sees per decode.
+        let slotend = slot.slotend_us;
+        // tail_window: audio-tail gap between SpecBundle arrival and
+        // SlotEnd — this is the budget Phase C tries to use.
+        let tail_window = (slotend - t_post_recv).max(0);
+        // Wallclock of coarse_sync (eats into the tail budget).
+        let coarse_us = t_coarse_done - t_post_recv;
+        // Overlap actually achieved: how much of `early` ran before
+        // SlotEnd. min(t_early_done, slotend) - t_coarse_done.
+        let tail_use_end = slotend.min(t_early_done);
+        let tail_use = (tail_use_end - t_coarse_done).max(0);
+        // User-visible post-SlotEnd latency from SlotEnd to all
+        // decodes ready.
+        let post_slotend = (t_done - slotend).max(0);
         log::info!(
-            "WAV[{wav_idx}] p1={n_pass1} dec={} pass2={}us stage3={}us total={}us",
+            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+             tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
+             slot_wait={}us late={}us",
             results.len(),
-            t_stage3 - t_pass2,
-            t_done - t_stage3,
-            t_done - t_pass2
+            tail_window,
+            coarse_us,
+            t_early_done - t_early_start,
+            tail_use,
+            post_slotend,
+            t_slot_recv - t_early_done,
+            t_done - t_slot_recv,
         );
         slot_seq = slot_seq.wrapping_add(1);
         // Publish to UiState so decoded_list renders GREEN only for

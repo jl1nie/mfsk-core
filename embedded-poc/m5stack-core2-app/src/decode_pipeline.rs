@@ -36,6 +36,18 @@ static QSO_WAVS: &[&[u8]] = &[
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
+// Phase C (2026-05-21) — last sample index Goertzel reads for a
+// candidate (matches the S3 sibling; both use the same FT8 params).
+const PHC_NSPS: i64 = 1_920;
+const PHC_SAMPLE_RATE_HZ: f32 = 12_000.0;
+const PHC_TX_START_OFFSET_S: f32 = 1.0;
+const PHC_NN: i64 = 79;
+
+fn audio_end_for(dt_sec: f32) -> usize {
+    let i0 = ((PHC_TX_START_OFFSET_S + dt_sec) * PHC_SAMPLE_RATE_HZ).round() as i64;
+    (i0 + PHC_NN * PHC_NSPS).max(0) as usize
+}
+
 /// Spawn target. Returns `!`. BASIS DRAM allocation happens inside
 /// this thread (not in main) so the per-thread 32 KB stack reservation
 /// doesn't fight the 60 KB × 4 BASIS allocs for the largest free
@@ -87,6 +99,7 @@ pub fn run() -> ! {
     let mut slot_seq: u32 = 0;
     loop {
         let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
+        let t_post_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
         let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
             &spec.spec,
             100.0,
@@ -96,31 +109,81 @@ pub fn run() -> ! {
             &spec.allsum_head,
             &spec.allsum_tail,
         );
+        let t_coarse_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+
+        // Phase C (2026-05-21): same speculative-pass2+stage3 pattern
+        // as the S3 sibling. Most candidates (dt_sec ∈ ±0.5 s) fit
+        // inside the SpecBundle audio snapshot → all stage-3 work
+        // shifts into the audio tail.
+        let n_pass1 = pass1.len();
+        let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        let snap_fill = spec.audio_fill;
+        let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
+            pass1.into_iter().partition(|c| audio_end_for(c.dt_sec) <= snap_fill);
+        let n_ready = ready.len();
+        let n_deferred = deferred.len();
+
+        let mut results = if !ready.is_empty() {
+            let partial_audio: &[i16] = unsafe {
+                core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
+            };
+            let p2 = dual_core::pass2_split(
+                partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
+            );
+            dual_core::stage3_split(
+                partial_audio,
+                p2,
+                DecodeDepth::BpAll,
+                DEFAULT_Q_THRESH,
+                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+                basis_re_main,
+                basis_im_main,
+            )
+        } else {
+            Vec::new()
+        };
+        let t_early_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
         let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
         let wav_idx = slot.wav_idx;
-        let n_pass1 = pass1.len();
+        let t_slot_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
-        let pass2 = dual_core::pass2_split(
-            &slot.audio,
-            pass1,
-            MAX_CAND,
-            basis_re_main,
-            basis_im_main,
+        if !deferred.is_empty() {
+            let p2 = dual_core::pass2_split(
+                &slot.audio, deferred, MAX_CAND, basis_re_main, basis_im_main,
+            );
+            let late = dual_core::stage3_split(
+                &slot.audio,
+                p2,
+                DecodeDepth::BpAll,
+                DEFAULT_Q_THRESH,
+                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+                basis_re_main,
+                basis_im_main,
+            );
+            results.extend(late);
+        }
+        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+
+        let slotend = slot.slotend_us;
+        let tail_window = (slotend - t_post_recv).max(0);
+        let coarse_us = t_coarse_done - t_post_recv;
+        let tail_use_end = slotend.min(t_early_done);
+        let tail_use = (tail_use_end - t_coarse_done).max(0);
+        let post_slotend = (t_done - slotend).max(0);
+        log::info!(
+            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+             tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
+             slot_wait={}us late={}us",
+            results.len(),
+            tail_window,
+            coarse_us,
+            t_early_done - t_early_start,
+            tail_use,
+            post_slotend,
+            t_slot_recv - t_early_done,
+            t_done - t_slot_recv,
         );
-
-        let depth = DecodeDepth::BpAll;
-        let results = dual_core::stage3_split(
-            &slot.audio,
-            pass2,
-            depth,
-            DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            basis_re_main,
-            basis_im_main,
-        );
-
-        log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
 
         for r in results.iter() {

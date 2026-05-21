@@ -45,6 +45,27 @@ const N_TIME: usize = NMAX / NSTEP - 3; // 184
 const N_PAIRS: usize = N_TIME / 2; // 92
 const TARGET_PEAK: i32 = (NFFT_SPEC * 2) as i32;
 
+// Phase C+ (2026-05-21): emit SpecBundle *before* the last few pairs
+// finish, so coarse_sync gets more headroom before SlotEnd. coarse_sync
+// reads spec at m ∈ {Costas-positions + lag} only; with `nstep-half`
+// (NSSY=2), jstrt=6, and SYNC_LAG_S=1.0 (jz≈12-13), the maximum m
+// touched is block-2 last Costas + jz = 162 + 13 = 175. Pair 87 fills
+// up to m=175 (j_a=174, j_b=175), so emitting at `next_pair == 88`
+// gives coarse_sync everything it needs while leaving ~720 ms more
+// of audio-tail wallclock for the speculative pass-2 + stage-3 path.
+//
+// Pairs 88..91 (m=176..183) still get computed after emit, but
+// `emit_spec_bundle` swaps in a fresh zero buffer so those writes
+// land in a discarded allocation. `xsnr2_db_simple` does sample
+// spec at strided m values across the full range; the trailing 8
+// zero rows out of 184 (≈ 4.3%) bias the median noise-floor estimate
+// slightly but stay well inside the per-station SNR jitter we
+// already see across slots. Keep all 92 pairs computed (we discard
+// rather than skip) so any future downstream consumer that needs
+// the full spec can opt in by hooking a second emit at pair 91.
+const SPEC_EMIT_PAIR: usize = 88; // emit after pair 87 done (m=0..175 valid)
+const _: () = assert!(SPEC_EMIT_PAIR <= N_PAIRS, "SPEC_EMIT_PAIR > N_PAIRS");
+
 // Phase-E2 per-half allsum parameters (matches dual_core
 // coarse_sync_split_with_allsum band 100..3000 split at 1550).
 const ALLSUM_FREQ_MIN: f32 = 100.0;
@@ -295,10 +316,13 @@ fn advance_pairs(ctx: &mut WorkerCtx) {
         ctx.cur.next_pair = j + 1;
     }
 
-    // If the last pair just landed and we haven't sent SpecBundle yet,
-    // fire it now — main can run stage 2 in parallel with the tail of
-    // capture (audio chunks 148–150 still arriving).
-    if ctx.cur.next_pair == N_PAIRS && !ctx.cur.spec_sent {
+    // Phase C+ (2026-05-21): emit SpecBundle as soon as the last
+    // pair that coarse_sync's needed_m bounds depends on completes
+    // (= pair `SPEC_EMIT_PAIR - 1`), not at the very last pair. This
+    // shifts ~720 ms of audio-tail wallclock from "stage1_inc is
+    // still finishing pairs" into "main can run coarse_sync +
+    // speculative pass-2/stage-3".
+    if ctx.cur.next_pair >= SPEC_EMIT_PAIR && !ctx.cur.spec_sent {
         emit_spec_bundle(ctx);
     }
 
@@ -313,6 +337,15 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     let spec = core::mem::replace(&mut ctx.cur.spec, vec![0u16; n_freq * N_TIME]);
     let head = core::mem::replace(&mut ctx.cur.allsum_head, vec![0f32; head_n * N_TIME]);
     let tail = core::mem::replace(&mut ctx.cur.allsum_tail, vec![0f32; tail_n * N_TIME]);
+    // Phase C: hand main a raw pointer to the audio buffer + a
+    // snapshot of the fill position. Lifetime contract is
+    // documented on `SpecBundle`; main must stop dereferencing
+    // `audio_ptr` once it has received the matching `Slot`. The
+    // snapshot avoids a races against `finalize_slot`'s reset of
+    // any shared atomic when the pipeline is offset by one slot.
+    let audio_ptr = ctx.cur.audio.as_ptr();
+    let audio_cap = ctx.cur.audio.len();
+    let audio_fill = ctx.cur.audio_fill;
     let bundle = Box::new(SpecBundle {
         spec: mfsk_core::ft8::decode_block::Spectrogram::from_parts(n_freq, N_TIME, spec),
         allsum_head: head,
@@ -320,6 +353,9 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
         // wav_idx is only known at SlotEnd; main matches SpecBundle to
         // Slot by FIFO order of receipt, so this is informational only.
         wav_idx: usize::MAX,
+        audio_ptr,
+        audio_cap,
+        audio_fill,
     });
     send_box(ctx.spec_q, bundle);
     ctx.cur.spec_sent = true;
@@ -511,6 +547,7 @@ fn update_one_half(
 }
 
 fn finalize_slot(ctx: &mut WorkerCtx, wav_idx: usize, total_samples: usize) {
+    let slotend_us = unsafe { esp_timer_get_time() };
     // Drain any remaining pairs that the audio supports.
     advance_pairs(ctx);
     if !ctx.cur.spec_sent {
@@ -536,6 +573,7 @@ fn finalize_slot(ctx: &mut WorkerCtx, wav_idx: usize, total_samples: usize) {
         audio: done.audio,
         wav_idx,
         inc_total_us: done.inc_total_us,
+        slotend_us,
     });
     send_box(ctx.slot_q, slot);
 }

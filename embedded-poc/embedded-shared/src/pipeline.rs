@@ -47,12 +47,57 @@ pub enum ChunkMsg {
 /// Lets main start stage 2 (`coarse_sync_with_allsum`) during the tail
 /// of audio capture, so that by the time `Slot` arrives main only has
 /// pass 2 + stage 3 left.
+///
+/// **Phase C audio-tail speculation** (2026-05-21): also carries a
+/// raw pointer to the in-progress audio buffer plus a snapshot of
+/// the fill position at the time of emit, so main can speculatively
+/// run pass-2 + early stage-3 on candidates whose Goertzel window
+/// already fits within the captured audio (most do at SpecBundle
+/// time). The pointer aliases the `Slot.audio` Vec that arrives next
+/// on `slot_q` — `stage1_inc::finalize_slot` uses `mem::replace` so
+/// the heap allocation is preserved when ownership transfers to
+/// `Slot`.
+///
+/// **Why a snapshot, not a live atomic**: the pipeline is offset by
+/// one slot — by the time main receives SpecBundle K, stage1_inc has
+/// already moved on to slot K+1, so any shared "current fill" atomic
+/// would reflect K+1's progress (possibly 0 right after
+/// `finalize_slot` resets it). The snapshot captures slot K's audio
+/// fill at the moment pair 92 completed, which is deterministic
+/// (≥ pair 91's audio requirement) and correctly bounds main's
+/// speculative reads. Audio that arrives between emit and SlotEnd
+/// (typically ~2 more chunks = ~200 ms) is unused by the speculative
+/// path; it lands in the next-arriving `Slot` for any deferred
+/// candidates.
+///
+/// **Lifetime contract**: `audio_ptr` is valid from when this
+/// `SpecBundle` is delivered through `spec_q` until the matching
+/// `Slot` is dropped. After receiving `Slot`, main MUST switch to
+/// `slot.audio` and stop dereferencing `audio_ptr`.
 pub struct SpecBundle {
     pub spec: mfsk_core::ft8::decode_block::Spectrogram,
     pub allsum_head: Vec<f32>,
     pub allsum_tail: Vec<f32>,
     pub wav_idx: usize,
+    /// Raw pointer to the in-progress audio buffer in stage1_inc's
+    /// `WorkerCtx::cur::audio`. Aliases the eventual `Slot.audio`.
+    pub audio_ptr: *const i16,
+    /// Capacity of the audio buffer (= `NMAX` samples). Snapshot
+    /// reads must stay within `[0, audio_fill]`.
+    pub audio_cap: usize,
+    /// Snapshot of `WorkerCtx::cur::audio_fill` captured at
+    /// `emit_spec_bundle` time. Always ≥ the audio requirement of
+    /// pair 91 (177 600 samples = 14.8 s @ 12 kHz).
+    pub audio_fill: usize,
 }
+
+// SAFETY: `audio_ptr` references a heap allocation owned first by
+// stage1_inc's `WorkerCtx::cur::audio` (until SlotEnd), then by the
+// matching `Slot.audio` after `mem::replace`. The queue hand-off
+// from stage1_inc to main establishes happens-before for the
+// SpecBundle fields and the writes to the audio prefix
+// `[0, audio_fill]`.
+unsafe impl Send for SpecBundle {}
 
 /// Audio + slot metadata, sent by stage1_inc at SlotEnd. Pairs with the
 /// `SpecBundle` for the same `wav_idx` to drive pass 2 / stage 3.
@@ -60,6 +105,11 @@ pub struct Slot {
     pub audio: Vec<i16>,
     pub wav_idx: usize,
     pub inc_total_us: i64,
+    /// `esp_timer_get_time()` captured at the start of
+    /// `finalize_slot` in stage1_inc — i.e. the moment SlotEnd
+    /// arrived. Used by the decode-pipeline log to measure how much
+    /// of the Phase C speculative window ran before SlotEnd vs after.
+    pub slotend_us: i64,
 }
 
 /// Streaming-waterfall tick — emitted by stage1_inc once per FFT pair
