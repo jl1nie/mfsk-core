@@ -810,6 +810,16 @@ pub fn run_log_panel(
         // wipe in the renderer so it doesn't flicker).
         status_bar::render(&mut display, &status_snapshot).ok();
 
+        // Pre-detect menu close (transition from visible → hidden)
+        // and force a WF repaint in this same iteration so the
+        // overlay's residual pixels get wiped without the 100 ms
+        // one-tick lag a post-WF check would have caused.
+        let menu_seq = menu_snapshot.5;
+        let menu_seq_changed = menu_seq != last_menu_seq;
+        if menu_seq_changed && !menu_snapshot.0 {
+            last_wf_seq = u32::MAX;
+        }
+
         // Waterfall: streams at per-pair cadence. Trigger on
         // `wf_push_seq` so the redraw still fires after the ring
         // saturates at WF_DEPTH (= ~8 s into runtime).
@@ -850,10 +860,7 @@ pub fn run_log_panel(
         // 84) sits fully inside the WF region y ∈ [14, 114), so a
         // WF repaint (~80 ms cadence per FFT pair) would otherwise
         // erase the menu within one or two ticks. The decoded
-        // list (y ∈ [114, …]) does NOT overlap the menu, so its
-        // redraws are irrelevant here (Gemini PR #124 review).
-        let menu_seq = menu_snapshot.5;
-        let menu_seq_changed = menu_seq != last_menu_seq;
+        // list (y ∈ [114, …]) does NOT overlap the menu.
         if menu_seq_changed || (menu_snapshot.0 && wf_redrawn) {
             menu::render(
                 &mut display,
@@ -865,13 +872,6 @@ pub fn run_log_panel(
                 mode.flipped().label(),
             )
             .ok();
-            // When menu closes, force a full WF re-render next
-            // iteration so the overlay's residual pixels get
-            // wiped. The decoded list doesn't share pixels with
-            // the menu so we don't touch its watermark.
-            if menu_seq_changed && !menu_snapshot.0 {
-                last_wf_seq = u32::MAX;
-            }
             last_menu_seq = menu_seq;
         }
 
