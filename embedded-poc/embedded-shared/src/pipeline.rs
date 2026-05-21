@@ -79,6 +79,12 @@ pub struct SpecBundle {
     pub audio_len: usize,
 }
 
+// SAFETY: `audio_ptr` references a long-lived `AudioBuf` allocation
+// owned by stage1_inc. Same contract as `Slot::audio` — consumer
+// reads are valid for the lifetime of this `SpecBundle` and the
+// matching `Slot` that arrives next on `slot_q`.
+unsafe impl Send for SpecBundle {}
+
 impl SpecBundle {
     /// Last sample index that
     /// `fill_symbol_spectra_goertzel(audio, freq_hz, dt_sec, ..)`

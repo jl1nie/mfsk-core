@@ -128,8 +128,20 @@ struct AudioBuf {
 
 impl AudioBuf {
     fn new() -> Self {
-        let b: Box<[i16; NMAX]> = Box::new([0i16; NMAX]);
-        let ptr = Box::into_raw(b) as *mut i16;
+        // `Box::new([0i16; NMAX])` puts the 360 KB array temporarily
+        // on the stack before moving it to the heap and can blow
+        // the FreeRTOS task stack on ESP32. Allocate via Vec, which
+        // goes straight to the heap (PSRAM under
+        // `SPIRAM_MALLOC_ALWAYSINTERNAL=4096`), then convert into a
+        // boxed array.
+        // SAFETY: `into_boxed_slice` yields a Box<[i16]> whose
+        // length is exactly NMAX (we built the Vec at that size).
+        // The size cast to `Box<[i16; NMAX]>` is sound — same
+        // layout, same allocation, length proven at construction.
+        let v: Vec<i16> = alloc::vec![0i16; NMAX];
+        let boxed_slice: Box<[i16]> = v.into_boxed_slice();
+        debug_assert_eq!(boxed_slice.len(), NMAX);
+        let ptr = Box::into_raw(boxed_slice) as *mut i16;
         Self { ptr, gen: 0 }
     }
 }
