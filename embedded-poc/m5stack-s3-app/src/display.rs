@@ -810,32 +810,10 @@ pub fn run_log_panel(
         // wipe in the renderer so it doesn't flicker).
         status_bar::render(&mut display, &status_snapshot).ok();
 
-        // Menu overlay — render after WF/decoded so it paints on top.
-        // Tracking last menu_seq to avoid redraw when nothing changed.
-        let menu_seq = menu_snapshot.5;
-        if menu_seq != last_menu_seq {
-            menu::render(
-                &mut display,
-                menu_snapshot.0,
-                menu_snapshot.1,
-                menu_snapshot.2,
-                menu_snapshot.3,
-                menu_snapshot.4,
-                mode.flipped().label(),
-            )
-            .ok();
-            // When menu closes, force a full re-render of WF + decoded
-            // next iteration so the overlay's residual pixels go away.
-            if !menu_snapshot.0 {
-                last_wf_seq = u32::MAX;
-                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None, u32::MAX);
-            }
-            last_menu_seq = menu_seq;
-        }
-
         // Waterfall: streams at per-pair cadence. Trigger on
         // `wf_push_seq` so the redraw still fires after the ring
         // saturates at WF_DEPTH (= ~8 s into runtime).
+        let mut wf_redrawn = false;
         if wf_seq != last_wf_seq {
             let wf_refs: heapless::Vec<
                 &mfsk_app_shared::ui::state::WfLine,
@@ -843,6 +821,7 @@ pub fn run_log_panel(
             > = wf_snapshot.iter().collect();
             waterfall::render(&mut display, &wf_refs).ok();
             last_wf_seq = wf_seq;
+            wf_redrawn = true;
         }
 
         // Decoded list: redraw when a new slot's results landed OR
@@ -855,6 +834,7 @@ pub fn run_log_panel(
             selected_decode_idx,
             latest_slot_seq_snapshot,
         );
+        let mut decoded_redrawn = false;
         if decoded_fp_with_cursor != last_decoded_fp_with_cursor {
             decoded_list::render_with_cursor(
                 &mut display,
@@ -864,6 +844,38 @@ pub fn run_log_panel(
             )
             .ok();
             last_decoded_fp_with_cursor = decoded_fp_with_cursor;
+            decoded_redrawn = true;
+        }
+
+        // Menu overlay — render AFTER WF + decoded so the overlay
+        // paints on top of whatever they put down. The menu region
+        // (32, 16) … (132, 84) sits fully inside the WF region
+        // y ∈ [14, 114), so a WF repaint (~80 ms cadence per FFT
+        // pair) would otherwise erase the menu within one or two
+        // ticks. We track both the menu_seq watermark *and* the
+        // WF/decoded redraw flags so the menu re-paints whenever
+        // anything underneath it changed.
+        let menu_seq = menu_snapshot.5;
+        let menu_seq_changed = menu_seq != last_menu_seq;
+        let underlying_redrawn = wf_redrawn || decoded_redrawn;
+        if menu_seq_changed || (menu_snapshot.0 && underlying_redrawn) {
+            menu::render(
+                &mut display,
+                menu_snapshot.0,
+                menu_snapshot.1,
+                menu_snapshot.2,
+                menu_snapshot.3,
+                menu_snapshot.4,
+                mode.flipped().label(),
+            )
+            .ok();
+            // When menu closes, force a full re-render of WF + decoded
+            // next iteration so the overlay's residual pixels go away.
+            if menu_seq_changed && !menu_snapshot.0 {
+                last_wf_seq = u32::MAX;
+                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None, u32::MAX);
+            }
+            last_menu_seq = menu_seq;
         }
 
         // TX line: 3-way priority — sync prompt > sync-mark
