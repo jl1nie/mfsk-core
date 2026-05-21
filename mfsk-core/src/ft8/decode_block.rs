@@ -54,7 +54,8 @@ pub use fill_symbol_spectra::{
     fill_symbol_spectra_into_generic, symbol_spectra_direct_into,
 };
 pub use fill_symbol_spectra::{
-    SymMask, fill_symbol_spectra, fill_symbol_spectra_goertzel, symbol_spectra_direct,
+    SymMask, fill_symbol_spectra, fill_symbol_spectra_goertzel, goertzel_window_end_sample,
+    symbol_spectra_direct,
 };
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).

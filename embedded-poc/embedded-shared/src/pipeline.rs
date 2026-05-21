@@ -47,19 +47,174 @@ pub enum ChunkMsg {
 /// Lets main start stage 2 (`coarse_sync_with_allsum`) during the tail
 /// of audio capture, so that by the time `Slot` arrives main only has
 /// pass 2 + stage 3 left.
+///
+/// **Phase C audio-tail speculation** (2026-05-21): also carries a
+/// raw pointer to stage1_inc's currently-frozen audio buffer +
+/// `audio_len` samples at the moment `emit_spec_bundle` ran. Main
+/// borrows `audio_prefix()` to run speculative pass-2 + early
+/// stage-3 on candidates whose Goertzel window fits the prefix;
+/// the rest defer to the full `slot.audio()` on the matching
+/// `Slot`.
+///
+/// **Why a raw pointer is sound under double-buffering**: prior
+/// (round-4) revisions copied `audio_prefix` to dodge stacked-
+/// borrow aliasing — stage1_inc kept an exclusive borrow on its
+/// only audio Vec while writing the tail past the snapshot fill.
+/// Round-11 introduced the double-buffer (`stage1_inc::AudioBuf`
+/// × 2): stage1_inc only ever writes `audio_bufs[fill_idx]`, and
+/// `finalize_slot` toggles `fill_idx` so the just-completed
+/// buffer's pointer (= `SpecBundle.audio_ptr` and
+/// `Slot.audio_ptr`) is read-only from stage1_inc's view until
+/// `fill_idx` cycles back at the *next* SlotEnd. Main must drop
+/// the matching `Slot` before that 15 s deadline; post-SlotEnd
+/// latency is ≪ 1 s in steady state so the constraint is
+/// trivially met. Result: no copy, no allocator churn, no
+/// PSRAM-bandwidth contention with main's coarse_sync reads.
 pub struct SpecBundle {
     pub spec: mfsk_core::ft8::decode_block::Spectrogram,
     pub allsum_head: Vec<f32>,
     pub allsum_tail: Vec<f32>,
     pub wav_idx: usize,
+    /// Raw pointer into stage1_inc's currently-frozen audio buffer
+    /// (same allocation as the matching `Slot.audio_ptr` that will
+    /// arrive on `slot_q` next). Kept private (Gemini PR #123
+    /// round-20) — callers go through `audio_prefix()` to get a
+    /// safe `&[i16]` so the raw pointer never escapes this module.
+    audio_ptr: *const i16,
+    /// Snapshot of `cur.audio_fill` at emit time. Always ≥
+    /// pair-86's audio requirement (168 000 samples = 14.0 s @
+    /// 12 kHz) when emit fires at `SPEC_EMIT_PAIR`.
+    audio_len: usize,
+}
+
+// SAFETY: `audio_ptr` references a long-lived `AudioBuf` allocation
+// owned by stage1_inc. Same contract as `Slot::audio` — consumer
+// reads are valid for the lifetime of this `SpecBundle` and the
+// matching `Slot` that arrives next on `slot_q`.
+unsafe impl Send for SpecBundle {}
+
+impl SpecBundle {
+    /// Last sample index that
+    /// `fill_symbol_spectra_goertzel(audio, freq_hz, dt_sec, ..)`
+    /// reads for a candidate at `dt_sec`. Thin re-export of
+    /// `mfsk_core::ft8::decode_block::goertzel_window_end_sample`
+    /// so the formula and its constants
+    /// (`TX_START_OFFSET_S` / `SAMPLE_RATE_HZ` / `NN` / `NSPS`)
+    /// live exactly once in mfsk-core and can't drift.
+    ///
+    /// Used by Phase-C decode-pipeline consumers to decide whether
+    /// a candidate's Goertzel window fits inside the SpecBundle
+    /// audio snapshot (`ready`) or must defer to the post-SlotEnd
+    /// path (`deferred`).
+    pub fn audio_end_for_dt(dt_sec: f32) -> usize {
+        mfsk_core::ft8::decode_block::goertzel_window_end_sample(dt_sec)
+    }
+
+    /// Borrow the snapshot prefix as a slice. SAFETY contract is
+    /// the same as [`Slot::audio`].
+    pub fn audio_prefix(&self) -> &[i16] {
+        unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
+    }
+
+    /// Length of the audio prefix in samples — equal to
+    /// `self.audio_prefix().len()`.
+    pub fn audio_len(&self) -> usize {
+        self.audio_len
+    }
+
+    /// Construct a SpecBundle directly. Used by stage1_inc when
+    /// it emits the bundle. `audio_ptr` must satisfy the lifetime
+    /// contract documented at the struct level.
+    pub(crate) fn new(
+        spec: mfsk_core::ft8::decode_block::Spectrogram,
+        allsum_head: Vec<f32>,
+        allsum_tail: Vec<f32>,
+        wav_idx: usize,
+        audio_ptr: *const i16,
+        audio_len: usize,
+    ) -> Self {
+        Self {
+            spec,
+            allsum_head,
+            allsum_tail,
+            wav_idx,
+            audio_ptr,
+            audio_len,
+        }
+    }
 }
 
 /// Audio + slot metadata, sent by stage1_inc at SlotEnd. Pairs with the
 /// `SpecBundle` for the same `wav_idx` to drive pass 2 / stage 3.
+///
+/// **Phase C+ double-buffer**: `audio_ptr` references one of
+/// stage1_inc's two long-lived `AudioBuf` allocations. It stays
+/// valid until stage1_inc next swaps `fill_idx` back to this
+/// buffer (= at SlotEnd of the *next* slot, ≥ 15 s away). The
+/// consumer (decode_pipeline / main) MUST drop the Slot before
+/// that deadline; in steady-state operation post_slotend ≪ 15 s,
+/// so the requirement is trivially met.
 pub struct Slot {
-    pub audio: Vec<i16>,
+    /// Raw pointer to the just-completed slot's audio. Same backing
+    /// allocation as the matching `SpecBundle.audio_ptr` — both
+    /// point into stage1_inc's currently-frozen `AudioBuf`.
+    /// Kept private (Gemini PR #123 round-20) — callers go through
+    /// `audio()` for a safe `&[i16]`.
+    audio_ptr: *const i16,
+    /// Number of valid samples at `audio_ptr` (usually
+    /// `NMAX = 180_000`; smaller on under-fed / BtnA-reset slots).
+    audio_len: usize,
     pub wav_idx: usize,
     pub inc_total_us: i64,
+    /// `esp_timer_get_time()` captured at the start of
+    /// `finalize_slot` in stage1_inc — i.e. the moment SlotEnd
+    /// arrived. Used by the decode-pipeline log to measure how much
+    /// of the Phase C speculative window ran before SlotEnd vs after.
+    pub slotend_us: i64,
+}
+
+// SAFETY: `audio_ptr` references a long-lived `AudioBuf` allocation
+// owned by stage1_inc. Consumer-only access (read-only) is sound
+// for the lifetime of the Slot, per `AudioBuf`'s aliasing contract.
+unsafe impl Send for Slot {}
+
+impl Slot {
+    /// Borrow the slot's audio as a slice. SAFETY: this method
+    /// borrows `self`, which keeps the Slot live and therefore
+    /// keeps the audio buffer reserved for the consumer.
+    pub fn audio(&self) -> &[i16] {
+        // SAFETY: `audio_ptr` + `audio_len` came from a valid
+        // `AudioBuf` allocation owned by stage1_inc and remain
+        // valid for `self`'s lifetime per `AudioBuf`'s rules.
+        unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
+    }
+
+    /// Length of the audio buffer in samples. Equal to
+    /// `self.audio().len()`; exposed as a free accessor so callers
+    /// can log it without materialising the slice.
+    pub fn audio_len(&self) -> usize {
+        self.audio_len
+    }
+
+    /// Construct a Slot directly. Used by stage1_inc when it
+    /// hands ownership of the just-completed `AudioBuf` to the
+    /// queue. The (`audio_ptr`, `audio_len`) pair must satisfy
+    /// `AudioBuf`'s aliasing contract.
+    pub(crate) fn new(
+        audio_ptr: *const i16,
+        audio_len: usize,
+        wav_idx: usize,
+        inc_total_us: i64,
+        slotend_us: i64,
+    ) -> Self {
+        Self {
+            audio_ptr,
+            audio_len,
+            wav_idx,
+            inc_total_us,
+            slotend_us,
+        }
+    }
 }
 
 /// Streaming-waterfall tick — emitted by stage1_inc once per FFT pair

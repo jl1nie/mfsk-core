@@ -40,6 +40,29 @@ pub enum DecodeDepth {
     BpAll,
     /// BP (all four variants) then OSD order-1 fallback when BP fails.
     BpAllOsd,
+    /// BP across `a`, `d`, `b` only — skips the heavy nsym=3 `c`
+    /// variant. Used by the embedded port to bypass the
+    /// `compute_llr_partial(3)` call (~5× cost of variant `b`) for
+    /// failed candidates. Empirically (S3 qso3_busy log,
+    /// 2026-05-21) every decode lands at `pass=0` (variant `a`) on
+    /// busy-band reference WAVs, so `c` contributes no extra
+    /// decodes and is pure overhead on a power-budgeted target.
+    ///
+    /// The lighter variants `d` (nsym=1 bit-normalised, free reuse
+    /// of step-1 LLR) and `b` (nsym=2, ~1.5× variant `a` cost) are
+    /// retained as safety nets for marginal SNR / fading cases.
+    BpAllNoNsym3,
+    /// BP across `a` (Step 1) and `d` (free-reuse bit-normalised
+    /// nsym=1) only — drops both the nsym=2 `b` and nsym=3 `c`
+    /// LLR computations + their BP attempts. Host A/B sweep
+    /// (`ft8_no_nsym3_sweep`, 5 in-repo WAVs) showed `b` and `c`
+    /// contribute zero extra decodes vs `a` alone; the lighter
+    /// `BpAllNoNsym3` only dropped `c`, this one drops `b` too.
+    ///
+    /// Embedded ship target — on a power-budgeted MCU each failed
+    /// candidate now costs only the Step-1 BP plus a free-LLR
+    /// `d` re-BP (~2×T1 instead of ~8.5×T1 under `BpAll`).
+    BpVariantsAd,
 }
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.

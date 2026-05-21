@@ -9,7 +9,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
@@ -200,70 +199,82 @@ where
         // 検出) で gate するため自動応答に流れない。設計の根拠は host 側
         // 実測: 200..2000 で phantom 0 だが 2 kHz 超の real (qso1/qso2 R6WA)
         // を逃す → ユーザを "聞こえてる気"にさせない方が大事。
-        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
-        let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
-            &spec.spec,
-            100.0,
-            3_000.0,
-            1.0,
-            PASS1_LIMIT,
-            &spec.allsum_head,
-            &spec.allsum_tail,
-        );
-        // Don't drop the spec yet — `xsnr2_db_simple` reads it after
-        // stage 3 completes to recompute SNR free of the per-block
-        // auto-gain bias `compute_snr_db` carries. Spec is ~360 KB
-        // for the slot, lives in PSRAM, dropped at the end of this
-        // loop iteration.
-
-        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
-        let wav_idx = slot.wav_idx;
-        let n_pass1 = pass1.len();
-        // Auto-sync uses `results` median (post BP), not pass1 — pass1
-        // candidates from a noise slot are random and would mis-anchor
-        // the slot phase. Gemini PR #103 review removed the no-op
-        // `pass1.iter().map(c.dt_sec).collect()` allocation that was
-        // immediately discarded below.
-
-        // (fine_refine attempted via fill_symbol_spectra iteration in
-        // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
-        // to 200k+ per-symbol DFTs per slot. Reverted; ship recall
-        // stays at 6/18 on qso3_busy.wav until a cd0-via-FIR-decimate
-        // refine lands.)
-
-        // The audio gate around pass2/stage3 was added to silence the
-        // DMA-underrun buzz the user heard during BP work, but the
-        // *resume* transition produced a much harsher click — the
-        // I2S driver / codec analog stage settles dirty after a
-        // 1.3 s starvation and pops on first non-zero sample. Net
-        // assessment: leave audio streaming the whole time. The
-        // residual buzz at -10 dB DAC volume is mild background
-        // texture; the click was an alarm.
-        // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
-
-        let t_pass2 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let pass2 =
-            dual_core::pass2_split(&slot.audio, pass1, MAX_CAND, basis_re_main, basis_im_main);
-        let t_stage3 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        let depth = DecodeDepth::BpAll;
-        let results = dual_core::stage3_split(
-            &slot.audio,
-            pass2,
-            depth,
-            DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+        //
+        // Phase-C speculative slot runner — receives both SpecBundle
+        // and Slot, partitions pass1 by audio-prefix coverage, runs
+        // the early speculative + late deferred decode paths, and
+        // hands back the timestamps for the per-slot log. Shared
+        // with `m5stack-core2-app`; canonical implementation lives
+        // in `embedded_shared::dual_core::run_speculative_slot`.
+        let cfg = dual_core::DecodeConfig {
+            freq_min: 100.0,
+            freq_max: 3_000.0,
+            sync_min: 1.0,
+            pass1_limit: PASS1_LIMIT,
+            max_cand: MAX_CAND,
+            q_thresh: DEFAULT_Q_THRESH,
+            bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            depth: DecodeDepth::BpVariantsAd,
+        };
+        let out = dual_core::run_speculative_slot(
+            spec_q,
+            slot_q,
+            &cfg,
             basis_re_main,
             basis_im_main,
         );
-        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        let dual_core::SpeculativeOut {
+            spec,
+            slot,
+            results,
+            n_pass1,
+            n_ready,
+            n_deferred,
+            t_post_recv,
+            t_coarse_done,
+            t_early_done,
+            t_slot_recv,
+            t_done,
+        } = out;
+        // Bind a non-mutable copy for downstream auto-sync / UI
+        // code that historically read `slot.wav_idx`.
+        let wav_idx = slot.wav_idx;
+        // Don't drop the spec yet — `xsnr2_db_simple` reads it after
+        // stage 3 completes to recompute SNR free of the per-block
+        // auto-gain bias `compute_snr_db` carries.
 
+        // Phase-C breakdown: the speculative `early` path may straddle
+        // SlotEnd. `slot.slotend_us` is stage1_inc's exact SlotEnd
+        // timestamp, so we can decompose the early run into
+        //   tail_use = work done before SlotEnd (the win)
+        //   post_early = work spent after SlotEnd inside the early path
+        // and quote the absolute post-SlotEnd latency that the user
+        // actually sees per decode.
+        let slotend = slot.slotend_us;
+        // tail_window: audio-tail gap between SpecBundle arrival and
+        // SlotEnd — this is the budget Phase C tries to use.
+        let tail_window = (slotend - t_post_recv).max(0);
+        // Wallclock of coarse_sync (eats into the tail budget).
+        let coarse_us = t_coarse_done - t_post_recv;
+        // Overlap actually achieved: how much of `early` ran before
+        // SlotEnd. min(t_early_done, slotend) - t_coarse_done.
+        let tail_use_end = slotend.min(t_early_done);
+        let tail_use = (tail_use_end - t_coarse_done).max(0);
+        // User-visible post-SlotEnd latency from SlotEnd to all
+        // decodes ready.
+        let post_slotend = (t_done - slotend).max(0);
         log::info!(
-            "WAV[{wav_idx}] p1={n_pass1} dec={} pass2={}us stage3={}us total={}us",
+            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+             tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
+             slot_wait={}us late={}us",
             results.len(),
-            t_stage3 - t_pass2,
-            t_done - t_stage3,
-            t_done - t_pass2
+            tail_window,
+            coarse_us,
+            t_early_done - t_coarse_done,
+            tail_use,
+            post_slotend,
+            t_slot_recv - t_early_done,
+            t_done - t_slot_recv,
         );
         slot_seq = slot_seq.wrapping_add(1);
         // Publish to UiState so decoded_list renders GREEN only for
@@ -465,10 +476,12 @@ where
                     };
                     ui.push_decode(row);
                     log::info!(
-                        "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
+                        "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) pass={} he={} {}",
                         r.freq_hz,
                         calibrated_snr,
                         r.snr_db,
+                        r.pass,
+                        r.hard_errors,
                         text
                     );
                     // Feed the FSM. SNR set first so an in-band reply

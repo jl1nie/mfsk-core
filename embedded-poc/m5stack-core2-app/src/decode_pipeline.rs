@@ -9,8 +9,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
@@ -86,41 +84,61 @@ pub fn run() -> ! {
 
     let mut slot_seq: u32 = 0;
     loop {
-        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
-        let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
-            &spec.spec,
-            100.0,
-            3_000.0,
-            1.0,
-            PASS1_LIMIT,
-            &spec.allsum_head,
-            &spec.allsum_tail,
+        // Phase-C speculative slot runner — shared with
+        // `m5stack-s3-app`. See
+        // `embedded_shared::dual_core::run_speculative_slot` doc for
+        // the partition + early/late path semantics.
+        let cfg = dual_core::DecodeConfig {
+            freq_min: 100.0,
+            freq_max: 3_000.0,
+            sync_min: 1.0,
+            pass1_limit: PASS1_LIMIT,
+            max_cand: MAX_CAND,
+            q_thresh: DEFAULT_Q_THRESH,
+            bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            depth: DecodeDepth::BpVariantsAd,
+        };
+        let out = dual_core::run_speculative_slot(
+            spec_q,
+            slot_q,
+            &cfg,
+            basis_re_main,
+            basis_im_main,
         );
-
-        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
+        let dual_core::SpeculativeOut {
+            spec,
+            slot,
+            results,
+            n_pass1,
+            n_ready,
+            n_deferred,
+            t_post_recv,
+            t_coarse_done,
+            t_early_done,
+            t_slot_recv,
+            t_done,
+        } = out;
         let wav_idx = slot.wav_idx;
-        let n_pass1 = pass1.len();
 
-        let pass2 = dual_core::pass2_split(
-            &slot.audio,
-            pass1,
-            MAX_CAND,
-            basis_re_main,
-            basis_im_main,
+        let slotend = slot.slotend_us;
+        let tail_window = (slotend - t_post_recv).max(0);
+        let coarse_us = t_coarse_done - t_post_recv;
+        let tail_use_end = slotend.min(t_early_done);
+        let tail_use = (tail_use_end - t_coarse_done).max(0);
+        let post_slotend = (t_done - slotend).max(0);
+        log::info!(
+            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+             tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
+             slot_wait={}us late={}us",
+            results.len(),
+            tail_window,
+            coarse_us,
+            t_early_done - t_coarse_done,
+            tail_use,
+            post_slotend,
+            t_slot_recv - t_early_done,
+            t_done - t_slot_recv,
         );
-
-        let depth = DecodeDepth::BpAll;
-        let results = dual_core::stage3_split(
-            &slot.audio,
-            pass2,
-            depth,
-            DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            basis_re_main,
-            basis_im_main,
-        );
-
-        log::info!("WAV[{wav_idx}] p1={n_pass1} dec={}", results.len());
         slot_seq = slot_seq.wrapping_add(1);
 
         for r in results.iter() {

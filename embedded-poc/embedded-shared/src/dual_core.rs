@@ -51,6 +51,189 @@ use mfsk_core::ft8::decode_block::{
 };
 
 use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
+use crate::pipeline::{self, SpecBundle, Slot};
+
+/// One slot's Phase-C output. Both apps consume it identically:
+/// `spec` for `xsnr2_db_simple`, `slot` for `wav_idx` /
+/// `inc_total_us`, `results` for the UI + QSO FSM, and the `t_*`
+/// timestamps for the per-slot timing log.
+pub struct SpeculativeOut {
+    pub spec: Box<SpecBundle>,
+    pub slot: Box<Slot>,
+    pub results: Vec<DecodeResult>,
+    pub n_pass1: usize,
+    pub n_ready: usize,
+    pub n_deferred: usize,
+    /// `esp_timer_get_time()` right after `recv_box::<SpecBundle>` returns.
+    pub t_post_recv: i64,
+    /// after `coarse_sync_split_with_allsum`.
+    pub t_coarse_done: i64,
+    /// after the speculative pass-2 + stage-3 on `audio_prefix` finish
+    /// (or immediately, if `ready` was empty).
+    pub t_early_done: i64,
+    /// after `recv_box::<Slot>` returns.
+    pub t_slot_recv: i64,
+    /// after the deferred pass-2 + stage-3 on `slot.audio` finish.
+    pub t_done: i64,
+}
+
+/// Per-slot decoder configuration shared between Phase-C speculative
+/// callers. Grouped into a single struct so
+/// [`run_speculative_slot`] doesn't need to accept ~10 positional
+/// `f32` / `usize` / `u32` args (Gemini PR #123 round-16 review).
+#[derive(Debug, Clone, Copy)]
+pub struct DecodeConfig {
+    /// coarse_sync lower band edge in Hz (apps use `100.0`).
+    pub freq_min: f32,
+    /// coarse_sync upper band edge in Hz (apps use `3_000.0`).
+    pub freq_max: f32,
+    /// coarse_sync ratio threshold (apps use `1.0`).
+    pub sync_min: f32,
+    /// Maximum pass-1 candidates fed into pass-2 / stage-3.
+    pub pass1_limit: usize,
+    /// Maximum refined candidates per half passed into stage-3.
+    pub max_cand: usize,
+    /// `process_candidates` sync-quality early-reject threshold.
+    pub q_thresh: u32,
+    /// BP iteration cap per LLR variant.
+    pub bp_max_iter: u32,
+    /// LLR-variant staircase depth (embedded ship uses
+    /// [`DecodeDepth::BpVariantsAd`]).
+    pub depth: DecodeDepth,
+}
+
+/// Phase-C audio-tail speculation runner. Receives a SpecBundle and
+/// Slot pair from the streaming pipeline, partitions pass1 by
+/// whether each candidate's Goertzel window fits inside the
+/// SpecBundle audio prefix, runs pass-2 + stage-3 speculatively on
+/// the `ready` half before SlotEnd, then completes any deferred
+/// candidates on the full `slot.audio` after SlotEnd. The decode
+/// pipelines in both `m5stack-s3-app` and `m5stack-core2-app` use
+/// this single entry to keep the speculative logic in one place.
+pub fn run_speculative_slot(
+    spec_q: esp_idf_svc::sys::QueueHandle_t,
+    slot_q: esp_idf_svc::sys::QueueHandle_t,
+    cfg: &DecodeConfig,
+    basis_re_main: &mut [i16],
+    basis_im_main: &mut [i16],
+) -> SpeculativeOut {
+    use esp_idf_svc::sys::esp_timer_get_time;
+
+    let spec = pipeline::recv_box::<SpecBundle>(spec_q);
+    let t_post_recv = unsafe { esp_timer_get_time() };
+    let pass1: Vec<SyncCandidate> = coarse_sync_split_with_allsum(
+        &spec.spec,
+        cfg.freq_min,
+        cfg.freq_max,
+        cfg.sync_min,
+        cfg.pass1_limit,
+        &spec.allsum_head,
+        &spec.allsum_tail,
+    );
+    let t_coarse_done = unsafe { esp_timer_get_time() };
+
+    let n_pass1 = pass1.len();
+    let snap_fill = spec.audio_len();
+    // Partition by audio-window fit only.
+    //
+    // An earlier revision (round 19) added an `i < cfg.max_cand`
+    // guard so high-rank pass1 cands with dt > +0.36 s would land
+    // in `deferred` instead of being outcompeted by lower-rank
+    // cands in the early path. On qso3-busy the guard moved
+    // 12-19 candidates per slot into the late path; the resulting
+    // post-SlotEnd wallclock grew (190..400 ms across slots) and
+    // we couldn't observe the theoretical recall benefit that
+    // motivated the change. Reverted — pass-2's own
+    // sync_quality_block0 heap top-N inside both halves filters
+    // the strongest cands per side, and the budget cap on
+    // `max_cand_late` keeps the union ≤ max_cand. High-score /
+    // high-dt cands that don't fit the prefix still naturally
+    // land in `deferred` and compete for a slot there.
+    let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) = pass1
+        .into_iter()
+        .partition(|c| SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
+    let n_ready = ready.len();
+    let n_deferred = deferred.len();
+
+    let mut n_early_refined = 0usize;
+    let mut results = if !ready.is_empty() {
+        let partial_audio: &[i16] = spec.audio_prefix();
+        let p2 = pass2_split(
+            partial_audio,
+            ready,
+            cfg.max_cand,
+            basis_re_main,
+            basis_im_main,
+        );
+        n_early_refined = p2.len();
+        stage3_split(
+            partial_audio,
+            p2,
+            cfg.depth,
+            cfg.q_thresh,
+            cfg.bp_max_iter,
+            basis_re_main,
+            basis_im_main,
+        )
+    } else {
+        Vec::new()
+    };
+    let t_early_done = unsafe { esp_timer_get_time() };
+
+    let slot = pipeline::recv_box::<Slot>(slot_q);
+    let t_slot_recv = unsafe { esp_timer_get_time() };
+
+    if !deferred.is_empty() {
+        // Budget cap (Gemini PR #123 round 8/9): stage-3's wallclock
+        // is roughly linear in the number of refined candidates
+        // pass-2 hands it. Sum-cap by the *refined* count (not the
+        // decoded count) so `n_early_refined + n_late_refined ≤
+        // max_cand` holds regardless of whether the early path's
+        // candidates went on to decode. Trade-off: when the early
+        // half already fills `max_cand` slots (typical qso3-busy
+        // case: ready=25-27, pass-2 keeps top 15) the deferred
+        // path gets zero budget and any dt > +0.36 s real signals
+        // are dropped. Acceptable on FT8 — operational dt clusters
+        // tightly under NTP sync; `time_sync`'s slot phase
+        // auto-anchor keeps dt within ±0.5 s in steady state.
+        let max_cand_late = cfg.max_cand.saturating_sub(n_early_refined);
+        if max_cand_late > 0 {
+            let slot_audio: &[i16] = slot.audio();
+            let p2 = pass2_split(
+                slot_audio,
+                deferred,
+                max_cand_late,
+                basis_re_main,
+                basis_im_main,
+            );
+            let late = stage3_split(
+                slot_audio,
+                p2,
+                cfg.depth,
+                cfg.q_thresh,
+                cfg.bp_max_iter,
+                basis_re_main,
+                basis_im_main,
+            );
+            results.extend(late);
+        }
+    }
+    let t_done = unsafe { esp_timer_get_time() };
+
+    SpeculativeOut {
+        spec,
+        slot,
+        results,
+        n_pass1,
+        n_ready,
+        n_deferred,
+        t_post_recv,
+        t_coarse_done,
+        t_early_done,
+        t_slot_recv,
+        t_done,
+    }
+}
 
 const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;
