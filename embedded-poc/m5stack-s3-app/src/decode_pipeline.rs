@@ -228,11 +228,12 @@ where
         let n_pass1 = pass1.len();
         let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
-        // Snapshot captured by stage1_inc at SpecBundle emit time
-        // (≥ pair 91's 177 600-sample requirement). Avoids a race
-        // against the next slot's `finalize_slot` that a shared
-        // atomic would have introduced.
-        let snap_fill = spec.audio_fill;
+        // Owned audio snapshot copied by stage1_inc at emit time.
+        // Always ≥ pair-91's 177 600-sample requirement when emit
+        // fires at SPEC_EMIT_PAIR. No aliasing concerns vs the
+        // still-being-filled stage1_inc audio buffer (Gemini PR
+        // #123 round-4 review).
+        let snap_fill = spec.audio_prefix.len();
         let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
             pass1.into_iter()
                 .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
@@ -240,20 +241,7 @@ where
         let n_deferred = deferred.len();
 
         let mut results = if !ready.is_empty() {
-            debug_assert!(
-                snap_fill <= spec.audio_cap,
-                "SpecBundle.audio_fill ({snap_fill}) > audio_cap ({})",
-                spec.audio_cap
-            );
-            // SAFETY: `spec.audio_ptr` references the audio Vec heap
-            // allocation in stage1_inc that survives `mem::replace`
-            // and remains valid until the matching `Slot` is dropped.
-            // The slice is bounded by `snap_fill` (≤ audio_cap, ≤
-            // NMAX). Workers read only `partial_audio[0..snap_fill]`;
-            // stage1_inc writes only to indices ≥ snap_fill (disjoint).
-            let partial_audio: &[i16] = unsafe {
-                core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
-            };
+            let partial_audio: &[i16] = &spec.audio_prefix;
             let p2 = dual_core::pass2_split(
                 partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
             );

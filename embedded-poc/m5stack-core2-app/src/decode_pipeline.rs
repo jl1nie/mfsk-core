@@ -105,7 +105,7 @@ pub fn run() -> ! {
         // shifts into the audio tail.
         let n_pass1 = pass1.len();
         let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let snap_fill = spec.audio_fill;
+        let snap_fill = spec.audio_prefix.len();
         let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
             pass1.into_iter()
                 .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
@@ -113,17 +113,7 @@ pub fn run() -> ! {
         let n_deferred = deferred.len();
 
         let mut results = if !ready.is_empty() {
-            debug_assert!(
-                snap_fill <= spec.audio_cap,
-                "SpecBundle.audio_fill ({snap_fill}) > audio_cap ({})",
-                spec.audio_cap
-            );
-            // SAFETY: lifetime of `spec.audio_ptr` is documented on
-            // `SpecBundle`; valid until the matching `Slot` is dropped.
-            // Workers read only `partial_audio[0..snap_fill]`.
-            let partial_audio: &[i16] = unsafe {
-                core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
-            };
+            let partial_audio: &[i16] = &spec.audio_prefix;
             let p2 = dual_core::pass2_split(
                 partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
             );

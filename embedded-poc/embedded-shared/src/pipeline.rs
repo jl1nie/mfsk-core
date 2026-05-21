@@ -48,60 +48,34 @@ pub enum ChunkMsg {
 /// of audio capture, so that by the time `Slot` arrives main only has
 /// pass 2 + stage 3 left.
 ///
-/// **Phase C audio-tail speculation** (2026-05-21): also carries a
-/// raw pointer to the in-progress audio buffer plus a snapshot of
-/// the fill position at the time of emit, so main can speculatively
-/// run pass-2 + early stage-3 on candidates whose Goertzel window
-/// already fits within the captured audio (most do at SpecBundle
-/// time). The pointer aliases the `Slot.audio` Vec that arrives next
-/// on `slot_q` — `stage1_inc::finalize_slot` uses `mem::replace` so
-/// the heap allocation is preserved when ownership transfers to
-/// `Slot`.
+/// **Phase C audio-tail speculation** (2026-05-21): also carries an
+/// owned snapshot of the audio captured so far (`audio_prefix`,
+/// `audio_fill` samples at the moment `emit_spec_bundle` ran). Main
+/// runs speculative pass-2 + early stage-3 on candidates whose
+/// Goertzel window fits inside `audio_prefix`; the rest defer to
+/// the full `Slot.audio` that arrives next on `slot_q`.
 ///
-/// **Why a snapshot, not a live atomic**: the pipeline is offset by
-/// one slot — by the time main receives SpecBundle K, stage1_inc has
-/// already moved on to slot K+1, so any shared "current fill" atomic
-/// would reflect K+1's progress (possibly 0 right after
-/// `finalize_slot` resets it). The snapshot captures slot K's audio
-/// fill at the moment pair 92 completed, which is deterministic
-/// (≥ pair 91's audio requirement) and correctly bounds main's
-/// speculative reads. Audio that arrives between emit and SlotEnd
-/// (typically ~2 more chunks = ~200 ms) is unused by the speculative
-/// path; it lands in the next-arriving `Slot` for any deferred
-/// candidates.
-///
-/// **Lifetime contract**: `audio_ptr` is valid from when this
-/// `SpecBundle` is delivered through `spec_q` until the matching
-/// `Slot` is dropped. After receiving `Slot`, main MUST switch to
-/// `slot.audio` and stop dereferencing `audio_ptr`.
+/// **Why a copy, not a shared pointer**: prior versions handed main
+/// a raw pointer into stage1_inc's still-being-written
+/// `WorkerCtx::cur::audio`. Even though stage1_inc only wrote past
+/// `audio_fill`, the implicit `&mut` borrow of `cur.audio` it held
+/// while doing so technically aliased main's raw-pointer-derived
+/// `&[i16]` under stacked borrows (Gemini PR #123 round-4 review).
+/// Copying the prefix costs ~2 ms PSRAM-to-PSRAM (~180 KB at
+/// ~80 MB/s) per slot — negligible vs the ~800 ms post-SlotEnd
+/// budget — and eliminates the aliasing concern entirely.
 pub struct SpecBundle {
     pub spec: mfsk_core::ft8::decode_block::Spectrogram,
     pub allsum_head: Vec<f32>,
     pub allsum_tail: Vec<f32>,
     pub wav_idx: usize,
-    /// Raw pointer to the in-progress audio buffer in stage1_inc's
-    /// `WorkerCtx::cur::audio`. Aliases the eventual `Slot.audio`.
-    pub audio_ptr: *const i16,
-    /// Capacity of the audio buffer (= `NMAX` samples). Snapshot
-    /// reads must stay within `[0, audio_fill]`.
-    pub audio_cap: usize,
-    /// Snapshot of `WorkerCtx::cur::audio_fill` captured at
-    /// `emit_spec_bundle` time. Always ≥ the audio requirement of
-    /// pair 91 (177 600 samples = 14.8 s @ 12 kHz).
-    pub audio_fill: usize,
+    /// Owned copy of `WorkerCtx::cur::audio[..audio_fill]` at the
+    /// moment `emit_spec_bundle` ran. Length is the snapshot fill
+    /// position (always ≥ pair-91's audio requirement of
+    /// 177 600 samples = 14.8 s @ 12 kHz when emit fires at
+    /// `SPEC_EMIT_PAIR`).
+    pub audio_prefix: Vec<i16>,
 }
-
-// SAFETY: `audio_ptr` references a heap allocation owned first by
-// stage1_inc's `WorkerCtx::cur::audio` (until SlotEnd), then by the
-// matching `Slot.audio` after `mem::replace`. The Vec is allocated
-// once as `vec![0i16; NMAX]` and never grown (stage1_inc only
-// `copy_from_slice`-writes into the existing slots), so the heap
-// pointer is stable — see the `debug_assert!` in stage1_inc's
-// `ingest_samples` that locks this invariant in. The queue hand-off
-// from stage1_inc to main establishes happens-before for the
-// SpecBundle fields and the writes to the audio prefix
-// `[0, audio_fill]`.
-unsafe impl Send for SpecBundle {}
 
 impl SpecBundle {
     /// Last sample index that

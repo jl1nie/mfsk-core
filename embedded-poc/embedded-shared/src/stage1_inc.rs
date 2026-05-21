@@ -261,19 +261,6 @@ fn reset_in_progress(ctx: &mut WorkerCtx) {
 
 fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {
     let cur = &mut ctx.cur;
-    // The Phase-C audio_ptr in SpecBundle aliases this Vec's heap
-    // allocation across SlotEnd. The aliasing is only sound while the
-    // Vec never reallocates — the initial `vec![0i16; NMAX]` already
-    // sets `len == capacity == NMAX`, and `copy_from_slice` below
-    // writes in-place into pre-allocated slots, so neither len nor
-    // capacity change. Lock the invariant in: any future change that
-    // accidentally grows the Vec trips this assert in debug builds.
-    debug_assert_eq!(
-        cur.audio.capacity(),
-        NMAX,
-        "audio Vec must not grow — Phase-C audio_ptr depends on stable heap"
-    );
-    debug_assert_eq!(cur.audio.len(), NMAX, "audio Vec len must stay = NMAX");
     let off = cur.audio_fill;
     if off + samples.len() > NMAX {
         // More than one slot worth of audio without a SlotEnd — should
@@ -364,15 +351,13 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     let spec = core::mem::replace(&mut ctx.cur.spec, vec![0u16; n_freq * N_TIME]);
     let head = core::mem::replace(&mut ctx.cur.allsum_head, vec![0f32; head_n * N_TIME]);
     let tail = core::mem::replace(&mut ctx.cur.allsum_tail, vec![0f32; tail_n * N_TIME]);
-    // Phase C: hand main a raw pointer to the audio buffer + a
-    // snapshot of the fill position. Lifetime contract is
-    // documented on `SpecBundle`; main must stop dereferencing
-    // `audio_ptr` once it has received the matching `Slot`. The
-    // snapshot avoids a races against `finalize_slot`'s reset of
-    // any shared atomic when the pipeline is offset by one slot.
-    let audio_ptr = ctx.cur.audio.as_ptr();
-    let audio_cap = ctx.cur.audio.len();
-    let audio_fill = ctx.cur.audio_fill;
+    // Phase C: hand main an owned snapshot of the audio captured
+    // so far. Copying (~180 KB PSRAM→PSRAM, ~2 ms) avoids the
+    // aliasing UB the prior raw-pointer scheme had under stacked
+    // borrows — main's `&[i16]` is now backed by its own
+    // allocation, independent of stage1_inc's mutable access to
+    // `ctx.cur.audio` for subsequent chunks.
+    let audio_prefix = ctx.cur.audio[..ctx.cur.audio_fill].to_vec();
     let bundle = Box::new(SpecBundle {
         spec: mfsk_core::ft8::decode_block::Spectrogram::from_parts(n_freq, N_TIME, spec),
         allsum_head: head,
@@ -380,9 +365,7 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
         // wav_idx is only known at SlotEnd; main matches SpecBundle to
         // Slot by FIFO order of receipt, so this is informational only.
         wav_idx: usize::MAX,
-        audio_ptr,
-        audio_cap,
-        audio_fill,
+        audio_prefix,
     });
     send_box(ctx.spec_q, bundle);
     ctx.cur.spec_sent = true;
