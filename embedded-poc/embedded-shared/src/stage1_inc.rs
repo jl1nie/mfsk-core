@@ -141,24 +141,37 @@ impl AudioBuf {
         // on the stack before moving it to the heap and can blow
         // the FreeRTOS task stack on ESP32. Allocate via Vec, which
         // goes straight to the heap (PSRAM under
-        // `SPIRAM_MALLOC_ALWAYSINTERNAL=4096`), then convert into a
-        // boxed array.
-        // SAFETY: `into_boxed_slice` yields a Box<[i16]> whose
-        // length is exactly NMAX (we built the Vec at that size).
-        // The size cast to `Box<[i16; NMAX]>` is sound — same
-        // layout, same allocation, length proven at construction.
+        // `SPIRAM_MALLOC_ALWAYSINTERNAL=4096`), then convert to a
+        // sized `Box<[i16; NMAX]>` *before* taking a raw pointer.
+        // The fat→thin cast detour
+        // `Box::into_raw(Box<[i16]>) as *mut i16` paired with
+        // `Box::from_raw(ptr as *mut [i16; NMAX])` in `Drop` mixes
+        // fat- and thin-pointer Box invariants and is technically
+        // UB (Gemini PR #123 round-17). Convert via `TryFrom`
+        // first so both ends speak `Box<[i16; NMAX]>`.
         let v: Vec<i16> = alloc::vec![0i16; NMAX];
         let boxed_slice: Box<[i16]> = v.into_boxed_slice();
-        debug_assert_eq!(boxed_slice.len(), NMAX);
-        let ptr = Box::into_raw(boxed_slice) as *mut i16;
-        Self { ptr, gen: 0 }
+        let boxed_array: Box<[i16; NMAX]> = boxed_slice
+            .try_into()
+            .expect("AudioBuf: boxed slice length must equal NMAX");
+        let ptr_arr: *mut [i16; NMAX] = Box::into_raw(boxed_array);
+        // Store as a thin element pointer for ergonomic indexed
+        // access in stage1_inc; cast it back to the array type in
+        // Drop so `Box::from_raw` sees the same type it gave us.
+        Self {
+            ptr: ptr_arr as *mut i16,
+            gen: 0,
+        }
     }
 }
 
 impl Drop for AudioBuf {
     fn drop(&mut self) {
-        // SAFETY: `ptr` came from `Box::into_raw(Box<[i16; NMAX]>)`
-        // and is owned exclusively by this struct.
+        // SAFETY: `ptr` was produced by `Box::into_raw(Box<[i16;
+        // NMAX]>)` in `new()` — we reconstruct the same Box type
+        // here (cast from `*mut i16` back to `*mut [i16; NMAX]`,
+        // valid because that was the original provenance) and let
+        // it drop, freeing the heap allocation.
         unsafe {
             let _ = Box::from_raw(self.ptr as *mut [i16; NMAX]);
         }
