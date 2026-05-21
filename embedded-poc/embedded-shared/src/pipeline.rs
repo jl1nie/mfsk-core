@@ -48,22 +48,28 @@ pub enum ChunkMsg {
 /// of audio capture, so that by the time `Slot` arrives main only has
 /// pass 2 + stage 3 left.
 ///
-/// **Phase C audio-tail speculation** (2026-05-21): also carries an
-/// owned snapshot of the audio captured so far (`audio_prefix`,
-/// `audio_fill` samples at the moment `emit_spec_bundle` ran). Main
-/// runs speculative pass-2 + early stage-3 on candidates whose
-/// Goertzel window fits inside `audio_prefix`; the rest defer to
-/// the full `Slot.audio` that arrives next on `slot_q`.
+/// **Phase C audio-tail speculation** (2026-05-21): also carries a
+/// raw pointer to stage1_inc's currently-frozen audio buffer +
+/// `audio_len` samples at the moment `emit_spec_bundle` ran. Main
+/// borrows `audio_prefix()` to run speculative pass-2 + early
+/// stage-3 on candidates whose Goertzel window fits the prefix;
+/// the rest defer to the full `slot.audio()` on the matching
+/// `Slot`.
 ///
-/// **Why a copy, not a shared pointer**: prior versions handed main
-/// a raw pointer into stage1_inc's still-being-written
-/// `WorkerCtx::cur::audio`. Even though stage1_inc only wrote past
-/// `audio_fill`, the implicit `&mut` borrow of `cur.audio` it held
-/// while doing so technically aliased main's raw-pointer-derived
-/// `&[i16]` under stacked borrows (Gemini PR #123 round-4 review).
-/// Copying the prefix costs ~2 ms PSRAM-to-PSRAM (~180 KB at
-/// ~80 MB/s) per slot — negligible vs the ~800 ms post-SlotEnd
-/// budget — and eliminates the aliasing concern entirely.
+/// **Why a raw pointer is sound under double-buffering**: prior
+/// (round-4) revisions copied `audio_prefix` to dodge stacked-
+/// borrow aliasing — stage1_inc kept an exclusive borrow on its
+/// only audio Vec while writing the tail past the snapshot fill.
+/// Round-11 introduced the double-buffer (`stage1_inc::AudioBuf`
+/// × 2): stage1_inc only ever writes `audio_bufs[fill_idx]`, and
+/// `finalize_slot` toggles `fill_idx` so the just-completed
+/// buffer's pointer (= `SpecBundle.audio_ptr` and
+/// `Slot.audio_ptr`) is read-only from stage1_inc's view until
+/// `fill_idx` cycles back at the *next* SlotEnd. Main must drop
+/// the matching `Slot` before that 15 s deadline; post-SlotEnd
+/// latency is ≪ 1 s in steady state so the constraint is
+/// trivially met. Result: no copy, no allocator churn, no
+/// PSRAM-bandwidth contention with main's coarse_sync reads.
 pub struct SpecBundle {
     pub spec: mfsk_core::ft8::decode_block::Spectrogram,
     pub allsum_head: Vec<f32>,
