@@ -134,29 +134,24 @@ pub fn run_speculative_slot(
 
     let n_pass1 = pass1.len();
     let snap_fill = spec.audio_len();
-    // Partition rule (Gemini PR #123 round-19):
-    //   ready    = pass1[i] for i < max_cand AND audio fits prefix
-    //   deferred = everything else
+    // Partition by audio-window fit only.
     //
-    // `pass1` is sorted by coarse-sync score (descending) inside
-    // `coarse_sync_split_with_allsum`, so `i < cfg.max_cand` is
-    // equivalent to "top `max_cand` by coarse-sync score". Filtering
-    // by index keeps a high-score / high-dt candidate (e.g.
-    // dt > +0.36 s but rank 0..max_cand) out of `ready` and lets
-    // it land in `deferred`, where the late path can still claim
-    // a stage-3 budget slot once early stage-3 finishes. Without
-    // this guard, low-rank cands that *happen* to fit the prefix
-    // would fill the early-path budget, max_cand_late would drop
-    // to zero, and the high-rank deferred cand would be dropped.
-    let (ready_indexed, deferred_indexed): (Vec<(usize, SyncCandidate)>, Vec<(usize, SyncCandidate)>) =
-        pass1
-            .into_iter()
-            .enumerate()
-            .partition(|(i, c)| {
-                *i < cfg.max_cand && SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill
-            });
-    let ready: Vec<SyncCandidate> = ready_indexed.into_iter().map(|(_, c)| c).collect();
-    let deferred: Vec<SyncCandidate> = deferred_indexed.into_iter().map(|(_, c)| c).collect();
+    // An earlier revision (round 19) added an `i < cfg.max_cand`
+    // guard so high-rank pass1 cands with dt > +0.36 s would land
+    // in `deferred` instead of being outcompeted by lower-rank
+    // cands in the early path. On qso3-busy the guard moved
+    // 12-19 candidates per slot into the late path; the resulting
+    // post-SlotEnd wallclock grew (190..400 ms across slots) and
+    // we couldn't observe the theoretical recall benefit that
+    // motivated the change. Reverted — pass-2's own
+    // sync_quality_block0 heap top-N inside both halves filters
+    // the strongest cands per side, and the budget cap on
+    // `max_cand_late` keeps the union ≤ max_cand. High-score /
+    // high-dt cands that don't fit the prefix still naturally
+    // land in `deferred` and compete for a slot there.
+    let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) = pass1
+        .into_iter()
+        .partition(|c| SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
     let n_ready = ready.len();
     let n_deferred = deferred.len();
 
