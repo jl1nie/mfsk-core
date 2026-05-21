@@ -60,10 +60,19 @@ const TARGET_PEAK: i32 = (NFFT_SPEC * 2) as i32;
 // steady state — taking the pair-86 emit, the 160 ms audio-tail
 // overlap gain shows up directly as -160 ms post_slotend.
 //
+// **Semantics of this constant** (Gemini PR #123 round-14 misread
+// guard): the value is compared `next_pair >= SPEC_EMIT_PAIR` in
+// `advance_pairs` AFTER each pair's `compute_pair_into` increments
+// `next_pair`. So `SPEC_EMIT_PAIR = 87` means "emit when 87 pairs
+// have been processed" = "emit just after pair index 86 finishes"
+// = "emit with m=0..173 filled" (pair k fills m=2k, 2k+1, so
+// pairs 0..86 fill m=0..173). It does NOT mean "emit at pair 87
+// producing m=174..175".
+//
 // Pairs 87..91 (m=174..183) still get computed when `wf_q.is_some()`
 // to keep the WF flowing through the slot tail; `wf_q = None`
 // (bench) skips them via the `pair_limit` branch in advance_pairs.
-const SPEC_EMIT_PAIR: usize = 87; // emit after pair 86 done (m=0..173 valid)
+const SPEC_EMIT_PAIR: usize = 87; // emit when next_pair == 87 (= pairs 0..86 done, m=0..173 valid)
 const _: () = assert!(SPEC_EMIT_PAIR <= N_PAIRS, "SPEC_EMIT_PAIR > N_PAIRS");
 
 // Phase-E2 per-half allsum parameters (matches dual_core
@@ -448,14 +457,19 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     let head_n = ctx.head_n_freq;
     let tail_n = ctx.tail_n_freq;
     // The post-emit "fresh" buffers swapped into `ctx.cur` are only
-    // touched if `compute_pair_into` runs for pairs 88..91 — and
-    // that only happens when `wf_q.is_some()` (the loop limit in
-    // `advance_pairs` is `SPEC_EMIT_PAIR` otherwise). For the bench
-    // crate (`wf_q = None`) skip the ~860 KB of zeroed PSRAM
-    // allocation entirely (Gemini PR #123 round-5 review). They are
-    // re-allocated at full size by `SlotInProgress::new` inside
-    // `finalize_slot` for the next slot.
-    let (new_spec, new_head, new_tail) = if ctx.wf_q.is_some() {
+    // touched if `compute_pair_into` runs for the remaining pairs
+    // (87..91). Two conditions must BOTH hold for an alloc to be
+    // worthwhile:
+    //   * `wf_q.is_some()` — otherwise `pair_limit` in
+    //     `advance_pairs` stops the loop at SPEC_EMIT_PAIR.
+    //   * `next_pair < N_PAIRS` — otherwise we're emitting from
+    //     `finalize_slot`'s late-emit fallback (the slot was
+    //     under-fed; all pairs already done) and the fresh buffer
+    //     would be discarded by the `mem::replace` later in the
+    //     same `finalize_slot` call.
+    // Gemini PR #123 round-5 & round-14 reviews.
+    let needs_buffers = ctx.wf_q.is_some() && ctx.cur.next_pair < N_PAIRS;
+    let (new_spec, new_head, new_tail) = if needs_buffers {
         (
             vec![0u16; n_freq * N_TIME],
             vec![0f32; head_n * N_TIME],
