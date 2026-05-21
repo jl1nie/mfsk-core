@@ -174,7 +174,7 @@ fn decode_one_slot(
 
     log::info!(
         "rx-wavsim: WAV[{wav_idx}] slot received (audio={} samples, pass1={pass1_n}, q_thresh={q_thresh})",
-        slot.audio.len(),
+        slot.audio_len,
     );
     log::info!(
         "  stage 2 (during cap): {:>7} us  ({pass1_n} cand)",
@@ -184,7 +184,7 @@ fn decode_one_slot(
     let t2 = now_us();
     #[allow(static_mut_refs)]
     let pass2 = unsafe {
-        dual_core::pass2_split(&slot.audio, pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM)
+        dual_core::pass2_split(slot.audio(), pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM)
     };
     let t3 = now_us();
     log::info!(
@@ -198,7 +198,7 @@ fn decode_one_slot(
     #[allow(static_mut_refs)]
     let results = unsafe {
         dual_core::stage3_split(
-            &slot.audio,
+            slot.audio(),
             pass2,
             depth,
             q_thresh,

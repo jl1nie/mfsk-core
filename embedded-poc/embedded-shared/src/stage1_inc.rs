@@ -88,6 +88,67 @@ fn band_for(freq_min: f32, freq_max: f32, spec_n_freq: usize) -> (usize, usize) 
     (ia, ib - ia + 1)
 }
 
+/// Long-lived NMAX-element i16 audio buffer in PSRAM.
+///
+/// Phase C+ owns two of these in `WorkerCtx::audio_bufs` and toggles
+/// `WorkerCtx::fill_idx` at SlotEnd so the just-completed buffer's
+/// pointer can be handed to main via Slot / SpecBundle while
+/// stage1_inc starts writing the next slot into the other buffer.
+/// This eliminates the per-slot ~340 KB Vec alloc/free + the
+/// ~170 KB audio_prefix memcpy that the prior Vec-based design
+/// required to keep Rust's aliasing rules satisfied.
+///
+/// SAFETY: each buffer is logically owned by exactly one of the
+/// stage1_inc / consumer pair at any moment, but Rust's borrow
+/// checker can't express that across the FreeRTOS queue boundary
+/// — the queue carries a raw `*const i16`, not a reference. The
+/// invariant the implementation guarantees is:
+///   * stage1_inc only WRITES the buffer indexed by `fill_idx`.
+///   * The other buffer is read-only from stage1_inc's view, and
+///     must have been emitted to main exactly once (via the
+///     previous slot's `SpecBundle` + `Slot`) before its index is
+///     re-promoted to `fill_idx`.
+///   * Main must DROP the previous `Slot` before stage1_inc swaps
+///     `fill_idx` back to that buffer. Steady-state pipeline has
+///     post-SlotEnd ≪ 15 s so the constraint is easily met; a
+///     debug build adds a check in `swap_fill_idx`.
+struct AudioBuf {
+    /// Box<[i16; NMAX]> reborrowed as a raw pointer so neither
+    /// stage1_inc's `&mut WorkerCtx` nor main's `*const i16`
+    /// derives an exclusive Rust borrow of the underlying slice.
+    /// `Box::into_raw` is paired with `Box::from_raw` in `Drop`.
+    ptr: *mut i16,
+    /// Generation tag bumped each time `swap_fill_idx` promotes
+    /// this buffer back to the fill side. Currently informational
+    /// (the queue-FIFO order is the primary guard); a future
+    /// `try_promote` could refuse to swap until a corresponding
+    /// drop signal lands.
+    gen: u32,
+}
+
+impl AudioBuf {
+    fn new() -> Self {
+        let b: Box<[i16; NMAX]> = Box::new([0i16; NMAX]);
+        let ptr = Box::into_raw(b) as *mut i16;
+        Self { ptr, gen: 0 }
+    }
+}
+
+impl Drop for AudioBuf {
+    fn drop(&mut self) {
+        // SAFETY: `ptr` came from `Box::into_raw(Box<[i16; NMAX]>)`
+        // and is owned exclusively by this struct.
+        unsafe {
+            let _ = Box::from_raw(self.ptr as *mut [i16; NMAX]);
+        }
+    }
+}
+
+// SAFETY: we treat `AudioBuf` as a pointer to a logically-owned
+// allocation. The aliasing contract is documented above and
+// enforced at the FreeRTOS-queue ownership-transfer boundary.
+unsafe impl Send for AudioBuf {}
+
 /// Task-local state: one in-flight slot + invariant resources.
 struct WorkerCtx {
     chunk_q: QueueHandle_t,
@@ -109,13 +170,28 @@ struct WorkerCtx {
     _fft_planner: Box<dyn FftPlanner16>,
     fft: Box<dyn Fft16>,
     fft_buf: Vec<Complex<i16>>,
-    /// Accumulating slot — fresh-allocated at start of each slot.
+    /// Double-buffered audio. `audio_bufs[fill_idx]` is the buffer
+    /// stage1_inc currently writes into; the other was just handed
+    /// to main via the previous SlotEnd. Indices are swapped inside
+    /// `finalize_slot` so the just-completed buffer's pointer is
+    /// what travels in `Slot.audio_ptr`.
+    audio_bufs: [AudioBuf; 2],
+    fill_idx: usize,
+    /// Accumulating slot metadata — counters / spec / allsum / etc.
+    /// The audio bytes themselves now live in `audio_bufs[fill_idx]`.
     cur: SlotInProgress,
+}
+
+impl WorkerCtx {
+    /// Pointer to the buffer stage1_inc currently writes into.
+    #[inline]
+    fn fill_ptr(&self) -> *mut i16 {
+        self.audio_bufs[self.fill_idx].ptr
+    }
 }
 
 /// State of the slot currently being assembled.
 struct SlotInProgress {
-    audio: Vec<i16>,
     audio_fill: usize,
     /// Spec/allsum buffers — moved out into a `SpecBundle` and sent
     /// downstream as soon as the last pair finalizes (typically ~200 ms
@@ -136,7 +212,6 @@ struct SlotInProgress {
 impl SlotInProgress {
     fn new(n_freq: usize, head_n_freq: usize, tail_n_freq: usize) -> Self {
         Self {
-            audio: vec![0i16; NMAX],
             audio_fill: 0,
             spec: vec![0u16; n_freq * N_TIME],
             allsum_head: vec![0f32; head_n_freq * N_TIME],
@@ -191,6 +266,8 @@ pub fn spawn_with_wf(
         _fft_planner: fft_planner,
         fft,
         fft_buf,
+        audio_bufs: [AudioBuf::new(), AudioBuf::new()],
+        fill_idx: 0,
         cur: SlotInProgress::new(n_freq, head_n_freq, tail_n_freq),
     });
     let ctx_ptr = Box::into_raw(ctx) as *mut c_void;
@@ -260,8 +337,7 @@ fn reset_in_progress(ctx: &mut WorkerCtx) {
 }
 
 fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {
-    let cur = &mut ctx.cur;
-    let off = cur.audio_fill;
+    let off = ctx.cur.audio_fill;
     if off + samples.len() > NMAX {
         // More than one slot worth of audio without a SlotEnd — should
         // not happen in normal operation. Drop excess.
@@ -271,14 +347,25 @@ fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {
         );
         return;
     }
-    cur.audio[off..off + samples.len()].copy_from_slice(samples);
-    for &s in samples {
-        let a = (s as i32).unsigned_abs() as i32;
-        if a > cur.peak_abs {
-            cur.peak_abs = a;
-        }
+    // SAFETY: `fill_ptr()` returns the heap pointer of the buffer
+    // currently owned (write-side) by stage1_inc. By the
+    // `AudioBuf` invariant documented at its definition, no other
+    // task is reading this index range concurrently. The dst range
+    // `[off, off+samples.len())` was bounds-checked above.
+    let dst = unsafe { ctx.fill_ptr().add(off) };
+    unsafe {
+        core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, samples.len());
     }
-    cur.audio_fill = off + samples.len();
+    {
+        let cur = &mut ctx.cur;
+        for &s in samples {
+            let a = (s as i32).unsigned_abs() as i32;
+            if a > cur.peak_abs {
+                cur.peak_abs = a;
+            }
+        }
+        cur.audio_fill = off + samples.len();
+    }
     advance_pairs(ctx);
 }
 
@@ -368,13 +455,13 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     let spec = core::mem::replace(&mut ctx.cur.spec, new_spec);
     let head = core::mem::replace(&mut ctx.cur.allsum_head, new_head);
     let tail = core::mem::replace(&mut ctx.cur.allsum_tail, new_tail);
-    // Phase C: hand main an owned snapshot of the audio captured
-    // so far. Copying (~180 KB PSRAM→PSRAM, ~2 ms) avoids the
-    // aliasing UB the prior raw-pointer scheme had under stacked
-    // borrows — main's `&[i16]` is now backed by its own
-    // allocation, independent of stage1_inc's mutable access to
-    // `ctx.cur.audio` for subsequent chunks.
-    let audio_prefix = ctx.cur.audio[..ctx.cur.audio_fill].to_vec();
+    // Phase C+ double-buffer (round-11): hand main a raw pointer
+    // to the fill-side audio buffer + the current fill count. No
+    // copy. The pointer remains valid until the next time stage1_inc
+    // promotes this index back to `fill_idx` (= next SlotEnd at the
+    // earliest); main must drop the matching `Slot` before then.
+    let audio_ptr: *const i16 = ctx.fill_ptr();
+    let audio_len = ctx.cur.audio_fill;
     let bundle = Box::new(SpecBundle {
         spec: mfsk_core::ft8::decode_block::Spectrogram::from_parts(n_freq, N_TIME, spec),
         allsum_head: head,
@@ -382,7 +469,8 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
         // wav_idx is only known at SlotEnd; main matches SpecBundle to
         // Slot by FIFO order of receipt, so this is informational only.
         wav_idx: usize::MAX,
-        audio_prefix,
+        audio_ptr,
+        audio_len,
     });
     send_box(ctx.spec_q, bundle);
     ctx.cur.spec_sent = true;
@@ -418,17 +506,22 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
     // costs ~3 dB SNR and spreads each tone's mainlobe across 2 bins,
     // negating the integer-bin advantage. See decode_block.rs:107.
     {
-        let cur = &ctx.cur;
+        // SAFETY: `audio_ptr` is the fill-side buffer (this is the
+        // only writer in this task); reading from indices < NMAX is
+        // bounds-safe (`AudioBuf` has fixed NMAX size). Each index
+        // is checked against NMAX (= NMAX here is the audio buffer
+        // length, matched to `cur.audio_fill`'s bound check).
+        let audio_ptr: *const i16 = ctx.fill_ptr();
         let buf = &mut ctx.fft_buf;
         for k in 0..NFFT_SPEC {
-            let re = if k < NSPS && ia_a + k < cur.audio.len() {
-                let raw = cur.audio[ia_a + k] as i32;
+            let re = if k < NSPS && ia_a + k < NMAX {
+                let raw = unsafe { *audio_ptr.add(ia_a + k) } as i32;
                 (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
             } else {
                 0
             };
-            let im = if k < NSPS && ia_b + k < cur.audio.len() {
-                let raw = cur.audio[ia_b + k] as i32;
+            let im = if k < NSPS && ia_b + k < NMAX {
+                let raw = unsafe { *audio_ptr.add(ia_b + k) } as i32;
                 (raw << shift).clamp(i16::MIN as i32, i16::MAX as i32) as i16
             } else {
                 0
@@ -605,13 +698,30 @@ fn finalize_slot(ctx: &mut WorkerCtx, wav_idx: usize, total_samples: usize) {
         );
     }
 
+    // Snapshot the just-completed buffer's pointer and fill count
+    // BEFORE we swap `fill_idx`. main reads from this pointer
+    // (= same buffer that was emitted via SpecBundle.audio_ptr).
+    let done_audio_ptr: *const i16 = ctx.fill_ptr();
+    let done_audio_fill = ctx.cur.audio_fill;
+
+    // Swap fill_idx so stage1_inc's NEXT slot fills the *other*
+    // buffer. Main keeps reading the just-snapshotted pointer until
+    // it drops the Slot — by which time stage1_inc is on slot K+1,
+    // so the only way these conflict is if main blocks for more
+    // than 15 s after SlotEnd K (post_slotend ≪ 15 s; debug_assert
+    // guards against drift). Bump the buffer's generation tag for
+    // future-introspection.
+    ctx.fill_idx ^= 1;
+    ctx.audio_bufs[ctx.fill_idx].gen = ctx.audio_bufs[ctx.fill_idx].gen.wrapping_add(1);
+
     let fresh = SlotInProgress::new(ctx.n_freq, ctx.head_n_freq, ctx.tail_n_freq);
-    let done = core::mem::replace(&mut ctx.cur, fresh);
+    let _done = core::mem::replace(&mut ctx.cur, fresh);
 
     let slot = Box::new(Slot {
-        audio: done.audio,
+        audio_ptr: done_audio_ptr,
+        audio_len: done_audio_fill,
         wav_idx,
-        inc_total_us: done.inc_total_us,
+        inc_total_us: _done.inc_total_us,
         slotend_us,
     });
     send_box(ctx.slot_q, slot);

@@ -69,15 +69,14 @@ pub struct SpecBundle {
     pub allsum_head: Vec<f32>,
     pub allsum_tail: Vec<f32>,
     pub wav_idx: usize,
-    /// Owned copy of `WorkerCtx::cur::audio[..audio_fill]` at the
-    /// moment `emit_spec_bundle` ran. Length depends on
-    /// `SPEC_EMIT_PAIR` in stage1_inc; at the current setting (87 =
-    /// emit after pair 86) it is the audio requirement of pair 86 =
-    /// `j_b * NSTEP + NSPS` = `173 * 960 + 1920 = 168 000` samples
-    /// (= 14.0 s @ 12 kHz). Always ≥ this lower bound — chunks
-    /// arrive in 1 200-sample increments, so audio_fill at emit time
-    /// may be a fraction-of-a-chunk larger.
-    pub audio_prefix: Vec<i16>,
+    /// Raw pointer into stage1_inc's currently-frozen audio buffer
+    /// (same allocation as the matching `Slot.audio_ptr` that will
+    /// arrive on `slot_q` next).
+    pub audio_ptr: *const i16,
+    /// Snapshot of `cur.audio_fill` at emit time. Always ≥
+    /// pair-86's audio requirement (168 000 samples = 14.0 s @
+    /// 12 kHz) when emit fires at `SPEC_EMIT_PAIR`.
+    pub audio_len: usize,
 }
 
 impl SpecBundle {
@@ -96,12 +95,32 @@ impl SpecBundle {
     pub fn audio_end_for_dt(dt_sec: f32) -> usize {
         mfsk_core::ft8::decode_block::goertzel_window_end_sample(dt_sec)
     }
+
+    /// Borrow the snapshot prefix as a slice. SAFETY contract is
+    /// the same as [`Slot::audio`].
+    pub fn audio_prefix(&self) -> &[i16] {
+        unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
+    }
 }
 
 /// Audio + slot metadata, sent by stage1_inc at SlotEnd. Pairs with the
 /// `SpecBundle` for the same `wav_idx` to drive pass 2 / stage 3.
+///
+/// **Phase C+ double-buffer**: `audio_ptr` references one of
+/// stage1_inc's two long-lived `AudioBuf` allocations. It stays
+/// valid until stage1_inc next swaps `fill_idx` back to this
+/// buffer (= at SlotEnd of the *next* slot, ≥ 15 s away). The
+/// consumer (decode_pipeline / main) MUST drop the Slot before
+/// that deadline; in steady-state operation post_slotend ≪ 15 s,
+/// so the requirement is trivially met.
 pub struct Slot {
-    pub audio: Vec<i16>,
+    /// Raw pointer to the just-completed slot's audio. Same backing
+    /// allocation as the matching `SpecBundle.audio_ptr` — both
+    /// point into stage1_inc's currently-frozen `AudioBuf`.
+    pub audio_ptr: *const i16,
+    /// Number of valid samples at `audio_ptr` (usually
+    /// `NMAX = 180_000`; smaller on under-fed / BtnA-reset slots).
+    pub audio_len: usize,
     pub wav_idx: usize,
     pub inc_total_us: i64,
     /// `esp_timer_get_time()` captured at the start of
@@ -109,6 +128,23 @@ pub struct Slot {
     /// arrived. Used by the decode-pipeline log to measure how much
     /// of the Phase C speculative window ran before SlotEnd vs after.
     pub slotend_us: i64,
+}
+
+// SAFETY: `audio_ptr` references a long-lived `AudioBuf` allocation
+// owned by stage1_inc. Consumer-only access (read-only) is sound
+// for the lifetime of the Slot, per `AudioBuf`'s aliasing contract.
+unsafe impl Send for Slot {}
+
+impl Slot {
+    /// Borrow the slot's audio as a slice. SAFETY: this method
+    /// borrows `self`, which keeps the Slot live and therefore
+    /// keeps the audio buffer reserved for the consumer.
+    pub fn audio(&self) -> &[i16] {
+        // SAFETY: `audio_ptr` + `audio_len` came from a valid
+        // `AudioBuf` allocation owned by stage1_inc and remain
+        // valid for `self`'s lifetime per `AudioBuf`'s rules.
+        unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
+    }
 }
 
 /// Streaming-waterfall tick — emitted by stage1_inc once per FFT pair

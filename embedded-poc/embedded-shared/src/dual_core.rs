@@ -120,7 +120,7 @@ pub fn run_speculative_slot(
     let t_coarse_done = unsafe { esp_timer_get_time() };
 
     let n_pass1 = pass1.len();
-    let snap_fill = spec.audio_prefix.len();
+    let snap_fill = spec.audio_len;
     let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) = pass1
         .into_iter()
         .partition(|c| SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
@@ -129,7 +129,7 @@ pub fn run_speculative_slot(
 
     let mut n_early_refined = 0usize;
     let mut results = if !ready.is_empty() {
-        let partial_audio: &[i16] = &spec.audio_prefix;
+        let partial_audio: &[i16] = spec.audio_prefix();
         let p2 = pass2_split(partial_audio, ready, max_cand, basis_re_main, basis_im_main);
         n_early_refined = p2.len();
         stage3_split(
@@ -164,15 +164,16 @@ pub fn run_speculative_slot(
         // auto-anchor keeps dt within ±0.5 s in steady state.
         let max_cand_late = max_cand.saturating_sub(n_early_refined);
         if max_cand_late > 0 {
+            let slot_audio: &[i16] = slot.audio();
             let p2 = pass2_split(
-                &slot.audio,
+                slot_audio,
                 deferred,
                 max_cand_late,
                 basis_re_main,
                 basis_im_main,
             );
             let late = stage3_split(
-                &slot.audio,
+                slot_audio,
                 p2,
                 depth,
                 q_thresh,
