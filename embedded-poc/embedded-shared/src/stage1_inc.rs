@@ -348,9 +348,33 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     let n_freq = ctx.n_freq;
     let head_n = ctx.head_n_freq;
     let tail_n = ctx.tail_n_freq;
-    let spec = core::mem::replace(&mut ctx.cur.spec, vec![0u16; n_freq * N_TIME]);
-    let head = core::mem::replace(&mut ctx.cur.allsum_head, vec![0f32; head_n * N_TIME]);
-    let tail = core::mem::replace(&mut ctx.cur.allsum_tail, vec![0f32; tail_n * N_TIME]);
+    // The post-emit "fresh" buffers swapped into `ctx.cur` are only
+    // touched if `compute_pair_into` runs for pairs 88..91 — and
+    // that only happens when `wf_q.is_some()` (the loop limit in
+    // `advance_pairs` is `SPEC_EMIT_PAIR` otherwise). For the bench
+    // crate (`wf_q = None`) skip the ~860 KB of zeroed PSRAM
+    // allocation entirely (Gemini PR #123 round-5 review). They are
+    // re-allocated at full size by `SlotInProgress::new` inside
+    // `finalize_slot` for the next slot.
+    let need_post_emit_buffers = ctx.wf_q.is_some();
+    let new_spec = if need_post_emit_buffers {
+        vec![0u16; n_freq * N_TIME]
+    } else {
+        Vec::new()
+    };
+    let new_head = if need_post_emit_buffers {
+        vec![0f32; head_n * N_TIME]
+    } else {
+        Vec::new()
+    };
+    let new_tail = if need_post_emit_buffers {
+        vec![0f32; tail_n * N_TIME]
+    } else {
+        Vec::new()
+    };
+    let spec = core::mem::replace(&mut ctx.cur.spec, new_spec);
+    let head = core::mem::replace(&mut ctx.cur.allsum_head, new_head);
+    let tail = core::mem::replace(&mut ctx.cur.allsum_tail, new_tail);
     // Phase C: hand main an owned snapshot of the audio captured
     // so far. Copying (~180 KB PSRAM→PSRAM, ~2 ms) avoids the
     // aliasing UB the prior raw-pointer scheme had under stacked
