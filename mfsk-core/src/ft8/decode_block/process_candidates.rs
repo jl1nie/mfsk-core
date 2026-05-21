@@ -1550,12 +1550,22 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // Order chosen by ascending compute cost — same number of BP
     // calls as the old variant loop in the worst case, far fewer
     // in the typical case where any earlier variant decodes.
-    if accepted.is_none()
-        && matches!(
-            depth,
-            DecodeDepth::BpAll | DecodeDepth::BpAllOsd | DecodeDepth::BpAllNoNsym3
-        )
-    {
+    // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only);
+    // `b` and `c` add nsym=2 / nsym=3 LLR work on top of the BP.
+    let run_d = matches!(
+        depth,
+        DecodeDepth::BpAll
+            | DecodeDepth::BpAllOsd
+            | DecodeDepth::BpAllNoNsym3
+            | DecodeDepth::BpVariantsAd
+    );
+    let run_b = matches!(
+        depth,
+        DecodeDepth::BpAll | DecodeDepth::BpAllOsd | DecodeDepth::BpAllNoNsym3
+    );
+    let run_c = matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd);
+
+    if accepted.is_none() && run_d {
         // Variant d: free reuse of Step 1's llrd.
         let bp_d =
             bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
@@ -1564,33 +1574,30 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         {
             accepted = Some((bp, 3));
         }
-        // Variant b: lazy nsym=2 only.
-        if accepted.is_none() {
-            let llrb_arr: [LlrT; LDPC_N] =
-                super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
-            let bp_b =
-                bp_step_select::<LlrT>(bp_scratch, &llrb_arr, bp_max_iter, Some(check_crc14));
-            if let Some(bp) = bp_b
-                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-            {
-                accepted = Some((bp, 1));
-            }
+    }
+    // Variant b: lazy nsym=2 only.
+    if accepted.is_none() && run_b {
+        let llrb_arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+        let bp_b = bp_step_select::<LlrT>(bp_scratch, &llrb_arr, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_b
+            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        {
+            accepted = Some((bp, 1));
         }
-        // Variant c: lazy nsym=3 (the expensive one). Gated to the
-        // host-default depths — `BpAllNoNsym3` skips it as the
-        // embedded post-SlotEnd dominant cost (~5× variant `b`) for
-        // failed candidates that the prior steps couldn't decode
-        // anyway on busy-band reference WAVs (see DecodeDepth doc).
-        if accepted.is_none() && !matches!(depth, DecodeDepth::BpAllNoNsym3) {
-            let llrc_arr: [LlrT; LDPC_N] =
-                super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
-            let bp_c =
-                bp_step_select::<LlrT>(bp_scratch, &llrc_arr, bp_max_iter, Some(check_crc14));
-            if let Some(bp) = bp_c
-                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-            {
-                accepted = Some((bp, 2));
-            }
+    }
+    // Variant c: lazy nsym=3 (the expensive one). Gated to the
+    // host-default depths — `BpAllNoNsym3` / `BpVariantsAd` skip it
+    // as the embedded post-SlotEnd dominant cost (~5× variant `b`)
+    // on busy-band reference WAVs (see DecodeDepth doc).
+    if accepted.is_none() && run_c {
+        let llrc_arr: [LlrT; LDPC_N] =
+            super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+        let bp_c = bp_step_select::<LlrT>(bp_scratch, &llrc_arr, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_c
+            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        {
+            accepted = Some((bp, 2));
         }
     }
 

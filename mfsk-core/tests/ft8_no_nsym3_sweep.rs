@@ -49,17 +49,19 @@ fn no_nsym3_recall_sweep() {
     );
 
     println!(
-        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}",
-        "WAV", "tru", "BpAll/15", "NoNsym3/15", "BpAllOsd/15"
+        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
+        "WAV", "tru", "BpAll/15", "NoNsym3/15", "VariantsAd/15", "BpAllOsd/15"
     );
-    println!("  {}", "─".repeat(82));
+    println!("  {}", "─".repeat(96));
 
     let mut sum_tru = 0usize;
     let mut sum_bp = 0usize;
     let mut sum_nn = 0usize;
+    let mut sum_ad = 0usize;
     let mut sum_osd = 0usize;
     let mut sum_bp_ms = 0u128;
     let mut sum_nn_ms = 0u128;
+    let mut sum_ad_ms = 0u128;
     let mut sum_osd_ms = 0u128;
 
     for (label, path) in WAVS {
@@ -77,6 +79,7 @@ fn no_nsym3_recall_sweep() {
         let configs: &[(&str, DecodeDepth)] = &[
             ("BpAll", DecodeDepth::BpAll),
             ("NoNsym3", DecodeDepth::BpAllNoNsym3),
+            ("VariantsAd", DecodeDepth::BpVariantsAd),
             ("BpAllOsd", DecodeDepth::BpAllOsd),
         ];
 
@@ -97,24 +100,27 @@ fn no_nsym3_recall_sweep() {
         }
 
         println!(
-            "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}",
+            "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
             label,
             truth.len(),
             cells[0],
             cells[1],
-            cells[2]
+            cells[2],
+            cells[3],
         );
 
         sum_tru += truth.len();
         sum_bp += hits[0];
         sum_nn += hits[1];
-        sum_osd += hits[2];
+        sum_ad += hits[2];
+        sum_osd += hits[3];
         sum_bp_ms += mss[0];
         sum_nn_ms += mss[1];
-        sum_osd_ms += mss[2];
+        sum_ad_ms += mss[2];
+        sum_osd_ms += mss[3];
 
-        // Per-WAV recall delta callout.
-        if hits[0] != hits[1] {
+        // Per-WAV recall delta callout: BpAll vs aggressive variants.
+        if hits[0] != hits[1] || hits[0] != hits[2] {
             println!(
                 "    ⚠ NoNsym3 recall delta: BpAll={} vs NoNsym3={} (-{})",
                 hits[0],
@@ -142,25 +148,27 @@ fn no_nsym3_recall_sweep() {
         }
     }
 
-    println!("  {}", "─".repeat(82));
+    println!("  {}", "─".repeat(96));
     println!(
-        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}",
+        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
         "TOTAL",
         sum_tru,
         format!("{sum_bp:>2}/{sum_bp_ms:<6}"),
         format!("{sum_nn:>2}/{sum_nn_ms:<6}"),
+        format!("{sum_ad:>2}/{sum_ad_ms:<6}"),
         format!("{sum_osd:>2}/{sum_osd_ms:<6}"),
     );
     println!();
     println!(
-        "  NoNsym3 recall: {}/{} ({:.1}%) vs BpAll {}/{} ({:.1}%); time {}ms vs {}ms",
-        sum_nn,
-        sum_tru,
-        100.0 * sum_nn as f32 / sum_tru.max(1) as f32,
-        sum_bp,
-        sum_tru,
-        100.0 * sum_bp as f32 / sum_tru.max(1) as f32,
-        sum_nn_ms,
-        sum_bp_ms,
+        "  NoNsym3    : {sum_nn}/{sum_tru} ({:.1}%) in {sum_nn_ms}ms",
+        100.0 * sum_nn as f32 / sum_tru.max(1) as f32
+    );
+    println!(
+        "  VariantsAd : {sum_ad}/{sum_tru} ({:.1}%) in {sum_ad_ms}ms  ← also drops variant b",
+        100.0 * sum_ad as f32 / sum_tru.max(1) as f32
+    );
+    println!(
+        "  BpAll      : {sum_bp}/{sum_tru} ({:.1}%) in {sum_bp_ms}ms",
+        100.0 * sum_bp as f32 / sum_tru.max(1) as f32
     );
 }

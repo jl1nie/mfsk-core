@@ -260,7 +260,7 @@ where
             dual_core::stage3_split(
                 partial_audio,
                 p2,
-                DecodeDepth::BpAllNoNsym3,
+                DecodeDepth::BpVariantsAd,
                 DEFAULT_Q_THRESH,
                 mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
                 basis_re_main,
@@ -307,7 +307,7 @@ where
             let late = dual_core::stage3_split(
                 &slot.audio,
                 p2,
-                DecodeDepth::BpAllNoNsym3,
+                DecodeDepth::BpVariantsAd,
                 DEFAULT_Q_THRESH,
                 mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
                 basis_re_main,
