@@ -261,6 +261,19 @@ fn reset_in_progress(ctx: &mut WorkerCtx) {
 
 fn ingest_samples(ctx: &mut WorkerCtx, samples: &[i16]) {
     let cur = &mut ctx.cur;
+    // The Phase-C audio_ptr in SpecBundle aliases this Vec's heap
+    // allocation across SlotEnd. The aliasing is only sound while the
+    // Vec never reallocates — the initial `vec![0i16; NMAX]` already
+    // sets `len == capacity == NMAX`, and `copy_from_slice` below
+    // writes in-place into pre-allocated slots, so neither len nor
+    // capacity change. Lock the invariant in: any future change that
+    // accidentally grows the Vec trips this assert in debug builds.
+    debug_assert_eq!(
+        cur.audio.capacity(),
+        NMAX,
+        "audio Vec must not grow — Phase-C audio_ptr depends on stable heap"
+    );
+    debug_assert_eq!(cur.audio.len(), NMAX, "audio Vec len must stay = NMAX");
     let off = cur.audio_fill;
     if off + samples.len() > NMAX {
         // More than one slot worth of audio without a SlotEnd — should
@@ -301,9 +314,23 @@ fn advance_pairs(ctx: &mut WorkerCtx) {
         return;
     }
 
+    // Pair-loop limit: when no streaming-waterfall consumer is
+    // wired, stop computing once the SpecBundle's needed_m range is
+    // covered (pair `SPEC_EMIT_PAIR - 1`). Pairs 88..91 (m=176..183)
+    // contribute nothing to coarse_sync and would otherwise compute
+    // 4 × `compute_pair_into` calls into a buffer that
+    // `emit_spec_bundle`'s `mem::replace` immediately discards
+    // (Gemini PR #123 review). Production apps with `wf_q = Some`
+    // still need pairs 88..91 to keep the waterfall flowing through
+    // the slot tail, so they keep the original N_PAIRS limit.
+    let pair_limit = if ctx.wf_q.is_some() {
+        N_PAIRS
+    } else {
+        SPEC_EMIT_PAIR
+    };
     loop {
         let j = ctx.cur.next_pair;
-        if j >= N_PAIRS {
+        if j >= pair_limit {
             break;
         }
         let j_a = 2 * j;

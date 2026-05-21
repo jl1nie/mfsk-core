@@ -93,7 +93,11 @@ pub struct SpecBundle {
 
 // SAFETY: `audio_ptr` references a heap allocation owned first by
 // stage1_inc's `WorkerCtx::cur::audio` (until SlotEnd), then by the
-// matching `Slot.audio` after `mem::replace`. The queue hand-off
+// matching `Slot.audio` after `mem::replace`. The Vec is allocated
+// once as `vec![0i16; NMAX]` and never grown (stage1_inc only
+// `copy_from_slice`-writes into the existing slots), so the heap
+// pointer is stable — see the `debug_assert!` in stage1_inc's
+// `ingest_samples` that locks this invariant in. The queue hand-off
 // from stage1_inc to main establishes happens-before for the
 // SpecBundle fields and the writes to the audio prefix
 // `[0, audio_fill]`.
@@ -102,22 +106,29 @@ unsafe impl Send for SpecBundle {}
 impl SpecBundle {
     /// Last sample index that
     /// `fill_symbol_spectra_goertzel(audio, freq_hz, dt_sec, ..)`
-    /// reads for a candidate at `dt_sec`. Mirrors the constants in
-    /// `mfsk_core::ft8::decode_block::fill_symbol_spectra`
-    /// (`TX_START_OFFSET_S = 1.0`, `SAMPLE_RATE_HZ = 12_000`,
-    /// `NN = 79`, `NSPS = 1_920`).
+    /// reads for a candidate at `dt_sec`. Mirrors the formula in
+    /// `mfsk_core::ft8::decode_block::fill_symbol_spectra_goertzel`
+    /// (`i0 = round((TX_START_OFFSET_S + dt) * SAMPLE_RATE_HZ);
+    /// end = i0 + NN * NSPS`). `NN` and `NSPS` are pulled from
+    /// `mfsk_core::ft8::params` so the two crates can't drift; the
+    /// two other constants live `pub(super)` in `decode_block::types`
+    /// so we mirror their values here with a same-file documentation
+    /// pointer.
     ///
     /// Used by Phase-C decode-pipeline consumers to decide whether
     /// a candidate's Goertzel window fits inside the SpecBundle
     /// audio snapshot (`ready`) or must defer to the post-SlotEnd
     /// path (`deferred`).
     pub fn audio_end_for_dt(dt_sec: f32) -> usize {
+        // Mirrored from `mfsk_core::ft8::decode_block::types`
+        // (`pub(super) const SAMPLE_RATE_HZ` / `TX_START_OFFSET_S`).
+        // If those values change in mfsk-core, update here too.
         const SAMPLE_RATE_HZ: f32 = 12_000.0;
         const TX_START_OFFSET_S: f32 = 1.0;
-        const NSPS: i64 = 1_920;
-        const NN: i64 = 79;
         let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
-        (i0 + NN * NSPS).max(0) as usize
+        let nsps = mfsk_core::ft8::params::NSPS as i64;
+        let nn = mfsk_core::ft8::params::NN as i64;
+        (i0 + nn * nsps).max(0) as usize
     }
 }
 
