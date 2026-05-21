@@ -133,7 +133,7 @@ pub fn run_speculative_slot(
     let t_coarse_done = unsafe { esp_timer_get_time() };
 
     let n_pass1 = pass1.len();
-    let snap_fill = spec.audio_len;
+    let snap_fill = spec.audio_len();
     // Partition rule (Gemini PR #123 round-19):
     //   ready    = pass1[i] for i < max_cand AND audio fits prefix
     //   deferred = everything else

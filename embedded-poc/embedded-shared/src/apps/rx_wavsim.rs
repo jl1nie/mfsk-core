@@ -174,7 +174,7 @@ fn decode_one_slot(
 
     log::info!(
         "rx-wavsim: WAV[{wav_idx}] slot received (audio={} samples, pass1={pass1_n}, q_thresh={q_thresh})",
-        slot.audio_len,
+        slot.audio_len(),
     );
     log::info!(
         "  stage 2 (during cap): {:>7} us  ({pass1_n} cand)",

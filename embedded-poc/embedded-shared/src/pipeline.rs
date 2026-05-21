@@ -77,12 +77,14 @@ pub struct SpecBundle {
     pub wav_idx: usize,
     /// Raw pointer into stage1_inc's currently-frozen audio buffer
     /// (same allocation as the matching `Slot.audio_ptr` that will
-    /// arrive on `slot_q` next).
-    pub audio_ptr: *const i16,
+    /// arrive on `slot_q` next). Kept private (Gemini PR #123
+    /// round-20) — callers go through `audio_prefix()` to get a
+    /// safe `&[i16]` so the raw pointer never escapes this module.
+    audio_ptr: *const i16,
     /// Snapshot of `cur.audio_fill` at emit time. Always ≥
     /// pair-86's audio requirement (168 000 samples = 14.0 s @
     /// 12 kHz) when emit fires at `SPEC_EMIT_PAIR`.
-    pub audio_len: usize,
+    audio_len: usize,
 }
 
 // SAFETY: `audio_ptr` references a long-lived `AudioBuf` allocation
@@ -113,6 +115,33 @@ impl SpecBundle {
     pub fn audio_prefix(&self) -> &[i16] {
         unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
     }
+
+    /// Length of the audio prefix in samples — equal to
+    /// `self.audio_prefix().len()`.
+    pub fn audio_len(&self) -> usize {
+        self.audio_len
+    }
+
+    /// Construct a SpecBundle directly. Used by stage1_inc when
+    /// it emits the bundle. `audio_ptr` must satisfy the lifetime
+    /// contract documented at the struct level.
+    pub(crate) fn new(
+        spec: mfsk_core::ft8::decode_block::Spectrogram,
+        allsum_head: Vec<f32>,
+        allsum_tail: Vec<f32>,
+        wav_idx: usize,
+        audio_ptr: *const i16,
+        audio_len: usize,
+    ) -> Self {
+        Self {
+            spec,
+            allsum_head,
+            allsum_tail,
+            wav_idx,
+            audio_ptr,
+            audio_len,
+        }
+    }
 }
 
 /// Audio + slot metadata, sent by stage1_inc at SlotEnd. Pairs with the
@@ -129,10 +158,12 @@ pub struct Slot {
     /// Raw pointer to the just-completed slot's audio. Same backing
     /// allocation as the matching `SpecBundle.audio_ptr` — both
     /// point into stage1_inc's currently-frozen `AudioBuf`.
-    pub audio_ptr: *const i16,
+    /// Kept private (Gemini PR #123 round-20) — callers go through
+    /// `audio()` for a safe `&[i16]`.
+    audio_ptr: *const i16,
     /// Number of valid samples at `audio_ptr` (usually
     /// `NMAX = 180_000`; smaller on under-fed / BtnA-reset slots).
-    pub audio_len: usize,
+    audio_len: usize,
     pub wav_idx: usize,
     pub inc_total_us: i64,
     /// `esp_timer_get_time()` captured at the start of
@@ -156,6 +187,33 @@ impl Slot {
         // `AudioBuf` allocation owned by stage1_inc and remain
         // valid for `self`'s lifetime per `AudioBuf`'s rules.
         unsafe { core::slice::from_raw_parts(self.audio_ptr, self.audio_len) }
+    }
+
+    /// Length of the audio buffer in samples. Equal to
+    /// `self.audio().len()`; exposed as a free accessor so callers
+    /// can log it without materialising the slice.
+    pub fn audio_len(&self) -> usize {
+        self.audio_len
+    }
+
+    /// Construct a Slot directly. Used by stage1_inc when it
+    /// hands ownership of the just-completed `AudioBuf` to the
+    /// queue. The (`audio_ptr`, `audio_len`) pair must satisfy
+    /// `AudioBuf`'s aliasing contract.
+    pub(crate) fn new(
+        audio_ptr: *const i16,
+        audio_len: usize,
+        wav_idx: usize,
+        inc_total_us: i64,
+        slotend_us: i64,
+    ) -> Self {
+        Self {
+            audio_ptr,
+            audio_len,
+            wav_idx,
+            inc_total_us,
+            slotend_us,
+        }
     }
 }
 

@@ -503,16 +503,16 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     // earliest); main must drop the matching `Slot` before then.
     let audio_ptr: *const i16 = ctx.fill_ptr();
     let audio_len = ctx.cur.audio_fill;
-    let bundle = Box::new(SpecBundle {
-        spec: mfsk_core::ft8::decode_block::Spectrogram::from_parts(n_freq, N_TIME, spec),
-        allsum_head: head,
-        allsum_tail: tail,
+    let bundle = Box::new(SpecBundle::new(
+        mfsk_core::ft8::decode_block::Spectrogram::from_parts(n_freq, N_TIME, spec),
+        head,
+        tail,
         // wav_idx is only known at SlotEnd; main matches SpecBundle to
         // Slot by FIFO order of receipt, so this is informational only.
-        wav_idx: usize::MAX,
+        usize::MAX,
         audio_ptr,
         audio_len,
-    });
+    ));
     send_box(ctx.spec_q, bundle);
     ctx.cur.spec_sent = true;
 }
@@ -756,14 +756,14 @@ fn finalize_slot(ctx: &mut WorkerCtx, wav_idx: usize, total_samples: usize) {
     ctx.audio_bufs[ctx.fill_idx].gen = ctx.audio_bufs[ctx.fill_idx].gen.wrapping_add(1);
 
     let fresh = SlotInProgress::new(ctx.n_freq, ctx.head_n_freq, ctx.tail_n_freq);
-    let _done = core::mem::replace(&mut ctx.cur, fresh);
+    let done = core::mem::replace(&mut ctx.cur, fresh);
 
-    let slot = Box::new(Slot {
-        audio_ptr: done_audio_ptr,
-        audio_len: done_audio_fill,
+    let slot = Box::new(Slot::new(
+        done_audio_ptr,
+        done_audio_fill,
         wav_idx,
-        inc_total_us: _done.inc_total_us,
+        done.inc_total_us,
         slotend_us,
-    });
+    ));
     send_box(ctx.slot_q, slot);
 }
