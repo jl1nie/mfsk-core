@@ -22,10 +22,17 @@ pub const LCD_HEIGHT: u16 = 240;
 // ST7789P3 は 0/90/180/270° で MADCTL を切替。
 pub const LCD_ROTATION_DEFAULT_DEG: u16 = 0;
 
-// ── Buttons (KEY1 = "BtnA"、KEY2 = "BtnB" にマップ) ───────────────────
+// ── Buttons (BtnA / BtnB に対応する GPIO) ──────────────────────────────
 // 入力、active-low (内部 pull-up 必要)。
-pub const BTN_A_PIN: i32 = 11; // KEY1
-pub const BTN_B_PIN: i32 = 12; // KEY2
+//
+// M5Stack 公式ピン表は KEY1=GPIO11 / KEY2=GPIO12 と記載しているが、
+// 実機検証 (2026-05-21) で物理ボタンと firmware ハンドラの紐付けが
+// 逆だったため swap した — 物理 BtnA (天面右、丸ボタン) = GPIO12、
+// 物理 BtnB (側面、長押しメニュー想定) = GPIO11。
+// 公式表記との不一致は本番アプリ動作 (BtnA 長押しでデモ trigger /
+// BtnB 長押しでメニュー) を一次資料として優先した結果。
+pub const BTN_A_PIN: i32 = 12;
+pub const BTN_B_PIN: i32 = 11;
 
 // ── I2C bus 0 (PMIC + IMU 共有) ──────────────────────────────────────
 pub const I2C0_SCL: i32 = 48;
