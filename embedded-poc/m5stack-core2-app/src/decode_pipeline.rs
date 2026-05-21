@@ -9,8 +9,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
@@ -86,71 +84,38 @@ pub fn run() -> ! {
 
     let mut slot_seq: u32 = 0;
     loop {
-        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
-        let t_post_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
-            &spec.spec,
+        // Phase-C speculative slot runner — shared with
+        // `m5stack-s3-app`. See
+        // `embedded_shared::dual_core::run_speculative_slot` doc for
+        // the partition + early/late path semantics.
+        let out = dual_core::run_speculative_slot(
+            spec_q,
+            slot_q,
             100.0,
             3_000.0,
             1.0,
             PASS1_LIMIT,
-            &spec.allsum_head,
-            &spec.allsum_tail,
+            MAX_CAND,
+            DEFAULT_Q_THRESH,
+            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            DecodeDepth::BpVariantsAd,
+            basis_re_main,
+            basis_im_main,
         );
-        let t_coarse_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        // Phase C (2026-05-21): same speculative-pass2+stage3 pattern
-        // as the S3 sibling. Most candidates (dt_sec ∈ ±0.5 s) fit
-        // inside the SpecBundle audio snapshot → all stage-3 work
-        // shifts into the audio tail.
-        let n_pass1 = pass1.len();
-        let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let snap_fill = spec.audio_prefix.len();
-        let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
-            pass1.into_iter()
-                .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
-        let n_ready = ready.len();
-        let n_deferred = deferred.len();
-
-        let mut results = if !ready.is_empty() {
-            let partial_audio: &[i16] = &spec.audio_prefix;
-            let p2 = dual_core::pass2_split(
-                partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
-            );
-            dual_core::stage3_split(
-                partial_audio,
-                p2,
-                DecodeDepth::BpVariantsAd,
-                DEFAULT_Q_THRESH,
-                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-                basis_re_main,
-                basis_im_main,
-            )
-        } else {
-            Vec::new()
-        };
-        let t_early_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
+        let dual_core::SpeculativeOut {
+            spec,
+            slot,
+            results,
+            n_pass1,
+            n_ready,
+            n_deferred,
+            t_post_recv,
+            t_coarse_done,
+            t_early_done,
+            t_slot_recv,
+            t_done,
+        } = out;
         let wav_idx = slot.wav_idx;
-        let t_slot_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        if !deferred.is_empty() {
-            let p2 = dual_core::pass2_split(
-                &slot.audio, deferred, MAX_CAND, basis_re_main, basis_im_main,
-            );
-            let late = dual_core::stage3_split(
-                &slot.audio,
-                p2,
-                DecodeDepth::BpVariantsAd,
-                DEFAULT_Q_THRESH,
-                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-                basis_re_main,
-                basis_im_main,
-            );
-            results.extend(late);
-        }
-        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
 
         let slotend = slot.slotend_us;
         let tail_window = (slotend - t_post_recv).max(0);
@@ -165,7 +130,7 @@ pub fn run() -> ! {
             results.len(),
             tail_window,
             coarse_us,
-            t_early_done - t_early_start,
+            t_early_done - t_coarse_done,
             tail_use,
             post_slotend,
             t_slot_recv - t_early_done,

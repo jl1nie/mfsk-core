@@ -51,6 +51,137 @@ use mfsk_core::ft8::decode_block::{
 };
 
 use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
+use crate::pipeline::{self, SpecBundle, Slot};
+
+/// One slot's Phase-C output. Both apps consume it identically:
+/// `spec` for `xsnr2_db_simple`, `slot` for `wav_idx` /
+/// `inc_total_us`, `results` for the UI + QSO FSM, and the `t_*`
+/// timestamps for the per-slot timing log.
+pub struct SpeculativeOut {
+    pub spec: Box<SpecBundle>,
+    pub slot: Box<Slot>,
+    pub results: Vec<DecodeResult>,
+    pub n_pass1: usize,
+    pub n_ready: usize,
+    pub n_deferred: usize,
+    /// `esp_timer_get_time()` right after `recv_box::<SpecBundle>` returns.
+    pub t_post_recv: i64,
+    /// after `coarse_sync_split_with_allsum`.
+    pub t_coarse_done: i64,
+    /// after the speculative pass-2 + stage-3 on `audio_prefix` finish
+    /// (or immediately, if `ready` was empty).
+    pub t_early_done: i64,
+    /// after `recv_box::<Slot>` returns.
+    pub t_slot_recv: i64,
+    /// after the deferred pass-2 + stage-3 on `slot.audio` finish.
+    pub t_done: i64,
+}
+
+/// Phase-C audio-tail speculation runner. Receives a SpecBundle and
+/// Slot pair from the streaming pipeline, partitions pass1 by
+/// whether each candidate's Goertzel window fits inside the
+/// SpecBundle audio prefix, runs pass-2 + stage-3 speculatively on
+/// the `ready` half before SlotEnd, then completes any deferred
+/// candidates on the full `slot.audio` after SlotEnd. The decode
+/// pipelines in both `m5stack-s3-app` and `m5stack-core2-app` use
+/// this single entry to keep the speculative logic in one place.
+///
+/// `freq_min` / `freq_max` are the coarse_sync band edges
+/// (typically 100..3000 Hz). `sync_min` is the coarse_sync ratio
+/// threshold (`1.0` matches both apps' historical setting).
+#[allow(clippy::too_many_arguments)]
+pub fn run_speculative_slot(
+    spec_q: esp_idf_svc::sys::QueueHandle_t,
+    slot_q: esp_idf_svc::sys::QueueHandle_t,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    pass1_limit: usize,
+    max_cand: usize,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    depth: DecodeDepth,
+    basis_re_main: &mut [i16],
+    basis_im_main: &mut [i16],
+) -> SpeculativeOut {
+    use esp_idf_svc::sys::esp_timer_get_time;
+
+    let spec = pipeline::recv_box::<SpecBundle>(spec_q);
+    let t_post_recv = unsafe { esp_timer_get_time() };
+    let pass1: Vec<SyncCandidate> = coarse_sync_split_with_allsum(
+        &spec.spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        pass1_limit,
+        &spec.allsum_head,
+        &spec.allsum_tail,
+    );
+    let t_coarse_done = unsafe { esp_timer_get_time() };
+
+    let n_pass1 = pass1.len();
+    let snap_fill = spec.audio_prefix.len();
+    let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) = pass1
+        .into_iter()
+        .partition(|c| SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
+    let n_ready = ready.len();
+    let n_deferred = deferred.len();
+
+    let mut results = if !ready.is_empty() {
+        let partial_audio: &[i16] = &spec.audio_prefix;
+        let p2 = pass2_split(partial_audio, ready, max_cand, basis_re_main, basis_im_main);
+        stage3_split(
+            partial_audio,
+            p2,
+            depth,
+            q_thresh,
+            bp_max_iter,
+            basis_re_main,
+            basis_im_main,
+        )
+    } else {
+        Vec::new()
+    };
+    let t_early_done = unsafe { esp_timer_get_time() };
+
+    let slot = pipeline::recv_box::<Slot>(slot_q);
+    let t_slot_recv = unsafe { esp_timer_get_time() };
+
+    if !deferred.is_empty() {
+        let p2 = pass2_split(
+            &slot.audio,
+            deferred,
+            max_cand,
+            basis_re_main,
+            basis_im_main,
+        );
+        let late = stage3_split(
+            &slot.audio,
+            p2,
+            depth,
+            q_thresh,
+            bp_max_iter,
+            basis_re_main,
+            basis_im_main,
+        );
+        results.extend(late);
+    }
+    let t_done = unsafe { esp_timer_get_time() };
+
+    SpeculativeOut {
+        spec,
+        slot,
+        results,
+        n_pass1,
+        n_ready,
+        n_deferred,
+        t_post_recv,
+        t_coarse_done,
+        t_early_done,
+        t_slot_recv,
+        t_done,
+    }
+}
 
 const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;

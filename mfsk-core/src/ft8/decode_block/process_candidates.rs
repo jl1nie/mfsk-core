@@ -1552,18 +1552,11 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // in the typical case where any earlier variant decodes.
     // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only);
     // `b` and `c` add nsym=2 / nsym=3 LLR work on top of the BP.
-    let run_d = matches!(
-        depth,
-        DecodeDepth::BpAll
-            | DecodeDepth::BpAllOsd
-            | DecodeDepth::BpAllNoNsym3
-            | DecodeDepth::BpVariantsAd
-    );
-    let run_b = matches!(
-        depth,
-        DecodeDepth::BpAll | DecodeDepth::BpAllOsd | DecodeDepth::BpAllNoNsym3
-    );
-    let run_c = matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd);
+    let (run_d, run_b, run_c) = match depth {
+        DecodeDepth::BpAll | DecodeDepth::BpAllOsd => (true, true, true),
+        DecodeDepth::BpAllNoNsym3 => (true, true, false),
+        DecodeDepth::BpVariantsAd => (true, false, false),
+    };
 
     if accepted.is_none() && run_d {
         // Variant d: free reuse of Step 1's llrd.

@@ -9,7 +9,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
@@ -200,110 +199,46 @@ where
         // 検出) で gate するため自動応答に流れない。設計の根拠は host 側
         // 実測: 200..2000 で phantom 0 だが 2 kHz 超の real (qso1/qso2 R6WA)
         // を逃す → ユーザを "聞こえてる気"にさせない方が大事。
-        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
-        let t_post_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let pass1: Vec<SyncCandidate> = dual_core::coarse_sync_split_with_allsum(
-            &spec.spec,
+        //
+        // Phase-C speculative slot runner — receives both SpecBundle
+        // and Slot, partitions pass1 by audio-prefix coverage, runs
+        // the early speculative + late deferred decode paths, and
+        // hands back the timestamps for the per-slot log. Shared
+        // with `m5stack-core2-app`; canonical implementation lives
+        // in `embedded_shared::dual_core::run_speculative_slot`.
+        let out = dual_core::run_speculative_slot(
+            spec_q,
+            slot_q,
             100.0,
             3_000.0,
             1.0,
             PASS1_LIMIT,
-            &spec.allsum_head,
-            &spec.allsum_tail,
+            MAX_CAND,
+            DEFAULT_Q_THRESH,
+            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            DecodeDepth::BpVariantsAd,
+            basis_re_main,
+            basis_im_main,
         );
-        let t_coarse_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        let dual_core::SpeculativeOut {
+            spec,
+            slot,
+            results,
+            n_pass1,
+            n_ready,
+            n_deferred,
+            t_post_recv,
+            t_coarse_done,
+            t_early_done,
+            t_slot_recv,
+            t_done,
+        } = out;
+        // Bind a non-mutable copy for downstream auto-sync / UI
+        // code that historically read `slot.wav_idx`.
+        let wav_idx = slot.wav_idx;
         // Don't drop the spec yet — `xsnr2_db_simple` reads it after
         // stage 3 completes to recompute SNR free of the per-block
-        // auto-gain bias `compute_snr_db` carries. Spec is ~360 KB
-        // for the slot, lives in PSRAM, dropped at the end of this
-        // loop iteration.
-
-        // Phase C (2026-05-21): partition pass1 by required audio
-        // window and run pass-2 + stage-3 on the "ready" half during
-        // the remaining audio-tail window (typically ~120-150 ms
-        // after coarse_sync completes, before SlotEnd). For
-        // qso3_busy and most live slots, candidates' dt_sec sits
-        // inside ±0.5 s → all of pass1 lands in `ready` →
-        // post-SlotEnd work shrinks to roughly Slot-recv latency only.
-        let n_pass1 = pass1.len();
-        let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        // Owned audio snapshot copied by stage1_inc at emit time.
-        // Always ≥ pair-91's 177 600-sample requirement when emit
-        // fires at SPEC_EMIT_PAIR. No aliasing concerns vs the
-        // still-being-filled stage1_inc audio buffer (Gemini PR
-        // #123 round-4 review).
-        let snap_fill = spec.audio_prefix.len();
-        let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
-            pass1.into_iter()
-                .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
-        let n_ready = ready.len();
-        let n_deferred = deferred.len();
-
-        let mut results = if !ready.is_empty() {
-            let partial_audio: &[i16] = &spec.audio_prefix;
-            let p2 = dual_core::pass2_split(
-                partial_audio, ready, MAX_CAND, basis_re_main, basis_im_main,
-            );
-            dual_core::stage3_split(
-                partial_audio,
-                p2,
-                DecodeDepth::BpVariantsAd,
-                DEFAULT_Q_THRESH,
-                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-                basis_re_main,
-                basis_im_main,
-            )
-        } else {
-            Vec::new()
-        };
-        let t_early_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
-        let wav_idx = slot.wav_idx;
-        let t_slot_recv = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-
-        // Auto-sync uses `results` median (post BP), not pass1 — pass1
-        // candidates from a noise slot are random and would mis-anchor
-        // the slot phase. Gemini PR #103 review removed the no-op
-        // `pass1.iter().map(c.dt_sec).collect()` allocation that was
-        // immediately discarded below.
-
-        // (fine_refine attempted via fill_symbol_spectra iteration in
-        // 0.6.3-experimental; tripped task watchdog at ~5 s on S3 due
-        // to 200k+ per-symbol DFTs per slot. Reverted; ship recall
-        // stays at 6/18 on qso3_busy.wav until a cd0-via-FIR-decimate
-        // refine lands.)
-
-        // The audio gate around pass2/stage3 was added to silence the
-        // DMA-underrun buzz the user heard during BP work, but the
-        // *resume* transition produced a much harsher click — the
-        // I2S driver / codec analog stage settles dirty after a
-        // 1.3 s starvation and pops on first non-zero sample. Net
-        // assessment: leave audio streaming the whole time. The
-        // residual buzz at -10 dB DAC volume is mild background
-        // texture; the click was an alarm.
-        // crate::audio::AUDIO_GATE.store(false, ...);  // intentionally not muted
-
-        // Late path: only runs when some candidates couldn't fit in
-        // the SpecBundle audio snapshot (high positive dt_sec; rare
-        // in practice). Uses the full Slot audio.
-        if !deferred.is_empty() {
-            let p2 = dual_core::pass2_split(
-                &slot.audio, deferred, MAX_CAND, basis_re_main, basis_im_main,
-            );
-            let late = dual_core::stage3_split(
-                &slot.audio,
-                p2,
-                DecodeDepth::BpVariantsAd,
-                DEFAULT_Q_THRESH,
-                mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-                basis_re_main,
-                basis_im_main,
-            );
-            results.extend(late);
-        }
-        let t_done = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+        // auto-gain bias `compute_snr_db` carries.
 
         // Phase-C breakdown: the speculative `early` path may straddle
         // SlotEnd. `slot.slotend_us` is stage1_inc's exact SlotEnd
@@ -332,7 +267,7 @@ where
             results.len(),
             tail_window,
             coarse_us,
-            t_early_done - t_early_start,
+            t_early_done - t_coarse_done,
             tail_use,
             post_slotend,
             t_slot_recv - t_early_done,

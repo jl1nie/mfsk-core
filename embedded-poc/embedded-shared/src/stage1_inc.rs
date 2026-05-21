@@ -356,21 +356,14 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
     // allocation entirely (Gemini PR #123 round-5 review). They are
     // re-allocated at full size by `SlotInProgress::new` inside
     // `finalize_slot` for the next slot.
-    let need_post_emit_buffers = ctx.wf_q.is_some();
-    let new_spec = if need_post_emit_buffers {
-        vec![0u16; n_freq * N_TIME]
+    let (new_spec, new_head, new_tail) = if ctx.wf_q.is_some() {
+        (
+            vec![0u16; n_freq * N_TIME],
+            vec![0f32; head_n * N_TIME],
+            vec![0f32; tail_n * N_TIME],
+        )
     } else {
-        Vec::new()
-    };
-    let new_head = if need_post_emit_buffers {
-        vec![0f32; head_n * N_TIME]
-    } else {
-        Vec::new()
-    };
-    let new_tail = if need_post_emit_buffers {
-        vec![0f32; tail_n * N_TIME]
-    } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), Vec::new())
     };
     let spec = core::mem::replace(&mut ctx.cur.spec, new_spec);
     let head = core::mem::replace(&mut ctx.cur.allsum_head, new_head);
