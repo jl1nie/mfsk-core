@@ -834,7 +834,6 @@ pub fn run_log_panel(
             selected_decode_idx,
             latest_slot_seq_snapshot,
         );
-        let mut decoded_redrawn = false;
         if decoded_fp_with_cursor != last_decoded_fp_with_cursor {
             decoded_list::render_with_cursor(
                 &mut display,
@@ -844,21 +843,18 @@ pub fn run_log_panel(
             )
             .ok();
             last_decoded_fp_with_cursor = decoded_fp_with_cursor;
-            decoded_redrawn = true;
         }
 
-        // Menu overlay — render AFTER WF + decoded so the overlay
-        // paints on top of whatever they put down. The menu region
-        // (32, 16) … (132, 84) sits fully inside the WF region
-        // y ∈ [14, 114), so a WF repaint (~80 ms cadence per FFT
-        // pair) would otherwise erase the menu within one or two
-        // ticks. We track both the menu_seq watermark *and* the
-        // WF/decoded redraw flags so the menu re-paints whenever
-        // anything underneath it changed.
+        // Menu overlay — render AFTER WF so the overlay paints on
+        // top of any WF repaint. The menu region (32, 16) … (132,
+        // 84) sits fully inside the WF region y ∈ [14, 114), so a
+        // WF repaint (~80 ms cadence per FFT pair) would otherwise
+        // erase the menu within one or two ticks. The decoded
+        // list (y ∈ [114, …]) does NOT overlap the menu, so its
+        // redraws are irrelevant here (Gemini PR #124 review).
         let menu_seq = menu_snapshot.5;
         let menu_seq_changed = menu_seq != last_menu_seq;
-        let underlying_redrawn = wf_redrawn || decoded_redrawn;
-        if menu_seq_changed || (menu_snapshot.0 && underlying_redrawn) {
+        if menu_seq_changed || (menu_snapshot.0 && wf_redrawn) {
             menu::render(
                 &mut display,
                 menu_snapshot.0,
@@ -869,11 +865,12 @@ pub fn run_log_panel(
                 mode.flipped().label(),
             )
             .ok();
-            // When menu closes, force a full re-render of WF + decoded
-            // next iteration so the overlay's residual pixels go away.
+            // When menu closes, force a full WF re-render next
+            // iteration so the overlay's residual pixels get
+            // wiped. The decoded list doesn't share pixels with
+            // the menu so we don't touch its watermark.
             if menu_seq_changed && !menu_snapshot.0 {
                 last_wf_seq = u32::MAX;
-                last_decoded_fp_with_cursor = (usize::MAX, u32::MAX, None, u32::MAX);
             }
             last_menu_seq = menu_seq;
         }
