@@ -70,10 +70,13 @@ pub struct SpecBundle {
     pub allsum_tail: Vec<f32>,
     pub wav_idx: usize,
     /// Owned copy of `WorkerCtx::cur::audio[..audio_fill]` at the
-    /// moment `emit_spec_bundle` ran. Length is the snapshot fill
-    /// position (always ≥ pair-91's audio requirement of
-    /// 177 600 samples = 14.8 s @ 12 kHz when emit fires at
-    /// `SPEC_EMIT_PAIR`).
+    /// moment `emit_spec_bundle` ran. Length depends on
+    /// `SPEC_EMIT_PAIR` in stage1_inc; at the current setting (87 =
+    /// emit after pair 86) it is the audio requirement of pair 86 =
+    /// `j_b * NSTEP + NSPS` = `173 * 960 + 1920 = 168 000` samples
+    /// (= 14.0 s @ 12 kHz). Always ≥ this lower bound — chunks
+    /// arrive in 1 200-sample increments, so audio_fill at emit time
+    /// may be a fraction-of-a-chunk larger.
     pub audio_prefix: Vec<i16>,
 }
 
