@@ -206,17 +206,20 @@ where
         // hands back the timestamps for the per-slot log. Shared
         // with `m5stack-core2-app`; canonical implementation lives
         // in `embedded_shared::dual_core::run_speculative_slot`.
+        let cfg = dual_core::DecodeConfig {
+            freq_min: 100.0,
+            freq_max: 3_000.0,
+            sync_min: 1.0,
+            pass1_limit: PASS1_LIMIT,
+            max_cand: MAX_CAND,
+            q_thresh: DEFAULT_Q_THRESH,
+            bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+            depth: DecodeDepth::BpVariantsAd,
+        };
         let out = dual_core::run_speculative_slot(
             spec_q,
             slot_q,
-            100.0,
-            3_000.0,
-            1.0,
-            PASS1_LIMIT,
-            MAX_CAND,
-            DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            DecodeDepth::BpVariantsAd,
+            &cfg,
             basis_re_main,
             basis_im_main,
         );

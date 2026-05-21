@@ -77,6 +77,31 @@ pub struct SpeculativeOut {
     pub t_done: i64,
 }
 
+/// Per-slot decoder configuration shared between Phase-C speculative
+/// callers. Grouped into a single struct so
+/// [`run_speculative_slot`] doesn't need to accept ~10 positional
+/// `f32` / `usize` / `u32` args (Gemini PR #123 round-16 review).
+#[derive(Debug, Clone, Copy)]
+pub struct DecodeConfig {
+    /// coarse_sync lower band edge in Hz (apps use `100.0`).
+    pub freq_min: f32,
+    /// coarse_sync upper band edge in Hz (apps use `3_000.0`).
+    pub freq_max: f32,
+    /// coarse_sync ratio threshold (apps use `1.0`).
+    pub sync_min: f32,
+    /// Maximum pass-1 candidates fed into pass-2 / stage-3.
+    pub pass1_limit: usize,
+    /// Maximum refined candidates per half passed into stage-3.
+    pub max_cand: usize,
+    /// `process_candidates` sync-quality early-reject threshold.
+    pub q_thresh: u32,
+    /// BP iteration cap per LLR variant.
+    pub bp_max_iter: u32,
+    /// LLR-variant staircase depth (embedded ship uses
+    /// [`DecodeDepth::BpVariantsAd`]).
+    pub depth: DecodeDepth,
+}
+
 /// Phase-C audio-tail speculation runner. Receives a SpecBundle and
 /// Slot pair from the streaming pipeline, partitions pass1 by
 /// whether each candidate's Goertzel window fits inside the
@@ -85,22 +110,10 @@ pub struct SpeculativeOut {
 /// candidates on the full `slot.audio` after SlotEnd. The decode
 /// pipelines in both `m5stack-s3-app` and `m5stack-core2-app` use
 /// this single entry to keep the speculative logic in one place.
-///
-/// `freq_min` / `freq_max` are the coarse_sync band edges
-/// (typically 100..3000 Hz). `sync_min` is the coarse_sync ratio
-/// threshold (`1.0` matches both apps' historical setting).
-#[allow(clippy::too_many_arguments)]
 pub fn run_speculative_slot(
     spec_q: esp_idf_svc::sys::QueueHandle_t,
     slot_q: esp_idf_svc::sys::QueueHandle_t,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    pass1_limit: usize,
-    max_cand: usize,
-    q_thresh: u32,
-    bp_max_iter: u32,
-    depth: DecodeDepth,
+    cfg: &DecodeConfig,
     basis_re_main: &mut [i16],
     basis_im_main: &mut [i16],
 ) -> SpeculativeOut {
@@ -110,10 +123,10 @@ pub fn run_speculative_slot(
     let t_post_recv = unsafe { esp_timer_get_time() };
     let pass1: Vec<SyncCandidate> = coarse_sync_split_with_allsum(
         &spec.spec,
-        freq_min,
-        freq_max,
-        sync_min,
-        pass1_limit,
+        cfg.freq_min,
+        cfg.freq_max,
+        cfg.sync_min,
+        cfg.pass1_limit,
         &spec.allsum_head,
         &spec.allsum_tail,
     );
@@ -130,14 +143,20 @@ pub fn run_speculative_slot(
     let mut n_early_refined = 0usize;
     let mut results = if !ready.is_empty() {
         let partial_audio: &[i16] = spec.audio_prefix();
-        let p2 = pass2_split(partial_audio, ready, max_cand, basis_re_main, basis_im_main);
+        let p2 = pass2_split(
+            partial_audio,
+            ready,
+            cfg.max_cand,
+            basis_re_main,
+            basis_im_main,
+        );
         n_early_refined = p2.len();
         stage3_split(
             partial_audio,
             p2,
-            depth,
-            q_thresh,
-            bp_max_iter,
+            cfg.depth,
+            cfg.q_thresh,
+            cfg.bp_max_iter,
             basis_re_main,
             basis_im_main,
         )
@@ -162,7 +181,7 @@ pub fn run_speculative_slot(
         // are dropped. Acceptable on FT8 — operational dt clusters
         // tightly under NTP sync; `time_sync`'s slot phase
         // auto-anchor keeps dt within ±0.5 s in steady state.
-        let max_cand_late = max_cand.saturating_sub(n_early_refined);
+        let max_cand_late = cfg.max_cand.saturating_sub(n_early_refined);
         if max_cand_late > 0 {
             let slot_audio: &[i16] = slot.audio();
             let p2 = pass2_split(
@@ -175,9 +194,9 @@ pub fn run_speculative_slot(
             let late = stage3_split(
                 slot_audio,
                 p2,
-                depth,
-                q_thresh,
-                bp_max_iter,
+                cfg.depth,
+                cfg.q_thresh,
+                cfg.bp_max_iter,
                 basis_re_main,
                 basis_im_main,
             );
