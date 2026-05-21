@@ -389,6 +389,18 @@ fn emit_spec_bundle(ctx: &mut WorkerCtx) {
 }
 
 fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
+    // Defensive check (Gemini PR #123 round-10): the `wf_q.is_none()`
+    // branch in `emit_spec_bundle` swaps empty Vecs into `ctx.cur`
+    // because the `pair_limit` gate in `advance_pairs` is supposed
+    // to prevent any further `compute_pair_into` calls for that
+    // slot. If that invariant ever breaks (refactor lands a
+    // `pair_limit = N_PAIRS` path that forgets to widen
+    // emit_spec_bundle's tuple), the indexed writes below would
+    // hit empty Vecs and panic anyway — surface it explicitly here.
+    debug_assert!(
+        !ctx.cur.spec.is_empty(),
+        "compute_pair_into invoked after wf_q=None emit replaced ctx.cur.spec with empty Vec"
+    );
     let shift = ctx.cur.shift;
     let ia_a = j_a * NSTEP;
     let ia_b = j_b * NSTEP;
