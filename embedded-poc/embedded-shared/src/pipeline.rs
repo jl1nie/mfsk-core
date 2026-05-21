@@ -99,6 +99,28 @@ pub struct SpecBundle {
 // `[0, audio_fill]`.
 unsafe impl Send for SpecBundle {}
 
+impl SpecBundle {
+    /// Last sample index that
+    /// `fill_symbol_spectra_goertzel(audio, freq_hz, dt_sec, ..)`
+    /// reads for a candidate at `dt_sec`. Mirrors the constants in
+    /// `mfsk_core::ft8::decode_block::fill_symbol_spectra`
+    /// (`TX_START_OFFSET_S = 1.0`, `SAMPLE_RATE_HZ = 12_000`,
+    /// `NN = 79`, `NSPS = 1_920`).
+    ///
+    /// Used by Phase-C decode-pipeline consumers to decide whether
+    /// a candidate's Goertzel window fits inside the SpecBundle
+    /// audio snapshot (`ready`) or must defer to the post-SlotEnd
+    /// path (`deferred`).
+    pub fn audio_end_for_dt(dt_sec: f32) -> usize {
+        const SAMPLE_RATE_HZ: f32 = 12_000.0;
+        const TX_START_OFFSET_S: f32 = 1.0;
+        const NSPS: i64 = 1_920;
+        const NN: i64 = 79;
+        let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
+        (i0 + NN * NSPS).max(0) as usize
+    }
+}
+
 /// Audio + slot metadata, sent by stage1_inc at SlotEnd. Pairs with the
 /// `SpecBundle` for the same `wav_idx` to drive pass 2 / stage 3.
 pub struct Slot {

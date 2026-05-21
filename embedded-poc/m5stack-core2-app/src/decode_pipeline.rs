@@ -36,18 +36,6 @@ static QSO_WAVS: &[&[u8]] = &[
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
-// Phase C (2026-05-21) — last sample index Goertzel reads for a
-// candidate (matches the S3 sibling; both use the same FT8 params).
-const PHC_NSPS: i64 = 1_920;
-const PHC_SAMPLE_RATE_HZ: f32 = 12_000.0;
-const PHC_TX_START_OFFSET_S: f32 = 1.0;
-const PHC_NN: i64 = 79;
-
-fn audio_end_for(dt_sec: f32) -> usize {
-    let i0 = ((PHC_TX_START_OFFSET_S + dt_sec) * PHC_SAMPLE_RATE_HZ).round() as i64;
-    (i0 + PHC_NN * PHC_NSPS).max(0) as usize
-}
-
 /// Spawn target. Returns `!`. BASIS DRAM allocation happens inside
 /// this thread (not in main) so the per-thread 32 KB stack reservation
 /// doesn't fight the 60 KB × 4 BASIS allocs for the largest free
@@ -119,11 +107,20 @@ pub fn run() -> ! {
         let t_early_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
         let snap_fill = spec.audio_fill;
         let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
-            pass1.into_iter().partition(|c| audio_end_for(c.dt_sec) <= snap_fill);
+            pass1.into_iter()
+                .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
         let n_ready = ready.len();
         let n_deferred = deferred.len();
 
         let mut results = if !ready.is_empty() {
+            debug_assert!(
+                snap_fill <= spec.audio_cap,
+                "SpecBundle.audio_fill ({snap_fill}) > audio_cap ({})",
+                spec.audio_cap
+            );
+            // SAFETY: lifetime of `spec.audio_ptr` is documented on
+            // `SpecBundle`; valid until the matching `Slot` is dropped.
+            // Workers read only `partial_audio[0..snap_fill]`.
             let partial_audio: &[i16] = unsafe {
                 core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
             };

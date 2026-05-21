@@ -37,22 +37,6 @@ pub(crate) static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
-// Phase C (2026-05-21) — last sample index Goertzel reads for a
-// candidate, used to decide whether the audio captured so far
-// covers the candidate's full window. Matches
-// `fill_symbol_spectra_goertzel`:
-//   i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round()
-//   end = i0 + NN * NSPS
-const PHC_NSPS: i64 = 1_920;
-const PHC_SAMPLE_RATE_HZ: f32 = 12_000.0;
-const PHC_TX_START_OFFSET_S: f32 = 1.0;
-const PHC_NN: i64 = 79;
-
-fn audio_end_for(dt_sec: f32) -> usize {
-    let i0 = ((PHC_TX_START_OFFSET_S + dt_sec) * PHC_SAMPLE_RATE_HZ).round() as i64;
-    (i0 + PHC_NN * PHC_NSPS).max(0) as usize
-}
-
 /// `BootMode::Decode` entry — runs the decode pipeline with the
 /// baked `QSO_WAVS` playlist as the audio source (via `wav_sim`).
 /// Thin wrapper around [`run_with_source`].
@@ -250,17 +234,23 @@ where
         // atomic would have introduced.
         let snap_fill = spec.audio_fill;
         let (ready, deferred): (Vec<SyncCandidate>, Vec<SyncCandidate>) =
-            pass1.into_iter().partition(|c| audio_end_for(c.dt_sec) <= snap_fill);
+            pass1.into_iter()
+                .partition(|c| pipeline::SpecBundle::audio_end_for_dt(c.dt_sec) <= snap_fill);
         let n_ready = ready.len();
         let n_deferred = deferred.len();
 
         let mut results = if !ready.is_empty() {
-            // SAFETY: same lifetime as `spec.audio_fill_atom` — the
-            // backing Vec heap allocation survives `mem::replace` in
-            // stage1_inc and remains valid until the matching `Slot`
-            // arrives on `slot_q` and is dropped. Workers read only
-            // `partial_audio[0..snap_fill]`; stage1_inc writes only
-            // to indices ≥ snap_fill (disjoint).
+            debug_assert!(
+                snap_fill <= spec.audio_cap,
+                "SpecBundle.audio_fill ({snap_fill}) > audio_cap ({})",
+                spec.audio_cap
+            );
+            // SAFETY: `spec.audio_ptr` references the audio Vec heap
+            // allocation in stage1_inc that survives `mem::replace`
+            // and remains valid until the matching `Slot` is dropped.
+            // The slice is bounded by `snap_fill` (≤ audio_cap, ≤
+            // NMAX). Workers read only `partial_audio[0..snap_fill]`;
+            // stage1_inc writes only to indices ≥ snap_fill (disjoint).
             let partial_audio: &[i16] = unsafe {
                 core::slice::from_raw_parts(spec.audio_ptr, snap_fill)
             };
