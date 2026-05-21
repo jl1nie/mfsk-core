@@ -45,25 +45,25 @@ const N_TIME: usize = NMAX / NSTEP - 3; // 184
 const N_PAIRS: usize = N_TIME / 2; // 92
 const TARGET_PEAK: i32 = (NFFT_SPEC * 2) as i32;
 
-// Phase C+ (2026-05-21): emit SpecBundle *before* the last few pairs
-// finish, so coarse_sync gets more headroom before SlotEnd. coarse_sync
-// reads spec at m ∈ {Costas-positions + lag} only; with `nstep-half`
-// (NSSY=2), jstrt=6, and SYNC_LAG_S=1.0 (jz≈12-13), the maximum m
-// touched is block-2 last Costas + jz = 162 + 13 = 175. Pair 87 fills
-// up to m=175 (j_a=174, j_b=175), so emitting at `next_pair == 88`
-// gives coarse_sync everything it needs while leaving ~720 ms more
-// of audio-tail wallclock for the speculative pass-2 + stage-3 path.
+// Phase C++ (2026-05-21): emit SpecBundle as early as we can
+// trade off against block-2 coarse_sync score for dt near ±jz.
 //
-// Pairs 88..91 (m=176..183) still get computed after emit, but
-// `emit_spec_bundle` swaps in a fresh zero buffer so those writes
-// land in a discarded allocation. `xsnr2_db_simple` does sample
-// spec at strided m values across the full range; the trailing 8
-// zero rows out of 184 (≈ 4.3%) bias the median noise-floor estimate
-// slightly but stay well inside the per-station SNR jitter we
-// already see across slots. Keep all 92 pairs computed (we discard
-// rather than skip) so any future downstream consumer that needs
-// the full spec can opt in by hooking a second emit at pair 91.
-const SPEC_EMIT_PAIR: usize = 88; // emit after pair 87 done (m=0..175 valid)
+// `nstep-half` (NSSY=2), jstrt=6, SYNC_LAG_S=1.0 → jz=13. The
+// strict-correct `needed_m` bound is 162 + 13 = 175 (block-2 last
+// Costas at m=162, plus max lag), which pair 87 completes.
+// Emitting at pair 86 (m=0..173) leaves m=174..175 zero in both
+// the spec and the per-half allsum, which silently flattens
+// block-2's contribution for candidates whose lag lands on ±jz
+// (= dt near ±1.0 s). On NTP-synced operation dt is well inside
+// ±0.5 s, and the dt median auto-sync (`time_sync::record_decode_dt`)
+// re-anchors the slot phase so the lag range can stay tight in
+// steady state — taking the pair-86 emit, the 160 ms audio-tail
+// overlap gain shows up directly as -160 ms post_slotend.
+//
+// Pairs 87..91 (m=174..183) still get computed when `wf_q.is_some()`
+// to keep the WF flowing through the slot tail; `wf_q = None`
+// (bench) skips them via the `pair_limit` branch in advance_pairs.
+const SPEC_EMIT_PAIR: usize = 87; // emit after pair 86 done (m=0..173 valid)
 const _: () = assert!(SPEC_EMIT_PAIR <= N_PAIRS, "SPEC_EMIT_PAIR > N_PAIRS");
 
 // Phase-E2 per-half allsum parameters (matches dual_core
