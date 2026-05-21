@@ -260,7 +260,7 @@ where
             dual_core::stage3_split(
                 partial_audio,
                 p2,
-                DecodeDepth::BpAll,
+                DecodeDepth::BpAllNoNsym3,
                 DEFAULT_Q_THRESH,
                 mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
                 basis_re_main,
@@ -307,7 +307,7 @@ where
             let late = dual_core::stage3_split(
                 &slot.audio,
                 p2,
-                DecodeDepth::BpAll,
+                DecodeDepth::BpAllNoNsym3,
                 DEFAULT_Q_THRESH,
                 mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
                 basis_re_main,
@@ -550,10 +550,12 @@ where
                     };
                     ui.push_decode(row);
                     log::info!(
-                        "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
+                        "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) pass={} he={} {}",
                         r.freq_hz,
                         calibrated_snr,
                         r.snr_db,
+                        r.pass,
+                        r.hard_errors,
                         text
                     );
                     // Feed the FSM. SNR set first so an in-band reply

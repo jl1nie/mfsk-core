@@ -40,6 +40,18 @@ pub enum DecodeDepth {
     BpAll,
     /// BP (all four variants) then OSD order-1 fallback when BP fails.
     BpAllOsd,
+    /// BP across `a`, `d`, `b` only — skips the heavy nsym=3 `c`
+    /// variant. Used by the embedded port to bypass the
+    /// `compute_llr_partial(3)` call (~5× cost of variant `b`) for
+    /// failed candidates. Empirically (S3 qso3_busy log,
+    /// 2026-05-21) every decode lands at `pass=0` (variant `a`) on
+    /// busy-band reference WAVs, so `c` contributes no extra
+    /// decodes and is pure overhead on a power-budgeted target.
+    ///
+    /// The lighter variants `d` (nsym=1 bit-normalised, free reuse
+    /// of step-1 LLR) and `b` (nsym=2, ~1.5× variant `a` cost) are
+    /// retained as safety nets for marginal SNR / fading cases.
+    BpAllNoNsym3,
 }
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.

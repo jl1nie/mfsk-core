@@ -1550,7 +1550,12 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // Order chosen by ascending compute cost — same number of BP
     // calls as the old variant loop in the worst case, far fewer
     // in the typical case where any earlier variant decodes.
-    if accepted.is_none() && matches!(depth, DecodeDepth::BpAll | DecodeDepth::BpAllOsd) {
+    if accepted.is_none()
+        && matches!(
+            depth,
+            DecodeDepth::BpAll | DecodeDepth::BpAllOsd | DecodeDepth::BpAllNoNsym3
+        )
+    {
         // Variant d: free reuse of Step 1's llrd.
         let bp_d =
             bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
@@ -1571,8 +1576,12 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                 accepted = Some((bp, 1));
             }
         }
-        // Variant c: lazy nsym=3 (the expensive one).
-        if accepted.is_none() {
+        // Variant c: lazy nsym=3 (the expensive one). Gated to the
+        // host-default depths — `BpAllNoNsym3` skips it as the
+        // embedded post-SlotEnd dominant cost (~5× variant `b`) for
+        // failed candidates that the prior steps couldn't decode
+        // anyway on busy-band reference WAVs (see DecodeDepth doc).
+        if accepted.is_none() && !matches!(depth, DecodeDepth::BpAllNoNsym3) {
             let llrc_arr: [LlrT; LDPC_N] =
                 super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
             let bp_c =
