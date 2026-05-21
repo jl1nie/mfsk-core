@@ -127,9 +127,11 @@ pub fn run_speculative_slot(
     let n_ready = ready.len();
     let n_deferred = deferred.len();
 
+    let mut n_early_refined = 0usize;
     let mut results = if !ready.is_empty() {
         let partial_audio: &[i16] = &spec.audio_prefix;
         let p2 = pass2_split(partial_audio, ready, max_cand, basis_re_main, basis_im_main);
+        n_early_refined = p2.len();
         stage3_split(
             partial_audio,
             p2,
@@ -148,24 +150,19 @@ pub fn run_speculative_slot(
     let t_slot_recv = unsafe { esp_timer_get_time() };
 
     if !deferred.is_empty() {
-        // Budget cap: stage-3's cost is roughly linear in the number
-        // of candidates that survive pass-2's heap top-N. The early
-        // path may already have processed up to `max_cand`
-        // candidates; running deferred pass-2 with the same
-        // `max_cand` lets up to `2 * max_cand` candidates reach
-        // stage-3 in the worst case (Gemini PR #123 round-8). Cap
-        // the deferred half at `max_cand - n_early_results.min(max_cand)`
-        // so the union of (early refined ∪ late refined) stays ≤
-        // `max_cand`. In typical qso3 operation the early path
-        // produces ~7 decodes → 8 deferred-slots remain; on
-        // noise-only inputs the early path produces 0 → all 15
-        // slots go to deferred. `n_early_results` undercounts
-        // refined-but-failed cands (they're discarded post-BP) but
-        // erring on the side of "give the late path more budget"
-        // matches the design intent — failures cost less than
-        // decodes thanks to the q-gate.
-        let n_early_results = results.len();
-        let max_cand_late = max_cand.saturating_sub(n_early_results);
+        // Budget cap (Gemini PR #123 round 8/9): stage-3's wallclock
+        // is roughly linear in the number of refined candidates
+        // pass-2 hands it. Sum-cap by the *refined* count (not the
+        // decoded count) so `n_early_refined + n_late_refined ≤
+        // max_cand` holds regardless of whether the early path's
+        // candidates went on to decode. Trade-off: when the early
+        // half already fills `max_cand` slots (typical qso3-busy
+        // case: ready=25-27, pass-2 keeps top 15) the deferred
+        // path gets zero budget and any dt > +0.36 s real signals
+        // are dropped. Acceptable on FT8 — operational dt clusters
+        // tightly under NTP sync; `time_sync`'s slot phase
+        // auto-anchor keeps dt within ±0.5 s in steady state.
+        let max_cand_late = max_cand.saturating_sub(n_early_refined);
         if max_cand_late > 0 {
             let p2 = pass2_split(
                 &slot.audio,
