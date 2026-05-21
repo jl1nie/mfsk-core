@@ -424,13 +424,15 @@ fn advance_pairs(ctx: &mut WorkerCtx) {
 
     // Pair-loop limit: when no streaming-waterfall consumer is
     // wired, stop computing once the SpecBundle's needed_m range is
-    // covered (pair `SPEC_EMIT_PAIR - 1`). Pairs 88..91 (m=176..183)
-    // contribute nothing to coarse_sync and would otherwise compute
-    // 4 × `compute_pair_into` calls into a buffer that
+    // covered. With `SPEC_EMIT_PAIR = 87` the loop exits after
+    // pair index 86 finishes, skipping pairs 87..91 (= m=174..183,
+    // 5 pairs × ~10 ms each); those rows contribute nothing to
+    // coarse_sync and would otherwise compute into a buffer that
     // `emit_spec_bundle`'s `mem::replace` immediately discards
-    // (Gemini PR #123 review). Production apps with `wf_q = Some`
-    // still need pairs 88..91 to keep the waterfall flowing through
-    // the slot tail, so they keep the original N_PAIRS limit.
+    // (Gemini PR #123 round-5 / round-18). Production apps with
+    // `wf_q = Some` still need pairs 87..91 to keep the waterfall
+    // flowing through the slot tail, so they keep the original
+    // N_PAIRS limit.
     let pair_limit = if ctx.wf_q.is_some() {
         N_PAIRS
     } else {
