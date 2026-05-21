@@ -106,29 +106,18 @@ unsafe impl Send for SpecBundle {}
 impl SpecBundle {
     /// Last sample index that
     /// `fill_symbol_spectra_goertzel(audio, freq_hz, dt_sec, ..)`
-    /// reads for a candidate at `dt_sec`. Mirrors the formula in
-    /// `mfsk_core::ft8::decode_block::fill_symbol_spectra_goertzel`
-    /// (`i0 = round((TX_START_OFFSET_S + dt) * SAMPLE_RATE_HZ);
-    /// end = i0 + NN * NSPS`). `NN` and `NSPS` are pulled from
-    /// `mfsk_core::ft8::params` so the two crates can't drift; the
-    /// two other constants live `pub(super)` in `decode_block::types`
-    /// so we mirror their values here with a same-file documentation
-    /// pointer.
+    /// reads for a candidate at `dt_sec`. Thin re-export of
+    /// `mfsk_core::ft8::decode_block::goertzel_window_end_sample`
+    /// so the formula and its constants
+    /// (`TX_START_OFFSET_S` / `SAMPLE_RATE_HZ` / `NN` / `NSPS`)
+    /// live exactly once in mfsk-core and can't drift.
     ///
     /// Used by Phase-C decode-pipeline consumers to decide whether
     /// a candidate's Goertzel window fits inside the SpecBundle
     /// audio snapshot (`ready`) or must defer to the post-SlotEnd
     /// path (`deferred`).
     pub fn audio_end_for_dt(dt_sec: f32) -> usize {
-        // Mirrored from `mfsk_core::ft8::decode_block::types`
-        // (`pub(super) const SAMPLE_RATE_HZ` / `TX_START_OFFSET_S`).
-        // If those values change in mfsk-core, update here too.
-        const SAMPLE_RATE_HZ: f32 = 12_000.0;
-        const TX_START_OFFSET_S: f32 = 1.0;
-        let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
-        let nsps = mfsk_core::ft8::params::NSPS as i64;
-        let nn = mfsk_core::ft8::params::NN as i64;
-        (i0 + nn * nsps).max(0) as usize
+        mfsk_core::ft8::decode_block::goertzel_window_end_sample(dt_sec)
     }
 }
 

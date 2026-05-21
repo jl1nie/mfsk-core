@@ -29,6 +29,18 @@ use super::super::params::{COSTAS, COSTAS_POS, NN, NSPS, NTONES};
 use super::types::{AudioSample, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
 use crate::core::scalar::Cmplx;
 
+/// Last sample index that
+/// [`fill_symbol_spectra_goertzel`] reads for a candidate at
+/// `dt_sec`. Same `i0 + NN * NSPS` formula as the per-symbol loop
+/// inside the kernel, exposed here so embedded callers (Phase C
+/// audio-tail speculation in `embedded-shared`) can decide whether
+/// a candidate's Goertzel window fits inside the currently-captured
+/// audio prefix without re-implementing the constants.
+pub fn goertzel_window_end_sample(dt_sec: f32) -> usize {
+    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
+    (i0 + (NN as i64) * (NSPS as i64)).max(0) as usize
+}
+
 // Thread-local scratch for the `S -> i16` conversion in
 // `fill_symbol_spectra_via_cd0`'s `fft_cache=None` branch. The
 // `Vec<i16>` capacity is grown once per thread and reused across
