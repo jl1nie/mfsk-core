@@ -35,8 +35,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use esp_idf_svc::sys::{
-    xQueueGenericCreate, xQueueGenericSend, xQueueReceive, xTaskCreatePinnedToCore,
-    xTaskGetCoreID, QueueHandle_t,
+    xQueueGenericCreate, xQueueGenericSend, xQueueReceive, xTaskCreatePinnedToCore, xTaskGetCoreID,
+    QueueHandle_t,
 };
 
 use alloc::boxed::Box;
@@ -51,7 +51,7 @@ use mfsk_core::ft8::decode_block::{
 };
 
 use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
-use crate::pipeline::{self, SpecBundle, Slot};
+use crate::pipeline::{self, Slot, SpecBundle};
 
 /// One slot's Phase-C output. Both apps consume it identically:
 /// `spec` for `xsnr2_db_simple`, `slot` for `wav_idx` /
@@ -384,13 +384,8 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 let basis_im = unsafe {
                     core::slice::from_raw_parts_mut(BASIS_IM_C1.get(), BASIS_SCRATCH_LEN)
                 };
-                let result = refine_candidates_into(
-                    audio_slice,
-                    cands,
-                    max_cand,
-                    basis_re,
-                    basis_im,
-                );
+                let result =
+                    refine_candidates_into(audio_slice, cands, max_cand, basis_re, basis_im);
                 let raw = Box::into_raw(Box::new(result));
                 unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
             }
@@ -470,7 +465,9 @@ pub fn init(re_c1: *mut i16, im_c1: *mut i16) {
         BASIS_RE_C1.set(re_c1);
         BASIS_IM_C1.set(im_c1);
         JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
-        PASS2_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<RefinedCandidate>>()));
+        PASS2_RESULT_Q.set(queue_create(
+            core::mem::size_of::<*mut Vec<RefinedCandidate>>(),
+        ));
         STAGE3_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<DecodeResult>>()));
         COARSE_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<SyncCandidate>>()));
 
@@ -542,8 +539,7 @@ pub fn coarse_sync_split_with_allsum(
     });
     unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(job)) };
 
-    let mut local =
-        coarse_sync_with_allsum(spec, freq_min, mid, sync_min, max_cand, allsum_head);
+    let mut local = coarse_sync_with_allsum(spec, freq_min, mid, sync_min, max_cand, allsum_head);
 
     let worker_ptr = unsafe { queue_recv_ptr::<Vec<SyncCandidate>>(COARSE_RESULT_Q.get()) };
     let worker = unsafe { *Box::from_raw(worker_ptr) };

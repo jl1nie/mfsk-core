@@ -175,9 +175,8 @@ fn ffi_smoke_one(slot: &[i16]) {
     if !results.items.is_null() {
         let items = unsafe { core::slice::from_raw_parts(results.items, results.len) };
         for (i, r) in items.iter().enumerate() {
-            let bytes: &[u8] = unsafe {
-                core::slice::from_raw_parts(r.text.as_ptr() as *const u8, r.text.len())
-            };
+            let bytes: &[u8] =
+                unsafe { core::slice::from_raw_parts(r.text.as_ptr() as *const u8, r.text.len()) };
             let n = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
             let text = core::str::from_utf8(&bytes[..n]).unwrap_or("<bad utf8>");
             log::info!(
@@ -215,9 +214,8 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
 
     let t_pass2 = now_us();
     #[allow(static_mut_refs)]
-    let pass2 = unsafe {
-        dual_core::pass2_split(slot, pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM)
-    };
+    let pass2 =
+        unsafe { dual_core::pass2_split(slot, pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM) };
     let t_pass2_end = now_us();
     log::info!(
         "  pass 2 (re-rank):     {:>8} us  → top {} by sync_quality_block0",

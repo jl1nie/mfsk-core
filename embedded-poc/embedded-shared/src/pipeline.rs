@@ -9,9 +9,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
 
-use esp_idf_svc::sys::{
-    xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t,
-};
+use esp_idf_svc::sys::{xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t};
 
 const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;
@@ -310,13 +308,7 @@ pub fn try_send_box<T>(q: QueueHandle_t, boxed: Box<T>) -> Result<(), Box<T>> {
 /// stage1_inc to discard its in-progress spec.
 pub fn try_recv_box<T>(q: QueueHandle_t) -> Option<Box<T>> {
     let mut raw: *mut T = ptr::null_mut();
-    let r = unsafe {
-        xQueueReceive(
-            q,
-            (&mut raw as *mut *mut T) as *mut core::ffi::c_void,
-            0,
-        )
-    };
+    let r = unsafe { xQueueReceive(q, (&mut raw as *mut *mut T) as *mut core::ffi::c_void, 0) };
     if r == PD_PASS {
         debug_assert!(!raw.is_null());
         Some(unsafe { Box::from_raw(raw) })

@@ -15,9 +15,7 @@ use core::ptr;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use esp_idf_svc::sys::{
-    configTICK_RATE_HZ, vTaskDelay, xTaskCreatePinnedToCore, QueueHandle_t,
-};
+use esp_idf_svc::sys::{configTICK_RATE_HZ, vTaskDelay, xTaskCreatePinnedToCore, QueueHandle_t};
 
 use crate::pipeline::{send_box, ChunkMsg, CHUNK_LEN};
 

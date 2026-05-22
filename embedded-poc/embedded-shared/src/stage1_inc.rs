@@ -16,9 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use esp_idf_svc::sys::{
-    esp_timer_get_time, xTaskCreatePinnedToCore, QueueHandle_t,
-};
+use esp_idf_svc::sys::{esp_timer_get_time, xTaskCreatePinnedToCore, QueueHandle_t};
 
 use mfsk_core::core::fft::{Fft16, FftPlanner16};
 use num_complex::Complex;
@@ -37,7 +35,10 @@ const NTONES: usize = 8;
 // candidates land in the wrong frequency bins and the entire slot
 // silently produces zero results (recall=0). Keep `assert!` below.
 const NFFT_SPEC: usize = mfsk_core::ft8::decode_block::NFFT_SPEC;
-const _: () = assert!(NFFT_SPEC == 3_840, "stage1_inc NFFT_SPEC must match mfsk_core (3840)");
+const _: () = assert!(
+    NFFT_SPEC == 3_840,
+    "stage1_inc NFFT_SPEC must match mfsk_core (3840)"
+);
 const FP_SPEC_SHIFT: u32 = 12;
 const TONE_SPACING_HZ: f32 = 6.25;
 const SAMPLE_RATE_HZ: f32 = 12_000.0;
@@ -332,7 +333,10 @@ pub fn spawn_with_wf(
             1, // APP_CPU
         )
     };
-    assert_eq!(r, PD_PASS, "xTaskCreatePinnedToCore(stage1_inc) failed: {r}");
+    assert_eq!(
+        r, PD_PASS,
+        "xTaskCreatePinnedToCore(stage1_inc) failed: {r}"
+    );
     log::info!(
         "stage1_inc: spawned (APP_CPU prio 6 — preempts dsp_worker); n_time={} n_pairs={} n_freq={}",
         N_TIME,
@@ -351,7 +355,10 @@ extern "C" fn worker_main(arg: *mut c_void) {
             ChunkMsg::Samples(samples) => {
                 ingest_samples(ctx, &samples);
             }
-            ChunkMsg::SlotEnd { wav_idx, total_samples } => {
+            ChunkMsg::SlotEnd {
+                wav_idx,
+                total_samples,
+            } => {
                 finalize_slot(ctx, wav_idx, total_samples);
             }
             ChunkMsg::SlotResetMark => {
@@ -597,10 +604,10 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             // path already saturates (`spectrogram.rs::compute_spectrogram`
             // mag2 sites). Matching it here keeps the two paths
             // algorithmically identical.
-            let mag2_a = (((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32);
-            let mag2_b = (((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT)
-                .min(u16::MAX as u32);
+            let mag2_a =
+                (((a_re * a_re + a_im * a_im) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
+            let mag2_b =
+                (((b_re * b_re + b_im * b_im) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
             spec[row_a + k] = mag2_a as u16;
             spec[row_b + k] = mag2_b as u16;
         }
@@ -642,10 +649,11 @@ fn decimate_pair_to_wf(
     let row_b = j_b * n_freq;
     let mut out = [0u8; crate::pipeline::WF_ROW_LEN];
     for col in 0..crate::pipeline::WF_ROW_LEN {
-        let f0 = WF_FREQ_LO_HZ + (col as f32) * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ)
-            / crate::pipeline::WF_ROW_LEN as f32;
-        let f1 = WF_FREQ_LO_HZ + ((col + 1) as f32) * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ)
-            / crate::pipeline::WF_ROW_LEN as f32;
+        let f0 = WF_FREQ_LO_HZ
+            + (col as f32) * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / crate::pipeline::WF_ROW_LEN as f32;
+        let f1 = WF_FREQ_LO_HZ
+            + ((col + 1) as f32) * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ)
+                / crate::pipeline::WF_ROW_LEN as f32;
         let bin_lo = (f0 / df).floor() as usize;
         let bin_hi = ((f1 / df).ceil() as usize).min(n_freq);
         if bin_hi <= bin_lo {
@@ -696,26 +704,42 @@ fn update_one_half(
     dst: &mut [f32],
 ) {
     // 7-tone gather at 2-bin step — matches WSJT-X `sync8.f90:66`
-    // (k=0..6; tone 7 is data-only, never a Costas position) and
-    // `coarse_sync_inner`'s score-formula divisor `(NTONES - 2) = 6`.
+    // (k=0..6; tone 7 is data-only, never a Costas position).
+    // NFFT=3840 → tone_step_bins=2.0 exactly → single-bin gather.
     //
-    // NFFT=3840 → tone_step_bins = 2.0 exactly. The earlier 16-bin
-    // contiguous sliding window matched the NFFT=4096 era when
-    // tone_step ≈ 2.13 + Hann mainlobe leakage made the in-between
-    // bins informative; at NFFT=3840 those bins carry pure noise and
-    // a 16-contig sum nearly doubles `t0_ref`, halving sync ratio
-    // and dropping weak qso3 signals (mid/high band → 0 hits).
-    const TONE_STEP_BINS: usize = 2;
+    // Sliding window: carriers at fi and fi+2 share 6 of 7 bins.
+    // allsum[fi] = allsum[fi-2] + row[ia+fi+12] - row[ia+fi-2].
+    // Reduces inner work from 7 adds to 1 add + 1 sub per carrier
+    // after the two seed values. Sequential row reads stay in cache.
+    if n_freq == 0 {
+        return;
+    }
     let row_base = m * spec_n_freq;
     let upper = spec_n_freq - 1;
-    for fi in 0..n_freq {
-        let i_carrier = ia + fi;
-        let mut s: f32 = 0.0;
-        for k in 0..(NTONES - 1) {
-            let bin = (i_carrier + TONE_STEP_BINS * k).min(upper);
-            s += spec[row_base + bin] as f32;
+    let row = &spec[row_base..row_base + spec_n_freq];
+    // Seed prev[0] (even fi=0) and prev[1] (odd fi=1) with full sums.
+    let mut prev = [0.0f32; 2];
+    for parity in 0..2usize {
+        if parity >= n_freq {
+            break;
         }
+        let i_carrier = ia + parity;
+        let mut s = 0.0f32;
+        for k in 0..(NTONES - 1) {
+            let bin = (i_carrier + 2 * k).min(upper);
+            s += row[bin] as f32;
+        }
+        dst[parity * N_TIME + m] = s;
+        prev[parity] = s;
+    }
+    for fi in 2..n_freq {
+        let i_carrier = ia + fi;
+        let drop = (i_carrier - 2).min(upper);
+        let add = (i_carrier + 2 * (NTONES - 2)).min(upper);
+        let p = fi & 1;
+        let s = prev[p] + row[add] as f32 - row[drop] as f32;
         dst[fi * N_TIME + m] = s;
+        prev[p] = s;
     }
 }
 
