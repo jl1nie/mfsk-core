@@ -1,0 +1,17 @@
+/target/
+/.embuild/
+Cargo.lock
+
+# Per-session device captures via flash-monitor.sh.
+/logs/
+
+# Build-time WiFi credentials and UDP log target. Created locally;
+# never committed. See cfg-sample.toml for the template.
+cfg.toml
+cfg.toml-*
+
+# build.rs / bootstrap-sdkconfig.sh が CARGO_MANIFEST_DIR の絶対パスで
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME を埋め込む生成ファイル。
+sdkconfig.gen.defaults
+
+components_esp32s3.lock

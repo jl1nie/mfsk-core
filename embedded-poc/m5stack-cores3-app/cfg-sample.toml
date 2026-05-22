@@ -1,0 +1,11 @@
+# m5stack-cores3-app build-time configuration template.
+#
+# Copy this file to `cfg.toml` (gitignored) and fill in real credentials
+# for your dev environment. See the sibling `m5stack-s3-app/cfg-sample.toml`
+# for full field documentation.
+
+[wifi]
+ssid = "your-ssid-here"
+psk = "your-passphrase-here"
+pc_ip = "auto"
+port = 9999
