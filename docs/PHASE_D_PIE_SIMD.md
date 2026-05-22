@@ -92,7 +92,12 @@ Confirmed-present candidates to migrate to (subject to the above
 listing):
 
 - `dsps_fft2r_fc32_aes3_` — replaces `dsps_fft2r_fc32_ae32_`
-  (line 106 + 284). LX7 PIE radix-2 FFT, ~2× the AE32 version.
+  at three call sites: the `extern "C"` declaration (line 106),
+  the 256-pt sub-FFT inside `MixedRadix3840Fft::process` (line
+  284), AND the general-length path inside `EspDspFft::process`
+  (line 324, which handles every non-3840 FFT including the
+  stage1_inc-internal lengths). LX7 PIE radix-2 FFT, ~2× the
+  AE32 version.
 - `dsps_fft4r_fc32_aes3_` — **radix-4** alternative. If available,
   preferred for the 256-pt sub-kernel in `MixedRadix3840Fft`
   (line 281-294): 256 is `4^4`, so radix-4 is natively suited and
@@ -111,10 +116,12 @@ listing):
    `docs/historical/ESP_DSP_1_8_1_SYMBOL_AUDIT.md` so future
    re-checks are diffable.
 2. **D1.1 — fc32 radix-2 rebind**. In
-   `embedded-poc/embedded-shared/src/esp_dsp_fft.rs:106,284`, add a
-   second extern declaration for `dsps_fft2r_fc32_aes3_` and switch
-   call sites behind a `#[cfg(target_arch = "xtensa")]` +
-   target-feature gate (LX7 = ESP32-S3 only; LX6 keeps `_ae32_`).
+   `embedded-poc/embedded-shared/src/esp_dsp_fft.rs:106,284,324`,
+   add a second extern declaration for `dsps_fft2r_fc32_aes3_` and
+   switch all three call sites (extern decl + `MixedRadix3840Fft`
+   sub-kernel + generic `EspDspFft`) behind a
+   `#[cfg(target_arch = "xtensa")]` + target-feature gate (LX7 =
+   ESP32-S3 only; LX6 keeps `_ae32_`).
    Commit: `perf(embedded): bind LX7 fc32 FFT to esp-dsp PIE (_aes3_)`.
 3. **D1.2 — fc32 radix-4 for the 256-pt sub-kernel** (only if
    D1.0 confirms `dsps_fft4r_fc32_aes3_`). Inside
@@ -249,9 +256,14 @@ and after each change)
      i16→f32 conversion gone.
    If neither, revert.
    Commit: `perf(ft8): pre-padded per-symbol scratch for goertzel inner`.
-3. **D2′.2 — alignment hints.** `#[repr(align(16))]` on the local
-   state arrays in `fill_symbol_spectra_goertzel`. Re-run host bench
-   and embedded sweep.
+3. **D2′.2 — alignment hints.** Force 16-byte alignment on the
+   local state arrays in `fill_symbol_spectra_goertzel`. Rust does
+   not allow `#[repr(align(N))]` on local variables, so the
+   mechanical pattern is either (a) a tiny `#[repr(align(16))]`
+   newtype wrapper struct around `[f32; NTONES]` (and the per-call
+   scratch from D2′.1 around `[f32; NSPS]`), or (b) a fixed-size
+   `Aligned16<T>(T)` helper if multiple call sites want it. Re-run
+   host bench and embedded sweep.
    Commit: `perf(ft8): align goertzel state vectors for FPU load`.
 4. **D2′.3 — measurement.** Re-run the wav_sim sweep on S3 and
    compare against the D1 log. Acceptance: pass 2 modal ≤ 110 ms
@@ -361,7 +373,10 @@ re-grep the function/struct name (also given) before relying on
 the number.
 
 - esp-dsp FFI surface to rebind: `embedded-poc/embedded-shared/src/esp_dsp_fft.rs`
-  (lines 86-141 = externs, 281-294 = MixedRadix3840Fft, 445+499 = sc16).
+  (lines 86-141 = externs, 281-294 = `MixedRadix3840Fft::process`
+  inner 256-pt fc32, 301-340 = generic `EspDspFft::process` fc32,
+  411-481 = `MixedRadix3840Sc16Fft::process` + generic
+  `EspDspFft16::process` sc16 — call sites 445 and 499).
 - Goertzel target (D2′ scalar tweaks): `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs:670-725`.
 - coarse_sync target (D3 PIE allsum + score): `mfsk-core/src/ft8/decode_block/coarse_sync.rs:181-405`.
 - stage1_inc allsum target (D3): `embedded-poc/embedded-shared/src/stage1_inc.rs`.
