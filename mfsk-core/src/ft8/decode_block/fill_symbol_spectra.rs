@@ -704,7 +704,7 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
         // sequential load that LLVM's unroll + Xtensa FPU pipeline can
         // run at ~1 cycle/tone/sample. Cold path (first/last ~1 symbol
         // per candidate) keeps the original per-sample check.
-        if sym_start >= 0 && sym_start as usize + NSPS <= audio.len() {
+        if sym_start >= 0 && (sym_start as usize) <= audio.len().saturating_sub(NSPS) {
             let base = sym_start as usize;
             for n in 0..NSPS {
                 let sample = audio[base + n].to_i16() as f32;

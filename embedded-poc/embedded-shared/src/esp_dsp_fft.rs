@@ -455,6 +455,9 @@ impl Fft16 for MixedRadix3840Sc16Fft {
         let mut rows_box: alloc::boxed::Box<AlignedRows> = unsafe {
             let layout = alloc::alloc::Layout::new::<AlignedRows>();
             let ptr = alloc::alloc::alloc_zeroed(layout) as *mut AlignedRows;
+            if ptr.is_null() {
+                alloc::alloc::handle_alloc_error(layout);
+            }
             alloc::boxed::Box::from_raw(ptr)
         };
         let rows: &mut [Complex<i16>] = &mut rows_box.0;
