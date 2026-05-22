@@ -121,9 +121,9 @@ unsafe extern "C" {
 
     // ── i16 (sc16) variants ──────────────────────────────────
     fn dsps_fft2r_init_sc16(fft_table_buff: *mut i16, table_size: i32) -> i32;
-    #[cfg(not(feature = "aes3"))]
     fn dsps_fft2r_sc16_ae32_(data: *mut i16, N: i32, w: *const i16) -> i32;
-    /// LX7 PIE radix-2 sc16 FFT.
+    /// LX7 PIE sc16 FFT. Requires 16-byte aligned input — caller must use
+    /// an aligned buffer (see `Aligned16Rows` in `MixedRadix3840Sc16Fft`).
     #[cfg(feature = "aes3")]
     fn dsps_fft2r_sc16_aes3_(data: *mut i16, N: i32, w: *const i16) -> i32;
     fn dsps_bit_rev_sc16_ansi(data: *mut i16, N: i32) -> i32;
@@ -445,11 +445,19 @@ impl Fft16 for MixedRadix3840Sc16Fft {
 
         // ── Step 1+2: reshape to 15 rows × 256 cols (i16) and run a
         //              256-pt sc16 esp-dsp FFT on each row.
-        // We allocate the row buffer on the heap to avoid a 2 KB stack
-        // bump; this path runs once per 184-frame slot tail so the alloc
-        // cost is negligible.
-        let mut rows: alloc::vec::Vec<Complex<i16>> =
-            alloc::vec![Complex::new(0i16, 0i16); N];
+        //
+        // dsps_fft2r_sc16_aes3_ (PIE) requires 16-byte aligned input.
+        // alloc::vec! only guarantees align_of::<Complex<i16>>() = 2 bytes,
+        // so we use alloc_zeroed with a repr(align(16)) struct and
+        // Box::from_raw — Box drop then calls dealloc with the correct layout.
+        #[repr(C, align(16))]
+        struct AlignedRows([Complex<i16>; N]);
+        let mut rows_box: alloc::boxed::Box<AlignedRows> = unsafe {
+            let layout = alloc::alloc::Layout::new::<AlignedRows>();
+            let ptr = alloc::alloc::alloc_zeroed(layout) as *mut AlignedRows;
+            alloc::boxed::Box::from_raw(ptr)
+        };
+        let rows: &mut [Complex<i16>] = &mut rows_box.0;
         for n1 in 0..N1 {
             for n2 in 0..N2 {
                 rows[n2 * N1 + n1] = buf[15 * n1 + n2];
@@ -515,10 +523,7 @@ impl Fft16 for EspDspFft16 {
         }
         // SAFETY: 2*N contiguous i16; `dsps_fft_w_table_sc16` valid post-init.
         unsafe {
-            #[cfg(not(feature = "aes3"))]
             dsps_fft2r_sc16_ae32_(ptr, self.len as i32, dsps_fft_w_table_sc16);
-            #[cfg(feature = "aes3")]
-            dsps_fft2r_sc16_aes3_(ptr, self.len as i32, dsps_fft_w_table_sc16);
             dsps_bit_rev_sc16_ansi(ptr, self.len as i32);
         }
         if !self.forward {
