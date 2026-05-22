@@ -153,56 +153,117 @@ for n in 0..NSPS {                       // 1920 iterations
 The 8 dependent chains are independent across `tone`, which is
 exactly the PIE 8-lane Q15 vector layout (Q register = 8 × i16).
 
+### Numerics — why Q15-state is a non-starter (PR #126 review)
+
+Goertzel state $s[n]$ at the carrier-resonant tone grows
+proportionally to $|x| \cdot N$. For full-scale i16 audio
+(peak ≈ 32767) and `NSPS = 1920`, the peak state magnitude is
+≈ $6.3 \times 10^7$ — **≈ 26 bits, well past Q15's 15-bit range**.
+A naïve Q15 state vector would either saturate strong stations or
+bury weak ones in quantisation noise.
+
+The recursion also forbids hiding the `coeff = 2·cos(ω)` factor
+of 2 with an output-time fix-up: it sits inside the feedback path,
+so every iteration must see the full `2·cos(ω)` magnitude. If we
+store coefficients pre-scaled (`coeff_half = cos(ω) ∈ [-1, 1]`,
+which *does* fit Q15), we owe a `<< 1` per iteration before adding
+$x[n] - s[n-2]$.
+
+**Decision: state lives in 32-bit lanes, not Q15.** Two architectural
+options for the PIE kernel; D2.0 host validation picks one.
+
+#### Option A — Q31 paired-Q-register state
+
+Each `s_prev` / `s_prev2` slot for 8 tones occupies two Q registers
+(2 × 4 lanes × i32). Coefficient stays Q15 (`coeff_half = cos(ω)`).
+Per-iteration:
+
+```
+; Q4..Q5 = sign-extend(Q1..Q2) * coeff_half (Q15·Q31 → Q31)
+;        i.e. EE.VMULAS.S16 on Q1 lo/hi halves × Q0 broadcast
+; Q4..Q5 = (Q4..Q5) << 1                 ; restore the 2·cos(ω) factor
+; Q4..Q5 = (Q4..Q5) + x_sample - s_prev2 ; sample broadcast as Q31
+; rotate: s_prev2 ← s_prev; s_prev ← new
+```
+
+Saturation handling: clamp on the `<< 1` (LX7 PIE has saturating
+shift). One scale-detect pass over `s_prev` every K samples (TBD,
+likely 256) lets the wrapper trigger a per-symbol re-normalisation
+mid-recursion, mirroring `EspDspFft16`'s per-stage `/2`.
+
+#### Option B — QACC 40-bit accumulator state
+
+LX7 PIE's `QACC` is 8-lane × 40-bit. Keep `s_prev` in QACC, multiply
+`coeff_half × QACC` into a temp Q register, double, then `EE.ADD.S40`
+the sample and subtract `s_prev2`. Fewer instructions per step than
+Option A but adds a Q↔QACC round-trip when rotating the recursion.
+
+Option A is the safer first cut (Q ops are straightforward, no
+accumulator round-trip); revisit Option B in D2.4 if cycle budget
+demands it.
+
 ### Approach
 
-1. **D2.0 — Q15 host A/B**. Land a **scalar Q15** version
-   (`fill_symbol_spectra_goertzel_q15`) first, on host, with no PIE.
-   Saturating Q15 arithmetic on f32-replica state. Compare against
-   the f32 baseline using
-   `tests/ft8_goertzel_vs_basis.rs` (existing) extended to cover
-   q15-vs-f32 on `qso3_busy.wav` + the WSJT-X reference set:
-   recall identical, per-station SNR within ±0.3 dB.
-   Commit: `feat(ft8): scalar Q15 fill_symbol_spectra_goertzel + host A/B vs f32`.
-2. **D2.1 — PIE kernel** in `embedded-shared/src/pie/goertzel_q15.S`
-   (new file). Uses `EE.LD.QACC_H.L.128.IP`,
-   `EE.VMULAS.S16.QACC.LDINCP`, `EE.VLDBC.16` style instructions to
-   process 8 tones in one Q register per sample. Pseudocode:
+1. **D2.0 — host Q31 A/B**. Land a scalar
+   `fill_symbol_spectra_goertzel_q31` (i16 input, Q15 `coeff_half`,
+   i32 state, per-iteration `<< 1`). Saturating arithmetic. Compare
+   against the f32 baseline by extending the existing
+   `tests/ft8_goertzel_vs_basis.rs` harness to add a q31-vs-f32 pair
+   on `qso3_busy.wav` + the WSJT-X reference set. **Acceptance:**
+   recall identical to f32, per-station SNR within ±0.3 dB, no
+   saturation events on the full-scale test WAV. If saturation does
+   surface, fall back to the per-K-sample re-normalisation in
+   the wrapper before declaring the design viable.
+   Commit: `feat(ft8): scalar Q31 fill_symbol_spectra_goertzel + host A/B vs f32`.
+2. **D2.1 — PIE Option-A kernel** in
+   `embedded-shared/src/pie/goertzel_q31.S` (new file). Per-tone
+   state in 2 Q registers (4 × i32 lanes per Q, two Qs for 8 tones).
+   Pseudocode (one iteration, 8 tones):
    ```
-   ; coeff vec (8 i16) in Q0
-   ; s_prev vec in Q1, s_prev2 vec in Q2
-   ; sample broadcast in Q3
+   ; Q0  = coeff_half (8 × i16, cos(ω) per tone)
+   ; Q1H:Q1L = s_prev   (8 × i32, two Q regs)
+   ; Q2H:Q2L = s_prev2  (8 × i32, two Q regs)
+   ; Q3  = sample broadcast (Q31)
    ; per n:
-   ;   Q4 = Q0 * Q1 (Q15 saturating)
-   ;   Q4 = Q4 + Q3 - Q2     ; new s
-   ;   Q2 = Q1
-   ;   Q1 = Q4
+   ;   QACC = 0
+   ;   EE.VMULAS.S16.QACC.LD ... Q0, Q1L  ; lanes 0..3
+   ;   EE.VMULAS.S16.QACC.LD ... Q0, Q1H  ; lanes 4..7
+   ;   ; QACC now holds Q31 coeff_half·s_prev for 8 tones
+   ;   EE.SLCI.2X20    QACC, 1            ; << 1  (restore 2·cos(ω))
+   ;   EE.VADDS.S32    Q4L, QACC_L, Q3
+   ;   EE.VADDS.S32    Q4H, QACC_H, Q3
+   ;   EE.VSUBS.S32    Q4L, Q4L, Q2L
+   ;   EE.VSUBS.S32    Q4H, Q4H, Q2H
+   ;   ; rotate: Q2 ← Q1; Q1 ← Q4
    ```
-   Throughput target: ~1 cycle/sample (vs current ~8-10 cycles for
-   the f32 unrolled chain), wall-clock 6-8× on the Goertzel inner.
-3. **D2.2 — Rust wrapper** in
-   `embedded-shared/src/pie/mod.rs`, gated by
-   `#[cfg(all(target_arch = "xtensa", target_feature = "..."))]`.
-   `fill_symbol_spectra_goertzel` in `mfsk-core` gains a
-   `#[cfg(...)]` arm that calls the embedded symbol via the existing
-   `extern "Rust"` shim pattern (see
-   `mfsk_core_dot_q15_i32` in `esp_dsp_fft.rs:167-183`).
-   Commit: `perf(embedded): PIE Q15 Goertzel kernel (m5stack-s3)`.
+   Exact mnemonics finalised against esp-dsp's
+   `dsps_biquad_f32_aes3_.S` (next section) plus the LX7 TRM. Target
+   throughput: ~2 cycles/sample (two Q lanes per tone-batch), wall-clock
+   ~4× on the inner vs the current f32 unrolled chain.
+3. **D2.2 — Rust wrapper** in `embedded-shared/src/pie/mod.rs`, gated
+   by `#[cfg(all(target_arch = "xtensa", target_feature = "..."))]`.
+   `fill_symbol_spectra_goertzel` in `mfsk-core` gains a `#[cfg(...)]`
+   arm that calls the embedded symbol via the existing `extern "Rust"`
+   shim pattern (see `mfsk_core_dot_q15_i32` in
+   `esp_dsp_fft.rs:167-183`). The wrapper handles the per-symbol
+   zero-pad and the optional mid-recursion re-normalisation flagged
+   in D2.0.
+   Commit: `perf(embedded): PIE Q31 Goertzel kernel (m5stack-s3)`.
 4. **D2.3 — on-device measurement**. Re-run wav_sim sweep; compare
    pass-2 wall against the D1 log. Acceptance: **pass 2 ≤ 50 ms
    modal AND identical decode list on qso3 + 1 other WAV**.
+5. **D2.4 — Option B follow-up (optional)**. If D2.3 is close to but
+   short of target, prototype the QACC-state variant and measure.
+   Skip if D2.3 hits the budget.
 
-### Numerics gotchas
+### Additional gotchas
 
-- The 8 tone frequencies span the slot's carrier window (200-2700
-  Hz). `coeff = 2·cos(2π·f/Fs)` ∈ (-2, 2) — fits Q14.1 with one
-  sign bit; pre-scale by `1/2` and shift compensate at the
-  output.
-- s_prev can overflow Q15 for high-energy slots. Adopt the same
-  shift-then-renormalise strategy as `EspDspFft16` (per-symbol
-  shift, recorded; output `re`/`im` re-scaled when materialised).
-- Tail edge of `audio[]` zero-pads — the PIE kernel needs the
-  same conditional or a pre-padded scratch (preferred: pad once
-  per symbol in the wrapper, avoid PIE branch).
+- Tail edge of `audio[]` zero-pads — the PIE kernel needs the same
+  conditional or a pre-padded scratch (preferred: pad once per
+  symbol in the wrapper, avoid PIE branch).
+- The per-iteration `<< 1` must be saturating, not wrapping; LX7
+  PIE has `EE.SLCI.2X20`-family saturating shift instructions —
+  confirm the exact form against the TRM before locking the asm.
 
 ### Reference
 
