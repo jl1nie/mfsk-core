@@ -45,19 +45,28 @@ Phase D1 below corrects this.
 | Sub-phase | Target | Effort | Expected gain | Risk |
 |---|---|---|---|---|
 | **D1** | Re-bind esp-dsp FFI to `_aes3_` (LX7 PIE) where esp-dsp 1.8.1 ships them | 0.5 day | stage1 inc FFT 60 → 30-40 ms; FFI dotprod path (currently unused, was BASIS) parity | Low — pure linkage change, fall back to `_ae32_` per-symbol if missing |
-| **D2** | Hand-write PIE Q15 Goertzel for `fill_symbol_spectra_goertzel` | 2-3 days | pass 2 121 ms → 30-50 ms (3-4×) | Med — Q15 numerics need host A/B vs f32 |
+| **D2′** | Tighten the existing **f32 scalar** Goertzel (zero-pad scratch, kill per-sample bounds check, align state) | 0.5-1 day | pass 2 122 ms → ~100-110 ms (10-20 ms off) | Low |
 | **D3** | PIE allsum + score for `coarse_sync` (and the incremental allsum builder in `stage1_inc`) | 2 days | coarse 137-170 ms → 60-80 ms (during cap; reduces stage1_inc slack pressure) | Med — coarse_sync is the recall floor, regression-test against existing sweeps |
 | **D4** | PIE spectrum magnitude squared (`|re|² + |im|²`) post-FFT in stage1_inc | 1 day | stage1 inc FFT 60 ms → 50 ms | Low |
 
-All sub-phases are independent and individually revertible. **Order
-D1 → D2 first** (best ROI per day); D3 and D4 only if D1+D2 don't
-already put us in the target budget.
+The original D2 (hand-rolled PIE Q15/Q31 Goertzel) is **deliberately
+out** — see "D2 reconsidered" below for the cycle-budget evidence.
+Goertzel is a tight IIR recurrence; the LX7 FPU + LLVM's existing
+cross-tone unroll is already running at ≈ 1.6 cycles/tone/sample
+(vs the 1.0 floor), so even the most optimistic PIE design only
+buys ~1.6×, and only on the inner — easily eaten by Q31 setup,
+saturation handling, and output extraction.
+
+All remaining sub-phases are independent and individually
+revertible. **Order D1 → D2′ first** (both low-risk, both cheap),
+then D3 → D4 by measured residual.
 
 ## Reference budget
 
 Goal: post-SlotEnd decode wall ≤ 300 ms on qso3 (current worst case
-1.0 s, modal ~480 ms). D1+D2 alone should hit ~250-350 ms modal
-based on the cost shares above.
+1.0 s, modal ~480 ms). D1+D2′+D3+D4 together should hit ~280-380 ms
+modal; if that misses, stage 3 (BP/LDPC) tuning is the next lever,
+not PIE Goertzel.
 
 ## D1 — switch to `_aes3_` (LX7 PIE esp-dsp kernels)
 
@@ -130,7 +139,7 @@ listing):
 Per-binding revert is one-line; if D1.2 (radix-4) breaks shape
 assumptions in `fft_mixed_3840`, keep D1.1 and skip D1.2.
 
-## D2 — hand-rolled PIE Goertzel
+## D2 reconsidered — why a PIE Goertzel kernel is *not* in this plan
 
 ### Target
 
@@ -148,134 +157,129 @@ for n in 0..NSPS {                       // 1920 iterations
 }
 ```
 
-8 tones × 1920 samples × per-symbol × 79 symbols × ~30 candidates =
-~36 M FPU ops per slot, currently single-cycle-throughput f32 fmadd.
-The 8 dependent chains are independent across `tone`, which is
-exactly the PIE 8-lane Q15 vector layout (Q register = 8 × i16).
+### Cycle-budget evidence against PIE here
 
-### Numerics — why Q15-state is a non-starter (PR #126 review)
+Measured on the qso3 sweep:
 
-Goertzel state $s[n]$ at the carrier-resonant tone grows
-proportionally to $|x| \cdot N$. For full-scale i16 audio
-(peak ≈ 32767) and `NSPS = 1920`, the peak state magnitude is
-≈ $6.3 \times 10^7$ — **≈ 26 bits, well past Q15's 15-bit range**.
-A naïve Q15 state vector would either saturate strong stations or
-bury weak ones in quantisation noise.
+- pass 2 = 122 ms (dual-core wall) → 244 ms single-core work
+- 30 cand × 79 sym × 1920 samp = 4.55 M sample-iterations
+- 244 ms ÷ 4.55 M = 53.6 ns/sample-iter × 240 MHz =
+  **12.9 cycles/sample for all 8 tones combined** =
+  **1.6 cycles/tone/sample**
 
-The recursion also forbids hiding the `coeff = 2·cos(ω)` factor
-of 2 with an output-time fix-up: it sits inside the feedback path,
-so every iteration must see the full `2·cos(ω)` magnitude. If we
-store coefficients pre-scaled (`coeff_half = cos(ω) ∈ [-1, 1]`,
-which *does* fit Q15), we owe a `<< 1` per iteration before adding
-$x[n] - s[n-2]$.
+The LX7 single-issue f32 FPU's theoretical floor for this kernel is
+~1 cycle/tone/sample (one fmadd issued per cycle, latency hidden by
+the 8 independent cross-tone chains that LLVM unrolls — see the
+inline comment at `fill_symbol_spectra.rs:708-716` for the existing
+design intent). We are at 1.6, which is roughly 60 % of peak FPU
+throughput. There is **at most a 1.6× headroom on the inner**, and
+only at the inner — wrapper overhead is fixed.
 
-**Decision: state lives in 32-bit lanes, not Q15.** Two architectural
-options for the PIE kernel; D2.0 host validation picks one.
+Most optimistic PIE Q31 design (Option A from the earlier draft of
+this doc: paired Q registers for i32 state, per-iteration saturating
+`<< 1`):
+- ~8 cycles/sample for 8 tones = 1 cycle/tone/sample
+- → 244 ms × (1.0/1.6) ≈ 150 ms single-core = 75 ms dual-core
+- → saves **≈ 47 ms** on the post-slot critical path
 
-#### Option A — Q31 paired-Q-register state
+…before subtracting the cost of Q31 state setup, saturation
+handling, mid-recursion re-normalisation, output extraction back to
+f32, and the `extern "Rust"` shim hop. The realistic net is closer
+to 20-30 ms, against 2-3 days of asm work and a real risk of
+opening a numerics regression (PR #126 Gemini-bot review already
+flagged three classes of footgun in the Q15 sketch — Q31 narrows
+them but does not eliminate them).
 
-Each `s_prev` / `s_prev2` slot for 8 tones occupies two Q registers
-(2 × 4 lanes × i32). Coefficient stays Q15 (`coeff_half = cos(ω)`).
-Per-iteration:
+### Decision
 
-```
-; Q4..Q5 = sign-extend(Q1..Q2) * coeff_half (Q15·Q31 → Q31)
-;        i.e. EE.VMULAS.S16 on Q1 lo/hi halves × Q0 broadcast
-; Q4..Q5 = (Q4..Q5) << 1                 ; restore the 2·cos(ω) factor
-; Q4..Q5 = (Q4..Q5) + x_sample - s_prev2 ; sample broadcast as Q31
-; rotate: s_prev2 ← s_prev; s_prev ← new
-```
+**Skip the hand-rolled PIE Goertzel kernel for Phase D.** Goertzel
+is a tight IIR recurrence; the only parallelism available is the
+8 independent tone-chains, which LLVM is *already* unrolling onto
+the FPU pipeline at ~60 % of peak. PIE's strength is in
+*dependency-free* vector reductions and gathers, which is exactly
+what D3 (coarse_sync allsum) and D4 (|x|²) are.
 
-Saturation handling: clamp on the `<< 1` (LX7 PIE has saturating
-shift). One scale-detect pass over `s_prev` every K samples (TBD,
-likely 256) lets the wrapper trigger a per-symbol re-normalisation
-mid-recursion, mirroring `EspDspFft16`'s per-stage `/2`.
+The right Goertzel optimisations are scalar — D2′ below.
 
-#### Option B — QACC 40-bit accumulator state
+## D2′ — f32 scalar Goertzel micro-optimisations
 
-LX7 PIE's `QACC` is 8-lane × 40-bit. Keep `s_prev` in QACC, multiply
-`coeff_half × QACC` into a temp Q register, double, then `EE.ADD.S40`
-the sample and subtract `s_prev2`. Fewer instructions per step than
-Option A but adds a Q↔QACC round-trip when rotating the recursion.
+Same target file, same inner loop. The wins here come from removing
+per-iteration overhead that LLVM cannot eliminate by itself, not
+from changing the arithmetic.
 
-Option A is the safer first cut (Q ops are straightforward, no
-accumulator round-trip); revisit Option B in D2.4 if cycle budget
-demands it.
+### Candidates (verify with `xtensa-esp32s3-elf-objdump -d` before
+and after each change)
+
+1. **Hoist the bounds check / zero-pad branch out of the sample
+   loop.** Currently:
+   ```rust
+   let sample = if idx >= 0 && (idx as usize) < audio.len() {
+       audio[idx as usize].to_i16() as f32
+   } else {
+       0.0
+   };
+   ```
+   The branch executes 1920× per symbol × 79 symbols × 30 cand =
+   4.55 M times. Replace with: build a per-symbol `[f32; NSPS]`
+   scratch (or a wider per-call scratch) once outside the inner
+   loop, with the head/tail zero-pad already applied; the inner
+   loop then does a clean sequential f32 load. Wrapper cost is
+   one `copy_from_slice` + two `fill(0.0)` per symbol — negligible
+   vs the 1920-iter inner.
+2. **Cast i16 → f32 once per symbol, not per sample.** Folds into
+   step 1.
+3. **Force 16-byte alignment** on the per-call `coeff`, `s_prev`,
+   `s_prev2`, and the new sample scratch. LX7 FPU loads prefer
+   aligned access; misalignment costs a cycle.
+4. **`#[inline(always)]` on `to_i16`** for the embedded path so
+   the per-sample fetch doesn't go through a thunk. Already true
+   on host — verify on the `+esp` build.
 
 ### Approach
 
-1. **D2.0 — host Q31 A/B**. Land a scalar
-   `fill_symbol_spectra_goertzel_q31` (i16 input, Q15 `coeff_half`,
-   i32 state, per-iteration `<< 1`). Saturating arithmetic. Compare
-   against the f32 baseline by extending the existing
-   `tests/ft8_goertzel_vs_basis.rs` harness to add a q31-vs-f32 pair
-   on `qso3_busy.wav` + the WSJT-X reference set. **Acceptance:**
-   recall identical to f32, per-station SNR within ±0.3 dB, no
-   saturation events on the full-scale test WAV. If saturation does
-   surface, fall back to the per-K-sample re-normalisation in
-   the wrapper before declaring the design viable.
-   Commit: `feat(ft8): scalar Q31 fill_symbol_spectra_goertzel + host A/B vs f32`.
-2. **D2.1 — PIE Option-A kernel** in
-   `embedded-shared/src/pie/goertzel_q31.S` (new file). Per-tone
-   state in 2 Q registers (4 × i32 lanes per Q, two Qs for 8 tones).
-   Pseudocode (one iteration, 8 tones):
-   ```
-   ; Q0  = coeff_half (8 × i16, cos(ω) per tone)
-   ; Q1H:Q1L = s_prev   (8 × i32, two Q regs)
-   ; Q2H:Q2L = s_prev2  (8 × i32, two Q regs)
-   ; Q3  = sample broadcast (Q31)
-   ; per n:
-   ;   QACC = 0
-   ;   EE.VMULAS.S16.QACC.LD ... Q0, Q1L  ; lanes 0..3
-   ;   EE.VMULAS.S16.QACC.LD ... Q0, Q1H  ; lanes 4..7
-   ;   ; QACC now holds Q31 coeff_half·s_prev for 8 tones
-   ;   EE.SLCI.2X20    QACC, 1            ; << 1  (restore 2·cos(ω))
-   ;   EE.VADDS.S32    Q4L, QACC_L, Q3
-   ;   EE.VADDS.S32    Q4H, QACC_H, Q3
-   ;   EE.VSUBS.S32    Q4L, Q4L, Q2L
-   ;   EE.VSUBS.S32    Q4H, Q4H, Q2H
-   ;   ; rotate: Q2 ← Q1; Q1 ← Q4
-   ```
-   Exact mnemonics finalised against esp-dsp's
-   `dsps_biquad_f32_aes3_.S` (next section) plus the LX7 TRM. Target
-   throughput: ~2 cycles/sample (two Q lanes per tone-batch), wall-clock
-   ~4× on the inner vs the current f32 unrolled chain.
-3. **D2.2 — Rust wrapper** in `embedded-shared/src/pie/mod.rs`, gated
-   by `#[cfg(all(target_arch = "xtensa", target_feature = "..."))]`.
-   `fill_symbol_spectra_goertzel` in `mfsk-core` gains a `#[cfg(...)]`
-   arm that calls the embedded symbol via the existing `extern "Rust"`
-   shim pattern (see `mfsk_core_dot_q15_i32` in
-   `esp_dsp_fft.rs:167-183`). The wrapper handles the per-symbol
-   zero-pad and the optional mid-recursion re-normalisation flagged
-   in D2.0.
-   Commit: `perf(embedded): PIE Q31 Goertzel kernel (m5stack-s3)`.
-4. **D2.3 — on-device measurement**. Re-run wav_sim sweep; compare
-   pass-2 wall against the D1 log. Acceptance: **pass 2 ≤ 50 ms
-   modal AND identical decode list on qso3 + 1 other WAV**.
-5. **D2.4 — Option B follow-up (optional)**. If D2.3 is close to but
-   short of target, prototype the QACC-state variant and measure.
-   Skip if D2.3 hits the budget.
+1. **D2′.0 — host measurement scaffold.** Add a host bench (criterion
+   or hand-rolled) that times `fill_symbol_spectra_goertzel` against
+   a fixed audio buffer. Lock the baseline ns/sample number; this
+   is the gate for the embedded changes.
+2. **D2′.1 — symbol-scratch hoist.** Implement #1+#2 above. Verify:
+   - Host bench shows ≥ 10 % speedup, OR
+   - The Xtensa disassembly shows the inner-loop branch and the
+     i16→f32 conversion gone.
+   If neither, revert.
+   Commit: `perf(ft8): pre-padded per-symbol scratch for goertzel inner`.
+3. **D2′.2 — alignment hints.** `#[repr(align(16))]` on the local
+   state arrays in `fill_symbol_spectra_goertzel`. Re-run host bench
+   and embedded sweep.
+   Commit: `perf(ft8): align goertzel state vectors for FPU load`.
+4. **D2′.3 — measurement.** Re-run the wav_sim sweep on S3 and
+   compare against the D1 log. Acceptance: pass 2 modal ≤ 110 ms
+   (was 122 ms), identical decode list on qso3.
 
-### Additional gotchas
+### Numerics
 
-- Tail edge of `audio[]` zero-pads — the PIE kernel needs the same
-  conditional or a pre-padded scratch (preferred: pad once per
-  symbol in the wrapper, avoid PIE branch).
-- The per-iteration `<< 1` must be saturating, not wrapping; LX7
-  PIE has `EE.SLCI.2X20`-family saturating shift instructions —
-  confirm the exact form against the TRM before locking the asm.
+f32 throughout — no Q31, no shift, no saturation, no host A/B vs
+fixed-point. The only correctness concern is that the
+pre-pad/scratch path must produce the same f32 values as the
+current branch for every `idx ∈ [0, audio.len())` and 0.0
+otherwise. Host equivalence test against the existing implementation
+on `qso3_busy.wav` is sufficient.
 
 ### Reference
 
-esp-dsp's own `dsps_biquad_f32_aes3_.S` (3-tap IIR, structurally
-identical to Goertzel) is the model to crib from. It ships under
-`managed_components/espressif__esp-dsp/modules/iir/`.
+esp-dsp's own `dsps_biquad_f32_ae32_.S` (LX6 baseline scalar IIR,
+not a vector kernel) is informative on what GCC produces for a
+well-tuned scalar f32 recurrence — the LLVM output should match
+its instruction density modulo the difference between `s.fmadd`
+and `s.fadd.s + s.fmul.s` issue patterns.
 
-## D3 — PIE coarse_sync allsum + score (optional)
+## D3 — PIE coarse_sync allsum + score
 
-Only pursue if D1+D2 don't hit the 300-ms post-slot target, or if
-the in-capture share (currently 6% per Phase-E log line) starts
-crowding stage1_inc as we add more candidates.
+The first PIE-asm sub-phase in this plan (D1 is just a linkage
+swap). Unlike Goertzel, the allsum precompute is a pure i16 gather
++ reduction with no inter-iteration dependency — exactly the shape
+PIE is built for. Pursue after D1 + D2′ have landed and the build
+infrastructure (Cargo `pie` feature, `cc::Build` for `*.S`, Rust
+shim pattern) exists.
 
 ### Targets
 
@@ -307,7 +311,7 @@ end each row with `buf[i].norm_sqr()` over `n_freq ≈ 1043` bins.
 
 PIE `EE.VMULAS.S16.QACC` does `re*re + im*im` for 4 complex
 samples per instruction. Wins ~10 ms off stage1_inc; small but
-free once the D2 wrapper machinery exists.
+free once the D3 wrapper machinery exists.
 
 ## Cross-cutting
 
@@ -326,8 +330,8 @@ the feature is on, using `cc::Build` with
 
 ### Regression gate
 
-- Host: all existing `mfsk-core` decode tests pass (the Q15
-  scalar reference for D2 lives here).
+- Host: all existing `mfsk-core` decode tests pass (the f32
+  baseline that D2′ must match cell-for-cell lives here).
 - S3: `embedded-poc/m5stack-s3` wav_sim sweep on the 3-WAV
   qso3 set (qso3_busy, qso3_quiet, qso3_callcq) — same recall list
   as the baseline.
@@ -349,25 +353,26 @@ the feature is on, using `cc::Build` with
 
 - esp-dsp FFI surface to rebind: `embedded-poc/embedded-shared/src/esp_dsp_fft.rs`
   (lines 86-141 = externs, 281-294 = MixedRadix3840Fft, 445+499 = sc16).
-- Goertzel target: `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs:670-725`.
-- coarse_sync target: `mfsk-core/src/ft8/decode_block/coarse_sync.rs:181-405`.
-- stage1_inc allsum target: `embedded-poc/embedded-shared/src/stage1_inc.rs`.
-- Reference dotprod wrapper pattern (for the PIE kernel Rust shim):
+- Goertzel target (D2′ scalar tweaks): `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs:670-725`.
+- coarse_sync target (D3 PIE allsum + score): `mfsk-core/src/ft8/decode_block/coarse_sync.rs:181-405`.
+- stage1_inc allsum target (D3): `embedded-poc/embedded-shared/src/stage1_inc.rs`.
+- Reference dotprod wrapper pattern (for D3/D4 Rust shim):
   `embedded-poc/embedded-shared/src/esp_dsp_fft.rs:167-183`
   (`mfsk_core_dot_q15_i32`).
-- Reference esp-dsp PIE asm to crib from:
-  `.embuild/espressif/build/managed_components/espressif__esp-dsp/modules/iir/dsps_biquad_f32_aes3_.S`
+- Reference esp-dsp PIE asm to crib from (D3/D4 — vector
+  reductions, *not* IIR):
+  `.embuild/espressif/build/managed_components/espressif__esp-dsp/modules/dotprod/`
   (after first build).
 - Logs to compare against: `embedded-poc/m5stack-s3/logs/s3_phaseC_*`.
-- Host A/B test scaffolding: `mfsk-core/tests/ft8_goertzel_vs_basis.rs`.
+- Host bench scaffolding for D2′: `mfsk-core/tests/ft8_goertzel_vs_basis.rs`.
 
 ## Out of scope (deliberately)
 
+- **PIE Goertzel kernel** — see "D2 reconsidered" above. Tight IIR,
+  cross-tone parallelism already exploited by the FPU + LLVM unroll
+  at ~60 % of peak, residual headroom too thin to justify Q31 asm.
 - LX6 (Core2) — no PIE on classic ESP32, all D-phases are
   cfg-gated to S3. Core2 keeps the `_ae32_` scalar path.
 - Stage-3 BP/LDPC inner — control-flow heavy, poor SIMD fit;
   separate effort if needed (track in `docs/ROADMAP.md` Open
   follow-ups).
-- esp-dsp upstream contribution of a generalised-Goertzel PIE
-  kernel — would benefit the wider ecosystem, but out of scope
-  for the ship-this-month decode-time target.
