@@ -103,10 +103,16 @@ unsafe extern "C" {
     /// register `a4` (the `w` pointer) uninitialised — the asm
     /// then reads from a garbage address inside the inner butterfly
     /// loop and crashes with `LoadProhibited` on real hardware.
+    /// LX6 baseline radix-2 fc32 FFT. Active when `aes3` feature is off.
+    #[cfg(not(feature = "aes3"))]
     fn dsps_fft2r_fc32_ae32_(data: *mut f32, N: i32, w: *const f32) -> i32;
 
+    /// LX7 PIE radix-2 fc32 FFT — ~2× throughput on ESP32-S3.
+    #[cfg(feature = "aes3")]
+    fn dsps_fft2r_fc32_aes3_(data: *mut f32, N: i32, w: *const f32) -> i32;
+
     /// Bit-reverse the radix-2 output into natural order. Call after
-    /// `dsps_fft2r_fc32_ae32_`.
+    /// `dsps_fft2r_fc32_ae32_` / `_aes3_`.
     fn dsps_bit_rev_fc32_ansi(data: *mut f32, N: i32) -> i32;
 
     /// Twiddle-factor table allocated and populated by
@@ -115,7 +121,11 @@ unsafe extern "C" {
 
     // ── i16 (sc16) variants ──────────────────────────────────
     fn dsps_fft2r_init_sc16(fft_table_buff: *mut i16, table_size: i32) -> i32;
+    #[cfg(not(feature = "aes3"))]
     fn dsps_fft2r_sc16_ae32_(data: *mut i16, N: i32, w: *const i16) -> i32;
+    /// LX7 PIE radix-2 sc16 FFT.
+    #[cfg(feature = "aes3")]
+    fn dsps_fft2r_sc16_aes3_(data: *mut i16, N: i32, w: *const i16) -> i32;
     fn dsps_bit_rev_sc16_ansi(data: *mut i16, N: i32) -> i32;
     static dsps_fft_w_table_sc16: *const i16;
 
@@ -281,7 +291,10 @@ impl Fft for MixedRadix3840Fft {
         let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
             let ptr = row.as_mut_ptr() as *mut f32;
             unsafe {
+                #[cfg(not(feature = "aes3"))]
                 dsps_fft2r_fc32_ae32_(ptr, 256, dsps_fft_w_table_fc32);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_fc32_aes3_(ptr, 256, dsps_fft_w_table_fc32);
                 dsps_bit_rev_fc32_ansi(ptr, 256);
             }
         };
@@ -321,7 +334,10 @@ impl Fft for EspDspFft {
         // `dsps_fft_w_table_fc32` is valid because `ensure_table` has
         // already called `dsps_fft2r_init_fc32` which populates it.
         unsafe {
+            #[cfg(not(feature = "aes3"))]
             dsps_fft2r_fc32_ae32_(ptr, self.len as i32, dsps_fft_w_table_fc32);
+            #[cfg(feature = "aes3")]
+            dsps_fft2r_fc32_aes3_(ptr, self.len as i32, dsps_fft_w_table_fc32);
             // Bit-reverse the in-place output to get natural order.
             dsps_bit_rev_fc32_ansi(ptr, self.len as i32);
         }
@@ -442,7 +458,10 @@ impl Fft16 for MixedRadix3840Sc16Fft {
         for n2 in 0..N2 {
             let row_ptr = rows[n2 * N1..(n2 + 1) * N1].as_mut_ptr() as *mut i16;
             unsafe {
+                #[cfg(not(feature = "aes3"))]
                 dsps_fft2r_sc16_ae32_(row_ptr, N1 as i32, dsps_fft_w_table_sc16);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_sc16_aes3_(row_ptr, N1 as i32, dsps_fft_w_table_sc16);
                 dsps_bit_rev_sc16_ansi(row_ptr, N1 as i32);
             }
         }
@@ -496,7 +515,10 @@ impl Fft16 for EspDspFft16 {
         }
         // SAFETY: 2*N contiguous i16; `dsps_fft_w_table_sc16` valid post-init.
         unsafe {
+            #[cfg(not(feature = "aes3"))]
             dsps_fft2r_sc16_ae32_(ptr, self.len as i32, dsps_fft_w_table_sc16);
+            #[cfg(feature = "aes3")]
+            dsps_fft2r_sc16_aes3_(ptr, self.len as i32, dsps_fft_w_table_sc16);
             dsps_bit_rev_sc16_ansi(ptr, self.len as i32);
         }
         if !self.forward {
