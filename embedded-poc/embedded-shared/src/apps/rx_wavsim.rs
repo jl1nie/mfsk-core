@@ -5,9 +5,11 @@
 //! wav_sim → ChunkMsg → stage1_inc → SpecBundle/Slot → main → dual_core
 //! ```
 //!
-//! Stage 2 (`coarse_sync_split_with_allsum`) starts on `SpecBundle`
-//! arrival (≈ 200 ms before SlotEnd), so it overlaps the tail of audio
-//! capture. Post-SlotEnd decode = pass 2 + stage 3 only.
+//! Uses [`dual_core::run_speculative_slot`] — the same Phase-C
+//! speculative runner as `m5stack-s3-app` and `m5stack-core2-app`.
+//! Both the early (audio-tail overlap) and deferred (post-SlotEnd)
+//! decode paths run; the per-slot log shows the Phase-C breakdown so
+//! bench results are directly comparable to production timing.
 //!
 //! Per-target binaries (m5stack-core2 / m5stack-s3) just supply the
 //! WAV byte slices and call `run()`. No target-specific code lives
@@ -15,47 +17,11 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
-
-use mfsk_ft8::mfsk_ft8_basis_scratch_len;
-
-use mfsk_core::core::sync::SyncCandidate;
 use mfsk_core::ft8::decode::DecodeDepth;
-use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 
-/// Per-core BASIS scratch. 60 KB × 4, internal DRAM `.bss`. Phase 0.7:
-/// both pairs live here so rx_wavsim keeps a single static allocation
-/// strategy; only the m5stack-s3-app runtime heap-allocates so it can
-/// skip the 120 KB worker pair in WiFi mode.
-static mut BASIS_RE: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_RE_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-
-fn now_us() -> i64 {
-    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
-}
-
-/// Run the rx_wavsim bench.
-///
-/// * `wavs` — playlist (≥ 1 baked WAV; cycled indefinitely).
-/// * `pass1_limit` — coarse_sync candidate cap (typical 30 for ship
-///   recall floor; raise to 100 to recover one extra borderline weak
-///   signal at ~1.7× post-SlotEnd time on LX7).
-/// * `max_cand` — pass 2 / stage 3 candidate cap (typical 15; raise
-///   to 30 alongside `pass1_limit=100`).
-/// * `q_thresh` — stage-3 `sync_quality` early-reject threshold; pass
-///   [`mfsk_core::ft8::decode_block::DEFAULT_Q_THRESH`] (= 12) for
-///   full recall.
-/// * `bp_max_iter` — stage-3 BP iteration cap per LLR variant. Pass
-///   [`mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER`] (= 30, WSJT-X
-///   reference) for full recall; lower (e.g. 20 / 15) trades weak-
-///   signal recall for post-SlotEnd time. Stage 3 wall-clock scales
-///   roughly linearly with this on cands that exhaust all 4 LLR
-///   variants (≈ half of `max_cand` on busy bands).
 /// One sweep config — applied per-slot when `run_sweep` is used.
 #[derive(Clone, Copy, Debug)]
 pub struct RxSweepCfg {
@@ -95,8 +61,14 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
         mfsk_core::ft8::decode_block::NFFT_SPEC
     );
 
-    let need = mfsk_ft8_basis_scratch_len();
-    assert!(BASIS_SCRATCH_LEN >= need, "BASIS_SCRATCH_LEN too small");
+    // Phase 1.7.7: BASIS scratch retired — Goertzel needs no internal
+    // DRAM scratch. Pass null to dual_core::init; empty slices to
+    // run_speculative_slot. The 4 × 30 KB that used to live here as
+    // `static mut BASIS_*` arrays is now free DRAM.
+    let basis_re_main: &'static mut [i16] =
+        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
+    let basis_im_main: &'static mut [i16] =
+        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
 
     // Bump main task priority above wav_sim (4) and stage1_inc (3).
     unsafe {
@@ -104,11 +76,8 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
     }
 
     esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
+    dual_core::init(core::ptr::null_mut(), core::ptr::null_mut());
 
-    #[allow(static_mut_refs)]
-    unsafe {
-        dual_core::init(BASIS_RE_C1.as_mut_ptr(), BASIS_IM_C1.as_mut_ptr());
-    }
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
     let spec_q = pipeline::create_spec_queue(2);
@@ -121,118 +90,83 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
     );
     let mut slot_i: usize = 0;
     loop {
-        let cfg = cfgs[slot_i % cfgs.len()];
+        let rx_cfg = cfgs[slot_i % cfgs.len()];
         slot_i = slot_i.wrapping_add(1);
-        // SpecBundle arrives ≈ 200 ms before SlotEnd, so stage 2 runs
-        // in parallel with the tail of capture.
-        let spec = pipeline::recv_box::<pipeline::SpecBundle>(spec_q);
+
         log::info!(
             "─── slot {} cfg pass1={} max_cand={} q={} BP={}",
             slot_i,
-            cfg.pass1_limit,
-            cfg.max_cand,
-            cfg.q_thresh,
-            cfg.bp_max_iter,
+            rx_cfg.pass1_limit,
+            rx_cfg.max_cand,
+            rx_cfg.q_thresh,
+            rx_cfg.bp_max_iter,
         );
-        let t_s2_start = now_us();
-        let pass1 = dual_core::coarse_sync_split_with_allsum(
-            &spec.spec,
-            100.0,
-            3_000.0,
-            1.0,
-            cfg.pass1_limit,
-            &spec.allsum_head,
-            &spec.allsum_tail,
+
+        let dc = dual_core::DecodeConfig {
+            freq_min: 100.0,
+            freq_max: 3_000.0,
+            sync_min: 1.0,
+            pass1_limit: rx_cfg.pass1_limit,
+            max_cand: rx_cfg.max_cand,
+            q_thresh: rx_cfg.q_thresh,
+            bp_max_iter: rx_cfg.bp_max_iter,
+            depth: DecodeDepth::BpVariantsAd,
+        };
+        let out =
+            dual_core::run_speculative_slot(spec_q, slot_q, &dc, basis_re_main, basis_im_main);
+        let dual_core::SpeculativeOut {
+            spec,
+            slot,
+            results,
+            n_pass1,
+            n_ready,
+            n_deferred,
+            t_post_recv,
+            t_coarse_done,
+            t_early_done,
+            t_slot_recv,
+            t_done,
+        } = out;
+
+        let slotend = slot.slotend_us;
+        let inc_us = slot.inc_total_us;
+        let wav_idx = slot.wav_idx;
+        let tail_window = (slotend - t_post_recv).max(0);
+        let coarse_us = t_coarse_done - t_post_recv;
+        let early_us = t_early_done - t_coarse_done;
+        let tail_use = (slotend.min(t_early_done) - t_coarse_done).max(0);
+        let post_slotend = (t_done - slotend).max(0);
+
+        log::info!(
+            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+             tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
+             slot_wait={}us late={}us",
+            results.len(),
+            tail_window,
+            coarse_us,
+            early_us,
+            tail_use,
+            post_slotend,
+            t_slot_recv - t_early_done,
+            t_done - t_slot_recv,
         );
-        let t_s2_end = now_us();
-        drop(spec);
-
-        let slot = pipeline::recv_box::<pipeline::Slot>(slot_q);
-        decode_one_slot(
-            *slot,
-            pass1,
-            t_s2_end - t_s2_start,
-            cfg.max_cand,
-            cfg.q_thresh,
-            cfg.bp_max_iter,
+        log::info!(
+            "  Phase-E: stage1_inc {} us in advance ({}% of capture)",
+            inc_us,
+            (inc_us * 100) / 15_000_000
         );
-    }
-}
 
-fn decode_one_slot(
-    slot: pipeline::Slot,
-    pass1: Vec<SyncCandidate>,
-    stage2_us: i64,
-    max_cand: usize,
-    q_thresh: u32,
-    bp_max_iter: u32,
-) {
-    let wav_idx = slot.wav_idx;
-    let inc_us = slot.inc_total_us;
-    let pass1_n = pass1.len();
-    let post_slot_t0 = now_us();
-
-    log::info!(
-        "rx-wavsim: WAV[{wav_idx}] slot received (audio={} samples, pass1={pass1_n}, q_thresh={q_thresh})",
-        slot.audio_len(),
-    );
-    log::info!(
-        "  stage 2 (during cap): {:>7} us  ({pass1_n} cand)",
-        stage2_us
-    );
-
-    let t2 = now_us();
-    #[allow(static_mut_refs)]
-    let pass2 = unsafe {
-        dual_core::pass2_split(slot.audio(), pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM)
-    };
-    let t3 = now_us();
-    log::info!(
-        "  pass 2:               {:>7} us  → top {}",
-        t3 - t2,
-        pass2.len()
-    );
-
-    let depth = DecodeDepth::BpAll;
-    let t4 = now_us();
-    #[allow(static_mut_refs)]
-    let results = unsafe {
-        dual_core::stage3_split(
-            slot.audio(),
-            pass2,
-            depth,
-            q_thresh,
-            bp_max_iter,
-            &mut BASIS_RE,
-            &mut BASIS_IM,
-        )
-    };
-    let t5 = now_us();
-    log::info!(
-        "  stage 3:              {:>7} us  ({} result(s))",
-        t5 - t4,
-        results.len()
-    );
-    log::info!(
-        "  ─── post-SlotEnd:     {:>7} us = {:.3} s",
-        t5 - post_slot_t0,
-        (t5 - post_slot_t0) as f64 / 1e6
-    );
-    log::info!(
-        "  Phase-E: stage1_inc {} us in advance ({}% of capture)",
-        inc_us,
-        (inc_us * 100) / 15_000_000
-    );
-
-    for (i, r) in results.iter().enumerate() {
-        if let Some(text) = unpack77(&r.message77) {
-            log::info!(
-                "    [{i}]  {:>4.0} Hz  SNR={:>5.1} dB  e={}  '{}'",
-                r.freq_hz,
-                r.snr_db,
-                r.hard_errors,
-                text
-            );
+        for (i, r) in results.iter().enumerate() {
+            if let Some(text) = unpack77(&r.message77) {
+                log::info!(
+                    "    [{i}]  {:>4.0} Hz  SNR={:>5.1} dB  e={}  '{}'",
+                    r.freq_hz,
+                    r.snr_db,
+                    r.hard_errors,
+                    text
+                );
+            }
         }
+        drop(spec);
     }
 }
