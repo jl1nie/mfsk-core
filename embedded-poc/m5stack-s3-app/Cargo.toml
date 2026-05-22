@@ -45,7 +45,7 @@ mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["a
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 # 共有 embedded glue (streaming buffer / esp_dsp_fft / dual_core / Q3i8 LLR)
-embedded-shared = { path = "../embedded-shared" }
+embedded-shared = { path = "../embedded-shared", features = ["aes3"] }
 
 # Board-agnostic app logic (QSO FSM, time sync, TX picker, SNR norm,
 # NVS boot mode, log fanout, WiFi + UDP, UI data + draw routines).

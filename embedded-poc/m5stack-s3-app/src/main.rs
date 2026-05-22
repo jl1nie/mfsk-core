@@ -86,7 +86,7 @@ fn main() -> ! {
 
     log::info!("=== mfsk-core-m5stack-s3-app boot ===");
     log::info!("phase 0.7c: runtime boot-mode (NVS + KEY1 override + KEY2 long-press)");
-    log::info!("build-stamp 2026-05-17-phase17-qso");
+    log::info!("build-stamp 2026-05-22-phaseD1-aes3-goertzel");
 
     // Global QSO FSM instance. Empty MY_CALL keeps the FSM Idle so
     // the TX scheduler / auto-CQ stays a no-op until cfg.toml provides

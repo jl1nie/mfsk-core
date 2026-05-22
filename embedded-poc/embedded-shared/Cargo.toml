@@ -21,6 +21,12 @@ rust-version = "1.82"
 [lib]
 name = "embedded_shared"
 
+[features]
+# Enable LX7 PIE _aes3_ esp-dsp kernels (fc32 + sc16 radix-2 FFT).
+# Default-off so LX6 (Core2, xtensa-esp32-espidf) keeps the _ae32_ path.
+# Enabled by m5stack-s3 and m5stack-s3-app via features = ["aes3"].
+aes3 = []
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }

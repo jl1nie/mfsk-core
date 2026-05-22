@@ -63,7 +63,7 @@ num-complex = { version = "0.4", default-features = false }
 
 # Shared embedded glue (wav_sim / esp_dsp_fft / dual_core / stage1_inc /
 # internal_pool). Compiled per-target alongside this binary.
-embedded-shared = { path = "../embedded-shared" }
+embedded-shared = { path = "../embedded-shared", features = ["aes3"] }
 
 [build-dependencies]
 embuild = "0.33"

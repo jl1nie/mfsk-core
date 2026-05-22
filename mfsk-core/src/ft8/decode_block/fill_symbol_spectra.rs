@@ -698,21 +698,36 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
         let mut s_prev = [0.0_f32; NTONES];
         let mut s_prev2 = [0.0_f32; NTONES];
 
-        for n in 0..NSPS {
-            let idx = sym_start + n as i64;
-            let sample = if idx >= 0 && (idx as usize) < audio.len() {
-                audio[idx as usize].to_i16() as f32
-            } else {
-                0.0
-            };
-            // NTONES=8 is `const`; LLVM unrolls this and the 8
-            // resulting fmul/fadd/fsub chains run independently — the
-            // Xtensa FPU's pipeline absorbs ~all of the per-chain
-            // latency in parallel.
-            for tone in 0..NTONES {
-                let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
-                s_prev2[tone] = s_prev[tone];
-                s_prev[tone] = s;
+        // Hot path: entire symbol window lies within audio bounds.
+        // The bounds check (idx >= 0 && idx < audio.len()) can then be
+        // hoisted out of the 1920-iteration inner loop, leaving a clean
+        // sequential load that LLVM's unroll + Xtensa FPU pipeline can
+        // run at ~1 cycle/tone/sample. Cold path (first/last ~1 symbol
+        // per candidate) keeps the original per-sample check.
+        if sym_start >= 0 && (sym_start as usize) <= audio.len().saturating_sub(NSPS) {
+            let base = sym_start as usize;
+            for n in 0..NSPS {
+                let sample = audio[base + n].to_i16() as f32;
+                for tone in 0..NTONES {
+                    let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
+                    s_prev2[tone] = s_prev[tone];
+                    s_prev[tone] = s;
+                }
+            }
+        } else {
+            let audio_len = audio.len() as i64;
+            for n in 0..NSPS {
+                let idx = sym_start + n as i64;
+                let sample = if idx >= 0 && idx < audio_len {
+                    audio[idx as usize].to_i16() as f32
+                } else {
+                    0.0
+                };
+                for tone in 0..NTONES {
+                    let s = sample + coeff[tone] * s_prev[tone] - s_prev2[tone];
+                    s_prev2[tone] = s_prev[tone];
+                    s_prev[tone] = s;
+                }
             }
         }
 
