@@ -21,13 +21,15 @@ representative post-Phase-C slot (qso3 reference WAV, dual-core,
 | stage 2 sync resolve (post-cap) | 188 000 | scalar |
 | **pass 2 (Goertzel × ~30 cand, dual-core)** | **121 000 – 122 000** | **f32 scalar Rust** |
 | stage 3 (BP/LDPC) | 100 000 – 625 000 | scalar; varies with `n_results` |
-| post-SlotEnd total | 480 000 – 1 002 000 | budget = 13 800 ms (cap + late tail) |
+| post-SlotEnd total | 480 000 – 1 002 000 | target ≤ 300 000 (so the operator sees decodes well before the next 15 s slot boundary) |
 
 The Phase-C streaming overlap (PR #123) parked stage1_inc +
 coarse_sync inside capture, so the **critical path is pass 2 + stage
 3**. Pass 2 is the largest fixed cost (Goertzel for every refined
 candidate × 79 symbols × NSPS=1920 samples) and is **pure scalar
-f32** today — the most leveraged single PIE target.
+f32** today — initially the most attractive PIE target, but the
+"D2 reconsidered" section below explains why this plan ends up
+keeping that loop scalar.
 
 ## The discrepancy this plan also fixes
 
@@ -350,6 +352,13 @@ the feature is on, using `cc::Build` with
   doc.
 
 ## File-path index (for the implementer)
+
+**Line numbers below were checked against the `476d2fa` parent
+commit on `claude/esp32s3-simd-optimization-Kzo1G`.** They are
+intentionally precise so the first implementer can jump straight
+to the right call site, but they will rot as the code evolves —
+re-grep the function/struct name (also given) before relying on
+the number.
 
 - esp-dsp FFI surface to rebind: `embedded-poc/embedded-shared/src/esp_dsp_fft.rs`
   (lines 86-141 = externs, 281-294 = MixedRadix3840Fft, 445+499 = sc16).
