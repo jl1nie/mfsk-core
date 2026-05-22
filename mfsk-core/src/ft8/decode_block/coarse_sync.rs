@@ -139,16 +139,82 @@ pub fn precompute_coarse_allsum_into(
     fill_coarse_allsum(spec, ia, ib, n_freq, dst);
 }
 
-/// Build the 16-bin sliding-window allsum for the carrier-bin range
-/// `[ia..=ib]` into the caller buffer `dst` (length
-/// `n_freq * spec.n_time`, layout `dst[fi * n_time + m]`).
+/// Build the 7-tone-stride-2 allsum for one time slice `m` into `dst`.
 ///
-/// Mirrors the inline precompute inside [`coarse_sync_inner`] —
-/// kept as a separate helper so the embedded port can replicate it
-/// row-by-row in [`stage1_inc`] without depending on private
-/// internals. Computes for **every m**, not just `needed_m`, so
-/// callers can populate cells incrementally with single-row updates
-/// in any order.
+/// Loop order: `m`-outer, `fi`-inner. One time slice (~2 KB at u16)
+/// stays in cache for all carriers instead of striding by `n_freq`
+/// bytes per time step.
+///
+/// Under `fixed-point` (SpecCell = u16, values ≤ 65535): uses a
+/// **sliding window** — carriers at `fi` and `fi+2` share 6 of 7
+/// bins, so `allsum[fi] = allsum[fi-2] + row[ia+fi+12] - row[ia+fi-2]`.
+/// Reduces inner work from 7 adds to 1 add + 1 sub. Intermediate
+/// sums ≤ 7×65535 < 2^19 are exactly representable in f32, so no
+/// drift accumulates.
+///
+/// Without `fixed-point` (SpecCell = f32, host path): direct sum to
+/// avoid rounding drift on large spectrum values that would break the
+/// full-band-allsum-then-slice equivalence test.
+fn fill_allsum_row(spec: &Spectrogram, ia: usize, n_freq: usize, m: usize, dst: &mut [CoarseAcc]) {
+    if n_freq == 0 {
+        return;
+    }
+    let nh1 = spec.n_freq;
+    let upper = nh1 - 1;
+    let n_time = spec.n_time;
+
+    #[cfg(feature = "fixed-point")]
+    {
+        // Sliding window: two independent chains (even / odd fi).
+        let mut prev = [CoarseAcc::default(); 2];
+        for parity in 0..2usize {
+            if parity >= n_freq {
+                break;
+            }
+            let i_carrier = ia + parity;
+            let mut s = CoarseAcc::default();
+            for k in 0..(NTONES - 1) {
+                let bin = (i_carrier + 2 * k).min(upper);
+                s += spec.power_acc(bin, m);
+            }
+            dst[parity * n_time + m] = s;
+            prev[parity] = s;
+        }
+        for fi in 2..n_freq {
+            let i_carrier = ia + fi;
+            let drop = (i_carrier - 2).min(upper);
+            let add = (i_carrier + 2 * (NTONES - 2)).min(upper);
+            let p = fi & 1;
+            #[allow(clippy::unnecessary_cast)]
+            let s = prev[p] + spec.power_acc(add, m) - spec.power_acc(drop, m);
+            dst[fi * n_time + m] = s;
+            prev[p] = s;
+        }
+    }
+
+    #[cfg(not(feature = "fixed-point"))]
+    {
+        // Direct sum: no f32 drift for host tests.
+        for fi in 0..n_freq {
+            let i_carrier = ia + fi;
+            let mut s = CoarseAcc::default();
+            for k in 0..(NTONES - 1) {
+                let bin = (i_carrier + 2 * k).min(upper);
+                s += spec.power_acc(bin, m);
+            }
+            dst[fi * n_time + m] = s;
+        }
+    }
+}
+
+/// Build the 7-tone-stride-2 allsum for the carrier range `[ia..=ib]`
+/// into `dst` (`n_freq * spec.n_time`, layout `dst[fi * n_time + m]`).
+///
+/// Mirrors the inline precompute inside [`coarse_sync_inner`] and
+/// [`stage1_inc::update_one_half`] — kept as a public helper so the
+/// embedded port can replicate it row-by-row without accessing private
+/// internals. Computes **every m** so callers can populate cells
+/// incrementally in any order.
 fn fill_coarse_allsum(
     spec: &Spectrogram,
     ia: usize,
@@ -156,25 +222,10 @@ fn fill_coarse_allsum(
     _n_freq: usize,
     dst: &mut [CoarseAcc],
 ) {
-    let nh1 = spec.n_freq;
-    // WSJT-X `sync8.f90:66` `t0a = sum(s(i:i+nfos*6:nfos, m))` — sums
-    // **7** tones (k=0..6), NOT 8. The Costas array uses `icos7 =
-    // [3,1,4,0,6,5,2]` ⊂ {0..6}; tone 7 is data-only and never a
-    // Costas position. Including tone 7 in the reference sum dilutes
-    // the discriminator with data/noise energy that has no parallel
-    // in WSJT-X — it shifts our normalised sync score relative to
-    // theirs and was a logical implementation diff. NFFT=3840 →
-    // tone_step_bins=2.0 exactly, so single-bin gather per tone.
-    for (fi, i_carrier) in (ia..=ib).enumerate() {
-        let row_off = fi * spec.n_time;
-        for m in 0..spec.n_time {
-            let mut s: CoarseAcc = CoarseAcc::default();
-            for k in 0..(NTONES - 1) {
-                let bin = (i_carrier + 2 * k).min(nh1 - 1);
-                s += spec.power_acc(bin, m);
-            }
-            dst[row_off + m] = s;
-        }
+    let n_freq = ib - ia + 1;
+    // m-outer loop: one time slice (~2 KB u16) stays in cache for all fi.
+    for m in 0..spec.n_time {
+        fill_allsum_row(spec, ia, n_freq, m, dst);
     }
 }
 
@@ -294,25 +345,15 @@ fn coarse_sync_inner(
         owned_allsum = {
             // Sum 7 Costas-tone bins (k=0..NTONES-1; tone 7 is data-only,
             // never a Costas position). Matches WSJT-X `sync8.f90:66` and
-            // the public `fill_coarse_allsum` helper, so the score
-            // formula's `(t0 - t) / (NTONES - 2)` divisor is calibrated:
-            // t0 sums 7 tones, t = 1 Costas-tone bin energy, t0-t = 6
-            // non-Costas tones, divisor = 6 ✓. Pre-fix this loop ran
-            // `0..NTONES` (= 8 tones), which made owned_allsum and
-            // fill_coarse_allsum disagree numerically and broke the
-            // `coarse_sync_with_allsum_matches_internal` /
-            // `coarse_sync_split_with_allsum_*` consistency tests.
+            // the public `fill_coarse_allsum` helper. Only populates
+            // `needed_m` cells — ~60 % of spec.n_time — to save ~40 % of
+            // allsum work; the remaining cells stay at default (0/0.0) and
+            // are never read by the score loop.
+            // Uses the stride-2 sliding window: allsum[fi] = allsum[fi-2]
+            // + row[add] - row[drop], 7× fewer ops per fi after init.
             let mut buf = vec![CoarseAcc::default(); n_freq * spec.n_time];
-            for (fi, i_carrier) in (ia..=ib).enumerate() {
-                let row_off = fi * spec.n_time;
-                for &m in &needed_m {
-                    let mut s: CoarseAcc = CoarseAcc::default();
-                    for k in 0..(NTONES - 1) {
-                        let bin = (i_carrier + 2 * k).min(nh1 - 1);
-                        s += spec.power_acc(bin, m);
-                    }
-                    buf[row_off + m] = s;
-                }
+            for &m in &needed_m {
+                fill_allsum_row(spec, ia, n_freq, m, &mut buf);
             }
             buf
         };

@@ -282,9 +282,7 @@ impl Fft for MixedRadix3840Fft {
     fn process(&self, buf: &mut [Complex32]) {
         const N: usize = mfsk_core::core::dsp::fft_mixed_3840::N;
         assert_eq!(buf.len(), N, "3840 FFT input length mismatch");
-        let buf_arr: &mut [Complex32; N] = buf
-            .try_into()
-            .expect("buf.len() == N already asserted");
+        let buf_arr: &mut [Complex32; N] = buf.try_into().expect("buf.len() == N already asserted");
 
         // Inner 256-pt forward FFT via esp-dsp asm path. Mirrors
         // `EspDspFft::process` but specialised to len=256.
@@ -478,8 +476,7 @@ impl Fft16 for MixedRadix3840Sc16Fft {
         }
 
         // ── Step 3+4: convert to f32, twiddle, run 15-pt PFA per column.
-        let mut m: alloc::vec::Vec<Complex32> =
-            alloc::vec![Complex32::new(0.0, 0.0); N];
+        let mut m: alloc::vec::Vec<Complex32> = alloc::vec![Complex32::new(0.0, 0.0); N];
         for (i, c) in rows.iter().enumerate() {
             m[i] = Complex32::new(c.re as f32, c.im as f32) * self.twiddles[i];
         }
