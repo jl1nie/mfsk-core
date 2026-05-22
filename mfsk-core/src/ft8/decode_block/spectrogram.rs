@@ -316,50 +316,112 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         let row_b = j_b * n_freq;
         // Demux. Modular wrap (NFFT_SPEC=3840 isn't a power of two so
         // `& (NFFT-1)` would alias the high bins). `kn = (NFFT-k) mod
-        // NFFT` collapses k=0 to 0 — DC bin is real, as expected for
-        // real input.
-        for k in 0..n_freq {
-            let kn = if k == 0 { 0 } else { NFFT_SPEC - k };
-            let yk_re = buf[k].re as i32;
-            let yk_im = buf[k].im as i32;
-            let yn_re = buf[kn].re as i32;
-            let yn_im = buf[kn].im as i32;
-            let a_re = (yk_re + yn_re) >> 1;
-            let a_im = (yk_im - yn_im) >> 1;
-            let b_re = (yk_im + yn_im) >> 1;
-            let b_im = (yn_re - yk_re) >> 1;
-            // Square via `unsigned_abs` to dodge the `i32` overflow at
-            // `(-32768)² + (-32768)² = 2^31`, which doesn't fit in i32
-            // (panic in debug, wrap to negative in release). Squaring as
-            // `u32` keeps the sum in 2^31 with one bit to spare —
-            // `>> FP_SPEC_SHIFT` (= 12) lands in u32.
-            // `.min(u16::MAX as u32)` then saturates the u16 cast so
-            // extremely-strong signals (two coincident tones at the
-            // same bin per the FP_SPEC_SHIFT comment) cap at u16::MAX
-            // instead of wrapping to a tiny value. Gemini PR #83 + #100
-            // review.
-            // mag² saturate at u16::MAX. Wrapping `as u16` (the
-            // pre-Phase 1.7.7b behaviour on the embedded path) was a
-            // real bug: very-strong-bin energy overflowed u16 after
-            // `>> FP_SPEC_SHIFT` and aliased to a tiny residue, hiding
-            // strong stations from `coarse_sync`. Both host fixed-point
-            // here and `embedded-shared::stage1_inc` saturate now.
-            // Use `unsigned_abs` so the squares stay in u32 with a bit
-            // to spare for the sum, then `.min(u16::MAX as u32)`.
-            let aru = a_re.unsigned_abs();
-            let aiu = a_im.unsigned_abs();
-            let bru = b_re.unsigned_abs();
-            let biu = b_im.unsigned_abs();
-            let mag2_a = ((aru * aru + aiu * aiu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
-            let mag2_b = ((bru * bru + biu * biu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
-            data[row_a + k] = mag2_a as u16;
-            data[row_b + k] = mag2_b as u16;
-            #[cfg(feature = "std")]
-            if jj == 0 && (k == 64 || k == 823) {
-                eprintln!(
-                    "[host spec] pair0 k={k}: yk=({},{}) yn=({},{}) a=({},{}) b=({},{}) mag2_a={mag2_a} mag2_b={mag2_b}",
-                    yk_re, yk_im, yn_re, yn_im, a_re, a_im, b_re, b_im
-                );
+        // NFFT` collapses k=0 to 0 — DC bin is real.
+        //
+        // D4: DC bin hoisted; main loop 4× unrolled to expose
+        // independent multiply chains at opt-level=1. Per-square u32
+        // cast: each square ≤ 2^30 fits in i32; cast before adding so
+        // the sum ≤ 2^31 stays within u32 (avoids i32 panic in debug
+        // for the ±32768 edge case that `unsigned_abs` was guarding).
+
+        // k=0: DC bin (kn=0 → yn=yk)
+        if n_freq > 0 {
+            let r0 = buf[0].re as i32;
+            let i0 = buf[0].im as i32;
+            data[row_a] = ((r0 * r0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
+            data[row_b] = ((i0 * i0) as u32 >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
+        }
+
+        let mut k = 1usize;
+        while k + 4 <= n_freq {
+            let yk0 = buf[k];
+            let yk1 = buf[k + 1];
+            let yk2 = buf[k + 2];
+            let yk3 = buf[k + 3];
+            let yn0 = buf[NFFT_SPEC - k];
+            let yn1 = buf[NFFT_SPEC - k - 1];
+            let yn2 = buf[NFFT_SPEC - k - 2];
+            let yn3 = buf[NFFT_SPEC - k - 3];
+
+            let (a0r, a0i) = (
+                (yk0.re as i32 + yn0.re as i32) >> 1,
+                (yk0.im as i32 - yn0.im as i32) >> 1,
+            );
+            let (b0r, b0i) = (
+                (yk0.im as i32 + yn0.im as i32) >> 1,
+                (yn0.re as i32 - yk0.re as i32) >> 1,
+            );
+            let (a1r, a1i) = (
+                (yk1.re as i32 + yn1.re as i32) >> 1,
+                (yk1.im as i32 - yn1.im as i32) >> 1,
+            );
+            let (b1r, b1i) = (
+                (yk1.im as i32 + yn1.im as i32) >> 1,
+                (yn1.re as i32 - yk1.re as i32) >> 1,
+            );
+            let (a2r, a2i) = (
+                (yk2.re as i32 + yn2.re as i32) >> 1,
+                (yk2.im as i32 - yn2.im as i32) >> 1,
+            );
+            let (b2r, b2i) = (
+                (yk2.im as i32 + yn2.im as i32) >> 1,
+                (yn2.re as i32 - yk2.re as i32) >> 1,
+            );
+            let (a3r, a3i) = (
+                (yk3.re as i32 + yn3.re as i32) >> 1,
+                (yk3.im as i32 - yn3.im as i32) >> 1,
+            );
+            let (b3r, b3i) = (
+                (yk3.im as i32 + yn3.im as i32) >> 1,
+                (yn3.re as i32 - yk3.re as i32) >> 1,
+            );
+
+            data[row_a + k] = (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_b + k] = (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_a + k + 1] = (((a1r * a1r) as u32 + (a1i * a1i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_b + k + 1] = (((b1r * b1r) as u32 + (b1i * b1i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_a + k + 2] = (((a2r * a2r) as u32 + (a2i * a2i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_b + k + 2] = (((b2r * b2r) as u32 + (b2i * b2i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_a + k + 3] = (((a3r * a3r) as u32 + (a3i * a3i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_b + k + 3] = (((b3r * b3r) as u32 + (b3i * b3i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+
+            k += 4;
+        }
+        while k < n_freq {
+            let yn = buf[NFFT_SPEC - k];
+            let yk = buf[k];
+            let (ar, ai) = (
+                (yk.re as i32 + yn.re as i32) >> 1,
+                (yk.im as i32 - yn.im as i32) >> 1,
+            );
+            let (br, bi) = (
+                (yk.im as i32 + yn.im as i32) >> 1,
+                (yn.re as i32 - yk.re as i32) >> 1,
+            );
+            data[row_a + k] = (((ar * ar) as u32 + (ai * ai) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            data[row_b + k] = (((br * br) as u32 + (bi * bi) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            k += 1;
+        }
+        #[cfg(feature = "std")]
+        if jj == 0 {
+            for ki in [64usize, 823usize] {
+                if ki < n_freq {
+                    eprintln!(
+                        "[host spec] pair0 k={ki}: mag2_a={} mag2_b={}",
+                        data[row_a + ki],
+                        data[row_b + ki]
+                    );
+                }
             }
         }
     }
@@ -375,10 +437,8 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
         for i in 0..n_freq {
             let re = buf[i].re as i32;
             let im = buf[i].im as i32;
-            // Same saturating mag² pattern as the demux loop above.
-            let ru = re.unsigned_abs();
-            let iu = im.unsigned_abs();
-            let mag2 = ((ru * ru + iu * iu) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
+            let mag2 =
+                (((re * re) as u32 + (im * im) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32);
             data[row_base + i] = mag2 as u16;
         }
     }
