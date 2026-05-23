@@ -1,11 +1,11 @@
-//! M5Stack CoreS3 FT8 controller — entry point (Phase 0-Core).
+//! M5Stack CoreS3 FT8 controller — entry point (Phase 1-Core).
 //!
 //! Mirrors `m5stack-core2-app/src/main.rs`. CoreS3 deltas vs Core2:
 //!   - PMIC: AXP2101 + AW9523B (vs AXP192); LCD RST via AW9523B.
 //!   - SPI2 (FSPI) on pins 36/37/3/35 for LCD (vs Core2 SPI3 18/23/5/15).
 //!   - I2C0: SDA=12, SCL=11 (vs Core2 SDA=21, SCL=22).
 //!   - No GPIO buttons (same as Core2); NVS-only boot mode.
-//!   - USB-OTG capable (Phase 1-Core); no audio in Phase 0.
+//!   - USB-OTG host via AW9523B P0_1 (BUS_OUT_EN) — Phase 1-Core UAC.
 
 #![allow(dead_code)]
 
@@ -13,6 +13,7 @@ mod board;
 mod decode_pipeline;
 mod display;
 mod pmic;
+mod uac;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -47,8 +48,8 @@ fn main() -> ! {
     LOGGER.install();
 
     log::info!("=== mfsk-core-m5stack-cores3-app boot ===");
-    log::info!("phase 0-core: NVS boot-mode, wav_sim decode, ILI9342C LCD");
-    log::info!("build-stamp 2026-05-23-cores3-phase0");
+    log::info!("phase 1-core: UAC host (AW9523B BUS_OUT_EN + usb_host_uac), wav_sim decode, ILI9342C LCD");
+    log::info!("build-stamp 2026-05-23-cores3-phase1");
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
@@ -58,10 +59,17 @@ fn main() -> ! {
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
     let mut _wifi_slot: Option<wifi::WifiHandle> = None;
-    let wifi_should_start = mode == boot_mode::BootMode::Wifi && !WIFI_SSID.is_empty();
-    if mode == boot_mode::BootMode::Wifi && WIFI_SSID.is_empty() {
+    let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
+    let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
+    if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(
-            "boot_mode=WIFI but WIFI_SSID empty (no cfg.toml) — flip NVS to DECODE"
+            "boot_mode={} but WIFI_SSID empty (no cfg.toml) — UDP log unavailable{}",
+            mode.label(),
+            if mode == boot_mode::BootMode::Uac {
+                "; serial console also gone in UAC mode (USB-Serial-JTAG detached on usb_host_install)"
+            } else {
+                ""
+            }
         );
     }
     if wifi_should_start {
@@ -107,16 +115,34 @@ fn main() -> ! {
         }
     }
 
-    if mode == boot_mode::BootMode::Decode {
-        log_free_internal("pre-thread-spawn");
-        let pipeline_spawn = std::thread::Builder::new()
-            .stack_size(32 * 1024)
-            .spawn(|| decode_pipeline::run());
-        if let Err(e) = pipeline_spawn {
-            log::error!("decode_pipeline spawn failed ({e})");
+    match mode {
+        boot_mode::BootMode::Decode => {
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| decode_pipeline::run());
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline spawn failed ({e})");
+            }
         }
-    } else {
-        log::info!("decode_pipeline skipped (BootMode::Wifi)");
+        boot_mode::BootMode::Uac => {
+            // Spawn the decode pipeline first so the chunk_q is live before
+            // uac::start_host() installs the UAC driver. The reader thread
+            // (spawned on first RxConnected) calls set_chunk_q once the
+            // queue handle is registered, dropping samples until then.
+            // Note: uac::start_host() itself is called in display::run_log_panel
+            // after pmic::init() drives BUS_OUT_EN HIGH.
+            log_free_internal("pre-thread-spawn");
+            let pipeline_spawn = std::thread::Builder::new()
+                .stack_size(32 * 1024)
+                .spawn(|| decode_pipeline::run_with_source(|q| uac::set_chunk_q(q)));
+            if let Err(e) = pipeline_spawn {
+                log::error!("decode_pipeline (Uac) spawn failed ({e})");
+            }
+        }
+        _ => {
+            log::info!("decode_pipeline skipped ({})", mode.label());
+        }
     }
 
     display::run_log_panel(

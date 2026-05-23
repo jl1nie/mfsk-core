@@ -23,7 +23,8 @@ use esp_idf_hal::{
 };
 
 use crate::board::{
-    AW9523B_I2C_ADDR, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST, AW9523_P1_TP_RST, AXP2101_I2C_ADDR,
+    AW9523B_I2C_ADDR, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST,
+    AW9523_P1_TP_RST, AXP2101_I2C_ADDR,
 };
 
 // AW9523B register map (AW9523B datasheet §6).
@@ -103,4 +104,15 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     log::info!("AW9523B LCD_RST + TP_RST cycle complete");
 
     Ok(i2c)
+}
+
+/// Drive AW9523B P0_1 (BUS_OUT_EN) HIGH to enable USB VBUS boost.
+/// Must be called BEFORE `usb_host_install()` — omission leaves VBUS
+/// floating and the host stack sees no device enumeration.
+pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
+    let current = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
+    let new_val = current | AW9523_P0_BUS_OUT_EN;
+    write_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, new_val)?;
+    log::info!("AW9523B P0_1 (BUS_OUT_EN) HIGH — USB VBUS enabled");
+    Ok(())
 }

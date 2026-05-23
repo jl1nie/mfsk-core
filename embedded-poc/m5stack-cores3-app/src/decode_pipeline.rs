@@ -13,6 +13,7 @@ use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 use mfsk_core::msg::wsjt77::unpack77;
 
 use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
+use esp_idf_svc::sys::QueueHandle_t;
 
 use mfsk_app_shared::qso::{self, QsoManager, QsoState};
 use mfsk_app_shared::ui::state::{DecodedRow, UI};
@@ -27,10 +28,22 @@ static QSO_WAVS: &[&[u8]] = &[
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
 
-/// Spawn target. Returns `!`.
+/// `BootMode::Decode` entry — runs the decode pipeline with the baked
+/// `QSO_WAVS` playlist as the audio source. Thin wrapper around
+/// [`run_with_source`].
 pub fn run() -> ! {
-    // Phase 1.7.7: BASIS scratch retired (Goertzel, zero internal-DRAM
-    // scratch). Empty leak slices stand in for the old ~120 KB allocs.
+    run_with_source(|q| wav_sim::spawn(QSO_WAVS, q))
+}
+
+/// Source-agnostic entry. Allocates the pipeline queues, spawns
+/// `stage1_inc` + `wf_drain`, calls `source_spawn` (which must push
+/// `ChunkMsg::Samples` + `ChunkMsg::SlotEnd` into the chunk queue),
+/// then runs the decode loop. Never returns.
+///
+/// `Decode` mode passes `|q| wav_sim::spawn(QSO_WAVS, q)`.
+/// `Uac` mode passes `|q| uac::set_chunk_q(q)` — the UAC reader thread
+/// starts pushing once it sees the queue handle land in its static slot.
+pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
     let basis_re_main: &'static mut [i16] =
         alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
     let basis_im_main: &'static mut [i16] =
@@ -52,7 +65,7 @@ pub fn run() -> ! {
     let spec_q = pipeline::create_spec_queue(2);
     let wf_q = pipeline::create_wf_queue(8);
     stage1_inc::spawn_with_wf(chunk_q, slot_q, spec_q, Some(wf_q));
-    wav_sim::spawn(QSO_WAVS, chunk_q);
+    source_spawn(chunk_q);
 
     let wf_q_addr = wf_q as usize;
     std::thread::Builder::new()

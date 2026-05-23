@@ -1,10 +1,10 @@
-# M5Stack CoreS3 FT8 controller — sdkconfig defaults (Phase 0-Core).
+# M5Stack CoreS3 FT8 controller — sdkconfig defaults (Phase 1-Core).
 #
 # CoreS3-specific vs sibling crates:
 #   1. SPIRAM_MODE_QUAD (CoreS3 has 8 MB Quad PSRAM; StickS3 is Octal).
 #   2. Flash size 16 MB (same as Core2; StickS3 is 8 MB).
-#   3. No USB host / no BLE for Phase 0-Core; both added in Phase 1-Core /
-#      Phase 2-Core respectively.
+#   3. USB host enabled in Phase 1-Core (AW9523B BUS_OUT_EN drives VBUS).
+#      BLE deferred to Phase 2-Core.
 #   4. No SPIRAM_MODE_OCT block (unlike s3-app sdkconfig).
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
@@ -39,6 +39,11 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # Keeps allocations ≤4096 B in internal DRAM, preventing TLSF corruption
 # when stage-3 cs Box buffers are placed in internal DRAM by both workers.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# ── USB Host (UAC capture, Phase 1-Core) ────────────────────────────
+# usb_host_install() consumes the USB-Serial-JTAG endpoint; BootMode::Uac
+# therefore forces WiFi STA + UDP log so serial output doesn't vanish.
+CONFIG_USB_HOST_ENABLED=y
 
 # ── esp-dsp FFT — 8192 twiddle table ─────────────────────────────────
 CONFIG_DSP_MAX_FFT_SIZE_8192=y

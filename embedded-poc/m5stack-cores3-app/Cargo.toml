@@ -74,3 +74,11 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.gen.defaults"]
 remote_component = { name = "espressif/esp-dsp", version = "^1.4" }
 bindings_header = "../bindings_dsp.h"
 bindings_module = "esp_dsp"
+
+# Phase 1-Core: UAC host capture from IC-705. Same version + bindings
+# split as s3-app (PR #91 rationale: separate bindings_module avoids
+# symbol collision with esp_dsp symbols in the same sys module).
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/usb_host_uac", version = "^1.4" }
+bindings_header = "../bindings_uac.h"
+bindings_module = "uac"

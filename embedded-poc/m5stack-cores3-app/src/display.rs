@@ -57,7 +57,15 @@ pub fn run_log_panel(
 ) -> ! {
     // ── PMIC: AXP2101 + AW9523B → LCD power rails + RST + BL. ──────────
     match crate::pmic::init(i2c0, pins.gpio12, pins.gpio11) {
-        Ok(i2c) => {
+        Ok(mut i2c) => {
+            // Phase 1-Core: enable USB VBUS boost BEFORE usb_host_install().
+            // AW9523B P0_1 (BUS_OUT_EN) HIGH drives the VBUS switch; omission
+            // leaves VBUS floating and the host stack sees no device.
+            if mode == BootMode::Uac {
+                if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
+                    log::error!("BUS_OUT_EN (Phase 1-Core) failed: {e:#}");
+                }
+            }
             drop(i2c); // Phase 6-Core touch driver reclaims the bus.
         }
         Err(e) => {
@@ -67,6 +75,14 @@ pub fn run_log_panel(
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
+    }
+    // Phase 1-Core: install USB host + UAC class driver after BUS_OUT_EN is HIGH.
+    if mode == BootMode::Uac {
+        crate::log_free_internal("pre-uac-host-install");
+        if let Err(e) = crate::uac::start_host() {
+            log::error!("UAC host start failed: {e:#}");
+        }
+        crate::log_free_internal("post-uac-host-install");
     }
 
     // ── SPI2 (FSPI) host for the ILI9342C. ───────────────────────────
