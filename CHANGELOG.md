@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.6.6 — cold-start slot bootstrap from coarse_sync top-5 DT median
+
+Embedded `m5stack-s3-app` auto-sync previously consumed only
+confirmed-decode DT median, so a cold start (or post-reset) with
+zero confirmed decodes left the slot mis-aligned indefinitely
+("BtnA required" in the log) until the operator intervened —
+defeating the mountain-top "leave the laptop at home" use case
+when the band is quiet for the first slot. WebFT8 faces the same
+constraint with no manual sync available at all.
+
+### Added
+
+- **`mfsk_core::core::sync::bootstrap_dt_median(cands, top_k)`**
+  (public): DT median over the top-`K` highest-score
+  `SyncCandidate`s. Empirically — on `qso3_busy` + `191111`
+  reference captures — `K=5` tracks confirmed-decode DT median
+  within ±70 ms, while `K=10`/`20` wash out into 200–275 ms
+  misses under false-candidate noise. Gated by new integration
+  test `tests/ft8_coarse_sync_bootstrap.rs` (100 ms `|Δ|`
+  budget). Uses `select_nth_unstable_by` for O(N) top-K
+  partition + O(K log K) winner sort.
+
+### Changed
+
+- `embedded-shared::dual_core::SpeculativeOut` gains
+  `bootstrap_dt_med: Option<f32>`, computed in
+  `run_speculative_slot` right after pass1 returns and before
+  the audio-window partition. `n_pass1 == 0` slots get `None`.
+- `m5stack-s3-app/decode_pipeline.rs` auto-sync gains a fourth
+  branch: when `n_dec == 0 && best_n == 0 && bootstrap_dt_med
+  .is_some()`, the helper's value drives the bootstrap shift
+  but `best_n` stays at 0, so the first confirmed-decode slot
+  reclaims the HWM via the existing path. Soft anchor only.
+- `m5stack-core2-app` / `m5stack-cores3-app` / `embedded-shared
+  ::apps::rx_wavsim` consumers thread `bootstrap_dt_med`
+  through as `_` (no slot-drift correction needed in wav_sim
+  mode).
+
+### Fixed
+
+- Stale comment in `m5stack-s3-app/src/audio.rs` claimed the
+  consumed shift hint was "pass1 candidate DT median"; in fact
+  the pre-0.6.6 producer was confirmed-decode median. Corrected.
+
+### Notes for WebFT8
+
+`bootstrap_dt_median` is the same helper WebFT8 calls from its
+cold-start path — no platform-specific wrapping required. Pass
+the raw `Vec<SyncCandidate>` from either
+`decode_block::coarse_sync` or `core::sync::coarse_sync::<Ft8>`.
+
 ## 0.6.5 — crates.io surface refresh (M5StickS3 FT8 controller PoC)
 
 Non-functional patch. Refreshes the project's discoverable surface

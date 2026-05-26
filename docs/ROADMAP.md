@@ -303,8 +303,18 @@ in module doc-comments:
   speaker plays back the WAV, TX scheduler is suppressed, LCD shows
   `DEMO MODE — TX OFF`. Deterministic demo safety net when ambient
   acoustic conditions kill the live WebFT8-to-mic path.
+- **Phase 1.7.9 (cold-start auto-sync bootstrap)** — ✅ Done. PR
+  #133 / v0.6.6. Auto-sync gains a fourth branch:
+  `n_dec == 0 && best_n == 0 && bootstrap_dt_med.is_some()` →
+  coarse_sync top-5 DT median drives a one-shot slot shift,
+  `best_n` stays at 0 so the next confirmed-decode slot reclaims
+  HWM. Removes the "BtnA required" cold-start dead-end for
+  no-GPS / no-NTP operation. Helper
+  (`mfsk_core::core::sync::bootstrap_dt_median`) shared with
+  WebFT8, gated by `tests/ft8_coarse_sync_bootstrap.rs`.
 - **Phases 2 / 5 / 6 / TX keying** — Rolled forward to Phase B-Core.
-  Stick frozen after Phase 1.7 demo toggle.
+  Stick frozen after Phase 1.7 demo toggle (1.7.9 is a
+  controller-only auto-sync delta — no new HW surface).
 
 ### Phase B-Core — m5stack-cores3-app (MAIN TARGET, NEW)
 
