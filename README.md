@@ -189,7 +189,7 @@ and per-mode performance characterisation.
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
 | `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP (see *Status* below for the Q3i8 → Q11i16 step taken in 0.6.2 / 0.6.3 for recall) |
-| `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (host has `MFSK_PROFILE_COARSE` env var alternative) |
+| `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (do not enable on `wasm32-unknown-unknown` — `Instant::now` panics) |
 
 ## Quick example
 
