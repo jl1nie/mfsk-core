@@ -23,7 +23,7 @@
 
 use std::path::Path;
 
-use mfsk_core::core::sync::{bootstrap_dt_median, SyncCandidate};
+use mfsk_core::core::sync::{SyncCandidate, bootstrap_dt_median};
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{coarse_sync, compute_spectrogram, decode_block};
 
@@ -59,8 +59,7 @@ fn check_one(label: &str, wav_path: &str) {
 
     let dt_conf = median(decodes.iter().map(|r| r.dt_sec).collect())
         .expect("reference WAVs all have ≥1 confirmed decode");
-    let dt_boot_k5 =
-        bootstrap_dt_median(&cands, 5).expect("coarse_sync returned no candidates");
+    let dt_boot_k5 = bootstrap_dt_median(&cands, 5).expect("coarse_sync returned no candidates");
     let dt_boot_k10 = bootstrap_dt_median(&cands, 10);
     let dt_boot_k20 = bootstrap_dt_median(&cands, 20);
 

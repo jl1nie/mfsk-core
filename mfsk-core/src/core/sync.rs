@@ -48,7 +48,11 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
         return None;
     }
     let mut sorted: Vec<&SyncCandidate> = cands.iter().collect();
-    sorted.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(core::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
     let mut dts: Vec<f32> = sorted.iter().take(top_k).map(|c| c.dt_sec).collect();
     dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     let n = dts.len();
