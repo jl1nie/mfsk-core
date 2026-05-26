@@ -1,6 +1,6 @@
 [package]
 name        = "mfsk-core"
-version     = "0.6.6"
+version     = "0.6.7"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 description = "Pure-Rust WSJT-family decoders + synthesisers (FT8 FT4 FST4 WSPR JT9 JT65 Q65) behind a zero-cost Protocol trait. Host (rustfft) or no_std embedded (ESP32-S3, RP2350, Cortex-M) via a pluggable FFT backend; fixed-point hot path for FPU-less MCUs. Ships with embedded-poc/m5stack-s3-app, a working M5StickS3 FT8 controller (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM) decoding real on-air signals in ~1.2 s post-SlotEnd on Xtensa LX7."
@@ -74,11 +74,12 @@ fixed-point  = ["nstep-half"]
 # dep so it can simulate embedded byte-for-byte.
 nstep-half   = []
 
-# Always-on coarse_sync sub-stage profiling. Same output as setting
-# `MFSK_PROFILE_COARSE=1` on host, but works on embedded targets where
-# the env var is not reachable. Only useful when investigating stage-2
-# wall-clock breakdown — adds 4 timestamp reads per `coarse_sync` call,
-# negligible cost.
+# Always-on coarse_sync sub-stage profiling. Emits `[coarse_sync prof]`
+# breakdown (allsum / score / dedupe+sort / total μs) to stderr after
+# every `coarse_sync` call. Only useful when investigating stage-2
+# wall-clock — adds 4 timestamp reads per call, negligible cost. Off by
+# default; automatically disabled on `wasm32-unknown-unknown` at compile
+# time to prevent runtime panics (`Instant::now` is unimplemented).
 profile-coarse = ["std"]
 
 # Lightweight modes — embedded-port-clean. `fft-rustfft` (host) or

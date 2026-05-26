@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.7 — fix coarse_sync wasm32 runtime panic
+
+0.6.6 left `std::time::Instant::now()` calls in `coarse_sync` gated
+only by `feature = "std"` (3 timestamps + a final diagnostic block).
+Any consumer building for `wasm32-unknown-unknown` with the default
+`std` feature panicked the first time stage-2 ran — `Instant::now` is
+unimplemented on that target. `webft8` and any future WASM PWA
+consumer were affected; embedded (esp-idf) was not because esp-idf
+provides a working clock.
+
+### Fixed
+
+- **`coarse_sync.rs`**: the 4 timestamp reads + the `eprintln!`
+  diagnostic block are now gated on `#[cfg(feature = "profile-coarse")]`
+  rather than `#[cfg(feature = "std")]`. WASM builds without
+  `profile-coarse` (the normal case — feature is off by default)
+  compile the timing code out entirely and no longer touch
+  `Instant::now`.
+
+### Removed
+
+- `MFSK_PROFILE_COARSE` env-var dispatch in `coarse_sync` (added in
+  `#130` as a host convenience to flip profiling without rebuild, but
+  never exercised by any in-tree script, test, or CI job — the same
+  diagnostic is reachable via `--features profile-coarse`). Embedded
+  apps already enabled the feature flag directly, so their serial-log
+  output is unchanged.
+
+### Notes
+
+- `mfsk-ffi-ft8` bumped to 0.6.7 in lock-step (no behavioral change in
+  the FFI itself — it tracks `mfsk-core` so users see matching version
+  numbers in release artifacts).
+
 ## 0.6.6 — cold-start slot bootstrap from coarse_sync top-5 DT median
 
 Embedded `m5stack-s3-app` auto-sync previously consumed only

@@ -258,9 +258,10 @@ fn coarse_sync_inner(
     let mut sync2d = vec![0.0f32; n_freq * n_lag];
     let idx = |fi: usize, lag: i32| fi * n_lag + (lag + jz) as usize;
     let ratio_eps = ratio_eps();
-    #[cfg(feature = "std")]
-    let prof = cfg!(feature = "profile-coarse") || std::env::var("MFSK_PROFILE_COARSE").is_ok();
-    #[cfg(feature = "std")]
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     let t_setup = std::time::Instant::now();
 
     // **Single-bin tone gather**. NFFT=3840 → tone_step_bins = 2.0
@@ -359,7 +360,10 @@ fn coarse_sync_inner(
         };
         &owned_allsum
     };
-    #[cfg(feature = "std")]
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     let t_allsum = std::time::Instant::now();
 
     // Three identical Costas arrays at symbol positions 0, 36, 72.
@@ -454,7 +458,10 @@ fn coarse_sync_inner(
             sync2d[idx(fi, lag)] = sync_all.max(sync_tail);
         }
     }
-    #[cfg(feature = "std")]
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
     let t_score = std::time::Instant::now();
 
     const MLAG: i32 = 10;
@@ -573,8 +580,11 @@ fn coarse_sync_inner(
         }
     }
     let cands = out;
-    #[cfg(feature = "std")]
-    if prof {
+    #[cfg(all(
+        feature = "profile-coarse",
+        not(all(target_arch = "wasm32", target_os = "unknown"))
+    ))]
+    {
         let t_end = std::time::Instant::now();
         let allsum_us = (t_allsum - t_setup).as_micros();
         let score_us = (t_score - t_allsum).as_micros();
