@@ -47,14 +47,21 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
     if cands.is_empty() || top_k == 0 {
         return None;
     }
-    let mut sorted: Vec<&SyncCandidate> = cands.iter().collect();
-    sorted.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-    let mut dts: Vec<f32> = sorted.iter().take(top_k).map(|c| c.dt_sec).collect();
-    dts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    // O(N) top-K partition via `select_nth_unstable_by`, then
+    // O(K log K) sort of just the K winners. Saves ~N log N vs full
+    // sort; for N≈200 / K=5 / one call per slot the saving is sub-µs,
+    // but the cost is identical to the naïve approach so we take it.
+    let mut refs: Vec<&SyncCandidate> = cands.iter().collect();
+    let k = top_k.min(refs.len());
+    if k < refs.len() {
+        refs.select_nth_unstable_by(k - 1, |a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+    }
+    let mut dts: Vec<f32> = refs[..k].iter().map(|c| c.dt_sec).collect();
+    dts.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
     let n = dts.len();
     Some(if n % 2 == 1 {
         dts[n / 2]
