@@ -230,6 +230,7 @@ where
             n_pass1,
             n_ready,
             n_deferred,
+            bootstrap_dt_med,
             t_post_recv,
             t_coarse_done,
             t_early_done,
@@ -407,6 +408,26 @@ where
                 MAX_SHIFT_SAMPLES as f32 / 12000.0
             );
             best_n = n_dec;
+        } else if n_dec == 0 && best_n == 0 && bootstrap_dt_med.is_some() {
+            // Cold start (or post-reset) with 0 confirmed decodes —
+            // fall back to coarse_sync top-5 DT median. Gated by
+            // `ft8_coarse_sync_bootstrap` test (mfsk-core): top-5
+            // median tracks confirmed median to within ±70 ms on the
+            // reference WAVs. Soft anchor only — best_n stays 0 so
+            // the next confirmed-decode slot takes over via the HWM
+            // update path above.
+            let med = bootstrap_dt_med.unwrap();
+            let shift_samples: i32 = if med.abs() < ALIGN_OK_SEC {
+                0
+            } else {
+                (med * 12000.0).round() as i32
+            };
+            let shift_samples = shift_samples.clamp(-MAX_SHIFT_SAMPLES, MAX_SHIFT_SAMPLES);
+            mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(shift_samples);
+            log::info!(
+                "  auto-sync (cold bootstrap from coarse_sync top-5, p1={n_pass1}): DT={:+.3}s → {:+} samples",
+                med, shift_samples,
+            );
         } else if post_sync {
             mfsk_app_shared::time_sync::set_bootstrap_slot_shift_12k(0);
             if n_dec > 0 {

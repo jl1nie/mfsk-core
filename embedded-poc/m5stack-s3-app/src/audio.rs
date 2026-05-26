@@ -660,8 +660,9 @@ pub fn capture_thread(mut i2s: I2sDriver<'static, I2sRx>) -> ! {
                             }),
                         );
                         // Consume the latest bootstrap shift hint
-                        // from decode_pipeline (pass1 candidate DT
-                        // median). Apply once as a one-shot adjustment
+                        // from decode_pipeline (confirmed-decode DT
+                        // median, gated on N>HWM). Apply once as a
+                        // one-shot adjustment
                         // to the next slot length; the producer side
                         // posts 0 in steady state so this is idempotent.
                         let shift = mfsk_app_shared::time_sync::take_bootstrap_slot_shift_12k();
