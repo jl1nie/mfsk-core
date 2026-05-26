@@ -78,8 +78,8 @@ nstep-half   = []
 # breakdown (allsum / score / dedupe+sort / total μs) to stderr after
 # every `coarse_sync` call. Only useful when investigating stage-2
 # wall-clock — adds 4 timestamp reads per call, negligible cost. Off by
-# default; enabling on `wasm32-unknown-unknown` will panic at runtime
-# (`Instant::now` is unimplemented), so leave disabled for WASM.
+# default; automatically disabled on `wasm32-unknown-unknown` at compile
+# time to prevent runtime panics (`Instant::now` is unimplemented).
 profile-coarse = ["std"]
 
 # Lightweight modes — embedded-port-clean. `fft-rustfft` (host) or
