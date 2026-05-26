@@ -112,6 +112,7 @@ pub fn run() -> ! {
             n_pass1,
             n_ready,
             n_deferred,
+            bootstrap_dt_med: _,
             t_post_recv,
             t_coarse_done,
             t_early_done,

@@ -43,7 +43,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use mfsk_core::core::sync::SyncCandidate;
+use mfsk_core::core::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
     coarse_sync, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
@@ -64,6 +64,13 @@ pub struct SpeculativeOut {
     pub n_pass1: usize,
     pub n_ready: usize,
     pub n_deferred: usize,
+    /// DT median over the top-5 highest-score pass1 candidates.
+    /// `None` if pass1 was empty. Used by the controller's auto-sync
+    /// path as a cold-start fallback when zero confirmed decodes
+    /// land — empirically lines up with the confirmed-decode median
+    /// to within ±70 ms on reference fixtures, gated by the
+    /// `ft8_coarse_sync_bootstrap` integration test.
+    pub bootstrap_dt_med: Option<f32>,
     /// `esp_timer_get_time()` right after `recv_box::<SpecBundle>` returns.
     pub t_post_recv: i64,
     /// after `coarse_sync_split_with_allsum`.
@@ -133,6 +140,7 @@ pub fn run_speculative_slot(
     let t_coarse_done = unsafe { esp_timer_get_time() };
 
     let n_pass1 = pass1.len();
+    let bootstrap_dt_med = bootstrap_dt_median(&pass1, 5);
     let snap_fill = spec.audio_len();
     // Partition by audio-window fit only.
     //
@@ -227,6 +235,7 @@ pub fn run_speculative_slot(
         n_pass1,
         n_ready,
         n_deferred,
+        bootstrap_dt_med,
         t_post_recv,
         t_coarse_done,
         t_early_done,

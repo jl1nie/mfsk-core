@@ -31,6 +31,45 @@ pub struct SyncCandidate {
     pub score: f32,
 }
 
+/// DT median of the top-`top_k` highest-score coarse-sync candidates.
+///
+/// Used to bootstrap slot alignment when zero confirmed decodes are
+/// available (cold start, or a deep-fade slot). Empirically — on
+/// reference qso3_busy / WSJT-X 191111 captures — the top-5 candidate
+/// DT median lands within ±70 ms of the confirmed-decode DT median,
+/// while top-10/20 wash out under false-candidate noise (see
+/// `mfsk-core/tests/ft8_coarse_sync_bootstrap.rs`).
+///
+/// `cands` does not need to be sorted; callers pass the raw output of
+/// `decode_block::coarse_sync` or `core::sync::coarse_sync`. Returns
+/// `None` if `cands` is empty or `top_k == 0`.
+pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32> {
+    if cands.is_empty() || top_k == 0 {
+        return None;
+    }
+    // O(N) top-K partition via `select_nth_unstable_by`, then
+    // O(K log K) sort of just the K winners. Saves ~N log N vs full
+    // sort; for N≈200 / K=5 / one call per slot the saving is sub-µs,
+    // but the cost is identical to the naïve approach so we take it.
+    let mut refs: Vec<&SyncCandidate> = cands.iter().collect();
+    let k = top_k.min(refs.len());
+    if k < refs.len() {
+        refs.select_nth_unstable_by(k - 1, |a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+    }
+    let mut dts: Vec<f32> = refs[..k].iter().map(|c| c.dt_sec).collect();
+    dts.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    let n = dts.len();
+    Some(if n % 2 == 1 {
+        dts[n / 2]
+    } else {
+        0.5 * (dts[n / 2 - 1] + dts[n / 2])
+    })
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Per-protocol DSP parameter bundle (all derived from P at compile time)
 // ──────────────────────────────────────────────────────────────────────────
