@@ -61,9 +61,19 @@ repositioned as the **demo / acoustic-fallback** path:
 - **Phase 1.7.8 (NextMode menu item) — ✅ done**: 4th menu item
   lets the user switch boot mode from within the menu overlay (no
   3-reboot KEY dance). On `feat/demo-mode-qso` (same PR #121 branch).
+- **Phase 1.7.9 (cold-start auto-sync bootstrap) — ✅ done**: PR
+  #133 / v0.6.6. `decode_pipeline.rs` auto-sync gains a fourth
+  branch — when `n_dec == 0 && best_n == 0 && bootstrap_dt_med
+  .is_some()`, coarse_sync top-5 DT median drives a one-shot
+  slot shift while `best_n` stays at 0 (soft anchor; first
+  confirmed-decode slot reclaims HWM via the existing path).
+  Removes the "BtnA required" cold-start dead-end on quiet
+  bands. Helper lives at `mfsk_core::core::sync::bootstrap_dt_median`
+  and is shared with WebFT8.
 - **Phase 1 (UAC), Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6
   (buttons), TX keying**: rolled forward to `m5stack-cores3-app`
-  (Phase B-Core in `docs/ROADMAP.md`). **Stick frozen after 1.7.8.**
+  (Phase B-Core in `docs/ROADMAP.md`). **Stick frozen after 1.7.9 —
+  1.7.9 is a controller-side auto-sync delta, no new HW surface.**
 
 The `uac.rs` module (~445 lines) stays in-tree as canonical
 reference; it's cloned verbatim into `m5stack-cores3-app` in Phase

@@ -375,6 +375,7 @@ The full state machine lives in `embedded-poc/mfsk-app-shared/src/qso.rs`.
 | UDP log not arriving on PC | Subnet broadcast dropped by router, or firewall | Set `pc_ip = "192.168.x.y"` (unicast to your PC) in `cfg.toml`. Open UDP 9999 in the PC firewall. On WSL2 see §4. |
 | Console freezes after a few minutes | USB-CDC host disconnected (chip kept emitting `println!`) | Already fixed in firmware (commit `8b46f4e` gates `println!` on `usb_serial_jtag_is_connected`). If you see it on a fresh build, your tooling is old. |
 | Decoder runs but 0 decodes | Audio level too low / too high; or wrong band on IC-705 | Watch `audio capture+tx tick: NNN B/s rx` log lines — should be 192–196 kB/s sustained for healthy 48 kHz stereo I2S RX. If silent, check mic gain (`embedded-poc/m5stack-s3-app/src/audio.rs` `mic_gain_db`) or radio output level. |
+| First 1-2 slots show `auto-sync (cold bootstrap from coarse_sync top-5, p1=N): DT=…s → +… samples` but no decodes | Cold-start clock skew worse than ±2.5 s tolerance | Expected — the bootstrap is a one-shot anchor from coarse_sync candidates. Once a real decode lands the HWM path takes over. Pre-v0.6.6 firmwares logged `auto-sync (cold): no source — BtnA required` and stayed stuck; update if you still see that. |
 
 ### Log capture conventions
 
