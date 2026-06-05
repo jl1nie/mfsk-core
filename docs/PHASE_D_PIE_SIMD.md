@@ -195,9 +195,9 @@ this doc: paired Q registers for i32 state, per-iteration saturating
 handling, mid-recursion re-normalisation, output extraction back to
 f32, and the `extern "Rust"` shim hop. The realistic net is closer
 to 20-30 ms, against 2-3 days of asm work and a real risk of
-opening a numerics regression (PR #126 Gemini-bot review already
-flagged three classes of footgun in the Q15 sketch — Q31 narrows
-them but does not eliminate them).
+opening a numerics regression (Gemini review on this PR flagged
+three classes of footgun in the Q15 sketch — Q31 narrows them but
+does not eliminate them).
 
 ### Decision
 
