@@ -389,10 +389,13 @@ stage1_inc). Detailed plan in [`docs/PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md).
 
 | Sub-phase | Target | Status |
 |---|---|---|
-| **D1** | Re-bind esp-dsp FFI to `_aes3_` (LX7 PIE) | Pending |
-| **D2′** | f32 scalar Goertzel micro-optimisations (scratch hoist, alignment) | Pending |
-| **D3** | PIE allsum + score for `coarse_sync` / `stage1_inc` | Pending |
-| **D4** | PIE `\|x\|²` post-FFT in `stage1_inc` | Pending |
+| **D1** | Re-bind esp-dsp FFI to `_aes3_` (LX7 PIE) | **Done** — commit `053bd67`; sc16 PIE 1.98→1.65s (−17%) on S3 sequential bench |
+| **D2′** | f32 scalar Goertzel micro-optimisations (scratch hoist, alignment) | **Done** — commit `053bd67`; bounds-check hoisted out of inner loop |
+| **D3** | PIE allsum + score for `coarse_sync` / `stage1_inc` | **Done** — commit `0b7978b`; sliding-window allsum |
+| **D4** | PIE `\|x\|²` post-FFT in `stage1_inc` | **Done** — commit `a8235e7`; demux-mag² DC-hoist + 4× unroll |
+
+CoreS3 dual-core wav_sim (qso3, 2026-06-05): **post_slotend 136〜138 ms, 7/7 decodes**.
+Log: `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log`.
 
 ## Quick file-path index
 

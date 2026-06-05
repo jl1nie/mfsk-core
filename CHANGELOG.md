@@ -129,6 +129,42 @@ instead of a real callsign.
   surface — the crate only wraps FT8 — so this is a version-number
   sync only, no behavioral change).
 
+## Embedded Phase D — ESP32-S3 LX7 PIE SIMD acceleration (2026-05-23)
+
+Not a crates.io release (embedded-only). All four sub-phases landed
+on `main` across commits `053bd67` / `0b7978b` / `a8235e7`. See
+[`docs/PHASE_D_PIE_SIMD.md`](docs/PHASE_D_PIE_SIMD.md) for the full
+plan and [`docs/ROADMAP.md`](docs/ROADMAP.md) Phase D for status.
+
+### Changed — embedded (S3 only, `aes3` feature)
+
+- **D1** `_aes3_` FFT rebind: `dsps_fft2r_fc32_ae32_` →
+  `dsps_fft2r_fc32_aes3_` and `dsps_fft2r_sc16_ae32_` →
+  `dsps_fft2r_sc16_aes3_` behind the new `embedded-shared/aes3`
+  feature (enabled by `m5stack-s3`, `m5stack-s3-app`,
+  `m5stack-cores3-app`). sc16 requires 16-byte aligned input;
+  `MixedRadix3840Sc16Fft` allocates via `alloc_zeroed` +
+  `#[repr(C, align(16))]`. **Measured: S3 sequential bench
+  sc16 stage1 1.98 s → 1.65 s (−17%).**
+- **D2′** Goertzel hot-path: bounds-check and i16→f32 cast
+  hoisted out of the 1920-iteration inner loop in
+  `fill_symbol_spectra_goertzel`. Branch-free path covers ~77/79
+  symbols per candidate; boundary symbols fall through to the
+  original per-sample check.
+- **D3** `coarse_sync` allsum sliding window + m-outer loop order
+  (`0b7978b`).
+- **D4** demux-mag² DC-hoist + 4× unroll on the post-FFT
+  |re|²+|im|² loop; `rx_wavsim` migrated to
+  `run_speculative_slot` (`a8235e7`).
+
+### Verified on CoreS3 (2026-06-05)
+
+Dual-core wav_sim, qso3 reference WAV, Quad PSRAM, `opt-level=1`:
+**post_slotend 136〜138 ms, 7/7 decodes**. coarse_sync (167〜172 ms)
+runs during audio capture and is off the critical path.
+
+---
+
 ## 0.6.7 — fix coarse_sync wasm32 runtime panic
 
 0.6.6 left `std::time::Instant::now()` calls in `coarse_sync` gated

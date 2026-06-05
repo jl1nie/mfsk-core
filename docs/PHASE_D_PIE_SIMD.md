@@ -390,6 +390,30 @@ the number.
 - Logs to compare against: `embedded-poc/m5stack-s3/logs/s3_phaseC_*`.
 - Host bench scaffolding for D2′: `mfsk-core/tests/ft8_goertzel_vs_basis.rs`.
 
+## Results — shipped 2026-05-23
+
+All four sub-phases landed on `main` in a single session:
+
+| Sub-phase | Commit | Measured result |
+|---|---|---|
+| **D1** fc32/sc16 `_aes3_` rebind | `053bd67` | S3 sequential bench: sc16 stage1 **1.98 s → 1.65 s (−17%)** |
+| **D2′** Goertzel hot-path hoist | `053bd67` | bounds-check + i16→f32 cast hoisted out of 1920-iter inner; branch-free hot path for ~77/79 symbols/cand |
+| **D3** allsum sliding window | `0b7978b` | coarse_sync allsum precompute: sliding-window, m-outer loop order |
+| **D4** demux-mag² hoist + unroll | `a8235e7` | 4× unroll on post-FFT |re|²+|im|² loop; DC-term hoist |
+
+**CoreS3 dual-core wav_sim measurement (qso3 reference WAV, 2026-06-05):**
+
+| Metric | Value |
+|---|---|
+| post_slotend (6-slot average) | **136〜138 ms** |
+| coarse_sync (during capture) | allsum 155〜389 µs / score 134〜140 ms / total 167〜172 ms |
+| Recall | **7 / 7** ✅ |
+| Log | `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log` |
+
+The 137 ms post_slotend on CoreS3 (Quad PSRAM, dual-core, `opt-level=1`) comfortably
+beats the original ≤ 300 ms target. coarse_sync runs during audio capture and is
+off the critical path.
+
 ## Out of scope (deliberately)
 
 - **PIE Goertzel kernel** — see "D2 reconsidered" above. Tight IIR,
