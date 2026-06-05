@@ -373,6 +373,18 @@ and `embedded-shared` resampler API are the seams shared across both.
   `libmfsk_ft8.a` only; add a job emitting a flashable
   `espflash save-image` for the s3-app once Phase 1 UAC stabilises.
 
+## Phase D — ESP32-S3 LX7 PIE SIMD acceleration
+
+Pure decoder-side perf push for the S3 critical path (pass 2 +
+stage1_inc). Detailed plan in [`docs/PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md).
+
+| Sub-phase | Target | Status |
+|---|---|---|
+| **D1** | Re-bind esp-dsp FFI to `_aes3_` (LX7 PIE) | Pending |
+| **D2′** | f32 scalar Goertzel micro-optimisations (scratch hoist, alignment) | Pending |
+| **D3** | PIE allsum + score for `coarse_sync` / `stage1_inc` | Pending |
+| **D4** | PIE `\|x\|²` post-FFT in `stage1_inc` | Pending |
+
 ## Quick file-path index
 
 - Host FT8 reference (post-ε split, 0.6.3):
