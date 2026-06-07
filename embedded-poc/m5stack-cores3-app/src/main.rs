@@ -42,6 +42,7 @@ const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PSK: &str = env!("WIFI_PSK");
 const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
 const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
+const BOOT_MODE_DEFAULT: &str = env!("BOOT_MODE_DEFAULT");
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
@@ -55,6 +56,14 @@ fn main() -> ! {
 
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
+    if !BOOT_MODE_DEFAULT.is_empty() {
+        let target = boot_mode::BootMode::from_cfg_str(BOOT_MODE_DEFAULT);
+        let current = boot_mode::read(&nvs);
+        if current != target {
+            log::info!("boot_mode: cfg override {} → {}", current.label(), target.label());
+            let _ = boot_mode::write(&nvs, target);
+        }
+    }
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 

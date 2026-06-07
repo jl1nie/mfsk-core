@@ -23,7 +23,7 @@ fn main() {
     let cfg_path = manifest_dir.join("cfg.toml");
     println!("cargo:rerun-if-changed={}", cfg_path.display());
 
-    let (ssid, psk, pc_ip, port) = if cfg_path.exists() {
+    let (ssid, psk, pc_ip, port, boot_mode) = if cfg_path.exists() {
         let txt = std::fs::read_to_string(&cfg_path)
             .unwrap_or_else(|e| panic!("read {}: {}", cfg_path.display(), e));
         let v: toml::Value = toml::from_str(&txt)
@@ -44,13 +44,21 @@ fn main() {
             .and_then(|p| p.as_integer())
             .map(|p| p as u16)
             .unwrap_or(9999);
-        (ssid, psk, pc_ip, port)
+        let boot_mode = v
+            .get("app")
+            .and_then(|t| t.as_table())
+            .and_then(|t| t.get("boot_mode"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        (ssid, psk, pc_ip, port, boot_mode)
     } else {
-        (String::new(), String::new(), "255.255.255.255".to_string(), 9999u16)
+        (String::new(), String::new(), "255.255.255.255".to_string(), 9999u16, String::new())
     };
 
     println!("cargo:rustc-env=WIFI_SSID={ssid}");
     println!("cargo:rustc-env=WIFI_PSK={psk}");
     println!("cargo:rustc-env=UDP_LOG_TARGET={pc_ip}");
     println!("cargo:rustc-env=UDP_LOG_PORT={port}");
+    println!("cargo:rustc-env=BOOT_MODE_DEFAULT={boot_mode}");
 }

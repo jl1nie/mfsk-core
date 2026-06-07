@@ -95,6 +95,23 @@ impl BootMode {
         }
     }
 
+    /// Parse a cfg.toml `boot_mode` string, defaulting to Decode on unknown values.
+    pub fn from_cfg_str(s: &str) -> Self {
+        match s {
+            "wifi" => BootMode::Wifi,
+            "decode" => BootMode::Decode,
+            "acoustic" => BootMode::Acoustic,
+            "civtest" => BootMode::CivTest,
+            "txtest" => BootMode::TxTest,
+            "qso" => BootMode::Qso,
+            "uac" => BootMode::Uac,
+            other => {
+                log::warn!("cfg boot_mode unknown value '{other}'; defaulting to decode");
+                BootMode::Decode
+            }
+        }
+    }
+
     /// 4-mode cycle: Decode → Wifi → Acoustic → Uac → Decode → ...
     /// KEY2 long-press from `flip_and_restart` walks the cycle one
     /// step at a time. Boot-time KEY1 override

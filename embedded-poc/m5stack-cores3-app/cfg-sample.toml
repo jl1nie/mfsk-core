@@ -9,3 +9,10 @@ ssid = "your-ssid-here"
 psk = "your-passphrase-here"
 pc_ip = "auto"
 port = 9999
+
+# Boot mode written to NVS at startup. Overrides the NVS-stored value
+# (CoreS3 has no physical buttons to cycle modes at runtime).
+# Values: "decode" | "uac" | "wifi"
+# Omit or leave empty to keep whatever is already in NVS.
+[app]
+boot_mode = "decode"
