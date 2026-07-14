@@ -426,7 +426,7 @@ tree is present at the expected sibling path):
 | `JT9/130418_1742.wav` (5 frames)    | **5 / 5**   | full WSJT-X-faithful softsym pipeline (afc9 + chkss2 + xx0 mettab + sync9 collapse) |
 | `MSK144/181211_120500.wav` (n/a)    | —           | not implemented — [#25](https://github.com/jl1nie/mfsk-core/issues/25) |
 | `JT65/*` (n/a)                      | —           | golden harness pending — [#24](https://github.com/jl1nie/mfsk-core/issues/24) |
-| `FST4/210115_0058.wav` (1 frame)    | —           | golden harness pending — [#23](https://github.com/jl1nie/mfsk-core/issues/23) |
+| `FST4/210115_0058.wav` (1 frame)    | **1 / 1**   | fixed NSPS/NDOWN/BT + rvec message scramble (0.6.8, [#23](https://github.com/jl1nie/mfsk-core/issues/23)) |
 
 #### Known limitations / quirks
 
@@ -439,9 +439,10 @@ tree is present at the expected sibling path):
   [#24](https://github.com/jl1nie/mfsk-core/issues/24).
 - **FST4** — only the FST4-60A long-period variant is wired (sample
   duration / Costas layout for FST4-15 / FST4W are out of scope of
-  the 0.5.x line, still out of scope as of 0.6.x). Recall against `samples/FST4/210115_0058.wav` is
-  not yet locked by a golden harness — tracked in
-  [#23](https://github.com/jl1nie/mfsk-core/issues/23).
+  the 0.5.x line, still out of scope as of 0.6.x — no user demand,
+  FST4-60A is the dominant terrestrial sub-mode). Recall against
+  `samples/FST4/210115_0058.wav` locked by a golden harness as of
+  0.6.8 — see [#23](https://github.com/jl1nie/mfsk-core/issues/23).
 - **MSK144** — not implemented (out of scope of the 0.5.x line and still as of 0.6.x). The decode path needs a
   different correlator geometry from the rest of the FT/JT/Q-family
   decoders this crate is built around. Tracked in
