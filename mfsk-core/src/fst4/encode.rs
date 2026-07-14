@@ -45,7 +45,7 @@ fn append_crc24(message77: &[u8; 77]) -> [u8; 101] {
 /// WSJT-X `genfst4.f90:63` XORs the message with `rvec` before CRC-24 +
 /// LDPC encode; `message_to_tones` transmits the **scrambled** message
 /// bits — same as WSJT-X, so the receive-side CRC verification stays
-/// correct (see [`super::FST4_RVEC`] doc comment).
+/// correct (see `super::FST4_RVEC`'s doc comment).
 pub fn message_to_tones(message77: &[u8; 77]) -> Vec<u8> {
     let mut scrambled = *message77;
     for (b, &r) in scrambled.iter_mut().zip(super::FST4_RVEC.iter()) {

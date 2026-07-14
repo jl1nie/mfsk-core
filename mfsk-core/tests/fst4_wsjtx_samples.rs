@@ -109,7 +109,7 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
 fn fst4_60_diagnose_golden() {
     use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::llr::{sync_quality, symbol_spectra};
+    use mfsk_core::core::llr::{symbol_spectra, sync_quality};
     use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
     use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
     use mfsk_core::core::{FrameLayout, ModulationParams};
@@ -149,7 +149,7 @@ fn fst4_60_diagnose_golden() {
             grid.push((freq, dt, nsync));
         }
     }
-    grid.sort_by(|a, b| b.2.cmp(&a.2));
+    grid.sort_by_key(|c| std::cmp::Reverse(c.2));
     eprintln!("brute-force (freq,dt) grid scan, top-10 by nsync (of 40):");
     for (freq, dt, n) in grid.iter().take(10) {
         eprintln!("  freq={:8.2} Hz  dt={:+7.3} s  nsync={}", freq, dt, n);
