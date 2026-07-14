@@ -13,19 +13,20 @@ use crate::core::pipeline::{self, FftCache};
 use crate::core::pipeline::DecodeStrictness;
 pub use crate::core::pipeline::{DecodeDepth, DecodeResult};
 
-/// FST4-60A downsample configuration: 12 kHz → 62.5 Hz baseband
-/// (NDOWN = 192), enough for the 4 tones spaced 3.125 Hz apart
-/// (12.5 Hz occupied) plus a generous guard band for the narrow
-/// 60-second slot.
+/// FST4-60A downsample configuration: 12 kHz → 111.11 Hz baseband
+/// (NDOWN = 108, matching WSJT-X `fst4_decode.f90`'s `fs2 = fs/ndown`
+/// for `ntrperiod.eq.60`), enough for the 4 tones spaced 3.0864 Hz
+/// apart (12.35 Hz occupied) plus a generous guard band for the
+/// narrow 60-second slot.
 ///
-/// `fft1_size` = 786 432 (= 2¹⁸ · 3, highly composite, ≥ 720 000
-/// samples that a 60-s slot at 12 kHz contains). `fft2_size` =
-/// fft1 / NDOWN = 4096.
+/// `fft1_size` = 746 496 (= 2¹⁰ · 3⁶, highly composite, ≥ 720 000
+/// samples that a 60-s slot at 12 kHz contains, and an exact multiple
+/// of NDOWN=108). `fft2_size` = fft1 / NDOWN = 6912.
 pub const FST4_60A_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     input_rate: 12_000,
-    fft1_size: 786_432,
-    fft2_size: 4_096,
-    tone_spacing_hz: 3.125,
+    fft1_size: 746_496,
+    fft2_size: 6_912,
+    tone_spacing_hz: 12_000.0 / 3_888.0,
     leading_pad_tones: 1.5,
     trailing_pad_tones: 1.5,
     ntones: 4,

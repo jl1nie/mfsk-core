@@ -67,14 +67,13 @@ impl MessageCodec for Wsjt77Message {
         // WSJT-X-style (sign-padded two-digit dB string).
         let report = if let Some(g) = &fields.grid {
             g.clone()
-        } else if let Some(r) = fields.report {
+        } else {
+            let r = fields.report?;
             if r >= 0 {
                 format!("+{:02}", r)
             } else {
                 format!("{:03}", r)
             }
-        } else {
-            return None;
         };
         wsjt77::pack77(call1, call2, &report).map(|a| a.to_vec())
     }

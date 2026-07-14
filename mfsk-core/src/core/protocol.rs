@@ -125,8 +125,10 @@ pub trait ModulationParams: Copy + Default + 'static {
     /// payload is the WSJT-X-transmitted message — but emerges as
     /// nonsense because we never undo the XOR.
     ///
-    /// Default `None` (FT8 / FST4 / others don't scramble); FT4
-    /// overrides to `Some(&FT4_RVEC)`. Length must be 77 when set.
+    /// Default `None` (FT8 / others don't scramble); FT4 and FST4
+    /// both override to the same 77-element `rvec` (WSJT-X
+    /// `genfst4.f90:29-31` uses the identical array to
+    /// `genft4.f90`'s). Length must be 77 when set.
     const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = None;
 
     /// Window function applied per `NSPS`-sample chunk in
