@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.6.8 — fix FST4-60A decode (#23): wrong NSPS/NDOWN/GFSK_BT + missing message scramble
+
+`Fst4s60`'s modulation parameters were never-revisited placeholders:
+`NSPS=3840`, `NDOWN=192`, `GFSK_BT=1.0` (the old `NDOWN` comment
+literally said *"Production value may differ; revisit once decoder
+is wired"*). Line-walking WSJT-X's `fst4_decode.f90` /
+`fst4sim.f90` / `gen_fst4wave.f90` for `ntrperiod=60` gives the real
+values: `NSPS=3888`, `NDOWN=108`, `BT=2.0`. The wrong `NSPS`
+accumulated timing error linearly across the 160-symbol frame, so
+real audio drifted ~0.3-0.6 s off the true frame start — invisible
+in the synth roundtrip test because encode and decode shared the
+same wrong constants self-consistently.
+
+Separately, FST4 never wired up the 77-bit `rvec` pre-LDPC scramble
+that WSJT-X's `genfst4.f90:63` applies (same sequence FT4 uses).
+CRC-24 still passed on real WSJT-X audio without it — the check is
+self-referential, it just confirms LDPC decoded whatever bits were
+actually sent — but every decode came out as scrambled garbage
+instead of a real callsign.
+
+### Fixed
+
+- **`fst4/mod.rs`**: `NSPS`/`NDOWN`/`SYMBOL_DT`/`TONE_SPACING_HZ`/
+  `GFSK_BT` corrected to match WSJT-X; `ModulationParams::
+  INFO_SCRAMBLE_RVEC` wired to a new `FST4_RVEC` constant (same
+  values as `ft4::FT4_RVEC`, duplicated so `fst4` doesn't pull in
+  the `ft4` feature).
+- **`fst4/decode.rs`**: `FST4_60A_DOWNSAMPLE`'s `fft1_size` /
+  `fft2_size` / `tone_spacing_hz` updated for the corrected `NDOWN`.
+- **`fst4/encode.rs`**: `FST4_60A_GFSK` corrected (was hardcoded
+  independently of `ModulationParams` and never updated in lockstep);
+  `message_to_tones` now scrambles the message before CRC-24, matching
+  `genfst4.f90`.
+
+### Tests
+
+- `tests/fst4_wsjtx_samples.rs::fst4_60_wsjtx_sample_recall_vs_golden`
+  now recovers the golden message `CQ N5TM EL29` (dB=-9) against the
+  WSJT-X reference WAV, plus the same recording's second signal
+  `CQ K9KFR EN71` (dB=16) as a bonus. Un-ignored (was skipping with
+  "decode_frame returns 0 messages" since the test was added).
+- Adds `fst4_60_diagnose_golden`, a permanent diagnostic probe
+  (`jt9::gate_diag::probe_missing_goldens`-style (freq, dt) grid scan)
+  for any future FST4 sync/timing regression.
+
+### Notes
+
+- `mfsk-ffi-ft8` bumped to 0.6.8 in lock-step (FST4 isn't in its FFI
+  surface — the crate only wraps FT8 — so this is a version-number
+  sync only, no behavioral change).
+
 ## 0.6.7 — fix coarse_sync wasm32 runtime panic
 
 0.6.6 left `std::time::Instant::now()` calls in `coarse_sync` gated

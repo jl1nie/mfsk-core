@@ -163,8 +163,6 @@ to a 0.7.x design pass.
 
 Currently open GitHub issues (state:open as of 2026-05-18):
 
-- **#23** — FST4-60A golden lockdown (host); FST4-15 / FST4W
-  stretch. Carried forward from the post-0.5.12 "Phase A1".
 - **#24** — JT65B golden lockdown + erasure-metadata path.
   Carried forward from the post-0.5.12 "Phase A2".
 - **#25** — MSK144 decode path. Community-contribution invitation;
@@ -195,6 +193,7 @@ prose, see the closed issue / linked PR / `git log`):
 | #61 | fold `m5stack-core2` into S3 dual-core; retire Core2 bench (PR #76) | 0.6.3 |
 | #63 | WSJT-X-faithful OSD `npre1`/`npre2` precoding (see "What landed in 0.6.3") | 0.6.3 |
 | #105 | EMBEDDED.md rewrite (kept deep tech ref, refreshed for 0.6.4) | 0.6.4 |
+| #23 | FST4-60A golden lockdown — wrong `NSPS`/`NDOWN`/`GFSK_BT` + missing `rvec` message scramble (PR #136); FST4-15/FST4W stretch still deferred, no user demand | 0.6.8 |
 
 The 5 remaining JTDX AP-on extras on `qso3_busy.wav` that surface
 only with `subtract_signal_lpf` multipass are a host-side win
@@ -239,11 +238,12 @@ hints; the live worklist is the **Open follow-ups** section above.
 
 (A0 / A0' both closed in v0.6.x — see the closed-issues table above.)
 
-- **A1** FST4-60A (`#23`) — `tests/fst4_wsjtx_samples.rs` is `#[ignore]`d
-  with "decode_frame returns 0 messages"; root-cause line-walk of
-  `WSJT-X/lib/fst4_decode.f90` against `mfsk-core/src/fst4/decode.rs`
-  still pending. Probe template:
-  `mfsk-core/src/jt9/decode.rs::gate_diag::probe_missing_goldens`.
+- **A1** FST4-60A (`#23`) — closed in 0.6.8 (PR #136). Root cause was
+  `Fst4s60`'s `NSPS`/`NDOWN`/`GFSK_BT` being never-revisited
+  placeholders (wrong vs. `WSJT-X/lib/fst4_decode.f90` /
+  `fst4sim.f90` / `gen_fst4wave.f90`) plus a missing `rvec` pre-LDPC
+  message scramble; `tests/fst4_wsjtx_samples.rs` is un-ignored and
+  recovers the golden decode.
 - **A2** JT65 (`#24`) — current implementation is JT65A; WSJT-X
   ships JT65B samples. Add a `Jt65b` ZST mirroring the Q65 sub-mode
   generic pattern (`Q65a30`, `Q65a60`, ...) and lock recall against
