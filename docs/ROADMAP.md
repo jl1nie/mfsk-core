@@ -193,7 +193,8 @@ prose, see the closed issue / linked PR / `git log`):
 | #61 | fold `m5stack-core2` into S3 dual-core; retire Core2 bench (PR #76) | 0.6.3 |
 | #63 | WSJT-X-faithful OSD `npre1`/`npre2` precoding (see "What landed in 0.6.3") | 0.6.3 |
 | #105 | EMBEDDED.md rewrite (kept deep tech ref, refreshed for 0.6.4) | 0.6.4 |
-| #23 | FST4-60A golden lockdown — wrong `NSPS`/`NDOWN`/`GFSK_BT` + missing `rvec` message scramble (PR #136); FST4-15/FST4W stretch still deferred, no user demand | 0.6.8 |
+| #23 | FST4-60A golden lockdown — wrong `NSPS`/`NDOWN`/`GFSK_BT` + missing `rvec` message scramble (PR #136) | 0.6.8 |
+| #23 | FST4-15/30/120/300 sub-modes wired (`fst4_submode!` macro, WSJT-X-cross-checked; no golden WAV available — synth-roundtrip + source-verification only) | pending release |
 
 The 5 remaining JTDX AP-on extras on `qso3_busy.wav` that surface
 only with `subtract_signal_lpf` multipass are a host-side win
@@ -249,8 +250,16 @@ hints; the live worklist is the **Open follow-ups** section above.
   generic pattern (`Q65a30`, `Q65a60`, ...) and lock recall against
   `samples/JT65/JT65B/*.wav` via a new
   `tests/jt65b_wsjtx_samples.rs` harness.
-- **A3** FST4-15 / FST4W — `#23` "stretch", deferred indefinitely
-  (no user demand; FST4-60A is the dominant terrestrial sub-mode).
+- **A3** FST4-15/30/120/300 (`#23` stretch) — landed via the
+  `fst4_submode!` macro (mirrors `q65_submode!`); all constants
+  cross-checked against WSJT-X `fst4_decode.f90`/`fst4sim.f90` and
+  pinned by an automated `DownsampleCfg`/`GfskCfg`-vs-trait-constant
+  test. No golden WAV exists for these four periods (WSJT-X's sample
+  tree only ships FST4-60A / FST4W-1800 recordings) — validated by
+  synth-roundtrip self-consistency + source cross-checks only;
+  requested by VK3NV (issue #23 comments) for a multi-period
+  weak-signal messaging project. FST4-900 / FST4-1800 and FST4W
+  remain deferred indefinitely (no user demand).
 
 ## Phase B — embedded controller line
 

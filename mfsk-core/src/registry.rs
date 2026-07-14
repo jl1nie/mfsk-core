@@ -35,6 +35,15 @@
 //! / `T_SLOT_S` differ; they share `ProtocolId::Q65` because the FFI
 //! protocol tag is family-level. [`by_id`] returns *all* entries
 //! sharing a given id, so a Q65 lookup yields six metadata records.
+//!
+//! ## FST4 sub-modes
+//!
+//! Same story as Q65: all five wired FST4 T/R-period sub-modes
+//! (FST4-15, -30, -60A, -120, -300) share `ProtocolId::Fst4`.
+//! FST4-60A is listed first (ahead of FST4-15, even though 15 < 60)
+//! so [`for_protocol_id`]`(ProtocolId::Fst4)` keeps returning the
+//! dominant terrestrial sub-mode as the default — this is one of the
+//! rare spots where entry order *is* load-bearing.
 
 // These imports look unused when *every* protocol feature is off
 // (the `protocol_meta!` invocations that consume them all gate on a
@@ -137,8 +146,21 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("FT8", crate::Ft8),
     #[cfg(feature = "ft4")]
     protocol_meta!("FT4", crate::Ft4),
+    // FST4-60A stays first among the FST4 entries — it's the dominant
+    // terrestrial sub-mode and `by_id`/`for_protocol_id` return the
+    // *first* matching entry, so this preserves the pre-existing
+    // "FST4-60A is the default FST4" behaviour for callers that don't
+    // care about sub-mode.
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-60A", crate::Fst4s60),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-15", crate::fst4::Fst4s15),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-30", crate::fst4::Fst4s30),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-120", crate::fst4::Fst4s120),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-300", crate::fst4::Fst4s300),
     #[cfg(feature = "wspr")]
     protocol_meta!("WSPR", crate::Wspr),
     #[cfg(feature = "jt9")]
@@ -268,5 +290,36 @@ mod tests {
                 "Q65 registry missing sub-mode {expected}; have {names:?}"
             );
         }
+    }
+
+    #[cfg(feature = "fst4")]
+    #[test]
+    fn fst4_id_yields_all_five_submodes() {
+        let fst4_entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Fst4).collect();
+        assert_eq!(
+            fst4_entries.len(),
+            5,
+            "expected five FST4 sub-modes in the registry, got {}: {:?}",
+            fst4_entries.len(),
+            fst4_entries.iter().map(|p| p.name).collect::<Vec<_>>()
+        );
+        let names: Vec<&str> = fst4_entries.iter().map(|p| p.name).collect();
+        for expected in &["FST4-15", "FST4-30", "FST4-60A", "FST4-120", "FST4-300"] {
+            assert!(
+                names.contains(expected),
+                "FST4 registry missing sub-mode {expected}; have {names:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "fst4")]
+    #[test]
+    fn for_protocol_id_defaults_to_fst4_60a() {
+        // FST4-60A must stay the default entry (order-dependent — see
+        // the "FST4 sub-modes" module doc section) since it's the
+        // dominant terrestrial sub-mode and pre-existing callers rely
+        // on `for_protocol_id(Fst4)` resolving to it.
+        let meta = for_protocol_id(ProtocolId::Fst4).expect("fst4 feature is on");
+        assert_eq!(meta.name, "FST4-60A");
     }
 }

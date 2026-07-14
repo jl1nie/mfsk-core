@@ -117,15 +117,19 @@ License matches upstream: **GPL-3.0-or-later**.
 | FT8        | 15 s   | LDPC(174, 91) + CRC-14            | 77 bit  | 3 × Costas-7           | `ft8`   |
 | FT4        | 7.5 s  | LDPC(174, 91) + CRC-14            | 77 bit  | 4 × Costas-4           | `ft4`   |
 | FST4-60A   | 60 s   | LDPC(240, 101) + CRC-24           | 77 bit  | 5 × Costas-8           | `fst4`  |
+| FST4-15/30/120/300 | 15-300 s | (same LDPC(240, 101))     | 77 bit  | (same sync layout)     | `fst4`  |
 | WSPR       | 120 s  | Convolutional r=½ K=32 + Fano     | 50 bit  | Per-symbol LSB (npr3)  | `wspr`  |
 | JT9        | 60 s   | Convolutional r=½ K=32 + Fano     | 72 bit  | 16 distributed slots   | `jt9`   |
 | JT65       | 60 s   | Reed-Solomon(63, 12) GF(2⁶)       | 72 bit  | 63 distributed slots   | `jt65`  |
 | Q65-30A    | 30 s   | QRA(15, 65) GF(2⁶) + CRC-12       | 77 bit  | 22 distributed slots   | `q65`   |
 | Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
 
-Seven protocol families, eleven wired ZSTs in the registry: Q65 contributes one
-30-s sub-mode (Q65-30A) plus five 60-s EME sub-modes (Q65-60A‥E) that share
-the FEC, message codec and sync layout but differ in NSPS / tone spacing.
+Seven protocol families, sixteen wired ZSTs in the registry: FST4
+contributes five T/R-period sub-modes (FST4-15, -30, -60A, -120, -300)
+and Q65 contributes one 30-s sub-mode (Q65-30A) plus five 60-s EME
+sub-modes (Q65-60A‥E) — both families share FEC, message codec and
+sync layout across their sub-modes, differing only in NSPS / tone
+spacing (and, for FST4-15 alone, the T/R start offset).
 [`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
 exposes one entry per wired ZST; `uvpacket` (when enabled) adds four
 more for its rate ladder.
@@ -178,7 +182,7 @@ and per-mode performance characterisation.
 |---------------|---------|----------------------------------------------|
 | `ft8`         | ✓       | FT8 decode / synth                           |
 | `ft4`         | ✓       | FT4 decode / synth                           |
-| `fst4`        |         | FST4-60A decode / synth                      |
+| `fst4`        |         | FST4-60A decode / synth (+ FST4-15/30/120/300) |
 | `wspr`        |         | WSPR decode / synth                          |
 | `jt9`         |         | JT9 decode / synth                           |
 | `jt65`        |         | JT65 decode / synth (+ erasure-aware RS)     |
@@ -228,7 +232,7 @@ carries its own Quick example:
 - [`mfsk_core::ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/)
   — `decode_frame`
 - [`mfsk_core::fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/)
-  — FST4-60A `decode_frame`
+  — FST4-60A `decode_frame`; other sub-modes via `decode_frame_for::<Fst4s120>` etc.
 - [`mfsk_core::wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/)
   — `decode::decode_scan_default`
 - [`mfsk_core::jt9`](https://docs.rs/mfsk-core/latest/mfsk_core/jt9/)
@@ -437,12 +441,22 @@ tree is present at the expected sibling path):
   themselves don't decode cleanly without the soft-symbol erasure
   metadata that lives in private WSJT-X branches. Tracked in
   [#24](https://github.com/jl1nie/mfsk-core/issues/24).
-- **FST4** — only the FST4-60A long-period variant is wired (sample
-  duration / Costas layout for FST4-15 / FST4W are out of scope of
-  the 0.5.x line, still out of scope as of 0.6.x — no user demand,
-  FST4-60A is the dominant terrestrial sub-mode). Recall against
-  `samples/FST4/210115_0058.wav` locked by a golden harness as of
-  0.6.8 — see [#23](https://github.com/jl1nie/mfsk-core/issues/23).
+- **FST4** — five T/R-period sub-modes wired: FST4-15,
+  -30, -60A, -120, -300 (`fst4::Fst4s15`/`Fst4s30`/`Fst4s60`/
+  `Fst4s120`/`Fst4s300`), all sharing frame layout / FEC / message
+  codec / GFSK shaping and differing only in `NSPS`/`NDOWN` (and, for
+  FST4-15 alone, the T/R start offset) — every constant verified
+  directly against WSJT-X `fst4_decode.f90` / `fst4sim.f90` source,
+  the same rigor that caught #23's original bug. Only FST4-60A has a
+  real-recording golden-WAV lock (`samples/FST4/210115_0058.wav`,
+  1/1) — the WSJT-X sample tree ships no FST4-15/30/120/300
+  recordings, so those four are validated by synth-roundtrip
+  self-consistency plus source cross-checks only; a real recording or
+  a WSJT-X `fst4sim`-generated reference WAV would strengthen that.
+  FST4-900 / FST4-1800 and FST4W (the WSPR-style 50-bit one-way
+  beacon variant, a different message format entirely) remain out of
+  scope — no user demand as of writing. See
+  [#23](https://github.com/jl1nie/mfsk-core/issues/23).
 - **MSK144** — not implemented (out of scope of the 0.5.x line and still as of 0.6.x). The decode path needs a
   different correlator geometry from the rest of the FT/JT/Q-family
   decoders this crate is built around. Tracked in
