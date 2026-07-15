@@ -1,6 +1,6 @@
 [package]
 name        = "mfsk-core"
-version     = "0.6.8"
+version     = "0.7.0"
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 description = "Pure-Rust WSJT-family decoders + synthesisers (FT8 FT4 FST4 WSPR JT9 JT65 Q65) behind a zero-cost Protocol trait. Host (rustfft) or no_std embedded (ESP32-S3, RP2350, Cortex-M) via a pluggable FFT backend; fixed-point hot path for FPU-less MCUs. Ships with embedded-poc/m5stack-s3-app, a working M5StickS3 FT8 controller (LCD UI, BLE CI-V to IC-705, acoustic mic, QSO FSM) decoding real on-air signals in ~1.2 s post-SlotEnd on Xtensa LX7."
