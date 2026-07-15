@@ -10,6 +10,25 @@
 //!            →  Gray-map 3 bits/symbol  →  itone[79]
 //!            →  phase accumulation  →  PCM f32 / i16
 //! ```
+//!
+//! ## Encoder-only example
+//!
+//! This module has no FFT dependency and no `std` requirement — it's the
+//! TX-only path a `no_std + alloc` embedded transmitter links against
+//! (decode needs an [`FftPlanner`](crate::core::fft::FftPlanner) impl via
+//! `fft-rustfft` or `fft-extern`; encode needs neither):
+//!
+//! ```
+//! # #[cfg(feature = "ft8")] {
+//! use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+//! use mfsk_core::msg::wsjt77::pack77;
+//!
+//! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
+//! let tones = message_to_tones(&msg77); // 79 Costas + data symbols
+//! let pcm = tones_to_i16(&tones, /* freq */ 1500.0, /* amp */ 20_000);
+//! assert_eq!(pcm.len(), tones.len() * 1920); // NSPS samples/symbol @ 12 kHz
+//! # }
+//! ```
 use alloc::vec::Vec;
 
 use super::Ft8;

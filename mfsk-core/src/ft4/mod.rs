@@ -9,19 +9,36 @@
 //!
 //! ## Quick example
 //!
-//! ```no_run
-//! use mfsk_core::ft4::decode::decode_frame;
-//! use mfsk_core::msg::wsjt77::unpack77;
+//! Round-trip a synthesised FT4 frame through the decoder:
 //!
-//! # let audio: Vec<i16> = vec![];
-//! // `audio` is 90_000 i16 samples at 12 kHz (7.5 s slot).
-//! for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100) {
-//!     let msg77: &[u8; 77] = r.message77().try_into().unwrap();
-//!     if let Some(text) = unpack77(msg77) {
-//!         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
-//!                  r.freq_hz, r.dt_sec, r.snr_db, text);
-//!     }
+//! ```
+//! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
+//! use mfsk_core::ft4::{
+//!     decode::decode_frame,
+//!     encode::{message_to_tones, tones_to_i16},
+//! };
+//! use mfsk_core::msg::wsjt77::{pack77, unpack77};
+//!
+//! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.
+//! //    The synth produces just the transmitted frame; pad to the full
+//! //    7.5 s slot with the signal starting at 0.5 s.
+//! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
+//! let tones = message_to_tones(&msg77);
+//! let frame = tones_to_i16(&tones, /* freq */ 1500.0, /* amp */ 20_000);
+//!
+//! let mut audio = vec![0i16; 90_000]; // 7.5 s @ 12 kHz
+//! let start = (0.5 * 12_000.0) as usize;
+//! for (i, &s) in frame.iter().enumerate() {
+//!     if start + i < audio.len() { audio[start + i] = s; }
 //! }
+//!
+//! // 2. Decode it back across the full FT4 band.
+//! let results = decode_frame(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100);
+//! assert!(!results.is_empty(), "roundtrip must decode");
+//! let msg77: &[u8; 77] = results[0].message77().try_into().unwrap();
+//! let text = unpack77(msg77).expect("unpack");
+//! assert_eq!(text, "CQ JA1ABC PM95");
+//! # }
 //! ```
 
 use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};

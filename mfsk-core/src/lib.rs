@@ -258,6 +258,36 @@
 //! assert_eq!(text, "CQ JA1ABC PM95");
 //! # }
 //! ```
+//!
+//! ## `no_std` usage
+//!
+//! ```toml
+//! # Cargo.toml — TX-only, no_std + alloc, no FFT backend needed
+//! [dependencies]
+//! mfsk-core = { version = "0.7", default-features = false, features = ["alloc", "ft8"] }
+//! ```
+//!
+//! Encoding (`message_to_tones` / `tones_to_i16`) never touches `std` — no
+//! FFT, no heap-backed collections beyond `alloc::vec::Vec`. This is the
+//! same call as the [`ft8::wave_gen`] encoder-only example above; the
+//! `alloc ft8` and `alloc ft8 fft-extern` legs of CI's feature-matrix build
+//! this exact combination (`.github/workflows/ci.yml`) to confirm it
+//! compiles under `#![no_std]`. Decoding additionally needs a
+//! [`core::fft::FftPlanner`] impl — bring your own via `fft-extern` (the
+//! embedded ports use this for esp-dsp / CMSIS-DSP) since `fft-rustfft`
+//! requires `std`.
+//!
+//! ```
+//! # #[cfg(feature = "ft8")] {
+//! use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+//! use mfsk_core::msg::wsjt77::pack77;
+//!
+//! let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack");
+//! let tones = message_to_tones(&msg77);
+//! let pcm = tones_to_i16(&tones, /* freq */ 1500.0, /* amp */ 20_000);
+//! assert!(!pcm.is_empty());
+//! # }
+//! ```
 
 // Several clippy lints fight with the style of this crate:
 //
