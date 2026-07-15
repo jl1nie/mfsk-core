@@ -364,10 +364,6 @@ jobs:
         if: steps.gate.outputs.should_run == 'true'
         uses: Swatinem/rust-cache@v2
 
-      - name: Build (full)
-        if: steps.gate.outputs.should_run == 'true'
-        run: cargo build -p mfsk-core --features full --release
-
       - name: Run suite
         if: steps.gate.outputs.should_run == 'true'
         env:
