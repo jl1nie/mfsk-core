@@ -95,11 +95,31 @@ struct SweepMode {
 }
 
 const MODES: &[SweepMode] = &[
-    SweepMode { nsec: 15,  decode: decode_wav_fst4_15,  enabled: true },
-    SweepMode { nsec: 30,  decode: decode_wav_fst4_30,  enabled: true },
-    SweepMode { nsec: 60,  decode: decode_wav_fst4_60,  enabled: true },
-    SweepMode { nsec: 120, decode: decode_wav_fst4_120, enabled: true },
-    SweepMode { nsec: 300, decode: decode_wav_fst4_300, enabled: true },
+    SweepMode {
+        nsec: 15,
+        decode: decode_wav_fst4_15,
+        enabled: true,
+    },
+    SweepMode {
+        nsec: 30,
+        decode: decode_wav_fst4_30,
+        enabled: true,
+    },
+    SweepMode {
+        nsec: 60,
+        decode: decode_wav_fst4_60,
+        enabled: true,
+    },
+    SweepMode {
+        nsec: 120,
+        decode: decode_wav_fst4_120,
+        enabled: true,
+    },
+    SweepMode {
+        nsec: 300,
+        decode: decode_wav_fst4_300,
+        enabled: true,
+    },
 ];
 
 // ── Filename parsing ─────────────────────────────────────────────────────────
@@ -160,7 +180,13 @@ fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
         };
         // channel = everything between nsec and snr_tag
         let channel = parts[2..parts.len() - 2].join("_");
-        out.push(WavMeta { nsec, channel, snr_db, trial, path });
+        out.push(WavMeta {
+            nsec,
+            channel,
+            snr_db,
+            trial,
+            path,
+        });
     }
     // Sort: mode → channel → snr desc → trial
     out.sort_by_key(|m| (m.nsec, m.channel.clone(), -m.snr_db, m.trial));
@@ -193,9 +219,9 @@ fn fst4_snr_sweep() {
 
     // Group WAVs by (nsec, channel, snr_db) so we can parallelise within each
     // group and print each row immediately when the group finishes.
-    use std::collections::BTreeMap;
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
+    use std::collections::BTreeMap;
 
     let mut groups: BTreeMap<(u32, String, i32), Vec<&WavMeta>> = BTreeMap::new();
     for wav in &wavs {

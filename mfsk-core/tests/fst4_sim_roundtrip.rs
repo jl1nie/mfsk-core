@@ -120,8 +120,8 @@ fn fst4_60_sim_roundtrip() {
 
 #[test]
 fn fst4_15_sim_roundtrip() {
-    use mfsk_core::fst4::decode::{FST4_15_DOWNSAMPLE, decode_frame_for};
     use mfsk_core::fst4::Fst4s15;
+    use mfsk_core::fst4::decode::{FST4_15_DOWNSAMPLE, decode_frame_for};
 
     let Some(audio) = sim_wav(15) else {
         eprintln!("skipping fst4_15_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
@@ -137,8 +137,8 @@ fn fst4_15_sim_roundtrip() {
 
 #[test]
 fn fst4_30_sim_roundtrip() {
-    use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, decode_frame_for};
     use mfsk_core::fst4::Fst4s30;
+    use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, decode_frame_for};
 
     let Some(audio) = sim_wav(30) else {
         eprintln!("skipping fst4_30_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
@@ -154,14 +154,15 @@ fn fst4_30_sim_roundtrip() {
 
 #[test]
 fn fst4_120_sim_roundtrip() {
-    use mfsk_core::fst4::decode::{FST4_120_DOWNSAMPLE, decode_frame_for};
     use mfsk_core::fst4::Fst4s120;
+    use mfsk_core::fst4::decode::{FST4_120_DOWNSAMPLE, decode_frame_for};
 
     let Some(audio) = sim_wav(120) else {
         eprintln!("skipping fst4_120_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
         return;
     };
-    let decodes = decode_frame_for::<Fst4s120>(&audio, &FST4_120_DOWNSAMPLE, 100.0, 3000.0, 0.8, 50);
+    let decodes =
+        decode_frame_for::<Fst4s120>(&audio, &FST4_120_DOWNSAMPLE, 100.0, 3000.0, 0.8, 50);
     check_golden_hit(120, &decodes);
 }
 
@@ -171,14 +172,15 @@ fn fst4_120_sim_roundtrip() {
 
 #[test]
 fn fst4_300_sim_roundtrip() {
-    use mfsk_core::fst4::decode::{FST4_300_DOWNSAMPLE, decode_frame_for};
     use mfsk_core::fst4::Fst4s300;
+    use mfsk_core::fst4::decode::{FST4_300_DOWNSAMPLE, decode_frame_for};
 
     let Some(audio) = sim_wav(300) else {
         eprintln!("skipping fst4_300_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
         return;
     };
-    let decodes = decode_frame_for::<Fst4s300>(&audio, &FST4_300_DOWNSAMPLE, 100.0, 3000.0, 0.8, 50);
+    let decodes =
+        decode_frame_for::<Fst4s300>(&audio, &FST4_300_DOWNSAMPLE, 100.0, 3000.0, 0.8, 50);
     check_golden_hit(300, &decodes);
 }
 
