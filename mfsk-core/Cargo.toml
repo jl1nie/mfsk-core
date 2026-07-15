@@ -26,7 +26,7 @@ std          = ["alloc"]
 alloc        = []
 
 # Aggregate features.
-full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "packet-bytes", "uvpacket"]
+full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "packet-bytes", "uvpacket", "parallel"]
 
 # FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
