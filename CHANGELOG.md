@@ -1,11 +1,84 @@
 # Changelog
 
-## 0.7.1 — README restructure for crates.io / GitHub discoverability (#144)
+## 0.7.1 — FST4 AWGN sensitivity fixes + README/docs discoverability pass (#144, #146)
 
-Non-functional patch. No source code modifications, no new features,
-no bug fixes — pure docs, published solely to refresh the crate's
-displayed README on crates.io (crates.io/docs.rs render a snapshot
-taken at publish time and don't pick up GitHub-only changes):
+### Fixed
+
+- **FST4 AWGN sensitivity gap vs WSJT-X closed from ~2.4-3.1 dB to
+  ~0.3 dB** (issue #146), from three compounding fixes:
+  - `LLR_NSYM_MAX` for FST4 was unset and silently inherited FT8's
+    calibrated depth (3); WSJT-X's own `get_fst4_bitmetrics.f90` uses
+    a 1/2/4/8-symbol correlation ladder. Override added: `= 8`.
+  - `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — FT8-
+    calibrated OSD pre-filter and hard-error ceiling — were blocking
+    or rejecting real, CRC-24-verified FST4 candidates near
+    threshold. Both bypassed for FST4 specifically; FST4 now trusts
+    CRC-24 alone, matching WSJT-X's own acceptance test
+    (`fst4_decode.f90:570`).
+  - New `core::sync2d::fst4_sync_search` — a coherent, full-slot
+    two-stage local (Δf, Δt) search matching WSJT-X's
+    `fst4_sync_search` / `sync_fst4` (`fst4_decode.f90:657-925`).
+    The coarse pass now covers the *entire* T/R slot (±1.5 s) instead
+    of a narrow local window, avoiding noise-peak lock-in, and scores
+    each 8-symbol Costas block with a single phase-continuous
+    coherent inner product (amplitude `|z|`, matching WSJT-X's
+    `csync1`) instead of a non-coherent power-sum — ~3 dB better
+    sync-score SNR discrimination in the ~5,000-cell coarse grid.
+- Measured (`tests/fst4_sweep.rs`, `fst4sim`-generated AWGN corpus,
+  20 trials/SNR point, full 5-sub-mode re-run against the final
+  0.7.1 code — see `docs/FST4_BENCHMARK.md`), 50% recall crossing
+  (linear interpolation between adjacent grid points) vs. WSJT-X's
+  published thresholds:
+
+  | Sub-mode | Measured | WSJT-X official | Gap |
+  |----------|---------:|-----------------:|----:|
+  | FST4-15  | ≈ −20.2 dB | −20.7 dB | 0.5 dB |
+  | FST4-30  | ≈ −23.4 dB | −24.2 dB | 0.8 dB |
+  | FST4-60  | ≈ −27.0 dB | −28.1 dB | 1.1 dB |
+  | FST4-120 | ≈ −30.0 dB | −31.3 dB | 1.3 dB |
+  | FST4-300 | ≈ −34.4 dB | −35.3 dB | 0.9 dB |
+
+  All five sub-modes improved substantially from the pre-0.7.1
+  baseline (2.3-3.1 dB gap across the board); the residual gap is
+  not perfectly flat across sub-modes as the earlier FST4-30-only
+  spot check suggested — FST4-60/120 sit ~0.3-0.5 dB behind
+  FST4-15/30/300. Not chased further in this release; a plausible
+  remaining contributor is the still-missing FST4 2D frequency
+  refine (`sync2d_refine` measured as a regression when tried for
+  FST4, see below) — worth revisiting with real off-air data rather
+  than this bin-centered synthetic sweep.
+
+### Added
+
+- `core::sync::coarse_sync::<P>` gained an FST4-only stage-1
+  candidate-detection augmentation: a bin also enters the candidate
+  list if it clears a full-slot non-coherent 4-tone power check
+  (modelled on WSJT-X's `get_candidates_fst4`), alongside the
+  existing short-time Costas-grid threshold. Gated on
+  `P::ID == ProtocolId::Fst4`, zero effect on FT8/FT4. Measured as a
+  no-op on the narrow single-signal AWGN sweep (the golden candidate
+  was never at risk of being dropped there) but is a real coverage
+  improvement for busy/wideband scans with many co-channel
+  candidates.
+- `core::sync2d::sync2d_refine` — FT4's `sync4d_refine` generalised
+  (radius/step now scale with the protocol's own `TONE_SPACING_HZ` /
+  `ds_spb` instead of FT4-hardcoded absolutes), verified
+  bit-identical to the prior FT4 constants via the FT4 golden-WAV
+  lock. FT4 only — an attempt to also enable it for FST4 measured as
+  a net *regression* near threshold and was left off (see inline
+  notes in `core::pipeline.rs`).
+- Runnable `docs.rs` examples: FT4 decode round-trip (`ft4` module
+  docs), a standalone TX-only encoder example with no FFT/`std`
+  dependency (`ft8::wave_gen` module docs), and a `no_std` + `alloc`
+  usage example (crate root docs) — previously only FT8 had a
+  runnable round-trip doctest.
+- `docs/LIBRARY.md` / `.ja.md` §4 updated with the `sync2d` module
+  (both `sync2d_refine` and `fst4_sync_search`), the FST4
+  `coarse_sync` augmentation, and the `LLR_NSYM_MAX` /
+  `DecodeStrictness` per-protocol calibration notes above — this
+  section had gone stale relative to the FST4 work.
+
+### Docs
 
 - `README.md` reordered so a first-time visitor hits the overview,
   supported-protocol table, and a copy-pasteable Quick Start example
@@ -17,8 +90,8 @@ taken at publish time and don't pick up GitHub-only changes):
 - Design Philosophy expanded with an explicit "why a `Protocol`
   trait" section (shared vs. protocol-specific, zero-cost
   monomorphisation) and the "Why Rust" rationale.
-- Added a Performance summary, a Comparison-with-WSJT-X table, and
-  an FAQ.
+- Added a Performance summary (now including the FST4 sensitivity
+  table above), a Comparison-with-WSJT-X table, and an FAQ.
 - Detailed reference material (attribution, modules, FFI, contributing,
   full status/recall tables) moved below License into a "Reference"
   section so the top of the file stays short.

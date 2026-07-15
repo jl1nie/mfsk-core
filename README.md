@@ -291,6 +291,18 @@ FST4, are one-line changes, not cross-cutting refactors.
 - **Host (desktop, f32)**: `decode_frame_subtract_with_ap` (multipass
   + AP hints) reaches 18 decodes on the WSJT-X busy-band reference
   WAV, including 5/6 of the JTDX AP-on extras.
+- **FST4 AWGN sensitivity**, 50% recall crossing vs. WSJT-X's
+  published thresholds (`tests/fst4_sweep.rs`, `fst4sim`-generated
+  corpus, 20 trials/SNR point — see
+  [`docs/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.md)):
+
+  | Sub-mode | mfsk-core | WSJT-X official | Gap |
+  |----------|----------:|-----------------:|----:|
+  | FST4-15  | ≈ −20.2 dB | −20.7 dB | 0.5 dB |
+  | FST4-30  | ≈ −23.4 dB | −24.2 dB | 0.8 dB |
+  | FST4-60  | ≈ −27.0 dB | −28.1 dB | 1.1 dB |
+  | FST4-120 | ≈ −30.0 dB | −31.3 dB | 1.3 dB |
+  | FST4-300 | ≈ −34.4 dB | −35.3 dB | 0.9 dB |
 - **Memory**: the embedded fixed-point path is designed to fit inside
   ESP32-S3 internal DRAM without PSRAM for the hot buffers — see
   [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
