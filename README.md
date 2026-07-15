@@ -517,11 +517,21 @@ reference:
 
 ## Status
 
-**Current line: `0.6.x`** (latest tag `v0.6.5`, 2026-05-18) — API
+**Current line: `0.7.x`** (latest tag `v0.7.1`, 2026-07-16) — API
 is deliberately not frozen. Breaking changes follow cargo-style minor
-bumps (`0.5 → 0.6`). See `CHANGELOG.md` for the per-release breakdown;
-the line history below explains what each series brought in. The
-0.5.x line landed the
+bumps (`0.6 → 0.7`). See `CHANGELOG.md` for the per-release breakdown;
+the line history below explains what each series brought in. **0.7.0**
+added the remaining FST4 sub-modes (FST4-15/30/120/300, alongside the
+existing FST4-60) and parallelised `coarse_sync` under `--features
+parallel`. **0.7.1** closed FST4's AWGN sensitivity gap vs. WSJT-X's
+published thresholds from ~2.4-3.1 dB down to ~0.3-1.3 dB across all
+five sub-modes (issue #146 — an FST4-specific `LLR_NSYM_MAX`
+override, an FST4-specific OSD-gate bypass trusting CRC-24 alone, and
+a coherent full-slot local sync search ported from WSJT-X's
+`fst4_sync_search`/`sync_fst4`), and did a README/docs discoverability
+pass (this restructure, `docs/LIBRARY.md` refresh, more `docs.rs`
+examples). See [Performance](#performance) above for the full
+per-sub-mode numbers. The 0.5.x line landed the
 embedded baseline (`no_std + alloc`, pluggable FFT backend,
 caller-buffer TX APIs) and the first end-to-end real-audio embedded
 port. The **0.6.x line consolidates the FT8 sync + per-candidate
