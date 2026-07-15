@@ -111,9 +111,16 @@ pub trait ModulationParams: Copy + Default + 'static {
     /// `nsym=1, 2, 4` for FT4 (`get_ft4_bitmetrics.f90:69-71`); we
     /// default to `nsym=3` (FT8 path is calibrated to it). FT4
     /// overrides to `4` for an extra ~3 dB SNR boost on stable
-    /// signals — closes the recall gap on real-WAV recordings.
-    /// Must be one of `{3, 4}`; values outside that range fall back
-    /// to 3 inside the LLR loop.
+    /// signals — closes the recall gap on real-WAV recordings. FST4
+    /// overrides to `8`, matching WSJT-X's own 1/2/4/8-symbol
+    /// correlation ladder in `get_fst4_bitmetrics.f90` (issue #146 —
+    /// FST4 had silently been using the uncalibrated FT8 default of
+    /// 3, never wired to its own bit-metric depth).
+    /// Any value ≥ 1 works — `nt = NTONES^nsym` combination
+    /// hypotheses are computed generically, no per-nsym lookup table
+    /// — but cost grows exponentially with `nsym`, so keep it at the
+    /// WSJT-X-matched depth for the protocol rather than raising it
+    /// further.
     const LLR_NSYM_MAX: u32 = 3;
 
     /// Optional 77-bit pre-LDPC scrambler. WSJT-X applies an

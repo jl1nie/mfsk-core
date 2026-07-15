@@ -136,6 +136,10 @@ macro_rules! fst4_submode {
             const NSTEP_PER_SYMBOL: u32 = 2;
             const NDOWN: u32 = $ndown;
             const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = Some(&FST4_RVEC);
+            /// Matches WSJT-X `get_fst4_bitmetrics.f90`'s 1/2/4/8-symbol
+            /// correlation ladder (issue #146) — was silently inheriting
+            /// the FT8-calibrated default of 3.
+            const LLR_NSYM_MAX: u32 = 8;
         }
 
         impl FrameLayout for $name {

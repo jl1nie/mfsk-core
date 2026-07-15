@@ -280,3 +280,83 @@ fn fst4_snr_sweep() {
     );
     eprintln!("(Disabled modes show no rows — enable by wiring decode fn in MODES[])\n");
 }
+
+/// Diagnostic probe (issue #146) — pinpoint where a known-failing AWGN
+/// trial actually breaks: coarse_sync candidate presence/score near the
+/// golden (freq, dt), vs. downstream decode (LLR/BP/OSD). Used to
+/// disprove the "coarse-sync candidate crowding" hypothesis (the real
+/// candidate was found in every trial, well above `sync_min`) and point
+/// at the post-candidate pipeline instead — kept for future regressions
+/// in this area.
+///
+/// Deliberately only exercises FST4-30 and FST4-300 (opposite ends of
+/// the sub-mode range) rather than all five — the measured gap is flat
+/// across periods (task #146), so two modes bracketing the range are
+/// enough to confirm a mechanism generalizes without paying for a full
+/// 5-mode diagnostic pass. Set `MFSK_DEBUG_TRACE=1` to also get
+/// per-candidate nsync/OSD-gate/hard-error tracing from
+/// `core::pipeline::process_candidate_basic`.
+#[test]
+#[ignore = "manual diagnostic, not a recall gate"]
+fn fst4_diag_weak_trials() {
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
+    use mfsk_core::fst4::{Fst4s30, Fst4s300};
+
+    fn probe<P: mfsk_core::core::Protocol>(
+        dir: &std::path::Path,
+        file_prefix: &str,
+        cfg: &mfsk_core::core::dsp::downsample::DownsampleCfg,
+    ) {
+        for trial in 1..=5 {
+            let path = dir.join(format!("{file_prefix}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                eprintln!("skip {path:?}");
+                continue;
+            };
+            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let near: Vec<_> = cands
+                .iter()
+                .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+                .collect();
+            eprintln!(
+                "{file_prefix} trial {trial}: {} candidates total, {} near golden freq",
+                cands.len(),
+                near.len()
+            );
+            for c in &near {
+                eprintln!(
+                    "  cand freq={:.2} dt={:.3} score={:.4}",
+                    c.freq_hz, c.dt_sec, c.score
+                );
+            }
+            let fft_cache = mfsk_core::core::dsp::downsample::build_fft_cache(&audio, cfg);
+            for c in &near {
+                let r = process_candidate_basic::<P>(
+                    c,
+                    &fft_cache,
+                    cfg,
+                    DecodeDepth::BpAllOsd,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    40,
+                    10,
+                );
+                eprintln!("  -> decode result: {:?}", r.map(|d| d.sync_score));
+            }
+        }
+    }
+
+    let dir = sweep_dir();
+    for snr_tag in ["m20", "m22", "m23", "m24", "m25"] {
+        probe::<Fst4s30>(
+            &dir,
+            &format!("fst4_30_awgn_{snr_tag}"),
+            &FST4_30_DOWNSAMPLE,
+        );
+    }
+    probe::<Fst4s300>(&dir, "fst4_300_awgn_m33", &FST4_300_DOWNSAMPLE);
+}

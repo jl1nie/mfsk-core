@@ -34,7 +34,6 @@ use crate::msg::Wsjt77Message;
 pub mod decode;
 pub mod encode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub mod refine_fine;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod subtract;
 

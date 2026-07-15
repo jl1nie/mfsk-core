@@ -435,18 +435,55 @@ pub fn coarse_sync<P: Protocol>(
     // `core::baseline::fit_baseline` in place for that future use.
     let sbase: Vec<f32> = vec![global_base; n_freq];
 
+    // FST4-specific stage-1 augmentation (issue #146): the Costas grid
+    // above only correlates against N_SYNC/N_SYMBOLS of the slot's
+    // symbols (25% for every FST4 sub-mode, since all five share frame
+    // layout), giving ~3 dB less SNR discrimination than a full-slot
+    // detector — measured as a flat ~2.3-3.1 dB AWGN recall gap vs
+    // WSJT-X's published thresholds across all five periods, matching
+    // sqrt(N_SYMBOLS/N_SYNC) = sqrt(4) = 3.01 dB almost exactly.
+    // WSJT-X's own FST4 candidate search (`get_candidates_fst4` in
+    // `fst4_decode.f90`) never Costas-correlates for candidate
+    // detection at all: it sums power at the NTONES candidate-tone
+    // offsets across the *entire* slot (every symbol, not just sync
+    // ones) before ever doing a timing search. Mirror that here as an
+    // OR-gate alongside the existing Costas-grid threshold — a bin
+    // that clears the full-slot non-coherent check gets into the
+    // candidate list even when its short-time Costas score alone
+    // doesn't clear `sync_min` at any lag. The reported `.score` is
+    // still the existing Costas-grid value (whatever it is), so
+    // downstream OSD-gating semantics (calibrated against that scale)
+    // are unaffected.
+    let stage1_norm: Vec<f32> = if P::ID == super::ProtocolId::Fst4 {
+        let avg_power = s.avg_power_per_bin();
+        let ccf: Vec<f32> = (0..n_freq)
+            .map(|fi| {
+                let i = ia + fi;
+                (0..ntones)
+                    .map(|k| avg_power[(i + d.nfos * k).min(d.nh1 - 1)])
+                    .sum()
+            })
+            .collect();
+        let stage1_base = pct(&ccf);
+        ccf.iter().map(|&c| c / stage1_base).collect()
+    } else {
+        Vec::new()
+    };
+    let stage1_pass = |fi: usize| stage1_norm.get(fi).copied().unwrap_or(0.0) >= sync_min;
+
     // Per-fi candidate extraction: each bin is independent.
     // Extract into a closure so both serial and parallel paths share the logic.
     let fi_cands = |fi: usize| -> Vec<SyncCandidate> {
         let i = ia + fi;
         let freq_hz = i as f32 * d.df;
         let local_base = sbase[fi];
+        let bin_stage1_pass = stage1_pass(fi);
 
         let mut peaks: Vec<(i32, f32)> = (-d.jz..=d.jz)
             .filter_map(|lag| {
                 let raw = sync2d[idx(fi, lag)];
                 let norm = raw / local_base;
-                if norm.is_finite() && norm >= sync_min {
+                if norm.is_finite() && (norm >= sync_min || bin_stage1_pass) {
                     Some((lag, norm))
                 } else {
                     None
@@ -505,7 +542,13 @@ pub fn coarse_sync<P: Protocol>(
             }
         }
     }
-    cands.retain(|c| c.score >= sync_min);
+    cands.retain(|c| {
+        if c.score >= sync_min {
+            return true;
+        }
+        let fi = ((c.freq_hz / d.df).round() as usize).saturating_sub(ia);
+        stage1_pass(fi)
+    });
 
     if let Some(fhint) = freq_hint {
         cands.sort_by(|a, b| {

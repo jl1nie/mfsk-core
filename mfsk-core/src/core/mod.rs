@@ -46,6 +46,8 @@ pub mod protocol;
 pub mod scalar;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod sync;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod sync2d;
 pub mod tx;
 
 pub use protocol::{

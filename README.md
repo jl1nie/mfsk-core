@@ -489,6 +489,14 @@ reference:
   deprecation, Q-format reference, full `mfsk-ffi-ft8` C ABI
   tutorial (streaming + ESP-IDF component layout), performance
   benchmark, streaming RX pipeline, binary footprint.
+- **FST4 sensitivity benchmark setup:**
+  [English `docs/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.md)
+  / [日本語 `docs/FST4_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.ja.md)
+  — reproducing the `fst4sim`-driven AWGN/fading SNR sweep
+  (`tests/fst4_sweep.rs`) from a clean checkout on any machine:
+  prerequisites, building `fst4sim` from WSJT-X source, generating
+  the WAV corpus, and how to avoid grid-censoring artifacts when
+  reading off the recall crossing.
 - **M5StickS3 FT8 controller manual:**
   [English `docs/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md)
   / [日本語 `docs/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.ja.md)

@@ -325,14 +325,21 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
     //   → run nsym ∈ {1, 2, 4}, store in {bmeta, bmetb, bmetc}; skip
     //   nsym=3. The 4-symbol coherent integration gives ~3 dB SNR
     //   gain on stable signals vs nsym=3.
+    // `max_nsym=8` (FST4, matching WSJT-X `get_fst4_bitmetrics.f90`'s
+    //   1/2/4/8-symbol correlation ladder) → run nsym ∈ {1, 2, 8},
+    //   store in {bmeta, bmetb, bmetc}; skip 3..7. `nt = NTONES^nsym`
+    //   reaches 4^8 = 65536 group hypotheses, same cost WSJT-X pays
+    //   (`s2(0:65535)` in the Fortran source) — the `data_chunks`
+    //   grouping + tail-patch logic below is already nsym-generic, so
+    //   no new per-nsym combination table is needed.
     for nsym in 1usize..=max_nsym {
-        if max_nsym == 4 && nsym == 3 {
-            continue; // FT4 path skips 3-symbol; bmetc holds the nsym=4 result
+        if nsym > 2 && nsym != max_nsym {
+            continue; // only the two shallow depths + the deepest (max_nsym) run
         }
         let primary: &mut [f32] = match nsym {
             1 => &mut bmeta,
             2 => &mut bmetb,
-            3 | 4 => &mut bmetc,
+            n if n == max_nsym => &mut bmetc,
             _ => unreachable!(),
         };
         if nsym == 1 {

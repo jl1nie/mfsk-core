@@ -30,15 +30,20 @@ mkdir -p "$OUT_DIR"
 MSG="CQ JL1NIE PM95"
 F0=1500
 DT=0.0
-TRIALS=10   # files per (mode, channel, snr) — raise to 20 for thorough sweep
+TRIALS=20   # files per (mode, channel, snr) — raise to 20 for thorough sweep
 
 # SNR levels per mode (dB, all negative — add more as needed)
+# Issue #146: original grids stopped 4-5 dB short of the WSJT-X-published
+# threshold for FST4-60/120/300 (weakest tested point == the "reported"
+# figure quoted in the issue, i.e. the true 50% crossing was never probed).
+# Extended here to run 1 dB past each mode's official threshold so the
+# sweep can locate the real crossing instead of being censored by the grid.
 declare -A MODE_SNRS
-MODE_SNRS[15]="-5 -10 -15 -17 -20"
-MODE_SNRS[30]="-5 -10 -15 -20 -22"
-MODE_SNRS[60]="-5 -10 -15 -20 -24"
-MODE_SNRS[120]="-5 -10 -15 -20 -24 -26"
-MODE_SNRS[300]="-5 -10 -15 -20 -24 -27 -30"
+MODE_SNRS[15]="-5 -10 -14 -15 -16 -17 -18 -19 -20 -21 -22 -23"
+MODE_SNRS[30]="-5 -10 -15 -18 -19 -20 -21 -22 -23 -24 -25 -26"
+MODE_SNRS[60]="-5 -10 -15 -20 -22 -23 -24 -25 -26 -27 -28 -29 -30"
+MODE_SNRS[120]="-5 -10 -15 -20 -24 -26 -27 -28 -29 -30 -31 -32 -33"
+MODE_SNRS[300]="-5 -10 -15 -20 -24 -27 -30 -31 -32 -33 -34 -35 -36 -37"
 
 # Channel conditions: name fdop del
 # fdop/del values follow ITU-R (CCIR) Watterson HF channel models.
