@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.7.0 — FST4 all sub-modes + coarse_sync parallelisation (#23, #139)
+
+### Added
+
+- **FST4-15, FST4-30, FST4-120, FST4-300** sub-modes (`Fst4s15`, `Fst4s30`,
+  `Fst4s120`, `Fst4s300`) via the `fst4_submode!` macro.  All 5 FST4 periods
+  now decode against WSJT-X `fst4sim`-generated signals (#138).
+  Per-mode constants verified against `fst4_decode.f90` / `fst4sim.f90`:
+
+  | Sub-mode | NSPS  | NDOWN | TX_START_OFFSET_S |
+  |----------|-------|-------|-------------------|
+  | FST4-15  | 720   | 18    | 0.5 s             |
+  | FST4-30  | 1 680 | 42    | 1.0 s             |
+  | FST4-60  | 3 888 | 108   | 1.0 s             |
+  | FST4-120 | 8 200 | 205   | 1.0 s             |
+  | FST4-300 | 21 504| 512   | 1.0 s             |
+
+- **Generic FST4 decode API**: `decode_frame_for::<P>(audio, cfg, freq_min,
+  freq_max, sync_min, max_cand)` — one function covers all sub-modes.
+
+- **`coarse_sync` parallelisation** under `--features parallel` (#139).
+  Three serial `fi`-loops (sync2d construction, per-bin peak reduction,
+  candidate NMS) replaced with rayon equivalents.  Serial path unchanged
+  when the feature is absent.  Measured on a 12-core host during the FST4-300
+  CCIR sweep (1 120 files): wall-clock ~3 min 44 s, CPU utilisation ≈8×.
+  FST4-300 benefits most (n_freq ≈ 5 200 bins vs FT8's ≈ 464); FT8 and all
+  other protocols that call `coarse_sync<P>` also gain proportionally.
+
+- **fst4sim test infrastructure** (`scripts/`):
+  - `build_fst4sim.sh` — builds WSJT-X's `fst4sim` Fortran binary (gfortran
+    + FFTW3) for use as a golden signal source.
+  - `gen_fst4_sim_wavs.sh` — one AWGN WAV per sub-mode at −5 dB.
+  - `gen_fst4_sweep_wavs.sh` — full SNR × fading matrix (5 modes × 4 ITU-R
+    Watterson channels × SNR sweep × 10 trials = 1 120 WAVs).
+
+### Tests
+
+- `tests/fst4_sim_roundtrip.rs` — all 5 sub-modes decode `fst4sim` −5 dB
+  AWGN signals; all pass.
+- `tests/fst4_sweep.rs` (`#[ignore]`) — SNR sweep benchmark with recall
+  table output.  Parallelises the 10 trials per cell when `parallel` is set.
+
+  Selected sensitivity results (50 % recall threshold, 10 trials/cell):
+
+  | Mode     | AWGN   | ccir_good | ccir_moderate | ccir_poor |
+  |----------|--------|-----------|---------------|-----------|
+  | FST4-15  | −17 dB | −17 dB    | −15 dB        | −15 dB    |
+  | FST4-30  | −20 dB | −20 dB    | −20 dB        | −20 dB    |
+  | FST4-60  | −24 dB | −24 dB    | −20 dB        | −20 dB    |
+  | FST4-120 | −26 dB | −26 dB    | −25 dB        | −24 dB    |
+  | FST4-300 | −30 dB | −30 dB    | −28 dB        | −22 dB    |
+
+  Channels: `ccir_good` = fdop 0.1 Hz / del 0.5 ms,
+  `ccir_moderate` = 0.5 / 1.0, `ccir_poor` = 1.0 / 2.0 (ITU-R Watterson).
+
 ## 0.6.8 — fix FST4-60A decode (#23): wrong NSPS/NDOWN/GFSK_BT + missing message scramble
 
 `Fst4s60`'s modulation parameters were never-revisited placeholders:
