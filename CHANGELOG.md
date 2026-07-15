@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.1 — README restructure for crates.io / GitHub discoverability (#144)
+
+Non-functional patch. No source code modifications, no new features,
+no bug fixes — pure docs, published solely to refresh the crate's
+displayed README on crates.io (crates.io/docs.rs render a snapshot
+taken at publish time and don't pick up GitHub-only changes):
+
+- `README.md` reordered so a first-time visitor hits the overview,
+  supported-protocol table, and a copy-pasteable Quick Start example
+  before any design discussion.
+- New DSP-pipeline Architecture diagram (Audio → FFT → Candidate
+  Search → Sync → Demodulation → FEC → Decoded Message), kept
+  separate from the existing trait-stack diagram (now under Design
+  Philosophy).
+- Design Philosophy expanded with an explicit "why a `Protocol`
+  trait" section (shared vs. protocol-specific, zero-cost
+  monomorphisation) and the "Why Rust" rationale.
+- Added a Performance summary, a Comparison-with-WSJT-X table, and
+  an FAQ.
+- Detailed reference material (attribution, modules, FFI, contributing,
+  full status/recall tables) moved below License into a "Reference"
+  section so the top of the file stays short.
+
 ## 0.7.0 — FST4 all sub-modes + coarse_sync parallelisation (#23, #139)
 
 ### Added
