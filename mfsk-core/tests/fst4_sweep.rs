@@ -199,9 +199,9 @@ fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
 #[ignore = "manual pre-merge benchmark — run with --ignored --nocapture"]
 fn fst4_snr_sweep() {
     let dir = sweep_dir();
-    let wavs = collect_wavs(&dir);
+    let all_wavs = collect_wavs(&dir);
 
-    if wavs.is_empty() {
+    if all_wavs.is_empty() {
         eprintln!(
             "No WAVs found in {:?}\n\
              Run: scripts/build_fst4sim.sh && scripts/gen_fst4_sweep_wavs.sh",
@@ -209,6 +209,36 @@ fn fst4_snr_sweep() {
         );
         return;
     }
+
+    // Optional env-var filters — narrow the sweep to the region of interest.
+    // MFSK_FST4_SWEEP_MODES=30,300        (comma-separated T/R periods)
+    // MFSK_FST4_SWEEP_CHANNELS=awgn       (comma-separated channel names)
+    // MFSK_FST4_SWEEP_SNR_MIN=-25         (inclusive lower bound, dB)
+    // MFSK_FST4_SWEEP_SNR_MAX=-20         (inclusive upper bound, dB)
+    let mode_filter: Option<Vec<u32>> = std::env::var("MFSK_FST4_SWEEP_MODES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect());
+    let chan_filter: Option<Vec<String>> = std::env::var("MFSK_FST4_SWEEP_CHANNELS")
+        .ok()
+        .map(|s| s.split(',').map(|v| v.trim().to_string()).collect());
+    let snr_min: Option<i32> = std::env::var("MFSK_FST4_SWEEP_SNR_MIN")
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+    let snr_max: Option<i32> = std::env::var("MFSK_FST4_SWEEP_SNR_MAX")
+        .ok()
+        .and_then(|s| s.trim().parse().ok());
+
+    let wavs: Vec<WavMeta> = all_wavs
+        .into_iter()
+        .filter(|w| mode_filter.as_ref().is_none_or(|f| f.contains(&w.nsec)))
+        .filter(|w| {
+            chan_filter
+                .as_ref()
+                .is_none_or(|f| f.iter().any(|c| c == &w.channel))
+        })
+        .filter(|w| snr_min.is_none_or(|m| w.snr_db >= m))
+        .filter(|w| snr_max.is_none_or(|m| w.snr_db <= m))
+        .collect();
 
     eprintln!("\n{:-<72}", "");
     eprintln!(

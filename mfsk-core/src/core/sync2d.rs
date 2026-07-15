@@ -1,31 +1,21 @@
-//! Generic 2-D (Δf, Δt) fine-sync refine — port of WSJT-X `sync4d.f90`,
-//! generalised so it isn't FT4-specific.
+//! Generic 2-D (Δf, Δt) fine-sync refine — port of WSJT-X `sync4d.f90`
+//! (FT4) and `fst4_sync_search` (FST4).
 //!
-//! Two-pass refinement of a coarse-sync candidate:
+//! **FT4** uses [`Sync2dConfig`] / [`sync2d_refine`]: two-pass local
+//! refinement around the coarse-sync candidate.
 //!
-//! - **Coarse**: ±`coarse_df_radius` Hz / `coarse_df_step` Hz-step ×
-//!   ±`coarse_t_radius` / `coarse_t_step`-sample window. Picks the
-//!   (Δf, Δt) cell with peak Costas-correlation power across the
-//!   protocol's sync blocks.
-//! - **Fine**: ±`fine_df_radius` Hz / `fine_df_step` Hz-step ×
-//!   ±`fine_t_radius` / `fine_t_step`-sample window around the coarse
-//!   winner.
+//! **FST4** uses [`fst4_sync_search`]: faithful port of WSJT-X
+//! `fst4_decode.f90:879-925`.  Coarse pass sweeps ±1.5 s of the full
+//! slot (not just the local coarse_sync window) so the winner is always
+//! near the true peak, then a fine pass ±7 × 0.02·baud × ±4 samples
+//! locks in.  The local-window approach (`sync2d_refine` with
+//! `Sync2dConfig::for_fst4`) caused regression because a noise peak at
+//! the edge of the ±10-sample coarse window displaced the fine pass
+//! outside the reach of the true position.
 //!
-//! The radius/step constants are derived from `P::TONE_SPACING_HZ`
-//! and `SyncDims::ds_spb` rather than hardcoded absolutes, so the same
-//! code serves every T/R-period sub-mode of a chained-frame protocol
-//! (FST4's tone spacing spans 0.56–16.67 Hz across its five sub-modes)
-//! as well as fixed-geometry protocols like FT4. The ratios are
-//! calibrated against FT4's original hand-tuned constants (12 Hz /
-//! 3 Hz / 20 samples / 4 samples coarse, 4 Hz / 1 Hz / 5 samples / 1
-//! sample fine, at FT4's TONE_SPACING_HZ=20.833 / ds_spb=32) so FT4's
-//! behaviour is bit-identical to before this became generic — see
-//! `ratio` constants below.
-//!
-//! The output is a tuple of `(refined_freq_hz, refined_i0)` plus the
-//! peak score; downstream `symbol_spectra` is invoked on a freq-twiddled
-//! `cd0` so per-symbol FFT bins land on the correct tones for the
-//! refined carrier.
+//! The output is a [`Sync2dResult`] with refined `(freq_hz, i0, score)`;
+//! downstream `symbol_spectra` is invoked on a freq-twiddled `cd0` so
+//! per-symbol FFT bins land on the correct tones for the refined carrier.
 
 use alloc::vec::Vec;
 use core::f32::consts::PI;
@@ -34,6 +24,41 @@ use num_complex::Complex;
 
 use crate::core::Protocol;
 use crate::core::sync::{SyncCandidate, SyncDims, make_costas_ref, score_costas_block};
+
+/// Parameters for [`sync2d_refine`].
+///
+/// Use [`Sync2dConfig::for_ft4`] rather than constructing directly.
+#[derive(Clone, Debug)]
+pub struct Sync2dConfig {
+    /// Coarse Δf search: `if = -n..=n`, step `coarse_df_step_hz`.
+    pub coarse_df_half_steps: i32,
+    pub coarse_df_step_hz: f32,
+    /// Coarse Δt search: ±`coarse_t_radius` downsampled samples, step `coarse_t_step`.
+    pub coarse_t_radius: i32,
+    pub coarse_t_step: i32,
+    /// Fine Δf search: `if = -n..=n`, step `fine_df_step_hz`.
+    pub fine_df_half_steps: i32,
+    pub fine_df_step_hz: f32,
+    /// Fine Δt search: ±`fine_t_radius` downsampled samples, step 1.
+    pub fine_t_radius: i32,
+}
+
+impl Sync2dConfig {
+    /// FT4 constants from `sync4d.f90`: coarse ±12 Hz/3 Hz × ±20/4 samples;
+    /// fine ±4 Hz/1 Hz × ±5 samples.  Bit-identical to the hard-coded
+    /// values that were in `sync2d_refine` before this struct was introduced.
+    pub fn for_ft4() -> Self {
+        Self {
+            coarse_df_half_steps: 4, // 12 Hz / 3 Hz
+            coarse_df_step_hz: 3.0,
+            coarse_t_radius: 20,
+            coarse_t_step: 4,
+            fine_df_half_steps: 4, // 4 Hz / 1 Hz
+            fine_df_step_hz: 1.0,
+            fine_t_radius: 5,
+        }
+    }
+}
 
 /// Output of [`sync2d_refine`].
 #[derive(Clone, Debug)]
@@ -77,7 +102,8 @@ fn twiddle_ref(csync: &[Vec<Complex<f32>>], df_hz: f32, ds_rate: f32) -> Vec<Vec
         .collect()
 }
 
-/// Sum-of-blocks Costas correlation power at (i0, df).
+/// Sum-of-blocks Costas correlation power at (i0, df) — twiddled on the fly.
+/// Used by `sync2d_refine` where each (df, i0) combination may have a distinct df.
 fn score_at<P: Protocol>(
     cd0: &[Complex<f32>],
     blocks_costas: &[(u32, Vec<Vec<Complex<f32>>>)],
@@ -91,41 +117,24 @@ fn score_at<P: Protocol>(
     for (start_sym, csync) in blocks_costas {
         let twiddled = twiddle_ref(csync, df_hz, ds_rate);
         let off = i0 + (*start_sym as i32) * ds_spb as i32;
-        // `score_costas_block` zero-fills any block whose samples fall
-        // outside cd0 (matching WSJT-X `sync8d.f90:43-45`), so negative
-        // `off` is safe to pass through.
         total += score_costas_block(cd0, &twiddled, ds_spb, off);
     }
     total
 }
 
-/// FT4-calibrated ratios (see module doc): coarse/fine Δf radius and
-/// step as a fraction of `P::TONE_SPACING_HZ`, and coarse/fine Δt
-/// radius/step as a fraction of `SyncDims::ds_spb`. Reproduces FT4's
-/// original hardcoded constants exactly (TONE_SPACING_HZ=20.833,
-/// ds_spb=32): 12/3/4Hz-radii-and-steps, 20/4/5/1-sample windows.
-mod ratio {
-    pub const COARSE_DF_RADIUS: f32 = 12.0 / 20.833;
-    pub const COARSE_DF_STEP: f32 = 3.0 / 20.833;
-    pub const COARSE_T_RADIUS: f32 = 20.0 / 32.0;
-    pub const COARSE_T_STEP: f32 = 4.0 / 32.0;
-    pub const FINE_DF_RADIUS: f32 = 4.0 / 20.833;
-    pub const FINE_DF_STEP: f32 = 1.0 / 20.833;
-    pub const FINE_T_RADIUS: f32 = 5.0 / 32.0;
-}
-
 /// Two-pass (Δf, Δt) refinement around an initial coarse candidate.
 ///
-/// Mirrors WSJT-X `sync4d.f90` + the search loop in
-/// `ft4_decode.f90:265-275` (FT4) / `fst4_sync_search` in
-/// `fst4_decode.f90:879-925` (FST4) — both are the same two-level
-/// local (Δf, Δt) search shape, scaled to each protocol's own tone
-/// spacing / symbol duration.
-pub fn sync2d_refine<P: Protocol>(cd0: &[Complex<f32>], candidate: &SyncCandidate) -> Sync2dResult {
+/// Mirrors WSJT-X `sync4d.f90` + `ft4_decode.f90:265-275` (FT4) and
+/// `fst4_sync_search` in `fst4_decode.f90:879-925` (FST4).
+/// Pass the appropriate [`Sync2dConfig`] for the calling protocol.
+pub fn sync2d_refine<P: Protocol>(
+    cd0: &[Complex<f32>],
+    candidate: &SyncCandidate,
+    cfg: &Sync2dConfig,
+) -> Sync2dResult {
     let d = SyncDims::of::<P>();
     let ds_spb = d.ds_spb;
     let ds_rate = d.ds_rate;
-    let tone_spacing = P::TONE_SPACING_HZ;
     let init_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * ds_rate).round() as i32;
 
     let blocks_costas: Vec<(u32, Vec<Vec<Complex<f32>>>)> = P::SYNC_MODE
@@ -135,19 +144,14 @@ pub fn sync2d_refine<P: Protocol>(cd0: &[Complex<f32>], candidate: &SyncCandidat
         .collect();
 
     // Pass 1 — coarse grid.
-    let coarse_df_radius = ratio::COARSE_DF_RADIUS * tone_spacing;
-    let coarse_df_step = ratio::COARSE_DF_STEP * tone_spacing;
-    let coarse_t_radius = (ratio::COARSE_T_RADIUS * ds_spb as f32).round() as i32;
-    let coarse_t_step = ((ratio::COARSE_T_STEP * ds_spb as f32).round() as i32).max(1);
-
     let mut best_df = 0.0f32;
     let mut best_i0 = init_i0;
     let mut best_score = f32::NEG_INFINITY;
 
-    let mut df = -coarse_df_radius;
-    while df <= coarse_df_radius + 1e-3 {
-        let mut di = -coarse_t_radius;
-        while di <= coarse_t_radius {
+    for si in -cfg.coarse_df_half_steps..=cfg.coarse_df_half_steps {
+        let df = si as f32 * cfg.coarse_df_step_hz;
+        let mut di = -cfg.coarse_t_radius;
+        while di <= cfg.coarse_t_radius {
             let i0 = init_i0 + di;
             let s = score_at::<P>(cd0, &blocks_costas, df, i0, ds_spb, ds_rate);
             if s > best_score {
@@ -155,24 +159,18 @@ pub fn sync2d_refine<P: Protocol>(cd0: &[Complex<f32>], candidate: &SyncCandidat
                 best_df = df;
                 best_i0 = i0;
             }
-            di += coarse_t_step;
+            di += cfg.coarse_t_step;
         }
-        df += coarse_df_step;
     }
 
-    // Pass 2 — fine grid around best.
-    let fine_df_radius = ratio::FINE_DF_RADIUS * tone_spacing;
-    let fine_df_step = ratio::FINE_DF_STEP * tone_spacing;
-    let fine_t_radius = (ratio::FINE_T_RADIUS * ds_spb as f32).round() as i32;
-    const FINE_T_STEP: i32 = 1;
-
+    // Pass 2 — fine grid around coarse winner.
     let coarse_winner_df = best_df;
     let coarse_winner_i0 = best_i0;
 
-    let mut df = coarse_winner_df - fine_df_radius;
-    while df <= coarse_winner_df + fine_df_radius + 1e-3 {
-        let mut di = -fine_t_radius;
-        while di <= fine_t_radius {
+    for si in -cfg.fine_df_half_steps..=cfg.fine_df_half_steps {
+        let df = coarse_winner_df + si as f32 * cfg.fine_df_step_hz;
+        let mut di = -cfg.fine_t_radius;
+        while di <= cfg.fine_t_radius {
             let i0 = coarse_winner_i0 + di;
             let s = score_at::<P>(cd0, &blocks_costas, df, i0, ds_spb, ds_rate);
             if s > best_score {
@@ -180,9 +178,184 @@ pub fn sync2d_refine<P: Protocol>(cd0: &[Complex<f32>], candidate: &SyncCandidat
                 best_df = df;
                 best_i0 = i0;
             }
-            di += FINE_T_STEP;
+            di += 1;
         }
-        df += fine_df_step;
+        // Note: fine Δt step is always 1 (= 1*hmod with hmod=1).
+    }
+
+    Sync2dResult {
+        freq_hz: candidate.freq_hz + best_df,
+        i0: best_i0,
+        score: best_score,
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Coherent block correlator — FST4-specific
+//
+// WSJT-X `sync_fst4` (fst4_decode.f90:657) computes the sync score by:
+//   1. Building a phase-continuous FSK reference (`csync1`/`csync2`) for
+//      the entire 8-symbol Costas block with continuous phase accumulation
+//      across symbol boundaries.
+//   2. Computing ONE coherent inner product over all 8*nss samples:
+//      z = sum(cd0 * conjg(csynct1))
+//   3. Score = |z| / nz   (AMPLITUDE, not power)
+//
+// Our previous `score_costas_block` computed the SUM OF PER-TONE POWERS:
+//   sum_k |inner_product_k|²  (8 separate dot-products, then sum of powers)
+// which gives ~3 dB worse SNR discrimination in the sync score vs the
+// coherent approach, causing noise peaks to win at near-threshold SNR even
+// with the full-slot time search.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Create a phase-continuous FSK reference for one Costas block.
+///
+/// Unlike `make_costas_ref` (per-tone, phase reset to 0 each symbol),
+/// this accumulates phase continuously — matching the actual phase-
+/// continuous FSK modulation of the FST4 signal.  Returned length is
+/// `pattern.len() * ds_spb`.
+fn make_costas_ref_continuous(pattern: &[u8], ds_spb: usize) -> Vec<Complex<f32>> {
+    let mut out = Vec::with_capacity(pattern.len() * ds_spb);
+    let mut phi = 0.0f64;
+    for &tone in pattern {
+        let dphi = core::f64::consts::TAU * (tone as f64) / (ds_spb as f64);
+        for _ in 0..ds_spb {
+            out.push(Complex::new(phi.cos() as f32, phi.sin() as f32));
+            phi += dphi;
+        }
+    }
+    out
+}
+
+/// Apply a carrier twiddle to a flat continuous reference.
+/// Returns a new Vec; if `df_hz ≈ 0` returns the input unchanged.
+fn twiddle_flat_ref(flat_ref: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Complex<f32>> {
+    if df_hz.abs() < f32::EPSILON {
+        return flat_ref.to_vec();
+    }
+    let omega = 2.0 * PI * df_hz / ds_rate;
+    flat_ref
+        .iter()
+        .enumerate()
+        .map(|(n, &r)| {
+            let p = omega * n as f32;
+            r * Complex::new(p.cos(), p.sin())
+        })
+        .collect()
+}
+
+/// Coherent inner product for one Costas block: returns amplitude |z|.
+/// Matches WSJT-X: `abs(sum(cd0 * conjg(csynct))) / nz`
+/// (normalization by block length omitted here — comparison is relative).
+/// Returns 0.0 if the block's samples fall outside `cd0`.
+fn score_flat_coherent(cd0: &[Complex<f32>], flat_ref: &[Complex<f32>], cd0_start: i32) -> f32 {
+    let np = cd0.len() as i32;
+    let len = flat_ref.len() as i32;
+    if cd0_start < 0 || cd0_start + len > np {
+        return 0.0;
+    }
+    let s0 = cd0_start as usize;
+    let z: Complex<f32> = cd0[s0..s0 + len as usize]
+        .iter()
+        .zip(flat_ref.iter())
+        .map(|(&c, &r)| c * r.conj())
+        .sum();
+    z.norm()
+}
+
+/// FST4-specific sync: faithful port of WSJT-X `fst4_sync_search`
+/// (`fst4_decode.f90:879-925`), with the coherent amplitude scorer matching
+/// `sync_fst4` (`fst4_decode.f90:657`, `nsyncoh=8`).
+///
+/// **Scorer**: phase-continuous FSK reference, one inner product per Costas
+/// block (8×ds_spb samples), return amplitude |z| and sum across 5 blocks.
+/// This is `~3 dB` better SNR discrimination than the per-tone power-sum
+/// (`score_costas_block`) at near-threshold SNR.
+///
+/// **Coarse pass**: ±12 × 0.1·baud Hz × ±1.5 s time range (step 4).
+/// Pre-twiddled once per freq offset to avoid per-cell re-allocation.
+///
+/// **Fine pass**: ±7 × 0.02·baud Hz × ±4 samples around coarse winner,
+/// step 1.  `sbest` reset to 0.0 before fine pass (WSJT-X convention).
+pub fn fst4_sync_search<P: Protocol>(
+    cd0: &[Complex<f32>],
+    candidate: &SyncCandidate,
+) -> Sync2dResult {
+    let d = SyncDims::of::<P>();
+    let ds_spb = d.ds_spb;
+    let ds_rate = d.ds_rate;
+    let baud = P::TONE_SPACING_HZ;
+    let init_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * ds_rate).round() as i32;
+
+    // WSJT-X: ishw = 1.5 * floor(fs2) samples.
+    let ishw = (1.5 * ds_rate as f64).floor() as i32;
+
+    // Pre-build flat phase-continuous references for each Costas block.
+    // (start_sample_offset, flat_ref)
+    let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
+        .blocks()
+        .iter()
+        .map(|b| {
+            let off = b.start_symbol as i32 * ds_spb as i32;
+            let flat = make_costas_ref_continuous(b.pattern, ds_spb);
+            (off, flat)
+        })
+        .collect();
+
+    // Helper: score all 5 blocks with pre-twiddled refs at given i0.
+    let score_flat = |twiddled: &Vec<(i32, Vec<Complex<f32>>)>, i0: i32| -> f32 {
+        twiddled
+            .iter()
+            .map(|(off, flat)| score_flat_coherent(cd0, flat, i0 + off))
+            .sum::<f32>()
+    };
+
+    // Coarse pass: sweep ±ishw time × ±12×0.1·baud freq.
+    let mut best_df = 0.0f32;
+    let mut best_i0 = init_i0;
+    let mut best_score = f32::NEG_INFINITY;
+
+    for si in -12i32..=12 {
+        let df = si as f32 * 0.1 * baud;
+        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = flat_blocks
+            .iter()
+            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
+            .collect();
+
+        let mut di = -ishw;
+        while di <= ishw {
+            let i0 = init_i0 + di;
+            let s = score_flat(&twiddled, i0);
+            if s > best_score {
+                best_score = s;
+                best_df = df;
+                best_i0 = i0;
+            }
+            di += 4;
+        }
+    }
+
+    // Fine pass: ±7×0.02·baud Hz × ±4 samples.  WSJT-X resets sbest=0.0.
+    let coarse_winner_df = best_df;
+    let coarse_winner_i0 = best_i0;
+    best_score = 0.0;
+
+    for si in -7i32..=7 {
+        let df = coarse_winner_df + si as f32 * 0.02 * baud;
+        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = flat_blocks
+            .iter()
+            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
+            .collect();
+
+        for di in -4i32..=4 {
+            let i0 = coarse_winner_i0 + di;
+            let s = score_flat(&twiddled, i0);
+            if s > best_score {
+                best_score = s;
+                best_df = df;
+                best_i0 = i0;
+            }
+        }
     }
 
     Sync2dResult {

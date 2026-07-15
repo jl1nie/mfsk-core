@@ -154,45 +154,43 @@ pub fn process_candidate_basic<P: Protocol>(
         }
     }
 
-    // FT4 uses the WSJT-X-faithful 2-D `sync2d_refine` (protocol-scaled
-    // Δf/Δt coarse→fine grid — see `core::sync2d` for the ratio
-    // derivation; this is a straight move of the old FT4-only
-    // `sync4d_refine`, verified bit-identical via the FT4 golden-WAV
-    // lock). Critical for sub-bin signals like W9JA in the WSJT-X
-    // golden WAV which sit on exact-Hz grid (e.g. 520.0) midway
-    // between our coarse 5.21-Hz bins.
+    // FT4 uses the WSJT-X-faithful 2-D `sync2d_refine` (`sync4d.f90`
+    // constants: coarse ±12 Hz/3 Hz × ±20/4 samples; fine ±4 Hz/1 Hz ×
+    // ±5 samples).  Bit-identical to the old `sync4d_refine`; critical for
+    // sub-bin signals like W9JA (520.0 Hz, midway between our 5.21-Hz bins)
+    // in the WSJT-X golden WAV.
     //
-    // FST4 does NOT use it (yet): WSJT-X's own FST4 decoder has the
-    // analogous two-level local (Δf, Δt) search (`fst4_sync_search`,
-    // `fst4_decode.f90:879-925`), and the missing-refine gap is a
-    // documented open item in issue #146 — but a first attempt at
-    // porting it here (ratios derived from FT4's TONE_SPACING_HZ /
-    // ds_spb scaling) measured as a net *regression* on the AWGN
-    // sweep (FST4-30 -23dB: 3/5→1/5, FST4-300 -33dB: 4/5→1/5) rather
-    // than the hoped-for improvement — the wider (Δf,Δt) search
-    // window most likely locks onto noise peaks more often than it
-    // recovers real timing/frequency error at these SNRs. Needs
-    // recalibration against real data before it's safe to enable for
-    // FST4; left off pending that.
-    // Other protocols (FT8) keep the generic time-only
-    // `refine_candidate` path; FT8 has its own 3-stage refine wired
-    // separately in `ft8/decode.rs`.
-    let (refined, i_start): (SyncCandidate, i32) = if P::ID == super::ProtocolId::Ft4 {
-        let s2 = super::sync2d::sync2d_refine::<P>(&cd0, cand);
-        let df_hz = s2.freq_hz - cand.freq_hz;
-        cd0 = super::sync2d::freq_shift_cd0(&cd0, df_hz, ds_rate);
-        let i_start: i32 = s2.i0;
-        let refined = SyncCandidate {
-            freq_hz: s2.freq_hz,
-            dt_sec: (s2.i0 as f32) / ds_rate - tx_start,
-            score: s2.score,
+    // FST4 uses `fst4_sync_search`: faithful port of WSJT-X
+    // `fst4_decode.f90:879-925`.  Coarse pass sweeps ±1.5 s (full slot)
+    // so the winner is always near the true peak; fine pass ±7×0.02·baud ×
+    // ±4 samples locks in.  Previous local-window approach (Sync2dConfig
+    // ±10 samples) caused regression because noise peaks at the window edge
+    // displaced the fine pass outside reach of the true position.
+    //
+    // FT8 keeps the generic time-only `refine_candidate` path; it has its
+    // own 3-stage refine wired separately in `ft8/decode.rs`.
+    let (refined, i_start): (SyncCandidate, i32) =
+        if P::ID == super::ProtocolId::Ft4 || P::ID == super::ProtocolId::Fst4 {
+            let s2 = if P::ID == super::ProtocolId::Fst4 {
+                super::sync2d::fst4_sync_search::<P>(&cd0, cand)
+            } else {
+                let cfg = super::sync2d::Sync2dConfig::for_ft4();
+                super::sync2d::sync2d_refine::<P>(&cd0, cand, &cfg)
+            };
+            let df_hz = s2.freq_hz - cand.freq_hz;
+            cd0 = super::sync2d::freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let i_start: i32 = s2.i0;
+            let refined = SyncCandidate {
+                freq_hz: s2.freq_hz,
+                dt_sec: (s2.i0 as f32) / ds_rate - tx_start,
+                score: s2.score,
+            };
+            (refined, i_start)
+        } else {
+            let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
+            let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
+            (refined, i_start)
         };
-        (refined, i_start)
-    } else {
-        let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
-        (refined, i_start)
-    };
 
     let cs_raw = symbol_spectra::<P>(&cd0, i_start);
     let nsync = sync_quality::<P>(&cs_raw);

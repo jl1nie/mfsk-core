@@ -5,12 +5,13 @@
 #   scripts/gen_fst4_sweep_wavs.sh [fst4sim-path] [out-dir]
 #
 # File naming:  fst4_<nsec>_<channel>_<snr>_<trial>.wav
-#   channel:  awgn | hf_quiet | hf_typical | hf_disturbed
+#   channel:  awgn | ccir_good | ccir_moderate | ccir_poor
 #   snr:      m05 = -5 dB, m24 = -24 dB, etc.
 #   trial:    01..TRIALS
 #
 # Run build_fst4sim.sh first if the binary doesn't exist.
 # Existing files are skipped (safe to re-run after adding modes/conditions).
+# Jobs run in parallel (JOBS env var, default: nproc).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,6 +19,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 FST4SIM="${1:-$REPO_ROOT/target/fst4sim/fst4sim}"
 OUT_DIR="${2:-$REPO_ROOT/embedded-poc/assets/fst4_sweep}"
+JOBS="${JOBS:-$(nproc)}"
 
 if [[ ! -x "$FST4SIM" ]]; then
   echo "error: fst4sim not found at $FST4SIM" >&2
@@ -30,14 +32,8 @@ mkdir -p "$OUT_DIR"
 MSG="CQ JL1NIE PM95"
 F0=1500
 DT=0.0
-TRIALS=20   # files per (mode, channel, snr) — raise to 20 for thorough sweep
+TRIALS=20
 
-# SNR levels per mode (dB, all negative — add more as needed)
-# Issue #146: original grids stopped 4-5 dB short of the WSJT-X-published
-# threshold for FST4-60/120/300 (weakest tested point == the "reported"
-# figure quoted in the issue, i.e. the true 50% crossing was never probed).
-# Extended here to run 1 dB past each mode's official threshold so the
-# sweep can locate the real crossing instead of being censored by the grid.
 declare -A MODE_SNRS
 MODE_SNRS[15]="-5 -10 -14 -15 -16 -17 -18 -19 -20 -21 -22 -23"
 MODE_SNRS[30]="-5 -10 -15 -18 -19 -20 -21 -22 -23 -24 -25 -26"
@@ -45,8 +41,6 @@ MODE_SNRS[60]="-5 -10 -15 -20 -22 -23 -24 -25 -26 -27 -28 -29 -30"
 MODE_SNRS[120]="-5 -10 -15 -20 -24 -26 -27 -28 -29 -30 -31 -32 -33"
 MODE_SNRS[300]="-5 -10 -15 -20 -24 -27 -30 -31 -32 -33 -34 -35 -36 -37"
 
-# Channel conditions: name fdop del
-# fdop/del values follow ITU-R (CCIR) Watterson HF channel models.
 CHANNELS=(
   "awgn          0.0  0.0"
   "ccir_good     0.1  0.5"
@@ -54,7 +48,6 @@ CHANNELS=(
   "ccir_poor     1.0  2.0"
 )
 
-# WAV filename written by fst4sim (depends on nsec)
 fst4sim_outname() {
   local nsec=$1 trial=$2
   if (( nsec <= 30 )); then
@@ -64,7 +57,6 @@ fst4sim_outname() {
   fi
 }
 
-# SNR → tag: -5 → m05, -24 → m24, 5 → p05
 snr_tag() {
   local snr=$1
   if (( snr < 0 )); then
@@ -74,55 +66,80 @@ snr_tag() {
   fi
 }
 
-TMPDIR_WORK="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_WORK"' EXIT
+# One worker function per (nsec, chan, snr) cell — each gets its own tmpdir.
+run_cell() {
+  local nsec=$1 chan=$2 fdop=$3 del=$4 snr=$5
 
-total=0; skipped=0; generated=0
+  local tag; tag="$(snr_tag "$snr")"
 
+  # Skip if all trials already exist.
+  local missing=0
+  for T in $(seq 1 "$TRIALS"); do
+    local dest="$OUT_DIR/fst4_${nsec}_${chan}_${tag}_$(printf '%02d' "$T").wav"
+    [[ -f "$dest" ]] || (( missing++ )) || true
+  done
+  if (( missing == 0 )); then
+    return 0
+  fi
+
+  printf "  FST4-%3d  %-14s  SNR=%4d dB  generating %d files ...\n" \
+    "$nsec" "$chan" "$snr" "$TRIALS"
+
+  local tmpd; tmpd="$(mktemp -d)"
+  trap 'rm -rf "$tmpd"' RETURN
+
+  (
+    cd "$tmpd"
+    "$FST4SIM" "$MSG" "$nsec" "$F0" "$DT" "$fdop" "$del" "$TRIALS" "$snr" F \
+      >/dev/null
+    for T in $(seq 1 "$TRIALS"); do
+      local src dest
+      src="$(fst4sim_outname "$nsec" "$T")"
+      dest="$OUT_DIR/fst4_${nsec}_${chan}_${tag}_$(printf '%02d' "$T").wav"
+      [[ -f "$src" ]] && mv "$src" "$dest"
+    done
+  )
+}
+
+export -f run_cell fst4sim_outname snr_tag
+export FST4SIM OUT_DIR TRIALS MSG F0 DT
+
+# Build the full list of (nsec chan fdop del snr) tuples, then fan out.
+CELLS=()
 for NSEC in 15 30 60 120 300; do
-  SNRS="${MODE_SNRS[$NSEC]}"
   for CHAN_SPEC in "${CHANNELS[@]}"; do
     read -r CHAN FDOP DEL <<< "$CHAN_SPEC"
-    for SNR in $SNRS; do
-      TAG="$(snr_tag "$SNR")"
-
-      # Generate all TRIALS files if any are missing
-      missing=0
-      for T in $(seq 1 "$TRIALS"); do
-        DEST="$OUT_DIR/fst4_${NSEC}_${CHAN}_${TAG}_$(printf '%02d' "$T").wav"
-        [[ -f "$DEST" ]] || (( missing++ )) || true
-      done
-
-      (( total += TRIALS ))
-      if (( missing == 0 )); then
-        (( skipped += TRIALS )) || true
-        continue
-      fi
-
-      printf "  FST4-%3d  %-14s  SNR=%4d dB  generating %d files ...\n" \
-        "$NSEC" "$CHAN" "$SNR" "$TRIALS"
-
-      (
-        cd "$TMPDIR_WORK"
-        rm -f 000000_*.wav
-        "$FST4SIM" "$MSG" "$NSEC" "$F0" "$DT" "$FDOP" "$DEL" "$TRIALS" "$SNR" F \
-          >/dev/null
-        for T in $(seq 1 "$TRIALS"); do
-          SRC="$(fst4sim_outname "$NSEC" "$T")"
-          DEST="$OUT_DIR/fst4_${NSEC}_${CHAN}_${TAG}_$(printf '%02d' "$T").wav"
-          [[ -f "$SRC" ]] && mv "$SRC" "$DEST"
-        done
-      )
-      (( generated += TRIALS )) || true
+    for SNR in ${MODE_SNRS[$NSEC]}; do
+      CELLS+=("$NSEC $CHAN $FDOP $DEL $SNR")
     done
   done
 done
 
+echo "Generating FST4 sweep corpus: ${#CELLS[@]} cells, TRIALS=$TRIALS, JOBS=$JOBS"
+echo "Output: $OUT_DIR"
 echo ""
-echo "Done. Total=$total  Generated=$generated  Skipped(existing)=$skipped"
-echo "Assets: $OUT_DIR"
+
+# Run cells in parallel using a simple job-pool (no GNU parallel needed).
+active=0
+pids=()
+for CELL in "${CELLS[@]}"; do
+  read -r nsec chan fdop del snr <<< "$CELL"
+  run_cell "$nsec" "$chan" "$fdop" "$del" "$snr" &
+  pids+=($!)
+  (( active++ )) || true
+  if (( active >= JOBS )); then
+    wait "${pids[0]}"
+    pids=("${pids[@]:1}")
+    (( active-- )) || true
+  fi
+done
+wait
+
+echo ""
+echo "Done. Assets: $OUT_DIR"
+echo "  $(ls "$OUT_DIR" | wc -l) files total"
 echo ""
 echo "Run the sweep test with:"
 echo "  MFSK_FST4_SWEEP_DIR=$OUT_DIR \\"
-echo "    cargo test --test fst4_sweep --features fst4,fft-rustfft \\"
+echo "    cargo test --test fst4_sweep --release --features fst4,fft-rustfft,parallel \\"
 echo "    -- --ignored --nocapture"
