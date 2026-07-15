@@ -21,6 +21,8 @@ use alloc::vec::Vec;
 use core::f32::consts::PI;
 
 use num_complex::Complex;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use crate::core::Protocol;
 use crate::core::sync::{SyncCandidate, SyncDims, make_costas_ref, score_costas_block};
