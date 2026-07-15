@@ -522,12 +522,60 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 > 出すパスは残しているが、`ft8::decode::decode_frame*` 系の高レベル
 > エントリは全て `decode_block::coarse_sync` を経由する。詳細は §10。
 
+### Sync2D — ローカル (Δf, Δt) refine と FST4 フルスロット探索 (`mfsk_core::core::sync2d`)
+
+`core::sync::coarse_sync` のグリッド探索とは別に、WSJT-X のローカル
+sync 微調整コードを移植した 2 系統がここにある:
+
+* `sync2d_refine::<P>(...)` — coarse sync で見つかった候補周辺の
+  汎用 2D (Δf, Δt) ローカル refine (探索半径/ステップは絶対値
+  ハードコードでなく `P::TONE_SPACING_HZ` / `ds_spb` でスケール)。
+  0.7.1 で FT4 の旧 `sync4d_refine` から切り出し、FT4 golden-WAV
+  ロックで旧ハードコード定数とビット完全一致を確認済み。
+  **FT4 専用** — FST4 にも有効化を試みたが、しきい値付近で逆に
+  recall が悪化する結果になった (探索窓を広げるとノイズ由来の相関
+  ピークにロックする頻度が、実際のタイミング/周波数誤差を拾う頻度
+  より高くなる低 SNR 域のため)。FST4 では無効のまま
+  `core::pipeline.rs` にインラインで経緯を記録 (issue #146)。
+* `fst4_sync_search::<P>(...)` — WSJT-X の `fst4_sync_search` /
+  `sync_fst4` (`fst4_decode.f90:657-925`) に対応する FST4 専用の
+  2 段階ローカル探索。coarse パスはスロット全体 (±1.5 s、step 4、
+  周波数 ±12 step × 0.1·baud)、fine パスは ±7 step × 0.02·baud ×
+  ±4 サンプル。実際に効いたのは探索の有無ではなく WSJT-X の 2 つの
+  細部を再現した点: symbol 境界で位相をリセットせず 8-symbol
+  ブロック全体で連続的に位相を積算する Costas 参照信号
+  (`make_costas_ref_continuous`、`csync1` 相当) と、それを非コヒー
+  レントな `Σ|z_k|²` パワー和ではなくコヒーレントな単一内積
+  (`score_flat_coherent`、振幅 `|z|`) でスコア化する点。コヒーレン
+  ト化により sync スコアの SNR 弁別力が ~3 dB 改善し、これが約
+  5,000 セルの coarse グリッドでノイズピークが真のピークに勝つ確率
+  を実際に下げた。結果、FST4 の AWGN 感度ギャップは WSJT-X 公称値
+  に対して ~2.4 dB → ~0.3 dB まで縮小 (0.7.1、issue #146)。
+
+同じ作業で `core::sync::coarse_sync::<P>` にも FST4 専用の拡張が
+入った: 既存の short-time Costas グリッドしきい値に加えて、
+WSJT-X の `get_candidates_fst4` を模したフルスロット非コヒーレント
+4-tone パワーチェックをクリアした bin も候補リストに追加できる
+ようになった (`P::ID == ProtocolId::Fst4` でゲート、FT8/FT4 は
+バイト完全一致のまま)。単一信号の AWGN sweep では no-op として
+計測された (この sweep では正解候補が元々リストから漏れる状況では
+なかった) が、混雑帯でリストサイズが固定のまま多数の co-channel
+候補が競合する実運用シナリオでは、WSJT-X 準拠のカバレッジ改善と
+して意味がある。
+
 ### LLR (`mfsk_core::core::llr`)
 
 * `symbol_spectra::<P>(cd0, i_start)` — シンボル単位 FFT bin
   (汎用パス。FT8 では中間 `cd0` を割り当てない
   `ft8::decode_block::fill_symbol_spectra` を推奨)
-* `compute_llr::<P>(cs)` — WSJT 式 4 バリアント LLR (a/b/c/d)
+* `compute_llr::<P>(cs)` — WSJT 式 4 バリアント LLR (a/b/c/d)。
+  `nsym ∈ {1, 2, P::LLR_NSYM_MAX}` の相関ラダー仮説から構築される。
+  `LLR_NSYM_MAX` のデフォルトは 3 (FT8 較正値)、FT4 は 4、FST4 は 8
+  に上書き — それぞれ自身の WSJT-X bit-metric コード
+  (`get_ft4_bitmetrics.f90` / `get_fst4_bitmetrics.f90`) に合わせた
+  値で、FT8 のデフォルトを無自覚に流用しているわけではない (FST4 の
+  上書きは 0.7.1 で追加。それまでは上書きが無く FT8 のデフォルトに
+  フォールバックしていた。issue #146)
 * `sync_quality::<P>(cs)` — 硬判定 sync シンボル一致数
 
 ### Equalise (`mfsk_core::core::equalize`)
@@ -544,6 +592,18 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
   subtract) に統一。旧 `subtract_signal_weighted` /
   `qsb_partial_gain` 系は削除済
 * `process_candidate_basic::<P>(...)` — 候補単体の BP+OSD
+* `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — OSD
+  実行前の coarse-sync スコアしきい値と、OSD 後の硬判定エラー上限
+  ゲート。2026-04-07 の FT8 実 WAV recall で較正した値で、0.7.1 まで
+  他プロトコルも無条件に流用していた (issue #72)。FST4 はこの 2 つ
+  のゲートを両方バイパスし CRC-24 のみを信頼する — WSJT-X 自身の
+  FST4 受理判定 (`fst4_decode.f90:570`: `nharderrors >= 0 &&
+  unpk77_success`。スコア事前フィルタなし、硬判定エラー上限なし)
+  に合わせた形。しきい値付近の実在する FST4 候補が OSD に到達でき
+  ずにブロックされたり、OSD が CRC-24 検証済みコードワードに収束
+  した後で棄却されたりしていたのは、この FT8 較正値がそのまま
+  原因だった。FT4 は依然として FT8 の数値をそのまま使っており、
+  再較正またはバイパスは別途追跡中 (issue #72、再オープン)。
 
 AP 対応版は `msg::pipeline_ap` に配置 (AP hint 構築が
 77-bit 形式に依存するため)。

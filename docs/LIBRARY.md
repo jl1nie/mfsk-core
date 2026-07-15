@@ -549,13 +549,65 @@ constants for each — `ft8::downsample::FT8_CFG`,
 > `ft8::decode::decode_frame*` entry points all dispatch via
 > `decode_block::coarse_sync`. See §10 for the FT8-specific notes.
 
+### Sync2D — local (Δf, Δt) refine and FST4 full-slot search (`mfsk_core::core::sync2d`)
+
+Two independent pieces live here, both ported from WSJT-X's local
+sync-refinement code rather than the shared `core::sync::coarse_sync`
+grid:
+
+* `sync2d_refine::<P>(...)` — a generic 2D (Δf, Δt) local refine
+  around an already-found coarse-sync candidate (radius/step scaled
+  by `P::TONE_SPACING_HZ` / `ds_spb` instead of hardcoded absolutes).
+  Ported out of FT4's original `sync4d_refine` in 0.7.1, verified
+  bit-identical to the prior FT4-hardcoded constants via the FT4
+  golden-WAV lock. **FT4 only** — an attempt to also enable it for
+  FST4 measured as a net *regression* near threshold (the wider
+  search window locks onto noise-driven correlation peaks more often
+  than it recovers real timing/frequency error at low SNR); left off
+  for FST4, documented inline in `core::pipeline.rs` (issue #146).
+* `fst4_sync_search::<P>(...)` — FST4-specific two-stage local search
+  matching WSJT-X's `fst4_sync_search` / `sync_fst4`
+  (`fst4_decode.f90:657-925`): a coarse pass over the *entire* T/R
+  slot (±1.5 s, step 4, ×±12 steps of 0.1·baud frequency) followed by
+  a fine pass (±7 steps of 0.02·baud × ±4 samples). Two WSJT-X details
+  matter here and were the actual fix (not just wiring the search up):
+  a **phase-continuous** Costas reference (`make_costas_ref_continuous`,
+  matching `csync1` — phase accumulates across the whole 8-symbol
+  block instead of resetting per symbol) scored with
+  `score_flat_coherent` (one coherent inner product, amplitude `|z|`)
+  instead of the non-coherent `Σ|z_k|²` power-sum the first attempt
+  used. The coherent scorer gives ~3 dB better sync-score SNR
+  discrimination, which is what actually stopped noise peaks from
+  beating the true peak in the ~5,000-cell coarse grid. Net effect:
+  closed FST4's AWGN sensitivity gap vs WSJT-X's published thresholds
+  from ~2.4 dB to ~0.3 dB (0.7.1, issue #146).
+
+`core::sync::coarse_sync::<P>` also gained an FST4-only augmentation
+in the same pass: a bin can enter the candidate list either via the
+existing short-time Costas-grid threshold *or* by clearing a
+full-slot non-coherent 4-tone power check modelled on WSJT-X's
+`get_candidates_fst4` (baseline-normalised the same way as the
+existing grid). Gated on `P::ID == ProtocolId::Fst4`, so FT8/FT4 are
+byte-identical. It measured as a no-op on the narrow single-signal
+AWGN sweep (the golden candidate was never actually at risk of being
+dropped there) but is a real WSJT-X-faithful coverage improvement for
+busy/wideband scans with many co-channel candidates competing for a
+fixed-size list.
+
 ### LLR (`mfsk_core::core::llr`)
 
 * `symbol_spectra::<P>(cd0, i_start)` — per-symbol FFT bins (generic
   path; FT8 callers should prefer
   `ft8::decode_block::fill_symbol_spectra` which avoids the
   intermediate `cd0` allocation).
-* `compute_llr::<P>(cs)` — four WSJT-style LLR variants (a/b/c/d).
+* `compute_llr::<P>(cs)` — four WSJT-style LLR variants (a/b/c/d),
+  built from `nsym ∈ {1, 2, P::LLR_NSYM_MAX}` correlation-ladder
+  hypotheses. `LLR_NSYM_MAX` defaults to 3 (FT8-calibrated); FT4
+  overrides it to 4 and FST4 to 8 — both matching their own WSJT-X
+  bit-metric code (`get_ft4_bitmetrics.f90` / `get_fst4_bitmetrics.f90`)
+  rather than silently inheriting FT8's depth (FST4's override landed
+  in 0.7.1, issue #146 — it had none before and was falling back to
+  the FT8 default).
 * `sync_quality::<P>(cs)` — hard-decision sync symbol count.
 
 ### Equalise (`mfsk_core::core::equalize`)
@@ -572,6 +624,19 @@ constants for each — `ft8::downsample::FT8_CFG`,
   as of 0.6.2; the previous `subtract_signal_weighted` /
   `qsb_partial_gain` path has been removed.
 * `process_candidate_basic::<P>(...)` — single-candidate BP+OSD.
+* `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — pre-OSD
+  coarse-sync-score gate and post-OSD hard-error ceiling. Calibrated
+  against FT8 real-WAV recall (2026-04-07) and, until 0.7.1, silently
+  reused as-is by every other protocol (issue #72). FST4 bypasses
+  both gates entirely (`P::ID == ProtocolId::Fst4`) and trusts CRC-24
+  alone, matching WSJT-X's own FST4 acceptance test
+  (`fst4_decode.f90:570`: `nharderrors >= 0 && unpk77_success`, no
+  score pre-filter, no hard-error upper bound) — real near-threshold
+  FST4 candidates were being blocked from attempting OSD, or rejected
+  after OSD converged to a CRC-24-verified codeword, purely by these
+  FT8-tuned constants. FT4 still runs through the literal FT8 numbers
+  unmodified; re-tuning or bypassing them for FT4 is tracked
+  separately (issue #72, reopened).
 
 AP-aware variants live in `msg::pipeline_ap` because AP hint
 construction is 77-bit specific.
