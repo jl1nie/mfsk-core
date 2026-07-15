@@ -49,6 +49,8 @@ use mfsk_core::Jt9;
 use mfsk_core::Jt65;
 #[cfg(feature = "wspr")]
 use mfsk_core::Wspr;
+#[cfg(feature = "fst4")]
+use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300};
 
 #[cfg(feature = "q65")]
 use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
@@ -270,6 +272,21 @@ fn fst4s60_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Fst4s60>("Fst4s60");
 }
 
+#[cfg(feature = "fst4")]
+#[test]
+fn fst4_other_submodes_satisfy_protocol_invariants() {
+    // The other four T/R-period sub-modes share frame layout, FEC,
+    // message format, and GFSK shaping with Fst4s60, so they must
+    // satisfy the same invariants — running them through the same
+    // generic asserter pins that sub-mode-only changes (NSPS, NDOWN,
+    // TX_START_OFFSET_S for FST4-15) don't accidentally break the
+    // contract.
+    assert_protocol_invariants::<Fst4s15>("Fst4s15");
+    assert_protocol_invariants::<Fst4s30>("Fst4s30");
+    assert_protocol_invariants::<Fst4s120>("Fst4s120");
+    assert_protocol_invariants::<Fst4s300>("Fst4s300");
+}
+
 #[cfg(feature = "wspr")]
 #[test]
 fn wspr_satisfies_protocol_invariants() {
@@ -445,7 +462,13 @@ fn registry_entries_match_zst_trait_constants() {
     #[cfg(feature = "ft4")]
     check!("FT4", Ft4);
     #[cfg(feature = "fst4")]
-    check!("FST4-60A", Fst4s60);
+    {
+        check!("FST4-60A", Fst4s60);
+        check!("FST4-15", Fst4s15);
+        check!("FST4-30", Fst4s30);
+        check!("FST4-120", Fst4s120);
+        check!("FST4-300", Fst4s300);
+    }
     #[cfg(feature = "wspr")]
     check!("WSPR", Wspr);
     #[cfg(feature = "jt9")]
@@ -495,7 +518,7 @@ fn registry_size_matches_wired_protocols() {
     }
     #[cfg(feature = "fst4")]
     {
-        expected += 1;
+        expected += 5;
     }
     #[cfg(feature = "wspr")]
     {
@@ -547,7 +570,16 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
     #[cfg(feature = "ft4")]
     ids.push(("Ft4", <Ft4 as Protocol>::ID));
     #[cfg(feature = "fst4")]
-    ids.push(("Fst4s60", <Fst4s60 as Protocol>::ID));
+    {
+        // Every FST4 sub-mode shares the same ProtocolId::Fst4 —
+        // that's by design (the sub-mode is below the FFI
+        // granularity), same rationale as Q65.
+        ids.push(("Fst4s60", <Fst4s60 as Protocol>::ID));
+        ids.push(("Fst4s15", <Fst4s15 as Protocol>::ID));
+        ids.push(("Fst4s30", <Fst4s30 as Protocol>::ID));
+        ids.push(("Fst4s120", <Fst4s120 as Protocol>::ID));
+        ids.push(("Fst4s300", <Fst4s300 as Protocol>::ID));
+    }
     #[cfg(feature = "wspr")]
     ids.push(("Wspr", <Wspr as Protocol>::ID));
     #[cfg(feature = "jt9")]
