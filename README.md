@@ -82,9 +82,8 @@ let frame = tones_to_i16(&tones, /* freq */ 1500.0, /* amp */ 20_000);
 
 let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
 let start = (0.5 * 12_000.0) as usize;
-for (i, &s) in frame.iter().enumerate() {
-    if start + i < audio.len() { audio[start + i] = s; }
-}
+let end = (start + frame.len()).min(audio.len());
+audio[start..end].copy_from_slice(&frame[..end - start]);
 
 // 2. Decode it back.
 for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None, DecodeDepth::BpAllOsd, 50) {
@@ -351,7 +350,7 @@ changes follow cargo-style minor bumps (`0.x` line).
 
 ------------------------------------------------------------------------
 
-# Reference
+## Reference
 
 The sections above cover getting started and the design rationale.
 The rest of this document is reference material: attribution, module
