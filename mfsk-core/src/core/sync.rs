@@ -16,6 +16,8 @@ use core::f32::consts::PI;
 use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use super::{Protocol, SpectrumWindow};
 use crate::core::fft::default_planner;
@@ -298,68 +300,78 @@ pub fn coarse_sync<P: Protocol>(
     // FT8 heuristic that a late start can still sync on blocks 1..).
     let num_blocks = P::SYNC_MODE.blocks().len();
 
-    for (fi, i) in (ia..=ib).enumerate() {
-        for lag in -d.jz..=d.jz {
-            // Accumulate per-sync-block correlation power.
-            let mut t_blocks = vec![0.0f32; num_blocks];
-            let mut t0_blocks = vec![0.0f32; num_blocks];
+    // Compute correlation scores for every (freq-bin, lag) cell.
+    // Each cell is fully independent, so the outer fi loop is safe to parallelise.
+    macro_rules! fill_sync2d_row {
+        ($fi:expr, $row:expr) => {{
+            let i = ia + $fi;
+            for (jlag, lag) in (-d.jz..=d.jz).enumerate() {
+                let mut t_blocks = vec![0.0f32; num_blocks];
+                let mut t0_blocks = vec![0.0f32; num_blocks];
 
-            for (bk, block) in P::SYNC_MODE.blocks().iter().enumerate() {
-                let block_offset = d.nssy as i32 * block.start_symbol as i32;
-                for (n, &costas_n) in block.pattern.iter().enumerate() {
-                    let m = lag + d.jstrt + block_offset + (d.nssy * n) as i32;
-                    let tone_bin = i + d.nfos * costas_n as usize;
-                    if m >= 0 && (m as usize) < d.nhsym && tone_bin < d.nh1 {
-                        let m = m as usize;
-                        t_blocks[bk] += s.get(tone_bin, m);
-                        // Reference: sum over all NTONES tones at this time slot.
-                        t0_blocks[bk] += (0..ntones)
-                            .map(|k| s.get((i + d.nfos * k).min(d.nh1 - 1), m))
-                            .sum::<f32>();
+                for (bk, block) in P::SYNC_MODE.blocks().iter().enumerate() {
+                    let block_offset = d.nssy as i32 * block.start_symbol as i32;
+                    for (n, &costas_n) in block.pattern.iter().enumerate() {
+                        let m = lag + d.jstrt + block_offset + (d.nssy * n) as i32;
+                        let tone_bin = i + d.nfos * costas_n as usize;
+                        if m >= 0 && (m as usize) < d.nhsym && tone_bin < d.nh1 {
+                            let m = m as usize;
+                            t_blocks[bk] += s.get(tone_bin, m);
+                            // Reference: sum over all NTONES tones at this time slot.
+                            t0_blocks[bk] += (0..ntones)
+                                .map(|k| s.get((i + d.nfos * k).min(d.nh1 - 1), m))
+                                .sum::<f32>();
+                        }
                     }
                 }
-            }
 
-            // All blocks combined.
-            let t_all: f32 = t_blocks.iter().sum();
-            let t0_all: f32 = t0_blocks.iter().sum();
-            // Reference excludes the signal energy: normalise by
-            // (t0_total - t_total) / (NTONES - 1).
-            // Zero-denominator case: a CLEAN synthetic signal lands
-            // entirely on Costas tones (`t0_all == t_all`) so the
-            // "non-Costas tone power" is zero. Treat that as a perfect
-            // match (the signal is *all* Costas energy) and report
-            // `t_all` directly — a large number that beats any
-            // noise-floor candidate. Without this, pure-synth
-            // round-trip tests get score 0 at the signal bin.
-            let t0_ref = (t0_all - t_all) / (ntones as f32 - 1.0);
-            let sync_all = if t0_ref > f32::EPSILON {
-                t_all / t0_ref
-            } else if t_all > 0.0 {
-                t_all
-            } else {
-                0.0
-            };
-
-            // Trailing N-1 blocks (drop the first), to tolerate an early-block loss.
-            let score = if num_blocks > 1 {
-                let t_tail: f32 = t_blocks[1..].iter().sum();
-                let t0_tail: f32 = t0_blocks[1..].iter().sum();
-                let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
-                let sync_tail = if t0_tail_ref > f32::EPSILON {
-                    t_tail / t0_tail_ref
-                } else if t_tail > 0.0 {
-                    t_tail
+                // All blocks combined.
+                let t_all: f32 = t_blocks.iter().sum();
+                let t0_all: f32 = t0_blocks.iter().sum();
+                // Zero-denominator: clean synthetic signal lies entirely on
+                // Costas tones (t0_all == t_all).  Report t_all directly so
+                // round-trip tests score above noise-floor candidates.
+                let t0_ref = (t0_all - t_all) / (ntones as f32 - 1.0);
+                let sync_all = if t0_ref > f32::EPSILON {
+                    t_all / t0_ref
+                } else if t_all > 0.0 {
+                    t_all
                 } else {
                     0.0
                 };
-                sync_all.max(sync_tail)
-            } else {
-                sync_all
-            };
 
-            sync2d[idx(fi, lag)] = score;
-        }
+                // Trailing N-1 blocks (drop block 0) tolerate an early-block loss.
+                let score = if num_blocks > 1 {
+                    let t_tail: f32 = t_blocks[1..].iter().sum();
+                    let t0_tail: f32 = t0_blocks[1..].iter().sum();
+                    let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
+                    let sync_tail = if t0_tail_ref > f32::EPSILON {
+                        t_tail / t0_tail_ref
+                    } else if t_tail > 0.0 {
+                        t_tail
+                    } else {
+                        0.0
+                    };
+                    sync_all.max(sync_tail)
+                } else {
+                    sync_all
+                };
+
+                $row[jlag] = score;
+            }
+        }};
+    }
+
+    #[cfg(feature = "parallel")]
+    sync2d
+        .par_chunks_mut(n_lag)
+        .enumerate()
+        .for_each(|(fi, row)| fill_sync2d_row!(fi, row));
+
+    #[cfg(not(feature = "parallel"))]
+    for fi in 0..n_freq {
+        let start = fi * n_lag;
+        fill_sync2d_row!(fi, sync2d[start..start + n_lag]);
     }
 
     // Per-frequency peak detection — non-maximum suppression.
@@ -383,6 +395,13 @@ pub fn coarse_sync<P: Protocol>(
     // First compute the per-bin best score (still needed for the
     // 40-percentile noise-floor normalisation as a fallback).
     let mut red = vec![0.0f32; n_freq];
+    #[cfg(feature = "parallel")]
+    red.par_iter_mut().enumerate().for_each(|(fi, r)| {
+        *r = (-d.jz..=d.jz)
+            .map(|lag| sync2d[idx(fi, lag)])
+            .fold(0.0f32, f32::max);
+    });
+    #[cfg(not(feature = "parallel"))]
     for fi in 0..n_freq {
         red[fi] = (-d.jz..=d.jz)
             .map(|lag| sync2d[idx(fi, lag)])
@@ -416,17 +435,13 @@ pub fn coarse_sync<P: Protocol>(
     // `core::baseline::fit_baseline` in place for that future use.
     let sbase: Vec<f32> = vec![global_base; n_freq];
 
-    let mut cands: Vec<SyncCandidate> = Vec::new();
-    for fi in 0..n_freq {
+    // Per-fi candidate extraction: each bin is independent.
+    // Extract into a closure so both serial and parallel paths share the logic.
+    let fi_cands = |fi: usize| -> Vec<SyncCandidate> {
         let i = ia + fi;
         let freq_hz = i as f32 * d.df;
-
-        // Per-bin baseline divisor; falls back to the global one
-        // computed above when polyfit didn't run.
         let local_base = sbase[fi];
 
-        // Collect every (lag, normalised_score) pair above the
-        // threshold within the full ±jz lag range.
         let mut peaks: Vec<(i32, f32)> = (-d.jz..=d.jz)
             .filter_map(|lag| {
                 let raw = sync2d[idx(fi, lag)];
@@ -445,6 +460,7 @@ pub fn coarse_sync<P: Protocol>(
         // separated by ≥ frame airtime in lag steps, far more than
         // MLAG, so they survive as distinct candidates.
         let mut picked: Vec<i32> = Vec::new();
+        let mut out = Vec::new();
         'outer: for (lag, score) in peaks {
             for &pl in &picked {
                 if (lag - pl).abs() <= MLAG {
@@ -452,18 +468,27 @@ pub fn coarse_sync<P: Protocol>(
                 }
             }
             picked.push(lag);
-            cands.push(SyncCandidate {
+            out.push(SyncCandidate {
                 freq_hz,
                 dt_sec: (lag as f32 - 0.5) * d.tstep,
                 score,
             });
-            // Cap per-bin candidates so a noisy bin can't crowd out
-            // the rest of the spectrum.
             if picked.len() >= 8 {
                 break;
             }
         }
-    }
+        out
+    };
+
+    #[cfg(feature = "parallel")]
+    let mut cands: Vec<SyncCandidate> = (0..n_freq)
+        .into_par_iter()
+        .flat_map_iter(fi_cands)
+        .collect();
+
+    #[cfg(not(feature = "parallel"))]
+    let mut cands: Vec<SyncCandidate> = (0..n_freq).flat_map(fi_cands).collect();
+
     let _ = pattern_len; // currently unused; kept for future scoring weights
 
     // De-duplicate: within 4 Hz and 40 ms, keep highest score.
