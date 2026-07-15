@@ -211,10 +211,7 @@ fn fst4_snr_sweep() {
     }
 
     eprintln!("\n{:-<72}", "");
-    eprintln!(
-        "  {:<10} {:<14} {:>7}   {:>6}  {}",
-        "Mode", "Channel", "SNR(dB)", "Recall", "Bar"
-    );
+    eprintln!("  {:<10} {:<14} {:>7}   {:>6}  Bar", "Mode", "Channel", "SNR(dB)", "Recall");
     eprintln!("{:-<72}", "");
 
     // Group WAVs by (nsec, channel, snr_db) so we can parallelise within each
