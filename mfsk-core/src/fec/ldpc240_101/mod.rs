@@ -149,17 +149,54 @@ impl FecCodec for Ldpc240_101 {
             return None;
         }
 
-        let r = osd_decode_generic::<Ldpc240_101Params>(
+        if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
             &llr_arr,
             opts.osd_depth.min(3) as u8,
             LDPC_K,
             opts.verify_info,
-        )?;
-        Some(FecResult {
-            info: r.info,
-            hard_errors: r.hard_errors,
-            iterations: 0,
-        })
+        ) {
+            return Some(FecResult {
+                info: r.info,
+                hard_errors: r.hard_errors,
+                iterations: 0,
+            });
+        }
+
+        // Issue #146: WSJT-X's `decode240_101` never feeds OSD the raw
+        // channel LLR when BP fails — it feeds the running sum of BP's
+        // variable-node soft estimate across the first two iterations
+        // (`zsave` in `lib/fst4/decode240_101.f90:51-63`, `maxosd=2`).
+        // Diagnostic measurement (`fst4_diag_zsum_osd` in
+        // `tests/fst4_sweep.rs`) on FST4-120 near-threshold AWGN trials —
+        // the sub-mode with the largest residual gap vs WSJT-X — found
+        // this recovers real additional trials (35 of 106 OSD-relevant
+        // trials, raw-LLR-OSD recall 37→62 when tried *in addition to*
+        // the existing raw-LLR attempt) at the cost of 3 trials where
+        // raw succeeds and zsum alone would not — hence "try both", not
+        // "replace": only reached when the raw-LLR OSD attempt above
+        // already failed, so it can only add successes, never remove
+        // any. Skipped under AP hints (`ap_slice.is_some()`) — FST4
+        // doesn't wire AP decoding yet (issue #143), and
+        // `bp_llr_zsum` doesn't clamp AP-locked bits the way the main
+        // BP loop does, so running it under an AP mask would drift
+        // those bits away from their hinted value.
+        if ap_slice.is_none() {
+            let zsum = crate::fec::ldpc::bp::bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
+            if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
+                &zsum,
+                opts.osd_depth.min(3) as u8,
+                LDPC_K,
+                opts.verify_info,
+            ) {
+                return Some(FecResult {
+                    info: r.info,
+                    hard_errors: r.hard_errors,
+                    iterations: 0,
+                });
+            }
+        }
+
+        None
     }
 }
 

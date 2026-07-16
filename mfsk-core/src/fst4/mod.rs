@@ -140,6 +140,10 @@ macro_rules! fst4_submode {
             /// correlation ladder (issue #146) — was silently inheriting
             /// the FT8-calibrated default of 3.
             const LLR_NSYM_MAX: u32 = 8;
+            /// The nsym=4 rung of that same ladder — see
+            /// `ModulationParams::LLR_NSYM_MID` doc for the measured
+            /// recall effect.
+            const LLR_NSYM_MID: Option<u32> = Some(4);
         }
 
         impl FrameLayout for $name {

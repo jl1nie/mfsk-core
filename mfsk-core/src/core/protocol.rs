@@ -123,6 +123,23 @@ pub trait ModulationParams: Copy + Default + 'static {
     /// further.
     const LLR_NSYM_MAX: u32 = 3;
 
+    /// Optional extra coherent-integration depth strictly between the
+    /// `nsym=2` and `nsym=LLR_NSYM_MAX` variants, populating [`LlrSet`]'s
+    /// `llre` slot. `None` for every protocol whose ladder has no gap
+    /// (FT8: {1,2,3}; FT4: {1,2,4}) — `llre` stays empty and costs
+    /// nothing. FST4 overrides to `Some(4)`: WSJT-X's
+    /// `get_fst4_bitmetrics.f90` tries all four of nsym ∈ {1,2,4,8}
+    /// (`fst4_decode.f90:429-433`), but `LLR_NSYM_MAX=8` alone only
+    /// gives `compute_llr_generic` two depths + the deepest ({1,2,8}) —
+    /// nsym=4 would otherwise never run. Diagnostic measurement (issue
+    /// #146, `fst4_diag_nsym4_ladder` in `tests/fst4_sweep.rs`) found a
+    /// real but modest effect: a standalone nsym=4 pass recovered 4/43
+    /// (~9%) of near-threshold FST4-30 AWGN failures and 2/38 (~5%) of
+    /// FST4-300's, over and above the existing {1,2,8,d} ladder.
+    ///
+    /// [`LlrSet`]: crate::core::llr::LlrSet
+    const LLR_NSYM_MID: Option<u32> = None;
+
     /// Optional 77-bit pre-LDPC scrambler. WSJT-X applies an
     /// FT4-specific scrambler in `genft4.f90:64`
     /// (`msgbits=mod(msgbits+rvec,2)`) before computing CRC-14 and

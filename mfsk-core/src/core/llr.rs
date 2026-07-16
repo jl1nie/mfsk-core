@@ -35,6 +35,13 @@ pub struct LlrSet<T: LlrScalar = f32> {
     pub llrc: Vec<T>,
     /// nsym=1 bit-normalised (matches WSJT-X llrd).
     pub llrd: Vec<T>,
+    /// Optional extra coherent-integration depth strictly between
+    /// nsym=2 and nsym=`LLR_NSYM_MAX` (see
+    /// [`ModulationParams::LLR_NSYM_MID`](super::ModulationParams::LLR_NSYM_MID)).
+    /// Empty unless the protocol sets `LLR_NSYM_MID` and the caller used
+    /// [`compute_llr`] (not [`compute_llr_generic`]/[`compute_llr_fast`]
+    /// directly, which never populate this field).
+    pub llre: Vec<T>,
 }
 
 /// Default LLR scale factor from WSJT-X ft8b.f90. Individual protocols may
@@ -173,7 +180,13 @@ fn normalize_bmet(bmet: &mut [f32]) {
 /// the caller already holds [`Cmplx<S>`] storage for some other
 /// `S: SpecScalar` (e.g. `Q14i16` on the embedded fixed-point path).
 pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
-    compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize)
+    let mut set = compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize);
+    if let Some(mid) = P::LLR_NSYM_MID {
+        let mut bmete = vec![0.0f32; codeword_bit_len::<P>()];
+        fill_bmet_for_nsym::<P, f32>(cs, mid as usize, &mut bmete, None);
+        set.llre = scale_bmet::<T>(bmete, P::LLR_SCALE);
+    }
+    set
 }
 
 /// Same as [`compute_llr`] but stops at nsym=1. `llrb`/`llrc` come
@@ -359,6 +372,7 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
         llrb: scale_bmet::<T>(bmetb, s),
         llrc: scale_bmet::<T>(bmetc, s),
         llrd: scale_bmet::<T>(bmetd, s),
+        llre: Vec::new(),
     }
 }
 

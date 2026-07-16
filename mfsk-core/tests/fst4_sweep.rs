@@ -8,12 +8,21 @@
 //! scripts/gen_fst4_sweep_wavs.sh
 //!
 //! # 2. Run the sweep (all currently-wired modes):
-//! MFSK_FST4_SWEEP_DIR=embedded-poc/assets/fst4_sweep \
-//!   cargo test --test fst4_sweep --release --features fst4,fft-rustfft,parallel \
+//! cargo test --test fst4_sweep --release --features fst4,fft-rustfft,parallel,uvpacket \
 //!   -- --ignored --nocapture
 //! ```
 //!
-//! Output is a recall table — no assertions, statistics only.
+//! (`uvpacket` is only required because `tests/common/channel.rs`, pulled in
+//! via `mod common`, unconditionally imports `mfsk_core::uvpacket` — unrelated
+//! to FST4 itself. `MFSK_FST4_SWEEP_DIR` overrides the default corpus location
+//! `../embedded-poc/assets/fst4_sweep`, relative to `CARGO_MANIFEST_DIR` —
+//! i.e. absolute, or relative to the repo root, not the crate root cargo
+//! actually runs tests from.)
+//!
+//! Output is a recall table — no assertions, statistics only. Set
+//! `MFSK_FST4_SWEEP_CSV=/path/out.csv` to also dump raw per-trial pass/fail
+//! rows for bootstrap-CI analysis of the 50%-crossing estimate (see the
+//! env-var doc block in `fst4_snr_sweep` below).
 //! Add a new sub-mode by:
 //!   1. Implementing `Fst4sNNN` + `decode_frameNNN` in `mfsk_core::fst4`.
 //!   2. Adding a `SweepMode` entry to `MODES` below.
@@ -140,7 +149,6 @@ struct WavMeta {
     nsec: u32,
     channel: String,
     snr_db: i32,
-    #[allow(dead_code)]
     trial: u32,
     path: PathBuf,
 }
@@ -215,6 +223,13 @@ fn fst4_snr_sweep() {
     // MFSK_FST4_SWEEP_CHANNELS=awgn       (comma-separated channel names)
     // MFSK_FST4_SWEEP_SNR_MIN=-25         (inclusive lower bound, dB)
     // MFSK_FST4_SWEEP_SNR_MAX=-20         (inclusive upper bound, dB)
+    // MFSK_FST4_SWEEP_CSV=/path/out.csv   (optional: dump raw per-trial
+    //   pass/fail rows — mode,channel,snr_db,trial,pass — alongside the
+    //   printed aggregate table. Only the aggregate hits/trials was
+    //   available before; a 50%-crossing interpolation's confidence
+    //   interval needs the per-trial outcomes to bootstrap, e.g. to tell
+    //   apart a genuine sub-mode-specific recall deficit from 20-trial
+    //   sampling noise — issue #146.)
     let mode_filter: Option<Vec<u32>> = std::env::var("MFSK_FST4_SWEEP_MODES")
         .ok()
         .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect());
@@ -247,11 +262,19 @@ fn fst4_snr_sweep() {
     );
     eprintln!("{:-<72}", "");
 
+    let mut csv = std::env::var("MFSK_FST4_SWEEP_CSV").ok().map(|path| {
+        let mut f = std::fs::File::create(&path)
+            .unwrap_or_else(|e| panic!("MFSK_FST4_SWEEP_CSV={path}: {e}"));
+        writeln!(f, "mode,channel,snr_db,trial,pass").unwrap();
+        f
+    });
+
     // Group WAVs by (nsec, channel, snr_db) so we can parallelise within each
     // group and print each row immediately when the group finishes.
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
     use std::collections::BTreeMap;
+    use std::io::Write;
 
     let mut groups: BTreeMap<(u32, String, i32), Vec<&WavMeta>> = BTreeMap::new();
     for wav in &wavs {
@@ -272,22 +295,32 @@ fn fst4_snr_sweep() {
             .unwrap(); // safe: we filtered above
 
         #[cfg(feature = "parallel")]
-        let results: Vec<bool> = wav_group
+        let results: Vec<(u32, bool)> = wav_group
             .par_iter()
-            .filter_map(|wav| load_wav_i16_opt(&wav.path).map(|audio| decode_fn(&audio)))
+            .filter_map(|wav| {
+                load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_fn(&audio)))
+            })
             .collect();
 
         #[cfg(not(feature = "parallel"))]
-        let results: Vec<bool> = wav_group
+        let results: Vec<(u32, bool)> = wav_group
             .iter()
-            .filter_map(|wav| load_wav_i16_opt(&wav.path).map(|audio| decode_fn(&audio)))
+            .filter_map(|wav| {
+                load_wav_i16_opt(&wav.path).map(|audio| (wav.trial, decode_fn(&audio)))
+            })
             .collect();
 
         let trials = results.len() as u32;
         if trials == 0 {
             continue;
         }
-        let hits = results.iter().filter(|&&h| h).count() as u32;
+        let hits = results.iter().filter(|&(_, h)| *h).count() as u32;
+
+        if let Some(f) = csv.as_mut() {
+            for &(trial, pass) in &results {
+                writeln!(f, "{nsec},{chan},{snr},{trial},{}", pass as u8).unwrap();
+            }
+        }
 
         let mode_chan = (*nsec, chan.clone());
         if Some(&mode_chan) != last_mode_chan.as_ref() {
@@ -389,4 +422,324 @@ fn fst4_diag_weak_trials() {
         );
     }
     probe::<Fst4s300>(&dir, "fst4_300_awgn_m33", &FST4_300_DOWNSAMPLE);
+}
+
+/// Diagnostic (issue #146, VK3NV's 2026-07-16 comment) — quantify whether
+/// adding a genuine `nsym=4` LLR variant (the depth WSJT-X's
+/// `get_fst4_bitmetrics.f90` includes in its 1/2/4/8 ladder but that
+/// `LlrSet`'s 4 fixed slots currently skip — FST4's `LLR_NSYM_MAX=8` runs
+/// `nsym ∈ {1, 2, 8}`, never 4) would recover any additional trials, BEFORE
+/// paying for the structural change (a 5th `LlrSet` slot touching the
+/// shared BP staircase in `core::pipeline.rs`).
+///
+/// For every trial in the near-threshold SNR range of FST4-30/FST4-300,
+/// runs the real production pipeline (`process_candidate_basic`, i.e.
+/// nsym ∈ {1, 2, 8, bit-normalised} + OSD escalation) as the baseline, then
+/// separately computes a standalone nsym=4 LLR variant
+/// (`compute_llr_generic(cs, 4)`, whose `llrc` slot holds the nsym=4
+/// metrics) and runs it through the same BP → OSD escalation the
+/// production path uses (mirroring `pipeline.rs:246-350`, including the
+/// FST4-specific "CRC-24-verified accepts unconditionally, no
+/// `osd_max_errors` gate" bypass). Tallies the 2×2 outcome so the value of
+/// a standalone nsym=4 pass is visible before touching `LlrSet`.
+#[test]
+#[ignore = "manual diagnostic, not a recall gate"]
+fn fst4_diag_nsym4_ladder() {
+    use mfsk_core::core::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::llr::{compute_llr_generic, symbol_spectra, sync_quality};
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec};
+    use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
+    use mfsk_core::fst4::{Fst4s30, Fst4s300};
+
+    #[derive(Default)]
+    struct Tally {
+        total: u32,
+        both_fail: u32,
+        both_pass: u32,
+        /// nsym=4 alone recovers a trial the real pipeline (nsym 1/2/8/d)
+        /// misses — the number that decides whether the 5th-slot change
+        /// in task #2 is worth it.
+        nsym4_unique_win: u32,
+        /// Sanity-check bucket: should stay ~0 (nsym=4 is a strict addition
+        /// to the ladder, not a replacement for 1/2/8/d).
+        baseline_only: u32,
+    }
+
+    fn probe<P>(
+        dir: &Path,
+        file_prefix: &str,
+        cfg: &DownsampleCfg,
+        trials: std::ops::RangeInclusive<u32>,
+        tally: &mut Tally,
+    ) where
+        P: mfsk_core::core::Protocol,
+        P::Fec: FecCodec,
+        P::Msg: MessageCodec,
+    {
+        for trial in trials {
+            let path = dir.join(format!("{file_prefix}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                eprintln!("skip {path:?}");
+                continue;
+            };
+
+            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let Some(cand) = cands
+                .iter()
+                .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+            else {
+                eprintln!("{file_prefix} trial {trial}: no candidate near golden freq");
+                continue;
+            };
+
+            let fft_cache = build_fft_cache(&audio, cfg);
+
+            // Baseline: real production pipeline (nsym in {1,2,8,d} + OSD escalation).
+            let baseline_ok = process_candidate_basic::<P>(
+                cand,
+                &fft_cache,
+                cfg,
+                DecodeDepth::BpAllOsd,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                40,
+                10,
+            )
+            .is_some();
+
+            // Standalone nsym=4 pass: replicate process_candidate_basic's
+            // sync/downsample/normalise path (pipeline.rs:138-193), then
+            // compute *only* the nsym=4 LLR variant instead of the
+            // production {1,2,8,d} set.
+            let mut cd0 = downsample_cached(&fft_cache, cand.freq_hz, cfg);
+            let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for c in cd0.iter_mut() {
+                    *c *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<P>(&cd0, cand);
+            let ds_rate = 12_000.0 / P::NDOWN as f32;
+            let df_hz = s2.freq_hz - cand.freq_hz;
+            cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let i_start = s2.i0;
+
+            let cs = symbol_spectra::<P>(&cd0, i_start);
+            let nsync = sync_quality::<P>(&cs);
+            let nsym4_ok = if nsync <= 10 {
+                false
+            } else {
+                let llr4 = compute_llr_generic::<P, f32, f32>(&cs, 4);
+                let fec = P::Fec::default();
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info: Some(<P::Msg as MessageCodec>::verify_info),
+                    ..FecOpts::default()
+                };
+                let mut ok = fec.decode_soft(&llr4.llrc, &bp_opts).is_some();
+                if !ok && nsync >= 12 {
+                    // Mirror pipeline.rs:284-320's FST4 bypass: OSD accepts
+                    // any CRC-24-verified codeword unconditionally, no
+                    // `osd_max_errors` gate.
+                    let osd_depth: u32 = if nsync >= 18 { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter: 30,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info: Some(<P::Msg as MessageCodec>::verify_info),
+                        ..FecOpts::default()
+                    };
+                    ok = fec.decode_soft(&llr4.llrc, &osd_opts).is_some();
+                }
+                ok
+            };
+
+            tally.total += 1;
+            match (baseline_ok, nsym4_ok) {
+                (false, false) => tally.both_fail += 1,
+                (true, true) => tally.both_pass += 1,
+                (false, true) => tally.nsym4_unique_win += 1,
+                (true, false) => tally.baseline_only += 1,
+            }
+            eprintln!(
+                "{file_prefix} trial {trial}: baseline={baseline_ok} nsym4_only={nsym4_ok} nsync={nsync}"
+            );
+        }
+    }
+
+    let dir = sweep_dir();
+    let mut tally30 = Tally::default();
+    for snr_tag in ["m20", "m21", "m22", "m23", "m24", "m25", "m26"] {
+        probe::<Fst4s30>(
+            &dir,
+            &format!("fst4_30_awgn_{snr_tag}"),
+            &FST4_30_DOWNSAMPLE,
+            1..=20,
+            &mut tally30,
+        );
+    }
+    eprintln!(
+        "\nFST4-30 (near-threshold m20-m26, {} trials): both_pass={} both_fail={} nsym4_unique_win={} baseline_only={}",
+        tally30.total,
+        tally30.both_pass,
+        tally30.both_fail,
+        tally30.nsym4_unique_win,
+        tally30.baseline_only
+    );
+
+    let mut tally300 = Tally::default();
+    for snr_tag in ["m31", "m32", "m33", "m34", "m35", "m36", "m37"] {
+        probe::<Fst4s300>(
+            &dir,
+            &format!("fst4_300_awgn_{snr_tag}"),
+            &FST4_300_DOWNSAMPLE,
+            1..=20,
+            &mut tally300,
+        );
+    }
+    eprintln!(
+        "FST4-300 (near-threshold m31-m37, {} trials): both_pass={} both_fail={} nsym4_unique_win={} baseline_only={}",
+        tally300.total,
+        tally300.both_pass,
+        tally300.both_fail,
+        tally300.nsym4_unique_win,
+        tally300.baseline_only
+    );
+}
+
+/// Diagnostic (issue #146) — quantify whether feeding OSD the running
+/// accumulated sum of BP's early-iteration soft output (WSJT-X
+/// `decode240_101.f90`'s `zsave` scheme — see
+/// [`mfsk_core::fec::ldpc::bp::bp_llr_zsum`]'s doc comment) instead of
+/// the raw channel LLR recovers any of the residual sensitivity gap.
+/// Scoped to FST4-120 only — the sub-mode with the largest measured gap
+/// vs WSJT-X's published threshold (1.3 dB, vs 0.5-0.8 dB for the other
+/// four) after the nsym=4 ladder fix, and the user asked to skip a full
+/// 5-mode run given how long that takes.
+///
+/// For each of BP's 4 main LLR variants (a=nsym1, b=nsym2, e=nsym4,
+/// c=nsym8 — d/bit-normalised is skipped since it has no WSJT-X FST4
+/// counterpart at all, see the `LLR_NSYM_MID` doc comment), on trials
+/// where plain BP fails, compares `osd_decode_generic` fed the raw
+/// channel LLR (what `Ldpc240_101::decode_soft` does today) against the
+/// same OSD fed `bp_llr_zsum(llr, 2)` instead (matching WSJT-X's
+/// `maxosd=2` case). Tallies the 2×2 outcome per (trial, variant) pair.
+#[test]
+#[ignore = "manual diagnostic, not a recall gate"]
+fn fst4_diag_zsum_osd() {
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::core::{MessageCodec, ModulationParams, Protocol};
+    use mfsk_core::fec::ldpc::bp::{bp_decode_generic, bp_llr_zsum};
+    use mfsk_core::fec::ldpc::osd::osd_decode_generic;
+    use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
+    use mfsk_core::fec::ldpc240_101::LDPC_K;
+    use mfsk_core::fst4::Fst4s120;
+    use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
+
+    #[derive(Default)]
+    struct Tally {
+        total_variant_attempts: u32,
+        both_fail: u32,
+        both_pass: u32,
+        /// zsum-as-OSD-input recovers a variant plain-OSD-on-channel-LLR
+        /// misses — the number that answers the actual question.
+        zsum_unique_win: u32,
+        /// Sanity-check bucket: should stay ~0 (zsum is not expected to
+        /// be strictly worse than the raw channel LLR).
+        raw_only: u32,
+    }
+
+    let dir = sweep_dir();
+    let verify: Option<fn(&[u8]) -> bool> =
+        Some(<<Fst4s120 as Protocol>::Msg as MessageCodec>::verify_info);
+    let mut tally = Tally::default();
+
+    for snr_tag in ["m27", "m28", "m29", "m30", "m31", "m32", "m33"] {
+        for trial in 1..=20u32 {
+            let path = dir.join(format!("fst4_120_awgn_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                eprintln!("skip {path:?}");
+                continue;
+            };
+
+            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let Some(cand) = cands
+                .iter()
+                .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+            else {
+                continue;
+            };
+
+            let fft_cache = build_fft_cache(&audio, &FST4_120_DOWNSAMPLE);
+            let mut cd0 = downsample_cached(&fft_cache, cand.freq_hz, &FST4_120_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for c in cd0.iter_mut() {
+                    *c *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s120>(&cd0, cand);
+            let ds_rate = 12_000.0 / Fst4s120::NDOWN as f32;
+            let df_hz = s2.freq_hz - cand.freq_hz;
+            cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+
+            let cs = symbol_spectra::<Fst4s120>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s120>(&cs);
+            if nsync <= 10 {
+                continue;
+            }
+
+            let llr_set = compute_llr::<Fst4s120, f32>(&cs);
+            for (name, llr) in [
+                ("a", &llr_set.llra),
+                ("b", &llr_set.llrb),
+                ("e", &llr_set.llre),
+                ("c", &llr_set.llrc),
+            ] {
+                if llr.is_empty() {
+                    continue;
+                }
+                if bp_decode_generic::<Ldpc240_101Params>(llr, None, 30, verify).is_some() {
+                    continue; // BP already succeeds — not an OSD-input question for this variant.
+                }
+                let raw_ok =
+                    osd_decode_generic::<Ldpc240_101Params>(llr, 3, LDPC_K, verify).is_some();
+                let zsum = bp_llr_zsum::<Ldpc240_101Params>(llr, 2);
+                let zsum_ok =
+                    osd_decode_generic::<Ldpc240_101Params>(&zsum, 3, LDPC_K, verify).is_some();
+
+                tally.total_variant_attempts += 1;
+                match (raw_ok, zsum_ok) {
+                    (false, false) => tally.both_fail += 1,
+                    (true, true) => tally.both_pass += 1,
+                    (false, true) => tally.zsum_unique_win += 1,
+                    (true, false) => tally.raw_only += 1,
+                }
+                eprintln!(
+                    "fst4_120_awgn_{snr_tag}_{trial:02} variant={name}: raw_osd={raw_ok} zsum_osd={zsum_ok} nsync={nsync}"
+                );
+            }
+        }
+    }
+
+    eprintln!(
+        "\nFST4-120 zsum-vs-raw OSD input ({} variant-attempts): both_pass={} both_fail={} zsum_unique_win={} raw_only={}",
+        tally.total_variant_attempts,
+        tally.both_pass,
+        tally.both_fail,
+        tally.zsum_unique_win,
+        tally.raw_only
+    );
 }

@@ -222,12 +222,19 @@ pub fn process_candidate_basic<P: Protocol>(
         // No-op for protocols with `CODEWORD_INTERLEAVE = None`
         // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
         deinterleave_llr_set::<P>(&mut llr_set);
-        let variants = [
-            (&llr_set.llra, 0u8),
-            (&llr_set.llrb, 1),
-            (&llr_set.llrc, 2),
-            (&llr_set.llrd, 3),
-        ];
+        // llre (nsym=P::LLR_NSYM_MID, e.g. FST4's nsym=4 rung — see
+        // `ModulationParams::LLR_NSYM_MID`) is empty for every protocol
+        // that doesn't set LLR_NSYM_MID, so this is a Vec instead of a
+        // fixed array only to make that slot conditional; no behaviour
+        // change for FT8/FT4/etc.
+        let mut variants: Vec<(&Vec<f32>, u8)> = Vec::with_capacity(5);
+        variants.push((&llr_set.llra, 0u8));
+        variants.push((&llr_set.llrb, 1));
+        if !llr_set.llre.is_empty() {
+            variants.push((&llr_set.llre, 6));
+        }
+        variants.push((&llr_set.llrc, 2));
+        variants.push((&llr_set.llrd, 3));
 
         let fec = P::Fec::default();
         let bp_opts = FecOpts {

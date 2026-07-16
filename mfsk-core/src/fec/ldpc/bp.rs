@@ -422,6 +422,105 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
     None
 }
 
+/// WSJT-X `decode240_101`'s OSD fallback does not feed OSD the raw
+/// channel LLR — it feeds the running sum `zsum = Σ_{i=0}^{n_iter} zn_i`
+/// of the variable-node soft estimate across the *first few* BP
+/// iterations (`lib/fst4/decode240_101.f90:51-63`; `zsave(:,iter)` for
+/// `iter ∈ {1,2}` when WSJT-X's `maxosd=2`).
+///
+/// This runs only the `SumProduct` variable/check update (the kernel
+/// WSJT-X itself uses for this step) for exactly `n_iter + 1` iterations
+/// (`iter = 0..=n_iter`, matching the Fortran's own indexing) and returns
+/// the accumulated `zsum` — no convergence check, no early return, no AP
+/// mask (callers with an AP hint should not use this; see
+/// [`crate::fec::Ldpc240_101`]'s `FecCodec::decode_soft` AP gate).
+///
+/// Diagnostic measurement (`fst4_diag_zsum_osd` in `tests/fst4_sweep.rs`,
+/// issue #146) on FST4-120 near-threshold AWGN trials found this input
+/// recovers real additional decodes beyond OSD-on-raw-channel-LLR (35 of
+/// 106 OSD-relevant trials) at the cost of only 3 where raw succeeds and
+/// this alone would not — feeding check-node-coupled values into OSD's
+/// reliability-ordering step breaks OSD's usual independent-reliability
+/// assumption in theory, but empirically it recovers more than it loses,
+/// matching WSJT-X's own practice. [`crate::fec::Ldpc240_101`]'s
+/// `FecCodec::decode_soft` therefore tries this as an *additional* OSD
+/// attempt after OSD-on-raw-channel-LLR fails, never as a replacement —
+/// that ordering is what makes the 3-trial loss moot (raw already had
+/// first try).
+pub fn bp_llr_zsum<P: LdpcParams>(llr: &[f32], n_iter: u32) -> Vec<f32> {
+    let n = P::N;
+    let m_checks = P::M;
+    let max_row = P::MAX_ROW;
+
+    let mut tov = vec![0f32; n * NCW];
+    let mut toc = vec![0f32; m_checks * max_row];
+    let mut tanhtoc = vec![0f32; m_checks * max_row];
+    let mut zn = vec![0f32; n];
+    let mut zsum = vec![0f32; n];
+
+    for j in 0..m_checks {
+        let nrw_j = P::nrw(j) as usize;
+        for i in 0..nrw_j {
+            let bit = P::nm(j, i) as usize;
+            toc[j * max_row + i] = llr[bit];
+        }
+    }
+
+    for _iter in 0..=n_iter {
+        for i in 0..n {
+            let mut sum = 0.0f32;
+            for k_ in 0..NCW {
+                sum += tov[i * NCW + k_];
+            }
+            zn[i] = llr[i] + sum;
+        }
+        for i in 0..n {
+            zsum[i] += zn[i];
+        }
+
+        // Check-to-variable message update (extrinsic info).
+        for j in 0..m_checks {
+            let nrw_j = P::nrw(j) as usize;
+            for i in 0..nrw_j {
+                let ibj = P::nm(j, i) as usize;
+                let mut msg = zn[ibj];
+                let mn_ibj = P::mn(ibj);
+                for kk in 0..NCW {
+                    if mn_ibj[kk] as usize == j {
+                        msg -= tov[ibj * NCW + kk];
+                    }
+                }
+                toc[j * max_row + i] = msg;
+            }
+        }
+
+        for i in 0..m_checks {
+            let nrw_i = P::nrw(i) as usize;
+            for k_ in 0..nrw_i {
+                tanhtoc[i * max_row + k_] = (-toc[i * max_row + k_] / 2.0).tanh();
+            }
+        }
+
+        for j in 0..n {
+            let mn_j = P::mn(j);
+            for k_ in 0..NCW {
+                let ichk = mn_j[k_] as usize;
+                let nrw_ichk = P::nrw(ichk) as usize;
+                let mut tmn = 1.0f32;
+                for s in 0..nrw_ichk {
+                    let bit = P::nm(ichk, s) as usize;
+                    if bit != j {
+                        tmn *= tanhtoc[ichk * max_row + s];
+                    }
+                }
+                tov[j * NCW + k_] = 2.0 * platanh(-tmn);
+            }
+        }
+    }
+
+    zsum
+}
+
 /// Backward-compatible LDPC(174,91) BP decode — pins
 /// [`bp_decode_generic`] to [`Ldpc174_91Params`]. Used by FT8's
 /// bespoke decode loop (which still consumes the shared LDPC
