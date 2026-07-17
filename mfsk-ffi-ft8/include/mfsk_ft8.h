@@ -89,7 +89,7 @@ typedef struct MfskFt8Result {
   /**
    * SNR estimate (dB, WSJT-X 2500 Hz reference). On the embedded
    * path this reads ~4–12 dB low on strong signals — see
-   * `docs/EMBEDDED.md` "Known limitations".
+   * `docs/reference/EMBEDDED.md` "Known limitations".
    */
   float snr_db;
   /**
