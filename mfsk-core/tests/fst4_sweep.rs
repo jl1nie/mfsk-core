@@ -743,3 +743,83 @@ fn fst4_diag_zsum_osd() {
         tally.raw_only
     );
 }
+
+/// Throwaway diagnostic (issue #148, VK3NV's blind-paired FST4-120x2
+/// proposal) — before claiming an LLR-combining scheme should recover
+/// "close to the ideal ~3dB gain" in AWGN, check whether near-threshold
+/// failures are actually decode failures (BP/OSD couldn't correct given a
+/// found candidate — the case LLR combining helps) or sync failures (no
+/// candidate near the golden freq at all — LLR combining does nothing for
+/// these, since there's no per-slot LLR vector to combine if the
+/// candidate was never found). If a meaningful fraction of near-threshold
+/// failures are sync failures, the achievable gain from LLR-only
+/// combining is capped well below the naive 3dB even in clean AWGN.
+#[test]
+#[ignore = "manual diagnostic, not a recall gate"]
+fn fst4_120_diag_sync_vs_decode_failure() {
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s120;
+    use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
+
+    let dir = sweep_dir();
+    for snr_tag in ["m29", "m30", "m31", "m32"] {
+        let mut n_total = 0;
+        let mut n_no_candidate = 0;
+        let mut n_candidate_decode_fail = 0;
+        let mut n_decode_ok = 0;
+        for trial in 1..=20 {
+            let path = dir.join(format!("fst4_120_awgn_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            n_total += 1;
+            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let near: Vec<_> = cands
+                .iter()
+                .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+                .collect();
+            if near.is_empty() {
+                n_no_candidate += 1;
+                eprintln!("fst4_120_awgn_{snr_tag}_{trial:02}: NO candidate near golden freq");
+                continue;
+            }
+            let fft_cache =
+                mfsk_core::core::dsp::downsample::build_fft_cache(&audio, &FST4_120_DOWNSAMPLE);
+            let mut ok = false;
+            for c in &near {
+                if let Some(d) = process_candidate_basic::<Fst4s120>(
+                    c,
+                    &fft_cache,
+                    &FST4_120_DOWNSAMPLE,
+                    DecodeDepth::BpAllOsd,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    40,
+                    10,
+                ) {
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(d.message77());
+                    if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                        ok = true;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                n_decode_ok += 1;
+            } else {
+                n_candidate_decode_fail += 1;
+                eprintln!(
+                    "fst4_120_awgn_{snr_tag}_{trial:02}: candidate found ({} near) but decode FAILED",
+                    near.len()
+                );
+            }
+        }
+        eprintln!(
+            "== fst4_120_awgn_{snr_tag}: total={n_total} decode_ok={n_decode_ok} candidate_found_decode_fail={n_candidate_decode_fail} no_candidate={n_no_candidate} =="
+        );
+    }
+}
