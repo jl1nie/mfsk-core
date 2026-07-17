@@ -7,7 +7,7 @@ C/C++ から `libmfsk.so` をリンクする場合、Kotlin/Android で JNI 雛�
 使う場合すべて対象。
 
 クイックスタート (バッジ・依存設定・最小コード例) は
-[README.md](../README.md) を参照。本ドキュメントでは設計の *なぜ* と
+[README.md](../../README.md) を参照。本ドキュメントでは設計の *なぜ* と
 *どう動くか* に踏み込む。
 
 ## 0. はじめに
@@ -1063,7 +1063,7 @@ uvpacket が汎用 TX/RX パイプラインを bypass するため、
 と `protocol_invariants` テストを満たすためだけに存在し、
 `tx::encode` や `rx::decode_known_layout` から参照されません。
 このトレードオフは
-[`mfsk-core/src/uvpacket/protocol.rs`](../mfsk-core/src/uvpacket/protocol.rs)
+[`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
 で明文化されており、非 WSJT プロトコルを sibling crate として切り
 出さず in-tree に残した自然な帰結です。
 
@@ -1089,12 +1089,12 @@ uvpacket が汎用 TX/RX パイプラインを bypass するため、
 です。汎用 PHY フレームワークだったら `SYNC_MODE` を「Costas でも
 m-sequence でも」と一般化する代償に WSJT 系のコードが余分な
 indirection を払うことになる。同じ視点を応用例側から書いた
-1 セクションが [`docs/UVPACKET.ja.md`](UVPACKET.ja.md) §0 にあり、
+1 セクションが [`docs/reference/UVPACKET.ja.md`](UVPACKET.ja.md) §0 にあり、
 本節と対のペアです。
 
 uvpacket の完全な設計ナラティブ、AX.25 / M17 / D-STAR / DMR /
 VARA との比較、特性測定曲線については
-[`docs/UVPACKET.ja.md`](UVPACKET.ja.md) を参照。代表的な WAV
+[`docs/reference/UVPACKET.ja.md`](UVPACKET.ja.md) を参照。代表的な WAV
 サンプルは `audio_samples/uvpacket/` 配下。
 
 ## ライセンス

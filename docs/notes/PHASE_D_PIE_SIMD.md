@@ -4,7 +4,7 @@ Plan for hand-rolling (and where free, just enabling) PIE 128-bit
 vector kernels on the production S3 decode path. Drafted 2026-05-22.
 
 Lives outside the `Phase B / Phase C` controller-line plan in
-`docs/ROADMAP.md` because it is **pure decoder-side perf** and
+`docs/notes/ROADMAP.md` because it is **pure decoder-side perf** and
 benefits every S3 consumer (`m5stack-s3`, `m5stack-s3-app`, the
 planned `m5stack-cores3-app`, and any `mfsk-ffi-ft8` user on S3).
 
@@ -33,7 +33,7 @@ keeping that loop scalar.
 
 ## The discrepancy this plan also fixes
 
-`embedded-poc/CLAUDE.md` and `docs/EMBEDDED.md:75` claim the
+`embedded-poc/CLAUDE.md` and `docs/reference/EMBEDDED.md:75` claim the
 S3 build uses *"esp-dsp ASM + LX7 PIE SIMD (auto-picked by `esp-dsp`
 at build)"*. The actual FFI bindings in
 `embedded-poc/embedded-shared/src/esp_dsp_fft.rs` call
@@ -359,8 +359,8 @@ the feature is on, using `cc::Build` with
   `"esp-dsp ASM (_ae32_); LX7 PIE _aes3_ being migrated in Phase D"`
   until D1 lands, then to `"esp-dsp ASM (_aes3_) + hand-rolled
   PIE kernels in embedded-shared/src/pie/"`.
-- `docs/EMBEDDED.md:75-78` — same correction, both LX7 rows.
-- `docs/ROADMAP.md` — add a `Phase D` section pointing at this
+- `docs/reference/EMBEDDED.md:75-78` — same correction, both LX7 rows.
+- `docs/notes/ROADMAP.md` — add a `Phase D` section pointing at this
   doc.
 
 ## File-path index (for the implementer)
@@ -422,5 +422,5 @@ off the critical path.
 - LX6 (Core2) — no PIE on classic ESP32, all D-phases are
   cfg-gated to S3. Core2 keeps the `_ae32_` scalar path.
 - Stage-3 BP/LDPC inner — control-flow heavy, poor SIMD fit;
-  separate effort if needed (track in `docs/ROADMAP.md` Open
+  separate effort if needed (track in `docs/notes/ROADMAP.md` Open
   follow-ups).

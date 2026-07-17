@@ -10,7 +10,7 @@ Xtensa-LX7 toolchain notes and the LX6/LX7 comparison table.
 
 **Operator manual** (build / flash / `cfg.toml` / `BootMode` cycle /
 UI / QSO workflow / troubleshooting) lives at
-[`docs/MANUAL_M5STICKS3.md`](../../docs/MANUAL_M5STICKS3.md). When
+[`docs/reference/MANUAL_M5STICKS3.md`](../../docs/reference/MANUAL_M5STICKS3.md). When
 end-user behaviour changes (new boot mode, new menu, new troubleshooting
 entry) update that file, not this one.
 
@@ -72,7 +72,7 @@ repositioned as the **demo / acoustic-fallback** path:
   and is shared with WebFT8.
 - **Phase 1 (UAC), Phase 2 (BLE CI-V), Phase 5 (ADIF), Phase 6
   (buttons), TX keying**: rolled forward to `m5stack-cores3-app`
-  (Phase B-Core in `docs/ROADMAP.md`). **Stick frozen after 1.7.9 —
+  (Phase B-Core in `docs/notes/ROADMAP.md`). **Stick frozen after 1.7.9 —
   1.7.9 is a controller-side auto-sync delta, no new HW surface.**
 
 The `uac.rs` module (~445 lines) stays in-tree as canonical

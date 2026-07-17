@@ -90,7 +90,7 @@ idf.py -p /dev/ttyACM0 flash monitor
 - Display, networking, OTA — out of scope.
 
 These are the same explicit non-goals as
-[`docs/EMBEDDED.md`](../../docs/EMBEDDED.md): mfsk-core ships the
+[`docs/reference/EMBEDDED.md`](../../docs/reference/EMBEDDED.md): mfsk-core ships the
 decoder, the integration template ships the wiring, the application
 is your code.
 

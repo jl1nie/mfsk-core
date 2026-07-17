@@ -8,9 +8,9 @@ what the library asks of the caller, what scratch buffers are
 needed, how the C ABI is shaped, and what performance to expect on
 the targets we exercise today.
 
-For host-only usage (no embedded) see [`docs/LIBRARY.md`](LIBRARY.md);
+For host-only usage (no embedded) see [`docs/reference/LIBRARY.md`](LIBRARY.md);
 for operating an existing FT8 controller built on this library see
-[`docs/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md).
+[`docs/reference/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md).
 
 ## Architecture: how f32 and fixed-point share one codebase
 
@@ -72,10 +72,10 @@ in the trait layer.
 
 | Target | MCU | Backend | Status |
 |---|---|---|---|
-| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 shared, scalar single-issue) — LX7 PIE `_aes3_` migration pending, see [`PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md) | **Production controller** — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + acoustic mic + WiFi UDP log). |
+| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 shared, scalar single-issue) — LX7 PIE `_aes3_` migration pending, see [`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) | **Production controller** — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + acoustic mic + WiFi UDP log). |
 | **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — confirmed by `espflash board-info`: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`. **Not** an ESP32-S2 (LX7, single-core, no BT) or S3. | esp-dsp ASM (`dsps_dotprod_s16_ae32`, `dsps_fft2r_*`) | **Production app (`wav_sim` only)** — `embedded-poc/m5stack-core2-app/` runs the same `decode_block` against the baked `wav_sim` audio loop on LX6 to cross-validate the `mfsk-app-shared` API. Classic ESP32 has no USB peripheral, so live mic / speaker / USB-Host paths are not on the table for this board — Core2's role is the second-board LX6 verifier for the shared QSO FSM. (The original standalone Core2 compute bench `embedded-poc/m5stack-core2/` was retired in #61 Phase 3 once this app crate covered the same wav_sim path in production-app shape.) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **Timing-regression bench** — `embedded-poc/m5stack-s3/`, drives `decode_block` against canned WAV inputs for per-stage timing sweeps. Not for end users. |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (BUS_OUT_EN on P1 drives VBUS boost) | esp-dsp `_ae32_` asm (same Phase D D1 migration applies) | **Main UAC controller target** (Phase B-Core, 2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`. Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) shipped in commit `1a93c92`. M5StickS3 cannot do USB-OTG host (no VBUS source circuit), so it was repositioned as the **demo / acoustic-fallback** board and the live USB Audio Class path to IC-705 lands on CoreS3 instead. See `docs/ROADMAP.md` Phase B-Core. |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (BUS_OUT_EN on P1 drives VBUS boost) | esp-dsp `_ae32_` asm (same Phase D D1 migration applies) | **Main UAC controller target** (Phase B-Core, 2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`. Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) shipped in commit `1a93c92`. M5StickS3 cannot do USB-OTG host (no VBUS source circuit), so it was repositioned as the **demo / acoustic-fallback** board and the live USB Audio Class path to IC-705 lands on CoreS3 instead. See `docs/notes/ROADMAP.md` Phase B-Core. |
 
 ### Other targets — what's verified vs aspirational
 
@@ -693,7 +693,7 @@ max_cand=15`:
 So the embedded `decode_block` ships at the recall floor that fits
 the 2 s budget cleanly. Pushing further requires either (a) porting
 iterative subtraction to the embedded path (open question on cost
-— see `docs/ROADMAP.md` "Embedded fine_refine attempt postmortem")
+— see `docs/notes/ROADMAP.md` "Embedded fine_refine attempt postmortem")
 or (b) accepting late-arrival "spotter mode" decodes that land too
 late for QSO turnaround.
 
@@ -807,7 +807,7 @@ that allocation now succeeds on the first try.
 By reader intent:
 
 - **I want to operate an existing FT8 controller** →
-  [`docs/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md) (build / flash /
+  [`docs/reference/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md) (build / flash /
   `cfg.toml` / `BootMode` cycle / UI / QSO workflow / troubleshooting).
 - **I want to integrate `mfsk-core` on a new MCU** → start with
   the [FFT extern contract](#the-fft-extern-rust-contract), then
@@ -820,6 +820,6 @@ By reader intent:
   for the cross-board toolchain notes + LX6/LX7 comparison table,
   then the per-crate `CLAUDE.md` for board-specific gotchas.
 - **I want to track the embedded roadmap** →
-  [`docs/ROADMAP.md`](ROADMAP.md) Phase B-Stick (M5StickS3 demo /
+  [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) Phase B-Stick (M5StickS3 demo /
   acoustic fallback) and Phase B-Core (M5Stack CoreS3 main UAC
   controller) sections.

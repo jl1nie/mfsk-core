@@ -23,7 +23,7 @@ pub use crate::core::llr::LlrSet as GenericLlrSet;
 /// ([`crate::core::scalar::Q3i8`] stays in `core::scalar` for the
 /// comparison path). The Q3i8 ↔ Q11i16 rationale is in
 /// `CHANGELOG.md` 0.5.4 + 0.6.2 / 0.6.3 entries and in
-/// `docs/EMBEDDED.md`'s `LlrScalar` section.
+/// `docs/reference/EMBEDDED.md`'s `LlrScalar` section.
 pub struct LlrSet<T: LlrScalar = f32> {
     pub llra: [T; LDPC_N],
     pub llrb: [T; LDPC_N],

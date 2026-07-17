@@ -3,7 +3,7 @@
 > **HISTORICAL.** All four stages (γ / β / δ / ε) landed in `mfsk-core`
 > 0.6.3 (2026-05-17). This document is preserved for the per-stage
 > Acceptance / Out-of-scope template, which is reused for future
-> cleanup waves. See `docs/ROADMAP.md` *Current line (0.6.x)* for
+> cleanup waves. See `docs/notes/ROADMAP.md` *Current line (0.6.x)* for
 > the live status; the per-stage PR list lives below.
 
 Single-target focus: production users are on m5stack-s3-app; Core2
@@ -127,7 +127,7 @@ Five sub-tasks, can be done in any order (no internal dependencies):
 
 ### δ.1 ROADMAP refresh
 
-`docs/ROADMAP.md` currently mixes 0.6.2 ("in flight") status,
+`docs/notes/ROADMAP.md` currently mixes 0.6.2 ("in flight") status,
 0.6.0 status, and a legacy post-0.5.12 plan. Refresh after γ/β
 landed:
 

@@ -7,7 +7,7 @@ resolver = "2"
 rust-version = "1.82"
 
 # M5Stack CoreS3 (ESP32-S3, LX7) FT8 controller — main UAC target.
-# Phase B-Core from docs/ROADMAP.md. Shares `mfsk-app-shared` and
+# Phase B-Core from docs/notes/ROADMAP.md. Shares `mfsk-app-shared` and
 # `embedded-shared` with both sibling app crates. Board-specific layer:
 # AXP2101 + AW9523B PMIC/IO-expander, ILI9342C LCD, FT6336U touch (Phase
 # 6-Core), ES7210 mic + AW88298 speaker (Phase 3-Core), USB-OTG host for

@@ -13,7 +13,7 @@ pivot — the StickS3 board can't do USB host),
 peripheral on classic ESP32), and the planned
 `embedded-poc/m5stack-cores3-app/` (S3 LX7, **main UAC controller
 target** — CoreS3 has AXP2101 + AW9523B for proper USB-OTG host mode;
-see `docs/ROADMAP.md` Phase B-Core). Each has its own `CLAUDE.md`
+see `docs/notes/ROADMAP.md` Phase B-Core). Each has its own `CLAUDE.md`
 covering board-specific bring-up; this section captures the shared
 workflow that's easy to forget between sessions.
 

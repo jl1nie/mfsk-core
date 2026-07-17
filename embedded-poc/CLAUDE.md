@@ -61,7 +61,7 @@ is what the user types under tee / piped redirection.
 | Internal DRAM | ~280 KB usable | ~512 KB | ~512 KB |
 | USB host capable | No (no USB peripheral; flashes via CP210x UART) | **No** (silicon yes, board no — no VBUS source, ID pin unwired, see memory `project_m5stick_s3_no_usb_host`) | **Yes** — AXP2101 + AW9523B BUS_OUT_EN drives VBUS boost |
 | Port enumeration | `/dev/ttyACM0` (CP2104) | `/dev/ttyACM0` (USB-Serial-JTAG, native S3) | `/dev/ttyACM0` (USB-Serial-JTAG via CH9102 bridge on CoreS3) |
-| SIMD | None | esp-dsp `_ae32_` asm (LX6/LX7 shared, scalar single-issue) — LX7 PIE `_aes3_` migration pending, see `docs/PHASE_D_PIE_SIMD.md` | esp-dsp `_ae32_` asm (same Phase D D1 migration applies) |
+| SIMD | None | esp-dsp `_ae32_` asm (LX6/LX7 shared, scalar single-issue) — LX7 PIE `_aes3_` migration pending, see `docs/notes/PHASE_D_PIE_SIMD.md` | esp-dsp `_ae32_` asm (same Phase D D1 migration applies) |
 | LCD | ILI9342C 320×240 landscape | ST7789P3 135×240 portrait | ILI9342C 320×240 landscape (same as Core2) + FT6336U capacitive touch |
 | Audio codec | none | ES8311 (mono mic + speaker amp) | ES7210 (dual mic) + AW88298 speaker amp |
 | Buttons / input | none (touch deferred Phase 2.5) | KEY1 / KEY2 GPIO 11/12 | none (touch FT6336U via I2C, Phase 6-Core) |
@@ -115,7 +115,7 @@ is what the user types under tee / piped redirection.
   HW: AXP2101 PMIC + AW9523B I/O expander (P1 = BUS_OUT_EN drives
   VBUS boost — must be HIGH before `usb_host_install()`), ILI9342C
   LCD with FT6336U capacitive touch, ES7210 dual-mic codec. See
-  Phase B-Core in `docs/ROADMAP.md` for the work breakdown.
+  Phase B-Core in `docs/notes/ROADMAP.md` for the work breakdown.
 - **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
   (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
   HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's

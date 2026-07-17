@@ -115,7 +115,7 @@ pub struct MfskFt8Result {
     pub dt_sec: f32,
     /// SNR estimate (dB, WSJT-X 2500 Hz reference). On the embedded
     /// path this reads ~4–12 dB low on strong signals — see
-    /// `docs/EMBEDDED.md` "Known limitations".
+    /// `docs/reference/EMBEDDED.md` "Known limitations".
     pub snr_db: f32,
     /// Number of bits the LDPC decoder corrected before CRC pass.
     pub hard_errors: u32,

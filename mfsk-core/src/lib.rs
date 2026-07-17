@@ -28,7 +28,7 @@
 //!   IC-705, acoustic mic capture, QSO FSM) running this library on
 //!   Xtensa LX7 + esp-dsp + the Goertzel per-symbol DFT, decoding
 //!   real on-air signals in ~1.2 s post-SlotEnd; see
-//!   [`docs/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md)
+//!   [`docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
 //!   for build / flash / operation,
 //! - or as the core of a **new protocol experiment** that reuses FT8's
 //!   LDPC and sync machinery for a different modulation / FEC /

@@ -7,7 +7,7 @@ Rust crate consumers, C/C++ projects linking `libmfsk.so`, and
 Kotlin/Android apps using the JNI scaffold.
 
 For a quick-start overview (badges, dependency snippet, minimal
-example) see [README.md](../README.md). This document goes deeper
+example) see [README.md](../../README.md). This document goes deeper
 into *why* and *how*.
 
 ## 0. Introduction
@@ -1085,7 +1085,7 @@ its `ModulationParams` trait constants (`NTONES = 4`, `GFSK_BT`,
 satisfy the trait signature and the `protocol_invariants` test
 without being consulted by `tx::encode` or `rx::decode_known_layout`.
 This trade-off is documented at
-[`mfsk-core/src/uvpacket/protocol.rs`](../mfsk-core/src/uvpacket/protocol.rs)
+[`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
 and is the natural consequence of keeping a non-WSJT protocol
 in-tree rather than spinning it out as a sibling crate.
 
@@ -1113,12 +1113,12 @@ generalisation. A general-purpose PHY framework would have to
 abstract `SYNC_MODE` beyond "Costas blocks or interleaved" to
 cover m-sequences, equaliser state, RRC pulse shaping, etc.; the
 WSJT code paths would pay the indirection cost for no in-family
-benefit. See [`docs/UVPACKET.md`](UVPACKET.md) §0 for the same
+benefit. See [`docs/reference/UVPACKET.md`](UVPACKET.md) §0 for the same
 view from the applied-example side.
 
 For the full uvpacket design narrative, AX.25 / M17 / D-STAR / DMR
 / VARA comparison, and characterisation curves, see
-[`docs/UVPACKET.md`](UVPACKET.md). Representative WAV samples are
+[`docs/reference/UVPACKET.md`](UVPACKET.md). Representative WAV samples are
 at `audio_samples/uvpacket/`.
 
 ## License

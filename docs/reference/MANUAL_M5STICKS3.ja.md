@@ -37,7 +37,7 @@ IC-705 (または互換 BLE CI-V / 音声ケーブル対応無線機) と連携�
   ケーブル経路をリアル信号なしで検証。
 - **Uac** — USB-Host Audio Class。**M5StickS3 ハードウェアでは動作不可**
   (基板に VBUS source 回路と ID pin 配線がない)。後継 CoreS3 への移行
-  予定は `docs/EMBEDDED.ja.md` 参照。共有検証作業のため code は残置。
+  予定は `docs/reference/EMBEDDED.ja.md` 参照。共有検証作業のため code は残置。
 
 ---
 
@@ -376,9 +376,9 @@ embedded-poc/scripts/udp-log-listen.sh 9999 \
 
 ## 10. 参照
 
-- [`docs/EMBEDDED.ja.md`](EMBEDDED.ja.md) — `mfsk-core` 組込統合リファレンス (scalar アーキテクチャ、FFT-extern 契約、Goertzel per-symbol DFT、Q-format リファレンス、`mfsk-ffi-ft8` C ABI チュートリアル、性能ベンチ、streaming pipeline、binary footprint)
-- [`docs/ROADMAP.md`](ROADMAP.md) — リリースマイルストーン + Phase B-Stick / B-Core プラン
-- [`embedded-poc/CLAUDE.md`](../embedded-poc/CLAUDE.md) — 共通組込ツールチェインメモ (cross-board)
-- [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../embedded-poc/m5stack-s3-app/CLAUDE.md) — この crate での AI agent 向けボード固有メモ
+- [`docs/reference/EMBEDDED.ja.md`](EMBEDDED.ja.md) — `mfsk-core` 組込統合リファレンス (scalar アーキテクチャ、FFT-extern 契約、Goertzel per-symbol DFT、Q-format リファレンス、`mfsk-ffi-ft8` C ABI チュートリアル、性能ベンチ、streaming pipeline、binary footprint)
+- [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) — リリースマイルストーン + Phase B-Stick / B-Core プラン
+- [`embedded-poc/CLAUDE.md`](../../embedded-poc/CLAUDE.md) — 共通組込ツールチェインメモ (cross-board)
+- [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../../embedded-poc/m5stack-s3-app/CLAUDE.md) — この crate での AI agent 向けボード固有メモ
 - `mfsk-core/` — 実体のデコーダライブラリ (host + embedded shared、crates.io 公開)
 - `embedded-poc/mfsk-app-shared/` — ボード非依存アプリロジック (QSO FSM、UI primitive、WiFi、log fanout)
