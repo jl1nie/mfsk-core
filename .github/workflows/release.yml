@@ -300,5 +300,5 @@ jobs:
             **Prebuilt `mfsk-ffi-ft8` binaries** (FT8 C ABI) are attached
             below for users who want to drop the decoder into a non-Rust
             project without setting up the cross-toolchain themselves —
-            see [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
+            see [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
             for the integration guide.

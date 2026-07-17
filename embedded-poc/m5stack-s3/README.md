@@ -5,7 +5,7 @@ dual-core @ 240 MHz, 8 MB Octal PSRAM)**. Drives
 `mfsk_core::ft8::decode_block` against the vendored WSJT-X reference
 WAVs in `../assets/` (`qso1`, `qso2`, `qso3_busy`) and prints
 per-stage timing for each slot. Not for end users — for end users
-see [`docs/MANUAL_M5STICKS3.md`](../../docs/MANUAL_M5STICKS3.md).
+see [`docs/reference/MANUAL_M5STICKS3.md`](../../docs/reference/MANUAL_M5STICKS3.md).
 
 The sibling LX6 bench (`embedded-poc/m5stack-core2/`) was retired
 in PR #76 (#61 Phase 3, 2026-05-16); the Core2 wall-clock path is
@@ -34,7 +34,7 @@ cargo build --release --bin rx-wavsim
 ```
 
 The bench prints per-stage timing in the form recognised by
-`docs/EMBEDDED.md`'s performance benchmark table; cross-reference
+`docs/reference/EMBEDDED.md`'s performance benchmark table; cross-reference
 that doc for the canonical 0.6.x post-SlotEnd numbers.
 
 ## Status

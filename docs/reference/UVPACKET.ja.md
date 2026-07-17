@@ -612,18 +612,18 @@ shoulder 付き。
 
 | Layer | File |
 |---|---|
-| Protocol ZST / サブモードパラメータ | [`mfsk-core/src/uvpacket/protocol.rs`](../mfsk-core/src/uvpacket/protocol.rs) |
-| フレームヘッダ + CRC + bit packing | [`mfsk-core/src/uvpacket/framing.rs`](../mfsk-core/src/uvpacket/framing.rs) |
-| Puncture sets (kSR-greedy) | [`mfsk-core/src/uvpacket/puncture.rs`](../mfsk-core/src/uvpacket/puncture.rs) |
-| ブロックインターリーバー | [`mfsk-core/src/uvpacket/interleaver.rs`](../mfsk-core/src/uvpacket/interleaver.rs) |
-| プリアンブル多項式 (4 変種) | [`mfsk-core/src/uvpacket/sync_pattern.rs`](../mfsk-core/src/uvpacket/sync_pattern.rs) |
-| TX (bytes → audio) | [`mfsk-core/src/uvpacket/tx.rs`](../mfsk-core/src/uvpacket/tx.rs) |
-| RX (audio → bytes)、イコライザ | [`mfsk-core/src/uvpacket/rx.rs`](../mfsk-core/src/uvpacket/rx.rs) |
-| AWGN + Rayleigh ハーネス | [`mfsk-core/tests/common/channel.rs`](../mfsk-core/tests/common/channel.rs) |
-| SSB / FM realistic チャンネル sim | [`mfsk-core/tests/common/air_channel.rs`](../mfsk-core/tests/common/air_channel.rs) |
-| LDPC のみ sweep (modem バイパス) | [`mfsk-core/tests/uvpacket_ldpc_direct.rs`](../mfsk-core/tests/uvpacket_ldpc_direct.rs) |
-| Modem TX/RX 診断 | [`mfsk-core/tests/uvpacket_modem_diag.rs`](../mfsk-core/tests/uvpacket_modem_diag.rs) |
-| 4 モード × 5 チャンネル PER sweep | [`mfsk-core/tests/uvpacket_per_modes_sweep.rs`](../mfsk-core/tests/uvpacket_per_modes_sweep.rs) |
+| Protocol ZST / サブモードパラメータ | [`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs) |
+| フレームヘッダ + CRC + bit packing | [`mfsk-core/src/uvpacket/framing.rs`](../../mfsk-core/src/uvpacket/framing.rs) |
+| Puncture sets (kSR-greedy) | [`mfsk-core/src/uvpacket/puncture.rs`](../../mfsk-core/src/uvpacket/puncture.rs) |
+| ブロックインターリーバー | [`mfsk-core/src/uvpacket/interleaver.rs`](../../mfsk-core/src/uvpacket/interleaver.rs) |
+| プリアンブル多項式 (4 変種) | [`mfsk-core/src/uvpacket/sync_pattern.rs`](../../mfsk-core/src/uvpacket/sync_pattern.rs) |
+| TX (bytes → audio) | [`mfsk-core/src/uvpacket/tx.rs`](../../mfsk-core/src/uvpacket/tx.rs) |
+| RX (audio → bytes)、イコライザ | [`mfsk-core/src/uvpacket/rx.rs`](../../mfsk-core/src/uvpacket/rx.rs) |
+| AWGN + Rayleigh ハーネス | [`mfsk-core/tests/common/channel.rs`](../../mfsk-core/tests/common/channel.rs) |
+| SSB / FM realistic チャンネル sim | [`mfsk-core/tests/common/air_channel.rs`](../../mfsk-core/tests/common/air_channel.rs) |
+| LDPC のみ sweep (modem バイパス) | [`mfsk-core/tests/uvpacket_ldpc_direct.rs`](../../mfsk-core/tests/uvpacket_ldpc_direct.rs) |
+| Modem TX/RX 診断 | [`mfsk-core/tests/uvpacket_modem_diag.rs`](../../mfsk-core/tests/uvpacket_modem_diag.rs) |
+| 4 モード × 5 チャンネル PER sweep | [`mfsk-core/tests/uvpacket_per_modes_sweep.rs`](../../mfsk-core/tests/uvpacket_per_modes_sweep.rs) |
 
 ## 8. ライセンス
 

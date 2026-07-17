@@ -87,7 +87,7 @@ non-WSJT protocols the natural way to use `mfsk-core` is as a thin
 library of FEC + DSP + channel-test infrastructure underneath your
 own TX/RX pipeline — exactly the way `uvpacket` itself uses it.
 
-`docs/LIBRARY.md` §10.1 summarises the same dual-probe view from
+`docs/reference/LIBRARY.md` §10.1 summarises the same dual-probe view from
 the trait-design side, and is a one-paragraph companion to this
 section.
 
@@ -114,8 +114,8 @@ several `ModulationParams` constants (`NTONES = 4`, `GFSK_BT`,
 they exist only to satisfy the trait signature and the
 `protocol_invariants` test, and are never consulted by
 [`tx::encode`] or `rx::decode_*`. This is documented at
-[`mfsk-core/src/uvpacket/protocol.rs`](../mfsk-core/src/uvpacket/protocol.rs)
-and [`docs/LIBRARY.md`](LIBRARY.md) §10.1 as a scope-boundary
+[`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
+and [`docs/reference/LIBRARY.md`](LIBRARY.md) §10.1 as a scope-boundary
 trade-off rather than disguised.
 
 The crate ships **only the modem**:
@@ -707,18 +707,18 @@ shoulders.
 
 | Layer | File |
 |---|---|
-| Protocol ZSTs / sub-mode parameters | [`mfsk-core/src/uvpacket/protocol.rs`](../mfsk-core/src/uvpacket/protocol.rs) |
-| Frame header + CRC + bit packing | [`mfsk-core/src/uvpacket/framing.rs`](../mfsk-core/src/uvpacket/framing.rs) |
-| Puncture sets (kSR-greedy) | [`mfsk-core/src/uvpacket/puncture.rs`](../mfsk-core/src/uvpacket/puncture.rs) |
-| Block interleaver | [`mfsk-core/src/uvpacket/interleaver.rs`](../mfsk-core/src/uvpacket/interleaver.rs) |
-| Preamble polynomials (4 variants) | [`mfsk-core/src/uvpacket/sync_pattern.rs`](../mfsk-core/src/uvpacket/sync_pattern.rs) |
-| TX (bytes → audio) | [`mfsk-core/src/uvpacket/tx.rs`](../mfsk-core/src/uvpacket/tx.rs) |
-| RX (audio → bytes), equaliser | [`mfsk-core/src/uvpacket/rx.rs`](../mfsk-core/src/uvpacket/rx.rs) |
-| AWGN + Rayleigh harness | [`mfsk-core/tests/common/channel.rs`](../mfsk-core/tests/common/channel.rs) |
-| SSB / FM realistic channel sims | [`mfsk-core/tests/common/air_channel.rs`](../mfsk-core/tests/common/air_channel.rs) |
-| LDPC-only sweep (modem-bypassed) | [`mfsk-core/tests/uvpacket_ldpc_direct.rs`](../mfsk-core/tests/uvpacket_ldpc_direct.rs) |
-| Modem TX/RX diagnostics | [`mfsk-core/tests/uvpacket_modem_diag.rs`](../mfsk-core/tests/uvpacket_modem_diag.rs) |
-| 4 modes × 5 channels PER sweep | [`mfsk-core/tests/uvpacket_per_modes_sweep.rs`](../mfsk-core/tests/uvpacket_per_modes_sweep.rs) |
+| Protocol ZSTs / sub-mode parameters | [`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs) |
+| Frame header + CRC + bit packing | [`mfsk-core/src/uvpacket/framing.rs`](../../mfsk-core/src/uvpacket/framing.rs) |
+| Puncture sets (kSR-greedy) | [`mfsk-core/src/uvpacket/puncture.rs`](../../mfsk-core/src/uvpacket/puncture.rs) |
+| Block interleaver | [`mfsk-core/src/uvpacket/interleaver.rs`](../../mfsk-core/src/uvpacket/interleaver.rs) |
+| Preamble polynomials (4 variants) | [`mfsk-core/src/uvpacket/sync_pattern.rs`](../../mfsk-core/src/uvpacket/sync_pattern.rs) |
+| TX (bytes → audio) | [`mfsk-core/src/uvpacket/tx.rs`](../../mfsk-core/src/uvpacket/tx.rs) |
+| RX (audio → bytes), equaliser | [`mfsk-core/src/uvpacket/rx.rs`](../../mfsk-core/src/uvpacket/rx.rs) |
+| AWGN + Rayleigh harness | [`mfsk-core/tests/common/channel.rs`](../../mfsk-core/tests/common/channel.rs) |
+| SSB / FM realistic channel sims | [`mfsk-core/tests/common/air_channel.rs`](../../mfsk-core/tests/common/air_channel.rs) |
+| LDPC-only sweep (modem-bypassed) | [`mfsk-core/tests/uvpacket_ldpc_direct.rs`](../../mfsk-core/tests/uvpacket_ldpc_direct.rs) |
+| Modem TX/RX diagnostics | [`mfsk-core/tests/uvpacket_modem_diag.rs`](../../mfsk-core/tests/uvpacket_modem_diag.rs) |
+| 4 modes × 5 channels PER sweep | [`mfsk-core/tests/uvpacket_per_modes_sweep.rs`](../../mfsk-core/tests/uvpacket_per_modes_sweep.rs) |
 
 ## 8. License
 

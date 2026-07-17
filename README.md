@@ -6,7 +6,7 @@
        width="360">
 </p>
 
-<p align="center"><i>M5StickS3 running <code>embedded-poc/m5stack-s3-app</code> — five real on-air FT8 decodes from a single 15 s slot, QSO FSM idle waiting for the operator to pick a callsign. See <a href="https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md">docs/MANUAL_M5STICKS3.md</a>.</i></p>
+<p align="center"><i>M5StickS3 running <code>embedded-poc/m5stack-s3-app</code> — five real on-air FT8 decodes from a single 15 s slot, QSO FSM idle waiting for the operator to pick a callsign. See <a href="https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md">docs/reference/MANUAL_M5STICKS3.md</a>.</i></p>
 
 [![CI](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml/badge.svg)](https://github.com/jl1nie/mfsk-core/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/mfsk-core.svg)](https://crates.io/crates/mfsk-core)
@@ -174,7 +174,7 @@ This is the same shape for FT8's LDPC(174,91) and JT65's
 Reed-Solomon(63,12) — only the boxes' contents change per protocol.
 See [Design Philosophy](#design-philosophy) for how that's expressed
 in code (a `Protocol` trait, not per-mode copy-paste), and
-[`docs/LIBRARY.md` §4](https://github.com/jl1nie/mfsk-core/blob/main/docs/LIBRARY.md#4-shared-primitives-core)
+[`docs/reference/LIBRARY.md` §4](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#4-shared-primitives-core)
 for the full data-flow diagram down to function level.
 
 ## Design Philosophy
@@ -294,23 +294,23 @@ FST4, are one-line changes, not cross-cutting refactors.
 - **FST4 AWGN sensitivity**, 50% recall crossing vs. WSJT-X's
   published thresholds (`tests/fst4_sweep.rs`, `fst4sim`-generated
   corpus, 20 trials/SNR point — see
-  [`docs/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.md)):
+  [`docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)):
 
   | Sub-mode | mfsk-core | WSJT-X official | Gap |
   |----------|----------:|-----------------:|----:|
-  | FST4-15  | ≈ −20.2 dB | −20.7 dB | 0.5 dB |
-  | FST4-30  | ≈ −23.4 dB | −24.2 dB | 0.8 dB |
-  | FST4-60  | ≈ −27.0 dB | −28.1 dB | 1.1 dB |
-  | FST4-120 | ≈ −30.0 dB | −31.3 dB | 1.3 dB |
-  | FST4-300 | ≈ −34.4 dB | −35.3 dB | 0.9 dB |
+  | FST4-15  | ≈ −20.60 dB | −20.7 dB | 0.10 dB |
+  | FST4-30  | ≈ −23.90 dB | −24.2 dB | 0.30 dB |
+  | FST4-60  | ≈ −27.62 dB | −28.1 dB | 0.48 dB |
+  | FST4-120 | ≈ −30.70 dB | −31.3 dB | 0.60 dB |
+  | FST4-300 | ≈ −34.78 dB | −35.3 dB | 0.52 dB |
 - **Memory**: the embedded fixed-point path is designed to fit inside
   ESP32-S3 internal DRAM without PSRAM for the hot buffers — see
-  [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
+  [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
   for the byte-level BP-scratch and spectrogram budget.
 - Full recall tables against WSJT-X-distributed reference recordings,
   per-protocol golden-WAV results, and the fixed-point Q-format
   history are in [Status](#status) below and
-  [`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md).
+  [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md).
 
 ## Comparison with WSJT-X
 
@@ -340,14 +340,14 @@ deployment targets (library vs desktop app, `no_std` embedded, WASM).
 = ["alloc", "ft8", "fft-extern"]` (or similar) builds without `std`.
 `std` is only required by the default `fft-rustfft` backend; embedded
 targets swap in their own FFT via `fft-extern`. See
-[`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md).
+[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md).
 
 **Can I swap the FFT backend?** Yes — enable `fft-extern` instead of
 `fft-rustfft` and provide an `FftPlanner` impl (`core::fft`); the
 embedded ports use this for esp-dsp (ESP32-S3) and CMSIS-DSP (RP2350).
 
 **How do I use this on embedded hardware?** Start with
-[`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
+[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
 (feature-flag map, FFT-extern contract, Q-format reference, full C ABI
 tutorial) and, for a complete working example,
 [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
@@ -403,8 +403,8 @@ an in-tree example showing the trait abstractions extend beyond
 WSJT-X — a π/4-DQPSK packet protocol for NFM / SSB voice channels
 that reuses the shared `Ldpc240_101` codec. **Experimental and
 its public API may change** — pin to an exact version. See
-[`docs/UVPACKET.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/UVPACKET.md)
-([日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/UVPACKET.ja.md))
+[`docs/reference/UVPACKET.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/UVPACKET.md)
+([日本語](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/UVPACKET.ja.md))
 for the design narrative, modulation / equaliser / framing details
 and per-mode performance characterisation.
 
@@ -488,13 +488,13 @@ reference:
 
 <!-- Absolute URLs so the links resolve from both GitHub and the
      crates.io README renderer (which otherwise rewrites
-     "docs/LIBRARY.md" to mfsk-core/docs/... — see workspace
+     "docs/reference/LIBRARY.md" to mfsk-core/docs/... — see workspace
      layout: docs/ lives at the repo root, not under the crate). -->
-- **English:** [`docs/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/LIBRARY.md)
-- **日本語:** [`docs/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/LIBRARY.ja.md)
+- **English:** [`docs/reference/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md)
+- **日本語:** [`docs/reference/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.ja.md)
 - **Embedded targets:**
-  [English `docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
-  / [日本語 `docs/EMBEDDED.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.ja.md)
+  [English `docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+  / [日本語 `docs/reference/EMBEDDED.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.ja.md)
   — generic-scalar architecture (one codebase for f32 host and
   fixed-point embedded), feature-flag map, FFT-extern contract,
   Goertzel per-symbol DFT (zero-scratch, 0.6.4+) with BASIS
@@ -502,22 +502,22 @@ reference:
   tutorial (streaming + ESP-IDF component layout), performance
   benchmark, streaming RX pipeline, binary footprint.
 - **FST4 sensitivity benchmark setup:**
-  [English `docs/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.md)
-  / [日本語 `docs/FST4_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/FST4_BENCHMARK.ja.md)
+  [English `docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)
+  / [日本語 `docs/notes/FST4_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.ja.md)
   — reproducing the `fst4sim`-driven AWGN/fading SNR sweep
   (`tests/fst4_sweep.rs`) from a clean checkout on any machine:
   prerequisites, building `fst4sim` from WSJT-X source, generating
   the WAV corpus, and how to avoid grid-censoring artifacts when
   reading off the recall crossing.
 - **M5StickS3 FT8 controller manual:**
-  [English `docs/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.md)
-  / [日本語 `docs/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/MANUAL_M5STICKS3.ja.md)
+  [English `docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
+  / [日本語 `docs/reference/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md)
   — build / flash / `cfg.toml` / `BootMode` cycle / UI / QSO
   workflow / troubleshooting.
 
 ## Status
 
-**Current line: `0.7.x`** (latest tag `v0.7.1`, 2026-07-16) — API
+**Current line: `0.7.x`** (latest tag `v0.7.2`, 2026-07-18) — API
 is deliberately not frozen. Breaking changes follow cargo-style minor
 bumps (`0.6 → 0.7`). See `CHANGELOG.md` for the per-release breakdown;
 the line history below explains what each series brought in. **0.7.0**
@@ -529,9 +529,15 @@ five sub-modes (issue #146 — an FST4-specific `LLR_NSYM_MAX`
 override, an FST4-specific OSD-gate bypass trusting CRC-24 alone, and
 a coherent full-slot local sync search ported from WSJT-X's
 `fst4_sync_search`/`sync_fst4`), and did a README/docs discoverability
-pass (this restructure, `docs/LIBRARY.md` refresh, more `docs.rs`
-examples). See [Performance](#performance) above for the full
-per-sub-mode numbers. The 0.5.x line landed the
+pass (this restructure, `docs/reference/LIBRARY.md` refresh, more `docs.rs`
+examples). **0.7.2** narrowed the FST4 residual further via an nsym=4
+LLR rung plus a zsum-OSD fallback (matching WSJT-X's `decode240_101`
+feeding OSD the sum of BP's first two iterations) to a common ≈0.3 dB
+gap across all five sub-modes — statistically indistinguishable
+mode-to-mode (χ²=3.85, df=4, p≈0.43), closing issue #146 — and split
+`CHANGELOG.md` plus `docs/` into `docs/reference/` vs. `docs/notes/`
+(issue #147) for readability. See [Performance](#performance) above
+for the full per-sub-mode numbers. The 0.5.x line landed the
 embedded baseline (`no_std + alloc`, pluggable FFT backend,
 caller-buffer TX APIs) and the first end-to-end real-audio embedded
 port. The **0.6.x line consolidates the FT8 sync + per-candidate
@@ -575,7 +581,7 @@ remaining headroom blocked by other parts of the embedded pipeline
 `Q3i8` is preserved in
 `core::scalar` for the comparison path. M5Stack Core2 (LX6) on the
 same WAV ~2.8 s. See
-[`docs/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/EMBEDDED.md)
+[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
 for the integration contract, runtime BP / `nstep-half` tuning knobs,
 and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
 without 192k FFT — investigated and deferred);

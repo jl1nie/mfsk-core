@@ -22,7 +22,7 @@ in turn depending on which downstream crate is building).
 - **`no_std + alloc`** — same constraints as the downstream
   bench / app crates. Do not pull `std`-only deps.
 - **Streaming API** is the seam the m5stack-s3-app Phase 1 UAC
-  port hooks into; see `docs/ROADMAP.md` Phase B and the
+  port hooks into; see `docs/notes/ROADMAP.md` Phase B and the
   `mfsk_ft8_stream_*` ABI in `mfsk-ffi-ft8/src/stream.rs`.
 - **Diagnostics**: `compute_bench` writes per-half timing to
   the logger configured by the downstream crate.

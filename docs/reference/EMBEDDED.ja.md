@@ -7,9 +7,9 @@
 scratch バッファが必要か、C ABI の形、現在テストしている対象上で
 の性能。
 
-ホスト専用利用 (no embedded) は [`docs/LIBRARY.ja.md`](LIBRARY.ja.md)、
+ホスト専用利用 (no embedded) は [`docs/reference/LIBRARY.ja.md`](LIBRARY.ja.md)、
 本ライブラリで作った既存 FT8 コントローラの操作は
-[`docs/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) 参照。
+[`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) 参照。
 
 ## アーキテクチャ: f32 と固定小数点が 1 つのコードベースを共有する仕組み
 
@@ -65,10 +65,10 @@ piece が共通なので次の候補) を追加するのは FT4 専用シンボ�
 
 | Target | MCU | Backend | Status |
 |---|---|---|---|
-| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は Phase D D1 で予定、[`PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く USB-OTG host が成立しないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
+| **M5StickS3** | **ESP32-S3 (Xtensa LX7 dual-core, 240 MHz, 8 MB Octal PSRAM, ES8311 codec, ST7789P3 135×240 LCD, KEY1/KEY2)** | esp-dsp `_ae32_` asm (LX6/LX7 共通、scalar single-issue) — LX7 PIE `_aes3_` への移行は Phase D D1 で予定、[`PHASE_D_PIE_SIMD.md`](../notes/PHASE_D_PIE_SIMD.md) 参照 | **デモ / 音響 fallback コントローラ** (2026-05-17 pivot) — `embedded-poc/m5stack-s3-app/` (LCD UI + QSO FSM + BLE CI-V + 音響 mic + WiFi UDP log)。VBUS 源回路が無く USB-OTG host が成立しないため、本命の UAC コントローラ役は CoreS3 に移譲され、StickS3 は音響経路の実機検証 / デモ機としての位置付けに再定義された。 |
 | **M5Stack Core2** | **ESP32-D0WD-V3** (Xtensa LX6, dual-core 240 MHz, single-issue f32 FPU, 16 MB flash, ~4 MB PSRAM) — `espflash board-info` 確認: `Chip type: esp32 (revision v3.1)` / `Features: WiFi, BT, Dual Core, 240MHz`。ESP32-S2 (LX7、single-core、BT 無し) や S3 では **ない**。 | esp-dsp ASM (`dsps_dotprod_s16_ae32`、`dsps_fft2r_*`) | **本番アプリ (`wav_sim` 専用)** — `embedded-poc/m5stack-core2-app/` が baked `wav_sim` 音源ループに対し同じ `decode_block` を LX6 上で走らせて `mfsk-app-shared` API を交差検証する役割。古典 ESP32 には USB peripheral が無いので mic / speaker / USB-Host 経路はこのボードでは扱わない — Core2 は共有 QSO FSM の LX6 second-board verifier。(独立した Core2 コンピュート bench `embedded-poc/m5stack-core2/` は #61 Phase 3 (0.6.3) で retired、wav_sim 経路はこの app crate に統合済み。) |
 | ESP32-S3 compute bench | Xtensa LX7 | esp-dsp ASM | **タイミング回帰 bench** — `embedded-poc/m5stack-s3/`、缶詰 WAV 入力に対し `decode_block` を走らせ per-stage timing sweep。エンドユーザ向けではない。 |
-| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (P1 の BUS_OUT_EN が VBUS boost 駆動) | esp-dsp `_ae32_` asm (Phase D D1 で `_aes3_` 化、S3-app と共通) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 に無い VBUS 源回路を持つので、IC-705 への USB-Host audio class はここで実装する。`docs/ROADMAP.md` Phase B-Core 参照。 |
+| **M5Stack CoreS3** | ESP32-S3 LX7 + AXP2101 PMIC + AW9523B I/O expander (P1 の BUS_OUT_EN が VBUS boost 駆動) | esp-dsp `_ae32_` asm (Phase D D1 で `_aes3_` 化、S3-app と共通) | **本命の UAC コントローラ ターゲット** (Phase B-Core、2026-05-17 pivot) — `embedded-poc/m5stack-cores3-app/`。Phase 0-Core (bringup) + Phase 1-Core (AW9523B BUS_OUT_EN + UAC host) は commit `1a93c92` で出荷済み。M5StickS3 に無い VBUS 源回路を持つので、IC-705 への USB-Host audio class はここで実装する。`docs/notes/ROADMAP.md` Phase B-Core 参照。 |
 
 ### その他のターゲット — 検証済 vs 願望
 
@@ -670,7 +670,7 @@ core vs Xtensa 240 MHz × 2 core) — 両者が同一整数パイプライン
 
 つまり組込 `decode_block` は 2 s 予算に綺麗に収まる recall floor
 で出荷している。これ以上を狙うには (a) 反復減算を組込パスに移植
-(コスト未知 — `docs/ROADMAP.md` の「Embedded fine_refine attempt
+(コスト未知 — `docs/notes/ROADMAP.md` の「Embedded fine_refine attempt
 postmortem」参照) または (b) QSO turnaround に間に合わない遅着
 「スポッターモード」decode を受け入れるかのどちらか。
 
@@ -782,7 +782,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
 読者の意図別:
 
 - **既存 FT8 コントローラを操作したい** →
-  [`docs/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) (ビルド /
+  [`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) (ビルド /
   flash / `cfg.toml` / `BootMode` サイクル / UI / QSO workflow /
   トラブルシュート)。
 - **新しい MCU に `mfsk-core` を統合したい** →
@@ -795,6 +795,6 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
   でクロスボードツールチェイン notes + LX6/LX7 比較表、それから
   ボード固有 gotcha のために per-crate `CLAUDE.md`。
 - **組込ロードマップを追いたい** →
-  [`docs/ROADMAP.md`](ROADMAP.md) Phase B-Stick (M5StickS3 demo /
+  [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) Phase B-Stick (M5StickS3 demo /
   音響 fallback) と Phase B-Core (M5Stack CoreS3 main UAC
   controller) セクション。

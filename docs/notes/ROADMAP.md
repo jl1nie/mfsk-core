@@ -59,7 +59,7 @@ catch up:
   end-to-end verification.
 - **`mfsk-core/src/lib.rs` "Why this exists"** gains a fourth
   bullet for the handheld-controller use case, with cross-links to
-  the M5StickS3 source crate and `docs/MANUAL_M5STICKS3.md`.
+  the M5StickS3 source crate and `docs/reference/MANUAL_M5STICKS3.md`.
 - **`README.md`** opens with a hero photo of the device decoding
   five real on-air FT8 callsigns from a single 15 s slot
   (`docs/assets/m5sticks3-ft8-decode.jpg`).
@@ -224,7 +224,7 @@ Architectural notes that did not graduate to issues:
 γ / β / δ / ε all landed in 0.6.3 (last stage PRs #77 + #83 + #79 +
 #80 + #81 + #82 carved `decode_block.rs` from 3,517 lines into a
 423-line parent + 6 stage submodules). See
-[`docs/historical/CLEANUP_2026_05.md`](historical/CLEANUP_2026_05.md) (HISTORICAL) for the
+[`docs/historical/CLEANUP_2026_05.md`](../historical/CLEANUP_2026_05.md) (HISTORICAL) for the
 original four-stage plan; the per-stage acceptance-criteria template
 documented there is reused for future cleanup waves.
 
@@ -385,7 +385,7 @@ and `embedded-shared` resampler API are the seams shared across both.
 ## Phase D — ESP32-S3 LX7 PIE SIMD acceleration
 
 Pure decoder-side perf push for the S3 critical path (pass 2 +
-stage1_inc). Detailed plan in [`docs/PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md).
+stage1_inc). Detailed plan in [`docs/notes/PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIMD.md).
 
 | Sub-phase | Target | Status |
 |---|---|---|
@@ -423,6 +423,6 @@ Log: `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log`.
   (M5StickS3, demo / acoustic fallback per Phase B-Stick);
   `embedded-poc/m5stack-core2-app/src/` (Core2 sibling,
   wav_sim only).
-- User manual: [`docs/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md)
-  ([JA](MANUAL_M5STICKS3.ja.md)).
+- User manual: [`docs/reference/MANUAL_M5STICKS3.md`](../reference/MANUAL_M5STICKS3.md)
+  ([JA](../reference/MANUAL_M5STICKS3.ja.md)).
 - Infra: `.github/workflows/{ci,release}.yml`.

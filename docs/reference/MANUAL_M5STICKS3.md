@@ -39,8 +39,8 @@ Five development / diagnostic modes round out the set:
 - **Uac** — USB-Host audio class. **Cannot run on M5StickS3 hardware**
   (board lacks VBUS source + ID pin). The successor path is
   M5Stack CoreS3, which has AXP2101 + AW9523B for proper USB-OTG
-  host mode — see `docs/EMBEDDED.md` *What we test* (CoreS3 row)
-  and `docs/ROADMAP.md` Phase B-Core (2026-05-17 pivot; hardware
+  host mode — see `docs/reference/EMBEDDED.md` *What we test* (CoreS3 row)
+  and `docs/notes/ROADMAP.md` Phase B-Core (2026-05-17 pivot; hardware
   bring-up in progress, no firmware ship date yet). The Uac mode
   is present in `m5stack-s3-app` so the codebase boots for shared
   verification work — on StickS3 it exits cleanly with a "USB-OTG
@@ -394,9 +394,9 @@ embedded-poc/scripts/udp-log-listen.sh 9999 \
 
 ## 10. Reference
 
-- [`docs/EMBEDDED.md`](EMBEDDED.md) — `mfsk-core` embedded integration reference (scalar architecture, FFT-extern contract, Goertzel per-symbol DFT, Q-format reference, `mfsk-ffi-ft8` C ABI tutorial, performance benchmark, streaming pipeline, binary footprint).
-- [`docs/ROADMAP.md`](ROADMAP.md) — release milestones and Phase B-Stick / B-Core plan.
-- [`embedded-poc/CLAUDE.md`](../embedded-poc/CLAUDE.md) — shared embedded toolchain notes (cross-board).
-- [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../embedded-poc/m5stack-s3-app/CLAUDE.md) — board-specific notes for AI agents working on this crate.
+- [`docs/reference/EMBEDDED.md`](EMBEDDED.md) — `mfsk-core` embedded integration reference (scalar architecture, FFT-extern contract, Goertzel per-symbol DFT, Q-format reference, `mfsk-ffi-ft8` C ABI tutorial, performance benchmark, streaming pipeline, binary footprint).
+- [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) — release milestones and Phase B-Stick / B-Core plan.
+- [`embedded-poc/CLAUDE.md`](../../embedded-poc/CLAUDE.md) — shared embedded toolchain notes (cross-board).
+- [`embedded-poc/m5stack-s3-app/CLAUDE.md`](../../embedded-poc/m5stack-s3-app/CLAUDE.md) — board-specific notes for AI agents working on this crate.
 - `mfsk-core/` — the actual decoder library (host + embedded shared, published on crates.io).
 - `embedded-poc/mfsk-app-shared/` — board-agnostic app logic (QSO FSM, UI primitives, WiFi, log fanout).
