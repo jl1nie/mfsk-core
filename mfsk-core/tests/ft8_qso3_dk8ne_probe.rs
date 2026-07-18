@@ -149,3 +149,43 @@ fn probe_wa2fzw_with_exact_context() {
         "    even with exact operator AP context — confirms JTDX false positive #4 (sync-artifact)."
     );
 }
+
+/// Before trusting the "no recoverable content" conclusion above: does
+/// `coarse_sync` even find a candidate near 2546 Hz at all? If not, the
+/// AP contexts in `probe_wa2fzw_with_exact_context` never had a chance
+/// to try in the first place (a structural gap, not evidence the claim
+/// is false) — if a candidate *is* found there and every AP context
+/// still misses, that's real evidence against the codeword content,
+/// not just "we never looked."
+#[test]
+#[ignore]
+fn probe_wa2fzw_coarse_sync_candidates() {
+    let audio = load_wav_i16(Path::new(QSO3_PATH));
+    let spec = mfsk_core::ft8::decode_block::compute_spectrogram(&audio, 3000.0);
+    let candidates = mfsk_core::ft8::decode_block::coarse_sync(&spec, 100.0, 3000.0, 0.8, 200);
+    let near: Vec<_> = candidates
+        .iter()
+        .filter(|c| (c.freq_hz - 2546.0).abs() <= 10.0)
+        .collect();
+    println!("\n=== coarse_sync near 2546 Hz (WA2FZW DL5AXX RR73 claimed site) ===");
+    println!(
+        "{} candidates total, {} within ±10 Hz of 2546 Hz",
+        candidates.len(),
+        near.len()
+    );
+    for c in &near {
+        println!(
+            "  cand freq={:.2} dt={:.3} score={:.4}",
+            c.freq_hz, c.dt_sec, c.score
+        );
+    }
+    if near.is_empty() {
+        println!(
+            "  → no candidate at all near 2546 Hz: the AP probes above never had a\n    real shot — this is a coarse-sync gap, not evidence against the codeword."
+        );
+    } else {
+        println!(
+            "  → candidate(s) exist near 2546 Hz; every AP context in\n    probe_wa2fzw_with_exact_context still missed, which is real evidence\n    the codeword content doesn't match DL5AXX RR73."
+        );
+    }
+}
