@@ -470,14 +470,12 @@ pub fn ft4_sync_search_window<P: Protocol>(
     // recomputing `cos`/`sin` from scratch at every sample — same
     // values, ~128x fewer transcendental calls per `score_at` call
     // (Gemini PR review, second pass after the allocation fix above).
-    let score_at = |i0: i32, df: f32| -> f32 {
-        let has_df = df.abs() >= f32::EPSILON;
-        let step = if has_df {
-            let omega = -2.0 * PI * df / ds_rate;
-            Complex::new(omega.cos(), omega.sin())
-        } else {
-            Complex::new(1.0f32, 0.0f32)
-        };
+    // `step`/`has_df` themselves are hoisted one level further out (per
+    // `df`, not per `(i0, df)` cell) by the two loops below — `df` only
+    // changes in the outer loop, so recomputing them inside `score_at`
+    // on every inner-loop `i0` was still >99% redundant `cos`/`sin`
+    // calls (Gemini PR review, third pass).
+    let score_at = |i0: i32, step: Complex<f32>, has_df: bool| -> f32 {
         blocks_ref
             .iter()
             .map(|(off, flat)| {
@@ -516,12 +514,24 @@ pub fn ft4_sync_search_window<P: Protocol>(
     let mut best_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * ds_rate).round() as i32;
     let mut best_score = f32::NEG_INFINITY;
 
+    let phasor_for = |df: f32| -> (Complex<f32>, bool) {
+        let has_df = df.abs() >= f32::EPSILON;
+        let step = if has_df {
+            let omega = -2.0 * PI * df / ds_rate;
+            Complex::new(omega.cos(), omega.sin())
+        } else {
+            Complex::new(1.0f32, 0.0f32)
+        };
+        (step, has_df)
+    };
+
     let mut idf = -12i32;
     while idf <= 12 {
         let df = idf as f32;
+        let (step, has_df) = phasor_for(df);
         let mut i0 = ib_min;
         while i0 <= ib_max {
-            let s = score_at(i0, df);
+            let s = score_at(i0, step, has_df);
             if s > best_score {
                 best_score = s;
                 best_df = df;
@@ -539,9 +549,10 @@ pub fn ft4_sync_search_window<P: Protocol>(
 
     for si in -4i32..=4 {
         let df = coarse_winner_df + si as f32;
+        let (step, has_df) = phasor_for(df);
         for di in -5i32..=5 {
             let i0 = coarse_winner_i0 + di;
-            let s = score_at(i0, df);
+            let s = score_at(i0, step, has_df);
             if s > best_score {
                 best_score = s;
                 best_df = df;
