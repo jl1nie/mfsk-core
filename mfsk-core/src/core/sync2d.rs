@@ -464,7 +464,20 @@ pub fn ft4_sync_search_window<P: Protocol>(
     // Mathematically identical: `score_flat_coherent` on a pre-twiddled
     // reference is the same dot product as twiddling each sample of
     // `cd0` in place here.
+    // `df` is constant across all samples in a block, so the per-sample
+    // twiddle phasor is a fixed rotation `step = exp(iω)` applied
+    // incrementally (one complex multiply per sample) rather than
+    // recomputing `cos`/`sin` from scratch at every sample — same
+    // values, ~128x fewer transcendental calls per `score_at` call
+    // (Gemini PR review, second pass after the allocation fix above).
     let score_at = |i0: i32, df: f32| -> f32 {
+        let has_df = df.abs() >= f32::EPSILON;
+        let step = if has_df {
+            let omega = -2.0 * PI * df / ds_rate;
+            Complex::new(omega.cos(), omega.sin())
+        } else {
+            Complex::new(1.0f32, 0.0f32)
+        };
         blocks_ref
             .iter()
             .map(|(off, flat)| {
@@ -475,7 +488,7 @@ pub fn ft4_sync_search_window<P: Protocol>(
                     return 0.0;
                 }
                 let s0 = cd0_start as usize;
-                if df.abs() < f32::EPSILON {
+                if !has_df {
                     let z: Complex<f32> = cd0[s0..s0 + len as usize]
                         .iter()
                         .zip(flat.iter())
@@ -483,15 +496,14 @@ pub fn ft4_sync_search_window<P: Protocol>(
                         .sum();
                     z.norm()
                 } else {
-                    let omega = -2.0 * PI * df / ds_rate;
+                    let mut twid = Complex::new(1.0f32, 0.0f32);
                     let z: Complex<f32> = cd0[s0..s0 + len as usize]
                         .iter()
                         .zip(flat.iter())
-                        .enumerate()
-                        .map(|(n, (&c, &r))| {
-                            let p = omega * n as f32;
-                            let twid = Complex::new(p.cos(), p.sin());
-                            c * r.conj() * twid
+                        .map(|(&c, &r)| {
+                            let val = c * r.conj() * twid;
+                            twid *= step;
+                            val
                         })
                         .sum();
                     z.norm()
