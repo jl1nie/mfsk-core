@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.7.3 — FT4 AWGN + FT8 CCIR fading sensitivity close-out (#151, #152, #153)
+
+### Fixed
+
+- **FT4 AWGN sensitivity gap vs WSJT-X narrowed from ~1.8 dB to ~0.3 dB**
+  (`docs/notes/FT4_BENCHMARK.md` sections 8-12, PR #151), from two real,
+  WSJT-X-source-verified fixes plus one confirmed-null-effect bug fixed
+  anyway:
+  - **Coherent Costas-block scorer**: `ft4_sync_search`'s scorer was
+    non-coherent within each 4-symbol block where WSJT-X's `sync4d.f90`
+    does one coherent 4-symbol correlation per block. Switched to the
+    coherent scorer already built for `fst4_sync_search`. ~+1.0 dB AWGN.
+  - **OSD-attempt gate checked the wrong score**: gated on coarse_sync's
+    non-coherent `cand.score` instead of the coherent score, silently
+    skipping OSD on 13/17 near-crossing candidates that cleared WSJT-X's
+    own `syncmin=1.2`. WSJT-X's FT4 decoder has no such gate at all;
+    bypassed `osd_score_min` for FT4 (same precedent as FST4's #146
+    bypass), kept `osd_max_errors` as the false-accept safety net.
+    ~+0.5 dB AWGN.
+  - OSD depth-3/4 escalation gate scale mismatch (`nsync>=18`,
+    calibrated against FT8's `N_SYNC=21` but FT4's `N_SYNC=16` is
+    mathematically unreachable) — real bug, measured null effect on
+    AWGN recall, fixed anyway at zero cost.
+  - A candidate WSJT-X-literal 3-segment Δt-search retry was
+    implemented, measured, and correctly retracted after discovering
+    the diagnostic had omitted the real `hard_errors>=osd_max_errors`
+    gate (10/17 apparent rescues → 0/17 once corrected) — reverted to
+    avoid 3x per-candidate decode cost for zero benefit.
+  - Net: AWGN 50% crossing -15.5 dB → **-17.2 dB**; CCIR fading channels
+    improved +0.25 to +1.1 dB depending on channel.
+- **FT8 CCIR moderate/poor fading recall gap closed** (`docs/notes/FT8_BENCHMARK.md`,
+  PR #152), via a new `ft8sim`-based AWGN/CCIR sensitivity sweep
+  (mirroring the FT4/FST4 `ft4sim`/`fst4sim` benchmarks). Root cause:
+  `OSD_HARDERRORS_MAX = 22` (deliberately tightened in 0.6.3 to filter
+  3 `qso3_busy.wav` candidates judged CRC-luck phantoms) was discarding
+  genuine golden decodes under CCIR fading — widened back to WSJT-X's
+  universal 36. Monotonic improvement across the full grid (AWGN
+  ≈-20.4→-20.8 dB, CCIR good ≈-20.0→-20.6 dB, CCIR moderate
+  ≈-18.3→-18.6 dB, CCIR poor ≈-18.2→-18.5 dB), no regressions.
+  `qso3_busy.wav` hard-assertion tests unchanged (golden/phantom counts
+  identical — the widening touched a disjoint candidate set); JTDX
+  18-entry recall 13/18 → 17/18.
+- Resolves issue #150 (JTDX-18 ground-truth question) as a side effect:
+  the OSD widening above independently reproduces 3 of the previously
+  JTDX-only candidates (`N1API F2VX`, `N1API HA6FQ`, `CQ EA2BFM`) —
+  two independent decoders converging on the same CRC-14-protected
+  message text is strong evidence they're real, not phantoms. A
+  follow-up probe (PR #153) confirmed `K1BZM DK8NE` is likewise
+  genuine (recoverable with AP context `mycall=K1BZM`, matching how
+  WSJT-X's own golden-8 reaches it) and found `coarse_sync` candidates
+  exist at WA2FZW DL5AXX's claimed frequency yet no AP context
+  recovers the message — the one JTDX-18 entry still classified as a
+  likely false positive.
+
 ## 0.7.2 — FST4 sensitivity close-out (#146) + docs restructure (#147)
 
 ### Fixed
