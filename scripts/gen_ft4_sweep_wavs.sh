@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 FT4SIM="${1:-$REPO_ROOT/target/ft4sim/ft4sim}"
 OUT_DIR="${2:-$REPO_ROOT/embedded-poc/assets/ft4_sweep}"
-JOBS="${JOBS:-$(nproc)}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)}"
 
 if [[ ! -x "$FT4SIM" ]]; then
   echo "error: ft4sim not found at $FT4SIM" >&2
@@ -80,7 +80,7 @@ run_cell() {
     "$chan" "$snr" "$TRIALS"
 
   local tmpd; tmpd="$(mktemp -d)"
-  trap 'rm -rf "$tmpd"' RETURN
+  trap 'rm -rf "$tmpd"' EXIT
 
   (
     cd "$tmpd"
@@ -125,7 +125,9 @@ for CELL in "${CELLS[@]}"; do
     (( active-- )) || true
   fi
 done
-wait
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
 
 echo ""
 echo "Done. Assets: $OUT_DIR"
