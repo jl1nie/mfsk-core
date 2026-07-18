@@ -136,21 +136,29 @@ const JTDX_GOLDEN: &[GoldenEntry] = &[
 
 /// Recall floor against JTDX 18.
 /// - host f32 (research config: BpAllOsd + max_cand=60 + sync_min=0.8):
-///   **13/18 hit** (was 16/18 pre-0.6.3). 0.6.3 added an OSD-pass
+///   **17/18 hit** (only `WA2FZW DL5AXX RR73` missing). Was 16/18
+///   before 0.6.3, then dropped to 13/18 when 0.6.3 added an OSD-pass
 ///   `hard_errors > 22` ceiling (`OSD_HARDERRORS_MAX` in
-///   `decode_block/osd_strategy.rs`) that eliminates 3 CRC-luck
-///   phantoms `qso3_busy.wav` previously surfaced from `pass=14`
-///   (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25, `CQ EA2BFM IN83`
-///   e=31). Those 3 were *in* the JTDX golden, so the recall floor
-///   drops by exactly 3. The WSJT-X 8-entry golden floor stays at
-///   7/8 because none of the dropped phantoms appear there.
+///   `decode_block/osd_strategy.rs`) meant to eliminate 3 assumed
+///   CRC-luck phantoms (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25,
+///   `CQ EA2BFM IN83` e=31). A CCIR-fading sensitivity investigation
+///   (issue #72 follow-up, `docs/notes/FT8_BENCHMARK.md`) found that
+///   ceiling was also discarding genuine golden decodes under fading,
+///   traced via `ft8sim`-synthesized WAVs with known ground truth —
+///   loosening it back to WSJT-X's own 36 recovered those *and*, as a
+///   side effect, the same 3 `qso3_busy.wav` candidates at their exact
+///   JTDX-claimed text, which is strong evidence they were real, not
+///   phantoms (see `OSD_HARDERRORS_MAX`'s docstring for the full
+///   account). The WSJT-X 8-entry golden floor stays at 7/8 — none of
+///   the affected candidates appear there.
 /// - host fixed-point (embedded ship config: BpAll + max_cand=15 +
 ///   sync_min=1.3, **no OSD** because OSD's genmrb + Gauss
 ///   elimination + thousand-codeword enumeration is not realistic
-///   on Xtensa LX7): **8/18 hit**. The 10 missing are -13..-19 dB
-///   weak signals where NMS Q3i8 BP can't converge in BP_MAX_ITER=30.
+///   on Xtensa LX7): **8/18 hit**, unaffected by the OSD ceiling
+///   change. The 10 missing are -13..-19 dB weak signals where NMS
+///   Q3i8 BP can't converge in BP_MAX_ITER=30.
 #[cfg(not(feature = "fixed-point"))]
-const MIN_JTDX_HITS: usize = 13;
+const MIN_JTDX_HITS: usize = 17;
 #[cfg(feature = "fixed-point")]
 const MIN_JTDX_HITS: usize = 8;
 
