@@ -627,7 +627,8 @@ tree is present at the expected sibling path):
 | `WSPR/150426_0918.wav` (8 frames)   | **8 / 8**   | sub-bin demod + neg-dt |
 | `FT4/000000_000002.wav` (6 frames)  | **6 / 6**   | Nuttall + sync4d       |
 | `JT9/130418_1742.wav` (5 frames)    | **5 / 5**   | full WSJT-X-faithful softsym pipeline (afc9 + chkss2 + xx0 mettab + sync9 collapse) |
-| `MSK144/181211_120500.wav` (n/a)    | —           | not implemented — [#25](https://github.com/jl1nie/mfsk-core/issues/25) |
+| `MSK144/181211_120500.wav` (1 frame) | **1 / 1**  | matches `msk144` feature |
+| `MSK144/181211_120800.wav` (2 frames) | **2 / 2** | matches `msk144` feature |
 | `JT65/*` (n/a)                      | —           | golden harness pending — [#24](https://github.com/jl1nie/mfsk-core/issues/24) |
 | `FST4/210115_0058.wav` (1 frame)    | **1 / 1**   | fixed NSPS/NDOWN/BT + rvec message scramble (0.6.8, [#23](https://github.com/jl1nie/mfsk-core/issues/23)) |
 
@@ -656,11 +657,6 @@ tree is present at the expected sibling path):
   beacon variant, a different message format entirely) remain out of
   scope — no user demand as of writing. See
   [#23](https://github.com/jl1nie/mfsk-core/issues/23).
-- **MSK144** — not implemented (out of scope of the 0.5.x line and still as of 0.6.x). The decode path needs a
-  different correlator geometry from the rest of the FT/JT/Q-family
-  decoders this crate is built around. Tracked in
-  [#25](https://github.com/jl1nie/mfsk-core/issues/25).
-
 #### What's solid
 
 - **FT8** — synth → decode round-trip lib tests green, real WSJT-X
@@ -714,5 +710,16 @@ tree is present at the expected sibling path):
   + `xx0` mettab + `sync9` per-freq collapse). Closed [#19](https://github.com/jl1nie/mfsk-core/issues/19).
 - **Q65** — fast-fading + AP-list paths exercise both the WSJT-X
   6 m EME and the 10 GHz EME reference recordings.
+- **MSK144** — the meteor-scatter mode ([#25](https://github.com/jl1nie/mfsk-core/issues/25)), whose
+  continuous-phase binary-MSK modulation and burst-scan decode loop
+  are genuinely different from the FSK/static-slot family the rest of
+  this crate shares — its own `msk144::decode::decode_slot` driver
+  bypasses `core::pipeline` entirely by design. Reuses
+  `crate::msg::wsjt77` (same `pack77`/`unpack77` payload as FT8/FT4/
+  FST4) and a 4th `LdpcParams` impl for LDPC(128,90) + CRC-13. **3 / 3
+  WSJT-X golden** across both `samples/MSK144/*.wav` recordings, no
+  threshold tuning needed. MSK40 (the legacy shorthand mode) and
+  RX-equalizer training remain out of scope. Behind the `msk144`
+  feature (part of `full`).
 - **SNR (FT8)** — `xsnr2_db_simple` calibration (0.5.7 + 0.5.8) lands
   reported SNR within ±3 dB of JTDX absolute on real silicon.

@@ -26,7 +26,7 @@ std          = ["alloc"]
 alloc        = []
 
 # Aggregate features.
-full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "packet-bytes", "uvpacket", "parallel"]
+full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144", "packet-bytes", "uvpacket", "parallel"]
 
 # FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
@@ -91,6 +91,20 @@ ft4          = []
 wspr         = []
 packet-bytes = []
 
+# MSK144 (issue #25) — full port landed: LDPC(128,90) + MSK/OQPSK DSP
+# (Phase 1-2), burst-scan sync search (Phase 3, needs `fft-rustfft` /
+# `fft-extern` for the sub-modules that use it), per-frame decode
+# (Phase 4), and the top-level sliding-window driver
+# (`msk144::decode::decode_slot`, Phase 5). Golden-WAV regression
+# against both WSJT-X `samples/MSK144/*.wav` recordings passes 3/3
+# (`tests/msk144_wsjtx_samples.rs`). No `Protocol`-trait ZST is wired
+# (MSK144 isn't FSK — its own top-level driver bypasses
+# `core::pipeline` entirely by design), so it doesn't appear in
+# `PROTOCOLS`/`protocol_invariants.rs`; that's an intentional
+# architectural difference from the other WSJT-family modes, not a
+# gap.
+msk144       = []
+
 # Heavy modes — these still call `rustfft` directly (out of scope of
 # the embedded port). Pulling them implies the host build via
 # `fft-rustfft` (which transitively requires `std`).
@@ -121,7 +135,7 @@ rayon       = { version = "1", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing

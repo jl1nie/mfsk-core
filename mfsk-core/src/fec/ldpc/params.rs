@@ -153,3 +153,41 @@ impl LdpcParams for Ldpc240_101Params {
         crate::fec::ldpc240_101::tables::GEN_PARITY[row][col]
     }
 }
+
+// ────────────────────────────────────────────────────────────────────
+// LDPC(128, 90) — MSK144
+// ────────────────────────────────────────────────────────────────────
+
+/// Parameters for the WSJT LDPC(128, 90) code (MSK144). Tables come
+/// from [`crate::fec::ldpc_128_90::tables`].
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ldpc128_90Params;
+
+impl sealed::Sealed for Ldpc128_90Params {}
+
+impl LdpcParams for Ldpc128_90Params {
+    const N: usize = 128;
+    const K: usize = 90;
+    const M: usize = 38;
+    const MAX_ROW: usize = 11;
+
+    #[inline]
+    fn mn(bit: usize) -> [u8; 3] {
+        crate::fec::ldpc_128_90::tables::MN[bit]
+    }
+
+    #[inline]
+    fn nm(check: usize, slot: usize) -> u8 {
+        crate::fec::ldpc_128_90::tables::NM[check][slot]
+    }
+
+    #[inline]
+    fn nrw(check: usize) -> u8 {
+        crate::fec::ldpc_128_90::tables::NRW[check]
+    }
+
+    #[inline]
+    fn gen_parity(row: usize, col: usize) -> u8 {
+        crate::fec::ldpc_128_90::tables::GEN_PARITY[row][col]
+    }
+}
