@@ -92,7 +92,14 @@ fn decode_block_matches_decode_frame_on_real_qso() {
             e.max_extra,
         );
 
-        if hit < e.min_hit {
+        if truth.len() < e.min_hit {
+            failures.push(format!(
+                "{}: host recall regression — only {} host-truth msgs found, expected at least {}",
+                e.label,
+                truth.len(),
+                e.min_hit
+            ));
+        } else if hit < e.min_hit {
             failures.push(format!(
                 "{}: embedded recall regression — {} of {} host-truth msgs, floor {}",
                 e.label,
