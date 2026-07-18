@@ -122,7 +122,7 @@ fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
         });
     }
     // Sort: channel → snr desc → trial
-    out.sort_by_key(|m| (m.channel.clone(), -m.snr_db, m.trial));
+    out.sort_by_key(|m| (m.channel.clone(), std::cmp::Reverse(m.snr_db), m.trial));
     out
 }
 
