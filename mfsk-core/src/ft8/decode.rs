@@ -1544,4 +1544,92 @@ mod tests {
         eprintln!("DT = {dt:+.3} s (expected ≈ 0.0)");
         assert!(dt.abs() < 0.5, "DT={dt} is too far from 0");
     }
+
+    /// Internal per-candidate probe for the CCIR fading gap investigation
+    /// (issue #72 follow-up, `FT8_BENCHMARK.md` section 7). Calls the
+    /// private `process_candidate` directly on just the known near-golden
+    /// candidate — avoids the noise-candidate spam a full-band
+    /// `decode_frame` run produces, and is reachable here (unlike from an
+    /// external `tests/` crate) because this module's own
+    /// `#[cfg(test)] mod tests` sees `crate::ft8`-private items via `use
+    /// super::*`. The root cause this helped find (`OSD_HARDERRORS_MAX`
+    /// too tight — see `decode_block/osd_strategy.rs`) is fixed; kept as
+    /// a reusable stage-attribution probe for future internal
+    /// investigations rather than deleted.
+    ///
+    /// Minimal inline WAV reader (12 kHz mono i16 PCM) since
+    /// `tests/common`'s loader isn't reachable from a `src/` unit test.
+    #[test]
+    #[ignore = "manual diagnostic — internal BP/OSD trace on CCIR losing trials (issue #72)"]
+    fn ft8_diag_internal_osd_trace() {
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                i = body + sz + (sz & 1);
+            }
+            let off = data_off?;
+            let end = (off + data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        const GOLDEN_FREQ_HZ: f32 = 1500.0;
+        const FREQ_TOL_HZ: f32 = 5.0;
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let dir = std::path::Path::new(manifest).join("../embedded-poc/assets/ft8_sweep");
+
+        for &(chan, snr_tag, trial) in &[
+            ("ccir_poor", "m18", 1u32),
+            ("ccir_poor", "m18", 3),
+            ("ccir_poor", "m17", 3),
+            ("ccir_moderate", "m17", 11),
+        ] {
+            let path = dir.join(format!("ft8_{chan}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16(&path) else {
+                eprintln!("skip {path:?}");
+                continue;
+            };
+            let spec = crate::ft8::decode_block::compute_spectrogram(&audio, 3000.0);
+            let candidates = crate::ft8::decode_block::coarse_sync(&spec, 100.0, 3000.0, 0.8, 50);
+            let fft_cache = build_fft_cache(&audio);
+            for c in candidates
+                .iter()
+                .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+            {
+                eprintln!(
+                    "{chan} {snr_tag} trial {trial}: cand freq={:.2} dt={:.3} score={:.4}",
+                    c.freq_hz, c.dt_sec, c.score
+                );
+                let r = process_candidate(
+                    c,
+                    &audio,
+                    &fft_cache,
+                    DecodeDepth::BpAllOsd,
+                    DecodeStrictness::default(),
+                    &[],
+                    EqMode::Off,
+                    None,
+                );
+                eprintln!("  -> process_candidate result: {:?}", r.map(|d| d.pass));
+            }
+        }
+    }
 }

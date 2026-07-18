@@ -30,33 +30,32 @@ use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
 /// both sides.
 const Q_NDEEP3_THRESHOLD: u32 = 18;
 
-/// OSD-specific `nharderrors` ceiling. mfsk-core-specific deviation
-/// from WSJT-X's universal `WSJTX_NHARDERRORS_MAX = 36`
-/// (`ft8b.f90:422`): we tighten the gate to 22 *only* for OSD-pass
-/// codewords (BP variants still use the looser 36 in
-/// `process_one_candidate_inner`).
+/// OSD `nharderrors` ceiling — matches WSJT-X's universal
+/// `WSJTX_NHARDERRORS_MAX = 36` (`ft8b.f90:422`) exactly, same as the
+/// BP variants in `process_one_candidate_inner`.
 ///
-/// **Why this isn't WSJT-X-faithful but worth the deviation.** OSD
-/// CRC-luck phantoms surface at the boundary where the encoded
-/// candidate disagrees with `hdec` in 25–36 bits and happens to pass
-/// CRC-14 (~1 in 16,384 random shot). On `qso3_busy.wav` this surfaces
-/// 3 fixed phantoms (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25,
-/// `CQ EA2BFM IN83` e=31) that all of #86's npre1, #87's npre2, and
-/// #88's WSJT-X post-OSD gates failed to filter because their
-/// `nsync >= 13` puts them above WSJT-X's `nsync <= 10` bail-out.
-///
-/// Empirically on the same WAV no legitimate signal surfaces from OSD
-/// (`pass >= 14`) with `hard_errors > 22` — real low-SNR signals that
-/// BP can't decode but OSD recovers all land at e ≤ 16 here. The
-/// gate doesn't touch BP variants 0–3 (which can legitimately produce
-/// e=20 cases like `N1PJT HB9CQK -10` on `qso3_busy`), only the
-/// OSD-pass codewords this module emits.
-///
-/// Trade-off: a borderline real signal needing OSD with e=23..36 on
-/// some other reference WAV would be dropped here. Reference-suite
-/// regression on the WSJT-X-distributed FT8 / FT4 / JT9 / WSPR /
-/// FST4 / Q65 samples did not surface any such case in 0.6.3.
-const OSD_HARDERRORS_MAX: u32 = 22;
+/// **History (issue #72 follow-up, 2026-07-18): was 22, a deliberate
+/// mfsk-core-specific deviation, now retracted.** The gate had been
+/// tightened to 22 specifically to filter 3 candidates on
+/// `qso3_busy.wav` — `N1API F2VX 73` (e=30), `N1API HA6FQ -23` (e=25),
+/// `CQ EA2BFM IN83` (e=31) — judged phantoms (CRC-14-luck false
+/// accepts) because JTDX's own 18-entry recall list wasn't independently
+/// verified for those specific entries (see issue #150). A CCIR-fading
+/// sensitivity investigation (`docs/notes/FT8_BENCHMARK.md`) using
+/// `ft8sim`-synthesized WAVs with a *known* golden message found the 22
+/// ceiling silently discarding genuine golden decodes under heavy
+/// fading — traced multiple independent LLR variants converging on the
+/// exact transmitted text at `hard_errors` in the high 20s/low 30s.
+/// Loosening back to WSJT-X's 36 recovered those, and as a direct
+/// side effect also recovered the same 3 `qso3_busy.wav` candidates at
+/// their *exact* JTDX-claimed text — independent corroboration between
+/// two separate decoders on a CRC-14-protected message is strong
+/// evidence against coincidence, resolving them as real rather than
+/// phantom. Full regression suite (host `ft8_qso3_apoff_recall`,
+/// `ft8_decode_block_real_qso`, embedded `decode_block` paths) showed
+/// zero change from this widening — nothing was relying on the
+/// tightened gate to stay green.
+const OSD_HARDERRORS_MAX: u32 = 36;
 
 /// Pass-ID range emitted by the OSD fallback (`14..=17` mirrors the
 /// llr-variant order `a/b/c/d` — see the post-0.6.1 pass-ID layout
@@ -128,10 +127,8 @@ pub(super) fn try_fallback(
             osd_decode_npre1(llr)
         };
         if let Some(osd) = osd {
-            // OSD-specific tightened ceiling at 22 (vs WSJT-X's
-            // universal 36 in BP). See [`OSD_HARDERRORS_MAX`]'s
-            // docstring for the WSJT-X-deviation rationale and the
-            // qso3_busy phantom-elimination data.
+            // WSJT-X-faithful ceiling — see [`OSD_HARDERRORS_MAX`]'s
+            // docstring.
             if osd.hard_errors > OSD_HARDERRORS_MAX {
                 continue;
             }

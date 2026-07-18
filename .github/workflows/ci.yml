@@ -182,21 +182,23 @@ jobs:
   #
   #   recall tier         — load-bearing regression protection. Runs
   #                         on every PR matching the path filter
-  #                         (current ft8/catchall recall hooks:
-  #                         `ft8_decode_block_real_qso`,
-  #                         `ft8_reference_suite_recall`,
-  #                         `fst4_wsjtx_samples`).
+  #                         (current catchall recall hook:
+  #                         `fst4_wsjtx_samples`; FT8's equivalent
+  #                         hard-floor tests are all non-ignored now
+  #                         and run in `default` instead — see below).
   #   characterization    — SNR sensitivity curves, depth/pass1 sweeps,
   #                         coarse-sync probes / concurrency stress,
-  #                         and similar diagnostic-only tests. Run on
-  #                         `push` to main and on PRs carrying the
+  #                         and similar diagnostic-only tests (still
+  #                         used by the `q65 sweeps` / `uvpacket
+  #                         sweeps` entries below). Run on `push` to
+  #                         main and on PRs carrying the
   #                         `run-full-sweep` label, but skipped on
   #                         regular PRs (caught post-merge, revert if
-  #                         broken). This is the wall-clock saving:
-  #                         a typical ESP32-related PR touching
-  #                         `mfsk-core/src/ft8/**` no longer spends
-  #                         ~10 min on the characterization sweep on
-  #                         every push.
+  #                         broken). FT8 had its own characterization
+  #                         tier and a separate "ft8 recall" tier here
+  #                         until 2026-07-18, both removed — see the
+  #                         comment further down where they used to
+  #                         sit, right after the `default` matrix entry.
   #
   # The non-ignored recall tests (qso3 apoff/apon/jtdx, all of
   # ft4/q65/uvpacket roundtrips + wsjtx_samples, protocol_invariants,
@@ -214,10 +216,11 @@ jobs:
   #                                        (even when the filter would
   #                                        otherwise gate it in).
   #
-  # Pre-this-split a regular `mfsk-core/src/ft8/**` PR ran ~10 min of
-  # characterization on top of the recall floor. With this split, the
-  # PR runs only the ~2 min recall tier; the characterization sweep
-  # runs once post-merge.
+  # A regular `mfsk-core/src/ft8/**` PR now runs only the ~2 min
+  # recall tier — no post-merge characterization sweep either, since
+  # that tier was removed entirely for FT8 (see above). Q65/uvpacket
+  # still follow the original split: PR runs recall only, push-to-main
+  # or `run-full-sweep` label also runs their characterization tier.
   # ───────────────────────────────────────────────────────────────
   test:
     name: Test (${{ matrix.suite.name }})
@@ -241,21 +244,33 @@ jobs:
             kind: default
             changes_key: src
             push_only: false
-          # FT8 recall protection (real-QSO regression + WSJT-X
-          # reference WAV recall across all distributed samples).
-          # Cheap enough to keep on every ft8-relevant PR.
-          - name: ft8 recall
-            kind: ignored-integration
-            globs: "ft8_decode_block_real_qso ft8_reference_suite_recall"
-            changes_key: ft8
-            push_only: false
-          # FT8 characterization — SNR curves, depth/pass1 sweeps,
-          # coarse-sync probe + concurrency stress. Push-only.
-          - name: ft8 characterization
-            kind: ignored-integration
-            globs: "ft8_coarse_sync_concurrent ft8_decode_block_coarse_diag ft8_decode_block_depth_sweep ft8_decode_block_pass1_sweep ft8_decode_block_snr_sweep ft8_qso3_coarse_sync_probe"
-            changes_key: ft8
-            push_only: true
+          # The former "ft8 characterization" tier (SNR curves,
+          # depth/pass1 sweeps, coarse-sync probe + concurrency
+          # stress) was removed 2026-07-18: all six tests were
+          # print-only diagnostics with no assertions, so this tier
+          # could never fail — it only ever cost wall-clock (~10 min
+          # push-only) for output nobody was routinely reading. One
+          # of the six (`ft8_coarse_sync_concurrent`) required the
+          # `fixed-point` feature, which `full` doesn't enable, so it
+          # was already running zero tests.
+          #
+          # The separate "ft8 recall" tier (`ft8_decode_block_real_qso`,
+          # `ft8_reference_suite_recall`) was audited the same day and
+          # found to have the identical problem (print-only, no
+          # assertions). `ft8_reference_suite_recall` (a PASS1_LIMIT/
+          # max_cand embedded-tuning config sweep) was deleted outright.
+          # `ft8_decode_block_real_qso` was converted to a hard-floor
+          # assertion test (embedded ship config vs host `decode_frame`
+          # truth on qso1/qso2/qso3_busy — qso1/qso2 have no WSJT-X
+          # golden and were otherwise completely untested) and is no
+          # longer `#[ignore]`'d, so it now runs in the `default` suite
+          # below and needs no matrix entry of its own.
+          #
+          # Actual FT8 recall regression protection now lives entirely
+          # in the `default` suite: `ft8_qso3_apoff_recall` /
+          # `ft8_qso3_apon_recall` (WSJT-X-golden floors on qso3_busy)
+          # plus `ft8_decode_block_real_qso` (host-truth floors on
+          # qso1/qso2/qso3_busy).
           # Q65 sweeps are all characterization (ap_list, ap_sweep,
           # fast_fading, snr_sweep). Recall protection sits in the
           # non-ignored `q65_roundtrip` / `q65_eme_submodes` /
