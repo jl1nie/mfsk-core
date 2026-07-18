@@ -161,26 +161,34 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-05-18):
+Currently open GitHub issues (state:open as of 2026-07-19 — re-checked
+directly against `gh issue view`; of the 8 entries in the previous
+"as of 2026-05-18" list, only 2 — `#24` and `#72` — are still open):
 
 - **#24** — JT65B golden lockdown + erasure-metadata path.
   Carried forward from the post-0.5.12 "Phase A2".
-- **#25** — MSK144 decode path. Community-contribution invitation;
-  not on the 3-month roadmap.
-- **#58** — coalesce redundant `compute_llr` between Step 3 (OSD)
-  and Step 4 (AP) in `decode_block`. Low-priority host perf.
-- **#64** — hoist `fft_cache` through host `decode_block_multipass`
-  (perf follow-up to #60, which landed the single-pass hoist).
-- **#65** — share `cd0` between SyncOnly + DataOnly
-  `fill_symbol_spectra` calls (host perf nice-to-have).
 - **#72** — `DecodeStrictness` duplicate definition + uncalibrated
   copy for FT4 / FST4. API hygiene; pick one definition and remove
   the duplicate.
-- **#73** — `EqMode::Adaptive` has collapsed into `EqMode::Local`
-  in practice. Either restore the distinct fallback behaviour or
-  drop the variant.
-- **#74** — `DecodeDepth::Bp` is the cheapest staircase rung;
-  confirm there is a real caller before keeping it.
+
+Closed since the 2026-05-18 snapshot (were listed above as open;
+see the closed issue / `git log` for the fix commit, not re-derived
+here):
+
+- ~~**#25**~~ — MSK144 decode path. Implemented (0.7.4): full
+  pipeline (LDPC(128,90)+CRC-13, MSK/OQPSK DSP, burst-scan sync,
+  `msk144::decode::decode_slot` top-level driver), 3/3 golden-WAV
+  recall. See CHANGELOG 0.7.4.
+- ~~**#58**~~ — coalesce redundant `compute_llr` between Step 3 (OSD)
+  and Step 4 (AP) in `decode_block`. Closed 2026-05-20.
+- ~~**#64**~~ — hoist `fft_cache` through host `decode_block_multipass`.
+  Closed 2026-05-19.
+- ~~**#65**~~ — share `cd0` between SyncOnly + DataOnly
+  `fill_symbol_spectra` calls. Closed 2026-05-20.
+- ~~**#73**~~ — `EqMode::Adaptive` collapsed into `EqMode::Local`.
+  Closed 2026-05-20.
+- ~~**#74**~~ — `DecodeDepth::Bp` cheapest-rung caller check.
+  Closed 2026-05-20.
 
 Closed during the 0.6.x line (compact context table — for full
 prose, see the closed issue / linked PR / `git log`):
@@ -194,7 +202,7 @@ prose, see the closed issue / linked PR / `git log`):
 | #63 | WSJT-X-faithful OSD `npre1`/`npre2` precoding (see "What landed in 0.6.3") | 0.6.3 |
 | #105 | EMBEDDED.md rewrite (kept deep tech ref, refreshed for 0.6.4) | 0.6.4 |
 | #23 | FST4-60A golden lockdown — wrong `NSPS`/`NDOWN`/`GFSK_BT` + missing `rvec` message scramble (PR #136) | 0.6.8 |
-| #23 | FST4-15/30/120/300 sub-modes wired (`fst4_submode!` macro, WSJT-X-cross-checked; no golden WAV available — synth-roundtrip + source-verification only) | pending release |
+| #23 | FST4-15/30/120/300 sub-modes wired (`fst4_submode!` macro, WSJT-X-cross-checked; no golden WAV available — synth-roundtrip + source-verification only) | 0.7.0 |
 
 The 5 remaining JTDX AP-on extras on `qso3_busy.wav` that surface
 only with `subtract_signal_lpf` multipass are a host-side win

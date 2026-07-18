@@ -80,6 +80,9 @@ Q65 は 6 個の sub-mode 構成で実装している — 地上波向け Q65-30
 コーデック、同期配置、共通の trait 実装ブロックを共有しており、
 NSPS とトーン間隔のみが sub-mode ごとに異なる。
 
+**MSK144** はこの表に意図的に含めていない — `Protocol` を実装する
+ZST が存在しないため。§0.6 を参照。
+
 ### 0.5 設計が機能していることの確認 — WSPR と Q65 という 2 つのストレステスト
 
 FT8 / FT4 / FST4 はいずれも LDPC + 77 bit メッセージ + ブロック Costas
@@ -133,13 +136,63 @@ WSPR が「**FEC 系統 + メッセージ長 + 同期形式**」を独立に差�
 詳述し、§7 で `PROTOCOLS` レジストリ (実装される 11 ZST すべての
 列挙) と `tests/protocol_invariants.rs` の汎用検査機構を扱う。
 
+### 0.6 MSK144 — 抽象化を使わないプロトコル
+
+§0.4 の全プロトコルは、互いの違いの下に一つの共通性質を持つ:
+coarse-sync → LLR → FEC という pipeline が、既知のおおよその
+オフセットに 0..N 個のフレームが並ぶ、1 つの固定長スロットの上で
+動く、という前提である。**MSK144** (issue #25) はこの前提の両方を
+同時に破る。無理に型に押し込む代わりに、`msk144::decode` は
+それ自身が独立したトップレベルドライバであり、`core::pipeline` /
+`ModulationParams` / `FrameLayout` のいずれにも触れない。
+`Protocol` を実装する ZST も存在しない。これは WSPR や Q65 (§0.5)
+よりもさらに一歩踏み込んだ話で、あちらは実デコードロジックが
+共有 pipeline を迂回する場合でも trait 面自体は採用している ——
+MSK144 は trait 面そのものから外れている。
+
+1. **M 元 FSK ではない**: MSK144 は連続位相の二値 MSK で、
+   offset-QPSK として送信される — bit は I/Q レールに割り当てられ、
+   それぞれ半正弦パルスで整形される。`ModulationParams` の
+   トーン番号・Gray map・GFSK 整形というモデルには、有用な
+   写像先がない。変調器と整合フィルタ復調器は `core::dsp::msk` に
+   trait 実装ではなく単なる関数として存在する。
+2. **静的スロットではない**: 他の全プロトコルはフレームが固定長
+   スロットバッファ内の既知のおおよそのオフセットに位置すると
+   仮定している。MSK144 は 864 サンプル (72 ms) のフレームを
+   15 秒 (または 30 秒) の T/R 期間全体にわたって連続的に繰り返す
+   ——実際の送信は同一内容を期間全体でバックトゥバックにループし続け、
+   受信側は電離飛跡のピングがどこに来るか分からないまま走査する
+   必要がある。`msk144::spd::detect_burst_candidates` (二乗信号の
+   2 トーン スペクトル走査) と `msk144::sync::msk144_sync`
+   (CFO/シンボルタイミングの同時整合フィルタ相関) がその走査を担う
+   ——WSJT-X の `msk144spd.f90`/`msk144sync.f90` からの移植であり、
+   `core::sync::coarse_sync` からではない。
+
+一方、ライブラリの他部分と共有しているものもある: 77 bit の
+`pack77`/`unpack77` メッセージペイロード (`msg::wsjt77`、完全に
+無変更 — MSK144 の実際の WSJT-X エンコーダは FT8/FT4/FST4 と
+同じ関数を呼んでいる) と、汎用 LDPC belief-propagation/OSD
+エンジン (`fec::ldpc::bp`/`osd`) を LDPC(128, 90) + CRC-13
+(`fec::ldpc_128_90`) 用に 4 番目の `LdpcParams` 実装として
+パラメータ化したもの ——これは FST4 用に `Ldpc240_101Params` を
+追加したときと全く同じ、その trait 自身が文書化している拡張手順
+どおりに追加した。つまり FEC・メッセージ層はこれまでの追加と
+同じ形で拡張されており、変調・フレームタイミング層だけが対象外
+になっている理由は、`ModulationParams`/`FrameLayout` に
+過渡バースト・非 FSK なプロトコルが差し込める場所がそもそも
+存在しないからである。
+
+WSJT-X `samples/MSK144/*.wav` の 2 ファイルに対するゴールデン
+WAV recall は 3/3 (`tests/msk144_wsjtx_samples.rs`) —
+アーキテクチャが分岐していても recall は犠牲になっていない。
+
 ## 1. モジュール構成
 
 ```
 mfsk_core
 ├── core/             Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
-│   ├── dsp/            resample · downsample · gfsk · subtract
+│   ├── dsp/            resample · downsample · gfsk · subtract · msk · analytic
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (トーン毎 Wiener)
@@ -147,6 +200,7 @@ mfsk_core
 ├── fec/              FecCodec 実装群
 │   ├── ldpc174_91.rs   LDPC(174, 91)  — FT8, FT4
 │   ├── ldpc240_101.rs  LDPC(240, 101) — FST4
+│   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
 │   ├── conv.rs         ConvFano r=½ K=32 — WSPR, JT9
 │   ├── rs63_12.rs      RS(63, 12) GF(2⁶) — JT65
 │   └── qra/            Q-ary RA codec ファミリ — Q65
@@ -157,7 +211,7 @@ mfsk_core
 │       ├── fast_fading.rs ドップラー拡散対応 intrinsic metric
 │       └── fading_tables.rs Gaussian / Lorentzian キャリブレーション表
 ├── msg/              メッセージコーデック
-│   ├── wsjt77.rs       77 bit WSJT メッセージ (pack / unpack) — FT8, FT4, FST4, Q65
+│   ├── wsjt77.rs       77 bit WSJT メッセージ (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
 │   └── hash.rs         コールサインハッシュテーブル
@@ -168,18 +222,24 @@ mfsk_core
 ├── wspr/             WSPR ZST + decode + synth + spectrogram search
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ 消失対応 RS)
-└── q65/              Q65 ファミリ — 6 sub-mode ZST + decode + synth
-    ├── protocol.rs     q65_submode! マクロ (Q65a30..Q65e60 ZST 生成)
-    ├── rx.rs           4 つのデコード戦略 (AWGN / AP-hint / fast-fading / AP-list)
-    ├── ap_list.rs      standard_qso_codewords — full AP-list 候補生成
-    ├── tx.rs           65-FSK 合成器 (sub-mode 対応)
-    ├── search.rs       22 シンボル Costas-block coarse 検索
-    └── sync_pattern.rs Q65 分散同期配置
+├── q65/              Q65 ファミリ — 6 sub-mode ZST + decode + synth
+│   ├── protocol.rs     q65_submode! マクロ (Q65a30..Q65e60 ZST 生成)
+│   ├── rx.rs           4 つのデコード戦略 (AWGN / AP-hint / fast-fading / AP-list)
+│   ├── ap_list.rs      standard_qso_codewords — full AP-list 候補生成
+│   ├── tx.rs           65-FSK 合成器 (sub-mode 対応)
+│   ├── search.rs       22 シンボル Costas-block coarse 検索
+│   └── sync_pattern.rs Q65 分散同期配置
+└── msk144/           MSK144 — Protocol 実装なし、独立トップレベルドライバ (§0.6)
+    ├── tx.rs           codeword -> 864 サンプル複素 OQPSK フレーム
+    ├── sync.rs         (CFO, タイミング) 同時整合フィルタ探索
+    ├── spd.rs          バースト候補検出 + short-ping デコードループ
+    ├── frame_decode.rs sync ゲート -> LLR -> LDPC -> メッセージ
+    └── decode.rs       decode_slot(): スライディングウィンドウ型トップレベルドライバ
 ```
 
 各プロトコルモジュールはフィーチャーフラグ (`ft8`、`ft4`、`fst4`、
-`wspr`、`jt9`、`jt65`、`q65`) で gate されている。`core`、`fec`、
-`msg`、`registry` は常時利用可能。
+`wspr`、`jt9`、`jt65`、`q65`、`msk144`) で gate されている。
+`core`、`fec`、`msg`、`registry` は常時利用可能。
 
 ワークスペースの兄弟クレート `mfsk-ffi` が同じクレートの上に C ABI
 共有ライブラリ (`libmfsk.{so,a,dylib}` + `mfsk.h`) を構築する。

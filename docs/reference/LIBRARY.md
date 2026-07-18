@@ -82,6 +82,9 @@ multipliers ×1, ×2, ×4, ×8, ×16). They share the FEC, message
 codec, sync layout and a common impl block; only NSPS and tone
 spacing differ.
 
+**MSK144** is deliberately not in this table — no ZST implements
+`Protocol` for it. See §0.6.
+
 ### 0.5 Checking that the design actually works — WSPR and Q65 as stress tests
 
 FT8, FT4 and FST4 share so much (LDPC FEC, 77-bit messages, block
@@ -143,13 +146,62 @@ protocol (eleven ZSTs in total) and the
 `tests/protocol_invariants.rs` generic checker that holds the trait
 contract honest.
 
+### 0.6 MSK144 — the protocol that doesn't use the abstraction
+
+Every protocol in §0.4 shares one property underneath their
+differences: a coarse-sync → LLR → FEC pipeline running over one
+fixed-length slot, with 0..N frames sitting at (or near) a known
+nominal offset. **MSK144** (issue #25) breaks both halves of that
+assumption at once, and rather than force a fit, `msk144::decode`
+is its own top-level driver — it never touches `core::pipeline`,
+`ModulationParams`, or `FrameLayout`, and no ZST implements
+`Protocol` for it at all. This is a step further than WSPR or Q65:
+those still adopt the trait surface (§0.5) even where their real
+decode logic bypasses the shared pipeline; MSK144 opts out of the
+trait surface itself.
+
+1. **Not M-ary FSK.** MSK144 is continuous-phase binary MSK,
+   transmitted as offset-QPSK: bits map onto I/Q rails, each shaped
+   with a half-sine pulse. `ModulationParams`'s tone-index /
+   Gray-map / GFSK-shaping model has no useful mapping onto that
+   waveform. The modulator and matched-filter demodulator live in
+   `core::dsp::msk` as plain functions, not a trait impl.
+2. **Not a static slot.** Every other protocol assumes a frame sits
+   at a known nominal offset inside one fixed-length slot buffer.
+   MSK144 instead repeats its 864-sample (72 ms) frame continuously
+   through the whole 15 s (or 30 s) T/R period — real transmissions
+   loop the same content back-to-back for the entire period — and a
+   receiver has to scan for wherever an ionized-trail ping happens to
+   land. `msk144::spd::detect_burst_candidates` (a squared-signal
+   two-tone spectral scan) plus `msk144::sync::msk144_sync` (a joint
+   CFO/symbol-timing matched-filter correlation) do that scanning,
+   ported from WSJT-X's `msk144spd.f90`/`msk144sync.f90` — not from
+   `core::sync::coarse_sync`.
+
+What it *does* share with the rest of the library: the 77-bit
+`pack77`/`unpack77` message payload (`msg::wsjt77`, completely
+unchanged — MSK144's real WSJT-X encoder calls the same function
+FT8/FT4/FST4 do), and the generic LDPC belief-propagation/OSD engine
+(`fec::ldpc::bp`/`osd`), parameterised by a fourth `LdpcParams` impl
+for LDPC(128, 90) + CRC-13 (`fec::ldpc_128_90`) — added exactly the
+way `Ldpc240_101Params` was added for FST4, per that trait's own
+documented extension recipe. So the FEC and message layers extend
+the same way every prior addition has; only the modulation and
+frame-timing layers opt out, because there's nothing in
+`ModulationParams`/`FrameLayout` for a transient-burst, non-FSK
+protocol to plug into.
+
+Golden-WAV recall against both WSJT-X `samples/MSK144/*.wav`
+recordings is 3/3 (`tests/msk144_wsjtx_samples.rs`) — the divergent
+architecture doesn't cost recall.
+
 ## 1. Module layout
 
 ```
 mfsk_core
 ├── core/             Protocol traits, DSP, sync, LLR, equaliser, pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
-│   ├── dsp/            resample · downsample · gfsk · subtract
+│   ├── dsp/            resample · downsample · gfsk · subtract · msk · analytic
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (Wiener per-tone)
@@ -157,6 +209,7 @@ mfsk_core
 ├── fec/              FecCodec implementations
 │   ├── ldpc174_91.rs   LDPC(174, 91)  — FT8, FT4
 │   ├── ldpc240_101.rs  LDPC(240, 101) — FST4
+│   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
 │   ├── conv.rs         ConvFano r=½ K=32 — WSPR, JT9
 │   ├── rs63_12.rs      RS(63, 12) GF(2⁶) — JT65
 │   └── qra/            Q-ary RA codec family — Q65
@@ -167,7 +220,7 @@ mfsk_core
 │       ├── fast_fading.rs Doppler-spread-aware intrinsic metric
 │       └── fading_tables.rs Gaussian / Lorentzian calibration tables
 ├── msg/              Message codecs
-│   ├── wsjt77.rs       77-bit WSJT message (pack / unpack) — FT8, FT4, FST4, Q65
+│   ├── wsjt77.rs       77-bit WSJT message (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72-bit JT message — JT9, JT65
 │   └── hash.rs         Callsign hash table
@@ -178,18 +231,24 @@ mfsk_core
 ├── wspr/             WSPR ZST + decode + synth + spectrogram search
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS)
-└── q65/              Q65 family — 6 sub-mode ZSTs + decode + synth
-    ├── protocol.rs     q65_submode! macro emitting Q65a30 .. Q65e60 ZSTs
-    ├── rx.rs           4 decoder strategies (AWGN / AP-hint / fast-fading / AP-list)
-    ├── ap_list.rs      standard_qso_codewords — full AP-list candidate generator
-    ├── tx.rs           65-FSK synthesiser (sub-mode-aware)
-    ├── search.rs       coarse 22-symbol Costas-block search
-    └── sync_pattern.rs Q65 distributed sync layout
+├── q65/              Q65 family — 6 sub-mode ZSTs + decode + synth
+│   ├── protocol.rs     q65_submode! macro emitting Q65a30 .. Q65e60 ZSTs
+│   ├── rx.rs           4 decoder strategies (AWGN / AP-hint / fast-fading / AP-list)
+│   ├── ap_list.rs      standard_qso_codewords — full AP-list candidate generator
+│   ├── tx.rs           65-FSK synthesiser (sub-mode-aware)
+│   ├── search.rs       coarse 22-symbol Costas-block search
+│   └── sync_pattern.rs Q65 distributed sync layout
+└── msk144/           MSK144 — no Protocol impl; own top-level driver (§0.6)
+    ├── tx.rs           codeword -> 864-sample complex OQPSK frame
+    ├── sync.rs         joint (CFO, timing) matched-filter search
+    ├── spd.rs          burst-candidate detector + short-ping decode loop
+    ├── frame_decode.rs sync gate -> LLR -> LDPC -> message
+    └── decode.rs       decode_slot(): sliding-window top-level driver
 ```
 
 Each protocol module is gated behind a feature flag (`ft8`, `ft4`,
-`fst4`, `wspr`, `jt9`, `jt65`, `q65`). The `core`, `fec`, `msg`
-and `registry` modules are always available.
+`fst4`, `wspr`, `jt9`, `jt65`, `q65`, `msk144`). The `core`, `fec`,
+`msg` and `registry` modules are always available.
 
 The `mfsk-ffi` sibling crate in this workspace builds a C ABI
 shared library (`libmfsk.{so,a,dylib}` + `mfsk.h`) on top of the

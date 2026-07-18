@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.4 — MSK144 decode (#25)
+
+### Added
+
+- **MSK144 meteor-scatter mode**, ported from WSJT-X across the full
+  pipeline: LDPC(128, 90) + CRC-13 FEC (a 4th `LdpcParams` impl
+  reusing the crate's generic BP/OSD engine, `fec::ldpc_128_90`),
+  MSK/OQPSK matched-filter DSP (`core::dsp::msk`), the joint
+  CFO/timing burst-scan sync search (`msk144::sync`,
+  `msk144::spd::detect_burst_candidates`), per-frame decode
+  (`msk144::frame_decode`, reusing the existing `msg::wsjt77`
+  `pack77`/`unpack77` payload — no bespoke message codec needed),
+  and a top-level sliding-window driver (`msk144::decode::decode_slot`).
+  MSK144's continuous-phase modulation and transient-burst timing
+  don't fit the static-slot `core::pipeline` model every other
+  protocol in this crate shares, so it gets its own driver by design,
+  the same shape as WSPR's.
+- Cross-validated with an independent reference synthesizer (simple
+  binary-FSK audio + FFT-based Hilbert transform, mirroring WSJT-X's
+  own `msk144sim.f90`) so RX correctness isn't only checked against
+  this crate's own TX code.
+- **Golden-WAV regression: 3 / 3** against both WSJT-X
+  `samples/MSK144/*.wav` recordings
+  (`tests/msk144_wsjtx_samples.rs`), matching WSJT-X's reported
+  SNR/frequency/decode-time within a few Hz / exact / ~1 dB, with no
+  threshold tuning needed on the first real-signal attempt.
+- New `msk144` feature flag, now part of `full`.
+- Out of scope (matches the original scoping in issue #25): MSK40
+  (the legacy shorthand mode) and RX-equalizer training
+  (`msk144signalquality.f90`-equivalent adaptive phase/amplitude
+  correction across decodes).
+
 ## 0.7.3 — FT4 AWGN + FT8 CCIR fading sensitivity close-out (#151, #152, #153)
 
 ### Fixed
