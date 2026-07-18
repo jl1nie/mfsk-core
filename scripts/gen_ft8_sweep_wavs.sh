@@ -126,7 +126,9 @@ for CELL in "${CELLS[@]}"; do
     (( active-- )) || true
   fi
 done
-wait
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
 
 echo ""
 echo "Done. Assets: $OUT_DIR"
