@@ -217,10 +217,31 @@ rather than the retracted phantom rationale, `ft8_qso3_jtdx_recall.rs`'s
 `JTDX_EXTRAS_HARD_FLOOR_MULTIPASS` raised 4→5. Full non-ignored suite
 and `-D clippy::perf` green throughout.
 
-**Net effect on the section-4 crossings**: CCIR moderate ≈-18.3 dB →
-comfortably better than -18 dB (85% recall there now, vs 55% before);
-CCIR poor ≈-18.2 dB → similarly improved (65%→90% across -18/-17 dB).
-Both channels' gap toward WSJT-X's own reported fading behaviour is
-substantially narrowed, from a single root cause shared with (and
-independently corroborated by) the real-recording JTDX comparison —
-not two separate fixes.
+**Full re-sweep, all 4 channels** (`ft8_snr_sweep`, real `decode_frame`,
+full `-5` to `-26` dB grid, same corpus/seed as section 4) — 50%
+crossing, linear-interpolated:
+
+| Channel | Section 4 (before) | Now (after) | Δ |
+|---|---:|---:|---:|
+| AWGN | ≈ -20.4 dB | ≈ -20.8 dB | +0.4 dB |
+| CCIR good | ≈ -20.0 dB | ≈ -20.6 dB | +0.6 dB |
+| CCIR moderate | ≈ -18.3 dB | ≈ -18.6 dB | +0.3 dB |
+| CCIR poor | ≈ -18.2 dB | ≈ -18.5 dB | +0.3 dB |
+
+No regressions anywhere in the grid (0% stays 0% at the noise floor,
+100% stays 100% at strong SNR — monotonic, as expected from loosening
+a reject-only gate). The crossing-point shift is more modest than the
+fixed-SNR-cell recall jumps earlier in this section suggest (e.g. CCIR
+moderate -18 dB: 55%→85%) — the recall-vs-SNR curve is steep through
+this region, so a given percentage jump maps to a smaller dB shift at
+the 50% point specifically. AWGN's ≈-20.8 dB now sits inside WSJT-X's
+own published -20 to -21 dB range rather than at its edge; CCIR good
+gained the most of the four (+0.6 dB) despite showing the least
+fading-driven OSD-ceiling pressure in section 4 — consistent with the
+fix's mechanism (recovers borderline decodes generally, not fading
+specifically) rather than a fading-only effect. CCIR moderate/poor's
+gains (+0.3 dB each) are real but smaller than the qualitative "85%/
+90%" recall figures might suggest on their own — the fixed-SNR-cell
+numbers and the 50%-crossing numbers are both correct, they're just
+answering different questions (recall at a specific operating point
+vs. the threshold definition used for cross-mode comparison).
