@@ -1579,7 +1579,10 @@ mod tests {
                     data_len = sz;
                     break;
                 }
-                i = body + sz + (sz & 1);
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
             }
             let off = data_off?;
             let end = (off + data_len).min(bytes.len());

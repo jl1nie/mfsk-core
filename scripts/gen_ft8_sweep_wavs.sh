@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 FT8SIM="${1:-$REPO_ROOT/target/ft8sim/ft8sim}"
 OUT_DIR="${2:-$REPO_ROOT/embedded-poc/assets/ft8_sweep}"
-JOBS="${JOBS:-$(nproc)}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)}"
 
 if [[ ! -x "$FT8SIM" ]]; then
   echo "error: ft8sim not found at $FT8SIM" >&2
@@ -81,7 +81,7 @@ run_cell() {
     "$chan" "$snr" "$TRIALS"
 
   local tmpd; tmpd="$(mktemp -d)"
-  trap 'rm -rf "$tmpd"' RETURN
+  trap 'rm -rf "$tmpd"' EXIT
 
   (
     cd "$tmpd"
