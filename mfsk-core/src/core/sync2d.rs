@@ -378,7 +378,7 @@ pub fn fst4_sync_search<P: Protocol>(
 /// large — even though the true peak's *coherent* score was consistently
 /// higher than whatever the non-coherent stage picked instead.
 ///
-/// **Scorer**: `score_flat_coherent` per FT4 Costas block (4 blocks:
+/// **Scorer**: one coherent dot product per FT4 Costas block (4 blocks:
 /// symbols 0, 33, 66, 99), magnitude-summed across blocks — matches
 /// `sync4d.f90`'s `sync = p(z1)+p(z2)+p(z3)+p(z4)` (`p(z)=|z*fac|`,
 /// magnitude not power) where each `z_k` is itself ONE coherent dot
@@ -386,15 +386,20 @@ pub fn fst4_sync_search<P: Protocol>(
 /// (`z1=sum(cd0(i1:i1+4*NSS-1:2)*conjg(csync2))`, `sync4d.f90:64`) — i.e.
 /// coherent *within* each block, magnitude-summed (non-coherent) *across*
 /// the 4 blocks, the same combining style [`fst4_sync_search`] already
-/// uses. **Originally shipped using `score_costas_block`** (per-symbol
-/// power-sum, correct for FT8's `sync8d.f90` — verified against
-/// `/home/minoru/src/WSJT-X/lib/ft8/sync8d.f90`, which really does
-/// non-coherent per-symbol power summing) — a ~3 dB-class discrimination
-/// gap at near-threshold SNR (same mechanism as the FST4 fix, issue #146),
-/// caught during the issue #72 AWGN-gap diagnostic
-/// (`docs/notes/FT4_BENCHMARK.md` section 9) by reading `sync4d.f90`'s
-/// inner `z1=sum(...)` line rather than stopping at the outer
-/// `sync=p(z1)+...` formula that (correctly) matched at a glance.
+/// uses. [`ft4_sync_search_window`] twiddles each candidate `(Δf, Δt)`
+/// cell's dot product inline rather than calling `score_flat_coherent`
+/// on a pre-twiddled reference (as an earlier revision did) — same
+/// arithmetic, but avoids re-allocating a twiddled `Vec<Complex<f32>>`
+/// per block on every one of the ~19,900 grid cells the coarse+fine
+/// passes evaluate. **Originally shipped using `score_costas_block`**
+/// (per-symbol power-sum, correct for FT8's `sync8d.f90` — verified
+/// against `/home/minoru/src/WSJT-X/lib/ft8/sync8d.f90`, which really
+/// does non-coherent per-symbol power summing) — a ~3 dB-class
+/// discrimination gap at near-threshold SNR (same mechanism as the
+/// FST4 fix, issue #146), caught during the issue #72 AWGN-gap
+/// diagnostic (`docs/notes/FT4_BENCHMARK.md` section 9) by reading
+/// `sync4d.f90`'s inner `z1=sum(...)` line rather than stopping at the
+/// outer `sync=p(z1)+...` formula that (correctly) matched at a glance.
 ///
 /// **Coarse pass**: ±12 Hz / 3 Hz step (`ft4_decode.f90` isync=1:
 /// `idfmin=-12,idfmax=12,idfstp=3`) × a *fixed absolute* Δt window,
@@ -451,10 +456,47 @@ pub fn ft4_sync_search_window<P: Protocol>(
         })
         .collect();
 
-    let score_at = |twiddled: &[(i32, Vec<Complex<f32>>)], i0: i32| -> f32 {
-        twiddled
+    // Twiddle on the fly inside the score rather than materialising a
+    // fresh `Vec<Complex<f32>>` per block per (Δf, Δt) grid cell — the
+    // coarse+fine passes below evaluate ~19,900 cells, so the old
+    // per-cell `twiddle_flat_ref` allocation added up to ~90 heap
+    // allocations per `ft4_sync_search_window` call (Gemini PR review).
+    // Mathematically identical: `score_flat_coherent` on a pre-twiddled
+    // reference is the same dot product as twiddling each sample of
+    // `cd0` in place here.
+    let score_at = |i0: i32, df: f32| -> f32 {
+        blocks_ref
             .iter()
-            .map(|(off, flat)| score_flat_coherent(cd0, flat, i0 + off))
+            .map(|(off, flat)| {
+                let cd0_start = i0 + off;
+                let np = cd0.len() as i32;
+                let len = flat.len() as i32;
+                if cd0_start < 0 || cd0_start + len > np {
+                    return 0.0;
+                }
+                let s0 = cd0_start as usize;
+                if df.abs() < f32::EPSILON {
+                    let z: Complex<f32> = cd0[s0..s0 + len as usize]
+                        .iter()
+                        .zip(flat.iter())
+                        .map(|(&c, &r)| c * r.conj())
+                        .sum();
+                    z.norm()
+                } else {
+                    let omega = -2.0 * PI * df / ds_rate;
+                    let z: Complex<f32> = cd0[s0..s0 + len as usize]
+                        .iter()
+                        .zip(flat.iter())
+                        .enumerate()
+                        .map(|(n, (&c, &r))| {
+                            let p = omega * n as f32;
+                            let twid = Complex::new(p.cos(), p.sin());
+                            c * r.conj() * twid
+                        })
+                        .sum();
+                    z.norm()
+                }
+            })
             .sum::<f32>()
     };
 
@@ -465,14 +507,9 @@ pub fn ft4_sync_search_window<P: Protocol>(
     let mut idf = -12i32;
     while idf <= 12 {
         let df = idf as f32;
-        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = blocks_ref
-            .iter()
-            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
-            .collect();
-
         let mut i0 = ib_min;
         while i0 <= ib_max {
-            let s = score_at(&twiddled, i0);
+            let s = score_at(i0, df);
             if s > best_score {
                 best_score = s;
                 best_df = df;
@@ -490,13 +527,9 @@ pub fn ft4_sync_search_window<P: Protocol>(
 
     for si in -4i32..=4 {
         let df = coarse_winner_df + si as f32;
-        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = blocks_ref
-            .iter()
-            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
-            .collect();
         for di in -5i32..=5 {
             let i0 = coarse_winner_i0 + di;
-            let s = score_at(&twiddled, i0);
+            let s = score_at(i0, df);
             if s > best_score {
                 best_score = s;
                 best_df = df;

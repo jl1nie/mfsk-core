@@ -328,11 +328,13 @@ pub fn process_candidate_basic<P: Protocol>(
             // (gated on `P::ID`, not a blanket formula, since FST4's
             // depth-escalation threshold was already tuned separately,
             // issue #146).
+            // Integer round-to-nearest (`(A + B/2) / B`) instead of the
+            // f32 `.round()` this originally used — same result for
+            // FT4's `N_SYNC=16` (9/14 either way), no float ops on a
+            // path embedded/no_std builds also compile (Gemini PR
+            // review).
             let (osd_attempt_min, osd_depth3_min) = if P::ID == super::ProtocolId::Ft4 {
-                (
-                    (12.0 * P::N_SYNC as f32 / 21.0).round() as u32,
-                    (18.0 * P::N_SYNC as f32 / 21.0).round() as u32,
-                )
+                ((12 * P::N_SYNC + 10) / 21, (18 * P::N_SYNC + 10) / 21)
             } else {
                 (12, 18)
             };
