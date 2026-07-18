@@ -1585,7 +1585,7 @@ mod tests {
                 }
             }
             let off = data_off?;
-            let end = (off + data_len).min(bytes.len());
+            let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
                     .chunks_exact(2)
