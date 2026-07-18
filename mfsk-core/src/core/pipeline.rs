@@ -41,6 +41,16 @@ pub enum DecodeDepth {
 }
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
+///
+/// `process_candidate_basic` bypasses both `osd_score_min` and
+/// `osd_max_errors` for FST4 (see the `is_fst4` gate below — issue #146:
+/// WSJT-X's own FST4 decoder has no such gates), so in practice these
+/// numbers are FT4-exclusive. `Normal` (FT4's hardcoded strictness,
+/// issue #72) was retuned 2026-07-18 against a `ft4sim` AWGN/CCIR sweep
+/// (`docs/notes/FT4_BENCHMARK.md`) — no longer a placeholder copy of the
+/// FT8 calibration. `Strict`/`Deep` are unused by any current caller but
+/// kept for the API shape; their numbers are the original FT8-copied
+/// values, unverified for FT4.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DecodeStrictness {
     Strict,
@@ -50,16 +60,23 @@ pub enum DecodeStrictness {
 }
 
 impl DecodeStrictness {
-    /// Upper bound on `hard_errors` for non-AP OSD decode. Same calibration
-    /// as the FT8 implementation; FT4/FST4 can re-tune later.
+    /// Upper bound on `hard_errors` for non-AP OSD decode.
+    ///
+    /// `Normal`'s values were retuned for FT4 (issue #72, 2026-07-18) by
+    /// sweeping against `ft4sim`-generated AWGN/CCIR WAVs and picking the
+    /// loosest thresholds that gained real (golden-message) recall without
+    /// also growing false-accepts (any CRC-passing decode beyond the golden
+    /// one) — see the `ft4_strictness_probe` test and
+    /// `docs/notes/FT4_BENCHMARK.md` section 5 for the measurements.
+    /// `Strict`/`Deep` remain the original FT8-copied placeholders.
     pub fn osd_max_errors(self, osd_depth: u8) -> u32 {
         match (self, osd_depth) {
             (Self::Strict, 3) => 20,
             (Self::Strict, 4) => 24,
             (Self::Strict, _) => 22,
-            (Self::Normal, 3) => 26,
+            (Self::Normal, 3) => 28,
             (Self::Normal, 4) => 30,
-            (Self::Normal, _) => 29,
+            (Self::Normal, _) => 31,
             (Self::Deep, 3) => 30,
             (Self::Deep, 4) => 36,
             (Self::Deep, _) => 40,
@@ -67,10 +84,12 @@ impl DecodeStrictness {
     }
 
     /// Minimum coarse-sync score to enter OSD fallback.
+    ///
+    /// `Normal` retuned alongside `osd_max_errors` above (issue #72).
     pub fn osd_score_min(self) -> f32 {
         match self {
             Self::Strict => 3.0,
-            Self::Normal => 2.2,
+            Self::Normal => 1.8,
             Self::Deep => 2.0,
         }
     }
@@ -154,189 +173,190 @@ pub fn process_candidate_basic<P: Protocol>(
         }
     }
 
-    // FT4 uses the WSJT-X-faithful 2-D `sync2d_refine` (`sync4d.f90`
-    // constants: coarse ±12 Hz/3 Hz × ±20/4 samples; fine ±4 Hz/1 Hz ×
-    // ±5 samples).  Bit-identical to the old `sync4d_refine`; critical for
-    // sub-bin signals like W9JA (520.0 Hz, midway between our 5.21-Hz bins)
-    // in the WSJT-X golden WAV.
-    //
-    // FST4 uses `fst4_sync_search`: faithful port of WSJT-X
-    // `fst4_decode.f90:879-925`.  Coarse pass sweeps ±1.5 s (full slot)
-    // so the winner is always near the true peak; fine pass ±7×0.02·baud ×
-    // ±4 samples locks in.  Previous local-window approach (Sync2dConfig
-    // ±10 samples) caused regression because noise peaks at the window edge
-    // displaced the fine pass outside reach of the true position.
-    //
-    // FT8 keeps the generic time-only `refine_candidate` path; it has its
-    // own 3-stage refine wired separately in `ft8/decode.rs`.
-    let (refined, i_start): (SyncCandidate, i32) =
-        if P::ID == super::ProtocolId::Ft4 || P::ID == super::ProtocolId::Fst4 {
-            let s2 = if P::ID == super::ProtocolId::Fst4 {
-                super::sync2d::fst4_sync_search::<P>(&cd0, cand)
-            } else {
-                let cfg = super::sync2d::Sync2dConfig::for_ft4();
-                super::sync2d::sync2d_refine::<P>(&cd0, cand, &cfg)
-            };
-            let df_hz = s2.freq_hz - cand.freq_hz;
-            cd0 = super::sync2d::freq_shift_cd0(&cd0, df_hz, ds_rate);
-            let i_start: i32 = s2.i0;
-            let refined = SyncCandidate {
-                freq_hz: s2.freq_hz,
-                dt_sec: (s2.i0 as f32) / ds_rate - tx_start,
-                score: s2.score,
-            };
-            (refined, i_start)
-        } else {
-            let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-            let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
-            (refined, i_start)
-        };
-
-    let cs_raw = symbol_spectra::<P>(&cd0, i_start);
-    let nsync = sync_quality::<P>(&cs_raw);
-    if nsync <= sync_q_min {
-        return None;
-    }
-
-    let per_block = fine_sync_power_per_block::<P>(&cd0, i_start);
-    let sync_cv = if !per_block.is_empty() {
-        let n = per_block.len() as f32;
-        let mean = per_block.iter().sum::<f32>() / n;
-        if mean > f32::EPSILON {
-            let var = per_block.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
-            var.sqrt() / mean
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    };
-
     let _ = ntones;
     let _ = n_sym;
-    let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
-        let mut llr_set = compute_llr::<P, f32>(cs);
-        // RX half of the optional bit interleaver: if the protocol
-        // declares an interleave table, permute each LLR vector from
-        // channel-bit order into codeword-bit order before BP/OSD.
-        // No-op for protocols with `CODEWORD_INTERLEAVE = None`
-        // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
-        deinterleave_llr_set::<P>(&mut llr_set);
-        // llre (nsym=P::LLR_NSYM_MID, e.g. FST4's nsym=4 rung — see
-        // `ModulationParams::LLR_NSYM_MID`) is empty for every protocol
-        // that doesn't set LLR_NSYM_MID, so this is a Vec instead of a
-        // fixed array only to make that slot conditional; no behaviour
-        // change for FT8/FT4/etc.
-        let mut variants: Vec<(&Vec<f32>, u8)> = Vec::with_capacity(5);
-        variants.push((&llr_set.llra, 0u8));
-        variants.push((&llr_set.llrb, 1));
-        if !llr_set.llre.is_empty() {
-            variants.push((&llr_set.llre, 6));
-        }
-        variants.push((&llr_set.llrc, 2));
-        variants.push((&llr_set.llrd, 3));
+    // BP iteration budget: WSJT-X's `ft8b.f90:96` and `fst4/decode240_101.f90:27`
+    // both use `max_iterations=30`, but `ft4_decode.f90:194` uses 40 — FT4 is
+    // the outlier, not the other two. Scoped to `P::ID == Ft4` (issue #72,
+    // discovered while checking whether BP/OSD strength explains the residual
+    // AWGN gap after `docs/notes/FT4_BENCHMARK.md` section 9) so FT8/FST4 stay
+    // byte-identical.
+    let bp_max_iter: u32 = if P::ID == super::ProtocolId::Ft4 {
+        40
+    } else {
+        30
+    };
+    let cd0_base = cd0;
 
-        let fec = P::Fec::default();
-        let bp_opts = FecOpts {
-            bp_max_iter: 30,
-            osd_depth: 0,
-            ap_mask: None,
-            // Thread the protocol's message-codec verifier so CRC-bearing
-            // protocols (FT8/FT4/FST4 → Wsjt77 → CRC-14) keep their
-            // existing reject-on-CRC-fail behaviour. uvpacket-style
-            // codecs that override `verify_info = |_| true` accept any
-            // parity-converged candidate.
-            verify_info: Some(<P::Msg as MessageCodec>::verify_info),
-            ..FecOpts::default()
+    // Attempt a full decode (symbol_spectra -> nsync gate -> BP -> OSD) at
+    // one explicit `(freq_hz, i0, score)` position. Factored out of the
+    // single-position call below so FT4 can retry it at up to 3 positions
+    // (see the segment loop further down) without duplicating the LLR/BP/
+    // OSD logic.
+    let try_position = |freq_hz: f32, i0: i32, score: f32| -> Option<DecodeResult> {
+        let df_hz = freq_hz - cand.freq_hz;
+        let cd0 = super::sync2d::freq_shift_cd0(&cd0_base, df_hz, ds_rate);
+        let refined = SyncCandidate {
+            freq_hz,
+            dt_sec: (i0 as f32) / ds_rate - tx_start,
+            score,
         };
 
-        for (llr, pass_id) in &variants {
-            if let Some(mut r) = fec.decode_soft(llr, &bp_opts) {
-                let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                let snr_db = compute_snr_db::<P>(cs, &itone);
-                // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
-                // the rvec XOR before presenting the 77-bit payload.
-                descramble_info::<P>(&mut r.info);
-                return Some(DecodeResult {
-                    info: r.info.into_boxed_slice(),
-                    freq_hz: cand.freq_hz,
-                    dt_sec: refined.dt_sec,
-                    hard_errors: r.hard_errors,
-                    sync_score: refined.score,
-                    pass: *pass_id,
-                    sync_cv,
-                    snr_db,
-                });
-            }
+        let cs_raw = symbol_spectra::<P>(&cd0, i0);
+        let nsync = sync_quality::<P>(&cs_raw);
+        if nsync <= sync_q_min {
+            return None;
         }
 
-        // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has neither of
-        // the gates below: `decode240_101` is called unconditionally
-        // after BP fails (no coarse-sync-score pre-filter), and its
-        // only acceptance test is `nharderrors.ge.0 .and.
-        // unpk77_success` (`fst4_decode.f90:570`) — i.e. "OSD
-        // converged to a CRC-24-verified codeword", full stop, no
-        // upper bound on how many bits OSD had to flip to get there.
-        // `osd_score_min`/`osd_max_errors` are FT8-calibrated
-        // (doc'd as "can re-tune later", issue #72) and were never
-        // re-tuned for FST4: near its own sensitivity threshold,
-        // every real candidate's coarse-sync score sat below
-        // `osd_score_min` (blocking OSD entirely) and every OSD
-        // result that *did* run had a CRC-verified hard-error count
-        // above `osd_max_errors` (rejected despite being provably
-        // correct) — issue #146. Bypass both for FST4 to match
-        // WSJT-X: attempt OSD whenever plain BP fails (still gated on
-        // `nsync` the same as every other protocol), and trust the
-        // CRC-24 verification inside `decode_soft` alone.
-        let is_fst4 = P::ID == super::ProtocolId::Fst4;
-        if depth == DecodeDepth::BpAllOsd
-            && nsync >= 12
-            && (is_fst4 || cand.score >= strictness.osd_score_min())
-        {
-            let freq_dup = known
-                .iter()
-                .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
-            if !freq_dup {
-                let osd_depth: u8 = if nsync >= 18 { 3 } else { 2 };
-                let osd_opts = FecOpts {
-                    bp_max_iter: 30,
-                    osd_depth: osd_depth as u32,
-                    ap_mask: None,
-                    verify_info: Some(<P::Msg as MessageCodec>::verify_info),
-                    ..FecOpts::default()
-                };
-                for (llr, _) in &variants {
-                    if let Some(mut r) = fec.decode_soft(llr, &osd_opts) {
-                        if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(osd_depth) {
-                            continue;
-                        }
-                        let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                        let snr_db = compute_snr_db::<P>(cs, &itone);
-                        descramble_info::<P>(&mut r.info);
-                        return Some(DecodeResult {
-                            info: r.info.into_boxed_slice(),
-                            freq_hz: cand.freq_hz,
-                            dt_sec: refined.dt_sec,
-                            hard_errors: r.hard_errors,
-                            sync_score: refined.score,
-                            pass: if osd_depth == 3 { 5 } else { 4 },
-                            sync_cv,
-                            snr_db,
-                        });
-                    }
+        let per_block = fine_sync_power_per_block::<P>(&cd0, i0);
+        let sync_cv = if !per_block.is_empty() {
+            let n = per_block.len() as f32;
+            let mean = per_block.iter().sum::<f32>() / n;
+            if mean > f32::EPSILON {
+                let var = per_block.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+                var.sqrt() / mean
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
+            let mut llr_set = compute_llr::<P, f32>(cs);
+            // RX half of the optional bit interleaver: if the protocol
+            // declares an interleave table, permute each LLR vector from
+            // channel-bit order into codeword-bit order before BP/OSD.
+            // No-op for protocols with `CODEWORD_INTERLEAVE = None`
+            // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
+            deinterleave_llr_set::<P>(&mut llr_set);
+            // llre (nsym=P::LLR_NSYM_MID, e.g. FST4's nsym=4 rung — see
+            // `ModulationParams::LLR_NSYM_MID`) is empty for every protocol
+            // that doesn't set LLR_NSYM_MID, so this is a Vec instead of a
+            // fixed array only to make that slot conditional; no behaviour
+            // change for FT8/FT4/etc.
+            let mut variants: Vec<(&Vec<f32>, u8)> = Vec::with_capacity(5);
+            variants.push((&llr_set.llra, 0u8));
+            variants.push((&llr_set.llrb, 1));
+            if !llr_set.llre.is_empty() {
+                variants.push((&llr_set.llre, 6));
+            }
+            variants.push((&llr_set.llrc, 2));
+            variants.push((&llr_set.llrd, 3));
+
+            let fec = P::Fec::default();
+            let bp_opts = FecOpts {
+                bp_max_iter,
+                osd_depth: 0,
+                ap_mask: None,
+                // Thread the protocol's message-codec verifier so CRC-bearing
+                // protocols (FT8/FT4/FST4 → Wsjt77 → CRC-14) keep their
+                // existing reject-on-CRC-fail behaviour. uvpacket-style
+                // codecs that override `verify_info = |_| true` accept any
+                // parity-converged candidate.
+                verify_info: Some(<P::Msg as MessageCodec>::verify_info),
+                ..FecOpts::default()
+            };
+
+            for (llr, pass_id) in &variants {
+                if let Some(mut r) = fec.decode_soft(llr, &bp_opts) {
+                    let itone = encode_tones_for_snr::<P>(&r.info, &fec);
+                    let snr_db = compute_snr_db::<P>(cs, &itone);
+                    // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
+                    // the rvec XOR before presenting the 77-bit payload.
+                    descramble_info::<P>(&mut r.info);
+                    return Some(DecodeResult {
+                        info: r.info.into_boxed_slice(),
+                        freq_hz: refined.freq_hz,
+                        dt_sec: refined.dt_sec,
+                        hard_errors: r.hard_errors,
+                        sync_score: refined.score,
+                        pass: *pass_id,
+                        sync_cv,
+                        snr_db,
+                    });
                 }
-                // OSD depth-4 Top-K pruning gated on high sync quality.
-                if nsync >= 18 {
-                    let osd4_opts = FecOpts {
-                        bp_max_iter: 30,
-                        osd_depth: 4,
+            }
+
+            // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has neither of
+            // the gates below: `decode240_101` is called unconditionally
+            // after BP fails (no coarse-sync-score pre-filter), and its
+            // only acceptance test is `nharderrors.ge.0 .and.
+            // unpk77_success` (`fst4_decode.f90:570`) — i.e. "OSD
+            // converged to a CRC-24-verified codeword", full stop, no
+            // upper bound on how many bits OSD had to flip to get there.
+            // `osd_score_min`/`osd_max_errors` are FT8-calibrated
+            // (doc'd as "can re-tune later", issue #72) and were never
+            // re-tuned for FST4: near its own sensitivity threshold,
+            // every real candidate's coarse-sync score sat below
+            // `osd_score_min` (blocking OSD entirely) and every OSD
+            // result that *did* run had a CRC-verified hard-error count
+            // above `osd_max_errors` (rejected despite being provably
+            // correct) — issue #146. Bypass both for FST4 to match
+            // WSJT-X: attempt OSD whenever plain BP fails (still gated on
+            // `nsync` the same as every other protocol), and trust the
+            // CRC-24 verification inside `decode_soft` alone.
+            let is_fst4 = P::ID == super::ProtocolId::Fst4;
+            // FT4 hit the identical `osd_score_min` symptom FST4 already
+            // worked around: `cand.score` is `coarse_sync`'s non-coherent
+            // score (unrelated to the coherent `ft4_sync_search` score
+            // computed above), and `1.8` was tuned against it back when
+            // that was the only score in play (section 5/6). Empirically
+            // confirmed (`ft4_diag_weak_trials`, issue #72,
+            // `docs/notes/FT4_BENCHMARK.md` section 12): 13/17 currently-
+            // failing near-crossing AWGN candidates have `cand.score <
+            // 1.8` and so never even attempt OSD, despite all 17 clearing
+            // WSJT-X's own `syncmin=1.2` easily (real signals, not
+            // noise). WSJT-X's own FT4 decoder has no OSD-attempt score
+            // gate at all either (`decode174_91` runs BP+OSD together,
+            // governed by `ndepth`, not by a score check) — bypass
+            // `osd_score_min` for FT4 too, same as FST4, keeping
+            // `osd_max_errors` (a real hard-error ceiling, not a stale-
+            // quantity gate) as the false-accept safety net.
+            let bypass_osd_score_min = is_fst4 || P::ID == super::ProtocolId::Ft4;
+            // The `12`/`18` OSD depth-escalation gates below were calibrated
+            // against FT8's `N_SYNC=21` (3 blocks x 7-symbol Costas): 12/21
+            // ~ attempt-OSD-at-all, 18/21 ~ escalate to depth-3/depth-4.
+            // FT4's `N_SYNC=16` (4 blocks x 4-symbol Costas) is smaller —
+            // `nsync` can never reach 18 there (empirically confirmed via
+            // `ft4_diag_weak_trials`, issue #72: even -14dB AWGN decodes
+            // topped out around 15/16), so depth-3 OSD and the depth-4 Top-K
+            // rescue were silently dead code for every FT4 candidate. Scale
+            // by the same ratio the FT8 numbers imply, applied to FT4's own
+            // `N_SYNC` (16 * 12/21 ~ 9, 16 * 18/21 ~ 14) — reproduces 12/18
+            // exactly for FT8 (`P::N_SYNC == 21`) and leaves FST4 untouched
+            // (gated on `P::ID`, not a blanket formula, since FST4's
+            // depth-escalation threshold was already tuned separately,
+            // issue #146).
+            // Integer round-to-nearest (`(A + B/2) / B`) instead of the
+            // f32 `.round()` this originally used — same result for
+            // FT4's `N_SYNC=16` (9/14 either way), no float ops on a
+            // path embedded/no_std builds also compile (Gemini PR
+            // review).
+            let (osd_attempt_min, osd_depth3_min) = if P::ID == super::ProtocolId::Ft4 {
+                ((12 * P::N_SYNC + 10) / 21, (18 * P::N_SYNC + 10) / 21)
+            } else {
+                (12, 18)
+            };
+            if depth == DecodeDepth::BpAllOsd
+                && nsync >= osd_attempt_min
+                && (bypass_osd_score_min || cand.score >= strictness.osd_score_min())
+            {
+                let freq_dup = known
+                    .iter()
+                    .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
+                if !freq_dup {
+                    let osd_depth: u8 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter,
+                        osd_depth: osd_depth as u32,
                         ap_mask: None,
                         verify_info: Some(<P::Msg as MessageCodec>::verify_info),
                         ..FecOpts::default()
                     };
                     for (llr, _) in &variants {
-                        if let Some(mut r) = fec.decode_soft(llr, &osd4_opts) {
-                            if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(4) {
+                        if let Some(mut r) = fec.decode_soft(llr, &osd_opts) {
+                            if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(osd_depth) {
                                 continue;
                             }
                             let itone = encode_tones_for_snr::<P>(&r.info, &fec);
@@ -344,31 +364,97 @@ pub fn process_candidate_basic<P: Protocol>(
                             descramble_info::<P>(&mut r.info);
                             return Some(DecodeResult {
                                 info: r.info.into_boxed_slice(),
-                                freq_hz: cand.freq_hz,
+                                freq_hz: refined.freq_hz,
                                 dt_sec: refined.dt_sec,
                                 hard_errors: r.hard_errors,
                                 sync_score: refined.score,
-                                pass: 13,
+                                pass: if osd_depth == 3 { 5 } else { 4 },
                                 sync_cv,
                                 snr_db,
                             });
                         }
                     }
+                    // OSD depth-4 Top-K pruning gated on high sync quality.
+                    if nsync >= osd_depth3_min {
+                        let osd4_opts = FecOpts {
+                            bp_max_iter,
+                            osd_depth: 4,
+                            ap_mask: None,
+                            verify_info: Some(<P::Msg as MessageCodec>::verify_info),
+                            ..FecOpts::default()
+                        };
+                        for (llr, _) in &variants {
+                            if let Some(mut r) = fec.decode_soft(llr, &osd4_opts) {
+                                if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(4) {
+                                    continue;
+                                }
+                                let itone = encode_tones_for_snr::<P>(&r.info, &fec);
+                                let snr_db = compute_snr_db::<P>(cs, &itone);
+                                descramble_info::<P>(&mut r.info);
+                                return Some(DecodeResult {
+                                    info: r.info.into_boxed_slice(),
+                                    freq_hz: refined.freq_hz,
+                                    dt_sec: refined.dt_sec,
+                                    hard_errors: r.hard_errors,
+                                    sync_score: refined.score,
+                                    pass: 13,
+                                    sync_cv,
+                                    snr_db,
+                                });
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        None
+            None
+        };
+
+        match eq_mode {
+            EqMode::Off => decode(&cs_raw),
+            EqMode::Local => {
+                let mut cs_eq = cs_raw.clone();
+                equalize_local::<P>(&mut cs_eq);
+                decode(&cs_eq)
+            }
+        }
     };
 
-    match eq_mode {
-        EqMode::Off => decode(&cs_raw),
-        EqMode::Local => {
-            let mut cs_eq = cs_raw.clone();
-            equalize_local::<P>(&mut cs_eq);
-            decode(&cs_eq)
-        }
-    }
+    // FT4 uses `ft4_sync_search`: a coherent full-slot Δt search (WSJT-X
+    // `ft4_decode.f90` isync=1/2 + `sync4d.f90` scorer). A literal port of
+    // WSJT-X's `iseg=1,2,3` per-segment retry structure (try up to 3
+    // different Δt positions, not just the single global best) was
+    // implemented and measured here — empirically ruled out, not just
+    // unimplemented: `ft4_diag_segment_retry` (`tests/ft4_sweep.rs`,
+    // issue #72, `docs/notes/FT4_BENCHMARK.md` section 11) found 0/17
+    // rescues once the diagnostic was corrected to apply the same
+    // `hard_errors >= osd_max_errors` gate and golden-message check
+    // production does — an earlier uncorrected pass had over-reported
+    // 10/17 by skipping that gate. Reverted to the single collapsed pass
+    // to avoid 3x the search/decode cost for zero measured benefit.
+    //
+    // FST4 uses `fst4_sync_search`: faithful port of WSJT-X
+    // `fst4_decode.f90:879-925`. Coarse pass sweeps ±1.5 s (full slot) so
+    // the winner is always near the true peak; fine pass ±7×0.02·baud ×
+    // ±4 samples locks in. Previous local-window approach (Sync2dConfig
+    // ±10 samples) caused regression because noise peaks at the window
+    // edge displaced the fine pass outside reach of the true position.
+    //
+    // FT8 (and everything else) keeps the generic time-only
+    // `refine_candidate` path; FT8 has its own 3-stage refine wired
+    // separately in `ft8/decode.rs`.
+    let (freq_hz, i0, score) = if P::ID == super::ProtocolId::Ft4 {
+        let s2 = super::sync2d::ft4_sync_search::<P>(&cd0_base, cand);
+        (s2.freq_hz, s2.i0, s2.score)
+    } else if P::ID == super::ProtocolId::Fst4 {
+        let s2 = super::sync2d::fst4_sync_search::<P>(&cd0_base, cand);
+        (s2.freq_hz, s2.i0, s2.score)
+    } else {
+        let refined = refine_candidate::<P>(&cd0_base, cand, refine_steps);
+        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
+        (refined.freq_hz, i_start, refined.score)
+    };
+    try_position(freq_hz, i0, score)
 }
 
 /// Deinterleave each of the four LLR variants from channel-bit order to
@@ -474,10 +560,23 @@ pub fn decode_frame<P: Protocol>(
         })
         .collect();
 
+    // Dedup by decoded message, keeping the candidate with the highest
+    // `sync_score` (the post-refine coherent Costas correlation) rather
+    // than the first-processed one. `coarse_sync`'s NMS can keep more
+    // than one (freq, dt) candidate per frequency bin, and more than one
+    // can independently reach a self-consistent Costas lock on the same
+    // real signal (not noise — both land in the same place after
+    // `ft4_sync_search`'s refine). This is now mostly cosmetic
+    // (`DecodeResult.freq_hz`/`dt_sec` come from the *refined* position,
+    // not the raw candidate, so duplicates converge on nearly the same
+    // reported values) but keeps the tie-break meaningful for the rare
+    // case where refinement doesn't fully converge.
     let mut results: Vec<DecodeResult> = Vec::new();
     for r in raw {
-        if !results.iter().any(|x| x.info == r.info) {
-            results.push(r);
+        match results.iter_mut().find(|x| x.info == r.info) {
+            Some(existing) if r.sync_score > existing.sync_score => *existing = r,
+            Some(_) => {}
+            None => results.push(r),
         }
     }
     (results, fft_cache)

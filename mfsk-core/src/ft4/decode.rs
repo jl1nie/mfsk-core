@@ -79,9 +79,10 @@ pub fn decode_frame(
 /// Decode one FT4 slot with an explicit `depth` knob.
 ///
 /// Mirrors [`crate::ft8::decode::decode_frame`]'s `depth` parameter.
-/// FT4's per-candidate strictness is hardcoded to `Normal` — the
-/// FT4-specific re-tune of the FT8-calibrated thresholds never landed
-/// and no caller exercised the `Strict` / `Deep` rungs (issue #72).
+/// FT4's per-candidate strictness is hardcoded to `Normal` — `Normal`'s
+/// numbers were retuned against a `ft4sim` AWGN/CCIR sweep (issue #72,
+/// 2026-07-18); no caller exercises the `Strict` / `Deep` rungs, whose
+/// numbers remain the original unverified FT8 copy.
 ///
 /// `freq_hint` is the same as in `ft8::decode::decode_frame`: when
 /// `Some(f)`, narrows the coarse-sync to candidates near `f` ± a few Hz.
