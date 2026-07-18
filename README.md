@@ -693,7 +693,22 @@ tree is present at the expected sibling path):
   cancellation primitives (`subtract_signal*`, `refine_signal_freq`)
   ported from `lib/ft4_subtract.f90`. WSJT-X Decode menu (Fast /
   Normal / Deep) exposed via `decode_frame_with_options` for FT4
-  and FST4-60A.
+  and FST4-60A. **0.7.3** closed the AWGN sensitivity gap vs. WSJT-X
+  from ~1.8 dB to **~0.3 dB** (50% recall crossing −15.5 dB → −17.2 dB
+  — coherent Costas-block scorer + an OSD-attempt gate that was
+  checking a non-coherent score; see
+  [`docs/notes/FT4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FT4_BENCHMARK.md)).
+- **FST4** — five T/R-period sub-modes wired (FST4-15/30/60A/120/300),
+  every constant verified directly against WSJT-X `fst4_decode.f90` /
+  `fst4sim.f90` source. **0.7.1**/**0.7.2** closed the AWGN sensitivity
+  gap vs. WSJT-X's published thresholds to a common **≈0.1-0.6 dB**
+  across all five sub-modes (coherent full-slot sync + an nsym=4 LLR
+  rung + a zsum-OSD fallback — see
+  [`docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)).
+  Real-recording golden-WAV lock exists only for FST4-60A (1/1,
+  `samples/FST4/210115_0058.wav`) — the other four sub-modes are
+  validated by synth-roundtrip + `fst4sim` sweep only, not a real
+  on-air recording (see *Known limitations* above).
 - **JT9** — 5 / 5 WSJT-X golden on `samples/JT9/130418_1742.wav`
   via the full WSJT-X-faithful softsym pipeline (`afc9` + `chkss2`
   + `xx0` mettab + `sync9` per-freq collapse). Closed [#19](https://github.com/jl1nie/mfsk-core/issues/19).
