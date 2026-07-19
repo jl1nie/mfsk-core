@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Generate q65sim WAV files for an AWGN SNR sweep across all six
-# sub-mode ZSTs this crate actually wires (Q65a30, Q65a60, Q65b60,
-# Q65c60, Q65d60, Q65e60). WSJT-X's Q65 also supports 15/120/300 s
-# periods and other (period, sub-mode) combinations, but this crate
-# doesn't implement those, so this sweep intentionally covers only
-# the six that exist -- mirroring the scoping call made for the
-# JT65/JT9 sweeps (validate what's shipped, not a hypothetical
+# Generate q65sim WAV files for an AWGN SNR sweep across all seven
+# sub-mode ZSTs this crate actually wires (Q65a15, Q65a30, Q65a60,
+# Q65b60, Q65c60, Q65d60, Q65e60). WSJT-X's Q65 also supports
+# 120/300 s periods and other (period, sub-mode) combinations, but
+# this crate doesn't implement those, so this sweep intentionally
+# covers only the seven that exist -- mirroring the scoping call made
+# for the JT65/JT9 sweeps (validate what's shipped, not a hypothetical
 # superset).
 #
 # Usage:
@@ -16,7 +16,7 @@
 #   cmake --build ~/wsjtx-build --target q65sim -j"$(nproc)"
 #
 # File naming:  q65_<submode>_awgn_<snr_tag>_<trial>.wav
-#   submode:  a30 | a60 | b60 | c60 | d60 | e60
+#   submode:  a15 | a30 | a60 | b60 | c60 | d60 | e60
 #   snr_tag:  m27 = -27 dB, p05 = +5 dB
 #   trial:    01..TRIALS
 #
@@ -24,8 +24,9 @@
 # threshold formula (`-27 + 10*log10(7200/nsps)`, which depends only
 # on T/R period, not sub-mode letter -- under pure AWGN the wider tone
 # spacing of B/C/D/E doesn't change matched-filter sensitivity, only
-# Doppler/fading tolerance): -24 dB for the 30 s period (a30), -27 dB
-# for all five 60 s sub-modes (a60/b60/c60/d60/e60).
+# Doppler/fading tolerance): -21 dB for the 15 s period (a15), -24 dB
+# for the 30 s period (a30), -27 dB for all five 60 s sub-modes
+# (a60/b60/c60/d60/e60).
 #
 # Existing files are skipped (safe to re-run after widening the grid).
 # Jobs run in parallel (JOBS env var, default: nproc).
@@ -54,6 +55,7 @@ TRIALS=15
 
 # submode:period:letter:threshold_dB
 CONFIGS=(
+  "a15:15:A:-21"
   "a30:30:A:-24"
   "a60:60:A:-27"
   "b60:60:B:-27"
@@ -102,11 +104,23 @@ run_cell() {
     # q65sim's filename index increments by (period/30) per file, not
     # by 1 (q65sim.f90: istart=(ifile*period*2)-(period*2), fname
     # index = istart/60 = (ifile-1)*period/30) -- confirmed by direct
-    # inspection since this isn't documented in the -h text.
-    local step=$(( period / 30 ))
+    # inspection since this isn't documented in the -h text. Below
+    # period=30, q65sim uses a DIFFERENT filename format entirely
+    # (000000_MMSS.wav, minutes+seconds, q65sim.f90's `ntrperiod.lt.30`
+    # branch) instead of the 4-digit sequential index used at 30 s and
+    # above -- period=15 (the only sub-30 period this crate wires) is
+    # special-cased here.
     for T in $(seq 1 "$TRIALS"); do
-      local src dest
-      src="$(printf '000000_%04d.wav' "$(( (T - 1) * step ))")"
+      local src dest istart imins isecs
+      if (( period < 30 )); then
+        istart=$(( 30 * (T - 1) ))
+        imins=$(( istart / 60 ))
+        isecs=$(( istart % 60 ))
+        src="$(printf '000000_%04d%02d.wav' "$imins" "$isecs")"
+      else
+        local step=$(( period / 30 ))
+        src="$(printf '000000_%04d.wav' "$(( (T - 1) * step ))")"
+      fi
       dest="$OUT_DIR/q65_${submode}_awgn_${tag}_$(printf '%02d' "$T").wav"
       [[ -f "$src" ]] && mv "$src" "$dest"
     done

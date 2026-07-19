@@ -53,7 +53,7 @@ use mfsk_core::Wspr;
 use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300};
 
 #[cfg(feature = "q65")]
-use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
+use mfsk_core::q65::{Q65a15, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
 
 #[cfg(feature = "uvpacket")]
 use mfsk_core::{UvExpress, UvRobust, UvStandard, UvUltraRobust};
@@ -307,6 +307,12 @@ fn jt65_satisfies_protocol_invariants() {
 
 #[cfg(feature = "q65")]
 #[test]
+fn q65a15_satisfies_protocol_invariants() {
+    assert_protocol_invariants::<Q65a15>("Q65a15");
+}
+
+#[cfg(feature = "q65")]
+#[test]
 fn q65a30_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Q65a30>("Q65a30");
 }
@@ -477,6 +483,7 @@ fn registry_entries_match_zst_trait_constants() {
     check!("JT65", Jt65);
     #[cfg(feature = "q65")]
     {
+        check!("Q65-15A", Q65a15);
         check!("Q65-30A", Q65a30);
         check!("Q65-60A", Q65a60);
         check!("Q65-60B", Q65b60);
@@ -534,7 +541,7 @@ fn registry_size_matches_wired_protocols() {
     }
     #[cfg(feature = "q65")]
     {
-        expected += 6;
+        expected += 7;
     }
     #[cfg(feature = "uvpacket")]
     {
@@ -590,6 +597,7 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
     {
         // Every Q65 sub-mode shares the same ProtocolId::Q65 — that's
         // by design (the sub-mode is below the FFI granularity).
+        ids.push(("Q65a15", <Q65a15 as Protocol>::ID));
         ids.push(("Q65a30", <Q65a30 as Protocol>::ID));
         ids.push(("Q65a60", <Q65a60 as Protocol>::ID));
         ids.push(("Q65b60", <Q65b60 as Protocol>::ID));

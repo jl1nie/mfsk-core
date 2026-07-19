@@ -119,6 +119,14 @@ typedef enum MfskQ65SubMode {
      * Q65-60E — 60 s slot, ×16 spacing. 24 GHz+ / extreme spread.
      */
     MFSK_Q65_SUB_MODE_E60 = 5,
+    /**
+     * Q65-15A — 15 s slot, ×1 spacing. Fastest wired Q65 sub-mode;
+     * stable terrestrial HF/VHF paths that prefer a shorter T/R
+     * period over Q65-30A's extra sensitivity margin. Appended
+     * after `E60` (rather than inserted before `A30`) to keep the
+     * existing discriminant values stable for this `#[repr(C)]` ABI.
+     */
+    MFSK_Q65_SUB_MODE_A15 = 6,
 } MfskQ65SubMode;
 
 /**

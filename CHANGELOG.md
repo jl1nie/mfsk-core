@@ -1,14 +1,30 @@
 # Changelog
 
-## 0.7.5 — Q65 AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
+## 0.7.5 — Q65-15A + AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
 
 ### Added
 
+- **Q65-15A**: a new sub-mode ZST (`Q65a15`, 15 s T/R period, ×1 tone
+  spacing = 6.667 Hz), the fastest wired Q65 mode — one line via the
+  existing `q65_submode!` macro, following the established
+  15/30/60-s-period axis `q65params.f90` already defines. Wired
+  through the FFI (`MfskQ65SubMode::A15`, appended after `E60` rather
+  than inserted before `A30` to keep the `#[repr(C)]` enum's existing
+  discriminant values stable) and the `PROTOCOLS` registry
+  (`"Q65-15A"`). No real off-air recording exists for this period in
+  WSJT-X's sample tree (same situation as Q65-60C/60E already
+  documented), so no golden-WAV test is possible — covered instead by
+  a dedicated `tests/q65_a15_roundtrip.rs` (synth + aligned/offset
+  scan recovery) and folded into the `q65sim`-based AWGN sweep below
+  (50% crossing ≈ -21 dB, matching `q65params.f90`'s analytical
+  formula for the 15 s period). Now 7 wired Q65 sub-modes total; docs
+  (`LIBRARY.md`/`.ja.md`) and `tests/protocol_invariants.rs` updated
+  to match.
 - New `scripts/gen_q65_sweep_wavs.sh` + `tests/q65_sim_sweep.rs`
   (`#[ignore]`d): a `q65sim`-generated AWGN SNR sweep covering every
-  sub-mode ZST this crate actually wires (`Q65a30`, `Q65a60`,
-  `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60` — WSJT-X's Q65 also has
-  15/120/300 s periods and other combinations this crate doesn't
+  sub-mode ZST this crate actually wires (`Q65a15`, `Q65a30`,
+  `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60` — WSJT-X's Q65 also has
+  120/300 s periods and other combinations this crate doesn't
   implement, so the sweep intentionally covers only what's shipped).
   `q65sim` has a real CMakeLists.txt target (unlike `jt9sim`), so no
   new build script was needed — build via

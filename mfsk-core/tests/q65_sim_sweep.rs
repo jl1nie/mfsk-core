@@ -1,6 +1,6 @@
 //! Q65 AWGN SNR sweep against `q65sim`-generated signals, across all
-//! six sub-mode ZSTs this crate actually wires (`Q65a30`, `Q65a60`,
-//! `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`).
+//! seven sub-mode ZSTs this crate actually wires (`Q65a15`, `Q65a30`,
+//! `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`).
 //!
 //! This test is `#[ignore]` — run it manually when investigating Q65
 //! sensitivity. `q65sim` is WSJT-X's canonical Q65 signal generator
@@ -26,11 +26,11 @@
 //! (`MFSK_Q65_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/q65_sweep`, relative to `CARGO_MANIFEST_DIR`.)
 //!
-//! ## Scope: only the six sub-modes actually wired
+//! ## Scope: only the seven sub-modes actually wired
 //!
-//! WSJT-X's Q65 also supports 15/120/300 s T/R periods and other
+//! WSJT-X's Q65 also supports 120/300 s T/R periods and other
 //! (period, sub-mode) combinations, but this crate only wires the
-//! 30 s A sub-mode plus all five 60 s sub-modes (see
+//! 15 s and 30 s A sub-modes plus all five 60 s sub-modes (see
 //! `docs/reference/LIBRARY.md` §0.5). This sweep intentionally
 //! covers only what's shipped, not a hypothetical superset — same
 //! scoping call as `tests/jt65_sweep.rs`/`tests/jt9_sweep.rs`.
@@ -55,7 +55,8 @@
 //! (`-27 + 10*log10(7200/nsps)`, which depends only on T/R period,
 //! not sub-mode letter — under pure AWGN, wider tone spacing doesn't
 //! change matched-filter sensitivity, only Doppler/fading tolerance):
-//! -24 dB for Q65-30A, -27 dB for all five 60 s sub-modes.
+//! -21 dB for Q65-15A, -24 dB for Q65-30A, -27 dB for all five 60 s
+//! sub-modes.
 //!
 //! ## Provenance (2026-07-19)
 //!
@@ -106,14 +107,15 @@ use common::load_wav_f32_opt;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for, decode_scan_with_ap_for,
+    Q65a15, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for,
+    decode_scan_with_ap_for,
 };
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
 const FREQ_TOL_HZ: f32 = 4.0;
 
-const SUBMODES: &[&str] = &["a30", "a60", "b60", "c60", "d60", "e60"];
+const SUBMODES: &[&str] = &["a15", "a30", "a60", "b60", "c60", "d60", "e60"];
 
 fn sweep_dir() -> PathBuf {
     if let Ok(d) = std::env::var("MFSK_Q65_SWEEP_DIR") {
@@ -155,6 +157,7 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
         }};
     }
     match submode {
+        "a15" => decode_both!(Q65a15),
         "a30" => decode_both!(Q65a30),
         "a60" => decode_both!(Q65a60),
         "b60" => decode_both!(Q65b60),

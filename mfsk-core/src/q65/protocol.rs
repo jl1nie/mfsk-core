@@ -15,6 +15,7 @@
 //!
 //! | ZST          | T/R   | spacing      | typical use                     |
 //! |--------------|-------|--------------|---------------------------------|
+//! | [`Q65a15`]   | 15 s  | 6.667 Hz     | fast terrestrial HF/VHF         |
 //! | [`Q65a30`]   | 30 s  | 3.333 Hz     | terrestrial HF/VHF, ionoscatter |
 //! | [`Q65a60`]   | 60 s  | 1.667 Hz     | 6 m EME                         |
 //! | [`Q65b60`]   | 60 s  | 3.333 Hz     | 70 cm – 23 cm EME               |
@@ -97,6 +98,17 @@ macro_rules! q65_submode {
             const ID: ProtocolId = ProtocolId::Q65;
         }
     };
+}
+
+q65_submode! {
+    /// Q65-15A: 15 s T/R period, sub-mode A (tone spacing = baud
+    /// × 1 = 6.667 Hz). The fastest wired Q65 mode; suits stable
+    /// terrestrial paths (HF/VHF) where a shorter T/R period is
+    /// preferred over Q65-30A's extra sensitivity margin.
+    Q65a15,
+    nsps = 1800,
+    spacing_mult = 1,
+    tr_period_s = 15,
 }
 
 q65_submode! {

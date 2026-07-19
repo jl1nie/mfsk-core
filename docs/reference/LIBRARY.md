@@ -73,14 +73,15 @@ Some direct consequences of this approach:
 | WSPR         | 120 s  | convolutional r=½ K=32 + Fano | 50 bit | per-symbol LSB       | `lib/wsprd/`    |
 | JT9          | 60 s   | convolutional r=½ K=32 + Fano | 72 bit | 16 distributed slots | `lib/jt9_decode.f90`, `lib/conv232.f90` |
 | JT65         | 60 s   | Reed-Solomon(63, 12) GF(2⁶)   | 72 bit | 63 distributed slots (pseudo-random) | `lib/jt65_decode.f90`, `lib/wrapkarn.c` |
-| Q65-30A      | 30 s   | QRA(15, 65) GF(2⁶) + CRC-12   | 77 bit | 22 distributed slots | `lib/qra/q65/`  |
+| Q65-15A      | 15 s   | QRA(15, 65) GF(2⁶) + CRC-12   | 77 bit | 22 distributed slots | `lib/qra/q65/`  |
+| Q65-30A      | 30 s   | (same QRA codec)              | 77 bit | (same sync layout)   | `lib/qra/q65/`  |
 | Q65-60A‥E    | 60 s   | (same QRA codec)              | 77 bit | (same sync layout)   | `lib/qra/q65/`  |
 
-Q65 ships as six wired sub-modes — one terrestrial 30-s mode plus
-five 60-s EME modes (Q65-60A through Q65-60E with tone-spacing
-multipliers ×1, ×2, ×4, ×8, ×16). They share the FEC, message
-codec, sync layout and a common impl block; only NSPS and tone
-spacing differ.
+Q65 ships as seven wired sub-modes — two terrestrial modes (15-s and
+30-s) plus five 60-s EME modes (Q65-60A through Q65-60E with
+tone-spacing multipliers ×1, ×2, ×4, ×8, ×16). They share the FEC,
+message codec, sync layout and a common impl block; only NSPS and
+tone spacing differ.
 
 **MSK144** is deliberately not in this table — no ZST implements
 `Protocol` for it. See §0.6.
@@ -122,7 +123,7 @@ exercise:
    neither `== NTONES` nor `== 2^BITS_PER_SYMBOL` holds for every
    protocol uniformly, so the contract was loosened to
    `[2^BITS_PER_SYMBOL, NTONES]`.
-3. **Six sub-modes sharing one impl block** — Q65-30A for
+3. **Seven sub-modes sharing one impl block** — Q65-15A / Q65-30A for
    terrestrial work, plus Q65-60A‥E for EME at 6 m / 70 cm / 23 cm
    / 5.7 GHz / 10 GHz / 24 GHz+. They differ only in NSPS and tone
    spacing. The `q65_submode!` macro emits the per-sub-mode ZSTs
@@ -732,7 +733,7 @@ which inner steps they enable:
 | `wspr`        | off     | WSPR ZST, decode, synth, spectrogram search                  |
 | `jt9`         | off     | JT9 ZST, decode                                              |
 | `jt65`        | off     | JT65 ZST, decode (+ erasure-aware RS)                        |
-| `q65`         | off     | Q65-30A + Q65-60A‥E ZSTs, four decode strategies, synth      |
+| `q65`         | off     | Q65-15A/30A + Q65-60A‥E ZSTs, four decode strategies, synth  |
 | `full`        | off     | Aggregate of all seven protocols                              |
 | `parallel`    | on      | Enables rayon `par_iter` in pipeline (no-op under WASM)       |
 
@@ -1068,7 +1069,8 @@ Full build instructions in `mfsk-ffi/examples/kotlin_jni/README.md`.
 | WSPR       | 120 s  | 4     | 162     | 1.465 Hz   | conv r=½ K=32 + Fano | 50 b | per-symbol LSB (npr3) | implemented |
 | JT9        | 60 s   | 9     | 85      | 1.736 Hz   | conv r=½ K=32 + Fano | 72 b  | 16 distributed | implemented |
 | JT65       | 60 s   | 65    | 126     | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 distributed | implemented |
-| Q65-30A    | 30 s   | 65    | 85      | 3.333 Hz   | QRA(15, 65) GF(2⁶) + CRC-12 | 77 b | 22 distributed | implemented |
+| Q65-15A    | 15 s   | 65    | 85      | 6.667 Hz   | QRA(15, 65) GF(2⁶) + CRC-12 | 77 b | 22 distributed | implemented |
+| Q65-30A    | 30 s   | 65    | 85      | 3.333 Hz   | (same QRA codec) | 77 b  | (same)     | implemented |
 | Q65-60A    | 60 s   | 65    | 85      | 1.667 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (6 m EME) |
 | Q65-60B    | 60 s   | 65    | 85      | 3.333 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (70 cm / 23 cm EME) |
 | Q65-60C    | 60 s   | 65    | 85      | 6.667 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (~3 GHz EME) |
@@ -1107,10 +1109,10 @@ probability domain via Walsh-Hadamard messages
 `fec::qra15_65_64::QRA15_65_64_IRR_E23`). The application layer
 adds a CRC-12 over 13 user information symbols and punctures the
 two CRC symbols out of the 65-symbol codeword, giving the 63
-channel symbols actually transmitted. Six wired sub-modes share
+channel symbols actually transmitted. Seven wired sub-modes share
 the same FEC + sync layout + 77-bit message; only `NSPS`
-(30-s vs 60-s slot) and tone spacing (×1, ×2, ×4, ×8, ×16) differ
-between them. The four parallel decoder strategies introduced in
+(15-s / 30-s / 60-s slot) and tone spacing (×1, ×2, ×4, ×8, ×16)
+differ between them. The four parallel decoder strategies introduced in
 §3 (AWGN BP, AP-hint BP, fast-fading metric, AP-list template
 matching) all share the same QRA codec under the hood.
 

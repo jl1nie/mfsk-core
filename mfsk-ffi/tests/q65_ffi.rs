@@ -94,6 +94,7 @@ fn encode_q65_roundtrips_for_every_submode() {
     let g = CString::new("FN42").unwrap();
 
     for &sm in &[
+        MfskQ65SubMode::A15,
         MfskQ65SubMode::A30,
         MfskQ65SubMode::A60,
         MfskQ65SubMode::B60,
@@ -106,11 +107,13 @@ fn encode_q65_roundtrips_for_every_submode() {
             unsafe { mfsk_encode_q65(sm, c1.as_ptr(), c2.as_ptr(), g.as_ptr(), 1500.0, &mut out) };
         assert_eq!(st, MfskStatus::Ok, "encode failed for sub-mode {sm:?}");
         assert!(!out.samples.is_null(), "null PCM for sub-mode {sm:?}");
-        // Q65 frames are 85 symbols × NSPS samples. Q65-30A:
-        // NSPS=3600 → 306 000 samples (25.5 s). Q65-60A..E:
-        // NSPS=7200 → 612 000 samples (51 s). Encoder returns the
-        // frame-length PCM, not the slot-length PCM.
+        // Q65 frames are 85 symbols × NSPS samples. Q65-15A:
+        // NSPS=1800 → 153 000 samples (12.75 s). Q65-30A: NSPS=3600
+        // → 306 000 samples (25.5 s). Q65-60A..E: NSPS=7200 →
+        // 612 000 samples (51 s). Encoder returns the frame-length
+        // PCM, not the slot-length PCM.
         let expected = match sm {
+            MfskQ65SubMode::A15 => 85 * 1_800,
             MfskQ65SubMode::A30 => 85 * 3_600,
             _ => 85 * 7_200,
         };
