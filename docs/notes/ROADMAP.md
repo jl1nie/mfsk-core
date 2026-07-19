@@ -187,7 +187,13 @@ status stated elsewhere in it):
   (`demod64a`'s `mrsym`/`mr2sym`). This crate's
   `decode_at_with_erasures` only tries a single deterministic
   increasing-erasure-count ordering — a materially weaker algorithm.
-  Porting `ftrsdap`'s approach is the likely fix; not started.
+  **Deprioritized 2026-07-19**: Q65 already covers JT65's deep-SNR
+  narrowband use case at a wider sensitivity range (10 wired
+  sub-modes, see #171's closing analysis), and JT65 on-air traffic has
+  largely migrated to it. Porting `ftrsdap` is a substantial,
+  JT65-specific algorithmic port with no other payoff — left open as
+  documentation of the traced root cause, not planned unless there's
+  an actual request for deeper JT65 recall.
 - **#24** — JT65 total-decode-failure bug: **fixed 2026-07-19**. Root
   cause was `jt65::interleave::{interleave,deinterleave}` (the 7×9
   transpose WSJT-X's `interleave63.f90` implements) having their
