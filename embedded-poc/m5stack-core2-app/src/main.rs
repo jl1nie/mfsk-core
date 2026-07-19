@@ -18,11 +18,10 @@ use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::{
-    heap_caps_aligned_alloc, heap_caps_get_free_size, heap_caps_get_largest_free_block,
-    MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL,
+    heap_caps_get_free_size, heap_caps_get_largest_free_block, MALLOC_CAP_8BIT,
+    MALLOC_CAP_INTERNAL,
 };
 use log::LevelFilter;
-use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 
 use mfsk_app_shared::boot_mode;
 use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
@@ -37,27 +36,6 @@ pub fn log_free_internal(label: &str) {
     let free = unsafe { heap_caps_get_free_size(caps) };
     let largest = unsafe { heap_caps_get_largest_free_block(caps) };
     log::info!("[mem] {label} free_internal={free} largest={largest}");
-}
-
-/// Allocate one 16-byte-aligned `BASIS_SCRATCH_LEN`-element `i16`
-/// buffer in internal DRAM. Panics on alloc failure or alignment
-/// violation; both indicate the heap is too fragmented for the asm
-/// dot product to hit 1 cycle/sample, which would silently regress
-/// the decode wall-clock 2× rather than fail loud.
-pub fn alloc_basis_dram(label: &str) -> &'static mut [i16] {
-    const BYTES: usize = BASIS_SCRATCH_LEN * core::mem::size_of::<i16>();
-    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    let raw = unsafe { heap_caps_aligned_alloc(16, BYTES, caps) } as *mut i16;
-    assert!(!raw.is_null(), "BASIS {label} alloc failed ({BYTES} B internal DRAM)");
-    assert_eq!(
-        raw as usize & 0xF,
-        0,
-        "BASIS {label} not 16-byte aligned (asm dot product would degrade 2×)"
-    );
-    unsafe {
-        core::ptr::write_bytes(raw, 0, BASIS_SCRATCH_LEN);
-        core::slice::from_raw_parts_mut(raw, BASIS_SCRATCH_LEN)
-    }
 }
 
 static FANOUT: LogFanout = LogFanout::new();

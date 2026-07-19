@@ -29,9 +29,8 @@ typedef enum MfskFt8Status {
    */
   MFSK_FT8_STATUS_BAD_DEPTH = -3,
   /**
-   * Caller-provided basis scratch too small (only meaningful for
-   * the `_into` variant). The required minimum is
-   * [`mfsk_ft8_basis_scratch_len`].
+   * Caller-provided output buffer too small (see
+   * [`mfsk_ft8_tones_to_i16`] / [`mfsk_ft8_tones_to_f32`]).
    */
   MFSK_FT8_STATUS_SCRATCH_TOO_SMALL = -4,
 } MfskFt8Status;
@@ -130,20 +129,8 @@ extern "C" {
 #endif // __cplusplus
 
 /**
- * Required scratch length (in i16 elements) for the `_into` variant.
- * Caller must allocate two arrays of at least this length, both in
- * internal RAM (not PSRAM) for the dot-product kernel to perform.
- */
- uintptr_t mfsk_ft8_basis_scratch_len(void);
-
-/**
- * **Primary FT8 decode** — caller provides BASIS scratch (two i16
- * arrays of [`mfsk_ft8_basis_scratch_len`] elements each, in
- * internal RAM, NOT PSRAM). Avoids per-decode allocation of the
- * 60 KB basis. Required for peak throughput on PSRAM-equipped
- * targets like ESP32 Core2 — the dot-product kernel needs the
- * basis in fast internal RAM. **Use this in production embedded
- * code.**
+ * **Primary FT8 decode** for embedded fixed-point targets. **Use
+ * this in production embedded code.**
  *
  * `freq_min_hz` / `freq_max_hz` bound the carrier search range
  * (typical: 200, 3000). `sync_min` is the stage-2 candidate
@@ -153,16 +140,22 @@ extern "C" {
  * thorough).
  *
  * Only available under the `embedded-fixed-point` feature (the
- * scratch-bearing path lives in mfsk-core's `cfg(fixed-point)`
- * block). Host code should use [`mfsk_ft8_decode_i16_alloc`].
+ * path lives in mfsk-core's `cfg(fixed-point)` block). Host code
+ * should use [`mfsk_ft8_decode_i16_alloc`].
+ *
+ * **Breaking change (0.8.0, issue #162)**: this function used to
+ * also take caller-provided BASIS scratch (`basis_re`/`basis_im`
+ * `int16_t*` arrays, sized via a now-removed
+ * `mfsk_ft8_basis_scratch_len()`). The BASIS fill path was retired
+ * in favour of the scratch-free Goertzel fill (Phase 1.7.7-Stick),
+ * making the scratch arguments dead weight — callers built against
+ * pre-0.8.0 headers must drop both arguments from their call site.
  *
  * # Safety
  * `audio` must point to `n_samples` valid `i16` values; at least
- * 168 000 (14 s × 12 kHz). `basis_re` and `basis_im` must each
- * point to at least `mfsk_ft8_basis_scratch_len()` valid i16
- * elements writable for the duration of the call. `out` must point
- * to a writable [`MfskFt8ResultList`]. Single-threaded — one decode
- * at a time per process.
+ * 168 000 (14 s × 12 kHz). `out` must point to a writable
+ * [`MfskFt8ResultList`]. Single-threaded — one decode at a time per
+ * process.
  */
 
 enum MfskFt8Status mfsk_ft8_decode_i16(const int16_t *audio,
@@ -172,8 +165,6 @@ enum MfskFt8Status mfsk_ft8_decode_i16(const int16_t *audio,
                                        float sync_min,
                                        int max_cand,
                                        enum MfskFt8Depth depth,
-                                       int16_t *basis_re,
-                                       int16_t *basis_im,
                                        struct MfskFt8ResultList *out);
 
 /**

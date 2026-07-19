@@ -1,6 +1,46 @@
 # Changelog
 
-## 0.7.5 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change)
+
+### Removed
+
+- **Legacy BASIS (Q15 sin/cos dot-product) per-symbol DFT fill path**
+  (#162) — dead weight since the 0.6.4 Goertzel migration (Phase
+  1.7.7-Stick) made Goertzel the sole production fill on every
+  embedded target, but the old path's functions and scratch
+  parameters were never actually deleted. Removed
+  `fill_symbol_spectra_into`/`fill_symbol_spectra_into_generic`,
+  `BASIS_SCRATCH_LEN`, `symbol_spectra_direct_into`, the
+  `mfsk_core::core::dotprod` module (`dot_q15_i32` + the
+  `mfsk_core_dot_q15_i32` extern symbol contract), and its esp-dsp
+  ASM bridge in `embedded-shared::esp_dsp_fft`
+  (`mfsk_core_dot_q15_i32`, `dsps_dotprod_s16_ae32`,
+  `ESP_DSP_DOT_SHIFT`/`set_dot_shift`). `fill_symbol_spectra_generic`
+  (the plain rotator-based DFT) is now unconditional — it no longer
+  needs a separate `fixed-point`-gated BASIS-backed overload.
+- **Breaking FFI change**: `mfsk_ft8_decode_i16`'s C ABI
+  (`mfsk-ffi-ft8`) dropped its `basis_re`/`basis_im` `int16_t*`
+  scratch parameters — they were dead weight once Goertzel took
+  over, and the crate's `mfsk_ft8_basis_scratch_len()` sizing
+  function is gone with them. **C callers must drop both arguments
+  from their call site** when upgrading past 0.7.x. This forces the
+  minor version bump for this release (0.7.4 → 0.8.0) ahead of the
+  otherwise-patch-level content below.
+- `basis_re`/`basis_im` parameters dropped from every Rust function
+  in the call chain down to that FFI boundary:
+  `decode_block_into[_tuned]`, `refine_candidates_into`,
+  `process_candidates_into[_tuned]`,
+  `process_candidates_into_with_cs_scratch[_tuned]` (all
+  `mfsk-core`), and `dual_core::init`/`pass2_split`/`stage3_split`/
+  `run_speculative_slot` (`embedded-shared`) — all embedded app
+  crates (`m5stack-s3-app`, `m5stack-core2-app`, `m5stack-cores3-app`)
+  updated to match; none of them were actually using the scratch for
+  anything by this point (Goertzel needs none), so this is a pure
+  signature simplification with no behavioral change on any target.
+- `mfsk-core/tests/ft8_goertzel_vs_basis.rs` deleted — its entire
+  purpose was A/B-validating BASIS against Goertzel during the
+  Phase 1.7.7-Stick migration, which is moot once BASIS no longer
+  exists to compare against.
 
 ### Fixed
 

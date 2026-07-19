@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use mfsk_core::ft8::decode_block::{compute_spectrogram, BASIS_SCRATCH_LEN};
+use mfsk_core::ft8::decode_block::compute_spectrogram;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::{dual_core, esp_dsp_fft};
@@ -23,17 +23,6 @@ const OSD_ENABLED: bool = false;
 const PASS1_LIMIT: usize = 30;
 
 const SLOT_LEN: usize = 180_000;
-
-/// Q15 basis scratch — internal DRAM `.bss`. Phase 0.7: both the main
-/// pair (consumed locally) and the worker pair (passed to
-/// `dual_core::init`) live here so this bench keeps a single static
-/// allocation strategy. The m5stack-s3-app runtime moved these to
-/// `heap_caps_aligned_alloc` so it can skip the 120 KB allocation in
-/// WiFi mode; the bench has no such mode-switch need.
-static mut BASIS_RE: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_RE_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
-static mut BASIS_IM_C1: [i16; BASIS_SCRATCH_LEN] = [0; BASIS_SCRATCH_LEN];
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -85,10 +74,7 @@ pub fn run(target_name: &str, qso_wavs: &'static [(&'static str, &'static [u8])]
     esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
     log::info!("FFT twiddle tables pre-warmed");
 
-    #[allow(static_mut_refs)]
-    unsafe {
-        dual_core::init(BASIS_RE_C1.as_mut_ptr(), BASIS_IM_C1.as_mut_ptr());
-    }
+    dual_core::init();
 
     // max_cand sweep — host PASS1×max_cand sweep at PASS1=75 showed
     // identical 15/22 truth recall for max_cand ∈ {15, 20, 30}; only
@@ -150,7 +136,6 @@ fn ffi_smoke_one(slot: &[i16]) {
         _capacity: 0,
     };
     let t0 = now_us();
-    #[allow(static_mut_refs)]
     let st = unsafe {
         mfsk_ft8_decode_i16(
             slot.as_ptr(),
@@ -160,8 +145,6 @@ fn ffi_smoke_one(slot: &[i16]) {
             1.0,
             30,
             MfskFt8Depth::BpAll,
-            BASIS_RE.as_mut_ptr(),
-            BASIS_IM.as_mut_ptr(),
             &mut results,
         )
     };
@@ -213,9 +196,7 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
     drop(spec);
 
     let t_pass2 = now_us();
-    #[allow(static_mut_refs)]
-    let pass2 =
-        unsafe { dual_core::pass2_split(slot, pass1, max_cand, &mut BASIS_RE, &mut BASIS_IM) };
+    let pass2 = dual_core::pass2_split(slot, pass1, max_cand);
     let t_pass2_end = now_us();
     log::info!(
         "  pass 2 (re-rank):     {:>8} us  → top {} by sync_quality_block0",
@@ -229,18 +210,13 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
         mfsk_core::ft8::decode::DecodeDepth::BpAll
     };
     let t4 = now_us();
-    #[allow(static_mut_refs)]
-    let results = unsafe {
-        dual_core::stage3_split(
-            slot,
-            pass2,
-            depth,
-            mfsk_core::ft8::decode_block::DEFAULT_Q_THRESH,
-            mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            &mut BASIS_RE,
-            &mut BASIS_IM,
-        )
-    };
+    let results = dual_core::stage3_split(
+        slot,
+        pass2,
+        depth,
+        mfsk_core::ft8::decode_block::DEFAULT_Q_THRESH,
+        mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
+    );
     let t5 = now_us();
     log::info!(
         "  stage 3 (refine+BP):  {:>8} us  ({} result(s))",

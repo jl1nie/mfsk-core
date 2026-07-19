@@ -45,7 +45,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 /* ── Tunables ──────────────────────────────────────────────────────── */
 
@@ -82,17 +81,6 @@ static MfskFt8Stream *g_stream;
  * comfortably on RP2350 / Cortex-M with external PSRAM.
  */
 static int16_t g_slot[180000];
-
-/* `g_basis_re` / `g_basis_im` MUST live in fast internal DRAM —
- * see docs/EMBEDDED.md §"Why caller-supplied scratch". On ESP32
- * (Core2 / S3) the simplest correct pattern is plain static arrays,
- * which the linker places in DRAM by default. Avoid `malloc()` for
- * these on PSRAM-equipped targets — a 60 KB heap_caps_malloc
- * without `MALLOC_CAP_INTERNAL` lands in PSRAM and tanks the inner
- * dot-product kernel.
- */
-static int16_t g_basis_re[15360];
-static int16_t g_basis_im[15360];
 
 /* ── Capture side ─────────────────────────────────────────────────── *
  *
@@ -169,7 +157,6 @@ static void on_slot_boundary(void) {
         g_slot, n,
         FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, MAX_CAND,
         MFSK_FT8_DEPTH_BP_ALL,
-        g_basis_re, g_basis_im,
         &results);
 
     if (st == MFSK_FT8_STATUS_OK) {
@@ -199,11 +186,6 @@ bool rx_init(void) {
         fprintf(stderr, "mfsk_ft8_stream_new failed\n");
         return false;
     }
-    /* Optional: zero scratch on first init for deterministic logs.
-     * Not required — decode_block writes the basis on every call.
-     */
-    memset(g_basis_re, 0, sizeof(g_basis_re));
-    memset(g_basis_im, 0, sizeof(g_basis_im));
     return true;
 }
 

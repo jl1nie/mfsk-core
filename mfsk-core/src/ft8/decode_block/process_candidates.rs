@@ -42,13 +42,10 @@ use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
 use crate::fec::ldpc::osd::osd_decode_deep;
 
-// Phase 1.7.7-Stick: `fill_symbol_spectra_into` / `symbol_spectra_direct_into`
-// (BASIS-based per-symbol DFT) are no longer used by this module — both
-// `refine_candidates_into` (pass-2) and the embedded branch of
-// `process_candidates_into_with_cs_scratch_tuned` (stage-3) now call
-// `fill_symbol_spectra_goertzel` instead. The BASIS symbols stay public
-// from `fill_symbol_spectra.rs` for `mfsk-ffi-ft8` ABI back-compat until
-// the 0.7.0 cleanup.
+// Phase 1.7.7-Stick: both `refine_candidates_into` (pass-2) and the
+// embedded branch of `process_candidates_into_with_cs_scratch_tuned`
+// (stage-3) call `fill_symbol_spectra_goertzel` (zero scratch). The
+// legacy BASIS per-symbol DFT path was removed in 0.8.0 (issue #162).
 
 // ── Public entry ────────────────────────────────────────────────────────────
 
@@ -711,17 +708,10 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
     cands
 }
 
-/// Variant of [`decode_block`] that accepts caller-provided
-/// basis scratch — required on Core2 / Cortex-M for the asm dot
-/// product to reach its theoretical 1-cycle/sample speed (default
-/// heap allocation routes the 60 KB × 2 basis to PSRAM /
-/// non-cacheable RAM and erases the kernel's advantage).
-///
-/// Both `basis_re` and `basis_im` must be at least
-/// [`BASIS_SCRATCH_LEN`] long; place them in **internal-RAM `.bss`**
-/// (`static [i16; BASIS_SCRATCH_LEN]` arrays) for max throughput.
-/// Same recall / depth / staircase as `decode_block`, just no
-/// per-candidate allocation cycles.
+/// Variant of [`decode_block`] used by embedded fixed-point callers.
+/// Same recall / depth / staircase as `decode_block`; kept as a
+/// distinct name for API stability with existing embedded callers
+/// (`mfsk-ffi-ft8`, `embedded-shared::dual_core`).
 #[cfg(feature = "fixed-point")]
 pub fn decode_block_into<S: AudioSample>(
     audio: &[S],
@@ -730,8 +720,6 @@ pub fn decode_block_into<S: AudioSample>(
     sync_min: f32,
     depth: DecodeDepth,
     max_cand: usize,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
 ) -> Vec<DecodeResult> {
     decode_block_into_tuned(
         audio,
@@ -741,8 +729,6 @@ pub fn decode_block_into<S: AudioSample>(
         depth,
         max_cand,
         DEFAULT_BP_MAX_ITER,
-        basis_re,
-        basis_im,
     )
 }
 
@@ -751,7 +737,6 @@ pub fn decode_block_into<S: AudioSample>(
 /// LX6 / LX7 callers — `bp_max_iter` is the dominant time-scaling
 /// knob in the post-SlotEnd budget.
 #[cfg(feature = "fixed-point")]
-#[allow(clippy::too_many_arguments)]
 pub fn decode_block_into_tuned<S: AudioSample>(
     audio: &[S],
     freq_min: f32,
@@ -760,22 +745,12 @@ pub fn decode_block_into_tuned<S: AudioSample>(
     depth: DecodeDepth,
     max_cand: usize,
     bp_max_iter: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
     let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
     drop(spec);
-    let pass2 = refine_candidates_into(audio, pass1, max_cand, basis_re, basis_im);
-    process_candidates_into_tuned(
-        audio,
-        pass2,
-        depth,
-        DEFAULT_Q_THRESH,
-        bp_max_iter,
-        basis_re,
-        basis_im,
-    )
+    let pass2 = refine_candidates_into(audio, pass1, max_cand);
+    process_candidates_into_tuned(audio, pass2, depth, DEFAULT_Q_THRESH, bp_max_iter)
 }
 
 /// Pass-1 candidate cap — coarse_sync emits at most this many
@@ -839,38 +814,28 @@ pub(super) fn refine_candidates<S: AudioSample>(
     })
 }
 
-/// Variant of [`refine_candidates`] that uses caller-provided basis
-/// scratch (forwards to `symbol_spectra_direct_into`).
+/// Variant of [`refine_candidates`] that builds its per-candidate cs
+/// via [`fill_symbol_spectra_goertzel`] (zero scratch) instead of the
+/// dispatcher `symbol_spectra_direct` uses.
 ///
 /// Public as of v0.6 (#49 cat C): used by the embedded
-/// `embedded-shared::dual_core` worker to keep the basis scratch
-/// allocated in internal DRAM across stages.
+/// `embedded-shared::dual_core` worker.
 #[cfg(feature = "fixed-point")]
 pub fn refine_candidates_into<S: AudioSample>(
     audio: &[S],
     cands: Vec<SyncCandidate>,
     max_cand: usize,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
 ) -> Vec<RefinedCandidate> {
-    // Phase 1.7.7-Stick: BASIS scratch is no longer consumed —
-    // pass-2 now uses Goertzel (zero scratch) for its SyncBlock0
-    // cs build, matching the stage-3 fill change. The args stay
-    // for API compat with embedded callers (`dual_core::pass2_split`)
-    // until Stage B drops them entirely.
     use super::super::params::NN;
     use super::fill_symbol_spectra::fill_symbol_spectra_goertzel;
-    let _ = &basis_re;
-    let _ = &basis_im;
     // NB (Gemini PR #103 MEDIUM): one cs Box per cand-iter = one 5 KB
     // heap alloc per pass1 candidate (up to 30/slot on embedded).
     // Total transient PSRAM use is ~150 KB, not catastrophic, but the
     // alloc churn fragments the TLSF allocator in long-running
     // sessions. Reusing a single Box across the closure invocations
-    // needs `refine_candidates_with` to expose a scratch parameter
-    // — refactor deferred to the same 0.7.0 cleanup that drops the
-    // BASIS API entirely (the heap is no longer the bottleneck so
-    // the win is marginal vs the API churn).
+    // needs `refine_candidates_with` to expose a scratch parameter —
+    // the heap is no longer the bottleneck so the win is marginal vs
+    // the API churn.
     refine_candidates_with(cands, max_cand, |c| {
         let mut cs: alloc::boxed::Box<[[Cmplx<f32>; 8]; NN]> =
             alloc::vec![[Cmplx::<f32>::default(); 8]; NN]
@@ -1179,11 +1144,8 @@ pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
     )
 }
 
-/// Variant of [`process_candidates`] that uses caller-provided basis
-/// scratch — required on Core2 / Cortex-M for the asm dot product
-/// to reach its theoretical 1-cycle/sample speed (default heap
-/// allocation routes the 60 KB × 2 basis to PSRAM /
-/// non-cacheable RAM and erases the kernel's advantage).
+/// Variant of [`process_candidates`] used by embedded fixed-point
+/// callers.
 ///
 /// **Pub for benchmarking + manually-staged callers** (e.g.
 /// m5stack-core2 main.rs which logs per-stage wall-clock).
@@ -1194,34 +1156,21 @@ pub fn process_candidates_into<S: AudioSample>(
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
     q_thresh: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
 ) -> Vec<DecodeResult> {
-    process_candidates_into_tuned(
-        audio,
-        cands,
-        depth,
-        q_thresh,
-        DEFAULT_BP_MAX_ITER,
-        basis_re,
-        basis_im,
-    )
+    process_candidates_into_tuned(audio, cands, depth, q_thresh, DEFAULT_BP_MAX_ITER)
 }
 
 /// Variant of [`process_candidates_into`] that accepts a runtime
 /// `bp_max_iter`. Same role as [`process_candidates_tuned`] but for
-/// the caller-provided-basis path.
+/// the embedded fixed-point path.
 #[cfg(feature = "fixed-point")]
 #[doc(hidden)]
-#[allow(clippy::too_many_arguments)]
 pub fn process_candidates_into_tuned<S: AudioSample>(
     audio: &[S],
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1233,8 +1182,6 @@ pub fn process_candidates_into_tuned<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
-        basis_re,
-        basis_im,
         &mut cs_scratch,
     )
 }
@@ -1242,10 +1189,10 @@ pub fn process_candidates_into_tuned<S: AudioSample>(
 /// Variant of [`process_candidates_into`] that also accepts a
 /// caller-provided per-symbol-spectra scratch (`cs_scratch`, 5 KB =
 /// `[[Cmplx<f32>; 8]; 79]`). Each candidate's PSRAM-resident `cs Box`
-/// is copied into this scratch before `fill_symbol_spectra_into` /
-/// LLR / BP run on it, then dropped — letting the BP / LLR hot loops
-/// read `cs` from internal DRAM (~5–10× faster than PSRAM on Xtensa
-/// LX6/LX7). Provide a `static mut` array in `.bss` for max win.
+/// is copied into this scratch before LLR / BP run on it, then
+/// dropped — letting the BP / LLR hot loops read `cs` from internal
+/// DRAM (~5–10× faster than PSRAM on Xtensa LX6/LX7). Provide a
+/// `static mut` array in `.bss` for max win.
 ///
 /// Public as of v0.6 (#49 cat C): used by the embedded
 /// `embedded-shared::dual_core::stage3_split` worker.
@@ -1255,8 +1202,6 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
     q_thresh: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
     process_candidates_into_with_cs_scratch_tuned(
@@ -1265,8 +1210,6 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
         depth,
         q_thresh,
         DEFAULT_BP_MAX_ITER,
-        basis_re,
-        basis_im,
         cs_scratch,
     )
 }
@@ -1278,29 +1221,14 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
 ///
 /// Public as of v0.6 (#49 cat C).
 #[cfg(feature = "fixed-point")]
-#[allow(clippy::too_many_arguments)]
 pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     audio: &[S],
     cands: Vec<RefinedCandidate>,
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
-    // Host fft-rustfft path doesn't need the basis buffers — cs is
-    // built via the cd0 32-pt FFT instead. The parameters stay in
-    // the signature so embedded callers (no fft-rustfft) get the
-    // same shape; reference them here to silence unused warnings.
-    // Phase 1.7.7-Stick: BASIS scratch is no longer used on either
-    // path. Host fft-rustfft uses cd0 (no scratch); embedded now uses
-    // Goertzel (no scratch). The `basis_re` / `basis_im` parameters
-    // are kept in the signature for API compatibility with embedded
-    // callers (`embedded-shared::dual_core::stage3_split`) that still
-    // thread them through; Stage B of the migration drops them entirely.
-    let _ = &basis_re;
-    let _ = &basis_im;
     process_candidates_with_ap(
         audio,
         &cands,
@@ -1322,8 +1250,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
             // sample-outer / tone-inner loop ordering so the 8 per-tone
             // dependent chains run independently through the Xtensa
             // FPU pipeline (see `fill_symbol_spectra_goertzel` doc).
-            // Zero scratch — replaces the BASIS 60 KB × 2 (re/im) × 2
-            // (dual_core) = 120 KB internal-DRAM allocation.
+            // Zero scratch needed.
             #[cfg(not(feature = "fft-rustfft"))]
             fill_symbol_spectra_goertzel(cs, audio, cand.freq_hz, cand.dt_sec, mask);
         },
@@ -1335,10 +1262,8 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
 /// Caller-provided **fill closure** variant of
 /// `process_candidates_into_with_cs_scratch_tuned`. The closure
 /// builds the per-candidate per-mask `cs_scratch` entries instead of
-/// the default `fill_symbol_spectra(_into)` path. Used by host
-/// research / regression tests to compare alternative pass-2 fill
-/// algorithms (Phase 1.7.7-Stick: spec-lookup + DT phase correction
-/// vs BASIS dot product).
+/// the default `fill_symbol_spectra` path. Used by host research /
+/// regression tests to compare alternative pass-2 fill algorithms.
 ///
 /// The closure signature is
 /// `FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask)` —
@@ -1436,9 +1361,9 @@ where
         // 8 = 464 data-symbol DFTs on every candidate that fails the
         // q gate (typically half of `max_cand`). `SyncBlocks12`
         // (instead of `SyncOnly`) skips re-filling block 0 — Pass 2
-        // already populated it via `symbol_spectra_direct_into` on
-        // `SyncBlock0`, and that data survives in `cs_scratch` here.
-        // Saves an additional 56 DFTs / candidate.
+        // already populated it on `SyncBlock0`, and that data
+        // survives in `cs_scratch` here. Saves an additional
+        // 56 DFTs / candidate.
         fill(cs_scratch, cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
         if q <= q_thresh {

@@ -2,24 +2,26 @@
 //!
 //! Bypasses the wide-band FFT cache by computing the 79 × 8 complex
 //! tone spectra for one candidate via direct DFT at the exact tone
-//! frequencies (host f32 path) or via the i16 basis-product
-//! `cd0_to_symbol_spectra` kernel (embedded fixed-point path). The
-//! `SymMask` enum drives which subset of symbols gets filled —
-//! `SyncOnly` for Pass-1 candidate gating, `DataOnly` for Pass-2
-//! LLR, `All` for the legacy single-call path.
+//! frequencies (host f32 path / generic rotator-based fill) or via
+//! the Goertzel recursion (embedded path, zero scratch — see
+//! [`fill_symbol_spectra_goertzel`]). The `SymMask` enum drives which
+//! subset of symbols gets filled — `SyncOnly` for Pass-1 candidate
+//! gating, `DataOnly` for Pass-2 LLR, `All` for the legacy
+//! single-call path.
 //!
 //! ε.4 of the `docs/CLEANUP_2026_05.md` `decode_block` split. The
 //! parent (`decode_block.rs`) re-exports `SymMask`,
-//! `symbol_spectra_direct`, the `fill_symbol_spectra*` family, and
-//! the embedded-only `BASIS_SCRATCH_LEN` / `symbol_spectra_direct_into`
-//! so external callers (`super::decode::*` host path, `mfsk-ffi-ft8`
+//! `symbol_spectra_direct`, and the `fill_symbol_spectra*` family so
+//! external callers (`super::decode::*` host path, `mfsk-ffi-ft8`
 //! embedded entry, `embedded-shared::stage1_inc`) keep the same
-//! `mfsk_core::ft8::decode_block::*` paths as before.
+//! `mfsk_core::ft8::decode_block::*` paths as before. The legacy
+//! BASIS (Q15 sin/cos dot-product) fill path was removed in 0.8.0
+//! (issue #162) — `fill_symbol_spectra_goertzel` (Phase
+//! 1.7.7-Stick) has been the sole production path on every embedded
+//! target since 0.6.4.
 
 use alloc::boxed::Box;
 use alloc::vec;
-#[cfg(feature = "fixed-point")]
-use alloc::vec::Vec;
 
 use num_complex::Complex;
 #[cfg(not(feature = "std"))]
@@ -180,14 +182,14 @@ pub fn fill_symbol_spectra<S: AudioSample>(
 
 /// Embedded fallback (no `fft-rustfft` available — Xtensa cannot run
 /// the 192k cd0 FFT). Reverts to the rectangular-window per-tone DFT
-/// for non-fixed-point builds; the fixed-point variant has its own
-/// basis-precompute path in `fill_symbol_spectra_into`.
+/// via [`fill_symbol_spectra_generic`] — the same generic fill used
+/// on host for non-`fft-rustfft` builds, fixed-point or not.
 ///
 /// The `fft_cache` parameter is accepted for API parity with the
 /// `fft-rustfft` variant but ignored — there is no 192k FFT to skip
 /// on this path.
 #[doc(hidden)]
-#[cfg(all(not(feature = "fft-rustfft"), not(feature = "fixed-point")))]
+#[cfg(not(feature = "fft-rustfft"))]
 pub fn fill_symbol_spectra<S: AudioSample>(
     out: &mut [[Cmplx<f32>; 8]; 79],
     audio: &[S],
@@ -314,7 +316,6 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
 /// `Sc::from_f32_scaled(value, scale)` with `scale = i16::MAX × 0.95
 /// / peak` so the i16 range is fully utilised without saturation.
 #[doc(hidden)]
-#[cfg(not(feature = "fixed-point"))]
 pub fn fill_symbol_spectra_generic<Sc: crate::core::scalar::SpecScalar, S: AudioSample>(
     out: &mut [[Cmplx<Sc>; 8]; 79],
     audio: &[S],
@@ -417,227 +418,17 @@ pub fn fill_symbol_spectra_generic<Sc: crate::core::scalar::SpecScalar, S: Audio
     }
 }
 
-/// Required scratch length for [`fill_symbol_spectra_into`] — one
-/// flat array per axis (cos / sin), `NTONES × NSPS = 15 360` i16.
-/// Caller must provide two slices of at least this length.
-#[cfg(feature = "fixed-point")]
-pub const BASIS_SCRATCH_LEN: usize = NTONES * NSPS;
-
-/// Fixed-point per-symbol DFT — basis-precompute + dot-product
-/// kernel. Drop-in heap-allocating wrapper around
-/// [`fill_symbol_spectra_into`]: allocates 60 KB × 2 of basis scratch
-/// from the default heap on every call. Convenient for host use; on
-/// embedded targets the scratch typically lands in PSRAM (slow reads
-/// in the dot-product inner loop), so callers that care about Core2
-/// throughput should pre-allocate scratch in **internal RAM**
-/// (`static [i16; BASIS_SCRATCH_LEN]` in `.bss`, or
-/// `heap_caps_malloc(MALLOC_CAP_INTERNAL)`) and call
-/// [`fill_symbol_spectra_into`] directly.
-// Fixed-point host with `fft-rustfft` uses the cd0-based
-// `fill_symbol_spectra` defined above. Pure embedded fixed-point
-// (no fft-rustfft) goes through `fill_symbol_spectra_into` instead
-// — this short heap-allocating wrapper is only kept for the
-// `(fixed-point, !fft-rustfft)` build, which is the only one that
-// would have called this entry.
-#[doc(hidden)]
-#[cfg(all(feature = "fixed-point", not(feature = "fft-rustfft")))]
-pub fn fill_symbol_spectra<S: AudioSample>(
-    out: &mut [[Cmplx<f32>; 8]; 79],
-    audio: &[S],
-    freq_hz: f32,
-    dt_sec: f32,
-    mask: SymMask,
-    fft_cache: Option<&[Complex<f32>]>,
-) {
-    let _ = fft_cache;
-    fill_symbol_spectra_generic::<f32, S>(out, audio, freq_hz, dt_sec, mask);
-}
-
-/// Generic fixed-point fill — writes `Cmplx<Sc>`. f32 wrapper above.
-#[doc(hidden)]
-#[cfg(feature = "fixed-point")]
-pub fn fill_symbol_spectra_generic<Sc: crate::core::scalar::SpecScalar, S: AudioSample>(
-    out: &mut [[Cmplx<Sc>; 8]; 79],
-    audio: &[S],
-    freq_hz: f32,
-    dt_sec: f32,
-    mask: SymMask,
-) {
-    let mut basis_re: Vec<i16> = alloc::vec![0i16; BASIS_SCRATCH_LEN];
-    let mut basis_im: Vec<i16> = alloc::vec![0i16; BASIS_SCRATCH_LEN];
-    fill_symbol_spectra_into_generic::<Sc, S>(
-        out,
-        audio,
-        freq_hz,
-        dt_sec,
-        mask,
-        &mut basis_re,
-        &mut basis_im,
-    );
-}
-
-/// Fixed-point per-symbol DFT with caller-provided basis scratch.
-///
-/// Two phases per call:
-/// 1. **Basis precompute** (in `basis_re` / `basis_im`) — 8 tones ×
-///    {cos, sin} = 16 vectors of NSPS=1920 i16 samples, generated by
-///    a Q15 rotator (one cos+sin pair per tone, then 1920 complex
-///    multiplies to fill the vector).
-/// 2. **Per-symbol dot products** — for each symbol in `mask`,
-///    16 calls to [`crate::core::dotprod::dot_q15_i32`] against the
-///    basis. Default is a Rust loop; embedded targets can override
-///    via `mfsk_core_dot_q15_i32` to bridge to chip-native asm
-///    (e.g. esp-dsp `dsps_dotprod_s16_ae32` on Xtensa LX6).
-///
-/// **Why caller-provided scratch?** On Core2 the basis is the inner
-/// loop's hot data — esp-dsp's asm dot product runs at 1 cycle/sample
-/// only when the basis lives in fast internal RAM. Default heap on
-/// ESP32 with `CONFIG_SPIRAM_USE_MALLOC` puts a 60 KB allocation in
-/// PSRAM (~5–10 cycles/sample read latency), which kills the asm
-/// kernel's advantage. Pre-allocating scratch in `.bss` (static
-/// arrays land in internal DRAM) lets the dot product reach its
-/// theoretical speed.
-///
-/// Both `basis_re` and `basis_im` must be at least
-/// [`BASIS_SCRATCH_LEN`] long — debug-asserted; longer is fine
-/// (only the prefix is used).
-#[doc(hidden)]
-#[cfg(feature = "fixed-point")]
-pub fn fill_symbol_spectra_into<S: AudioSample>(
-    out: &mut [[Cmplx<f32>; 8]; 79],
-    audio: &[S],
-    freq_hz: f32,
-    dt_sec: f32,
-    mask: SymMask,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
-) {
-    fill_symbol_spectra_into_generic::<f32, S>(
-        out, audio, freq_hz, dt_sec, mask, basis_re, basis_im,
-    );
-}
-
-/// Generic version of [`fill_symbol_spectra_into`] — writes
-/// `Cmplx<Sc>` for any spec scalar. f32 wrapper above.
-#[doc(hidden)]
-#[cfg(feature = "fixed-point")]
-pub fn fill_symbol_spectra_into_generic<Sc: crate::core::scalar::SpecScalar, S: AudioSample>(
-    out: &mut [[Cmplx<Sc>; 8]; 79],
-    audio: &[S],
-    freq_hz: f32,
-    dt_sec: f32,
-    mask: SymMask,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
-) {
-    use crate::core::dotprod::dot_q15_i32;
-    debug_assert!(basis_re.len() >= BASIS_SCRATCH_LEN);
-    debug_assert!(basis_im.len() >= BASIS_SCRATCH_LEN);
-    let i0 = ((TX_START_OFFSET_S + dt_sec) * SAMPLE_RATE_HZ).round() as i64;
-    let two_pi_over_fs = core::f32::consts::TAU / SAMPLE_RATE_HZ;
-
-    // ── Phase 1: precompute Q15 basis vectors (cos, sin × 8 tones).
-    for tone in 0..NTONES {
-        let tone_freq = freq_hz + tone as f32 * TONE_SPACING_HZ;
-        let dphi = -two_pi_over_fs * tone_freq;
-        let rot_re = (dphi.cos() * 32767.0).round() as i32;
-        let rot_im = (dphi.sin() * 32767.0).round() as i32;
-        let mut osc_re: i32 = 32767;
-        let mut osc_im: i32 = 0;
-        let base = tone * NSPS;
-        for k in 0..NSPS {
-            basis_re[base + k] = osc_re as i16;
-            basis_im[base + k] = osc_im as i16;
-            let new_re = ((osc_re * rot_re) - (osc_im * rot_im)) >> 15;
-            let new_im = ((osc_re * rot_im) + (osc_im * rot_re)) >> 15;
-            osc_re = new_re;
-            osc_im = new_im;
-        }
-    }
-
-    // Stack buffer: one symbol of audio as i16. 1920 × 2 = 3.8 KB.
-    let mut sym_buf = [0i16; NSPS];
-
-    // ── Phase 2: per-symbol dot products (audio × basis).
-    //
-    // For `Sc = f32` (no autogain) we write each cell straight into
-    // `out` via `Sc::from_f32` (no-op cast). For fixed-point types
-    // we collect i32 accumulators into a stack tmp buffer
-    // (~40 KB i32×8×79×2), find the peak, and write
-    // `Sc::from_f32_scaled(acc as f32, scale)` so the i16 output
-    // range is fully utilised. The scratch is a stack array — fits
-    // the 32 KB Core2 main task stack with the existing 16 KB used
-    // by basis scratch references and the spec.
-    let mut tmp_re = [[0i32; 8]; 79];
-    let mut tmp_im = [[0i32; 8]; 79];
-    let mut peak: i32 = 0;
-    for sym in 0..NN {
-        if !sym_in_mask(sym, mask) {
-            continue;
-        }
-        let sym_start = i0 + (sym as i64) * (NSPS as i64);
-        for k in 0..NSPS {
-            let idx = sym_start + k as i64;
-            sym_buf[k] = if idx >= 0 && (idx as usize) < audio.len() {
-                audio[idx as usize].to_i16()
-            } else {
-                0
-            };
-        }
-        for tone in 0..NTONES {
-            let base = tone * NSPS;
-            let basis_re_tone = &basis_re[base..base + NSPS];
-            let basis_im_tone = &basis_im[base..base + NSPS];
-            let acc_re = dot_q15_i32(&sym_buf, basis_re_tone);
-            let acc_im = dot_q15_i32(&sym_buf, basis_im_tone);
-            if !Sc::NEEDS_AUTOGAIN {
-                // f32 fast path — direct write, identical to the
-                // pre-2.6 cast.
-                out[sym][tone] = Cmplx {
-                    re: Sc::from_f32(acc_re as f32),
-                    im: Sc::from_f32(acc_im as f32),
-                };
-            } else {
-                tmp_re[sym][tone] = acc_re;
-                tmp_im[sym][tone] = acc_im;
-                peak = peak.max(acc_re.unsigned_abs() as i32);
-                peak = peak.max(acc_im.unsigned_abs() as i32);
-            }
-        }
-    }
-
-    // 2-pass auto-gain: scale i32 accumulators into i16 range,
-    // saturating safe, peak ≈ 95 % of i16::MAX. Skipped on the f32
-    // fast path (`out` is already populated above).
-    if Sc::NEEDS_AUTOGAIN {
-        let scale = if peak > 0 {
-            (i16::MAX as f32 * 0.95) / peak as f32
-        } else {
-            0.0
-        };
-        for sym in 0..NN {
-            if !sym_in_mask(sym, mask) {
-                continue;
-            }
-            for tone in 0..NTONES {
-                out[sym][tone] = Cmplx {
-                    re: Sc::from_f32_scaled(tmp_re[sym][tone] as f32, scale),
-                    im: Sc::from_f32_scaled(tmp_im[sym][tone] as f32, scale),
-                };
-            }
-        }
-    }
-}
-
-/// Per-symbol DFT via **generalised Goertzel** — drop-in for
-/// `fill_symbol_spectra_into` (the cfg-gated `fixed-point`-only BASIS
-/// dot-product variant) with **zero caller-provided scratch**.
+/// Per-symbol DFT via **generalised Goertzel** — the embedded
+/// production fill (Phase 1.7.7-Stick) with **zero caller-provided
+/// scratch**. Replaced the legacy BASIS (Q15 sin/cos dot-product)
+/// fill path, which was removed in 0.8.0 (issue #162) once this had
+/// been the sole production path on every embedded target for
+/// several releases.
 ///
 /// Same output (`Σ x[n] exp(-jωn)` for each tone at `ω = 2π·f/Fs`
 /// across NSPS=1920 samples), produced via a 2-tap IIR recursion
-/// instead of the BASIS sin/cos dot-product. Saves the 60 KB × 2
-/// (re/im) × 2 (dual_core) = 120 KB internal-DRAM basis scratch on
-/// embedded — the whole point of Phase 1.7.7-Stick.
+/// instead of a sin/cos dot-product. Needs no basis scratch at all —
+/// the whole point of Phase 1.7.7-Stick.
 ///
 /// Algorithm (per `(sym, tone)`):
 /// ```text
@@ -664,9 +455,9 @@ pub fn fill_symbol_spectra_into_generic<Sc: crate::core::scalar::SpecScalar, S: 
 /// traffic, friendlier to the LX7 L1.
 ///
 /// **Numerics**: f32 internal arithmetic. Host validation on
-/// qso3_busy.wav (`ft8_goertzel_vs_basis.rs`) shows recall 7/7 vs
-/// BASIS Q15 and per-station SNR +0.0..+0.6 dB (f32's extra precision
-/// over Q15 helps the weakest decodes).
+/// qso3_busy.wav (pre-0.8.0, against the now-removed BASIS Q15 path)
+/// showed recall 7/7 with per-station SNR +0.0..+0.6 dB (f32's extra
+/// precision over Q15 helped the weakest decodes).
 pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
     out: &mut [[Cmplx<f32>; 8]; 79],
     audio: &[S],
@@ -737,27 +528,4 @@ pub fn fill_symbol_spectra_goertzel<S: AudioSample>(
             out[sym][tone] = Cmplx { re, im };
         }
     }
-}
-
-/// Heap-allocating sibling of [`symbol_spectra_direct`] that uses a
-/// caller-provided basis scratch (passed through to
-/// [`fill_symbol_spectra_into`]). Only the fixed-point variant is
-/// exposed — host f32 path doesn't need a scratch (`fill_symbol_spectra`
-/// f32 has no basis precompute step).
-#[doc(hidden)]
-#[cfg(feature = "fixed-point")]
-pub fn symbol_spectra_direct_into<S: AudioSample>(
-    audio: &[S],
-    freq_hz: f32,
-    dt_sec: f32,
-    sym_mask: SymMask,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
-) -> Box<[[Cmplx<f32>; 8]; 79]> {
-    let mut out: Box<[[Cmplx<f32>; 8]; 79]> =
-        vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
-    fill_symbol_spectra_into(
-        &mut out, audio, freq_hz, dt_sec, sym_mask, basis_re, basis_im,
-    );
-    out
 }

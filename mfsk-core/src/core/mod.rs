@@ -29,7 +29,6 @@
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod baseline;
-pub mod dotprod;
 pub mod dsp;
 pub mod equalize;
 pub mod fft;

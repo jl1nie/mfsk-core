@@ -12,9 +12,7 @@ use alloc::vec::Vec;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{DEFAULT_Q_THRESH, NFFT_SPEC};
 
-use mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
 use mfsk_core::msg::wsjt77::unpack77;
-use mfsk_ft8::mfsk_ft8_basis_scratch_len;
 
 use embedded_shared::{dual_core, esp_dsp_fft, pipeline, stage1_inc, wav_sim};
 
@@ -89,24 +87,12 @@ where
     // Goertzel (zero internal-DRAM scratch) for both pass-2
     // (`refine_candidates_into`) and stage-3
     // (`process_candidates_into_with_cs_scratch_tuned`) cs builds.
-    // The 4 × 30 KB = 120 KB internal DRAM that used to live here
-    // (one `BASIS_SCRATCH_LEN` i16 buffer per (re/im, main/worker
-    // dual_core)) is now free for Qso-mode I2S bidir DMA descriptors
-    // (the `i2s_alloc_dma_desc` largest=7680 KB requirement that
-    // tripped on the old layout).
-    //
-    // `dual_core::pass2_split` / `stage3_split` and `dual_core::init`
-    // still take `basis_re` / `basis_im` slice / pointer parameters
-    // for API compat — they're unused inside mfsk-core but threaded
-    // through the dispatcher boilerplate. Pass empty slices / null
-    // pointers; mfsk-core no longer dereferences them.
-    let _ = mfsk_ft8_basis_scratch_len();
-    let _ = BASIS_SCRATCH_LEN;
+    // The BASIS scratch removal (0.8.0, issue #162) dropped the
+    // `basis_re`/`basis_im` parameters entirely — the 4 × 30 KB =
+    // 120 KB internal DRAM that used to live here is free for
+    // Qso-mode I2S bidir DMA descriptors (the `i2s_alloc_dma_desc`
+    // largest=7680 KB requirement that tripped on the old layout).
     crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
-    let basis_re_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-    let basis_im_main: &'static mut [i16] = alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-    let basis_re_c1_ptr: *mut i16 = core::ptr::null_mut();
-    let basis_im_c1_ptr: *mut i16 = core::ptr::null_mut();
 
     // wav_sim (4) / stage1_inc (3) より高い優先度。
     unsafe {
@@ -114,7 +100,7 @@ where
     }
 
     esp_dsp_fft::prewarm(NFFT_SPEC);
-    dual_core::init(basis_re_c1_ptr, basis_im_c1_ptr);
+    dual_core::init();
 
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
@@ -216,13 +202,7 @@ where
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
             depth: DecodeDepth::BpVariantsAd,
         };
-        let out = dual_core::run_speculative_slot(
-            spec_q,
-            slot_q,
-            &cfg,
-            basis_re_main,
-            basis_im_main,
-        );
+        let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {
             spec,
             slot,

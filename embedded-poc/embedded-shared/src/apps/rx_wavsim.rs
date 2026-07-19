@@ -61,22 +61,13 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
         mfsk_core::ft8::decode_block::NFFT_SPEC
     );
 
-    // Phase 1.7.7: BASIS scratch retired — Goertzel needs no internal
-    // DRAM scratch. Pass null to dual_core::init; empty slices to
-    // run_speculative_slot. The 4 × 30 KB that used to live here as
-    // `static mut BASIS_*` arrays is now free DRAM.
-    let basis_re_main: &'static mut [i16] =
-        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-    let basis_im_main: &'static mut [i16] =
-        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-
     // Bump main task priority above wav_sim (4) and stage1_inc (3).
     unsafe {
         esp_idf_svc::sys::vTaskPrioritySet(core::ptr::null_mut(), 6);
     }
 
     esp_dsp_fft::prewarm(mfsk_core::ft8::decode_block::NFFT_SPEC);
-    dual_core::init(core::ptr::null_mut(), core::ptr::null_mut());
+    dual_core::init();
 
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
@@ -112,8 +103,7 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
             bp_max_iter: rx_cfg.bp_max_iter,
             depth: DecodeDepth::BpVariantsAd,
         };
-        let out =
-            dual_core::run_speculative_slot(spec_q, slot_q, &dc, basis_re_main, basis_im_main);
+        let out = dual_core::run_speculative_slot(spec_q, slot_q, &dc);
         let dual_core::SpeculativeOut {
             spec,
             slot,

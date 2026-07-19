@@ -166,100 +166,59 @@ Xtensa ASM カーネル (`dsps_fft2r_fc32_ae32` + i16 用
 `dsps_fft2r_sc16_ae32`) にブリッジする実装例。RP2040 / Cortex-M
 実装は CMSIS-DSP に同様にブリッジする。
 
-### レガシ: i16 × Q15 dot product extern (deprecated)
+### 除去済み: i16 × Q15 dot product extern (0.8.0, issue #162)
 
 per-symbol DFT (BASIS パス) には別途 `mfsk_core_dot_q15_i32`
-extern シンボルが必須だった。**0.6.4 (Phase 1.7.7-Stick) 以降この
-extern は使われていない** — per-symbol DFT は in-tree の Goertzel
-recursion を通る (次節参照)。extern シグネチャは
-`mfsk-ffi-ft8` 0.5.x 呼び出し側と BASIS コードパスとの後方互換性
-のため export を維持しており、両者とも 0.7.0 で除去予定。
+extern シンボルが必須だった。0.6.4 (Phase 1.7.7-Stick) 以降この
+extern は既に decoder から使われておらず — per-symbol DFT は
+in-tree の Goertzel recursion を通っていた (次節参照) — 0.8.0 で
+このシンボル自体、`mfsk_core::core::dotprod` モジュール、BASIS
+fill path 全体を削除した。新規統合ではここに何も実装する必要が
+ない。
 
-```rust
-// export は維持、decoder からは呼ばれない。
-#[unsafe(no_mangle)]
-pub unsafe extern "Rust" fn mfsk_core_dot_q15_i32(
-    a: *const i16,
-    b: *const i16,
-    n: usize,
-) -> i32 {
-    // dsps_dotprod_s16_ae32 (LX6/LX7) や
-    // arm_dot_prod_q15 (CMSIS-DSP 入り Cortex-M) などにブリッジ。
-}
-```
-
-新規統合ではこのシンボルを実装しないこと; BASIS コードパス向けの
-デフォルト scalar fallback が `mfsk_core::core::dotprod` に同梱
-されている。
-
-## per-symbol DFT: Goertzel (現行) と BASIS (deprecated)
+## per-symbol DFT: Goertzel
 
 FT8 per-symbol DFT は `Σ x[n] · exp(-jωn)` を 8 トーン周波数それぞれ
 について NSPS = 1920 サンプル全域で評価する。各 candidate の `cs`
 matrix で全 (symbol, tone) ペア (79 sym × 8 tone = 632 DFT/candidate、
-~15 candidate/slot ⇒ ~9.5k DFT/slot) について。
-`mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs` に 2 実装:
+~15 candidate/slot ⇒ ~9.5k DFT/slot) について。実装は
+`mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs` にある:
 
-### Goertzel (現行、0.6.4+) — `fill_symbol_spectra_goertzel`
+### Goertzel — `fill_symbol_spectra_goertzel`
 
 一般化 Goertzel recursion: (sym, tone) ごとに 2-tap IIR、3 個の
 f32 状態をスタック上に持ち、return 時に破棄。**呼び出し側
 scratch ゼロ**、内部 DRAM 静的バッファゼロ、extern シンボル要求
-ゼロ。0.6.4 以降、組込呼び出し側のデフォルトパス。
+ゼロ。0.6.4 以降、組込呼び出し側の唯一のパス。置き換えられた
+legacy BASIS (Q15 sin/cos dot-product) fill path は 0.8.0 で
+完全に削除された (issue #162)。
 
 性能トリック: ループを **sample-outer / tone-inner** で並べることで
 8 個の per-tone recursion (FT8 トーン数分) が FPU パイプラインを通る
 独立した 8 本の dependent chain として走る。LLVM が定数境界の
 `NTONES = 8` 内側ループを unroll し、Xtensa FPU が per-chain
-latency をほぼ全部並列吸収する。結果: stage-3 cost は BASIS asm
+latency をほぼ全部並列吸収する。結果: stage-3 cost は旧 BASIS asm
 dot product と一致 (S3 `qso3_busy.wav` 上 ~1.4 s)、**scratch ゼロ +
-BASIS 比 SNR +0.16..+0.63 dB 改善** (f32 Goertzel は Q15 BASIS
-より精度が高い)。
+旧 BASIS 比 SNR +0.16..+0.63 dB 改善** (f32 Goertzel は Q15 BASIS
+より精度が高かった)。
 
-### BASIS dot product (deprecated、0.7.0 で除去) — `fill_symbol_spectra_into`
-
-事前計算済 Q15 sin/cos テーブル (`BASIS_RE` / `BASIS_IM`、各
-`NTONES × NSPS = 15 360` i16 entry ≈ 30 KB) を
-`mfsk_core_dot_q15_i32` extern 経由で叩く (esp-dsp ASM カーネル
-で LX6/LX7 上 1 cycle / 2 MAC)。このテーブルは dot product 内側
-ループのホットデータなので、fast 内部 SRAM (DRAM) に置く必要が
-ある — PSRAM だとカーネルが定格 throughput の ~30 % に落ちる。
-
-何故引退させるか: 内部 DRAM 30 KB / 軸 × 2 軸 × 2 core = **120 KB
-の内部 DRAM** がまさに M5StickS3 Qso モードの双方向 I2S DMA
-descriptor が割当てたい量。ボードの空き連続内部チャンクが両者を
-満たせず、Qso モード起動が `i2s_alloc_dma_desc: allocate DMA
-buffer failed` で失敗した。Goertzel は perf を落とさず 120 KB を
-解放する。
-
-BASIS 時代の呼び出し側を持っていて 0.6.x 内でレガシパスを動かし
-続けたい場合、scratch を `.bss` に置けば自動で内部 DRAM に乗る:
-
-```rust
-const SCRATCH_LEN: usize = mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
-static mut BASIS_RE: [i16; SCRATCH_LEN] = [0; SCRATCH_LEN];
-static mut BASIS_IM: [i16; SCRATCH_LEN] = [0; SCRATCH_LEN];
-```
-
-C 側で配列がヒープに居る場合 (`.bss` でなく) は ESP-IDF の
-capability flag 付きアロケータを使う:
-
-```c
-int16_t *basis = heap_caps_malloc(BASIS_SCRATCH_LEN * sizeof(int16_t),
-                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-```
-
-30 KB 軸 1 本ぶんの素の `malloc` リクエストは ESP-IDF のデフォルト
-ルーティングでは暗黙に PSRAM に乗り、これが slow ケース。新規統合ではこの問題
-を考える必要なし — Goertzel パスを呼んで decoder には何も alloc
-させない。
+何故 BASIS を引退させたか: 事前計算済 Q15 sin/cos テーブル
+(`BASIS_RE` / `BASIS_IM`、各 `NTONES × NSPS = 15 360` i16 entry ≈
+30 KB) を ASM dot product が定格 throughput を出すには fast 内部
+SRAM (DRAM) に置く必要があった — 内部 DRAM 30 KB / 軸 × 2 軸 ×
+2 core = **120 KB の内部 DRAM** がまさに M5StickS3 Qso モードの
+双方向 I2S DMA descriptor が割当てたい量。ボードの空き連続内部
+チャンクが両者を満たせず、Qso モード起動が `i2s_alloc_dma_desc:
+allocate DMA buffer failed` で失敗した。Goertzel は perf を落とさず
+120 KB を解放し、0.8.0 で BASIS コードと `basis_re`/`basis_im`
+scratch 引数そのものを削除して仕上げた — 新規統合では scratch の
+配置を一切考える必要がない。
 
 ## Q-format クイックリファレンス
 
 | Stage | Format | Range | File |
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`、0.6.4 以降飽和 | `ft8::decode_block::spectrogram::Spectrogram` |
-| DFT basis (BASIS パス) | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `ft8::decode_block::fill_symbol_spectra` |
 | Symbol cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (`fixed-point`) | f32 無制限、Q14 ±2 | `core::scalar::Cmplx` (`num_complex::Complex` の type alias) |
 | LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `core::scalar` に比較経路用として残置) | `core::scalar::LlrScalar` |
 | BP messages | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
@@ -309,27 +268,22 @@ typedef struct MfskFt8ResultList {
     size_t         _capacity;  // private
 } MfskFt8ResultList;
 
-// Legacy: BASIS dot-product パス用 scratch 長 (i16 要素数)。
-// 呼び出し側が同じ長さの配列を 2 本 alloc。0.6.4 以降は decoder
-// が内部で Goertzel を使うので下記の basis_re / basis_im ポインタ
-// に NULL を渡せる。
-size_t mfsk_ft8_basis_scratch_len(void);
-
-// 組込のメインエントリ。0.6.4 以降、caller-managed scratch は
-// オプション — basis_re / basis_im に NULL を渡せば in-tree
-// Goertzel パス (内部 DRAM scratch ゼロ) を使う。0.5.x 呼び出し側
-// との後方互換のため、非 NULL ポインタを渡すと legacy BASIS パス
-// にルーティングし、これは fast 内部 RAM に置く必要がある。
+// 組込のメインエントリ。呼び出し側 scratch は不要 — decoder は
+// in-tree Goertzel パス (内部 DRAM scratch ゼロ) で per-symbol DFT
+// を埋める。0.8.0 (issue #162) 以前はここで `basis_re`/`basis_im`
+// scratch ポインタも受け取っていたが、削除済み BASIS fill path
+// 用だったため除去した — pre-0.8.0 ヘッダでビルドしていた C
+// 呼び出し側はこの 2 引数を呼び出し箇所から削除する必要がある。
 MfskFt8Status mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
     float freq_min_hz, float freq_max_hz,     // typical 200, 3000
     float sync_min, int max_cand,             // typical 1.0, 30
     MfskFt8Depth depth,                       // 0=Bp、1=BpAll、2=BpAllOsd
-    int16_t *basis_re, int16_t *basis_im,     // Goertzel なら NULL
     MfskFt8ResultList *out);                  // callee が populate
 
-// HOST 専用便利関数 — scratch を内部 heap alloc。組込ビルド
-// からは除外: 下の「Caller-managed BASIS scratch」参照。
+// HOST 専用便利関数 — 内部で heap alloc。組込ビルドからは除外
+// (もはや scratch を alloc する対象すらないが、host テスト用に
+// 別エントリポイントとして維持)。
 #ifdef MFSK_FT8_HOST  // デフォルト `host` feature でビルド
 MfskFt8Status mfsk_ft8_decode_i16_alloc(
     const int16_t *audio, size_t n_samples,
@@ -342,18 +296,9 @@ MfskFt8Status mfsk_ft8_decode_i16_alloc(
 void mfsk_ft8_result_list_free(MfskFt8ResultList *list);
 ```
 
-### Caller-managed BASIS scratch (legacy)
+### `mfsk_ft8_decode_i16` の呼び出し方
 
-C ABI は Rust の `_into` ファミリを反映 —
-`mfsk_ft8_decode_i16` は basis 配列を引数で取り、内部に `malloc`
-を隠さない。理由は上の
-[per-symbol DFT](#per-symbol-dft-goertzel-現行-と-basis-deprecated)
-と同じ (PSRAM 配置で ASM カーネルが壊れる)。FFI パスとしての帰結は、
-legacy decoder パスは「内部 `malloc` する便利 wrapper」を **意図的に
-出荷しない** こと — C 呼び出し側はどのヒープに alloc が落ちるか
-分からないので。
-
-0.6.4 以降は **NULL を渡して** Goertzel パスに任せるのが推奨パターン:
+管理すべき scratch バッファは無い — そのまま呼ぶだけ:
 
 ```c
 #include "mfsk_ft8.h"
@@ -363,24 +308,6 @@ MfskFt8Status st = mfsk_ft8_decode_i16(
     audio, n_samples,
     200.0f, 3000.0f, 1.0f, 30,
     MFSK_FT8_DEPTH_BP_ALL,
-    NULL, NULL,           // Goertzel — scratch 不要
-    &results);
-```
-
-0.5.x → 0.6.x 移行向けの legacy `.bss` 配列パターンも引き続き
-動く:
-
-```c
-#include "mfsk_ft8.h"
-static int16_t basis_re[15360];   // = mfsk_ft8_basis_scratch_len()
-static int16_t basis_im[15360];
-
-MfskFt8ResultList results = {0};
-MfskFt8Status st = mfsk_ft8_decode_i16(
-    audio, n_samples,
-    200.0f, 3000.0f, 1.0f, 30,
-    MFSK_FT8_DEPTH_BP_ALL,
-    basis_re, basis_im,   // legacy BASIS パス
     &results);
 ```
 
