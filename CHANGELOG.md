@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.5 — Q65-15A + AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
+## 0.7.5 — Q65-15A/120D/120E/300A + AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
 
 ### Added
 
@@ -17,18 +17,45 @@
   a dedicated `tests/q65_a15_roundtrip.rs` (synth + aligned/offset
   scan recovery) and folded into the `q65sim`-based AWGN sweep below
   (50% crossing ≈ -21 dB, matching `q65params.f90`'s analytical
-  formula for the 15 s period). Now 7 wired Q65 sub-modes total; docs
-  (`LIBRARY.md`/`.ja.md`) and `tests/protocol_invariants.rs` updated
-  to match.
+  formula for the 15 s period).
+- **Q65-120D, Q65-120E, Q65-300A**: three longer-period sub-modes
+  (`Q65d120`/`Q65e120`/`Q65a300`), chosen because WSJT-X's own user
+  guide (`doc/user_guide/en/protocols.adoc`) and sample tree document
+  real, specific use cases for exactly these three: Q65-120D (10 GHz
+  rainscatter/troposcatter, backed by 14 files in WSJT-X's own
+  `UnitTests.txt` regression corpus), Q65-120E (6 m ionoscatter),
+  and Q65-300A (optical/laser scatter — the deepest wired Q65
+  sub-mode, ~-34 dB AWGN threshold, matching the published table
+  value almost exactly). Unlike Q65-15A, these three **do** have
+  golden-WAV tests: `tests/q65_wsjtx_samples.rs` gained
+  `rainscatter_10ghz_120d_decodes_with_fading_metric`,
+  `ionoscatter_6m_120e_decodes_with_fading_metric`, and
+  `optical_scatter_300a_decodes_with_fading_metric` — golden messages
+  ("VK3WE VK7MO QE37", "KB7IJ N0AN 73", "VK7MO VK7PD QE38")
+  independently confirmed via `jt9 -3 -p {120,300} -b {D,E,A}` first.
+  All three need the fast-fading metric to decode (plain BP fails,
+  same shape as the existing Q65-60D EME test) — for Q65-300A this
+  holds even though it's stable-path scatter rather than classic
+  Doppler-spread EME, suggesting the fading metric's robustness helps
+  generally at threshold-adjacent SNR, not only under true multipath.
+  Now **10 wired Q65 sub-modes total**; docs (`LIBRARY.md`/`.ja.md`),
+  `tests/protocol_invariants.rs`, FFI (`MfskQ65SubMode::{D120,E120,A300}`,
+  discriminants 7-9), and the `q65sim` AWGN sweep all updated to match
+  (the 120/300 s configs use 5 trials instead of 15 — their WAVs are
+  proportionally larger and the #171 fine-timing retry multiplies
+  decode cost further).
 - New `scripts/gen_q65_sweep_wavs.sh` + `tests/q65_sim_sweep.rs`
   (`#[ignore]`d): a `q65sim`-generated AWGN SNR sweep covering every
   sub-mode ZST this crate actually wires (`Q65a15`, `Q65a30`,
-  `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60` — WSJT-X's Q65 also has
-  120/300 s periods and other combinations this crate doesn't
-  implement, so the sweep intentionally covers only what's shipped).
-  `q65sim` has a real CMakeLists.txt target (unlike `jt9sim`), so no
-  new build script was needed — build via
-  `cmake --build ~/wsjtx-build --target q65sim`.
+  `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`, `Q65d120`,
+  `Q65e120`, `Q65a300` — WSJT-X's Q65 also has other (period,
+  sub-mode) combinations this crate doesn't implement, so the sweep
+  intentionally covers only what's shipped). `q65sim` has a real
+  CMakeLists.txt target (unlike `jt9sim`), so no new build script was
+  needed — build via `cmake --build ~/wsjtx-build --target q65sim`.
+  Below period=30 s, `q65sim` uses a completely different filename
+  format (`000000_MMSS.wav`, not the sequential index used at ≥30 s)
+  — `gen_q65_sweep_wavs.sh` special-cases this for Q65-15A.
 - **New `tests/q65_wsjtx_samples.rs::tropo_1296_60b_decodes_via_averaging`**:
   Q65-60B was the only wired sub-mode with a real off-air recording
   already vendored (`WSJT-X/samples/Q65/60B_1296_Troposcatter/`) but

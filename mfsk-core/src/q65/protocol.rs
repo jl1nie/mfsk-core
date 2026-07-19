@@ -22,6 +22,9 @@
 //! | [`Q65c60`]   | 60 s  | 6.667 Hz     | microwave EME                   |
 //! | [`Q65d60`]   | 60 s  | 13.33 Hz     | 5.7 / 10 GHz EME                |
 //! | [`Q65e60`]   | 60 s  | 26.67 Hz     | extreme Doppler / wide spread   |
+//! | [`Q65d120`]  | 120 s | 6.0 Hz       | 10 GHz rainscatter/troposcatter |
+//! | [`Q65e120`]  | 120 s | 12.0 Hz      | 6 m ionoscatter, wider Doppler  |
+//! | [`Q65a300`]  | 300 s | 0.289 Hz     | optical scatter, deepest AWGN   |
 //!
 //! Adding a new sub-mode is a one-line invocation of the
 //! `q65_submode!` macro defined further down in this file.
@@ -169,6 +172,38 @@ q65_submode! {
     nsps = 7200,
     spacing_mult = 16,
     tr_period_s = 60,
+}
+
+q65_submode! {
+    /// Q65-120D: 120 s T/R period, sub-mode D (tone spacing = baud
+    /// × 8 = 6.0 Hz). Rainscatter / troposcatter at 10 GHz, where the
+    /// longer T/R period buys ~3 dB over Q65-60D at the cost of a
+    /// slower QSO rate.
+    Q65d120,
+    nsps = 16000,
+    spacing_mult = 8,
+    tr_period_s = 120,
+}
+
+q65_submode! {
+    /// Q65-120E: 120 s T/R period, sub-mode E (tone spacing = baud
+    /// × 16 = 12.0 Hz). 6 m ionoscatter with wider Doppler spread
+    /// than Q65-30A/60A comfortably tolerate.
+    Q65e120,
+    nsps = 16000,
+    spacing_mult = 16,
+    tr_period_s = 120,
+}
+
+q65_submode! {
+    /// Q65-300A: 300 s T/R period, sub-mode A (tone spacing = baud
+    /// × 1 ≈ 0.289 Hz). The deepest wired Q65 sub-mode (~-34 dB AWGN
+    /// threshold) — extreme weak-signal paths such as optical
+    /// (laser) scatter.
+    Q65a300,
+    nsps = 41472,
+    spacing_mult = 1,
+    tr_period_s = 300,
 }
 
 /// FecCodec stub for Q65 — present so [`Q65a30`] can satisfy the

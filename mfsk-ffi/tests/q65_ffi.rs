@@ -101,6 +101,9 @@ fn encode_q65_roundtrips_for_every_submode() {
         MfskQ65SubMode::C60,
         MfskQ65SubMode::D60,
         MfskQ65SubMode::E60,
+        MfskQ65SubMode::D120,
+        MfskQ65SubMode::E120,
+        MfskQ65SubMode::A300,
     ] {
         let mut out = empty_samples();
         let st =
@@ -110,11 +113,15 @@ fn encode_q65_roundtrips_for_every_submode() {
         // Q65 frames are 85 symbols × NSPS samples. Q65-15A:
         // NSPS=1800 → 153 000 samples (12.75 s). Q65-30A: NSPS=3600
         // → 306 000 samples (25.5 s). Q65-60A..E: NSPS=7200 →
-        // 612 000 samples (51 s). Encoder returns the frame-length
-        // PCM, not the slot-length PCM.
+        // 612 000 samples (51 s). Q65-120D/E: NSPS=16000 →
+        // 1 360 000 samples (113.3 s). Q65-300A: NSPS=41472 →
+        // 3 525 120 samples (293.8 s). Encoder returns the
+        // frame-length PCM, not the slot-length PCM.
         let expected = match sm {
             MfskQ65SubMode::A15 => 85 * 1_800,
             MfskQ65SubMode::A30 => 85 * 3_600,
+            MfskQ65SubMode::D120 | MfskQ65SubMode::E120 => 85 * 16_000,
+            MfskQ65SubMode::A300 => 85 * 41_472,
             _ => 85 * 7_200,
         };
         assert_eq!(

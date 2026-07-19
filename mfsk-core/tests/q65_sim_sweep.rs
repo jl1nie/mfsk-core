@@ -1,6 +1,7 @@
 //! Q65 AWGN SNR sweep against `q65sim`-generated signals, across all
-//! seven sub-mode ZSTs this crate actually wires (`Q65a15`, `Q65a30`,
-//! `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`).
+//! ten sub-mode ZSTs this crate actually wires (`Q65a15`, `Q65a30`,
+//! `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`, `Q65d120`,
+//! `Q65e120`, `Q65a300`).
 //!
 //! This test is `#[ignore]` — run it manually when investigating Q65
 //! sensitivity. `q65sim` is WSJT-X's canonical Q65 signal generator
@@ -26,11 +27,15 @@
 //! (`MFSK_Q65_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/q65_sweep`, relative to `CARGO_MANIFEST_DIR`.)
 //!
-//! ## Scope: only the seven sub-modes actually wired
+//! ## Scope: only the ten sub-modes actually wired
 //!
-//! WSJT-X's Q65 also supports 120/300 s T/R periods and other
-//! (period, sub-mode) combinations, but this crate only wires the
-//! 15 s and 30 s A sub-modes plus all five 60 s sub-modes (see
+//! WSJT-X's Q65 also supports other (period, sub-mode) combinations
+//! (e.g. 15B/15C, 30B/30C/30D, most of 120/300's other letters), but
+//! this crate only wires the 15 s / 30 s A sub-modes, all five 60 s
+//! sub-modes, plus three longer-period scatter modes — Q65-120D
+//! (10 GHz rainscatter), Q65-120E (6 m ionoscatter), Q65-300A
+//! (optical scatter) — chosen because WSJT-X ships real off-air
+//! reference recordings for exactly these three (see
 //! `docs/reference/LIBRARY.md` §0.5). This sweep intentionally
 //! covers only what's shipped, not a hypothetical superset — same
 //! scoping call as `tests/jt65_sweep.rs`/`tests/jt9_sweep.rs`.
@@ -56,7 +61,10 @@
 //! not sub-mode letter — under pure AWGN, wider tone spacing doesn't
 //! change matched-filter sensitivity, only Doppler/fading tolerance):
 //! -21 dB for Q65-15A, -24 dB for Q65-30A, -27 dB for all five 60 s
-//! sub-modes.
+//! sub-modes, -30 dB for Q65-120D/E, -35 dB for Q65-300A. The 120/300 s
+//! configs use fewer trials (5 instead of 15) since their audio files
+//! are proportionally longer and the fine-timing retry from issue
+//! #171 multiplies decode cost further.
 //!
 //! ## Provenance (2026-07-19)
 //!
@@ -107,15 +115,17 @@ use common::load_wav_f32_opt;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a15, Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for,
-    decode_scan_with_ap_for,
+    Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
+    decode_scan_for, decode_scan_with_ap_for,
 };
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
 const FREQ_TOL_HZ: f32 = 4.0;
 
-const SUBMODES: &[&str] = &["a15", "a30", "a60", "b60", "c60", "d60", "e60"];
+const SUBMODES: &[&str] = &[
+    "a15", "a30", "a60", "b60", "c60", "d60", "e60", "d120", "e120", "a300",
+];
 
 fn sweep_dir() -> PathBuf {
     if let Ok(d) = std::env::var("MFSK_Q65_SWEEP_DIR") {
@@ -164,6 +174,9 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
         "c60" => decode_both!(Q65c60),
         "d60" => decode_both!(Q65d60),
         "e60" => decode_both!(Q65e60),
+        "d120" => decode_both!(Q65d120),
+        "e120" => decode_both!(Q65e120),
+        "a300" => decode_both!(Q65a300),
         _ => (false, false),
     }
 }

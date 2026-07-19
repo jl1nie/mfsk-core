@@ -127,6 +127,21 @@ typedef enum MfskQ65SubMode {
      * existing discriminant values stable for this `#[repr(C)]` ABI.
      */
     MFSK_Q65_SUB_MODE_A15 = 6,
+    /**
+     * Q65-120D — 120 s slot, ×8 spacing. 10 GHz rainscatter/
+     * troposcatter.
+     */
+    MFSK_Q65_SUB_MODE_D120 = 7,
+    /**
+     * Q65-120E — 120 s slot, ×16 spacing. 6 m ionoscatter with
+     * wider Doppler than Q65-30A/60A comfortably tolerate.
+     */
+    MFSK_Q65_SUB_MODE_E120 = 8,
+    /**
+     * Q65-300A — 300 s slot, ×1 spacing. The deepest wired Q65
+     * sub-mode (~-34 dB AWGN threshold); optical (laser) scatter.
+     */
+    MFSK_Q65_SUB_MODE_A300 = 9,
 } MfskQ65SubMode;
 
 /**
