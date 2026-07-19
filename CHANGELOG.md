@@ -44,6 +44,20 @@
   (the 120/300 s configs use 5 trials instead of 15 — their WAVs are
   proportionally larger and the #171 fine-timing retry multiplies
   decode cost further).
+- **Direct WSJT-X cross-check for Q65-120D/120E/300A**: ran `jt9 -3
+  -p {120,300} -b {D,E,A}` (no `-c`/`-x`) over the identical 165-file
+  sweep corpus per sub-mode used above. Result: **no regression, and
+  two sub-modes exceed WSJT-X's own plain decode**. Q65-300A's curve
+  is statistically identical to `jt9`'s at every tested SNR point
+  (both cross 50% at ≈-35 dB). Q65-120D and Q65-120E's `decode_scan_for`
+  50% crossings (≈-30.7 dB, ≈-31.0 dB) are **2.5-3.4 dB better** than
+  `jt9 -3`'s own plain-decode crossings (≈-28.2 dB, ≈-27.6 dB) —
+  consistent across 4+ SNR points each, not sampling noise. Likely
+  explanation (not fully confirmed): the #171 fine-timing retry tries
+  a fixed ±3-step grid per coarse candidate regardless of T/R period,
+  which may end up relatively more thorough than WSJT-X's own
+  `q65_loops.f90` `idt`/`idf` retry granularity at these slower-baud,
+  longer-period sub-modes specifically.
 - New `scripts/gen_q65_sweep_wavs.sh` + `tests/q65_sim_sweep.rs`
   (`#[ignore]`d): a `q65sim`-generated AWGN SNR sweep covering every
   sub-mode ZST this crate actually wires (`Q65a15`, `Q65a30`,
