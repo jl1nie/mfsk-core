@@ -199,27 +199,48 @@ fn run_sweep(name: &str, ntr_period: usize, width: f32) {
     println!(
         "\n=== MSK144 {name} SNR sweep (TRp={ntr_period}s width={width}, {SEEDS} seeds/SNR) ==="
     );
+
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    let trial = |snr: i32, seed: u64| -> bool {
+        let audio = make_slot(
+            &itone,
+            ntr_period,
+            width,
+            snr as f32,
+            0xA5A5_0000 + seed as u32,
+        );
+        hit(&decode_slot(&audio, 1500.0, 60.0, Depth::Deep), expected)
+    };
+
     for snr in [-9, -8, -7, -6, -5, -4, -3] {
-        let mut hits = 0u64;
-        for seed in 0..SEEDS {
-            let audio = make_slot(
-                &itone,
-                ntr_period,
-                width,
-                snr as f32,
-                0xA5A5_0000 + seed as u32,
-            );
-            let decodes = decode_slot(&audio, 1500.0, 60.0, Depth::Deep);
-            if hit(&decodes, expected) {
-                hits += 1;
+        #[cfg(feature = "parallel")]
+        let hits: u64 = (0..SEEDS)
+            .into_par_iter()
+            .filter(|&s| trial(snr, s))
+            .count() as u64;
+
+        #[cfg(not(feature = "parallel"))]
+        let hits: u64 = {
+            let mut hits = 0u64;
+            for seed in 0..SEEDS {
+                if trial(snr, seed) {
+                    hits += 1;
+                }
             }
-        }
+            hits
+        };
+
         println!("  {snr:>3} dB   {hits:>3}/{SEEDS}");
     }
 }
 
 #[test]
-#[ignore = "slow: 2 configs x 7 SNR x 20 seeds; minutes even in release. CI runs via --include-ignored."]
+#[ignore = "slow: 2 configs x 7 SNR x 20 seeds; ~22s in release with `parallel` \
+            (rayon), ~4.5min without. CI's \"catchall characterization\" suite \
+            runs this via `--test msk144_snr_sweep -- --ignored` with \
+            `--features full` (implies `parallel`)."]
 fn msk144_snr_sweep_short_and_long_ping() {
     // WSJT-X's own `msk144sim` examples: short ping (0.43 s ~ TRp=15),
     // long ping (2.5 s decay ~ TRp=30).
