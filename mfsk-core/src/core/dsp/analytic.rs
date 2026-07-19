@@ -17,6 +17,8 @@
 
 use alloc::vec::Vec;
 use num_complex::Complex32;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 use super::super::fft::default_planner;
 use super::msk::FS_HZ;
