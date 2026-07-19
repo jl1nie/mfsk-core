@@ -172,22 +172,33 @@ worklist; if you're reading this file to decide what to work on next,
 this section is the one to trust over any recall numbers or hardware
 status stated elsewhere in it):
 
-- **#24** — JT65 golden-WAV recall lock. **Scope changed again,
-  2026-07-19**: built WSJT-X's `jt65sim` and confirmed `kvasd`/
-  erasure metadata is *not* needed for its signals — `jt9 -6` (no
-  kvasd) decodes them cleanly down to -15 dB. But
-  `mfsk_core::jt65::decode_scan_default` found **zero decodes on any
-  of them**, including strong ones — and it's not a search-tolerance
-  problem: a wide-open diagnostic search lands candidates within
-  ~1 Hz / a few symbols of ground truth, but `decode_at()` fails on
-  every one of them. So there's a real decode-chain bug (demod → RS
-  → message-unpack) independent of the kvasd question, likely
-  because this path was only ever self-roundtrip-tested against this
-  crate's own encoder, never against an independent reference — same
-  shape as the JT9 encoder bug (#19). Deferred to a follow-up
-  session; see the issue for the full repro recipe. Once fixed, a
-  `jt65sim`-based sweep (mirroring `msk144_snr_sweep.rs`) becomes a
-  solid regression harness, no `b65a`/`kvasd` port needed after all.
+- **JT65 sensitivity gap vs. WSJT-X's `ftrsdap` stochastic Chase
+  decoder** — follow-up from closing #24, filed 2026-07-19. With the
+  interleave bug fixed (#24), a 15-point AWGN sweep
+  (`tests/jt65_sweep.rs`, `scripts/gen_jt65_sweep_wavs.sh`) shows this
+  crate's hard-decision `decode_at`/`decode_at_with_erasures` at 50%
+  recall around -14 dB and near-zero below -19 dB, while WSJT-X's own
+  no-`kvasd` path (`jt9 -6`) holds ~100% down to -22 dB on the
+  identical corpus. Root cause: `jt9 -6` isn't plain hard-decision RS
+  either — `lib/extract.f90` calls `ftrsdap` (`lib/ftrsd/ftrsdap.c`),
+  a stochastic Chase decoder that runs many randomized soft-symbol
+  erasure-pattern trials around Berlekamp-Massey RS, using both the
+  most- and second-most-reliable symbol per position
+  (`demod64a`'s `mrsym`/`mr2sym`). This crate's
+  `decode_at_with_erasures` only tries a single deterministic
+  increasing-erasure-count ordering — a materially weaker algorithm.
+  Porting `ftrsdap`'s approach is the likely fix; not started.
+- **#24** — JT65 total-decode-failure bug: **fixed 2026-07-19**. Root
+  cause was `jt65::interleave::{interleave,deinterleave}` (the 7×9
+  transpose WSJT-X's `interleave63.f90` implements) having their
+  permutations swapped relative to WSJT-X's TX/RX convention — self-
+  consistent (so self-roundtrip tests passed 100%) but not matching
+  real channel symbol order, so every independently-generated
+  (`jt65sim`) signal failed to decode regardless of SNR. Same shape as
+  the JT9 encoder bug (#19): a decode path only ever self-roundtrip-
+  tested, never cross-checked against an independent reference. See
+  CHANGELOG's 0.7.5 entry and the sensitivity-gap follow-up above for
+  what's still open.
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &
