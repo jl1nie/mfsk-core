@@ -7,23 +7,31 @@
 
 /// Interleave 63 symbols: write as 7 rows × 9 cols, read as 9 rows ×
 /// 7 cols. Invertible by [`deinterleave`].
+///
+/// Matches WSJT-X `interleave63(d1, idir=1)`, called at TX time
+/// (`gen65.f90`, `jt65sim.f90`) to go from RS-codeword order to
+/// channel order. Fortran's column-major `d1(0:6,0:8)` /
+/// `d2(0:8,0:6)` gives `output[9*i+j] = input[7*j+i]`.
 pub fn interleave(sym: &mut [u8; 63]) {
     let mut tmp = [0u8; 63];
     for i in 0..7 {
         for j in 0..9 {
-            // `d2[j, i] = d1[i, j]` — transpose.
-            tmp[j * 7 + i] = sym[i * 9 + j];
+            tmp[i * 9 + j] = sym[j * 7 + i];
         }
     }
     *sym = tmp;
 }
 
 /// Inverse of [`interleave`].
+///
+/// Matches WSJT-X `interleave63(d1, idir=-1)`, called at RX time
+/// (`extract.f90`) to go from channel order back to RS-codeword
+/// order.
 pub fn deinterleave(sym: &mut [u8; 63]) {
     let mut tmp = [0u8; 63];
     for i in 0..7 {
         for j in 0..9 {
-            tmp[i * 9 + j] = sym[j * 7 + i];
+            tmp[j * 7 + i] = sym[i * 9 + j];
         }
     }
     *sym = tmp;

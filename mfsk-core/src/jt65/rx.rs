@@ -144,12 +144,11 @@ fn demodulate_aligned_with_confidence_inner(
     // Apply the same permutation to confidence so positions line up.
     let mut conf_perm = [0f32; 63];
     {
-        // Re-run the 7×9 transpose on the confidence array with the
-        // same pattern `deinterleave` uses. Since deinterleave is
-        // i_native = j*7 + i_inner, j*9+i_inner mapping, reapply:
+        // Re-run the same 7×9 transpose `deinterleave` uses so
+        // confidence stays aligned with the permuted symbols.
         for i in 0..7 {
             for j in 0..9 {
-                conf_perm[i * 9 + j] = conf[j * 7 + i];
+                conf_perm[j * 7 + i] = conf[i * 9 + j];
             }
         }
     }
