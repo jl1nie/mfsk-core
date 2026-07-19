@@ -181,9 +181,6 @@ status stated elsewhere in it):
   (`b65a`/`kvasd`); three routes are on the table (synth-only
   golden, this crate's own `decode_at_with_erasures` circularly,
   or porting the `b65a`/`kvasd` pipeline properly).
-- **#72** — `DecodeStrictness` duplicate definition + uncalibrated
-  copy for FT4 / FST4. API hygiene; pick one definition and remove
-  the duplicate.
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &
@@ -224,6 +221,16 @@ log` for the fix commit, not re-derived here):
   (resolved as a side effect of 0.7.3's `OSD_HARDERRORS_MAX` widening).
 - ~~**#156**~~ — MSK144 SNR sensitivity verification against real
   WSJT-X (0.7.4, see *Current line* above).
+- ~~**#72**~~ — `DecodeStrictness` duplicate definition + uncalibrated
+  copy for FT4/FST4. Turned out almost entirely resolved already
+  (2026-07-18, before this closure): FT4's copy was retuned against
+  a new `ft4sim`-based sweep (`core/pipeline.rs`'s `DecodeStrictness`,
+  see `docs/notes/FT4_BENCHMARK.md` section 6), and FST4 bypasses
+  these gates entirely per #146's fix — so the two enums now hold
+  independently-calibrated, not-actually-duplicate values. Closed
+  the residual "should the type itself be unified" question as no
+  longer worth it (would need a protocol discriminator, net
+  complexity increase).
 
 Closed during the 0.6.x line (compact context table — for full
 prose, see the closed issue / linked PR / `git log`):
