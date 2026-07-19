@@ -54,6 +54,18 @@
   characterization" tier) reproduces the same synthetic-signal recipe
   as an ongoing regression signal.
 
+### Docs
+
+- **`docs/notes/MSK144_BENCHMARK.md` + `.ja.md`**, matching
+  `FT4_BENCHMARK.md`/`FST4_BENCHMARK.md`'s convention: how to
+  reproduce the `jt9`-based verification above (prerequisites,
+  building `jt9`/`msk144sim`/Hamlib from source — Hamlib's
+  `integration` branch referenced by `WSJT-X/INSTALL` no longer
+  exists, use `master` — `msk144sim`'s verified SNR convention, and
+  the measured baseline). Explicitly notes this is a one-time
+  verification: `tests/msk144_snr_sweep.rs` itself needs no WSJT-X
+  checkout.
+
 ## 0.7.3 — FT4 AWGN + FT8 CCIR fading sensitivity close-out (#151, #152, #153)
 
 ### Fixed
