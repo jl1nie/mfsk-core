@@ -704,15 +704,28 @@ tree is present at the expected sibling path):
   - **WSJT-X 8-entry golden: 7 / 8** (host `decode_frame_with_ap` and
     embedded `decode_block` both, post-0.6.0 sync consolidation +
     `i_start as i32` fix).
-  - **JTDX 18-entry golden: 13 / 18** (`decode_block`). Peaked at
+  - **JTDX 18-entry golden: 17 / 18** (`decode_block`). Peaked at
     16/18 in 0.6.2; 0.6.3's WSJT-X-faithful OSD `npre1`/`npre2`
     precoding + `OSD_HARDERRORS_MAX = 22` ceiling identified 3 of
-    those as CRC-luck phantoms and dropped them. The 13/18 is true
-    positives only.
-  - **Host AP-on multipass JTDX-extras: 4 / 6** (was 1 / 6 pre-0.6.2,
-    5 / 6 in 0.6.2, 4 / 6 in 0.6.3 after the same phantom drop)
+    those as CRC-luck phantoms and dropped them (13/18). **0.7.3**
+    found that CRC-luck-phantom assumption wrong — a CCIR-fading
+    sensitivity investigation (issue #150) showed the tightened
+    ceiling was discarding genuine decodes under fading, not just
+    phantoms — and widened it back to WSJT-X's universal 36,
+    recovering 3 of those entries (`N1API F2VX`, `N1API HA6FQ`,
+    `CQ EA2BFM`) plus a 4th (`K1BZM DK8NE`, confirmed genuine via
+    AP context `mycall=K1BZM`). The one remaining entry
+    (`WA2FZW DL5AXX`) is still classified a likely false positive —
+    `coarse_sync` candidates exist at its claimed frequency but no
+    AP context recovers the message.
+  - **Host AP-on multipass JTDX-extras: 5 / 6** (was 1 / 6 pre-0.6.2,
+    5 / 6 in 0.6.2, dipped to 4 / 6 in 0.6.3's phantom filter, restored
+    to 5 / 6 in 0.7.3 by the same `OSD_HARDERRORS_MAX` widening above)
     via `decode_frame_subtract_with_ap` after the cs-source +
-    `subtract_signal_lpf` unification.
+    `subtract_signal_lpf` unification. The one remaining miss for this
+    fixed AP context (`mycall=K1JT`/`hiscall=HA0DU`), `K1BZM DK8NE`,
+    needs a wider AP-list / callsign hash table to reach — out of
+    scope for now.
   - **Embedded S3 fixed-point: 6 / 18 + 1 bonus = 7 total** in
     ~1.19 s post-SlotEnd (last formally measured during the 0.6.2 →
     0.6.3 Q11i16 ship sweep — see *Status* above for re-measurement

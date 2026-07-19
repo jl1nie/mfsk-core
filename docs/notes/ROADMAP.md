@@ -1,48 +1,49 @@
-# Roadmap (post-0.6.5)
+# Roadmap (post-0.7.4)
 
-## Current line (0.6.x) — shipped through 0.6.5 (2026-05-18)
+## Current line (0.7.x) — shipped through 0.7.4 (2026-07-19)
 
-The 0.6 line shipped in four cuts: a bundled `v0.6.0` + `v0.6.1` + `v0.6.2`
-via PR #50 (2026-05-10), then `v0.6.3` (2026-05-17, PR #89 — WSJT-X-faithful
-OSD precoding + the ε `decode_block` split), then `v0.6.4` (2026-05-18,
-PR #104 — Phase 1.7.7-Stick Goertzel migration), and finally `v0.6.5`
-(2026-05-18, PR #108 — crates.io surface refresh; no behaviour change).
-The cleanup-2026-05
-γ/β/δ/ε plan landed end-to-end across these cuts; see
-`docs/historical/CLEANUP_2026_05.md` (historical) for the original prescription.
-Headline numbers (all on `qso3_busy.wav`):
+Numeric recall/sensitivity figures for every protocol are **not**
+duplicated here — `README.md`'s "What's solid" section is the
+canonical, kept-current source (duplicating numbers in two docs is
+exactly how this file's FT8 figures drifted out of sync with reality
+for two months; see `CHANGELOG.md` for the full per-release detail).
+This section is just a byline of what shipped since the last time
+this doc was substantially updated (0.6.5, 2026-05-18):
 
-- Host AP-off recall: **7/8** WSJT-X golden, **13/18** JTDX golden
-  (`decode_block` path). The JTDX number peaked at 16/18 in 0.6.2
-  but 0.6.3's WSJT-X-faithful OSD `npre1`/`npre2` precoding +
-  `OSD_HARDERRORS_MAX = 22` ceiling identified 3 of those as
-  CRC-luck phantoms and dropped them — the 13/18 is true positives
-  only. See 0.6.3 CHANGELOG entry for the
-  faithfulness-vs-recall trade-off rationale.
-- Host AP-on multipass: **17 decodes total / 4 of 6 JTDX-extras**
-  on the `decode_frame_subtract_with_ap` path (also lost one
-  CRC-luck phantom in 0.6.3 — 5/6 → 4/6). The path had been
-  stuck at 1/6 pre-0.6.2 because it used `subtract_signal_weighted`
-  instead of the WSJT-X-faithful `subtract_signal_lpf`; 0.6.2
-  unified onto the LPF path → 5/6, then 0.6.3 trimmed the
-  CRC-luck phantom to 4/6 true positives.
-- Embedded S3 (M5StickS3, fixed-point + `esp-dsp` + Goertzel):
-  **6/18 + 1 bonus = 7 total** in **~1.19 s** post-SlotEnd, with
-  **+0.16..+0.63 dB SNR improvement** over the BASIS-era 0.5.x
-  baseline (Phase 1.7.7-Stick Goertzel migration). The 6/18+1=7
-  embedded decode count was last formally measured in the 0.6.2 →
-  0.6.3 Q11i16 ship sweep; 0.6.3's host-side OSD tightening was
-  not re-measured on embedded (no embedded log captured post-0.6.3
-  in `embedded-poc/m5stack-s3/logs/`). Treat as the last-confirmed
-  number, not a re-measured 0.6.5 figure — `wav_sim` re-run is
-  needed to confirm whether the host phantom drop applies to the
-  embedded path as well. The `~1.19 s` post-SlotEnd is similarly
-  the 0.6.3 measurement (CHANGELOG 0.6.3 "Verified on M5StickS3
-  S3 LX7, 7/8 golden" only confirms the WSJT-X 8-set, not the
-  JTDX 18-set or the wall-clock).
-- Embedded internal-DRAM use: BASIS scratch dropped (120 KB freed
-  on dual-core), unblocking M5StickS3 Qso-mode bidirectional I2S
-  DMA allocation.
+- **0.7.0** — FST4 gained its remaining four sub-modes
+  (FST4-15/30/120/300, via the `fst4_submode!` macro) and
+  `coarse_sync` was parallelised under `--features parallel`.
+- **0.7.1 / 0.7.2** — FST4 AWGN sensitivity gap vs. WSJT-X's
+  published thresholds closed from ~2.4-3.1 dB down to a common
+  ≈0.1-0.6 dB across all five sub-modes (issue #146 — coherent
+  full-slot sync, an FST4-specific `LLR_NSYM_MAX` override, a
+  zsum-OSD fallback). See `docs/notes/FST4_BENCHMARK.md` for how to
+  reproduce the sweep.
+- **0.7.3** — FT4 AWGN sensitivity gap narrowed ~1.8 dB → ~0.3 dB
+  (coherent Costas-block scorer + an OSD-gate fix); FT8 CCIR
+  moderate/poor fading recall gap closed by widening
+  `OSD_HARDERRORS_MAX` back to WSJT-X's universal 36, which also
+  resolved issue #150's JTDX-18 ground-truth question as a side
+  effect.
+- **0.7.4** — MSK144 meteor-scatter decode shipped (issue #25): full
+  WSJT-X port (LDPC(128,90)+CRC-13, MSK/OQPSK DSP, burst-scan sync),
+  3/3 golden-WAV recall. A systematic -1 dB SNR bias found
+  post-ship was root-caused (missing fixed bandpass filter in the
+  analytic-signal front end) and fixed, then cross-validated
+  against a real WSJT-X `jt9` build (25/28 cells exact match — see
+  `docs/notes/MSK144_BENCHMARK.md`). Also established this repo's
+  release cadence policy: PRs land on `main` immediately, but
+  crates.io tags are cut **biweekly** rather than per-change (escape
+  hatch for security/correctness-critical fixes or explicit
+  request) — see `CLAUDE.md`'s "Release cadence" section.
+
+Embedded-line status (M5StickS3 / CoreS3 / Core2) has its own
+detailed writeup under **Phase B** below — the short version: Phase
+B-Core (CoreS3, the main production target) has its crate skeleton
+and UAC host support shipped and compiling clean, but has never been
+verified against live hardware (issue #163); Phase B-Stick
+(M5StickS3, demo/fallback) and the Core2 sibling are both frozen,
+unchanged since late May.
 
 ### What landed in 0.6.5 (2026-05-18)
 
@@ -93,7 +94,11 @@ catch up:
 The legacy BASIS code path (`fill_symbol_spectra_into` and the
 `mfsk_core_dot_q15_i32` extern symbol) and the `basis_re`/`basis_im`
 scratch arguments on `mfsk_ft8_decode_i16` remain for back-compat
-with 0.5.x callers, scheduled for removal in 0.7.0.
+with 0.5.x callers. **Still present as of 0.7.4** — this was
+originally slated for 0.7.0 removal, which never happened (0.7.0's
+actual scope was FST4 sub-modes + `coarse_sync` parallelisation,
+unrelated). Now tracked as [#162](https://github.com/jl1nie/mfsk-core/issues/162)
+rather than re-promising a version number here.
 
 ### What landed in 0.6.3 (2026-05-17)
 
@@ -161,34 +166,64 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-07-19 — re-checked
-directly against `gh issue view`; of the 8 entries in the previous
-"as of 2026-05-18" list, only 2 — `#24` and `#72` — are still open):
+Currently open GitHub issues (state:open as of 2026-07-19, re-checked
+directly against `gh issue list`/`gh issue view` — this is the live
+worklist; if you're reading this file to decide what to work on next,
+this section is the one to trust over any recall numbers or hardware
+status stated elsewhere in it):
 
-- **#24** — JT65B golden lockdown + erasure-metadata path.
-  Carried forward from the post-0.5.12 "Phase A2".
+- **#24** — JT65 golden-WAV recall lock. Scope has moved since this
+  was last described here: it's **not** about adding a `Jt65b` ZST
+  (JT65B/C are explicitly out of scope per the issue body — no
+  current user has asked for them). The real blocker is that
+  WSJT-X v3's `samples/JT65/*.wav` don't decode cleanly without
+  soft-symbol **erasure metadata** from private WSJT-X branches
+  (`b65a`/`kvasd`); three routes are on the table (synth-only
+  golden, this crate's own `decode_at_with_erasures` circularly,
+  or porting the `b65a`/`kvasd` pipeline properly).
 - **#72** — `DecodeStrictness` duplicate definition + uncalibrated
   copy for FT4 / FST4. API hygiene; pick one definition and remove
   the duplicate.
+- **#125** — License question (GPLv3 vs. a more permissive license
+  for broader/proprietary adoption). Needs a decision, not code.
+- **#143** — FST4 AP decode + SIC for FST4-15/30, design &
+  implementation tracking. Motivated by VK3NV's real-time
+  weak-signal-messaging use of those two sub-modes; building blocks
+  exist elsewhere in the codebase but aren't applied to FST4 yet.
+  Active design discussion in the issue comments as of 2026-07-19.
+- **#148** — Research idea (not a commitment): blind-paired FST4-120
+  with soft combining, as a Doppler-robust alternative to FST4-300.
+- **#162** — Remove the legacy BASIS `fill_symbol_spectra_into` path.
+  Filed 2026-07-19 after this same accuracy pass found the "removal
+  scheduled for 0.7.0" promise (twice, in two different sections of
+  this file) was never followed through — `fill_symbol_spectra_into`,
+  `mfsk_core_dot_q15_i32`, and the `basis_re`/`basis_im` FFI args are
+  all still live in 0.7.4.
+- **#163** — CoreS3 Phase 1-Verify: live IC-705 hardware RX
+  confirmation. Filed 2026-07-19 for the same reason — see **Phase
+  B-Core** below for the full status this replaces.
 
-Closed since the 2026-05-18 snapshot (were listed above as open;
-see the closed issue / `git log` for the fix commit, not re-derived
-here):
+Closed since the 2026-05-18 snapshot (see the closed issue / `git
+log` for the fix commit, not re-derived here):
 
-- ~~**#25**~~ — MSK144 decode path. Implemented (0.7.4): full
-  pipeline (LDPC(128,90)+CRC-13, MSK/OQPSK DSP, burst-scan sync,
-  `msk144::decode::decode_slot` top-level driver), 3/3 golden-WAV
-  recall. See CHANGELOG 0.7.4.
-- ~~**#58**~~ — coalesce redundant `compute_llr` between Step 3 (OSD)
-  and Step 4 (AP) in `decode_block`. Closed 2026-05-20.
+- ~~**#25**~~ — MSK144 decode path (0.7.4).
+- ~~**#58**~~ — coalesce redundant `compute_llr` (OSD/AP steps).
 - ~~**#64**~~ — hoist `fft_cache` through host `decode_block_multipass`.
-  Closed 2026-05-19.
-- ~~**#65**~~ — share `cd0` between SyncOnly + DataOnly
-  `fill_symbol_spectra` calls. Closed 2026-05-20.
+- ~~**#65**~~ — share `cd0` between SyncOnly + DataOnly `fill_symbol_spectra`.
 - ~~**#73**~~ — `EqMode::Adaptive` collapsed into `EqMode::Local`.
-  Closed 2026-05-20.
 - ~~**#74**~~ — `DecodeDepth::Bp` cheapest-rung caller check.
-  Closed 2026-05-20.
+- ~~**#110**~~ — qso(FSM) slot parity tracking (TX/peer-decode collision).
+- ~~**#113**~~ — CI: skip Build/Test/C++ matrix on docs-only PRs.
+- ~~**#116**~~ — FT8: classify JTDX 5/18 misses on `qso3_busy.wav`.
+- ~~**#117**~~ — FT8: auto-AP iaptype-2 from same-slot decoded callsigns.
+- ~~**#146**~~ — FST4 AWGN sensitivity gap vs. WSJT-X's published table
+  (0.7.1/0.7.2 close-out, see *Current line* above).
+- ~~**#147**~~ — docs: `CHANGELOG.md` size + docs/ reader-facing vs.
+  internal-notes split.
+- ~~**#150**~~ — FT8 JTDX-only extra decodes ground-truth question
+  (resolved as a side effect of 0.7.3's `OSD_HARDERRORS_MAX` widening).
+- ~~**#156**~~ — MSK144 SNR sensitivity verification against real
+  WSJT-X (0.7.4, see *Current line* above).
 
 Closed during the 0.6.x line (compact context table — for full
 prose, see the closed issue / linked PR / `git log`):
@@ -204,11 +239,14 @@ prose, see the closed issue / linked PR / `git log`):
 | #23 | FST4-60A golden lockdown — wrong `NSPS`/`NDOWN`/`GFSK_BT` + missing `rvec` message scramble (PR #136) | 0.6.8 |
 | #23 | FST4-15/30/120/300 sub-modes wired (`fst4_submode!` macro, WSJT-X-cross-checked; no golden WAV available — synth-roundtrip + source-verification only) | 0.7.0 |
 
-The 5 remaining JTDX AP-on extras on `qso3_busy.wav` that surface
-only with `subtract_signal_lpf` multipass are a host-side win
-(coarse-sync upstream of AP); no embedded issue filed yet —
-revisit when an embedded-only WAV exhibits a post-coarse-sync
-gap.
+(Note: `#23` appears twice — GitHub issue numbers aren't reused; this
+issue was reopened/re-closed across two separate pieces of work,
+FST4-60A golden lockdown then the remaining sub-modes.)
+
+The JTDX AP-on-multipass recall is now 5/6 (README's "What's solid"
+has the current number and mechanism) — the remaining miss
+(`K1BZM DK8NE`, for the test's fixed AP context) is a host-side win
+(needs a wider AP-list); no embedded issue filed yet.
 
 Architectural notes that did not graduate to issues:
 
@@ -253,11 +291,15 @@ hints; the live worklist is the **Open follow-ups** section above.
   `fst4sim.f90` / `gen_fst4wave.f90`) plus a missing `rvec` pre-LDPC
   message scramble; `tests/fst4_wsjtx_samples.rs` is un-ignored and
   recovers the golden decode.
-- **A2** JT65 (`#24`) — current implementation is JT65A; WSJT-X
-  ships JT65B samples. Add a `Jt65b` ZST mirroring the Q65 sub-mode
-  generic pattern (`Q65a30`, `Q65a60`, ...) and lock recall against
-  `samples/JT65/JT65B/*.wav` via a new
-  `tests/jt65b_wsjtx_samples.rs` harness.
+- **A2** JT65 (`#24`) — **scope has moved on from the description
+  below** (kept as a historical note; see "Open follow-ups" above
+  for the current, accurate scope). Original framing: current
+  implementation is JT65A; WSJT-X ships JT65B samples, so add a
+  `Jt65b` ZST mirroring the Q65 sub-mode generic pattern. That's no
+  longer the plan — JT65B/C are explicitly out of scope per the live
+  issue, which is now about porting WSJT-X's `b65a`/`kvasd`
+  soft-symbol erasure-metadata pipeline (or a lighter synth-only
+  golden as a fallback).
 - **A3** FST4-15/30/120/300 (`#23` stretch) — landed via the
   `fst4_submode!` macro (mirrors `q65_submode!`); all constants
   cross-checked against WSJT-X `fst4_decode.f90`/`fst4sim.f90` and
@@ -267,7 +309,12 @@ hints; the live worklist is the **Open follow-ups** section above.
   synth-roundtrip self-consistency + source cross-checks only;
   requested by VK3NV (issue #23 comments) for a multi-period
   weak-signal messaging project. FST4-900 / FST4-1800 and FST4W
-  remain deferred indefinitely (no user demand).
+  remain deferred indefinitely (no user demand). **Update**: even
+  without a real-audio golden, all five sub-modes now have a
+  rigorous AWGN-sensitivity characterization vs. WSJT-X's published
+  thresholds (issue #146, closed 0.7.1/0.7.2 — see *Current line*
+  above and `docs/notes/FST4_BENCHMARK.md`), so "synth-only" no
+  longer means "unquantified."
 
 ## Phase B — embedded controller line
 
@@ -277,8 +324,9 @@ pin wiring, host power switch IC — silicon supports it, board doesn't
 wire for it). Phase B splits in two:
 
 - **Phase B-Stick** — `m5stack-s3-app`, demoted to **demo / acoustic
-  fallback** path. Frozen at Phase 1.5; Phases 1 (UAC), 2 (BLE CI-V),
-  5 (ADIF), 6 (buttons), TX keying all roll forward to Phase B-Core.
+  fallback** path. Frozen after Phase 1.7.9 (2026-05-27 — see the
+  detailed phase list below); Phases 1 (UAC), 2 (BLE CI-V), 5 (ADIF),
+  6 (buttons), TX keying all roll forward to Phase B-Core.
 - **Phase B-Core** — `m5stack-cores3-app` (NEW crate), the **main
   production controller**. M5Stack CoreS3 has AXP2101 PMIC + AW9523B
   I/O expander (BUS_OUT_EN pin 1 controls VBUS boost for host mode),
@@ -341,40 +389,60 @@ sensor-stripped variant) deferred until that hardware is procured;
 when needed, gated behind `cfg(feature = "cores3_se")` in the same
 crate.
 
-Status: planned. Brings up after CoreS3 unit arrives.
+**Status (corrected 2026-07-19 — this section previously said
+"planned. Brings up after CoreS3 unit arrives", which was stale and
+self-contradicted by this file's own Phase D section citing a
+CoreS3 benchmark log)**: Phase 0-Core and Phase 1-Core both shipped
+**2026-05-23** (PR #132, commit `1a93c92`) — CoreS3 hardware has
+been on the bench and flashed since then. What's actually still
+open is **Phase 1-Verify**, tracked as
+[#163](https://github.com/jl1nie/mfsk-core/issues/163): the UAC code
+compiles clean but has never been run against a live IC-705, and
+there's been no cores3-app feature commit since 2026-06-07 (6+
+weeks). The `(tasks #33/#34)` / `(task #48)` / `(task #49)` /
+`(task #50)` / `(task #51)` annotations previously on the phases
+below were leftover placeholder numbers that resolved to unrelated,
+already-closed May items (CI hygiene, the v0.6.2 release, S3
+boot-mode work) — removed below rather than left misleading.
 
-- **Phase 0-Core** (task #48) — Crate skeleton: board.rs (ILI9342C
-  SPI pins, I2C0 for AXP2101 + AW9523B + FT6336U, USB-OTG fixed
-  GPIO 19/20, ES7210 audio pins), pmic.rs (AXP2101 + AW9523B init,
-  distinct from S3-app's M5PM1 and Core2-app's AXP192), display.rs
-  (ILI9342C via mipidsi — Core2-app pattern), main.rs orchestration,
-  decode_pipeline.rs thin wrapper. Workspace member added.
-- **Phase 1-Core** (task #49) — UAC: clone `uac.rs` from s3-app
-  verbatim; pmic.rs drives **AW9523B P1 (BUS_OUT_EN) HIGH** before
-  `usb_host_install()` (omission = floating VBUS = floating host
-  capability). BootMode::Uac dispatch arm.
-- **Phase 1-Verify** (tasks #33 / #34) — 1500 Hz tone injection from
-  IC-705 → FT8 candidate appears in decoded list; then live antenna
-  → end-to-end RX confirmed.
-- **Phase 1.5-Core** (task #50) — Hoist `uac.rs` into
-  `mfsk-app-shared` (gated `cfg(feature = "uac")`); both s3-app and
-  cores3-app consume via shared. Deferred until Phase 1-Verify
-  passes (no premature abstraction).
+- **Phase 0-Core** — DONE (2026-05-23). Crate skeleton: board.rs
+  (ILI9342C SPI pins, I2C0 for AXP2101 + AW9523B + FT6336U, USB-OTG
+  fixed GPIO 19/20, ES7210 audio pins), pmic.rs (AXP2101 + AW9523B
+  init, distinct from S3-app's M5PM1 and Core2-app's AXP192),
+  display.rs (ILI9342C via mipidsi — Core2-app pattern), main.rs
+  orchestration, decode_pipeline.rs thin wrapper. First flash
+  verified: I2C scan confirmed all peripherals, LCD up, 7/7 decodes
+  on `qso3_busy.wav` via wav_sim, 137 ms post_slotend.
+- **Phase 1-Core** — DONE (2026-05-23, same day). UAC: `uac.rs`
+  cloned from s3-app verbatim; pmic.rs drives **AW9523B P1
+  (BUS_OUT_EN) HIGH** before `usb_host_install()` (omission =
+  floating VBUS = floating host capability). `BootMode::Uac`
+  dispatch arm wired. `cargo check --release` clean on
+  `xtensa-esp32s3-espidf` — not yet flashed/run against real
+  hardware.
+- **Phase 1-Verify** — **OPEN, not yet attempted**
+  ([#163](https://github.com/jl1nie/mfsk-core/issues/163)). 1500 Hz
+  tone injection from IC-705 → FT8 candidate appears in decoded
+  list; then live antenna → end-to-end RX confirmed. This is the
+  actual current bottleneck for the whole Phase B-Core line.
+- **Phase 1.5-Core** — Hoist `uac.rs` into `mfsk-app-shared` (gated
+  `cfg(feature = "uac")`); both s3-app and cores3-app consume via
+  shared. Deferred until Phase 1-Verify passes (no premature
+  abstraction) — unchanged blocking logic, just correctly blocked on
+  a real open issue now instead of a placeholder task number.
 - **Phase 2-Core** — BLE CI-V to IC-705. Same `civ.rs` work that
   was queued on s3-app; CoreS3 also has BLE.
 - **Phase 5-Core** — ADIF (`flash_log.rs` + `adif.rs`). Crate-agnostic;
   could be hoisted to `mfsk-app-shared` from day 1.
-- **Phase 6-Core** (task #51) — FT6336U capacitive touch driver
-  (CoreS3 base has no physical buttons beyond Power). Replaces the
-  Stick `buttons.rs` paradigm with touch zones (menu / decoded-list
+- **Phase 6-Core** — FT6336U capacitive touch driver (CoreS3 base
+  has no physical buttons beyond Power). Replaces the Stick
+  `buttons.rs` paradigm with touch zones (menu / decoded-list
   tap-to-select / TX-strip tap-to-send).
 - **Phase 7-Core** — TX keying (paired with Phase 2-Core
   `civ::set_ptt` + Phase 1-Core TX audio synth to UAC OUT endpoint).
 
-Sequencing: B-Stick Phase 1.5 (acoustic) starts immediately as a
-parallel demo while CoreS3 hardware is procured. B-Core Phase 0 starts
-the moment CoreS3 lands on the bench. `mfsk-ffi-ft8/src/stream.rs::mfsk_ft8_stream_*`
-and `embedded-shared` resampler API are the seams shared across both.
+`mfsk-ffi-ft8/src/stream.rs::mfsk_ft8_stream_*` and `embedded-shared`
+resampler API are the seams shared between B-Stick and B-Core.
 
 ## Phase C — Quality / infra
 
@@ -414,8 +482,10 @@ Log: `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log`.
   `compute_spectrogram`), `…/coarse_sync.rs` (Costas search +
   allsum), `…/fill_symbol_spectra.rs` (per-symbol DFT family —
   **`fill_symbol_spectra_goertzel` is the current path; the
-  BASIS `fill_symbol_spectra_into` is back-compat only,
-  removed in 0.7.0**), `…/process_candidates.rs` (engine +
+  BASIS `fill_symbol_spectra_into` is back-compat only, still
+  present as of 0.7.4, tracked for removal under
+  [#162](https://github.com/jl1nie/mfsk-core/issues/162)**),
+  `…/process_candidates.rs` (engine +
   facade impls), `…/osd_strategy.rs` (OSD dispatch, #63 hook).
   Host `decode_frame*` family + `refine_fine` gate:
   `mfsk-core/src/ft8/decode.rs`.
