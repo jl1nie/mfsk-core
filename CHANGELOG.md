@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.5 — JT9 AWGN SNR sweep + jt9sim build
+
+### Added
+
+- New `scripts/build_jt9sim.sh` + `scripts/gen_jt9_sweep_wavs.sh` +
+  `tests/jt9_sweep.rs` (`#[ignore]`d, mirrors `tests/jt65_sweep.rs`):
+  a `jt9sim`-generated AWGN SNR sweep for JT9. Unlike `ft8sim`/
+  `ft4sim`/`fst4sim`/`jt65sim`, `jt9sim` has no CMakeLists.txt target
+  in WSJT-X at all — `build_jt9sim.sh` assembles its actual dependency
+  closure (`gen9` → `packjt`/`entail`/`encode232`/`interleave9`/
+  `graycode`, plus `jt9fano`/`fano232` for jt9sim's own internal
+  self-verify step) as a standalone binary from source.
+- Result: `decode_scan_default` holds **100% recall down to -24 dB**,
+  crossing 50% around -26 dB — closely tracking WSJT-X's own `jt9 -9`
+  on the identical 300-file corpus (100% to -25 dB, 80% at -26 dB; the
+  per-cell differences are within 20-trial sampling noise at the
+  steep part of the curve, not a systematic gap). Confirms JT9 has
+  **no JT65-style hidden sensitivity gap** — the three remaining
+  misses in the real-recording golden test
+  (`tests/jt9_wsjtx_samples.rs`) are congestion/wrong-codeword-lock
+  issues specific to that busy recording, not a general AWGN
+  weakness.
+- Also re-confirms the #19 encoder fix (`pack_grid4_plain`/
+  `unpack_grid`) against a second, independently-built reference
+  encoder: a fresh `jt9sim` signal ("CQ JL1NIE PM95" @ 1400 Hz)
+  decodes cleanly, matching WSJT-X's own `jt9 -9` output exactly.
+
 ## 0.7.4 — MSK144 decode (#25)
 
 ### Added
