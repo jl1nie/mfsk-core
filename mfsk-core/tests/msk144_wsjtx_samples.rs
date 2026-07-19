@@ -14,9 +14,17 @@
 //! principled derivation, validated against synthetic/independent-
 //! oracle signals only up to this point) — but this first real-WAV
 //! run recovers all 3 golden messages across both files with no
-//! tuning needed (freq within a few Hz, `tsec` exact, SNR within 1 dB
-//! of WSJT-X), so this is a strict gate like the other protocols'
-//! golden-WAV tests.
+//! tuning needed (freq within a few Hz, `tsec` exact), so this is a
+//! strict gate like the other protocols' golden-WAV tests.
+//!
+//! SNR is gated too, exact-match after the `analytic_signal` fixed
+//! bandpass filter fix (`core/dsp/analytic.rs` — WSJT-X's `analytic()`
+//! always applies a 1500 Hz-centered raised-cosine bandpass before
+//! computing `pmax`/`pnoise`; the initial port omitted it, producing
+//! a systematic -1dB bias on all 3 golden decodes). `SNR_TOL_DB`
+//! leaves headroom for future incidental changes upstream of the SNR
+//! computation (e.g. FFT backend swaps) without making this an
+//! exact-bit-match gate.
 //!
 //! Skipped when the WSJT-X tree is not present at the expected
 //! sibling path so developers cloning only `mfsk-core` won't see a
@@ -51,10 +59,12 @@ struct Golden {
     msg: &'static str,
     freq_hz: f32,
     tsec: f32,
+    snr_db: i32,
 }
 
 const FREQ_TOL_HZ: f32 = 15.0;
 const TSEC_TOL: f32 = 1.0;
+const SNR_TOL_DB: i32 = 1;
 
 fn check(name: &str, golden: &[Golden]) {
     let Some(path) = sample_path(name) else {
@@ -85,6 +95,7 @@ fn check(name: &str, golden: &[Golden]) {
             d.message == g.msg
                 && (d.freq_hz - g.freq_hz).abs() <= FREQ_TOL_HZ
                 && (d.tsec - g.tsec).abs() <= TSEC_TOL
+                && (d.snr_db - g.snr_db).abs() <= SNR_TOL_DB
         });
         if hit {
             hits += 1;
@@ -98,8 +109,8 @@ fn check(name: &str, golden: &[Golden]) {
     );
     for g in &misses {
         eprintln!(
-            "  MISSING: '{}' @ {:.1} Hz tsec={:.1}",
-            g.msg, g.freq_hz, g.tsec
+            "  MISSING: '{}' @ {:.1} Hz tsec={:.1} snr={:+}",
+            g.msg, g.freq_hz, g.tsec, g.snr_db
         );
     }
 
@@ -123,6 +134,7 @@ fn msk144_181211_120500_wsjtx_sample() {
             msg: "K1JT WA4CQG EM72",
             freq_hz: 1488.0,
             tsec: 8.7,
+            snr_db: 8,
         }],
     );
 }
@@ -136,11 +148,13 @@ fn msk144_181211_120800_wsjtx_sample() {
                 msg: "CQ W4IMD EM84",
                 freq_hz: 1458.0,
                 tsec: 4.6,
+                snr_db: 5,
             },
             Golden {
                 msg: "CQ KD9VV EN71",
                 freq_hz: 1496.0,
                 tsec: 12.2,
+                snr_db: 7,
             },
         ],
     );
