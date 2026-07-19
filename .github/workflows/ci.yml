@@ -134,9 +134,11 @@ jobs:
               - 'mfsk-core/src/jt9/**'
               - 'mfsk-core/src/jt65/**'
               - 'mfsk-core/src/wspr/**'
+              - 'mfsk-core/src/msk144/**'
               - 'mfsk-core/src/uvpacket/**'
               - 'mfsk-core/tests/ft4_*'
               - 'mfsk-core/tests/fst4_*'
+              - 'mfsk-core/tests/msk144_*'
               - 'mfsk-core/tests/ldpc_min_sum*'
               - 'mfsk-core/tests/common/**'
 
@@ -296,12 +298,13 @@ jobs:
             changes_key: catchall
             push_only: false
           # catchall characterization — FT4 SNR/timing sweeps,
-          # ldpc_min_sum AWGN sweep, lib-level #[ignore] tests
-          # (jt9 demod/decode/search/softsym + uvpacket::puncture
-          # AWGN sweeps), env-gated FST4 60-s roundtrip.
+          # MSK144 SNR sweep, ldpc_min_sum AWGN sweep, lib-level
+          # #[ignore] tests (jt9 demod/decode/search/softsym +
+          # uvpacket::puncture AWGN sweeps), env-gated FST4 60-s
+          # roundtrip.
           - name: catchall characterization
             kind: catchall
-            globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget ldpc_min_sum"
+            globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget msk144_snr_sweep ldpc_min_sum"
             changes_key: catchall
             push_only: true
     steps:
