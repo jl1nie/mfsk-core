@@ -545,13 +545,14 @@ fn decode_scan_inner<P: ModulationParams>(
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Q65Decode> = Vec::new();
     for c in cands {
-        let decode = match ap_hint {
-            Some(hint) if hint.has_info() => {
-                decode_at_with_ap_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz, hint)
-            }
-            _ => decode_at_for::<P>(audio, sample_rate, c.start_sample, c.freq_hz),
-        };
-        let Some(decode) = decode else {
+        let Some(decode) = decode_at_with_fine_timing_for::<P>(
+            audio,
+            sample_rate,
+            c.start_sample,
+            c.freq_hz,
+            nsps,
+            ap_hint,
+        ) else {
             continue;
         };
         let dup = seen.iter().any(|prev| {
@@ -564,6 +565,53 @@ fn decode_scan_inner<P: ModulationParams>(
         }
     }
     seen
+}
+
+/// Try decoding at a coarse candidate's reported alignment; if that
+/// fails, retry at a small grid of nearby `start_sample` offsets
+/// before giving up.
+///
+/// `coarse_search_for`'s timing estimate is measurably imprecise at
+/// low SNR — issue #171 found it can land up to ~1/5 of a symbol
+/// period away from the alignment that actually decodes, because the
+/// coarse sync score is only ever evaluated at whole-symbol
+/// granularity. WSJT-X's `q65_loops` never trusts its own coarse
+/// alignment as final either: it always runs a local `idt` retry loop
+/// (steps of `nsps/16`, `lib/qra/q65/q65_loops.f90`) before attempting
+/// the real decode. This mirrors that with a symmetric ±3-step search
+/// (0, ±1, ±2, ±3 steps of `nsps/16`, trying the unperturbed alignment
+/// first so the common high-SNR case pays no extra cost beyond one
+/// early-exit check).
+fn decode_at_with_fine_timing_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    freq_hz: f32,
+    nsps: usize,
+    ap_hint: Option<&ApHint>,
+) -> Option<Q65Decode> {
+    let step = (nsps / 16).max(1) as i64;
+    let try_decode = |candidate_start: i64| -> Option<Q65Decode> {
+        let candidate_start = usize::try_from(candidate_start).ok()?;
+        match ap_hint {
+            Some(hint) if hint.has_info() => {
+                decode_at_with_ap_for::<P>(audio, sample_rate, candidate_start, freq_hz, hint)
+            }
+            _ => decode_at_for::<P>(audio, sample_rate, candidate_start, freq_hz),
+        }
+    };
+
+    if let Some(decode) = try_decode(start_sample as i64) {
+        return Some(decode);
+    }
+    for dt_steps in 1..=3i64 {
+        for sign in [1i64, -1i64] {
+            if let Some(decode) = try_decode(start_sample as i64 + sign * dt_steps * step) {
+                return Some(decode);
+            }
+        }
+    }
+    None
 }
 
 /// Q65-30A convenience wrapper for [`decode_scan_for`].

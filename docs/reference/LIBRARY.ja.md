@@ -71,14 +71,20 @@ BP / OSD、畳み込み符号の Fano 復号、Reed-Solomon 消失復号、メ�
 | WSPR         | 120 s   | 畳み込み r=½ K=32 + Fano   | 50 bit    | シンボル毎 LSB    | `lib/wsprd/`   |
 | JT9          | 60 s    | 畳み込み r=½ K=32 + Fano   | 72 bit    | 16 分散位置       | `lib/jt9_decode.f90`, `lib/conv232.f90` |
 | JT65         | 60 s    | Reed-Solomon(63, 12) GF(2⁶) | 72 bit   | 63 分散位置 (擬似乱数) | `lib/jt65_decode.f90`, `lib/wrapkarn.c` |
-| Q65-30A      | 30 s    | QRA(15, 65) GF(2⁶) + CRC-12 | 77 bit   | 22 分散位置       | `lib/qra/q65/` |
+| Q65-15A      | 15 s    | QRA(15, 65) GF(2⁶) + CRC-12 | 77 bit   | 22 分散位置       | `lib/qra/q65/` |
+| Q65-30A      | 30 s    | (同 QRA codec)              | 77 bit   | (同 sync 配置)    | `lib/qra/q65/` |
 | Q65-60A‥E    | 60 s    | (同 QRA codec)              | 77 bit    | (同 sync 配置)    | `lib/qra/q65/` |
+| Q65-120D‥E   | 120 s   | (同 QRA codec)              | 77 bit    | (同 sync 配置)    | `lib/qra/q65/` |
+| Q65-300A     | 300 s   | (同 QRA codec)              | 77 bit    | (同 sync 配置)    | `lib/qra/q65/` |
 
-Q65 は 6 個の sub-mode 構成で実装している — 地上波向け Q65-30A
-1 つに加え、EME 帯向けの 60 秒スロット 5 種 (Q65-60A〜Q65-60E、
-トーン間隔倍率 ×1, ×2, ×4, ×8, ×16)。これらは FEC、メッセージ
-コーデック、同期配置、共通の trait 実装ブロックを共有しており、
-NSPS とトーン間隔のみが sub-mode ごとに異なる。
+Q65 は 10 個の sub-mode 構成で実装している — 地上波向け Q65-15A/30A
+2 つ、EME 帯向けの 60 秒スロット 5 種 (Q65-60A〜Q65-60E、トーン間隔
+倍率 ×1, ×2, ×4, ×8, ×16)、そして長周期スキャッター系 3 種
+(Q65-120D 10GHz レインスキャッター/対流圏散乱、Q65-120E 6m
+イオノスキャッター、Q65-300A 光散乱 — 実装済み中最深の約-34dB
+AWGN閾値)。これらは FEC、メッセージコーデック、同期配置、共通の
+trait 実装ブロックを共有しており、NSPS とトーン間隔のみが
+sub-mode ごとに異なる。
 
 **MSK144** はこの表に意図的に含めていない — `Protocol` を実装する
 ZST が存在しないため。§0.6 を参照。
@@ -117,9 +123,10 @@ Q65 は WSPR では試されなかった軸で trait 面を試す材料になっ
    不整合を露呈した — 全プロトコルで `== NTONES` も
    `== 2^BITS_PER_SYMBOL` も一様には成立しないため、契約を
    `[2^BITS_PER_SYMBOL, NTONES]` に緩めた。
-3. **6 sub-mode を 1 個の impl ブロックで共有**: 地上波向け
-   Q65-30A に加え、EME 用の Q65-60A〜E (6 m / 70 cm / 23 cm /
-   5.7 GHz / 10 GHz / 24 GHz+)。NSPS とトーン間隔のみが異なる。
+3. **10 sub-mode を 1 個の impl ブロックで共有**: 地上波向け
+   Q65-15A/30A、EME 用の Q65-60A〜E (6 m / 70 cm / 23 cm /
+   5.7 GHz / 10 GHz / 24 GHz+)、長周期スキャッター用の
+   Q65-120D/120E/300A。NSPS とトーン間隔のみが異なる。
    `q65_submode!` マクロが各 sub-mode の ZST と trait 実装を 1 行で
    生成するため、sub-mode ごとのコード重複は無い。
 4. **4 つの並列なデコード戦略**: 同一 FEC フレームに対し正当に
@@ -698,7 +705,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 | `wspr`        | off        | WSPR ZST、decode、synth、spectrogram search                 |
 | `jt9`         | off        | JT9 ZST、decode                                             |
 | `jt65`        | off        | JT65 ZST、decode (+ 消失対応 RS)                            |
-| `q65`         | off        | Q65-30A + Q65-60A‥E ZST、4 デコード戦略、synth              |
+| `q65`         | off        | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZST、4 デコード戦略、synth |
 | `full`        | off        | 全 7 プロトコルの集約                                        |
 | `parallel`    | on         | パイプラインで rayon `par_iter` (WASM は無効化)              |
 
@@ -1051,12 +1058,16 @@ Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
 | WSPR             | 120 s      | 4      | 162      | 1.465 Hz   | conv r=½ K=32 + Fano  | 50 b  | シンボル毎 LSB (npr3) | 実装済 |
 | JT9              | 60 s       | 9      | 85       | 1.736 Hz   | conv r=½ K=32 + Fano  | 72 b  | 16 分散位置   | 実装済 |
 | JT65             | 60 s       | 65     | 126      | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 分散位置   | 実装済 |
-| Q65-30A          | 30 s       | 65     | 85       | 3.333 Hz   | QRA(15, 65) GF(2⁶) + CRC-12 | 77 b | 22 分散位置 | 実装済 |
+| Q65-15A          | 15 s       | 65     | 85       | 6.667 Hz   | QRA(15, 65) GF(2⁶) + CRC-12 | 77 b | 22 分散位置 | 実装済 |
+| Q65-30A          | 30 s       | 65     | 85       | 3.333 Hz   | (同 QRA codec) | 77 b | (同) | 実装済 |
 | Q65-60A          | 60 s       | 65     | 85       | 1.667 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (6 m EME) |
 | Q65-60B          | 60 s       | 65     | 85       | 3.333 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (70 cm / 23 cm EME) |
 | Q65-60C          | 60 s       | 65     | 85       | 6.667 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (~3 GHz EME) |
 | Q65-60D          | 60 s       | 65     | 85       | 13.33 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (5.7 / 10 GHz EME) |
 | Q65-60E          | 60 s       | 65     | 85       | 26.67 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (24 GHz+、強拡散) |
+| Q65-120D         | 120 s      | 65     | 85       | 6.0 Hz     | (同 QRA codec)        | 77 b  | (同)          | 実装済 (10GHz レインスキャッター/対流圏散乱) |
+| Q65-120E         | 120 s      | 65     | 85       | 12.0 Hz    | (同 QRA codec)        | 77 b  | (同)          | 実装済 (6m イオノスキャッター) |
+| Q65-300A         | 300 s      | 65     | 85       | 0.289 Hz   | (同 QRA codec)        | 77 b  | (同)          | 実装済 (光散乱、最深AWGN) |
 
 FST4 は FT8 の LDPC(174, 91) ではなく LDPC(240, 101) + 24 bit CRC を
 用いる別の符号系で、`fec::ldpc240_101` として実装している。

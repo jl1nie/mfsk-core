@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.5 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep
+## 0.7.5 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
 
 ### Fixed
 
@@ -34,9 +34,135 @@
   algorithm than this crate's single-pass confidence-ordered erasure
   decode (`decode_at_with_erasures`). Tracked as a follow-up (#169);
   see the sweep test's doc comment for the full provenance.
+- **Q65 AWGN sensitivity gap, root-caused and substantially
+  narrowed** (#171). The initial sweep found a real, reproducible
+  ~2-3 dB gap vs. WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`)
+  for Q65-30A specifically (50% recall crossing ~-24 dB vs. WSJT-X's
+  ~-26 to -27 dB), confirmed directly on a single failing file (not a
+  batch-script artifact). The entire FEC/BP stack was verified
+  byte-for-byte correct against `WSJT-X/lib/qra/q65/{qracodes.c,
+  npfwht.c,pdmath.c}` first (all 10 code tables, the WHT, and every
+  `pdmath` primitive — diffed programmatically, zero discrepancies),
+  which pointed the search upstream: `coarse_search_for`'s reported
+  best `(start_sample, freq_hz)` is measurably imprecise at low SNR
+  — off by up to ~1/5 of a symbol period — and neither
+  `decode_scan_for` nor `decode_at_for` ever refined that alignment
+  before attempting decode. WSJT-X's `q65_loops` never trusts its own
+  coarse alignment either — it always runs a local fine-timing
+  (`idt`) retry loop before the real decode attempt. Added
+  `decode_at_with_fine_timing_for` (tries the reported alignment
+  first, then a symmetric ±3-step retry grid in units of `nsps/16`)
+  to `decode_scan_inner`, the shared implementation behind every
+  scan-level Q65 entry point. Full 990-file sweep re-run: all six
+  wired sub-modes improved by roughly 1-2 dB at their threshold
+  region (e.g. Q65-60A 20%→100% at -27 dB; Q65-30A 40%→93% at -24 dB,
+  0%→33% at -25 dB).
+- **Remaining residual gap traced to a comparison-methodology
+  difference, not a further implementation bug.** Even after the
+  fine-timing fix, a gap persisted at the deep end (e.g. Q65-30A ~0%
+  at -26 dB vs. WSJT-X's ~40%). Traced this to WSJT-X's Q65 decode
+  chain always having access to the free "CQ ??? ???" AP hypothesis
+  (`aptype=1` in `extract.f90`'s AP table — needs no user-supplied
+  callsign), so *every* real `jt9` decode attempt implicitly gets
+  some AP-list benefit on CQ-calling signals, whether or not the user
+  configured `-c`/`-x`. `decode_scan_for` (this crate's genuinely
+  blind baseline) has no equivalent for-free hypothesis by design —
+  the four decoder strategies stay deliberately separate
+  (`docs/reference/LIBRARY.md` §3). Re-measured with
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now also reported by
+  `tests/q65_sim_sweep.rs` as a second column) and it closes the gap
+  almost exactly across all six sub-modes: Q65-30A -26 dB 0%→40%
+  (matches WSJT-X's reported 40%), -25 dB 33%→93% (WSJT-X: 87%),
+  -24 dB 93%→100% (WSJT-X: 100%); Q65-60A -29 dB 7%→53%, -28 dB
+  47%→93%; Q65-60B/C/D/E show the same ~40-50 point jump at their
+  respective thresholds. **Usage note, not a code change**:
+  applications wanting WSJT-X-equivalent behavior for CQ traffic
+  should call the AP-hinted path with at least a `"CQ"` hint rather
+  than the plain one — matching what WSJT-X's own decoder always
+  does internally. Issue #171 left open with this as the closing
+  analysis (no further action expected; re-open if a real remaining
+  gap is found with matched AP context on both sides).
 
 ### Added
 
+- **Q65-15A**: a new sub-mode ZST (`Q65a15`, 15 s T/R period, ×1 tone
+  spacing = 6.667 Hz), the fastest wired Q65 mode — one line via the
+  existing `q65_submode!` macro, following the established
+  15/30/60-s-period axis `q65params.f90` already defines. Wired
+  through the FFI (`MfskQ65SubMode::A15`, appended after `E60` rather
+  than inserted before `A30` to keep the `#[repr(C)]` enum's existing
+  discriminant values stable) and the `PROTOCOLS` registry
+  (`"Q65-15A"`). No real off-air recording exists for this period in
+  WSJT-X's sample tree (same situation as Q65-60C/60E already
+  documented), so no golden-WAV test is possible — covered instead by
+  a dedicated `tests/q65_a15_roundtrip.rs` (synth + aligned/offset
+  scan recovery) and folded into the `q65sim`-based AWGN sweep below
+  (50% crossing ≈ -21 dB, matching `q65params.f90`'s analytical
+  formula for the 15 s period).
+- **Q65-120D, Q65-120E, Q65-300A**: three longer-period sub-modes
+  (`Q65d120`/`Q65e120`/`Q65a300`), chosen because WSJT-X's own user
+  guide (`doc/user_guide/en/protocols.adoc`) and sample tree document
+  real, specific use cases for exactly these three: Q65-120D (10 GHz
+  rainscatter/troposcatter, backed by 14 files in WSJT-X's own
+  `UnitTests.txt` regression corpus), Q65-120E (6 m ionoscatter),
+  and Q65-300A (optical/laser scatter — the deepest wired Q65
+  sub-mode, ~-34 dB AWGN threshold, matching the published table
+  value almost exactly). Unlike Q65-15A, these three **do** have
+  golden-WAV tests: `tests/q65_wsjtx_samples.rs` gained
+  `rainscatter_10ghz_120d_decodes_with_fading_metric`,
+  `ionoscatter_6m_120e_decodes_with_fading_metric`, and
+  `optical_scatter_300a_decodes_with_fading_metric` — golden messages
+  ("VK3WE VK7MO QE37", "KB7IJ N0AN 73", "VK7MO VK7PD QE38")
+  independently confirmed via `jt9 -3 -p {120,300} -b {D,E,A}` first.
+  All three need the fast-fading metric to decode (plain BP fails,
+  same shape as the existing Q65-60D EME test) — for Q65-300A this
+  holds even though it's stable-path scatter rather than classic
+  Doppler-spread EME, suggesting the fading metric's robustness helps
+  generally at threshold-adjacent SNR, not only under true multipath.
+  Now **10 wired Q65 sub-modes total**; docs (`LIBRARY.md`/`.ja.md`),
+  `tests/protocol_invariants.rs`, FFI (`MfskQ65SubMode::{D120,E120,A300}`,
+  discriminants 7-9), and the `q65sim` AWGN sweep all updated to match
+  (the 120/300 s configs use 5 trials instead of 15 — their WAVs are
+  proportionally larger and the #171 fine-timing retry multiplies
+  decode cost further).
+- **Direct WSJT-X cross-check for Q65-120D/120E/300A**: ran `jt9 -3
+  -p {120,300} -b {D,E,A}` (no `-c`/`-x`) over the identical 165-file
+  sweep corpus per sub-mode used above. Result: **no regression, and
+  two sub-modes exceed WSJT-X's own plain decode**. Q65-300A's curve
+  is statistically identical to `jt9`'s at every tested SNR point
+  (both cross 50% at ≈-35 dB). Q65-120D and Q65-120E's `decode_scan_for`
+  50% crossings (≈-30.7 dB, ≈-31.0 dB) are **2.5-3.4 dB better** than
+  `jt9 -3`'s own plain-decode crossings (≈-28.2 dB, ≈-27.6 dB) —
+  consistent across 4+ SNR points each, not sampling noise. Likely
+  explanation (not fully confirmed): the #171 fine-timing retry tries
+  a fixed ±3-step grid per coarse candidate regardless of T/R period,
+  which may end up relatively more thorough than WSJT-X's own
+  `q65_loops.f90` `idt`/`idf` retry granularity at these slower-baud,
+  longer-period sub-modes specifically.
+- New `scripts/gen_q65_sweep_wavs.sh` + `tests/q65_sim_sweep.rs`
+  (`#[ignore]`d): a `q65sim`-generated AWGN SNR sweep covering every
+  sub-mode ZST this crate actually wires (`Q65a15`, `Q65a30`,
+  `Q65a60`, `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60`, `Q65d120`,
+  `Q65e120`, `Q65a300` — WSJT-X's Q65 also has other (period,
+  sub-mode) combinations this crate doesn't implement, so the sweep
+  intentionally covers only what's shipped). `q65sim` has a real
+  CMakeLists.txt target (unlike `jt9sim`), so no new build script was
+  needed — build via `cmake --build ~/wsjtx-build --target q65sim`.
+  Below period=30 s, `q65sim` uses a completely different filename
+  format (`000000_MMSS.wav`, not the sequential index used at ≥30 s)
+  — `gen_q65_sweep_wavs.sh` special-cases this for Q65-15A.
+- **New `tests/q65_wsjtx_samples.rs::tropo_1296_60b_decodes_via_averaging`**:
+  Q65-60B was the only wired sub-mode with a real off-air recording
+  already vendored (`WSJT-X/samples/Q65/60B_1296_Troposcatter/`) but
+  no corresponding test. Single-slot decode fails on this dataset (as
+  expected, same as the existing 10 GHz EME test's plain path); the
+  multi-period EMA-on-spectrogram path (`decode_multi_period_for`,
+  same mechanism the existing ionoscatter test uses) recovers the
+  golden message "VK7MO VK7PD QE38" cleanly.
+- Q65-60C and Q65-60E have no real off-air recording anywhere in
+  WSJT-X's sample tree, so no golden-WAV test is possible for those
+  two sub-modes (same situation JT65 was already in before this
+  session — no real recording exists to validate against).
 - New `scripts/build_jt9sim.sh` + `scripts/gen_jt9_sweep_wavs.sh` +
   `tests/jt9_sweep.rs` (`#[ignore]`d, mirrors `tests/jt65_sweep.rs`):
   a `jt9sim`-generated AWGN SNR sweep for JT9. Unlike `ft8sim`/
@@ -59,6 +185,57 @@
   `unpack_grid`) against a second, independently-built reference
   encoder: a fresh `jt9sim` signal ("CQ JL1NIE PM95" @ 1400 Hz)
   decodes cleanly, matching WSJT-X's own `jt9 -9` output exactly.
+
+### Fixed
+
+- **Q65 AWGN sensitivity gap, root-caused and substantially
+  narrowed** (#171). The initial sweep found a real, reproducible
+  ~2-3 dB gap vs. WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`)
+  for Q65-30A specifically (50% recall crossing ~-24 dB vs. WSJT-X's
+  ~-26 to -27 dB), confirmed directly on a single failing file (not a
+  batch-script artifact). The entire FEC/BP stack was verified
+  byte-for-byte correct against `WSJT-X/lib/qra/q65/{qracodes.c,
+  npfwht.c,pdmath.c}` first (all 10 code tables, the WHT, and every
+  `pdmath` primitive — diffed programmatically, zero discrepancies),
+  which pointed the search upstream: `coarse_search_for`'s reported
+  best `(start_sample, freq_hz)` is measurably imprecise at low SNR
+  — off by up to ~1/5 of a symbol period — and neither
+  `decode_scan_for` nor `decode_at_for` ever refined that alignment
+  before attempting decode. WSJT-X's `q65_loops` never trusts its own
+  coarse alignment either — it always runs a local fine-timing
+  (`idt`) retry loop before the real decode attempt. Added
+  `decode_at_with_fine_timing_for` (tries the reported alignment
+  first, then a symmetric ±3-step retry grid in units of `nsps/16`)
+  to `decode_scan_inner`, the shared implementation behind every
+  scan-level Q65 entry point. Full 990-file sweep re-run: all six
+  wired sub-modes improved by roughly 1-2 dB at their threshold
+  region (e.g. Q65-60A 20%→100% at -27 dB; Q65-30A 40%→93% at -24 dB,
+  0%→33% at -25 dB).
+- **Remaining residual gap traced to a comparison-methodology
+  difference, not a further implementation bug.** Even after the
+  fine-timing fix, a gap persisted at the deep end (e.g. Q65-30A ~0%
+  at -26 dB vs. WSJT-X's ~40%). Traced this to WSJT-X's Q65 decode
+  chain always having access to the free "CQ ??? ???" AP hypothesis
+  (`aptype=1` in `extract.f90`'s AP table — needs no user-supplied
+  callsign), so *every* real `jt9` decode attempt implicitly gets
+  some AP-list benefit on CQ-calling signals, whether or not the user
+  configured `-c`/`-x`. `decode_scan_for` (this crate's genuinely
+  blind baseline) has no equivalent for-free hypothesis by design —
+  the four decoder strategies stay deliberately separate
+  (`docs/reference/LIBRARY.md` §3). Re-measured with
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now also reported by
+  `tests/q65_sim_sweep.rs` as a second column) and it closes the gap
+  almost exactly across all six sub-modes: Q65-30A -26 dB 0%→40%
+  (matches WSJT-X's reported 40%), -25 dB 33%→93% (WSJT-X: 87%),
+  -24 dB 93%→100% (WSJT-X: 100%); Q65-60A -29 dB 7%→53%, -28 dB
+  47%→93%; Q65-60B/C/D/E show the same ~40-50 point jump at their
+  respective thresholds. **Usage note, not a code change**:
+  applications wanting WSJT-X-equivalent behavior for CQ traffic
+  should call the AP-hinted path with at least a `"CQ"` hint rather
+  than the plain one — matching what WSJT-X's own decoder always
+  does internally. Issue #171 left open with this as the closing
+  analysis (no further action expected; re-open if a real remaining
+  gap is found with matched AP context on both sides).
 
 ## 0.7.4 — MSK144 decode (#25)
 

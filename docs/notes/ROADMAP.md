@@ -256,6 +256,24 @@ log` for the fix commit, not re-derived here):
   the residual "should the type itself be unified" question as no
   longer worth it (would need a protocol discriminator, net
   complexity increase).
+- ~~**#171**~~ — Q65 AWGN sensitivity gap, root-caused and closed
+  2026-07-19 (same day it was found). Two contributing causes, both
+  resolved: (1) `coarse_search_for`'s reported best alignment is off
+  by up to ~1/5 of a symbol period at low SNR with nothing refining it
+  before decode — fixed with a local fine-timing retry
+  (`decode_at_with_fine_timing_for`, mirrors WSJT-X's `q65_loops` `idt`
+  loop); (2) the remaining gap after that fix was a comparison
+  artifact, not a bug — WSJT-X's default `jt9` decode always has
+  access to a free "CQ ??? ???" AP hypothesis that `decode_scan_for`
+  (this crate's genuinely blind baseline) doesn't, by design.
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now a second column in
+  `tests/q65_sim_sweep.rs`) matches WSJT-X's numbers almost exactly
+  across all six wired sub-modes. FEC/BP stack was verified
+  byte-for-byte correct against WSJT-X before either finding (10 code
+  tables + WHT + every `pdmath` primitive, programmatic diff, zero
+  discrepancies). Usage note for future sessions: applications wanting
+  WSJT-X-equivalent behavior for CQ traffic should default to the
+  AP-hinted path with at least a `"CQ"` hint, not the plain one.
 
 Closed during the 0.6.x line (compact context table — for full
 prose, see the closed issue / linked PR / `git log`):

@@ -20,8 +20,9 @@ use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a30, Q65a60, Q65d60, decode_multi_period_for, decode_scan, decode_scan_fading_for,
-    decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for,
+    Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120, decode_multi_period_for,
+    decode_scan, decode_scan_fading_for, decode_scan_for, decode_scan_with_ap,
+    decode_scan_with_ap_for,
 };
 
 #[allow(dead_code)]
@@ -399,6 +400,299 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
     assert!(
         hit,
         "10 GHz EME Q65-60D fading decode did not recover 'VK7MO K6QPV' near 1000 Hz — \
+         regression in the fast-fading receive chain. Fading decodes: {:?}",
+        fading.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Q65-60B 1296 MHz troposcatter recordings:
+/// `WSJT-X/samples/Q65/60B_1296_Troposcatter/*.wav` (3 of the 75 files
+/// in WSJT-X's own full test corpus — `WSJT-X/UnitTests.txt`'s
+/// "Q65-60B / 60B_1296_Troposcatter" entry documents the golden
+/// message).
+///
+/// WSJT-X UnitTests.txt golden: "VK7MO VK7PD QE38" near 1000 Hz.
+///
+/// Single-slot plain/AP-hint decode fails on all 3 files (this
+/// dataset sits below that threshold, same as
+/// `eme_10ghz_60d_decodes_with_fading_metric`'s plain path) — the
+/// multi-period EMA-on-spectrogram path
+/// (`decode_multi_period_for`, same mechanism
+/// `ionoscatter_6m_full_stack_decodes_via_averaging` uses) recovers
+/// it cleanly, both with and without the AP-list.
+///
+/// Added 2026-07-19: this recording already existed in the vendored
+/// WSJT-X samples tree but had no corresponding test — Q65-60B was
+/// the only one of the six wired sub-modes with a real off-air
+/// recording available and not yet exercised.
+#[test]
+fn tropo_1296_60b_decodes_via_averaging() {
+    let Some(dir) = samples_dir("60B_1296_Troposcatter") else {
+        eprintln!("skipping: WSJT-X 60B_1296_Troposcatter sample tree not found");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    paths.sort();
+    assert!(
+        !paths.is_empty(),
+        "WSJT-X 60B_1296_Troposcatter sample dir contains no .wav files"
+    );
+
+    let audios: Vec<Vec<f32>> = paths.iter().filter_map(read_wsjtx_wav).collect();
+    assert!(
+        !audios.is_empty(),
+        "no readable WAVs in WSJT-X 60B_1296_Troposcatter sample dir"
+    );
+    let slot_refs: Vec<&[f32]> = audios.iter().map(|v| v.as_slice()).collect();
+
+    let nominal_mid = 12_000 * 30; // 30 s into the 60 s slot
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    };
+
+    let decodes_no_ap =
+        decode_multi_period_for::<Q65b60>(&slot_refs, 12_000, nominal_mid, &params, None);
+    eprintln!(
+        "[info] 1296 troposcatter multi-period (no AP-list): {} unique decode(s) across {} slot(s)",
+        decodes_no_ap.len(),
+        slot_refs.len(),
+    );
+    for d in &decodes_no_ap {
+        eprintln!("  → freq={:.1} Hz : {}", d.freq_hz, d.message);
+    }
+
+    use mfsk_core::q65::standard_qso_codewords;
+    let ap_codewords = standard_qso_codewords("VK7MO", "VK7PD", "");
+    let decodes_ap = decode_multi_period_for::<Q65b60>(
+        &slot_refs,
+        12_000,
+        nominal_mid,
+        &params,
+        Some(&ap_codewords),
+    );
+    eprintln!(
+        "[info] 1296 troposcatter multi-period (AP-list VK7MO/VK7PD): {} unique decode(s)",
+        decodes_ap.len(),
+    );
+    for d in &decodes_ap {
+        eprintln!("  → freq={:.1} Hz : {}", d.freq_hz, d.message);
+    }
+
+    let hit = |ds: &[mfsk_core::q65::Q65Decode]| {
+        ds.iter()
+            .any(|d| d.message.contains("VK7MO") && d.message.contains("VK7PD"))
+    };
+    assert!(
+        hit(&decodes_no_ap) || hit(&decodes_ap),
+        "1296 MHz troposcatter reference recording did not recover 'VK7MO VK7PD' via \
+         multi-period averaging (neither without AP-list nor with VK7MO/VK7PD AP-list) — \
+         regression in the Q65-60B receive chain"
+    );
+}
+
+/// Q65-120D 10 GHz rainscatter/troposcatter recording:
+/// `WSJT-X/samples/Q65/120D_Rainscatter_10_GHz/210117_0920.wav`.
+///
+/// Golden (confirmed via `jt9 -3 -p 120 -b D`): "VK3WE VK7MO QE37"
+/// near 995 Hz. Plain BP fails (same shape as the 60D/300A cases
+/// below); the fast-fading metric (b90 ≥ 20 Hz, Gaussian or
+/// Lorentzian) recovers it.
+#[test]
+fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
+    let Some(dir) = samples_dir("120D_Rainscatter_10_GHz") else {
+        eprintln!("skipping: WSJT-X 120D_Rainscatter_10_GHz sample tree not found");
+        return;
+    };
+    let path = dir.join("210117_0920.wav");
+    let Some(audio) = read_wsjtx_wav(&path) else {
+        eprintln!("skipping: WAV not found/readable at {}", path.display());
+        return;
+    };
+
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 10,
+        score_threshold: 0.0,
+        max_candidates: 30,
+    };
+
+    let plain = decode_scan_for::<Q65d120>(&audio, 12_000, 0, &params);
+    eprintln!("[info] 10 GHz rainscatter plain: {} decode(s)", plain.len());
+
+    let fading = decode_scan_fading_for::<Q65d120>(
+        &audio,
+        12_000,
+        0,
+        &params,
+        20.0,
+        FadingModel::Gaussian,
+        None,
+    );
+    eprintln!(
+        "[info] 10 GHz rainscatter fading b90=20 Gaussian: {} decode(s)",
+        fading.len()
+    );
+    for d in &fading {
+        eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
+    }
+
+    let hit = fading.iter().any(|d| {
+        d.message.contains("VK3WE")
+            && d.message.contains("VK7MO")
+            && (d.freq_hz - 995.0).abs() <= 15.0
+    });
+    assert!(
+        hit,
+        "10 GHz rainscatter Q65-120D fading decode did not recover 'VK3WE VK7MO' near 995 Hz — \
+         regression in the fast-fading receive chain. Fading decodes: {:?}",
+        fading.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Q65-120E 6 m ionoscatter recordings:
+/// `WSJT-X/samples/Q65/120E_Ionoscatter_6m/*.wav` (2 files).
+///
+/// Golden (confirmed via `jt9 -3 -p 120 -b E`): "KB7IJ N0AN 73" near
+/// 1799 Hz, recovered from `210130_1442.wav` only — `210130_1438.wav`
+/// doesn't decode even via WSJT-X's own reference, so this test
+/// doesn't require a hit from every file in the directory, only that
+/// at least one recovers the golden message (mirrors how
+/// `tests/q65_wsjtx_samples.rs`'s other multi-file tests handle
+/// per-file variance).
+#[test]
+fn ionoscatter_6m_120e_decodes_with_fading_metric() {
+    let Some(dir) = samples_dir("120E_Ionoscatter_6m") else {
+        eprintln!("skipping: WSJT-X 120E_Ionoscatter_6m sample tree not found");
+        return;
+    };
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "WSJT-X 120E_Ionoscatter_6m sample dir contains no .wav files"
+    );
+
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 10,
+        score_threshold: 0.0,
+        max_candidates: 30,
+    };
+
+    let mut hit = false;
+    for path in &entries {
+        let Some(audio) = read_wsjtx_wav(path) else {
+            continue;
+        };
+        let fading = decode_scan_fading_for::<Q65e120>(
+            &audio,
+            12_000,
+            0,
+            &params,
+            12.0,
+            FadingModel::Gaussian,
+            None,
+        );
+        eprintln!(
+            "{}: {} fading decode(s)",
+            path.file_name().unwrap().to_string_lossy(),
+            fading.len()
+        );
+        for d in &fading {
+            eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
+        }
+        if fading.iter().any(|d| {
+            d.message.contains("KB7IJ")
+                && d.message.contains("N0AN")
+                && (d.freq_hz - 1799.0).abs() <= 15.0
+        }) {
+            hit = true;
+        }
+    }
+    assert!(
+        hit,
+        "6 m ionoscatter Q65-120E fading decode did not recover 'KB7IJ N0AN' near 1799 Hz \
+         from any of {} recordings — regression in the fast-fading receive chain",
+        entries.len()
+    );
+}
+
+/// Q65-300A optical (laser) scatter recording:
+/// `WSJT-X/samples/Q65/300A_Optical_Scatter/201210_0505.wav`.
+///
+/// Golden (confirmed via `jt9 -3 -p 300 -b A`): "VK7MO VK7PD QE38"
+/// near 1002 Hz at SNR ≈ -34 dB — right at Q65-300A's published
+/// ~-33.8 dB AWGN threshold, the deepest of any wired Q65 sub-mode.
+/// Plain BP fails; the fast-fading metric (b90 = 2-20 Hz, either
+/// model) recovers it even though this is a stable-path scatter
+/// signal, not classic Doppler-spread EME — the fading metric's
+/// robustness appears to help at threshold-adjacent SNR generally,
+/// not just under true multipath.
+#[test]
+fn optical_scatter_300a_decodes_with_fading_metric() {
+    let Some(dir) = samples_dir("300A_Optical_Scatter") else {
+        eprintln!("skipping: WSJT-X 300A_Optical_Scatter sample tree not found");
+        return;
+    };
+    let path = dir.join("201210_0505.wav");
+    let Some(audio) = read_wsjtx_wav(&path) else {
+        eprintln!("skipping: WAV not found/readable at {}", path.display());
+        return;
+    };
+
+    // 300 s slot is long; widen the timing search to cover the whole
+    // recording rather than just the first few seconds.
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 60,
+        score_threshold: 0.0,
+        max_candidates: 200,
+    };
+
+    let plain = decode_scan_for::<Q65a300>(&audio, 12_000, 0, &params);
+    eprintln!("[info] optical scatter plain: {} decode(s)", plain.len());
+
+    let fading = decode_scan_fading_for::<Q65a300>(
+        &audio,
+        12_000,
+        0,
+        &params,
+        5.0,
+        FadingModel::Gaussian,
+        None,
+    );
+    eprintln!(
+        "[info] optical scatter fading b90=5 Gaussian: {} decode(s)",
+        fading.len()
+    );
+    for d in &fading {
+        eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
+    }
+
+    let hit = fading.iter().any(|d| {
+        d.message.contains("VK7MO")
+            && d.message.contains("VK7PD")
+            && (d.freq_hz - 1002.0).abs() <= 15.0
+    });
+    assert!(
+        hit,
+        "Optical scatter Q65-300A fading decode did not recover 'VK7MO VK7PD' near 1002 Hz — \
          regression in the fast-fading receive chain. Fading decodes: {:?}",
         fading.iter().map(|d| &d.message).collect::<Vec<_>>()
     );

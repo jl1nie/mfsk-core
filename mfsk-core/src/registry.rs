@@ -168,6 +168,8 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     #[cfg(feature = "jt65")]
     protocol_meta!("JT65", crate::Jt65),
     #[cfg(feature = "q65")]
+    protocol_meta!("Q65-15A", crate::q65::Q65a15),
+    #[cfg(feature = "q65")]
     protocol_meta!("Q65-30A", crate::q65::Q65a30),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-60A", crate::q65::Q65a60),
@@ -179,6 +181,12 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("Q65-60D", crate::q65::Q65d60),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-60E", crate::q65::Q65e60),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120D", crate::q65::Q65d120),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120E", crate::q65::Q65e120),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-300A", crate::q65::Q65a300),
     #[cfg(feature = "uvpacket")]
     protocol_meta!("UvRobust", crate::UvRobust),
     #[cfg(feature = "uvpacket")]
@@ -271,19 +279,20 @@ mod tests {
 
     #[cfg(feature = "q65")]
     #[test]
-    fn q65_id_yields_all_six_submodes() {
+    fn q65_id_yields_all_ten_submodes() {
         let q65_entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Q65).collect();
         assert_eq!(
             q65_entries.len(),
-            6,
-            "expected six Q65 sub-modes in the registry, got {}: {:?}",
+            10,
+            "expected ten Q65 sub-modes in the registry, got {}: {:?}",
             q65_entries.len(),
             q65_entries.iter().map(|p| p.name).collect::<Vec<_>>()
         );
         // Names are the canonical sub-mode labels.
         let names: Vec<&str> = q65_entries.iter().map(|p| p.name).collect();
         for expected in &[
-            "Q65-30A", "Q65-60A", "Q65-60B", "Q65-60C", "Q65-60D", "Q65-60E",
+            "Q65-15A", "Q65-30A", "Q65-60A", "Q65-60B", "Q65-60C", "Q65-60D", "Q65-60E",
+            "Q65-120D", "Q65-120E", "Q65-300A",
         ] {
             assert!(
                 names.contains(expected),
