@@ -188,6 +188,15 @@ status stated elsewhere in it):
   session; see the issue for the full repro recipe. Once fixed, a
   `jt65sim`-based sweep (mirroring `msk144_snr_sweep.rs`) becomes a
   solid regression harness, no `b65a`/`kvasd` port needed after all.
+- **#171** — Q65-30A ~2-3 dB AWGN sensitivity gap vs. WSJT-X's own
+  `jt9 -3 -p 30 -b A` decode, found 2026-07-19 via a new `q65sim`-based
+  sweep (`tests/q65_sim_sweep.rs`) built after auditing Q65's
+  validation coverage post-#24. Independently spot-checked (not just
+  a batch artifact); root cause not yet investigated. The same
+  cross-check for Q65's other five sub-modes (60A/B/C/D/E) was
+  inconclusive due to a suspected CLI-parameter-parity issue in the ad
+  hoc reference invocation — see the issue for what would need
+  redoing before drawing conclusions there.
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &

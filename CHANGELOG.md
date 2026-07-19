@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.7.5 — Q65 AWGN SNR sweep across all six wired sub-modes
+
+### Added
+
+- New `scripts/gen_q65_sweep_wavs.sh` + `tests/q65_sim_sweep.rs`
+  (`#[ignore]`d): a `q65sim`-generated AWGN SNR sweep covering every
+  sub-mode ZST this crate actually wires (`Q65a30`, `Q65a60`,
+  `Q65b60`, `Q65c60`, `Q65d60`, `Q65e60` — WSJT-X's Q65 also has
+  15/120/300 s periods and other combinations this crate doesn't
+  implement, so the sweep intentionally covers only what's shipped).
+  `q65sim` has a real CMakeLists.txt target (unlike `jt9sim`), so no
+  new build script was needed — build via
+  `cmake --build ~/wsjtx-build --target q65sim`.
+- **New `tests/q65_wsjtx_samples.rs::tropo_1296_60b_decodes_via_averaging`**:
+  Q65-60B was the only wired sub-mode with a real off-air recording
+  already vendored (`WSJT-X/samples/Q65/60B_1296_Troposcatter/`) but
+  no corresponding test. Single-slot decode fails on this dataset (as
+  expected, same as the existing 10 GHz EME test's plain path); the
+  multi-period EMA-on-spectrogram path (`decode_multi_period_for`,
+  same mechanism the existing ionoscatter test uses) recovers the
+  golden message "VK7MO VK7PD QE38" cleanly.
+- Q65-60C and Q65-60E have no real off-air recording anywhere in
+  WSJT-X's sample tree, so no golden-WAV test is possible for those
+  two sub-modes (same situation JT65 was already in before this
+  session — no real recording exists to validate against).
+
+### Findings
+
+- **Q65-30A**: a real, reproducible ~2-3 dB AWGN sensitivity gap vs
+  WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`) on the identical
+  `q65sim` corpus — this crate's 50% recall crossing sits around
+  -24 dB vs. WSJT-X's ~-26 to -27 dB. Confirmed directly (not just a
+  batch-script artifact): a specific -25 dB file that WSJT-X decodes
+  cleanly produces 0 decodes through this crate's `decode_scan_for::<Q65a30>`.
+  Root cause not investigated in this session — filed as a follow-up (#171).
+- **Q65-60A/B/C/D/E**: all five 60 s sub-modes show internally
+  consistent, sane threshold crossings closely tracking
+  `q65params.f90`'s analytical -27 dB prediction (`decode_scan_for`
+  sweep results). An initial cross-check against WSJT-X's own
+  decoder at these submodes produced inconsistent results (sometimes
+  WSJT-X apparently far ahead, sometimes far behind, varying wildly
+  by sub-mode) that don't hold up as a trustworthy comparison without
+  more careful CLI-parameter parity — not reported as a finding
+  either way pending a more rigorous cross-check.
+
 ## 0.7.4 — MSK144 decode (#25)
 
 ### Added
