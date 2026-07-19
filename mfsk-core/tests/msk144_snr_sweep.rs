@@ -135,7 +135,10 @@ fn synth_frame_waveform(itone: &[u8; 144], freq_hz: f32, phi0: f32) -> (Vec<f32>
         let dphi = if tone == 0 { dphi0 } else { dphi1 };
         for _ in 0..6 {
             out.push(phi.cos());
-            phi = (phi + dphi) % twopi;
+            phi += dphi;
+            if phi >= twopi {
+                phi -= twopi;
+            }
         }
     }
     (out, phi)
@@ -147,7 +150,6 @@ fn synth_frame_waveform(itone: &[u8; 144], freq_hz: f32, phi0: f32) -> (Vec<f32>
 /// `snr_db` (WSJT-X's 2500 Hz-referenced convention). `nfqso=1500 Hz`.
 fn make_slot(itone: &[u8; 144], ntr_period: usize, width: f32, snr_db: f32, seed: u32) -> Vec<i16> {
     let npts = ntr_period * FS as usize;
-    let dt = 1.0 / FS;
     let sig = 2f32.sqrt() * 10f32.powf(0.05 * snr_db);
     let fac = (NYQUIST / REF_BW).sqrt();
 
@@ -174,7 +176,7 @@ fn make_slot(itone: &[u8; 144], ntr_period: usize, width: f32, snr_db: f32, seed
     let mut out = Vec::with_capacity(npts);
     for (i, &wf) in waveform.iter().enumerate().take(npts) {
         let iping = ((i / 12_000).max(1)).min(ntr_period - 1);
-        let t = (i as f64 * dt as f64 - iping as f64) as f32 / width;
+        let t = (i as f32 / FS - iping as f32) / width;
         let env = if !(0.0..=10.0).contains(&t) {
             0.0
         } else {
