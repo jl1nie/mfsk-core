@@ -1,6 +1,87 @@
 # Changelog
 
-## 0.7.5 — Q65-15A/120D/120E/300A + AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
+## 0.7.5 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
+
+### Fixed
+
+- **JT65 total decode failure, root-caused and fixed** (#24). Every
+  `jt65sim`-generated (or otherwise WSJT-X-compatible) JT65 signal
+  failed to decode regardless of SNR, even when `search::coarse_search`
+  landed candidates within ~1 Hz / a few symbols of ground truth.
+  Root cause: `jt65::interleave::interleave`/`deinterleave` (the 7×9
+  transpose WSJT-X's `interleave63.f90` implements) had their
+  permutations swapped relative to WSJT-X's TX/RX convention
+  (`gen65.f90`/`jt65sim.f90` call `interleave63(sent, idir=1)` at TX;
+  `extract.f90` calls `interleave63(mrsym, idir=-1)` at RX). The swap
+  was internally self-consistent — TX and RX remained exact mutual
+  inverses of each other — so every self-roundtrip test passed while
+  real/independent-reference signals decoded to garbage RS codewords.
+  Structurally identical to the JT9 encoder bug (#19): a decode path
+  only ever cross-checked against this crate's own encoder, never an
+  independent reference.
+- New `tests/jt65_sweep.rs` (`#[ignore]`d, mirrors `ft8_sweep.rs`) +
+  `scripts/gen_jt65_sweep_wavs.sh` build a `jt65sim`-generated AWGN
+  SNR-sweep corpus and characterise the post-fix recall curve: 100%
+  recall down to 0 dB, 50% around -14 dB, near-zero below -19 dB (all
+  in `jt65sim`'s 2500 Hz reference bandwidth convention).
+- Found and documented, but did **not** port in this fix: WSJT-X's
+  own hard-decision-only path (`jt9 -6`, no `kvasd`) holds ~100%
+  recall down to -22 dB on the same corpus — a further ~7-8 dB
+  sensitivity gap. Root cause traced to `lib/ftrsd/ftrsdap.c`, a
+  stochastic Chase decoder (randomized multi-trial soft-symbol
+  erasure-pattern search around Berlekamp-Massey RS) that WSJT-X runs
+  even without `kvasd` — a materially different (and more involved)
+  algorithm than this crate's single-pass confidence-ordered erasure
+  decode (`decode_at_with_erasures`). Tracked as a follow-up (#169);
+  see the sweep test's doc comment for the full provenance.
+- **Q65 AWGN sensitivity gap, root-caused and substantially
+  narrowed** (#171). The initial sweep found a real, reproducible
+  ~2-3 dB gap vs. WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`)
+  for Q65-30A specifically (50% recall crossing ~-24 dB vs. WSJT-X's
+  ~-26 to -27 dB), confirmed directly on a single failing file (not a
+  batch-script artifact). The entire FEC/BP stack was verified
+  byte-for-byte correct against `WSJT-X/lib/qra/q65/{qracodes.c,
+  npfwht.c,pdmath.c}` first (all 10 code tables, the WHT, and every
+  `pdmath` primitive — diffed programmatically, zero discrepancies),
+  which pointed the search upstream: `coarse_search_for`'s reported
+  best `(start_sample, freq_hz)` is measurably imprecise at low SNR
+  — off by up to ~1/5 of a symbol period — and neither
+  `decode_scan_for` nor `decode_at_for` ever refined that alignment
+  before attempting decode. WSJT-X's `q65_loops` never trusts its own
+  coarse alignment either — it always runs a local fine-timing
+  (`idt`) retry loop before the real decode attempt. Added
+  `decode_at_with_fine_timing_for` (tries the reported alignment
+  first, then a symmetric ±3-step retry grid in units of `nsps/16`)
+  to `decode_scan_inner`, the shared implementation behind every
+  scan-level Q65 entry point. Full 990-file sweep re-run: all six
+  wired sub-modes improved by roughly 1-2 dB at their threshold
+  region (e.g. Q65-60A 20%→100% at -27 dB; Q65-30A 40%→93% at -24 dB,
+  0%→33% at -25 dB).
+- **Remaining residual gap traced to a comparison-methodology
+  difference, not a further implementation bug.** Even after the
+  fine-timing fix, a gap persisted at the deep end (e.g. Q65-30A ~0%
+  at -26 dB vs. WSJT-X's ~40%). Traced this to WSJT-X's Q65 decode
+  chain always having access to the free "CQ ??? ???" AP hypothesis
+  (`aptype=1` in `extract.f90`'s AP table — needs no user-supplied
+  callsign), so *every* real `jt9` decode attempt implicitly gets
+  some AP-list benefit on CQ-calling signals, whether or not the user
+  configured `-c`/`-x`. `decode_scan_for` (this crate's genuinely
+  blind baseline) has no equivalent for-free hypothesis by design —
+  the four decoder strategies stay deliberately separate
+  (`docs/reference/LIBRARY.md` §3). Re-measured with
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now also reported by
+  `tests/q65_sim_sweep.rs` as a second column) and it closes the gap
+  almost exactly across all six sub-modes: Q65-30A -26 dB 0%→40%
+  (matches WSJT-X's reported 40%), -25 dB 33%→93% (WSJT-X: 87%),
+  -24 dB 93%→100% (WSJT-X: 100%); Q65-60A -29 dB 7%→53%, -28 dB
+  47%→93%; Q65-60B/C/D/E show the same ~40-50 point jump at their
+  respective thresholds. **Usage note, not a code change**:
+  applications wanting WSJT-X-equivalent behavior for CQ traffic
+  should call the AP-hinted path with at least a `"CQ"` hint rather
+  than the plain one — matching what WSJT-X's own decoder always
+  does internally. Issue #171 left open with this as the closing
+  analysis (no further action expected; re-open if a real remaining
+  gap is found with matched AP context on both sides).
 
 ### Added
 
@@ -82,6 +163,28 @@
   WSJT-X's sample tree, so no golden-WAV test is possible for those
   two sub-modes (same situation JT65 was already in before this
   session — no real recording exists to validate against).
+- New `scripts/build_jt9sim.sh` + `scripts/gen_jt9_sweep_wavs.sh` +
+  `tests/jt9_sweep.rs` (`#[ignore]`d, mirrors `tests/jt65_sweep.rs`):
+  a `jt9sim`-generated AWGN SNR sweep for JT9. Unlike `ft8sim`/
+  `ft4sim`/`fst4sim`/`jt65sim`, `jt9sim` has no CMakeLists.txt target
+  in WSJT-X at all — `build_jt9sim.sh` assembles its actual dependency
+  closure (`gen9` → `packjt`/`entail`/`encode232`/`interleave9`/
+  `graycode`, plus `jt9fano`/`fano232` for jt9sim's own internal
+  self-verify step) as a standalone binary from source.
+- Result: `decode_scan_default` holds **100% recall down to -24 dB**,
+  crossing 50% around -26 dB — closely tracking WSJT-X's own `jt9 -9`
+  on the identical 300-file corpus (100% to -25 dB, 80% at -26 dB; the
+  per-cell differences are within 20-trial sampling noise at the
+  steep part of the curve, not a systematic gap). Confirms JT9 has
+  **no JT65-style hidden sensitivity gap** — the three remaining
+  misses in the real-recording golden test
+  (`tests/jt9_wsjtx_samples.rs`) are congestion/wrong-codeword-lock
+  issues specific to that busy recording, not a general AWGN
+  weakness.
+- Also re-confirms the #19 encoder fix (`pack_grid4_plain`/
+  `unpack_grid`) against a second, independently-built reference
+  encoder: a fresh `jt9sim` signal ("CQ JL1NIE PM95" @ 1400 Hz)
+  decodes cleanly, matching WSJT-X's own `jt9 -9` output exactly.
 
 ### Fixed
 
