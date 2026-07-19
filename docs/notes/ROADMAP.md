@@ -188,15 +188,19 @@ status stated elsewhere in it):
   session; see the issue for the full repro recipe. Once fixed, a
   `jt65sim`-based sweep (mirroring `msk144_snr_sweep.rs`) becomes a
   solid regression harness, no `b65a`/`kvasd` port needed after all.
-- **#171** — Q65-30A ~2-3 dB AWGN sensitivity gap vs. WSJT-X's own
-  `jt9 -3 -p 30 -b A` decode, found 2026-07-19 via a new `q65sim`-based
-  sweep (`tests/q65_sim_sweep.rs`) built after auditing Q65's
-  validation coverage post-#24. Independently spot-checked (not just
-  a batch artifact); root cause not yet investigated. The same
-  cross-check for Q65's other five sub-modes (60A/B/C/D/E) was
-  inconclusive due to a suspected CLI-parameter-parity issue in the ad
-  hoc reference invocation — see the issue for what would need
-  redoing before drawing conclusions there.
+- **#171** — Q65 AWGN sensitivity gap, root-caused and substantially
+  narrowed 2026-07-19 (same day it was found). FEC/BP stack verified
+  byte-for-byte correct against WSJT-X first (10 code tables + WHT +
+  every `pdmath` primitive, programmatic diff, zero discrepancies) —
+  the real cause was upstream: `coarse_search_for`'s reported best
+  alignment is off by up to ~1/5 of a symbol period at low SNR, and
+  nothing refined it before decode. Added a local fine-timing retry
+  (`decode_at_with_fine_timing_for`, mirrors WSJT-X's `q65_loops` `idt`
+  loop) to every scan-level entry point. All six wired sub-modes
+  improved ~1-2 dB at threshold on the full 990-file sweep re-run.
+  **Not fully closed** — a residual gap remains for Q65-30A around
+  -25/-26 dB; left open pending further narrowing (wider retry grid,
+  or a fine-frequency refinement alongside the timing one).
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &

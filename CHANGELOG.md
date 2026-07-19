@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.5 — Q65 AWGN SNR sweep across all six wired sub-modes
+## 0.7.5 — Q65 AWGN SNR sweep + fine-timing sensitivity fix (#171)
 
 ### Added
 
@@ -26,24 +26,34 @@
   two sub-modes (same situation JT65 was already in before this
   session — no real recording exists to validate against).
 
-### Findings
+### Fixed
 
-- **Q65-30A**: a real, reproducible ~2-3 dB AWGN sensitivity gap vs
-  WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`) on the identical
-  `q65sim` corpus — this crate's 50% recall crossing sits around
-  -24 dB vs. WSJT-X's ~-26 to -27 dB. Confirmed directly (not just a
-  batch-script artifact): a specific -25 dB file that WSJT-X decodes
-  cleanly produces 0 decodes through this crate's `decode_scan_for::<Q65a30>`.
-  Root cause not investigated in this session — filed as a follow-up (#171).
-- **Q65-60A/B/C/D/E**: all five 60 s sub-modes show internally
-  consistent, sane threshold crossings closely tracking
-  `q65params.f90`'s analytical -27 dB prediction (`decode_scan_for`
-  sweep results). An initial cross-check against WSJT-X's own
-  decoder at these submodes produced inconsistent results (sometimes
-  WSJT-X apparently far ahead, sometimes far behind, varying wildly
-  by sub-mode) that don't hold up as a trustworthy comparison without
-  more careful CLI-parameter parity — not reported as a finding
-  either way pending a more rigorous cross-check.
+- **Q65 AWGN sensitivity gap, root-caused and substantially
+  narrowed** (#171). The initial sweep found a real, reproducible
+  ~2-3 dB gap vs. WSJT-X's own plain-BP decode (`jt9 -3 -p 30 -b A`)
+  for Q65-30A specifically (50% recall crossing ~-24 dB vs. WSJT-X's
+  ~-26 to -27 dB), confirmed directly on a single failing file (not a
+  batch-script artifact). The entire FEC/BP stack was verified
+  byte-for-byte correct against `WSJT-X/lib/qra/q65/{qracodes.c,
+  npfwht.c,pdmath.c}` first (all 10 code tables, the WHT, and every
+  `pdmath` primitive — diffed programmatically, zero discrepancies),
+  which pointed the search upstream: `coarse_search_for`'s reported
+  best `(start_sample, freq_hz)` is measurably imprecise at low SNR
+  — off by up to ~1/5 of a symbol period — and neither
+  `decode_scan_for` nor `decode_at_for` ever refined that alignment
+  before attempting decode. WSJT-X's `q65_loops` never trusts its own
+  coarse alignment either — it always runs a local fine-timing
+  (`idt`) retry loop before the real decode attempt. Added
+  `decode_at_with_fine_timing_for` (tries the reported alignment
+  first, then a symmetric ±3-step retry grid in units of `nsps/16`)
+  to `decode_scan_inner`, the shared implementation behind every
+  scan-level Q65 entry point. Full 990-file sweep re-run: all six
+  wired sub-modes improved by roughly 1-2 dB at their threshold
+  region (e.g. Q65-60A 20%→100% at -27 dB; Q65-30A 40%→93% at -24 dB,
+  0%→33% at -25 dB). **Not fully closed** — a residual gap remains
+  for Q65-30A around -25/-26 dB — kept open pending further work
+  (e.g. extending the retry grid, or adding a fine-frequency
+  refinement alongside the timing one).
 
 ## 0.7.4 — MSK144 decode (#25)
 
