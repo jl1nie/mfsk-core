@@ -32,7 +32,7 @@
   erasure-pattern search around Berlekamp-Massey RS) that WSJT-X runs
   even without `kvasd` — a materially different (and more involved)
   algorithm than this crate's single-pass confidence-ordered erasure
-  decode (`decode_at_with_erasures`). Tracked as a follow-up issue;
+  decode (`decode_at_with_erasures`). Tracked as a follow-up (#169);
   see the sweep test's doc comment for the full provenance.
 
 ## 0.7.4 — MSK144 decode (#25)

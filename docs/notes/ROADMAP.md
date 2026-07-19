@@ -172,8 +172,8 @@ worklist; if you're reading this file to decide what to work on next,
 this section is the one to trust over any recall numbers or hardware
 status stated elsewhere in it):
 
-- **JT65 sensitivity gap vs. WSJT-X's `ftrsdap` stochastic Chase
-  decoder** — follow-up from closing #24, filed 2026-07-19. With the
+- **#169** — JT65 sensitivity gap vs. WSJT-X's `ftrsdap` stochastic
+  Chase decoder — follow-up from closing #24, filed 2026-07-19. With the
   interleave bug fixed (#24), a 15-point AWGN sweep
   (`tests/jt65_sweep.rs`, `scripts/gen_jt65_sweep_wavs.sh`) shows this
   crate's hard-decision `decode_at`/`decode_at_with_erasures` at 50%
