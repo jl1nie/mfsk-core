@@ -188,19 +188,6 @@ status stated elsewhere in it):
   session; see the issue for the full repro recipe. Once fixed, a
   `jt65sim`-based sweep (mirroring `msk144_snr_sweep.rs`) becomes a
   solid regression harness, no `b65a`/`kvasd` port needed after all.
-- **#171** — Q65 AWGN sensitivity gap, root-caused and substantially
-  narrowed 2026-07-19 (same day it was found). FEC/BP stack verified
-  byte-for-byte correct against WSJT-X first (10 code tables + WHT +
-  every `pdmath` primitive, programmatic diff, zero discrepancies) —
-  the real cause was upstream: `coarse_search_for`'s reported best
-  alignment is off by up to ~1/5 of a symbol period at low SNR, and
-  nothing refined it before decode. Added a local fine-timing retry
-  (`decode_at_with_fine_timing_for`, mirrors WSJT-X's `q65_loops` `idt`
-  loop) to every scan-level entry point. All six wired sub-modes
-  improved ~1-2 dB at threshold on the full 990-file sweep re-run.
-  **Not fully closed** — a residual gap remains for Q65-30A around
-  -25/-26 dB; left open pending further narrowing (wider retry grid,
-  or a fine-frequency refinement alongside the timing one).
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &
@@ -258,6 +245,24 @@ log` for the fix commit, not re-derived here):
   the residual "should the type itself be unified" question as no
   longer worth it (would need a protocol discriminator, net
   complexity increase).
+- ~~**#171**~~ — Q65 AWGN sensitivity gap, root-caused and closed
+  2026-07-19 (same day it was found). Two contributing causes, both
+  resolved: (1) `coarse_search_for`'s reported best alignment is off
+  by up to ~1/5 of a symbol period at low SNR with nothing refining it
+  before decode — fixed with a local fine-timing retry
+  (`decode_at_with_fine_timing_for`, mirrors WSJT-X's `q65_loops` `idt`
+  loop); (2) the remaining gap after that fix was a comparison
+  artifact, not a bug — WSJT-X's default `jt9` decode always has
+  access to a free "CQ ??? ???" AP hypothesis that `decode_scan_for`
+  (this crate's genuinely blind baseline) doesn't, by design.
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now a second column in
+  `tests/q65_sim_sweep.rs`) matches WSJT-X's numbers almost exactly
+  across all six wired sub-modes. FEC/BP stack was verified
+  byte-for-byte correct against WSJT-X before either finding (10 code
+  tables + WHT + every `pdmath` primitive, programmatic diff, zero
+  discrepancies). Usage note for future sessions: applications wanting
+  WSJT-X-equivalent behavior for CQ traffic should default to the
+  AP-hinted path with at least a `"CQ"` hint, not the plain one.
 
 Closed during the 0.6.x line (compact context table — for full
 prose, see the closed issue / linked PR / `git log`):

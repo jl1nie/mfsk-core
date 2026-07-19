@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.5 — Q65 AWGN SNR sweep + fine-timing sensitivity fix (#171)
+## 0.7.5 — Q65 AWGN SNR sweep + fine-timing sensitivity fix + CQ-AP-hint parity note (#171)
 
 ### Added
 
@@ -50,10 +50,32 @@
   scan-level Q65 entry point. Full 990-file sweep re-run: all six
   wired sub-modes improved by roughly 1-2 dB at their threshold
   region (e.g. Q65-60A 20%→100% at -27 dB; Q65-30A 40%→93% at -24 dB,
-  0%→33% at -25 dB). **Not fully closed** — a residual gap remains
-  for Q65-30A around -25/-26 dB — kept open pending further work
-  (e.g. extending the retry grid, or adding a fine-frequency
-  refinement alongside the timing one).
+  0%→33% at -25 dB).
+- **Remaining residual gap traced to a comparison-methodology
+  difference, not a further implementation bug.** Even after the
+  fine-timing fix, a gap persisted at the deep end (e.g. Q65-30A ~0%
+  at -26 dB vs. WSJT-X's ~40%). Traced this to WSJT-X's Q65 decode
+  chain always having access to the free "CQ ??? ???" AP hypothesis
+  (`aptype=1` in `extract.f90`'s AP table — needs no user-supplied
+  callsign), so *every* real `jt9` decode attempt implicitly gets
+  some AP-list benefit on CQ-calling signals, whether or not the user
+  configured `-c`/`-x`. `decode_scan_for` (this crate's genuinely
+  blind baseline) has no equivalent for-free hypothesis by design —
+  the four decoder strategies stay deliberately separate
+  (`docs/reference/LIBRARY.md` §3). Re-measured with
+  `decode_scan_with_ap_for` + a `"CQ"` hint (now also reported by
+  `tests/q65_sim_sweep.rs` as a second column) and it closes the gap
+  almost exactly across all six sub-modes: Q65-30A -26 dB 0%→40%
+  (matches WSJT-X's reported 40%), -25 dB 33%→93% (WSJT-X: 87%),
+  -24 dB 93%→100% (WSJT-X: 100%); Q65-60A -29 dB 7%→53%, -28 dB
+  47%→93%; Q65-60B/C/D/E show the same ~40-50 point jump at their
+  respective thresholds. **Usage note, not a code change**:
+  applications wanting WSJT-X-equivalent behavior for CQ traffic
+  should call the AP-hinted path with at least a `"CQ"` hint rather
+  than the plain one — matching what WSJT-X's own decoder always
+  does internally. Issue #171 left open with this as the closing
+  analysis (no further action expected; re-open if a real remaining
+  gap is found with matched AP context on both sides).
 
 ## 0.7.4 — MSK144 decode (#25)
 

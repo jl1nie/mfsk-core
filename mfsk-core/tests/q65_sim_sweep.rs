@@ -35,18 +35,19 @@
 //! covers only what's shipped, not a hypothetical superset — same
 //! scoping call as `tests/jt65_sweep.rs`/`tests/jt9_sweep.rs`.
 //!
-//! ## AWGN-only, plain BP decode
+//! ## AWGN-only; plain BP decode *and* the CQ-AP-hinted variant
 //!
-//! This sweep uses `decode_scan_for` (plain AWGN Bessel + BP), the
-//! baseline of Q65's four decoder strategies — not the AP-hint,
-//! fast-fading, or AP-list variants (those are exercised separately
-//! by `tests/q65_ap_sweep.rs` / `tests/q65_fast_fading.rs` /
-//! `tests/q65_ap_list.rs`, and don't need an independent-reference
-//! generator sweep the same way since they compose with this
-//! baseline path rather than replacing its core FEC). All q65sim
-//! signals here are clean AWGN (fDop=0, no Doppler/drift/tracking) —
-//! fading-channel sensitivity is a separate axis already covered by
-//! the fast-fading test.
+//! Reports two curves per sub-mode: `decode_scan_for` (plain AWGN
+//! Bessel + BP, no assumptions) and `decode_scan_with_ap_for` with a
+//! `call1 = "CQ"` hint. Both matter for a fair WSJT-X comparison —
+//! see the issue #171 follow-up note below. Neither the fast-fading
+//! nor full AP-list strategies are swept here (exercised separately
+//! by `tests/q65_fast_fading.rs` / `tests/q65_ap_list.rs`, and don't
+//! need an independent-reference generator sweep the same way since
+//! they compose with this baseline path rather than replacing its
+//! core FEC). All q65sim signals here are clean AWGN (fDop=0, no
+//! Doppler/drift/tracking) — fading-channel sensitivity is a separate
+//! axis already covered by the fast-fading test.
 //!
 //! ## Per-submode threshold grids
 //!
@@ -67,6 +68,32 @@
 //! interleave bugs). This sweep closes that gap with a real
 //! independent-reference generator across every wired sub-mode.
 //!
+//! ## Issue #171 follow-up: the "plain vs plain" comparison was
+//! ## partly a methodology gap, not just an implementation gap
+//!
+//! This sweep first found (and #171's fix narrowed) a real
+//! fine-timing-precision bug in `coarse_search_for` — see the
+//! CHANGELOG `## 0.7.5` entry. But after that fix, a residual gap
+//! against WSJT-X's own `jt9 -3` remained at the deep end (e.g.
+//! Q65-30A ~0% at -26 dB vs. WSJT-X's ~40%). Tracing further: `jt9`'s
+//! default decode is not actually "plain" in the sense
+//! `decode_scan_for` is — WSJT-X's Q65 decode chain always has access
+//! to the free "CQ ??? ???" AP hypothesis (`aptype=1` in
+//! `extract.f90`'s AP table, requiring no user-supplied callsign), so
+//! *every* real decode attempt implicitly gets some AP-list benefit
+//! for CQ-calling signals, whether or not the user configured `-c`/
+//! `-x`. Re-measuring with `decode_scan_with_ap_for` + a `"CQ"` hint
+//! closes the remaining gap almost exactly: Q65-30A -26 dB 0%→40%
+//! (WSJT-X: 40%), -25 dB 33%→93% (WSJT-X: 87%), -24 dB 93%→100%
+//! (WSJT-X: 100%); Q65-60A -28 dB 47%→93%, -29 dB 7%→53%. This isn't
+//! a reason to silently fold AP into `decode_scan_for` (the crate's
+//! four decoder strategies stay deliberately separate,
+//! `docs/reference/LIBRARY.md` §3) — it's a usage note: an
+//! application wanting WSJT-X-equivalent behavior for CQ traffic
+//! should call the AP-hinted path with at least a `"CQ"` hint, not
+//! the plain one, the same way WSJT-X's own decoder always does
+//! internally.
+//!
 //! Output is a recall table — no assertions, statistics only.
 
 #![cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
@@ -76,8 +103,11 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod common;
 use common::load_wav_f32_opt;
+use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
-use mfsk_core::q65::{Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for};
+use mfsk_core::q65::{
+    Q65a30, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60, decode_scan_for, decode_scan_with_ap_for,
+};
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
@@ -107,31 +137,31 @@ fn parse_snr_tag(tag: &str) -> Option<i32> {
     }
 }
 
-fn decode_wav_q65(submode: &str, audio: &[f32]) -> bool {
+/// `(plain_hit, cq_ap_hinted_hit)`.
+fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool) {
     let params = SearchParams::default();
     let hit = |freq_hz: f32, msg: &str| {
         msg == GOLDEN_MSG && (freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
     };
+    macro_rules! decode_both {
+        ($p:ty) => {{
+            let plain = decode_scan_for::<$p>(audio, 12_000, 0, &params)
+                .iter()
+                .any(|d| hit(d.freq_hz, &d.message));
+            let cq = decode_scan_with_ap_for::<$p>(audio, 12_000, 0, &params, cq_hint)
+                .iter()
+                .any(|d| hit(d.freq_hz, &d.message));
+            (plain, cq)
+        }};
+    }
     match submode {
-        "a30" => decode_scan_for::<Q65a30>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        "a60" => decode_scan_for::<Q65a60>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        "b60" => decode_scan_for::<Q65b60>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        "c60" => decode_scan_for::<Q65c60>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        "d60" => decode_scan_for::<Q65d60>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        "e60" => decode_scan_for::<Q65e60>(audio, 12_000, 0, &params)
-            .iter()
-            .any(|d| hit(d.freq_hz, &d.message)),
-        _ => false,
+        "a30" => decode_both!(Q65a30),
+        "a60" => decode_both!(Q65a60),
+        "b60" => decode_both!(Q65b60),
+        "c60" => decode_both!(Q65c60),
+        "d60" => decode_both!(Q65d60),
+        "e60" => decode_both!(Q65e60),
+        _ => (false, false),
     }
 }
 
@@ -148,8 +178,10 @@ fn q65_awgn_snr_sweep() {
         return;
     };
 
-    // (submode, snr) -> (hits, trials)
-    let mut cells: std::collections::BTreeMap<(String, i32), (u32, u32)> =
+    let cq_hint = ApHint::new().with_call1("CQ");
+
+    // (submode, snr) -> (plain_hits, cq_hits, trials)
+    let mut cells: std::collections::BTreeMap<(String, i32), (u32, u32, u32)> =
         std::collections::BTreeMap::new();
 
     for entry in entries.flatten() {
@@ -175,11 +207,14 @@ fn q65_awgn_snr_sweep() {
         let Some(audio) = load_wav_f32_opt(&path) else {
             continue;
         };
-        let hit = decode_wav_q65(submode, &audio);
-        let cell = cells.entry((submode.to_string(), snr)).or_insert((0, 0));
-        cell.1 += 1;
-        if hit {
+        let (plain_hit, cq_hit) = decode_wav_q65(submode, &audio, &cq_hint);
+        let cell = cells.entry((submode.to_string(), snr)).or_insert((0, 0, 0));
+        cell.2 += 1;
+        if plain_hit {
             cell.0 += 1;
+        }
+        if cq_hit {
+            cell.1 += 1;
         }
     }
 
@@ -192,19 +227,28 @@ fn q65_awgn_snr_sweep() {
     }
 
     println!("Q65 AWGN SNR sweep — {:?}", dir);
+    println!(
+        "(plain = decode_scan_for; CQ = decode_scan_with_ap_for + \"CQ\" hint — see module docs, issue #171)"
+    );
     for submode in SUBMODES {
         println!("\n-- Q65-{submode} --");
-        println!("{:>6}  {:>10}  {:>6}", "SNR", "hits/trials", "pct");
-        for ((sm, snr), (hits, trials)) in &cells {
+        println!(
+            "{:>6}  {:>12}  {:>6}  {:>12}  {:>6}",
+            "SNR", "plain hits", "pct", "CQ hits", "pct"
+        );
+        for ((sm, snr), (plain_hits, cq_hits, trials)) in &cells {
             if sm != submode {
                 continue;
             }
-            let pct = *hits as f32 / *trials as f32 * 100.0;
+            let plain_pct = *plain_hits as f32 / *trials as f32 * 100.0;
+            let cq_pct = *cq_hits as f32 / *trials as f32 * 100.0;
             println!(
-                "{:>+5}dB  {:>10}  {:5.1}%",
+                "{:>+5}dB  {:>12}  {:5.1}%  {:>12}  {:5.1}%",
                 snr,
-                format!("{hits}/{trials}"),
-                pct
+                format!("{plain_hits}/{trials}"),
+                plain_pct,
+                format!("{cq_hits}/{trials}"),
+                cq_pct
             );
         }
     }
