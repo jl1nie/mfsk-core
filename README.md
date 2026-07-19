@@ -46,17 +46,26 @@ collaborators), which remains the reference implementation — see
 | JT65       | 60 s   | Reed-Solomon(63, 12) GF(2⁶)       | 72 bit  | 63 distributed slots   | `jt65`  |
 | Q65-30A    | 30 s   | QRA(15, 65) GF(2⁶) + CRC-12       | 77 bit  | 22 distributed slots   | `q65`   |
 | Q65-60A‥E  | 60 s   | (same QRA codec)                  | 77 bit  | (same sync layout)     | `q65`   |
+| MSK144     | 15 s   | LDPC(128, 90) + CRC-13            | 77 bit  | Meteor-ping burst-scan (matched filter) | `msk144` |
 
-Seven protocol families, sixteen wired ZSTs in the registry: FST4
-contributes five T/R-period sub-modes (FST4-15, -30, -60A, -120, -300)
-and Q65 contributes one 30-s sub-mode (Q65-30A) plus five 60-s EME
-sub-modes (Q65-60A‥E) — both families share FEC, message codec and
-sync layout across their sub-modes, differing only in NSPS / tone
-spacing (and, for FST4-15 alone, the T/R start offset).
+Eight protocol families, sixteen wired `Protocol`-trait ZSTs in the
+registry: FST4 contributes five T/R-period sub-modes (FST4-15, -30,
+-60A, -120, -300) and Q65 contributes one 30-s sub-mode (Q65-30A) plus
+five 60-s EME sub-modes (Q65-60A‥E) — both families share FEC, message
+codec and sync layout across their sub-modes, differing only in NSPS /
+tone spacing (and, for FST4-15 alone, the T/R start offset). **MSK144
+is the exception**: its continuous-phase binary-MSK modulation and
+transient-burst timing don't fit the static-slot model every other
+protocol here shares, so no ZST implements `Protocol` for it — its own
+`msk144::decode::decode_slot` driver bypasses `core::pipeline`
+entirely by design (see
+[`docs/reference/LIBRARY.md` §0.6](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#06-msk144--the-protocol-that-doesnt-use-the-abstraction)
+for why).
 [`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
-exposes one entry per wired ZST; `uvpacket` (when enabled) adds four
-more for its rate ladder. See [Static set of protocols](#static-set-of-protocols)
-for why there's no runtime `register_protocol()`.
+exposes one entry per wired ZST (so MSK144 doesn't appear there);
+`uvpacket` (when enabled) adds four more for its rate ladder. See
+[Static set of protocols](#static-set-of-protocols) for why there's no
+runtime `register_protocol()`.
 
 ## Quick Start
 
