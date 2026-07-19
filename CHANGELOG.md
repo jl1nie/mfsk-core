@@ -1,6 +1,39 @@
 # Changelog
 
-## 0.7.5 — JT9 AWGN SNR sweep + jt9sim build
+## 0.7.5 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep
+
+### Fixed
+
+- **JT65 total decode failure, root-caused and fixed** (#24). Every
+  `jt65sim`-generated (or otherwise WSJT-X-compatible) JT65 signal
+  failed to decode regardless of SNR, even when `search::coarse_search`
+  landed candidates within ~1 Hz / a few symbols of ground truth.
+  Root cause: `jt65::interleave::interleave`/`deinterleave` (the 7×9
+  transpose WSJT-X's `interleave63.f90` implements) had their
+  permutations swapped relative to WSJT-X's TX/RX convention
+  (`gen65.f90`/`jt65sim.f90` call `interleave63(sent, idir=1)` at TX;
+  `extract.f90` calls `interleave63(mrsym, idir=-1)` at RX). The swap
+  was internally self-consistent — TX and RX remained exact mutual
+  inverses of each other — so every self-roundtrip test passed while
+  real/independent-reference signals decoded to garbage RS codewords.
+  Structurally identical to the JT9 encoder bug (#19): a decode path
+  only ever cross-checked against this crate's own encoder, never an
+  independent reference.
+- New `tests/jt65_sweep.rs` (`#[ignore]`d, mirrors `ft8_sweep.rs`) +
+  `scripts/gen_jt65_sweep_wavs.sh` build a `jt65sim`-generated AWGN
+  SNR-sweep corpus and characterise the post-fix recall curve: 100%
+  recall down to 0 dB, 50% around -14 dB, near-zero below -19 dB (all
+  in `jt65sim`'s 2500 Hz reference bandwidth convention).
+- Found and documented, but did **not** port in this fix: WSJT-X's
+  own hard-decision-only path (`jt9 -6`, no `kvasd`) holds ~100%
+  recall down to -22 dB on the same corpus — a further ~7-8 dB
+  sensitivity gap. Root cause traced to `lib/ftrsd/ftrsdap.c`, a
+  stochastic Chase decoder (randomized multi-trial soft-symbol
+  erasure-pattern search around Berlekamp-Massey RS) that WSJT-X runs
+  even without `kvasd` — a materially different (and more involved)
+  algorithm than this crate's single-pass confidence-ordered erasure
+  decode (`decode_at_with_erasures`). Tracked as a follow-up (#169);
+  see the sweep test's doc comment for the full provenance.
 
 ### Added
 
