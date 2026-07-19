@@ -720,12 +720,15 @@ which inner steps they enable:
   followed by the WSJT-X AP iaptype loop (1–12) for any candidate
   whose pass-1 step missed but whose sync quality crosses
   `q_thresh`. New in 0.6.1.
-* `decode_block_into[_tuned]` — `_into`-style variants that take
-  caller-owned scratch and return decoded frames into a passed-in
-  `Vec`. Used by the embedded port to avoid per-slot allocation.
+* `decode_block_into[_tuned]` — the embedded fixed-point entry point
+  (`fixed-point` feature); same shape as `decode_block[_tuned]`, kept
+  as a distinct name for API stability with `mfsk-ffi-ft8` and
+  `embedded-shared::dual_core`. Prior to 0.8.0 this family also took
+  caller-owned BASIS scratch buffers — removed (issue #162) once the
+  Goertzel fill path made the scratch dead weight.
 * `coarse_sync` / `coarse_sync_with_allsum` — the FT8 sync grid
   itself (graduated to public API in 0.6.0).
-* `fill_symbol_spectra` / `fill_symbol_spectra_into` — per-symbol
+* `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — per-symbol
   FFT extraction directly from audio (replaces the cd0 +
   `core::llr::symbol_spectra` two-step that older code used).
 

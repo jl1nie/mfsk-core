@@ -24,28 +24,31 @@ idf-component/
     │   └── config.toml    ← target = xtensa-esp32-espidf, panic=abort
     └── src/
         ├── lib.rs         ← exports `mfsk_core_make_default_fft_planner`
-        │                    and `mfsk_core_dot_q15_i32` (extern Rust)
+        │                    (extern Rust)
         └── esp_dsp_fft.rs ← esp-dsp ASM bridges (vendored copy of
-                              m5stack-core2/src/esp_dsp_fft.rs)
+                              embedded-shared/src/esp_dsp_fft.rs)
 ```
 
 ## Why a Rust shim is needed
 
 `mfsk-ffi-ft8` calls into `mfsk-core` which on the embedded path
-takes its FFT backend and i16 × Q15 dot product through **two
-`extern "Rust"` symbols**:
+takes its FFT backend through **one `extern "Rust"` symbol**:
 
 - `mfsk_core_make_default_fft_planner()` — returns a boxed
   `Box<dyn FftPlanner>` for the protocol's FFT calls.
-- `mfsk_core_dot_q15_i32(*a, *b, n)` — the per-symbol DFT inner kernel.
+
+(Prior to 0.8.0 there was a second symbol,
+`mfsk_core_dot_q15_i32`, for the legacy BASIS per-symbol DFT path —
+removed in issue #162 once the Goertzel fill path made it dead
+weight. New integrations don't need to implement it.)
 
 Pure-C code can't define `extern "Rust"` symbols (different name
 mangling, ABI assumptions). So we wrap the ESP-IDF `esp-dsp`
 component in a tiny Rust shim crate (`shim/`) that:
 
 1. Depends on `mfsk-ffi-ft8` (which carries the FT8 decoder).
-2. Implements the two extern Rust symbols by calling esp-dsp's
-   `dsps_dotprod_s16_ae32` / `dsps_fft2r_*`.
+2. Implements the extern Rust symbol by calling esp-dsp's
+   `dsps_fft2r_*`.
 3. Compiles to a `staticlib` (`libft8_shim.a`) that the ESP-IDF
    `mfsk_ft8` component imports.
 
@@ -97,7 +100,6 @@ is your code.
 ## Other targets
 
 For RP2040 / RP2350-Hazard3 / Cortex-M, replace `shim/`'s
-`esp_dsp_fft.rs` with bridges to your DSP library
-(CMSIS-DSP / arm-dsp via `arm_*_q15`, etc.) and adjust
-`shim/.cargo/config.toml`'s target. The mfsk-ffi-ft8 / ESP-IDF
-component wiring is the same.
+`esp_dsp_fft.rs` with an FFT bridge to your DSP library
+(CMSIS-DSP / arm-dsp, etc.) and adjust `shim/.cargo/config.toml`'s
+target. The mfsk-ffi-ft8 / ESP-IDF component wiring is the same.

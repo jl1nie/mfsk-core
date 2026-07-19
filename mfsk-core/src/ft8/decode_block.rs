@@ -46,16 +46,9 @@ pub use coarse_sync::{
     coarse_allsum_len, coarse_sync, coarse_sync_with_allsum, precompute_coarse_allsum,
     precompute_coarse_allsum_into,
 };
-#[cfg(not(feature = "fixed-point"))]
-pub use fill_symbol_spectra::fill_symbol_spectra_generic;
-#[cfg(feature = "fixed-point")]
 pub use fill_symbol_spectra::{
-    BASIS_SCRATCH_LEN, fill_symbol_spectra_generic, fill_symbol_spectra_into,
-    fill_symbol_spectra_into_generic, symbol_spectra_direct_into,
-};
-pub use fill_symbol_spectra::{
-    SymMask, fill_symbol_spectra, fill_symbol_spectra_goertzel, goertzel_window_end_sample,
-    symbol_spectra_direct,
+    SymMask, fill_symbol_spectra, fill_symbol_spectra_generic, fill_symbol_spectra_goertzel,
+    goertzel_window_end_sample, symbol_spectra_direct,
 };
 /// Phase 1.7.7-Stick: fill-closure variant for host research /
 /// regression tests (spec-lookup vs BASIS dot product comparison).
@@ -398,18 +391,8 @@ mod tests {
             alloc::vec![[Cmplx::<Q14i16>::default(); 8]; 79]
                 .try_into()
                 .unwrap();
-        // Use the host f32 fill on the f32 path; under fixed-point
-        // the i16 fill (with autogain) is exercised. Both must yield
-        // a Costas-perfect block 0 sync_quality.
-        #[cfg(not(feature = "fixed-point"))]
-        fill_symbol_spectra_generic::<Q14i16, i16>(
-            &mut cs_q14,
-            &audio,
-            1500.0,
-            0.0,
-            SymMask::SyncBlock0,
-        );
-        #[cfg(feature = "fixed-point")]
+        // The generic fill's 2-pass auto-gain path must yield a
+        // Costas-perfect block 0 sync_quality regardless of build.
         fill_symbol_spectra_generic::<Q14i16, i16>(
             &mut cs_q14,
             &audio,

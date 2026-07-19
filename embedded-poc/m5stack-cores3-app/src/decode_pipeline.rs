@@ -44,13 +44,6 @@ pub fn run() -> ! {
 /// `Uac` mode passes `|q| uac::set_chunk_q(q)` — the UAC reader thread
 /// starts pushing once it sees the queue handle land in its static slot.
 pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
-    let basis_re_main: &'static mut [i16] =
-        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-    let basis_im_main: &'static mut [i16] =
-        alloc::boxed::Box::leak(alloc::vec![].into_boxed_slice());
-    let basis_re_c1_ptr: *mut i16 = core::ptr::null_mut();
-    let basis_im_c1_ptr: *mut i16 = core::ptr::null_mut();
-
     crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
 
     unsafe {
@@ -58,7 +51,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
     }
 
     esp_dsp_fft::prewarm(NFFT_SPEC);
-    dual_core::init(basis_re_c1_ptr, basis_im_c1_ptr);
+    dual_core::init();
 
     let chunk_q = pipeline::create_chunk_queue(4);
     let slot_q = pipeline::create_slot_queue(2);
@@ -91,13 +84,7 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
             depth: DecodeDepth::BpVariantsAd,
         };
-        let out = dual_core::run_speculative_slot(
-            spec_q,
-            slot_q,
-            &cfg,
-            basis_re_main,
-            basis_im_main,
-        );
+        let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {
             spec,
             slot,

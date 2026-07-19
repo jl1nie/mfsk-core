@@ -177,102 +177,61 @@ example that bridges to esp-dsp's Xtensa ASM kernels
 RP2040 / Cortex-M implementations would bridge to CMSIS-DSP
 similarly.
 
-### Legacy: i16 × Q15 dot product extern (deprecated)
+### Removed: i16 × Q15 dot product extern (0.8.0, issue #162)
 
 A separate `mfsk_core_dot_q15_i32` extern symbol used to be required
-for the per-symbol DFT (BASIS path). **Since 0.6.4 (Phase 1.7.7-Stick)
-this extern is no longer used** — the per-symbol DFT runs through the
-in-tree Goertzel recursion (see next section). The extern signature
-remains exported for back-compat with `mfsk-ffi-ft8` 0.5.x callers
-and the BASIS code path; both are scheduled for removal in 0.7.0.
+for the per-symbol DFT (the BASIS path). Since 0.6.4 (Phase
+1.7.7-Stick) that extern was already unused by the decoder — the
+per-symbol DFT ran through the in-tree Goertzel recursion (see next
+section) — and 0.8.0 removed the symbol, the `mfsk_core::core::dotprod`
+module, and the BASIS fill path entirely. New integrations don't need
+to implement anything here at all.
 
-```rust
-// Still exported, no longer called by the decoder.
-#[unsafe(no_mangle)]
-pub unsafe extern "Rust" fn mfsk_core_dot_q15_i32(
-    a: *const i16,
-    b: *const i16,
-    n: usize,
-) -> i32 {
-    // bridge to dsps_dotprod_s16_ae32 (LX6/LX7) or
-    // arm_dot_prod_q15 (Cortex-M with CMSIS-DSP), etc.
-}
-```
-
-New integrations should not implement this symbol; a default scalar
-fallback ships in `mfsk_core::core::dotprod` for the BASIS code path.
-
-## Per-symbol DFT: Goertzel (current) and BASIS (deprecated)
+## Per-symbol DFT: Goertzel
 
 The FT8 per-symbol DFT evaluates `Σ x[n] · exp(-jωn)` at each of the
 8 tone frequencies across NSPS = 1920 samples, for every (symbol,
 tone) pair in every candidate's `cs` matrix (79 symbols × 8 tones =
 632 DFTs per candidate, ~15 candidates per slot ⇒ ~9.5k DFTs per
-slot). Two implementations live in
+slot). The implementation lives in
 `mfsk-core/src/ft8/decode_block/fill_symbol_spectra.rs`:
 
-### Goertzel (current, 0.6.4+) — `fill_symbol_spectra_goertzel`
+### Goertzel — `fill_symbol_spectra_goertzel`
 
 A generalised Goertzel recursion: per (sym, tone) a 2-tap IIR with
 3 f32 state values that get thrown away on return. **Zero caller
 scratch**, zero internal-DRAM static buffers, zero extern symbols
-required. This is the default path for embedded callers as of 0.6.4.
+required. This has been the sole path for embedded callers since
+0.6.4; the legacy BASIS (Q15 sin/cos dot-product) fill path it
+replaced was removed entirely in 0.8.0 (issue #162).
 
 The performance trick: order the loop **sample-outer / tone-inner**
 so the 8 per-tone recursions (one per FT8 tone) run as 8 independent
 dependent chains through the FPU pipeline. LLVM unrolls the
 constant-bound `NTONES = 8` inner loop and the Xtensa FPU absorbs
 ~all of the per-chain latency in parallel. Result: stage-3 cost
-matches the BASIS asm dot product (~1.4 s on S3 `qso3_busy.wav`)
+matches the old BASIS asm dot product (~1.4 s on S3 `qso3_busy.wav`)
 **with zero scratch + +0.16..+0.63 dB SNR improvement** over BASIS
-(f32 Goertzel has more precision than Q15 BASIS).
+(f32 Goertzel has more precision than Q15 BASIS had).
 
-### BASIS dot product (deprecated, removed in 0.7.0) — `fill_symbol_spectra_into`
-
-A precomputed Q15 sin/cos table (`BASIS_RE` / `BASIS_IM`, each
-`NTONES × NSPS = 15 360` i16 entries ≈ 30 KB) called through the
-`mfsk_core_dot_q15_i32` extern (1 cycle per 2 MACs on LX6/LX7 with
-the esp-dsp ASM kernel). The table is the dot-product inner-loop hot
-data, so it has to live in fast internal SRAM (DRAM) — not PSRAM —
-or the kernel drops to ~30 % of rated throughput.
-
-Why this is being retired: the 30 KB of internal DRAM per axis ×
-2 axes × 2 cores = **120 KB of internal DRAM** was exactly what the
-M5StickS3 Qso-mode bidirectional I2S DMA descriptor needs to
-allocate. The board's free contiguous internal chunk could not
-satisfy both, and Qso mode boot failed with `i2s_alloc_dma_desc:
-allocate DMA buffer failed`. Goertzel frees that 120 KB without
-losing perf.
-
-If you have a BASIS-era caller and want to keep the legacy path
-working through 0.6.x, allocate the scratch in `.bss` so it lands
-in internal DRAM automatically:
-
-```rust
-const SCRATCH_LEN: usize = mfsk_core::ft8::decode_block::BASIS_SCRATCH_LEN;
-static mut BASIS_RE: [i16; SCRATCH_LEN] = [0; SCRATCH_LEN];
-static mut BASIS_IM: [i16; SCRATCH_LEN] = [0; SCRATCH_LEN];
-```
-
-The C-side equivalent for ESP-IDF (when the array is on the heap
-rather than `.bss`) is to use the capability-flagged allocator:
-
-```c
-int16_t *basis = heap_caps_malloc(BASIS_SCRATCH_LEN * sizeof(int16_t),
-                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-```
-
-A plain `malloc` of either 30 KB axis silently lands in PSRAM under
-ESP-IDF's default routing, which is the slow case. New integrations should
-not need to think about this — call the Goertzel path and let the
-decoder allocate nothing.
+Why BASIS was retired: it needed a precomputed Q15 sin/cos table
+(`BASIS_RE` / `BASIS_IM`, each `NTONES × NSPS = 15 360` i16 entries
+≈ 30 KB) living in fast internal SRAM (not PSRAM) for the ASM dot
+product to hit its rated throughput — 30 KB per axis × 2 axes ×
+2 cores = **120 KB of internal DRAM**, exactly what the M5StickS3
+Qso-mode bidirectional I2S DMA descriptor needed to allocate. The
+board's free contiguous internal chunk couldn't satisfy both, and
+Qso mode boot failed with `i2s_alloc_dma_desc: allocate DMA buffer
+failed`. Goertzel freed that 120 KB without losing perf, and 0.8.0
+finished the job by deleting the now-dead BASIS code and its
+`basis_re`/`basis_im` scratch parameters outright — new integrations
+never need to think about scratch placement here at all.
 
 ## Q-format quick reference
 
 | Stage | Format | Range | File |
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`, saturated since 0.6.4 | `ft8::decode_block::spectrogram::Spectrogram` |
-| DFT basis (BASIS path) | Q15 i16 (cos, sin) | ±2¹⁵ ≈ ±1.0 | `ft8::decode_block::fill_symbol_spectra` |
 | Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `core::scalar::Cmplx` (type alias for `num_complex::Complex`) |
 | LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `core::scalar` for the comparison path) | `core::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
@@ -324,27 +283,22 @@ typedef struct MfskFt8ResultList {
     size_t         _capacity;  // private
 } MfskFt8ResultList;
 
-// Legacy: required scratch length for the BASIS dot-product path,
-// in i16 elements. Caller allocates two arrays of this length each.
-// Since 0.6.4 the decoder uses Goertzel internally and you may pass
-// NULL for the basis_re / basis_im pointers below.
-size_t mfsk_ft8_basis_scratch_len(void);
-
-// PRIMARY embedded entry. Caller-managed scratch is OPTIONAL since
-// 0.6.4 — pass NULL for basis_re / basis_im to use the in-tree
-// Goertzel path (zero internal-DRAM scratch). For back-compat with
-// 0.5.x callers, passing non-NULL pointers routes through the
-// legacy BASIS path, which must live in fast internal RAM.
+// PRIMARY embedded entry. Needs no caller-managed scratch — the
+// decoder fills its per-symbol DFT via the in-tree Goertzel
+// recursion (zero internal-DRAM scratch). Before 0.8.0 (issue #162)
+// this function also took `basis_re`/`basis_im` scratch pointers for
+// a since-removed BASIS fill path; C callers built against pre-0.8.0
+// headers must drop those two arguments.
 MfskFt8Status mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
     float freq_min_hz, float freq_max_hz,     // typical 200, 3000
     float sync_min, int max_cand,             // typical 1.0, 30
     MfskFt8Depth depth,                       // 0=Bp, 1=BpAll, 2=BpAllOsd
-    int16_t *basis_re, int16_t *basis_im,     // NULL for Goertzel
     MfskFt8ResultList *out);                  // populated by callee
 
-// HOST-ONLY convenience — heap-allocs scratch internally. Excluded
-// from embedded builds: see "Caller-managed BASIS scratch" below.
+// HOST-ONLY convenience — heap-allocs internally. Excluded from
+// embedded builds (not that there's anything to allocate scratch
+// for any more — kept as a separate entry point for host testing).
 #ifdef MFSK_FT8_HOST  // built with default `host` feature
 MfskFt8Status mfsk_ft8_decode_i16_alloc(
     const int16_t *audio, size_t n_samples,
@@ -357,19 +311,9 @@ MfskFt8Status mfsk_ft8_decode_i16_alloc(
 void mfsk_ft8_result_list_free(MfskFt8ResultList *list);
 ```
 
-### Caller-managed BASIS scratch (legacy)
+### Calling `mfsk_ft8_decode_i16`
 
-The C ABI mirrors the Rust `_into` family — `mfsk_ft8_decode_i16`
-takes the basis arrays as parameters rather than hiding a `malloc`
-inside. The reasoning is the same as documented in
-[Per-symbol DFT](#per-symbol-dft-goertzel-current-and-basis-deprecated)
-above (PSRAM placement breaks the ASM kernel); for the FFI path the
-consequence is that the legacy decoder path deliberately does **not**
-ship a "convenience" wrapper that internally `malloc`s, because the
-C caller can't tell which heap the allocation lands in.
-
-Since 0.6.4 the recommended pattern is **pass NULL** and let the
-Goertzel path handle it:
+No scratch buffers to manage — just call it:
 
 ```c
 #include "mfsk_ft8.h"
@@ -379,24 +323,6 @@ MfskFt8Status st = mfsk_ft8_decode_i16(
     audio, n_samples,
     200.0f, 3000.0f, 1.0f, 30,
     MFSK_FT8_DEPTH_BP_ALL,
-    NULL, NULL,           // Goertzel — no scratch needed
-    &results);
-```
-
-The legacy `.bss` array pattern still works for 0.5.x → 0.6.x
-migrations:
-
-```c
-#include "mfsk_ft8.h"
-static int16_t basis_re[15360];   // = mfsk_ft8_basis_scratch_len()
-static int16_t basis_im[15360];
-
-MfskFt8ResultList results = {0};
-MfskFt8Status st = mfsk_ft8_decode_i16(
-    audio, n_samples,
-    200.0f, 3000.0f, 1.0f, 30,
-    MFSK_FT8_DEPTH_BP_ALL,
-    basis_re, basis_im,   // legacy BASIS path
     &results);
 ```
 

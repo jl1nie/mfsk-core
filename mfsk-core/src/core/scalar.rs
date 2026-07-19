@@ -309,7 +309,7 @@ impl LlrScalar for Q3i8 {
 /// the Q-format (Q14 vs Q11) and the operations needed (norm² for
 /// sync_quality / LLR, conversion to f32 for SNR estimation) differ.
 ///
-/// The DFT (`symbol_spectra_direct_into` on the fixed-point path)
+/// The DFT (`fill_symbol_spectra_generic` on the fixed-point path)
 /// natively produces i16 Q15-ish output; `Q14i16` is one bit
 /// narrower to give the squared sum (norm²) a 1-bit headroom in
 /// i32 even when both re and im saturate.

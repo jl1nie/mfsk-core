@@ -15,13 +15,10 @@
 //!
 //! ## Memory
 //!
-//! Worker uses a Q15 basis scratch pair (60 KB each, internal DRAM) so
-//! the esp-dsp asm dot product stays at 1 cycle/sample. Phase 0.7: the
-//! caller owns these buffers and hands their raw pointers to `init`,
-//! letting WiFi-mode boot skip the 120 KB allocation entirely. The
-//! pointers must reference 16-byte-aligned `BASIS_SCRATCH_LEN`-element
-//! `i16` buffers in internal DRAM (`MALLOC_CAP_INTERNAL`) for the asm
-//! kernel to hit its 1 cycle/sample target.
+//! Pass-2 and stage-3 cs builds use the Goertzel fill (Phase
+//! 1.7.7-Stick, zero scratch) — the legacy BASIS Q15 scratch pair
+//! this module used to thread through `init` / `pass2_split` /
+//! `stage3_split` was removed in 0.8.0 (issue #162).
 //!
 //! ## Safety
 //!
@@ -47,7 +44,7 @@ use mfsk_core::core::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
     coarse_sync, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
-    RefinedCandidate, Spectrogram, BASIS_SCRATCH_LEN,
+    RefinedCandidate, Spectrogram,
 };
 
 use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
@@ -121,8 +118,6 @@ pub fn run_speculative_slot(
     spec_q: esp_idf_svc::sys::QueueHandle_t,
     slot_q: esp_idf_svc::sys::QueueHandle_t,
     cfg: &DecodeConfig,
-    basis_re_main: &mut [i16],
-    basis_im_main: &mut [i16],
 ) -> SpeculativeOut {
     use esp_idf_svc::sys::esp_timer_get_time;
 
@@ -166,23 +161,9 @@ pub fn run_speculative_slot(
     let mut n_early_refined = 0usize;
     let mut results = if !ready.is_empty() {
         let partial_audio: &[i16] = spec.audio_prefix();
-        let p2 = pass2_split(
-            partial_audio,
-            ready,
-            cfg.max_cand,
-            basis_re_main,
-            basis_im_main,
-        );
+        let p2 = pass2_split(partial_audio, ready, cfg.max_cand);
         n_early_refined = p2.len();
-        stage3_split(
-            partial_audio,
-            p2,
-            cfg.depth,
-            cfg.q_thresh,
-            cfg.bp_max_iter,
-            basis_re_main,
-            basis_im_main,
-        )
+        stage3_split(partial_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter)
     } else {
         Vec::new()
     };
@@ -207,22 +188,8 @@ pub fn run_speculative_slot(
         let max_cand_late = cfg.max_cand.saturating_sub(n_early_refined);
         if max_cand_late > 0 {
             let slot_audio: &[i16] = slot.audio();
-            let p2 = pass2_split(
-                slot_audio,
-                deferred,
-                max_cand_late,
-                basis_re_main,
-                basis_im_main,
-            );
-            let late = stage3_split(
-                slot_audio,
-                p2,
-                cfg.depth,
-                cfg.q_thresh,
-                cfg.bp_max_iter,
-                basis_re_main,
-                basis_im_main,
-            );
+            let p2 = pass2_split(slot_audio, deferred, max_cand_late);
+            let late = stage3_split(slot_audio, p2, cfg.depth, cfg.q_thresh, cfg.bp_max_iter);
             results.extend(late);
         }
     }
@@ -248,27 +215,6 @@ const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;
 const QUEUE_TYPE_BASE: u8 = 0;
 const PORT_MAX_DELAY: u32 = u32::MAX;
-
-/// Worker-side basis scratch pointers — set once by `init`, then read
-/// only by `worker_main`. The `xTaskCreatePinnedToCore` call in `init`
-/// is the release barrier that publishes the stores to the worker core.
-struct BasisPtrCell(UnsafeCell<*mut i16>);
-unsafe impl Sync for BasisPtrCell {}
-impl BasisPtrCell {
-    const fn new() -> Self {
-        Self(UnsafeCell::new(ptr::null_mut()))
-    }
-    fn get(&self) -> *mut i16 {
-        unsafe { *self.0.get() }
-    }
-    /// SAFETY: only call from `init` before the worker is spawned.
-    unsafe fn set(&self, p: *mut i16) {
-        unsafe { *self.0.get() = p };
-    }
-}
-
-static BASIS_RE_C1: BasisPtrCell = BasisPtrCell::new();
-static BASIS_IM_C1: BasisPtrCell = BasisPtrCell::new();
 
 enum Job {
     Pass2 {
@@ -387,14 +333,7 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 max_cand,
             } => {
                 let audio_slice = unsafe { core::slice::from_raw_parts(audio, audio_len) };
-                let basis_re = unsafe {
-                    core::slice::from_raw_parts_mut(BASIS_RE_C1.get(), BASIS_SCRATCH_LEN)
-                };
-                let basis_im = unsafe {
-                    core::slice::from_raw_parts_mut(BASIS_IM_C1.get(), BASIS_SCRATCH_LEN)
-                };
-                let result =
-                    refine_candidates_into(audio_slice, cands, max_cand, basis_re, basis_im);
+                let result = refine_candidates_into(audio_slice, cands, max_cand);
                 let raw = Box::into_raw(Box::new(result));
                 unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
             }
@@ -409,12 +348,6 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                 next_idx,
             } => {
                 let audio_slice = unsafe { core::slice::from_raw_parts(audio, audio_len) };
-                let basis_re = unsafe {
-                    core::slice::from_raw_parts_mut(BASIS_RE_C1.get(), BASIS_SCRATCH_LEN)
-                };
-                let basis_im = unsafe {
-                    core::slice::from_raw_parts_mut(BASIS_IM_C1.get(), BASIS_SCRATCH_LEN)
-                };
                 #[allow(static_mut_refs)]
                 let result = unsafe {
                     drain_stage3_queue(
@@ -425,8 +358,6 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                         depth,
                         q_thresh,
                         bp_max_iter,
-                        basis_re,
-                        basis_im,
                         &mut CS_SCRATCH_WORKER,
                     )
                 };
@@ -461,18 +392,8 @@ fn current_core() -> i32 {
 /// Spawn the persistent worker task on APP_CPU and create dispatch
 /// queues. Call once at startup, after `link_patches()`,
 /// `EspLogger::initialize_default()`, and `esp_dsp_fft::prewarm()`.
-///
-/// `re_c1` / `im_c1` are legacy BASIS scratch pointers — unused
-/// since Phase 1.7.7-Stick (mfsk-core now uses Goertzel for both
-/// pass-2 and stage-3 cs builds, zero scratch). Pass null; the
-/// stored fields are kept only for ABI shape compatibility with
-/// the in-tree closures that still bind them via
-/// `BASIS_{RE,IM}_C1.set()`. A follow-up commit drops these
-/// fields and the arg.
-pub fn init(re_c1: *mut i16, im_c1: *mut i16) {
+pub fn init() {
     unsafe {
-        BASIS_RE_C1.set(re_c1);
-        BASIS_IM_C1.set(im_c1);
         JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
         PASS2_RESULT_Q.set(queue_create(
             core::mem::size_of::<*mut Vec<RefinedCandidate>>(),
@@ -563,14 +484,11 @@ pub fn coarse_sync_split_with_allsum(
     local
 }
 
-/// Pass 2 split across main + worker. Each half scored with its own
-/// BASIS scratch; merged top-`max_cand` returned.
+/// Pass 2 split across main + worker; merged top-`max_cand` returned.
 pub fn pass2_split(
     audio: &[i16],
     pass1: Vec<SyncCandidate>,
     max_cand: usize,
-    basis_re_main: &mut [i16],
-    basis_im_main: &mut [i16],
 ) -> Vec<RefinedCandidate> {
     let mid = pass1.len() / 2;
     let mut head = pass1;
@@ -584,7 +502,7 @@ pub fn pass2_split(
     });
     unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(job)) };
 
-    let mut local = refine_candidates_into(audio, head, max_cand, basis_re_main, basis_im_main);
+    let mut local = refine_candidates_into(audio, head, max_cand);
 
     let worker_ptr = unsafe { queue_recv_ptr::<Vec<RefinedCandidate>>(PASS2_RESULT_Q.get()) };
     let worker = unsafe { *Box::from_raw(worker_ptr) };
@@ -602,15 +520,12 @@ pub fn pass2_split(
 /// on one core doesn't stall the other. Compared to the old
 /// fixed head/tail split, this absorbs the per-cand BP wall-clock
 /// variance (qso3 ~7 of 15 cands fail and run all 4 LLR variants).
-#[allow(clippy::too_many_arguments)]
 pub fn stage3_split(
     audio: &[i16],
     pass2: Vec<RefinedCandidate>,
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    basis_re_main: &mut [i16],
-    basis_im_main: &mut [i16],
 ) -> Vec<DecodeResult> {
     let mut slots: Vec<Option<RefinedCandidate>> = pass2.into_iter().map(Some).collect();
     let next_idx = AtomicUsize::new(0);
@@ -643,8 +558,6 @@ pub fn stage3_split(
             depth,
             q_thresh,
             bp_max_iter,
-            basis_re_main,
-            basis_im_main,
             &mut CS_SCRATCH_MAIN,
         )
     };
@@ -665,7 +578,6 @@ pub fn stage3_split(
 /// SAFETY: `slots_ptr` must point to `slots_len` valid
 /// `Option<RefinedCandidate>` cells, and `next_idx` claims an exclusive
 /// index per `fetch_add` so the same slot is never read by two callers.
-#[allow(clippy::too_many_arguments)]
 unsafe fn drain_stage3_queue(
     audio: &[i16],
     slots_ptr: *mut Option<RefinedCandidate>,
@@ -674,8 +586,6 @@ unsafe fn drain_stage3_queue(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    basis_re: &mut [i16],
-    basis_im: &mut [i16],
     cs_scratch: &mut [[mfsk_core::core::scalar::Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
     let mut out: Vec<DecodeResult> = Vec::new();
@@ -695,8 +605,6 @@ unsafe fn drain_stage3_queue(
             depth,
             q_thresh,
             bp_max_iter,
-            basis_re,
-            basis_im,
             cs_scratch,
         );
         out.append(&mut results);

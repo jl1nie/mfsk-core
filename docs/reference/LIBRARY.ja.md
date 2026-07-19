@@ -686,12 +686,15 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 * `decode_block_with_ap` / `decode_block_with_ap_tuned` — pass-1 BP
   に続き、`q_thresh` を超える sync quality の候補に対して WSJT-X
   AP iaptype ループ (1–12) を回す。0.6.1 新規
-* `decode_block_into[_tuned]` — 呼出側 scratch を受け取る `_into`
-  形式、結果は渡された `Vec` に書き込む。組込ポートで slot 毎の
-  alloc を避けるために使用
+* `decode_block_into[_tuned]` — 組込 fixed-point エントリポイント
+  (`fixed-point` feature)。`decode_block[_tuned]` と同じ形だが、
+  `mfsk-ffi-ft8` / `embedded-shared::dual_core` との API 安定性のため
+  別名を維持。0.8.0 以前は呼出側提供の BASIS scratch も受け取って
+  いたが、Goertzel fill path 移行で scratch が不要になったため削除
+  (issue #162)
 * `coarse_sync` / `coarse_sync_with_allsum` — FT8 sync grid 本体
   (0.6.0 で公開 API 昇格)
-* `fill_symbol_spectra` / `fill_symbol_spectra_into` — 音声から
+* `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — 音声から
   直接シンボル毎 FFT を抽出 (旧コードの cd0 +
   `core::llr::symbol_spectra` 二段経路を置換)
 
