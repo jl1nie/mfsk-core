@@ -114,6 +114,45 @@ Sequence:
 3. `git tag vX.Y.Z <merge-sha>` then `git push origin vX.Y.Z`.
 4. Watch the Actions tab for the `Release` workflow.
 
+### Release cadence — biweekly, decoupled from merging
+
+PRs land on `main` immediately as they're ready — CHANGELOG.md's
+top (unreleased/latest-numbered) section accumulates entries between
+tags, so `main`'s history and the CHANGELOG are always current for
+anyone reading the repo directly. **Tagging is separate and
+throttled**: established 2026-07-19 after v0.7.0-v0.7.3 shipped in a
+4-day burst (see `~/.claude/projects/.../memory/` for the session
+that measured this) — that burst wasn't itself a problem (each tag
+was a genuinely complete, coherently-scoped unit of work, not an
+arbitrary slice; per-tag diff size was comparable to or larger than
+historically slower-cadence releases), but four crates.io publishes /
+GitHub Releases in four days is more update-notification noise than
+downstream consumers want, even when every individual change was
+sound.
+
+**Default cadence: every 2 weeks** (max wait 13 days, average 7) from
+the last tag, bundling everything merged to `main` since then into
+one release PR + tag. Don't tag opportunistically just because a
+feature or fix finished — let it sit in the unreleased CHANGELOG
+section until the next scheduled cut, *unless* the escape hatch below
+applies.
+
+**Escape hatch**: an out-of-cadence tag is fine for a security fix, a
+data-loss/correctness bug serious enough to want off the broken
+version quickly, or whenever the user explicitly asks for an
+immediate release regardless of reason. Cutting early is the user's
+call, not something to infer on your own from "this seems important."
+
+**Versioning within this cadence**: a new protocol/mode addition is
+patch-level by this crate's own established convention (MSK144
+shipped as `0.7.4`, not `0.8.0` — grep `CHANGELOG.md` for prior
+protocol additions before assuming otherwise). Minor bumps
+(`0.6→0.7`) have historically marked a more structural change (e.g.
+`0.7.0`'s generic `decode_frame_for::<P>` API landing alongside FST4's
+remaining sub-modes), not simply "a release with new capability in
+it" — when genuinely unsure which a given accumulated batch warrants,
+ask rather than default to whichever bump feels more exciting.
+
 ## Memory
 
 - `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the

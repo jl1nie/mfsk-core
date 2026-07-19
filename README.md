@@ -66,6 +66,15 @@ for why there's no runtime `register_protocol()`.
 mfsk-core = { version = "0.7", features = ["ft8", "ft4"] }
 ```
 
+New features and fixes land on `main` immediately as PRs merge, but
+crates.io releases are cut on a throttled cadence (see
+[Status](#status)) — if you want a specific fix or new mode before it
+ships to crates.io, point at the git repo instead:
+
+```toml
+mfsk-core = { git = "https://github.com/jl1nie/mfsk-core", branch = "main", features = ["ft8", "ft4"] }
+```
+
 Synthesise an FT8 frame and decode it back:
 
 ```rust
@@ -525,10 +534,24 @@ reference:
 
 ## Status
 
-**Current line: `0.7.x`** (latest tag `v0.7.2`, 2026-07-18) — API
+**Current line: `0.7.x`** (latest tag `v0.7.4`, 2026-07-19) — API
 is deliberately not frozen. Breaking changes follow cargo-style minor
-bumps (`0.6 → 0.7`). See `CHANGELOG.md` for the per-release breakdown;
-the line history below explains what each series brought in. **0.7.0**
+bumps (`0.6 → 0.7`); a new protocol/mode addition on its own is
+patch-level (e.g. MSK144 shipped as `0.7.4`, not `0.8.0`) — minor
+bumps mark more structural changes (`0.7.0`'s generic
+`decode_frame_for::<P>` API, alongside FST4's remaining sub-modes).
+See `CHANGELOG.md` for the per-release breakdown; the line history
+below explains what each series brought in.
+
+**Release cadence**: PRs merge to `main` continuously — CHANGELOG.md's
+top section always reflects the latest unreleased state, so tracking
+`main` directly (see [Quick Start](#quick-start)) gets you every
+change immediately. Actual crates.io tags/GitHub Releases are cut on
+a **biweekly** cadence (bundling everything merged since the last
+tag) rather than after every individual change, to keep update
+notifications for crates.io consumers from firing too often — an
+out-of-cadence release is still fine for a security fix, a serious
+correctness bug, or on explicit request. **0.7.0**
 added the remaining FST4 sub-modes (FST4-15/30/120/300, alongside the
 existing FST4-60) and parallelised `coarse_sync` under `--features
 parallel`. **0.7.1** closed FST4's AWGN sensitivity gap vs. WSJT-X's
