@@ -172,15 +172,22 @@ worklist; if you're reading this file to decide what to work on next,
 this section is the one to trust over any recall numbers or hardware
 status stated elsewhere in it):
 
-- **#24** — JT65 golden-WAV recall lock. Scope has moved since this
-  was last described here: it's **not** about adding a `Jt65b` ZST
-  (JT65B/C are explicitly out of scope per the issue body — no
-  current user has asked for them). The real blocker is that
-  WSJT-X v3's `samples/JT65/*.wav` don't decode cleanly without
-  soft-symbol **erasure metadata** from private WSJT-X branches
-  (`b65a`/`kvasd`); three routes are on the table (synth-only
-  golden, this crate's own `decode_at_with_erasures` circularly,
-  or porting the `b65a`/`kvasd` pipeline properly).
+- **#24** — JT65 golden-WAV recall lock. **Scope changed again,
+  2026-07-19**: built WSJT-X's `jt65sim` and confirmed `kvasd`/
+  erasure metadata is *not* needed for its signals — `jt9 -6` (no
+  kvasd) decodes them cleanly down to -15 dB. But
+  `mfsk_core::jt65::decode_scan_default` found **zero decodes on any
+  of them**, including strong ones — and it's not a search-tolerance
+  problem: a wide-open diagnostic search lands candidates within
+  ~1 Hz / a few symbols of ground truth, but `decode_at()` fails on
+  every one of them. So there's a real decode-chain bug (demod → RS
+  → message-unpack) independent of the kvasd question, likely
+  because this path was only ever self-roundtrip-tested against this
+  crate's own encoder, never against an independent reference — same
+  shape as the JT9 encoder bug (#19). Deferred to a follow-up
+  session; see the issue for the full repro recipe. Once fixed, a
+  `jt65sim`-based sweep (mirroring `msk144_snr_sweep.rs`) becomes a
+  solid regression harness, no `b65a`/`kvasd` port needed after all.
 - **#125** — License question (GPLv3 vs. a more permissive license
   for broader/proprietary adoption). Needs a decision, not code.
 - **#143** — FST4 AP decode + SIC for FST4-15/30, design &
