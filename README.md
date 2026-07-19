@@ -509,6 +509,14 @@ reference:
   prerequisites, building `fst4sim` from WSJT-X source, generating
   the WAV corpus, and how to avoid grid-censoring artifacts when
   reading off the recall crossing.
+- **MSK144 sensitivity benchmark setup:**
+  [English `docs/notes/MSK144_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.md)
+  / [日本語 `docs/notes/MSK144_BENCHMARK.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.ja.md)
+  — the self-contained `tests/msk144_snr_sweep.rs` regression sweep
+  (no WSJT-X checkout needed), plus how to reproduce the one-time
+  apples-to-apples verification against a real WSJT-X `jt9` build
+  (building `jt9`/`msk144sim`/Hamlib from source, `msk144sim`'s SNR
+  convention, and the measured baseline results).
 - **M5StickS3 FT8 controller manual:**
   [English `docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
   / [日本語 `docs/reference/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md)
@@ -728,9 +736,12 @@ tree is present at the expected sibling path):
   differed by exactly 1 file out of 20 — no measurable recall gap at
   any tested SNR, 50% crossing ≈ -5.5 to -6 dB (WSJT-X's 2500 Hz
   reference-bandwidth convention) for both short (~0.4 s) and long
-  (~2.5 s) ping profiles. MSK40 (the legacy shorthand mode) and the
-  *adaptive* RX-equalizer training loop (as opposed to the fixed
-  bandpass filter above, which is ported) remain out of scope. Behind
-  the `msk144` feature (part of `full`).
+  (~2.5 s) ping profiles — see
+  [`docs/notes/MSK144_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.md)
+  for how to reproduce this and the self-contained
+  `tests/msk144_snr_sweep.rs` regression sweep. MSK40 (the legacy
+  shorthand mode) and the *adaptive* RX-equalizer training loop (as
+  opposed to the fixed bandpass filter above, which is ported) remain
+  out of scope. Behind the `msk144` feature (part of `full`).
 - **SNR (FT8)** — `xsnr2_db_simple` calibration (0.5.7 + 0.5.8) lands
   reported SNR within ±3 dB of JTDX absolute on real silicon.
