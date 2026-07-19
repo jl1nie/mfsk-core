@@ -8,12 +8,13 @@
 //! deliberate simplifications from the WSJT-X reference, both
 //! documented at the point they matter below:
 //!
-//! - No RX-equalizer training (`bvar`/`pcoeffs` in `mskrtd.f90`,
-//!   trained by `msk144signalquality.f90`): this port always builds
-//!   the analytic signal via a plain FFT-based Hilbert transform
-//!   ([`crate::core::dsp::analytic_signal`]), with no adaptive
-//!   phase/amplitude correction across decodes. Signal-quality
-//!   estimation/training is not ported.
+//! - No adaptive RX-equalizer training (`beq`/`pcoeffs`/`corr(i)` in
+//!   `mskrtd.f90`, trained by `msk144signalquality.f90`):
+//!   [`crate::core::dsp::analytic_signal`] applies WSJT-X's *fixed*
+//!   1500 Hz-centered bandpass filter (`analytic.f90`'s `h(i)`,
+//!   unconditional in the reference), but not the *adaptive*
+//!   session-trained phase/amplitude correction layered on top of it.
+//!   Signal-quality estimation/training is not ported.
 //! - MSK40 (the legacy shorthand mode, `msk40spd.f90`) and SWL/hash
 //!   dedup bookkeeping are out of scope (matches the original scoping
 //!   in this crate's issue #25).
