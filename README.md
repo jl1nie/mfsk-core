@@ -717,9 +717,20 @@ tree is present at the expected sibling path):
   bypasses `core::pipeline` entirely by design. Reuses
   `crate::msg::wsjt77` (same `pack77`/`unpack77` payload as FT8/FT4/
   FST4) and a 4th `LdpcParams` impl for LDPC(128,90) + CRC-13. **3 / 3
-  WSJT-X golden** across both `samples/MSK144/*.wav` recordings, no
-  threshold tuning needed. MSK40 (the legacy shorthand mode) and
-  RX-equalizer training remain out of scope. Behind the `msk144`
-  feature (part of `full`).
+  WSJT-X golden** across both `samples/MSK144/*.wav` recordings
+  (message, frequency, timing, **and SNR** all gated — a systematic
+  -1 dB SNR bias found post-ship was root-caused to a missing fixed
+  1500 Hz-centered bandpass filter in the analytic-signal front end
+  and fixed, closing the gap to an exact match). AWGN sensitivity
+  cross-validated directly against a WSJT-X `jt9 -k` build on
+  `msk144sim`-generated synthetic signals ([#156](https://github.com/jl1nie/mfsk-core/issues/156)):
+  25 of 28 (ping-length × SNR) cells matched exactly, the other 3
+  differed by exactly 1 file out of 20 — no measurable recall gap at
+  any tested SNR, 50% crossing ≈ -5.5 to -6 dB (WSJT-X's 2500 Hz
+  reference-bandwidth convention) for both short (~0.4 s) and long
+  (~2.5 s) ping profiles. MSK40 (the legacy shorthand mode) and the
+  *adaptive* RX-equalizer training loop (as opposed to the fixed
+  bandpass filter above, which is ported) remain out of scope. Behind
+  the `msk144` feature (part of `full`).
 - **SNR (FT8)** — `xsnr2_db_simple` calibration (0.5.7 + 0.5.8) lands
   reported SNR within ±3 dB of JTDX absolute on real silicon.

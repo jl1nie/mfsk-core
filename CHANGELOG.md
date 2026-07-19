@@ -32,6 +32,28 @@
   (`msk144signalquality.f90`-equivalent adaptive phase/amplitude
   correction across decodes).
 
+### Fixed
+
+- **MSK144 SNR systematic -1 dB bias, root-caused and closed** (#156).
+  WSJT-X's `analytic()` always applies a fixed 1500 Hz-centered
+  raised-cosine bandpass filter before computing the `pmax`/`pnoise`
+  SNR ratio (`analytic.f90`'s `h(i)`); the initial port's
+  `analytic_signal()` was a bare Hilbert transform with no
+  frequency-selective filtering, inflating the noise floor and
+  depressing every reported SNR by a consistent amount. Porting the
+  filter closes the gap to an exact match on all 3 golden decodes
+  (was +7/+4/+6 dB, now +8/+5/+7 dB, matching WSJT-X bit-for-bit);
+  `tests/msk144_wsjtx_samples.rs` now asserts SNR (±1 dB) instead of
+  only printing it.
+- **AWGN sensitivity cross-validated against a real WSJT-X `jt9 -k`
+  build** on `msk144sim`-generated synthetic signals: 25 of 28
+  (ping-length × SNR) cells matched exactly, the other 3 differed by
+  exactly 1 file out of 20 — no measurable recall gap at any tested
+  SNR. New `tests/msk144_snr_sweep.rs` (`#[ignore]`'d characterization
+  sweep, no WSJT-X build dependency, wired into CI's "catchall
+  characterization" tier) reproduces the same synthetic-signal recipe
+  as an ongoing regression signal.
+
 ## 0.7.3 — FT4 AWGN + FT8 CCIR fading sensitivity close-out (#151, #152, #153)
 
 ### Fixed
