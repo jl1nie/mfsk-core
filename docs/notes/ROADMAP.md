@@ -193,9 +193,16 @@ status stated elsewhere in it):
 - **#162** — Remove the legacy BASIS `fill_symbol_spectra_into` path.
   Filed 2026-07-19 after this same accuracy pass found the "removal
   scheduled for 0.7.0" promise (twice, in two different sections of
-  this file) was never followed through — `fill_symbol_spectra_into`,
-  `mfsk_core_dot_q15_i32`, and the `basis_re`/`basis_im` FFI args are
-  all still live in 0.7.4.
+  this file) was never followed through. **Priority downgraded same
+  day** after checking the 3 embedded app crates directly: all of
+  them already pass empty slices / null pointers for `basis_re`/
+  `basis_im` (dead since the 0.6.4 Goertzel migration — the scratch
+  allocation was eliminated then, the function *signatures* just
+  never got updated to drop the now-vestigial parameters). So this
+  is real code hygiene (dead code, one less confusing FFI parameter
+  pair) but zero actual harm today — not worth rushing the breaking
+  public-ABI change. Open, low priority, pick up when there's
+  headroom in a release cycle.
 - **#163** — CoreS3 Phase 1-Verify: live IC-705 hardware RX
   confirmation. Filed 2026-07-19 for the same reason — see **Phase
   B-Core** below for the full status this replaces.
