@@ -712,13 +712,20 @@ fn decode_at_grid_for<P: ModulationParams>(
                 }
                 let b90_ts = b90 / baud;
 
+                // `q65_dec1`/`q65_dec2` (`q65.f90:598,627`) both
+                // hardcode `nFadingModel=1` — WSJT-X's own automatic
+                // Q65 decode always uses Lorentzian here, never
+                // Gaussian (the Gaussian/Lorentzian choice only varies
+                // in the multi-period fading sweep,
+                // `decode_multi_period_for`, which faithfully tries
+                // both).
                 let _state = intrinsics_fast_fading(
                     &QRA15_65_64_IRR_E23,
                     &mut intrinsics,
                     &energies,
                     submode,
                     b90_ts,
-                    FadingModel::Gaussian,
+                    FadingModel::Lorentzian,
                     es_no,
                 );
 

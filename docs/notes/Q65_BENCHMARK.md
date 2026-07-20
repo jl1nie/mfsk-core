@@ -208,15 +208,36 @@ With that resolved, the real (smaller, coherent) picture: sub-modes
 with `ibwa=1` or `3` (A, B) now track real `jt9` closely — e.g.
 Q65-60B's CQ-AP crossing matches `jt9`'s own to within the sweep's own
 ±0.5 dB granularity. Sub-modes with `ibwa=8` (C, D, E, plus
-Q65-120D/120E which share the same letters) sit a real ~2.5-3 dB behind
-`jt9`. This is *not* the bug above (already fixed) — it's the next
-layer down: `q65_dec0` tries `q65_dec_q3` (a full-AP-list decode via
-`q65_ccf_85`, an 85-symbol — not just the 22 sync symbols —
-cross-correlation search) before ever reaching `q65_dec_q012`, and
-`q65_ccf_22` itself does an exhaustive `(freq × lag × drift)` search
-using all 22 sync symbols where this port only reuses the existing
-(narrower) sync-symbol-sum score. Neither is ported. Tracked as a
-follow-up — see `BENCHMARKS.md`'s Q65 section for current numbers.
+Q65-120D/120E which share the same letters) sat a real ~2.5-3 dB behind
+`jt9`.
+
+Two hypotheses for this residual gap were checked against the actual
+`decoder.f90`/`q65.f90` source and **ruled out**: (1) WSJT-X's
+`q65_dec_q3` full-AP-list stage (`q65_ccf_85`, an 85-symbol
+cross-correlation) running before `q65_dec_q012` — traced the call
+chain (`decoder.f90:210` hardcodes `nqd=1` on every decode, which
+looked promising, but `q65_set_list.f90:14` bails with `ncw=0`
+immediately when `hiscall` is blank, which it is for a bare `jt9 -3`
+invocation with no `-x`, so this path never actually activates for the
+comparison being made); (2) `q65_ccf_22`'s drift dimension
+(`max_drift`) — this is a caller-supplied argument
+(`decoder.f90:214`/`q65_decode.f90:34`, ultimately a GUI/CLI option),
+not something `jt9 -3` enables by default either.
+
+**The real cause**: `q65_dec1` and `q65_dec2` (`q65.f90:598`, `:627`
+— the two entry points both `q65_dec_q012` and `q65_loops` call) each
+hardcode `nFadingModel=1` locally, i.e. **every real Q65 decode always
+uses the Lorentzian fading model**, never Gaussian.
+`decode_at_grid_for` used `FadingModel::Gaussian`. Gaussian and
+Lorentzian barely differ at the narrow `b90` values Q65-60A/B's `ibw`
+sweep ever reaches (`ibwa=1..7`, max `b90≈44 Hz`) — which is exactly
+why those sub-modes had looked fine — but diverge sharply at the wide
+`b90` values Q65-60C/D/E's full sweep reaches (`ibwa=8..14`, up to
+`b90≈2 kHz`). Switching to `FadingModel::Lorentzian` closed the gap:
+all ten sub-modes now sit within ~1 dB of `jt9`'s own crossing (e.g.
+Q65-60C mfsk-core ≈−25.2 dB CQ-AP vs. `jt9` ≈−25.4 dB; Q65-120E
+mfsk-core ≈−27.6 dB vs. `jt9`'s previously-documented ≈−27.6 dB almost
+exactly). See `BENCHMARKS.md`'s Q65 section for the full table.
 
 ### Outcome
 

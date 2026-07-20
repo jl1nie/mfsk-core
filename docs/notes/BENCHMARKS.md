@@ -381,14 +381,14 @@ about ±0.5 dB given the sweep's SNR step granularity:
 |----------|---------------------------:|--------------------------------------------:|
 | Q65-15A  | ≈ −21.3 dB | ≈ −22.4 dB |
 | Q65-30A  | ≈ −24.6 dB | ≈ −25.2 dB |
-| Q65-60A  | ≈ −27.3 dB | ≈ −27.7 dB |
-| Q65-60B  | ≈ −26.4 dB | ≈ −27.3 dB |
-| Q65-60C  | ≈ −21.7 dB | ≈ −22.6 dB |
-| Q65-60D  | ≈ −22.4 dB | ≈ −22.6 dB |
-| Q65-60E  | ≈ −21.7 dB | ≈ −22.4 dB |
-| Q65-120D | ≈ −22.9 dB | ≈ −23.8 dB |
-| Q65-120E | ≈ −23.6 dB | ≳ −24.0 dB |
-| Q65-300A | ≈ −32.6 dB | ≈ −32.9 dB |
+| Q65-60A  | ≈ −27.4 dB | ≈ −28.2 dB |
+| Q65-60B  | ≈ −26.9 dB | ≈ −28.1 dB |
+| Q65-60C  | ≈ −24.6 dB | ≈ −25.2 dB |
+| Q65-60D  | ≈ −24.5 dB | ≈ −25.1 dB |
+| Q65-60E  | ≈ −24.3 dB | ≈ −25.1 dB |
+| Q65-120D | ≈ −25.5 dB | ≈ −27.3 dB |
+| Q65-120E | ≈ −25.7 dB | ≈ −27.6 dB |
+| Q65-300A | ≈ −33.6 dB | ≈ −34.5 dB |
 
 - **CQ-AP-hinted path is the fair WSJT-X comparison, verified against a
   real `jt9` build.** WSJT-X's default `jt9` decode always has free
@@ -396,17 +396,21 @@ about ±0.5 dB given the sweep's SNR step granularity:
   on CQ traffic implicitly gets AP-list benefit — a fair comparison
   needs this crate's `decode_scan_with_ap_for` + a `"CQ"` hint, not the
   plain baseline. Built `jt9` from WSJT-X source and ran it across the
-  same `q65sim` AWGN corpus at fine SNR resolution: Q65-60A/60B (`ibwa`
-  starts at 1/3) now match `jt9`'s own crossing almost exactly (60B:
-  mfsk-core ≈−27.3 dB vs `jt9` ≈−27.3 dB). Q65-60C/60D/60E (`ibwa`
-  starts at 8 — the widest fading-tolerance sub-modes) sit roughly
-  2.5-3 dB short of `jt9`'s real crossing (60C: mfsk-core ≈−22.6 dB vs
-  `jt9` ≈−25.4 dB) — a real, understood residual gap (WSJT-X's
-  additional `q65_dec_q3` AP-list stage and full `q65_ccf_22` lag-search
-  fidelity, neither ported this session), not a correctness bug: see
-  `Q65_BENCHMARK.md` for the investigation that ruled out a bug and the
-  false lead (an apparent sub-mode-specific cliff) it caught along the
-  way.
+  same `q65sim` AWGN corpus at fine SNR resolution. An initial pass
+  found Q65-60C/D/E (`ibwa=8`, the widest fading-tolerance sub-modes)
+  sitting ~2.5-3 dB short of `jt9`'s real crossing while Q65-60A/60B
+  (`ibwa=1/3`) matched closely — traced to a real bug, not a residual
+  algorithmic gap: `q65_dec1`/`q65_dec2` (`q65.f90:598,627`) both
+  hardcode `nFadingModel=1` (Lorentzian), but `decode_at_grid_for` used
+  Gaussian. Gaussian vs. Lorentzian barely differs at the narrow `b90`
+  values Q65-60A/B ever reach, which is why they'd looked fine — but
+  diverges sharply at the wide `b90` values (up to ~2 kHz) Q65-60C/D/E's
+  full `ibw` sweep reaches. Switching to Lorentzian closed the gap: all
+  ten sub-modes now sit within ~1 dB of `jt9`'s own crossing (Q65-60C
+  mfsk-core ≈−25.2 dB vs. `jt9` ≈−25.4 dB; Q65-120E mfsk-core ≈−27.6 dB
+  vs. `jt9` ≈−27.6 dB). See `Q65_BENCHMARK.md` for the investigation,
+  including a false lead (an apparent sub-mode-specific cliff, actually
+  a sparse-SNR-sampling artifact) it caught along the way.
 - **Historical note (pre-2026-07-20 rewrite):** an earlier direct
   cross-check against a real `jt9 -3` build on Q65-120D/120E/300A, using
   the narrow-Bessel `decode_scan_for` this session replaced, found two
@@ -414,10 +418,9 @@ about ±0.5 dB given the sweep's SNR step granularity:
   (Q65-120D ≈−28.2 dB, Q65-120E ≈−27.6 dB for `jt9 -3` vs. that
   implementation's ≈−30.8/−31.2 dB) because its unconditional
   time-retry gave it an advantage `jt9 -3` without `-c`/`-x` didn't
-  have; Q65-300A matched `jt9` almost exactly. The rewrite changed this
-  picture — see the table above: Q65-120D/120E (`ibwa=8`, like
-  Q65-60C/D/E) now sit *behind* `jt9` by a few dB rather than ahead of
-  it, while Q65-300A (`ibwa=1`, like Q65-60A/B) stays close.
+  have; Q65-300A matched `jt9` almost exactly. The rewrite (including
+  the Lorentzian fix above) reproduces this closely — see the table
+  above (Q65-120D ≈−27.3 dB, Q65-120E ≈−27.6 dB CQ-AP).
 
 ## MSK144
 

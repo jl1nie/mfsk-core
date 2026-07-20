@@ -23,21 +23,21 @@
   sweeping the fast-fading metric over a submode-specific b90 range in
   an `ndepth`-gated grid; our previous port diverged into a
   narrow-window AWGN-only Bessel metric with a time-only retry. Landing
-  the faithful port surfaced two further bugs found via a real-`jt9`
+  the faithful port surfaced three further bugs found via a real-`jt9`
   cross-check: a missing full/unpruned `ibw` sweep at the origin cell
   (WSJT-X's primary `q65_dec_q012` decode stage, which the pruned
   `q65_loops` fallback alone doesn't cover — worst for wide-`ibwa`
-  C/D/E sub-modes), and coarse-sync time resolution 4× coarser than
+  C/D/E sub-modes); coarse-sync time resolution 4× coarser than
   WSJT-X's own `NSTEP=8` (`q65/search.rs::Spectrogram`, fixed alongside
   a `q65_ccf_22`-style restructure — per-frequency time-collapse +
   local-max NMS + noise-adaptive percentile admission — needed to avoid
-  regressing a real off-air multi-signal recording). Sub-modes with
-  `ibwa=1/3` (A/B) now track real `jt9` closely; `ibwa=8` sub-modes
-  (C/D/E, plus Q65-120D/120E) still sit ~2.5-3 dB behind `jt9` — a real,
-  understood residual gap (WSJT-X's additional AP-list pre-stage and
-  fuller sync cross-correlation, neither ported), not a bug. Real
-  off-air golden-test recall *improved* (6 m EME sample: 3 → 4 messages
-  recovered). See `docs/notes/Q65_BENCHMARK.md`.
+  regressing a real off-air multi-signal recording); and a wrong fading
+  model — `q65_dec1`/`q65_dec2` hardcode Lorentzian, not Gaussian, but
+  the port used Gaussian, invisible for narrow-`b90` A/B sub-modes and
+  costing wide-`b90` C/D/E sub-modes ~2.5-3 dB. With all three fixed,
+  all ten sub-modes sit within ~1 dB of real `jt9`'s own crossing. Real
+  off-air golden-test recall also *improved* (6 m EME sample: 3 → 4
+  messages recovered). See `docs/notes/Q65_BENCHMARK.md`.
 - **FST4-60A OSD depth-escalation gate hand-calibrated for its own
   `N_SYNC=40`** (`core/pipeline.rs`) — the shared `osd_depth3_min=18`
   gate was calibrated against FT8's `N_SYNC=21`; FST4's larger sync
