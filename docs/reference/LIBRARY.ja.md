@@ -86,6 +86,15 @@ AWGN閾値)。これらは FEC、メッセージコーデック、同期配置�
 trait 実装ブロックを共有しており、NSPS とトーン間隔のみが
 sub-mode ごとに異なる。
 
+FST4 も同様に 5 個の T/R 周期 sub-mode (FST4-15 / FST4-30 /
+FST4-60A / FST4-120 / FST4-300) を実装済みで、LDPC(240, 101)・
+メッセージコーデック・5×Costas-8 同期・GFSK 整形 (BT=2.0) を共有し、
+`NSPS` / `NDOWN` / `SYMBOL_DT` / `TONE_SPACING_HZ` のみが異なる
+(FST4-15 のみ `TX_START_OFFSET_S` も異なる)。FST4-900 / FST4-1800 は
+意図的に未実装 (現時点で需要なし)。FST4W (WSPR 型の片方向 50 bit
+ビーコン、LDPC(240, 74)、周期 120/300/900/1800 s) は別のメッセージ
+形式であり本書の対象外 — issue #23 参照。
+
 **MSK144** はこの表に意図的に含めていない — `Protocol` を実装する
 ZST が存在しないため。§0.6 を参照。
 
@@ -108,7 +117,7 @@ FT8 / FT4 / FST4 はいずれも LDPC + 77 bit メッセージ + ブロック Co
    表現するために `FrameLayout::SYNC_MODE` に `Interleaved` バリアントを
    追加した。
 
-#### Q65 — 第 3 の FEC 系統 + 4 戦略 × 6 sub-mode
+#### Q65 — 第 3 の FEC 系統 + 5 戦略 × 10 sub-mode
 
 Q65 は WSPR では試されなかった軸で trait 面を試す材料になった:
 
@@ -129,19 +138,20 @@ Q65 は WSPR では試されなかった軸で trait 面を試す材料になっ
    Q65-120D/120E/300A。NSPS とトーン間隔のみが異なる。
    `q65_submode!` マクロが各 sub-mode の ZST と trait 実装を 1 行で
    生成するため、sub-mode ごとのコード重複は無い。
-4. **4 つの並列なデコード戦略**: 同一 FEC フレームに対し正当に
-   選び得る受信経路が 4 通り存在するのは Q65 が初めて — plain AWGN
-   BP、AP-hint BP、fast-fading metric、AP-list テンプレート照合。
-   §3 で詳述する。各戦略は sub-mode ZST に対して generic な
-   別個のエントリポイント関数として共存し、内部の FEC と
-   メッセージコーデックは共有する。
+4. **5 つの並列なデコード戦略**: 同一 FEC フレームに対し正当に
+   選び得る受信経路が複数通り存在するのは Q65 が初めて — plain AWGN
+   BP、AP-hint BP、fast-fading metric、AP-list テンプレート照合、
+   multi-period EMA averaging。§3 で詳述する。各戦略は sub-mode ZST
+   に対して generic な別個のエントリポイント関数として共存し、
+   内部の FEC とメッセージコーデックは共有する。
 
 WSPR が「**FEC 系統 + メッセージ長 + 同期形式**」を独立に差し替え
-られることを示したのに対し、Q65 は「第 3 の FEC 系統 + 6 sub-mode
-+ 4 戦略」がすべて `Protocol` super-trait の中に収まり、専用の
-配管を増やすことなく実現できることを示している。§3 で 4 戦略を
-詳述し、§7 で `PROTOCOLS` レジストリ (実装される 11 ZST すべての
-列挙) と `tests/protocol_invariants.rs` の汎用検査機構を扱う。
+られることを示したのに対し、Q65 は「第 3 の FEC 系統 + 10 sub-mode
++ 5 戦略」がすべて `Protocol` super-trait の中に収まり、専用の
+配管を増やすことなく実現できることを示している。§3 でデコード戦略を
+詳述し、§7 で `PROTOCOLS` レジストリ (実装される 24 ZST —
+WSJT ファミリ 20 + uvpacket 4、§10.1 — すべての列挙) と
+`tests/protocol_invariants.rs` の汎用検査機構を扱う。
 
 ### 0.6 MSK144 — 抽象化を使わないプロトコル
 
@@ -205,48 +215,63 @@ mfsk_core
 │   ├── equalize.rs     equalize_local (トーン毎 Wiener)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 ├── fec/              FecCodec 実装群
-│   ├── ldpc174_91.rs   LDPC(174, 91)  — FT8, FT4
-│   ├── ldpc240_101.rs  LDPC(240, 101) — FST4
+│   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
+│   ├── ldpc240_101/    LDPC(240, 101) — FST4
 │   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
-│   ├── conv.rs         ConvFano r=½ K=32 — WSPR, JT9
-│   ├── rs63_12.rs      RS(63, 12) GF(2⁶) — JT65
+│   ├── conv/           ConvFano r=½ K=32 — WSPR、ConvFano232 — JT9 (fano.rs)
+│   ├── rs/             RS(63, 12) GF(2⁶) — JT65
 │   └── qra/            Q-ary RA codec ファミリ — Q65
 │       ├── code.rs       汎用 QRA エンコーダ + 非二進 BP デコーダ
 │       ├── q65.rs        Q65 アプリケーション層 (CRC-12 + puncturing) +
 │       │                 リストデコード関数 (check_codeword_llh,
 │       │                 decode_with_codeword_list)
 │       ├── fast_fading.rs ドップラー拡散対応 intrinsic metric
-│       └── fading_tables.rs Gaussian / Lorentzian キャリブレーション表
+│       ├── fading_tables.rs Gaussian / Lorentzian キャリブレーション表
+│       ├── npfwht.rs      非二進 Walsh-Hadamard 変換ヘルパ
+│       └── pdmath.rs      確率領域 BP 数値計算ヘルパ
 ├── msg/              メッセージコーデック
 │   ├── wsjt77.rs       77 bit WSJT メッセージ (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
-│   └── hash.rs         コールサインハッシュテーブル
+│   ├── q65.rs          77 bit <-> 13×GF(64) symbol パッキング (QRA codec 用)
+│   ├── ap.rs           ApHint — a-priori ヒントビルダー (with_call1/call2/grid/report)
+│   ├── pipeline_ap.rs  AP 対応マルチパス decode pipeline (77-bit 系プロトコル)
+│   ├── packet_bytes.rs PacketBytesMessage — バイトペイロード例示コーデック
+│   └── hash_table.rs   コールサインハッシュテーブル
 ├── registry.rs       PROTOCOLS 静的配列 + ProtocolMeta + by_id / by_name
 ├── ft8/              FT8 ZST + decode + wave_gen
 ├── ft4/              FT4 ZST + decode
-├── fst4/             FST4-60A ZST + decode
+├── fst4/             FST4 ファミリ — 5 sub-mode ZST (15/30/60A/120/300) + decode
 ├── wspr/             WSPR ZST + decode + synth + spectrogram search
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ 消失対応 RS)
-├── q65/              Q65 ファミリ — 6 sub-mode ZST + decode + synth
-│   ├── protocol.rs     q65_submode! マクロ (Q65a30..Q65e60 ZST 生成)
-│   ├── rx.rs           4 つのデコード戦略 (AWGN / AP-hint / fast-fading / AP-list)
+├── q65/              Q65 ファミリ — 10 sub-mode ZST + decode + synth
+│   ├── protocol.rs     q65_submode! マクロ (Q65a15..Q65a300 ZST 生成)
+│   ├── rx.rs           5 つのデコード戦略 (AWGN / AP-hint / fast-fading / AP-list / multi-period)、§3 参照
 │   ├── ap_list.rs      standard_qso_codewords — full AP-list 候補生成
 │   ├── tx.rs           65-FSK 合成器 (sub-mode 対応)
 │   ├── search.rs       22 シンボル Costas-block coarse 検索
 │   └── sync_pattern.rs Q65 分散同期配置
-└── msk144/           MSK144 — Protocol 実装なし、独立トップレベルドライバ (§0.6)
-    ├── tx.rs           codeword -> 864 サンプル複素 OQPSK フレーム
-    ├── sync.rs         (CFO, タイミング) 同時整合フィルタ探索
-    ├── spd.rs          バースト候補検出 + short-ping デコードループ
-    ├── frame_decode.rs sync ゲート -> LLR -> LDPC -> メッセージ
-    └── decode.rs       decode_slot(): スライディングウィンドウ型トップレベルドライバ
+├── msk144/           MSK144 — Protocol 実装なし、独立トップレベルドライバ (§0.6)
+│   ├── tx.rs           codeword -> 864 サンプル複素 OQPSK フレーム
+│   ├── sync.rs         (CFO, タイミング) 同時整合フィルタ探索
+│   ├── spd.rs          バースト候補検出 + short-ping デコードループ
+│   ├── frame_decode.rs sync ゲート -> LLR -> LDPC -> メッセージ
+│   └── decode.rs       decode_slot(): スライディングウィンドウ型トップレベルドライバ
+└── uvpacket/         非 WSJT 応用例 — 4 sub-mode ZST、独自 tx/rx (§10.1)
+    ├── protocol.rs     ModulationParams/FrameLayout 実装 (一部は装飾的、§10.1 参照)
+    ├── framing.rs      可変長バーストフレーミング
+    ├── sync_pattern.rs 4 バリアント 127-chip BPSK m-sequence プリアンブル
+    ├── interleaver.rs  bit インターリーバ
+    ├── puncture.rs     ヘッダブロック用 LDPC240_101 puncturing
+    ├── message.rs      byte-pipe (app_type) メッセージ層
+    ├── tx.rs           π/4-DQPSK + RRC 合成器
+    └── rx.rs           LMS イコライザ + differential demod + decode
 ```
 
 各プロトコルモジュールはフィーチャーフラグ (`ft8`、`ft4`、`fst4`、
-`wspr`、`jt9`、`jt65`、`q65`、`msk144`) で gate されている。
-`core`、`fec`、`msg`、`registry` は常時利用可能。
+`wspr`、`jt9`、`jt65`、`q65`、`msk144`、`packet-bytes`、`uvpacket`)
+で gate されている。`core`、`fec`、`msg`、`registry` は常時利用可能。
 
 ワークスペースの兄弟クレート `mfsk-ffi` が同じクレートの上に C ABI
 共有ライブラリ (`libmfsk.{so,a,dylib}` + `mfsk.h`) を構築する。
@@ -327,7 +352,7 @@ ZST 定義で示す。
 
 ```rust
 use mfsk_core::core::protocol::*;
-use mfsk_core::fec::ldpc174_91::Ldpc174_91;
+use mfsk_core::fec::Ldpc174_91; // fec::ldpc から re-export
 use mfsk_core::msg::wsjt77::Wsjt77Message;
 
 pub struct Ft4;
@@ -458,22 +483,45 @@ FEC・メッセージコーデック・同期方式が自動的に使われる�
 このライブラリの大半のプロトコルはデコード経路が 1 通りしかない
 (FT 系列の `decode_frame::<P>`、WSPR の
 `wspr::decode::decode_scan_default` など)。Q65 は同一 FEC フレームに
-対して**正当に選び得る受信経路が 4 通り**ある最初の実装プロトコル
+対して**正当に選び得る受信経路が複数通り**ある最初の実装プロトコル
 で、各経路が異なる種類のチャネル劣化に対して計算コストとデコード
 閾値のトレードオフを実現している。これらは `mfsk_core::q65::rx`
 内で並列な関数ファミリとして共存し、すべて sub-mode ZST に対して
 generic である。
 
-| 状況                                                  | 戦略                       | エントリポイント                                              | 閾値ゲイン       |
-|-------------------------------------------------------|----------------------------|---------------------------------------------------------------|------------------|
-| デフォルト — チャネル特性 / メッセージ未知            | AWGN Bessel + BP           | `decode_at_for<P>` / `decode_scan_for<P>`                     | 基準             |
-| コールサイン or レポート既知、地上波チャネル          | AP-hint BP               | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB            |
-| ドップラー拡散チャネル (≥10 Hz、microwave EME)        | Fast-fading metric + BP    | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>`       | 拡散時 5–8 dB    |
-| コールペア既知、QSO 文脈無し、地上波                  | AP-list テンプレート照合   | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>` | ~3 dB |
+先に一点注意しておく: 単一候補の point-decode 関数 (`decode_at_for`,
+`decode_at_fading_for`, …) と、それらをラップする scan 関数
+(`decode_scan_for`, `decode_scan_fading_for`, …) は、同一アルゴリズム
+を 2 通りの呼び出し形にしただけではない。`decode_at_for` は文字通り
+plain Bessel-I0 metric である。しかし実際のほぼ全呼び出し元が使う
+`decode_scan_for` / `decode_scan_with_ap_for` は、各 coarse-search
+候補を `decode_at_with_fine_timing_for` に通しており、これは
+`q65_loops.f90` / `q65_dec_q012` から移植した WSJT-X 忠実な
+`(Δf, Δt, b90)` grid search を `FadingModel::Lorentzian` の
+fast-fading metric で常に実行する。これは WSJT-X 自身の自動デコーダの
+挙動と一致する — WSJT-X もデフォルト scan で plain-AWGN-only な
+Bessel パスを走らせることは無い。つまり「AWGN」と「fast-fading」は
+チャネル種別で選ぶ 2 つの独立した front end というより、
+(point 用 / scan 用という) 2 つの異なるエントリポイント群と捉える
+方が正確で、scan 経路はデフォルトで既にある程度の fading を仮定して
+おり、下記の専用 fast-fading エントリポイントは呼び出し側が明示的に
+`(b90_ts, model)` を指定したい場合のために存在する。
 
-**AWGN Bessel + BP** は教科書通りの経路: シンボル毎 FFT エネルギーを
-Bessel-I0 metric で確率ベクトル化し、QRA 符号上で非二進 belief
-propagation を実行する。加法ガウスノイズに近いチャネルで安全に動く。
+| 状況                                                  | 戦略                                              | エントリポイント                                                     | 閾値ゲイン       |
+|-------------------------------------------------------|-----------------------------------------------------|-------------------------------------------------------------------------|------------------|
+| 単一候補既知、メッセージ未知 (point-decode のみ)      | AWGN Bessel + BP                                    | `decode_at_for<P>`                                                       | 基準             |
+| デフォルト scan — チャネル特性 / メッセージ未知       | `(Δf,Δt,b90)` grid search + Lorentzian fading BP   | `decode_scan_for<P>` / `decode_scan_with_ap_for<P>`                      | WSJT-X 忠実デフォルト |
+| コールサイン or レポート既知、地上波チャネル          | AP-hint BP                                          | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`                | ~2 dB            |
+| ドップラー拡散チャネル、model 明示指定 (≥10 Hz、microwave EME) | Fast-fading metric + BP、呼び出し側が `(b90_ts, FadingModel)` を指定 | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` | 拡散時 5–8 dB    |
+| コールペア既知、QSO 文脈無し、地上波                  | AP-list テンプレート照合                            | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`      | ~3 dB |
+| 複数 T/R 期間にまたがる弱信号 / ionoscatter           | Multi-period EMA averaging (3 段カスケード)         | `decode_multi_period_for<P>` / `decode_multi_period`                     | 単一期間のどの戦略でも復号できない信号を回収 |
+
+**AWGN Bessel + BP** (`decode_at_for`) は教科書通りの単発経路:
+シンボル毎 FFT エネルギーを Bessel-I0 metric で確率ベクトル化し、
+QRA 符号上で非二進 belief propagation を実行する。加法ガウスノイズに
+近いチャネルで安全に動く — ただしこれは *point-decode* API 限定で
+あり、scan ファミリがこの front end に留まらない理由は上の注意点
+を参照。
 
 **AP-hint BP** は BP 開始前に既知の情報ビット位置で intrinsic
 確率ベクトルをクランプする。正しい hint は BP の収束点を真値側に
@@ -481,13 +529,15 @@ propagation を実行する。加法ガウスノイズに近いチャネルで�
 ある (CRC が残りを捕捉する)。`mfsk_core::msg::ApHint` の builder
 (`with_call1`, `with_call2`, `with_grid`, `with_report`) で構築する。
 
-**Fast-fading metric** は Bessel front end を、Gaussian / Lorentzian
-fading 形状に対してキャリブレーションされた拡散対応 metric に
-置き換える。トーンが 10–60 Hz に拡散する microwave EME で必須:
-リファレンス録音 `samples/Q65/60D_EME_10GHz/` (10 GHz EME) は
-この経路で復号できるが、AWGN front end では 0 件。`b90_ts` は
-拡散帯域 × シンボル周期 (代表値: 0.05 = ほぼ AWGN、1.0 = 中程度、
-5.0+ = 強拡散)。
+**Fast-fading metric** は Bessel front end を、呼び出し側が選ぶ
+`FadingModel::Gaussian` / `FadingModel::Lorentzian` 形状に対して
+キャリブレーションされた拡散対応 metric に置き換える (model は
+`decode_at_fading_for` / `decode_scan_fading_for` の明示的な引数で
+あり、固定キャリブレーションではない)。トーンが 10–60 Hz に拡散する
+microwave EME で必須: リファレンス録音 `samples/Q65/60D_EME_10GHz/`
+(10 GHz EME) はこの経路で復号できるが、plain Bessel front end では
+0 件。`b90_ts` は拡散帯域 × シンボル周期 (代表値: 0.05 = ほぼ AWGN、
+1.0 = 中程度、5.0+ = 強拡散)。
 
 **AP-list テンプレート照合**は BP を**走らせない**。代わりに生成器
 `q65::ap_list::standard_qso_codewords(my_call, his_call, his_grid)`
@@ -499,16 +549,32 @@ fading 形状に対してキャリブレーションされた拡散対応 metric
 SNR −25 dB (公開閾値より 1 dB 低い) のスイープ試験では plain BP が
 0/6 失敗するのに対し AP-list は 6/6 復号する。
 
+**Multi-period EMA averaging** (`decode_multi_period_for` /
+`decode_multi_period`) は `q65_decode.f90` の WSJT-X `iavg=1`/`iavg=2`
+平均化デコードを移植したもの — 上記のどの単一期間戦略でも復号
+できない ionoscatter / 弱 EME 信号を救う最後の戦略である。連続する
+T/R 期間にわたって per-slot spectrogram の指数移動平均 (時定数
+`min(navg, 4)`) を維持し、各スロットで平均化済みエネルギーに対して
+3 段のデコードラダーを試す: (1) AP-list — 呼び出し側が有望な
+call/grid ペアを与えた場合、(2) `b90·Ts ∈ {3, 8, 15}` ×
+`{Gaussian, Lorentzian}` を掃く fast-fading BP、(3) 最終手段としての
+plain Bessel BP (AWGN fallback)。スロットあたり最大 1 件を返し、
+`(message, ±4 Hz freq)` で重複排除する。`mfsk-ffi` にはまだ未公開 —
+現時点では Rust API のみ。
+
 **戦略の合成**: fast-fading と AP-list は合成可能で、fast-fading の
 intrinsic ベクトルをそのまま `Q65Codec::decode_with_codeword_list`
 に渡せる。専用の `decode_at_fading_with_ap_list_for<P>` を配線する
 のは小さな additive な作業; 現状は呼び出し側が低レベル primitive
 (`intrinsics_fast_fading` + `Q65Codec`) で明示的に合成する。
 
-C ABI には同 4 戦略が `mfsk_q65_decode`、`mfsk_q65_decode_with_ap`、
-`mfsk_q65_decode_fading`、`mfsk_q65_decode_with_ap_list` として
-1 対 1 で公開されており、いずれも `MfskQ65SubMode` 引数を取って
-6 sub-mode のいずれにもアクセス可能。
+C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
+`mfsk_q65_decode_with_ap`、`mfsk_q65_decode_fading`、
+`mfsk_q65_decode_with_ap_list` として 1 対 1 で公開されており、
+いずれも `MfskQ65SubMode` 引数を取って 10 sub-mode のいずれにも
+アクセス可能。`mfsk_q65_decode_fading` はさらに `MfskQ65FadingModel`
+(`Gaussian` / `Lorentzian`) 引数を取る (§8)。Multi-period averaging は
+まだ C ABI に含まれていない。
 
 ## 4. 共有プリミティブ (`core`)
 
@@ -589,35 +655,35 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 > 出すパスは残しているが、`ft8::decode::decode_frame*` 系の高レベル
 > エントリは全て `decode_block::coarse_sync` を経由する。詳細は §10。
 
-### Sync2D — ローカル (Δf, Δt) refine と FST4 フルスロット探索 (`mfsk_core::core::sync2d`)
+### Sync2D — FT4 / FST4 フルスロット・コヒーレント sync 探索 (`mfsk_core::core::sync2d`)
 
-`core::sync::coarse_sync` のグリッド探索とは別に、WSJT-X のローカル
-sync 微調整コードを移植した 2 系統がここにある:
+WSJT-X から移植したプロトコル専用のフルスロット・コヒーレント探索が
+2 系統ここにある。いずれも symbol 境界で位相をリセットせず 8-symbol
+ブロック全体で連続的に位相を積算する Costas 参照信号
+(`make_costas_ref_continuous`) を、非コヒーレントな `Σ|z_k|²` パワー
+和ではなくコヒーレントな単一内積 (`score_flat_coherent`、振幅 `|z|`)
+でスコア化する — sync スコアの SNR 弁別力が ~3 dB 改善する:
 
-* `sync2d_refine::<P>(...)` — coarse sync で見つかった候補周辺の
-  汎用 2D (Δf, Δt) ローカル refine (探索半径/ステップは絶対値
-  ハードコードでなく `P::TONE_SPACING_HZ` / `ds_spb` でスケール)。
-  0.7.1 で FT4 の旧 `sync4d_refine` から切り出し、FT4 golden-WAV
-  ロックで旧ハードコード定数とビット完全一致を確認済み。
-  **FT4 専用** — FST4 にも有効化を試みたが、しきい値付近で逆に
-  recall が悪化する結果になった (探索窓を広げるとノイズ由来の相関
-  ピークにロックする頻度が、実際のタイミング/周波数誤差を拾う頻度
-  より高くなる低 SNR 域のため)。FST4 では無効のまま
-  `core::pipeline.rs` にインラインで経緯を記録 (issue #146)。
-* `fst4_sync_search::<P>(...)` — WSJT-X の `fst4_sync_search` /
-  `sync_fst4` (`fst4_decode.f90:657-925`) に対応する FST4 専用の
-  2 段階ローカル探索。coarse パスはスロット全体 (±1.5 s、step 4、
+* `ft4_sync_search::<P>(cd0, candidate)` / 窓指定版の
+  `ft4_sync_search_window::<P>(cd0, candidate, ib_min, ib_max)` —
+  **FT4 専用**。coarse-sync 候補自身の (しばしば外れる) Δt 推定
+  周辺のローカル窓ではなく、スロット全体のダウンサンプル・サンプル
+  範囲にわたるコヒーレントな Δt 探索 (`ft4_decode.f90` の
+  `isync=1`/`isync=2` ループ、`sync4d.f90` のスコア関数)。
+* `fst4_sync_search::<P>(cd0, cand)` — WSJT-X の
+  `fst4_decode.f90:657-925` に対応する FST4 専用の 2 段階フル
+  スロット探索。coarse パスはスロット全体 (±1.5 s、step 4、
   周波数 ±12 step × 0.1·baud)、fine パスは ±7 step × 0.02·baud ×
-  ±4 サンプル。実際に効いたのは探索の有無ではなく WSJT-X の 2 つの
-  細部を再現した点: symbol 境界で位相をリセットせず 8-symbol
-  ブロック全体で連続的に位相を積算する Costas 参照信号
-  (`make_costas_ref_continuous`、`csync1` 相当) と、それを非コヒー
-  レントな `Σ|z_k|²` パワー和ではなくコヒーレントな単一内積
-  (`score_flat_coherent`、振幅 `|z|`) でスコア化する点。コヒーレン
-  ト化により sync スコアの SNR 弁別力が ~3 dB 改善し、これが約
-  5,000 セルの coarse グリッドでノイズピークが真のピークに勝つ確率
-  を実際に下げた。結果、FST4 の AWGN 感度ギャップは WSJT-X 公称値
-  に対して ~2.4 dB → ~0.3 dB まで縮小 (0.7.1、issue #146)。
+  ±4 サンプル。FST4 の AWGN 感度ギャップを WSJT-X 公称値に対して
+  ~0.3 dB まで縮小した (issue #146)。
+
+両者はかつて共有していたローカル (Δf, Δt) refine
+(`sync2d_refine` / `Sync2dConfig`) を置き換えたもので、その旧実装は
+**削除済み** (2026-07-20、呼び出し箇所ゼロ)。FT4 (issue #72) と
+FST4 (issue #146) がそれぞれフルスロット探索を必要とするようになった
+ため — coarse-sync 候補の位置を中心とするローカル窓では、その
+非コヒーレントな Δt 推定が窓の探索半径を超えて外れているケースを
+回復できなかった。
 
 同じ作業で `core::sync::coarse_sync::<P>` にも FST4 専用の拡張が
 入った: 既存の short-time Costas グリッドしきい値に加えて、
@@ -700,17 +766,20 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 
 ## 5. Feature flags
 
-| フィーチャー  | デフォルト | 効果                                                         |
-|---------------|------------|--------------------------------------------------------------|
-| `ft8`         | on         | FT8 ZST、decode、wave_gen                                   |
-| `ft4`         | on         | FT4 ZST、decode                                             |
-| `fst4`        | off        | FST4-60A ZST、decode                                        |
-| `wspr`        | off        | WSPR ZST、decode、synth、spectrogram search                 |
-| `jt9`         | off        | JT9 ZST、decode                                             |
-| `jt65`        | off        | JT65 ZST、decode (+ 消失対応 RS)                            |
-| `q65`         | off        | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZST、4 デコード戦略、synth |
-| `full`        | off        | 全 7 プロトコルの集約                                        |
-| `parallel`    | on         | パイプラインで rayon `par_iter` (WASM は無効化)              |
+| フィーチャー      | デフォルト | 効果                                                         |
+|-------------------|------------|--------------------------------------------------------------|
+| `ft8`             | on         | FT8 ZST、decode、wave_gen                                   |
+| `ft4`             | on         | FT4 ZST、decode                                             |
+| `fst4`            | off        | FST4-15/30/60A/120/300 ZST、decode                          |
+| `wspr`            | off        | WSPR ZST、decode、synth、spectrogram search                 |
+| `jt9`             | off        | JT9 ZST、decode                                             |
+| `jt65`            | off        | JT65 ZST、decode (+ 消失対応 RS)                            |
+| `q65`             | off        | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZST、5 デコード戦略 (§3)、synth |
+| `msk144`          | off        | MSK144 — `Protocol` ZST 無し、独立トップレベルドライバ (§0.6) |
+| `packet-bytes`    | off        | `PacketBytesMessage` — バイトペイロード例示 `MessageCodec`    |
+| `uvpacket`        | off        | uvpacket — 非 WSJT 応用例、4 sub-mode ZST (§10.1)、`fst4` を要求 |
+| `full`            | off        | 上記全プロトコル系フィーチャーの集約                          |
+| `parallel`        | on         | パイプラインで rayon `par_iter` (WASM は無効化)              |
 
 ## 6. Rust から利用する
 
@@ -718,7 +787,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.6", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコルのフィーチャーだけ有効にすれば十分。以下では複数を
@@ -804,10 +873,16 @@ use mfsk_core::core::equalize::EqMode;
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
                           DecodeDepth::BpAllOsd, /*max_cand*/ 15,
-                          EqMode::Adaptive, Some(&ap)) {
+                          EqMode::Local, Some(&ap)) {
     // …
 }
 ```
+
+`EqMode` は 0.7.0 以降 `Off` / `Local` の 2 種類のみ — 従来の
+`Adaptive` (EQ あり→無しの 2 パス試行) は、その効果
+(-18 dB で追加復号 ~1/20) が候補あたり 2 倍のコストに見合わなく
+なったため同リリースで廃止された (issue #73)。旧 2 パス挙動が
+欲しい呼び出し元は `Local` → `Off` の順に明示的に 2 回呼べばよい。
 
 FT4 側も `ft4::decode::decode_sniper_ap` として同じ形で提供して
 いる。
@@ -863,15 +938,16 @@ for p in PROTOCOLS {
 参照ヘルパー:
 
 * `mfsk_core::by_id(ProtocolId::Q65)` — 同じファミリ id を持つ
-  全 entry を返す。Q65 は 6 件 (sub-mode 毎)、その他は 1 件。
+  全 entry を返す。Q65 は 10 件 (sub-mode 毎)、その他は 1 件。
 * `mfsk_core::by_name("Q65-60D")` — 表示名による厳密一致検索。
 * `mfsk_core::for_protocol_id(id)` — 同じ id を持つ最初の entry。
   「ファミリ毎に 1 mode」のケースで便利。
 
-Q65 は registry 上で family / sub-mode 区別が顕在化する例:
-6 sub-mode 全てが `ProtocolId::Q65` を共有 (FFI tag が family
+Q65 は registry 上で family / sub-mode 区別が最も顕在化する例:
+10 sub-mode 全てが `ProtocolId::Q65` を共有 (FFI tag が family
 レベルである故) しつつ、NSPS / トーン間隔 / スロット長が異なる
-ため独立した entry になる。
+ため独立した entry になる。同じ形が FST4 にも小規模に現れる —
+`by_id(ProtocolId::Fst4)` は 5 件 (T/R 周期 sub-mode 毎) を返す。
 
 レジストリ本体は `mfsk-core/src/registry.rs` 内部の
 `protocol_meta!` マクロで構築される。新しいプロトコルの追加は
@@ -881,9 +957,9 @@ ZST + 表示名で 1 行ずつ。
 
 `tests/protocol_invariants.rs` は `assert_protocol_invariants::<P:
 Protocol>(name)` の単一の generic 関数をすべての実装 ZST に対して
-実行する。本体は FT8、FT4、FST4、WSPR、JT9、JT65 と 6 sub-mode の
-Q65 — 11 invocation × 1 実装。3 つのヘルパー関数が合計 17 個の
-不変条件を pin する:
+実行する。本体は FT8、FT4、5 sub-mode の FST4、WSPR、JT9、JT65、
+10 sub-mode の Q65、4 sub-mode の uvpacket — 24 invocation × 1 実装。
+3 つのヘルパー関数が合計 17 個の不変条件を pin する:
 
 * **`assert_modulation_invariants<P: ModulationParams>`** —
   `2^BITS_PER_SYMBOL ≤ NTONES`、`SYMBOL_DT × 12000 == NSPS`、
@@ -947,12 +1023,16 @@ enum MfskProtocol {
     MFSK_PROTOCOL_WSPR    = 2,
     MFSK_PROTOCOL_JT9     = 3,
     MFSK_PROTOCOL_JT65    = 4,
-    MFSK_PROTOCOL_FST4S60 = 5,
+    MFSK_PROTOCOL_FST4S60 = 5,  // FFI で公開されているのは FST4-60A のみ
+                                // (他の 4 sub-mode: 15/30/120/300 は
+                                // Rust API 限定、§0.4)
     MFSK_PROTOCOL_Q65A30  = 6,
 };
 
-// Q65 sub-mode は family enum とは別の専用 enum で識別:
-enum MfskQ65SubMode { A30=0, A60=1, B60=2, C60=3, D60=4, E60=5 };
+// Q65 sub-mode は family enum とは別の専用 enum で識別 (全 10 sub-mode):
+enum MfskQ65SubMode { A30=0, A60=1, B60=2, C60=3, D60=4, E60=5,
+                       A15=6, D120=7, E120=8, A300=9 };
+// mfsk_q65_decode_fading の model 引数 (§3):
 enum MfskQ65FadingModel { Gaussian=0, Lorentzian=1 };
 
 uint32_t          mfsk_version(void);           // major<<16 | minor<<8 | patch
@@ -980,7 +1060,8 @@ MfskStatus        mfsk_encode_q65(MfskQ65SubMode submode,
                                   const char* report, float freq_hz,
                                   MfskSamples* out);
 
-// Q65 専用 4 戦略 (sub-mode 引数で 6 sub-mode のいずれにも適用):
+// Q65 専用 4 戦略 (sub-mode 引数で 10 sub-mode のいずれにも適用。
+// multi-period averaging はまだ C ABI 未公開、§3 参照):
 MfskStatus        mfsk_q65_decode(MfskQ65SubMode, ...);              // AWGN
 MfskStatus        mfsk_q65_decode_with_ap(MfskQ65SubMode, ...,
                                   const char* ap_call1, ap_call2,
@@ -1056,8 +1137,11 @@ Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
 |------------------|------------|--------|----------|------------|-----------------------|-------|---------------|------|
 | FT8              | 15 s       | 8      | 79       | 6.25 Hz    | LDPC(174, 91)         | 77 b  | 3×Costas-7    | 実装済 |
 | FT4              | 7.5 s      | 4      | 103      | 20.833 Hz  | LDPC(174, 91)         | 77 b  | 4×Costas-4    | 実装済 |
-| FST4-60A         | 60 s       | 4      | 160      | 3.125 Hz   | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 |
-| FST4 他サブモード | 15–1800 s  | 4      | 可変     | 可変       | LDPC(240, 101)        | 77 b  | 5×Costas-8    | ZST 1 つ/サブモード |
+| FST4-15          | 15 s       | 4      | 160      | 16.667 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 (最速 FST4、閾値約-20.7dB) |
+| FST4-30          | 30 s       | 4      | 160      | 7.143 Hz   | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 (閾値約-24.2dB) |
+| FST4-60A         | 60 s       | 4      | 160      | 3.0864 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 (地上波主力サブモード、閾値約-28.1dB) |
+| FST4-120         | 120 s      | 4      | 160      | 1.4634 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 (閾値約-31.3dB) |
+| FST4-300         | 300 s      | 4      | 160      | 0.5580 Hz  | LDPC(240, 101)        | 77 b  | 5×Costas-8    | 実装済 (閾値約-35.3dB、実装済み中最深) |
 | WSPR             | 120 s      | 4      | 162      | 1.465 Hz   | conv r=½ K=32 + Fano  | 50 b  | シンボル毎 LSB (npr3) | 実装済 |
 | JT9              | 60 s       | 9      | 85       | 1.736 Hz   | conv r=½ K=32 + Fano  | 72 b  | 16 分散位置   | 実装済 |
 | JT65             | 60 s       | 65     | 126      | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 分散位置   | 実装済 |
@@ -1076,10 +1160,14 @@ FST4 は FT8 の LDPC(174, 91) ではなく LDPC(240, 101) + 24 bit CRC を
 用いる別の符号系で、`fec::ldpc240_101` として実装している。
 BP / OSD のアルゴリズムは LDPC サイズが変わっても構造的に同じなので、
 新たに用意したのはパリティ検査行列・生成行列と符号寸法だけである。
-FST4-60A は全経路が動作する状態でまとめている。他のサブモード
-(-15 / -30 / -120 / -300 / -900 / -1800) は `NSPS` / `SYMBOL_DT` /
-`TONE_SPACING_HZ` のみが異なるため、それぞれ短い ZST を追加して
-同じ FEC・同期・DSP を再利用すれば対応できる。
+実装済みの 5 sub-mode (FST4-15/30/60A/120/300) は全経路が動作する
+状態で揃っており、異なるのは `NSPS` / `SYMBOL_DT` /
+`TONE_SPACING_HZ` のみ (FST4-15 だけは `TX_START_OFFSET_S` も
+0.5 s で他と異なる) — `q65_submode!` と同じパターンの
+`fst4_submode!` マクロが各 ZST を生成する。FST4-900 / FST4-1800 は
+未実装のまま (現時点で需要なし)。FST4W (WSPR 型片方向 50 bit
+ビーコン、LDPC(240, 74)、周期 120/300/900/1800 s) は別のメッセージ
+形式であり本書の対象外 — issue #23 参照。
 
 WSPR はこれまでの FT モードと構造的に異なる。LDPC ではなく畳み込み符号
 (`fec::conv::ConvFano`、WSJT-X `lib/wsprd/fano.c` を移植)、
@@ -1090,10 +1178,13 @@ interleaved sync (`SyncMode::Interleaved`) を用いる。`wspr` モジュール
 coarse search を提供しており、120 s スロット全体の探索を妥当な時間で
 実行できるように構成している。
 
-JT9 は畳み込み FEC (`ConvFano`) と 72 bit JT メッセージコーデック
-(`msg::jt72::Jt72Codec`) を再利用する。JT65 は Reed-Solomon
-`fec::rs63_12::Rs63_12` を用い、Karn の Berlekamp-Massey アルゴリズム
-に基づく消失対応復号を提供する。
+JT9 は WSPR と同じ畳み込み FEC 系統を使うが、`ConvFano` をそのまま
+共有するのではなく独自の `ConvFano232` 型 (`fec::conv`) として実装
+している — JT9 の 206 bit 符号語フレーミングが WSPR とは異なるため。
+加えて 72 bit JT メッセージコーデック (`msg::jt72::Jt72Codec`) を
+使う。JT65 は Reed-Solomon `fec::rs::Rs63_12` (`fec::Rs63_12` として
+re-export) を用い、Karn の Berlekamp-Massey アルゴリズムに基づく
+消失対応復号を提供する。
 
 Q65 は第 3 の FEC 系統を導入する: GF(64) 上の Q-ary
 repeat-accumulate 符号で、Walsh-Hadamard メッセージにより確率
@@ -1102,11 +1193,12 @@ repeat-accumulate 符号で、Walsh-Hadamard メッセージにより確率
 `fec::qra15_65_64::QRA15_65_64_IRR_E23`)。アプリケーション層は
 13 個のユーザ情報シンボルに CRC-12 を付与した上で 65 シンボルの
 符号語から CRC 2 シンボルを puncture することで 63 シンボルを
-実送信する。実装した 6 sub-mode は同じ FEC + 同期配置 + 77 bit
-メッセージを共有し、`NSPS` (30 s vs 60 s スロット) と
-トーン間隔 (×1, ×2, ×4, ×8, ×16) のみが異なる。§3 の 4 つの
-並列デコード戦略 (AWGN BP, AP-hint BP, fast-fading metric,
-AP-list テンプレート照合) はすべて同じ QRA codec を利用する。
+実送信する。実装した 10 sub-mode は同じ FEC + 同期配置 + 77 bit
+メッセージを共有し、`NSPS` (15-s / 30-s / 60-s / 120-s / 300-s
+スロット) とトーン間隔 (×1, ×2, ×4, ×8, ×16) のみが異なる。§3 の
+5 つの並列デコード戦略 (AWGN BP, AP-hint BP, fast-fading metric,
+AP-list テンプレート照合, multi-period EMA averaging) はすべて
+同じ QRA codec を利用する。
 
 ### 10.1 スコープ境界: 応用例としての `uvpacket`
 
@@ -1140,6 +1232,14 @@ uvpacket が汎用 TX/RX パイプラインを bypass するため、
 [`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
 で明文化されており、非 WSJT プロトコルを sibling crate として切り
 出さず in-tree に残した自然な帰結です。
+
+実際の受信パイプラインを bypass しているにもかかわらず、uvpacket の
+4 つの sub-mode ZST (`UvRobust`, `UvStandard`, `UvUltraRobust`,
+`UvExpress`) は実際に `Protocol` を実装しており、`PROTOCOLS`
+レジストリ (§7.1) と `tests/protocol_invariants.rs` の両方に
+配線されています — `tx::encode`/`rx::decode_known_layout` がその
+大半を読まなくても、列挙・不変条件検査の目的では trait 面が満たされ
+ています。
 
 #### Trait scope を 2 方向から probe する見立て
 

@@ -88,6 +88,15 @@ sub-mode at ~-34 dB AWGN threshold). They share the FEC, message
 codec, sync layout and a common impl block; only NSPS and tone
 spacing differ.
 
+FST4 similarly ships as five wired T/R-period sub-modes — FST4-15,
+FST4-30, FST4-60A, FST4-120, FST4-300 — sharing LDPC(240, 101),
+message codec, Costas-8 sync and GFSK shaping (BT=2.0); only `NSPS` /
+`NDOWN` / `SYMBOL_DT` / `TONE_SPACING_HZ` differ (and `TX_START_OFFSET_S`
+for FST4-15 alone). FST4-900 and FST4-1800 are deliberately not wired
+(no user demand as of writing); FST4W, the WSPR-style one-way 50-bit
+beacon variant (LDPC(240, 74), periods 120/300/900/1800 s), is a
+separate message format not covered here — see issue #23.
+
 **MSK144** is deliberately not in this table — no ZST implements
 `Protocol` for it. See §0.6.
 
@@ -111,7 +120,7 @@ the FT-family code paths.
    not a block of Costas arrays. Captured by adding an `Interleaved`
    variant to `FrameLayout::SYNC_MODE`.
 
-#### Q65 — a third FEC family plus a four-way decoder-strategy axis
+#### Q65 — a third FEC family plus a five-way decoder-strategy axis
 
 Q65 came later and stresses the abstraction along axes WSPR did not
 exercise:
@@ -135,21 +144,22 @@ exercise:
    spacing. The `q65_submode!` macro emits the per-sub-mode ZSTs
    and their trait impls in one line each — no per-mode code
    duplication.
-4. **Four parallel decoder strategies** — Q65 is the first protocol
+4. **Five parallel decoder strategies** — Q65 is the first protocol
    in the library where the receiver chain has multiple legitimate
    paths through the same FEC. They are listed in §3:
-   plain AWGN BP, AP-hint BP, fast-fading metric, and AP-list
-   template matching. Each is a distinct entry-point function
-   generic over the sub-mode ZST; the underlying FEC and message
-   codec are shared.
+   plain AWGN BP, AP-hint BP, fast-fading metric, AP-list
+   template matching, and multi-period EMA averaging. Each is a
+   distinct entry-point function generic over the sub-mode ZST; the
+   underlying FEC and message codec are shared.
 
 Where WSPR proved that *FEC family + message width + sync mode*
 could each be swapped independently, Q65 proves that adding a third
-FEC family, six sub-modes and four parallel decoder strategies all
-still fit inside the same `Protocol` super-trait without bespoke
-plumbing. §3 expands on the four strategies; §7 covers the
+FEC family, ten sub-modes and (now) five parallel decoder strategies
+all still fit inside the same `Protocol` super-trait without bespoke
+plumbing. §3 expands on the decoder strategies; §7 covers the
 `PROTOCOLS` registry that lets consumers enumerate every wired
-protocol (eleven ZSTs in total) and the
+protocol (24 ZSTs in total: 20 WSJT-family protocols/sub-modes plus
+4 `uvpacket` sub-modes, §10.1) and the
 `tests/protocol_invariants.rs` generic checker that holds the trait
 contract honest.
 
@@ -214,48 +224,64 @@ mfsk_core
 │   ├── equalize.rs     equalize_local (Wiener per-tone)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 ├── fec/              FecCodec implementations
-│   ├── ldpc174_91.rs   LDPC(174, 91)  — FT8, FT4
-│   ├── ldpc240_101.rs  LDPC(240, 101) — FST4
+│   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
+│   ├── ldpc240_101/    LDPC(240, 101) — FST4
 │   ├── ldpc_128_90/    LDPC(128, 90)  — MSK144
-│   ├── conv.rs         ConvFano r=½ K=32 — WSPR, JT9
-│   ├── rs63_12.rs      RS(63, 12) GF(2⁶) — JT65
+│   ├── conv/           ConvFano r=½ K=32 — WSPR; ConvFano232 — JT9 (fano.rs)
+│   ├── rs/             RS(63, 12) GF(2⁶) — JT65
 │   └── qra/            Q-ary RA codec family — Q65
 │       ├── code.rs       Generic QRA encoder + non-binary BP decoder
 │       ├── q65.rs        Q65 application wrapper (CRC-12 + puncturing) +
 │       │                 list-decoding primitives (check_codeword_llh,
 │       │                 decode_with_codeword_list)
 │       ├── fast_fading.rs Doppler-spread-aware intrinsic metric
-│       └── fading_tables.rs Gaussian / Lorentzian calibration tables
+│       ├── fading_tables.rs Gaussian / Lorentzian calibration tables
+│       ├── npfwht.rs      Non-binary Walsh-Hadamard transform helpers
+│       └── pdmath.rs      Probability-domain BP math helpers
 ├── msg/              Message codecs
 │   ├── wsjt77.rs       77-bit WSJT message (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72-bit JT message — JT9, JT65
-│   └── hash.rs         Callsign hash table
+│   ├── q65.rs          77-bit <-> 13x GF(64)-symbol packing for the QRA codec
+│   ├── ap.rs           ApHint — a-priori hint builder (with_call1/call2/grid/report)
+│   ├── pipeline_ap.rs  AP-assisted multi-pass decode pipeline (77-bit-family protocols)
+│   ├── packet_bytes.rs PacketBytesMessage — byte-payload example codec
+│   └── hash_table.rs   Callsign hash table
 ├── registry.rs       PROTOCOLS static + ProtocolMeta + by_id / by_name
 ├── ft8/              FT8 ZST + decode + wave_gen
 ├── ft4/              FT4 ZST + decode
-├── fst4/             FST4-60A ZST + decode
+├── fst4/             FST4 family — 5 sub-mode ZSTs (15/30/60A/120/300) + decode
 ├── wspr/             WSPR ZST + decode + synth + spectrogram search
 ├── jt9/              JT9 ZST + decode
 ├── jt65/             JT65 ZST + decode (+ erasure-aware RS)
-├── q65/              Q65 family — 6 sub-mode ZSTs + decode + synth
-│   ├── protocol.rs     q65_submode! macro emitting Q65a30 .. Q65e60 ZSTs
-│   ├── rx.rs           4 decoder strategies (AWGN / AP-hint / fast-fading / AP-list)
+├── q65/              Q65 family — 10 sub-mode ZSTs + decode + synth
+│   ├── protocol.rs     q65_submode! macro emitting Q65a15 .. Q65a300 ZSTs
+│   ├── rx.rs           5 decoder strategies (AWGN / AP-hint / fast-fading / AP-list / multi-period), see §3
 │   ├── ap_list.rs      standard_qso_codewords — full AP-list candidate generator
 │   ├── tx.rs           65-FSK synthesiser (sub-mode-aware)
 │   ├── search.rs       coarse 22-symbol Costas-block search
 │   └── sync_pattern.rs Q65 distributed sync layout
-└── msk144/           MSK144 — no Protocol impl; own top-level driver (§0.6)
-    ├── tx.rs           codeword -> 864-sample complex OQPSK frame
-    ├── sync.rs         joint (CFO, timing) matched-filter search
-    ├── spd.rs          burst-candidate detector + short-ping decode loop
-    ├── frame_decode.rs sync gate -> LLR -> LDPC -> message
-    └── decode.rs       decode_slot(): sliding-window top-level driver
+├── msk144/           MSK144 — no Protocol impl; own top-level driver (§0.6)
+│   ├── tx.rs           codeword -> 864-sample complex OQPSK frame
+│   ├── sync.rs         joint (CFO, timing) matched-filter search
+│   ├── spd.rs          burst-candidate detector + short-ping decode loop
+│   ├── frame_decode.rs sync gate -> LLR -> LDPC -> message
+│   └── decode.rs       decode_slot(): sliding-window top-level driver
+└── uvpacket/         Applied non-WSJT example — 4 sub-mode ZSTs, own tx/rx (§10.1)
+    ├── protocol.rs     ModulationParams/FrameLayout impls (partly decorative, see §10.1)
+    ├── framing.rs      variable-length burst framing
+    ├── sync_pattern.rs 4-variant 127-chip BPSK m-sequence preamble
+    ├── interleaver.rs  bit interleaver
+    ├── puncture.rs     LDPC240_101 puncturing for the header block
+    ├── message.rs      byte-pipe (app_type) message layer
+    ├── tx.rs           π/4-DQPSK + RRC synthesiser
+    └── rx.rs           LMS equaliser + differential demod + decode
 ```
 
 Each protocol module is gated behind a feature flag (`ft8`, `ft4`,
-`fst4`, `wspr`, `jt9`, `jt65`, `q65`, `msk144`). The `core`, `fec`,
-`msg` and `registry` modules are always available.
+`fst4`, `wspr`, `jt9`, `jt65`, `q65`, `msk144`, `packet-bytes`,
+`uvpacket`). The `core`, `fec`, `msg` and `registry` modules are
+always available.
 
 The `mfsk-ffi` sibling crate in this workspace builds a C ABI
 shared library (`libmfsk.{so,a,dylib}` + `mfsk.h`) on top of the
@@ -336,7 +362,7 @@ message codec with FT8:
 
 ```rust
 use mfsk_core::core::protocol::*;
-use mfsk_core::fec::ldpc174_91::Ldpc174_91;
+use mfsk_core::fec::Ldpc174_91; // re-exported from fec::ldpc
 use mfsk_core::msg::wsjt77::Wsjt77Message;
 
 pub struct Ft4;
@@ -475,23 +501,47 @@ existing infrastructure it can reuse.
 Most protocols in this library expose a single decoder entry point:
 `decode_frame::<P>` for the FT family, `wspr::decode::decode_scan_default`
 for WSPR, etc. Q65 is the first wired protocol where a single FEC
-frame can be approached through **four** legitimately different
+frame can be approached through several legitimately different
 receiver chains, each trading runtime cost against a different kind
 of channel pathology. They live side by side as parallel
 function families in `mfsk_core::q65::rx`, each generic over the
 sub-mode ZST.
 
-| When                                               | Strategy                  | Entry point                                                   | Threshold gain |
-|----------------------------------------------------|---------------------------|---------------------------------------------------------------|----------------|
-| Default — unknown channel, unknown content         | AWGN Bessel + BP          | `decode_at_for<P>` / `decode_scan_for<P>`                     | baseline       |
-| Known callsign(s) or report, terrestrial channel   | AP-hint BP              | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`     | ~2 dB          |
-| Doppler-spread channel (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>`       | 5–8 dB on spread channels |
-| Known call pair, no QSO context, terrestrial       | AP-list template matching | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>` | ~3 dB          |
+A point worth flagging up front: the single-candidate point-decode
+functions (`decode_at_for`, `decode_at_fading_for`, …) and the
+scanning functions that wrap them (`decode_scan_for`,
+`decode_scan_fading_for`, …) are *not* the same algorithm behind two
+call shapes. `decode_at_for` really is the plain Bessel-I0 metric.
+But `decode_scan_for` / `decode_scan_with_ap_for` — the family nearly
+every real caller uses — route each coarse-search candidate through
+`decode_at_with_fine_timing_for`, which always runs a WSJT-X-faithful
+`(Δf, Δt, b90)` grid search using the fast-fading metric with
+`FadingModel::Lorentzian`, ported from `q65_loops.f90` /
+`q65_dec_q012`. That mirrors WSJT-X's own automatic decoder, which
+never actually runs a plain-AWGN-only Bessel pass for its default
+scan either. So "AWGN" and "fast-fading" are best read as two
+distinct *entry-point families* (point vs. scan), not two cleanly
+separate front ends picked by channel type — the scan path already
+assumes some amount of fading by default, and the dedicated
+fast-fading entry points below exist for when the caller wants to
+pick a specific `(b90_ts, model)` explicitly instead.
 
-**AWGN Bessel + BP** is the textbook path: per-symbol FFT energies
-become probability vectors via the Bessel-I0 metric, then non-binary
-belief propagation runs on the QRA code. Falls back gracefully on
-any channel reasonably close to additive Gaussian noise.
+| When                                                   | Strategy                              | Entry point                                                          | Threshold gain |
+|---------------------------------------------------------|----------------------------------------|------------------------------------------------------------------------|----------------|
+| Single known candidate, unknown content                | AWGN Bessel + BP (point-decode only)   | `decode_at_for<P>`                                                     | baseline       |
+| Default scan — unknown channel, unknown content         | `(Δf,Δt,b90)` grid search + Lorentzian fading BP | `decode_scan_for<P>` / `decode_scan_with_ap_for<P>`             | WSJT-X-faithful default |
+| Known callsign(s) or report, terrestrial channel        | AP-hint BP                             | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`              | ~2 dB          |
+| Doppler-spread channel, explicit model (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP, caller-picked `(b90_ts, FadingModel)` | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` | 5–8 dB on spread channels |
+| Known call pair, no QSO context, terrestrial            | AP-list template matching              | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`    | ~3 dB          |
+| Weak/ionoscatter signal spanning several T/R periods    | Multi-period EMA averaging (3-stage cascade) | `decode_multi_period_for<P>` / `decode_multi_period`             | recovers signals no single-period strategy can |
+
+**AWGN Bessel + BP** (`decode_at_for`) is the textbook single-shot
+path: per-symbol FFT energies become probability vectors via the
+Bessel-I0 metric, then non-binary belief propagation runs on the QRA
+code. Falls back gracefully on any channel reasonably close to
+additive Gaussian noise — but note it is the *point-decode* API only;
+see the note above for why the scan family doesn't stay on this front
+end.
 
 **AP-hint BP** clamps the intrinsic probability vectors at known
 information-bit positions before BP. A correct hint shifts the BP
@@ -501,12 +551,15 @@ Construct the hint via `mfsk_core::msg::ApHint` (`with_call1`,
 `with_call2`, `with_grid`, `with_report`).
 
 **Fast-fading metric** replaces the Bessel front end with a
-spread-aware alternative calibrated against Gaussian or Lorentzian
-fading shapes. Required for microwave EME where lunar libration
-spreads each tone over 10–60 Hz: the 10 GHz EME reference recording
-in `samples/Q65/60D_EME_10GHz/` decodes via this path but produces
-zero hits with the AWGN front end. `b90_ts` is the spread bandwidth
-× symbol period (typical: 0.05 = near-AWGN, 1.0 = moderate,
+spread-aware alternative, calibrated against a caller-chosen
+`FadingModel::Gaussian` or `FadingModel::Lorentzian` shape (the
+model is an explicit parameter on `decode_at_fading_for` /
+`decode_scan_fading_for`, not a fixed calibration). Required for
+microwave EME where lunar libration spreads each tone over
+10–60 Hz: the 10 GHz EME reference recording in
+`samples/Q65/60D_EME_10GHz/` decodes via this path but produces zero
+hits with the plain Bessel front end. `b90_ts` is the spread
+bandwidth × symbol period (typical: 0.05 = near-AWGN, 1.0 = moderate,
 5.0+ = severe).
 
 **AP-list template matching** does *not* run BP. Instead, the
@@ -522,6 +575,20 @@ SNR −25 dB (1 dB below the published Q65-30A threshold), the
 test sweep shows AP-list decodes 6/6 frames where plain BP fails
 0/6.
 
+**Multi-period EMA averaging** (`decode_multi_period_for` /
+`decode_multi_period`) mirrors WSJT-X's `iavg=1`/`iavg=2` averaged
+decode from `q65_decode.f90` — the strategy that lets ionoscatter and
+weak EME signals decode when no single-period strategy above can. It
+maintains an exponential moving average of the per-slot spectrogram
+(time constant `min(navg, 4)`) across consecutive T/R periods and, at
+each slot, tries a 3-stage decode ladder against the averaged
+energies: (1) AP-list, when the caller supplies a plausible
+call/grid pair; (2) fast-fading BP sweeping `b90·Ts ∈ {3, 8, 15}` ×
+`{Gaussian, Lorentzian}`; (3) plain Bessel BP as a last-resort AWGN
+fallback. Returns at most one decode per slot, deduped by
+`(message, ±4 Hz freq)`. Not yet exposed via `mfsk-ffi` — Rust API
+only as of writing.
+
 **Composing strategies.** Fast-fading and AP-list compose: the
 fast-fading metric produces intrinsic vectors that
 `Q65Codec::decode_with_codeword_list` accepts directly. Wiring a
@@ -529,10 +596,13 @@ combined `decode_at_fading_with_ap_list_for<P>` is a small additive
 change; for now, callers do the composition explicitly via the
 lower-level primitives (`intrinsics_fast_fading` + `Q65Codec`).
 
-The C ABI exposes the same four strategies one-for-one as
+The C ABI exposes four of the strategies above one-for-one as
 `mfsk_q65_decode`, `mfsk_q65_decode_with_ap`, `mfsk_q65_decode_fading`
 and `mfsk_q65_decode_with_ap_list`, each taking a `MfskQ65SubMode`
-parameter so any of the six sub-modes is reachable from C/C++/Kotlin.
+parameter so any of the ten sub-modes is reachable from C/C++/Kotlin;
+`mfsk_q65_decode_fading` additionally takes an `MfskQ65FadingModel`
+(`Gaussian` / `Lorentzian`) parameter (§8). Multi-period averaging is
+not yet part of the C ABI.
 
 ## 4. Shared primitives (`core`)
 
@@ -615,38 +685,35 @@ constants for each — `ft8::downsample::FT8_CFG`,
 > `ft8::decode::decode_frame*` entry points all dispatch via
 > `decode_block::coarse_sync`. See §10 for the FT8-specific notes.
 
-### Sync2D — local (Δf, Δt) refine and FST4 full-slot search (`mfsk_core::core::sync2d`)
+### Sync2D — FT4 / FST4 full-slot coherent sync search (`mfsk_core::core::sync2d`)
 
-Two independent pieces live here, both ported from WSJT-X's local
-sync-refinement code rather than the shared `core::sync::coarse_sync`
-grid:
+Two protocol-specific full-slot coherent searches live here, both
+ported from WSJT-X and both scored via a **phase-continuous** Costas
+reference (`make_costas_ref_continuous`, phase accumulating across the
+whole 8-symbol block instead of resetting per symbol) with
+`score_flat_coherent` (one coherent inner product, amplitude `|z|`) —
+~3 dB better sync-score SNR discrimination than a non-coherent
+`Σ|z_k|²` power-sum:
 
-* `sync2d_refine::<P>(...)` — a generic 2D (Δf, Δt) local refine
-  around an already-found coarse-sync candidate (radius/step scaled
-  by `P::TONE_SPACING_HZ` / `ds_spb` instead of hardcoded absolutes).
-  Ported out of FT4's original `sync4d_refine` in 0.7.1, verified
-  bit-identical to the prior FT4-hardcoded constants via the FT4
-  golden-WAV lock. **FT4 only** — an attempt to also enable it for
-  FST4 measured as a net *regression* near threshold (the wider
-  search window locks onto noise-driven correlation peaks more often
-  than it recovers real timing/frequency error at low SNR); left off
-  for FST4, documented inline in `core::pipeline.rs` (issue #146).
-* `fst4_sync_search::<P>(...)` — FST4-specific two-stage local search
-  matching WSJT-X's `fst4_sync_search` / `sync_fst4`
-  (`fst4_decode.f90:657-925`): a coarse pass over the *entire* T/R
-  slot (±1.5 s, step 4, ×±12 steps of 0.1·baud frequency) followed by
-  a fine pass (±7 steps of 0.02·baud × ±4 samples). Two WSJT-X details
-  matter here and were the actual fix (not just wiring the search up):
-  a **phase-continuous** Costas reference (`make_costas_ref_continuous`,
-  matching `csync1` — phase accumulates across the whole 8-symbol
-  block instead of resetting per symbol) scored with
-  `score_flat_coherent` (one coherent inner product, amplitude `|z|`)
-  instead of the non-coherent `Σ|z_k|²` power-sum the first attempt
-  used. The coherent scorer gives ~3 dB better sync-score SNR
-  discrimination, which is what actually stopped noise peaks from
-  beating the true peak in the ~5,000-cell coarse grid. Net effect:
-  closed FST4's AWGN sensitivity gap vs WSJT-X's published thresholds
-  from ~2.4 dB to ~0.3 dB (0.7.1, issue #146).
+* `ft4_sync_search::<P>(cd0, candidate)` / the windowed variant
+  `ft4_sync_search_window::<P>(cd0, candidate, ib_min, ib_max)` —
+  **FT4 only**; a coherent full-slot Δt search (`ft4_decode.f90`'s
+  `isync=1`/`isync=2` loop, `sync4d.f90` scorer) over the slot's
+  downsampled-sample range rather than a local window around the
+  coarse-sync candidate's own (frequently-wrong) Δt estimate.
+* `fst4_sync_search::<P>(cd0, cand)` — FST4-specific two-stage
+  full-slot search (`fst4_decode.f90:657-925`): a coarse pass over
+  the entire T/R slot (±1.5 s, step 4, ±12 steps of 0.1·baud) then a
+  fine pass (±7 steps of 0.02·baud × ±4 samples). Closed FST4's AWGN
+  sensitivity gap vs WSJT-X's published thresholds to ~0.3 dB
+  (issue #146).
+
+Both superseded a shared local (Δf, Δt) refine (`sync2d_refine` /
+`Sync2dConfig`) that has since been **removed** (2026-07-20, no call
+sites left) once FT4 (issue #72) and FST4 (issue #146) each needed a
+full-slot search instead — a local window anchored on the coarse-sync
+candidate's position couldn't recover cases where that non-coherent Δt
+estimate was wrong by more than the window's own radius.
 
 `core::sync::coarse_sync::<P>` also gained an FST4-only augmentation
 in the same pass: a bin can enter the candidate list either via the
@@ -734,17 +801,20 @@ which inner steps they enable:
 
 ## 5. Feature flags
 
-| Feature       | Default | Effect                                                        |
-|---------------|---------|---------------------------------------------------------------|
-| `ft8`         | on      | FT8 ZST, decode, wave_gen                                    |
-| `ft4`         | on      | FT4 ZST, decode                                              |
-| `fst4`        | off     | FST4-60A ZST, decode                                         |
-| `wspr`        | off     | WSPR ZST, decode, synth, spectrogram search                  |
-| `jt9`         | off     | JT9 ZST, decode                                              |
-| `jt65`        | off     | JT65 ZST, decode (+ erasure-aware RS)                        |
-| `q65`         | off     | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZSTs, four decode strategies, synth |
-| `full`        | off     | Aggregate of all seven protocols                              |
-| `parallel`    | on      | Enables rayon `par_iter` in pipeline (no-op under WASM)       |
+| Feature         | Default | Effect                                                        |
+|-----------------|---------|---------------------------------------------------------------|
+| `ft8`           | on      | FT8 ZST, decode, wave_gen                                    |
+| `ft4`           | on      | FT4 ZST, decode                                              |
+| `fst4`          | off     | FST4-15/30/60A/120/300 ZSTs, decode                           |
+| `wspr`          | off     | WSPR ZST, decode, synth, spectrogram search                  |
+| `jt9`           | off     | JT9 ZST, decode                                              |
+| `jt65`          | off     | JT65 ZST, decode (+ erasure-aware RS)                        |
+| `q65`           | off     | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZSTs, five decode strategies (§3), synth |
+| `msk144`        | off     | MSK144 — no `Protocol` ZST; own top-level driver (§0.6)       |
+| `packet-bytes`  | off     | `PacketBytesMessage` — byte-payload example `MessageCodec`    |
+| `uvpacket`      | off     | uvpacket — applied non-WSJT example, 4 sub-mode ZSTs (§10.1); pulls in `fst4` |
+| `full`          | off     | Aggregate of all protocol features above                      |
+| `parallel`      | on      | Enables rayon `par_iter` in pipeline (no-op under WASM)       |
 
 ## 6. Using from Rust
 
@@ -752,7 +822,7 @@ which inner steps they enable:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.6", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
 ```
 
 Pull in only the protocol features you need; the examples below
@@ -838,10 +908,17 @@ use mfsk_core::core::equalize::EqMode;
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
                           DecodeDepth::BpAllOsd, /*max_cand*/ 15,
-                          EqMode::Adaptive, Some(&ap)) {
+                          EqMode::Local, Some(&ap)) {
     // …
 }
 ```
+
+`EqMode` has only `Off` / `Local` as of 0.7.0 — the earlier
+`Adaptive` (try-EQ-then-non-EQ two-pass) variant was retired that
+release once its measured payoff (~1/20 extra decodes at -18 dB)
+stopped justifying the 2× per-candidate cost (issue #73). Callers
+that want the old two-pass behaviour invoke the decoder twice
+explicitly with `Local` then `Off`.
 
 The FT4 equivalent is `ft4::decode::decode_sniper_ap` with a similar
 signature.
@@ -897,16 +974,18 @@ exposes — modulation (`ntones`, `bits_per_symbol`, `nsps`,
 Lookup helpers:
 
 * `mfsk_core::by_id(ProtocolId::Q65)` — yields *every* registry
-  entry sharing the family-level id. Q65 yields six (one per
+  entry sharing the family-level id. Q65 yields ten (one per
   sub-mode); other protocols yield one.
 * `mfsk_core::by_name("Q65-60D")` — exact-match name lookup.
 * `mfsk_core::for_protocol_id(id)` — first entry sharing the id;
   convenient for the "single-mode-per-family" case.
 
-Q65 is the case where the family / sub-mode distinction matters:
-all six Q65 sub-modes share `ProtocolId::Q65` (the FFI tag is
+Q65 is the case where the family / sub-mode distinction matters most:
+all ten Q65 sub-modes share `ProtocolId::Q65` (the FFI tag is
 family-level) but live as distinct registry entries because their
-NSPS, tone spacing and slot length differ.
+NSPS, tone spacing and slot length differ. FST4 is the same shape at
+smaller scale — `by_id(ProtocolId::Fst4)` yields five (one per
+T/R-period sub-mode).
 
 The registry is built by an internal `protocol_meta!` macro in
 `mfsk-core/src/registry.rs`; adding a new protocol is one line per
@@ -916,10 +995,10 @@ ZST plus its display name.
 
 `tests/protocol_invariants.rs` runs a single generic
 `assert_protocol_invariants::<P: Protocol>(name)` against every
-wired ZST. The body is the same for FT8, FT4, FST4, WSPR, JT9,
-JT65 and all six Q65 sub-modes — eleven invocations, one
-implementation. Seventeen invariants are pinned across three
-helper functions:
+wired ZST. The body is the same for FT8, FT4, all five FST4
+sub-modes, WSPR, JT9, JT65, all ten Q65 sub-modes, and all four
+uvpacket sub-modes — 24 invocations, one implementation. Seventeen
+invariants are pinned across three helper functions:
 
 * **`assert_modulation_invariants<P: ModulationParams>`** —
   `2^BITS_PER_SYMBOL ≤ NTONES`; `SYMBOL_DT × 12000 == NSPS`;
@@ -988,12 +1067,21 @@ enum MfskProtocol {
     MFSK_PROTOCOL_WSPR    = 2,
     MFSK_PROTOCOL_JT9     = 3,
     MFSK_PROTOCOL_JT65    = 4,
-    MFSK_PROTOCOL_FST4S60 = 5,
+    MFSK_PROTOCOL_FST4S60 = 5,  // only FST4-60A is FFI-exposed; the
+                                // other 4 wired FST4 sub-modes
+                                // (15/30/120/300, §0.4) are Rust-API
+                                // only as of writing
     MFSK_PROTOCOL_Q65A30  = 6,  // other Q65 sub-modes (60A..60E, 15A,
                                 // 120D/E, 300A) and AP-hint / fading /
                                 // AP-list strategies: dedicated
                                 // mfsk_q65_* function family, see
                                 // mfsk-ffi/include/mfsk.h
+};
+
+// Channel-spread fading model for mfsk_q65_decode_fading (§3).
+enum MfskQ65FadingModel {
+    MFSK_Q65_FADING_MODEL_GAUSSIAN   = 0,
+    MFSK_Q65_FADING_MODEL_LORENTZIAN = 1,
 };
 
 uint32_t          mfsk_version(void);           // major<<16 | minor<<8 | patch
@@ -1082,8 +1170,11 @@ Full build instructions in `mfsk-ffi/examples/kotlin_jni/README.md`.
 |------------|--------|-------|---------|------------|------------------|-------|------------|--------|
 | FT8        | 15 s   | 8     | 79      | 6.25 Hz    | LDPC(174, 91)    | 77 b  | 3×Costas-7 | implemented |
 | FT4        | 7.5 s  | 4     | 103     | 20.833 Hz  | LDPC(174, 91)    | 77 b  | 4×Costas-4 | implemented |
-| FST4-60A   | 60 s   | 4     | 160     | 3.125 Hz   | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented |
-| FST4 other | 15–1800 s | 4 | var     | var        | LDPC(240, 101)   | 77 b  | 5×Costas-8 | one more ZST per sub-mode |
+| FST4-15    | 15 s   | 4     | 160     | 16.667 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented (fastest FST4, ≈-20.7 dB threshold) |
+| FST4-30    | 30 s   | 4     | 160     | 7.143 Hz   | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented (≈-24.2 dB threshold) |
+| FST4-60A   | 60 s   | 4     | 160     | 3.0864 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented (dominant terrestrial sub-mode, ≈-28.1 dB threshold) |
+| FST4-120   | 120 s  | 4     | 160     | 1.4634 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented (≈-31.3 dB threshold) |
+| FST4-300   | 300 s  | 4     | 160     | 0.5580 Hz  | LDPC(240, 101)   | 77 b  | 5×Costas-8 | implemented (≈-35.3 dB threshold, deepest wired FST4) |
 | WSPR       | 120 s  | 4     | 162     | 1.465 Hz   | conv r=½ K=32 + Fano | 50 b | per-symbol LSB (npr3) | implemented |
 | JT9        | 60 s   | 9     | 85      | 1.736 Hz   | conv r=½ K=32 + Fano | 72 b  | 16 distributed | implemented |
 | JT65       | 60 s   | 65    | 126     | 2.69 Hz    | RS(63, 12) GF(2⁶)     | 72 b  | 63 distributed | implemented |
@@ -1102,11 +1193,16 @@ FST4 does not share FT8's LDPC(174, 91); it uses a separate
 LDPC(240, 101) + 24-bit CRC, implemented as `fec::ldpc240_101`.
 The BP / OSD algorithms are structurally the same across LDPC
 sizes, so the new material is essentially the parity-check and
-generator tables together with the code dimensions. FST4-60A is
-complete end-to-end; the other FST4 sub-modes (-15/-30/-120/-300/
--900/-1800) differ only in `NSPS` / `SYMBOL_DT` /
-`TONE_SPACING_HZ`, and each can be added as a short ZST reusing the
-same FEC, sync and DSP.
+generator tables together with the code dimensions. All five wired
+sub-modes (FST4-15/30/60A/120/300) are complete end-to-end,
+differing only in `NSPS` / `SYMBOL_DT` / `TONE_SPACING_HZ` (and
+`TX_START_OFFSET_S` for FST4-15 alone, which starts 0.5 s rather
+than 1.0 s into the slot); the `fst4_submode!` macro emits each ZST
+the same way `q65_submode!` does for Q65. FST4-900 and FST4-1800
+remain unwired (no user demand as of writing) but would follow the
+same pattern. FST4W — the WSPR-style one-way 50-bit beacon variant,
+LDPC(240, 74), periods 120/300/900/1800 s — is a separate message
+format entirely and is out of scope here; see issue #23 for status.
 
 WSPR is structurally different from the FT modes: it uses
 convolutional coding (`fec::conv::ConvFano`, ported from WSJT-X
@@ -1118,10 +1214,12 @@ synthesiser, RX demodulator, and a quarter-symbol spectrogram used
 to keep the coarse search over a 120-s slot within a reasonable time
 budget.
 
-JT9 reuses the convolutional FEC (`ConvFano`) and a 72-bit JT
-message codec (`msg::jt72::Jt72Codec`). JT65 uses Reed-Solomon
-`fec::rs63_12::Rs63_12` with erasure-aware decoding based on Karn's
-Berlekamp-Massey algorithm.
+JT9 reuses the same convolutional FEC family as WSPR, but as its own
+`ConvFano232` type (`fec::conv`) rather than literally sharing
+`ConvFano` — JT9's 206-bit codeword framing differs from WSPR's —
+plus a 72-bit JT message codec (`msg::jt72::Jt72Codec`). JT65 uses
+Reed-Solomon `fec::rs::Rs63_12` (re-exported as `fec::Rs63_12`) with
+erasure-aware decoding based on Karn's Berlekamp-Massey algorithm.
 
 Q65 introduces a third FEC family: Q-ary repeat-accumulate codes
 over GF(64), running non-binary belief propagation in the
@@ -1133,10 +1231,11 @@ two CRC symbols out of the 65-symbol codeword, giving the 63
 channel symbols actually transmitted. Ten wired sub-modes share
 the same FEC + sync layout + 77-bit message; only `NSPS`
 (15-s / 30-s / 60-s / 120-s / 300-s slot) and tone spacing
-(×1, ×2, ×4, ×8, ×16) differ between them. The four parallel decoder
+(×1, ×2, ×4, ×8, ×16) differ between them. The five parallel decoder
 strategies introduced in
 §3 (AWGN BP, AP-hint BP, fast-fading metric, AP-list template
-matching) all share the same QRA codec under the hood.
+matching, multi-period EMA averaging) all share the same QRA codec
+under the hood.
 
 ### 10.1 Scope boundary: `uvpacket` as an applied example
 
@@ -1171,6 +1270,14 @@ This trade-off is documented at
 [`mfsk-core/src/uvpacket/protocol.rs`](../../mfsk-core/src/uvpacket/protocol.rs)
 and is the natural consequence of keeping a non-WSJT protocol
 in-tree rather than spinning it out as a sibling crate.
+
+Despite bypassing the real receive pipeline, uvpacket's four
+sub-mode ZSTs (`UvRobust`, `UvStandard`, `UvUltraRobust`,
+`UvExpress`) *do* implement `Protocol` and are wired into both the
+`PROTOCOLS` registry (§7.1) and `tests/protocol_invariants.rs` —
+the trait surface is satisfied for enumeration/invariant purposes
+even though `tx::encode`/`rx::decode_known_layout` never read most
+of it.
 
 #### Dual-probe view of the trait scope
 

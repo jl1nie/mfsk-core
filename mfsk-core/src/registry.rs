@@ -10,7 +10,7 @@
 //! their own.
 //!
 //! Entries are gated on Cargo features — disabling `q65` removes the
-//! six Q65 entries from the registry, etc. The order is stable but
+//! ten Q65 entries from the registry, etc. The order is stable but
 //! not load-bearing; consume [`PROTOCOLS`] as a set or filter via
 //! [`by_id`] / [`by_name`] / [`for_protocol_id`].
 //!
@@ -30,11 +30,12 @@
 //!
 //! ## Q65 sub-modes
 //!
-//! All six wired Q65 sub-modes (Q65-30A, Q65-60A‥E) appear as
-//! distinct registry entries because their `NSPS` / `TONE_SPACING_HZ`
-//! / `T_SLOT_S` differ; they share `ProtocolId::Q65` because the FFI
-//! protocol tag is family-level. [`by_id`] returns *all* entries
-//! sharing a given id, so a Q65 lookup yields six metadata records.
+//! All ten wired Q65 sub-modes (Q65-15A, -30A, -60A‥E, -120D‥E, -300A)
+//! appear as distinct registry entries because their `NSPS` /
+//! `TONE_SPACING_HZ` / `T_SLOT_S` differ; they share `ProtocolId::Q65`
+//! because the FFI protocol tag is family-level. [`by_id`] returns
+//! *all* entries sharing a given id, so a Q65 lookup yields ten
+//! metadata records.
 //!
 //! ## FST4 sub-modes
 //!
@@ -64,7 +65,7 @@ use crate::ProtocolId;
 #[derive(Clone, Copy, Debug)]
 pub struct ProtocolMeta {
     /// Family-level protocol id used at the FFI boundary. Multiple
-    /// `ProtocolMeta` entries may share an id (e.g. all six Q65
+    /// `ProtocolMeta` entries may share an id (e.g. all ten Q65
     /// sub-modes are `ProtocolId::Q65`).
     pub id: ProtocolId,
     /// Human-readable name (e.g. `"FT8"`, `"Q65-60D"`). Stable —
@@ -198,7 +199,7 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
 ];
 
 /// Iterator over every registry entry sharing `id`. For most
-/// protocols this yields exactly one entry; Q65 yields six (one per
+/// protocols this yields exactly one entry; Q65 yields ten (one per
 /// sub-mode).
 pub fn by_id(id: ProtocolId) -> impl Iterator<Item = &'static ProtocolMeta> {
     PROTOCOLS.iter().filter(move |p| p.id == id)
