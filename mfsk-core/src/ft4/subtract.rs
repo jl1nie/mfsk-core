@@ -107,6 +107,7 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
         result.dt_sec,
         &FT4_SUBTRACT,
         LPF_HALF_SAMPLES,
+        false, // endcorrection: subtractft4.f90 has no end-correction step
     );
 }
 

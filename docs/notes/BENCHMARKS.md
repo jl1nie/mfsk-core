@@ -49,10 +49,11 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
-| JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.15 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.32 s |
+| JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.39 s |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.45 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
@@ -60,18 +61,25 @@ is wall time on a many-core host, not a single-thread figure).
 | FT4 | 000000_000002.wav | 7.5 s | 1.20 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 1.89 s |
-| FST4-60A | 210115_0058.wav | 60 s | 2.60 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 2.55 s |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 4.73 s |
+| FST4-60A | 210115_0058.wav | 60 s | 2.60 s |
 
 Notes:
 
 - These are real-recording decode times, not synthetic sweeps — they
   reflect actual candidate density and search cost on real audio, not
-  a clean-signal best case. FT8's `qso3_busy.wav` is the heaviest
-  fixed-slot-length case specifically because it's a crowded band (16
-  simultaneous signals drive a large coarse-sync candidate count
-  through OSD).
+  a clean-signal best case.
+- FT8's `qso3_busy.wav` was the outlier at **4.73 s** (busy band, 16
+  simultaneous signals) until a profiling pass (2026-07-20) found the
+  cost wasn't BP/OSD at all but `subtract_tones_lpf`'s successive-
+  interference-cancellation step: a naive O(candidates × NFRAME ×
+  lpf_half) direct time-domain convolution, ~310 ms per accepted
+  decode. Replaced with WSJT-X's own algorithm
+  (`lib/ft8/subtractft8.f90`/`lib/ft4/subtractft4.f90`) — a cached
+  filter-response FFT + one forward/inverse FFT pair per call,
+  O(N log N) — dropping this row to 0.45 s (~10.5×) with byte-identical
+  recall (7/8 golden, 7 phantom, 14 total). FT4's golden test was
+  already on a different (non-LPF) subtract path and unaffected.
 - Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
   1.05 s — the fast-fading metric's per-candidate cost dominates, not
   a full-buffer rescan. An earlier profiling pass found this same

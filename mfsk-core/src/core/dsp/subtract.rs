@@ -174,16 +174,35 @@ pub fn refine_freq(
 /// channel fading (QSB) and slow phase drift that defeat the
 /// constant-amplitude path in [`subtract_tones`].
 ///
-/// Mirrors `WSJT-X/lib/ft8/subtractft8.f90`. The LPF kernel is a
-/// cosine² window of length `2 * lpf_half + 1`. WSJT-X uses
-/// `lpf_half = 2000` (NFILT=4000, ~0.33 s at 12 kHz).
+/// Mirrors `WSJT-X/lib/ft8/subtractft8.f90` / `lib/ft4/subtractft4.f90`.
+/// The LPF kernel is a cosine² window of length `2 * lpf_half + 1`.
+/// WSJT-X uses `lpf_half = 2000` for FT8 (NFILT=4000) and `700` for
+/// FT4 (NFILT=1400).
+///
+/// `endcorrection` mirrors WSJT-X's per-protocol choice: `subtractft8.f90`
+/// boosts the near-edge (within `lpf_half` samples of the frame start/end)
+/// LPF estimate to compensate for the truncated filter response there;
+/// `subtractft4.f90` does not. Pass `true` for FT8, `false` for FT4.
 ///
 /// # Cost
 ///
-/// Direct convolution: `lpf_half * NFRAME` MACs per call (~608 M for
-/// FT8). On host f32 this is ~0.5–1 s; embedded paths should switch
-/// to an FFT-convolution version. Acceptable as a one-shot per
-/// successfully-decoded message in `decode_frame_subtract`.
+/// With the `fft-rustfft` feature (host), this runs WSJT-X's own
+/// algorithm: one forward + inverse FFT of the full audio length per
+/// call, against a filter-response FFT that's computed once and
+/// cached (`OnceLock`) — matching `subtractft8.f90`'s `first`-gated
+/// `cw` setup. O(N log N) instead of the O(`lpf_half` × NFRAME) direct
+/// convolution (~608 M MACs / ~300 ms per call for FT8 on host —
+/// measured as the dominant cost of `decode_block`'s multi-pass
+/// subtract loop on busy-band recordings before this fix).
+///
+/// Without `fft-rustfft` (embedded / fixed-point, `no_std`) this falls
+/// back to the direct time-domain convolution — unchanged from before
+/// this function gained the FFT fast path. No embedded caller
+/// currently invokes this function: `decode_block`'s embedded
+/// (`not(fft-rustfft)`) variant of `decode_block_multipass` has no
+/// subtract loop at all (single-pass, no SIC), so the fallback exists
+/// only for other `no_std` callers (if any) and to keep the function
+/// universally available.
 ///
 /// # Requirements
 ///
@@ -192,6 +211,37 @@ pub fn refine_freq(
 /// The reference is built via `generate_iq`, which dispatches on
 /// `cfg.gfsk`.
 pub fn subtract_tones_lpf(
+    audio: &mut [i16],
+    tones: &[u8],
+    freq_hz: f32,
+    dt_sec: f32,
+    cfg: &SubtractCfg,
+    lpf_half: usize,
+    endcorrection: bool,
+) {
+    #[cfg(feature = "fft-rustfft")]
+    {
+        fft_lpf::subtract_tones_lpf_fft(
+            audio,
+            tones,
+            freq_hz,
+            dt_sec,
+            cfg,
+            lpf_half,
+            endcorrection,
+        );
+    }
+    #[cfg(not(feature = "fft-rustfft"))]
+    {
+        let _ = endcorrection;
+        subtract_tones_lpf_direct(audio, tones, freq_hz, dt_sec, cfg, lpf_half);
+    }
+}
+
+/// Direct time-domain convolution fallback for `no_std` / non-`fft-rustfft`
+/// builds. See [`subtract_tones_lpf`]'s doc comment for when this is used.
+#[cfg(not(feature = "fft-rustfft"))]
+fn subtract_tones_lpf_direct(
     audio: &mut [i16],
     tones: &[u8],
     freq_hz: f32,
@@ -274,6 +324,184 @@ pub fn subtract_tones_lpf(
         let sub = 2.0 * (cfilt_re[i] * cr - cfilt_im[i] * ci);
         let v = audio[audio_off + i] as f32 - sub;
         audio[audio_off + i] = v.clamp(-32_768.0, 32_767.0) as i16;
+    }
+}
+
+/// FFT-based fast convolution for [`subtract_tones_lpf`], mirroring
+/// `WSJT-X/lib/ft8/subtractft8.f90` / `lib/ft4/subtractft4.f90`'s own
+/// `cw`-cached frequency-domain LPF exactly (not just "an" FFT
+/// convolution — the same algorithm, same normalization, same
+/// end-correction).
+#[cfg(feature = "fft-rustfft")]
+mod fft_lpf {
+    use super::{SubtractCfg, generate_iq};
+    use core::f32::consts::PI;
+    use rustfft::FftPlanner;
+    use rustfft::num_complex::Complex32;
+    use std::sync::{Mutex, OnceLock};
+    use std::vec;
+    use std::vec::Vec;
+
+    /// Cached filter-response FFT, keyed by `(nfft, lpf_half)`. WSJT-X
+    /// builds this once per program run (`first`/`save` in the
+    /// Fortran); we build it once per distinct `(nfft, lpf_half)` pair
+    /// seen (in practice exactly one for FT8, one for FT4) and reuse
+    /// it for every subtract call after that.
+    struct CachedWindow {
+        nfft: usize,
+        lpf_half: usize,
+        cw: std::sync::Arc<Vec<Complex32>>,
+    }
+
+    static WINDOW_CACHE: OnceLock<Mutex<Vec<CachedWindow>>> = OnceLock::new();
+
+    /// Cosine² LPF kernel of length `2*lpf_half+1`, normalised so the
+    /// weights sum to 1. Shared by the window-FFT builder and the
+    /// end-correction computation — both need the same un-FFT'd taps.
+    fn normalized_kernel(lpf_half: usize) -> Vec<f32> {
+        let nk = 2 * lpf_half + 1;
+        let mut kern = vec![0.0f32; nk];
+        let mut sumw = 0.0f32;
+        for (j, k) in kern.iter_mut().enumerate() {
+            let x = (j as f32 - lpf_half as f32) * PI / lpf_half as f32;
+            let w = x.cos().powi(2);
+            *k = w;
+            sumw += w;
+        }
+        for w in kern.iter_mut() {
+            *w /= sumw;
+        }
+        kern
+    }
+
+    /// `cw` from `subtractft8.f90`: the cosine² window placed at its
+    /// circular delay positions (tap for relative offset `m` goes at
+    /// index `m mod nfft`, matching Fortran's `cshift(cw, NFILT/2+1)`
+    /// applied to a window initially placed at `cw(1:NFILT+1)`), FFT'd
+    /// once, scaled by `1/nfft` (WSJT-X's `fac`) so the un-normalised
+    /// forward/inverse FFT pair used per call needs no further scaling.
+    fn cached_window_fft(nfft: usize, lpf_half: usize) -> std::sync::Arc<Vec<Complex32>> {
+        let cache = WINDOW_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+        {
+            let guard = cache.lock().unwrap();
+            if let Some(e) = guard
+                .iter()
+                .find(|e| e.nfft == nfft && e.lpf_half == lpf_half)
+            {
+                return e.cw.clone();
+            }
+        }
+
+        let kern = normalized_kernel(lpf_half);
+        let mut cw = vec![Complex32::new(0.0, 0.0); nfft];
+        for (j, &w) in kern.iter().enumerate() {
+            let offset = j as isize - lpf_half as isize; // -lpf_half..=lpf_half
+            let idx = offset.rem_euclid(nfft as isize) as usize;
+            cw[idx] = Complex32::new(w, 0.0);
+        }
+        let mut planner = FftPlanner::<f32>::new();
+        planner.plan_fft_forward(nfft).process(&mut cw);
+        let fac = 1.0 / nfft as f32;
+        for c in cw.iter_mut() {
+            *c *= fac;
+        }
+
+        let arc = std::sync::Arc::new(cw);
+        let mut guard = cache.lock().unwrap();
+        if let Some(e) = guard
+            .iter()
+            .find(|e| e.nfft == nfft && e.lpf_half == lpf_half)
+        {
+            return e.cw.clone();
+        }
+        guard.push(CachedWindow {
+            nfft,
+            lpf_half,
+            cw: arc.clone(),
+        });
+        arc
+    }
+
+    /// Per-edge-distance boost factor, `endcorrection(j)` in
+    /// `subtractft8.f90` (`j` there is 1-indexed 1..=lpf_half+1; here
+    /// `d = j-1` is the 0-indexed distance from the frame edge,
+    /// `0..=lpf_half`). Literal port of:
+    /// `endcorrection(j) = 1/(1 - sum(window(j-1:NFILT/2))/sumw)`.
+    fn end_correction(lpf_half: usize) -> Vec<f32> {
+        let kern = normalized_kernel(lpf_half); // already sums to 1
+        let nk = kern.len();
+        let mut ec = vec![1.0f32; lpf_half + 1];
+        for (d, e) in ec.iter_mut().enumerate() {
+            let k_from = d + lpf_half; // window(j-1 : NFILT/2), j-1=d
+            let s: f32 = kern[k_from..nk].iter().sum();
+            *e = 1.0 / (1.0 - s).max(1e-6);
+        }
+        ec
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn subtract_tones_lpf_fft(
+        audio: &mut [i16],
+        tones: &[u8],
+        freq_hz: f32,
+        dt_sec: f32,
+        cfg: &SubtractCfg,
+        lpf_half: usize,
+        endcorrection: bool,
+    ) {
+        let nframe = tones.len() * cfg.samples_per_symbol;
+        let nfft = audio.len();
+        if nframe == 0 || nfft == 0 || lpf_half == 0 {
+            return;
+        }
+        let (cref_re, cref_im) = generate_iq(tones, freq_hz, cfg);
+
+        // `nstart - 1` in WSJT-X's 1-indexed Fortran == `signed_start`
+        // here: camp(i) (0-indexed i=0..nframe) reads audio at absolute
+        // sample `signed_start + i`, zero when that index is out of
+        // bounds (matches `if(j.ge.1.and.j.le.NMAX) camp(i)=...`).
+        let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+
+        let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
+        for i in 0..nframe {
+            let j = signed_start + i as i64;
+            if j >= 0 && (j as usize) < audio.len() {
+                let rx = audio[j as usize] as f32;
+                // camp = audio * conjg(cref) = rx*(cref_re - j*cref_im)
+                cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
+            }
+        }
+
+        let cw = cached_window_fft(nfft, lpf_half);
+        let mut planner = FftPlanner::<f32>::new();
+        planner.plan_fft_forward(nfft).process(&mut cfilt);
+        for (c, w) in cfilt.iter_mut().zip(cw.iter()) {
+            *c *= *w;
+        }
+        planner.plan_fft_inverse(nfft).process(&mut cfilt);
+
+        if endcorrection && lpf_half < nframe {
+            let ec = end_correction(lpf_half);
+            for (d, &factor) in ec.iter().enumerate() {
+                cfilt[d] *= factor;
+                let end_idx = nframe - 1 - d;
+                if end_idx != d {
+                    cfilt[end_idx] *= factor;
+                }
+            }
+        }
+
+        // Subtract: audio[j] -= 2*Re[cfilt(i) * cref(i)] for i=0..nframe,
+        // j = signed_start + i (same bounds check as the camp build above).
+        for i in 0..nframe {
+            let j = signed_start + i as i64;
+            if j >= 0 && (j as usize) < audio.len() {
+                let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
+                let sub = 2.0 * z.re;
+                let v = audio[j as usize] as f32 - sub;
+                audio[j as usize] = v.clamp(-32_768.0, 32_767.0) as i16;
+            }
+        }
     }
 }
 

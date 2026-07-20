@@ -373,6 +373,45 @@
   all seven `MfskProtocol` values, matching `mfsk-ffi`'s actual
   all-decoder scope.
 
+### Fixed
+
+- **FT8 `decode_block` multi-pass decode ~10.5× faster on busy-band
+  recordings, WSJT-X-faithful subtract algorithm.** A decode-speed
+  investigation (prompted by `qso3_busy.wav` benchmarking 4.73 s —
+  suspiciously slow for a 15 s slot on host hardware) profiled
+  `decode_block`'s three-pass successive-interference-cancellation
+  loop phase by phase. Coarse-sync, fine-refine, and per-candidate
+  BP/OSD were all sub-5 ms each; the entire cost (~310 ms per
+  accepted decode, ~13 calls on this recording) was
+  `core::dsp::subtract::subtract_tones_lpf` — a naive O(candidates ×
+  NFRAME × lpf_half) direct time-domain convolution for the
+  channel-tracking LPF (≈608 M MACs/call at FT8's `lpf_half=2000`).
+  Checked WSJT-X's own `lib/ft8/subtractft8.f90` /
+  `lib/ft4/subtractft4.f90`: both use a *cached* filter-response FFT
+  (built once, `first`/`save` in the Fortran) plus one forward +
+  inverse FFT of the full slot per call — O(N log N), not O(N×M).
+  Ported that algorithm exactly (including FT8's `endcorrection`
+  edge-response boost, which `subtractft4.f90` omits and the port
+  now matches per-protocol via a new `endcorrection: bool` parameter
+  on `subtract_tones_lpf`) behind the existing `fft-rustfft` (host)
+  feature; the direct-convolution version is kept as the `no_std`
+  fallback, unchanged. No embedded target is affected either way —
+  `decode_block`'s embedded (`not(fft-rustfft)`) variant of
+  `decode_block_multipass` has no subtract loop at all (single-pass,
+  no SIC), confirmed by grepping `embedded-shared`'s actual decode
+  pipeline before assuming otherwise.
+  `ft8_qso3_apoff_recall.rs`'s `qso3_apoff_meets_wsjtx_golden_floor`:
+  **4.73 s → 0.45 s**, byte-identical recall (7/8 golden, 7 phantom,
+  14 total). Also caught and fixed a second, independent staleness
+  bug found during the same investigation: this test's comment
+  claimed to match "the Core2 / S3 production path" while passing
+  `DecodeDepth::BpAll`; the actual embedded ship config is
+  `DecodeDepth::BpVariantsAd` (introduced later, skips the two most
+  expensive BP LLR variants for failed candidates) — updated the
+  test to match, verified identical recall either way. FT4's golden
+  test is on a different (non-LPF, constant-amplitude) subtract path
+  in `core::pipeline` and was unaffected by this change.
+
 ## 0.7.4 — MSK144 decode (#25)
 
 ### Added

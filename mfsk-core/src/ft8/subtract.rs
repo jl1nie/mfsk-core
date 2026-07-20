@@ -43,7 +43,15 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
 /// for the recall delta this rewire produced on `qso3_busy.wav`.
 pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
     let tones = message_to_tones(&result.message77);
-    subtract_tones_lpf(audio, &tones, result.freq_hz, result.dt_sec, &FT8_CFG, 2000);
+    subtract_tones_lpf(
+        audio,
+        &tones,
+        result.freq_hz,
+        result.dt_sec,
+        &FT8_CFG,
+        2000,
+        true, // endcorrection: matches subtractft8.f90
+    );
 }
 
 /// Refine `result.freq_hz` by grid-searching ±2.5 Hz at 0.1 Hz resolution
