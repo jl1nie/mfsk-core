@@ -50,19 +50,19 @@ is wall time on a many-core host, not a single-thread figure).
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
 | FT4 | 000000_000002.wav | 7.5 s | 0.049 s |
-| Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.15 s |
+| Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.22 s |
 | FST4-60A | 210115_0058.wav | 60 s | 0.27 s |
-| Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.32 s |
+| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.28 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
-| Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.39 s |
+| Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.40 s |
 | FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.45 s |
-| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.49 s |
-| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.64 s |
+| Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.45 s |
+| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.72 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
-| Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.05 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.49 s |
+| Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.52 s |
 
 Notes:
 
@@ -116,7 +116,13 @@ Notes:
   showed the fading-BP stage still ~79% of wall-clock — 16→8, matching
   the library's own `SearchParams::default()`) — dropping these rows to
   0.49 s / 0.64 s (~4×) with bit-identical recall (same message,
-  frequency, BP iteration count) at every step.
+  frequency, BP iteration count) at every step. A later pass the same
+  day (the coarse-sync overhaul below) moved both again: Q65-60B
+  0.49 s → **0.28 s** (downstream savings from better candidate quality
+  dominated), Q65-30A 0.64 s → **0.72 s** (the coarse-search itself got
+  ~4× more expensive per frequency bin — see next bullet — and this
+  4-slot multi-period test's longer combined audio didn't have enough
+  downstream savings to offset that).
 - Q65-60A (`decode_scan_for`/`decode_scan_with_ap_for`, a different code
   path from the two above) was rewritten (2026-07-20) as a faithful
   `q65_loops.f90`/`q65_dec_q012` `(Δf, Δt, b90)` grid search, replacing
@@ -126,17 +132,39 @@ Notes:
   1.49 s) barely moved because the real cost shifted from
   candidate-count to `intrinsics_fast_fading` calls, but recall on this
   real recording *improved* (3 → 4 messages recovered — a new
-  `W7GJ N0TB -15`). See `Q65_BENCHMARK.md` for the full investigation,
-  including a real-`jt9` cross-check that both confirmed a genuine bug
-  in the port and caught a false lead (an apparent sub-mode-specific
-  regression that turned out to be an SNR-sampling artifact once finer
-  trial points were measured).
-- Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
-  1.05 s — the fast-fading metric's per-candidate cost dominates, not
-  a full-buffer rescan. An earlier profiling pass found this same
-  golden test took 8.95 s before an unasserted diagnostic pre-check
-  was removed (see CHANGELOG); 1.05 s reflects the load-bearing decode
-  path only.
+  `W7GJ N0TB -15`). Landing this surfaced two further bugs, fixed the
+  same day: a missing full/unpruned `ibw` sweep at the grid's origin
+  cell, and coarse-sync time resolution 4× coarser than WSJT-X's own
+  `NSTEP=8` (`Spectrogram`, `q65/search.rs`) — closing that gap required
+  restructuring candidate selection to match `q65_ccf_22`'s own shape
+  (per-frequency time-collapse + local-max NMS + noise-adaptive
+  percentile admission), which is the shared-infrastructure change
+  behind the other Q65 rows' speed shifts in this table (it's used by
+  every Q65 decode path, not just this one). A follow-up the same day
+  also found `decode_at_grid_for` was using the wrong fading model
+  (Gaussian instead of WSJT-X's hardcoded Lorentzian), closing a
+  further ~2.5-3 dB AWGN sensitivity gap for the wide-tone-spacing C/D/E
+  sub-modes with no further speed impact. See `Q65_BENCHMARK.md` for
+  the full investigation, including a real-`jt9` cross-check that
+  caught a false lead (an apparent sub-mode-specific regression that
+  turned out to be an SNR-sampling artifact) along the way.
+- Q65-120D/120E/300A (fading-metric paths, `decode_scan_fading_for`)
+  don't go through `decode_at_grid_for` or its Lorentzian fix — they
+  already take an explicit model parameter and sweep both — but they do
+  share the coarse-sync overhaul above via `coarse_search_for`, which
+  moved their rows too: Q65-120D 0.15 s → 0.22 s, Q65-120E 0.32 s →
+  0.45 s, Q65-300A 1.05 s → **1.52 s**. All three got slower for the
+  same reason as Q65-30A above — the coarse-search itself does ~4×
+  more per-frequency work now (`NSTEP=8` samples the time dimension 4×
+  more finely before collapsing to one candidate per frequency bin),
+  and for these longer-audio recordings that raw cost increase wasn't
+  offset by fewer wasted downstream decode attempts. Recall is
+  unaffected (still 0 regressions across every real off-air Q65 golden
+  test). An earlier profiling pass found Q65-300A's golden test took
+  8.95 s before an unasserted diagnostic pre-check was removed (see
+  CHANGELOG) — today's 1.52 s is still ~5.9× faster than that, just
+  slower than the 1.05 s this table showed right after that fix and
+  before today's coarse-sync work.
 - Not comparable to the embedded (Xtensa) numbers quoted elsewhere in
   this doc (e.g. FT8's ~0.7-1.2 s post-SlotEnd) — those run a
   different no_std/fixed-point pipeline on a much slower MCU core;
@@ -361,13 +389,17 @@ part of every sweep in this doc at this trial count.)
   5-8 dB on Doppler-spread channels, required for microwave EME.
 - AP-list template matching decodes 6/6 frames at SNR −25 dB where
   plain BP fails 0/6.
-- **Decode speed** (2026-07-20): Q65-60B/30A dropped ~4× (see the
-  "Decode speed" notes above) via a redundant-extraction fix and a
-  calibrated `max_candidates` cut in `decode_multi_period_for`. Q65-60A
-  (and every other sub-mode routed through `decode_scan_for`/
+- **Decode speed** (2026-07-20): Q65-60B/30A first dropped ~4× via a
+  redundant-extraction fix and a calibrated `max_candidates` cut in
+  `decode_multi_period_for`, then moved again (60B faster, 30A/120D/
+  120E/300A slower) when the coarse-sync overhaul below landed — see
+  the "Decode speed" notes above for the per-row breakdown and why.
+  Q65-60A (and every other sub-mode routed through `decode_scan_for`/
   `decode_scan_with_ap_for`) was rewritten the same day as a faithful
-  `(Δf, Δt, b90)` grid search + coarse-sync overhaul — full writeup,
-  including the real-`jt9` verification methodology: `Q65_BENCHMARK.md`.
+  `(Δf, Δt, b90)` grid search, which is also where the coarse-sync
+  overhaul and a Lorentzian-vs-Gaussian fading-model fix (below) came
+  from — full writeup, including the real-`jt9` verification
+  methodology: `Q65_BENCHMARK.md`.
 
 **AWGN sensitivity sweep** (`tests/q65_sim_sweep.rs`, `q65sim`-driven,
 15 trials/SNR for the 15/30/60 s sub-modes, 5 trials/SNR for the
