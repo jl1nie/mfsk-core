@@ -44,7 +44,17 @@
   candidates; cut the test's `max_candidates` 32→16 (2× headroom,
   deliberately not pushed to the edge given a thin ~0.002 score margin
   at the weakest signal's rank), dropping golden-WAV time 1.49s→0.69s
-  (~2.2×) with bit-identical recall. See `docs/notes/Q65_BENCHMARK.md`.
+  (~2.2×) with bit-identical recall. The same calibration then extended
+  to the four fading-metric golden tests (`decode_scan_fading_for`,
+  which don't go through `decode_at_grid_for` but share the coarse-sync
+  overhaul's `coarse_search_for` and had gotten slower from it): real
+  signals ranked within the top 3 of 94-3094 candidates in all four
+  recordings (Q65-300A's margin over the next candidate is thin,
+  ~0.0004, so its cut kept more headroom than the others). Cutting
+  each test's `max_candidates` (100/30/30/200 -> 8/8/8/20) dropped
+  Q65-60D 0.39s->0.08s, Q65-120D 0.15s->0.12s, Q65-120E 0.32s->0.26s,
+  Q65-300A 1.05s->0.34s, bit-identical recall throughout. See
+  `docs/notes/Q65_BENCHMARK.md`.
 - **FST4-60A OSD depth-escalation gate hand-calibrated for its own
   `N_SYNC=40`** (`core/pipeline.rs`) — the shared `osd_depth3_min=18`
   gate was calibrated against FT8's `N_SYNC=21`; FST4's larger sync

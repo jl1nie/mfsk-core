@@ -255,6 +255,18 @@ exactly). See `BENCHMARKS.md`'s Q65 section for the full table.
   its score margin over the next (noise) candidate is thin (~0.002),
   unlike the Q65-60B/30A case's healthy #0-ranked margin — dropping the
   row to **0.69 s** (~2.2×) with bit-identical recall.
+- The same calibration extended to the four fading-metric golden tests
+  (`decode_scan_fading_for`, which don't go through `decode_at_grid_for`
+  but do share the coarse-sync overhaul's `coarse_search_for`, and had
+  gotten slower from it): real signals ranked within the top 3 of
+  94-3094 total candidates in all four recordings (Q65-60D rank 1,
+  Q65-120D rank 0, Q65-120E rank 2, Q65-300A rank 9 — with a thin
+  ~0.0004-score margin over the next candidate, so its cut kept more
+  headroom than the others' generous margins). Cutting each test's
+  `max_candidates` (100/30/30/200 → 8/8/8/20) dropped all four rows
+  well below where they started: Q65-60D 0.39 s → **0.08 s**, Q65-120D
+  0.15 s → **0.12 s**, Q65-120E 0.32 s → **0.26 s**, Q65-300A 1.05 s →
+  **0.34 s** — bit-identical recall throughout.
 - Every real off-air Q65 golden test (`q65_wsjtx_samples.rs`, including
   the ionoscatter/tropo/rainscatter/EME/optical-scatter recordings)
   passes; full non-ignored suite (948 tests) and

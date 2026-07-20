@@ -270,7 +270,7 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 10,
         score_threshold: 0.05,
-        max_candidates: 100,
+        max_candidates: 8,
     };
 
     // Plain BP is known to fail at this SNR (see doc comment above) —
@@ -434,7 +434,7 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 10,
         score_threshold: 0.0,
-        max_candidates: 30,
+        max_candidates: 8,
     };
 
     // Plain BP is known to fail at this SNR (see doc comment above) —
@@ -502,7 +502,7 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 10,
         score_threshold: 0.0,
-        max_candidates: 30,
+        max_candidates: 8,
     };
 
     let mut hit = false;
@@ -573,7 +573,7 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 60,
         score_threshold: 0.0,
-        max_candidates: 200,
+        max_candidates: 20,
     };
 
     // Plain BP is known to fail at this SNR (see doc comment above) —
@@ -979,6 +979,155 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
                     decoded.map(|d| d.message.as_str())
                 );
             }
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual diagnostic — Q65-60D/120D/120E/300A fading-metric candidate-score calibration (2026-07-20 speed follow-up)"]
+fn q65_fading_candidate_score_calibration_diag() {
+    use mfsk_core::q65::decode_at_fading_for;
+    use mfsk_core::q65::search::coarse_search_for;
+
+    struct Golden<'a> {
+        want: &'a [&'a str],
+        freq_hz: f32,
+        tol_hz: f32,
+    }
+
+    fn probe<P: mfsk_core::core::ModulationParams + Sync>(
+        label: &str,
+        audio: &[f32],
+        time_tolerance_symbols: u32,
+        b90_ts: f32,
+        model: FadingModel,
+        golden: Golden,
+    ) {
+        let unbounded = SearchParams {
+            freq_min_hz: 200.0,
+            freq_max_hz: 3_000.0,
+            time_tolerance_symbols,
+            score_threshold: 0.0,
+            max_candidates: 100_000,
+        };
+        let cands = coarse_search_for::<P>(audio, 12_000, 0, &unbounded);
+        println!("== {label} — {} total candidates ==", cands.len());
+
+        // Per-candidate decode attempts are independent — parallelize
+        // over rayon (same convention as tests/q65_sim_sweep.rs)
+        // rather than the sequential loop an earlier version of this
+        // diagnostic used; the 300A file alone has 3094 candidates.
+        let decode_one = |(rank, c): (usize, &mfsk_core::q65::search::SyncCandidate)| {
+            let d = decode_at_fading_for::<P>(
+                audio,
+                12_000,
+                c.start_sample,
+                c.freq_hz,
+                b90_ts,
+                model,
+                None,
+            );
+            let is_hit = d.as_ref().is_some_and(|d| {
+                golden.want.iter().all(|w| d.message.contains(w))
+                    && (d.freq_hz - golden.freq_hz).abs() <= golden.tol_hz
+            });
+            (rank, c.score, c.freq_hz, d.map(|d| d.message), is_hit)
+        };
+        #[cfg(feature = "parallel")]
+        let results: Vec<_> = {
+            use rayon::prelude::*;
+            cands.par_iter().enumerate().map(decode_one).collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let results: Vec<_> = cands.iter().enumerate().map(decode_one).collect();
+
+        for (rank, score, freq_hz, message, is_hit) in results {
+            if rank < 20 || is_hit {
+                println!(
+                    "  rank={rank} score={score:.4} freq={freq_hz:.1}Hz -> {message:?}{}",
+                    if is_hit { "  <-- GOLDEN" } else { "" }
+                );
+            }
+        }
+    }
+
+    if let Some(dir) = samples_dir("60D_EME_10GHz") {
+        let path = dir.join("201212_1838.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            probe::<Q65d60>(
+                "Q65-60D 201212_1838.wav",
+                &audio,
+                10,
+                10.0,
+                FadingModel::Gaussian,
+                Golden {
+                    want: &["VK7MO", "K6QPV"],
+                    freq_hz: 1000.0,
+                    tol_hz: 20.0,
+                },
+            );
+        }
+    }
+
+    if let Some(dir) = samples_dir("120D_Rainscatter_10_GHz") {
+        let path = dir.join("210117_0920.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            probe::<Q65d120>(
+                "Q65-120D 210117_0920.wav",
+                &audio,
+                10,
+                20.0,
+                FadingModel::Gaussian,
+                Golden {
+                    want: &["VK3WE", "VK7MO"],
+                    freq_hz: 995.0,
+                    tol_hz: 15.0,
+                },
+            );
+        }
+    }
+
+    if let Some(dir) = samples_dir("120E_Ionoscatter_6m") {
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+            .collect();
+        for path in &entries {
+            if let Some(audio) = read_wsjtx_wav(path) {
+                probe::<Q65e120>(
+                    &format!("Q65-120E {}", path.file_name().unwrap().to_string_lossy()),
+                    &audio,
+                    10,
+                    12.0,
+                    FadingModel::Gaussian,
+                    Golden {
+                        want: &["KB7IJ", "N0AN"],
+                        freq_hz: 1799.0,
+                        tol_hz: 15.0,
+                    },
+                );
+            }
+        }
+    }
+
+    if let Some(dir) = samples_dir("300A_Optical_Scatter") {
+        let path = dir.join("201210_0505.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            probe::<Q65a300>(
+                "Q65-300A 201210_0505.wav",
+                &audio,
+                60,
+                5.0,
+                FadingModel::Gaussian,
+                Golden {
+                    want: &["VK7MO", "VK7PD"],
+                    freq_hz: 1002.0,
+                    tol_hz: 15.0,
+                },
+            );
         }
     }
 }
