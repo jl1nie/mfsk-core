@@ -91,7 +91,7 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 50,
         score_threshold: 0.05,
-        max_candidates: 32,
+        max_candidates: 16,
     };
 
     let decodes_no_ap =
@@ -367,7 +367,7 @@ fn tropo_1296_60b_decodes_via_averaging() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 50,
         score_threshold: 0.05,
-        max_candidates: 32,
+        max_candidates: 16,
     };
 
     let decodes_no_ap =
@@ -611,4 +611,315 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
          regression in the fast-fading receive chain. Fading decodes: {:?}",
         fading.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+}
+
+/// Diagnostic (new investigation, mirrors the FT4/FST4 speed
+/// methodology): `BENCHMARKS.md`'s "Decode speed" table has Q65-60A
+/// (1.57 s), Q65-60B (1.89 s), Q65-30A (2.55 s) far slower than
+/// Q65-120D (0.15 s) / Q65-60D (0.39 s) despite similar or shorter
+/// audio — counter-intuitive since 120D/60D use the (presumably more
+/// expensive per-candidate) fast-fading metric while 60A uses plain
+/// BP. Measures `coarse_search_for`'s candidate count/time separately
+/// from the full `decode_scan_for`/`decode_scan_with_ap_for` wall-clock,
+/// to see whether the gap is coarse-search grid size (Q65-60A's
+/// `SearchParams::time_tolerance_symbols=50` vs Q65-60D's `10` — a 5×
+/// larger coarse time-search window, `coarse_search_on_spec_for`,
+/// `q65/search.rs:202-236`, O(time_span × freq_span)) or the
+/// per-candidate fine-timing retry (`decode_at_with_fine_timing_for`,
+/// up to 7 decode attempts per candidate). No assertions.
+#[test]
+#[ignore = "manual diagnostic — Q65-60A/60B/30A speed investigation (new investigation)"]
+fn q65_speed_diag_coarse_vs_finetiming() {
+    use std::time::Instant;
+
+    use mfsk_core::q65::search::coarse_search_for;
+
+    fn measure_plain<P: mfsk_core::ModulationParams>(
+        label: &str,
+        audio: &[f32],
+        nominal_start: usize,
+        params: &SearchParams,
+    ) {
+        let t0 = Instant::now();
+        let cands = coarse_search_for::<P>(audio, 12_000, nominal_start, params);
+        let coarse_dt = t0.elapsed();
+
+        let t0 = Instant::now();
+        let decodes = mfsk_core::q65::decode_scan_for::<P>(audio, 12_000, nominal_start, params);
+        let plain_dt = t0.elapsed();
+
+        eprintln!(
+            "{label}: {} candidates (time_tolerance_symbols={}, max_cand={}), coarse={:.1}ms, \
+             decode_scan_for(plain)={:.1}ms, {} decode(s)",
+            cands.len(),
+            params.time_tolerance_symbols,
+            params.max_candidates,
+            coarse_dt.as_secs_f64() * 1000.0,
+            plain_dt.as_secs_f64() * 1000.0,
+            decodes.len()
+        );
+    }
+
+    if let Some(dir) = samples_dir("60A_EME_6m") {
+        if let Some(entry) = std::fs::read_dir(&dir).ok().and_then(|it| {
+            it.filter_map(|e| e.ok())
+                .find(|e| e.path().extension().and_then(|s| s.to_str()) == Some("wav"))
+        }) && let Some(audio) = read_wsjtx_wav(entry.path())
+        {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 50,
+                score_threshold: 0.05,
+                max_candidates: 32,
+            };
+            measure_plain::<Q65a60>("Q65-60A (real params)", &audio, 12_000 * 30, &params);
+
+            // Same audio, Q65-60D's much narrower time-tolerance,
+            // to isolate the coarse-search-window effect alone.
+            let params_narrow = SearchParams {
+                time_tolerance_symbols: 10,
+                max_candidates: 100,
+                ..params
+            };
+            measure_plain::<Q65a60>(
+                "Q65-60A (60D-style narrow tolerance)",
+                &audio,
+                12_000 * 30,
+                &params_narrow,
+            );
+        }
+    } else {
+        eprintln!("skipping Q65-60A: sample dir not found");
+    }
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok().unwrap_or_default();
+    let path = std::path::Path::new(&manifest)
+        .join("../../WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav");
+    if let Ok(path) = path.canonicalize() {
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 10,
+                score_threshold: 0.05,
+                max_candidates: 100,
+            };
+            let t0 = Instant::now();
+            let cands = coarse_search_for::<Q65d60>(&audio, 12_000, 0, &params);
+            let coarse_dt = t0.elapsed();
+            eprintln!(
+                "Q65-60D (real params): {} candidates, coarse={:.1}ms",
+                cands.len(),
+                coarse_dt.as_secs_f64() * 1000.0
+            );
+            let t0 = Instant::now();
+            let fading = decode_scan_fading_for::<Q65d60>(
+                &audio,
+                12_000,
+                0,
+                &params,
+                10.0,
+                FadingModel::Gaussian,
+                None,
+            );
+            let fading_dt = t0.elapsed();
+            eprintln!(
+                "Q65-60D decode_scan_fading_for = {:.1}ms, {} decode(s)",
+                fading_dt.as_secs_f64() * 1000.0,
+                fading.len()
+            );
+        }
+    } else {
+        eprintln!("skipping Q65-60D: sample not found");
+    }
+}
+
+/// Timing-only diagnostic for the `decode_multi_period_for` redundant-
+/// extraction fix (Q65-60B/30A speed investigation, new investigation).
+/// Search params match the real golden tests exactly
+/// (`tropo_1296_60b_decodes_via_averaging` /
+/// `ionoscatter_6m_full_stack_decodes_via_averaging`).
+#[test]
+#[ignore = "manual diagnostic — Q65-60B/30A decode_multi_period_for timing (new investigation)"]
+fn q65_multi_period_speed_diag() {
+    use std::time::Instant;
+
+    if let Some(dir) = samples_dir("60B_1296_Troposcatter") {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+            .collect();
+        entries.sort();
+        let slots: Vec<Vec<f32>> = entries.iter().filter_map(read_wsjtx_wav).collect();
+        let slot_refs: Vec<&[f32]> = slots.iter().map(|v| v.as_slice()).collect();
+        let params = SearchParams {
+            freq_min_hz: 200.0,
+            freq_max_hz: 3_000.0,
+            time_tolerance_symbols: 50,
+            score_threshold: 0.05,
+            max_candidates: 16,
+        };
+        let t0 = Instant::now();
+        let decodes =
+            decode_multi_period_for::<Q65b60>(&slot_refs, 12_000, 12_000 * 30, &params, None);
+        let dt = t0.elapsed();
+        eprintln!(
+            "Q65-60B decode_multi_period_for = {:.1}ms, {} slot(s), {} decode(s)",
+            dt.as_secs_f64() * 1000.0,
+            slot_refs.len(),
+            decodes.len()
+        );
+    }
+
+    if let Some(dir) = samples_dir("30A_Ionoscatter_6m") {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+            .collect();
+        entries.sort();
+        let slots: Vec<Vec<f32>> = entries.iter().filter_map(read_wsjtx_wav).collect();
+        let slot_refs: Vec<&[f32]> = slots.iter().map(|v| v.as_slice()).collect();
+        let params = SearchParams {
+            freq_min_hz: 200.0,
+            freq_max_hz: 3_000.0,
+            time_tolerance_symbols: 50,
+            score_threshold: 0.05,
+            max_candidates: 16,
+        };
+        let t0 = Instant::now();
+        let decodes =
+            decode_multi_period_for::<Q65a30>(&slot_refs, 12_000, 12_000 * 15, &params, None);
+        let dt = t0.elapsed();
+        eprintln!(
+            "Q65-30A decode_multi_period_for = {:.1}ms, {} slot(s), {} decode(s)",
+            dt.as_secs_f64() * 1000.0,
+            slot_refs.len(),
+            decodes.len()
+        );
+    }
+}
+
+/// Candidate-count diagnostic: how many coarse candidates does each
+/// slot of the Q65-30A ionoscatter multi-period scan actually
+/// produce? `decode_multi_period_for` pays its 8-stage decode ladder
+/// (AP-list + 6-way fading sweep + plain Bessel) once per candidate
+/// per slot — if candidate counts are large, that's the real cost
+/// driver, not the extraction redundancy already fixed above.
+#[test]
+#[ignore = "manual diagnostic — Q65-30A/60B candidate-count profiling (new investigation)"]
+fn q65_multi_period_candidate_count_diag() {
+    use mfsk_core::q65::search::{Spectrogram, coarse_search_on_spec_for};
+
+    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
+        eprintln!("skipping: sample tree not found");
+        return;
+    };
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    entries.sort();
+    let slots: Vec<Vec<f32>> = entries.iter().filter_map(read_wsjtx_wav).collect();
+
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 32,
+    };
+
+    let mut ema_spec = Spectrogram::build_for::<Q65a30>(&slots[0], 12_000);
+    for (i, audio) in slots.iter().enumerate() {
+        if i > 0 {
+            let slot_spec = Spectrogram::build_for::<Q65a30>(audio, 12_000);
+            if slot_spec.n_time == ema_spec.n_time && slot_spec.n_freq == ema_spec.n_freq {
+                let weight = 1.0_f32 / ((i + 1).min(4) as f32);
+                let one_minus = 1.0 - weight;
+                for (e, s) in ema_spec.mags_sqr.iter_mut().zip(&slot_spec.mags_sqr) {
+                    *e = weight * *s + one_minus * *e;
+                }
+            }
+        }
+        let cands = coarse_search_on_spec_for::<Q65a30>(&ema_spec, 12_000, 12_000 * 15, &params);
+        eprintln!("slot {i}: {} candidates", cands.len());
+    }
+}
+
+/// Score-distribution calibration diagnostic: with `max_candidates`
+/// raised high enough to see the *full* candidate list (not truncated
+/// at 32), where does the real signal's own candidate score fall
+/// relative to the rest? Q65-30A's known golden message ("K1JT K9AN
+/// R-16" — confirmed via `ionoscatter_6m_full_stack_decodes_via_averaging`)
+/// gives a concrete target to check "did truncating to N candidates
+/// ever drop the real signal" against.
+#[test]
+#[ignore = "manual diagnostic — Q65-30A candidate-score calibration (new investigation)"]
+fn q65_candidate_score_calibration_diag() {
+    use mfsk_core::q65::search::{Spectrogram, coarse_search_on_spec_for};
+
+    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
+        eprintln!("skipping: sample tree not found");
+        return;
+    };
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    entries.sort();
+    let slots: Vec<Vec<f32>> = entries.iter().filter_map(read_wsjtx_wav).collect();
+
+    // No truncation — see the full score distribution above threshold.
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 100_000,
+    };
+
+    let mut ema_spec = Spectrogram::build_for::<Q65a30>(&slots[0], 12_000);
+    for (i, audio) in slots.iter().enumerate() {
+        if i > 0 {
+            let slot_spec = Spectrogram::build_for::<Q65a30>(audio, 12_000);
+            if slot_spec.n_time == ema_spec.n_time && slot_spec.n_freq == ema_spec.n_freq {
+                let weight = 1.0_f32 / ((i + 1).min(4) as f32);
+                let one_minus = 1.0 - weight;
+                for (e, s) in ema_spec.mags_sqr.iter_mut().zip(&slot_spec.mags_sqr) {
+                    *e = weight * *s + one_minus * *e;
+                }
+            }
+        }
+        let mut cands =
+            coarse_search_on_spec_for::<Q65a30>(&ema_spec, 12_000, 12_000 * 15, &params);
+        cands.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        eprintln!(
+            "slot {i}: {} total candidates above score_threshold=0.05",
+            cands.len()
+        );
+        eprintln!(
+            "  top 40 scores: {:?}",
+            cands.iter().take(40).map(|c| c.score).collect::<Vec<_>>()
+        );
+        // Where would a real ionoscatter signal near 1010 Hz (the
+        // decoded freq from the no-AP run) rank? Report every
+        // candidate within 30 Hz of that frequency and its rank.
+        for (rank, c) in cands.iter().enumerate() {
+            if (c.freq_hz - 1010.0).abs() <= 30.0 {
+                eprintln!(
+                    "  near-1010Hz candidate: rank={rank} freq={:.1} score={:.4}",
+                    c.freq_hz, c.score
+                );
+            }
+        }
+    }
 }

@@ -764,10 +764,20 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     })
 }
 
-/// Run the fast-fading metric BP decoder against averaged wide energies.
-fn decode_averaged_fading_for<P: ModulationParams>(
-    audio_slots: &[&[f32]],
-    sample_rate: u32,
+/// Run the fast-fading metric BP decoder against averaged wide
+/// energies **already extracted** by the caller.
+///
+/// Split out of the former `decode_averaged_fading_for` so
+/// [`decode_multi_period_for`]'s `b90 × model` sweep can call
+/// [`averaged_data_energies_wide`] once per candidate and reuse the
+/// same energies buffer across all 6 combinations, instead of paying
+/// for the FFT-based extraction (and slot-averaging) redundantly on
+/// every sweep step — the extraction depends only on
+/// `(audio_slots, start_sample, base_freq_hz)`, never on `b90_ts`/
+/// `model`, so those 6 calls were doing bit-identical extraction work
+/// 6 times over.
+fn decode_fading_with_energies<P: ModulationParams>(
+    energies: &[f32],
     start_sample: usize,
     base_freq_hz: f32,
     b90_ts: f32,
@@ -776,14 +786,11 @@ fn decode_averaged_fading_for<P: ModulationParams>(
     use crate::core::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
-    let energies =
-        averaged_data_energies_wide::<P>(audio_slots, sample_rate, start_sample, base_freq_hz)?;
-
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     let _state = intrinsics_fast_fading(
         &QRA15_65_64_IRR_E23,
         &mut intrinsics,
-        &energies,
+        energies,
         submode_index_from_params::<P>(),
         b90_ts,
         model,
@@ -933,18 +940,28 @@ pub fn decode_multi_period_for<P: ModulationParams>(
             }
 
             // Stage C-fading — fast-fading metric BP, b90 × model sweep.
-            for &b90 in &b90_ladder {
-                for &model in &fading_models {
-                    if let Some(d) = decode_averaged_fading_for::<P>(
-                        history,
-                        sample_rate,
-                        cand.start_sample,
-                        cand.freq_hz,
-                        b90,
-                        model,
-                    ) {
-                        slot_decode = Some(d);
-                        break 'candidate_loop;
+            // Extraction (FFT + slot-averaging) depends only on
+            // `(history, cand.start_sample, cand.freq_hz)`, not on
+            // `b90`/`model` — computed once here and reused across all
+            // 6 sweep combinations (was 6 redundant extractions).
+            if let Some(energies) = averaged_data_energies_wide::<P>(
+                history,
+                sample_rate,
+                cand.start_sample,
+                cand.freq_hz,
+            ) {
+                for &b90 in &b90_ladder {
+                    for &model in &fading_models {
+                        if let Some(d) = decode_fading_with_energies::<P>(
+                            &energies,
+                            cand.start_sample,
+                            cand.freq_hz,
+                            b90,
+                            model,
+                        ) {
+                            slot_decode = Some(d);
+                            break 'candidate_loop;
+                        }
                     }
                 }
             }
