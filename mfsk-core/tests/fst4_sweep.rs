@@ -823,3 +823,432 @@ fn fst4_120_diag_sync_vs_decode_failure() {
         );
     }
 }
+
+/// Phase 0 diagnostic (new investigation, mirrors the FT4
+/// `ft4_diag_candidate_cost_split` methodology from
+/// `~/.claude/plans/dapper-soaring-nest.md`): is FST4-60A slow
+/// (`BENCHMARKS.md`: 2.60 s, slowest golden-WAV decode of any protocol)
+/// for the same structural reason FT4 was — a generic 2-D (freq × lag)
+/// Costas-correlation `core::sync::coarse_sync` computed for a protocol
+/// whose WSJT-X reference candidate finder (`get_candidates_fst4` in
+/// `fst4_decode.f90:802-877`) has no lag dimension at all (a CLEAN-style
+/// iterative-peak periodogram, single wideband FFT, no per-lag grid)?
+///
+/// Measures, on the real WSJT-X FST4-60 golden WAV: `coarse_sync`
+/// candidate count / distinct-frequency count, and the wall-clock split
+/// between `coarse_sync` itself, `fst4_sync_search`'s coherent full-slot
+/// Δt search, and everything after it (symbol_spectra + LLR + BP + OSD)
+/// — plus the real production `decode_frame` wall-clock for direct
+/// comparison against the `BENCHMARKS.md` figure. Measurement only, no
+/// assertions.
+#[test]
+#[ignore = "manual diagnostic — FST4-60A coarse-sync cost split (new investigation, mirrors dapper-soaring-nest plan Phase 0)"]
+fn fst4_60_diag_candidate_cost_split() {
+    use std::time::{Duration, Instant};
+
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::core::sync2d::fst4_sync_search;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const REFINE_STEPS: i32 = 40;
+    const SYNC_Q_MIN: u32 = 10;
+
+    fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
+        let mut buckets: Vec<i32> = cands
+            .iter()
+            .map(|c| (c.freq_hz / 4.0).round() as i32)
+            .collect();
+        buckets.sort_unstable();
+        buckets.dedup();
+        buckets.len()
+    }
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let Ok(golden_path) = golden_path.canonicalize() else {
+        eprintln!("skipping: WSJT-X FST4 sample not found (sibling checkout)");
+        return;
+    };
+    let Some(audio) = load_wav_i16_opt(&golden_path) else {
+        eprintln!("skipping: WAV not 12 kHz mono PCM-16");
+        return;
+    };
+
+    let t0 = Instant::now();
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let coarse_dt = t0.elapsed();
+
+    eprintln!(
+        "FST4-60A golden: {} candidates, {} distinct freq buckets (avg {:.1} cand/freq), coarse_sync={:.1}ms",
+        cands.len(),
+        freq_bucket_count(&cands),
+        cands.len() as f32 / freq_bucket_count(&cands).max(1) as f32,
+        coarse_dt.as_secs_f64() * 1000.0
+    );
+
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let mut total_downsample = Duration::ZERO;
+    let mut total_sync_search = Duration::ZERO;
+    let mut total_process = Duration::ZERO;
+    let mut n_decoded = 0usize;
+    for c in &cands {
+        let t0 = Instant::now();
+        let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+        total_downsample += t0.elapsed();
+
+        let t0 = Instant::now();
+        let _ = fst4_sync_search::<Fst4s60>(&cd0, c);
+        total_sync_search += t0.elapsed();
+
+        let t0 = Instant::now();
+        let r = process_candidate_basic::<Fst4s60>(
+            c,
+            &fft_cache,
+            &FST4_60A_DOWNSAMPLE,
+            DecodeDepth::BpAllOsd,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            REFINE_STEPS,
+            SYNC_Q_MIN,
+        );
+        total_process += t0.elapsed();
+        if r.is_some() {
+            n_decoded += 1;
+        }
+    }
+    let llr_bp_osd = total_process
+        .saturating_sub(total_downsample)
+        .saturating_sub(total_sync_search);
+    eprintln!(
+        "  per-cand[downsample={:.1}ms sync_search={:.1}ms llr+bp+osd(inferred)={:.1}ms] decoded={n_decoded}",
+        total_downsample.as_secs_f64() * 1000.0,
+        total_sync_search.as_secs_f64() * 1000.0,
+        llr_bp_osd.as_secs_f64() * 1000.0
+    );
+
+    // Real production entry point, for direct comparison against
+    // `BENCHMARKS.md`'s "Decode speed" table (2.60 s as of this
+    // investigation's start).
+    let t0 = Instant::now();
+    let decodes = mfsk_core::fst4::decode::decode_frame(&audio, 100.0, 3000.0, 1.0, 50);
+    let dt = t0.elapsed();
+    eprintln!(
+        "FST4-60A golden: decode_frame wall-clock = {:.1} ms, {} decode(s)",
+        dt.as_secs_f64() * 1000.0,
+        decodes.len()
+    );
+}
+
+/// Phase 0 follow-up: `fst4_60_diag_candidate_cost_split` found the
+/// 8+ second cost is almost entirely inside `process_candidate_basic`
+/// (LLR + BP + OSD), not `coarse_sync`/`fst4_sync_search` — the
+/// opposite of what drove FT4's slowness. Hypothesis: `nsync` gates
+/// `osd_attempt_min`/`osd_depth3_min` are hardcoded `(12, 18)`
+/// (`core/pipeline.rs`), calibrated against FT8's `N_SYNC=21` — but
+/// FST4-60's `N_SYNC=40` (`fst4/mod.rs`), so 18/40=45% is a far looser
+/// bar than FT8's 18/21=86%, letting most candidates escalate into the
+/// most expensive OSD depth-4 (+ `Ldpc240_101`'s raw-then-zsum
+/// *double* OSD attempt per depth, `fec/ldpc240_101/mod.rs:148-197`)
+/// tier even when they have no real chance of succeeding.
+///
+/// Measures, per candidate: `nsync` (out of 40), whether plain BP alone
+/// succeeds, and — for BP failures — how much wall-clock the OSD
+/// escalation (depth-2/3, then depth-4 if `nsync>=18`) burns before
+/// giving up. No assertions.
+#[test]
+#[ignore = "manual diagnostic — FST4-60A OSD-escalation gate hypothesis (new investigation)"]
+fn fst4_60_diag_osd_escalation() {
+    use std::time::Instant;
+
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const BP_MAX_ITER: u32 = 30;
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let Ok(golden_path) = golden_path.canonicalize() else {
+        eprintln!("skipping: WSJT-X FST4 sample not found (sibling checkout)");
+        return;
+    };
+    let Some(audio) = load_wav_i16_opt(&golden_path) else {
+        eprintln!("skipping: WAV not 12 kHz mono PCM-16");
+        return;
+    };
+
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+    let mut n_bp_ok = 0usize;
+    let mut n_no_osd_attempt = 0usize;
+    let mut n_osd_2_3_only = 0usize;
+    let mut n_osd_4_escalated = 0usize;
+    let mut t_osd_2_3 = std::time::Duration::ZERO;
+    let mut t_osd_4 = std::time::Duration::ZERO;
+
+    for c in &cands {
+        let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+        let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+        let df_hz = s2.freq_hz - c.freq_hz;
+        let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+        let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+
+        let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+        let variants: Vec<&Vec<f32>> = [
+            Some(&llr_set.llra),
+            Some(&llr_set.llrb),
+            if llr_set.llre.is_empty() {
+                None
+            } else {
+                Some(&llr_set.llre)
+            },
+            Some(&llr_set.llrc),
+            Some(&llr_set.llrd),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let bp_opts = FecOpts {
+            bp_max_iter: BP_MAX_ITER,
+            osd_depth: 0,
+            ap_mask: None,
+            verify_info,
+            ..FecOpts::default()
+        };
+        let bp_ok = variants
+            .iter()
+            .any(|llr| fec.decode_soft(llr, &bp_opts).is_some());
+        if bp_ok {
+            n_bp_ok += 1;
+            continue;
+        }
+
+        // production gate: hardcoded (12, 18) regardless of N_SYNC.
+        if nsync < 12 {
+            n_no_osd_attempt += 1;
+            continue;
+        }
+        let osd_depth: u32 = if nsync >= 18 { 3 } else { 2 };
+        let t0 = Instant::now();
+        let osd_opts = FecOpts {
+            bp_max_iter: BP_MAX_ITER,
+            osd_depth,
+            ap_mask: None,
+            verify_info,
+            ..FecOpts::default()
+        };
+        let ok_2_3 = variants
+            .iter()
+            .any(|llr| fec.decode_soft(llr, &osd_opts).is_some());
+        t_osd_2_3 += t0.elapsed();
+        if ok_2_3 {
+            n_osd_2_3_only += 1;
+            continue;
+        }
+
+        if nsync >= 18 {
+            n_osd_4_escalated += 1;
+            let t0 = Instant::now();
+            let osd4_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 4,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let _ = variants
+                .iter()
+                .any(|llr| fec.decode_soft(llr, &osd4_opts).is_some());
+            t_osd_4 += t0.elapsed();
+        }
+    }
+
+    eprintln!(
+        "FST4-60A golden ({} candidates): bp_ok={n_bp_ok} no_osd_attempt(nsync<12)={n_no_osd_attempt} \
+         osd_2_3_only={n_osd_2_3_only} osd_4_escalated(nsync>=18)={n_osd_4_escalated}",
+        cands.len()
+    );
+    eprintln!(
+        "  wall-clock: osd_depth_2_3={:.1}ms osd_depth_4={:.1}ms",
+        t_osd_2_3.as_secs_f64() * 1000.0,
+        t_osd_4.as_secs_f64() * 1000.0
+    );
+}
+
+/// Calibration diagnostic: the naive fix (reusing FT4's exact
+/// `N_SYNC`-scaled ratio — `40 * 12/21 ~ 23`, `40 * 18/21 ~ 34` — for
+/// FST4 too) measured as a real ~0.5 dB AWGN sensitivity *regression*
+/// (`fst4_snr_sweep`, AWGN, controlled A/B on identical code:
+/// pre-fix ≈-27.6dB, post-fix ≈-27.1dB) — unlike FT4, where the
+/// analogous scaling only ever *raised* an unreachable threshold.
+/// Measures the actual `nsync` distribution of candidates that only
+/// succeed via OSD depth-3/4 (not plain BP, not depth-2) across the
+/// FST4-60 AWGN near-crossing region, so a safe cutoff can be picked
+/// from real data instead of a cross-protocol ratio.
+#[test]
+#[ignore = "manual diagnostic — FST4 OSD-escalation gate recalibration (new investigation)"]
+fn fst4_60_diag_osd_depth34_nsync_floor() {
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    const BP_MAX_ITER: u32 = 30;
+
+    let dir = sweep_dir();
+    let mut work: Vec<(&str, u32)> = Vec::new();
+    for snr_tag in ["m29", "m28", "m27", "m26"] {
+        for trial in 1..=20u32 {
+            work.push((snr_tag, trial));
+        }
+    }
+
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> Vec<(u32, u8)> {
+        let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            return Vec::new();
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let fec = <Fst4s60 as Protocol>::Fec::default();
+        let verify_info =
+            Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+        let mut out = Vec::new();
+        for c in &cands {
+            if (c.freq_hz - GOLDEN_FREQ_HZ).abs() > FREQ_TOL_HZ {
+                continue;
+            }
+            let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let df_hz = s2.freq_hz - c.freq_hz;
+            let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+
+            let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+            let variants: Vec<&Vec<f32>> = [
+                Some(&llr_set.llra),
+                Some(&llr_set.llrb),
+                if llr_set.llre.is_empty() {
+                    None
+                } else {
+                    Some(&llr_set.llre)
+                },
+                Some(&llr_set.llrc),
+                Some(&llr_set.llrd),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            let bp_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 0,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                fec.decode_soft(llr, opts).is_some_and(|r| {
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(&r.info[..77]);
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                })
+            };
+
+            let bp_ok = variants.iter().any(|llr| is_golden(llr, &bp_opts));
+            if bp_ok {
+                continue; // not an OSD-rescue case
+            }
+
+            let osd2_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 2,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let ok_depth2 = variants.iter().any(|llr| is_golden(llr, &osd2_opts));
+            if ok_depth2 {
+                out.push((nsync, 2));
+                continue;
+            }
+
+            let osd3_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 3,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let ok_depth3 = variants.iter().any(|llr| is_golden(llr, &osd3_opts));
+            if ok_depth3 {
+                out.push((nsync, 3));
+                continue;
+            }
+
+            let osd4_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 4,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let ok_depth4 = variants.iter().any(|llr| is_golden(llr, &osd4_opts));
+            if ok_depth4 {
+                out.push((nsync, 4));
+            }
+        }
+        out
+    };
+
+    #[cfg(feature = "parallel")]
+    let per_file: Vec<Vec<(u32, u8)>> = work.par_iter().map(process_one).collect();
+    #[cfg(not(feature = "parallel"))]
+    let per_file: Vec<Vec<(u32, u8)>> = work.iter().map(process_one).collect();
+
+    let mut rescues: Vec<(u32, u8)> = per_file.into_iter().flatten().collect();
+    rescues.sort_by_key(|&(nsync, _)| nsync);
+
+    eprintln!(
+        "OSD depth-2/3/4 rescues (BP failed, OSD succeeded), near-crossing AWGN (-29..-26 dB): n={}",
+        rescues.len()
+    );
+    eprintln!("(nsync, depth) sorted by nsync: {rescues:?}");
+    if let Some(&(min_nsync, _)) = rescues.first() {
+        eprintln!("minimum nsync among all OSD rescues: {min_nsync} (out of N_SYNC=40)");
+    }
+    let depth3_or_4: Vec<u32> = rescues
+        .iter()
+        .filter(|&&(_, d)| d >= 3)
+        .map(|&(n, _)| n)
+        .collect();
+    eprintln!(
+        "depth-3/4-specifically rescues: n={}, min nsync={:?}",
+        depth3_or_4.len(),
+        depth3_or_4.iter().min()
+    );
+}

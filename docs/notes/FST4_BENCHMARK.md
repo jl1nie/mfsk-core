@@ -215,3 +215,130 @@ could plausibly move:
 - Compute the new 50% crossing the same way as before (linear
   interpolation between adjacent SNR points) and diff directly
   against the prior crossing rather than re-deriving from scratch.
+
+## 8. FST4-60A decode speed — OSD-escalation gate over-triggering, ~8.4× win (2026-07-20)
+
+New investigation, same methodology as the FT4 coarse-sync/speed work
+(`~/.claude/plans/dapper-soaring-nest.md`): `docs/notes/BENCHMARKS.md`'s
+"Decode speed" table had FST4-60A as the single slowest golden-WAV
+decode of any protocol (2.60 s for a 60 s slot). Unlike FT4, the
+bottleneck turned out **not** to be coarse-candidate redundancy.
+
+**Profiling** (`fst4_60_diag_candidate_cost_split`, `tests/fst4_sweep.rs`,
+new): on the WSJT-X FST4-60 golden WAV (`210115_0058.wav`), `coarse_sync`
+found only 50 candidates across 31 distinct frequencies (1.6× — nowhere
+near FT4's 4.5×), and `coarse_sync` + `fst4_sync_search` together cost
+under 110 ms combined. The real cost was `symbol_spectra` + LLR + BP +
+OSD: **8054 ms** summed across all 50 candidates, out of a
+`decode_frame` production wall-clock of 2278 ms.
+
+**Root cause, confirmed against WSJT-X source** (`lib/fst4_decode.f90`,
+`lib/fec/ldpc240_101` equivalents): two compounding factors.
+
+1. `Ldpc240_101::decode_soft` (`fec/ldpc240_101/mod.rs:148-197`) tries
+   OSD **twice** whenever BP fails and OSD is requested: once on the raw
+   channel LLR, and — faithfully matching WSJT-X's `decode240_101.f90`
+   `zsave` mechanism (issue #146) — again on the running BP soft-estimate
+   sum. Both are genuinely needed (issue #146 measured real recall gain
+   from the zsum retry), so this isn't a bug, but it doubles the cost of
+   every OSD attempt.
+2. `process_candidate_basic`'s OSD-escalation gates
+   (`osd_attempt_min`/`osd_depth3_min`, `core/pipeline.rs`) were
+   hardcoded `(12, 18)` for every protocol except FT4 (which already got
+   an `N_SYNC`-scaled version, issue #72) — calibrated against FT8's
+   `N_SYNC=21`. FST4's `N_SYNC=40` (5 blocks × 8-symbol Costas) makes
+   `18` a *far looser* bar than FT8's own 18/21=86% (18/40=45%), so
+   roughly half of all real candidates escalated into the OSD depth-3
+   tier regardless of actual signal quality.
+   `fst4_60_diag_osd_escalation` (new) measured this directly on the
+   golden WAV: 24 of 50 candidates attempted OSD depth-2/3 (only 1
+   succeeded, 3.7 s combined), 2 escalated further to depth-4 (0
+   succeeded, 2.1 s combined) — on a WAV whose real signals were all
+   found comfortably under either threshold.
+   The comment this replaced claimed FST4's depth-escalation gate "was
+   already tuned separately" (issue #146) — checked `CHANGELOG.md` for
+   that tuning and found none: issue #146 tuned `bypass_osd_score_min`
+   and AWGN sensitivity, never the `(12, 18)` pair, which appears to
+   have been an untouched FT8 inheritance all along (the same kind of
+   stale-comment trap the FT4 investigation hit more than once).
+
+**First attempt: reuse FT4's exact scaling formula** — extend
+`P::ID == Ft4`'s `((12*N_SYNC+10)/21, (18*N_SYNC+10)/21)` to FST4 too
+(→ `(23, 34)` for `N_SYNC=40`). Golden-WAV `decode_frame` dropped to
+197 ms (~11.5×), recall unchanged (1/1). **But a controlled A/B on
+identical code** (git-stash the pipeline.rs change, rerun the exact same
+`fst4_snr_sweep` AWGN cells, restore) showed a real regression: 50%
+crossing moved **-27.6 dB → -27.1 dB** (~0.5 dB) — confirmed against
+`CHANGELOG.md`'s documented 0.7.2 baseline (`-27.62 dB`), which the
+pre-fix rerun reproduced almost exactly (`-27.625 dB`), ruling out a
+stale-baseline explanation. Unlike FT4's identical-looking fix (which
+only ever *raised* a threshold nsync could never reach, pure upside),
+FST4's `nsync` genuinely spans into the `[18, 34)` range for some real,
+recoverable signals — this is a case where "the same formula, the
+opposite direction" carries real recall risk, exactly as flagged before
+measuring.
+
+A follow-up per-candidate diagnostic
+(`fst4_60_diag_osd_depth34_nsync_floor`, checks decoded message against
+`GOLDEN_MSG`, not just CRC-24 pass) tried to find the real depth-3/4
+rescue floor directly and came back empty (0 rescues in the
+near-crossing AWGN region) — contradicted by the real sweep regression,
+so this diagnostic's candidate selection doesn't fully match production
+(left as a known gap, not chased further; the per-candidate diagnostics
+in this file remain useful for cost/count profiling, just not proven
+reliable for recall-floor calibration the way `ft4_diag_smax_calibration`
+was for FT4). Reverted to hand-sweeping the real `fst4_snr_sweep` test
+directly instead — same fallback FT4_BENCHMARK.md section 6 used.
+
+**Calibration, against the real recall test**:
+
+| `osd_attempt_min` | `osd_depth3_min` | AWGN 50% crossing |
+|---:|---:|---:|
+| 12 (unchanged) | 34 (fully scaled) | ≈ -27.3 dB |
+| 12 (unchanged) | 24 | ≈ -27.44 dB |
+| 12 (unchanged) | **20** | ≈ -27.56 dB |
+
+`osd_attempt_min` stayed at the original `12` throughout (raising it
+alone, in an earlier intermediate step, was the main driver of the
+first attempt's 0.5 dB loss — most real near-threshold candidates need
+*some* OSD attempt, just not always depth-3). `osd_depth3_min = 20`
+(barely above the original `18`) reproduced the documented baseline
+closely enough to call it noise: AWGN -27.56 vs -27.62 dB documented,
+and a full 4-channel re-run matched almost exactly —
+
+| Channel | Documented (pre-fix, CHANGELOG 0.7.2) | Measured (post-fix, this pass) |
+|---|---:|---:|
+| AWGN | -27.62 dB | -27.56 dB |
+| CCIR good | -25.78 dB | -25.78 dB |
+| CCIR moderate | -25.43 dB | -25.43 dB |
+| CCIR poor | -24.50 dB | -24.50 dB |
+
+— 3 of 4 channels bit-identical to the documented figure, AWGN within
+0.06 dB (well inside 20-trial sampling noise). Spot-checked FST4-120
+(-30.71 vs documented -30.70 dB) and FST4-300 (-34.78 vs documented
+-34.78 dB, exact) at AWGN — both sub-modes share the same `N_SYNC=40`
+and confirmed equally unaffected. FST4-15/30 were not independently
+re-verified (time-boxed; the mechanism is `N_SYNC`-driven and identical
+across all five sub-modes, so this is a reasonable but not
+independently-confirmed extrapolation — revisit if a future FST4-15/30
+regression surfaces).
+
+**Final fix** (`core/pipeline.rs`): FST4 gets its own branch —
+`osd_attempt_min` stays the shared default `12`; `osd_depth3_min = 20`,
+a hand-calibrated value verified against the real sweep, not derived
+from the `N_SYNC` ratio formula (that formula only reproduced FT8/FT4
+correctly; FST4 needed direct calibration).
+
+**Final numbers**: golden WAV `decode_frame` wall-clock
+**2278 ms → 272 ms (~8.4×)**, recall unchanged (1/1, same 2 total
+decodes). `llr+bp+osd` summed cost 8054 ms → 3262 ms. Full non-ignored
+suite (922 tests) and `-D clippy::perf -D warnings` green throughout.
+
+Lesson, stated plainly (same one section 7 draws from the opposite
+direction): a fix that looks identical to a previously-verified one
+(same formula, same code shape) can still carry different risk when the
+underlying quantity behaves differently for the new protocol — FT4's
+`N_SYNC` scaling only ever unlocked dead code; FST4's tightened *live*
+code that some real signals depend on. Controlled A/B against the exact
+current codebase (not a possibly-stale prior baseline) is what caught
+it before shipping.

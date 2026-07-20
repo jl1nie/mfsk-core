@@ -324,10 +324,42 @@ pub fn process_candidate_basic<P: Protocol>(
             // rescue were silently dead code for every FT4 candidate. Scale
             // by the same ratio the FT8 numbers imply, applied to FT4's own
             // `N_SYNC` (16 * 12/21 ~ 9, 16 * 18/21 ~ 14) — reproduces 12/18
-            // exactly for FT8 (`P::N_SYNC == 21`) and leaves FST4 untouched
-            // (gated on `P::ID`, not a blanket formula, since FST4's
-            // depth-escalation threshold was already tuned separately,
-            // issue #146).
+            // exactly for FT8 (`P::N_SYNC == 21`).
+            //
+            // FST4's `N_SYNC=40` (5 blocks x 8-symbol Costas) is the
+            // opposite problem: 18/40=45% is a far *looser* bar than FT8's
+            // 18/21=86%, so roughly half of all real candidates cleared it
+            // regardless of actual signal quality — not dead code, but the
+            // wrong kind of live code. `Ldpc240_101::decode_soft` tries OSD
+            // twice per LLR variant at whatever depth is requested (raw LLR,
+            // then WSJT-X's `zsave`-style running-BP-sum retry,
+            // `fec/ldpc240_101/mod.rs:148-197` — both genuinely needed,
+            // issue #146), across up to 5 LLR variants
+            // (`llra/llrb/llre/llrc/llrd`) — so escalating unnecessarily is
+            // expensive: `fst4_60_diag_osd_escalation`
+            // (`tests/fst4_sweep.rs`) measured the WSJT-X FST4-60 golden WAV
+            // at the unscaled gates: 24 of 50 candidates attempted OSD
+            // depth-2/3 (only 1 succeeded), for 3.7 s combined, vs 2
+            // escalating further to depth-4 for another 2.1 s — on a WAV
+            // whose real signals were all found well under either threshold.
+            // The comment this replaced claimed FST4's depth-escalation gate
+            // "was already tuned separately" (issue #146) — checked
+            // `CHANGELOG.md` for that tuning and found none: issue #146's
+            // FST4 work tuned `bypass_osd_score_min` (directly above) and
+            // AWGN sensitivity, never the `(12, 18)` pair itself, which
+            // appears to have been an untouched FT8 inheritance all along.
+            //
+            // Unlike FT4, reusing the same `N_SYNC`-scaled formula for FST4
+            // (→ 23/34) is NOT safe: a controlled A/B (`FST4_BENCHMARK.md`
+            // section 8) measured a real ~0.5 dB AWGN sensitivity regression
+            // — some real FST4 signals' `nsync` genuinely falls in [18, 34),
+            // unlike FT4 where the scaled threshold only ever unlocked
+            // previously-dead code. `osd_attempt_min` stays the shared `12`
+            // (raising it was most of that 0.5 dB loss); `osd_depth3_min=20`
+            // is a hand-calibrated value verified directly against the real
+            // `fst4_snr_sweep` AWGN/CCIR sweep (not the `N_SYNC` formula) —
+            // matches the documented pre-fix baseline within sampling noise
+            // on all 4 channels, plus FST4-120/300 AWGN spot-checks.
             // Integer round-to-nearest (`(A + B/2) / B`) instead of the
             // f32 `.round()` this originally used — same result for
             // FT4's `N_SYNC=16` (9/14 either way), no float ops on a
@@ -335,6 +367,8 @@ pub fn process_candidate_basic<P: Protocol>(
             // review).
             let (osd_attempt_min, osd_depth3_min) = if P::ID == super::ProtocolId::Ft4 {
                 ((12 * P::N_SYNC + 10) / 21, (18 * P::N_SYNC + 10) / 21)
+            } else if P::ID == super::ProtocolId::Fst4 {
+                (12, 20)
             } else {
                 (12, 18)
             };

@@ -51,6 +51,7 @@ is wall time on a many-core host, not a single-thread figure).
 |---|---|---:|---:|
 | FT4 | 000000_000002.wav | 7.5 s | 0.049 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.15 s |
+| FST4-60A | 210115_0058.wav | 60 s | 0.27 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.32 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.39 s |
@@ -62,7 +63,6 @@ is wall time on a many-core host, not a single-thread figure).
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 1.89 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 2.55 s |
-| FST4-60A | 210115_0058.wav | 60 s | 2.60 s |
 
 Notes:
 
@@ -91,6 +91,18 @@ Notes:
   port (WSJT-X's actual FT4 candidate finder has no lag dimension at
   all) — dropping this row to 0.049 s (~25×) with byte-identical 6/6
   golden recall (see `FT4_BENCHMARK.md` section 13).
+- FST4-60A was the outlier at **2.60 s** (60 s slot) until a profiling
+  pass (2026-07-20) found `coarse_sync` itself was cheap (unlike FT4) —
+  the real cost was OSD escalating into its expensive depth-3/4 tier for
+  roughly half of all 50 candidates, because the shared
+  `osd_depth3_min=18` gate was calibrated against FT8's `N_SYNC=21` but
+  FST4's `N_SYNC=40` makes that a far looser bar (18/40=45% vs
+  18/21=86%). Hand-calibrated a FST4-specific `osd_depth3_min=20`
+  against the real AWGN/CCIR sweep (a naive full `N_SYNC`-scaled value,
+  34, measured as a real ~0.5 dB AWGN sensitivity regression first) —
+  dropping this row to 0.27 s (~8.4×) with recall matching the
+  documented pre-fix baseline across all 4 channels + FST4-120/300 spot
+  checks (see `FST4_BENCHMARK.md` section 8).
 - Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
   1.05 s — the fast-fading metric's per-candidate cost dominates, not
   a full-buffer rescan. An earlier profiling pass found this same
@@ -190,6 +202,17 @@ FST4-15/30/120/300 recordings, so those four are validated by
 synth-roundtrip self-consistency plus `fst4sim` sweep only, not a real
 on-air recording. FST4-900/1800 and FST4W (the WSPR-style one-way
 beacon variant) remain out of scope — no user demand as of writing.
+
+**Decode speed** (2026-07-20): FST4-60A's golden-WAV decode dropped
+**2.60 s → 0.27 s (~8.4×)** after hand-calibrating the OSD
+depth-escalation gate for FST4's own `N_SYNC=40` (was hardcoded to a
+value calibrated for FT8's `N_SYNC=21`) — recall verified unchanged
+against the table above (re-measured this pass: FST4-60 AWGN ≈-27.56 dB,
+CCIR good/moderate/poor bit-identical to the pre-fix figures; FST4-120/
+300 AWGN spot-checked, also unchanged). See `FST4_BENCHMARK.md`
+section 8 for the full investigation, including a first-attempt fix
+that measured as a real ~0.5 dB regression and was corrected before
+shipping.
 
 Reproduce: `docs/notes/FST4_BENCHMARK.md`.
 

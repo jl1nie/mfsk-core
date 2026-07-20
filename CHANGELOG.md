@@ -4,6 +4,17 @@
 
 ### Changed
 
+- **FST4-60A OSD depth-escalation gate hand-calibrated for its own
+  `N_SYNC=40`** (`core/pipeline.rs`) — the shared `osd_depth3_min=18`
+  gate was calibrated against FT8's `N_SYNC=21`; FST4's larger sync
+  sequence made 18 a far looser bar, escalating roughly half of all
+  candidates into the expensive OSD depth-3/4 tier regardless of signal
+  quality. Golden-WAV decode time dropped **2.60 s → 0.27 s (~8.4×)**,
+  recall verified unchanged (4-channel AWGN/CCIR sweep matching the
+  documented pre-fix baseline almost exactly, FST4-120/300 spot-checked).
+  A first attempt (reusing FT4's exact `N_SYNC`-scaled formula) measured
+  as a real ~0.5 dB AWGN sensitivity regression and was corrected before
+  shipping — see `docs/notes/FST4_BENCHMARK.md` section 8.
 - **FT4 coarse-candidate stage replaced with a faithful
   `getcandidates4.f90` port** (`core::ft4_coarse::ft4_coarse_sync`) —
   the generic Costas-lag coarse_sync FT4 previously shared with
