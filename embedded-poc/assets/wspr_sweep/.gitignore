@@ -1,0 +1,2 @@
+# wsprsim-generated sweep WAVs — regenerate with scripts/gen_wspr_sweep_wavs.sh
+*.wav

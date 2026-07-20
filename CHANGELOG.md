@@ -276,6 +276,25 @@
   does internally. Issue #171 left open with this as the closing
   analysis (no further action expected; re-open if a real remaining
   gap is found with matched AP context on both sides).
+- **WSPR AWGN SNR sweep test infra** (`tests/wspr_sweep.rs`,
+  `scripts/gen_wspr_sweep_wavs.sh`), closing the one gap left where
+  WSJT-X ships a simulator but this crate had no simulator-driven
+  objective benchmark — every other supported protocol
+  (FT8/FT4/JT9/JT65/Q65/MSK144/FST4) already had a `*sim`-based AWGN
+  sweep; WSPR's only prior validation was a single real-world WAV's
+  fixed-SNR golden recall (`wspr_wsjtx_samples.rs`). WSJT-X's
+  CMakeLists.txt only wires the C `wsprsim` (`lib/wsprd/wsprsim.c`),
+  which writes `.c2` complex-baseband files for `wsprd`, not WAV audio
+  this crate's decode path consumes — the WAV-capable simulator is a
+  second, orphaned Fortran program (`lib/wsprd/wsprsimf.f90`, no
+  CMake target, same situation as `jt9sim`) that this crate now
+  builds standalone via `scripts/build_wsprsim.sh` (picking out its
+  actual dependency closure, plus a local no-op `watterson` stub to
+  avoid pulling in FFTW for a code path — the `.c2` branch — this
+  build never exercises). 13-point AWGN sweep, 20 trials/point:
+  100% recall from 0 dB down to -27 dB, 95% at -28/-29 dB, 40% at
+  -30 dB, 0% at -31 dB and below — consistent with WSJT-X's published
+  WSPR sensitivity floor.
 
 ## 0.7.4 — MSK144 decode (#25)
 
