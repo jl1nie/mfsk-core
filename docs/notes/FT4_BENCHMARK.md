@@ -651,3 +651,24 @@ placement differently near the AWGN crossing specifically — untested).
 
 Full non-ignored suite (922 passed, 0 failed) and
 `-D clippy::perf -D warnings` green.
+
+## 14. Dead-code follow-up: `sync2d_refine`/`Sync2dConfig` removed (2026-07-20)
+
+Section 7 above (and #146 for FST4) already moved both protocols off
+the shared two-pass *local* refine (`core::sync2d::sync2d_refine` /
+`Sync2dConfig`, ±10-±20 downsampled-sample window around the coarse-sync
+candidate) onto their own full-slot coherent searches
+(`ft4_sync_search`/`fst4_sync_search`) — but the old function and its
+config struct were never deleted, just left unreferenced. Grepped the
+whole repo (`mfsk-core/src`, `mfsk-core/tests`, `embedded-poc`,
+`mfsk-ffi*`) for actual call sites (not doc-comment mentions): zero.
+Removed `sync2d_refine`, `Sync2dConfig`, and the two helpers
+(`twiddle_ref`, `score_at<P>`) only reachable from it, along with the
+now-unused `make_costas_ref`/`score_costas_block` imports —
+162 lines. `Sync2dResult` (the shared output type both live search
+functions still return) stays. Verified: full non-ignored suite green,
+`-D clippy::perf -D warnings` clean, and separately checked FST4-only /
+FT8-only (no FT4/FST4) feature builds still compile — this module has
+no `#[cfg(feature = "ft4")]` gate of its own (same reasoning as
+`ft4_coarse`: `core` compiles unconditionally), so a stray reference
+from either protocol's exclusion would have shown up there.
