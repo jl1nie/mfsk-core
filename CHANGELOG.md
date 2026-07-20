@@ -37,7 +37,14 @@
   costing wide-`b90` C/D/E sub-modes ~2.5-3 dB. With all three fixed,
   all ten sub-modes sit within ~1 dB of real `jt9`'s own crossing. Real
   off-air golden-test recall also *improved* (6 m EME sample: 3 → 4
-  messages recovered). See `docs/notes/Q65_BENCHMARK.md`.
+  messages recovered). A follow-up `max_candidates` calibration
+  (`tests/q65_wsjtx_samples.rs`, score-distribution profiling — same
+  methodology as the Q65-60B/30A cut above) found all 4 real signals in
+  the 6 m EME golden recording ranked within the top 8 of 530 coarse
+  candidates; cut the test's `max_candidates` 32→16 (2× headroom,
+  deliberately not pushed to the edge given a thin ~0.002 score margin
+  at the weakest signal's rank), dropping golden-WAV time 1.49s→0.69s
+  (~2.2×) with bit-identical recall. See `docs/notes/Q65_BENCHMARK.md`.
 - **FST4-60A OSD depth-escalation gate hand-calibrated for its own
   `N_SYNC=40`** (`core/pipeline.rs`) — the shared `osd_depth3_min=18`
   gate was calibrated against FT8's `N_SYNC=21`; FST4's larger sync

@@ -179,7 +179,7 @@ fn eme_6m_sample_yields_decode_with_ap() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 50,
         score_threshold: 0.05,
-        max_candidates: 32,
+        max_candidates: 16,
     };
 
     // The 210106_1621.wav recording captures W7GJ working multiple
@@ -671,7 +671,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
                 freq_max_hz: 3_000.0,
                 time_tolerance_symbols: 50,
                 score_threshold: 0.05,
-                max_candidates: 32,
+                max_candidates: 16,
             };
             measure_plain::<Q65a60>("Q65-60A (real params)", &audio, 12_000 * 30, &params);
 
@@ -918,6 +918,65 @@ fn q65_candidate_score_calibration_diag() {
                 eprintln!(
                     "  near-1010Hz candidate: rank={rank} freq={:.1} score={:.4}",
                     c.freq_hz, c.score
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual diagnostic — Q65-60A candidate-score calibration (2026-07-20 speed follow-up)"]
+fn q65_60a_eme6m_candidate_score_calibration_diag() {
+    use mfsk_core::q65::search::coarse_search_for;
+    use mfsk_core::q65::{Q65a60, decode_at_for, decode_at_with_ap_for};
+
+    let Some(dir) = samples_dir("60A_EME_6m") else {
+        eprintln!("skipping: WSJT-X 6m EME sample tree not found");
+        return;
+    };
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+
+    let nominal_mid = 12_000 * 30;
+    let unbounded = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.0,
+        max_candidates: 100_000,
+    };
+
+    for path in &entries {
+        let Some(audio) = read_wsjtx_wav(path) else {
+            continue;
+        };
+        let cands = coarse_search_for::<Q65a60>(&audio, 12_000, nominal_mid, &unbounded);
+        println!(
+            "== {} — {} total candidates ==",
+            path.file_name().unwrap().to_string_lossy(),
+            cands.len()
+        );
+        for (rank, c) in cands.iter().enumerate() {
+            let plain = decode_at_for::<Q65a60>(&audio, 12_000, c.start_sample, c.freq_hz);
+            let ap_hint = ApHint::new().with_call1("W7GJ");
+            let ap = decode_at_with_ap_for::<Q65a60>(
+                &audio,
+                12_000,
+                c.start_sample,
+                c.freq_hz,
+                &ap_hint,
+            );
+            let decoded = plain.as_ref().or(ap.as_ref());
+            if rank < 12 || decoded.is_some() {
+                println!(
+                    "  rank={rank} score={:.4} freq={:.1}Hz -> {:?}",
+                    c.score,
+                    c.freq_hz,
+                    decoded.map(|d| d.message.as_str())
                 );
             }
         }

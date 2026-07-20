@@ -241,12 +241,20 @@ exactly). See `BENCHMARKS.md`'s Q65 section for the full table.
 
 ### Outcome
 
-- Golden-WAV Q65-60A decode: 1.57 s → 1.49 s (modest — the cost moved
+- Golden-WAV Q65-60A decode: 1.57 s → 1.49 s at first (the cost moved
   from candidate-count to `intrinsics_fast_fading` calls, so the
-  rewrite's speed goal doesn't show up as a dramatic number here) —
+  rewrite's own speed goal didn't show up as a dramatic number yet) —
   but real-recording recall *improved*: `eme_6m_sample_yields_decode_
   with_ap` now recovers 4 messages instead of 3 (`W7GJ N0TB -15`,
-  previously missed).
+  previously missed). A follow-up `max_candidates` calibration (same
+  score-distribution-profiling methodology as the Q65-60B/30A cut
+  earlier in this doc) found all 4 real signals in this recording
+  ranked within the top 8 of 530 total coarse candidates, but the
+  golden test's own `SearchParams` used `max_candidates: 32`. Cut to
+  `16` — 2× headroom above the weakest signal's observed rank 7, since
+  its score margin over the next (noise) candidate is thin (~0.002),
+  unlike the Q65-60B/30A case's healthy #0-ranked margin — dropping the
+  row to **0.69 s** (~2.2×) with bit-identical recall.
 - Every real off-air Q65 golden test (`q65_wsjtx_samples.rs`, including
   the ionoscatter/tropo/rainscatter/EME/optical-scatter recordings)
   passes; full non-ignored suite (948 tests) and

@@ -57,11 +57,11 @@ is wall time on a many-core host, not a single-thread figure).
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.40 s |
 | FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.45 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.45 s |
+| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.69 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.72 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
-| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.49 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.52 s |
 
 Notes:
@@ -129,10 +129,21 @@ Notes:
   an AWGN-only narrow-window Bessel metric + time-only retry that wasn't
   a WSJT-X algorithm at all. The rewrite's own speed goal was already
   met before this row's final number — the golden-WAV time (1.57 s →
-  1.49 s) barely moved because the real cost shifted from
+  1.49 s) barely moved at first because the real cost shifted from
   candidate-count to `intrinsics_fast_fading` calls, but recall on this
   real recording *improved* (3 → 4 messages recovered — a new
-  `W7GJ N0TB -15`). Landing this surfaced two further bugs, fixed the
+  `W7GJ N0TB -15`). A follow-up pass (score-distribution profiling,
+  same methodology as the Q65-60B/30A `max_candidates` calibration
+  above) found all 4 real signals ranked within the top 8 of 530 total
+  coarse candidates for this recording — the golden test's own
+  `SearchParams` used `max_candidates: 32`, paying for up to 24 wasted
+  decode attempts per candidate list. Cut to `16` (2× headroom above
+  the weakest real signal's observed rank 7, not pushed to the edge —
+  the margin there is thin, ~0.002 in score, unlike the Q65-60B/30A
+  case's healthy #0-with-margin ranking) — dropped this row to
+  **0.69 s** (~2.2×) with bit-identical recall (same 4 messages, both
+  plain and AP). Landing the grid-search rewrite itself also surfaced
+  two further bugs, fixed the
   same day: a missing full/unpruned `ibw` sweep at the grid's origin
   cell, and coarse-sync time resolution 4× coarser than WSJT-X's own
   `NSTEP=8` (`Spectrogram`, `q65/search.rs`) — closing that gap required
