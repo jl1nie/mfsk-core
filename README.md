@@ -33,6 +33,31 @@ Every algorithm is a Rust re-implementation of
 collaborators), which remains the reference implementation — see
 [Attribution](#attribution) below.
 
+## Why mfsk-core
+
+- **At or near WSJT-X sensitivity parity on every mode but one.**
+  FST4 is within 0.1-0.6 dB of WSJT-X's published thresholds across
+  all five sub-modes; FT4's AWGN gap is ~0.3 dB; MSK144 matches a real
+  WSJT-X `jt9` build on 25/28 AWGN cross-check cells exactly; FT8
+  scores 7/8 on the WSJT-X golden set and 17/18 against JTDX's; WSPR
+  and JT9 are 8/8 and 5/5 on their WSJT-X reference recordings. The
+  one exception is disclosed, not hidden: JT65 trails WSJT-X's
+  stochastic `ftrsdap` decoder by ~7-8 dB at deep SNR, a gap that's
+  root-caused but deliberately not closed (Q65 already covers the
+  same deep-SNR niche). Full numbers, per protocol:
+  [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
+- **Runs where WSJT-X can't.** Same algorithms, `no_std`-portable:
+  a real shipping product
+  ([`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/),
+  pictured above) decodes real on-air FT8 in ~1.2 s post-slot on an
+  ESP32-S3, plus WASM in the browser and Android/iOS via FFI — none
+  of which a Fortran/C/Qt desktop application can target.
+- **A `Protocol` trait, not per-mode copy-paste.** Eight protocol
+  families share one generic, monomorphised decode pipeline (no
+  vtable, no dynamic dispatch on the hot path) — adding FST4-60A to
+  the crate was a trait impl on one ZST, not a cross-cutting refactor.
+  See [Design Philosophy](#design-philosophy).
+
 ## Supported protocols
 
 | Protocol   | Slot   | FEC                               | Message | Sync                   | Feature |
@@ -157,7 +182,7 @@ points and carries its own Quick example:
 | `parallel`    | ✓       | Rayon-parallel candidate processing          |
 | `fft-rustfft` | ✓       | Default host FFT backend (`rustfft`, requires `std`) |
 | `fft-extern`  |         | Pluggable FFT trait — caller binary supplies an `FftPlanner` impl (esp-dsp on ESP32-S3, CMSIS-DSP on RP2350, …) |
-| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP (see [Status](#status) for the Q3i8 → Q11i16 step taken in 0.6.2 / 0.6.3 for recall) |
+| `fixed-point` |         | Embedded integer pipeline: u16 spectrogram + i16 DFT + Q11i16 LLR + integer NMS BP — see [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md#q-format-quick-reference) for the Q-format reference |
 | `profile-coarse` |      | Always-on coarse_sync sub-stage profiling (automatically disabled on `wasm32-unknown-unknown` to prevent panics) |
 
 ## Architecture
@@ -299,38 +324,7 @@ FST4, are one-line changes, not cross-cutting refactors.
   plug-and-play, so the crate's dependency graph is small and
   reviewable.
 
-## Performance
-
-- **Embedded (M5StickS3, Xtensa LX7, fixed-point)**: decodes a real
-  on-air busy-band FT8 slot in **~1.19 s post-SlotEnd** via the
-  streaming pipeline (FFT overlapped with capture); BP scratch is
-  ~12 KB with the `Q11i16` LLR format. M5Stack Core2 (Xtensa LX6) on
-  the same recording: ~2.8 s.
-- **Host (desktop, f32)**: `decode_frame_subtract_with_ap` (multipass
-  + AP hints) reaches 18 decodes on the WSJT-X busy-band reference
-  WAV, including 5/6 of the JTDX AP-on extras.
-- **FST4 AWGN sensitivity**, 50% recall crossing vs. WSJT-X's
-  published thresholds (`tests/fst4_sweep.rs`, `fst4sim`-generated
-  corpus, 20 trials/SNR point — see
-  [`docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)):
-
-  | Sub-mode | mfsk-core | WSJT-X official | Gap |
-  |----------|----------:|-----------------:|----:|
-  | FST4-15  | ≈ −20.60 dB | −20.7 dB | 0.10 dB |
-  | FST4-30  | ≈ −23.90 dB | −24.2 dB | 0.30 dB |
-  | FST4-60  | ≈ −27.62 dB | −28.1 dB | 0.48 dB |
-  | FST4-120 | ≈ −30.70 dB | −31.3 dB | 0.60 dB |
-  | FST4-300 | ≈ −34.78 dB | −35.3 dB | 0.52 dB |
-- **Memory**: the embedded fixed-point path is designed to fit inside
-  ESP32-S3 internal DRAM without PSRAM for the hot buffers — see
-  [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-  for the byte-level BP-scratch and spectrogram budget.
-- Full recall tables against WSJT-X-distributed reference recordings,
-  per-protocol golden-WAV results, and the fixed-point Q-format
-  history are in [Status](#status) below and
-  [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md).
-
-## Comparison with WSJT-X
+## Benchmarks vs. WSJT-X
 
 Not a competitor — a different point in the design space. WSJT-X is
 the reference implementation and the source of truth for every
@@ -347,10 +341,32 @@ algorithms in places a Fortran/C/Qt desktop application can't reach.
 | FFT backend | fixed (FFTW) | pluggable (`rustfft` or caller-supplied, e.g. esp-dsp/CMSIS-DSP) |
 | Reference implementation | ✓ | derived from WSJT-X, cites source per file |
 
+Headline decode numbers (full per-protocol writeup, including how each
+sweep was generated and reproduced, in
+[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)):
+
+| Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X |
+|----------|-------------------|----------------------|
+| FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | CCIR fading gap closed |
+| FT4      | 6/6 | ~0.3 dB |
+| FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
+| WSPR     | 8/8 | matches published sensitivity floor |
+| JT9      | 5/5 | no measurable gap |
+| JT65     | none available | **~7-8 dB** (known, deprioritized — see [#169](https://github.com/jl1nie/mfsk-core/issues/169)) |
+| Q65      | 2 real EME recordings | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
+| MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build |
+
+Embedded wall-clock: M5StickS3 (Xtensa LX7, fixed-point) decodes a
+real on-air busy-band FT8 slot in **~1.19 s post-SlotEnd** via the
+streaming pipeline (FFT overlapped with capture); M5Stack Core2
+(Xtensa LX6) on the same recording: ~2.8 s. See
+[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+for the byte-level BP-scratch / spectrogram memory budget.
+
 ## FAQ
 
 **How does this differ from WSJT-X?** See
-[Comparison with WSJT-X](#comparison-with-wsjt-x) and
+[Benchmarks vs. WSJT-X](#benchmarks-vs-wsjt-x) and
 [Why this exists](#why-this-exists) above — same algorithms, different
 deployment targets (library vs desktop app, `no_std` embedded, WASM).
 
@@ -510,6 +526,11 @@ reference:
      layout: docs/ lives at the repo root, not under the crate). -->
 - **English:** [`docs/reference/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md)
 - **日本語:** [`docs/reference/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.ja.md)
+- **Benchmarks vs. WSJT-X, full per-protocol detail:**
+  [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
+  — golden-WAV recall + AWGN sensitivity sweep results for every
+  protocol, current-state only (see `CHANGELOG.md` for how each
+  number got there).
 - **Embedded targets:**
   [English `docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
   / [日本語 `docs/reference/EMBEDDED.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.ja.md)
@@ -543,250 +564,43 @@ reference:
 
 ## Status
 
-**Current line: `0.7.x`** (latest tag `v0.7.4`, 2026-07-19) — API
-is deliberately not frozen. Breaking changes follow cargo-style minor
-bumps (`0.6 → 0.7`); a new protocol/mode addition on its own is
+**Latest published tag: `v0.7.4`** — `main` has since accumulated
+`0.8.0`-bound content (unreleased, see `CHANGELOG.md`'s top section).
+API is deliberately not frozen: breaking changes follow cargo-style
+minor bumps, while a new protocol/mode addition on its own is
 patch-level (e.g. MSK144 shipped as `0.7.4`, not `0.8.0`) — minor
-bumps mark more structural changes (`0.7.0`'s generic
-`decode_frame_for::<P>` API, alongside FST4's remaining sub-modes).
-See `CHANGELOG.md` for the per-release breakdown; the line history
-below explains what each series brought in.
+bumps mark more structural changes. See `CHANGELOG.md` for the
+per-release breakdown and `docs/notes/ROADMAP.md` for open follow-ups.
 
 **Release cadence**: PRs merge to `main` continuously — CHANGELOG.md's
 top section always reflects the latest unreleased state, so tracking
 `main` directly (see [Quick Start](#quick-start)) gets you every
-change immediately. Actual crates.io tags/GitHub Releases are cut on
-a **biweekly** cadence (bundling everything merged since the last
-tag) rather than after every individual change, to keep update
+change immediately. Actual crates.io tags/GitHub Releases are cut on a
+**biweekly** cadence (bundling everything merged since the last tag)
+rather than after every individual change, to keep update
 notifications for crates.io consumers from firing too often — an
 out-of-cadence release is still fine for a security fix, a serious
-correctness bug, or on explicit request. **0.7.0**
-added the remaining FST4 sub-modes (FST4-15/30/120/300, alongside the
-existing FST4-60) and parallelised `coarse_sync` under `--features
-parallel`. **0.7.1** closed FST4's AWGN sensitivity gap vs. WSJT-X's
-published thresholds from ~2.4-3.1 dB down to ~0.3-1.3 dB across all
-five sub-modes (issue #146 — an FST4-specific `LLR_NSYM_MAX`
-override, an FST4-specific OSD-gate bypass trusting CRC-24 alone, and
-a coherent full-slot local sync search ported from WSJT-X's
-`fst4_sync_search`/`sync_fst4`), and did a README/docs discoverability
-pass (this restructure, `docs/reference/LIBRARY.md` refresh, more `docs.rs`
-examples). **0.7.2** narrowed the FST4 residual further via an nsym=4
-LLR rung plus a zsum-OSD fallback (matching WSJT-X's `decode240_101`
-feeding OSD the sum of BP's first two iterations) to a common ≈0.3 dB
-gap across all five sub-modes — statistically indistinguishable
-mode-to-mode (χ²=3.85, df=4, p≈0.43), closing issue #146 — and split
-`CHANGELOG.md` plus `docs/` into `docs/reference/` vs. `docs/notes/`
-(issue #147) for readability. See [Performance](#performance) above
-for the full per-sub-mode numbers. The 0.5.x line landed the
-embedded baseline (`no_std + alloc`, pluggable FFT backend,
-caller-buffer TX APIs) and the first end-to-end real-audio embedded
-port. The **0.6.x line consolidates the FT8 sync + per-candidate
-pipeline**: host (`decode_frame*`) and embedded (`decode_block`) now
-share `decode_block::coarse_sync` (WSJT-X `sync8.f90`-faithful 16-bin
-allsum estimator) and a unified `process_one_candidate_inner` for the
-LLR / BP / OSD / AP staircase. **0.6.3** added WSJT-X-faithful OSD
-`npre1`/`npre2` precoding (#63) and carved `decode_block.rs` into
-six stage submodules (ε refactor). **0.6.4** (Phase 1.7.7-Stick)
-replaced the BASIS Q15 dot-product per-symbol DFT with a Goertzel
-recursion that needs **zero scratch** — freeing 120 KB of internal
-DRAM on dual-core S3 (which unblocks M5StickS3 Qso-mode I2S
-bidirectional DMA) and improving SNR by **+0.16..+0.63 dB** on
-real-silicon decodes. See `CHANGELOG.md` for the full per-release
-breakdown.
-
-Latest M5StickS3 (Xtensa LX7) ship config decodes **6 / 18 JTDX-golden
-FT8 callsigns + 1 bonus = 7 total** on the WSJT-X-distributed busy-band
-reference (`samples/FT8/210703_133430.wav`) in **~1.19 s post-SlotEnd**
-via the streaming pipeline (FFT overlapped with capture). (These
-embedded recall + wall-clock numbers were last formally measured
-during the 0.6.2 → 0.6.3 Q11i16 ship sweep — `wav_sim` re-run on
-0.6.5 firmware is the right way to confirm whether 0.6.3's host-side
-OSD CRC-luck phantom drop applies to the embedded path. 0.6.3
-CHANGELOG only re-verified the WSJT-X 8-entry golden at 7/8 on
-embedded.) The
-embedded LLR scalar settled on `Q11i16` after a two-step path:
-0.5.x's Phase 1 used `Q3i8` (i8, ±16, ~1/8 LSB) and a 2026-05-04
-host sweep initially read as Q3i8-equivalent. The wider real-silicon
-LX7 sweep done in 0.6.3 then showed Q3i8's ~0.875-LLR quantization
-step was the dominant recall ceiling on Xtensa — host fixed-point +
-rustfft hit 16/18 with f32 but only 9/18 with Q3i8 on this WAV. The
-`Q11i16` widening (i16, ±16, ~1/2048 LSB, BP scratch doubled from
-~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM budget)
-removed the LLR-resolution bottleneck. The recovery is asymmetric:
-on host `Q11i16` reaches f32-equivalent recall (16/18 ≈ 16/18, full
-gap close); on real-silicon embedded the gain is one entry
-(6/18 → 6/18 + 1 bonus = 7 total, XE2X HA2NP RR73), with the
-remaining headroom blocked by other parts of the embedded pipeline
-(NSTEP-half, coarse-sync simplifications, no `fine_refine_pass1`).
-`Q3i8` is preserved in
-`core::scalar` for the comparison path. M5Stack Core2 (LX6) on the
-same WAV ~2.8 s. See
-[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
-for the integration contract, runtime BP / `nstep-half` tuning knobs,
-and the structural recall ceiling (no `fine_refine_pass1` on Xtensa
-without 192k FFT — investigated and deferred);
-`embedded-poc/m5stack-s3-app/` and `embedded-poc/m5stack-core2-app/`
-are the production FT8 controller crates (LCD UI + QSO FSM +
-WiFi-UDP log streaming) — both consume the board-agnostic
-`embedded-poc/mfsk-app-shared/` (carved out as part of
-[#61](https://github.com/jl1nie/mfsk-core/issues/61), closed in
-0.6.3). `embedded-poc/m5stack-s3/` is the remaining decoder-only
-compute-bench crate for S3 timing-regression tracking; the matching
-Core2 bench was retired in #61 Phase 3 (M5Stack Core2 timing is
-now measured through `m5stack-core2-app` itself).
-
-Host AP-on multipass recall on the same WAV is materially higher.
-After 0.6.2's host pipeline catch-up (cs-source unification +
-`subtract_signal_lpf` matching `decode_block_multipass`),
-`decode_frame_subtract_with_ap` produces **18 decodes** including
-**5 / 6 of the JTDX AP-on extras** (was 1 / 6 pre-0.6.2). The single
-remaining AP-on extra (K1BZM DK8NE -19 dB) needs a wider AP-list /
-callsign hash table — out of 0.6.x scope.
+correctness bug, or on explicit request.
 
 Algorithm correctness is covered by the workspace test suite:
-end-to-end synth → decode roundtrips for every protocol, an AWGN
-sensitivity sweep that confirms Q65-30A hits its WSJT-X-published
-−24 dB threshold, an AP-vs-plain comparison that shows the expected
-~2 dB gain from a-priori call sign information, an AP-list
-(template matching) comparison that decodes 6/6 frames at SNR −25 dB
-where plain BP fails 0/6, a real 6 m EME recording (W7GJ exchanges
-from the WSJT-X reference set), and a real 10 GHz EME recording that
-the fast-fading metric is required to decode. The trait surface
-itself is pinned by `tests/protocol_invariants.rs` — a single generic
-`<P: Protocol>` checker run across every wired ZST. Run with
-`--features full` for the eleven-ZST coverage; the default features
-(`ft8`, `ft4`) only exercise the two default protocols.
+end-to-end synth → decode roundtrips for every protocol, real
+WSJT-X-distributed reference recordings, `*sim`-generated AWGN
+sensitivity sweeps, and AP-list / fast-fading comparisons — see
+[Benchmarks vs. WSJT-X](#benchmarks-vs-wsjt-x) above and
+[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
+for the full results. The trait surface itself is pinned by
+`tests/protocol_invariants.rs` — a single generic `<P: Protocol>`
+checker run across every wired ZST. Run with `--features full` for
+full coverage; the default features (`ft8`, `ft4`) only exercise the
+two default protocols.
 
-Recall against the **WSJT-X-distributed reference recordings**
-(`samples/{WSPR,FT4,JT9}/*.wav`) is locked by golden harnesses in
-`tests/{wspr,ft4,jt9}_wsjtx_samples.rs` (run only when the WSJT-X
-tree is present at the expected sibling path):
-
-| Reference WAV                       | Recall      | Notes                  |
-|-------------------------------------|-------------|------------------------|
-| `WSPR/150426_0918.wav` (8 frames)   | **8 / 8**   | sub-bin demod + neg-dt |
-| `FT4/000000_000002.wav` (6 frames)  | **6 / 6**   | Nuttall + sync4d       |
-| `JT9/130418_1742.wav` (5 frames)    | **5 / 5**   | full WSJT-X-faithful softsym pipeline (afc9 + chkss2 + xx0 mettab + sync9 collapse) |
-| `MSK144/181211_120500.wav` (1 frame) | **1 / 1**  | matches `msk144` feature |
-| `MSK144/181211_120800.wav` (2 frames) | **2 / 2** | matches `msk144` feature |
-| `JT65/*` (n/a)                      | —           | golden harness pending — [#24](https://github.com/jl1nie/mfsk-core/issues/24) |
-| `FST4/210115_0058.wav` (1 frame)    | **1 / 1**   | fixed NSPS/NDOWN/BT + rvec message scramble (0.6.8, [#23](https://github.com/jl1nie/mfsk-core/issues/23)) |
-
-#### Known limitations / quirks
-
-- **JT65** — `decode_scan` decodes synthesised JT65A frames cleanly
-  via the Reed-Solomon(63, 12) FEC and the AP-list path lifts weak
-  signals to within ~2 dB of WSJT-X. There's no golden WAV in this
-  crate's regression set because the WSJT-X v3 reference samples
-  themselves don't decode cleanly without the soft-symbol erasure
-  metadata that lives in private WSJT-X branches. Tracked in
-  [#24](https://github.com/jl1nie/mfsk-core/issues/24).
-- **FST4** — five T/R-period sub-modes wired: FST4-15,
-  -30, -60A, -120, -300 (`fst4::Fst4s15`/`Fst4s30`/`Fst4s60`/
-  `Fst4s120`/`Fst4s300`), all sharing frame layout / FEC / message
-  codec / GFSK shaping and differing only in `NSPS`/`NDOWN` (and, for
-  FST4-15 alone, the T/R start offset) — every constant verified
-  directly against WSJT-X `fst4_decode.f90` / `fst4sim.f90` source,
-  the same rigor that caught #23's original bug. Only FST4-60A has a
-  real-recording golden-WAV lock (`samples/FST4/210115_0058.wav`,
-  1/1) — the WSJT-X sample tree ships no FST4-15/30/120/300
-  recordings, so those four are validated by synth-roundtrip
-  self-consistency plus source cross-checks only; a real recording or
-  a WSJT-X `fst4sim`-generated reference WAV would strengthen that.
-  FST4-900 / FST4-1800 and FST4W (the WSPR-style 50-bit one-way
-  beacon variant, a different message format entirely) remain out of
-  scope — no user demand as of writing. See
-  [#23](https://github.com/jl1nie/mfsk-core/issues/23).
-#### What's solid
-
-- **FT8** — synth → decode round-trip lib tests green, real WSJT-X
-  reference (`210703_133430.wav`):
-  - **WSJT-X 8-entry golden: 7 / 8** (host `decode_frame_with_ap` and
-    embedded `decode_block` both, post-0.6.0 sync consolidation +
-    `i_start as i32` fix).
-  - **JTDX 18-entry golden: 17 / 18** (`decode_block`). Peaked at
-    16/18 in 0.6.2; 0.6.3's WSJT-X-faithful OSD `npre1`/`npre2`
-    precoding + `OSD_HARDERRORS_MAX = 22` ceiling identified 3 of
-    those as CRC-luck phantoms and dropped them (13/18). **0.7.3**
-    found that CRC-luck-phantom assumption wrong — a CCIR-fading
-    sensitivity investigation (issue #150) showed the tightened
-    ceiling was discarding genuine decodes under fading, not just
-    phantoms — and widened it back to WSJT-X's universal 36,
-    recovering 3 of those entries (`N1API F2VX`, `N1API HA6FQ`,
-    `CQ EA2BFM`) plus a 4th (`K1BZM DK8NE`, confirmed genuine via
-    AP context `mycall=K1BZM`). The one remaining entry
-    (`WA2FZW DL5AXX`) is still classified a likely false positive —
-    `coarse_sync` candidates exist at its claimed frequency but no
-    AP context recovers the message.
-  - **Host AP-on multipass JTDX-extras: 5 / 6** (was 1 / 6 pre-0.6.2,
-    5 / 6 in 0.6.2, dipped to 4 / 6 in 0.6.3's phantom filter, restored
-    to 5 / 6 in 0.7.3 by the same `OSD_HARDERRORS_MAX` widening above)
-    via `decode_frame_subtract_with_ap` after the cs-source +
-    `subtract_signal_lpf` unification. The one remaining miss for this
-    fixed AP context (`mycall=K1JT`/`hiscall=HA0DU`), `K1BZM DK8NE`,
-    needs a wider AP-list / callsign hash table to reach — out of
-    scope for now.
-  - **Embedded S3 fixed-point: 6 / 18 + 1 bonus = 7 total** in
-    ~1.19 s post-SlotEnd (last formally measured during the 0.6.2 →
-    0.6.3 Q11i16 ship sweep — see *Status* above for re-measurement
-    status). AP-hint biasing exposed on the narrow-band
-    (`decode_sniper_ap`), wide-band single-pass (`decode_frame_with_ap`),
-    multipass (`decode_frame_subtract_with_ap`) and embedded
-    (`decode_block_with_ap`, new in 0.6.1) paths.
-- **WSPR** — 8 / 8 WSJT-X golden, ~0.88 s end-to-end on a desktop
-  build. Sub-bin demod + 2-pass subtract+re-coarse + OSD-2 fallback +
-  Type-3 phantom filter.
-- **FT4** — 6 / 6 WSJT-X golden after the 0.5.9 multi-slice port of
-  the WSJT-X demod path (Nuttall window, `nsym = 4` LLR aggregation,
-  `sync4d` 2-pass refine, `rvec` scrambler). Successive-interference
-  cancellation primitives (`subtract_signal*`, `refine_signal_freq`)
-  ported from `lib/ft4_subtract.f90`. WSJT-X Decode menu (Fast /
-  Normal / Deep) exposed via `decode_frame_with_options` for FT4
-  and FST4-60A. **0.7.3** closed the AWGN sensitivity gap vs. WSJT-X
-  from ~1.8 dB to **~0.3 dB** (50% recall crossing −15.5 dB → −17.2 dB
-  — coherent Costas-block scorer + an OSD-attempt gate that was
-  checking a non-coherent score; see
-  [`docs/notes/FT4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FT4_BENCHMARK.md)).
-- **FST4** — five T/R-period sub-modes wired (FST4-15/30/60A/120/300),
-  every constant verified directly against WSJT-X `fst4_decode.f90` /
-  `fst4sim.f90` source. **0.7.1**/**0.7.2** closed the AWGN sensitivity
-  gap vs. WSJT-X's published thresholds to a common **≈0.1-0.6 dB**
-  across all five sub-modes (coherent full-slot sync + an nsym=4 LLR
-  rung + a zsum-OSD fallback — see
-  [`docs/notes/FST4_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/FST4_BENCHMARK.md)).
-  Real-recording golden-WAV lock exists only for FST4-60A (1/1,
-  `samples/FST4/210115_0058.wav`) — the other four sub-modes are
-  validated by synth-roundtrip + `fst4sim` sweep only, not a real
-  on-air recording (see *Known limitations* above).
-- **JT9** — 5 / 5 WSJT-X golden on `samples/JT9/130418_1742.wav`
-  via the full WSJT-X-faithful softsym pipeline (`afc9` + `chkss2`
-  + `xx0` mettab + `sync9` per-freq collapse). Closed [#19](https://github.com/jl1nie/mfsk-core/issues/19).
-- **Q65** — fast-fading + AP-list paths exercise both the WSJT-X
-  6 m EME and the 10 GHz EME reference recordings.
-- **MSK144** — the meteor-scatter mode ([#25](https://github.com/jl1nie/mfsk-core/issues/25)), whose
-  continuous-phase binary-MSK modulation and burst-scan decode loop
-  are genuinely different from the FSK/static-slot family the rest of
-  this crate shares — its own `msk144::decode::decode_slot` driver
-  bypasses `core::pipeline` entirely by design. Reuses
-  `crate::msg::wsjt77` (same `pack77`/`unpack77` payload as FT8/FT4/
-  FST4) and a 4th `LdpcParams` impl for LDPC(128,90) + CRC-13. **3 / 3
-  WSJT-X golden** across both `samples/MSK144/*.wav` recordings
-  (message, frequency, timing, **and SNR** all gated — a systematic
-  -1 dB SNR bias found post-ship was root-caused to a missing fixed
-  1500 Hz-centered bandpass filter in the analytic-signal front end
-  and fixed, closing the gap to an exact match). AWGN sensitivity
-  cross-validated directly against a WSJT-X `jt9 -k` build on
-  `msk144sim`-generated synthetic signals ([#156](https://github.com/jl1nie/mfsk-core/issues/156)):
-  25 of 28 (ping-length × SNR) cells matched exactly, the other 3
-  differed by exactly 1 file out of 20 — no measurable recall gap at
-  any tested SNR, 50% crossing ≈ -5.5 to -6 dB (WSJT-X's 2500 Hz
-  reference-bandwidth convention) for both short (~0.4 s) and long
-  (~2.5 s) ping profiles — see
-  [`docs/notes/MSK144_BENCHMARK.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/MSK144_BENCHMARK.md)
-  for how to reproduce this and the self-contained
-  `tests/msk144_snr_sweep.rs` regression sweep. MSK40 (the legacy
-  shorthand mode) and the *adaptive* RX-equalizer training loop (as
-  opposed to the fixed bandpass filter above, which is ported) remain
-  out of scope. Behind the `msk144` feature (part of `full`).
-- **SNR (FT8)** — `xsnr2_db_simple` calibration (0.5.7 + 0.5.8) lands
-  reported SNR within ±3 dB of JTDX absolute on real silicon.
+`embedded-poc/m5stack-s3-app/` and `embedded-poc/m5stack-core2-app/`
+are the production FT8 controller crates (LCD UI + QSO FSM + WiFi-UDP
+log streaming), both consuming the board-agnostic
+`embedded-poc/mfsk-app-shared/`. `embedded-poc/m5stack-s3/` is a
+decoder-only compute-bench crate for S3 timing-regression tracking.
+See
+[`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+for the integration contract and runtime tuning knobs, and
+[`docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
+for the M5StickS3 controller's build/flash/UI workflow.
