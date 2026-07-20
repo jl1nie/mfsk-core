@@ -32,6 +32,8 @@ pub mod baseline;
 pub mod dsp;
 pub mod equalize;
 pub mod fft;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod ft4_coarse;
 // Decode-side modules go through the `core::fft` trait abstraction;
 // gated on the meta-feature (true if any of fft-rustfft / fft-microfft
 // / fft-extern is on). Embedded TX-only builds with no FFT backend

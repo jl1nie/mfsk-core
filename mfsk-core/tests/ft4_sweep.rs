@@ -703,3 +703,230 @@ fn ft4_diag_segment_retry() {
         "\nfailing candidates checked={candidates_checked} rescued-by-segment-retry={rescued}"
     );
 }
+
+/// Phase 0 diagnostic for the coarse_sync-precision / BP-OSD-speed plan
+/// (see `~/.claude/plans/dapper-soaring-nest.md`): measures whether FT4's
+/// generic `core::sync::coarse_sync` — a 2-D (freq × lag) Costas-array
+/// correlation search, unlike WSJT-X's `getcandidates4.f90` (a
+/// frequency-only periodogram with no lag dimension at all) — produces
+/// multiple lag-distinct candidates per real signal frequency, and how
+/// much of `process_candidate_basic`'s per-candidate wall-clock is spent
+/// in `ft4_sync_search`'s coherent grid search vs. everything after it
+/// (symbol_spectra + LLR + BP + OSD).
+///
+/// `ft4_sync_search` already does an *absolute* full-window Δt search
+/// that ignores each candidate's own `dt_sec` (FT4_BENCHMARK.md section
+/// 9) — so if a real signal's frequency does produce several lag-distinct
+/// coarse_sync candidates, each pays this diagnostic's full per-candidate
+/// cost independently for what should be a redundant, identical result.
+///
+/// Run against the real WSJT-X FT4 golden WAV (skipped if the sibling
+/// WSJT-X checkout isn't present) and a handful of representative sweep
+/// cells. This is a measurement tool, not a pass/fail gate — no
+/// assertions, `--nocapture` output only.
+#[test]
+#[ignore = "manual diagnostic — coarse_sync candidate redundancy / cost split (dapper-soaring-nest plan, Phase 0)"]
+fn ft4_diag_candidate_cost_split() {
+    use std::time::{Duration, Instant};
+
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::core::sync2d::ft4_sync_search;
+    use mfsk_core::ft4::Ft4;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+
+    const REFINE_STEPS: i32 = 32;
+    const SYNC_Q_MIN: u32 = 8;
+
+    #[derive(Default)]
+    struct CostSplit {
+        n_candidates: usize,
+        n_freq_buckets: usize,
+        coarse_sync: Duration,
+        downsample: Duration,
+        sync_search: Duration,
+        process_total: Duration,
+        n_decoded: usize,
+    }
+
+    /// Bucket width matches `coarse_sync`'s own within-frequency dedup
+    /// radius (`sync.rs`: `fdiff < 4.0`) — candidates in the same 4 Hz
+    /// bucket are, by that same logic, the same underlying signal.
+    fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
+        let mut buckets: Vec<i32> = cands
+            .iter()
+            .map(|c| (c.freq_hz / 4.0).round() as i32)
+            .collect();
+        buckets.sort_unstable();
+        buckets.dedup();
+        buckets.len()
+    }
+
+    fn measure(
+        label: &str,
+        audio: &[i16],
+        freq_min: f32,
+        freq_max: f32,
+        sync_min: f32,
+        max_cand: usize,
+        use_new: bool,
+    ) {
+        let t0 = Instant::now();
+        let cands = if use_new {
+            ft4_coarse_sync(audio, freq_min, freq_max, sync_min, None, max_cand)
+        } else {
+            coarse_sync::<Ft4>(audio, freq_min, freq_max, sync_min, None, max_cand)
+        };
+        let coarse_dt = t0.elapsed();
+
+        let mut split = CostSplit {
+            n_candidates: cands.len(),
+            n_freq_buckets: freq_bucket_count(&cands),
+            coarse_sync: coarse_dt,
+            ..Default::default()
+        };
+
+        let fft_cache = build_fft_cache(audio, &FT4_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Ft4 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+        for c in &cands {
+            let t0 = Instant::now();
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FT4_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            split.downsample += t0.elapsed();
+
+            let t0 = Instant::now();
+            let _ = ft4_sync_search::<Ft4>(&cd0, c);
+            split.sync_search += t0.elapsed();
+            let _ = ds_rate;
+
+            let t0 = Instant::now();
+            let r = process_candidate_basic::<Ft4>(
+                c,
+                &fft_cache,
+                &FT4_DOWNSAMPLE,
+                DecodeDepth::BpAllOsd,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                REFINE_STEPS,
+                SYNC_Q_MIN,
+            );
+            split.process_total += t0.elapsed();
+            if r.is_some() {
+                split.n_decoded += 1;
+            }
+        }
+
+        let llr_bp_osd = split
+            .process_total
+            .saturating_sub(split.downsample)
+            .saturating_sub(split.sync_search);
+        eprintln!(
+            "{label}: {} candidates, {} distinct freq buckets (avg {:.1} cand/freq)",
+            split.n_candidates,
+            split.n_freq_buckets,
+            split.n_candidates as f32 / split.n_freq_buckets.max(1) as f32
+        );
+        eprintln!(
+            "  coarse_sync={:>7.1}ms  per-cand[downsample={:>7.1}ms sync_search={:>7.1}ms \
+             llr+bp+osd(inferred)={:>7.1}ms]  decoded={}",
+            split.coarse_sync.as_secs_f64() * 1000.0,
+            split.downsample.as_secs_f64() * 1000.0,
+            split.sync_search.as_secs_f64() * 1000.0,
+            llr_bp_osd.as_secs_f64() * 1000.0,
+            split.n_decoded
+        );
+    }
+
+    // ── Golden WAV (matches `ft4_wsjtx_samples.rs`'s exact search params) ──
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FT4/000000_000002.wav");
+    if let Ok(golden_path) = golden_path.canonicalize() {
+        if let Some(raw) = load_wav_i16_opt(&golden_path) {
+            const SLOT_SAMPLES: usize = 90_000;
+            let mut audio = vec![0i16; SLOT_SAMPLES];
+            let copy = raw.len().min(SLOT_SAMPLES);
+            audio[..copy].copy_from_slice(&raw[..copy]);
+            measure(
+                "golden 000000_000002.wav [OLD generic coarse_sync]",
+                &audio,
+                100.0,
+                2700.0,
+                0.05,
+                2000,
+                false,
+            );
+            measure(
+                "golden 000000_000002.wav [NEW ft4_coarse_sync]",
+                &audio,
+                100.0,
+                2700.0,
+                0.05,
+                2000,
+                true,
+            );
+
+            // Real production entry point (rayon-parallel, 3 subtract
+            // passes) — the number directly comparable to
+            // `BENCHMARKS.md`'s "Decode speed" table.
+            let t0 = Instant::now();
+            let decodes =
+                mfsk_core::ft4::decode::decode_frame_subtract(&audio, 100.0, 2700.0, 0.05, 2000);
+            let dt = t0.elapsed();
+            eprintln!(
+                "golden 000000_000002.wav: decode_frame_subtract wall-clock = {:.1} ms, {} decode(s)",
+                dt.as_secs_f64() * 1000.0,
+                decodes.len()
+            );
+        }
+    } else {
+        eprintln!("skipping golden WAV: WSJT-X sample not found (sibling checkout)");
+    }
+
+    // ── Representative sweep cells (near the measured 50%-crossing SNRs,
+    //    FT4_BENCHMARK.md / BENCHMARKS.md) — a handful of trials per
+    //    channel, not a full re-sweep. Search params match `ft4_snr_sweep`
+    //    / `decode_wav_ft4` above (100..3000 Hz, sync_min=0.8, max_cand=50).
+    let dir = sweep_dir();
+    for (channel, snr_tag) in [
+        ("awgn", "m17"),
+        ("ccir_good", "m17"),
+        ("ccir_moderate", "m15"),
+        ("ccir_poor", "m16"),
+    ] {
+        for trial in 1..=5u32 {
+            let path = dir.join(format!("ft4_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            measure(
+                &format!("{channel} {snr_tag} trial {trial} [OLD]"),
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                50,
+                false,
+            );
+            measure(
+                &format!("{channel} {snr_tag} trial {trial} [NEW]"),
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                50,
+                true,
+            );
+        }
+    }
+}

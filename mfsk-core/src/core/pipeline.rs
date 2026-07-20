@@ -519,7 +519,19 @@ pub fn decode_frame<P: Protocol>(
     refine_steps: i32,
     sync_q_min: u32,
 ) -> (Vec<DecodeResult>, FftCache) {
-    let candidates = coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand);
+    // FT4's own coarse-candidate stage (`core::ft4_coarse::ft4_coarse_sync`,
+    // a faithful `getcandidates4.f90` port) replaces the generic 2-D
+    // (freq × lag) Costas-correlation search: WSJT-X's FT4 candidate
+    // finder has no lag dimension at all, and the generic search's
+    // up-to-8 lag-distinct candidates per frequency are redundant
+    // downstream for FT4 — `ft4_sync_search` (below) already searches
+    // Δt absolutely, ignoring each candidate's own `dt_sec`. See
+    // `core::ft4_coarse` module doc / `~/.claude/plans/dapper-soaring-nest.md`.
+    let candidates = if P::ID == super::ProtocolId::Ft4 {
+        super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
+    } else {
+        coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
+    };
     let fft_cache = build_fft_cache(audio, cfg);
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
@@ -605,14 +617,26 @@ pub fn decode_frame_subtract<P: Protocol>(
     let fec = P::Fec::default();
 
     for &factor in passes {
-        let candidates = coarse_sync::<P>(
-            &residual,
-            freq_min,
-            freq_max,
-            sync_min * factor,
-            freq_hint,
-            max_cand,
-        );
+        // See the identical `P::ID == Ft4` branch in `decode_frame` above.
+        let candidates = if P::ID == super::ProtocolId::Ft4 {
+            super::ft4_coarse::ft4_coarse_sync(
+                &residual,
+                freq_min,
+                freq_max,
+                sync_min * factor,
+                freq_hint,
+                max_cand,
+            )
+        } else {
+            coarse_sync::<P>(
+                &residual,
+                freq_min,
+                freq_max,
+                sync_min * factor,
+                freq_hint,
+                max_cand,
+            )
+        };
         if candidates.is_empty() {
             continue;
         }

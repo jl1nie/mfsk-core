@@ -180,7 +180,12 @@ impl Spectrogram {
 /// Build the per-sample Nuttall-4 window of length `n`.
 /// Matches WSJT-X `nuttal_window.f90`. Coefficients fixed by the
 /// CW shape of the window — see `SpectrumWindow::Nuttall4` doc.
-fn nuttall_window(n: usize) -> Vec<f32> {
+///
+/// `pub(crate)`: reused by [`crate::ft4::coarse`] (`getcandidates4.f90`
+/// faithful port), which needs it at `NFFT1` length, not just the
+/// `Protocol::SPECTRUM_WINDOW`-gated `NSPS` length this module applies
+/// internally.
+pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
     const A0: f32 = 0.3635819;
     const A1: f32 = 0.4891775;
     const A2: f32 = 0.1365995;

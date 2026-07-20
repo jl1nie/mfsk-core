@@ -5,6 +5,23 @@
 //! wiring (modulation params, frame layout, GFSK shaping, sync patterns,
 //! LDPC, message codec) is correct end-to-end, the first decoded message
 //! should equal the input bit-for-bit.
+//!
+//! `decode_frame`'s search band is intentionally wide (100-2700 Hz, the
+//! same convention every other FT4 caller in this repo uses), not a
+//! ~400 Hz window tight around the one transmitted signal. Found
+//! necessary (`~/.claude/plans/dapper-soaring-nest.md`, Phase 3):
+//! `core::ft4_coarse::ft4_coarse_sync` (a faithful `getcandidates4.f90`
+//! port, replacing the old Costas-lag coarse search) normalises its
+//! periodogram against `core::baseline::fit_baseline`'s per-segment
+//! low-percentile fit — a "noise floor" estimator that assumes most of
+//! the search band is genuinely off-signal. A search band narrow enough
+//! that the transmitted signal's own spectral footprint dominates it
+//! (no real off-signal content anywhere in range) breaks that
+//! assumption and biases the baseline, which the old Costas-correlation
+//! search never depended on. This is exactly the scenario WSJT-X's own
+//! `getcandidates4` is never actually run against either — real usage
+//! always scans the ~200-4910 Hz working band, never a single signal's
+//! own narrow footprint.
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::{Ft4, decode, encode};
@@ -50,7 +67,7 @@ fn build_slot(msg77: &[u8; 77], freq_hz: f32, peak_i16: i16) -> Vec<i16> {
 fn encode_decode_clean_signal_1000hz() {
     let msg = pack_cq("JA1ABC", "PM95");
     let audio = build_slot(&msg, 1000.0, 20_000);
-    let results = decode::decode_frame(&audio, 800.0, 1200.0, 1.0, 50);
+    let results = decode::decode_frame(&audio, 100.0, 2700.0, 1.0, 50);
     assert!(
         !results.is_empty(),
         "FT4 decode produced no results for clean 1000 Hz signal"
@@ -76,7 +93,7 @@ fn encode_decode_clean_signal_1000hz() {
 fn encode_decode_mid_band_1500hz() {
     let msg = pack_cq("W1AW", "FN42");
     let audio = build_slot(&msg, 1500.0, 20_000);
-    let results = decode::decode_frame(&audio, 1200.0, 1800.0, 1.0, 50);
+    let results = decode::decode_frame(&audio, 100.0, 2700.0, 1.0, 50);
     assert!(!results.is_empty());
     assert!(results.iter().any(|r| r.message77() == msg));
 }

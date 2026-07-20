@@ -47,6 +47,12 @@ use crate::msg::Wsjt77Message;
 
 // Decode pulls `core::pipeline` (FFT trait); gated on the FFT
 // meta-feature. `encode` is FFT-free and always available.
+// FT4's own coarse-candidate stage lives in `core::ft4_coarse`, not
+// here — `core::pipeline` calls it directly, and `core` is compiled
+// regardless of which protocol features are enabled, so a
+// `crate::ft4::*` reference from `core::pipeline` would force the
+// `ft4` feature on for every build (same reason `core::sync2d::
+// ft4_sync_search` lives in `core`, not `ft4`, despite being FT4-only).
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 pub mod encode;

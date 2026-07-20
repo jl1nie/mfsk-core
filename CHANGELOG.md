@@ -2,6 +2,21 @@
 
 ## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change)
 
+### Changed
+
+- **FT4 coarse-candidate stage replaced with a faithful
+  `getcandidates4.f90` port** (`core::ft4_coarse::ft4_coarse_sync`) —
+  the generic Costas-lag coarse_sync FT4 previously shared with
+  FT8/FST4 was a structurally different algorithm from what WSJT-X
+  actually does for FT4 (a 2-D freq×lag correlation search vs. WSJT-X's
+  frequency-only periodogram), producing ~4.5× redundant candidates
+  per real signal on busy recordings. Golden-WAV decode time dropped
+  **1.20 s → 0.049 s (~25×)** with byte-identical 6/6 recall; AWGN 50%
+  sensitivity crossing moved −17.2 dB → −16.9 dB (structural algorithm
+  swap reshaped rather than uniformly improved the SNR curve — 3 of 4
+  channels held or improved). See `docs/notes/FT4_BENCHMARK.md` section
+  13.
+
 ### Removed
 
 - **Legacy BASIS (Q15 sin/cos dot-product) per-symbol DFT fill path**

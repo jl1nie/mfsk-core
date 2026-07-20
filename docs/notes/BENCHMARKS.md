@@ -20,7 +20,7 @@ Two kinds of numbers appear per protocol:
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|----------------------|--------|
 | FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | AWGN ≈ −20.8 dB (WSJT-X: −20 to −21 dB) | at parity |
-| FT4      | 6/6 | AWGN ≈ −17.2 dB (WSJT-X: −17.5 dB, ~0.3 dB gap) | at parity |
+| FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
 | JT9      | 5/5 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
@@ -49,6 +49,7 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
+| FT4 | 000000_000002.wav | 7.5 s | 0.049 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.15 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.32 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
@@ -58,7 +59,6 @@ is wall time on a many-core host, not a single-thread figure).
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.05 s |
-| FT4 | 000000_000002.wav | 7.5 s | 1.20 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 1.89 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 2.55 s |
@@ -80,6 +80,17 @@ Notes:
   O(N log N) — dropping this row to 0.45 s (~10.5×) with byte-identical
   recall (7/8 golden, 7 phantom, 14 total). FT4's golden test was
   already on a different (non-LPF) subtract path and unaffected.
+- FT4 was the outlier at **1.20 s** (7.5 s slot, only 6 signals) until a
+  profiling pass (2026-07-20, `dapper-soaring-nest` plan) found its
+  coarse-candidate stage was structurally the wrong algorithm — a
+  generic 2-D (freq × lag) Costas-correlation search producing ~4.5×
+  redundant candidates per real signal frequency on this WAV (2000
+  candidates / 440 distinct frequencies), each independently paying the
+  full downstream sync-refine + LLR + BP + OSD cost. Replaced with
+  `core::ft4_coarse::ft4_coarse_sync`, a faithful `getcandidates4.f90`
+  port (WSJT-X's actual FT4 candidate finder has no lag dimension at
+  all) — dropping this row to 0.049 s (~25×) with byte-identical 6/6
+  golden recall (see `FT4_BENCHMARK.md` section 13).
 - Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
   1.05 s — the fast-fading metric's per-candidate cost dominates, not
   a full-buffer rescan. An earlier profiling pass found this same
@@ -125,11 +136,20 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 
 ## FT4
 
-- **6/6 WSJT-X golden** (`samples/FT4/000000_000002.wav`).
-- **AWGN sensitivity gap: ~0.3 dB** (was ~1.8 dB pre-0.7.3) — 50%
-  recall crossing moved from −15.5 dB to −17.2 dB after a coherent
-  Costas-block scorer fix and an OSD-attempt gate that had been
-  checking a non-coherent score.
+- **6/6 WSJT-X golden** (`samples/FT4/000000_000002.wav`), decoded in
+  **0.049 s** (was 1.20 s — see "Decode speed" notes above and
+  `FT4_BENCHMARK.md` section 13).
+- **AWGN sensitivity gap: ~0.6 dB** (was ~0.3 dB before the coarse-sync
+  algorithm swap, ~1.8 dB pre-0.7.3) — 50% recall crossing moved from
+  −15.5 dB to −17.2 dB after a coherent Costas-block scorer fix and an
+  OSD-attempt gate that had been checking a non-coherent score (issue
+  #72), then to −16.9 dB after replacing the coarse-candidate stage with
+  a faithful `getcandidates4.f90` port for the ~25× speed win above — a
+  structural algorithm swap, not a threshold retune, so unlike the
+  earlier fixes it reshaped rather than uniformly improved the
+  SNR-response curve (3 of 4 channels held or improved; AWGN alone
+  softened by ~0.3 dB — see `FT4_BENCHMARK.md` section 13 for the
+  per-channel breakdown).
 - Successive-interference-cancellation primitives
   (`subtract_signal*`, `refine_signal_freq`) ported from
   `lib/ft4_subtract.f90`; WSJT-X's Fast/Normal/Deep decode-depth menu
@@ -140,10 +160,10 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 
 | Channel | mfsk-core 50% crossing | WSJT-X published | Gap |
 |---|---:|---:|---:|
-| AWGN | ≈ −17.2 dB | −17.5 dB | 0.3 dB |
-| CCIR good | ≈ −17.3 dB | — (no separate WSJT-X figure) | — |
-| CCIR moderate | ≈ −15.75 dB | — | — |
-| CCIR poor | ≈ −16.1 dB | — | — |
+| AWGN | ≈ −16.9 dB | −17.5 dB | 0.6 dB |
+| CCIR good | ≈ −17.5 dB | — (no separate WSJT-X figure) | — |
+| CCIR moderate | ≈ −15.7 dB | — | — |
+| CCIR poor | ≈ −16.0 dB | — | — |
 
 Reproduce: `docs/notes/FT4_BENCHMARK.md`.
 

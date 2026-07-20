@@ -540,3 +540,114 @@ still in place is doing its job). Full non-ignored suite and
 real, WSJT-X-source-verified fixes contributed (sections 6, 9, 12); two
 plausible-looking candidates were built, measured, and correctly
 discarded (sections 8, 11) rather than shipped on faith.
+
+## 13. Coarse-candidate stage was the wrong algorithm — `getcandidates4.f90`
+    faithful port (`ft4_coarse_sync`), ~25× decode-speed win (2026-07-20)
+
+A follow-up investigation (not #72 — the `dapper-soaring-nest` plan,
+prompted by a request to both improve coarse-sync precision and BP/OSD
+speed) started from a different observation than sections 1-12: FT4's
+golden-WAV decode was the slowest in the whole protocol suite (1.20 s
+for a 6-signal, 7.5 s recording — see `BENCHMARKS.md`'s "Decode speed"
+table), and the golden test needed `max_cand=2000` despite its own code
+comment claiming 200 should suffice.
+
+**Root cause, confirmed by reading `lib/ft4/getcandidates4.f90` +
+`lib/ft4/ft4_baseline.f90` line-by-line**: `core::sync::coarse_sync`
+(shared with FT8/FST4/etc, used for FT4 until this section) is a 2-D
+(freq × lag) Costas-array correlation search — structurally *not* what
+WSJT-X does for FT4. `getcandidates4` never searches a lag/Δt dimension
+at all: it's a pure frequency-domain periodogram (Nuttall-windowed FFT
+over overlapping 4-symbol-wide segments, time-averaged, 15-bin
+boxcar-smoothed, normalised by `ft4_baseline`'s 5-term-polynomial noise
+floor, one candidate per local-max frequency peak). FT4's actual Δt
+determination happens entirely later in `ft4_sync_search` (section 9),
+which already does an *absolute* full-window search ignoring each
+candidate's own `dt_sec`. Consequence: every one of the generic search's
+up-to-8 lag-distinct candidates per frequency is functionally redundant
+downstream — each independently pays the full `ft4_sync_search` + LLR +
+BP + OSD cost for what should converge on the same result.
+
+**Measured before any change** (`ft4_diag_candidate_cost_split`,
+`tests/ft4_sweep.rs`, golden WAV): 2000 candidates across only 440
+distinct frequencies (4.5× redundancy), and `ft4_sync_search` alone
+accounted for 5.09 s of the ~6.65 s summed per-candidate cost (LLR+BP+OSD
+only 1.46 s) — confirming BP/OSD itself was never the bottleneck; the
+fix belongs at candidate generation, matching that `fec::ldpc::bp`
+already breaks on parity/CRC convergence and OSD depth-4 essentially
+never fires (section 10).
+
+**Fix**: `core::ft4_coarse::ft4_coarse_sync` — a faithful
+`getcandidates4.f90` + `ft4_baseline.f90` port, reusing existing faithful
+primitives (`core::baseline::fit_baseline`, already unit-tested but
+previously only tried — and reverted — as a mismatched normaliser for
+the generic Costas-correlation score; `core::sync::parabolic_peak`).
+Lives in `core::` (not `ft4::`) alongside `ft4_sync_search`, since `core`
+compiles regardless of which protocol features are enabled and
+`core::pipeline` needs to call it unconditionally. Wired in via a
+`P::ID == Ft4` branch in `core::pipeline::decode_frame` /
+`decode_frame_subtract`, same pattern as the existing sync2d-refine
+branch. One deliberate deviation from WSJT-X: candidates are score-sorted
+before truncating to `max_cand` (WSJT-X's own frequency-scan-order fill
+is a Fortran fixed-array convenience, not an intentional ranking).
+
+**Measured after** (same diagnostic, golden WAV): 31 candidates across 31
+distinct frequencies (redundancy eliminated — exactly 1.0/freq), summed
+`ft4_sync_search` cost 75.7 ms, LLR+BP+OSD 25.8 ms. Real production
+entry point (`decode_frame_subtract`, rayon-parallel, 3 subtract passes):
+**1.20 s → 48.8 ms (~25×)**. `ft4_wsjtx_sample_recall_vs_golden` stayed
+**6/6** (12 total decodes, was 13 — one fewer near-duplicate/marginal
+accept, not a golden miss). `max_cand` in the golden test dropped
+2000→100 with byte-identical recall — 100 also happens to match WSJT-X's
+own `MAXCAND=100` in `ft4_decode.f90`, unplanned but reassuring symmetry.
+
+**One real regression found and fixed, in the test suite, not
+production**: `ft4_roundtrip.rs`'s two clean-signal round-trip tests
+started failing. Root cause (confirmed via a temporary in-crate debug
+test surveying 18 different messages, 0/18 landing near the true
+carrier): those two tests search a ~400-600 Hz band tight around the one
+transmitted signal — with no other content anywhere in range,
+`fit_baseline`'s per-segment low-percentile noise-floor fit has nothing
+but signal to fit, and its estimate comes out systematically wrong. Widening
+that band to 100 Hz to 2700 Hz (freq_min, freq_max) — the same convention
+every other FT4 caller in this repo already uses — fixed both tests
+outright (18/18 in the survey). An initial attempt to fix this by adding
+synthetic dither noise instead was tried and discarded first: it didn't
+work even at ~16 dB SNR (sigma=3000), and a follow-up 18-message survey
+confirmed the failure was 0/18 regardless of noise level for a narrow
+band — deterministic, not noise-sensitive, so noise was never going to
+fix it. This isn't a WSJT-X faithfulness gap: `getcandidates4`'s baseline
+fit assumes a realistically wide working band with genuine off-signal
+content, exactly WSJT-X's own real usage (~200-4910 Hz) and every other
+caller here — the two round-trip tests' narrow band was the outlier,
+an assumption that only happened to hold under the old Costas-correlation
+search's different (baseline-free) scoring.
+
+**AWGN/CCIR sweep, re-measured in full** (`ft4_snr_sweep`,
+`--ignored --nocapture`): 50%-crossing changed from a pure
+candidate-generation swap, not a threshold retune, so (unlike sections
+6-12) the "loosening a gate can only hold or increase recall" invariant
+doesn't strictly apply here — a structurally different algorithm can
+legitimately reshape the SNR-response curve rather than uniformly
+improve or hold it.
+
+| Channel | 50% crossing (before) | 50% crossing (after) | Δ |
+|---|---:|---:|---:|
+| AWGN | -17.2 dB | -16.9 dB | -0.3 dB (regressed) |
+| CCIR good | -17.3 dB | -17.5 dB | +0.2 dB |
+| CCIR moderate | -15.75 dB | -15.7 dB | ~0 (noise) |
+| CCIR poor | -16.1 dB | -16.0 dB | ~0 (noise) |
+
+Three of four channels are equal-or-better; AWGN alone softened by
+~0.3 dB (widening WSJT-X's published-gap comparison from ~0.3 dB to
+~0.6 dB) — but not uniformly: AWGN -19/-18 dB actually *improved*
+(0%→5%, 15%→25%) while -17 dB alone dropped (60%→45%, a 3-trial swing
+out of 20), reshaping rather than uniformly shifting the curve. Given
+the ~25× decode-speed win and that 3/4 channels didn't regress, this
+trade was accepted rather than chased further within this pass; revisit
+if the AWGN gap needs closing again specifically (candidate: whether
+`ft4_coarse_sync`'s 15-bin smoothing width interacts with `sync_min`
+placement differently near the AWGN crossing specifically — untested).
+
+Full non-ignored suite (922 passed, 0 failed) and
+`-D clippy::perf -D warnings` green.
