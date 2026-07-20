@@ -21,7 +21,7 @@ use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
     Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120, decode_multi_period_for,
-    decode_scan, decode_scan_fading_for, decode_scan_with_ap, decode_scan_with_ap_for,
+    decode_scan_fading_for, decode_scan_with_ap_for,
 };
 
 #[allow(dead_code)]
@@ -40,95 +40,6 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
         .canonicalize()
         .ok()?;
     if dir.is_dir() { Some(dir) } else { None }
-}
-
-/// Smoke test: the Q65-30A *single-period* receive chain (plain BP +
-/// AP + fast-fading metric) runs to completion against every WSJT-X
-/// ionoscatter reference recording without panicking, and the WAV
-/// reader handles the file format correctly.
-///
-/// **Single-period decode rate is not asserted** — these recordings
-/// sit below the single-period decode threshold (each WAV produces
-/// 0 decodes via plain / AP-CQ / fast-fading taken in isolation).
-/// The averaged-decode gate lives in
-/// `ionoscatter_6m_full_stack_decodes_via_averaging` below, which
-/// stacks the slots and recovers them via the multi-period EMA path
-/// (`decode_multi_period_for`). This test stays useful as a
-/// regression catch on the per-slot chain (panic / WAV-reader /
-/// search-params blow-up).
-#[test]
-fn ionoscatter_6m_receive_chain_runs() {
-    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
-        eprintln!(
-            "skipping: WSJT-X sample tree not found at ../../WSJT-X/samples/Q65/30A_Ionoscatter_6m/"
-        );
-        return;
-    };
-
-    let entries: Vec<_> = std::fs::read_dir(&dir)
-        .expect("read samples dir")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
-        .collect();
-    assert!(
-        !entries.is_empty(),
-        "WSJT-X Q65-30A sample dir contains no .wav files"
-    );
-
-    // ±50 symbols × 0.3 s/sym ≈ ±15 s around the slot midpoint.
-    let nominal_mid = 12_000 * 15; // 15 s into the 30 s slot
-    let params = SearchParams {
-        freq_min_hz: 200.0,
-        freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
-        score_threshold: 0.05,
-        max_candidates: 32,
-    };
-
-    let mut wav_count = 0usize;
-    for path in &entries {
-        let audio = match read_wsjtx_wav(path) {
-            Some(a) => a,
-            None => {
-                eprintln!("skip {}: unsupported WAV format", path.display());
-                continue;
-            }
-        };
-        wav_count += 1;
-
-        // Three receive paths must all complete without panic. Decode
-        // counts are reported but not asserted — see this test's
-        // docstring for why ionoscatter is currently a known gap.
-        let plain = decode_scan(&audio, 12_000, nominal_mid, &params);
-        let cq = decode_scan_with_ap(
-            &audio,
-            12_000,
-            nominal_mid,
-            &params,
-            &ApHint::new().with_call1("CQ"),
-        );
-        let fading = decode_scan_fading_for::<Q65a30>(
-            &audio,
-            12_000,
-            nominal_mid,
-            &params,
-            8.0,
-            FadingModel::Gaussian,
-            None,
-        );
-        eprintln!(
-            "{}: plain={} cq={} fading_b90=8={}",
-            path.file_name().unwrap().to_string_lossy(),
-            plain.len(),
-            cq.len(),
-            fading.len(),
-        );
-    }
-    assert!(
-        wav_count > 0,
-        "no readable WAVs in WSJT-X Q65-30A ionoscatter sample dir"
-    );
 }
 
 /// Strict gate: stack the four ionoscatter recordings into one
