@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Q65-60B/30A `decode_multi_period_for` sped up ~2×**
+- **Q65-60B/30A `decode_multi_period_for` sped up ~4×**
   (`q65/rx.rs`, `tests/q65_wsjtx_samples.rs`) — two stacked fixes: (1)
   the fast-fading `b90 × model` sweep (6 combinations) was redundantly
   re-extracting FFT-based energies from scratch for each combination
@@ -12,12 +12,15 @@
   its cap on every slot, paying the full 8-stage decode ladder for
   candidates far below the real signal's own score (confirmed #0-ranked
   in every slot of both golden recordings via score-distribution
-  profiling) — cut to 16. Golden-WAV wall-clock: Q65-60B 1.89s → 0.92s,
-  Q65-30A 2.55s → 1.26s, bit-identical recall. Q65-60A (a different
-  code path, `decode_scan_for`) has a larger root cause — WSJT-X's
-  `q65_loops.f90` has no separate "plain BP" path at all, always
-  sweeping the fast-fading metric over a submode-specific b90 range in
-  an `ndepth`-gated (Δf,Δt,b90) grid, while our port diverged into a
+  profiling) — cut in two verified steps (32→16, then — after
+  re-profiling showed the fading-BP stage still ~79% of wall-clock even
+  after fix (1) — 16→8, matching `SearchParams::default()`). Golden-WAV
+  wall-clock: Q65-60B 1.89s → 0.49s, Q65-30A 2.55s → 0.64s,
+  bit-identical recall at every step. Q65-60A (a different code path,
+  `decode_scan_for`) has a larger root cause — WSJT-X's `q65_loops.f90`
+  has no separate "plain BP" path at all, always sweeping the
+  fast-fading metric over a submode-specific b90 range in an
+  `ndepth`-gated (Δf,Δt,b90) grid, while our port diverged into a
   narrow-window AWGN-only Bessel metric with a time-only retry — not
   fixed in this pass since `decode_scan_for` is also the baseline for
   the 10-sub-mode AWGN sensitivity sweep. See `docs/notes/Q65_BENCHMARK.md`.

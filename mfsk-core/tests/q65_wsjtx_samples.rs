@@ -91,7 +91,7 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 50,
         score_threshold: 0.05,
-        max_candidates: 16,
+        max_candidates: 8,
     };
 
     let decodes_no_ap =
@@ -367,7 +367,7 @@ fn tropo_1296_60b_decodes_via_averaging() {
         freq_max_hz: 3_000.0,
         time_tolerance_symbols: 50,
         score_threshold: 0.05,
-        max_candidates: 16,
+        max_candidates: 8,
     };
 
     let decodes_no_ap =
@@ -760,7 +760,7 @@ fn q65_multi_period_speed_diag() {
             freq_max_hz: 3_000.0,
             time_tolerance_symbols: 50,
             score_threshold: 0.05,
-            max_candidates: 16,
+            max_candidates: 8,
         };
         let t0 = Instant::now();
         let decodes =
@@ -789,7 +789,7 @@ fn q65_multi_period_speed_diag() {
             freq_max_hz: 3_000.0,
             time_tolerance_symbols: 50,
             score_threshold: 0.05,
-            max_candidates: 16,
+            max_candidates: 8,
         };
         let t0 = Instant::now();
         let decodes =

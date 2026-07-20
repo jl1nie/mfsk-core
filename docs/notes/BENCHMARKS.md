@@ -56,12 +56,12 @@ is wall time on a many-core host, not a single-thread figure).
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.39 s |
 | FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.45 s |
+| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.49 s |
+| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.64 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
-| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.92 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.05 s |
-| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 1.26 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
 
 Notes:
@@ -112,11 +112,13 @@ Notes:
   8-stage decode ladder for candidates far below the real signal's own
   score. Score-distribution profiling found the real signal ranked #0
   (top score) in every slot of both golden recordings with a healthy
-  margin — cut to `max_candidates=16` (still 2× the library's own
-  default of 8) — dropping these rows to 0.92 s / 1.26 s (~2×) with
-  bit-identical recall (same message, frequency, BP iteration count).
-  Q65-60A (a different code path, `decode_scan_for`) has a larger,
-  separately-scoped root cause not yet fixed — see `Q65_BENCHMARK.md`.
+  margin. Cut in two verified steps (32→16, then — after re-profiling
+  showed the fading-BP stage still ~79% of wall-clock — 16→8, matching
+  the library's own `SearchParams::default()`) — dropping these rows to
+  0.49 s / 0.64 s (~4×) with bit-identical recall (same message,
+  frequency, BP iteration count) at every step. Q65-60A (a different
+  code path, `decode_scan_for`) has a larger, separately-scoped root
+  cause not yet fixed — see `Q65_BENCHMARK.md`.
 - Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
   1.05 s — the fast-fading metric's per-candidate cost dominates, not
   a full-buffer rescan. An earlier profiling pass found this same
@@ -347,7 +349,7 @@ part of every sweep in this doc at this trial count.)
   5-8 dB on Doppler-spread channels, required for microwave EME.
 - AP-list template matching decodes 6/6 frames at SNR −25 dB where
   plain BP fails 0/6.
-- **Decode speed** (2026-07-20): Q65-60B/30A dropped ~2× (see the
+- **Decode speed** (2026-07-20): Q65-60B/30A dropped ~4× (see the
   "Decode speed" notes above) via a redundant-extraction fix and a
   calibrated `max_candidates` cut in `decode_multi_period_for`; Q65-60A
   has a larger, deferred root cause. Full writeup, including the

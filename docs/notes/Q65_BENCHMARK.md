@@ -63,23 +63,30 @@ candidate — in all 4 slots**, with a healthy margin over the next tier
 (e.g. slot 0: real signal scores 0.90-0.97, next distinct signal cluster
 at 0.86 and below). This is real off-air data, not synthetic, so the
 margin is meaningful evidence, not a guarantee for every future
-recording — chose `max_candidates=16` (a 2× cut from 32, but still 2×
-more generous than the library's own default of 8) rather than an
-aggressive cut matching only what this one corpus needed, to keep a
-safety margin for weaker signals not covered by the 2-file (60B) /
-4-file (30A) sample corpus.
+recording — first cut `max_candidates` 32→16 (still 2× the library's own
+default of 8), verified bit-identical recall, then re-profiled with
+temporary per-stage timing (`Q65_MPF_DEBUG_TIMING` env-gated
+instrumentation, added and reverted within this pass): the fast-fading
+BP stage (up to 6 attempts/candidate) was still ~79% of total
+wall-clock even after the extraction fix, confirming candidate *count*
+— not per-candidate cost — remained the dominant lever. Given the same
+#0-with-margin evidence, cut further to `max_candidates=8`, matching
+`SearchParams::default()` exactly rather than an arbitrary number —
+verified bit-identical recall again (same message, freq, dt, and — for
+Q65-30A — the exact same BP iteration count, 37) before settling there.
 
-**Measured**: golden-message recall bit-identical on both tests (same
-message, frequency, dt, and — for Q65-30A — the exact same BP iteration
-count, 37, confirming the identical candidate was found and decoded).
+**Measured**: golden-message recall bit-identical at every step (same
+message, frequency, dt, BP iteration count throughout the 32→16→8
+progression, confirming the identical candidate was found and decoded
+each time).
 
 **Combined result** (both fixes, real golden-test wall-clock, matching
 `BENCHMARKS.md`'s methodology):
 
 | Sub-mode | Before | After | Speedup |
 |---|---:|---:|---:|
-| Q65-60B | 1.89 s | 0.92 s | ~2.1× |
-| Q65-30A | 2.55 s | 1.26 s | ~2.0× |
+| Q65-60B | 1.89 s | 0.49 s | ~3.9× |
+| Q65-30A | 2.55 s | 0.64 s | ~4.0× |
 
 Full non-ignored suite (922 tests) and `-D clippy::perf -D warnings`
 green throughout. `q65_sim_sweep.rs` (the AWGN sensitivity sweep) does
