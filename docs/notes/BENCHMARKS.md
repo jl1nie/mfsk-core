@@ -33,6 +33,56 @@ nearest swept SNR points, in each `*sim` generator's 2500 Hz
 reference-bandwidth convention (matches WSJT-X's own published
 numbers directly, no unit conversion needed).
 
+## Decode speed (single golden-WAV, host)
+
+Wall-clock time for one full decode call against each protocol's real
+WSJT-X-recorded golden WAV (see the recall sections below for which
+file and which decode function). Measured 2026-07-20, single run per
+row — treat as an order-of-magnitude reference, not an averaged
+benchmark.
+
+**Compute environment**: AMD Ryzen 9 9900X (12C/24T), 32 GB RAM,
+Ubuntu 24.04.2 LTS under WSL2 (kernel 6.6.87.2-microsoft-standard-WSL2),
+rustc 1.97.1, `cargo test --release --features full` (includes the
+`parallel` feature — some decode paths use `rayon` internally, so this
+is wall time on a many-core host, not a single-thread figure).
+
+| Protocol | Golden WAV | Slot length | Decode time |
+|---|---|---:|---:|
+| JT9 | 130418_1742.wav | 60 s | 0.33 s |
+| Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.15 s |
+| Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.32 s |
+| Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.39 s |
+| MSK144 | 181211_120800.wav | 30 s | 0.84 s |
+| MSK144 | 181211_120500.wav | 15 s | 0.88 s |
+| WSPR | 150426_0918.wav | 120 s | 0.93 s |
+| Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.05 s |
+| FT4 | 000000_000002.wav | 7.5 s | 1.20 s |
+| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
+| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 1.89 s |
+| FST4-60A | 210115_0058.wav | 60 s | 2.60 s |
+| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 2.55 s |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 4.73 s |
+
+Notes:
+
+- These are real-recording decode times, not synthetic sweeps — they
+  reflect actual candidate density and search cost on real audio, not
+  a clean-signal best case. FT8's `qso3_busy.wav` is the heaviest
+  fixed-slot-length case specifically because it's a crowded band (16
+  simultaneous signals drive a large coarse-sync candidate count
+  through OSD).
+- Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
+  1.05 s — the fast-fading metric's per-candidate cost dominates, not
+  a full-buffer rescan. An earlier profiling pass found this same
+  golden test took 8.95 s before an unasserted diagnostic pre-check
+  was removed (see CHANGELOG); 1.05 s reflects the load-bearing decode
+  path only.
+- Not comparable to the embedded (Xtensa) numbers quoted elsewhere in
+  this doc (e.g. FT8's ~0.7-1.2 s post-SlotEnd) — those run a
+  different no_std/fixed-point pipeline on a much slower MCU core;
+  this table is host x86_64 only.
+
 ## FT8
 
 - **WSJT-X 8-entry golden: 7/8** (`decode_frame_with_ap` host,
