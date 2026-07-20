@@ -21,8 +21,7 @@ use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
     Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120, decode_multi_period_for,
-    decode_scan, decode_scan_fading_for, decode_scan_for, decode_scan_with_ap,
-    decode_scan_with_ap_for,
+    decode_scan, decode_scan_fading_for, decode_scan_with_ap, decode_scan_with_ap_for,
 };
 
 #[allow(dead_code)]
@@ -363,9 +362,10 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
         max_candidates: 100,
     };
 
-    // Plain BP: expected 0 decodes at this SNR.
-    let plain = decode_scan_for::<Q65d60>(&audio, 12_000, 0, &params);
-    eprintln!("[info] 10 GHz EME plain: {} decode(s)", plain.len());
+    // Plain BP is known to fail at this SNR (see doc comment above) —
+    // not re-verified here since it's diagnostic-only and, with this
+    // sub-mode's fine-timing retry, was measured costing seconds of
+    // wall time for zero assertion coverage.
 
     // Fast-fading Gaussian, b90 = 10 Hz: the path that actually works.
     let fading = decode_scan_fading_for::<Q65d60>(
@@ -526,8 +526,8 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
         max_candidates: 30,
     };
 
-    let plain = decode_scan_for::<Q65d120>(&audio, 12_000, 0, &params);
-    eprintln!("[info] 10 GHz rainscatter plain: {} decode(s)", plain.len());
+    // Plain BP is known to fail at this SNR (see doc comment above) —
+    // not re-verified here; diagnostic-only and not worth the wall time.
 
     let fading = decode_scan_fading_for::<Q65d120>(
         &audio,
@@ -665,8 +665,12 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
         max_candidates: 200,
     };
 
-    let plain = decode_scan_for::<Q65a300>(&audio, 12_000, 0, &params);
-    eprintln!("[info] optical scatter plain: {} decode(s)", plain.len());
+    // Plain BP is known to fail at this SNR (see doc comment above) —
+    // not re-verified here. With these wide search params (needed to
+    // locate an unknown offset in the 293.8 s recording) plus the
+    // fine-timing retry, a live run of this diagnostic-only scan was
+    // measured costing ~8.5 s of the previous ~9.6 s test wall time
+    // for zero assertion coverage (2026-07-20 profiling).
 
     let fading = decode_scan_fading_for::<Q65a300>(
         &audio,
