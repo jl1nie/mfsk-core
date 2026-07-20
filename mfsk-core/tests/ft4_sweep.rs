@@ -930,3 +930,152 @@ fn ft4_diag_candidate_cost_split() {
         }
     }
 }
+
+/// Phase 4 calibration diagnostic (dapper-soaring-nest plan): gathers the
+/// `ft4_sync_search` coherent `score` distribution (WSJT-X's `smax`
+/// equivalent) alongside decode outcome, across the AWGN/CCIR
+/// near-crossing region, using the *current production* candidate
+/// generator (`ft4_coarse_sync`) — not the retired generic
+/// `core::sync::coarse_sync`. Goal: find a `score` cutoff low enough
+/// that zero golden-succeeding candidates ever fall below it (so a
+/// WSJT-X-style `if(smax < cutoff) cycle` early-exit before
+/// symbol_spectra/LLR/BP/OSD costs nothing in recall), following the
+/// same "measure before picking a number" discipline as
+/// `FT4_BENCHMARK.md` section 6 rather than guessing a translated
+/// constant from WSJT-X's own `1.2`.
+#[test]
+#[ignore = "manual diagnostic — Phase 4 smax early-reject calibration (dapper-soaring-nest plan)"]
+fn ft4_diag_smax_calibration() {
+    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::core::equalize::EqMode;
+    use mfsk_core::core::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::core::sync2d::ft4_sync_search;
+    use mfsk_core::ft4::Ft4;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    const REFINE_STEPS: i32 = 32;
+    const SYNC_Q_MIN: u32 = 8;
+
+    let dir = sweep_dir();
+
+    // Flatten (channel, snr_tag, trial) into one work list so the whole
+    // grid — not just the per-candidate loop inside a trial — fans out
+    // across cores. Each entry is independent (its own WAV, own
+    // candidate list), so this is embarrassingly parallel; the same
+    // `#[cfg(feature = "parallel")]` / rayon `par_iter` convention
+    // `ft4_snr_sweep` already uses above.
+    let mut work: Vec<(&str, &str, u32)> = Vec::new();
+    for (channel, snr_tags) in [
+        ("awgn", &["m19", "m18", "m17", "m16", "m15"][..]),
+        ("ccir_good", &["m19", "m18", "m17", "m16"][..]),
+        ("ccir_moderate", &["m18", "m17", "m16", "m15"][..]),
+        ("ccir_poor", &["m18", "m17", "m16", "m15"][..]),
+    ] {
+        for &snr_tag in snr_tags {
+            for trial in 1..=20u32 {
+                work.push((channel, snr_tag, trial));
+            }
+        }
+    }
+
+    let process_one = |&(channel, snr_tag, trial): &(&str, &str, u32)| -> (Vec<f32>, Vec<f32>) {
+        let path = dir.join(format!("ft4_{channel}_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            return (Vec::new(), Vec::new());
+        };
+        let cands = ft4_coarse_sync(&audio, 100.0, 3000.0, 0.8, None, 50);
+        if cands.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+        let mut golden = Vec::new();
+        let mut other = Vec::new();
+        for c in &cands {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FT4_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = ft4_sync_search::<Ft4>(&cd0, c);
+
+            let r = process_candidate_basic::<Ft4>(
+                c,
+                &fft_cache,
+                &FT4_DOWNSAMPLE,
+                DecodeDepth::BpAllOsd,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                REFINE_STEPS,
+                SYNC_Q_MIN,
+            );
+            let is_golden = r.as_ref().is_some_and(|d| {
+                let mut m77 = [0u8; 77];
+                m77.copy_from_slice(&d.info[..77]);
+                unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+            });
+            if is_golden {
+                golden.push(s2.score);
+            } else {
+                other.push(s2.score);
+            }
+        }
+        (golden, other)
+    };
+
+    #[cfg(feature = "parallel")]
+    let per_file: Vec<(Vec<f32>, Vec<f32>)> = work.par_iter().map(process_one).collect();
+    #[cfg(not(feature = "parallel"))]
+    let per_file: Vec<(Vec<f32>, Vec<f32>)> = work.iter().map(process_one).collect();
+
+    let mut golden_scores: Vec<f32> = Vec::new();
+    let mut other_scores: Vec<f32> = Vec::new();
+    for (g, o) in per_file {
+        golden_scores.extend(g);
+        other_scores.extend(o);
+    }
+
+    golden_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    other_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    eprintln!(
+        "golden-succeeding candidates: n={}, min score={:.4}, 1st%={:.4}, median={:.4}",
+        golden_scores.len(),
+        golden_scores.first().copied().unwrap_or(f32::NAN),
+        golden_scores
+            .get(golden_scores.len() / 100)
+            .copied()
+            .unwrap_or(f32::NAN),
+        golden_scores
+            .get(golden_scores.len() / 2)
+            .copied()
+            .unwrap_or(f32::NAN),
+    );
+    eprintln!(
+        "non-golden candidates: n={}, below golden-min: {}",
+        other_scores.len(),
+        other_scores
+            .iter()
+            .filter(|&&s| s < golden_scores.first().copied().unwrap_or(f32::NEG_INFINITY))
+            .count()
+    );
+    // Histogram of the lowest 30 golden scores — the tail that determines
+    // how tight a safe cutoff can be.
+    eprintln!(
+        "lowest 30 golden scores: {:?}",
+        &golden_scores[..30.min(golden_scores.len())]
+    );
+
+    let below_200 = other_scores.iter().filter(|&&s| s < 200.0).count();
+    eprintln!(
+        "non-golden scores below FT4_SMAX_MIN=200.0: {}/{} ({:.1}%)",
+        below_200,
+        other_scores.len(),
+        100.0 * below_200 as f32 / other_scores.len() as f32
+    );
+}

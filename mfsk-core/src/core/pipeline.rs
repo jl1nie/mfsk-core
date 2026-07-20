@@ -454,6 +454,18 @@ pub fn process_candidate_basic<P: Protocol>(
         let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
         (refined.freq_hz, i_start, refined.score)
     };
+
+    // A WSJT-X-style `smax` early exit (`ft4_decode.f90:279`:
+    // `if(smax.lt.1.2) cycle`) was implemented and measured here — using
+    // `ft4_sync_search`'s own coherent score, not `cand.score` — and
+    // reverted for negligible benefit (dapper-soaring-nest plan Phase 4,
+    // `FT4_BENCHMARK.md` section 15): a safely-margined cutoff only
+    // filtered 0.5% of non-golden candidates in the calibration sweep
+    // (`ft4_diag_smax_calibration`, `tests/ft4_sweep.rs`) — junk scores
+    // cluster tightly just below the golden-succeeding floor rather than
+    // spread far below it, so there's no safe gap wide enough to filter
+    // much without risking a real signal.
+
     try_position(freq_hz, i0, score)
 }
 

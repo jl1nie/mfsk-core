@@ -672,3 +672,56 @@ FT8-only (no FT4/FST4) feature builds still compile — this module has
 no `#[cfg(feature = "ft4")]` gate of its own (same reasoning as
 `ft4_coarse`: `core` compiles unconditionally), so a stray reference
 from either protocol's exclusion would have shown up there.
+
+## 15. Phase 4 `smax` early-reject — implemented, measured, reverted (2026-07-20)
+
+Section 13's Phase 4 was explicitly conditional: only pursue a
+per-candidate early exit (WSJT-X's `ft4_decode.f90:279
+if(smax.lt.1.2) cycle`) if profiling still showed LLR/BP/OSD as a
+meaningful wall-clock share after the coarse-sync fix landed. Revisited
+anyway on request, with the same "measure before picking a number"
+discipline section 6 established.
+
+**Calibration** (`ft4_diag_smax_calibration`, `tests/ft4_sweep.rs`, new):
+ran the current production candidate generator (`ft4_coarse_sync`) +
+`ft4_sync_search` across the full AWGN/CCIR near-crossing region (17
+channel/SNR cells × 20 trials), recording the coherent `score` for every
+candidate against whether it decoded to `GOLDEN_MSG`. 142
+golden-succeeding candidates, minimum observed score **266.1**; 16858
+non-golden candidates. A first read of "16418/16858 (97.4%) score below
+the golden floor" looked like a strong filtering opportunity.
+
+**Implemented**: a gate in `process_candidate_basic` (`core/pipeline.rs`)
+— `if P::ID == Ft4 && score < 200.0 { return None }` — right after
+`ft4_sync_search`, before `symbol_spectra`/LLR/BP/OSD. `200.0` was
+chosen with a ~25% safety margin below the observed 266.1 floor, not a
+guessed translation of WSJT-X's own `1.2` (different absolute scale:
+ours is a magnitude-sum over 4 Costas blocks on unit-RMS-normalised
+`cd0`).
+
+**Measured**: golden WAV stayed 6/6 (12/12 decodes, byte-identical), the
+full AWGN/CCIR sweep was byte-identical to the pre-gate baseline, full
+suite (922 tests) and clippy clean — recall-safe as designed. But
+re-checking what fraction of non-golden scores actually fell *below the
+200.0 cutoff itself* (not the 266.1 golden floor the first read
+compared against) gave a very different number: **91/16858 (0.5%)**.
+The "97.4% below the golden floor" statistic was true but misleading —
+junk-candidate scores cluster tightly in a band just *below* 266.1
+(mostly in [200, 266)), not spread out far below it. There is no gap
+between "safe" and "effective": widening the cutoff toward 266 to catch
+more junk would erode the safety margin against the exact same
+candidates that motivated keeping it small.
+
+**Reverted.** The gate added real code and a magic-number cutoff for a
+measured 0.5% reduction in per-trial candidate-processing work — at
+already-single-digit-millisecond wall-clock costs post section 13, not
+worth the maintenance burden. Kept `ft4_diag_smax_calibration` (now
+rayon-parallelised across the (channel, SNR, trial) grid — flagged
+during this pass as a general reminder to parallelise this file's
+diagnostics at the file/trial level, not just leave `process_candidate_basic`'s
+own internal work serial, per the existing `ft4_snr_sweep` convention
+above) as a reusable reference for anyone revisiting this later with a
+different corpus or a different score quantity.
+
+Full non-ignored suite (922 passed) and `-D clippy::perf -D warnings`
+green both before and after the revert.
