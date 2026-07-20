@@ -16,14 +16,28 @@
   re-profiling showed the fading-BP stage still ~79% of wall-clock even
   after fix (1) — 16→8, matching `SearchParams::default()`). Golden-WAV
   wall-clock: Q65-60B 1.89s → 0.49s, Q65-30A 2.55s → 0.64s,
-  bit-identical recall at every step. Q65-60A (a different code path,
-  `decode_scan_for`) has a larger root cause — WSJT-X's `q65_loops.f90`
-  has no separate "plain BP" path at all, always sweeping the
-  fast-fading metric over a submode-specific b90 range in an
-  `ndepth`-gated (Δf,Δt,b90) grid, while our port diverged into a
-  narrow-window AWGN-only Bessel metric with a time-only retry — not
-  fixed in this pass since `decode_scan_for` is also the baseline for
-  the 10-sub-mode AWGN sensitivity sweep. See `docs/notes/Q65_BENCHMARK.md`.
+  bit-identical recall at every step.
+- **Q65-60A/`decode_scan_for` family rewritten as a faithful `(Δf, Δt,
+  b90)` grid search** (`q65/rx.rs::decode_at_grid_for`) — WSJT-X's
+  `q65_loops.f90` has no separate "plain BP" path at all, always
+  sweeping the fast-fading metric over a submode-specific b90 range in
+  an `ndepth`-gated grid; our previous port diverged into a
+  narrow-window AWGN-only Bessel metric with a time-only retry. Landing
+  the faithful port surfaced two further bugs found via a real-`jt9`
+  cross-check: a missing full/unpruned `ibw` sweep at the origin cell
+  (WSJT-X's primary `q65_dec_q012` decode stage, which the pruned
+  `q65_loops` fallback alone doesn't cover — worst for wide-`ibwa`
+  C/D/E sub-modes), and coarse-sync time resolution 4× coarser than
+  WSJT-X's own `NSTEP=8` (`q65/search.rs::Spectrogram`, fixed alongside
+  a `q65_ccf_22`-style restructure — per-frequency time-collapse +
+  local-max NMS + noise-adaptive percentile admission — needed to avoid
+  regressing a real off-air multi-signal recording). Sub-modes with
+  `ibwa=1/3` (A/B) now track real `jt9` closely; `ibwa=8` sub-modes
+  (C/D/E, plus Q65-120D/120E) still sit ~2.5-3 dB behind `jt9` — a real,
+  understood residual gap (WSJT-X's additional AP-list pre-stage and
+  fuller sync cross-correlation, neither ported), not a bug. Real
+  off-air golden-test recall *improved* (6 m EME sample: 3 → 4 messages
+  recovered). See `docs/notes/Q65_BENCHMARK.md`.
 - **FST4-60A OSD depth-escalation gate hand-calibrated for its own
   `N_SYNC=40`** (`core/pipeline.rs`) — the shared `osd_depth3_min=18`
   gate was calibrated against FT8's `N_SYNC=21`; FST4's larger sync

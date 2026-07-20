@@ -567,51 +567,207 @@ fn decode_scan_inner<P: ModulationParams>(
     seen
 }
 
-/// Try decoding at a coarse candidate's reported alignment; if that
-/// fails, retry at a small grid of nearby `start_sample` offsets
-/// before giving up.
+/// Decode depth for the internal `(Δf, Δt, b90)` grid search — mirrors WSJT-X
+/// `q65_loops.f90`'s `ndepth` bit field (`iand(ndepth,3)`).
 ///
-/// `coarse_search_for`'s timing estimate is measurably imprecise at
-/// low SNR — issue #171 found it can land up to ~1/5 of a symbol
-/// period away from the alignment that actually decodes, because the
-/// coarse sync score is only ever evaluated at whole-symbol
-/// granularity. WSJT-X's `q65_loops` never trusts its own coarse
-/// alignment as final either: it always runs a local `idt` retry loop
-/// (steps of `nsps/16`, `lib/qra/q65/q65_loops.f90`) before attempting
-/// the real decode. This mirrors that with a symmetric ±3-step search
-/// (0, ±1, ±2, ±3 steps of `nsps/16`, trying the unperturbed alignment
-/// first so the common high-SNR case pays no extra cost beyond one
-/// early-exit check).
+/// `Fast` still sweeps the full `b90` range (WSJT-X never skips that
+/// dimension, even at its shallowest depth) but tries only the
+/// unperturbed `(Δf, Δt) = (0, 0)` cell — no retry. `Normal` matches
+/// WSJT-X's typical automatic-scan depth (`ndepth&3==2`). `Deep`
+/// matches WSJT-X's "Decode Again" depth (`ndepth&3==3`,
+/// `lib/q65_decode.f90:112`: `if(lagain) ndepth=ior(ndepth,3)` —
+/// explicitly commented "Use 'Deep' for manual Q65 decodes", i.e.
+/// never WSJT-X's own automatic per-slot default).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridDepth {
+    Fast,
+    Normal,
+    Deep,
+}
+
+impl GridDepth {
+    /// `(idfmax, idtmax, maxdist)` — `q65_loops.f90:28-41`.
+    fn params(self) -> (i32, i32, i32) {
+        match self {
+            GridDepth::Fast => (1, 1, 4),
+            GridDepth::Normal => (3, 3, 5),
+            GridDepth::Deep => (5, 5, 5),
+        }
+    }
+}
+
+/// Submode-specific `b90` sweep lower bound (`ibwa`), matching the
+/// table at `lib/q65_decode.f90:168-178`. `ibwb = min(15, ibwa+6)`.
+fn ibwa_for_submode(submode: u8) -> i32 {
+    match submode {
+        0 => 1, // A
+        1 => 3, // B
+        _ => 8, // C, D, E
+    }
+}
+
+/// Zigzag index → signed offset: `1→0, 2→-1, 3→1, 4→-2, 5→2, ...` —
+/// matches `q65_loops.f90`'s `ndf=idf/2; if(mod(idf,2).eq.0) ndf=-ndf`
+/// (1-indexed Fortran integer division), so the center cell is always
+/// tried first and neighbours alternate ± outward.
+fn zigzag_offset(idx1: i32) -> i32 {
+    let n = idx1 / 2;
+    if idx1 % 2 == 0 { -n } else { n }
+}
+
+/// WSJT-X-faithful `(Δf, Δt, b90)` grid search around a coarse
+/// candidate — port of `lib/qra/q65/q65_loops.f90`.
+///
+/// Replaces the previous narrow-window, AWGN-only Bessel metric
+/// wrapped in a time-only ±3-step retry: WSJT-X has **no** separate
+/// "plain BP" code path for Q65 at all — `q65_dec2` always calls the
+/// fast-fading intrinsics (`q65_intrinsics_ff`), swept over a
+/// submode-specific `b90` range, combined with a distance-pruned
+/// `(Δf, Δt, b90)` grid. `coarse_search_for`'s timing estimate is
+/// measurably imprecise at low SNR (issue #171: can land up to ~1/5 of
+/// a symbol period off), which is exactly the role WSJT-X's own `idt`
+/// retry loop (steps of `nsps/16`) plays — this searches the same
+/// space, plus the `Δf` and `b90` dimensions WSJT-X's own decoder
+/// never omits.
+///
+/// The extraction (FFT) is computed once per `(Δf, Δt)` cell and
+/// reused across the whole `b90` sub-sweep for that cell — mirroring
+/// `q65_loops.f90`'s own structure (`spec64` inside the `idt` loop,
+/// `q65_dec2` inside the nested `ibw` loop) and the same
+/// extract-once-reuse-many pattern already applied to
+/// `decode_multi_period_for`'s fading sweep.
+fn decode_at_grid_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    depth: GridDepth,
+    ap_hint: Option<&ApHint>,
+) -> Option<Q65Decode> {
+    use crate::core::{DecodeContext, MessageCodec};
+    use crate::msg::Q65Message;
+
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let baud = 1.0 / P::SYMBOL_DT;
+    let dt_step = (nsps / 16).max(1) as i64;
+
+    let (idfmax, idtmax, maxdist) = depth.params();
+    let submode = submode_index_from_params::<P>();
+    let ibwa = ibwa_for_submode(submode);
+    let ibwb = (ibwa + 6).min(15);
+    let ibw0 = (ibwa + ibwb) / 2;
+
+    let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
+    let mut info_syms = [0_i32; 13];
+    let mut intrinsics = vec![0.0_f32; 64 * 63];
+    let es_no = default_es_no_metric();
+
+    for idf in 1..=idfmax {
+        let ndf = zigzag_offset(idf);
+        let freq_shift = base_freq_hz + 0.5 * baud * ndf as f32;
+        for idt in 1..=idtmax {
+            let ndt = zigzag_offset(idt);
+            let ndist_ft = ndf * ndf + ndt * ndt;
+            if ndist_ft > maxdist {
+                // Even the closest b90 (distance 0) can't satisfy the
+                // bound at this (Δf,Δt) — skip the FFT extraction
+                // entirely rather than computing it for nothing.
+                continue;
+            }
+            let dt_offset = ndt as i64 * dt_step;
+            let Ok(shifted_start) = usize::try_from(start_sample as i64 + dt_offset) else {
+                continue;
+            };
+            let Some(energies) =
+                extract_data_energies_wide::<P>(audio, sample_rate, shifted_start, freq_shift)
+            else {
+                continue;
+            };
+
+            for ibw in ibwa..=ibwb {
+                // At the unperturbed (Δf,Δt)=(0,0) cell, WSJT-X always
+                // runs a full, UNPRUNED ibwa..=ibwb sweep first —
+                // `q65_dec_q012` (`lib/qra/q65/q65.f90:381`), called
+                // from `q65_dec0` before `q65_loops` ever runs. Only
+                // once that full-range attempt fails does `q65_loops`
+                // itself run, and *it* prunes by `maxdist` at every
+                // (Δf,Δt) including (0,0) — but by then ibwa..ibwb at
+                // (0,0) is already known to have failed, so the
+                // pruning there is redundant, not restrictive. Pruning
+                // it here too (as an earlier port did) silently drops
+                // the low-ibw end for wide-ibwa submodes (C/D/E) that
+                // matters most for near-zero-fading signals, producing
+                // a measured ~4 dB sensitivity regression vs real jt9
+                // (`-d 1`, `docs/notes/Q65_BENCHMARK.md`).
+                let ndist = ndist_ft + (ibw - ibw0) * (ibw - ibw0);
+                if (ndf != 0 || ndt != 0) && ndist > maxdist {
+                    continue;
+                }
+                let b90 = 1.72_f32.powi(ibw);
+                // `q65_loops.f90:73` caps b90 at 345 Hz for the (Δf,Δt)
+                // retry cells; `q65_dec_q012`'s full (0,0) sweep has no
+                // such cap, so only apply it off-center.
+                if (ndf != 0 || ndt != 0) && b90 > 345.0 {
+                    continue;
+                }
+                let b90_ts = b90 / baud;
+
+                let _state = intrinsics_fast_fading(
+                    &QRA15_65_64_IRR_E23,
+                    &mut intrinsics,
+                    &energies,
+                    submode,
+                    b90_ts,
+                    FadingModel::Gaussian,
+                    es_no,
+                );
+
+                let result = match ap_hint {
+                    Some(hint) if hint.has_info() => {
+                        let (mask, syms) = ap_hint_to_q65_mask(hint);
+                        codec.decode_with_ap(&intrinsics, &mut info_syms, 50, &mask, &syms)
+                    }
+                    _ => codec.decode(&intrinsics, &mut info_syms, 50),
+                };
+                let Ok(iterations) = result else { continue };
+
+                let bits77 = unpack_symbols_to_bits77(&info_syms);
+                let Some(text) = Q65Message.unpack(&bits77, &DecodeContext::default()) else {
+                    continue;
+                };
+                return Some(Q65Decode {
+                    message: text,
+                    freq_hz: freq_shift,
+                    start_sample: shifted_start,
+                    iterations,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Try decoding at a coarse candidate's reported alignment via the
+/// WSJT-X-faithful `(Δf, Δt, b90)` grid search — see
+/// [`decode_at_grid_for`]. Uses `GridDepth::Fast`, matching WSJT-X's
+/// own automatic per-slot decode depth (confirmed against `jt9`'s CLI
+/// default, `-d 1`).
 fn decode_at_with_fine_timing_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
     freq_hz: f32,
-    nsps: usize,
+    _nsps: usize,
     ap_hint: Option<&ApHint>,
 ) -> Option<Q65Decode> {
-    let step = (nsps / 16).max(1) as i64;
-    let try_decode = |candidate_start: i64| -> Option<Q65Decode> {
-        let candidate_start = usize::try_from(candidate_start).ok()?;
-        match ap_hint {
-            Some(hint) if hint.has_info() => {
-                decode_at_with_ap_for::<P>(audio, sample_rate, candidate_start, freq_hz, hint)
-            }
-            _ => decode_at_for::<P>(audio, sample_rate, candidate_start, freq_hz),
-        }
-    };
-
-    if let Some(decode) = try_decode(start_sample as i64) {
-        return Some(decode);
-    }
-    for dt_steps in 1..=3i64 {
-        for sign in [1i64, -1i64] {
-            if let Some(decode) = try_decode(start_sample as i64 + sign * dt_steps * step) {
-                return Some(decode);
-            }
-        }
-    }
-    None
+    decode_at_grid_for::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        freq_hz,
+        GridDepth::Fast,
+        ap_hint,
+    )
 }
 
 /// Q65-30A convenience wrapper for [`decode_scan_for`].

@@ -5,10 +5,11 @@
 //! cleanest correlation target across the WSJT family — every sync
 //! symbol carries the full symbol energy on the same frequency bin.
 //! This module mirrors the structure of [`crate::jt65::search`]:
-//! build an NSPS-sized spectrogram at half-symbol time steps,
-//! score each candidate `(start_row, base_bin)` by summing the
-//! tone-0 power across the 22 sync positions, and return the
-//! top-scoring candidates.
+//! build an NSPS-sized spectrogram at `nsps/8`-symbol time steps
+//! (matching WSJT-X's own `NSTEP=8` sync resolution,
+//! `lib/qra/q65/q65.f90:3`), score each candidate `(start_row,
+//! base_bin)` by summing the tone-0 power across the 22 sync
+//! positions, and return the top-scoring candidates.
 
 use crate::core::ModulationParams;
 use num_complex::Complex;
@@ -17,7 +18,7 @@ use rustfft::FftPlanner;
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
 
-/// FFT-bin spectrogram covering the audio buffer at half-symbol
+/// FFT-bin spectrogram covering the audio buffer at `nsps/8`-symbol
 /// time steps. `mags_sqr[t * n_freq + f]` is `|FFT[f]|²` at time `t`.
 pub struct Spectrogram {
     pub mags_sqr: Vec<f32>,
@@ -31,11 +32,19 @@ pub struct Spectrogram {
 
 impl Spectrogram {
     /// Build the spectrogram from `audio` for Q65 sub-mode `P`. Time
-    /// step = `nsps / 2` (match `NSTEP_PER_SYMBOL = 2`); frequency
-    /// resolution = `sample_rate / nsps` ≈ tone spacing.
+    /// step = `nsps / NSTEP_PER_SYMBOL`, matching WSJT-X's own sync
+    /// spectrogram resolution (`NSTEP=8`, `lib/qra/q65/q65.f90:3`,
+    /// "Number of time bins per symbol in s1, s1a, s1b") — an earlier
+    /// `nsps/2` here under-resolved the sync search 4× relative to
+    /// `q65_ccf_22`'s own lag search, which was root-caused (verified
+    /// against real jt9) as the source of a multi-dB AWGN sensitivity
+    /// gap at `GridDepth::Fast`'s single-shot decode (no further Δt
+    /// retry to compensate); see `docs/notes/Q65_BENCHMARK.md`.
+    /// Frequency resolution = `sample_rate / nsps` ≈ tone spacing.
     pub fn build_for<P: ModulationParams>(audio: &[f32], sample_rate: u32) -> Self {
+        const NSTEP_PER_SYMBOL: usize = 8;
         let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-        let t_step = nsps / 2;
+        let t_step = (nsps / NSTEP_PER_SYMBOL).max(1);
         let n_freq = nsps / 2;
         if audio.len() < nsps || t_step == 0 {
             return Self {
@@ -142,14 +151,14 @@ impl Default for SearchParams {
 /// Score one `(start_row, base_bin)`: sum tone-0 power across the
 /// 22 sync positions, divide by `(sum + noise_floor)`.
 pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) -> f32 {
-    const ROWS_PER_SYMBOL: usize = 2;
-    let last_row = start_row + (Q65_SYNC_POSITIONS[21] as usize) * ROWS_PER_SYMBOL;
+    let rows_per_symbol = (spec.nsps / spec.t_step).max(1);
+    let last_row = start_row + (Q65_SYNC_POSITIONS[21] as usize) * rows_per_symbol;
     if last_row >= spec.n_time || base_bin >= spec.n_freq {
         return 0.0;
     }
     let mut sync_pwr = 0.0_f32;
     for &sym_idx in &Q65_SYNC_POSITIONS {
-        let row = start_row + (sym_idx as usize) * ROWS_PER_SYMBOL;
+        let row = start_row + (sym_idx as usize) * rows_per_symbol;
         sync_pwr += spec.get(row, base_bin);
     }
     let noise_floor = spec.noise_per_bin * Q65_SYNC_POSITIONS.len() as f32;
@@ -192,7 +201,7 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     }
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
-    let rows_per_symbol = 2_usize;
+    let rows_per_symbol = (nsps / spec.t_step.max(1)).max(1);
     // For wider sub-modes (B/C/D/E) the highest data tone sits
     // 64 × bins_per_tone above the sync bin instead of just 64
     // bins; we need that much headroom in the spectrogram before
@@ -207,32 +216,102 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     let fmin_bin = (params.freq_min_hz / df).floor() as i64;
     let fmax_bin = (params.freq_max_hz / df).ceil() as i64;
 
-    let mut out: Vec<SyncCandidate> = Vec::new();
-    for row in row_min..=row_max {
-        if row < 0 {
+    // Collapse over time first, per frequency bin — mirrors
+    // `q65_ccf_22`'s own structure (`lib/qra/q65/q65.f90:506-538`):
+    // for each frequency it keeps only the single best-scoring lag
+    // (`ccfmax = max over lag,idrift`), then ranks candidates across
+    // frequencies from that already-time-collapsed curve. Emitting
+    // one `(row, freq)` candidate per cell instead — as an earlier
+    // version of this function did — let a finer time step (`t_step`
+    // was widened 4× here to match WSJT-X's `NSTEP=8`) flood the
+    // `max_candidates`-truncated list with near-duplicate rows all
+    // describing the same true peak's neighbourhood, crowding out
+    // distinct weaker signals (regression caught by
+    // `ionoscatter_6m_120e_decodes_with_fading_metric`, a real-off-air
+    // multi-signal recording).
+    let fb_lo = fmin_bin.max(0) as usize;
+    let fb_hi = fmax_bin.max(fmin_bin) as usize;
+    let mut curve: Vec<f32> = vec![0.0; fb_hi.saturating_sub(fb_lo) + 1];
+    let mut rows: Vec<usize> = vec![0; curve.len()];
+    for fb in fb_lo..=fb_hi {
+        // Tone 64 (highest data tone) sits at base_bin + 64 *
+        // bins_per_tone for the active sub-mode.
+        if fb + 64 * bins_per_tone + 1 > spec.n_freq {
             continue;
         }
-        let row = row as usize;
-        // Need room for the last data symbol (84) + the 64 data
-        // tones above the sync bin.
-        if row + 84 * rows_per_symbol >= spec.n_time {
-            continue;
-        }
-        for fb in fmin_bin..=fmax_bin {
-            // Tone 64 (highest data tone) sits at base_bin + 64 *
-            // bins_per_tone for the active sub-mode.
-            if fb < 0 || (fb as usize) + 64 * bins_per_tone + 1 > spec.n_freq {
+        let mut best: Option<(usize, f32)> = None;
+        for row in row_min..=row_max {
+            if row < 0 {
                 continue;
             }
-            let score = score_candidate(spec, row, fb as usize);
-            if score >= params.score_threshold {
-                out.push(SyncCandidate {
-                    start_sample: row * spec.t_step,
-                    freq_hz: fb as f32 * df,
-                    score,
-                });
+            let row = row as usize;
+            // Need room for the last data symbol (84) + the 64 data
+            // tones above the sync bin.
+            if row + 84 * rows_per_symbol >= spec.n_time {
+                continue;
+            }
+            let score = score_candidate(spec, row, fb);
+            if best.is_none_or(|(_, best_score)| score > best_score) {
+                best = Some((row, score));
             }
         }
+        if let Some((row, score)) = best {
+            let idx = fb - fb_lo;
+            curve[idx] = score;
+            rows[idx] = row;
+        }
+    }
+
+    // Noise-adaptive admission threshold — `q65_ccf_22`'s own
+    // candidate-selection logic (`lib/qra/q65/q65.f90:553-574`):
+    // `ave` = 50th percentile, `base` = 84th percentile of the whole
+    // per-frequency score curve (≈ mean+1σ for a roughly-Gaussian
+    // noise floor), `rms = base - ave`, admit only candidates with
+    // `(score-ave)/rms >= 6.0`. This adapts to each recording's own
+    // noise spread instead of a fixed absolute `score_threshold`,
+    // which — verified against real jt9 on a pure-AWGN sweep,
+    // `docs/notes/Q65_BENCHMARK.md` — was rejecting genuine weak
+    // signals outright at low SNR well before `max_candidates`
+    // truncation ever mattered.
+    let ave = percentile(&curve, 50);
+    let base = percentile(&curve, 84);
+    let rms = base - ave;
+    let use_adaptive = rms.is_finite() && rms > 1e-6;
+    const SNR_ADMIT: f32 = 6.0;
+
+    // Frequency-domain local-max suppression — `i3=i-mode_q65,
+    // i4=i+mode_q65; if(ccf2(i).ne.biggest) cycle`
+    // (`lib/qra/q65/q65.f90:563-566`) — `mode_q65` there is exactly
+    // our `bins_per_tone` (`nBinsPerTone = 1<<submode`, `q65.c:351`).
+    let mut out: Vec<SyncCandidate> = Vec::new();
+    for (idx, &score) in curve.iter().enumerate() {
+        if score <= 0.0 {
+            continue;
+        }
+        // OR, not replace: the adaptive gate rescues weak-but-real
+        // signals the fixed floor would reject outright (the AWGN
+        // case this was added for), but a clean/strong signal must
+        // still be admitted on its own absolute score even if the
+        // curve's noise estimate is itself distorted (e.g. broadband
+        // transients from a hard on/off edge in a synthetic test
+        // buffer inflating `rms` well above what a continuous-noise
+        // real recording would show).
+        let admitted =
+            score >= params.score_threshold || (use_adaptive && (score - ave) / rms >= SNR_ADMIT);
+        if !admitted {
+            continue;
+        }
+        let lo = idx.saturating_sub(bins_per_tone);
+        let hi = (idx + bins_per_tone).min(curve.len() - 1);
+        let is_local_max = curve[lo..=hi].iter().all(|&other| other <= score);
+        if !is_local_max {
+            continue;
+        }
+        out.push(SyncCandidate {
+            start_sample: rows[idx] * spec.t_step,
+            freq_hz: (fb_lo + idx) as f32 * df,
+            score,
+        });
     }
     out.sort_unstable_by(|a, b| {
         b.score
@@ -241,6 +320,22 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     });
     out.truncate(params.max_candidates);
     out
+}
+
+/// Nearest-rank percentile — matches WSJT-X's own `pctile`
+/// (`lib/pctile.f90`): sort ascending, take element at
+/// `round(n * pct/100)` (1-indexed, clamped to `[1, n]`).
+fn percentile(values: &[f32], pct: u32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f32> = values.to_vec();
+    sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    let j = ((n as f32 * 0.01 * pct as f32).round() as usize)
+        .max(1)
+        .min(n);
+    sorted[j - 1]
 }
 
 /// Q65-30A convenience wrapper for [`coarse_search_on_spec_for`].

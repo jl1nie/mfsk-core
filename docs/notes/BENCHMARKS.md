@@ -62,7 +62,7 @@ is wall time on a many-core host, not a single-thread figure).
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 1.05 s |
-| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.57 s |
+| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 1.49 s |
 
 Notes:
 
@@ -116,9 +116,21 @@ Notes:
   showed the fading-BP stage still ~79% of wall-clock — 16→8, matching
   the library's own `SearchParams::default()`) — dropping these rows to
   0.49 s / 0.64 s (~4×) with bit-identical recall (same message,
-  frequency, BP iteration count) at every step. Q65-60A (a different
-  code path, `decode_scan_for`) has a larger, separately-scoped root
-  cause not yet fixed — see `Q65_BENCHMARK.md`.
+  frequency, BP iteration count) at every step.
+- Q65-60A (`decode_scan_for`/`decode_scan_with_ap_for`, a different code
+  path from the two above) was rewritten (2026-07-20) as a faithful
+  `q65_loops.f90`/`q65_dec_q012` `(Δf, Δt, b90)` grid search, replacing
+  an AWGN-only narrow-window Bessel metric + time-only retry that wasn't
+  a WSJT-X algorithm at all. The rewrite's own speed goal was already
+  met before this row's final number — the golden-WAV time (1.57 s →
+  1.49 s) barely moved because the real cost shifted from
+  candidate-count to `intrinsics_fast_fading` calls, but recall on this
+  real recording *improved* (3 → 4 messages recovered — a new
+  `W7GJ N0TB -15`). See `Q65_BENCHMARK.md` for the full investigation,
+  including a real-`jt9` cross-check that both confirmed a genuine bug
+  in the port and caught a false lead (an apparent sub-mode-specific
+  regression that turned out to be an SNR-sampling artifact once finer
+  trial points were measured).
 - Q65-300A (293.8 s slot, ~20× FT8's audio length) still only takes
   1.05 s — the fast-fading metric's per-candidate cost dominates, not
   a full-buffer rescan. An earlier profiling pass found this same
@@ -351,48 +363,61 @@ part of every sweep in this doc at this trial count.)
   plain BP fails 0/6.
 - **Decode speed** (2026-07-20): Q65-60B/30A dropped ~4× (see the
   "Decode speed" notes above) via a redundant-extraction fix and a
-  calibrated `max_candidates` cut in `decode_multi_period_for`; Q65-60A
-  has a larger, deferred root cause. Full writeup, including the
-  `q65_loops.f90` reference comparison for the deferred Q65-60A case:
-  `docs/notes/Q65_BENCHMARK.md`.
+  calibrated `max_candidates` cut in `decode_multi_period_for`. Q65-60A
+  (and every other sub-mode routed through `decode_scan_for`/
+  `decode_scan_with_ap_for`) was rewritten the same day as a faithful
+  `(Δf, Δt, b90)` grid search + coarse-sync overhaul — full writeup,
+  including the real-`jt9` verification methodology: `Q65_BENCHMARK.md`.
 
 **AWGN sensitivity sweep** (`tests/q65_sim_sweep.rs`, `q65sim`-driven,
 15 trials/SNR for the 15/30/60 s sub-modes, 5 trials/SNR for the
 120/300 s ones — proportionally longer audio + the fine-timing retry
-below multiply decode cost). All 10 wired sub-modes, plain
-(`decode_scan_for`, no assumptions) 50% crossing vs. `q65params.f90`'s
-analytical AWGN threshold (`-27 + 10*log10(7200/nsps)`, WSJT-X's own
-formula — depends only on T/R period, not sub-mode letter):
+below multiply decode cost). Updated 2026-07-20 after the
+`decode_scan_for`/`decode_scan_with_ap_for` rewrite (see
+`Q65_BENCHMARK.md`); both columns are 50% crossings, approximate to
+about ±0.5 dB given the sweep's SNR step granularity:
 
-| Sub-mode | mfsk-core 50% crossing (plain) | `q65params.f90` target | Gap |
-|----------|--------------------------------:|------------------------:|----:|
-| Q65-15A  | ≈ −21.9 dB | −21 dB | 0.9 dB |
-| Q65-30A  | ≈ −24.7 dB | −24 dB | 0.7 dB |
-| Q65-60A  | ≈ −27.9 dB | −27 dB | 0.9 dB |
-| Q65-60B  | ≈ −27.9 dB | −27 dB | 0.9 dB |
-| Q65-60C  | ≈ −28.2 dB | −27 dB | 1.2 dB |
-| Q65-60D  | ≈ −28.4 dB | −27 dB | 1.4 dB |
-| Q65-60E  | ≈ −27.9 dB | −27 dB | 0.9 dB |
-| Q65-120D | ≈ −30.8 dB | −30 dB | 0.8 dB |
-| Q65-120E | ≈ −31.2 dB | −30 dB | 1.2 dB |
-| Q65-300A | ≈ −35.2 dB | −35 dB | 0.2 dB |
+| Sub-mode | plain (`decode_scan_for`) | CQ-AP (`decode_scan_with_ap_for` + `"CQ"`) |
+|----------|---------------------------:|--------------------------------------------:|
+| Q65-15A  | ≈ −21.3 dB | ≈ −22.4 dB |
+| Q65-30A  | ≈ −24.6 dB | ≈ −25.2 dB |
+| Q65-60A  | ≈ −27.3 dB | ≈ −27.7 dB |
+| Q65-60B  | ≈ −26.4 dB | ≈ −27.3 dB |
+| Q65-60C  | ≈ −21.7 dB | ≈ −22.6 dB |
+| Q65-60D  | ≈ −22.4 dB | ≈ −22.6 dB |
+| Q65-60E  | ≈ −21.7 dB | ≈ −22.4 dB |
+| Q65-120D | ≈ −22.9 dB | ≈ −23.8 dB |
+| Q65-120E | ≈ −23.6 dB | ≳ −24.0 dB |
+| Q65-300A | ≈ −32.6 dB | ≈ −32.9 dB |
 
-- **CQ-AP-hinted path matches WSJT-X almost exactly.** WSJT-X's
-  default `jt9` decode always has free access to the "CQ ??? ???" AP
-  hypothesis, so every real `jt9` decode on CQ traffic implicitly gets
-  AP-list benefit — a fair comparison needs this crate's
-  `decode_scan_with_ap_for` + a `"CQ"` hint, not the blind baseline
-  above. That comparison closes the gap almost exactly (e.g. Q65-30A
-  −26 dB: 0%→40%, matching WSJT-X's own reported 40%; Q65-60A −28 dB:
-  47%→93%).
-- **Direct cross-check against a real `jt9 -3` build on
-  Q65-120D/120E/300A found no regression, and two sub-modes exceed
-  WSJT-X's own plain decode** by 2.5-3.4 dB (Q65-120D ≈−28.2 dB,
-  Q65-120E ≈−27.6 dB for `jt9 -3` vs. this crate's ≈−30.8/−31.2 dB
-  above) — because `decode_scan_for`'s fine-timing retry runs
-  unconditionally, while `jt9 -3` without `-c`/`-x` doesn't get it.
-  Q65-300A's curve is statistically identical to `jt9`'s own at every
-  tested SNR point (both cross 50% at ≈−35 dB).
+- **CQ-AP-hinted path is the fair WSJT-X comparison, verified against a
+  real `jt9` build.** WSJT-X's default `jt9` decode always has free
+  access to the "CQ ??? ???" AP hypothesis, so every real `jt9` decode
+  on CQ traffic implicitly gets AP-list benefit — a fair comparison
+  needs this crate's `decode_scan_with_ap_for` + a `"CQ"` hint, not the
+  plain baseline. Built `jt9` from WSJT-X source and ran it across the
+  same `q65sim` AWGN corpus at fine SNR resolution: Q65-60A/60B (`ibwa`
+  starts at 1/3) now match `jt9`'s own crossing almost exactly (60B:
+  mfsk-core ≈−27.3 dB vs `jt9` ≈−27.3 dB). Q65-60C/60D/60E (`ibwa`
+  starts at 8 — the widest fading-tolerance sub-modes) sit roughly
+  2.5-3 dB short of `jt9`'s real crossing (60C: mfsk-core ≈−22.6 dB vs
+  `jt9` ≈−25.4 dB) — a real, understood residual gap (WSJT-X's
+  additional `q65_dec_q3` AP-list stage and full `q65_ccf_22` lag-search
+  fidelity, neither ported this session), not a correctness bug: see
+  `Q65_BENCHMARK.md` for the investigation that ruled out a bug and the
+  false lead (an apparent sub-mode-specific cliff) it caught along the
+  way.
+- **Historical note (pre-2026-07-20 rewrite):** an earlier direct
+  cross-check against a real `jt9 -3` build on Q65-120D/120E/300A, using
+  the narrow-Bessel `decode_scan_for` this session replaced, found two
+  sub-modes *exceeding* WSJT-X's own plain decode by 2.5-3.4 dB
+  (Q65-120D ≈−28.2 dB, Q65-120E ≈−27.6 dB for `jt9 -3` vs. that
+  implementation's ≈−30.8/−31.2 dB) because its unconditional
+  time-retry gave it an advantage `jt9 -3` without `-c`/`-x` didn't
+  have; Q65-300A matched `jt9` almost exactly. The rewrite changed this
+  picture — see the table above: Q65-120D/120E (`ibwa=8`, like
+  Q65-60C/D/E) now sit *behind* `jt9` by a few dB rather than ahead of
+  it, while Q65-300A (`ibwa=1`, like Q65-60A/B) stays close.
 
 ## MSK144
 
