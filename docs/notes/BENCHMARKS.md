@@ -19,14 +19,19 @@ Two kinds of numbers appear per protocol:
 
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|----------------------|--------|
-| FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | CCIR fading gap closed (0.7.3) | at parity |
-| FT4      | 6/6 | ~0.3 dB (was ~1.8 dB) | at parity |
+| FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | AWGN ≈ −20.8 dB (WSJT-X: −20 to −21 dB) | at parity |
+| FT4      | 6/6 | AWGN ≈ −17.2 dB (WSJT-X: −17.5 dB, ~0.3 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
-| WSPR     | 8/8 | matches published sensitivity floor | at parity |
-| JT9      | 5/5 | no measurable gap | at parity |
+| WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
+| JT9      | 5/5 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
 | JT65     | none available | **~7-8 dB** at deep SNR | known gap, deprioritized |
-| Q65      | 2 real EME recordings | matches WSJT-X almost exactly with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode | at/above parity |
-| MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build | at parity |
+| Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
+| MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
+
+All AWGN 50%-crossing figures below are linear-interpolated between the
+nearest swept SNR points, in each `*sim` generator's 2500 Hz
+reference-bandwidth convention (matches WSJT-X's own published
+numbers directly, no unit conversion needed).
 
 ## FT8
 
@@ -47,7 +52,18 @@ Two kinds of numbers appear per protocol:
   ±3 dB of JTDX absolute on real silicon.
 - CCIR moderate/poor fading recall gap closed in 0.7.3 by widening
   `OSD_HARDERRORS_MAX` back to WSJT-X's universal 36.
-- Reproduce: `docs/notes/FT8_BENCHMARK.md`.
+
+**AWGN/CCIR sensitivity sweep** (`tests/ft8_sweep.rs`, `ft8sim`-driven,
+`-5` to `-26` dB grid, 4 channel conditions):
+
+| Channel | mfsk-core 50% crossing | WSJT-X published | Gap |
+|---|---:|---:|---:|
+| AWGN | ≈ −20.8 dB | −20 to −21 dB | within range |
+| CCIR good | ≈ −20.6 dB | — (no separate WSJT-X figure) | — |
+| CCIR moderate | ≈ −18.6 dB | — | — |
+| CCIR poor | ≈ −18.5 dB | — | — |
+
+Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 
 ## FT4
 
@@ -60,7 +76,18 @@ Two kinds of numbers appear per protocol:
   (`subtract_signal*`, `refine_signal_freq`) ported from
   `lib/ft4_subtract.f90`; WSJT-X's Fast/Normal/Deep decode-depth menu
   exposed via `decode_frame_with_options`.
-- Reproduce: `docs/notes/FT4_BENCHMARK.md`.
+
+**AWGN/CCIR sensitivity sweep** (`tests/ft4_sweep.rs`, `ft4sim`-driven,
+4 channel conditions):
+
+| Channel | mfsk-core 50% crossing | WSJT-X published | Gap |
+|---|---:|---:|---:|
+| AWGN | ≈ −17.2 dB | −17.5 dB | 0.3 dB |
+| CCIR good | ≈ −17.3 dB | — (no separate WSJT-X figure) | — |
+| CCIR moderate | ≈ −15.75 dB | — | — |
+| CCIR poor | ≈ −16.1 dB | — | — |
+
+Reproduce: `docs/notes/FT4_BENCHMARK.md`.
 
 ## FST4
 
@@ -93,31 +120,71 @@ Reproduce: `docs/notes/FST4_BENCHMARK.md`.
 - **8/8 WSJT-X golden** (`samples/WSPR/150426_0918.wav`), ~0.88 s
   end-to-end on a desktop build — sub-bin demod + 2-pass
   subtract+re-coarse + OSD-2 fallback + Type-3 phantom filter.
-- **AWGN sensitivity sweep** (`tests/wspr_sweep.rs`, `wsprsim`-driven,
-  13 SNR points × 20 trials): 100% recall 0 to −27 dB, 95% at
-  −28/−29 dB, 40% at −30 dB, 0% at −31 dB and below — consistent with
-  WSJT-X's published WSPR sensitivity floor.
+
+**AWGN sensitivity sweep** (`tests/wspr_sweep.rs`, `wsprsim`-driven,
+13 SNR points × 20 trials each):
+
+| SNR | Recall |
+|---:|---:|
+| −34 dB | 0.0% |
+| −32 dB | 0.0% |
+| −31 dB | 0.0% |
+| −30 dB | 40.0% |
+| −29 dB | 95.0% |
+| −28 dB | 95.0% |
+| −27 dB | 100.0% |
+| −26 dB | 100.0% |
+| −24 dB | 100.0% |
+| −20 dB | 100.0% |
+| −15 dB | 100.0% |
+| −10 dB | 100.0% |
+| 0 dB | 100.0% |
+
+50% crossing ≈ −29.8 dB — consistent with WSJT-X's published WSPR
+sensitivity floor (commonly cited around −28 to −30 dB, 2500 Hz
+reference bandwidth).
 
 ## JT9
 
 - **5/5 WSJT-X golden** (`samples/JT9/130418_1742.wav`) via the full
   WSJT-X-faithful softsym pipeline (`afc9` + `chkss2` + `xx0` mettab +
   `sync9` per-freq collapse).
-- **AWGN sweep** (`jt9sim`-driven, 300 files): no measurable gap vs. a
-  real WSJT-X `jt9 -9` build — agreement within margin at every tested
-  SNR (~100% at −24 dB, ~50% near −26 dB).
+
+**AWGN sensitivity sweep** (`tests/jt9_sweep.rs`, `jt9sim`-driven,
+20 trials/SNR):
+
+| SNR | Recall |
+|---:|---:|
+| −30 dB | 0.0% |
+| −28 dB | 0.0% |
+| −27 dB | 10.0% |
+| −26 dB | 65.0% |
+| −25 dB | 90.0% |
+| −24 dB | 100.0% |
+| −22 dB | 100.0% |
+| −20 dB | 100.0% |
+| −18 dB | 100.0% |
+| −15 dB | 100.0% |
+| −10 dB | 100.0% |
+| −5 dB | 100.0% |
+| 0 dB | 100.0% |
+| +5 dB | 100.0% |
+| +10 dB | 100.0% |
+
+50% crossing ≈ −26.3 dB — no measurable gap vs. a real WSJT-X `jt9 -9`
+build on the identical 300-file corpus (100% to −25 dB, 80% at
+−26 dB there; per-cell differences are within 20-trial sampling noise
+at the steep part of the curve).
 
 ## JT65 — known gap, deliberately not closed
 
 - No real-recording golden WAV available: WSJT-X's own v3 reference
   samples need soft-symbol erasure metadata that lives in private
   WSJT-X branches.
-- **AWGN sweep** (`tests/jt65_sweep.rs`, `jt65sim`-driven, 15 SNR
-  points): this crate's hard-decision `decode_at`/
-  `decode_at_with_erasures` hits 50% recall around −14 dB and
-  near-zero below −19 dB, while WSJT-X's own no-`kvasd` path (`jt9
-  -6`) holds ~100% down to −22 dB on the identical corpus — a real
-  **~7-8 dB gap**.
+- This crate's hard-decision `decode_at`/`decode_at_with_erasures` hits
+  50% recall around **−14 dB** and near-zero below −19 dB, while
+  WSJT-X's own no-`kvasd` path (`jt9 -6`) holds ~100% down to −22 dB on
+  the identical corpus — a real **~7-8 dB gap**.
 - **Root cause**: `jt9 -6` isn't plain hard-decision RS either —
   `lib/extract.f90` calls `ftrsdap` (`lib/ftrsd/ftrsdap.c`), a
   stochastic Chase decoder that runs many randomized soft-symbol
@@ -132,29 +199,77 @@ Reproduce: `docs/notes/FST4_BENCHMARK.md`.
   substantial, JT65-specific algorithmic port with no other payoff —
   not planned unless there's an actual request for deeper JT65 recall.
 
+**AWGN sensitivity sweep** (`tests/jt65_sweep.rs`, `jt65sim`-driven,
+20 trials/SNR):
+
+| SNR | Recall |
+|---:|---:|
+| −25 dB | 0.0% |
+| −22 dB | 0.0% |
+| −20 dB | 0.0% |
+| −19 dB | 0.0% |
+| −18 dB | 5.0% |
+| −17 dB | 15.0% |
+| −16 dB | 30.0% |
+| −15 dB | 25.0% |
+| −14 dB | 50.0% |
+| −12 dB | 45.0% |
+| −10 dB | 60.0% |
+| −5 dB | 80.0% |
+| 0 dB | 100.0% |
+| +5 dB | 100.0% |
+| +10 dB | 100.0% |
+
+(The −15 dB / −12 dB dips relative to their neighbors are 20-trial
+sampling noise, not a non-monotonic decoder — visible on the steep
+part of every sweep in this doc at this trial count.)
+
 ## Q65
 
 - Real recordings: WSJT-X's 6 m EME (W7GJ exchanges) and 10 GHz EME
   reference both decode.
-- 10 wired sub-modes (Q65a15/a30/a60/b60/c60/d60/e60/d120/e120/a300).
-  `q65sim` AWGN sweep matches `q65params.f90`'s analytical threshold
-  formula almost exactly across all of them.
 - Fast-fading metric (Gaussian/Lorentzian channel models) recovers
   5-8 dB on Doppler-spread channels, required for microwave EME.
 - AP-list template matching decodes 6/6 frames at SNR −25 dB where
   plain BP fails 0/6.
-- A residual gap that looked like a decode weakness was root-caused to
-  comparison methodology, not a bug: WSJT-X's default `jt9` decode
-  always has free access to the "CQ ??? ???" AP hypothesis, so every
-  real `jt9` decode on CQ traffic implicitly gets AP-list benefit.
-  Using `decode_scan_with_ap_for` with a `"CQ"` hint closes the gap
-  almost exactly (e.g. Q65-30A −26 dB: 0%→40%, matching WSJT-X's own
-  reported 40%).
-- Direct cross-check against a real `jt9 -3` build on Q65-120D/120E/
-  300A found **no regression, and two sub-modes exceed WSJT-X's own
-  plain decode** by 2.5-3.4 dB (Q65-120D/120E) — because
-  `decode_scan_for`'s fine-timing retry runs unconditionally, while
-  `jt9 -3` without `-c`/`-x` doesn't get it.
+
+**AWGN sensitivity sweep** (`tests/q65_sim_sweep.rs`, `q65sim`-driven,
+15 trials/SNR for the 15/30/60 s sub-modes, 5 trials/SNR for the
+120/300 s ones — proportionally longer audio + the fine-timing retry
+below multiply decode cost). All 10 wired sub-modes, plain
+(`decode_scan_for`, no assumptions) 50% crossing vs. `q65params.f90`'s
+analytical AWGN threshold (`-27 + 10*log10(7200/nsps)`, WSJT-X's own
+formula — depends only on T/R period, not sub-mode letter):
+
+| Sub-mode | mfsk-core 50% crossing (plain) | `q65params.f90` target | Gap |
+|----------|--------------------------------:|------------------------:|----:|
+| Q65-15A  | ≈ −21.9 dB | −21 dB | 0.9 dB |
+| Q65-30A  | ≈ −24.7 dB | −24 dB | 0.7 dB |
+| Q65-60A  | ≈ −27.9 dB | −27 dB | 0.9 dB |
+| Q65-60B  | ≈ −27.9 dB | −27 dB | 0.9 dB |
+| Q65-60C  | ≈ −28.2 dB | −27 dB | 1.2 dB |
+| Q65-60D  | ≈ −28.4 dB | −27 dB | 1.4 dB |
+| Q65-60E  | ≈ −27.9 dB | −27 dB | 0.9 dB |
+| Q65-120D | ≈ −30.8 dB | −30 dB | 0.8 dB |
+| Q65-120E | ≈ −31.2 dB | −30 dB | 1.2 dB |
+| Q65-300A | ≈ −35.2 dB | −35 dB | 0.2 dB |
+
+- **CQ-AP-hinted path matches WSJT-X almost exactly.** WSJT-X's
+  default `jt9` decode always has free access to the "CQ ??? ???" AP
+  hypothesis, so every real `jt9` decode on CQ traffic implicitly gets
+  AP-list benefit — a fair comparison needs this crate's
+  `decode_scan_with_ap_for` + a `"CQ"` hint, not the blind baseline
+  above. That comparison closes the gap almost exactly (e.g. Q65-30A
+  −26 dB: 0%→40%, matching WSJT-X's own reported 40%; Q65-60A −28 dB:
+  47%→93%).
+- **Direct cross-check against a real `jt9 -3` build on
+  Q65-120D/120E/300A found no regression, and two sub-modes exceed
+  WSJT-X's own plain decode** by 2.5-3.4 dB (Q65-120D ≈−28.2 dB,
+  Q65-120E ≈−27.6 dB for `jt9 -3` vs. this crate's ≈−30.8/−31.2 dB
+  above) — because `decode_scan_for`'s fine-timing retry runs
+  unconditionally, while `jt9 -3` without `-c`/`-x` doesn't get it.
+  Q65-300A's curve is statistically identical to `jt9`'s own at every
+  tested SNR point (both cross 50% at ≈−35 dB).
 
 ## MSK144
 
@@ -167,10 +282,25 @@ Reproduce: `docs/notes/FST4_BENCHMARK.md`.
   `jt9 -k` build** on `msk144sim`-generated signals: 25 of 28
   (ping-length × SNR) cells matched exactly, the other 3 differed by
   exactly 1 file out of 20 — no measurable recall gap at any tested
-  SNR. 50% crossing ≈ −5.5 to −6 dB (WSJT-X's 2500 Hz reference-
-  bandwidth convention) for both short (~0.4 s) and long (~2.5 s) ping
-  profiles.
+  SNR.
 - MSK40 (the legacy shorthand mode) and the *adaptive* RX-equalizer
   training loop (as opposed to the fixed bandpass filter above, which
   is ported) remain out of scope.
-- Reproduce: `docs/notes/MSK144_BENCHMARK.md`.
+
+**AWGN sensitivity sweep** (`tests/msk144_snr_sweep.rs`, self-contained
+`msk144sim`-recipe synthesis, 20 seeds/SNR):
+
+| SNR | Short ping (TRp=15s, width=0.12) | Long ping (TRp=30s, width=2.5) |
+|---:|---:|---:|
+| −9 dB | 0.0% | 0.0% |
+| −8 dB | 0.0% | 0.0% |
+| −7 dB | 0.0% | 0.0% |
+| −6 dB | 40.0% | 0.0% |
+| −5 dB | 90.0% | 60.0% |
+| −4 dB | 100.0% | 100.0% |
+| −3 dB | 100.0% | 100.0% |
+
+50% crossing ≈ −5.8 dB (short ping) / −5.2 dB (long ping), both in
+WSJT-X's 2500 Hz reference-bandwidth convention.
+
+Reproduce: `docs/notes/MSK144_BENCHMARK.md`.

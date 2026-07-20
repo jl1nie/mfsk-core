@@ -19,7 +19,7 @@
 //! scripts/gen_jt65_sweep_wavs.sh ~/wsjtx-build/jt65sim
 //!
 //! # 2. Run the sweep:
-//! cargo test --test jt65_sweep --release --features jt65,fft-rustfft \
+//! cargo test --test jt65_sweep --release --features jt65,fft-rustfft,parallel \
 //!   -- --ignored --nocapture
 //! ```
 //!
@@ -95,6 +95,11 @@ fn decode_wav_jt65(audio: &[f32]) -> bool {
     })
 }
 
+struct Job {
+    snr: i32,
+    path: PathBuf,
+}
+
 #[test]
 #[ignore]
 fn jt65_awgn_snr_sweep() {
@@ -108,9 +113,7 @@ fn jt65_awgn_snr_sweep() {
         return;
     };
 
-    // snr -> (hits, trials)
-    let mut cells: std::collections::BTreeMap<i32, (u32, u32)> = std::collections::BTreeMap::new();
-
+    let mut jobs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -125,10 +128,35 @@ fn jt65_awgn_snr_sweep() {
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        let Some(audio) = load_wav_f32_opt(&path) else {
-            continue;
-        };
-        let hit = decode_wav_jt65(&audio);
+        jobs.push(Job { snr, path });
+    }
+
+    // Corpus is small enough that a sequential run finishes in
+    // seconds, but the load+decode step parallelizes for free with
+    // the same rayon pattern the larger sweeps use (`ft8_sweep.rs`,
+    // `q65_sim_sweep.rs`).
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    #[cfg(feature = "parallel")]
+    let results: Vec<(i32, bool)> = jobs
+        .par_iter()
+        .filter_map(|job| {
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_jt65(&audio)))
+        })
+        .collect();
+
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<(i32, bool)> = jobs
+        .iter()
+        .filter_map(|job| {
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_jt65(&audio)))
+        })
+        .collect();
+
+    // snr -> (hits, trials)
+    let mut cells: std::collections::BTreeMap<i32, (u32, u32)> = std::collections::BTreeMap::new();
+    for (snr, hit) in results {
         let cell = cells.entry(snr).or_insert((0, 0));
         cell.1 += 1;
         if hit {

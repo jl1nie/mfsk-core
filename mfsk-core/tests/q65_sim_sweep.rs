@@ -181,6 +181,16 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
     }
 }
 
+/// One WAV's parsed-from-filename metadata — split out from the
+/// decode step so filename parsing (cheap, sequential) and
+/// load+decode (expensive, parallelizable) don't share a loop.
+/// Mirrors the `ft8_sweep.rs`/`ft4_sweep.rs` grouping pattern.
+struct Job {
+    submode: String,
+    snr: i32,
+    path: PathBuf,
+}
+
 #[test]
 #[ignore]
 fn q65_awgn_snr_sweep() {
@@ -194,12 +204,7 @@ fn q65_awgn_snr_sweep() {
         return;
     };
 
-    let cq_hint = ApHint::new().with_call1("CQ");
-
-    // (submode, snr) -> (plain_hits, cq_hits, trials)
-    let mut cells: std::collections::BTreeMap<(String, i32), (u32, u32, u32)> =
-        std::collections::BTreeMap::new();
-
+    let mut jobs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -220,11 +225,48 @@ fn q65_awgn_snr_sweep() {
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        let Some(audio) = load_wav_f32_opt(&path) else {
-            continue;
-        };
-        let (plain_hit, cq_hit) = decode_wav_q65(submode, &audio, &cq_hint);
-        let cell = cells.entry((submode.to_string(), snr)).or_insert((0, 0, 0));
+        jobs.push(Job {
+            submode: submode.to_string(),
+            snr,
+            path,
+        });
+    }
+
+    let cq_hint = ApHint::new().with_call1("CQ");
+
+    // Q65's per-file decode cost (two full scans — plain + CQ-AP-hinted
+    // — over up to 293 s of audio for Q65-300A) makes the 1320-file
+    // corpus impractically slow single-threaded; run the load+decode
+    // step in parallel (`rayon`, gated by the crate's existing
+    // `parallel` feature) same as `ft8_sweep.rs`/`ft4_sweep.rs`.
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    #[cfg(feature = "parallel")]
+    let results: Vec<((String, i32), bool, bool)> = jobs
+        .par_iter()
+        .filter_map(|job| {
+            let audio = load_wav_f32_opt(&job.path)?;
+            let (plain_hit, cq_hit) = decode_wav_q65(&job.submode, &audio, &cq_hint);
+            Some(((job.submode.clone(), job.snr), plain_hit, cq_hit))
+        })
+        .collect();
+
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<((String, i32), bool, bool)> = jobs
+        .iter()
+        .filter_map(|job| {
+            let audio = load_wav_f32_opt(&job.path)?;
+            let (plain_hit, cq_hit) = decode_wav_q65(&job.submode, &audio, &cq_hint);
+            Some(((job.submode.clone(), job.snr), plain_hit, cq_hit))
+        })
+        .collect();
+
+    // (submode, snr) -> (plain_hits, cq_hits, trials)
+    let mut cells: std::collections::BTreeMap<(String, i32), (u32, u32, u32)> =
+        std::collections::BTreeMap::new();
+    for (key, plain_hit, cq_hit) in results {
+        let cell = cells.entry(key).or_insert((0, 0, 0));
         cell.2 += 1;
         if plain_hit {
             cell.0 += 1;
