@@ -2,16 +2,22 @@
 
 C ABI wrapper around [`mfsk-core`](https://crates.io/crates/mfsk-core) that
 exposes the WSJT-family decoders and synthesisers to C, C++, and JNI
-(Android) consumers. Not published to crates.io — consumers clone this
-repo and link against the local `cdylib` / `staticlib`.
+(Android) consumers. Not published to crates.io, but every tagged release
+attaches a prebuilt `linux-x86_64` tarball (library + `mfsk.h`) on the
+[GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page —
+other platforms/ABIs (including Android) still need a local
+`cargo build -p mfsk-ffi`.
 
 > **Embedded (no_std + alloc) targets — ESP32-S3, RP2350, Cortex-M:**
 > use the sibling [`mfsk-ffi-ft8`](../mfsk-ffi-ft8/) crate instead.
 > It exposes the FT8 decode + transmit slice with the fixed-point
 > hot path enabled, distributed as prebuilt static libraries on the
-> [GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page
+> same [GitHub Releases](https://github.com/jl1nie/mfsk-core/releases) page
 > (linux-x86_64 / esp32-xtensa / esp32s3-xtensa). `mfsk-ffi` (this
-> crate) is the host-only superset covering all seven WSJT modes.
+> crate) is the desktop/mobile-focused superset covering all seven
+> WSJT modes — same footprint tradeoff either way, since desktop and
+> mobile apps don't need the embedded crate's no_std/fixed-point
+> constraints.
 
 ## Build
 
@@ -58,7 +64,8 @@ cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
     build -p mfsk-ffi --release
 ```
 
-See `examples/kotlin_jni/` for a JNI skeleton.
+See `examples/kotlin_jni/` for a JNI skeleton (Kotlin wrapper + JNI
+C shim + build instructions for both desktop-JVM testing and Android).
 
 ## Quick start (C++)
 

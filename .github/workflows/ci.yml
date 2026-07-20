@@ -471,10 +471,20 @@ jobs:
           fi
 
   # ───────────────────────────────────────────────────────────────
-  # mfsk-ffi: cdylib build + C++ driver (encode/decode for every
-  # protocol + multi-threaded stress). Doesn't publish to crates.io
-  # but is the real ABI that C/C++/Kotlin consumers link against,
-  # so regressions here need catching.
+  # mfsk-ffi + mfsk-ffi-ft8: cdylib build + Rust-level ABI tests
+  # (`cargo test -p mfsk-ffi`, covering q65_ffi.rs and wsjt_ffi.rs;
+  # `cargo test -p mfsk-ffi-ft8`, covering streaming.rs) + C++ driver
+  # for mfsk-ffi (encode/decode for every protocol + multi-threaded
+  # stress). Neither crate publishes to crates.io but both are real
+  # ABIs that C/C++/Kotlin/embedded consumers link against, so
+  # regressions here need catching.
+  #
+  # mfsk-ffi-ft8 is only host-tested (default `host` feature — the
+  # same rustfft backend as `mfsk-ffi`). Its `embedded-fixed-point`
+  # feature builds `no_std`, which has no `cargo test` harness to run
+  # here; those cross-compiled builds (xtensa-esp32/esp32s3-espidf)
+  # are build-only-verified at release time in `release.yml` and can
+  # only be exercised on real hardware.
   # ───────────────────────────────────────────────────────────────
   ffi:
     name: mfsk-ffi + C++ driver
@@ -495,6 +505,11 @@ jobs:
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release
 
+      - name: cargo test -p mfsk-ffi (Rust-level ABI tests)
+        env:
+          RUN_FST4_ROUNDTRIP: "1"
+        run: cargo test -p mfsk-ffi --release
+
       - name: Run C++ driver (default + multi-thread tests)
         run: bash mfsk-ffi/examples/cpp_smoke/build.sh
 
@@ -504,6 +519,12 @@ jobs:
         run: |
           cd mfsk-ffi/examples/cpp_smoke
           ./cpp_smoke
+
+      - name: Build mfsk-ffi-ft8 (default host feature)
+        run: cargo build -p mfsk-ffi-ft8 --release
+
+      - name: cargo test -p mfsk-ffi-ft8 (host feature only)
+        run: cargo test -p mfsk-ffi-ft8 --release
 
   # ───────────────────────────────────────────────────────────────
   # rustdoc: catches broken intra-doc links and missing-example

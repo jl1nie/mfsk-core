@@ -972,6 +972,10 @@ protocol's bespoke decode tests need to run.
 * `target/release/libmfsk.a`   (static, for bundling)
 * `mfsk-ffi/include/mfsk.h`    (cbindgen-generated, committed)
 
+Every tagged release also attaches a prebuilt `linux-x86_64` tarball
+of these artefacts to the GitHub Release — see `mfsk-ffi/README.md`.
+Other platforms/ABIs (including Android) still need a local build.
+
 ### API
 
 See `mfsk-ffi/include/mfsk.h` for the authoritative declarations.
@@ -985,6 +989,11 @@ enum MfskProtocol {
     MFSK_PROTOCOL_JT9     = 3,
     MFSK_PROTOCOL_JT65    = 4,
     MFSK_PROTOCOL_FST4S60 = 5,
+    MFSK_PROTOCOL_Q65A30  = 6,  // other Q65 sub-modes (60A..60E, 15A,
+                                // 120D/E, 300A) and AP-hint / fading /
+                                // AP-list strategies: dedicated
+                                // mfsk_q65_* function family, see
+                                // mfsk-ffi/include/mfsk.h
 };
 
 uint32_t          mfsk_version(void);           // major<<16 | minor<<8 | patch

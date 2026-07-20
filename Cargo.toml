@@ -7,3 +7,13 @@ members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-ft8"]
 # try to compile them against the stable toolchain and fail.
 exclude  = ["embedded-poc"]
 resolver = "2"
+
+# Single source of truth for the crate version. `mfsk-core`,
+# `mfsk-ffi`, and `mfsk-ffi-ft8` all pull this via `version.workspace
+# = true` in their own `[package]` tables, so a release bump is one
+# edit here instead of three manually-synced literals (mfsk-ffi had
+# drifted to a stale 0.1.0 before this was introduced — see
+# CHANGELOG). `release.yml`'s tag-vs-Cargo.toml check reads this
+# field directly.
+[workspace.package]
+version = "0.7.4"

@@ -296,6 +296,83 @@
   -30 dB, 0% at -31 dB and below — consistent with WSJT-X's published
   WSPR sensitivity floor.
 
+### Tests
+
+- **`mfsk-ffi` Rust-level ABI test coverage for the non-Q65
+  protocols** (`mfsk-ffi/tests/wsjt_ffi.rs`). Previously only Q65 had
+  a `cargo test`-driven FFI test (`q65_ffi.rs`); FT8/FT4/WSPR/JT9/
+  JT65/FST4-60A were exercised solely by the C++ smoke driver
+  (`examples/cpp_smoke`). Added encode/decode round-trips for all
+  six (mirroring the C++ driver's known-good test vectors), an
+  `mfsk_decode_i16` case (the f32 path was the only one covered
+  before), and NULL/bad-input negative-path tests
+  (`mfsk_decode_f32` with a null decoder/samples pointer,
+  `mfsk_encode_ft8` with an unpackable callsign, freeing null
+  pointers). Also fixed a CI gap found while adding this: the `ffi`
+  job built `mfsk-ffi` and ran the C++ driver but never ran
+  `cargo test -p mfsk-ffi` at all, so `q65_ffi.rs` itself was not
+  actually executing in CI; `.github/workflows/ci.yml` now runs it
+  (FST4's slow slot decode stays behind the same
+  `RUN_FST4_ROUNDTRIP` gate the C++ driver already used).
+- **`mfsk-ffi-ft8` wired into the same `ffi` CI job** — previously
+  had zero CI coverage of any kind (not even a build step), despite
+  shipping a `tests/streaming.rs` suite (7 tests, ring-buffer /
+  resample / chunk-boundary coverage for the `mfsk_ft8_stream_*`
+  API) that only ever ran locally. Added `cargo build`/`cargo test -p
+  mfsk-ffi-ft8` steps using the crate's default `host` feature only
+  — the `embedded-fixed-point` feature builds `no_std` and has no
+  `cargo test` harness to run on a CI runner, so the
+  xtensa-esp32/esp32s3-espidf cross-compiles stay build-only-verified
+  in `release.yml` as before (they can't be executed without real
+  hardware anyway).
+
+### Changed
+
+- **`mfsk-ffi`'s version unstuck from a stale `0.1.0`** — it had
+  never been bumped since the crate's initial commit despite
+  gaining Q65 sub-modes and other features release after release.
+  Introduced `[workspace.package].version` in the root `Cargo.toml`
+  as the single source of truth; `mfsk-core`, `mfsk-ffi`, and
+  `mfsk-ffi-ft8` now all declare `version.workspace = true` instead
+  of a hand-copied literal, so a release version bump is one edit
+  instead of three manually-synced ones (the exact class of bug that
+  let `mfsk-ffi` drift). `release.yml`'s tag-vs-Cargo.toml gate
+  (`verify-tag` job) updated to read the workspace version from the
+  root `Cargo.toml` instead of `mfsk-core/Cargo.toml` directly, since
+  the latter no longer carries a literal version string.
+- **`mfsk-ffi` release-build policy decided: desktop/mobile stays a
+  single all-decoder library, and it's now distributed the same way
+  as `mfsk-ffi-ft8`.** Confirmed design split — `mfsk-ffi-ft8` stays
+  the embedded-only FT8 slice, `mfsk-ffi` stays the desktop/mobile
+  superset covering all seven WSJT modes (Kotlin/Android's binary
+  footprint isn't a concern here, unlike the embedded no_std targets;
+  Android release binaries deliberately deferred — see below) — and
+  closed the distribution gap this implied for the desktop target:
+  `release.yml` gained `build-ffi-desktop-host` (linux-x86_64:
+  `libmfsk.{so,a}` + `mfsk.h`), gating `publish` alongside the
+  existing `mfsk-ffi-ft8` build jobs so a broken build blocks the
+  release instead of leaving it half-published. `mfsk-ffi/README.md`,
+  root `README.md`, and `docs/reference/LIBRARY.md` §8-9 updated to
+  describe the new prebuilt-binary distribution instead of "clone and
+  build". Android (arm64 via NDK cross-build) was drafted in the same
+  pass — a working `build-ffi-desktop-android` job was written and
+  locally verified for target/toolchain-name correctness — but
+  deliberately left out of this release-build pass; Kotlin/Android
+  consumers keep building `mfsk-ffi` locally with cargo-ndk per
+  `mfsk-ffi/examples/kotlin_jni/README.md` for now.
+- **`examples/kotlin_jni/` scaffold renamed to match the
+  `wsjt-ffi` → `mfsk-ffi` crate rename it had missed** — found while
+  drafting the Android release build above. `Wsjt.kt` /
+  `wsjt_jni.c` / package `io.github.rsft8n` still referenced the
+  pre-rename crate name (`cargo build -p wsjt-ffi`, `libwsjt.so`,
+  `WsjtMessageList`, …), none of which exist anymore; the scaffold's
+  own documented build commands would not have run. Renamed to
+  `Mfsk.kt` / `mfsk_jni.c` / package `io.github.mfskcore` throughout,
+  matching what `docs/reference/LIBRARY.md` §9 already (aspirationally)
+  described. Also expanded `Mfsk.Protocol` from `FT8`/`FT4` only to
+  all seven `MfskProtocol` values, matching `mfsk-ffi`'s actual
+  all-decoder scope.
+
 ## 0.7.4 — MSK144 decode (#25)
 
 ### Added

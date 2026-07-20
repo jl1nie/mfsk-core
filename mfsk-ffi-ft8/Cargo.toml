@@ -1,6 +1,6 @@
 [package]
 name        = "mfsk-ffi-ft8"
-version     = "0.7.4"
+version.workspace = true
 edition     = "2024"
 license     = "GPL-3.0-or-later"
 publish     = false

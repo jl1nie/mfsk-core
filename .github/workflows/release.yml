@@ -102,28 +102,37 @@ jobs:
             exit 1
           fi
 
-      # The tag version must match `mfsk-core/Cargo.toml`, the only
-      # published crate. mfsk-ffi-ft8's version is bumped in lockstep
-      # for binary-tarball naming consistency, but the workflow only
-      # needs to gate on the publishable one.
+      # The tag version must match the workspace version in the root
+      # `Cargo.toml` (`[workspace.package].version`) — `mfsk-core`,
+      # `mfsk-ffi`, and `mfsk-ffi-ft8` all inherit it via
+      # `version.workspace = true`, so this one field gates the
+      # publishable crate (mfsk-core) and both binary-tarball crates
+      # at once.
       - name: Check tag matches Cargo.toml version
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF#refs/tags/v}"
-          V=$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' mfsk-core/Cargo.toml)
+          V=$(awk -F'"' '/^version[[:space:]]*=/ { print $2; exit }' Cargo.toml)
           if [ "$TAG" != "$V" ]; then
-            echo "::error::Tag v$TAG does not match mfsk-core/Cargo.toml version $V"
+            echo "::error::Tag v$TAG does not match workspace version $V (Cargo.toml [workspace.package])"
             exit 1
           fi
 
-  # ── Gate 3a-c ──────────────────────────────────────────────────────
-  # Build all three mfsk-ffi-ft8 binaries BEFORE crates.io publish so
-  # a cross-toolchain failure doesn't leave the release set in a
+  # ── Gate 3a-d ──────────────────────────────────────────────────────
+  # Build every FFI binary BEFORE crates.io publish so a
+  # cross-toolchain failure doesn't leave the release set in a
   # half-published state (the previous workflow had `release-ffi-*
   # needs: publish`, which meant a broken xtensa build came after
   # crates.io was already updated, with no rollback). Each job uploads
   # its tarball as a workflow artifact; the publish job downloads all
-  # three and attaches them to a single GitHub release.
+  # of them and attaches them to a single GitHub release.
+  #
+  # Two crates ship binaries here: `mfsk-ffi-ft8` (embedded-focused
+  # FT8-only slice — host/esp32/esp32s3) and `mfsk-ffi` (desktop
+  # all-decoder library — host only for now; Android arm64 deferred,
+  # see `mfsk-ffi/examples/kotlin_jni/` for the manual cargo-ndk
+  # build in the meantime). See `docs/reference/LIBRARY.md` §8-9 for
+  # what each targets.
   build-ffi-host:
     name: Build mfsk-ffi-ft8 — linux-x86_64
     runs-on: ubuntu-latest
@@ -246,6 +255,32 @@ jobs:
           path: mfsk-ffi-ft8-*-esp32s3-xtensa.tar.gz
           if-no-files-found: error
 
+  build-ffi-desktop-host:
+    name: Build mfsk-ffi — linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p mfsk-ffi --release
+      - name: Package
+        run: |
+          set -euo pipefail
+          PKG=mfsk-ffi-${GITHUB_REF#refs/tags/}-linux-x86_64
+          mkdir -p "$PKG"/{lib,include}
+          cp target/release/libmfsk.so "$PKG"/lib/
+          cp target/release/libmfsk.a  "$PKG"/lib/
+          cp mfsk-ffi/include/mfsk.h "$PKG"/include/
+          cp mfsk-ffi/README.md      "$PKG"/ 2>/dev/null || true
+          cp mfsk-ffi/examples/cpp_smoke/main.cpp "$PKG"/
+          tar -czvf "$PKG".tar.gz "$PKG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffi-desktop-host
+          path: mfsk-ffi-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
   # ── Publish ───────────────────────────────────────────────────────
   # Runs only after every gate above is green: CI passed on this SHA,
   # tag verification succeeded, and all three FFI binaries built. Then
@@ -255,7 +290,15 @@ jobs:
   publish:
     name: Publish to crates.io + GitHub release
     runs-on: ubuntu-latest
-    needs: [wait-for-ci, verify-tag, build-ffi-host, build-ffi-esp32, build-ffi-esp32s3]
+    needs:
+      [
+        wait-for-ci,
+        verify-tag,
+        build-ffi-host,
+        build-ffi-esp32,
+        build-ffi-esp32s3,
+        build-ffi-desktop-host,
+      ]
     permissions:
       contents: write   # for creating the GitHub release
     steps:
@@ -297,8 +340,17 @@ jobs:
             [CHANGELOG.md](https://github.com/jl1nie/mfsk-core/blob/main/CHANGELOG.md)
             for curated release notes.
 
-            **Prebuilt `mfsk-ffi-ft8` binaries** (FT8 C ABI) are attached
-            below for users who want to drop the decoder into a non-Rust
-            project without setting up the cross-toolchain themselves —
-            see [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+            **Prebuilt `mfsk-ffi-ft8` binaries** (embedded FT8-only C ABI:
+            linux-x86_64, esp32-xtensa, esp32s3-xtensa) are attached below
+            for users who want to drop the decoder into a non-Rust project
+            without setting up the cross-toolchain themselves — see
+            [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)
+            for the integration guide.
+
+            **Prebuilt `mfsk-ffi` binaries** (desktop all-decoder C ABI —
+            FT8/FT4/WSPR/JT9/JT65/FST4/Q65: linux-x86_64) are
+            also attached — see
+            [`mfsk-ffi/README.md`](https://github.com/jl1nie/mfsk-core/blob/main/mfsk-ffi/README.md)
+            and the Kotlin/JNI scaffold in
+            [`mfsk-ffi/examples/kotlin_jni/`](https://github.com/jl1nie/mfsk-core/blob/main/mfsk-ffi/examples/kotlin_jni/)
             for the integration guide.
