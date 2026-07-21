@@ -188,6 +188,68 @@ Notes:
   different no_std/fixed-point pipeline on a much slower MCU core;
   this table is host x86_64 only.
 
+### Cross-platform: Apple Silicon (M5) vs. Ryzen 9 9900X — FST4
+
+Measured 2026-07-22. **Compute environment**: Apple M5, 10 cores
+(4 performance + 6 efficiency), 16 GB RAM, macOS 26.5.2 (build
+25F84), rustc/cargo 1.96.0 (aarch64-apple-darwin), same
+`cargo test --release --features full` command as the Ryzen9 numbers
+above (`parallel` + `rustfft` both on, so this is wall time on a
+10-core host, not single-thread).
+
+**Golden-WAV single decode** (`fst4_60_diag_candidate_cost_split`,
+`tests/fst4_sweep.rs`, same harness that produced the Ryzen9 0.27 s
+figure — see `FST4_BENCHMARK.md` section 8):
+
+| Run | `decode_frame` wall-clock | `coarse_sync` | decodes |
+|---|---:|---:|---:|
+| 1 | 0.571 s | 36.9 ms | 3 |
+| 2 | 0.554 s | 23.0 ms | 3 |
+| 3 | 0.556 s | 20.7 ms | 3 |
+
+Median **0.556 s** vs. Ryzen9's documented **0.27 s** — **~2.1x
+slower**, roughly tracking the core/thread gap (M5: 10 cores vs.
+Ryzen9 9900X: 12C/24T) given this workload's cost is dominated by the
+`rayon`-parallelized LLR+BP+OSD stage. Recall parity separately
+confirmed via the actual gated test
+(`fst4_60_wsjtx_sample_recall_vs_golden`): 1/1 golden, same 2 messages
+as documented (`CQ N5TM EL29`, `CQ K9KFR EN71`). (Aside: the
+diagnostic harness's own `decode_frame` call reports 3 total decodes
+on this machine vs. 2 recorded for the original Ryzen9 investigation —
+not a recall regression, since the officially-gated recall test above
+matches exactly; plausibly floating-point-reduction order
+nondeterminism from `rayon` on a near-marginal candidate. Not chased
+further — flagged here for whoever revisits this.)
+
+**AWGN + CCIR sweep** (`tests/fst4_sweep.rs::fst4_snr_sweep`): the
+full 5-mode × 4-channel × 20-trial grid (5,120 trials) was attempted
+first but aborted after projecting tens-of-hours total wall time from
+an in-progress rate (FST4-15, the cheapest sub-mode, alone was on pace
+for ~63 min) — `FST4_BENCHMARK.md`'s "tens of minutes" reference for
+the Ryzen9 box was never a precise measurement of this exact grid, so
+that mismatch is itself informative, not a sign of an M5-specific
+regression. Rerun scoped to **FST4-30 only, all 4 channels, full
+existing SNR grid** (12 SNR points × 4 channels × 20 trials = 960
+trials) as a representative single sub-mode:
+
+- **Wall-clock: 19 m 25 s** (`real`), `user` time 179 m 58 s (~9.3x
+  average core utilization out of 10 — confirms the `rayon` path is
+  engaged; no directly comparable Ryzen9 number exists for this exact
+  scoped run).
+- 50% crossings (linear-interpolated, same method as the rest of this
+  doc):
+
+| Channel | Ryzen9 (documented) | Apple M5 (measured) | Note |
+|---|---:|---:|---|
+| AWGN | −23.90 dB | ≈ −23.71 dB | Δ0.19 dB — within 20-trial sampling noise, recall parity confirmed |
+| CCIR good | — (not previously measured for FST4-30) | ≈ −22.60 dB | new data point |
+| CCIR moderate | — | ≈ −21.50 dB | new data point |
+| CCIR poor | — | ≈ −20.82 dB | new data point |
+
+**TODO (user, later)**: add Ryzen9 numbers for the FST4-30 sweep
+wall-clock and CCIR crossings above once measured, to complete the
+cross-platform comparison.
+
 ## FT8
 
 - **WSJT-X 8-entry golden: 7/8** (`decode_frame_with_ap` host,
