@@ -230,25 +230,27 @@ the Ryzen9 box was never a precise measurement of this exact grid, so
 that mismatch is itself informative, not a sign of an M5-specific
 regression. Rerun scoped to **FST4-30 only, all 4 channels, full
 existing SNR grid** (12 SNR points × 4 channels × 20 trials = 960
-trials) as a representative single sub-mode:
+trials) as a representative single sub-mode.
 
-- **Wall-clock: 19 m 25 s** (`real`), `user` time 179 m 58 s (~9.3x
-  average core utilization out of 10 — confirms the `rayon` path is
-  engaged; no directly comparable Ryzen9 number exists for this exact
-  scoped run).
-- 50% crossings (linear-interpolated, same method as the rest of this
-  doc):
-
-| Channel | Ryzen9 (documented) | Apple M5 (measured) | Note |
-|---|---:|---:|---|
-| AWGN | −23.90 dB | ≈ −23.71 dB | Δ0.19 dB — within 20-trial sampling noise, recall parity confirmed |
-| CCIR good | — (not previously measured for FST4-30) | ≈ −22.60 dB | new data point |
-| CCIR moderate | — | ≈ −21.50 dB | new data point |
-| CCIR poor | — | ≈ −20.82 dB | new data point |
-
-**TODO (user, later)**: add Ryzen9 numbers for the FST4-30 sweep
-wall-clock and CCIR crossings above once measured, to complete the
-cross-platform comparison.
+- **Wall-clock (the actual speed benchmark): 19 m 25 s** (`real`),
+  `user` time 179 m 58 s (~9.3x average core utilization out of 10 —
+  confirms the `rayon` path is engaged). **TODO (user, later)**: add
+  the Ryzen9 wall-clock for this identical scoped run (mode=30, all 4
+  channels, unfiltered SNR grid) once measured, to complete the speed
+  comparison.
+- **Recall crossings — not a speed metric, a correctness sanity
+  check.** The decoder is the same algorithm on both architectures, so
+  it should recover the same messages at the same SNR regardless of
+  CPU; this only exists to confirm the M5 build wasn't silently
+  decoding *differently* before trusting the speed numbers above.
+  AWGN is the one channel with a prior Ryzen9-measured figure to check
+  against: **≈ −23.71 dB vs. the documented −23.90 dB (Δ0.19 dB, within
+  20-trial sampling noise)** — parity confirmed. CCIR good/moderate/
+  poor (≈ −22.60 / −21.50 / −20.82 dB) have no prior FST4-30 baseline
+  to compare against (only FST4-60A's CCIR breakdown was previously
+  documented, in `FST4_BENCHMARK.md` section 8) — recorded here as new
+  reference data for this decoder, not as something needing a Ryzen9
+  counterpart.
 
 ## FT8
 
