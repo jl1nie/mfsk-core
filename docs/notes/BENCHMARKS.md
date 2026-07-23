@@ -232,25 +232,46 @@ regression. Rerun scoped to **FST4-30 only, all 4 channels, full
 existing SNR grid** (12 SNR points × 4 channels × 20 trials = 960
 trials) as a representative single sub-mode.
 
-- **Wall-clock (the actual speed benchmark): 19 m 25 s** (`real`),
-  `user` time 179 m 58 s (~9.3x average core utilization out of 10 —
-  confirms the `rayon` path is engaged). **TODO (user, later)**: add
-  the Ryzen9 wall-clock for this identical scoped run (mode=30, all 4
-  channels, unfiltered SNR grid) once measured, to complete the speed
-  comparison.
+- **Wall-clock (the actual speed benchmark)**: M5 **19 m 25 s** (`real`,
+  `user` 179 m 58 s, ~9.3x average core utilization out of 10) vs.
+  Ryzen9 9900X **6 m 57 s** (`real` 417.17 s, `user` 135 m 43 s, ~19.5x
+  average core utilization out of 24 — 81% of available threads,
+  confirming the `rayon` path is engaged on both boxes) for the
+  identical scoped run (mode=30, all 4 channels, unfiltered SNR grid;
+  Ryzen9 side measured 2026-07-24 on the same box as the rest of this
+  doc's host figures, `cargo test --test fst4_sweep --release --features
+  fst4,fft-rustfft,parallel,uvpacket -- --ignored --nocapture
+  fst4_snr_sweep`). Ryzen9 is **~2.8x faster wall-clock** — tracking the
+  core/thread-count gap (24 vs. 10 logical contexts) more closely than
+  the single golden-WAV decode's ~2.1x gap above, consistent with this
+  sweep having far more independent trials (960) to spread across cores
+  than one `decode_frame` call's ~50-candidate list.
 - **Recall crossings — not a speed metric, a correctness sanity
   check.** The decoder is the same algorithm on both architectures, so
   it should recover the same messages at the same SNR regardless of
   CPU; this only exists to confirm the M5 build wasn't silently
   decoding *differently* before trusting the speed numbers above.
-  AWGN is the one channel with a prior Ryzen9-measured figure to check
-  against: **≈ −23.71 dB vs. the documented −23.90 dB (Δ0.19 dB, within
-  20-trial sampling noise)** — parity confirmed. CCIR good/moderate/
-  poor (≈ −22.60 / −21.50 / −20.82 dB) have no prior FST4-30 baseline
-  to compare against (only FST4-60A's CCIR breakdown was previously
-  documented, in `FST4_BENCHMARK.md` section 8) — recorded here as new
-  reference data for this decoder, not as something needing a Ryzen9
-  counterpart.
+  Ryzen9's own crossings from this scoped run (same linear-interpolation
+  method used throughout this doc): AWGN ≈ −23.90 dB — matching the
+  already-documented FST4-30 main-table figure below exactly, an
+  independent reproduction — CCIR good ≈ −23.3 dB, moderate ≈ −21.4 dB,
+  poor ≈ −21.7 dB.
+
+  | Channel | Ryzen9 9900X | Apple M5 | Δ |
+  |---|---:|---:|---:|
+  | AWGN | ≈ −23.90 dB | ≈ −23.71 dB | 0.19 dB |
+  | CCIR good | ≈ −23.3 dB | ≈ −22.60 dB | 0.7 dB |
+  | CCIR moderate | ≈ −21.4 dB | ≈ −21.50 dB | 0.1 dB |
+  | CCIR poor | ≈ −21.7 dB | ≈ −20.82 dB | 0.9 dB |
+
+  AWGN and CCIR moderate agree tightly (≤0.2 dB) between the two
+  independently-seeded 20-trial corpora. CCIR good/poor show a larger
+  ~0.7-0.9 dB spread — plausibly the same 20-trial sampling noise this
+  doc notes elsewhere on steep parts of an SNR curve, landing
+  differently on two independent corpora, rather than a platform-
+  specific decode difference (if it were platform-specific, AWGN/
+  moderate on the same two corpora should show it too, and they don't).
+  No evidence the M5 build decodes differently from Ryzen9.
 
 ## FT8
 
