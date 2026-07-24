@@ -54,6 +54,55 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
     );
 }
 
+/// Floating-point SIC residual variant used by the host/browser decoder.
+///
+/// The captured PCM may start as i16, but the evolving residual must remain
+/// f32 across multiple subtractions to match WSJT-X and preserve weak signals.
+#[cfg(feature = "fft-rustfft")]
+pub fn subtract_signal_lpf_f32(audio: &mut [f32], result: &DecodeResult) {
+    let tones = message_to_tones(&result.message77);
+    crate::core::dsp::subtract::subtract_tones_lpf_f32(
+        audio,
+        &tones,
+        result.freq_hz,
+        result.dt_sec,
+        &FT8_CFG,
+        2000,
+        true,
+    );
+}
+
+/// Timing-refined subtraction for the WSJT-X depth-3 SIC path.
+///
+/// Fits the decoded waveform's complex-correlation peak at -90, 0, and
+/// +90 input samples, then applies the subtraction at the fitted
+/// integer-sample offset. An unstable fit or one outside the probe
+/// interval is rejected rather than risking a destructive subtraction.
+#[cfg(feature = "fft-rustfft")]
+pub fn subtract_signal_lpf_f32_refined_dt(audio: &mut [f32], result: &DecodeResult) -> bool {
+    let tones = message_to_tones(&result.message77);
+    let Some(refined_dt) = crate::core::dsp::subtract::refine_dt_f32(
+        audio,
+        &tones,
+        result.freq_hz,
+        result.dt_sec,
+        &FT8_CFG,
+        90,
+    ) else {
+        return false;
+    };
+    crate::core::dsp::subtract::subtract_tones_lpf_f32(
+        audio,
+        &tones,
+        result.freq_hz,
+        refined_dt,
+        &FT8_CFG,
+        2000,
+        true,
+    );
+    true
+}
+
 /// Refine `result.freq_hz` by grid-searching ±2.5 Hz at 0.1 Hz resolution
 /// for the carrier that maximises the LS amplitude of the GFSK reference
 /// against `audio`. Returns the refined frequency.

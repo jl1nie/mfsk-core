@@ -367,21 +367,10 @@ fn coarse_sync_inner(
     let t_allsum = std::time::Instant::now();
 
     // Three identical Costas arrays at symbol positions 0, 36, 72.
-    //
-    // **Bounds-check hoist**. For the standard FT8 slot:
-    //   block 0: m = lag + jstrt + NSSY*n   ∈ [-7..31] over (lag, n)
-    //   block 1: m = lag + jstrt + 144 + NSSY*n  ∈ [65..103]
-    //   block 2: m = lag + jstrt + 288 + NSSY*n  ∈ [137..175]
-    //
-    // Only block 0 can dip below 0 (and only at large negative lag).
-    // Compute the smallest valid `n` per lag once, then iterate
-    // n_start..NTONES_C without per-iter checks. Blocks 1 and 2 are
-    // always fully in range. Sanity-check the upper bound at function
-    // entry so the unchecked-as-usize is safe.
-    debug_assert!(
-        m_base[2][COSTAS.len() - 1] + jz < spec.n_time as i32,
-        "n_time too small for SYNC_LAG_S/jstrt"
-    );
+    // Match `sync8.f90`'s boundary handling exactly: the first block
+    // can run before the captured slot and the third can run past it
+    // over the reference ±2.5 s lag search. The middle block is always
+    // present for a full 15-second FT8 frame.
     let n_time = spec.n_time;
     // Per-fi: tbin_lo[n] = i_carrier + costas_off[n]. Hoist out of
     // the lag loop — saves an addition per inner iteration.
@@ -417,14 +406,23 @@ fn coarse_sync_inner(
                 t_blocks[0] += spec.power_acc(tbin_lo, m_u);
                 t0_blocks[0] += allsum_row[m_u];
             }
-            // Blocks 1, 2: always fully in range — no per-iter check.
-            for bk in 1..COSTAS_POS.len() {
-                for n in 0..COSTAS.len() {
-                    let m_u = (m_base[bk][n] + lag) as usize;
-                    let tbin_lo = tbin_lo_arr[n];
-                    t_blocks[bk] += spec.power_acc(tbin_lo, m_u);
-                    t0_blocks[bk] += allsum_row[m_u];
+            // Block 1 is always in range.
+            for n in 0..COSTAS.len() {
+                let m_u = (m_base[1][n] + lag) as usize;
+                let tbin_lo = tbin_lo_arr[n];
+                t_blocks[1] += spec.power_acc(tbin_lo, m_u);
+                t0_blocks[1] += allsum_row[m_u];
+            }
+            // Block 2 is conditional at large positive lags.
+            for n in 0..COSTAS.len() {
+                let m = m_base[2][n] + lag;
+                if m >= n_time as i32 {
+                    continue;
                 }
+                let m_u = m as usize;
+                let tbin_lo = tbin_lo_arr[n];
+                t_blocks[2] += spec.power_acc(tbin_lo, m_u);
+                t0_blocks[2] += allsum_row[m_u];
             }
 
             // Regularised ratio `t / (mean_others + ε)`.
@@ -464,122 +462,101 @@ fn coarse_sync_inner(
     ))]
     let t_score = std::time::Instant::now();
 
-    const MLAG: i32 = 10;
+    const MLAG: i32 = 13;
+    const MAX_PRE_CAND: usize = 1000;
 
-    // Per-bin peak + 40-percentile noise floor.
+    // WSJT-X maintains two independent timing searches and normalises
+    // each against its own 40th-percentile floor: a primary ±13-step
+    // window and the full ±2.5-second window.
     let mut red = vec![0.0f32; n_freq];
+    let mut red2 = vec![0.0f32; n_freq];
+    let mut jpeak = vec![0i32; n_freq];
+    let mut jpeak2 = vec![0i32; n_freq];
     for fi in 0..n_freq {
-        red[fi] = (-jz..=jz)
-            .map(|lag| sync2d[idx(fi, lag)])
-            .fold(0.0f32, f32::max);
+        let (lag1, score1) = (-MLAG..=MLAG)
+            .map(|lag| (lag, sync2d[idx(fi, lag)]))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal))
+            .unwrap_or((0, 0.0));
+        let (lag2, score2) = (-jz..=jz)
+            .map(|lag| (lag, sync2d[idx(fi, lag)]))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(core::cmp::Ordering::Equal))
+            .unwrap_or((0, 0.0));
+        jpeak[fi] = lag1;
+        red[fi] = score1;
+        jpeak2[fi] = lag2;
+        red2[fi] = score2;
     }
-    let base = {
-        // 40th-percentile noise floor: `select_nth_unstable_by` is O(N)
-        // average vs the previous full-sort's O(N log N). Pivot
-        // ordering inside the percentile isn't load-bearing
-        // (downstream only uses `red[pct_idx]` as a normaliser), so
-        // unstable selection is fine. `unwrap_or(Ordering::Equal)`
-        // for NaN safety — matches the same pattern at
-        // `process_candidates.rs` xsnr2_db_simple median.
-        // Gemini PR #79 + #101 review.
-        let mut sorted = red.clone();
-        let pct_idx = ((0.40 * n_freq as f32) as usize).min(n_freq - 1);
-        sorted.select_nth_unstable_by(pct_idx, |a, b| {
-            a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
-        });
-        sorted[pct_idx].max(f32::EPSILON)
+    let percentile_index = ((0.40 * n_freq as f32).round() as usize)
+        .saturating_sub(1)
+        .min(n_freq - 1);
+    let normalise = |values: &mut [f32]| {
+        let mut sorted = values.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let base = sorted[percentile_index].max(f32::EPSILON);
+        for value in values {
+            *value /= base;
+        }
     };
+    normalise(&mut red);
+    normalise(&mut red2);
 
-    let mut cands: Vec<SyncCandidate> = Vec::new();
-    for fi in 0..n_freq {
-        let i_carrier = ia + fi;
-        let freq_hz = i_carrier as f32 * df;
-
-        let mut peaks: Vec<(i32, f32)> = (-jz..=jz)
-            .filter_map(|lag| {
-                let raw = sync2d[idx(fi, lag)];
-                let norm = raw / base;
-                if norm.is_finite() && norm >= sync_min {
-                    Some((lag, norm))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-        let mut picked: Vec<i32> = Vec::new();
-        for (lag, score) in peaks {
-            if picked.iter().any(|&pl| (lag - pl).abs() <= MLAG) {
-                continue;
-            }
-            picked.push(lag);
-            let dt_quanta = if lag > -jz && lag < jz {
-                let y_lo = sync2d[idx(fi, lag - 1)];
-                let y_mi = sync2d[idx(fi, lag)];
-                let y_hi = sync2d[idx(fi, lag + 1)];
-                let denom = y_lo - 2.0 * y_mi + y_hi;
-                if denom.abs() > f32::EPSILON {
-                    let off = 0.5 * (y_lo - y_hi) / denom;
-                    off.clamp(-1.0, 1.0)
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let dt_lag = lag as f32 + dt_quanta;
+    // `sync8.f90` orders frequency bins by the primary score, then emits
+    // the primary candidate followed by the wide-window candidate for
+    // the same bin when its lag differs.
+    let mut order: Vec<usize> = (0..n_freq).collect();
+    order.sort_by(|&a, &b| {
+        red[a]
+            .partial_cmp(&red[b])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let mut cands: Vec<SyncCandidate> = Vec::with_capacity(MAX_PRE_CAND);
+    for &fi in order.iter().rev().take(MAX_PRE_CAND.min(n_freq)) {
+        if cands.len() >= MAX_PRE_CAND {
+            break;
+        }
+        let freq_hz = (ia + fi) as f32 * df;
+        if red[fi].is_finite() && red[fi] >= sync_min {
             cands.push(SyncCandidate {
                 freq_hz,
-                dt_sec: (dt_lag - 0.5) * tstep,
-                score,
+                dt_sec: (jpeak[fi] as f32 - 0.5) * tstep,
+                score: red[fi],
             });
-            // WSJT-X sync8.f90 emits at most 2 candidates per freq:
-            // one from `red` (narrow ±MLAG window) and one from `red2`
-            // (full ±jz window) when the peak lags differ. We don't
-            // run two windows separately; the `picked` greedy NMS with
-            // cap 2 produces equivalent recall on `qso3_busy.wav` —
-            // empirically verified during the v0.6.2 plan (a
-            // dual-window prototype produced identical 16/18 JTDX
-            // hit, so the additional separate normalization wasn't
-            // worth the code volume). Dropped from 0.6.2 scope.
-            if picked.len() >= 2 {
-                break;
-            }
+        }
+        if jpeak2[fi] != jpeak[fi]
+            && cands.len() < MAX_PRE_CAND
+            && red2[fi].is_finite()
+            && red2[fi] >= sync_min
+        {
+            cands.push(SyncCandidate {
+                freq_hz,
+                dt_sec: (jpeak2[fi] as f32 - 0.5) * tstep,
+                score: red2[fi],
+            });
         }
     }
 
-    // Dedupe within 4 Hz / 40 ms; keep highest score.
-    //
-    // Sort once by score desc, then greedily keep cands with no
-    // already-kept near neighbour. Stops early at `max_cand` for
-    // O(n log n + n × max_cand) instead of the prior O(n²) pairwise
-    // compare-and-zero (n is several thousand).
-    //
-    // Empirically this drops 1 borderline busy-band truth on qso3
-    // vs the byte-equivalent O(n²) implementation — likely a
-    // tie-break ordering difference at the 4 Hz dedupe boundary
-    // (haven't fully traced; the algorithms are equivalent on every
-    // small-case scenario I worked through). We accept the recall
-    // delta for the ~150 us host (~150 ms Core2) saving.
-    cands.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    let mut out: Vec<SyncCandidate> = Vec::with_capacity(max_cand);
-    for c in cands {
-        if c.score < sync_min {
-            break;
-        }
-        let near = out
-            .iter()
-            .any(|k| (c.freq_hz - k.freq_hz).abs() < 4.0 && (c.dt_sec - k.dt_sec).abs() < 0.04);
-        if near {
-            continue;
-        }
-        out.push(c);
-        if out.len() >= max_cand {
-            break;
+    // Preserve WSJT-X's pairwise near-duplicate elimination semantics,
+    // including its strict 4 Hz / 40 ms boundaries.
+    for i in 0..cands.len() {
+        for j in 0..i {
+            if (cands[i].freq_hz.abs() - cands[j].freq_hz.abs()).abs() < 4.0
+                && (cands[i].dt_sec - cands[j].dt_sec).abs() < 0.04
+            {
+                if cands[i].score >= cands[j].score {
+                    cands[j].score = 0.0;
+                } else {
+                    cands[i].score = 0.0;
+                }
+            }
         }
     }
-    let cands = out;
+    cands.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    cands.retain(|c| c.score >= sync_min);
+    cands.truncate(max_cand);
     #[cfg(all(
         feature = "profile-coarse",
         not(all(target_arch = "wasm32", target_os = "unknown"))

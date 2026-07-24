@@ -123,6 +123,43 @@ fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &Subt
     ((a * a + b * b) as f32).sqrt()
 }
 
+#[cfg(feature = "fft-rustfft")]
+fn ls_amp_mag_f32(
+    audio: &[f32],
+    tones: &[u8],
+    freq_hz: f32,
+    dt_sec: f32,
+    cfg: &SubtractCfg,
+) -> f32 {
+    let (w_cos, w_sin) = generate_iq(tones, freq_hz, cfg);
+    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let (audio_off, ref_off) = if signed_start < 0 {
+        (0usize, (-signed_start) as usize)
+    } else {
+        (signed_start as usize, 0usize)
+    };
+    if ref_off >= w_cos.len() {
+        return 0.0;
+    }
+    let len = (w_cos.len() - ref_off).min(audio.len().saturating_sub(audio_off));
+    if len == 0 {
+        return 0.0;
+    }
+    let (mut na, mut nb, mut da, mut db) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for i in 0..len {
+        let rx = audio[audio_off + i] as f64;
+        let c = w_cos[ref_off + i] as f64;
+        let s = w_sin[ref_off + i] as f64;
+        na += rx * c;
+        nb += rx * s;
+        da += c * c;
+        db += s * s;
+    }
+    let a = if da > 0.0 { na / da } else { 0.0 };
+    let b = if db > 0.0 { nb / db } else { 0.0 };
+    ((a * a + b * b) as f32).sqrt()
+}
+
 /// Refine the carrier frequency around `freq_hz_init` by grid search,
 /// returning the freq that maximises the LS amplitude magnitude of the
 /// GFSK reference vs `audio`.
@@ -164,6 +201,40 @@ pub fn refine_freq(
         df += step_hz;
     }
     best_freq
+}
+
+/// Refine the frame start time by fitting a parabola through complex
+/// reference-correlation magnitudes at `-radius_samples`, zero, and
+/// `+radius_samples`.
+///
+/// Returns `None` when the fitted vertex lies outside the probe interval
+/// or the three points do not define a stable parabola.
+#[cfg(feature = "fft-rustfft")]
+pub fn refine_dt_f32(
+    audio: &[f32],
+    tones: &[u8],
+    freq_hz: f32,
+    dt_sec: f32,
+    cfg: &SubtractCfg,
+    radius_samples: i32,
+) -> Option<f32> {
+    if radius_samples <= 0 {
+        return None;
+    }
+    let radius_sec = radius_samples as f32 / cfg.sample_rate;
+    let minus = ls_amp_mag_f32(audio, tones, freq_hz, dt_sec - radius_sec, cfg);
+    let zero = ls_amp_mag_f32(audio, tones, freq_hz, dt_sec, cfg);
+    let plus = ls_amp_mag_f32(audio, tones, freq_hz, dt_sec + radius_sec, cfg);
+    let curvature = plus + minus - 2.0 * zero;
+    if !curvature.is_finite() || curvature.abs() <= f32::EPSILON {
+        return None;
+    }
+    let dx = -(plus - minus) / (2.0 * curvature);
+    if !dx.is_finite() || dx.abs() > 1.0 {
+        return None;
+    }
+    let sample_offset = (radius_samples as f32 * dx).round() as i32;
+    Some(dt_sec + sample_offset as f32 / cfg.sample_rate)
 }
 
 /// WSJT-X-style channel-aware subtract.
@@ -238,6 +309,32 @@ pub fn subtract_tones_lpf(
     }
 }
 
+/// Floating-point residual variant of [`subtract_tones_lpf`].
+///
+/// WSJT-X keeps its successive-interference-cancellation buffer as `real`
+/// throughout all decode passes. Keeping the residual in `f32` avoids
+/// rounding and clipping the full slot after every successful subtraction.
+#[cfg(feature = "fft-rustfft")]
+pub fn subtract_tones_lpf_f32(
+    audio: &mut [f32],
+    tones: &[u8],
+    freq_hz: f32,
+    dt_sec: f32,
+    cfg: &SubtractCfg,
+    lpf_half: usize,
+    endcorrection: bool,
+) {
+    fft_lpf::subtract_tones_lpf_fft_f32(
+        audio,
+        tones,
+        freq_hz,
+        dt_sec,
+        cfg,
+        lpf_half,
+        endcorrection,
+    );
+}
+
 /// Direct time-domain convolution fallback for `no_std` / non-`fft-rustfft`
 /// builds. See [`subtract_tones_lpf`]'s doc comment for when this is used.
 #[cfg(not(feature = "fft-rustfft"))]
@@ -280,7 +377,7 @@ fn subtract_tones_lpf_direct(
     let mut kern = vec![0.0f32; nk];
     let mut sumw = 0.0f32;
     for j in 0..nk {
-        let x = (j as f32 - lpf_half as f32) * PI / lpf_half as f32;
+        let x = (j as f32 - lpf_half as f32) * PI / (2.0 * lpf_half as f32);
         let w = x.cos().powi(2);
         kern[j] = w;
         sumw += w;
@@ -363,7 +460,7 @@ mod fft_lpf {
         let mut kern = vec![0.0f32; nk];
         let mut sumw = 0.0f32;
         for (j, k) in kern.iter_mut().enumerate() {
-            let x = (j as f32 - lpf_half as f32) * PI / lpf_half as f32;
+            let x = (j as f32 - lpf_half as f32) * PI / (2.0 * lpf_half as f32);
             let w = x.cos().powi(2);
             *k = w;
             sumw += w;
@@ -396,7 +493,10 @@ mod fft_lpf {
         let mut cw = vec![Complex32::new(0.0, 0.0); nfft];
         for (j, &w) in kern.iter().enumerate() {
             let offset = j as isize - lpf_half as isize; // -lpf_half..=lpf_half
-            let idx = offset.rem_euclid(nfft as isize) as usize;
+            // Fortran places the taps at cw(1:NFILT+1) and applies
+            // cshift(..., NFILT/2+1). In zero-based coordinates an
+            // original tap at `offset` therefore lands at offset-1.
+            let idx = (offset - 1).rem_euclid(nfft as isize) as usize;
             cw[idx] = Complex32::new(w, 0.0);
         }
         let mut planner = FftPlanner::<f32>::new();
@@ -500,6 +600,61 @@ mod fft_lpf {
                 let sub = 2.0 * z.re;
                 let v = audio[j as usize] as f32 - sub;
                 audio[j as usize] = v.clamp(-32_768.0, 32_767.0) as i16;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn subtract_tones_lpf_fft_f32(
+        audio: &mut [f32],
+        tones: &[u8],
+        freq_hz: f32,
+        dt_sec: f32,
+        cfg: &SubtractCfg,
+        lpf_half: usize,
+        endcorrection: bool,
+    ) {
+        let nframe = tones.len() * cfg.samples_per_symbol;
+        let nfft = audio.len();
+        if nframe == 0 || nfft == 0 || lpf_half == 0 {
+            return;
+        }
+        let (cref_re, cref_im) = generate_iq(tones, freq_hz, cfg);
+        let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+
+        let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
+        for i in 0..nframe {
+            let j = signed_start + i as i64;
+            if j >= 0 && (j as usize) < audio.len() {
+                let rx = audio[j as usize];
+                cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
+            }
+        }
+
+        let cw = cached_window_fft(nfft, lpf_half);
+        let mut planner = FftPlanner::<f32>::new();
+        planner.plan_fft_forward(nfft).process(&mut cfilt);
+        for (c, w) in cfilt.iter_mut().zip(cw.iter()) {
+            *c *= *w;
+        }
+        planner.plan_fft_inverse(nfft).process(&mut cfilt);
+
+        if endcorrection && lpf_half < nframe {
+            let ec = end_correction(lpf_half);
+            for (d, &factor) in ec.iter().enumerate() {
+                cfilt[d] *= factor;
+                let end_idx = nframe - 1 - d;
+                if end_idx != d {
+                    cfilt[end_idx] *= factor;
+                }
+            }
+        }
+
+        for i in 0..nframe {
+            let j = signed_start + i as i64;
+            if j >= 0 && (j as usize) < audio.len() {
+                let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
+                audio[j as usize] -= 2.0 * z.re;
             }
         }
     }

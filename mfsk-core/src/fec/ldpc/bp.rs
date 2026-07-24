@@ -26,14 +26,26 @@ pub use crate::core::BpKind;
 /// crate are uniform with `NCW = 3`.
 const NCW: usize = 3;
 
-/// Clamped atanh to avoid ±∞ near the boundaries.
-/// Equivalent to WSJT-X `platanh`.
+/// WSJT-X `platanh.f90` piecewise-linear approximation.
+///
+/// This is intentionally not `f32::atanh`: the hybrid BP/OSD decoder
+/// feeds accumulated beliefs from its first two iterations into OSD,
+/// so matching the reference transfer curve (including its ±7
+/// saturation) is part of decoder parity.
 #[inline]
 fn platanh(x: f32) -> f32 {
-    if x.abs() > 0.999_999_9 {
-        x.signum() * 4.6
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let z = x.abs();
+    if z <= 0.664 {
+        x / 0.83
+    } else if z <= 0.9217 {
+        sign * (z - 0.4064) / 0.322
+    } else if z <= 0.9951 {
+        sign * (z - 0.8378) / 0.0524
+    } else if z <= 0.9998 {
+        sign * (z - 0.9914) / 0.0012
     } else {
-        x.atanh()
+        sign * 7.0
     }
 }
 
@@ -961,5 +973,15 @@ mod tests {
     #[test]
     fn crc14_known_vector() {
         assert_eq!(crc14(&[0u8; 12]), 0);
+    }
+
+    #[test]
+    fn platanh_matches_wsjtx_piecewise_curve() {
+        assert!((platanh(0.664) - 0.8).abs() < 1.0e-6);
+        assert!((platanh(0.9217) - ((0.9217 - 0.4064) / 0.322)).abs() < 1.0e-6);
+        assert!((platanh(0.9951) - ((0.9951 - 0.8378) / 0.0524)).abs() < 1.0e-6);
+        assert!((platanh(0.9998) - ((0.9998 - 0.9914) / 0.0012)).abs() < 1.0e-5);
+        assert_eq!(platanh(1.0), 7.0);
+        assert_eq!(platanh(-1.0), -7.0);
     }
 }

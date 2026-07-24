@@ -954,8 +954,16 @@ pub fn pack28(call: &str) -> Option<u32> {
             let sb = suffix.as_bytes();
             if sb.len() <= 4 && sb.iter().all(|c| c.is_ascii_uppercase()) {
                 let mut buf = [b' '; 4];
+                // WSJT-X `pack28` applies Fortran `adjustr(c4)` before
+                // base-27 packing, so suffixes shorter than four
+                // characters are right-aligned (for example
+                // `CQ DX` becomes `"  DX"`).  Left alignment happens
+                // to unpack to the same display text after trimming,
+                // but produces a different on-air codeword and breaks
+                // AP matching.
+                let start = buf.len() - sb.len();
                 for (i, &b) in sb.iter().enumerate() {
-                    buf[i] = b;
+                    buf[start + i] = b;
                 }
                 let i1 = C4.iter().position(|&c| c == buf[0])?;
                 let i2 = C4.iter().position(|&c| c == buf[1])?;
@@ -1358,6 +1366,9 @@ mod tests {
             let decoded = unpack28(n);
             assert_eq!(decoded, *cq, "CQ suffix roundtrip mismatch for {cq}");
         }
+        // A roundtrip alone cannot detect left- vs right-alignment,
+        // because `unpack28` trims both forms to the same text.
+        assert_eq!(pack28("CQ DX"), Some(1135));
 
         // CQ with numeric suffix
         let n = pack28("CQ 001").unwrap();

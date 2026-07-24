@@ -591,6 +591,7 @@ fn process_candidate(
                 nsync,
                 depth,
                 BP_MAX_ITER,
+                false,
                 &mut bp_scratch,
                 known,
                 ap_hint,

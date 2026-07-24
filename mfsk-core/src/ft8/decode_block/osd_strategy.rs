@@ -20,7 +20,7 @@
 use super::super::decode::DecodeDepth;
 use crate::core::scalar::Cmplx;
 use crate::fec::ldpc::bp::BpResult;
-use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
+use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1, osd_decode_npre1_npre2};
 
 /// `sync_quality` threshold for dispatching to the heavier WSJT-X
 /// ndeep=3 entry ([`osd_decode_npre1_npre2`]) instead of ndeep=2
@@ -64,6 +64,30 @@ const OSD_HARDERRORS_MAX: u32 = 36;
 /// numbers.
 pub(super) const PASS_ID_OSD_A: u8 = 14;
 
+fn accepted_osd(osd: OsdResult, channel_llr: &[f32; 174], pass_id: u8) -> Option<(BpResult, u8)> {
+    // `decode174_91.f90` may run OSD on a saved BP-belief vector, but
+    // computes nharderrors against the original channel LLR afterward.
+    let hard_errors = osd
+        .codeword
+        .iter()
+        .zip(channel_llr.iter())
+        .filter(|&(bit, llr)| (*bit != 0) != (*llr >= 0.0))
+        .count() as u32;
+    if hard_errors > OSD_HARDERRORS_MAX {
+        return None;
+    }
+    Some((
+        BpResult {
+            message77: osd.message77,
+            info: osd.info,
+            codeword: osd.codeword,
+            hard_errors,
+            iterations: 0,
+        },
+        pass_id,
+    ))
+}
+
 /// Try the OSD staircase for a candidate whose BP staircase didn't
 /// converge. Returns `Some((bp_result, pass_id))` on the first
 /// accepted CRC-pass codeword, `None` otherwise.
@@ -77,6 +101,7 @@ pub(super) fn try_fallback(
     precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
     depth: DecodeDepth,
     q: u32,
+    power_metric: bool,
 ) -> Option<(BpResult, u8)> {
     if !matches!(depth, DecodeDepth::BpAllOsd) || q < 12 {
         return None;
@@ -95,7 +120,11 @@ pub(super) fn try_fallback(
     let llr_full_f32: &super::super::llr::LlrSet<f32> = match precomputed_llr {
         Some(llr) => llr,
         None => {
-            owned_llr_storage = super::super::llr::compute_llr(cs_scratch);
+            owned_llr_storage = if power_metric {
+                super::super::llr::compute_llr_power(cs_scratch)
+            } else {
+                super::super::llr::compute_llr(cs_scratch)
+            };
             &owned_llr_storage
         }
     };
@@ -110,6 +139,7 @@ pub(super) fn try_fallback(
         (&llr_full_f32.llrb, PASS_ID_OSD_A + 1),
         (&llr_full_f32.llrc, PASS_ID_OSD_A + 2),
         (&llr_full_f32.llrd, PASS_ID_OSD_A + 3),
+        (&llr_full_f32.llre, PASS_ID_OSD_A + 4),
     ] {
         // WSJT-X-faithful OSD dispatch (issue #63). Mirrors WSJT-X's
         // ndeep=2/3 split: ndeep=2 (= nord=1 + npre1=1, ~165 patterns
@@ -126,24 +156,10 @@ pub(super) fn try_fallback(
         } else {
             osd_decode_npre1(llr)
         };
-        if let Some(osd) = osd {
-            // WSJT-X-faithful ceiling — see [`OSD_HARDERRORS_MAX`]'s
-            // docstring.
-            if osd.hard_errors > OSD_HARDERRORS_MAX {
-                continue;
-            }
-            // Reuse `osd.codeword` instead of allocating a fresh
-            // zero vec — `OsdResult` already carries the actual
-            // decoded codeword bits, which the previous `vec![0; N]`
-            // dropped on the floor (Gemini PR #86 review).
-            let bp = BpResult {
-                message77: osd.message77,
-                info: osd.info,
-                codeword: osd.codeword,
-                hard_errors: osd.hard_errors,
-                iterations: 0,
-            };
-            return Some((bp, pid));
+        if let Some(osd) = osd
+            && let Some(accepted) = accepted_osd(osd, llr, pid)
+        {
+            return Some(accepted);
         }
     }
     None

@@ -29,6 +29,7 @@ pub struct LlrSet<T: LlrScalar = f32> {
     pub llrb: [T; LDPC_N],
     pub llrc: [T; LDPC_N],
     pub llrd: [T; LDPC_N],
+    pub llre: [T; LDPC_N],
 }
 
 #[inline]
@@ -55,7 +56,7 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 /// `&[Cmplx<f32>]` view via `flatten_cs`.
 pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::core::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 3);
+    let g = crate::core::llr::compute_llr_generic_ft8::<Ft8, f32, T>(&flat, 3);
     // Sanity check scale consistency at build time.
     debug_assert!((crate::core::llr::LLR_SCALE - LLR_SCALE).abs() < 1e-6);
     LlrSet {
@@ -63,12 +64,27 @@ pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
         llrb: inflate_llr(g.llrb),
         llrc: inflate_llr(g.llrc),
         llrd: inflate_llr(g.llrd),
+        llre: inflate_llr(g.llre),
     }
 }
 
 /// LLRs for the BP-only path: skips nsym=2 and nsym=3 (~5× faster
 /// than [`compute_llr`]). `llrb` / `llrc` come back zero — only
 /// `llra` and `llrd` are valid.
+/// WSJT-X `imetric=2` power-metric LLR bundle used after subtraction.
+#[doc(hidden)]
+pub fn compute_llr_power<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
+    let flat = flatten_cs(cs);
+    let g = crate::core::llr::compute_llr_generic_power::<Ft8, f32, T>(&flat, 3);
+    LlrSet {
+        llra: inflate_llr(g.llra),
+        llrb: inflate_llr(g.llrb),
+        llrc: inflate_llr(g.llrc),
+        llrd: inflate_llr(g.llrd),
+        llre: inflate_llr(g.llre),
+    }
+}
+
 pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
     let g = crate::core::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 1);
@@ -77,6 +93,7 @@ pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
         llrb: inflate_llr(g.llrb),
         llrc: inflate_llr(g.llrc),
         llrd: inflate_llr(g.llrd),
+        llre: [T::ZERO; LDPC_N],
     }
 }
 

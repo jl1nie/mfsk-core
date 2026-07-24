@@ -185,9 +185,9 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
 /// - pass 2 skips when pass 1 returned 0 decodes;
 /// - pass 3 skips when pass 2 returned no NEW decodes.
 ///
-/// On host (`fft-rustfft`) the audio is cloned to a working `Vec<i16>`
-/// (subtract operates on i16 samples). Embedded targets compile through
-/// the same path; the clone cost is dominated by the BP work it enables.
+/// On host (`fft-rustfft`) the audio is cloned to a floating-point
+/// residual. Keeping that residual in `f32` preserves weak fractional
+/// samples across successive interference-cancellation passes.
 #[cfg(feature = "fft-rustfft")]
 #[allow(clippy::too_many_arguments)]
 fn decode_block_multipass<S: AudioSample>(
@@ -202,10 +202,17 @@ fn decode_block_multipass<S: AudioSample>(
     strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
-    let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
+    let mut work: AllocVec<f32> = audio.iter().map(|s| s.to_f32()).collect();
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
     let mut prev_total: usize = 0;
-    let mut sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = None;
+    #[cfg(not(feature = "fixed-point"))]
+    let spectrum_baseline =
+        crate::ft8::baseline::spectrum_baseline(work.as_slice(), freq_min, freq_max);
+    #[cfg(not(feature = "fixed-point"))]
+    let original_fft_cache = crate::core::dsp::downsample::build_fft_cache_f32(
+        work.as_slice(),
+        &crate::ft8::downsample::FT8_CFG,
+    );
     for ipass in 0..3 {
         if ipass >= 1 && all.len() == prev_total {
             // Pass 2 skips on zero from pass 1; pass 3 on zero new.
@@ -214,22 +221,6 @@ fn decode_block_multipass<S: AudioSample>(
         prev_total = all.len();
 
         let spec = compute_spectrogram(work.as_slice(), freq_max);
-        // Capture pass 1's spectrogram + per-bin baseline (= ORIGINAL
-        // audio, before any subtract) for WSJT-X-faithful xsnr2 SNR.
-        // ft8b.f90:449 reads sbase from the pre-subtract baseline so
-        // xsnr2 stays stable across passes; xsig is also read from
-        // the same spectrogram so the two share an absolute scale.
-        if ipass == 0 {
-            let mut avg = alloc::vec![0.0_f32; spec.n_freq];
-            crate::ft8::baseline::avg_spectrum(&spec, &mut avg);
-            let sbase_v = crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1);
-            let spec_clone = Spectrogram {
-                n_freq: spec.n_freq,
-                n_time: spec.n_time,
-                data: spec.data.clone(),
-            };
-            sbase_and_spec = Some((sbase_v, spec_clone));
-        }
         let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
         drop(spec);
         let cands = fine_refine_pass1(work.as_slice(), cands);
@@ -248,20 +239,40 @@ fn decode_block_multipass<S: AudioSample>(
         let trace = std::env::var("MFSK_TRACE_PHANTOM").is_ok();
         #[cfg(not(feature = "std"))]
         let trace = false;
+        // WSJT-X `ft8_decode.f90`: pass 1 uses amplitude metrics;
+        // subtraction passes 2 and 3 use squared-power metrics.
+        let power_metric = ipass > 0;
         for cand in pass2 {
-            let single_results = process_candidates_tuned_with_ap(
+            let mut single_results = process_candidates_tuned_with_ap(
                 work.as_slice(),
-                alloc::vec![cand],
+                alloc::vec![cand.clone()],
                 depth,
                 DEFAULT_Q_THRESH,
                 bp_max_iter,
+                power_metric,
                 ap_hint,
                 strictness,
             );
+            single_results.retain(|r| !all.iter().any(|known| known.message77 == r.message77));
+            // A candidate may become visible only after SIC even though an
+            // imperfect subtraction has slightly degraded its residual.
+            // If residual demodulation fails, retry the same data-derived
+            // coordinates against the immutable slot audio. This is a
+            // general non-destructive rescue, not a message or fixture hint.
+            if single_results.is_empty() && ipass > 0 {
+                single_results = process_candidates_tuned_with_ap(
+                    audio,
+                    alloc::vec![cand],
+                    depth,
+                    DEFAULT_Q_THRESH,
+                    bp_max_iter,
+                    power_metric,
+                    ap_hint,
+                    strictness,
+                );
+                single_results.retain(|r| !all.iter().any(|known| known.message77 == r.message77));
+            }
             for r in single_results {
-                if all.iter().any(|x| x.message77 == r.message77) {
-                    continue;
-                }
                 if trace {
                     #[cfg(feature = "std")]
                     if let Some(text) = crate::msg::wsjt77::unpack77(&r.message77) {
@@ -271,7 +282,14 @@ fn decode_block_multipass<S: AudioSample>(
                         );
                     }
                 }
-                crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
+                if matches!(depth, DecodeDepth::BpAllOsd) {
+                    crate::ft8::subtract::subtract_signal_lpf_f32_refined_dt(
+                        work.as_mut_slice(),
+                        &r,
+                    );
+                } else {
+                    crate::ft8::subtract::subtract_signal_lpf_f32(work.as_mut_slice(), &r);
+                }
                 all.push(r);
             }
         }
@@ -304,136 +322,69 @@ fn decode_block_multipass<S: AudioSample>(
             if all.iter().any(|x| x.message77 == r.message77) {
                 continue;
             }
-            crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
+            crate::ft8::subtract::subtract_signal_lpf_f32(work.as_mut_slice(), &r);
             all.push(r);
         }
     }
 
-    // Replace each result's snr_db with WSJT-X xsnr2 (pre-subtract
-    // spectrogram + baseline). `xsig` is read directly from the
-    // captured pass-1 spectrogram at each tone position, so xsig
-    // and xbase share the exact same absolute scale (= the original
-    // sync8 spectrogram). This is critical: feeding xsig from a
-    // different chain (e.g. cd0 downsampled per-symbol DFT) loses
-    // the calibration.
+    // Recompute WSJT-X's xsnr2 against the immutable input slot after
+    // all SIC passes. `spectrum_baseline` uses the reference 3840-point
+    // Nuttall analysis; `fill_symbol_spectra` supplies decoded-tone
+    // energy and the 21-symbol sync count from the original FFT cache.
+    // The raw SNR must be tested before the -25 dB display clamp.
     //
-    // **WSJT-X post-decode validity gates (#63).** Mirrors
-    // `ft8b.f90:422-459`:
-    //   - msg-type `i3 / n3` validity (lines 425-428)
-    //   - `unpack77` success (line 430)
-    //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
-    // The xsnr gate has to run on the RAW (un-clamped) `xsnr2` because
-    // both WSJT-X (line 460) and our previous attempt clamp the value
-    // to -24 dB for display *after* the gate. Clamping first would
-    // collapse every "below floor" result to exactly -24, dead-letter
-    // the `xsnr < -24.0` test, and let exactly the phantoms the gate
-    // was designed to catch slip through (= the qso3_busy phantoms
-    // named in issue #63's body).
-    //
-    // xsnr2/xbase post-process is f32-only. Fixed-point Spectrogram
-    // cells are quantised post `>> FP_SPEC_SHIFT`, putting many noise
-    // cells at u16 zero — `fit_baseline`'s `log10(p.max(1e-30))` then
-    // produces sbase ≈ -250 dB and xsnr2 explodes. The original
-    // adjacent-tone SNR from `process_candidates_into` (compute_snr_db)
-    // is already on a sensible scale, so leave it untouched on the
-    // fixed-point path; the msg-type / unpack77 / nsync gates also
-    // run only on the f32 path (the fixed-point pipeline doesn't
-    // surface OSD-pass results, so the phantom set doesn't apply).
+    // This post-process is f32-only. Fixed-point spectrogram cells can
+    // quantise the noise floor to zero, so embedded builds retain their
+    // adjacent-tone SNR estimate instead.
     #[cfg(not(feature = "fixed-point"))]
-    if let Some((sbase, spec)) = sbase_and_spec {
-        let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-        let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-        let nsps_steps = (NSPS / NSTEP) as f32;
-        all.retain_mut(|r| {
-            // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
-            // gates are intentionally omitted here: every `DecodeResult`
-            // in `all` came through `process_one_candidate_inner`,
-            // which already rejects via `unpack77(&bp.message77)?` (line
-            // ~1565). `unpack77` returns `None` for all-zero messages
-            // (i3=0 n3=0 → free text → empty string → None) and for
-            // every invalid i3/n3 combination (`i3 > 5` falls through
-            // the outer match's `_ => None`; `i3=0 n3=2` falls through
-            // the inner match's `_ => None`). Repeating those checks
-            // here just paid for a second `unpack77` call per result
-            // (Gemini PR #88 review). The xsnr2 gate stays — it needs
-            // the raw-pre-clamp value that `process_one_candidate_inner`
-            // can't compute (no sbase / spec at that scope).
-
-            // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
-            // The clamp here MUST happen after the gate test — see the
-            // function-level comment on `recompute_snr_xsnr2` for why
-            // the pre-clamp ordering used to dead-letter the gate.
-            let raw_snr = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
-            let nsync = recompute_nsync(r, &spec, df, tstep, nsps_steps);
-            if nsync <= 10 && raw_snr < -24.0 {
+    {
+        let mut cs = alloc::boxed::Box::new([[Cmplx::<f32>::default(); 8]; 79]);
+        all.retain_mut(|result| {
+            // Message validity and CRC were already checked in
+            // `process_one_candidate_inner`; only the slot-level
+            // sync/SNR validity gate remains here.
+            fill_symbol_spectra(
+                &mut cs,
+                audio,
+                result.freq_hz,
+                result.dt_sec,
+                SymMask::SyncOnly,
+                Some(&original_fft_cache),
+            );
+            fill_symbol_spectra(
+                &mut cs,
+                audio,
+                result.freq_hz,
+                result.dt_sec,
+                SymMask::DataOnly,
+                Some(&original_fft_cache),
+            );
+            let nsync = sync_quality(&cs);
+            let tones = crate::ft8::wave_gen::message_to_tones(&result.message77);
+            let xsig: f32 = cs
+                .iter()
+                .zip(tones.iter())
+                .map(|(symbol, &tone)| symbol[tone as usize].norm_sqr_wide() * 1_000_000.0)
+                .sum();
+            let baseline_bin = (result.freq_hz / 3.125).round() as usize;
+            let baseline_db = spectrum_baseline.get(baseline_bin).copied().unwrap_or(0.0);
+            let xbase = 10.0_f32.powf(0.1 * (baseline_db - 40.0));
+            let ratio = xsig / xbase / 3_000_000.0 - 1.0;
+            let xsnr2 = if ratio > 0.1 { ratio } else { 0.001 };
+            let raw_snr = 10.0 * xsnr2.log10() - 27.0;
+            if nsync <= 10 && raw_snr < -25.0 {
                 return false;
             }
-            r.snr_db = raw_snr.max(-24.0);
+            result.snr_db = raw_snr.max(-25.0);
             true
         });
     }
-    #[cfg(feature = "fixed-point")]
-    let _ = sbase_and_spec;
     all
 }
 
-/// Hard-decision sync count (= WSJT-X `ft8b.f90:163-176` nsync) read
-/// from the pass-1 spectrogram at the result's refined (freq, dt).
-/// 21-bit upper bound (3 sync blocks × 7 Costas positions).
-///
-/// Only the host f32 build calls this — `recompute_snr_xsnr2` /
-/// `recompute_nsync` use the `xsnr2/xbase` formulation which is
-/// f32-only (see the `#[cfg(not(feature = "fixed-point"))]` caller
-/// at line ~1877).
-#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
-fn recompute_nsync(
-    result: &DecodeResult,
-    spec: &Spectrogram,
-    df: f32,
-    tstep: f32,
-    nsps_steps: f32,
-) -> u32 {
-    use crate::ft8::params::COSTAS;
-    const NTONES: usize = 8;
-    let carrier_bin_f = result.freq_hz / df;
-    let tone_step = TONE_SPACING_HZ / df; // = 2.0 at NFFT=3840
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
-    // Costas blocks at symbol indices 0, 36, 72 (each 7 symbols long).
-    let mut count = 0u32;
-    for &block_off in &[0_usize, 36, 72] {
-        for (sym_in_block, &expected) in COSTAS.iter().enumerate() {
-            let k = block_off + sym_in_block;
-            let m_bin = (t0 + (k as f32) * nsps_steps).round() as i32;
-            if m_bin < 0 || m_bin as usize >= spec.n_time {
-                continue;
-            }
-            let m_bin = m_bin as usize;
-            let mut best_t = 0;
-            let mut best_p = f32::MIN;
-            for t in 0..NTONES {
-                let f_bin = (carrier_bin_f + (t as f32) * tone_step).round() as i32;
-                if f_bin < 0 || f_bin as usize >= spec.n_freq {
-                    continue;
-                }
-                let p = spec.power_acc(f_bin as usize, m_bin);
-                if p > best_p {
-                    best_p = p;
-                    best_t = t;
-                }
-            }
-            if best_t == expected {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
-/// Slot-baseline xsnr2 SNR for any [`Spectrogram`] — `std`-free
-/// alternative to `recompute_snr_xsnr2` for callers that haven't
-/// run `baseline::fit_baseline`'s polynomial smoother (= the
-/// embedded path: `mfsk-core` is built `default-features = false`
-/// + `alloc` only there, so the polynomial fit is unavailable).
+/// Slot-baseline xsnr2 SNR for any [`Spectrogram`] — a `std`-free
+/// approximation for embedded callers that cannot run the host's
+/// Nuttall-windowed baseline analysis.
 ///
 /// Computes the per-frequency baseline as the mean across time over
 /// a ±50-bin window centred on the decode's carrier — same idea as
@@ -556,81 +507,6 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     snr.max(-24.0)
 }
 
-/// WSJT-X `ft8b.f90:449-454` xsnr2 SNR formula. Reads the signal's
-/// per-symbol power from the pass-1 spectrogram (= pre-subtract,
-/// matching WSJT-X's sync8 spectrogram convention) at each of the
-/// 79 expected tones, then divides by the per-frequency baseline
-/// `sbase`:
-///
-/// ```text
-///   xbase = 10^((sbase[round(f1/df)] - 40) / 10)
-///   xsnr2 = xsig / xbase / 3e6 - 1
-///   xsnr2_db = 10·log10(xsnr2) - 27
-/// ```
-///
-/// Both `xsig` and `xbase` are on the same spectrogram scale, so the
-/// formula's `/3e6 - 27` calibration (WSJT-X's "2.5 kHz reference"
-/// convention) maps directly into a WSJT-X-compatible dB number.
-///
-/// Falls back to `-24 dB` if the ratio degenerates.
-///
-/// f32-only — fixed-point spectrograms quantise to u16, putting noise
-/// cells at zero and breaking the `log10` baseline; see the comment
-/// block at the `retain_mut` caller for the full rationale.
-#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
-fn recompute_snr_xsnr2(
-    result: &DecodeResult,
-    spec: &Spectrogram,
-    sbase: &[f32],
-    df: f32,
-    tstep: f32,
-    nsps_steps: f32,
-    cell_scale: f32,
-) -> f32 {
-    let itone = crate::ft8::wave_gen::message_to_tones(&result.message77);
-    let carrier_bin_f = result.freq_hz / df;
-    let tone_step = TONE_SPACING_HZ / df;
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
-
-    let mut xsig = 0.0_f32;
-    for k in 0..79_usize {
-        let t = itone[k] as f32;
-        let f_bin = (carrier_bin_f + t * tone_step).round() as i32;
-        let m_bin = (t0 + (k as f32) * nsps_steps).round() as i32;
-        if f_bin < 0 || f_bin as usize >= spec.n_freq || m_bin < 0 || m_bin as usize >= spec.n_time
-        {
-            continue;
-        }
-        xsig += spec.power_acc(f_bin as usize, m_bin as usize);
-    }
-    // `cell_scale` reverts the fixed-point spectrogram's
-    // `>> FP_SPEC_SHIFT` so xsig and xbase live in WSJT-X's calibration
-    // regime. For the f32 spectrogram cell_scale=1.0 (no-op).
-    xsig *= cell_scale;
-
-    let bin = carrier_bin_f.round() as i32;
-    let bin = bin.clamp(0, sbase.len() as i32 - 1) as usize;
-    // Same compensation on xbase: sbase_db came from `fit_baseline` of
-    // post-shift cells, so its log10 reads ~36 dB low in fixed-point.
-    let sbase_db_compensated = sbase[bin] + 10.0 * cell_scale.log10();
-    let xbase = 10f32.powf(0.1 * (sbase_db_compensated - 40.0));
-    let arg = xsig / xbase / 3.0e6 - 1.0;
-    // WSJT-X `ft8b.f90:445-454`: `xsnr2 = max(0.001, xsig/xbase/3e6 - 1)`
-    // then `xsnr2_db = 10·log10(xsnr2) - 27` → floors at -57 dB.
-    // Caller (`retain_mut` in `decode_block_multipass`) applies the
-    // `xsnr < -24` gate against this raw value BEFORE clamping it to
-    // the -24 dB display floor; the previous `snr.max(-24.0)` here
-    // pre-clamped and made the gate fire only for arithmetic
-    // underflow, not for "degenerate signal" cases.
-    //
-    // The previous form `if arg > 0.1 { arg } else { 0.001 }` was an
-    // mfsk-core-specific deviation: at `arg = 0.1` the result jumped
-    // from ~-37 dB straight to -57 dB (Gemini PR #88 review). WSJT-X
-    // is continuous from -57 dB upward via the simple `max`.
-    let xsnr2 = arg.max(0.001);
-    10.0 * xsnr2.log10() - 27.0
-}
-
 /// Embedded path: single-pass `decode_block` (matches the previous
 /// production behaviour, no subtract). Host-only `fft-rustfft` adds
 /// the multipass driver. `_ap_hint` and `_strictness` parameters are
@@ -670,14 +546,19 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
     if cands.is_empty() {
         return cands;
     }
-    // Convert audio → Vec<i16> for the downsampler (no-op when S=i16).
-    let audio_i16: alloc::vec::Vec<i16> = audio.iter().map(|s| s.to_i16()).collect();
-    let fft_cache = crate::ft8::downsample::build_fft_cache(&audio_i16);
+    let audio_f32: alloc::vec::Vec<f32> = audio.iter().map(|s| s.to_f32()).collect();
+    let fft_cache = crate::core::dsp::downsample::build_fft_cache_f32(
+        &audio_f32,
+        &crate::ft8::downsample::FT8_CFG,
+    );
     cands
         .into_iter()
         .map(|c| {
-            let (cd0, _) =
-                crate::ft8::downsample::downsample(&audio_i16, c.freq_hz, Some(&fft_cache));
+            let cd0 = crate::core::dsp::downsample::downsample_cached(
+                &fft_cache,
+                c.freq_hz,
+                &crate::ft8::downsample::FT8_CFG,
+            );
             let r = crate::ft8::refine_fine::fine_refine_3stage(&cd0, c.dt_sec);
             crate::core::sync::SyncCandidate {
                 freq_hz: c.freq_hz + r.delf_hz,
@@ -759,19 +640,12 @@ pub fn decode_block_into_tuned<S: AudioSample>(
 /// attempts — much sharper than the per-bin power ratio) and
 /// truncates to caller's `max_cand` for stage 3.
 ///
-/// Sweep on real-QSO WAVs (host fp i16, BpAll, with the regularised
-/// coarse_sync ratio in `RATIO_EPS_DEFAULT`) showed:
-/// - PASS1 ∈ {30, 50}: 14/22 truth (drops one weak qso1 signal)
-/// - PASS1 ∈ {75, 100}: 15/22 truth (full recall ceiling)
-/// - PASS1=200: same 15/22 (no further gain — qso3's remaining gap
-///   is at coarse_sync rank 100+, beyond Pass 2's reach).
-///
-/// 75 is the smallest PASS1 that keeps the full recall ceiling.
-/// 30 is the smallest PASS1 that keeps the qso3 (busy band) truth
-/// ceiling — it loses one borderline -17 dB qso1 signal (OH3NIV).
-/// Core2 ships with 30 (speed-priority — Pass 2 cost ≈ 0.4 s vs
-/// 1.0 s at PASS1=75). Override per-call via `MFSK_PASS1_LIMIT`
-/// when std is enabled.
+/// Host decoding defaults to 200 so the fine-refinement stage sees
+/// the same bounded busy-band candidate set used by parity tests.
+/// Embedded builds retain the smaller real-time budget.
+#[cfg(feature = "fft-rustfft")]
+const PASS1_LIMIT_DEFAULT: usize = 200;
+#[cfg(not(feature = "fft-rustfft"))]
 const PASS1_LIMIT_DEFAULT: usize = 30;
 pub(super) fn pass1_limit() -> usize {
     #[cfg(feature = "std")]
@@ -861,6 +735,8 @@ where
     use alloc::collections::BinaryHeap;
     use core::cmp::{Ordering, Reverse};
 
+    const PRIMARY_TIMING_LIMIT_S: f32 = 0.54;
+
     // Min-heap on q so the smallest survivor is at the top — replace
     // it whenever a stronger candidate arrives. Bounds the live heap
     // footprint at `max_cand × cs Box` regardless of PASS1_LIMIT,
@@ -869,11 +745,16 @@ where
     // truncate; new code never holds more than max_cand=15 Boxes
     // (120 KB peak).
     //
-    // The heap stores (q, cand_idx, RefinedCandidate); cand_idx
-    // breaks ties deterministically (insertion order) so the
-    // truncation result is reproducible across runs.
+    // The heap ranks first by q, then prefers candidates from the
+    // primary WSJT-X ±13-step timing window, then the stronger coarse
+    // score. The secondary ±2.5 s search deliberately adds many
+    // candidates; using insertion order for the common q=7 tie lets
+    // wide-window peaks starve a small embedded budget. `idx` remains
+    // the final deterministic tie-break.
     struct Slot {
         q: u32,
+        primary_timing: bool,
+        coarse_score: f32,
         idx: u32,
         cand: SyncCandidate,
         cs: Box<[[Cmplx<f32>; 8]; 79]>,
@@ -886,7 +767,11 @@ where
     impl Eq for Slot {}
     impl Ord for Slot {
         fn cmp(&self, other: &Self) -> Ordering {
-            self.q.cmp(&other.q).then_with(|| self.idx.cmp(&other.idx))
+            self.q
+                .cmp(&other.q)
+                .then_with(|| self.primary_timing.cmp(&other.primary_timing))
+                .then_with(|| self.coarse_score.total_cmp(&other.coarse_score))
+                .then_with(|| self.idx.cmp(&other.idx))
         }
     }
     impl PartialOrd for Slot {
@@ -895,34 +780,63 @@ where
         }
     }
 
-    let mut heap: BinaryHeap<Reverse<Slot>> = BinaryHeap::with_capacity(max_cand + 1);
+    // Reserve two thirds of a constrained budget for the strongest
+    // full-three-block coarse scores in the primary timing window.
+    // The remaining third is selected by the cheap block-0 hard score.
+    // This complementary selection keeps a weak first Costas block from
+    // hiding a signal that is strong across the complete FT8 frame.
+    let reserve_target = max_cand.saturating_mul(2) / 3;
+    let mut reserve_mask = alloc::vec![false; cands.len()];
+    let mut reserved_count = 0usize;
+    for (idx, cand) in cands.iter().enumerate() {
+        if reserve_target > 0 && cand.dt_sec.abs() <= PRIMARY_TIMING_LIMIT_S {
+            reserve_mask[idx] = true;
+            reserved_count += 1;
+            if reserved_count >= reserve_target {
+                break;
+            }
+        }
+    }
+    let q_capacity = max_cand.saturating_sub(reserved_count);
+    let mut reserved: Vec<Slot> = Vec::with_capacity(reserved_count);
+    let mut heap: BinaryHeap<Reverse<Slot>> = BinaryHeap::with_capacity(q_capacity + 1);
     for (idx, c) in cands.into_iter().enumerate() {
         let cs = cs_for(&c);
         let q = sync_quality_block0(&cs);
         let slot = Slot {
             q,
+            primary_timing: c.dt_sec.abs() <= PRIMARY_TIMING_LIMIT_S,
+            coarse_score: c.score,
             idx: idx as u32,
             cand: c,
             cs,
         };
-        if heap.len() < max_cand {
+        if reserve_mask[idx] {
+            reserved.push(slot);
+        } else if heap.len() < q_capacity {
             heap.push(Reverse(slot));
         } else if let Some(Reverse(top)) = heap.peek()
-            && slot.q > top.q
+            && slot > *top
         {
             heap.pop();
             heap.push(Reverse(slot));
             // else branch: drop slot.cs immediately when it leaves scope
         }
     }
-    let mut out: Vec<RefinedCandidate> = heap
+    let mut out: Vec<RefinedCandidate> = reserved
         .into_iter()
-        .map(|r| {
-            let s = r.0;
-            (s.cand, s.cs, s.q)
-        })
+        .chain(heap.into_iter().map(|r| r.0))
+        .map(|r| (r.cand, r.cs, r.q))
         .collect();
-    out.sort_by_key(|r| core::cmp::Reverse(r.2));
+    // Candidate processing order is observable because each successful
+    // decode is subtracted before the next candidate. WSJT-X processes
+    // `sync8` output in descending coarse-sync order; q is used here only
+    // to choose survivors when `max_cand` truncates the list.
+    out.sort_by(|a, b| {
+        b.0.score
+            .partial_cmp(&a.0.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
     out
 }
 
@@ -1068,6 +982,7 @@ pub fn process_candidates_tuned<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
+        false,
         None,
         DecodeStrictness::Normal,
     )
@@ -1085,6 +1000,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
+    power_metric: bool,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
 ) -> Vec<DecodeResult> {
@@ -1098,6 +1014,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
+        power_metric,
         &mut cs_scratch,
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
@@ -1135,6 +1052,7 @@ pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
+        false,
         &mut cs_scratch,
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
@@ -1235,6 +1153,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         depth,
         q_thresh,
         bp_max_iter,
+        false,
         cs_scratch,
         |cs, cand, mask| {
             // Host fft-rustfft: cd0-based 32-pt FFT cs builder (=
@@ -1289,6 +1208,7 @@ where
         depth,
         q_thresh,
         bp_max_iter,
+        false,
         cs_scratch,
         fill,
         None,
@@ -1313,6 +1233,7 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
+    power_metric: bool,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
     mut fill: F,
     ap_hint: Option<&ApHint>,
@@ -1357,16 +1278,21 @@ where
         // Box reallocation.
         *cs_scratch = **cs_box;
         // Two-step fill: sync blocks first, gate by full sync_quality,
-        // then fill data symbols only for survivors. Saves the 58 ×
-        // 8 = 464 data-symbol DFTs on every candidate that fails the
-        // q gate (typically half of `max_cand`). `SyncBlocks12`
-        // (instead of `SyncOnly`) skips re-filling block 0 — Pass 2
-        // already populated it on `SyncBlock0`, and that data
-        // survives in `cs_scratch` here. Saves an additional
-        // 56 DFTs / candidate.
-        fill(cs_scratch, cand, SymMask::SyncBlocks12);
+        // then fill data symbols only for survivors. Refill all three
+        // Costas blocks from the current audio. In the sequential SIC
+        // driver `cs_box` block 0 was captured before earlier candidates
+        // were subtracted; combining that stale block with fresh blocks
+        // 1/2 creates a spectrum from two different residual states.
+        fill(cs_scratch, cand, SymMask::SyncOnly);
         let q = sync_quality(cs_scratch);
-        if q <= q_thresh {
+        // `ft8b.f90` raises the hard-sync floor from 6 to 7 for
+        // `imetric=2` subtraction passes.
+        let effective_q_thresh = if power_metric {
+            q_thresh.saturating_add(1)
+        } else {
+            q_thresh
+        };
+        if q <= effective_q_thresh {
             continue;
         }
         fill(cs_scratch, cand, SymMask::DataOnly);
@@ -1377,6 +1303,7 @@ where
             q,
             depth,
             bp_max_iter,
+            power_metric,
             &mut bp_scratch,
             &results,
             ap_hint,
@@ -1423,6 +1350,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     q: u32,
     depth: DecodeDepth,
     bp_max_iter: u32,
+    power_metric: bool,
     bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
         crate::fec::ldpc::params::Ldpc174_91Params,
         LlrT,
@@ -1444,18 +1372,69 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // `Bp` stops after step 1.
     let mut accepted: Option<(crate::fec::ldpc::bp::BpResult, u8)> = None;
 
+    if power_metric {
+        let llr_power = super::super::llr::compute_llr_power::<LlrT>(cs_scratch);
+        for (values, pass_id) in [
+            (&llr_power.llra, 30u8),
+            (&llr_power.llrb, 31),
+            (&llr_power.llrc, 32),
+            (&llr_power.llrd, 33),
+            (&llr_power.llre, 34),
+        ] {
+            if let Some(bp) =
+                bp_step_select::<LlrT>(bp_scratch, values, bp_max_iter, Some(check_crc14))
+                && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            {
+                accepted = Some((bp, pass_id));
+                break;
+            }
+        }
+        #[cfg(feature = "fft-rustfft")]
+        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q >= 12 {
+            let llr_power_f32 = super::super::llr::compute_llr_power::<f32>(cs_scratch);
+            for (values, pass_id) in [
+                (&llr_power_f32.llra, 35u8),
+                (&llr_power_f32.llrb, 36),
+                (&llr_power_f32.llrc, 37),
+                (&llr_power_f32.llrd, 38),
+                (&llr_power_f32.llre, 39),
+            ] {
+                if let Some(osd) = osd_decode_deep(values, 2, Some(check_crc14))
+                    && osd.hard_errors <= WSJTX_NHARDERRORS_MAX
+                {
+                    accepted = Some((
+                        crate::fec::ldpc::bp::BpResult {
+                            message77: osd.message77,
+                            info: osd.info,
+                            codeword: osd.codeword,
+                            hard_errors: osd.hard_errors,
+                            iterations: 0,
+                        },
+                        pass_id,
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    if power_metric && accepted.is_none() {
+        return None;
+    }
+
     // Step 1: fast llra. The LLR / BP scalar is selected at compile
     // time via `fixed-point` (Q11i16) or default (f32) — see the
     // `LlrT` definition above. Both go through the *same* generic
     // NMS implementation, bit-identical AWGN behaviour by design.
     let llr_a_fast: super::super::llr::LlrSet<LlrT> =
         super::super::llr::compute_llr_fast(cs_scratch);
-    let bp_step1 =
-        bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
-    if let Some(bp) = bp_step1
-        && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
-    {
-        accepted = Some((bp, 0));
+    if accepted.is_none() {
+        let bp_step1 =
+            bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_step1
+            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        {
+            accepted = Some((bp, 0));
+        }
     }
 
     // Step 2: deeper-LLR variants. Lazy + LLR-shared with Step 1.
@@ -1519,6 +1498,17 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         }
     }
 
+    if accepted.is_none() && run_c {
+        let llr_full: super::super::llr::LlrSet<LlrT> = super::super::llr::compute_llr(cs_scratch);
+        let bp_e =
+            bp_step_select::<LlrT>(bp_scratch, &llr_full.llre, bp_max_iter, Some(check_crc14));
+        if let Some(bp) = bp_e
+            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        {
+            accepted = Some((bp, 4));
+        }
+    }
+
     // Pre-compute the nsym=3 LLR once if BOTH the OSD fallback AND
     // the AP loop will run on this candidate — both stages use the
     // same `compute_llr(cs_scratch)` output and recomputing it twice
@@ -1534,7 +1524,11 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         && q >= 12
         && ap_hint.is_some()
     {
-        Some(super::super::llr::compute_llr(cs_scratch))
+        Some(if power_metric {
+            super::super::llr::compute_llr_power(cs_scratch)
+        } else {
+            super::super::llr::compute_llr(cs_scratch)
+        })
     } else {
         None
     };
@@ -1546,7 +1540,13 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // deviation #63 tracks restoring — lives in `super::osd_strategy`
     // so #63 can patch it without touching the rest of this function.
     if accepted.is_none() {
-        accepted = super::osd_strategy::try_fallback(cs_scratch, prefetched_llr.as_ref(), depth, q);
+        accepted = super::osd_strategy::try_fallback(
+            cs_scratch,
+            prefetched_llr.as_ref(),
+            depth,
+            q,
+            power_metric,
+        );
     }
 
     // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
@@ -1578,11 +1578,12 @@ pub(in crate::ft8) fn process_one_candidate_inner(
             .map(|v| v.abs())
             .fold(0.0f32, f32::max)
             * 1.01;
-        let llr_variants: [&[f32; LDPC_N]; 4] = [
+        let llr_variants: [&[f32; LDPC_N]; 5] = [
             &llr_full_f32.llra,
             &llr_full_f32.llrb,
             &llr_full_f32.llrc,
             &llr_full_f32.llrd,
+            &llr_full_f32.llre,
         ];
 
         let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();

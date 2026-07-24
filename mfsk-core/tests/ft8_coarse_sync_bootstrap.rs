@@ -8,11 +8,12 @@
 //! N_confirmed = 0.
 //!
 //! `core::sync::bootstrap_dt_median(&cands, K=5)` is the published
-//! helper both consumers use. This test gates K=5 |Δ| < 100 ms vs
-//! the confirmed-decode DT median on three reference recordings —
-//! one busy band (15 decodes) and two sparse JTDX captures (4-5
-//! decodes). The K=5 cutoff is empirical: K=10+ washes out under
-//! false-candidate noise (see informational K=10/20 print-outs).
+//! helper both consumers use. It finds the strongest local timing
+//! consensus before taking a score-weighted median, so WSJT-X's
+//! secondary ±2.5-second search peaks cannot dominate the estimate.
+//! This test gates K=5 |Δ| < 100 ms vs the confirmed-decode DT median
+//! on one busy-band and two sparse JTDX reference recordings. K=10/20
+//! are printed as informational stability checks.
 //!
 //! Run:
 //! ```sh
@@ -47,7 +48,7 @@ fn median(mut xs: Vec<f32>) -> Option<f32> {
 
 /// K=5 |Δ| budget vs confirmed-decode median. Empirical worst case on
 /// the three reference WAVs is ~68 ms; 100 ms gives a small safety
-/// margin without admitting K=10's ~225-275 ms misses.
+/// margin for FFT and platform-level floating-point differences.
 const BOOTSTRAP_MAX_DELTA_SEC: f32 = 0.100;
 
 fn check_one(label: &str, wav_path: &str) {

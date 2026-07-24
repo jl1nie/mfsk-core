@@ -24,17 +24,14 @@
 //!   - host f32 `BpAllOsd` only — embedded ship (`BpAll`) skips
 //!     because Xtensa LX7 lacks the wall-clock budget for an
 //!     additional per-candidate × per-callsign loop.
-//!   - One extra `coarse_sync` + `refine_candidates` (~50-80 ms host).
-//!   - Per (candidate, callsign): full `process_one_candidate_inner`
-//!     invocation (~80-100 ms). For `qso3_busy.wav` with 60 max_cand
-//!     and ~10 distinct callsigns the auto-AP step adds ~5-15 s
-//!     wall-clock — significant but bounded, and only runs in the
-//!     host research config.
+//!   - At most 100 refined candidates and four callsigns, ranked by
+//!     same-slot occurrence count.
+//!   - The rescue uses BP only; the normal pass already exhausted OSD.
 
 #![cfg(feature = "fft-rustfft")]
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -63,14 +60,14 @@ pub(super) const PASS_ID_AUTO_AP: u8 = 18;
 /// CRC-luck-phantom-suppression reason.
 const AUTO_AP_HARDERRORS_MAX: u32 = 22;
 
-/// Extract the set of distinct caller-callsigns from a decode list.
+/// Extract distinct caller callsigns, ranked by same-slot occurrence count.
 ///
 /// For standard FT8 messages the caller is the first token; for `CQ`
 /// messages it's the second. Anything that doesn't look like a real
 /// callsign (3..=10 alphanumeric with both letter and digit) is
 /// dropped via [`looks_like_callsign`].
 pub(super) fn extract_caller_callsigns(decodes: &[DecodeResult]) -> Vec<String> {
-    let mut set: BTreeSet<String> = BTreeSet::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for d in decodes {
         let Some(text) = crate::msg::wsjt77::unpack77(&d.message77) else {
             continue;
@@ -84,10 +81,12 @@ pub(super) fn extract_caller_callsigns(decodes: &[DecodeResult]) -> Vec<String> 
             _ => continue,
         };
         if looks_like_callsign(caller) {
-            set.insert(caller.to_string());
+            *counts.entry(caller.to_string()).or_default() += 1;
         }
     }
-    set.into_iter().collect()
+    let mut ranked: Vec<(String, usize)> = counts.into_iter().collect();
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ranked.into_iter().map(|(callsign, _)| callsign).collect()
 }
 
 /// Conservative callsign filter — keep only tokens that plausibly are
@@ -165,11 +164,8 @@ where
     // signals that survived sync but failed BP, so the original
     // spectrum is the safer pick.
     let spec = compute_spectrogram(audio, freq_max);
-    // PASS1_LIMIT_DEFAULT (=30) keeps only the top-30 coarse-sync
-    // candidates by `coarse_sync` rank — that ranking deprioritises
-    // weak signals (block-0 q low) like K1BZM DK8NE @-19 dB. For
-    // auto-AP we explicitly want the long tail, so use a much higher
-    // limit. Cost-bounded by `auto_ap_max_cand` below.
+    // Auto-AP explicitly wants the weak tail of the coarse-sync list.
+    // Cost remains bounded by `auto_ap_max_cand` below.
     const AUTO_AP_PASS1_LIMIT: usize = 200;
     let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, AUTO_AP_PASS1_LIMIT);
     drop(spec);
@@ -188,17 +184,13 @@ where
         })
         .collect();
     let cands = fine_refine_pass1(audio, cands);
-    // Use a generous max_cand for auto-AP — the standard multipass
-    // already truncated to `max_cand` (typically 60) by block-0 q,
-    // which deprioritises weak signals like K1BZM DK8NE @-19 dB whose
-    // block-0 q is small even though the candidate is real. Auto-AP
-    // wants those weak candidates because they're precisely where AP
-    // rescue pays off. Cap at 4× the regular max_cand to bound cost.
-    let auto_ap_max_cand = max_cand.saturating_mul(4).max(200);
+    // Auto-AP targets weak candidates that the regular block-0 ranking
+    // deprioritises. Never exceed the caller's budget or 100 candidates.
+    let auto_ap_max_cand = max_cand.min(100);
     let refined: Vec<RefinedCandidate> = refine_candidates(audio, cands, auto_ap_max_cand);
 
-    // Per-callsign batch processing. Gemini PR #118 high-priority
-    // optimisation: passing one (cand, callsign) pair at a time
+    // Per-callsign batch processing. Passing one (candidate, callsign)
+    // pair at a time
     // re-allocates `BpScratch` (~12 KB) on every invocation; batching
     // all remaining candidates per callsign reuses the BpScratch
     // inside `process_candidates_tuned_with_ap_ref`'s inner loop and
@@ -207,13 +199,14 @@ where
     // (semantically equivalent to the original `break` once a
     // (cand, callsign) pair succeeded).
     //
-    // Round-2 follow-up: the slice-borrow `_ref` entrypoint lets us
-    // pass `&remaining` directly, eliminating the per-callsign
+    // The slice-borrow `_ref` entry point lets us pass `&remaining`
+    // directly, eliminating the per-callsign
     // `clone_refined` (one ~5 KB `Box` per candidate × per callsign)
     // allocation churn flagged by Gemini.
     let mut remaining: Vec<RefinedCandidate> = refined;
     let mut out: Vec<DecodeResult> = Vec::new();
-    for callsign in &callsigns {
+    const AUTO_AP_CALLSIGN_LIMIT: usize = 4;
+    for callsign in callsigns.iter().take(AUTO_AP_CALLSIGN_LIMIT) {
         if remaining.is_empty() {
             break;
         }
@@ -221,7 +214,7 @@ where
         let batch_results = process_candidates_tuned_with_ap_ref(
             audio,
             &remaining,
-            depth,
+            DecodeDepth::BpAll,
             DEFAULT_Q_THRESH,
             bp_max_iter,
             Some(&ap),

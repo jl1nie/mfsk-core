@@ -726,44 +726,36 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
         }
     }
 
-    let mut pivot_col: Vec<usize> = vec![0; k];
-    let mut pivot_row = 0usize;
-    for col in 0..n {
-        if pivot_row >= k {
-            break;
-        }
-        let mut found: Option<usize> = None;
-        for r in pivot_row..k {
-            if g[r * n + col] != 0 {
-                found = Some(r);
-                break;
+    // Literal `osd174_91.f90` MRB elimination. For each basis row,
+    // find a pivot no farther than K+20, swap that COLUMN into the
+    // diagonal position (and keep the reliability permutation in
+    // lock-step), then eliminate the column from every other row.
+    //
+    // The previous implementation used conventional row-pivot RREF
+    // without moving pivot columns, but the search below still treated
+    // columns 0..K as the independent basis. That searched error
+    // patterns in the wrong coordinate system.
+    let search_last_exclusive = (k + 20).min(n);
+    for id in 0..k {
+        let pivot_col = (id..search_last_exclusive).find(|&col| g[id * n + col] != 0)?;
+        if pivot_col != id {
+            for row in 0..k {
+                g.swap(row * n + id, row * n + pivot_col);
             }
+            perm.swap(id, pivot_col);
         }
-        if let Some(r) = found {
-            if r != pivot_row {
-                for c in 0..n {
-                    g.swap(r * n + c, pivot_row * n + c);
+        for row in 0..k {
+            if row != id && g[row * n + id] != 0 {
+                for col in 0..n {
+                    g[row * n + col] ^= g[id * n + col];
                 }
             }
-            for r2 in 0..k {
-                if r2 != pivot_row && g[r2 * n + col] != 0 {
-                    for c in 0..n {
-                        g[r2 * n + c] ^= g[pivot_row * n + c];
-                    }
-                }
-            }
-            pivot_col[pivot_row] = col;
-            pivot_row += 1;
         }
-    }
-    if pivot_row < k {
-        return None;
     }
 
     let mut m0: Vec<u8> = vec![0u8; k];
     for r in 0..k {
-        let orig = perm[pivot_col[r]];
-        m0[r] = if llr[orig] > 0.0 { 1 } else { 0 };
+        m0[r] = if llr[perm[r]] > 0.0 { 1 } else { 0 };
     }
 
     let mut hdec_perm: Vec<u8> = vec![0u8; n];
@@ -792,27 +784,22 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
 }
 
 /// Un-permute a candidate codeword into the caller-provided
-/// `c_unperm` scratch buffer and CRC-verify it. Returns the
-/// unpermuted full codeword + its first-`K` info slice as fresh
-/// `Vec`s on CRC pass, or `None` if CRC fails (no allocation on
-/// the fail path).
+/// `c_unperm` scratch buffer.
 ///
 /// Caller provides the scratch buffer so it can be reused across
-/// the ~4186 invocations a single OSD candidate triggers — heap
-/// churn on each call was the dominant per-candidate cost before
-/// this refactor (Gemini PR #86 review).
+/// the OSD search. CRC is intentionally checked only after the
+/// globally nearest codeword has been selected, matching WSJT-X
+/// `osd174_91.f90:281-290`. Filtering every trial by CRC here would
+/// implement a different "nearest CRC-valid codeword" decoder.
 fn try_candidate_ldpc174_91(
     perm: &[usize],
     cp: &[u8],
     c_unperm: &mut [u8; LDPC_N],
-) -> Option<(Vec<u8>, Vec<u8>)> {
+) -> (Vec<u8>, Vec<u8>) {
     for col in 0..LDPC_N {
         c_unperm[perm[col]] = cp[col];
     }
-    if !check_crc14(&c_unperm[..LDPC_K]) {
-        return None;
-    }
-    Some((c_unperm[..LDPC_K].to_vec(), c_unperm.to_vec()))
+    (c_unperm[..LDPC_K].to_vec(), c_unperm.to_vec())
 }
 
 /// Run the WSJT-X `nord=1 + npre1=1` pass against the given
@@ -852,10 +839,8 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 wd += setup.absrx_perm[col];
             }
         }
-        if wd < best.dd
-            && let Some((d, cw)) =
-                try_candidate_ldpc174_91(&setup.perm, &setup.c_perm, &mut c_unperm)
-        {
+        if wd < best.dd {
+            let (d, cw) = try_candidate_ldpc174_91(&setup.perm, &setup.c_perm, &mut c_unperm);
             best.maybe_update(d, cw, wd);
         }
     }
@@ -885,10 +870,8 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 }
             }
             let dd = d1 + parity_wd;
-            if dd < best.dd
-                && let Some((d, cw)) =
-                    try_candidate_ldpc174_91(&setup.perm, &ce_iflag, &mut c_unperm)
-            {
+            if dd < best.dd {
+                let (d, cw) = try_candidate_ldpc174_91(&setup.perm, &ce_iflag, &mut c_unperm);
                 best.maybe_update(d, cw, dd);
             }
         }
@@ -918,10 +901,8 @@ fn osd_npre1_pass(setup: &OsdSetup, best: &mut OsdBest, ntheta: u32) {
                 }
             }
             let dd = d1 + setup.absrx_perm[n1] + parity_wd_pair;
-            if dd < best.dd
-                && let Some((d, cw)) =
-                    try_candidate_ldpc174_91(&setup.perm, &ce_pair, &mut c_unperm)
-            {
+            if dd < best.dd {
+                let (d, cw) = try_candidate_ldpc174_91(&setup.perm, &ce_pair, &mut c_unperm);
                 best.maybe_update(d, cw, dd);
             }
         }
@@ -1107,10 +1088,8 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
                         dd += setup.absrx_perm[col];
                     }
                 }
-                if dd < best.dd
-                    && let Some((d, cw)) =
-                        try_candidate_ldpc174_91(&setup.perm, &ce_test, &mut c_unperm)
-                {
+                if dd < best.dd {
+                    let (d, cw) = try_candidate_ldpc174_91(&setup.perm, &ce_test, &mut c_unperm);
                     best.maybe_update(d, cw, dd);
                 }
             }
@@ -1124,9 +1103,12 @@ fn osd_npre2_pass(setup: &OsdSetup, best: &mut OsdBest, ntau: usize) {
 /// computation.
 fn osd_result_from_best(llr: &[f32; LDPC_N], best: OsdBest) -> Option<OsdResult> {
     let (decoded, codeword) = best.state?;
+    if !check_crc14(&decoded) {
+        return None;
+    }
     let mut hard_errors = 0u32;
     for i in 0..LDPC_N {
-        if (codeword[i] == 1) != (llr[i] > 0.0) {
+        if (codeword[i] == 1) != (llr[i] >= 0.0) {
             hard_errors += 1;
         }
     }
@@ -1168,7 +1150,7 @@ fn osd_result_from_best(llr: &[f32; LDPC_N], best: OsdBest) -> Option<OsdResult>
 ///     incrementally as `e2 = e2sub XOR g[n1, k..n]`, mirroring
 ///     `osd174_91:203`.
 ///
-/// Returns `None` if no CRC-passing candidate is found.
+/// Returns `None` when the nearest candidate does not pass CRC.
 pub fn osd_decode_npre1(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     let setup = osd_setup_ldpc174_91(llr)?;
     let mut best = OsdBest::new();

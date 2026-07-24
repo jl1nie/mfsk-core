@@ -95,7 +95,9 @@ pub fn synth_f32_into(out: &mut [f32], tones: &[u8], f0_hz: f32, amplitude: f32,
     let pulse_len = 3 * nsps;
     let pulse: Vec<f32> = (0..pulse_len)
         .map(|i| {
-            let tt = (i as f32 - 1.5 * nsps as f32) / nsps as f32;
+            // Fortran `gen_ft8wave` indexes this loop from 1, so its
+            // `tt=(i-1.5*nsps)/nsps` maps to `(i+1)-1.5*nsps` here.
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
             gfsk_pulse(cfg.bt, tt)
         })
         .collect();
@@ -189,7 +191,7 @@ pub fn synth_complex_f32_into(
     let pulse_len = 3 * nsps;
     let pulse: Vec<f32> = (0..pulse_len)
         .map(|i| {
-            let tt = (i as f32 - 1.5 * nsps as f32) / nsps as f32;
+            let tt = ((i + 1) as f32 - 1.5 * nsps as f32) / nsps as f32;
             gfsk_pulse(cfg.bt, tt)
         })
         .collect();

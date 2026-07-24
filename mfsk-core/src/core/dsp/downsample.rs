@@ -92,6 +92,24 @@ pub fn build_fft_cache(audio: &[i16], cfg: &DownsampleCfg) -> Vec<Complex<f32>> 
     x
 }
 
+/// Floating-point residual counterpart of [`build_fft_cache`].
+///
+/// Later SIC passes in WSJT-X keep `dd` as `real`; converting that
+/// residual back to PCM16 before this FFT discards weak fractional
+/// samples created by cancellation.
+#[inline]
+pub fn build_fft_cache_f32(audio: &[f32], cfg: &DownsampleCfg) -> Vec<Complex<f32>> {
+    let mut x: Vec<Complex<f32>> = audio
+        .iter()
+        .map(|&sample| Complex::new(sample, 0.0))
+        .chain(iter::repeat(Complex::new(0.0, 0.0)))
+        .take(cfg.fft1_size)
+        .collect();
+    let mut planner = default_planner();
+    planner.plan_forward(cfg.fft1_size).process(&mut x);
+    x
+}
+
 /// Downconvert `audio` to a complex baseband centred on `f0`.
 ///
 /// Returns the decimated signal plus the forward-FFT cache so the caller can
@@ -104,6 +122,18 @@ pub fn downsample(
     cfg: &DownsampleCfg,
 ) -> (Vec<Complex<f32>>, Vec<Complex<f32>>) {
     let cache = build_fft_cache(audio, cfg);
+    let out = downsample_cached(&cache, f0, cfg);
+    (out, cache)
+}
+
+/// Downconvert a floating-point SIC residual without PCM requantization.
+#[inline]
+pub fn downsample_f32(
+    audio: &[f32],
+    f0: f32,
+    cfg: &DownsampleCfg,
+) -> (Vec<Complex<f32>>, Vec<Complex<f32>>) {
+    let cache = build_fft_cache_f32(audio, cfg);
     let out = downsample_cached(&cache, f0, cfg);
     (out, cache)
 }

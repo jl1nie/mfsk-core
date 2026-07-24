@@ -38,6 +38,19 @@ pub fn downsample(
     }
 }
 
+/// Floating-point residual variant used by later SIC passes.
+#[inline]
+pub fn downsample_f32(
+    audio: &[f32],
+    f0: f32,
+    fft_cache: Option<&[Complex<f32>]>,
+) -> (Vec<Complex<f32>>, Vec<Complex<f32>>) {
+    match fft_cache {
+        Some(cache) => (g::downsample_cached(cache, f0, &FT8_CFG), cache.to_vec()),
+        None => g::downsample_f32(audio, f0, &FT8_CFG),
+    }
+}
+
 /// Compute only the forward FFT cache (192 000-point) — expensive, shared
 /// across all subsequent downsample calls for the same audio block.
 #[inline]

@@ -13,6 +13,8 @@
 //! `…::NFFT_SPEC`, …) as before the move.
 
 use super::super::params::NSPS;
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 // ── Audio sample trait ──────────────────────────────────────────────────────
 
@@ -54,6 +56,17 @@ impl AudioSample for i8 {
     #[inline]
     fn to_i16(self) -> i16 {
         (self as i16) << 8
+    }
+}
+
+impl AudioSample for f32 {
+    #[inline]
+    fn to_f32(self) -> f32 {
+        self
+    }
+    #[inline]
+    fn to_i16(self) -> i16 {
+        self.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
     }
 }
 
@@ -153,12 +166,10 @@ pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 
 /// Coarse-sync ±lag search window (s).
 ///
-/// WSJT-X uses ±2.5 s — covers operators with sloppy slot timing
-/// or slow rigs. Embedded targets running on a synced clock (NTP /
-/// GPS) live well within ±1 s; halving the lag range cuts
-/// `coarse_sync` work by ~60 % (linear in `n_lag`). If the live
-/// timing source is loose, raise this back to 2.5.
-const SYNC_LAG_S_DEFAULT: f32 = 1.0;
+/// Match WSJT-X `sync8.f90`'s ±2.5 s search. A narrower window is a
+/// legitimate embedded speed/recall trade-off, but it is not decoder
+/// parity and must be an explicit opt-in through `MFSK_SYNC_LAG_S`.
+const SYNC_LAG_S_DEFAULT: f32 = 2.5;
 pub(super) fn sync_lag_s() -> f32 {
     #[cfg(feature = "std")]
     {

@@ -43,18 +43,18 @@ pub fn goertzel_window_end_sample(dt_sec: f32) -> usize {
     (i0 + (NN as i64) * (NSPS as i64)).max(0) as usize
 }
 
-// Thread-local scratch for the `S -> i16` conversion in
+// Thread-local scratch for the `S -> f32` conversion in
 // `fill_symbol_spectra_via_cd0`'s `fft_cache=None` branch. The
-// `Vec<i16>` capacity is grown once per thread and reused across
+// `Vec<f32>` capacity is grown once per thread and reused across
 // every per-candidate call — replaces the previous per-call
-// `collect::<Vec<i16>>()` that allocated ~360 KB × 30 cand × 3 pass
+// conversion allocation that grew with every candidate and pass
 // = ~32 MB of allocator traffic per slot (Gemini PR #80 / #100
 // review). Gated on `fft-rustfft` only — matches the usage site's
 // gate; `fft-rustfft` implies `std` via the Cargo.toml feature
 // closure (`fft-rustfft = ["std", "dep:rustfft"]`).
 #[cfg(feature = "fft-rustfft")]
 std::thread_local! {
-    static AUDIO_I16_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
+    static AUDIO_F32_SCRATCH: core::cell::RefCell<alloc::vec::Vec<f32>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
 }
 
@@ -241,11 +241,11 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
             freq_hz,
             &crate::ft8::downsample::FT8_CFG,
         ),
-        None => AUDIO_I16_SCRATCH.with_borrow_mut(|buf| {
+        None => AUDIO_F32_SCRATCH.with_borrow_mut(|buf| {
             buf.clear();
             buf.reserve(audio.len());
-            buf.extend(audio.iter().map(|s| s.to_i16()));
-            crate::ft8::downsample::downsample(buf.as_slice(), freq_hz, None).0
+            buf.extend(audio.iter().map(|s| s.to_f32()));
+            crate::ft8::downsample::downsample_f32(buf.as_slice(), freq_hz, None).0
         }),
     };
 

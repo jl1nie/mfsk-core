@@ -33,13 +33,15 @@ pub struct SyncCandidate {
     pub score: f32,
 }
 
-/// DT median of the top-`top_k` highest-score coarse-sync candidates.
+/// Score-weighted DT median of the strongest timing-consensus candidates.
 ///
 /// Used to bootstrap slot alignment when zero confirmed decodes are
-/// available (cold start, or a deep-fade slot). Empirically — on
-/// reference qso3_busy / WSJT-X 191111 captures — the top-5 candidate
-/// DT median lands within ±70 ms of the confirmed-decode DT median,
-/// while top-10/20 wash out under false-candidate noise (see
+/// available (cold start, or a deep-fade slot). The full WSJT-X timing
+/// search deliberately returns secondary peaks across a ±2.5-second
+/// window, so blindly taking the five largest scores can lock onto
+/// unrelated wide-window peaks. This helper first finds the strongest
+/// local DT consensus, then takes a score-weighted median of up to
+/// `top_k` candidates in that cluster (see
 /// `mfsk-core/tests/ft8_coarse_sync_bootstrap.rs`).
 ///
 /// `cands` does not need to be sorted; callers pass the raw output of
@@ -49,26 +51,90 @@ pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32>
     if cands.is_empty() || top_k == 0 {
         return None;
     }
-    // O(N) top-K partition via `select_nth_unstable_by`, then
-    // O(K log K) sort of just the K winners. Saves ~N log N vs full
-    // sort; for N≈200 / K=5 / one call per slot the saving is sub-µs,
-    // but the cost is identical to the naïve approach so we take it.
-    let mut refs: Vec<&SyncCandidate> = cands.iter().collect();
-    let k = top_k.min(refs.len());
-    if k < refs.len() {
-        refs.select_nth_unstable_by(k - 1, |a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(core::cmp::Ordering::Equal)
-        });
+
+    // Two FT8 symbols is wide enough to absorb the coarse 40 ms timing
+    // quantisation and normal station-to-station spread, while keeping
+    // the secondary ±2.5 s search peaks in separate clusters.
+    const CONSENSUS_HALF_WINDOW_S: f32 = 0.32;
+    const MIN_CONSENSUS_POOL: usize = 32;
+    const POOL_MULTIPLIER: usize = 8;
+
+    let mut refs: Vec<&SyncCandidate> = cands
+        .iter()
+        .filter(|cand| cand.dt_sec.is_finite() && cand.score.is_finite())
+        .collect();
+    if refs.is_empty() {
+        return None;
     }
-    let mut dts: Vec<f32> = refs[..k].iter().map(|c| c.dt_sec).collect();
-    dts.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    let n = dts.len();
+    refs.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let pool_len = top_k
+        .saturating_mul(POOL_MULTIPLIER)
+        .max(MIN_CONSENSUS_POOL)
+        .min(refs.len());
+    refs.truncate(pool_len);
+
+    let support = |center: &SyncCandidate| {
+        refs.iter()
+            .filter(|cand| (cand.dt_sec - center.dt_sec).abs() <= CONSENSUS_HALF_WINDOW_S)
+            .map(|cand| cand.score.max(0.0))
+            .sum::<f32>()
+    };
+    let center = refs.iter().copied().max_by(|a, b| {
+        support(a)
+            .partial_cmp(&support(b))
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.score
+                    .partial_cmp(&b.score)
+                    .unwrap_or(core::cmp::Ordering::Equal)
+            })
+    })?;
+
+    let mut consensus: Vec<&SyncCandidate> = refs
+        .into_iter()
+        .filter(|cand| (cand.dt_sec - center.dt_sec).abs() <= CONSENSUS_HALF_WINDOW_S)
+        .collect();
+    consensus.sort_unstable_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    consensus.truncate(top_k.min(consensus.len()));
+    consensus.sort_unstable_by(|a, b| {
+        a.dt_sec
+            .partial_cmp(&b.dt_sec)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let total_weight = consensus
+        .iter()
+        .map(|cand| cand.score.max(0.0))
+        .sum::<f32>();
+    if total_weight > f32::EPSILON {
+        let midpoint = total_weight * 0.5;
+        let mut cumulative = 0.0;
+        for (index, cand) in consensus.iter().enumerate() {
+            cumulative += cand.score.max(0.0);
+            if cumulative >= midpoint {
+                if cumulative == midpoint && index + 1 < consensus.len() {
+                    return Some(0.5 * (cand.dt_sec + consensus[index + 1].dt_sec));
+                }
+                return Some(cand.dt_sec);
+            }
+        }
+    }
+
+    // Scores can legitimately be zero in synthetic caller tests. Preserve
+    // the ordinary unweighted-median behaviour for that degenerate case.
+    let n = consensus.len();
     Some(if n % 2 == 1 {
-        dts[n / 2]
+        consensus[n / 2].dt_sec
     } else {
-        0.5 * (dts[n / 2 - 1] + dts[n / 2])
+        0.5 * (consensus[n / 2 - 1].dt_sec + consensus[n / 2].dt_sec)
     })
 }
 

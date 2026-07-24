@@ -39,8 +39,8 @@ pub struct LlrSet<T: LlrScalar = f32> {
     /// nsym=2 and nsym=`LLR_NSYM_MAX` (see
     /// [`ModulationParams::LLR_NSYM_MID`](super::ModulationParams::LLR_NSYM_MID)).
     /// Empty unless the protocol sets `LLR_NSYM_MID` and the caller used
-    /// [`compute_llr`] (not [`compute_llr_generic`]/[`compute_llr_fast`]
-    /// directly, which never populate this field).
+    /// [`compute_llr`]. The FT8-specific wrappers also use this slot for
+    /// WSJT-X's combined `bmete` vector.
     pub llre: Vec<T>,
 }
 
@@ -135,17 +135,6 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cm
 // frame layout the encoder honours is decoded the same way.
 use crate::core::tx::data_chunks;
 
-/// Decompose `i` into `nsym` base-`ntones` digits, most significant first.
-#[inline]
-fn base_digits(mut i: usize, ntones: usize, nsym: usize) -> Vec<usize> {
-    let mut out = vec![0usize; nsym];
-    for j in (0..nsym).rev() {
-        out[j] = i % ntones;
-        i /= ntones;
-    }
-    out
-}
-
 #[inline]
 fn normalize_bmet(bmet: &mut [f32]) {
     let n = bmet.len() as f32;
@@ -183,7 +172,7 @@ pub fn compute_llr<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<T> {
     let mut set = compute_llr_generic::<P, f32, T>(cs, P::LLR_NSYM_MAX as usize);
     if let Some(mid) = P::LLR_NSYM_MID {
         let mut bmete = vec![0.0f32; codeword_bit_len::<P>()];
-        fill_bmet_for_nsym::<P, f32>(cs, mid as usize, &mut bmete, None);
+        fill_bmet_for_nsym::<P, f32>(cs, mid as usize, &mut bmete, None, false);
         set.llre = scale_bmet::<T>(bmete, P::LLR_SCALE);
     }
     set
@@ -212,6 +201,7 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     nsym: usize,
     bmet_primary: &mut [f32],
     bmet_norm: Option<&mut [f32]>,
+    square_metric: bool,
 ) {
     let ntones = P::NTONES as usize;
     let bps = P::BITS_PER_SYMBOL as usize;
@@ -222,6 +212,7 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     let nt = ntones.pow(nsym as u32);
     let ibmax = bps * nsym - 1;
     let mut s2 = vec![0.0f32; nt];
+    debug_assert!(nsym <= 8, "supported coherent LLR depth is at most 8");
 
     // Bit-normalised array (llrd) is only produced for nsym=1.
     let mut bmet_norm_holder = bmet_norm;
@@ -237,7 +228,12 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
          bmet_primary: &mut [f32],
          bmet_norm_holder: &mut Option<&mut [f32]>| {
             for (i, s2_i) in s2.iter_mut().enumerate() {
-                let digits = base_digits(i, ntones, nsym);
+                let mut digits = [0usize; 8];
+                let mut state = i;
+                for j in (0..nsym).rev() {
+                    digits[j] = state % ntones;
+                    state /= ntones;
+                }
                 let mut sum_re = 0.0f32;
                 let mut sum_im = 0.0f32;
                 for j in 0..nsym {
@@ -245,7 +241,12 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
                     sum_re += entry.re.to_f32();
                     sum_im += entry.im.to_f32();
                 }
-                *s2_i = (sum_re * sum_re + sum_im * sum_im).sqrt();
+                let magnitude_squared = sum_re * sum_re + sum_im * sum_im;
+                *s2_i = if square_metric {
+                    magnitude_squared
+                } else {
+                    magnitude_squared.sqrt()
+                };
             }
             for ib in 0..=ibmax {
                 let bit_idx = i_bit_base + ib;
@@ -277,29 +278,21 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     let mut chunk_bit_base = 0usize;
     for &(chunk_start_sym, chunk_len) in &chunks {
         let mut k = 0usize;
-        while k + nsym <= chunk_len {
+        // WSJT-X walks `k = 1, 1+nsym, ... <= chunk_len` and does
+        // not require the whole coherent group to remain inside the
+        // data chunk.  Consequently the final group can include one
+        // or two symbols from the following Costas block.  Its bit
+        // writes are clipped by the codeword boundary (and, for the
+        // first FT8 half, the next half overwrites any spill).
+        //
+        // The former overlap-tail patch moved the final group
+        // backwards to keep it wholly in data.  That changed bits
+        // 82..87 for nsym=2/3 and diverged from `ft8b.f90`.
+        while k < chunk_len {
             let ks = chunk_start_sym + k;
             let i_bit_base = chunk_bit_base + k * bps;
             process_group(ks, i_bit_base, bmet_primary, &mut bmet_norm_holder);
             k += nsym;
-        }
-        // Tail patch (issue #18, slice 5):
-        // when `chunk_len` is not a multiple of `nsym`, the last
-        // `chunk_len - k` symbols are uncovered by the non-overlapping
-        // sweep above. WSJT-X's `get_ft4_bitmetrics.f90` iterates over
-        // the **whole** frame (including sync symbols) so the loop
-        // structure naturally covers everything; our chunk-restricted
-        // loop drops `chunk_len % nsym` data symbols per chunk = 6
-        // bits total for FT4 (chunk_len=29, nsym=4). We patch by
-        // running one final overlapping group at `k = chunk_len -
-        // nsym` whose later bits overwrite the prior group's overlap
-        // and whose new bits fill the tail. Identity for chunks that
-        // are exact multiples of `nsym` (k == chunk_len there).
-        if k < chunk_len && chunk_len >= nsym {
-            let tail_k = chunk_len - nsym;
-            let ks = chunk_start_sym + tail_k;
-            let i_bit_base = chunk_bit_base + tail_k * bps;
-            process_group(ks, i_bit_base, bmet_primary, &mut bmet_norm_holder);
         }
         chunk_bit_base += chunk_len * bps;
     }
@@ -325,6 +318,36 @@ fn codeword_bit_len<P: Protocol>() -> usize {
 pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     max_nsym: usize,
+) -> LlrSet<T> {
+    compute_llr_generic_with_metric::<P, S, T>(cs, max_nsym, false, false)
+}
+
+/// FT8 amplitude-metric bundle including WSJT-X's combined `bmete`
+/// vector in `llre`.
+#[doc(hidden)]
+pub fn compute_llr_generic_ft8<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+) -> LlrSet<T> {
+    compute_llr_generic_with_metric::<P, S, T>(cs, max_nsym, false, true)
+}
+
+/// WSJT-X `imetric=2` variant used by later FT8 subtraction passes.
+/// It squares each coherent-group magnitude before forming max-log
+/// bit metrics.
+#[doc(hidden)]
+pub fn compute_llr_generic_power<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+) -> LlrSet<T> {
+    compute_llr_generic_with_metric::<P, S, T>(cs, max_nsym, true, true)
+}
+
+fn compute_llr_generic_with_metric<P: Protocol, S: SpecScalar, T: LlrScalar>(
+    cs: &[Cmplx<S>],
+    max_nsym: usize,
+    square_metric: bool,
+    include_combined: bool,
 ) -> LlrSet<T> {
     let codeword_len = codeword_bit_len::<P>();
     let mut bmeta = vec![0.0f32; codeword_len];
@@ -360,11 +383,33 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
             // function-local Vecs but we need disjoint &mut. The
             // explicit shadow keeps the borrow checker happy.
             let (bmeta_slice, bmetd_slice) = (&mut bmeta[..], &mut bmetd[..]);
-            fill_bmet_for_nsym::<P, S>(cs, 1, bmeta_slice, Some(bmetd_slice));
+            fill_bmet_for_nsym::<P, S>(cs, 1, bmeta_slice, Some(bmetd_slice), square_metric);
         } else {
-            fill_bmet_for_nsym::<P, S>(cs, nsym, primary, None);
+            fill_bmet_for_nsym::<P, S>(cs, nsym, primary, None, square_metric);
         }
     }
+
+    // WSJT-X FT8 `bmete`: choose the largest-magnitude value from the
+    // three *raw* nsym=1/2/3 metric vectors for each bit, then normalize
+    // the combined vector once. Choosing after each source vector has
+    // already been normalized changes both the winner and OSD reliability
+    // ordering on weak signals.
+    let bmete = if include_combined && max_nsym >= 3 {
+        (0..codeword_len)
+            .map(|i| {
+                [bmeta[i], bmetb[i], bmetc[i]]
+                    .into_iter()
+                    .max_by(|left, right| {
+                        left.abs()
+                            .partial_cmp(&right.abs())
+                            .unwrap_or(core::cmp::Ordering::Equal)
+                    })
+                    .unwrap_or(0.0)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let s = P::LLR_SCALE;
     LlrSet {
@@ -372,7 +417,7 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
         llrb: scale_bmet::<T>(bmetb, s),
         llrc: scale_bmet::<T>(bmetc, s),
         llrd: scale_bmet::<T>(bmetd, s),
-        llre: Vec::new(),
+        llre: scale_bmet::<T>(bmete, s),
     }
 }
 
@@ -398,7 +443,7 @@ pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
     debug_assert!((1..=3).contains(&nsym));
     let codeword_len = codeword_bit_len::<P>();
     let mut bmet = vec![0.0f32; codeword_len];
-    fill_bmet_for_nsym::<P, S>(cs, nsym, &mut bmet, None);
+    fill_bmet_for_nsym::<P, S>(cs, nsym, &mut bmet, None, false);
     scale_bmet::<T>(bmet, P::LLR_SCALE)
 }
 
