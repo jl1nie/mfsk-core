@@ -101,10 +101,11 @@ pub fn symbol_spectra_direct<S: AudioSample>(
     freq_hz: f32,
     dt_sec: f32,
     sym_mask: SymMask,
+    fft_cache: Option<&[Complex<f32>]>,
 ) -> Box<[[Cmplx<f32>; 8]; 79]> {
     let mut out: Box<[[Cmplx<f32>; 8]; 79]> =
         vec![[Cmplx::<f32>::default(); 8]; 79].try_into().unwrap();
-    fill_symbol_spectra(&mut out, audio, freq_hz, dt_sec, sym_mask, None);
+    fill_symbol_spectra(&mut out, audio, freq_hz, dt_sec, sym_mask, fft_cache);
     out
 }
 

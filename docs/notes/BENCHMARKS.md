@@ -57,7 +57,7 @@ is wall time on a many-core host, not a single-thread figure).
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.28 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.34 s |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.45 s |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.12 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.69 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.72 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
@@ -80,6 +80,38 @@ Notes:
   O(N log N) — dropping this row to 0.45 s (~10.5×) with byte-identical
   recall (7/8 golden, 7 phantom, 14 total). FT4's golden test was
   already on a different (non-LPF) subtract path and unaffected.
+- FT8's `qso3_busy.wav` dropped further, **0.45 s → 0.12 s (~3.6×)**,
+  in a follow-up pass (2026-07-25). Two wiring gaps, found by
+  instrumenting `decode_block_multipass` directly rather than
+  re-guessing from the algorithm shape:
+  1. `decode_block`'s own `refine_candidates` / per-candidate
+     `process_candidates_tuned_with_ap` calls were passing
+     `fft_cache: None` at every call site, so each of up to ~45
+     candidates/slot re-ran the 192 k-point forward FFT from scratch
+     even though `fine_refine_pass1` (a sibling stage in the same
+     pass) already built and used exactly this cache. Wired the
+     existing `build_fft_cache`/`downsample_cached` helpers through
+     `refine_candidates`, `process_candidates_tuned_with_ap[_ref]`,
+     and `auto_ap_strategy::run`, lazily rebuilding only when the
+     WSJT-X-mandated sequential subtract actually mutates `work`
+     (not eagerly every pass). Alone: 0.43 s → ~0.12-0.22 s.
+  2. `subtract_tones_lpf_fft`'s filter-response FFT was already
+     cached (`cached_window_fft`, from the original 10.5× fix above),
+     but the forward/inverse `FftPlanner` *plans* for `nfft = 180 000`
+     were rebuilt on every call — measured at ~2.8 ms/call for plan
+     construction vs ~0.7 ms for the transform itself, i.e. plan
+     rebuild cost ~4× the FFT it was gating. Cached the plans in a
+     `nfft`-keyed `OnceLock`, same pattern as
+     `fill_symbol_spectra.rs`'s `SYMBOL_FFT_32`.
+
+  Both fixes are FFT-cache wiring, not new algorithms — byte-identical
+  recall verified at each step (7/8 golden, 7 phantom, 14 total on
+  `qso3_apoff`; 5/6 JTDX AP-on extras unchanged on `qso3_apon`).
+  `fft-rustfft` is `std`-gated but thread-free, so both caches also
+  apply under `wasm32-unknown-unknown` (verified via a feature-matched
+  build) — no embedded-target impact either way, since
+  `decode_block_multipass`'s `not(fft-rustfft)` variant has no
+  subtract loop (single-pass, no SIC) and never calls these paths.
 - FT4 was the outlier at **1.20 s** (7.5 s slot, only 6 signals) until a
   profiling pass (2026-07-20, `dapper-soaring-nest` plan) found its
   coarse-candidate stage was structurally the wrong algorithm — a

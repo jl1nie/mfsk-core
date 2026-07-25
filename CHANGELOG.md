@@ -488,6 +488,38 @@
   test to match, verified identical recall either way. FT4's golden
   test is on a different (non-LPF, constant-amplitude) subtract path
   in `core::pipeline` and was unaffected by this change.
+- **FT8 `decode_block` a further ~3.6× faster on busy-band recordings
+  — two FFT-cache wiring gaps closed.** Follow-up profiling of
+  `decode_block_multipass` (post the 10.5× subtract fix above) found
+  its cost had moved, not disappeared: (1) `refine_candidates` and
+  the per-candidate `process_candidates_tuned_with_ap[_ref]` calls
+  were all passing `fft_cache: None`, so each of up to ~45
+  candidates/slot re-ran the 192 k-point forward FFT from scratch
+  even though the sibling `fine_refine_pass1` stage in the same pass
+  already built and reused exactly this cache — a wiring gap, not a
+  missing algorithm. Threaded the existing
+  `build_fft_cache`/`downsample_cached` helpers through
+  `refine_candidates`, `process_candidates_tuned_with_ap[_ref]`, and
+  `auto_ap_strategy::run`, rebuilding the cache lazily only when the
+  WSJT-X-mandated sequential subtract actually mutates the working
+  buffer (not eagerly every pass) — alone dropped
+  `qso3_apoff_meets_wsjtx_golden_floor` 0.43 s → ~0.12–0.22 s. (2)
+  `subtract_tones_lpf_fft`'s filter-response FFT was already cached
+  (`cached_window_fft`, from the fix above), but its forward/inverse
+  `FftPlanner` *plans* for `nfft = 180 000` were rebuilt on every
+  call — measured at ~2.8 ms/call for plan construction vs ~0.7 ms
+  for the transform itself, i.e. plan-rebuild cost ~4× the FFT it
+  was gating. Cached the plans in an `nfft`-keyed `OnceLock`, the
+  same pattern `fill_symbol_spectra.rs`'s `SYMBOL_FFT_32` already
+  used for the per-symbol 32-pt FFT. Combined: **0.43 s → 0.12 s
+  (~3.6×)**, byte-identical recall (7/8 golden, 7 phantom, 14 total
+  on `qso3_apoff`; 5/6 JTDX AP-on extras unchanged on `qso3_apon`).
+  Both fixes are cache wiring, not new algorithms, so risk is low;
+  `fft-rustfft` is `std`-gated but thread-free, so both caches also
+  apply under `wasm32-unknown-unknown` (build-verified). No embedded
+  impact either way, since `decode_block_multipass`'s
+  `not(fft-rustfft)` variant has no subtract loop (single-pass, no
+  SIC) and never calls these paths.
 
 ## 0.7.4 — MSK144 decode (#25)
 

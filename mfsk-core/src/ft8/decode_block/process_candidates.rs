@@ -41,6 +41,7 @@ use crate::core::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
 use crate::fec::ldpc::osd::osd_decode_deep;
+use num_complex::Complex;
 
 // Phase 1.7.7-Stick: both `refine_candidates_into` (pass-2) and the
 // embedded branch of `process_candidates_into_with_cs_scratch_tuned`
@@ -233,7 +234,14 @@ fn decode_block_multipass<S: AudioSample>(
         let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
         drop(spec);
         let cands = fine_refine_pass1(work.as_slice(), cands);
-        let pass2 = refine_candidates(work.as_slice(), cands, max_cand);
+        // Wide-band 192k-FFT cache, shared across every `refine_candidates`
+        // / `process_candidates_tuned_with_ap` call in this pass — valid
+        // as long as `work` hasn't changed. Rebuilt lazily (only when the
+        // next candidate is actually processed) rather than eagerly after
+        // every subtract, since most candidates in a pass don't decode.
+        let mut fft_cache: Option<alloc::vec::Vec<Complex<f32>>> =
+            Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
+        let pass2 = refine_candidates(work.as_slice(), cands, max_cand, fft_cache.as_deref());
 
         // **WSJT-X ft8b.f90:432-437 sequential subtract**: each
         // accepted decode immediately subtracts from `work` so the
@@ -249,6 +257,9 @@ fn decode_block_multipass<S: AudioSample>(
         #[cfg(not(feature = "std"))]
         let trace = false;
         for cand in pass2 {
+            if fft_cache.is_none() {
+                fft_cache = Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
+            }
             let single_results = process_candidates_tuned_with_ap(
                 work.as_slice(),
                 alloc::vec![cand],
@@ -257,6 +268,7 @@ fn decode_block_multipass<S: AudioSample>(
                 bp_max_iter,
                 ap_hint,
                 strictness,
+                fft_cache.as_deref(),
             );
             for r in single_results {
                 if all.iter().any(|x| x.message77 == r.message77) {
@@ -272,6 +284,7 @@ fn decode_block_multipass<S: AudioSample>(
                     }
                 }
                 crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
+                fft_cache = None; // `work` changed — cache is stale.
                 all.push(r);
             }
         }
@@ -654,7 +667,7 @@ fn decode_block_multipass<S: AudioSample>(
     let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
     drop(spec);
     let pass1 = fine_refine_pass1(audio, pass1);
-    let pass2 = refine_candidates(audio, pass1, max_cand);
+    let pass2 = refine_candidates(audio, pass1, max_cand, None);
     process_candidates_tuned(audio, pass2, depth, DEFAULT_Q_THRESH, bp_max_iter)
 }
 
@@ -808,9 +821,10 @@ pub(super) fn refine_candidates<S: AudioSample>(
     audio: &[S],
     cands: Vec<SyncCandidate>,
     max_cand: usize,
+    fft_cache: Option<&[Complex<f32>]>,
 ) -> Vec<RefinedCandidate> {
     refine_candidates_with(cands, max_cand, |c| {
-        symbol_spectra_direct(audio, c.freq_hz, c.dt_sec, SymMask::SyncBlock0)
+        symbol_spectra_direct(audio, c.freq_hz, c.dt_sec, SymMask::SyncBlock0, fft_cache)
     })
 }
 
@@ -1070,6 +1084,7 @@ pub fn process_candidates_tuned<S: AudioSample>(
         bp_max_iter,
         None,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -1087,6 +1102,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     bp_max_iter: u32,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
+    fft_cache: Option<&[Complex<f32>]>,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1100,7 +1116,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         bp_max_iter,
         &mut cs_scratch,
         |cs, cand, mask| {
-            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
+            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, fft_cache);
         },
         ap_hint,
         strictness,
@@ -1124,6 +1140,7 @@ pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
     bp_max_iter: u32,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
+    fft_cache: Option<&[Complex<f32>]>,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1137,7 +1154,7 @@ pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
         bp_max_iter,
         &mut cs_scratch,
         |cs, cand, mask| {
-            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, None);
+            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, fft_cache);
         },
         ap_hint,
         strictness,
