@@ -357,11 +357,85 @@ impl FecCodec for Q65Fec {
         }
     }
 
-    fn decode_soft(&self, _llr: &[f32], _opts: &FecOpts) -> Option<FecResult> {
-        // Bit-LLR soft decoding is not the natural API for Q65's
-        // GF(64) belief propagation. Use `Q65Codec::decode` (or the
-        // protocol-level helpers in `crate::q65::rx`) instead.
-        None
+    fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
+        assert_eq!(llr.len(), Self::N, "decode_soft: llr.len() != N");
+
+        let mut working_llr = llr.to_vec();
+        if let Some((mask, values)) = opts.ap_mask {
+            assert_eq!(mask.len(), Self::N, "decode_soft: AP mask length");
+            assert_eq!(values.len(), Self::N, "decode_soft: AP values length");
+            let ap_magnitude = working_llr
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0_f32, f32::max)
+                .max(20.0);
+            for (index, (&known, &value)) in mask.iter().zip(values).enumerate() {
+                if known != 0 {
+                    working_llr[index] = if value != 0 {
+                        ap_magnitude
+                    } else {
+                        -ap_magnitude
+                    };
+                }
+            }
+        }
+
+        // Q65 consumes one normalized probability distribution per GF(64)
+        // channel symbol. Treat each six-bit LLR group as independent
+        // observations and form its joint distribution.
+        let mut intrinsics = vec![0.0_f32; 64 * 63];
+        for symbol_index in 0..63 {
+            let row = &mut intrinsics[64 * symbol_index..64 * (symbol_index + 1)];
+            for (candidate, probability) in row.iter_mut().enumerate() {
+                let mut joint = 1.0_f32;
+                for bit_index in 0..6 {
+                    let value = working_llr[6 * symbol_index + bit_index].clamp(-40.0, 40.0);
+                    let probability_one = 1.0 / (1.0 + (-value).exp());
+                    let bit = (candidate >> (5 - bit_index)) & 1;
+                    joint *= if bit == 1 {
+                        probability_one
+                    } else {
+                        1.0 - probability_one
+                    };
+                }
+                *probability = joint;
+            }
+            let sum = row.iter().sum::<f32>();
+            if !sum.is_finite() || sum <= 0.0 {
+                return None;
+            }
+            for probability in row {
+                *probability /= sum;
+            }
+        }
+
+        let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
+        let mut decoded_symbols = [0_i32; 13];
+        let iterations = codec
+            .decode(&intrinsics, &mut decoded_symbols, opts.bp_max_iter)
+            .ok()?;
+        let mut info = vec![0_u8; Self::K];
+        for (symbol_index, &symbol) in decoded_symbols.iter().enumerate() {
+            for bit_index in 0..6 {
+                info[6 * symbol_index + bit_index] = ((symbol >> (5 - bit_index)) & 1) as u8;
+            }
+        }
+        if opts.verify_info.is_some_and(|verify| !verify(&info)) {
+            return None;
+        }
+
+        let mut reencoded = vec![0_u8; Self::N];
+        self.encode(&info, &mut reencoded);
+        let hard_errors = reencoded
+            .iter()
+            .zip(llr)
+            .filter(|(bit, value)| (**bit == 1) != (**value > 0.0))
+            .count() as u32;
+        Some(FecResult {
+            info,
+            hard_errors,
+            iterations,
+        })
     }
 }
 
@@ -491,7 +565,7 @@ mod tests {
 
     #[test]
     fn q65fec_encode_matches_q65codec_direct() {
-        // The bit-level FecCodec stub must agree with calling
+        // The bit-level FecCodec adapter must agree with calling
         // `Q65Codec::encode` directly on the same payload.
         let fec = Q65Fec;
         // Pseudo-random 78-bit info pattern.
@@ -527,9 +601,23 @@ mod tests {
     }
 
     #[test]
-    fn decode_soft_is_a_stub() {
+    fn bit_llr_adapter_round_trips_a_clean_codeword() {
         let fec = Q65Fec;
-        let llr = vec![0.0_f32; Q65Fec::N];
-        assert!(fec.decode_soft(&llr, &FecOpts::default()).is_none());
+        let info = (0..Q65Fec::K)
+            .map(|index| ((index.wrapping_mul(13) ^ 0x55) & 1) as u8)
+            .collect::<Vec<_>>();
+        let mut codeword = vec![0_u8; Q65Fec::N];
+        fec.encode(&info, &mut codeword);
+        let llr = codeword
+            .iter()
+            .map(|bit| if *bit == 1 { 12.0 } else { -12.0 })
+            .collect::<Vec<_>>();
+
+        let decoded = fec
+            .decode_soft(&llr, &FecOpts::default())
+            .expect("clean Q65 bit LLRs must decode");
+        assert_eq!(decoded.info, info);
+        assert_eq!(decoded.hard_errors, 0);
+        assert!(decoded.iterations > 0);
     }
 }

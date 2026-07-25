@@ -414,12 +414,9 @@ pub struct FecResult {
 /// The trait surface speaks in **bits**: `&[u8]` info / codeword, `&[f32]`
 /// bit-LLRs, `K` and `N` counted in bits. Non-binary codes (Q65's QRA over
 /// GF(2⁶), JT65's RS over GF(2⁶)) implement this surface by packing /
-/// unpacking bits ↔ symbols inside their own `encode`, and by using a
-/// private symbol-level decode path that lives outside `decode_soft`. In
-/// particular [`crate::q65::Q65Fec::decode_soft`] returns `None` by design —
-/// the real Q65 decode runs over GF(64) probability vectors via
-/// [`crate::fec::qra::Q65Codec`] and is invoked from
-/// [`crate::q65::rx::decode_at_for`], not through this trait.
+/// unpacking bits ↔ symbols inside their own methods. Q65 converts each
+/// six-bit LLR group into a normalized GF(64) probability distribution before
+/// invoking its native QRA decoder.
 ///
 /// Counting `K` / `N` in bits keeps the cross-protocol invariant
 /// `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` (pinned in
@@ -442,10 +439,6 @@ pub trait FecCodec: Default + 'static {
     ///
     /// `llr.len() == N`. On success returns the `K` information bits plus
     /// decoder statistics. On failure returns `None`.
-    ///
-    /// Non-binary codes whose natural decode operates on symbol-level
-    /// probability vectors (Q65) MAY return `None` unconditionally and
-    /// expose their real decode through a protocol-specific entry point.
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult>;
 }
 
