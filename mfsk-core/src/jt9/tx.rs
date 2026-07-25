@@ -16,9 +16,9 @@ use core::f32::consts::TAU;
 use crate::core::{FecCodec, ModulationParams};
 use crate::fec::ConvFano232;
 
-use super::Jt9;
 use super::interleave::interleave;
 use super::sync_pattern::JT9_ISYNC;
+use super::{Jt9, Jt9Waveform};
 
 /// Gray-map a 3-bit value: `n ^ (n >> 1)`.
 #[inline]
@@ -100,6 +100,87 @@ pub fn synthesize_audio(
     out
 }
 
+/// Synthesize any selectable normal or fast JT9 waveform.
+pub fn synthesize_audio_variant(
+    tones: &[u8; 85],
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+    variant: Jt9Waveform,
+) -> Vec<f32> {
+    assert!(sample_rate > 0);
+    assert!(base_freq_hz.is_finite() && base_freq_hz >= 0.0);
+    assert!(amplitude.is_finite() && (0.0..=1.0).contains(&amplitude));
+    let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+    let samples_per_symbol = (sample_rate as f64 * symbol_dt).round() as usize;
+    let tone_spacing = variant.tone_spacing_hz();
+    let mut out = Vec::with_capacity(samples_per_symbol * tones.len());
+    let mut phase = 0.0f32;
+    for &tone in tones {
+        assert!(tone < 9, "JT9 tone must be in 0..=8");
+        let frequency = base_freq_hz + tone as f32 * tone_spacing;
+        let step = TAU * frequency / sample_rate as f32;
+        for _ in 0..samples_per_symbol {
+            out.push(amplitude * phase.cos());
+            phase += step;
+            if phase >= TAU {
+                phase -= TAU;
+            }
+        }
+    }
+    out
+}
+
+/// Synthesize the complete scheduled transmit interval for a JT9
+/// waveform. Normal A-H emit their single 85-symbol frame. Fast E-H
+/// repeat that frame phase-continuously and stop 0.5 seconds before the
+/// selected 5/10/15/30 second boundary, matching WSJT-X's fast-mode
+/// modulator.
+pub fn synthesize_audio_variant_period(
+    tones: &[u8; 85],
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+    variant: Jt9Waveform,
+    period_seconds: u32,
+) -> Option<Vec<f32>> {
+    if !matches!(period_seconds, 5 | 10 | 15 | 30 | 60) {
+        return None;
+    }
+    if matches!(variant, Jt9Waveform::Normal(_)) {
+        return (period_seconds == 60).then(|| {
+            synthesize_audio_variant(tones, sample_rate, base_freq_hz, amplitude, variant)
+        });
+    }
+    if sample_rate == 0
+        || !base_freq_hz.is_finite()
+        || base_freq_hz < 0.0
+        || !amplitude.is_finite()
+        || !(0.0..=1.0).contains(&amplitude)
+    {
+        return None;
+    }
+    let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+    let samples_per_symbol = (sample_rate as f64 * symbol_dt).round() as usize;
+    if samples_per_symbol == 0 {
+        return None;
+    }
+    let sample_count = period_seconds as usize * sample_rate as usize - sample_rate as usize / 2;
+    let mut output = Vec::with_capacity(sample_count);
+    let mut phase = 0.0f32;
+    for sample_index in 0..sample_count {
+        let symbol = (sample_index / samples_per_symbol) % tones.len();
+        let tone = tones[symbol];
+        let frequency = base_freq_hz + tone as f32 * variant.tone_spacing_hz();
+        phase += TAU * frequency / sample_rate as f32;
+        if phase >= TAU {
+            phase -= TAU;
+        }
+        output.push(amplitude * phase.cos());
+    }
+    Some(output)
+}
+
 /// Convenience: pack a standard message via `Jt72` and synthesize.
 pub fn synthesize_standard(
     call1: &str,
@@ -124,6 +205,86 @@ pub fn synthesize_standard(
         base_freq_hz,
         amplitude,
     ))
+}
+
+/// Pack a standard message and synthesize a selected JT9 waveform.
+pub fn synthesize_standard_variant(
+    call1: &str,
+    call2: &str,
+    grid_or_report: &str,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+    variant: Jt9Waveform,
+) -> Option<Vec<f32>> {
+    let words = crate::msg::jt72::pack_standard(call1, call2, grid_or_report)?;
+    let mut info_bits = [0u8; 72];
+    for (index, bit) in info_bits.iter_mut().enumerate() {
+        let word = words[index / 6];
+        *bit = (word >> (5 - index % 6)) & 1;
+    }
+    let tones = encode_channel_symbols(&info_bits);
+    Some(synthesize_audio_variant(
+        &tones,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+        variant,
+    ))
+}
+
+/// Pack a standard message and synthesize its complete scheduled
+/// normal/fast transmit interval.
+pub fn synthesize_standard_variant_period(
+    call1: &str,
+    call2: &str,
+    grid_or_report: &str,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+    variant: Jt9Waveform,
+    period_seconds: u32,
+) -> Option<Vec<f32>> {
+    let words = crate::msg::jt72::pack_standard(call1, call2, grid_or_report)?;
+    let mut info_bits = [0u8; 72];
+    for (index, bit) in info_bits.iter_mut().enumerate() {
+        *bit = (words[index / 6] >> (5 - index % 6)) & 1;
+    }
+    let tones = encode_channel_symbols(&info_bits);
+    synthesize_audio_variant_period(
+        &tones,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+        variant,
+        period_seconds,
+    )
+}
+
+/// Pack a complete JT9 message, including Type 6 free text, and synthesize
+/// its complete scheduled normal/fast transmit interval.
+pub fn synthesize_message_variant_period(
+    message: &str,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+    variant: Jt9Waveform,
+    period_seconds: u32,
+) -> Option<Vec<f32>> {
+    let words = crate::msg::jt72::pack_message(message);
+    let mut info_bits = [0u8; 72];
+    for (index, bit) in info_bits.iter_mut().enumerate() {
+        *bit = (words[index / 6] >> (5 - index % 6)) & 1;
+    }
+    let tones = encode_channel_symbols(&info_bits);
+    synthesize_audio_variant_period(
+        &tones,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+        variant,
+        period_seconds,
+    )
 }
 
 #[cfg(test)]
@@ -169,5 +330,52 @@ mod tests {
         let audio =
             synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1500.0, 0.3).expect("pack + synth");
         assert_eq!(audio.len(), 6912 * 85);
+    }
+
+    #[test]
+    fn free_text_roundtrips_through_jt9() {
+        let variant = Jt9Waveform::Normal(super::super::Jt9Submode::A);
+        let audio =
+            synthesize_message_variant_period("TNX JOE -14 73", 12_000, 1_500.0, 0.3, variant, 60)
+                .expect("free-text synth");
+        let decoded = super::super::decode_at_variant(&audio, 12_000, 0, 1_500.0, variant)
+            .expect("decode free-text synth");
+        assert_eq!(decoded.to_string(), "TNX JOE -14 7");
+    }
+
+    #[test]
+    fn fast_period_repeats_until_the_wsjt_x_stop_margin() {
+        let tones = encode_channel_symbols(&[0; 72]);
+        for period in [5, 10, 15, 30] {
+            let audio = synthesize_audio_variant_period(
+                &tones,
+                12_000,
+                1_500.0,
+                0.3,
+                Jt9Waveform::Fast(super::super::Jt9Submode::H),
+                period,
+            )
+            .expect("fast period");
+            assert_eq!(audio.len(), period as usize * 12_000 - 6_000,);
+        }
+    }
+
+    #[test]
+    fn every_normal_and_fast_geometry_has_exact_length() {
+        let tones = [0u8; 85];
+        for submode in super::super::Jt9Submode::ALL {
+            let variant = Jt9Waveform::Normal(submode);
+            assert_eq!(
+                synthesize_audio_variant(&tones, 12_000, 1_500.0, 0.3, variant).len(),
+                variant.symbol_samples_12k() as usize * 85,
+            );
+        }
+        for submode in super::super::Jt9Submode::FAST {
+            let variant = Jt9Waveform::fast(submode).expect("E-H");
+            assert_eq!(
+                synthesize_audio_variant(&tones, 12_000, 1_500.0, 0.3, variant).len(),
+                variant.symbol_samples_12k() as usize * 85,
+            );
+        }
     }
 }

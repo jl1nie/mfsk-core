@@ -29,17 +29,26 @@ mod common;
 
 use common::load_wav_f32_opt as read_wsjtx_wav;
 
+fn wsjtx_root() -> Option<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    [
+        std::env::var_os("WSJTX_SOURCE_DIR").map(PathBuf::from),
+        Some(manifest.join("../WSJT-X")),
+        Some(manifest.join("../../OpenDigi/.cache/upstream/wsjtx")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|root| root.join("lib/q65_decode.f90").is_file())
+}
+
 fn samples_dir(rel: &str) -> Option<PathBuf> {
-    // Tests run from `mfsk-core/mfsk-core/`; the WSJT-X tree is at
-    // `mfsk-core/../WSJT-X/`. Use `CARGO_MANIFEST_DIR` so the lookup
-    // is independent of the caller's working directory.
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let dir = Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65")
-        .join(rel)
-        .canonicalize()
-        .ok()?;
+    let dir = wsjtx_root()?.join("samples/Q65").join(rel);
     if dir.is_dir() { Some(dir) } else { None }
+}
+
+fn sample_file(rel: &str) -> Option<PathBuf> {
+    let path = wsjtx_root()?.join("samples/Q65").join(rel);
+    path.is_file().then_some(path)
 }
 
 /// Strict gate: stack the four ionoscatter recordings into one
@@ -242,15 +251,12 @@ fn eme_6m_sample_yields_decode_with_ap() {
 /// which matches WSJT-X's "No_AP" count ≤ 9/14 on the full dataset).
 #[test]
 fn eme_10ghz_60d_decodes_with_fading_metric() {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok().unwrap_or_default();
-    let path = std::path::Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav");
-    let path = match path.canonicalize() {
-        Ok(p) if p.is_file() => p,
-        _ => {
+    let path = match sample_file("60D_EME_10GHz/201212_1838.wav") {
+        Some(path) => path,
+        None => {
             eprintln!(
-                "skipping: WSJT-X 60D_EME_10GHz sample not found at {}",
-                path.display()
+                "not run: set WSJTX_SOURCE_DIR to the pinned WSJT-X tree \
+                 to execute Q65-60D reference-audio interoperability"
             );
             return;
         }
@@ -693,10 +699,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
         eprintln!("skipping Q65-60A: sample dir not found");
     }
 
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok().unwrap_or_default();
-    let path = std::path::Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav");
-    if let Ok(path) = path.canonicalize() {
+    if let Some(path) = sample_file("60D_EME_10GHz/201212_1838.wav") {
         if let Some(audio) = read_wsjtx_wav(&path) {
             let params = SearchParams {
                 freq_min_hz: 200.0,

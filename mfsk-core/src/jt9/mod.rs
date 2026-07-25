@@ -46,10 +46,90 @@ pub mod sync_pattern;
 pub mod tx;
 
 pub use interleave::{deinterleave, deinterleave_llrs, interleave};
-pub use rx::demodulate_aligned;
-pub use search::{SearchParams, SyncCandidate, coarse_search};
+pub use rx::{demodulate_aligned, demodulate_aligned_variant};
+pub use search::{SearchParams, SyncCandidate, coarse_search, coarse_search_variant};
 pub use sync_pattern::{JT9_ISYNC, JT9_SYNC_BLOCKS, JT9_SYNC_POSITIONS};
-pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
+pub use tx::{
+    encode_channel_symbols, synthesize_audio, synthesize_audio_variant,
+    synthesize_audio_variant_period, synthesize_message_variant_period, synthesize_standard,
+    synthesize_standard_variant, synthesize_standard_variant_period,
+};
+
+/// JT9 submode letter. Normal JT9 supports A-H; fast JT9 supports E-H.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Jt9Submode {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+}
+
+impl Jt9Submode {
+    pub const ALL: [Self; 8] = [
+        Self::A,
+        Self::B,
+        Self::C,
+        Self::D,
+        Self::E,
+        Self::F,
+        Self::G,
+        Self::H,
+    ];
+    pub const FAST: [Self; 4] = [Self::E, Self::F, Self::G, Self::H];
+
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+            Self::C => 2,
+            Self::D => 3,
+            Self::E => 4,
+            Self::F => 5,
+            Self::G => 6,
+            Self::H => 7,
+        }
+    }
+}
+
+/// On-air JT9 waveform geometry. Scheduling period is orthogonal to the
+/// fast E-H waveform and is carried by the protocol/profile variant.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Jt9Waveform {
+    Normal(Jt9Submode),
+    Fast(Jt9Submode),
+}
+
+impl Jt9Waveform {
+    pub fn fast(submode: Jt9Submode) -> Option<Self> {
+        if submode.index() >= Jt9Submode::E.index() {
+            Some(Self::Fast(submode))
+        } else {
+            None
+        }
+    }
+
+    pub const fn symbol_samples_12k(self) -> u32 {
+        match self {
+            Self::Normal(_) => 6_912,
+            Self::Fast(Jt9Submode::E) => 480,
+            Self::Fast(Jt9Submode::F) => 240,
+            Self::Fast(Jt9Submode::G) => 120,
+            Self::Fast(Jt9Submode::H) => 60,
+            Self::Fast(_) => 0,
+        }
+    }
+
+    pub const fn tone_spacing_hz(self) -> f32 {
+        match self {
+            Self::Normal(submode) => (12_000.0 / 6_912.0) * (1u32 << submode.index()) as f32,
+            Self::Fast(_) => 12_000.0 / self.symbol_samples_12k() as f32,
+        }
+    }
+}
 
 /// Top-level convenience: decode a JT9 signal at a known (start_sample,
 /// base_freq) and return the recovered message if Fano converges.
@@ -59,9 +139,27 @@ pub fn decode_at(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<crate::msg::Jt72Message> {
+    decode_at_variant(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        Jt9Waveform::Normal(Jt9Submode::A),
+    )
+}
+
+/// Decode an aligned normal or fast JT9 waveform.
+pub fn decode_at_variant(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    variant: Jt9Waveform,
+) -> Option<crate::msg::Jt72Message> {
     use crate::core::{DecodeContext, FecCodec, FecOpts, MessageCodec};
 
-    let llrs = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz);
+    let llrs =
+        rx::demodulate_aligned_variant(audio, sample_rate, start_sample, base_freq_hz, variant);
     let codec = ConvFano232;
     let res = codec.decode_soft(&llrs, &FecOpts::default())?;
     let mut payload = [0u8; 72];
@@ -138,6 +236,96 @@ pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt9Decode> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
 }
 
+/// Scan a slot for any selectable normal A-H or fast E-H waveform.
+///
+/// JT9A keeps the more sensitive WSJT-X `softsym` path in
+/// [`decode_scan`]. This variant-aware scanner is the common acquisition
+/// path for the wider and fast waveforms: it searches the known sync-tone
+/// positions on a quarter-symbol grid and refines the strongest
+/// candidates before running the exact aligned demodulator/Fano decoder.
+pub fn decode_scan_variant(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    variant: Jt9Waveform,
+    params: &search::SearchParams,
+) -> Vec<Jt9Decode> {
+    if sample_rate == 0 || variant.symbol_samples_12k() == 0 {
+        return Vec::new();
+    }
+    let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+    let nsps = (sample_rate as f64 * symbol_dt).round() as usize;
+    if nsps == 0 {
+        return Vec::new();
+    }
+    let quarter = (nsps / 4).max(1) as i64;
+    let frequency_step = sample_rate as f32 / nsps as f32 / 4.0;
+    let time_refinements = [0, -quarter, quarter, -2 * quarter, 2 * quarter];
+    let frequency_refinements = [
+        0.0,
+        -frequency_step,
+        frequency_step,
+        -2.0 * frequency_step,
+        2.0 * frequency_step,
+    ];
+
+    let mut decodes = Vec::new();
+    for candidate in
+        search::coarse_search_variant(audio, sample_rate, nominal_start_sample, variant, params)
+    {
+        let mut found = None;
+        'refine: for time_delta in time_refinements {
+            let start = candidate.start_sample as i64 + time_delta;
+            if start < 0 {
+                continue;
+            }
+            for frequency_delta in frequency_refinements {
+                if let Some(message) = decode_at_variant(
+                    audio,
+                    sample_rate,
+                    start as usize,
+                    candidate.freq_hz + frequency_delta,
+                    variant,
+                ) {
+                    found = Some(Jt9Decode {
+                        message,
+                        freq_hz: candidate.freq_hz + frequency_delta,
+                        start_sample: start as usize,
+                    });
+                    break 'refine;
+                }
+            }
+        }
+        if let Some(decode) = found {
+            let duplicate = decodes.iter().any(|previous: &Jt9Decode| {
+                previous.message == decode.message
+                    && (previous.freq_hz - decode.freq_hz).abs() <= variant.tone_spacing_hz()
+                    && (previous.start_sample as i64 - decode.start_sample as i64).abs()
+                        <= nsps as i64
+            });
+            if !duplicate {
+                decodes.push(decode);
+            }
+        }
+    }
+    decodes
+}
+
+/// Variant-aware scan with default acquisition settings.
+pub fn decode_scan_variant_default(
+    audio: &[f32],
+    sample_rate: u32,
+    variant: Jt9Waveform,
+) -> Vec<Jt9Decode> {
+    decode_scan_variant(
+        audio,
+        sample_rate,
+        0,
+        variant,
+        &search::SearchParams::default(),
+    )
+}
+
 /// JT9 protocol marker.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Jt9;
@@ -188,6 +376,105 @@ impl Protocol for Jt9 {
     const ID: ProtocolId = ProtocolId::Jt9;
 }
 
+macro_rules! jt9_normal_protocol {
+    ($name:ident, $multiplier:literal) => {
+        #[derive(Copy, Clone, Debug, Default)]
+        pub struct $name;
+
+        impl ModulationParams for $name {
+            const NTONES: u32 = 9;
+            const BITS_PER_SYMBOL: u32 = 3;
+            const NSPS: u32 = 6_912;
+            const SYMBOL_DT: f32 = 6_912.0 / 12_000.0;
+            const TONE_SPACING_HZ: f32 = (12_000.0 / 6_912.0) * $multiplier as f32;
+            const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2, 6, 7, 5, 4];
+            const GFSK_BT: f32 = 0.0;
+            const GFSK_HMOD: f32 = 1.0;
+            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
+            const NSTEP_PER_SYMBOL: u32 = 2;
+            const NDOWN: u32 = 8;
+        }
+
+        impl FrameLayout for $name {
+            const N_DATA: u32 = 69;
+            const N_SYNC: u32 = 16;
+            const N_SYMBOLS: u32 = 85;
+            const N_RAMP: u32 = 0;
+            const SYNC_MODE: SyncMode = SyncMode::Block(&JT9_SYNC_BLOCKS);
+            const T_SLOT_S: f32 = 60.0;
+            const TX_START_OFFSET_S: f32 = 0.0;
+        }
+
+        impl Protocol for $name {
+            type Fec = ConvFano232;
+            type Msg = Jt72Codec;
+            const ID: ProtocolId = ProtocolId::Jt9;
+        }
+    };
+}
+
+jt9_normal_protocol!(Jt9b, 2);
+jt9_normal_protocol!(Jt9c, 4);
+jt9_normal_protocol!(Jt9d, 8);
+jt9_normal_protocol!(Jt9e, 16);
+jt9_normal_protocol!(Jt9f, 32);
+jt9_normal_protocol!(Jt9g, 64);
+jt9_normal_protocol!(Jt9h, 128);
+
+macro_rules! jt9_fast_protocol {
+    ($name:ident, $nsps:literal, $period:literal) => {
+        #[derive(Copy, Clone, Debug, Default)]
+        pub struct $name;
+
+        impl ModulationParams for $name {
+            const NTONES: u32 = 9;
+            const BITS_PER_SYMBOL: u32 = 3;
+            const NSPS: u32 = $nsps;
+            const SYMBOL_DT: f32 = $nsps as f32 / 12_000.0;
+            const TONE_SPACING_HZ: f32 = 12_000.0 / $nsps as f32;
+            const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2, 6, 7, 5, 4];
+            const GFSK_BT: f32 = 0.0;
+            const GFSK_HMOD: f32 = 1.0;
+            const NFFT_PER_SYMBOL_FACTOR: u32 = 2;
+            const NSTEP_PER_SYMBOL: u32 = 4;
+            const NDOWN: u32 = 1;
+        }
+
+        impl FrameLayout for $name {
+            const N_DATA: u32 = 69;
+            const N_SYNC: u32 = 16;
+            const N_SYMBOLS: u32 = 85;
+            const N_RAMP: u32 = 0;
+            const SYNC_MODE: SyncMode = SyncMode::Block(&JT9_SYNC_BLOCKS);
+            const T_SLOT_S: f32 = $period as f32;
+            const TX_START_OFFSET_S: f32 = 0.0;
+        }
+
+        impl Protocol for $name {
+            type Fec = ConvFano232;
+            type Msg = Jt72Codec;
+            const ID: ProtocolId = ProtocolId::Jt9;
+        }
+    };
+}
+
+jt9_fast_protocol!(Jt9eFast5, 480, 5);
+jt9_fast_protocol!(Jt9fFast5, 240, 5);
+jt9_fast_protocol!(Jt9gFast5, 120, 5);
+jt9_fast_protocol!(Jt9hFast5, 60, 5);
+jt9_fast_protocol!(Jt9eFast10, 480, 10);
+jt9_fast_protocol!(Jt9fFast10, 240, 10);
+jt9_fast_protocol!(Jt9gFast10, 120, 10);
+jt9_fast_protocol!(Jt9hFast10, 60, 10);
+jt9_fast_protocol!(Jt9eFast15, 480, 15);
+jt9_fast_protocol!(Jt9fFast15, 240, 15);
+jt9_fast_protocol!(Jt9gFast15, 120, 15);
+jt9_fast_protocol!(Jt9hFast15, 60, 15);
+jt9_fast_protocol!(Jt9eFast30, 480, 30);
+jt9_fast_protocol!(Jt9fFast30, 240, 30);
+jt9_fast_protocol!(Jt9gFast30, 120, 30);
+jt9_fast_protocol!(Jt9hFast30, 60, 30);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +505,50 @@ mod tests {
 
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::N, 206);
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::K, 72);
+    }
+
+    #[test]
+    fn all_selectable_waveform_geometries_round_trip() {
+        let normal = Jt9Submode::ALL.map(Jt9Waveform::Normal);
+        let fast = Jt9Submode::FAST
+            .map(|submode| Jt9Waveform::fast(submode).expect("E-H are fast-capable"));
+        for variant in normal.into_iter().chain(fast) {
+            let audio =
+                synthesize_standard_variant("CQ", "K1ABC", "FN42", 12_000, 500.0, 0.3, variant)
+                    .expect("pack");
+            let decoded = decode_at_variant(&audio, 12_000, 0, 500.0, variant)
+                .expect("clean JT9 waveform must decode");
+            assert_eq!(decoded.to_string(), "CQ K1ABC FN42");
+        }
+    }
+
+    #[test]
+    fn variant_scanner_acquires_wide_and_fast_waveforms() {
+        for variant in [
+            Jt9Waveform::Normal(Jt9Submode::H),
+            Jt9Waveform::Fast(Jt9Submode::E),
+            Jt9Waveform::Fast(Jt9Submode::H),
+        ] {
+            let prefix = (variant.symbol_samples_12k() / 2) as usize;
+            let signal =
+                synthesize_standard_variant("CQ", "K1ABC", "FN42", 12_000, 500.0, 0.3, variant)
+                    .expect("pack");
+            let mut audio = vec![0.0; prefix];
+            audio.extend(signal);
+            let params = search::SearchParams {
+                freq_min_hz: 490.0,
+                freq_max_hz: 510.0,
+                time_tolerance_symbols: 2,
+                score_threshold: 0.05,
+                max_candidates: 12,
+            };
+            let decodes = decode_scan_variant(&audio, 12_000, 0, variant, &params);
+            assert!(
+                decodes
+                    .iter()
+                    .any(|decode| decode.message.to_string() == "CQ K1ABC FN42"),
+                "failed to scan {variant:?}: {decodes:?}",
+            );
+        }
     }
 }

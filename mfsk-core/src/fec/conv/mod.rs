@@ -296,6 +296,95 @@ impl FecCodec for ConvFano232 {
     }
 }
 
+/// JT4 convolutional codec: the same K=32, r=1/2 code and 72+31 bit
+/// framing as JT9, but with the JT4-specific soft-decision metric table.
+///
+/// WSJT-X deliberately uses a steeper high-confidence disagreement
+/// penalty in `getmet4.f90` than JT9 uses in `jt9fano.f90`. Keeping this
+/// as a distinct codec prevents a clean-waveform round trip from hiding a
+/// low-SNR interoperability difference.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ConvFano232Jt4;
+
+fn jt4_branch_metrics(llrs: &[f32]) -> alloc::vec::Vec<[i32; 2]> {
+    const BIAS: f32 = 0.5;
+    const SCALE: f32 = 50.0;
+    const IB: usize = 160;
+    const EXTENSION_PER_STEP: f32 = 6.822 / 65.3;
+
+    let mut col0 = [0i32; 256];
+    for i in 0..=255 {
+        let xx = if i >= IB {
+            JT9_XX0[IB] - (i - IB) as f32 * EXTENSION_PER_STEP
+        } else {
+            JT9_XX0[i]
+        };
+        col0[i] = (SCALE * (xx - BIAS)).round() as i32;
+    }
+
+    let mut mettab = [[0i32; 2]; 256];
+    for i in 0..=255 {
+        mettab[i][0] = col0[i];
+    }
+    for i in 1..=255 {
+        mettab[256 - i][1] = col0[i];
+    }
+    mettab[0][1] = mettab[1][1];
+
+    llrs.iter()
+        .map(|&llr| {
+            // mfsk-core uses positive => bit 0; WSJT-X's signed soft
+            // symbol is positive for bit 1.
+            let soft = (-llr).round().clamp(-127.0, 127.0) as i32;
+            mettab[(soft + 128) as usize]
+        })
+        .collect()
+}
+
+impl FecCodec for ConvFano232Jt4 {
+    const N: usize = 206;
+    const K: usize = 72;
+
+    fn encode(&self, info: &[u8], codeword: &mut [u8]) {
+        ConvFano232.encode(info, codeword);
+    }
+
+    fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
+        assert_eq!(llr.len(), Self::N);
+        let metrics = jt4_branch_metrics(llr);
+        let max_cycles = opts
+            .max_cycles_per_bit
+            .unwrap_or(ConvFano232::DEFAULT_MAX_CYCLES);
+        let decoded = fano::fano_decode(
+            &metrics,
+            ConvFano232::NBITS,
+            ConvFano232::DEFAULT_DELTA,
+            max_cycles,
+        );
+        if !decoded.converged {
+            return None;
+        }
+
+        let mut info = vec![0u8; Self::K];
+        for i in 0..Self::K {
+            info[i] = (decoded.data[i / 8] >> (7 - (i % 8))) & 1;
+        }
+        let mut reencoded = vec![0u8; Self::N];
+        self.encode(&info, &mut reencoded);
+        let hard_errors = llr
+            .iter()
+            .zip(reencoded.iter())
+            .filter(|&(&soft, &bit)| (bit == 1) != (soft < 0.0))
+            .count() as u32;
+
+        Some(FecResult {
+            info,
+            hard_errors,
+            iterations: 0,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

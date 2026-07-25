@@ -266,7 +266,8 @@ pub fn bp_decode_generic_kind<P: LdpcParams>(
                     }
                 }
                 let mut message77 = [0u8; 77];
-                message77.copy_from_slice(&decoded[..77]);
+                let message_len = decoded.len().min(message77.len());
+                message77[..message_len].copy_from_slice(&decoded[..message_len]);
                 return Some(BpResult {
                     message77,
                     info: decoded,
@@ -795,7 +796,8 @@ pub fn bp_decode_generic_nms_with_scratch<P: LdpcParams, T: LlrScalar>(
                     }
                 }
                 let mut message77 = [0u8; 77];
-                message77.copy_from_slice(&decoded[..77]);
+                let message_len = decoded.len().min(message77.len());
+                message77[..message_len].copy_from_slice(&decoded[..message_len]);
                 // Codeword is small (174 / 240 bytes); clone instead
                 // of moving so the scratch's `cw` Vec stays in the pool
                 // for the next call.

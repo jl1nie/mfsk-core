@@ -13,10 +13,118 @@ use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use super::Jt65;
 use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
+
+/// Per-data-symbol power in each of the 64 JT65 data-tone hypotheses.
+pub type Jt65TonePowers = [[f32; 64]; 63];
+
+/// Preserve the full symbol spectra for message averaging and
+/// Franke-Taylor/erasure-assisted decoding.
+pub fn demodulate_tone_powers_for_with_polarity<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    polarity: SyncPolarity,
+) -> Option<Jt65TonePowers> {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let df = sample_rate as f32 / nsps as f32;
+    let base_bin = (base_freq_hz / df).round() as usize;
+    let fractional_offset_hz = base_freq_hz - base_bin as f32 * df;
+    let spacing_bins = (P::TONE_SPACING_HZ / df).round() as usize;
+    if start_sample.checked_add(126 * nsps)? > audio.len()
+        || base_bin + 66 * spacing_bins >= nsps / 2
+        || spacing_bins == 0
+    {
+        return None;
+    }
+
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(nsps);
+    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
+    let mut buffer = vec![Complex::new(0f32, 0f32); nsps];
+    let mut powers = [[0.0f32; 64]; 63];
+    let mut data_index = 0usize;
+    for symbol in 0..126 {
+        let is_data = match polarity {
+            SyncPolarity::Normal => JT65_NPRC[symbol] == 0,
+            SyncPolarity::Inverted => JT65_NPRC[symbol] == 1,
+        };
+        if !is_data {
+            continue;
+        }
+        let begin = start_sample + symbol * nsps;
+        let phase_step = -core::f32::consts::TAU * fractional_offset_hz / sample_rate as f32;
+        let rotation = Complex::new(phase_step.cos(), phase_step.sin());
+        let mut oscillator = Complex::new(1.0f32, 0.0);
+        for (slot, &sample) in buffer.iter_mut().zip(&audio[begin..begin + nsps]) {
+            *slot = oscillator * sample;
+            oscillator *= rotation;
+        }
+        fft.process_with_scratch(&mut buffer, &mut scratch);
+        for tone in 0..64 {
+            powers[data_index][tone] = buffer[base_bin + (tone + 2) * spacing_bins].norm_sqr();
+        }
+        data_index += 1;
+    }
+    debug_assert_eq!(data_index, 63);
+    Some(powers)
+}
+
+pub(crate) fn hard_decisions_from_tone_powers(
+    powers: &Jt65TonePowers,
+) -> ([u8; 63], [u8; 63], [f32; 63], [f32; 63]) {
+    let mut symbols = [0u8; 63];
+    let mut second_symbols = [0u8; 63];
+    let mut confidence = [0f32; 63];
+    let mut best_probability = [0f32; 63];
+    for (index, row) in powers.iter().enumerate() {
+        let mut best_tone = 0u8;
+        let mut second_tone = 0u8;
+        let mut best_power = f32::NEG_INFINITY;
+        let mut second_power = f32::NEG_INFINITY;
+        let mut power_sum = 0.0f32;
+        for (tone, &power) in row.iter().enumerate() {
+            power_sum += power;
+            if power > best_power {
+                second_power = best_power;
+                second_tone = best_tone;
+                best_power = power;
+                best_tone = tone as u8;
+            } else if power > second_power {
+                second_power = power;
+                second_tone = tone as u8;
+            }
+        }
+        symbols[index] = inv_gray6(best_tone);
+        second_symbols[index] = inv_gray6(second_tone);
+        confidence[index] = if best_power > 0.0 {
+            ((best_power - second_power.max(0.0)) / best_power).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        best_probability[index] = best_power.max(0.0) / power_sum.max(f32::EPSILON);
+    }
+    deinterleave(&mut symbols);
+    deinterleave(&mut second_symbols);
+    let mut permuted_confidence = [0f32; 63];
+    let mut permuted_probability = [0f32; 63];
+    for i in 0..7 {
+        for j in 0..9 {
+            permuted_confidence[j * 7 + i] = confidence[i * 9 + j];
+            permuted_probability[j * 7 + i] = best_probability[i * 9 + j];
+        }
+    }
+    (
+        symbols,
+        second_symbols,
+        permuted_confidence,
+        permuted_probability,
+    )
+}
+use super::{Jt65, SyncPolarity};
 
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
@@ -27,12 +135,43 @@ pub fn demodulate_aligned(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<[u8; 63]> {
-    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32; // ≡ TONE_SPACING_HZ
+    demodulate_aligned_for::<Jt65>(audio, sample_rate, start_sample, base_freq_hz)
+}
+
+/// Demodulate a JT65 sub-mode selected by protocol marker `P`.
+pub fn demodulate_aligned_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<[u8; 63]> {
+    demodulate_aligned_for_with_polarity::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        SyncPolarity::Normal,
+    )
+}
+
+/// Demodulate an aligned normal or `OOO`-inverted JT65 frame.
+pub fn demodulate_aligned_for_with_polarity<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    polarity: SyncPolarity,
+) -> Option<[u8; 63]> {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
+    let spacing_bins = (P::TONE_SPACING_HZ / df).round() as usize;
 
     // Sanity bounds.
-    if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
+    if start_sample + 126 * nsps > audio.len()
+        || base_bin + 66 * spacing_bins >= nsps / 2
+        || spacing_bins == 0
+    {
         return None;
     }
 
@@ -48,6 +187,8 @@ pub fn demodulate_aligned(
         base_freq_hz,
         nsps,
         base_bin,
+        spacing_bins,
+        polarity,
         &mut buf,
         &mut scratch,
         &*fft,
@@ -68,10 +209,41 @@ pub fn demodulate_aligned_with_confidence(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<([u8; 63], [f32; 63])> {
-    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
+    demodulate_aligned_with_confidence_for::<Jt65>(audio, sample_rate, start_sample, base_freq_hz)
+}
+
+/// Confidence-producing demodulator for JT65 sub-mode `P`.
+pub fn demodulate_aligned_with_confidence_for<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<([u8; 63], [f32; 63])> {
+    demodulate_aligned_with_confidence_for_with_polarity::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        SyncPolarity::Normal,
+    )
+}
+
+/// Confidence-producing demodulator for either JT65 sync polarity.
+pub fn demodulate_aligned_with_confidence_for_with_polarity<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    polarity: SyncPolarity,
+) -> Option<([u8; 63], [f32; 63])> {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
-    if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
+    let spacing_bins = (P::TONE_SPACING_HZ / df).round() as usize;
+    if start_sample + 126 * nsps > audio.len()
+        || base_bin + 66 * spacing_bins >= nsps / 2
+        || spacing_bins == 0
+    {
         return None;
     }
 
@@ -86,6 +258,8 @@ pub fn demodulate_aligned_with_confidence(
         base_freq_hz,
         nsps,
         base_bin,
+        spacing_bins,
+        polarity,
         &mut buf,
         &mut scratch,
         &*fft,
@@ -99,6 +273,8 @@ fn demodulate_aligned_with_confidence_inner(
     _base_freq_hz: f32,
     nsps: usize,
     base_bin: usize,
+    spacing_bins: usize,
+    polarity: SyncPolarity,
     buf: &mut [Complex<f32>],
     scratch: &mut [Complex<f32>],
     fft: &dyn rustfft::Fft<f32>,
@@ -114,14 +290,18 @@ fn demodulate_aligned_with_confidence_inner(
             *slot = Complex::new(s, 0.0);
         }
         fft.process_with_scratch(buf, scratch);
-        if JT65_NPRC[sym_idx] == 1 {
+        let is_data = match polarity {
+            SyncPolarity::Normal => JT65_NPRC[sym_idx] == 0,
+            SyncPolarity::Inverted => JT65_NPRC[sym_idx] == 1,
+        };
+        if !is_data {
             continue;
         }
         let mut best_tone = 0u8;
         let mut best_pwr = f32::NEG_INFINITY;
         let mut second_pwr = f32::NEG_INFINITY;
         for tone in 0u8..64 {
-            let bin = base_bin + 2 + tone as usize;
+            let bin = base_bin + (2 + tone as usize) * spacing_bins;
             let p = buf[bin].norm_sqr();
             if p > best_pwr {
                 second_pwr = best_pwr;

@@ -336,12 +336,17 @@ pub mod ft4;
 
 #[cfg(feature = "fst4")]
 pub mod fst4;
+#[cfg(feature = "fst4")]
+pub mod fst4w;
 
 #[cfg(feature = "wspr")]
 pub mod wspr;
 
 #[cfg(feature = "jt9")]
 pub mod jt9;
+
+#[cfg(feature = "jt4")]
+pub mod jt4;
 
 #[cfg(feature = "jt65")]
 pub mod jt65;
@@ -370,10 +375,12 @@ pub use crate::fst4::Fst4s60;
 pub use crate::ft4::Ft4;
 #[cfg(feature = "ft8")]
 pub use crate::ft8::Ft8;
+#[cfg(feature = "jt4")]
+pub use crate::jt4::{Jt4a, Jt4b, Jt4c, Jt4d, Jt4e, Jt4f, Jt4g};
 #[cfg(feature = "jt9")]
 pub use crate::jt9::Jt9;
 #[cfg(feature = "jt65")]
-pub use crate::jt65::Jt65;
+pub use crate::jt65::{Jt65, Jt65b, Jt65c};
 #[cfg(feature = "q65")]
 pub use crate::q65::Q65a30;
 #[cfg(feature = "uvpacket")]

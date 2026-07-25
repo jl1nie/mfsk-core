@@ -30,7 +30,8 @@
 //!
 //! ## Q65 sub-modes
 //!
-//! All ten wired Q65 sub-modes (Q65-15A, -30A, -60A‥E, -120D‥E, -300A)
+//! All 23 selectable WSJT-X Q65 sub-modes (15A‥C, 30A‥D, 60A‥E,
+//! 120A‥F, and 300A‥E)
 //! appear as distinct registry entries because their `NSPS` /
 //! `TONE_SPACING_HZ` / `T_SLOT_S` differ; they share `ProtocolId::Q65`
 //! because the FFI protocol tag is family-level. [`by_id`] returns
@@ -39,8 +40,9 @@
 //!
 //! ## FST4 sub-modes
 //!
-//! Same story as Q65: all five wired FST4 T/R-period sub-modes
-//! (FST4-15, -30, -60A, -120, -300) share `ProtocolId::Fst4`.
+//! Same story as Q65: all seven FST4 T/R-period sub-modes
+//! (FST4-15, -30, -60, -120, -300, -900, -1800) share
+//! `ProtocolId::Fst4`.
 //! FST4-60A is listed first (ahead of FST4-15, even though 15 < 60)
 //! so [`for_protocol_id`]`(ProtocolId::Fst4)` keeps returning the
 //! dominant terrestrial sub-mode as the default — this is one of the
@@ -162,16 +164,102 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     protocol_meta!("FST4-120", crate::fst4::Fst4s120),
     #[cfg(feature = "fst4")]
     protocol_meta!("FST4-300", crate::fst4::Fst4s300),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-900", crate::fst4::Fst4s900),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4-1800", crate::fst4::Fst4s1800),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4W-120", crate::fst4w::Fst4w120),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4W-300", crate::fst4w::Fst4w300),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4W-900", crate::fst4w::Fst4w900),
+    #[cfg(feature = "fst4")]
+    protocol_meta!("FST4W-1800", crate::fst4w::Fst4w1800),
     #[cfg(feature = "wspr")]
     protocol_meta!("WSPR", crate::Wspr),
     #[cfg(feature = "jt9")]
-    protocol_meta!("JT9", crate::Jt9),
+    protocol_meta!("JT9-60A", crate::Jt9),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60B", crate::jt9::Jt9b),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60C", crate::jt9::Jt9c),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60D", crate::jt9::Jt9d),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60E", crate::jt9::Jt9e),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60F", crate::jt9::Jt9f),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60G", crate::jt9::Jt9g),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-60H", crate::jt9::Jt9h),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-5E-fast", crate::jt9::Jt9eFast5),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-5F-fast", crate::jt9::Jt9fFast5),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-5G-fast", crate::jt9::Jt9gFast5),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-5H-fast", crate::jt9::Jt9hFast5),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-10E-fast", crate::jt9::Jt9eFast10),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-10F-fast", crate::jt9::Jt9fFast10),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-10G-fast", crate::jt9::Jt9gFast10),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-10H-fast", crate::jt9::Jt9hFast10),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-15E-fast", crate::jt9::Jt9eFast15),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-15F-fast", crate::jt9::Jt9fFast15),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-15G-fast", crate::jt9::Jt9gFast15),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-15H-fast", crate::jt9::Jt9hFast15),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-30E-fast", crate::jt9::Jt9eFast30),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-30F-fast", crate::jt9::Jt9fFast30),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-30G-fast", crate::jt9::Jt9gFast30),
+    #[cfg(feature = "jt9")]
+    protocol_meta!("JT9-30H-fast", crate::jt9::Jt9hFast30),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-A", crate::Jt4a),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-B", crate::Jt4b),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-C", crate::Jt4c),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-D", crate::Jt4d),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-E", crate::Jt4e),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-F", crate::Jt4f),
+    #[cfg(feature = "jt4")]
+    protocol_meta!("JT4-G", crate::Jt4g),
     #[cfg(feature = "jt65")]
-    protocol_meta!("JT65", crate::Jt65),
+    protocol_meta!("JT65-A", crate::Jt65),
+    #[cfg(feature = "jt65")]
+    protocol_meta!("JT65-B", crate::Jt65b),
+    #[cfg(feature = "jt65")]
+    protocol_meta!("JT65-C", crate::Jt65c),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-15A", crate::q65::Q65a15),
     #[cfg(feature = "q65")]
+    protocol_meta!("Q65-15B", crate::q65::Q65b15),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-15C", crate::q65::Q65c15),
+    #[cfg(feature = "q65")]
     protocol_meta!("Q65-30A", crate::q65::Q65a30),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-30B", crate::q65::Q65b30),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-30C", crate::q65::Q65c30),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-30D", crate::q65::Q65d30),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-60A", crate::q65::Q65a60),
     #[cfg(feature = "q65")]
@@ -183,11 +271,27 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-60E", crate::q65::Q65e60),
     #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120A", crate::q65::Q65a120),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120B", crate::q65::Q65b120),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120C", crate::q65::Q65c120),
+    #[cfg(feature = "q65")]
     protocol_meta!("Q65-120D", crate::q65::Q65d120),
     #[cfg(feature = "q65")]
     protocol_meta!("Q65-120E", crate::q65::Q65e120),
     #[cfg(feature = "q65")]
+    protocol_meta!("Q65-120F", crate::q65::Q65f120),
+    #[cfg(feature = "q65")]
     protocol_meta!("Q65-300A", crate::q65::Q65a300),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-300B", crate::q65::Q65b300),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-300C", crate::q65::Q65c300),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-300D", crate::q65::Q65d300),
+    #[cfg(feature = "q65")]
+    protocol_meta!("Q65-300E", crate::q65::Q65e300),
     #[cfg(feature = "uvpacket")]
     protocol_meta!("UvRobust", crate::UvRobust),
     #[cfg(feature = "uvpacket")]
@@ -199,7 +303,7 @@ pub static PROTOCOLS: &[ProtocolMeta] = &[
 ];
 
 /// Iterator over every registry entry sharing `id`. For most
-/// protocols this yields exactly one entry; Q65 yields ten (one per
+/// protocols this yields exactly one entry; Q65 yields 23 (one per
 /// sub-mode).
 pub fn by_id(id: ProtocolId) -> impl Iterator<Item = &'static ProtocolMeta> {
     PROTOCOLS.iter().filter(move |p| p.id == id)
@@ -280,20 +384,22 @@ mod tests {
 
     #[cfg(feature = "q65")]
     #[test]
-    fn q65_id_yields_all_ten_submodes() {
+    fn q65_id_yields_all_selectable_submodes() {
         let q65_entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Q65).collect();
         assert_eq!(
             q65_entries.len(),
-            10,
-            "expected ten Q65 sub-modes in the registry, got {}: {:?}",
+            23,
+            "expected 23 Q65 sub-modes in the registry, got {}: {:?}",
             q65_entries.len(),
             q65_entries.iter().map(|p| p.name).collect::<Vec<_>>()
         );
         // Names are the canonical sub-mode labels.
         let names: Vec<&str> = q65_entries.iter().map(|p| p.name).collect();
         for expected in &[
-            "Q65-15A", "Q65-30A", "Q65-60A", "Q65-60B", "Q65-60C", "Q65-60D", "Q65-60E",
-            "Q65-120D", "Q65-120E", "Q65-300A",
+            "Q65-15A", "Q65-15B", "Q65-15C", "Q65-30A", "Q65-30B", "Q65-30C", "Q65-30D", "Q65-60A",
+            "Q65-60B", "Q65-60C", "Q65-60D", "Q65-60E", "Q65-120A", "Q65-120B", "Q65-120C",
+            "Q65-120D", "Q65-120E", "Q65-120F", "Q65-300A", "Q65-300B", "Q65-300C", "Q65-300D",
+            "Q65-300E",
         ] {
             assert!(
                 names.contains(expected),
@@ -302,19 +408,49 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "jt9")]
+    #[test]
+    fn jt9_id_yields_all_normal_and_fast_variants() {
+        let entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Jt9).collect();
+        assert_eq!(entries.len(), 24);
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name).collect();
+        for expected in [
+            "JT9-60A",
+            "JT9-60H",
+            "JT9-5E-fast",
+            "JT9-5H-fast",
+            "JT9-10E-fast",
+            "JT9-10H-fast",
+            "JT9-15E-fast",
+            "JT9-15H-fast",
+            "JT9-30E-fast",
+            "JT9-30H-fast",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+    }
+
     #[cfg(feature = "fst4")]
     #[test]
-    fn fst4_id_yields_all_five_submodes() {
+    fn fst4_id_yields_all_seven_periods() {
         let fst4_entries: Vec<&ProtocolMeta> = by_id(ProtocolId::Fst4).collect();
         assert_eq!(
             fst4_entries.len(),
-            5,
-            "expected five FST4 sub-modes in the registry, got {}: {:?}",
+            7,
+            "expected seven FST4 periods in the registry, got {}: {:?}",
             fst4_entries.len(),
             fst4_entries.iter().map(|p| p.name).collect::<Vec<_>>()
         );
         let names: Vec<&str> = fst4_entries.iter().map(|p| p.name).collect();
-        for expected in &["FST4-15", "FST4-30", "FST4-60A", "FST4-120", "FST4-300"] {
+        for expected in &[
+            "FST4-15",
+            "FST4-30",
+            "FST4-60A",
+            "FST4-120",
+            "FST4-300",
+            "FST4-900",
+            "FST4-1800",
+        ] {
             assert!(
                 names.contains(expected),
                 "FST4 registry missing sub-mode {expected}; have {names:?}"

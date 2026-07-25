@@ -115,6 +115,22 @@ q65_submode! {
 }
 
 q65_submode! {
+    /// Q65-15B: 15 s T/R period, sub-mode B.
+    Q65b15,
+    nsps = 1800,
+    spacing_mult = 2,
+    tr_period_s = 15,
+}
+
+q65_submode! {
+    /// Q65-15C: 15 s T/R period, sub-mode C.
+    Q65c15,
+    nsps = 1800,
+    spacing_mult = 4,
+    tr_period_s = 15,
+}
+
+q65_submode! {
     /// Q65-30A: 30 s T/R period, sub-mode A (tone spacing = baud
     /// × 1 = 3.333 Hz). The most common terrestrial Q65 mode; suits
     /// HF and VHF ionoscatter / weak-signal QSOs.
@@ -122,6 +138,54 @@ q65_submode! {
     nsps = 3600,
     spacing_mult = 1,
     tr_period_s = 30,
+}
+
+q65_submode! {
+    /// Q65-30B: 30 s T/R period, sub-mode B.
+    Q65b30,
+    nsps = 3600,
+    spacing_mult = 2,
+    tr_period_s = 30,
+}
+
+q65_submode! {
+    /// Q65-30C: 30 s T/R period, sub-mode C.
+    Q65c30,
+    nsps = 3600,
+    spacing_mult = 4,
+    tr_period_s = 30,
+}
+
+q65_submode! {
+    /// Q65-30D: 30 s T/R period, sub-mode D.
+    Q65d30,
+    nsps = 3600,
+    spacing_mult = 8,
+    tr_period_s = 30,
+}
+
+q65_submode! {
+    /// Q65-120A: 120 s T/R period, sub-mode A.
+    Q65a120,
+    nsps = 16000,
+    spacing_mult = 1,
+    tr_period_s = 120,
+}
+
+q65_submode! {
+    /// Q65-120B: 120 s T/R period, sub-mode B.
+    Q65b120,
+    nsps = 16000,
+    spacing_mult = 2,
+    tr_period_s = 120,
+}
+
+q65_submode! {
+    /// Q65-120C: 120 s T/R period, sub-mode C.
+    Q65c120,
+    nsps = 16000,
+    spacing_mult = 4,
+    tr_period_s = 120,
 }
 
 q65_submode! {
@@ -196,6 +260,14 @@ q65_submode! {
 }
 
 q65_submode! {
+    /// Q65-120F: 120 s T/R period, sub-mode F.
+    Q65f120,
+    nsps = 16000,
+    spacing_mult = 32,
+    tr_period_s = 120,
+}
+
+q65_submode! {
     /// Q65-300A: 300 s T/R period, sub-mode A (tone spacing = baud
     /// × 1 ≈ 0.289 Hz). The deepest wired Q65 sub-mode (~-34 dB AWGN
     /// threshold) — extreme weak-signal paths such as optical
@@ -203,6 +275,38 @@ q65_submode! {
     Q65a300,
     nsps = 41472,
     spacing_mult = 1,
+    tr_period_s = 300,
+}
+
+q65_submode! {
+    /// Q65-300B: 300 s T/R period, sub-mode B.
+    Q65b300,
+    nsps = 41472,
+    spacing_mult = 2,
+    tr_period_s = 300,
+}
+
+q65_submode! {
+    /// Q65-300C: 300 s T/R period, sub-mode C.
+    Q65c300,
+    nsps = 41472,
+    spacing_mult = 4,
+    tr_period_s = 300,
+}
+
+q65_submode! {
+    /// Q65-300D: 300 s T/R period, sub-mode D.
+    Q65d300,
+    nsps = 41472,
+    spacing_mult = 8,
+    tr_period_s = 300,
+}
+
+q65_submode! {
+    /// Q65-300E: 300 s T/R period, sub-mode E.
+    Q65e300,
+    nsps = 41472,
+    spacing_mult = 16,
     tr_period_s = 300,
 }
 

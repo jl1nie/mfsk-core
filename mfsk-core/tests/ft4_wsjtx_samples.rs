@@ -31,12 +31,16 @@ use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 const SLOT_SAMPLES: usize = 90_000; // 7.5 s × 12 kHz
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/FT4/000000_000002.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    [
+        std::env::var_os("WSJTX_SOURCE_DIR").map(PathBuf::from),
+        Some(manifest.join("../WSJT-X")),
+        Some(manifest.join("../../OpenDigi/.cache/upstream/wsjtx")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|root| root.join("samples/FT4/000000_000002.wav"))
+    .find(|path| path.is_file())
 }
 
 /// WSJT-X-published golden decode list (see
@@ -88,7 +92,8 @@ const DT_TOL_SEC: f32 = 0.3;
 fn ft4_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
         eprintln!(
-            "skipping: WSJT-X FT4 sample not found at ../../WSJT-X/samples/FT4/000000_000002.wav"
+            "not run: set WSJTX_SOURCE_DIR to the pinned WSJT-X tree \
+             to execute FT4 reference-audio interoperability"
         );
         return;
     };

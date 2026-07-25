@@ -22,3 +22,8 @@ pub mod frame_decode;
 pub mod spd;
 pub mod sync;
 pub mod tx;
+
+pub use tx::{
+    message77_to_tones, message77_with_crc, synth_codeword_frame, synthesize_text_period,
+    tones_to_period_audio,
+};

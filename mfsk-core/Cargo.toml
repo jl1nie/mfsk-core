@@ -26,7 +26,7 @@ std          = ["alloc"]
 alloc        = []
 
 # Aggregate features.
-full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144", "packet-bytes", "uvpacket", "parallel"]
+full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt4", "jt9", "jt65", "q65", "msk144", "packet-bytes", "uvpacket", "parallel"]
 
 # FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
@@ -110,6 +110,7 @@ msk144       = []
 # `fft-rustfft` (which transitively requires `std`).
 fst4         = ["fft-rustfft"]
 jt9          = ["fft-rustfft"]
+jt4          = ["fft-rustfft"]
 jt65         = ["fft-rustfft"]
 q65          = ["fft-rustfft"]
 
@@ -135,7 +136,7 @@ rayon       = { version = "1", optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt4","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing

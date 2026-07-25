@@ -69,6 +69,24 @@ pub const FST4_300_GFSK: GfskCfg = GfskCfg {
     ramp_samples: 21_504 / 8,
 };
 
+/// FST4-900 GFSK configuration.
+pub const FST4_900_GFSK: GfskCfg = GfskCfg {
+    sample_rate: 12_000.0,
+    samples_per_symbol: 66_560,
+    bt: 2.0,
+    hmod: 1.0,
+    ramp_samples: 66_560 / 8,
+};
+
+/// FST4-1800 GFSK configuration.
+pub const FST4_1800_GFSK: GfskCfg = GfskCfg {
+    sample_rate: 12_000.0,
+    samples_per_symbol: 134_400,
+    bt: 2.0,
+    hmod: 1.0,
+    ramp_samples: 134_400 / 8,
+};
+
 /// Append the 24-bit CRC used by FST4 (see `mfsk_core::fec::ldpc240_101::crc24`)
 /// to a 77-bit message, producing 101 info bits.
 fn append_crc24(message77: &[u8; 77]) -> [u8; 101] {

@@ -12,12 +12,11 @@
 //! The aligned `decode_at` remains available for callers that already
 //! know both.
 
-use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use super::Jt9;
 use super::sync_pattern::JT9_SYNC_POSITIONS;
+use super::{Jt9Submode, Jt9Waveform};
 
 /// One-symbol-FFT spectrogram, reusable across many candidate scores.
 pub struct Spectrogram {
@@ -39,7 +38,15 @@ impl Spectrogram {
     /// Build a quarter-symbol spectrogram for JT9. Returns an empty
     /// shell if the audio is shorter than one symbol.
     pub fn build(audio: &[f32], sample_rate: u32) -> Self {
-        let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
+        Self::build_variant(audio, sample_rate, Jt9Waveform::Normal(Jt9Submode::A))
+    }
+
+    /// Build the sync-search spectrogram for a selected normal or fast
+    /// JT9 waveform. Normal B-H retain JT9A's symbol duration but use a
+    /// wider tone stride; fast E-H use their shorter symbol duration.
+    pub fn build_variant(audio: &[f32], sample_rate: u32, variant: Jt9Waveform) -> Self {
+        let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+        let nsps = (sample_rate as f64 * symbol_dt).round() as usize;
         let t_step = nsps / 4;
         let n_freq = nsps / 2;
         if audio.len() < nsps || t_step == 0 {
@@ -174,6 +181,19 @@ pub fn coarse_search(
     coarse_search_on_spec(&spec, sample_rate, nominal_start_sample, params)
 }
 
+/// Variant-aware coarse acquisition for all normal A-H and fast E-H
+/// waveforms.
+pub fn coarse_search_variant(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    variant: Jt9Waveform,
+    params: &SearchParams,
+) -> Vec<SyncCandidate> {
+    let spec = Spectrogram::build_variant(audio, sample_rate, variant);
+    coarse_search_on_spec_variant(&spec, sample_rate, nominal_start_sample, variant, params)
+}
+
 /// Same as [`coarse_search`] but reuses a pre-built spectrogram.
 pub fn coarse_search_on_spec(
     spec: &Spectrogram,
@@ -181,11 +201,30 @@ pub fn coarse_search_on_spec(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
+    coarse_search_on_spec_variant(
+        spec,
+        sample_rate,
+        nominal_start_sample,
+        Jt9Waveform::Normal(Jt9Submode::A),
+        params,
+    )
+}
+
+/// Variant-aware form of [`coarse_search_on_spec`].
+pub fn coarse_search_on_spec_variant(
+    spec: &Spectrogram,
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    variant: Jt9Waveform,
+    params: &SearchParams,
+) -> Vec<SyncCandidate> {
     if spec.n_time == 0 {
         return Vec::new();
     }
-    let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+    let nsps = (sample_rate as f64 * symbol_dt).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
+    let tone_stride = (variant.tone_spacing_hz() / df).round().max(1.0) as usize;
     let rows_per_symbol = 4usize;
 
     let t_span_rows = params.time_tolerance_symbols as i64 * rows_per_symbol as i64;
@@ -203,7 +242,7 @@ pub fn coarse_search_on_spec(
     // when we apply `max_candidates`.
     let mut out: Vec<SyncCandidate> = Vec::new();
     for fb in fmin_bin..=fmax_bin {
-        if fb < 0 || (fb as usize) + 9 > spec.n_freq {
+        if fb < 0 || (fb as usize) + 8 * tone_stride >= spec.n_freq {
             continue;
         }
         let mut best_row: i64 = -1;

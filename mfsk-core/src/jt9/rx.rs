@@ -17,11 +17,10 @@
 //! The output is 206 bit LLRs suitable for
 //! `crate::fec::ConvFano232::decode_soft`.
 
-use crate::core::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use super::Jt9;
+use super::Jt9Waveform;
 use super::interleave::deinterleave_llrs;
 use super::sync_pattern::JT9_ISYNC;
 
@@ -49,13 +48,36 @@ pub fn demodulate_aligned(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> [f32; 206] {
-    let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
-    let df = sample_rate as f32 / nsps as f32; // = TONE_SPACING_HZ by construction
+    demodulate_aligned_variant(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        Jt9Waveform::Normal(super::Jt9Submode::A),
+    )
+}
+
+/// Aligned demodulator for every normal A-H and fast E-H waveform.
+pub fn demodulate_aligned_variant(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    variant: Jt9Waveform,
+) -> [f32; 206] {
+    let symbol_dt = variant.symbol_samples_12k() as f64 / 12_000.0;
+    let nsps = (sample_rate as f64 * symbol_dt).round() as usize;
+    let df = sample_rate as f32 / nsps as f32;
+    let tone_stride = (variant.tone_spacing_hz() / df).round() as usize;
     let base_bin = (base_freq_hz / df).round() as usize;
 
     // Guard — if the caller asked for a window that doesn't fit, return
     // zero LLRs (decode will fail gracefully via Fano non-convergence).
-    if start_sample + 85 * nsps > audio.len() || base_bin + 9 >= nsps / 2 {
+    if nsps == 0
+        || tone_stride == 0
+        || start_sample + 85 * nsps > audio.len()
+        || base_bin + 9 * tone_stride >= nsps / 2
+    {
         return [0f32; 206];
     }
 
@@ -79,7 +101,7 @@ pub fn demodulate_aligned(
 
         // Noise reference from bins just above the 9-tone passband.
         for k in 9..14 {
-            let bin = base_bin + k;
+            let bin = base_bin + k * tone_stride;
             if bin < nsps / 2 {
                 noise_acc += buf[bin].norm_sqr();
                 noise_count += 1;
@@ -93,7 +115,7 @@ pub fn demodulate_aligned(
         // Eight data-tone magnitudes (tones 1..=8 in the tone index).
         let mut mags = [0f32; 8];
         for t in 0..8 {
-            mags[t] = buf[base_bin + 1 + t].norm();
+            mags[t] = buf[base_bin + (1 + t) * tone_stride].norm();
         }
 
         // Max-log-MAP bit LLRs. For each of 3 bits, the LLR is

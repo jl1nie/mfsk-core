@@ -44,13 +44,17 @@ mod common;
 use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path(name: &str) -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/MSK144")
-        .join(name)
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [
+        std::env::var_os("WSJTX_SOURCE_DIR").map(PathBuf::from),
+        Some(manifest.join("../WSJT-X")),
+        Some(manifest.join("../../OpenDigi/.cache/upstream/wsjtx")),
+    ];
+    roots
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("samples/MSK144").join(name))
+        .find(|path| path.is_file())
 }
 
 /// WSJT-X-published golden decode (see
@@ -68,7 +72,10 @@ const SNR_TOL_DB: i32 = 1;
 
 fn check(name: &str, golden: &[Golden]) {
     let Some(path) = sample_path(name) else {
-        eprintln!("skipping: WSJT-X MSK144 sample not found at ../../WSJT-X/samples/MSK144/{name}");
+        eprintln!(
+            "not run: set WSJTX_SOURCE_DIR to the pinned WSJT-X tree \
+             to execute MSK144 reference-audio interoperability ({name})"
+        );
         return;
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");

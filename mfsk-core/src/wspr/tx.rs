@@ -92,6 +92,23 @@ pub fn synthesize_audio(
     out
 }
 
+/// Pack any pinned-WSJT-X WSPR message form and synthesize its waveform.
+pub fn synthesize_message(
+    message: &str,
+    sample_rate: u32,
+    base_freq_hz: f32,
+    amplitude: f32,
+) -> Option<Vec<f32>> {
+    let info = crate::msg::wspr::pack_message(message)?;
+    let symbols = super::encode_channel_symbols(&info);
+    Some(synthesize_audio(
+        &symbols,
+        sample_rate,
+        base_freq_hz,
+        amplitude,
+    ))
+}
+
 /// Convenience wrapper that packs a message and synthesises in one step.
 /// Returns `None` if the message can't fit the Type 1 layout.
 pub fn synthesize_type1(
@@ -102,14 +119,12 @@ pub fn synthesize_type1(
     base_freq_hz: f32,
     amplitude: f32,
 ) -> Option<Vec<f32>> {
-    let info = crate::msg::wspr::pack_type1(callsign, grid, power_dbm)?;
-    let symbols = super::encode_channel_symbols(&info);
-    Some(synthesize_audio(
-        &symbols,
+    synthesize_message(
+        &alloc::format!("{callsign} {grid} {power_dbm}"),
         sample_rate,
         base_freq_hz,
         amplitude,
-    ))
+    )
 }
 
 #[cfg(test)]

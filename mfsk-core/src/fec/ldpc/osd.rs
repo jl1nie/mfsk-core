@@ -1113,7 +1113,8 @@ fn osd_result_from_best(llr: &[f32; LDPC_N], best: OsdBest) -> Option<OsdResult>
         }
     }
     let mut message77 = [0u8; 77];
-    message77.copy_from_slice(&decoded[..77]);
+    let message_len = decoded.len().min(message77.len());
+    message77[..message_len].copy_from_slice(&decoded[..message_len]);
     Some(OsdResult {
         message77,
         info: decoded,
@@ -1390,7 +1391,8 @@ pub fn osd_decode_generic<P: LdpcParams>(
         }
     }
     let mut message77 = [0u8; 77];
-    message77.copy_from_slice(&decoded[..77]);
+    let message_len = decoded.len().min(message77.len());
+    message77[..message_len].copy_from_slice(&decoded[..message_len]);
     Some(OsdResult {
         message77,
         info: decoded,

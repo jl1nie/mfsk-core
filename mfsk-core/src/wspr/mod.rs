@@ -70,7 +70,7 @@ pub use rx::demodulate_aligned;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_vector::WSPR_SYNC_VECTOR;
-pub use tx::{synthesize_audio, synthesize_type1};
+pub use tx::{synthesize_audio, synthesize_message, synthesize_type1};
 
 // ─────────────────────────────────────────────────────────────────────────
 // Protocol ZST
@@ -228,6 +228,10 @@ mod tests {
     use super::*;
     use crate::core::FecCodec;
 
+    fn tone_string(tones: &[u8]) -> String {
+        tones.iter().map(|tone| (b'0' + *tone) as char).collect()
+    }
+
     #[test]
     fn wspr_trait_surface() {
         assert_eq!(<Wspr as ModulationParams>::NTONES, 4);
@@ -310,5 +314,35 @@ mod tests {
                 power_dbm: 37,
             }
         );
+    }
+
+    #[test]
+    fn wsjtx_v3_0_2_complete_tone_frames_match_exactly() {
+        // Generated with pinned `lib/wsprd/wsprsim -c`. Together with the
+        // 50-bit vectors in msg::wspr this proves the convolutional encoder,
+        // interleaver, sync merge, and all three message forms.
+        let vectors = [
+            (
+                "K1ABC FN42 37",
+                "330020001020131222100323133220200032012322002232110233210221321222033030301210212032132003323032203020201023021112330231212221332000010320132222202332323320031222",
+            ),
+            (
+                "PJ4/K1ABC 37",
+                "310220001022131020100123131220220230030322022010130031010003323222013010301210032032112203323030223022021023001310310031230021332000010120112222222132323102011022",
+            ),
+            (
+                "<K1ABC> FN42LX 37",
+                "332220023220333222320303111222222232030122020010130233012201303002211012323010210030310023321232223002023001221330330031032001112202212120330020200110301122031200",
+            ),
+        ];
+        for (message, expected) in vectors {
+            let bits =
+                crate::msg::wspr::pack_message(message).unwrap_or_else(|| panic!("pack {message}"));
+            assert_eq!(
+                tone_string(&encode_channel_symbols(&bits)),
+                expected,
+                "{message}"
+            );
+        }
     }
 }

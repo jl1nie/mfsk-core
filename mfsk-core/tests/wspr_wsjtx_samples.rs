@@ -17,12 +17,17 @@ mod common;
 use common::load_wav_f32_opt as read_wsjtx_wav_f32;
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/WSPR/150426_0918.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [
+        std::env::var_os("WSJTX_SOURCE_DIR").map(PathBuf::from),
+        Some(manifest.join("../WSJT-X")),
+        Some(manifest.join("../../OpenDigi/.cache/upstream/wsjtx")),
+    ];
+    roots
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("samples/WSPR/150426_0918.wav"))
+        .find(|path| path.is_file())
 }
 
 /// Each golden entry carries the WSPR Type-1 message string in its
@@ -84,7 +89,8 @@ const DT_TOL_SEC: f32 = 0.5;
 fn wspr_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
         eprintln!(
-            "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
+            "not run: set WSJTX_SOURCE_DIR to the pinned WSJT-X tree \
+             to execute WSPR reference-audio interoperability"
         );
         return;
     };

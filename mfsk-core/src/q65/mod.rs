@@ -67,7 +67,9 @@ pub mod tx;
 
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
 pub use protocol::{
-    Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
+    Q65Fec, Q65a15, Q65a30, Q65a60, Q65a120, Q65a300, Q65b15, Q65b30, Q65b60, Q65b120, Q65b300,
+    Q65c15, Q65c30, Q65c60, Q65c120, Q65c300, Q65d30, Q65d60, Q65d120, Q65d300, Q65e60, Q65e120,
+    Q65e300, Q65f120,
 };
 pub use rx::{
     Q65Decode, decode_at, decode_at_fading_for, decode_at_for, decode_at_with_ap,

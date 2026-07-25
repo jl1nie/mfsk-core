@@ -56,6 +56,16 @@ const RTTY_STATES: &[&str] = &[
     "X97", "X98", "X99",
 ];
 
+/// ARRL/RAC Field Day sections used by WSJT-X Type 0.3/0.4 messages.
+const FIELD_DAY_SECTIONS: &[&str] = &[
+    "AB", "AK", "AL", "AR", "AZ", "BC", "CO", "CT", "DE", "EB", "EMA", "ENY", "EPA", "EWA", "GA",
+    "GH", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "LAX", "NS", "MB", "MDC", "ME", "MI", "MN",
+    "MO", "MS", "MT", "NC", "ND", "NE", "NFL", "NH", "NL", "NLI", "NM", "NNJ", "NNY", "TER", "NTX",
+    "NV", "OH", "OK", "ONE", "ONN", "ONS", "OR", "ORG", "PAC", "PR", "QC", "RI", "SB", "SC", "SCV",
+    "SD", "SDG", "SF", "SFL", "SJV", "SK", "SNJ", "STX", "SV", "TN", "UT", "VA", "VI", "VT", "WCF",
+    "WI", "WMA", "WNY", "WPA", "WTX", "WV", "WWA", "WY", "DX", "PE", "NB",
+];
+
 // ── Token boundaries ─────────────────────────────────────────────────────────
 
 const NTOKENS: u32 = 2_063_592;
@@ -201,6 +211,93 @@ fn to_grid4(n: u32) -> Option<String> {
     ))
 }
 
+/// Decode the 25-bit six-character grid used by WSJT77 Type 5.
+fn to_grid6(n: u32) -> Option<String> {
+    if n > 18_662_399 {
+        return None;
+    }
+    let j1 = n / (18 * 10 * 10 * 24 * 24);
+    let rest = n % (18 * 10 * 10 * 24 * 24);
+    let j2 = rest / (10 * 10 * 24 * 24);
+    let rest = rest % (10 * 10 * 24 * 24);
+    let j3 = rest / (10 * 24 * 24);
+    let rest = rest % (10 * 24 * 24);
+    let j4 = rest / (24 * 24);
+    let rest = rest % (24 * 24);
+    let j5 = rest / 24;
+    let j6 = rest % 24;
+    if j1 > 17 || j2 > 17 || j3 > 9 || j4 > 9 || j5 > 23 || j6 > 23 {
+        return None;
+    }
+    Some(format!(
+        "{}{}{}{}{}{}",
+        (b'A' + j1 as u8) as char,
+        (b'A' + j2 as u8) as char,
+        (b'0' + j3 as u8) as char,
+        (b'0' + j4 as u8) as char,
+        (b'A' + j5 as u8) as char,
+        (b'A' + j6 as u8) as char,
+    ))
+}
+
+fn unpack_field_day(
+    msg: &[u8; 77],
+    hash_table: Option<&CallsignHashTable>,
+    n3: u32,
+) -> Option<String> {
+    let decode_call =
+        |packed| hash_table.map_or_else(|| unpack28(packed), |table| unpack28_h(packed, table));
+    let call1 = decode_call(read_bits(msg, 0, 28));
+    let call2 = decode_call(read_bits(msg, 28, 28));
+    let ir = msg[56] & 1;
+    let mut transmitters = read_bits(msg, 57, 4) + 1;
+    if n3 == 4 {
+        transmitters += 16;
+    }
+    let class_index = read_bits(msg, 61, 3);
+    let section_index = read_bits(msg, 64, 7);
+    let section = section_index
+        .checked_sub(1)
+        .and_then(|index| FIELD_DAY_SECTIONS.get(index as usize))?;
+    let class = (b'A' + class_index as u8) as char;
+    let exchange = format!("{transmitters}{class}");
+    if ir == 1 {
+        Some(format!("{call1} {call2} R {exchange} {section}"))
+    } else {
+        Some(format!("{call1} {call2} {exchange} {section}"))
+    }
+}
+
+fn unpack_telemetry(msg: &[u8; 77]) -> String {
+    let mut value = 0u128;
+    for bit in &msg[..71] {
+        value = (value << 1) | u128::from(*bit & 1);
+    }
+    let padded = format!("{value:018X}");
+    padded.trim_start_matches('0').to_string()
+}
+
+fn unpack_type5(msg: &[u8; 77], hash_table: Option<&CallsignHashTable>) -> Option<String> {
+    let n12 = read_bits(msg, 0, 12);
+    let n22 = read_bits(msg, 12, 22);
+    let ir = msg[34] & 1;
+    let report = read_bits(msg, 35, 3) + 52;
+    let serial = read_bits(msg, 38, 11);
+    let grid = to_grid6(read_bits(msg, 49, 25))?;
+    let call1 = hash_table
+        .map(|table| resolve_hash12(n12, table))
+        .unwrap_or_else(|| "<...>".to_string());
+    let call2 = hash_table
+        .and_then(|table| table.lookup22(n22))
+        .unwrap_or_else(|| "<...>".to_string());
+    let exchange = format!("{report:02}{serial:04}");
+    if ir == 1 {
+        Some(format!("{call1} {call2} R {exchange} {grid}"))
+    } else {
+        Some(format!("{call1} {call2} {exchange} {grid}"))
+    }
+}
+
 /// Decode a 71-bit free-text message (13 chars from a 42-char alphabet).
 fn unpack_free_text(msg: &[u8; 77]) -> String {
     let mut n = 0u128;
@@ -216,6 +313,110 @@ fn unpack_free_text(msg: &[u8; 77]) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+/// Decode the 50 significant bits of WSJT77 subtype 0.6 used by FST4W.
+///
+/// Pinned WSJT-X `packjt77.f90::pack77_06` stores these WSPR-style
+/// messages in the first 50 bits and marks the containing word with
+/// `(n3, i3) = (6, 0)`. This is not the classic WSPR 50-bit layout.
+fn unpack_wspr50(msg: &[u8; 77], ht: Option<&CallsignHashTable>) -> Option<String> {
+    const NZZZ: u32 = 46_656;
+
+    let decode_power = |encoded: u32| -> Option<u32> {
+        // Exact integer equivalent of `nint(encoded * 10.0 / 3.0)`.
+        let power = (encoded * 10 + 1) / 3;
+        (power <= 60).then_some(power)
+    };
+    let decode_call = |n28: u32| -> Option<String> {
+        let call = if let Some(table) = ht {
+            unpack28_h(n28, table)
+        } else {
+            unpack28(n28)
+        };
+        (!matches!(call.as_str(), "<?>" | "?????")).then_some(call)
+    };
+
+    // Bits 48..50 in Fortran numbering classify the payload:
+    // Type 1 = x00, Type 2 = xx1, Type 3 = 010.
+    if msg[49] == 1 {
+        let call = decode_call(read_bits(msg, 0, 28))?;
+        let mut npfx = read_bits(msg, 28, 16);
+        let power = decode_power(read_bits(msg, 44, 5))?;
+
+        if npfx < NZZZ {
+            let mut prefix = [b' '; 3];
+            for index in (0..3).rev() {
+                prefix[index] = C2[(npfx % 36) as usize];
+                npfx /= 36;
+                if npfx == 0 {
+                    break;
+                }
+            }
+            let prefix = core::str::from_utf8(&prefix).ok()?.trim();
+            return Some(format!("{prefix}/{call} {power}"));
+        }
+
+        npfx -= NZZZ;
+        let suffix = if npfx <= 35 {
+            String::from(C2[npfx as usize] as char)
+        } else if npfx <= 1_295 {
+            let chars = [C2[(npfx / 36) as usize], C2[(npfx % 36) as usize]];
+            String::from_utf8(chars.to_vec()).ok()?
+        } else if npfx <= 12_959 {
+            let chars = [
+                C2[(npfx / 360) as usize],
+                C2[((npfx / 10) % 36) as usize],
+                C2[(npfx % 10) as usize],
+            ];
+            String::from_utf8(chars.to_vec()).ok()?
+        } else {
+            return None;
+        };
+        return Some(format!("{call}/{suffix} {power}"));
+    }
+
+    if msg[48] == 0 {
+        let call = decode_call(read_bits(msg, 0, 28))?;
+        let grid = to_grid4(read_bits(msg, 28, 15))?;
+        let power = decode_power(read_bits(msg, 43, 5))?;
+        return Some(format!("{call} {grid} {power}"));
+    }
+
+    if msg[47] != 0 {
+        return None;
+    }
+
+    let hash22 = read_bits(msg, 0, 22);
+    let grid_index = read_bits(msg, 22, 25);
+    let j1 = grid_index / (18 * 10 * 10 * 25 * 25);
+    let rest = grid_index % (18 * 10 * 10 * 25 * 25);
+    let j2 = rest / (10 * 10 * 25 * 25);
+    let rest = rest % (10 * 10 * 25 * 25);
+    let j3 = rest / (10 * 25 * 25);
+    let rest = rest % (10 * 25 * 25);
+    let j4 = rest / (25 * 25);
+    let rest = rest % (25 * 25);
+    let j5 = rest / 25;
+    let j6 = rest % 25;
+    if j1 > 17 || j2 > 17 || j3 > 9 || j4 > 9 || j5 > 24 || j6 > 24 {
+        return None;
+    }
+    let mut grid = format!(
+        "{}{}{}{}",
+        (b'A' + j1 as u8) as char,
+        (b'A' + j2 as u8) as char,
+        (b'0' + j3 as u8) as char,
+        (b'0' + j4 as u8) as char,
+    );
+    if j5 != 24 || j6 != 24 {
+        grid.push((b'A' + j5 as u8) as char);
+        grid.push((b'A' + j6 as u8) as char);
+    }
+    let call = ht
+        .and_then(|table| table.lookup22(hash22))
+        .unwrap_or_else(|| "<...>".to_string());
+    Some(format!("{call} {grid}"))
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -259,12 +460,9 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
                 let c2 = unpack28(n28b);
                 Some(format!("{} RR73; {} <...> {}", c1, c2, crpt))
             }
-            3 | 4 => {
-                // ARRL Field Day — show callsigns + tag
-                let c1 = unpack28(read_bits(msg, 0, 28));
-                let c2 = unpack28(read_bits(msg, 28, 28));
-                Some(format!("{} {} [FD]", c1, c2))
-            }
+            3 | 4 => unpack_field_day(msg, None, n3),
+            5 => Some(unpack_telemetry(msg)),
+            6 => unpack_wspr50(msg, None),
             _ => None,
         },
 
@@ -398,6 +596,8 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
             }
         }
 
+        5 => unpack_type5(msg, None),
+
         _ => None,
     }
 }
@@ -437,11 +637,9 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
                 };
                 Some(format!("{} RR73; {} {} {}", c1, c2, c3, crpt))
             }
-            3 | 4 => {
-                let c1 = unpack28_h(read_bits(msg, 0, 28), ht);
-                let c2 = unpack28_h(read_bits(msg, 28, 28), ht);
-                Some(format!("{} {} [FD]", c1, c2))
-            }
+            3 | 4 => unpack_field_day(msg, Some(ht), n3),
+            5 => Some(unpack_telemetry(msg)),
+            6 => unpack_wspr50(msg, Some(ht)),
             _ => None,
         },
 
@@ -559,6 +757,8 @@ pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<Stri
                 _ => None,
             }
         }
+
+        5 => unpack_type5(msg, Some(ht)),
 
         _ => None,
     }
@@ -863,6 +1063,71 @@ pub fn is_plausible_message(text: &str) -> bool {
         return true;
     }
 
+    let valid_call =
+        |word: &str| (word.starts_with('<') && word.ends_with('>')) || is_plausible_callsign(word);
+
+    // Complete ARRL Field Day exchange.
+    if (words.len() == 4 || words.len() == 5)
+        && valid_call(words[0])
+        && valid_call(words[1])
+        && FIELD_DAY_SECTIONS.contains(words.last().unwrap_or(&""))
+    {
+        let reply_offset = usize::from(words.len() == 5 && words[2] == "R");
+        if words.len() == 4 + reply_offset {
+            let exchange = words[2 + reply_offset].as_bytes();
+            if (2..=3).contains(&exchange.len())
+                && exchange[..exchange.len() - 1]
+                    .iter()
+                    .all(u8::is_ascii_digit)
+                && (b'A'..=b'H').contains(&exchange[exchange.len() - 1])
+            {
+                return true;
+            }
+        }
+    }
+
+    // Complete ARRL RTTY Roundup exchange.
+    let tu_offset = usize::from(words.first() == Some(&"TU;"));
+    if words.len() >= tu_offset + 4
+        && words.len() <= tu_offset + 5
+        && valid_call(words[tu_offset])
+        && valid_call(words[tu_offset + 1])
+    {
+        let reply = words.get(tu_offset + 2) == Some(&"R");
+        let rst_index = tu_offset + 2 + usize::from(reply);
+        if words.len() == rst_index + 2 {
+            let rst = words[rst_index].as_bytes();
+            let exchange = words[rst_index + 1];
+            if rst.len() == 3
+                && rst[0] == b'5'
+                && (b'2'..=b'9').contains(&rst[1])
+                && rst[2] == b'9'
+                && (RTTY_STATES.contains(&exchange)
+                    || (exchange.len() == 4 && exchange.bytes().all(|byte| byte.is_ascii_digit())))
+            {
+                return true;
+            }
+        }
+    }
+
+    // Complete EU VHF Type-5 exchange.
+    if (words.len() == 4 || words.len() == 5)
+        && words[0].starts_with('<')
+        && words[1].starts_with('<')
+    {
+        let reply_offset = usize::from(words.len() == 5 && words[2] == "R");
+        if words.len() == 4 + reply_offset {
+            let exchange = words[2 + reply_offset];
+            let grid = words[3 + reply_offset];
+            if exchange.len() == 6
+                && exchange.bytes().all(|byte| byte.is_ascii_digit())
+                && pack_grid6(grid).is_some()
+            {
+                return true;
+            }
+        }
+    }
+
     for (idx, &w) in words.iter().enumerate() {
         // Known non-callsign tokens
         if matches!(
@@ -932,7 +1197,16 @@ fn write_bits(msg: &mut [u8; 77], start: usize, len: usize, val: u32) {
 /// Returns `None` if the callsign contains characters outside the FT8 alphabet
 /// or cannot be encoded in the standard 28-bit field.
 pub fn pack28(call: &str) -> Option<u32> {
-    let call = call.trim();
+    let upper = call.trim().to_ascii_uppercase();
+    let mapped = if upper.starts_with("3DA0") && upper.len() >= 5 {
+        Some(format!("3D0{}", &upper[4..upper.len().min(7)]))
+    } else if upper.starts_with("3X") && upper.as_bytes().get(2).is_some_and(u8::is_ascii_uppercase)
+    {
+        Some(format!("Q{}", &upper[2..upper.len().min(6)]))
+    } else {
+        None
+    };
+    let call = mapped.as_deref().unwrap_or(&upper);
     match call {
         "DE" => return Some(0),
         "QRZ" => return Some(1),
@@ -1033,6 +1307,31 @@ pub fn pack_grid4(grid: &str) -> Option<u32> {
     Some(((j1 * 18 + j2) * 10 + j3) * 10 + j4)
 }
 
+/// Pack a six-character Maidenhead locator into the Type-5 25-bit field.
+pub fn pack_grid6(grid: &str) -> Option<u32> {
+    let g = grid.as_bytes();
+    if g.len() != 6 {
+        return None;
+    }
+    let j1 = g[0].to_ascii_uppercase().wrapping_sub(b'A') as u32;
+    let j2 = g[1].to_ascii_uppercase().wrapping_sub(b'A') as u32;
+    let j3 = g[2].wrapping_sub(b'0') as u32;
+    let j4 = g[3].wrapping_sub(b'0') as u32;
+    let j5 = g[4].to_ascii_uppercase().wrapping_sub(b'A') as u32;
+    let j6 = g[5].to_ascii_uppercase().wrapping_sub(b'A') as u32;
+    if j1 > 17 || j2 > 17 || j3 > 9 || j4 > 9 || j5 > 23 || j6 > 23 {
+        return None;
+    }
+    Some(
+        j1 * 18 * 10 * 10 * 24 * 24
+            + j2 * 10 * 10 * 24 * 24
+            + j3 * 10 * 24 * 24
+            + j4 * 24 * 24
+            + j5 * 24
+            + j6,
+    )
+}
+
 /// Pack a Type 1 standard message: `"CALL1 CALL2 GRID"`.
 ///
 /// Both callsigns must be packable via [`pack28`], and `grid` must be a valid
@@ -1117,6 +1416,242 @@ pub fn pack77(call1: &str, call2: &str, report: &str) -> Option<[u8; 77]> {
     Some(msg)
 }
 
+fn bracketed_call(call: &str) -> Option<&str> {
+    let inner = call.strip_prefix('<')?.strip_suffix('>')?;
+    (!inner.is_empty() && inner != "...").then_some(inner)
+}
+
+fn pack28_message_call(call: &str) -> Option<u32> {
+    if let Some(inner) = bracketed_call(call) {
+        return Some(NTOKENS + super::hash_table::ihashcall(inner, 22));
+    }
+    pack28(call)
+}
+
+fn portable_base(call: &str) -> (&str, Option<u8>) {
+    if let Some(base) = call.strip_suffix("/R") {
+        (base, Some(b'R'))
+    } else if let Some(base) = call.strip_suffix("/P") {
+        (base, Some(b'P'))
+    } else {
+        (call, None)
+    }
+}
+
+fn encode_standard_field(report: &str, reply_grid: bool) -> Option<(u32, u8)> {
+    if report.is_empty() {
+        return Some((MAX_GRID4 + 1, 0));
+    }
+    if let Some(grid) = pack_grid4(report) {
+        return Some((grid, u8::from(reply_grid)));
+    }
+    if reply_grid {
+        return None;
+    }
+    match report {
+        "RRR" => return Some((MAX_GRID4 + 2, 0)),
+        "RR73" => return Some((MAX_GRID4 + 3, 0)),
+        "73" => return Some((MAX_GRID4 + 4, 0)),
+        _ => {}
+    }
+    let (ir, numeric) = report
+        .strip_prefix('R')
+        .map_or((0, report), |numeric| (1, numeric));
+    if !numeric.starts_with(['+', '-']) {
+        return None;
+    }
+    let snr: i32 = numeric.parse().ok()?;
+    if !(-50..=49).contains(&snr) {
+        return None;
+    }
+    let adjusted = if snr <= -31 { snr + 101 } else { snr };
+    Some((MAX_GRID4 + (adjusted + 35) as u32, ir))
+}
+
+fn pack77_standard_words(words: &[String]) -> Option<[u8; 77]> {
+    if !(2..=4).contains(&words.len()) {
+        return None;
+    }
+    let (call1, suffix1) = portable_base(&words[0]);
+    let (call2, suffix2) = portable_base(&words[1]);
+    if (bracketed_call(call1).is_some() && suffix2.is_some())
+        || (bracketed_call(call2).is_some() && suffix1.is_some())
+    {
+        return None;
+    }
+    if words.len() == 2 && suffix2.is_some() {
+        return None;
+    }
+    let n28a = pack28_message_call(call1)?;
+    let n28b = pack28_message_call(call2)?;
+    let (report, reply_grid) = match words.len() {
+        2 => ("", false),
+        3 => (words[2].as_str(), false),
+        4 if words[2] == "R" => (words[3].as_str(), true),
+        _ => return None,
+    };
+    let (igrid, ir) = encode_standard_field(report, reply_grid)?;
+    if words[0].starts_with("CQ ") && (ir == 1 || igrid > MAX_GRID4 + 1) {
+        return None;
+    }
+    let i3 = if suffix1 == Some(b'P') || suffix2 == Some(b'P') {
+        2
+    } else {
+        1
+    };
+    let mut msg = [0u8; 77];
+    write_bits(&mut msg, 0, 28, n28a);
+    msg[28] = u8::from(suffix1.is_some());
+    write_bits(&mut msg, 29, 28, n28b);
+    msg[57] = u8::from(suffix2.is_some());
+    msg[58] = ir;
+    write_bits(&mut msg, 59, 15, igrid);
+    write_bits(&mut msg, 74, 3, i3);
+    Some(msg)
+}
+
+/// Pack the WSJT-X Type 0.1 DXpedition exchange.
+pub fn pack77_dxpedition(
+    call1: &str,
+    call2: &str,
+    hashed_call: &str,
+    report: i32,
+) -> Option<[u8; 77]> {
+    let inner = bracketed_call(hashed_call).unwrap_or(hashed_call);
+    if inner.len() < 3 {
+        return None;
+    }
+    let n28a = pack28(call1)?;
+    let n28b = pack28(call2)?;
+    let n5 = ((report + 30) / 2).clamp(0, 31) as u32;
+    let mut msg = [0u8; 77];
+    write_bits(&mut msg, 0, 28, n28a);
+    write_bits(&mut msg, 28, 28, n28b);
+    write_bits(&mut msg, 56, 10, super::hash_table::ihashcall(inner, 10));
+    write_bits(&mut msg, 66, 5, n5);
+    write_bits(&mut msg, 71, 3, 1);
+    Some(msg)
+}
+
+/// Pack an ARRL Field Day Type 0.3/0.4 exchange.
+pub fn pack77_field_day(
+    call1: &str,
+    call2: &str,
+    reply: bool,
+    transmitters: u8,
+    class: char,
+    section: &str,
+) -> Option<[u8; 77]> {
+    if !(1..=32).contains(&transmitters) || !('A'..='H').contains(&class) {
+        return None;
+    }
+    let section = section.trim().to_ascii_uppercase();
+    let section_index = FIELD_DAY_SECTIONS
+        .iter()
+        .position(|candidate| *candidate == section)?
+        + 1;
+    let (n3, transmitter_index) = if transmitters <= 16 {
+        (3, transmitters - 1)
+    } else {
+        (4, transmitters - 17)
+    };
+    let mut msg = [0u8; 77];
+    write_bits(&mut msg, 0, 28, pack28(call1)?);
+    write_bits(&mut msg, 28, 28, pack28(call2)?);
+    msg[56] = u8::from(reply);
+    write_bits(&mut msg, 57, 4, u32::from(transmitter_index));
+    write_bits(&mut msg, 61, 3, u32::from(class as u8 - b'A'));
+    write_bits(&mut msg, 64, 7, section_index as u32);
+    write_bits(&mut msg, 71, 3, n3);
+    Some(msg)
+}
+
+/// Pack a WSJT-X Type 0.5 telemetry word (up to 71 significant bits).
+pub fn pack77_telemetry(hex: &str) -> Option<[u8; 77]> {
+    let hex = hex.trim();
+    if hex.is_empty() || hex.len() > 18 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u128::from_str_radix(hex, 16).ok()?;
+    if value >= (1u128 << 71) {
+        return None;
+    }
+    let mut msg = [0u8; 77];
+    for (index, bit) in msg[..71].iter_mut().enumerate() {
+        *bit = ((value >> (70 - index)) & 1) as u8;
+    }
+    write_bits(&mut msg, 71, 3, 5);
+    Some(msg)
+}
+
+/// Pack a WSJT-X Type 3 ARRL RTTY Roundup exchange.
+pub fn pack77_rtty(
+    call1: &str,
+    call2: &str,
+    reply: bool,
+    rst: &str,
+    exchange: &str,
+    tu: bool,
+) -> Option<[u8; 77]> {
+    let rst_bytes = rst.as_bytes();
+    if rst_bytes.len() != 3
+        || rst_bytes[0] != b'5'
+        || !(b'2'..=b'9').contains(&rst_bytes[1])
+        || rst_bytes[2] != b'9'
+    {
+        return None;
+    }
+    let nexch = if let Some(index) = RTTY_STATES
+        .iter()
+        .position(|candidate| *candidate == exchange)
+    {
+        8_001 + index as u32
+    } else {
+        let serial: u32 = exchange.parse().ok()?;
+        if !(1..=7_999).contains(&serial) {
+            return None;
+        }
+        serial
+    };
+    let rst_value: i32 = rst.parse().ok()?;
+    let irpt = ((rst_value - 509) / 10 - 2).clamp(0, 7) as u32;
+    let mut msg = [0u8; 77];
+    msg[0] = u8::from(tu);
+    write_bits(&mut msg, 1, 28, pack28(call1)?);
+    write_bits(&mut msg, 29, 28, pack28(call2)?);
+    msg[57] = u8::from(reply);
+    write_bits(&mut msg, 58, 3, irpt);
+    write_bits(&mut msg, 61, 13, nexch);
+    write_bits(&mut msg, 74, 3, 3);
+    Some(msg)
+}
+
+/// Pack a WSJT-X Type 5 EU VHF exchange with two explicitly hashed calls.
+pub fn pack77_eu_vhf(
+    call1: &str,
+    call2: &str,
+    reply: bool,
+    exchange: u32,
+    grid: &str,
+) -> Option<[u8; 77]> {
+    let call1 = bracketed_call(call1)?;
+    let call2 = bracketed_call(call2)?;
+    if !(520_001..=594_095).contains(&exchange) {
+        return None;
+    }
+    let report = exchange / 10_000 - 52;
+    let serial = (exchange % 10_000).min(2_047);
+    let mut msg = [0u8; 77];
+    write_bits(&mut msg, 0, 12, super::hash_table::ihashcall(call1, 12));
+    write_bits(&mut msg, 12, 22, super::hash_table::ihashcall(call2, 22));
+    msg[34] = u8::from(reply);
+    write_bits(&mut msg, 35, 3, report);
+    write_bits(&mut msg, 38, 11, serial);
+    write_bits(&mut msg, 49, 25, pack_grid6(grid)?);
+    write_bits(&mut msg, 74, 3, 5);
+    Some(msg)
+}
+
 /// Write `len` bits of a u64 `val` (MSB first) into `msg` starting at `start`.
 fn write_bits_u64(msg: &mut [u8; 77], start: usize, len: usize, val: u64) {
     for i in 0..len {
@@ -1138,6 +1673,16 @@ fn write_bits_u64(msg: &mut [u8; 77], start: usize, len: usize, val: u64) {
 /// [12-bit hash][58-bit base-38 nonstd][1-bit iflip][2-bit nrpt][1-bit icq][3-bit i3=4]
 /// ```
 pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> Option<[u8; 77]> {
+    pack77_type4_ordered(nonstd, std_call, report, is_cq, u8::from(!is_cq))
+}
+
+fn pack77_type4_ordered(
+    nonstd: &str,
+    hashed_call: &str,
+    report: &str,
+    is_cq: bool,
+    iflip: u8,
+) -> Option<[u8; 77]> {
     let nonstd = nonstd.trim().to_ascii_uppercase();
     let nb = nonstd.as_bytes();
     if nb.is_empty() || nb.len() > 11 {
@@ -1160,12 +1705,12 @@ pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> 
         n58 = n58 * 38 + idx as u64;
     }
 
-    // 12-bit hash of standard callsign
+    // WSJT-X also stores the CQ target's hash even though the decoder
+    // ignores it while `icq=1`.
     let n12 = if is_cq {
-        0u32 // unused when CQ flag is set
+        super::hash_table::ihashcall(&nonstd, 12)
     } else {
-        use super::hash_table::ihashcall;
-        ihashcall(std_call, 12)
+        super::hash_table::ihashcall(hashed_call, 12)
     };
 
     // Report encoding
@@ -1175,15 +1720,6 @@ pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> 
         "RR73" => 2,
         "73" => 3,
         _ => return None,
-    };
-
-    // iflip: 0 = <hash> nonstd, 1 = nonstd <hash>
-    // When std_call packs via pack28, place hash first (iflip=0).
-    // Otherwise nonstd first (iflip=1).
-    let iflip: u8 = if is_cq || pack28(std_call).is_some() {
-        0
-    } else {
-        1
     };
 
     let icq: u8 = if is_cq { 1 } else { 0 };
@@ -1196,6 +1732,159 @@ pub fn pack77_type4(nonstd: &str, std_call: &str, report: &str, is_cq: bool) -> 
     msg[73] = icq; // icq (bit 73)
     write_bits(&mut msg, 74, 3, 4); // i3=4 (bits 74-76)
     Some(msg)
+}
+
+fn normalize_message_words(text: &str) -> (String, Vec<String>) {
+    let normalized = text
+        .split_whitespace()
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut words = normalized
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if words.len() >= 3
+        && words[0] == "CQ"
+        && words[1].len() <= 4
+        && (is_valid_callsign(&words[2]) || bracketed_call(&words[2]).is_some())
+    {
+        words[0] = format!("CQ {}", words[1]);
+        words.remove(1);
+    }
+    (normalized, words)
+}
+
+fn pack77_type4_words(words: &[String]) -> Option<[u8; 77]> {
+    if !(2..=3).contains(&words.len()) {
+        return None;
+    }
+    let report = words.get(2).map_or("", String::as_str);
+    if words[0] == "CQ" {
+        if words[1].len() <= 4 {
+            return None;
+        }
+        return pack77_type4_ordered(&words[1], "", "", true, 0);
+    }
+    let first = bracketed_call(&words[0]);
+    let second = bracketed_call(&words[1]);
+    match (first, second) {
+        (Some(hashed), None) => pack77_type4_ordered(&words[1], hashed, report, false, 0),
+        (None, Some(hashed)) => pack77_type4_ordered(&words[0], hashed, report, false, 1),
+        _ => None,
+    }
+}
+
+fn pack77_dxpedition_words(words: &[String]) -> Option<[u8; 77]> {
+    if words.len() != 5 || words[1] != "RR73;" || bracketed_call(&words[3]).is_none() {
+        return None;
+    }
+    pack77_dxpedition(&words[0], &words[2], &words[3], words[4].parse().ok()?)
+}
+
+fn pack77_field_day_words(words: &[String]) -> Option<[u8; 77]> {
+    if !(4..=5).contains(&words.len()) {
+        return None;
+    }
+    let reply = words.len() == 5;
+    if reply && words[2] != "R" {
+        return None;
+    }
+    let exchange = &words[words.len() - 2];
+    let class = exchange.chars().last()?;
+    let transmitters = exchange[..exchange.len().checked_sub(1)?].parse().ok()?;
+    pack77_field_day(
+        &words[0],
+        &words[1],
+        reply,
+        transmitters,
+        class,
+        &words[words.len() - 1],
+    )
+}
+
+fn pack77_rtty_words(words: &[String]) -> Option<[u8; 77]> {
+    if !(4..=6).contains(&words.len()) {
+        return None;
+    }
+    let tu = words[0] == "TU;";
+    let offset = usize::from(tu);
+    if words.len() < offset + 4 {
+        return None;
+    }
+    let reply = words.get(offset + 2).is_some_and(|word| word == "R");
+    let rst_index = offset + 2 + usize::from(reply);
+    if words.len() != rst_index + 2 {
+        return None;
+    }
+    pack77_rtty(
+        &words[offset],
+        &words[offset + 1],
+        reply,
+        &words[rst_index],
+        &words[rst_index + 1],
+        tu,
+    )
+}
+
+fn pack77_eu_vhf_words(words: &[String]) -> Option<[u8; 77]> {
+    if !(4..=5).contains(&words.len()) {
+        return None;
+    }
+    let reply = words.len() == 5;
+    if reply && words[2] != "R" {
+        return None;
+    }
+    let exchange_index = 2 + usize::from(reply);
+    pack77_eu_vhf(
+        &words[0],
+        &words[1],
+        reply,
+        words[exchange_index].parse().ok()?,
+        &words[exchange_index + 1],
+    )
+}
+
+/// Pack a complete user-facing WSJT77 message using the same type-selection
+/// order as pinned WSJT-X `packjt77.f90::pack77`.
+///
+/// Messages that do not match a structured form fall back to the first
+/// 13 characters of the normalized text, matching WSJT-X free-text behavior.
+pub fn pack77_message(text: &str) -> Option<[u8; 77]> {
+    let (normalized, words) = normalize_message_words(text);
+    if normalized.is_empty() {
+        return None;
+    }
+    let starts_special = normalized.starts_with("CQ ")
+        || normalized.starts_with("DE ")
+        || normalized.starts_with("QRZ ");
+    if !starts_special {
+        if let Some(message) = pack77_dxpedition_words(&words) {
+            return Some(message);
+        }
+        if let Some(message) = pack77_field_day_words(&words) {
+            return Some(message);
+        }
+        if words.len() == 1
+            && let Some(message) = pack77_telemetry(&words[0])
+        {
+            return Some(message);
+        }
+    }
+    if let Some(message) = pack77_standard_words(&words) {
+        return Some(message);
+    }
+    if let Some(message) = pack77_rtty_words(&words) {
+        return Some(message);
+    }
+    if let Some(message) = pack77_type4_words(&words) {
+        return Some(message);
+    }
+    if let Some(message) = pack77_eu_vhf_words(&words) {
+        return Some(message);
+    }
+    let free_text = normalized.chars().take(13).collect::<String>();
+    pack77_free_text(&free_text)
 }
 
 /// Pack a free-text message (Type 0, n3=0).
@@ -1318,6 +2007,122 @@ mod tests {
             *bit = (bytes[j / 8] >> (7 - j % 8)) & 1;
         }
         msg
+    }
+
+    fn bits_to_msg77(bits: &str) -> [u8; 77] {
+        assert_eq!(bits.len(), 77);
+        let mut message = [0u8; 77];
+        for (target, source) in message.iter_mut().zip(bits.bytes()) {
+            *target = match source {
+                b'0' => 0,
+                b'1' => 1,
+                _ => panic!("invalid bit"),
+            };
+        }
+        message
+    }
+
+    #[test]
+    fn pinned_wsjtx_structured_message_vectors() {
+        // Generated by tools/wsjtx_wsjt77_oracle.f90 against pinned WSJT-X
+        // v3.0.2 commit ccdfaf3c1c109010d15399674ce278167cfde848.
+        let vectors = [
+            (
+                "K1ABC RR73; W9XYZ <KH1/KH7Z> -11",
+                "K1ABC RR73; W9XYZ <...> -12",
+                "00001001101111011110001101010000110000101001001110111000001100100101001001000",
+            ),
+            (
+                "WA9XYZ KA1ABC R 16A EMA",
+                "WA9XYZ KA1ABC R 16A EMA",
+                "11100111000010000110110111001001010111000110010100100001111110000001011011000",
+            ),
+            (
+                "WA9XYZ KA1ABC 32A EMA",
+                "WA9XYZ KA1ABC 32A EMA",
+                "11100111000010000110110111001001010111000110010100100001011110000001011100000",
+            ),
+            (
+                "PA3XYZ/P GM4ABC/P R JO22",
+                "PA3XYZ/P GM4ABC/P R JO22",
+                "10110111100111011111000000101011111010000110110010101001011100010011010110010",
+            ),
+            (
+                "TU; W9XYZ K1ABC R 579 MA",
+                "TU; W9XYZ K1ABC R 579 MA",
+                "10000110000101001001110111000000010011011110111100011010111011111101010101011",
+            ),
+            (
+                "CQ PJ4/KA1ABC",
+                "CQ PJ4/KA1ABC",
+                "00011100000100000011111001001010001101001010100001101110111010111000010001100",
+            ),
+            (
+                "<WA9XYZ> PJ4/KA1ABC RR73",
+                "<...> PJ4/KA1ABC RR73",
+                "11000001100000000011111001001010001101001010100001101110111010111000010100100",
+            ),
+            (
+                "PJ4/KA1ABC <WA9XYZ> 73",
+                "PJ4/KA1ABC <...> 73",
+                "11000001100000000011111001001010001101001010100001101110111010111000011110100",
+            ),
+            (
+                "<PA3XYZ> <G4ABC/P> R 590003 IO91NP",
+                "<...> <...> R 590003 IO91NP",
+                "11001000101111001000101111100100111111000000000110100010111010110000000111101",
+            ),
+            (
+                "K1ABC W9XYZ",
+                "K1ABC W9XYZ",
+                "00001001101111011110001101010000011000010100100111011100000111111010010001001",
+            ),
+            (
+                "0123456789ABCDEF01",
+                "123456789ABCDEF01",
+                "00000010010001101000101011001111000100110101011110011011110111100000001101000",
+            ),
+        ];
+
+        for (input, expected_decode, bits) in vectors {
+            let expected = bits_to_msg77(bits);
+            let actual = pack77_message(input)
+                .unwrap_or_else(|| panic!("failed to pack structured message: {input}"));
+            assert_eq!(actual, expected, "packed bits differ for {input}");
+            assert_eq!(
+                unpack77(&actual).as_deref(),
+                Some(expected_decode),
+                "canonical decode differs for {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn type5_hash_resolution_matches_upstream_collision_semantics() {
+        let message = pack77_message("<PA3XYZ> <G4ABC/P> R 590003 IO91NP").expect("pack Type 5");
+        let mut hashes = CallsignHashTable::new();
+        hashes.insert("PA3XYZ");
+        hashes.insert("G4ABC/P");
+        // These calls collide at 12 bits. WSJT-X's direct-indexed calls12
+        // table is last-writer-wins, so its pinned oracle emits this text.
+        assert_eq!(
+            unpack77_with_hash(&message, &hashes).as_deref(),
+            Some("<G4ABC/P> <G4ABC/P> R 590003 IO91NP")
+        );
+    }
+
+    #[test]
+    fn telemetry_uses_the_wsjt_x_type_05_layout() {
+        let message = pack77_telemetry("0123456789ABCDEF01").expect("pack telemetry");
+        assert_eq!(read_bits(&message, 71, 3), 5);
+        assert_eq!(read_bits(&message, 74, 3), 0);
+        assert_eq!(unpack77(&message).as_deref(), Some("123456789ABCDEF01"));
+        assert_eq!(
+            pack77_message("0123456789ABCDEF01"),
+            Some(message),
+            "single-word hexadecimal input must select Type 0.5"
+        );
+        assert!(pack77_telemetry("8123456789ABCDEF01").is_none());
     }
 
     #[test]

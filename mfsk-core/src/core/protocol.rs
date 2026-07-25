@@ -45,6 +45,10 @@ pub enum ProtocolId {
     /// at U/VHF (Rayleigh-fading-tolerant). 4 sub-modes share this
     /// family ID; the protocol-layer ZST disambiguates.
     UvPacket = 8,
+    /// FST4W beacon family: LDPC(240,74), CRC-24, 50-bit WSPR payload.
+    Fst4w = 9,
+    /// JT4 — 60 s slot, 4-FSK, convolutional r=1/2 K=32, 72-bit message.
+    Jt4 = 10,
 }
 
 /// Baseband modulation parameters (tones, symbol rate, Gray mapping, Gaussian

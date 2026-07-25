@@ -19,15 +19,8 @@
 //! are expected to unpack the 72-bit byte stream into whatever FEC
 //! wants.
 //!
-//! ## Scope
-//!
-//! The MVP covers the **standard message** (two callsigns plus a
-//! grid / report) and its documented report-code variants (plain
-//! `-NN` / `RNN` / `RO` / `RRR` / `73`). Free text (Type 6) and the
-//! compound-callsign Type 2–5 cases are detected but reported as
-//! `Standard { .., grid: "…" }` rather than fully unpacked; those
-//! less common paths can be ported from `getpfx1` / `getpfx2` when
-//! needed.
+//! Standard messages, compound-callsign Types 2–5, and the pinned
+//! WSJT-X 13-character free-text format are implemented.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -38,6 +31,9 @@ use core::fmt;
 /// Matches `NBASE` in WSJT-X: `37 * 36 * 10 * 27 * 27 * 27 = 262 177 560`.
 const NBASE: u32 = 37 * 36 * 10 * 27 * 27 * 27;
 
+/// First value after the original call / CQ-frequency namespace.
+const NBASE2: u32 = NBASE + 1_002;
+
 /// Base used for 4-character Maidenhead grids: `180 * 180 = 32 400`.
 /// Values above this encode report codes (see `unpack_grid`).
 const NGBASE: u32 = 180 * 180;
@@ -46,8 +42,9 @@ const NGBASE: u32 = 180 * 180;
 ///
 /// The enum shape mirrors the `itype` classification in WSJT-X
 /// `packmsg` (Type 1 = standard, Types 2–5 = compound-callsign
-/// variants, Type 6 = free text) but for the MVP everything that
-/// isn't a plain standard message is collapsed into `Unsupported`.
+/// variants, Type 6 = free text). Compound calls are returned in the
+/// same `Standard` fields as ordinary calls because callers should not
+/// need to know which wire representation produced the callsign.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Jt72Message {
     /// Standard two-callsign + grid / report message.
@@ -59,9 +56,11 @@ pub enum Jt72Message {
         /// the short tokens ("RO", "RRR", "73").
         grid_or_report: String,
     },
-    /// A message whose fields decode but don't fit the standard
-    /// pattern yet (compound callsign prefix/suffix, free text).
-    /// Raw integer fields are exposed for callers that want to dig in.
+    /// Pinned WSJT-X Type 6 base-42 free text (up to 13 characters).
+    FreeText { text: String },
+    /// A malformed or reserved payload that cannot be rendered as a
+    /// valid WSJT-X message. Raw integer fields are retained for
+    /// diagnostics.
     Unsupported { nc1: u32, nc2: u32, ng: u32 },
 }
 
@@ -72,7 +71,14 @@ impl fmt::Display for Jt72Message {
                 call1,
                 call2,
                 grid_or_report,
-            } => write!(f, "{} {} {}", call1, call2, grid_or_report),
+            } => {
+                write!(f, "{} {}", call1, call2)?;
+                if !grid_or_report.is_empty() {
+                    write!(f, " {grid_or_report}")?;
+                }
+                Ok(())
+            }
+            Jt72Message::FreeText { text } => f.write_str(text),
             Jt72Message::Unsupported { nc1, nc2, ng } => {
                 write!(f, "<unsupported nc1={nc1} nc2={nc2} ng={ng}>")
             }
@@ -86,6 +92,230 @@ impl fmt::Display for Jt72Message {
 
 /// 37-char callsign alphabet: digits, uppercase letters, space.
 const CALL_ALPHA: &[u8; 37] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+const TEXT_ALPHA: &[u8; 42] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-./?";
+const LEGACY_SUFFIXES: &[u8; 12] = b"P0123456789A";
+const LEGACY_PREFIXES: &str = "1A 1S 3A 3B6 3B8 3B9 3C 3C0 3D2 3D2C 3D2R 3DA 3V 3W 3X 3Y 3YB 3YP 4J 4L 4S 4U1I 4U1U 4W 4X 5A 5B 5H 5N 5R 5T 5U 5V 5W 5X 5Z 6W 6Y 7O 7P 7Q 7X 8P 8Q 8R 9A 9G 9H 9J 9K 9L 9M2 9M6 9N 9Q 9U 9V 9X 9Y A2 A3 A4 A5 A6 A7 A9 AP BS7 BV BV9 BY C2 C3 C5 C6 C9 CE CE0X CE0Y CE0Z CE9 CM CN CP CT CT3 CU CX CY0 CY9 D2 D4 D6 DL DU E3 E4 EA EA6 EA8 EA9 EI EK EL EP ER ES ET EU EX EY EZ F FG FH FJ FK FKC FM FO FOA FOC FOM FP FR FRG FRJ FRT FT5W FT5X FT5Z FW FY M MD MI MJ MM MU MW H4 H40 HA HB HB0 HC HC8 HH HI HK HK0 HK0M HL HM HP HR HS HV HZ I IS IS0 J2 J3 J5 J6 J7 J8 JA JDM JDO JT JW JX JY K KG4 KH0 KH1 KH2 KH3 KH4 KH5 KH5K KH6 KH7 KH8 KH9 KL KP1 KP2 KP4 KP5 LA LU LX LY LZ OA OD OE OH OH0 OJ0 OK OM ON OX OY OZ P2 P4 PA PJ2 PJ7 PY PY0F PT0S PY0T PZ R1F R1M S0 S2 S5 S7 S9 SM SP ST SU SV SVA SV5 SV9 T2 T30 T31 T32 T33 T5 T7 T8 T9 TA TF TG TI TI9 TJ TK TL TN TR TT TU TY TZ UA UA2 UA9 UK UN UR V2 V3 V4 V5 V6 V7 V8 VE VK VK0H VK0M VK9C VK9L VK9M VK9N VK9W VK9X VP2E VP2M VP2V VP5 VP6 VP6D VP8 VP8G VP8H VP8O VP8S VP9 VQ9 VR VU VU4 VU7 XE XF4 XT XU XW XX9 XZ YA YB YI YJ YK YL YN YO YS YU YV YV0 Z2 Z3 ZA ZB ZC4 ZD7 ZD8 ZD9 ZF ZK1N ZK1S ZK2 ZK3 ZL ZL7 ZL8 ZL9 ZP ZS ZS8 KC4 E5";
+
+#[derive(Clone, Debug)]
+struct CompoundCall {
+    base: String,
+    /// WSJT-X `nv2`: 2/3 legacy prefix/suffix, 4/5 generic prefix/suffix.
+    kind: u8,
+    k: u32,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum GenericLeader {
+    Cq,
+    Qrz,
+    De,
+}
+
+impl GenericLeader {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Cq => "CQ",
+            Self::Qrz => "QRZ",
+            Self::De => "DE",
+        }
+    }
+}
+
+fn parse_compound_call(call: &str) -> Option<CompoundCall> {
+    let call = call.trim().to_ascii_uppercase();
+    let (left, right) = call.split_once('/')?;
+    if left.is_empty() || right.is_empty() || right.contains('/') {
+        return None;
+    }
+    if let Some(index) = LEGACY_PREFIXES
+        .split_ascii_whitespace()
+        .position(|prefix| prefix == left)
+    {
+        return Some(CompoundCall {
+            base: right.to_owned(),
+            kind: 2,
+            k: index as u32 + 1,
+        });
+    }
+    if right.len() == 1
+        && let Some(index) = LEGACY_SUFFIXES
+            .iter()
+            .position(|suffix| *suffix == right.as_bytes()[0])
+    {
+        return Some(CompoundCall {
+            base: left.to_owned(),
+            kind: 3,
+            k: 401 + index as u32,
+        });
+    }
+
+    let prefix_shape = (1..=4).contains(&left.len());
+    let suffix_shape = (1..=3).contains(&right.len());
+    let is_prefix = match (prefix_shape, suffix_shape) {
+        (false, false) => return None,
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) if left.len() < 3 && right.len() < 3 => return None,
+        (true, true) if left.len() < 3 => true,
+        (true, true) if right.len() < 3 => false,
+        (true, true) => left.as_bytes().last().is_some_and(u8::is_ascii_digit),
+    };
+    let encode_base37 = |text: &str, width: usize| {
+        let mut value = 0u32;
+        for index in 0..width {
+            value = 37 * value + nchar(text.as_bytes().get(index).copied().unwrap_or(b' '))?;
+        }
+        Some(value)
+    };
+    if is_prefix {
+        Some(CompoundCall {
+            base: right.to_owned(),
+            kind: 4,
+            k: encode_base37(left, 4)?,
+        })
+    } else {
+        Some(CompoundCall {
+            base: left.to_owned(),
+            kind: 5,
+            k: encode_base37(right, 3)?,
+        })
+    }
+}
+
+fn apply_legacy_affix(call: &str, mut k: u32) -> Option<String> {
+    if k > 450 {
+        k -= 450;
+    }
+    if (1..=339).contains(&k) {
+        let prefix = LEGACY_PREFIXES
+            .split_ascii_whitespace()
+            .nth(k as usize - 1)?;
+        return Some(format!("{prefix}/{call}"));
+    }
+    if (401..=412).contains(&k) {
+        return Some(format!(
+            "{call}/{}",
+            LEGACY_SUFFIXES[(k - 401) as usize] as char
+        ));
+    }
+    None
+}
+
+fn unpack_base37(mut value: u32, width: usize) -> Option<String> {
+    let mut characters = [b' '; 4];
+    if width == 0 || width > characters.len() {
+        return None;
+    }
+    for index in (0..width).rev() {
+        characters[index] = CALL_ALPHA[(value % 37) as usize];
+        value /= 37;
+    }
+    if value != 0 {
+        return None;
+    }
+    Some(
+        core::str::from_utf8(&characters[..width])
+            .ok()?
+            .trim_end()
+            .to_owned(),
+    )
+}
+
+/// Decode the six JT65v2 ranges embedded in `nc1` by WSJT-X
+/// `unpackcall`: CQ/QRZ/DE, each with either a generic prefix or
+/// suffix on the second callsign.
+fn unpack_generic_nc1(nc1: u32) -> Option<(GenericLeader, bool, String)> {
+    const PREFIX_SPAN: u32 = 1_823_509;
+    const SUFFIX_SPAN: u32 = 49_285;
+    let (leader, is_prefix, value) = if (NBASE2 + 1..=NBASE2 + PREFIX_SPAN).contains(&nc1) {
+        (GenericLeader::Cq, true, nc1 - (NBASE2 + 1))
+    } else if (NBASE2 + PREFIX_SPAN + 1..=NBASE2 + 2 * PREFIX_SPAN).contains(&nc1) {
+        (GenericLeader::Qrz, true, nc1 - (NBASE2 + PREFIX_SPAN + 1))
+    } else if (NBASE2 + 2 * PREFIX_SPAN + 1..=NBASE2 + 3 * PREFIX_SPAN).contains(&nc1) {
+        (
+            GenericLeader::De,
+            true,
+            nc1 - (NBASE2 + 2 * PREFIX_SPAN + 1),
+        )
+    } else if (NBASE2 + 3 * PREFIX_SPAN + 1..=NBASE2 + 3 * PREFIX_SPAN + SUFFIX_SPAN).contains(&nc1)
+    {
+        (
+            GenericLeader::Cq,
+            false,
+            nc1 - (NBASE2 + 3 * PREFIX_SPAN + 1),
+        )
+    } else if (NBASE2 + 3 * PREFIX_SPAN + SUFFIX_SPAN + 1
+        ..=NBASE2 + 3 * PREFIX_SPAN + 2 * SUFFIX_SPAN)
+        .contains(&nc1)
+    {
+        (
+            GenericLeader::Qrz,
+            false,
+            nc1 - (NBASE2 + 3 * PREFIX_SPAN + SUFFIX_SPAN + 1),
+        )
+    } else if (NBASE2 + 3 * PREFIX_SPAN + 2 * SUFFIX_SPAN + 1
+        ..=NBASE2 + 3 * PREFIX_SPAN + 3 * SUFFIX_SPAN)
+        .contains(&nc1)
+    {
+        (
+            GenericLeader::De,
+            false,
+            nc1 - (NBASE2 + 3 * PREFIX_SPAN + 2 * SUFFIX_SPAN + 1),
+        )
+    } else {
+        return None;
+    };
+    Some((
+        leader,
+        is_prefix,
+        unpack_base37(value, if is_prefix { 4 } else { 3 })?,
+    ))
+}
+
+fn k_to_grid(k: u32) -> Option<String> {
+    if !(1..=900).contains(&k) {
+        return None;
+    }
+    let mut longitude = 2 * (((k - 1) / 5) % 90) as i32 - 179;
+    if k > 450 {
+        longitude += 180;
+    }
+    let latitude = ((k - 1) % 5) as i32 + 85;
+    let longitude_units = 12 * (180 - longitude);
+    let latitude_units = 24 * (latitude + 90);
+    let field_longitude = longitude_units / 240;
+    let square_longitude = (longitude_units - 240 * field_longitude) / 24;
+    let field_latitude = latitude_units / 240;
+    let square_latitude = (latitude_units - 240 * field_latitude) / 24;
+    Some(format!(
+        "{}{}{}{}",
+        (b'A' + field_longitude as u8) as char,
+        (b'A' + field_latitude as u8) as char,
+        square_longitude,
+        square_latitude,
+    ))
+}
+
+fn grid_to_k(grid: &str) -> u32 {
+    let bytes = grid.as_bytes();
+    if bytes.len() != 4
+        || !matches!(bytes[0], b'A'..=b'R')
+        || !matches!(bytes[1], b'A'..=b'R')
+        || !bytes[2].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+    {
+        return 0;
+    }
+    let longitude = 179 - 20 * i32::from(bytes[0] - b'A') - 2 * i32::from(bytes[2] - b'0');
+    // `unpackmsg` probes the four-character grid at subsquare `ma`:
+    // longitude is centered by `m`, while latitude remains just above
+    // the square's southern edge because `a` is used there.
+    let latitude = -90 + 10 * i32::from(bytes[1] - b'A') + i32::from(bytes[3] - b'0');
+    if latitude < 85 {
+        return 0;
+    }
+    (5 * (longitude + 179) / 2 + latitude - 84) as u32
+}
 
 /// Translate a callsign char to its `nchar` index: digit→0..9,
 /// letter→10..35, space→36. Returns `None` for anything else.
@@ -112,6 +342,19 @@ fn nchar(c: u8) -> Option<u32> {
 /// schema — those cases trigger the "text / compound" fallbacks in
 /// `packcall` that this MVP doesn't yet model.
 pub fn pack_call(call: &str) -> Option<u32> {
+    let mut normalized = call.trim().to_ascii_uppercase();
+    // Historical mappings retained verbatim by WSJT-X `packcall`.
+    if normalized.starts_with("3DA0") {
+        normalized = format!("3D0{}", &normalized[4..]);
+    } else if normalized.starts_with("3X")
+        && normalized
+            .as_bytes()
+            .get(2)
+            .is_some_and(u8::is_ascii_uppercase)
+    {
+        normalized = format!("Q{}", &normalized[2..]);
+    }
+    let call = normalized.as_str();
     let bytes = call.as_bytes();
     // Special tokens handled by WSJT-X's `packcall`.
     match call {
@@ -119,6 +362,12 @@ pub fn pack_call(call: &str) -> Option<u32> {
         "QRZ" => return Some(NBASE + 2),
         "DE" => return Some(267_796_945),
         _ => {}
+    }
+    if let Some(frequency) = call.strip_prefix("CQ ")
+        && frequency.len() == 3
+        && frequency.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Some(NBASE + 3 + frequency.parse::<u32>().ok()?);
     }
     if bytes.is_empty() || bytes.len() > 6 {
         return None;
@@ -196,6 +445,9 @@ pub fn unpack_call(ncall: u32) -> Option<String> {
         267_796_945 => return Some("DE".into()),
         _ => {}
     }
+    if (NBASE + 3..=NBASE + 1_002).contains(&ncall) {
+        return Some(format!("CQ {:03}", ncall - NBASE - 3));
+    }
     if ncall >= NBASE {
         return None;
     }
@@ -219,8 +471,16 @@ pub fn unpack_call(ncall: u32) -> Option<String> {
     let c1 = n; // 0..=36
     chars[0] = CALL_ALPHA[c1 as usize];
 
-    let s = core::str::from_utf8(&chars).ok()?;
-    Some(s.trim().to_string())
+    let s = core::str::from_utf8(&chars).ok()?.trim();
+    if let Some(rest) = s.strip_prefix("3D0") {
+        Some(format!("3DA0{rest}"))
+    } else if let Some(rest) = s.strip_prefix('Q')
+        && rest.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+    {
+        Some(format!("3X{rest}"))
+    } else {
+        Some(s.to_string())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -286,6 +546,17 @@ pub fn pack_grid_or_report(s: &str) -> Option<u32> {
             {
                 return Some(NGBASE + 31 + n as u32);
             }
+            let (is_acknowledged, numeric) = if let Some(report) = other.strip_prefix('R') {
+                (true, report)
+            } else {
+                (false, other)
+            };
+            if let Ok(report) = numeric.parse::<i32>()
+                && (-50..=49).contains(&report)
+            {
+                let prefix = if is_acknowledged { 'L' } else { 'K' };
+                return pack_grid4_plain(&format!("{prefix}A{:02}", report + 50));
+            }
             pack_grid4_plain(other)
         }
     }
@@ -327,7 +598,17 @@ pub fn unpack_grid(ng: u32) -> String {
         g[1] = b'A' + fla as u8;
         g[2] = b'0' + sl as u8;
         g[3] = b'0' + sla as u8;
-        return core::str::from_utf8(&g).unwrap_or("????").to_string();
+        let grid = core::str::from_utf8(&g).unwrap_or("????");
+        if matches!(&grid[..2], "KA" | "LA") {
+            let report = grid[2..].parse::<i32>().unwrap_or(50) - 50;
+            let prefix = if grid.starts_with('L') { "R" } else { "" };
+            return if report >= 0 {
+                format!("{prefix}+{report:02}")
+            } else {
+                format!("{prefix}-{abs:02}", abs = report.unsigned_abs())
+            };
+        }
+        return grid.to_string();
     }
     "?".into()
 }
@@ -377,30 +658,273 @@ pub fn unpack_words(d: &[u8; 12]) -> (u32, u32, u32) {
 /// Convenience: pack a standard message (call1, call2, grid_or_report)
 /// into 12 six-bit words.
 pub fn pack_standard(call1: &str, call2: &str, grid_or_report: &str) -> Option<[u8; 12]> {
-    let nc1 = pack_call(call1)?;
-    let nc2 = pack_call(call2)?;
+    const PREFIX_SPAN: u32 = 1_823_509;
+    const SUFFIX_SPAN: u32 = 49_285;
+
+    let call1 = call1.trim().to_ascii_uppercase();
+    let call2 = call2.trim().to_ascii_uppercase();
+    let compound1 = parse_compound_call(&call1);
+    let compound2 = parse_compound_call(&call2);
+    let base1 = compound1
+        .as_ref()
+        .map_or(call1.as_str(), |compound| compound.base.as_str());
+    let base2 = compound2
+        .as_ref()
+        .map_or(call2.as_str(), |compound| compound.base.as_str());
+
+    // Pinned `packmsg` never permits a generic Type 4/5 affix in the
+    // first call field. It falls back to Type 6 text instead.
+    if compound1
+        .as_ref()
+        .is_some_and(|compound| compound.kind >= 4)
+    {
+        return None;
+    }
+
+    let ordinary_nc1 = pack_call(base1)?;
+    let nc2 = pack_call(base2)?;
     let ng = pack_grid_or_report(grid_or_report)?;
-    Some(pack_words(nc1, nc2, ng))
+
+    let legacy1 = compound1
+        .as_ref()
+        .filter(|compound| matches!(compound.kind, 2 | 3));
+    let legacy2 = compound2
+        .as_ref()
+        .filter(|compound| matches!(compound.kind, 2 | 3));
+    if legacy1.is_some() || legacy2.is_some() {
+        // WSJT-X has only one legacy affix channel: k=1..450 is
+        // carried in the first call, k=451..900 in the second. The
+        // synthetic polar grid replaces any supplied grid/report.
+        if legacy1.is_some() && legacy2.is_some() {
+            return None;
+        }
+        if compound2
+            .as_ref()
+            .is_some_and(|compound| compound.kind >= 4)
+        {
+            return None;
+        }
+        let k = legacy1
+            .map(|compound| compound.k)
+            .or_else(|| legacy2.map(|compound| compound.k + 450))?;
+        let synthetic_grid = k_to_grid(k)?;
+        let synthetic_ng = pack_grid_or_report(&synthetic_grid)?;
+        return Some(pack_words(ordinary_nc1, nc2, synthetic_ng));
+    }
+
+    if let Some(compound) = compound2.as_ref() {
+        let leader = match call1.as_str() {
+            "CQ" => GenericLeader::Cq,
+            "QRZ" => GenericLeader::Qrz,
+            "DE" => GenericLeader::De,
+            _ => return None,
+        };
+        let nc1 = match (leader, compound.kind) {
+            (GenericLeader::Cq, 4) => NBASE2 + 1 + compound.k,
+            (GenericLeader::Qrz, 4) => NBASE2 + PREFIX_SPAN + 1 + compound.k,
+            (GenericLeader::De, 4) => NBASE2 + 2 * PREFIX_SPAN + 1 + compound.k,
+            (GenericLeader::Cq, 5) => NBASE2 + 3 * PREFIX_SPAN + 1 + compound.k,
+            (GenericLeader::Qrz, 5) => NBASE2 + 3 * PREFIX_SPAN + SUFFIX_SPAN + 1 + compound.k,
+            (GenericLeader::De, 5) => NBASE2 + 3 * PREFIX_SPAN + 2 * SUFFIX_SPAN + 1 + compound.k,
+            _ => return None,
+        };
+        return Some(pack_words(nc1, nc2, ng));
+    }
+
+    Some(pack_words(ordinary_nc1, nc2, ng))
+}
+
+/// Pack the pinned WSJT-X Type 6 free-text format.
+///
+/// Text is uppercased, internal whitespace is collapsed like `fmtmsg`,
+/// padded to 13 characters, and truncated after character 13.
+pub fn pack_free_text(text: &str) -> [u8; 12] {
+    let normalized = text
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    let mut characters = [b' '; 13];
+    for (slot, character) in characters.iter_mut().zip(normalized.bytes()) {
+        *slot = if TEXT_ALPHA.contains(&character) {
+            character
+        } else {
+            b' '
+        };
+    }
+    let code = |character: u8| {
+        TEXT_ALPHA
+            .iter()
+            .position(|candidate| *candidate == character)
+            .unwrap_or(36) as u32
+    };
+    let mut nc1 = 0u32;
+    for &character in &characters[..5] {
+        nc1 = 42 * nc1 + code(character);
+    }
+    let mut nc2 = 0u32;
+    for &character in &characters[5..10] {
+        nc2 = 42 * nc2 + code(character);
+    }
+    let mut nc3 = 0u32;
+    for &character in &characters[10..] {
+        nc3 = 42 * nc3 + code(character);
+    }
+    nc1 = 2 * nc1 + u32::from(nc3 & 32_768 != 0);
+    nc2 = 2 * nc2 + u32::from(nc3 & 65_536 != 0);
+    nc3 &= 32_767;
+    pack_words(nc1, nc2, nc3 + 32_768)
+}
+
+fn unpack_free_text(nc1: u32, nc2: u32, ng: u32) -> String {
+    let mut first = nc1;
+    let mut second = nc2;
+    let mut third = ng & 32_767;
+    if first & 1 != 0 {
+        third += 32_768;
+    }
+    first /= 2;
+    if second & 1 != 0 {
+        third += 65_536;
+    }
+    second /= 2;
+
+    let mut characters = [b' '; 13];
+    for index in (0..5).rev() {
+        characters[index] = TEXT_ALPHA[(first % 42) as usize];
+        first /= 42;
+    }
+    for index in (5..10).rev() {
+        characters[index] = TEXT_ALPHA[(second % 42) as usize];
+        second /= 42;
+    }
+    for index in (10..13).rev() {
+        characters[index] = TEXT_ALPHA[(third % 42) as usize];
+        third /= 42;
+    }
+    core::str::from_utf8(&characters)
+        .unwrap_or_default()
+        .trim_end()
+        .to_owned()
+}
+
+/// Pack a complete JT4/JT9/JT65 message, falling back to Type 6 free
+/// text when it is not a valid two-callsign standard message.
+pub fn pack_message(message: &str) -> [u8; 12] {
+    let normalized = message
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase()
+        .chars()
+        .take(22)
+        .collect::<String>();
+    let fields = normalized.split_ascii_whitespace().collect::<Vec<_>>();
+    if fields.len() == 4
+        && fields[0] == "CQ"
+        && matches!(fields[1].len(), 1 | 3)
+        && fields[1].bytes().all(|byte| byte.is_ascii_digit())
+        && let Some(frequency) = fields[1].parse::<u16>().ok()
+        && let Some(words) = pack_standard(&format!("CQ {frequency:03}"), fields[2], fields[3])
+    {
+        return words;
+    }
+    if fields.len() == 4 && fields[0] == "CQ" {
+        let encoded_cq = if fields[1] == "DX" {
+            Some("CQ9DX".to_owned())
+        } else if fields[1].len() == 2 && fields[1].bytes().all(|byte| byte.is_ascii_uppercase()) {
+            Some(format!("E9{}", fields[1]))
+        } else {
+            None
+        };
+        if let Some(encoded_cq) = encoded_cq
+            && let Some(words) = pack_standard(&encoded_cq, fields[2], fields[3])
+        {
+            return words;
+        }
+    }
+    if (2..=3).contains(&fields.len())
+        && let Some(words) =
+            pack_standard(fields[0], fields[1], fields.get(2).copied().unwrap_or(""))
+    {
+        return words;
+    }
+    pack_free_text(&normalized)
 }
 
 /// Convenience: unpack 12 six-bit words into a `Jt72Message`.
 pub fn unpack(d: &[u8; 12]) -> Jt72Message {
     let (nc1, nc2, ng) = unpack_words(d);
-    let c1 = unpack_call(nc1);
-    let c2 = unpack_call(nc2);
-    // Text / free-form messages set a `ng + 32768` high bit that
-    // this MVP doesn't decode — collapse those and anything outside
-    // the standard NBASE range into `Unsupported`.
     if ng >= 32768 {
-        return Jt72Message::Unsupported { nc1, nc2, ng };
+        return Jt72Message::FreeText {
+            text: unpack_free_text(nc1, nc2, ng),
+        };
     }
-    match (c1, c2) {
-        (Some(call1), Some(call2)) => Jt72Message::Standard {
+    let Some(mut call2) = unpack_call(nc2) else {
+        return Jt72Message::Unsupported { nc1, nc2, ng };
+    };
+    let grid = unpack_grid(ng);
+
+    if let Some((leader, is_prefix, affix)) = unpack_generic_nc1(nc1) {
+        call2 = if is_prefix {
+            format!("{affix}/{call2}")
+        } else {
+            format!("{call2}/{affix}")
+        };
+        return Jt72Message::Standard {
+            call1: leader.text().to_owned(),
+            call2,
+            grid_or_report: grid,
+        };
+    }
+
+    let Some(mut call1) = unpack_call(nc1) else {
+        return Jt72Message::Unsupported { nc1, nc2, ng };
+    };
+    let k = grid_to_k(&grid);
+
+    // `DE` is the final special value in `unpackcall`. WSJT-X gives
+    // it a dedicated legacy-second-call branch.
+    if nc1 == 267_796_945 {
+        let has_legacy_second_call = (451..=900).contains(&k);
+        if has_legacy_second_call && let Some(compound) = apply_legacy_affix(&call2, k) {
+            call2 = compound;
+        }
+        return Jt72Message::Standard {
             call1,
             call2,
-            grid_or_report: unpack_grid(ng),
-        },
-        _ => Jt72Message::Unsupported { nc1, nc2, ng },
+            grid_or_report: if has_legacy_second_call {
+                String::new()
+            } else {
+                grid
+            },
+        };
+    }
+
+    if (1..=450).contains(&k) {
+        if let Some(compound) = apply_legacy_affix(&call1, k) {
+            call1 = compound;
+        }
+    } else if (451..=900).contains(&k)
+        && let Some(compound) = apply_legacy_affix(&call2, k)
+    {
+        call2 = compound;
+    }
+
+    // Reverse the two historical CQ activity shims in `packmsg`.
+    if call1 == "CQ9DX" {
+        call1 = "CQ DX".to_owned();
+    } else if call1.len() == 4
+        && call1.starts_with("E9")
+        && call1[2..].bytes().all(|byte| byte.is_ascii_uppercase())
+    {
+        call1 = format!("CQ {}", &call1[2..]);
+    }
+
+    Jt72Message::Standard {
+        call1,
+        call2,
+        grid_or_report: if k == 0 { grid } else { String::new() },
     }
 }
 
@@ -425,14 +949,17 @@ impl MessageCodec for Jt72Message_ {
     const CRC_BITS: u32 = 0;
 
     fn pack(&self, fields: &MessageFields) -> Option<Vec<u8>> {
-        let c1 = fields.call1.as_deref()?;
-        let c2 = fields.call2.as_deref()?;
-        let rep = fields
-            .grid
-            .as_deref()
-            .or(fields.free_text.as_deref())
-            .unwrap_or("");
-        let words = pack_standard(c1, c2, rep)?;
+        let words = if let (Some(c1), Some(c2)) = (fields.call1.as_deref(), fields.call2.as_deref())
+        {
+            let rep = fields
+                .grid
+                .as_deref()
+                .or(fields.free_text.as_deref())
+                .unwrap_or("");
+            pack_standard(c1, c2, rep)?
+        } else {
+            pack_free_text(fields.free_text.as_deref()?)
+        };
         // Flatten the 12 × 6-bit words into 72 individual bits
         // (MSB-first within each word), matching how FEC stages
         // consume them elsewhere in mfsk-*.
@@ -529,6 +1056,109 @@ mod tests {
                 grid_or_report: "FN42".into(),
             }
         );
+    }
+
+    #[test]
+    fn free_text_roundtrip_uses_wsjt_base42_alphabet() {
+        for (input, expected) in [
+            ("TNX JOE -14 73", "TNX JOE -14 7"),
+            ("RO", "RO"),
+            ("A+B/C.D? 123", "A+B/C.D? 123"),
+            ("lower   case", "LOWER CASE"),
+        ] {
+            let words = pack_free_text(input);
+            assert_eq!(
+                unpack(&words),
+                Jt72Message::FreeText {
+                    text: expected.to_owned()
+                }
+            );
+            assert_eq!(unpack(&words).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn complete_message_prefers_standard_then_falls_back_to_text() {
+        assert!(matches!(
+            unpack(&pack_message("CQ K1ABC FN42")),
+            Jt72Message::Standard { .. }
+        ));
+        assert_eq!(
+            unpack(&pack_message("TNX JOE -14 73")),
+            Jt72Message::FreeText {
+                text: "TNX JOE -14 7".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn wsjtx_v3_0_2_testmsg_vectors_match_exactly() {
+        let fixture = include_str!("../../tests/data/jt72_wsjtx_v3_0_2.tsv");
+        let mut checked = 0usize;
+        for (line_number, line) in fixture.lines().enumerate() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields = line.split('\t').collect::<Vec<_>>();
+            assert_eq!(
+                fields.len(),
+                4,
+                "malformed fixture line {}",
+                line_number + 1
+            );
+            let message = fields[0];
+            let expected_decode = fields[1];
+            let message_type = fields[2].parse::<u8>().expect("valid itype");
+            assert!((1..=6).contains(&message_type));
+            let expected_words = fields[3]
+                .split_ascii_whitespace()
+                .map(|word| word.parse::<u8>().expect("valid six-bit word"))
+                .collect::<Vec<_>>();
+            let expected_words: [u8; 12] =
+                expected_words.try_into().unwrap_or_else(|words: Vec<u8>| {
+                    panic!(
+                        "fixture line {} has {} words instead of 12",
+                        line_number + 1,
+                        words.len()
+                    )
+                });
+
+            let actual_words = pack_message(message);
+            assert_eq!(
+                actual_words, expected_words,
+                "packed words differ from pinned WSJT-X for {message:?} (itype {message_type})"
+            );
+            assert_eq!(
+                unpack(&actual_words).to_string(),
+                expected_decode,
+                "decoded text differs from pinned WSJT-X for {message:?} (itype {message_type})"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 68,
+            "the complete pinned upstream test set must run"
+        );
+    }
+
+    #[test]
+    fn compound_calls_use_only_the_wire_forms_allowed_by_packmsg() {
+        assert_eq!(LEGACY_PREFIXES.split_ascii_whitespace().count(), 339);
+        assert!(matches!(
+            unpack(&pack_message("1A/KA1ABC WB9XYZ EN34")),
+            Jt72Message::Standard {
+                grid_or_report,
+                ..
+            } if grid_or_report.is_empty()
+        ));
+        assert!(matches!(
+            unpack(&pack_message("A000/KA1ABC WB9XYZ FM07")),
+            Jt72Message::FreeText { .. }
+        ));
+        assert!(matches!(
+            unpack(&pack_message("KA1ABC/P WB9XYZ/A")),
+            Jt72Message::FreeText { .. }
+        ));
     }
 
     #[test]

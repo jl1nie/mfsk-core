@@ -14,9 +14,8 @@
 //! Valid "power-in-dBm" values (0, 3, 7, 10, …, 60) mark Type 1; other
 //! positive ntype is Type 2; negative ntype is Type 3.
 //!
-//! Currently Type 1 and Type 3 are implemented end-to-end. Type 2 is
-//! detected but reported as a placeholder — the prefix/suffix unpack
-//! logic can be ported verbatim when a test corpus materialises.
+//! All three forms are implemented end-to-end, including the legacy
+//! 15-bit Jenkins callsign hash and compound-call prefix/suffix transforms.
 //!
 //! The decoded representation is a `WsprMessage` enum so callers can
 //! distinguish the types; the convenience `to_string()` impl yields the
@@ -275,11 +274,9 @@ pub fn unpack_grid(ngrid_full: u32) -> Option<(String, i32)> {
 /// 50 bits, stored MSB-first across a 50-element `[u8; 50]` of 0/1 values —
 /// the form required by [`crate::fec::ConvFano`]'s encode path.
 pub fn pack_type1(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]> {
-    if !POWERS.contains(&power_dbm) {
-        return None;
-    }
-    let n1 = pack_call(callsign)?;
-    let n2 = pack_grid4_power(grid, power_dbm)?;
+    let power_dbm = normalize_power(power_dbm)?;
+    let n1 = pack_call(&callsign.trim().to_ascii_uppercase())?;
+    let n2 = pack_grid4_power(&grid.trim().to_ascii_uppercase(), power_dbm)?;
     let bytes = pack50(n1, n2);
     let mut bits = [0u8; 50];
     for i in 0..50 {
@@ -287,6 +284,193 @@ pub fn pack_type1(callsign: &str, grid: &str, power_dbm: i32) -> Option<[u8; 50]
         bits[i] = (byte >> (7 - (i % 8))) & 1;
     }
     Some(bits)
+}
+
+fn normalize_power(power_dbm: i32) -> Option<i32> {
+    const ADJUST: [i32; 10] = [0, -1, 1, 0, -1, 2, 1, 0, -1, 1];
+    let power = power_dbm.clamp(0, 60);
+    let normalized = power + ADJUST[(power % 10) as usize];
+    POWERS.contains(&normalized).then_some(normalized)
+}
+
+fn bits_from_words(n1: u32, n2: u32) -> [u8; 50] {
+    let bytes = pack50(n1, n2);
+    let mut bits = [0u8; 50];
+    for index in 0..50 {
+        bits[index] = (bytes[index / 8] >> (7 - index % 8)) & 1;
+    }
+    bits
+}
+
+fn mix_hash(mut a: u32, mut b: u32, mut c: u32) -> (u32, u32, u32) {
+    a = a.wrapping_sub(c);
+    a ^= c.rotate_left(4);
+    c = c.wrapping_add(b);
+    b = b.wrapping_sub(a);
+    b ^= a.rotate_left(6);
+    a = a.wrapping_add(c);
+    c = c.wrapping_sub(b);
+    c ^= b.rotate_left(8);
+    b = b.wrapping_add(a);
+    a = a.wrapping_sub(c);
+    a ^= c.rotate_left(16);
+    c = c.wrapping_add(b);
+    b = b.wrapping_sub(a);
+    b ^= a.rotate_left(19);
+    a = a.wrapping_add(c);
+    c = c.wrapping_sub(b);
+    c ^= b.rotate_left(4);
+    b = b.wrapping_add(a);
+    (a, b, c)
+}
+
+fn final_hash(mut a: u32, mut b: u32, mut c: u32) -> u32 {
+    c ^= b;
+    c = c.wrapping_sub(b.rotate_left(14));
+    a ^= c;
+    a = a.wrapping_sub(c.rotate_left(11));
+    b ^= a;
+    b = b.wrapping_sub(a.rotate_left(25));
+    c ^= b;
+    c = c.wrapping_sub(b.rotate_left(16));
+    a ^= c;
+    a = a.wrapping_sub(c.rotate_left(4));
+    b ^= a;
+    b = b.wrapping_sub(a.rotate_left(14));
+    c ^= b;
+    c.wrapping_sub(b.rotate_left(24))
+}
+
+/// Legacy WSPR 15-bit callsign hash (`nhash(call, len, 146)`).
+///
+/// This is Bob Jenkins' lookup3 `hashlittle` transform as shipped in
+/// pinned WSJT-X `lib/wsprd/nhash.c`, truncated to its on-air 15 bits.
+pub fn hash_call_15(callsign: &str) -> u32 {
+    let uppercase = callsign.trim().to_ascii_uppercase();
+    let mut bytes = uppercase.as_bytes();
+    let initial = 0xdead_beefu32
+        .wrapping_add(bytes.len() as u32)
+        .wrapping_add(146);
+    let (mut a, mut b, mut c) = (initial, initial, initial);
+
+    while bytes.len() > 12 {
+        a = a.wrapping_add(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+        b = b.wrapping_add(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]));
+        c = c.wrapping_add(u32::from_le_bytes([
+            bytes[8], bytes[9], bytes[10], bytes[11],
+        ]));
+        (a, b, c) = mix_hash(a, b, c);
+        bytes = &bytes[12..];
+    }
+    if bytes.is_empty() {
+        return c & 0x7fff;
+    }
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let shifted = u32::from(byte) << (8 * (index % 4));
+        match index / 4 {
+            0 => a = a.wrapping_add(shifted),
+            1 => b = b.wrapping_add(shifted),
+            _ => c = c.wrapping_add(shifted),
+        }
+    }
+    final_hash(a, b, c) & 0x7fff
+}
+
+/// Pack a classic WSPR Type-2 compound callsign and power.
+pub fn pack_type2(callsign: &str, power_dbm: i32) -> Option<[u8; 50]> {
+    let callsign = callsign.trim().to_ascii_uppercase();
+    let (left, right) = callsign.split_once('/')?;
+    if left.is_empty() || right.is_empty() || right.contains('/') {
+        return None;
+    }
+    let power = normalize_power(power_dbm)?;
+
+    let (n1, ng, nadd) = if right.len() == 1 {
+        let n1 = pack_call(left)?;
+        let suffix = callsign_char_code(right.as_bytes()[0])?;
+        if suffix >= 36 {
+            return None;
+        }
+        (n1, 60_000 - 32_768 + u32::from(suffix), 1u32)
+    } else if right.len() == 2 && right.bytes().all(|byte| byte.is_ascii_digit()) {
+        let n1 = pack_call(left)?;
+        let suffix =
+            u32::from(right.as_bytes()[0] - b'0') * 10 + u32::from(right.as_bytes()[1] - b'0');
+        (n1, 60_000 + 26 + suffix, 1u32)
+    } else {
+        if left.len() > 3 {
+            return None;
+        }
+        let n1 = pack_call(right)?;
+        let mut prefix = [b' '; 3];
+        let start = prefix.len().checked_sub(left.len())?;
+        prefix[start..].copy_from_slice(left.as_bytes());
+        let mut ng = 0u32;
+        for byte in prefix {
+            ng = ng
+                .checked_mul(37)?
+                .checked_add(u32::from(callsign_char_code(byte)?))?;
+        }
+        let nadd = u32::from(ng >= 32_768);
+        if nadd == 1 {
+            ng -= 32_768;
+        }
+        (n1, ng, nadd)
+    };
+
+    let ntype = power as u32 + 1 + nadd;
+    Some(bits_from_words(n1, 128 * ng + ntype + 64))
+}
+
+/// Pack a classic WSPR Type-3 hashed callsign, six-character grid and power.
+pub fn pack_type3(callsign: &str, grid6: &str, power_dbm: i32) -> Option<[u8; 50]> {
+    let callsign = callsign
+        .trim()
+        .strip_prefix('<')
+        .and_then(|call| call.strip_suffix('>'))
+        .unwrap_or(callsign.trim())
+        .to_ascii_uppercase();
+    if callsign.is_empty()
+        || callsign.len() > 12
+        || !callsign
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'/')
+    {
+        return None;
+    }
+    let grid = grid6.trim().to_ascii_uppercase();
+    let bytes = grid.as_bytes();
+    if bytes.len() != 6
+        || !(b'A'..=b'R').contains(&bytes[0])
+        || !(b'A'..=b'R').contains(&bytes[1])
+        || !bytes[2].is_ascii_digit()
+        || !bytes[3].is_ascii_digit()
+        || !(b'A'..=b'X').contains(&bytes[4])
+        || !(b'A'..=b'X').contains(&bytes[5])
+    {
+        return None;
+    }
+    let rotated = format!("{}{}", &grid[1..], &grid[..1]);
+    let n1 = pack_call(&rotated)?;
+    let power = normalize_power(power_dbm)?;
+    let n2 = 128 * hash_call_15(&callsign) + 63 - power as u32;
+    Some(bits_from_words(n1, n2))
+}
+
+/// Pack any of the three classic WSPR message forms.
+pub fn pack_message(message: &str) -> Option<[u8; 50]> {
+    let normalized = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    let fields: Vec<&str> = normalized.split_whitespace().collect();
+    match fields.as_slice() {
+        [call, grid, power] if call.starts_with('<') => pack_type3(call, grid, power.parse().ok()?),
+        [call, grid, power] => pack_type1(call, grid, power.parse().ok()?),
+        [call, power] => pack_type2(call, power.parse().ok()?),
+        _ => None,
+    }
 }
 
 /// Add a prefix or suffix to a callsign according to the 16-bit
@@ -436,10 +620,20 @@ impl MessageCodec for Wspr50Message {
     const CRC_BITS: u32 = 0;
 
     fn pack(&self, fields: &MessageFields) -> Option<Vec<u8>> {
+        if let Some(message) = fields.free_text.as_deref() {
+            return pack_message(message).map(|bits| bits.to_vec());
+        }
         let call = fields.call1.as_deref()?;
-        let grid = fields.grid.as_deref()?;
         let power = fields.report?; // re-using MessageFields.report for dBm
-        let bits = pack_type1(call, grid, power)?;
+        let bits = if let Some(grid) = fields.grid.as_deref() {
+            if call.starts_with('<') {
+                pack_type3(call, grid, power)?
+            } else {
+                pack_type1(call, grid, power)?
+            }
+        } else {
+            pack_type2(call, power)?
+        };
         Some(bits.to_vec())
     }
 
@@ -456,6 +650,12 @@ impl MessageCodec for Wspr50Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bit_string(bits: &[u8]) -> String {
+        bits.iter()
+            .map(|bit| if *bit == 0 { '0' } else { '1' })
+            .collect()
+    }
 
     #[test]
     fn type1_roundtrip_callsign() {
@@ -492,8 +692,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_power_rejected() {
-        assert!(pack_type1("K1ABC", "FN42", 42).is_none());
+    fn non_channelized_power_is_normalized_like_wsjtx() {
+        let bits = pack_type1("K1ABC", "FN42", 42).expect("WSJT-X clamps and channelizes power");
+        assert_eq!(
+            unpack(&bits),
+            Some(WsprMessage::Type1 {
+                callsign: "K1ABC".into(),
+                grid: "FN42".into(),
+                power_dbm: 43,
+            })
+        );
     }
 
     #[test]
@@ -644,6 +852,69 @@ mod tests {
                 power_dbm: power,
             }
         );
+    }
+
+    #[test]
+    fn wsjtx_v3_0_2_all_message_type_vectors_match_exactly() {
+        // Generated with pinned `lib/wsprd/wsprsim -d` at WSJT-X commit
+        // ccdfaf3c1c109010d15399674ce278167cfde848.
+        let vectors = [
+            (
+                "K1ABC FN42 37",
+                "11110111000011000010001110001011000011010001100101",
+            ),
+            (
+                "PJ4/K1ABC 37",
+                "11110111000011000010001110000001000011101001100111",
+            ),
+            (
+                "K1ABC/7 37",
+                "11110111000011000010001110001101010011001111100111",
+            ),
+            (
+                "K1ABC/12 37",
+                "11110111000011000010001110001101010100001101100111",
+            ),
+            (
+                "<K1ABC> FN42LX 37",
+                "10011100001110001101000010110011001011110010011010",
+            ),
+        ];
+        for (message, expected) in vectors {
+            let bits = pack_message(message).unwrap_or_else(|| panic!("pack {message}"));
+            assert_eq!(bit_string(&bits), expected, "{message}");
+        }
+    }
+
+    #[test]
+    fn production_packers_round_trip_type2_and_type3() {
+        for (message, expected) in [
+            (
+                "PJ4/K1ABC 37",
+                WsprMessage::Type2 {
+                    callsign: "PJ4/K1ABC".into(),
+                    power_dbm: 37,
+                },
+            ),
+            (
+                "K1ABC/12 37",
+                WsprMessage::Type2 {
+                    callsign: "K1ABC/12".into(),
+                    power_dbm: 37,
+                },
+            ),
+            (
+                "<K1ABC> FN42LX 37",
+                WsprMessage::Type3 {
+                    callsign_hash: hash_call_15("K1ABC"),
+                    grid6: "FN42LX".into(),
+                    power_dbm: 37,
+                },
+            ),
+        ] {
+            let bits = pack_message(message).unwrap_or_else(|| panic!("pack {message}"));
+            assert_eq!(unpack(&bits), Some(expected), "{message}");
+        }
     }
 
     #[test]

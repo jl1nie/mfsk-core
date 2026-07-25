@@ -106,6 +106,32 @@ pub const FST4_300_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     edge_taper_bins: 101,
 };
 
+/// FST4-900 downsample configuration from WSJT-X `fst4_decode.f90`:
+/// NDOWN=1664, `nfft1=6480*1664`, `nfft2=6480`.
+pub const FST4_900_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
+    input_rate: 12_000,
+    fft1_size: 6_480 * 1_664,
+    fft2_size: 6_480,
+    tone_spacing_hz: 12_000.0 / 66_560.0,
+    leading_pad_tones: 1.5,
+    trailing_pad_tones: 1.5,
+    ntones: 4,
+    edge_taper_bins: 101,
+};
+
+/// FST4-1800 downsample configuration from WSJT-X `fst4_decode.f90`:
+/// NDOWN=3360, `nfft1=6426*3360`, `nfft2=6426`.
+pub const FST4_1800_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
+    input_rate: 12_000,
+    fft1_size: 6_426 * 3_360,
+    fft2_size: 6_426,
+    tone_spacing_hz: 12_000.0 / 134_400.0,
+    leading_pad_tones: 1.5,
+    trailing_pad_tones: 1.5,
+    ntones: 4,
+    edge_taper_bins: 101,
+};
+
 /// FST4 has 40 sync symbols (5 × 8); require at least a quarter of
 /// them right for a candidate to survive coarse-sync scoring. Shared
 /// by every sub-mode.

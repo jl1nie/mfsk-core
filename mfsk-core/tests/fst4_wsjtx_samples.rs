@@ -15,12 +15,16 @@ mod common;
 use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    [
+        std::env::var_os("WSJTX_SOURCE_DIR").map(PathBuf::from),
+        Some(manifest.join("../WSJT-X")),
+        Some(manifest.join("../../OpenDigi/.cache/upstream/wsjtx")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|root| root.join("samples/FST4+FST4W/210115_0058.wav"))
+    .find(|path| path.is_file())
 }
 
 struct Golden {
@@ -42,8 +46,8 @@ const DT_TOL_SEC: f32 = 0.5;
 fn fst4_60_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
         eprintln!(
-            "skipping: WSJT-X FST4 sample not found at \
-             ../../WSJT-X/samples/FST4+FST4W/210115_0058.wav"
+            "not run: set WSJTX_SOURCE_DIR to the pinned WSJT-X tree \
+             to execute FST4 reference-audio interoperability"
         );
         return;
     };

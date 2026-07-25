@@ -27,7 +27,7 @@ pub mod tables;
 
 pub use bp::{BpResult, bp_decode, bp_decode_kind, check_crc14, crc14};
 pub use osd::{OsdResult, ldpc_encode, osd_decode, osd_decode_deep, osd_decode_deep4};
-pub use params::{Ldpc174_91Params, Ldpc240_101Params, LdpcParams};
+pub use params::{Ldpc174_91Params, Ldpc240_74Params, Ldpc240_101Params, LdpcParams};
 
 use crate::core::{FecCodec, FecOpts, FecResult};
 

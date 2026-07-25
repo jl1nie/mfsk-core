@@ -8,16 +8,16 @@
 //!
 //! ## Covered sub-modes
 //!
-//! Five T/R-period sub-modes are wired: [`Fst4s15`], [`Fst4s30`],
-//! [`Fst4s60`], [`Fst4s120`], [`Fst4s300`]. They differ only in
+//! All seven WSJT-X T/R-period sub-modes are wired: [`Fst4s15`],
+//! [`Fst4s30`], [`Fst4s60`], [`Fst4s120`], [`Fst4s300`],
+//! [`Fst4s900`], and [`Fst4s1800`]. They differ only in
 //! [`ModulationParams::NSPS`] / `NDOWN` / `SYMBOL_DT` /
 //! `TONE_SPACING_HZ` (and `Fst4s15` alone in
 //! [`FrameLayout::TX_START_OFFSET_S`] — see the `fst4_submode!`
 //! invocations below for the WSJT-X-sourced values) — frame layout,
 //! sync pattern, FEC, message codec, and GFSK shaping (BT=2.0) are
 //! identical across all of them, mirroring the
-//! [`crate::q65::Q65a30`]-family `q65_submode!` pattern. FST4-900 and
-//! FST4-1800 are not wired (no user demand as of writing). FST4W (the
+//! [`crate::q65::Q65a30`]-family `q65_submode!` pattern. FST4W (the
 //! WSPR-style 50-bit one-way beacon variant, LDPC(240,74), periods
 //! 120/300/900/1800 s) is a separate message format entirely — not
 //! covered here; see issue #23 for status.
@@ -193,6 +193,28 @@ fst4_submode! {
 }
 
 fst4_submode! {
+    /// FST4-900: 900 s (15 min) T/R period. WSJT-X
+    /// `fst4_decode.f90` (`ntrperiod.eq.900`): `nsps=66560`,
+    /// `ndown=1664`.
+    Fst4s900,
+    nsps = 66_560,
+    ndown = 1_664,
+    tr_period_s = 900,
+    tx_start_offset_s = 1.0,
+}
+
+fst4_submode! {
+    /// FST4-1800: 1800 s (30 min) T/R period. WSJT-X
+    /// `fst4_decode.f90` (`ntrperiod.eq.1800`): `nsps=134400`,
+    /// `ndown=3360`.
+    Fst4s1800,
+    nsps = 134_400,
+    ndown = 3_360,
+    tr_period_s = 1800,
+    tx_start_offset_s = 1.0,
+}
+
+fst4_submode! {
     /// FST4-60A: 60 s T/R period, 3.0864 Hz tone spacing (12.35 Hz
     /// occupied). The dominant terrestrial FST4 sub-mode; S/N
     /// threshold ≈ -28.1 dB. WSJT-X `fst4_decode.f90`
@@ -293,6 +315,8 @@ mod tests {
         check::<Fst4s60>("Fst4s60", 3_888, 108, 60.0, 1.0);
         check::<Fst4s120>("Fst4s120", 8_200, 205, 120.0, 1.0);
         check::<Fst4s300>("Fst4s300", 21_504, 512, 300.0, 1.0);
+        check::<Fst4s900>("Fst4s900", 66_560, 1_664, 900.0, 1.0);
+        check::<Fst4s1800>("Fst4s1800", 134_400, 3_360, 1800.0, 1.0);
     }
 
     /// Every FST4 sub-mode MUST share the same frame structure, sync
@@ -320,6 +344,8 @@ mod tests {
         check::<Fst4s60>("Fst4s60");
         check::<Fst4s120>("Fst4s120");
         check::<Fst4s300>("Fst4s300");
+        check::<Fst4s900>("Fst4s900");
+        check::<Fst4s1800>("Fst4s1800");
     }
 
     /// Cross-checks every sub-mode's `DownsampleCfg` / `GfskCfg`
@@ -348,10 +374,11 @@ mod tests {
                 cfg.fft2_size,
                 "{name}: fft1_size/NDOWN != fft2_size"
             );
-            let nmax = (P::T_SLOT_S * 12_000.0).round() as usize;
+            let nmax = ((P::TX_START_OFFSET_S + P::N_SYMBOLS as f32 * P::SYMBOL_DT) * 12_000.0)
+                .round() as usize;
             assert!(
                 cfg.fft1_size >= nmax,
-                "{name}: fft1_size {} < nmax {nmax} (slot won't fit)",
+                "{name}: fft1_size {} < nmax {nmax} (transmission won't fit)",
                 cfg.fft1_size
             );
             assert!(
@@ -382,11 +409,15 @@ mod tests {
         check_downsample::<Fst4s60>("Fst4s60", &decode::FST4_60A_DOWNSAMPLE);
         check_downsample::<Fst4s120>("Fst4s120", &decode::FST4_120_DOWNSAMPLE);
         check_downsample::<Fst4s300>("Fst4s300", &decode::FST4_300_DOWNSAMPLE);
+        check_downsample::<Fst4s900>("Fst4s900", &decode::FST4_900_DOWNSAMPLE);
+        check_downsample::<Fst4s1800>("Fst4s1800", &decode::FST4_1800_DOWNSAMPLE);
 
         check_gfsk::<Fst4s15>("Fst4s15", &encode::FST4_15_GFSK);
         check_gfsk::<Fst4s30>("Fst4s30", &encode::FST4_30_GFSK);
         check_gfsk::<Fst4s60>("Fst4s60", &encode::FST4_60A_GFSK);
         check_gfsk::<Fst4s120>("Fst4s120", &encode::FST4_120_GFSK);
         check_gfsk::<Fst4s300>("Fst4s300", &encode::FST4_300_GFSK);
+        check_gfsk::<Fst4s900>("Fst4s900", &encode::FST4_900_GFSK);
+        check_gfsk::<Fst4s1800>("Fst4s1800", &encode::FST4_1800_GFSK);
     }
 }

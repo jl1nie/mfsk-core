@@ -154,6 +154,39 @@ impl LdpcParams for Ldpc240_101Params {
     }
 }
 
+/// Parameters for the WSJT-X LDPC(240, 74) code used by FST4W.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ldpc240_74Params;
+
+impl sealed::Sealed for Ldpc240_74Params {}
+
+impl LdpcParams for Ldpc240_74Params {
+    const N: usize = 240;
+    const K: usize = 74;
+    const M: usize = 166;
+    const MAX_ROW: usize = 5;
+
+    #[inline]
+    fn mn(bit: usize) -> [u8; 3] {
+        crate::fec::ldpc240_74::tables::MN[bit]
+    }
+
+    #[inline]
+    fn nm(check: usize, slot: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::NM[check][slot]
+    }
+
+    #[inline]
+    fn nrw(check: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::NRW[check]
+    }
+
+    #[inline]
+    fn gen_parity(row: usize, col: usize) -> u8 {
+        crate::fec::ldpc240_74::tables::GEN_PARITY[row][col]
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────
 // LDPC(128, 90) — MSK144
 // ────────────────────────────────────────────────────────────────────

@@ -45,16 +45,28 @@ use mfsk_core::Ft4;
 use mfsk_core::Ft8;
 #[cfg(feature = "jt9")]
 use mfsk_core::Jt9;
-#[cfg(feature = "jt65")]
-use mfsk_core::Jt65;
 #[cfg(feature = "wspr")]
 use mfsk_core::Wspr;
 #[cfg(feature = "fst4")]
-use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300};
+use mfsk_core::fst4::{Fst4s15, Fst4s30, Fst4s120, Fst4s300, Fst4s900, Fst4s1800};
+#[cfg(feature = "fst4")]
+use mfsk_core::fst4w::{Fst4w120, Fst4w300, Fst4w900, Fst4w1800};
+#[cfg(feature = "jt9")]
+use mfsk_core::jt9::{
+    Jt9b, Jt9c, Jt9d, Jt9e, Jt9eFast5, Jt9eFast10, Jt9eFast15, Jt9eFast30, Jt9f, Jt9fFast5,
+    Jt9fFast10, Jt9fFast15, Jt9fFast30, Jt9g, Jt9gFast5, Jt9gFast10, Jt9gFast15, Jt9gFast30, Jt9h,
+    Jt9hFast5, Jt9hFast10, Jt9hFast15, Jt9hFast30,
+};
+#[cfg(feature = "jt4")]
+use mfsk_core::{Jt4a, Jt4b, Jt4c, Jt4d, Jt4e, Jt4f, Jt4g};
+#[cfg(feature = "jt65")]
+use mfsk_core::{Jt65, Jt65b, Jt65c};
 
 #[cfg(feature = "q65")]
 use mfsk_core::q65::{
-    Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
+    Q65a15, Q65a30, Q65a60, Q65a120, Q65a300, Q65b15, Q65b30, Q65b60, Q65b120, Q65b300, Q65c15,
+    Q65c30, Q65c60, Q65c120, Q65c300, Q65d30, Q65d60, Q65d120, Q65d300, Q65e60, Q65e120, Q65e300,
+    Q65f120,
 };
 
 #[cfg(feature = "uvpacket")]
@@ -287,6 +299,17 @@ fn fst4_other_submodes_satisfy_protocol_invariants() {
     assert_protocol_invariants::<Fst4s30>("Fst4s30");
     assert_protocol_invariants::<Fst4s120>("Fst4s120");
     assert_protocol_invariants::<Fst4s300>("Fst4s300");
+    assert_protocol_invariants::<Fst4s900>("Fst4s900");
+    assert_protocol_invariants::<Fst4s1800>("Fst4s1800");
+}
+
+#[cfg(feature = "fst4")]
+#[test]
+fn fst4w_submodes_satisfy_protocol_invariants() {
+    assert_protocol_invariants::<Fst4w120>("Fst4w120");
+    assert_protocol_invariants::<Fst4w300>("Fst4w300");
+    assert_protocol_invariants::<Fst4w900>("Fst4w900");
+    assert_protocol_invariants::<Fst4w1800>("Fst4w1800");
 }
 
 #[cfg(feature = "wspr")]
@@ -299,24 +322,61 @@ fn wspr_satisfies_protocol_invariants() {
 #[test]
 fn jt9_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Jt9>("Jt9");
+    assert_protocol_invariants::<Jt9b>("Jt9b");
+    assert_protocol_invariants::<Jt9c>("Jt9c");
+    assert_protocol_invariants::<Jt9d>("Jt9d");
+    assert_protocol_invariants::<Jt9e>("Jt9e");
+    assert_protocol_invariants::<Jt9f>("Jt9f");
+    assert_protocol_invariants::<Jt9g>("Jt9g");
+    assert_protocol_invariants::<Jt9h>("Jt9h");
+    assert_protocol_invariants::<Jt9eFast5>("Jt9eFast5");
+    assert_protocol_invariants::<Jt9fFast5>("Jt9fFast5");
+    assert_protocol_invariants::<Jt9gFast5>("Jt9gFast5");
+    assert_protocol_invariants::<Jt9hFast5>("Jt9hFast5");
+    assert_protocol_invariants::<Jt9eFast10>("Jt9eFast10");
+    assert_protocol_invariants::<Jt9fFast10>("Jt9fFast10");
+    assert_protocol_invariants::<Jt9gFast10>("Jt9gFast10");
+    assert_protocol_invariants::<Jt9hFast10>("Jt9hFast10");
+    assert_protocol_invariants::<Jt9eFast15>("Jt9eFast15");
+    assert_protocol_invariants::<Jt9fFast15>("Jt9fFast15");
+    assert_protocol_invariants::<Jt9gFast15>("Jt9gFast15");
+    assert_protocol_invariants::<Jt9hFast15>("Jt9hFast15");
+    assert_protocol_invariants::<Jt9eFast30>("Jt9eFast30");
+    assert_protocol_invariants::<Jt9fFast30>("Jt9fFast30");
+    assert_protocol_invariants::<Jt9gFast30>("Jt9gFast30");
+    assert_protocol_invariants::<Jt9hFast30>("Jt9hFast30");
+}
+
+#[cfg(feature = "jt4")]
+#[test]
+fn jt4_submodes_satisfy_protocol_invariants() {
+    assert_protocol_invariants::<Jt4a>("Jt4a");
+    assert_protocol_invariants::<Jt4b>("Jt4b");
+    assert_protocol_invariants::<Jt4c>("Jt4c");
+    assert_protocol_invariants::<Jt4d>("Jt4d");
+    assert_protocol_invariants::<Jt4e>("Jt4e");
+    assert_protocol_invariants::<Jt4f>("Jt4f");
+    assert_protocol_invariants::<Jt4g>("Jt4g");
 }
 
 #[cfg(feature = "jt65")]
 #[test]
 fn jt65_satisfies_protocol_invariants() {
     assert_protocol_invariants::<Jt65>("Jt65");
+    assert_protocol_invariants::<Jt65b>("Jt65b");
+    assert_protocol_invariants::<Jt65c>("Jt65c");
 }
 
 #[cfg(feature = "q65")]
 #[test]
-fn q65a15_satisfies_protocol_invariants() {
+fn q65_short_period_submodes_satisfy_protocol_invariants() {
     assert_protocol_invariants::<Q65a15>("Q65a15");
-}
-
-#[cfg(feature = "q65")]
-#[test]
-fn q65a30_satisfies_protocol_invariants() {
+    assert_protocol_invariants::<Q65b15>("Q65b15");
+    assert_protocol_invariants::<Q65c15>("Q65c15");
     assert_protocol_invariants::<Q65a30>("Q65a30");
+    assert_protocol_invariants::<Q65b30>("Q65b30");
+    assert_protocol_invariants::<Q65c30>("Q65c30");
+    assert_protocol_invariants::<Q65d30>("Q65d30");
 }
 
 #[cfg(feature = "q65")]
@@ -337,12 +397,20 @@ fn q65_eme_submodes_satisfy_protocol_invariants() {
 #[cfg(feature = "q65")]
 #[test]
 fn q65_long_period_scatter_submodes_satisfy_protocol_invariants() {
-    // Q65-120D/120E/300A share the same FEC, message format and
+    // All 120 s and 300 s choices share the same FEC, message format and
     // frame layout too -- only NSPS (T/R period) and TONE_SPACING_HZ
     // differ, same as the EME sub-modes above.
+    assert_protocol_invariants::<Q65a120>("Q65a120");
+    assert_protocol_invariants::<Q65b120>("Q65b120");
+    assert_protocol_invariants::<Q65c120>("Q65c120");
     assert_protocol_invariants::<Q65d120>("Q65d120");
     assert_protocol_invariants::<Q65e120>("Q65e120");
+    assert_protocol_invariants::<Q65f120>("Q65f120");
     assert_protocol_invariants::<Q65a300>("Q65a300");
+    assert_protocol_invariants::<Q65b300>("Q65b300");
+    assert_protocol_invariants::<Q65c300>("Q65c300");
+    assert_protocol_invariants::<Q65d300>("Q65d300");
+    assert_protocol_invariants::<Q65e300>("Q65e300");
 }
 
 #[cfg(feature = "uvpacket")]
@@ -487,25 +555,83 @@ fn registry_entries_match_zst_trait_constants() {
         check!("FST4-30", Fst4s30);
         check!("FST4-120", Fst4s120);
         check!("FST4-300", Fst4s300);
+        check!("FST4-900", Fst4s900);
+        check!("FST4-1800", Fst4s1800);
+        check!("FST4W-120", Fst4w120);
+        check!("FST4W-300", Fst4w300);
+        check!("FST4W-900", Fst4w900);
+        check!("FST4W-1800", Fst4w1800);
     }
     #[cfg(feature = "wspr")]
     check!("WSPR", Wspr);
     #[cfg(feature = "jt9")]
-    check!("JT9", Jt9);
+    {
+        check!("JT9-60A", Jt9);
+        check!("JT9-60B", Jt9b);
+        check!("JT9-60C", Jt9c);
+        check!("JT9-60D", Jt9d);
+        check!("JT9-60E", Jt9e);
+        check!("JT9-60F", Jt9f);
+        check!("JT9-60G", Jt9g);
+        check!("JT9-60H", Jt9h);
+        check!("JT9-5E-fast", Jt9eFast5);
+        check!("JT9-5F-fast", Jt9fFast5);
+        check!("JT9-5G-fast", Jt9gFast5);
+        check!("JT9-5H-fast", Jt9hFast5);
+        check!("JT9-10E-fast", Jt9eFast10);
+        check!("JT9-10F-fast", Jt9fFast10);
+        check!("JT9-10G-fast", Jt9gFast10);
+        check!("JT9-10H-fast", Jt9hFast10);
+        check!("JT9-15E-fast", Jt9eFast15);
+        check!("JT9-15F-fast", Jt9fFast15);
+        check!("JT9-15G-fast", Jt9gFast15);
+        check!("JT9-15H-fast", Jt9hFast15);
+        check!("JT9-30E-fast", Jt9eFast30);
+        check!("JT9-30F-fast", Jt9fFast30);
+        check!("JT9-30G-fast", Jt9gFast30);
+        check!("JT9-30H-fast", Jt9hFast30);
+    }
+    #[cfg(feature = "jt4")]
+    {
+        check!("JT4-A", Jt4a);
+        check!("JT4-B", Jt4b);
+        check!("JT4-C", Jt4c);
+        check!("JT4-D", Jt4d);
+        check!("JT4-E", Jt4e);
+        check!("JT4-F", Jt4f);
+        check!("JT4-G", Jt4g);
+    }
     #[cfg(feature = "jt65")]
-    check!("JT65", Jt65);
+    {
+        check!("JT65-A", Jt65);
+        check!("JT65-B", Jt65b);
+        check!("JT65-C", Jt65c);
+    }
     #[cfg(feature = "q65")]
     {
         check!("Q65-15A", Q65a15);
+        check!("Q65-15B", Q65b15);
+        check!("Q65-15C", Q65c15);
         check!("Q65-30A", Q65a30);
+        check!("Q65-30B", Q65b30);
+        check!("Q65-30C", Q65c30);
+        check!("Q65-30D", Q65d30);
         check!("Q65-60A", Q65a60);
         check!("Q65-60B", Q65b60);
         check!("Q65-60C", Q65c60);
         check!("Q65-60D", Q65d60);
         check!("Q65-60E", Q65e60);
+        check!("Q65-120A", Q65a120);
+        check!("Q65-120B", Q65b120);
+        check!("Q65-120C", Q65c120);
         check!("Q65-120D", Q65d120);
         check!("Q65-120E", Q65e120);
+        check!("Q65-120F", Q65f120);
         check!("Q65-300A", Q65a300);
+        check!("Q65-300B", Q65b300);
+        check!("Q65-300C", Q65c300);
+        check!("Q65-300D", Q65d300);
+        check!("Q65-300E", Q65e300);
     }
     #[cfg(feature = "uvpacket")]
     {
@@ -541,7 +667,7 @@ fn registry_size_matches_wired_protocols() {
     }
     #[cfg(feature = "fst4")]
     {
-        expected += 5;
+        expected += 11;
     }
     #[cfg(feature = "wspr")]
     {
@@ -549,15 +675,19 @@ fn registry_size_matches_wired_protocols() {
     }
     #[cfg(feature = "jt9")]
     {
-        expected += 1;
+        expected += 24;
+    }
+    #[cfg(feature = "jt4")]
+    {
+        expected += 7;
     }
     #[cfg(feature = "jt65")]
     {
-        expected += 1;
+        expected += 3;
     }
     #[cfg(feature = "q65")]
     {
-        expected += 10;
+        expected += 23;
     }
     #[cfg(feature = "uvpacket")]
     {
@@ -602,27 +732,85 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
         ids.push(("Fst4s30", <Fst4s30 as Protocol>::ID));
         ids.push(("Fst4s120", <Fst4s120 as Protocol>::ID));
         ids.push(("Fst4s300", <Fst4s300 as Protocol>::ID));
+        ids.push(("Fst4s900", <Fst4s900 as Protocol>::ID));
+        ids.push(("Fst4s1800", <Fst4s1800 as Protocol>::ID));
+        ids.push(("Fst4w120", <Fst4w120 as Protocol>::ID));
+        ids.push(("Fst4w300", <Fst4w300 as Protocol>::ID));
+        ids.push(("Fst4w900", <Fst4w900 as Protocol>::ID));
+        ids.push(("Fst4w1800", <Fst4w1800 as Protocol>::ID));
     }
     #[cfg(feature = "wspr")]
     ids.push(("Wspr", <Wspr as Protocol>::ID));
     #[cfg(feature = "jt9")]
-    ids.push(("Jt9", <Jt9 as Protocol>::ID));
+    {
+        ids.push(("Jt9", <Jt9 as Protocol>::ID));
+        ids.push(("Jt9b", <Jt9b as Protocol>::ID));
+        ids.push(("Jt9c", <Jt9c as Protocol>::ID));
+        ids.push(("Jt9d", <Jt9d as Protocol>::ID));
+        ids.push(("Jt9e", <Jt9e as Protocol>::ID));
+        ids.push(("Jt9f", <Jt9f as Protocol>::ID));
+        ids.push(("Jt9g", <Jt9g as Protocol>::ID));
+        ids.push(("Jt9h", <Jt9h as Protocol>::ID));
+        ids.push(("Jt9eFast5", <Jt9eFast5 as Protocol>::ID));
+        ids.push(("Jt9fFast5", <Jt9fFast5 as Protocol>::ID));
+        ids.push(("Jt9gFast5", <Jt9gFast5 as Protocol>::ID));
+        ids.push(("Jt9hFast5", <Jt9hFast5 as Protocol>::ID));
+        ids.push(("Jt9eFast10", <Jt9eFast10 as Protocol>::ID));
+        ids.push(("Jt9fFast10", <Jt9fFast10 as Protocol>::ID));
+        ids.push(("Jt9gFast10", <Jt9gFast10 as Protocol>::ID));
+        ids.push(("Jt9hFast10", <Jt9hFast10 as Protocol>::ID));
+        ids.push(("Jt9eFast15", <Jt9eFast15 as Protocol>::ID));
+        ids.push(("Jt9fFast15", <Jt9fFast15 as Protocol>::ID));
+        ids.push(("Jt9gFast15", <Jt9gFast15 as Protocol>::ID));
+        ids.push(("Jt9hFast15", <Jt9hFast15 as Protocol>::ID));
+        ids.push(("Jt9eFast30", <Jt9eFast30 as Protocol>::ID));
+        ids.push(("Jt9fFast30", <Jt9fFast30 as Protocol>::ID));
+        ids.push(("Jt9gFast30", <Jt9gFast30 as Protocol>::ID));
+        ids.push(("Jt9hFast30", <Jt9hFast30 as Protocol>::ID));
+    }
+    #[cfg(feature = "jt4")]
+    {
+        ids.push(("Jt4a", <Jt4a as Protocol>::ID));
+        ids.push(("Jt4b", <Jt4b as Protocol>::ID));
+        ids.push(("Jt4c", <Jt4c as Protocol>::ID));
+        ids.push(("Jt4d", <Jt4d as Protocol>::ID));
+        ids.push(("Jt4e", <Jt4e as Protocol>::ID));
+        ids.push(("Jt4f", <Jt4f as Protocol>::ID));
+        ids.push(("Jt4g", <Jt4g as Protocol>::ID));
+    }
     #[cfg(feature = "jt65")]
-    ids.push(("Jt65", <Jt65 as Protocol>::ID));
+    {
+        ids.push(("Jt65", <Jt65 as Protocol>::ID));
+        ids.push(("Jt65b", <Jt65b as Protocol>::ID));
+        ids.push(("Jt65c", <Jt65c as Protocol>::ID));
+    }
     #[cfg(feature = "q65")]
     {
         // Every Q65 sub-mode shares the same ProtocolId::Q65 — that's
         // by design (the sub-mode is below the FFI granularity).
         ids.push(("Q65a15", <Q65a15 as Protocol>::ID));
+        ids.push(("Q65b15", <Q65b15 as Protocol>::ID));
+        ids.push(("Q65c15", <Q65c15 as Protocol>::ID));
         ids.push(("Q65a30", <Q65a30 as Protocol>::ID));
+        ids.push(("Q65b30", <Q65b30 as Protocol>::ID));
+        ids.push(("Q65c30", <Q65c30 as Protocol>::ID));
+        ids.push(("Q65d30", <Q65d30 as Protocol>::ID));
         ids.push(("Q65a60", <Q65a60 as Protocol>::ID));
         ids.push(("Q65b60", <Q65b60 as Protocol>::ID));
         ids.push(("Q65c60", <Q65c60 as Protocol>::ID));
         ids.push(("Q65d60", <Q65d60 as Protocol>::ID));
         ids.push(("Q65e60", <Q65e60 as Protocol>::ID));
+        ids.push(("Q65a120", <Q65a120 as Protocol>::ID));
+        ids.push(("Q65b120", <Q65b120 as Protocol>::ID));
+        ids.push(("Q65c120", <Q65c120 as Protocol>::ID));
         ids.push(("Q65d120", <Q65d120 as Protocol>::ID));
         ids.push(("Q65e120", <Q65e120 as Protocol>::ID));
+        ids.push(("Q65f120", <Q65f120 as Protocol>::ID));
         ids.push(("Q65a300", <Q65a300 as Protocol>::ID));
+        ids.push(("Q65b300", <Q65b300 as Protocol>::ID));
+        ids.push(("Q65c300", <Q65c300 as Protocol>::ID));
+        ids.push(("Q65d300", <Q65d300 as Protocol>::ID));
+        ids.push(("Q65e300", <Q65e300 as Protocol>::ID));
     }
     #[cfg(feature = "uvpacket")]
     {
@@ -660,13 +848,17 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
     }
     #[cfg(feature = "fst4")]
     {
-        expected_distinct += 1;
+        expected_distinct += 2;
     }
     #[cfg(feature = "wspr")]
     {
         expected_distinct += 1;
     }
     #[cfg(feature = "jt9")]
+    {
+        expected_distinct += 1;
+    }
+    #[cfg(feature = "jt4")]
     {
         expected_distinct += 1;
     }
@@ -704,7 +896,9 @@ fn every_wired_protocol_has_a_unique_protocol_id() {
             | ProtocolId::Jt9
             | ProtocolId::Wspr
             | ProtocolId::Q65
-            | ProtocolId::UvPacket => {}
+            | ProtocolId::UvPacket
+            | ProtocolId::Fst4w
+            | ProtocolId::Jt4 => {}
         }
         let _ = name;
     }
