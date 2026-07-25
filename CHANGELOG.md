@@ -2,6 +2,234 @@
 
 ## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change)
 
+### Added
+
+- **`ft8::decode::decode_frame_subtract_staged` / `_with_ap`** (issue
+  #180) — WSJT-X-faithful checkpoint SIC for FT8, ported from
+  instrumented `jt9.f90`/`ft8_decode.f90` ground truth rather than the
+  issue's own initial paraphrase. `jt9`'s disk-file FT8 decode is not a
+  single pass over the 15 s slot: it decodes progressively larger audio
+  *prefixes* at three checkpoints (0..141_696 / 0..162_432 / 0..172_800
+  samples), carrying decoded signals forward and subtracting them from
+  the residual *before* the final, hardest checkpoint's candidates are
+  attempted — something the pre-existing flat 3-pass
+  `decode_frame_subtract` structurally cannot reproduce regardless of
+  threshold tuning, since nothing is ever subtracted before the
+  residual a marginal candidate is found in gets assembled. Verified
+  no regression vs the flat pass on all 3 real reference WAVs
+  (`tests/ft8_qso3_staged_sic_check.rs`, `191111_110130.wav`,
+  `191111_110200.wav`) — identical decode sets on each. The specific
+  case that motivated #180 (`CQ DX DL8YHR JO41`, ~-17 dB on
+  `qso3_busy.wav`) still does not decode even with the correct
+  checkpoint architecture in place (checkpoint A finds 11 signals
+  early, including its closest neighbour `W1FC` only ~35 Hz away,
+  correctly subtracted before checkpoint C runs).
+
+  **Root-caused, not just reproduced.** Re-ran real `jt9 -8 -d3`
+  (rebuilt from the local `WSJT-X` checkout, `build_jt9/jt9`, on the
+  byte-identical `samples/FT8/210703_133430.wav`) to get fresh ground
+  truth instead of relying on the issue's prior transcript: at
+  DL8YHR's true coordinates jt9's own per-Costas-block breakdown is
+  `is1=2 is2=7 is3=6` → `nsync=15`. A new diagnostic
+  (`ft8::decode::tests::issue_180_dl8yhr_staged_checkpoint_c_probe`,
+  using `decode_frame_subtract_staged_with_ap_debug_residual` to
+  reproduce the same per-block count against mfsk-core's *actual*
+  production checkpoint-C residual) found:
+  - **Raw, unsubtracted audio**: `is1=0 is2=3 is3=3` → `nsync=6`.
+  - **Staged checkpoint-C residual** (all 11 early signals cleanly
+    subtracted): `is1=1 is2=4 is3=4` → `nsync=9`.
+  - A ±15 ms (±3-sample) `dt` sweep around the ground truth only ever
+    moved the total between 8 and 10 — the off-by-one dt-convention
+    hypothesis (#180 "Bug 1") explains at most ~1 of the 6-point
+    shortfall, not the bulk of it.
+
+  Two conclusions from the aggregate counts: (1) subtraction/SIC
+  quality **is** doing real work (+3 points, raw→residual) — the
+  staged architecture isn't wasted effort; (2) the *remaining* 6-point
+  gap barely moves under a ±15 ms timing sweep (nsync stayed in
+  8..10), ruling out the off-by-one dt-convention hypothesis (#180
+  "Bug 1") as the dominant cause.
+
+  **Symbol-level dump pinpoints the actual mechanism.** Re-instrumented
+  `ft8b.f90` to also emit its raw 8-tone `s8` magnitudes for Costas
+  blocks 2 and 3 (only block 1 was previously dumped), rebuilt `jt9`,
+  and diffed symbol-by-symbol against mfsk-core's own tone magnitudes
+  at the identical `(f1, dt)`, on both raw and staged-residual audio.
+  Finding: at symbol positions **t=5 and t=6 of every 7-symbol Costas
+  block**, mfsk-core computes a large spurious energy spike at **tone
+  0** (DL8YHR's own base carrier frequency, 2606.25 Hz) that swamps
+  the true, weak Costas tone — e.g. block 2 t=5: mfsk-core residual
+  tone0=9.7 vs true tone6=0.2 (raw audio: tone0=42.0 vs tone6=2.7).
+  Critically, **jt9's own real-signal data shows this same tone-0
+  artifact only in block 1** (where it explains jt9's own weak
+  `is1=2`) — its block-2/3 t=5,6 values have the *true* Costas tone
+  clearly dominant (e.g. block 2 t=5: tone6=2641 vs tone0=1140; t=6:
+  tone5=3570 vs tone0=1584). mfsk-core reproduces the artifact
+  correctly where it's real (block 1) but *also* manufactures it where
+  the real signal has none (blocks 2 and 3) — a structural,
+  position-periodic pattern (always t=5,6 of a block, at three
+  absolute times spread across the ~13 s message), not diffuse
+  numeric imprecision.
+
+  **Raw baseband (`cd0`) comparison localises the mechanism further —
+  and revises the diagnosis.** Re-instrumented `ft8b.f90` a second
+  time to dump its raw complex `cd0` (200 sps downsampled baseband)
+  samples over the exact 64-sample window spanning block-1's t=5/t=6
+  (Fortran index 268..331, i.e. `ibest+128 .. ibest+191`), rebuilt
+  `jt9`, and diffed those against mfsk-core's own `cd0` at the
+  identical physical samples (0-indexed `n` == Fortran's 1-indexed
+  `n+1` — confirmed aligned, not an indexing bug: values track the
+  same sign and shape throughout, ruling out a real off-by-one at the
+  `cd0` level). The magnitudes are not just noisier — mfsk-core's
+  `|cd0|` runs **2-4× (6-12 dB) larger than jt9's own post-subtraction
+  `|cd0|` at the same samples**, most pronounced exactly over Fortran
+  idx 280-327 (e.g. idx 285: jt9 `|cd0|`=205 vs mfsk-core 632; idx
+  291: jt9 121 vs mfsk-core 597). That's not a tone-detection/FFT
+  computation bug — it means **mfsk-core's residual genuinely has
+  more uncancelled signal energy left in it than jt9's residual does**,
+  at the same point in time and frequency, even though both have
+  subtracted an overlapping set of interferers by this point.
+
+  **Isolated (a) [subtraction quality] from (b) [a missing
+  interferer], and ruled out (b).** Re-instrumented `ft8_decode.f90` a
+  third time to dump `f1_save`/`xdt_save`/`allmessages(1:ndec_early)`
+  — jt9's *actual* list of the 13 signals subtracted before the
+  nzhsym=50 pass — rather than inferring it from stdout decode-print
+  order. jt9's 13 match mfsk-core's 18-message final set on 12 calls,
+  but include a 13th, `WA2FZW DL5AXX RR73` @ 2545.88 Hz (only 60 Hz
+  from DL8YHR's own 2606.25 Hz carrier) that **mfsk-core never decodes
+  anywhere** in this investigation (not in either checkpoint's results,
+  not in the flat-pass baseline) — a real, plausible candidate for
+  hypothesis (b): an unsubtracted nearby signal leaking into DL8YHR's
+  band. Tested directly: manually built a `DecodeResult` from jt9's own
+  reported `WA2FZW` coordinates and subtracted it from the staged
+  residual with the same `subtract_signal_lpf` call production uses.
+  Result: **no change** — `is1=1 is2=4 is3=4, nsync=9`, identical to
+  before the subtract. Hypothesis (b) is ruled out for this specific
+  signal (its own contribution isn't what's showing up as excess `cd0`
+  energy near DL8YHR — either the reconstructed/refined waveform
+  doesn't fit what's actually there, or the energy comes from
+  elsewhere entirely). That left hypothesis (a) — `subtract_tones_lpf`
+  vs `subtractft8.f90`'s actual per-signal cancellation depth on the
+  *already-subtracted* candidates — as the standing lead.
+
+  **Confirmed definitively: hypothesis (a), 100% subtraction quality,
+  zero mfsk-core tone-detection bug.** The decisive test: swap the
+  residual, keep mfsk-core's algorithm untouched. Re-instrumented
+  `ft8_decode.f90` a fourth time to dump jt9's actual `dd` array —
+  raw i16, taken right after jt9's real SIC (its 13 subtracted
+  signals) and right before its own `nzhsym=50` `sync8`/`ft8b` search
+  — to `/tmp/jt9_post_sic_dd.raw` (180,000 samples, sanity-checked:
+  RMS 115, ±577 range, consistent with a heavily-subtracted residual).
+  Loaded that exact buffer into mfsk-core and ran its *unmodified*
+  `symbol_spectra_direct`/`sync_quality` at DL8YHR's coordinates:
+  **`is1=2 is2=7 is3=6` → `nsync=15`** — bit-for-bit the same
+  per-block breakdown jt9 itself reports on this buffer. Then ran the
+  full BP/OSD chain (`compute_llr` → `bp_decode`/`osd_decode_*`) on
+  the same residual: **decodes `"CQ DX DL8YHR JO41"` outright.**
+  mfsk-core's downsample → per-symbol tone extraction → LLR → BP/OSD
+  pipeline has no bug at all with respect to this signal — given the
+  same clean residual WSJT-X itself decodes from, it decodes it too,
+  byte-for-byte matching sync counts. The *entire* gap between
+  mfsk-core's own decode (`nsync=9`, no decode) and jt9's (`nsync=15`,
+  decodes) traces to one place: **mfsk-core's own SIC subtraction
+  leaves more residual interference behind than `subtractft8.f90`
+  does**, on the exact same set of already-decoded interfering
+  signals. The next concrete, scoped step for #180 is a direct
+  `subtract_tones_lpf` vs `subtractft8.f90` per-signal suppression-dB
+  comparison (GFSK waveform reconstruction fidelity, LPF width/shape,
+  QSB/fading-envelope tracking) — not sync-quality computation, not
+  pipeline architecture, not a missing candidate. All diagnostics
+  (per-block breakdown, `cd0` dump, WA2FZW confirmation, residual-swap
+  confirmation) kept in
+  `ft8::decode::tests::issue_180_dl8yhr_staged_checkpoint_c_probe`.
+  `decode_frame_subtract_staged` is not yet wired as the default for
+  any production caller — opt-in via the new function pending a
+  decision on whether/when to switch.
+  **Cost**: checkpoint A runs its own full 3-sub-pass search on top of
+  checkpoint C's, so this is strictly more decode work than the flat
+  pass. Measured (release, `--features full`, 10 reps, host, real
+  reference WAVs): 1.31–1.87× the flat pass's wall-clock
+  (`191111_110130.wav` 231ms→303ms, `191111_110200.wav`
+  249ms→460ms, `qso3_busy.wav` 388ms→611ms).
+
+- **`core::dsp::subtract::subtract_tones_lpf_refine_dt` / FT8's
+  `subtract_signal_lpf_refine_dt`** (issue #180 follow-up) — closes
+  part of the "next concrete step" left open above: a direct
+  `subtract_tones_lpf` vs `subtractft8.f90` comparison found the two
+  algorithms structurally identical (GFSK waveform synthesis, cos²
+  LPF kernel, end-correction — all line-for-line matches), *except*
+  for one missing feature: `subtractft8.f90` takes an `lrefinedt`
+  argument, and `ft8_decode.f90`'s two early-decode-and-subtract
+  checkpoints (lines 132, 162 — exactly the calls
+  `decode_frame_subtract_staged` above is modelling) pass
+  `lrefinedt=.true.`. That path (`subtractft8.f90`'s internal `sqf`/
+  `peakup`) re-searches `dt` by ±90 samples (±7.5 ms @ 12 kHz) around
+  the candidate's own value, scoring each trial by the residual power
+  left in the signal's own tone band after subtraction, and commits
+  the subtraction at the parabolic-fit minimum — rather than trusting
+  the early candidate's own (still-coarse) `dt` outright. mfsk-core's
+  staged-checkpoint SIC had no equivalent: every early subtract used
+  the plain, non-refining `subtract_signal_lpf`. Ported `sqf`/`peakup`
+  faithfully (`core::dsp::subtract::fft_lpf::subtract_tones_lpf_refine_dt_fft`)
+  and wired it into `decode_frame_subtract_staged_with_ap_inner`'s
+  checkpoint-B and checkpoint-C deferred subtracts (the flat 3-pass
+  `sic_inner_passes`'s single confirmed-decode subtract is unchanged —
+  matches `ft8b.f90:474`'s `lrefinedt=.false.`).
+  **Effect on the DL8YHR case**: checkpoint-C's residual `sync_quality`
+  at WSJT-X's own ground-truth coordinates improved from `nsync=9` to
+  `nsync=10` (jt9 itself gets `nsync=15` on this signal) — a real,
+  measured reduction in leftover interference from the same 13
+  already-subtracted signals, though not yet enough on its own to
+  flip this specific -17 dB decode (`any_hit` still `false` in
+  `issue_180_dl8yhr_staged_checkpoint_c_probe`). No regression on any
+  of the 18 golden `qso3_busy.wav` decodes or any other reference WAV
+  (`ft8_qso3_staged_sic_check.rs`, `ft8_qso3_subtract_fix_check.rs`,
+  `ft8_qso3_apoff_recall.rs`, `ft8_qso3_apon_recall.rs`, full
+  workspace `cargo test --release --features full`: 100% pass). New
+  regression test:
+  `core::dsp::subtract::refine_dt_tests::refine_dt_beats_plain_subtract_when_dt_is_off`.
+  Remaining gap (candidates per the prior comment: LPF width/shape,
+  QSB/fading-envelope tracking, or f32 vs Fortran-single-precision
+  accumulation differences over the 151_680-sample reference) is still
+  open — logged here rather than pursued further in this pass.
+
+- **`core::dsp::subtract::fft_lpf::normalized_kernel` LPF window shape
+  bug — root cause of the DL8YHR gap, issue #180 closed.** Auditing
+  the "LPF width/shape" item left open above (per the entry directly
+  above this one) against `subtractft8.f90`/`subtractft4.f90` found the
+  actual bug: `window(j) = cos(pi*j/NFILT)**2` in WSJT-X (`NFILT =
+  2*lpf_half`) had been ported as `cos((j - lpf_half) * pi / lpf_half)²`
+  — dividing by `lpf_half` instead of `NFILT` (`2*lpf_half`), doubling
+  the cosine's argument range from `[-pi/2, pi/2]` to `[-pi, pi]`.
+  `cos²` is monotonic (a proper single taper, 1 at the centre → 0 at
+  the edges) only over the first range; over the doubled range it dips
+  to 0 at the quarter points and rises back to **1 — full weight — at
+  the true edges** (`lpf_half` samples / 166 ms away from the centre
+  sample, for FT8's `lpf_half=2000`). Verified numerically: at
+  offset=2000, shipped kernel=1.000 vs correct=0.000; at offset=1000,
+  shipped=0.000 vs correct=0.500. So every `subtract_tones_lpf` /
+  `subtract_signal_lpf` call since this became the canonical FT8/FT4
+  SIC entry point (v0.6.2) had been running a badly-misshapen "lowpass"
+  that gave 166-ms-stale channel samples as much weight as the current
+  one — actively corrupting the complex-amplitude/QSB estimate instead
+  of smoothing it. Root cause of the residual DL8YHR gap the two
+  entries above this one were chasing (`refine_signal_freq`'s dt-search
+  only got `nsync` from 9 to 10 on top of this broken window).
+  One-line-formula fix, shared by both the FFT-cached path
+  (`fft_lpf::normalized_kernel`, feeds both `cached_window_fft` and
+  `end_correction`) and the `no_std` direct-convolution fallback
+  (`subtract_tones_lpf_direct`) — fixing both fixes FT4 subtract too
+  (`subtractft4.f90` uses the identical window formula, confirmed by
+  inspection; FT4's own recall floor is unaffected — see regression
+  results below). **Result: `CQ DX DL8YHR JO41` now decodes**
+  (`decode_frame_subtract_staged`'s `qso3_busy.wav` golden-set test,
+  `staged_sic_matches_flat_pass_golden_floor`: still 18/18 golden hits,
+  0 phantoms in that set, unique-decode count 19→20, `has_dl8yhr` flips
+  `false`→`true`) — issue #180 is closed. Full workspace `cargo test
+  --release --features full` (all 70 test binaries): 100% pass, no regression on
+  any golden decode set (FT8 or FT4).
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

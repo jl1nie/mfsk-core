@@ -7,7 +7,9 @@
 //! subtracts it in place so weaker signals become decodable.
 
 use super::{decode::DecodeResult, wave_gen::message_to_tones};
-use crate::core::dsp::subtract::{GfskParams, SubtractCfg, subtract_tones_lpf};
+use crate::core::dsp::subtract::{
+    GfskParams, SubtractCfg, subtract_tones_lpf, subtract_tones_lpf_refine_dt,
+};
 
 /// FT8 subtract configuration: 12 kHz sample rate, 6.25 Hz tone spacing,
 /// 1920 samples/symbol, frame origin at 0.5 s, GFSK pulse shaping
@@ -51,6 +53,27 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
         &FT8_CFG,
         2000,
         true, // endcorrection: matches subtractft8.f90
+    );
+}
+
+/// `subtractft8.f90`'s `lrefinedt=.true.` variant of
+/// [`subtract_signal_lpf`]: probes `dt` around `result.dt_sec` for the
+/// offset that leaves the least residual energy in the signal's own
+/// tone band, then subtracts there. Matches `ft8_decode.f90`'s two
+/// early-decode-and-subtract checkpoints (issue #180) — candidates
+/// found early in a staged/checkpointed SIC pass, whose `dt` hasn't had
+/// a final decode pass to lock it down. Use plain [`subtract_signal_lpf`]
+/// once a candidate's `dt` is already final.
+pub fn subtract_signal_lpf_refine_dt(audio: &mut [i16], result: &DecodeResult) {
+    let tones = message_to_tones(&result.message77);
+    subtract_tones_lpf_refine_dt(
+        audio,
+        &tones,
+        result.freq_hz,
+        result.dt_sec,
+        &FT8_CFG,
+        2000,
+        true,
     );
 }
 
