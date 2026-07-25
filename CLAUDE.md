@@ -153,6 +153,25 @@ remaining sub-modes), not simply "a release with new capability in
 it" — when genuinely unsure which a given accumulated batch warrants,
 ask rather than default to whichever bump feels more exciting.
 
+## Branching — `main` is trunk, `devel` is for open-ended experiments
+
+Established 2026-07-25. Default workflow is unchanged: PRs land on
+`main` immediately once they're a complete, coherently-scoped unit
+(see release cadence above) — this is what keeps `main` safe for
+downstream consumers who git-dependency-pin `branch = "main"` in
+their `Cargo.toml`.
+
+`devel` exists as a holding branch for work where the outcome isn't
+known yet — embedded bring-up experiments, algorithm changes chasing
+a numerical gap (e.g. JT65-style sensitivity work) — anything that
+might get reverted rather than merged. Land commits there directly;
+once an experiment resolves, PR the result into `main` as usual (or
+just let the branch die if it didn't pan out).
+
+If `devel` runs long, periodically merge/rebase `main` into it so it
+doesn't rot into an unmergeable state by the time the experiment
+concludes.
+
 ## Memory
 
 - `~/.claude/projects/-home-minoru-src-mfsk-core/memory/` holds the
