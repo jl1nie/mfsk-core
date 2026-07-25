@@ -384,6 +384,63 @@
   says plainly not to reach for it by default until a concrete
   zsum-unreachable case justifies its cost again.
 
+- **Reverted the now-pointless auto-AP `rayon` parallelism and
+  `AudioSample: Sync` bound** (issue #182 follow-up) —
+  `decode_block::auto_ap_strategy`'s per-callsign `par_iter` loop was
+  parallelising a search that, per the entry above, now finds zero
+  additional decodes on `qso3_busy.wav`: real multi-core speedup with
+  no offsetting value, plus a second (parallel/sequential) code path
+  to maintain for a function not wired into any default path. Reverted
+  to one sequential path. With that gone, `AudioSample`'s `+ Sync`
+  supertrait (added specifically to let `&[S]` cross that `rayon` task
+  boundary) has no remaining caller that needs it — every other
+  `rayon` usage in the codebase (`core/sync.rs`, `ft8/decode.rs`,
+  `core/pipeline.rs`) operates on concrete `i16` or non-`AudioSample`-
+  generic types where `Sync` was already automatic. Reverted to `Copy`
+  only. Full workspace regression: 100% pass.
+
+- **Bit-packed `osd_setup_ldpc174_91`'s Gaussian elimination — 6.8×
+  faster setup, ~4× faster overall OSD dispatch** (issue #182
+  perf follow-up). Profiling `try_fallback` found it was ~22-25% of
+  total decode wall-clock (~281ms of ~1.27s on `qso3_busy.wav`, ~200
+  candidates × up to 8 zsave-seeded dispatches each, ~1% success rate).
+  Splitting a single `osd_decode_npre1` call's cost further (2000-rep
+  synthetic-LLR microbenchmark) found **86% of it was
+  `osd_setup_ldpc174_91`** (sort + Gaussian elimination to build the
+  MRB systematic generator) — 113.5µs/call — versus only ~18µs/call
+  for the actual `npre1` combinatorial search (the OSD algorithm
+  itself). Root cause: `OsdSetup.g` stored the GF(2) generator matrix
+  as **one byte per bit** (`Vec<u8>`, 91×174 bytes), so the
+  elimination's row-XOR step did up to 174 individual byte XORs per
+  row instead of ~3 packed 64-bit-word XORs — paid fresh on every one
+  of the 8 zsave-seeded dispatches per candidate, since each has a
+  different LLR reliability ordering and can't share a cached basis.
+  Note this isn't a WSJT-X-fidelity gap: `osd174_91.f90`'s own
+  `genmrb` is `integer*1` (byte-per-bit) too — bit-packing is a
+  legitimate algorithmic improvement *beyond* what WSJT-X itself does,
+  not a port of anything.
+
+  Rewrote only `osd_setup_ldpc174_91`'s internals to build and
+  eliminate on a packed `[u64; 3]`-per-row representation, unpacking
+  to the existing `Vec<u8>` `g` format at the end — `OsdSetup`'s shape
+  and every downstream consumer (`osd_npre1_pass`, `osd_npre2_pass`,
+  `build_npre2_table`, `try_candidate_ldpc174_91`) are byte-for-byte
+  unchanged, confining all risk to one function. Verified with a new
+  differential test (`packed_elimination_matches_byte_reference`)
+  asserting the packed rewrite produces identical `perm`/`g`/
+  `hdec_perm`/`absrx_perm`/`c_perm` to a frozen byte-per-bit reference
+  copy of the pre-rewrite code, across 5 seeded synthetic LLR vectors
+  plus all-zero and exact-tie edge cases — not just "does the
+  regression suite still pass."
+
+  **Result**: `osd_setup_ldpc174_91` 113.5µs → 16.7µs/call (6.8×);
+  total OSD dispatch (setup + `npre1_pass`) 131.6µs → 34.1µs/call
+  (3.9×). End-to-end single-threaded blind decode of `qso3_busy.wav`:
+  **1.27-1.30s → 1.09-1.12s** — landing right at real `jt9 -8 -d3`'s
+  own measured ~1.1s total file decode time. Still 22/22 decodes, zero
+  regressions (full workspace `cargo test --release --features full`,
+  `qso3_apon_subtract_jtdx_extras_diag` still 6/6 JTDX extras).
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

@@ -714,15 +714,32 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
             .unwrap_or(core::cmp::Ordering::Equal)
     });
 
-    let mut g: Vec<u8> = vec![0u8; k * n];
+    // Bit-packed Gaussian elimination (issue #182 perf follow-up).
+    // Profiling found this setup (sort + elimination) is ~86% of a
+    // single `osd_decode_npre1`/`_npre2` call's cost (~113µs of
+    // ~132µs, synthetic-LLR microbenchmark), paid fresh on every one
+    // of the 8 zsave-seeded dispatches per candidate in
+    // `osd_strategy.rs::try_fallback` (each has a different LLR
+    // reliability ordering, so results can't be cached across them).
+    // `osd174_91.f90`'s own `genmrb` is `integer*1` (byte-per-bit)
+    // too — this isn't a WSJT-X-fidelity fix, it's a legitimate
+    // algorithmic improvement beyond what WSJT-X itself does. `g`'s
+    // *final* representation (`Vec<u8>`, unpacked below) and every
+    // downstream consumer (`osd_npre1_pass`, `osd_npre2_pass`,
+    // `build_npre2_table`, `try_candidate_ldpc174_91`) are unchanged —
+    // only the elimination's internal representation differs.
+    const WORDS: usize = LDPC_N.div_ceil(64); // 3 for LDPC_N=174
+    type PackedRow = [u64; WORDS];
+    let mut g_packed: Vec<PackedRow> = vec![[0u64; WORDS]; k];
     for row in 0..k {
         for col in 0..n {
             let j = perm[col];
-            g[row * n + col] = if j < k {
-                (row == j) as u8
+            let bit = if j < k {
+                (row == j) as u64
             } else {
-                <Ldpc174_91Params as LdpcParams>::gen_parity(j - k, row)
+                <Ldpc174_91Params as LdpcParams>::gen_parity(j - k, row) as u64
             };
+            g_packed[row][col / 64] |= bit << (col % 64);
         }
     }
 
@@ -732,23 +749,24 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
         if pivot_row >= k {
             break;
         }
+        let word = col / 64;
+        let bit = col % 64;
         let mut found: Option<usize> = None;
         for r in pivot_row..k {
-            if g[r * n + col] != 0 {
+            if (g_packed[r][word] >> bit) & 1 != 0 {
                 found = Some(r);
                 break;
             }
         }
         if let Some(r) = found {
             if r != pivot_row {
-                for c in 0..n {
-                    g.swap(r * n + c, pivot_row * n + c);
-                }
+                g_packed.swap(r, pivot_row);
             }
+            let pivot = g_packed[pivot_row];
             for r2 in 0..k {
-                if r2 != pivot_row && g[r2 * n + col] != 0 {
-                    for c in 0..n {
-                        g[r2 * n + c] ^= g[pivot_row * n + c];
+                if r2 != pivot_row && (g_packed[r2][word] >> bit) & 1 != 0 {
+                    for c in 0..WORDS {
+                        g_packed[r2][c] ^= pivot[c];
                     }
                 }
             }
@@ -758,6 +776,16 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
     }
     if pivot_row < k {
         return None;
+    }
+
+    // Unpack to the byte-per-bit format every downstream consumer
+    // expects — one linear O(k*n) pass, negligible next to the O(k²*n)
+    // elimination it replaces.
+    let mut g: Vec<u8> = vec![0u8; k * n];
+    for row in 0..k {
+        for col in 0..n {
+            g[row * n + col] = ((g_packed[row][col / 64] >> (col % 64)) & 1) as u8;
+        }
     }
 
     let mut m0: Vec<u8> = vec![0u8; k];
@@ -1577,6 +1605,218 @@ pub fn osd_decode_generic<P: LdpcParams>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Byte-per-bit reference copy of `osd_setup_ldpc174_91` as it
+    /// existed before the bit-packed Gaussian elimination rewrite
+    /// (issue #182 perf follow-up). Exists solely so
+    /// `packed_elimination_matches_byte_reference` can differentially
+    /// verify the packed rewrite is a pure implementation-detail
+    /// change, not a behavior change — do not "fix" this to match any
+    /// future change to the real function; it's intentionally frozen.
+    fn osd_setup_ldpc174_91_byte_reference(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
+        let n = LDPC_N;
+        let k = LDPC_K;
+
+        let mut perm: Vec<usize> = (0..n).collect();
+        perm.sort_unstable_by(|&a, &b| {
+            llr[b]
+                .abs()
+                .partial_cmp(&llr[a].abs())
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        let mut g: Vec<u8> = vec![0u8; k * n];
+        for row in 0..k {
+            for col in 0..n {
+                let j = perm[col];
+                g[row * n + col] = if j < k {
+                    (row == j) as u8
+                } else {
+                    <Ldpc174_91Params as LdpcParams>::gen_parity(j - k, row)
+                };
+            }
+        }
+
+        let mut pivot_col: Vec<usize> = vec![0; k];
+        let mut pivot_row = 0usize;
+        for col in 0..n {
+            if pivot_row >= k {
+                break;
+            }
+            let mut found: Option<usize> = None;
+            for r in pivot_row..k {
+                if g[r * n + col] != 0 {
+                    found = Some(r);
+                    break;
+                }
+            }
+            if let Some(r) = found {
+                if r != pivot_row {
+                    for c in 0..n {
+                        g.swap(r * n + c, pivot_row * n + c);
+                    }
+                }
+                for r2 in 0..k {
+                    if r2 != pivot_row && g[r2 * n + col] != 0 {
+                        for c in 0..n {
+                            g[r2 * n + c] ^= g[pivot_row * n + c];
+                        }
+                    }
+                }
+                pivot_col[pivot_row] = col;
+                pivot_row += 1;
+            }
+        }
+        if pivot_row < k {
+            return None;
+        }
+
+        let mut m0: Vec<u8> = vec![0u8; k];
+        for r in 0..k {
+            let orig = perm[pivot_col[r]];
+            m0[r] = if llr[orig] > 0.0 { 1 } else { 0 };
+        }
+
+        let mut hdec_perm: Vec<u8> = vec![0u8; n];
+        let mut absrx_perm: Vec<f32> = vec![0.0f32; n];
+        for col in 0..n {
+            hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+            absrx_perm[col] = llr[perm[col]].abs();
+        }
+
+        let mut c_perm: Vec<u8> = vec![0u8; n];
+        for r in 0..k {
+            if m0[r] == 1 {
+                for col in 0..n {
+                    c_perm[col] ^= g[r * n + col];
+                }
+            }
+        }
+
+        Some(OsdSetup {
+            perm,
+            g,
+            hdec_perm,
+            absrx_perm,
+            c_perm,
+        })
+    }
+
+    /// Differential test (issue #182 perf follow-up): the bit-packed
+    /// `osd_setup_ldpc174_91` must produce byte-for-byte identical
+    /// output to the frozen byte-per-bit reference above, across many
+    /// LLR inputs — not just "does the regression suite still pass"
+    /// (which only exercises a handful of real-world candidates), but
+    /// exhaustive equivalence including edge cases the reference WAVs
+    /// may not hit (e.g. exact-tie |LLR| magnitudes).
+    #[test]
+    fn packed_elimination_matches_byte_reference() {
+        fn synth_llr(seed: u32) -> [f32; LDPC_N] {
+            let mut llr = [0f32; LDPC_N];
+            let mut s = seed;
+            for x in llr.iter_mut() {
+                s = s.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                let u = (s >> 8) as f32 / (1u32 << 24) as f32; // [0,1)
+                *x = (u - 0.5) * 6.0;
+            }
+            llr
+        }
+
+        for seed in [0x1234_5678u32, 1, 42, 0xdead_beef, 0xc0ffee] {
+            let llr = synth_llr(seed);
+            let expected = osd_setup_ldpc174_91_byte_reference(&llr);
+            let actual = osd_setup_ldpc174_91(&llr);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(e.perm, a.perm, "seed={seed}: perm mismatch");
+                    assert_eq!(e.g, a.g, "seed={seed}: g mismatch");
+                    assert_eq!(e.hdec_perm, a.hdec_perm, "seed={seed}: hdec_perm mismatch");
+                    assert_eq!(
+                        e.absrx_perm, a.absrx_perm,
+                        "seed={seed}: absrx_perm mismatch"
+                    );
+                    assert_eq!(e.c_perm, a.c_perm, "seed={seed}: c_perm mismatch");
+                }
+                (None, None) => {}
+                _ => panic!("seed={seed}: Some/None mismatch between reference and packed"),
+            }
+        }
+
+        // Degenerate/edge cases: all-zero (many exact ties), all-same-
+        // sign, and an exact-tie-heavy pattern.
+        let all_zero = [0f32; LDPC_N];
+        let mut alternating = [0f32; LDPC_N];
+        for (i, x) in alternating.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 1.0 } else { -1.0 };
+        }
+        for (label, llr) in [("all_zero", all_zero), ("alternating", alternating)] {
+            let expected = osd_setup_ldpc174_91_byte_reference(&llr);
+            let actual = osd_setup_ldpc174_91(&llr);
+            match (expected, actual) {
+                (Some(e), Some(a)) => {
+                    assert_eq!(e.perm, a.perm, "{label}: perm mismatch");
+                    assert_eq!(e.g, a.g, "{label}: g mismatch");
+                    assert_eq!(e.hdec_perm, a.hdec_perm, "{label}: hdec_perm mismatch");
+                    assert_eq!(e.absrx_perm, a.absrx_perm, "{label}: absrx_perm mismatch");
+                    assert_eq!(e.c_perm, a.c_perm, "{label}: c_perm mismatch");
+                }
+                (None, None) => {}
+                _ => panic!("{label}: Some/None mismatch between reference and packed"),
+            }
+        }
+    }
+
+    /// Throwaway probe (issue #182 cost investigation) — NOT for
+    /// commit. `osd_setup_ldpc174_91` (basis construction: sort +
+    /// Gaussian elimination) reruns from scratch on every one of the 8
+    /// zsave-seeded dispatches per candidate in `try_fallback` — splits
+    /// out how much of a single `osd_decode_npre1` call's cost is setup
+    /// vs the actual `npre1` pattern search.
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 setup-vs-search cost split"]
+    fn issue_182_setup_vs_search_cost() {
+        // Synthetic but realistic-shaped LLR: random-ish magnitudes so
+        // the Gaussian elimination and npre1 gate behave like a real
+        // noisy candidate, not a degenerate all-same-value case.
+        let mut llr = [0f32; LDPC_N];
+        let mut seed = 0x1234_5678u32;
+        for x in llr.iter_mut() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let u = (seed >> 8) as f32 / (1u32 << 24) as f32; // [0,1)
+            *x = (u - 0.5) * 6.0; // roughly [-3,3), plausible LLR range
+        }
+
+        const REPS: usize = 2000;
+        let t0 = std::time::Instant::now();
+        for _ in 0..REPS {
+            let _ = osd_setup_ldpc174_91(&llr);
+        }
+        let setup_only = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        for _ in 0..REPS {
+            if let Some(setup) = osd_setup_ldpc174_91(&llr) {
+                let mut best = OsdBest::new();
+                osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+            }
+        }
+        let setup_plus_search = t1.elapsed();
+
+        println!(
+            "setup_only: {:?}/call ({:?} total for {REPS} reps)",
+            setup_only / REPS as u32,
+            setup_only
+        );
+        println!(
+            "setup+npre1_pass: {:?}/call ({:?} total for {REPS} reps)",
+            setup_plus_search / REPS as u32,
+            setup_plus_search
+        );
+        println!(
+            "npre1_pass alone (by subtraction): {:?}/call",
+            (setup_plus_search.saturating_sub(setup_only)) / REPS as u32
+        );
+    }
 
     /// All-zero LLR should not produce a spurious decode (CRC check guards it).
     #[test]
