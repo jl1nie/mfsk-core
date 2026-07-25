@@ -29,7 +29,7 @@
 //! retuning lands in one place.
 
 use super::{decode::DecodeResult, encode::message_to_tones};
-use crate::core::dsp::subtract::{subtract_tones, subtract_tones_lpf};
+use crate::core::dsp::subtract::{subtract_tones, subtract_tones_lpf, subtract_tones_lpf_converge};
 
 // Reuse the configuration `decode_frame_subtract` already uses, so any
 // behavioural tuning lands in one place.
@@ -109,6 +109,52 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
         LPF_HALF_SAMPLES,
         false, // endcorrection: subtractft4.f90 has no end-correction step
     );
+}
+
+/// Convergence-iterated variant of [`subtract_signal_lpf`] (issue #179,
+/// mirroring [`crate::ft8::subtract::subtract_signal_lpf_converge`] for
+/// FT8). This is what `core::pipeline::decode_frame_subtract` (FT4's
+/// production SIC path) actually uses internally — exposed here as a
+/// named, discoverable wrapper for API symmetry with FT8 and so
+/// standalone callers/tests don't have to reach into
+/// `core::dsp::subtract::subtract_tones_lpf_converge` with FT4's raw
+/// tuning constants (`LPF_HALF_SAMPLES`/no end-correction) by hand.
+///
+/// Repeats the subtract, re-estimating the LS amplitude each time,
+/// until the marginal improvement drops below `min_step_db` or
+/// `max_iters` is reached. See
+/// [`crate::core::dsp::subtract::subtract_tones_lpf_converge`] for why
+/// a single shot underuses real signals and why a *fixed* iteration
+/// count isn't safe either. Returns the number of subtract
+/// applications actually performed.
+///
+/// `max_iters = 6, min_step_db = 1.0` are the calibrated defaults
+/// (same as FT8's — validated against both `qso3_busy.wav` and the
+/// real WSJT-X FT4 sample, `ft8_qso3_iteration_count_diag.rs` /
+/// `ft4_wsjtx_sample_iteration_diag.rs`, showing natural per-candidate
+/// diversity rather than pinning at the cap); exposed as parameters
+/// mainly so callers/tests can sweep them.
+pub fn subtract_signal_lpf_converge(
+    audio: &mut [i16],
+    result: &DecodeResult,
+    max_iters: u32,
+    min_step_db: f32,
+) -> u32 {
+    let tones = match get_tones(result) {
+        Some(t) => t,
+        None => return 0,
+    };
+    subtract_tones_lpf_converge(
+        audio,
+        &tones,
+        result.freq_hz,
+        result.dt_sec,
+        &FT4_SUBTRACT,
+        LPF_HALF_SAMPLES,
+        false, // endcorrection: subtractft4.f90 has no end-correction step
+        max_iters,
+        min_step_db,
+    )
 }
 
 /// Refine `result.freq_hz` by grid-searching ±5 Hz at 0.1 Hz resolution
