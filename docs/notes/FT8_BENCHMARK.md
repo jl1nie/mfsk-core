@@ -245,3 +245,74 @@ gains (+0.3 dB each) are real but smaller than the qualitative "85%/
 numbers and the 50%-crossing numbers are both correct, they're just
 answering different questions (recall at a specific operating point
 vs. the threshold definition used for cross-mode comparison).
+
+## 8. SIC LPF window bug — JTDX 17/18 → 18/18 closed (issue #180, 2026-07-25)
+
+Follow-up to section 7's `OSD_HARDERRORS_MAX` widening, which took
+`ft8_qso3_jtdx_recall.rs`'s JTDX-18 recall from 13/18 to 17/18 and left
+exactly one miss: `WA2FZW DL5AXX RR73` @ 2545.88 Hz, at the time
+classified a likely JTDX false positive (`coarse_sync` found candidates
+near its frequency but nothing recovered a message).
+
+**That classification was wrong.** Issue #180's investigation (originally
+chasing a *different* miss, `CQ DX DL8YHR JO41` @ 2606.25 Hz, also on
+`qso3_busy.wav`) ground-truthed against a real WSJT-X `jt9 -d3` build and
+found jt9 itself decodes `WA2FZW DL5AXX RR73` on this exact WAV — real
+signal, not a JTDX artifact. jt9's own disk-decode is staged/checkpointed
+(not a flat single pass): it decodes progressively larger audio prefixes
+at three checkpoints, subtracting each stage's confirmed decodes before
+the next, harder stage runs — DL8YHR only decodes after 13 such
+early-subtracted signals are removed, WA2FZW among them.
+
+Chasing why mfsk-core's own SIC left more residual behind than
+`subtractft8.f90` on the same signals (not a sync/LLR/BP/OSD bug — a
+decisive test loaded jt9's own dumped post-SIC residual buffer directly
+into mfsk-core's unmodified decode chain and it decoded DL8YHR outright)
+led to `subtract_tones_lpf`'s LPF kernel: `normalized_kernel`'s cos²
+window divided its argument by `lpf_half` instead of `NFILT` (`=
+2*lpf_half`), doubling the taper's argument range from `[-pi/2, pi/2]`
+to `[-pi, pi]`. `cos²` is a single monotonic taper (1 at centre → 0 at
+the edges) only over the first range; over the doubled range it dips to
+0 at the quarter points and **rises back to 1 — full weight — at the
+true edges** (`lpf_half` samples / 166 ms away from the current sample,
+for FT8's `lpf_half=2000`). Verified numerically:
+
+| offset (samples) | shipped kernel | correct kernel |
+|---|---|---|
+| 0 (centre) | 1.000 | 1.000 |
+| 1000 | 0.000 | 0.500 |
+| 2000 (edge) | **1.000** | **0.000** |
+
+So every `subtract_tones_lpf` call since it became the canonical
+FT8/FT4 SIC path (v0.6.2) — including every number in sections 1-7 of
+this document that involves the SIC-dependent `decode_frame_subtract`
+family — had been running a badly-misshapen "lowpass" giving 166-ms-stale
+channel samples as much weight as the current one, actively corrupting
+the QSB/channel estimate instead of smoothing it. One-line-formula fix
+(divide by `2*lpf_half`, not `lpf_half`); same bug and same fix applies
+to FT4 (`subtractft4.f90` uses the identical window formula).
+
+**Result**: `ft8_qso3_jtdx_recall.rs` **17/18 → 18/18** — `WA2FZW DL5AXX
+RR73` now decodes, zero new phantoms, zero regressions on the WSJT-X
+8-entry golden (still 7/8, `K1BZM DK8NE` remains the one gap, unrelated —
+see the AP-list follow-up noted elsewhere in this doc) or the AP-on
+multipass JTDX-extras floor (still 5/6, same remaining miss). Full
+non-ignored suite green throughout.
+
+**Scope check — only in-band-SIC scenarios should move; section 4/7's
+`ft8_snr_sweep` was deliberately *not* re-run to confirm this.** That
+sweep synthesizes a single target signal per trial with no co-channel
+interference, so `subtract_tones_lpf` is never invoked there — the fix
+has no code path to affect those numbers through, so re-running it was
+judged not worth the cost. This is inference from the fix's own call
+graph, not a re-measurement of section 7's table. Indirect corroboration
+exists: WebFT8's independent `ft8-bench` simulator suite (`docs/bench.md`
+in the WebFT8 repo, not this one) *was* fully re-run the same day, and
+every scenario without in-band interference (single target + AWGN/BPF
+only) reproduced byte-identical before/after, while every scenario with
+in-band SIC moved — the same scope boundary this argument predicts, just
+demonstrated on a different corpus/harness than `ft8sim`. If this
+distinction ever matters for a specific decision, re-run section 7's
+sweep directly rather than relying on this note.
+
+**mfsk-core issue/PR**: [#180](https://github.com/jl1nie/mfsk-core/issues/180) (investigation), [#178](https://github.com/jl1nie/mfsk-core/pull/178) (fix, merged).
