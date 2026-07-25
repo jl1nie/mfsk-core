@@ -51,15 +51,15 @@ is wall time on a many-core host, not a single-thread figure).
 |---|---|---:|---:|
 | FT4 | 000000_000002.wav | 7.5 s | 0.049 s |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.08 s |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.12 s |
+| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.12 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.12 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.26 s |
 | FST4-60A | 210115_0058.wav | 60 s | 0.27 s |
-| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.28 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.34 s |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.12 s |
+| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.56 s |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.69 s |
-| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.72 s |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
@@ -155,6 +155,30 @@ Notes:
   ~4× more expensive per frequency bin — see next bullet — and this
   4-slot multi-period test's longer combined audio didn't have enough
   downstream savings to offset that).
+- Q65-60B/30A dropped again, **0.28 s → 0.12 s (~2.3×)** and
+  **0.72 s → 0.56 s (~1.3×)**, in a follow-up pass (2026-07-25) prompted
+  by the FT8 FFT-cache investigation above: same "is this pattern
+  elsewhere too" question, applied to Q65. The FFT-cache wiring gap
+  itself wasn't present here — `decode_at_grid_for`'s `GridDepth::Fast`
+  (WSJT-X's own automatic-decode depth) has exactly one `(Δf,Δt)` grid
+  cell per candidate, so a direct call-count instrumentation found only
+  16 `extract_data_energies_wide` calls for Q65-60A's 16 candidates —
+  not the ~333 an earlier estimate assumed — making any FFT-planner
+  cache there negligible (confirmed by measurement, not implemented).
+  Phase-by-phase instrumentation of `Spectrogram::build_for` (used by
+  every candidate-search call) found a different bug instead: its noise-
+  floor estimate (`q65/search.rs`) computed a trimmed mean of the bottom
+  95% of FFT-magnitude bins via a full `sort_unstable_by` (O(n log n))
+  over the *entire* magnitude array (hundreds of thousands to millions
+  of cells for a 60-120 s slot), when only the unordered *set* of
+  bottom-95% values was needed. Same class of fix as FT8's
+  `xsnr2_db_simple` noise-floor median (already on `select_nth_unstable_by`,
+  O(n) average) — Q65 just hadn't had it applied. Measured as 64% of
+  `decode_multi_period_for`'s wall-clock on Q65-60B (short slot, low
+  candidate count — `build_for` dominates), 12% on Q65-30A (longer
+  multi-slot audio where the BP/fading-metric stage dominates instead).
+  Byte-identical recall on both golden tests (VK7MO/VK7PD on 60B,
+  K1JT/K9AN AP-list on 30A) before and after.
 - Q65-60A (`decode_scan_for`/`decode_scan_with_ap_for`, a different code
   path from the two above) was rewritten (2026-07-20) as a faithful
   `q65_loops.f90`/`q65_dec_q012` `(Δf, Δt, b90)` grid search, replacing
