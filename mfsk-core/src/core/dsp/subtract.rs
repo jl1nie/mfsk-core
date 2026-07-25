@@ -338,7 +338,7 @@ mod fft_lpf {
     use core::f32::consts::PI;
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::vec;
     use std::vec::Vec;
 
@@ -422,6 +422,49 @@ mod fft_lpf {
         arc
     }
 
+    /// Cached forward/inverse FFT plans, keyed by `nfft`. Same idea as
+    /// `cached_window_fft` (and `fill_symbol_spectra.rs`'s
+    /// `SYMBOL_FFT_32`): `FftPlanner::plan_fft_{forward,inverse}`
+    /// re-derives the same `nfft`-point twiddle tables on every call —
+    /// measured at ~2.8 ms/call (vs ~0.7 ms for the FFT itself) for
+    /// FT8's `nfft = 180 000`, i.e. plan construction cost ~4x the
+    /// actual transform. `subtract_tones_lpf_fft` runs this twice
+    /// (forward + inverse) per accepted decode subtracted, so this
+    /// dominated the per-call cost even after `cached_window_fft`
+    /// removed the filter-response rebuild.
+    struct CachedPlans {
+        nfft: usize,
+        forward: Arc<dyn rustfft::Fft<f32>>,
+        inverse: Arc<dyn rustfft::Fft<f32>>,
+    }
+
+    static PLAN_CACHE: OnceLock<Mutex<Vec<CachedPlans>>> = OnceLock::new();
+
+    fn cached_plans(nfft: usize) -> (Arc<dyn rustfft::Fft<f32>>, Arc<dyn rustfft::Fft<f32>>) {
+        let cache = PLAN_CACHE.get_or_init(|| Mutex::new(Vec::new()));
+        {
+            let guard = cache.lock().unwrap();
+            if let Some(e) = guard.iter().find(|e| e.nfft == nfft) {
+                return (e.forward.clone(), e.inverse.clone());
+            }
+        }
+
+        let mut planner = FftPlanner::<f32>::new();
+        let forward = planner.plan_fft_forward(nfft);
+        let inverse = planner.plan_fft_inverse(nfft);
+
+        let mut guard = cache.lock().unwrap();
+        if let Some(e) = guard.iter().find(|e| e.nfft == nfft) {
+            return (e.forward.clone(), e.inverse.clone());
+        }
+        guard.push(CachedPlans {
+            nfft,
+            forward: forward.clone(),
+            inverse: inverse.clone(),
+        });
+        (forward, inverse)
+    }
+
     /// Per-edge-distance boost factor, `endcorrection(j)` in
     /// `subtractft8.f90` (`j` there is 1-indexed 1..=lpf_half+1; here
     /// `d = j-1` is the 0-indexed distance from the frame edge,
@@ -473,12 +516,12 @@ mod fft_lpf {
         }
 
         let cw = cached_window_fft(nfft, lpf_half);
-        let mut planner = FftPlanner::<f32>::new();
-        planner.plan_fft_forward(nfft).process(&mut cfilt);
+        let (forward, inverse) = cached_plans(nfft);
+        forward.process(&mut cfilt);
         for (c, w) in cfilt.iter_mut().zip(cw.iter()) {
             *c *= *w;
         }
-        planner.plan_fft_inverse(nfft).process(&mut cfilt);
+        inverse.process(&mut cfilt);
 
         if endcorrection && lpf_half < nframe {
             let ec = end_correction(lpf_half);

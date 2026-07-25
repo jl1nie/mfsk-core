@@ -195,7 +195,14 @@ where
     // wants those weak candidates because they're precisely where AP
     // rescue pays off. Cap at 4× the regular max_cand to bound cost.
     let auto_ap_max_cand = max_cand.saturating_mul(4).max(200);
-    let refined: Vec<RefinedCandidate> = refine_candidates(audio, cands, auto_ap_max_cand);
+    // `audio` is the original (unsubtracted) slot audio and is never
+    // mutated by this function, so one 192k-FFT cache covers both the
+    // `refine_candidates` build below and every per-callsign batch call
+    // further down — same win as the main multipass driver's cache.
+    let audio_i16: Vec<i16> = audio.iter().map(|s| s.to_i16()).collect();
+    let fft_cache = crate::ft8::downsample::build_fft_cache(&audio_i16);
+    let refined: Vec<RefinedCandidate> =
+        refine_candidates(audio, cands, auto_ap_max_cand, Some(&fft_cache));
 
     // Per-callsign batch processing. Gemini PR #118 high-priority
     // optimisation: passing one (cand, callsign) pair at a time
@@ -226,6 +233,7 @@ where
             bp_max_iter,
             Some(&ap),
             strictness,
+            Some(&fft_cache),
         );
         for mut r in batch_results {
             if existing.iter().any(|x| x.message77 == r.message77)
