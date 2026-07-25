@@ -19,7 +19,7 @@ Two kinds of numbers appear per protocol:
 
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|----------------------|--------|
-| FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | AWGN ≈ −20.8 dB (WSJT-X: −20 to −21 dB) | at parity |
+| FT8      | 7/8 (WSJT-X), 18/18 (JTDX) | AWGN ≈ −20.8 dB (WSJT-X: −20 to −21 dB) | at parity |
 | FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
@@ -333,10 +333,19 @@ trials) as a representative single sub-mode.
 
 - **WSJT-X 8-entry golden: 7/8** (`decode_frame_with_ap` host,
   `decode_block` embedded — same result both paths).
-- **JTDX 18-entry golden: 17/18** (`decode_block`). The one miss,
-  `WA2FZW DL5AXX`, is classified a likely JTDX false positive —
-  `coarse_sync` candidates exist at its claimed frequency but no AP
-  context recovers a message.
+- **JTDX 18-entry golden: 18/18** (`decode_block`; was 17/18 through
+  issue #180's fix, 2026-07-25). The former miss, `WA2FZW DL5AXX`, was
+  **not** a JTDX false positive — that classification is retracted.
+  Root cause was `subtract_tones_lpf`'s SIC low-pass window: its cos²
+  argument was divided by `lpf_half` instead of `NFILT` (`=
+  2*lpf_half`), doubling the taper's argument range so the kernel gave
+  samples 166 ms away **full weight** instead of tapering to 0 —
+  actively corrupting the QSB/channel estimate on every SIC subtract
+  since this became the canonical FT8/FT4 SIC path (v0.6.2). Real
+  WSJT-X `jt9 -d3` independently decodes `WA2FZW DL5AXX RR73` on the
+  same WAV, confirming it was always a real signal, just one
+  mfsk-core's own broken SIC window was failing to clean up enough to
+  reach. See issue #180 and PR #178 for the full investigation.
 - **Host AP-on multipass JTDX-extras: 5/6** via
   `decode_frame_subtract_with_ap`. The remaining miss (`K1BZM DK8NE`,
   fixed AP context `mycall=K1JT`/`hiscall=HA0DU`) needs a wider
