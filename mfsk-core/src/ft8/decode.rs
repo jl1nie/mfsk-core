@@ -743,27 +743,59 @@ pub fn decode_frame_subtract_with_ap(
     strictness: DecodeStrictness,
     ap_hint: Option<&ApHint>,
 ) -> Vec<DecodeResult> {
-    // **WSJT-X-faithful** 3-pass + sequential SIC, mirroring the
-    // structure of `decode_block::decode_block_multipass` (the embedded
-    // path) which is a faithful port of `lib/ft8/ft8b.f90:432-437`.
-    //
-    // Two changes from the pre-v0.6.0 host implementation:
-    //
-    // 1. **Fixed `sync_min` across all 3 passes** (was 1.0 / 0.75 / 0.5).
-    //    Progressive relaxation lets phantoms slip through later passes
-    //    when SIC artefacts dominate the residual; WSJT-X holds the
-    //    threshold and skips later passes when no new decodes come out.
-    //
-    // 2. **Sequential subtract within each pass** (was batch-after-pass).
-    //    Each accepted decode immediately subtracts from the residual so
-    //    the *next* candidate in the same pass sees a cleaner spectrum.
-    //    This is what surfaces -13 to -18 dB signals sitting beneath
-    //    strong neighbours (the JTDX-extras shape on `qso3_busy.wav`).
-    //    Without sequential subtract, all candidates in a pass see the
-    //    same raw residual and weak signals stay masked.
-    //
-    // Pass termination matches WSJT-X: pass 2 skips when pass 1 returned
-    // 0 decodes; pass 3 skips when pass 2 returned no NEW decodes.
+    // Delegates to the staged-checkpoint SIC (issue #180) as of this
+    // release — jt9.f90's disk-decode is itself staged/checkpointed,
+    // not a flat single pass (see `decode_frame_subtract_staged_with_ap`'s
+    // own doc comment), and the staged path is a strict recall
+    // superset of the flat 3-pass loop below with no observed
+    // regressions (verified: identical golden-set hits on every
+    // reference WAV, plus `CQ DX DL8YHR JO41` on `qso3_busy.wav`,
+    // which the flat loop structurally cannot reach regardless of
+    // threshold tuning — see issue #180). Cost: ~1.3-1.9x the flat
+    // pass's wall-clock, still well inside the FT8 15s slot's decode
+    // budget on host.
+    decode_frame_subtract_staged_with_ap(
+        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+    )
+}
+
+/// The pre-issue-#180 flat 3-pass + sequential SIC, mirroring the
+/// structure of `decode_block::decode_block_multipass` (the embedded
+/// path) which is a faithful port of `lib/ft8/ft8b.f90:432-437`.
+/// [`decode_frame_subtract_with_ap`] now delegates to the staged
+/// checkpoint SIC instead (issue #180) — this flat version is kept as
+/// its own entry point for callers that specifically want the cheaper,
+/// non-staged behaviour (e.g. tight embedded-adjacent host budgets, or
+/// A/B comparison against the staged path).
+///
+/// Two changes from the pre-v0.6.0 host implementation:
+///
+/// 1. **Fixed `sync_min` across all 3 passes** (was 1.0 / 0.75 / 0.5).
+///    Progressive relaxation lets phantoms slip through later passes
+///    when SIC artefacts dominate the residual; WSJT-X holds the
+///    threshold and skips later passes when no new decodes come out.
+///
+/// 2. **Sequential subtract within each pass** (was batch-after-pass).
+///    Each accepted decode immediately subtracts from the residual so
+///    the *next* candidate in the same pass sees a cleaner spectrum.
+///    This is what surfaces -13 to -18 dB signals sitting beneath
+///    strong neighbours (the JTDX-extras shape on `qso3_busy.wav`).
+///    Without sequential subtract, all candidates in a pass see the
+///    same raw residual and weak signals stay masked.
+///
+/// Pass termination matches WSJT-X: pass 2 skips when pass 1 returned
+/// 0 decodes; pass 3 skips when pass 2 returned no NEW decodes.
+pub fn decode_frame_subtract_flat_with_ap(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+) -> Vec<DecodeResult> {
     let _ = freq_hint;
 
     let mut residual = audio.to_vec();
@@ -778,6 +810,112 @@ pub fn decode_frame_subtract_with_ap(
         &[],
         ap_hint,
     )
+}
+
+/// [`decode_frame_subtract`] plus a final auto-AP rescue pass: harvest
+/// caller callsigns from the blind decodes and retry coarse_sync
+/// candidates that didn't decode blind, using each harvested callsign
+/// as an AP `mycall` hint. Recovers signals too weak for blind BP/OSD
+/// but not too weak to sync — e.g. `K1BZM DK8NE -10` (-19 dB) on
+/// `qso3_busy.wav`, real but unrecoverable via this crate's own blind
+/// decode without knowing `K1BZM` is a plausible caller (issue #180
+/// follow-up).
+///
+/// **Not a port of any real jt9/WSJT-X mechanism** — this is a genuine
+/// mfsk-core-original extension, and an earlier version of this doc
+/// comment claiming it "mirrors WSJT-X's own recently-heard-callsign
+/// hash-table AP mechanism" was wrong. Checked directly against
+/// `ft8apset.f90`'s actual source: real WSJT-X only ever applies AP
+/// using the *operator-configured* `mycall`/`hiscall` (`-c`/`-x` or the
+/// GUI) and disables AP entirely — every `apsym` bit left unconstrained
+/// — the moment `mycall` isn't set (`if(len(trim(mycall12)).lt.3)
+/// return`, the subroutine's first line). There is no automatic
+/// same-slot-decode-seeded hash table. A real `jt9 -8 -d 3` run with no
+/// `-c`/`-x` therefore has AP **fully disabled**; its own `K1BZM DK8NE
+/// -10` decode is blind (`iaptype=0`), found through whatever makes
+/// jt9's own blind sync/LLR/BP pipeline more sensitive than this
+/// crate's on that one signal — a real, separate, still-open gap this
+/// function does *not* explain or close. This function reaches the
+/// same message through a different, AP-assisted route unique to
+/// mfsk-core, not by matching jt9's actual blind-decode sensitivity.
+///
+/// Deliberately *not* `decode_block::auto_ap_strategy`'s own `run` (the
+/// existing embedded-shared implementation), which widens the
+/// candidate search 4x (`max_cand.saturating_mul(4).max(200)`) to
+/// chase weak signals out of the normal ranking: ~4.8 s measured on
+/// `qso3_busy.wav`.
+///
+/// Uses `auto_ap_strategy::run_bounded` with a fixed
+/// `AUTO_AP_CAND_BUDGET` instead — deliberately decoupled from the
+/// caller's own `max_cand` (webft8/`ft8-bench` pass 200, for maximum
+/// blind recall; reusing that as the auto-AP budget too still measured
+/// ~5 s). `K1BZM DK8NE -10`'s own coarse_sync candidate ranks inside
+/// the top 60 of 1419 by score on `qso3_busy.wav` — comfortable margin
+/// below the budget below. The per-callsign retry loop inside
+/// `run_bounded` runs on Rayon (`parallel` feature) since each
+/// harvested callsign is fully independent; measured total (staged
+/// `decode_frame_subtract_with_ap` + parallel auto-AP), 24-core host:
+/// ~0.9 s. Single-threaded (`RAYON_NUM_THREADS=1`), the same call is
+/// ~1.3 s — slower than real `jt9 -8 -d 3`'s own ~1.1 s *total* file
+/// decode time, since this function does provably more search (a full
+/// per-callsign retry sweep) than jt9 does for this signal (nothing —
+/// its own blind pass already finds it). The parallel speedup is real,
+/// independent task-level parallelism (15-ish unrelated callsigns, no
+/// shared mutable state) — not a substitute for closing the blind-
+/// sensitivity gap above.
+///
+/// Only fires at `DecodeDepth::BpAllOsd` (mirrors
+/// `decode_block::auto_ap_strategy`'s own gate) and when at least one
+/// caller callsign can be harvested; otherwise reproduces
+/// [`decode_frame_subtract`] exactly.
+///
+/// `fft-rustfft` only — delegates to
+/// `decode_block::auto_ap_strategy::run_bounded`, itself gated the
+/// same way (host research config; no embedded/`fft-extern` caller
+/// has the wall-clock budget for this).
+#[cfg(feature = "fft-rustfft")]
+pub fn decode_frame_subtract_with_auto_ap(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
+    let mut results = decode_frame_subtract_with_ap(
+        audio, freq_min, freq_max, sync_min, None, depth, max_cand, strictness, None,
+    );
+    // `run_bounded` with a fixed, cost-bounded candidate budget —
+    // deliberately *not* the caller's own `max_cand` (which webft8/
+    // ft8-bench set to 200 for maximum blind recall; reusing it here
+    // measured ~5s, still too slow). `AUTO_AP_CAND_BUDGET` is
+    // decoupled from `max_cand` because the two searches answer
+    // different questions: the blind pass wants every candidate that
+    // *might* be a real signal; auto-AP only needs candidates that
+    // already synced well enough to be worth an AP retry, and
+    // `K1BZM DK8NE -10`'s own candidate ranks inside the top 60 of
+    // 1419 by coarse_sync score on `qso3_busy.wav` — comfortable
+    // margin below this budget.
+    const AUTO_AP_CAND_BUDGET: usize = 80;
+    let rescued = crate::ft8::decode_block::auto_ap_strategy::run_bounded(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        AUTO_AP_CAND_BUDGET,
+        AUTO_AP_CAND_BUDGET,
+        &results,
+        depth,
+        BP_MAX_ITER,
+        strictness,
+    );
+    for r in rescued {
+        if !results.iter().any(|x| x.message77 == r.message77) {
+            results.push(r);
+        }
+    }
+    results
 }
 
 /// Shared inner loop: up to 3 sub-passes of coarse_sync + per-candidate
@@ -911,10 +1049,11 @@ fn sic_inner_passes(
 // (~-17 dB, on `qso3_busy.wav`) only decodes at checkpoint C, after 13 other
 // signals found at checkpoint A have already been removed from its local
 // spectral neighbourhood — something a flat "decode-the-whole-buffer,
-// subtract-after" pass (`decode_frame_subtract_with_ap` above) can't
-// reproduce no matter how the sync threshold is tuned, because DL8YHR's
-// neighbours were never subtracted from *before* the residual it's found
-// in was assembled.
+// subtract-after" pass (`decode_frame_subtract_flat_with_ap`, the
+// pre-#180 behaviour `decode_frame_subtract_with_ap` delegated to before
+// this staged version became the default) can't reproduce no matter how
+// the sync threshold is tuned, because DL8YHR's neighbours were never
+// subtracted from *before* the residual it's found in was assembled.
 //
 // This crate has no live streaming buffer for FT8 host/offline decode (the
 // checkpoint semantics above are a WSJT-X real-time-emulation artefact of
@@ -1022,8 +1161,12 @@ fn decode_frame_subtract_staged_with_ap_inner(
 
     // Buffers shorter than checkpoint A can't be staged meaningfully —
     // there's no "early, incomplete" window smaller than the whole thing.
+    // Must call the *flat* fallback, not `decode_frame_subtract_with_ap`
+    // — that now delegates to this very function (issue #180), so
+    // calling it here would recurse indefinitely (stack overflow, caught
+    // by `decode_frame_subtract_with_ap_silence_shape`).
     if audio.len() < A_SAMPLES {
-        let r = decode_frame_subtract_with_ap(
+        let r = decode_frame_subtract_flat_with_ap(
             audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
         );
         return (r, audio.to_vec());
@@ -1072,8 +1215,9 @@ fn decode_frame_subtract_staged_with_ap_inner(
         // back to a single flat pass over the *full* original audio
         // (rather than reproducing jt9.f90's own checkpoint-47-sized
         // truncation quirk in this branch) can only find as much or
-        // more, never less.
-        let r = decode_frame_subtract_with_ap(
+        // more, never less. Must be the *flat* fallback here too — same
+        // recursion hazard as the `A_SAMPLES` branch above.
+        let r = decode_frame_subtract_flat_with_ap(
             audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
         );
         return (r, audio.to_vec());
@@ -2546,6 +2690,476 @@ mod tests {
                     "\n/tmp/jt9_post_sic_dd.raw not found — run the instrumented jt9 build first"
                 );
             }
+        }
+    }
+
+    /// Throwaway probe (issue #180 DK8NE follow-up) — NOT for commit.
+    /// What sync_quality does mfsk-core's own staged-SIC residual give
+    /// at `K1BZM DK8NE -10`'s coordinates, vs real jt9's own residual
+    /// (ground-truthed via a locally-rebuilt instrumented jt9:
+    /// nsync=11, is1=1 is2=7 is3=3 at nzhsym=50)?
+    #[test]
+    #[ignore = "manual diagnostic — issue #180 DK8NE own-SIC score probe"]
+    fn issue_180_dk8ne_own_sic_score_probe() {
+        use crate::core::sync::refine_candidate;
+        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
+        use crate::ft8::downsample::downsample;
+        use crate::ft8::llr::sync_quality;
+        use crate::msg::wsjt77::unpack77;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        let (results, residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio,
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            DecodeDepth::BpAllOsd,
+            200,
+            DecodeStrictness::Normal,
+            None,
+        );
+        let has_dk8ne = results
+            .iter()
+            .any(|r| unpack77(&r.message77).as_deref() == Some("K1BZM DK8NE -10"));
+        println!("staged pipeline already found DK8NE blind: {has_dk8ne}");
+
+        let freq = 244.2f32;
+        let dt = 0.505f32;
+        let cand = crate::core::sync::SyncCandidate {
+            freq_hz: freq,
+            dt_sec: dt,
+            score: 0.0,
+        };
+        let (cd0, _cache) = downsample(&residual, cand.freq_hz, None);
+        let refined = refine_candidate::<crate::ft8::Ft8>(&cd0, &cand, 10);
+
+        let mut cs = symbol_spectra_direct::<i16>(
+            &residual,
+            cand.freq_hz,
+            refined.dt_sec,
+            SymMask::SyncOnly,
+            None,
+        );
+        let q = sync_quality(&cs);
+        fill_symbol_spectra(
+            &mut cs,
+            &residual,
+            cand.freq_hz,
+            refined.dt_sec,
+            SymMask::DataOnly,
+            None,
+        );
+        let icos7: [u8; 7] = [3, 1, 4, 0, 6, 5, 2];
+        let mut is = [0u32; 3];
+        for (b, base) in [0usize, 36, 72].iter().enumerate() {
+            for (k, &tone) in icos7.iter().enumerate() {
+                let sym = base + k;
+                let mut best = 0usize;
+                let mut best_mag = -1.0f32;
+                for t in 0..8 {
+                    let m = cs[sym][t].norm();
+                    if m > best_mag {
+                        best_mag = m;
+                        best = t;
+                    }
+                }
+                if best == tone as usize {
+                    is[b] += 1;
+                }
+            }
+        }
+        println!(
+            "mfsk-core's OWN staged-SIC residual: freq={freq:.2} dt={dt:.3} refined_dt={:+.3} q={q} is1={} is2={} is3={}",
+            refined.dt_sec, is[0], is[1], is[2]
+        );
+        println!("jt9's own residual (ground truth):   nsync=11 is1=1 is2=7 is3=3");
+
+        // Sync score matches jt9's exactly — now try the full BP/OSD
+        // decode on this same residual to see how close (hard_errors)
+        // it gets, even if it doesn't fully converge.
+        use crate::fec::ldpc::bp::bp_decode;
+        use crate::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
+        use crate::ft8::llr::compute_llr;
+        let llr_set = compute_llr::<f32>(&cs);
+        let target = "K1BZM DK8NE -10";
+        for (name, llr) in [
+            ("a", &llr_set.llra),
+            ("b", &llr_set.llrb),
+            ("c", &llr_set.llrc),
+            ("d", &llr_set.llrd),
+        ] {
+            if let Some(bp) = bp_decode(llr, None, 40, None) {
+                let text = unpack77(&bp.message77).unwrap_or_default();
+                println!("  BP({name}) -> {text:?} hard_errors={}", bp.hard_errors);
+            } else {
+                println!("  BP({name}) -> no convergence");
+            }
+            if let Some(o) = osd_decode_npre1_npre2(llr) {
+                println!(
+                    "  OSD-npre1npre2({name}) -> {:?} hard_errors={}",
+                    unpack77(&o.message77).unwrap_or_default(),
+                    o.hard_errors
+                );
+            } else if let Some(o) = osd_decode_npre1(llr) {
+                println!(
+                    "  OSD-npre1({name}) -> {:?} hard_errors={}",
+                    unpack77(&o.message77).unwrap_or_default(),
+                    o.hard_errors
+                );
+            } else {
+                println!("  OSD-npre1(npre2)({name}) -> no candidate");
+            }
+            if let Some(o) = osd_decode_deep4(llr, 30, None) {
+                println!(
+                    "  OSD-deep4({name}) -> {:?} hard_errors={}",
+                    unpack77(&o.message77).unwrap_or_default(),
+                    o.hard_errors
+                );
+            } else {
+                println!("  OSD-deep4({name}) -> no candidate");
+            }
+        }
+        let _ = target;
+    }
+
+    /// Throwaway probe (issue #180 DK8NE follow-up) — NOT for commit.
+    /// Sync score (is1/is2/is3) matches jt9's exactly on both
+    /// residuals, but OSD outcome differs. Does the *data* portion (58
+    /// symbols the sync_quality metric never looks at) actually differ
+    /// between mfsk-core's own SIC residual and jt9's own residual?
+    /// Direct per-symbol argmax + magnitude comparison, mirroring the
+    /// bin-by-bin methodology the original DL8YHR investigation used.
+    #[test]
+    #[ignore = "manual diagnostic — issue #180 DK8NE data-symbol residual comparison"]
+    fn issue_180_dk8ne_data_symbol_comparison() {
+        use crate::core::sync::refine_candidate;
+        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
+        use crate::ft8::downsample::downsample;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        let (_results, mfsk_residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio,
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            DecodeDepth::BpAllOsd,
+            200,
+            DecodeStrictness::Normal,
+            None,
+        );
+
+        let jt9_bytes = std::fs::read("/tmp/jt9_post_sic_dd.raw").expect("read jt9 residual dump");
+        let jt9_residual: Vec<i16> = jt9_bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+
+        let freq = 244.2f32;
+        let dt = 0.505f32;
+
+        type SymSpectra = alloc::boxed::Box<[[crate::core::scalar::Cmplx<f32>; 8]; 79]>;
+        let mut spectra: Vec<(&str, SymSpectra)> = Vec::new();
+        for (label, residual) in [
+            ("mfsk-core own SIC", &mfsk_residual),
+            ("jt9 own SIC", &jt9_residual),
+        ] {
+            let cand = crate::core::sync::SyncCandidate {
+                freq_hz: freq,
+                dt_sec: dt,
+                score: 0.0,
+            };
+            let (cd0, _cache) = downsample(residual, cand.freq_hz, None);
+            let refined = refine_candidate::<crate::ft8::Ft8>(&cd0, &cand, 10);
+            let mut cs = symbol_spectra_direct::<i16>(
+                residual,
+                cand.freq_hz,
+                refined.dt_sec,
+                SymMask::SyncOnly,
+                None,
+            );
+            fill_symbol_spectra(
+                &mut cs,
+                residual,
+                cand.freq_hz,
+                refined.dt_sec,
+                SymMask::DataOnly,
+                None,
+            );
+            spectra.push((label, cs));
+        }
+
+        // Data symbol positions: 7..36 and 43..72 (0-indexed), 58 total.
+        let data_syms: Vec<usize> = (7..36).chain(43..72).collect();
+        let (mfsk_cs, jt9_cs) = (&spectra[0].1, &spectra[1].1);
+        let mut diverge_count = 0usize;
+        for &sym in &data_syms {
+            let argmax = |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79]| -> (usize, f32) {
+                let mut best = 0usize;
+                let mut best_mag = -1.0f32;
+                for t in 0..8 {
+                    let m = cs[sym][t].norm();
+                    if m > best_mag {
+                        best_mag = m;
+                        best = t;
+                    }
+                }
+                (best, best_mag)
+            };
+            let (m_tone, m_mag) = argmax(mfsk_cs);
+            let (j_tone, j_mag) = argmax(jt9_cs);
+            if m_tone != j_tone {
+                diverge_count += 1;
+                println!(
+                    "  sym={sym:2} DIVERGE  mfsk: tone={m_tone} mag={m_mag:8.1}  |  jt9: tone={j_tone} mag={j_mag:8.1}"
+                );
+            }
+        }
+        println!(
+            "\n{diverge_count}/{} data-symbol argmax disagreements between mfsk-core's own SIC residual and jt9's own SIC residual (identical sync-symbol scores, both q=11/is1=1/is2=7/is3=3)",
+            data_syms.len()
+        );
+
+        // Aggregate energy comparison in the data region — average
+        // per-tone magnitude at each data symbol, to see whether
+        // mfsk-core's residual carries systematically more energy
+        // (i.e. more uncancelled interference) even where the argmax
+        // agrees.
+        let mut mfsk_energy = 0f64;
+        let mut jt9_energy = 0f64;
+        for &sym in &data_syms {
+            for t in 0..8 {
+                mfsk_energy += (mfsk_cs[sym][t].norm() as f64).powi(2);
+                jt9_energy += (jt9_cs[sym][t].norm() as f64).powi(2);
+            }
+        }
+        println!(
+            "data-region total energy: mfsk-core={mfsk_energy:.1}  jt9={jt9_energy:.1}  ratio={:.3}",
+            mfsk_energy / jt9_energy
+        );
+    }
+
+    /// Throwaway probe (issue #182 follow-up) — NOT for commit.
+    /// argmax-only comparison (`issue_180_dk8ne_data_symbol_comparison`)
+    /// showed 0/58 data-symbol tone disagreements, which rules out a
+    /// gross SIC data-quality gap but does NOT rule out a *reliability
+    /// ordering* difference — OSD's reprocessing basis is chosen by
+    /// sorting all 174 codeword bits by `|LLR|`, and that ordering is a
+    /// separate, more sensitive signal than the per-symbol tone argmax.
+    /// This probe compares hard-decision agreement and reliability rank
+    /// agreement (top-91 most-reliable set overlap) between mfsk-core's
+    /// own SIC residual and jt9's own SIC residual, for all 4 LLR
+    /// variants (a/b/c/d), to see whether the ~13% energy gap already
+    /// found is enough to perturb the ordering OSD actually depends on.
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 DK8NE LLR reliability-ordering comparison"]
+    fn issue_182_dk8ne_llr_reliability_comparison() {
+        use crate::core::sync::refine_candidate;
+        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
+        use crate::ft8::downsample::downsample;
+        use crate::ft8::llr::compute_llr;
+        use crate::ft8::params::LDPC_N;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        let (_results, mfsk_residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio,
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            DecodeDepth::BpAllOsd,
+            200,
+            DecodeStrictness::Normal,
+            None,
+        );
+
+        let jt9_bytes = std::fs::read("/tmp/jt9_post_sic_dd.raw").expect("read jt9 residual dump");
+        let jt9_residual: Vec<i16> = jt9_bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+
+        let freq = 244.2f32;
+        let dt = 0.505f32;
+
+        let mut llr_sets: Vec<(&str, crate::ft8::llr::LlrSet<f32>)> = Vec::new();
+        for (label, residual) in [
+            ("mfsk-core own SIC", &mfsk_residual),
+            ("jt9 own SIC", &jt9_residual),
+        ] {
+            let cand = crate::core::sync::SyncCandidate {
+                freq_hz: freq,
+                dt_sec: dt,
+                score: 0.0,
+            };
+            let (cd0, _cache) = downsample(residual, cand.freq_hz, None);
+            let refined = refine_candidate::<crate::ft8::Ft8>(&cd0, &cand, 10);
+            let mut cs = symbol_spectra_direct::<i16>(
+                residual,
+                cand.freq_hz,
+                refined.dt_sec,
+                SymMask::SyncOnly,
+                None,
+            );
+            fill_symbol_spectra(
+                &mut cs,
+                residual,
+                cand.freq_hz,
+                refined.dt_sec,
+                SymMask::DataOnly,
+                None,
+            );
+            llr_sets.push((label, compute_llr::<f32>(&cs)));
+        }
+        let (mfsk_llr, jt9_llr) = (&llr_sets[0].1, &llr_sets[1].1);
+
+        // OSD's real reprocessing basis size mirrors WSJT-X's `nord=1`
+        // entry: the 91 (=LDPC_K) most-reliable bits form the systematic
+        // basis after Gaussian elimination; everything past that is
+        // candidate-flip territory. Top-91 overlap is the number that
+        // actually matters for whether the *same* basis gets built.
+        const BASIS_SIZE: usize = 91;
+
+        for (name, m, j) in [
+            ("a", &mfsk_llr.llra, &jt9_llr.llra),
+            ("b", &mfsk_llr.llrb, &jt9_llr.llrb),
+            ("c", &mfsk_llr.llrc, &jt9_llr.llrc),
+            ("d", &mfsk_llr.llrd, &jt9_llr.llrd),
+        ] {
+            let hard_disagree = (0..LDPC_N)
+                .filter(|&i| (m[i] > 0.0) != (j[i] > 0.0))
+                .count();
+
+            let mut m_rank: Vec<usize> = (0..LDPC_N).collect();
+            m_rank.sort_by(|&x, &y| m[y].abs().partial_cmp(&m[x].abs()).unwrap());
+            let mut j_rank: Vec<usize> = (0..LDPC_N).collect();
+            j_rank.sort_by(|&x, &y| j[y].abs().partial_cmp(&j[x].abs()).unwrap());
+
+            let m_top: std::collections::HashSet<usize> =
+                m_rank[..BASIS_SIZE].iter().copied().collect();
+            let j_top: std::collections::HashSet<usize> =
+                j_rank[..BASIS_SIZE].iter().copied().collect();
+            let overlap = m_top.intersection(&j_top).count();
+
+            // Of the bits BOTH sides agree belong in the top-91 basis,
+            // how many disagree on hard decision (sign)? This is the
+            // number that actually breaks OSD's Gaussian elimination —
+            // a shared-basis bit with a flipped sign is a wrong "known"
+            // bit baked into the systematic form.
+            let basis_hard_disagree = m_top
+                .intersection(&j_top)
+                .filter(|&&i| (m[i] > 0.0) != (j[i] > 0.0))
+                .count();
+
+            println!(
+                "llr({name}): hard_disagree={hard_disagree}/{LDPC_N}  top-{BASIS_SIZE}-overlap={overlap}/{BASIS_SIZE}  basis_hard_disagree={basis_hard_disagree}"
+            );
         }
     }
 }

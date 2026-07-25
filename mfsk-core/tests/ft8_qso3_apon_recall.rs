@@ -220,8 +220,7 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
 // `decode_frame_subtract_with_ap` driver was rewired to use
 // `subtract_signal_lpf` (matching `decode_block`'s WSJT-X-faithful
 // channel-aware subtract). Cleaner residual surfaces 4 of the 5
-// missing JTDX-extras at coarse-sync stage 1 of pass 1; only K1BZM
-// DK8NE -19 (deepest) remains beyond reach without a wider AP-list.
+// missing JTDX-extras at coarse-sync stage 1 of pass 1.
 // Stepped back to 4 in 0.6.3, restored to 5 in the issue #72
 // follow-up (2026-07-18): 0.6.3's `OSD_HARDERRORS_MAX = 22` filtered
 // `CQ EA2BFM IN83` (one of the multipass extras, `hard_errors = 31`)
@@ -232,6 +231,21 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
 // 36, which restores this extra too. The other 4 extras (CQ F5RXL
 // IN94, KD2UGC F6GCP, K1BZM EA3CJ, the 4 in 0.6.2) were never
 // affected by that gate either way.
+//
+// K1BZM DK8NE -19 (deepest) still isn't caught here, but **not**
+// because of AP-list breadth (the AP hint above is K1JT/HA0DU, a
+// different QSO — DK8NE's own real decode is blind, no AP at all;
+// confirmed directly against a locally-instrumented jt9 rebuild,
+// issue #180 follow-up). The old `q >= 12` OSD gate that used to
+// block this candidate outright has since been loosened to `q > 6`
+// (WSJT-X-faithful, see `osd_strategy.rs`), and both the SIC
+// residual's data-symbol quality and its LLR reliability ordering
+// have been verified equivalent to jt9's own residual at these
+// coordinates — yet `osd_decode_npre1` (the real ndeep=2 dispatch
+// for this candidate's q=11) still fails to produce a codeword where
+// WSJT-X's real `osd174_91.f90` ndeep=2 succeeds. That's a genuine
+// OSD algorithm fidelity gap, tracked as issue #182, not something a
+// wider AP list would fix.
 const JTDX_EXTRAS_HARD_FLOOR_MULTIPASS: usize = 5;
 
 #[test]

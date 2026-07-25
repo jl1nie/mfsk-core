@@ -25,6 +25,16 @@
 //!
 //! # Status
 //!
+//! **Resolved (issue #180, closed).** The remaining gap this doc used to
+//! describe (staging the checkpoints alone reached `sync_quality=9`,
+//! short of `jt9`'s `nsync=15`) was root-caused to a shape bug in the LPF
+//! subtraction kernel itself (`normalized_kernel` in
+//! `src/core/dsp/subtract.rs` used `PI / lpf_half` instead of
+//! `PI / nfilt`), not a deeper sync/downsample sensitivity gap. Fixing
+//! the kernel shape closed it: `decode_frame_subtract_staged` now finds
+//! `CQ DX DL8YHR JO41` on this same recording (`has_dl8yhr=true` below is
+//! now a hard-asserted regression floor, not a diagnostic print).
+//!
 //! Verified (2026-07-25) against this real recording:
 //! - The staged path finds the same 18/18 golden messages as the flat
 //!   `decode_frame_subtract` baseline — no regression from restructuring
@@ -32,17 +42,7 @@
 //! - Checkpoint A found 11 signals early (including `W1FC F5BZB`, only
 //!   ~35 Hz from DL8YHR's carrier); checkpoint C found the remaining 7
 //!   against that cleaned residual.
-//! - `DL8YHR` still does **not** decode. This matches issue #180's own
-//!   finding that even subtracting *all 18* golden decodes from the raw
-//!   residual (a superset of WSJT-X's 13) only reached `sync_quality=9`,
-//!   short of `jt9`'s `nsync=15` — i.e. the architecture fix alone does
-//!   not close the separately-documented ~1-2 dB sync/downsample
-//!   sensitivity gap (issue #180's "Bug 1" off-by-one dt convention /
-//!   numeric fidelity discussion). That remains open, tracked in #180.
-//!
-//! This test therefore asserts the *no-regression* floor, not a DL8YHR
-//! hit — flip `assert!(has_dl8yhr, ...)` on once the sensitivity gap is
-//! independently closed.
+//! - With the kernel-shape fix, `DL8YHR` decodes too (19/19).
 //!
 //! Run:
 //! ```sh
@@ -119,7 +119,7 @@ fn staged_sic_matches_flat_pass_golden_floor() {
         }
     }
     let has_dl8yhr = msgs.iter().any(|m| m.contains("DL8YHR"));
-    println!("has_dl8yhr={has_dl8yhr} (see module doc — known open gap, issue #180)");
+    println!("has_dl8yhr={has_dl8yhr}");
 
     assert_eq!(
         golden_hits,
@@ -127,5 +127,13 @@ fn staged_sic_matches_flat_pass_golden_floor() {
         "staged SIC regressed vs the flat-pass golden floor: {}/{}",
         golden_hits,
         FLAT_PASS_GOLDEN.len(),
+    );
+    // Issue #180, closed: the LPF subtraction kernel's shape bug
+    // (`normalized_kernel` in `src/core/dsp/subtract.rs`) was the real
+    // root cause of DL8YHR's miss, not a deeper sync/downsample
+    // sensitivity gap. Now a hard regression floor, not a diagnostic.
+    assert!(
+        has_dl8yhr,
+        "DL8YHR regressed — issue #180's LPF kernel-shape fix should make this a hard hit"
     );
 }
