@@ -72,10 +72,11 @@ pub use protocol::{
     Q65e300, Q65f120,
 };
 pub use rx::{
-    Q65Decode, decode_at, decode_at_fading_for, decode_at_for, decode_at_with_ap,
+    GridDepth, Q65Decode, decode_at, decode_at_fading_for, decode_at_for, decode_at_with_ap,
     decode_at_with_ap_for, decode_at_with_ap_list_for, decode_multi_period,
     decode_multi_period_for, decode_scan, decode_scan_default, decode_scan_fading_for,
-    decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for, decode_scan_with_ap_list_for,
+    decode_scan_for, decode_scan_for_with_depth, decode_scan_with_ap, decode_scan_with_ap_for,
+    decode_scan_with_ap_list_for,
 };
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};

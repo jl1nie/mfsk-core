@@ -510,7 +510,35 @@ pub fn decode_scan_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
 ) -> Vec<Q65Decode> {
-    decode_scan_inner::<P>(audio, sample_rate, nominal_start_sample, params, None)
+    decode_scan_for_with_depth::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        GridDepth::Fast,
+    )
+}
+
+/// Depth-selectable variant of [`decode_scan_for`].
+///
+/// `Fast` is the WSJT-X automatic-slot default. `Normal` and `Deep`
+/// expand the fine frequency/time retry grid for an explicit operator
+/// decode-depth request without changing the coarse candidate search.
+pub fn decode_scan_for_with_depth<P: ModulationParams>(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &super::search::SearchParams,
+    depth: GridDepth,
+) -> Vec<Q65Decode> {
+    decode_scan_inner::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        None,
+        depth,
+    )
 }
 
 /// AP-hint variant of [`decode_scan_for`]. Same coarse search; each
@@ -530,6 +558,7 @@ pub fn decode_scan_with_ap_for<P: ModulationParams>(
         nominal_start_sample,
         params,
         Some(ap_hint),
+        GridDepth::Fast,
     )
 }
 
@@ -539,6 +568,7 @@ fn decode_scan_inner<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: Option<&ApHint>,
+    depth: GridDepth,
 ) -> Vec<Q65Decode> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
@@ -551,6 +581,7 @@ fn decode_scan_inner<P: ModulationParams>(
             c.start_sample,
             c.freq_hz,
             nsps,
+            depth,
             ap_hint,
         ) else {
             continue;
@@ -756,25 +787,19 @@ fn decode_at_grid_for<P: ModulationParams>(
 
 /// Try decoding at a coarse candidate's reported alignment via the
 /// WSJT-X-faithful `(Δf, Δt, b90)` grid search — see
-/// [`decode_at_grid_for`]. Uses `GridDepth::Fast`, matching WSJT-X's
-/// own automatic per-slot decode depth (confirmed against `jt9`'s CLI
-/// default, `-d 1`).
+/// [`decode_at_grid_for`]. The caller chooses the operator-requested
+/// grid depth; the public automatic-slot entry point defaults to
+/// `GridDepth::Fast`, matching `jt9`'s CLI default (`-d 1`).
 fn decode_at_with_fine_timing_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
     freq_hz: f32,
     _nsps: usize,
+    depth: GridDepth,
     ap_hint: Option<&ApHint>,
 ) -> Option<Q65Decode> {
-    decode_at_grid_for::<P>(
-        audio,
-        sample_rate,
-        start_sample,
-        freq_hz,
-        GridDepth::Fast,
-        ap_hint,
-    )
+    decode_at_grid_for::<P>(audio, sample_rate, start_sample, freq_hz, depth, ap_hint)
 }
 
 /// Q65-30A convenience wrapper for [`decode_scan_for`].
@@ -1206,5 +1231,15 @@ mod tests {
             decodes.is_empty(),
             "got false decodes from silence: {decodes:#?}"
         );
+    }
+
+    #[test]
+    fn scan_accepts_every_operator_decode_depth() {
+        let params = super::super::search::SearchParams::default();
+        for depth in [GridDepth::Fast, GridDepth::Normal, GridDepth::Deep] {
+            assert!(
+                decode_scan_for_with_depth::<Q65a30>(&[], 12_000, 0, &params, depth).is_empty()
+            );
+        }
     }
 }
