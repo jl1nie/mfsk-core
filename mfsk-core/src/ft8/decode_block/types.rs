@@ -25,14 +25,17 @@ use super::super::params::NSPS;
 /// The `to_f32` implementation must produce values on the same
 /// amplitude scale as `i16` so the LLR computation downstream keeps
 /// its calibration; for `i8` we therefore multiply by 256.
-/// `Sync` (both current impls, `i16`/`i8`, are plain `Copy` primitives
-/// with no interior mutability, so this costs real implementors
-/// nothing): lets `&[S]` cross the `rayon` task boundary in the
-/// `parallel`-feature host paths (e.g.
+///
+/// `Copy` only — no `Sync` supertrait. An earlier version added `+
+/// Sync` here so `&[S]` could cross a `rayon` task boundary in
 /// `decode_block::auto_ap_strategy::run_bounded`'s per-callsign
-/// parallel loop) without every generic caller needing to spell out
-/// the bound itself.
-pub trait AudioSample: Copy + Sync {
+/// parallel loop; that parallelism was reverted (issue #182 follow-up
+/// — the loop it sped up now finds zero additional decodes once the
+/// OSD `bp_llr_zsum` fix landed, so parallelising it further was pure
+/// unused complexity), and no other `AudioSample`-generic function
+/// crosses a thread boundary. Re-add `+ Sync` only alongside a real
+/// generic-over-`S` parallel caller, not preemptively.
+pub trait AudioSample: Copy {
     fn to_f32(self) -> f32;
     /// Promote to i16 range. i8 → i16 via `<<8`; i16 → i16
     /// identity. Used by the fixed-point FFT input path.

@@ -816,10 +816,24 @@ pub fn decode_frame_subtract_flat_with_ap(
 /// caller callsigns from the blind decodes and retry coarse_sync
 /// candidates that didn't decode blind, using each harvested callsign
 /// as an AP `mycall` hint. Recovers signals too weak for blind BP/OSD
-/// but not too weak to sync — e.g. `K1BZM DK8NE -10` (-19 dB) on
-/// `qso3_busy.wav`, real but unrecoverable via this crate's own blind
-/// decode without knowing `K1BZM` is a plausible caller (issue #180
-/// follow-up).
+/// but not too weak to sync — originally motivated by `K1BZM DK8NE
+/// -10` (-19 dB) on `qso3_busy.wav` (issue #180 follow-up), which at
+/// the time was unrecoverable via this crate's own blind decode
+/// without knowing `K1BZM` is a plausible caller.
+///
+/// **Deliberately not wired into any default decode path — call this
+/// explicitly, opt-in only.** As of issue #182's `bp_llr_zsum` OSD fix
+/// (`decode_block/osd_strategy.rs`), this function's own motivating
+/// case decodes via blind [`decode_frame_subtract_with_ap`] alone —
+/// measured on `qso3_busy.wav`: blind-only and blind-plus-this-
+/// function now both return the same 22 decodes, so the auto-AP pass
+/// finds *zero* additional signals there while still paying its own
+/// full search cost (~0.3-0.5s single-threaded on top of blind). This
+/// doesn't mean the mechanism is dead in general — an AP-rescuable-
+/// but-zsum-OSD-unreachable signal is still conceivable — but there is
+/// no evidence for one currently, so treat this as a research/
+/// diagnostic tool rather than a default production step until a
+/// concrete case justifies its cost again.
 ///
 /// **Not a port of any real jt9/WSJT-X mechanism** — this is a genuine
 /// mfsk-core-original extension, and an earlier version of this doc
@@ -3159,6 +3173,313 @@ mod tests {
 
             println!(
                 "llr({name}): hard_disagree={hard_disagree}/{LDPC_N}  top-{BASIS_SIZE}-overlap={overlap}/{BASIS_SIZE}  basis_hard_disagree={basis_hard_disagree}"
+            );
+        }
+    }
+
+    /// Throwaway probe (issue #182) — NOT for commit. Tests the leading
+    /// hypothesis for `osd_decode_npre1`'s DK8NE fidelity gap: WSJT-X's
+    /// real Gaussian elimination (`osd174_91.f90:86-107`) bounds its
+    /// pivot search to `id..k+20` with column swaps ("ad hoc... beware"
+    /// per its own comment), while `osd_setup_ldpc174_91` scans the
+    /// full N=174 column range — a more complete elimination that can
+    /// select a genuinely different set of MRB (most-reliable-basis)
+    /// physical bit positions. Since `osd_npre1_pass` only explores
+    /// flips *within* whichever basis got selected, a different basis
+    /// changes which codewords are reachable at all. Runs
+    /// `osd_decode_npre1_fortran_pivot` (same npre1 search, WSJT-X's
+    /// bounded-window pivot construction) against
+    /// `osd_decode_npre1`'s own construction, on the identical LLR, to
+    /// see whether the bounded pivot window is what recovers DK8NE.
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 Fortran-pivot-window OSD basis probe"]
+    fn issue_182_dk8ne_osd_fortran_pivot_probe() {
+        use crate::core::sync::refine_candidate;
+        use crate::fec::ldpc::bp::bp_llr_zsum;
+        use crate::fec::ldpc::osd::{
+            osd_debug_basis_sets, osd_decode, osd_decode_npre1, osd_decode_npre1_fortran_pivot,
+        };
+        use crate::fec::ldpc::params::Ldpc174_91Params;
+        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
+        use crate::ft8::downsample::downsample;
+        use crate::ft8::llr::compute_llr;
+        use crate::msg::wsjt77::unpack77;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        let (_results, mfsk_residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio,
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            DecodeDepth::BpAllOsd,
+            200,
+            DecodeStrictness::Normal,
+            None,
+        );
+
+        let freq = 244.2f32;
+        let dt = 0.505f32;
+        let cand = crate::core::sync::SyncCandidate {
+            freq_hz: freq,
+            dt_sec: dt,
+            score: 0.0,
+        };
+        let (cd0, _cache) = downsample(&mfsk_residual, cand.freq_hz, None);
+        let refined = refine_candidate::<crate::ft8::Ft8>(&cd0, &cand, 10);
+        let mut cs = symbol_spectra_direct::<i16>(
+            &mfsk_residual,
+            cand.freq_hz,
+            refined.dt_sec,
+            SymMask::SyncOnly,
+            None,
+        );
+        fill_symbol_spectra(
+            &mut cs,
+            &mfsk_residual,
+            cand.freq_hz,
+            refined.dt_sec,
+            SymMask::DataOnly,
+            None,
+        );
+        let llr_set = compute_llr::<f32>(&cs);
+
+        let target = "K1BZM DK8NE -10";
+        for (name, llr) in [
+            ("a", &llr_set.llra),
+            ("b", &llr_set.llrb),
+            ("c", &llr_set.llrc),
+            ("d", &llr_set.llrd),
+        ] {
+            let current = osd_decode_npre1(llr)
+                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
+            let fortran_pivot = osd_decode_npre1_fortran_pivot(llr)
+                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
+            let (basis_current, basis_fortran) = osd_debug_basis_sets(llr);
+            let set_current: std::collections::HashSet<usize> =
+                basis_current.iter().copied().collect();
+            let set_fortran: std::collections::HashSet<usize> =
+                basis_fortran.iter().copied().collect();
+            let basis_overlap = set_current.intersection(&set_fortran).count();
+            let exhaustive = osd_decode(llr)
+                .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
+            println!(
+                "llr({name}): current_basis={current:?}  fortran_pivot_basis={fortran_pivot:?}  basis_position_overlap={basis_overlap}/{}  exhaustive_order2={exhaustive:?}",
+                set_current.len()
+            );
+
+            // WSJT-X's real decode174_91.f90 driver never feeds osd174_91
+            // the raw channel LLR when maxosd>0 (FT8 ndepth=3 always sets
+            // maxosd=2) -- it feeds `zsave(:,i)`, the running sum of the
+            // BP variable-node soft estimate `zn` across the first `i`
+            // BP iterations (i=1,2 for maxosd=2), trying i=1 then i=2.
+            // `bp_llr_zsum` already exists and is wired for FST4-120
+            // (Ldpc240_101) but was never wired into FT8's osd_strategy.rs
+            // dispatch at all -- FT8's OSD has only ever seen the raw
+            // channel LLR variants (a/b/c/d), never a BP-refined one.
+            for n_iter in [1u32, 2u32] {
+                let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
+                let mut zsum = [0f32; LDPC_N];
+                zsum.copy_from_slice(&zsum_vec);
+                let via_zsum = osd_decode_npre1(&zsum)
+                    .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
+                println!("  bp_llr_zsum(llr, {n_iter}) -> osd_decode_npre1: {via_zsum:?}");
+            }
+            if let Some((msg, _)) = &fortran_pivot
+                && msg == target
+            {
+                println!("  -> fortran_pivot_basis RECOVERS {target} on llr variant {name}!");
+            }
+        }
+    }
+
+    /// Throwaway probe (issue #182) — NOT for commit. The `bp_llr_zsum`
+    /// OSD-seed fix surfaced a new decode (`<?> 5T5ZGS/R FE02`) on
+    /// `qso3_busy.wav`'s AP-on multipass run that wasn't there before.
+    /// Print pass/hard_errors/freq for every decode to check whether
+    /// it's a plausible weak-but-real signal or a CRC-luck phantom.
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 zsum-fix phantom check"]
+    fn issue_182_zsum_fix_phantom_check() {
+        use crate::msg::wsjt77::unpack77;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        let ap = ApHint::new().with_call1("K1JT").with_call2("HA0DU");
+        let results = decode_frame_subtract_with_ap(
+            &audio,
+            100.0,
+            3000.0,
+            1.3,
+            None,
+            DecodeDepth::BpAllOsd,
+            50,
+            DecodeStrictness::Normal,
+            Some(&ap),
+        );
+        for r in &results {
+            let msg = unpack77(&r.message77).unwrap_or_default();
+            println!(
+                "pass={:3} hard_errors={:3} freq={:8.2} dt={:+.3} msg={msg:?}",
+                r.pass, r.hard_errors, r.freq_hz, r.dt_sec
+            );
+        }
+    }
+
+    /// Throwaway probe (issue #182 follow-up) — NOT for commit. Real
+    /// blind-decode wall-clock on `qso3_busy.wav` after the
+    /// `bp_llr_zsum` OSD fix, for direct comparison against jt9's own
+    /// real `-8 -d3` file decode time (~1.1s, measured in an earlier
+    /// session via jt9's built-in `timer.out` profiler).
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 post-fix wall-clock check"]
+    fn issue_182_postfix_wallclock_check() {
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        // Blind decode only (no AP hint) -- staged SIC is the default
+        // decode_frame_subtract_with_ap path since #180/#183.
+        for rep in 0..3 {
+            let t0 = std::time::Instant::now();
+            let results = decode_frame_subtract_with_ap(
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                DecodeDepth::BpAllOsd,
+                200,
+                DecodeStrictness::Normal,
+                None,
+            );
+            let elapsed = t0.elapsed();
+            println!(
+                "rep={rep} blind decode_frame_subtract_with_ap: {:?}, {} decodes",
+                elapsed,
+                results.len()
+            );
+        }
+
+        // Blind + auto-AP rescue (the full production-equivalent path).
+        #[cfg(feature = "fft-rustfft")]
+        for rep in 0..3 {
+            let t0 = std::time::Instant::now();
+            let results = decode_frame_subtract_with_auto_ap(
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                DecodeDepth::BpAllOsd,
+                200,
+                DecodeStrictness::Normal,
+            );
+            let elapsed = t0.elapsed();
+            println!(
+                "rep={rep} blind + auto-AP: {:?}, {} decodes",
+                elapsed,
+                results.len()
             );
         }
     }

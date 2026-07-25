@@ -305,6 +305,142 @@
   disagreements within the shared basis). Filed as a genuine OSD
   algorithm fidelity gap — issue #182, open.
 
+- **FT8 OSD now seeds with BP-refined LLR, closing issue #182.**
+  Root-caused the `osd_decode_npre1` fidelity gap above: WSJT-X's real
+  `decode174_91.f90` driver never feeds `osd174_91` the raw channel LLR
+  when `maxosd>0` — and FT8's blind `ndepth=3` dispatch always sets
+  `maxosd=2` (`ft8b.f90:434-441`). It feeds `zsave(:,i)`, the running
+  sum of the BP variable-node soft estimate `zn` across the first `i`
+  BP iterations, trying `i=1` then `i=2` (`decode174_91.f90:52-64,
+  137-148`). mfsk-core's OSD had only ever used the raw channel LLR
+  (the 4 `a/b/c/d` variants) — confirmed exhaustively: `K1BZM DK8NE
+  -10` never decodes via any channel-LLR variant at any OSD depth up
+  to and including brute-force order-2 exhaustive search (no
+  `ntheta` gate at all), so the true codeword simply isn't reachable
+  from a channel-LLR-selected basis. The mechanism needed
+  (`bp_llr_zsum`) already existed and is wired for FST4-120
+  (`Ldpc240_101`, issue #146) but was never ported to FT8's
+  `osd_strategy.rs` dispatch. Wired it in as a second-stage fallback
+  (after the existing 4 channel-LLR attempts fail): feeding
+  `bp_llr_zsum(llrd, 2)` into the *same*, unmodified `osd_decode_npre1`
+  decodes DK8NE outright at `hard_errors=17` — better than jt9's own
+  real result (`hard_errors=18`) on this exact candidate. (A parallel
+  hypothesis — that WSJT-X's `osd174_91.f90:86-107` bounded-window
+  `k+20` pivot search selects a different MRB basis than mfsk-core's
+  unbounded one — was tested directly and disproven: the bases do
+  differ, but `osd_decode_npre1` fails on *either* basis. Kept as a
+  documented, `#[cfg(test)]`-only diagnostic so it isn't
+  re-investigated from scratch.)
+  **Effect**: `K1BZM DK8NE -10` now decodes through the real
+  production dispatch (`decode_frame_subtract_with_ap`'s AP-on
+  multipass path, `qso3_apon_subtract_jtdx_extras_diag`: 5/6 → 6/6
+  JTDX extras). **Cost**: ~30-40% wall-clock increase on candidates
+  that reach the OSD fallback at all (most candidates decode earlier
+  in the BP/OSD staircase and never reach this code path) —
+  `ft8_qso3_staged_sic_check.rs` ~1.0s → ~1.4s. **One new
+  near-ceiling phantom observed** (`qso3_busy.wav`, freq 2570.25 Hz,
+  `hard_errors=30`, malformed callsign token — ~1 Hz from the real,
+  strong `W1FC F5BZB` at 2571.38 Hz, almost certainly spectral
+  leakage): same class of tradeoff already accepted in this file's
+  `OSD_HARDERRORS_MAX` 22→36 history, where tightening the ceiling to
+  suppress phantoms was found to silently discard genuine weak
+  decodes living in the same hard-error range. Full workspace `cargo
+  test --release --features full`: 100% pass, no regressions.
+
+- **FT8 OSD dispatch: dropped the direct-channel-LLR loop, since it
+  was never what real WSJT-X does either** (issue #182 follow-up).
+  Checking `ft8b.f90`'s actual `do ipass=1,4` / `decode174_91.f90`'s
+  `maxosd` branches confirmed the raw-channel-LLR OSD path
+  (`maxosd=0`) is a *different* WSJT-X depth setting FT8's blind
+  `ndepth=3` dispatch never takes (that always sets `maxosd=2`, which
+  only ever calls `osd174_91` on `zsave(:,i)`). So the pre-#182
+  `osd_strategy.rs::try_fallback` loop that tried the 4 llr variants
+  directly against `osd_decode_npre1`/`_npre2` — predating this
+  session, from issue #63 — was itself not WSJT-X-faithful for this
+  depth; the `bp_llr_zsum` fallback added above was layered *on top*
+  of it rather than replacing it. Removed the direct-channel loop
+  entirely and restructured the `zsave(:,1)`/`zsave(:,2)` loop to nest
+  in WSJT-X's actual order (outer = llr variant / `ipass`, inner =
+  `zsave` index — `ft8b.f90:294-298`, `decode174_91.f90:137-148`),
+  rather than the previous variant-innermost ordering. Full workspace
+  regression: 100% pass, zero decodes lost — every candidate that used
+  to succeed via the direct-channel path also succeeds via
+  `zsave`-seeded OSD. **Net effect vs the immediately-preceding
+  zsum-as-addition state**: 12 OSD dispatches worst-case → 8 (33%
+  fewer), single-threaded `qso3_busy.wav` blind decode
+  1.37s → 1.27-1.30s, still 22/22 decodes.
+
+- **`decode_frame_subtract_with_auto_ap` marked explicitly opt-in-only**
+  (issue #182 follow-up) — with the `bp_llr_zsum` OSD fix above, this
+  function's own motivating case (`K1BZM DK8NE -10`) now decodes via
+  blind `decode_frame_subtract_with_ap` alone: measured on
+  `qso3_busy.wav`, blind-only and blind-plus-auto-AP both return the
+  same 22 decodes, so the auto-AP pass currently finds *zero*
+  additional signals there while still paying its own full search cost
+  (~0.3-0.5s single-threaded on top of blind). It was never wired into
+  any default decode path (always a separate, explicitly-called
+  function), so this is a documentation-only change making that
+  explicit rather than a behavioural one — but the doc comment now
+  says plainly not to reach for it by default until a concrete
+  zsum-unreachable case justifies its cost again.
+
+- **Reverted the now-pointless auto-AP `rayon` parallelism and
+  `AudioSample: Sync` bound** (issue #182 follow-up) —
+  `decode_block::auto_ap_strategy`'s per-callsign `par_iter` loop was
+  parallelising a search that, per the entry above, now finds zero
+  additional decodes on `qso3_busy.wav`: real multi-core speedup with
+  no offsetting value, plus a second (parallel/sequential) code path
+  to maintain for a function not wired into any default path. Reverted
+  to one sequential path. With that gone, `AudioSample`'s `+ Sync`
+  supertrait (added specifically to let `&[S]` cross that `rayon` task
+  boundary) has no remaining caller that needs it — every other
+  `rayon` usage in the codebase (`core/sync.rs`, `ft8/decode.rs`,
+  `core/pipeline.rs`) operates on concrete `i16` or non-`AudioSample`-
+  generic types where `Sync` was already automatic. Reverted to `Copy`
+  only. Full workspace regression: 100% pass.
+
+- **Bit-packed `osd_setup_ldpc174_91`'s Gaussian elimination — 6.8×
+  faster setup, ~4× faster overall OSD dispatch** (issue #182
+  perf follow-up). Profiling `try_fallback` found it was ~22-25% of
+  total decode wall-clock (~281ms of ~1.27s on `qso3_busy.wav`, ~200
+  candidates × up to 8 zsave-seeded dispatches each, ~1% success rate).
+  Splitting a single `osd_decode_npre1` call's cost further (2000-rep
+  synthetic-LLR microbenchmark) found **86% of it was
+  `osd_setup_ldpc174_91`** (sort + Gaussian elimination to build the
+  MRB systematic generator) — 113.5µs/call — versus only ~18µs/call
+  for the actual `npre1` combinatorial search (the OSD algorithm
+  itself). Root cause: `OsdSetup.g` stored the GF(2) generator matrix
+  as **one byte per bit** (`Vec<u8>`, 91×174 bytes), so the
+  elimination's row-XOR step did up to 174 individual byte XORs per
+  row instead of ~3 packed 64-bit-word XORs — paid fresh on every one
+  of the 8 zsave-seeded dispatches per candidate, since each has a
+  different LLR reliability ordering and can't share a cached basis.
+  Note this isn't a WSJT-X-fidelity gap: `osd174_91.f90`'s own
+  `genmrb` is `integer*1` (byte-per-bit) too — bit-packing is a
+  legitimate algorithmic improvement *beyond* what WSJT-X itself does,
+  not a port of anything.
+
+  Rewrote only `osd_setup_ldpc174_91`'s internals to build and
+  eliminate on a packed `[u64; 3]`-per-row representation, unpacking
+  to the existing `Vec<u8>` `g` format at the end — `OsdSetup`'s shape
+  and every downstream consumer (`osd_npre1_pass`, `osd_npre2_pass`,
+  `build_npre2_table`, `try_candidate_ldpc174_91`) are byte-for-byte
+  unchanged, confining all risk to one function. Verified with a new
+  differential test (`packed_elimination_matches_byte_reference`)
+  asserting the packed rewrite produces identical `perm`/`g`/
+  `hdec_perm`/`absrx_perm`/`c_perm` to a frozen byte-per-bit reference
+  copy of the pre-rewrite code, across 5 seeded synthetic LLR vectors
+  plus all-zero and exact-tie edge cases — not just "does the
+  regression suite still pass."
+
+  **Result**: `osd_setup_ldpc174_91` 113.5µs → 16.7µs/call (6.8×);
+  total OSD dispatch (setup + `npre1_pass`) 131.6µs → 34.1µs/call
+  (3.9×). End-to-end single-threaded blind decode of `qso3_busy.wav`:
+  **1.27-1.30s → 1.09-1.12s** — landing right at real `jt9 -8 -d3`'s
+  own measured ~1.1s total file decode time. Still 22/22 decodes, zero
+  regressions (full workspace `cargo test --release --features full`,
+  `qso3_apon_subtract_jtdx_extras_diag` still 6/6 JTDX extras).
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**
