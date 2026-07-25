@@ -78,6 +78,30 @@
   swap reshaped rather than uniformly improved the SNR curve — 3 of 4
   channels held or improved). See `docs/notes/FT4_BENCHMARK.md` section
   13.
+- **Q65-60B/30A `decode_multi_period_for` sped up further, ~2.3×/~1.3×**
+  (`q65/search.rs::Spectrogram::build_for`) — follow-up to a separate
+  FFT-cache wiring investigation on FT8's `decode_block` (same "does
+  this pattern exist elsewhere" question, applied to Q65). That
+  specific pattern wasn't present here: `decode_at_grid_for`'s
+  `GridDepth::Fast` has exactly one `(Δf,Δt)` grid cell per candidate
+  (confirmed via direct call-count instrumentation — 16 calls for
+  Q65-60A's 16 candidates, not the ~333 an earlier estimate assumed),
+  so no redundant FFT-planner construction existed to cache. Phase-by-
+  phase profiling of `decode_multi_period_for` found a different bug
+  instead: `Spectrogram::build_for`'s noise-floor estimate (run once per
+  candidate-search call) computed a trimmed mean of the bottom 95% of
+  FFT-magnitude bins via a full `sort_unstable_by` (O(n log n)) over the
+  entire magnitude array (hundreds of thousands to millions of cells for
+  a 60-120 s slot) when only the unordered *set* of bottom-95% values
+  was needed. Same class of fix already applied to FT8's
+  `xsnr2_db_simple` noise-floor median — swapped to
+  `select_nth_unstable_by` (O(n) average partition), Q65 just hadn't had
+  it applied. Measured as 64% of wall-clock on Q65-60B (short slot, low
+  candidate count) and 12% on Q65-30A (longer multi-slot audio where the
+  BP/fading-metric stage dominates instead). Golden-WAV decode time:
+  Q65-60B **0.28 s → 0.12 s**, Q65-30A **0.72 s → 0.56 s**, byte-
+  identical recall on both (VK7MO/VK7PD on 60B, K1JT/K9AN AP-list on
+  30A).
 
 ### Removed
 

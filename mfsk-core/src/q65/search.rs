@@ -77,11 +77,21 @@ impl Spectrogram {
         }
 
         // Noise floor estimate: trimmed-mean of the bottom 95 % of
-        // FFT magnitudes (rejects strong narrow-band signals).
+        // FFT magnitudes (rejects strong narrow-band signals). Only
+        // the *set* of bottom-95% values (order within that set is
+        // irrelevant, we just sum them) is needed, not a full
+        // ascending order — `select_nth_unstable_by` partitions in
+        // O(n) average instead of `sort_unstable_by`'s O(n log n),
+        // same fix already applied to FT8's `xsnr2_db_simple` noise
+        // median. Measured as 64% of `decode_multi_period_for`'s
+        // wall-clock on Q65-60B (short-slot, `build_for` called once
+        // per audio slot).
         let mut sorted = mags_sqr.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let keep = (sorted.len() as f32 * 0.95) as usize;
         let noise_per_bin = if keep > 0 {
+            sorted.select_nth_unstable_by(keep - 1, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
             sorted[..keep].iter().sum::<f32>() / keep as f32
         } else {
             1.0
