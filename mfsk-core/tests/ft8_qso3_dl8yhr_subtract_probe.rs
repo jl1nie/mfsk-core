@@ -220,3 +220,63 @@ fn probe_w1fc_sync_cv_and_snr_context() {
         "(sync_cv > 0.3 per decode.rs doc comment => QSB/fading flagged, partial-gain subtract kicks in)"
     );
 }
+
+#[test]
+#[ignore]
+fn probe_iterative_subtract_convergence() {
+    let mut audio = load_wav_i16(Path::new(QSO3_PATH));
+
+    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::BpAllOsd, 20);
+    let w1fc = w1fc_results
+        .iter()
+        .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
+        .expect("W1FC F5BZB should decode near 2571 Hz")
+        .clone();
+
+    let refined_freq = refine_signal_freq(&audio, &w1fc);
+    let mut w1fc_refined = w1fc.clone();
+    w1fc_refined.freq_hz = refined_freq;
+
+    let d = SyncDims::of::<Ft8>();
+    let blocks = <Ft8 as FrameLayout>::SYNC_MODE.blocks();
+    let first = &blocks[0];
+    let csync = make_costas_ref(first.pattern, d.ds_spb);
+    let i0 = ((w1fc.dt_sec + Ft8::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
+
+    let score_at = |audio: &[i16]| -> f32 {
+        let (cd0, _c) = downsample(audio, w1fc.freq_hz, None);
+        score_costas_block(&cd0, &csync, d.ds_spb, i0)
+    };
+
+    let s0 = score_at(&audio);
+    println!("\n=== iterative re-subtract of W1FC (same candidate, same audio buffer) ===");
+    println!("  iter 0 (baseline): score={s0:.1}");
+
+    let mut prev = s0;
+    for iter in 1..=6 {
+        subtract_signal_lpf(&mut audio, &w1fc_refined);
+        let s = score_at(&audio);
+        let step_db = 10.0 * (prev as f64 / s as f64).log10();
+        let cum_db = 10.0 * (s0 as f64 / s as f64).log10();
+        println!("  iter {iter}: score={s:.1}  step={step_db:.2} dB  cumulative={cum_db:.2} dB");
+        prev = s;
+    }
+
+    let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::BpAllOsd, 20);
+    let hit = post_results
+        .iter()
+        .any(|r| unpack77(&r.message77).as_deref() == Some("CQ DX DL8YHR JO41"));
+    println!(
+        "\ndecode_sniper(2606 Hz) after 6x W1FC re-subtract: {} decode(s), DL8YHR hit: {hit}",
+        post_results.len()
+    );
+    for r in &post_results {
+        println!(
+            "    {:.1} Hz dt={:+.3} snr={:+.1}  {:?}",
+            r.freq_hz,
+            r.dt_sec,
+            r.snr_db,
+            unpack77(&r.message77)
+        );
+    }
+}
