@@ -17,7 +17,7 @@ use super::{
     llr::sync_quality,
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
-    subtract::subtract_signal_lpf,
+    subtract::{subtract_signal_lpf, subtract_signal_lpf_converge},
     sync::SyncCandidate,
 };
 
@@ -810,7 +810,26 @@ pub fn decode_frame_subtract_with_ap(
             // weaker neighbours like KD2UGC F6GCP / CQ EA2BFM /
             // K1BZM EA3CJ on qso3_busy.wav (the 3 entries embedded
             // catches but host couldn't pre-0.6.2).
-            subtract_signal_lpf(&mut residual, &r);
+            //
+            // Convergence-iterated (issue #177): a single
+            // `subtract_signal_lpf` call underuses real (non-synthetic)
+            // signals — measured ~6.6 dB suppression on a real fading
+            // qso3_busy.wav signal vs the > 100 dB the algorithm hits on
+            // a clean synthetic self-test. WSJT-X's own jt9 reaches
+            // ~17.65 dB on the same real signal not via a different
+            // algorithm but by revisiting the same strong candidate
+            // several times across its internal multi-pass loop. A
+            // *fixed* iteration count regresses other candidates
+            // (verified: 3x always regressed K1JT HA5WA 73 on this same
+            // WAV) — `subtract_signal_lpf_converge` instead stops as
+            // soon as the marginal per-iteration improvement drops
+            // under 1 dB (or overshoots negative), so a stable/already
+            // well-estimated signal gets ~1 application same as before,
+            // while a genuinely fading one gets the extra passes it
+            // needs. See `ft8_qso3_sync_cv_iteration_correlation.rs` /
+            // `ft8_qso3_subtract_fix_check.rs` for the calibration data
+            // (sync_cv does not predict this — correlation ~0.13).
+            subtract_signal_lpf_converge(&mut residual, &r, 6, 1.0);
             all_results.push(r);
         }
     }
