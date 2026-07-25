@@ -816,10 +816,24 @@ pub fn decode_frame_subtract_flat_with_ap(
 /// caller callsigns from the blind decodes and retry coarse_sync
 /// candidates that didn't decode blind, using each harvested callsign
 /// as an AP `mycall` hint. Recovers signals too weak for blind BP/OSD
-/// but not too weak to sync — e.g. `K1BZM DK8NE -10` (-19 dB) on
-/// `qso3_busy.wav`, real but unrecoverable via this crate's own blind
-/// decode without knowing `K1BZM` is a plausible caller (issue #180
-/// follow-up).
+/// but not too weak to sync — originally motivated by `K1BZM DK8NE
+/// -10` (-19 dB) on `qso3_busy.wav` (issue #180 follow-up), which at
+/// the time was unrecoverable via this crate's own blind decode
+/// without knowing `K1BZM` is a plausible caller.
+///
+/// **Deliberately not wired into any default decode path — call this
+/// explicitly, opt-in only.** As of issue #182's `bp_llr_zsum` OSD fix
+/// (`decode_block/osd_strategy.rs`), this function's own motivating
+/// case decodes via blind [`decode_frame_subtract_with_ap`] alone —
+/// measured on `qso3_busy.wav`: blind-only and blind-plus-this-
+/// function now both return the same 22 decodes, so the auto-AP pass
+/// finds *zero* additional signals there while still paying its own
+/// full search cost (~0.3-0.5s single-threaded on top of blind). This
+/// doesn't mean the mechanism is dead in general — an AP-rescuable-
+/// but-zsum-OSD-unreachable signal is still conceivable — but there is
+/// no evidence for one currently, so treat this as a research/
+/// diagnostic tool rather than a default production step until a
+/// concrete case justifies its cost again.
 ///
 /// **Not a port of any real jt9/WSJT-X mechanism** — this is a genuine
 /// mfsk-core-original extension, and an earlier version of this doc
@@ -3377,6 +3391,95 @@ mod tests {
             println!(
                 "pass={:3} hard_errors={:3} freq={:8.2} dt={:+.3} msg={msg:?}",
                 r.pass, r.hard_errors, r.freq_hz, r.dt_sec
+            );
+        }
+    }
+
+    /// Throwaway probe (issue #182 follow-up) — NOT for commit. Real
+    /// blind-decode wall-clock on `qso3_busy.wav` after the
+    /// `bp_llr_zsum` OSD fix, for direct comparison against jt9's own
+    /// real `-8 -d3` file decode time (~1.1s, measured in an earlier
+    /// session via jt9's built-in `timer.out` profiler).
+    #[test]
+    #[ignore = "manual diagnostic — issue #182 post-fix wall-clock check"]
+    fn issue_182_postfix_wallclock_check() {
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+
+        // Blind decode only (no AP hint) -- staged SIC is the default
+        // decode_frame_subtract_with_ap path since #180/#183.
+        for rep in 0..3 {
+            let t0 = std::time::Instant::now();
+            let results = decode_frame_subtract_with_ap(
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                DecodeDepth::BpAllOsd,
+                200,
+                DecodeStrictness::Normal,
+                None,
+            );
+            let elapsed = t0.elapsed();
+            println!(
+                "rep={rep} blind decode_frame_subtract_with_ap: {:?}, {} decodes",
+                elapsed,
+                results.len()
+            );
+        }
+
+        // Blind + auto-AP rescue (the full production-equivalent path).
+        #[cfg(feature = "fft-rustfft")]
+        for rep in 0..3 {
+            let t0 = std::time::Instant::now();
+            let results = decode_frame_subtract_with_auto_ap(
+                &audio,
+                100.0,
+                3000.0,
+                0.8,
+                DecodeDepth::BpAllOsd,
+                200,
+                DecodeStrictness::Normal,
+            );
+            let elapsed = t0.elapsed();
+            println!(
+                "rep={rep} blind + auto-AP: {:?}, {} decodes",
+                elapsed,
+                results.len()
             );
         }
     }

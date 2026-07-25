@@ -4,18 +4,30 @@
 //! Runs only when Steps 1–2 (BP staircase) fail and the caller asks
 //! for `BpAllOsd` depth at sufficient `sync_quality`. Computes a
 //! fresh f32 LLR bundle for the candidate (OSD operates on f32
-//! regardless of the embedded fixed-point `LlrT`), walks the four
-//! LLR variants (a/b/c/d) through the WSJT-X-faithful OSD entry
+//! regardless of the embedded fixed-point `LlrT`), and for each of
+//! the four LLR variants (a/b/c/d, matching `ft8b.f90`'s `ipass=1..4`
+//! `llra/b/c/d`), tries the WSJT-X-faithful OSD entry
 //! ([`osd_decode_npre1`] for low-`q` candidates, [`osd_decode_npre1_npre2`]
-//! for `q >= Q_NDEEP3_THRESHOLD`), and applies the
-//! `nharderrors > 36` cycle gate to weed out high-error CRC-luck
+//! for `q >= Q_NDEEP3_THRESHOLD`) seeded with `bp_llr_zsum(llr, 1)`
+//! then `bp_llr_zsum(llr, 2)` — mirroring `decode174_91.f90`'s own
+//! `do i=1,nosd` loop over its `zsave(:,i)` snapshots — and applies
+//! the `nharderrors > 36` cycle gate to weed out high-error CRC-luck
 //! codewords.
 //!
 //! ε.6 of the `docs/CLEANUP_2026_05.md` `decode_block` split. As of
 //! issue **#63** this module hosts the WSJT-X-faithful OSD dispatch
 //! — the q-conditional split mirrors `osd174_91.f90`'s ndeep=2/3
 //! dispatch table, replacing the previous mfsk-core-specific
-//! brute-force ndeep=2/3 split (`osd_decode` / `osd_decode_deep`).
+//! brute-force ndeep=2/3 split (`osd_decode` / `osd_decode_deep`). As
+//! of issue **#182** the OSD *input* is also WSJT-X-faithful: earlier
+//! versions fed `osd_decode_npre1`/`_npre2` the raw channel LLR
+//! directly, which is not what real WSJT-X does for FT8's blind
+//! `ndepth=3` dispatch — that always sets `maxosd=2`
+//! (`ft8b.f90:434-441`), and `decode174_91.f90` never calls
+//! `osd174_91` on the raw channel LLR when `maxosd>0` (that's a
+//! separate `maxosd=0` branch FT8's blind dispatch never takes). It
+//! always calls with `zsave(:,i)`, the running BP variable-node soft-
+//! estimate sum through the first `i` BP iterations.
 
 use super::super::decode::DecodeDepth;
 use crate::core::scalar::Cmplx;
@@ -59,21 +71,20 @@ const Q_NDEEP3_THRESHOLD: u32 = 18;
 /// tightened gate to stay green.
 const OSD_HARDERRORS_MAX: u32 = 36;
 
-/// Pass-ID range emitted by the OSD fallback (`14..=17` mirrors the
-/// llr-variant order `a/b/c/d` — see the post-0.6.1 pass-ID layout
-/// documented inline below). Exposed so `process_one_candidate_inner`
-/// can size its pass-tracking buffers without re-declaring magic
-/// numbers.
-pub(super) const PASS_ID_OSD_A: u8 = 14;
+/// Pass-ID range for the `zsave(:,1)`-equivalent (BP-refined, 1
+/// iteration) OSD attempts, `14..=17` for llr-variants a/b/c/d.
+/// Exposed so `process_one_candidate_inner` can size its
+/// pass-tracking buffers without re-declaring magic numbers.
+///
+/// Was the direct-channel-LLR OSD pass-ID range pre-issue-#182; that
+/// loop is gone now (see [`try_fallback`]'s doc comment for why), so
+/// this range was free to reclaim.
+pub(super) const PASS_ID_OSD_ZSAVE1_A: u8 = 14;
 
-/// Pass-ID range for the BP-refined-LLR (`zsave(:,1)`-equivalent)
-/// OSD attempts — issue #182. `19..=22` for llr-variants a/b/c/d.
-/// (18 is already `auto_ap_strategy::PASS_ID_AUTO_AP`.)
-pub(super) const PASS_ID_OSD_ZSUM1_A: u8 = 19;
-
-/// Pass-ID range for the BP-refined-LLR (`zsave(:,2)`-equivalent)
-/// OSD attempts — issue #182. `23..=26` for llr-variants a/b/c/d.
-pub(super) const PASS_ID_OSD_ZSUM2_A: u8 = 23;
+/// Pass-ID range for the `zsave(:,2)`-equivalent (BP-refined, 2
+/// iterations) OSD attempts — issue #182. `19..=22` for llr-variants
+/// a/b/c/d. (18 is `auto_ap_strategy::PASS_ID_AUTO_AP`.)
+pub(super) const PASS_ID_OSD_ZSAVE2_A: u8 = 19;
 
 /// Try the OSD staircase for a candidate whose BP staircase didn't
 /// converge. Returns `Some((bp_result, pass_id))` on the first
@@ -161,56 +172,48 @@ pub(super) fn try_fallback(
         iterations: 0,
     };
 
-    // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
-    // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
-    // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
-    // frees 5..12 for the AP loop being plumbed into the same
-    // per-candidate function in 0.6.1.
-    for (llr, pid) in [
-        (&llr_full_f32.llra, PASS_ID_OSD_A),
-        (&llr_full_f32.llrb, PASS_ID_OSD_A + 1),
-        (&llr_full_f32.llrc, PASS_ID_OSD_A + 2),
-        (&llr_full_f32.llrd, PASS_ID_OSD_A + 3),
-    ] {
-        if let Some(osd) = dispatch(llr) {
-            return Some((to_bp(osd), pid));
-        }
-    }
-
-    // WSJT-X-faithful BP-refined-LLR seed (issue #182). WSJT-X's real
-    // `decode174_91.f90` driver never feeds `osd174_91` the raw channel
-    // LLR when `maxosd>0` — and FT8's blind `ndepth=3` dispatch always
-    // sets `maxosd=2` (`ft8b.f90:434-441`). It feeds `zsave(:,i)`, the
-    // running sum of the BP variable-node soft estimate `zn` across the
-    // first `i` BP iterations, trying `i=1` then `i=2`
-    // (`decode174_91.f90:52-64,137-148`). The direct-channel-LLR loop
-    // above is what mfsk-core's OSD has *always* used — it never
-    // implements this BP-refined seed for FT8 at all, even though the
-    // exact same mechanism (`bp_llr_zsum`) is already ported and wired
-    // for FST4-120 (`Ldpc240_101`, see that function's own doc comment).
+    // WSJT-X-faithful BP-refined-LLR seed (issue #182), replacing what
+    // used to be a direct-channel-LLR OSD loop here. `decode174_91.f90`
+    // never calls `osd174_91` on the raw channel LLR when `maxosd>0` —
+    // and FT8's blind `ndepth=3` dispatch always sets `maxosd=2`
+    // (`ft8b.f90:434-441`), so the raw-channel-LLR OSD path
+    // (`maxosd=0`, a *different* WSJT-X depth setting FT8's blind
+    // dispatch never takes) was never actually what real `jt9 -d3`
+    // does here. It always calls `osd174_91` with `zsave(:,i)`, the
+    // running sum of the BP variable-node soft estimate `zn` across
+    // the first `i` BP iterations — trying `i=1` then `i=2`
+    // (`decode174_91.f90:52-64,137-148`) *before* moving to the next
+    // `ipass`/llr variant (`ft8b.f90:294-298`, `do ipass=1,4`). Nesting
+    // mirrored exactly here: outer loop over the 4 llr variants, inner
+    // loop over the 2 `zsave` snapshots — not the other way around, so
+    // the search order (and which candidate gets returned first when
+    // more than one would eventually succeed) matches WSJT-X's own.
+    //
     // Root-caused directly: `K1BZM DK8NE -10` (-19 dB, `qso3_busy.wav`)
-    // never decodes via any direct-channel-LLR variant (a/b/c/d) at any
-    // OSD depth up to and including brute-force order-2 exhaustive
-    // search (no gate) — the true codeword is not reachable via a
-    // weight <=2 flip of the channel-LLR-selected MRB basis at all.
-    // Feeding `bp_llr_zsum(llrd, 2)` into the *same* `osd_decode_npre1`
-    // decodes it outright at `hard_errors=17` (better than jt9's own
-    // real `hard_errors=18` on this exact candidate).
-    for n_iter in [1u32, 2u32] {
-        let base = if n_iter == 1 {
-            PASS_ID_OSD_ZSUM1_A
-        } else {
-            PASS_ID_OSD_ZSUM2_A
-        };
-        for (idx, llr) in [
-            &llr_full_f32.llra,
-            &llr_full_f32.llrb,
-            &llr_full_f32.llrc,
-            &llr_full_f32.llrd,
-        ]
-        .into_iter()
-        .enumerate()
-        {
+    // never decoded via the old direct-channel-LLR loop at any OSD
+    // depth up to and including a brute-force order-2 exhaustive
+    // search (no gate) — the true codeword was not reachable from a
+    // channel-LLR-selected MRB basis at all. Feeding
+    // `bp_llr_zsum(llrd, 2)` into the *same*, unmodified
+    // `osd_decode_npre1` decodes it outright at `hard_errors=17`
+    // (better than jt9's own real `hard_errors=18` on this exact
+    // candidate). The mechanism (`bp_llr_zsum`) already existed and is
+    // wired for FST4-120 (`Ldpc240_101`, issue #146) but was never
+    // ported to FT8 before now.
+    //
+    // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes 5..12
+    // (mirroring WSJT-X ipass 5..12), host OSD-Deep 13, embedded OSD
+    // zsave(1) a/b/c/d 14..17, auto-AP 18, zsave(2) a/b/c/d 19..22.
+    for (idx, llr) in [
+        &llr_full_f32.llra,
+        &llr_full_f32.llrb,
+        &llr_full_f32.llrc,
+        &llr_full_f32.llrd,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (n_iter, base) in [(1u32, PASS_ID_OSD_ZSAVE1_A), (2u32, PASS_ID_OSD_ZSAVE2_A)] {
             let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
             let mut zsum = [0f32; LDPC_N];
             zsum.copy_from_slice(&zsum_vec);

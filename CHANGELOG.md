@@ -347,6 +347,43 @@
   decodes living in the same hard-error range. Full workspace `cargo
   test --release --features full`: 100% pass, no regressions.
 
+- **FT8 OSD dispatch: dropped the direct-channel-LLR loop, since it
+  was never what real WSJT-X does either** (issue #182 follow-up).
+  Checking `ft8b.f90`'s actual `do ipass=1,4` / `decode174_91.f90`'s
+  `maxosd` branches confirmed the raw-channel-LLR OSD path
+  (`maxosd=0`) is a *different* WSJT-X depth setting FT8's blind
+  `ndepth=3` dispatch never takes (that always sets `maxosd=2`, which
+  only ever calls `osd174_91` on `zsave(:,i)`). So the pre-#182
+  `osd_strategy.rs::try_fallback` loop that tried the 4 llr variants
+  directly against `osd_decode_npre1`/`_npre2` — predating this
+  session, from issue #63 — was itself not WSJT-X-faithful for this
+  depth; the `bp_llr_zsum` fallback added above was layered *on top*
+  of it rather than replacing it. Removed the direct-channel loop
+  entirely and restructured the `zsave(:,1)`/`zsave(:,2)` loop to nest
+  in WSJT-X's actual order (outer = llr variant / `ipass`, inner =
+  `zsave` index — `ft8b.f90:294-298`, `decode174_91.f90:137-148`),
+  rather than the previous variant-innermost ordering. Full workspace
+  regression: 100% pass, zero decodes lost — every candidate that used
+  to succeed via the direct-channel path also succeeds via
+  `zsave`-seeded OSD. **Net effect vs the immediately-preceding
+  zsum-as-addition state**: 12 OSD dispatches worst-case → 8 (33%
+  fewer), single-threaded `qso3_busy.wav` blind decode
+  1.37s → 1.27-1.30s, still 22/22 decodes.
+
+- **`decode_frame_subtract_with_auto_ap` marked explicitly opt-in-only**
+  (issue #182 follow-up) — with the `bp_llr_zsum` OSD fix above, this
+  function's own motivating case (`K1BZM DK8NE -10`) now decodes via
+  blind `decode_frame_subtract_with_ap` alone: measured on
+  `qso3_busy.wav`, blind-only and blind-plus-auto-AP both return the
+  same 22 decodes, so the auto-AP pass currently finds *zero*
+  additional signals there while still paying its own full search cost
+  (~0.3-0.5s single-threaded on top of blind). It was never wired into
+  any default decode path (always a separate, explicitly-called
+  function), so this is a documentation-only change making that
+  explicit rather than a behavioural one — but the doc comment now
+  says plainly not to reach for it by default until a concrete
+  zsum-unreachable case justifies its cost again.
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**
