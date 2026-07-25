@@ -6,15 +6,20 @@
 //!
 //! # Status / how this investigation actually concluded
 //!
-//! This scenario found a real bug (old constant-amplitude subtract
-//! recovered the target 0/10 seeds) and the #179 fix
-//! (`subtract_tones_lpf_converge`, matching #178's FT8 approach)
-//! improved that to 9/10 — but seed=4 exposed something worse: not
-//! just "misses the target," the *whole residual* came back empty
-//! (0 decodes at all) after converge-subtracting all 5 candidates,
-//! vs. 2 decodes with a single shot. Cross-checked against real
-//! WSJT-X `jt9 -5` on the same dumped WAV (`dump_failing_seed_wav`) —
-//! it decodes the target fine, so this wasn't "too hard regardless."
+//! This scenario found a real bug: the old constant-amplitude subtract
+//! recovered the target 0/10 seeds. Migrating FT4 to the same
+//! WSJT-X-faithful, channel-aware `subtract_tones_lpf` FT8 already
+//! used (single call per candidate, no inner iteration) fixes it —
+//! `busy_band_fading_baseline` is 10/10.
+//!
+//! An intermediate version of the fix wrapped that call in
+//! `subtract_tones_lpf_converge`, an iterate-per-candidate-to-
+//! convergence loop with no counterpart in WSJT-X. seed=4 exposed a
+//! real problem with it: the *whole residual* came back empty (0
+//! decodes at all) after converge-subtracting all 5 candidates, vs. 2
+//! decodes with a single shot — cross-checked against real WSJT-X
+//! `jt9 -5` on the same dumped WAV (`dump_failing_seed_wav`), which
+//! decodes the target fine, so this wasn't "too hard regardless."
 //!
 //! First reflex was to gate iteration count on `sync_cv > 0.3` (only
 //! iterate candidates that look like they're fading). **Reverted —
@@ -23,28 +28,23 @@
 //! iteration count) for another (a hand-picked gate threshold)
 //! instead of understanding the actual mechanism.**
 //!
-//! Checked what real data does instead (as it should have been
-//! checked first): `ft8_qso3_iteration_count_diag.rs` (real
-//! qso3_busy.wav) and `ft4_wsjtx_sample_iteration_diag.rs` (real
-//! WSJT-X FT4 sample, `samples/FT4/000000_000002.wav` — exists,
-//! wasn't checked for until this investigation) both show natural
-//! per-candidate iteration diversity (2-6 on FT8, 3-6 on FT4) with no
-//! `sync_cv` correlation on *either* protocol. The flat, ungated
-//! convergence stop rule works correctly on real signals; it's
-//! *this* scenario's near-noiseless synthetic crowd tones (no
-//! per-signal AWGN — only the fading channel added any noise, and
-//! only to itself before mixing) that made every candidate pin near
-//! the iteration cap, an artifact of the test construction, not the
-//! algorithm. Bumping the added noise floor up to 6000 (comparable to
-//! the 9000-amplitude crowd signals themselves) didn't reproduce the
-//! natural diversity real data shows either — so this was left
-//! unresolved rather than tuned further; the real-data checks are
-//! what the shipped fix (`e7df249`, flat/ungated) is actually
-//! validated against.
-//!
-//! Kept as a record of what was tried, not as a validated regression
-//! gate — `busy_band_fading_baseline` is expected to show 9/10, one
-//! genuine known-unreproduced-on-real-data edge case included.
+//! What actually resolved it: reading WSJT-X's real Fortran source
+//! (`subtractft4.f90`/`ft4_decode.f90`, `subtractft8.f90`/
+//! `ft8_decode.f90`) directly, rather than continuing to tune the
+//! convergence loop's parameters. `subtractft4`/`subtractft8` are
+//! each a single, non-iterated call — WSJT-X's deep suppression of a
+//! persistent signal comes entirely from its outer `do ipass=1,npass`
+//! (3-pass) loop re-detecting the same residual as a fresh candidate
+//! in a later pass, which both `core::pipeline::decode_frame_subtract`
+//! (this scenario's driver) and `ft8::decode`'s equivalent already do
+//! independently. The convergence loop was a redundant, invented
+//! mechanism duplicating what the outer pass loop already provides —
+//! and, once its iteration cap was raised on the FT8 side too, it
+//! caused a *real* regression on real WSJT-X FT4 data (lost `W9JA
+//! PY2APK RRR`, ~40 Hz from an over-iterated neighbour). Removed
+//! entirely; single-shot `subtract_tones_lpf` is what both protocols'
+//! production paths use now, and it's a strictly better result here
+//! than convergence ever was (10/10 vs. 9/10, seed=4 included).
 //!
 //! Run:
 //! ```sh
@@ -339,10 +339,11 @@ fn diag_target_score_before_after_subtract() {
 #[test]
 #[ignore]
 fn dump_failing_seed_wav() {
-    // seed=4 is the one seed that still misses the target after the
-    // #178/#179 fix (9/10 hit rate) — write it out so it can be tested
-    // against the real WSJT-X `jt9 -5` (FT4) decoder directly, rather
-    // than assuming 10/10 is the achievable ceiling.
+    // seed=4 was the seed that exposed the convergence-loop bug (see
+    // module doc) — write it out so it can be tested against the real
+    // WSJT-X `jt9 -5` (FT4) decoder directly rather than assuming a
+    // synthetic-only result. Now decodes correctly (10/10 including
+    // seed=4) since the convergence loop was removed.
     let (audio, target) = build_scenario(4);
     println!("target msg: {:?}", pack("CQ", "DL8YHR", "JO41") == target);
 
@@ -450,150 +451,13 @@ fn diag_seed4_why_still_missing() {
 
 #[test]
 #[ignore]
-fn diag_seed4_converge_vs_single_shot() {
-    use mfsk_core::core::dsp::subtract::subtract_tones_lpf_converge;
-    use mfsk_core::ft4::decode::{
-        DecodeDepth, FT4_SUBTRACT, decode_frame_subtract, decode_frame_with_options,
-    };
-    use mfsk_core::ft4::encode::message_to_tones;
-    use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
-
-    let (audio, target) = build_scenario(4);
-    let results = decode_frame_subtract(&audio, 100.0, 3000.0, 0.6, 15);
-
-    for (label, iters) in [("single-shot (1x)", 1u32), ("converge (6x max)", 6u32)] {
-        let mut residual = audio.clone();
-        for r in &results {
-            let refined_freq = refine_signal_freq(&residual, r);
-            let mut rr = r.clone();
-            rr.freq_hz = refined_freq;
-            if iters == 1 {
-                subtract_signal_lpf(&mut residual, &rr);
-            } else {
-                let msg: [u8; 77] = rr.message77().try_into().unwrap();
-                let tones = message_to_tones(&msg);
-                subtract_tones_lpf_converge(
-                    &mut residual,
-                    &tones,
-                    rr.freq_hz,
-                    rr.dt_sec,
-                    &FT4_SUBTRACT,
-                    700,
-                    false,
-                    iters,
-                    1.0,
-                );
-            }
-        }
-        let pass2 = decode_frame_with_options(
-            &residual,
-            100.0,
-            3000.0,
-            0.5,
-            None,
-            DecodeDepth::BpAllOsd,
-            15,
+fn dump_all_failing_seeds() {
+    for seed in [4u64, 6u64] {
+        let (audio, _target) = build_scenario(seed);
+        let path = format!(
+            "/tmp/claude-1000/-home-minoru-src-webft8/8982ee91-093d-436b-a122-e9412ea3a371/scratchpad/ft4_busy_band_seed{seed}.wav"
         );
-        let hit = pass2.iter().any(|r| r.message77() == target.as_slice());
-        println!(
-            "[{label}] re-decode: {} results, target hit: {hit}",
-            pass2.len()
-        );
-        for r in &pass2 {
-            println!(
-                "    freq={:.1} dt={:+.3} snr={:+.1}",
-                r.freq_hz, r.dt_sec, r.snr_db
-            );
-        }
-    }
-}
-
-#[test]
-#[ignore]
-fn diag_seed4_converge_param_sweep() {
-    use mfsk_core::core::dsp::subtract::subtract_tones_lpf_converge;
-    use mfsk_core::ft4::decode::{
-        DecodeDepth, FT4_SUBTRACT, decode_frame_subtract, decode_frame_with_options,
-    };
-    use mfsk_core::ft4::encode::message_to_tones;
-    use mfsk_core::ft4::subtract::refine_signal_freq;
-
-    let (audio, target) = build_scenario(4);
-    let results = decode_frame_subtract(&audio, 100.0, 3000.0, 0.6, 15);
-
-    for (max_iters, min_step_db) in [
-        (6u32, 1.0f32),
-        (3, 1.0),
-        (2, 1.0),
-        (6, 2.0),
-        (6, 3.0),
-        (2, 2.0),
-    ] {
-        let mut residual = audio.clone();
-        for r in &results {
-            let refined_freq = refine_signal_freq(&residual, r);
-            let msg: [u8; 77] = r.message77().try_into().unwrap();
-            let tones = message_to_tones(&msg);
-            subtract_tones_lpf_converge(
-                &mut residual,
-                &tones,
-                refined_freq,
-                r.dt_sec,
-                &FT4_SUBTRACT,
-                700,
-                false,
-                max_iters,
-                min_step_db,
-            );
-        }
-        let pass2 = decode_frame_with_options(
-            &residual,
-            100.0,
-            3000.0,
-            0.5,
-            None,
-            DecodeDepth::BpAllOsd,
-            15,
-        );
-        let hit = pass2.iter().any(|r| r.message77() == target.as_slice());
-        println!(
-            "max_iters={max_iters} min_step_db={min_step_db}  re-decode={} target_hit={hit}",
-            pass2.len()
-        );
-    }
-}
-
-#[test]
-#[ignore]
-fn diag_seed4_actual_iteration_counts() {
-    use mfsk_core::core::dsp::subtract::subtract_tones_lpf_converge;
-    use mfsk_core::ft4::decode::{FT4_SUBTRACT, decode_frame_subtract};
-    use mfsk_core::ft4::encode::message_to_tones;
-    use mfsk_core::ft4::subtract::refine_signal_freq;
-
-    let (audio, _target) = build_scenario(4);
-    let results = decode_frame_subtract(&audio, 100.0, 3000.0, 0.6, 15);
-
-    let mut residual = audio.clone();
-    println!("\nPer-candidate iteration count under flat (no sync_cv gate) 6x/1.0dB convergence:");
-    for r in &results {
-        let refined_freq = refine_signal_freq(&residual, r);
-        let msg: [u8; 77] = r.message77().try_into().unwrap();
-        let tones = message_to_tones(&msg);
-        let applied = subtract_tones_lpf_converge(
-            &mut residual,
-            &tones,
-            refined_freq,
-            r.dt_sec,
-            &FT4_SUBTRACT,
-            700,
-            false,
-            6,
-            1.0,
-        );
-        println!(
-            "  freq={:.1} sync_cv={:.3} snr={:+.1}  -> iterations_applied={applied}",
-            r.freq_hz, r.sync_cv, r.snr_db
-        );
+        write_wav_i16(std::path::Path::new(&path), &audio, 12_000);
+        println!("wrote {path}");
     }
 }

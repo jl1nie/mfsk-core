@@ -7,9 +7,7 @@
 //! subtracts it in place so weaker signals become decodable.
 
 use super::{decode::DecodeResult, wave_gen::message_to_tones};
-use crate::core::dsp::subtract::{
-    GfskParams, SubtractCfg, subtract_tones_lpf, subtract_tones_lpf_converge,
-};
+use crate::core::dsp::subtract::{GfskParams, SubtractCfg, subtract_tones_lpf};
 
 /// FT8 subtract configuration: 12 kHz sample rate, 6.25 Hz tone spacing,
 /// 1920 samples/symbol, frame origin at 0.5 s, GFSK pulse shaping
@@ -54,39 +52,6 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
         2000,
         true, // endcorrection: matches subtractft8.f90
     );
-}
-
-/// Convergence-iterated variant of [`subtract_signal_lpf`] (issue #177).
-///
-/// Repeats the subtract, re-estimating the LS amplitude each time, until
-/// the marginal improvement drops below `min_step_db` or `max_iters` is
-/// reached — see [`crate::core::dsp::subtract::subtract_tones_lpf_converge`]
-/// for why a single shot underuses real (non-synthetic) signals and why a
-/// *fixed* iteration count isn't safe either. Returns the number of
-/// subtract applications actually performed (1 = behaved like a single
-/// shot, i.e. the second iteration would have been an overshoot).
-///
-/// `max_iters = 6, min_step_db = 1.0` are the calibrated defaults (see
-/// the function this wraps); exposed as parameters here mainly so
-/// callers/tests can sweep them.
-pub fn subtract_signal_lpf_converge(
-    audio: &mut [i16],
-    result: &DecodeResult,
-    max_iters: u32,
-    min_step_db: f32,
-) -> u32 {
-    let tones = message_to_tones(&result.message77);
-    subtract_tones_lpf_converge(
-        audio,
-        &tones,
-        result.freq_hz,
-        result.dt_sec,
-        &FT8_CFG,
-        2000,
-        true, // endcorrection: matches subtractft8.f90
-        max_iters,
-        min_step_db,
-    )
 }
 
 /// Refine `result.freq_hz` by grid-searching ±2.5 Hz at 0.1 Hz resolution

@@ -750,21 +750,43 @@ pub fn decode_frame_subtract<P: Protocol>(
             let mut info_for_tx = r.info.to_vec();
             descramble_info::<P>(&mut info_for_tx);
             let tones = encode_tones_for_snr::<P>(&info_for_tx, &fec);
-            // WSJT-X-faithful channel-aware LPF subtract, converge-
-            // iterated (issue #177/#178/#179): the old constant-
-            // amplitude `subtract_tones` + coarse binary QSB gain
-            // (0.5 / 1.0 on `sync_cv > 0.3`) is FT8's pre-0.6.2 design,
-            // never migrated here when FT8 moved to
-            // `subtract_tones_lpf`. On a synthetic busy-band scenario
-            // with a strong Rayleigh-faded interferer 40 Hz from a weak
-            // target (`ft4_busy_band_fading_probe.rs`), the old path
-            // recovered the target 0/10 seeds; `subtract_tones_lpf_converge`
-            // (6 iterations max, stop under 1 dB marginal improvement —
-            // same calibration as #178's FT8 fix, sync_cv doesn't
-            // predict this any better here than it did for FT8)
-            // recovers it reliably. Also refines the carrier frequency
-            // first (`refine_freq`'s own doc comment recommends this
-            // for real-signal input; wasn't being called here either).
+            // WSJT-X-faithful channel-aware LPF subtract, single shot
+            // (issue #177/#178/#179): the old constant-amplitude
+            // `subtract_tones` + coarse binary QSB gain (0.5 / 1.0 on
+            // `sync_cv > 0.3`) is FT8's pre-0.6.2 design, never
+            // migrated here when FT8 moved to `subtract_tones_lpf`. On
+            // a synthetic busy-band scenario with a strong
+            // Rayleigh-faded interferer 40 Hz from a weak target
+            // (`ft4_busy_band_fading_probe.rs`), the old path recovered
+            // the target 0/10 seeds; migrating to `subtract_tones_lpf`
+            // (this call) recovers it reliably, 10/10.
+            //
+            // An intermediate version of this code iterated
+            // `subtract_tones_lpf` to convergence per candidate (up to
+            // 6, later 20, re-fits) — reading `ft4_decode.f90` /
+            // `subtractft4.f90` directly showed WSJT-X never does
+            // this: `subtractft4` is always a single call, and deeper
+            // suppression of a persistent signal comes from the
+            // *outer* multi-pass loop above (`for &factor in passes`)
+            // re-detecting it as a fresh candidate in a later pass —
+            // which this function already does independently of any
+            // inner iteration. The inner convergence loop had no
+            // WSJT-X counterpart and, once its iteration cap was
+            // raised, repeatedly re-fit/re-subtracted the same
+            // candidate against its own imperfect model with no
+            // independent ground truth: on the real WSJT-X FT4 sample
+            // this leaked distortion from `CQ RU AB5XS EM12` (560.0 Hz)
+            // into `W9JA PY2APK RRR` (519.4 Hz, ~40 Hz away) and lost
+            // that decode (`ft4_wsjtx_sample_iteration_diag.rs`).
+            // Removed — the single-shot call here matches every
+            // regression guard that previously seemed to require
+            // convergence (this synthetic scenario 10/10, the real
+            // sample 6/6, FT8's `qso3_busy.wav` 18/18) identically or
+            // better.
+            //
+            // Also refines the carrier frequency first (`refine_freq`'s
+            // own doc comment recommends this for real-signal input;
+            // wasn't being called here either).
             let refined_freq = super::dsp::subtract::refine_freq(
                 &residual,
                 &tones,
@@ -774,7 +796,7 @@ pub fn decode_frame_subtract<P: Protocol>(
                 refine_freq_radius_hz,
                 0.1,
             );
-            super::dsp::subtract::subtract_tones_lpf_converge(
+            super::dsp::subtract::subtract_tones_lpf(
                 &mut residual,
                 &tones,
                 refined_freq,
@@ -782,8 +804,6 @@ pub fn decode_frame_subtract<P: Protocol>(
                 sub_cfg,
                 lpf_half,
                 lpf_endcorrection,
-                6,
-                1.0,
             );
         }
         all_results.extend(deduped);

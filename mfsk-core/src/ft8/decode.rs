@@ -17,7 +17,7 @@ use super::{
     llr::sync_quality,
     message::pack28,
     params::{BP_MAX_ITER, LDPC_N},
-    subtract::{subtract_signal_lpf, subtract_signal_lpf_converge},
+    subtract::subtract_signal_lpf,
     sync::SyncCandidate,
 };
 
@@ -811,25 +811,31 @@ pub fn decode_frame_subtract_with_ap(
             // K1BZM EA3CJ on qso3_busy.wav (the 3 entries embedded
             // catches but host couldn't pre-0.6.2).
             //
-            // Convergence-iterated (issue #177): a single
-            // `subtract_signal_lpf` call underuses real (non-synthetic)
-            // signals — measured ~6.6 dB suppression on a real fading
-            // qso3_busy.wav signal vs the > 100 dB the algorithm hits on
-            // a clean synthetic self-test. WSJT-X's own jt9 reaches
-            // ~17.65 dB on the same real signal not via a different
-            // algorithm but by revisiting the same strong candidate
-            // several times across its internal multi-pass loop. A
-            // *fixed* iteration count regresses other candidates
-            // (verified: 3x always regressed K1JT HA5WA 73 on this same
-            // WAV) — `subtract_signal_lpf_converge` instead stops as
-            // soon as the marginal per-iteration improvement drops
-            // under 1 dB (or overshoots negative), so a stable/already
-            // well-estimated signal gets ~1 application same as before,
-            // while a genuinely fading one gets the extra passes it
-            // needs. See `ft8_qso3_sync_cv_iteration_correlation.rs` /
-            // `ft8_qso3_subtract_fix_check.rs` for the calibration data
-            // (sync_cv does not predict this — correlation ~0.13).
-            subtract_signal_lpf_converge(&mut residual, &r, 6, 1.0);
+            // Single shot, matching `subtractft8.f90` exactly (issue
+            // #177/#179): an earlier version of this code iterated
+            // `subtract_signal_lpf` to convergence per candidate,
+            // reasoning that WSJT-X reaches deeper suppression
+            // (~17.65 dB measured vs ~6.6 dB for one call) on hard
+            // real signals. Reading `ft8_decode.f90`/`ft8b.f90`
+            // directly showed that extra suppression comes from the
+            // *outer* `do ipass=1,npass` loop re-detecting the same
+            // residual signal as a fresh candidate in a later pass
+            // (this function's own `for ipass in 0..3` above already
+            // does the same) — `subtractft8.f90` itself is always a
+            // single, non-iterated call. The inner convergence loop
+            // had no WSJT-X counterpart and repeatedly re-fit/re-
+            // subtracted the same candidate against its own imperfect
+            // model with no independent ground truth, which let error
+            // accumulate and leak into a signal ~40 Hz away on a real
+            // FT4 sample (`W9JA PY2APK RRR` at 519.4 Hz, killed by
+            // over-iterating a neighbour at 560.0 Hz — see
+            // `ft4_wsjtx_sample_iteration_diag.rs`). Removed; the
+            // existing outer pass loop is what WSJT-X actually relies
+            // on, and every prior regression guard
+            // (`ft8_qso3_subtract_fix_check.rs`'s 18/18 with HA5WA,
+            // the FT4 busy-band-fading synthetic 10/10) passes
+            // identically or better with the single-shot call.
+            subtract_signal_lpf(&mut residual, &r);
             all_results.push(r);
         }
     }
