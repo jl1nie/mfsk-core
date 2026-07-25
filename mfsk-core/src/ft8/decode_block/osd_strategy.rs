@@ -19,8 +19,10 @@
 
 use super::super::decode::DecodeDepth;
 use crate::core::scalar::Cmplx;
-use crate::fec::ldpc::bp::BpResult;
-use crate::fec::ldpc::osd::{osd_decode_npre1, osd_decode_npre1_npre2};
+use crate::fec::ldpc::LDPC_N;
+use crate::fec::ldpc::bp::{BpResult, bp_llr_zsum};
+use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1, osd_decode_npre1_npre2};
+use crate::fec::ldpc::params::Ldpc174_91Params;
 
 /// `sync_quality` threshold for dispatching to the heavier WSJT-X
 /// ndeep=3 entry ([`osd_decode_npre1_npre2`]) instead of ndeep=2
@@ -63,6 +65,15 @@ const OSD_HARDERRORS_MAX: u32 = 36;
 /// can size its pass-tracking buffers without re-declaring magic
 /// numbers.
 pub(super) const PASS_ID_OSD_A: u8 = 14;
+
+/// Pass-ID range for the BP-refined-LLR (`zsave(:,1)`-equivalent)
+/// OSD attempts — issue #182. `19..=22` for llr-variants a/b/c/d.
+/// (18 is already `auto_ap_strategy::PASS_ID_AUTO_AP`.)
+pub(super) const PASS_ID_OSD_ZSUM1_A: u8 = 19;
+
+/// Pass-ID range for the BP-refined-LLR (`zsave(:,2)`-equivalent)
+/// OSD attempts — issue #182. `23..=26` for llr-variants a/b/c/d.
+pub(super) const PASS_ID_OSD_ZSUM2_A: u8 = 23;
 
 /// Try the OSD staircase for a candidate whose BP staircase didn't
 /// converge. Returns `Some((bp_result, pass_id))` on the first
@@ -119,6 +130,37 @@ pub(super) fn try_fallback(
         }
     };
 
+    // WSJT-X-faithful OSD dispatch (issue #63). Mirrors WSJT-X's
+    // ndeep=2/3 split: ndeep=2 (= nord=1 + npre1=1, ~165 patterns
+    // post-gate) for the default `q < 18` candidates; ndeep=3
+    // (= ndeep=2 + npre2 weight-3 anchored pairs via a ntau=14
+    // hash table) for cleaner candidates that justify the extra
+    // 64 KB hash-table build.
+    //
+    // Both entries carry implicit `check_crc14` verifiers (mirror
+    // WSJT-X's `nbadcrc` gate inside `osd174_91`), so no
+    // `Some(check_crc14)` argument.
+    let dispatch = |llr: &[f32; LDPC_N]| -> Option<OsdResult> {
+        let osd = if q >= Q_NDEEP3_THRESHOLD {
+            osd_decode_npre1_npre2(llr)
+        } else {
+            osd_decode_npre1(llr)
+        };
+        // WSJT-X-faithful ceiling — see [`OSD_HARDERRORS_MAX`]'s docstring.
+        osd.filter(|o| o.hard_errors <= OSD_HARDERRORS_MAX)
+    };
+    // Reuse `osd.codeword` instead of allocating a fresh zero vec —
+    // `OsdResult` already carries the actual decoded codeword bits,
+    // which the previous `vec![0; N]` dropped on the floor (Gemini PR
+    // #86 review).
+    let to_bp = |osd: OsdResult| BpResult {
+        message77: osd.message77,
+        info: osd.info,
+        codeword: osd.codeword,
+        hard_errors: osd.hard_errors,
+        iterations: 0,
+    };
+
     // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes
     // 5..12 (mirroring WSJT-X ipass 5..12), host OSD-Deep 13,
     // embedded OSD a/b/c/d 14/15/16/17. The +10 shift on OSD
@@ -130,40 +172,53 @@ pub(super) fn try_fallback(
         (&llr_full_f32.llrc, PASS_ID_OSD_A + 2),
         (&llr_full_f32.llrd, PASS_ID_OSD_A + 3),
     ] {
-        // WSJT-X-faithful OSD dispatch (issue #63). Mirrors WSJT-X's
-        // ndeep=2/3 split: ndeep=2 (= nord=1 + npre1=1, ~165 patterns
-        // post-gate) for the default `q < 18` candidates; ndeep=3
-        // (= ndeep=2 + npre2 weight-3 anchored pairs via a ntau=14
-        // hash table) for cleaner candidates that justify the extra
-        // 64 KB hash-table build.
-        //
-        // Both entries carry implicit `check_crc14` verifiers (mirror
-        // WSJT-X's `nbadcrc` gate inside `osd174_91`), so no
-        // `Some(check_crc14)` argument.
-        let osd = if q >= Q_NDEEP3_THRESHOLD {
-            osd_decode_npre1_npre2(llr)
-        } else {
-            osd_decode_npre1(llr)
-        };
-        if let Some(osd) = osd {
-            // WSJT-X-faithful ceiling — see [`OSD_HARDERRORS_MAX`]'s
-            // docstring.
-            if osd.hard_errors > OSD_HARDERRORS_MAX {
-                continue;
-            }
-            // Reuse `osd.codeword` instead of allocating a fresh
-            // zero vec — `OsdResult` already carries the actual
-            // decoded codeword bits, which the previous `vec![0; N]`
-            // dropped on the floor (Gemini PR #86 review).
-            let bp = BpResult {
-                message77: osd.message77,
-                info: osd.info,
-                codeword: osd.codeword,
-                hard_errors: osd.hard_errors,
-                iterations: 0,
-            };
-            return Some((bp, pid));
+        if let Some(osd) = dispatch(llr) {
+            return Some((to_bp(osd), pid));
         }
     }
+
+    // WSJT-X-faithful BP-refined-LLR seed (issue #182). WSJT-X's real
+    // `decode174_91.f90` driver never feeds `osd174_91` the raw channel
+    // LLR when `maxosd>0` — and FT8's blind `ndepth=3` dispatch always
+    // sets `maxosd=2` (`ft8b.f90:434-441`). It feeds `zsave(:,i)`, the
+    // running sum of the BP variable-node soft estimate `zn` across the
+    // first `i` BP iterations, trying `i=1` then `i=2`
+    // (`decode174_91.f90:52-64,137-148`). The direct-channel-LLR loop
+    // above is what mfsk-core's OSD has *always* used — it never
+    // implements this BP-refined seed for FT8 at all, even though the
+    // exact same mechanism (`bp_llr_zsum`) is already ported and wired
+    // for FST4-120 (`Ldpc240_101`, see that function's own doc comment).
+    // Root-caused directly: `K1BZM DK8NE -10` (-19 dB, `qso3_busy.wav`)
+    // never decodes via any direct-channel-LLR variant (a/b/c/d) at any
+    // OSD depth up to and including brute-force order-2 exhaustive
+    // search (no gate) — the true codeword is not reachable via a
+    // weight <=2 flip of the channel-LLR-selected MRB basis at all.
+    // Feeding `bp_llr_zsum(llrd, 2)` into the *same* `osd_decode_npre1`
+    // decodes it outright at `hard_errors=17` (better than jt9's own
+    // real `hard_errors=18` on this exact candidate).
+    for n_iter in [1u32, 2u32] {
+        let base = if n_iter == 1 {
+            PASS_ID_OSD_ZSUM1_A
+        } else {
+            PASS_ID_OSD_ZSUM2_A
+        };
+        for (idx, llr) in [
+            &llr_full_f32.llra,
+            &llr_full_f32.llrb,
+            &llr_full_f32.llrc,
+            &llr_full_f32.llrd,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
+            let mut zsum = [0f32; LDPC_N];
+            zsum.copy_from_slice(&zsum_vec);
+            if let Some(osd) = dispatch(&zsum) {
+                return Some((to_bp(osd), base + idx as u8));
+            }
+        }
+    }
+
     None
 }

@@ -305,6 +305,48 @@
   disagreements within the shared basis). Filed as a genuine OSD
   algorithm fidelity gap — issue #182, open.
 
+- **FT8 OSD now seeds with BP-refined LLR, closing issue #182.**
+  Root-caused the `osd_decode_npre1` fidelity gap above: WSJT-X's real
+  `decode174_91.f90` driver never feeds `osd174_91` the raw channel LLR
+  when `maxosd>0` — and FT8's blind `ndepth=3` dispatch always sets
+  `maxosd=2` (`ft8b.f90:434-441`). It feeds `zsave(:,i)`, the running
+  sum of the BP variable-node soft estimate `zn` across the first `i`
+  BP iterations, trying `i=1` then `i=2` (`decode174_91.f90:52-64,
+  137-148`). mfsk-core's OSD had only ever used the raw channel LLR
+  (the 4 `a/b/c/d` variants) — confirmed exhaustively: `K1BZM DK8NE
+  -10` never decodes via any channel-LLR variant at any OSD depth up
+  to and including brute-force order-2 exhaustive search (no
+  `ntheta` gate at all), so the true codeword simply isn't reachable
+  from a channel-LLR-selected basis. The mechanism needed
+  (`bp_llr_zsum`) already existed and is wired for FST4-120
+  (`Ldpc240_101`, issue #146) but was never ported to FT8's
+  `osd_strategy.rs` dispatch. Wired it in as a second-stage fallback
+  (after the existing 4 channel-LLR attempts fail): feeding
+  `bp_llr_zsum(llrd, 2)` into the *same*, unmodified `osd_decode_npre1`
+  decodes DK8NE outright at `hard_errors=17` — better than jt9's own
+  real result (`hard_errors=18`) on this exact candidate. (A parallel
+  hypothesis — that WSJT-X's `osd174_91.f90:86-107` bounded-window
+  `k+20` pivot search selects a different MRB basis than mfsk-core's
+  unbounded one — was tested directly and disproven: the bases do
+  differ, but `osd_decode_npre1` fails on *either* basis. Kept as a
+  documented, `#[cfg(test)]`-only diagnostic so it isn't
+  re-investigated from scratch.)
+  **Effect**: `K1BZM DK8NE -10` now decodes through the real
+  production dispatch (`decode_frame_subtract_with_ap`'s AP-on
+  multipass path, `qso3_apon_subtract_jtdx_extras_diag`: 5/6 → 6/6
+  JTDX extras). **Cost**: ~30-40% wall-clock increase on candidates
+  that reach the OSD fallback at all (most candidates decode earlier
+  in the BP/OSD staircase and never reach this code path) —
+  `ft8_qso3_staged_sic_check.rs` ~1.0s → ~1.4s. **One new
+  near-ceiling phantom observed** (`qso3_busy.wav`, freq 2570.25 Hz,
+  `hard_errors=30`, malformed callsign token — ~1 Hz from the real,
+  strong `W1FC F5BZB` at 2571.38 Hz, almost certainly spectral
+  leakage): same class of tradeoff already accepted in this file's
+  `OSD_HARDERRORS_MAX` 22→36 history, where tightening the ceiling to
+  suppress phantoms was found to silently discard genuine weak
+  decodes living in the same hard-error range. Full workspace `cargo
+  test --release --features full`: 100% pass, no regressions.
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

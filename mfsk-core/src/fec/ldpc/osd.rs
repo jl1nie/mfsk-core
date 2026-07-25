@@ -791,6 +791,163 @@ fn osd_setup_ldpc174_91(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
     })
 }
 
+/// Diagnostic variant of [`osd_setup_ldpc174_91`] (issue #182) — builds
+/// the systematic generator with `osd174_91.f90:86-107`'s *exact*
+/// bounded-window column-swap pivot search instead of
+/// [`osd_setup_ldpc174_91`]'s unbounded full-column-range row
+/// reduction.
+///
+/// The two are **not** the same algorithm. WSJT-X's real Gaussian
+/// elimination processes diagonal indices `id=1..k` and, for each,
+/// searches only columns `id..k+20` (`do icol=id,k+20` — "The 20 is ad
+/// hoc - beware", per the source comment itself) for a usable pivot,
+/// swapping that column into position `id` when found. Any column
+/// beyond `k+20` in reliability order is never eligible to become an
+/// MRB (most-reliable-basis) position, no matter how the elimination
+/// unfolds. [`osd_setup_ldpc174_91`] instead scans the *entire* N=174
+/// column range for each pivot row — a more complete elimination that
+/// never leaves a row un-pivoted, but which can select a genuinely
+/// *different* set of k physical bit positions as the systematic basis
+/// whenever the top `k+20` reliable columns don't happen to be the
+/// ones WSJT-X's row-major search would have chosen.
+///
+/// Since `osd_npre1_pass` only explores single- and paired-bit flips
+/// *within* whichever k positions got selected as the MRB, a different
+/// basis changes which candidate codewords are reachable at all —
+/// independent of `ntheta`/`nt` gate values, which already matched
+/// exactly.
+///
+/// **Disproven.** This was the leading hypothesis for
+/// `osd_decode_npre1`'s `K1BZM DK8NE -10` gap, tested directly
+/// (`issue_182_dk8ne_osd_fortran_pivot_probe`): the bounded-window
+/// basis genuinely differs from [`osd_setup_ldpc174_91`]'s (87-90/91
+/// position overlap across the 4 LLR variants), but `osd_decode_npre1`
+/// built on *either* basis still fails on this candidate — even a full
+/// unrestricted order-2 exhaustive search (no `ntheta` gate at all)
+/// never reaches it. The real gap was upstream of basis construction
+/// entirely: see [`super::bp::bp_llr_zsum`]'s doc comment and
+/// `osd_strategy.rs`'s `try_fallback` for the actual fix (WSJT-X's
+/// `decode174_91.f90` never feeds `osd174_91` the raw channel LLR when
+/// `maxosd>0`, which FT8's blind dispatch always is). Kept as a
+/// diagnostic — `#[cfg(test)]` only, not part of the production
+/// dispatch — documenting a plausible-but-wrong hypothesis so it isn't
+/// re-investigated from scratch later.
+#[cfg(test)]
+fn osd_setup_ldpc174_91_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdSetup> {
+    let n = LDPC_N;
+    let k = LDPC_K;
+
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_unstable_by(|&a, &b| {
+        llr[b]
+            .abs()
+            .partial_cmp(&llr[a].abs())
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let mut g: Vec<u8> = vec![0u8; k * n];
+    for row in 0..k {
+        for col in 0..n {
+            let j = perm[col];
+            g[row * n + col] = if j < k {
+                (row == j) as u8
+            } else {
+                <Ldpc174_91Params as LdpcParams>::gen_parity(j - k, row)
+            };
+        }
+    }
+
+    // `osd174_91.f90:86-107`: for each diagonal row `id`, search only
+    // columns `id..k+20` (ad hoc 20-column slack) for a usable pivot,
+    // swapping it into position `id` and eliminating it from every
+    // other row. Unlike `osd_setup_ldpc174_91`, a row that finds no
+    // pivot within this bounded window is silently left un-eliminated
+    // (matching WSJT-X's own behaviour, "beware" and all — not treated
+    // as an error here either).
+    const PIVOT_WINDOW_SLACK: usize = 20;
+    for id in 0..k {
+        let upper = (k + PIVOT_WINDOW_SLACK).min(n);
+        let mut found: Option<usize> = None;
+        for icol in id..upper {
+            if g[id * n + icol] == 1 {
+                found = Some(icol);
+                break;
+            }
+        }
+        let Some(icol) = found else { continue };
+        if icol != id {
+            for r in 0..k {
+                g.swap(r * n + id, r * n + icol);
+            }
+            perm.swap(id, icol);
+        }
+        for ii in 0..k {
+            if ii != id && g[ii * n + id] == 1 {
+                for c in 0..n {
+                    g[ii * n + c] ^= g[id * n + c];
+                }
+            }
+        }
+    }
+
+    let mut m0: Vec<u8> = vec![0u8; k];
+    for r in 0..k {
+        m0[r] = if llr[perm[r]] > 0.0 { 1 } else { 0 };
+    }
+
+    let mut hdec_perm: Vec<u8> = vec![0u8; n];
+    let mut absrx_perm: Vec<f32> = vec![0.0f32; n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    let mut c_perm: Vec<u8> = vec![0u8; n];
+    for r in 0..k {
+        if m0[r] == 1 {
+            for col in 0..n {
+                c_perm[col] ^= g[r * n + col];
+            }
+        }
+    }
+
+    Some(OsdSetup {
+        perm,
+        g,
+        hdec_perm,
+        absrx_perm,
+        c_perm,
+    })
+}
+
+/// Diagnostic (issue #182, disproven hypothesis — see
+/// [`osd_setup_ldpc174_91_fortran_pivot`]'s doc comment):
+/// [`osd_decode_npre1`] built on
+/// [`osd_setup_ldpc174_91_fortran_pivot`] instead of
+/// [`osd_setup_ldpc174_91`] — same `npre1` search, different MRB basis
+/// construction.
+#[cfg(test)]
+pub(crate) fn osd_decode_npre1_fortran_pivot(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
+    let setup = osd_setup_ldpc174_91_fortran_pivot(llr)?;
+    let mut best = OsdBest::new();
+    osd_npre1_pass(&setup, &mut best, NPRE1_GATE_NDEEP2);
+    osd_result_from_best(llr, best)
+}
+
+/// Diagnostic (issue #182, disproven hypothesis): the MRB basis
+/// (`perm[0..LDPC_K]`, as a set of physical bit indices) each setup
+/// variant selects, for direct comparison. `(current, fortran_pivot)`.
+#[cfg(test)]
+pub(crate) fn osd_debug_basis_sets(llr: &[f32; LDPC_N]) -> (Vec<usize>, Vec<usize>) {
+    let current = osd_setup_ldpc174_91(llr)
+        .map(|s| s.perm[..LDPC_K].to_vec())
+        .unwrap_or_default();
+    let fortran_pivot = osd_setup_ldpc174_91_fortran_pivot(llr)
+        .map(|s| s.perm[..LDPC_K].to_vec())
+        .unwrap_or_default();
+    (current, fortran_pivot)
+}
+
 /// Un-permute a candidate codeword into the caller-provided
 /// `c_unperm` scratch buffer and CRC-verify it. Returns the
 /// unpermuted full codeword + its first-`K` info slice as fresh
