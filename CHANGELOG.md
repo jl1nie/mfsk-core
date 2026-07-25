@@ -153,6 +153,47 @@
   (`191111_110130.wav` 231ms→303ms, `191111_110200.wav`
   249ms→460ms, `qso3_busy.wav` 388ms→611ms).
 
+- **`core::dsp::subtract::subtract_tones_lpf_refine_dt` / FT8's
+  `subtract_signal_lpf_refine_dt`** (issue #180 follow-up) — closes
+  part of the "next concrete step" left open above: a direct
+  `subtract_tones_lpf` vs `subtractft8.f90` comparison found the two
+  algorithms structurally identical (GFSK waveform synthesis, cos²
+  LPF kernel, end-correction — all line-for-line matches), *except*
+  for one missing feature: `subtractft8.f90` takes an `lrefinedt`
+  argument, and `ft8_decode.f90`'s two early-decode-and-subtract
+  checkpoints (lines 132, 162 — exactly the calls
+  `decode_frame_subtract_staged` above is modelling) pass
+  `lrefinedt=.true.`. That path (`subtractft8.f90`'s internal `sqf`/
+  `peakup`) re-searches `dt` by ±90 samples (±7.5 ms @ 12 kHz) around
+  the candidate's own value, scoring each trial by the residual power
+  left in the signal's own tone band after subtraction, and commits
+  the subtraction at the parabolic-fit minimum — rather than trusting
+  the early candidate's own (still-coarse) `dt` outright. mfsk-core's
+  staged-checkpoint SIC had no equivalent: every early subtract used
+  the plain, non-refining `subtract_signal_lpf`. Ported `sqf`/`peakup`
+  faithfully (`core::dsp::subtract::fft_lpf::subtract_tones_lpf_refine_dt_fft`)
+  and wired it into `decode_frame_subtract_staged_with_ap_inner`'s
+  checkpoint-B and checkpoint-C deferred subtracts (the flat 3-pass
+  `sic_inner_passes`'s single confirmed-decode subtract is unchanged —
+  matches `ft8b.f90:474`'s `lrefinedt=.false.`).
+  **Effect on the DL8YHR case**: checkpoint-C's residual `sync_quality`
+  at WSJT-X's own ground-truth coordinates improved from `nsync=9` to
+  `nsync=10` (jt9 itself gets `nsync=15` on this signal) — a real,
+  measured reduction in leftover interference from the same 13
+  already-subtracted signals, though not yet enough on its own to
+  flip this specific -17 dB decode (`any_hit` still `false` in
+  `issue_180_dl8yhr_staged_checkpoint_c_probe`). No regression on any
+  of the 18 golden `qso3_busy.wav` decodes or any other reference WAV
+  (`ft8_qso3_staged_sic_check.rs`, `ft8_qso3_subtract_fix_check.rs`,
+  `ft8_qso3_apoff_recall.rs`, `ft8_qso3_apon_recall.rs`, full
+  workspace `cargo test --release --features full`: 100% pass). New
+  regression test:
+  `core::dsp::subtract::refine_dt_tests::refine_dt_beats_plain_subtract_when_dt_is_off`.
+  Remaining gap (candidates per the prior comment: LPF width/shape,
+  QSB/fading-envelope tracking, or f32 vs Fortran-single-precision
+  accumulation differences over the 151_680-sample reference) is still
+  open — logged here rather than pursued further in this pass.
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

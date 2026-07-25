@@ -238,6 +238,55 @@ pub fn subtract_tones_lpf(
     }
 }
 
+/// `subtractft8.f90`'s `lrefinedt=.true.` subtract: probes a small
+/// range of `dt` offsets around `dt_sec` and subtracts at whichever one
+/// leaves the least residual energy in the signal's own tone band,
+/// instead of trusting `dt_sec` exactly. See the private
+/// `fft_lpf::subtract_tones_lpf_refine_dt_fft` (this function's
+/// `fft-rustfft` backend) for the full port of WSJT-X's `sqf`/`peakup`
+/// search.
+///
+/// Intended for subtracting candidates whose `dt` hasn't been through a
+/// full decode pass yet — e.g. issue #180's staged-checkpoint SIC,
+/// which (like `ft8_decode.f90`'s own early-decode-and-subtract
+/// checkpoints) subtracts still-early candidates before the harder,
+/// final search runs. Use plain [`subtract_tones_lpf`] once a
+/// candidate's `dt` is already the final decode's own value
+/// (`ft8b.f90:474`'s `lrefinedt=.false.` case).
+///
+/// Without `fft-rustfft` this falls back to the plain (non-refining)
+/// direct-convolution subtract — the dt-search itself needs the
+/// in-band-power FFT metric, which the `no_std` direct path has no
+/// cheap equivalent for, and (per [`subtract_tones_lpf`]'s doc comment)
+/// no embedded caller uses either path today.
+pub fn subtract_tones_lpf_refine_dt(
+    audio: &mut [i16],
+    tones: &[u8],
+    freq_hz: f32,
+    dt_sec: f32,
+    cfg: &SubtractCfg,
+    lpf_half: usize,
+    endcorrection: bool,
+) {
+    #[cfg(feature = "fft-rustfft")]
+    {
+        fft_lpf::subtract_tones_lpf_refine_dt_fft(
+            audio,
+            tones,
+            freq_hz,
+            dt_sec,
+            cfg,
+            lpf_half,
+            endcorrection,
+        );
+    }
+    #[cfg(not(feature = "fft-rustfft"))]
+    {
+        let _ = endcorrection;
+        subtract_tones_lpf_direct(audio, tones, freq_hz, dt_sec, cfg, lpf_half);
+    }
+}
+
 /// Direct time-domain convolution fallback for `no_std` / non-`fft-rustfft`
 /// builds. See [`subtract_tones_lpf`]'s doc comment for when this is used.
 #[cfg(not(feature = "fft-rustfft"))]
@@ -492,6 +541,35 @@ mod fft_lpf {
         lpf_half: usize,
         endcorrection: bool,
     ) {
+        apply_at_offset(
+            audio,
+            tones,
+            freq_hz,
+            dt_sec,
+            cfg,
+            lpf_half,
+            endcorrection,
+            0,
+        );
+    }
+
+    /// Core of [`subtract_tones_lpf_fft`], with an extra `idt_offset`
+    /// (samples at `cfg.sample_rate`) added to the reference alignment
+    /// before subtracting. `idt_offset = 0` is byte-identical to the
+    /// former single-purpose `subtract_tones_lpf_fft` body. Shared by
+    /// the plain subtract and by [`subtract_tones_lpf_refine_dt_fft`]'s
+    /// `-90/0/+90`-sample trial search (`subtractft8.f90`'s `sqf`).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_at_offset(
+        audio: &mut [i16],
+        tones: &[u8],
+        freq_hz: f32,
+        dt_sec: f32,
+        cfg: &SubtractCfg,
+        lpf_half: usize,
+        endcorrection: bool,
+        idt_offset: i64,
+    ) {
         let nframe = tones.len() * cfg.samples_per_symbol;
         let nfft = audio.len();
         if nframe == 0 || nfft == 0 || lpf_half == 0 {
@@ -503,7 +581,10 @@ mod fft_lpf {
         // here: camp(i) (0-indexed i=0..nframe) reads audio at absolute
         // sample `signed_start + i`, zero when that index is out of
         // bounds (matches `if(j.ge.1.and.j.le.NMAX) camp(i)=...`).
-        let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+        // `idt_offset` mirrors `subtractft8.f90`'s `sqf(idt)` inner
+        // function, which probes `nstart=dt*12000+1+idt`.
+        let signed_start =
+            ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64 + idt_offset;
 
         let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
         for i in 0..nframe {
@@ -545,6 +626,126 @@ mod fft_lpf {
                 audio[j as usize] = v.clamp(-32_768.0, 32_767.0) as i16;
             }
         }
+    }
+
+    /// In-band residual power after a trial subtraction, `sqq` in
+    /// `subtractft8.f90::sqf`. Computes a full-length forward FFT of
+    /// `audio` (real input, zero imaginary — the Fortran side gets the
+    /// same positive-frequency half-spectrum via a real-FFT/equivalence
+    /// trick) and sums `|X(k)|^2` over the bins spanning
+    /// `[freq_hz - 1.5*tone_spacing_hz, freq_hz + 8.5*tone_spacing_hz]`
+    /// — the candidate's own tone band. Used only to *rank* three trial
+    /// offsets against each other, so the missing real-FFT packing is
+    /// immaterial (both sides of that symmetric band are scaled
+    /// identically for every trial).
+    fn residual_band_power(
+        audio: &[i16],
+        freq_hz: f32,
+        tone_spacing_hz: f32,
+        sample_rate: f32,
+    ) -> f32 {
+        let nfft = audio.len();
+        if nfft == 0 {
+            return 0.0;
+        }
+        let mut buf: Vec<Complex32> = audio
+            .iter()
+            .map(|&s| Complex32::new(s as f32, 0.0))
+            .collect();
+        let (forward, _) = cached_plans(nfft);
+        forward.process(&mut buf);
+
+        let df = sample_rate / nfft as f32;
+        // Fortran `ia=(f0-1.5*baud)/df` / `ib=(f0+8.5*baud)/df`: real-to-
+        // integer assignment truncates toward zero, not rounds.
+        let ia = ((freq_hz - 1.5 * tone_spacing_hz) / df) as i64;
+        let ib = ((freq_hz + 8.5 * tone_spacing_hz) / df) as i64;
+        let lo = ia.max(0) as usize;
+        let hi = (ib.max(0) as usize).min(nfft.saturating_sub(1));
+        let mut sqq = 0.0f32;
+        for k in lo..=hi {
+            let c = buf[k];
+            sqq += c.re * c.re + c.im * c.im;
+        }
+        sqq
+    }
+
+    /// `subtractft8.f90`'s `lrefinedt=.true.` path: probes `idt` offsets
+    /// of `-90`/`0`/`+90` samples (±7.5 ms at 12 kHz) around the
+    /// candidate's own `dt_sec`, scores each trial by its resulting
+    /// in-band residual power ([`residual_band_power`]), fits a
+    /// parabola through the 3 points (`peakup.f90`) and subtracts at
+    /// the fitted vertex offset. If the fitted vertex falls outside
+    /// `±90` samples (`|dx| > 1.0`), the signal is left untouched —
+    /// matching WSJT-X's `if(abs(dx).gt.1.0) return`, which treats that
+    /// case as "no acceptable minimum".
+    ///
+    /// WSJT-X reserves this for its two "early decode, subtract before
+    /// the next checkpoint" call sites (`ft8_decode.f90:132`, `:162`) —
+    /// candidates whose `dt` hasn't yet had a full decode pass to lock
+    /// it down. The single subtract-after-a-confirmed-decode call
+    /// (`ft8b.f90:474`) always uses `lrefinedt=.false.` (plain
+    /// [`subtract_tones_lpf_fft`]) since that `dt` is already final.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn subtract_tones_lpf_refine_dt_fft(
+        audio: &mut [i16],
+        tones: &[u8],
+        freq_hz: f32,
+        dt_sec: f32,
+        cfg: &SubtractCfg,
+        lpf_half: usize,
+        endcorrection: bool,
+    ) {
+        const SEARCH_SAMPLES: i64 = 90;
+
+        let trial = |offset: i64| -> Vec<i16> {
+            let mut copy = audio.to_vec();
+            apply_at_offset(
+                &mut copy,
+                tones,
+                freq_hz,
+                dt_sec,
+                cfg,
+                lpf_half,
+                endcorrection,
+                offset,
+            );
+            copy
+        };
+
+        let cand_m = trial(-SEARCH_SAMPLES);
+        let cand_p = trial(SEARCH_SAMPLES);
+        let cand_0 = trial(0);
+
+        let sq_m = residual_band_power(&cand_m, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
+        let sq_p = residual_band_power(&cand_p, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
+        let sq_0 = residual_band_power(&cand_0, freq_hz, cfg.tone_spacing_hz, cfg.sample_rate);
+
+        // peakup.f90: b=(yp-ym)/2; c=(yp+ym-2*y0)/2; dx=-b/(2*c).
+        let b = (sq_p - sq_m) / 2.0;
+        let c = (sq_p + sq_m - 2.0 * sq_0) / 2.0;
+        if c.abs() < f32::EPSILON {
+            // No curvature: fall back to the untried, unshifted subtract
+            // rather than leaving the signal untouched.
+            audio.copy_from_slice(&cand_0);
+            return;
+        }
+        let dx = -b / (2.0 * c);
+        if dx.abs() > 1.0 {
+            // No acceptable minimum in range: don't subtract at all.
+            return;
+        }
+        let best_offset = (SEARCH_SAMPLES as f32 * dx).round() as i64;
+        apply_at_offset(
+            audio,
+            tones,
+            freq_hz,
+            dt_sec,
+            cfg,
+            lpf_half,
+            endcorrection,
+            best_offset,
+        );
     }
 }
 
@@ -614,6 +815,91 @@ pub fn subtract_tones(
         let sub = gain * (a * w_cos[ref_off + i] + b * w_sin[ref_off + i]);
         let new_val = audio[audio_off + i] as f32 - sub;
         audio[audio_off + i] = new_val.clamp(-32_768.0, 32_767.0) as i16;
+    }
+}
+
+#[cfg(all(test, feature = "fft-rustfft"))]
+mod refine_dt_tests {
+    use super::*;
+    use crate::core::dsp::gfsk::{GfskCfg, synth_i16};
+
+    fn ft8_cfg() -> SubtractCfg {
+        SubtractCfg {
+            sample_rate: 12_000.0,
+            tone_spacing_hz: 6.25,
+            samples_per_symbol: 1920,
+            base_offset_s: 0.5,
+            gfsk: Some(GfskParams {
+                bt: 2.0,
+                hmod: 1.0,
+                ramp_samples: 1920 / 8,
+            }),
+        }
+    }
+
+    /// Issue #180: when a candidate's reported `dt` is a few ms off from
+    /// the signal's true position (as happens with early/coarse
+    /// checkpoint-SIC candidates — see `ft8::decode`'s staged-checkpoint
+    /// SIC), `subtract_tones_lpf_refine_dt` should leave less residual
+    /// energy behind than the plain, non-refining `subtract_tones_lpf`,
+    /// by re-searching ±90 samples for the best-cancelling alignment
+    /// (mirrors `subtractft8.f90`'s `lrefinedt=.true.` path).
+    #[test]
+    fn refine_dt_beats_plain_subtract_when_dt_is_off() {
+        let cfg = ft8_cfg();
+        let gfsk_cfg = GfskCfg {
+            sample_rate: cfg.sample_rate,
+            samples_per_symbol: cfg.samples_per_symbol,
+            bt: cfg.gfsk.unwrap().bt,
+            hmod: cfg.gfsk.unwrap().hmod,
+            ramp_samples: cfg.gfsk.unwrap().ramp_samples,
+        };
+        let tones: Vec<u8> = (0..79).map(|k| (k % 8) as u8).collect();
+        let freq_hz = 1500.0f32;
+        let true_dt_sec = 0.2f32;
+
+        let samples = synth_i16(&tones, freq_hz, 5000, &gfsk_cfg);
+        let mut audio = vec![0i16; 180_000];
+        let start = ((cfg.base_offset_s + true_dt_sec) * cfg.sample_rate).round() as usize;
+        for (i, &s) in samples.iter().enumerate() {
+            audio[start + i] = s;
+        }
+
+        // Candidate's reported dt is 40 samples (~3.3 ms) off true —
+        // within subtractft8.f90's ±90-sample search radius, comparable
+        // to the timing slop an early/unrefined checkpoint-SIC candidate
+        // can carry.
+        let reported_dt_sec = true_dt_sec + 40.0 / cfg.sample_rate;
+
+        let mut audio_plain = audio.clone();
+        subtract_tones_lpf(
+            &mut audio_plain,
+            &tones,
+            freq_hz,
+            reported_dt_sec,
+            &cfg,
+            2000,
+            true,
+        );
+        let energy_plain: f64 = audio_plain.iter().map(|&s| (s as f64).powi(2)).sum();
+
+        let mut audio_refined = audio.clone();
+        subtract_tones_lpf_refine_dt(
+            &mut audio_refined,
+            &tones,
+            freq_hz,
+            reported_dt_sec,
+            &cfg,
+            2000,
+            true,
+        );
+        let energy_refined: f64 = audio_refined.iter().map(|&s| (s as f64).powi(2)).sum();
+
+        assert!(
+            energy_refined < energy_plain,
+            "dt-refining subtract left more residual energy ({energy_refined:.0}) than the \
+             plain subtract ({energy_plain:.0}) at a 40-sample dt offset"
+        );
     }
 }
 

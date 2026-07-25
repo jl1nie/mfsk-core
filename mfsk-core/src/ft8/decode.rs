@@ -18,7 +18,7 @@ use super::{
     message::pack28,
     params,
     params::{BP_MAX_ITER, LDPC_N},
-    subtract::subtract_signal_lpf,
+    subtract::{subtract_signal_lpf, subtract_signal_lpf_refine_dt},
     sync::SyncCandidate,
 };
 
@@ -1096,10 +1096,14 @@ fn decode_frame_subtract_staged_with_ap_inner(
     // NN=79/NSPS=1920 — see `params.rs`).
     let message_dur_s = params::NZ as f32 / 12_000.0;
     let dt_fit_limit_b = b_len as f32 / 12_000.0 - message_dur_s - 0.5;
+    // `ft8_decode.f90:132` subtracts these checkpoint-A decodes with
+    // `lrefinedt=.true.` — their `dt` came from an early, still-coarse
+    // pass, not a final decode, so WSJT-X re-searches ±90 samples for
+    // the best-cancelling alignment before subtracting (issue #180).
     let mut deferred: Vec<DecodeResult> = Vec::new();
     for r in &early_results {
         if r.dt_sec < dt_fit_limit_b {
-            subtract_signal_lpf(&mut buf_b, r);
+            subtract_signal_lpf_refine_dt(&mut buf_b, r);
         } else {
             deferred.push(r.clone());
         }
@@ -1115,8 +1119,10 @@ fn decode_frame_subtract_staged_with_ap_inner(
     let mut buf_c = vec![0i16; audio.len()];
     buf_c[..b_len].copy_from_slice(&buf_b[..b_len]);
     buf_c[b_len..c_len].copy_from_slice(&audio[b_len..c_len]);
+    // `ft8_decode.f90:162` — same `lrefinedt=.true.` re-search as
+    // checkpoint B above, for the late-`dt` decodes deferred to here.
     for r in &deferred {
-        subtract_signal_lpf(&mut buf_c, r);
+        subtract_signal_lpf_refine_dt(&mut buf_c, r);
     }
 
     let new_results = sic_inner_passes(
