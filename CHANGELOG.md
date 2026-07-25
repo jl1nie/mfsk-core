@@ -143,9 +143,11 @@
   (per-block breakdown, `cd0` dump, WA2FZW confirmation, residual-swap
   confirmation) kept in
   `ft8::decode::tests::issue_180_dl8yhr_staged_checkpoint_c_probe`.
-  `decode_frame_subtract_staged` is not yet wired as the default for
-  any production caller — opt-in via the new function pending a
-  decision on whether/when to switch.
+  As of the follow-up entry below, `decode_frame_subtract_with_ap`
+  (and therefore `decode_frame_subtract`) delegates to this staged
+  checkpoint SIC by default; the pre-#180 flat 3-pass behaviour is
+  still available via `decode_frame_subtract_flat_with_ap` for callers
+  that specifically want it.
   **Cost**: checkpoint A runs its own full 3-sub-pass search on top of
   checkpoint C's, so this is strictly more decode work than the flat
   pass. Measured (release, `--features full`, 10 reps, host, real
@@ -229,6 +231,79 @@
   `false`→`true`) — issue #180 is closed. Full workspace `cargo test
   --release --features full` (all 70 test binaries): 100% pass, no regression on
   any golden decode set (FT8 or FT4).
+
+- **`decode_frame_subtract_with_ap` now delegates to the staged
+  checkpoint SIC by default** (issue #180 follow-up) — the flat 3-pass
+  behaviour is a strict recall subset (verified: identical golden-set
+  hits on every reference WAV, plus `CQ DX DL8YHR JO41` on
+  `qso3_busy.wav`, which the flat loop structurally cannot reach) at
+  1.3-1.9× the flat pass's wall-clock, still comfortably inside FT8's
+  15 s slot budget on host. The old flat behaviour remains available
+  as its own entry point, `decode_frame_subtract_flat_with_ap`, for
+  callers that specifically want the cheaper non-staged path.
+  **Fixed a stack-overflow regression this introduced**: the staged
+  path's own two fallback branches (buffer shorter than checkpoint A;
+  checkpoint A finds nothing) used to fall back to
+  `decode_frame_subtract_with_ap` — which, after this change, calls
+  right back into the staged path, recursing indefinitely. Both now
+  fall back to `decode_frame_subtract_flat_with_ap` instead. Caught by
+  the full-workspace regression run
+  (`decode_frame_subtract_with_ap_silence_shape`, a short-buffer test)
+  before release.
+
+- **`decode_frame_subtract_with_auto_ap`** (`fft-rustfft` only) —
+  `decode_frame_subtract_with_ap` plus a final rescue pass: harvest
+  caller callsigns from the blind decodes and retry `coarse_sync`
+  candidates that didn't decode blind, using each harvested callsign
+  as an AP `mycall` hint. Recovers signals too weak for blind BP/OSD
+  but not too weak to sync — e.g. `K1BZM DK8NE -10` (-19 dB) on
+  `qso3_busy.wav`. **This is a genuine mfsk-core-original extension,
+  not a port of any real jt9/WSJT-X mechanism** — checked directly
+  against `ft8apset.f90`'s actual source: real WSJT-X only applies AP
+  using the *operator-configured* `mycall`/`hiscall` and disables AP
+  entirely the moment `mycall` isn't set (`if(len(trim(mycall12)).lt.3)
+  return`, the subroutine's first line). A real `jt9 -8 -d 3` run with
+  no `-c`/`-x` has AP fully disabled; its own `K1BZM DK8NE -10` decode
+  is blind (`iaptype=0`) — a real, separate, still-open blind-decode
+  sensitivity gap this function does not explain or close, it just
+  reaches the same message through a different, AP-assisted route.
+  Cost-optimized from a naive per-(candidate, callsign) sweep (~5.7s
+  on `qso3_busy.wav`) via three measured steps: (1) a presync
+  `sync_quality` gate before the callsign loop (66→8 candidates), (2)
+  a blind-decode precheck sharing the same refined-candidate cache,
+  (3) `DecodeDepth::BpAll` instead of `BpAllOsd` for the AP retries
+  (OSD is redundant once AP narrows the search) — cut to ~1.25-1.3s
+  single-threaded, ~0.9s on 24 cores via `rayon` (the per-callsign
+  loop is embarrassingly parallel, no shared mutable state). The
+  parallel speedup is real, independent task-level parallelism — not a
+  substitute for closing the blind-decode gap above, and single-
+  threaded this function alone still costs more wall-clock than real
+  `jt9 -8 -d 3`'s entire file decode (~1.1s), since it does provably
+  more search than jt9 needs for this signal (nothing — its own blind
+  pass already finds it).
+
+- **OSD fallback gate loosened from `q >= 12` to `q > 6`**
+  (`decode_block/osd_strategy.rs`, issue #180 follow-up) — the old
+  gate was a mfsk-core-specific deviation with no `ft8b.f90`
+  counterpart, which only bails (`nsync <= 6`) before attempting any
+  decode at all. Root-caused directly: `K1BZM DK8NE -10` sits at
+  `q=11` on mfsk-core's own SIC residual — verified an *exact*
+  per-block match to real jt9's own residual at the same coordinates
+  (`is1=1 is2=7 is3=3`, confirmed via a locally-instrumented jt9
+  rebuild) — yet never reached the OSD fallback at all under the old
+  gate. Full regression suite showed zero change from loosening it —
+  nothing was relying on the tighter gate to stay green.
+  **Not sufficient on its own**: even past this gate, the real OSD
+  dispatch for `q=11` (`osd_decode_npre1`, ndeep=2) still fails to
+  decode this candidate on any LLR variant, where WSJT-X's real
+  `osd174_91.f90` ndeep=2 succeeds (`hard_errors=18`). Verified this
+  isn't a SIC/LLR-input problem: mfsk-core's own residual matches
+  jt9's own residual not just on sync quality but on all 58
+  data-symbol tone decisions (0/58 argmax disagreements) and on the
+  actual LLR reliability ordering OSD consumes (top-91-most-reliable
+  overlap 90-91/91 across all 4 LLR variants, zero hard-decision
+  disagreements within the shared basis). Filed as a genuine OSD
+  algorithm fidelity gap — issue #182, open.
 
 ### Changed
 

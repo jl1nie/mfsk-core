@@ -25,7 +25,14 @@ use super::super::params::NSPS;
 /// The `to_f32` implementation must produce values on the same
 /// amplitude scale as `i16` so the LLR computation downstream keeps
 /// its calibration; for `i8` we therefore multiply by 256.
-pub trait AudioSample: Copy {
+/// `Sync` (both current impls, `i16`/`i8`, are plain `Copy` primitives
+/// with no interior mutability, so this costs real implementors
+/// nothing): lets `&[S]` cross the `rayon` task boundary in the
+/// `parallel`-feature host paths (e.g.
+/// `decode_block::auto_ap_strategy::run_bounded`'s per-callsign
+/// parallel loop) without every generic caller needing to spell out
+/// the bound itself.
+pub trait AudioSample: Copy + Sync {
     fn to_f32(self) -> f32;
     /// Promote to i16 range. i8 → i16 via `<<8`; i16 → i16
     /// identity. Used by the fixed-point FFT input path.

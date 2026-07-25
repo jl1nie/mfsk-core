@@ -30,7 +30,7 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
-mod auto_ap_strategy;
+pub(crate) mod auto_ap_strategy;
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod osd_strategy;

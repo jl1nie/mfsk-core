@@ -1,5 +1,18 @@
 //! One-off probe for issue #116 K1BZM DK8NE @244 Hz classification.
 //!
+//! **Resolved (issue #180/#182 follow-up): DK8NE is real, not a JTDX
+//! false positive.** A locally-rebuilt, instrumented jt9 confirms it
+//! blind-decodes this exact signal (`iaptype=0`, no AP), and mfsk-core's
+//! own SIC residual at these coordinates was verified — down to the
+//! per-symbol tone argmax and the LLR reliability ordering OSD actually
+//! consumes — to be equivalent to jt9's own residual. The remaining
+//! recall gap was `osd_decode_npre1`'s algorithm fidelity vs
+//! `osd174_91.f90`'s real ndeep=2 (see #182), not the classification
+//! question this file originally asked. The probes below still run and
+//! their AP-context sweep is still informative, but the "false positive
+//! #5" conclusion they were written to reach is now known incorrect —
+//! kept for the historical AP-context data, not as a live hypothesis.
+//!
 //! Tries `decode_frame_subtract_with_ap` with the *exact* operator
 //! context (mycall=K1BZM, hiscall=DK8NE) — if even that doesn't
 //! surface DK8NE, it is JTDX false positive #5 (the signal at 244 Hz
@@ -95,10 +108,14 @@ fn probe_dk8ne_with_exact_context() {
     try_context("ctx4", &audio, "K1JT", "DK8NE"); // partial (hiscall=DK8NE only useful)
     try_context("ctx5", &audio, "K1JT", "HA0DU"); // unrelated context (sanity)
 
+    // NOTE (issue #180/#182): this conclusion is now known incorrect —
+    // DK8NE is a real signal (jt9 blind-decodes it) and the recall gap
+    // was root-caused to `osd_decode_npre1` fidelity, not missing
+    // mutual information. Kept for the historical AP-context sweep data.
     println!("\n  → if all of ctx1..ctx5 + baseline are 'miss', the 244 Hz site does not contain");
     println!("    enough mutual info with the DK8NE codeword for any of our paths to recover.");
     println!(
-        "    That classifies K1BZM DK8NE @244 as JTDX false positive #5 (=> true ceiling 13/13)."
+        "    [HISTORICAL, since disproven by #180/#182] would classify K1BZM DK8NE @244 as JTDX false positive #5."
     );
 }
 

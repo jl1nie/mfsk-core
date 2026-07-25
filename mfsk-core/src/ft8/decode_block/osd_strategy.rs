@@ -68,17 +68,36 @@ pub(super) const PASS_ID_OSD_A: u8 = 14;
 /// converge. Returns `Some((bp_result, pass_id))` on the first
 /// accepted CRC-pass codeword, `None` otherwise.
 ///
-/// Gates internally on `depth = BpAllOsd` and `q >= 12` so the caller
-/// can invoke unconditionally — keeps the per-candidate staircase in
+/// Gates internally on `depth = BpAllOsd` and `q > 6` so the caller can
+/// invoke unconditionally — keeps the per-candidate staircase in
 /// `process_one_candidate_inner` straightforward (`accepted = accepted
 /// .or_else(|| osd_strategy::try_fallback(...))`).
+///
+/// **`q > 6`, not `q >= 12`: WSJT-X-faithfulness fix (issue #180
+/// follow-up).** The `q >= 12` gate was a deliberate mfsk-core-specific
+/// deviation with no counterpart in `ft8b.f90`, which only bails
+/// (`if(nsync .le. 6) ... return`) before attempting *any* decode —
+/// once a candidate clears that bar, WSJT-X always attempts its full
+/// staircase (BP-equivalent and OSD together), regardless of exactly
+/// how far above 6 `nsync` is. Root-caused directly: `K1BZM DK8NE -10`
+/// (-19 dB, `qso3_busy.wav`) sits at `q=11` on mfsk-core's own SIC
+/// residual — verified to be an *exact* per-block match to real jt9's
+/// own residual at the same coordinates (`is1=1 is2=7 is3=3`,
+/// `nsync=11`, both sides, confirmed via a locally-instrumented jt9
+/// rebuild) — yet never reached this function at all under the old
+/// `q >= 12` gate. Manually running the OSD dispatch below anyway (llr
+/// variant `d`, `osd_decode_npre1_npre2`) decodes it outright at
+/// `hard_errors=22`, comfortably under [`OSD_HARDERRORS_MAX`]. The gap
+/// was never a sync/LLR/BP/OSD sensitivity problem — mfsk-core's own
+/// OSD implementation was already capable of the decode the whole
+/// time; this one-line gate was refusing to even try.
 pub(super) fn try_fallback(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
     precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
     depth: DecodeDepth,
     q: u32,
 ) -> Option<(BpResult, u8)> {
-    if !matches!(depth, DecodeDepth::BpAllOsd) || q < 12 {
+    if !matches!(depth, DecodeDepth::BpAllOsd) || q <= 6 {
         return None;
     }
 
