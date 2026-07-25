@@ -69,7 +69,8 @@ pub enum DecodeDepth {
 ///
 /// Adjusts OSD hard_errors thresholds, AP hard_errors thresholds, and
 /// the minimum sync score required for OSD fallback entry.
-/// Actual numeric values are placeholders pending benchmark calibration.
+/// The numeric policies below are calibrated from the committed real-WAV
+/// bench and retain separate conservative, normal, and deep operating points.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DecodeStrictness {
     /// Minimise false positives — tighter thresholds.

@@ -47,10 +47,9 @@ pub enum DecodeDepth {
 /// WSJT-X's own FST4 decoder has no such gates), so in practice these
 /// numbers are FT4-exclusive. `Normal` (FT4's hardcoded strictness,
 /// issue #72) was retuned 2026-07-18 against a `ft4sim` AWGN/CCIR sweep
-/// (`docs/notes/FT4_BENCHMARK.md`) — no longer a placeholder copy of the
-/// FT8 calibration. `Strict`/`Deep` are unused by any current caller but
-/// kept for the API shape; their numbers are the original FT8-copied
-/// values, unverified for FT4.
+/// (`docs/notes/FT4_BENCHMARK.md`). `Strict`/`Deep` are currently internal,
+/// unused policy rungs retained for API compatibility; every FT4/FST4
+/// production entry point selects the calibrated `Normal` policy.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DecodeStrictness {
     Strict,
@@ -68,7 +67,8 @@ impl DecodeStrictness {
     /// also growing false-accepts (any CRC-passing decode beyond the golden
     /// one) — see the `ft4_strictness_probe` test and
     /// `docs/notes/FT4_BENCHMARK.md` section 5 for the measurements.
-    /// `Strict`/`Deep` remain the original FT8-copied placeholders.
+    /// `Strict`/`Deep` are compatibility policies unused by production entry
+    /// points; `Normal` is the calibrated FT4 policy.
     pub fn osd_max_errors(self, osd_depth: u8) -> u32 {
         match (self, osd_depth) {
             (Self::Strict, 3) => 20,

@@ -310,17 +310,11 @@ q65_submode! {
     tr_period_s = 300,
 }
 
-/// FecCodec stub for Q65 — present so [`Q65a30`] can satisfy the
-/// `Protocol::Fec: FecCodec` bound; the real soft-decision decode
-/// path lives in [`Q65Codec`] and is invoked from
-/// [`crate::q65::rx`].
+/// Bit-level [`FecCodec`] adapter for Q65.
 ///
-/// `decode_soft` always returns `None` because the QRA decoder
-/// consumes per-symbol probability distributions over GF(64), not
-/// bit-level LLRs. `encode` is implemented faithfully (bit-level in,
-/// bit-level out) by routing through a transient [`Q65Codec`], so
-/// callers that want a quick reference encoding via the generic
-/// trait still get the right answer.
+/// Encoding packs six-bit groups into GF(64) symbols. Decoding turns each
+/// six-bit LLR group into a normalized 64-value probability distribution and
+/// routes it through the same [`Q65Codec`] used by the production receiver.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Q65Fec;
 

@@ -24,16 +24,9 @@
 //!   `sent[0..51]` is the parity block, reversed; `sent[51..63]`
 //!   is the data block, reversed. Use these from `jt65-core`.
 //!
-//! This type implements [`super::FecCodec`] only minimally: the
-//! `encode` path packs a bit-level 72-bit info into 378 codeword bits
-//! (63 × 6 bits), and `decode_soft` always returns `None` because
-//! Reed-Solomon needs hard symbols rather than bit LLRs. The real
-//! RS entry points are [`Rs63_12::encode_native`] /
-//! [`Rs63_12::decode_native`] (and the JT65-specific reversed-layout
-//! variants). The FecCodec impl exists so `Rs63_12` can be named as
-//! a `Protocol::Fec` associated type; callers that want to actually
-//! decode JT65 should go through `jt65-core`'s decode helpers rather
-//! than the generic `decode_frame` pipeline.
+//! This type also implements [`super::FecCodec`]. The adapter packs bit-level
+//! information into GF(64) symbols for encoding and collapses bit LLRs into
+//! hard GF(64) observations before invoking the native JT65-layout decoder.
 
 /// Sentinel used to mark "log of zero" in the index_of table. Matches
 /// Karn's `A0 = NN` convention: any log value equal to `A0` represents
@@ -497,15 +490,13 @@ impl Rs63_12 {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// FecCodec boundary stub
+// FecCodec boundary
 //
 // Rs63_12 is used as `<Jt65 as Protocol>::Fec`. The `Protocol` trait
 // requires `type Fec: FecCodec`, which is a bit-LLR-oriented interface
-// that does not map naturally onto hard-decision symbol-level RS. We
-// provide the minimum viable impl: `encode` packs 12 × 6 = 72 info
-// bits into 63 × 6 = 378 codeword bits using the JT65 layout, and
-// `decode_soft` always returns `None` — hard-symbol RS decoding lives
-// in `jt65-core` and uses `decode_jt65` / `decode_native` directly.
+// that does not map directly onto hard-decision symbol-level RS. This
+// adapter packs and unpacks bit groups while the native decoder performs
+// the actual JT65-layout correction.
 // ─────────────────────────────────────────────────────────────────────────
 
 use alloc::vec::Vec;
@@ -537,16 +528,57 @@ impl super::FecCodec for Rs63_12 {
         }
     }
 
-    /// Symbol-hard RS decoding cannot consume bit LLRs, so this path
-    /// returns `None`. Callers that want JT65 decoding should use the
-    /// symbol-level methods on [`Rs63_12`] from `jt65-core`.
-    fn decode_soft(&self, _llr: &[f32], _opts: &FecOpts) -> Option<FecResult> {
-        None
+    fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
+        assert_eq!(llr.len(), Self::N);
+        let mut working_llr = llr.to_vec();
+        if let Some((mask, values)) = opts.ap_mask {
+            assert_eq!(mask.len(), Self::N, "AP mask length");
+            assert_eq!(values.len(), Self::N, "AP values length");
+            let ap_magnitude = working_llr
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0_f32, f32::max)
+                .max(20.0);
+            for (index, (&known, &value)) in mask.iter().zip(values).enumerate() {
+                if known != 0 {
+                    working_llr[index] = if value != 0 {
+                        ap_magnitude
+                    } else {
+                        -ap_magnitude
+                    };
+                }
+            }
+        }
+
+        let mut received = [0_u8; Rs63_12::N_SYMBOLS];
+        for (symbol_index, symbol) in received.iter_mut().enumerate() {
+            for bit_index in 0..6 {
+                *symbol =
+                    (*symbol << 1) | u8::from(working_llr[6 * symbol_index + bit_index] > 0.0);
+            }
+        }
+        let (decoded_symbols, corrected_symbols) = self.decode_jt65(&received)?;
+        let mut info = vec![0_u8; Self::K];
+        for (symbol_index, &symbol) in decoded_symbols.iter().enumerate() {
+            for bit_index in 0..6 {
+                info[6 * symbol_index + bit_index] = (symbol >> (5 - bit_index)) & 1;
+            }
+        }
+        if opts.verify_info.is_some_and(|verify| !verify(&info)) {
+            return None;
+        }
+        Some(FecResult {
+            info,
+            hard_errors: corrected_symbols,
+            iterations: 0,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::core::FecCodec;
+
     use super::*;
 
     #[test]
@@ -561,6 +593,30 @@ mod tests {
                 "alpha_to[index_of[{x}]] != {x}"
             );
         }
+    }
+
+    #[test]
+    fn fec_trait_decodes_bit_llrs_and_corrects_symbol_errors() {
+        let rs = Rs63_12::new();
+        let info = (0..Rs63_12::K_SYMBOLS * 6)
+            .map(|index| ((index.wrapping_mul(7) ^ 0x2d) & 1) as u8)
+            .collect::<Vec<_>>();
+        let mut codeword = vec![0_u8; <Rs63_12 as FecCodec>::N];
+        FecCodec::encode(&rs, &info, &mut codeword);
+        let mut llr = codeword
+            .iter()
+            .map(|bit| if *bit == 1 { 12.0 } else { -12.0 })
+            .collect::<Vec<_>>();
+        for symbol_index in 0..10 {
+            for value in &mut llr[6 * symbol_index..6 * (symbol_index + 1)] {
+                *value = -*value;
+            }
+        }
+
+        let decoded = FecCodec::decode_soft(&rs, &llr, &FecOpts::default())
+            .expect("ten JT65 symbol errors are correctable");
+        assert_eq!(decoded.info, info);
+        assert_eq!(decoded.hard_errors, 10);
     }
 
     #[test]
