@@ -38,9 +38,6 @@ use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
-
 use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
 use super::super::llr::sync_quality;
 use super::coarse_sync::coarse_sync;
@@ -358,53 +355,34 @@ where
         }
     }
 
-    // Per-callsign batch processing, one Rayon task per harvested
-    // callsign — this is why the presync/blind-decode filters above
-    // matter for more than raw op count: by the time this loop runs,
-    // `refined` is down to a handful of genuinely-synced candidates
-    // (typically 1-7 on a real WAV), so each callsign's own batch call
-    // is cheap and the 15-ish callsigns are fully independent (a
-    // different `ApHint::call1` each, same read-only `refined`/`audio`
-    // /`fft_cache`) — an easy fit for the 15-way (or however many
-    // callsigns) parallelism this crate already uses for the analogous
-    // per-candidate loop in `ft8::decode`'s host driver. Each task
-    // computes against the *full* `refined` list rather than a
-    // shrinking one (the pre-parallelisation version removed a
-    // candidate from `remaining` once some callsign decoded it, so
-    // later callsigns wouldn't redundantly re-attempt it) — safe to
-    // drop now that there are only a handful of candidates left to
-    // begin with, and required for parallel workers to stay
-    // independent (no shared mutable state to race on).
+    // Per-callsign batch processing (sequential — see below for why
+    // this used to be a Rayon `par_iter` and no longer is).
     //
-    // Gemini PR #118 high-priority optimisation (still applies within
-    // each task): passing one (cand, callsign) pair at a time
-    // re-allocates `BpScratch` (~12 KB) on every invocation; batching
-    // all `refined` candidates per callsign reuses the BpScratch inside
+    // Gemini PR #118 high-priority optimisation (still applies): passing
+    // one (cand, callsign) pair at a time re-allocates `BpScratch`
+    // (~12 KB) on every invocation; batching all `refined` candidates
+    // per callsign reuses the BpScratch inside
     // `process_candidates_tuned_with_ap_ref`'s inner loop.
-    #[cfg(feature = "parallel")]
-    let all_batches: Vec<Vec<DecodeResult>> = callsigns
-        .par_iter()
-        .map(|callsign| {
-            let ap = ApHint::new().with_call1(callsign);
-            // `DecodeDepth::BpAll` — see the blind-precheck step above
-            // for why this loop skips OSD too.
-            process_candidates_tuned_with_ap_ref(
-                audio,
-                &refined,
-                DecodeDepth::BpAll,
-                DEFAULT_Q_THRESH,
-                bp_max_iter,
-                Some(&ap),
-                strictness,
-                Some(&fft_cache),
-            )
-        })
-        .collect();
-    #[cfg(not(feature = "parallel"))]
+    //
+    // **Reverted the Rayon parallelisation (issue #182 follow-up).**
+    // This function's own motivating case (`K1BZM DK8NE -10`) now
+    // decodes via blind `decode_frame_subtract_with_ap` alone once the
+    // OSD `bp_llr_zsum` fix landed (see
+    // `decode_frame_subtract_with_auto_ap`'s doc comment) — measured
+    // zero additional decodes from this whole function on
+    // `qso3_busy.wav`. Parallelising a search that finds nothing is
+    // pure wasted complexity: real, independent multi-core speedup
+    // with no offsetting value, carrying a second (parallel/sequential)
+    // code path to test and maintain for a research/diagnostic
+    // function that isn't part of any default decode path. Simplified
+    // back to one sequential path; re-introduce parallelism here only
+    // if a concrete case re-justifies this function's cost.
     let all_batches: Vec<Vec<DecodeResult>> = callsigns
         .iter()
         .map(|callsign| {
             let ap = ApHint::new().with_call1(callsign);
+            // `DecodeDepth::BpAll` — see the blind-precheck step above
+            // for why this loop skips OSD too.
             process_candidates_tuned_with_ap_ref(
                 audio,
                 &refined,
