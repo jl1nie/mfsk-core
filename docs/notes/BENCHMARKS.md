@@ -23,7 +23,7 @@ Two kinds of numbers appear per protocol:
 | FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
-| JT9      | 5/5 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
+| JT9      | 7/7 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
 | JT65     | none available | **~7-8 dB** at deep SNR | known gap, deprioritized |
 | Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
@@ -39,7 +39,14 @@ Wall-clock time for one full decode call against each protocol's real
 WSJT-X-recorded golden WAV (see the recall sections below for which
 file and which decode function). Measured 2026-07-20, single run per
 row — treat as an order-of-magnitude reference, not an averaged
-benchmark.
+benchmark. Re-verified in full 2026-07-26 (each row re-run against its
+own protocol's real recall/timing harness) after the FT8 fine-sync
+refinement rewrite below (`fine_refine_3stage`'s reference-tweak
+port) and a cross-protocol Costas-reference caching hoist in
+`core::sync::fine_sync_power_per_block`: FT8 moved again (see its own
+row); every other row was confirmed unchanged within run-to-run noise
+(≤~15%) **except FT4**, which turned out to already be stale for an
+unrelated reason — see its row below.
 
 **Compute environment**: AMD Ryzen 9 9900X (12C/24T), 32 GB RAM,
 Ubuntu 24.04.2 LTS under WSL2 (kernel 6.6.87.2-microsoft-standard-WSL2),
@@ -49,9 +56,9 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
-| FT4 | 000000_000002.wav | 7.5 s | 0.049 s |
+| FT4 | 000000_000002.wav | 7.5 s | 0.28 s (was 0.049 s pre-#178-180, briefly regressed to ~0.53-0.58 s — see note) |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.08 s |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.12 s |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.10 s |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.12 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.12 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.26 s |
@@ -69,6 +76,52 @@ Notes:
 - These are real-recording decode times, not synthetic sweeps — they
   reflect actual candidate density and search cost on real audio, not
   a clean-signal best case.
+- **FT8's `qso3_busy.wav` row dropped again, 0.12 s → ~0.10 s**
+  (2026-07-26), re-measured via `decode_block(&slot, 100.0, 3000.0,
+  1.3, DecodeDepth::BpVariantsAd, 15)` — the exact ship-config call
+  `ft8_qso3_apoff_recall.rs`'s `qso3_apoff_meets_wsjtx_golden_floor`
+  uses, matching this row's original 2026-07-25 methodology. Comes
+  from `fine_refine_3stage`'s rewrite (tweaks a small 32-sample Costas
+  reference waveform instead of shifting the whole 3200-sample `cd0`
+  baseband buffer per trial DF/DT, matching WSJT-X's real
+  `sync8d.f90`/`ft8b.f90:133-140` algorithm) plus a `core::sync.rs`
+  cross-protocol Costas-reference caching hoist — both trig-heavy-loop
+  fixes, not new algorithms. Recall byte-identical (7/8 golden, 7
+  phantom, 14 total on `qso3_apoff`; 18/18 on `qso3_jtdx`; 6/6 JTDX
+  AP-on multipass extras — see the FT8 section below for that last
+  number's own history). See `CHANGELOG.md` for the full investigation
+  (issue #182 follow-up).
+- **FT4's `000000_000002.wav` row was stale, then found regressed,
+  then fixed (issue #182).** First found 2026-07-26 while re-verifying
+  every row for the FT8 fix above: real wall-clock was ~0.53-0.58 s, not
+  the documented 0.049 s — not itself caused by that fix, bisected to
+  `7bc1684` / issues #178-#180 (already merged to `main` before this
+  pass started), which migrated FT4's `decode_frame_subtract` from a
+  cheap constant-amplitude subtract onto the same WSJT-X-faithful
+  channel-aware LPF subtract FT8 uses (`subtract_tones_lpf`,
+  `FT4_SUBTRACT`'s `lpf_half=700`/`GfskParams`) for recall-quality
+  reasons, without a corresponding re-measurement of this row.
+
+  Root cause: not `subtract_tones_lpf` (already FFT-cached, <1 ms/call)
+  but `core::dsp::subtract::refine_freq` — its ±5 Hz/0.1 Hz carrier
+  grid search (~101 evaluations/candidate) called `generate_iq` fresh
+  every evaluation, fully rebuilding the GFSK-shaped modulation
+  (erf-based pulse table, `O(nsym·pulse_len)` convolution, `O(nwave)`
+  `sin`/`cos` integration) even though only the carrier frequency
+  differs between evaluations — ~35 ms/call, ×14 real decodes ≈ 490 ms,
+  essentially the entire regression. Fixed by building the carrier-free
+  phasor once per call and applying each grid point via a cheap
+  per-sample NCO rotation instead of a full resynthesis
+  (`ls_amp_mag_tweaked`), verified against the frozen full-resynthesis
+  path with a differential + argmax-preservation test. `refine_freq`
+  dropped to ~15.7 ms/call; `decode_frame_subtract` wall-clock:
+  multi-threaded ~575.8 ms → ~280 ms, single-threaded ~893.6 ms →
+  ~602 ms. Not a full return to 48.8 ms — the LPF subtract + freq-refine
+  step is a deliberate, permanent recall-quality cost (see
+  `FT4_BENCHMARK.md` section 13's update for the full account); this fix
+  removes the *redundant* part of that cost, not the cost itself.
+  Candidate count unchanged (31, matching the 25× coarse-sync fix's own
+  numbers) and recall unaffected (still 6/6).
 - FT8's `qso3_busy.wav` was the outlier at **4.73 s** (busy band, 16
   simultaneous signals) until a profiling pass (2026-07-20) found the
   cost wasn't BP/OSD at all but `subtract_tones_lpf`'s successive-
@@ -346,10 +399,16 @@ trials) as a representative single sub-mode.
   same WAV, confirming it was always a real signal, just one
   mfsk-core's own broken SIC window was failing to clean up enough to
   reach. See issue #180 and PR #178 for the full investigation.
-- **Host AP-on multipass JTDX-extras: 5/6** via
-  `decode_frame_subtract_with_ap`. The remaining miss (`K1BZM DK8NE`,
-  fixed AP context `mycall=K1JT`/`hiscall=HA0DU`) needs a wider
-  AP-list / callsign hash table.
+- **Host AP-on multipass JTDX-extras: 6/6** via
+  `decode_frame_subtract_with_ap` (was 5/6 through 2026-07-25; the
+  remaining miss, `K1BZM DK8NE`, was never an AP-list breadth problem
+  — that hypothesis is retracted). Root cause was `osd_decode_npre1`
+  (WSJT-X's OSD `ndeep=2` dispatch) being fed raw channel LLR instead
+  of the BP-refined `bp_llr_zsum`, unlike WSJT-X's real
+  `decode174_91.f90` driver, which always hands OSD the post-BP LLR.
+  Fixed by threading the already-computed BP-refined LLR through to
+  the OSD call site instead of recomputing/reusing the pre-BP one
+  (issue [#182](https://github.com/jl1nie/mfsk-core/issues/182)).
 - **Embedded (M5StickS3, Xtensa LX7, fixed-point)**: 6/18 + 1 bonus =
   7 total on the same WAV, in ~1.19 s post-SlotEnd via the streaming
   pipeline. M5Stack Core2 (LX6): ~2.8 s.
@@ -373,8 +432,13 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 ## FT4
 
 - **6/6 WSJT-X golden** (`samples/FT4/000000_000002.wav`), decoded in
-  **0.049 s** (was 1.20 s — see "Decode speed" notes above and
-  `FT4_BENCHMARK.md` section 13).
+  **~0.28 s** as of 2026-07-26 (briefly 0.049 s right after the
+  `getcandidates4.f90`-port fix, up from 1.20 s before it — see
+  "Decode speed" notes above and `FT4_BENCHMARK.md` section 13 — then a
+  later LPF-subtract migration re-inflated it to ~0.53-0.58 s via a
+  redundant-resynthesis bug in `refine_freq`, fixed same-day, issue
+  #182; see the "Decode speed" table's own FT4 note for the full
+  account).
 - **AWGN sensitivity gap: ~0.6 dB** (was ~0.3 dB before the coarse-sync
   algorithm swap, ~1.8 dB pre-0.7.3) — 50% recall crossing moved from
   −15.5 dB to −17.2 dB after a coherent Costas-block scorer fix and an
@@ -471,9 +535,13 @@ reference bandwidth).
 
 ## JT9
 
-- **5/5 WSJT-X golden** (`samples/JT9/130418_1742.wav`) via the full
+- **7/7 WSJT-X golden** (`samples/JT9/130418_1742.wav`) via the full
   WSJT-X-faithful softsym pipeline (`afc9` + `chkss2` + `xx0` mettab +
-  `sync9` per-freq collapse).
+  `sync9` per-freq collapse). This table previously said 5/5 — stale;
+  `jt9_wsjtx_samples.rs`'s own comment records 7/7 as of 2026-05-08,
+  well before this row was last touched. Found and corrected
+  2026-07-26 during an unrelated cross-protocol re-verification pass;
+  decode speed re-confirmed unchanged (0.33 s → 0.34 s, within noise).
 
 **AWGN sensitivity sweep** (`tests/jt9_sweep.rs`, `jt9sim`-driven,
 20 trials/SNR):

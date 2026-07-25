@@ -39,8 +39,8 @@ collaborators), which remains the reference implementation — see
   FST4 is within 0.1-0.6 dB of WSJT-X's published thresholds across
   all five sub-modes; FT4's AWGN gap is ~0.3 dB; MSK144 matches a real
   WSJT-X `jt9` build on 25/28 AWGN cross-check cells exactly; FT8
-  scores 7/8 on the WSJT-X golden set and 17/18 against JTDX's; WSPR
-  and JT9 are 8/8 and 5/5 on their WSJT-X reference recordings. The
+  scores 7/8 on the WSJT-X golden set and 18/18 against JTDX's; WSPR
+  and JT9 are 8/8 and 7/7 on their WSJT-X reference recordings. The
   one exception is disclosed, not hidden: JT65 trails WSJT-X's
   stochastic `ftrsdap` decoder by ~7-8 dB at deep SNR, a gap that's
   root-caused but deliberately not closed (Q65 already covers the
@@ -347,11 +347,11 @@ sweep was generated and reproduced, in
 
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X |
 |----------|-------------------|----------------------|
-| FT8      | 7/8 (WSJT-X), 17/18 (JTDX) | CCIR fading gap closed |
+| FT8      | 7/8 (WSJT-X), 18/18 (JTDX) | CCIR fading gap closed |
 | FT4      | 6/6 | ~0.3 dB |
 | FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
 | WSPR     | 8/8 | matches published sensitivity floor |
-| JT9      | 5/5 | no measurable gap |
+| JT9      | 7/7 | no measurable gap |
 | JT65     | none available | **~7-8 dB** (known, deprioritized — see [#169](https://github.com/jl1nie/mfsk-core/issues/169)) |
 | Q65      | 2 real EME recordings | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
 | MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build |

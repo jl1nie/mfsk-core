@@ -93,6 +93,12 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
 /// LS amplitude magnitude for a candidate `(freq_hz, dt_sec)`. Returns
 /// `sqrt(a² + b²)` where `(a, b)` are the cos/sin LS projections of
 /// `audio` onto the GFSK reference at `freq_hz`. Higher = closer match.
+///
+/// `refine_freq` no longer calls this directly (see
+/// [`ls_amp_mag_tweaked`]) — kept `#[cfg(test)]`-only as the frozen,
+/// trusted full-resynthesis reference its differential test compares
+/// against.
+#[cfg(test)]
 fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &SubtractCfg) -> f32 {
     let (w_cos, w_sin) = generate_iq(tones, freq_hz, cfg);
     let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
@@ -123,6 +129,97 @@ fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &Subt
     ((a * a + b * b) as f32).sqrt()
 }
 
+/// Number of samples between rotor-magnitude renormalizations in
+/// [`ls_amp_mag_tweaked`]'s incremental NCO. Bounds f32 rounding drift
+/// over the ~59k (FT4) / ~334k (FT8) sample buffers `refine_freq`
+/// sweeps; cheap relative to the multiply-adds it guards (one `norm()`
+/// + divide every 256 samples).
+const NCO_RESYNC_SAMPLES: usize = 256;
+
+/// Same LS amplitude magnitude as [`ls_amp_mag`], but takes a
+/// precomputed carrier-free (`freq_hz = 0.0`) reference phasor
+/// `(base_cos, base_sin)` and applies `freq_hz` via a cheap per-sample
+/// NCO rotation instead of resynthesizing the whole GFSK waveform.
+///
+/// Valid because `generate_iq`'s carrier term is added *uniformly* to
+/// every entry of its internal phase-rate array before integration, so
+/// `phi(k; f0) = phi_mod(k) + k · (2π · f0 · dt)` — i.e. any carrier
+/// just adds a pure linear phase ramp on top of the carrier-free
+/// (tone-modulation-only) phase `phi_mod(k)` that `base_cos`/`base_sin`
+/// already encode. Rotating by that ramp via `nco(k) = exp(j · k · 2π ·
+/// f0 · dt)` and combining via the angle-addition identities
+/// (`cos(a+b)`, `sin(a+b)`) reproduces `generate_iq(tones, f0, cfg)`
+/// without repeating its `O(nsym · pulse_len)` Gaussian-pulse
+/// convolution or its `O(nwave)` `sin`/`cos` integration — both
+/// independent of `f0`, and (measured) the dominant cost of
+/// `refine_freq`'s ~50-100-point frequency grid search (issue #182:
+/// FT4's `decode_frame_subtract` regressed from 48.8ms to ~530ms after
+/// issues #178-180 wired `refine_freq` into FT4's subtract path; ~35ms
+/// of that was this resynthesis, repeated per real decode).
+fn ls_amp_mag_tweaked(
+    audio: &[i16],
+    base_cos: &[f32],
+    base_sin: &[f32],
+    freq_hz: f32,
+    dt_sec: f32,
+    dt: f32,
+    cfg: &SubtractCfg,
+) -> f32 {
+    let signed_start = ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64;
+    let (audio_off, ref_off) = if signed_start < 0 {
+        (0usize, (-signed_start) as usize)
+    } else {
+        (signed_start as usize, 0usize)
+    };
+    if ref_off >= base_cos.len() {
+        return 0.0;
+    }
+    let len = (base_cos.len() - ref_off).min(audio.len().saturating_sub(audio_off));
+    if len == 0 {
+        return 0.0;
+    }
+
+    let step_phase = 2.0 * PI * freq_hz * dt;
+    let (step_cos, step_sin) = (step_phase.cos(), step_phase.sin());
+    // Seed the rotor at absolute index `ref_off` (one trig call), then
+    // advance it by incremental complex multiply — matching the
+    // absolute-index carrier phase `generate_iq(tones, freq_hz, cfg)`
+    // would have produced at the same position.
+    let seed_phase = step_phase * ref_off as f32;
+    let (mut nco_re, mut nco_im) = (seed_phase.cos(), seed_phase.sin());
+
+    let (mut na, mut nb, mut da, mut db) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for i in 0..len {
+        let bc = base_cos[ref_off + i];
+        let bs = base_sin[ref_off + i];
+        let c = bc * nco_re - bs * nco_im;
+        let s = bs * nco_re + bc * nco_im;
+
+        let rx = audio[audio_off + i] as f64;
+        na += rx * c as f64;
+        nb += rx * s as f64;
+        da += (c * c) as f64;
+        db += (s * s) as f64;
+
+        let (new_re, new_im) = (
+            nco_re * step_cos - nco_im * step_sin,
+            nco_re * step_sin + nco_im * step_cos,
+        );
+        nco_re = new_re;
+        nco_im = new_im;
+        if (i + 1) % NCO_RESYNC_SAMPLES == 0 {
+            let norm = (nco_re * nco_re + nco_im * nco_im).sqrt();
+            if norm > f32::EPSILON {
+                nco_re /= norm;
+                nco_im /= norm;
+            }
+        }
+    }
+    let a = if da > 0.0 { na / da } else { 0.0 };
+    let b = if db > 0.0 { nb / db } else { 0.0 };
+    ((a * a + b * b) as f32).sqrt()
+}
+
 /// Refine the carrier frequency around `freq_hz_init` by grid search,
 /// returning the freq that maximises the LS amplitude magnitude of the
 /// GFSK reference vs `audio`.
@@ -139,7 +236,9 @@ fn ls_amp_mag(audio: &[i16], tones: &[u8], freq_hz: f32, dt_sec: f32, cfg: &Subt
 /// host f32, embedded paths may use coarser steps for speed).
 ///
 /// Mirrors WSJT-X's `ft8b.f90` `sync8d` + `ctwk` step (32-element
-/// twiddle table over ±2.5 Hz).
+/// twiddle table over ±2.5 Hz). Builds the carrier-free GFSK reference
+/// once (`ls_amp_mag_tweaked`) rather than resynthesizing it at every
+/// grid step — see that function's doc comment for why this is safe.
 pub fn refine_freq(
     audio: &[i16],
     tones: &[u8],
@@ -150,12 +249,23 @@ pub fn refine_freq(
     step_hz: f32,
 ) -> f32 {
     debug_assert!(cfg.gfsk.is_some(), "refine_freq requires GFSK shaping");
+    let (base_cos, base_sin) = generate_iq(tones, 0.0, cfg);
+    let dt = 1.0 / cfg.sample_rate;
     let mut best_freq = freq_hz_init;
-    let mut best_amp = ls_amp_mag(audio, tones, freq_hz_init, dt_sec, cfg);
+    let mut best_amp =
+        ls_amp_mag_tweaked(audio, &base_cos, &base_sin, freq_hz_init, dt_sec, dt, cfg);
     let mut df = -radius_hz;
     while df <= radius_hz {
         if df.abs() > f32::EPSILON {
-            let a = ls_amp_mag(audio, tones, freq_hz_init + df, dt_sec, cfg);
+            let a = ls_amp_mag_tweaked(
+                audio,
+                &base_cos,
+                &base_sin,
+                freq_hz_init + df,
+                dt_sec,
+                dt,
+                cfg,
+            );
             if a > best_amp {
                 best_amp = a;
                 best_freq = freq_hz_init + df;
@@ -1012,6 +1122,150 @@ mod tests {
         assert!(
             drop_db < -30.0,
             "positive-DT subtract drop only {drop_db:.1} dB"
+        );
+    }
+
+    fn ft4_like_cfg() -> SubtractCfg {
+        SubtractCfg {
+            sample_rate: 12_000.0,
+            tone_spacing_hz: 20.833,
+            samples_per_symbol: 576,
+            base_offset_s: 0.5,
+            gfsk: Some(GfskParams {
+                bt: 1.0,
+                hmod: 1.0,
+                ramp_samples: 576 / 8,
+            }),
+        }
+    }
+
+    fn ft8_like_cfg() -> SubtractCfg {
+        SubtractCfg {
+            sample_rate: 12_000.0,
+            tone_spacing_hz: 6.25,
+            samples_per_symbol: 1920,
+            base_offset_s: 0.5,
+            gfsk: Some(GfskParams {
+                bt: 2.0,
+                hmod: 1.0,
+                ramp_samples: 1920 / 8,
+            }),
+        }
+    }
+
+    /// `ls_amp_mag_tweaked`'s NCO-rotation fast path must match
+    /// `ls_amp_mag`'s full-resynthesis result (issue #182's FT4
+    /// decode-speed fix) within a tight, measured relative tolerance
+    /// across both protocols' real `refine_freq` sweep ranges.
+    #[test]
+    fn ls_amp_mag_tweaked_matches_full_resynthesis() {
+        // `ls_amp_mag`'s LS amplitude has a comb of deep nulls a few
+        // tenths of a Hz apart (an inherent property of correlating a
+        // GFSK reference against itself at a near-but-not-exact carrier,
+        // not an artifact of either implementation) where a purely
+        // relative-error metric blows up even though the *absolute*
+        // discrepancy between the two implementations stays tiny
+        // relative to the signal's own amplitude scale. Use a combined
+        // absolute-or-relative tolerance, with the absolute floor tied
+        // to the known synth amplitude below (measured: away from
+        // nulls, relative error is ~0.001-2.3%; at nulls, absolute error
+        // stays under ~0.2% of the synth amplitude).
+        const AMPLITUDE: f32 = 8000.0;
+        const ABS_TOL: f32 = 1e-3 * AMPLITUDE;
+        const REL_TOL: f32 = 3e-2;
+        let mut max_abs_err = 0.0f32;
+        let mut max_rel_err = 0.0f32;
+
+        for (cfg, radius_hz, nsym) in [(ft4_like_cfg(), 5.0f32, 103), (ft8_like_cfg(), 2.5f32, 79)]
+        {
+            let tones: Vec<u8> = (0..nsym).map(|k| ((k * 3 + 1) % 8) as u8).collect();
+            let samples = {
+                let n = tones.len() * cfg.samples_per_symbol;
+                let mut out = vec![0.0f32; n];
+                let gfsk_cfg = crate::core::dsp::gfsk::GfskCfg {
+                    sample_rate: cfg.sample_rate,
+                    samples_per_symbol: cfg.samples_per_symbol,
+                    bt: cfg.gfsk.unwrap().bt,
+                    hmod: cfg.gfsk.unwrap().hmod,
+                    ramp_samples: cfg.gfsk.unwrap().ramp_samples,
+                };
+                crate::core::dsp::gfsk::synth_f32_into(
+                    &mut out, &tones, 1500.0, AMPLITUDE, &gfsk_cfg,
+                );
+                out
+            };
+            let offset = (cfg.base_offset_s * cfg.sample_rate) as usize;
+            let mut audio = vec![0i16; samples.len() + offset + 4000];
+            for (i, &s) in samples.iter().enumerate() {
+                audio[offset + i] = s.clamp(-32_768.0, 32_767.0) as i16;
+            }
+
+            let (base_cos, base_sin) = generate_iq(&tones, 0.0, &cfg);
+            let dt = 1.0 / cfg.sample_rate;
+
+            for dt_sec in [0.0f32, 0.15, -0.2] {
+                let mut df = -radius_hz;
+                while df <= radius_hz {
+                    let freq = 1500.0 + df;
+                    let expected = ls_amp_mag(&audio, &tones, freq, dt_sec, &cfg);
+                    let actual =
+                        ls_amp_mag_tweaked(&audio, &base_cos, &base_sin, freq, dt_sec, dt, &cfg);
+                    let abs_err = (actual - expected).abs();
+                    let rel_err = abs_err / expected.abs().max(f32::EPSILON);
+                    max_abs_err = max_abs_err.max(abs_err);
+                    if abs_err > ABS_TOL && rel_err > REL_TOL {
+                        panic!(
+                            "df={df} dt_sec={dt_sec}: expected={expected} actual={actual} \
+                             abs_err={abs_err} (tol {ABS_TOL}) rel_err={rel_err} (tol {REL_TOL})"
+                        );
+                    }
+                    if abs_err > ABS_TOL {
+                        // Away from a null (else the ABS_TOL branch above
+                        // would have already accepted it) — relative
+                        // error is meaningful here.
+                        max_rel_err = max_rel_err.max(rel_err);
+                    }
+                    df += 0.1;
+                }
+            }
+        }
+        eprintln!("MEASURED max_abs_err={max_abs_err} max_rel_err (away from nulls)={max_rel_err}");
+    }
+
+    /// `refine_freq` must still find the true off-grid carrier after
+    /// switching to the NCO-tweaked fast path, not just stay numerically
+    /// close to the old per-step resynthesis on average.
+    #[test]
+    fn refine_freq_finds_true_offgrid_carrier() {
+        let cfg = ft4_like_cfg();
+        let tones: Vec<u8> = (0..103).map(|k| ((k * 5 + 2) % 8) as u8).collect();
+        let freq_hz_init = 1500.0f32;
+        let freq_true = freq_hz_init + 1.7;
+
+        let samples = {
+            let n = tones.len() * cfg.samples_per_symbol;
+            let mut out = vec![0.0f32; n];
+            let g = cfg.gfsk.unwrap();
+            let gfsk_cfg = crate::core::dsp::gfsk::GfskCfg {
+                sample_rate: cfg.sample_rate,
+                samples_per_symbol: cfg.samples_per_symbol,
+                bt: g.bt,
+                hmod: g.hmod,
+                ramp_samples: g.ramp_samples,
+            };
+            crate::core::dsp::gfsk::synth_f32_into(&mut out, &tones, freq_true, 8000.0, &gfsk_cfg);
+            out
+        };
+        let offset = (cfg.base_offset_s * cfg.sample_rate) as usize;
+        let mut audio = vec![0i16; samples.len() + offset + 4000];
+        for (i, &s) in samples.iter().enumerate() {
+            audio[offset + i] = s.clamp(-32_768.0, 32_767.0) as i16;
+        }
+
+        let refined = refine_freq(&audio, &tones, freq_hz_init, 0.0, &cfg, 5.0, 0.1);
+        assert!(
+            (refined - freq_true).abs() <= 0.1 + 1e-3,
+            "refine_freq picked {refined}, expected within 0.1 Hz of true carrier {freq_true}"
         );
     }
 }

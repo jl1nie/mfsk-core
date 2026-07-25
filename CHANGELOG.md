@@ -441,6 +441,139 @@
   regressions (full workspace `cargo test --release --features full`,
   `qso3_apon_subtract_jtdx_extras_diag` still 6/6 JTDX extras).
 
+- **`fine_refine_3stage` (`ft8/refine_fine.rs`) sped up ~45% by porting
+  WSJT-X's real Stage-B/C algorithm** (issue #182 follow-up). Pulling
+  real `jt9 -8 -d3`'s own `timer.out` breakdown found its BP+OSD stage
+  (`dec174_9`) was 65% of jt9's *own* total runtime — while our own
+  BP+OSD staircase (after the fixes above) was already ~2.5x faster
+  than jt9's, our `process_candidate` "prelude" (dominated by
+  `fine_refine_3stage`) still ran at ~2.2x jt9's own per-candidate rate
+  for the equivalent step. Root-caused by reading `lib/ft8/sync8d.f90`
+  and `lib/ft8/ft8b.f90:104-154` directly: our port's Stage-B/C
+  frequency sweep shifted the *entire* ~3200-sample `cd0` baseband
+  buffer per trial (11 trials/candidate, ~35,200 elements of work),
+  while WSJT-X's real algorithm tweaks only the **32-sample Costas
+  reference waveform** per trial (`ft8b.f90:133-140`'s `ctwk`,
+  multiplied into `sync8d.f90`'s cached `csync` before conjugating) and
+  never touches the data buffer at all — ~100x less arithmetic by
+  construction, not a missing optimization. `sync8d.f90`'s `save
+  first,twopi,csync` also confirmed WSJT-X caches its Costas reference
+  table once for the *entire process*, not once per candidate.
+
+  Two incremental fixes earlier in this same investigation (a
+  once-per-candidate Costas-table lookup, then an NCO-rotation
+  approximation for the data-shift with a tolerance-validated
+  differential test) had already cut wall-clock from ~966ms to ~753ms
+  single-threaded on `qso3_busy.wav` — real wins, but optimizing the
+  *wrong* algorithm faster rather than replacing it. Porting WSJT-X's
+  actual reference-tweak approach obsoletes both: the Costas table is
+  now cached for the process lifetime (`std::sync::OnceLock`, `no_std`
+  builds keep the once-per-candidate fallback), and the frequency sweep
+  tweaks a 32-element reference (`build_tweak`, mirroring `ctwk` exactly
+  — including the *non*-negated sign convention, since the tweak lands
+  on the conjugated reference rather than the data) instead of shifting
+  `cd0`. The old NCO-approximated `shift_freq` (and its `tmp` buffer
+  allocation) is deleted entirely — nothing left to call it.
+
+  Verified via a new differential test comparing the reference-tweak
+  formulation against a frozen copy of the exact data-shift approach it
+  replaces: measured max relative error `5.3e-6`, tighter than the
+  `1e-5` bound (this is floating-point reassociation of two
+  *exactly-equivalent* formulations, not an approximation — unlike the
+  NCO fix it replaces). All 5 pre-existing `fine_refine_3stage` tests
+  (including the sign-sensitive `freq_snap_positive_offset`/
+  `freq_snap_negative_offset`) pass unchanged. Also hoisted the same
+  "don't recompute a value that hasn't changed" fix into
+  `core::sync::fine_sync_power_per_block` (used for `sync_cv`,
+  shared across protocols) — FT8's 3 identical Costas sync blocks no
+  longer rebuild the same reference waveform 3x per call; content-equal
+  (not pointer-identity) caching keeps it correct for any `Protocol`.
+
+  **Result**: single-threaded blind decode of `qso3_busy.wav`:
+  **~753ms → ~682-719ms (avg ~700ms)** — ~39% faster than real
+  `jt9 -8 -d3`'s own ~1.1s total file decode time. Full workspace
+  regression (100% pass), `qso3_apon_subtract_jtdx_extras_diag` (still
+  6/6 JTDX extras), and the no_std/fixed-point feature matrix across
+  every protocol touched by the shared `core::sync.rs` change: all
+  clean.
+
+  Two smaller, related fixes landed in the same investigation: (1)
+  `process_candidate`'s prelude reordered so `sync_quality`'s
+  `nsync<=6` gate runs right after the cheap sync-symbol-only extraction
+  and before the expensive 58-data-symbol FFT extraction — `sync_quality`
+  never reads the data symbols, so the ~82% of candidates that fail this
+  gate on `qso3_busy.wav` no longer pay for work whose result is never
+  used. (2) `try_fallback`'s OSD dispatch now reuses the LLR variants
+  `process_one_candidate_inner`'s own BP staircase already computed
+  (`llra`/`llrd`/`llrb`/`llrc`) instead of a fresh `compute_llr`
+  recompute — that recompute previously only got skipped when an AP
+  hint was present (Gemini PR #81's original intent, avoiding a
+  *second* recompute between OSD and the AP loop), so blind decode (the
+  common case) always paid for nsym=3's full cost twice per
+  OSD-reaching candidate. Also cached `bp_step_select`'s
+  `MFSK_BP_KIND` env-var lookup (`std::sync::OnceLock`) instead of a
+  syscall-and-allocate `std::env::var` on every one of the up-to-4
+  BP calls per candidate — a debug-only A/B switch that never needs to
+  change mid-process.
+
+- **`core::dsp::subtract::refine_freq` sped up ~2.2x/call, fixing an FT4
+  decode-speed regression** (issue #182 follow-up). While re-verifying
+  every protocol's decode-speed benchmark row after the
+  `fine_refine_3stage` fix above (`core::sync.rs`'s cache hoist touches
+  every protocol), FT4's `decode_frame_subtract` golden-WAV wall-clock
+  turned out to have silently regressed from 48.8ms to ~526-576ms —
+  caused by an earlier, unrelated, already-merged commit (issues
+  #178-#180, migrating FT4 onto FT8's WSJT-X-faithful channel-aware LPF
+  subtract for recall-quality reasons) that was never re-benchmarked
+  afterward. Root-caused (not just documented) via temporary `Instant`
+  timers around the SIC subtract loop's two calls per accepted
+  candidate: `subtract_tones_lpf` was fine (already FFT-cached from
+  issue #180, <1ms/call); `refine_freq` cost ~35ms/call — essentially
+  the entire regression (×14 real decodes ≈ 490ms).
+
+  `refine_freq` grid-searches ±5Hz (FT4) / ±2.5Hz (FT8) at 0.1Hz
+  resolution to compensate for coarse-sync's bin-quantized carrier
+  estimate before subtracting. Every one of its ~50-100 evaluations
+  called `generate_iq` → `synth_complex_f32_into` fresh, fully
+  rebuilding the GFSK-shaped modulation (erf-based Gaussian pulse
+  table, `O(nsym·pulse_len)` per-symbol convolution, full `O(nwave)`
+  phase-integration + `sin`/`cos` loop) even though only the carrier
+  frequency differs between evaluations of one call — the same
+  "recompute something invariant across a search loop" bug pattern as
+  the `fine_refine_3stage` fix above, this time in the protocol-agnostic
+  subtract path shared by FT4 and FT8.
+
+  `generate_iq`'s carrier term is added uniformly to every sample before
+  phase integration, so `phi(k; f0) = phi_mod(k) + k·(2π·f0·dt)` — any
+  carrier is a pure linear phase ramp on top of the carrier-free
+  (tone-modulation-only) phase. Fixed by building the carrier-free
+  phasor once per `refine_freq` call and deriving each grid point via a
+  cheap per-sample NCO rotation + angle-addition instead of a full
+  resynthesis (`ls_amp_mag_tweaked`), with periodic rotor
+  renormalization to bound f32 drift over the ~59k (FT4) / ~334k (FT8)
+  sample buffers. Verified against the frozen full-resynthesis path
+  (`ls_amp_mag`, now `#[cfg(test)]`-only) with a differential test using
+  a combined absolute/relative tolerance — the LS amplitude has a comb
+  of deep correlation nulls a few tenths of a Hz apart where relative
+  error alone isn't meaningful — plus an argmax-preservation test
+  confirming the search still finds the true off-grid carrier.
+
+  **Result**: `refine_freq` ~35ms/call → ~15.7ms/call
+  (`RAYON_NUM_THREADS=1`, isolating per-call cost from thread count).
+  `decode_frame_subtract` real production wall-clock: multi-threaded
+  ~575.8ms → ~280ms, single-threaded ~893.6ms → ~602ms. Not a full
+  return to 48.8ms — the LPF subtract + freq-refine step is a
+  deliberate, permanent recall-quality cost (10/10 vs 0/10 on a
+  Rayleigh-faded-interferer scenario, `docs/notes/FT4_BENCHMARK.md`
+  section 13) that will always cost more than the pre-#178
+  constant-amplitude path; this fix removes the *redundant* part of
+  that cost, not the cost itself. Candidate count unchanged (31/31, no
+  redundancy) and recall unaffected (`ft4_wsjtx_sample_recall_vs_golden`
+  still 6/6). Also re-confirmed FT8's own SIC/JTDX golden suite
+  byte-identical (`qso3_apoff` 7/8+7 phantom, `qso3_jtdx` 18/18,
+  `qso3_apon` 6/6 JTDX extras) since `refine_freq` sits on FT8's subtract
+  path too.
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

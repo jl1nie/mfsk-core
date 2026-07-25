@@ -601,6 +601,60 @@ accept, not a golden miss). `max_cand` in the golden test dropped
 2000→100 with byte-identical recall — 100 also happens to match WSJT-X's
 own `MAXCAND=100` in `ft4_decode.f90`, unplanned but reassuring symmetry.
 
+**Update (2026-07-26): this 48.8 ms figure went stale, then was fixed
+(issue #182).** Issues #178-#180 (see `FT8_BENCHMARK.md` section 8)
+migrated FT4's `decode_frame_subtract` from the cheap constant-amplitude
+subtract this section measured onto the same WSJT-X-faithful
+channel-aware LPF subtract FT8 uses, for recall-quality reasons — but
+this row was never re-measured afterward, and regressed to ~526-576 ms
+(median of several runs, both `decode_frame_subtract(&audio, 100.0,
+2700.0, 0.05, 100)` directly and via this file's own
+`ft4_diag_candidate_cost_split` instrumentation).
+
+Root cause (found by adding temporary `Instant` timers around the two
+calls the SIC subtract loop makes per accepted candidate): not
+`subtract_tones_lpf` itself (already FFT-cached from issue #180, <1 ms/
+call) but `core::dsp::subtract::refine_freq`, at ~35 ms/call × 14 real
+decodes ≈ 490 ms — essentially the entire regression. `refine_freq`
+grid-searches ±5 Hz at 0.1 Hz resolution (~101 evaluations) to compensate
+for `ft4_coarse_sync`'s ~5.2 Hz-bin carrier estimate before subtracting;
+every evaluation called `generate_iq` → `synth_complex_f32_into`, which
+rebuilt the **entire** GFSK-shaped modulation from scratch each time
+(erf-based Gaussian pulse table, `O(nsym·pulse_len)` per-symbol
+convolution, full `O(nwave)` phase-integration + `sin`/`cos` loop) even
+though only the carrier frequency differs between the 101 evaluations of
+one call — the same "recompute something invariant across a search
+loop" bug pattern as this file's `fine_refine_3stage` fix.
+
+**Fix**: `generate_iq`'s carrier term is added uniformly to every sample
+before phase integration, so `phi(k; f0) = phi_mod(k) + k·(2π·f0·dt)` —
+any carrier is a pure linear phase ramp on top of the carrier-free
+(tone-modulation-only) phase. `refine_freq` now builds the carrier-free
+phasor once per call and derives each grid point via a cheap per-sample
+NCO rotation + angle-addition instead of a full resynthesis
+(`ls_amp_mag_tweaked`, `core/dsp/subtract.rs`), with periodic rotor
+renormalization to bound f32 drift over the ~59k-sample buffer. Verified
+against the frozen full-resynthesis path with a differential test
+(`ls_amp_mag_tweaked_matches_full_resynthesis`, combined absolute/
+relative tolerance — the LS amplitude has a comb of deep correlation
+nulls a few tenths of a Hz apart, where relative error alone isn't a
+meaningful metric) and an argmax-preservation test
+(`refine_freq_finds_true_offgrid_carrier`).
+
+Measured result: `refine_freq` ~35 ms/call → ~15.7 ms/call
+(`RAYON_NUM_THREADS=1`, isolating the per-call cost from thread count).
+`decode_frame_subtract` real production wall-clock: multi-threaded
+(default rayon, matching how the original 48.8 ms figure was measured)
+~575.8 ms → **~280 ms**; single-threaded ~893.6 ms → **~602 ms**. Not a
+full return to 48.8 ms — the LPF subtract + frequency-refine step is a
+deliberate, permanent recall-quality addition (10/10 vs 0/10 on the
+Rayleigh-faded-interferer scenario noted above) that will always cost
+more than the pre-#178 constant-amplitude path; this fix removes the
+*redundant* part of that added cost, not the added cost itself. Candidate
+count unchanged (31/31, no redundancy) and recall unaffected (still
+6/6). See `BENCHMARKS.md`'s "Decode speed" table for the current
+headline number.
+
 **One real regression found and fixed, in the test suite, not
 production**: `ft4_roundtrip.rs`'s two clean-signal round-trip tests
 started failing. Root cause (confirmed via a temporary in-crate debug
