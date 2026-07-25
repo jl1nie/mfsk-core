@@ -1023,7 +1023,15 @@ fn bp_step_select<T: crate::core::scalar::LlrScalar>(
     max_iter: u32,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<crate::fec::ldpc::bp::BpResult> {
-    if std::env::var("MFSK_BP_KIND").as_deref() == Ok("nms") {
+    // `std::env::var` is a locked, allocating lookup — reading it fresh
+    // on every call (up to 4x per candidate: Steps 1/d/b/c) measurably
+    // added up across the hundreds of candidates a busy-band decode
+    // processes. Cache the one-time result; this env var is a debug
+    // A/B-comparison switch (see doc comment above), never expected to
+    // change mid-process. `once_cell` isn't a dependency here — a
+    // `std::sync::OnceLock<bool>` is sufficient and std-only.
+    static USE_NMS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *USE_NMS.get_or_init(|| std::env::var("MFSK_BP_KIND").as_deref() == Ok("nms")) {
         return crate::fec::ldpc::bp::bp_decode_nms_with_scratch::<T>(
             bp_scratch, llr, None, max_iter, verify, NMS_ALPHA,
         );
@@ -1433,6 +1441,7 @@ pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
 ///   gain attenuation; embedded passes 0.0).
 #[allow(clippy::too_many_arguments)]
 #[allow(unused_variables)] // ap_hint / strictness only used under #[cfg(feature = "fft-rustfft")]
+#[allow(unused_assignments)] // llrb_arr/llrc_arr only read back under #[cfg(feature = "fft-rustfft")]
 pub(in crate::ft8) fn process_one_candidate_inner(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
     cand: &SyncCandidate,
@@ -1510,51 +1519,92 @@ pub(in crate::ft8) fn process_one_candidate_inner(
             accepted = Some((bp, 3));
         }
     }
-    // Variant b: lazy nsym=2 only.
+    // Variant b: lazy nsym=2 only. Kept outside the `if` (as
+    // `Option`) so a `BpAllOsd` candidate that falls through to Step 3
+    // can reuse it — see the `prefetched_llr` assembly below. Only
+    // read back under `fft-rustfft` (that assembly is gated on it);
+    // `fft-extern`/no_std builds compute and discard it — see the
+    // function's own `#[allow(unused_assignments)]`.
+    let mut llrb_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_b {
-        let llrb_arr: [LlrT; LDPC_N] =
-            super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
-        let bp_b = bp_step_select::<LlrT>(bp_scratch, &llrb_arr, bp_max_iter, Some(check_crc14));
+        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
+        let bp_b = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_b
             && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
         {
             accepted = Some((bp, 1));
         }
+        llrb_arr = Some(arr);
     }
     // Variant c: lazy nsym=3 (the expensive one). Gated to the
     // host-default depths — `BpAllNoNsym3` / `BpVariantsAd` skip it
     // as the embedded post-SlotEnd dominant cost (~5× variant `b`)
-    // on busy-band reference WAVs (see DecodeDepth doc).
+    // on busy-band reference WAVs (see DecodeDepth doc). Same
+    // `Option`-hoist (and `fft-rustfft`-only readback) as `llrb_arr`
+    // above, for the same reason.
+    let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
     if accepted.is_none() && run_c {
-        let llrc_arr: [LlrT; LDPC_N] =
-            super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
-        let bp_c = bp_step_select::<LlrT>(bp_scratch, &llrc_arr, bp_max_iter, Some(check_crc14));
+        let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
+        let bp_c = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_c
             && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
         {
             accepted = Some((bp, 2));
         }
+        llrc_arr = Some(arr);
     }
 
-    // Pre-compute the nsym=3 LLR once if BOTH the OSD fallback AND
-    // the AP loop will run on this candidate — both stages use the
-    // same `compute_llr(cs_scratch)` output and recomputing it twice
-    // is the dominant per-candidate cost when OSD fails into AP
-    // (Gemini PR #81 review). Gate: `accepted.is_none()` (Steps 1-2
-    // failed), `depth = BpAllOsd`, `q >= 12` (OSD will fire), and
-    // `ap_hint.is_some()` (AP will follow on OSD failure). On the
-    // embedded path `ap_hint` is always `None`, so this entire
-    // pre-compute is constant-folded away.
+    // Pre-compute the f32 `LlrSet` OSD needs, reusing Steps 1-2's own
+    // llra/llrd/llrb/llrc instead of a fresh `compute_llr(cs_scratch)`
+    // call whenever possible (issue #182 follow-up). For `BpAllOsd`
+    // depth, `run_b`/`run_c` are unconditionally `true`, so if we've
+    // reached this point with `accepted.is_none()` then *both*
+    // `llrb_arr` and `llrc_arr` above were computed — nothing here was
+    // ever skipped by an earlier success (that would have short-
+    // circuited `accepted` to `Some` already). On the non-`fixed-point`
+    // host build `LlrT = f32`, so `llr_a_fast`/`llrb_arr`/`llrc_arr`
+    // are *already* the exact `f32` values OSD needs — no recompute.
+    //
+    // Previously this only ever fired `if ap_hint.is_some()` (Gemini PR
+    // #81 review — avoiding a *second* `compute_llr` when both OSD and
+    // the AP loop would otherwise each compute their own), which meant
+    // blind decode (`ap_hint = None`, the common case) always paid for
+    // a full redundant `compute_llr(cs_scratch)` recompute inside
+    // `try_fallback` itself — nsym=3 alone is ~80% of that call's cost,
+    // paid twice (once here piecewise, once again wholesale) for every
+    // single candidate that reached OSD. Measured on `qso3_busy.wav`
+    // blind decode: this was a large fraction of OSD's real-world cost
+    // that a synthetic-LLR microbenchmark (which calls `osd_setup`/
+    // `osd_npre1_pass` directly, bypassing this recompute entirely)
+    // couldn't see.
     #[cfg(feature = "fft-rustfft")]
-    let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = if accepted.is_none()
-        && matches!(depth, DecodeDepth::BpAllOsd)
-        && q >= 12
-        && ap_hint.is_some()
-    {
-        Some(super::super::llr::compute_llr(cs_scratch))
-    } else {
-        None
-    };
+    let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
+        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q > 6 {
+            #[cfg(not(feature = "fixed-point"))]
+            {
+                match (llrb_arr, llrc_arr) {
+                    (Some(llrb), Some(llrc)) => Some(super::super::llr::LlrSet {
+                        llra: llr_a_fast.llra,
+                        llrb,
+                        llrc,
+                        llrd: llr_a_fast.llrd,
+                    }),
+                    // Defensive fallback — shouldn't happen for
+                    // `BpAllOsd` (see reasoning above), but a fresh
+                    // compute is still correct if it ever does.
+                    _ => Some(super::super::llr::compute_llr(cs_scratch)),
+                }
+            }
+            #[cfg(feature = "fixed-point")]
+            {
+                // Steps 1-2's llrb_arr/llrc_arr are Q11i16 here, not
+                // directly reusable as the f32 LlrSet OSD needs —
+                // still must recompute.
+                Some(super::super::llr::compute_llr(cs_scratch))
+            }
+        } else {
+            None
+        };
     #[cfg(not(feature = "fft-rustfft"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = None;
 

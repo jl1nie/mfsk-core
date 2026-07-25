@@ -544,6 +544,18 @@ fn process_candidate(
         alloc::vec![[crate::core::scalar::Cmplx::<f32>::default(); 8]; 79]
             .try_into()
             .unwrap();
+    // `sync_quality` only reads the 21 sync-block symbol positions
+    // (`P::SYNC_MODE.blocks()`, `core::llr::sync_quality_generic`) —
+    // never the 58 data symbols. Gate on `nsync <= 6` right after the
+    // `SyncOnly` fill, *before* paying for `DataOnly`'s per-symbol
+    // 32-pt FFTs (58 of the 79 symbols — the bulk of this function's
+    // per-candidate cost) and its own `downsample_cached` call. On
+    // `qso3_busy.wav`'s reference decode, ~82% of the up-to-1200
+    // candidates this function sees across a full staged decode get
+    // rejected at this gate — profiling found the pre-gate work was
+    // costing nearly as much in aggregate as the entire BP+OSD
+    // staircase combined, almost all of it wasted on candidates whose
+    // `DataOnly` symbols are never looked at (issue #182 follow-up).
     crate::ft8::decode_block::fill_symbol_spectra(
         &mut cs_raw,
         audio,
@@ -552,6 +564,10 @@ fn process_candidate(
         crate::ft8::decode_block::SymMask::SyncOnly,
         Some(fft_cache),
     );
+    let nsync = sync_quality(&cs_raw);
+    if nsync <= 6 {
+        return None;
+    }
     crate::ft8::decode_block::fill_symbol_spectra(
         &mut cs_raw,
         audio,
@@ -560,10 +576,6 @@ fn process_candidate(
         crate::ft8::decode_block::SymMask::DataOnly,
         Some(fft_cache),
     );
-    let nsync = sync_quality(&cs_raw);
-    if nsync <= 6 {
-        return None;
-    }
 
     // Per-candidate decode delegated to the unified inner — same
     // staircase + OSD + AP loop the embedded `decode_block` path

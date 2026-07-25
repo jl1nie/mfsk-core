@@ -633,17 +633,34 @@ pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> f32 {
 }
 
 /// Per-block Costas correlation powers for diagnostics and the FT8 double-sync.
+///
+/// Caches `make_costas_ref`'s result across consecutive blocks that
+/// share the same (content-equal) `pattern` — FT8's 3 sync blocks all
+/// use the identical Costas array, so this avoids rebuilding the same
+/// `Vec<Vec<Complex<f32>>>` reference waveform 3x per call for no
+/// reason. Content equality (not pointer identity) so it's correct for
+/// any `Protocol`, not just ones whose blocks happen to share a
+/// `&'static` allocation (issue #182 follow-up — same "don't recompute
+/// a value that hasn't changed" pattern as `refine_fine.rs`'s Costas
+/// reference table, scoped to this smaller, protocol-generic case).
 pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> Vec<f32> {
+    type CachedCsync = (&'static [u8], Vec<Vec<Complex<f32>>>);
     let d = SyncDims::of::<P>();
-    P::SYNC_MODE
-        .blocks()
-        .iter()
-        .map(|block| {
-            let csync = make_costas_ref(block.pattern, d.ds_spb);
-            let start = i0 + (block.start_symbol as usize * d.ds_spb) as i32;
-            score_costas_block(cd0, &csync, d.ds_spb, start)
-        })
-        .collect()
+    let blocks = P::SYNC_MODE.blocks();
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut last: Option<CachedCsync> = None;
+    for block in blocks {
+        let csync = match &last {
+            Some((p, c)) if *p == block.pattern => c,
+            _ => {
+                last = Some((block.pattern, make_costas_ref(block.pattern, d.ds_spb)));
+                &last.as_ref().unwrap().1
+            }
+        };
+        let start = i0 + (block.start_symbol as usize * d.ds_spb) as i32;
+        out.push(score_costas_block(cd0, csync, d.ds_spb, start));
+    }
+    out
 }
 
 /// Parabolic peak interpolation: returns `(subsample_offset in [-0.5, 0.5], interpolated_peak)`.

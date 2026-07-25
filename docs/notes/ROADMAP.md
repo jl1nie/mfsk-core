@@ -304,10 +304,13 @@ prose, see the closed issue / linked PR / `git log`):
 issue was reopened/re-closed across two separate pieces of work,
 FST4-60A golden lockdown then the remaining sub-modes.)
 
-The JTDX AP-on-multipass recall is now 5/6 (README's "What's solid"
-has the current number and mechanism) — the remaining miss
-(`K1BZM DK8NE`, for the test's fixed AP context) is a host-side win
-(needs a wider AP-list); no embedded issue filed yet.
+The JTDX AP-on-multipass recall is now 6/6 (was 5/6; see
+`BENCHMARKS.md`'s FT8 section for the current number and mechanism).
+The former remaining miss, `K1BZM DK8NE`, was closed by issue
+[#182](https://github.com/jl1nie/mfsk-core/issues/182) — an
+`osd_decode_npre1` LLR-fidelity gap (fed raw channel LLR instead of
+BP-refined `bp_llr_zsum`), not the AP-list breadth this note used to
+suspect.
 
 Architectural notes that did not graduate to issues:
 

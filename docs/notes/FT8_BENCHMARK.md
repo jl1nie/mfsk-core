@@ -294,10 +294,24 @@ to FT4 (`subtractft4.f90` uses the identical window formula).
 
 **Result**: `ft8_qso3_jtdx_recall.rs` **17/18 → 18/18** — `WA2FZW DL5AXX
 RR73` now decodes, zero new phantoms, zero regressions on the WSJT-X
-8-entry golden (still 7/8, `K1BZM DK8NE` remains the one gap, unrelated —
-see the AP-list follow-up noted elsewhere in this doc) or the AP-on
-multipass JTDX-extras floor (still 5/6, same remaining miss). Full
-non-ignored suite green throughout.
+8-entry golden (still 7/8, `K1BZM DK8NE` remains the one gap — see
+issue #182 below) or the AP-on multipass JTDX-extras floor (still
+5/6, same remaining miss at the time). Full non-ignored suite green
+throughout.
+
+**Update (issue #182, 2026-07-26)**: `K1BZM DK8NE`'s gap was **not**
+an AP-list breadth problem, despite the "wider AP-list" hypothesis
+this section originally pointed to. Root cause was `osd_decode_npre1`
+(WSJT-X's OSD `ndeep=2` dispatch for this candidate's `q=11`) being
+fed raw channel LLR instead of the BP-refined `bp_llr_zsum`, unlike
+WSJT-X's real `decode174_91.f90` driver, which always hands OSD the
+post-BP LLR. Threading the already-computed BP-refined LLR through to
+the OSD call site (instead of recomputing/reusing the pre-BP one)
+closed it: the AP-on multipass JTDX-extras floor is now **6/6**, and
+the ship-config `ft8_qso3_jtdx_recall.rs` 18-entry check (which also
+routes through the same OSD call site) now recovers `K1BZM DK8NE`
+directly, no AP hint needed. See `CHANGELOG.md` for the full
+investigation.
 
 **Scope check — only in-band-SIC scenarios should move; section 4/7's
 `ft8_snr_sweep` was deliberately *not* re-run to confirm this.** That
