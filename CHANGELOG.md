@@ -194,6 +194,42 @@
   accumulation differences over the 151_680-sample reference) is still
   open — logged here rather than pursued further in this pass.
 
+- **`core::dsp::subtract::fft_lpf::normalized_kernel` LPF window shape
+  bug — root cause of the DL8YHR gap, issue #180 closed.** Auditing
+  the "LPF width/shape" item left open above (per the entry directly
+  above this one) against `subtractft8.f90`/`subtractft4.f90` found the
+  actual bug: `window(j) = cos(pi*j/NFILT)**2` in WSJT-X (`NFILT =
+  2*lpf_half`) had been ported as `cos((j - lpf_half) * pi / lpf_half)²`
+  — dividing by `lpf_half` instead of `NFILT` (`2*lpf_half`), doubling
+  the cosine's argument range from `[-pi/2, pi/2]` to `[-pi, pi]`.
+  `cos²` is monotonic (a proper single taper, 1 at the centre → 0 at
+  the edges) only over the first range; over the doubled range it dips
+  to 0 at the quarter points and rises back to **1 — full weight — at
+  the true edges** (`lpf_half` samples / 166 ms away from the centre
+  sample, for FT8's `lpf_half=2000`). Verified numerically: at
+  offset=2000, shipped kernel=1.000 vs correct=0.000; at offset=1000,
+  shipped=0.000 vs correct=0.500. So every `subtract_tones_lpf` /
+  `subtract_signal_lpf` call since this became the canonical FT8/FT4
+  SIC entry point (v0.6.2) had been running a badly-misshapen "lowpass"
+  that gave 166-ms-stale channel samples as much weight as the current
+  one — actively corrupting the complex-amplitude/QSB estimate instead
+  of smoothing it. Root cause of the residual DL8YHR gap the two
+  entries above this one were chasing (`refine_signal_freq`'s dt-search
+  only got `nsync` from 9 to 10 on top of this broken window).
+  One-line-formula fix, shared by both the FFT-cached path
+  (`fft_lpf::normalized_kernel`, feeds both `cached_window_fft` and
+  `end_correction`) and the `no_std` direct-convolution fallback
+  (`subtract_tones_lpf_direct`) — fixing both fixes FT4 subtract too
+  (`subtractft4.f90` uses the identical window formula, confirmed by
+  inspection; FT4's own recall floor is unaffected — see regression
+  results below). **Result: `CQ DX DL8YHR JO41` now decodes**
+  (`decode_frame_subtract_staged`'s `qso3_busy.wav` golden-set test,
+  `staged_sic_matches_flat_pass_golden_floor`: still 18/18 golden hits,
+  0 phantoms in that set, unique-decode count 19→20, `has_dl8yhr` flips
+  `false`→`true`) — issue #180 is closed. Full workspace `cargo test
+  --release --features full` (all 70 test binaries): 100% pass, no regression on
+  any golden decode set (FT8 or FT4).
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

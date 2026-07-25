@@ -325,11 +325,16 @@ fn subtract_tones_lpf_direct(
     }
 
     // Cosine² LPF kernel of length 2*lpf_half + 1, normalized so sum = 1.
+    // Argument spans -pi/2..=pi/2 (NFILT = 2*lpf_half), matching
+    // subtractft8.f90's `cos(pi*j/NFILT)**2` — see `fft_lpf::normalized_kernel`'s
+    // doc comment (issue #180) for why the divisor must be `2*lpf_half`, not
+    // `lpf_half`.
     let nk = 2 * lpf_half + 1;
+    let nfilt = 2.0 * lpf_half as f32;
     let mut kern = vec![0.0f32; nk];
     let mut sumw = 0.0f32;
     for j in 0..nk {
-        let x = (j as f32 - lpf_half as f32) * PI / lpf_half as f32;
+        let x = (j as f32 - lpf_half as f32) * PI / nfilt;
         let w = x.cos().powi(2);
         kern[j] = w;
         sumw += w;
@@ -407,12 +412,25 @@ mod fft_lpf {
     /// Cosine² LPF kernel of length `2*lpf_half+1`, normalised so the
     /// weights sum to 1. Shared by the window-FFT builder and the
     /// end-correction computation — both need the same un-FFT'd taps.
+    ///
+    /// `subtractft8.f90`/`subtractft4.f90`: `window(j) = cos(pi*j/NFILT)**2`
+    /// for `j` in `-NFILT/2 ..= NFILT/2`, where `NFILT = 2*lpf_half` — i.e.
+    /// the cosine argument spans `-pi/2 ..= pi/2` (a single taper, 1 at the
+    /// centre, 0 at the edges). A prior version of this function divided
+    /// by `lpf_half` instead of `2*lpf_half` (`NFILT`), doubling the
+    /// argument to `-pi ..= pi`: `cos²` at that range is *not* monotonic
+    /// (it dips to 0 at the quarter points and rises back to 1 at the
+    /// true edges), so the kernel that shipped was two humps with a null
+    /// between them, not a lowpass at all — full-weight was given to
+    /// samples `lpf_half` away (166 ms, for FT8's `lpf_half=2000`), same
+    /// as the centre sample. See issue #180.
     fn normalized_kernel(lpf_half: usize) -> Vec<f32> {
         let nk = 2 * lpf_half + 1;
+        let nfilt = 2.0 * lpf_half as f32;
         let mut kern = vec![0.0f32; nk];
         let mut sumw = 0.0f32;
         for (j, k) in kern.iter_mut().enumerate() {
-            let x = (j as f32 - lpf_half as f32) * PI / lpf_half as f32;
+            let x = (j as f32 - lpf_half as f32) * PI / nfilt;
             let w = x.cos().powi(2);
             *k = w;
             sumw += w;
