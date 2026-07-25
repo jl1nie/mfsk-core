@@ -16,6 +16,7 @@ use super::{
     equalizer,
     llr::sync_quality,
     message::pack28,
+    params,
     params::{BP_MAX_ITER, LDPC_N},
     subtract::subtract_signal_lpf,
     sync::SyncCandidate,
@@ -765,6 +766,44 @@ pub fn decode_frame_subtract_with_ap(
     let _ = freq_hint;
 
     let mut residual = audio.to_vec();
+    sic_inner_passes(
+        &mut residual,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        strictness,
+        &[],
+        ap_hint,
+    )
+}
+
+/// Shared inner loop: up to 3 sub-passes of coarse_sync + per-candidate
+/// decode, subtracting each accepted decode from `residual` immediately
+/// (sequential, not batch-after-pass) so later candidates in the same
+/// sub-pass see a cleaner spectrum. This is WSJT-X's `ft8b.f90:432-437`
+/// `do ipass=1,npass` structure. Factored out of
+/// [`decode_frame_subtract_with_ap`] so [`decode_frame_subtract_staged_with_ap`]
+/// can reuse it at checkpoint A and checkpoint C (issue #180) without
+/// duplicating the pass/dedup/subtract logic.
+///
+/// `residual` is mutated in place (final state = fully subtracted).
+/// `known` seeds dedup against decodes from an earlier stage — those
+/// messages are skipped if re-found and are not re-emitted in the
+/// returned `Vec`.
+#[allow(clippy::too_many_arguments)]
+fn sic_inner_passes(
+    residual: &mut [i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    ap_hint: Option<&ApHint>,
+) -> Vec<DecodeResult> {
     let mut all_results: Vec<DecodeResult> = Vec::new();
 
     let mut prev_total: usize = 0;
@@ -774,7 +813,7 @@ pub fn decode_frame_subtract_with_ap(
         }
         prev_total = all_results.len();
 
-        let spec = crate::ft8::decode_block::compute_spectrogram(&residual, freq_max);
+        let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
         let candidates =
             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
         drop(spec);
@@ -782,23 +821,26 @@ pub fn decode_frame_subtract_with_ap(
             continue;
         }
 
-        let fft_cache = build_fft_cache(&residual);
+        let fft_cache = build_fft_cache(residual);
         for cand in &candidates {
             let r = match process_candidate(
                 cand,
-                &residual,
+                residual,
                 &fft_cache,
                 depth,
                 strictness,
-                &all_results,
+                known,
                 EqMode::Off,
                 ap_hint,
             ) {
                 Some(r) => r,
                 None => continue,
             };
-            // Dedup against earlier passes' accepted decodes.
-            if all_results.iter().any(|x| x.message77 == r.message77) {
+            // Dedup against `known` (an earlier stage) and this loop's
+            // own earlier passes.
+            if known.iter().any(|x| x.message77 == r.message77)
+                || all_results.iter().any(|x| x.message77 == r.message77)
+            {
                 continue;
             }
             // Sequential subtract — clean residual for next candidate.
@@ -835,12 +877,263 @@ pub fn decode_frame_subtract_with_ap(
             // (`ft8_qso3_subtract_fix_check.rs`'s 18/18 with HA5WA,
             // the FT4 busy-band-fading synthetic 10/10) passes
             // identically or better with the single-shot call.
-            subtract_signal_lpf(&mut residual, &r);
+            subtract_signal_lpf(residual, &r);
             all_results.push(r);
         }
     }
 
     all_results
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Staged (checkpoint) SIC — jt9.f90-faithful early-decode-and-subtract
+//
+// Issue #180: WSJT-X's disk-file FT8 decode is not a single pass over the
+// full 15 s slot. `jt9.f90`'s `mode.eq.8` branch calls `multimode_decoder`
+// three times with progressively larger *prefixes* of the same audio
+// (`nearly=41`, `nearly=47`, `nzhsym=50` — samples 0..141_696, 0..162_432,
+// 0..172_800 at 12 kHz), and `ft8_decode.f90::decode` keeps state (`save
+// ndec_early, itone_save, f1_save, xdt_save`) across those three calls:
+//
+//   * Checkpoint A (41): search the truncated/zero-tail buffer with a
+//     stricter sync threshold; save whatever decodes as `ndec_early`.
+//   * Checkpoint B (47): NOT a search — just subtract every checkpoint-A
+//     decode whose full message fits inside this larger truncated buffer,
+//     producing a cleaner `dd1`. Late-`dt` decodes are deferred.
+//   * Checkpoint C (50): build `dd` = checkpoint-B's cleaned head (0..
+//     162_432) + a *fresh* raw tail (162_432..172_800); subtract any
+//     deferred checkpoint-A decodes against this now-complete buffer; then
+//     run the normal 3-sub-pass search at the relaxed threshold.
+//
+// The real ground-truth investigation (mfsk-core issue #180, ground-truthed
+// against `jt9 -d3` + instrumented WSJT-X source) found `CQ DX DL8YHR JO41`
+// (~-17 dB, on `qso3_busy.wav`) only decodes at checkpoint C, after 13 other
+// signals found at checkpoint A have already been removed from its local
+// spectral neighbourhood — something a flat "decode-the-whole-buffer,
+// subtract-after" pass (`decode_frame_subtract_with_ap` above) can't
+// reproduce no matter how the sync threshold is tuned, because DL8YHR's
+// neighbours were never subtracted from *before* the residual it's found
+// in was assembled.
+//
+// This crate has no live streaming buffer for FT8 host/offline decode (the
+// checkpoint semantics above are a WSJT-X real-time-emulation artefact of
+// `jt9`'s chunked WAV reader) — but the *effect* is fully reproducible
+// offline by decoding progressively larger prefixes of the same static
+// buffer, since `compute_spectrogram`/`build_fft_cache` already zero-fill
+// any index past the slice length (sized off the fixed `NMAX`/`fft1_size`
+// constants, not the slice itself) — a plain `&audio[..N]` sub-slice
+// reproduces jt9.f90's `id2a(N+1:)=0` zero-pad with no extra copy.
+
+/// jt9.f90's checkpoint sample counts for FT8 disk decode. `kstep=3456`
+/// is `nsps/2` where `nsps=6912` is jt9's generic multi-mode block-reader
+/// chunk size — a WAV-reading-loop constant unrelated to FT8's own 1920
+/// samples/symbol, used unmodified for every mode jt9 supports. Kept as
+/// literal sample counts (not re-derived from FT8's own `NSPS`) to stay
+/// byte-faithful to the reference values `41×3456`/`47×3456`/`50×3456`.
+mod staged_checkpoint {
+    /// Checkpoint A ("early pass"): jt9.f90 `nearly=41` — ~11.8 s.
+    pub const A_SAMPLES: usize = 141_696;
+    /// Checkpoint B (subtract-prep only, no search): jt9.f90 `nearly=47` — ~13.5 s.
+    pub const B_SAMPLES: usize = 162_432;
+    /// Checkpoint C (final full pass): jt9.f90 `nzhsym=50` — ~14.4 s.
+    pub const C_SAMPLES: usize = 172_800;
+}
+
+/// Like [`decode_frame_subtract`] but structured as WSJT-X's disk-decode
+/// checkpoint architecture (see the module doc above) instead of a flat
+/// 3-pass SIC over the whole buffer. `audio` should be a full 15 s / 12 kHz
+/// slot (≤ 180_000 samples) for the staging to have any effect; shorter
+/// buffers (e.g. synthetic test fixtures) fall back to
+/// [`decode_frame_subtract`] unchanged.
+pub fn decode_frame_subtract_staged(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+) -> Vec<DecodeResult> {
+    decode_frame_subtract_staged_with_ap(
+        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, None,
+    )
+}
+
+/// Like [`decode_frame_subtract_staged`] but forwards an `ap_hint` to
+/// every per-candidate decode in every checkpoint.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_frame_subtract_staged_with_ap(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+) -> Vec<DecodeResult> {
+    decode_frame_subtract_staged_with_ap_inner(
+        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+    )
+    .0
+}
+
+/// Test-only variant that also returns checkpoint C's residual buffer
+/// (the state actually handed to the final, most-relaxed search) —
+/// used by diagnostics that need to probe a specific `(freq, dt)` by
+/// hand against exactly what the production checkpoint-C search sees.
+/// Thin shim over the same inner the production function above uses,
+/// same pattern as
+/// [`decode_frame_subtract_with_known_and_ap_debug_residual`].
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+) -> (Vec<DecodeResult>, Vec<i16>) {
+    decode_frame_subtract_staged_with_ap_inner(
+        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_frame_subtract_staged_with_ap_inner(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    ap_hint: Option<&ApHint>,
+) -> (Vec<DecodeResult>, Vec<i16>) {
+    use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
+
+    // Buffers shorter than checkpoint A can't be staged meaningfully —
+    // there's no "early, incomplete" window smaller than the whole thing.
+    if audio.len() < A_SAMPLES {
+        let r = decode_frame_subtract_with_ap(
+            audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+        );
+        return (r, audio.to_vec());
+    }
+
+    // ---- Checkpoint A (nearly=41): early pass on a full-length buffer
+    // whose tail (from `A_SAMPLES` on) is zeroed. Full length (not a
+    // truncated slice) matters here: `subtract_signal_lpf`'s reference
+    // waveform for a candidate found near the truncation edge can still
+    // extend past `A_SAMPLES` samples (a message is `params::NZ` =
+    // 151_680 samples long), so the buffer must physically have room for
+    // it — exactly why WSJT-X's `dd`/`id2a` are fixed `15*12000`-sample
+    // arrays with the *content* zeroed past the checkpoint, not
+    // shorter arrays.
+    //
+    // WSJT-X: `syncmin=2.0` at nzhsym=41 vs `syncmin=1.3` at nzhsym=50
+    // (ndepth=3) — a stricter gate on the early, still-incomplete
+    // window. Scaled by ratio rather than reusing WSJT-X's absolute
+    // `sync8` units, which live on a different score scale than this
+    // crate's `coarse_sync` (see e.g. the FT4/FST4 threshold-scaling
+    // precedent in `core::pipeline`).
+    const EARLY_SYNC_MIN_SCALE: f32 = 2.0 / 1.3;
+    let mut residual_a = vec![0i16; audio.len()];
+    residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
+    let early_results = sic_inner_passes(
+        &mut residual_a,
+        freq_min,
+        freq_max,
+        sync_min * EARLY_SYNC_MIN_SCALE,
+        depth,
+        max_cand,
+        strictness,
+        &[],
+        ap_hint,
+    );
+    // Checkpoint A's own residual is not carried forward — only its
+    // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
+    // checkpoint B rather than reusing checkpoint A's `dd`).
+    drop(residual_a);
+
+    if early_results.is_empty() {
+        // WSJT-X: `nzhsym=47 .and. ndec_early.eq.0` skips checkpoint B's
+        // search entirely, and checkpoint C's "combine cleaned head +
+        // raw tail" step is itself gated on `ndec_early.ge.1` — with
+        // nothing to pre-subtract there is nothing to stage. Falling
+        // back to a single flat pass over the *full* original audio
+        // (rather than reproducing jt9.f90's own checkpoint-47-sized
+        // truncation quirk in this branch) can only find as much or
+        // more, never less.
+        let r = decode_frame_subtract_with_ap(
+            audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+        );
+        return (r, audio.to_vec());
+    }
+
+    // ---- Checkpoint B (nearly=47): subtract-prep only, no search.
+    // Full-length buffer again (see checkpoint A comment above), content
+    // zeroed past `b_len`. Only signals whose full NN-symbol message
+    // fits inside this checkpoint's *real-content* window are subtracted
+    // now — subtracting against the zeroed tail would fit the reference
+    // waveform to silence there — late-`dt` signals are deferred to
+    // checkpoint C, where the raw tail is available.
+    let b_len = B_SAMPLES.min(audio.len());
+    let mut buf_b = vec![0i16; audio.len()];
+    buf_b[..b_len].copy_from_slice(&audio[..b_len]);
+    // Message duration (`params::NZ` samples at 12 kHz) plus the 0.5 s
+    // frame-start offset must fit before the checkpoint-B buffer's real
+    // content ends. Mirrors `ft8_decode.f90`'s `xdt_save(i)-0.5 < 0.396`
+    // gate, generalised via the message duration instead of the magic
+    // constant (which is this formula evaluated at FT8's own
+    // NN=79/NSPS=1920 — see `params.rs`).
+    let message_dur_s = params::NZ as f32 / 12_000.0;
+    let dt_fit_limit_b = b_len as f32 / 12_000.0 - message_dur_s - 0.5;
+    let mut deferred: Vec<DecodeResult> = Vec::new();
+    for r in &early_results {
+        if r.dt_sec < dt_fit_limit_b {
+            subtract_signal_lpf(&mut buf_b, r);
+        } else {
+            deferred.push(r.clone());
+        }
+    }
+
+    // ---- Checkpoint C (nzhsym=50): cleaned head (checkpoint B's
+    // residual, samples 0..b_len) + fresh raw tail (b_len..c_len),
+    // zeroed past `c_len` (matches jt9.f90's `id2a(50*3456+1:)=0`).
+    // Subtract any deferred signals against the now-complete buffer,
+    // then run the full 3-sub-pass search at the caller's baseline
+    // `sync_min`.
+    let c_len = C_SAMPLES.min(audio.len());
+    let mut buf_c = vec![0i16; audio.len()];
+    buf_c[..b_len].copy_from_slice(&buf_b[..b_len]);
+    buf_c[b_len..c_len].copy_from_slice(&audio[b_len..c_len]);
+    for r in &deferred {
+        subtract_signal_lpf(&mut buf_c, r);
+    }
+
+    let new_results = sic_inner_passes(
+        &mut buf_c,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        strictness,
+        &early_results,
+        ap_hint,
+    );
+
+    let mut all_results = early_results;
+    all_results.extend(new_results);
+    (all_results, buf_c)
 }
 
 /// Phase-2 subtract decode: accepts Phase-1 results as `known` and an
@@ -1657,6 +1950,594 @@ mod tests {
                     None,
                 );
                 eprintln!("  -> process_candidate result: {:?}", r.map(|d| d.pass));
+            }
+        }
+    }
+
+    /// Issue #180 follow-up: does the *actual* checkpoint-C residual
+    /// produced by `decode_frame_subtract_staged` — not the flat-pass
+    /// full-residual buffer `ft8_qso3_dl8yhr_full_residual_probe.rs`
+    /// checked — get `CQ DX DL8YHR JO41` (~-17 dB, f≈2606.25 Hz) any
+    /// closer to decoding? Uses
+    /// `decode_frame_subtract_staged_with_ap_debug_residual` to get the
+    /// exact buffer the production checkpoint-C search sees (not a
+    /// hand-rolled approximation), then probes WSJT-X's own reported
+    /// coordinates (`f1=2606.25`, internal `xdt=0.695` → display
+    /// `dt=0.195`) directly through `sync_quality`/BP/OSD, mirroring
+    /// the existing full-residual probe's methodology.
+    #[test]
+    #[ignore = "manual diagnostic — issue #180 staged-residual DL8YHR probe"]
+    fn issue_180_dl8yhr_staged_checkpoint_c_probe() {
+        use crate::core::sync::{SyncCandidate, refine_candidate};
+        use crate::fec::ldpc::bp::bp_decode;
+        use crate::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
+        use crate::ft8::Ft8;
+        use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
+        use crate::ft8::downsample::downsample;
+        use crate::ft8::llr::compute_llr;
+        use crate::msg::wsjt77::unpack77;
+
+        fn load_wav_i16(path: &std::path::Path) -> Option<alloc::vec::Vec<i16>> {
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+                return None;
+            }
+            let mut i = 12usize;
+            let mut data_off = None;
+            let mut data_len = 0usize;
+            while i + 8 <= bytes.len() {
+                let id = &bytes[i..i + 4];
+                let sz = u32::from_le_bytes(bytes[i + 4..i + 8].try_into().unwrap()) as usize;
+                let body = i + 8;
+                if id == b"data" {
+                    data_off = Some(body);
+                    data_len = sz;
+                    break;
+                }
+                match body.checked_add(sz).and_then(|s| s.checked_add(sz & 1)) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            let off = data_off?;
+            let end = off.saturating_add(data_len).min(bytes.len());
+            Some(
+                bytes[off..end]
+                    .chunks_exact(2)
+                    .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                    .collect(),
+            )
+        }
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
+        let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
+        let target = "CQ DX DL8YHR JO41";
+
+        let (results, residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio,
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            DecodeDepth::BpAllOsd,
+            200,
+            DecodeStrictness::Normal,
+            None,
+        );
+        println!(
+            "decode_frame_subtract_staged: {} decodes (checkpoint-C residual captured)",
+            results.len()
+        );
+
+        // WSJT-X's own ground-truth coordinates for this candidate
+        // (issue #180): f1=2606.25 Hz, internal xdt=0.695 -> display
+        // dt=xdt-0.5=0.195. Probe a small grid around them, same shape
+        // as `ft8_qso3_dl8yhr_full_residual_probe.rs`.
+        let mut freqs = vec![2606.25f32];
+        for df in [-6.25, -3.0, 3.0, 6.25, -9.0, 9.0] {
+            freqs.push(2606.25 + df);
+        }
+        let mut dts = vec![0.195f32];
+        for ddt in [-0.05, 0.05, -0.1, 0.1, -0.16, 0.16] {
+            dts.push(0.195 + ddt);
+        }
+
+        let mut best: Option<(f32, f32, u32)> = None;
+        let mut any_hit = false;
+
+        for &freq in &freqs {
+            for &dt in &dts {
+                let cand = SyncCandidate {
+                    freq_hz: freq,
+                    dt_sec: dt,
+                    score: 0.0,
+                };
+                let (cd0, _cache) = downsample(&residual, cand.freq_hz, None);
+                let refined = refine_candidate::<Ft8>(&cd0, &cand, 10);
+
+                let mut cs = symbol_spectra_direct::<i16>(
+                    &residual,
+                    cand.freq_hz,
+                    refined.dt_sec,
+                    SymMask::SyncOnly,
+                    None,
+                );
+                let q = sync_quality(&cs);
+                fill_symbol_spectra(
+                    &mut cs,
+                    &residual,
+                    cand.freq_hz,
+                    refined.dt_sec,
+                    SymMask::DataOnly,
+                    None,
+                );
+                let llr_set = compute_llr::<f32>(&cs);
+
+                for llr in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
+                    if let Some(bp) = bp_decode(llr, None, 40, None) {
+                        let text = unpack77(&bp.message77).unwrap_or_default();
+                        if text == target {
+                            println!(
+                                "BP HIT: freq={freq:.2} dt={dt:.3} refined_dt={:+.3} q={q}",
+                                refined.dt_sec
+                            );
+                            any_hit = true;
+                        }
+                    }
+                    let osd = if q >= 18 {
+                        osd_decode_npre1_npre2(llr)
+                    } else {
+                        osd_decode_npre1(llr)
+                    };
+                    if let Some(o) = osd {
+                        let text = unpack77(&o.message77).unwrap_or_default();
+                        if text == target {
+                            println!(
+                                "OSD(wsjtx-faithful) HIT: freq={freq:.2} dt={dt:.3} refined_dt={:+.3} q={q}",
+                                refined.dt_sec
+                            );
+                            any_hit = true;
+                        }
+                    }
+                    if let Some(o) = osd_decode_deep4(llr, 30, None) {
+                        let text = unpack77(&o.message77).unwrap_or_default();
+                        if text == target {
+                            println!(
+                                "OSD(deep4) HIT: freq={freq:.2} dt={dt:.3} refined_dt={:+.3} q={q}",
+                                refined.dt_sec
+                            );
+                            any_hit = true;
+                        }
+                    }
+                }
+
+                let is_better = match &best {
+                    None => true,
+                    Some((_, _, bq)) => q > *bq,
+                };
+                if is_better {
+                    best = Some((freq, dt, q));
+                }
+                println!(
+                    "  probe freq={freq:.2} dt={dt:.3} refined_dt={:+.3} q={q}",
+                    refined.dt_sec
+                );
+            }
+        }
+
+        if let Some((freq, dt, q)) = best {
+            println!(
+                "\nBest sync_quality on staged checkpoint-C residual: freq={freq:.2} dt={dt:.3} q={q}"
+            );
+        }
+        println!("any_hit={any_hit}");
+
+        // Per-Costas-block breakdown at the exact WSJT-X ground-truth
+        // coordinates, directly comparable to jt9's own instrumented
+        // `is1`/`is2`/`is3` (this run's real `jt9 -8 -d3` on the
+        // identical WAV: is1=2 is2=7 is3=6, nsync=15). Reproduces
+        // `sync_quality_generic`'s per-symbol argmax logic
+        // (`core/llr.rs`) but reports per-block subtotals instead of
+        // just the sum, to localise *where* the 15-vs-9 gap lives.
+        {
+            println!(
+                "\nPer-block Costas breakdown, no-refine (raw candidate dt/freq fed directly):"
+            );
+            println!("  jt9 (real, this run):        is1=2 is2=7 is3=6  nsync=15");
+
+            // Bug 1 hypothesis (issue #180): WSJT-X's displayed dt is one
+            // cd0-sample (5 ms = 1/200 symbol-fraction) *before* the
+            // window it actually decodes (`ibest` vs `ibest-1`). If that
+            // explains the shortfall, it should show up as roughly
+            // uniform improvement across all 3 blocks at some small dt
+            // shift — sweep ±3 steps of 1/200 s around the ground-truth
+            // dt=0.195 (freq held fixed) and report each block
+            // breakdown to check for that signature.
+            let step = 1.0f32 / 200.0;
+            for k in -3i32..=3 {
+                let dt = 0.195f32 + (k as f32) * step;
+                let freq = 2606.25f32;
+                let cand = SyncCandidate {
+                    freq_hz: freq,
+                    dt_sec: dt,
+                    score: 0.0,
+                };
+                let cs = symbol_spectra_direct::<i16>(
+                    &residual,
+                    cand.freq_hz,
+                    cand.dt_sec,
+                    SymMask::SyncOnly,
+                    None,
+                );
+                print!("  mfsk-core dt={dt:.4} (k={k:+}):");
+                let mut total = 0u32;
+                for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+                    .blocks()
+                    .iter()
+                    .enumerate()
+                {
+                    let start = block.start_symbol as usize;
+                    let mut hits = 0u32;
+                    for (t, &expected) in block.pattern.iter().enumerate() {
+                        let sym = start + t;
+                        let mut best_tone = 0usize;
+                        let mut best_val = cs[sym][0].norm_sqr();
+                        for a in 1..8 {
+                            let v = cs[sym][a].norm_sqr();
+                            if v > best_val {
+                                best_val = v;
+                                best_tone = a;
+                            }
+                        }
+                        if best_tone == expected as usize {
+                            hits += 1;
+                        }
+                    }
+                    total += hits;
+                    print!(" is{}={hits}", bi + 1);
+                }
+                println!("  nsync={total}");
+            }
+
+            // Also try the refine_candidate-adjusted dt (what production
+            // actually feeds symbol_spectra), for reference.
+            let cand0 = SyncCandidate {
+                freq_hz: 2606.25,
+                dt_sec: 0.195,
+                score: 0.0,
+            };
+            let (cd0, _cache) = downsample(&residual, cand0.freq_hz, None);
+            let refined = refine_candidate::<Ft8>(&cd0, &cand0, 10);
+            let cs = symbol_spectra_direct::<i16>(
+                &residual,
+                cand0.freq_hz,
+                refined.dt_sec,
+                SymMask::SyncOnly,
+                None,
+            );
+            print!("  mfsk-core refine_candidate dt={:.4}:", refined.dt_sec);
+            let mut total = 0u32;
+            for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+                .blocks()
+                .iter()
+                .enumerate()
+            {
+                let start = block.start_symbol as usize;
+                let mut hits = 0u32;
+                for (t, &expected) in block.pattern.iter().enumerate() {
+                    let sym = start + t;
+                    let mut best_tone = 0usize;
+                    let mut best_val = cs[sym][0].norm_sqr();
+                    for a in 1..8 {
+                        let v = cs[sym][a].norm_sqr();
+                        if v > best_val {
+                            best_val = v;
+                            best_tone = a;
+                        }
+                    }
+                    if best_tone == expected as usize {
+                        hits += 1;
+                    }
+                }
+                total += hits;
+                print!(" is{}={hits}", bi + 1);
+            }
+            println!("  nsync={total}");
+
+            // Same breakdown on the RAW, unsubtracted audio at the same
+            // coordinates — distinguishes "SIC subtraction residue is
+            // corrupting this region" (raw would look better) from "the
+            // tone-detection fidelity gap exists even before any
+            // subtraction" (raw looks the same or worse).
+            let cs_raw =
+                symbol_spectra_direct::<i16>(&audio, 2606.25, 0.195, SymMask::SyncOnly, None);
+            print!("  mfsk-core RAW audio dt=0.1950 (no subtraction at all):");
+            let mut total_raw = 0u32;
+            for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+                .blocks()
+                .iter()
+                .enumerate()
+            {
+                let start = block.start_symbol as usize;
+                let mut hits = 0u32;
+                for (t, &expected) in block.pattern.iter().enumerate() {
+                    let sym = start + t;
+                    let mut best_tone = 0usize;
+                    let mut best_val = cs_raw[sym][0].norm_sqr();
+                    for a in 1..8 {
+                        let v = cs_raw[sym][a].norm_sqr();
+                        if v > best_val {
+                            best_val = v;
+                            best_tone = a;
+                        }
+                    }
+                    if best_tone == expected as usize {
+                        hits += 1;
+                    }
+                }
+                total_raw += hits;
+                print!(" is{}={hits}", bi + 1);
+            }
+            println!("  nsync={total_raw}");
+
+            // Symbol-by-symbol tone-magnitude dump for Costas block 2
+            // (mfsk-core sym 36..42 == jt9's k=37..43), the block with
+            // the largest is2 shortfall (4/7 vs jt9's 7/7). Printed in
+            // the same per-symbol/per-tone layout as jt9's own
+            // `DL8YHR_PROBE s8` dump (captured separately from a real
+            // `jt9 -8 -d3` run, re-instrumented to also cover k=37..43/
+            // 73..79) for direct side-by-side comparison. Units aren't
+            // identical (different FFT normalisation constants) but the
+            // *shape* — which tone dominates, by how much — is directly
+            // comparable.
+            let icos7 = [3u8, 1, 4, 0, 6, 5, 2];
+            let cs_all =
+                symbol_spectra_direct::<i16>(&residual, 2606.25, 0.195, SymMask::SyncOnly, None);
+            for (label, block_start, k_start) in [
+                ("Block-1", 0usize, 1u32),
+                ("Block-2", 36, 37),
+                ("Block-3", 72, 73),
+            ] {
+                println!("\n{label} (sym {}..{}):", block_start, block_start + 6);
+                for t in 0..7 {
+                    let sym = block_start + t;
+                    let argmax_of =
+                        |cs: &[[num_complex::Complex<f32>; 8]; 79]| -> (usize, Vec<f32>) {
+                            let mags: Vec<f32> = (0..8).map(|a| cs[sym][a].norm()).collect();
+                            let mut best = 0usize;
+                            for a in 1..8 {
+                                if mags[a] > mags[best] {
+                                    best = a;
+                                }
+                            }
+                            (best, mags)
+                        };
+                    let (best_res, mags_res) = argmax_of(&cs_all);
+                    let (best_raw, mags_raw) = argmax_of(&cs_raw);
+                    let mark_res = if best_res == icos7[t] as usize {
+                        "OK "
+                    } else {
+                        "BAD"
+                    };
+                    let mark_raw = if best_raw == icos7[t] as usize {
+                        "OK "
+                    } else {
+                        "BAD"
+                    };
+                    println!(
+                        "  k={:>2} t={} exp={}  RAW argmax={} [{mark_raw}] {:>7.1?}  |  RESIDUAL argmax={} [{mark_res}] {:>7.1?}",
+                        k_start + t as u32,
+                        t + 1,
+                        icos7[t],
+                        best_raw,
+                        mags_raw,
+                        best_res,
+                        mags_res,
+                    );
+                }
+            }
+
+            // Raw cd0 (200 sps downsampled baseband) dump at Rust index
+            // 267..330 — physically the same samples as jt9's Fortran
+            // `cd0(268:331)` IF 0-indexed Rust position n == 1-indexed
+            // Fortran position n+1 (i.e. if the two downsample origins
+            // are aligned and this is purely an indexing-convention
+            // difference, not a real off-by-one). Printed as
+            // `fortran_idx = rust_idx+1` so the two dumps line up for a
+            // direct diff. This is the ground-truth test for issue
+            // #180's "Bug 1" (off-by-one dt convention) hypothesis: if
+            // values match, indices are just labelled differently and
+            // there's no real bug; if they don't, there's a genuine
+            // 1-sample physical misalignment.
+            println!(
+                "\ncd0 dump (staged residual, f1=2606.25, dt=0.195), Rust idx -> Fortran idx = idx+1:"
+            );
+            for rust_idx in 267..=330usize {
+                let c = cd0[rust_idx];
+                println!(
+                    "  rust_idx={:>4} fortran_idx={:>4} re={:>12.4} im={:>12.4}",
+                    rust_idx,
+                    rust_idx + 1,
+                    c.re,
+                    c.im
+                );
+            }
+
+            // Confirmation test: jt9's own "13 early-subtracted signals"
+            // list (dumped via a second `ft8_decode.f90` instrumentation
+            // pass, `DL8YHR_PROBE early_list`) includes a 13th signal —
+            // `WA2FZW DL5AXX RR73` @ 2545.88 Hz, dt=-0.125 — that
+            // mfsk-core never decodes anywhere in this investigation (11
+            // checkpoint-A early results + 7 checkpoint-C new results =
+            // 18 total, none of them WA2FZW). Since mfsk-core never
+            // finds it, it never subtracts it — a real, un-cancelled
+            // signal only 60 Hz from DL8YHR's own carrier is exactly the
+            // kind of thing that could explain the excess `cd0` energy
+            // measured above. Test directly: manually subtract jt9's
+            // exact WA2FZW coordinates from the staged residual and
+            // re-measure DL8YHR's per-block sync breakdown.
+            if let Some(msg77) = crate::msg::wsjt77::pack77("WA2FZW", "DL5AXX", "RR73") {
+                let wa2fzw = DecodeResult {
+                    message77: msg77,
+                    freq_hz: 2545.88,
+                    dt_sec: -0.125,
+                    hard_errors: 0,
+                    sync_score: 0.0,
+                    pass: 0,
+                    sync_cv: 0.0,
+                    snr_db: 0.0,
+                };
+                let mut residual2 = residual.clone();
+                let refined_freq = crate::ft8::subtract::refine_signal_freq(&residual2, &wa2fzw);
+                let mut wa2fzw_r = wa2fzw.clone();
+                wa2fzw_r.freq_hz = refined_freq;
+                subtract_signal_lpf(&mut residual2, &wa2fzw_r);
+
+                let cs_wa = symbol_spectra_direct::<i16>(
+                    &residual2,
+                    2606.25,
+                    0.195,
+                    SymMask::SyncOnly,
+                    None,
+                );
+                print!(
+                    "\nAfter manually subtracting jt9's WA2FZW DL5AXX RR73 (refined freq={refined_freq:.2}):"
+                );
+                let mut total_wa = 0u32;
+                for block in <Ft8 as crate::core::FrameLayout>::SYNC_MODE.blocks().iter() {
+                    let start = block.start_symbol as usize;
+                    let mut hits = 0u32;
+                    for (t, &expected) in block.pattern.iter().enumerate() {
+                        let sym = start + t;
+                        let mut best_tone = 0usize;
+                        let mut best_val = cs_wa[sym][0].norm_sqr();
+                        for a in 1..8 {
+                            let v = cs_wa[sym][a].norm_sqr();
+                            if v > best_val {
+                                best_val = v;
+                                best_tone = a;
+                            }
+                        }
+                        if best_tone == expected as usize {
+                            hits += 1;
+                        }
+                    }
+                    total_wa += hits;
+                    print!(" {hits}");
+                }
+                println!("  nsync={total_wa}  (was 9 before this subtract; jt9=15)");
+            } else {
+                println!(
+                    "\npack77(WA2FZW,DL5AXX,RR73) failed to encode — cannot run confirmation test"
+                );
+            }
+
+            // Decisive test: swap the residual, keep mfsk-core's own
+            // algorithm unchanged. `jt9_post_sic_dd.raw` is jt9's own
+            // `dd` array — a raw i16 dump added via a fourth
+            // `ft8_decode.f90` instrumentation pass, taken right after
+            // jt9's real SIC (its 13 early-subtracted signals) and
+            // right before the nzhsym=50 `sync8`/`ft8b` search itself —
+            // i.e. exactly the buffer real jt9 measures `is1=2 is2=7
+            // is3=6` (nsync=15) against. If mfsk-core's own
+            // symbol_spectra_direct/sync_quality computation, run
+            // unchanged on THIS buffer, still falls well short of 15,
+            // that proves the gap is in mfsk-core's tone-detection /
+            // downsample computation itself, independent of subtraction
+            // quality. If it gets close to 15, that proves the gap is
+            // entirely mfsk-core's own SIC being weaker than jt9's
+            // (hypothesis (a) from the WA2FZW test above), not a
+            // computation bug.
+            if let Ok(raw) = std::fs::read("/tmp/jt9_post_sic_dd.raw") {
+                let jt9_residual: Vec<i16> = raw
+                    .chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                    .collect();
+                println!(
+                    "\nLoaded jt9's own post-SIC residual: {} samples",
+                    jt9_residual.len()
+                );
+                let cs_jt9 = symbol_spectra_direct::<i16>(
+                    &jt9_residual,
+                    2606.25,
+                    0.195,
+                    SymMask::SyncOnly,
+                    None,
+                );
+                print!("mfsk-core's own tone-detection on jt9's post-SIC residual:");
+                let mut total_jt9 = 0u32;
+                for block in <Ft8 as crate::core::FrameLayout>::SYNC_MODE.blocks().iter() {
+                    let start = block.start_symbol as usize;
+                    let mut hits = 0u32;
+                    for (t, &expected) in block.pattern.iter().enumerate() {
+                        let sym = start + t;
+                        let mut best_tone = 0usize;
+                        let mut best_val = cs_jt9[sym][0].norm_sqr();
+                        for a in 1..8 {
+                            let v = cs_jt9[sym][a].norm_sqr();
+                            if v > best_val {
+                                best_val = v;
+                                best_tone = a;
+                            }
+                        }
+                        if best_tone == expected as usize {
+                            hits += 1;
+                        }
+                    }
+                    total_jt9 += hits;
+                    print!(" {hits}");
+                }
+                println!(
+                    "  nsync={total_jt9}  (mfsk-core residual gave 9; real jt9 on this exact buffer gives 15)"
+                );
+                // Full BP/OSD decode on this residual — does the
+                // message actually come out, not just the sync count?
+                use crate::fec::ldpc::bp::bp_decode;
+                use crate::fec::ldpc::osd::{
+                    osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2,
+                };
+                use crate::ft8::llr::compute_llr;
+                use crate::msg::wsjt77::unpack77;
+
+                let mut cs_full = cs_jt9.clone();
+                fill_symbol_spectra(
+                    &mut cs_full,
+                    &jt9_residual,
+                    2606.25,
+                    0.195,
+                    SymMask::DataOnly,
+                    None,
+                );
+                let llr_set = compute_llr::<f32>(&cs_full);
+                let mut decoded_msg: Option<String> = None;
+                for llr in [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd] {
+                    if decoded_msg.is_none()
+                        && let Some(bp) = bp_decode(llr, None, 40, None)
+                    {
+                        decoded_msg = unpack77(&bp.message77);
+                    }
+                    if decoded_msg.is_none() {
+                        let osd = if total_jt9 >= 18 {
+                            osd_decode_npre1_npre2(llr)
+                        } else {
+                            osd_decode_npre1(llr)
+                        };
+                        if let Some(o) = osd {
+                            decoded_msg = unpack77(&o.message77);
+                        }
+                    }
+                    if decoded_msg.is_none()
+                        && let Some(o) = osd_decode_deep4(llr, 30, None)
+                    {
+                        decoded_msg = unpack77(&o.message77);
+                    }
+                }
+                println!("Full BP/OSD decode on jt9's post-SIC residual: {decoded_msg:?}");
+            } else {
+                println!(
+                    "\n/tmp/jt9_post_sic_dd.raw not found — run the instrumented jt9 build first"
+                );
             }
         }
     }
