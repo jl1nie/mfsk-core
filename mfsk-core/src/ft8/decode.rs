@@ -2,6 +2,7 @@
 ///
 /// Chains: downsample → coarse_sync → fine_sync → LLR → BP decode
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
