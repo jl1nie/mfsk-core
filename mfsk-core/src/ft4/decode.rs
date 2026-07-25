@@ -210,6 +210,13 @@ pub fn decode_frame_subtract_with_options(
         DecodeStrictness::Normal,
         REFINE_STEPS,
         SYNC_Q_MIN,
+        // Matches WSJT-X `subtractft4.f90`: NFILT=1400 (lpf_half=700),
+        // no end-correction, +/-5 Hz refine radius. See
+        // `ft4::subtract::{LPF_HALF_SAMPLES, subtract_signal_lpf,
+        // refine_signal_freq}` for the same constants used elsewhere.
+        700,
+        false,
+        5.0,
     )
 }
 

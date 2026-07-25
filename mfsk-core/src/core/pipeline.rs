@@ -17,7 +17,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
-use super::dsp::subtract::{SubtractCfg, subtract_tones};
+use super::dsp::subtract::SubtractCfg;
 use super::equalize::{EqMode, equalize_local};
 use super::llr::{compute_llr, compute_snr_db, descramble_info, symbol_spectra, sync_quality};
 use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
@@ -643,6 +643,7 @@ pub fn decode_frame<P: Protocol>(
 /// Multi-pass decode with successive signal subtraction. Each pass decodes
 /// the residual audio; decoded signals are reconstructed and subtracted so
 /// subsequent passes can expose previously-masked weak signals.
+#[allow(clippy::too_many_arguments)]
 pub fn decode_frame_subtract<P: Protocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
@@ -656,6 +657,15 @@ pub fn decode_frame_subtract<P: Protocol>(
     strictness: DecodeStrictness,
     refine_steps: i32,
     sync_q_min: u32,
+    // Channel-aware LPF subtract tuning (issue #178/#179 FT4 port).
+    // Protocol-specific — mirrors WSJT-X's per-protocol `NFILT`/
+    // end-correction choice (`subtractft8.f90` vs `subtractft4.f90`).
+    // Passed in rather than derived from `P` to avoid growing the
+    // `Protocol` trait for a single generic-pipeline caller (FT4, as
+    // of this writing).
+    lpf_half: usize,
+    lpf_endcorrection: bool,
+    refine_freq_radius_hz: f32,
 ) -> Vec<DecodeResult> {
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
@@ -733,16 +743,6 @@ pub fn decode_frame_subtract<P: Protocol>(
         }
 
         for r in &deduped {
-            // Arithmetic form (1.0 - 0.5*qsb) instead of the obvious
-            // `if cond { 0.5 } else { 1.0 }` to dodge an Xtensa Rust
-            // 1.95.0.0 LLVM instruction-selection SIGSEGV on the
-            // `[2 x float] [1.0, 0.5]` constant pool the select form
-            // generates. The FT8 SIC path used the same workaround
-            // until 0.6.2 retired the FT8 implementation of
-            // `qsb_partial_gain` and `subtract_signal_weighted` (the
-            // FT4 versions are still live in this generic pipeline).
-            let qsb = (r.sync_cv > 0.3) as u32 as f32;
-            let gain = 1.0 - 0.5 * qsb;
             // `r.info` is post-descramble (FT4 only); re-apply the rvec
             // XOR before re-encoding so the subtracted tones match what
             // was actually on the air. XOR is its own inverse, so calling
@@ -750,7 +750,41 @@ pub fn decode_frame_subtract<P: Protocol>(
             let mut info_for_tx = r.info.to_vec();
             descramble_info::<P>(&mut info_for_tx);
             let tones = encode_tones_for_snr::<P>(&info_for_tx, &fec);
-            subtract_tones(&mut residual, &tones, r.freq_hz, r.dt_sec, gain, sub_cfg);
+            // WSJT-X-faithful channel-aware LPF subtract, converge-
+            // iterated (issue #177/#178/#179): the old constant-
+            // amplitude `subtract_tones` + coarse binary QSB gain
+            // (0.5 / 1.0 on `sync_cv > 0.3`) is FT8's pre-0.6.2 design,
+            // never migrated here when FT8 moved to
+            // `subtract_tones_lpf`. On a synthetic busy-band scenario
+            // with a strong Rayleigh-faded interferer 40 Hz from a weak
+            // target (`ft4_busy_band_fading_probe.rs`), the old path
+            // recovered the target 0/10 seeds; `subtract_tones_lpf_converge`
+            // (6 iterations max, stop under 1 dB marginal improvement —
+            // same calibration as #178's FT8 fix, sync_cv doesn't
+            // predict this any better here than it did for FT8)
+            // recovers it reliably. Also refines the carrier frequency
+            // first (`refine_freq`'s own doc comment recommends this
+            // for real-signal input; wasn't being called here either).
+            let refined_freq = super::dsp::subtract::refine_freq(
+                &residual,
+                &tones,
+                r.freq_hz,
+                r.dt_sec,
+                sub_cfg,
+                refine_freq_radius_hz,
+                0.1,
+            );
+            super::dsp::subtract::subtract_tones_lpf_converge(
+                &mut residual,
+                &tones,
+                refined_freq,
+                r.dt_sec,
+                sub_cfg,
+                lpf_half,
+                lpf_endcorrection,
+                6,
+                1.0,
+            );
         }
         all_results.extend(deduped);
     }
