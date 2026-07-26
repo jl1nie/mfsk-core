@@ -465,12 +465,19 @@ graph that the redesign itself moved none of these numbers; the delta
 vs the last-tracked figures is accumulated prior sensitivity work
 never rolled into this table before, see `FT8_BENCHMARK.md` section 9):
 
-| Channel | mfsk-core 50% crossing | WSJT-X published | Gap |
+| Channel | mfsk-core 50% crossing | WSJT-X published / real `jt9 -8 -d3` | Gap |
 |---|---:|---:|---:|
-| AWGN | ≈ −21.4 dB | −20 to −21 dB | within range |
-| CCIR good | ≈ −20.8 dB | — (no separate WSJT-X figure) | — |
-| CCIR moderate | ≈ −18.9 dB | — | — |
-| CCIR poor | ≈ −19.0 dB | — | — |
+| AWGN | ≈ −21.4 dB | −20 to −21 dB published; ≈ −21.2 dB real `jt9` | mfsk-core +0.2 dB ahead |
+| CCIR good | ≈ −20.8 dB | ≈ −20.75 dB real `jt9` (no published figure) | ~parity |
+| CCIR moderate | ≈ −18.9 dB | ≈ −19.5 dB real `jt9` (no published figure) | **jt9 +0.6 dB (open gap)** |
+| CCIR poor | ≈ −19.0 dB | ≈ −19.7 dB real `jt9` (no published figure) | **jt9 +0.7 dB (open gap)** |
+
+WSJT-X doesn't publish per-fading-model thresholds, but `ft8sim`'s the
+same simulator generating this corpus, so a real `jt9 -8 -d 3` run
+against it is real ground truth, not just "no figure available" —
+see `FT8_BENCHMARK.md` section 10 for the full methodology and a
+candidate root-cause direction for the CCIR moderate/poor gap (not
+yet chased down).
 
 Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 

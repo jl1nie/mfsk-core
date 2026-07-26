@@ -392,3 +392,67 @@ candidate count doesn't parallelise much), ~7-8× faster than real
 recall parity. This is now the tracked answer to "how fast can host
 match WSJT-X exactly on this WAV" — a question this document didn't
 previously have a permanent regression test for.
+
+## 10. CCIR moderate/poor "no separate WSJT-X figure" replaced with real `jt9 -8 -d3` ground truth (2026-07-26)
+
+Section 4's sweep table (and `BENCHMARKS.md`'s copy) always carried
+"—" in the WSJT-X-published column for CCIR good/moderate/poor —
+WSJT-X publishes an official AWGN threshold but not per-fading-model
+numbers. But `ft8sim` (the same WSJT-X-native simulator generating
+this sweep's corpus) produces real CCIR-faded WAVs, and a real `jt9`
+binary was available locally (`~/wsjtx-build/jt9`, sanity-checked
+first against `qso3_busy.wav` — 22/22 decodes, byte-identical to the
+known-good reference from `FT8_BENCHMARK.md`'s own prior
+investigations) — so there was no reason "—" had to stay a permanent
+gap. Ran `jt9 -8 -d 3` directly against the full AWGN/CCIR corpus
+(all 3 channels × 13 SNR points × 20 trials = 780 files, ~62 s
+wall-clock at 8-way parallel; a hit = `JL1NIE` appears in jt9's
+stdout, mirroring the Rust sweep's own single-known-message
+methodology):
+
+| Channel | mfsk-core (section 9) | real `jt9 -8 -d3` | Δ (jt9 − mfsk-core) |
+|---|---:|---:|---:|
+| AWGN | ≈ -21.4 dB | ≈ -21.2 dB | mfsk-core +0.2 dB (ahead) |
+| CCIR good | ≈ -20.8 dB | ≈ -20.75 dB | ~parity |
+| CCIR moderate | ≈ -18.9 dB | ≈ -19.5 dB | **jt9 +0.6 dB (gap)** |
+| CCIR poor | ≈ -19.0 dB | ≈ -19.7 dB | **jt9 +0.7 dB (gap)** |
+
+AWGN and CCIR good confirm what section 9's own framing already
+assumed — at or slightly ahead of real WSJT-X. **CCIR moderate/poor
+are a different story**: a real, previously undocumented ~0.6-0.7 dB
+sensitivity gap under heavier Watterson fading, now backed by direct
+ground truth instead of "no published figure." This isn't the
+`OSD_HARDERRORS_MAX` fading-recall issue section 7 already closed
+(that was about a golden-decode ceiling on `qso3_busy.wav`, a
+different axis from this sweep's clean-signal-plus-fading-channel
+50%-crossing measurement) — this is a genuinely new, unclosed gap.
+
+**Not yet root-caused.** Candidate directions for a future pass,
+following this document's own diagnose-before-fixing discipline
+(section 6's lesson, and `FST4_BENCHMARK.md` section 6's shared
+playbook): the Watterson channel model's `fdop`/`del` parameters
+scale with fading severity (`ccir_moderate` = 0.5 Hz/1.0 ms, `ccir_poor`
+= 1.0 Hz/2.0 ms per the module doc in `ft8_sweep.rs`), so whatever's
+different between mfsk-core and real jt9 here likely interacts with
+channel decorrelation specifically — a plausible first place to look
+is `fine_refine_3stage`'s coherent Costas-block combining (issue #182,
+section covered in `BENCHMARKS.md`), which assumes phase stability
+across the reference window; heavier fading could partially undermine
+that assumption in a way this document hasn't checked, similar to the
+"fading channels gained less than AWGN" pattern already observed for
+FT4's analogous coherent-combining fix
+(`FT4_BENCHMARK.md` section 9). Not chased further in this pass —
+flagged here as the next concrete lead rather than left as an
+unexplained "—".
+
+Raw per-cell counts, jt9 -8 -d3, 20 trials/cell:
+
+| SNR | CCIR good | CCIR moderate | CCIR poor |
+|---:|---:|---:|---:|
+| -15 dB | 19/20 | 20/20 | 20/20 |
+| -17 dB | 19/20 | 17/20 | 18/20 |
+| -18 dB | 19/20 | 18/20 | 16/20 |
+| -19 dB | 19/20 | 11/20 | 15/20 |
+| -20 dB | 16/20 | 9/20 | 8/20 |
+| -21 dB | 8/20 | 3/20 | 2/20 |
+| -22 dB | 3/20 | 1/20 | 0/20 |
