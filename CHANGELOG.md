@@ -713,6 +713,39 @@
   compute-bench crate build clean for their Xtensa targets; `mfsk-ffi`
   + C++ smoke driver green.
 
+  **`fixed-point` (Q11i16, the numeric path embedded ships) separately
+  verified — not part of the `full` feature set, so not covered by the
+  checks above.** All FT8 tests pass under `--features
+  fft-rustfft,ft8,uvpacket,parallel,fixed-point`, including both new
+  tests (`ft8_qso3_full_parity_recall.rs` needed the same `SNR_TOL_DB`
+  12→14 dB fixed-point widening `ft8_qso3_apoff_recall.rs` already
+  uses — golden recall itself is 8/8 under fixed-point too, only the
+  SNR-drift assertion needed the existing tolerance pattern). One
+  unrelated pre-existing failure found and confirmed *not* caused by
+  this change (reproduced identically on `main` before this PR, via a
+  throwaway git-worktree check): `ft8_coarse_sync_bootstrap.rs`'s
+  `bootstrap_dt_median_top5_matches_confirmed` under `fixed-point` —
+  filed as [#189](https://github.com/jl1nie/mfsk-core/issues/189),
+  left unfixed as out of scope here.
+
+  **Also updated this pass** (issue #182 follow-up, same day):
+  `docs/notes/BENCHMARKS.md` and `docs/notes/FT8_BENCHMARK.md`'s FT8
+  AWGN/CCIR sweep tables re-measured (all 4 channels moved 0.6-1.0 dB
+  more sensitive vs the last-tracked figures — confirmed by scope
+  audit + a direct re-run that `decode_frame_inner`'s separate call
+  graph never touched `auto_ap_strategy`, so this is accumulated prior
+  work never rolled into the table, not an effect of this PR); a new
+  permanent regression, `tests/ft8_qso3_full_parity_recall.rs`, tracks
+  the **host full-parity** config (`DecodeDepth::FULL`, `sync_min=0.8`,
+  `max_cand=60`) hitting the full WSJT-X 8-entry golden in ~139-148 ms
+  (~7-8× faster than real `jt9 -8 -d3`'s own ~1.1 s); `README.md` /
+  `docs/reference/LIBRARY.md` / `docs/reference/EMBEDDED.md` (+ `.ja.md`
+  mirrors) updated for the renamed `DecodeDepth` API and to stop
+  conflating ship-config's permanent 7/8 floor with the achievable 8/8
+  host figure in top-level summary tables (they're different code
+  paths by construction now, not a temporary gap — see `DecodeDepth`'s
+  own doc comment).
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

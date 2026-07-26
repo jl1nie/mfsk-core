@@ -330,3 +330,65 @@ distinction ever matters for a specific decision, re-run section 7's
 sweep directly rather than relying on this note.
 
 **mfsk-core issue/PR**: [#180](https://github.com/jl1nie/mfsk-core/issues/180) (investigation), [#178](https://github.com/jl1nie/mfsk-core/pull/178) (fix, merged).
+
+## 9. AWGN/CCIR sweep re-measured, `DecodeDepth` redesign confirmed to have zero sweep impact (issue #182 follow-up, 2026-07-26)
+
+Section 4's "Measured 2026-07-18" table had never been re-run since —
+section 8 explicitly reasoned about scope rather than re-measuring.
+Re-run directly this pass, prompted by the `DecodeDepth` enum→struct
+redesign and the unrelated `auto_ap_strategy` removal (both landed the
+same day, see `CHANGELOG.md`) — to confirm neither touched this
+sweep's numbers.
+
+**Confirmed unaffected, by construction**: `ft8_snr_sweep`'s
+`decode_wav_ft8` calls `decode_frame` → `decode_frame_inner`, a
+separate implementation from `decode_block::decode_block_multipass`
+(the only caller `auto_ap_strategy::run` ever had) — `decode_frame_inner`
+never invoked it, before or after the removal. Verified by `git diff`
+across the whole redesign PR: zero files outside `ft8/decode.rs`,
+`ft8/decode_block/*`, FT8-only tests, and the FT8 slice of FFI/embedded
+glue were touched — no other protocol's sweep code path exists to have
+moved either.
+
+**Re-measured** (`ft8_snr_sweep`, `--ignored --nocapture`, same
+`-5`..`-26` dB grid / 20 trials/cell corpus as section 4):
+
+| Channel | 2026-07-18 | 2026-07-26 | Δ |
+|---|---:|---:|---:|
+| AWGN | ≈ -20.4 dB | ≈ -21.4 dB | -1.0 dB (more sensitive) |
+| CCIR good | ≈ -20.0 dB | ≈ -20.8 dB | -0.8 dB |
+| CCIR moderate | ≈ -18.3 dB | ≈ -18.9 dB | -0.6 dB |
+| CCIR poor | ≈ -18.2 dB | ≈ -19.0 dB | -0.8 dB |
+
+All four channels moved the same direction (more negative = lower SNR
+needed = better) by a consistent 0.6-1.0 dB — not the `DecodeDepth`
+redesign (confirmed unaffected above), but the accumulated effect of
+every FT8 sensitivity fix landed between the two dates (OSD
+`bp_llr_zsum` seeding, the `OSD_HARDERRORS_MAX` widening in section 7,
+the SIC LPF window fix in section 8, and others tracked in
+`CHANGELOG.md`) that were never rolled up into this specific table.
+Single run, not averaged across repeats — treat deltas under ~0.5 dB
+as within 20-trials/cell sampling noise (see the sparse-SNR-sampling
+lesson linked from `BENCHMARKS.md`); the consistent same-direction
+movement across all four channels here is the signal, not any single
+cell.
+
+This table (not `BENCHMARKS.md`'s own copy, which already carried
+intermediate numbers close to today's — AWGN ≈-20.8, CCIR good ≈-20.6,
+CCIR moderate ≈-18.6, CCIR poor ≈-18.5) is the one to treat as stale
+after this pass; `BENCHMARKS.md`'s FT8 section has been updated to
+today's figures directly.
+
+**Also added this pass**: `tests/ft8_qso3_full_parity_recall.rs`, a
+new regression distinct from `ft8_qso3_apoff_recall.rs`'s ship-config
+7/8 floor — asserts the **host research config**
+(`DecodeDepth::FULL`, `sync_min=0.8`, `max_cand=60`, the same default
+`ft8_qso3_jtdx_recall.rs` already used) hits the full WSJT-X 8-entry
+golden (**8/8**, including `K1BZM DK8NE -10`, which ship-config's
+`DecodeDepth::EMBEDDED` structurally cannot reach with OSD compiled
+out). Measured: **~139-148 ms** (single- or multi-threaded — this
+candidate count doesn't parallelise much), ~7-8× faster than real
+`jt9 -8 -d3`'s own measured ~1.1 s total file decode time, at full
+recall parity. This is now the tracked answer to "how fast can host
+match WSJT-X exactly on this WAV" — a question this document didn't
+previously have a permanent regression test for.

@@ -39,7 +39,7 @@ collaborators), which remains the reference implementation — see
   FST4 is within 0.1-0.6 dB of WSJT-X's published thresholds across
   all five sub-modes; FT4's AWGN gap is ~0.3 dB; MSK144 matches a real
   WSJT-X `jt9` build on 25/28 AWGN cross-check cells exactly; FT8
-  scores 7/8 on the WSJT-X golden set and 18/18 against JTDX's; WSPR
+  matches the WSJT-X golden set 8/8 and JTDX's 18/18; WSPR
   and JT9 are 8/8 and 7/7 on their WSJT-X reference recordings. The
   one exception is disclosed, not hidden: JT65 trails WSJT-X's
   stochastic `ftrsdap` decoder by ~7-8 dB at deep SNR, a gap that's
@@ -129,7 +129,7 @@ let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 
 // 2. Decode it back.
-for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None, DecodeDepth::BpAllOsd, 50) {
+for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None, DecodeDepth::FULL, 50) {
     if let Some(text) = unpack77(&r.message77) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
@@ -347,7 +347,7 @@ sweep was generated and reproduced, in
 
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X |
 |----------|-------------------|----------------------|
-| FT8      | 7/8 (WSJT-X), 18/18 (JTDX) | CCIR fading gap closed |
+| FT8      | 8/8 host full-parity (WSJT-X), 18/18 (JTDX) | CCIR fading gap closed |
 | FT4      | 6/6 | ~0.3 dB |
 | FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
 | WSPR     | 8/8 | matches published sensitivity floor |
