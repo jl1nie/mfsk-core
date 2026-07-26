@@ -443,7 +443,8 @@ that assumption in a way this document hasn't checked, similar to the
 FT4's analogous coherent-combining fix
 (`FT4_BENCHMARK.md` section 9). Not chased further in this pass —
 flagged here as the next concrete lead rather than left as an
-unexplained "—".
+unexplained "—". Tracked as
+[#190](https://github.com/jl1nie/mfsk-core/issues/190).
 
 Raw per-cell counts, jt9 -8 -d3, 20 trials/cell:
 

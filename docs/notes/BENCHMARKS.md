@@ -476,8 +476,9 @@ WSJT-X doesn't publish per-fading-model thresholds, but `ft8sim`'s the
 same simulator generating this corpus, so a real `jt9 -8 -d 3` run
 against it is real ground truth, not just "no figure available" —
 see `FT8_BENCHMARK.md` section 10 for the full methodology and a
-candidate root-cause direction for the CCIR moderate/poor gap (not
-yet chased down).
+candidate root-cause direction for the CCIR moderate/poor gap —
+tracked as [#190](https://github.com/jl1nie/mfsk-core/issues/190),
+not yet chased down.
 
 Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 
