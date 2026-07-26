@@ -1,15 +1,17 @@
-//! Integration test for `ft8::decode::decode_frame_with_ap` (PR #22).
+//! Integration test for `DecodeRequest::ap_hint` (issue #191 rewrite of
+//! the original PR #22 test, which covered `ft8::decode::decode_frame_with_ap`
+//! before that function family was consolidated into `DecodeRequest`).
 //!
-//! The PR's inline tests cover (a) clean self-synth round-trip with a
-//! matching hint and (b) `ap_hint=None` is bit-identical to
-//! `decode_frame`. This test extends the contract by checking that a
-//! deliberately *wrong* AP hint does not corrupt a clean-signal decode
-//! — the post-FEC CRC must catch any AP-locked spurious convergence,
-//! which is the safety claim made in the PR description.
+//! Covers (a) clean self-synth round-trip with a matching hint and (b) a
+//! deliberately *wrong* AP hint does not corrupt a clean-signal decode —
+//! the post-FEC CRC must catch any AP-locked spurious convergence, which
+//! is the safety claim made in the original PR description.
 
 use mfsk_core::core::{MessageCodec, MessageFields};
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth, decode_frame, decode_frame_with_ap};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{ApHint, DecodeDepth};
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
 
 fn pack_msg(call1: &str, call2: &str, grid: &str) -> [u8; 77] {
@@ -50,16 +52,11 @@ fn matching_ap_hint_decodes_clean_signal() {
     let audio = synth_slot(&msg, 1500.0, 25_000);
     let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
 
-    let results = decode_frame_with_ap(
-        &audio,
-        300.0,
-        2700.0,
-        1.5,
-        None,
-        DecodeDepth::FULL,
-        15,
-        Some(&ap),
-    );
+    let results = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
+        .depth(DecodeDepth::FULL)
+        .ap_hint(&ap)
+        .decode()
+        .results;
     assert!(
         first_text_at(&results, msg)
             .unwrap_or_default()
@@ -81,16 +78,11 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
     // Hint targets a totally unrelated callsign pair.
     let wrong = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
 
-    let results_wrong = decode_frame_with_ap(
-        &audio,
-        300.0,
-        2700.0,
-        1.5,
-        None,
-        DecodeDepth::FULL,
-        15,
-        Some(&wrong),
-    );
+    let results_wrong = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
+        .depth(DecodeDepth::FULL)
+        .ap_hint(&wrong)
+        .decode()
+        .results;
 
     // Either the right message survives, or no decode happens at the
     // target frequency — but we must NOT see a "K1ABC" frame mutate
@@ -103,33 +95,5 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
     assert!(
         !bad_3y0z,
         "wrong AP hint induced a CRC-passing 3Y0Z decode where K1ABC was transmitted"
-    );
-}
-
-#[test]
-fn ap_none_matches_legacy_decode_frame() {
-    // Belt-and-braces version of the inline test:
-    // decode_frame_with_ap(.., None) should produce the same message
-    // set as decode_frame on a clean signal.
-    let msg = pack_msg("CQ", "K1ABC", "FN42");
-    let audio = synth_slot(&msg, 1500.0, 25_000);
-
-    let legacy = decode_frame(&audio, 300.0, 2700.0, 1.5, None, DecodeDepth::FULL, 15);
-    let new_none = decode_frame_with_ap(
-        &audio,
-        300.0,
-        2700.0,
-        1.5,
-        None,
-        DecodeDepth::FULL,
-        15,
-        None,
-    );
-
-    let legacy_msgs: Vec<_> = legacy.iter().map(|r| r.message77).collect();
-    let new_msgs: Vec<_> = new_none.iter().map(|r| r.message77).collect();
-    assert_eq!(
-        legacy_msgs, new_msgs,
-        "ap_hint=None must match decode_frame"
     );
 }

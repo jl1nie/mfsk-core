@@ -24,7 +24,7 @@
 //! own narrow footprint.
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
-use mfsk_core::ft4::{Ft4, decode, encode};
+use mfsk_core::ft4::{Ft4, encode};
 
 const NSPS: usize = <Ft4 as ModulationParams>::NSPS as usize; // 576
 const NN: usize = <Ft4 as FrameLayout>::N_SYMBOLS as usize; // 103
@@ -67,7 +67,10 @@ fn build_slot(msg77: &[u8; 77], freq_hz: f32, peak_i16: i16) -> Vec<i16> {
 fn encode_decode_clean_signal_1000hz() {
     let msg = pack_cq("JA1ABC", "PM95");
     let audio = build_slot(&msg, 1000.0, 20_000);
-    let results = decode::decode_frame(&audio, 100.0, 2700.0, 1.0, 50);
+    let results =
+        mfsk_core::msg::decode_request::DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 1.0, 50)
+            .decode()
+            .results;
     assert!(
         !results.is_empty(),
         "FT4 decode produced no results for clean 1000 Hz signal"
@@ -93,7 +96,10 @@ fn encode_decode_clean_signal_1000hz() {
 fn encode_decode_mid_band_1500hz() {
     let msg = pack_cq("W1AW", "FN42");
     let audio = build_slot(&msg, 1500.0, 20_000);
-    let results = decode::decode_frame(&audio, 100.0, 2700.0, 1.0, 50);
+    let results =
+        mfsk_core::msg::decode_request::DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 1.0, 50)
+            .decode()
+            .results;
     assert!(!results.is_empty());
     assert!(results.iter().any(|r| r.message77() == msg));
 }

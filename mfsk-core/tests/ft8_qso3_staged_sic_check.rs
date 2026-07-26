@@ -54,7 +54,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness, decode_frame_subtract_staged};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -91,25 +93,18 @@ use common::load_wav_i16;
 #[test]
 fn staged_sic_matches_flat_pass_golden_floor() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
-    let results = decode_frame_subtract_staged(
-        &audio,
-        100.0,
-        3000.0,
-        0.8,
-        None,
-        DecodeDepth::FULL,
-        200,
-        DecodeStrictness::Normal,
-    );
+    let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .decode()
+        .results;
     let msgs: BTreeSet<String> = results
         .iter()
         .filter_map(|r| unpack77(&r.message77))
         .collect();
 
-    println!(
-        "decode_frame_subtract_staged(qso3_busy.wav): {} decodes",
-        msgs.len()
-    );
+    println!("staged decode(qso3_busy.wav): {} decodes", msgs.len());
     let mut golden_hits = 0usize;
     for g in FLAT_PASS_GOLDEN {
         let hit = msgs.contains(*g);
@@ -135,5 +130,81 @@ fn staged_sic_matches_flat_pass_golden_floor() {
     assert!(
         has_dl8yhr,
         "DL8YHR regressed — issue #180's LPF kernel-shape fix should make this a hard hit"
+    );
+}
+
+/// Issue #191's actual reported bug, end to end: a two-phase pipelined
+/// caller (WebFT8's `decode_phase1`/`decode_phase2` shape) that hands a
+/// Phase-1 result set + FFT cache into a Phase-2 `.staged()` call must
+/// get the *same* staged-checkpoint engine `staged_sic_matches_flat_pass_golden_floor`
+/// above exercises directly — not a separate, unfixed flat-only path.
+///
+/// Before #191, `known`/`precomputed_fft` were only accepted by
+/// `decode_frame_subtract_with_known_and_ap`, a flat 3-pass loop with
+/// none of issue #178/#179/#180's SIC-quality fixes — structurally
+/// unable to find `CQ DX DL8YHR JO41` regardless of `known`/cache
+/// content (its checkpoint-free structure is exactly what #180's doc
+/// comment above explains DL8YHR needs). `SupportsStagedSic`'s
+/// `.known()`/`.fft_cache()` handling now routes through the same
+/// engine as the plain `.staged()` case, so this combination finds it.
+#[test]
+fn staged_with_known_and_cache_finds_dl8yhr() {
+    let audio = load_wav_i16(Path::new(QSO3_PATH));
+
+    // Phase 1: a plain single-pass wide-band decode (no SIC) — the
+    // shape of WebFT8's `decode_phase1`. Captures both the decoded
+    // messages and the FFT cache for reuse.
+    let phase1 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .decode();
+    assert!(
+        !phase1.results.is_empty(),
+        "phase 1 must decode something for this test to be meaningful"
+    );
+    assert!(
+        !phase1
+            .results
+            .iter()
+            .filter_map(|r| unpack77(&r.message77))
+            .any(|m| m.contains("DL8YHR")),
+        "test setup assumption violated: DL8YHR should NOT be in the plain \
+         single-pass phase 1 result set (it should only surface via staged SIC)"
+    );
+
+    // Phase 2: staged SIC seeded with phase 1's results + cache — the
+    // exact combination issue #191 reported as unreachable.
+    let phase2 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .known(&phase1.results)
+        .fft_cache(phase1.fft_cache)
+        .decode();
+
+    let phase2_msgs: BTreeSet<String> = phase2
+        .results
+        .iter()
+        .filter_map(|r| unpack77(&r.message77))
+        .collect();
+    println!(
+        "phase2 staged+known+cache(qso3_busy.wav): {} new decodes",
+        phase2_msgs.len()
+    );
+
+    // `known` (phase 1's own results) must not be re-reported.
+    for r in &phase1.results {
+        assert!(
+            !phase2.results.iter().any(|r2| r2.message77 == r.message77),
+            "phase 2 re-reported a phase-1 `known` message instead of skipping it"
+        );
+    }
+
+    assert!(
+        phase2_msgs.iter().any(|m| m.contains("DL8YHR")),
+        "staged SIC with known+cache should find CQ DX DL8YHR JO41 in phase 2 \
+         (issue #191 regression: this combination used to route through the \
+         unfixed flat-only decode_frame_subtract_with_known_and_ap engine, \
+         which cannot reach DL8YHR structurally)"
     );
 }

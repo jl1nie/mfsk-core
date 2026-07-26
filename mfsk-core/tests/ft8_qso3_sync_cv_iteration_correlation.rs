@@ -20,10 +20,11 @@ use std::path::Path;
 use mfsk_core::FrameLayout;
 use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness, decode_frame_subtract};
+use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
 use mfsk_core::ft8::downsample::downsample;
 use mfsk_core::ft8::message::unpack77;
 use mfsk_core::ft8::subtract::{refine_signal_freq, subtract_signal_lpf};
+use mfsk_core::msg::decode_request::DecodeRequest;
 
 #[allow(dead_code)]
 mod common;
@@ -36,16 +37,12 @@ use common::load_wav_i16;
 #[ignore]
 fn correlate_sync_cv_with_iteration_convergence() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
-    let mut results = decode_frame_subtract(
-        &audio,
-        100.0,
-        3000.0,
-        0.8,
-        None,
-        DecodeDepth::FULL,
-        200,
-        DecodeStrictness::Normal,
-    );
+    let mut results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .decode()
+        .results;
     results.sort_by(|a, b| a.freq_hz.partial_cmp(&b.freq_hz).unwrap());
 
     let d = SyncDims::of::<Ft8>();

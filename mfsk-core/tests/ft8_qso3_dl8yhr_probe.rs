@@ -17,7 +17,9 @@
 
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness, decode_frame, decode_frame_subtract};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -65,45 +67,32 @@ fn probe_dl8yhr_decode_sweep() {
         ("more candidates", 1.5, 400),
         ("wider dt_tol + more candidates", 3.0, 400),
     ] {
-        let single = decode_frame(
-            &audio,
-            200.0,
-            3000.0,
-            dt_tol,
-            None,
-            DecodeDepth::FULL,
-            max_cand,
-        );
+        let single = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
+            .depth(DecodeDepth::FULL)
+            .decode()
+            .results;
         let hit_single = single
             .iter()
             .filter_map(|r| unpack77(&r.message77))
             .any(|m| m == target);
 
-        let sub = decode_frame_subtract(
-            &audio,
-            200.0,
-            3000.0,
-            dt_tol,
-            None,
-            DecodeDepth::FULL,
-            max_cand,
-            DecodeStrictness::Normal,
-        );
+        let sub = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
+            .depth(DecodeDepth::FULL)
+            .strictness(DecodeStrictness::Normal)
+            .staged()
+            .decode()
+            .results;
         let hit_sub = sub
             .iter()
             .filter_map(|r| unpack77(&r.message77))
             .any(|m| m == target);
 
-        let sub_deep = decode_frame_subtract(
-            &audio,
-            200.0,
-            3000.0,
-            dt_tol,
-            None,
-            DecodeDepth::FULL,
-            max_cand,
-            DecodeStrictness::Deep,
-        );
+        let sub_deep = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
+            .depth(DecodeDepth::FULL)
+            .strictness(DecodeStrictness::Deep)
+            .staged()
+            .decode()
+            .results;
         let hit_sub_deep = sub_deep
             .iter()
             .filter_map(|r| unpack77(&r.message77))

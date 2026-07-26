@@ -225,9 +225,11 @@
 //! ```
 //! # #[cfg(feature = "ft8")] {
 //! use mfsk_core::ft8::{
-//!     decode::{decode_frame, DecodeDepth},
+//!     Ft8,
+//!     decode::DecodeDepth,
 //!     wave_gen::{message_to_tones, tones_to_i16},
 //! };
+//! use mfsk_core::msg::decode_request::DecodeRequest;
 //! use mfsk_core::msg::wsjt77::{pack77, unpack77};
 //!
 //! // 1. Pack a standard FT8 message and synthesise 12 kHz i16 PCM.
@@ -244,15 +246,16 @@
 //! }
 //!
 //! // 2. Decode it back across the full FT8 band.
-//! let results = decode_frame(
+//! let results = DecodeRequest::<Ft8>::new(
 //!     &audio,
 //!     /* freq_min */ 100.0,
 //!     /* freq_max */ 3_000.0,
 //!     /* sync_min */ 1.0,
-//!     /* freq_hint */ None,
-//!     DecodeDepth::FULL,
 //!     /* max_cand */ 50,
-//! );
+//! )
+//! .depth(DecodeDepth::FULL)
+//! .decode()
+//! .results;
 //! assert!(!results.is_empty(), "roundtrip must decode");
 //! let text = unpack77(&results[0].message77).expect("unpack");
 //! assert_eq!(text, "CQ JA1ABC PM95");

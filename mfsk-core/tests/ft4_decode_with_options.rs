@@ -1,5 +1,7 @@
-//! Integration test for `ft4::decode::decode_frame_with_options`
-//! (added in PR #21).
+//! Integration test for `DecodeRequest<Ft4>::depth` (issue #191 rewrite
+//! of the original PR #21 test, which covered
+//! `ft4::decode::decode_frame_with_options` before that function family
+//! was consolidated into `DecodeRequest`).
 //!
 //! The PR ships an inline unit test that iterates `DecodeDepth` rungs
 //! against a *silent* buffer, which catches signature drift but doesn't
@@ -9,8 +11,9 @@
 //! `depth` on the floor would break the assertion.
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields};
-use mfsk_core::ft4::decode::{DecodeDepth, decode_frame_with_options};
+use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::{Ft4, encode};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
 
 const NN: usize = <Ft4 as FrameLayout>::N_SYMBOLS as usize;
@@ -47,8 +50,11 @@ fn every_depth_decodes_clean_signal() {
     let audio = synth_slot(&msg, 1500.0, 25_000);
 
     let mut decoded_text = None;
-    for depth in [DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-        let results = decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, depth, 5);
+    for depth in [DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+        let results = DecodeRequest::<Ft4>::new(&audio, 100.0, 3000.0, 0.6, 5)
+            .depth(depth)
+            .decode()
+            .results;
         let hit = results
             .iter()
             .find(|r| r.message77() == msg)

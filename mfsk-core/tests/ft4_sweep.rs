@@ -53,15 +53,19 @@ fn sweep_dir() -> PathBuf {
 const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 fn decode_wav_ft4(audio: &[i16]) -> bool {
-    mfsk_core::ft4::decode::decode_frame(audio, 100.0, 3000.0, 0.8, 50)
-        .iter()
-        .any(|d| {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
-                && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
-                && d.dt_sec.abs() <= DT_TOL_SEC
-        })
+    mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+        audio, 100.0, 3000.0, 0.8, 50,
+    )
+    .decode()
+    .results
+    .iter()
+    .any(|d| {
+        let mut m77 = [0u8; 77];
+        m77.copy_from_slice(d.message77());
+        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+            && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+            && d.dt_sec.abs() <= DT_TOL_SEC
+    })
 }
 
 // ── Filename parsing ─────────────────────────────────────────────────────────
@@ -254,9 +258,9 @@ fn ft4_snr_sweep() {
 /// this protocol? Run once a full sweep (above) has identified the
 /// partial-recall band per channel.
 ///
-/// `REFINE_STEPS = 32` / `SYNC_Q_MIN = 8` below mirror the private
-/// constants in `src/ft4/decode.rs` — duplicated here because integration
-/// tests only see `pub` items.
+/// `SYNC_Q_MIN = 8` below mirrors the private constant in
+/// `src/ft4/decode.rs` — duplicated here because integration tests only
+/// see `pub` items.
 #[test]
 #[ignore = "manual diagnostic — DecodeStrictness calibration probe (issue #72)"]
 fn ft4_strictness_probe() {
@@ -265,7 +269,6 @@ fn ft4_strictness_probe() {
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
-    const REFINE_STEPS: i32 = 32;
     const SYNC_Q_MIN: u32 = 8;
 
     fn snr_tag(snr: i32) -> String {
@@ -322,11 +325,10 @@ fn ft4_strictness_probe() {
                     3000.0,
                     0.8,
                     None,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     50,
                     strictness,
                     EqMode::Off,
-                    REFINE_STEPS,
                     SYNC_Q_MIN,
                 );
                 any_hits += !results.is_empty() as u32;
@@ -371,8 +373,8 @@ fn ft4_strictness_probe() {
 /// BP / OSD). This is read manually, not asserted — see `FST4_BENCHMARK.md`
 /// section 6 for why this stage-attribution step comes before any fix.
 ///
-/// `REFINE_STEPS = 32` / `SYNC_Q_MIN = 8` mirror the private constants in
-/// `src/ft4/decode.rs` (integration tests only see `pub` items).
+/// `SYNC_Q_MIN = 8` mirrors the private constant in `src/ft4/decode.rs`
+/// (integration tests only see `pub` items).
 #[test]
 #[ignore = "manual diagnostic — AWGN sensitivity gap stage attribution (issue #72)"]
 fn ft4_diag_weak_trials() {
@@ -386,7 +388,6 @@ fn ft4_diag_weak_trials() {
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
-    const REFINE_STEPS: i32 = 32;
     const SYNC_Q_MIN: u32 = 8;
 
     // Mirrors `process_candidate_basic`'s downsample -> RMS-normalize ->
@@ -458,11 +459,10 @@ fn ft4_diag_weak_trials() {
                     c,
                     &fft_cache,
                     &FT4_DOWNSAMPLE,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
-                    REFINE_STEPS,
                     SYNC_Q_MIN,
                 );
                 // pass: 0/1/2/3=BP variants a/b/c/d, 6=llre (BP succeeded
@@ -513,7 +513,6 @@ fn ft4_diag_segment_retry() {
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
-    const REFINE_STEPS: i32 = 32;
     const SYNC_Q_MIN: u32 = 8;
     const BP_MAX_ITER: u32 = 40; // FT4's own value, section 10.
     const OSD_ATTEMPT_MIN: u32 = 9; // section 8's FT4-scaled gate.
@@ -635,11 +634,10 @@ fn ft4_diag_segment_retry() {
                     c,
                     &fft_cache,
                     &FT4_DOWNSAMPLE,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
-                    REFINE_STEPS,
                     SYNC_Q_MIN,
                 );
                 if baseline.is_some() {
@@ -738,7 +736,6 @@ fn ft4_diag_candidate_cost_split() {
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
-    const REFINE_STEPS: i32 = 32;
     const SYNC_Q_MIN: u32 = 8;
 
     #[derive(Default)]
@@ -814,11 +811,10 @@ fn ft4_diag_candidate_cost_split() {
                 c,
                 &fft_cache,
                 &FT4_DOWNSAMPLE,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,
-                REFINE_STEPS,
                 SYNC_Q_MIN,
             );
             split.process_total += t0.elapsed();
@@ -881,10 +877,15 @@ fn ft4_diag_candidate_cost_split() {
             // `BENCHMARKS.md`'s "Decode speed" table.
             let t0 = Instant::now();
             let decodes =
-                mfsk_core::ft4::decode::decode_frame_subtract(&audio, 100.0, 2700.0, 0.05, 2000);
+                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+                    &audio, 100.0, 2700.0, 0.05, 2000,
+                )
+                .flat()
+                .decode()
+                .results;
             let dt = t0.elapsed();
             eprintln!(
-                "golden 000000_000002.wav: decode_frame_subtract wall-clock = {:.1} ms, {} decode(s)",
+                "golden 000000_000002.wav: flat SIC wall-clock = {:.1} ms, {} decode(s)",
                 dt.as_secs_f64() * 1000.0,
                 decodes.len()
             );
@@ -956,7 +957,6 @@ fn ft4_diag_smax_calibration() {
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
 
-    const REFINE_STEPS: i32 = 32;
     const SYNC_Q_MIN: u32 = 8;
 
     let dir = sweep_dir();
@@ -1008,11 +1008,10 @@ fn ft4_diag_smax_calibration() {
                 c,
                 &fft_cache,
                 &FT4_DOWNSAMPLE,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,
-                REFINE_STEPS,
                 SYNC_Q_MIN,
             );
             let is_golden = r.as_ref().is_some_and(|d| {

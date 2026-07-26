@@ -1,7 +1,6 @@
 /// High-level FT8 decode pipeline.
 ///
 /// Chains: downsample → coarse_sync → fine_sync → LLR → BP decode
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -13,174 +12,56 @@ use rayon::prelude::*;
 
 pub use super::equalizer::EqMode;
 use super::{
+    Ft8,
     downsample::build_fft_cache,
     equalizer,
     llr::sync_quality,
-    message::pack28,
     params,
-    params::{BP_MAX_ITER, LDPC_N},
+    params::BP_MAX_ITER,
     subtract::{subtract_signal_lpf, subtract_signal_lpf_refine_dt},
     sync::SyncCandidate,
+};
+use crate::msg::decode_request::{
+    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
+    SupportsStagedSic, SupportsWideBandAp,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
 
-/// Opaque FFT cache produced by [`decode_frame_with_cache`] (Phase 1),
-/// consumed by [`decode_frame_subtract_with_known`] (Phase 2).
-pub type FftCache = Vec<num_complex::Complex<f32>>;
+/// Opaque FFT cache, reusable across pipelined decode passes.
+///
+/// Canonical definition lives in [`crate::core::pipeline::FftCache`] — same
+/// underlying `Vec<Complex<f32>>`, re-exported here for backward-compatible
+/// `mfsk_core::ft8::decode::FftCache` import paths (issue #191).
+pub use crate::core::pipeline::FftCache;
 
-/// How much extra work the BP staircase does per candidate before
-/// falling back to more expensive strategies. The only axis embedded
-/// targets ever configure — see [`DecodeDepth::osd`] for the
-/// (host-only) OSD escalation axis.
+/// Decode cost/recall configuration, plus the [`LlrEffort`] staircase width.
 ///
-/// Each bit's log-likelihood ratio (LLR) can be estimated by looking
-/// at just its own FT8 symbol, or jointly across 2 or 3 *adjacent*
-/// symbols — a wider joint estimate is a more reliable LLR (correlated
-/// symbol-decision errors partially cancel) but costs proportionally
-/// more to compute, and BP is tried again from scratch each time a
-/// wider estimate is added. `LlrEffort` picks how wide this staircase
-/// climbs before giving up on a candidate. (If cross-referencing
-/// WSJT-X's `ft8b.f90`: its own internal labels for these are
-/// `llra`/`llrb`/`llrc`/`llrd` — 1-symbol, 2-symbol, 3-symbol, and a
-/// second cheap 1-symbol variant respectively; `LlrEffort` doesn't
-/// need that vocabulary to use.)
-///
-/// Redesigned in 0.8.0 (issue #182 follow-up) from a 3-tier scheme
-/// (a middle tier between `Minimal`/`Full` that added the 2-symbol
-/// estimate but not the 3-symbol one) down to 2: the middle tier had
-/// zero real callers outside one dedicated sweep test, and both that
-/// test's history and a fresh host measurement (`qso3_busy.wav`,
-/// single-threaded) showed the 3-symbol estimate contributes
-/// +5.5ms/0 extra decodes over the 2-symbol one alone, and the
-/// 2-symbol estimate itself contributes +2.5ms/0 extra decodes over
-/// the two 1-symbol ones — not enough signal to justify a third named
-/// tier.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LlrEffort {
-    /// Only the two cheap 1-symbol LLR estimates (one from the
-    /// candidate's initial Step-1 pass, one a free bit-normalised
-    /// variant reusing that same pass's work — no extra symbol-spectra
-    /// computation). ESP32 ship default — the 2-symbol/3-symbol
-    /// estimates empirically add zero extra decodes on power-budgeted
-    /// busy-band references (S3 log 2026-05-21; host re-measurement
-    /// 2026-07-26: +8ms, 0 extra decodes on `qso3_busy.wav`). Every
-    /// decode lands at `pass=0` (the initial 1-symbol estimate) on
-    /// these references, so the wider joint estimates are pure
-    /// overhead here.
-    Minimal,
-    /// All four LLR estimates, up to the 3-symbol joint one. Host
-    /// default — full recall.
-    Full,
-}
-
-/// Decode cost/recall configuration: [`LlrEffort`] plus whether to
-/// escalate to OSD when the BP staircase fails.
-///
-/// `osd` is host-only: the OSD dispatch code
-/// ([`super::decode_block`]'s `osd_strategy` module) is compiled out
-/// of non-`fft-rustfft` builds entirely, so `osd: true` is a silent
-/// no-op on embedded rather than a footgun. OSD has never shipped on
-/// an ESP32 target and there is no plan to add it there — this isn't
-/// a current tuning choice, it's a permanent architectural boundary.
-///
-/// `Bp` (single-metric, no all-variants pass) was retired in 0.7.0 —
-/// no production consumer was found by issue #74, and the cheapest
-/// staircase rung wasn't a power-budget escape hatch (embedded ship
-/// runs the full LLR-variant staircase end-to-end inside the slot
-/// budget already).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DecodeDepth {
-    pub llr_effort: LlrEffort,
-    pub osd: bool,
-}
-
-impl DecodeDepth {
-    /// ESP32 ship config: cheapest LLR effort, OSD off (was
-    /// `BpVariantsAd`).
-    pub const EMBEDDED: Self = Self {
-        llr_effort: LlrEffort::Minimal,
-        osd: false,
-    };
-    /// Full LLR effort, no OSD — host "fast" baseline (was `BpAll`).
-    pub const BP_ONLY: Self = Self {
-        llr_effort: LlrEffort::Full,
-        osd: false,
-    };
-    /// Full LLR effort + OSD fallback — host default (was
-    /// `BpAllOsd`).
-    pub const FULL: Self = Self {
-        llr_effort: LlrEffort::Full,
-        osd: true,
-    };
-}
+/// Canonical definition lives in [`crate::core::pipeline::DecodeDepth`] —
+/// re-exported here (with [`LlrEffort`]) for backward-compatible
+/// `mfsk_core::ft8::decode::DecodeDepth` import paths (issue #191 type
+/// consolidation migrated `core::pipeline`'s old 2-variant `BpAll`/
+/// `BpAllOsd` enum, used by FT4/FST4, onto this struct). `llr_effort` is
+/// FT8-only in practice — the generic `core::pipeline` engine FT4/FST4 use
+/// always computes all LLR variants and only reads `depth.osd`.
+pub use crate::core::pipeline::{DecodeDepth, LlrEffort};
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.
 ///
-/// Adjusts OSD hard_errors thresholds, AP hard_errors thresholds, and
-/// the minimum sync score required for OSD fallback entry.
-/// Actual numeric values are placeholders pending benchmark calibration.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum DecodeStrictness {
-    /// Minimise false positives — tighter thresholds.
-    Strict,
-    /// Balanced (current behaviour).
-    #[default]
-    Normal,
-    /// Maximum sensitivity — looser thresholds, more FP risk.
-    Deep,
-}
-
-impl DecodeStrictness {
-    /// Maximum hard_errors for non-AP OSD decode.
-    ///
-    /// Calibrated from real WAV bench (2026-04-07):
-    ///   - BP pass 0: errors 0–8 (all clean)
-    ///   - OSD real signals: errors 19, 23
-    ///   - OSD false positive: errors 29
-    pub fn osd_max_errors(self, osd_depth: u8) -> u32 {
-        match (self, osd_depth) {
-            // Strict: high-confidence OSD (e19 real → keep, e23+ → cut)
-            (Self::Strict, 3) => 20,
-            (Self::Strict, 4) => 24,
-            (Self::Strict, _) => 22,
-            // Normal: catches errors=29 FP, keeps errors=23 real decode
-            (Self::Normal, 3) => 26,
-            (Self::Normal, 4) => 30,
-            (Self::Normal, _) => 29,
-            // Deep: previous defaults — maximum sensitivity
-            (Self::Deep, 3) => 30,
-            (Self::Deep, 4) => 36,
-            (Self::Deep, _) => 40,
-        }
-    }
-
-    /// Maximum hard_errors for AP decode passes.
-    ///
-    /// Calibrated from synthetic QSO scenario:
-    ///   - REPORT AP at -18 dB: 15% FP rate with old thresholds (30/36)
-    pub fn ap_max_errors(self, locked_bits: usize) -> u32 {
-        match (self, locked_bits >= 55) {
-            (Self::Strict, true) => 20,
-            (Self::Strict, false) => 24,
-            (Self::Normal, true) => 25,
-            (Self::Normal, false) => 30,
-            // Deep: previous defaults
-            (Self::Deep, true) => 30,
-            (Self::Deep, false) => 36,
-        }
-    }
-
-    /// Minimum coarse-sync score to enter OSD fallback.
-    pub fn osd_score_min(self) -> f32 {
-        match self {
-            Self::Strict => 3.0,
-            Self::Normal => 2.2,
-            Self::Deep => 2.0,
-        }
-    }
-}
+/// Canonical definition lives in [`crate::core::pipeline::DecodeStrictness`]
+/// — this used to be a separate, differently-calibrated `osd_max_errors`/
+/// `osd_score_min` (FT8's own real-WAV-bench numbers), but neither method
+/// has ever actually been called anywhere in FT8's own decode path: FT8's
+/// non-AP OSD gate uses hardcoded `OSD_HARDERRORS_MAX`/
+/// `WSJTX_NHARDERRORS_MAX` constants instead
+/// (`ft8/decode_block/osd_strategy.rs`, `process_candidates.rs`), leftover
+/// dead code from before #188 removed the `auto_ap_strategy` module that
+/// used to consume them. `ap_max_errors` *is* live (FT8's per-candidate AP
+/// loop) and was already numerically identical to the generic pipeline's
+/// copy — moved onto the canonical type, no numeric change (issue #191
+/// type consolidation).
+pub use crate::core::pipeline::DecodeStrictness;
 
 /// One successfully decoded FT8 message.
 #[derive(Debug, Clone)]
@@ -212,301 +93,14 @@ pub struct DecodeResult {
 
 // ────────────────────────────────────────────────────────────────────────────
 // A Priori (AP) hint for sniper-mode decode
-
-/// A Priori information for assisted decoding.
-///
-/// Known callsigns are converted to 28-bit packed tokens and injected as
-/// high-confidence LLR values into the BP decoder, effectively reducing the
-/// number of unknown bits.  This lowers the decode threshold by several dB.
-///
-/// # Example
-/// ```
-/// use mfsk_core::ft8::decode::ApHint;
-/// // "I'm calling 3Y0Z, expecting a reply to my CQ"
-/// let ap = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct ApHint {
-    /// Known first callsign (e.g. "CQ", "JA1ABC").
-    /// Locks message bits 0–28 (28-bit call + 1-bit flag).
-    pub call1: Option<String>,
-    /// Known second callsign (e.g. "3Y0Z").
-    /// Locks message bits 29–57 (28-bit call + 1-bit flag).
-    pub call2: Option<String>,
-    /// Known grid locator (e.g. "JD34").
-    /// Locks message bits 58 (ir=0) + 59–73 (15-bit grid).
-    pub grid: Option<String>,
-    /// Known report/response token (e.g. "RRR", "RR73", "73").
-    /// Locks bits 58–73 (ir flag + 15-bit report field) for full 77-bit lock.
-    pub report: Option<String>,
-}
-
-impl ApHint {
-    /// Construct an empty `ApHint` — no fields pre-filled.
-    pub fn new() -> Self {
-        Self::default()
-    }
-    /// Pre-fill the first callsign (`CALL1` in a standard FT8 message).
-    pub fn with_call1(mut self, call: &str) -> Self {
-        self.call1 = Some(call.to_string());
-        self
-    }
-    /// Pre-fill the second callsign (`CALL2`).
-    pub fn with_call2(mut self, call: &str) -> Self {
-        self.call2 = Some(call.to_string());
-        self
-    }
-    /// Pre-fill the 4-character Maidenhead grid.
-    pub fn with_grid(mut self, grid: &str) -> Self {
-        self.grid = Some(grid.to_string());
-        self
-    }
-    /// Pre-fill the signal report (e.g. `"-12"`, `"R+05"`, `"73"`).
-    pub fn with_report(mut self, rpt: &str) -> Self {
-        self.report = Some(rpt.to_string());
-        self
-    }
-
-    /// Returns true if any a-priori information is available.
-    pub fn has_info(&self) -> bool {
-        self.call1.is_some() || self.call2.is_some()
-    }
-
-    /// Build AP mask and LLR overrides for the 174-bit LDPC codeword.
-    ///
-    /// `apmag` — magnitude to assign to known bits (typically `max(|llr|) * 1.01`).
-    ///
-    /// Returns `(ap_mask, ap_llr)` where:
-    /// - `ap_mask[i] = true` means bit `i` is a-priori known (frozen in BP)
-    /// - `ap_llr[i]` is the LLR override for known bits (±apmag)
-    pub fn build_ap(&self, apmag: f32) -> ([bool; LDPC_N], [f32; LDPC_N]) {
-        let mut mask = [false; LDPC_N];
-        let mut ap_llr = [0.0f32; LDPC_N];
-
-        // Helper: write 28-bit packed call + 1-bit flag (=0) into AP arrays
-        let mut set_call_bits = |call: &str, start: usize| {
-            if let Some(n28) = pack28(call) {
-                // Write 28 bits of the packed callsign
-                for i in 0..28 {
-                    let bit = ((n28 >> (27 - i)) & 1) as u8;
-                    mask[start + i] = true;
-                    ap_llr[start + i] = if bit == 1 { apmag } else { -apmag };
-                }
-                // Flag bit (ipa/ipb) = 0 for standard calls
-                mask[start + 28] = true;
-                ap_llr[start + 28] = -apmag; // bit=0 → negative LLR
-            }
-        };
-
-        if let Some(ref c1) = self.call1 {
-            set_call_bits(c1, 0); // bits 0–28
-        }
-        if let Some(ref c2) = self.call2 {
-            set_call_bits(c2, 29); // bits 29–57
-        }
-
-        // Lock grid field (bits 58–73: ir=0 + 15-bit grid) if known
-        if let Some(ref grid) = self.grid
-            && let Some(igrid) = super::message::pack_grid4(grid)
-        {
-            mask[58] = true;
-            ap_llr[58] = -apmag; // ir=0
-            for i in 0..15 {
-                let bit = ((igrid >> (14 - i)) & 1) as u8;
-                mask[59 + i] = true;
-                ap_llr[59 + i] = if bit == 1 { apmag } else { -apmag };
-            }
-        }
-
-        // Lock report field (bits 58–73) for known responses: RRR, RR73, 73
-        if let Some(ref rpt) = self.report {
-            // Type 1: igrid values for special responses
-            let igrid_val: Option<u32> = match rpt.as_str() {
-                "RRR" => Some(32_400 + 2),
-                "RR73" => Some(32_400 + 3),
-                "73" => Some(32_400 + 4),
-                _ => None,
-            };
-            if let Some(igrid) = igrid_val {
-                mask[58] = true;
-                ap_llr[58] = -apmag; // ir=0
-                for i in 0..15 {
-                    let bit = ((igrid >> (14 - i)) & 1) as u8;
-                    mask[59 + i] = true;
-                    ap_llr[59 + i] = if bit == 1 { apmag } else { -apmag };
-                }
-            }
-        }
-
-        // Lock message type i3=1 (Type 1 standard) if any call is known
-        if self.has_info() {
-            // bits 74-76 = i3 = 001 (Type 1)
-            mask[74] = true;
-            ap_llr[74] = -apmag; // bit=0
-            mask[75] = true;
-            ap_llr[75] = -apmag; // bit=0
-            mask[76] = true;
-            ap_llr[76] = apmag; // bit=1
-        }
-
-        (mask, ap_llr)
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Main decode entry point
-
-/// Decode one 15-second FT8 audio frame.
-///
-/// # Arguments
-/// * `audio`      — 16-bit PCM samples at 12 000 Hz, length ≤ 180 000
-/// * `freq_min`   — lower edge of search band (Hz)
-/// * `freq_max`   — upper edge of search band (Hz)
-/// * `sync_min`   — minimum coarse-sync score (typical: 1.0–2.0)
-/// * `freq_hint`  — optional preferred frequency; matching candidates are tried first
-/// * `depth`      — decoding depth
-/// * `max_cand`   — maximum number of sync candidates to evaluate
-///
-/// Returns all successfully decoded messages (deduplicated by `message77`).
-pub fn decode_frame(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_inner(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        &[],
-        EqMode::Off,
-        None,
-        None,
-    )
-    .0
-}
-
-/// Wide-band decode with an a-priori (AP) callsign / grid hint applied
-/// to every candidate.
-///
-/// Unlike [`decode_sniper_ap`] which scans only ±250 Hz around a target
-/// frequency, this function scans the full `freq_min..freq_max` band and
-/// attempts AP-assisted decoding on each sync candidate. Useful when an
-/// operator has an active QSO and wants the whole band searched with
-/// the known callsigns biasing FEC LLRs:
-///
-/// ```ignore
-/// use mfsk_core::ft8::decode::{decode_frame_with_ap, ApHint, DecodeDepth};
-/// let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
-/// let results = decode_frame_with_ap(
-///     &audio, 100.0, 3000.0, 1.0, None,
-///     DecodeDepth::FULL, 50, Some(&ap),
-/// );
-/// ```
-///
-/// AP gain is typically 1–3 dB at the FT8 decode threshold when at
-/// least one of `call1` / `call2` matches a station actually on air.
-/// When the hint is wrong, decode quality degrades only slightly
-/// because the AP path is gated behind sync-quality and BP score
-/// checks; spurious AP-locked decodes are caught by the post-FEC CRC.
-pub fn decode_frame_with_ap(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    decode_frame_with_ap_full(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        DecodeStrictness::Normal,
-        max_cand,
-        ap_hint,
-    )
-    .0
-}
-
-/// Wide-band decode with AP hint plus configurable strictness, returning
-/// the FFT cache for downstream pipelined passes.
-///
-/// This is the "full" form of [`decode_frame_with_ap`]: it exposes the
-/// [`DecodeStrictness`] knob and returns the 192 k-point FFT cache so a
-/// follow-up [`decode_frame_subtract_with_known`] (or
-/// [`decode_frame_subtract_with_known_and_ap`]) call can reuse it without
-/// recomputing.
-///
-/// `ap_hint = None` reproduces the legacy [`decode_frame_with_cache`]
-/// pipeline bit-for-bit (no AP bits locked).
-pub fn decode_frame_with_ap_full(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    strictness: DecodeStrictness,
-    max_cand: usize,
-    ap_hint: Option<&ApHint>,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_inner(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        strictness,
-        &[],
-        EqMode::Off,
-        None,
-        ap_hint,
-    )
-}
-
-/// Like [`decode_frame`] but also returns the 192k-point FFT cache for
-/// reuse by a subsequent [`decode_frame_subtract_with_known`] call.
-///
-/// This is the Phase 1 entry point for pipelined decoding.
-pub fn decode_frame_with_cache(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_inner(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        &[],
-        EqMode::Off,
-        None,
-        None,
-    )
-}
+//
+// Canonical definition lives in [`crate::msg::ap::ApHint`] — this used to be
+// a separate, byte-for-byte-identical struct (down to reusing the same
+// `pack28`/`pack_grid4` from `msg::wsjt77` under the hood), duplicated here
+// before the `DecodeRequest<P>` consolidation (issue #191) made a single
+// shared type load-bearing for genericity across protocols. Re-exported so
+// existing `mfsk_core::ft8::decode::ApHint` import paths keep working.
+pub use crate::msg::ap::ApHint;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Per-candidate decode helper (used by both inner and sniper paths)
@@ -758,76 +352,12 @@ fn decode_frame_inner(
 // ────────────────────────────────────────────────────────────────────────────
 // Multi-pass decode with signal subtraction
 
-/// Decode a 15-second FT8 frame using successive signal subtraction.
-///
-/// Runs three decode passes with decreasing sync thresholds.  After each
-/// pass every newly decoded signal is subtracted from the residual audio,
-/// revealing weaker signals that were previously hidden.
-///
-/// | Pass | sync_min factor | OSD score min | Purpose |
-/// |------|----------------|---------------|---------|
-/// | 1    | 1.0×           | 2.5           | Strong signals (BP + OSD) |
-/// | 2    | 0.75×          | 2.5           | Medium signals on residual |
-/// | 3    | 0.5×           | 2.0           | Weak / spurious signals |
-///
-/// Pass 3 uses a lower OSD score threshold (`2.0` vs the normal `2.5`) to
-/// also subtract signals that are marginal but have valid CRC — even if they
-/// were questionable in the original audio, subtracting their reconstructed
-/// waveform from the already-cleaned residual does more good than harm.
-pub fn decode_frame_subtract(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-) -> Vec<DecodeResult> {
-    decode_frame_subtract_with_ap(
-        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, None,
-    )
-}
-
-/// Like [`decode_frame_subtract`] but forwards an `ap_hint` to every
-/// per-candidate decode in every subtract pass.
-///
-/// `ap_hint = None` reproduces [`decode_frame_subtract`] bit-for-bit.
-pub fn decode_frame_subtract_with_ap(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    // Delegates to the staged-checkpoint SIC (issue #180) as of this
-    // release — jt9.f90's disk-decode is itself staged/checkpointed,
-    // not a flat single pass (see `decode_frame_subtract_staged_with_ap`'s
-    // own doc comment), and the staged path is a strict recall
-    // superset of the flat 3-pass loop below with no observed
-    // regressions (verified: identical golden-set hits on every
-    // reference WAV, plus `CQ DX DL8YHR JO41` on `qso3_busy.wav`,
-    // which the flat loop structurally cannot reach regardless of
-    // threshold tuning — see issue #180). Cost: ~1.3-1.9x the flat
-    // pass's wall-clock, still well inside the FT8 15s slot's decode
-    // budget on host.
-    decode_frame_subtract_staged_with_ap(
-        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
-    )
-}
-
-/// The pre-issue-#180 flat 3-pass + sequential SIC, mirroring the
-/// structure of `decode_block::decode_block_multipass` (the embedded
-/// path) which is a faithful port of `lib/ft8/ft8b.f90:432-437`.
-/// [`decode_frame_subtract_with_ap`] now delegates to the staged
-/// checkpoint SIC instead (issue #180) — this flat version is kept as
-/// its own entry point for callers that specifically want the cheaper,
-/// non-staged behaviour (e.g. tight embedded-adjacent host budgets, or
-/// A/B comparison against the staged path).
+/// The flat 3-pass + sequential SIC, mirroring the structure of
+/// `decode_block::decode_block_multipass` (the embedded path) which is a
+/// faithful port of `lib/ft8/ft8b.f90:432-437`. Used by
+/// [`SupportsFlatSic`]'s `Ft8` impl (`.flat()`) and as
+/// [`decode_frame_subtract_staged_with_ap_inner`]'s fallback for
+/// buffers too short to stage meaningfully.
 ///
 /// Two changes from the pre-v0.6.0 host implementation:
 ///
@@ -846,21 +376,21 @@ pub fn decode_frame_subtract_with_ap(
 ///
 /// Pass termination matches WSJT-X: pass 2 skips when pass 1 returned
 /// 0 decodes; pass 3 skips when pass 2 returned no NEW decodes.
-pub fn decode_frame_subtract_flat_with_ap(
+#[allow(clippy::too_many_arguments)]
+fn flat_sic_inner(
     audio: &[i16],
     freq_min: f32,
     freq_max: f32,
     sync_min: f32,
-    freq_hint: Option<f32>,
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
+    known: &[DecodeResult],
     ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    let _ = freq_hint;
-
+    precomputed_fft: Option<&[num_complex::Complex<f32>]>,
+) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
-    sic_inner_passes(
+    sic_inner_passes_with_cache(
         &mut residual,
         freq_min,
         freq_max,
@@ -868,8 +398,9 @@ pub fn decode_frame_subtract_flat_with_ap(
         depth,
         max_cand,
         strictness,
-        &[],
+        known,
         ap_hint,
+        precomputed_fft,
     )
 }
 
@@ -877,10 +408,10 @@ pub fn decode_frame_subtract_flat_with_ap(
 /// decode, subtracting each accepted decode from `residual` immediately
 /// (sequential, not batch-after-pass) so later candidates in the same
 /// sub-pass see a cleaner spectrum. This is WSJT-X's `ft8b.f90:432-437`
-/// `do ipass=1,npass` structure. Factored out of
-/// [`decode_frame_subtract_with_ap`] so [`decode_frame_subtract_staged_with_ap`]
-/// can reuse it at checkpoint A and checkpoint C (issue #180) without
-/// duplicating the pass/dedup/subtract logic.
+/// `do ipass=1,npass` structure. Factored out of [`flat_sic_inner`] so
+/// [`decode_frame_subtract_staged_with_ap_inner`] can reuse it at
+/// checkpoint A and checkpoint C (issue #180) without duplicating the
+/// pass/dedup/subtract logic.
 ///
 /// `residual` is mutated in place (final state = fully subtracted).
 /// `known` seeds dedup against decodes from an earlier stage — those
@@ -898,7 +429,38 @@ fn sic_inner_passes(
     known: &[DecodeResult],
     ap_hint: Option<&ApHint>,
 ) -> Vec<DecodeResult> {
+    sic_inner_passes_with_cache(
+        residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, ap_hint, None,
+    )
+    .0
+}
+
+/// Like [`sic_inner_passes`] but also accepts a `precomputed_fft` cache
+/// (reused only on pass 0, and only when `residual` has not yet been
+/// mutated by a subtraction the caller did before calling in — passing
+/// `Some(_)` alongside an already-subtracted `residual` would silently
+/// mismatch the cache against the audio it's meant to describe) and
+/// returns the pass-0 cache alongside the results, so a follow-up
+/// pipelined call can reuse it in turn. This is the fix for issue #191:
+/// previously only the (dead-code, zero-caller)
+/// `decode_frame_subtract_with_known_and_ap` had *any* cache-reuse path,
+/// and it used its own unfixed flat-3-pass engine rather than this
+/// (shared by both `.flat()` and `.staged()`) one.
+#[allow(clippy::too_many_arguments)]
+fn sic_inner_passes_with_cache(
+    residual: &mut [i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    ap_hint: Option<&ApHint>,
+    precomputed_fft: Option<&[num_complex::Complex<f32>]>,
+) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
+    let mut pass0_cache: Option<FftCache> = None;
 
     let mut prev_total: usize = 0;
     for ipass in 0..3 {
@@ -915,7 +477,16 @@ fn sic_inner_passes(
             continue;
         }
 
-        let fft_cache = build_fft_cache(residual);
+        let fft_cache = if ipass == 0
+            && let Some(c) = precomputed_fft
+        {
+            c.to_vec()
+        } else {
+            build_fft_cache(residual)
+        };
+        if ipass == 0 {
+            pass0_cache = Some(fft_cache.clone());
+        }
         for cand in &candidates {
             let r = match process_candidate(
                 cand,
@@ -976,7 +547,12 @@ fn sic_inner_passes(
         }
     }
 
-    all_results
+    // Pass 0 may have had no candidates at all (empty coarse-sync), in
+    // which case `pass0_cache` was never set — build one from the
+    // (possibly already-subtracted) residual as a fallback, matching
+    // `decode_frame_inner`'s "cache is always returned" contract.
+    let fft_cache = pass0_cache.unwrap_or_else(|| build_fft_cache(residual));
+    (all_results, fft_cache)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1034,47 +610,6 @@ mod staged_checkpoint {
     pub const C_SAMPLES: usize = 172_800;
 }
 
-/// Like [`decode_frame_subtract`] but structured as WSJT-X's disk-decode
-/// checkpoint architecture (see the module doc above) instead of a flat
-/// 3-pass SIC over the whole buffer. `audio` should be a full 15 s / 12 kHz
-/// slot (≤ 180_000 samples) for the staging to have any effect; shorter
-/// buffers (e.g. synthetic test fixtures) fall back to
-/// [`decode_frame_subtract`] unchanged.
-pub fn decode_frame_subtract_staged(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-) -> Vec<DecodeResult> {
-    decode_frame_subtract_staged_with_ap(
-        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, None,
-    )
-}
-
-/// Like [`decode_frame_subtract_staged`] but forwards an `ap_hint` to
-/// every per-candidate decode in every checkpoint.
-#[allow(clippy::too_many_arguments)]
-pub fn decode_frame_subtract_staged_with_ap(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    decode_frame_subtract_staged_with_ap_inner(
-        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
-    )
-    .0
-}
-
 /// Test-only variant that also returns checkpoint C's residual buffer
 /// (the state actually handed to the final, most-relaxed search) —
 /// used by diagnostics that need to probe a specific `(freq, dt)` by
@@ -1116,13 +651,23 @@ fn decode_frame_subtract_staged_with_ap_inner(
 
     // Buffers shorter than checkpoint A can't be staged meaningfully —
     // there's no "early, incomplete" window smaller than the whole thing.
-    // Must call the *flat* fallback, not `decode_frame_subtract_with_ap`
-    // — that now delegates to this very function (issue #180), so
+    // Must call the *flat* fallback (`flat_sic_inner`), not `.staged()`
+    // itself — that dispatches to this very function (issue #180), so
     // calling it here would recurse indefinitely (stack overflow, caught
-    // by `decode_frame_subtract_with_ap_silence_shape`).
+    // by `staged_with_ap_silence_shape`).
+    let _ = freq_hint;
     if audio.len() < A_SAMPLES {
-        let r = decode_frame_subtract_flat_with_ap(
-            audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+        let (r, _) = flat_sic_inner(
+            audio,
+            freq_min,
+            freq_max,
+            sync_min,
+            depth,
+            max_cand,
+            strictness,
+            &[],
+            ap_hint,
+            None,
         );
         return (r, audio.to_vec());
     }
@@ -1172,8 +717,17 @@ fn decode_frame_subtract_staged_with_ap_inner(
         // truncation quirk in this branch) can only find as much or
         // more, never less. Must be the *flat* fallback here too — same
         // recursion hazard as the `A_SAMPLES` branch above.
-        let r = decode_frame_subtract_flat_with_ap(
-            audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+        let (r, _) = flat_sic_inner(
+            audio,
+            freq_min,
+            freq_max,
+            sync_min,
+            depth,
+            max_cand,
+            strictness,
+            &[],
+            ap_hint,
+            None,
         );
         return (r, audio.to_vec());
     }
@@ -1242,340 +796,23 @@ fn decode_frame_subtract_staged_with_ap_inner(
     (all_results, buf_c)
 }
 
-/// Phase-2 subtract decode: accepts Phase-1 results as `known` and an
-/// optional pre-computed FFT cache for the first pass.
-///
-/// Internally runs three subtract passes (sync_min × 1.0 / 0.75 / 0.5).
-/// The first pass reuses `precomputed_fft` when available; subsequent
-/// passes recompute the FFT from the post-subtraction residual.
-///
-/// Caller-supplied `known` signals are subtracted from the working
-/// buffer after Pass 0 (before Pass 1 / Pass 2 begin), so subsequent
-/// passes see a residual with all known signals removed. Without this,
-/// strong known carriers would re-decode in later passes and crowd out
-/// the new candidates this function exists to surface.
-///
-/// Returns only **newly** decoded messages (those not in `known`).
-pub fn decode_frame_subtract_with_known(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    known: &[DecodeResult],
-    precomputed_fft: Option<FftCache>,
-) -> Vec<DecodeResult> {
-    decode_frame_subtract_with_known_and_ap(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        strictness,
-        known,
-        precomputed_fft,
-        None,
-    )
-}
-
-/// Like [`decode_frame_subtract_with_known`] but also forwards an
-/// `ap_hint` to every per-candidate decode in every subtract pass.
-///
-/// `ap_hint = None` reproduces [`decode_frame_subtract_with_known`]
-/// bit-for-bit.
-///
-/// Caller-supplied `known` signals are subtracted from the working
-/// buffer after Pass 0 (before Pass 1 / Pass 2 begin), so subsequent
-/// passes see a residual with all known signals removed. This applies
-/// regardless of whether `ap_hint` is supplied.
-#[allow(clippy::too_many_arguments)]
-pub fn decode_frame_subtract_with_known_and_ap(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    known: &[DecodeResult],
-    precomputed_fft: Option<FftCache>,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    let (results, _residual) = decode_frame_subtract_with_known_and_ap_inner(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        strictness,
-        known,
-        precomputed_fft,
-        ap_hint,
-    );
-    results
-}
-
-/// Shared SIC loop for `decode_frame_subtract_with_known_and_ap` and its
-/// `#[cfg(test)]` debug counterpart. Returns the newly-decoded messages
-/// (excluding `known`) plus the residual buffer after all passes
-/// complete.
-///
-/// Pass 0 uses the pre-computed FFT (built from the *original* audio) to
-/// discover any signals missed in Phase 1; only after that do we subtract
-/// both the caller-supplied `known` signals and the newly discovered
-/// signals from the residual. Subtracting before Pass 0 would require
-/// either (a) recomputing the FFT cache against the modified residual
-/// or (b) using a stale cache that no longer matches the audio. Either
-/// would defeat the cache-reuse optimization.
-#[allow(clippy::too_many_arguments)]
-fn decode_frame_subtract_with_known_and_ap_inner(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    known: &[DecodeResult],
-    precomputed_fft: Option<FftCache>,
-    ap_hint: Option<&ApHint>,
-) -> (Vec<DecodeResult>, Vec<i16>) {
-    let mut residual = audio.to_vec();
-    let mut all_results: Vec<DecodeResult> = known.to_vec();
-    let known_count = known.len();
-
-    let passes: &[f32] = &[1.0, 0.75, 0.5];
-    let mut residual_dirty = false;
-
-    for (i, &factor) in passes.iter().enumerate() {
-        // Reuse the pre-computed FFT cache only on Pass 0, and only while
-        // `residual` has not yet been modified by any subtraction step.
-        let fft = if i == 0 && !residual_dirty {
-            precomputed_fft.as_deref()
-        } else {
-            None
-        };
-
-        let (new, _) = decode_frame_inner(
-            &residual,
-            freq_min,
-            freq_max,
-            sync_min * factor,
-            freq_hint,
-            depth,
-            max_cand,
-            strictness,
-            &all_results,
-            EqMode::Off,
-            fft,
-            ap_hint,
-        );
-
-        // After Pass 0, also subtract every `known` signal supplied by
-        // the caller (typically Phase 1 results). Without this, those
-        // strong known signals continue to mask weaker ones in Pass 1
-        // and Pass 2 of the SIC loop, defeating the whole purpose of
-        // successive interference cancellation.
-        if i == 0 {
-            for r in known {
-                subtract_signal_lpf(&mut residual, r);
-            }
-            if !known.is_empty() {
-                residual_dirty = true;
-            }
-        }
-
-        for r in &new {
-            subtract_signal_lpf(&mut residual, r);
-        }
-        if !new.is_empty() {
-            residual_dirty = true;
-        }
-        all_results.extend(new);
-    }
-
-    // Return only the newly decoded messages (exclude `known`).
-    (all_results.split_off(known_count), residual)
-}
-
-/// Test-only variant that returns the residual buffer after all
-/// subtraction passes complete, alongside the decoded messages. Used
-/// by regression tests that need to verify successive-interference-
-/// cancellation actually cancels the caller-supplied `known` signals
-/// from the residual.
-///
-/// Implemented as a thin shim over the same private inner that the
-/// production [`decode_frame_subtract_with_known_and_ap`] uses, so the
-/// SIC pass structure, gain schedule, FFT-cache validity logic, and
-/// `known`-subtraction placement can never drift between the two. The
-/// only difference is that this variant exposes the residual buffer
-/// the production function discards.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_frame_subtract_with_known_and_ap_debug_residual(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-    known: &[DecodeResult],
-    precomputed_fft: Option<FftCache>,
-    ap_hint: Option<&ApHint>,
-) -> (Vec<DecodeResult>, Vec<i16>) {
-    decode_frame_subtract_with_known_and_ap_inner(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        strictness,
-        known,
-        precomputed_fft,
-        ap_hint,
-    )
-}
-
 // ────────────────────────────────────────────────────────────────────────────
-// Convenience: sniper-mode decode (single target frequency, narrow band)
+// Sniper-mode decode (single target frequency, narrow band)
 
-/// Sniper-mode decode: search only within ±250 Hz of `target_freq`.
-///
-/// Intended for use after a 500 Hz hardware BPF.  The search band is
-/// narrowed to `target_freq ± 250 Hz` and `sync_min` is lowered to 0.8
-/// because the BPF removes strong adjacent signals that would otherwise
-/// raise the noise floor.
-///
-/// `sync_cv` (Costas-array power coefficient of variation) is computed for
-/// each decoded result and can be used downstream as a channel-quality
-/// indicator for the Phase 3 adaptive equaliser.
-pub fn decode_sniper(
-    audio: &[i16],
-    target_freq: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_sniper_eq(audio, target_freq, depth, max_cand, EqMode::Off)
-}
-
-/// Sniper-mode decode with configurable equalizer.
-///
-/// Same as [`decode_sniper`] but allows enabling the adaptive equalizer
-/// to correct BPF edge distortion.
-pub fn decode_sniper_eq(
-    audio: &[i16],
-    target_freq: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    eq_mode: EqMode,
-) -> Vec<DecodeResult> {
-    decode_sniper_ap(audio, target_freq, depth, max_cand, eq_mode, None)
-}
-
-/// Sniper-mode decode with equalizer and A Priori hints.
-///
-/// The full sniper pipeline: hardware BPF simulation + adaptive EQ +
-/// AP-assisted BP decode.  When `ap_hint` provides known callsigns,
-/// the BP decoder locks those bits at high confidence, effectively
-/// reducing the number of unknown bits and lowering the decode threshold.
-///
-/// # Example
-/// ```ignore
-/// let ap = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
-/// let results = decode_sniper_ap(
-///     &audio, 1000.0, DecodeDepth::FULL, 20,
-///     EqMode::Local, Some(&ap),
-/// );
-/// ```
-pub fn decode_sniper_ap(
-    audio: &[i16],
-    target_freq: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    eq_mode: EqMode,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    decode_sniper_inner(audio, target_freq, depth, max_cand, eq_mode, ap_hint, 0.8)
-}
-
-/// Sniper-mode decode with in-band Successive Interference Cancellation (SIC).
-///
-/// Pass 1 decodes all signals in ±250 Hz.  Any decoded signal more than 25 Hz
-/// away from `target_freq` is subtracted from the audio.  Pass 2 then
-/// re-decodes the residual with a relaxed sync threshold, recovering targets
-/// that were masked by in-band interferers.
-///
-/// This is particularly effective when 2–3 stronger stations reside within the
-/// 500 Hz BPF window alongside the target.  Falls back to a single-pass result
-/// when no interferers are found (zero extra cost).
-pub fn decode_sniper_sic(
-    audio: &[i16],
-    target_freq: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    eq_mode: EqMode,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    // Pass 1: decode everything in ±250 Hz at normal sync threshold.
-    let pass1 = decode_sniper_inner(audio, target_freq, depth, max_cand, eq_mode, ap_hint, 0.8);
-
-    // Subtract non-target signals (those > 25 Hz away from target_freq).
-    let mut residual: Vec<i16> = audio.to_vec();
-    let mut subtracted = false;
-    for r in &pass1 {
-        if (r.freq_hz - target_freq).abs() > 25.0 {
-            subtract_signal_lpf(&mut residual, r);
-            subtracted = true;
-        }
-    }
-
-    if !subtracted {
-        return pass1;
-    }
-
-    // Pass 2: re-decode residual with relaxed sync_min to catch the target.
-    let pass2 = decode_sniper_inner(
-        &residual,
-        target_freq,
-        depth,
-        max_cand,
-        eq_mode,
-        ap_hint,
-        0.6,
-    );
-
-    // Merge, deduplicating by message77.
-    let mut results = pass1;
-    for r in pass2 {
-        if !results.iter().any(|x| x.message77 == r.message77) {
-            results.push(r);
-        }
-    }
-    results
-}
-
+/// Sniper-mode decode over `target_freq ± 250 Hz`. Used by
+/// [`FrameDecodable::__sniper`]'s `Ft8` impl; also the shared inner for
+/// [`SniperRequest`]'s single-pass search.
+#[allow(clippy::too_many_arguments)]
 fn decode_sniper_inner(
     audio: &[i16],
     target_freq: f32,
     depth: DecodeDepth,
     max_cand: usize,
+    strictness: DecodeStrictness,
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     sync_min: f32,
-) -> Vec<DecodeResult> {
+) -> (Vec<DecodeResult>, FftCache) {
     let freq_min = (target_freq - 250.0).max(100.0);
     let freq_max = (target_freq + 250.0).min(5900.0);
 
@@ -1587,11 +824,10 @@ fn decode_sniper_inner(
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
     let candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-
     let fft_cache = build_fft_cache(audio);
+    if candidates.is_empty() {
+        return (Vec::new(), fft_cache);
+    }
 
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
@@ -1602,7 +838,7 @@ fn decode_sniper_inner(
                 audio,
                 &fft_cache,
                 depth,
-                DecodeStrictness::Normal,
+                strictness,
                 &[],
                 eq_mode,
                 ap_hint,
@@ -1618,7 +854,7 @@ fn decode_sniper_inner(
                 audio,
                 &fft_cache,
                 depth,
-                DecodeStrictness::Normal,
+                strictness,
                 &[],
                 eq_mode,
                 ap_hint,
@@ -1632,20 +868,159 @@ fn decode_sniper_inner(
             results.push(r);
         }
     }
-    results
+    (results, fft_cache)
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// `DecodeRequest`/`SniperRequest` dispatch (issue #191)
+
+impl FrameDecodable for Ft8 {
+    type DecodeResult = DecodeResult;
+
+    fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+        let (results, fft_cache) = decode_frame_inner(
+            req.audio,
+            req.freq_min,
+            req.freq_max,
+            req.sync_min,
+            req.freq_hint,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            req.known,
+            req.eq_mode,
+            req.fft_cache.as_deref(),
+            req.ap_hint,
+        );
+        DecodeOutcome { results, fft_cache }
+    }
+
+    fn __sniper(req: &SniperRequest<'_, Self>) -> DecodeOutcome<Self> {
+        let (results, fft_cache) = decode_sniper_inner(
+            req.audio,
+            req.target_freq,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            req.eq_mode,
+            req.ap_hint,
+            req.sync_min,
+        );
+        DecodeOutcome { results, fft_cache }
+    }
+}
+
+impl SupportsFlatSic for Ft8 {
+    fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+        // Subtract caller-supplied `known` before pass 0, same rationale
+        // as `SupportsStagedSic::__staged_sic` below: without this, a
+        // strong `known` carrier continues to mask weaker signals
+        // throughout the SIC loop (the exact issue #191 bug, previously
+        // only reachable through the deleted, unfixed
+        // `decode_frame_subtract_with_known_and_ap`). `precomputed_fft`
+        // can only be trusted for pass 0 once `known` is empty — reusing
+        // it after this subtraction would silently mismatch the cache
+        // against the now-modified audio.
+        if req.known.is_empty() {
+            let (results, fft_cache) = flat_sic_inner(
+                req.audio,
+                req.freq_min,
+                req.freq_max,
+                req.sync_min,
+                req.depth,
+                req.max_cand,
+                req.strictness,
+                req.known,
+                req.ap_hint,
+                req.fft_cache.as_deref(),
+            );
+            DecodeOutcome { results, fft_cache }
+        } else {
+            let mut audio_clean = req.audio.to_vec();
+            for r in req.known {
+                subtract_signal_lpf_refine_dt(&mut audio_clean, r);
+            }
+            let (results, fft_cache) = flat_sic_inner(
+                &audio_clean,
+                req.freq_min,
+                req.freq_max,
+                req.sync_min,
+                req.depth,
+                req.max_cand,
+                req.strictness,
+                req.known,
+                req.ap_hint,
+                None,
+            );
+            DecodeOutcome { results, fft_cache }
+        }
+    }
+}
+
+impl SupportsStagedSic for Ft8 {
+    /// The issue #191 fix: `decode_frame_subtract_with_known_and_ap` used
+    /// to be the *only* entry point accepting `known`/`precomputed_fft`,
+    /// and it ran its own unfixed flat-3-pass engine instead of the
+    /// staged checkpoint one — missing every SIC-quality improvement
+    /// (issue #178/#179/#180) landed since. `known` is now honoured by
+    /// *this* (staged) path directly: subtracted from the audio before
+    /// checkpoint A runs, so all three checkpoints see the cleaned
+    /// residual, then deduped from the final results.
+    ///
+    /// `precomputed_fft` is deliberately not reused here: every
+    /// checkpoint operates on a truncated/zero-tailed buffer, never on
+    /// the full original audio the cache was built from, so reusing it
+    /// would silently mismatch. (It *is* reused by [`SupportsFlatSic`]'s
+    /// impl above, whose single full-buffer pass 0 has the matching
+    /// shape.) Recomputing here is always correct, just not free.
+    fn __staged_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+        // `subtract_signal_lpf_refine_dt`, not the plain single-shot
+        // variant: `known` is conceptually the same kind of carried-
+        // forward decode checkpoint B/C already re-subtract with
+        // `lrefinedt=.true.` (±90-sample best-alignment search) rather
+        // than trusting the original `dt_sec` verbatim. A `known` signal
+        // sitting only ~35 Hz from a marginal candidate (as W1FC does
+        // next to `CQ DX DL8YHR JO41`, issue #180) needs that same
+        // precision — plain `subtract_signal_lpf` measurably left enough
+        // residual to lose DL8YHR entirely in end-to-end testing here.
+        let mut audio_clean = req.audio.to_vec();
+        for r in req.known {
+            subtract_signal_lpf_refine_dt(&mut audio_clean, r);
+        }
+        let (mut results, residual) = decode_frame_subtract_staged_with_ap_inner(
+            &audio_clean,
+            req.freq_min,
+            req.freq_max,
+            req.sync_min,
+            req.freq_hint,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            req.ap_hint,
+        );
+        // Belt-and-braces dedup: subtraction above should already
+        // prevent `known` signals from re-decoding, but an imperfect
+        // subtraction on a very strong carrier could still leave enough
+        // residual to re-cross the CRC/OSD threshold.
+        results.retain(|r| !req.known.iter().any(|k| k.message77 == r.message77));
+        let fft_cache = build_fft_cache(&residual);
+        DecodeOutcome { results, fft_cache }
+    }
+}
+
+impl SupportsWideBandAp for Ft8 {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `decode_frame_with_ap` accepts the AP hint and round-trips a
-    /// clean self-synthesised signal with the hint matching. Doesn't
-    /// directly assert the AP gain (that needs a low-SNR fixture);
-    /// just guards against signature drift and validates the
-    /// "hint-aware decode of a perfect signal still succeeds" invariant.
+    /// `DecodeRequest::ap_hint` round-trips a clean self-synthesised
+    /// signal with the hint matching. Doesn't directly assert the AP
+    /// gain (that needs a low-SNR fixture); just guards against
+    /// signature drift and validates the "hint-aware decode of a
+    /// perfect signal still succeeds" invariant.
     #[test]
-    fn decode_frame_with_ap_round_trips_clean_signal() {
+    fn ap_hint_round_trips_clean_signal() {
         use crate::ft8::wave_gen::{message_to_tones, tones_to_i16};
         use crate::msg::wsjt77::pack77;
 
@@ -1661,183 +1036,119 @@ mod tests {
 
         // Provide a matching AP hint.
         let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
-        let results = decode_frame_with_ap(
-            &audio,
-            100.0,
-            3000.0,
-            1.0,
-            None,
-            DecodeDepth::FULL,
-            50,
-            Some(&ap),
-        );
+        let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 50)
+            .depth(DecodeDepth::FULL)
+            .ap_hint(&ap)
+            .decode()
+            .results;
         assert!(
             results.iter().any(|r| r.message77 == m77),
             "expected to decode the self-synthesized signal with matching AP hint"
         );
     }
 
-    /// `decode_frame_with_ap` with `ap_hint = None` should produce
-    /// exactly the same results as `decode_frame` (legacy path).
+    /// Compile-shape: `DecodeRequest` accepts an AP hint and strictness,
+    /// and returns the FFT cache alongside the decode list. On a silent
+    /// buffer the result list must be empty and the cache must be
+    /// non-empty (FFT is built unconditionally).
     #[test]
-    fn decode_frame_with_ap_none_matches_legacy() {
-        use crate::ft8::wave_gen::{message_to_tones, tones_to_i16};
-        use crate::msg::wsjt77::pack77;
-
-        let m77 = pack77("CQ", "W7VV", "CN87").expect("pack77");
-        let tones = message_to_tones(&m77);
-        let samples = tones_to_i16(&tones, 1200.0, 18_000);
-
-        let mut audio = vec![0i16; 15 * 12_000];
-        let off = 6_000usize;
-        let len = samples.len().min(audio.len() - off);
-        audio[off..off + len].copy_from_slice(&samples[..len]);
-
-        let r_legacy = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 50);
-        let r_ap_none = decode_frame_with_ap(
-            &audio,
-            100.0,
-            3000.0,
-            1.0,
-            None,
-            DecodeDepth::FULL,
-            50,
-            None,
-        );
-        assert_eq!(
-            r_legacy.iter().map(|r| r.message77).collect::<Vec<_>>(),
-            r_ap_none.iter().map(|r| r.message77).collect::<Vec<_>>(),
-            "ap_hint=None must match legacy decode_frame exactly"
-        );
-    }
-
-    /// Compile-shape: `decode_frame_with_ap_full` accepts all parameter
-    /// combinations and returns the FFT cache alongside the decode list.
-    /// On a silent buffer the result list must be empty and the cache
-    /// must be non-empty (FFT is built unconditionally).
-    #[test]
-    fn decode_frame_with_ap_full_silence_shape() {
+    fn ap_hint_full_silence_shape() {
         let audio = vec![0i16; 15 * 12_000];
         let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
 
-        // ap_hint = None
-        let (r0, c0) = decode_frame_with_ap_full(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            DecodeStrictness::Normal,
-            10,
-            None,
-        );
-        assert!(r0.is_empty());
-        assert!(!c0.is_empty(), "FFT cache should be returned");
+        // ap_hint unset
+        let out0 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .decode();
+        assert!(out0.results.is_empty());
+        assert!(!out0.fft_cache.is_empty(), "FFT cache should be returned");
 
         // ap_hint = Some, strictness = Strict
-        let (r1, c1) = decode_frame_with_ap_full(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            Some(1500.0),
-            DecodeDepth::FULL,
-            DecodeStrictness::Strict,
-            10,
-            Some(&ap),
-        );
-        assert!(r1.is_empty());
-        assert!(!c1.is_empty());
+        let out1 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .freq_hint(1500.0)
+            .depth(DecodeDepth::FULL)
+            .strictness(DecodeStrictness::Strict)
+            .ap_hint(&ap)
+            .decode();
+        assert!(out1.results.is_empty());
+        assert!(!out1.fft_cache.is_empty());
     }
 
-    /// Compile-shape: `decode_frame_subtract_with_ap` accepts an AP hint
-    /// and returns no decodes on silence.
+    /// Compile-shape: `.staged()` accepts an AP hint and returns no
+    /// decodes on silence.
     #[test]
-    fn decode_frame_subtract_with_ap_silence_shape() {
+    fn staged_with_ap_silence_shape() {
         let audio = vec![0i16; 15 * 12_000];
         let ap = ApHint::new().with_call1("CQ").with_call2("W7VV");
 
-        let r_none = decode_frame_subtract_with_ap(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            10,
-            DecodeStrictness::Normal,
-            None,
-        );
+        let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .staged()
+            .decode()
+            .results;
         assert!(r_none.is_empty());
 
-        let r_some = decode_frame_subtract_with_ap(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            10,
-            DecodeStrictness::Normal,
-            Some(&ap),
-        );
+        let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .staged()
+            .ap_hint(&ap)
+            .decode()
+            .results;
         assert!(r_some.is_empty());
     }
 
-    /// Compile-shape: `decode_frame_subtract_with_known_and_ap` accepts
+    /// Compile-shape: `.staged().known(&known).fft_cache(cache)` accepts
     /// the full parameter set (known list + FFT cache + AP hint) and
-    /// returns no decodes on silence.
+    /// returns no decodes on silence — the issue #191 combination that
+    /// used to be unreachable (only the buggy, now-deleted flat-only
+    /// `decode_frame_subtract_with_known_and_ap` accepted `known`+cache
+    /// at all).
     #[test]
-    fn decode_frame_subtract_with_known_and_ap_silence_shape() {
+    fn staged_known_and_cache_silence_shape() {
         let audio = vec![0i16; 15 * 12_000];
         let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
         let known: Vec<DecodeResult> = Vec::new();
 
-        let r_none = decode_frame_subtract_with_known_and_ap(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            10,
-            DecodeStrictness::Normal,
-            &known,
-            None,
-            None,
-        );
+        let cache = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .decode()
+            .fft_cache;
+
+        let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .staged()
+            .known(&known)
+            .fft_cache(cache.clone())
+            .decode()
+            .results;
         assert!(r_none.is_empty());
 
-        let r_some = decode_frame_subtract_with_known_and_ap(
-            &audio,
-            200.0,
-            2800.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            10,
-            DecodeStrictness::Normal,
-            &known,
-            None,
-            Some(&ap),
-        );
+        let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .staged()
+            .known(&known)
+            .fft_cache(cache)
+            .ap_hint(&ap)
+            .decode()
+            .results;
         assert!(r_some.is_empty());
     }
 
-    /// Regression test for the Phase-2 SIC correctness bug: when caller-supplied
-    /// `known` signals are *not* subtracted from the residual, a strong known
-    /// signal continues to mask weaker signals throughout the SIC loop. With
-    /// the fix in place, the residual is cleaned of the known signal after
-    /// Pass 0 so subsequent passes operate on a near-zero baseline at the
-    /// known signal's frequency.
+    /// Regression test for the Phase-2 SIC correctness bug (issue #191):
+    /// when caller-supplied `known` signals are *not* subtracted from
+    /// the residual, a strong known signal continues to mask weaker
+    /// signals throughout the SIC loop. With the fix in place, the
+    /// residual is cleaned of the known signal before checkpoint A runs
+    /// so every checkpoint operates on a near-zero baseline at the known
+    /// signal's frequency.
     ///
-    /// We assert this directly by measuring the residual energy at the known
-    /// signal's narrow band before vs. after the function runs. Without the
-    /// fix, residual energy at f0 ≈ original input energy at f0. With the
-    /// fix, it drops by an order of magnitude.
+    /// We assert this directly by measuring the residual energy at the
+    /// known signal's narrow band before vs. after the staged engine
+    /// runs. Without the fix, residual energy at f0 ≈ original input
+    /// energy at f0. With the fix, it drops by an order of magnitude.
+    /// Exercises the same `subtract_signal_lpf` + staged-checkpoint path
+    /// `SupportsStagedSic::__staged_sic` uses (see its doc comment).
     #[test]
-    fn decode_frame_subtract_with_known_and_ap_subtracts_known_before_phase2() {
+    fn staged_subtracts_known_before_checkpoint_a() {
         use crate::ft8::wave_gen::{message_to_tones, tones_to_i16};
         use crate::msg::wsjt77::pack77;
 
@@ -1854,7 +1165,10 @@ mod tests {
 
         // Phase 1: decode A. We need a real DecodeResult (with proper sync_cv,
         // freq_hz, dt_sec) so the SIC path can reconstruct A.
-        let phase1 = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::FULL, 50);
+        let phase1 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 50)
+            .depth(DecodeDepth::FULL)
+            .decode()
+            .results;
         let known_results: Vec<DecodeResult> = phase1
             .iter()
             .filter(|r| r.message77 == m_known)
@@ -1894,8 +1208,15 @@ mod tests {
         // Restrict the band to a 2 Hz window so the DFT loop stays cheap.
         let e_before = band_energy(&audio, f0 - 1.0, f0 + 1.0);
 
-        let (new_results, residual) = decode_frame_subtract_with_known_and_ap_debug_residual(
-            &audio,
+        // Mirrors `SupportsStagedSic::__staged_sic`'s own upfront
+        // subtraction step exactly (same `subtract_signal_lpf` call),
+        // then reuses the `_debug_residual` shim to observe the result.
+        let mut audio_clean = audio.clone();
+        for r in &known_results {
+            subtract_signal_lpf(&mut audio_clean, r);
+        }
+        let (new_results, residual) = decode_frame_subtract_staged_with_ap_debug_residual(
+            &audio_clean,
             200.0,
             2800.0,
             1.0,
@@ -1903,8 +1224,6 @@ mod tests {
             DecodeDepth::FULL,
             50,
             DecodeStrictness::Normal,
-            &known_results,
-            None,
             None,
         );
         let _ = new_results; // not under test here
@@ -1927,7 +1246,10 @@ mod tests {
     #[test]
     fn silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BP_ONLY, 10);
+        let results = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .decode()
+            .results;
         assert!(results.is_empty(), "silence should decode nothing");
     }
 
@@ -1935,7 +1257,10 @@ mod tests {
     #[test]
     fn sniper_silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_sniper(&audio, 1000.0, DecodeDepth::BP_ONLY, 10);
+        let results = SniperRequest::<Ft8>::new(&audio, 1000.0, 10)
+            .depth(DecodeDepth::BP_ONLY)
+            .decode()
+            .results;
         assert!(results.is_empty());
     }
 
@@ -1962,7 +1287,10 @@ mod tests {
             .map(|&s| (s * 20000.0).clamp(-32767.0, 32767.0) as i16)
             .collect();
 
-        let results = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 200);
+        let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+            .depth(DecodeDepth::FULL)
+            .decode()
+            .results;
         assert!(!results.is_empty(), "should decode the signal");
         let dt = results[0].dt_sec;
         eprintln!("DT = {dt:+.3} s (expected ≈ 0.0)");
@@ -3255,7 +2583,7 @@ mod tests {
             // channel LLR variants (a/b/c/d), never a BP-refined one.
             for n_iter in [1u32, 2u32] {
                 let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
-                let mut zsum = [0f32; LDPC_N];
+                let mut zsum = [0f32; crate::ft8::params::LDPC_N];
                 zsum.copy_from_slice(&zsum_vec);
                 let via_zsum = osd_decode_npre1(&zsum)
                     .map(|o| (unpack77(&o.message77).unwrap_or_default(), o.hard_errors));
@@ -3316,17 +2644,13 @@ mod tests {
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
 
         let ap = ApHint::new().with_call1("K1JT").with_call2("HA0DU");
-        let results = decode_frame_subtract_with_ap(
-            &audio,
-            100.0,
-            3000.0,
-            1.3,
-            None,
-            DecodeDepth::FULL,
-            50,
-            DecodeStrictness::Normal,
-            Some(&ap),
-        );
+        let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.3, 50)
+            .depth(DecodeDepth::FULL)
+            .strictness(DecodeStrictness::Normal)
+            .staged()
+            .ap_hint(&ap)
+            .decode()
+            .results;
         for r in &results {
             let msg = unpack77(&r.message77).unwrap_or_default();
             println!(
@@ -3380,24 +2704,19 @@ mod tests {
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
 
-        // Blind decode only (no AP hint) -- staged SIC is the default
-        // decode_frame_subtract_with_ap path since #180/#183.
+        // Blind decode only (no AP hint) -- staged SIC (`.staged()`) has
+        // been the default since #180/#183.
         for rep in 0..3 {
             let t0 = std::time::Instant::now();
-            let results = decode_frame_subtract_with_ap(
-                &audio,
-                100.0,
-                3000.0,
-                0.8,
-                None,
-                DecodeDepth::FULL,
-                200,
-                DecodeStrictness::Normal,
-                None,
-            );
+            let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
+                .depth(DecodeDepth::FULL)
+                .strictness(DecodeStrictness::Normal)
+                .staged()
+                .decode()
+                .results;
             let elapsed = t0.elapsed();
             println!(
-                "rep={rep} blind decode_frame_subtract_with_ap: {:?}, {} decodes",
+                "rep={rep} blind staged decode: {:?}, {} decodes",
                 elapsed,
                 results.len()
             );

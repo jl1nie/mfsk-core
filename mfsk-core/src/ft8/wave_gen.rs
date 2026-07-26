@@ -175,8 +175,10 @@ mod tests {
     /// arbitrary `[1u8; 77]` payload no longer round-trips.)
     #[test]
     fn encode_decode_roundtrip() {
-        use super::super::decode::{DecodeDepth, decode_frame};
+        use super::super::Ft8;
+        use super::super::decode::DecodeDepth;
         use super::super::message::pack77;
+        use crate::msg::decode_request::DecodeRequest;
 
         // Build a valid FT8 standard message ("CQ JA1ABC PM95").
         let msg = pack77("CQ", "JA1ABC", "PM95").expect("pack77");
@@ -195,7 +197,10 @@ mod tests {
         let len = samples.len().min(audio.len());
         audio[..len].copy_from_slice(&samples[..len]);
 
-        let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BP_ONLY, 50);
+        let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1200.0, 1.0, 50)
+            .depth(DecodeDepth::BP_ONLY)
+            .decode()
+            .results;
         assert!(
             !results.is_empty(),
             "round-trip decode failed — no message found"
@@ -216,8 +221,10 @@ mod tests {
     /// and verifies WSJT-X CRC compatibility (77-bit CRC, not 96-bit).
     #[test]
     fn callsign_roundtrip() {
-        use super::super::decode::{DecodeDepth, decode_frame};
+        use super::super::Ft8;
+        use super::super::decode::DecodeDepth;
         use super::super::message::{pack77, unpack77};
+        use crate::msg::decode_request::DecodeRequest;
 
         let cases: &[(&str, &str, &str, &str)] = &[
             ("CQ", "JA1ABC", "PM95", "CQ JA1ABC PM95"),
@@ -248,7 +255,10 @@ mod tests {
             let n = samples.len().min(audio.len());
             audio[..n].copy_from_slice(&samples[..n]);
 
-            let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BP_ONLY, 50);
+            let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1200.0, 1.0, 50)
+                .depth(DecodeDepth::BP_ONLY)
+                .decode()
+                .results;
             assert!(!results.is_empty(), "decode found nothing for: {expected}");
 
             let decoded = unpack77(&results[0].message77)

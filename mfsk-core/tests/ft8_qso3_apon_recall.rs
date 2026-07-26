@@ -40,9 +40,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{
-    ApHint, DecodeDepth, DecodeStrictness, decode_frame_subtract_with_ap, decode_frame_with_ap,
-};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{ApHint, DecodeDepth, DecodeStrictness};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -118,7 +118,12 @@ const MAX_TOTAL_DECODES: usize = 35;
 use common::load_wav_i16;
 
 fn decode_set(audio: &[i16], ap: Option<&ApHint>) -> BTreeSet<String> {
-    decode_frame_with_ap(audio, 100.0, 3000.0, 1.3, None, DecodeDepth::FULL, 50, ap)
+    let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50).depth(DecodeDepth::FULL);
+    if let Some(ap) = ap {
+        req = req.ap_hint(ap);
+    }
+    req.decode()
+        .results
         .into_iter()
         .filter_map(|r| unpack77(&r.message77))
         .collect()
@@ -244,17 +249,13 @@ fn qso3_apon_subtract_jtdx_extras_diag() {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
     let ap = ApHint::new().with_call1(MYCALL).with_call2(HISCALL);
 
-    let decoded = decode_frame_subtract_with_ap(
-        &slot,
-        100.0,
-        3000.0,
-        1.3,
-        None,
-        DecodeDepth::FULL,
-        50,
-        DecodeStrictness::Normal,
-        Some(&ap),
-    );
+    let decoded = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .ap_hint(&ap)
+        .decode()
+        .results;
     let messages: BTreeSet<String> = decoded
         .iter()
         .filter_map(|r| unpack77(&r.message77))

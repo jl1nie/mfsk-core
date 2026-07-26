@@ -14,9 +14,10 @@
 //! ```
 //! # #[cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))] {
 //! use mfsk_core::ft4::{
-//!     decode::decode_frame,
+//!     Ft4,
 //!     encode::{message_to_tones, tones_to_i16},
 //! };
+//! use mfsk_core::msg::decode_request::DecodeRequest;
 //! use mfsk_core::msg::wsjt77::{pack77, unpack77};
 //!
 //! // 1. Pack a standard message and synthesise 12 kHz i16 PCM.
@@ -33,7 +34,9 @@
 //! }
 //!
 //! // 2. Decode it back across the full FT4 band.
-//! let results = decode_frame(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100);
+//! let results = DecodeRequest::<Ft4>::new(&audio, 100.0, 3_000.0, 1.0, /* max_cand */ 100)
+//!     .decode()
+//!     .results;
 //! assert!(!results.is_empty(), "roundtrip must decode");
 //! let msg77: &[u8; 77] = results[0].message77().try_into().unwrap();
 //! let text = unpack77(msg77).expect("unpack");

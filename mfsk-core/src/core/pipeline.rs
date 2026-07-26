@@ -20,24 +20,81 @@ use super::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use super::dsp::subtract::SubtractCfg;
 use super::equalize::{EqMode, equalize_local};
 use super::llr::{compute_llr, compute_snr_db, descramble_info, symbol_spectra, sync_quality};
-use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
+use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 
 /// FFT cache for the initial large forward transform; reusable across passes.
 pub type FftCache = Vec<Complex<f32>>;
 
-/// Decoding depth: which LLR variants to attempt and whether to use OSD.
+/// How much extra work the BP staircase does per candidate before falling
+/// back to more expensive strategies. The only axis embedded targets ever
+/// configure — see [`DecodeDepth::osd`] for the (host-only) OSD escalation
+/// axis.
 ///
-/// The single-variant `Bp` rung (llra-only, no all-variants pass) was retired
-/// in 0.7.0 — no production caller was found by issue #74, and the cheapest
-/// staircase step never functioned as a power-budget escape hatch.
+/// Each bit's log-likelihood ratio (LLR) can be estimated by looking at
+/// just its own symbol, or jointly across 2 or 3 *adjacent* symbols — a
+/// wider joint estimate is a more reliable LLR (correlated symbol-decision
+/// errors partially cancel) but costs proportionally more to compute, and
+/// BP is tried again from scratch each time a wider estimate is added.
+/// `LlrEffort` picks how wide this staircase climbs before giving up on a
+/// candidate.
+///
+/// FT8-only in practice: `process_candidate_basic` below (the engine
+/// FT4/FST4 share) always computes all LLR variants unconditionally and
+/// never reads this field — only FT8's own `ft8::decode_block` engine has
+/// an actual `Minimal`/`Full` staircase. Kept on the shared type (rather
+/// than an FT8-local field) so [`DecodeDepth`] has one shape across every
+/// protocol using [`crate::msg::decode_request::DecodeRequest`] (issue #191).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DecodeDepth {
-    /// BP across all four LLR variants (a, b, c, d).
-    BpAll,
-    /// BP on all variants, then OSD fallback when BP fails.
-    BpAllOsd,
+pub enum LlrEffort {
+    /// Only the two cheap 1-symbol LLR estimates. ESP32 ship default — the
+    /// 2-symbol/3-symbol estimates empirically add zero extra decodes on
+    /// power-budgeted busy-band references (S3 log 2026-05-21; host
+    /// re-measurement 2026-07-26: +8ms, 0 extra decodes on `qso3_busy.wav`).
+    Minimal,
+    /// All four LLR estimates, up to the 3-symbol joint one. Host default —
+    /// full recall.
+    Full,
+}
+
+/// Decode cost/recall configuration: [`LlrEffort`] plus whether to escalate
+/// to OSD when the BP staircase fails.
+///
+/// `osd` is host-only: the OSD dispatch code is compiled out of
+/// non-`fft-rustfft` builds entirely, so `osd: true` is a silent no-op on
+/// embedded rather than a footgun. OSD has never shipped on an ESP32 target
+/// and there is no plan to add it there — this isn't a current tuning
+/// choice, it's a permanent architectural boundary.
+///
+/// Redesigned in 0.8.0 (issue #182 follow-up, then issue #191) from
+/// FT8-local 3-/4-variant enums (`BpAll`/`BpAllOsd`/…) into this single
+/// orthogonal struct shared by every protocol. The single-variant `Bp` rung
+/// (llra-only, no all-variants pass) was retired in 0.7.0 — no production
+/// caller was found by issue #74, and the cheapest staircase step never
+/// functioned as a power-budget escape hatch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecodeDepth {
+    pub llr_effort: LlrEffort,
+    pub osd: bool,
+}
+
+impl DecodeDepth {
+    /// ESP32 ship config: cheapest LLR effort, OSD off.
+    pub const EMBEDDED: Self = Self {
+        llr_effort: LlrEffort::Minimal,
+        osd: false,
+    };
+    /// Full LLR effort, no OSD — host "fast" baseline (was `BpAll`).
+    pub const BP_ONLY: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: false,
+    };
+    /// Full LLR effort + OSD fallback — host default (was `BpAllOsd`).
+    pub const FULL: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: true,
+    };
 }
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
@@ -93,6 +150,25 @@ impl DecodeStrictness {
             Self::Deep => 2.0,
         }
     }
+
+    /// Upper bound on `hard_errors` for AP-assisted decode passes, graded by
+    /// the number of locked bits (heavier locks → tighter threshold, since
+    /// random bits flipping to agree with the lock is increasingly
+    /// unlikely). Calibrated from a synthetic QSO scenario (REPORT AP at
+    /// -18 dB: 15% FP rate with old thresholds 30/36) — shared by FT8's
+    /// per-candidate AP loop and [`crate::msg::pipeline_ap`]'s generic
+    /// sniper (issue #191 type consolidation; previously duplicated
+    /// byte-for-byte in both places).
+    pub fn ap_max_errors(self, locked_bits: usize) -> u32 {
+        match (self, locked_bits >= 55) {
+            (Self::Strict, true) => 20,
+            (Self::Strict, false) => 24,
+            (Self::Normal, true) => 25,
+            (Self::Normal, false) => 30,
+            (Self::Deep, true) => 30,
+            (Self::Deep, false) => 36,
+        }
+    }
 }
 
 /// One successfully decoded message. Protocol-agnostic.
@@ -130,6 +206,21 @@ impl DecodeResult {
     }
 }
 
+/// Protocols with a dedicated 2-D (frequency + time) coarse-candidate
+/// refine search wired into [`process_candidate_basic`] — currently `Ft4`
+/// ([`super::sync2d::ft4_sync_search`]) and every FST4 sub-mode
+/// ([`super::sync2d::fst4_sync_search`]).
+///
+/// Sealed by construction to this crate's own protocol modules: not a
+/// `sealed`-trait pattern, just documentation of intent, since the
+/// generic fallback this trait replaced (a bare `refine_candidate::<P>`
+/// call, time-only, no frequency correction) was confirmed unreachable by
+/// every call site in the crate before removal (issue #192) — FT8 has its
+/// own separate bespoke engine and never instantiates this pipeline at
+/// all. Adding a new protocol here means giving it a real `*_sync_search`
+/// function first, not falling back to an unvalidated generic path.
+pub trait GenericPipelineProtocol: Protocol {}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Per-candidate processing
 // ──────────────────────────────────────────────────────────────────────────
@@ -138,7 +229,7 @@ impl DecodeResult {
 ///
 /// `fft_cache` must match the protocol's [`DownsampleCfg`]. `known` is used
 /// to prevent redundant OSD work on frequencies with an existing decode.
-pub fn process_candidate_basic<P: Protocol>(
+pub fn process_candidate_basic<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
@@ -146,7 +237,6 @@ pub fn process_candidate_basic<P: Protocol>(
     strictness: DecodeStrictness,
     known: &[DecodeResult],
     eq_mode: EqMode,
-    refine_steps: i32,
     sync_q_min: u32,
 ) -> Option<DecodeResult> {
     let ntones = P::NTONES as usize;
@@ -372,7 +462,7 @@ pub fn process_candidate_basic<P: Protocol>(
             } else {
                 (12, 18)
             };
-            if depth == DecodeDepth::BpAllOsd
+            if depth.osd
                 && nsync >= osd_attempt_min
                 && (bypass_osd_score_min || cand.score >= strictness.osd_score_min())
             {
@@ -474,19 +564,15 @@ pub fn process_candidate_basic<P: Protocol>(
     // ±10 samples) caused regression because noise peaks at the window
     // edge displaced the fine pass outside reach of the true position.
     //
-    // FT8 (and everything else) keeps the generic time-only
-    // `refine_candidate` path; FT8 has its own 3-stage refine wired
-    // separately in `ft8/decode.rs`.
+    // `P: GenericPipelineProtocol` is implemented only for `Ft4` and each
+    // FST4 sub-mode (issue #192) — no third case exists to fall back to,
+    // so this is a plain two-way dispatch, not a `P::ID`-exhaustive match.
     let (freq_hz, i0, score) = if P::ID == super::ProtocolId::Ft4 {
         let s2 = super::sync2d::ft4_sync_search::<P>(&cd0_base, cand);
         (s2.freq_hz, s2.i0, s2.score)
-    } else if P::ID == super::ProtocolId::Fst4 {
+    } else {
         let s2 = super::sync2d::fst4_sync_search::<P>(&cd0_base, cand);
         (s2.freq_hz, s2.i0, s2.score)
-    } else {
-        let refined = refine_candidate::<P>(&cd0_base, cand, refine_steps);
-        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
-        (refined.freq_hz, i_start, refined.score)
     };
 
     // A WSJT-X-style `smax` early exit (`ft4_decode.f90:279`:
@@ -551,7 +637,7 @@ fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Decode one slot of audio: coarse sync → candidates → BP/OSD per candidate.
-pub fn decode_frame<P: Protocol>(
+pub fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
     freq_min: f32,
@@ -562,7 +648,6 @@ pub fn decode_frame<P: Protocol>(
     max_cand: usize,
     strictness: DecodeStrictness,
     eq_mode: EqMode,
-    refine_steps: i32,
     sync_q_min: u32,
 ) -> (Vec<DecodeResult>, FftCache) {
     // FT4's own coarse-candidate stage (`core::ft4_coarse::ft4_coarse_sync`,
@@ -595,7 +680,6 @@ pub fn decode_frame<P: Protocol>(
                 strictness,
                 &[],
                 eq_mode,
-                refine_steps,
                 sync_q_min,
             )
         })
@@ -612,7 +696,6 @@ pub fn decode_frame<P: Protocol>(
                 strictness,
                 &[],
                 eq_mode,
-                refine_steps,
                 sync_q_min,
             )
         })
@@ -644,7 +727,7 @@ pub fn decode_frame<P: Protocol>(
 /// the residual audio; decoded signals are reconstructed and subtracted so
 /// subsequent passes can expose previously-masked weak signals.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_frame_subtract<P: Protocol>(
+pub fn decode_frame_subtract<P: GenericPipelineProtocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
     sub_cfg: &SubtractCfg,
@@ -655,7 +738,6 @@ pub fn decode_frame_subtract<P: Protocol>(
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
-    refine_steps: i32,
     sync_q_min: u32,
     // Channel-aware LPF subtract tuning (issue #178/#179 FT4 port).
     // Protocol-specific — mirrors WSJT-X's per-protocol `NFILT`/
@@ -710,7 +792,6 @@ pub fn decode_frame_subtract<P: Protocol>(
                     strictness,
                     &all_results,
                     EqMode::Off,
-                    refine_steps,
                     sync_q_min,
                 )
             })
@@ -727,7 +808,6 @@ pub fn decode_frame_subtract<P: Protocol>(
                     strictness,
                     &all_results,
                     EqMode::Off,
-                    refine_steps,
                     sync_q_min,
                 )
             })
