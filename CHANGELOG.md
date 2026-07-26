@@ -1,8 +1,104 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking)
 
 ### Added
+
+- **`DecodeRequest<P: FrameDecodable>` / `SniperRequest<P>`** (issue
+  #191) — a single, ZST/trait-driven builder replacing the FT8
+  `decode_frame*`/`decode_frame_subtract*`/`decode_sniper*` family (15
+  public functions), FT4's `decode_frame`/`_with_options`/`_with_cache`/
+  `_with_cache_and_options`/`decode_frame_subtract`/`_with_options`/
+  `decode_sniper_ap`/`_with_options` (8 functions), and FST4's
+  `decode_frame_for`/`_with_options_for`/`_with_cache_for`/
+  `_with_cache_and_options_for` plus the FST4-60A convenience wrappers (8
+  functions) — 31 functions total collapsed into two generic types plus
+  a handful of builder methods. Lives in `msg::decode_request`,
+  re-exported from each protocol's `decode` module.
+
+  Suffix-exploded functions encoded three orthogonal axes (`ap_hint`,
+  `precomputed_fft`/`known`, SIC strategy) as combinatorial function
+  names, the same disease #188 fixed for `DecodeDepth` alone. The
+  reported symptom: `decode_frame_subtract_with_known_and_ap` — the
+  *only* function accepting `known`/`precomputed_fft`, and the one an
+  external pipelined consumer (WebFT8's `decode_phase1`/`decode_phase2`)
+  actually called — ran its own unfixed flat-3-pass engine, never
+  receiving the staged-checkpoint SIC (#180) or sequential-subtract
+  (#178/#179) fixes the "regular" subtract path got. Structurally
+  guaranteed to recur with more suffixes.
+
+  New design, capability-gated via marker traits so invalid
+  protocol/feature combinations are compile errors, not silent no-ops or
+  runtime panics:
+  - `FrameDecodable: Protocol` — `type DecodeResult` + hidden dispatch;
+    implemented for `Ft8`, `Ft4`, every FST4 sub-mode. Deliberately not
+    implemented for Q65/WSPR/JT65/JT9/uvpacket, which keep their
+    existing bespoke entry points.
+  - `SupportsFlatSic` (`Ft8`, `Ft4`) gates `.flat()`; `SupportsStagedSic`
+    (`Ft8` only) gates `.staged()`; `SupportsWideBandAp` (`Ft8` only)
+    gates `DecodeRequest::ap_hint` (FT4/FST4's AP engine has an
+    early-exit-after-first-hit optimization only valid for
+    `SniperRequest`'s narrow-band single-target search — enabling
+    wide-band AP for them would be new, unvalidated capability, kept
+    out of scope). `SniperRequest::ap_hint` is gated by the existing
+    `P::Msg: WsjtApCompatible` sealed trait instead, and is available
+    for all three protocols.
+  - `.known()`/`.fft_cache()` are universal (any `FrameDecodable`
+    protocol): `known` is always honoured as a dedup filter, and as an
+    upfront `subtract_signal_lpf_refine_dt` subtraction for FT8's
+    `.flat()`/`.staged()` (the actual #191 fix — see below).
+    `fft_cache` is reused where the underlying engine's buffer shape
+    permits (FT8 single-pass/flat pass 0); elsewhere it's a documented
+    no-op degrade (always-correct recompute, not a silent behavior
+    change) since `core::pipeline`'s generic engine has no cache
+    injection point.
+
+  The actual bug fix, not just the API reshape: FT8's staged-checkpoint
+  engine (`SupportsStagedSic::__staged_sic`) now subtracts `known` from
+  the full audio buffer *before* checkpoint A runs (using
+  `subtract_signal_lpf_refine_dt` — plain `subtract_signal_lpf`
+  measurably lost `CQ DX DL8YHR JO41`, ~35 Hz from a `known` W1FC
+  signal, in end-to-end testing; the dt-refined ±90-sample
+  best-alignment search checkpoint B/C already used for their own
+  carried-forward decodes turned out to matter for `known` too), so all
+  three checkpoints see a residual with caller-supplied signals already
+  removed. New regression test
+  `ft8_qso3_staged_sic_check::staged_with_known_and_cache_finds_dl8yhr`
+  reproduces the exact two-phase pipelined-caller shape end to end.
+
+  Type unification required as a prerequisite for a genuinely generic
+  builder (previously duplicated, non-interchangeable definitions):
+  `ApHint` (canonical: `msg::ap::ApHint`; FT8's own copy was already
+  byte-for-byte identical, reusing the same `pack28`/`pack_grid4`),
+  `FftCache` (canonical: `core::pipeline::FftCache`, same underlying
+  `Vec<Complex<f32>>`), `DecodeStrictness` (canonical:
+  `core::pipeline::DecodeStrictness`; `ap_max_errors` — previously
+  duplicated in `msg::pipeline_ap` too — moved onto the type, no numeric
+  change), `DecodeDepth` (canonical: the #188-redesigned
+  `{llr_effort, osd}` struct, replacing `core::pipeline`'s stale
+  `BpAll`/`BpAllOsd` 2-variant enum FT4/FST4 were still on).
+
+  Deleted outright (confirmed zero callers anywhere in the crate,
+  including internal): `decode_frame_subtract_with_known`(`_and_ap`)
+  (the buggy engine above), `decode_frame_with_cache` (FT8/FT4/FST4, all
+  three), `decode_sniper_sic`. No deprecation shims — matches #188's
+  precedent of a hard breaking rename with all callers migrated in the
+  same change.
+
+  Engine unification (porting FT8's `fine_refine_3stage`/nsync-gate/
+  sync_cv into the generic `core::pipeline` engine FT4/FST4 share, so
+  FT8 could stop having its own bespoke decode engine) was investigated
+  and found to be organic drift rather than a necessary architectural
+  boundary (git archaeology: both engines already existed side-by-side
+  at the initial fork from `jl1nie/webft8`; FT8 pulled ahead via two
+  unported investment commits) — but explicitly **not** bundled into
+  this change; the trait boundary here doesn't block it (`decode()`'s
+  internal engine dispatch is a private implementation detail), so it's
+  tracked separately as issue #192. FST4 SIC support (issue #193, no
+  `SubtractCfg` exists yet — new numerical work, not a refactor) and
+  full `DecodeResult` unification (issue #194, FT8's `message77` strips
+  CRC bits FT4/FST4's `info` retains — a real semantic difference, not
+  just a naming one) are likewise deferred as separate issues.
 
 - **`ft8::decode::decode_frame_subtract_staged` / `_with_ap`** (issue
   #180) — WSJT-X-faithful checkpoint SIC for FT8, ported from

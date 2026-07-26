@@ -27,17 +27,74 @@ use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 /// FFT cache for the initial large forward transform; reusable across passes.
 pub type FftCache = Vec<Complex<f32>>;
 
-/// Decoding depth: which LLR variants to attempt and whether to use OSD.
+/// How much extra work the BP staircase does per candidate before falling
+/// back to more expensive strategies. The only axis embedded targets ever
+/// configure — see [`DecodeDepth::osd`] for the (host-only) OSD escalation
+/// axis.
 ///
-/// The single-variant `Bp` rung (llra-only, no all-variants pass) was retired
-/// in 0.7.0 — no production caller was found by issue #74, and the cheapest
-/// staircase step never functioned as a power-budget escape hatch.
+/// Each bit's log-likelihood ratio (LLR) can be estimated by looking at
+/// just its own symbol, or jointly across 2 or 3 *adjacent* symbols — a
+/// wider joint estimate is a more reliable LLR (correlated symbol-decision
+/// errors partially cancel) but costs proportionally more to compute, and
+/// BP is tried again from scratch each time a wider estimate is added.
+/// `LlrEffort` picks how wide this staircase climbs before giving up on a
+/// candidate.
+///
+/// FT8-only in practice: `process_candidate_basic` below (the engine
+/// FT4/FST4 share) always computes all LLR variants unconditionally and
+/// never reads this field — only FT8's own `ft8::decode_block` engine has
+/// an actual `Minimal`/`Full` staircase. Kept on the shared type (rather
+/// than an FT8-local field) so [`DecodeDepth`] has one shape across every
+/// protocol using [`crate::msg::decode_request::DecodeRequest`] (issue #191).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DecodeDepth {
-    /// BP across all four LLR variants (a, b, c, d).
-    BpAll,
-    /// BP on all variants, then OSD fallback when BP fails.
-    BpAllOsd,
+pub enum LlrEffort {
+    /// Only the two cheap 1-symbol LLR estimates. ESP32 ship default — the
+    /// 2-symbol/3-symbol estimates empirically add zero extra decodes on
+    /// power-budgeted busy-band references (S3 log 2026-05-21; host
+    /// re-measurement 2026-07-26: +8ms, 0 extra decodes on `qso3_busy.wav`).
+    Minimal,
+    /// All four LLR estimates, up to the 3-symbol joint one. Host default —
+    /// full recall.
+    Full,
+}
+
+/// Decode cost/recall configuration: [`LlrEffort`] plus whether to escalate
+/// to OSD when the BP staircase fails.
+///
+/// `osd` is host-only: the OSD dispatch code is compiled out of
+/// non-`fft-rustfft` builds entirely, so `osd: true` is a silent no-op on
+/// embedded rather than a footgun. OSD has never shipped on an ESP32 target
+/// and there is no plan to add it there — this isn't a current tuning
+/// choice, it's a permanent architectural boundary.
+///
+/// Redesigned in 0.8.0 (issue #182 follow-up, then issue #191) from
+/// FT8-local 3-/4-variant enums (`BpAll`/`BpAllOsd`/…) into this single
+/// orthogonal struct shared by every protocol. The single-variant `Bp` rung
+/// (llra-only, no all-variants pass) was retired in 0.7.0 — no production
+/// caller was found by issue #74, and the cheapest staircase step never
+/// functioned as a power-budget escape hatch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecodeDepth {
+    pub llr_effort: LlrEffort,
+    pub osd: bool,
+}
+
+impl DecodeDepth {
+    /// ESP32 ship config: cheapest LLR effort, OSD off.
+    pub const EMBEDDED: Self = Self {
+        llr_effort: LlrEffort::Minimal,
+        osd: false,
+    };
+    /// Full LLR effort, no OSD — host "fast" baseline (was `BpAll`).
+    pub const BP_ONLY: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: false,
+    };
+    /// Full LLR effort + OSD fallback — host default (was `BpAllOsd`).
+    pub const FULL: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: true,
+    };
 }
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
@@ -91,6 +148,25 @@ impl DecodeStrictness {
             Self::Strict => 3.0,
             Self::Normal => 1.8,
             Self::Deep => 2.0,
+        }
+    }
+
+    /// Upper bound on `hard_errors` for AP-assisted decode passes, graded by
+    /// the number of locked bits (heavier locks → tighter threshold, since
+    /// random bits flipping to agree with the lock is increasingly
+    /// unlikely). Calibrated from a synthetic QSO scenario (REPORT AP at
+    /// -18 dB: 15% FP rate with old thresholds 30/36) — shared by FT8's
+    /// per-candidate AP loop and [`crate::msg::pipeline_ap`]'s generic
+    /// sniper (issue #191 type consolidation; previously duplicated
+    /// byte-for-byte in both places).
+    pub fn ap_max_errors(self, locked_bits: usize) -> u32 {
+        match (self, locked_bits >= 55) {
+            (Self::Strict, true) => 20,
+            (Self::Strict, false) => 24,
+            (Self::Normal, true) => 25,
+            (Self::Normal, false) => 30,
+            (Self::Deep, true) => 30,
+            (Self::Deep, false) => 36,
         }
     }
 }
@@ -372,7 +448,7 @@ pub fn process_candidate_basic<P: Protocol>(
             } else {
                 (12, 18)
             };
-            if depth == DecodeDepth::BpAllOsd
+            if depth.osd
                 && nsync >= osd_attempt_min
                 && (bypass_osd_score_min || cand.score >= strictness.osd_score_min())
             {

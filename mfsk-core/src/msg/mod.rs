@@ -13,6 +13,10 @@
 //! is shared by every message unpack invocation.
 
 pub mod ap;
+// `DecodeRequest`/`SniperRequest` builder (issue #191); depends on
+// `pipeline_ap`'s generic AP engine, so declared after it.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod decode_request;
 pub mod hash_table;
 pub mod jt72;
 #[cfg(feature = "packet-bytes")]

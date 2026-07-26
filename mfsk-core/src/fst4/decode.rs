@@ -4,20 +4,25 @@
 //! WSJT message payload, with 5 × 8-symbol Costas sync blocks. The
 //! generic pipeline handles all of that once we supply a
 //! [`DownsampleCfg`] tuned for the sub-mode's geometry — see the
-//! `FST4_*_DOWNSAMPLE` constants below and [`decode_frame_for`] /
-//! [`decode_frame_with_options_for`] / [`decode_frame_with_cache_for`] /
-//! [`decode_frame_with_cache_and_options_for`] for the generic entry
-//! points. `decode_frame` and friends (no `_for` suffix) are FST4-60A
-//! convenience wrappers kept for backward compatibility.
+//! `FST4_*_DOWNSAMPLE` constants below. Exposed via the shared
+//! [`crate::msg::decode_request::DecodeRequest`] /
+//! [`crate::msg::decode_request::SniperRequest`] builders, generic over
+//! `P` (issue #191) — e.g. `DecodeRequest::<Fst4s120>::new(...)` with
+//! `req.audio`/etc, dispatching internally to the matching
+//! `FST4_*_DOWNSAMPLE` constant for that sub-mode.
+//!
+//! FST4 has no SIC (successive interference cancellation) path — no
+//! `SubtractCfg` exists for it, so
+//! [`SupportsFlatSic`](crate::msg::decode_request::SupportsFlatSic) is not
+//! implemented for any sub-mode (issue #193: new numerical work, not a
+//! refactor, kept out of this redesign's scope).
 
-use super::Fst4s60;
-use crate::core::Protocol;
 use crate::core::dsp::downsample::DownsampleCfg;
-use crate::core::equalize::EqMode;
-use crate::core::pipeline::{self, FftCache};
+use crate::core::pipeline;
 
-use crate::core::pipeline::DecodeStrictness;
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult};
+pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
+pub use crate::msg::ApHint;
+use crate::msg::decode_request::{DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest};
 
 /// FST4-15 downsample configuration: 12 kHz → 666.7 Hz baseband
 /// (NDOWN = 18, matching WSJT-X `fst4_decode.f90`'s `ndown` for
@@ -119,211 +124,73 @@ const SYNC_Q_MIN: u32 = 10;
 /// search window across all of them — no per-sub-mode retuning needed.
 const REFINE_STEPS: i32 = 40;
 
-/// Decode one slot of 12 kHz PCM audio for FST4 sub-mode `P`.
-///
-/// Typical arguments for a wide-band scan:
-/// - `freq_min` / `freq_max` = 100.0 / 3000.0
-/// - `sync_min` = 1.0 (lower than FT4 because symbols are 6× longer)
-/// - `max_cand` = 50
-///
-/// `cfg` must match `P` — pass the corresponding `FST4_*_DOWNSAMPLE`
-/// constant (e.g. [`FST4_120_DOWNSAMPLE`] for `P = Fst4s120`).
-pub fn decode_frame_for<P: Protocol>(
-    audio: &[i16],
-    cfg: &DownsampleCfg,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_with_options_for::<P>(
-        audio,
-        cfg,
-        freq_min,
-        freq_max,
-        sync_min,
-        None,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-    )
+/// Dedup `raw` against caller-supplied `known` (by `info` equality) — the
+/// generic engine has no `known` parameter at all, so this is a
+/// best-effort post-filter rather than an in-loop skip (same rationale as
+/// `ft4::decode`'s copy of this helper).
+fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
+    raw.into_iter()
+        .filter(|r| !known.iter().any(|k| k.info == r.info))
+        .collect()
 }
 
-/// Decode one FST4 slot with an explicit `depth` knob. See
-/// [`decode_frame_for`] for the `cfg` contract.
-///
-/// FST4's per-candidate strictness is hardcoded to `Normal` — the
-/// FST4-specific re-tune of the FT8-calibrated thresholds never landed
-/// and no caller exercised the `Strict` / `Deep` rungs (issue #72).
-///
-/// `freq_hint`: when `Some(f)`, narrows the coarse-sync to candidates
-/// near `f`. Pass `None` for full-band scan.
-pub fn decode_frame_with_options_for<P: Protocol>(
-    audio: &[i16],
-    cfg: &DownsampleCfg,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    pipeline::decode_frame::<P>(
-        audio,
-        cfg,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        EqMode::Off,
-        REFINE_STEPS,
-        SYNC_Q_MIN,
-    )
-    .0
+/// Implements [`FrameDecodable`] for one FST4 sub-mode ZST, wiring in its
+/// `DownsampleCfg`. Every sub-mode shares the same generic engine
+/// (`core::pipeline`/`msg::pipeline_ap`), `REFINE_STEPS`, and
+/// `SYNC_Q_MIN` — only the downsample geometry differs.
+macro_rules! impl_frame_decodable {
+    ($proto:ty, $cfg:expr) => {
+        impl FrameDecodable for $proto {
+            type DecodeResult = DecodeResult;
+
+            fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+                let (raw, fft_cache) = pipeline::decode_frame::<$proto>(
+                    req.audio,
+                    &$cfg,
+                    req.freq_min,
+                    req.freq_max,
+                    req.sync_min,
+                    req.freq_hint,
+                    req.depth,
+                    req.max_cand,
+                    req.strictness,
+                    req.eq_mode,
+                    REFINE_STEPS,
+                    SYNC_Q_MIN,
+                );
+                DecodeOutcome {
+                    results: dedup_known(raw, req.known),
+                    fft_cache,
+                }
+            }
+
+            fn __sniper(req: &SniperRequest<'_, Self>) -> DecodeOutcome<Self> {
+                let results = crate::msg::pipeline_ap::decode_sniper_ap::<$proto>(
+                    req.audio,
+                    &$cfg,
+                    req.target_freq,
+                    250.0,
+                    req.sync_min,
+                    req.depth,
+                    req.max_cand,
+                    req.strictness,
+                    req.eq_mode,
+                    REFINE_STEPS,
+                    SYNC_Q_MIN / 2,
+                    req.ap_hint,
+                );
+                let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &$cfg);
+                DecodeOutcome { results, fft_cache }
+            }
+        }
+    };
 }
 
-/// Same as [`decode_frame_for`] but also returns the large outer FFT
-/// cache so callers can chain further processing (SIC, narrow-band
-/// rescan) without recomputing it.
-pub fn decode_frame_with_cache_for<P: Protocol>(
-    audio: &[i16],
-    cfg: &DownsampleCfg,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_with_cache_and_options_for::<P>(
-        audio,
-        cfg,
-        freq_min,
-        freq_max,
-        sync_min,
-        None,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-    )
-}
-
-/// Same as [`decode_frame_with_cache_for`] but with an explicit
-/// `depth` knob (see [`decode_frame_with_options_for`]).
-pub fn decode_frame_with_cache_and_options_for<P: Protocol>(
-    audio: &[i16],
-    cfg: &DownsampleCfg,
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    pipeline::decode_frame::<P>(
-        audio,
-        cfg,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        EqMode::Off,
-        REFINE_STEPS,
-        SYNC_Q_MIN,
-    )
-}
-
-/// Decode one 60-second FST4-60A slot of 12 kHz PCM audio.
-///
-/// Convenience wrapper over [`decode_frame_for`]`::<Fst4s60>` with
-/// [`FST4_60A_DOWNSAMPLE`] — kept for backward compatibility with
-/// callers that predate the multi-sub-mode `_for` entry points. Other
-/// sub-modes: call `decode_frame_for::<Fst4s120>(audio, cfg, ...)`
-/// etc. directly with the matching `FST4_*_DOWNSAMPLE` constant.
-pub fn decode_frame(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_for::<Fst4s60>(
-        audio,
-        &FST4_60A_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        max_cand,
-    )
-}
-
-/// FST4-60A convenience wrapper over [`decode_frame_with_options_for`].
-/// See [`decode_frame`] for the multi-sub-mode alternative.
-pub fn decode_frame_with_options(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_with_options_for::<Fst4s60>(
-        audio,
-        &FST4_60A_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-    )
-}
-
-/// FST4-60A convenience wrapper over [`decode_frame_with_cache_for`].
-/// See [`decode_frame`] for the multi-sub-mode alternative.
-pub fn decode_frame_with_cache(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_with_cache_for::<Fst4s60>(
-        audio,
-        &FST4_60A_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        max_cand,
-    )
-}
-
-/// FST4-60A convenience wrapper over
-/// [`decode_frame_with_cache_and_options_for`]. See [`decode_frame`]
-/// for the multi-sub-mode alternative.
-pub fn decode_frame_with_cache_and_options(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_with_cache_and_options_for::<Fst4s60>(
-        audio,
-        &FST4_60A_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-    )
-}
+impl_frame_decodable!(super::Fst4s15, FST4_15_DOWNSAMPLE);
+impl_frame_decodable!(super::Fst4s30, FST4_30_DOWNSAMPLE);
+impl_frame_decodable!(super::Fst4s60, FST4_60A_DOWNSAMPLE);
+impl_frame_decodable!(super::Fst4s120, FST4_120_DOWNSAMPLE);
+impl_frame_decodable!(super::Fst4s300, FST4_300_DOWNSAMPLE);
 
 #[cfg(test)]
 mod tests {
@@ -353,7 +220,9 @@ mod tests {
         let copy_len = audio.len().min(slot.len() - offset);
         slot[offset..offset + copy_len].copy_from_slice(&audio[..copy_len]);
 
-        let results = decode_frame(&slot, 1000.0, 2000.0, 0.8, 20);
+        let results = DecodeRequest::<crate::fst4::Fst4s60>::new(&slot, 1000.0, 2000.0, 0.8, 20)
+            .decode()
+            .results;
         assert!(
             !results.is_empty(),
             "expected at least one decode from clean synth, got none"
@@ -392,12 +261,12 @@ mod tests {
     /// `fst4::tests::all_submodes_match_wsjtx_fst4_decode_f90`), which
     /// is the strongest available check without either a real
     /// recording or a WSJT-X `fst4sim`-generated reference WAV.
-    fn synth_roundtrip_for<P: crate::core::Protocol + crate::core::FrameLayout>(
-        cfg: &DownsampleCfg,
-        gfsk: &crate::core::dsp::gfsk::GfskCfg,
-        freq_min: f32,
-        freq_max: f32,
-    ) {
+    fn synth_roundtrip_for<P>(gfsk: &crate::core::dsp::gfsk::GfskCfg, freq_min: f32, freq_max: f32)
+    where
+        P: crate::core::Protocol
+            + crate::core::FrameLayout
+            + FrameDecodable<DecodeResult = DecodeResult>,
+    {
         use super::super::encode::{message_to_tones, tones_to_i16_with_gfsk};
         use crate::msg::wsjt77::{pack77, unpack77};
 
@@ -412,7 +281,9 @@ mod tests {
         let copy_len = audio.len().min(slot_len.saturating_sub(offset));
         slot[offset..offset + copy_len].copy_from_slice(&audio[..copy_len]);
 
-        let results = decode_frame_for::<P>(&slot, cfg, freq_min, freq_max, 0.8, 20);
+        let results = DecodeRequest::<P>::new(&slot, freq_min, freq_max, 0.8, 20)
+            .decode()
+            .results;
         assert!(
             !results.is_empty(),
             "expected at least one decode from clean synth, got none"
@@ -442,7 +313,6 @@ mod tests {
             return;
         }
         synth_roundtrip_for::<super::super::Fst4s15>(
-            &FST4_15_DOWNSAMPLE,
             &super::super::encode::FST4_15_GFSK,
             1000.0,
             2000.0,
@@ -457,7 +327,6 @@ mod tests {
             return;
         }
         synth_roundtrip_for::<super::super::Fst4s30>(
-            &FST4_30_DOWNSAMPLE,
             &super::super::encode::FST4_30_GFSK,
             1000.0,
             2000.0,
@@ -473,7 +342,6 @@ mod tests {
             return;
         }
         synth_roundtrip_for::<super::super::Fst4s120>(
-            &FST4_120_DOWNSAMPLE,
             &super::super::encode::FST4_120_GFSK,
             1000.0,
             2000.0,
@@ -490,33 +358,27 @@ mod tests {
             return;
         }
         synth_roundtrip_for::<super::super::Fst4s300>(
-            &FST4_300_DOWNSAMPLE,
             &super::super::encode::FST4_300_GFSK,
             1000.0,
             2000.0,
         );
     }
 
-    /// Compile-time check that `decode_frame_with_options` accepts every
-    /// `DecodeDepth` rung. No actual decoding happens — empty audio
-    /// returns no candidates fast — but this guards against future
-    /// signature drift breaking downstream callers that do parameterised
-    /// dispatch.
+    /// Compile-time check that `DecodeRequest<Fst4s60>` accepts every
+    /// `DecodeDepth` rung across single-pass and sniper. No actual
+    /// decoding happens — empty audio returns no candidates fast — but
+    /// this guards against future signature drift breaking downstream
+    /// callers that do parameterised dispatch.
     #[test]
-    fn decode_frame_with_options_accepts_all_param_combos() {
+    fn decode_request_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 60 * 1000]; // 60 s of silence
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_frame_with_options(&empty, 100.0, 3000.0, 0.8, None, depth, 5);
-        }
-    }
-
-    /// Compile-time check that `decode_frame_with_cache_and_options`
-    /// accepts every `DecodeDepth` rung.
-    #[test]
-    fn decode_frame_with_cache_and_options_accepts_all_param_combos() {
-        let empty = vec![0i16; 12 * 60 * 1000]; // 60 s of silence
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_frame_with_cache_and_options(&empty, 100.0, 3000.0, 0.8, None, depth, 5);
+        for &depth in &[DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+            let _ = DecodeRequest::<crate::fst4::Fst4s60>::new(&empty, 100.0, 3000.0, 0.8, 5)
+                .depth(depth)
+                .decode();
+            let _ = DecodeRequest::<crate::fst4::Fst4s60>::sniper(&empty, 1500.0, 5)
+                .depth(depth)
+                .decode();
         }
     }
 }

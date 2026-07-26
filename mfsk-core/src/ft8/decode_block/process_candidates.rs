@@ -52,8 +52,9 @@ use num_complex::Complex;
 
 /// Embedded FT8 decode for one 15-s slot.
 ///
-/// Runs the same algorithm shape as [`decode_frame`](super::super::decode::decode_frame)
-/// but talks only to power-of-two FFTs (via the
+/// Runs the same algorithm shape as the host
+/// [`DecodeRequest`](crate::msg::decode_request::DecodeRequest) single-pass
+/// path but talks only to power-of-two FFTs (via the
 /// [`crate::core::fft::FftPlanner`] trait) and uses the min-sum LDPC
 /// kernel to skip per-iteration `tanh` / `atanh`. No
 /// `decode_sniper*` paths are involved; no wide-band 192 k FFT cache.
@@ -1668,7 +1669,17 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         }
 
         'ap_outer: for (ap_cfg, pass_id) in &ap_passes {
-            let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
+            // `ApHint::build_bits` (canonical, `crate::msg::ap`) returns
+            // dynamically-sized `Vec<u8>` mask/value bits rather than the
+            // old FT8-local `build_ap`'s `[bool; LDPC_N]`/`[f32; LDPC_N]`
+            // arrays with the ±apmag magnitude already baked in — apply
+            // that mapping here instead. Same underlying `pack28`/
+            // `pack_grid4` and bit layout, so this is behavior-preserving.
+            let (ap_mask_bits, ap_values) = ap_cfg.build_bits(LDPC_N);
+            let mut ap_mask = [false; LDPC_N];
+            for (dst, &src) in ap_mask.iter_mut().zip(ap_mask_bits.iter()) {
+                *dst = src != 0;
+            }
             let locked_bits = ap_mask.iter().filter(|&&m| m).count();
             let max_errors: u32 = strictness.ap_max_errors(locked_bits);
 
@@ -1676,7 +1687,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                 let mut llr_ap = *base_llr;
                 for i in 0..LDPC_N {
                     if ap_mask[i] {
-                        llr_ap[i] = ap_llr_override[i];
+                        llr_ap[i] = if ap_values[i] == 1 { apmag } else { -apmag };
                     }
                 }
                 // Inline AP-result validator: hard-error gate, unpack,

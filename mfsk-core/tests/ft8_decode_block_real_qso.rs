@@ -23,8 +23,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{DecodeDepth, decode_frame};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::decode_block;
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -67,11 +69,13 @@ fn decode_block_matches_decode_frame_on_real_qso() {
     for e in ENTRIES {
         let slot = load_wav_i16(Path::new(e.path));
 
-        let truth: BTreeSet<String> =
-            decode_frame(&slot, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 200)
-                .iter()
-                .filter_map(|x| unpack77(&x.message77))
-                .collect();
+        let truth: BTreeSet<String> = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.0, 200)
+            .depth(DecodeDepth::FULL)
+            .decode()
+            .results
+            .iter()
+            .filter_map(|x| unpack77(&x.message77))
+            .collect();
         let ship: BTreeSet<String> =
             decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BP_ONLY, 15)
                 .iter()

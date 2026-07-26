@@ -29,20 +29,6 @@ use crate::core::{FecCodec, FecOpts, Protocol};
 use super::ap::{ApHint, WsjtApCompatible};
 use super::wsjt77::{is_plausible_message, unpack77};
 
-/// Upper bound on hard_errors for AP-assisted decodes, graded by the number
-/// of locked bits (heavier locks → tighter threshold, since random bits
-/// flipping to agree with the lock is increasingly unlikely).
-fn ap_max_errors(strictness: DecodeStrictness, locked_bits: usize) -> u32 {
-    match (strictness, locked_bits >= 55) {
-        (DecodeStrictness::Strict, true) => 20,
-        (DecodeStrictness::Strict, false) => 24,
-        (DecodeStrictness::Normal, true) => 25,
-        (DecodeStrictness::Normal, false) => 30,
-        (DecodeStrictness::Deep, true) => 30,
-        (DecodeStrictness::Deep, false) => 36,
-    }
-}
-
 /// Build one AP configuration: derive the mask/values bit vectors from a
 /// hint for this protocol's codeword length. Convenience for callers that
 /// want to try several hint shapes (full lock, partial lock, …).
@@ -183,7 +169,7 @@ where
             for (ap_cfg, pass_id) in ap_passes(hint) {
                 let (mask, values) = ap_bits_for::<P>(&ap_cfg);
                 let locked = mask.iter().filter(|&&m| m != 0).count();
-                let max_errors = ap_max_errors(strictness, locked);
+                let max_errors = strictness.ap_max_errors(locked);
 
                 for (llr, _) in &variants {
                     let ap_opts = FecOpts {
@@ -208,7 +194,7 @@ where
                     {
                         return Some(res);
                     }
-                    if depth == DecodeDepth::BpAllOsd {
+                    if depth.osd {
                         // OSD depth-2 only (matches FT8's AP path).
                         let depths: &[u32] = &[2];
                         let _ = locked;

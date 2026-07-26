@@ -181,8 +181,9 @@ mod tests {
 
     #[test]
     fn subtract_reveals_hidden_signal() {
-        use super::super::decode::decode_frame_subtract;
+        use super::super::Ft8;
         use super::super::message::pack77;
+        use crate::msg::decode_request::DecodeRequest;
 
         // Two valid FT8 standard messages (the inner's unpack77 +
         // plausibility gate inside `process_one_candidate_inner`
@@ -204,16 +205,12 @@ mod tests {
             audio[off + i] = v.clamp(-32_768, 32_767) as i16;
         }
 
-        let results = decode_frame_subtract(
-            &audio,
-            800.0,
-            1700.0,
-            1.0,
-            None,
-            DecodeDepth::BP_ONLY,
-            50,
-            DecodeStrictness::Normal,
-        );
+        let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1700.0, 1.0, 50)
+            .depth(DecodeDepth::BP_ONLY)
+            .strictness(DecodeStrictness::Normal)
+            .staged()
+            .decode()
+            .results;
         let found_strong = results.iter().any(|r| r.message77 == msg_strong);
         let found_weak = results.iter().any(|r| r.message77 == msg_weak);
         assert!(found_strong, "strong signal not decoded");

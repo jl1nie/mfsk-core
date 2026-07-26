@@ -29,9 +29,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mfsk_core::ft8::decode::{
-    ApHint, DecodeDepth, DecodeStrictness, decode_frame_subtract_with_ap, decode_frame_with_ap,
-};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{ApHint, DecodeDepth, DecodeStrictness};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -45,17 +45,13 @@ fn try_context(label: &str, audio: &[i16], mycall: &str, hiscall: &str) -> BTree
     let ap = ApHint::new().with_call1(mycall).with_call2(hiscall);
 
     // Multi-pass + SIC + AP — the strongest AP-on recovery path we have.
-    let decoded = decode_frame_subtract_with_ap(
-        audio,
-        100.0,
-        3000.0,
-        1.3,
-        None,
-        DecodeDepth::FULL,
-        50,
-        DecodeStrictness::Normal,
-        Some(&ap),
-    );
+    let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .ap_hint(&ap)
+        .decode()
+        .results;
     let msgs: BTreeSet<String> = decoded
         .iter()
         .filter_map(|r| unpack77(&r.message77))
@@ -77,16 +73,10 @@ fn probe_dk8ne_with_exact_context() {
     println!("\n=== K1BZM DK8NE @244 Hz / SNR -19 dB — AP context sweep ===");
 
     // Baseline: no AP context (single-pass, host AP-off equivalent).
-    let no_ap = decode_frame_with_ap(
-        &audio,
-        100.0,
-        3000.0,
-        1.3,
-        None,
-        DecodeDepth::FULL,
-        50,
-        None,
-    );
+    let no_ap = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.3, 50)
+        .depth(DecodeDepth::FULL)
+        .decode()
+        .results;
     let no_ap_msgs: BTreeSet<String> = no_ap
         .iter()
         .filter_map(|r| unpack77(&r.message77))
@@ -121,17 +111,13 @@ fn probe_dk8ne_with_exact_context() {
 
 fn try_context_for(label: &str, audio: &[i16], mycall: &str, hiscall: &str, target: &str) -> bool {
     let ap = ApHint::new().with_call1(mycall).with_call2(hiscall);
-    let decoded = decode_frame_subtract_with_ap(
-        audio,
-        100.0,
-        3000.0,
-        1.3,
-        None,
-        DecodeDepth::FULL,
-        50,
-        DecodeStrictness::Normal,
-        Some(&ap),
-    );
+    let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
+        .depth(DecodeDepth::FULL)
+        .strictness(DecodeStrictness::Normal)
+        .staged()
+        .ap_hint(&ap)
+        .decode()
+        .results;
     let msgs: BTreeSet<String> = decoded
         .iter()
         .filter_map(|r| unpack77(&r.message77))

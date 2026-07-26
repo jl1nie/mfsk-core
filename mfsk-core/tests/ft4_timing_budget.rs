@@ -10,8 +10,10 @@ use std::time::Instant;
 
 use mfsk_core::core::equalize::EqMode;
 use mfsk_core::core::{MessageCodec, MessageFields};
-use mfsk_core::ft4::decode::{ApHint, decode_sniper_ap};
+use mfsk_core::ft4::Ft4;
+use mfsk_core::ft4::decode::ApHint;
 use mfsk_core::ft4::encode;
+use mfsk_core::msg::decode_request::DecodeRequest;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;
@@ -96,7 +98,11 @@ fn ft4_sniper_ap_wallclock() {
         for seed in 0..3u64 {
             let audio = make_slot(&msg, snr as f32, 0xBEEF + seed);
             let t0 = Instant::now();
-            let results = decode_sniper_ap(&audio, 1000.0, 30, EqMode::Local, Some(&ap));
+            let results = DecodeRequest::<Ft4>::sniper(&audio, 1000.0, 30)
+                .eq_mode(EqMode::Local)
+                .ap_hint(&ap)
+                .decode()
+                .results;
             let dt = t0.elapsed();
             times.push(dt);
             if results.iter().any(|r| r.message77() == msg) {

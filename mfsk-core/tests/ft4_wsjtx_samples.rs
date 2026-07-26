@@ -21,7 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-use mfsk_core::ft4::decode::decode_frame_subtract;
+use mfsk_core::ft4::Ft4;
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -109,7 +110,10 @@ fn ft4_wsjtx_sample_recall_vs_golden() {
     // large safety margin required any more. (The stale comment this
     // replaced described the old search's redundancy-driven budget,
     // now obsolete.)
-    let decodes = decode_frame_subtract(&audio, 100.0, 2700.0, 0.05, 100);
+    let decodes = DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 0.05, 100)
+        .flat()
+        .decode()
+        .results;
 
     // Enumerate decodes (msg + freq + dt) for diagnostic visibility.
     let decoded: Vec<(String, f32, f32)> = decodes

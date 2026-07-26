@@ -13,11 +13,11 @@
 //! break self-cancellation still gets caught.
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
-use mfsk_core::ft4::decode::decode_frame_with_options;
-use mfsk_core::ft4::decode::{DecodeDepth, decode_frame};
+use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
+use mfsk_core::msg::decode_request::DecodeRequest;
 
 const NSPS: usize = <Ft4 as ModulationParams>::NSPS as usize;
 const NN: usize = <Ft4 as FrameLayout>::N_SYMBOLS as usize;
@@ -70,7 +70,9 @@ fn subtract_reveals_hidden_ft4_signal() {
     // signal; whether it also catches the weak one depends on how
     // much the strong one's leakage masks it. We don't assert on
     // weak-in-pass-1 either way.
-    let pass1 = decode_frame(&audio, 100.0, 3000.0, 0.6, 5);
+    let pass1 = DecodeRequest::<Ft4>::new(&audio, 100.0, 3000.0, 0.6, 5)
+        .decode()
+        .results;
     let strong_hit = pass1
         .iter()
         .find(|r| r.message77() == strong)
@@ -85,15 +87,10 @@ fn subtract_reveals_hidden_ft4_signal() {
     subtract_signal_lpf(&mut residual, &refined);
 
     // Pass 2 on the residual: must surface the weak signal.
-    let pass2 = decode_frame_with_options(
-        &residual,
-        100.0,
-        3000.0,
-        0.5,
-        None,
-        DecodeDepth::BpAllOsd,
-        5,
-    );
+    let pass2 = DecodeRequest::<Ft4>::new(&residual, 100.0, 3000.0, 0.5, 5)
+        .depth(DecodeDepth::FULL)
+        .decode()
+        .results;
     let saw_weak = pass2.iter().any(|r| r.message77() == weak);
     let pass1_saw_weak = pass1.iter().any(|r| r.message77() == weak);
     assert!(

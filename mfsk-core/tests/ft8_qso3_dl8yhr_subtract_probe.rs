@@ -20,11 +20,24 @@ use std::path::Path;
 use mfsk_core::FrameLayout;
 use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, decode_sniper};
+use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::downsample::downsample;
 use mfsk_core::ft8::llr::sync_quality;
 use mfsk_core::ft8::message::unpack77;
 use mfsk_core::ft8::subtract::{refine_signal_freq, subtract_signal_lpf};
+use mfsk_core::msg::decode_request::SniperRequest;
+
+fn decode_sniper(
+    audio: &[i16],
+    target_freq: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+) -> Vec<mfsk_core::ft8::decode::DecodeResult> {
+    SniperRequest::<Ft8>::new(audio, target_freq, max_cand)
+        .depth(depth)
+        .decode()
+        .results
+}
 
 #[allow(dead_code)]
 mod common;

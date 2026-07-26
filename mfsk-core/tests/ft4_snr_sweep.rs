@@ -8,8 +8,10 @@ use std::f32::consts::PI;
 
 use mfsk_core::core::equalize::EqMode;
 use mfsk_core::core::{MessageCodec, MessageFields};
-use mfsk_core::ft4::decode::{ApHint, DecodeResult, decode_frame, decode_sniper_ap};
+use mfsk_core::ft4::Ft4;
+use mfsk_core::ft4::decode::{ApHint, DecodeResult};
 use mfsk_core::ft4::encode;
+use mfsk_core::msg::decode_request::DecodeRequest;
 
 const FS: f32 = 12_000.0;
 const REF_BW: f32 = 2_500.0;
@@ -107,13 +109,18 @@ fn ft4_snr_sweep_basic_vs_ap() {
         let mut ok_a = 0;
         for seed in 0..SEEDS {
             let audio = make_slot(&msg, 1000.0, snr as f32, 0xF70000 + seed);
-            if hit(&decode_frame(&audio, 800.0, 1200.0, 1.2, 50), &msg) {
+            let basic = DecodeRequest::<Ft4>::new(&audio, 800.0, 1200.0, 1.2, 50)
+                .decode()
+                .results;
+            if hit(&basic, &msg) {
                 ok_b += 1;
             }
-            if hit(
-                &decode_sniper_ap(&audio, 1000.0, 30, EqMode::Local, Some(&ap)),
-                &msg,
-            ) {
+            let ap_result = DecodeRequest::<Ft4>::sniper(&audio, 1000.0, 30)
+                .eq_mode(EqMode::Local)
+                .ap_hint(&ap)
+                .decode()
+                .results;
+            if hit(&ap_result, &msg) {
                 ok_a += 1;
             }
         }

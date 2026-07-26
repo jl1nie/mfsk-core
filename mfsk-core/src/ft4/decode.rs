@@ -1,23 +1,23 @@
 //! FT4 decode — thin wrapper over [`crate::core::pipeline`].
 //!
-//! Exposes `decode_frame` and `decode_frame_subtract` which drive the full
-//! generic pipeline (coarse sync → refine → LLR → BP/OSD → optional SIC
-//! multi-pass) specialised to the [`Ft4`] protocol. AP hints and sniper
-//! single-frequency entry points are not provided here — they can be added
-//! once the generic pipeline grows AP support.
+//! Drives the full generic pipeline (coarse sync → refine → LLR → BP/OSD →
+//! optional SIC multi-pass) specialised to the [`Ft4`] protocol, exposed
+//! via the shared [`crate::msg::decode_request::DecodeRequest`] /
+//! [`crate::msg::decode_request::SniperRequest`] builders (issue #191).
 
 use alloc::vec::Vec;
 
 use super::Ft4;
 use crate::core::dsp::downsample::DownsampleCfg;
 use crate::core::dsp::subtract::SubtractCfg;
-use crate::core::equalize::EqMode;
-use crate::core::pipeline::{self, FftCache};
+use crate::core::pipeline;
 use crate::msg::pipeline_ap;
 
-use crate::core::pipeline::DecodeStrictness;
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult};
+pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
 pub use crate::msg::ApHint;
+use crate::msg::decode_request::{
+    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
+};
 
 /// FT4 downsample configuration: 12 kHz → ~666.7 Hz baseband, covering four
 /// tones spaced 20.833 Hz apart plus headroom.
@@ -57,287 +57,151 @@ const REFINE_STEPS: i32 = 32;
 /// FT4 has 16 sync symbols (4 × 4); require at least half correct.
 const SYNC_Q_MIN: u32 = 8;
 
-/// Decode one FT4 slot of 12 kHz PCM audio.
-pub fn decode_frame(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_with_options(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        None,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-    )
+/// Dedup `raw` against caller-supplied `known` (by `info` equality) — the
+/// generic engine has no `known`/AP-hint parameter at all, so this is a
+/// best-effort post-filter rather than an in-loop skip. Always correct
+/// (never mis-reports a known signal as new), just cannot save the work
+/// of re-decoding it the way FT8's engine-level `known` handling can.
+fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
+    raw.into_iter()
+        .filter(|r| !known.iter().any(|k| k.info == r.info))
+        .collect()
 }
 
-/// Decode one FT4 slot with an explicit `depth` knob.
-///
-/// Mirrors [`crate::ft8::decode::decode_frame`]'s `depth` parameter.
-/// FT4's per-candidate strictness is hardcoded to `Normal` — `Normal`'s
-/// numbers were retuned against a `ft4sim` AWGN/CCIR sweep (issue #72,
-/// 2026-07-18); no caller exercises the `Strict` / `Deep` rungs, whose
-/// numbers remain the original unverified FT8 copy.
-///
-/// `freq_hint` is the same as in `ft8::decode::decode_frame`: when
-/// `Some(f)`, narrows the coarse-sync to candidates near `f` ± a few Hz.
-/// Pass `None` for full-band scan.
-pub fn decode_frame_with_options(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    pipeline::decode_frame::<Ft4>(
-        audio,
-        &FT4_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        EqMode::Off,
-        REFINE_STEPS,
-        SYNC_Q_MIN,
-    )
-    .0
+impl FrameDecodable for Ft4 {
+    type DecodeResult = DecodeResult;
+
+    fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+        // `precomputed_fft` isn't reusable: `pipeline::decode_frame::<Ft4>`
+        // always builds its own cache internally, with no injection point.
+        let (raw, fft_cache) = pipeline::decode_frame::<Ft4>(
+            req.audio,
+            &FT4_DOWNSAMPLE,
+            req.freq_min,
+            req.freq_max,
+            req.sync_min,
+            req.freq_hint,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            req.eq_mode,
+            REFINE_STEPS,
+            SYNC_Q_MIN,
+        );
+        DecodeOutcome {
+            results: dedup_known(raw, req.known),
+            fft_cache,
+        }
+    }
+
+    fn __sniper(req: &SniperRequest<'_, Self>) -> DecodeOutcome<Self> {
+        // Clamp caller's candidate count: in sniper mode the target is
+        // reliably in the top-5 after dedup even at -18 dB, so >15 just
+        // burns CPU — especially important under the lite feature
+        // defaults where every candidate runs BP + OSD per AP config.
+        let max_cand = req.max_cand.min(15);
+        let results = pipeline_ap::decode_sniper_ap::<Ft4>(
+            req.audio,
+            &FT4_DOWNSAMPLE,
+            req.target_freq,
+            250.0,
+            req.sync_min,
+            req.depth,
+            max_cand,
+            req.strictness,
+            req.eq_mode,
+            REFINE_STEPS,
+            // Halve the sync-quality gate for AP: locked bits carry the
+            // decision, so weak sync-quality signals may still succeed.
+            SYNC_Q_MIN / 2,
+            req.ap_hint,
+        );
+        // `pipeline_ap::decode_sniper_ap` doesn't return its FFT cache;
+        // sniper mode never exposed one before this redesign either
+        // (old `decode_sniper_ap` returned `Vec<DecodeResult>` only), so
+        // rebuild it once here purely to satisfy `DecodeOutcome`'s
+        // uniform shape.
+        let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &FT4_DOWNSAMPLE);
+        DecodeOutcome { results, fft_cache }
+    }
 }
 
-/// Decode one FT4 slot returning the FFT cache for pipelined subtraction.
-pub fn decode_frame_with_cache(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    decode_frame_with_cache_and_options(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        None,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-    )
-}
-
-/// Same as [`decode_frame_with_cache`] but with an explicit `depth` knob
-/// (see [`decode_frame_with_options`]).
-///
-/// `freq_hint`: when `Some(f)`, narrows the coarse-sync to candidates
-/// near `f`. Pass `None` for full-band scan. Mirrors
-/// [`decode_frame_with_options`] for parity.
-pub fn decode_frame_with_cache_and_options(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> (Vec<DecodeResult>, FftCache) {
-    pipeline::decode_frame::<Ft4>(
-        audio,
-        &FT4_DOWNSAMPLE,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        EqMode::Off,
-        REFINE_STEPS,
-        SYNC_Q_MIN,
-    )
-}
-
-/// Multi-pass decode with successive interference cancellation.
-pub fn decode_frame_subtract(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    decode_frame_subtract_with_options(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        None,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-    )
-}
-
-/// Same as [`decode_frame_subtract`] but with an explicit `depth` knob
-/// (see [`decode_frame_with_options`]).
-///
-/// `freq_hint`: when `Some(f)`, narrows the coarse-sync to candidates
-/// near `f`. Pass `None` for full-band scan. Mirrors
-/// [`decode_frame_with_options`] for parity.
-pub fn decode_frame_subtract_with_options(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    freq_hint: Option<f32>,
-    depth: DecodeDepth,
-    max_cand: usize,
-) -> Vec<DecodeResult> {
-    pipeline::decode_frame_subtract::<Ft4>(
-        audio,
-        &FT4_DOWNSAMPLE,
-        &FT4_SUBTRACT,
-        freq_min,
-        freq_max,
-        sync_min,
-        freq_hint,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        REFINE_STEPS,
-        SYNC_Q_MIN,
-        // lpf_half/end-correction match WSJT-X `subtractft4.f90`:
-        // NFILT=1400 (lpf_half=700), no end-correction. See
-        // `ft4::subtract::{LPF_HALF_SAMPLES, subtract_signal_lpf,
-        // refine_signal_freq}` for the same constants used elsewhere.
-        //
-        // WSJT-X's own `subtractft4` has no frequency-refine step at
-        // all — it subtracts directly at the decoded `f0`. mfsk-core's
-        // `refine_freq` call above exists to compensate for this
-        // codebase's own `r.freq_hz` being integer-Hz-quantized
-        // (`core::sync2d::ft4_sync_search`'s df search only ever
-        // produces integer Hz offsets — see its `idf`/`si` loops), not
-        // to replicate anything WSJT-X does. That quantization bounds
-        // the true continuous optimum to within ±0.5 Hz of the
-        // reported freq, so a ±1.0 Hz radius (with 0.5 Hz margin) is
-        // sufficient — the previous ±5.0 Hz was carried over from
-        // `coarse_sync`'s ~2.93 Hz FFT-bin uncertainty, a different
-        // (and much coarser) mechanism `ft4_coarse_sync` replaced for
-        // FT4 back in `FT4_BENCHMARK.md` section 13, without this
-        // radius being re-derived for the new, tighter bound (issue
-        // #182 follow-up). Cuts `refine_freq`'s 0.1 Hz grid search from
-        // 101 to 21 evaluations per call — the dominant remaining cost
-        // in `decode_frame_subtract` after the NCO fix (~16 ms/call ×
-        // 14 real decodes ≈ 227 ms of the golden WAV's 280 ms total).
-        700,
-        false,
-        1.0,
-    )
-}
-
-/// Sniper-mode decode with optional AP hints — searches ±250 Hz of
-/// `target_freq` and, if `ap_hint` is supplied, clamps the known parts of
-/// the expected message to high-confidence LLRs before BP/OSD.
-pub fn decode_sniper_ap(
-    audio: &[i16],
-    target_freq: f32,
-    max_cand: usize,
-    eq_mode: EqMode,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    decode_sniper_ap_with_options(
-        audio,
-        target_freq,
-        DecodeDepth::BpAllOsd,
-        max_cand,
-        eq_mode,
-        ap_hint,
-    )
-}
-
-/// Same as [`decode_sniper_ap`] but with an explicit `depth` knob
-/// (see [`decode_frame_with_options`]).
-pub fn decode_sniper_ap_with_options(
-    audio: &[i16],
-    target_freq: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    eq_mode: EqMode,
-    ap_hint: Option<&ApHint>,
-) -> Vec<DecodeResult> {
-    // Clamp caller's candidate count: in sniper mode the target is
-    // reliably in the top-5 after dedup even at -18 dB, so >15 just
-    // burns CPU — especially important under the lite feature defaults
-    // where every candidate runs BP + OSD per AP config.
-    let max_cand = max_cand.min(15);
-    pipeline_ap::decode_sniper_ap::<Ft4>(
-        audio,
-        &FT4_DOWNSAMPLE,
-        target_freq,
-        250.0,
-        // Looser sync_min under sniper+AP: when AP locks ≥55 bits the FEC
-        // can recover signals whose coarse-sync score wouldn't qualify for
-        // a bare decode — we still need candidates to attempt the lock on.
-        0.5,
-        depth,
-        max_cand,
-        DecodeStrictness::Normal,
-        eq_mode,
-        REFINE_STEPS,
-        // Halve the sync-quality gate for AP: locked bits carry the
-        // decision, so weak sync-quality signals may still succeed.
-        SYNC_Q_MIN / 2,
-        ap_hint,
-    )
+impl SupportsFlatSic for Ft4 {
+    fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+        let raw = pipeline::decode_frame_subtract::<Ft4>(
+            req.audio,
+            &FT4_DOWNSAMPLE,
+            &FT4_SUBTRACT,
+            req.freq_min,
+            req.freq_max,
+            req.sync_min,
+            req.freq_hint,
+            req.depth,
+            req.max_cand,
+            req.strictness,
+            REFINE_STEPS,
+            SYNC_Q_MIN,
+            // lpf_half/end-correction match WSJT-X `subtractft4.f90`:
+            // NFILT=1400 (lpf_half=700), no end-correction. See
+            // `ft4::subtract::{LPF_HALF_SAMPLES, subtract_signal_lpf,
+            // refine_signal_freq}` for the same constants used elsewhere.
+            //
+            // WSJT-X's own `subtractft4` has no frequency-refine step at
+            // all — it subtracts directly at the decoded `f0`. mfsk-core's
+            // `refine_freq` call above exists to compensate for this
+            // codebase's own `r.freq_hz` being integer-Hz-quantized
+            // (`core::sync2d::ft4_sync_search`'s df search only ever
+            // produces integer Hz offsets — see its `idf`/`si` loops), not
+            // to replicate anything WSJT-X does. That quantization bounds
+            // the true continuous optimum to within ±0.5 Hz of the
+            // reported freq, so a ±1.0 Hz radius (with 0.5 Hz margin) is
+            // sufficient — the previous ±5.0 Hz was carried over from
+            // `coarse_sync`'s ~2.93 Hz FFT-bin uncertainty, a different
+            // (and much coarser) mechanism `ft4_coarse_sync` replaced for
+            // FT4 back in `FT4_BENCHMARK.md` section 13, without this
+            // radius being re-derived for the new, tighter bound (issue
+            // #182 follow-up). Cuts `refine_freq`'s 0.1 Hz grid search from
+            // 101 to 21 evaluations per call — the dominant remaining cost
+            // in the subtract engine after the NCO fix (~16 ms/call ×
+            // 14 real decodes ≈ 227 ms of the golden WAV's 280 ms total).
+            700,
+            false,
+            1.0,
+        );
+        // Multi-pass SIC has no single "the" cache (residual changes every
+        // pass) — rebuild from the original audio, matching the shape
+        // `decode_frame_with_cache` used to return pre-#191.
+        let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &FT4_DOWNSAMPLE);
+        DecodeOutcome {
+            results: dedup_known(raw, req.known),
+            fft_cache,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msg::decode_request::DecodeRequest;
 
-    /// Compile-time check that `decode_frame_with_options` accepts every
-    /// `DecodeDepth` rung. No actual decoding happens — empty audio
-    /// returns no candidates fast — but this guards against future
-    /// signature drift.
+    /// Compile-time check that `DecodeRequest<Ft4>` accepts every
+    /// `DecodeDepth` rung across single-pass, flat SIC, and sniper. No
+    /// actual decoding happens — empty audio returns no candidates fast
+    /// — but this guards against future signature drift.
     #[test]
-    fn decode_frame_with_options_accepts_all_param_combos() {
+    fn decode_request_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500]; // 7.5 s of silence at 12 kHz
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_frame_with_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
-        }
-    }
-
-    /// Compile-time check that `decode_frame_with_cache_and_options`
-    /// accepts every `DecodeDepth` rung.
-    #[test]
-    fn decode_frame_with_cache_and_options_accepts_all_param_combos() {
-        let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_frame_with_cache_and_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
-        }
-    }
-
-    /// Compile-time check that `decode_frame_subtract_with_options`
-    /// accepts every `DecodeDepth` rung.
-    #[test]
-    fn decode_frame_subtract_with_options_accepts_all_param_combos() {
-        let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_frame_subtract_with_options(&empty, 100.0, 3000.0, 1.0, None, depth, 5);
-        }
-    }
-
-    /// Compile-time check that `decode_sniper_ap_with_options` accepts
-    /// every `DecodeDepth` rung.
-    #[test]
-    fn decode_sniper_ap_with_options_accepts_all_param_combos() {
-        let empty = vec![0i16; 12 * 7500];
-        for &depth in &[DecodeDepth::BpAll, DecodeDepth::BpAllOsd] {
-            let _ = decode_sniper_ap_with_options(&empty, 1500.0, depth, 5, EqMode::Off, None);
+        for &depth in &[DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+            let _ = DecodeRequest::<Ft4>::new(&empty, 100.0, 3000.0, 1.0, 5)
+                .depth(depth)
+                .decode();
+            let _ = DecodeRequest::<Ft4>::new(&empty, 100.0, 3000.0, 1.0, 5)
+                .depth(depth)
+                .flat()
+                .decode();
+            let _ = DecodeRequest::<Ft4>::sniper(&empty, 1500.0, 5)
+                .depth(depth)
+                .decode();
         }
     }
 }

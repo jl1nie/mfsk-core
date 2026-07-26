@@ -50,7 +50,6 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::slice;
 
-use mfsk_core::fst4::decode as fst4;
 use mfsk_core::ft4::decode as ft4;
 use mfsk_core::ft8::decode as ft8;
 
@@ -558,13 +557,25 @@ fn decode_i16_wsjt77(
     match protocol {
         MfskProtocol::Ft8 => {
             let ht = mfsk_core::msg::CallsignHashTable::new();
-            for r in ft8::decode_frame(audio, 200.0, 3_000.0, 2.0, None, ft8::DecodeDepth::FULL, 50)
-            {
+            let results =
+                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
+                    audio, 200.0, 3_000.0, 2.0, 50,
+                )
+                .depth(ft8::DecodeDepth::FULL)
+                .decode()
+                .results;
+            for r in results {
                 push_wsjt77(&r, &ht, &mut vec);
             }
         }
         MfskProtocol::Ft4 => {
-            for r in ft4::decode_frame(audio, 200.0, 3_000.0, 1.2, 50) {
+            let results =
+                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+                    audio, 200.0, 3_000.0, 1.2, 50,
+                )
+                .decode()
+                .results;
+            for r in results {
                 push_ft4(&r, &mut vec);
             }
         }
@@ -575,7 +586,13 @@ fn decode_i16_wsjt77(
             use mfsk_core::MessageCodec;
             let codec = mfsk_core::msg::Wsjt77Message;
             let ctx = mfsk_core::DecodeContext::default();
-            for r in fst4::decode_frame(audio, 100.0, 3_000.0, 0.8, 30) {
+            let results =
+                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s60>::new(
+                    audio, 100.0, 3_000.0, 0.8, 30,
+                )
+                .decode()
+                .results;
+            for r in results {
                 let text = codec.unpack(r.message77(), &ctx).unwrap_or_default();
                 vec.push(MfskMessage {
                     freq_hz: r.freq_hz,

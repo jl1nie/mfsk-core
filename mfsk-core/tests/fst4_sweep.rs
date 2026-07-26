@@ -58,12 +58,16 @@ const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 // ── Per-mode decode dispatch ─────────────────────────────────────────────────
 
-fn decode_wav_fst4<P>(audio: &[i16], cfg: &mfsk_core::core::dsp::downsample::DownsampleCfg) -> bool
+fn decode_wav_fst4<P>(audio: &[i16]) -> bool
 where
-    P: mfsk_core::core::Protocol,
+    P: mfsk_core::msg::decode_request::FrameDecodable<
+            DecodeResult = mfsk_core::fst4::decode::DecodeResult,
+        >,
 {
-    use mfsk_core::fst4::decode::decode_frame_for;
-    decode_frame_for::<P>(audio, cfg, 100.0, 3000.0, 0.8, 50)
+    use mfsk_core::msg::decode_request::DecodeRequest;
+    DecodeRequest::<P>::new(audio, 100.0, 3000.0, 0.8, 50)
+        .decode()
+        .results
         .iter()
         .any(|d| {
             let mut m77 = [0u8; 77];
@@ -75,24 +79,24 @@ where
 }
 
 fn decode_wav_fst4_15(audio: &[i16]) -> bool {
-    use mfsk_core::fst4::{Fst4s15, decode::FST4_15_DOWNSAMPLE};
-    decode_wav_fst4::<Fst4s15>(audio, &FST4_15_DOWNSAMPLE)
+    use mfsk_core::fst4::Fst4s15;
+    decode_wav_fst4::<Fst4s15>(audio)
 }
 fn decode_wav_fst4_30(audio: &[i16]) -> bool {
-    use mfsk_core::fst4::{Fst4s30, decode::FST4_30_DOWNSAMPLE};
-    decode_wav_fst4::<Fst4s30>(audio, &FST4_30_DOWNSAMPLE)
+    use mfsk_core::fst4::Fst4s30;
+    decode_wav_fst4::<Fst4s30>(audio)
 }
 fn decode_wav_fst4_60(audio: &[i16]) -> bool {
-    use mfsk_core::fst4::{Fst4s60, decode::FST4_60A_DOWNSAMPLE};
-    decode_wav_fst4::<Fst4s60>(audio, &FST4_60A_DOWNSAMPLE)
+    use mfsk_core::fst4::Fst4s60;
+    decode_wav_fst4::<Fst4s60>(audio)
 }
 fn decode_wav_fst4_120(audio: &[i16]) -> bool {
-    use mfsk_core::fst4::{Fst4s120, decode::FST4_120_DOWNSAMPLE};
-    decode_wav_fst4::<Fst4s120>(audio, &FST4_120_DOWNSAMPLE)
+    use mfsk_core::fst4::Fst4s120;
+    decode_wav_fst4::<Fst4s120>(audio)
 }
 fn decode_wav_fst4_300(audio: &[i16]) -> bool {
-    use mfsk_core::fst4::{Fst4s300, decode::FST4_300_DOWNSAMPLE};
-    decode_wav_fst4::<Fst4s300>(audio, &FST4_300_DOWNSAMPLE)
+    use mfsk_core::fst4::Fst4s300;
+    decode_wav_fst4::<Fst4s300>(audio)
 }
 
 // ── Mode table ───────────────────────────────────────────────────────────────
@@ -401,7 +405,7 @@ fn fst4_diag_weak_trials() {
                     c,
                     &fft_cache,
                     cfg,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
@@ -503,7 +507,7 @@ fn fst4_diag_nsym4_ladder() {
                 cand,
                 &fft_cache,
                 cfg,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,
@@ -793,7 +797,7 @@ fn fst4_120_diag_sync_vs_decode_failure() {
                     c,
                     &fft_cache,
                     &FST4_120_DOWNSAMPLE,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
@@ -909,7 +913,7 @@ fn fst4_60_diag_candidate_cost_split() {
             c,
             &fft_cache,
             &FST4_60A_DOWNSAMPLE,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             DecodeStrictness::Normal,
             &[],
             EqMode::Off,
@@ -935,7 +939,11 @@ fn fst4_60_diag_candidate_cost_split() {
     // `BENCHMARKS.md`'s "Decode speed" table (2.60 s as of this
     // investigation's start).
     let t0 = Instant::now();
-    let decodes = mfsk_core::fst4::decode::decode_frame(&audio, 100.0, 3000.0, 1.0, 50);
+    let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s60>::new(
+        &audio, 100.0, 3000.0, 1.0, 50,
+    )
+    .decode()
+    .results;
     let dt = t0.elapsed();
     eprintln!(
         "FST4-60A golden: decode_frame wall-clock = {:.1} ms, {} decode(s)",

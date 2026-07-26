@@ -53,15 +53,19 @@ fn sweep_dir() -> PathBuf {
 const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 fn decode_wav_ft4(audio: &[i16]) -> bool {
-    mfsk_core::ft4::decode::decode_frame(audio, 100.0, 3000.0, 0.8, 50)
-        .iter()
-        .any(|d| {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
-                && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
-                && d.dt_sec.abs() <= DT_TOL_SEC
-        })
+    mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+        audio, 100.0, 3000.0, 0.8, 50,
+    )
+    .decode()
+    .results
+    .iter()
+    .any(|d| {
+        let mut m77 = [0u8; 77];
+        m77.copy_from_slice(d.message77());
+        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+            && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+            && d.dt_sec.abs() <= DT_TOL_SEC
+    })
 }
 
 // ── Filename parsing ─────────────────────────────────────────────────────────
@@ -322,7 +326,7 @@ fn ft4_strictness_probe() {
                     3000.0,
                     0.8,
                     None,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     50,
                     strictness,
                     EqMode::Off,
@@ -458,7 +462,7 @@ fn ft4_diag_weak_trials() {
                     c,
                     &fft_cache,
                     &FT4_DOWNSAMPLE,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
@@ -635,7 +639,7 @@ fn ft4_diag_segment_retry() {
                     c,
                     &fft_cache,
                     &FT4_DOWNSAMPLE,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
@@ -814,7 +818,7 @@ fn ft4_diag_candidate_cost_split() {
                 c,
                 &fft_cache,
                 &FT4_DOWNSAMPLE,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,
@@ -881,10 +885,15 @@ fn ft4_diag_candidate_cost_split() {
             // `BENCHMARKS.md`'s "Decode speed" table.
             let t0 = Instant::now();
             let decodes =
-                mfsk_core::ft4::decode::decode_frame_subtract(&audio, 100.0, 2700.0, 0.05, 2000);
+                mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
+                    &audio, 100.0, 2700.0, 0.05, 2000,
+                )
+                .flat()
+                .decode()
+                .results;
             let dt = t0.elapsed();
             eprintln!(
-                "golden 000000_000002.wav: decode_frame_subtract wall-clock = {:.1} ms, {} decode(s)",
+                "golden 000000_000002.wav: flat SIC wall-clock = {:.1} ms, {} decode(s)",
                 dt.as_secs_f64() * 1000.0,
                 decodes.len()
             );
@@ -1008,7 +1017,7 @@ fn ft4_diag_smax_calibration() {
                 c,
                 &fft_cache,
                 &FT4_DOWNSAMPLE,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,

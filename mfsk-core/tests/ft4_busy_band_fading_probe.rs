@@ -54,9 +54,44 @@
 use std::collections::BTreeSet;
 
 use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
-use mfsk_core::ft4::decode::{DecodeDepth, decode_frame_subtract};
+use mfsk_core::ft4::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
+use mfsk_core::msg::decode_request::DecodeRequest;
+
+/// Local shim matching the pre-#191 `ft4::decode::decode_frame_subtract`
+/// signature — this file has many call sites, easier to keep them
+/// unchanged than thread `.flat()` through each individually.
+fn decode_frame_subtract(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+) -> Vec<DecodeResult> {
+    DecodeRequest::<Ft4>::new(audio, freq_min, freq_max, sync_min, max_cand)
+        .flat()
+        .decode()
+        .results
+}
+
+/// Local shim matching the pre-#191 `ft4::decode::decode_frame_with_options`.
+fn decode_frame_with_options(
+    audio: &[i16],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+) -> Vec<DecodeResult> {
+    let mut req =
+        DecodeRequest::<Ft4>::new(audio, freq_min, freq_max, sync_min, max_cand).depth(depth);
+    if let Some(f) = freq_hint {
+        req = req.freq_hint(f);
+    }
+    req.decode().results
+}
 
 #[allow(dead_code)]
 mod common;
@@ -183,13 +218,12 @@ fn busy_band_fading_single_pass_reference() {
     // Sanity: without the strong fading interferer at all, does the
     // weak target decode cleanly? Confirms the scenario's SNR/spacing
     // choices aren't just "too hard regardless."
-    use mfsk_core::ft4::decode::decode_frame_with_options;
     let target_msg = pack("CQ", "DL8YHR", "JO41");
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
     let mut audio = vec![0i16; SLOT_SAMPLES];
     mix_i16(&mut audio, &tone_pcm(&target_msg, 1600.0, 4_500), pad);
     let results =
-        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::BpAllOsd, 15);
+        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::FULL, 15);
     let hit = results
         .iter()
         .any(|r| r.message77() == target_msg.as_slice());
@@ -203,7 +237,6 @@ fn busy_band_fading_single_pass_reference() {
 #[test]
 #[ignore]
 fn diag_crowd_only_no_strong_interferer() {
-    use mfsk_core::ft4::decode::decode_frame_with_options;
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
     let mut audio = vec![0i16; SLOT_SAMPLES];
     let crowd = [
@@ -219,7 +252,7 @@ fn diag_crowd_only_no_strong_interferer() {
     mix_i16(&mut audio, &tone_pcm(&target_msg, 1600.0, 4_500), pad);
 
     let results =
-        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::BpAllOsd, 15);
+        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::FULL, 15);
     let hit = results
         .iter()
         .any(|r| r.message77() == target_msg.as_slice());
@@ -232,7 +265,6 @@ fn diag_crowd_only_no_strong_interferer() {
 #[test]
 #[ignore]
 fn diag_strong_only_no_crowd() {
-    use mfsk_core::ft4::decode::decode_frame_subtract;
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
     let mut audio = vec![0i16; SLOT_SAMPLES];
 
@@ -266,7 +298,6 @@ fn diag_strong_only_no_crowd() {
 #[ignore]
 fn diag_target_score_before_after_subtract() {
     use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
-    use mfsk_core::ft4::decode::decode_frame_subtract;
     use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
@@ -384,7 +415,6 @@ fn write_wav_i16(path: &std::path::Path, samples: &[i16], sample_rate: u32) {
 #[ignore]
 fn diag_seed4_why_still_missing() {
     use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
-    use mfsk_core::ft4::decode::decode_frame_subtract;
     use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 
     let (audio, target) = build_scenario(4);
@@ -426,16 +456,8 @@ fn diag_seed4_why_still_missing() {
     }
 
     // Does a second decode pass on this manually-cleaned residual find it?
-    use mfsk_core::ft4::decode::{DecodeDepth, decode_frame_with_options};
-    let pass2 = decode_frame_with_options(
-        &residual,
-        100.0,
-        3000.0,
-        0.5,
-        None,
-        DecodeDepth::BpAllOsd,
-        15,
-    );
+    let pass2 =
+        decode_frame_with_options(&residual, 100.0, 3000.0, 0.5, None, DecodeDepth::FULL, 15);
     let hit2 = pass2.iter().any(|r| r.message77() == target.as_slice());
     println!(
         "\nmanual-residual re-decode: {} results, target hit: {hit2}",

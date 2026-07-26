@@ -7,7 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use mfsk_core::fst4::decode::decode_frame;
+use mfsk_core::fst4::Fst4s60;
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
@@ -49,7 +50,9 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
     };
     let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
 
-    let decodes = decode_frame(&audio, 100.0, 3000.0, 1.0, 50);
+    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+        .decode()
+        .results;
 
     let decoded: Vec<(String, f32, f32)> = decodes
         .iter()
@@ -183,7 +186,7 @@ fn fst4_60_diagnose_golden() {
             cand,
             &fft_cache,
             &FST4_60A_DOWNSAMPLE,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             DecodeStrictness::Normal,
             &[],
             EqMode::Off,
