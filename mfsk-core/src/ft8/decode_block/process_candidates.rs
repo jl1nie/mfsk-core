@@ -208,6 +208,14 @@ fn decode_block_multipass<S: AudioSample>(
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
     let mut prev_total: usize = 0;
     let mut sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = None;
+    // Shared across every pass's per-candidate loop below (issue #199):
+    // this driver calls the per-candidate decode entry once per
+    // candidate (1-element `vec![cand]`), so without a caller-owned
+    // scratch here it would otherwise be reallocated on every
+    // iteration, defeating the reuse `process_candidates_with_ap`'s
+    // scratch pool exists for.
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     for ipass in 0..3 {
         if ipass >= 1 && all.len() == prev_total {
             // Pass 2 skips on zero from pass 1; pass 3 on zero new.
@@ -261,7 +269,7 @@ fn decode_block_multipass<S: AudioSample>(
             if fft_cache.is_none() {
                 fft_cache = Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
             }
-            let single_results = process_candidates_tuned_with_ap(
+            let single_results = process_candidates_tuned_with_ap_scratch(
                 work.as_slice(),
                 alloc::vec![cand],
                 depth,
@@ -270,6 +278,7 @@ fn decode_block_multipass<S: AudioSample>(
                 ap_hint,
                 strictness,
                 fft_cache.as_deref(),
+                &mut bp_scratch,
             );
             for r in single_results {
                 if all.iter().any(|x| x.message77 == r.message77) {
@@ -1070,6 +1079,12 @@ pub fn process_candidates_tuned<S: AudioSample>(
 /// identical to `process_candidates_tuned`. Internal helper for the
 /// `decode_block_with_ap` driver and host's redirected
 /// `process_candidate`.
+///
+/// Owns a fresh [`BpScratch`](crate::fec::ldpc::bp::BpScratch) for
+/// this call. Callers that invoke this once per candidate in a loop
+/// (e.g. `decode_block_multipass`) should use
+/// [`process_candidates_tuned_with_ap_scratch`] instead so the
+/// scratch pool is reused across iterations (issue #199).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     audio: &[S],
@@ -1080,6 +1095,41 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     fft_cache: Option<&[Complex<f32>]>,
+) -> Vec<DecodeResult> {
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
+    process_candidates_tuned_with_ap_scratch(
+        audio,
+        cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        ap_hint,
+        strictness,
+        fft_cache,
+        &mut bp_scratch,
+    )
+}
+
+/// [`process_candidates_tuned_with_ap`] with a caller-owned
+/// [`BpScratch`](crate::fec::ldpc::bp::BpScratch) — lets a per-candidate
+/// outer loop (`decode_block_multipass`) reuse the scratch pool across
+/// calls instead of paying its allocation cost on every candidate
+/// (issue #199).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
+    audio: &[S],
+    cands: Vec<RefinedCandidate>,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    ap_hint: Option<&ApHint>,
+    strictness: DecodeStrictness,
+    fft_cache: Option<&[Complex<f32>]>,
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1092,6 +1142,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         q_thresh,
         bp_max_iter,
         &mut cs_scratch,
+        bp_scratch,
         |cs, cand, mask| {
             fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, fft_cache);
         },
@@ -1185,6 +1236,8 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     bp_max_iter: u32,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     process_candidates_with_ap(
         audio,
         &cands,
@@ -1192,6 +1245,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         q_thresh,
         bp_max_iter,
         cs_scratch,
+        &mut bp_scratch,
         |cs, cand, mask| {
             // Host fft-rustfft: cd0-based 32-pt FFT cs builder (=
             // ft8b.f90:154-161). WSJT-X-faithful; out-of-band signals
@@ -1239,6 +1293,8 @@ where
     S: AudioSample,
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
 {
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
     process_candidates_with_ap(
         audio,
         &cands,
@@ -1246,6 +1302,7 @@ where
         q_thresh,
         bp_max_iter,
         cs_scratch,
+        &mut bp_scratch,
         fill,
         None,
         DecodeStrictness::Normal,
@@ -1270,6 +1327,10 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     q_thresh: u32,
     bp_max_iter: u32,
     cs_scratch: &mut [[Cmplx<f32>; 8]; 79],
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
     mut fill: F,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
@@ -1280,28 +1341,15 @@ where
     // dt is already parabolically refined by coarse_sync; no grid here.
 
     let mut results: Vec<DecodeResult> = Vec::new();
-    // BP scratch pool — instantiated once per call to this function
-    // and reused across this call's `cands` × all 5 BP calls per
-    // candidate. Eliminates the ~12 KB-per-BP-call `tlsf_malloc`
-    // traffic that dominated stage-3 non-DFT cost on Core2
-    // (~50–100 ms / qso). See `mfsk_core::fec::ldpc::bp::BpScratch`.
-    //
-    // **Caveat (Gemini PR #81 review, deferred follow-up):** the
-    // host multipass driver in `decode_block_multipass` (line ~250)
-    // calls `process_candidates_tuned_with_ap` ONCE PER CANDIDATE
-    // with a 1-element `vec![cand]` per call, so this scratch is
-    // actually re-allocated on every outer-loop iteration. Lifting
-    // it up to the `decode_block_multipass` loop scope is the right
-    // fix but needs propagating the `LlrT` generic + `&mut
-    // BpScratch` through two wrapping layers
-    // (`process_candidates_tuned_with_ap` → `process_candidates_with_ap`);
-    // tracked as a separate refactor. The non-multipass callers
-    // (`process_candidates_tuned` etc., line 1031) pass multi-cand
-    // vecs so they ALREADY get the documented reuse benefit; the
-    // comment as written was misleading only for the multipass
-    // entry, not for the function itself.
-    let mut bp_scratch =
-        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
+    // BP scratch pool — caller-owned (issue #199) so it can be reused
+    // not just across this call's `cands` × all 5 BP calls per
+    // candidate, but also across an outer per-candidate loop like
+    // `decode_block_multipass`'s (which calls
+    // `process_candidates_tuned_with_ap_scratch` once per candidate
+    // with a 1-element cand list — see that function's caller for the
+    // scratch's actual lifetime). Eliminates the ~12 KB-per-BP-call
+    // `tlsf_malloc` traffic that dominated stage-3 non-DFT cost on
+    // Core2 (~50–100 ms / qso). See `mfsk_core::fec::ldpc::bp::BpScratch`.
     for (cand, cs_box, _q_block0) in cands.iter() {
         // Stage cs into the caller's scratch (typically internal DRAM
         // on Xtensa) so the LLR / BP / sync_quality hot loops below
@@ -1333,7 +1381,7 @@ where
             q,
             depth,
             bp_max_iter,
-            &mut bp_scratch,
+            bp_scratch,
             &results,
             ap_hint,
             strictness,
@@ -1369,6 +1417,12 @@ pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
 /// `qso3_busy.wav`'s Step-4 candidate count from 188 to 34 (measured)
 /// with zero recall change on any golden test, while leaving the
 /// CCIR-sweep fix fully intact.
+///
+/// **FT4/FST4 analog**: this Pass 12 blind-CQ pass is FT8's own
+/// bespoke equivalent of [`crate::msg::pipeline_ap::ap_passes`]'s
+/// `pass 7` (CQ + DX call), which FT4/FST4 reach via
+/// `msg::pipeline_ap`. Independent implementations, independently
+/// tuned — review both when adjusting either (issue #192).
 #[cfg(feature = "fft-rustfft")]
 const BLIND_CQ_MIN_NSYNC: u32 = 12;
 

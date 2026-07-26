@@ -33,6 +33,13 @@
 //! embedded builds (see its doc comment in `ft8::decode`), so this
 //! whole module is compiled out of non-`fft-rustfft` targets entirely
 //! rather than merely unreachable at runtime.
+//!
+//! **FT4/FST4 analog**: this module is FT8's bespoke OSD-fallback
+//! dispatch, reached by bypassing [`crate::core::FecCodec`] entirely
+//! (same root cause as issue #198). FT4/FST4 get their OSD escalation
+//! through [`crate::core::pipeline::osd_escalation_gates`] instead —
+//! an independent implementation, independently calibrated. Review
+//! both when tuning either (issue #192).
 
 #![cfg(feature = "fft-rustfft")]
 

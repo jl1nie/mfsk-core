@@ -149,6 +149,13 @@ impl DecodeDepth {
 /// duplicating the literals — a prior duplicated copy went stale after
 /// this function's `(12, 20)` FST4 branch landed while the copy stayed
 /// at the pre-fix `(12, 18)`.
+///
+/// **FT8 analog**: FT8 never calls this function — it has its own
+/// bespoke OSD-fallback dispatch in `ft8::decode_block::osd_strategy`
+/// (private module), reached by bypassing [`crate::core::FecCodec`]
+/// entirely (same root cause as issue #198). Independent
+/// implementation, independently calibrated — review both when
+/// tuning either (issue #192).
 pub fn osd_escalation_gates<P: Protocol>() -> (u32, u32) {
     if P::ID == super::ProtocolId::Ft4 {
         ((12 * P::N_SYNC + 10) / 21, (18 * P::N_SYNC + 10) / 21)

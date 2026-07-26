@@ -50,6 +50,11 @@ where
 /// - 7:       CQ + DX call (expected "CQ DXCALL GRID").
 /// - 8:       my-call + DX call (directed message).
 /// - 6:       DX call only (partial lock, fallback).
+///
+/// **FT8 analog for pass 7**: `ft8::decode_block::process_candidates`'s
+/// own blind-CQ `Pass 12` (gated by `BLIND_CQ_MIN_NSYNC`) is FT8's
+/// bespoke equivalent, independently implemented and tuned — review
+/// both when adjusting either (issue #192).
 pub fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
     let mut passes = Vec::new();
     if base.call1.is_some() && base.call2.is_some() {
