@@ -105,12 +105,27 @@ pub use crate::msg::ap::ApHint;
 // ────────────────────────────────────────────────────────────────────────────
 // Per-candidate decode helper (used by both inner and sniper paths)
 
+/// `BpScratch`'s LLR-scalar type, matching `decode_block`'s own
+/// `LlrT` selection (`Q11i16` under `fixed-point`, `f32` otherwise).
+#[cfg(feature = "fixed-point")]
+type LlrT = crate::core::scalar::Q11i16;
+#[cfg(not(feature = "fixed-point"))]
+type LlrT = f32;
+
 /// Decode a single sync candidate: downsample → refine → LLR → BP/OSD.
 ///
 /// `fft_cache` — pre-computed 192 000-point forward FFT of the full audio
 ///   (from [`build_fft_cache`]), shared read-only across parallel calls.
 /// `known`     — messages decoded in earlier subtract passes; prevents OSD
 ///   from running on frequencies that already have a result.
+///
+/// Owns a fresh `BpScratch` for this call — correct as the per-candidate
+/// unit of work under `#[cfg(feature = "parallel")]`'s `par_iter()`
+/// (`decode_frame_inner`, `decode_sniper_inner`), where each concurrent
+/// candidate needs its own scratch regardless. Callers with a plain
+/// sequential per-candidate loop (`sic_inner_passes_with_cache`) should
+/// use [`process_candidate_with_scratch`] instead to reuse one scratch
+/// pool across the whole loop (issue #201).
 ///
 /// Returns `Some(DecodeResult)` on the first successful decode, `None` if the
 /// candidate yields no valid message.
@@ -123,6 +138,42 @@ fn process_candidate(
     known: &[DecodeResult],
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
+) -> Option<DecodeResult> {
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
+    process_candidate_with_scratch(
+        cand,
+        audio,
+        fft_cache,
+        depth,
+        strictness,
+        known,
+        eq_mode,
+        ap_hint,
+        &mut bp_scratch,
+    )
+}
+
+/// [`process_candidate`] with a caller-owned
+/// [`BpScratch`](crate::fec::ldpc::bp::BpScratch) — lets a sequential
+/// per-candidate outer loop (`sic_inner_passes_with_cache`) reuse the
+/// scratch pool across calls instead of paying its allocation cost on
+/// every candidate (issue #201, same pattern as issue #199's fix for
+/// `decode_block_multipass`).
+#[allow(clippy::too_many_arguments)]
+fn process_candidate_with_scratch(
+    cand: &SyncCandidate,
+    audio: &[i16],
+    fft_cache: &[num_complex::Complex<f32>],
+    depth: DecodeDepth,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    eq_mode: EqMode,
+    ap_hint: Option<&ApHint>,
+    bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<
+        crate::fec::ldpc::params::Ldpc174_91Params,
+        LlrT,
+    >,
 ) -> Option<DecodeResult> {
     let _ = strictness; // used inside try_decode via the inner
     // Use `downsample_cached` directly so the FT8 wrapper's
@@ -226,21 +277,8 @@ fn process_candidate(
     // host's outer prelude (downsample → fine_refine_3stage →
     // symbol_spectra → nsync gate → sync_cv → EqMode cs choice)
     // stays here; only the per-candidate decode body delegates.
-    let try_decode =
+    let mut try_decode =
         |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79], _use_ap: bool| -> Option<DecodeResult> {
-            // BpScratch must be parameterised on the same LlrT the
-            // inner uses. decode_block defines `type LlrT = Q11i16`
-            // under `feature = "fixed-point"`, `f32` otherwise — match.
-            #[cfg(feature = "fixed-point")]
-            let mut bp_scratch = crate::fec::ldpc::bp::BpScratch::<
-                crate::fec::ldpc::params::Ldpc174_91Params,
-                crate::core::scalar::Q11i16,
-            >::new();
-            #[cfg(not(feature = "fixed-point"))]
-            let mut bp_scratch = crate::fec::ldpc::bp::BpScratch::<
-                crate::fec::ldpc::params::Ldpc174_91Params,
-                f32,
-            >::new();
             crate::ft8::decode_block::process_one_candidate_inner(
                 cs,
                 &refined,
@@ -248,7 +286,7 @@ fn process_candidate(
                 nsync,
                 depth,
                 BP_MAX_ITER,
-                &mut bp_scratch,
+                bp_scratch,
                 known,
                 ap_hint,
                 strictness,
@@ -467,6 +505,15 @@ fn sic_inner_passes_with_cache(
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
 
+    // Shared across every pass's per-candidate loop below (issue #201,
+    // same pattern as issue #199's `decode_block_multipass` fix): this
+    // is always a plain sequential loop (no `#[cfg(feature = "parallel")]`
+    // branch here, unlike `decode_frame_inner`/`decode_sniper_inner`), so
+    // a single caller-owned scratch pool can be reused across every
+    // candidate in every pass instead of reallocating per candidate.
+    let mut bp_scratch =
+        crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
+
     let mut prev_total: usize = 0;
     for ipass in 0..3 {
         if ipass >= 1 && all_results.len() == prev_total {
@@ -493,8 +540,16 @@ fn sic_inner_passes_with_cache(
             pass0_cache = Some(fft_cache.clone());
         }
         for cand in &candidates {
-            let r = match process_candidate(
-                cand, residual, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
+            let r = match process_candidate_with_scratch(
+                cand,
+                residual,
+                &fft_cache,
+                depth,
+                strictness,
+                known,
+                eq_mode,
+                ap_hint,
+                &mut bp_scratch,
             ) {
                 Some(r) => r,
                 None => continue,
