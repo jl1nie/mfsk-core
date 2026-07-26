@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
+use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness, LlrEffort};
 use super::super::llr::sync_quality;
 use super::super::message::unpack77;
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER, LDPC_N, NSPS, NTONES};
@@ -287,38 +287,6 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache = None; // `work` changed — cache is stale.
                 all.push(r);
             }
-        }
-    }
-
-    // Issue #117: auto-AP iaptype-2 rescue. After the 3-pass driver
-    // settles, take the callsigns we already decoded in this slot
-    // and feed them back as AP mycall candidates against a fresh
-    // coarse-sync pass. Recovers weak signals like K1BZM DK8NE @244 Hz
-    // -19 dB on `qso3_busy.wav` whose 28-bit caller-callsign
-    // constraint brings BP into convergence but which no operator-
-    // supplied AP context exists to seed.
-    //
-    // Gated to `BpAllOsd` host research config inside
-    // `auto_ap_strategy::run` — embedded ship (`BpAll` +
-    // fixed-point) returns an empty vec without doing any work.
-    {
-        let auto_ap_decodes = super::auto_ap_strategy::run(
-            audio,
-            freq_min,
-            freq_max,
-            sync_min,
-            max_cand,
-            &all,
-            depth,
-            bp_max_iter,
-            strictness,
-        );
-        for r in auto_ap_decodes {
-            if all.iter().any(|x| x.message77 == r.message77) {
-                continue;
-            }
-            crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
-            all.push(r);
         }
     }
 
@@ -1131,44 +1099,6 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     )
 }
 
-/// Slice-borrow variant of [`process_candidates_tuned_with_ap`].
-/// Lets a caller (e.g. auto-AP) reuse the same `RefinedCandidate`
-/// values across multiple AP-hint iterations without per-call
-/// `Vec::clone` + `Box::new` allocation churn.
-///
-/// Only used by `auto_ap_strategy` (fft-rustfft host research path);
-/// gated to match.
-#[cfg(feature = "fft-rustfft")]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
-    audio: &[S],
-    cands: &[RefinedCandidate],
-    depth: DecodeDepth,
-    q_thresh: u32,
-    bp_max_iter: u32,
-    ap_hint: Option<&ApHint>,
-    strictness: DecodeStrictness,
-    fft_cache: Option<&[Complex<f32>]>,
-) -> Vec<DecodeResult> {
-    let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
-        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
-            .try_into()
-            .unwrap();
-    process_candidates_with_ap(
-        audio,
-        cands,
-        depth,
-        q_thresh,
-        bp_max_iter,
-        &mut cs_scratch,
-        |cs, cand, mask| {
-            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, fft_cache);
-        },
-        ap_hint,
-        strictness,
-    )
-}
-
 /// Variant of [`process_candidates`] used by embedded fixed-point
 /// callers.
 ///
@@ -1420,6 +1350,27 @@ where
 /// reject above this and fall through to the next BP variant.
 pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
 
+/// Minimum `sync_quality` (nsync, 0..=21) required to attempt the
+/// always-on blind-CQ AP pass (Step 4 "Pass 12", issue #190). Real
+/// WSJT-X's `sync8`'s own `syncmin` pre-filter keeps the candidate
+/// count that ever reaches `ft8b`'s (always-on, no `ap_hint` needed)
+/// iaptype-1 pass much smaller than mfsk-core's own coarse-sync +
+/// wide `max_cand` lets through; without an equivalent filter here,
+/// `decode_frame_subtract_staged`'s 3-checkpoint scan of
+/// `qso3_busy.wav` sends 188 candidates through this pass (measured),
+/// nearly all of them (140/188) sitting at nsync 7-9 — and **none**
+/// of them, at any nsync value observed on that file, actually
+/// produced a decode via this pass (all 22 decodes came from earlier
+/// steps). The 3 trials issue #190 traced this fix against
+/// (`ccir_moderate_m19_{01,05,14}.wav`) needed nsync 14/16/18 to
+/// succeed. Gating at 12 — comfortably below that observed floor,
+/// comfortably above the noise-dominated 7-9 cluster — cuts
+/// `qso3_busy.wav`'s Step-4 candidate count from 188 to 34 (measured)
+/// with zero recall change on any golden test, while leaving the
+/// CCIR-sweep fix fully intact.
+#[cfg(feature = "fft-rustfft")]
+const BLIND_CQ_MIN_NSYNC: u32 = 12;
+
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
 /// and AP iaptype loop on a *fully-filled* `cs_scratch`. Shared
 /// between the embedded `process_candidates_with` driver (above) and
@@ -1501,12 +1452,14 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // Order chosen by ascending compute cost — same number of BP
     // calls as the old variant loop in the worst case, far fewer
     // in the typical case where any earlier variant decodes.
-    // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only);
-    // `b` and `c` add nsym=2 / nsym=3 LLR work on top of the BP.
-    let (run_d, run_b, run_c) = match depth {
-        DecodeDepth::BpAll | DecodeDepth::BpAllOsd => (true, true, true),
-        DecodeDepth::BpAllNoNsym3 => (true, true, false),
-        DecodeDepth::BpVariantsAd => (true, false, false),
+    // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only) and
+    // unconditional — every `LlrEffort` tier ran it even before this
+    // struct existed, so there was never a real third state here.
+    // `b`/`c` add nsym=2 / nsym=3 LLR work on top of the BP.
+    let run_d = true;
+    let (run_b, run_c) = match depth.llr_effort {
+        LlrEffort::Minimal => (false, false),
+        LlrEffort::Full => (true, true),
     };
 
     if accepted.is_none() && run_d {
@@ -1536,10 +1489,10 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         }
         llrb_arr = Some(arr);
     }
-    // Variant c: lazy nsym=3 (the expensive one). Gated to the
-    // host-default depths — `BpAllNoNsym3` / `BpVariantsAd` skip it
-    // as the embedded post-SlotEnd dominant cost (~5× variant `b`)
-    // on busy-band reference WAVs (see DecodeDepth doc). Same
+    // Variant c: lazy nsym=3 (the expensive one). Gated to
+    // `LlrEffort::Full` — `LlrEffort::Minimal` skips it as the
+    // embedded post-SlotEnd dominant cost (~5× variant `b`) on
+    // busy-band reference WAVs (see `LlrEffort`'s doc comment). Same
     // `Option`-hoist (and `fft-rustfft`-only readback) as `llrb_arr`
     // above, for the same reason.
     let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
@@ -1579,7 +1532,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // couldn't see.
     #[cfg(feature = "fft-rustfft")]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q > 6 {
+        if accepted.is_none() && depth.osd && q > 6 {
             #[cfg(not(feature = "fixed-point"))]
             {
                 match (llrb_arr, llrc_arr) {
@@ -1589,8 +1542,8 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                         llrc,
                         llrd: llr_a_fast.llrd,
                     }),
-                    // Defensive fallback — shouldn't happen for
-                    // `BpAllOsd` (see reasoning above), but a fresh
+                    // Defensive fallback — shouldn't happen when
+                    // `depth.osd` (see reasoning above), but a fresh
                     // compute is still correct if it ever does.
                     _ => Some(super::super::llr::compute_llr(cs_scratch)),
                 }
@@ -1608,19 +1561,48 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     #[cfg(not(feature = "fft-rustfft"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = None;
 
-    // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
+    // Step 3: OSD fallback (sync_quality gated; only when `depth.osd`).
     // The actual dispatch — including the WSJT-X-faithfulness
     // deviation #63 tracks restoring — lives in `super::osd_strategy`
     // so #63 can patch it without touching the rest of this function.
+    // Host-only: `osd_strategy` itself is `#[cfg(feature =
+    // "fft-rustfft")]`-gated (`DecodeDepth::osd` is a no-op on
+    // embedded — see its doc comment in `ft8::decode`), so the call
+    // is gated the same way here rather than relying on `depth.osd`
+    // alone to keep it unreachable.
+    #[cfg(feature = "fft-rustfft")]
     if accepted.is_none() {
         accepted = super::osd_strategy::try_fallback(cs_scratch, prefetched_llr.as_ref(), depth, q);
     }
 
     // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).
     // Mirrors WSJT-X ft8b.f90 ipass 5..12 — runs only if Steps 1-3 all
-    // failed and the caller supplied an `ap_hint`. Embedded fixed-point
-    // builds always pass `ap_hint = None` so this entire block
-    // constant-folds away.
+    // failed. Embedded fixed-point builds always pass `ap_hint = None`
+    // and never reach here (no `fft-rustfft`), so this block is a
+    // host-only cost.
+    //
+    // Pass 12 (blind CQ, WSJT-X iaptype 1) always runs, independent of
+    // `ap_hint` — this is a faithful port, not an mfsk-core extension:
+    // `ft8b.f90`'s `naptypes(0,1:4)=(1,2,0,0)` tries iaptype=1 for
+    // *every* idle-state (`nQSOProgress=0`) candidate, using the fixed
+    // 29-bit "CQ" callsign pattern (`mcq`) as its AP prior — no
+    // operator-supplied mycall/hiscall needed, unlike iaptype≥2. Real
+    // `jt9 -8 -d3` (`lib/jt9.f90:302`, `lft8apon=.true.` hardcoded in
+    // the CLI tool) always includes this pass; prior to this fix,
+    // mfsk-core's equivalent only fired when the *caller* supplied an
+    // `ap_hint`, so a plain blind `decode_frame` call (`ap_hint: None`,
+    // e.g. `tests/ft8_sweep.rs`'s SNR-crossing measurement) never
+    // attempted it. Traced directly against a real jt9 build on the 3
+    // `ccir_moderate_m19_{01,05,14}.wav` trials from issue #190: nsync
+    // matches jt9 almost exactly (14/16/18 vs jt9's own 14/16/18) and
+    // ipass 1-4 (blind BP/OSD) fail identically on both sides — the
+    // decode only succeeds via jt9's ipass 5 (iaptype=1, nharderrors
+    // 27-35, well above the blind BP/OSD ceiling but within
+    // `decode174_91`'s `nharderrors.le.36` AP acceptance). The
+    // CCIR-moderate/poor sensitivity gap issue #190 measured is this
+    // missing pass, not a numerical LLR/sync precision deficiency —
+    // AWGN/CCIR-good were unaffected because blind decode alone already
+    // clears those (higher-SNR) thresholds.
     //
     // Iaptype priority (deepest-first, mirroring decode.rs:634-684):
     //   9/10/11 (call1+call2+RRR/RR73/73 → full 77-bit lock)
@@ -1630,9 +1612,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     //   5 (mycall only → ~32 bits, WSJT-X iaptype 2)
     //   12 (blind CQ → always tried last, WSJT-X iaptype 1)
     #[cfg(feature = "fft-rustfft")]
-    if accepted.is_none()
-        && let Some(ap) = ap_hint
-    {
+    if accepted.is_none() {
         // Reuse the pre-computed LLR from above if it ran; otherwise
         // compute fresh. The unwrap_or_else only fires when the
         // pre-compute gate was `false` (BpAll with no OSD) but AP
@@ -1653,7 +1633,9 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         ];
 
         let mut ap_passes: alloc::vec::Vec<(ApHint, u8)> = alloc::vec::Vec::new();
-        if ap.has_info() {
+        if let Some(ap) = ap_hint
+            && ap.has_info()
+        {
             if ap.call1.is_some() && ap.call2.is_some() {
                 for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
                     let ap_full = ap.clone().with_report(rpt);
@@ -1676,8 +1658,14 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                 ap_passes.push((ap5, 5));
             }
         }
-        // Pass 12: blind-CQ (WSJT-X iaptype 1) — always tried.
-        ap_passes.push((ApHint::new().with_call1("CQ"), 12));
+        // Pass 12: blind-CQ (WSJT-X iaptype 1) — tried regardless of
+        // `ap_hint` (see the module comment above), gated on nsync to
+        // bound the cost of scanning it over every failing candidate
+        // in a busy-band multipass decode (see `BLIND_CQ_MIN_NSYNC`'s
+        // doc comment).
+        if q >= BLIND_CQ_MIN_NSYNC {
+            ap_passes.push((ApHint::new().with_call1("CQ"), 12));
+        }
 
         'ap_outer: for (ap_cfg, pass_id) in &ap_passes {
             let (ap_mask, ap_llr_override) = ap_cfg.build_ap(apmag);
@@ -1728,8 +1716,8 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                     accepted = Some((bp, *pass_id));
                     break 'ap_outer;
                 }
-                // AP + OSD-Deep fallback (BpAllOsd only)
-                if depth == DecodeDepth::BpAllOsd
+                // AP + OSD-Deep fallback (`depth.osd` only)
+                if depth.osd
                     && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
                     && validate(osd.message77, osd.hard_errors)
                 {

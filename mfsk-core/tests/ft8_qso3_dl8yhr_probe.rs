@@ -1,7 +1,7 @@
 //! One-off probe: `CQ DX DL8YHR JO41` @2606 Hz, found by WSJT-X's `jt9
 //! -d3` (Deep) on `qso3_busy.wav` but missed by
 //! `mfsk_core::ft8::decode::decode_frame_subtract` (AP-off, 200-3000 Hz,
-//! `DecodeDepth::BpAllOsd`). Unlike the DK8NE/WA2FZW probes, this is a
+//! `DecodeDepth::FULL`). Unlike the DK8NE/WA2FZW probes, this is a
 //! `CQ` message — there is no plausible AP call1/call2 context to try,
 //! since it isn't addressed to anyone. So the only questions are:
 //! (a) does coarse_sync even surface a candidate near 2606 Hz, and
@@ -71,7 +71,7 @@ fn probe_dl8yhr_decode_sweep() {
             3000.0,
             dt_tol,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             max_cand,
         );
         let hit_single = single
@@ -85,7 +85,7 @@ fn probe_dl8yhr_decode_sweep() {
             3000.0,
             dt_tol,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             max_cand,
             DecodeStrictness::Normal,
         );
@@ -100,7 +100,7 @@ fn probe_dl8yhr_decode_sweep() {
             3000.0,
             dt_tol,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             max_cand,
             DecodeStrictness::Deep,
         );

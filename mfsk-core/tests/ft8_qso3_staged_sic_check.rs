@@ -97,7 +97,7 @@ fn staged_sic_matches_flat_pass_golden_floor() {
         3000.0,
         0.8,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         200,
         DecodeStrictness::Normal,
     );

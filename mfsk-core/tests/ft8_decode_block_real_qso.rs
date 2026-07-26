@@ -1,5 +1,5 @@
 //! Hard-assertion regression: embedded ship config (`decode_block`,
-//! `DecodeDepth::BpAll`, `max_cand=15`, `sync_min=1.3` — matches
+//! `DecodeDepth::BP_ONLY`, `max_cand=15`, `sync_min=1.3` — matches
 //! `ft8_qso3_apoff_recall.rs`'s ship config) vs the host wide-band
 //! reference (`decode_frame`, `BpAllOsd`, `max_cand=200`) on real
 //! on-air recordings.
@@ -68,12 +68,12 @@ fn decode_block_matches_decode_frame_on_real_qso() {
         let slot = load_wav_i16(Path::new(e.path));
 
         let truth: BTreeSet<String> =
-            decode_frame(&slot, 100.0, 3000.0, 1.0, None, DecodeDepth::BpAllOsd, 200)
+            decode_frame(&slot, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 200)
                 .iter()
                 .filter_map(|x| unpack77(&x.message77))
                 .collect();
         let ship: BTreeSet<String> =
-            decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BpAll, 15)
+            decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BP_ONLY, 15)
                 .iter()
                 .filter_map(|x| unpack77(&x.message77))
                 .collect();

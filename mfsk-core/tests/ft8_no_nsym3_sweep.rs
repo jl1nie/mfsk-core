@@ -1,11 +1,18 @@
-//! BpAll vs BpAllNoNsym3 vs BpAllOsd recall + wall-clock sweep
-//! across the in-repo FT8 corpus.
+//! `DecodeDepth::BP_ONLY` (full `LlrEffort`) vs `DecodeDepth::EMBEDDED`
+//! (`LlrEffort::Minimal`) recall + wall-clock sweep across the in-repo
+//! FT8 corpus.
 //!
-//! Built to validate the embedded `BpAllNoNsym3` ship config (PR
-//! #123, 2026-05-21) — `qso3_busy` alone showed variant-c contributing
-//! no decodes, but that's a single strong-signal corpus. Run this
-//! sweep on the on-air recordings (qso1, qso2, 191111_*) to confirm
-//! variant-c doesn't rescue any decodes those other slots need.
+//! Built to validate the embedded ship config (PR #123, 2026-05-21;
+//! renamed/collapsed in the 0.8.0 `DecodeDepth` redesign, issue #182
+//! follow-up) — `qso3_busy` alone showed variants b/c contributing no
+//! decodes, but that's a single strong-signal corpus. Run this sweep
+//! on the on-air recordings (qso1, qso2, 191111_*) to confirm
+//! `LlrEffort::Minimal` doesn't lose any decodes those other slots
+//! need. This is the permanent regression guard for the 0.8.0
+//! decision to collapse the old 3-tier `BpAll`/`BpAllNoNsym3`/
+//! `BpVariantsAd` scheme down to 2 (`LlrEffort::{Minimal, Full}`) —
+//! the removed middle tier had zero real callers and this sweep's own
+//! history never showed it earning its keep.
 //!
 //! Run:
 //! ```sh
@@ -40,27 +47,25 @@ const WAVS: &[(&str, &str)] = &[
 ];
 
 #[test]
-#[ignore = "BpAllNoNsym3 vs BpAll sweep; run with --include-ignored"]
+#[ignore = "BP_ONLY vs EMBEDDED vs FULL sweep; run with --include-ignored"]
 fn no_nsym3_recall_sweep() {
-    println!("\n=== BpAll vs BpAllNoNsym3 vs BpAllOsd recall + wall-clock ===\n");
+    println!("\n=== DecodeDepth::BP_ONLY vs EMBEDDED vs FULL recall + wall-clock ===\n");
     println!(
-        "Truth = BpAllOsd, max_cand=200 (widest host search).\n\
+        "Truth = FULL, max_cand=200 (widest host search).\n\
          Each cell = decodes ∩ truth  /  wall-clock ms.\n"
     );
 
     println!(
-        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
-        "WAV", "tru", "BpAll/15", "NoNsym3/15", "VariantsAd/15", "BpAllOsd/15"
+        "  {:<38}  {:>4}  {:<12}  {:<12}  {:<12}",
+        "WAV", "tru", "BP_ONLY/15", "EMBEDDED/15", "FULL/15"
     );
-    println!("  {}", "─".repeat(96));
+    println!("  {}", "─".repeat(88));
 
     let mut sum_tru = 0usize;
     let mut sum_bp = 0usize;
-    let mut sum_nn = 0usize;
     let mut sum_ad = 0usize;
     let mut sum_osd = 0usize;
     let mut sum_bp_ms = 0u128;
-    let mut sum_nn_ms = 0u128;
     let mut sum_ad_ms = 0u128;
     let mut sum_osd_ms = 0u128;
 
@@ -71,16 +76,15 @@ fn no_nsym3_recall_sweep() {
         };
 
         let truth: BTreeSet<String> =
-            decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::BpAllOsd, 200)
+            decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::FULL, 200)
                 .iter()
                 .filter_map(|x| unpack77(&x.message77))
                 .collect();
 
         let configs: &[(&str, DecodeDepth)] = &[
-            ("BpAll", DecodeDepth::BpAll),
-            ("NoNsym3", DecodeDepth::BpAllNoNsym3),
-            ("VariantsAd", DecodeDepth::BpVariantsAd),
-            ("BpAllOsd", DecodeDepth::BpAllOsd),
+            ("BP_ONLY", DecodeDepth::BP_ONLY),
+            ("EMBEDDED", DecodeDepth::EMBEDDED),
+            ("FULL", DecodeDepth::FULL),
         ];
 
         let mut cells: Vec<String> = Vec::new();
@@ -100,75 +104,69 @@ fn no_nsym3_recall_sweep() {
         }
 
         println!(
-            "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
+            "  {:<38}  {:>4}  {:<12}  {:<12}  {:<12}",
             label,
             truth.len(),
             cells[0],
             cells[1],
             cells[2],
-            cells[3],
         );
 
         sum_tru += truth.len();
         sum_bp += hits[0];
-        sum_nn += hits[1];
-        sum_ad += hits[2];
-        sum_osd += hits[3];
+        sum_ad += hits[1];
+        sum_osd += hits[2];
         sum_bp_ms += mss[0];
-        sum_nn_ms += mss[1];
-        sum_ad_ms += mss[2];
-        sum_osd_ms += mss[3];
+        sum_ad_ms += mss[1];
+        sum_osd_ms += mss[2];
 
-        // Per-WAV recall delta callout: BpAll vs aggressive variants.
-        if hits[0] != hits[1] || hits[0] != hits[2] {
+        // Per-WAV recall delta callout: BP_ONLY (full LLR effort) vs
+        // EMBEDDED (Minimal) — the comparison this sweep exists to
+        // guard.
+        if hits[0] != hits[1] {
             println!(
-                "    ⚠ NoNsym3 recall delta: BpAll={} vs NoNsym3={} (-{})",
+                "    ⚠ EMBEDDED recall delta: BP_ONLY={} vs EMBEDDED={} (-{})",
                 hits[0],
                 hits[1],
                 hits[0] as i32 - hits[1] as i32
             );
             let bp_set: BTreeSet<String> =
-                decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::BpAll, 15)
+                decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 15)
                     .iter()
                     .filter_map(|x| unpack77(&x.message77))
                     .collect();
-            let nn_set: BTreeSet<String> =
-                decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::BpAllNoNsym3, 15)
+            let ad_set: BTreeSet<String> =
+                decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::EMBEDDED, 15)
                     .iter()
                     .filter_map(|x| unpack77(&x.message77))
                     .collect();
-            let lost: Vec<&String> = bp_set.difference(&nn_set).collect();
-            let gained: Vec<&String> = nn_set.difference(&bp_set).collect();
+            let lost: Vec<&String> = bp_set.difference(&ad_set).collect();
+            let gained: Vec<&String> = ad_set.difference(&bp_set).collect();
             if !lost.is_empty() {
-                println!("    NoNsym3 lost  : {:?}", lost);
+                println!("    EMBEDDED lost  : {:?}", lost);
             }
             if !gained.is_empty() {
-                println!("    NoNsym3 gained: {:?}", gained);
+                println!("    EMBEDDED gained: {:?}", gained);
             }
         }
     }
 
-    println!("  {}", "─".repeat(96));
+    println!("  {}", "─".repeat(88));
     println!(
-        "  {:<38}  {:>4}  {:<10}  {:<10}  {:<10}  {:<10}",
+        "  {:<38}  {:>4}  {:<12}  {:<12}  {:<12}",
         "TOTAL",
         sum_tru,
         format!("{sum_bp:>2}/{sum_bp_ms:<6}"),
-        format!("{sum_nn:>2}/{sum_nn_ms:<6}"),
         format!("{sum_ad:>2}/{sum_ad_ms:<6}"),
         format!("{sum_osd:>2}/{sum_osd_ms:<6}"),
     );
     println!();
     println!(
-        "  NoNsym3    : {sum_nn}/{sum_tru} ({:.1}%) in {sum_nn_ms}ms",
-        100.0 * sum_nn as f32 / sum_tru.max(1) as f32
-    );
-    println!(
-        "  VariantsAd : {sum_ad}/{sum_tru} ({:.1}%) in {sum_ad_ms}ms  ← also drops variant b",
+        "  EMBEDDED : {sum_ad}/{sum_tru} ({:.1}%) in {sum_ad_ms}ms  ← LlrEffort::Minimal (a+d only)",
         100.0 * sum_ad as f32 / sum_tru.max(1) as f32
     );
     println!(
-        "  BpAll      : {sum_bp}/{sum_tru} ({:.1}%) in {sum_bp_ms}ms",
+        "  BP_ONLY  : {sum_bp}/{sum_tru} ({:.1}%) in {sum_bp_ms}ms  ← LlrEffort::Full, no OSD",
         100.0 * sum_bp as f32 / sum_tru.max(1) as f32
     );
 }

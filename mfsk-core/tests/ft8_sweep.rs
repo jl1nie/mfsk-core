@@ -66,7 +66,7 @@ const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 fn decode_wav_ft8(audio: &[i16]) -> bool {
     use mfsk_core::ft8::decode::DecodeDepth;
-    mfsk_core::ft8::decode::decode_frame(audio, 100.0, 3000.0, 0.8, None, DecodeDepth::BpAllOsd, 50)
+    mfsk_core::ft8::decode::decode_frame(audio, 100.0, 3000.0, 0.8, None, DecodeDepth::FULL, 50)
         .iter()
         .any(|d| {
             unpack77(&d.message77).as_deref() == Some(GOLDEN_MSG)

@@ -191,9 +191,9 @@ fn qso3_apoff_meets_jtdx_recall_floor() {
     // enumeration is not realistic on Xtensa LX7), max_cand=15,
     // sync_min=1.3 = ndepth=3 default. Real-on-hardware regression.
     #[cfg(not(feature = "fixed-point"))]
-    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 0.8, DecodeDepth::BpAllOsd, 60);
+    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 0.8, DecodeDepth::FULL, 60);
     #[cfg(feature = "fixed-point")]
-    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BpAll, 15);
+    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BP_ONLY, 15);
 
     let mut by_msg: std::collections::HashMap<String, &mfsk_core::ft8::decode::DecodeResult> =
         std::collections::HashMap::new();

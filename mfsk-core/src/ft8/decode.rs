@@ -30,41 +30,90 @@ use super::{
 /// consumed by [`decode_frame_subtract_with_known`] (Phase 2).
 pub type FftCache = Vec<num_complex::Complex<f32>>;
 
-/// Decoding depth: which LLR sets and passes to attempt.
+/// How much extra work the BP staircase does per candidate before
+/// falling back to more expensive strategies. The only axis embedded
+/// targets ever configure — see [`DecodeDepth::osd`] for the
+/// (host-only) OSD escalation axis.
+///
+/// Each bit's log-likelihood ratio (LLR) can be estimated by looking
+/// at just its own FT8 symbol, or jointly across 2 or 3 *adjacent*
+/// symbols — a wider joint estimate is a more reliable LLR (correlated
+/// symbol-decision errors partially cancel) but costs proportionally
+/// more to compute, and BP is tried again from scratch each time a
+/// wider estimate is added. `LlrEffort` picks how wide this staircase
+/// climbs before giving up on a candidate. (If cross-referencing
+/// WSJT-X's `ft8b.f90`: its own internal labels for these are
+/// `llra`/`llrb`/`llrc`/`llrd` — 1-symbol, 2-symbol, 3-symbol, and a
+/// second cheap 1-symbol variant respectively; `LlrEffort` doesn't
+/// need that vocabulary to use.)
+///
+/// Redesigned in 0.8.0 (issue #182 follow-up) from a 3-tier scheme
+/// (a middle tier between `Minimal`/`Full` that added the 2-symbol
+/// estimate but not the 3-symbol one) down to 2: the middle tier had
+/// zero real callers outside one dedicated sweep test, and both that
+/// test's history and a fresh host measurement (`qso3_busy.wav`,
+/// single-threaded) showed the 3-symbol estimate contributes
+/// +5.5ms/0 extra decodes over the 2-symbol one alone, and the
+/// 2-symbol estimate itself contributes +2.5ms/0 extra decodes over
+/// the two 1-symbol ones — not enough signal to justify a third named
+/// tier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlrEffort {
+    /// Only the two cheap 1-symbol LLR estimates (one from the
+    /// candidate's initial Step-1 pass, one a free bit-normalised
+    /// variant reusing that same pass's work — no extra symbol-spectra
+    /// computation). ESP32 ship default — the 2-symbol/3-symbol
+    /// estimates empirically add zero extra decodes on power-budgeted
+    /// busy-band references (S3 log 2026-05-21; host re-measurement
+    /// 2026-07-26: +8ms, 0 extra decodes on `qso3_busy.wav`). Every
+    /// decode lands at `pass=0` (the initial 1-symbol estimate) on
+    /// these references, so the wider joint estimates are pure
+    /// overhead here.
+    Minimal,
+    /// All four LLR estimates, up to the 3-symbol joint one. Host
+    /// default — full recall.
+    Full,
+}
+
+/// Decode cost/recall configuration: [`LlrEffort`] plus whether to
+/// escalate to OSD when the BP staircase fails.
+///
+/// `osd` is host-only: the OSD dispatch code
+/// ([`super::decode_block`]'s `osd_strategy` module) is compiled out
+/// of non-`fft-rustfft` builds entirely, so `osd: true` is a silent
+/// no-op on embedded rather than a footgun. OSD has never shipped on
+/// an ESP32 target and there is no plan to add it there — this isn't
+/// a current tuning choice, it's a permanent architectural boundary.
 ///
 /// `Bp` (single-metric, no all-variants pass) was retired in 0.7.0 —
 /// no production consumer was found by issue #74, and the cheapest
 /// staircase rung wasn't a power-budget escape hatch (embedded ship
-/// runs `BpAll` end-to-end inside the slot budget already).
+/// runs the full LLR-variant staircase end-to-end inside the slot
+/// budget already).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DecodeDepth {
-    /// BP with all four metric variants (a, b, c, d).
-    BpAll,
-    /// BP (all four variants) then OSD order-1 fallback when BP fails.
-    BpAllOsd,
-    /// BP across `a`, `d`, `b` only — skips the heavy nsym=3 `c`
-    /// variant. Used by the embedded port to bypass the
-    /// `compute_llr_partial(3)` call (~5× cost of variant `b`) for
-    /// failed candidates. Empirically (S3 qso3_busy log,
-    /// 2026-05-21) every decode lands at `pass=0` (variant `a`) on
-    /// busy-band reference WAVs, so `c` contributes no extra
-    /// decodes and is pure overhead on a power-budgeted target.
-    ///
-    /// The lighter variants `d` (nsym=1 bit-normalised, free reuse
-    /// of step-1 LLR) and `b` (nsym=2, ~1.5× variant `a` cost) are
-    /// retained as safety nets for marginal SNR / fading cases.
-    BpAllNoNsym3,
-    /// BP across `a` (Step 1) and `d` (free-reuse bit-normalised
-    /// nsym=1) only — drops both the nsym=2 `b` and nsym=3 `c`
-    /// LLR computations + their BP attempts. Host A/B sweep
-    /// (`ft8_no_nsym3_sweep`, 5 in-repo WAVs) showed `b` and `c`
-    /// contribute zero extra decodes vs `a` alone; the lighter
-    /// `BpAllNoNsym3` only dropped `c`, this one drops `b` too.
-    ///
-    /// Embedded ship target — on a power-budgeted MCU each failed
-    /// candidate now costs only the Step-1 BP plus a free-LLR
-    /// `d` re-BP (~2×T1 instead of ~8.5×T1 under `BpAll`).
-    BpVariantsAd,
+pub struct DecodeDepth {
+    pub llr_effort: LlrEffort,
+    pub osd: bool,
+}
+
+impl DecodeDepth {
+    /// ESP32 ship config: cheapest LLR effort, OSD off (was
+    /// `BpVariantsAd`).
+    pub const EMBEDDED: Self = Self {
+        llr_effort: LlrEffort::Minimal,
+        osd: false,
+    };
+    /// Full LLR effort, no OSD — host "fast" baseline (was `BpAll`).
+    pub const BP_ONLY: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: false,
+    };
+    /// Full LLR effort + OSD fallback — host default (was
+    /// `BpAllOsd`).
+    pub const FULL: Self = Self {
+        llr_effort: LlrEffort::Full,
+        osd: true,
+    };
 }
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.
@@ -359,7 +408,7 @@ pub fn decode_frame(
 /// let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
 /// let results = decode_frame_with_ap(
 ///     &audio, 100.0, 3000.0, 1.0, None,
-///     DecodeDepth::BpAllOsd, 50, Some(&ap),
+///     DecodeDepth::FULL, 50, Some(&ap),
 /// );
 /// ```
 ///
@@ -822,126 +871,6 @@ pub fn decode_frame_subtract_flat_with_ap(
         &[],
         ap_hint,
     )
-}
-
-/// [`decode_frame_subtract`] plus a final auto-AP rescue pass: harvest
-/// caller callsigns from the blind decodes and retry coarse_sync
-/// candidates that didn't decode blind, using each harvested callsign
-/// as an AP `mycall` hint. Recovers signals too weak for blind BP/OSD
-/// but not too weak to sync — originally motivated by `K1BZM DK8NE
-/// -10` (-19 dB) on `qso3_busy.wav` (issue #180 follow-up), which at
-/// the time was unrecoverable via this crate's own blind decode
-/// without knowing `K1BZM` is a plausible caller.
-///
-/// **Deliberately not wired into any default decode path — call this
-/// explicitly, opt-in only.** As of issue #182's `bp_llr_zsum` OSD fix
-/// (`decode_block/osd_strategy.rs`), this function's own motivating
-/// case decodes via blind [`decode_frame_subtract_with_ap`] alone —
-/// measured on `qso3_busy.wav`: blind-only and blind-plus-this-
-/// function now both return the same 22 decodes, so the auto-AP pass
-/// finds *zero* additional signals there while still paying its own
-/// full search cost (~0.3-0.5s single-threaded on top of blind). This
-/// doesn't mean the mechanism is dead in general — an AP-rescuable-
-/// but-zsum-OSD-unreachable signal is still conceivable — but there is
-/// no evidence for one currently, so treat this as a research/
-/// diagnostic tool rather than a default production step until a
-/// concrete case justifies its cost again.
-///
-/// **Not a port of any real jt9/WSJT-X mechanism** — this is a genuine
-/// mfsk-core-original extension, and an earlier version of this doc
-/// comment claiming it "mirrors WSJT-X's own recently-heard-callsign
-/// hash-table AP mechanism" was wrong. Checked directly against
-/// `ft8apset.f90`'s actual source: real WSJT-X only ever applies AP
-/// using the *operator-configured* `mycall`/`hiscall` (`-c`/`-x` or the
-/// GUI) and disables AP entirely — every `apsym` bit left unconstrained
-/// — the moment `mycall` isn't set (`if(len(trim(mycall12)).lt.3)
-/// return`, the subroutine's first line). There is no automatic
-/// same-slot-decode-seeded hash table. A real `jt9 -8 -d 3` run with no
-/// `-c`/`-x` therefore has AP **fully disabled**; its own `K1BZM DK8NE
-/// -10` decode is blind (`iaptype=0`), found through whatever makes
-/// jt9's own blind sync/LLR/BP pipeline more sensitive than this
-/// crate's on that one signal — a real, separate, still-open gap this
-/// function does *not* explain or close. This function reaches the
-/// same message through a different, AP-assisted route unique to
-/// mfsk-core, not by matching jt9's actual blind-decode sensitivity.
-///
-/// Deliberately *not* `decode_block::auto_ap_strategy`'s own `run` (the
-/// existing embedded-shared implementation), which widens the
-/// candidate search 4x (`max_cand.saturating_mul(4).max(200)`) to
-/// chase weak signals out of the normal ranking: ~4.8 s measured on
-/// `qso3_busy.wav`.
-///
-/// Uses `auto_ap_strategy::run_bounded` with a fixed
-/// `AUTO_AP_CAND_BUDGET` instead — deliberately decoupled from the
-/// caller's own `max_cand` (webft8/`ft8-bench` pass 200, for maximum
-/// blind recall; reusing that as the auto-AP budget too still measured
-/// ~5 s). `K1BZM DK8NE -10`'s own coarse_sync candidate ranks inside
-/// the top 60 of 1419 by score on `qso3_busy.wav` — comfortable margin
-/// below the budget below. The per-callsign retry loop inside
-/// `run_bounded` runs on Rayon (`parallel` feature) since each
-/// harvested callsign is fully independent; measured total (staged
-/// `decode_frame_subtract_with_ap` + parallel auto-AP), 24-core host:
-/// ~0.9 s. Single-threaded (`RAYON_NUM_THREADS=1`), the same call is
-/// ~1.3 s — slower than real `jt9 -8 -d 3`'s own ~1.1 s *total* file
-/// decode time, since this function does provably more search (a full
-/// per-callsign retry sweep) than jt9 does for this signal (nothing —
-/// its own blind pass already finds it). The parallel speedup is real,
-/// independent task-level parallelism (15-ish unrelated callsigns, no
-/// shared mutable state) — not a substitute for closing the blind-
-/// sensitivity gap above.
-///
-/// Only fires at `DecodeDepth::BpAllOsd` (mirrors
-/// `decode_block::auto_ap_strategy`'s own gate) and when at least one
-/// caller callsign can be harvested; otherwise reproduces
-/// [`decode_frame_subtract`] exactly.
-///
-/// `fft-rustfft` only — delegates to
-/// `decode_block::auto_ap_strategy::run_bounded`, itself gated the
-/// same way (host research config; no embedded/`fft-extern` caller
-/// has the wall-clock budget for this).
-#[cfg(feature = "fft-rustfft")]
-pub fn decode_frame_subtract_with_auto_ap(
-    audio: &[i16],
-    freq_min: f32,
-    freq_max: f32,
-    sync_min: f32,
-    depth: DecodeDepth,
-    max_cand: usize,
-    strictness: DecodeStrictness,
-) -> Vec<DecodeResult> {
-    let mut results = decode_frame_subtract_with_ap(
-        audio, freq_min, freq_max, sync_min, None, depth, max_cand, strictness, None,
-    );
-    // `run_bounded` with a fixed, cost-bounded candidate budget —
-    // deliberately *not* the caller's own `max_cand` (which webft8/
-    // ft8-bench set to 200 for maximum blind recall; reusing it here
-    // measured ~5s, still too slow). `AUTO_AP_CAND_BUDGET` is
-    // decoupled from `max_cand` because the two searches answer
-    // different questions: the blind pass wants every candidate that
-    // *might* be a real signal; auto-AP only needs candidates that
-    // already synced well enough to be worth an AP retry, and
-    // `K1BZM DK8NE -10`'s own candidate ranks inside the top 60 of
-    // 1419 by coarse_sync score on `qso3_busy.wav` — comfortable
-    // margin below this budget.
-    const AUTO_AP_CAND_BUDGET: usize = 80;
-    let rescued = crate::ft8::decode_block::auto_ap_strategy::run_bounded(
-        audio,
-        freq_min,
-        freq_max,
-        sync_min,
-        AUTO_AP_CAND_BUDGET,
-        AUTO_AP_CAND_BUDGET,
-        &results,
-        depth,
-        BP_MAX_ITER,
-        strictness,
-    );
-    for r in rescued {
-        if !results.iter().any(|x| x.message77 == r.message77) {
-            results.push(r);
-        }
-    }
-    results
 }
 
 /// Shared inner loop: up to 3 sub-passes of coarse_sync + per-candidate
@@ -1567,7 +1496,7 @@ pub fn decode_sniper_eq(
 /// ```ignore
 /// let ap = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
 /// let results = decode_sniper_ap(
-///     &audio, 1000.0, DecodeDepth::BpAllOsd, 20,
+///     &audio, 1000.0, DecodeDepth::FULL, 20,
 ///     EqMode::Local, Some(&ap),
 /// );
 /// ```
@@ -1738,7 +1667,7 @@ mod tests {
             3000.0,
             1.0,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             50,
             Some(&ap),
         );
@@ -1764,14 +1693,14 @@ mod tests {
         let len = samples.len().min(audio.len() - off);
         audio[off..off + len].copy_from_slice(&samples[..len]);
 
-        let r_legacy = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::BpAllOsd, 50);
+        let r_legacy = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 50);
         let r_ap_none = decode_frame_with_ap(
             &audio,
             100.0,
             3000.0,
             1.0,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             50,
             None,
         );
@@ -1798,7 +1727,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             DecodeStrictness::Normal,
             10,
             None,
@@ -1813,7 +1742,7 @@ mod tests {
             2800.0,
             1.0,
             Some(1500.0),
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             DecodeStrictness::Strict,
             10,
             Some(&ap),
@@ -1835,7 +1764,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             10,
             DecodeStrictness::Normal,
             None,
@@ -1848,7 +1777,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             10,
             DecodeStrictness::Normal,
             Some(&ap),
@@ -1871,7 +1800,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             10,
             DecodeStrictness::Normal,
             &known,
@@ -1886,7 +1815,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             10,
             DecodeStrictness::Normal,
             &known,
@@ -1925,7 +1854,7 @@ mod tests {
 
         // Phase 1: decode A. We need a real DecodeResult (with proper sync_cv,
         // freq_hz, dt_sec) so the SIC path can reconstruct A.
-        let phase1 = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BpAllOsd, 50);
+        let phase1 = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::FULL, 50);
         let known_results: Vec<DecodeResult> = phase1
             .iter()
             .filter(|r| r.message77 == m_known)
@@ -1971,7 +1900,7 @@ mod tests {
             2800.0,
             1.0,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             50,
             DecodeStrictness::Normal,
             &known_results,
@@ -1998,7 +1927,7 @@ mod tests {
     #[test]
     fn silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BpAll, 10);
+        let results = decode_frame(&audio, 200.0, 2800.0, 1.0, None, DecodeDepth::BP_ONLY, 10);
         assert!(results.is_empty(), "silence should decode nothing");
     }
 
@@ -2006,7 +1935,7 @@ mod tests {
     #[test]
     fn sniper_silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
-        let results = decode_sniper(&audio, 1000.0, DecodeDepth::BpAll, 10);
+        let results = decode_sniper(&audio, 1000.0, DecodeDepth::BP_ONLY, 10);
         assert!(results.is_empty());
     }
 
@@ -2033,7 +1962,7 @@ mod tests {
             .map(|&s| (s * 20000.0).clamp(-32767.0, 32767.0) as i16)
             .collect();
 
-        let results = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::BpAllOsd, 200);
+        let results = decode_frame(&audio, 100.0, 3000.0, 1.0, None, DecodeDepth::FULL, 200);
         assert!(!results.is_empty(), "should decode the signal");
         let dt = results[0].dt_sec;
         eprintln!("DT = {dt:+.3} s (expected ≈ 0.0)");
@@ -2120,7 +2049,7 @@ mod tests {
                     c,
                     &audio,
                     &fft_cache,
-                    DecodeDepth::BpAllOsd,
+                    DecodeDepth::FULL,
                     DecodeStrictness::default(),
                     &[],
                     EqMode::Off,
@@ -2197,7 +2126,7 @@ mod tests {
             3000.0,
             0.8,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             200,
             DecodeStrictness::Normal,
             None,
@@ -2775,7 +2704,7 @@ mod tests {
             3000.0,
             0.8,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             200,
             DecodeStrictness::Normal,
             None,
@@ -2940,7 +2869,7 @@ mod tests {
             3000.0,
             0.8,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             200,
             DecodeStrictness::Normal,
             None,
@@ -3099,7 +3028,7 @@ mod tests {
             3000.0,
             0.8,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             200,
             DecodeStrictness::Normal,
             None,
@@ -3259,7 +3188,7 @@ mod tests {
             3000.0,
             0.8,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             200,
             DecodeStrictness::Normal,
             None,
@@ -3393,7 +3322,7 @@ mod tests {
             3000.0,
             1.3,
             None,
-            DecodeDepth::BpAllOsd,
+            DecodeDepth::FULL,
             50,
             DecodeStrictness::Normal,
             Some(&ap),
@@ -3461,7 +3390,7 @@ mod tests {
                 3000.0,
                 0.8,
                 None,
-                DecodeDepth::BpAllOsd,
+                DecodeDepth::FULL,
                 200,
                 DecodeStrictness::Normal,
                 None,
@@ -3469,27 +3398,6 @@ mod tests {
             let elapsed = t0.elapsed();
             println!(
                 "rep={rep} blind decode_frame_subtract_with_ap: {:?}, {} decodes",
-                elapsed,
-                results.len()
-            );
-        }
-
-        // Blind + auto-AP rescue (the full production-equivalent path).
-        #[cfg(feature = "fft-rustfft")]
-        for rep in 0..3 {
-            let t0 = std::time::Instant::now();
-            let results = decode_frame_subtract_with_auto_ap(
-                &audio,
-                100.0,
-                3000.0,
-                0.8,
-                DecodeDepth::BpAllOsd,
-                200,
-                DecodeStrictness::Normal,
-            );
-            let elapsed = t0.elapsed();
-            println!(
-                "rep={rep} blind + auto-AP: {:?}, {} decodes",
                 elapsed,
                 results.len()
             );

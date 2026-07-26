@@ -83,15 +83,7 @@ fn resample_decode_48k_weak_signal() {
     let resampled = resample_to_12k(&audio_48k, 48000);
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 1);
 
-    let results = decode_frame(
-        &resampled,
-        800.0,
-        1200.0,
-        1.0,
-        None,
-        DecodeDepth::BpAllOsd,
-        50,
-    );
+    let results = decode_frame(&resampled, 800.0, 1200.0, 1.0, None, DecodeDepth::FULL, 50);
     assert!(
         !results.is_empty(),
         "resample 48k decode failed at -18 dB SNR"
@@ -110,15 +102,7 @@ fn resample_f32_decode_48k_weak_signal() {
     let resampled = resample_f32_to_12k(&audio_48k_f32, 48000);
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 1);
 
-    let results = decode_frame(
-        &resampled,
-        800.0,
-        1200.0,
-        1.0,
-        None,
-        DecodeDepth::BpAllOsd,
-        50,
-    );
+    let results = decode_frame(&resampled, 800.0, 1200.0, 1.0, None, DecodeDepth::FULL, 50);
     assert!(
         !results.is_empty(),
         "f32 resample 48k decode failed at -18 dB SNR"
@@ -136,15 +120,7 @@ fn resample_decode_44100_weak_signal() {
     let resampled = resample_to_12k(&audio_44k, 44100);
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 2);
 
-    let results = decode_frame(
-        &resampled,
-        800.0,
-        1200.0,
-        1.0,
-        None,
-        DecodeDepth::BpAllOsd,
-        50,
-    );
+    let results = decode_frame(&resampled, 800.0, 1200.0, 1.0, None, DecodeDepth::FULL, 50);
     assert!(
         !results.is_empty(),
         "resample 44100 decode failed at -18 dB SNR"

@@ -210,7 +210,7 @@ mod tests {
             1700.0,
             1.0,
             None,
-            DecodeDepth::BpAll,
+            DecodeDepth::BP_ONLY,
             50,
             DecodeStrictness::Normal,
         );

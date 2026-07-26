@@ -101,7 +101,7 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
             max_cand: rx_cfg.max_cand,
             q_thresh: rx_cfg.q_thresh,
             bp_max_iter: rx_cfg.bp_max_iter,
-            depth: DecodeDepth::BpVariantsAd,
+            depth: DecodeDepth::EMBEDDED,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &dc);
         let dual_core::SpeculativeOut {

@@ -19,7 +19,7 @@ Two kinds of numbers appear per protocol:
 
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|----------------------|--------|
-| FT8      | 7/8 (WSJT-X), 18/18 (JTDX) | AWGN ≈ −20.8 dB (WSJT-X: −20 to −21 dB) | at parity |
+| FT8      | 8/8 host full-parity (WSJT-X), 18/18 (JTDX) | AWGN ≈ −21.6 dB (WSJT-X: −20 to −21 dB) | at/above parity |
 | FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
@@ -77,8 +77,9 @@ Notes:
   reflect actual candidate density and search cost on real audio, not
   a clean-signal best case.
 - **FT8's `qso3_busy.wav` row dropped again, 0.12 s → ~0.10 s**
-  (2026-07-26), re-measured via `decode_block(&slot, 100.0, 3000.0,
-  1.3, DecodeDepth::BpVariantsAd, 15)` — the exact ship-config call
+  (2026-07-25), re-measured via `decode_block(&slot, 100.0, 3000.0,
+  1.3, DecodeDepth::EMBEDDED, 15)` (`DecodeDepth::BpVariantsAd` prior
+  to the 2026-07-26 redesign below) — the exact ship-config call
   `ft8_qso3_apoff_recall.rs`'s `qso3_apoff_meets_wsjtx_golden_floor`
   uses, matching this row's original 2026-07-25 methodology. Comes
   from `fine_refine_3stage`'s rewrite (tweaks a small 32-sample Costas
@@ -91,6 +92,15 @@ Notes:
   AP-on multipass extras — see the FT8 section below for that last
   number's own history). See `CHANGELOG.md` for the full investigation
   (issue #182 follow-up).
+- **New row's worth noting separately (2026-07-26): full WSJT-X
+  parity (8/8, not this row's 7/8) via `DecodeDepth::FULL`,
+  `sync_min=0.8`, `max_cand=60` runs `~139-148 ms`** — still
+  ~7-8× faster than real `jt9 -8 -d3`'s own ~1.1 s total file decode
+  time, just with OSD's extra cost included (and the `depth.osd`-gated
+  auto-AP bug fixed — see the FT8 section below). Not merged into this
+  table's own row since it's a different config answering a different
+  question ("fastest full parity" vs "real ship-config budget"); see
+  `tests/ft8_qso3_full_parity_recall.rs`.
 - **FT4's `000000_000002.wav` row was stale, then found regressed,
   then fixed (issue #182).** First found 2026-07-26 while re-verifying
   every row for the FT8 fix above: real wall-clock was ~0.53-0.58 s, not
@@ -407,8 +417,15 @@ trials) as a representative single sub-mode.
 
 ## FT8
 
-- **WSJT-X 8-entry golden: 7/8** (`decode_frame_with_ap` host,
-  `decode_block` embedded — same result both paths).
+- **WSJT-X 8-entry golden: 7/8 ship-config (`DecodeDepth::EMBEDDED`,
+  the real Core2/S3/host-mirroring-embedded path — no OSD by design,
+  missing only `K1BZM DK8NE -10`), 8/8 host full-parity
+  (`DecodeDepth::FULL`, `sync_min=0.8`, `max_cand=60` — see the
+  "Decode speed" section above and `tests/ft8_qso3_full_parity_recall.rs`).**
+  The two aren't the same code path with the same result — ship-config
+  structurally cannot run OSD at all (issue #182 follow-up,
+  `DecodeDepth` redesign), so 7/8 is its permanent floor, not a
+  temporary gap.
 - **JTDX 18-entry golden: 18/18** (`decode_block`; was 17/18 through
   issue #180's fix, 2026-07-25). The former miss, `WA2FZW DL5AXX`, was
   **not** a JTDX false positive — that classification is retracted.
@@ -441,16 +458,79 @@ trials) as a representative single sub-mode.
   `OSD_HARDERRORS_MAX` back to WSJT-X's universal 36.
 
 **AWGN/CCIR sensitivity sweep** (`tests/ft8_sweep.rs`, `ft8sim`-driven,
-`-5` to `-26` dB grid, 4 channel conditions):
+`-5` to `-26` dB grid, 4 channel conditions). Re-measured 2026-07-26
+(issue #182 follow-up, alongside the `DecodeDepth` redesign below —
+confirmed by `git diff` scope + `decode_frame_inner`'s separate call
+graph that the redesign itself moved none of these numbers; the delta
+vs the last-tracked figures is accumulated prior sensitivity work
+never rolled into this table before, see `FT8_BENCHMARK.md` section 9):
 
-| Channel | mfsk-core 50% crossing | WSJT-X published | Gap |
+| Channel | mfsk-core 50% crossing | WSJT-X published / real `jt9 -8 -d3` | Gap |
 |---|---:|---:|---:|
-| AWGN | ≈ −20.8 dB | −20 to −21 dB | within range |
-| CCIR good | ≈ −20.6 dB | — (no separate WSJT-X figure) | — |
-| CCIR moderate | ≈ −18.6 dB | — | — |
-| CCIR poor | ≈ −18.5 dB | — | — |
+| AWGN | ≈ −21.6 dB | −20 to −21 dB published; ≈ −21.2 dB real `jt9` | mfsk-core +0.4 dB ahead |
+| CCIR good | ≈ −21.1 dB | ≈ −20.75 dB real `jt9` (no published figure) | mfsk-core +0.35 dB ahead |
+| CCIR moderate | ≈ −20.0 dB | ≈ −19.5 dB real `jt9` (no published figure) | mfsk-core +0.5 dB ahead |
+| CCIR poor | ≈ −19.7 dB | ≈ −19.7 dB real `jt9` (no published figure) | ~parity |
+
+WSJT-X doesn't publish per-fading-model thresholds, but `ft8sim`'s the
+same simulator generating this corpus, so a real `jt9 -8 -d 3` run
+against it is real ground truth. Figures above are post-fix
+(2026-07-26) — see `FT8_BENCHMARK.md` section 11 for the root cause
+(real `jt9 -8 -d3`'s CLI always runs an implicit CQ-AP hypothesis pass
+that mfsk-core's blind `decode_frame` wasn't attempting) and the fix
+(`process_one_candidate_inner`'s blind-CQ pass now always runs, not
+just under an explicit `ap_hint`). Issue
+[#190](https://github.com/jl1nie/mfsk-core/issues/190) closed.
 
 Reproduce: `docs/notes/FT8_BENCHMARK.md`.
+
+- **`DecodeDepth` redesigned from a flat, ad-hoc 4-variant enum into
+  an orthogonal `{ llr_effort: LlrEffort, osd: bool }` struct; the
+  automatic auto-AP rescue it used to gate was removed entirely**
+  (2026-07-26, issue #182 follow-up). `BpVariantsAd`/`BpAllOsd`/
+  `BpAll` became `DecodeDepth::EMBEDDED`/`FULL`/`BP_ONLY`;
+  `BpAllNoNsym3` (zero real callers) has no replacement. `osd: true`
+  is now host-only *by construction* — the OSD dispatch code is
+  `#[cfg(feature = "fft-rustfft")]`-excluded from embedded builds,
+  not just gated at runtime. Separately, `depth.osd` turned out to
+  also be the only thing preventing an *unconditional*, `ap_hint`-
+  independent auto-AP widening pass from firing inside every
+  `decode_block*` call — measured on `qso3_busy.wav`: **1320-1450 ms
+  → 145-151 ms** for the identical 19 decodes once removed (9× for
+  zero recall difference at any realistic `max_cand`). See
+  `CHANGELOG.md` for the full investigation and migration mapping.
+- **New regression: `tests/ft8_qso3_full_parity_recall.rs`** — the
+  **host research config** (`DecodeDepth::FULL`, `sync_min=0.8`,
+  `max_cand=60`) hits the full WSJT-X 8-entry golden (**8/8**,
+  including `K1BZM DK8NE -10`, which ship-config's `DecodeDepth::
+  EMBEDDED` structurally cannot reach with OSD compiled out) in
+  **~165-175 ms** (was ~139-148 ms before the issue #190 fix below
+  made the blind-CQ AP pass always-on) — still ~6-7× faster than real
+  `jt9 -8 -d3`'s own ~1.1 s total file decode time, at full recall
+  parity. Distinct from the `0.10 s` ship-config row below, which is
+  the real Core2/S3 production path and floors at 7/8 by design.
+- **Issue #190 fix (2026-07-26): the blind-CQ AP pass (WSJT-X
+  iaptype-1, "Pass 12" in `process_one_candidate_inner`'s Step 4) now
+  runs when the blind BP/OSD staircase fails and `nsync ≥
+  BLIND_CQ_MIN_NSYNC (12)`, independent of `ap_hint`** — not a revival
+  of the `auto_ap_strategy` module removed above (that was iaptype-2
+  self-seeding from same-slot callsigns, an mfsk-core-original
+  extension with no WSJT-X counterpart; this is iaptype-1, a faithful
+  port that needs no mycall/hiscall at all). Real `jt9 -8 -d3`'s CLI
+  hardcodes AP on (`lib/jt9.f90:302`) and always tries this hypothesis
+  for idle-state candidates — mfsk-core had the matching code already
+  but gated it behind an explicit `ap_hint`, so plain `decode_frame`
+  calls never reached it. The nsync gate was added after measuring an
+  un-gated first version: it sent 188 candidates through this pass on
+  `qso3_busy.wav`'s multipass staged-SIC path (140 of them at nsync
+  7-9, none producing a decode there), pushing that file's wall-clock
+  0.7 s → 1.5 s — slower than real jt9's own ~1.15 s on the same file.
+  Gating at nsync≥12 (comfortably below the 14-18 real recoveries
+  need) cuts that to 34 candidates and ~0.85 s, faster than jt9 again,
+  with zero recall change either way. Closes the CCIR moderate/poor
+  sensitivity gap from the sweep table above (moderate now ahead of
+  jt9, poor at parity) — see `FT8_BENCHMARK.md` section 11 for the
+  full trace, cost investigation, and re-measurement.
 
 ## FT4
 

@@ -278,7 +278,7 @@ MfskFt8Status mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
     float freq_min_hz, float freq_max_hz,     // typical 200, 3000
     float sync_min, int max_cand,             // typical 1.0, 30
-    MfskFt8Depth depth,                       // 0=Bp、1=BpAll、2=BpAllOsd
+    MfskFt8Depth depth,                       // 1=BpAll、2=BpAllOsd
     MfskFt8ResultList *out);                  // callee が populate
 
 // HOST 専用便利関数 — 内部で heap alloc。組込ビルドからは除外
@@ -546,13 +546,13 @@ PCM、各 ≈ 360 KB)、`rx-wavsim` ストリーミング bench がリアルタ�
 ### WSJT-X リファレンスでの host wide-band との比較
 
 同じ `qso3_busy.wav` で `decode_frame` (host wide-band: rustfft、
-`BpAllOsd`、max_cand=200、OSD-3 fallback) と `decode_block`
+`DecodeDepth::FULL`、max_cand=200、OSD-3 fallback) と `decode_block`
 (組込相当: 整数パイプライン、max_cand=15、q=12) を side-by-side
 で走らせた結果:
 
 | run | callsigns / 18 JTDX truth | wall-clock | hardware |
 |---|---:|---:|---|
-| host wide-band (`decode_frame BpAllOsd 200`) | **16 / 18** | ~140 ms | Ryzen デスクトップ |
+| host wide-band (`decode_frame DecodeDepth::FULL 200`) | **16 / 18** | ~140 ms | Ryzen デスクトップ |
 | host fixed-point (= embedded, `decode_block` 15) | 7 / 18 | ~6 ms | Ryzen デスクトップ |
 | **M5StickS3 LX7** (`decode_block`, 実機)  | 7 / 18 | **1.19 s** | post-SlotEnd, 240 MHz dual-core |
 | **M5Stack Core2 LX6** (`decode_block`, 実機) | 7 / 18 | ~2.8 s | post-SlotEnd, 240 MHz dual-core |
@@ -573,7 +573,7 @@ core vs Xtensa 240 MHz × 2 core) — 両者が同一整数パイプライン
 |---|---:|---:|---:|
 | Bp/30/15 (ship)  | **~1.2 s** | 7/18 | 14/22 (phantom 込で 15) |
 | Bp/100/30        | **~1.6 s** | 7/18 (不変) | +1 (qso1 の OH3NIV のみ) |
-| BpAllOsd/200/100 (host 推定) | ~7 s | 7/18 (+1 で qso3 N1JFU) | 16/22 |
+| DecodeDepth::FULL/200/100 (host 推定) | ~7 s | 7/18 (+1 で qso3 N1JFU) | 16/22 |
 
 `PASS1=30 / max_cand=15` 維持を決めた非自明な 2 知見:
 

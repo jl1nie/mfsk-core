@@ -850,7 +850,7 @@ for (i, &s) in frame.iter().enumerate() {
 
 // 2. Decode it back.
 for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None,
-                      DecodeDepth::BpAllOsd, 50) {
+                      DecodeDepth::FULL, 50) {
     if let Some(text) = unpack77(&r.message77) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
@@ -907,7 +907,7 @@ use mfsk_core::core::equalize::EqMode;
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
-                          DecodeDepth::BpAllOsd, /*max_cand*/ 15,
+                          DecodeDepth::FULL, /*max_cand*/ 15,
                           EqMode::Local, Some(&ap)) {
     // …
 }

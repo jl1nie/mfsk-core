@@ -293,7 +293,7 @@ MfskFt8Status mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
     float freq_min_hz, float freq_max_hz,     // typical 200, 3000
     float sync_min, int max_cand,             // typical 1.0, 30
-    MfskFt8Depth depth,                       // 0=Bp, 1=BpAll, 2=BpAllOsd
+    MfskFt8Depth depth,                       // 1=BpAll, 2=BpAllOsd
     MfskFt8ResultList *out);                  // populated by callee
 
 // HOST-ONLY convenience — heap-allocs internally. Excluded from
@@ -565,13 +565,13 @@ confirm post-0.6.3 OSD-tightening did not move the embedded numbers.
 ### vs host wide-band on the WSJT-X reference
 
 A side-by-side run of `decode_frame` (host wide-band: rustfft,
-`BpAllOsd`, max_cand=200, OSD-3 fallback) vs `decode_block`
+`DecodeDepth::FULL`, max_cand=200, OSD-3 fallback) vs `decode_block`
 (embedded equivalent: integer pipeline, max_cand=15, q=12) on the
 same `qso3_busy.wav`:
 
 | run | callsigns / 18 JTDX truth | wall-clock | hardware |
 |---|---:|---:|---|
-| host wide-band (`decode_frame BpAllOsd 200`) | **16 / 18** | ~140 ms | Ryzen desktop |
+| host wide-band (`decode_frame DecodeDepth::FULL 200`) | **16 / 18** | ~140 ms | Ryzen desktop |
 | host fixed-point (= embedded, `decode_block` 15) | 7 / 18 | ~6 ms | Ryzen desktop |
 | **M5StickS3 LX7** (`decode_block`, real silicon)  | 7 / 18 | **1.19 s** | post-SlotEnd, 240 MHz dual-core |
 | **M5Stack Core2 LX6** (`decode_block`, real silicon) | 7 / 18 | ~2.8 s | post-SlotEnd, 240 MHz dual-core |
@@ -593,7 +593,7 @@ silicon (`logs/s3_pass100_max30_2026-05-04.log`):
 |---|---:|---:|---:|
 | Bp/30/15 (ship)  | **~1.2 s** | 7/18 | 14/22 (or 15 with phantom) |
 | Bp/100/30        | **~1.6 s** | 7/18 (unchanged) | +1 (qso1 OH3NIV only) |
-| BpAllOsd/200/100 (host estimate) | ~7 s | 7/18 (+1 on qso3 N1JFU) | 16/22 |
+| DecodeDepth::FULL/200/100 (host estimate) | ~7 s | 7/18 (+1 on qso3 N1JFU) | 16/22 |
 
 Two non-obvious findings drove the decision to stay at `PASS1=30 /
 max_cand=15`:

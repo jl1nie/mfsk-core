@@ -1,23 +1,30 @@
-//! Hard-assertion regression — WSJT-X **AP-off** decode of the
+//! Hard-assertion regression — WSJT-X **full parity** decode of the
 //! reference WAV (`samples/FT8/210703_133430.wav` =
-//! `embedded-poc/assets/qso3_busy.wav`).
+//! `embedded-poc/assets/qso3_busy.wav`) under the **host research
+//! config** (`DecodeDepth::FULL`, `sync_min=0.8`, `max_cand=60` — the
+//! same default already used by `ft8_qso3_jtdx_recall.rs` for the
+//! larger JTDX-18 comparison).
 //!
-//! The 8-entry golden in [`WSJTX_GOLDEN`] is what WSJT-X normal mode
-//! produces with **a-priori decoding disabled** (the canonical
-//! reproducible reference). A companion AP-on regression will be
-//! added when AP-list (ft8b.f90 ipass 5..8) is ported — tracked in
-//! https://github.com/jl1nie/mfsk-core/issues/31.
+//! Distinct from `ft8_qso3_apoff_recall.rs`'s **ship config**
+//! (`DecodeDepth::EMBEDDED`, `sync_min=1.3`, `max_cand=15` — the real
+//! Core2/S3 production path, which never runs OSD and floors at 7/8
+//! missing `K1BZM DK8NE -10`). This test tracks the separate question
+//! "how fast can host achieve full WSJT-X-8-entry parity" — the
+//! host-side speed/recall target, not what ships on hardware. Do not
+//! conflate the two: `DecodeDepth::FULL` is host-only by construction
+//! (see its own doc comment) and never runs on an ESP32 target.
 //!
 //! Run:
 //! ```sh
 //! cargo test --release -p mfsk-core \
 //!     --features fft-rustfft,ft8 \
-//!     --test ft8_qso3_apoff_recall -- --nocapture
+//!     --test ft8_qso3_full_parity_recall -- --nocapture
 //! ```
 #![cfg(feature = "fft-rustfft")]
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Instant;
 
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::decode_block;
@@ -25,17 +32,15 @@ use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
 mod common;
+use common::load_wav_i16;
 
 const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 
-/// WSJT-X **AP-off** decode of the official sample WAV
-/// (`samples/FT8/210703_133430.wav`). 8 entries — this is the ground
-/// truth for AP-disabled regression. Source memory:
-/// `reference_qso3_busy_wsjtx_decode.md`.
-///
-/// JTDX produces a different (larger) set; that is checked separately
-/// in `ft8_qso3_jtdx_recall.rs`. Do NOT mix the two references in
-/// this test.
+/// Same 8-entry WSJT-X AP-off golden as `ft8_qso3_apoff_recall.rs` —
+/// see that file's own doc comment for provenance
+/// (`reference_qso3_busy_wsjtx_decode.md`). Duplicated rather than
+/// shared across files to keep each regression test self-contained
+/// and independently greppable.
 struct GoldenEntry {
     msg: &'static str,
     snr_db: f32,
@@ -84,48 +89,52 @@ const WSJTX_GOLDEN: &[GoldenEntry] = &[
     },
 ];
 
-/// Tolerance for matching a callsign decode to WSJT-X reference. Our
-/// SNR (xsnr2/xbase) systematically sits ~7 dB below WSJT-X (host
-/// f32). fixed-point uses adjacent-tone SNR (no xsnr2 post-process)
-/// which can sit further off (N1PJT Δ-13 dB on this WAV) but stays
-/// within 14 dB.
+// Same tolerance split as `ft8_qso3_apoff_recall.rs`: fixed-point uses
+// adjacent-tone SNR (no xsnr2 post-process), which can sit further off
+// (N1PJT Δ-13.5 dB on this WAV) than host f32's xsnr2/xbase estimate.
 #[cfg(not(feature = "fixed-point"))]
 const SNR_TOL_DB: f32 = 12.0;
 #[cfg(feature = "fixed-point")]
 const SNR_TOL_DB: f32 = 14.0;
 const DF_TOL_HZ: f32 = 5.0;
 
-/// Recall floor against the 8-entry WSJT-X AP-off golden.
-/// host f32 baseline = **7/8 hits** (only K1BZM DK8NE -17 dB @244
-/// missing). host fixed-point (= bit-identical to embedded Q3i8 LLR
-/// build) drops 2 borderline-weak decodes (N1JFU @-13, W0RSJ @-15)
-/// to LLR quantisation, leaving **5/8** as the embedded floor.
-#[cfg(not(feature = "fixed-point"))]
-const MIN_GOLDEN_HITS: usize = 7;
-#[cfg(feature = "fixed-point")]
-const MIN_GOLDEN_HITS: usize = 5;
+/// Full parity floor: all 8 WSJT-X AP-off golden entries, including
+/// `K1BZM DK8NE -10` which `ship-config`'s `DecodeDepth::EMBEDDED`
+/// structurally cannot reach (no OSD). Measured 2026-07-26: 8/8, 19
+/// total decodes, ~139-140ms (single- or multi-threaded — this
+/// candidate count doesn't parallelise much), on an AMD Ryzen 9 9900X.
+/// For comparison, real `jt9 -8 -d3`'s own measured total file decode
+/// time is ~1.1s (`FT8_BENCHMARK.md`) — full parity here runs ~7-8x
+/// faster than jt9 itself.
+///
+/// Also holds under `fixed-point` (`LlrT = Q11i16` on host, the same
+/// numeric path embedded ships): still 8/8, 20 total decodes,
+/// ~162ms — `DecodeDepth::FULL`'s OSD dispatch operates on `&[f32]`
+/// regardless of the embedded `LlrT` choice (see `osd_strategy.rs`'s
+/// own doc comment), so full parity isn't host-f32-exclusive. This
+/// isn't the embedded *ship* config though (that's `EMBEDDED`, tested
+/// separately in `ft8_qso3_apoff_recall.rs`) — real Xtensa silicon
+/// never runs OSD (see `DecodeDepth::osd`'s doc comment) — this just
+/// confirms the fixed-point *arithmetic* path itself doesn't leave
+/// anything on the table if a future host-side use case wanted it.
+const MIN_GOLDEN_HITS: usize = 8;
 
-/// Cap on total output. The test does NOT consider extras outside
-/// the WSJT-X golden as failures — they may be JTDX-confirmed real
-/// decodes (gated by the separate `ft8_qso3_jtdx_recall.rs` test).
-/// 25 leaves significant headroom while still catching catastrophic
-/// CRC-noise regressions.
-const MAX_TOTAL_DECODES: usize = 25;
-
-use common::load_wav_i16;
+/// Cap on total output — same rationale as `ft8_qso3_apoff_recall.rs`:
+/// not a phantom-zero requirement (JTDX-confirmed extras are fine,
+/// see `ft8_qso3_jtdx_recall.rs`), just a catastrophic-regression net.
+const MAX_TOTAL_DECODES: usize = 30;
 
 #[test]
-fn qso3_apoff_meets_wsjtx_golden_floor() {
+fn qso3_full_parity_meets_wsjtx_golden_floor() {
     let slot = load_wav_i16(Path::new(QSO3_PATH));
 
-    // Ship config: BP only, max_cand=15. Matches the Core2 / S3
-    // production path (PASS1 default = 30 via DEFAULT_Q_THRESH).
-    // sync_min=1.3 = WSJT-X ft8_decode.f90:176 default for ndepth=3
-    // ("Deep" mode). User golden has K1BZM DK8NE -17 dB which only
-    // surfaces in Deep mode, so user's reference uses ndepth=3.
-    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15);
+    // Host research config (same default as ft8_qso3_jtdx_recall.rs):
+    // DecodeDepth::FULL (OSD on — host-only by construction, never
+    // runs on embedded), sync_min=0.8, max_cand=60.
+    let t0 = Instant::now();
+    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 0.8, DecodeDepth::FULL, 60);
+    let elapsed = t0.elapsed();
 
-    // Build (msg → result) for matching.
     let mut by_msg: std::collections::HashMap<String, &mfsk_core::ft8::decode::DecodeResult> =
         std::collections::HashMap::new();
     for r in &decoded {
@@ -134,7 +143,7 @@ fn qso3_apoff_meets_wsjtx_golden_floor() {
         }
     }
 
-    println!("\nqso3 ship config (Bp/30/15) — content match vs WSJT-X golden:");
+    println!("\nqso3 host full-parity config (FULL/0.8/60) — content match vs WSJT-X golden:");
     println!(
         "  {:<22} {:>9} {:>9} {:>7} {:>9} {:>9} {:>4}",
         "callsign chunk", "gold DF", "ours DF", "ours dt", "gold SNR", "ours SNR", "e"
@@ -208,16 +217,17 @@ fn qso3_apoff_meets_wsjtx_golden_floor() {
         }
     }
     println!(
-        "\n  → {}/{} golden hit, {} phantom, {} total",
+        "\n  → {}/{} golden hit, {} phantom, {} total, {:.1} ms",
         golden_hits,
         WSJTX_GOLDEN.len(),
         phantoms.len(),
-        decoded.len()
+        decoded.len(),
+        elapsed.as_secs_f64() * 1000.0,
     );
 
     assert!(
         golden_hits >= MIN_GOLDEN_HITS,
-        "qso3 recall regression: {} of {} WSJT-X golden, floor {}",
+        "qso3 full-parity recall regression: {} of {} WSJT-X golden, floor {}",
         golden_hits,
         WSJTX_GOLDEN.len(),
         MIN_GOLDEN_HITS,

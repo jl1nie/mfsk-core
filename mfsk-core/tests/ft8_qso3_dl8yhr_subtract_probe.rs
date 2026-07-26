@@ -62,7 +62,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     let mut audio = load_wav_i16(Path::new(QSO3_PATH));
 
     // 1. Decode W1FC F5BZB near 2571 Hz.
-    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::BpAllOsd, 20);
+    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
         .find(|r| {
@@ -138,7 +138,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     println!("  sync_quality at 2606 Hz (dt refined near 0.2): q={q_after} (was {q_before})");
 
     // 3. Does DL8YHR decode now, after W1FC removal, with a full re-decode?
-    let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::BpAllOsd, 20);
+    let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::FULL, 20);
     let hit = post_results
         .iter()
         .any(|r| unpack77(&r.message77).as_deref() == Some("CQ DX DL8YHR JO41"));
@@ -162,7 +162,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
 fn probe_subtract_depth_on_w1fc_itself() {
     let mut audio = load_wav_i16(Path::new(QSO3_PATH));
 
-    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::BpAllOsd, 20);
+    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
         .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
@@ -207,7 +207,7 @@ fn probe_subtract_depth_on_w1fc_itself() {
 #[ignore]
 fn probe_w1fc_sync_cv_and_snr_context() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
-    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::BpAllOsd, 20);
+    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
         .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
@@ -226,7 +226,7 @@ fn probe_w1fc_sync_cv_and_snr_context() {
 fn probe_iterative_subtract_convergence() {
     let mut audio = load_wav_i16(Path::new(QSO3_PATH));
 
-    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::BpAllOsd, 20);
+    let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
         .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
@@ -262,7 +262,7 @@ fn probe_iterative_subtract_convergence() {
         prev = s;
     }
 
-    let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::BpAllOsd, 20);
+    let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::FULL, 20);
     let hit = post_results
         .iter()
         .any(|r| unpack77(&r.message77).as_deref() == Some("CQ DX DL8YHR JO41"));

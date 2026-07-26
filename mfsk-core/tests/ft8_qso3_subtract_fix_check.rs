@@ -25,7 +25,7 @@ fn check_decode_frame_subtract_full_qso3() {
         3000.0,
         0.8,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         200,
         DecodeStrictness::Normal,
     );

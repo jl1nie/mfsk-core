@@ -102,7 +102,7 @@ pub struct DecodeConfig {
     /// BP iteration cap per LLR variant.
     pub bp_max_iter: u32,
     /// LLR-variant staircase depth (embedded ship uses
-    /// [`DecodeDepth::BpVariantsAd`]).
+    /// [`DecodeDepth::EMBEDDED`]).
     pub depth: DecodeDepth,
 }
 

@@ -28,6 +28,13 @@
 //! separate `maxosd=0` branch FT8's blind dispatch never takes). It
 //! always calls with `zsave(:,i)`, the running BP variable-node soft-
 //! estimate sum through the first `i` BP iterations.
+//!
+//! Host-only (`fft-rustfft`): `DecodeDepth::osd` is a no-op on
+//! embedded builds (see its doc comment in `ft8::decode`), so this
+//! whole module is compiled out of non-`fft-rustfft` targets entirely
+//! rather than merely unreachable at runtime.
+
+#![cfg(feature = "fft-rustfft")]
 
 use super::super::decode::DecodeDepth;
 use crate::core::scalar::Cmplx;
@@ -83,14 +90,16 @@ pub(super) const PASS_ID_OSD_ZSAVE1_A: u8 = 14;
 
 /// Pass-ID range for the `zsave(:,2)`-equivalent (BP-refined, 2
 /// iterations) OSD attempts — issue #182. `19..=22` for llr-variants
-/// a/b/c/d. (18 is `auto_ap_strategy::PASS_ID_AUTO_AP`.)
+/// a/b/c/d. (18 was the old auto-AP pass ID, removed in the 0.8.0
+/// `DecodeDepth` redesign — currently unused, left as a gap rather
+/// than renumbered to avoid an unnecessary diff.)
 pub(super) const PASS_ID_OSD_ZSAVE2_A: u8 = 19;
 
 /// Try the OSD staircase for a candidate whose BP staircase didn't
 /// converge. Returns `Some((bp_result, pass_id))` on the first
 /// accepted CRC-pass codeword, `None` otherwise.
 ///
-/// Gates internally on `depth = BpAllOsd` and `q > 6` so the caller can
+/// Gates internally on `depth.osd` and `q > 6` so the caller can
 /// invoke unconditionally — keeps the per-candidate staircase in
 /// `process_one_candidate_inner` straightforward (`accepted = accepted
 /// .or_else(|| osd_strategy::try_fallback(...))`).
@@ -119,7 +128,7 @@ pub(super) fn try_fallback(
     depth: DecodeDepth,
     q: u32,
 ) -> Option<(BpResult, u8)> {
-    if !matches!(depth, DecodeDepth::BpAllOsd) || q <= 6 {
+    if !depth.osd || q <= 6 {
         return None;
     }
 

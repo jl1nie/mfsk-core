@@ -195,7 +195,7 @@ mod tests {
         let len = samples.len().min(audio.len());
         audio[..len].copy_from_slice(&samples[..len]);
 
-        let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BpAll, 50);
+        let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BP_ONLY, 50);
         assert!(
             !results.is_empty(),
             "round-trip decode failed — no message found"
@@ -248,7 +248,7 @@ mod tests {
             let n = samples.len().min(audio.len());
             audio[..n].copy_from_slice(&samples[..n]);
 
-            let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BpAll, 50);
+            let results = decode_frame(&audio, 800.0, 1200.0, 1.0, None, DecodeDepth::BP_ONLY, 50);
             assert!(!results.is_empty(), "decode found nothing for: {expected}");
 
             let decoded = unpack77(&results[0].message77)

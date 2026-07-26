@@ -30,7 +30,6 @@
 // the tree is stage-shaped (spectrogram → coarse_sync →
 // fill_symbol_spectra → per-candidate processing). The parent file
 // owns only module declarations + re-exports + tests.
-pub(crate) mod auto_ap_strategy;
 mod coarse_sync;
 mod fill_symbol_spectra;
 mod osd_strategy;
@@ -369,7 +368,7 @@ mod tests {
     fn roundtrip_clean_signal() {
         let msg = pack_cq();
         let audio = synth_clean(&msg, 1500.0);
-        let results = decode_block(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BpAll, 30);
+        let results = decode_block(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 30);
         assert!(
             results.iter().any(|r| r.message77 == msg),
             "decode_block should recover clean CQ; got {} results",
