@@ -386,6 +386,7 @@ fn flat_sic_inner(
     max_cand: usize,
     strictness: DecodeStrictness,
     known: &[DecodeResult],
+    eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
 ) -> (Vec<DecodeResult>, FftCache) {
@@ -399,6 +400,7 @@ fn flat_sic_inner(
         max_cand,
         strictness,
         known,
+        eq_mode,
         ap_hint,
         precomputed_fft,
     )
@@ -427,10 +429,12 @@ fn sic_inner_passes(
     max_cand: usize,
     strictness: DecodeStrictness,
     known: &[DecodeResult],
+    eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
-        residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, ap_hint, None,
+        residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
+        ap_hint, None,
     )
     .0
 }
@@ -456,6 +460,7 @@ fn sic_inner_passes_with_cache(
     max_cand: usize,
     strictness: DecodeStrictness,
     known: &[DecodeResult],
+    eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
 ) -> (Vec<DecodeResult>, FftCache) {
@@ -489,14 +494,7 @@ fn sic_inner_passes_with_cache(
         }
         for cand in &candidates {
             let r = match process_candidate(
-                cand,
-                residual,
-                &fft_cache,
-                depth,
-                strictness,
-                known,
-                EqMode::Off,
-                ap_hint,
+                cand, residual, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
             ) {
                 Some(r) => r,
                 None => continue,
@@ -631,7 +629,16 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
     ap_hint: Option<&ApHint>,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     decode_frame_subtract_staged_with_ap_inner(
-        audio, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, ap_hint,
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        freq_hint,
+        depth,
+        max_cand,
+        strictness,
+        EqMode::Off,
+        ap_hint,
     )
 }
 
@@ -645,6 +652,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
+    eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
@@ -666,6 +674,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             max_cand,
             strictness,
             &[],
+            eq_mode,
             ap_hint,
             None,
         );
@@ -700,6 +709,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         max_cand,
         strictness,
         &[],
+        eq_mode,
         ap_hint,
     );
     // Checkpoint A's own residual is not carried forward — only its
@@ -726,6 +736,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             max_cand,
             strictness,
             &[],
+            eq_mode,
             ap_hint,
             None,
         );
@@ -788,6 +799,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         max_cand,
         strictness,
         &early_results,
+        eq_mode,
         ap_hint,
     );
 
@@ -931,6 +943,7 @@ impl SupportsFlatSic for Ft8 {
                 req.max_cand,
                 req.strictness,
                 req.known,
+                req.eq_mode,
                 req.ap_hint,
                 req.fft_cache.as_deref(),
             );
@@ -949,6 +962,7 @@ impl SupportsFlatSic for Ft8 {
                 req.max_cand,
                 req.strictness,
                 req.known,
+                req.eq_mode,
                 req.ap_hint,
                 None,
             );
@@ -996,6 +1010,7 @@ impl SupportsStagedSic for Ft8 {
             req.depth,
             req.max_cand,
             req.strictness,
+            req.eq_mode,
             req.ap_hint,
         );
         // Belt-and-braces dedup: subtraction above should already
@@ -1239,6 +1254,229 @@ mod tests {
             "expected residual band energy at known signal's frequency \
              to drop by >2× after SIC; got e_before={e_before:.3e}, \
              e_after={e_after:.3e} (fix not applied?)"
+        );
+    }
+
+    /// Regression test for the `eq_mode`/SIC gap (webft8 sniper-mode
+    /// investigation, 2026-07-26): `.flat()`/`.staged()` used to silently
+    /// hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
+    /// `DecodeRequest::eq_mode()` entirely for both SIC strategies even
+    /// though the builder method compiled and looked like it worked.
+    ///
+    /// Builds a synthetic "BPF-edge" candidate: a clean FT8 signal whose
+    /// 8 Costas tones are given a frequency-dependent complex gain (the
+    /// same shape `equalizer::tests::edge_attenuation_corrected` uses to
+    /// validate the correction math), applied to the raw audio via an
+    /// FFT-domain multiply so it exercises the real per-candidate decode
+    /// path, not just the isolated equalizer unit. `.staged()` (this test)
+    /// and `.flat()` share the same `sic_inner_passes` engine this fix
+    /// touches, so covering `.staged()` here is sufficient for both.
+    ///
+    /// Asserts `eq_mode(Local)` decodes a weak, edge-distorted signal that
+    /// `eq_mode(Off)` misses through the exact same `.staged()` call — the
+    /// same shape as the `docs/bench.md`-style "BPF edge + AWGN" scenario,
+    /// just self-contained (no external BPF/simulator crate). Fails again
+    /// if the hardcoded `EqMode::Off` inside `sic_inner_passes` regresses.
+    /// Minimal 4-pole Butterworth bandpass (ported from `ft8-bench::bpf`,
+    /// same design route: LP prototype poles -> LP->BP transform ->
+    /// bilinear -> biquad cascade) — self-contained so this test doesn't
+    /// need a cross-crate dependency on `ft8-bench`.
+    #[cfg(test)]
+    struct TestBpf {
+        sections: Vec<(f64, f64, f64, f64, f64, f64, f64)>, // b0,b1,b2,a1,a2,s1,s2
+    }
+    #[cfg(test)]
+    impl TestBpf {
+        fn design(n_poles: usize, f_low: f64, f_high: f64, fs: f64) -> Self {
+            fn csqrt(re: f64, im: f64) -> (f64, f64) {
+                let r = (re * re + im * im).sqrt();
+                let theta = im.atan2(re);
+                let sr = r.sqrt();
+                (sr * (theta / 2.0).cos(), sr * (theta / 2.0).sin())
+            }
+            fn lp_to_bp(p_re: f64, p_im: f64, bw: f64, w0sq: f64) -> [(f64, f64); 2] {
+                let pbw_re = p_re * bw;
+                let pbw_im = p_im * bw;
+                let d_re = pbw_re * pbw_re - pbw_im * pbw_im - 4.0 * w0sq;
+                let d_im = 2.0 * pbw_re * pbw_im;
+                let (sd_re, sd_im) = csqrt(d_re, d_im);
+                [
+                    ((pbw_re + sd_re) / 2.0, (pbw_im + sd_im) / 2.0),
+                    ((pbw_re - sd_re) / 2.0, (pbw_im - sd_im) / 2.0),
+                ]
+            }
+            fn bilinear(s_re: f64, s_im: f64, t: f64) -> (f64, f64) {
+                let nr = 1.0 + s_re * t;
+                let ni = s_im * t;
+                let dr = 1.0 - s_re * t;
+                let di = -s_im * t;
+                let d_sq = dr * dr + di * di;
+                ((nr * dr + ni * di) / d_sq, (ni * dr - nr * di) / d_sq)
+            }
+            let t = 1.0 / (2.0 * fs);
+            let wl = (core::f64::consts::PI * f_low / fs).tan() / t;
+            let wh = (core::f64::consts::PI * f_high / fs).tan() / t;
+            let w0sq = wl * wh;
+            let bw = wh - wl;
+            let half = n_poles / 2;
+            let mut sections = Vec::with_capacity(n_poles);
+            for k in 0..half {
+                let theta = core::f64::consts::PI * (2.0 * k as f64 + n_poles as f64 + 1.0)
+                    / (2.0 * n_poles as f64);
+                let (p_re, p_im) = (theta.cos(), theta.sin());
+                for (s_re, s_im) in lp_to_bp(p_re, p_im, bw, w0sq) {
+                    let (z_re, z_im) = bilinear(s_re, s_im, t);
+                    sections.push((
+                        1.0,
+                        0.0,
+                        -1.0,
+                        -2.0 * z_re,
+                        z_re * z_re + z_im * z_im,
+                        0.0,
+                        0.0,
+                    ));
+                }
+            }
+            // Normalise to unity gain at the geometric centre frequency.
+            let fc = (f_low * f_high).sqrt();
+            let wc = 2.0 * core::f64::consts::PI * fc / fs;
+            let mag_at = |b0: f64, b1: f64, b2: f64, a1: f64, a2: f64, w: f64| -> f64 {
+                let (c1, s1) = (w.cos(), w.sin());
+                let (c2, s2) = ((2.0 * w).cos(), (2.0 * w).sin());
+                let nr = b0 * c2 + b1 * c1 + b2;
+                let ni = b0 * s2 + b1 * s1;
+                let dr = c2 + a1 * c1 + a2;
+                let di = s2 + a1 * s1;
+                ((nr * nr + ni * ni) / (dr * dr + di * di)).sqrt()
+            };
+            let gain: f64 = sections
+                .iter()
+                .map(|&(b0, b1, b2, a1, a2, _, _)| mag_at(b0, b1, b2, a1, a2, wc))
+                .product();
+            if let Some(sec) = sections.first_mut() {
+                sec.0 /= gain;
+                sec.2 /= gain;
+            }
+            TestBpf { sections }
+        }
+        fn filter(&mut self, input: &[f32]) -> Vec<f32> {
+            input
+                .iter()
+                .map(|&x| {
+                    let mut y = x as f64;
+                    for sec in &mut self.sections {
+                        let (b0, b1, b2, a1, a2, s1, s2) = *sec;
+                        let out = b0 * y + s1;
+                        sec.5 = b1 * y - a1 * out + s2;
+                        sec.6 = b2 * y - a2 * out;
+                        y = out;
+                    }
+                    y as f32
+                })
+                .collect()
+        }
+    }
+
+    /// Regression test for the `eq_mode`/SIC gap (webft8 sniper-mode
+    /// investigation, 2026-07-26): `.flat()`/`.staged()` used to silently
+    /// hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
+    /// `DecodeRequest::eq_mode()` entirely for both SIC strategies even
+    /// though the builder method compiled and looked like it worked.
+    ///
+    /// Reproduces `ft8-bench`'s own "BPF edge" scenario (4-pole
+    /// Butterworth 1000-1500 Hz, target at the passband's -3 dB edge,
+    /// 1000 Hz), calibrated against a real ground-truth sweep to a target
+    /// SNR (-22 dB, WSJT-X convention) where `eq_mode(Off)` reliably
+    /// misses the signal and `eq_mode(Local)` reliably recovers it through
+    /// `.staged()` — proving the fix actually reaches the SIC engine, not
+    /// just that the builder method compiles.
+    #[test]
+    fn staged_eq_mode_reaches_sic_engine() {
+        use crate::ft8::wave_gen::{message_to_tones, tones_to_f32};
+        use crate::msg::wsjt77::pack77;
+
+        // splitmix64 + Box-Muller — deterministic, dependency-free AWGN.
+        struct Rng(u64);
+        impl Rng {
+            fn next_u64(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+            fn uniform01(&mut self) -> f32 {
+                ((self.next_u64() >> 40) as f32 / (1u64 << 24) as f32).max(1e-9)
+            }
+            fn gaussian(&mut self) -> f32 {
+                let u1 = self.uniform01();
+                let u2 = self.uniform01();
+                (-2.0 * u1.ln()).sqrt() * (2.0 * core::f32::consts::PI * u2).cos()
+            }
+        }
+
+        const FS: f32 = 12_000.0;
+        const F0: f32 = 1_000.0; // BPF edge, matches ft8-bench's own "edge" case
+        const BPF_LO: f64 = 1_000.0;
+        const BPF_HI: f64 = 1_500.0;
+        const REF_BW: f32 = 2_500.0;
+        // WSJT-X SNR convention (matches `ft8-bench::simulator::generate_frame`).
+        const TARGET_SNR_DB: f32 = -22.0;
+
+        let m77 = pack77("CQ", "K1ABC", "FN42").expect("pack77");
+        let tones = message_to_tones(&m77);
+        let snr_linear = 10.0_f32.powf(TARGET_SNR_DB / 10.0);
+        let amplitude = (4.0 * snr_linear * REF_BW / FS).sqrt();
+        let sig = tones_to_f32(&tones, F0, amplitude);
+
+        let n = 15 * 12_000;
+        let mut mix = vec![0.0f32; n];
+        let off = 6_000usize;
+        let n_sig = sig.len().min(n - off);
+        mix[off..off + n_sig].copy_from_slice(&sig[..n_sig]);
+
+        let mut rng = Rng(0xC0FF_EE12_3456_789A);
+        for s in mix.iter_mut() {
+            *s += rng.gaussian();
+        }
+
+        let mut bpf = TestBpf::design(4, BPF_LO, BPF_HI, FS as f64);
+        let filtered = bpf.filter(&mix);
+
+        // Quantise to i16 with WSJT-X-style headroom (peak -> 29000).
+        let peak = filtered.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+        let iq_scale = if peak > 1e-6 { 29_000.0 / peak } else { 1.0 };
+        let audio: Vec<i16> = filtered
+            .iter()
+            .map(|&s| (s * iq_scale).clamp(-32_768.0, 32_767.0) as i16)
+            .collect();
+
+        let find = |eq: EqMode| -> Option<DecodeResult> {
+            let results = DecodeRequest::<Ft8>::new(
+                &audio,
+                (BPF_LO as f32) - 50.0,
+                (BPF_HI as f32) + 50.0,
+                0.8,
+                10,
+            )
+            .depth(DecodeDepth::FULL)
+            .eq_mode(eq)
+            .staged()
+            .decode()
+            .results;
+            results.into_iter().find(|r| r.message77 == m77)
+        };
+
+        assert!(
+            find(EqMode::Off).is_none(),
+            "expected the BPF-edge signal to NOT decode with eq_mode(Off) \
+             (test fixture drifted off the calibrated marginal point)"
+        );
+        assert!(
+            find(EqMode::Local).is_some(),
+            "expected eq_mode(Local) to decode the same BPF-edge signal \
+             that eq_mode(Off) misses through .staged() — eq_mode is not \
+             reaching the SIC engine"
         );
     }
 
