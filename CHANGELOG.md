@@ -574,6 +574,46 @@
   `qso3_apon` 6/6 JTDX extras) since `refine_freq` sits on FT8's subtract
   path too.
 
+- **`refine_freq`'s search radius was 5x too wide, closing out the FT4
+  decode-speed regression** (issue #182 follow-up). The NCO fix above
+  cut `refine_freq` from ~35ms/call to ~15.7-16.2ms/call, but FT4's
+  `decode_frame_subtract` golden-WAV wall-clock was still ~280ms — 5.7x
+  the pre-#178 baseline of 48.8ms. Isolated `refine_freq` /
+  `subtract_tones_lpf` with a standalone microbenchmark (14 calls each,
+  matching the golden WAV's real accepted-decode count): `refine_freq`
+  alone was 227ms of the 280ms total (81%), `subtract_tones_lpf` only
+  13ms (already FFT-cached). The NCO fix reduced *per-evaluation* cost;
+  the *evaluation count* (101/call, ±5Hz radius at 0.1Hz step) was
+  untouched.
+
+  Cross-checked the call site's "+/-5 Hz refine radius…matches WSJT-X"
+  comment against `lib/ft4/subtractft4.f90` directly: WSJT-X's
+  `subtractft4` has **no frequency-refine step at all** — it subtracts
+  directly at the decoded `f0`, no grid search. The comment's "matches
+  WSJT-X" claim was wrong; `refine_freq` compensates for mfsk-core's own
+  coarse-frequency resolution, not anything WSJT-X does in its subtract
+  path. The ±5Hz figure traced to `refine_freq`'s generic doc comment
+  (written for `core::sync::coarse_sync`'s ~2.93Hz FFT-bin uncertainty)
+  and was never re-derived after FT4 moved onto `ft4_coarse_sync` +
+  `core::sync2d::ft4_sync_search` (issue #72). Reading `ft4_sync_search`'s
+  df search line by line: both its coarse (`idf` step 3) and fine (`si`
+  step 1) passes only ever produce integer-Hz `df` values, so the
+  `freq_hz` `refine_freq` receives is always within ±0.5Hz of the true
+  continuous optimum by construction — a much tighter bound than the
+  ±2.5Hz the borrowed comment assumed.
+
+  Fix: `ft4::decode::decode_frame_subtract_with_options`'s
+  `refine_freq_radius_hz` `5.0 → 1.0` (0.1Hz step unchanged — the
+  response's mainlobe is well under 1Hz wide for a ~7.5s tone train, so
+  widening the step risks skipping it; only the radius was oversized).
+  Cuts the grid 101 → 21 evaluations/call. **Result**: golden-WAV
+  `decode_frame_subtract` wall-clock **280ms → 110ms** (~2.5x further,
+  2.3x off the 48.8ms floor vs. 5.7x before this fix), recall
+  byte-identical (6/6 golden, 14/14 total decodes). The Rayleigh-fading
+  busy-band regression guard the LPF-subtract migration (#177-179) was
+  built to fix (`ft4_busy_band_fading_probe.rs::busy_band_fading_baseline`)
+  stayed 10/10. See `docs/notes/FT4_BENCHMARK.md` section 16.
+
 ### Changed
 
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**

@@ -210,13 +210,32 @@ pub fn decode_frame_subtract_with_options(
         DecodeStrictness::Normal,
         REFINE_STEPS,
         SYNC_Q_MIN,
-        // Matches WSJT-X `subtractft4.f90`: NFILT=1400 (lpf_half=700),
-        // no end-correction, +/-5 Hz refine radius. See
+        // lpf_half/end-correction match WSJT-X `subtractft4.f90`:
+        // NFILT=1400 (lpf_half=700), no end-correction. See
         // `ft4::subtract::{LPF_HALF_SAMPLES, subtract_signal_lpf,
         // refine_signal_freq}` for the same constants used elsewhere.
+        //
+        // WSJT-X's own `subtractft4` has no frequency-refine step at
+        // all — it subtracts directly at the decoded `f0`. mfsk-core's
+        // `refine_freq` call above exists to compensate for this
+        // codebase's own `r.freq_hz` being integer-Hz-quantized
+        // (`core::sync2d::ft4_sync_search`'s df search only ever
+        // produces integer Hz offsets — see its `idf`/`si` loops), not
+        // to replicate anything WSJT-X does. That quantization bounds
+        // the true continuous optimum to within ±0.5 Hz of the
+        // reported freq, so a ±1.0 Hz radius (with 0.5 Hz margin) is
+        // sufficient — the previous ±5.0 Hz was carried over from
+        // `coarse_sync`'s ~2.93 Hz FFT-bin uncertainty, a different
+        // (and much coarser) mechanism `ft4_coarse_sync` replaced for
+        // FT4 back in `FT4_BENCHMARK.md` section 13, without this
+        // radius being re-derived for the new, tighter bound (issue
+        // #182 follow-up). Cuts `refine_freq`'s 0.1 Hz grid search from
+        // 101 to 21 evaluations per call — the dominant remaining cost
+        // in `decode_frame_subtract` after the NCO fix (~16 ms/call ×
+        // 14 real decodes ≈ 227 ms of the golden WAV's 280 ms total).
         700,
         false,
-        5.0,
+        1.0,
     )
 }
 

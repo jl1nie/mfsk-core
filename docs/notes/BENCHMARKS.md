@@ -56,7 +56,7 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
-| FT4 | 000000_000002.wav | 7.5 s | 0.28 s (was 0.049 s pre-#178-180, briefly regressed to ~0.53-0.58 s — see note) |
+| FT4 | 000000_000002.wav | 7.5 s | 0.11 s (was 0.049 s pre-#178-180, briefly regressed to ~0.53-0.58 s then ~0.28 s — see note) |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.08 s |
 | FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.10 s |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.12 s |
@@ -122,6 +122,29 @@ Notes:
   removes the *redundant* part of that cost, not the cost itself.
   Candidate count unchanged (31, matching the 25× coarse-sync fix's own
   numbers) and recall unaffected (still 6/6).
+
+  **Follow-up, same day: `refine_freq` was still 81% of the 280 ms**
+  (227 ms of it, isolated via a standalone microbenchmark) even after the
+  NCO fix above — the fix cut *per-evaluation* cost, not the *evaluation
+  count* (still 101 evaluations/call, ±5 Hz radius at 0.1 Hz step).
+  Cross-checking the call site's own "+/-5 Hz refine radius…matches
+  WSJT-X" comment against `lib/ft4/subtractft4.f90` found the comment
+  wrong: WSJT-X's `subtractft4` has no frequency-refine step at all, so
+  there was nothing to match. The ±5 Hz figure actually came from
+  `refine_freq`'s generic doc comment (written for `coarse_sync`'s
+  ~2.93 Hz FFT-bin uncertainty) and was never re-derived after FT4 moved
+  onto `ft4_coarse_sync` + `ft4_sync_search` (section 7/13), whose df
+  search (`core::sync2d::ft4_sync_search`) only ever produces
+  integer-Hz offsets — bounding the true optimum to within ±0.5 Hz of
+  the reported freq by construction, tighter than the ±2.5 Hz the old
+  comment assumed. Shrunk `refine_freq_radius_hz` `5.0 → 1.0` (kept the
+  0.1 Hz step — the response's mainlobe is well under 1 Hz wide, so
+  widening the step risks skipping it), cutting the grid 101 → 21
+  evaluations/call. **280 ms → 110 ms** (~2.5x further, ~2.3x off the
+  48.8 ms pre-#178 floor now vs. 5.7x before this pass), recall
+  byte-identical (6/6 golden, 14/14 total decodes) and the
+  `ft4_busy_band_fading_probe.rs` Rayleigh-fading regression guard
+  unchanged at 10/10. See `FT4_BENCHMARK.md` section 16.
 - FT8's `qso3_busy.wav` was the outlier at **4.73 s** (busy band, 16
   simultaneous signals) until a profiling pass (2026-07-20) found the
   cost wasn't BP/OSD at all but `subtract_tones_lpf`'s successive-

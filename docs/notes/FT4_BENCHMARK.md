@@ -779,3 +779,75 @@ different corpus or a different score quantity.
 
 Full non-ignored suite (922 passed) and `-D clippy::perf -D warnings`
 green both before and after the revert.
+
+## 16. `refine_freq`'s search radius was 5x too wide (issue #182 follow-up, 2026-07-26)
+
+Follow-up to section 13's update: issue #182 (`FT8_BENCHMARK.md`, same-day
+`fine_refine_3stage` port) fixed `refine_freq`'s dominant cost — full GFSK
+resynthesis per grid point — by switching to a per-sample NCO tweak of a
+once-built carrier-free reference (`ls_amp_mag_tweaked`). That dropped
+`refine_freq` from ~35 ms/call to ~15.7-16.2 ms/call and
+`decode_frame_subtract`'s golden-WAV wall-clock from ~530-580 ms to
+~280 ms — a real fix, but still 5.7x the pre-#178 baseline of 48.8 ms, and
+the user-reported "still slow" symptom this section addresses.
+
+Re-measured with a standalone microbenchmark isolating `refine_freq` /
+`subtract_tones_lpf` from the rest of `decode_frame_subtract` (14 calls
+each, matching the golden WAV's real accepted-decode count):
+`refine_freq` alone accounted for 227 ms of the 280 ms total (81%,
+16.2 ms/call); `subtract_tones_lpf` only 13 ms (5%, already FFT-cached
+per issue #180). Confirms `refine_freq`'s ±5 Hz/0.1 Hz grid (101
+evaluations/call) — not `subtract_tones_lpf` — is still the bottleneck
+after the NCO fix; the NCO fix cut *per-evaluation* cost, not the
+*evaluation count*.
+
+**Root cause of the evaluation count being unnecessarily large**: cross-
+checked `refine_freq`'s call-site comment ("+/-5 Hz refine radius" —
+claimed to match WSJT-X) against `lib/ft4/subtractft4.f90` directly.
+WSJT-X's `subtractft4` has **no frequency-refine step at all** — it
+synthesizes the reference at the decoded `f0` and subtracts directly, no
+grid search, no `ctwk`-style tweak (that mechanism is FT8-only,
+`sync8d.f90`, and operates during *sync*, not *subtract*). The call-site
+comment's "matches WSJT-X" claim was simply wrong; `refine_freq` is an
+mfsk-core-specific step compensating for this codebase's own coarse-sync
+frequency resolution, not a port of anything WSJT-X does in the subtract
+path.
+
+The ±5 Hz figure traces to `refine_freq`'s own doc comment, written
+against the *generic* `core::sync::coarse_sync`'s ~2.93 Hz FFT-bin
+resolution ("recommend 2.5 Hz to cover one bin either side"). But FT4
+stopped using that generic coarse-sync path back in section 13
+(`ft4_coarse_sync`, a `getcandidates4.f90` port with its own, different
+bin structure) — and more directly, `r.freq_hz` going into `refine_freq`
+is `process_candidate_basic`'s post-`ft4_sync_search` refined value
+(section 7's own fix), not a raw coarse-sync bin. Reading
+`core::sync2d::ft4_sync_search`'s df search (`core/sync2d.rs`) line by
+line: both its coarse pass (`idf` in `-12..=12` step 3) and fine pass
+(`si` in `-4..=4` step 1) only ever produce **integer-Hz** `df` values —
+the reported `freq_hz` is always `candidate.freq_hz + <integer>`. That
+bounds the true continuous optimum to within ±0.5 Hz of the reported
+value by construction — a much tighter guarantee than the generic
+coarse-sync comment's ±2.5 Hz assumed, and the ±5 Hz radius was never
+re-derived when FT4 moved onto this tighter-bound path.
+
+**Fix**: `ft4/decode.rs`'s `decode_frame_subtract_with_options` call
+site — `refine_freq_radius_hz` `5.0 → 1.0` (kept the existing 0.1 Hz
+step, since the mainlobe of `ls_amp_mag_tweaked`'s frequency response is
+narrow enough — well under 1 Hz for a ~7.5 s tone train — that widening
+the *step* risks skipping over it entirely; only the *radius* was
+oversized). Cuts the grid from 101 to 21 evaluations/call, a margin of
+0.5 Hz still on each side of the ±0.5 Hz quantization bound above.
+
+**Measured**: golden WAV `decode_frame_subtract` wall-clock **280.3 ms →
+110.2 ms** (~2.5x), recall byte-identical (6/6 golden, 14/14 total
+decodes, same messages/freq/dt as before). The section-11-referenced
+busy-band Rayleigh-fading regression guard (`ft4_busy_band_fading_probe.rs
+::busy_band_fading_baseline`, the exact scenario the LPF-subtract
+migration in issues #177-179 was built to fix) stayed **10/10** target
+recoveries. Full non-ignored suite and `-D clippy::perf -D warnings`
+green. Cumulative from the pre-#178 baseline: 48.8 ms → 110.2 ms (2.3x
+remaining gap) — the residual is the LPF subtract + freq-refine step's
+now-irreducible cost (21 `ls_amp_mag_tweaked` evaluations + one
+`subtract_tones_lpf` FFT pair per real decode), a deliberate
+recall-quality addition per section 13's original update, not redundant
+work.
