@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190)
 
 ### Added
 
@@ -1288,6 +1288,49 @@
   impact either way, since `decode_block_multipass`'s
   `not(fft-rustfft)` variant has no subtract loop (single-pass, no
   SIC) and never calls these paths.
+- **FT8 CCIR moderate/poor sweep sensitivity gap closed, root-caused
+  as a comparison-methodology gap, not a numerical deficiency**
+  (#190). The ~0.6-0.7 dB gap vs real `jt9 -8 -d3` on the
+  `ft8sim`-driven CCIR moderate/poor 50%-crossing sweep traced (via a
+  locally-instrumented `jt9` build, `ISSUE190_PROBE` prints following
+  the `DL8YHR_PROBE` precedent from #180) to `jt9`'s CLI hardcoding
+  `lft8apon=.true.` (`lib/jt9.f90:302`, independent of the GUI's own
+  default-off `FT8AP` setting) — every `jt9 -8 -d3` invocation used
+  throughout this project's WSJT-X-parity work has implicitly
+  included a free "CQ ??? ???" AP hypothesis pass (WSJT-X iaptype-1,
+  needs no operator-supplied mycall/hiscall), and the sweep corpus's
+  message (`CQ JL1NIE PM95`) is exactly the class that pass targets.
+  Traced nsync (14/16/18) matching jt9 almost exactly on the 3
+  `ccir_moderate_m19_{01,05,14}.wav` trials jt9 wins and mfsk-core
+  lost — ruling out the fine-sync/coherent-combining lead
+  `FT8_BENCHMARK.md` section 10 had flagged — and found jt9's own
+  blind `ipass=1..4` also failed identically on all 3, succeeding
+  only via `ipass=5` (`iaptype=1`). mfsk-core's
+  `process_one_candidate_inner` already had the matching "Pass 12:
+  blind-CQ" logic, but it was gated behind `ap_hint.is_some()`, so
+  plain `decode_frame` (no AP hint) never reached it. Not a revival of
+  the auto-AP mechanism removed earlier in this release — that was
+  iaptype-2 self-seeding from same-slot callsigns, an mfsk-core
+  original with no WSJT-X counterpart; this is iaptype-1, a faithful
+  port. Fix: pass 12 now runs whenever the blind BP/OSD staircase
+  fails **and** `sync_quality (nsync) ≥ BLIND_CQ_MIN_NSYNC (12)`,
+  independent of `ap_hint`. The nsync floor is a cost gate added after
+  measuring an un-gated first version: on `qso3_busy.wav`'s multipass
+  staged-SIC path it sent 188 candidates through this pass (140 at
+  nsync 7-9, none producing a decode there — real recoveries needed
+  nsync 14-18), pushing wall-clock 0.7 s → 1.5 s, slower than real
+  jt9's own ~1.15 s on the same file. Gating at nsync≥12 cuts that to
+  34 candidates and ~0.85 s (faster than jt9 again), zero recall
+  change either way. Re-measured 50%-crossings (same 780-file corpus,
+  gated version): AWGN -21.4→-21.6 dB, CCIR good -20.8→-21.1 dB, CCIR
+  moderate -18.9→-20.0 dB, CCIR poor -19.0→-19.7 dB — moderate now
+  ahead of real `jt9 -8 -d3`, poor at parity (was behind on both). No
+  recall regression on any FT8 golden test (WSJT-X AP-off 7/8, JTDX
+  18/18, full-parity 8/8, staged-SIC 18/18, AP-on JTDX-extras 6/6);
+  `qso3_busy.wav` single-pass `DecodeDepth::FULL` wall-clock ~139-141
+  ms → ~165-175 ms (~6-7× faster than real `jt9 -8 -d3`'s ~1.1-1.2 s).
+  See `FT8_BENCHMARK.md` section 11 for the full trace and cost
+  investigation.
 
 ## 0.7.4 — MSK144 decode (#25)
 
