@@ -20,7 +20,7 @@ use super::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use super::dsp::subtract::SubtractCfg;
 use super::equalize::{EqMode, equalize_local};
 use super::llr::{compute_llr, compute_snr_db, descramble_info, symbol_spectra, sync_quality};
-use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
+use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 
@@ -206,6 +206,21 @@ impl DecodeResult {
     }
 }
 
+/// Protocols with a dedicated 2-D (frequency + time) coarse-candidate
+/// refine search wired into [`process_candidate_basic`] — currently `Ft4`
+/// ([`super::sync2d::ft4_sync_search`]) and every FST4 sub-mode
+/// ([`super::sync2d::fst4_sync_search`]).
+///
+/// Sealed by construction to this crate's own protocol modules: not a
+/// `sealed`-trait pattern, just documentation of intent, since the
+/// generic fallback this trait replaced (a bare `refine_candidate::<P>`
+/// call, time-only, no frequency correction) was confirmed unreachable by
+/// every call site in the crate before removal (issue #192) — FT8 has its
+/// own separate bespoke engine and never instantiates this pipeline at
+/// all. Adding a new protocol here means giving it a real `*_sync_search`
+/// function first, not falling back to an unvalidated generic path.
+pub trait GenericPipelineProtocol: Protocol {}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Per-candidate processing
 // ──────────────────────────────────────────────────────────────────────────
@@ -214,7 +229,7 @@ impl DecodeResult {
 ///
 /// `fft_cache` must match the protocol's [`DownsampleCfg`]. `known` is used
 /// to prevent redundant OSD work on frequencies with an existing decode.
-pub fn process_candidate_basic<P: Protocol>(
+pub fn process_candidate_basic<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
@@ -222,7 +237,6 @@ pub fn process_candidate_basic<P: Protocol>(
     strictness: DecodeStrictness,
     known: &[DecodeResult],
     eq_mode: EqMode,
-    refine_steps: i32,
     sync_q_min: u32,
 ) -> Option<DecodeResult> {
     let ntones = P::NTONES as usize;
@@ -550,19 +564,15 @@ pub fn process_candidate_basic<P: Protocol>(
     // ±10 samples) caused regression because noise peaks at the window
     // edge displaced the fine pass outside reach of the true position.
     //
-    // FT8 (and everything else) keeps the generic time-only
-    // `refine_candidate` path; FT8 has its own 3-stage refine wired
-    // separately in `ft8/decode.rs`.
+    // `P: GenericPipelineProtocol` is implemented only for `Ft4` and each
+    // FST4 sub-mode (issue #192) — no third case exists to fall back to,
+    // so this is a plain two-way dispatch, not a `P::ID`-exhaustive match.
     let (freq_hz, i0, score) = if P::ID == super::ProtocolId::Ft4 {
         let s2 = super::sync2d::ft4_sync_search::<P>(&cd0_base, cand);
         (s2.freq_hz, s2.i0, s2.score)
-    } else if P::ID == super::ProtocolId::Fst4 {
+    } else {
         let s2 = super::sync2d::fst4_sync_search::<P>(&cd0_base, cand);
         (s2.freq_hz, s2.i0, s2.score)
-    } else {
-        let refined = refine_candidate::<P>(&cd0_base, cand, refine_steps);
-        let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
-        (refined.freq_hz, i_start, refined.score)
     };
 
     // A WSJT-X-style `smax` early exit (`ft4_decode.f90:279`:
@@ -627,7 +637,7 @@ fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Decode one slot of audio: coarse sync → candidates → BP/OSD per candidate.
-pub fn decode_frame<P: Protocol>(
+pub fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
     freq_min: f32,
@@ -638,7 +648,6 @@ pub fn decode_frame<P: Protocol>(
     max_cand: usize,
     strictness: DecodeStrictness,
     eq_mode: EqMode,
-    refine_steps: i32,
     sync_q_min: u32,
 ) -> (Vec<DecodeResult>, FftCache) {
     // FT4's own coarse-candidate stage (`core::ft4_coarse::ft4_coarse_sync`,
@@ -671,7 +680,6 @@ pub fn decode_frame<P: Protocol>(
                 strictness,
                 &[],
                 eq_mode,
-                refine_steps,
                 sync_q_min,
             )
         })
@@ -688,7 +696,6 @@ pub fn decode_frame<P: Protocol>(
                 strictness,
                 &[],
                 eq_mode,
-                refine_steps,
                 sync_q_min,
             )
         })
@@ -720,7 +727,7 @@ pub fn decode_frame<P: Protocol>(
 /// the residual audio; decoded signals are reconstructed and subtracted so
 /// subsequent passes can expose previously-masked weak signals.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_frame_subtract<P: Protocol>(
+pub fn decode_frame_subtract<P: GenericPipelineProtocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
     sub_cfg: &SubtractCfg,
@@ -731,7 +738,6 @@ pub fn decode_frame_subtract<P: Protocol>(
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
-    refine_steps: i32,
     sync_q_min: u32,
     // Channel-aware LPF subtract tuning (issue #178/#179 FT4 port).
     // Protocol-specific — mirrors WSJT-X's per-protocol `NFILT`/
@@ -786,7 +792,6 @@ pub fn decode_frame_subtract<P: Protocol>(
                     strictness,
                     &all_results,
                     EqMode::Off,
-                    refine_steps,
                     sync_q_min,
                 )
             })
@@ -803,7 +808,6 @@ pub fn decode_frame_subtract<P: Protocol>(
                     strictness,
                     &all_results,
                     EqMode::Off,
-                    refine_steps,
                     sync_q_min,
                 )
             })

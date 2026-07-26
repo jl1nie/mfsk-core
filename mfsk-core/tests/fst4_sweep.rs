@@ -372,7 +372,7 @@ fn fst4_diag_weak_trials() {
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
 
-    fn probe<P: mfsk_core::core::Protocol>(
+    fn probe<P: mfsk_core::core::pipeline::GenericPipelineProtocol>(
         dir: &std::path::Path,
         file_prefix: &str,
         cfg: &mfsk_core::core::dsp::downsample::DownsampleCfg,
@@ -409,7 +409,6 @@ fn fst4_diag_weak_trials() {
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
-                    40,
                     10,
                 );
                 eprintln!("  -> decode result: {:?}", r.map(|d| d.sync_score));
@@ -480,7 +479,7 @@ fn fst4_diag_nsym4_ladder() {
         trials: std::ops::RangeInclusive<u32>,
         tally: &mut Tally,
     ) where
-        P: mfsk_core::core::Protocol,
+        P: mfsk_core::core::pipeline::GenericPipelineProtocol,
         P::Fec: FecCodec,
         P::Msg: MessageCodec,
     {
@@ -511,7 +510,6 @@ fn fst4_diag_nsym4_ladder() {
                 DecodeStrictness::Normal,
                 &[],
                 EqMode::Off,
-                40,
                 10,
             )
             .is_some();
@@ -801,7 +799,6 @@ fn fst4_120_diag_sync_vs_decode_failure() {
                     DecodeStrictness::Normal,
                     &[],
                     EqMode::Off,
-                    40,
                     10,
                 ) {
                     let mut m77 = [0u8; 77];
@@ -858,7 +855,6 @@ fn fst4_60_diag_candidate_cost_split() {
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
-    const REFINE_STEPS: i32 = 40;
     const SYNC_Q_MIN: u32 = 10;
 
     fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
@@ -917,7 +913,6 @@ fn fst4_60_diag_candidate_cost_split() {
             DecodeStrictness::Normal,
             &[],
             EqMode::Off,
-            REFINE_STEPS,
             SYNC_Q_MIN,
         );
         total_process += t0.elapsed();

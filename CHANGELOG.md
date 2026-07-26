@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking)
 
 ### Added
 
@@ -982,6 +982,42 @@
   purpose was A/B-validating BASIS against Goertzel during the
   Phase 1.7.7-Stick migration, which is moot once BASIS no longer
   exists to compare against.
+- **`core::pipeline`'s unreachable generic-refine fallback + dead
+  `refine_candidate_double`** (issue #192 investigation) — auditing
+  whether FT8's decode engine should unify with `core::pipeline` (as
+  #192 originally proposed) found the reverse problem first: the
+  generic engine already carried speculative generality nothing used.
+  An exhaustive call-graph audit (every call site in `src`, `tests`,
+  and doc examples) confirmed two dead branches:
+  - `process_candidate_basic`'s bare `refine_candidate::<P>` fallback
+    (time-only refine, no frequency correction) — every real caller is
+    `Ft4` or an FST4 sub-mode, both of which already take the
+    frequency-aware `ft4_sync_search`/`fst4_sync_search` branch; FT8
+    never calls into this pipeline at all (it has its own bespoke
+    engine). Replaced the runtime branch with a new sealed-by-convention
+    marker trait, `core::pipeline::GenericPipelineProtocol: Protocol`,
+    implemented only for `Ft4` and the five FST4 sub-modes — calling
+    `process_candidate_basic`/`decode_frame`/`decode_frame_subtract`
+    with any other protocol is now a compile error instead of silently
+    falling back to an unvalidated code path.
+  - `core::sync::refine_candidate_double` and its `FineSyncDetail`
+    result type — a generalized "double sync" (independent first-block/
+    last-block refine + drift estimate) with zero callers anywhere in
+    the crate; FT8's own copy of this idea was already removed in #49.
+    Deleted both outright, along with the now-pointless `FineSyncDetail`
+    re-export from `ft8::sync`.
+  - The now-dead `refine_steps` parameter threaded through
+    `process_candidate_basic`/`decode_frame`/`decode_frame_subtract`
+    (only consumed by the removed fallback) was also dropped from all
+    three signatures — `Ft4`/FST4 callers no longer pass it.
+  - **Not done**: full FT8/`core::pipeline` engine unification, as #192
+    originally scoped it. That would mean porting FT8-only machinery
+    (blind-CQ AP pass, non-AP OSD fallback, lazy LLR-effort staircase,
+    two-phase sync/data fill, frequency-aware 3-stage refine) into a
+    layer with no second consumer — the opposite direction from this
+    cleanup. Issue #192 closed with this narrower fix instead; FST4 SIC
+    and `DecodeResult` semantic unification remain tracked separately
+    in #193/#194.
 
 ### Fixed
 

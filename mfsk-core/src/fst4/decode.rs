@@ -140,6 +140,8 @@ fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResu
 /// `SYNC_Q_MIN` — only the downsample geometry differs.
 macro_rules! impl_frame_decodable {
     ($proto:ty, $cfg:expr) => {
+        impl pipeline::GenericPipelineProtocol for $proto {}
+
         impl FrameDecodable for $proto {
             type DecodeResult = DecodeResult;
 
@@ -155,7 +157,6 @@ macro_rules! impl_frame_decodable {
                     req.max_cand,
                     req.strictness,
                     req.eq_mode,
-                    REFINE_STEPS,
                     SYNC_Q_MIN,
                 );
                 DecodeOutcome {
