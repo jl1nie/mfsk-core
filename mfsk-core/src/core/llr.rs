@@ -205,6 +205,58 @@ pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<
 const MAX_NSYM: usize = 16;
 const MAX_IBMAX_PLUS_1: usize = 32;
 
+/// Complex coherent-sum table for `span` consecutive symbols starting
+/// at frame symbol `ks` — one entry per `ntones^span` tone-combination
+/// hypothesis, left un-normalised (magnitude is taken by the caller
+/// once, at the top level only — matches WSJT-X's own `c1`/`c2`/`c4`
+/// staying complex until the final `abs()`,
+/// `get_fst4_bitmetrics.f90:94-162`).
+///
+/// Recursively splits `span` into `hi = span/2`, `lo = span - hi`,
+/// builds each half, and combines via outer-sum:
+/// `combined[i * lo_len + j] = half_hi[i] + half_lo[j]` — `i` (the
+/// earlier `hi` symbols) in the high-order position, `j` (the later
+/// `lo` symbols) in the low-order position. This matches the same
+/// big-endian mixed-radix digit convention the flat direct-sum
+/// computation used (symbol 0 of a group = most significant digit of
+/// the hypothesis index), so index `i` means exactly the same
+/// tone-combination hypothesis either way.
+///
+/// Base case `span == 1` is the trivial per-tone lookup (`O(ntones)`,
+/// no recursion). Reduces the s2-fill loop's `O(nt * nsym)` direct-sum
+/// cost to `O(nt)` at the top-level combine (plus lower-order cost
+/// building the halves) — WSJT-X's own reasoning ("eliminates
+/// redundant calculations") ported to this per-`nsym`-call shape. For
+/// FST4's `nsym=8` rung (`nt=65536`) this cuts the s2-fill cost from
+/// `65536*8=524288` adds to `65536 + 256 + 16 ≈ 65808`, ~8x.
+fn build_group_amplitudes<S: SpecScalar>(
+    cs: &[Cmplx<S>],
+    ks: usize,
+    span: usize,
+    ntones: usize,
+    gray_map: &[u8],
+) -> Vec<Complex<f32>> {
+    if span == 1 {
+        return (0..ntones)
+            .map(|t| {
+                let entry = cs[ks * ntones + gray_map[t] as usize];
+                Complex::new(entry.re.to_f32(), entry.im.to_f32())
+            })
+            .collect();
+    }
+    let hi = span / 2;
+    let lo = span - hi;
+    let half_hi = build_group_amplitudes::<S>(cs, ks, hi, ntones, gray_map);
+    let half_lo = build_group_amplitudes::<S>(cs, ks + hi, lo, ntones, gray_map);
+    let mut out = Vec::with_capacity(half_hi.len() * half_lo.len());
+    for &a in &half_hi {
+        for &b in &half_lo {
+            out.push(a + b);
+        }
+    }
+    out
+}
+
 fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
@@ -234,26 +286,9 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
          i_bit_base: usize,
          bmet_primary: &mut [f32],
          bmet_norm_holder: &mut Option<&mut [f32]>| {
-            for (i, s2_i) in s2.iter_mut().enumerate() {
-                // Base-`ntones` digit decomposition of `i`, most
-                // significant symbol first — on the stack instead of a
-                // per-hypothesis `Vec` (this loop runs `nt` times per
-                // group, up to 65536 for FST4's nsym=8 rung, so a heap
-                // allocation per iteration here was the dominant cost).
-                let mut digits = [0usize; MAX_NSYM];
-                let mut rem = i;
-                for j in (0..nsym).rev() {
-                    digits[j] = rem % ntones;
-                    rem /= ntones;
-                }
-                let mut sum_re = 0.0f32;
-                let mut sum_im = 0.0f32;
-                for j in 0..nsym {
-                    let entry = cs[(ks + j) * ntones + gray_map[digits[j]] as usize];
-                    sum_re += entry.re.to_f32();
-                    sum_im += entry.im.to_f32();
-                }
-                *s2_i = (sum_re * sum_re + sum_im * sum_im).sqrt();
+            let table = build_group_amplitudes::<S>(cs, ks, nsym, ntones, gray_map);
+            for (s2_i, entry) in s2.iter_mut().zip(&table) {
+                *s2_i = (entry.re * entry.re + entry.im * entry.im).sqrt();
             }
             // Single pass over `s2` updating every bit position's
             // running max-when-1 / max-when-0 together, instead of the
