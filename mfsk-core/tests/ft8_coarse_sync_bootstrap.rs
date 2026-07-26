@@ -46,9 +46,23 @@ fn median(mut xs: Vec<f32>) -> Option<f32> {
 }
 
 /// K=5 |Δ| budget vs confirmed-decode median. Empirical worst case on
-/// the three reference WAVs is ~68 ms; 100 ms gives a small safety
-/// margin without admitting K=10's ~225-275 ms misses.
+/// the three reference WAVs is 90 ms (host f32); 100 ms gives a small
+/// safety margin without admitting K=10's ~225-275 ms misses.
+#[cfg(not(feature = "fixed-point"))]
 const BOOTSTRAP_MAX_DELTA_SEC: f32 = 0.100;
+
+/// `fixed-point`'s `coarse_sync` quantises candidate magnitudes
+/// through `SpecCell = u16` / `CoarseAcc = i32` (see
+/// `decode_block/spectrogram.rs` and `decode_block/coarse_sync.rs`)
+/// rather than host f32's direct sum — this measurably reorders which
+/// candidates land in the top-5 by score, without indicating any
+/// decode-correctness problem (`ft8_qso3_apoff_recall`'s
+/// fixed-point run gets byte-identical golden hits + phantom set to
+/// f32 on the same fixture). Empirical worst case here is 116 ms
+/// (`qso3_busy.wav`); 130 ms keeps a similar small margin to the f32
+/// budget above.
+#[cfg(feature = "fixed-point")]
+const BOOTSTRAP_MAX_DELTA_SEC: f32 = 0.130;
 
 fn check_one(label: &str, wav_path: &str) {
     let audio = load_wav_i16(Path::new(wav_path));
