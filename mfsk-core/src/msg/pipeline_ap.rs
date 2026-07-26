@@ -20,7 +20,9 @@ use num_traits::Float;
 
 use crate::core::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use crate::core::equalize::{EqMode, equalize_local};
-use crate::core::llr::{compute_llr, compute_snr_db, symbol_spectra, sync_quality};
+use crate::core::llr::{
+    compute_llr_fast, compute_llr_partial, compute_snr_db, symbol_spectra, sync_quality,
+};
 use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
 use crate::core::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
 use crate::core::tx::codeword_to_itone;
@@ -137,30 +139,55 @@ where
 
     for (cs_ref, _used_eq) in try_order {
         let cs_ref: &[Complex<f32>] = cs_ref;
-        let llr_set = compute_llr::<P, f32>(cs_ref);
+
+        // Lazy nsym staircase (issue #199 follow-up): build each LLR
+        // variant only as this loop reaches it, instead of eagerly
+        // computing the whole `LlrSet` (nsym=1, 2, `LLR_NSYM_MAX`) up
+        // front regardless of whether a cheap variant already lets
+        // plain BP succeed. Mirrors the lazy staircase
+        // `core::pipeline::process_candidate_basic` has had since
+        // commit `4801722` (issue #197 item 2) — this AP-path sibling
+        // never got the same port despite sharing the exact same
+        // motivation (FST4's `LLR_NSYM_MAX=8` rung enumerates
+        // `4^8=65536` tone-combination hypotheses per group, 128-256x
+        // FT8/FT4's own deepest rung). If every plain-BP attempt below
+        // fails (the common case whenever an AP-assisted pass is what
+        // actually succeeds), `llr_set` ends up fully populated exactly
+        // once by the time the AP loop runs — same total cost as the
+        // previous eager version, so this is a pure win with no
+        // regression on the AP-success path.
+        let mut llr_set = compute_llr_fast::<P, f32>(cs_ref);
+        macro_rules! try_plain_bp {
+            ($llr:expr, $pass_id:expr) => {
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
+                    ..FecOpts::default()
+                };
+                if let Some(r) = fec.decode_soft($llr, &bp_opts)
+                    && let Some(res) = finalise_result::<P>(
+                        &r, cand, &refined, sync_cv, $pass_id, cs_ref, None, &fec,
+                    )
+                {
+                    return Some(res);
+                }
+            };
+        }
+        try_plain_bp!(&llr_set.llra, 0u8);
+        llr_set.llrb = compute_llr_partial::<P, f32, f32>(cs_ref, 2);
+        try_plain_bp!(&llr_set.llrb, 1u8);
+        llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs_ref, P::LLR_NSYM_MAX as usize);
+        try_plain_bp!(&llr_set.llrc, 2u8);
+        try_plain_bp!(&llr_set.llrd, 3u8);
+
         let variants = [
             (&llr_set.llra, 0u8),
             (&llr_set.llrb, 1),
             (&llr_set.llrc, 2),
             (&llr_set.llrd, 3),
         ];
-
-        // ── Plain BP first, in case the signal is already clear ────────
-        for (llr, pass_id) in &variants {
-            let bp_opts = FecOpts {
-                bp_max_iter: 30,
-                osd_depth: 0,
-                ap_mask: None,
-                verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
-                ..FecOpts::default()
-            };
-            if let Some(r) = fec.decode_soft(llr, &bp_opts)
-                && let Some(res) =
-                    finalise_result::<P>(&r, cand, &refined, sync_cv, *pass_id, cs_ref, None, &fec)
-            {
-                return Some(res);
-            }
-        }
 
         // ── AP-assisted passes ─────────────────────────────────────────
         //
