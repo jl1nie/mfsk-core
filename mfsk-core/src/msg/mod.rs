@@ -14,8 +14,16 @@
 
 pub mod ap;
 // `DecodeRequest`/`SniperRequest` builder (issue #191); depends on
-// `pipeline_ap`'s generic AP engine, so declared after it.
-#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+// `pipeline_ap`'s generic AP engine, so declared after it. Also needs
+// at least one `FrameDecodable` implementor (`ft8`/`ft4`/`fst4`) or its
+// generic structs have zero concrete instantiations anywhere in the
+// crate, making every field dead code under `-D warnings` (e.g. a
+// `jt65`-only build: `fft-rustfft` is on via `jt65`'s own feature
+// dependency, but no protocol implements `FrameDecodable`).
+#[cfg(all(
+    any(feature = "fft-rustfft", feature = "fft-extern"),
+    any(feature = "ft8", feature = "ft4", feature = "fst4")
+))]
 pub mod decode_request;
 pub mod hash_table;
 pub mod jt72;
