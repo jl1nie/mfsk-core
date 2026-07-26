@@ -16,10 +16,15 @@
 //!   (`ft8::decode::process_candidate`) now turbofish the generic
 //!   functions directly. Out-of-tree FT8 callers should do the same.
 //!
-//! The re-exports below preserve the [`SyncCandidate`] and
-//! [`FineSyncDetail`] types at their FT8-namespaced paths so naming
-//! stays stable even though no FT8-specific code lives here anymore.
+//! - `refine_candidate_double` and its `FineSyncDetail` result type were
+//!   deleted outright from `crate::core::sync` in issue #192: an
+//!   exhaustive call-graph audit found zero callers anywhere in the
+//!   crate (production, tests, or benches) — the generic engine's
+//!   fallback path that would have used it was unreachable and removed
+//!   in the same pass (see `core::pipeline::GenericPipelineProtocol`).
+//!
+//! The re-export below preserves the [`SyncCandidate`] type at its
+//! FT8-namespaced path so naming stays stable even though no
+//! FT8-specific code lives here anymore.
 
-pub use crate::core::sync::{
-    FineSyncDetail, SyncCandidate, make_costas_ref, parabolic_peak, score_costas_block,
-};
+pub use crate::core::sync::{SyncCandidate, make_costas_ref, parabolic_peak, score_costas_block};

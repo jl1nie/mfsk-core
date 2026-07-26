@@ -68,6 +68,8 @@ fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResu
         .collect()
 }
 
+impl pipeline::GenericPipelineProtocol for Ft4 {}
+
 impl FrameDecodable for Ft4 {
     type DecodeResult = DecodeResult;
 
@@ -85,7 +87,6 @@ impl FrameDecodable for Ft4 {
             req.max_cand,
             req.strictness,
             req.eq_mode,
-            REFINE_STEPS,
             SYNC_Q_MIN,
         );
         DecodeOutcome {
@@ -139,7 +140,6 @@ impl SupportsFlatSic for Ft4 {
             req.depth,
             req.max_cand,
             req.strictness,
-            REFINE_STEPS,
             SYNC_Q_MIN,
             // lpf_half/end-correction match WSJT-X `subtractft4.f90`:
             // NFILT=1400 (lpf_half=700), no end-correction. See

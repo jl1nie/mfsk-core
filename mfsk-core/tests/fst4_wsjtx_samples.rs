@@ -190,7 +190,6 @@ fn fst4_60_diagnose_golden() {
             DecodeStrictness::Normal,
             &[],
             EqMode::Off,
-            40,
             0, // sync_q_min=0: bypass the gate, we want to see every attempt
         );
         let outcome = match result {
