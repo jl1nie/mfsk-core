@@ -37,7 +37,7 @@
 //!     /* freq_max */ 3_000.0,
 //!     /* sync_min */ 1.0,
 //!     /* freq_hint */ None,
-//!     DecodeDepth::BpAllOsd,
+//!     DecodeDepth::FULL,
 //!     /* max_cand */ 200,
 //! );
 //! for r in &results {

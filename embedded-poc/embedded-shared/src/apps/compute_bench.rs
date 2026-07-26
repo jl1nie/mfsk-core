@@ -205,9 +205,9 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
     );
 
     let depth = if OSD_ENABLED {
-        mfsk_core::ft8::decode::DecodeDepth::BpAllOsd
+        mfsk_core::ft8::decode::DecodeDepth::FULL
     } else {
-        mfsk_core::ft8::decode::DecodeDepth::BpAll
+        mfsk_core::ft8::decode::DecodeDepth::BP_ONLY
     };
     let t4 = now_us();
     let results = dual_core::stage3_split(

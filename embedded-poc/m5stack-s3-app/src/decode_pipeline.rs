@@ -200,7 +200,7 @@ where
             max_cand: MAX_CAND,
             q_thresh: DEFAULT_Q_THRESH,
             bp_max_iter: mfsk_core::ft8::params::DEFAULT_BP_MAX_ITER,
-            depth: DecodeDepth::BpVariantsAd,
+            depth: DecodeDepth::EMBEDDED,
         };
         let out = dual_core::run_speculative_slot(spec_q, slot_q, &cfg);
         let dual_core::SpeculativeOut {

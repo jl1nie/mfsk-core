@@ -55,7 +55,7 @@ fn check_one(label: &str, wav_path: &str) {
     let spec = compute_spectrogram(&audio, 3_000.0);
 
     let cands: Vec<SyncCandidate> = coarse_sync(&spec, 100.0, 3_000.0, 1.0, 200);
-    let decodes = decode_block(&audio, 100.0, 3_000.0, 1.0, DecodeDepth::BpAllOsd, 30);
+    let decodes = decode_block(&audio, 100.0, 3_000.0, 1.0, DecodeDepth::FULL, 30);
 
     let dt_conf = median(decodes.iter().map(|r| r.dt_sec).collect())
         .expect("reference WAVs all have ≥1 confirmed decode");

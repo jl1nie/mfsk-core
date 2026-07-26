@@ -89,8 +89,8 @@ pub enum MfskFt8Depth {
 #[inline]
 fn map_depth(d: MfskFt8Depth) -> DecodeDepth {
     match d {
-        MfskFt8Depth::BpAll => DecodeDepth::BpAll,
-        MfskFt8Depth::BpAllOsd => DecodeDepth::BpAllOsd,
+        MfskFt8Depth::BpAll => DecodeDepth::BP_ONLY,
+        MfskFt8Depth::BpAllOsd => DecodeDepth::FULL,
     }
 }
 

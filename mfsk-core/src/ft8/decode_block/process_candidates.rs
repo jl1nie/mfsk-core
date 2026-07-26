@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness};
+use super::super::decode::{ApHint, DecodeDepth, DecodeResult, DecodeStrictness, LlrEffort};
 use super::super::llr::sync_quality;
 use super::super::message::unpack77;
 use super::super::params::{COSTAS, DEFAULT_BP_MAX_ITER, LDPC_N, NSPS, NTONES};
@@ -287,38 +287,6 @@ fn decode_block_multipass<S: AudioSample>(
                 fft_cache = None; // `work` changed — cache is stale.
                 all.push(r);
             }
-        }
-    }
-
-    // Issue #117: auto-AP iaptype-2 rescue. After the 3-pass driver
-    // settles, take the callsigns we already decoded in this slot
-    // and feed them back as AP mycall candidates against a fresh
-    // coarse-sync pass. Recovers weak signals like K1BZM DK8NE @244 Hz
-    // -19 dB on `qso3_busy.wav` whose 28-bit caller-callsign
-    // constraint brings BP into convergence but which no operator-
-    // supplied AP context exists to seed.
-    //
-    // Gated to `BpAllOsd` host research config inside
-    // `auto_ap_strategy::run` — embedded ship (`BpAll` +
-    // fixed-point) returns an empty vec without doing any work.
-    {
-        let auto_ap_decodes = super::auto_ap_strategy::run(
-            audio,
-            freq_min,
-            freq_max,
-            sync_min,
-            max_cand,
-            &all,
-            depth,
-            bp_max_iter,
-            strictness,
-        );
-        for r in auto_ap_decodes {
-            if all.iter().any(|x| x.message77 == r.message77) {
-                continue;
-            }
-            crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
-            all.push(r);
         }
     }
 
@@ -1131,44 +1099,6 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     )
 }
 
-/// Slice-borrow variant of [`process_candidates_tuned_with_ap`].
-/// Lets a caller (e.g. auto-AP) reuse the same `RefinedCandidate`
-/// values across multiple AP-hint iterations without per-call
-/// `Vec::clone` + `Box::new` allocation churn.
-///
-/// Only used by `auto_ap_strategy` (fft-rustfft host research path);
-/// gated to match.
-#[cfg(feature = "fft-rustfft")]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn process_candidates_tuned_with_ap_ref<S: AudioSample>(
-    audio: &[S],
-    cands: &[RefinedCandidate],
-    depth: DecodeDepth,
-    q_thresh: u32,
-    bp_max_iter: u32,
-    ap_hint: Option<&ApHint>,
-    strictness: DecodeStrictness,
-    fft_cache: Option<&[Complex<f32>]>,
-) -> Vec<DecodeResult> {
-    let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
-        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
-            .try_into()
-            .unwrap();
-    process_candidates_with_ap(
-        audio,
-        cands,
-        depth,
-        q_thresh,
-        bp_max_iter,
-        &mut cs_scratch,
-        |cs, cand, mask| {
-            fill_symbol_spectra(cs, audio, cand.freq_hz, cand.dt_sec, mask, fft_cache);
-        },
-        ap_hint,
-        strictness,
-    )
-}
-
 /// Variant of [`process_candidates`] used by embedded fixed-point
 /// callers.
 ///
@@ -1501,12 +1431,14 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // Order chosen by ascending compute cost — same number of BP
     // calls as the old variant loop in the worst case, far fewer
     // in the typical case where any earlier variant decodes.
-    // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only);
-    // `b` and `c` add nsym=2 / nsym=3 LLR work on top of the BP.
-    let (run_d, run_b, run_c) = match depth {
-        DecodeDepth::BpAll | DecodeDepth::BpAllOsd => (true, true, true),
-        DecodeDepth::BpAllNoNsym3 => (true, true, false),
-        DecodeDepth::BpVariantsAd => (true, false, false),
+    // Per-variant gates. `d` is cheap (Step-1 LLR re-use, BP only) and
+    // unconditional — every `LlrEffort` tier ran it even before this
+    // struct existed, so there was never a real third state here.
+    // `b`/`c` add nsym=2 / nsym=3 LLR work on top of the BP.
+    let run_d = true;
+    let (run_b, run_c) = match depth.llr_effort {
+        LlrEffort::Minimal => (false, false),
+        LlrEffort::Full => (true, true),
     };
 
     if accepted.is_none() && run_d {
@@ -1536,10 +1468,10 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         }
         llrb_arr = Some(arr);
     }
-    // Variant c: lazy nsym=3 (the expensive one). Gated to the
-    // host-default depths — `BpAllNoNsym3` / `BpVariantsAd` skip it
-    // as the embedded post-SlotEnd dominant cost (~5× variant `b`)
-    // on busy-band reference WAVs (see DecodeDepth doc). Same
+    // Variant c: lazy nsym=3 (the expensive one). Gated to
+    // `LlrEffort::Full` — `LlrEffort::Minimal` skips it as the
+    // embedded post-SlotEnd dominant cost (~5× variant `b`) on
+    // busy-band reference WAVs (see `LlrEffort`'s doc comment). Same
     // `Option`-hoist (and `fft-rustfft`-only readback) as `llrb_arr`
     // above, for the same reason.
     let mut llrc_arr: Option<[LlrT; LDPC_N]> = None;
@@ -1579,7 +1511,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // couldn't see.
     #[cfg(feature = "fft-rustfft")]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> =
-        if accepted.is_none() && matches!(depth, DecodeDepth::BpAllOsd) && q > 6 {
+        if accepted.is_none() && depth.osd && q > 6 {
             #[cfg(not(feature = "fixed-point"))]
             {
                 match (llrb_arr, llrc_arr) {
@@ -1589,8 +1521,8 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                         llrc,
                         llrd: llr_a_fast.llrd,
                     }),
-                    // Defensive fallback — shouldn't happen for
-                    // `BpAllOsd` (see reasoning above), but a fresh
+                    // Defensive fallback — shouldn't happen when
+                    // `depth.osd` (see reasoning above), but a fresh
                     // compute is still correct if it ever does.
                     _ => Some(super::super::llr::compute_llr(cs_scratch)),
                 }
@@ -1608,10 +1540,16 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     #[cfg(not(feature = "fft-rustfft"))]
     let prefetched_llr: Option<super::super::llr::LlrSet<f32>> = None;
 
-    // Step 3: OSD fallback (sync_quality gated; only for BpAllOsd).
+    // Step 3: OSD fallback (sync_quality gated; only when `depth.osd`).
     // The actual dispatch — including the WSJT-X-faithfulness
     // deviation #63 tracks restoring — lives in `super::osd_strategy`
     // so #63 can patch it without touching the rest of this function.
+    // Host-only: `osd_strategy` itself is `#[cfg(feature =
+    // "fft-rustfft")]`-gated (`DecodeDepth::osd` is a no-op on
+    // embedded — see its doc comment in `ft8::decode`), so the call
+    // is gated the same way here rather than relying on `depth.osd`
+    // alone to keep it unreachable.
+    #[cfg(feature = "fft-rustfft")]
     if accepted.is_none() {
         accepted = super::osd_strategy::try_fallback(cs_scratch, prefetched_llr.as_ref(), depth, q);
     }
@@ -1728,8 +1666,8 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                     accepted = Some((bp, *pass_id));
                     break 'ap_outer;
                 }
-                // AP + OSD-Deep fallback (BpAllOsd only)
-                if depth == DecodeDepth::BpAllOsd
+                // AP + OSD-Deep fallback (`depth.osd` only)
+                if depth.osd
                     && let Some(osd) = osd_decode_deep(&llr_ap, 2, Some(check_crc14))
                     && validate(osd.message77, osd.hard_errors)
                 {

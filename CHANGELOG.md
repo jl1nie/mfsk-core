@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking)
 
 ### Added
 
@@ -613,6 +613,105 @@
   busy-band regression guard the LPF-subtract migration (#177-179) was
   built to fix (`ft4_busy_band_fading_probe.rs::busy_band_fading_baseline`)
   stayed 10/10. See `docs/notes/FT4_BENCHMARK.md` section 16.
+
+- **`ft8::decode::DecodeDepth` redesigned from a flat, ad-hoc 4-variant
+  enum into an orthogonal 2-field struct (breaking); the automatic
+  auto-AP rescue it used to gate was found unconditionally costing
+  ~1.2s for zero recall benefit and removed entirely** (issue #182
+  follow-up). Investigating why FT8's WSJT-X AP-off golden floor stays
+  at 7/8 (`K1BZM DK8NE -10` missing) surfaced that the ship-config
+  benchmark call uses `DecodeDepth::BpVariantsAd`, which skips OSD
+  entirely by design — not a fidelity bug, DK8NE genuinely decodes
+  under `BpAllOsd` (confirmed directly: `decode_block(..., BpAllOsd,
+  ..)` finds it at `freq=244.2 dt=0.510`). But the old
+  `DecodeDepth` enum (`BpAll`/`BpAllOsd`/`BpAllNoNsym3`/`BpVariantsAd`)
+  conflated two independent concerns — which LLR variants to try, and
+  whether to escalate to OSD — into 4 named combinations that couldn't
+  express "cheap variants + OSD" or any combination the original
+  author hadn't happened to name. `BpAllNoNsym3` (a middle tier between
+  the cheap and full variant sets) had zero real callers outside one
+  dedicated sweep test.
+
+  **New shape**:
+  ```rust
+  pub enum LlrEffort { Minimal, Full }
+  pub struct DecodeDepth { pub llr_effort: LlrEffort, pub osd: bool }
+  impl DecodeDepth {
+      pub const EMBEDDED: Self; // Minimal, osd: false — was BpVariantsAd
+      pub const BP_ONLY: Self;  // Full, osd: false — was BpAll
+      pub const FULL: Self;     // Full, osd: true — was BpAllOsd
+  }
+  ```
+  `BpAllNoNsym3` has no replacement — collapsed into the 2-tier scheme
+  after both its own sweep test's history and a fresh host measurement
+  (`qso3_busy.wav`) showed the LLR variants it dropped (`b`/`c`,
+  WSJT-X `ft8b.f90`'s own `llrb`/`llrc` naming) contribute +2.5ms/+5.5ms
+  wall-clock for **zero** extra decodes over the cheap `a`+`d` pair —
+  not enough signal to justify a third named tier.
+  `osd: true` is host-only by construction, not just convention: the
+  OSD dispatch code (`decode_block::osd_strategy`, gated the same way
+  `auto_ap_strategy` already was) is now `#[cfg(feature =
+  "fft-rustfft")]`-excluded from non-host builds entirely, so it's
+  impossible for an embedded build to accidentally link in OSD's
+  Gaussian-elimination/combinatorial-search machinery, and `osd: true`
+  is a silent no-op there rather than a footgun. OSD has never shipped
+  on an ESP32 target and there is no plan to add it — this was always
+  a permanent architectural boundary, now enforced structurally.
+
+  **Auto-AP removed entirely, not just re-gated.** While migrating
+  callers, `depth.osd`'s gate on `auto_ap_strategy`'s harvest-callsigns-
+  and-retry rescue (issue #117) turned out to be doing double duty: it
+  wasn't just gating the deliberately opt-in
+  `decode_frame_subtract_with_auto_ap` research function, but was also
+  the *only* thing preventing `auto_ap_strategy::run` (a separate,
+  unbounded, 4x/200-candidate-widening variant) from firing
+  **unconditionally** inside `decode_block_multipass` — the driver
+  shared by *every* `decode_block*` entry point, `ap_hint` or not —
+  whenever `depth.osd` was true. A plain `decode_block(audio, ...,
+  DecodeDepth::FULL, ...)` call with no AP involvement at all was
+  silently paying this cost. Measured directly on `qso3_busy.wav`
+  (`RAYON_NUM_THREADS=1`): with it, `decode_block(FULL)` took
+  ~1320-1450ms for 19 decodes at `max_cand` 60/200; without it, ~145-
+  151ms for the *same* 19 decodes — 9x wall-clock for zero recall
+  difference at any realistic `max_cand` (only `max_cand=15` lost 2
+  decodes, a budget artifact of the unbounded variant's own internal
+  200-candidate floor, not real AP value). This matches what this
+  file's own CHANGELOG already found for the explicit
+  `decode_frame_subtract_with_auto_ap` path — zero additional decodes
+  once the OSD `bp_llr_zsum` fix (below) closed this mechanism's
+  original motivating case (`K1BZM DK8NE -10`) through a different
+  route. Also not a WSJT-X port: `ft8apset.f90`'s AP only ever uses the
+  *operator-configured* `mycall`/`hiscall`, never same-slot decoded
+  callsigns. With zero measured value, zero FFI/embedded/production
+  consumers, and a real correctness surprise (`ap_hint`-independent
+  cost), `auto_ap_strategy` (module, `run`/`run_bounded`,
+  `decode_frame_subtract_with_auto_ap`) was deleted outright rather
+  than re-gated — an app wanting this policy can rebuild it from the
+  still-present, genuinely WSJT-X-faithful primitives (`ApHint`,
+  `decode_block_with_ap`).
+
+  Migration: `DecodeDepth::BpAll` → `DecodeDepth::BP_ONLY`,
+  `::BpAllOsd` → `::FULL`, `::BpVariantsAd` → `::EMBEDDED`,
+  `::BpAllNoNsym3` → no replacement (use `::BP_ONLY` or `::FULL`).
+  `mfsk-ffi-ft8`'s C-facing `MfskFt8Depth` enum is unchanged (only its
+  internal `map_depth()` target type changed shape) — no ABI break.
+  `core::pipeline::DecodeDepth` (FT4/FST4's own, separate, already-
+  clean 2-variant enum of the same name in a different module) is
+  untouched — deliberately out of scope, since neither protocol runs
+  on embedded today and it doesn't have the conflation problem this
+  redesign targets.
+
+  Verified: full workspace `cargo test --release --features full`
+  (100% pass) and `-D clippy::perf -D warnings` clean; golden recall
+  byte-identical everywhere it was checked (`DecodeDepth::EMBEDDED`
+  still 7/8 WSJT-X AP-off golden / 14 total on `qso3_busy.wav`; JTDX
+  AP-on extras still 6/6; staged-SIC `CQ DX DL8YHR JO41` still decodes;
+  `LlrEffort::Minimal` vs `Full` still 32/40 vs 32/40 recall parity
+  across the full in-repo corpus, `ft8_no_nsym3_sweep.rs`, adapted to
+  the 2-tier scheme rather than deleted); all 3 embedded app crates
+  (`m5stack-s3-app`, `m5stack-core2-app`, `m5stack-cores3-app`) plus the
+  compute-bench crate build clean for their Xtensa targets; `mfsk-ffi`
+  + C++ smoke driver green.
 
 ### Changed
 

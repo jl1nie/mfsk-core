@@ -66,7 +66,7 @@ fn decode_block_fixed_point_baseline() {
     //   compute_spectrogram → coarse_sync → refine_candidates_into →
     //   process_candidates_into_tuned
     // (same as m5stack-s3-app + Core2 production).
-    let r_into = decode_block_into(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BpAll, 15);
+    let r_into = decode_block_into(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 15);
     println!(
         "\ndecode_block_into (embedded canonical): {} decodes",
         r_into.len()
@@ -114,7 +114,7 @@ fn decode_block_fixed_point_baseline() {
     let r_split = process_candidates_into_tuned(
         &audio,
         pass2,
-        DecodeDepth::BpAll,
+        DecodeDepth::BP_ONLY,
         DEFAULT_Q_THRESH,
         DEFAULT_BP_MAX_ITER,
     );
@@ -160,7 +160,7 @@ fn decode_block_fixed_point_baseline() {
     drop(spec_dump);
 
     // For contrast: decode_block (host multipass via_cd0 cd0+32pt path)
-    let r = decode_block(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BpAll, 15);
+    let r = decode_block(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 15);
     println!(
         "\ndecode_block (host multipass via_cd0): {} decodes",
         r.len()

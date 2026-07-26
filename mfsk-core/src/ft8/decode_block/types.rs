@@ -27,14 +27,14 @@ use super::super::params::NSPS;
 /// its calibration; for `i8` we therefore multiply by 256.
 ///
 /// `Copy` only — no `Sync` supertrait. An earlier version added `+
-/// Sync` here so `&[S]` could cross a `rayon` task boundary in
-/// `decode_block::auto_ap_strategy::run_bounded`'s per-callsign
-/// parallel loop; that parallelism was reverted (issue #182 follow-up
-/// — the loop it sped up now finds zero additional decodes once the
-/// OSD `bp_llr_zsum` fix landed, so parallelising it further was pure
-/// unused complexity), and no other `AudioSample`-generic function
-/// crosses a thread boundary. Re-add `+ Sync` only alongside a real
-/// generic-over-`S` parallel caller, not preemptively.
+/// Sync` here so `&[S]` could cross a `rayon` task boundary in the
+/// old auto-AP per-callsign parallel loop (issue #117); that whole
+/// mechanism was removed in the 0.8.0 `DecodeDepth` redesign (issue
+/// #182 follow-up — it was firing unconditionally on every `depth.osd`
+/// call regardless of AP usage, for zero measured recall benefit once
+/// the OSD `bp_llr_zsum` fix landed), and no other `AudioSample`-
+/// generic function crosses a thread boundary. Re-add `+ Sync` only
+/// alongside a real generic-over-`S` parallel caller, not preemptively.
 pub trait AudioSample: Copy {
     fn to_f32(self) -> f32;
     /// Promote to i16 range. i8 → i16 via `<<8`; i16 → i16

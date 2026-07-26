@@ -42,7 +42,7 @@ fn correlate_sync_cv_with_iteration_convergence() {
         3000.0,
         0.8,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         200,
         DecodeStrictness::Normal,
     );

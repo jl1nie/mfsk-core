@@ -558,15 +558,8 @@ fn decode_i16_wsjt77(
     match protocol {
         MfskProtocol::Ft8 => {
             let ht = mfsk_core::msg::CallsignHashTable::new();
-            for r in ft8::decode_frame(
-                audio,
-                200.0,
-                3_000.0,
-                2.0,
-                None,
-                ft8::DecodeDepth::BpAllOsd,
-                50,
-            ) {
+            for r in ft8::decode_frame(audio, 200.0, 3_000.0, 2.0, None, ft8::DecodeDepth::FULL, 50)
+            {
                 push_wsjt77(&r, &ht, &mut vec);
             }
         }

@@ -118,19 +118,10 @@ const MAX_TOTAL_DECODES: usize = 35;
 use common::load_wav_i16;
 
 fn decode_set(audio: &[i16], ap: Option<&ApHint>) -> BTreeSet<String> {
-    decode_frame_with_ap(
-        audio,
-        100.0,
-        3000.0,
-        1.3,
-        None,
-        DecodeDepth::BpAllOsd,
-        50,
-        ap,
-    )
-    .into_iter()
-    .filter_map(|r| unpack77(&r.message77))
-    .collect()
+    decode_frame_with_ap(audio, 100.0, 3000.0, 1.3, None, DecodeDepth::FULL, 50, ap)
+        .into_iter()
+        .filter_map(|r| unpack77(&r.message77))
+        .collect()
 }
 
 #[test]
@@ -259,7 +250,7 @@ fn qso3_apon_subtract_jtdx_extras_diag() {
         3000.0,
         1.3,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         50,
         DecodeStrictness::Normal,
         Some(&ap),

@@ -123,7 +123,7 @@ fn qso3_apoff_meets_wsjtx_golden_floor() {
     // sync_min=1.3 = WSJT-X ft8_decode.f90:176 default for ndepth=3
     // ("Deep" mode). User golden has K1BZM DK8NE -17 dB which only
     // surfaces in Deep mode, so user's reference uses ndepth=3.
-    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BpVariantsAd, 15);
+    let decoded: Vec<_> = decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::EMBEDDED, 15);
 
     // Build (msg → result) for matching.
     let mut by_msg: std::collections::HashMap<String, &mfsk_core::ft8::decode::DecodeResult> =

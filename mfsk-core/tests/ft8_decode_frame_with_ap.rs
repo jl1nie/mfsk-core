@@ -56,7 +56,7 @@ fn matching_ap_hint_decodes_clean_signal() {
         2700.0,
         1.5,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         15,
         Some(&ap),
     );
@@ -87,7 +87,7 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
         2700.0,
         1.5,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         15,
         Some(&wrong),
     );
@@ -114,14 +114,14 @@ fn ap_none_matches_legacy_decode_frame() {
     let msg = pack_msg("CQ", "K1ABC", "FN42");
     let audio = synth_slot(&msg, 1500.0, 25_000);
 
-    let legacy = decode_frame(&audio, 300.0, 2700.0, 1.5, None, DecodeDepth::BpAllOsd, 15);
+    let legacy = decode_frame(&audio, 300.0, 2700.0, 1.5, None, DecodeDepth::FULL, 15);
     let new_none = decode_frame_with_ap(
         &audio,
         300.0,
         2700.0,
         1.5,
         None,
-        DecodeDepth::BpAllOsd,
+        DecodeDepth::FULL,
         15,
         None,
     );

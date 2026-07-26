@@ -250,7 +250,7 @@
 //!     /* freq_max */ 3_000.0,
 //!     /* sync_min */ 1.0,
 //!     /* freq_hint */ None,
-//!     DecodeDepth::BpAllOsd,
+//!     DecodeDepth::FULL,
 //!     /* max_cand */ 50,
 //! );
 //! assert!(!results.is_empty(), "roundtrip must decode");
