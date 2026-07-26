@@ -135,17 +135,6 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cm
 // frame layout the encoder honours is decoded the same way.
 use crate::core::tx::data_chunks;
 
-/// Decompose `i` into `nsym` base-`ntones` digits, most significant first.
-#[inline]
-fn base_digits(mut i: usize, ntones: usize, nsym: usize) -> Vec<usize> {
-    let mut out = vec![0usize; nsym];
-    for j in (0..nsym).rev() {
-        out[j] = i % ntones;
-        i /= ntones;
-    }
-    out
-}
-
 #[inline]
 fn normalize_bmet(bmet: &mut [f32]) {
     let n = bmet.len() as f32;
@@ -207,6 +196,15 @@ pub fn compute_llr_fast<P: Protocol, T: LlrScalar>(cs: &[Cmplx<f32>]) -> LlrSet<
 /// llrb at nsym=2, llrc at nsym=3). At nsym=1 only, `bmet_norm`
 /// receives the bit-normalised variant (= llrd). For nsym ≥ 2 pass
 /// `bmet_norm = None`.
+///
+/// Stack-array bounds for the per-hypothesis scratch below. FST4's
+/// `LLR_NSYM_MAX=8` (`ModulationParams::LLR_NSYM_MAX` doc) is the
+/// largest `nsym` any protocol uses today; both bounds are sized with
+/// headroom (indexing panics if a future protocol ever exceeds them,
+/// rather than silently truncating).
+const MAX_NSYM: usize = 16;
+const MAX_IBMAX_PLUS_1: usize = 32;
+
 fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
@@ -237,7 +235,17 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
          bmet_primary: &mut [f32],
          bmet_norm_holder: &mut Option<&mut [f32]>| {
             for (i, s2_i) in s2.iter_mut().enumerate() {
-                let digits = base_digits(i, ntones, nsym);
+                // Base-`ntones` digit decomposition of `i`, most
+                // significant symbol first — on the stack instead of a
+                // per-hypothesis `Vec` (this loop runs `nt` times per
+                // group, up to 65536 for FST4's nsym=8 rung, so a heap
+                // allocation per iteration here was the dominant cost).
+                let mut digits = [0usize; MAX_NSYM];
+                let mut rem = i;
+                for j in (0..nsym).rev() {
+                    digits[j] = rem % ntones;
+                    rem /= ntones;
+                }
                 let mut sum_re = 0.0f32;
                 let mut sum_im = 0.0f32;
                 for j in 0..nsym {
@@ -247,24 +255,31 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
                 }
                 *s2_i = (sum_re * sum_re + sum_im * sum_im).sqrt();
             }
+            // Single pass over `s2` updating every bit position's
+            // running max-when-1 / max-when-0 together, instead of the
+            // previous `2 * (ibmax + 1)` independent full scans (one
+            // `filter().fold()` pair per bit position) — `nt * (ibmax +
+            // 1)` element visits here vs. `2 * (ibmax + 1) * nt` before.
+            let mut max_one = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
+            let mut max_zero = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
+            for (i, &v) in s2.iter().enumerate() {
+                for bit_sel in 0..=ibmax {
+                    if (i >> bit_sel) & 1 == 1 {
+                        if v > max_one[bit_sel] {
+                            max_one[bit_sel] = v;
+                        }
+                    } else if v > max_zero[bit_sel] {
+                        max_zero[bit_sel] = v;
+                    }
+                }
+            }
             for ib in 0..=ibmax {
                 let bit_idx = i_bit_base + ib;
                 if bit_idx >= codeword_len {
                     break;
                 }
                 let bit_sel = ibmax - ib;
-                let max_one = s2
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| (i >> bit_sel) & 1 == 1)
-                    .map(|(_, &v)| v)
-                    .fold(f32::NEG_INFINITY, f32::max);
-                let max_zero = s2
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, _)| (i >> bit_sel) & 1 == 0)
-                    .map(|(_, &v)| v)
-                    .fold(f32::NEG_INFINITY, f32::max);
+                let (max_one, max_zero) = (max_one[bit_sel], max_zero[bit_sel]);
                 let bm = max_one - max_zero;
                 bmet_primary[bit_idx] = bm;
                 if let Some(b) = bmet_norm_holder.as_deref_mut() {
