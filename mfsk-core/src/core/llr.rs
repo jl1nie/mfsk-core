@@ -391,26 +391,23 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
     }
 }
 
-/// Compute a single LLR variant by `nsym` level. Returns the bmet
-/// vector matching that nsym (llra at 1, llrb at 2, llrc at 3),
-/// normalised + scaled exactly the way [`compute_llr_generic`] would
-/// produce that array on its own. nsym=1 returns the same llra
-/// [`compute_llr_generic`] produces; the bit-normalised variant
-/// (llrd) isn't separately exposed because the staircase consumer
-/// already obtains llrd from Step 1's [`compute_llr_fast`] output.
+/// Compute a single LLR variant at one `nsym` level, normalised +
+/// scaled exactly the way [`compute_llr_generic`] would produce that
+/// array on its own (nsym=1 returns the same `llra` `compute_llr_generic`
+/// produces; the bit-normalised variant `llrd` isn't separately exposed
+/// because callers already obtain it from [`compute_llr_fast`]'s
+/// output).
 ///
-/// Used by the FT8 stage-3 BP staircase to lazy-compute Step-2
-/// variants — Step-1 already did the nsym=1 work, so Step 2 only
-/// pays the (cheap) nsym=2 if variant b is tried, the (expensive)
-/// nsym=3 only if variant c is needed. Empirically variant a from
-/// Step 1 fails identically in Step 2 (same input, same BP), so
-/// this path skips it — see `process_candidates_with` in
-/// `ft8::decode_block`.
+/// Used by staircase-style decode paths to lazy-compute deeper variants
+/// only once shallower ones have already failed BP — e.g. the FT8
+/// stage-3 BP staircase (`nsym` up to `LLR_NSYM_MAX=3`) and the generic
+/// `core::pipeline` engine's own lazy variant loop (FST4's `nsym` up to
+/// `LLR_NSYM_MAX=8`, plus `LLR_NSYM_MID=4`).
 pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],
     nsym: usize,
 ) -> Vec<T> {
-    debug_assert!((1..=3).contains(&nsym));
+    debug_assert!((1..=MAX_NSYM).contains(&nsym));
     let codeword_len = codeword_bit_len::<P>();
     let mut bmet = vec![0.0f32; codeword_len];
     fill_bmet_for_nsym::<P, S>(cs, nsym, &mut bmet, None);

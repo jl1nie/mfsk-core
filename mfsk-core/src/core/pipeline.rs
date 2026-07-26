@@ -19,7 +19,10 @@ use num_traits::Float;
 use super::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use super::dsp::subtract::SubtractCfg;
 use super::equalize::{EqMode, equalize_local};
-use super::llr::{compute_llr, compute_snr_db, descramble_info, symbol_spectra, sync_quality};
+use super::llr::{
+    compute_llr_fast, compute_llr_partial, compute_snr_db, descramble_info, symbol_spectra,
+    sync_quality,
+};
 use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -372,27 +375,6 @@ pub fn process_candidate_basic<P: GenericPipelineProtocol>(
         };
 
         let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
-            let mut llr_set = compute_llr::<P, f32>(cs);
-            // RX half of the optional bit interleaver: if the protocol
-            // declares an interleave table, permute each LLR vector from
-            // channel-bit order into codeword-bit order before BP/OSD.
-            // No-op for protocols with `CODEWORD_INTERLEAVE = None`
-            // (FT4/FT8/FST4/etc) — same call site, byte-identical result.
-            deinterleave_llr_set::<P>(&mut llr_set);
-            // llre (nsym=P::LLR_NSYM_MID, e.g. FST4's nsym=4 rung — see
-            // `ModulationParams::LLR_NSYM_MID`) is empty for every protocol
-            // that doesn't set LLR_NSYM_MID, so this is a Vec instead of a
-            // fixed array only to make that slot conditional; no behaviour
-            // change for FT8/FT4/etc.
-            let mut variants: Vec<(&Vec<f32>, u8)> = Vec::with_capacity(5);
-            variants.push((&llr_set.llra, 0u8));
-            variants.push((&llr_set.llrb, 1));
-            if !llr_set.llre.is_empty() {
-                variants.push((&llr_set.llre, 6));
-            }
-            variants.push((&llr_set.llrc, 2));
-            variants.push((&llr_set.llrd, 3));
-
             let fec = P::Fec::default();
             let bp_opts = FecOpts {
                 bp_max_iter,
@@ -407,25 +389,93 @@ pub fn process_candidate_basic<P: GenericPipelineProtocol>(
                 ..FecOpts::default()
             };
 
-            for (llr, pass_id) in &variants {
-                if let Some(mut r) = fec.decode_soft(llr, &bp_opts) {
-                    let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                    let snr_db = compute_snr_db::<P>(cs, &itone);
-                    // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
-                    // the rvec XOR before presenting the 77-bit payload.
-                    descramble_info::<P>(&mut r.info);
-                    return Some(DecodeResult {
-                        info: r.info.into_boxed_slice(),
-                        freq_hz: refined.freq_hz,
-                        dt_sec: refined.dt_sec,
-                        hard_errors: r.hard_errors,
-                        sync_score: refined.score,
-                        pass: *pass_id,
-                        sync_cv,
-                        snr_db,
-                    });
+            // RX half of the optional bit interleaver — same no-op for
+            // protocols with `CODEWORD_INTERLEAVE = None` (FT4/FT8/FST4/etc)
+            // as the previous `deinterleave_llr_set` call site.
+            let deinterleave = |v: &mut Vec<f32>| {
+                if let Some(table) = P::CODEWORD_INTERLEAVE {
+                    deinterleave_llr_vec(v, table);
+                }
+            };
+            let try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
+                let mut r = fec.decode_soft(llr, &bp_opts)?;
+                let itone = encode_tones_for_snr::<P>(&r.info, &fec);
+                let snr_db = compute_snr_db::<P>(cs, &itone);
+                // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
+                // the rvec XOR before presenting the 77-bit payload.
+                descramble_info::<P>(&mut r.info);
+                Some(DecodeResult {
+                    info: r.info.into_boxed_slice(),
+                    freq_hz: refined.freq_hz,
+                    dt_sec: refined.dt_sec,
+                    hard_errors: r.hard_errors,
+                    sync_score: refined.score,
+                    pass: pass_id,
+                    sync_cv,
+                    snr_db,
+                })
+            };
+
+            // Lazy nsym staircase: compute each LLR variant only as this
+            // loop reaches it, instead of eagerly building the whole
+            // `LlrSet` (nsym=1, 2, `LLR_NSYM_MID`, `LLR_NSYM_MAX`) up
+            // front regardless of whether a cheap variant already lets BP
+            // succeed. FST4's `LLR_NSYM_MAX=8` rung enumerates
+            // `4^8=65536` tone-combination hypotheses per group — 128-
+            // 256x FT8/FT4's own deepest rung — so skipping it whenever
+            // an earlier variant already decodes is the dominant win.
+            // Same variants, same try-order, same `pass_id`s as the
+            // previous eager version; if every variant fails BP (as
+            // today), `llr_set` below ends up fully populated exactly
+            // once per field, so OSD's own variant reuse further down is
+            // unaffected either way.
+            let mut llr_set = compute_llr_fast::<P, f32>(cs);
+            deinterleave(&mut llr_set.llra);
+            deinterleave(&mut llr_set.llrd);
+            if let Some(r) = try_bp(&llr_set.llra, 0) {
+                return Some(r);
+            }
+
+            llr_set.llrb = compute_llr_partial::<P, f32, f32>(cs, 2);
+            deinterleave(&mut llr_set.llrb);
+            if let Some(r) = try_bp(&llr_set.llrb, 1) {
+                return Some(r);
+            }
+
+            if let Some(mid) = P::LLR_NSYM_MID {
+                llr_set.llre = compute_llr_partial::<P, f32, f32>(cs, mid as usize);
+                // `llre` has no interleave handling in the previous
+                // `deinterleave_llr_set` either — harmless while
+                // `CODEWORD_INTERLEAVE` is `None` for every protocol
+                // that sets `LLR_NSYM_MID` today (FST4 only).
+                if let Some(r) = try_bp(&llr_set.llre, 6) {
+                    return Some(r);
                 }
             }
+
+            llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs, P::LLR_NSYM_MAX as usize);
+            deinterleave(&mut llr_set.llrc);
+            if let Some(r) = try_bp(&llr_set.llrc, 2) {
+                return Some(r);
+            }
+
+            if let Some(r) = try_bp(&llr_set.llrd, 3) {
+                return Some(r);
+            }
+
+            // llre (nsym=P::LLR_NSYM_MID, e.g. FST4's nsym=4 rung — see
+            // `ModulationParams::LLR_NSYM_MID`) is empty for every protocol
+            // that doesn't set LLR_NSYM_MID, so this is a Vec instead of a
+            // fixed array only to make that slot conditional; no behaviour
+            // change for FT8/FT4/etc.
+            let mut variants: Vec<(&Vec<f32>, u8)> = Vec::with_capacity(5);
+            variants.push((&llr_set.llra, 0u8));
+            variants.push((&llr_set.llrb, 1));
+            if !llr_set.llre.is_empty() {
+                variants.push((&llr_set.llre, 6));
+            }
+            variants.push((&llr_set.llrc, 2));
+            variants.push((&llr_set.llrd, 3));
 
             // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has neither of
             // the gates below: `decode240_101` is called unconditionally
@@ -591,19 +641,6 @@ pub fn process_candidate_basic<P: GenericPipelineProtocol>(
     // much without risking a real signal.
 
     try_position(freq_hz, i0, score)
-}
-
-/// Deinterleave each of the four LLR variants from channel-bit order to
-/// codeword-bit order, in place. No-op when
-/// [`P::CODEWORD_INTERLEAVE`](crate::core::FrameLayout::CODEWORD_INTERLEAVE)
-/// is `None` — every existing protocol stays bit-identical.
-fn deinterleave_llr_set<P: Protocol>(set: &mut crate::core::llr::LlrSet) {
-    if let Some(table) = P::CODEWORD_INTERLEAVE {
-        deinterleave_llr_vec(&mut set.llra, table);
-        deinterleave_llr_vec(&mut set.llrb, table);
-        deinterleave_llr_vec(&mut set.llrc, table);
-        deinterleave_llr_vec(&mut set.llrd, table);
-    }
 }
 
 /// `llr[INTERLEAVE[j]] = channel_llr[j]` — inverse of the TX-side
