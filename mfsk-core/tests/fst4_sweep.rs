@@ -1000,8 +1000,14 @@ fn fst4_60_diag_osd_escalation() {
     let mut n_no_osd_attempt = 0usize;
     let mut n_osd_2_3_only = 0usize;
     let mut n_osd_4_escalated = 0usize;
+    let mut t_llr = std::time::Duration::ZERO;
+    let mut t_bp = std::time::Duration::ZERO;
     let mut t_osd_2_3 = std::time::Duration::ZERO;
     let mut t_osd_4 = std::time::Duration::ZERO;
+    // Real production gate — see `osd_escalation_gates`'s doc comment in
+    // `core/pipeline.rs` (FST4 uses (12, 20), not FT8's (12, 18)).
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::core::pipeline::osd_escalation_gates::<Fst4s60>();
 
     for c in &cands {
         let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
@@ -1011,7 +1017,9 @@ fn fst4_60_diag_osd_escalation() {
         let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
         let nsync = sync_quality::<Fst4s60>(&cs);
 
+        let t0 = Instant::now();
         let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+        t_llr += t0.elapsed();
         let variants: Vec<&Vec<f32>> = [
             Some(&llr_set.llra),
             Some(&llr_set.llrb),
@@ -1034,20 +1042,21 @@ fn fst4_60_diag_osd_escalation() {
             verify_info,
             ..FecOpts::default()
         };
+        let t0 = Instant::now();
         let bp_ok = variants
             .iter()
             .any(|llr| fec.decode_soft(llr, &bp_opts).is_some());
+        t_bp += t0.elapsed();
         if bp_ok {
             n_bp_ok += 1;
             continue;
         }
 
-        // production gate: hardcoded (12, 18) regardless of N_SYNC.
-        if nsync < 12 {
+        if nsync < osd_attempt_min {
             n_no_osd_attempt += 1;
             continue;
         }
-        let osd_depth: u32 = if nsync >= 18 { 3 } else { 2 };
+        let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
         let t0 = Instant::now();
         let osd_opts = FecOpts {
             bp_max_iter: BP_MAX_ITER,
@@ -1065,7 +1074,7 @@ fn fst4_60_diag_osd_escalation() {
             continue;
         }
 
-        if nsync >= 18 {
+        if nsync >= osd_depth3_min {
             n_osd_4_escalated += 1;
             let t0 = Instant::now();
             let osd4_opts = FecOpts {
@@ -1083,12 +1092,16 @@ fn fst4_60_diag_osd_escalation() {
     }
 
     eprintln!(
-        "FST4-60A golden ({} candidates): bp_ok={n_bp_ok} no_osd_attempt(nsync<12)={n_no_osd_attempt} \
-         osd_2_3_only={n_osd_2_3_only} osd_4_escalated(nsync>=18)={n_osd_4_escalated}",
+        "FST4-60A golden ({} candidates): bp_ok={n_bp_ok} \
+         no_osd_attempt(nsync<{osd_attempt_min})={n_no_osd_attempt} \
+         osd_2_3_only={n_osd_2_3_only} \
+         osd_4_escalated(nsync>={osd_depth3_min})={n_osd_4_escalated}",
         cands.len()
     );
     eprintln!(
-        "  wall-clock: osd_depth_2_3={:.1}ms osd_depth_4={:.1}ms",
+        "  wall-clock: llr={:.1}ms bp={:.1}ms osd_depth_2_3={:.1}ms osd_depth_4={:.1}ms",
+        t_llr.as_secs_f64() * 1000.0,
+        t_bp.as_secs_f64() * 1000.0,
         t_osd_2_3.as_secs_f64() * 1000.0,
         t_osd_4.as_secs_f64() * 1000.0
     );
