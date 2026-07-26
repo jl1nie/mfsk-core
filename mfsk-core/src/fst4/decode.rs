@@ -111,10 +111,15 @@ pub const FST4_300_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
     edge_taper_bins: 101,
 };
 
-/// FST4 has 40 sync symbols (5 × 8); require at least a quarter of
-/// them right for a candidate to survive coarse-sync scoring. Shared
-/// by every sub-mode.
-const SYNC_Q_MIN: u32 = 10;
+/// FST4 has 40 sync symbols (5 × 8). Matches WSJT-X's own pre-ladder
+/// gate exactly (`get_fst4_bitmetrics.f90`: `if(nsync .lt. 16)
+/// badsync=.true.; return` — bails before the expensive nsym=1/2/4/8
+/// correlation ladder, `core::llr::compute_llr`, ever runs). Was `10`
+/// (a quarter of 40) — looser than WSJT-X's `16` (40%), so candidates
+/// WSJT-X would already reject pre-ladder were paying for the full
+/// ladder (including the 65536-hypothesis nsym=8 rung) in our pipeline
+/// too — issue #197. Shared by every sub-mode.
+const SYNC_Q_MIN: u32 = 16;
 
 /// Fine-refine time-domain search half-width, in *downsampled*
 /// samples. Every FST4 sub-mode's downsampled samples-per-symbol
