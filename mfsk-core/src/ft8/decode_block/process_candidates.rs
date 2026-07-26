@@ -1368,6 +1368,7 @@ pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
 /// `qso3_busy.wav`'s Step-4 candidate count from 188 to 34 (measured)
 /// with zero recall change on any golden test, while leaving the
 /// CCIR-sweep fix fully intact.
+#[cfg(feature = "fft-rustfft")]
 const BLIND_CQ_MIN_NSYNC: u32 = 12;
 
 /// Per-candidate decode core — runs the LLR-staircase, OSD fallback,
