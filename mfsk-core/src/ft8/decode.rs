@@ -2496,7 +2496,17 @@ mod tests {
             None,
         );
 
-        let jt9_bytes = std::fs::read("/tmp/jt9_post_sic_dd.raw").expect("read jt9 residual dump");
+        let jt9_bytes = match std::fs::read("/tmp/jt9_post_sic_dd.raw") {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!(
+                    "skipping issue_180_dk8ne_data_symbol_comparison: \
+                     /tmp/jt9_post_sic_dd.raw (WSJT-X jt9 post-SIC residual dump) \
+                     not present — this is a local-only diagnostic input"
+                );
+                return;
+            }
+        };
         let jt9_residual: Vec<i16> = jt9_bytes
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
@@ -2655,7 +2665,17 @@ mod tests {
             None,
         );
 
-        let jt9_bytes = std::fs::read("/tmp/jt9_post_sic_dd.raw").expect("read jt9 residual dump");
+        let jt9_bytes = match std::fs::read("/tmp/jt9_post_sic_dd.raw") {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!(
+                    "skipping issue_182_dk8ne_llr_reliability_comparison: \
+                     /tmp/jt9_post_sic_dd.raw (WSJT-X jt9 post-SIC residual dump) \
+                     not present — this is a local-only diagnostic input"
+                );
+                return;
+            }
+        };
         let jt9_residual: Vec<i16> = jt9_bytes
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
