@@ -220,6 +220,7 @@ q65_submode! {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Q65Fec;
 
+impl crate::engine::protocol::sealed::Sealed for Q65Fec {}
 impl FecCodec for Q65Fec {
     /// 63 transmitted channel symbols × 6 bits.
     const N: usize = 63 * 6;

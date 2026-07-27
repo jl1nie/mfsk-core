@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198)
 
 ### Added
 
@@ -1096,6 +1096,19 @@
   `DecodeRequest`/`FrameDecodable` (#191), so unifying their naming
   with this family is deferred to #204's Q65 builder design pass
   rather than done piecemeal here.
+- **Sealed `FecCodec`** (issue #198, pre-0.8.0 public-API review) — a
+  private `sealed::Sealed` supertrait bound, implemented for all seven
+  in-crate implementors (`Ldpc174_91`, `Ldpc240_101`, `Ldpc128_90`,
+  `ConvFano`, `ConvFano232`, `Rs63_12`, `Q65Fec`), blocks downstream
+  crates from implementing `FecCodec` themselves. `decode_soft` is
+  still f32-hardcoded — genericizing it (`decode_soft<T: LlrScalar>`,
+  which would unlock fixed-point BP for FT4/FST4/MSK144 through the
+  generic pipeline, currently FT8-only via its own bespoke engine) is
+  deliberately deferred: real numerical work with its own verification
+  cost, decided (2026-07-27) as a stretch goal rather than a 0.8.0
+  requirement. Sealing now means that redesign can land later as a
+  signature change on existing implementors without breaking any
+  downstream implementor, since none can exist.
 
 ### Fixed
 

@@ -512,6 +512,7 @@ use alloc::vec::Vec;
 
 use crate::engine::{FecOpts, FecResult};
 
+impl crate::engine::protocol::sealed::Sealed for Rs63_12 {}
 impl super::FecCodec for Rs63_12 {
     const N: usize = Rs63_12::N_SYMBOLS * 6; // 63 × 6 = 378 bits
     const K: usize = Rs63_12::K_SYMBOLS * 6; // 12 × 6 = 72 bits

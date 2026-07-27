@@ -45,6 +45,7 @@ pub const LDPC_M: usize = LDPC_N - LDPC_K; // 83
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Ldpc174_91;
 
+impl crate::engine::protocol::sealed::Sealed for Ldpc174_91 {}
 impl FecCodec for Ldpc174_91 {
     const N: usize = LDPC_N;
     const K: usize = LDPC_K;

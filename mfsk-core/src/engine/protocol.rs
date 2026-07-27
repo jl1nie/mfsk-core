@@ -387,6 +387,13 @@ impl<'a> Default for FecOpts<'a> {
     }
 }
 
+/// Seals [`FecCodec`] against downstream implementors (issue #198).
+/// `pub(crate)` — visible anywhere in this crate (every implementor
+/// lives in a different module) but unnameable outside it.
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
 /// Result of a successful FEC decode.
 #[derive(Clone, Debug)]
 pub struct FecResult {
@@ -421,7 +428,20 @@ pub struct FecResult {
 /// `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` (pinned in
 /// `tests/protocol_invariants.rs::assert_codec_consistency`) meaningful for
 /// both binary (LDPC, conv) and non-binary (RS, QRA) codes.
-pub trait FecCodec: Default + 'static {
+///
+/// Sealed (issue #198, pre-0.8.0 public-API review): `decode_soft` is
+/// f32-hardcoded today, which blocks fixed-point BP from ever running
+/// through the generic pipeline for FT4/FST4/MSK144 (FT8 only gets it
+/// via its own separate bespoke engine, which bypasses this trait
+/// entirely). Generic-izing the signature (`decode_soft<T: LlrScalar>`)
+/// is future work with its own numerical-verification cost; sealing
+/// now means that redesign can land as a signature change on the
+/// existing implementors (`Ldpc174_91`, `Ldpc240_101`, `Ldpc128_90`,
+/// `ConvFano`, `ConvFano232`, `Rs63_12`, `Q65Fec`) without being a
+/// breaking change for any
+/// downstream implementor, since none can exist — `sealed::Sealed` is
+/// private to this crate.
+pub trait FecCodec: sealed::Sealed + Default + 'static {
     /// Codeword length, in **bits** (regardless of the underlying symbol
     /// alphabet — see "Symbol granularity" above).
     const N: usize;

@@ -62,6 +62,7 @@ fn pack_msg_with_tail(info: &[u8]) -> [u8; 11] {
     packed
 }
 
+impl crate::engine::protocol::sealed::Sealed for ConvFano {}
 impl FecCodec for ConvFano {
     const N: usize = 162;
     const K: usize = 50;
@@ -250,6 +251,7 @@ fn pack_msg_with_tail_jt9(info: &[u8]) -> [u8; 13] {
     packed
 }
 
+impl crate::engine::protocol::sealed::Sealed for ConvFano232 {}
 impl FecCodec for ConvFano232 {
     const N: usize = 206;
     const K: usize = 72;

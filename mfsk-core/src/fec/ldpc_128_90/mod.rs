@@ -87,6 +87,7 @@ pub fn check_crc13(decoded: &[u8]) -> bool {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Ldpc128_90;
 
+impl crate::engine::protocol::sealed::Sealed for Ldpc128_90 {}
 impl FecCodec for Ldpc128_90 {
     const N: usize = LDPC_N;
     const K: usize = LDPC_K;

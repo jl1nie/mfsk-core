@@ -93,6 +93,7 @@ pub fn check_crc24(decoded: &[u8]) -> bool {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Ldpc240_101;
 
+impl crate::engine::protocol::sealed::Sealed for Ldpc240_101 {}
 impl FecCodec for Ldpc240_101 {
     const N: usize = LDPC_N;
     const K: usize = LDPC_K;
