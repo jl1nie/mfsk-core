@@ -4,15 +4,15 @@
 //! Ported from WSJT-X `msk144decodeframe.f90:69-111`. The carrier-
 //! phase estimate + OQPSK matched filter
 //! (`msk144decodeframe.f90:51-67`) already live in
-//! [`crate::core::dsp::msk::matched_filter_softbits`] (Phase 2); this
+//! [`crate::engine::dsp::msk::matched_filter_softbits`] (Phase 2); this
 //! module picks up from its 144 soft symbols.
 
 use alloc::string::String;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::dsp::msk::bipolar_sync_word;
-use crate::core::{DecodeContext, FecCodec, FecOpts};
+use crate::engine::dsp::msk::bipolar_sync_word;
+use crate::engine::{DecodeContext, FecCodec, FecOpts};
 use crate::fec::Ldpc128_90;
 use crate::fec::ldpc_128_90::check_crc13;
 use crate::msg::CallsignHashTable;
@@ -65,7 +65,7 @@ fn n3_i3_plausible(n3: u8, i3: u8) -> bool {
 
 /// Decode one MSK144 frame's worth of matched-filter soft symbols
 /// into a message. `softbits` is the output of
-/// [`crate::core::dsp::msk::matched_filter_softbits`] for an
+/// [`crate::engine::dsp::msk::matched_filter_softbits`] for an
 /// already-aligned (correct symbol timing, derotated) frame.
 ///
 /// Ported from `msk144decodeframe.f90:69-111`: sync hard-error gate
@@ -145,7 +145,7 @@ pub fn decode_frame(softbits: &[f32; 144], ctx: &DecodeContext) -> Option<FrameD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::dsp::msk::{build_bitseq, matched_filter_softbits, synth_frame};
+    use crate::engine::dsp::msk::{build_bitseq, matched_filter_softbits, synth_frame};
 
     fn build_info_with_crc(pattern: impl Fn(usize) -> u8) -> [u8; 90] {
         let mut info = [0u8; 90];

@@ -16,7 +16,7 @@
 
 #![cfg(feature = "ft8")]
 
-use mfsk_core::core::BpKind;
+use mfsk_core::engine::BpKind;
 #[cfg(feature = "fst4")]
 use mfsk_core::fec::ldpc::bp::bp_decode_generic_kind;
 use mfsk_core::fec::ldpc::bp::bp_decode_kind;

@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use super::ap::ApHint;
 use super::wsjt77;
 use super::{CallsignHashTable, Wsjt77Message};
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// Pack a 77-bit WSJT message (LSB / MSB convention matching
 /// [`super::wsjt77`]: each byte holds one bit in its LSB) into the

@@ -995,7 +995,7 @@ fn q65_fading_candidate_score_calibration_diag() {
         tol_hz: f32,
     }
 
-    fn probe<P: mfsk_core::core::ModulationParams + Sync>(
+    fn probe<P: mfsk_core::engine::ModulationParams + Sync>(
         label: &str,
         audio: &[f32],
         time_tolerance_symbols: u32,

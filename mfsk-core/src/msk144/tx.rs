@@ -5,15 +5,15 @@
 //! (`pack77`/CRC-13) and LDPC encoding are the caller's job — see
 //! [`crate::msg::wsjt77`] and [`crate::fec::Ldpc128_90`] — this module
 //! covers only the MSK144-specific channel framing, delegating the
-//! OQPSK waveform math to [`crate::core::dsp::msk`].
+//! OQPSK waveform math to [`crate::engine::dsp::msk`].
 
 use num_complex::Complex32;
 
-use crate::core::dsp::msk::{NSPM, build_bitseq, synth_frame};
+use crate::engine::dsp::msk::{NSPM, build_bitseq, synth_frame};
 
 /// Synthesise the 864-sample complex baseband frame for a 128-bit
 /// LDPC(128,90) codeword (already produced by
-/// [`crate::fec::Ldpc128_90::encode`](crate::core::FecCodec::encode)).
+/// [`crate::fec::Ldpc128_90::encode`](crate::engine::FecCodec::encode)).
 /// Convenience wrapper combining [`build_bitseq`] + [`synth_frame`].
 pub fn synth_codeword_frame(codeword: &[u8; 128]) -> [Complex32; NSPM] {
     let bitseq = build_bitseq(codeword);
@@ -23,8 +23,8 @@ pub fn synth_codeword_frame(codeword: &[u8; 128]) -> [Complex32; NSPM] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::dsp::msk::{build_bitseq, matched_filter_softbits};
-    use crate::core::{FecCodec, FecOpts};
+    use crate::engine::dsp::msk::{build_bitseq, matched_filter_softbits};
+    use crate::engine::{FecCodec, FecOpts};
     use crate::fec::Ldpc128_90;
     use crate::fec::ldpc_128_90::check_crc13;
 

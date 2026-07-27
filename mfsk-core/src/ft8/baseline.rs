@@ -1,7 +1,7 @@
 //! Spectrum baseline estimator — historical FT8 entry point.
 //!
 //! The polynomial-fit implementation moved to
-//! [`crate::core::baseline`] in 2026-05 (slice 1 of issue #18) so that
+//! [`crate::engine::baseline`] in 2026-05 (slice 1 of issue #18) so that
 //! FT4's `coarse_sync` can normalise its candidate spectrum the same
 //! way WSJT-X does (`ft4_baseline.f90`). The algorithm is identical
 //! across FT8 / FT4 / FST4 in WSJT-X — keeping a single Rust port
@@ -13,7 +13,7 @@
 
 #![cfg(feature = "std")]
 
-pub use crate::core::baseline::fit_baseline;
+pub use crate::engine::baseline::fit_baseline;
 
 /// Compute the average linear power per FFT bin from a `Spectrogram`.
 /// `out.len()` must equal `spec.n_freq`. FT8-specific because it

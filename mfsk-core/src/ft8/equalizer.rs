@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Adaptive equaliser — thin wrapper over [`crate::core::equalize`].
+//! Adaptive equaliser — thin wrapper over [`crate::engine::equalize`].
 //!
 //! Preserves the pre-refactor `equalize_local(&mut [[Complex;8];79])`
 //! signature expected by `decode`. The underlying algorithm (Wiener
@@ -10,10 +10,10 @@
 use alloc::vec::Vec;
 
 use super::Ft8;
-use crate::core::scalar::Cmplx;
+use crate::engine::scalar::Cmplx;
 use num_complex::Complex;
 
-pub use crate::core::equalize::EqMode;
+pub use crate::engine::equalize::EqMode;
 
 /// Apply FT8 local equalisation in place. cs storage is `Cmplx<f32>`,
 /// which is a type alias for `Complex<f32>` post the Cmplx
@@ -22,7 +22,7 @@ pub use crate::core::equalize::EqMode;
 pub fn equalize_local(cs: &mut [[Cmplx<f32>; 8]; 79]) {
     // Flatten → generic apply → inflate back.
     let mut flat: Vec<Complex<f32>> = cs.iter().flatten().copied().collect();
-    crate::core::equalize::equalize_local::<Ft8>(&mut flat);
+    crate::engine::equalize::equalize_local::<Ft8>(&mut flat);
     for (k, row) in cs.iter_mut().enumerate() {
         for t in 0..8 {
             row[t] = flat[k * 8 + t];

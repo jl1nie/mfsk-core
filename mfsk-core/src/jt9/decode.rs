@@ -4,7 +4,7 @@
 //! Replaces the earlier box-car path in `baseband.rs` + `demod_bb.rs`.
 //! The big audio FFT is computed once and reused across candidates.
 
-use crate::core::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
 use crate::fec::ConvFano232;
 use crate::msg::{Jt72Codec, Jt72Message};
 
@@ -109,7 +109,7 @@ fn lag_to_audio_sample(lagpk: i64) -> usize {
 #[allow(dead_code)]
 mod gate_diag {
     use super::*;
-    use crate::core::DecodeContext;
+    use crate::engine::DecodeContext;
     use crate::msg::Jt72Codec;
     use std::path::Path;
 

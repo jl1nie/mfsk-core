@@ -21,7 +21,7 @@ use super::types::{
     NFFT_SPEC, NSSY, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S, ratio_eps,
     sync_lag_s,
 };
-use crate::core::sync::SyncCandidate;
+use crate::engine::sync::SyncCandidate;
 
 // ── Coarse sync ─────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ use crate::core::sync::SyncCandidate;
 ///
 /// Public as of v0.6 (#48): this is now the canonical FT8 coarse-sync
 /// for both the embedded port and the host `decode_frame*` pipeline.
-/// `core::sync::coarse_sync<Ft8>` is no longer reachable from FT8 code
+/// `engine::sync::coarse_sync<Ft8>` is no longer reachable from FT8 code
 /// paths; that generic function stays in place for FT4 / FST4 / JT9 /
 /// Q65 / WSPR / uvpacket.
 pub fn coarse_sync(

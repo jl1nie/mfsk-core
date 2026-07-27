@@ -18,9 +18,9 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::ModulationParams;
-use crate::core::baseline::fit_baseline;
-use crate::core::fft::default_planner;
+use crate::engine::ModulationParams;
+use crate::engine::baseline::fit_baseline;
+use crate::engine::fft::default_planner;
 
 use super::Wspr;
 

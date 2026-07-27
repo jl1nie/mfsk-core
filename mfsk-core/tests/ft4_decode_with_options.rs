@@ -10,7 +10,7 @@
 //! rung decodes it back, so a future refactor that silently drops
 //! `depth` on the floor would break the assertion.
 
-use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields};
+use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields};
 use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::decode_request::DecodeRequest;

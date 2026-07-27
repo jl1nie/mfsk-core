@@ -1,5 +1,5 @@
 //! FT8-tuned wrapper around the generic downsampler in
-//! [`mod@crate::core::dsp::downsample`].
+//! [`mod@crate::engine::dsp::downsample`].
 //!
 //! Keeps the pre-existing `crate::ft8::downsample::{downsample, downsample_simple,
 //! build_fft_cache}` signatures so existing callers (`decode.rs`, WASM glue,
@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use crate::core::dsp::downsample::{self as g, DownsampleCfg};
+use crate::engine::dsp::downsample::{self as g, DownsampleCfg};
 use num_complex::Complex;
 
 /// FT8 downsample configuration: 12 kHz → 200 Hz, 8 tones spaced 6.25 Hz apart.

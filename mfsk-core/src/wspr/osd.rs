@@ -22,7 +22,7 @@
 
 use alloc::vec;
 
-use crate::core::{FecCodec, FecOpts};
+use crate::engine::{FecCodec, FecOpts};
 use crate::fec::ConvFano;
 
 const N: usize = 162;

@@ -23,10 +23,10 @@
 //! [`crate::uvpacket::tx::encode`] and
 //! [`crate::uvpacket::rx::decode`].
 //!
-//! [`MessageCodec`]: crate::core::MessageCodec
-//! [`Protocol`]: crate::core::Protocol
+//! [`MessageCodec`]: crate::engine::MessageCodec
+//! [`Protocol`]: crate::engine::Protocol
 
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// Trivial passthrough [`MessageCodec`] for the uvpacket family.
 /// See module-level docs.

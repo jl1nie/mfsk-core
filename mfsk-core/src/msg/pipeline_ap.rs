@@ -1,6 +1,6 @@
 //! AP-assisted decode pipeline for WSJT 77-bit-family protocols.
 //!
-//! Builds on `mfsk-core::pipeline` to add multi-pass AP (a-priori) hints: the
+//! Builds on `mfsk-engine::pipeline` to add multi-pass AP (a-priori) hints: the
 //! caller supplies known portions of the expected message (callsigns, grid,
 //! response) and the decoder tries several configurations with those bits
 //! clamped to high-confidence LLRs. Because the 77-bit bit layout is shared
@@ -18,15 +18,17 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
-use crate::core::equalize::{EqMode, equalize_local};
-use crate::core::llr::{
+use crate::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
+use crate::engine::equalize::{EqMode, equalize_local};
+use crate::engine::llr::{
     compute_llr_fast, compute_llr_partial, compute_snr_db, symbol_spectra, sync_quality,
 };
-use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
-use crate::core::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate};
-use crate::core::tx::codeword_to_itone;
-use crate::core::{FecCodec, FecOpts, Protocol};
+use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
+use crate::engine::sync::{
+    SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate,
+};
+use crate::engine::tx::codeword_to_itone;
+use crate::engine::{FecCodec, FecOpts, Protocol};
 
 use super::ap::{ApHint, WsjtApCompatible};
 use super::wsjt77::{is_plausible_message, unpack77};
@@ -145,7 +147,7 @@ where
         // computing the whole `LlrSet` (nsym=1, 2, `LLR_NSYM_MAX`) up
         // front regardless of whether a cheap variant already lets
         // plain BP succeed. Mirrors the lazy staircase
-        // `core::pipeline::process_candidate_basic` has had since
+        // `engine::pipeline::process_candidate_basic` has had since
         // commit `4801722` (issue #197 item 2) — this AP-path sibling
         // never got the same port despite sharing the exact same
         // motivation (FST4's `LLR_NSYM_MAX=8` rung enumerates
@@ -163,7 +165,7 @@ where
                     bp_max_iter: 30,
                     osd_depth: 0,
                     ap_mask: None,
-                    verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
+                    verify_info: Some(<P::Msg as crate::engine::MessageCodec>::verify_info),
                     ..FecOpts::default()
                 };
                 if let Some(r) = fec.decode_soft($llr, &bp_opts)
@@ -208,7 +210,7 @@ where
                         bp_max_iter: 30,
                         osd_depth: 0,
                         ap_mask: Some((&mask, &values)),
-                        verify_info: Some(<P::Msg as crate::core::MessageCodec>::verify_info),
+                        verify_info: Some(<P::Msg as crate::engine::MessageCodec>::verify_info),
                         ..FecOpts::default()
                     };
                     if let Some(r) = fec.decode_soft(llr, &ap_opts)
@@ -236,7 +238,7 @@ where
                                 osd_depth: od,
                                 ap_mask: Some((&mask, &values)),
                                 verify_info: Some(
-                                    <P::Msg as crate::core::MessageCodec>::verify_info,
+                                    <P::Msg as crate::engine::MessageCodec>::verify_info,
                                 ),
                                 ..FecOpts::default()
                             };
@@ -266,7 +268,7 @@ where
 }
 
 fn finalise_result<P: Protocol>(
-    fec_result: &crate::core::FecResult,
+    fec_result: &crate::engine::FecResult,
     cand: &SyncCandidate,
     refined: &SyncCandidate,
     sync_cv: f32,
@@ -280,7 +282,7 @@ fn finalise_result<P: Protocol>(
     // encode below still uses the *scrambled* `fec_result.info`
     // because that's what the on-air codeword carried.
     let mut info_unscrambled = fec_result.info.clone();
-    crate::core::llr::descramble_info::<P>(&mut info_unscrambled);
+    crate::engine::llr::descramble_info::<P>(&mut info_unscrambled);
     let msg77: [u8; 77] = info_unscrambled[..77].try_into().ok()?;
     let text = unpack77(&msg77)?;
     if text.is_empty() || !is_plausible_message(&text) {

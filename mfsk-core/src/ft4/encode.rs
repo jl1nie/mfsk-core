@@ -7,8 +7,8 @@
 use alloc::vec::Vec;
 
 use super::Ft4;
-use crate::core::dsp::gfsk::{GfskCfg, synth_f32, synth_f32_into, synth_i16, synth_i16_into};
-use crate::core::{FecCodec, FrameLayout, ModulationParams};
+use crate::engine::dsp::gfsk::{GfskCfg, synth_f32, synth_f32_into, synth_i16, synth_i16_into};
+use crate::engine::{FecCodec, FrameLayout, ModulationParams};
 use crate::fec::Ldpc174_91;
 
 /// FT4 GFSK configuration: 12 kHz, 576 samples/symbol, BT=1.0, hmod=1.0,
@@ -52,7 +52,7 @@ pub fn message_to_tones(message77: &[u8; 77]) -> Vec<u8> {
     let codec = Ldpc174_91;
     let mut cw = [0u8; 174];
     codec.encode(&info, &mut cw);
-    crate::core::tx::codeword_to_itone::<Ft4>(&cw)
+    crate::engine::tx::codeword_to_itone::<Ft4>(&cw)
 }
 
 /// Output sample count for FT4 waveform synthesis (103 × 576 = 59 328).

@@ -15,7 +15,7 @@
 //!
 //! This module has no FFT dependency and no `std` requirement — it's the
 //! TX-only path a `no_std + alloc` embedded transmitter links against
-//! (decode needs an [`FftPlanner`](crate::core::fft::FftPlanner) impl via
+//! (decode needs an [`FftPlanner`](crate::engine::fft::FftPlanner) impl via
 //! `fft-rustfft` or `fft-extern`; encode needs neither):
 //!
 //! ```
@@ -58,7 +58,7 @@ fn append_crc14(message77: &[u8; MSG_BITS]) -> [u8; LDPC_K] {
 pub fn message_to_tones(message77: &[u8; MSG_BITS]) -> [u8; NN] {
     let info = append_crc14(message77);
     let cw = ldpc_encode(&info);
-    let generic = crate::core::tx::codeword_to_itone::<Ft8>(&cw);
+    let generic = crate::engine::tx::codeword_to_itone::<Ft8>(&cw);
     let mut out = [0u8; NN];
     out.copy_from_slice(&generic);
     out
@@ -66,7 +66,7 @@ pub fn message_to_tones(message77: &[u8; MSG_BITS]) -> [u8; NN] {
 
 /// FT8 GFSK configuration: 12 kHz sample rate, 1920 samples/symbol (= 6.25 Hz
 /// tone spacing), BT=2.0, modulation index 1.0, 240-sample raised-cosine ramp.
-const FT8_GFSK: crate::core::dsp::gfsk::GfskCfg = crate::core::dsp::gfsk::GfskCfg {
+const FT8_GFSK: crate::engine::dsp::gfsk::GfskCfg = crate::engine::dsp::gfsk::GfskCfg {
     sample_rate: 12_000.0,
     samples_per_symbol: 1920,
     bt: 2.0,
@@ -90,14 +90,14 @@ pub const TONES_OUTPUT_LEN: usize = NN * 1920;
 /// Panics if `out.len() != TONES_OUTPUT_LEN`.
 #[inline]
 pub fn tones_to_f32_into(out: &mut [f32], itone: &[u8; NN], f0: f32, amplitude: f32) {
-    crate::core::dsp::gfsk::synth_f32_into(out, itone, f0, amplitude, &FT8_GFSK)
+    crate::engine::dsp::gfsk::synth_f32_into(out, itone, f0, amplitude, &FT8_GFSK)
 }
 
 /// Synthesise a 12 000 Hz f32 PCM waveform from an FT8 tone sequence.
 /// Vec-returning convenience wrapper for [`tones_to_f32_into`].
 #[inline]
 pub fn tones_to_f32(itone: &[u8; NN], f0: f32, amplitude: f32) -> Vec<f32> {
-    crate::core::dsp::gfsk::synth_f32(itone, f0, amplitude, &FT8_GFSK)
+    crate::engine::dsp::gfsk::synth_f32(itone, f0, amplitude, &FT8_GFSK)
 }
 
 /// Synthesise into a caller-provided i16 PCM buffer. Peak value
@@ -105,7 +105,7 @@ pub fn tones_to_f32(itone: &[u8; NN], f0: f32, amplitude: f32) -> Vec<f32> {
 /// [`TONES_OUTPUT_LEN`].
 #[inline]
 pub fn tones_to_i16_into(out: &mut [i16], itone: &[u8; NN], f0: f32, amplitude_i16: i16) {
-    crate::core::dsp::gfsk::synth_i16_into(out, itone, f0, amplitude_i16, &FT8_GFSK)
+    crate::engine::dsp::gfsk::synth_i16_into(out, itone, f0, amplitude_i16, &FT8_GFSK)
 }
 
 /// Synthesise and return a 16-bit PCM waveform. Peak value of the returned
@@ -113,7 +113,7 @@ pub fn tones_to_i16_into(out: &mut [i16], itone: &[u8; NN], f0: f32, amplitude_i
 /// wrapper for [`tones_to_i16_into`].
 #[inline]
 pub fn tones_to_i16(itone: &[u8; NN], f0: f32, amplitude_i16: i16) -> Vec<i16> {
-    crate::core::dsp::gfsk::synth_i16(itone, f0, amplitude_i16, &FT8_GFSK)
+    crate::engine::dsp::gfsk::synth_i16(itone, f0, amplitude_i16, &FT8_GFSK)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -16,7 +16,7 @@
 //!    a fixed `+0.65 dB` offset to match WSJT-X line 43
 //!
 //! Originally lived in `crate::ft8::baseline`; lifted to
-//! `crate::core::baseline` so FT4's `coarse_sync` can use it for
+//! `crate::engine::baseline` so FT4's `coarse_sync` can use it for
 //! candidate-spectrum normalisation (see issue #18).
 
 extern crate alloc;

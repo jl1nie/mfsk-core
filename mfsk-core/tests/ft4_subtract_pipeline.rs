@@ -12,7 +12,7 @@
 //! `tests/` level so any `ft4::subtract` API regression that doesn't
 //! break self-cancellation still gets caught.
 
-use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
+use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 use mfsk_core::ft4::{Ft4, encode};

@@ -77,8 +77,8 @@ mod tests {
     use super::super::params::{NMAX, NTONES};
     use super::types::{SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
     use super::*;
-    use crate::core::scalar::Cmplx;
-    use crate::core::{MessageCodec, MessageFields};
+    use crate::engine::scalar::Cmplx;
+    use crate::engine::{MessageCodec, MessageFields};
     use crate::ft8::wave_gen::{message_to_tones, tones_to_f32};
     use crate::msg::Wsjt77Message;
 
@@ -382,7 +382,7 @@ mod tests {
     /// Exercises the Phase 2.6 fill / autogain path end-to-end.
     #[test]
     fn fill_q14i16_autogain_recovers_costas() {
-        use crate::core::scalar::Q14i16;
+        use crate::engine::scalar::Q14i16;
         let msg = pack_cq();
         let audio = synth_clean(&msg, 1500.0);
 

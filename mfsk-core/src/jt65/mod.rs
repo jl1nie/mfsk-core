@@ -57,7 +57,7 @@
 //! );
 //! ```
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Rs63_12;
 use crate::msg::Jt72Codec;
 
@@ -83,7 +83,7 @@ pub fn decode_at(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<crate::msg::Jt72Message> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
 
     let received = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz)?;
     let rs = Rs63_12::new();
@@ -117,7 +117,7 @@ pub fn decode_at_with_erasures(
     base_freq_hz: f32,
     attempts: &[usize],
 ) -> Option<crate::msg::Jt72Message> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
 
     let (symbols, conf) =
         rx::demodulate_aligned_with_confidence(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -193,7 +193,7 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &search::SearchParams,
 ) -> Vec<Jt65Decode> {
-    use crate::core::ModulationParams;
+    use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Jt65Decode> = Vec::new();

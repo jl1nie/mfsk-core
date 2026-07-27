@@ -1,4 +1,4 @@
-//! # `core` — protocol traits, DSP, sync, pipeline
+//! # `engine` — protocol traits, DSP, sync, pipeline
 //!
 //! Generic MFSK (M-ary frequency-shift-keying) primitives for WSJT-family
 //! amateur-radio digital modes (FT8, FT4, FT2, FST4, JT9, JT65, WSPR).
@@ -34,7 +34,7 @@ pub mod equalize;
 pub mod fft;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod ft4_coarse;
-// Decode-side modules go through the `core::fft` trait abstraction;
+// Decode-side modules go through the `engine::fft` trait abstraction;
 // gated on the meta-feature (true if any of fft-rustfft / fft-microfft
 // / fft-extern is on). Embedded TX-only builds with no FFT backend
 // still get `protocol`, `tx`, equalize, and the synthesis-side dsp

@@ -13,7 +13,7 @@
 
 use core::f32::consts::TAU;
 
-use crate::core::{FecCodec, ModulationParams};
+use crate::engine::{FecCodec, ModulationParams};
 use crate::fec::ConvFano232;
 
 use super::Jt9;

@@ -31,11 +31,11 @@
 
 use alloc::vec;
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano;
 use crate::msg::Wspr50Message;
 
-// Decode-side modules go through `core::fft` (FFT trait); gated on
+// Decode-side modules go through `engine::fft` (FFT trait); gated on
 // the FFT meta-feature. `tx` (synthesis) and `sync_vector` (a const
 // table) stay available for TX-only embedded WSPR beacons.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
@@ -187,7 +187,7 @@ pub fn deinterleave(bits: &mut [u8; 162]) {
 /// Mirrors WSJT-X `get_wspr_channel_symbols`: FEC encode → interleave →
 /// combine with sync vector as `symbol = 2·data_bit + sync_bit`.
 pub fn encode_channel_symbols(info_bits: &[u8; 50]) -> [u8; 162] {
-    use crate::core::FecCodec;
+    use crate::engine::FecCodec;
 
     let codec = ConvFano;
     let mut cw = vec![0u8; ConvFano::N];
@@ -213,20 +213,20 @@ pub fn encode_channel_symbols(info_bits: &[u8; 50]) -> [u8; 162] {
 /// data-bit LLR per symbol, then de-interleave. This function is the
 /// last mile of that pipeline and the entry point we exercise in tests.
 pub fn decode_from_deinterleaved_llrs(data_llrs: &[f32; 162]) -> Option<crate::msg::WsprMessage> {
-    use crate::core::{FecCodec, FecOpts, MessageCodec};
+    use crate::engine::{FecCodec, FecOpts, MessageCodec};
 
     let codec = ConvFano;
     let fec = codec.decode_soft(data_llrs, &FecOpts::default())?;
     let msg = Wspr50Message;
     let mut info_bits = [0u8; 50];
     info_bits.copy_from_slice(&fec.info);
-    msg.unpack(&info_bits, &crate::core::DecodeContext::default())
+    msg.unpack(&info_bits, &crate::engine::DecodeContext::default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
+    use crate::engine::FecCodec;
 
     #[test]
     fn wspr_trait_surface() {

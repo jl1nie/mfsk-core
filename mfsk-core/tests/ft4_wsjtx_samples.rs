@@ -9,7 +9,7 @@
 //!
 //! This is the FT4 counterpart to `q65_wsjtx_samples.rs`. It exists
 //! to catch regressions in the *generic* DSP path that FT4 shares
-//! with FT8: in particular, the `core::dsp::subtract` rewrite that
+//! with FT8: in particular, the `engine::dsp::subtract` rewrite that
 //! turned on GFSK shaping for FT4 (commit cec9472) had no real-WAV
 //! coverage before this test was added.
 //!
@@ -102,7 +102,7 @@ fn ft4_wsjtx_sample_recall_vs_golden() {
 
     // Wide search — FT4 audio band is ~100..2700 Hz.
     // `max_cand=100` matches WSJT-X's own `getcandidates4.f90`
-    // `MAXCAND=100`: since `core::ft4_coarse::ft4_coarse_sync`
+    // `MAXCAND=100`: since `engine::ft4_coarse::ft4_coarse_sync`
     // (dapper-soaring-nest plan, Phase 1) emits one candidate per
     // frequency-domain peak instead of the old generic Costas-lag
     // search's up-to-8-per-frequency, this real 6-signal WAV needed

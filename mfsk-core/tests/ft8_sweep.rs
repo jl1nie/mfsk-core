@@ -7,7 +7,7 @@
 //! faithful pipeline from the #48 consolidation) uses its own
 //! already-calibrated `ft8::decode::DecodeStrictness` (see the "Calibrated
 //! from real WAV bench 2026-04-07" doc comment there), not the uncalibrated
-//! copy in `core::pipeline` that FT4/FST4 share (issue #72) — `process_candidate`
+//! copy in `engine::pipeline` that FT4/FST4 share (issue #72) — `process_candidate`
 //! isn't `pub`, so there's no external hook to vary it from this test. What
 //! this sweep *does* give FT8 for the first time: a true Watterson-fading
 //! AWGN/CCIR corpus generated from WSJT-X's own `ft8sim`, as opposed to the
@@ -280,8 +280,8 @@ fn ft8_snr_sweep() {
 #[test]
 #[ignore = "manual diagnostic — CCIR fading stage attribution (issue #72 follow-up)"]
 fn ft8_diag_weak_trials() {
-    use mfsk_core::core::dsp::downsample::downsample_cached;
-    use mfsk_core::core::sync::fine_sync_power_per_block;
+    use mfsk_core::engine::dsp::downsample::downsample_cached;
+    use mfsk_core::engine::sync::fine_sync_power_per_block;
     use mfsk_core::ft8::Ft8;
     use mfsk_core::ft8::decode_block::{coarse_sync, compute_spectrogram};
     use mfsk_core::ft8::downsample::{FT8_CFG, build_fft_cache};
@@ -324,7 +324,8 @@ fn ft8_diag_weak_trials() {
                 let refine = fine_refine_3stage(&cd0, c.dt_sec);
                 let refined_freq = c.freq_hz + refine.delf_hz;
                 let i_start = ((refine.dt_sec + 0.5) * 200.0).round() as i32;
-                let shifted = mfsk_core::core::sync2d::freq_shift_cd0(&cd0, refine.delf_hz, 200.0);
+                let shifted =
+                    mfsk_core::engine::sync2d::freq_shift_cd0(&cd0, refine.delf_hz, 200.0);
                 let scores = fine_sync_power_per_block::<Ft8>(&shifted, i_start);
                 let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
                 let sync_cv = if mean > f32::EPSILON {
@@ -334,7 +335,7 @@ fn ft8_diag_weak_trials() {
                 } else {
                     0.0
                 };
-                let mut cs_raw: [[mfsk_core::core::scalar::Cmplx<f32>; 8]; 79] =
+                let mut cs_raw: [[mfsk_core::engine::scalar::Cmplx<f32>; 8]; 79] =
                     [[Default::default(); 8]; 79];
                 mfsk_core::ft8::decode_block::fill_symbol_spectra(
                     &mut cs_raw,

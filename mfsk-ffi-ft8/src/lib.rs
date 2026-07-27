@@ -507,7 +507,7 @@ pub unsafe extern "C" fn mfsk_ft8_tones_to_f32(
 // — the streaming primitives are pure-arithmetic, no FFT / no DSP
 // backend, so they don't need a target-specific kernel.
 
-use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
+use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
 
 /// Opaque handle returned by [`mfsk_ft8_stream_new`].
 ///

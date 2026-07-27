@@ -1,4 +1,4 @@
-//! FST4 decode — thin wrapper over [`crate::core::pipeline`].
+//! FST4 decode — thin wrapper over [`crate::engine::pipeline`].
 //!
 //! Every FST4 sub-mode uses LDPC(240, 101) + CRC-24 over the 77-bit
 //! WSJT message payload, with 5 × 8-symbol Costas sync blocks. The
@@ -17,10 +17,10 @@
 //! implemented for any sub-mode (issue #193: new numerical work, not a
 //! refactor, kept out of this redesign's scope).
 
-use crate::core::dsp::downsample::DownsampleCfg;
-use crate::core::pipeline;
+use crate::engine::dsp::downsample::DownsampleCfg;
+use crate::engine::pipeline;
 
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
+pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest};
 
@@ -114,7 +114,7 @@ pub const FST4_300_DOWNSAMPLE: DownsampleCfg = DownsampleCfg {
 /// FST4 has 40 sync symbols (5 × 8). Matches WSJT-X's own pre-ladder
 /// gate exactly (`get_fst4_bitmetrics.f90`: `if(nsync .lt. 16)
 /// badsync=.true.; return` — bails before the expensive nsym=1/2/4/8
-/// correlation ladder, `core::llr::compute_llr`, ever runs). Was `10`
+/// correlation ladder, `engine::llr::compute_llr`, ever runs). Was `10`
 /// (a quarter of 40) — looser than WSJT-X's `16` (40%), so candidates
 /// WSJT-X would already reject pre-ladder were paying for the full
 /// ladder (including the 65536-hypothesis nsym=8 rung) in our pipeline
@@ -141,7 +141,7 @@ fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResu
 
 /// Implements [`FrameDecodable`] for one FST4 sub-mode ZST, wiring in its
 /// `DownsampleCfg`. Every sub-mode shares the same generic engine
-/// (`core::pipeline`/`msg::pipeline_ap`), `REFINE_STEPS`, and
+/// (`engine::pipeline`/`msg::pipeline_ap`), `REFINE_STEPS`, and
 /// `SYNC_Q_MIN` — only the downsample geometry differs.
 macro_rules! impl_frame_decodable {
     ($proto:ty, $cfg:expr) => {
@@ -185,7 +185,7 @@ macro_rules! impl_frame_decodable {
                     SYNC_Q_MIN / 2,
                     req.ap_hint,
                 );
-                let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+                let fft_cache = FftCache(crate::engine::dsp::downsample::build_fft_cache(
                     req.audio, &$cfg,
                 ));
                 DecodeOutcome { results, fft_cache }
@@ -269,10 +269,13 @@ mod tests {
     /// `fst4::tests::all_submodes_match_wsjtx_fst4_decode_f90`), which
     /// is the strongest available check without either a real
     /// recording or a WSJT-X `fst4sim`-generated reference WAV.
-    fn synth_roundtrip_for<P>(gfsk: &crate::core::dsp::gfsk::GfskCfg, freq_min: f32, freq_max: f32)
-    where
-        P: crate::core::Protocol
-            + crate::core::FrameLayout
+    fn synth_roundtrip_for<P>(
+        gfsk: &crate::engine::dsp::gfsk::GfskCfg,
+        freq_min: f32,
+        freq_max: f32,
+    ) where
+        P: crate::engine::Protocol
+            + crate::engine::FrameLayout
             + FrameDecodable<DecodeResult = DecodeResult>,
     {
         use super::super::encode::{message_to_tones, tones_to_i16_with_gfsk};

@@ -543,7 +543,7 @@ pub fn afc9(c3a: &mut Vec<Complex<f32>>) -> Afc9Result {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
     use crate::fec::ConvFano232;
     use crate::jt9::tx::synthesize_standard;
     use crate::msg::{Jt72Codec, Jt72Message};
@@ -608,7 +608,7 @@ mod tests {
     /// hand WSJT-X two WAVs and see which one (if any) it decodes.
     /// Returns the 85 channel tones.
     fn encode_with_gray_dir(c1: &str, c2: &str, grid: &str, invert_gray: bool) -> [u8; 85] {
-        use crate::core::FecCodec;
+        use crate::engine::FecCodec;
         use crate::fec::ConvFano232;
         use crate::jt9::interleave::interleave;
         use crate::jt9::sync_pattern::JT9_ISYNC;

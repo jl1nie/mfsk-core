@@ -7,7 +7,7 @@
 //! transmitter emits tone 0 (sync), and where `NPRC[i] == 0` it
 //! emits one of the 64 data tones.
 
-use crate::core::SyncBlock;
+use crate::engine::SyncBlock;
 
 /// Raw 126-bit sync pattern, as transcribed from WSJT-X `nprc`.
 pub const JT65_NPRC: [u8; 126] = [

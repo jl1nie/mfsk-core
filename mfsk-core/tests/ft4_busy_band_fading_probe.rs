@@ -35,7 +35,7 @@
 //! each a single, non-iterated call — WSJT-X's deep suppression of a
 //! persistent signal comes entirely from its outer `do ipass=1,npass`
 //! (3-pass) loop re-detecting the same residual as a fresh candidate
-//! in a later pass, which both `core::pipeline::decode_frame_subtract`
+//! in a later pass, which both `engine::pipeline::decode_frame_subtract`
 //! (this scenario's driver) and `ft8::decode`'s equivalent already do
 //! independently. The convergence loop was a redundant, invented
 //! mechanism duplicating what the outer pass loop already provides —
@@ -53,7 +53,7 @@
 //! ```
 use std::collections::BTreeSet;
 
-use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
+use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
@@ -297,7 +297,7 @@ fn diag_strong_only_no_crowd() {
 #[test]
 #[ignore]
 fn diag_target_score_before_after_subtract() {
-    use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
+    use mfsk_core::engine::sync::{SyncDims, make_costas_ref, score_costas_block};
     use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
@@ -323,7 +323,7 @@ fn diag_target_score_before_after_subtract() {
     let i0 = ((0.0f32 + Ft4::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
     let ds_cfg = mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
     let score_at = |a: &[i16], f: f32| -> f32 {
-        let (cd0, _c) = mfsk_core::core::dsp::downsample::downsample(a, f, &ds_cfg);
+        let (cd0, _c) = mfsk_core::engine::dsp::downsample::downsample(a, f, &ds_cfg);
         score_costas_block(&cd0, &csync, d.ds_spb, i0)
     };
 
@@ -414,7 +414,7 @@ fn write_wav_i16(path: &std::path::Path, samples: &[i16], sample_rate: u32) {
 #[test]
 #[ignore]
 fn diag_seed4_why_still_missing() {
-    use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
+    use mfsk_core::engine::sync::{SyncDims, make_costas_ref, score_costas_block};
     use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 
     let (audio, target) = build_scenario(4);
@@ -449,7 +449,7 @@ fn diag_seed4_why_still_missing() {
     let mut freq = 1600.0 - 20.833 * 3.0;
     println!("\nresidual scan near 1600 Hz after subtracting all found decodes:");
     while freq <= 1600.0 + 20.833 * 3.0 {
-        let (cd0, _c) = mfsk_core::core::dsp::downsample::downsample(&residual, freq, &ds_cfg);
+        let (cd0, _c) = mfsk_core::engine::dsp::downsample::downsample(&residual, freq, &ds_cfg);
         let score = score_costas_block(&cd0, &csync, d.ds_spb, i0);
         println!("  freq={freq:>8.2}  score={score:>16.4}");
         freq += 20.833 / 2.0;

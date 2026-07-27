@@ -25,7 +25,7 @@ use num_complex::Complex32;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::dsp::msk::{NSPM, sync_waveform};
+use crate::engine::dsp::msk::{NSPM, sync_waveform};
 
 /// Frequency-shift (NCO mixdown) an analytic-signal buffer by `f0_hz`,
 /// at the fixed MSK144 sample rate of 12 kHz. Matches WSJT-X
@@ -252,7 +252,7 @@ pub fn msk144_sync(
 /// Circularly rotate a coherently-averaged frame so the sample at
 /// `shift` (as reported by [`SyncPeak::shift`]) lands at index 0 —
 /// i.e. `aligned[k] = frame[(k + shift) % NSPM]`. Produces a frame
-/// ready for [`crate::core::dsp::msk::matched_filter_softbits`].
+/// ready for [`crate::engine::dsp::msk::matched_filter_softbits`].
 pub fn rotate_to_shift(frame: &[Complex32], shift: usize) -> Vec<Complex32> {
     assert_eq!(frame.len(), NSPM, "frame must hold exactly NSPM samples");
     let mut out = vec![Complex32::new(0.0, 0.0); NSPM];
@@ -265,8 +265,8 @@ pub fn rotate_to_shift(frame: &[Complex32], shift: usize) -> Vec<Complex32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
-    use crate::core::dsp::msk::{build_bitseq, matched_filter_softbits, synth_frame};
+    use crate::engine::FecCodec;
+    use crate::engine::dsp::msk::{build_bitseq, matched_filter_softbits, synth_frame};
     use crate::fec::Ldpc128_90;
 
     fn build_info_with_crc(pattern: impl Fn(usize) -> u8) -> [u8; 90] {

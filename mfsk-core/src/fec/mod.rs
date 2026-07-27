@@ -2,9 +2,9 @@
 //!
 //! Forward-error-correction codecs shared across WSJT-family protocols.
 //!
-//! Each codec implements [`crate::core::FecCodec`] so generic pipeline code can
+//! Each codec implements [`crate::engine::FecCodec`] so generic pipeline code can
 //! treat it uniformly. Protocol crates pick the codec via the
-//! `type Fec = …;` associated type on [`crate::core::Protocol`].
+//! `type Fec = …;` associated type on [`crate::engine::Protocol`].
 //!
 //! ## Contents
 //!
@@ -35,4 +35,4 @@ pub use rs::Rs63_12;
 
 // Re-export the FecCodec trait so callers can name it via [`crate::fec::FecCodec`]
 // alongside the concrete codec types.
-pub use crate::core::FecCodec;
+pub use crate::engine::FecCodec;

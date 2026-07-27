@@ -6,7 +6,7 @@
 //!
 //! The positions are 0-indexed here (`1,2,5,…` → `0,1,4,…`).
 
-use crate::core::SyncBlock;
+use crate::engine::SyncBlock;
 
 /// 0-indexed symbol positions of the 16 sync symbols within the
 /// 85-symbol JT9 frame.

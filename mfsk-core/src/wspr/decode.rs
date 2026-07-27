@@ -99,7 +99,7 @@ pub fn decode_at_baseband_nblocks(
     drift_hz: f32,
     nblocks: &[usize],
 ) -> Option<WsprDecode> {
-    use crate::core::{FecCodec, FecOpts, MessageCodec};
+    use crate::engine::{FecCodec, FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
     // takes the signal CENTER, so we add 1.5·tone_spacing here and sweep
@@ -188,8 +188,8 @@ pub fn decode_at_baseband_nblocks(
                 if nhardmin > OSD_HARD_ERR_MAX {
                     continue;
                 }
-                let Some(msg) =
-                    crate::msg::Wspr50Message.unpack(&info, &crate::core::DecodeContext::default())
+                let Some(msg) = crate::msg::Wspr50Message
+                    .unpack(&info, &crate::engine::DecodeContext::default())
                 else {
                     continue;
                 };
@@ -201,7 +201,7 @@ pub fn decode_at_baseband_nblocks(
                 continue;
             };
         let Some(message) =
-            crate::msg::Wspr50Message.unpack(&info_bits, &crate::core::DecodeContext::default())
+            crate::msg::Wspr50Message.unpack(&info_bits, &crate::engine::DecodeContext::default())
         else {
             continue;
         };
@@ -339,7 +339,7 @@ pub fn decode_scan(
     // the dense refine grid.
     const REFINE_FREQ_RADIUS_HZ: f32 = 1.0;
     const REFINE_FREQ_STEP_HZ: f32 = 1.0;
-    let nsps = (sample_rate as f32 * <super::Wspr as crate::core::ModulationParams>::SYMBOL_DT)
+    let nsps = (sample_rate as f32 * <super::Wspr as crate::engine::ModulationParams>::SYMBOL_DT)
         .round() as i64;
     let refine_time_radius = nsps / 8; // ≈85 ms half-window
     let refine_time_step = nsps / 8; // 1 step at radius → 3 cells in time
@@ -453,8 +453,8 @@ pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
 /// WSPR subtract configuration (continuous-phase 4-FSK). Mirrors WSJT-X
 /// `subtract_signal2` in `wsprd.c`: tone spacing 1.4648 Hz, 8192
 /// samples/symbol at 12 kHz, no GFSK shaping (WSPR is plain CPFSK).
-const WSPR_SUBTRACT: crate::core::dsp::subtract::SubtractCfg =
-    crate::core::dsp::subtract::SubtractCfg {
+const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
+    crate::engine::dsp::subtract::SubtractCfg {
         sample_rate: 12_000.0,
         tone_spacing_hz: 1.4648,
         samples_per_symbol: 8192,
@@ -489,7 +489,7 @@ pub fn decode_scan_subtract(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<WsprDecode> {
-    use crate::core::dsp::subtract::subtract_tones;
+    use crate::engine::dsp::subtract::subtract_tones;
 
     // The subtract helper takes `&mut [i16]`; convert once, mutate
     // across passes, work on `f32` for `decode_scan` per pass.

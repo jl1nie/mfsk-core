@@ -408,7 +408,7 @@ pub fn unpack(d: &[u8; 12]) -> Jt72Message {
 // MessageCodec impl
 // ─────────────────────────────────────────────────────────────────────────
 
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// JT 72-bit message codec. Used by JT65 and JT9.
 #[derive(Copy, Clone, Debug, Default)]

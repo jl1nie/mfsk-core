@@ -17,7 +17,7 @@
 //! The output is 206 bit LLRs suitable for
 //! `crate::fec::ConvFano232::decode_soft`.
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
@@ -153,7 +153,7 @@ pub fn demodulate_aligned(
 mod tests {
     use super::super::tx::synthesize_standard;
     use super::*;
-    use crate::core::{DecodeContext, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::{Jt72Codec, Jt72Message};
 
@@ -203,7 +203,7 @@ mod tests {
 #[allow(clippy::collapsible_if, clippy::unnecessary_map_or)]
 mod diag_tests {
     use super::*;
-    use crate::core::{DecodeContext, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::Jt72Codec;
     use std::path::Path;
@@ -336,7 +336,7 @@ fn freq_sweep_1224hz() {
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
         .collect();
-    use crate::core::{DecodeContext, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::Jt72Codec;
     let codec = ConvFano232;
@@ -374,7 +374,7 @@ fn wide_freq_time_sweep() {
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
         .collect();
-    use crate::core::{DecodeContext, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecOpts, MessageCodec};
     use crate::fec::{ConvFano232, FecCodec};
     use crate::msg::Jt72Codec;
     let codec = ConvFano232;

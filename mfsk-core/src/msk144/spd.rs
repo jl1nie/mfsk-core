@@ -23,9 +23,9 @@ use num_complex::Complex32;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::DecodeContext;
-use crate::core::dsp::msk::{NSPM, matched_filter_softbits};
-use crate::core::fft::default_planner;
+use crate::engine::DecodeContext;
+use crate::engine::dsp::msk::{NSPM, matched_filter_softbits};
+use crate::engine::fft::default_planner;
 use crate::msk144::frame_decode::decode_frame;
 use crate::msk144::sync::{msk144_sync, rotate_to_shift};
 
@@ -329,8 +329,8 @@ pub fn short_ping_decode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
-    use crate::core::dsp::msk::{build_bitseq, synth_frame};
+    use crate::engine::FecCodec;
+    use crate::engine::dsp::msk::{build_bitseq, synth_frame};
     use crate::fec::Ldpc128_90;
     use crate::msk144::sync::tweak1;
 
@@ -457,7 +457,7 @@ mod tests {
     /// `msk144sim.f90:52-76` (simple continuous-phase binary FSK at
     /// ±500 Hz deviation, driven by the *tone* sequence `itone` — not
     /// this crate's own OQPSK/complex-baseband
-    /// `crate::core::dsp::msk::synth_frame`). Used only to build a
+    /// `crate::engine::dsp::msk::synth_frame`). Used only to build a
     /// test signal whose generation shares no code with the
     /// `synth_frame`/`matched_filter_softbits` pair under test, so a
     /// bug shared between TX and RX can't silently cancel out in a
@@ -535,7 +535,7 @@ mod tests {
         let fc_true = 1500.0f32;
         let itone = build_i4tone(&bitseq);
         let audio = msk144sim_reference_audio(&itone, fc_true);
-        let analytic = crate::core::dsp::analytic_signal(&audio);
+        let analytic = crate::engine::dsp::analytic_signal(&audio);
         assert_eq!(analytic.len(), NSPM);
 
         let navmask = [true];
@@ -543,7 +543,7 @@ mod tests {
         assert!(result.success, "xmax = {}", result.xmax);
 
         let aligned = crate::msk144::sync::rotate_to_shift(&result.frame, result.peaks[0].shift);
-        let softbits = crate::core::dsp::msk::matched_filter_softbits(
+        let softbits = crate::engine::dsp::msk::matched_filter_softbits(
             aligned.as_slice().try_into().expect("NSPM samples"),
         );
         for i in 0..144 {
@@ -596,7 +596,7 @@ mod tests {
         let itone_repeated: alloc::vec::Vec<u8> =
             itone.iter().copied().cycle().take(144 * NREPS).collect();
         let audio = msk144sim_reference_audio(&itone_repeated, fc_true);
-        let analytic = crate::core::dsp::analytic_signal(&audio);
+        let analytic = crate::engine::dsp::analytic_signal(&audio);
 
         let total = 8 * NSPM;
         let mut cbig = pseudo_gaussian_noise(total, 0.05, 999);

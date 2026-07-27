@@ -1,4 +1,4 @@
-//! FT8 LLR — thin wrapper over [`crate::core::llr`].
+//! FT8 LLR — thin wrapper over [`crate::engine::llr`].
 //!
 //! Preserves the pre-refactor `[[Complex;8];79]` input type for
 //! compatibility with `decode`, `equalizer`, and external callers.
@@ -10,17 +10,17 @@ use alloc::vec::Vec;
 use super::Ft8;
 
 use super::params::{LDPC_N, LLR_SCALE};
-use crate::core::scalar::{Cmplx, LlrScalar};
+use crate::engine::scalar::{Cmplx, LlrScalar};
 
-pub use crate::core::llr::LlrSet as GenericLlrSet;
+pub use crate::engine::llr::LlrSet as GenericLlrSet;
 
 /// FT8 LLR bundle: four fixed-length (174-bit) variants. Generic over
 /// the [`LlrScalar`] storage; defaults to `f32` for backward
 /// compatibility (`LlrSet` ≡ `LlrSet<f32>`). The
-/// [`crate::core::scalar::Q11i16`] instantiation (`LlrSet<Q11i16>`)
+/// [`crate::engine::scalar::Q11i16`] instantiation (`LlrSet<Q11i16>`)
 /// feeds the integer-only NMS BP under the `fixed-point` feature
 /// since 0.6.2 — the 0.5.x line used `LlrSet<Q3i8>`
-/// ([`crate::core::scalar::Q3i8`] stays in `core::scalar` for the
+/// ([`crate::engine::scalar::Q3i8`] stays in `engine::scalar` for the
 /// comparison path). The Q3i8 ↔ Q11i16 rationale is in
 /// `CHANGELOG.md` 0.5.4 + 0.6.2 / 0.6.3 entries and in
 /// `docs/reference/EMBEDDED.md`'s `LlrScalar` section.
@@ -55,9 +55,9 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 /// `&[Cmplx<f32>]` view via `flatten_cs`.
 pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::core::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 3);
+    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 3);
     // Sanity check scale consistency at build time.
-    debug_assert!((crate::core::llr::LLR_SCALE - LLR_SCALE).abs() < 1e-6);
+    debug_assert!((crate::engine::llr::LLR_SCALE - LLR_SCALE).abs() < 1e-6);
     LlrSet {
         llra: inflate_llr(g.llra),
         llrb: inflate_llr(g.llrb),
@@ -71,7 +71,7 @@ pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// `llra` and `llrd` are valid.
 pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::core::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 1);
+    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 1);
     LlrSet {
         llra: inflate_llr(g.llra),
         llrb: inflate_llr(g.llrb),
@@ -89,20 +89,20 @@ pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// `nsym = 2` and `nsym = 3`.
 pub fn compute_llr_partial<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], nsym: usize) -> [T; LDPC_N] {
     let flat = flatten_cs(cs);
-    let v = crate::core::llr::compute_llr_partial::<Ft8, f32, T>(&flat, nsym);
+    let v = crate::engine::llr::compute_llr_partial::<Ft8, f32, T>(&flat, nsym);
     inflate_llr(v)
 }
 
 /// WSJT-X compatible SNR from 8-tone spectra + decoded 79-tone sequence.
 pub fn compute_snr_db(cs: &[[Cmplx<f32>; 8]; 79], itone: &[u8; 79]) -> f32 {
     let flat = flatten_cs(cs);
-    crate::core::llr::compute_snr_db_generic::<Ft8, f32>(&flat, itone)
+    crate::engine::llr::compute_snr_db_generic::<Ft8, f32>(&flat, itone)
 }
 
 /// Hard-decision sync quality (0..21). FT8 threshold ≤ 6 → bail out.
 pub fn sync_quality(cs: &[[Cmplx<f32>; 8]; 79]) -> u32 {
     let flat = flatten_cs(cs);
-    crate::core::llr::sync_quality_generic::<Ft8, f32>(&flat)
+    crate::engine::llr::sync_quality_generic::<Ft8, f32>(&flat)
 }
 
 #[cfg(test)]

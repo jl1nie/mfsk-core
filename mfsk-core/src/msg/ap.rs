@@ -16,7 +16,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::wsjt77::{pack_grid4, pack28};
-use crate::core::MessageCodec;
+use crate::engine::MessageCodec;
 
 /// Marker trait for `MessageCodec`s whose information-bit layout matches the
 /// 77-bit Wsjt77 family field positions (call1 at 0..28, call2 at 29..57,

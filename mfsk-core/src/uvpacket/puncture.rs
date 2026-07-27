@@ -520,7 +520,7 @@ mod tests {
     /// Eb/N0 see the same per-info-bit energy budget but different
     /// per-channel-bit noise.
     fn awgn_sweep(keep: &[usize], eb_n0_db: f32, n_trials: usize) -> (usize, usize) {
-        use crate::core::{FecCodec, FecOpts};
+        use crate::engine::{FecCodec, FecOpts};
         use crate::fec::Ldpc240_101;
 
         let fec = Ldpc240_101;

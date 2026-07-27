@@ -223,7 +223,7 @@ mod rustfft_backend_i16 {
     /// Phase 1.7.7a host adapter for the 3840-pt FT8 spectrogram FFT.
     /// Bit-exact match to embedded `MixedRadix3840Sc16Fft` (esp-dsp
     /// 256-pt sc16 + f32 PFA), via the software port in
-    /// `core::dsp::fft_mixed_3840_sc16::Plan3840Sc16`.
+    /// `engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16`.
     ///
     /// Without this adapter `RustFft16Adapter` ran a single rustfft
     /// 3840-pt + flat `1/N` scaling — mathematically the same DFT
@@ -232,7 +232,7 @@ mod rustfft_backend_i16 {
     /// diverge between host `compute_spectrogram` (fixed-point) and
     /// the S3 wav_sim baseline (host 3 vs embedded 7 on qso3_busy).
     struct MixedRadix3840Sc16Adapter {
-        plan: crate::core::dsp::fft_mixed_3840_sc16::Plan3840Sc16,
+        plan: crate::engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16,
     }
 
     impl Fft16 for MixedRadix3840Sc16Adapter {
@@ -248,7 +248,7 @@ mod rustfft_backend_i16 {
         fn plan_forward(&mut self, len: usize) -> Box<dyn Fft16> {
             if len == 3840 {
                 return Box::new(MixedRadix3840Sc16Adapter {
-                    plan: crate::core::dsp::fft_mixed_3840_sc16::Plan3840Sc16::new(),
+                    plan: crate::engine::dsp::fft_mixed_3840_sc16::Plan3840Sc16::new(),
                 });
             }
             Box::new(RustFft16Adapter {
@@ -284,7 +284,7 @@ pub use rustfft_backend_i16::RustFftPlanner16;
 ///    ```ignore
 ///    #[unsafe(no_mangle)]
 ///    pub extern "Rust" fn mfsk_core_make_default_fft_planner()
-///        -> Box<dyn mfsk_core::core::fft::FftPlanner>;
+///        -> Box<dyn mfsk_core::engine::fft::FftPlanner>;
 ///    ```
 ///    The binary must define this symbol; missing it is a link-time
 ///    error. Typical ESP32-S3 implementation wraps an

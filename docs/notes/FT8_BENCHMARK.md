@@ -73,7 +73,7 @@ AWGN and CCIR-good land within ~1 dB of the -20/-21 dB published figure
 (~2 dB gap, see `FT4_BENCHMARK.md`). This is consistent with FT8's
 production `decode_frame` running through `decode_block`'s WSJT-X-
 faithful pipeline (post-#48 consolidation) rather than the generic
-`core::pipeline` path FT4/FST4 use. CCIR moderate/poor show a larger
+`engine::pipeline` path FT4/FST4 use. CCIR moderate/poor show a larger
 ~2-2.5 dB gap — not yet investigated; a candidate follow-up for the
 diagnose-before-fixing approach in `FST4_BENCHMARK.md` section 6 if
 fading-specific sensitivity becomes a priority.
@@ -85,7 +85,7 @@ calibration probe. FT8's production path calls `process_candidate`
 (not `pub`) with its own already-calibrated `ft8::decode::DecodeStrictness`
 (see the "Calibrated from real WAV bench 2026-04-07" doc comment in
 `src/ft8/decode.rs`) — a different, already-tuned struct from the
-uncalibrated copy in `core::pipeline` that FT4/FST4 share (issue #72).
+uncalibrated copy in `engine::pipeline` that FT4/FST4 share (issue #72).
 There's no public hook to vary it from an external test. What this
 sweep gives FT8 for the first time is a systematic Watterson-fading
 corpus to validate that existing calibration against, rather than a new

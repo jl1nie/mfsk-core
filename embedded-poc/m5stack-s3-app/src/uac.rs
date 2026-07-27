@@ -59,7 +59,7 @@ use std::sync::OnceLock;
 use anyhow::{anyhow, Result};
 use embedded_shared::pipeline::{send_box, ChunkMsg, CHUNK_LEN};
 use esp_idf_svc::sys;
-use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
+use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
 
 /// Newtype around the IDF `uac_host_device_handle_t` (`*mut uac_interface`)
 /// to assert thread-safety for the `move` into the reader thread. The

@@ -40,7 +40,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use mfsk_core::core::sync::{bootstrap_dt_median, SyncCandidate};
+use mfsk_core::engine::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
     coarse_sync, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
@@ -586,7 +586,7 @@ unsafe fn drain_stage3_queue(
     depth: DecodeDepth,
     q_thresh: u32,
     bp_max_iter: u32,
-    cs_scratch: &mut [[mfsk_core::core::scalar::Cmplx<f32>; 8]; 79],
+    cs_scratch: &mut [[mfsk_core::engine::scalar::Cmplx<f32>; 8]; 79],
 ) -> Vec<DecodeResult> {
     let mut out: Vec<DecodeResult> = Vec::new();
     loop {

@@ -1,15 +1,15 @@
 //! FT4-specific coarse-candidate stage — faithful port of WSJT-X
 //! `getcandidates4.f90` + `ft4_baseline.f90`.
 //!
-//! Lives in `core`, not `ft4`, alongside `core::sync2d::ft4_sync_search`
-//! for the same reason that function does: `core` is compiled regardless
-//! of which protocol features are enabled, and `core::pipeline` needs to
+//! Lives in `engine`, not `ft4`, alongside `engine::sync2d::ft4_sync_search`
+//! for the same reason that function does: `engine` is compiled regardless
+//! of which protocol features are enabled, and `engine::pipeline` needs to
 //! call this unconditionally (gated only by a runtime `P::ID == Ft4`
 //! check, matching the existing `ft4_sync_search` wiring) — a
-//! `crate::ft4::*` reference from `core` would force the `ft4` feature
+//! `crate::ft4::*` reference from `engine` would force the `ft4` feature
 //! on for every build.
 //!
-//! `core::sync::coarse_sync` (used by every other protocol still on the
+//! `engine::sync::coarse_sync` (used by every other protocol still on the
 //! generic path) is a 2-D (freq × lag) Costas-array correlation search —
 //! correct for FT8/FST4/etc, but a structurally different algorithm from
 //! what WSJT-X actually does for FT4. `getcandidates4.f90` never searches
@@ -20,10 +20,10 @@
 //! step), time-averaged into `savg`, 15-bin boxcar-smoothed into `savsm`,
 //! normalised by a 5-term-polynomial baseline (`ft4_baseline.f90`,
 //! already a faithful, unit-tested port at
-//! [`crate::core::baseline::fit_baseline`]), and reduced to **one
+//! [`crate::engine::baseline::fit_baseline`]), and reduced to **one
 //! candidate per local-max frequency peak** (parabolic sub-bin
 //! interpolation). FT4's actual Δt determination happens entirely later,
-//! in the already-faithful [`crate::core::sync2d::ft4_sync_search`]
+//! in the already-faithful [`crate::engine::sync2d::ft4_sync_search`]
 //! (an *absolute* full-window coherent search that ignores whatever
 //! `dt_sec` a coarse candidate carries).
 //!
@@ -54,7 +54,7 @@
 //! slots fill (a Fortran fixed-array convenience, not an intentional
 //! ranking), then reorders only by nfqso-proximity. This module instead
 //! sorts by score (falling back to `freq_hint` proximity, matching
-//! `core::sync::coarse_sync`'s own convention) before truncating to
+//! `engine::sync::coarse_sync`'s own convention) before truncating to
 //! `max_cand` — consistent with how every other caller in this pipeline
 //! (dedup, sniper mode) already treats `SyncCandidate::score` as a
 //! genuine ranking, not an FFI-array-fill leftover.
@@ -136,11 +136,11 @@ fn symbol_spectra_avg(audio: &[i16]) -> Vec<f32> {
 
 /// FT4 coarse-candidate stage: one candidate per frequency-domain local
 /// peak, faithful to `getcandidates4.f90`. Signature matches
-/// `core::sync::coarse_sync::<Ft4>` — a drop-in replacement at call
+/// `engine::sync::coarse_sync::<Ft4>` — a drop-in replacement at call
 /// sites.
 ///
 /// `dt_sec` on every returned candidate is `0.0` — genuinely unused
-/// downstream: `core::sync2d::ft4_sync_search` (called next in
+/// downstream: `engine::sync2d::ft4_sync_search` (called next in
 /// `process_candidate_basic` for `P::ID == Ft4`) searches the absolute
 /// time window regardless of the candidate's own `dt_sec`.
 pub fn ft4_coarse_sync(
@@ -178,7 +178,7 @@ pub fn ft4_coarse_sync(
     }
 
     // Baseline fit (`ft4_baseline.f90`, ported at
-    // `core::baseline::fit_baseline`) operates on the raw (unsmoothed)
+    // `engine::baseline::fit_baseline`) operates on the raw (unsmoothed)
     // `savg`, same as WSJT-X's `call ft4_baseline(savg,nfa,nfb,sbase)`.
     // `fit_baseline` returns dB (its own documented contract); convert
     // back to linear power to match `ft4_baseline.f90:46`'s

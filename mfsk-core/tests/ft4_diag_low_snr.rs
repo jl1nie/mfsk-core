@@ -6,10 +6,10 @@
 
 use std::f32::consts::PI;
 
-use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-use mfsk_core::core::sync::{coarse_sync, refine_candidate};
-use mfsk_core::core::{
+use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+use mfsk_core::engine::sync::{coarse_sync, refine_candidate};
+use mfsk_core::engine::{
     FecCodec, FecOpts, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
 };
 use mfsk_core::ft4::{Ft4, encode};

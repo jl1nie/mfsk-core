@@ -6,7 +6,7 @@
 //! mapped alternately onto I/Q "rails", each rail bit shaped with a
 //! 12-sample half-sine pulse, the Q rail delayed 6 samples relative to
 //! I. This is a fundamentally different modulation family from the
-//! Gaussian-shaped M-ary FSK the rest of `core::dsp` targets
+//! Gaussian-shaped M-ary FSK the rest of `engine::dsp` targets
 //! ([`super::gfsk`]) — MSK144 needs its own primitives rather than
 //! reusing GFSK synth/subtract.
 //!

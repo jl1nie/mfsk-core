@@ -82,7 +82,7 @@ tone spacing (and, for FST4-15 alone, the T/R start offset). **MSK144
 is the exception**: its continuous-phase binary-MSK modulation and
 transient-burst timing don't fit the static-slot model every other
 protocol here shares, so no ZST implements `Protocol` for it — its own
-`msk144::decode::decode_slot` driver bypasses `core::pipeline`
+`msk144::decode::decode_slot` driver bypasses `engine::pipeline`
 entirely by design (see
 [`docs/reference/LIBRARY.md` §0.6](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#06-msk144--the-protocol-that-doesnt-use-the-abstraction)
 for why).
@@ -266,7 +266,7 @@ sync search. In the Fortran codebase that commonality is expressed by
 copy-and-paste between per-mode source files; here it is expressed by
 traits, split by what actually varies per protocol:
 
-- **Shared** (lives in `core`, generic over any `P: Protocol`): coarse
+- **Shared** (lives in `engine`, generic over any `P: Protocol`): coarse
   sync, fine sync, LLR computation, equalisation, the decode pipeline
   driver, GFSK synthesis.
 - **Protocol-specific** (declared as `const` associated items + ZSTs on
@@ -304,8 +304,8 @@ the LDPC inner loop — is **monomorphised per protocol**. LLVM sees a
 fully specialised function for each `P`, inlines the constants, and
 autovectorises the hot loops. The generated machine code is
 byte-identical to a hand-written per-protocol decoder; the receive
-path is a chain of free functions in `core::sync` → `core::llr` →
-`core::equalize` → `core::pipeline` (each generic over `P: Protocol`),
+path is a chain of free functions in `engine::sync` → `engine::llr` →
+`engine::equalize` → `engine::pipeline` (each generic over `P: Protocol`),
 not a `Demodulator` / `Receiver` trait object — there is no vtable, no
 dynamic dispatch, on the hot path.
 
@@ -389,7 +389,7 @@ targets swap in their own FFT via `fft-extern`. See
 [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md).
 
 **Can I swap the FFT backend?** Yes — enable `fft-extern` instead of
-`fft-rustfft` and provide an `FftPlanner` impl (`core::fft`); the
+`fft-rustfft` and provide an `FftPlanner` impl (`engine::fft`); the
 embedded ports use this for esp-dsp (ESP32-S3) and CMSIS-DSP (RP2350).
 
 **How do I use this on embedded hardware?** Start with
@@ -456,7 +456,7 @@ and per-mode performance characterisation.
 
 ## Modules
 
-- `mfsk_core::core` — protocol traits, DSP (resample / downsample /
+- `mfsk_core::engine` — protocol traits, DSP (resample / downsample /
   GFSK / subtract), sync, LLR, equaliser, pipeline driver.
 - `mfsk_core::fec` — `Ldpc174_91` / `Ldpc240_101` / `ConvFano` /
   `ConvFano232` / `Rs63_12` / `qra::Q65Codec` (with the

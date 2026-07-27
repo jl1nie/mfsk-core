@@ -9,7 +9,7 @@
 
 #![cfg(feature = "q65")]
 
-use mfsk_core::core::ModulationParams;
+use mfsk_core::engine::ModulationParams;
 use mfsk_core::q65::rx::{decode_at_for, decode_scan_for};
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::tx::synthesize_standard_for;

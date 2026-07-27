@@ -169,9 +169,9 @@ MFSK_FST4_SWEEP_DIR=embedded-poc/assets/fst4_sweep \
 2. **そのセルから個別のトライアルWAVを数本選び**、使い捨ての
    `#[ignore]` テストでパイプラインの各ステージを直接呼び出す
    （`tests/fst4_sweep.rs` の `fst4_60_diag_weak_trial` がそのパター
-   ン）——まず `core::sync::coarse_sync` で正しい候補がそもそも
+   ン）——まず `engine::sync::coarse_sync` で正しい候補がそもそも
    見つかっているか、`sync_min` に対してどのスコアかを確認し、
-   次にその候補を`core::pipeline::process_candidate_basic`に直接
+   次にその候補を`engine::pipeline::process_candidate_basic`に直接
    渡して、coarse-sync・fine-refine・LLR・BP/OSDのどこで実際に
    失敗しているかを見る。
 3. **失敗しているステージを特定できてから**コードを変更し、

@@ -17,7 +17,7 @@
 //! (`uvpacket` is only required because `tests/common/channel.rs`, pulled in
 //! via `mod common`, unconditionally imports `mfsk_core::uvpacket` — unrelated
 //! to FT4 itself. `internal-testing` (issue #203) is required because this
-//! file calls `core::pipeline::{decode_frame, process_candidate_basic}`
+//! file calls `engine::pipeline::{decode_frame, process_candidate_basic}`
 //! directly, which are `pub(crate)` on the default feature set.
 //! `MFSK_FT4_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/ft4_sweep`, relative to `CARGO_MANIFEST_DIR`.)
@@ -268,8 +268,8 @@ fn ft4_snr_sweep() {
 #[test]
 #[ignore = "manual diagnostic — DecodeStrictness calibration probe (issue #72)"]
 fn ft4_strictness_probe() {
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -383,12 +383,12 @@ fn ft4_strictness_probe() {
 #[ignore = "manual diagnostic — AWGN sensitivity gap stage attribution (issue #72)"]
 fn ft4_diag_weak_trials() {
     use mfsk_core::ModulationParams;
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
-    use mfsk_core::core::sync2d::ft4_sync_search;
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -401,7 +401,7 @@ fn ft4_diag_weak_trials() {
     fn nsync_for(
         cand: &SyncCandidate,
         fft_cache: &[num_complex::Complex<f32>],
-        cfg: &mfsk_core::core::dsp::downsample::DownsampleCfg,
+        cfg: &mfsk_core::engine::dsp::downsample::DownsampleCfg,
     ) -> u32 {
         let mut cd0 = downsample_cached(fft_cache, cand.freq_hz, cfg);
         let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
@@ -414,7 +414,7 @@ fn ft4_diag_weak_trials() {
         let s2 = ft4_sync_search::<Ft4>(&cd0, cand);
         let df_hz = s2.freq_hz - cand.freq_hz;
         let ds_rate = 12_000.0 / Ft4::NDOWN as f32;
-        let cd0 = mfsk_core::core::sync2d::freq_shift_cd0(&cd0, df_hz, ds_rate);
+        let cd0 = mfsk_core::engine::sync2d::freq_shift_cd0(&cd0, df_hz, ds_rate);
         let cs_raw = symbol_spectra::<Ft4>(&cd0, s2.i0);
         sync_quality::<Ft4>(&cs_raw)
     }
@@ -495,7 +495,7 @@ fn ft4_diag_weak_trials() {
 /// crossing band: run the collapsed search first (skip if it already
 /// succeeds — only interested in today's failures), then replicate the
 /// literal 3-segment search via
-/// [`mfsk_core::core::sync2d::ft4_sync_search_window`] and attempt a
+/// [`mfsk_core::engine::sync2d::ft4_sync_search_window`] and attempt a
 /// decode at every segment whose gate passes, via a local
 /// `try_decode_at` that mirrors `process_candidate_basic`'s LLR/BP/OSD
 /// tail (symbol_spectra -> sync_quality -> BP variants -> OSD) for an
@@ -507,13 +507,13 @@ fn ft4_diag_weak_trials() {
 #[test]
 #[ignore = "manual diagnostic — 3-segment Δt-search retry hypothesis (issue #72)"]
 fn ft4_diag_segment_retry() {
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::coarse_sync;
-    use mfsk_core::core::sync2d::{freq_shift_cd0, ft4_sync_search_window};
-    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search_window};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -708,7 +708,7 @@ fn ft4_diag_segment_retry() {
 
 /// Phase 0 diagnostic for the coarse_sync-precision / BP-OSD-speed plan
 /// (see `~/.claude/plans/dapper-soaring-nest.md`): measures whether FT4's
-/// generic `core::sync::coarse_sync` — a 2-D (freq × lag) Costas-array
+/// generic `engine::sync::coarse_sync` — a 2-D (freq × lag) Costas-array
 /// correlation search, unlike WSJT-X's `getcandidates4.f90` (a
 /// frequency-only periodogram with no lag dimension at all) — produces
 /// multiple lag-distinct candidates per real signal frequency, and how
@@ -731,12 +731,12 @@ fn ft4_diag_segment_retry() {
 fn ft4_diag_candidate_cost_split() {
     use std::time::{Duration, Instant};
 
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
-    use mfsk_core::core::sync2d::ft4_sync_search;
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 
@@ -941,7 +941,7 @@ fn ft4_diag_candidate_cost_split() {
 /// equivalent) alongside decode outcome, across the AWGN/CCIR
 /// near-crossing region, using the *current production* candidate
 /// generator (`ft4_coarse_sync`) — not the retired generic
-/// `core::sync::coarse_sync`. Goal: find a `score` cutoff low enough
+/// `engine::sync::coarse_sync`. Goal: find a `score` cutoff low enough
 /// that zero golden-succeeding candidates ever fall below it (so a
 /// WSJT-X-style `if(smax < cutoff) cycle` early-exit before
 /// symbol_spectra/LLR/BP/OSD costs nothing in recall), following the
@@ -951,11 +951,11 @@ fn ft4_diag_candidate_cost_split() {
 #[test]
 #[ignore = "manual diagnostic — Phase 4 smax early-reject calibration (dapper-soaring-nest plan)"]
 fn ft4_diag_smax_calibration() {
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::ft4_coarse::ft4_coarse_sync;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync2d::ft4_sync_search;
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
     #[cfg(feature = "parallel")]

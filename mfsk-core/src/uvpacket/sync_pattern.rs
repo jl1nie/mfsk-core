@@ -41,7 +41,7 @@
 //! (the standard NRZ-mapping consumed by the receiver's
 //! correlator).
 
-use crate::core::SyncBlock;
+use crate::engine::SyncBlock;
 
 use super::puncture::Mode;
 

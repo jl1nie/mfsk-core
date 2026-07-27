@@ -465,28 +465,28 @@ pub unsafe extern "C" fn mfsk_decode_f32(
                     .map(|&s| (s * 32767.0).clamp(-32_768.0, 32_767.0) as i16)
                     .collect()
             } else {
-                mfsk_core::core::dsp::resample::resample_f32_to_12k(slice_f32, sample_rate)
+                mfsk_core::engine::dsp::resample::resample_f32_to_12k(slice_f32, sample_rate)
             };
             decode_i16_wsjt77(inner_ref.protocol, &audio, out)
         }
         MfskProtocol::Wspr => {
             let audio =
-                mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
+                mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
             decode_wspr(&audio, out)
         }
         MfskProtocol::Jt9 => {
             let audio =
-                mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
+                mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
             decode_jt9_aligned(&audio, out)
         }
         MfskProtocol::Jt65 => {
             let audio =
-                mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
+                mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
             decode_jt65_aligned(&audio, out)
         }
         MfskProtocol::Q65a30 => {
             let audio =
-                mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
+                mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate);
             decode_q65_default(&audio, out)
         }
     }
@@ -526,7 +526,7 @@ pub unsafe extern "C" fn mfsk_decode_i16(
             let audio: Vec<i16> = if sample_rate == 12_000 {
                 slice_i16.to_vec()
             } else {
-                mfsk_core::core::dsp::resample::resample_to_12k(slice_i16, sample_rate)
+                mfsk_core::engine::dsp::resample::resample_to_12k(slice_i16, sample_rate)
             };
             decode_i16_wsjt77(inner_ref.protocol, &audio, out)
         }
@@ -535,7 +535,7 @@ pub unsafe extern "C" fn mfsk_decode_i16(
             let audio: Vec<f32> = if sample_rate == 12_000 {
                 slice_i16.iter().map(|&s| s as f32 / 32768.0).collect()
             } else {
-                mfsk_core::core::dsp::resample::resample_i16_to_12k_f32(slice_i16, sample_rate)
+                mfsk_core::engine::dsp::resample::resample_i16_to_12k_f32(slice_i16, sample_rate)
             };
             match inner_ref.protocol {
                 MfskProtocol::Wspr => decode_wspr(&audio, out),
@@ -1160,7 +1160,7 @@ unsafe fn q65_prepare_audio(
     let audio: Vec<f32> = if sample_rate == 12_000 {
         slice_f32.to_vec()
     } else {
-        mfsk_core::core::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate)
+        mfsk_core::engine::dsp::resample::resample_f32_to_12k_f32(slice_f32, sample_rate)
     };
     Ok(audio)
 }

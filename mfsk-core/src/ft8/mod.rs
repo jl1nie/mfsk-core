@@ -18,7 +18,7 @@
 //! ## Protocol trait
 //!
 //! The zero-sized [`Ft8`] type implements the generic
-//! [`crate::core::Protocol`] trait so downstream pipeline code (shared with
+//! [`crate::engine::Protocol`] trait so downstream pipeline code (shared with
 //! FT4, FT2, FST4) can dispatch on `P: Protocol` at compile time.
 //!
 //! ## Quick example
@@ -51,8 +51,8 @@
 //! }
 //! ```
 
-// Decode-side modules go through `core::fft` (FFT trait) and the
-// shared `core::pipeline`; gated on the FFT meta-feature so embedded
+// Decode-side modules go through `engine::fft` (FFT trait) and the
+// shared `engine::pipeline`; gated on the FFT meta-feature so embedded
 // builds with `fft-microfft` or `fft-extern` get them. `wave_gen`,
 // `message`, `ldpc`, `params`, `hash_table` stay available for TX-only
 // / FEC-only use cases without any FFT backend.
@@ -84,7 +84,7 @@ pub mod subtract;
 pub mod sync;
 pub mod wave_gen;
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc174_91;
 use crate::msg::Wsjt77Message;
 

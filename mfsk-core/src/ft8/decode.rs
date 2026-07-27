@@ -31,25 +31,25 @@ use crate::msg::decode_request::{
 
 /// Opaque FFT cache, reusable across pipelined decode passes.
 ///
-/// Canonical definition lives in [`crate::core::pipeline::FftCache`] — same
+/// Canonical definition lives in [`crate::engine::pipeline::FftCache`] — same
 /// underlying `Vec<Complex<f32>>`, re-exported here for backward-compatible
 /// `mfsk_core::ft8::decode::FftCache` import paths (issue #191).
-pub use crate::core::pipeline::FftCache;
+pub use crate::engine::pipeline::FftCache;
 
 /// Decode cost/recall configuration, plus the [`LlrEffort`] staircase width.
 ///
-/// Canonical definition lives in [`crate::core::pipeline::DecodeDepth`] —
+/// Canonical definition lives in [`crate::engine::pipeline::DecodeDepth`] —
 /// re-exported here (with [`LlrEffort`]) for backward-compatible
 /// `mfsk_core::ft8::decode::DecodeDepth` import paths (issue #191 type
-/// consolidation migrated `core::pipeline`'s old 2-variant `BpAll`/
+/// consolidation migrated `engine::pipeline`'s old 2-variant `BpAll`/
 /// `BpAllOsd` enum, used by FT4/FST4, onto this struct). `llr_effort` is
-/// FT8-only in practice — the generic `core::pipeline` engine FT4/FST4 use
+/// FT8-only in practice — the generic `engine::pipeline` engine FT4/FST4 use
 /// always computes all LLR variants and only reads `depth.osd`.
-pub use crate::core::pipeline::{DecodeDepth, LlrEffort};
+pub use crate::engine::pipeline::{DecodeDepth, LlrEffort};
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.
 ///
-/// Canonical definition lives in [`crate::core::pipeline::DecodeStrictness`]
+/// Canonical definition lives in [`crate::engine::pipeline::DecodeStrictness`]
 /// — this used to be a separate, differently-calibrated `osd_max_errors`/
 /// `osd_score_min` (FT8's own real-WAV-bench numbers), but neither method
 /// has ever actually been called anywhere in FT8's own decode path: FT8's
@@ -61,7 +61,7 @@ pub use crate::core::pipeline::{DecodeDepth, LlrEffort};
 /// loop) and was already numerically identical to the generic pipeline's
 /// copy — moved onto the canonical type, no numeric change (issue #191
 /// type consolidation).
-pub use crate::core::pipeline::DecodeStrictness;
+pub use crate::engine::pipeline::DecodeStrictness;
 
 /// One successfully decoded FT8 message.
 #[derive(Debug, Clone)]
@@ -108,7 +108,7 @@ pub use crate::msg::ap::ApHint;
 /// `BpScratch`'s LLR-scalar type, matching `decode_block`'s own
 /// `LlrT` selection (`Q11i16` under `fixed-point`, `f32` otherwise).
 #[cfg(feature = "fixed-point")]
-type LlrT = crate::core::scalar::Q11i16;
+type LlrT = crate::engine::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point"))]
 type LlrT = f32;
 
@@ -179,7 +179,7 @@ fn process_candidate_with_scratch(
     // Use `downsample_cached` directly so the FT8 wrapper's
     // `cache.to_vec()` clone (~3 MB) on the `Some(_)` branch is
     // bypassed — same pattern as `fill_symbol_spectra_via_cd0`.
-    let mut cd0 = crate::core::dsp::downsample::downsample_cached(
+    let mut cd0 = crate::engine::dsp::downsample::downsample_cached(
         fft_cache,
         cand.freq_hz,
         &crate::ft8::downsample::FT8_CFG,
@@ -215,7 +215,8 @@ fn process_candidate_with_scratch(
     // references in `fine_sync_power_per_block` align correctly.
     let i_start = ((refined.dt_sec + 0.5) * 200.0).round() as i32;
     let sync_cv = {
-        let scores = crate::core::sync::fine_sync_power_per_block::<crate::ft8::Ft8>(&cd0, i_start);
+        let scores =
+            crate::engine::sync::fine_sync_power_per_block::<crate::ft8::Ft8>(&cd0, i_start);
         let sa = scores.first().copied().unwrap_or(0.0);
         let sb = scores.get(1).copied().unwrap_or(0.0);
         let sc = scores.get(2).copied().unwrap_or(0.0);
@@ -234,12 +235,12 @@ fn process_candidate_with_scratch(
     // numerically-different cs values that lost ~3 entries on
     // qso3_busy.wav vs decode_block (CQ EA2BFM, KD2UGC F6GCP,
     // K1BZM EA3CJ). Rewiring to fill_symbol_spectra closes that gap.
-    let mut cs_raw: alloc::boxed::Box<[[crate::core::scalar::Cmplx<f32>; 8]; 79]> =
-        alloc::vec![[crate::core::scalar::Cmplx::<f32>::default(); 8]; 79]
+    let mut cs_raw: alloc::boxed::Box<[[crate::engine::scalar::Cmplx<f32>; 8]; 79]> =
+        alloc::vec![[crate::engine::scalar::Cmplx::<f32>::default(); 8]; 79]
             .try_into()
             .unwrap();
     // `sync_quality` only reads the 21 sync-block symbol positions
-    // (`P::SYNC_MODE.blocks()`, `core::llr::sync_quality_generic`) —
+    // (`P::SYNC_MODE.blocks()`, `engine::llr::sync_quality_generic`) —
     // never the 58 data symbols. Gate on `nsync <= 6` right after the
     // `SyncOnly` fill, *before* paying for `DataOnly`'s per-symbol
     // 32-pt FFTs (58 of the 79 symbols — the bulk of this function's
@@ -277,22 +278,23 @@ fn process_candidate_with_scratch(
     // host's outer prelude (downsample → fine_refine_3stage →
     // symbol_spectra → nsync gate → sync_cv → EqMode cs choice)
     // stays here; only the per-candidate decode body delegates.
-    let mut try_decode =
-        |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79], _use_ap: bool| -> Option<DecodeResult> {
-            crate::ft8::decode_block::process_one_candidate_inner(
-                cs,
-                &refined,
-                refined.dt_sec,
-                nsync,
-                depth,
-                BP_MAX_ITER,
-                bp_scratch,
-                known,
-                ap_hint,
-                strictness,
-                sync_cv,
-            )
-        };
+    let mut try_decode = |cs: &[[crate::engine::scalar::Cmplx<f32>; 8]; 79],
+                          _use_ap: bool|
+     -> Option<DecodeResult> {
+        crate::ft8::decode_block::process_one_candidate_inner(
+            cs,
+            &refined,
+            refined.dt_sec,
+            nsync,
+            depth,
+            BP_MAX_ITER,
+            bp_scratch,
+            known,
+            ap_hint,
+            strictness,
+            sync_cv,
+        )
+    };
 
     match eq_mode {
         EqMode::Off => try_decode(&cs_raw, true),
@@ -751,7 +753,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
     // window. Scaled by ratio rather than reusing WSJT-X's absolute
     // `sync8` units, which live on a different score scale than this
     // crate's `coarse_sync` (see e.g. the FT4/FST4 threshold-scaling
-    // precedent in `core::pipeline`).
+    // precedent in `engine::pipeline`).
     const EARLY_SYNC_MIN_SCALE: f32 = 2.0 / 1.3;
     let mut residual_a = vec![0i16; audio.len()];
     residual_a[..A_SAMPLES].copy_from_slice(&audio[..A_SAMPLES]);
@@ -884,7 +886,7 @@ fn decode_sniper_inner(
     let freq_max = (target_freq + 250.0).min(5900.0);
 
     // Sniper-mode: freq_hint (=target_freq) used to promote candidates
-    // near the target via the legacy core::sync::coarse_sync path. After
+    // near the target via the legacy engine::sync::coarse_sync path. After
     // the v0.6 consolidation in #48, decode_block::coarse_sync does not
     // honour hints; the ±250 Hz freq_min/freq_max band above does most
     // of the work the hint used to.
@@ -1698,7 +1700,7 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #180 staged-residual DL8YHR probe"]
     fn issue_180_dl8yhr_staged_checkpoint_c_probe() {
-        use crate::core::sync::{SyncCandidate, refine_candidate};
+        use crate::engine::sync::{SyncCandidate, refine_candidate};
         use crate::fec::ldpc::bp::bp_decode;
         use crate::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
         use crate::ft8::Ft8;
@@ -1902,7 +1904,7 @@ mod tests {
                 );
                 print!("  mfsk-core dt={dt:.4} (k={k:+}):");
                 let mut total = 0u32;
-                for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+                for (bi, block) in <Ft8 as crate::engine::FrameLayout>::SYNC_MODE
                     .blocks()
                     .iter()
                     .enumerate()
@@ -1948,7 +1950,7 @@ mod tests {
             );
             print!("  mfsk-core refine_candidate dt={:.4}:", refined.dt_sec);
             let mut total = 0u32;
-            for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+            for (bi, block) in <Ft8 as crate::engine::FrameLayout>::SYNC_MODE
                 .blocks()
                 .iter()
                 .enumerate()
@@ -1984,7 +1986,7 @@ mod tests {
                 symbol_spectra_direct::<i16>(&audio, 2606.25, 0.195, SymMask::SyncOnly, None);
             print!("  mfsk-core RAW audio dt=0.1950 (no subtraction at all):");
             let mut total_raw = 0u32;
-            for (bi, block) in <Ft8 as crate::core::FrameLayout>::SYNC_MODE
+            for (bi, block) in <Ft8 as crate::engine::FrameLayout>::SYNC_MODE
                 .blocks()
                 .iter()
                 .enumerate()
@@ -2135,7 +2137,10 @@ mod tests {
                     "\nAfter manually subtracting jt9's WA2FZW DL5AXX RR73 (refined freq={refined_freq:.2}):"
                 );
                 let mut total_wa = 0u32;
-                for block in <Ft8 as crate::core::FrameLayout>::SYNC_MODE.blocks().iter() {
+                for block in <Ft8 as crate::engine::FrameLayout>::SYNC_MODE
+                    .blocks()
+                    .iter()
+                {
                     let start = block.start_symbol as usize;
                     let mut hits = 0u32;
                     for (t, &expected) in block.pattern.iter().enumerate() {
@@ -2197,7 +2202,10 @@ mod tests {
                 );
                 print!("mfsk-core's own tone-detection on jt9's post-SIC residual:");
                 let mut total_jt9 = 0u32;
-                for block in <Ft8 as crate::core::FrameLayout>::SYNC_MODE.blocks().iter() {
+                for block in <Ft8 as crate::engine::FrameLayout>::SYNC_MODE
+                    .blocks()
+                    .iter()
+                {
                     let start = block.start_symbol as usize;
                     let mut hits = 0u32;
                     for (t, &expected) in block.pattern.iter().enumerate() {
@@ -2280,7 +2288,7 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #180 DK8NE own-SIC score probe"]
     fn issue_180_dk8ne_own_sic_score_probe() {
-        use crate::core::sync::refine_candidate;
+        use crate::engine::sync::refine_candidate;
         use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
         use crate::ft8::downsample::downsample;
         use crate::ft8::llr::sync_quality;
@@ -2340,7 +2348,7 @@ mod tests {
 
         let freq = 244.2f32;
         let dt = 0.505f32;
-        let cand = crate::core::sync::SyncCandidate {
+        let cand = crate::engine::sync::SyncCandidate {
             freq_hz: freq,
             dt_sec: dt,
             score: 0.0,
@@ -2447,7 +2455,7 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #180 DK8NE data-symbol residual comparison"]
     fn issue_180_dk8ne_data_symbol_comparison() {
-        use crate::core::sync::refine_candidate;
+        use crate::engine::sync::refine_candidate;
         use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
         use crate::ft8::downsample::downsample;
 
@@ -2518,13 +2526,13 @@ mod tests {
         let freq = 244.2f32;
         let dt = 0.505f32;
 
-        type SymSpectra = alloc::boxed::Box<[[crate::core::scalar::Cmplx<f32>; 8]; 79]>;
+        type SymSpectra = alloc::boxed::Box<[[crate::engine::scalar::Cmplx<f32>; 8]; 79]>;
         let mut spectra: Vec<(&str, SymSpectra)> = Vec::new();
         for (label, residual) in [
             ("mfsk-core own SIC", &mfsk_residual),
             ("jt9 own SIC", &jt9_residual),
         ] {
-            let cand = crate::core::sync::SyncCandidate {
+            let cand = crate::engine::sync::SyncCandidate {
                 freq_hz: freq,
                 dt_sec: dt,
                 score: 0.0,
@@ -2554,7 +2562,7 @@ mod tests {
         let (mfsk_cs, jt9_cs) = (&spectra[0].1, &spectra[1].1);
         let mut diverge_count = 0usize;
         for &sym in &data_syms {
-            let argmax = |cs: &[[crate::core::scalar::Cmplx<f32>; 8]; 79]| -> (usize, f32) {
+            let argmax = |cs: &[[crate::engine::scalar::Cmplx<f32>; 8]; 79]| -> (usize, f32) {
                 let mut best = 0usize;
                 let mut best_mag = -1.0f32;
                 for t in 0..8 {
@@ -2614,7 +2622,7 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #182 DK8NE LLR reliability-ordering comparison"]
     fn issue_182_dk8ne_llr_reliability_comparison() {
-        use crate::core::sync::refine_candidate;
+        use crate::engine::sync::refine_candidate;
         use crate::ft8::decode_block::{SymMask, fill_symbol_spectra, symbol_spectra_direct};
         use crate::ft8::downsample::downsample;
         use crate::ft8::llr::compute_llr;
@@ -2692,7 +2700,7 @@ mod tests {
             ("mfsk-core own SIC", &mfsk_residual),
             ("jt9 own SIC", &jt9_residual),
         ] {
-            let cand = crate::core::sync::SyncCandidate {
+            let cand = crate::engine::sync::SyncCandidate {
                 freq_hz: freq,
                 dt_sec: dt,
                 score: 0.0,
@@ -2779,7 +2787,7 @@ mod tests {
     #[test]
     #[ignore = "manual diagnostic — issue #182 Fortran-pivot-window OSD basis probe"]
     fn issue_182_dk8ne_osd_fortran_pivot_probe() {
-        use crate::core::sync::refine_candidate;
+        use crate::engine::sync::refine_candidate;
         use crate::fec::ldpc::bp::bp_llr_zsum;
         use crate::fec::ldpc::osd::{
             osd_debug_basis_sets, osd_decode, osd_decode_npre1, osd_decode_npre1_fortran_pivot,
@@ -2840,7 +2848,7 @@ mod tests {
 
         let freq = 244.2f32;
         let dt = 0.505f32;
-        let cand = crate::core::sync::SyncCandidate {
+        let cand = crate::engine::sync::SyncCandidate {
             freq_hz: freq,
             dt_sec: dt,
             score: 0.0,

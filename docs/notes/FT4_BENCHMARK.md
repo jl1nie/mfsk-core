@@ -124,7 +124,7 @@ gets picked up.
 
 ## 5. `DecodeStrictness` probe (issue #72)
 
-`ft4_strictness_probe` (same file) drives `core::pipeline::decode_frame`
+`ft4_strictness_probe` (same file) drives `engine::pipeline::decode_frame`
 directly with each of `Strict` / `Normal` / `Deep` across a handful of
 partial-recall cells identified by the sweep above, and reports both
 "golden" recall (matches the known transmitted message) and "any-msg"
@@ -160,9 +160,9 @@ FP cost — that needs a numeric sweep over `osd_max_errors` /
 ## 6. Numeric retune (issue #72, 2026-07-18)
 
 Traced `strictness.osd_score_min()` / `strictness.osd_max_errors()` call
-sites in `core::pipeline::process_candidate_basic`: both are gated
+sites in `engine::pipeline::process_candidate_basic`: both are gated
 behind `!is_fst4`, so **FST4 bypasses these values entirely** (the #146
-fix) — in practice `core::pipeline::DecodeStrictness`'s numbers are
+fix) — in practice `engine::pipeline::DecodeStrictness`'s numbers are
 FT4-exclusive. This means retuning `Normal` carries zero regression
 risk against FST4's separately-tuned recall, clearing the way to
 actually move the numbers instead of just characterising them.
@@ -191,7 +191,7 @@ Net effect on the full sweep (Normal, before → after):
 
 Modest, monotonic, no regressions anywhere (loosening a gate can only
 hold or increase recall) — a real but incremental gain, not a dB-scale
-jump. Landed in `core::pipeline::DecodeStrictness::{osd_max_errors,
+jump. Landed in `engine::pipeline::DecodeStrictness::{osd_max_errors,
 osd_score_min}`; `Strict`/`Deep` numbers untouched (still the original
 unverified FT8 copy — no current caller exercises them).
 
@@ -199,7 +199,7 @@ unverified FT8 copy — no current caller exercises them).
 
 Separately from the `DecodeStrictness` tuning above, a WSJT-X
 faithfulness audit of `sync4d.f90`/`ft4_decode.f90` against our FT4 sync
-pipeline found that `core::sync::coarse_sync`'s wide (±2.5 s) Δt search
+pipeline found that `engine::sync::coarse_sync`'s wide (±2.5 s) Δt search
 is *non-coherent* (magnitude-squared spectrogram bins) while WSJT-X's
 own wide Δt search (`isync=1`, ~350-450 samples/segment × 3 segments) is
 *coherent* (complex Costas correlation). `tests/ft4_coherent_wide_search_diag.rs`
@@ -210,7 +210,7 @@ though the true peak's *coherent* score was consistently higher. AWGN
 was not affected (non-coherent gap stayed under ~16 ms, within the old
 refine's reach).
 
-Fix: `core::sync2d::ft4_sync_search`, a coherent full-slot Δt search
+Fix: `engine::sync2d::ft4_sync_search`, a coherent full-slot Δt search
 mirroring WSJT-X's `isync=1`/`isync=2` loops (±12 Hz/3 Hz coarse ×
 absolute `[-344, 1012]` downsampled-sample window step 4, then ±4 Hz/1 Hz
 × ±5 samples fine), replacing `sync2d_refine`/`Sync2dConfig::for_ft4` for
@@ -553,7 +553,7 @@ table), and the golden test needed `max_cand=2000` despite its own code
 comment claiming 200 should suffice.
 
 **Root cause, confirmed by reading `lib/ft4/getcandidates4.f90` +
-`lib/ft4/ft4_baseline.f90` line-by-line**: `core::sync::coarse_sync`
+`lib/ft4/ft4_baseline.f90` line-by-line**: `engine::sync::coarse_sync`
 (shared with FT8/FST4/etc, used for FT4 until this section) is a 2-D
 (freq × lag) Costas-array correlation search — structurally *not* what
 WSJT-X does for FT4. `getcandidates4` never searches a lag/Δt dimension
@@ -577,15 +577,15 @@ fix belongs at candidate generation, matching that `fec::ldpc::bp`
 already breaks on parity/CRC convergence and OSD depth-4 essentially
 never fires (section 10).
 
-**Fix**: `core::ft4_coarse::ft4_coarse_sync` — a faithful
+**Fix**: `engine::ft4_coarse::ft4_coarse_sync` — a faithful
 `getcandidates4.f90` + `ft4_baseline.f90` port, reusing existing faithful
-primitives (`core::baseline::fit_baseline`, already unit-tested but
+primitives (`engine::baseline::fit_baseline`, already unit-tested but
 previously only tried — and reverted — as a mismatched normaliser for
-the generic Costas-correlation score; `core::sync::parabolic_peak`).
-Lives in `core::` (not `ft4::`) alongside `ft4_sync_search`, since `core`
-compiles regardless of which protocol features are enabled and
-`core::pipeline` needs to call it unconditionally. Wired in via a
-`P::ID == Ft4` branch in `core::pipeline::decode_frame` /
+the generic Costas-correlation score; `engine::sync::parabolic_peak`).
+Lives in `engine::` (not `ft4::`) alongside `ft4_sync_search`, since
+`engine` compiles regardless of which protocol features are enabled and
+`engine::pipeline` needs to call it unconditionally. Wired in via a
+`P::ID == Ft4` branch in `engine::pipeline::decode_frame` /
 `decode_frame_subtract`, same pattern as the existing sync2d-refine
 branch. One deliberate deviation from WSJT-X: candidates are score-sorted
 before truncating to `max_cand` (WSJT-X's own frequency-scan-order fill
@@ -614,7 +614,7 @@ this row was never re-measured afterward, and regressed to ~526-576 ms
 Root cause (found by adding temporary `Instant` timers around the two
 calls the SIC subtract loop makes per accepted candidate): not
 `subtract_tones_lpf` itself (already FFT-cached from issue #180, <1 ms/
-call) but `core::dsp::subtract::refine_freq`, at ~35 ms/call × 14 real
+call) but `engine::dsp::subtract::refine_freq`, at ~35 ms/call × 14 real
 decodes ≈ 490 ms — essentially the entire regression. `refine_freq`
 grid-searches ±5 Hz at 0.1 Hz resolution (~101 evaluations) to compensate
 for `ft4_coarse_sync`'s ~5.2 Hz-bin carrier estimate before subtracting;
@@ -709,7 +709,7 @@ Full non-ignored suite (922 passed, 0 failed) and
 ## 14. Dead-code follow-up: `sync2d_refine`/`Sync2dConfig` removed (2026-07-20)
 
 Section 7 above (and #146 for FST4) already moved both protocols off
-the shared two-pass *local* refine (`core::sync2d::sync2d_refine` /
+the shared two-pass *local* refine (`engine::sync2d::sync2d_refine` /
 `Sync2dConfig`, ±10-±20 downsampled-sample window around the coarse-sync
 candidate) onto their own full-slot coherent searches
 (`ft4_sync_search`/`fst4_sync_search`) — but the old function and its
@@ -724,7 +724,7 @@ functions still return) stays. Verified: full non-ignored suite green,
 `-D clippy::perf -D warnings` clean, and separately checked FST4-only /
 FT8-only (no FT4/FST4) feature builds still compile — this module has
 no `#[cfg(feature = "ft4")]` gate of its own (same reasoning as
-`ft4_coarse`: `core` compiles unconditionally), so a stray reference
+`ft4_coarse`: `engine` compiles unconditionally), so a stray reference
 from either protocol's exclusion would have shown up there.
 
 ## 15. Phase 4 `smax` early-reject — implemented, measured, reverted (2026-07-20)
@@ -814,14 +814,14 @@ frequency resolution, not a port of anything WSJT-X does in the subtract
 path.
 
 The ±5 Hz figure traces to `refine_freq`'s own doc comment, written
-against the *generic* `core::sync::coarse_sync`'s ~2.93 Hz FFT-bin
+against the *generic* `engine::sync::coarse_sync`'s ~2.93 Hz FFT-bin
 resolution ("recommend 2.5 Hz to cover one bin either side"). But FT4
 stopped using that generic coarse-sync path back in section 13
 (`ft4_coarse_sync`, a `getcandidates4.f90` port with its own, different
 bin structure) — and more directly, `r.freq_hz` going into `refine_freq`
 is `process_candidate_basic`'s post-`ft4_sync_search` refined value
 (section 7's own fix), not a raw coarse-sync bin. Reading
-`core::sync2d::ft4_sync_search`'s df search (`core/sync2d.rs`) line by
+`engine::sync2d::ft4_sync_search`'s df search (`core/sync2d.rs`) line by
 line: both its coarse pass (`idf` in `-12..=12` step 3) and fine pass
 (`si` in `-4..=4` step 1) only ever produce **integer-Hz** `df` values —
 the reported `freq_hz` is always `candidate.freq_hz + <integer>`. That

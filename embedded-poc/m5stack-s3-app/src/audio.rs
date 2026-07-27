@@ -26,7 +26,7 @@ use esp_idf_hal::{
     i2s::{I2sBiDir, I2sDriver, I2sRx, I2sTx},
 };
 use esp_idf_svc::sys;
-use mfsk_core::core::dsp::resample::LinearResamplerI16To12k;
+use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
 
 /// Audio playback gate. `true` (default) = stream WAV samples,
 /// `false` = emit silence. The decode pipeline flips this off

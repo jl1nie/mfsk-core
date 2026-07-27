@@ -39,7 +39,7 @@ use std::f32::consts::PI;
 
 use num_complex::Complex32;
 
-use crate::core::{FecCodec, FecOpts};
+use crate::engine::{FecCodec, FecOpts};
 use crate::fec::Ldpc240_101;
 
 use super::framing::{HEADER_BYTES, INFO_BYTES_PER_BLOCK, UnpackError, unpack_header};

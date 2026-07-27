@@ -4,7 +4,7 @@
 
 #![cfg(feature = "uvpacket")]
 
-use mfsk_core::core::FecOpts;
+use mfsk_core::engine::FecOpts;
 use mfsk_core::uvpacket::framing::FrameHeader;
 use mfsk_core::uvpacket::rx::{MultiChannelOpts, decode_multichannel, measure_slot_energies};
 use mfsk_core::uvpacket::{Mode, tx};

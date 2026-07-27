@@ -72,7 +72,7 @@ pub fn data_chunks<P: Protocol>() -> Vec<(usize, usize)> {
 /// `Protocol::SYNC_BLOCKS`; data symbols consume `BITS_PER_SYMBOL` codeword
 /// bits each, passed through the Gray map.
 ///
-/// When [`P::CODEWORD_INTERLEAVE`](crate::core::FrameLayout::CODEWORD_INTERLEAVE)
+/// When [`P::CODEWORD_INTERLEAVE`](crate::engine::FrameLayout::CODEWORD_INTERLEAVE)
 /// is `Some`, the codeword bits are read in interleaved order: channel bit
 /// position `j` gets `cw[INTERLEAVE[j]]`. This is the TX half of the
 /// burst-error-tolerance scheme available for fading-channel protocols;

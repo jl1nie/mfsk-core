@@ -1,8 +1,8 @@
-//! `mfsk_core::core::fft` backend bridged to Espressif `esp-dsp`.
+//! `mfsk_core::engine::fft` backend bridged to Espressif `esp-dsp`.
 //!
 //! `esp-dsp` ships hand-written Xtensa assembly for the FFT (1.8-3×
 //! the C reference on ESP32-S3). We expose it as an
-//! [`mfsk_core::core::fft::FftPlanner`] so `mfsk-core`'s decode
+//! [`mfsk_core::engine::fft::FftPlanner`] so `mfsk-core`'s decode
 //! pipeline can use it without knowing it's there.
 //!
 //! ## Sizes
@@ -23,13 +23,13 @@
 
 use alloc::boxed::Box;
 
-use mfsk_core::core::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
+use mfsk_core::engine::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
 use num_complex::{Complex, Complex32};
 
-/// Factory called by `mfsk_core::core::fft::default_planner()` when
+/// Factory called by `mfsk_core::engine::fft::default_planner()` when
 /// the crate is built with `fft-extern` (and no built-in backend like
 /// `fft-rustfft`). Symbol name + signature are the link-time contract;
-/// see `mfsk_core::core::fft::default_planner` for the spec.
+/// see `mfsk_core::engine::fft::default_planner` for the spec.
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner() -> Box<dyn FftPlanner> {
     Box::new(EspDspPlanner::new())
@@ -203,22 +203,22 @@ impl FftPlanner for EspDspPlanner {
 
 /// 3840-pt forward FFT via Cooley-Tukey 256 × 15 mixed-radix.
 /// 256-pt: esp-dsp `dsps_fft2r_fc32_ae32_` (asm). 15-pt: see
-/// [`mfsk_core::core::dsp::fft_15`]. Inter-stage twiddles cached.
+/// [`mfsk_core::engine::dsp::fft_15`]. Inter-stage twiddles cached.
 struct MixedRadix3840Fft {
-    twiddles: Box<[Complex32; mfsk_core::core::dsp::fft_mixed_3840::N]>,
+    twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_3840::N]>,
 }
 
 impl MixedRadix3840Fft {
     fn new() -> Self {
         Self {
-            twiddles: mfsk_core::core::dsp::fft_mixed_3840::build_twiddles(),
+            twiddles: mfsk_core::engine::dsp::fft_mixed_3840::build_twiddles(),
         }
     }
 }
 
 impl Fft for MixedRadix3840Fft {
     fn process(&self, buf: &mut [Complex32]) {
-        const N: usize = mfsk_core::core::dsp::fft_mixed_3840::N;
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
         assert_eq!(buf.len(), N, "3840 FFT input length mismatch");
         let buf_arr: &mut [Complex32; N] = buf.try_into().expect("buf.len() == N already asserted");
 
@@ -235,7 +235,7 @@ impl Fft for MixedRadix3840Fft {
             }
         };
 
-        mfsk_core::core::dsp::fft_mixed_3840::fft_3840_with(
+        mfsk_core::engine::dsp::fft_mixed_3840::fft_3840_with(
             buf_arr,
             &mut esp_dsp_256,
             &self.twiddles,
@@ -243,7 +243,7 @@ impl Fft for MixedRadix3840Fft {
     }
 
     fn len(&self) -> usize {
-        mfsk_core::core::dsp::fft_mixed_3840::N
+        mfsk_core::engine::dsp::fft_mixed_3840::N
     }
 }
 
@@ -361,20 +361,20 @@ impl FftPlanner16 for EspDspPlanner16 {
 /// realistic FT8 SNR margins. The f32 detour costs ~1 ms over the
 /// 184-frame slot — invisible vs the ~3 ms/FFT mixed-radix budget.
 struct MixedRadix3840Sc16Fft {
-    twiddles: alloc::boxed::Box<[Complex32; mfsk_core::core::dsp::fft_mixed_3840::N]>,
+    twiddles: alloc::boxed::Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_3840::N]>,
 }
 
 impl MixedRadix3840Sc16Fft {
     fn new() -> Self {
         Self {
-            twiddles: mfsk_core::core::dsp::fft_mixed_3840::build_twiddles(),
+            twiddles: mfsk_core::engine::dsp::fft_mixed_3840::build_twiddles(),
         }
     }
 }
 
 impl Fft16 for MixedRadix3840Sc16Fft {
     fn process(&self, buf: &mut [Complex<i16>]) {
-        const N: usize = mfsk_core::core::dsp::fft_mixed_3840::N;
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
         const N1: usize = 256;
         const N2: usize = 15;
         assert_eq!(buf.len(), N, "3840 sc16 FFT input length mismatch");
@@ -423,7 +423,7 @@ impl Fft16 for MixedRadix3840Sc16Fft {
             for k2 in 0..N2 {
                 col[k2] = m[k2 * N1 + k1];
             }
-            mfsk_core::core::dsp::fft_15::fft_15(&mut col);
+            mfsk_core::engine::dsp::fft_15::fft_15(&mut col);
             for k2 in 0..N2 {
                 m[k2 * N1 + k1] = col[k2];
             }
@@ -441,7 +441,7 @@ impl Fft16 for MixedRadix3840Sc16Fft {
     }
 
     fn len(&self) -> usize {
-        mfsk_core::core::dsp::fft_mixed_3840::N
+        mfsk_core::engine::dsp::fft_mixed_3840::N
     }
 }
 

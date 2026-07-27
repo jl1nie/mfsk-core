@@ -33,8 +33,8 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::ModulationParams;
-use crate::core::fft::default_planner;
+use crate::engine::ModulationParams;
+use crate::engine::fft::default_planner;
 
 use super::{WSPR_SYNC_VECTOR, Wspr};
 

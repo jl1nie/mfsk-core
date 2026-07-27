@@ -10,9 +10,9 @@
 //! same convention every other FT4 caller in this repo uses), not a
 //! ~400 Hz window tight around the one transmitted signal. Found
 //! necessary (`~/.claude/plans/dapper-soaring-nest.md`, Phase 3):
-//! `core::ft4_coarse::ft4_coarse_sync` (a faithful `getcandidates4.f90`
+//! `engine::ft4_coarse::ft4_coarse_sync` (a faithful `getcandidates4.f90`
 //! port, replacing the old Costas-lag coarse search) normalises its
-//! periodogram against `core::baseline::fit_baseline`'s per-segment
+//! periodogram against `engine::baseline::fit_baseline`'s per-segment
 //! low-percentile fit — a "noise floor" estimator that assumes most of
 //! the search band is genuinely off-signal. A search band narrow enough
 //! that the transmitted signal's own spectral footprint dominates it
@@ -23,7 +23,7 @@
 //! always scans the ~200-4910 Hz working band, never a single signal's
 //! own narrow footprint.
 
-use mfsk_core::core::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
+use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
 use mfsk_core::ft4::{Ft4, encode};
 
 const NSPS: usize = <Ft4 as ModulationParams>::NSPS as usize; // 576
@@ -82,7 +82,7 @@ fn encode_decode_clean_signal_1000hz() {
     // Verify the decoded payload also unpacks to the expected human-readable
     // text — confirms the full trait chain (FEC → MessageCodec::unpack).
     let codec = mfsk_core::msg::Wsjt77Message;
-    let ctx = mfsk_core::core::DecodeContext::default();
+    let ctx = mfsk_core::engine::DecodeContext::default();
     let text = codec
         .unpack(got.message77(), &ctx)
         .expect("unpack returns a valid text");

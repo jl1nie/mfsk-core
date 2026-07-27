@@ -122,7 +122,7 @@ assertion はなし、あくまで測定ツール）。
 
 ## 5. `DecodeStrictness` の probe (issue #72)
 
-同ファイル内の `ft4_strictness_probe` は `core::pipeline::decode_frame`
+同ファイル内の `ft4_strictness_probe` は `engine::pipeline::decode_frame`
 を `Strict` / `Normal` / `Deep` それぞれで直接叩き、上記スイープで
 判明した部分 recall のセルについて「golden recall」（実際に送信された
 メッセージと一致）と「any-msg recall」（golden かどうか問わず CRC を
@@ -157,11 +157,11 @@ gain の大半を捉えつつ、`Deep` の最悪の false-accept 増加は避け
 
 ## 6. 数値の再較正 (issue #72, 2026-07-18)
 
-`core::pipeline::process_candidate_basic` 内の
+`engine::pipeline::process_candidate_basic` 内の
 `strictness.osd_score_min()` / `strictness.osd_max_errors()` 呼び出し
 箇所を追跡したところ、両方とも `!is_fst4` の条件下でのみ実行される
 ことが判明 — つまり **FST4 はこれらの値を一切使わない**（#146 の
-fix）。実際には `core::pipeline::DecodeStrictness` の数値は FT4 専用
+fix）。実際には `engine::pipeline::DecodeStrictness` の数値は FT4 専用
 になっている。これは `Normal` の再較正が FST4 の（別途調整済みの）
 recall に対して回帰リスクゼロであることを意味し、単に特性を測定する
 だけでなく実際に数値を動かす道を開いた。
@@ -190,14 +190,14 @@ false-accept が出ない）範囲で golden recall が上がっていれば採�
 
 小幅かつ単調な改善で、どこにも regression なし（ゲートを緩めるだけ
 なので recall は維持か増加のみ）— dB スケールの跳躍ではなく、実質的
-だが漸進的な gain。`core::pipeline::DecodeStrictness::{osd_max_errors,
+だが漸進的な gain。`engine::pipeline::DecodeStrictness::{osd_max_errors,
 osd_score_min}` に反映済み。`Strict`/`Deep` の数値は未変更（現状どの
 呼び出し元も使っていない、FT8 からの未検証コピーのまま）。
 
 ## 7. Coherent full-slot Δt search (`ft4_sync_search`, 2026-07-18)
 
 上記の `DecodeStrictness` チューニングとは別に、`sync4d.f90`/
-`ft4_decode.f90` に対する WSJT-X 忠実性監査で判明: `core::sync::coarse_sync`
+`ft4_decode.f90` に対する WSJT-X 忠実性監査で判明: `engine::sync::coarse_sync`
 の広域(±2.5s) Δt 探索は **non-coherent**（パワースペクトラムのbin）
 なのに対し、WSJT-X 本家の広域 Δt 探索（`isync=1`、3セグメントで
 各350〜450サンプル）は **coherent**（複素Costas相関）。
@@ -208,7 +208,7 @@ samples ≈ ±30ms）の範囲外——それでも真のピークの coherent �
 方が一貫して高い。AWGN では影響なし（non-coherent のずれは16ms以内
 に収まり、旧refineの範囲内）。
 
-修正: `core::sync2d::ft4_sync_search`、WSJT-Xの`isync=1`/`isync=2`
+修正: `engine::sync2d::ft4_sync_search`、WSJT-Xの`isync=1`/`isync=2`
 ループを模した coherent full-slot Δt 探索（±12Hz/3Hz の coarse ×
 絶対座標`[-344, 1012]` downsampled-sample窓・step4、その後±4Hz/1Hz ×
 ±5サンプルの fine）で `sync2d_refine`/`Sync2dConfig::for_ft4` を置換

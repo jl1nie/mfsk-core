@@ -39,7 +39,7 @@
 
 use alloc::vec::Vec;
 
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// Maximum payload length in bytes per frame.
 pub const MAX_PAYLOAD_BYTES: usize = 10;

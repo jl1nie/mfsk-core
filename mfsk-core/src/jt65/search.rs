@@ -9,7 +9,7 @@
 //! Reuses the same shape as `crate::jt9::search` — the only differences
 //! are the sync-positions list and the per-frame symbol count.
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 

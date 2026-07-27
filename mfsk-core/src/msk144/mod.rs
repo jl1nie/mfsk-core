@@ -5,7 +5,7 @@
 //! (offset-QPSK) rather than M-ary FSK, and its decode loop scans a
 //! 15 s slot for 50-200ms ionised-trail bursts that can start almost
 //! anywhere, rather than assuming one frame at a known offset. See
-//! `crate::core::dsp::msk` for the OQPSK waveform primitives and
+//! `crate::engine::dsp::msk` for the OQPSK waveform primitives and
 //! `crate::fec::Ldpc128_90` for the FEC layer — both are reused as-is
 //! by [`tx`]; the burst-scan sync search and top-level decode driver
 //! are still to come.

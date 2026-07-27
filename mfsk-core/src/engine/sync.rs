@@ -20,7 +20,7 @@ use num_traits::Float;
 use rayon::prelude::*;
 
 use super::{Protocol, SpectrumWindow};
-use crate::core::fft::default_planner;
+use crate::engine::fft::default_planner;
 
 /// One synchronisation candidate.
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ pub struct SyncCandidate {
 /// `mfsk-core/tests/ft8_coarse_sync_bootstrap.rs`).
 ///
 /// `cands` does not need to be sorted; callers pass the raw output of
-/// `decode_block::coarse_sync` or `core::sync::coarse_sync`. Returns
+/// `decode_block::coarse_sync` or `engine::sync::coarse_sync`. Returns
 /// `None` if `cands` is empty or `top_k == 0`.
 pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32> {
     if cands.is_empty() || top_k == 0 {
@@ -158,7 +158,7 @@ impl Spectrogram {
     /// Mean linear power per FFT bin, averaged across all time slices.
     ///
     /// Returns `Vec<f32>` of length [`Self::n_freq`]. Used by
-    /// [`crate::core::baseline::fit_baseline`] to compute the
+    /// [`crate::engine::baseline::fit_baseline`] to compute the
     /// per-frequency noise floor (WSJT-X `ft4_baseline.f90` /
     /// `baseline.f90` first input). Memory layout is row-major by
     /// frequency, so each output entry is a contiguous reduction.
@@ -437,7 +437,7 @@ pub fn coarse_sync<P: Protocol>(
     // The polyfit baseline still has value for **per-symbol LLR
     // normalisation** (slice 2 territory) but that's a separate
     // place from the candidate ranking. Leave the helper
-    // `core::baseline::fit_baseline` in place for that future use.
+    // `engine::baseline::fit_baseline` in place for that future use.
     let sbase: Vec<f32> = vec![global_base; n_freq];
 
     // FST4-specific stage-1 augmentation (issue #146): the Costas grid

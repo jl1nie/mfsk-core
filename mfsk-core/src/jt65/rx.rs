@@ -9,7 +9,7 @@
 //! Geometry: NSPS = 4460 samples at 12 kHz gives bin width ≈
 //! 2.6906 Hz = one JT65A tone spacing.
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
@@ -159,7 +159,7 @@ fn demodulate_aligned_with_confidence_inner(
 mod tests {
     use super::super::tx::synthesize_standard;
     use super::*;
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::fec::Rs63_12;
     use crate::msg::{Jt72Codec, Jt72Message};
 

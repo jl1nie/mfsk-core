@@ -10,8 +10,8 @@
 //!
 //! Sync is carried by 16 symbols at fixed positions in the 85-symbol
 //! frame, each expected on tone 0. That distribution fits the
-//! existing [`crate::core::SyncMode::Block`] variant by expressing
-//! each sync symbol as a length-1 [`crate::core::SyncBlock`]; no new
+//! existing [`crate::engine::SyncMode::Block`] variant by expressing
+//! each sync symbol as a length-1 [`crate::engine::SyncBlock`]; no new
 //! `SyncMode` variant is required.
 //!
 //! References:
@@ -31,7 +31,7 @@
 //! }
 //! ```
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
 
@@ -59,7 +59,7 @@ pub fn decode_at(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<crate::msg::Jt72Message> {
-    use crate::core::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+    use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
 
     let llrs = rx::demodulate_aligned(audio, sample_rate, start_sample, base_freq_hz);
     let codec = ConvFano232;
@@ -88,7 +88,7 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &search::SearchParams,
 ) -> Vec<Jt9Decode> {
-    use crate::core::ModulationParams;
+    use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
 
     // Collect all coarse candidates above a very low threshold (the score
@@ -191,7 +191,7 @@ impl Protocol for Jt9 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
+    use crate::engine::FecCodec;
 
     #[test]
     fn jt9_trait_surface() {

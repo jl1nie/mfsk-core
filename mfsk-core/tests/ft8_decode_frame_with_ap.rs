@@ -7,7 +7,7 @@
 //! the post-FEC CRC must catch any AP-locked spurious convergence, which
 //! is the safety claim made in the original PR description.
 
-use mfsk_core::core::{MessageCodec, MessageFields};
+use mfsk_core::engine::{MessageCodec, MessageFields};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::{ApHint, DecodeDepth};
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};

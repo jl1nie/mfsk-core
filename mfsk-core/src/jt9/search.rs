@@ -12,7 +12,7 @@
 //! The aligned `decode_at` remains available for callers that already
 //! know both.
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 

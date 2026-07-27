@@ -10,7 +10,7 @@
 //!
 //! - No adaptive RX-equalizer training (`beq`/`pcoeffs`/`corr(i)` in
 //!   `mskrtd.f90`, trained by `msk144signalquality.f90`):
-//!   [`crate::core::dsp::analytic_signal`] applies WSJT-X's *fixed*
+//!   [`crate::engine::dsp::analytic_signal`] applies WSJT-X's *fixed*
 //!   1500 Hz-centered bandpass filter (`analytic.f90`'s `h(i)`,
 //!   unconditional in the reference), but not the *adaptive*
 //!   session-trained phase/amplitude correction layered on top of it.
@@ -32,9 +32,9 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::DecodeContext;
-use crate::core::dsp::analytic_signal;
-use crate::core::dsp::msk::NSPM;
+use crate::engine::DecodeContext;
+use crate::engine::dsp::analytic_signal;
+use crate::engine::dsp::msk::NSPM;
 use crate::msk144::sync::{msk144_sync, rotate_to_shift};
 use crate::msk144::{frame_decode::decode_frame, spd::short_ping_decode};
 
@@ -174,7 +174,7 @@ fn decode_block(
                     _ => (peak.shift + 1).min(NSPM - 1),
                 };
                 let aligned = rotate_to_shift(&sync_result.frame, ic0);
-                let softbits = crate::core::dsp::msk::matched_filter_softbits(
+                let softbits = crate::engine::dsp::msk::matched_filter_softbits(
                     aligned.as_slice().try_into().expect("NSPM samples"),
                 );
                 if let Some(result) = decode_frame(&softbits, ctx) {
@@ -265,8 +265,8 @@ pub fn decode_slot(audio: &[i16], fc: f32, ntol: f32, depth: Depth) -> Vec<SlotD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
-    use crate::core::dsp::msk::build_bitseq;
+    use crate::engine::FecCodec;
+    use crate::engine::dsp::msk::build_bitseq;
     use crate::fec::Ldpc128_90;
 
     /// The `itone` audio-tone sequence msk144sim/genmsk_128_90 actually

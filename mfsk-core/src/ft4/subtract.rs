@@ -2,7 +2,7 @@
 //! FT4 signal subtraction (successive interference cancellation).
 //!
 //! Thin FT4-tuned wrapper around the protocol-agnostic
-//! [`crate::core::dsp::subtract`] implementation. Given a decoded message and
+//! [`crate::engine::dsp::subtract`] implementation. Given a decoded message and
 //! its time/frequency coordinates, reconstructs the ideal 4-GFSK waveform and
 //! subtracts it in place so weaker signals become decodable.
 //!
@@ -29,7 +29,7 @@
 //! retuning lands in one place.
 
 use super::{decode::DecodeResult, encode::message_to_tones};
-use crate::core::dsp::subtract::{subtract_tones, subtract_tones_lpf};
+use crate::engine::dsp::subtract::{subtract_tones, subtract_tones_lpf};
 
 // Reuse the configuration `decode_frame_subtract` already uses, so any
 // behavioural tuning lands in one place.
@@ -86,7 +86,7 @@ pub fn subtract_signal_weighted(audio: &mut [i16], result: &DecodeResult, gain: 
 }
 
 /// WSJT-X-style channel-aware subtract for FT4. Wraps
-/// [`crate::core::dsp::subtract::subtract_tones_lpf`] with the FT4 cfg
+/// [`crate::engine::dsp::subtract::subtract_tones_lpf`] with the FT4 cfg
 /// and `lpf_half = 700` (matching WSJT-X `NFILT = 1400` from
 /// `lib/ft4/subtractft4.f90`; full window ≈ 116 ms / half ≈ 58 ms).
 /// Note: this is narrower than FT8's NFILT=4000 — the original PR's
@@ -137,7 +137,7 @@ pub fn refine_signal_freq(audio: &[i16], result: &DecodeResult) -> f32 {
         Some(t) => t,
         None => return result.freq_hz,
     };
-    crate::core::dsp::subtract::refine_freq(
+    crate::engine::dsp::subtract::refine_freq(
         audio,
         &tones,
         result.freq_hz,

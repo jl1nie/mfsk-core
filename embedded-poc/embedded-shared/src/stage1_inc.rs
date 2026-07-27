@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use esp_idf_svc::sys::{esp_timer_get_time, xTaskCreatePinnedToCore, QueueHandle_t};
 
-use mfsk_core::core::fft::{Fft16, FftPlanner16};
+use mfsk_core::engine::fft::{Fft16, FftPlanner16};
 use num_complex::Complex;
 
 use crate::pipeline::{recv_box, send_box, ChunkMsg, Slot, SpecBundle};
@@ -284,7 +284,7 @@ pub fn spawn_with_wf(
     let (head_ia, head_n_freq) = band_for(ALLSUM_FREQ_MIN, ALLSUM_FREQ_MID, n_freq);
     let (tail_ia, tail_n_freq) = band_for(ALLSUM_FREQ_MID, ALLSUM_FREQ_MAX, n_freq);
 
-    let mut fft_planner = mfsk_core::core::fft::default_planner_16();
+    let mut fft_planner = mfsk_core::engine::fft::default_planner_16();
     let fft = fft_planner.plan_forward(NFFT_SPEC);
     let fft_buf: Vec<Complex<i16>> = vec![Complex::new(0i16, 0i16); NFFT_SPEC];
 

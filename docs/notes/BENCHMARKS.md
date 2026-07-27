@@ -43,7 +43,7 @@ benchmark. Re-verified in full 2026-07-26 (each row re-run against its
 own protocol's real recall/timing harness) after the FT8 fine-sync
 refinement rewrite below (`fine_refine_3stage`'s reference-tweak
 port) and a cross-protocol Costas-reference caching hoist in
-`core::sync::fine_sync_power_per_block`: FT8 moved again (see its own
+`engine::sync::fine_sync_power_per_block`: FT8 moved again (see its own
 row); every other row was confirmed unchanged within run-to-run noise
 (≤~15%) **except FT4**, which turned out to already be stale for an
 unrelated reason — see its row below.
@@ -85,7 +85,7 @@ Notes:
   from `fine_refine_3stage`'s rewrite (tweaks a small 32-sample Costas
   reference waveform instead of shifting the whole 3200-sample `cd0`
   baseband buffer per trial DF/DT, matching WSJT-X's real
-  `sync8d.f90`/`ft8b.f90:133-140` algorithm) plus a `core::sync.rs`
+  `sync8d.f90`/`ft8b.f90:133-140` algorithm) plus a `engine::sync.rs`
   cross-protocol Costas-reference caching hoist — both trig-heavy-loop
   fixes, not new algorithms. Recall byte-identical (7/8 golden, 7
   phantom, 14 total on `qso3_apoff`; 18/18 on `qso3_jtdx`; 6/6 JTDX
@@ -113,7 +113,7 @@ Notes:
   reasons, without a corresponding re-measurement of this row.
 
   Root cause: not `subtract_tones_lpf` (already FFT-cached, <1 ms/call)
-  but `core::dsp::subtract::refine_freq` — its ±5 Hz/0.1 Hz carrier
+  but `engine::dsp::subtract::refine_freq` — its ±5 Hz/0.1 Hz carrier
   grid search (~101 evaluations/candidate) called `generate_iq` fresh
   every evaluation, fully rebuilding the GFSK-shaped modulation
   (erf-based pulse table, `O(nsym·pulse_len)` convolution, `O(nwave)`
@@ -144,7 +144,7 @@ Notes:
   `refine_freq`'s generic doc comment (written for `coarse_sync`'s
   ~2.93 Hz FFT-bin uncertainty) and was never re-derived after FT4 moved
   onto `ft4_coarse_sync` + `ft4_sync_search` (section 7/13), whose df
-  search (`core::sync2d::ft4_sync_search`) only ever produces
+  search (`engine::sync2d::ft4_sync_search`) only ever produces
   integer-Hz offsets — bounding the true optimum to within ±0.5 Hz of
   the reported freq by construction, tighter than the ±2.5 Hz the old
   comment assumed. Shrunk `refine_freq_radius_hz` `5.0 → 1.0` (kept the
@@ -205,7 +205,7 @@ Notes:
   redundant candidates per real signal frequency on this WAV (2000
   candidates / 440 distinct frequencies), each independently paying the
   full downstream sync-refine + LLR + BP + OSD cost. Replaced with
-  `core::ft4_coarse::ft4_coarse_sync`, a faithful `getcandidates4.f90`
+  `engine::ft4_coarse::ft4_coarse_sync`, a faithful `getcandidates4.f90`
   port (WSJT-X's actual FT4 candidate finder has no lag dimension at
   all) — dropping this row to 0.049 s (~25×) with byte-identical 6/6
   golden recall (see `FT4_BENCHMARK.md` section 13).

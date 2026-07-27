@@ -13,7 +13,7 @@
 //! APP_CPU worker uses [`CS_SCRATCH_WORKER`], 5 KB each, 10 KB total
 //! out of the ~111 KB free internal DRAM after BASIS pins.
 
-use mfsk_core::core::scalar::Cmplx;
+use mfsk_core::engine::scalar::Cmplx;
 
 /// 79 symbols × 8 tones = `[[Cmplx<f32>; 8]; 79]` = 5,056 bytes.
 pub const CS_LEN_SYMBOLS: usize = 79;

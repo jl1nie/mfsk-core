@@ -5,7 +5,7 @@
 //! the negative-frequency half of its spectrum and doubling the
 //! positive half. This is how a real audio buffer becomes the
 //! complex passband/baseband signal the MSK144 sync/matched-filter
-//! code (`crate::msk144::sync`, `crate::core::dsp::msk`) operates on
+//! code (`crate::msk144::sync`, `crate::engine::dsp::msk`) operates on
 //! — mirrors WSJT-X `analytic()` (called from `mskrtd.f90`), though
 //! this port lets the FFT size equal the input length rather than
 //! fixing an oversized/zero-padded `NFFT1` — callers needing that

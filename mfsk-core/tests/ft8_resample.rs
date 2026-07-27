@@ -1,6 +1,6 @@
 //! FT8-specific integration tests for the resampler.
 //!
-//! The resampler itself lives in `mfsk-core::dsp::resample` (pure DSP, no
+//! The resampler itself lives in `mfsk-engine::dsp::resample` (pure DSP, no
 //! protocol knowledge). These tests exercise the end-to-end path
 //! `arbitrary-rate PCM → resample → FT8 decoder` which can only be expressed
 //! in a crate that depends on `ft8-core::decode`.

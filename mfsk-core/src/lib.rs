@@ -105,7 +105,7 @@
 //!
 //! ## Module layout
 //!
-//! - [`core`] — protocol traits, DSP (resample / downsample / GFSK /
+//! - [`engine`] — protocol traits, DSP (resample / downsample / GFSK /
 //!   subtract), sync, LLR, equaliser, pipeline driver.
 //! - [`fec`] — LDPC(174, 91), LDPC(240, 101), convolutional r=½ K=32
 //!   Fano, Reed-Solomon(63, 12) over GF(2⁶), and the QRA(15, 65)
@@ -207,7 +207,7 @@
 //!
 //! Each protocol declares its slot length, tone count, Gray map,
 //! Costas / sync pattern, FEC codec and message codec at compile time
-//! via the [`Protocol`] trait. The generic code in [`core`] —
+//! via the [`Protocol`] trait. The generic code in [`engine`] —
 //! coarse sync, fine sync, LLR computation, LDPC / RS / convolutional
 //! decode, GFSK synthesis — works for any type that satisfies the
 //! trait.
@@ -276,7 +276,7 @@
 //! `alloc ft8` and `alloc ft8 fft-extern` legs of CI's feature-matrix build
 //! this exact combination (`.github/workflows/ci.yml`) to confirm it
 //! compiles under `#![no_std]`. Decoding additionally needs a
-//! [`core::fft::FftPlanner`] impl — bring your own via `fft-extern` (the
+//! [`engine::fft::FftPlanner`] impl — bring your own via `fft-extern` (the
 //! embedded ports use this for esp-dsp / CMSIS-DSP) since `fft-rustfft`
 //! requires `std`.
 //!
@@ -327,7 +327,7 @@ extern crate alloc;
 /// override that didn't get re-fingerprinted).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub mod core;
+pub mod engine;
 pub mod fec;
 pub mod msg;
 
@@ -361,7 +361,7 @@ pub mod msk144;
 pub mod registry;
 
 // Flatten commonly-used types to the crate root.
-pub use crate::core::{
+pub use crate::engine::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
     ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
 };

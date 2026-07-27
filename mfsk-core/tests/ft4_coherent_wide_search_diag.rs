@@ -1,4 +1,4 @@
-//! Diagnostic (not a regression gate): does `core::sync::coarse_sync`'s
+//! Diagnostic (not a regression gate): does `engine::sync::coarse_sync`'s
 //! non-coherent wide-Δt search actually land near the true sync peak on
 //! weak FT4 trials, or does a directly-computed coherent wide-Δt scan
 //! (bypassing coarse_sync entirely) find a much stronger peak elsewhere?
@@ -7,7 +7,7 @@
 //! FT4 decoder (`ft4_decode.f90` + `sync4d.f90`) does its wide Δt search
 //! (~350-450 raw samples per segment, step 4 @ 666.7 Hz ≈ 6 ms)
 //! *coherently* — complex Costas correlation, not power spectra. Our
-//! `core::sync::coarse_sync` searches a wider Δt window (±2.5 s) but
+//! `engine::sync::coarse_sync` searches a wider Δt window (±2.5 s) but
 //! *non-coherently* (magnitude-squared spectrogram bins) at a coarser
 //! 24 ms grid, then `sync2d_refine`'s coherent pass only re-examines
 //! ±20 downsampled samples (≈±30 ms) around whatever coarse_sync picked.
@@ -38,8 +38,8 @@
 
 use std::path::{Path, PathBuf};
 
-use mfsk_core::core::dsp::downsample::downsample;
-use mfsk_core::core::sync::{coarse_sync, fine_sync_power};
+use mfsk_core::engine::dsp::downsample::downsample;
+use mfsk_core::engine::sync::{coarse_sync, fine_sync_power};
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 

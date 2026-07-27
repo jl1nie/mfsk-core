@@ -35,7 +35,7 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::fft::default_planner;
+use crate::engine::fft::default_planner;
 
 /// Runtime parameters shared by [`downsample`], [`downsample_cached`], and
 /// [`build_fft_cache`]. Callers typically keep one instance per protocol.

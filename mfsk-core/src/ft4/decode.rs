@@ -1,4 +1,4 @@
-//! FT4 decode — thin wrapper over [`crate::core::pipeline`].
+//! FT4 decode — thin wrapper over [`crate::engine::pipeline`].
 //!
 //! Drives the full generic pipeline (coarse sync → refine → LLR → BP/OSD →
 //! optional SIC multi-pass) specialised to the [`Ft4`] protocol, exposed
@@ -8,12 +8,12 @@
 use alloc::vec::Vec;
 
 use super::Ft4;
-use crate::core::dsp::downsample::DownsampleCfg;
-use crate::core::dsp::subtract::SubtractCfg;
-use crate::core::pipeline;
+use crate::engine::dsp::downsample::DownsampleCfg;
+use crate::engine::dsp::subtract::SubtractCfg;
+use crate::engine::pipeline;
 use crate::msg::pipeline_ap;
 
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
+pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{
     DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
@@ -44,7 +44,7 @@ pub const FT4_SUBTRACT: SubtractCfg = SubtractCfg {
     tone_spacing_hz: 20.833,
     samples_per_symbol: 576,
     base_offset_s: 0.5,
-    gfsk: Some(crate::core::dsp::subtract::GfskParams {
+    gfsk: Some(crate::engine::dsp::subtract::GfskParams {
         bt: 1.0,
         hmod: 1.0,
         ramp_samples: 576 / 8,
@@ -122,7 +122,7 @@ impl FrameDecodable for Ft4 {
         // (old `decode_sniper_ap` returned `Vec<DecodeResult>` only), so
         // rebuild it once here purely to satisfy `DecodeOutcome`'s
         // uniform shape.
-        let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+        let fft_cache = FftCache(crate::engine::dsp::downsample::build_fft_cache(
             req.audio,
             &FT4_DOWNSAMPLE,
         ));
@@ -153,7 +153,7 @@ impl SupportsFlatSic for Ft4 {
             // all — it subtracts directly at the decoded `f0`. mfsk-core's
             // `refine_freq` call above exists to compensate for this
             // codebase's own `r.freq_hz` being integer-Hz-quantized
-            // (`core::sync2d::ft4_sync_search`'s df search only ever
+            // (`engine::sync2d::ft4_sync_search`'s df search only ever
             // produces integer Hz offsets — see its `idf`/`si` loops), not
             // to replicate anything WSJT-X does. That quantization bounds
             // the true continuous optimum to within ±0.5 Hz of the
@@ -174,7 +174,7 @@ impl SupportsFlatSic for Ft4 {
         // Multi-pass SIC has no single "the" cache (residual changes every
         // pass) — rebuild from the original audio, matching the shape
         // `decode_frame_with_cache` used to return pre-#191.
-        let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+        let fft_cache = FftCache(crate::engine::dsp::downsample::build_fft_cache(
             req.audio,
             &FT4_DOWNSAMPLE,
         ));

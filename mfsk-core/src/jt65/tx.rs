@@ -12,7 +12,7 @@
 
 use core::f32::consts::TAU;
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use crate::fec::Rs63_12;
 
 use super::Jt65;

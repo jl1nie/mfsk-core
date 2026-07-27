@@ -32,7 +32,7 @@ pub struct SubtractCfg {
     pub gfsk: Option<GfskParams>,
 }
 
-/// Subset of [`crate::core::dsp::gfsk::GfskCfg`] needed to shape the
+/// Subset of [`crate::engine::dsp::gfsk::GfskCfg`] needed to shape the
 /// subtract reference. `sample_rate` and `samples_per_symbol` are
 /// already on `SubtractCfg` so we only carry the GFSK-specific knobs.
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +57,7 @@ pub struct GfskParams {
 fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<f32>) {
     let n = tones.len() * cfg.samples_per_symbol;
     if let Some(g) = cfg.gfsk {
-        let gfsk_cfg = crate::core::dsp::gfsk::GfskCfg {
+        let gfsk_cfg = crate::engine::dsp::gfsk::GfskCfg {
             sample_rate: cfg.sample_rate,
             samples_per_symbol: cfg.samples_per_symbol,
             bt: g.bt,
@@ -66,7 +66,7 @@ fn generate_iq(tones: &[u8], freq_hz: f32, cfg: &SubtractCfg) -> (Vec<f32>, Vec<
         };
         let mut w_cos = vec![0.0f32; n];
         let mut w_sin = vec![0.0f32; n];
-        crate::core::dsp::gfsk::synth_complex_f32_into(
+        crate::engine::dsp::gfsk::synth_complex_f32_into(
             &mut w_cos, &mut w_sin, tones, freq_hz, 1.0, &gfsk_cfg,
         );
         return (w_cos, w_sin);
@@ -949,7 +949,7 @@ pub fn subtract_tones(
 #[cfg(all(test, feature = "fft-rustfft"))]
 mod refine_dt_tests {
     use super::*;
-    use crate::core::dsp::gfsk::{GfskCfg, synth_i16};
+    use crate::engine::dsp::gfsk::{GfskCfg, synth_i16};
 
     fn ft8_cfg() -> SubtractCfg {
         SubtractCfg {
@@ -1182,14 +1182,14 @@ mod tests {
             let samples = {
                 let n = tones.len() * cfg.samples_per_symbol;
                 let mut out = vec![0.0f32; n];
-                let gfsk_cfg = crate::core::dsp::gfsk::GfskCfg {
+                let gfsk_cfg = crate::engine::dsp::gfsk::GfskCfg {
                     sample_rate: cfg.sample_rate,
                     samples_per_symbol: cfg.samples_per_symbol,
                     bt: cfg.gfsk.unwrap().bt,
                     hmod: cfg.gfsk.unwrap().hmod,
                     ramp_samples: cfg.gfsk.unwrap().ramp_samples,
                 };
-                crate::core::dsp::gfsk::synth_f32_into(
+                crate::engine::dsp::gfsk::synth_f32_into(
                     &mut out, &tones, 1500.0, AMPLITUDE, &gfsk_cfg,
                 );
                 out
@@ -1246,14 +1246,16 @@ mod tests {
             let n = tones.len() * cfg.samples_per_symbol;
             let mut out = vec![0.0f32; n];
             let g = cfg.gfsk.unwrap();
-            let gfsk_cfg = crate::core::dsp::gfsk::GfskCfg {
+            let gfsk_cfg = crate::engine::dsp::gfsk::GfskCfg {
                 sample_rate: cfg.sample_rate,
                 samples_per_symbol: cfg.samples_per_symbol,
                 bt: g.bt,
                 hmod: g.hmod,
                 ramp_samples: g.ramp_samples,
             };
-            crate::core::dsp::gfsk::synth_f32_into(&mut out, &tones, freq_true, 8000.0, &gfsk_cfg);
+            crate::engine::dsp::gfsk::synth_f32_into(
+                &mut out, &tones, freq_true, 8000.0, &gfsk_cfg,
+            );
             out
         };
         let offset = (cfg.base_offset_s * cfg.sample_rate) as usize;

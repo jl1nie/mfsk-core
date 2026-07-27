@@ -77,7 +77,7 @@
 //!
 //! ## Application API
 //!
-//! Byte pipe — bypasses [`crate::core::MessageCodec`]. Callers
+//! Byte pipe — bypasses [`crate::engine::MessageCodec`]. Callers
 //! deliver raw bytes plus a 4-bit `app_type` tag; the modem
 //! doesn't know or care what's inside.
 //!

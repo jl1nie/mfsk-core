@@ -35,16 +35,16 @@
 //! rather than merely unreachable at runtime.
 //!
 //! **FT4/FST4 analog**: this module is FT8's bespoke OSD-fallback
-//! dispatch, reached by bypassing [`crate::core::FecCodec`] entirely
+//! dispatch, reached by bypassing [`crate::engine::FecCodec`] entirely
 //! (same root cause as issue #198). FT4/FST4 get their OSD escalation
-//! through [`crate::core::pipeline::osd_escalation_gates`] instead —
+//! through [`crate::engine::pipeline::osd_escalation_gates`] instead —
 //! an independent implementation, independently calibrated. Review
 //! both when tuning either (issue #192).
 
 #![cfg(feature = "fft-rustfft")]
 
 use super::super::decode::DecodeDepth;
-use crate::core::scalar::Cmplx;
+use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
 use crate::fec::ldpc::bp::{BpResult, bp_llr_zsum};
 use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1, osd_decode_npre1_npre2};

@@ -29,7 +29,7 @@
 //! Adding a new sub-mode is a one-line invocation of the
 //! `q65_submode!` macro defined further down in this file.
 
-use crate::core::{
+use crate::engine::{
     FecCodec, FecOpts, FecResult, FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode,
 };
 use crate::fec::qra::Q65Codec;

@@ -318,7 +318,7 @@ Architectural notes that did not graduate to issues:
   type-system enforcement against future protocol-sync drift.
   Scoped out of v0.6.x (8 protocols + 2 macros + embedded feature
   matrix; benefit is speculative for non-FT8 protocols).
-- **#49 cat D** — `core::sync::coarse_sync<P>` `NotFt8` marker
+- **#49 cat D** — `engine::sync::coarse_sync<P>` `NotFt8` marker
   bound. Subsumed structurally by Phase 4 dispatch in v0.6.0; the
   doc note ("FT8 should not use this") is the practical backstop
   until #48 option A lands.
@@ -439,7 +439,7 @@ in module doc-comments:
   `best_n` stays at 0 so the next confirmed-decode slot reclaims
   HWM. Removes the "BtnA required" cold-start dead-end for
   no-GPS / no-NTP operation. Helper
-  (`mfsk_core::core::sync::bootstrap_dt_median`) shared with
+  (`mfsk_core::engine::sync::bootstrap_dt_median`) shared with
   WebFT8, gated by `tests/ft8_coarse_sync_bootstrap.rs`.
 - **Phases 2 / 5 / 6 / TX keying** — Rolled forward to Phase B-Core.
   Stick frozen after Phase 1.7 demo toggle (1.7.9 is a

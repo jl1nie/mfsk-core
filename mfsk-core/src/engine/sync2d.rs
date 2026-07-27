@@ -32,8 +32,8 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::Protocol;
-use crate::core::sync::{SyncCandidate, SyncDims};
+use crate::engine::Protocol;
+use crate::engine::sync::{SyncCandidate, SyncDims};
 
 /// Output of [`fst4_sync_search`] / [`ft4_sync_search`].
 #[derive(Clone, Debug)]
@@ -226,7 +226,7 @@ pub fn fst4_sync_search<P: Protocol>(
 /// WSJT-X `ft4_decode.f90`'s `isync=1`/`isync=2` loop (`sync4d.f90` scorer)
 /// — added 2026-07-18 after a diagnostic
 /// (`tests/ft4_coherent_wide_search_diag.rs`) confirmed the hypothesis:
-/// `core::sync::coarse_sync`'s non-coherent (power-spectrogram) Δt
+/// `engine::sync::coarse_sync`'s non-coherent (power-spectrogram) Δt
 /// estimate can be wrong by more than a second under CCIR fading, and
 /// the previous local `sync2d_refine` (`Sync2dConfig::for_ft4`, ±20
 /// downsampled samples ≈ ±30 ms) could never recover from an error that
@@ -425,7 +425,7 @@ pub fn ft4_sync_search_window<P: Protocol>(
 
 /// Apply a complex-phasor freq shift to `cd0`. Used by callers that
 /// take the [`Sync2dResult::freq_hz`] from this module and want to
-/// run [`crate::core::llr::symbol_spectra`] on a baseband whose
+/// run [`crate::engine::llr::symbol_spectra`] on a baseband whose
 /// carrier sits at the refined freq.
 pub fn freq_shift_cd0(cd0: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Complex<f32>> {
     if df_hz.abs() < f32::EPSILON {

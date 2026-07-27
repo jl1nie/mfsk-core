@@ -1,9 +1,9 @@
-//! End-to-end validation of the `mfsk_core::core::Protocol` trait wiring for
+//! End-to-end validation of the `mfsk_core::engine::Protocol` trait wiring for
 //! [`mfsk_core::ft8::Ft8`]. These tests intentionally route through the trait
 //! methods (not the concrete free functions) so that future genericised
 //! pipeline code is guaranteed to work when driven by `<P: Protocol>`.
 
-use mfsk_core::core::{
+use mfsk_core::engine::{
     FecCodec, FrameLayout, MessageCodec, MessageFields, ModulationParams, Protocol,
 };
 use mfsk_core::ft8::Ft8;
@@ -92,7 +92,7 @@ fn ft8_message_and_fec_round_trip() {
         .map(|&b| if b == 1 { 8.0 } else { -8.0 })
         .collect();
     let result = fec
-        .decode_soft(&llr, &mfsk_core::core::FecOpts::default())
+        .decode_soft(&llr, &mfsk_core::engine::FecOpts::default())
         .expect("BP converges with perfect LLR");
     assert_eq!(&result.info[..77], &payload[..]);
 }
@@ -109,7 +109,7 @@ fn ft8_message_unpack_renders_text() {
         ..MessageFields::default()
     };
     let payload = msg.pack(&fields).unwrap();
-    let ctx = mfsk_core::core::DecodeContext::default();
+    let ctx = mfsk_core::engine::DecodeContext::default();
     let text = msg.unpack(&payload, &ctx).unwrap();
     assert!(text.contains("CQ"));
     assert!(text.contains("JA1ABC"));

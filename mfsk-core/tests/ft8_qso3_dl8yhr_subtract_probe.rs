@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use mfsk_core::FrameLayout;
-use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
+use mfsk_core::engine::sync::{SyncDims, make_costas_ref, score_costas_block};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::downsample::downsample;
@@ -95,9 +95,9 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     scan_near(&audio, 2606.0, 0.2, "before");
     let q_before = {
         let (cd0, _c) = downsample(&audio, 2606.0, None);
-        let refined = mfsk_core::core::sync::refine_candidate::<Ft8>(
+        let refined = mfsk_core::engine::sync::refine_candidate::<Ft8>(
             &cd0,
-            &mfsk_core::core::sync::SyncCandidate {
+            &mfsk_core::engine::sync::SyncCandidate {
                 freq_hz: 2606.0,
                 dt_sec: 0.2,
                 score: 0.0,
@@ -130,9 +130,9 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     scan_near(&audio, 2606.0, 0.2, "after");
     let q_after = {
         let (cd0, _c) = downsample(&audio, 2606.0, None);
-        let refined = mfsk_core::core::sync::refine_candidate::<Ft8>(
+        let refined = mfsk_core::engine::sync::refine_candidate::<Ft8>(
             &cd0,
-            &mfsk_core::core::sync::SyncCandidate {
+            &mfsk_core::engine::sync::SyncCandidate {
                 freq_hz: 2606.0,
                 dt_sec: 0.2,
                 score: 0.0,

@@ -7,7 +7,7 @@
 //! alignment from raw `coarse_sync` candidate DTs while
 //! N_confirmed = 0.
 //!
-//! `core::sync::bootstrap_dt_median(&cands, K=5)` is the published
+//! `engine::sync::bootstrap_dt_median(&cands, K=5)` is the published
 //! helper both consumers use. This test gates K=5 |Δ| < 100 ms vs
 //! the confirmed-decode DT median on three reference recordings —
 //! one busy band (15 decodes) and two sparse JTDX captures (4-5
@@ -23,7 +23,7 @@
 
 use std::path::Path;
 
-use mfsk_core::core::sync::{SyncCandidate, bootstrap_dt_median};
+use mfsk_core::engine::sync::{SyncCandidate, bootstrap_dt_median};
 use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::decode_block::{coarse_sync, compute_spectrogram, decode_block};
 

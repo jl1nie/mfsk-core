@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use mfsk_core::FrameLayout;
-use mfsk_core::core::sync::{SyncDims, make_costas_ref, score_costas_block};
+use mfsk_core::engine::sync::{SyncDims, make_costas_ref, score_costas_block};
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
 use mfsk_core::ft8::downsample::downsample;

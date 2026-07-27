@@ -70,7 +70,7 @@ MFSK_FT8_SWEEP_DIR=embedded-poc/assets/ft8_sweep \
 AWGN と CCIR good は公称値 -20/-21 dB の約 1 dB 以内に収まっており、
 FT4 が公称値 -17.5 dB に対して見せた約 2 dB のギャップ
 （`FT4_BENCHMARK.ja.md` 参照）よりかなり良い一致。これは FT8 の
-本番 `decode_frame` が（FT4/FST4 が使う汎用 `core::pipeline` 経路
+本番 `decode_frame` が（FT4/FST4 が使う汎用 `engine::pipeline` 経路
 ではなく）#48 統合後の WSJT-X 忠実パイプライン `decode_block` を
 通っていることと整合する。CCIR moderate/poor はより大きい約
 2〜2.5 dB のギャップを見せており、未調査 — フェージング下の感度が

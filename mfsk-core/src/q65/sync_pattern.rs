@@ -10,7 +10,7 @@
 //! WSJT-X `lib/qra/q65/q65.f90` (line ~10), translated to 0-indexed
 //! positions.
 
-use crate::core::SyncBlock;
+use crate::engine::SyncBlock;
 
 /// 0-indexed positions (within the 85-symbol frame) of the 22 sync
 /// symbols. Translated from the Fortran `isync(1..22)` constant in

@@ -23,7 +23,7 @@ use super::super::params::{NMAX, NSPS, NTONES};
 use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
 
 #[cfg(not(feature = "fixed-point"))]
-use crate::core::fft::default_planner;
+use crate::engine::fft::default_planner;
 
 /// Spectrogram cell type. f32 (4 bytes) by default; u16 (2 bytes)
 /// under `fixed-point` — magnitude squared right-shifted by
@@ -204,7 +204,7 @@ pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spe
 /// headroom for FFT growth in tone-rich slots.
 #[cfg(feature = "fixed-point")]
 pub fn compute_spectrogram<S: AudioSample>(audio: &[S], max_freq_hz: f32) -> Spectrogram {
-    use crate::core::fft::default_planner_16;
+    use crate::engine::fft::default_planner_16;
 
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;

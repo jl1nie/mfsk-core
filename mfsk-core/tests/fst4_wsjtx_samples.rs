@@ -109,17 +109,17 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
 ///       --features fst4,fft-rustfft,internal-testing -- --ignored --nocapture
 ///
 /// `internal-testing` (issue #203) is required because this probe calls
-/// `core::pipeline::process_candidate_basic` directly, which is
+/// `engine::pipeline::process_candidate_basic` directly, which is
 /// `pub(crate)` on the default feature set.
 #[test]
 #[ignore = "diagnostic probe, not a recall gate — run manually"]
 fn fst4_60_diagnose_golden() {
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::llr::{symbol_spectra, sync_quality};
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
-    use mfsk_core::core::{FrameLayout, ModulationParams};
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::{FrameLayout, ModulationParams};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 

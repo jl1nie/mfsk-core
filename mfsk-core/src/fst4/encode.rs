@@ -10,8 +10,8 @@
 //! convenience wrappers kept for backward compatibility.
 
 use super::Fst4s60;
-use crate::core::dsp::gfsk::{GfskCfg, synth_f32, synth_i16};
-use crate::core::{FecCodec, FrameLayout, ModulationParams};
+use crate::engine::dsp::gfsk::{GfskCfg, synth_f32, synth_i16};
+use crate::engine::{FecCodec, FrameLayout, ModulationParams};
 use crate::fec::Ldpc240_101;
 
 /// FST4-15 GFSK configuration: 12 kHz, 720 samples/symbol, BT=2.0,
@@ -107,7 +107,7 @@ pub fn message_to_tones(message77: &[u8; 77]) -> Vec<u8> {
     let codec = Ldpc240_101;
     let mut cw = [0u8; 240];
     codec.encode(&info, &mut cw);
-    crate::core::tx::codeword_to_itone::<Fst4s60>(&cw)
+    crate::engine::tx::codeword_to_itone::<Fst4s60>(&cw)
 }
 
 /// Synthesise a 12 kHz f32 PCM waveform from an FST4 tone sequence

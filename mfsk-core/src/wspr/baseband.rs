@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use num_complex::Complex;
 
-use crate::core::fft::default_planner;
+use crate::engine::fft::default_planner;
 
 /// Baseband sample rate. Matches wsprd `dt = 1.0/375.0` throughout.
 pub const BASEBAND_RATE: f32 = 375.0;

@@ -40,7 +40,7 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::core::fft::default_planner;
+use crate::engine::fft::default_planner;
 
 use super::WSPR_SYNC_VECTOR;
 use super::baseband::{BASEBAND_RATE, CENTER_HZ};

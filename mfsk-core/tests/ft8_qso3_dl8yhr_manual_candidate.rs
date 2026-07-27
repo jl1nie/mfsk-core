@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use mfsk_core::core::sync::{SyncCandidate, refine_candidate};
+use mfsk_core::engine::sync::{SyncCandidate, refine_candidate};
 use mfsk_core::fec::ldpc::bp::bp_decode;
 use mfsk_core::fec::ldpc::osd::{osd_decode_deep4, osd_decode_npre1, osd_decode_npre1_npre2};
 use mfsk_core::ft8::Ft8;

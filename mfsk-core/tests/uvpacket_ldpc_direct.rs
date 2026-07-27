@@ -11,7 +11,7 @@
 
 #![cfg(feature = "uvpacket")]
 
-use mfsk_core::core::{FecCodec, FecOpts};
+use mfsk_core::engine::{FecCodec, FecOpts};
 use mfsk_core::fec::Ldpc240_101;
 use mfsk_core::uvpacket::Mode;
 use mfsk_core::uvpacket::puncture::{de_puncture_llr, puncture};

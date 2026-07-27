@@ -8,15 +8,15 @@
 //! combinations (e.g. staged SIC on FT4, which has no such engine) are
 //! compile errors rather than runtime no-ops or silent panics.
 //!
-//! Lives in `msg` rather than `core` because [`ApHint`] (a `msg::ap` type)
-//! is a struct field on both builders, and `core` never depends on `msg`
+//! Lives in `msg` rather than `engine` because [`ApHint`] (a `msg::ap` type)
+//! is a struct field on both builders, and `engine` never depends on `msg`
 //! (the reverse dependency direction is established crate-wide).
 //!
 //! Each concrete protocol (`Ft8`, `Ft4`, each FST4 sub-mode) implements
 //! [`FrameDecodable`]'s hidden dispatch methods in its own module, calling
 //! into whichever engine that protocol actually uses — FT8's own bespoke
 //! one (`ft8::decode_block`), or the shared generic one
-//! (`core::pipeline`/`msg::pipeline_ap`) FT4/FST4 share. `DecodeRequest`/
+//! (`engine::pipeline`/`msg::pipeline_ap`) FT4/FST4 share. `DecodeRequest`/
 //! `SniperRequest` don't need to know which: `decode()` just calls the
 //! dispatch function stashed in `self.strategy` (set by whichever gated
 //! builder method — `new`, `.flat()`, `.staged()` — was actually callable
@@ -25,9 +25,9 @@
 
 use alloc::vec::Vec;
 
-use crate::core::equalize::EqMode;
-use crate::core::pipeline::{DecodeDepth, DecodeStrictness, FftCache};
-use crate::core::protocol::Protocol;
+use crate::engine::equalize::EqMode;
+use crate::engine::pipeline::{DecodeDepth, DecodeStrictness, FftCache};
+use crate::engine::protocol::Protocol;
 
 use super::ap::{ApHint, WsjtApCompatible};
 
@@ -40,7 +40,7 @@ pub trait FrameDecodable: Protocol {
     /// Result type this protocol's decode engine produces. FT8's is a
     /// 77-bit post-CRC payload (`ft8::decode::DecodeResult`); FT4/FST4's
     /// carries the full K-bit FEC info with CRC bits retained
-    /// (`core::pipeline::DecodeResult`) — genuinely different bit ranges
+    /// (`engine::pipeline::DecodeResult`) — genuinely different bit ranges
     /// (issue #194), not force-unified here.
     type DecodeResult;
 

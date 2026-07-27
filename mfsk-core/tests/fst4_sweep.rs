@@ -16,7 +16,7 @@
 //! (`uvpacket` is only required because `tests/common/channel.rs`, pulled in
 //! via `mod common`, unconditionally imports `mfsk_core::uvpacket` — unrelated
 //! to FST4 itself. `internal-testing` (issue #203) is required because this
-//! file calls `core::pipeline::{process_candidate_basic, osd_escalation_gates,
+//! file calls `engine::pipeline::{process_candidate_basic, osd_escalation_gates,
 //! GenericPipelineProtocol}` directly, which are `pub(crate)` on the default
 //! feature set. `MFSK_FST4_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/fst4_sweep`, relative to `CARGO_MANIFEST_DIR` —
@@ -366,20 +366,20 @@ fn fst4_snr_sweep() {
 /// enough to confirm a mechanism generalizes without paying for a full
 /// 5-mode diagnostic pass. Set `MFSK_DEBUG_TRACE=1` to also get
 /// per-candidate nsync/OSD-gate/hard-error tracing from
-/// `core::pipeline::process_candidate_basic`.
+/// `engine::pipeline::process_candidate_basic`.
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_weak_trials() {
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::coarse_sync;
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
 
-    fn probe<P: mfsk_core::core::pipeline::GenericPipelineProtocol>(
+    fn probe<P: mfsk_core::engine::pipeline::GenericPipelineProtocol>(
         dir: &std::path::Path,
         file_prefix: &str,
-        cfg: &mfsk_core::core::dsp::downsample::DownsampleCfg,
+        cfg: &mfsk_core::engine::dsp::downsample::DownsampleCfg,
     ) {
         for trial in 1..=5 {
             let path = dir.join(format!("{file_prefix}_{trial:02}.wav"));
@@ -403,7 +403,7 @@ fn fst4_diag_weak_trials() {
                     c.freq_hz, c.dt_sec, c.score
                 );
             }
-            let fft_cache = mfsk_core::core::dsp::downsample::build_fft_cache(&audio, cfg);
+            let fft_cache = mfsk_core::engine::dsp::downsample::build_fft_cache(&audio, cfg);
             for c in &near {
                 let r = process_candidate_basic::<P>(
                     c,
@@ -437,7 +437,7 @@ fn fst4_diag_weak_trials() {
 /// `LlrSet`'s 4 fixed slots currently skip — FST4's `LLR_NSYM_MAX=8` runs
 /// `nsym ∈ {1, 2, 8}`, never 4) would recover any additional trials, BEFORE
 /// paying for the structural change (a 5th `LlrSet` slot touching the
-/// shared BP staircase in `core::pipeline.rs`).
+/// shared BP staircase in `engine::pipeline.rs`).
 ///
 /// For every trial in the near-threshold SNR range of FST4-30/FST4-300,
 /// runs the real production pipeline (`process_candidate_basic`, i.e.
@@ -452,13 +452,13 @@ fn fst4_diag_weak_trials() {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_nsym4_ladder() {
-    use mfsk_core::core::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::llr::{compute_llr_generic, symbol_spectra, sync_quality};
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::coarse_sync;
-    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
-    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec};
+    use mfsk_core::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{compute_llr_generic, symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec};
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
 
@@ -483,7 +483,7 @@ fn fst4_diag_nsym4_ladder() {
         trials: std::ops::RangeInclusive<u32>,
         tally: &mut Tally,
     ) where
-        P: mfsk_core::core::pipeline::GenericPipelineProtocol,
+        P: mfsk_core::engine::pipeline::GenericPipelineProtocol,
         P::Fec: FecCodec,
         P::Msg: MessageCodec,
     {
@@ -641,11 +641,11 @@ fn fst4_diag_nsym4_ladder() {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_diag_zsum_osd() {
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::core::sync::coarse_sync;
-    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
-    use mfsk_core::core::{MessageCodec, ModulationParams, Protocol};
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{MessageCodec, ModulationParams, Protocol};
     use mfsk_core::fec::ldpc::bp::{bp_decode_generic, bp_llr_zsum};
     use mfsk_core::fec::ldpc::osd::osd_decode_generic;
     use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
@@ -763,9 +763,9 @@ fn fst4_diag_zsum_osd() {
 #[test]
 #[ignore = "manual diagnostic, not a recall gate"]
 fn fst4_120_diag_sync_vs_decode_failure() {
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::coarse_sync;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::coarse_sync;
     use mfsk_core::fst4::Fst4s120;
     use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
 
@@ -792,7 +792,7 @@ fn fst4_120_diag_sync_vs_decode_failure() {
                 continue;
             }
             let fft_cache =
-                mfsk_core::core::dsp::downsample::build_fft_cache(&audio, &FST4_120_DOWNSAMPLE);
+                mfsk_core::engine::dsp::downsample::build_fft_cache(&audio, &FST4_120_DOWNSAMPLE);
             let mut ok = false;
             for c in &near {
                 if let Some(d) = process_candidate_basic::<Fst4s120>(
@@ -834,7 +834,7 @@ fn fst4_120_diag_sync_vs_decode_failure() {
 /// `~/.claude/plans/dapper-soaring-nest.md`): is FST4-60A slow
 /// (`BENCHMARKS.md`: 2.60 s, slowest golden-WAV decode of any protocol)
 /// for the same structural reason FT4 was — a generic 2-D (freq × lag)
-/// Costas-correlation `core::sync::coarse_sync` computed for a protocol
+/// Costas-correlation `engine::sync::coarse_sync` computed for a protocol
 /// whose WSJT-X reference candidate finder (`get_candidates_fst4` in
 /// `fst4_decode.f90:802-877`) has no lag dimension at all (a CLEAN-style
 /// iterative-peak periodogram, single wideband FFT, no per-lag grid)?
@@ -851,11 +851,11 @@ fn fst4_120_diag_sync_vs_decode_failure() {
 fn fst4_60_diag_candidate_cost_split() {
     use std::time::{Duration, Instant};
 
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::equalize::EqMode;
-    use mfsk_core::core::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::core::sync::{SyncCandidate, coarse_sync};
-    use mfsk_core::core::sync2d::fst4_sync_search;
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -972,11 +972,11 @@ fn fst4_60_diag_candidate_cost_split() {
 fn fst4_60_diag_osd_escalation() {
     use std::time::Instant;
 
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::core::sync::coarse_sync;
-    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
-    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -1011,7 +1011,7 @@ fn fst4_60_diag_osd_escalation() {
     // Real production gate — see `osd_escalation_gates`'s doc comment in
     // `core/pipeline.rs` (FST4 uses (12, 20), not FT8's (12, 18)).
     let (osd_attempt_min, osd_depth3_min) =
-        mfsk_core::core::pipeline::osd_escalation_gates::<Fst4s60>();
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
 
     for c in &cands {
         let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
@@ -1124,11 +1124,11 @@ fn fst4_60_diag_osd_escalation() {
 #[test]
 #[ignore = "manual diagnostic — FST4 OSD-escalation gate recalibration (new investigation)"]
 fn fst4_60_diag_osd_depth34_nsync_floor() {
-    use mfsk_core::core::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::core::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::core::sync::coarse_sync;
-    use mfsk_core::core::sync2d::{freq_shift_cd0, fst4_sync_search};
-    use mfsk_core::core::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
     #[cfg(feature = "parallel")]

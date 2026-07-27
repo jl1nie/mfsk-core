@@ -5,7 +5,7 @@
 //! inner 256-pt sc16 radix-2 (via [`super::fft_sc16_r2`]), same
 //! f32 PFA outer stage, same round+clamp back to i16.
 //!
-//! Host callers (`RustFftPlanner16` in `core::fft`) use this for the
+//! Host callers (`RustFftPlanner16` in `engine::fft`) use this for the
 //! NFFT_SPEC=3840 case so `compute_spectrogram` (fixed-point feature
 //! on host) produces byte-identical output to the embedded path —
 //! enables host simulation of embedded recall behaviour.

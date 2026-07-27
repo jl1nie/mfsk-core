@@ -29,7 +29,7 @@ use num_traits::Float;
 
 use super::super::params::{COSTAS, COSTAS_POS, NN, NSPS, NTONES};
 use super::types::{AudioSample, SAMPLE_RATE_HZ, TONE_SPACING_HZ, TX_START_OFFSET_S};
-use crate::core::scalar::Cmplx;
+use crate::engine::scalar::Cmplx;
 
 /// Last sample index that
 /// [`fill_symbol_spectra_goertzel`] reads for a candidate at
@@ -237,7 +237,7 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
     // supplied (the slot-cache path doesn't touch the audio bytes —
     // only the precomputed forward FFT). Gemini PR #80 review.
     let cd0 = match fft_cache {
-        Some(cache) => crate::core::dsp::downsample::downsample_cached(
+        Some(cache) => crate::engine::dsp::downsample::downsample_cached(
             cache,
             freq_hz,
             &crate::ft8::downsample::FT8_CFG,
@@ -317,7 +317,7 @@ fn fill_symbol_spectra_via_cd0<S: AudioSample>(
 /// `Sc::from_f32_scaled(value, scale)` with `scale = i16::MAX × 0.95
 /// / peak` so the i16 range is fully utilised without saturation.
 #[doc(hidden)]
-pub fn fill_symbol_spectra_generic<Sc: crate::core::scalar::SpecScalar, S: AudioSample>(
+pub fn fill_symbol_spectra_generic<Sc: crate::engine::scalar::SpecScalar, S: AudioSample>(
     out: &mut [[Cmplx<Sc>; 8]; 79],
     audio: &[S],
     freq_hz: f32,

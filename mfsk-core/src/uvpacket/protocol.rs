@@ -56,7 +56,7 @@
 //! the standard mfsk-core invariants (FEC fits in N_DATA × bits/sym)
 //! hold.
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Ldpc240_101;
 
 use super::message::UvPacketRawMessage;

@@ -16,7 +16,7 @@
 
 use core::f32::consts::TAU;
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::pack77_to_symbols;

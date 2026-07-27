@@ -36,8 +36,8 @@ use super::types::{
     AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC, NMS_ALPHA, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ,
     TX_START_OFFSET_S,
 };
-use crate::core::scalar::{Cmplx, ComplexSpec};
-use crate::core::sync::SyncCandidate;
+use crate::engine::scalar::{Cmplx, ComplexSpec};
+use crate::engine::sync::SyncCandidate;
 use crate::fec::ldpc::bp::check_crc14;
 #[cfg(feature = "fft-rustfft")]
 use crate::fec::ldpc::osd::osd_decode_deep;
@@ -55,7 +55,7 @@ use num_complex::Complex;
 /// Runs the same algorithm shape as the host
 /// [`DecodeRequest`](crate::msg::decode_request::DecodeRequest) single-pass
 /// path but talks only to power-of-two FFTs (via the
-/// [`crate::core::fft::FftPlanner`] trait) and uses the min-sum LDPC
+/// [`crate::engine::fft::FftPlanner`] trait) and uses the min-sum LDPC
 /// kernel to skip per-iteration `tanh` / `atanh`. No
 /// `decode_sniper*` paths are involved; no wide-band 192 k FFT cache.
 ///
@@ -656,8 +656,8 @@ fn decode_block_multipass<S: AudioSample>(
 #[cfg(feature = "fft-rustfft")]
 pub(super) fn fine_refine_pass1<S: AudioSample>(
     audio: &[S],
-    cands: alloc::vec::Vec<crate::core::sync::SyncCandidate>,
-) -> alloc::vec::Vec<crate::core::sync::SyncCandidate> {
+    cands: alloc::vec::Vec<crate::engine::sync::SyncCandidate>,
+) -> alloc::vec::Vec<crate::engine::sync::SyncCandidate> {
     if cands.is_empty() {
         return cands;
     }
@@ -670,7 +670,7 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
             let (cd0, _) =
                 crate::ft8::downsample::downsample(&audio_i16, c.freq_hz, Some(&fft_cache));
             let r = crate::ft8::refine_fine::fine_refine_3stage(&cd0, c.dt_sec);
-            crate::core::sync::SyncCandidate {
+            crate::engine::sync::SyncCandidate {
                 freq_hz: c.freq_hz + r.delf_hz,
                 dt_sec: r.dt_sec,
                 score: c.score,
@@ -694,8 +694,8 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
 #[cfg(not(feature = "fft-rustfft"))]
 pub(super) fn fine_refine_pass1<S: AudioSample>(
     _audio: &[S],
-    cands: alloc::vec::Vec<crate::core::sync::SyncCandidate>,
-) -> alloc::vec::Vec<crate::core::sync::SyncCandidate> {
+    cands: alloc::vec::Vec<crate::engine::sync::SyncCandidate>,
+) -> alloc::vec::Vec<crate::engine::sync::SyncCandidate> {
     cands
 }
 
@@ -926,7 +926,7 @@ where
 /// PoC's manual Pass 2) can re-rank coarse_sync candidates by this
 /// metric without pulling in the full `decode_block` D-pattern.
 #[doc(hidden)]
-pub fn sync_quality_block0<S: crate::core::scalar::SpecScalar>(cs: &[[Cmplx<S>; 8]; 79]) -> u32
+pub fn sync_quality_block0<S: crate::engine::scalar::SpecScalar>(cs: &[[Cmplx<S>; 8]; 79]) -> u32
 where
     S::Wide: PartialOrd,
 {
@@ -976,9 +976,9 @@ where
 ///   ~6 KB to ~12 KB, still inside the S3 / Core2 internal-DRAM
 ///   budget.
 ///
-/// `Q3i8` stays in `core::scalar` for the comparison path.
+/// `Q3i8` stays in `engine::scalar` for the comparison path.
 #[cfg(feature = "fixed-point")]
-type LlrT = crate::core::scalar::Q11i16;
+type LlrT = crate::engine::scalar::Q11i16;
 #[cfg(not(feature = "fixed-point"))]
 type LlrT = f32;
 
@@ -995,7 +995,7 @@ type LlrT = f32;
 /// (correctly) reject.
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 #[inline]
-fn bp_step_select<T: crate::core::scalar::LlrScalar>(
+fn bp_step_select<T: crate::engine::scalar::LlrScalar>(
     bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<crate::fec::ldpc::Ldpc174_91Params, T>,
     llr: &[T; LDPC_N],
     max_iter: u32,
@@ -1020,7 +1020,7 @@ fn bp_step_select<T: crate::core::scalar::LlrScalar>(
 
 #[cfg(any(not(feature = "fft-rustfft"), feature = "fixed-point"))]
 #[inline]
-fn bp_step_select<T: crate::core::scalar::LlrScalar>(
+fn bp_step_select<T: crate::engine::scalar::LlrScalar>(
     bp_scratch: &mut crate::fec::ldpc::bp::BpScratch<crate::fec::ldpc::Ldpc174_91Params, T>,
     llr: &[T; LDPC_N],
     max_iter: u32,

@@ -11,7 +11,7 @@
 //! base_bin)` by summing the tone-0 power across the 22 sync
 //! positions, and return the top-scoring candidates.
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 

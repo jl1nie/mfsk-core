@@ -96,7 +96,7 @@ pub fn standard_qso_codewords(my_call: &str, his_call: &str, his_grid: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
     use crate::msg::q65::unpack_symbols_to_bits77;
 

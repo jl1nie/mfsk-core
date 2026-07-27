@@ -8,8 +8,8 @@
 
 use std::time::Instant;
 
-use mfsk_core::core::equalize::EqMode;
-use mfsk_core::core::{MessageCodec, MessageFields};
+use mfsk_core::engine::equalize::EqMode;
+use mfsk_core::engine::{MessageCodec, MessageFields};
 use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::decode::ApHint;
 use mfsk_core::ft4::encode;

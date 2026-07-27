@@ -29,7 +29,7 @@ pub mod hash_table;
 pub mod jt72;
 #[cfg(feature = "packet-bytes")]
 pub mod packet_bytes;
-// Decoder helper that wires `core::pipeline` (FFT-trait); gated on
+// Decoder helper that wires `engine::pipeline` (FFT-trait); gated on
 // the FFT meta-feature so embedded-rx (alloc + microfft) gets it.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod pipeline_ap;
@@ -51,7 +51,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 /// WSJT 77-bit message codec used by FT8, FT4, FT2 and FST4.
 ///

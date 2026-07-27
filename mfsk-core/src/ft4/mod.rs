@@ -3,7 +3,7 @@
 //! FT4 shares the LDPC(174, 91) code and WSJT 77-bit message payload with FT8;
 //! only the modulation parameters (4-GFSK at 20.833 baud), frame layout (four
 //! 4-symbol Costas arrays at symbols 0 / 33 / 66 / 99) and DSP ratios differ.
-//! All heavy lifting is delegated to generic code in [`crate::core`]; this
+//! All heavy lifting is delegated to generic code in [`crate::engine`]; this
 //! module mainly wires the trait impls and provides decode / synth entry
 //! points.
 //!
@@ -44,18 +44,18 @@
 //! # }
 //! ```
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc174_91;
 use crate::msg::Wsjt77Message;
 
-// Decode pulls `core::pipeline` (FFT trait); gated on the FFT
+// Decode pulls `engine::pipeline` (FFT trait); gated on the FFT
 // meta-feature. `encode` is FFT-free and always available.
-// FT4's own coarse-candidate stage lives in `core::ft4_coarse`, not
-// here — `core::pipeline` calls it directly, and `core` is compiled
+// FT4's own coarse-candidate stage lives in `engine::ft4_coarse`, not
+// here — `engine::pipeline` calls it directly, and `engine` is compiled
 // regardless of which protocol features are enabled, so a
-// `crate::ft4::*` reference from `core::pipeline` would force the
-// `ft4` feature on for every build (same reason `core::sync2d::
-// ft4_sync_search` lives in `core`, not `ft4`, despite being FT4-only).
+// `crate::ft4::*` reference from `engine::pipeline` would force the
+// `ft4` feature on for every build (same reason `engine::sync2d::
+// ft4_sync_search` lives in `engine`, not `ft4`, despite being FT4-only).
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 pub mod encode;
@@ -89,7 +89,8 @@ impl ModulationParams for Ft4 {
     // tests (clean-signal case where Nuttall + global-pct baseline
     // misranks the signal bin against sidelobes). Nuttall is correct
     // per WSJT-X but needs a more robust noise-floor estimator first.
-    const SPECTRUM_WINDOW: crate::core::SpectrumWindow = crate::core::SpectrumWindow::Rectangular;
+    const SPECTRUM_WINDOW: crate::engine::SpectrumWindow =
+        crate::engine::SpectrumWindow::Rectangular;
 
     // 4-symbol coherent integration on the 3rd LLR variant (matches
     // WSJT-X `get_ft4_bitmetrics.f90:71` `nsym=4`). Gives ~3 dB SNR

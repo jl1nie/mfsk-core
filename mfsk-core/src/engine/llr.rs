@@ -14,8 +14,8 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::Protocol;
-use crate::core::fft::default_planner;
-use crate::core::scalar::{Cmplx, ComplexSpec, LlrScalar, SpecScalar};
+use crate::engine::fft::default_planner;
+use crate::engine::scalar::{Cmplx, ComplexSpec, LlrScalar, SpecScalar};
 
 // ──────────────────────────────────────────────────────────────────────────
 // LLR bundle
@@ -131,9 +131,9 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cm
 // ──────────────────────────────────────────────────────────────────────────
 
 // Data-chunk layout (slots between / around sync blocks) is shared
-// with the TX side; reuse [`crate::core::tx::data_chunks`] so any
+// with the TX side; reuse [`crate::engine::tx::data_chunks`] so any
 // frame layout the encoder honours is decoded the same way.
-use crate::core::tx::data_chunks;
+use crate::engine::tx::data_chunks;
 
 #[inline]
 fn normalize_bmet(bmet: &mut [f32]) {
@@ -164,7 +164,7 @@ fn normalize_bmet(bmet: &mut [f32]) {
 /// instead — it caps at nsym=1 and skips the heavy nsym=2/3 loops.
 ///
 /// The `Cmplx<f32>` (= `Complex<f32>` via the type alias in
-/// `core::scalar`) cs entry is a thin convenience wrapper around
+/// `engine::scalar`) cs entry is a thin convenience wrapper around
 /// the generic `compute_llr_generic` — use the generic form when
 /// the caller already holds [`Cmplx<S>`] storage for some other
 /// `S: SpecScalar` (e.g. `Q14i16` on the embedded fixed-point path).
@@ -436,7 +436,7 @@ pub fn compute_llr_generic<P: Protocol, S: SpecScalar, T: LlrScalar>(
 /// Used by staircase-style decode paths to lazy-compute deeper variants
 /// only once shallower ones have already failed BP — e.g. the FT8
 /// stage-3 BP staircase (`nsym` up to `LLR_NSYM_MAX=3`) and the generic
-/// `core::pipeline` engine's own lazy variant loop (FST4's `nsym` up to
+/// `engine::pipeline` engine's own lazy variant loop (FST4's `nsym` up to
 /// `LLR_NSYM_MAX=8`, plus `LLR_NSYM_MID=4`).
 pub fn compute_llr_partial<P: Protocol, S: SpecScalar, T: LlrScalar>(
     cs: &[Cmplx<S>],

@@ -169,9 +169,9 @@ The reliable order is:
 2. **Pick a handful of individual trial WAVs from that cell** and
    call the pipeline stages directly in a throwaway `#[ignore]`d
    test (see `fst4_60_diag_weak_trial` in `tests/fst4_sweep.rs` for
-   the pattern) — `core::sync::coarse_sync` first to check whether
+   the pattern) — `engine::sync::coarse_sync` first to check whether
    the correct candidate is even found and with what score relative
-   to `sync_min`, then `core::pipeline::process_candidate_basic` on
+   to `sync_min`, then `engine::pipeline::process_candidate_basic` on
    that exact candidate to see whether it's coarse-sync,
    fine-refine, LLR, or BP/OSD that actually fails.
 3. **Only once the failing stage is identified**, make the code

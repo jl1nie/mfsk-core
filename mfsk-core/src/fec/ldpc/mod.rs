@@ -15,7 +15,7 @@
 //!
 //! ## Public surface
 //!
-//! - [`Ldpc174_91`] — zero-sized type implementing [`crate::core::FecCodec`].
+//! - [`Ldpc174_91`] — zero-sized type implementing [`crate::engine::FecCodec`].
 //! - [`bp::bp_decode`] / [`osd::osd_decode_deep`] / [`osd::ldpc_encode`] — raw
 //!   functions kept stable for the existing ft8-core callers that integrate
 //!   CRC checks and AP hints directly.
@@ -29,7 +29,7 @@ pub use bp::{BpResult, bp_decode, bp_decode_kind, check_crc14, crc14};
 pub use osd::{OsdResult, ldpc_encode, osd_decode, osd_decode_deep, osd_decode_deep4};
 pub use params::{Ldpc174_91Params, Ldpc240_101Params, LdpcParams};
 
-use crate::core::{FecCodec, FecOpts, FecResult};
+use crate::engine::{FecCodec, FecOpts, FecResult};
 
 /// Codeword length of the WSJT LDPC code.
 pub const LDPC_N: usize = 174;

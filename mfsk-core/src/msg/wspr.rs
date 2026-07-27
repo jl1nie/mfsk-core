@@ -425,7 +425,7 @@ pub fn unpack(bits: &[u8; 50]) -> Option<WsprMessage> {
 // MessageCodec trait impl
 // ─────────────────────────────────────────────────────────────────────────
 
-use crate::core::{DecodeContext, MessageCodec, MessageFields};
+use crate::engine::{DecodeContext, MessageCodec, MessageFields};
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Wspr50Message;

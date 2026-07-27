@@ -510,7 +510,7 @@ impl Rs63_12 {
 
 use alloc::vec::Vec;
 
-use crate::core::{FecOpts, FecResult};
+use crate::engine::{FecOpts, FecResult};
 
 impl super::FecCodec for Rs63_12 {
     const N: usize = Rs63_12::N_SYMBOLS * 6; // 63 × 6 = 378 bits

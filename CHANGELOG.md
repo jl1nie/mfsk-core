@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking)
 
 ### Added
 
@@ -1056,6 +1056,22 @@
   now correctly sees them as unreachable (previously masked because
   `pub` items are exempt from the lint regardless of in-crate callers).
   `#[allow(dead_code)]` added at each such item.
+- **Breaking**: renamed the `mfsk_core::core` module to `mfsk_core::engine`
+  (issue #206, pre-0.8.0 public-API review) — `pub mod core` shadowed
+  Rust's own `core` crate at every scope where both names were
+  simultaneously visible (the crate root, and anywhere writing a bare
+  `core::` path meaning std rather than this module), which is exactly
+  the kind of surprise a public API shouldn't hand downstream
+  consumers. Mechanical rename: `core::pipeline`, `core::protocol`,
+  `core::sync`/`sync2d`, `core::dsp::*`, `core::llr`, `core::equalize`,
+  `core::scalar`, `core::fft`, `core::tx`, `core::ft4_coarse`,
+  `core::baseline`, and the flattened re-exports (`DecodeContext`,
+  `FecCodec`, `FecOpts`, `FecResult`, `FrameLayout`, `MessageCodec`,
+  `MessageFields`, `ModulationParams`, `Protocol`, `ProtocolId`,
+  `SyncBlock`, `SyncMode`) all move to `engine::*` with no behavior
+  change. `embedded-poc` (path-dependency, outside the workspace)
+  updated to match — not compile-verified here (no `+esp` toolchain in
+  this environment); run `cargo check` there before flashing.
 
 ### Fixed
 

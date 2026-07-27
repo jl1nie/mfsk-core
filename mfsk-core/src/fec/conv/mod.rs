@@ -5,7 +5,7 @@
 //! for now (that's what WSPR uses); JT9 uses the same pair, so adding it
 //! will be a no-op on this module.
 //!
-//! The `ConvFano` type implements [`crate::core::FecCodec`] for the specific
+//! The `ConvFano` type implements [`crate::engine::FecCodec`] for the specific
 //! shape WSPR needs: 50 info bits, 31 zero-tail bits, 162 coded bits.
 
 pub mod fano;
@@ -16,7 +16,7 @@ use alloc::vec;
 use num_traits::Float;
 
 use super::FecCodec;
-use crate::core::{FecOpts, FecResult};
+use crate::engine::{FecOpts, FecResult};
 
 /// WSPR convolutional codec: 50 info bits + 31 zero-tail → 162 coded bits.
 ///

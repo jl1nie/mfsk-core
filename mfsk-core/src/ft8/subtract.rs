@@ -2,12 +2,12 @@
 //! FT8 signal subtraction (successive interference cancellation).
 //!
 //! Thin FT8-tuned wrapper around the protocol-agnostic
-//! [`crate::core::dsp::subtract`] implementation. Given a decoded message and
+//! [`crate::engine::dsp::subtract`] implementation. Given a decoded message and
 //! its time/frequency coordinates, reconstructs the ideal 8-GFSK waveform and
 //! subtracts it in place so weaker signals become decodable.
 
 use super::{decode::DecodeResult, wave_gen::message_to_tones};
-use crate::core::dsp::subtract::{
+use crate::engine::dsp::subtract::{
     GfskParams, SubtractCfg, subtract_tones_lpf, subtract_tones_lpf_refine_dt,
 };
 
@@ -32,7 +32,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
 };
 
 /// WSJT-X-style channel-aware subtract for FT8. Wraps
-/// [`crate::core::dsp::subtract::subtract_tones_lpf`] with the FT8 cfg
+/// [`crate::engine::dsp::subtract::subtract_tones_lpf`] with the FT8 cfg
 /// and `lpf_half = 2000` matching WSJT-X NFILT=4000. The canonical
 /// FT8 subtract entry point as of v0.6.2 — both the host
 /// `decode_frame_subtract*` driver and the embedded
@@ -94,7 +94,7 @@ pub fn subtract_signal_lpf_refine_dt(audio: &mut [i16], result: &DecodeResult) {
 /// than per pass-2 candidate.
 pub fn refine_signal_freq(audio: &[i16], result: &DecodeResult) -> f32 {
     let tones = message_to_tones(&result.message77);
-    crate::core::dsp::subtract::refine_freq(
+    crate::engine::dsp::subtract::refine_freq(
         audio,
         &tones,
         result.freq_hz,

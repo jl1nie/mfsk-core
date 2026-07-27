@@ -1,7 +1,7 @@
 //! Scalar abstraction for the LLR / BP arithmetic in the fixed-point
 //! embedded path. Both `f32` (host / RasPi / FPU-equipped MCUs) and
 //! [`Q11i16`] (FPU-less / consistency-focused embedded targets)
-//! implement [`LlrScalar`], so [`crate::core::llr::compute_llr`] and
+//! implement [`LlrScalar`], so [`crate::engine::llr::compute_llr`] and
 //! [`crate::fec::ldpc::bp::bp_decode_generic_nms`] can be written
 //! once and instantiated for either scalar.
 //!

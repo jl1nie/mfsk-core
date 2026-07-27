@@ -137,7 +137,7 @@ pub trait ModulationParams: Copy + Default + 'static {
     /// (~9%) of near-threshold FST4-30 AWGN failures and 2/38 (~5%) of
     /// FST4-300's, over and above the existing {1,2,8,d} ladder.
     ///
-    /// [`LlrSet`]: crate::core::llr::LlrSet
+    /// [`LlrSet`]: crate::engine::llr::LlrSet
     const LLR_NSYM_MID: Option<u32> = None;
 
     /// Optional 77-bit pre-LDPC scrambler. WSJT-X applies an
@@ -156,7 +156,7 @@ pub trait ModulationParams: Copy + Default + 'static {
     const INFO_SCRAMBLE_RVEC: Option<&'static [u8]> = None;
 
     /// Window function applied per `NSPS`-sample chunk in
-    /// [`crate::core::sync::compute_spectra`] before the NFFT1 FFT.
+    /// [`crate::engine::sync::compute_spectra`] before the NFFT1 FFT.
     /// Default = [`SpectrumWindow::Rectangular`] (preserves FT8's
     /// existing synth-roundtrip behaviour); FT4 overrides to
     /// [`SpectrumWindow::Nuttall4`] to match WSJT-X
@@ -282,7 +282,7 @@ pub trait FrameLayout: Copy + Default + 'static {
     /// `0..codeword_bits`; a polynomial form `INTERLEAVE[j] = (s * j)
     /// mod n` with `gcd(s, n) = 1` gives uniform stride spacing.
     ///
-    /// Both [`crate::core::tx::codeword_to_itone`] and the pipeline's
+    /// Both [`crate::engine::tx::codeword_to_itone`] and the pipeline's
     /// LLR-deinterleave step honour this constant; protocols that
     /// override get TX/RX symmetry for free.
     const CODEWORD_INTERLEAVE: Option<&'static [u16]> = None;

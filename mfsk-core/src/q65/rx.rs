@@ -29,7 +29,7 @@
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use crate::core::ModulationParams;
+use crate::engine::ModulationParams;
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
@@ -249,7 +249,7 @@ fn decode_at_inner<P: ModulationParams>(
     base_freq_hz: f32,
     ap_hint: Option<&ApHint>,
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     let energies = extract_data_energies::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -306,7 +306,7 @@ pub fn decode_at_fading_for<P: ModulationParams>(
     model: FadingModel,
     ap_hint: Option<&ApHint>,
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     let energies = extract_data_energies_wide::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
@@ -409,7 +409,7 @@ pub fn decode_at_with_ap_list_for<P: ModulationParams>(
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     if candidates.is_empty() {
@@ -644,7 +644,7 @@ fn decode_at_grid_for<P: ModulationParams>(
     depth: GridDepth,
     ap_hint: Option<&ApHint>,
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
@@ -901,7 +901,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     if candidates.is_empty() {
@@ -946,7 +946,7 @@ fn decode_fading_with_energies<P: ModulationParams>(
     b90_ts: f32,
     model: FadingModel,
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     let mut intrinsics = vec![0.0_f32; 64 * 63];
@@ -982,7 +982,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<Q65Decode> {
-    use crate::core::{DecodeContext, MessageCodec};
+    use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
     let energies =

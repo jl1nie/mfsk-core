@@ -20,7 +20,7 @@ use num_traits::Float;
 
 use super::params::{Ldpc174_91Params, LdpcParams};
 use super::{LDPC_K, LDPC_N};
-pub use crate::core::BpKind;
+pub use crate::engine::BpKind;
 
 /// Column weight (variable-node degree). Both LDPC codes in this
 /// crate are uniform with `NCW = 3`.
@@ -558,16 +558,16 @@ pub fn bp_decode_kind(
 // targets, `Q11i16` for FPU-less / consistency-focused embedded).
 // ──────────────────────────────────────────────────────────────────────────
 
-use crate::core::scalar::LlrScalar;
+use crate::engine::scalar::LlrScalar;
 
 /// Convert an `f32` LLR to Q11 i16 with saturation.
 ///
-/// Thin wrapper around [`crate::core::scalar::Q11i16::from_f32`] —
+/// Thin wrapper around [`crate::engine::scalar::Q11i16::from_f32`] —
 /// kept for source compatibility with callers from before the
 /// generic refactor.
 #[inline]
 pub fn llr_f32_to_q11(x: f32) -> i16 {
-    use crate::core::scalar::Q11i16;
+    use crate::engine::scalar::Q11i16;
     Q11i16::from_f32(x).0
 }
 
@@ -939,7 +939,7 @@ pub fn bp_decode_nms_q11(
     verify: Option<fn(&[u8]) -> bool>,
     alpha: f32,
 ) -> Option<BpResult> {
-    use crate::core::scalar::Q11i16;
+    use crate::engine::scalar::Q11i16;
     let ap_slice: Option<&[bool]> = ap_mask.map(|a| a.as_slice());
     // SAFETY: `Q11i16` is `#[repr(transparent)]`-equivalent — wraps a
     // single `i16` in a tuple struct. A `&[i16; N]` aliases a

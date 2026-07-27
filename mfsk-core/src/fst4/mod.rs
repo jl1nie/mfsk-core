@@ -49,7 +49,7 @@
 //! }
 //! ```
 
-use crate::core::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
+use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode};
 use crate::fec::Ldpc240_101;
 use crate::msg::Wsjt77Message;
 
@@ -234,7 +234,7 @@ fst4_submode! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::FecCodec;
+    use crate::engine::FecCodec;
 
     #[test]
     fn fst4s60_trait_surface() {
@@ -336,8 +336,8 @@ mod tests {
     /// quietly drifts from the ZST it's paired with.
     #[test]
     fn downsample_and_gfsk_configs_match_submode_constants() {
-        use crate::core::dsp::downsample::DownsampleCfg;
-        use crate::core::dsp::gfsk::GfskCfg;
+        use crate::engine::dsp::downsample::DownsampleCfg;
+        use crate::engine::dsp::gfsk::GfskCfg;
 
         fn check_downsample<P: ModulationParams + FrameLayout>(name: &str, cfg: &DownsampleCfg) {
             let ndown = P::NDOWN as usize;

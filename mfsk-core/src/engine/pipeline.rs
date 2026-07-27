@@ -177,7 +177,7 @@ impl DecodeDepth {
 ///
 /// **FT8 analog**: FT8 never calls this function — it has its own
 /// bespoke OSD-fallback dispatch in `ft8::decode_block::osd_strategy`
-/// (private module), reached by bypassing [`crate::core::FecCodec`]
+/// (private module), reached by bypassing [`crate::engine::FecCodec`]
 /// entirely (same root cause as issue #198). Independent
 /// implementation, independently calibrated — review both when
 /// tuning either (issue #192).
@@ -834,14 +834,14 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
     eq_mode: EqMode,
     sync_q_min: u32,
 ) -> (Vec<DecodeResult>, FftCache) {
-    // FT4's own coarse-candidate stage (`core::ft4_coarse::ft4_coarse_sync`,
+    // FT4's own coarse-candidate stage (`engine::ft4_coarse::ft4_coarse_sync`,
     // a faithful `getcandidates4.f90` port) replaces the generic 2-D
     // (freq × lag) Costas-correlation search: WSJT-X's FT4 candidate
     // finder has no lag dimension at all, and the generic search's
     // up-to-8 lag-distinct candidates per frequency are redundant
     // downstream for FT4 — `ft4_sync_search` (below) already searches
     // Δt absolutely, ignoring each candidate's own `dt_sec`. See
-    // `core::ft4_coarse` module doc / `~/.claude/plans/dapper-soaring-nest.md`.
+    // `engine::ft4_coarse` module doc / `~/.claude/plans/dapper-soaring-nest.md`.
     let candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {

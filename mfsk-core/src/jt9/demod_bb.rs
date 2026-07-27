@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn synth_demod_bb_roundtrip() {
-        use crate::core::{DecodeContext, FecOpts, MessageCodec};
+        use crate::engine::{DecodeContext, FecOpts, MessageCodec};
         use crate::fec::{ConvFano232, FecCodec};
         use crate::msg::{Jt72Codec, Jt72Message};
 
@@ -198,7 +198,7 @@ mod tests {
     /// Roundtrip for all 5 golden messages to catch any Jt72Codec grid-square bugs.
     #[test]
     fn jt9_golden_grid_roundtrips() {
-        use crate::core::{DecodeContext, FecOpts, MessageCodec};
+        use crate::engine::{DecodeContext, FecOpts, MessageCodec};
         use crate::fec::{ConvFano232, FecCodec};
         use crate::msg::{Jt72Codec, Jt72Message};
 
@@ -550,7 +550,7 @@ mod sync_diag {
     #[test]
     #[ignore]
     fn fano_sweep_golden() {
-        use crate::core::{DecodeContext, FecOpts, MessageCodec};
+        use crate::engine::{DecodeContext, FecOpts, MessageCodec};
         use crate::fec::{ConvFano232, FecCodec};
         use crate::msg::Jt72Codec;
 
