@@ -292,6 +292,12 @@ pub struct SyncStats {
 /// return both the winning mode and the score stats. Useful for
 /// callers that want to inspect sync quality without running a full
 /// LDPC decode.
+///
+/// `#[doc(hidden)]`: diagnostic escape hatch, not part of the
+/// supported decode API (issue #203) — kept callable rather than
+/// `pub(crate)` since it has no in-crate caller and exists purely for
+/// external sync-quality debugging.
+#[doc(hidden)]
 pub fn diag_sync_at(audio: &[f32], audio_centre_hz: f32) -> Option<(Mode, SyncStats)> {
     // Need enough audio for the longest preamble (UltraRobust at
     // NSPS=20 = 127·20 + 121 = 2 661 samples, ≈ 222 ms at 12 kHz).
@@ -361,6 +367,10 @@ pub fn diag_sync_at(audio: &[f32], audio_centre_hz: f32) -> Option<(Mode, SyncSt
 /// AFC frequency-offset estimate for a known mode. Same algorithm
 /// as inside [`decode_known_layout_with_afc`]'s AFC step, exposed
 /// for diagnostic harnesses.
+///
+/// `#[doc(hidden)]`: diagnostic escape hatch, not part of the
+/// supported decode API (issue #203) — see [`diag_sync_at`].
+#[doc(hidden)]
 pub fn diag_estimate_freq_offset(
     audio: &[f32],
     sample_offset: usize,

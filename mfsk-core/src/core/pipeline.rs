@@ -156,7 +156,24 @@ impl DecodeDepth {
 /// entirely (same root cause as issue #198). Independent
 /// implementation, independently calibrated — review both when
 /// tuning either (issue #192).
+///
+/// `pub` only under the `internal-testing` feature (issue #203) — no
+/// in-crate production caller (FT4/FST4 reach this gate through
+/// [`process_candidate_basic`], not directly); exists only for
+/// `tests/fst4_sweep.rs`-style diagnostics to read the real gate. See
+/// [`decode_frame`]'s doc comment for the feature-gating rationale.
+#[cfg(feature = "internal-testing")]
 pub fn osd_escalation_gates<P: Protocol>() -> (u32, u32) {
+    osd_escalation_gates_impl::<P>()
+}
+
+#[cfg(not(feature = "internal-testing"))]
+#[allow(dead_code)] // only reachable from tests/ (internal-testing feature)
+pub(crate) fn osd_escalation_gates<P: Protocol>() -> (u32, u32) {
+    osd_escalation_gates_impl::<P>()
+}
+
+fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
     if P::ID == super::ProtocolId::Ft4 {
         ((12 * P::N_SYNC + 10) / 21, (18 * P::N_SYNC + 10) / 21)
     } else if P::ID == super::ProtocolId::Fst4 {
@@ -288,7 +305,13 @@ impl DecodeResult {
 /// own separate bespoke engine and never instantiates this pipeline at
 /// all. Adding a new protocol here means giving it a real `*_sync_search`
 /// function first, not falling back to an unvalidated generic path.
+///
+/// `pub` only under the `internal-testing` feature (issue #203) — see
+/// [`decode_frame`]'s doc comment for the feature-gating rationale.
+#[cfg(feature = "internal-testing")]
 pub trait GenericPipelineProtocol: Protocol {}
+#[cfg(not(feature = "internal-testing"))]
+pub(crate) trait GenericPipelineProtocol: Protocol {}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Per-candidate processing
@@ -298,7 +321,42 @@ pub trait GenericPipelineProtocol: Protocol {}
 ///
 /// `fft_cache` must match the protocol's [`DownsampleCfg`]. `known` is used
 /// to prevent redundant OSD work on frequencies with an existing decode.
+///
+/// `pub` only under the `internal-testing` feature (issue #203) — see
+/// [`decode_frame`]'s doc comment for the feature-gating rationale.
+#[cfg(feature = "internal-testing")]
 pub fn process_candidate_basic<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+    depth: DecodeDepth,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    eq_mode: EqMode,
+    sync_q_min: u32,
+) -> Option<DecodeResult> {
+    process_candidate_basic_impl::<P>(
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
+    )
+}
+
+#[cfg(not(feature = "internal-testing"))]
+pub(crate) fn process_candidate_basic<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+    depth: DecodeDepth,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    eq_mode: EqMode,
+    sync_q_min: u32,
+) -> Option<DecodeResult> {
+    process_candidate_basic_impl::<P>(
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
+    )
+}
+
+fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
@@ -685,7 +743,53 @@ fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Decode one slot of audio: coarse sync → candidates → BP/OSD per candidate.
+///
+/// `pub` only under the `internal-testing` feature (issue #203): the
+/// crate's own `tests/` sweep/probe binaries are compiled as separate
+/// crates and need real `pub` visibility to call this directly; on the
+/// default feature set it's `pub(crate)`, since #191's `DecodeRequest`
+/// is the supported public entry point.
+#[cfg(feature = "internal-testing")]
 pub fn decode_frame<P: GenericPipelineProtocol>(
+    audio: &[i16],
+    cfg: &DownsampleCfg,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    eq_mode: EqMode,
+    sync_q_min: u32,
+) -> (Vec<DecodeResult>, FftCache) {
+    decode_frame_impl::<P>(
+        audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
+        sync_q_min,
+    )
+}
+
+#[cfg(not(feature = "internal-testing"))]
+pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
+    audio: &[i16],
+    cfg: &DownsampleCfg,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    depth: DecodeDepth,
+    max_cand: usize,
+    strictness: DecodeStrictness,
+    eq_mode: EqMode,
+    sync_q_min: u32,
+) -> (Vec<DecodeResult>, FftCache) {
+    decode_frame_impl::<P>(
+        audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
+        sync_q_min,
+    )
+}
+
+fn decode_frame_impl<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
     freq_min: f32,
@@ -775,7 +879,7 @@ pub fn decode_frame<P: GenericPipelineProtocol>(
 /// the residual audio; decoded signals are reconstructed and subtracted so
 /// subsequent passes can expose previously-masked weak signals.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_frame_subtract<P: GenericPipelineProtocol>(
+pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
     sub_cfg: &SubtractCfg,

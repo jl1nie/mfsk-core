@@ -1203,6 +1203,12 @@ pub fn process_candidates_into_tuned<S: AudioSample>(
 ///
 /// Public as of v0.6 (#49 cat C): used by the embedded
 /// `embedded-shared::dual_core::stage3_split` worker.
+///
+/// `#[doc(hidden)]`: embedded-internal scratch-reuse API, not part of
+/// the supported host decode surface (issue #203) — stays `pub`
+/// rather than `pub(crate)` because `embedded-poc` depends on this
+/// crate as an external path dependency, not a workspace member.
+#[doc(hidden)]
 #[cfg(feature = "fixed-point")]
 pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
     audio: &[S],
@@ -1227,6 +1233,11 @@ pub fn process_candidates_into_with_cs_scratch<S: AudioSample>(
 /// can dial the BP cap without rebuilding `mfsk-core`.
 ///
 /// Public as of v0.6 (#49 cat C).
+///
+/// `#[doc(hidden)]`: see [`process_candidates_into_with_cs_scratch`]
+/// (issue #203) — stays `pub` since `embedded-shared::dual_core` (an
+/// external path dependency) calls this directly.
+#[doc(hidden)]
 #[cfg(feature = "fixed-point")]
 pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
     audio: &[S],
@@ -1279,6 +1290,10 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
 /// `FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask)` —
 /// fill only the cells matching `mask` (block-0 sync, block-1/2 sync,
 /// data symbols) using the caller's preferred algorithm.
+///
+/// `#[doc(hidden)]`: see [`process_candidates_into_with_cs_scratch`]
+/// (issue #203).
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 pub fn process_candidates_into_with_cs_scratch_tuned_with_fill<S, F>(
     audio: &[S],

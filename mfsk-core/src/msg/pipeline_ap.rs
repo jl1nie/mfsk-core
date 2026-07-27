@@ -38,7 +38,7 @@ use super::wsjt77::{is_plausible_message, unpack77};
 /// Bound on [`WsjtApCompatible`] keeps callers honest: the hint encodes
 /// callsign / grid / report at fixed Wsjt77 bit positions and is meaningless
 /// for protocols whose info layout differs (e.g. byte-oriented codecs).
-pub fn ap_bits_for<P: Protocol>(hint: &ApHint) -> (Vec<u8>, Vec<u8>)
+pub(crate) fn ap_bits_for<P: Protocol>(hint: &ApHint) -> (Vec<u8>, Vec<u8>)
 where
     P::Msg: WsjtApCompatible,
 {
@@ -57,7 +57,7 @@ where
 /// own blind-CQ `Pass 12` (gated by `BLIND_CQ_MIN_NSYNC`) is FT8's
 /// bespoke equivalent, independently implemented and tuned — review
 /// both when adjusting either (issue #192).
-pub fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
+pub(crate) fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
     let mut passes = Vec::new();
     if base.call1.is_some() && base.call2.is_some() {
         for (rpt, pid) in [("RRR", 9u8), ("RR73", 10), ("73", 11)] {
@@ -82,7 +82,7 @@ pub fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
 /// 77-bit message layout matches the Wsjt77 family — `ApHint` writes
 /// call1/call2/grid bits at hardcoded positions that would be nonsense
 /// for a different layout.
-pub fn process_candidate_ap<P: Protocol>(
+pub(crate) fn process_candidate_ap<P: Protocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     ds_cfg: &DownsampleCfg,
@@ -334,7 +334,7 @@ fn finalise_result<P: Protocol>(
 /// the underlying AP path writes to Wsjt77 bit positions and only makes
 /// sense for protocols whose 77-bit message field shares that layout.
 #[allow(clippy::too_many_arguments)]
-pub fn decode_sniper_ap<P: Protocol>(
+pub(crate) fn decode_sniper_ap<P: Protocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
     target_freq: f32,

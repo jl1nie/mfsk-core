@@ -9,13 +9,17 @@
 //! scripts/gen_ft4_sweep_wavs.sh
 //!
 //! # 2. Run the sweep:
-//! cargo test --test ft4_sweep --release --features ft4,fft-rustfft,parallel,uvpacket \
+//! cargo test --test ft4_sweep --release \
+//!   --features ft4,fft-rustfft,parallel,uvpacket,internal-testing \
 //!   -- --ignored --nocapture
 //! ```
 //!
 //! (`uvpacket` is only required because `tests/common/channel.rs`, pulled in
 //! via `mod common`, unconditionally imports `mfsk_core::uvpacket` — unrelated
-//! to FT4 itself. `MFSK_FT4_SWEEP_DIR` overrides the default corpus location
+//! to FT4 itself. `internal-testing` (issue #203) is required because this
+//! file calls `core::pipeline::{decode_frame, process_candidate_basic}`
+//! directly, which are `pub(crate)` on the default feature set.
+//! `MFSK_FT4_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/ft4_sweep`, relative to `CARGO_MANIFEST_DIR`.)
 //!
 //! Output is a recall table — no assertions, statistics only. Set

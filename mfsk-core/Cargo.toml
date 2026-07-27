@@ -119,6 +119,21 @@ q65          = ["fft-rustfft"]
 uvpacket     = ["fst4"]
 parallel     = ["std", "dep:rayon"]
 
+# Test-only visibility escape hatch (issue #203). `core::pipeline`'s
+# pre-#191 raw engine functions (`decode_frame`, `process_candidate_basic`,
+# `osd_escalation_gates`, the `GenericPipelineProtocol` trait) are
+# `pub(crate)` by default so downstream consumers can't bypass
+# `DecodeRequest`/`SniperRequest` (#191) — but `mfsk-core/tests/*.rs`
+# integration tests (`fst4_sweep.rs`, `ft4_sweep.rs`,
+# `fst4_wsjtx_samples.rs`) are compiled as separate crates and need real
+# `pub` visibility to call these diagnostics directly. Deliberately NOT
+# part of `full` — enabling `full` is a normal downstream choice and must
+# not silently reopen this surface. CI passes this alongside `full` only
+# for `cargo test`/`cargo clippy --all-targets`; the `cargo doc`/
+# `cargo publish` steps omit it so the public docs and crates.io tarball
+# stay on the `pub(crate)` shape.
+internal-testing = []
+
 [dependencies]
 # `num-complex` carries the `Float` trait via num-traits; under no_std
 # we need `libm` to provide sin/cos/sqrt/etc. The std build pulls

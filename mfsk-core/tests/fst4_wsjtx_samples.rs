@@ -106,7 +106,11 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
 /// displaced `nsync` peak instead of a silent `decode_frame` miss. Run
 /// with:
 ///   cargo test --test fst4_wsjtx_samples fst4_60_diagnose_golden \
-///       --features fst4,fft-rustfft -- --ignored --nocapture
+///       --features fst4,fft-rustfft,internal-testing -- --ignored --nocapture
+///
+/// `internal-testing` (issue #203) is required because this probe calls
+/// `core::pipeline::process_candidate_basic` directly, which is
+/// `pub(crate)` on the default feature set.
 #[test]
 #[ignore = "diagnostic probe, not a recall gate — run manually"]
 fn fst4_60_diagnose_golden() {

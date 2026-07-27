@@ -8,13 +8,17 @@
 //! scripts/gen_fst4_sweep_wavs.sh
 //!
 //! # 2. Run the sweep (all currently-wired modes):
-//! cargo test --test fst4_sweep --release --features fst4,fft-rustfft,parallel,uvpacket \
+//! cargo test --test fst4_sweep --release \
+//!   --features fst4,fft-rustfft,parallel,uvpacket,internal-testing \
 //!   -- --ignored --nocapture
 //! ```
 //!
 //! (`uvpacket` is only required because `tests/common/channel.rs`, pulled in
 //! via `mod common`, unconditionally imports `mfsk_core::uvpacket` — unrelated
-//! to FST4 itself. `MFSK_FST4_SWEEP_DIR` overrides the default corpus location
+//! to FST4 itself. `internal-testing` (issue #203) is required because this
+//! file calls `core::pipeline::{process_candidate_basic, osd_escalation_gates,
+//! GenericPipelineProtocol}` directly, which are `pub(crate)` on the default
+//! feature set. `MFSK_FST4_SWEEP_DIR` overrides the default corpus location
 //! `../embedded-poc/assets/fst4_sweep`, relative to `CARGO_MANIFEST_DIR` —
 //! i.e. absolute, or relative to the repo root, not the crate root cargo
 //! actually runs tests from.)

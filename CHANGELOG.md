@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking)
 
 ### Added
 
@@ -1018,6 +1018,26 @@
     cleanup. Issue #192 closed with this narrower fix instead; FST4 SIC
     and `DecodeResult` semantic unification remain tracked separately
     in #193/#194.
+- **Breaking**: demoted the pre-#191 raw engine functions `DecodeRequest`/
+  `SniperRequest` wrap to `pub(crate)` (issue #203, part of the pre-0.8.0
+  public-API review tracked in #206) — `core::pipeline::{decode_frame,
+  decode_frame_subtract, process_candidate_basic, osd_escalation_gates}`,
+  the `GenericPipelineProtocol` trait, and `msg::pipeline_ap::{
+  decode_sniper_ap, ap_bits_for, ap_passes, process_candidate_ap}` were
+  still reachable at their pre-#191 legacy-shaped call sites even though
+  #191 removed the protocol-module wrappers around them. `DecodeRequest`/
+  `SniperRequest` are the only supported entry points now. Also
+  `#[doc(hidden)]`'d `uvpacket::rx::{diag_sync_at, diag_estimate_freq_offset}`
+  and `ft8::decode_block::process_candidates_into_with_cs_scratch{,_tuned,
+  _tuned_with_fill}` (kept `pub`, not `pub(crate)`, since `embedded-poc`'s
+  `embedded-shared::dual_core` depends on the `_tuned` variant as an
+  external path dependency outside the workspace). A new non-`full`
+  `internal-testing` feature keeps the demoted `core::pipeline` items
+  `pub` for `mfsk-core/tests/{fst4_sweep,ft4_sweep,fst4_wsjtx_samples}.rs`,
+  which call them directly as diagnostics — CI enables it alongside
+  `full` for `cargo test`/`cargo clippy --all-targets` only; `cargo doc`/
+  `cargo publish` stay on the `pub(crate)` shape downstream consumers
+  actually see.
 
 ### Fixed
 
