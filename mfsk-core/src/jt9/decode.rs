@@ -8,7 +8,7 @@ use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
 use crate::fec::ConvFano232;
 use crate::msg::{Jt72Codec, Jt72Message};
 
-use super::Jt9Decode;
+use super::Jt9Result;
 use super::softsym::{AudioFft, FSAMPLE_DOWN, afc9, llrs_from_c5, peakdt9, twkfreq_poly};
 
 /// Sync-score gate: peakdt9 returns `(sync_avg/data_avg)−1`. For pure
@@ -21,7 +21,7 @@ const SYNC_GATE: f32 = 1.5;
 /// Try to decode a JT9 signal centred at `freq_hz` using a pre-built
 /// audio FFT. Returns `None` when the sync gate is missed, Fano fails
 /// to converge, or the message is not `Jt72Message::Standard`.
-pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<Jt9Decode> {
+pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<Jt9Result> {
     if freq_hz <= 0.0 {
         return None;
     }
@@ -67,7 +67,7 @@ pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<J
     // downstream consumers see a consistent timing/freq report.
     let start_sample = lag_to_audio_sample(lagpk);
     let freq_corrected = freq_hz - afc.a0;
-    Some(Jt9Decode {
+    Some(Jt9Result {
         message: msg,
         freq_hz: freq_corrected,
         start_sample,
@@ -83,7 +83,7 @@ pub fn decode_at_baseband(
     _sample_rate: u32,
     _start_sample: usize,
     freq_hz: f32,
-) -> Option<Jt9Decode> {
+) -> Option<Jt9Result> {
     let big = AudioFft::build(audio);
     decode_at_baseband_with_fft(&big, freq_hz)
 }

@@ -90,7 +90,7 @@ fn make_slot(
     slot
 }
 
-fn hit(decodes: &[mfsk_core::q65::Q65Decode], expected: &str) -> bool {
+fn hit(decodes: &[mfsk_core::q65::Q65Result], expected: &str) -> bool {
     decodes.iter().any(|d| d.message == expected)
 }
 

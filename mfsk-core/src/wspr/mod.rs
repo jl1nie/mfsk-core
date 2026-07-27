@@ -64,7 +64,7 @@ pub mod sync_vector;
 pub mod tx;
 
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
-pub use decode::{WsprDecode, decode_at};
+pub use decode::{WsprResult, decode_at};
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub use rx::demodulate_aligned;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking)
 
 ### Added
 
@@ -1153,6 +1153,30 @@
     `decode_multi_period`) are gone entirely — `DecodeRequest::<Q65a30>`
     is not meaningfully more to type.
 
+  Migration (issue #207 — call-site reshapes lose `rustc`'s "did you
+  mean" hint that plain renames get, so worked examples save the
+  source-reading detour):
+
+  ```rust
+  // before: wide-band scan
+  decode_scan_for::<Q65a30>(&audio, sr, start, &params)
+  // after
+  DecodeRequest::<Q65a30>::new(&audio, sr, start, params).decode()
+
+  // before: single-target sniper
+  decode_at_for::<Q65a30>(&audio, sr, start, freq_hz)
+  // after
+  SniperRequest::<Q65a30>::new(&audio, sr, start, freq_hz).decode()
+
+  // before: wide-band scan + fast-fading metric + AP hint
+  decode_scan_fading_for::<Q65a60>(&audio, sr, start, &params, b90_ts, model, Some(&ap_hint))
+  // after
+  DecodeRequest::<Q65a60>::new(&audio, sr, start, params)
+      .fading(model, b90_ts)
+      .ap_hint(&ap_hint)
+      .decode()
+  ```
+
   All 15 functions demoted to `pub(crate)` (the underlying engine, used
   internally by the new builders). Updated every call site: 9
   `mfsk-core/tests/q65_*.rs` integration tests (~85 call sites) and
@@ -1262,6 +1286,27 @@
   this issue, reconfirmed), clippy `--workspace --all-targets`, full
   test suite (`mfsk-ffi`/`mfsk-ffi-ft8`/`mfsk-ffi-abi`), `cargo doc`,
   and the C/C++ smoke drivers above.
+- **Breaking**: unified the four legacy protocols' decode-result type
+  names onto one naming convention (issue #206, pre-0.8.0 public-API
+  review, decided 2026-07-27) — `WsprDecode`→`WsprResult`
+  (`wspr::decode`), `Jt9Decode`→`Jt9Result` (`jt9`),
+  `Jt65Decode`→`Jt65Result` (`jt65`), `Q65Decode`→`Q65Result`
+  (`q65::rx`), matching `engine::pipeline::DecodeResult`'s `*Result`
+  suffix instead of the WSJT77-family's leftover `*Decode`.
+  Naming-convention-only: `decode_at`/`decode_scan`/`decode_slot`
+  entry-point verbs are unchanged, and all four types keep their
+  existing protocol-specific shapes — WSPR/JT9/JT65 carry an
+  already-unpacked human message (`WsprMessage`/`Jt72Message`) plus
+  mode-specific timing metadata via their own `decode_at`/`decode_scan`
+  engines, which (unlike FT8/FT4/FST4) never route through
+  `engine::pipeline`; `Q65Result` carries an unpacked `String` message
+  rather than raw FEC info bits. A full structural merge onto
+  `engine::pipeline::DecodeResult` would require first porting
+  WSPR/JT9/JT65 onto the generic pipeline engine — the same scale of
+  work as issue #192's FT8 proposal, times three protocols — and was
+  explicitly scoped out of the 0.8.0 window as too large/risky for the
+  time remaining before the release cut; tracked as future work rather
+  than bundled here.
 
 ### Fixed
 

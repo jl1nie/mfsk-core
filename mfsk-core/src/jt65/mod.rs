@@ -177,7 +177,7 @@ pub fn decode_at_with_erasures(
 
 /// One successful JT65 decode with its alignment info.
 #[derive(Clone, Debug)]
-pub struct Jt65Decode {
+pub struct Jt65Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
     pub start_sample: usize,
@@ -192,11 +192,11 @@ pub fn decode_scan(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &search::SearchParams,
-) -> Vec<Jt65Decode> {
+) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Jt65Decode> = Vec::new();
+    let mut seen: Vec<Jt65Result> = Vec::new();
     for c in cands {
         let Some(msg) = decode_at(audio, sample_rate, c.start_sample, c.freq_hz) else {
             continue;
@@ -207,7 +207,7 @@ pub fn decode_scan(
                 && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
-            seen.push(Jt65Decode {
+            seen.push(Jt65Result {
                 message: msg,
                 freq_hz: c.freq_hz,
                 start_sample: c.start_sample,
@@ -217,7 +217,7 @@ pub fn decode_scan(
     seen
 }
 
-pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Decode> {
+pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
 }
 

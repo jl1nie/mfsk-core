@@ -382,7 +382,7 @@ fn tropo_1296_60b_decodes_via_averaging() {
         eprintln!("  → freq={:.1} Hz : {}", d.freq_hz, d.message);
     }
 
-    let hit = |ds: &[mfsk_core::q65::Q65Decode]| {
+    let hit = |ds: &[mfsk_core::q65::Q65Result]| {
         ds.iter()
             .any(|d| d.message.contains("VK7MO") && d.message.contains("VK7PD"))
     };

@@ -162,10 +162,10 @@ pub fn subtract_signal_baseband(
 pub fn subtract_all<F>(
     idat: &mut [f32],
     qdat: &mut [f32],
-    decodes: &[super::WsprDecode],
+    decodes: &[super::WsprResult],
     audio_to_baseband_lag: F,
 ) where
-    F: Fn(&super::WsprDecode) -> i32,
+    F: Fn(&super::WsprResult) -> i32,
 {
     for d in decodes {
         let symbols = super::encode_channel_symbols(&d.info_bits);

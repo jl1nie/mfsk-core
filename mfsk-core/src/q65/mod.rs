@@ -80,7 +80,7 @@ pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRe
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
 };
-pub use rx::Q65Decode;
+pub use rx::Q65Result;
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
 pub use tx::{

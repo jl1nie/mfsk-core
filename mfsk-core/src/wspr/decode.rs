@@ -14,7 +14,7 @@ use super::search::{SearchParams, SyncCandidate}; // kept for synth round-trip l
 
 /// One successful WSPR decode.
 #[derive(Clone, Debug)]
-pub struct WsprDecode {
+pub struct WsprResult {
     /// Recovered message payload.
     pub message: WsprMessage,
     /// Base frequency (tone 0) used for demodulation.
@@ -49,7 +49,7 @@ pub fn decode_at(
     sample_rate: u32,
     start_sample: usize,
     freq_hz: f32,
-) -> Option<WsprDecode> {
+) -> Option<WsprResult> {
     decode_at_with_drift(audio, sample_rate, start_sample, freq_hz, 0.0)
 }
 
@@ -74,7 +74,7 @@ pub fn decode_at_baseband(
     start_sample: usize,
     freq_hz: f32,
     drift_hz: f32,
-) -> Option<WsprDecode> {
+) -> Option<WsprResult> {
     decode_at_baseband_nblocks(
         idat,
         qdat,
@@ -98,7 +98,7 @@ pub fn decode_at_baseband_nblocks(
     freq_hz: f32,
     drift_hz: f32,
     nblocks: &[usize],
-) -> Option<WsprDecode> {
+) -> Option<WsprResult> {
     use crate::engine::{FecCodec, FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
@@ -157,8 +157,8 @@ pub fn decode_at_baseband_nblocks(
     // [1, 2, 3] for coherent-block gain). IsQs is reused across
     // nblocks — only `nblock_bit_metrics` (cheap, no oscillator
     // build) runs per variant.
-    let mut best_type1: Option<(u32, WsprDecode)> = None;
-    let mut best_other: Option<(u32, WsprDecode)> = None;
+    let mut best_type1: Option<(u32, WsprResult)> = None;
+    let mut best_other: Option<(u32, WsprResult)> = None;
     for &nblock in nblocks {
         let bm = super::demod::nblock_bit_metrics(&best_isqs, nblock);
         let mut llrs = bm;
@@ -207,7 +207,7 @@ pub fn decode_at_baseband_nblocks(
         };
         let lag_audio = best_lag * 32;
         let dt_sec = lag_audio as f32 / sample_rate as f32 - 1.0;
-        let candidate = WsprDecode {
+        let candidate = WsprResult {
             message: message.clone(),
             freq_hz: best_freq + super::baseband::CENTER_HZ - 1.5 * super::demod::TONE_SPACING_HZ,
             start_sample: lag_audio.max(0) as usize,
@@ -237,7 +237,7 @@ pub fn decode_at_with_drift(
     start_sample: usize,
     freq_hz: f32,
     drift_hz: f32,
-) -> Option<WsprDecode> {
+) -> Option<WsprResult> {
     let (idat, qdat) = super::baseband::decimate_to_baseband(audio);
     decode_at_baseband(&idat, &qdat, sample_rate, start_sample, freq_hz, drift_hz)
 }
@@ -263,7 +263,7 @@ pub fn decode_scan(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &SearchParams,
-) -> Vec<WsprDecode> {
+) -> Vec<WsprResult> {
     // Prepend zeros so signals that started before audio[0] (negative
     // dt) become reachable. Internal `start_sample`s are shifted by
     // `pad`; we subtract `pad` back out before returning so callers
@@ -313,7 +313,7 @@ pub fn decode_scan(
     });
     cands.truncate(params.max_candidates);
     let _audio = &padded[..]; // shadow so all downstream reads use padded buffer
-    let mut seen: Vec<WsprDecode> = Vec::new();
+    let mut seen: Vec<WsprResult> = Vec::new();
     const FREQ_DEDUP_HZ: f32 = 5.0;
     const TIME_DEDUP_SAMPLES: i64 = 8192; // one WSPR symbol at 12 kHz
     // 2-D refinement: WSPR's Fano (K=32 convolutional, no CRC) is
@@ -356,7 +356,7 @@ pub fn decode_scan(
     );
     // pass-1 decodes carry their padded-buffer alignment so we can
     // subtract them from the baseband for pass 2.
-    let mut pass1: Vec<(WsprDecode, usize)> = Vec::new();
+    let mut pass1: Vec<(WsprResult, usize)> = Vec::new();
     for c in &cands {
         let Some(mut d) =
             decode_at_baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz, 0.0)
@@ -446,7 +446,7 @@ pub fn decode_scan(
 }
 
 /// Convenience: scan using [`SearchParams::default`].
-pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<WsprDecode> {
+pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<WsprResult> {
     decode_scan(audio, sample_rate, 0, &SearchParams::default())
 }
 
@@ -461,7 +461,7 @@ const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
         // WSPR's nominal symbol-0 start is 1.0 s into the slot; our
         // `start_sample` is already absolute, so the subtract layer
         // sees `dt_sec` as `(start - 1.0*FS) / FS`. `base_offset_s = 1.0`
-        // matches the convention used by `WsprDecode::dt_sec`.
+        // matches the convention used by `WsprResult::dt_sec`.
         base_offset_s: 1.0,
         gfsk: None,
     };
@@ -488,7 +488,7 @@ pub fn decode_scan_subtract(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &SearchParams,
-) -> Vec<WsprDecode> {
+) -> Vec<WsprResult> {
     use crate::engine::dsp::subtract::subtract_tones;
 
     // The subtract helper takes `&mut [i16]`; convert once, mutate
@@ -498,7 +498,7 @@ pub fn decode_scan_subtract(
         .map(|&x| (x * 32767.0).clamp(-32768.0, 32767.0) as i16)
         .collect();
 
-    let mut all: Vec<WsprDecode> = Vec::new();
+    let mut all: Vec<WsprResult> = Vec::new();
     const FREQ_DEDUP_HZ: f32 = 5.0;
     const TIME_DEDUP_SAMPLES: i64 = 8192;
     // wsprd uses 3 passes. Our `decode_scan` is expensive (~30 s on

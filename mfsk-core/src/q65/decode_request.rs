@@ -44,7 +44,7 @@ use crate::engine::Protocol;
 use crate::fec::qra::FadingModel;
 use crate::msg::ApHint;
 
-use super::Q65Decode;
+use super::Q65Result;
 use super::search::SearchParams;
 
 /// Protocols usable with the Q65 builders — sealed to the Q65 sub-mode
@@ -146,7 +146,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// set (carrying any `.ap_hint()` along), else
     /// `decode_scan_with_ap_for`/`decode_scan_for` depending on
     /// [`Self::ap_hint`].
-    pub fn decode(&self) -> Vec<Q65Decode> {
+    pub fn decode(&self) -> Vec<Q65Result> {
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_scan_with_ap_list_for::<P>(
                 self.audio,
@@ -237,7 +237,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
 
     /// Precedence: ap_list > fading (+ ap_hint) > ap_hint > plain — see
     /// [`DecodeRequest::decode`].
-    pub fn decode(&self) -> Option<Q65Decode> {
+    pub fn decode(&self) -> Option<Q65Result> {
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_at_with_ap_list_for::<P>(
                 self.audio,
@@ -322,7 +322,7 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
         self
     }
 
-    pub fn decode(&self) -> Vec<Q65Decode> {
+    pub fn decode(&self) -> Vec<Q65Result> {
         super::rx::decode_multi_period_for::<P>(
             self.audio_slots,
             self.sample_rate,

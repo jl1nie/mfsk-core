@@ -726,7 +726,7 @@ fn decode_jt65_aligned(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
 // Q65 helpers (sub-mode dispatch + decoded-message push)
 // ──────────────────────────────────────────────────────────────────────────
 
-fn push_q65_decode(d: &mfsk_core::q65::Q65Decode, vec: &mut Vec<MfskResult>) {
+fn push_q65_decode(d: &mfsk_core::q65::Q65Result, vec: &mut Vec<MfskResult>) {
     push_simple(
         d.freq_hz,
         d.start_sample as f32 / 12_000.0,
@@ -789,7 +789,7 @@ fn q65_nominal_mid(submode: MfskQ65SubMode) -> usize {
 
 /// Plain-AWGN sub-mode-aware scan. Dispatches at runtime to the right
 /// `DecodeRequest::<Q65*>` instantiation in `mfsk_core::q65`.
-fn q65_scan_for(submode: MfskQ65SubMode, audio: &[f32]) -> Vec<mfsk_core::q65::Q65Decode> {
+fn q65_scan_for(submode: MfskQ65SubMode, audio: &[f32]) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
@@ -814,7 +814,7 @@ fn q65_scan_with_ap_for(
     submode: MfskQ65SubMode,
     audio: &[f32],
     hint: &mfsk_core::msg::ApHint,
-) -> Vec<mfsk_core::q65::Q65Decode> {
+) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
@@ -847,7 +847,7 @@ fn q65_scan_fading_for(
     audio: &[f32],
     b90_ts: f32,
     model: mfsk_core::fec::qra::FadingModel,
-) -> Vec<mfsk_core::q65::Q65Decode> {
+) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
@@ -879,7 +879,7 @@ fn q65_scan_with_ap_list_for(
     submode: MfskQ65SubMode,
     audio: &[f32],
     candidates: &[[i32; 63]],
-) -> Vec<mfsk_core::q65::Q65Decode> {
+) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,

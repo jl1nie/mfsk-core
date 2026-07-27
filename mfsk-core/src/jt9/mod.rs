@@ -71,7 +71,7 @@ pub fn decode_at(
 
 /// One successful JT9 decode with its alignment info.
 #[derive(Clone, Debug)]
-pub struct Jt9Decode {
+pub struct Jt9Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
     pub start_sample: usize,
@@ -87,7 +87,7 @@ pub fn decode_scan(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &search::SearchParams,
-) -> Vec<Jt9Decode> {
+) -> Vec<Jt9Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
 
@@ -116,7 +116,7 @@ pub fn decode_scan(
     // one baseband per candidate frequency from this cached spectrum.
     let big_fft = softsym::AudioFft::build(audio);
 
-    let mut seen: Vec<Jt9Decode> = Vec::new();
+    let mut seen: Vec<Jt9Result> = Vec::new();
     for c in cands {
         let Some(d) = decode::decode_at_baseband_with_fft(&big_fft, c.freq_hz) else {
             continue;
@@ -134,7 +134,7 @@ pub fn decode_scan(
 }
 
 /// Convenience: scan using [`search::SearchParams::default`].
-pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt9Decode> {
+pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt9Result> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
 }
 

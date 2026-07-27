@@ -191,7 +191,7 @@ fn submode_index_from_params<P: ModulationParams>() -> u8 {
 
 /// One successful Q65 decode with its alignment metadata.
 #[derive(Clone, Debug)]
-pub struct Q65Decode {
+pub struct Q65Result {
     /// Decoded human-readable Wsjt77 message.
     pub message: String,
     /// Tone-0 frequency in Hz.
@@ -215,7 +215,7 @@ pub(crate) fn decode_at_for<P: ModulationParams>(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     decode_at_inner::<P>(audio, sample_rate, start_sample, base_freq_hz, None)
 }
 
@@ -233,7 +233,7 @@ pub(crate) fn decode_at_with_ap_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     ap_hint: &ApHint,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     decode_at_inner::<P>(
         audio,
         sample_rate,
@@ -249,7 +249,7 @@ fn decode_at_inner<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     ap_hint: Option<&ApHint>,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -276,7 +276,7 @@ fn decode_at_inner<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -306,7 +306,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     b90_ts: f32,
     model: FadingModel,
     ap_hint: Option<&ApHint>,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -339,7 +339,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -359,11 +359,11 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     b90_ts: f32,
     model: FadingModel,
     ap_hint: Option<&ApHint>,
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Decode> = Vec::new();
+    let mut seen: Vec<Q65Result> = Vec::new();
     for c in cands {
         let Some(decode) = decode_at_fading_for::<P>(
             audio,
@@ -409,7 +409,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -428,7 +428,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -449,14 +449,14 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     candidates: &[[i32; 63]],
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     if candidates.is_empty() {
         return Vec::new();
     }
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Decode> = Vec::new();
+    let mut seen: Vec<Q65Result> = Vec::new();
     for c in cands {
         let Some(decode) = decode_at_with_ap_list_for::<P>(
             audio,
@@ -489,7 +489,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     decode_scan_inner::<P>(audio, sample_rate, nominal_start_sample, params, None)
 }
 
@@ -503,7 +503,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: &ApHint,
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
         sample_rate,
@@ -519,11 +519,11 @@ fn decode_scan_inner<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: Option<&ApHint>,
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-    let mut seen: Vec<Q65Decode> = Vec::new();
+    let mut seen: Vec<Q65Result> = Vec::new();
     for c in cands {
         let Some(decode) = decode_at_with_fine_timing_for::<P>(
             audio,
@@ -623,7 +623,7 @@ fn decode_at_grid_for<P: ModulationParams>(
     base_freq_hz: f32,
     depth: GridDepth,
     ap_hint: Option<&ApHint>,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -722,7 +722,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                 let Some(text) = Q65Message.unpack(&bits77, &DecodeContext::default()) else {
                     continue;
                 };
-                return Some(Q65Decode {
+                return Some(Q65Result {
                     message: text,
                     freq_hz: freq_shift,
                     start_sample: shifted_start,
@@ -746,7 +746,7 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
     freq_hz: f32,
     _nsps: usize,
     ap_hint: Option<&ApHint>,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     decode_at_grid_for::<P>(
         audio,
         sample_rate,
@@ -848,7 +848,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -867,7 +867,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -893,7 +893,7 @@ fn decode_fading_with_energies<P: ModulationParams>(
     base_freq_hz: f32,
     b90_ts: f32,
     model: FadingModel,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -915,7 +915,7 @@ fn decode_fading_with_energies<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -929,7 +929,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
-) -> Option<Q65Decode> {
+) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
@@ -946,7 +946,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    Some(Q65Decode {
+    Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
@@ -989,10 +989,10 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_codewords: Option<&[[i32; 63]]>,
-) -> Vec<Q65Decode> {
+) -> Vec<Q65Result> {
     use super::search::{Spectrogram, coarse_search_on_spec_for};
 
-    let mut output: Vec<Q65Decode> = Vec::new();
+    let mut output: Vec<Q65Result> = Vec::new();
     if audio_slots.is_empty() {
         return output;
     }
@@ -1033,7 +1033,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
             coarse_search_on_spec_for::<P>(&ema_spec, sample_rate, nominal_start_sample, params);
 
         let history = &audio_slots[..=i];
-        let mut slot_decode: Option<Q65Decode> = None;
+        let mut slot_decode: Option<Q65Result> = None;
 
         'candidate_loop: for cand in candidates {
             // Stage B — AP-list decode on averaged narrow energies.
