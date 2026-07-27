@@ -1,5 +1,5 @@
 [workspace]
-members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-ft8"]
+members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "mfsk-ffi-ft8"]
 # `embedded-poc/*` are stand-alone Cargo projects targeting embedded
 # MCUs (ESP32-S3, RP2350, …) with their own toolchain (`+esp` for
 # Xtensa, etc). They depend on mfsk-core via a path dep but must not

@@ -75,6 +75,13 @@
 
 static MfskFt8Stream *g_stream;
 
+/* Built once at init from the tunables above; every
+ * `on_slot_boundary` decode reuses the same handle (issue #205 —
+ * `mfsk_ft8_decode_i16` takes an `MfskDecodeOptions*` instead of five
+ * positional knobs).
+ */
+static MfskDecodeOptions *g_options;
+
 /* `g_slot` lives in PSRAM if the linker supplies it (default on
  * Core2 with `CONFIG_SPIRAM_USE_MALLOC=y`); on internal-DRAM-only
  * targets just declare it as a regular `.bss` array — 360 KB fits
@@ -152,16 +159,12 @@ static void on_slot_boundary(void) {
         return; /* unreachable given the buffered_samples check above */
     }
 
-    MfskFt8ResultList results = {0};
-    MfskFt8Status st = mfsk_ft8_decode_i16(
-        g_slot, n,
-        FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, MAX_CAND,
-        MFSK_FT8_DEPTH_BP_ALL,
-        &results);
+    MfskResultList results = {0};
+    MfskStatus st = mfsk_ft8_decode_i16(g_slot, n, g_options, &results);
 
-    if (st == MFSK_FT8_STATUS_OK) {
+    if (st == MFSK_STATUS_OK) {
         for (size_t i = 0; i < results.len; ++i) {
-            const MfskFt8Result *r = &results.items[i];
+            const MfskResult *r = &results.items[i];
             printf("  %+4.1f dB  %5.1f Hz  dt=%+.2f s  '%s'\n",
                    (double)r->snr_db, (double)r->freq_hz,
                    (double)r->dt_sec, r->text);
@@ -186,10 +189,20 @@ bool rx_init(void) {
         fprintf(stderr, "mfsk_ft8_stream_new failed\n");
         return false;
     }
+    g_options = mfsk_ft8_options_new(FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN,
+                                      MAX_CAND, MFSK_DECODE_DEPTH_BP_ALL);
+    if (!g_options) {
+        fprintf(stderr, "mfsk_ft8_options_new failed\n");
+        mfsk_ft8_stream_free(g_stream);
+        g_stream = NULL;
+        return false;
+    }
     return true;
 }
 
 void rx_shutdown(void) {
+    mfsk_ft8_options_free(g_options);
+    g_options = NULL;
     mfsk_ft8_stream_free(g_stream);
     g_stream = NULL;
 }

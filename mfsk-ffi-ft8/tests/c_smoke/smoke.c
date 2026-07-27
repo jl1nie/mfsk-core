@@ -43,26 +43,27 @@ int main(int argc, char **argv) {
     }
     fclose(f);
 
-    MfskFt8ResultList results = {0};
-    MfskFt8Status st = mfsk_ft8_decode_i16(
-        audio, n_samples,
+    MfskDecodeOptions *options = mfsk_ft8_options_new(
         /* freq_min */ 200.0f,
         /* freq_max */ 3000.0f,
         /* sync_min */ 1.0f,
         /* max_cand */ 100,
-        MFSK_FT8_DEPTH_BP_ALL_OSD,
-        &results);
+        MFSK_DECODE_DEPTH_BP_ALL_OSD);
+
+    MfskResultList results = {0};
+    MfskStatus st = mfsk_ft8_decode_i16(audio, n_samples, options, &results);
 
     printf("== %s ==\n", argv[1]);
     printf("status=%d, found %zu message(s):\n", (int)st, results.len);
     for (size_t i = 0; i < results.len; i++) {
-        const MfskFt8Result *r = &results.items[i];
+        const MfskResult *r = &results.items[i];
         printf("  [%zu] %5.0f Hz  dt=%+.2f s  SNR=%+.0f dB  e=%u  '%s'\n",
                i, (double)r->freq_hz, (double)r->dt_sec,
                (double)r->snr_db, r->hard_errors, r->text);
     }
 
     mfsk_ft8_result_list_free(&results);
+    mfsk_ft8_options_free(options);
     free(audio);
     return (int)st;
 }

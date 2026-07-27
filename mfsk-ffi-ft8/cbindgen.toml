@@ -12,8 +12,12 @@ no_includes = true
 prefix = ""
 include = []
 
+# See mfsk-ffi/cbindgen.toml for why parse_deps must be on, restricted
+# to mfsk-ffi-abi: the shared ABI types (issue #205) are only
+# `pub use`-re-exported here, not defined in this crate.
 [parse]
-parse_deps = false
+parse_deps = true
+include = ["mfsk-ffi-abi"]
 
 [fn]
 prefix = ""

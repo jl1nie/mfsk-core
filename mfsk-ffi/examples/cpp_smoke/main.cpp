@@ -31,24 +31,26 @@ void fail(const char* proto, const char* detail) {
 }
 
 // Helper: does any decoded message text contain `needle` (case-sensitive)?
-bool any_contains(const MfskMessageList& list, const char* needle) {
+// `text` is a fixed inline buffer (issue #205), always NUL-terminated —
+// no null check needed, unlike the old heap-`CString`-pointer shape.
+bool any_contains(const MfskResultList& list, const char* needle) {
     for (size_t i = 0; i < list.len; ++i) {
-        const MfskMessage& m = list.items[i];
-        if (m.text && std::strstr(m.text, needle) != nullptr) {
+        const MfskResult& m = list.items[i];
+        if (std::strstr(m.text, needle) != nullptr) {
             return true;
         }
     }
     return false;
 }
 
-void print_decodes(const char* proto, const MfskMessageList& list) {
+void print_decodes(const char* proto, const MfskResultList& list) {
     std::printf("  [%s] %zu decode(s):\n", proto, list.len);
     for (size_t i = 0; i < list.len; ++i) {
-        const MfskMessage& m = list.items[i];
+        const MfskResult& m = list.items[i];
         std::printf("    freq=%7.2f dt=%+.3f snr=%+.1f err=%u pass=%u text='%s'\n",
                     m.freq_hz, m.dt_sec, m.snr_db,
                     m.hard_errors, m.pass,
-                    m.text ? m.text : "<null>");
+                    m.text);
     }
 }
 
@@ -61,8 +63,8 @@ void test_ft8() {
         return;
     }
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("FT8", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -71,7 +73,7 @@ void test_ft8() {
             fail("FT8", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -85,8 +87,8 @@ void test_ft4() {
         return;
     }
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT4);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("FT4", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -95,7 +97,7 @@ void test_ft4() {
             fail("FT4", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -109,8 +111,8 @@ void test_wspr() {
         return;
     }
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_WSPR);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("WSPR", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -119,7 +121,7 @@ void test_wspr() {
             fail("WSPR", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -133,8 +135,8 @@ void test_jt9() {
         return;
     }
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_JT9);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("JT9", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -143,7 +145,7 @@ void test_jt9() {
             fail("JT9", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -172,8 +174,8 @@ void test_fst4() {
     std::memcpy(slot.data() + offset, pcm.samples, copy_len * sizeof(float));
 
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FST4S60);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, slot.data(), slot.size(), 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, slot.data(), slot.size(), 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("FST4", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -182,7 +184,7 @@ void test_fst4() {
             fail("FST4", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -196,8 +198,8 @@ void test_jt65() {
         return;
     }
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_JT65);
-    MfskMessageList list{};
-    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fail("JT65", mfsk_last_error() ? mfsk_last_error() : "decode_f32 failed");
     } else {
@@ -206,7 +208,7 @@ void test_jt65() {
             fail("JT65", "expected callsign / grid not recovered");
         }
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_decoder_free(dec);
     mfsk_samples_free(&pcm);
 }
@@ -232,11 +234,11 @@ void test_threads_one_handle_per_thread() {
                 return;
             }
             MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);
-            MfskMessageList list{};
-            const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+            MfskResultList list{};
+            const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
             bool ok = (st == MFSK_STATUS_OK) && any_contains(list, "JA1ABC");
             if (ok) ok_count++; else fail_count++;
-            mfsk_message_list_free(&list);
+            mfsk_result_list_free(&list);
             mfsk_decoder_free(dec);
             mfsk_samples_free(&pcm);
         });
@@ -267,11 +269,11 @@ void test_threads_shared_handle() {
                 fail_count++;
                 return;
             }
-            MfskMessageList list{};
-            const MfskStatus st = mfsk_decode_f32(shared, pcm.samples, pcm.len, 12000, &list);
+            MfskResultList list{};
+            const MfskStatus st = mfsk_decode_f32(shared, pcm.samples, pcm.len, 12000, nullptr, &list);
             bool ok = (st == MFSK_STATUS_OK) && any_contains(list, "K1ABC");
             if (ok) ok_count++; else fail_count++;
-            mfsk_message_list_free(&list);
+            mfsk_result_list_free(&list);
             mfsk_samples_free(&pcm);
         });
     }
@@ -294,11 +296,11 @@ void test_threads_mixed_protocols() {
         MfskSamples pcm{};
         if (encode_fn(&pcm) != MFSK_STATUS_OK) { fail_count++; return; }
         MfskDecoder* dec = mfsk_decoder_new(proto);
-        MfskMessageList list{};
-        const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, &list);
+        MfskResultList list{};
+        const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, nullptr, &list);
         if (st == MFSK_STATUS_OK && any_contains(list, needle)) ok_count++;
         else fail_count++;
-        mfsk_message_list_free(&list);
+        mfsk_result_list_free(&list);
         mfsk_decoder_free(dec);
         mfsk_samples_free(&pcm);
     };
@@ -330,14 +332,14 @@ void test_threads_mixed_protocols() {
 void test_null_handling() {
     std::printf("— NULL / invalid-arg handling\n");
     // NULL decoder
-    MfskMessageList list{};
-    MfskStatus st = mfsk_decode_f32(nullptr, nullptr, 0, 12000, &list);
+    MfskResultList list{};
+    MfskStatus st = mfsk_decode_f32(nullptr, nullptr, 0, 12000, nullptr, &list);
     if (st != MFSK_STATUS_INVALID_ARG) {
         fail("null", "expected INVALID_ARG for null decoder");
     }
     // Free NULL pointers — must not crash.
     mfsk_decoder_free(nullptr);
-    mfsk_message_list_free(nullptr);
+    mfsk_result_list_free(nullptr);
     mfsk_samples_free(nullptr);
     // Unknown callsign at encode time → InvalidArg + meaningful error.
     MfskSamples bogus{};

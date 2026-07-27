@@ -19,10 +19,10 @@ use std::ffi::{CString, c_char};
 use std::ptr;
 
 use mfsk::{
-    MfskMessageList, MfskProtocol, MfskQ65FadingModel, MfskQ65SubMode, MfskSamples, MfskStatus,
-    mfsk_decode_f32, mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_q65, mfsk_message_list_free,
-    mfsk_q65_decode, mfsk_q65_decode_fading, mfsk_q65_decode_with_ap, mfsk_q65_decode_with_ap_list,
-    mfsk_samples_free,
+    MfskProtocol, MfskQ65FadingModel, MfskQ65SubMode, MfskResultList, MfskSamples, MfskStatus,
+    mfsk_decode_f32, mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_q65, mfsk_q65_decode,
+    mfsk_q65_decode_fading, mfsk_q65_decode_with_ap, mfsk_q65_decode_with_ap_list,
+    mfsk_result_list_free, mfsk_samples_free,
 };
 
 fn empty_samples() -> MfskSamples {
@@ -33,17 +33,17 @@ fn empty_samples() -> MfskSamples {
     }
 }
 
-fn empty_list() -> MfskMessageList {
-    MfskMessageList {
+fn empty_list() -> MfskResultList {
+    MfskResultList {
         items: ptr::null_mut(),
         len: 0,
-        _cap: 0,
+        _capacity: 0,
     }
 }
 
 /// Read a NUL-terminated C string from a decoded message into an
 /// owned `String`. Caller still owns the underlying allocation
-/// (via the parent `MfskMessageList`).
+/// (via the parent `MfskResultList`).
 unsafe fn cstr_to_string(p: *const c_char) -> String {
     if p.is_null() {
         return String::new();
@@ -54,14 +54,14 @@ unsafe fn cstr_to_string(p: *const c_char) -> String {
 /// True if any decoded message in `list` contains the given
 /// substring. Used to keep the assertions tolerant of FT4-style
 /// `<...>` decorations and protocol-level whitespace.
-unsafe fn list_any_contains(list: &MfskMessageList, needle: &str) -> bool {
+unsafe fn list_any_contains(list: &MfskResultList, needle: &str) -> bool {
     if list.items.is_null() || list.len == 0 {
         return false;
     }
     let slice = unsafe { std::slice::from_raw_parts(list.items, list.len) };
     slice
         .iter()
-        .any(|m| unsafe { cstr_to_string(m.text) }.contains(needle))
+        .any(|m| unsafe { cstr_to_string(m.text.as_ptr()) }.contains(needle))
 }
 
 /// Build a `Q65a30` message via the FFI encoder, returning the
@@ -147,7 +147,7 @@ fn q65_plain_decode_recovers_clean_signal() {
         "expected K1ABC + FN42 in plain Q65 decode output"
     );
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -174,7 +174,7 @@ fn q65_decode_with_ap_handles_null_hints() {
     assert_eq!(st, MfskStatus::Ok);
     assert!(unsafe { list_any_contains(&list, "JA1ABC") });
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -200,7 +200,7 @@ fn q65_decode_with_ap_uses_call1_hint() {
     assert_eq!(st, MfskStatus::Ok);
     assert!(unsafe { list_any_contains(&list, "JA1ABC") });
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -226,7 +226,7 @@ fn q65_decode_fading_recovers_clean_signal() {
         "fast-fading FFI path must decode a clean signal"
     );
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -258,7 +258,7 @@ fn q65_decode_with_ap_list_picks_matching_template() {
         "AP-list FFI path must pick the matching template"
     );
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -290,7 +290,7 @@ fn q65_decode_with_ap_list_returns_decode_failed_on_bad_calls() {
     );
     assert_eq!(list.len, 0);
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
     }
 }
@@ -303,11 +303,11 @@ fn generic_handle_path_decodes_q65a30() {
     let dec = mfsk_decoder_new(MfskProtocol::Q65a30);
     assert!(!dec.is_null());
     let mut list = empty_list();
-    let st = unsafe { mfsk_decode_f32(dec, pcm.samples, pcm.len, 12_000, &mut list) };
+    let st = unsafe { mfsk_decode_f32(dec, pcm.samples, pcm.len, 12_000, ptr::null(), &mut list) };
     assert_eq!(st, MfskStatus::Ok);
     assert!(unsafe { list_any_contains(&list, "JA1ABC") });
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_decoder_free(dec);
         mfsk_samples_free(&mut pcm);
     }

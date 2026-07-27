@@ -12,9 +12,9 @@ use std::ffi::{CString, c_char};
 use std::ptr;
 
 use mfsk::{
-    MfskMessageList, MfskProtocol, MfskSamples, MfskStatus, mfsk_decode_f32, mfsk_decode_i16,
+    MfskProtocol, MfskResultList, MfskSamples, MfskStatus, mfsk_decode_f32, mfsk_decode_i16,
     mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_fst4s60, mfsk_encode_ft4, mfsk_encode_ft8,
-    mfsk_encode_jt9, mfsk_encode_jt65, mfsk_encode_wspr, mfsk_message_list_free, mfsk_samples_free,
+    mfsk_encode_jt9, mfsk_encode_jt65, mfsk_encode_wspr, mfsk_result_list_free, mfsk_samples_free,
 };
 
 fn empty_samples() -> MfskSamples {
@@ -25,11 +25,11 @@ fn empty_samples() -> MfskSamples {
     }
 }
 
-fn empty_list() -> MfskMessageList {
-    MfskMessageList {
+fn empty_list() -> MfskResultList {
+    MfskResultList {
         items: ptr::null_mut(),
         len: 0,
-        _cap: 0,
+        _capacity: 0,
     }
 }
 
@@ -40,14 +40,14 @@ unsafe fn cstr_to_string(p: *const c_char) -> String {
     unsafe { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() }
 }
 
-unsafe fn list_any_contains(list: &MfskMessageList, needle: &str) -> bool {
+unsafe fn list_any_contains(list: &MfskResultList, needle: &str) -> bool {
     if list.items.is_null() || list.len == 0 {
         return false;
     }
     let slice = unsafe { std::slice::from_raw_parts(list.items, list.len) };
     slice
         .iter()
-        .any(|m| unsafe { cstr_to_string(m.text) }.contains(needle))
+        .any(|m| unsafe { cstr_to_string(m.text.as_ptr()) }.contains(needle))
 }
 
 /// Decode `pcm` through the generic handle path and assert every
@@ -56,7 +56,7 @@ fn decode_and_check(protocol: MfskProtocol, pcm: &MfskSamples, needles: &[&str])
     let dec = mfsk_decoder_new(protocol);
     assert!(!dec.is_null(), "mfsk_decoder_new returned null");
     let mut list = empty_list();
-    let st = unsafe { mfsk_decode_f32(dec, pcm.samples, pcm.len, 12_000, &mut list) };
+    let st = unsafe { mfsk_decode_f32(dec, pcm.samples, pcm.len, 12_000, ptr::null(), &mut list) };
     assert_eq!(st, MfskStatus::Ok, "decode_f32 failed for {protocol:?}");
     for needle in needles {
         assert!(
@@ -65,7 +65,7 @@ fn decode_and_check(protocol: MfskProtocol, pcm: &MfskSamples, needles: &[&str])
         );
     }
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_decoder_free(dec);
     }
 }
@@ -111,13 +111,14 @@ fn ft8_roundtrip_i16() {
             i16_samples.as_ptr(),
             i16_samples.len(),
             12_000,
+            ptr::null(),
             &mut list,
         )
     };
     assert_eq!(st, MfskStatus::Ok);
     assert!(unsafe { list_any_contains(&list, "JA1ABC") && list_any_contains(&list, "PM95") });
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_decoder_free(dec);
         mfsk_samples_free(&mut pcm);
     }
@@ -212,11 +213,20 @@ fn fst4s60_roundtrip_f32() {
     let dec = mfsk_decoder_new(MfskProtocol::Fst4s60);
     assert!(!dec.is_null());
     let mut list = empty_list();
-    let st = unsafe { mfsk_decode_f32(dec, slot.as_ptr(), slot.len(), 12_000, &mut list) };
+    let st = unsafe {
+        mfsk_decode_f32(
+            dec,
+            slot.as_ptr(),
+            slot.len(),
+            12_000,
+            ptr::null(),
+            &mut list,
+        )
+    };
     assert_eq!(st, MfskStatus::Ok);
     assert!(unsafe { list_any_contains(&list, "JA1ABC") && list_any_contains(&list, "PM95") });
     unsafe {
-        mfsk_message_list_free(&mut list);
+        mfsk_result_list_free(&mut list);
         mfsk_decoder_free(dec);
         mfsk_samples_free(&mut pcm);
     }
@@ -225,7 +235,8 @@ fn fst4s60_roundtrip_f32() {
 #[test]
 fn decode_f32_null_decoder_returns_invalid_arg() {
     let mut list = empty_list();
-    let st = unsafe { mfsk_decode_f32(ptr::null(), ptr::null(), 0, 12_000, &mut list) };
+    let st =
+        unsafe { mfsk_decode_f32(ptr::null(), ptr::null(), 0, 12_000, ptr::null(), &mut list) };
     assert_eq!(st, MfskStatus::InvalidArg);
 }
 
@@ -234,7 +245,7 @@ fn decode_f32_null_samples_returns_invalid_arg() {
     let dec = mfsk_decoder_new(MfskProtocol::Ft8);
     assert!(!dec.is_null());
     let mut list = empty_list();
-    let st = unsafe { mfsk_decode_f32(dec, ptr::null(), 0, 12_000, &mut list) };
+    let st = unsafe { mfsk_decode_f32(dec, ptr::null(), 0, 12_000, ptr::null(), &mut list) };
     assert_eq!(st, MfskStatus::InvalidArg);
     unsafe {
         mfsk_decoder_free(dec);
@@ -258,7 +269,7 @@ fn encode_ft8_bad_callsign_returns_invalid_arg() {
 fn free_null_pointers_is_safe() {
     unsafe {
         mfsk_decoder_free(ptr::null_mut());
-        mfsk_message_list_free(ptr::null_mut());
+        mfsk_result_list_free(ptr::null_mut());
         mfsk_samples_free(ptr::null_mut());
     }
 }

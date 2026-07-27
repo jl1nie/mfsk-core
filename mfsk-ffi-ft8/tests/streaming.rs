@@ -33,7 +33,7 @@ fn passthrough_at_12k_is_lossless() {
     let input: Vec<i16> = (0..1000).map(|i| (i as i16).wrapping_mul(7)).collect();
     unsafe {
         let st = mfsk_ft8_stream_push_i16(s, input.as_ptr(), input.len());
-        assert_eq!(st, MfskFt8Status::Ok);
+        assert_eq!(st, MfskStatus::Ok);
         assert_eq!(mfsk_ft8_stream_buffered_samples(s), 1000);
 
         let mut out = vec![0i16; 1000];

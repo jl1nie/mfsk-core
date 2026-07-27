@@ -267,7 +267,7 @@ cbindgen-generated header — `mfsk-ffi-ft8/include/mfsk_ft8.h`,
 regenerated on every build. The full surface is:
 
 ```c
-typedef struct MfskFt8Result {
+typedef struct MfskResult {
     char     text[40];   // NUL-terminated unpacked message
     float    freq_hz;    // carrier
     float    dt_sec;     // time offset relative to slot start
@@ -275,40 +275,40 @@ typedef struct MfskFt8Result {
                          // xsnr2_db_simple (within ±3 dB on real silicon)
     uint32_t hard_errors;
     uint8_t  pass;       // staircase stage (0=fast Bp, 1=full Bp,…)
-} MfskFt8Result;
+} MfskResult;
 
-typedef struct MfskFt8ResultList {
-    MfskFt8Result *items;
-    size_t         len;
-    size_t         _capacity;  // private
-} MfskFt8ResultList;
+typedef struct MfskResultList {
+    MfskResult *items;
+    size_t      len;
+    size_t      _capacity;  // private
+} MfskResultList;
+
+// Opaque decode-tuning handle — construct with mfsk_ft8_options_new,
+// release with mfsk_ft8_options_free. NULL is always a valid options
+// argument (uses this crate's built-in default: 200-3000 Hz, sync_min
+// 1.0, max_cand 30, MFSK_DECODE_DEPTH_BP_ALL_OSD).
+typedef struct MfskDecodeOptions MfskDecodeOptions;
+
+MfskDecodeOptions *mfsk_ft8_options_new(
+    float freq_min_hz, float freq_max_hz,     // typical 200, 3000
+    float sync_min, int max_cand,             // typical 1.0, 30
+    MfskDecodeDepth depth);                   // 1=BpAll, 2=BpAllOsd
+void mfsk_ft8_options_free(MfskDecodeOptions *opts);
 
 // PRIMARY embedded entry. Needs no caller-managed scratch — the
 // decoder fills its per-symbol DFT via the in-tree Goertzel
 // recursion (zero internal-DRAM scratch). Before 0.8.0 (issue #162)
 // this function also took `basis_re`/`basis_im` scratch pointers for
-// a since-removed BASIS fill path; C callers built against pre-0.8.0
-// headers must drop those two arguments.
-MfskFt8Status mfsk_ft8_decode_i16(
+// a since-removed BASIS fill path; before 0.8.0 (issue #205) it also
+// took the five tuning knobs positionally instead of via `options`,
+// and host builds exposed a separately-named `mfsk_ft8_decode_i16_alloc`
+// — C callers built against pre-0.8.0 headers must update both.
+MfskStatus mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
-    float freq_min_hz, float freq_max_hz,     // typical 200, 3000
-    float sync_min, int max_cand,             // typical 1.0, 30
-    MfskFt8Depth depth,                       // 1=BpAll, 2=BpAllOsd
-    MfskFt8ResultList *out);                  // populated by callee
+    const MfskDecodeOptions *options,         // NULL = built-in default
+    MfskResultList *out);                     // populated by callee
 
-// HOST-ONLY convenience — heap-allocs internally. Excluded from
-// embedded builds (not that there's anything to allocate scratch
-// for any more — kept as a separate entry point for host testing).
-#ifdef MFSK_FT8_HOST  // built with default `host` feature
-MfskFt8Status mfsk_ft8_decode_i16_alloc(
-    const int16_t *audio, size_t n_samples,
-    float freq_min_hz, float freq_max_hz,
-    float sync_min, int max_cand,
-    MfskFt8Depth depth,
-    MfskFt8ResultList *out);
-#endif
-
-void mfsk_ft8_result_list_free(MfskFt8ResultList *list);
+void mfsk_ft8_result_list_free(MfskResultList *list);
 ```
 
 ### Calling `mfsk_ft8_decode_i16`
@@ -318,12 +318,14 @@ No scratch buffers to manage — just call it:
 ```c
 #include "mfsk_ft8.h"
 
-MfskFt8ResultList results = {0};
-MfskFt8Status st = mfsk_ft8_decode_i16(
-    audio, n_samples,
-    200.0f, 3000.0f, 1.0f, 30,
-    MFSK_FT8_DEPTH_BP_ALL,
-    &results);
+MfskDecodeOptions *options = mfsk_ft8_options_new(
+    200.0f, 3000.0f, 1.0f, 30, MFSK_DECODE_DEPTH_BP_ALL);
+
+MfskResultList results = {0};
+MfskStatus st = mfsk_ft8_decode_i16(audio, n_samples, options, &results);
+// ... use results ...
+mfsk_ft8_result_list_free(&results);
+mfsk_ft8_options_free(options);
 ```
 
 ### Streaming capture: I2S / USB Audio → 12 kHz ring
@@ -344,8 +346,8 @@ void           mfsk_ft8_stream_free(MfskFt8Stream *);
 
 // Push DMA chunk. Resamples to 12 kHz internally and appends to the
 // ring (oldest samples overwritten when full — rolling-window model).
-MfskFt8Status mfsk_ft8_stream_push_i16(MfskFt8Stream *,
-                                       const int16_t *samples, size_t n);
+MfskStatus mfsk_ft8_stream_push_i16(MfskFt8Stream *,
+                                    const int16_t *samples, size_t n);
 
 // Snapshot: copy the most recent `cap` 12 kHz samples into `out`.
 // Does not modify the ring — call _drain() after a successful decode
@@ -367,10 +369,13 @@ arithmetic — no FFT, no DSP backend. Available in both `host` and
 ```c
 // One-time setup
 static MfskFt8Stream *g_stream;
+static MfskDecodeOptions *g_options;
 static int16_t g_slot[180000];          // 360 KB; OK in PSRAM
 
 void rx_init(void) {
     g_stream = mfsk_ft8_stream_new(/*src*/16000, /*cap*/180000);
+    g_options = mfsk_ft8_options_new(200.0f, 3000.0f, 1.0f, 30,
+                                      MFSK_DECODE_DEPTH_BP_ALL);
 }
 
 // Capture task: I2S DMA callback
@@ -383,14 +388,11 @@ void on_slot_boundary(void) {
     if (mfsk_ft8_stream_buffered_samples(g_stream) < 168000) return;
     size_t n = mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
 
-    MfskFt8ResultList results = {0};
+    MfskResultList results = {0};
     mfsk_ft8_decode_i16(g_slot, n,        // n, not 180000 — peek may
                                           // return fewer if the ring
                                           // isn't yet full.
-                        200.0f, 3000.0f, 1.0f, 30,
-                        MFSK_FT8_DEPTH_BP_ALL,
-                        NULL, NULL,       // Goertzel
-                        &results);
+                        g_options, &results);
     // ... use results, then ...
     mfsk_ft8_result_list_free(&results);
     mfsk_ft8_stream_drain(g_stream, 180000);  // make room for next slot
@@ -461,8 +463,8 @@ rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
 
 | Feature | Default | Purpose |
 |---|---|---|
-| `host` | ✓ | Host build — pulls `mfsk-core/std + ft8 + fft-rustfft`. Both `mfsk_ft8_decode_i16` (caller scratch, may be NULL) and `mfsk_ft8_decode_i16_alloc` (heap convenience) are exported. |
-| `embedded-fixed-point` | — | `no_std + alloc`. Pulls `mfsk-core/fft-extern + fixed-point` (which implies `nstep-half`). **Only `mfsk_ft8_decode_i16` is exported** — the heap-alloc convenience is excluded by design (see above). The linker must resolve `mfsk_core_make_default_fft_planner` + `_planner16` (typically via a small Rust shim that bridges esp-dsp). |
+| `host` | ✓ | Host build — pulls `mfsk-core/std + ft8 + fft-rustfft`. Exports `mfsk_ft8_decode_i16` backed by the host-native f32 path. Before 0.8.0 (issue #205) this feature exported a separately-named `mfsk_ft8_decode_i16_alloc`; the symbol is now unified with the embedded build's — same name, host-native backend. |
+| `embedded-fixed-point` | — | `no_std + alloc`. Pulls `mfsk-core/fft-extern + fixed-point` (which implies `nstep-half`). Exports the same `mfsk_ft8_decode_i16` symbol, backed by the fixed-point path. The linker must resolve `mfsk_core_make_default_fft_planner` + `_planner16` (typically via a small Rust shim that bridges esp-dsp). |
 | `embedded-runtime` | — | Provides default `#[panic_handler]` (calls libc `abort`) + `#[global_allocator]` (libc `malloc`/`free`). Needed for a self-contained `staticlib`; turn off when stacking another Rust runtime in the same image. |
 
 ### Linking it into an ESP-IDF (CMake) project

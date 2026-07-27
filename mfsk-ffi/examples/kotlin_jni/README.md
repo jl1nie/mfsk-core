@@ -79,8 +79,8 @@ for Android — both are built locally as shown above (the shim is
 
 - `Mfsk.open(...)` allocates a native handle; `close()` (or `use { }`)
   releases it.
-- `decode()` internally allocates, populates, and frees a
-  `MfskMessageList` on every call — Kotlin side sees only `List<Message>`.
+- `decode()` internally allocates, populates, and frees an
+  `MfskResultList` on every call — Kotlin side sees only `List<Message>`.
 - No Kotlin-visible pointer / handle besides the opaque `Long` stashed
   inside the `Mfsk` instance; attempting `decode()` after `close()`
   throws `IllegalStateException`.

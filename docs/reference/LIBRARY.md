@@ -1088,11 +1088,21 @@ uint32_t          mfsk_version(void);           // major<<16 | minor<<8 | patch
 MfskDecoder*      mfsk_decoder_new(MfskProtocol protocol);
 void              mfsk_decoder_free(MfskDecoder* dec);
 
+// `options` may be NULL to use this crate's per-protocol default
+// search range / threshold / depth, or a handle from
+// mfsk_decode_options_new(...) to override it uniformly.
+MfskDecodeOptions* mfsk_decode_options_new(float freq_min_hz, float freq_max_hz,
+                                  float sync_min, int max_cand,
+                                  MfskDecodeDepth depth);
+void              mfsk_decode_options_free(MfskDecodeOptions* opts);
+
 MfskStatus        mfsk_decode_i16(MfskDecoder*, const int16_t* samples,
                                   size_t n, uint32_t sample_rate,
-                                  MfskMessageList* out);
+                                  const MfskDecodeOptions* options,
+                                  MfskResultList* out);
 MfskStatus        mfsk_decode_f32(MfskDecoder*, const float*,  size_t,
-                                  uint32_t, MfskMessageList* out);
+                                  uint32_t, const MfskDecodeOptions*,
+                                  MfskResultList* out);
 
 MfskStatus        mfsk_encode_ft8(const char* call1, const char* call2,
                                   const char* report, float freq_hz,
@@ -1105,14 +1115,18 @@ MfskStatus        mfsk_encode_wspr(const char* call, const char* grid,
 MfskStatus        mfsk_encode_jt9(...);      // same shape as ft8
 MfskStatus        mfsk_encode_jt65(...);     // same shape as ft8
 
-void              mfsk_message_list_free(MfskMessageList* list);
+void              mfsk_result_list_free(MfskResultList* list);
 void              mfsk_samples_free(MfskSamples* s);
 const char*       mfsk_last_error(void);
 ```
 
-`MfskMessageList` is caller-owned storage filled by the decode call;
-text fields are `char*` UTF-8 NUL-terminated, owned by the list and
-freed by `mfsk_message_list_free`.
+`MfskResultList` is caller-owned storage filled by the decode call.
+Each `MfskResult::text` is a fixed inline buffer (not a heap
+pointer) — the whole list is one allocation, freed in one call via
+`mfsk_result_list_free`. (Before issue #205, `text` was a heap
+`CString*` freed per message; `mfsk-ffi-ft8` always used the fixed
+buffer, and `mfsk-ffi` adopted it too so both crates share one ABI
+shape.)
 
 `MfskSamples` is caller-owned storage filled by encode calls; it
 holds 12 kHz f32 PCM and is freed by `mfsk_samples_free`.
@@ -1124,13 +1138,17 @@ See `mfsk-ffi/examples/cpp_smoke/` for a minimal end-to-end demo.
 1. **Handles**: allocate with `mfsk_decoder_new`, free with
    `mfsk_decoder_free`. One handle per thread. Free is idempotent on
    NULL.
-2. **Message lists**: zero-initialise a `MfskMessageList` on the
+2. **Result lists**: zero-initialise a `MfskResultList` on the
    stack, pass its address to the decode call, free with
-   `mfsk_message_list_free` when done reading. Do *not* free
-   individual `text` pointers yourself.
+   `mfsk_result_list_free` when done reading. `text` is a fixed
+   inline buffer — no individual pointers to free.
 3. **Sample buffers**: zero-initialise `MfskSamples`, pass to
    encode, free with `mfsk_samples_free`.
-4. **Errors**: on non-zero `MfskStatus`, call `mfsk_last_error` on the
+4. **Decode options**: an optional `MfskDecodeOptions*` handle from
+   `mfsk_decode_options_new`, released with
+   `mfsk_decode_options_free`. NULL is always valid (uses the
+   protocol's built-in default).
+5. **Errors**: on non-zero `MfskStatus`, call `mfsk_last_error` on the
    **same thread** to retrieve a human-readable diagnostic. The
    returned pointer is valid until the next fallible call on that
    thread.
@@ -1158,7 +1176,7 @@ Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
 
 * `libmfsk.so` built via `cargo build --target aarch64-linux-android -p mfsk-ffi`.
 * `libmfsk_jni.so` built from the ~115-line C shim, marshals
-  `ShortArray` ↔ `MfskMessageList`.
+  `ShortArray` ↔ `MfskResultList`.
 * `Mfsk.kt` exposes an `AutoCloseable` Kotlin class; use with
   `.use { }` to guarantee release.
 

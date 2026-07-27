@@ -128,26 +128,22 @@ pub fn run(target_name: &str, qso_wavs: &'static [(&'static str, &'static [u8])]
 
 fn ffi_smoke_one(slot: &[i16]) {
     use mfsk_ft8::{
-        mfsk_ft8_decode_i16, mfsk_ft8_result_list_free, MfskFt8Depth, MfskFt8ResultList,
+        mfsk_ft8_decode_i16, mfsk_ft8_options_free, mfsk_ft8_options_new, mfsk_ft8_result_list_free,
+        MfskDecodeDepth, MfskResultList,
     };
-    let mut results = MfskFt8ResultList {
+    let mut results = MfskResultList {
         items: core::ptr::null_mut(),
         len: 0,
         _capacity: 0,
     };
-    let t0 = now_us();
-    let st = unsafe {
-        mfsk_ft8_decode_i16(
-            slot.as_ptr(),
-            slot.len(),
-            100.0,
-            3_000.0,
-            1.0,
-            30,
-            MfskFt8Depth::BpAll,
-            &mut results,
-        )
+    // issue #205: the five positional tuning knobs are now behind an
+    // MfskDecodeOptions handle.
+    let options = unsafe {
+        mfsk_ft8_options_new(100.0, 3_000.0, 1.0, 30, MfskDecodeDepth::BpAll)
     };
+    let t0 = now_us();
+    let st = unsafe { mfsk_ft8_decode_i16(slot.as_ptr(), slot.len(), options, &mut results) };
+    unsafe { mfsk_ft8_options_free(options) };
     let t1 = now_us();
     log::info!(
         "  ffi status={:?}  {:>3} result(s)  {:>8} us",

@@ -1039,11 +1039,21 @@ uint32_t          mfsk_version(void);           // major<<16 | minor<<8 | patch
 MfskDecoder*      mfsk_decoder_new(MfskProtocol protocol);
 void              mfsk_decoder_free(MfskDecoder* dec);
 
+// `options` は NULL 可。NULL の場合はプロトコルごとの既定の探索範囲
+// / しきい値 / depth を使う。mfsk_decode_options_new(...) のハンドル
+// を渡すと一律に上書きできる。
+MfskDecodeOptions* mfsk_decode_options_new(float freq_min_hz, float freq_max_hz,
+                                  float sync_min, int max_cand,
+                                  MfskDecodeDepth depth);
+void              mfsk_decode_options_free(MfskDecodeOptions* opts);
+
 MfskStatus        mfsk_decode_i16(MfskDecoder*, const int16_t* samples,
                                   size_t n, uint32_t sample_rate,
-                                  MfskMessageList* out);
+                                  const MfskDecodeOptions* options,
+                                  MfskResultList* out);
 MfskStatus        mfsk_decode_f32(MfskDecoder*, const float*,  size_t,
-                                  uint32_t, MfskMessageList* out);
+                                  uint32_t, const MfskDecodeOptions*,
+                                  MfskResultList* out);
 
 MfskStatus        mfsk_encode_ft8(const char* call1, const char* call2,
                                   const char* report, float freq_hz,
@@ -1074,14 +1084,18 @@ MfskStatus        mfsk_q65_decode_with_ap_list(MfskQ65SubMode, ...,
                                   const char* his_call,
                                   const char* his_grid, ...);        // AP-list
 
-void              mfsk_message_list_free(MfskMessageList* list);
+void              mfsk_result_list_free(MfskResultList* list);
 void              mfsk_samples_free(MfskSamples* s);
 const char*       mfsk_last_error(void);
 ```
 
-`MfskMessageList` は呼び出し元が確保するストレージで、デコードが
-中身を埋める。text フィールドは UTF-8 NUL 終端 `char*`、list が所有し
-`mfsk_message_list_free` で解放される。
+`MfskResultList` は呼び出し元が確保するストレージで、デコードが
+中身を埋める。各 `MfskResult::text` は固定長のインラインバッファ
+(ヒープポインタではない) — list 全体が 1 回のアロケーションで
+`mfsk_result_list_free` により 1 回で解放される (issue #205 以前は
+`text` はメッセージごとのヒープ `CString*` だった。`mfsk-ffi-ft8` は
+元々この固定バッファ方式で、`mfsk-ffi` も揃えて両クレートで ABI
+形状を共有するようにした)。
 
 `MfskSamples` は呼び出し元が確保するストレージで、エンコードが
 中身を埋める。12 kHz f32 PCM を保持し `mfsk_samples_free` で解放。
@@ -1092,13 +1106,16 @@ const char*       mfsk_last_error(void);
 
 1. **ハンドル**: `mfsk_decoder_new` で確保、`mfsk_decoder_free` で解放。
    スレッドあたり 1 ハンドル。NULL に対する free は no-op。
-2. **メッセージリスト**: `MfskMessageList` をスタック上でゼロ初期化、
+2. **結果リスト**: `MfskResultList` をスタック上でゼロ初期化、
    そのアドレスを decode に渡し、読み終わったら
-   `mfsk_message_list_free` で解放。個別 `text` ポインタを手動で
-   free してはいけない。
+   `mfsk_result_list_free` で解放。`text` は固定長インラインバッファ
+   なので個別に free するポインタはない。
 3. **サンプルバッファ**: `MfskSamples` をゼロ初期化、encode に渡し、
    `mfsk_samples_free` で解放。
-4. **エラー**: `MfskStatus` が非ゼロの場合、**同じスレッド** で
+4. **デコードオプション**: `mfsk_decode_options_new` で確保する
+   任意の `MfskDecodeOptions*` ハンドル、`mfsk_decode_options_free`
+   で解放。NULL は常に有効 (プロトコル既定値を使う)。
+5. **エラー**: `MfskStatus` が非ゼロの場合、**同じスレッド** で
    `mfsk_last_error` を呼ぶと診断メッセージが得られる。返される
    ポインタは次の fallible 呼び出しまで有効。
 
@@ -1125,7 +1142,7 @@ Mfsk.open(Mfsk.Protocol.FT4).use { dec ->
 
 * `libmfsk.so` は `cargo build --target aarch64-linux-android -p mfsk-ffi` で生成
 * `libmfsk_jni.so` は約 115 行の C shim、`ShortArray` ↔
-  `MfskMessageList` を変換
+  `MfskResultList` を変換
 * `Mfsk.kt` は `AutoCloseable` な Kotlin クラス。`.use { }` で確実
   に解放
 

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 mfsk-core = { path = "../mfsk-core", version = "0.7", features = ["full"] }
+mfsk-ffi-abi = { path = "../mfsk-ffi-abi", version = "0.7.4" }
 
 [build-dependencies]
 cbindgen = "0.29"

@@ -84,10 +84,12 @@ int main() {
         return 1;
     }
 
-    // 2. Decode the synthesised audio.
+    // 2. Decode the synthesised audio. `options` may be NULL to use
+    //    this crate's per-protocol default search range / depth, or a
+    //    handle from mfsk_decode_options_new(...) to override it.
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);
-    MfskMessageList list = {0};
-    MfskStatus st = mfsk_decode_f32(dec, wave.samples, wave.len, 12000, &list);
+    MfskResultList list = {0};
+    MfskStatus st = mfsk_decode_f32(dec, wave.samples, wave.len, 12000, nullptr, &list);
     if (st != MFSK_STATUS_OK) {
         fprintf(stderr, "decode failed: %s\n", mfsk_last_error());
         return 1;
@@ -103,7 +105,7 @@ int main() {
     }
 
     // 4. Release everything.
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     mfsk_samples_free(&wave);
     mfsk_decoder_free(dec);
     return 0;
@@ -124,9 +126,11 @@ bash examples/cpp_smoke/build.sh
 |----------------------------|-------------------------------------------------------------------|
 | `mfsk_decoder_new`         | Construct opaque decoder handle for one protocol.                 |
 | `mfsk_decoder_free`        | Destroy decoder handle.                                           |
-| `mfsk_decode_f32`          | Decode one slot of `f32` PCM.                                     |
+| `mfsk_decode_options_new`  | Construct an optional decode-tuning handle (search range / threshold / depth). |
+| `mfsk_decode_options_free` | Destroy a decode-tuning handle.                                    |
+| `mfsk_decode_f32`          | Decode one slot of `f32` PCM. `options` may be NULL.               |
 | `mfsk_decode_i16`          | Decode one slot of `i16` PCM (same semantics as `_f32`).          |
-| `mfsk_message_list_free`   | Release the list returned by a decode.                            |
+| `mfsk_result_list_free`    | Release the list returned by a decode.                            |
 | `mfsk_encode_ft8`          | Synthesise a standard FT8 message (`call1 call2 report`).         |
 | `mfsk_encode_ft4`          | Synthesise a standard FT4 message.                                |
 | `mfsk_encode_fst4s60`      | Synthesise an FST4-60A message.                                   |
@@ -144,10 +148,10 @@ bash examples/cpp_smoke/build.sh
 
 ## Memory ownership
 
-- **Decode**: caller allocates a zero-initialised `MfskMessageList`;
-  the decoder fills `items` / `len`. The caller must release the list
-  with `mfsk_message_list_free`, which frees each message's `text`
-  pointer and the `items` array itself.
+- **Decode**: caller allocates a zero-initialised `MfskResultList`;
+  the decoder fills `items` / `len`. Each `MfskResult::text` is a
+  fixed inline buffer (not a heap pointer) — the whole list is one
+  allocation. The caller must release it with `mfsk_result_list_free`.
 - **Encode**: caller allocates a zero-initialised `MfskSamples`; the
   encoder fills `samples` / `len`. The caller must release with
   `mfsk_samples_free`.

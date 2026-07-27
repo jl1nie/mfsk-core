@@ -70,12 +70,15 @@ Java_io_github_mfskcore_Mfsk_nativeDecodeI16(
     jshort* ptr = (*env)->GetShortArrayElements(env, samples, NULL);
     if (!ptr) { return NULL; }
 
-    MfskMessageList list = {0};
+    MfskResultList list = {0};
+    // `options` NULL keeps this crate's pre-0.8.0 per-protocol default
+    // search range / threshold / depth (issue #205).
     MfskStatus st = mfsk_decode_i16(
         handle_from(handle),
         (const int16_t*)ptr,
         (size_t)n,
         (uint32_t)sampleRate,
+        NULL,
         &list);
 
     (*env)->ReleaseShortArrayElements(env, samples, ptr, JNI_ABORT);
@@ -83,7 +86,7 @@ Java_io_github_mfskcore_Mfsk_nativeDecodeI16(
     if (st != MFSK_STATUS_OK) {
         // Caller gets an empty array on failure; last_error accessible via
         // Java_io_github_mfskcore_Mfsk_nativeLastError.
-        mfsk_message_list_free(&list);
+        mfsk_result_list_free(&list);
         jclass sclass = (*env)->FindClass(env, "java/lang/String");
         return (*env)->NewObjectArray(env, 0, sclass, NULL);
     }
@@ -93,9 +96,10 @@ Java_io_github_mfskcore_Mfsk_nativeDecodeI16(
 
     char buf[768];
     for (size_t i = 0; i < list.len; ++i) {
-        const MfskMessage* m = &list.items[i];
+        const MfskResult* m = &list.items[i];
         // Use "%g" for float fields; text may contain '|' only in unusual
-        // free-text messages — acceptable for an example shim.
+        // free-text messages — acceptable for an example shim. `text` is
+        // a fixed inline buffer (issue #205), always NUL-terminated.
         snprintf(buf, sizeof(buf),
                  "%g|%g|%g|%u|%u|%s",
                  (double)m->freq_hz,
@@ -103,12 +107,12 @@ Java_io_github_mfskcore_Mfsk_nativeDecodeI16(
                  (double)m->snr_db,
                  (unsigned)m->hard_errors,
                  (unsigned)m->pass,
-                 m->text ? m->text : "");
+                 m->text);
         jstring s = (*env)->NewStringUTF(env, buf);
         (*env)->SetObjectArrayElement(env, out, (jsize)i, s);
         (*env)->DeleteLocalRef(env, s);
     }
-    mfsk_message_list_free(&list);
+    mfsk_result_list_free(&list);
     return out;
 }
 

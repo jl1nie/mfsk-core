@@ -252,7 +252,7 @@ cbindgen 生成ヘッダ — `mfsk-ffi-ft8/include/mfsk_ft8.h`、ビルド毎
 に再生成。フル surface:
 
 ```c
-typedef struct MfskFt8Result {
+typedef struct MfskResult {
     char     text[40];   // NUL 終端の unpack 済メッセージ
     float    freq_hz;    // carrier
     float    dt_sec;     // slot 開始基準の時間 offset
@@ -260,40 +260,40 @@ typedef struct MfskFt8Result {
                          // 校正済 (実機で ±3 dB 以内)
     uint32_t hard_errors;
     uint8_t  pass;       // staircase stage (0=fast Bp、1=full Bp…)
-} MfskFt8Result;
+} MfskResult;
 
-typedef struct MfskFt8ResultList {
-    MfskFt8Result *items;
-    size_t         len;
-    size_t         _capacity;  // private
-} MfskFt8ResultList;
+typedef struct MfskResultList {
+    MfskResult *items;
+    size_t      len;
+    size_t      _capacity;  // private
+} MfskResultList;
+
+// Opaque デコードチューニングハンドル — mfsk_ft8_options_new で構築、
+// mfsk_ft8_options_free で解放。NULL は常に有効な options 引数
+// (このクレートの既定値: 200-3000 Hz、sync_min 1.0、max_cand 30、
+// MFSK_DECODE_DEPTH_BP_ALL_OSD を使う)。
+typedef struct MfskDecodeOptions MfskDecodeOptions;
+
+MfskDecodeOptions *mfsk_ft8_options_new(
+    float freq_min_hz, float freq_max_hz,     // typical 200, 3000
+    float sync_min, int max_cand,             // typical 1.0, 30
+    MfskDecodeDepth depth);                   // 1=BpAll、2=BpAllOsd
+void mfsk_ft8_options_free(MfskDecodeOptions *opts);
 
 // 組込のメインエントリ。呼び出し側 scratch は不要 — decoder は
 // in-tree Goertzel パス (内部 DRAM scratch ゼロ) で per-symbol DFT
 // を埋める。0.8.0 (issue #162) 以前はここで `basis_re`/`basis_im`
 // scratch ポインタも受け取っていたが、削除済み BASIS fill path
-// 用だったため除去した — pre-0.8.0 ヘッダでビルドしていた C
-// 呼び出し側はこの 2 引数を呼び出し箇所から削除する必要がある。
-MfskFt8Status mfsk_ft8_decode_i16(
+// 用だったため除去した。0.8.0 (issue #205) 以前は 5 個のチューニング
+// 引数を options 経由でなく位置引数で受け取っており、host ビルドは
+// 別名の `mfsk_ft8_decode_i16_alloc` を export していた —
+// pre-0.8.0 ヘッダでビルドしていた C 呼び出し側は両方の更新が必要。
+MfskStatus mfsk_ft8_decode_i16(
     const int16_t *audio, size_t n_samples,   // 12 kHz, mono, ≥168 000
-    float freq_min_hz, float freq_max_hz,     // typical 200, 3000
-    float sync_min, int max_cand,             // typical 1.0, 30
-    MfskFt8Depth depth,                       // 1=BpAll、2=BpAllOsd
-    MfskFt8ResultList *out);                  // callee が populate
+    const MfskDecodeOptions *options,         // NULL = 既定値
+    MfskResultList *out);                     // callee が populate
 
-// HOST 専用便利関数 — 内部で heap alloc。組込ビルドからは除外
-// (もはや scratch を alloc する対象すらないが、host テスト用に
-// 別エントリポイントとして維持)。
-#ifdef MFSK_FT8_HOST  // デフォルト `host` feature でビルド
-MfskFt8Status mfsk_ft8_decode_i16_alloc(
-    const int16_t *audio, size_t n_samples,
-    float freq_min_hz, float freq_max_hz,
-    float sync_min, int max_cand,
-    MfskFt8Depth depth,
-    MfskFt8ResultList *out);
-#endif
-
-void mfsk_ft8_result_list_free(MfskFt8ResultList *list);
+void mfsk_ft8_result_list_free(MfskResultList *list);
 ```
 
 ### `mfsk_ft8_decode_i16` の呼び出し方
@@ -303,12 +303,14 @@ void mfsk_ft8_result_list_free(MfskFt8ResultList *list);
 ```c
 #include "mfsk_ft8.h"
 
-MfskFt8ResultList results = {0};
-MfskFt8Status st = mfsk_ft8_decode_i16(
-    audio, n_samples,
-    200.0f, 3000.0f, 1.0f, 30,
-    MFSK_FT8_DEPTH_BP_ALL,
-    &results);
+MfskDecodeOptions *options = mfsk_ft8_options_new(
+    200.0f, 3000.0f, 1.0f, 30, MFSK_DECODE_DEPTH_BP_ALL);
+
+MfskResultList results = {0};
+MfskStatus st = mfsk_ft8_decode_i16(audio, n_samples, options, &results);
+// ... results を使う ...
+mfsk_ft8_result_list_free(&results);
+mfsk_ft8_options_free(options);
 ```
 
 ### Streaming capture: I2S / USB Audio → 12 kHz ring
@@ -329,8 +331,8 @@ void           mfsk_ft8_stream_free(MfskFt8Stream *);
 
 // DMA chunk を push。内部で 12 kHz に再サンプリング、ring に追加
 // (満杯時は古いサンプルから上書き — rolling-window モデル)。
-MfskFt8Status mfsk_ft8_stream_push_i16(MfskFt8Stream *,
-                                       const int16_t *samples, size_t n);
+MfskStatus mfsk_ft8_stream_push_i16(MfskFt8Stream *,
+                                    const int16_t *samples, size_t n);
 
 // Snapshot: 最新 `cap` 個の 12 kHz サンプルを `out` にコピー。
 // ring は変更しない — decode 成功後 _drain() を呼んで新音源用
@@ -352,10 +354,13 @@ FFT なし、DSP backend なし。`host` ビルドと `embedded-fixed-point`
 ```c
 // 一回だけのセットアップ
 static MfskFt8Stream *g_stream;
+static MfskDecodeOptions *g_options;
 static int16_t g_slot[180000];          // 360 KB; PSRAM 可
 
 void rx_init(void) {
     g_stream = mfsk_ft8_stream_new(/*src*/16000, /*cap*/180000);
+    g_options = mfsk_ft8_options_new(200.0f, 3000.0f, 1.0f, 30,
+                                      MFSK_DECODE_DEPTH_BP_ALL);
 }
 
 // Capture タスク: I2S DMA コールバック
@@ -368,14 +373,11 @@ void on_slot_boundary(void) {
     if (mfsk_ft8_stream_buffered_samples(g_stream) < 168000) return;
     size_t n = mfsk_ft8_stream_peek_latest(g_stream, g_slot, 180000);
 
-    MfskFt8ResultList results = {0};
+    MfskResultList results = {0};
     mfsk_ft8_decode_i16(g_slot, n,        // 180000 ではなく n。ring が
                                           // 満杯でなければ peek は短く
                                           // 返してくる。
-                        200.0f, 3000.0f, 1.0f, 30,
-                        MFSK_FT8_DEPTH_BP_ALL,
-                        NULL, NULL,       // Goertzel
-                        &results);
+                        g_options, &results);
     // ... results を使った後 ...
     mfsk_ft8_result_list_free(&results);
     mfsk_ft8_stream_drain(g_stream, 180000);  // 次スロット用に空ける
@@ -444,8 +446,8 @@ rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
 
 | Feature | デフォルト | 目的 |
 |---|---|---|
-| `host` | ✓ | Host ビルド — `mfsk-core/std + ft8 + fft-rustfft` を引く。`mfsk_ft8_decode_i16` (caller scratch、NULL 可) と `mfsk_ft8_decode_i16_alloc` (heap 便利) 両方を export。 |
-| `embedded-fixed-point` | — | `no_std + alloc`。`mfsk-core/fft-extern + fixed-point` (`nstep-half` を含意) を引く。**`mfsk_ft8_decode_i16` のみ export** — heap-alloc 便利関数は設計上除外 (上記参照)。リンカが `mfsk_core_make_default_fft_planner` + `_planner16` を解決する必要あり (esp-dsp にブリッジする小さな Rust shim 経由が典型)。 |
+| `host` | ✓ | Host ビルド — `mfsk-core/std + ft8 + fft-rustfft` を引く。host ネイティブ f32 パスを backend とする `mfsk_ft8_decode_i16` を export。0.8.0 (issue #205) 以前はこの feature が別名の `mfsk_ft8_decode_i16_alloc` を export していたが、組込ビルドと同名のシンボルに統合 (backend は host ネイティブのまま)。 |
+| `embedded-fixed-point` | — | `no_std + alloc`。`mfsk-core/fft-extern + fixed-point` (`nstep-half` を含意) を引く。同じ `mfsk_ft8_decode_i16` シンボルを export、backend は fixed-point パス。リンカが `mfsk_core_make_default_fft_planner` + `_planner16` を解決する必要あり (esp-dsp にブリッジする小さな Rust shim 経由が典型)。 |
 | `embedded-runtime` | — | デフォルト `#[panic_handler]` (libc `abort` 呼ぶ) + `#[global_allocator]` (libc `malloc`/`free`) を提供。自己完結型 `staticlib` 用; 同一 image 内で別 Rust runtime を積む場合は off。 |
 
 ### ESP-IDF (CMake) プロジェクトへのリンク方法

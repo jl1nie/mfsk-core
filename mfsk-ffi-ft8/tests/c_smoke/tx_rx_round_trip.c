@@ -26,8 +26,8 @@
 int main(void) {
     /* 1. Pack "CQ JA1ABC PM86" into 77 bits. */
     uint8_t msg77[77];
-    MfskFt8Status st = mfsk_ft8_pack77("CQ", "JA1ABC", "PM86", msg77);
-    if (st != MFSK_FT8_STATUS_OK) {
+    MfskStatus st = mfsk_ft8_pack77("CQ", "JA1ABC", "PM86", msg77);
+    if (st != MFSK_STATUS_OK) {
         fprintf(stderr, "pack77 failed: %d\n", (int)st); return 2;
     }
     printf("packed 'CQ JA1ABC PM86' OK (status=%d)\n", (int)st);
@@ -35,7 +35,7 @@ int main(void) {
     /* 2. 77 bits → 79-tone Gray-mapped sequence. */
     uint8_t itone[79];
     st = mfsk_ft8_message_to_tones(msg77, itone);
-    if (st != MFSK_FT8_STATUS_OK) {
+    if (st != MFSK_STATUS_OK) {
         fprintf(stderr, "message_to_tones failed: %d\n", (int)st); return 2;
     }
     printf("encoded 79 tones (first 7 Costas: %d %d %d %d %d %d %d)\n",
@@ -56,28 +56,27 @@ int main(void) {
         /* amplitude_i16 */ 16384,
         slot + prepend_silence,
         synth_len);
-    if (st != MFSK_FT8_STATUS_OK) {
+    if (st != MFSK_STATUS_OK) {
         fprintf(stderr, "tones_to_i16 failed: %d\n", (int)st); return 2;
     }
     printf("synthesised %zu samples at 1500 Hz, peak %u\n",
            synth_len, 16384);
 
     /* 4. Decode the synthesised slot. */
-    MfskFt8ResultList results = {0};
-    st = mfsk_ft8_decode_i16_alloc(
-        slot, SLOT_SAMPLES,
-        200.0f, 3000.0f, 1.0f, 30,
-        MFSK_FT8_DEPTH_BP_ALL_OSD,
-        &results);
+    MfskDecodeOptions *options = mfsk_ft8_options_new(
+        200.0f, 3000.0f, 1.0f, 30, MFSK_DECODE_DEPTH_BP_ALL_OSD);
+    MfskResultList results = {0};
+    st = mfsk_ft8_decode_i16(slot, SLOT_SAMPLES, options, &results);
+    mfsk_ft8_options_free(options);
     free(slot);
-    if (st != MFSK_FT8_STATUS_OK) {
+    if (st != MFSK_STATUS_OK) {
         fprintf(stderr, "decode failed: %d\n", (int)st); return 2;
     }
 
     printf("decoded %zu message(s):\n", results.len);
     int round_trip_ok = 0;
     for (size_t i = 0; i < results.len; i++) {
-        const MfskFt8Result *r = &results.items[i];
+        const MfskResult *r = &results.items[i];
         printf("  [%zu] %.0f Hz  SNR=%+.0f dB  '%s'\n",
                i, (double)r->freq_hz, (double)r->snr_db, r->text);
         if (strcmp(r->text, "CQ JA1ABC PM86") == 0) round_trip_ok = 1;

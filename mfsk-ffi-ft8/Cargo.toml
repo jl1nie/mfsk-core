@@ -54,6 +54,7 @@ embedded-runtime = []
 
 [dependencies]
 mfsk-core = { path = "../mfsk-core", version = "0.7.4", default-features = false }
+mfsk-ffi-abi = { path = "../mfsk-ffi-abi", version = "0.7.4" }
 
 [build-dependencies]
 cbindgen = "0.29"

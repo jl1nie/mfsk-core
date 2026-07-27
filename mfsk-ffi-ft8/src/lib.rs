@@ -18,16 +18,35 @@
 //!
 //! # API shape
 //!
-//! [`mfsk_ft8_decode_i16`] runs the embedded fixed-point decode path
-//! and populates a [`MfskFt8ResultList`] the caller frees with
-//! [`mfsk_ft8_result_list_free`]. Prior to 0.8.0 this function also
-//! took caller-provided BASIS scratch buffers (`basis_re`/`basis_im`)
-//! — removed (issue #162) once the Goertzel fill path (Phase
-//! 1.7.7-Stick) became the sole production path on every embedded
-//! target, making the scratch dead weight. **Breaking change**: C
-//! callers built against pre-0.8.0 headers must drop the two
-//! `int16_t*` scratch arguments from their `mfsk_ft8_decode_i16`
-//! call site.
+//! [`mfsk_ft8_decode_i16`] runs the FT8 block decoder (fixed-point on
+//! embedded, host-native f32 under the `host` feature) and populates
+//! an [`MfskResultList`] the caller frees with
+//! [`mfsk_ft8_result_list_free`]. Status codes, the result record/list
+//! shape, and the decode-depth enum are shared with `mfsk-ffi` via
+//! `mfsk-ffi-abi` (issue #205) — this crate used to define its own
+//! `MfskFt8Status`/`MfskFt8Result`/`MfskFt8ResultList` with colliding
+//! numeric codes and a different result shape than `mfsk-ffi`'s.
+//!
+//! Decode-tuning knobs (`freq_min_hz`/`freq_max_hz`/`sync_min`/
+//! `max_cand`/`depth`) go through an opaque [`MfskDecodeOptions`]
+//! handle (`mfsk_ft8_options_new` / `_free`) rather than positional
+//! function parameters, so a future knob is an additive setter rather
+//! than a breaking signature change.
+//!
+//! Prior to 0.8.0, the primary decode symbol's name differed by build
+//! feature (`mfsk_ft8_decode_i16` under `embedded-fixed-point`,
+//! `mfsk_ft8_decode_i16_alloc` under `host`) — unified to
+//! `mfsk_ft8_decode_i16` under both (issue #205); the `host` build's
+//! separate BASIS-scratch allocation this naming used to signal is
+//! moot since Goertzel (Phase 1.7.7-Stick) became the sole fill path.
+//!
+//! **Breaking change (0.8.0, issue #162)**: this function used to
+//! also take caller-provided BASIS scratch buffers (`basis_re`/
+//! `basis_im`) — removed once the Goertzel fill path became the sole
+//! production path on every embedded target, making the scratch dead
+//! weight. C callers built against pre-0.8.0 headers must drop the
+//! scratch arguments from their call site (on top of the options-handle
+//! and symbol-name changes above).
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
@@ -49,105 +68,132 @@ use mfsk_core::ft8::wave_gen::{
 };
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
-// ── Status codes ────────────────────────────────────────────────────────────
+pub use mfsk_ffi_abi::{
+    MfskDecodeDepth, MfskDecodeOptions, MfskResult, MfskResultList, MfskStatus,
+};
 
-/// Outcome of a decode call.
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum MfskFt8Status {
-    /// Decode completed (zero or more results in `out`).
-    Ok = 0,
-    /// One of the input pointers was null.
-    NullPointer = -1,
-    /// `n_samples` is too short for a 14-second slot at 12 kHz.
-    AudioTooShort = -2,
-    /// `depth` is outside `0..=2`.
-    BadDepth = -3,
-    /// Caller-provided output buffer too small (see
-    /// [`mfsk_ft8_tones_to_i16`] / [`mfsk_ft8_tones_to_f32`]).
-    ScratchTooSmall = -4,
+// ── Error string (thread-unsafe single global — see doc comment) ───────────
+
+const LAST_ERROR_CAP: usize = 128;
+
+/// Single-threaded error-string storage — appropriate here since every
+/// public function in this crate is already documented
+/// single-threaded ("one decode at a time per process"), and
+/// `no_std` has no portable `thread_local!`. Do not call from
+/// multiple threads concurrently without external synchronisation.
+static mut LAST_ERROR: [u8; LAST_ERROR_CAP] = [0; LAST_ERROR_CAP];
+
+fn set_error(msg: &str) {
+    let bytes = msg.as_bytes();
+    let n = bytes.len().min(LAST_ERROR_CAP - 1);
+    // SAFETY: single-threaded per this crate's documented contract.
+    // Raw-pointer arithmetic throughout (no reference to the `static
+    // mut` is ever created) to satisfy `dangerous_implicit_autorefs`.
+    unsafe {
+        let addr: *mut u8 = (&raw mut LAST_ERROR).cast();
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), addr, n);
+        *addr.add(n) = 0;
+    }
 }
 
-// ── Decode-depth selector ───────────────────────────────────────────────────
-
-/// Mirrors `mfsk_core::ft8::decode::DecodeDepth`. The deeper levels
-/// trade decode time for recall on busy bands.
+/// Returns a pointer to the last-error string recorded by this crate,
+/// or an empty string if none has been recorded yet. The pointer is
+/// valid until the next fallible call. Mirrors `mfsk-ffi`'s
+/// `mfsk_last_error` in shape (NUL-terminated UTF-8, same
+/// pointer-lifetime contract) under this crate's own `mfsk_ft8_`
+/// prefix.
 ///
-/// Discriminant `0` is intentionally unassigned — the legacy
-/// `Bp` (single-metric) rung was retired in 0.7.0 (issue #74).
-/// Existing C callers passing `1` / `2` remain valid; passing `0`
-/// is now rejected by `map_depth` and surfaces as a caller bug.
-#[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum MfskFt8Depth {
-    /// Four full LLR variants + BP run per candidate.
-    BpAll = 1,
-    /// Above + OSD-1 / OSD-3 fallback (gated on sync-quality ≥ 12).
-    BpAllOsd = 2,
+/// Not thread-safe — see [`MfskDecodeOptions`]'s module doc / this
+/// crate's existing single-threaded contract.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_ft8_last_error() -> *const c_char {
+    (&raw const LAST_ERROR).cast()
+}
+
+// ── Decode options (opaque handle) ──────────────────────────────────────────
+
+struct DecodeOptionsInner {
+    freq_min_hz: f32,
+    freq_max_hz: f32,
+    sync_min: f32,
+    max_cand: c_int,
+    depth: MfskDecodeDepth,
+}
+
+impl Default for DecodeOptionsInner {
+    /// Matches this crate's pre-0.8.0 hardcoded example/test defaults.
+    fn default() -> Self {
+        Self {
+            freq_min_hz: 200.0,
+            freq_max_hz: 3_000.0,
+            sync_min: 1.0,
+            max_cand: 30,
+            depth: MfskDecodeDepth::BpAllOsd,
+        }
+    }
 }
 
 #[inline]
-fn map_depth(d: MfskFt8Depth) -> DecodeDepth {
+fn options_inner(opts: *const MfskDecodeOptions) -> Option<&'static DecodeOptionsInner> {
+    unsafe { (opts as *const DecodeOptionsInner).as_ref() }
+}
+
+/// Construct a decode-options handle. `freq_min_hz`/`freq_max_hz`
+/// bound the carrier search range (typical: 200, 3000). `sync_min` is
+/// the stage-2 candidate threshold (typical 1.0). `max_cand` caps the
+/// survivors after Pass 2 (typical 30 for embedded busy-band).
+/// `depth` picks the decoder staircase (`MFSK_DECODE_DEPTH_BP_ALL_OSD`
+/// is the most thorough).
+///
+/// Free with [`mfsk_ft8_options_free`]. A later knob (issue #205)
+/// arrives as a new, optional setter function — this constructor's
+/// signature and every decode function's signature stay stable.
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_ft8_options_new(
+    freq_min_hz: f32,
+    freq_max_hz: f32,
+    sync_min: f32,
+    max_cand: c_int,
+    depth: MfskDecodeDepth,
+) -> *mut MfskDecodeOptions {
+    let inner = Box::new(DecodeOptionsInner {
+        freq_min_hz,
+        freq_max_hz,
+        sync_min,
+        max_cand,
+        depth,
+    });
+    Box::into_raw(inner) as *mut MfskDecodeOptions
+}
+
+/// Free a handle from [`mfsk_ft8_options_new`]. NULL is a no-op.
+///
+/// # Safety
+/// `opts` must be a pointer previously returned by
+/// [`mfsk_ft8_options_new`], or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_ft8_options_free(opts: *mut MfskDecodeOptions) {
+    if !opts.is_null() {
+        drop(unsafe { Box::from_raw(opts as *mut DecodeOptionsInner) });
+    }
+}
+
+#[inline]
+fn map_depth(d: MfskDecodeDepth) -> DecodeDepth {
     match d {
-        MfskFt8Depth::BpAll => DecodeDepth::BP_ONLY,
-        MfskFt8Depth::BpAllOsd => DecodeDepth::FULL,
+        MfskDecodeDepth::BpAll => DecodeDepth::BP_ONLY,
+        MfskDecodeDepth::BpAllOsd => DecodeDepth::FULL,
     }
 }
 
-// ── Result records ──────────────────────────────────────────────────────────
-
-/// One decoded FT8 message.
-///
-/// `text` is a C string of at most 39 visible UTF-8 characters plus
-/// NUL terminator (FT8's 77-bit message decompresses to ≤ ~36 chars
-/// in practice — the buffer is sized at 40 for safety).
-#[repr(C)]
-pub struct MfskFt8Result {
-    /// NUL-terminated UTF-8 unpacked message. ASCII in practice.
-    pub text: [c_char; 40],
-    /// Carrier frequency of the decoded slot, Hz.
-    pub freq_hz: f32,
-    /// Time offset relative to the slot start, seconds.
-    pub dt_sec: f32,
-    /// SNR estimate (dB, WSJT-X 2500 Hz reference). On the embedded
-    /// path this reads ~4–12 dB low on strong signals — see
-    /// `docs/reference/EMBEDDED.md` "Known limitations".
-    pub snr_db: f32,
-    /// Number of bits the LDPC decoder corrected before CRC pass.
-    pub hard_errors: u32,
-    /// Stage that produced the decode (0 = fast Bp, 1 = full Bp, …).
-    pub pass: u8,
-    /// Padding to keep the struct C-friendly across compilers.
-    pub _pad: [u8; 3],
-}
-
-/// Result list — owned by the FFI side. Free with
-/// [`mfsk_ft8_result_list_free`].
-#[repr(C)]
-pub struct MfskFt8ResultList {
-    /// Pointer to the first result, or null if `len == 0`.
-    pub items: *mut MfskFt8Result,
-    /// Number of valid entries.
-    pub len: usize,
-    /// Capacity (private — only the free function reads this).
-    pub _capacity: usize,
-}
+// ── Result conversion ────────────────────────────────────────────────────────
 
 #[inline]
-fn empty_result_list() -> MfskFt8ResultList {
-    MfskFt8ResultList {
-        items: core::ptr::null_mut(),
-        len: 0,
-        _capacity: 0,
-    }
-}
-
-#[inline]
-fn finalise_results(results: Vec<DecodeResult>, out: *mut MfskFt8ResultList) {
-    let mut converted: Vec<MfskFt8Result> = Vec::with_capacity(results.len());
+fn finalise_results(results: Vec<DecodeResult>, out: *mut MfskResultList) {
+    let mut converted: Vec<MfskResult> = Vec::with_capacity(results.len());
     for r in results {
-        let mut rec = MfskFt8Result {
-            text: [0; 40],
+        let mut rec = MfskResult {
+            text: [0; mfsk_ffi_abi::MFSK_TEXT_BUF_LEN],
             freq_hz: r.freq_hz,
             dt_sec: r.dt_sec,
             snr_db: r.snr_db,
@@ -180,123 +226,113 @@ fn finalise_results(results: Vec<DecodeResult>, out: *mut MfskFt8ResultList) {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// **Primary FT8 decode** for embedded fixed-point targets. **Use
-/// this in production embedded code.**
+/// Shared validation + options-resolution + result-conversion body for
+/// [`mfsk_ft8_decode_i16`], parameterised over the actual decode call
+/// (`decode_block_into` on embedded, `decode_block` on host) so the
+/// two mutually-exclusive `#[cfg]` bodies below don't duplicate the
+/// surrounding logic.
+#[inline]
+unsafe fn decode_i16_common(
+    audio: *const i16,
+    n_samples: usize,
+    options: *const MfskDecodeOptions,
+    out: *mut MfskResultList,
+    decode_fn: impl FnOnce(&[i16], f32, f32, f32, DecodeDepth, usize) -> Vec<DecodeResult>,
+) -> MfskStatus {
+    if audio.is_null() || out.is_null() {
+        set_error("mfsk_ft8_decode_i16: null audio/out pointer");
+        return MfskStatus::NullPointer;
+    }
+    unsafe { *out = MfskResultList::empty() };
+    if n_samples < 168_000 {
+        set_error(
+            "mfsk_ft8_decode_i16: n_samples too short for a 14 s slot at 12 kHz (need >= 168000)",
+        );
+        return MfskStatus::InvalidArg;
+    }
+    let defaults = DecodeOptionsInner::default();
+    let o = options_inner(options).unwrap_or(&defaults);
+    let slot = unsafe { core::slice::from_raw_parts(audio, n_samples) };
+    let results = decode_fn(
+        slot,
+        o.freq_min_hz,
+        o.freq_max_hz,
+        o.sync_min,
+        map_depth(o.depth),
+        o.max_cand.max(0) as usize,
+    );
+    finalise_results(results, out);
+    MfskStatus::Ok
+}
+
+/// **Primary FT8 decode.** Runs the embedded fixed-point path under
+/// `embedded-fixed-point`, or the host-native f32 path under `host`
+/// (mutually exclusive builds — see the crate doc comment). `options`
+/// may be NULL to use this crate's defaults (200-3000 Hz, sync_min
+/// 1.0, max_cand 30, `MFSK_DECODE_DEPTH_BP_ALL_OSD`); build one with
+/// [`mfsk_ft8_options_new`] to override.
 ///
-/// `freq_min_hz` / `freq_max_hz` bound the carrier search range
-/// (typical: 200, 3000). `sync_min` is the stage-2 candidate
-/// threshold (typical 1.0). `max_cand` caps the survivors after
-/// Pass 2 (typical 30 for embedded busy-band). `depth` picks the
-/// decoder staircase (`MFSK_FT8_DEPTH_BP_ALL_OSD` = 2 is the most
-/// thorough).
-///
-/// Only available under the `embedded-fixed-point` feature (the
-/// path lives in mfsk-core's `cfg(fixed-point)` block). Host code
-/// should use [`mfsk_ft8_decode_i16_alloc`].
-///
-/// **Breaking change (0.8.0, issue #162)**: this function used to
-/// also take caller-provided BASIS scratch (`basis_re`/`basis_im`
-/// `int16_t*` arrays, sized via a now-removed
-/// `mfsk_ft8_basis_scratch_len()`). The BASIS fill path was retired
-/// in favour of the scratch-free Goertzel fill (Phase 1.7.7-Stick),
-/// making the scratch arguments dead weight — callers built against
-/// pre-0.8.0 headers must drop both arguments from their call site.
+/// **Breaking change (0.8.0, issue #205)**: this symbol used to be
+/// named `mfsk_ft8_decode_i16_alloc` under the `host` feature
+/// (`mfsk_ft8_decode_i16` was embedded-only) and took the five tuning
+/// knobs positionally instead of via `options`. C callers built
+/// against pre-0.8.0 host headers must rename their call site and
+/// switch to an `MfskDecodeOptions` handle.
 ///
 /// # Safety
 /// `audio` must point to `n_samples` valid `i16` values; at least
-/// 168 000 (14 s × 12 kHz). `out` must point to a writable
-/// [`MfskFt8ResultList`]. Single-threaded — one decode at a time per
-/// process.
-#[unsafe(no_mangle)]
+/// 168 000 (14 s × 12 kHz). `options`, if non-NULL, must be a live
+/// handle from [`mfsk_ft8_options_new`]. `out` must point to a
+/// writable [`MfskResultList`]. Single-threaded — one decode at a
+/// time per process.
 #[cfg(feature = "embedded-fixed-point")]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_ft8_decode_i16(
     audio: *const i16,
     n_samples: usize,
-    freq_min_hz: f32,
-    freq_max_hz: f32,
-    sync_min: f32,
-    max_cand: c_int,
-    depth: MfskFt8Depth,
-    out: *mut MfskFt8ResultList,
-) -> MfskFt8Status {
-    if audio.is_null() || out.is_null() {
-        return MfskFt8Status::NullPointer;
+    options: *const MfskDecodeOptions,
+    out: *mut MfskResultList,
+) -> MfskStatus {
+    unsafe {
+        decode_i16_common(
+            audio,
+            n_samples,
+            options,
+            out,
+            |slot, fmin, fmax, smin, depth, mc| {
+                decode_block_into(slot, fmin, fmax, smin, depth, mc)
+            },
+        )
     }
-    if n_samples < 168_000 {
-        unsafe { *out = empty_result_list() };
-        return MfskFt8Status::AudioTooShort;
-    }
-    let slot = unsafe { core::slice::from_raw_parts(audio, n_samples) };
-    unsafe { *out = empty_result_list() };
-    let results = decode_block_into(
-        slot,
-        freq_min_hz,
-        freq_max_hz,
-        sync_min,
-        map_depth(depth),
-        max_cand.max(0) as usize,
-    );
-    finalise_results(results, out);
-    MfskFt8Status::Ok
 }
 
-/// **Host-only heap-alloc convenience** — same shape as
-/// [`mfsk_ft8_decode_i16`] but allocates the BASIS scratch
-/// internally on every call (~60 KB × 2 = ~120 KB heap traffic per
-/// decode).
-///
-/// Only available on host (`feature = "host"`). Deliberately
-/// excluded from embedded builds: surprise per-call heap-allocation
-/// of a 60 KB scratch is a bad default for an MCU, and on Core2 with
-/// PSRAM the scratch lands in slow PSRAM and tanks the dot-product
-/// inner kernel. Embedded callers must use [`mfsk_ft8_decode_i16`]
-/// with caller-managed scratch in internal RAM.
+/// See the embedded-feature [`mfsk_ft8_decode_i16`] doc comment — same
+/// symbol name, host-native f32 backend (`decode_block`) instead of
+/// the embedded fixed-point path.
 ///
 /// # Safety
-/// Same as [`mfsk_ft8_decode_i16`] minus the scratch arguments.
+/// See the embedded-feature [`mfsk_ft8_decode_i16`].
+#[cfg(all(feature = "host", not(feature = "embedded-fixed-point")))]
 #[unsafe(no_mangle)]
-#[cfg(feature = "host")]
-pub unsafe extern "C" fn mfsk_ft8_decode_i16_alloc(
+pub unsafe extern "C" fn mfsk_ft8_decode_i16(
     audio: *const i16,
     n_samples: usize,
-    freq_min_hz: f32,
-    freq_max_hz: f32,
-    sync_min: f32,
-    max_cand: c_int,
-    depth: MfskFt8Depth,
-    out: *mut MfskFt8ResultList,
-) -> MfskFt8Status {
-    if audio.is_null() || out.is_null() {
-        return MfskFt8Status::NullPointer;
-    }
-    if n_samples < 168_000 {
-        unsafe { *out = empty_result_list() };
-        return MfskFt8Status::AudioTooShort;
-    }
-    let slot = unsafe { core::slice::from_raw_parts(audio, n_samples) };
-    unsafe { *out = empty_result_list() };
-    let results = decode_block(
-        slot,
-        freq_min_hz,
-        freq_max_hz,
-        sync_min,
-        map_depth(depth),
-        max_cand.max(0) as usize,
-    );
-    finalise_results(results, out);
-    MfskFt8Status::Ok
+    options: *const MfskDecodeOptions,
+    out: *mut MfskResultList,
+) -> MfskStatus {
+    unsafe { decode_i16_common(audio, n_samples, options, out, decode_block) }
 }
 
-/// Free a result list previously populated by
-/// `mfsk_ft8_decode_i16` / `mfsk_ft8_decode_i16_into`. Safe to call
-/// with a zero-length list. After this returns, the list's `items`
-/// pointer is invalid; the struct itself remains valid for reuse.
+/// Free a result list previously populated by [`mfsk_ft8_decode_i16`].
+/// Safe to call with a zero-length list. After this returns, the
+/// list's `items` pointer is invalid; the struct itself remains valid
+/// for reuse.
 ///
 /// # Safety
-/// `list` must be either null (no-op) or point to a `MfskFt8ResultList`
+/// `list` must be either null (no-op) or point to a `MfskResultList`
 /// previously populated by this crate.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mfsk_ft8_result_list_free(list: *mut MfskFt8ResultList) {
+pub unsafe extern "C" fn mfsk_ft8_result_list_free(list: *mut MfskResultList) {
     if list.is_null() {
         return;
     }
@@ -308,14 +344,6 @@ pub unsafe extern "C" fn mfsk_ft8_result_list_free(list: *mut MfskFt8ResultList)
     l.items = core::ptr::null_mut();
     l.len = 0;
     l._capacity = 0;
-}
-
-// Suppress dead-code warning on the host build for the embedded-only
-// helper imports.
-#[cfg(all(feature = "host", not(feature = "embedded-fixed-point")))]
-#[allow(dead_code)]
-fn _silence_unused() {
-    let _ = empty_result_list;
 }
 
 // ── TX (encode + synthesise) ────────────────────────────────────────────────
@@ -346,9 +374,9 @@ pub extern "C" fn mfsk_ft8_synth_output_len() -> usize {
 /// practice).
 ///
 /// Writes 77 bytes (each 0 or 1) to `out_message77`. Returns
-/// `MfskFt8Status::Ok` on success, `BadDepth` is reused as a
-/// generic "bad input" indicator if any string fails to pack
-/// (callsign too long, bad characters, etc).
+/// `MfskStatus::Ok` on success, `InvalidArg` if any string fails to
+/// pack (callsign too long, bad characters, etc) — see
+/// [`mfsk_ft8_last_error`] for the specific reason.
 ///
 /// # Safety
 /// `call1`, `call2`, `report` must point to valid NUL-terminated
@@ -360,30 +388,41 @@ pub unsafe extern "C" fn mfsk_ft8_pack77(
     call2: *const c_char,
     report: *const c_char,
     out_message77: *mut u8,
-) -> MfskFt8Status {
+) -> MfskStatus {
     if call1.is_null() || call2.is_null() || report.is_null() || out_message77.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_pack77: null pointer");
+        return MfskStatus::NullPointer;
     }
     // SAFETY: caller upholds NUL-terminated strings.
     let s1 = match unsafe { core::ffi::CStr::from_ptr(call1) }.to_str() {
         Ok(s) => s,
-        Err(_) => return MfskFt8Status::BadDepth,
+        Err(_) => {
+            set_error("mfsk_ft8_pack77: call1 is not valid UTF-8");
+            return MfskStatus::InvalidArg;
+        }
     };
     let s2 = match unsafe { core::ffi::CStr::from_ptr(call2) }.to_str() {
         Ok(s) => s,
-        Err(_) => return MfskFt8Status::BadDepth,
+        Err(_) => {
+            set_error("mfsk_ft8_pack77: call2 is not valid UTF-8");
+            return MfskStatus::InvalidArg;
+        }
     };
     let s3 = match unsafe { core::ffi::CStr::from_ptr(report) }.to_str() {
         Ok(s) => s,
-        Err(_) => return MfskFt8Status::BadDepth,
+        Err(_) => {
+            set_error("mfsk_ft8_pack77: report is not valid UTF-8");
+            return MfskStatus::InvalidArg;
+        }
     };
     let Some(msg) = pack77(s1, s2, s3) else {
-        return MfskFt8Status::BadDepth;
+        set_error("mfsk_ft8_pack77: pack77 failed (bad callsign/report format)");
+        return MfskStatus::InvalidArg;
     };
     // SAFETY: caller provided 77-byte writable buffer.
     let dst = unsafe { core::slice::from_raw_parts_mut(out_message77, 77) };
     dst.copy_from_slice(&msg);
-    MfskFt8Status::Ok
+    MfskStatus::Ok
 }
 
 /// Convert a 77-bit FT8 message into the 79-tone Gray-mapped
@@ -399,9 +438,10 @@ pub unsafe extern "C" fn mfsk_ft8_pack77(
 pub unsafe extern "C" fn mfsk_ft8_message_to_tones(
     message77: *const u8,
     out_itone: *mut u8,
-) -> MfskFt8Status {
+) -> MfskStatus {
     if message77.is_null() || out_itone.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_message_to_tones: null pointer");
+        return MfskStatus::NullPointer;
     }
     let msg_slice = unsafe { core::slice::from_raw_parts(message77, 77) };
     let mut msg77 = [0u8; 77];
@@ -409,7 +449,7 @@ pub unsafe extern "C" fn mfsk_ft8_message_to_tones(
     let itone = message_to_tones(&msg77);
     let dst = unsafe { core::slice::from_raw_parts_mut(out_itone, 79) };
     dst.copy_from_slice(&itone);
-    MfskFt8Status::Ok
+    MfskStatus::Ok
 }
 
 /// Synthesise FT8 i16 PCM (12 kHz mono) from a 79-tone sequence
@@ -428,7 +468,8 @@ pub unsafe extern "C" fn mfsk_ft8_message_to_tones(
 /// # Safety
 /// `itone` must point to 79 valid bytes (each 0..7). `out` must
 /// point to a writable buffer of at least `out_len` i16 samples.
-/// Returns `ScratchTooSmall` if `out_len < TONES_OUTPUT_LEN`.
+/// Returns `InvalidArg` if `out_len < TONES_OUTPUT_LEN` (see
+/// [`mfsk_ft8_last_error`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_ft8_tones_to_i16(
     itone: *const u8,
@@ -436,19 +477,21 @@ pub unsafe extern "C" fn mfsk_ft8_tones_to_i16(
     amplitude_i16: i16,
     out: *mut i16,
     out_len: usize,
-) -> MfskFt8Status {
+) -> MfskStatus {
     if itone.is_null() || out.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_tones_to_i16: null pointer");
+        return MfskStatus::NullPointer;
     }
     if out_len < TONES_OUTPUT_LEN {
-        return MfskFt8Status::ScratchTooSmall;
+        set_error("mfsk_ft8_tones_to_i16: out_len < mfsk_ft8_synth_output_len()");
+        return MfskStatus::InvalidArg;
     }
     let itone_slice = unsafe { core::slice::from_raw_parts(itone, 79) };
     let mut itone_arr = [0u8; 79];
     itone_arr.copy_from_slice(itone_slice);
     let out_slice = unsafe { core::slice::from_raw_parts_mut(out, TONES_OUTPUT_LEN) };
     tones_to_i16_into(out_slice, &itone_arr, f0_hz, amplitude_i16);
-    MfskFt8Status::Ok
+    MfskStatus::Ok
 }
 
 /// f32 variant of [`mfsk_ft8_tones_to_i16`]. `amplitude` is unitless
@@ -457,8 +500,8 @@ pub unsafe extern "C" fn mfsk_ft8_tones_to_i16(
 /// # Safety
 /// Same as [`mfsk_ft8_tones_to_i16`] — `itone` must point to 79
 /// valid bytes, `out` must point to a writable f32 buffer of at
-/// least `out_len` samples; returns `ScratchTooSmall` if `out_len`
-/// is below `mfsk_ft8_synth_output_len()`.
+/// least `out_len` samples; returns `InvalidArg` if `out_len` is
+/// below `mfsk_ft8_synth_output_len()` (see [`mfsk_ft8_last_error`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mfsk_ft8_tones_to_f32(
     itone: *const u8,
@@ -466,19 +509,21 @@ pub unsafe extern "C" fn mfsk_ft8_tones_to_f32(
     amplitude: f32,
     out: *mut f32,
     out_len: usize,
-) -> MfskFt8Status {
+) -> MfskStatus {
     if itone.is_null() || out.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_tones_to_f32: null pointer");
+        return MfskStatus::NullPointer;
     }
     if out_len < TONES_OUTPUT_LEN {
-        return MfskFt8Status::ScratchTooSmall;
+        set_error("mfsk_ft8_tones_to_f32: out_len < mfsk_ft8_synth_output_len()");
+        return MfskStatus::InvalidArg;
     }
     let itone_slice = unsafe { core::slice::from_raw_parts(itone, 79) };
     let mut itone_arr = [0u8; 79];
     itone_arr.copy_from_slice(itone_slice);
     let out_slice = unsafe { core::slice::from_raw_parts_mut(out, TONES_OUTPUT_LEN) };
     tones_to_f32_into(out_slice, &itone_arr, f0_hz, amplitude);
-    MfskFt8Status::Ok
+    MfskStatus::Ok
 }
 
 // ── Streaming wrapper: I2S / USB-Audio chunk capture → 12 kHz ring ─────────
@@ -600,7 +645,7 @@ pub unsafe extern "C" fn mfsk_ft8_stream_free(stream: *mut MfskFt8Stream) {
 /// 12 kHz internally and appends to the ring (oldest samples
 /// overwritten if the ring is full).
 ///
-/// Returns [`MfskFt8Status::Ok`] on success, [`MfskFt8Status::NullPointer`]
+/// Returns [`MfskStatus::Ok`] on success, [`MfskStatus::NullPointer`]
 /// if `stream` or `samples` is null (or `n == 0` with non-null
 /// samples is allowed and is a no-op).
 ///
@@ -612,15 +657,17 @@ pub unsafe extern "C" fn mfsk_ft8_stream_push_i16(
     stream: *mut MfskFt8Stream,
     samples: *const i16,
     n: usize,
-) -> MfskFt8Status {
+) -> MfskStatus {
     if stream.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_stream_push_i16: null stream");
+        return MfskStatus::NullPointer;
     }
     if n == 0 {
-        return MfskFt8Status::Ok;
+        return MfskStatus::Ok;
     }
     if samples.is_null() {
-        return MfskFt8Status::NullPointer;
+        set_error("mfsk_ft8_stream_push_i16: null samples");
+        return MfskStatus::NullPointer;
     }
     let stream = unsafe { &mut *stream };
     let src = unsafe { core::slice::from_raw_parts(samples, n) };
@@ -651,7 +698,7 @@ pub unsafe extern "C" fn mfsk_ft8_stream_push_i16(
             }
         }
     }
-    MfskFt8Status::Ok
+    MfskStatus::Ok
 }
 
 /// Number of 12 kHz samples currently buffered.

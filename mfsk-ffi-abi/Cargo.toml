@@ -1,0 +1,10 @@
+[package]
+name        = "mfsk-ffi-abi"
+version.workspace = true
+edition     = "2024"
+license     = "GPL-3.0-or-later"
+publish     = false
+description = "Shared #[repr(C)] status/result/options types for mfsk-ffi and mfsk-ffi-ft8 (issue #205) — not a standalone C ABI on its own; each consuming crate generates its own cbindgen header re-emitting these definitions."
+
+[lib]
+name = "mfsk_ffi_abi"

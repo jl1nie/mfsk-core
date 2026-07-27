@@ -49,39 +49,68 @@ typedef enum MfskProtocol {
 } MfskProtocol;
 
 /**
- * Status / error code returned by every fallible `mfsk_*` call.
+ * Decode cost/recall tradeoff, shared across every protocol both FFI
+ * crates expose — mirrors `mfsk_core`'s generic
+ * `engine::pipeline::DecodeDepth` (`BP_ONLY` / `FULL`).
  *
- * Zero is success. Negative values indicate errors; use
- * [`mfsk_last_error`] for a human-readable description.
+ * Discriminant `0` is intentionally unassigned — FT8's pre-0.7.0
+ * single-metric `Bp` rung was retired (issue #74); existing callers
+ * passing `1`/`2` remain valid.
+ */
+typedef enum MfskDecodeDepth {
+    /**
+     * Full LLR-variant staircase + BP, no OSD fallback.
+     */
+    MFSK_DECODE_DEPTH_BP_ALL = 1,
+    /**
+     * Above + OSD fallback (host-only; a no-op on protocols/builds
+     * without an OSD path).
+     */
+    MFSK_DECODE_DEPTH_BP_ALL_OSD = 2,
+} MfskDecodeDepth;
+
+/**
+ * Outcome of a fallible `mfsk_*` / `mfsk_ft8_*` call.
+ *
+ * Zero is success; negative values are errors. Both crates additionally
+ * expose a `_last_error()` function (`mfsk_last_error` /
+ * `mfsk_ft8_last_error`) returning a human-readable string for the
+ * specific failure reason — the numeric code stays a small, stable
+ * set; the string carries the detail (e.g. which buffer was too
+ * short, which enum value was out of range).
  */
 typedef enum MfskStatus {
     /**
-     * Success.
+     * Success (zero or more results in the output list).
      */
     MFSK_STATUS_OK = 0,
     /**
-     * A caller-supplied argument was invalid (null pointer to a
-     * non-optional arg, out-of-range size, malformed string, etc.).
+     * A required pointer argument was null.
      */
-    MFSK_STATUS_INVALID_ARG = -1,
+    MFSK_STATUS_NULL_POINTER = -1,
+    /**
+     * A non-null argument was invalid: malformed UTF-8, an
+     * out-of-range enum discriminant, an audio buffer too short for
+     * the protocol's slot length, a caller-provided output buffer
+     * too small, etc. See `_last_error()` for which.
+     */
+    MFSK_STATUS_INVALID_ARG = -2,
     /**
      * The supplied protocol tag is not recognised or not supported
-     * by this build (e.g. FST4 in a build that was compiled without
-     * the `fst4` feature would report this at decode / encode time).
+     * by this build (e.g. a protocol compiled out via feature flags).
      */
-    MFSK_STATUS_UNKNOWN_PROTOCOL = -2,
+    MFSK_STATUS_UNKNOWN_PROTOCOL = -3,
     /**
-     * The decoder ran without a fatal error but produced no results;
-     * the message list is empty. Used by some encode helpers to
-     * signal that the message could not be packed into the protocol
-     * payload (e.g. unsupported callsign format).
+     * The call ran without a fatal error but produced no usable
+     * result — e.g. an encode helper that could not pack the given
+     * callsign/grid/report into the protocol's message payload.
      */
-    MFSK_STATUS_DECODE_FAILED = -3,
+    MFSK_STATUS_DECODE_FAILED = -4,
     /**
      * Internal error: an invariant of the Rust implementation was
-     * violated (e.g. a `Box::from_raw` got a bad pointer). Always a bug.
+     * violated. Always a bug; please report it.
      */
-    MFSK_STATUS_INTERNAL = -4,
+    MFSK_STATUS_INTERNAL = -5,
 } MfskStatus;
 
 /**
@@ -171,9 +200,47 @@ typedef struct MfskDecoder {
 } MfskDecoder;
 
 /**
- * One successfully decoded message.
+ * Opaque decode-tuning-options handle (issue #205) — construct with
+ * each crate's own `_options_new(...)`, release with
+ * `_options_free`.
+ *
+ * Both `mfsk-ffi` and `mfsk-ffi-ft8` used to hardcode (or take
+ * entirely positionally, with no room to add more later) every
+ * decode-tuning knob. Wrapping them behind an opaque handle now means
+ * a future knob is a new, optional setter function — the options
+ * constructor and every decode function's signature stay stable
+ * forever; only additive growth on the setter side.
+ *
+ * Zero-sized marker type + phantom pointer, matching the established
+ * `MfskDecoder` opaque-handle shape in `mfsk-ffi` — each consuming
+ * crate `Box`es its own private options struct and casts the raw
+ * pointer to/from this type. Defined once here purely so both
+ * crates' generated headers agree on the type name / pointer shape.
  */
-typedef struct MfskMessage {
+typedef struct MfskDecodeOptions {
+    uint8_t _priv[0];
+} MfskDecodeOptions;
+
+/**
+ * One successfully decoded message, shared shape across every
+ * protocol both FFI crates expose.
+ *
+ * `text` is a fixed inline buffer (not a heap pointer): the whole
+ * [`MfskResultList`] is one allocation, freed in one call, with no
+ * per-message ownership to track — the model `mfsk-ffi-ft8` already
+ * used, now shared by `mfsk-ffi` too (issue #205; previously
+ * `mfsk-ffi`'s `MfskMessage` held a heap `CString` pointer per
+ * message instead).
+ */
+typedef struct MfskResult {
+    /**
+     * NUL-terminated UTF-8 decoded message text. ASCII in practice.
+     *
+     * Length is [`MFSK_TEXT_BUF_LEN`] (`40`); written as a bare
+     * literal here rather than the constant — see
+     * [`MFSK_TEXT_BUF_LEN`]'s doc comment for why.
+     */
+    char text[40];
     /**
      * Carrier (tone-0) frequency in Hz.
      */
@@ -183,42 +250,42 @@ typedef struct MfskMessage {
      */
     float dt_sec;
     /**
-     * WSJT-X compatible SNR in dB (2500 Hz reference bandwidth).
+     * WSJT-X-compatible SNR estimate, dB (2500 Hz reference bandwidth).
      */
     float snr_db;
     /**
-     * Hard-decision errors corrected by the FEC.
+     * Hard-decision errors corrected by the FEC (0 if not applicable).
      */
     uint32_t hard_errors;
     /**
-     * Decode pass identifier (matches the Rust `DecodeResult::pass`).
+     * Decode pass/stage identifier; meaning is protocol-specific.
      */
     uint8_t pass;
     /**
-     * UTF-8, NUL-terminated message text. Owned by the parent
-     * [`MfskMessageList`]; do not free individually.
+     * Padding to keep the struct's layout stable across compilers.
      */
-    char *text;
-} MfskMessage;
+    uint8_t _pad[3];
+} MfskResult;
 
 /**
- * List of decoded messages returned from a decode call. Caller should
- * zero-initialise before the call; callee fills `items` / `len`.
+ * List of decoded messages, owned by the FFI side. Free with the
+ * crate's `_result_list_free` function.
  */
-typedef struct MfskMessageList {
+typedef struct MfskResultList {
     /**
-     * Array of `len` `MfskMessage` values.
+     * Pointer to the first result, or null if `len == 0`.
      */
-    struct MfskMessage *items;
+    struct MfskResult *items;
     /**
-     * Number of entries in `items`.
+     * Number of valid entries.
      */
     uintptr_t len;
     /**
-     * Internal: total allocation (reserved for future growth).
+     * Total allocation length (private — only the free function
+     * needs this; may exceed `len`).
      */
-    uintptr_t _cap;
-} MfskMessageList;
+    uintptr_t _capacity;
+} MfskResultList;
 
 /**
  * A buffer of synthesised f32 PCM samples returned by `mfsk_encode_*`.
@@ -271,16 +338,45 @@ struct MfskDecoder *mfsk_decoder_new(enum MfskProtocol protocol);
 void mfsk_decoder_free(struct MfskDecoder *dec);
 
 /**
- * Free a [`MfskMessageList`] populated by a decode call. Passing NULL
+ * Construct a decode-options handle overriding
+ * [`mfsk_decode_f32`]/[`mfsk_decode_i16`]'s per-protocol default
+ * search range / threshold / depth for the FT8/FT4/FST4-60A/Q65-30A
+ * protocols (WSPR/JT9/JT65 decode at a fixed alignment with no
+ * tunable search — `options` is ignored for those). `freq_min_hz`/
+ * `freq_max_hz` bound the carrier search range. `sync_min` is the
+ * candidate threshold. `max_cand` caps survivors after coarse sync.
+ * `depth` picks the decoder staircase.
+ *
+ * Free with [`mfsk_decode_options_free`]. A later knob (issue #205)
+ * arrives as a new, optional setter function — this constructor's
+ * signature and every decode function's signature stay stable.
+ */
+struct MfskDecodeOptions *mfsk_decode_options_new(float freq_min_hz,
+                                                  float freq_max_hz,
+                                                  float sync_min,
+                                                  int max_cand,
+                                                  enum MfskDecodeDepth depth);
+
+/**
+ * Free a handle from [`mfsk_decode_options_new`]. NULL is a no-op.
+ *
+ * # Safety
+ * `opts` must be a pointer previously returned by
+ * [`mfsk_decode_options_new`], or NULL.
+ */
+void mfsk_decode_options_free(struct MfskDecodeOptions *opts);
+
+/**
+ * Free a [`MfskResultList`] populated by a decode call. Passing NULL
  * or an already-freed list is safe.
  *
  * # Safety
  *
- * `list` must point to a [`MfskMessageList`] written by one of the
+ * `list` must point to a [`MfskResultList`] written by one of the
  * `mfsk_decode_*` functions, or be NULL. After this call, `items` is
  * NULL and `len` is 0.
  */
-void mfsk_message_list_free(struct MfskMessageList *list);
+void mfsk_result_list_free(struct MfskResultList *list);
 
 /**
  * Free a [`MfskSamples`] buffer populated by a `mfsk_encode_*` call.
@@ -307,7 +403,7 @@ void mfsk_samples_free(struct MfskSamples *s);
  *
  * On success, `out` is filled with the list of decoded messages
  * (may be empty). The caller owns the list and must release it with
- * [`mfsk_message_list_free`].
+ * [`mfsk_result_list_free`].
  *
  * Samples should be scaled to roughly ±1.0 (full-scale sine = 1.0).
  *
@@ -318,9 +414,14 @@ void mfsk_samples_free(struct MfskSamples *s);
  * - `n_samples` — number of samples in `samples`.
  * - `sample_rate` — sample rate of `samples` in Hz (commonly 12000,
  *   48000, or 44100). Must be ≥ 8000 Hz.
- * - `out` — pointer to a caller-allocated `MfskMessageList` that is
+ * - `options` — decode-tuning handle from [`mfsk_decode_options_new`],
+ *   or null to use each protocol's built-in default search range /
+ *   threshold / depth. Applies to FT8/FT4/FST4-60A/Q65-30A; ignored
+ *   (accepted but unused) for WSPR/JT9/JT65, which have no tunable
+ *   search knobs today.
+ * - `out` — pointer to a caller-allocated `MfskResultList` that is
  *   either zero-initialised or previously freed via
- *   [`mfsk_message_list_free`].
+ *   [`mfsk_result_list_free`].
  *
  * # Returns
  *
@@ -332,14 +433,16 @@ void mfsk_samples_free(struct MfskSamples *s);
  *
  * - `dec` must be a live [`MfskDecoder`] handle.
  * - `samples` must point to `n_samples` valid `f32` values.
- * - `out` must point to a writable [`MfskMessageList`]; caller must
- *   pair with [`mfsk_message_list_free`].
+ * - `options`, if non-null, must be a live [`MfskDecodeOptions`] handle.
+ * - `out` must point to a writable [`MfskResultList`]; caller must
+ *   pair with [`mfsk_result_list_free`].
  */
 enum MfskStatus mfsk_decode_f32(const struct MfskDecoder *dec,
                                 const float *samples,
                                 uintptr_t n_samples,
                                 uint32_t sample_rate,
-                                struct MfskMessageList *out);
+                                const struct MfskDecodeOptions *options,
+                                struct MfskResultList *out);
 
 /**
  * Decode one slot of 16-bit signed PCM audio.
@@ -357,7 +460,8 @@ enum MfskStatus mfsk_decode_i16(const struct MfskDecoder *dec,
                                 const int16_t *samples,
                                 uintptr_t n_samples,
                                 uint32_t sample_rate,
-                                struct MfskMessageList *out);
+                                const struct MfskDecodeOptions *options,
+                                struct MfskResultList *out);
 
 /**
  * Synthesise a standard FT8 message ("CALL1 CALL2 REPORT") at `freq_hz`
@@ -465,14 +569,14 @@ enum MfskStatus mfsk_encode_q65(enum MfskQ65SubMode submode,
  * # Safety
  *
  * `samples` must point to `n_samples` valid `f32` values.
- * `out` must point to a writable [`MfskMessageList`]; pair with
- * [`mfsk_message_list_free`] when done.
+ * `out` must point to a writable [`MfskResultList`]; pair with
+ * [`mfsk_result_list_free`] when done.
  */
 enum MfskStatus mfsk_q65_decode(enum MfskQ65SubMode submode,
                                 const float *samples,
                                 uintptr_t n_samples,
                                 uint32_t sample_rate,
-                                struct MfskMessageList *out);
+                                struct MfskResultList *out);
 
 /**
  * AP-hint Q65 scan-and-decode. Up to four optional hints
@@ -493,7 +597,7 @@ enum MfskStatus mfsk_q65_decode_with_ap(enum MfskQ65SubMode submode,
                                         const char *ap_call2,
                                         const char *ap_grid,
                                         const char *ap_report,
-                                        struct MfskMessageList *out);
+                                        struct MfskResultList *out);
 
 /**
  * Fast-fading Q65 scan-and-decode. Recovers the 5–8 dB the AWGN
@@ -513,7 +617,7 @@ enum MfskStatus mfsk_q65_decode_fading(enum MfskQ65SubMode submode,
                                        uint32_t sample_rate,
                                        float b90_ts,
                                        enum MfskQ65FadingModel fading_model,
-                                       struct MfskMessageList *out);
+                                       struct MfskResultList *out);
 
 /**
  * AP-list (template-matching) Q65 scan-and-decode. Builds the
@@ -536,7 +640,7 @@ enum MfskStatus mfsk_q65_decode_with_ap_list(enum MfskQ65SubMode submode,
                                              const char *my_call,
                                              const char *his_call,
                                              const char *his_grid,
-                                             struct MfskMessageList *out);
+                                             struct MfskResultList *out);
 
 /**
  * Library version, major.minor.patch packed into a 32-bit integer (8

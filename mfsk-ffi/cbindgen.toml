@@ -18,5 +18,13 @@ args = "vertical"
 [enum]
 rename_variants = "QualifiedScreamingSnakeCase"
 
+# parse_deps + a tight include allow-list: mfsk-ffi-abi's shared
+# MfskStatus/MfskResult/MfskResultList/MfskDecodeOptions/MfskDecodeDepth
+# (issue #205) are only `pub use`-re-exported here, not defined in this
+# crate — cbindgen must cross the crate boundary to see their real
+# definitions, or it silently emits function signatures referencing
+# types it never `typedef`s. Restricted to mfsk-ffi-abi (not `true`
+# alone) so mfsk-core's much larger dependency tree is never parsed.
 [parse]
-parse_deps = false
+parse_deps = true
+include = ["mfsk-ffi-abi"]

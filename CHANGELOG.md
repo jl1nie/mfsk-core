@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking)
 
 ### Added
 
@@ -1165,6 +1165,103 @@
   every Q65 WSJT-X real-off-air-sample recall gate: 10 GHz EME, 6 m
   ionoscatter/EME, 1296 MHz troposcatter, 120D rainscatter, optical
   scatter), `mfsk-ffi`/`mfsk-ffi-ft8` test suites, and `cargo doc`.
+- **Breaking**: unified `mfsk-ffi` and `mfsk-ffi-ft8`'s C ABI
+  conventions (issue #205, pre-0.8.0 public-API review) — the two FFI
+  crates had independently evolved incompatible shapes for the same
+  domain: clashing status vocabularies (`MfskStatus` vs
+  `MfskFt8Status`, both using `-1..-4` for different meanings),
+  duplicate result structs with different text-ownership models
+  (`mfsk-ffi`'s `MfskMessage` held a heap `CString*` per message;
+  `mfsk-ffi-ft8`'s `MfskFt8Result` always used a fixed inline buffer),
+  and decode entry points that hardcoded every tuning knob
+  positionally with no room to grow.
+
+  New zero-dependency `no_std` crate, `mfsk-ffi-abi`, is now the
+  single source of truth for the shared shape: `MfskStatus` (`Ok`,
+  `NullPointer`, `InvalidArg`, `UnknownProtocol`, `DecodeFailed`,
+  `Internal`), `MfskDecodeDepth` (`BpAll`/`BpAllOsd`, mirroring
+  `engine::pipeline::DecodeDepth`), `MfskResult`/`MfskResultList`
+  (fixed 40-byte inline `text` buffer, not a heap pointer — the whole
+  list is one allocation freed in one call), and an opaque
+  `MfskDecodeOptions` handle. Not published, not a C ABI on its own —
+  each consuming crate `pub use`-re-exports these types so its own
+  cbindgen-generated header carries identical definitions; not
+  parsed together in the same C translation unit (only one of
+  `mfsk.h`/`mfsk_ft8.h` is linked per target).
+
+  - `mfsk-ffi-ft8`: dropped its local `MfskFt8Status`/`MfskFt8Depth`/
+    `MfskFt8Result`/`MfskFt8ResultList` in favor of the shared types.
+    `mfsk_ft8_decode_i16` (host feature) and the pre-existing
+    `mfsk_ft8_decode_i16_alloc` are unified into one symbol name,
+    `mfsk_ft8_decode_i16`, taking an `MfskDecodeOptions*` (NULL = this
+    crate's built-in default) instead of five positional tuning
+    arguments — **C callers must rename `mfsk_ft8_decode_i16_alloc`
+    call sites and switch to an options handle.** Host error strings
+    moved from `thread_local!` (unavailable in `no_std`) to a
+    documented single-threaded `static mut` buffer written via raw
+    pointer arithmetic (`&raw mut`/`copy_nonoverlapping`, satisfying
+    the `dangerous_implicit_autorefs` lint).
+  - `mfsk-ffi`: dropped its local `MfskStatus`/`MfskMessage`/
+    `MfskMessageList` in favor of the shared types (renamed
+    `MfskMessageList`→`MfskResultList`, `MfskMessage`→`MfskResult`,
+    `mfsk_message_list_free`→`mfsk_result_list_free`). `MfskResult::text`
+    is now a fixed inline buffer instead of a heap `CString*` — no
+    more per-message `CString::from_raw` in the free path, matching
+    `mfsk-ffi-ft8`'s existing model. **Breaking**: `mfsk_decode_f32`/
+    `mfsk_decode_i16` gained a new `options: *const MfskDecodeOptions`
+    parameter (construct with `mfsk_decode_options_new`, release with
+    `mfsk_decode_options_free`) — **C callers must add a NULL (or
+    real) argument at every call site.** NULL preserves each
+    protocol's pre-0.8.0 hardcoded defaults exactly (FT8: 200-3000 Hz/
+    sync_min 2.0/max_cand 50/`BpAllOsd`; FT4: sync_min 1.2; FST4-60A:
+    100-3000 Hz/sync_min 0.8/max_cand 30); a non-null handle overrides
+    freq range/sync_min/max_cand uniformly, and depth for FT8. Q65's
+    generic-handle path (`decode_q65_default`) also honours the
+    freq-range/max_cand override; `decode_wspr`/`decode_jt9_aligned`/
+    `decode_jt65_aligned` and the dedicated `mfsk_q65_*` function
+    family are untouched (no tunable search knobs to wire, or a
+    separate ABI surface out of scope for this issue).
+
+  Caught during verification, fixed as part of this same change:
+  both crates' `cbindgen.toml` had `parse_deps = false`, which made
+  cbindgen silently emit function signatures referencing the shared
+  types **without ever `typedef`-ing them** in the generated header
+  (a `pub use`-re-exported type isn't visible to cbindgen unless it
+  parses the defining crate) — `MfskResult` in particular collapsed
+  to a field-less opaque forward declaration because its `text` field
+  used a `MFSK_TEXT_CAP + 1` compound array-length expression cbindgen
+  can't evaluate across a crate boundary (a bare literal works fine,
+  hence `mfsk-ffi-abi::MFSK_TEXT_BUF_LEN` — a derived constant used
+  Rust-side, with a `const _` assertion keeping it in sync — while the
+  struct field itself stays a literal `40`). Fixed by turning on
+  `parse_deps = true` with `include = ["mfsk-ffi-abi"]` (not a bare
+  `parse_deps = true`, which would additionally — and needlessly —
+  parse all of `mfsk-core` through the `mfsk-ffi`/`mfsk-ffi-ft8`
+  dependency graph). Verified both regenerated headers now carry
+  full, byte-identical (differing only in indentation style per
+  crate's `cbindgen.toml`) definitions for every shared type.
+
+  Updated every call site: `mfsk-ffi/tests/{q65_ffi,wsjt_ffi}.rs`,
+  `mfsk-ffi-ft8/tests/streaming.rs`, `mfsk-ffi/examples/cpp_smoke`
+  (built + run, including the `RUN_FST4_ROUNDTRIP=1` gated path),
+  `mfsk-ffi-ft8/tests/c_smoke/{smoke.c,tx_rx_round_trip.c}` (built +
+  run against a real WAV and a synthesised round-trip),
+  `mfsk-ffi-ft8/examples/streaming_recipe.c` (compile-checked; it's a
+  documentation artefact with no `main`), `mfsk-ffi/examples/kotlin_jni/
+  native/mfsk_jni.c` + its `README.md`, and `embedded-poc/embedded-shared/
+  src/apps/compute_bench.rs`'s FFI smoke path (path-dependency outside
+  the workspace, not compile-verified here — no `+esp` toolchain in
+  this environment; run `cargo check` there before flashing).
+  `docs/reference/{LIBRARY,EMBEDDED}.md` and their `.ja.md`
+  counterparts updated to match, including a pre-existing stale
+  `NULL, NULL, // Goertzel` leftover in `EMBEDDED.md`'s streaming
+  recipe (from the #162 BASIS-scratch removal, unrelated to this
+  issue but caught in the same doc pass).
+
+  Verified clean across the `mfsk-core` feature matrix (unaffected by
+  this issue, reconfirmed), clippy `--workspace --all-targets`, full
+  test suite (`mfsk-ffi`/`mfsk-ffi-ft8`/`mfsk-ffi-abi`), `cargo doc`,
+  and the C/C++ smoke drivers above.
 
 ### Fixed
 
