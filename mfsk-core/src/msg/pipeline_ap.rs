@@ -334,6 +334,15 @@ fn finalise_result<P: Protocol>(
 /// the underlying AP path writes to Wsjt77 bit positions and only makes
 /// sense for protocols whose 77-bit message field shares that layout.
 #[allow(clippy::too_many_arguments)]
+// Only `ft4::decode`/`fst4::decode` call this (issue #203's pub(crate)
+// demotion made that reachability-dependent-on-feature visible to
+// rustc): dead code under any feature combination that excludes both
+// `ft4` and `fst4` (`jt9`/`jt65`/`q65`-only, etc). `#[allow(dead_code)]`
+// here also covers this function's own private callees
+// (`ap_bits_for`/`ap_passes`/`process_candidate_ap`/`finalise_result`),
+// which would otherwise separately warn once this entry point is
+// unreachable.
+#[allow(dead_code)]
 pub(crate) fn decode_sniper_ap<P: Protocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,

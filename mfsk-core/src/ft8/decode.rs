@@ -537,7 +537,7 @@ fn sic_inner_passes_with_cache(
             build_fft_cache(residual)
         };
         if ipass == 0 {
-            pass0_cache = Some(fft_cache.clone());
+            pass0_cache = Some(FftCache(fft_cache.clone()));
         }
         for cand in &candidates {
             let r = match process_candidate_with_scratch(
@@ -604,7 +604,7 @@ fn sic_inner_passes_with_cache(
     // which case `pass0_cache` was never set — build one from the
     // (possibly already-subtracted) residual as a fallback, matching
     // `decode_frame_inner`'s "cache is always returned" contract.
-    let fft_cache = pass0_cache.unwrap_or_else(|| build_fft_cache(residual));
+    let fft_cache = pass0_cache.unwrap_or_else(|| FftCache(build_fft_cache(residual)));
     (all_results, fft_cache)
 }
 
@@ -891,7 +891,7 @@ fn decode_sniper_inner(
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
     let candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
-    let fft_cache = build_fft_cache(audio);
+    let fft_cache = FftCache(build_fft_cache(audio));
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
@@ -903,7 +903,7 @@ fn decode_sniper_inner(
             process_candidate(
                 cand,
                 audio,
-                &fft_cache,
+                fft_cache.as_slice(),
                 depth,
                 strictness,
                 &[],
@@ -919,7 +919,7 @@ fn decode_sniper_inner(
             process_candidate(
                 cand,
                 audio,
-                &fft_cache,
+                fft_cache.as_slice(),
                 depth,
                 strictness,
                 &[],
@@ -956,10 +956,13 @@ impl FrameDecodable for Ft8 {
             req.strictness,
             req.known,
             req.eq_mode,
-            req.fft_cache.as_deref(),
+            req.fft_cache.as_ref().map(FftCache::as_slice),
             req.ap_hint,
         );
-        DecodeOutcome { results, fft_cache }
+        DecodeOutcome {
+            results,
+            fft_cache: FftCache(fft_cache),
+        }
     }
 
     fn __sniper(req: &SniperRequest<'_, Self>) -> DecodeOutcome<Self> {
@@ -1000,7 +1003,7 @@ impl SupportsFlatSic for Ft8 {
                 req.known,
                 req.eq_mode,
                 req.ap_hint,
-                req.fft_cache.as_deref(),
+                req.fft_cache.as_ref().map(FftCache::as_slice),
             );
             DecodeOutcome { results, fft_cache }
         } else {
@@ -1073,7 +1076,7 @@ impl SupportsStagedSic for Ft8 {
         // subtraction on a very strong carrier could still leave enough
         // residual to re-cross the CRC/OSD threshold.
         results.retain(|r| !req.known.iter().any(|k| k.message77 == r.message77));
-        let fft_cache = build_fft_cache(&residual);
+        let fft_cache = FftCache(build_fft_cache(&residual));
         DecodeOutcome { results, fft_cache }
     }
 }

@@ -28,7 +28,32 @@ use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 
 /// FFT cache for the initial large forward transform; reusable across passes.
-pub type FftCache = Vec<Complex<f32>>;
+///
+/// Opaque wrapper (issue #206, part of the pre-0.8.0 public-API review):
+/// used to be `pub type FftCache = Vec<Complex<f32>>`, which leaked
+/// `num_complex::Complex` — a dependency's type, not this crate's own —
+/// into the public API. There's no public constructor and no way to
+/// inspect the contents; obtain one from a `decode_frame`-family return
+/// value / [`crate::msg::decode_request::DecodeOutcome::fft_cache`] and
+/// pass it straight back into
+/// [`crate::msg::decode_request::DecodeRequest::fft_cache`] or
+/// `decode_frame`'s `precomputed_fft` param.
+#[derive(Clone)]
+pub struct FftCache(pub(crate) Vec<Complex<f32>>);
+
+impl FftCache {
+    pub(crate) fn as_slice(&self) -> &[Complex<f32>] {
+        &self.0
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// How much extra work the BP staircase does per candidate before falling
 /// back to more expensive strategies. The only axis embedded targets ever
@@ -341,6 +366,10 @@ pub fn process_candidate_basic<P: GenericPipelineProtocol>(
 }
 
 #[cfg(not(feature = "internal-testing"))]
+// Only reachable via `decode_frame`/`decode_frame_subtract`, themselves
+// only called by `ft4`/`fst4`'s `decode` modules — dead code under any
+// feature combination excluding both (e.g. `jt9`/`jt65`/`q65`-only).
+#[allow(dead_code)]
 pub(crate) fn process_candidate_basic<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
@@ -770,6 +799,9 @@ pub fn decode_frame<P: GenericPipelineProtocol>(
 }
 
 #[cfg(not(feature = "internal-testing"))]
+// Only called by `ft4`/`fst4`'s `decode` modules — dead code under any
+// feature combination excluding both (e.g. `jt9`/`jt65`/`q65`-only).
+#[allow(dead_code)]
 pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
@@ -815,7 +847,7 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
     } else {
         coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     };
-    let fft_cache = build_fft_cache(audio, cfg);
+    let fft_cache = FftCache(build_fft_cache(audio, cfg));
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
@@ -826,7 +858,7 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
         .filter_map(|cand| {
             process_candidate_basic::<P>(
                 cand,
-                &fft_cache,
+                fft_cache.as_slice(),
                 cfg,
                 depth,
                 strictness,
@@ -842,7 +874,7 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
         .filter_map(|cand| {
             process_candidate_basic::<P>(
                 cand,
-                &fft_cache,
+                fft_cache.as_slice(),
                 cfg,
                 depth,
                 strictness,
@@ -879,6 +911,12 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
 /// the residual audio; decoded signals are reconstructed and subtracted so
 /// subsequent passes can expose previously-masked weak signals.
 #[allow(clippy::too_many_arguments)]
+// Only `ft4::decode` calls this (issue #203's pub(crate) demotion made
+// that reachability-dependent-on-feature visible to rustc): dead code
+// under any feature combination that excludes `ft4` (`fst4`-only,
+// `jt9`/`jt65`/`q65`/`uvpacket`, `ft8`+`alloc`/`fft-extern` embedded
+// presets, etc).
+#[allow(dead_code)]
 pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,

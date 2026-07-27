@@ -1038,6 +1038,24 @@
   `full` for `cargo test`/`cargo clippy --all-targets` only; `cargo doc`/
   `cargo publish` stay on the `pub(crate)` shape downstream consumers
   actually see.
+- **Breaking**: `core::pipeline::FftCache` (re-exported at
+  `ft8::decode::FftCache`) is now an opaque newtype instead of `pub type
+  FftCache = Vec<Complex<f32>>` (issue #206, pre-0.8.0 public-API
+  review) — the old alias leaked `num_complex::Complex`, a dependency's
+  type, into the public API. No public constructor and no way to
+  inspect the contents; obtain one from a `decode_frame`-family return
+  value / `DecodeOutcome::fft_cache` and pass it straight back into
+  `DecodeRequest::fft_cache`. Added `FftCache::len`/`is_empty` for the
+  one query downstream code plausibly needs.
+- #203's `pub(crate)` demotion (above) surfaced `-D warnings`
+  `dead_code` failures across the `feature-matrix` CI job's
+  single-protocol builds (`fst4`, `jt9`, `jt65`, `q65`, `uvpacket`, the
+  `alloc ft8 fft-extern[,fixed-point]` embedded presets) — several
+  `core::pipeline`/`msg::pipeline_ap` items are only reachable via
+  `ft4`/`fst4`'s `decode` modules, so any combination excluding both
+  now correctly sees them as unreachable (previously masked because
+  `pub` items are exempt from the lint regardless of in-crate callers).
+  `#[allow(dead_code)]` added at each such item.
 
 ### Fixed
 

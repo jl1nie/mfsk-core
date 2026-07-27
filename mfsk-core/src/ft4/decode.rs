@@ -13,7 +13,7 @@ use crate::core::dsp::subtract::SubtractCfg;
 use crate::core::pipeline;
 use crate::msg::pipeline_ap;
 
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
+pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{
     DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
@@ -122,7 +122,10 @@ impl FrameDecodable for Ft4 {
         // (old `decode_sniper_ap` returned `Vec<DecodeResult>` only), so
         // rebuild it once here purely to satisfy `DecodeOutcome`'s
         // uniform shape.
-        let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &FT4_DOWNSAMPLE);
+        let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+            req.audio,
+            &FT4_DOWNSAMPLE,
+        ));
         DecodeOutcome { results, fft_cache }
     }
 }
@@ -171,7 +174,10 @@ impl SupportsFlatSic for Ft4 {
         // Multi-pass SIC has no single "the" cache (residual changes every
         // pass) — rebuild from the original audio, matching the shape
         // `decode_frame_with_cache` used to return pre-#191.
-        let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &FT4_DOWNSAMPLE);
+        let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+            req.audio,
+            &FT4_DOWNSAMPLE,
+        ));
         DecodeOutcome {
             results: dedup_known(raw, req.known),
             fft_cache,

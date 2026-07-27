@@ -20,7 +20,7 @@
 use crate::core::dsp::downsample::DownsampleCfg;
 use crate::core::pipeline;
 
-pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
+pub use crate::core::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest};
 
@@ -185,7 +185,9 @@ macro_rules! impl_frame_decodable {
                     SYNC_Q_MIN / 2,
                     req.ap_hint,
                 );
-                let fft_cache = crate::core::dsp::downsample::build_fft_cache(req.audio, &$cfg);
+                let fft_cache = FftCache(crate::core::dsp::downsample::build_fft_cache(
+                    req.audio, &$cfg,
+                ));
                 DecodeOutcome { results, fft_cache }
             }
         }
