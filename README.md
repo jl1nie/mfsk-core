@@ -112,10 +112,10 @@ mfsk-core = { git = "https://github.com/jl1nie/mfsk-core", branch = "main", feat
 Synthesise an FT8 frame and decode it back:
 
 ```rust
-use mfsk_core::ft8::{
-    decode::{decode_frame, DecodeDepth},
-    wave_gen::{message_to_tones, tones_to_i16},
-};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::DecodeDepth;
+use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 // 1. Synthesise an FT8 frame and pad it into a 15-second slot.
@@ -129,7 +129,17 @@ let end = (start + frame.len()).min(audio.len());
 audio[start..end].copy_from_slice(&frame[..end - start]);
 
 // 2. Decode it back.
-for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None, DecodeDepth::FULL, 50) {
+let results = DecodeRequest::<Ft8>::new(
+    &audio,
+    /* freq_min */ 100.0,
+    /* freq_max */ 3_000.0,
+    /* sync_min */ 1.0,
+    /* max_cand */ 50,
+)
+.depth(DecodeDepth::FULL)
+.decode()
+.results;
+for r in &results {
     if let Some(text) = unpack77(&r.message77) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
@@ -142,11 +152,13 @@ decode it back. Each protocol module documents its own top-level entry
 points and carries its own Quick example:
 
 - [`mfsk_core::ft8`](https://docs.rs/mfsk-core/latest/mfsk_core/ft8/)
-  — `decode_frame` + `decode_sniper_ap` (narrow-band "sniper" mode)
+  — `DecodeRequest::<Ft8>` (wide-band) + `SniperRequest::<Ft8>`
+  (narrow-band "sniper" mode)
 - [`mfsk_core::ft4`](https://docs.rs/mfsk-core/latest/mfsk_core/ft4/)
-  — `decode_frame`
+  — `DecodeRequest::<Ft4>`
 - [`mfsk_core::fst4`](https://docs.rs/mfsk-core/latest/mfsk_core/fst4/)
-  — FST4-60A `decode_frame`; other sub-modes via `decode_frame_for::<Fst4s120>` etc.
+  — `DecodeRequest::<Fst4s60>` (FST4-60A); other sub-modes via
+  `DecodeRequest::<Fst4s120>` etc.
 - [`mfsk_core::wspr`](https://docs.rs/mfsk-core/latest/mfsk_core/wspr/)
   — `decode::decode_scan_default`
 - [`mfsk_core::jt9`](https://docs.rs/mfsk-core/latest/mfsk_core/jt9/)
