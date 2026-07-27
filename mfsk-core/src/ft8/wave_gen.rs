@@ -39,7 +39,7 @@ use super::{
 
 /// Append 14 CRC bits to a 77-bit message, producing 91 info bits. Uses the
 /// shared CRC-14 implementation from mfsk-fec.
-fn append_crc14(message77: &[u8; MSG_BITS]) -> [u8; LDPC_K] {
+fn append_crc14(message77: &[u8]) -> [u8; LDPC_K] {
     let mut bytes = [0u8; 12];
     for (i, &bit) in message77.iter().enumerate() {
         bytes[i / 8] |= (bit & 1) << (7 - i % 8);
@@ -55,7 +55,7 @@ fn append_crc14(message77: &[u8; MSG_BITS]) -> [u8; LDPC_K] {
 }
 
 /// Encode a 77-bit message into a 79-symbol FT8 tone sequence.
-pub fn message_to_tones(message77: &[u8; MSG_BITS]) -> [u8; NN] {
+pub fn message_to_tones(message77: &[u8]) -> [u8; NN] {
     let info = append_crc14(message77);
     let cw = ldpc_encode(&info);
     let generic = crate::engine::tx::codeword_to_itone::<Ft8>(&cw);
@@ -207,7 +207,8 @@ mod tests {
         );
         // The decoded message77 bits should match.
         assert_eq!(
-            results[0].message77, msg,
+            results[0].message77(),
+            msg,
             "decoded message77 does not match input"
         );
     }
@@ -261,7 +262,7 @@ mod tests {
                 .results;
             assert!(!results.is_empty(), "decode found nothing for: {expected}");
 
-            let decoded = unpack77(&results[0].message77)
+            let decoded = unpack77(results[0].message77())
                 .unwrap_or_else(|| panic!("unpack decoded bits failed for: {expected}"));
             assert_eq!(
                 decoded, expected,

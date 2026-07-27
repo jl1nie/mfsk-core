@@ -138,7 +138,7 @@ fn qso3_full_parity_meets_wsjtx_golden_floor() {
     let mut by_msg: std::collections::HashMap<String, &mfsk_core::ft8::decode::DecodeResult> =
         std::collections::HashMap::new();
     for r in &decoded {
-        if let Some(text) = unpack77(&r.message77) {
+        if let Some(text) = unpack77(r.message77()) {
             by_msg.insert(text, r);
         }
     }
@@ -200,7 +200,7 @@ fn qso3_full_parity_meets_wsjtx_golden_floor() {
     let phantoms: Vec<&mfsk_core::ft8::decode::DecodeResult> = decoded
         .iter()
         .filter(|r| {
-            unpack77(&r.message77)
+            unpack77(r.message77())
                 .map(|t| !golden_msgs.contains(&t))
                 .unwrap_or(false)
         })
@@ -208,7 +208,7 @@ fn qso3_full_parity_meets_wsjtx_golden_floor() {
     if !phantoms.is_empty() {
         println!("\nphantoms ({}):", phantoms.len());
         for r in &phantoms {
-            if let Some(text) = unpack77(&r.message77) {
+            if let Some(text) = unpack77(r.message77()) {
                 println!(
                     "  ✗ {:>4.0} Hz  SNR={:>5.1} dB  e={:>2}  '{}'",
                     r.freq_hz, r.snr_db, r.hard_errors, text

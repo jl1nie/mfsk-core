@@ -198,7 +198,7 @@ fn qso3_apoff_meets_jtdx_recall_floor() {
     let mut by_msg: std::collections::HashMap<String, &mfsk_core::ft8::decode::DecodeResult> =
         std::collections::HashMap::new();
     for r in &decoded {
-        if let Some(text) = unpack77(&r.message77) {
+        if let Some(text) = unpack77(r.message77()) {
             by_msg.insert(text, r);
         }
     }
@@ -258,7 +258,7 @@ fn qso3_apoff_meets_jtdx_recall_floor() {
     let extras: Vec<&mfsk_core::ft8::decode::DecodeResult> = decoded
         .iter()
         .filter(|r| {
-            unpack77(&r.message77)
+            unpack77(r.message77())
                 .map(|t| !golden_msgs.contains(&t))
                 .unwrap_or(false)
         })
@@ -266,7 +266,7 @@ fn qso3_apoff_meets_jtdx_recall_floor() {
     if !extras.is_empty() {
         println!("\nextras (not in JTDX golden — could be WSJT-X-only or other):");
         for r in &extras {
-            if let Some(text) = unpack77(&r.message77) {
+            if let Some(text) = unpack77(r.message77()) {
                 println!(
                     "  • {:>4.0} Hz  SNR={:>5.1} dB  e={:>2}  '{}'",
                     r.freq_hz, r.snr_db, r.hard_errors, text

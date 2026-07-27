@@ -72,7 +72,7 @@ fn decode_block_fixed_point_baseline() {
         r_into.len()
     );
     for r in &r_into {
-        let msg = unpack77(&r.message77).unwrap_or_else(|| "<unpack-fail>".into());
+        let msg = unpack77(r.message77()).unwrap_or_else(|| "<unpack-fail>".into());
         println!(
             "  freq={:6.1} dt={:+.3} hard_err={:3} snr={:+.1}  '{}'",
             r.freq_hz, r.dt_sec, r.hard_errors, r.snr_db, msg
@@ -123,7 +123,7 @@ fn decode_block_fixed_point_baseline() {
         r_split.len()
     );
     for r in &r_split {
-        let msg = unpack77(&r.message77).unwrap_or_else(|| "<unpack-fail>".into());
+        let msg = unpack77(r.message77()).unwrap_or_else(|| "<unpack-fail>".into());
         println!(
             "  freq={:6.1} dt={:+.3} hard_err={:3} snr={:+.1}  '{}'",
             r.freq_hz, r.dt_sec, r.hard_errors, r.snr_db, msg
@@ -166,7 +166,7 @@ fn decode_block_fixed_point_baseline() {
         r.len()
     );
     for r in &r {
-        let msg = unpack77(&r.message77).unwrap_or_else(|| "<unpack-fail>".into());
+        let msg = unpack77(r.message77()).unwrap_or_else(|| "<unpack-fail>".into());
         println!(
             "  freq={:6.1} dt={:+.3} hard_err={:3} snr={:+.1}  '{}'",
             r.freq_hz, r.dt_sec, r.hard_errors, r.snr_db, msg

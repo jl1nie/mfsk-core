@@ -65,7 +65,7 @@ const MAX_GRID4: u32 = 32_400;
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Read `len` bits starting at `start` from `msg` (MSB first) into a u32.
-fn read_bits(msg: &[u8; 77], start: usize, len: usize) -> u32 {
+fn read_bits(msg: &[u8], start: usize, len: usize) -> u32 {
     let mut n = 0u32;
     for i in start..start + len {
         n = (n << 1) | (msg[i] & 1) as u32;
@@ -74,7 +74,7 @@ fn read_bits(msg: &[u8; 77], start: usize, len: usize) -> u32 {
 }
 
 /// Same as `read_bits` but returns u64 (for the 58-bit field in Type 4).
-fn read_bits_u64(msg: &[u8; 77], start: usize, len: usize) -> u64 {
+fn read_bits_u64(msg: &[u8], start: usize, len: usize) -> u64 {
     let mut n = 0u64;
     for i in start..start + len {
         n = (n << 1) | (msg[i] & 1) as u64;
@@ -202,7 +202,7 @@ fn to_grid4(n: u32) -> Option<String> {
 }
 
 /// Decode a 71-bit free-text message (13 chars from a 42-char alphabet).
-fn unpack_free_text(msg: &[u8; 77]) -> String {
+fn unpack_free_text(msg: &[u8]) -> String {
     let mut n = 0u128;
     for i in 0..71 {
         n = (n << 1) | (msg[i] & 1) as u128;
@@ -232,7 +232,7 @@ fn unpack_free_text(msg: &[u8; 77]) -> String {
 /// - `1`    Standard: `CALL1 CALL2 GRID` or `CALL1 CALL2 REPORT`
 /// - `2`    Standard with `/P`
 /// - `4`    One non-standard callsign + 12-bit hashed counterpart
-pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
+pub fn unpack77(msg: &[u8]) -> Option<String> {
     let n3 = read_bits(msg, 71, 3);
     let i3 = read_bits(msg, 74, 3);
 
@@ -406,7 +406,7 @@ pub fn unpack77(msg: &[u8; 77]) -> Option<String> {
 ///
 /// Behaves identically to [`unpack77`] but replaces `<...>` placeholders with
 /// actual callsigns when they are found in the hash table.
-pub fn unpack77_with_hash(msg: &[u8; 77], ht: &CallsignHashTable) -> Option<String> {
+pub fn unpack77_with_hash(msg: &[u8], ht: &CallsignHashTable) -> Option<String> {
     let n3 = read_bits(msg, 71, 3);
     let i3 = read_bits(msg, 74, 3);
 

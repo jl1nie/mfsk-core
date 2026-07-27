@@ -125,7 +125,7 @@ fn decode_set(audio: &[i16], ap: Option<&ApHint>) -> BTreeSet<String> {
     req.decode()
         .results
         .into_iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect()
 }
 
@@ -258,7 +258,7 @@ fn qso3_apon_subtract_jtdx_extras_diag() {
         .results;
     let messages: BTreeSet<String> = decoded
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
 
     println!(

@@ -44,7 +44,7 @@ const FT8_CFG: SubtractCfg = SubtractCfg {
 /// underused the residual on busy bands; see the v0.6.2 CHANGELOG
 /// for the recall delta this rewire produced on `qso3_busy.wav`.
 pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
-    let tones = message_to_tones(&result.message77);
+    let tones = message_to_tones(result.message77());
     subtract_tones_lpf(
         audio,
         &tones,
@@ -65,7 +65,7 @@ pub fn subtract_signal_lpf(audio: &mut [i16], result: &DecodeResult) {
 /// a final decode pass to lock it down. Use plain [`subtract_signal_lpf`]
 /// once a candidate's `dt` is already final.
 pub fn subtract_signal_lpf_refine_dt(audio: &mut [i16], result: &DecodeResult) {
-    let tones = message_to_tones(&result.message77);
+    let tones = message_to_tones(result.message77());
     subtract_tones_lpf_refine_dt(
         audio,
         &tones,
@@ -93,7 +93,7 @@ pub fn subtract_signal_lpf_refine_dt(audio: &mut [i16], result: &DecodeResult) {
 /// this is a few ms per signal — call once per decoded result rather
 /// than per pass-2 candidate.
 pub fn refine_signal_freq(audio: &[i16], result: &DecodeResult) -> f32 {
-    let tones = message_to_tones(&result.message77);
+    let tones = message_to_tones(result.message77());
     crate::engine::dsp::subtract::refine_freq(
         audio,
         &tones,
@@ -111,6 +111,16 @@ mod tests {
     use super::super::wave_gen::{message_to_tones, tones_to_i16};
     use super::*;
 
+    /// Build a 91-bit `info` (K for LDPC174_91) from a 77-bit message,
+    /// zero-padding the CRC-14 tail — `message77()` only reads the
+    /// leading 77 bits, so the padding is never exercised by these
+    /// signal-reconstruction tests.
+    fn info91(msg77: [u8; 77]) -> Box<[u8]> {
+        let mut info = vec![0u8; 91];
+        info[..77].copy_from_slice(&msg77);
+        info.into_boxed_slice()
+    }
+
     #[test]
     fn subtract_reduces_power() {
         let msg = [0u8; 77];
@@ -126,7 +136,7 @@ mod tests {
             audio.iter().map(|&s| (s as f32).powi(2)).sum::<f32>() / audio.len() as f32;
 
         let result = DecodeResult {
-            message77: msg,
+            info: info91(msg),
             freq_hz: 1000.0,
             dt_sec: 0.0,
             hard_errors: 0,
@@ -161,7 +171,7 @@ mod tests {
         let power_before: f32 = audio.iter().map(|&s| (s as f32).powi(2)).sum::<f32>();
 
         let result = DecodeResult {
-            message77: msg,
+            info: info91(msg),
             freq_hz: 1000.0,
             dt_sec: 0.0,
             hard_errors: 0,
@@ -211,8 +221,8 @@ mod tests {
             .staged()
             .decode()
             .results;
-        let found_strong = results.iter().any(|r| r.message77 == msg_strong);
-        let found_weak = results.iter().any(|r| r.message77 == msg_weak);
+        let found_strong = results.iter().any(|r| r.message77() == msg_strong);
+        let found_weak = results.iter().any(|r| r.message77() == msg_weak);
         assert!(found_strong, "strong signal not decoded");
         assert!(found_weak, "weak signal not decoded after subtract");
     }

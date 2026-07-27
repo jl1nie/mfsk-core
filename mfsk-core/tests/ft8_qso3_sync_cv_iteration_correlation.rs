@@ -85,7 +85,7 @@ fn correlate_sync_cv_with_iteration_convergence() {
         }
         let cum6: f32 = step_db.iter().sum();
 
-        let text = unpack77(&r.message77).unwrap_or_default();
+        let text = unpack77(r.message77()).unwrap_or_default();
         println!(
             "{:>10.1} {:>8.3} {:>7} {:>7.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2}  {}",
             r.freq_hz,

@@ -350,7 +350,7 @@ fn push_wsjt77(
     ht: &mfsk_core::msg::CallsignHashTable,
     vec: &mut Vec<MfskMessage>,
 ) {
-    let text = mfsk_core::msg::wsjt77::unpack77_with_hash(&r.message77, ht).unwrap_or_default();
+    let text = mfsk_core::msg::wsjt77::unpack77_with_hash(r.message77(), ht).unwrap_or_default();
     vec.push(MfskMessage {
         freq_hz: r.freq_hz,
         dt_sec: r.dt_sec,

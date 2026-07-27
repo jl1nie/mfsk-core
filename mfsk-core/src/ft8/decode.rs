@@ -64,32 +64,20 @@ pub use crate::engine::pipeline::{DecodeDepth, LlrEffort};
 pub use crate::engine::pipeline::DecodeStrictness;
 
 /// One successfully decoded FT8 message.
-#[derive(Debug, Clone)]
-pub struct DecodeResult {
-    /// Decoded message: 77 bits packed as bytes (LSB first within each byte).
-    pub message77: [u8; 77],
-    /// Carrier frequency (Hz)
-    pub freq_hz: f32,
-    /// Time offset from the nominal 0.5 s start (seconds)
-    pub dt_sec: f32,
-    /// Number of hard-decision errors in the final codeword
-    pub hard_errors: u32,
-    /// Sync quality score from fine sync
-    pub sync_score: f32,
-    /// Which LLR variant decoded successfully (0=llra, 1=llrb, 2=llrc, 3=llrd)
-    pub pass: u8,
-    /// Coefficient of variation of the three Costas-array powers (score_a/b/c).
-    ///
-    /// Near zero for a stable channel; elevated (> 0.3) when QSB or strong
-    /// time-varying fading is present.  Used by `decode_frame_subtract` to
-    /// apply partial subtraction gain when the amplitude estimate is unreliable.
-    pub sync_cv: f32,
-    /// WSJT-X compatible SNR estimate (dB).
-    ///
-    /// Computed from decoded tone power vs. opposite-tone noise power:
-    /// `10 log10(xsig/xnoi − 1) − 27 dB`.  Floor is −24 dB (same as WSJT-X).
-    pub snr_db: f32,
-}
+///
+/// Canonical definition lives in [`crate::engine::pipeline::DecodeResult`]
+/// (issue #194) — this used to be a separate, byte-for-byte-identical
+/// struct except for `message77: [u8; 77]` (CRC bits stripped) vs. the
+/// generic type's `info: Box<[u8]>` (all `K` FEC info bits, CRC
+/// retained) + `message77()` accessor slicing the leading 77. FT8's own
+/// BP/OSD engine already produces the full `info` (`fec::ldpc::bp::
+/// BpResult::info`) at every construction site — it was just being
+/// discarded in favor of the 77-bit-only field. Unifying onto the
+/// generic type (rather than just matching its shape) lets a
+/// protocol-generic caller over `DecodeRequest<P>` read every
+/// protocol's results the same way. Re-exported so existing
+/// `mfsk_core::ft8::decode::DecodeResult` import paths keep working.
+pub use crate::engine::pipeline::DecodeResult;
 
 // ────────────────────────────────────────────────────────────────────────────
 // A Priori (AP) hint for sniper-mode decode
@@ -380,8 +368,8 @@ fn decode_frame_inner(
     // Deduplicate: preserve first occurrence; drop messages already in `known`.
     let mut results: Vec<DecodeResult> = Vec::new();
     for r in raw {
-        if !known.iter().any(|k| k.message77 == r.message77)
-            && !results.iter().any(|x| x.message77 == r.message77)
+        if !known.iter().any(|k| k.message77() == r.message77())
+            && !results.iter().any(|x| x.message77() == r.message77())
         {
             results.push(r);
         }
@@ -558,8 +546,8 @@ fn sic_inner_passes_with_cache(
             };
             // Dedup against `known` (an earlier stage) and this loop's
             // own earlier passes.
-            if known.iter().any(|x| x.message77 == r.message77)
-                || all_results.iter().any(|x| x.message77 == r.message77)
+            if known.iter().any(|x| x.message77() == r.message77())
+                || all_results.iter().any(|x| x.message77() == r.message77())
             {
                 continue;
             }
@@ -933,7 +921,7 @@ fn decode_sniper_inner(
 
     let mut results: Vec<DecodeResult> = Vec::new();
     for r in raw {
-        if !results.iter().any(|x| x.message77 == r.message77) {
+        if !results.iter().any(|x| x.message77() == r.message77()) {
             results.push(r);
         }
     }
@@ -1077,7 +1065,7 @@ impl SupportsStagedSic for Ft8 {
         // prevent `known` signals from re-decoding, but an imperfect
         // subtraction on a very strong carrier could still leave enough
         // residual to re-cross the CRC/OSD threshold.
-        results.retain(|r| !req.known.iter().any(|k| k.message77 == r.message77));
+        results.retain(|r| !req.known.iter().any(|k| k.message77() == r.message77()));
         let fft_cache = FftCache(build_fft_cache(&residual));
         DecodeOutcome { results, fft_cache }
     }
@@ -1117,7 +1105,7 @@ mod tests {
             .decode()
             .results;
         assert!(
-            results.iter().any(|r| r.message77 == m77),
+            results.iter().any(|r| r.message77() == m77),
             "expected to decode the self-synthesized signal with matching AP hint"
         );
     }
@@ -1246,7 +1234,7 @@ mod tests {
             .results;
         let known_results: Vec<DecodeResult> = phase1
             .iter()
-            .filter(|r| r.message77 == m_known)
+            .filter(|r| r.message77() == m_known)
             .cloned()
             .collect();
         assert!(
@@ -1524,7 +1512,7 @@ mod tests {
             .staged()
             .decode()
             .results;
-            results.into_iter().find(|r| r.message77 == m77)
+            results.into_iter().find(|r| r.message77() == m77)
         };
 
         assert!(
@@ -2110,8 +2098,10 @@ mod tests {
             // exact WA2FZW coordinates from the staged residual and
             // re-measure DL8YHR's per-block sync breakdown.
             if let Some(msg77) = crate::msg::wsjt77::pack77("WA2FZW", "DL5AXX", "RR73") {
+                let mut info = vec![0u8; 91];
+                info[..77].copy_from_slice(&msg77);
                 let wa2fzw = DecodeResult {
-                    message77: msg77,
+                    info: info.into_boxed_slice(),
                     freq_hz: 2545.88,
                     dt_sec: -0.125,
                     hard_errors: 0,
@@ -2343,7 +2333,7 @@ mod tests {
         );
         let has_dk8ne = results
             .iter()
-            .any(|r| unpack77(&r.message77).as_deref() == Some("K1BZM DK8NE -10"));
+            .any(|r| unpack77(r.message77()).as_deref() == Some("K1BZM DK8NE -10"));
         println!("staged pipeline already found DK8NE blind: {has_dk8ne}");
 
         let freq = 244.2f32;
@@ -2976,7 +2966,7 @@ mod tests {
             .decode()
             .results;
         for r in &results {
-            let msg = unpack77(&r.message77).unwrap_or_default();
+            let msg = unpack77(r.message77()).unwrap_or_default();
             println!(
                 "pass={:3} hard_errors={:3} freq={:8.2} dt={:+.3} msg={msg:?}",
                 r.pass, r.hard_errors, r.freq_hz, r.dt_sec

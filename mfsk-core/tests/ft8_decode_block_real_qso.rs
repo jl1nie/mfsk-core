@@ -74,12 +74,12 @@ fn decode_block_matches_decode_frame_on_real_qso() {
             .decode()
             .results
             .iter()
-            .filter_map(|x| unpack77(&x.message77))
+            .filter_map(|x| unpack77(x.message77()))
             .collect();
         let ship: BTreeSet<String> =
             decode_block(&slot, 100.0, 3000.0, 1.3, DecodeDepth::BP_ONLY, 15)
                 .iter()
-                .filter_map(|x| unpack77(&x.message77))
+                .filter_map(|x| unpack77(x.message77()))
                 .collect();
 
         let hit = ship.intersection(&truth).count();

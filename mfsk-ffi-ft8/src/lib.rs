@@ -155,7 +155,7 @@ fn finalise_results(results: Vec<DecodeResult>, out: *mut MfskFt8ResultList) {
             pass: r.pass,
             _pad: [0; 3],
         };
-        if let Some(text) = unpack77(&r.message77) {
+        if let Some(text) = unpack77(r.message77()) {
             let bytes = text.as_bytes();
             let n = bytes.len().min(rec.text.len() - 1);
             // Reinterpret c_char vs u8 portably (c_char is i8 on

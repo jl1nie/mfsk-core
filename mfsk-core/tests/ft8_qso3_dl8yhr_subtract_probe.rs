@@ -79,8 +79,8 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     let w1fc = w1fc_results
         .iter()
         .find(|r| {
-            unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -08")
-                || unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8")
+            unpack77(r.message77()).as_deref() == Some("W1FC F5BZB -08")
+                || unpack77(r.message77()).as_deref() == Some("W1FC F5BZB -8")
         })
         .expect("W1FC F5BZB should decode near 2571 Hz");
     println!(
@@ -88,7 +88,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
         w1fc.freq_hz,
         w1fc.dt_sec,
         w1fc.snr_db,
-        unpack77(&w1fc.message77)
+        unpack77(w1fc.message77())
     );
 
     println!("\n=== BEFORE subtracting W1FC ===");
@@ -154,7 +154,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
     let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::FULL, 20);
     let hit = post_results
         .iter()
-        .any(|r| unpack77(&r.message77).as_deref() == Some("CQ DX DL8YHR JO41"));
+        .any(|r| unpack77(r.message77()).as_deref() == Some("CQ DX DL8YHR JO41"));
     println!(
         "\ndecode_sniper(2606 Hz) after W1FC subtraction: {} decode(s), DL8YHR hit: {hit}",
         post_results.len()
@@ -165,7 +165,7 @@ fn probe_subtract_w1fc_effect_on_dl8yhr_region() {
             r.freq_hz,
             r.dt_sec,
             r.snr_db,
-            unpack77(&r.message77)
+            unpack77(r.message77())
         );
     }
 }
@@ -178,7 +178,7 @@ fn probe_subtract_depth_on_w1fc_itself() {
     let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
-        .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
+        .find(|r| unpack77(r.message77()).as_deref() == Some("W1FC F5BZB -8"))
         .expect("W1FC F5BZB should decode near 2571 Hz")
         .clone();
 
@@ -223,7 +223,7 @@ fn probe_w1fc_sync_cv_and_snr_context() {
     let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
-        .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
+        .find(|r| unpack77(r.message77()).as_deref() == Some("W1FC F5BZB -8"))
         .expect("W1FC F5BZB should decode near 2571 Hz");
     println!(
         "\nW1FC: freq={:.2} dt={:+.3} snr_db={:+.1} sync_cv={:.4} hard_errors={} sync_score={:.2}",
@@ -242,7 +242,7 @@ fn probe_iterative_subtract_convergence() {
     let w1fc_results = decode_sniper(&audio, 2571.0, DecodeDepth::FULL, 20);
     let w1fc = w1fc_results
         .iter()
-        .find(|r| unpack77(&r.message77).as_deref() == Some("W1FC F5BZB -8"))
+        .find(|r| unpack77(r.message77()).as_deref() == Some("W1FC F5BZB -8"))
         .expect("W1FC F5BZB should decode near 2571 Hz")
         .clone();
 
@@ -278,7 +278,7 @@ fn probe_iterative_subtract_convergence() {
     let post_results = decode_sniper(&audio, 2606.0, DecodeDepth::FULL, 20);
     let hit = post_results
         .iter()
-        .any(|r| unpack77(&r.message77).as_deref() == Some("CQ DX DL8YHR JO41"));
+        .any(|r| unpack77(r.message77()).as_deref() == Some("CQ DX DL8YHR JO41"));
     println!(
         "\ndecode_sniper(2606 Hz) after 6x W1FC re-subtract: {} decode(s), DL8YHR hit: {hit}",
         post_results.len()
@@ -289,7 +289,7 @@ fn probe_iterative_subtract_convergence() {
             r.freq_hz,
             r.dt_sec,
             r.snr_db,
-            unpack77(&r.message77)
+            unpack77(r.message77())
         );
     }
 }

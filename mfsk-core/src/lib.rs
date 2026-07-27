@@ -257,7 +257,7 @@
 //! .decode()
 //! .results;
 //! assert!(!results.is_empty(), "roundtrip must decode");
-//! let text = unpack77(&results[0].message77).expect("unpack");
+//! let text = unpack77(results[0].message77()).expect("unpack");
 //! assert_eq!(text, "CQ JA1ABC PM95");
 //! # }
 //! ```

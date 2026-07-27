@@ -370,7 +370,7 @@ mod tests {
         let audio = synth_clean(&msg, 1500.0);
         let results = decode_block(&audio, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 30);
         assert!(
-            results.iter().any(|r| r.message77 == msg),
+            results.iter().any(|r| r.message77() == msg),
             "decode_block should recover clean CQ; got {} results",
             results.len()
         );

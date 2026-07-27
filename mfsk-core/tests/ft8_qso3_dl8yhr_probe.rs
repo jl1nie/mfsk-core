@@ -73,7 +73,7 @@ fn probe_dl8yhr_decode_sweep() {
             .results;
         let hit_single = single
             .iter()
-            .filter_map(|r| unpack77(&r.message77))
+            .filter_map(|r| unpack77(r.message77()))
             .any(|m| m == target);
 
         let sub = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
@@ -84,7 +84,7 @@ fn probe_dl8yhr_decode_sweep() {
             .results;
         let hit_sub = sub
             .iter()
-            .filter_map(|r| unpack77(&r.message77))
+            .filter_map(|r| unpack77(r.message77()))
             .any(|m| m == target);
 
         let sub_deep = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
@@ -95,7 +95,7 @@ fn probe_dl8yhr_decode_sweep() {
             .results;
         let hit_sub_deep = sub_deep
             .iter()
-            .filter_map(|r| unpack77(&r.message77))
+            .filter_map(|r| unpack77(r.message77()))
             .any(|m| m == target);
 
         println!(

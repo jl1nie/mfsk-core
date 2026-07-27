@@ -78,7 +78,7 @@ fn no_nsym3_recall_sweep() {
         let truth: BTreeSet<String> =
             decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::FULL, 200)
                 .iter()
-                .filter_map(|x| unpack77(&x.message77))
+                .filter_map(|x| unpack77(x.message77()))
                 .collect();
 
         let configs: &[(&str, DecodeDepth)] = &[
@@ -94,7 +94,7 @@ fn no_nsym3_recall_sweep() {
             let t0 = Instant::now();
             let r: BTreeSet<String> = decode_block(&slot, 100.0, 3000.0, 1.0, depth, 15)
                 .iter()
-                .filter_map(|x| unpack77(&x.message77))
+                .filter_map(|x| unpack77(x.message77()))
                 .collect();
             let ms = t0.elapsed().as_millis();
             let hit = r.intersection(&truth).count();
@@ -133,12 +133,12 @@ fn no_nsym3_recall_sweep() {
             let bp_set: BTreeSet<String> =
                 decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::BP_ONLY, 15)
                     .iter()
-                    .filter_map(|x| unpack77(&x.message77))
+                    .filter_map(|x| unpack77(x.message77()))
                     .collect();
             let ad_set: BTreeSet<String> =
                 decode_block(&slot, 100.0, 3000.0, 1.0, DecodeDepth::EMBEDDED, 15)
                     .iter()
-                    .filter_map(|x| unpack77(&x.message77))
+                    .filter_map(|x| unpack77(x.message77()))
                     .collect();
             let lost: Vec<&String> = bp_set.difference(&ad_set).collect();
             let gained: Vec<&String> = ad_set.difference(&bp_set).collect();

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking)
 
 ### Added
 
@@ -1072,6 +1072,30 @@
   change. `embedded-poc` (path-dependency, outside the workspace)
   updated to match — not compile-verified here (no `+esp` toolchain in
   this environment); run `cargo check` there before flashing.
+- **Breaking**: unified `ft8::decode::DecodeResult` with
+  `engine::pipeline::DecodeResult` (issue #194, pre-0.8.0 public-API
+  review) — FT8's own struct was byte-for-byte identical to the
+  generic pipeline type (used by FT4/FST4) except for
+  `message77: [u8; 77]` (CRC bits stripped) vs. the generic type's
+  `info: Box<[u8]>` (full `K` FEC info bits, CRC retained) +
+  `message77()` accessor slicing the leading 77. FT8's own BP/OSD
+  engine already produced the full `info` at its one production
+  construction site (`fec::ldpc::bp::BpResult::info`) — it was just
+  being discarded in favor of the 77-bit-only field. Rather than just
+  matching the shape, FT8 now literally re-exports
+  `engine::pipeline::DecodeResult`, so a protocol-generic caller over
+  `DecodeRequest<P>` can read every protocol's results the same way.
+  `mfsk_core::msg::wsjt77::{unpack77, unpack77_with_hash}` and
+  `mfsk_core::ft8::wave_gen::message_to_tones` relaxed from `&[u8; 77]`
+  to `&[u8]` to match — a strict widening (any existing `&[u8; 77]`
+  caller still compiles via unsized coercion) that also lets
+  `result.message77()`'s `&[u8]` return flow in directly, without the
+  copy-into-a-scratch-`[u8; 77]`-array dance FT4/FST4 callers
+  previously needed. `WsprDecode`/`Jt9Decode`/`Jt65Decode`/`Q65Decode`
+  are deliberately untouched — none of those protocols adopted
+  `DecodeRequest`/`FrameDecodable` (#191), so unifying their naming
+  with this family is deferred to #204's Q65 builder design pass
+  rather than done piecemeal here.
 
 ### Fixed
 

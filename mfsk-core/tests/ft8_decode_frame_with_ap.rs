@@ -42,8 +42,8 @@ fn first_text_at(
     results: &[mfsk_core::ft8::decode::DecodeResult],
     target: [u8; 77],
 ) -> Option<String> {
-    let r = results.iter().find(|r| r.message77 == target)?;
-    wsjt77::unpack77(&r.message77)
+    let r = results.iter().find(|r| r.message77() == target)?;
+    wsjt77::unpack77(r.message77())
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
     // target frequency — but we must NOT see a "K1ABC" frame mutate
     // into a "3Y0Z" CRC-passing decode.
     let bad_3y0z = results_wrong.iter().any(|r| {
-        wsjt77::unpack77(&r.message77)
+        wsjt77::unpack77(r.message77())
             .map(|t| t.contains("3Y0Z"))
             .unwrap_or(false)
     });

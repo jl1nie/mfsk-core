@@ -74,7 +74,7 @@ fn decode_wav_ft8(audio: &[i16]) -> bool {
         .results
         .iter()
         .any(|d| {
-            unpack77(&d.message77).as_deref() == Some(GOLDEN_MSG)
+            unpack77(d.message77()).as_deref() == Some(GOLDEN_MSG)
                 && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
                 && d.dt_sec.abs() <= DT_TOL_SEC
         })

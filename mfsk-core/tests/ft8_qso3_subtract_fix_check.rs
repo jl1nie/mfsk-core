@@ -29,7 +29,7 @@ fn check_decode_frame_subtract_full_qso3() {
         .results;
     let msgs: BTreeSet<String> = results
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
     println!("staged decode(qso3_busy.wav): {} decodes", msgs.len());
     for m in &msgs {

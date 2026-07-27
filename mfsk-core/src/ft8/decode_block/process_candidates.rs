@@ -281,12 +281,12 @@ fn decode_block_multipass<S: AudioSample>(
                 &mut bp_scratch,
             );
             for r in single_results {
-                if all.iter().any(|x| x.message77 == r.message77) {
+                if all.iter().any(|x| x.message77() == r.message77()) {
                     continue;
                 }
                 if trace {
                     #[cfg(feature = "std")]
-                    if let Some(text) = crate::msg::wsjt77::unpack77(&r.message77) {
+                    if let Some(text) = crate::msg::wsjt77::unpack77(r.message77()) {
                         eprintln!(
                             "  TRACE pass={} freq={:>7.2} dt={:+.4} e={:>2} '{}'",
                             ipass, r.freq_hz, r.dt_sec, r.hard_errors, text,
@@ -511,7 +511,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     }
 
     // xsig at the 79 decoded-tone (freq, m) positions.
-    let itone = message_to_tones(&result.message77);
+    let itone = message_to_tones(result.message77());
     let carrier_bin_f = result.freq_hz / df;
     let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
     let mut xsig: f32 = 0.0;
@@ -578,7 +578,7 @@ fn recompute_snr_xsnr2(
     nsps_steps: f32,
     cell_scale: f32,
 ) -> f32 {
-    let itone = crate::ft8::wave_gen::message_to_tones(&result.message77);
+    let itone = crate::ft8::wave_gen::message_to_tones(result.message77());
     let carrier_bin_f = result.freq_hz / df;
     let tone_step = TONE_SPACING_HZ / df;
     let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
@@ -1830,13 +1830,13 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     if !crate::msg::wsjt77::is_plausible_message(&text) {
         return None;
     }
-    if known.iter().any(|r| r.message77 == bp.message77) {
+    if known.iter().any(|r| r.message77() == bp.message77) {
         return None;
     }
     let itone = message_to_tones(&bp.message77);
     let snr_db = super::super::llr::compute_snr_db(cs_scratch, &itone);
     Some(DecodeResult {
-        message77: bp.message77,
+        info: bp.info.into_boxed_slice(),
         freq_hz: cand.freq_hz,
         dt_sec: refined_dt,
         hard_errors: bp.hard_errors,

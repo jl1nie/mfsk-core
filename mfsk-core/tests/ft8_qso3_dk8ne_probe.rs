@@ -54,7 +54,7 @@ fn try_context(label: &str, audio: &[i16], mycall: &str, hiscall: &str) -> BTree
         .results;
     let msgs: BTreeSet<String> = decoded
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
     let hit_dk8ne = msgs.contains("K1BZM DK8NE -10");
     println!(
@@ -79,7 +79,7 @@ fn probe_dk8ne_with_exact_context() {
         .results;
     let no_ap_msgs: BTreeSet<String> = no_ap
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
     println!(
         "  [baseline] AP-off single-pass → {} decodes, K1BZM DK8NE -10: {}",
@@ -120,7 +120,7 @@ fn try_context_for(label: &str, audio: &[i16], mycall: &str, hiscall: &str, targ
         .results;
     let msgs: BTreeSet<String> = decoded
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
     let hit = msgs.contains(target);
     println!(

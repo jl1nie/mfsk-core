@@ -101,7 +101,7 @@ fn staged_sic_matches_flat_pass_golden_floor() {
         .results;
     let msgs: BTreeSet<String> = results
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
 
     println!("staged decode(qso3_busy.wav): {} decodes", msgs.len());
@@ -166,7 +166,7 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
         !phase1
             .results
             .iter()
-            .filter_map(|r| unpack77(&r.message77))
+            .filter_map(|r| unpack77(r.message77()))
             .any(|m| m.contains("DL8YHR")),
         "test setup assumption violated: DL8YHR should NOT be in the plain \
          single-pass phase 1 result set (it should only surface via staged SIC)"
@@ -185,7 +185,7 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
     let phase2_msgs: BTreeSet<String> = phase2
         .results
         .iter()
-        .filter_map(|r| unpack77(&r.message77))
+        .filter_map(|r| unpack77(r.message77()))
         .collect();
     println!(
         "phase2 staged+known+cache(qso3_busy.wav): {} new decodes",
@@ -195,7 +195,10 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
     // `known` (phase 1's own results) must not be re-reported.
     for r in &phase1.results {
         assert!(
-            !phase2.results.iter().any(|r2| r2.message77 == r.message77),
+            !phase2
+                .results
+                .iter()
+                .any(|r2| r2.message77() == r.message77()),
             "phase 2 re-reported a phase-1 `known` message instead of skipping it"
         );
     }
