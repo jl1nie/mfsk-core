@@ -19,7 +19,7 @@ use std::f32::consts::PI;
 
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
-use mfsk_core::q65::{Q65Decode, decode_scan_default, decode_scan_with_ap, synthesize_standard};
+use mfsk_core::q65::{DecodeRequest, Q65Decode, Q65a30, synthesize_standard};
 
 const FS: f32 = 12_000.0;
 const FS_U: u32 = 12_000;
@@ -121,13 +121,15 @@ fn q65_30a_ap_sweep_call1_call2() {
         let mut ok_ap = 0u64;
         for seed in 0..SEEDS {
             let audio = make_slot("CQ", "K1ABC", "FN42", freq, snr as f32, 0xA9_0000 + seed);
-            if hit(&decode_scan_default(&audio, FS_U), expected) {
+            let plain_decodes =
+                DecodeRequest::<Q65a30>::new(&audio, FS_U, 0, SearchParams::default()).decode();
+            if hit(&plain_decodes, expected) {
                 ok_plain += 1;
             }
-            if hit(
-                &decode_scan_with_ap(&audio, FS_U, nominal_mid, &params, &hint),
-                expected,
-            ) {
+            let ap_decodes = DecodeRequest::<Q65a30>::new(&audio, FS_U, nominal_mid, params)
+                .ap_hint(&hint)
+                .decode();
+            if hit(&ap_decodes, expected) {
                 ok_ap += 1;
             }
         }

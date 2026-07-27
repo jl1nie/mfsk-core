@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking)
 
 ### Added
 
@@ -1109,6 +1109,62 @@
   requirement. Sealing now means that redesign can land later as a
   signature change on existing implementors without breaking any
   downstream implementor, since none can exist.
+- **Breaking**: migrated Q65's decode API to a `DecodeRequest`/
+  `SniperRequest`/`MultiPeriodRequest` builder (issue #204, pre-0.8.0
+  public-API review) — the largest single item in the review. Q65 still
+  carried the full pre-#191 `_with_*`/`_for` suffix explosion (15 public
+  entry points in `q65::rx`: `decode_at`, `decode_at_for`,
+  `decode_at_fading_for`, `decode_at_with_ap`, `decode_at_with_ap_for`,
+  `decode_at_with_ap_list_for`, `decode_multi_period`,
+  `decode_multi_period_for`, `decode_scan`, `decode_scan_default`,
+  `decode_scan_for`, `decode_scan_fading_for`, `decode_scan_with_ap`,
+  `decode_scan_with_ap_for`, `decode_scan_with_ap_list_for`) — the exact
+  combinatorial disease #191 collapsed into `DecodeRequest<P>` for
+  FT8/FT4/FST4, shipping 0.8.0 with two contradictory decode-API
+  philosophies otherwise.
+
+  Q65 gets its **own** builder types (`q65::{DecodeRequest, SniperRequest,
+  MultiPeriodRequest}`) rather than reusing
+  `msg::decode_request::{DecodeRequest, SniperRequest}`: every `q65::rx`
+  function (and the FFI layer wrapping it) operates on `&[f32]` audio,
+  but the WSJT77-family builders hardcode `audio: &'a [i16]` — a real
+  architectural difference (Q65's own decode chain works in float
+  throughout, unlike the integer WSJT77-family path), not an oversight.
+  `decode_multi_period*`'s `&[&[f32]]` (one buffer per T/R slot) is a
+  further distinct shape from either wide-scan or single-target decode,
+  hence the third builder type.
+
+  - `DecodeRequest::<P>::new(audio, sample_rate, nominal_start_sample,
+    params)` replaces `decode_scan*`; `.sniper(...)` (or
+    `SniperRequest::<P>::new`) replaces `decode_at*`.
+  - `.ap_hint(&ApHint)`, `.ap_list(&[[i32; 63]])`, and
+    `.fading(model, b90_ts)` are plain inherent methods (not
+    capability-gated marker traits like FT8/FT4/FST4's
+    `SupportsWideBandAp`): every Q65 sub-mode supports every capability
+    uniformly, so there is no invalid combination to guard against at
+    the type level. A new `Q65SubMode: Protocol` marker (implemented for
+    the 10 wired sub-mode ZSTs) stops the builders from compiling
+    against a non-Q65 protocol and silently producing garbage.
+  - `MultiPeriodRequest::<P>::new(audio_slots, sample_rate,
+    nominal_start_sample, params)` + `.ap_list(...)` replaces
+    `decode_multi_period*`.
+  - The Q65-30A convenience wrappers (`decode_at`, `decode_at_with_ap`,
+    `decode_scan`, `decode_scan_with_ap`, `decode_scan_default`,
+    `decode_multi_period`) are gone entirely — `DecodeRequest::<Q65a30>`
+    is not meaningfully more to type.
+
+  All 15 functions demoted to `pub(crate)` (the underlying engine, used
+  internally by the new builders). Updated every call site: 9
+  `mfsk-core/tests/q65_*.rs` integration tests (~85 call sites) and
+  `mfsk-ffi`'s Q65 FFI dispatch (~50 call sites across the 10-sub-mode ×
+  4-capability match tables) — the C ABI itself is unchanged, only the
+  internal Rust wiring moved to the new builders.
+
+  Verified clean across all 14 feature-matrix combinations, clippy
+  `--workspace --all-targets`, full test suite + doctests (including
+  every Q65 WSJT-X real-off-air-sample recall gate: 10 GHz EME, 6 m
+  ionoscatter/EME, 1296 MHz troposcatter, 120D rainscatter, optical
+  scatter), `mfsk-ffi`/`mfsk-ffi-ft8` test suites, and `cargo doc`.
 
 ### Fixed
 

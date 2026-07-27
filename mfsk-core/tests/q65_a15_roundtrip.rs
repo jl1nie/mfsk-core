@@ -3,7 +3,7 @@
 //! Q65-15A is the fastest wired Q65 sub-mode (15 s T/R period,
 //! NSPS=1800). Mirrors `tests/q65_eme_submodes.rs`'s pattern for the
 //! EME sub-modes: verifies the generic `synthesize_standard_for<P>` /
-//! `decode_at_for<P>` / `decode_scan_for<P>` paths correctly propagate
+//! `DecodeRequest<P>`/`SniperRequest<P>` paths correctly propagate
 //! Q65a15's NSPS/tone-spacing constants through the entire tx → rx
 //! pipeline, including the sync-search path at a non-zero offset
 //! inside the (short) 15 s slot.
@@ -12,7 +12,7 @@
 
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::tx::synthesize_standard_for;
-use mfsk_core::q65::{Q65a15, decode_at_for, decode_scan_for};
+use mfsk_core::q65::{DecodeRequest, Q65a15};
 
 const FS: u32 = 12_000;
 
@@ -21,8 +21,9 @@ fn q65_15a_aligned_decode_recovers_message() {
     let freq = 1500.0;
     let audio = synthesize_standard_for::<Q65a15>("CQ", "K1ABC", "FN42", FS, freq, 0.3)
         .expect("Q65-15A: pack + synth must succeed");
-    let r =
-        decode_at_for::<Q65a15>(&audio, FS, 0, freq).expect("Q65-15A: aligned decode must succeed");
+    let r = DecodeRequest::<Q65a15>::sniper(&audio, FS, 0, freq)
+        .decode()
+        .expect("Q65-15A: aligned decode must succeed");
     assert_eq!(r.message, "CQ K1ABC FN42");
     assert_eq!(r.start_sample, 0);
     assert!((r.freq_hz - freq).abs() < 0.1);
@@ -48,7 +49,7 @@ fn q65_15a_scan_recovers_at_offset() {
         score_threshold: 0.1,
         max_candidates: 8,
     };
-    let decodes = decode_scan_for::<Q65a15>(&slot, FS, start, &params);
+    let decodes = DecodeRequest::<Q65a15>::new(&slot, FS, start, params).decode();
     assert!(
         decodes.iter().any(|d| d.message == "CQ JA1ABC PM95"),
         "Q65-15A scan must find offset signal, got {decodes:#?}"

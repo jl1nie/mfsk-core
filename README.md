@@ -166,17 +166,22 @@ points and carries its own Quick example:
 - [`mfsk_core::jt65`](https://docs.rs/mfsk-core/latest/mfsk_core/jt65/)
   — `decode_scan_default` + `decode_at_with_erasures` (for low SNR)
 - [`mfsk_core::q65`](https://docs.rs/mfsk-core/latest/mfsk_core/q65/)
-  — `decode_scan_default` (Q65-30A); generic `decode_scan_for<P>`
-  for any wired sub-mode including the Q65-60A‥E EME variants;
-  `decode_scan_with_ap` / `decode_scan_with_ap_for<P>` for AP-hint
-  decoding (~2 dB threshold gain when call signs are known); and
-  `decode_scan_fading_for<P>` for the fast-fading metric (Gaussian
-  / Lorentzian channel models) that recovers 5–8 dB on Doppler-spread
-  channels — required for microwave EME at 5.7 / 10 / 24 GHz; and
-  `decode_scan_with_ap_list_for<P>` (paired with `standard_qso_codewords`)
-  for BP-free template matching against the full WSJT-X "AP list"
-  of standard exchanges (~3 dB threshold gain when the callsign pair
-  is known up-front)
+  — `DecodeRequest::<P>` (wide-band scan) / `SniperRequest::<P>`
+  (narrow-band, known alignment) for any wired sub-mode including the
+  Q65-60A‥E EME variants; `.ap_hint(...)` for AP-hint decoding (~2 dB
+  threshold gain when call signs are known); `.fading(model, b90_ts)`
+  for the fast-fading metric (Gaussian / Lorentzian channel models)
+  that recovers 5–8 dB on Doppler-spread channels — required for
+  microwave EME at 5.7 / 10 / 24 GHz; `.ap_list(candidates)` (paired
+  with `standard_qso_codewords`) for BP-free template matching against
+  the full WSJT-X "AP list" of standard exchanges (~3 dB threshold
+  gain when the callsign pair is known up-front); and
+  `MultiPeriodRequest::<P>` for averaged multi-slot decode
+  (ionoscatter / weak-EME signals no single-period decode recovers).
+  Q65's own dedicated builders — unlike FT8/FT4/FST4's
+  `msg::decode_request::{DecodeRequest, SniperRequest}` — since every
+  `q65::rx` function operates on `&[f32]` audio, not `&[i16]` (issue
+  #204)
 
 ## Features
 
@@ -469,9 +474,9 @@ and per-mode performance characterisation.
   module exposes one ZST per wired sub-mode — `Q65a30` for
   terrestrial work, plus `Q65a60` / `Q65b60` / `Q65c60` / `Q65d60` /
   `Q65e60` for EME at 6 m through 10 GHz+ — with generic
-  `synthesize_standard_for<P>` / `decode_at_for<P>` / `decode_scan_for<P>`
-  helpers that pick the right NSPS and tone spacing from the type
-  parameter.
+  `synthesize_standard_for<P>` helper plus the
+  `DecodeRequest<P>`/`SniperRequest<P>` builders that pick the right
+  NSPS and tone spacing from the type parameter.
 
 ## C / C++ / Kotlin
 

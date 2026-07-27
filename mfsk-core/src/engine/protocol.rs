@@ -422,7 +422,8 @@ pub struct FecResult {
 /// particular [`crate::q65::Q65Fec::decode_soft`] returns `None` by design —
 /// the real Q65 decode runs over GF(64) probability vectors via
 /// [`crate::fec::qra::Q65Codec`] and is invoked from
-/// [`crate::q65::rx::decode_at_for`], not through this trait.
+/// [`crate::q65::DecodeRequest`]/[`crate::q65::SniperRequest`], not through
+/// this trait.
 ///
 /// Counting `K` / `N` in bits keeps the cross-protocol invariant
 /// `FecCodec::N ≤ N_DATA × BITS_PER_SYMBOL` (pinned in

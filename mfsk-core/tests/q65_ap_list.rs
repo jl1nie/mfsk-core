@@ -1,8 +1,8 @@
 //! Q65 AP-list (full-AP-list) integration tests.
 //!
 //! Validates the BP-free template-matching decoder
-//! ([`mfsk_core::q65::decode_at_with_ap_list_for`] +
-//! [`mfsk_core::q65::decode_scan_with_ap_list_for`]) on synthetic
+//! ([`mfsk_core::q65::SniperRequest::ap_list`] +
+//! [`mfsk_core::q65::DecodeRequest::ap_list`]) on synthetic
 //! audio plus the WSJT-X 6 m EME reference recording.
 
 #![cfg(feature = "q65")]
@@ -17,8 +17,8 @@ use mfsk_core::fec::qra::Q65Codec;
 use mfsk_core::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a30, Q65a60, decode_at_with_ap_list_for, decode_scan_with_ap_list_for,
-    standard_qso_codewords, synthesize_standard, synthesize_standard_for,
+    DecodeRequest, Q65a30, Q65a60, SniperRequest, standard_qso_codewords, synthesize_standard,
+    synthesize_standard_for,
 };
 
 const FS: f32 = 12_000.0;
@@ -70,7 +70,9 @@ fn ap_list_decodes_clean_qso_message() {
     let candidates = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
     assert!(!candidates.is_empty());
 
-    let result = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, freq, &candidates)
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&candidates)
+        .decode()
         .expect("AP-list decode of a clean signal must succeed");
     assert_eq!(result.message, "K1ABC JA1ABC PM95");
     assert_eq!(
@@ -87,7 +89,9 @@ fn ap_list_decodes_snr_template_messages() {
         let freq = 1500.0;
         let audio = synthesize_standard("K1ABC", "JA1ABC", report, FS_U, freq, 0.3).expect("synth");
         let candidates = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
-        let result = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, freq, &candidates)
+        let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+            .ap_list(&candidates)
+            .decode()
             .unwrap_or_else(|| panic!("AP-list decode failed for report {report}"));
         assert_eq!(result.message, format!("K1ABC JA1ABC {report}"));
     }
@@ -103,7 +107,9 @@ fn ap_list_returns_none_when_message_not_in_list() {
     let audio = synthesize_standard("K1ABC", "JA9XYZ", "RR73", FS_U, freq, 0.3).expect("synth");
     let candidates = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
 
-    let result = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, freq, &candidates);
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&candidates)
+        .decode();
     assert!(
         result.is_none(),
         "list decoder must reject messages outside its candidate set, \
@@ -121,7 +127,9 @@ fn ap_list_returns_none_on_silence() {
         *s = 0.001 * rng.gauss();
     }
     let candidates = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
-    let result = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, 1500.0, &candidates);
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, 1500.0)
+        .ap_list(&candidates)
+        .decode();
     assert!(result.is_none(), "got false decode from silence");
 }
 
@@ -162,8 +170,12 @@ fn ap_list_lifts_threshold_versus_plain_decode() {
             score_threshold: 0.05,
             max_candidates: 16,
         };
-        let plain = !mfsk_core::q65::decode_scan_default(&slot, FS_U).is_empty();
-        let listed = !decode_scan_with_ap_list_for::<Q65a30>(&slot, FS_U, 0, &params, &candidates)
+        let plain = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, SearchParams::default())
+            .decode()
+            .is_empty();
+        let listed = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, params)
+            .ap_list(&candidates)
+            .decode()
             .is_empty();
         if plain {
             plain_hits += 1;
@@ -208,7 +220,9 @@ fn ap_list_threshold_scales_with_list_size() {
         codec.encode(&info, &mut cw);
         vec![cw]
     };
-    let small = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, freq, &small_list);
+    let small = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&small_list)
+        .decode();
     assert!(
         small.is_some(),
         "single-codeword list must accept the matching codeword"
@@ -217,7 +231,10 @@ fn ap_list_threshold_scales_with_list_size() {
     // Full standard list (206) — also must succeed; the threshold
     // just needs to be loose enough to admit the true codeword.
     let full = standard_qso_codewords("K1ABC", "JA1ABC", "PM95");
-    let result = decode_at_with_ap_list_for::<Q65a30>(&audio, FS_U, 0, freq, &full).unwrap();
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .ap_list(&full)
+        .decode()
+        .unwrap();
     assert_eq!(result.message, "K1ABC JA1ABC 73");
 }
 
@@ -278,13 +295,9 @@ fn ap_list_decodes_eme_6m_w7gj_exchanges() {
         let mut hit_any = false;
         for &(other, grid) in counterparts {
             let candidates = standard_qso_codewords("W7GJ", other, grid);
-            let decodes = decode_scan_with_ap_list_for::<Q65a60>(
-                &audio,
-                FS_U,
-                nominal_mid,
-                &params,
-                &candidates,
-            );
+            let decodes = DecodeRequest::<Q65a60>::new(&audio, FS_U, nominal_mid, params)
+                .ap_list(&candidates)
+                .decode();
             for d in &decodes {
                 println!(
                     "{} [list ({other}, {grid})]: {}",

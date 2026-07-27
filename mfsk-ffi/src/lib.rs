@@ -675,7 +675,14 @@ fn q65_default_search() -> mfsk_core::q65::SearchParams {
 /// Q65a30 default scan (used by the generic-handle path).
 fn decode_q65_default(audio: &[f32], out: &mut MfskMessageList) -> MfskStatus {
     let mut vec: Vec<MfskMessage> = Vec::new();
-    for d in mfsk_core::q65::decode_scan_default(audio, 12_000) {
+    let decodes = mfsk_core::q65::DecodeRequest::<mfsk_core::q65::Q65a30>::new(
+        audio,
+        12_000,
+        0,
+        mfsk_core::q65::SearchParams::default(),
+    )
+    .decode();
+    for d in decodes {
         push_q65_decode(&d, &mut vec);
     }
     finalise(vec, out);
@@ -695,26 +702,26 @@ fn q65_nominal_mid(submode: MfskQ65SubMode) -> usize {
     12_000 * slot_s / 2
 }
 
-/// Plain-AWGN sub-mode-aware scan. Dispatches at runtime to the
-/// right `decode_scan_for::<Q65*>` generic in `mfsk_core::q65`.
+/// Plain-AWGN sub-mode-aware scan. Dispatches at runtime to the right
+/// `DecodeRequest::<Q65*>` instantiation in `mfsk_core::q65`.
 fn q65_scan_for(submode: MfskQ65SubMode, audio: &[f32]) -> Vec<mfsk_core::q65::Q65Decode> {
     use mfsk_core::q65::{
-        Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-        decode_scan_for,
+        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+        Q65e120,
     };
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
     match submode {
-        MfskQ65SubMode::A15 => decode_scan_for::<Q65a15>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::A30 => decode_scan_for::<Q65a30>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::A60 => decode_scan_for::<Q65a60>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::B60 => decode_scan_for::<Q65b60>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::C60 => decode_scan_for::<Q65c60>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::D60 => decode_scan_for::<Q65d60>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::E60 => decode_scan_for::<Q65e60>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::D120 => decode_scan_for::<Q65d120>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::E120 => decode_scan_for::<Q65e120>(audio, 12_000, mid, &params),
-        MfskQ65SubMode::A300 => decode_scan_for::<Q65a300>(audio, 12_000, mid, &params),
+        MfskQ65SubMode::A15 => DecodeRequest::<Q65a15>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::A30 => DecodeRequest::<Q65a30>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::A60 => DecodeRequest::<Q65a60>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::B60 => DecodeRequest::<Q65b60>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::C60 => DecodeRequest::<Q65c60>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::D60 => DecodeRequest::<Q65d60>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::E60 => DecodeRequest::<Q65e60>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::D120 => DecodeRequest::<Q65d120>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::E120 => DecodeRequest::<Q65e120>::new(audio, 12_000, mid, params).decode(),
+        MfskQ65SubMode::A300 => DecodeRequest::<Q65a300>::new(audio, 12_000, mid, params).decode(),
     }
 }
 
@@ -724,28 +731,29 @@ fn q65_scan_with_ap_for(
     hint: &mfsk_core::msg::ApHint,
 ) -> Vec<mfsk_core::q65::Q65Decode> {
     use mfsk_core::q65::{
-        Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-        decode_scan_with_ap_for,
+        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+        Q65e120,
     };
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
+    macro_rules! scan {
+        ($p:ty) => {
+            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
+                .ap_hint(hint)
+                .decode()
+        };
+    }
     match submode {
-        MfskQ65SubMode::A15 => decode_scan_with_ap_for::<Q65a15>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::A30 => decode_scan_with_ap_for::<Q65a30>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::A60 => decode_scan_with_ap_for::<Q65a60>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::B60 => decode_scan_with_ap_for::<Q65b60>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::C60 => decode_scan_with_ap_for::<Q65c60>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::D60 => decode_scan_with_ap_for::<Q65d60>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::E60 => decode_scan_with_ap_for::<Q65e60>(audio, 12_000, mid, &params, hint),
-        MfskQ65SubMode::D120 => {
-            decode_scan_with_ap_for::<Q65d120>(audio, 12_000, mid, &params, hint)
-        }
-        MfskQ65SubMode::E120 => {
-            decode_scan_with_ap_for::<Q65e120>(audio, 12_000, mid, &params, hint)
-        }
-        MfskQ65SubMode::A300 => {
-            decode_scan_with_ap_for::<Q65a300>(audio, 12_000, mid, &params, hint)
-        }
+        MfskQ65SubMode::A15 => scan!(Q65a15),
+        MfskQ65SubMode::A30 => scan!(Q65a30),
+        MfskQ65SubMode::A60 => scan!(Q65a60),
+        MfskQ65SubMode::B60 => scan!(Q65b60),
+        MfskQ65SubMode::C60 => scan!(Q65c60),
+        MfskQ65SubMode::D60 => scan!(Q65d60),
+        MfskQ65SubMode::E60 => scan!(Q65e60),
+        MfskQ65SubMode::D120 => scan!(Q65d120),
+        MfskQ65SubMode::E120 => scan!(Q65e120),
+        MfskQ65SubMode::A300 => scan!(Q65a300),
     }
 }
 
@@ -756,42 +764,29 @@ fn q65_scan_fading_for(
     model: mfsk_core::fec::qra::FadingModel,
 ) -> Vec<mfsk_core::q65::Q65Decode> {
     use mfsk_core::q65::{
-        Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-        decode_scan_fading_for,
+        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+        Q65e120,
     };
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
+    macro_rules! scan {
+        ($p:ty) => {
+            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
+                .fading(model, b90_ts)
+                .decode()
+        };
+    }
     match submode {
-        MfskQ65SubMode::A15 => {
-            decode_scan_fading_for::<Q65a15>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::A30 => {
-            decode_scan_fading_for::<Q65a30>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::A60 => {
-            decode_scan_fading_for::<Q65a60>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::B60 => {
-            decode_scan_fading_for::<Q65b60>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::C60 => {
-            decode_scan_fading_for::<Q65c60>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::D60 => {
-            decode_scan_fading_for::<Q65d60>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::E60 => {
-            decode_scan_fading_for::<Q65e60>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::D120 => {
-            decode_scan_fading_for::<Q65d120>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::E120 => {
-            decode_scan_fading_for::<Q65e120>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
-        MfskQ65SubMode::A300 => {
-            decode_scan_fading_for::<Q65a300>(audio, 12_000, mid, &params, b90_ts, model, None)
-        }
+        MfskQ65SubMode::A15 => scan!(Q65a15),
+        MfskQ65SubMode::A30 => scan!(Q65a30),
+        MfskQ65SubMode::A60 => scan!(Q65a60),
+        MfskQ65SubMode::B60 => scan!(Q65b60),
+        MfskQ65SubMode::C60 => scan!(Q65c60),
+        MfskQ65SubMode::D60 => scan!(Q65d60),
+        MfskQ65SubMode::E60 => scan!(Q65e60),
+        MfskQ65SubMode::D120 => scan!(Q65d120),
+        MfskQ65SubMode::E120 => scan!(Q65e120),
+        MfskQ65SubMode::A300 => scan!(Q65a300),
     }
 }
 
@@ -801,42 +796,29 @@ fn q65_scan_with_ap_list_for(
     candidates: &[[i32; 63]],
 ) -> Vec<mfsk_core::q65::Q65Decode> {
     use mfsk_core::q65::{
-        Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-        decode_scan_with_ap_list_for,
+        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+        Q65e120,
     };
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
+    macro_rules! scan {
+        ($p:ty) => {
+            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
+                .ap_list(candidates)
+                .decode()
+        };
+    }
     match submode {
-        MfskQ65SubMode::A15 => {
-            decode_scan_with_ap_list_for::<Q65a15>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::A30 => {
-            decode_scan_with_ap_list_for::<Q65a30>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::A60 => {
-            decode_scan_with_ap_list_for::<Q65a60>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::B60 => {
-            decode_scan_with_ap_list_for::<Q65b60>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::C60 => {
-            decode_scan_with_ap_list_for::<Q65c60>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::D60 => {
-            decode_scan_with_ap_list_for::<Q65d60>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::E60 => {
-            decode_scan_with_ap_list_for::<Q65e60>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::D120 => {
-            decode_scan_with_ap_list_for::<Q65d120>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::E120 => {
-            decode_scan_with_ap_list_for::<Q65e120>(audio, 12_000, mid, &params, candidates)
-        }
-        MfskQ65SubMode::A300 => {
-            decode_scan_with_ap_list_for::<Q65a300>(audio, 12_000, mid, &params, candidates)
-        }
+        MfskQ65SubMode::A15 => scan!(Q65a15),
+        MfskQ65SubMode::A30 => scan!(Q65a30),
+        MfskQ65SubMode::A60 => scan!(Q65a60),
+        MfskQ65SubMode::B60 => scan!(Q65b60),
+        MfskQ65SubMode::C60 => scan!(Q65c60),
+        MfskQ65SubMode::D60 => scan!(Q65d60),
+        MfskQ65SubMode::E60 => scan!(Q65e60),
+        MfskQ65SubMode::D120 => scan!(Q65d120),
+        MfskQ65SubMode::E120 => scan!(Q65e120),
+        MfskQ65SubMode::A300 => scan!(Q65a300),
     }
 }
 

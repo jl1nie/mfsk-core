@@ -6,7 +6,7 @@
 //! tests:
 //! - the signal lives at a non-trivial dial frequency (1500 Hz),
 //! - it can start at any sample within the slot — the receiver
-//!   should still find it via [`mfsk_core::q65::decode_scan_default`],
+//!   should still find it via [`mfsk_core::q65::DecodeRequest`],
 //! - non-standard messages (free text, varying callsigns / grids)
 //!   round-trip through the message codec.
 //!
@@ -15,7 +15,8 @@
 
 #![cfg(feature = "q65")]
 
-use mfsk_core::q65::{decode_at, decode_scan_default, synthesize_standard};
+use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::{DecodeRequest, Q65a30, synthesize_standard};
 
 const FS: u32 = 12_000;
 /// 30-second Q65-30A slot at 12 kHz.
@@ -31,11 +32,19 @@ fn make_slot(audio: &[f32], start_sample: usize) -> Vec<f32> {
     slot
 }
 
+/// Q65-30A default-search-params scan from sample 0 — replacement for
+/// the pre-#204 `decode_scan_default` convenience wrapper.
+fn scan_default(audio: &[f32], sample_rate: u32) -> Vec<mfsk_core::q65::Q65Decode> {
+    DecodeRequest::<Q65a30>::new(audio, sample_rate, 0, SearchParams::default()).decode()
+}
+
 #[test]
 fn aligned_decode_at_dial_frequency_recovers_message() {
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS, freq, 0.3).expect("pack + synth");
-    let result = decode_at(&audio, FS, 0, freq).expect("aligned decode must succeed");
+    let result = DecodeRequest::<Q65a30>::sniper(&audio, FS, 0, freq)
+        .decode()
+        .expect("aligned decode must succeed");
     assert_eq!(result.message, "CQ K1ABC FN42");
     assert!((result.freq_hz - freq).abs() < 0.1);
 }
@@ -47,7 +56,7 @@ fn scan_finds_signal_with_one_second_offset() {
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "JA1ABC", "PM95", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize); // 1.0 s offset
-    let decodes = decode_scan_default(&slot, FS);
+    let decodes = scan_default(&slot, FS);
     assert!(!decodes.is_empty(), "scan must find an offset signal");
     let hit = decodes
         .iter()
@@ -78,7 +87,7 @@ fn scan_finds_signal_at_low_dial_frequency() {
     let freq = 400.0;
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize);
-    let decodes = decode_scan_default(&slot, FS);
+    let decodes = scan_default(&slot, FS);
     assert!(
         decodes.iter().any(|d| d.message == "CQ K1ABC FN42"),
         "expected CQ K1ABC FN42 not in {decodes:#?}"
@@ -91,7 +100,7 @@ fn scan_finds_signal_at_high_dial_frequency() {
     let freq = 2700.0;
     let audio = synthesize_standard("W1AW", "JA1XYZ", "QM06", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize);
-    let decodes = decode_scan_default(&slot, FS);
+    let decodes = scan_default(&slot, FS);
     assert!(
         decodes.iter().any(|d| d.message == "W1AW JA1XYZ QM06"),
         "expected W1AW JA1XYZ QM06 not in {decodes:#?}"
@@ -106,7 +115,7 @@ fn duplicate_decodes_are_collapsed() {
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize);
-    let decodes = decode_scan_default(&slot, FS);
+    let decodes = scan_default(&slot, FS);
     let count = decodes
         .iter()
         .filter(|d| d.message == "CQ K1ABC FN42")

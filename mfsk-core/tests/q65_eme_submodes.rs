@@ -1,7 +1,7 @@
 //! Q65 EME sub-mode end-to-end roundtrip tests.
 //!
 //! Verifies that the generic `synthesize_standard_for<P>` /
-//! `decode_at_for<P>` / `decode_scan_for<P>` paths work with each of
+//! `DecodeRequest<P>`/`SniperRequest<P>` paths work with each of
 //! the wired EME sub-modes (Q65-60A through Q65-60E). One synthetic
 //! frame per sub-mode is enough to prove the type parameter cleanly
 //! propagates NSPS and tone-spacing constants through the entire
@@ -9,19 +9,18 @@
 
 #![cfg(feature = "q65")]
 
-use mfsk_core::engine::ModulationParams;
-use mfsk_core::q65::rx::{decode_at_for, decode_scan_for};
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::tx::synthesize_standard_for;
-use mfsk_core::q65::{Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
+use mfsk_core::q65::{DecodeRequest, Q65SubMode, Q65a60, Q65b60, Q65c60, Q65d60, Q65e60};
 
 const FS: u32 = 12_000;
 
-fn roundtrip_aligned<P: ModulationParams>(label: &str) {
+fn roundtrip_aligned<P: Q65SubMode>(label: &str) {
     let freq = 1500.0;
     let audio = synthesize_standard_for::<P>("CQ", "K1ABC", "FN42", FS, freq, 0.3)
         .unwrap_or_else(|| panic!("{label}: pack + synth must succeed"));
-    let r = decode_at_for::<P>(&audio, FS, 0, freq)
+    let r = DecodeRequest::<P>::sniper(&audio, FS, 0, freq)
+        .decode()
         .unwrap_or_else(|| panic!("{label}: aligned decode must succeed"));
     assert_eq!(r.message, "CQ K1ABC FN42", "{label}: message text");
     assert_eq!(r.start_sample, 0, "{label}: start_sample");
@@ -75,7 +74,7 @@ fn q65_60a_scan_recovers_at_offset() {
         score_threshold: 0.1,
         max_candidates: 8,
     };
-    let decodes = decode_scan_for::<Q65a60>(&slot, FS, start, &params);
+    let decodes = DecodeRequest::<Q65a60>::new(&slot, FS, start, params).decode();
     assert!(
         decodes.iter().any(|d| d.message == "CQ JA1ABC PM95"),
         "Q65-60A scan must find offset signal, got {decodes:#?}"

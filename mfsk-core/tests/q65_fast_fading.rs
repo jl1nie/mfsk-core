@@ -1,8 +1,8 @@
 //! Q65 fast-fading metric integration tests.
 //!
 //! Validates the Doppler-spread-aware path
-//! ([`mfsk_core::q65::decode_at_fading_for`] +
-//! [`mfsk_core::q65::decode_scan_fading_for`]) end-to-end:
+//! ([`mfsk_core::q65::SniperRequest::fading`] +
+//! [`mfsk_core::q65::DecodeRequest::fading`]) end-to-end:
 //! - clean synthetic input round-trips at every wired sub-mode;
 //! - the metric tolerates injected frequency spread that defeats the
 //!   plain AWGN Bessel front end at the same SNR;
@@ -21,8 +21,8 @@ use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a30, Q65a60, Q65d60, decode_at_fading_for, decode_scan_default, decode_scan_fading_for,
-    synthesize_standard, synthesize_standard_for,
+    DecodeRequest, Q65a30, Q65a60, Q65d60, SniperRequest, synthesize_standard,
+    synthesize_standard_for,
 };
 
 const FS: f32 = 12_000.0;
@@ -72,9 +72,10 @@ fn fast_fading_decodes_clean_q65a30_signal() {
     // intrinsics → QRA path on the most common Q65 sub-mode.
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS_U, freq, 0.3).expect("synth");
-    let result =
-        decode_at_fading_for::<Q65a30>(&audio, FS_U, 0, freq, 0.05, FadingModel::Gaussian, None)
-            .expect("fast-fading decode of a clean Q65-30A signal must succeed");
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .fading(FadingModel::Gaussian, 0.05)
+        .decode()
+        .expect("fast-fading decode of a clean Q65-30A signal must succeed");
     assert_eq!(result.message, "CQ K1ABC FN42");
 }
 
@@ -87,9 +88,10 @@ fn fast_fading_decodes_clean_q65d60_signal() {
     let freq = 1500.0;
     let audio =
         synthesize_standard_for::<Q65d60>("CQ", "W7GJ", "DN27", FS_U, freq, 0.3).expect("synth");
-    let result =
-        decode_at_fading_for::<Q65d60>(&audio, FS_U, 0, freq, 0.1, FadingModel::Gaussian, None)
-            .expect("fast-fading decode of a clean Q65-60D signal must succeed");
+    let result = SniperRequest::<Q65d60>::new(&audio, FS_U, 0, freq)
+        .fading(FadingModel::Gaussian, 0.1)
+        .decode()
+        .expect("fast-fading decode of a clean Q65-60D signal must succeed");
     assert_eq!(result.message, "CQ W7GJ DN27");
 }
 
@@ -101,16 +103,11 @@ fn fast_fading_with_ap_hint_decodes_clean_signal() {
     let freq = 1500.0;
     let audio = synthesize_standard("CQ", "JA1ABC", "PM95", FS_U, freq, 0.3).expect("synth");
     let hint = ApHint::new().with_call1("CQ");
-    let result = decode_at_fading_for::<Q65a30>(
-        &audio,
-        FS_U,
-        0,
-        freq,
-        0.05,
-        FadingModel::Gaussian,
-        Some(&hint),
-    )
-    .expect("fast-fading + AP must decode a clean signal");
+    let result = SniperRequest::<Q65a30>::new(&audio, FS_U, 0, freq)
+        .fading(FadingModel::Gaussian, 0.05)
+        .ap_hint(&hint)
+        .decode()
+        .expect("fast-fading + AP must decode a clean signal");
     assert_eq!(result.message, "CQ JA1ABC PM95");
 }
 
@@ -177,17 +174,13 @@ fn fast_fading_handles_moderate_spread_better_than_bessel() {
             score_threshold: 0.05,
             max_candidates: 16,
         };
-        let bessel = !decode_scan_default(&slot, FS_U).is_empty();
-        let fading = !decode_scan_fading_for::<Q65a30>(
-            &slot,
-            FS_U,
-            0,
-            &params,
-            0.5,
-            FadingModel::Gaussian,
-            None,
-        )
-        .is_empty();
+        let bessel = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, SearchParams::default())
+            .decode()
+            .is_empty();
+        let fading = !DecodeRequest::<Q65a30>::new(&slot, FS_U, 0, params)
+            .fading(FadingModel::Gaussian, 0.5)
+            .decode()
+            .is_empty();
         if bessel {
             bessel_hits += 1;
         }
@@ -231,15 +224,9 @@ fn fast_fading_does_not_decode_pure_silence() {
         score_threshold: 0.05,
         max_candidates: 8,
     };
-    let decodes = decode_scan_fading_for::<Q65a30>(
-        &audio,
-        FS_U,
-        0,
-        &params,
-        0.3,
-        FadingModel::Gaussian,
-        None,
-    );
+    let decodes = DecodeRequest::<Q65a30>::new(&audio, FS_U, 0, params)
+        .fading(FadingModel::Gaussian, 0.3)
+        .decode();
     assert!(
         decodes.is_empty(),
         "got false decode(s) from low-level noise: {decodes:#?}"
@@ -301,15 +288,9 @@ fn eme_10ghz_reference_decodes_with_fast_fading() {
         let mut best = 0usize;
         for &b90 in &b90_ts_values {
             for model in [FadingModel::Gaussian, FadingModel::Lorentzian] {
-                let decodes = decode_scan_fading_for::<Q65d60>(
-                    &audio,
-                    FS_U,
-                    nominal_mid,
-                    &params,
-                    b90,
-                    model,
-                    None,
-                );
+                let decodes = DecodeRequest::<Q65d60>::new(&audio, FS_U, nominal_mid, params)
+                    .fading(model, b90)
+                    .decode();
                 if decodes.len() > best {
                     best = decodes.len();
                     println!(
@@ -371,15 +352,9 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
             Some(a) => a,
             None => continue,
         };
-        let decodes = decode_scan_fading_for::<Q65a60>(
-            &audio,
-            FS_U,
-            nominal_mid,
-            &params,
-            0.1,
-            FadingModel::Gaussian,
-            None,
-        );
+        let decodes = DecodeRequest::<Q65a60>::new(&audio, FS_U, nominal_mid, params)
+            .fading(FadingModel::Gaussian, 0.1)
+            .decode();
         total += decodes.len();
         for d in &decodes {
             println!(

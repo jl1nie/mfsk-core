@@ -34,22 +34,31 @@
 //! rainscatter/troposcatter), [`Q65e120`] (6 m ionoscatter with wider
 //! Doppler), and [`Q65a300`] (optical scatter — the deepest wired
 //! sub-mode, ~-34 dB AWGN threshold).
-//! Generic `synthesize_standard_for<P>`, `decode_at_for<P>`,
-//! `decode_scan_for<P>` helpers pick up the right NSPS / tone
-//! spacing from the type parameter; `decode_at_with_ap_for<P>` /
-//! `decode_scan_with_ap_for<P>` accept an [`crate::msg::ApHint`]
-//! that biases the QRA decoder with known call-sign / report
-//! information and lifts the effective decode threshold by ~2 dB.
-//! `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` use the
-//! fast-fading metric ([`crate::fec::qra::intrinsics_fast_fading`])
-//! that recovers the 5–8 dB the AWGN Bessel front end loses to
-//! Doppler-spread channels — required for microwave EME (libration
-//! spread ≥10 Hz at 5.7 GHz and above).
-//! `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`
-//! run BP-free **template matching** against a candidate codeword
-//! list (typically built with [`standard_qso_codewords`]) — the
-//! mfsk-core port of `q65_decode_fullaplist`. Useful when the
-//! application has a known callsign pair but no QSO context.
+//! Generic `synthesize_standard_for<P>` picks up the right NSPS / tone
+//! spacing from the type parameter. Decoding goes through the
+//! [`DecodeRequest`]/[`SniperRequest`]/[`MultiPeriodRequest`] builders
+//! (issue #204 — replaces the pre-#191-style `decode_at*`/
+//! `decode_scan*`/`decode_multi_period*` suffix explosion `q65::rx`
+//! used to expose as 15 separate public functions):
+//! - [`DecodeRequest::new`] — wide-band scan; [`DecodeRequest::sniper`]
+//!   narrows to a single known `(start_sample, base_freq_hz)`
+//!   alignment ([`SniperRequest`]).
+//! - `.ap_hint(...)` biases the QRA decoder with a known call-sign /
+//!   report [`crate::msg::ApHint`], lifting the effective decode
+//!   threshold by ~2 dB.
+//! - `.fading(model, b90_ts)` swaps in the fast-fading metric
+//!   ([`crate::fec::qra::intrinsics_fast_fading`]), recovering the
+//!   5–8 dB the AWGN Bessel front end loses to Doppler-spread channels
+//!   — required for microwave EME (libration spread ≥10 Hz at
+//!   5.7 GHz and above).
+//! - `.ap_list(candidates)` runs BP-free **template matching** against
+//!   a candidate codeword list (typically built with
+//!   [`standard_qso_codewords`]) instead of belief propagation — the
+//!   mfsk-core port of `q65_decode_fullaplist`. Useful when the
+//!   application has a known callsign pair but no QSO context.
+//! - [`MultiPeriodRequest`] averages energies across multiple T/R
+//!   slots for ionoscatter / weak-EME signals that no single-period
+//!   decode can recover.
 //!
 //! References:
 //! - WSJT-X `lib/qra/q65/q65.f90`, `lib/qra/q65/q65.c`,
@@ -59,6 +68,7 @@
 //!   Communication", QEX 2022.
 
 pub mod ap_list;
+pub mod decode_request;
 pub mod protocol;
 pub mod rx;
 pub mod search;
@@ -66,15 +76,11 @@ pub mod sync_pattern;
 pub mod tx;
 
 pub use ap_list::{MAX_AP_CODEWORDS, standard_qso_codewords};
+pub use decode_request::{DecodeRequest, MultiPeriodRequest, Q65SubMode, SniperRequest};
 pub use protocol::{
     Q65Fec, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
 };
-pub use rx::{
-    Q65Decode, decode_at, decode_at_fading_for, decode_at_for, decode_at_with_ap,
-    decode_at_with_ap_for, decode_at_with_ap_list_for, decode_multi_period,
-    decode_multi_period_for, decode_scan, decode_scan_default, decode_scan_fading_for,
-    decode_scan_for, decode_scan_with_ap, decode_scan_with_ap_for, decode_scan_with_ap_list_for,
-};
+pub use rx::Q65Decode;
 pub use search::{SearchParams, SyncCandidate, coarse_search};
 pub use sync_pattern::{Q65_DATA_POSITIONS, Q65_SYNC_BLOCKS, Q65_SYNC_POSITIONS};
 pub use tx::{

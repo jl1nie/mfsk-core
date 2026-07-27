@@ -42,8 +42,8 @@
 //!
 //! ## AWGN-only; plain BP decode *and* the CQ-AP-hinted variant
 //!
-//! Reports two curves per sub-mode: `decode_scan_for` (plain AWGN
-//! Bessel + BP, no assumptions) and `decode_scan_with_ap_for` with a
+//! Reports two curves per sub-mode: `DecodeRequest::decode` (plain AWGN
+//! Bessel + BP, no assumptions) and `DecodeRequest::ap_hint` with a
 //! `call1 = "CQ"` hint. Both matter for a fair WSJT-X comparison —
 //! see the issue #171 follow-up note below. Neither the fast-fading
 //! nor full AP-list strategies are swept here (exercised separately
@@ -86,16 +86,16 @@
 //! against WSJT-X's own `jt9 -3` remained at the deep end (e.g.
 //! Q65-30A ~0% at -26 dB vs. WSJT-X's ~40%). Tracing further: `jt9`'s
 //! default decode is not actually "plain" in the sense
-//! `decode_scan_for` is — WSJT-X's Q65 decode chain always has access
+//! `DecodeRequest::decode` (no AP hint) is — WSJT-X's Q65 decode chain always has access
 //! to the free "CQ ??? ???" AP hypothesis (`aptype=1` in
 //! `extract.f90`'s AP table, requiring no user-supplied callsign), so
 //! *every* real decode attempt implicitly gets some AP-list benefit
 //! for CQ-calling signals, whether or not the user configured `-c`/
-//! `-x`. Re-measuring with `decode_scan_with_ap_for` + a `"CQ"` hint
+//! `-x`. Re-measuring with `DecodeRequest::ap_hint` + a `"CQ"` hint
 //! closes the remaining gap almost exactly: Q65-30A -26 dB 0%→40%
 //! (WSJT-X: 40%), -25 dB 33%→93% (WSJT-X: 87%), -24 dB 93%→100%
 //! (WSJT-X: 100%); Q65-60A -28 dB 47%→93%, -29 dB 7%→53%. This isn't
-//! a reason to silently fold AP into `decode_scan_for` (the crate's
+//! a reason to silently fold AP into the no-hint `decode()` path (the crate's
 //! four decoder strategies stay deliberately separate,
 //! `docs/reference/LIBRARY.md` §3) — it's a usage note: an
 //! application wanting WSJT-X-equivalent behavior for CQ traffic
@@ -115,8 +115,8 @@ use common::load_wav_f32_opt;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60, Q65e120,
-    decode_scan_for, decode_scan_with_ap_for,
+    DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+    Q65e120,
 };
 
 const GOLDEN_MSG: &str = "CQ JL1NIE PM95";
@@ -157,10 +157,13 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
     };
     macro_rules! decode_both {
         ($p:ty) => {{
-            let plain = decode_scan_for::<$p>(audio, 12_000, 0, &params)
+            let plain = DecodeRequest::<$p>::new(audio, 12_000, 0, params)
+                .decode()
                 .iter()
                 .any(|d| hit(d.freq_hz, &d.message));
-            let cq = decode_scan_with_ap_for::<$p>(audio, 12_000, 0, &params, cq_hint)
+            let cq = DecodeRequest::<$p>::new(audio, 12_000, 0, params)
+                .ap_hint(cq_hint)
+                .decode()
                 .iter()
                 .any(|d| hit(d.freq_hz, &d.message));
             (plain, cq)
@@ -286,7 +289,7 @@ fn q65_awgn_snr_sweep() {
 
     println!("Q65 AWGN SNR sweep — {:?}", dir);
     println!(
-        "(plain = decode_scan_for; CQ = decode_scan_with_ap_for + \"CQ\" hint — see module docs, issue #171)"
+        "(plain = DecodeRequest::decode; CQ = DecodeRequest::ap_hint + \"CQ\" hint — see module docs, issue #171)"
     );
     for submode in SUBMODES {
         println!("\n-- Q65-{submode} --");

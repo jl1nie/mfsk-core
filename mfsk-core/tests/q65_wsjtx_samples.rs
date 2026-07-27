@@ -20,8 +20,7 @@ use mfsk_core::fec::qra::FadingModel;
 use mfsk_core::msg::ApHint;
 use mfsk_core::q65::search::SearchParams;
 use mfsk_core::q65::{
-    Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120, decode_multi_period_for,
-    decode_scan_fading_for, decode_scan_with_ap_for,
+    DecodeRequest, MultiPeriodRequest, Q65a30, Q65a60, Q65a300, Q65b60, Q65d60, Q65d120, Q65e120,
 };
 
 #[allow(dead_code)]
@@ -43,7 +42,7 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
 }
 
 /// Strict gate: stack the four ionoscatter recordings into one
-/// running EMA via [`decode_multi_period_for`] and require at least
+/// running EMA via [`mfsk_core::q65::MultiPeriodRequest`] and require at least
 /// one decode total.
 ///
 /// Mirrors WSJT-X's `iavg=1`/`iavg=2` averaged-decode flow from
@@ -95,7 +94,7 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     };
 
     let decodes_no_ap =
-        decode_multi_period_for::<Q65a30>(&slot_refs, 12_000, nominal_mid, &params, None);
+        MultiPeriodRequest::<Q65a30>::new(&slot_refs, 12_000, nominal_mid, params).decode();
     eprintln!(
         "[info] ionoscatter multi-period (no AP-list): {} unique decode(s) across {} slot(s)",
         decodes_no_ap.len(),
@@ -117,13 +116,9 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     // discovered pair to test the AP-list integration.
     use mfsk_core::q65::standard_qso_codewords;
     let ap_codewords = standard_qso_codewords("K1JT", "K9AN", "");
-    let decodes_ap = decode_multi_period_for::<Q65a30>(
-        &slot_refs,
-        12_000,
-        nominal_mid,
-        &params,
-        Some(&ap_codewords),
-    );
+    let decodes_ap = MultiPeriodRequest::<Q65a30>::new(&slot_refs, 12_000, nominal_mid, params)
+        .ap_list(&ap_codewords)
+        .decode();
     eprintln!(
         "[info] ionoscatter multi-period (AP-list K1JT/K9AN): {} unique decode(s)",
         decodes_ap.len(),
@@ -199,12 +194,11 @@ fn eme_6m_sample_yields_decode_with_ap() {
             None => continue,
         };
         for (label, hint) in &hints {
-            use mfsk_core::q65::decode_scan_for;
-            let decodes = if hint.has_info() {
-                decode_scan_with_ap_for::<Q65a60>(&audio, 12_000, nominal_mid, &params, hint)
-            } else {
-                decode_scan_for::<Q65a60>(&audio, 12_000, nominal_mid, &params)
-            };
+            let mut req = DecodeRequest::<Q65a60>::new(&audio, 12_000, nominal_mid, params);
+            if hint.has_info() {
+                req = req.ap_hint(hint);
+            }
+            let decodes = req.decode();
             let names: Vec<String> = decodes.iter().map(|d| d.message.clone()).collect();
             println!(
                 "{} [{label}]: {} decode(s) → {names:?}",
@@ -279,15 +273,9 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
     // wall time for zero assertion coverage.
 
     // Fast-fading Gaussian, b90 = 10 Hz: the path that actually works.
-    let fading = decode_scan_fading_for::<Q65d60>(
-        &audio,
-        12_000,
-        0,
-        &params,
-        10.0,
-        FadingModel::Gaussian,
-        None,
-    );
+    let fading = DecodeRequest::<Q65d60>::new(&audio, 12_000, 0, params)
+        .fading(FadingModel::Gaussian, 10.0)
+        .decode();
     eprintln!(
         "[info] 10 GHz EME fading b90=10 Gaussian: {} decode(s)",
         fading.len()
@@ -328,7 +316,7 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
 /// dataset sits below that threshold, same as
 /// `eme_10ghz_60d_decodes_with_fading_metric`'s plain path) — the
 /// multi-period EMA-on-spectrogram path
-/// (`decode_multi_period_for`, same mechanism
+/// (`MultiPeriodRequest`, same mechanism
 /// `ionoscatter_6m_full_stack_decodes_via_averaging` uses) recovers
 /// it cleanly, both with and without the AP-list.
 ///
@@ -371,7 +359,7 @@ fn tropo_1296_60b_decodes_via_averaging() {
     };
 
     let decodes_no_ap =
-        decode_multi_period_for::<Q65b60>(&slot_refs, 12_000, nominal_mid, &params, None);
+        MultiPeriodRequest::<Q65b60>::new(&slot_refs, 12_000, nominal_mid, params).decode();
     eprintln!(
         "[info] 1296 troposcatter multi-period (no AP-list): {} unique decode(s) across {} slot(s)",
         decodes_no_ap.len(),
@@ -383,13 +371,9 @@ fn tropo_1296_60b_decodes_via_averaging() {
 
     use mfsk_core::q65::standard_qso_codewords;
     let ap_codewords = standard_qso_codewords("VK7MO", "VK7PD", "");
-    let decodes_ap = decode_multi_period_for::<Q65b60>(
-        &slot_refs,
-        12_000,
-        nominal_mid,
-        &params,
-        Some(&ap_codewords),
-    );
+    let decodes_ap = MultiPeriodRequest::<Q65b60>::new(&slot_refs, 12_000, nominal_mid, params)
+        .ap_list(&ap_codewords)
+        .decode();
     eprintln!(
         "[info] 1296 troposcatter multi-period (AP-list VK7MO/VK7PD): {} unique decode(s)",
         decodes_ap.len(),
@@ -440,15 +424,9 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
     // Plain BP is known to fail at this SNR (see doc comment above) —
     // not re-verified here; diagnostic-only and not worth the wall time.
 
-    let fading = decode_scan_fading_for::<Q65d120>(
-        &audio,
-        12_000,
-        0,
-        &params,
-        20.0,
-        FadingModel::Gaussian,
-        None,
-    );
+    let fading = DecodeRequest::<Q65d120>::new(&audio, 12_000, 0, params)
+        .fading(FadingModel::Gaussian, 20.0)
+        .decode();
     eprintln!(
         "[info] 10 GHz rainscatter fading b90=20 Gaussian: {} decode(s)",
         fading.len()
@@ -510,15 +488,9 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
         let Some(audio) = read_wsjtx_wav(path) else {
             continue;
         };
-        let fading = decode_scan_fading_for::<Q65e120>(
-            &audio,
-            12_000,
-            0,
-            &params,
-            12.0,
-            FadingModel::Gaussian,
-            None,
-        );
+        let fading = DecodeRequest::<Q65e120>::new(&audio, 12_000, 0, params)
+            .fading(FadingModel::Gaussian, 12.0)
+            .decode();
         eprintln!(
             "{}: {} fading decode(s)",
             path.file_name().unwrap().to_string_lossy(),
@@ -583,15 +555,9 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
     // measured costing ~8.5 s of the previous ~9.6 s test wall time
     // for zero assertion coverage (2026-07-20 profiling).
 
-    let fading = decode_scan_fading_for::<Q65a300>(
-        &audio,
-        12_000,
-        0,
-        &params,
-        5.0,
-        FadingModel::Gaussian,
-        None,
-    );
+    let fading = DecodeRequest::<Q65a300>::new(&audio, 12_000, 0, params)
+        .fading(FadingModel::Gaussian, 5.0)
+        .decode();
     eprintln!(
         "[info] optical scatter fading b90=5 Gaussian: {} decode(s)",
         fading.len()
@@ -620,7 +586,7 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
 /// audio — counter-intuitive since 120D/60D use the (presumably more
 /// expensive per-candidate) fast-fading metric while 60A uses plain
 /// BP. Measures `coarse_search_for`'s candidate count/time separately
-/// from the full `decode_scan_for`/`decode_scan_with_ap_for` wall-clock,
+/// from the full `DecodeRequest::decode`/`.ap_hint(..).decode()` wall-clock,
 /// to see whether the gap is coarse-search grid size (Q65-60A's
 /// `SearchParams::time_tolerance_symbols=50` vs Q65-60D's `10` — a 5×
 /// larger coarse time-search window, `coarse_search_on_spec_for`,
@@ -634,7 +600,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
 
     use mfsk_core::q65::search::coarse_search_for;
 
-    fn measure_plain<P: mfsk_core::ModulationParams>(
+    fn measure_plain<P: mfsk_core::q65::Q65SubMode>(
         label: &str,
         audio: &[f32],
         nominal_start: usize,
@@ -645,12 +611,12 @@ fn q65_speed_diag_coarse_vs_finetiming() {
         let coarse_dt = t0.elapsed();
 
         let t0 = Instant::now();
-        let decodes = mfsk_core::q65::decode_scan_for::<P>(audio, 12_000, nominal_start, params);
+        let decodes = DecodeRequest::<P>::new(audio, 12_000, nominal_start, *params).decode();
         let plain_dt = t0.elapsed();
 
         eprintln!(
             "{label}: {} candidates (time_tolerance_symbols={}, max_cand={}), coarse={:.1}ms, \
-             decode_scan_for(plain)={:.1}ms, {} decode(s)",
+             DecodeRequest::decode(plain)={:.1}ms, {} decode(s)",
             cands.len(),
             params.time_tolerance_symbols,
             params.max_candidates,
@@ -714,18 +680,12 @@ fn q65_speed_diag_coarse_vs_finetiming() {
                 coarse_dt.as_secs_f64() * 1000.0
             );
             let t0 = Instant::now();
-            let fading = decode_scan_fading_for::<Q65d60>(
-                &audio,
-                12_000,
-                0,
-                &params,
-                10.0,
-                FadingModel::Gaussian,
-                None,
-            );
+            let fading = DecodeRequest::<Q65d60>::new(&audio, 12_000, 0, params)
+                .fading(FadingModel::Gaussian, 10.0)
+                .decode();
             let fading_dt = t0.elapsed();
             eprintln!(
-                "Q65-60D decode_scan_fading_for = {:.1}ms, {} decode(s)",
+                "Q65-60D DecodeRequest::fading decode = {:.1}ms, {} decode(s)",
                 fading_dt.as_secs_f64() * 1000.0,
                 fading.len()
             );
@@ -735,13 +695,13 @@ fn q65_speed_diag_coarse_vs_finetiming() {
     }
 }
 
-/// Timing-only diagnostic for the `decode_multi_period_for` redundant-
+/// Timing-only diagnostic for the `MultiPeriodRequest` redundant-
 /// extraction fix (Q65-60B/30A speed investigation, new investigation).
 /// Search params match the real golden tests exactly
 /// (`tropo_1296_60b_decodes_via_averaging` /
 /// `ionoscatter_6m_full_stack_decodes_via_averaging`).
 #[test]
-#[ignore = "manual diagnostic — Q65-60B/30A decode_multi_period_for timing (new investigation)"]
+#[ignore = "manual diagnostic — Q65-60B/30A MultiPeriodRequest timing (new investigation)"]
 fn q65_multi_period_speed_diag() {
     use std::time::Instant;
 
@@ -764,10 +724,10 @@ fn q65_multi_period_speed_diag() {
         };
         let t0 = Instant::now();
         let decodes =
-            decode_multi_period_for::<Q65b60>(&slot_refs, 12_000, 12_000 * 30, &params, None);
+            MultiPeriodRequest::<Q65b60>::new(&slot_refs, 12_000, 12_000 * 30, params).decode();
         let dt = t0.elapsed();
         eprintln!(
-            "Q65-60B decode_multi_period_for = {:.1}ms, {} slot(s), {} decode(s)",
+            "Q65-60B MultiPeriodRequest::decode = {:.1}ms, {} slot(s), {} decode(s)",
             dt.as_secs_f64() * 1000.0,
             slot_refs.len(),
             decodes.len()
@@ -793,10 +753,10 @@ fn q65_multi_period_speed_diag() {
         };
         let t0 = Instant::now();
         let decodes =
-            decode_multi_period_for::<Q65a30>(&slot_refs, 12_000, 12_000 * 15, &params, None);
+            MultiPeriodRequest::<Q65a30>::new(&slot_refs, 12_000, 12_000 * 15, params).decode();
         let dt = t0.elapsed();
         eprintln!(
-            "Q65-30A decode_multi_period_for = {:.1}ms, {} slot(s), {} decode(s)",
+            "Q65-30A MultiPeriodRequest::decode = {:.1}ms, {} slot(s), {} decode(s)",
             dt.as_secs_f64() * 1000.0,
             slot_refs.len(),
             decodes.len()
@@ -806,7 +766,7 @@ fn q65_multi_period_speed_diag() {
 
 /// Candidate-count diagnostic: how many coarse candidates does each
 /// slot of the Q65-30A ionoscatter multi-period scan actually
-/// produce? `decode_multi_period_for` pays its 8-stage decode ladder
+/// produce? `MultiPeriodRequest::decode` pays its 8-stage decode ladder
 /// (AP-list + 6-way fading sweep + plain Bessel) once per candidate
 /// per slot — if candidate counts are large, that's the real cost
 /// driver, not the extraction redundancy already fixed above.
@@ -928,7 +888,7 @@ fn q65_candidate_score_calibration_diag() {
 #[ignore = "manual diagnostic — Q65-60A candidate-score calibration (2026-07-20 speed follow-up)"]
 fn q65_60a_eme6m_candidate_score_calibration_diag() {
     use mfsk_core::q65::search::coarse_search_for;
-    use mfsk_core::q65::{Q65a60, decode_at_for, decode_at_with_ap_for};
+    use mfsk_core::q65::{Q65a60, SniperRequest};
 
     let Some(dir) = samples_dir("60A_EME_6m") else {
         eprintln!("skipping: WSJT-X 6m EME sample tree not found");
@@ -961,15 +921,12 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
             cands.len()
         );
         for (rank, c) in cands.iter().enumerate() {
-            let plain = decode_at_for::<Q65a60>(&audio, 12_000, c.start_sample, c.freq_hz);
+            let plain =
+                SniperRequest::<Q65a60>::new(&audio, 12_000, c.start_sample, c.freq_hz).decode();
             let ap_hint = ApHint::new().with_call1("W7GJ");
-            let ap = decode_at_with_ap_for::<Q65a60>(
-                &audio,
-                12_000,
-                c.start_sample,
-                c.freq_hz,
-                &ap_hint,
-            );
+            let ap = SniperRequest::<Q65a60>::new(&audio, 12_000, c.start_sample, c.freq_hz)
+                .ap_hint(&ap_hint)
+                .decode();
             let decoded = plain.as_ref().or(ap.as_ref());
             if rank < 12 || decoded.is_some() {
                 println!(
@@ -986,7 +943,7 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
 #[test]
 #[ignore = "manual diagnostic — Q65-60D/120D/120E/300A fading-metric candidate-score calibration (2026-07-20 speed follow-up)"]
 fn q65_fading_candidate_score_calibration_diag() {
-    use mfsk_core::q65::decode_at_fading_for;
+    use mfsk_core::q65::SniperRequest;
     use mfsk_core::q65::search::coarse_search_for;
 
     struct Golden<'a> {
@@ -995,7 +952,7 @@ fn q65_fading_candidate_score_calibration_diag() {
         tol_hz: f32,
     }
 
-    fn probe<P: mfsk_core::engine::ModulationParams + Sync>(
+    fn probe<P: mfsk_core::q65::Q65SubMode + Sync>(
         label: &str,
         audio: &[f32],
         time_tolerance_symbols: u32,
@@ -1018,15 +975,9 @@ fn q65_fading_candidate_score_calibration_diag() {
         // rather than the sequential loop an earlier version of this
         // diagnostic used; the 300A file alone has 3094 candidates.
         let decode_one = |(rank, c): (usize, &mfsk_core::q65::search::SyncCandidate)| {
-            let d = decode_at_fading_for::<P>(
-                audio,
-                12_000,
-                c.start_sample,
-                c.freq_hz,
-                b90_ts,
-                model,
-                None,
-            );
+            let d = SniperRequest::<P>::new(audio, 12_000, c.start_sample, c.freq_hz)
+                .fading(model, b90_ts)
+                .decode();
             let is_hit = d.as_ref().is_some_and(|d| {
                 golden.want.iter().all(|w| d.message.contains(w))
                     && (d.freq_hz - golden.freq_hz).abs() <= golden.tol_hz

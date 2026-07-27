@@ -35,6 +35,7 @@ use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
 use crate::msg::q65::{ap_hint_to_q65_mask, unpack_symbols_to_bits77};
 
+#[cfg(test)]
 use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
 
@@ -209,7 +210,7 @@ pub struct Q65Decode {
 /// CRC-12, and unpacks the recovered 77-bit Wsjt77 message. Returns
 /// `None` if the buffer is too short, BP fails to converge, the CRC
 /// rejects the result, or the unpack fails.
-pub fn decode_at_for<P: ModulationParams>(
+pub(crate) fn decode_at_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -226,7 +227,7 @@ pub fn decode_at_for<P: ModulationParams>(
 /// hint is converted to the Q65-specific 13-symbol GF(64) mask via
 /// [`ap_hint_to_q65_mask`] and applied to the depunctured intrinsics
 /// before BP.
-pub fn decode_at_with_ap_for<P: ModulationParams>(
+pub(crate) fn decode_at_with_ap_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -297,7 +298,7 @@ fn decode_at_inner<P: ModulationParams>(
 ///
 /// Returns `None` for the same reasons as [`decode_at_for`]: short
 /// buffer, BP failure, CRC failure, or message-codec rejection.
-pub fn decode_at_fading_for<P: ModulationParams>(
+pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -350,7 +351,7 @@ pub fn decode_at_fading_for<P: ModulationParams>(
 /// fast-fading metric. Mirrors [`decode_scan_for`] but routes each
 /// candidate through [`decode_at_fading_for`] with the supplied
 /// spread parameters.
-pub fn decode_scan_fading_for<P: ModulationParams>(
+pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -402,7 +403,7 @@ pub fn decode_scan_fading_for<P: ModulationParams>(
 /// Returns `None` when no candidate clears the threshold (the most
 /// common outcome on weak signals or when the true message is not
 /// in the list) or the buffer / FFT placement is out of range.
-pub fn decode_at_with_ap_list_for<P: ModulationParams>(
+pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     start_sample: usize,
@@ -442,7 +443,7 @@ pub fn decode_at_with_ap_list_for<P: ModulationParams>(
 /// AP-list decoding on every coarse-search candidate. Mirrors
 /// [`decode_scan_for`] but routes each candidate through
 /// [`decode_at_with_ap_list_for`].
-pub fn decode_scan_with_ap_list_for<P: ModulationParams>(
+pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -478,33 +479,12 @@ pub fn decode_scan_with_ap_list_for<P: ModulationParams>(
     seen
 }
 
-/// Q65-30A convenience wrapper for [`decode_at_for`].
-pub fn decode_at(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-) -> Option<Q65Decode> {
-    decode_at_for::<Q65a30>(audio, sample_rate, start_sample, base_freq_hz)
-}
-
-/// Q65-30A convenience wrapper for [`decode_at_with_ap_for`].
-pub fn decode_at_with_ap(
-    audio: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    base_freq_hz: f32,
-    ap_hint: &ApHint,
-) -> Option<Q65Decode> {
-    decode_at_with_ap_for::<Q65a30>(audio, sample_rate, start_sample, base_freq_hz, ap_hint)
-}
-
 /// Scan an audio buffer for Q65 frames in sub-mode `P` within the
 /// search window: runs [`super::search::coarse_search_for`] and tries
 /// [`decode_at_for`] on each candidate in score order, collapsing
 /// duplicate decodes (same message, frequency within ±4 Hz, start
 /// sample within ±1 symbol).
-pub fn decode_scan_for<P: ModulationParams>(
+pub(crate) fn decode_scan_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -517,7 +497,7 @@ pub fn decode_scan_for<P: ModulationParams>(
 /// candidate is decoded with the AP hint applied, which lifts the
 /// effective decode threshold by 2–4 dB on Q65-30A and is essential
 /// for EME on 6 m and above.
-pub fn decode_scan_with_ap_for<P: ModulationParams>(
+pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -777,38 +757,6 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
     )
 }
 
-/// Q65-30A convenience wrapper for [`decode_scan_for`].
-pub fn decode_scan(
-    audio: &[f32],
-    sample_rate: u32,
-    nominal_start_sample: usize,
-    params: &super::search::SearchParams,
-) -> Vec<Q65Decode> {
-    decode_scan_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params)
-}
-
-/// Q65-30A convenience wrapper for [`decode_scan_with_ap_for`].
-pub fn decode_scan_with_ap(
-    audio: &[f32],
-    sample_rate: u32,
-    nominal_start_sample: usize,
-    params: &super::search::SearchParams,
-    ap_hint: &ApHint,
-) -> Vec<Q65Decode> {
-    decode_scan_with_ap_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params, ap_hint)
-}
-
-/// Convenience: scan for Q65-30A with default search parameters
-/// from sample 0.
-pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Q65Decode> {
-    decode_scan(
-        audio,
-        sample_rate,
-        0,
-        &super::search::SearchParams::default(),
-    )
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Multi-period averaging — WSJT-X `iavg=1,2` parity.
 //
@@ -1035,7 +983,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 /// [`decode_scan_for`] / [`decode_scan_fading_for`] separately.
 ///
 /// Empty `audio_slots` returns an empty Vec.
-pub fn decode_multi_period_for<P: ModulationParams>(
+pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     audio_slots: &[&[f32]],
     sample_rate: u32,
     nominal_start_sample: usize,
@@ -1154,25 +1102,9 @@ pub fn decode_multi_period_for<P: ModulationParams>(
     output
 }
 
-/// Q65-30A convenience wrapper for [`decode_multi_period_for`].
-pub fn decode_multi_period(
-    audio_slots: &[&[f32]],
-    sample_rate: u32,
-    nominal_start_sample: usize,
-    params: &super::search::SearchParams,
-    ap_codewords: Option<&[[i32; 63]]>,
-) -> Vec<Q65Decode> {
-    decode_multi_period_for::<Q65a30>(
-        audio_slots,
-        sample_rate,
-        nominal_start_sample,
-        params,
-        ap_codewords,
-    )
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::decode_request::DecodeRequest;
     use super::super::tx::synthesize_standard;
     use super::*;
 
@@ -1181,7 +1113,9 @@ mod tests {
         let freq = 1500.0;
         let audio =
             synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack + synth");
-        let result = decode_at(&audio, 12_000, 0, freq).expect("clean aligned decode must succeed");
+        let result = DecodeRequest::<Q65a30>::sniper(&audio, 12_000, 0, freq)
+            .decode()
+            .expect("clean aligned decode must succeed");
         assert_eq!(result.message, "CQ K1ABC FN42");
         assert_eq!(result.start_sample, 0);
         assert!((result.freq_hz - freq).abs() < 0.001);
@@ -1192,7 +1126,9 @@ mod tests {
         let freq = 1500.0;
         let audio =
             synthesize_standard("CQ", "JA1ABC", "PM95", 12_000, freq, 0.3).expect("pack + synth");
-        let decodes = decode_scan_default(&audio, 12_000);
+        let decodes =
+            DecodeRequest::<Q65a30>::new(&audio, 12_000, 0, super::super::SearchParams::default())
+                .decode();
         assert!(!decodes.is_empty(), "scan must find a clean signal");
         assert_eq!(decodes[0].message, "CQ JA1ABC PM95");
     }
@@ -1201,7 +1137,9 @@ mod tests {
     fn scan_with_no_signal_returns_empty() {
         // Pure silence (well, low noise) must not produce false decodes.
         let audio = vec![0.0_f32; 12_000 * 30];
-        let decodes = decode_scan_default(&audio, 12_000);
+        let decodes =
+            DecodeRequest::<Q65a30>::new(&audio, 12_000, 0, super::super::SearchParams::default())
+                .decode();
         assert!(
             decodes.is_empty(),
             "got false decodes from silence: {decodes:#?}"

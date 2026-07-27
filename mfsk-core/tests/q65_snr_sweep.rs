@@ -18,7 +18,8 @@
 
 use std::f32::consts::PI;
 
-use mfsk_core::q65::{decode_scan_default, synthesize_standard};
+use mfsk_core::q65::search::SearchParams;
+use mfsk_core::q65::{DecodeRequest, Q65a30, synthesize_standard};
 
 const FS: f32 = 12_000.0;
 const FS_U: u32 = 12_000;
@@ -107,7 +108,8 @@ fn q65_30a_snr_sweep() {
         let mut ok = 0u64;
         for seed in 0..SEEDS {
             let audio = make_slot("CQ", "K1ABC", "FN42", freq, snr as f32, 0xC65000 + seed);
-            let decodes = decode_scan_default(&audio, FS_U);
+            let decodes =
+                DecodeRequest::<Q65a30>::new(&audio, FS_U, 0, SearchParams::default()).decode();
             if hit(&decodes, expected) {
                 ok += 1;
             }
