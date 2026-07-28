@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211)
 
 ### Added
 
@@ -1752,6 +1752,29 @@
   ms → ~165-175 ms (~6-7× faster than real `jt9 -8 -d3`'s ~1.1-1.2 s).
   See `FT8_BENCHMARK.md` section 11 for the full trace and cost
   investigation.
+- **`engine::dsp::downsample::downsample_cached` rebuilt its inverse-FFT
+  plan (twiddle table) from scratch on every call instead of reusing one
+  across a session** (#211), found while profiling the wasm `+simd128`
+  benchmark harness (#208, Stage C — `node --prof` with real function
+  symbols). Called once per FT8 candidate (~90×/slot), it constructed a
+  fresh `default_planner()` and called `plan_inverse(cfg.fft2_size)`
+  every time, even though `fft2_size` never varies within a decode
+  session — discarding `rustfft::FftPlanner`'s own per-size cache each
+  call and rebuilding the twiddle table via scalar `sin`/`cos`/`rem_pio2`.
+  Same anti-pattern already fixed twice nearby (`SYMBOL_FFT_32` in
+  `fill_symbol_spectra.rs`, `subtract_tones_lpf_fft`'s filter-response
+  plan above) — `default_planner()`'s own doc comment already says to
+  "reuse the same instance across all decodes in a session so rustfft's
+  twiddle cache hits," this call site just didn't. Fixed with a
+  `std`-gated `thread_local!` planner, reused across calls on the same
+  thread; `no_std`/`fft-extern` (embedded) callers are unaffected — the
+  only hot-loop caller (`fill_symbol_spectra_via_cd0`) is itself
+  `fft-rustfft`-gated. Measured impact: ~12.5% of total wasm decode
+  wall-clock (`node --prof` flat profile, `qso3_busy.wav`), bigger than
+  any dense-kernel SIMD target found in the same profiling pass; not
+  wasm-specific, the same redundant work happens on every target. Golden
+  recall unchanged: FT8 full-parity 8/8, AP-off 7/8 (7 phantom, 14
+  total), JTDX 18/18 (1 extra) — byte-identical to pre-fix.
 
 ## 0.7.4 — MSK144 decode (#25)
 
