@@ -415,6 +415,39 @@ trials) as a representative single sub-mode.
   moderate on the same two corpora should show it too, and they don't).
   No evidence the M5 build decodes differently from Ryzen9.
 
+### WASM: `+simd128` effect on FT8 decode (Node, wasm32-unknown-unknown)
+
+Measured 2026-07-28, in support of issue #208 (mfsk-core owing docs +
+implementation back to WASM consumers after `jl1nie/webft8#5` found the
+wasm build had no SIMD feature enabled). **Compute environment**: Node.js
+(`--target nodejs` wasm-bindgen build), target `wasm32-unknown-unknown`,
+`opt-level = 3` + `lto = true`, two rustflags configs compared —
+`-C target-feature=+simd128` absent vs. present, nothing else changed.
+Measured via an ad hoc local harness (not yet the committed
+`bench/wasm/` script — see below); real `decode_wav()` FT8 decode calls,
+median of 5-7 runs per config, same input, steady-state.
+
+| WAV | without `+simd128` | with `+simd128` | speedup |
+|---|---:|---:|---:|
+| sim_busy_band.wav | 194.2 ms | 156.5 ms | 19.4% |
+| sim_extreme_hard.wav | 216.5 ms | 173.1 ms | 20.0% |
+
+Notes:
+- `sim_busy_band.wav` / `sim_extreme_hard.wav` are not part of this
+  repo's committed fixture set (`ft8sim`-generated stress WAVs from a
+  sibling `webft8` checkout) — a manual local repro, not a CI-reachable
+  one. A committed, CI-safe harness (`bench/wasm/`, wrapping the same
+  `DecodeRequest::<Ft8>` call as `mfsk-core/tests/ft8_sweep.rs`, default
+  fixture `embedded-poc/assets/qso3_busy.wav`) is tracked as a follow-up
+  under the same issue.
+- This isolates the flag's effect only — no kernel code changed between
+  the two columns. Decode *recall* (not just timing) has not yet been
+  asserted identical between the two configs; that check is deferred to
+  the harness above, alongside whichever dense-kernel vectorization
+  follows from profiling the `+simd128` build (Part 2 of issue #208 —
+  LDPC belief-propagation is explicitly out of scope there, it's a
+  gather/scatter-bound reduction, a poor SIMD target).
+
 ## FT8
 
 - **WSJT-X 8-entry golden: 7/8 ship-config (`DecodeDepth::EMBEDDED`,
