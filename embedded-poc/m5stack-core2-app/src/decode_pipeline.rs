@@ -142,7 +142,7 @@ pub fn run() -> ! {
         let mut had_response_this_slot = false;
         if let Ok(mut ui) = UI.lock() {
             for r in results.iter() {
-                if let Some(text) = unpack77(&r.message77) {
+                if let Some(text) = unpack77(r.message77()) {
                     let mut msg: heapless::String<22> = heapless::String::new();
                     let take = text.len().min(msg.capacity());
                     let _ = msg.push_str(&text[..take]);
