@@ -140,7 +140,7 @@ let results = DecodeRequest::<Ft8>::new(
 .decode()
 .results;
 for r in &results {
-    if let Some(text) = unpack77(&r.message77) {
+    if let Some(text) = unpack77(r.message77()) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
     }

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215)
 
 ### Added
 
@@ -1798,6 +1798,16 @@
   Byte-identical recall on all three FT8 golden regressions
   (full-parity 8/8, AP-off 7/8/7-phantom/14-total, JTDX 18/18/1-extra)
   and the full `--features full` test suite.
+- **`embedded-poc` didn't compile against the real `+esp` Xtensa
+  toolchain** (#215) — #194's `DecodeResult.message77` field→method
+  change wasn't propagated there, since `embedded-poc` is
+  workspace-excluded and never built by host CI. 5 call sites still
+  used `&r.message77` as a field: `embedded-shared/src/apps/{compute_bench,rx_wavsim}.rs`
+  and each app's `decode_pipeline.rs`
+  (`m5stack-s3-app`/`m5stack-core2-app`/`m5stack-cores3-app`). Found by
+  installing `espup` fresh and running `cargo check` across all four
+  `embedded-poc` crates — closes the "embedded-poc +esp check still
+  owed" item from #206. All four now compile clean.
 
 ## 0.7.4 — MSK144 decode (#25)
 
