@@ -45,10 +45,10 @@ while broadening the set of platforms that can host it.
 Protocol-independent algorithms — DSP, sync, LLR, the equaliser,
 LDPC BP / OSD, Fano convolutional decoding, Reed-Solomon erasure
 decoding, and the shared parts of the message codec — live in the
-`core`, `fec`, and `msg` modules. Each protocol is a comparatively
+`engine`, `fec`, and `msg` modules. Each protocol is a comparatively
 small zero-sized type (ZST) that declares its own constants and the
-specific FEC / message codec it uses. The pipeline is expressed as
-`decode_frame::<P>()`, taking `P: Protocol` as a compile-time type
+specific FEC / message codec it uses. The pipeline is driven through
+`DecodeRequest::<P>` (§4), taking `P: Protocol` as a compile-time type
 parameter so that monomorphisation produces specialised code per
 protocol. The abstraction does not add runtime cost.
 
@@ -149,7 +149,8 @@ exercise:
    paths through the same FEC. They are listed in §3:
    plain AWGN BP, AP-hint BP, fast-fading metric, AP-list
    template matching, and multi-period EMA averaging. Each is a
-   distinct entry-point function generic over the sub-mode ZST; the
+   builder method combination on `DecodeRequest`/`SniperRequest`/
+   `MultiPeriodRequest`, generic over the sub-mode ZST; the
    underlying FEC and message codec are shared.
 
 Where WSPR proved that *FEC family + message width + sync mode*
@@ -170,7 +171,7 @@ differences: a coarse-sync → LLR → FEC pipeline running over one
 fixed-length slot, with 0..N frames sitting at (or near) a known
 nominal offset. **MSK144** (issue #25) breaks both halves of that
 assumption at once, and rather than force a fit, `msk144::decode`
-is its own top-level driver — it never touches `core::pipeline`,
+is its own top-level driver — it never touches `engine::pipeline`,
 `ModulationParams`, or `FrameLayout`, and no ZST implements
 `Protocol` for it at all. This is a step further than WSPR or Q65:
 those still adopt the trait surface (§0.5) even where their real
@@ -182,7 +183,7 @@ trait surface itself.
    with a half-sine pulse. `ModulationParams`'s tone-index /
    Gray-map / GFSK-shaping model has no useful mapping onto that
    waveform. The modulator and matched-filter demodulator live in
-   `core::dsp::msk` as plain functions, not a trait impl.
+   `engine::dsp::msk` as plain functions, not a trait impl.
 2. **Not a static slot.** Every other protocol assumes a frame sits
    at a known nominal offset inside one fixed-length slot buffer.
    MSK144 instead repeats its 864-sample (72 ms) frame continuously
@@ -193,7 +194,7 @@ trait surface itself.
    two-tone spectral scan) plus `msk144::sync::msk144_sync` (a joint
    CFO/symbol-timing matched-filter correlation) do that scanning,
    ported from WSJT-X's `msk144spd.f90`/`msk144sync.f90` — not from
-   `core::sync::coarse_sync`.
+   `engine::sync::coarse_sync`.
 
 What it *does* share with the rest of the library: the 77-bit
 `pack77`/`unpack77` message payload (`msg::wsjt77`, completely
@@ -216,13 +217,15 @@ architecture doesn't cost recall.
 
 ```
 mfsk_core
-├── core/             Protocol traits, DSP, sync, LLR, equaliser, pipeline
+├── engine/           Protocol traits, DSP, sync, LLR, equaliser, pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · subtract · msk · analytic
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (Wiener per-tone)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
+│                       (pub(crate) internals — see §4; call via
+│                       msg::decode_request::DecodeRequest/SniperRequest)
 ├── fec/              FecCodec implementations
 │   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
 │   ├── ldpc240_101/    LDPC(240, 101) — FST4
@@ -239,6 +242,9 @@ mfsk_core
 │       ├── npfwht.rs      Non-binary Walsh-Hadamard transform helpers
 │       └── pdmath.rs      Probability-domain BP math helpers
 ├── msg/              Message codecs
+│   ├── decode_request.rs DecodeRequest / SniperRequest — the public decode
+│   │                     entry point for FT8/FT4/FST4 (§4, replaces the
+│   │                     pre-0.8.0 decode_frame*/decode_sniper* families)
 │   ├── wsjt77.rs       77-bit WSJT message (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72-bit JT message — JT9, JT65
@@ -280,7 +286,7 @@ mfsk_core
 
 Each protocol module is gated behind a feature flag (`ft8`, `ft4`,
 `fst4`, `wspr`, `jt9`, `jt65`, `q65`, `msk144`, `packet-bytes`,
-`uvpacket`). The `core`, `fec`, `msg` and `registry` modules are
+`uvpacket`). The `engine`, `fec`, `msg` and `registry` modules are
 always available.
 
 The `mfsk-ffi` sibling crate in this workspace builds a C ABI
@@ -289,7 +295,7 @@ same crate.
 
 #### `FecCodec` is symbol-agnostic
 
-The `FecCodec` trait surface (`core/protocol.rs`) speaks in **bits**:
+The `FecCodec` trait surface (`engine/protocol.rs`) speaks in **bits**:
 `&[u8]` info / codeword, `&[f32]` bit-LLRs, `K` and `N` counted in
 bits. The four FEC families above include two non-binary codes —
 Reed-Solomon over GF(2⁶) for JT65 and QRA over GF(2⁶) for Q65 — which
@@ -361,9 +367,9 @@ Two concrete cases show how the three traits combine on a real ZST.
 message codec with FT8:
 
 ```rust
-use mfsk_core::core::protocol::*;
+use mfsk_core::engine::protocol::*;
 use mfsk_core::fec::Ldpc174_91; // re-exported from fec::ldpc
-use mfsk_core::msg::wsjt77::Wsjt77Message;
+use mfsk_core::msg::Wsjt77Message;
 
 pub struct Ft4;
 
@@ -438,16 +444,16 @@ impl Protocol for Wspr {
 ```
 
 Calling code just passes the ZST as a type argument —
-`decode_frame::<Ft4>(...)` or the WSPR-specific
-`wspr::decode::decode_scan_default(...)` — and the trait composition
-pulls in the appropriate FEC, message codec, and sync mode
-automatically.
+`DecodeRequest::<Ft4>::new(...).decode()` (§4, §6.2) or the
+WSPR-specific `wspr::decode::decode_scan_default(...)` — and the
+trait composition pulls in the appropriate FEC, message codec, and
+sync mode automatically.
 
 ### Monomorphisation & zero cost
 
-All hot-path functions (`core::sync::coarse_sync::<P>`,
-`core::llr::compute_llr::<P>`,
-`core::pipeline::process_candidate_basic::<P>`, …) take
+All hot-path functions (`engine::sync::coarse_sync::<P>`,
+`engine::llr::compute_llr::<P>`,
+`engine::pipeline::process_candidate_basic::<P>`, …) take
 `P: Protocol` as a **compile-time** type parameter. rustc
 monomorphises one copy per concrete protocol; LLVM sees a
 fully-specialised function and inlines the trait constants as
@@ -469,7 +475,7 @@ existing infrastructure it can reuse.
    the other FST4 sub-modes). Define a new ZST and swap the numeric
    constants (`NTONES`, `NSPS`, `TONE_SPACING_HZ`, `SYNC_MODE`, and
    the sync pattern). `Fec` and `Msg` can be type aliases to the
-   existing implementations, and the full `decode_frame::<P>()`
+   existing implementations, and the full `DecodeRequest::<P>`
    pipeline runs unchanged.
 
 2. **New FEC but same message** (e.g. a different LDPC size). Add
@@ -499,73 +505,81 @@ existing infrastructure it can reuse.
 ## 3. Decoder strategies (Q65 case study)
 
 Most protocols in this library expose a single decoder entry point:
-`decode_frame::<P>` for the FT family, `wspr::decode::decode_scan_default`
+`DecodeRequest::<P>` for the FT family (§4, "The public decode entry
+point"), `wspr::decode::decode_scan_default`
 for WSPR, etc. Q65 is the first wired protocol where a single FEC
 frame can be approached through several legitimately different
 receiver chains, each trading runtime cost against a different kind
-of channel pathology. They live side by side as parallel
-function families in `mfsk_core::q65::rx`, each generic over the
-sub-mode ZST.
+of channel pathology.
 
-A point worth flagging up front: the single-candidate point-decode
-functions (`decode_at_for`, `decode_at_fading_for`, …) and the
-scanning functions that wrap them (`decode_scan_for`,
-`decode_scan_fading_for`, …) are *not* the same algorithm behind two
-call shapes. `decode_at_for` really is the plain Bessel-I0 metric.
-But `decode_scan_for` / `decode_scan_with_ap_for` — the family nearly
-every real caller uses — route each coarse-search candidate through
-`decode_at_with_fine_timing_for`, which always runs a WSJT-X-faithful
-`(Δf, Δt, b90)` grid search using the fast-fading metric with
-`FadingModel::Lorentzian`, ported from `q65_loops.f90` /
-`q65_dec_q012`. That mirrors WSJT-X's own automatic decoder, which
-never actually runs a plain-AWGN-only Bessel pass for its default
-scan either. So "AWGN" and "fast-fading" are best read as two
-distinct *entry-point families* (point vs. scan), not two cleanly
-separate front ends picked by channel type — the scan path already
-assumes some amount of fading by default, and the dedicated
-fast-fading entry points below exist for when the caller wants to
-pick a specific `(b90_ts, model)` explicitly instead.
+As of issue #204, these are exposed through three generic builders in
+`mfsk_core::q65::decode_request` — `DecodeRequest<P>` (wide-band
+scan), `SniperRequest<P>` (single known `(start_sample, base_freq_hz)`,
+built via `DecodeRequest::sniper` or `SniperRequest::new` directly),
+and `MultiPeriodRequest<P>` (averaged multi-slot decode) — mirroring
+`msg::decode_request`'s FT8/FT4/FST4 shape (§4), generic over a
+sealed `Q65SubMode` marker implemented for all ten sub-mode ZSTs. The
+underlying `q65::rx` functions this section used to reference directly
+(`decode_at_for`, `decode_scan_for`, …) are `pub(crate)` — the builders
+are the public entry point. `.ap_hint()`, `.ap_list()`, `.fading()` are
+plain inherent methods (not capability-gated marker traits like
+`SupportsWideBandAp`) since every Q65 sub-mode supports every
+capability uniformly.
 
-| When                                                   | Strategy                              | Entry point                                                          | Threshold gain |
+A point worth flagging up front: `SniperRequest::decode()` with no
+capability set (`decode_at_for` internally) really is the plain
+Bessel-I0 metric — the point-decode-only baseline. But
+`DecodeRequest::decode()` with no capability set (`decode_scan_for`
+internally) — the shape nearly every real caller uses — routes each
+coarse-search candidate through a WSJT-X-faithful `(Δf, Δt, b90)` grid
+search using the fast-fading metric with `FadingModel::Lorentzian`,
+ported from `q65_loops.f90` / `q65_dec_q012`. That mirrors WSJT-X's own
+automatic decoder, which never actually runs a plain-AWGN-only Bessel
+pass for its default scan either. So "AWGN" and "fast-fading" are best
+read as two distinct *entry-point families* (sniper vs. scan), not two
+cleanly separate front ends picked by channel type — the scan path
+already assumes some amount of fading by default, and `.fading()`
+exists for when the caller wants to pick a specific `(b90_ts, model)`
+explicitly instead.
+
+| When                                                   | Strategy                              | Builder call                                                          | Threshold gain |
 |---------------------------------------------------------|----------------------------------------|------------------------------------------------------------------------|----------------|
-| Single known candidate, unknown content                | AWGN Bessel + BP (point-decode only)   | `decode_at_for<P>`                                                     | baseline       |
-| Default scan — unknown channel, unknown content         | `(Δf,Δt,b90)` grid search + Lorentzian fading BP | `decode_scan_for<P>` / `decode_scan_with_ap_for<P>`             | WSJT-X-faithful default |
-| Known callsign(s) or report, terrestrial channel        | AP-hint BP                             | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`              | ~2 dB          |
-| Doppler-spread channel, explicit model (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP, caller-picked `(b90_ts, FadingModel)` | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` | 5–8 dB on spread channels |
-| Known call pair, no QSO context, terrestrial            | AP-list template matching              | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`    | ~3 dB          |
-| Weak/ionoscatter signal spanning several T/R periods    | Multi-period EMA averaging (3-stage cascade) | `decode_multi_period_for<P>` / `decode_multi_period`             | recovers signals no single-period strategy can |
+| Single known candidate, unknown content                | AWGN Bessel + BP (point-decode only)   | `SniperRequest::<P>::new(...).decode()`                                | baseline       |
+| Default scan — unknown channel, unknown content         | `(Δf,Δt,b90)` grid search + Lorentzian fading BP | `DecodeRequest::<P>::new(...).decode()`                        | WSJT-X-faithful default |
+| Known callsign(s) or report, terrestrial channel        | AP-hint BP                             | `.ap_hint(&ap)` on either builder                                      | ~2 dB          |
+| Doppler-spread channel, explicit model (microwave EME, ≥10 Hz spread) | Fast-fading metric + BP, caller-picked `(b90_ts, FadingModel)` | `.fading(model, b90_ts)` on either builder | 5–8 dB on spread channels |
+| Known call pair, no QSO context, terrestrial            | AP-list template matching              | `.ap_list(&candidates)` on either builder                             | ~3 dB          |
+| Weak/ionoscatter signal spanning several T/R periods    | Multi-period EMA averaging (3-stage cascade) | `MultiPeriodRequest::<P>::new(...).decode()`                     | recovers signals no single-period strategy can |
 
-**AWGN Bessel + BP** (`decode_at_for`) is the textbook single-shot
-path: per-symbol FFT energies become probability vectors via the
-Bessel-I0 metric, then non-binary belief propagation runs on the QRA
-code. Falls back gracefully on any channel reasonably close to
-additive Gaussian noise — but note it is the *point-decode* API only;
-see the note above for why the scan family doesn't stay on this front
-end.
+**AWGN Bessel + BP** (`SniperRequest` with no capability set) is the
+textbook single-shot path: per-symbol FFT energies become probability
+vectors via the Bessel-I0 metric, then non-binary belief propagation
+runs on the QRA code. Falls back gracefully on any channel reasonably
+close to additive Gaussian noise — but note it is the *point-decode*
+shape only; see the note above for why the scan family doesn't stay on
+this front end.
 
-**AP-hint BP** clamps the intrinsic probability vectors at known
-information-bit positions before BP. A correct hint shifts the BP
-fixed-point closer to the truth; a wrong hint typically fails to
-converge rather than misdecoding (the CRC catches what's left).
-Construct the hint via `mfsk_core::msg::ApHint` (`with_call1`,
+**AP-hint BP** (`.ap_hint(&ap)`) clamps the intrinsic probability
+vectors at known information-bit positions before BP. A correct hint
+shifts the BP fixed-point closer to the truth; a wrong hint typically
+fails to converge rather than misdecoding (the CRC catches what's
+left). Construct the hint via `mfsk_core::msg::ApHint` (`with_call1`,
 `with_call2`, `with_grid`, `with_report`).
 
-**Fast-fading metric** replaces the Bessel front end with a
-spread-aware alternative, calibrated against a caller-chosen
-`FadingModel::Gaussian` or `FadingModel::Lorentzian` shape (the
-model is an explicit parameter on `decode_at_fading_for` /
-`decode_scan_fading_for`, not a fixed calibration). Required for
-microwave EME where lunar libration spreads each tone over
-10–60 Hz: the 10 GHz EME reference recording in
+**Fast-fading metric** (`.fading(model, b90_ts)`) replaces the Bessel
+front end with a spread-aware alternative, calibrated against a
+caller-chosen `FadingModel::Gaussian` or `FadingModel::Lorentzian`
+shape. Required for microwave EME where lunar libration spreads each
+tone over 10–60 Hz: the 10 GHz EME reference recording in
 `samples/Q65/60D_EME_10GHz/` decodes via this path but produces zero
 hits with the plain Bessel front end. `b90_ts` is the spread
 bandwidth × symbol period (typical: 0.05 = near-AWGN, 1.0 = moderate,
 5.0+ = severe).
 
-**AP-list template matching** does *not* run BP. Instead, the
-generator `q65::ap_list::standard_qso_codewords(my_call, his_call,
-his_grid)` pre-encodes the WSJT-X "full AP list" — 206 standard
-exchanges that a known callsign pair can legally produce
+**AP-list template matching** (`.ap_list(&candidates)`) does *not* run
+BP. Instead, the generator `q65::ap_list::standard_qso_codewords(my_call,
+his_call, his_grid)` pre-encodes the WSJT-X "full AP list" — 206
+standard exchanges that a known callsign pair can legally produce
 (`MYCALL HISCALL`, `MYCALL HISCALL RRR/RR73/73`, `CQ HISCALL grid`,
 plus the 200-entry SNR ladder). The decoder picks the candidate
 whose log-likelihood under the soft observations exceeds a
@@ -573,28 +587,24 @@ size-adjusted threshold, or returns `None`. Useful when the
 application has a known callsign pair but no QSO state — and at
 SNR −25 dB (1 dB below the published Q65-30A threshold), the
 test sweep shows AP-list decodes 6/6 frames where plain BP fails
-0/6.
+0/6. `.ap_list()` and `.fading()` are mutually exclusive in the
+underlying engine; `.decode()` resolves precedence as
+ap_list > fading (+ ap_hint) > ap_hint > plain.
 
-**Multi-period EMA averaging** (`decode_multi_period_for` /
-`decode_multi_period`) mirrors WSJT-X's `iavg=1`/`iavg=2` averaged
-decode from `q65_decode.f90` — the strategy that lets ionoscatter and
-weak EME signals decode when no single-period strategy above can. It
-maintains an exponential moving average of the per-slot spectrogram
-(time constant `min(navg, 4)`) across consecutive T/R periods and, at
-each slot, tries a 3-stage decode ladder against the averaged
-energies: (1) AP-list, when the caller supplies a plausible
-call/grid pair; (2) fast-fading BP sweeping `b90·Ts ∈ {3, 8, 15}` ×
-`{Gaussian, Lorentzian}`; (3) plain Bessel BP as a last-resort AWGN
-fallback. Returns at most one decode per slot, deduped by
-`(message, ±4 Hz freq)`. Not yet exposed via `mfsk-ffi` — Rust API
-only as of writing.
-
-**Composing strategies.** Fast-fading and AP-list compose: the
-fast-fading metric produces intrinsic vectors that
-`Q65Codec::decode_with_codeword_list` accepts directly. Wiring a
-combined `decode_at_fading_with_ap_list_for<P>` is a small additive
-change; for now, callers do the composition explicitly via the
-lower-level primitives (`intrinsics_fast_fading` + `Q65Codec`).
+**Multi-period EMA averaging** (`MultiPeriodRequest`) mirrors
+WSJT-X's `iavg=1`/`iavg=2` averaged decode from `q65_decode.f90` —
+the strategy that lets ionoscatter and weak EME signals decode when
+no single-period strategy above can. Takes `&[&[f32]]` (one buffer
+per T/R slot) rather than a single audio buffer. It maintains an
+exponential moving average of the per-slot spectrogram (time constant
+`min(navg, 4)`) across consecutive T/R periods and, at each slot,
+tries a 3-stage decode ladder against the averaged energies: (1)
+AP-list, when `.ap_list()` was set; (2) fast-fading BP sweeping
+`b90·Ts ∈ {3, 8, 15}` × `{Gaussian, Lorentzian}`; (3) plain Bessel BP
+as a last-resort AWGN fallback (no separate `.fading()`/`.ap_hint()`
+on this builder — the ladder always runs). Returns at most one decode
+per slot, deduped by `(message, ±4 Hz freq)`. Not yet exposed via
+`mfsk-ffi` — Rust API only as of writing.
 
 The C ABI exposes four of the strategies above one-for-one as
 `mfsk_q65_decode`, `mfsk_q65_decode_with_ap`, `mfsk_q65_decode_fading`
@@ -604,13 +614,13 @@ parameter so any of the ten sub-modes is reachable from C/C++/Kotlin;
 (`Gaussian` / `Lorentzian`) parameter (§8). Multi-period averaging is
 not yet part of the C ABI.
 
-## 4. Shared primitives (`core`)
+## 4. Shared primitives (`engine`)
 
 ### Receive pipeline at a glance
 
 The complete receive flow for any wired protocol — from raw audio
 samples to decoded message text — is a chain of free functions in
-the `core` submodules below, parameterised by `P: Protocol`:
+the `engine` submodules below, parameterised by `P: Protocol`:
 
 ```text
 ┌─────────┐  coarse_sync   ┌──────────────┐  refine_candidate  ┌──────────┐
@@ -638,11 +648,11 @@ the `core` submodules below, parameterised by `P: Protocol`:
 ```
 
 There is no `Demodulator` or `Receiver` trait. The receive path is
-realised as free functions in `core::sync`, `core::llr`,
-`core::equalize`, `core::pipeline`, each generic over `P: Protocol`.
+realised as free functions in `engine::sync`, `engine::llr`,
+`engine::equalize`, `engine::pipeline`, each generic over `P: Protocol`.
 Monomorphisation produces per-protocol code identical to a hand-
 written decoder, without forcing every protocol to implement an
-n-method receive interface. `core::llr::compute_llr<P>` is the soft
+n-method receive interface. `engine::llr::compute_llr<P>` is the soft
 demapper: it lives as a free fn rather than a `Protocol::demap()`
 method because the spectral extraction (`symbol_spectra`), the four
 WSJT-style LLR variants (a/b/c/d) and the equaliser feed into it as
@@ -651,7 +661,40 @@ equalisation and the pipeline driver — all of them take the
 protocol type as a parameter and read `P`'s associated constants
 (`NTONES`, `NSPS`, `SYNC_MODE`, …) directly.
 
-### DSP (`mfsk_core::core::dsp`)
+### The public decode entry point: `DecodeRequest` / `SniperRequest`
+
+The engine functions in the diagram above (`coarse_sync`,
+`decode_frame`, `process_candidate_basic`, …) are internal —
+`pub(crate)` since issue #191/#203. Applications drive them through
+two generic builders in `mfsk_core::msg::decode_request`, implemented
+for `Ft8`, `Ft4`, and every FST4 sub-mode (the `FrameDecodable`
+marker trait; Q65/WSPR/JT65/JT9/uvpacket keep their own bespoke entry
+points, §6.3/§6.5):
+
+* **`DecodeRequest<P>`** — wide-band search over `freq_min..freq_max`.
+  `DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min,
+  max_cand)`, then chain `.depth(...)`, `.strictness(...)`,
+  `.eq_mode(...)`, `.known(...)` (skip/subtract already-decoded
+  messages from an earlier pass), `.fft_cache(...)` (reuse a previous
+  call's forward FFT), `.ap_hint(...)` where the protocol implements
+  `SupportsWideBandAp` (FT8 only), and one of `.flat()` / `.staged()`
+  to pick a successive-interference-cancellation strategy where the
+  protocol supports it (`SupportsFlatSic`: FT8+FT4; `SupportsStagedSic`:
+  FT8 only). Call `.decode()` to get a `DecodeOutcome<P>` (`.results:
+  Vec<P::DecodeResult>`, plus `.fft_cache` for a follow-up call).
+* **`SniperRequest<P>`** — narrow-band, single-target search.
+  `DecodeRequest::<P>::sniper(audio, target_freq_hz, max_cand)` or
+  `SniperRequest::<P>::new(...)` directly; `.depth(...)`,
+  `.strictness(...)`, `.eq_mode(...)`, and `.ap_hint(...)` where the
+  protocol's message codec implements `WsjtApCompatible` (no SIC
+  variant — sniper mode is inherently single-candidate). `.decode()`
+  returns the same `DecodeOutcome<P>` shape.
+
+This replaced FT8's `decode_frame*`/`decode_frame_subtract*`/
+`decode_sniper*` family (15 public functions) and FT4/FST4's own
+suffix-exploded equivalents — see §6.2/§6.4 for worked examples.
+
+### DSP (`mfsk_core::engine::dsp`)
 
 | Module           | Purpose                                                     |
 |------------------|-------------------------------------------------------------|
@@ -666,7 +709,7 @@ from trait constants alone. Protocol modules expose module-level
 constants for each — `ft8::downsample::FT8_CFG`,
 `ft4::decode::FT4_DOWNSAMPLE`, etc.
 
-### Sync (`mfsk_core::core::sync`)
+### Sync (`mfsk_core::engine::sync`)
 
 * `coarse_sync::<P>(audio, freq_min, freq_max, …)` — UTC-aligned 2D
   peak search over `P::SYNC_MODE.blocks()` for non-FT8 protocols.
@@ -680,12 +723,12 @@ constants for each — `ft8::downsample::FT8_CFG`,
 > `mfsk_core::ft8::decode_block::coarse_sync` (graduated to public
 > API alongside `compute_spectrogram`) — the older
 > `ft8::sync::coarse_sync` thin wrapper has been removed. Calling
-> `core::sync::coarse_sync::<Ft8>` is still the right path for
-> hand-rolled non-default usage but the high-level
-> `ft8::decode::decode_frame*` entry points all dispatch via
-> `decode_block::coarse_sync`. See §10 for the FT8-specific notes.
+> `engine::sync::coarse_sync::<Ft8>` is still the right path for
+> hand-rolled non-default usage but `DecodeRequest::<Ft8>`/
+> `SniperRequest::<Ft8>` (§4) dispatch via `decode_block::coarse_sync`
+> internally. See §10 for the FT8-specific notes.
 
-### Sync2D — FT4 / FST4 full-slot coherent sync search (`mfsk_core::core::sync2d`)
+### Sync2D — FT4 / FST4 full-slot coherent sync search (`mfsk_core::engine::sync2d`)
 
 Two protocol-specific full-slot coherent searches live here, both
 ported from WSJT-X and both scored via a **phase-continuous** Costas
@@ -715,7 +758,7 @@ full-slot search instead — a local window anchored on the coarse-sync
 candidate's position couldn't recover cases where that non-coherent Δt
 estimate was wrong by more than the window's own radius.
 
-`core::sync::coarse_sync::<P>` also gained an FST4-only augmentation
+`engine::sync::coarse_sync::<P>` also gained an FST4-only augmentation
 in the same pass: a bin can enter the candidate list either via the
 existing short-time Costas-grid threshold *or* by clearing a
 full-slot non-coherent 4-tone power check modelled on WSJT-X's
@@ -727,7 +770,7 @@ dropped there) but is a real WSJT-X-faithful coverage improvement for
 busy/wideband scans with many co-channel candidates competing for a
 fixed-size list.
 
-### LLR (`mfsk_core::core::llr`)
+### LLR (`mfsk_core::engine::llr`)
 
 * `symbol_spectra::<P>(cd0, i_start)` — per-symbol FFT bins (generic
   path; FT8 callers should prefer
@@ -743,20 +786,28 @@ fixed-size list.
   the FT8 default).
 * `sync_quality::<P>(cs)` — hard-decision sync symbol count.
 
-### Equalise (`mfsk_core::core::equalize`)
+### Equalise (`mfsk_core::engine::equalize`)
 
 * `equalize_local::<P>(cs)` — per-tone Wiener equaliser driven by
   `P::SYNC_MODE.blocks()` pilot observations; linearly extrapolates any tones
   that Costas doesn't visit.
 
-### Pipeline (`mfsk_core::core::pipeline`)
+### Pipeline (`mfsk_core::engine::pipeline`)
 
-* `decode_frame::<P>(...)` — coarse sync → parallel process_candidate → dedupe.
-* `decode_frame_subtract::<P>(...)` — 3-pass SIC driver. The SIC step
-  uses `subtract_signal_lpf` (WSJT-X-style channel-aware subtract)
-  as of 0.6.2; the previous `subtract_signal_weighted` /
-  `qsb_partial_gain` path has been removed.
-* `process_candidate_basic::<P>(...)` — single-candidate BP+OSD.
+`decode_frame::<P>` (coarse sync → parallel process_candidate →
+dedupe), `decode_frame_subtract::<P>` (3-pass SIC driver), and
+`process_candidate_basic::<P>` (single-candidate BP+OSD) are the raw
+engine functions underneath the pipeline — but as of issue #191/#203
+they are **`pub(crate)`** (or `pub` only under the non-default
+`internal-testing` feature, used by the crate's own test binaries).
+Application code should not call them directly; use
+`msg::decode_request::DecodeRequest`/`SniperRequest` instead (see
+"The public decode entry point" above), which wrap these same
+functions behind a builder. `decode_frame_subtract`
+uses `subtract_signal_lpf` (WSJT-X-style channel-aware subtract) as of
+0.6.2; the previous `subtract_signal_weighted` / `qsb_partial_gain`
+path has been removed.
+
 * `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — pre-OSD
   coarse-sync-score gate and post-OSD hard-error ceiling. Calibrated
   against FT8 real-WAV recall (2026-04-07) and, until 0.7.1, silently
@@ -797,7 +848,7 @@ which inner steps they enable:
   itself (graduated to public API in 0.6.0).
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — per-symbol
   FFT extraction directly from audio (replaces the cd0 +
-  `core::llr::symbol_spectra` two-step that older code used).
+  `engine::llr::symbol_spectra` two-step that older code used).
 
 ## 5. Feature flags
 
@@ -831,10 +882,10 @@ enable several for illustration.
 ### 6.2 FT8 decode — minimal example
 
 ```rust
-use mfsk_core::ft8::{
-    decode::{decode_frame, DecodeDepth},
-    wave_gen::{message_to_tones, tones_to_i16},
-};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::DecodeDepth;
+use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 // 1. Synthesise an FT8 frame and pad it into a 15-second slot.
@@ -848,10 +899,13 @@ for (i, &s) in frame.iter().enumerate() {
     if start + i < audio.len() { audio[start + i] = s; }
 }
 
-// 2. Decode it back.
-for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None,
-                      DecodeDepth::FULL, 50) {
-    if let Some(text) = unpack77(&r.message77) {
+// 2. Decode it back. new(audio, freq_min, freq_max, sync_min, max_cand).
+let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3_000.0, 1.0, 50)
+    .depth(DecodeDepth::FULL)
+    .decode()
+    .results;
+for r in &results {
+    if let Some(text) = unpack77(r.message77()) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
     }
@@ -898,17 +952,24 @@ start_sample, freq_hz)` bypasses the scan.
 
 ### 6.4 Sniper mode + AP hint
 
-Narrowing the search to ±500 Hz and supplying an a-priori hint lets
-the decoder recover weaker signals:
+Narrowing the search to ±250 Hz around a known target frequency and
+supplying an a-priori hint lets the decoder recover weaker signals —
+intended for use after a 500 Hz hardware BPF, or when hunting one
+known station:
 
 ```rust
-use mfsk_core::ft8::decode::{decode_sniper_ap, DecodeDepth, ApHint};
-use mfsk_core::core::equalize::EqMode;
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{DecodeDepth, EqMode, ApHint};
+use mfsk_core::msg::decode_request::SniperRequest;
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
-for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
-                          DecodeDepth::FULL, /*max_cand*/ 15,
-                          EqMode::Local, Some(&ap)) {
+let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
+    .depth(DecodeDepth::FULL)
+    .eq_mode(EqMode::Local)
+    .ap_hint(&ap)
+    .decode()
+    .results;
+for r in &results {
     // …
 }
 ```
@@ -920,8 +981,8 @@ stopped justifying the 2× per-candidate cost (issue #73). Callers
 that want the old two-pass behaviour invoke the decoder twice
 explicitly with `Local` then `Off`.
 
-The FT4 equivalent is `ft4::decode::decode_sniper_ap` with a similar
-signature.
+`SniperRequest::<Ft4>` works the same way (`FrameDecodable` is
+implemented for both).
 
 ### 6.5 JT9 / JT65
 
