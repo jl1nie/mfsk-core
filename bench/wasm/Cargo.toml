@@ -1,0 +1,24 @@
+[package]
+name = "mfsk-wasm-bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Not part of the mfsk-core workspace (see root Cargo.toml exclude) — a standalone wasm-bindgen harness for measuring the effect of -C target-feature=+simd128 on FT8 decode under wasm32-unknown-unknown. See README.md."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["std", "ft8", "fft-rustfft"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# `wasm-pack build --profiling` (Stage C: node --prof) — keep wasm-opt's
+# optimizations but retain the name section via `-g`, so V8's tick
+# profiler resolves real function names instead of `wasm-function[N]`.
+# The plain `--release` path (Stage B: timing) intentionally omits `-g`.
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = ['-O3', '-g']

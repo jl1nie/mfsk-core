@@ -6,12 +6,16 @@ on:
     # `embedded-poc/**` are stand-alone xtensa / cortex-m binary
     # crates with their own toolchains. Excluded from the host
     # workspace and not built by host CI; skip the workflow if the
-    # only changes are inside that tree.
+    # only changes are inside that tree. `bench/wasm/**` is the same
+    # deal for a different target (wasm32-unknown-unknown, issue #208)
+    # — a manual/periodic tool, not CI-gated.
     paths-ignore:
       - 'embedded-poc/**'
+      - 'bench/wasm/**'
   pull_request:
     paths-ignore:
       - 'embedded-poc/**'
+      - 'bench/wasm/**'
 
 env:
   CARGO_TERM_COLOR: always
