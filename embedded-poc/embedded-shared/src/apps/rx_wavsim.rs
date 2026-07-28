@@ -148,7 +148,7 @@ pub fn run_sweep(wavs: &'static [&'static [u8]], cfgs: &'static [RxSweepCfg]) ->
         );
 
         for (i, r) in results.iter().enumerate() {
-            if let Some(text) = unpack77(&r.message77) {
+            if let Some(text) = unpack77(r.message77()) {
                 log::info!(
                     "    [{i}]  {:>4.0} Hz  SNR={:>5.1} dB  e={}  '{}'",
                     r.freq_hz,

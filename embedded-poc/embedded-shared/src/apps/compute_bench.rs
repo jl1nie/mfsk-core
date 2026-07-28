@@ -225,7 +225,7 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
         (t5 - t0) as f64 / 1e6,
     );
     for (i, r) in results.iter().enumerate() {
-        if let Some(text) = unpack77(&r.message77) {
+        if let Some(text) = unpack77(r.message77()) {
             log::info!(
                 "    [{i}]  {:>4.0} Hz  SNR={:>5.1} dB  e={}  '{}'",
                 r.freq_hz,
