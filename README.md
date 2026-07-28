@@ -307,12 +307,16 @@ Because everything above is expressed as `const` associated items +
 ZSTs, the generic pipeline code — `coarse_sync::<P>`, `decode_frame::<P>`,
 the LDPC inner loop — is **monomorphised per protocol**. LLVM sees a
 fully specialised function for each `P`, inlines the constants, and
-autovectorises the hot loops. The generated machine code is
-byte-identical to a hand-written per-protocol decoder; the receive
-path is a chain of free functions in `engine::sync` → `engine::llr` →
-`engine::equalize` → `engine::pipeline` (each generic over `P: Protocol`),
-not a `Demodulator` / `Receiver` trait object — there is no vtable, no
-dynamic dispatch, on the hot path.
+autovectorises the hot loops **on native targets, where SIMD is enabled
+by default** (SSE/AVX on x86_64, NEON on aarch64). The generated machine
+code is byte-identical to a hand-written per-protocol decoder; the
+receive path is a chain of free functions in `engine::sync` →
+`engine::llr` → `engine::equalize` → `engine::pipeline` (each generic
+over `P: Protocol`), not a `Demodulator` / `Receiver` trait object —
+there is no vtable, no dynamic dispatch, on the hot path. On
+`wasm32-unknown-unknown` this autovectorization requires an explicit
+build flag — see [Building for WebAssembly](#building-for-webassembly)
+below.
 
 This pays off most clearly when adding a new protocol: it's a trait
 impl on a ZST, not a cross-cutting refactor. FST4-60A joined the crate
@@ -321,6 +325,40 @@ implementation is the trait impl block on a single ZST plus a
 Costas pattern table. Similarly, swapping an LDPC codec between two
 LDPC modes, or exposing the same 77-bit message layer to FT8, FT4 and
 FST4, are one-line changes, not cross-cutting refactors.
+
+### Building for WebAssembly
+
+Unlike `x86_64`/`aarch64` hosts, where SSE/AVX or NEON are enabled by
+default, `wasm32-unknown-unknown` ships with **no SIMD by default**.
+mfsk-core has zero hand-written SIMD (by design — it keeps the crate
+`no_std`/portable), so every hot loop depends entirely on LLVM's
+autovectorizer, which on wasm32 only emits `v128` instructions when
+`+simd128` is explicitly enabled. This also gates `rustfft` (the
+default FFT backend)'s own wasm-SIMD butterfly kernels. Without the
+flag, both mfsk-core's DSP and the FFT backend run fully scalar.
+
+Add this to your **consuming project's** `.cargo/config.toml` (this is
+a build flag for the binary/wasm-bindgen crate that embeds mfsk-core,
+not something the library itself can impose on downstream builds):
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+```
+
+Measured effect (Node, `--target nodejs`, real `decode_wav()` FT8
+decode calls, median of 5-7 runs per config, same input, steady-state;
+methodology and a reproducible harness in
+[`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)):
+
+| WAV | without `+simd128` | with `+simd128` | speedup |
+|---|---:|---:|---:|
+| sim_busy_band.wav | 194.2 ms | 156.5 ms | 19.4% |
+| sim_extreme_hard.wav | 216.5 ms | 173.1 ms | 20.0% |
+
+Browser support for wasm SIMD has been universal since ~2021
+(Chrome/Firefox/Safari 16.4+); in practice there's no reason not to
+set this flag for a wasm build.
 
 ### Why Rust
 
@@ -334,9 +372,11 @@ FST4, are one-line changes, not cross-cutting refactors.
   metaprogramming with subtler error messages; in Fortran, it simply
   isn't on offer.
 - **Targets**: the same code compiles to `wasm32-unknown-unknown`
-  (WASM SIMD 128-bit via `rustfft`), to Android `arm64-v8a` via the
-  NDK (NEON SIMD), to `no_std + alloc` embedded MCUs, and to any
-  `x86_64-*-unknown` host for servers — from a single source tree.
+  (WASM SIMD 128-bit via `rustfft`, requires `+simd128` — see
+  [Building for WebAssembly](#building-for-webassembly) above), to
+  Android `arm64-v8a` via the NDK (NEON SIMD), to `no_std + alloc`
+  embedded MCUs, and to any `x86_64-*-unknown` host for servers — from
+  a single source tree.
 - **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` are
   plug-and-play, so the crate's dependency graph is small and
   reviewable.
@@ -353,7 +393,7 @@ algorithms in places a Fortran/C/Qt desktop application can't reach.
 | Language | Fortran + C + Qt | Rust |
 | Distribution | Desktop application | Library crate (`cargo add`) |
 | `no_std` / embedded | ✗ | ✓ (ESP32-S3, RP2350, Cortex-M) |
-| WASM | ✗ | ✓ (`wasm32-unknown-unknown`) |
+| WASM | ✗ | ✓ (`wasm32-unknown-unknown`, [`+simd128`](#building-for-webassembly) recommended) |
 | Android / iOS | ✗ | ✓ (NDK / FFI) |
 | FFT backend | fixed (FFTW) | pluggable (`rustfft` or caller-supplied, e.g. esp-dsp/CMSIS-DSP) |
 | Reference implementation | ✓ | derived from WSJT-X, cites source per file |

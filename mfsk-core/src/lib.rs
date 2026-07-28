@@ -60,9 +60,12 @@
 //! the generic pipeline code — `coarse_sync::<P>`, `decode_frame::<P>`,
 //! the LDPC inner loop — is **monomorphised per protocol**. LLVM sees
 //! a fully specialised function for each `P`, inlines the constants,
-//! and autovectorises the hot loops. The generated machine code is
-//! byte-identical to a hand-written per-protocol decoder; the only
-//! thing the abstraction costs is longer compile times.
+//! and autovectorises the hot loops **on native targets, where SIMD is
+//! enabled by default**. The generated machine code is byte-identical
+//! to a hand-written per-protocol decoder; the only thing the
+//! abstraction costs is longer compile times. On
+//! `wasm32-unknown-unknown` this autovectorization requires an
+//! explicit `+simd128` build flag — see "WebAssembly builds" below.
 //!
 //! This pays off most clearly when you add a new protocol. FST4-60A
 //! joined the library post-hoc without touching any of the shared
@@ -84,12 +87,31 @@
 //!   metaprogramming with subtler error messages; in Fortran, it
 //!   simply isn't on offer.
 //! - **Targets**: the same code compiles to `wasm32-unknown-unknown`
-//!   (WASM SIMD 128-bit via `rustfft`), to Android `arm64-v8a` via
+//!   (WASM SIMD 128-bit via `rustfft`, requires `+simd128` — see
+//!   "WebAssembly builds" below), to Android `arm64-v8a` via
 //!   the NDK (NEON SIMD), and to any `x86_64-*-unknown` host for
 //!   servers — from a single source tree.
 //! - **Ecosystem**: `rustfft`, `num-complex`, `crc`, `rayon` are
 //!   plug-and-play, so the crate's dependency graph is small and
 //!   reviewable.
+//!
+//! ## WebAssembly builds
+//!
+//! `wasm32-unknown-unknown` ships with no SIMD by default (unlike
+//! x86_64/aarch64 hosts). Since this crate has zero hand-written SIMD
+//! by design, every hot loop — plus `rustfft`'s own wasm-SIMD
+//! butterfly kernels — depends on LLVM's autovectorizer, which only
+//! emits `v128` code on wasm32 when `+simd128` is explicitly enabled.
+//! Add to your consuming project's `.cargo/config.toml`:
+//!
+//! ```toml
+//! [target.wasm32-unknown-unknown]
+//! rustflags = ["-C", "target-feature=+simd128"]
+//! ```
+//!
+//! Measured ~19-20% FT8 decode speedup from this flag alone; see the
+//! README's "Building for WebAssembly" section and
+//! `docs/notes/BENCHMARKS.md` for the full numbers and methodology.
 //!
 //! ## Relationship to WSJT-X
 //!
