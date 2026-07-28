@@ -415,38 +415,63 @@ trials) as a representative single sub-mode.
   moderate on the same two corpora should show it too, and they don't).
   No evidence the M5 build decodes differently from Ryzen9.
 
-### WASM: `+simd128` effect on FT8 decode (Node, wasm32-unknown-unknown)
+### WASM: `+simd128` + mfsk-core update effect on FT8 decode (Node, wasm32-unknown-unknown)
 
 Measured 2026-07-28, in support of issue #208 (mfsk-core owing docs +
 implementation back to WASM consumers after `jl1nie/webft8#5` found the
 wasm build had no SIMD feature enabled). **Compute environment**: Node.js
-(`--target nodejs` wasm-bindgen build), target `wasm32-unknown-unknown`,
-`opt-level = 3` + `lto = true`, two rustflags configs compared —
-`-C target-feature=+simd128` absent vs. present, nothing else changed.
-Measured via an ad hoc local harness (not yet the committed
-`bench/wasm/` script — see below); real `decode_wav()` FT8 decode calls,
-median of 5-7 runs per config, same input, steady-state.
+v26.3.0 (`wasm-pack build --target nodejs`), target
+`wasm32-unknown-unknown`, `opt-level = 3` + `lto = true`. `--target
+nodejs` and `--target web` emit the identical `.wasm` (same SIMD
+instructions) — only the JS glue's module-loading strategy differs
+(`require`/`import` vs. browser `fetch()`) — so timing `decode_wav()`
+under `--target nodejs` is a valid headless proxy for the real deployed
+WASM binary's speed, not a separate/unrepresentative build.
 
-| WAV | without `+simd128` | with `+simd128` | speedup |
-|---|---:|---:|---:|
-| sim_busy_band.wav | 194.2 ms | 156.5 ms | 19.4% |
-| sim_extreme_hard.wav | 216.5 ms | 173.1 ms | 20.0% |
+Two independent measurement passes, same methodology (`decode_wav()`
+FT8 decode calls, `performance.now()`, median of 5-7 runs per config,
+same input, steady-state):
+
+1. **Flag-only** (this repo's own `sim_busy_band.wav`/`sim_extreme_hard.wav`
+   local run, before the fixes below existed): isolates `-C
+   target-feature=+simd128` alone, nothing else changed.
+2. **Flag + mfsk-core update** (independently re-measured downstream in
+   `jl1nie/webft8`, same two WAVs, same `--target nodejs` methodology):
+   `+simd128` plus this repo's `main` after #211 (`downsample_cached`
+   FFT-plan caching) and #213 (LLR loop-order/branchless vectorization)
+   landed.
+
+| WAV | scalar baseline | `+simd128` only | `+simd128` + mfsk-core update | additional gain | vs. scalar baseline |
+|---|---:|---:|---:|---:|---:|
+| sim_busy_band.wav | 194.2 ms | 156.5 ms | 128.8 ms | 17.7% | 33.7% |
+| sim_extreme_hard.wav | 216.5 ms | 173.1 ms | 146.8 ms | 15.2% | 32.2% |
 
 Notes:
 - `sim_busy_band.wav` / `sim_extreme_hard.wav` are not part of this
   repo's committed fixture set (`ft8sim`-generated stress WAVs from a
-  sibling `webft8` checkout) — a manual local repro, not a CI-reachable
-  one. A committed, CI-safe harness (`bench/wasm/`, wrapping the same
-  `DecodeRequest::<Ft8>` call as `mfsk-core/tests/ft8_sweep.rs`, default
-  fixture `embedded-poc/assets/qso3_busy.wav`) is tracked as a follow-up
-  under the same issue.
-- This isolates the flag's effect only — no kernel code changed between
-  the two columns. Decode *recall* (not just timing) has not yet been
-  asserted identical between the two configs; that check is deferred to
-  the harness above, alongside whichever dense-kernel vectorization
-  follows from profiling the `+simd128` build (Part 2 of issue #208 —
-  LDPC belief-propagation is explicitly out of scope there, it's a
-  gather/scatter-bound reduction, a poor SIMD target).
+  sibling `webft8` checkout) — both passes above are manual local
+  repro, not CI-reachable. A committed, CI-safe harness now exists
+  (`bench/wasm/`, wrapping the same `DecodeRequest::<Ft8>` call as
+  `mfsk-core/tests/ft8_sweep.rs`, default fixture
+  `embedded-poc/assets/qso3_busy.wav`) for reproducing the *shape* of
+  these results on the golden fixture; see its README for usage.
+- The "additional gain" column (15.2-17.7%) roughly matches the sum of
+  what #211 and #213's own PRs measured independently: #211's
+  `node --prof` flat profile attributed ~12.5% of total decode
+  wall-clock to the FFT-plan-rebuild bug it fixed; #213's fix had a
+  real but small (~2.9%) ceiling, individually within measurement noise
+  on `qso3_busy.wav` but evidently contributing at the larger scale
+  these two WAVs exercise.
+- Decode *recall* was not independently re-verified against these two
+  WAVs specifically (they're not committed fixtures with a known-golden
+  answer) — the byte-identical-recall gate for #211/#213 was run
+  against this repo's own FT8 golden regressions (`qso3_busy.wav`
+  full-parity/AP-off/JTDX, see their PR descriptions), not against
+  these two `webft8`-side WAVs.
+- LDPC belief-propagation remains explicitly out of scope for
+  vectorization (issue #208) — it's a gather/scatter-bound reduction, a
+  poor SIMD target; the only real lever there is batching candidates
+  across lanes, a separate, larger effort tracked independently.
 
 ## FT8
 
