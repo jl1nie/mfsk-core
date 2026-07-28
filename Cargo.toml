@@ -5,7 +5,12 @@ members  = ["mfsk-core", "mfsk-ffi", "mfsk-ffi-abi", "mfsk-ffi-ft8"]
 # Xtensa, etc). They depend on mfsk-core via a path dep but must not
 # be part of the host workspace — otherwise host `cargo build` would
 # try to compile them against the stable toolchain and fail.
-exclude  = ["embedded-poc"]
+#
+# `bench/wasm` is excluded for the same reason with a different target:
+# a wasm-bindgen harness for wasm32-unknown-unknown (issue #208), not
+# meant to build under a normal host `cargo build`/`cargo test` — see
+# bench/wasm/README.md.
+exclude  = ["embedded-poc", "bench/wasm"]
 resolver = "2"
 
 # Single source of truth for the crate version. `mfsk-core`,

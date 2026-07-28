@@ -1,0 +1,8 @@
+# Scoped to this directory only (Cargo's config discovery walks up from
+# the crate being built) — the rest of the workspace is untouched. This
+# is the "+simd128 on" default, i.e. the config real-world consumers
+# should copy into their own project per README.md's "Building for
+# WebAssembly" section. build.sh's `--no-simd128` flag overrides this for
+# the before/after comparison; see README.md here for details.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
