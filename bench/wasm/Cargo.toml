@@ -15,3 +15,10 @@ mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["s
 [profile.release]
 opt-level = 3
 lto = true
+
+# `wasm-pack build --profiling` (Stage C: node --prof) — keep wasm-opt's
+# optimizations but retain the name section via `-g`, so V8's tick
+# profiler resolves real function names instead of `wasm-function[N]`.
+# The plain `--release` path (Stage B: timing) intentionally omits `-g`.
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = ['-O3', '-g']

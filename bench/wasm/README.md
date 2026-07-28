@@ -72,3 +72,24 @@ should be byte-identical between the two runs — that's the recall
 invariant any dense-kernel vectorization work (Stage D of the #208
 plan) must preserve; a difference there is a correctness bug, not
 noise.
+
+## Profiling (Stage C)
+
+```sh
+./build.sh --profiling
+node --prof bench.mjs 200      # more iterations = better sample resolution
+node --prof-process isolate-*-v8.log > profile.txt
+```
+
+`--profiling` alone isn't enough to get real function names out of
+`--prof-process` (you'd otherwise see `wasm-function[N]`) — two things
+have to both be true: rustc needs to emit name/debug info in the first
+place (`build.sh --profiling` sets `CARGO_PROFILE_RELEASE_DEBUG=2` for
+this), and `wasm-opt` needs to not strip the wasm `name` custom section
+afterwards (`Cargo.toml`'s `[package.metadata.wasm-pack.profile.profiling]`
+passes `-g` for this). Both are already wired up — just use
+`--profiling`, don't reach for `--dev` (unoptimized, not representative
+of the real hot-loop shape) to get symbols.
+
+Clean up `isolate-*.log` / `profile.txt` after — they're gitignored but
+sizeable and not useful past the investigation that produced them.
