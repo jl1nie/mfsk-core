@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208)
 
 ### Added
 
@@ -1775,6 +1775,29 @@
   wasm-specific, the same redundant work happens on every target. Golden
   recall unchanged: FT8 full-parity 8/8, AP-off 7/8 (7 phantom, 14
   total), JTDX 18/18 (1 extra) — byte-identical to pre-fix.
+- **`engine::llr::fill_bmet_for_nsym`'s max-reduction loop rewritten to
+  actually vectorize under `wasm32 +simd128`** (#208 Stage D). The
+  per-element `if (i >> bit_sel) & 1 == 1 { max_one[..] = v } else {
+  max_zero[..] = v }` blocked LLVM's vectorizer two ways at once:
+  branchy per-lane control flow, and an `i`-outer/`bit_sel`-inner loop
+  nest that would need outer-loop vectorization LLVM doesn't attempt
+  here. Making the branch branchless (feed `f32::NEG_INFINITY` to
+  whichever accumulator the bit doesn't select, then an unconditional
+  `max()`) alone changed nothing — confirmed empirically via
+  `wasm-objdump`, the compiled region's `v128` count was unchanged.
+  Swapping the loop order (`bit_sel` outer, `i` inner — a flat
+  reduction over `s2` with a loop-invariant `bit_sel`) combined with
+  the branchless rewrite is what actually unblocked it: 40 → 86 `v128`
+  ops in the function's compiled region. This was the a-priori top
+  Part-2 target from #208's dense-kernel survey, but profiling (Stage
+  C) found its real ceiling is small (~2.9% of total decode time,
+  `qso3_busy.wav`, wasm), well below what a `node --prof` flat profile
+  found in an unrelated FFT-plan-caching bug (#211, fixed separately)
+  — wall-clock impact here is within run-to-run measurement noise even
+  though the vectorization itself is real and verified.
+  Byte-identical recall on all three FT8 golden regressions
+  (full-parity 8/8, AP-off 7/8/7-phantom/14-total, JTDX 18/18/1-extra)
+  and the full `--features full` test suite.
 
 ## 0.7.4 — MSK144 decode (#25)
 

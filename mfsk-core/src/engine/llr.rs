@@ -290,23 +290,44 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
             for (s2_i, entry) in s2.iter_mut().zip(&table) {
                 *s2_i = (entry.re * entry.re + entry.im * entry.im).sqrt();
             }
-            // Single pass over `s2` updating every bit position's
-            // running max-when-1 / max-when-0 together, instead of the
-            // previous `2 * (ibmax + 1)` independent full scans (one
+            // Updates every bit position's running max-when-1 /
+            // max-when-0 in one sweep, instead of the previous
+            // `2 * (ibmax + 1)` independent full scans (one
             // `filter().fold()` pair per bit position) — `nt * (ibmax +
             // 1)` element visits here vs. `2 * (ibmax + 1) * nt` before.
+            //
+            // Loop order is `bit_sel` outer, `i` inner (issue #208 Stage
+            // D — swapped from the original `i`-outer/`bit_sel`-inner
+            // nesting). With `i` outer, LLVM would need to vectorize
+            // across `i` while re-running the whole (runtime-bounded)
+            // `bit_sel` loop per lane — an outer-loop vectorization it
+            // doesn't attempt here regardless of the inner branch shape
+            // (confirmed empirically: making the original branch
+            // branchless without also flipping the loop order left the
+            // compiled `v128` count for this function unchanged). With
+            // `bit_sel` outer, the inner loop is a single flat max-
+            // reduction over `s2` with a loop-invariant `bit_sel` and a
+            // regular period-`2^(bit_sel+1)` predicate on `i` — the
+            // classic shape LLVM's inner-loop vectorizer handles, and
+            // the branchless select (`f32::NEG_INFINITY` fed to
+            // whichever accumulator the bit doesn't select, then an
+            // unconditional `max()`) is what lets it lower the
+            // per-element predicate to a vector compare-and-blend
+            // instead of scalarizing. Confirmed via `wasm-objdump`.
             let mut max_one = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
             let mut max_zero = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
-            for (i, &v) in s2.iter().enumerate() {
-                for bit_sel in 0..=ibmax {
-                    if (i >> bit_sel) & 1 == 1 {
-                        if v > max_one[bit_sel] {
-                            max_one[bit_sel] = v;
-                        }
-                    } else if v > max_zero[bit_sel] {
-                        max_zero[bit_sel] = v;
-                    }
+            for bit_sel in 0..=ibmax {
+                let mut mo = f32::NEG_INFINITY;
+                let mut mz = f32::NEG_INFINITY;
+                for (i, &v) in s2.iter().enumerate() {
+                    let bit_is_one = (i >> bit_sel) & 1 == 1;
+                    let v_for_one = if bit_is_one { v } else { f32::NEG_INFINITY };
+                    let v_for_zero = if bit_is_one { f32::NEG_INFINITY } else { v };
+                    mo = mo.max(v_for_one);
+                    mz = mz.max(v_for_zero);
                 }
+                max_one[bit_sel] = mo;
+                max_zero[bit_sel] = mz;
             }
             for ib in 0..=ibmax {
                 let bit_idx = i_bit_base + ib;
