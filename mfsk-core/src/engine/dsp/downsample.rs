@@ -35,7 +35,49 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::engine::fft::default_planner;
+use crate::engine::fft::{FftPlanner, default_planner};
+
+// `default_planner()`'s own doc comment says to "reuse the same instance
+// across all decodes in a session so rustfft's twiddle cache hits" — but
+// `build_fft_cache`/`downsample_cached` used to construct a fresh one on
+// every call instead. `downsample_cached` alone is called once per FT8
+// candidate (~30 cand × 3 pass = ~90×/slot, see
+// `fill_symbol_spectra_via_cd0`'s neighboring `SYMBOL_FFT_32` comment for
+// the same anti-pattern already fixed at a different call site), so every
+// call rebuilt the `fft2_size`-point inverse-FFT plan's twiddle table
+// from scratch via scalar sin/cos, even though `fft2_size` never varies
+// within a decode session. A wasm --prof profile (issue #208, Stage C)
+// attributed ~12% of total decode wall-clock to exactly this — bigger
+// than any dense-kernel vectorization target found in that pass. Fixed
+// the same way `subtract_tones_lpf_fft`'s filter-response FFT plan was
+// (see docs/notes/BENCHMARKS.md, 2026-07-25 entry): cache the planner
+// itself, not just its output, keyed by nothing since one thread only
+// ever needs one live planner regardless of how many distinct sizes it's
+// asked to plan (rustfft's own `FftPlanner` caches per size internally).
+//
+// `std`-gated because `thread_local!` needs std; `no_std` (embedded,
+// `fft-extern`) callers keep constructing a fresh planner per call —
+// those call sites don't reach this function at all today (FT8's
+// `fill_symbol_spectra_via_cd0`, the only `downsample_cached` caller in
+// the hot per-candidate loop, is itself `fft-rustfft`-gated), so this is
+// out of scope for embedded rather than a regression there.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static DOWNSAMPLE_PLANNER: core::cell::RefCell<Box<dyn FftPlanner>> =
+        core::cell::RefCell::new(default_planner());
+}
+
+#[cfg(feature = "std")]
+#[inline]
+fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
+    DOWNSAMPLE_PLANNER.with_borrow_mut(|planner| f(planner.as_mut()))
+}
+
+#[cfg(not(feature = "std"))]
+#[inline]
+fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
+    f(default_planner().as_mut())
+}
 
 /// Runtime parameters shared by [`downsample`], [`downsample_cached`], and
 /// [`build_fft_cache`]. Callers typically keep one instance per protocol.
@@ -87,8 +129,7 @@ pub fn build_fft_cache(audio: &[i16], cfg: &DownsampleCfg) -> Vec<Complex<f32>> 
         .chain(iter::repeat(Complex::new(0.0, 0.0)))
         .take(cfg.fft1_size)
         .collect();
-    let mut planner = default_planner();
-    planner.plan_forward(cfg.fft1_size).process(&mut x);
+    with_default_planner(|planner| planner.plan_forward(cfg.fft1_size).process(&mut x));
     x
 }
 
@@ -116,7 +157,6 @@ pub fn downsample_cached(
     cfg: &DownsampleCfg,
 ) -> Vec<Complex<f32>> {
     debug_assert_eq!(fft_cache.len(), cfg.fft1_size);
-    let mut planner = default_planner();
 
     let df = cfg.bin_hz();
     let baud = cfg.tone_spacing_hz;
@@ -158,7 +198,7 @@ pub fn downsample_cached(
     c1.rotate_left(shift);
 
     // Inverse FFT.
-    planner.plan_inverse(cfg.fft2_size).process(&mut c1);
+    with_default_planner(|planner| planner.plan_inverse(cfg.fft2_size).process(&mut c1));
 
     // Combined scale factor.
     let fac = 1.0 / ((cfg.fft1_size as f32) * (cfg.fft2_size as f32)).sqrt();
