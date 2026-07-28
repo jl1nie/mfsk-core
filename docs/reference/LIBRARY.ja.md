@@ -42,13 +42,13 @@ mfsk-core は WSJT-X のアルゴリズムを Rust で再実装し、それを�
 
 プロトコル非依存のアルゴリズム (DSP、同期、LLR、イコライザ、LDPC の
 BP / OSD、畳み込み符号の Fano 復号、Reed-Solomon 消失復号、メッセージ
-コーデックの共通部) は `core`、`fec`、`msg` モジュールにまとめ、
+コーデックの共通部) は `engine`、`fec`、`msg` モジュールにまとめ、
 各プロトコルは固有定数と採用する FEC / メッセージコーデックを宣言する
 比較的小さな ZST (zero-sized type) として表現する。パイプラインは
-`decode_frame::<P>()` の形で `P: Protocol` をコンパイル時型パラメータ
-として受け取り、monomorphize によってプロトコルごとに特殊化された
-コードが生成されるので、抽象化のためにランタイムコストが増えることは
-ない。
+`DecodeRequest::<P>` (§4) 経由で駆動され、`P: Protocol` をコンパイル時
+型パラメータとして受け取り、monomorphize によってプロトコルごとに
+特殊化されたコードが生成されるので、抽象化のためにランタイムコストが
+増えることはない。
 
 この方針から直接得られるのは次のような性質である。
 
@@ -141,9 +141,10 @@ Q65 は WSPR では試されなかった軸で trait 面を試す材料になっ
 4. **5 つの並列なデコード戦略**: 同一 FEC フレームに対し正当に
    選び得る受信経路が複数通り存在するのは Q65 が初めて — plain AWGN
    BP、AP-hint BP、fast-fading metric、AP-list テンプレート照合、
-   multi-period EMA averaging。§3 で詳述する。各戦略は sub-mode ZST
-   に対して generic な別個のエントリポイント関数として共存し、
-   内部の FEC とメッセージコーデックは共有する。
+   multi-period EMA averaging。§3 で詳述する。各戦略は
+   `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` 上の builder
+   メソッドの組み合わせとして表現され、sub-mode ZST に対して
+   generic であり、内部の FEC とメッセージコーデックは共有する。
 
 WSPR が「**FEC 系統 + メッセージ長 + 同期形式**」を独立に差し替え
 られることを示したのに対し、Q65 は「第 3 の FEC 系統 + 10 sub-mode
@@ -160,7 +161,7 @@ coarse-sync → LLR → FEC という pipeline が、既知のおおよその
 オフセットに 0..N 個のフレームが並ぶ、1 つの固定長スロットの上で
 動く、という前提である。**MSK144** (issue #25) はこの前提の両方を
 同時に破る。無理に型に押し込む代わりに、`msk144::decode` は
-それ自身が独立したトップレベルドライバであり、`core::pipeline` /
+それ自身が独立したトップレベルドライバであり、`engine::pipeline` /
 `ModulationParams` / `FrameLayout` のいずれにも触れない。
 `Protocol` を実装する ZST も存在しない。これは WSPR や Q65 (§0.5)
 よりもさらに一歩踏み込んだ話で、あちらは実デコードロジックが
@@ -171,7 +172,7 @@ MSK144 は trait 面そのものから外れている。
    offset-QPSK として送信される — bit は I/Q レールに割り当てられ、
    それぞれ半正弦パルスで整形される。`ModulationParams` の
    トーン番号・Gray map・GFSK 整形というモデルには、有用な
-   写像先がない。変調器と整合フィルタ復調器は `core::dsp::msk` に
+   写像先がない。変調器と整合フィルタ復調器は `engine::dsp::msk` に
    trait 実装ではなく単なる関数として存在する。
 2. **静的スロットではない**: 他の全プロトコルはフレームが固定長
    スロットバッファ内の既知のおおよそのオフセットに位置すると
@@ -183,7 +184,7 @@ MSK144 は trait 面そのものから外れている。
    2 トーン スペクトル走査) と `msk144::sync::msk144_sync`
    (CFO/シンボルタイミングの同時整合フィルタ相関) がその走査を担う
    ——WSJT-X の `msk144spd.f90`/`msk144sync.f90` からの移植であり、
-   `core::sync::coarse_sync` からではない。
+   `engine::sync::coarse_sync` からではない。
 
 一方、ライブラリの他部分と共有しているものもある: 77 bit の
 `pack77`/`unpack77` メッセージペイロード (`msg::wsjt77`、完全に
@@ -207,13 +208,15 @@ WAV recall は 3/3 (`tests/msk144_wsjtx_samples.rs`) —
 
 ```
 mfsk_core
-├── core/             Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
+├── engine/           Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
 │   ├── dsp/            resample · downsample · gfsk · subtract · msk · analytic
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (トーン毎 Wiener)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
+│                       (pub(crate) 内部実装 — §4 参照。呼び出しは
+│                       msg::decode_request::DecodeRequest/SniperRequest 経由)
 ├── fec/              FecCodec 実装群
 │   ├── ldpc/           LDPC(174, 91)  — FT8, FT4 (bp.rs / osd.rs / params.rs / tables.rs)
 │   ├── ldpc240_101/    LDPC(240, 101) — FST4
@@ -230,6 +233,9 @@ mfsk_core
 │       ├── npfwht.rs      非二進 Walsh-Hadamard 変換ヘルパ
 │       └── pdmath.rs      確率領域 BP 数値計算ヘルパ
 ├── msg/              メッセージコーデック
+│   ├── decode_request.rs DecodeRequest / SniperRequest — FT8/FT4/FST4 の
+│   │                     公開デコードエントリポイント (§4。0.8.0 以前の
+│   │                     decode_frame*/decode_sniper* 系を置換)
 │   ├── wsjt77.rs       77 bit WSJT メッセージ (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
@@ -271,14 +277,14 @@ mfsk_core
 
 各プロトコルモジュールはフィーチャーフラグ (`ft8`、`ft4`、`fst4`、
 `wspr`、`jt9`、`jt65`、`q65`、`msk144`、`packet-bytes`、`uvpacket`)
-で gate されている。`core`、`fec`、`msg`、`registry` は常時利用可能。
+で gate されている。`engine`、`fec`、`msg`、`registry` は常時利用可能。
 
 ワークスペースの兄弟クレート `mfsk-ffi` が同じクレートの上に C ABI
 共有ライブラリ (`libmfsk.{so,a,dylib}` + `mfsk.h`) を構築する。
 
 #### `FecCodec` はシンボル粒度から独立
 
-`FecCodec` trait の表面 (`core/protocol.rs`) は **bit** で語る:
+`FecCodec` trait の表面 (`engine/protocol.rs`) は **bit** で語る:
 `&[u8]` info / codeword、`&[f32]` bit-LLR、`K`・`N` も bit 単位。
 上記の 4 系統の FEC のうち 2 系統 — JT65 の Reed-Solomon over
 GF(2⁶) と Q65 の QRA over GF(2⁶) — は非二進符号で、bit 単位の
@@ -351,9 +357,9 @@ ZST 定義で示す。
 **FT4** — 標準的なブロック Costas 系。`Fec` と `Msg` は FT8 と共有する:
 
 ```rust
-use mfsk_core::core::protocol::*;
+use mfsk_core::engine::protocol::*;
 use mfsk_core::fec::Ldpc174_91; // fec::ldpc から re-export
-use mfsk_core::msg::wsjt77::Wsjt77Message;
+use mfsk_core::msg::Wsjt77Message;
 
 pub struct Ft4;
 
@@ -426,16 +432,17 @@ impl Protocol for Wspr {
 }
 ```
 
-呼び出し側のパイプラインは `decode_frame::<Ft4>(...)` または
-WSPR 専用の `wspr::decode::decode_scan_default(...)` のように
-型引数でプロトコルを指定するだけで済み、合成の結果として選ばれた
-FEC・メッセージコーデック・同期方式が自動的に使われる。
+呼び出し側のパイプラインは `DecodeRequest::<Ft4>::new(...).decode()`
+(§4、§6.2) または WSPR 専用の
+`wspr::decode::decode_scan_default(...)` のように型引数でプロトコルを
+指定するだけで済み、合成の結果として選ばれた FEC・メッセージ
+コーデック・同期方式が自動的に使われる。
 
 ### Monomorphization とゼロコスト抽象
 
-ホットパス (`core::sync::coarse_sync::<P>`、
-`core::llr::compute_llr::<P>`、
-`core::pipeline::process_candidate_basic::<P>`、…) はすべて
+ホットパス (`engine::sync::coarse_sync::<P>`、
+`engine::llr::compute_llr::<P>`、
+`engine::pipeline::process_candidate_basic::<P>`、…) はすべて
 `P: Protocol` を**コンパイル時型パラメータ**として受け取る。rustc が
 具象プロトコルごとに 1 コピーずつ monomorphize し、LLVM は完全特殊化
 された関数として trait 定数を即値にインライン化する。抽象化のコストは
@@ -455,7 +462,7 @@ FEC・メッセージコーデック・同期方式が自動的に使われる�
    FST4 の他サブモード) — 新しい ZST を定義し、数値定数 (`NTONES`、
    `NSPS`、`TONE_SPACING_HZ`、`SYNC_MODE` など) と同期パターンを
    入れ替えるだけで済む。`Fec` と `Msg` は既存実装の型エイリアスで
-   構わず、`decode_frame::<P>()` パイプライン全体がそのまま動く。
+   構わず、`DecodeRequest::<P>` パイプライン全体がそのまま動く。
 
 2. **FEC が新しく、メッセージは既存と同じ場合** (例: 異なるサイズの
    LDPC) — `fec/` にコーデックのモジュールを追加し、`FecCodec`
@@ -481,65 +488,77 @@ FEC・メッセージコーデック・同期方式が自動的に使われる�
 ## 3. デコード戦略 (Q65 ケーススタディ)
 
 このライブラリの大半のプロトコルはデコード経路が 1 通りしかない
-(FT 系列の `decode_frame::<P>`、WSPR の
-`wspr::decode::decode_scan_default` など)。Q65 は同一 FEC フレームに
-対して**正当に選び得る受信経路が複数通り**ある最初の実装プロトコル
-で、各経路が異なる種類のチャネル劣化に対して計算コストとデコード
-閾値のトレードオフを実現している。これらは `mfsk_core::q65::rx`
-内で並列な関数ファミリとして共存し、すべて sub-mode ZST に対して
-generic である。
+(FT 系列の `DecodeRequest::<P>` (§4「パブリックデコードエントリ
+ポイント」参照)、WSPR の `wspr::decode::decode_scan_default` など)。
+Q65 は同一 FEC フレームに対して**正当に選び得る受信経路が複数通り**
+ある最初の実装プロトコルで、各経路が異なる種類のチャネル劣化に
+対して計算コストとデコード閾値のトレードオフを実現している。
 
-先に一点注意しておく: 単一候補の point-decode 関数 (`decode_at_for`,
-`decode_at_fading_for`, …) と、それらをラップする scan 関数
-(`decode_scan_for`, `decode_scan_fading_for`, …) は、同一アルゴリズム
-を 2 通りの呼び出し形にしただけではない。`decode_at_for` は文字通り
-plain Bessel-I0 metric である。しかし実際のほぼ全呼び出し元が使う
-`decode_scan_for` / `decode_scan_with_ap_for` は、各 coarse-search
-候補を `decode_at_with_fine_timing_for` に通しており、これは
-`q65_loops.f90` / `q65_dec_q012` から移植した WSJT-X 忠実な
-`(Δf, Δt, b90)` grid search を `FadingModel::Lorentzian` の
-fast-fading metric で常に実行する。これは WSJT-X 自身の自動デコーダの
-挙動と一致する — WSJT-X もデフォルト scan で plain-AWGN-only な
-Bessel パスを走らせることは無い。つまり「AWGN」と「fast-fading」は
-チャネル種別で選ぶ 2 つの独立した front end というより、
-(point 用 / scan 用という) 2 つの異なるエントリポイント群と捉える
-方が正確で、scan 経路はデフォルトで既にある程度の fading を仮定して
-おり、下記の専用 fast-fading エントリポイントは呼び出し側が明示的に
-`(b90_ts, model)` を指定したい場合のために存在する。
+issue #204 以降、これらは `mfsk_core::q65::decode_request` 内の
+3 つの generic builder として公開されている — `DecodeRequest<P>`
+(wide-band scan)、`SniperRequest<P>` (既知の
+`(start_sample, base_freq_hz)` を指定する単一候補探索、
+`DecodeRequest::sniper` または `SniperRequest::new` 直接呼び出しで
+構築)、`MultiPeriodRequest<P>` (複数スロット平均化デコード) —
+`msg::decode_request` の FT8/FT4/FST4 向け builder (§4) と同じ形を
+とり、10 sub-mode ZST すべてに実装された sealed `Q65SubMode`
+マーカーに対して generic である。本節がかつて直接参照していた
+`q65::rx` の各関数 (`decode_at_for`, `decode_scan_for`, …) は
+`pub(crate)` になっている — 公開エントリポイントは builder 側。
+`.ap_hint()` / `.ap_list()` / `.fading()` は (`SupportsWideBandAp`
+のような capability-gated marker trait ではなく) 素朴な inherent
+method である。Q65 は全 sub-mode が全 capability を一様にサポート
+するため。
 
-| 状況                                                  | 戦略                                              | エントリポイント                                                     | 閾値ゲイン       |
+先に一点注意しておく: capability を何も設定しない
+`SniperRequest::decode()` (内部で `decode_at_for` を呼ぶ) は文字通り
+plain Bessel-I0 metric — point-decode のみの基準経路である。しかし
+capability を何も設定しない `DecodeRequest::decode()` (内部で
+`decode_scan_for` を呼ぶ) — 実際のほぼ全呼び出し元が使う形 — は、
+各 coarse-search 候補を、`q65_loops.f90` / `q65_dec_q012` から移植した
+WSJT-X 忠実な `(Δf, Δt, b90)` grid search を `FadingModel::Lorentzian`
+の fast-fading metric で常に実行する経路に通す。これは WSJT-X 自身の
+自動デコーダの挙動と一致する — WSJT-X もデフォルト scan で
+plain-AWGN-only な Bessel パスを走らせることは無い。つまり「AWGN」と
+「fast-fading」はチャネル種別で選ぶ 2 つの独立した front end という
+より、(sniper 用 / scan 用という) 2 つの異なるエントリポイント群と
+捉える方が正確で、scan 経路はデフォルトで既にある程度の fading を
+仮定しており、`.fading()` は呼び出し側が明示的に `(b90_ts, model)`
+を指定したい場合のために存在する。
+
+| 状況                                                  | 戦略                                              | Builder 呼び出し                                                     | 閾値ゲイン       |
 |-------------------------------------------------------|-----------------------------------------------------|-------------------------------------------------------------------------|------------------|
-| 単一候補既知、メッセージ未知 (point-decode のみ)      | AWGN Bessel + BP                                    | `decode_at_for<P>`                                                       | 基準             |
-| デフォルト scan — チャネル特性 / メッセージ未知       | `(Δf,Δt,b90)` grid search + Lorentzian fading BP   | `decode_scan_for<P>` / `decode_scan_with_ap_for<P>`                      | WSJT-X 忠実デフォルト |
-| コールサイン or レポート既知、地上波チャネル          | AP-hint BP                                          | `decode_at_with_ap_for<P>` / `decode_scan_with_ap_for<P>`                | ~2 dB            |
-| ドップラー拡散チャネル、model 明示指定 (≥10 Hz、microwave EME) | Fast-fading metric + BP、呼び出し側が `(b90_ts, FadingModel)` を指定 | `decode_at_fading_for<P>` / `decode_scan_fading_for<P>` | 拡散時 5–8 dB    |
-| コールペア既知、QSO 文脈無し、地上波                  | AP-list テンプレート照合                            | `decode_at_with_ap_list_for<P>` / `decode_scan_with_ap_list_for<P>`      | ~3 dB |
-| 複数 T/R 期間にまたがる弱信号 / ionoscatter           | Multi-period EMA averaging (3 段カスケード)         | `decode_multi_period_for<P>` / `decode_multi_period`                     | 単一期間のどの戦略でも復号できない信号を回収 |
+| 単一候補既知、メッセージ未知 (point-decode のみ)      | AWGN Bessel + BP                                    | `SniperRequest::<P>::new(...).decode()`                                  | 基準             |
+| デフォルト scan — チャネル特性 / メッセージ未知       | `(Δf,Δt,b90)` grid search + Lorentzian fading BP   | `DecodeRequest::<P>::new(...).decode()`                                  | WSJT-X 忠実デフォルト |
+| コールサイン or レポート既知、地上波チャネル          | AP-hint BP                                          | いずれかの builder に `.ap_hint(&ap)`                                    | ~2 dB            |
+| ドップラー拡散チャネル、model 明示指定 (≥10 Hz、microwave EME) | Fast-fading metric + BP、呼び出し側が `(b90_ts, FadingModel)` を指定 | いずれかの builder に `.fading(model, b90_ts)` | 拡散時 5–8 dB    |
+| コールペア既知、QSO 文脈無し、地上波                  | AP-list テンプレート照合                            | いずれかの builder に `.ap_list(&candidates)`                            | ~3 dB |
+| 複数 T/R 期間にまたがる弱信号 / ionoscatter           | Multi-period EMA averaging (3 段カスケード)         | `MultiPeriodRequest::<P>::new(...).decode()`                             | 単一期間のどの戦略でも復号できない信号を回収 |
 
-**AWGN Bessel + BP** (`decode_at_for`) は教科書通りの単発経路:
-シンボル毎 FFT エネルギーを Bessel-I0 metric で確率ベクトル化し、
-QRA 符号上で非二進 belief propagation を実行する。加法ガウスノイズに
-近いチャネルで安全に動く — ただしこれは *point-decode* API 限定で
-あり、scan ファミリがこの front end に留まらない理由は上の注意点
-を参照。
+**AWGN Bessel + BP** (`SniperRequest` に capability 未設定) は教科書
+通りの単発経路: シンボル毎 FFT エネルギーを Bessel-I0 metric で
+確率ベクトル化し、QRA 符号上で非二進 belief propagation を実行する。
+加法ガウスノイズに近いチャネルで安全に動く — ただしこれは
+*point-decode* の形のみであり、scan ファミリがこの front end に
+留まらない理由は上の注意点を参照。
 
-**AP-hint BP** は BP 開始前に既知の情報ビット位置で intrinsic
-確率ベクトルをクランプする。正しい hint は BP の収束点を真値側に
-寄せ、誤った hint は誤デコードよりも収束失敗を引き起こす傾向が
-ある (CRC が残りを捕捉する)。`mfsk_core::msg::ApHint` の builder
-(`with_call1`, `with_call2`, `with_grid`, `with_report`) で構築する。
+**AP-hint BP** (`.ap_hint(&ap)`) は BP 開始前に既知の情報ビット位置で
+intrinsic 確率ベクトルをクランプする。正しい hint は BP の収束点を
+真値側に寄せ、誤った hint は誤デコードよりも収束失敗を引き起こす
+傾向がある (CRC が残りを捕捉する)。`mfsk_core::msg::ApHint` の
+builder (`with_call1`, `with_call2`, `with_grid`, `with_report`) で
+構築する。
 
-**Fast-fading metric** は Bessel front end を、呼び出し側が選ぶ
-`FadingModel::Gaussian` / `FadingModel::Lorentzian` 形状に対して
-キャリブレーションされた拡散対応 metric に置き換える (model は
-`decode_at_fading_for` / `decode_scan_fading_for` の明示的な引数で
-あり、固定キャリブレーションではない)。トーンが 10–60 Hz に拡散する
-microwave EME で必須: リファレンス録音 `samples/Q65/60D_EME_10GHz/`
-(10 GHz EME) はこの経路で復号できるが、plain Bessel front end では
-0 件。`b90_ts` は拡散帯域 × シンボル周期 (代表値: 0.05 = ほぼ AWGN、
-1.0 = 中程度、5.0+ = 強拡散)。
+**Fast-fading metric** (`.fading(model, b90_ts)`) は Bessel front end
+を、呼び出し側が選ぶ `FadingModel::Gaussian` / `FadingModel::Lorentzian`
+形状に対してキャリブレーションされた拡散対応 metric に置き換える。
+トーンが 10–60 Hz に拡散する microwave EME で必須: リファレンス
+録音 `samples/Q65/60D_EME_10GHz/` (10 GHz EME) はこの経路で復号
+できるが、plain Bessel front end では 0 件。`b90_ts` は拡散帯域 ×
+シンボル周期 (代表値: 0.05 = ほぼ AWGN、1.0 = 中程度、5.0+ = 強拡散)。
 
-**AP-list テンプレート照合**は BP を**走らせない**。代わりに生成器
+**AP-list テンプレート照合** (`.ap_list(&candidates)`) は BP を
+**走らせない**。代わりに生成器
 `q65::ap_list::standard_qso_codewords(my_call, his_call, his_grid)`
 が WSJT-X "full AP list" — 既知のコールペアが正当に生成し得る
 標準交換 206 件 (`MYCALL HISCALL`、`MYCALL HISCALL RRR/RR73/73`、
@@ -547,26 +566,24 @@ microwave EME で必須: リファレンス録音 `samples/Q65/60D_EME_10GHz/`
 デコーダは soft observation との対数尤度がリスト規模調整済み
 閾値を超える候補を選ぶか、そうでなければ `None` を返す。
 SNR −25 dB (公開閾値より 1 dB 低い) のスイープ試験では plain BP が
-0/6 失敗するのに対し AP-list は 6/6 復号する。
+0/6 失敗するのに対し AP-list は 6/6 復号する。`.ap_list()` と
+`.fading()` は内部エンジン上で排他 — `.decode()` の優先順位は
+ap_list > fading (+ap_hint) > ap_hint > plain。
 
-**Multi-period EMA averaging** (`decode_multi_period_for` /
-`decode_multi_period`) は `q65_decode.f90` の WSJT-X `iavg=1`/`iavg=2`
-平均化デコードを移植したもの — 上記のどの単一期間戦略でも復号
-できない ionoscatter / 弱 EME 信号を救う最後の戦略である。連続する
-T/R 期間にわたって per-slot spectrogram の指数移動平均 (時定数
-`min(navg, 4)`) を維持し、各スロットで平均化済みエネルギーに対して
-3 段のデコードラダーを試す: (1) AP-list — 呼び出し側が有望な
-call/grid ペアを与えた場合、(2) `b90·Ts ∈ {3, 8, 15}` ×
-`{Gaussian, Lorentzian}` を掃く fast-fading BP、(3) 最終手段としての
-plain Bessel BP (AWGN fallback)。スロットあたり最大 1 件を返し、
-`(message, ±4 Hz freq)` で重複排除する。`mfsk-ffi` にはまだ未公開 —
-現時点では Rust API のみ。
-
-**戦略の合成**: fast-fading と AP-list は合成可能で、fast-fading の
-intrinsic ベクトルをそのまま `Q65Codec::decode_with_codeword_list`
-に渡せる。専用の `decode_at_fading_with_ap_list_for<P>` を配線する
-のは小さな additive な作業; 現状は呼び出し側が低レベル primitive
-(`intrinsics_fast_fading` + `Q65Codec`) で明示的に合成する。
+**Multi-period EMA averaging** (`MultiPeriodRequest`) は
+`q65_decode.f90` の WSJT-X `iavg=1`/`iavg=2` 平均化デコードを
+移植したもの — 上記のどの単一期間戦略でも復号できない
+ionoscatter / 弱 EME 信号を救う最後の戦略である。単一のオーディオ
+バッファではなく `&[&[f32]]` (T/R スロットごとに 1 バッファ) を
+受け取る。連続する T/R 期間にわたって per-slot spectrogram の
+指数移動平均 (時定数 `min(navg, 4)`) を維持し、各スロットで
+平均化済みエネルギーに対して 3 段のデコードラダーを試す:
+(1) `.ap_list()` が設定されていれば AP-list、(2) `b90·Ts ∈ {3, 8, 15}`
+× `{Gaussian, Lorentzian}` を掃く fast-fading BP、(3) 最終手段としての
+plain Bessel BP (AWGN fallback、この builder には別途
+`.fading()`/`.ap_hint()` は無く、このラダーが常に走る)。スロット
+あたり最大 1 件を返し、`(message, ±4 Hz freq)` で重複排除する。
+`mfsk-ffi` にはまだ未公開 — 現時点では Rust API のみ。
 
 C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
 `mfsk_q65_decode_with_ap`、`mfsk_q65_decode_fading`、
@@ -576,12 +593,12 @@ C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
 (`Gaussian` / `Lorentzian`) 引数を取る (§8)。Multi-period averaging は
 まだ C ABI に含まれていない。
 
-## 4. 共有プリミティブ (`core`)
+## 4. 共有プリミティブ (`engine`)
 
 ### 受信パイプライン概観
 
 任意の wired プロトコルにおける受信フロー全体 — 生オーディオ
-サンプルから復号メッセージ文字列まで — は、以下に挙げる `core`
+サンプルから復号メッセージ文字列まで — は、以下に挙げる `engine`
 サブモジュール内のフリー関数群を `P: Protocol` でパラメタライズ
 して鎖状に呼び出した形になっている:
 
@@ -611,12 +628,12 @@ C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
 ```
 
 `Demodulator` や `Receiver` という trait はない。受信経路は
-`core::sync` / `core::llr` / `core::equalize` / `core::pipeline` の
+`engine::sync` / `engine::llr` / `engine::equalize` / `engine::pipeline` の
 フリー関数群として実現され、それぞれ `P: Protocol` で generic に
 なっている。Monomorphization により、手書きのプロトコル別デコーダ
 と同等のコードが生成されつつ、各プロトコルに n-method な受信
 trait の実装を強制しないで済む。Soft demap は
-`core::llr::compute_llr<P>` で、`Protocol::demap()` メソッドではなく
+`engine::llr::compute_llr<P>` で、`Protocol::demap()` メソッドではなく
 フリー関数になっているのは、スペクトル抽出 (`symbol_spectra`)・
 WSJT 式 4 バリアント LLR (a/b/c/d)・equalizer がデータとして
 組み合わさるためで、trait 合成では表現が冗長になる。Sync /
@@ -624,7 +641,41 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
 パラメータとして受け取り `P` の関連定数 (`NTONES`、`NSPS`、
 `SYNC_MODE` など) を直接参照する。
 
-### DSP (`mfsk_core::core::dsp`)
+### パブリックデコードエントリポイント: `DecodeRequest` / `SniperRequest`
+
+上図の engine 関数群 (`coarse_sync`、`decode_frame`、
+`process_candidate_basic`、…) は issue #191/#203 以降内部実装
+(`pub(crate)`) である。アプリケーションはこれらを
+`mfsk_core::msg::decode_request` にある 2 つの generic builder 経由で
+駆動する。実装対象は `Ft8`、`Ft4`、および全 FST4 sub-mode
+(`FrameDecodable` マーカー trait。Q65/WSPR/JT65/JT9/uvpacket は
+それぞれ独自のエントリポイントを維持、§6.3/§6.5):
+
+* **`DecodeRequest<P>`** — `freq_min..freq_max` に対する wide-band
+  探索。`DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min,
+  max_cand)` の後、`.depth(...)`、`.strictness(...)`、`.eq_mode(...)`、
+  `.known(...)` (前パスで既に復号済みのメッセージをスキップ/減算)、
+  `.fft_cache(...)` (直前呼び出しの forward FFT を再利用)、
+  プロトコルが `SupportsWideBandAp` を実装していれば `.ap_hint(...)`
+  (FT8 のみ)、さらにプロトコルが対応していれば
+  `.flat()` / `.staged()` のいずれかで successive-interference-
+  cancellation 戦略を選択 (`SupportsFlatSic`: FT8+FT4、
+  `SupportsStagedSic`: FT8 のみ) をチェーンする。`.decode()` で
+  `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`、後続呼び出し用の
+  `.fft_cache` も含む) を得る。
+* **`SniperRequest<P>`** — narrow-band、単一ターゲット探索。
+  `DecodeRequest::<P>::sniper(audio, target_freq_hz, max_cand)` または
+  `SniperRequest::<P>::new(...)` を直接呼ぶ。`.depth(...)`、
+  `.strictness(...)`、`.eq_mode(...)`、プロトコルのメッセージ
+  コーデックが `WsjtApCompatible` を実装していれば `.ap_hint(...)`
+  (SIC バリアントは無し — sniper モードは元々単一候補)。
+  `.decode()` は同じ `DecodeOutcome<P>` 形状を返す。
+
+これにより FT8 の `decode_frame*`/`decode_frame_subtract*`/
+`decode_sniper*` 系 (公開関数 15 個) と FT4/FST4 独自の同種の
+suffix 展開を置き換えた — §6.2/§6.4 に実例がある。
+
+### DSP (`mfsk_core::engine::dsp`)
 
 | モジュール      | 役割                                                        |
 |-----------------|-------------------------------------------------------------|
@@ -638,7 +689,7 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 ためで、プロトコルモジュールがモジュールレベル定数を公開している:
 `ft8::downsample::FT8_CFG`、`ft4::decode::FT4_DOWNSAMPLE` など。
 
-### Sync (`mfsk_core::core::sync`)
+### Sync (`mfsk_core::engine::sync`)
 
 * `coarse_sync::<P>(audio, freq_min, freq_max, …)` — UTC 整列 2D
   ピーク探索、`P::SYNC_MODE.blocks()` を走査 (FT8 以外向け)
@@ -651,11 +702,11 @@ FFT サイズなどチューニングが trait 定数だけから単純派生で
 > 0.6.0 以降、FT8 ホストパイプラインは
 > `mfsk_core::ft8::decode_block::coarse_sync` (`compute_spectrogram`
 > とともに公開 API に昇格) を使う。旧 `ft8::sync::coarse_sync` の
-> 薄ラッパは削除済。`core::sync::coarse_sync::<Ft8>` を直接呼び
-> 出すパスは残しているが、`ft8::decode::decode_frame*` 系の高レベル
-> エントリは全て `decode_block::coarse_sync` を経由する。詳細は §10。
+> 薄ラッパは削除済。`engine::sync::coarse_sync::<Ft8>` を直接呼び
+> 出すパスは残しているが、`DecodeRequest::<Ft8>`/`SniperRequest::<Ft8>`
+> (§4) は内部で `decode_block::coarse_sync` を経由する。詳細は §10。
 
-### Sync2D — FT4 / FST4 フルスロット・コヒーレント sync 探索 (`mfsk_core::core::sync2d`)
+### Sync2D — FT4 / FST4 フルスロット・コヒーレント sync 探索 (`mfsk_core::engine::sync2d`)
 
 WSJT-X から移植したプロトコル専用のフルスロット・コヒーレント探索が
 2 系統ここにある。いずれも symbol 境界で位相をリセットせず 8-symbol
@@ -685,7 +736,7 @@ FST4 (issue #146) がそれぞれフルスロット探索を必要とするよ�
 非コヒーレントな Δt 推定が窓の探索半径を超えて外れているケースを
 回復できなかった。
 
-同じ作業で `core::sync::coarse_sync::<P>` にも FST4 専用の拡張が
+同じ作業で `engine::sync::coarse_sync::<P>` にも FST4 専用の拡張が
 入った: 既存の short-time Costas グリッドしきい値に加えて、
 WSJT-X の `get_candidates_fst4` を模したフルスロット非コヒーレント
 4-tone パワーチェックをクリアした bin も候補リストに追加できる
@@ -696,7 +747,7 @@ WSJT-X の `get_candidates_fst4` を模したフルスロット非コヒーレ�
 候補が競合する実運用シナリオでは、WSJT-X 準拠のカバレッジ改善と
 して意味がある。
 
-### LLR (`mfsk_core::core::llr`)
+### LLR (`mfsk_core::engine::llr`)
 
 * `symbol_spectra::<P>(cd0, i_start)` — シンボル単位 FFT bin
   (汎用パス。FT8 では中間 `cd0` を割り当てない
@@ -711,20 +762,27 @@ WSJT-X の `get_candidates_fst4` を模したフルスロット非コヒーレ�
   フォールバックしていた。issue #146)
 * `sync_quality::<P>(cs)` — 硬判定 sync シンボル一致数
 
-### Equalise (`mfsk_core::core::equalize`)
+### Equalise (`mfsk_core::engine::equalize`)
 
 * `equalize_local::<P>(cs)` — `P::SYNC_MODE.blocks()` pilot 観測から
   トーン毎 Wiener equalizer を推定、Costas が訪問しないトーンは
   線形外挿でカバー
 
-### Pipeline (`mfsk_core::core::pipeline`)
+### Pipeline (`mfsk_core::engine::pipeline`)
 
-* `decode_frame::<P>(...)` — coarse sync → 並列 process_candidate → dedupe
-* `decode_frame_subtract::<P>(...)` — 3-pass SIC ドライバ。0.6.2 で
-  SIC ステップは `subtract_signal_lpf` (WSJT-X 式 channel-aware
-  subtract) に統一。旧 `subtract_signal_weighted` /
-  `qsb_partial_gain` 系は削除済
-* `process_candidate_basic::<P>(...)` — 候補単体の BP+OSD
+`decode_frame::<P>` (coarse sync → 並列 process_candidate →
+dedupe)、`decode_frame_subtract::<P>` (3-pass SIC ドライバ)、
+`process_candidate_basic::<P>` (候補単体の BP+OSD) は pipeline の
+下にある engine 生関数だが、issue #191/#203 以降 **`pub(crate)`**
+(または非デフォルトの `internal-testing` feature 下でのみ `pub`。
+クレート自身のテストバイナリが使用) である。アプリケーションから
+直接呼び出すべきではなく、代わりに
+`msg::decode_request::DecodeRequest`/`SniperRequest` (上記参照) を
+使う — これらの関数を builder で包んでいる。`decode_frame_subtract`
+は 0.6.2 以降 `subtract_signal_lpf` (WSJT-X 式 channel-aware
+subtract) を使用。旧 `subtract_signal_weighted` /
+`qsb_partial_gain` 系は削除済。
+
 * `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — OSD
   実行前の coarse-sync スコアしきい値と、OSD 後の硬判定エラー上限
   ゲート。2026-04-07 の FT8 実 WAV recall で較正した値で、0.7.1 まで
@@ -762,7 +820,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
   (0.6.0 で公開 API 昇格)
 * `fill_symbol_spectra` / `fill_symbol_spectra_goertzel` — 音声から
   直接シンボル毎 FFT を抽出 (旧コードの cd0 +
-  `core::llr::symbol_spectra` 二段経路を置換)
+  `engine::llr::symbol_spectra` 二段経路を置換)
 
 ## 5. Feature flags
 
@@ -796,10 +854,10 @@ mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
 ### 6.2 FT8 デコード — 最小例
 
 ```rust
-use mfsk_core::ft8::{
-    decode::{decode_frame, DecodeDepth},
-    wave_gen::{message_to_tones, tones_to_i16},
-};
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::DecodeDepth;
+use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
+use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
 
 // 1. FT8 フレームを合成し、15 秒スロットに詰める。
@@ -813,10 +871,13 @@ for (i, &s) in frame.iter().enumerate() {
     if start + i < audio.len() { audio[start + i] = s; }
 }
 
-// 2. デコードする。
-for r in decode_frame(&audio, 100.0, 3_000.0, 1.0, None,
-                      DecodeDepth::FULL, 50) {
-    if let Some(text) = unpack77(&r.message77) {
+// 2. デコードする。new(audio, freq_min, freq_max, sync_min, max_cand)。
+let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3_000.0, 1.0, 50)
+    .depth(DecodeDepth::FULL)
+    .decode()
+    .results;
+for r in &results {
+    if let Some(text) = unpack77(r.message77()) {
         println!("{:7.1} Hz  dt={:+.2} s  SNR={:+.0} dB  {}",
                  r.freq_hz, r.dt_sec, r.snr_db, text);
     }
@@ -863,17 +924,23 @@ for d in decodes {
 
 ### 6.4 Sniper モード + AP hint
 
-狭帯域 (±500 Hz 程度) に絞って AP hint を与えると、より弱い信号まで
-引き出せる:
+既知のターゲット周波数を中心に ±250 Hz に絞って AP hint を与えると、
+より弱い信号まで引き出せる — 500 Hz ハードウェア BPF の後段や、
+既知の 1 局を狙う場合の利用を想定:
 
 ```rust
-use mfsk_core::ft8::decode::{decode_sniper_ap, DecodeDepth, ApHint};
-use mfsk_core::core::equalize::EqMode;
+use mfsk_core::ft8::Ft8;
+use mfsk_core::ft8::decode::{DecodeDepth, EqMode, ApHint};
+use mfsk_core::msg::decode_request::SniperRequest;
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
-for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
-                          DecodeDepth::FULL, /*max_cand*/ 15,
-                          EqMode::Local, Some(&ap)) {
+let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
+    .depth(DecodeDepth::FULL)
+    .eq_mode(EqMode::Local)
+    .ap_hint(&ap)
+    .decode()
+    .results;
+for r in &results {
     // …
 }
 ```
@@ -884,8 +951,8 @@ for r in decode_sniper_ap(&audio, /*target_hz*/ 1000.0,
 なったため同リリースで廃止された (issue #73)。旧 2 パス挙動が
 欲しい呼び出し元は `Local` → `Off` の順に明示的に 2 回呼べばよい。
 
-FT4 側も `ft4::decode::decode_sniper_ap` として同じ形で提供して
-いる。
+`SniperRequest::<Ft4>` も同じ形で使える (`FrameDecodable` は両方に
+実装されている)。
 
 ### 6.5 JT9 / JT65
 
