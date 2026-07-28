@@ -17,9 +17,9 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 おり、同じソースが host 側 f32 パスと組込側整数パスのいずれにも
 **コード重複なし** で compile される:
 
-- [`core::scalar::SpecScalar`] — spectrogram / DFT 出力 scalar
+- [`engine::scalar::SpecScalar`] — spectrogram / DFT 出力 scalar
   (host は `f32`、embedded cs 格納は `Q14i16`)。
-- [`core::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
+- [`engine::scalar::LlrScalar`] — wide-accumulator 付き LLR scalar
   (host は `f32`、組込 BP は **`Q11i16` + i32 wide accumulator**、
   0.6.2 以降。0.5.x までは `Q3i8` だった。拡張の動機は host
   fixed-point + rustfft sweep (pre-0.6.3 計測 — 0.6.3 の OSD
@@ -33,8 +33,8 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
   ただし実機 embedded の上乗せは 1 件のみ (6/18 → 7 total) —
   残る host gap は LLR scalar ではなく組込パイプラインの他要素
   (NSTEP-half、coarse-sync 簡略化、`fine_refine_pass1` 無し) が
-  律速。`Q3i8` 型は比較経路用に `core::scalar` に残置)。
-- [`core::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
+  律速。`Q3i8` 型は比較経路用に `engine::scalar` に残置)。
+- [`engine::scalar::Cmplx<S>`] — `SpecScalar` 上のジェネリック複素数。
   0.6.3 (cleanup β.5) 以降は `num_complex::Complex<S>` の type
   alias、組込整数パスと host f32 パスで同じ複素演算実装を共有。
 - `compute_llr_generic<P, S, T>`、`compute_snr_db_generic<P, S>`、
@@ -51,7 +51,7 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 | Component | Generic over | Fixed-point switch 配線済み? |
 |---|---|---|
 | LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ `fixed-point` 経由 |
-| LLR 計算 (`core::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point` 経由 |
+| LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point` 経由 |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — FT8 LDPC(174,91) と FST4/uvpacket LDPC(240,101) で機能 |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
 | **FT4 / WSPR / Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — これらは現状 `decode_block` を通っていない |
@@ -133,14 +133,14 @@ Feature リファレンス:
 | `alloc` | `extern crate alloc` + Vec / Box。 | 全 decode パス。 |
 | `fft-extern` | `mfsk_core_make_default_fft_planner` extern fn (i16 用 `_planner16` も) 経由の FFT バックエンド。 | 任意の組込ターゲット。 |
 | `fft-rustfft` | rustfft を FFT バックエンドに。 | Host 専用。 |
-| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で `Q11i16` に拡張。`Q3i8` 型は比較経路用に `core::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
+| `fixed-point` | 組込整数パイプライン: u16 spectrogram + i16 内部 DFT + Q11i16 LLR + 整数 NMS BP。`nstep-half` を含意。(0.5.x は `Q3i8` だったが、host fixed-point + rustfft で `qso3_busy.wav` の recall が f32 16/18 → Q3i8 9/18 と落ちる LLR 解像度律速が判明、0.6.2 で `Q11i16` に拡張。`Q3i8` 型は比較経路用に `engine::scalar` に残置。) | 任意の組込ターゲット — host f32 に近い recall (1/2048 LSB)、PSRAM 帯域半減、~12 KB BP scratch (Q11i16、0.6.2 以降)。 |
 | `nstep-half` | spectrogram カラムレートを NSTEP = NSPS/2 (WSJT-X 忠実な NSPS/4 でなく)。 | `fixed-point` で自動有効。host ビルドで組込パスを明示的に simulate する以外では独立に enable しない。 |
 | `parallel` | Rayon 並列 candidate 処理。 | Host 専用。組込では常に off (`std::thread` 無し)。 |
 | `profile-coarse` | coarse_sync sub-stage timing を常時 stderr 出力。 | 診断専用。 |
 
 ## FFT extern Rust 契約
 
-`mfsk_core::core::fft::FftPlanner` (および i16 パス用
+`mfsk_core::engine::fft::FftPlanner` (および i16 パス用
 `FftPlanner16`) が decode パスの FFT trait。`fft-extern` 配下では
 リンクされたバイナリが 2 つの `extern "Rust"` factory 関数を提供
 することを要求する:
@@ -148,14 +148,14 @@ Feature リファレンス:
 ```rust
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner()
-    -> Box<dyn mfsk_core::core::fft::FftPlanner>
+    -> Box<dyn mfsk_core::engine::fft::FftPlanner>
 {
     Box::new(MyEspDspPlanner::new())
 }
 
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner16()
-    -> Box<dyn mfsk_core::core::fft::FftPlanner16>
+    -> Box<dyn mfsk_core::engine::fft::FftPlanner16>
 {
     Box::new(MyEspDspPlanner16::new())
 }
@@ -219,8 +219,8 @@ scratch 引数そのものを削除して仕上げた — 新規統合では scr
 | Stage | Format | Range | File |
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`、0.6.4 以降飽和 | `ft8::decode_block::spectrogram::Spectrogram` |
-| Symbol cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (`fixed-point`) | f32 無制限、Q14 ±2 | `core::scalar::Cmplx` (`num_complex::Complex` の type alias) |
-| LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `core::scalar` に比較経路用として残置) | `core::scalar::LlrScalar` |
+| Symbol cs | `Cmplx<f32>` (デフォルト) または `Cmplx<Q14i16>` (`fixed-point`) | f32 無制限、Q14 ±2 | `engine::scalar::Cmplx` (`num_complex::Complex` の type alias) |
+| LLR | f32 (host) または **Q11i16** (`fixed-point`、0.6.2 以降 — 0.5.x は `Q3i8`。解像度律速の recall 天井を解消するため拡張) | f32 無制限、Q11i16 ±16 (~1/2048 LSB) (Q3i8 ±16 (~1/8 LSB) は `engine::scalar` に比較経路用として残置) | `engine::scalar::LlrScalar` |
 | BP messages | T (LLR と同じ) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## C / C++ / 非 Rust ESP-IDF プロジェクトからの利用 (`mfsk-ffi-ft8`)

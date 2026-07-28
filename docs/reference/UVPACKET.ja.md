@@ -60,7 +60,7 @@ WSJT 系に対して適切な scope を持っている」。
 | `MessageCodec` | **意図的に bypass** (バイトパイプ — 構造化 codec 不要) |
 | `WsjtApCompatible` | **意図的に bypass** (uvpacket には AP の概念がない) |
 | `Protocol::ID` / `ModulationParams` 定数 | **decorative** (自前 TX/RX パイプラインからは参照されない) |
-| 汎用 `core::pipeline::decode_frame::<P>` | **使っていない** (専用 `uvpacket::rx`) |
+| 汎用 `engine::pipeline::decode_frame::<P>` | **使っていない** (専用 `uvpacket::rx`) |
 
 ### 結論 — trait は WSJT 系のために意図的に specific
 

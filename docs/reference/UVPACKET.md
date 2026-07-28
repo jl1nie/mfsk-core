@@ -62,7 +62,7 @@ right-sized for WSJT."*
 | `MessageCodec` | **deliberately bypassed** (byte-pipe: no structured codec needed) |
 | `WsjtApCompatible` | **deliberately bypassed** (uvpacket has no AP concept) |
 | `Protocol::ID` / `ModulationParams` trait constants | **decorative** — not consulted by the bespoke TX/RX pipeline |
-| Generic `core::pipeline::decode_frame::<P>` | **not used** (bespoke `uvpacket::rx`) |
+| Generic `engine::pipeline::decode_frame::<P>` | **not used** (bespoke `uvpacket::rx`) |
 
 ### Conclusion — the traits are intentionally WSJT-specific
 

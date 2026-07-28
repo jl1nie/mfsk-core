@@ -18,9 +18,9 @@ The whole DSP / FEC pipeline is parameterised by **scalar traits**, so
 the same source compiles to either a host-friendly f32 path or an
 embedded-friendly integer path **with no duplicated code**:
 
-- [`core::scalar::SpecScalar`] — spectrogram / DFT-output scalar
+- [`engine::scalar::SpecScalar`] — spectrogram / DFT-output scalar
   (`f32` on host; `Q14i16` for embedded cs storage).
-- [`core::scalar::LlrScalar`] — LLR scalar with wide-accumulator
+- [`engine::scalar::LlrScalar`] — LLR scalar with wide-accumulator
   type (`f32` on host; **`Q11i16` with i32 wide accumulator** for
   embedded BP, since 0.6.2 — was `Q3i8` in 0.5.x. The widening
   was driven by the host f32-vs-`Q3i8` sweep on `qso3_busy.wav`
@@ -37,8 +37,8 @@ embedded-friendly integer path **with no duplicated code**:
   coarse-sync simplifications, no `fine_refine_pass1`), not by the
   LLR scalar. BP scratch doubles from ~6 KB to ~12 KB, still inside
   the S3 / Core2 internal-DRAM budget. `Q3i8` stays in
-  `core::scalar` for the comparison path).
-- [`core::scalar::Cmplx<S>`] — generic complex over a `SpecScalar`.
+  `engine::scalar` for the comparison path).
+- [`engine::scalar::Cmplx<S>`] — generic complex over a `SpecScalar`.
   As of 0.6.3 (cleanup β.5) this is a type alias for
   `num_complex::Complex<S>`, so the embedded integer path and the
   host f32 path share the same complex algebra implementation.
@@ -56,7 +56,7 @@ and optimisations land once and apply everywhere.
 | Component | Generic over | Fixed-point switch wired? |
 |---|---|---|
 | LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ via `fixed-point` |
-| LLR computation (`core::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` |
+| LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — works for FT8 LDPC(174,91) and FST4/uvpacket LDPC(240,101) |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
 | **FT4 / WSPR / Q65 / JT9 / JT65** | (host f32 only) | ❌ — these protocols don't go through `decode_block` today |
@@ -143,14 +143,14 @@ Feature reference:
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
 | `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner16`). | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
-| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `core::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
+| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
 | `parallel` | Rayon-parallel candidate processing. | Host only. Always off on embedded (no `std::thread`). |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
 
 ## The FFT extern Rust contract
 
-`mfsk_core::core::fft::FftPlanner` (and `FftPlanner16` for the i16
+`mfsk_core::engine::fft::FftPlanner` (and `FftPlanner16` for the i16
 path) is the decode path's FFT trait. Under `fft-extern`, the library
 expects the linked binary to provide two `extern "Rust"` factory
 functions:
@@ -158,14 +158,14 @@ functions:
 ```rust
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner()
-    -> Box<dyn mfsk_core::core::fft::FftPlanner>
+    -> Box<dyn mfsk_core::engine::fft::FftPlanner>
 {
     Box::new(MyEspDspPlanner::new())
 }
 
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner16()
-    -> Box<dyn mfsk_core::core::fft::FftPlanner16>
+    -> Box<dyn mfsk_core::engine::fft::FftPlanner16>
 {
     Box::new(MyEspDspPlanner16::new())
 }
@@ -232,8 +232,8 @@ never need to think about scratch placement here at all.
 | Stage | Format | Range | File |
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`, saturated since 0.6.4 | `ft8::decode_block::spectrogram::Spectrogram` |
-| Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `core::scalar::Cmplx` (type alias for `num_complex::Complex`) |
-| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `core::scalar` for the comparison path) | `core::scalar::LlrScalar` |
+| Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `engine::scalar::Cmplx` (type alias for `num_complex::Complex`) |
+| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `engine::scalar` for the comparison path) | `engine::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## Using from C / C++ / non-Rust ESP-IDF projects (`mfsk-ffi-ft8`)
