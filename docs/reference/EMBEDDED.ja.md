@@ -145,7 +145,13 @@ Feature リファレンス:
 リンクされたバイナリが 2 つの `extern "Rust"` factory 関数を提供
 することを要求する:
 
-```rust
+<!-- 非コンパイル: `MyEspDspPlanner`/`MyEspDspPlanner16` はダウンストリーム
+     バイナリが用意する具体型のプレースホルダーで、この例はライブラリ
+     クレート自身では実行できないバイナリ側の弱リンク契約を示す
+     ものである — `engine::fft::default_planner` 自身の doc comment
+     (この例の短縮版) も同じ理由で `ignore` にしている。 -->
+
+```rust,ignore
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner()
     -> Box<dyn mfsk_core::engine::fft::FftPlanner>
@@ -452,7 +458,7 @@ rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
 
 ### ESP-IDF (CMake) プロジェクトへのリンク方法
 
-```
+```text
 your-app/                          # esp-idf プロジェクトルート
 ├── main/main.c                    # mfsk_ft8_decode_i16(...) を呼ぶ
 ├── components/mfsk_ft8/
@@ -633,7 +639,7 @@ Phase E 以降のパイプライン (`embedded-poc/embedded-shared/src/`
 配線済) は **キューベース、per-slot 単一所有** — 共有可変状態
 なし、notify-and-out-pointer 分離なし:
 
-```
+```text
 wav_sim / I2S キャプチャ (PRO_CPU, prio 4)
   │
   │  ChunkMsg = Samples(Vec<i16>) | SlotEnd { wav_idx, total_samples }

@@ -206,7 +206,7 @@ WAV recall は 3/3 (`tests/msk144_wsjtx_samples.rs`) —
 
 ## 1. モジュール構成
 
-```
+```text
 mfsk_core
 ├── engine/           Protocol trait 群、DSP、sync、LLR、equaliser、pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
@@ -303,7 +303,12 @@ trait API を満たすために `encode` の中で bit ↔ シンボル変換を
 対応するすべてのモードは、3 つの合成可能な trait を実装する
 **Zero-Sized Type (ZST)** で記述される:
 
-```rust
+<!-- 非コンパイル: 同名 trait をここで再宣言しても実際の定義との
+     整合性チェックにはならない (下の worked example は実物の
+     trait を import して impl するのでドリフトすれば壊れる)。
+     `engine/protocol.rs` を変更したら手動で追随させること。 -->
+
+```rust,ignore
 pub trait ModulationParams: Copy + Default + 'static {
     const NTONES: u32;
     const BITS_PER_SYMBOL: u32;
@@ -357,25 +362,37 @@ ZST 定義で示す。
 **FT4** — 標準的なブロック Costas 系。`Fec` と `Msg` は FT8 と共有する:
 
 ```rust
-use mfsk_core::engine::protocol::*;
+use mfsk_core::engine::{
+    FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
+};
 use mfsk_core::fec::Ldpc174_91; // fec::ldpc から re-export
 use mfsk_core::msg::Wsjt77Message;
 
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Ft4;
 
 impl ModulationParams for Ft4 {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 576;          // 48 ms @ 12 kHz
+    const SYMBOL_DT: f32 = 0.048;
     const TONE_SPACING_HZ: f32 = 20.833;
     const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2];
-    // … (GFSK_BT、NFFT_PER_SYMBOL_FACTOR、NDOWN などの定数)
+    const GFSK_BT: f32 = 1.0;
+    const GFSK_HMOD: f32 = 1.0;
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 4;
+    const NSTEP_PER_SYMBOL: u32 = 2;
+    const NDOWN: u32 = 18;
+    // (LLR_NSYM_MAX / INFO_SCRAMBLE_RVEC 等はデフォルト値のままの
+    // recall チューニング用パラメータ — 実際の FT4 側の上書き値は
+    // `ft4::Ft4` を参照)
 }
 
 impl FrameLayout for Ft4 {
     const N_DATA: u32 = 87;
     const N_SYNC: u32 = 16;
     const N_SYMBOLS: u32 = 103;
+    const N_RAMP: u32 = 2;
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT4_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 7.5;
     const TX_START_OFFSET_S: f32 = 0.5;
@@ -399,24 +416,32 @@ const FT4_SYNC_BLOCKS: [SyncBlock; 4] = [
 差し替え、同期は `Interleaved` バリアントで表現する:
 
 ```rust
+use mfsk_core::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use mfsk_core::fec::conv::ConvFano;
 use mfsk_core::msg::wspr::Wspr50Message;
 
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Wspr;
 
 impl ModulationParams for Wspr {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 8192;                  // 約 683 ms @ 12 kHz
+    const SYMBOL_DT: f32 = 8192.0 / 12_000.0;
     const TONE_SPACING_HZ: f32 = 12_000.0 / 8192.0;  // ≈ 1.4648
     const GRAY_MAP: &'static [u8] = &[0, 1, 2, 3];
-    // …
+    const GFSK_BT: f32 = 1.0;
+    const GFSK_HMOD: f32 = 1.0;
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 1;
+    const NSTEP_PER_SYMBOL: u32 = 16;
+    const NDOWN: u32 = 32;
 }
 
 impl FrameLayout for Wspr {
     const N_DATA: u32 = 162;
     const N_SYNC: u32 = 0;                   // sync はデータシンボルに埋込
     const N_SYMBOLS: u32 = 162;
+    const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Interleaved {
         sync_bit_pos: 0,                     // トーン index の LSB に埋込
         vector: &WSPR_SYNC_VECTOR,           // 162 bit 既知列 (npr3)
@@ -430,6 +455,10 @@ impl Protocol for Wspr {
     type Msg = Wspr50Message;                // 50 bit メッセージ
     const ID: ProtocolId = ProtocolId::Wspr;
 }
+
+// 説明用のダミー値 — 実際の 162 bit npr3 ベクトルは
+// `wspr::decode` 内部の非公開 sync テーブルにある。
+const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 ```
 
 呼び出し側のパイプラインは `DecodeRequest::<Ft4>::new(...).decode()`
@@ -934,12 +963,17 @@ FT 系の「ダウンサンプリングしてからシンボル同期」とい�
 関連型として宣言済みで、抽象の枠組みからは外れていない。
 
 ```rust
+# #[cfg(feature = "wspr")] {
 use mfsk_core::wspr::decode::decode_scan_default;
+use mfsk_core::wspr::tx::synthesize_type1;
 use mfsk_core::msg::WsprMessage;
 
-let samples_f32: Vec<f32> = /* 120 秒 × 12 kHz の f32 サンプル */;
+// WSPR Type 1 フレームを合成 (120 秒 @ 12 kHz スロット)。
+let samples_f32 = synthesize_type1("K1ABC", "FN42", 37, 12_000, 1500.0, 0.3)
+    .expect("valid message");
 
 let decodes = decode_scan_default(&samples_f32, /*sample_rate*/ 12_000);
+assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
 for d in decodes {
     match d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
@@ -955,6 +989,7 @@ for d in decodes {
         }
     }
 }
+# }
 ```
 
 `decode_scan_default` が粗同期 (周波数×時刻探索) を込みでスロット全体を
@@ -971,7 +1006,16 @@ for d in decodes {
 ```rust
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::{EqMode, ApHint};
+use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::SniperRequest;
+use mfsk_core::msg::wsjt77::{pack77, unpack77};
+
+let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
+let tones = message_to_tones(&msg77);
+let frame = tones_to_i16(&tones, /* freq */ 1000.0, /* amp */ 20_000);
+let mut audio = vec![0i16; 180_000]; // 15 秒 @ 12 kHz
+let start = (0.5 * 12_000.0) as usize;
+audio[start..start + frame.len()].copy_from_slice(&frame);
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
@@ -979,8 +1023,10 @@ let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand
     .ap_hint(&ap)
     .decode()
     .results;
+assert!(!results.is_empty(), "ラウンドトリップは復号できるはず");
 for r in &results {
-    // …
+    let text = unpack77(r.message77()).unwrap();
+    println!("{:7.1} Hz  {}", r.freq_hz, text);
 }
 ```
 
@@ -998,12 +1044,18 @@ for r in &results {
 JT9 と JT65 は同じ scan + 単点デコードのパターンを提供する:
 
 ```rust
+# #[cfg(feature = "jt65")] {
 use mfsk_core::jt65::decode_scan_default;
+use mfsk_core::jt65::tx::synthesize_standard;
 
-let audio_f32: Vec<f32> = /* 60 秒 × 12 kHz の f32 サンプル */;
-for d in decode_scan_default(&audio_f32, 12_000) {
+let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
+    .expect("pack + synth");
+let decodes = decode_scan_default(&audio_f32, 12_000);
+assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
+for d in decodes {
     println!("{:7.2} Hz  {}", d.freq_hz, d.message);
 }
+# }
 ```
 
 JT65 はさらに `decode_at_with_erasures` を提供しており、

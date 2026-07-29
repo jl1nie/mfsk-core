@@ -375,7 +375,7 @@ stack (see §4).
 
 ### 3.3 AWGN sweep
 
-```
+```text
 mode         Eb/N0 (dB)  -2   0   2   4   6   8  10
 ─────────────────────────────────────────────────────
 UltraRobust               0   0   6  29  30  30  30
@@ -391,7 +391,7 @@ half-baud bonus for UltraRobust.
 
 ### 3.4 Rayleigh flat fading
 
-```
+```text
 mode         fd (Hz)  +4   +8  +12  +16  +20  +25   (Eb/N0_info dB)
 ────────────────────────────────────────────────────────
 UltraRobust    1       4   22   29   30   30   30
@@ -420,7 +420,7 @@ Channel: BPF (300, 2700) Hz with 100 Hz transition, clarifier
 offset 100 Hz (within AFC range), LO phase walk 2 rad/√s,
 single 5 ms multipath tap at −10 dB.
 
-```
+```text
 mode         Eb/N0 (dB)  +4   +6   +8  +10  +12  +15
 ─────────────────────────────────────────────────────
 UltraRobust              21   30   30   30   30   30
@@ -439,7 +439,7 @@ to the LO walk.
 Channel: 75 µs de-emphasis, discriminator DC drift 50 Hz, LO walk
 1 rad/√s, Rician K = 10 dB, single 5 ms multipath tap at −10 dB.
 
-```
+```text
 mode         Eb/N0 (dB)  +6   +8  +10  +12  +15  +20
 ─────────────────────────────────────────────────────
 UltraRobust              27   30   30   30   30   30
@@ -456,7 +456,7 @@ on FM due to the de-emphasis tilt convolved with multipath.
 Multipath stress test, no other impairments beyond AWGN.
 Isolates the equaliser's reach.
 
-```
+```text
 mode         Eb/N0 (dB)  +6   +8  +10  +12  +15  +20
 ─────────────────────────────────────────────────────
 UltraRobust              30   30   30   30   30   30
@@ -486,7 +486,7 @@ passband) is roughly `CNR_threshold + FM_SNR_improvement ≈ +9 +
 Translating uvpacket UltraRobust's 90 % PER threshold (+4 dB
 Eb/N0_info) to the same units:
 
-```
+```text
 SNR_3kHz_UltraRobust = +4 + 10·log₁₀(504 / 3000) = −3.7 dB
 ```
 
@@ -547,20 +547,33 @@ and 2000 Hz audio centres).
 `mfsk-core::uvpacket::rx` ships two stateless primitives:
 
 ```rust
+# #[cfg(feature = "uvpacket")] {
+use mfsk_core::uvpacket::framing::FrameHeader;
+use mfsk_core::uvpacket::rx::{
+    MultiChannelOpts, decode_multichannel, default_fec_opts, measure_slot_energies,
+};
+use mfsk_core::uvpacket::{Mode, tx};
+
 // RX: decode every frame in the passband, return each frame's
 // detected audio centre.
-pub fn decode_multichannel(
-    audio: &[f32],
-    mc_opts: &MultiChannelOpts,
-    fec_opts: &FecOpts,
-) -> Vec<(f32, DecodedFrame)>;
+let header = FrameHeader { mode: Mode::Robust, block_count: 4, app_type: 0, sequence: 1 };
+let payload: Vec<u8> = (0..20).map(|i| (i ^ 0x5A) as u8).collect();
+let audio = tx::encode(&header, &payload, /* audio_centre_hz */ 800.0).unwrap();
+
+let mc_opts = MultiChannelOpts::default();
+let fec_opts = default_fec_opts();
+let frames = decode_multichannel(&audio, &mc_opts, &fec_opts);
+assert!(!frames.is_empty(), "roundtrip must decode");
+for (centre_hz, frame) in &frames {
+    println!("{:7.1} Hz  {} byte payload", centre_hz, frame.payload.len());
+}
 
 // TX-side LBT: per-slot mean MF magnitude survey.
-pub fn measure_slot_energies(
-    audio: &[f32],
-    mc_opts: &MultiChannelOpts,
-    slot_spacing_hz: f32,
-) -> Vec<SlotEnergy>;
+let energies = measure_slot_energies(&audio, &mc_opts, /*slot_spacing_hz*/ 1200.0);
+for e in &energies {
+    println!("{:7.1} Hz  mean|MF|^2={:.4}", e.audio_centre_hz, e.mean_mf_magnitude);
+}
+# }
 ```
 
 `decode_multichannel` runs a coarse-grid frequency scan

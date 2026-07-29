@@ -300,7 +300,7 @@ Standard ≈ +0.7 dB、Express ≈ +1.5 dB。親コードの設計レートは
 
 ### 3.3 AWGN sweep
 
-```
+```text
 mode         Eb/N0 (dB)  -2   0   2   4   6   8  10
 ─────────────────────────────────────────────────────
 UltraRobust               0   0   6  29  30  30  30
@@ -315,7 +315,7 @@ Standard ≈ +8 dB、Express ≈ +10 dB。教科書通りの rate ordering
 
 ### 3.4 Rayleigh フラットフェージング
 
-```
+```text
 mode         fd (Hz)  +4   +8  +12  +16  +20  +25   (Eb/N0_info dB)
 ────────────────────────────────────────────────────────
 UltraRobust    1       4   22   29   30   30   30
@@ -343,7 +343,7 @@ Express だけが 1 Hz vs 10 Hz で閾値が動く。
 クラリファイア offset 100 Hz (AFC 範囲内)、LO 位相 walk
 2 rad/√s、5 ms multipath タップ 1 本 −10 dB。
 
-```
+```text
 mode         Eb/N0 (dB)  +4   +6   +8  +10  +12  +15
 ─────────────────────────────────────────────────────
 UltraRobust              21   30   30   30   30   30
@@ -361,7 +361,7 @@ UltraRobust は AWGN 閾値 (+4 dB) と**ほぼ同等**で動作 — 半 baud
 チャンネル: 75 µs de-emphasis、識別器 DC ドリフト 50 Hz、LO walk
 1 rad/√s、Rician K = 10 dB、5 ms multipath タップ 1 本 −10 dB。
 
-```
+```text
 mode         Eb/N0 (dB)  +6   +8  +10  +12  +15  +20
 ─────────────────────────────────────────────────────
 UltraRobust              27   30   30   30   30   30
@@ -378,7 +378,7 @@ de-emphasis 傾斜 × multipath で FM ではほぼ実用に耐えない。
 その他の劣化なし、AWGN のみのマルチパス耐性試験。イコライザの
 リーチを単離する。
 
-```
+```text
 mode         Eb/N0 (dB)  +6   +8  +10  +12  +15  +20
 ─────────────────────────────────────────────────────
 UltraRobust              30   30   30   30   30   30
@@ -407,7 +407,7 @@ audio-domain modem も壊滅的に失敗する。上の音声領域 Eb/N0 数値
 uvpacket UltraRobust の 90 % PER 閾値 (+4 dB Eb/N0_info) を同じ
 単位に換算:
 
-```
+```text
 SNR_3kHz_UltraRobust = +4 + 10·log₁₀(504 / 3000) = −3.7 dB
 ```
 
@@ -461,20 +461,33 @@ uvpacket 信号 1 つの占有帯域は `R_s · (1+α) = 1200 · 1.5 =
 `mfsk-core::uvpacket::rx` は stateless な primitives を 2 つ提供:
 
 ```rust
+# #[cfg(feature = "uvpacket")] {
+use mfsk_core::uvpacket::framing::FrameHeader;
+use mfsk_core::uvpacket::rx::{
+    MultiChannelOpts, decode_multichannel, default_fec_opts, measure_slot_energies,
+};
+use mfsk_core::uvpacket::{Mode, tx};
+
 // RX: passband 全体で全フレーム復号、検出された audio centre と
 // 一緒に返す
-pub fn decode_multichannel(
-    audio: &[f32],
-    mc_opts: &MultiChannelOpts,
-    fec_opts: &FecOpts,
-) -> Vec<(f32, DecodedFrame)>;
+let header = FrameHeader { mode: Mode::Robust, block_count: 4, app_type: 0, sequence: 1 };
+let payload: Vec<u8> = (0..20).map(|i| (i ^ 0x5A) as u8).collect();
+let audio = tx::encode(&header, &payload, /* audio_centre_hz */ 800.0).unwrap();
+
+let mc_opts = MultiChannelOpts::default();
+let fec_opts = default_fec_opts();
+let frames = decode_multichannel(&audio, &mc_opts, &fec_opts);
+assert!(!frames.is_empty(), "ラウンドトリップは復号できるはず");
+for (centre_hz, frame) in &frames {
+    println!("{:7.1} Hz  {} バイトのペイロード", centre_hz, frame.payload.len());
+}
 
 // TX 側 LBT: スロットごとの平均 MF magnitude survey
-pub fn measure_slot_energies(
-    audio: &[f32],
-    mc_opts: &MultiChannelOpts,
-    slot_spacing_hz: f32,
-) -> Vec<SlotEnergy>;
+let energies = measure_slot_energies(&audio, &mc_opts, /*slot_spacing_hz*/ 1200.0);
+for e in &energies {
+    println!("{:7.1} Hz  mean|MF|^2={:.4}", e.audio_centre_hz, e.mean_mf_magnitude);
+}
+# }
 ```
 
 `decode_multichannel` は coarse-grid 周波数 sweep (デフォルト

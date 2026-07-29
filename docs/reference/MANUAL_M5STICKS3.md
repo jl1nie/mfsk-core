@@ -211,7 +211,7 @@ build-time choice — the same flashed firmware can run any mode.
 
 ### Mode cycle
 
-```
+```text
 Decode → Wifi → Acoustic → CivTest → TxTest → Qso → Uac → Decode → …
 ```
 
@@ -242,7 +242,7 @@ day-to-day.
 
 Audio in → decoded callsigns out, ~1.5–2 s after each FT8 slot ends.
 
-```
+```text
 ES8311 mic / TRRS in   ← 48 kHz stereo I2S RX (one channel used)
         │
         │  audio::capture_tx_thread  (LX7 PRO_CPU, prio 5)
@@ -304,7 +304,7 @@ migration log.
 
 ### LCD layout (135 × 240 portrait)
 
-```
+```text
 ┌─────────────────────────────────┐
 │ status bar (mode / RX gain / …) │
 ├─────────────────────────────────┤

@@ -215,7 +215,7 @@ architecture doesn't cost recall.
 
 ## 1. Module layout
 
-```
+```text
 mfsk_core
 ├── engine/           Protocol traits, DSP, sync, LLR, equaliser, pipeline
 │   ├── protocol.rs     ModulationParams / FrameLayout / Protocol / FecCodec / MessageCodec
@@ -313,7 +313,13 @@ and non-binary codes — see §7.2.
 Every supported mode is described by a zero-sized type that
 implements three composable traits:
 
-```rust
+<!-- Not compiled: re-declaring same-named traits here wouldn't
+     actually check anything against the real definitions (unlike
+     the worked examples below, which `impl` the real imported
+     traits and so break if they drift). Kept in sync by hand against
+     `engine/protocol.rs` when that file changes. -->
+
+```rust,ignore
 pub trait ModulationParams: Copy + Default + 'static {
     const NTONES: u32;
     const BITS_PER_SYMBOL: u32;
@@ -367,25 +373,36 @@ Two concrete cases show how the three traits combine on a real ZST.
 message codec with FT8:
 
 ```rust
-use mfsk_core::engine::protocol::*;
+use mfsk_core::engine::{
+    FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
+};
 use mfsk_core::fec::Ldpc174_91; // re-exported from fec::ldpc
 use mfsk_core::msg::Wsjt77Message;
 
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Ft4;
 
 impl ModulationParams for Ft4 {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 576;          // 48 ms @ 12 kHz
+    const SYMBOL_DT: f32 = 0.048;
     const TONE_SPACING_HZ: f32 = 20.833;
     const GRAY_MAP: &'static [u8] = &[0, 1, 3, 2];
-    // … (GFSK_BT, NFFT_PER_SYMBOL_FACTOR, NDOWN, …)
+    const GFSK_BT: f32 = 1.0;
+    const GFSK_HMOD: f32 = 1.0;
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 4;
+    const NSTEP_PER_SYMBOL: u32 = 2;
+    const NDOWN: u32 = 18;
+    // (LLR_NSYM_MAX/INFO_SCRAMBLE_RVEC etc. are recall-tuning knobs
+    // with defaults — see the real `ft4::Ft4` for FT4's overrides.)
 }
 
 impl FrameLayout for Ft4 {
     const N_DATA: u32 = 87;
     const N_SYNC: u32 = 16;
     const N_SYMBOLS: u32 = 103;
+    const N_RAMP: u32 = 2;
     const SYNC_MODE: SyncMode = SyncMode::Block(&FT4_SYNC_BLOCKS);
     const T_SLOT_S: f32 = 7.5;
     const TX_START_OFFSET_S: f32 = 0.5;
@@ -410,24 +427,32 @@ const FT4_SYNC_BLOCKS: [SyncBlock; 4] = [
 expressed via `SyncMode::Interleaved`:
 
 ```rust
+use mfsk_core::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use mfsk_core::fec::conv::ConvFano;
 use mfsk_core::msg::wspr::Wspr50Message;
 
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Wspr;
 
 impl ModulationParams for Wspr {
     const NTONES: u32 = 4;
     const BITS_PER_SYMBOL: u32 = 2;
     const NSPS: u32 = 8192;                  // ~683 ms @ 12 kHz
+    const SYMBOL_DT: f32 = 8192.0 / 12_000.0;
     const TONE_SPACING_HZ: f32 = 12_000.0 / 8192.0;  // ≈ 1.4648
     const GRAY_MAP: &'static [u8] = &[0, 1, 2, 3];
-    // …
+    const GFSK_BT: f32 = 1.0;
+    const GFSK_HMOD: f32 = 1.0;
+    const NFFT_PER_SYMBOL_FACTOR: u32 = 1;
+    const NSTEP_PER_SYMBOL: u32 = 16;
+    const NDOWN: u32 = 32;
 }
 
 impl FrameLayout for Wspr {
     const N_DATA: u32 = 162;
     const N_SYNC: u32 = 0;                   // sync is embedded in data symbols
     const N_SYMBOLS: u32 = 162;
+    const N_RAMP: u32 = 0;
     const SYNC_MODE: SyncMode = SyncMode::Interleaved {
         sync_bit_pos: 0,                     // LSB of the tone index
         vector: &WSPR_SYNC_VECTOR,           // 162-bit npr3
@@ -441,6 +466,10 @@ impl Protocol for Wspr {
     type Msg = Wspr50Message;                // 50-bit message
     const ID: ProtocolId = ProtocolId::Wspr;
 }
+
+// Illustrative stand-in — the real 162-bit npr3 vector lives in
+// `wspr::decode`'s private sync table.
+const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 ```
 
 Calling code just passes the ZST as a type argument —
@@ -963,12 +992,17 @@ entry points. The FEC (`ConvFano`) and message codec
 — only the slot-level decoder differs.
 
 ```rust
+# #[cfg(feature = "wspr")] {
 use mfsk_core::wspr::decode::decode_scan_default;
+use mfsk_core::wspr::tx::synthesize_type1;
 use mfsk_core::msg::WsprMessage;
 
-let samples_f32: Vec<f32> = /* 120 s × 12 kHz of f32 samples */;
+// Synthesise a WSPR Type 1 frame (120 s @ 12 kHz slot).
+let samples_f32 = synthesize_type1("K1ABC", "FN42", 37, 12_000, 1500.0, 0.3)
+    .expect("valid message");
 
 let decodes = decode_scan_default(&samples_f32, /*sample_rate*/ 12_000);
+assert!(!decodes.is_empty(), "roundtrip must decode");
 for d in decodes {
     match d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
@@ -983,6 +1017,7 @@ for d in decodes {
         }
     }
 }
+# }
 ```
 
 `decode_scan_default` runs the (frequency × time) coarse search over
@@ -1000,7 +1035,16 @@ known station:
 ```rust
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::{EqMode, ApHint};
+use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::SniperRequest;
+use mfsk_core::msg::wsjt77::{pack77, unpack77};
+
+let msg77 = pack77("CQ", "JA1ABC", "PM95").unwrap();
+let tones = message_to_tones(&msg77);
+let frame = tones_to_i16(&tones, /* freq */ 1000.0, /* amp */ 20_000);
+let mut audio = vec![0i16; 180_000]; // 15 s @ 12 kHz
+let start = (0.5 * 12_000.0) as usize;
+audio[start..start + frame.len()].copy_from_slice(&frame);
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
@@ -1008,8 +1052,10 @@ let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand
     .ap_hint(&ap)
     .decode()
     .results;
+assert!(!results.is_empty(), "roundtrip must decode");
 for r in &results {
-    // …
+    let text = unpack77(r.message77()).unwrap();
+    println!("{:7.1} Hz  {}", r.freq_hz, text);
 }
 ```
 
@@ -1028,12 +1074,18 @@ implemented for both).
 Both JT9 and JT65 expose the same scan + point-decode pattern:
 
 ```rust
+# #[cfg(feature = "jt65")] {
 use mfsk_core::jt65::decode_scan_default;
+use mfsk_core::jt65::tx::synthesize_standard;
 
-let audio_f32: Vec<f32> = /* 60 s × 12 kHz of f32 samples */;
-for d in decode_scan_default(&audio_f32, 12_000) {
+let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
+    .expect("pack + synth");
+let decodes = decode_scan_default(&audio_f32, 12_000);
+assert!(!decodes.is_empty(), "roundtrip must decode");
+for d in decodes {
     println!("{:7.2} Hz  {}", d.freq_hz, d.message);
 }
+# }
 ```
 
 JT65 additionally offers `decode_at_with_erasures` for low-SNR

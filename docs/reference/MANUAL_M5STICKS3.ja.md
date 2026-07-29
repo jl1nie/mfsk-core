@@ -199,7 +199,7 @@ flash バイナリでどの mode も実行可能。
 
 ### Mode 巡回
 
-```
+```text
 Decode → Wifi → Acoustic → CivTest → TxTest → Qso → Uac → Decode → …
 ```
 
@@ -229,7 +229,7 @@ Decode → Wifi → Acoustic → CivTest → TxTest → Qso → Uac → Decode �
 
 音声入力 → デコード結果出力、FT8 slot 終了から ~1.5–2 秒。
 
-```
+```text
 ES8311 mic / TRRS in   ← 48 kHz stereo I2S RX (1 ch 使用)
         │
         │  audio::capture_tx_thread  (LX7 PRO_CPU、prio 5)
@@ -289,7 +289,7 @@ bidir DMA alloc が初回で成功して clean に起動。
 
 ### LCD レイアウト (135 × 240 縦)
 
-```
+```text
 ┌─────────────────────────────────┐
 │ status bar (mode / RX gain / …) │
 ├─────────────────────────────────┤

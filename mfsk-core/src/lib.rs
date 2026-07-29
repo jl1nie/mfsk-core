@@ -403,3 +403,46 @@ pub use crate::q65::Q65a30;
 pub use crate::uvpacket::{UvExpress, UvRobust, UvStandard, UvUltraRobust};
 #[cfg(feature = "wspr")]
 pub use crate::wspr::Wspr;
+
+// Markdown-doc doctest hooks: pulls each file's fenced `rust` code
+// blocks into `cargo test --doc` so a renamed/removed API breaks the
+// build here instead of silently rotting in prose. `#[cfg(doctest)]`
+// keeps these out of normal builds and the generated docs.rs page;
+// non-`rust`-tagged fences (shell commands, ASCII diagrams) must be
+// tagged accordingly in the source file or rustdoc treats them as
+// Rust too.
+#[doc = include_str!("../../README.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsReadme;
+
+#[doc = include_str!("../../docs/reference/LIBRARY.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsLibrary;
+
+#[doc = include_str!("../../docs/reference/LIBRARY.ja.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsLibraryJa;
+
+#[doc = include_str!("../../docs/reference/EMBEDDED.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsEmbedded;
+
+#[doc = include_str!("../../docs/reference/EMBEDDED.ja.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsEmbeddedJa;
+
+#[doc = include_str!("../../docs/reference/UVPACKET.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsUvpacket;
+
+#[doc = include_str!("../../docs/reference/UVPACKET.ja.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsUvpacketJa;
+
+#[doc = include_str!("../../docs/reference/MANUAL_M5STICKS3.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsManualM5StickS3;
+
+#[doc = include_str!("../../docs/reference/MANUAL_M5STICKS3.ja.md")]
+#[cfg(doctest)]
+struct MarkdownDoctestsManualM5StickS3Ja;

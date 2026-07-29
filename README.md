@@ -525,7 +525,7 @@ same decoder and synthesiser surface through an opaque-handle C ABI.
 attaches a prebuilt `linux-x86_64` tarball to the GitHub Release;
 other platforms/ABIs (including Android) build locally:
 
-```
+```sh
 cargo build -p mfsk-ffi --release
 ```
 

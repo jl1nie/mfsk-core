@@ -155,7 +155,15 @@ path) is the decode path's FFT trait. Under `fft-extern`, the library
 expects the linked binary to provide two `extern "Rust"` factory
 functions:
 
-```rust
+<!-- Not compiled: `MyEspDspPlanner`/`MyEspDspPlanner16` are stand-ins
+     for whatever backend type the downstream binary defines, and this
+     block deliberately shows the binary side of a weak-linkage extern
+     contract rather than something the library crate can exercise
+     itself — matching `engine::fft::default_planner`'s own doc
+     comment, which marks its (shorter) version of this same example
+     `ignore` for the same reason. -->
+
+```rust,ignore
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_make_default_fft_planner()
     -> Box<dyn mfsk_core::engine::fft::FftPlanner>
@@ -469,7 +477,7 @@ rustflags = ["-C", "link-arg=-nostartfiles", "-C", "panic=abort"]
 
 ### Linking it into an ESP-IDF (CMake) project
 
-```
+```text
 your-app/                          # esp-idf project root
 ├── main/main.c                    # calls mfsk_ft8_decode_i16(...)
 ├── components/mfsk_ft8/
@@ -657,7 +665,7 @@ The post-Phase-E pipeline (wired up in
 single-ownership per slot** — no shared mutable state, no
 notify-and-out-pointer split:
 
-```
+```text
 wav_sim / I2S capture (PRO_CPU, prio 4)
   │
   │  ChunkMsg = Samples(Vec<i16>) | SlotEnd { wav_idx, total_samples }
