@@ -16,7 +16,7 @@ use crate::msg::pipeline_ap;
 pub use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness, FftCache};
 pub use crate::msg::ApHint;
 use crate::msg::decode_request::{
-    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
+    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsSicRounds,
 };
 
 /// FT4 downsample configuration: 12 kHz → ~666.7 Hz baseband, covering four
@@ -130,7 +130,7 @@ impl FrameDecodable for Ft4 {
     }
 }
 
-impl SupportsFlatSic for Ft4 {
+impl SupportsSicRounds for Ft4 {
     fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
         let raw = pipeline::decode_frame_subtract::<Ft4>(
             req.audio,
@@ -143,6 +143,7 @@ impl SupportsFlatSic for Ft4 {
             req.depth,
             req.max_cand,
             req.strictness,
+            req.sic_rounds,
             SYNC_Q_MIN,
             // lpf_half/end-correction match WSJT-X `subtractft4.f90`:
             // NFILT=1400 (lpf_half=700), no end-correction. See
@@ -191,7 +192,7 @@ mod tests {
     use crate::msg::decode_request::DecodeRequest;
 
     /// Compile-time check that `DecodeRequest<Ft4>` accepts every `osd`
-    /// setting across single-pass, flat SIC, and sniper. No actual
+    /// setting across single-pass, `sic_rounds`, and sniper. No actual
     /// decoding happens — empty audio returns no candidates fast — but
     /// this guards against future signature drift.
     #[test]
@@ -203,7 +204,7 @@ mod tests {
                 .decode();
             let _ = DecodeRequest::<Ft4>::new(&empty, 100.0, 3000.0, 1.0, 5)
                 .osd(osd)
-                .flat()
+                .sic_rounds(3)
                 .decode();
             let _ = DecodeRequest::<Ft4>::sniper(&empty, 1500.0, 5)
                 .osd(osd)

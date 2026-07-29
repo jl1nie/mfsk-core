@@ -22,8 +22,8 @@ use super::{
     sync::SyncCandidate,
 };
 use crate::msg::decode_request::{
-    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsFlatSic,
-    SupportsStagedSic, SupportsWideBandAp,
+    DecodeOutcome, DecodeRequest, FrameDecodable, SniperRequest, SupportsSicEarly,
+    SupportsSicRounds, SupportsWideBandAp,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -380,30 +380,31 @@ fn decode_frame_inner(
 // ────────────────────────────────────────────────────────────────────────────
 // Multi-pass decode with signal subtraction
 
-/// The flat 3-pass + sequential SIC, mirroring the structure of
+/// The flat SIC (up to [`DecodeRequest::sic_rounds`] rounds, default and
+/// max of 3) plus sequential subtract, mirroring the structure of
 /// `decode_block::decode_block_multipass` (the embedded path) which is a
 /// faithful port of `lib/ft8/ft8b.f90:432-437`. Used by
-/// [`SupportsFlatSic`]'s `Ft8` impl (`.flat()`) and as
+/// [`SupportsSicRounds`]'s `Ft8` impl (`.sic_rounds()`) and as
 /// [`decode_frame_subtract_staged_with_ap_inner`]'s fallback for
 /// buffers too short to stage meaningfully.
 ///
 /// Two changes from the pre-v0.6.0 host implementation:
 ///
-/// 1. **Fixed `sync_min` across all 3 passes** (was 1.0 / 0.75 / 0.5).
-///    Progressive relaxation lets phantoms slip through later passes
+/// 1. **Fixed `sync_min` across all rounds** (was 1.0 / 0.75 / 0.5).
+///    Progressive relaxation lets phantoms slip through later rounds
 ///    when SIC artefacts dominate the residual; WSJT-X holds the
-///    threshold and skips later passes when no new decodes come out.
+///    threshold and skips later rounds when no new decodes come out.
 ///
-/// 2. **Sequential subtract within each pass** (was batch-after-pass).
+/// 2. **Sequential subtract within each round** (was batch-after-round).
 ///    Each accepted decode immediately subtracts from the residual so
-///    the *next* candidate in the same pass sees a cleaner spectrum.
+///    the *next* candidate in the same round sees a cleaner spectrum.
 ///    This is what surfaces -13 to -18 dB signals sitting beneath
 ///    strong neighbours (the JTDX-extras shape on `qso3_busy.wav`).
-///    Without sequential subtract, all candidates in a pass see the
+///    Without sequential subtract, all candidates in a round see the
 ///    same raw residual and weak signals stay masked.
 ///
-/// Pass termination matches WSJT-X: pass 2 skips when pass 1 returned
-/// 0 decodes; pass 3 skips when pass 2 returned no NEW decodes.
+/// Round termination matches WSJT-X: round 2 skips when round 1 returned
+/// 0 decodes; round 3 skips when round 2 returned no NEW decodes.
 #[allow(clippy::too_many_arguments)]
 fn flat_sic_inner(
     audio: &[i16],
@@ -417,6 +418,7 @@ fn flat_sic_inner(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
+    n_rounds: usize,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -431,17 +433,20 @@ fn flat_sic_inner(
         eq_mode,
         ap_hint,
         precomputed_fft,
+        n_rounds,
     )
 }
 
-/// Shared inner loop: up to 3 sub-passes of coarse_sync + per-candidate
-/// decode, subtracting each accepted decode from `residual` immediately
-/// (sequential, not batch-after-pass) so later candidates in the same
-/// sub-pass see a cleaner spectrum. This is WSJT-X's `ft8b.f90:432-437`
-/// `do ipass=1,npass` structure. Factored out of [`flat_sic_inner`] so
-/// [`decode_frame_subtract_staged_with_ap_inner`] can reuse it at
-/// checkpoint A and checkpoint C (issue #180) without duplicating the
-/// pass/dedup/subtract logic.
+/// Shared inner loop: up to `n_rounds` sub-passes of coarse_sync +
+/// per-candidate decode, subtracting each accepted decode from `residual`
+/// immediately (sequential, not batch-after-round) so later candidates in
+/// the same sub-pass see a cleaner spectrum. This is WSJT-X's
+/// `ft8b.f90:432-437` `do ipass=1,npass` structure. Factored out of
+/// [`flat_sic_inner`] so [`decode_frame_subtract_staged_with_ap_inner`] can
+/// reuse it at checkpoint A and checkpoint C (issue #180) without
+/// duplicating the pass/dedup/subtract logic — those checkpoint call sites
+/// always pass `n_rounds = 3` (checkpoint structure is fixed, not exposed
+/// as a caller-tunable knob; see [`SupportsSicEarly`]).
 ///
 /// `residual` is mutated in place (final state = fully subtracted).
 /// `known` seeds dedup against decodes from an earlier stage — those
@@ -459,25 +464,30 @@ fn sic_inner_passes(
     known: &[DecodeResult],
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
+    n_rounds: usize,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None,
+        ap_hint, None, n_rounds,
     )
     .0
 }
 
 /// Like [`sic_inner_passes`] but also accepts a `precomputed_fft` cache
-/// (reused only on pass 0, and only when `residual` has not yet been
+/// (reused only on round 0, and only when `residual` has not yet been
 /// mutated by a subtraction the caller did before calling in — passing
 /// `Some(_)` alongside an already-subtracted `residual` would silently
 /// mismatch the cache against the audio it's meant to describe) and
-/// returns the pass-0 cache alongside the results, so a follow-up
+/// returns the round-0 cache alongside the results, so a follow-up
 /// pipelined call can reuse it in turn. This is the fix for issue #191:
 /// previously only the (dead-code, zero-caller)
 /// `decode_frame_subtract_with_known_and_ap` had *any* cache-reuse path,
-/// and it used its own unfixed flat-3-pass engine rather than this
-/// (shared by both `.flat()` and `.staged()`) one.
+/// and it used its own unfixed flat-3-round engine rather than this
+/// (shared by both `.sic_rounds()` and `.sic_early()`) one.
+///
+/// `n_rounds` — upper bound on SIC rounds, expected 1..=3
+/// (`DecodeRequest::sic_rounds` already clamps to this range for the
+/// `.sic_rounds()` path; checkpoint callers always pass `3`).
 #[allow(clippy::too_many_arguments)]
 fn sic_inner_passes_with_cache(
     residual: &mut [i16],
@@ -491,6 +501,7 @@ fn sic_inner_passes_with_cache(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
+    n_rounds: usize,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -505,7 +516,7 @@ fn sic_inner_passes_with_cache(
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
 
     let mut prev_total: usize = 0;
-    for ipass in 0..3 {
+    for ipass in 0..n_rounds {
         if ipass >= 1 && all_results.len() == prev_total {
             break;
         }
@@ -704,10 +715,10 @@ fn decode_frame_subtract_staged_with_ap_inner(
 
     // Buffers shorter than checkpoint A can't be staged meaningfully —
     // there's no "early, incomplete" window smaller than the whole thing.
-    // Must call the *flat* fallback (`flat_sic_inner`), not `.staged()`
+    // Must call the *flat* fallback (`flat_sic_inner`), not `.sic_early()`
     // itself — that dispatches to this very function (issue #180), so
     // calling it here would recurse indefinitely (stack overflow, caught
-    // by `staged_with_ap_silence_shape`).
+    // by `sic_early_with_ap_silence_shape`).
     let _ = freq_hint;
     if audio.len() < A_SAMPLES {
         let (r, _) = flat_sic_inner(
@@ -722,6 +733,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             eq_mode,
             ap_hint,
             None,
+            3,
         );
         return (r, audio.to_vec());
     }
@@ -756,6 +768,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         &[],
         eq_mode,
         ap_hint,
+        3,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -784,6 +797,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             eq_mode,
             ap_hint,
             None,
+            3,
         );
         return (r, audio.to_vec());
     }
@@ -846,6 +860,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         &early_results,
         eq_mode,
         ap_hint,
+        3,
     );
 
     let mut all_results = early_results;
@@ -970,15 +985,15 @@ impl FrameDecodable for Ft8 {
     }
 }
 
-impl SupportsFlatSic for Ft8 {
+impl SupportsSicRounds for Ft8 {
     fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
-        // Subtract caller-supplied `known` before pass 0, same rationale
-        // as `SupportsStagedSic::__staged_sic` below: without this, a
+        // Subtract caller-supplied `known` before round 0, same rationale
+        // as `SupportsSicEarly::__staged_sic` below: without this, a
         // strong `known` carrier continues to mask weaker signals
         // throughout the SIC loop (the exact issue #191 bug, previously
         // only reachable through the deleted, unfixed
         // `decode_frame_subtract_with_known_and_ap`). `precomputed_fft`
-        // can only be trusted for pass 0 once `known` is empty — reusing
+        // can only be trusted for round 0 once `known` is empty — reusing
         // it after this subtraction would silently mismatch the cache
         // against the now-modified audio.
         if req.known.is_empty() {
@@ -994,6 +1009,7 @@ impl SupportsFlatSic for Ft8 {
                 req.eq_mode,
                 req.ap_hint,
                 req.fft_cache.as_ref().map(FftCache::as_slice),
+                req.sic_rounds,
             );
             DecodeOutcome { results, fft_cache }
         } else {
@@ -1013,27 +1029,28 @@ impl SupportsFlatSic for Ft8 {
                 req.eq_mode,
                 req.ap_hint,
                 None,
+                req.sic_rounds,
             );
             DecodeOutcome { results, fft_cache }
         }
     }
 }
 
-impl SupportsStagedSic for Ft8 {
+impl SupportsSicEarly for Ft8 {
     /// The issue #191 fix: `decode_frame_subtract_with_known_and_ap` used
     /// to be the *only* entry point accepting `known`/`precomputed_fft`,
-    /// and it ran its own unfixed flat-3-pass engine instead of the
+    /// and it ran its own unfixed flat-3-round engine instead of the
     /// staged checkpoint one — missing every SIC-quality improvement
     /// (issue #178/#179/#180) landed since. `known` is now honoured by
-    /// *this* (staged) path directly: subtracted from the audio before
-    /// checkpoint A runs, so all three checkpoints see the cleaned
+    /// *this* (early-decode) path directly: subtracted from the audio
+    /// before checkpoint A runs, so all three checkpoints see the cleaned
     /// residual, then deduped from the final results.
     ///
     /// `precomputed_fft` is deliberately not reused here: every
     /// checkpoint operates on a truncated/zero-tailed buffer, never on
     /// the full original audio the cache was built from, so reusing it
-    /// would silently mismatch. (It *is* reused by [`SupportsFlatSic`]'s
-    /// impl above, whose single full-buffer pass 0 has the matching
+    /// would silently mismatch. (It *is* reused by [`SupportsSicRounds`]'s
+    /// impl above, whose single full-buffer round 0 has the matching
     /// shape.) Recomputing here is always correct, just not free.
     fn __staged_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
         // `subtract_signal_lpf_refine_dt`, not the plain single-shot
@@ -1080,7 +1097,7 @@ impl SupportsStagedSic for Ft8 {
 /// |---|---|---|---|
 /// | this tier | `D1` | `D2` | `D3` |
 /// | OSD | off | on | on |
-/// | SIC | `.flat()` | `.staged()` | `.staged()` |
+/// | SIC | `.sic_rounds(2)` | `.sic_early()` | `.sic_early()` |
 /// | AP | — | — | `.ap_hint()` if supplied |
 ///
 /// Measured on `qso3_busy.wav` (this host, real local `jt9 -8 -dN`
@@ -1088,19 +1105,26 @@ impl SupportsStagedSic for Ft8 {
 ///
 /// | | jt9 | mfsk-core |
 /// |---|---|---|
-/// | D1 | 14 decodes / 370ms | 14 decodes / 237ms |
+/// | D1 | 14 decodes / 370ms | *(needs remeasurement — see below)* |
 /// | D2 | 19 decodes / 1040ms | 22 decodes / 1078ms |
 /// | D3 | 22 decodes / 2110ms | 22 decodes / 2991ms |
 ///
-/// jt9 `-d1` still runs SIC (`npass=2` vs. 3 for `-d2`/`-d3`,
-/// `ft8_decode.f90:172-173`) and jt9's own `ndepth==1` branch skips
+/// The mfsk-core D1 number above (`14 decodes / 237ms`, superseded)
+/// was measured before issue #218's `.sic_rounds(2)` fix — `D1`
+/// previously ran `.flat()`'s full 3 rounds (no round-count knob
+/// existed), not jt9 `-d1`'s actual `npass=2`. Re-measure against
+/// `qso3_busy.wav` once `.sic_rounds(2)` lands; expect fewer decodes
+/// and lower latency than the superseded number, not identical.
+///
+/// jt9 `-d1` runs SIC with `npass=2` (vs. 3 for `-d2`/`-d3`,
+/// `ft8_decode.f90:172-173`), and jt9's own `ndepth==1` branch skips
 /// the checkpoint-replay staging entirely (`ft8_decode.f90:97-103`) —
-/// structurally that's `.flat()` (single full-buffer SIC pass-set),
-/// not `.staged()`. `D2`/`D3` both go through checkpoint staging in
-/// jt9 (`npass=3` either way), so both map to `.staged()`. Neither
-/// `.flat()` nor `.staged()` exposes a 2-vs-3-pass knob, so `D1`'s
-/// pass count doesn't exactly match jt9's; lower `max_cand` if a
-/// closer time-budget match matters for your comparison.
+/// structurally that's `.sic_rounds()` (single full-buffer SIC
+/// round-set), not `.sic_early()`. `D2`/`D3` both go through checkpoint
+/// staging in jt9 (`npass=3` either way), so both map to
+/// `.sic_early()`. `D1` uses `.sic_rounds(2)` to match jt9 `-d1`'s
+/// `npass=2` exactly (previously this crate had no round-count knob at
+/// all, so `D1` ran the full 3 rounds — see issue #218).
 ///
 /// jt9 also varies `syncmin` per tier (1.6 for d1/d2, 1.3 for d3,
 /// `ft8_decode.f90:176-177`) and OSD *strength* is not just on/off in
@@ -1135,8 +1159,8 @@ impl<'a> DecodeRequest<'a, Ft8> {
         let mut req = Self::new(audio, freq_min, freq_max, sync_min, max_cand)
             .osd(!matches!(tier, WsjtxDepth::D1));
         req = match tier {
-            WsjtxDepth::D1 => req.flat(),
-            WsjtxDepth::D2 | WsjtxDepth::D3 => req.staged(),
+            WsjtxDepth::D1 => req.sic_rounds(2),
+            WsjtxDepth::D2 | WsjtxDepth::D3 => req.sic_early(),
         };
         if let (WsjtxDepth::D3, Some(ap)) = (tier, ap) {
             req = req.ap_hint(ap);
@@ -1209,37 +1233,37 @@ mod tests {
         assert!(!out1.fft_cache.is_empty());
     }
 
-    /// Compile-shape: `.staged()` accepts an AP hint and returns no
+    /// Compile-shape: `.sic_early()` accepts an AP hint and returns no
     /// decodes on silence.
     #[test]
-    fn staged_with_ap_silence_shape() {
+    fn sic_early_with_ap_silence_shape() {
         let audio = vec![0i16; 15 * 12_000];
         let ap = ApHint::new().with_call1("CQ").with_call2("W7VV");
 
         let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
             .osd(false)
-            .staged()
+            .sic_early()
             .decode()
             .results;
         assert!(r_none.is_empty());
 
         let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
             .osd(false)
-            .staged()
+            .sic_early()
             .ap_hint(&ap)
             .decode()
             .results;
         assert!(r_some.is_empty());
     }
 
-    /// Compile-shape: `.staged().known(&known).fft_cache(cache)` accepts
+    /// Compile-shape: `.sic_early().known(&known).fft_cache(cache)` accepts
     /// the full parameter set (known list + FFT cache + AP hint) and
     /// returns no decodes on silence — the issue #191 combination that
     /// used to be unreachable (only the buggy, now-deleted flat-only
     /// `decode_frame_subtract_with_known_and_ap` accepted `known`+cache
     /// at all).
     #[test]
-    fn staged_known_and_cache_silence_shape() {
+    fn sic_early_known_and_cache_silence_shape() {
         let audio = vec![0i16; 15 * 12_000];
         let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
         let known: Vec<DecodeResult> = Vec::new();
@@ -1250,7 +1274,7 @@ mod tests {
 
         let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
             .osd(false)
-            .staged()
+            .sic_early()
             .known(&known)
             .fft_cache(cache.clone())
             .decode()
@@ -1259,7 +1283,7 @@ mod tests {
 
         let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
             .osd(false)
-            .staged()
+            .sic_early()
             .known(&known)
             .fft_cache(cache)
             .ap_hint(&ap)
@@ -1281,9 +1305,9 @@ mod tests {
     /// runs. Without the fix, residual energy at f0 ≈ original input
     /// energy at f0. With the fix, it drops by an order of magnitude.
     /// Exercises the same `subtract_signal_lpf` + staged-checkpoint path
-    /// `SupportsStagedSic::__staged_sic` uses (see its doc comment).
+    /// `SupportsSicEarly::__staged_sic` uses (see its doc comment).
     #[test]
-    fn staged_subtracts_known_before_checkpoint_a() {
+    fn sic_early_subtracts_known_before_checkpoint_a() {
         use crate::ft8::wave_gen::{message_to_tones, tones_to_i16};
         use crate::msg::wsjt77::pack77;
 
@@ -1342,7 +1366,7 @@ mod tests {
         // Restrict the band to a 2 Hz window so the DFT loop stays cheap.
         let e_before = band_energy(&audio, f0 - 1.0, f0 + 1.0);
 
-        // Mirrors `SupportsStagedSic::__staged_sic`'s own upfront
+        // Mirrors `SupportsSicEarly::__staged_sic`'s own upfront
         // subtraction step exactly (same `subtract_signal_lpf` call),
         // then reuses the `_debug_residual` shim to observe the result.
         let mut audio_clean = audio.clone();
@@ -1377,8 +1401,8 @@ mod tests {
     }
 
     /// Regression test for the `eq_mode`/SIC gap (webft8 sniper-mode
-    /// investigation, 2026-07-26): `.flat()`/`.staged()` used to silently
-    /// hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
+    /// investigation, 2026-07-26): `.sic_rounds()`/`.sic_early()` used to
+    /// silently hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
     /// `DecodeRequest::eq_mode()` entirely for both SIC strategies even
     /// though the builder method compiled and looked like it worked.
     ///
@@ -1387,12 +1411,12 @@ mod tests {
     /// same shape `equalizer::tests::edge_attenuation_corrected` uses to
     /// validate the correction math), applied to the raw audio via an
     /// FFT-domain multiply so it exercises the real per-candidate decode
-    /// path, not just the isolated equalizer unit. `.staged()` (this test)
-    /// and `.flat()` share the same `sic_inner_passes` engine this fix
-    /// touches, so covering `.staged()` here is sufficient for both.
+    /// path, not just the isolated equalizer unit. `.sic_early()` (this test)
+    /// and `.sic_rounds()` share the same `sic_inner_passes` engine this fix
+    /// touches, so covering `.sic_early()` here is sufficient for both.
     ///
     /// Asserts `eq_mode(Local)` decodes a weak, edge-distorted signal that
-    /// `eq_mode(Off)` misses through the exact same `.staged()` call — the
+    /// `eq_mode(Off)` misses through the exact same `.sic_early()` call — the
     /// same shape as the `docs/bench.md`-style "BPF edge + AWGN" scenario,
     /// just self-contained (no external BPF/simulator crate). Fails again
     /// if the hardcoded `EqMode::Off` inside `sic_inner_passes` regresses.
@@ -1497,8 +1521,8 @@ mod tests {
     }
 
     /// Regression test for the `eq_mode`/SIC gap (webft8 sniper-mode
-    /// investigation, 2026-07-26): `.flat()`/`.staged()` used to silently
-    /// hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
+    /// investigation, 2026-07-26): `.sic_rounds()`/`.sic_early()` used to
+    /// silently hardcode `EqMode::Off` inside `sic_inner_passes`, dropping
     /// `DecodeRequest::eq_mode()` entirely for both SIC strategies even
     /// though the builder method compiled and looked like it worked.
     ///
@@ -1507,10 +1531,10 @@ mod tests {
     /// 1000 Hz), calibrated against a real ground-truth sweep to a target
     /// SNR (-22 dB, WSJT-X convention) where `eq_mode(Off)` reliably
     /// misses the signal and `eq_mode(Local)` reliably recovers it through
-    /// `.staged()` — proving the fix actually reaches the SIC engine, not
+    /// `.sic_early()` — proving the fix actually reaches the SIC engine, not
     /// just that the builder method compiles.
     #[test]
-    fn staged_eq_mode_reaches_sic_engine() {
+    fn sic_early_eq_mode_reaches_sic_engine() {
         use crate::ft8::wave_gen::{message_to_tones, tones_to_f32};
         use crate::msg::wsjt77::pack77;
 
@@ -1579,7 +1603,7 @@ mod tests {
                 10,
             )
             .eq_mode(eq)
-            .staged()
+            .sic_early()
             .decode()
             .results;
             results.into_iter().find(|r| r.message77() == m77)
@@ -1593,7 +1617,7 @@ mod tests {
         assert!(
             find(EqMode::Local).is_some(),
             "expected eq_mode(Local) to decode the same BPF-edge signal \
-             that eq_mode(Off) misses through .staged() — eq_mode is not \
+             that eq_mode(Off) misses through .sic_early() — eq_mode is not \
              reaching the SIC engine"
         );
     }
@@ -3029,7 +3053,7 @@ mod tests {
         let ap = ApHint::new().with_call1("K1JT").with_call2("HA0DU");
         let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.3, 50)
             .strictness(DecodeStrictness::Normal)
-            .staged()
+            .sic_early()
             .ap_hint(&ap)
             .decode()
             .results;
@@ -3086,13 +3110,13 @@ mod tests {
         let path = std::path::Path::new(manifest).join("../embedded-poc/assets/qso3_busy.wav");
         let audio = load_wav_i16(&path).expect("load qso3_busy.wav");
 
-        // Blind decode only (no AP hint) -- staged SIC (`.staged()`) has
+        // Blind decode only (no AP hint) -- staged SIC (`.sic_early()`) has
         // been the default since #180/#183.
         for rep in 0..3 {
             let t0 = std::time::Instant::now();
             let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
                 .strictness(DecodeStrictness::Normal)
-                .staged()
+                .sic_early()
                 .decode()
                 .results;
             let elapsed = t0.elapsed();

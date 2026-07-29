@@ -23,7 +23,7 @@ fn check_decode_frame_subtract_full_qso3() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .decode()
         .results;
     let msgs: BTreeSet<String> = results

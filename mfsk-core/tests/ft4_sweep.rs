@@ -884,7 +884,7 @@ fn ft4_diag_candidate_cost_split() {
                 mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
                     &audio, 100.0, 2700.0, 0.05, 2000,
                 )
-                .flat()
+                .sic_rounds(3)
                 .decode()
                 .results;
             let dt = t0.elapsed();

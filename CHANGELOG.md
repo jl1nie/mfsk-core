@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset + `DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()` (#218, breaking)
 
 ### Added
 
@@ -861,6 +861,57 @@
   own doc comment).
 
 ### Changed
+
+- **`DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()`,
+  `SupportsFlatSic`/`SupportsStagedSic` → `SupportsSicRounds`/
+  `SupportsSicEarly`** (issue #218, breaking). The flat-SIC engine's
+  round count was hardcoded to 3 (`for ipass in 0..3` in
+  `sic_inner_passes_with_cache`, mirroring WSJT-X's `do ipass=1,npass`
+  with `npass` fixed) with no caller-tunable upper bound — the exact gap
+  `WsjtxDepth`'s own doc comment flagged: jt9 `-d1` runs SIC with
+  `npass=2` (vs. 3 for `-d2`/`-d3`), but neither `.flat()` nor
+  `.staged()` exposed a 2-vs-3-round knob, so `WsjtxDepth::D1` silently
+  ran the full 3 rounds instead of matching jt9 `-d1` exactly. Round
+  count is now a required argument on the strategy-selecting method
+  itself (`.sic_rounds(n)`, clamped 1..=3 — WSJT-X's own `npass`/`nsp`
+  never exceeds 3) rather than an independently-settable field, so
+  `.sic_rounds(_).sic_early()` — where the round count would be
+  silently ignored by the early-decode strategy — is structurally
+  unwritable rather than a compiling no-op. `WsjtxDepth::D1` now uses
+  `.sic_rounds(2)`, closing the gap; `D2`/`D3` use `.sic_early()`
+  (checkpoint structure is fixed at 3, not exposed as a knob).
+
+  Renamed rather than kept as an additive alias: `flat`/`staged`
+  described mfsk-core's own internal buffer-structure axis (single
+  full buffer vs. checkpoint-replayed growing prefixes), not
+  self-descriptive at a bare call site and not WSJT-X's own vocabulary.
+  `sic_early` borrows WSJT-X's actual term for the checkpoint mechanism
+  (`ndec_early`/`MAX_EARLY` in `ft8_decode.f90`, checkpointed at
+  `nzhsym` = 41/47/50 out of 79 symbols); `sic_rounds` avoids `pass`,
+  which is overloaded in WSJT-X's own source — FT8's `ft8_decode.f90`
+  `ipass`/`npass` *is* the subtraction loop, but FT4's `ft4_decode.f90`
+  reserves `ipass`/`npasses` for an unrelated AP-hint-variant loop
+  inside a single decode attempt, using `isp`/`nsp` for the actual
+  subtraction loop instead. `SupportsFlatSic`/`SupportsStagedSic` were
+  renamed alongside the methods they gate so a trait-bound compile
+  error names something a reader can connect back to the method they
+  called.
+
+  FT4's flat-SIC engine (`engine::pipeline::decode_frame_subtract`)
+  gained the same `.sic_rounds(n)` knob — its progressive-`sync_min`-
+  relaxation pass array (`&[1.0, 0.75, 0.5]`, mfsk-core's own
+  pre-migration design, not WSJT-X's) is now sliced to `n` rounds
+  rather than always iterated in full. FT4's SIC still isn't
+  WSJT-X-faithful in its own right (`ft4_decode.f90` uses a **fixed**
+  `syncmin=1.18` across rounds, the same fixed-threshold design FT8
+  already migrated to — see `flat_sic_inner`'s doc comment) — tracked
+  as a separate follow-up, out of scope here.
+
+  `.sic_rounds(3)` verified byte-identical to the pre-rename `.flat()`
+  default on `qso3_busy.wav` (20/20 matching decodes, checked against a
+  clean pre-#218 `main` worktree); new `tests/ft8_sic_rounds_recall.rs`
+  locks in both that golden and a `sic_rounds(1) ⊆ sic_rounds(2) ⊆
+  sic_rounds(3)` monotonicity invariant (measured 13/19/20 decodes).
 
 - **`DecodeRequest`/`SniperRequest::depth(DecodeDepth)` → `.osd(bool)`
   (breaking).** `LlrEffort` was a dead lever on host — its own doc

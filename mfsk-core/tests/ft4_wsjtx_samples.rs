@@ -111,7 +111,7 @@ fn ft4_wsjtx_sample_recall_vs_golden() {
     // replaced described the old search's redundancy-driven budget,
     // now obsolete.)
     let decodes = DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 0.05, 100)
-        .flat()
+        .sic_rounds(3)
         .decode()
         .results;
 

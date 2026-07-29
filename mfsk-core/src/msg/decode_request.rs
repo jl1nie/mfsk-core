@@ -5,7 +5,7 @@
 //! `decode_sniper*` suffix-exploded function families (31 public functions
 //! across the three protocols, before this module) into two generic
 //! builder types, `P: FrameDecodable` capability-gated so invalid
-//! combinations (e.g. staged SIC on FT4, which has no such engine) are
+//! combinations (e.g. `.sic_early()` on FT4, which has no such engine) are
 //! compile errors rather than runtime no-ops or silent panics.
 //!
 //! Lives in `msg` rather than `engine` because [`ApHint`] (a `msg::ap` type)
@@ -19,9 +19,9 @@
 //! (`engine::pipeline`/`msg::pipeline_ap`) FT4/FST4 share. `DecodeRequest`/
 //! `SniperRequest` don't need to know which: `decode()` just calls the
 //! dispatch function stashed in `self.strategy` (set by whichever gated
-//! builder method — `new`, `.flat()`, `.staged()` — was actually callable
-//! for this `P`, so an unsupported combination is a compile error, not a
-//! reachable runtime state).
+//! builder method — `new`, `.sic_rounds()`, `.sic_early()` — was actually
+//! callable for this `P`, so an unsupported combination is a compile
+//! error, not a reachable runtime state).
 
 use alloc::vec::Vec;
 
@@ -54,23 +54,25 @@ pub trait FrameDecodable: Protocol {
         Self: Sized;
 }
 
-/// Protocols with a calibrated flat 3-pass SIC (fixed sync_min, sequential
-/// subtract). FST4 has no `SubtractCfg` yet — enabling it there is new
-/// numerical work requiring WSJT-X-reference calibration, not a refactor,
-/// so it's deliberately not implemented here (tracked separately, issue
-/// #193).
-pub trait SupportsFlatSic: FrameDecodable {
+/// Protocols with a calibrated flat SIC (fixed sync_min, sequential
+/// subtract, up to 3 rounds — see [`DecodeRequest::sic_rounds`]). FST4 has
+/// no `SubtractCfg` yet — enabling it there is new numerical work requiring
+/// WSJT-X-reference calibration, not a refactor, so it's deliberately not
+/// implemented here (tracked separately, issue #193).
+pub trait SupportsSicRounds: FrameDecodable {
     #[doc(hidden)]
     fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self>
     where
         Self: Sized;
 }
 
-/// Protocols with the jt9.f90 checkpoint-emulation staged SIC (issue
-/// #180). FT8 only today. Gated on capability, not identity — a future
+/// Protocols with the jt9.f90 checkpoint-emulation early decode (issue
+/// #180; WSJT-X's own name for this is `ndec_early`/`MAX_EARLY` in
+/// `ft8_decode.f90` — checkpointed at `nzhsym` = 41/47/50 out of 79
+/// symbols). FT8 only today. Gated on capability, not identity — a future
 /// protocol implementing the same checkpoint architecture just adds an
 /// `impl` here, no trait redesign needed (see issue #192).
-pub trait SupportsStagedSic: FrameDecodable {
+pub trait SupportsSicEarly: FrameDecodable {
     #[doc(hidden)]
     fn __staged_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self>
     where
@@ -119,6 +121,12 @@ pub struct DecodeRequest<'a, P: FrameDecodable> {
     pub(crate) ap_hint: Option<&'a ApHint>,
     pub(crate) known: &'a [P::DecodeResult],
     pub(crate) fft_cache: Option<FftCache>,
+    /// Only consulted by [`SupportsSicRounds::__flat_sic`] (set via
+    /// [`DecodeRequest::sic_rounds`]); ignored by every other strategy,
+    /// including [`SupportsSicEarly::__staged_sic`], whose checkpoint
+    /// structure is fixed. Not independently settable — see
+    /// `sic_rounds`'s doc comment for why.
+    pub(crate) sic_rounds: usize,
     strategy: fn(&DecodeRequest<'a, P>) -> DecodeOutcome<P>,
 }
 
@@ -145,6 +153,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
             ap_hint: None,
             known: &[],
             fft_cache: None,
+            sic_rounds: 3,
             strategy: P::__single_pass,
         }
     }
@@ -206,22 +215,39 @@ impl<'a, P: SupportsWideBandAp> DecodeRequest<'a, P> {
     }
 }
 
-impl<'a, P: SupportsFlatSic> DecodeRequest<'a, P> {
-    /// Flat 3-pass SIC: fixed `sync_min` across all passes, sequential
-    /// subtract (each accepted decode is subtracted before the next
-    /// candidate in the same pass is tried).
-    pub fn flat(mut self) -> Self {
+impl<'a, P: SupportsSicRounds> DecodeRequest<'a, P> {
+    /// One round = coarse-sync + per-candidate decode + subtract, over the
+    /// (shrinking) residual buffer. `n` is clamped to 1..=3 — WSJT-X's own
+    /// `npass`/`nsp` never exceeds 3. Fixed `sync_min` across rounds,
+    /// sequential subtract (each accepted decode is subtracted before the
+    /// next candidate in the same round is tried).
+    ///
+    /// Corresponds to WSJT-X FT8 `ft8_decode.f90:176` `ipass`/`npass` and
+    /// FT4 `ft4_decode.f90` `isp`/`nsp` — **not** FT4's separate
+    /// `ipass`/`npasses` AP-hint-variant loop inside a single candidate's
+    /// decode attempt, which is an unrelated concept that happens to reuse
+    /// the same word in WSJT-X's own source.
+    ///
+    /// `n` is folded into strategy selection (rather than an independently
+    /// settable field) so `.sic_rounds(_).sic_early()` can't compile a
+    /// combination where the round count is silently ignored — see issue
+    /// #218 for the design discussion.
+    pub fn sic_rounds(mut self, n: usize) -> Self {
         self.strategy = P::__flat_sic;
+        self.sic_rounds = n.clamp(1, 3);
         self
     }
 }
 
-impl<'a, P: SupportsStagedSic> DecodeRequest<'a, P> {
-    /// jt9.f90 checkpoint-emulation staged SIC (issue #180) — decodes
+impl<'a, P: SupportsSicEarly> DecodeRequest<'a, P> {
+    /// WSJT-X's early decode (`ft8_decode.f90`'s `ndec_early`/`MAX_EARLY`,
+    /// checkpointed at `nzhsym` = 41/47/50 out of 79 symbols): decodes
     /// progressively larger audio prefixes, subtracting earlier
     /// checkpoints' signals before the next, faithfully reproducing
-    /// WSJT-X's disk-decode architecture. Recall superset of `.flat()`.
-    pub fn staged(mut self) -> Self {
+    /// WSJT-X's disk-decode architecture. Recall superset of
+    /// `.sic_rounds()`. Checkpoint structure (A/B/C) is fixed — no
+    /// tunable count, matching jt9 `-d2`/`-d3`'s `npass=3` either way.
+    pub fn sic_early(mut self) -> Self {
         self.strategy = P::__staged_sic;
         self
     }

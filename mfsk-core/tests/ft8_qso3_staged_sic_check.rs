@@ -91,11 +91,11 @@ const FLAT_PASS_GOLDEN: &[&str] = &[
 use common::load_wav_i16;
 
 #[test]
-fn staged_sic_matches_flat_pass_golden_floor() {
+fn sic_early_matches_sic_rounds_golden_floor() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .decode()
         .results;
     let msgs: BTreeSet<String> = results
@@ -134,8 +134,8 @@ fn staged_sic_matches_flat_pass_golden_floor() {
 
 /// Issue #191's actual reported bug, end to end: a two-phase pipelined
 /// caller (WebFT8's `decode_phase1`/`decode_phase2` shape) that hands a
-/// Phase-1 result set + FFT cache into a Phase-2 `.staged()` call must
-/// get the *same* staged-checkpoint engine `staged_sic_matches_flat_pass_golden_floor`
+/// Phase-1 result set + FFT cache into a Phase-2 `.sic_early()` call must
+/// get the *same* staged-checkpoint engine `sic_early_matches_sic_rounds_golden_floor`
 /// above exercises directly — not a separate, unfixed flat-only path.
 ///
 /// Before #191, `known`/`precomputed_fft` were only accepted by
@@ -143,11 +143,11 @@ fn staged_sic_matches_flat_pass_golden_floor() {
 /// none of issue #178/#179/#180's SIC-quality fixes — structurally
 /// unable to find `CQ DX DL8YHR JO41` regardless of `known`/cache
 /// content (its checkpoint-free structure is exactly what #180's doc
-/// comment above explains DL8YHR needs). `SupportsStagedSic`'s
+/// comment above explains DL8YHR needs). `SupportsSicEarly`'s
 /// `.known()`/`.fft_cache()` handling now routes through the same
-/// engine as the plain `.staged()` case, so this combination finds it.
+/// engine as the plain `.sic_early()` case, so this combination finds it.
 #[test]
-fn staged_with_known_and_cache_finds_dl8yhr() {
+fn sic_early_with_known_and_cache_finds_dl8yhr() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
 
     // Phase 1: a plain single-pass wide-band decode (no SIC) — the
@@ -174,7 +174,7 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
     // exact combination issue #191 reported as unreachable.
     let phase2 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .known(&phase1.results)
         .fft_cache(phase1.fft_cache)
         .decode();

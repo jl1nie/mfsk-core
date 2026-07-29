@@ -47,7 +47,7 @@ fn try_context(label: &str, audio: &[i16], mycall: &str, hiscall: &str) -> BTree
     // Multi-pass + SIC + AP — the strongest AP-on recovery path we have.
     let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .ap_hint(&ap)
         .decode()
         .results;
@@ -111,7 +111,7 @@ fn try_context_for(label: &str, audio: &[i16], mycall: &str, hiscall: &str, targ
     let ap = ApHint::new().with_call1(mycall).with_call2(hiscall);
     let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .ap_hint(&ap)
         .decode()
         .results;

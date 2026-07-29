@@ -39,7 +39,7 @@ fn correlate_sync_cv_with_iteration_convergence() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let mut results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .decode()
         .results;
     results.sort_by(|a, b| a.freq_hz.partial_cmp(&b.freq_hz).unwrap());
