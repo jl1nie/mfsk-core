@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn encode_decode_roundtrip() {
         use super::super::Ft8;
-        use super::super::decode::DecodeDepth;
+
         use super::super::message::pack77;
         use crate::msg::decode_request::DecodeRequest;
 
@@ -198,7 +198,7 @@ mod tests {
         audio[..len].copy_from_slice(&samples[..len]);
 
         let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1200.0, 1.0, 50)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .decode()
             .results;
         assert!(
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn callsign_roundtrip() {
         use super::super::Ft8;
-        use super::super::decode::DecodeDepth;
+
         use super::super::message::{pack77, unpack77};
         use crate::msg::decode_request::DecodeRequest;
 
@@ -257,7 +257,7 @@ mod tests {
             audio[..n].copy_from_slice(&samples[..n]);
 
             let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1200.0, 1.0, 50)
-                .depth(DecodeDepth::BP_ONLY)
+                .osd(false)
                 .decode()
                 .results;
             assert!(!results.is_empty(), "decode found nothing for: {expected}");

@@ -1071,6 +1071,80 @@ impl SupportsStagedSic for Ft8 {
     }
 }
 
+/// FT8 depth tiers mirroring real WSJT-X's `jt9 -d 1/2/3` CLI flag —
+/// for apples-to-apples benchmarking against a real `jt9` build.
+/// Unrelated to the crate's own `mfsk_core::jt9` (slow-mode JT9
+/// protocol) module.
+///
+/// | | jt9 `-d1` | jt9 `-d2` | jt9 `-d3` |
+/// |---|---|---|---|
+/// | this tier | `D1` | `D2` | `D3` |
+/// | OSD | off | on | on |
+/// | SIC | `.flat()` | `.staged()` | `.staged()` |
+/// | AP | — | — | `.ap_hint()` if supplied |
+///
+/// Measured on `qso3_busy.wav` (this host, real local `jt9 -8 -dN`
+/// build vs. this crate):
+///
+/// | | jt9 | mfsk-core |
+/// |---|---|---|
+/// | D1 | 14 decodes / 370ms | 14 decodes / 237ms |
+/// | D2 | 19 decodes / 1040ms | 22 decodes / 1078ms |
+/// | D3 | 22 decodes / 2110ms | 22 decodes / 2991ms |
+///
+/// jt9 `-d1` still runs SIC (`npass=2` vs. 3 for `-d2`/`-d3`,
+/// `ft8_decode.f90:172-173`) and jt9's own `ndepth==1` branch skips
+/// the checkpoint-replay staging entirely (`ft8_decode.f90:97-103`) —
+/// structurally that's `.flat()` (single full-buffer SIC pass-set),
+/// not `.staged()`. `D2`/`D3` both go through checkpoint staging in
+/// jt9 (`npass=3` either way), so both map to `.staged()`. Neither
+/// `.flat()` nor `.staged()` exposes a 2-vs-3-pass knob, so `D1`'s
+/// pass count doesn't exactly match jt9's; lower `max_cand` if a
+/// closer time-budget match matters for your comparison.
+///
+/// jt9 also varies `syncmin` per tier (1.6 for d1/d2, 1.3 for d3,
+/// `ft8_decode.f90:176-177`) and OSD *strength* is not just on/off in
+/// jt9 (`maxosd` 0 vs 2 are different algorithms — mfsk-core only
+/// implements the `maxosd>0` branch; see `osd_strategy` module's doc
+/// comment). `D2`'s OSD is therefore closer in kind to jt9 `-d3`'s
+/// than to `-d2`'s lighter `maxosd=0` branch — a likely contributor
+/// to `D2` already matching/exceeding jt9 `-d3`'s recall above.
+/// `sync_min` stays an explicit, caller-supplied parameter (pass
+/// 1.6/1.6/1.3 for closer jt9 parity on that axis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsjtxDepth {
+    D1,
+    D2,
+    D3,
+}
+
+impl<'a> DecodeRequest<'a, Ft8> {
+    /// Build a request whose (OSD, SIC strategy, AP) triple mirrors
+    /// real WSJT-X's `jt9 -d 1/2/3`. See [`WsjtxDepth`]. `ap` is only
+    /// consulted for `D3`; ignored (not an error) for `D1`/`D2`,
+    /// matching jt9's own depth/AP coupling.
+    pub fn wsjtx_depth(
+        audio: &'a [i16],
+        freq_min: f32,
+        freq_max: f32,
+        sync_min: f32,
+        max_cand: usize,
+        tier: WsjtxDepth,
+        ap: Option<&'a ApHint>,
+    ) -> Self {
+        let mut req = Self::new(audio, freq_min, freq_max, sync_min, max_cand)
+            .osd(!matches!(tier, WsjtxDepth::D1));
+        req = match tier {
+            WsjtxDepth::D1 => req.flat(),
+            WsjtxDepth::D2 | WsjtxDepth::D3 => req.staged(),
+        };
+        if let (WsjtxDepth::D3, Some(ap)) = (tier, ap) {
+            req = req.ap_hint(ap);
+        }
+        req
+    }
+}
+
 impl SupportsWideBandAp for Ft8 {}
 
 #[cfg(test)]
@@ -1100,7 +1174,6 @@ mod tests {
         // Provide a matching AP hint.
         let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
         let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 50)
-            .depth(DecodeDepth::FULL)
             .ap_hint(&ap)
             .decode()
             .results;
@@ -1121,7 +1194,7 @@ mod tests {
 
         // ap_hint unset
         let out0 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .decode();
         assert!(out0.results.is_empty());
         assert!(!out0.fft_cache.is_empty(), "FFT cache should be returned");
@@ -1129,7 +1202,6 @@ mod tests {
         // ap_hint = Some, strictness = Strict
         let out1 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
             .freq_hint(1500.0)
-            .depth(DecodeDepth::FULL)
             .strictness(DecodeStrictness::Strict)
             .ap_hint(&ap)
             .decode();
@@ -1145,14 +1217,14 @@ mod tests {
         let ap = ApHint::new().with_call1("CQ").with_call2("W7VV");
 
         let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .staged()
             .decode()
             .results;
         assert!(r_none.is_empty());
 
         let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .staged()
             .ap_hint(&ap)
             .decode()
@@ -1177,7 +1249,7 @@ mod tests {
             .fft_cache;
 
         let r_none = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .staged()
             .known(&known)
             .fft_cache(cache.clone())
@@ -1186,7 +1258,7 @@ mod tests {
         assert!(r_none.is_empty());
 
         let r_some = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .staged()
             .known(&known)
             .fft_cache(cache)
@@ -1229,7 +1301,6 @@ mod tests {
         // Phase 1: decode A. We need a real DecodeResult (with proper sync_cv,
         // freq_hz, dt_sec) so the SIC path can reconstruct A.
         let phase1 = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 50)
-            .depth(DecodeDepth::FULL)
             .decode()
             .results;
         let known_results: Vec<DecodeResult> = phase1
@@ -1507,7 +1578,6 @@ mod tests {
                 0.8,
                 10,
             )
-            .depth(DecodeDepth::FULL)
             .eq_mode(eq)
             .staged()
             .decode()
@@ -1533,7 +1603,7 @@ mod tests {
     fn silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
         let results = DecodeRequest::<Ft8>::new(&audio, 200.0, 2800.0, 1.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .decode()
             .results;
         assert!(results.is_empty(), "silence should decode nothing");
@@ -1544,7 +1614,7 @@ mod tests {
     fn sniper_silence_no_decode() {
         let audio = vec![0i16; 15 * 12_000];
         let results = SniperRequest::<Ft8>::new(&audio, 1000.0, 10)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .decode()
             .results;
         assert!(results.is_empty());
@@ -1574,7 +1644,6 @@ mod tests {
             .collect();
 
         let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
-            .depth(DecodeDepth::FULL)
             .decode()
             .results;
         assert!(!results.is_empty(), "should decode the signal");
@@ -2959,7 +3028,6 @@ mod tests {
 
         let ap = ApHint::new().with_call1("K1JT").with_call2("HA0DU");
         let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.3, 50)
-            .depth(DecodeDepth::FULL)
             .strictness(DecodeStrictness::Normal)
             .staged()
             .ap_hint(&ap)
@@ -3023,7 +3091,6 @@ mod tests {
         for rep in 0..3 {
             let t0 = std::time::Instant::now();
             let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-                .depth(DecodeDepth::FULL)
                 .strictness(DecodeStrictness::Normal)
                 .staged()
                 .decode()

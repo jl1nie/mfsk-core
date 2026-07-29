@@ -248,7 +248,6 @@
 //! # #[cfg(feature = "ft8")] {
 //! use mfsk_core::ft8::{
 //!     Ft8,
-//!     decode::DecodeDepth,
 //!     wave_gen::{message_to_tones, tones_to_i16},
 //! };
 //! use mfsk_core::msg::decode_request::DecodeRequest;
@@ -275,7 +274,6 @@
 //!     /* sync_min */ 1.0,
 //!     /* max_cand */ 50,
 //! )
-//! .depth(DecodeDepth::FULL)
 //! .decode()
 //! .results;
 //! assert!(!results.is_empty(), "roundtrip must decode");

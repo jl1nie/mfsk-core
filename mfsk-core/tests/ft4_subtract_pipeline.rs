@@ -13,7 +13,6 @@
 //! break self-cancellation still gets caught.
 
 use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
-use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::subtract::{refine_signal_freq, subtract_signal_lpf};
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
@@ -88,7 +87,6 @@ fn subtract_reveals_hidden_ft4_signal() {
 
     // Pass 2 on the residual: must surface the weak signal.
     let pass2 = DecodeRequest::<Ft4>::new(&residual, 100.0, 3000.0, 0.5, 5)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results;
     let saw_weak = pass2.iter().any(|r| r.message77() == weak);

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset
 
 ### Added
 
@@ -99,6 +99,24 @@
   full `DecodeResult` unification (issue #194, FT8's `message77` strips
   CRC bits FT4/FST4's `info` retains — a real semantic difference, not
   just a naming one) are likewise deferred as separate issues.
+
+- **`ft8::decode::WsjtxDepth` / `DecodeRequest::<Ft8>::wsjtx_depth`**
+  — three named tiers (`D1`/`D2`/`D3`) mirroring real WSJT-X's `jt9 -d
+  1/2/3` CLI flag, for apples-to-apples benchmarking against a real
+  `jt9` build. `DecodeDepth` alone (LLR effort + OSD) has no SIC/AP
+  dimension — jt9's real `ndepth` axis (`ft8_decode.f90:168-192`,
+  `ft8b.f90:403-412`) simultaneously varies SIC pass count, `syncmin`,
+  subtract dt-refine, and OSD strength — so this bundles `.osd(...)` +
+  `.flat()`/`.staged()` + `.ap_hint()` into one preset per tier. Local
+  `jt9 -8 -d1/-d2/-d3` measurements on `qso3_busy.wav` (this session):
+  D1 14 decodes/370ms vs. mfsk-core 14/237ms; D2 19/1040ms vs.
+  22/1078ms; D3 22/2110ms vs. 22/2991ms — see the type's own doc
+  comment for the exact tier→builder-method mapping and known
+  limitations (pass-count and OSD-strength don't exactly match jt9's;
+  mfsk-core has no equivalent of jt9's lighter `maxosd=0` OSD branch at
+  all, a separate follow-up). New durable regression test
+  `tests/ft8_wsjtx_depth_ladder.rs` replaces the ad-hoc probes used to
+  derive this.
 
 - **`ft8::decode::decode_frame_subtract_staged` / `_with_ap`** (issue
   #180) — WSJT-X-faithful checkpoint SIC for FT8, ported from
@@ -844,6 +862,24 @@
 
 ### Changed
 
+- **`DecodeRequest`/`SniperRequest::depth(DecodeDepth)` → `.osd(bool)`
+  (breaking).** `LlrEffort` was a dead lever on host — its own doc
+  comment already says the 2-/3-symbol LLR estimates it toggles
+  "empirically add zero extra decodes"; a full-repo grep of every
+  `.depth(...)` builder call site (crate tests, `mfsk-ffi`,
+  `bench/wasm`) found zero cases ever passing `LlrEffort::Minimal`
+  through either builder — it exists solely for `decode_block_into`'s
+  ESP32 power budget (`DecodeDepth::EMBEDDED`). Both builders now
+  hardcode `LlrEffort::Full` internally and expose only the `osd`
+  toggle that callers actually used (`DecodeDepth::FULL`/`BP_ONLY` →
+  `.osd(true)`/`.osd(false)`, default unchanged at `true`).
+  `DecodeDepth` itself is untouched and still required positionally by
+  `decode_block`/`decode_block_into` (the embedded/host-shared
+  function API) and by `mfsk-ffi-ft8`'s C ABI (`MfskDecodeDepth`,
+  unaffected — it's a separate 2-variant `#[repr(C)]` mirror that never
+  crossed the builder boundary). `mfsk-ffi`'s internal `map_depth` helper
+  is renamed `map_osd` (returns `bool`) to match; its C ABI surface is
+  unaffected.
 - **Q65-60B/30A `decode_multi_period_for` sped up ~4×**
   (`q65/rx.rs`, `tests/q65_wsjtx_samples.rs`) — two stacked fixes: (1)
   the fast-fading `b90 × model` sweep (6 combinations) was redundantly

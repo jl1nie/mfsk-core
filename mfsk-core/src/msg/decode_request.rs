@@ -26,7 +26,7 @@
 use alloc::vec::Vec;
 
 use crate::engine::equalize::EqMode;
-use crate::engine::pipeline::{DecodeDepth, DecodeStrictness, FftCache};
+use crate::engine::pipeline::{DecodeDepth, DecodeStrictness, FftCache, LlrEffort};
 use crate::engine::protocol::Protocol;
 
 use super::ap::{ApHint, WsjtApCompatible};
@@ -159,8 +159,17 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
         self.freq_hint = Some(f);
         self
     }
-    pub fn depth(mut self, d: DecodeDepth) -> Self {
-        self.depth = d;
+    /// Toggle OSD fallback when the BP staircase fails. `LlrEffort` is
+    /// always `Full` for host decodes (the cheaper LLR variants exist
+    /// solely for `decode_block_into`'s ESP32 power budget — see
+    /// `DecodeDepth::EMBEDDED`'s doc comment; no host caller has ever
+    /// needed `Minimal`). Default: `true` (matches the old
+    /// `DecodeDepth::FULL` default).
+    pub fn osd(mut self, on: bool) -> Self {
+        self.depth = DecodeDepth {
+            llr_effort: LlrEffort::Full,
+            osd: on,
+        };
         self
     }
     pub fn strictness(mut self, s: DecodeStrictness) -> Self {
@@ -263,8 +272,13 @@ impl<'a, P: FrameDecodable> SniperRequest<'a, P> {
         self.sync_min = v;
         self
     }
-    pub fn depth(mut self, d: DecodeDepth) -> Self {
-        self.depth = d;
+    /// Toggle OSD fallback when the BP staircase fails. See
+    /// [`DecodeRequest::osd`] for why `LlrEffort` isn't exposed here.
+    pub fn osd(mut self, on: bool) -> Self {
+        self.depth = DecodeDepth {
+            llr_effort: LlrEffort::Full,
+            osd: on,
+        };
         self
     }
     pub fn strictness(mut self, s: DecodeStrictness) -> Self {

@@ -41,7 +41,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::{ApHint, DecodeStrictness};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -118,7 +118,7 @@ const MAX_TOTAL_DECODES: usize = 35;
 use common::load_wav_i16;
 
 fn decode_set(audio: &[i16], ap: Option<&ApHint>) -> BTreeSet<String> {
-    let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50).depth(DecodeDepth::FULL);
+    let mut req = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50);
     if let Some(ap) = ap {
         req = req.ap_hint(ap);
     }
@@ -250,7 +250,6 @@ fn qso3_apon_subtract_jtdx_extras_diag() {
     let ap = ApHint::new().with_call1(MYCALL).with_call2(HISCALL);
 
     let decoded = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .ap_hint(&ap)

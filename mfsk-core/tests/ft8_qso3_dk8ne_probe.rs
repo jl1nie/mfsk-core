@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::{ApHint, DecodeStrictness};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -46,7 +46,6 @@ fn try_context(label: &str, audio: &[i16], mycall: &str, hiscall: &str) -> BTree
 
     // Multi-pass + SIC + AP — the strongest AP-on recovery path we have.
     let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .ap_hint(&ap)
@@ -74,7 +73,6 @@ fn probe_dk8ne_with_exact_context() {
 
     // Baseline: no AP context (single-pass, host AP-off equivalent).
     let no_ap = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.3, 50)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results;
     let no_ap_msgs: BTreeSet<String> = no_ap
@@ -112,7 +110,6 @@ fn probe_dk8ne_with_exact_context() {
 fn try_context_for(label: &str, audio: &[i16], mycall: &str, hiscall: &str, target: &str) -> bool {
     let ap = ApHint::new().with_call1(mycall).with_call2(hiscall);
     let decoded = DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 1.3, 50)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .ap_hint(&ap)

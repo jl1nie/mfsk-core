@@ -673,18 +673,21 @@ points, §6.3/§6.5):
 
 * **`DecodeRequest<P>`** — wide-band search over `freq_min..freq_max`.
   `DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min,
-  max_cand)`, then chain `.depth(...)`, `.strictness(...)`,
-  `.eq_mode(...)`, `.known(...)` (skip/subtract already-decoded
-  messages from an earlier pass), `.fft_cache(...)` (reuse a previous
-  call's forward FFT), `.ap_hint(...)` where the protocol implements
-  `SupportsWideBandAp` (FT8 only), and one of `.flat()` / `.staged()`
-  to pick a successive-interference-cancellation strategy where the
-  protocol supports it (`SupportsFlatSic`: FT8+FT4; `SupportsStagedSic`:
-  FT8 only). Call `.decode()` to get a `DecodeOutcome<P>` (`.results:
-  Vec<P::DecodeResult>`, plus `.fft_cache` for a follow-up call).
+  max_cand)`, then chain `.osd(bool)` (default `true`; toggles OSD
+  fallback when the BP staircase fails — `LlrEffort` is always `Full`
+  for host decodes, see the doc comment on `.osd` itself),
+  `.strictness(...)`, `.eq_mode(...)`, `.known(...)` (skip/subtract
+  already-decoded messages from an earlier pass), `.fft_cache(...)`
+  (reuse a previous call's forward FFT), `.ap_hint(...)` where the
+  protocol implements `SupportsWideBandAp` (FT8 only), and one of
+  `.flat()` / `.staged()` to pick a successive-interference-cancellation
+  strategy where the protocol supports it (`SupportsFlatSic`: FT8+FT4;
+  `SupportsStagedSic`: FT8 only). Call `.decode()` to get a
+  `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`, plus
+  `.fft_cache` for a follow-up call).
 * **`SniperRequest<P>`** — narrow-band, single-target search.
   `DecodeRequest::<P>::sniper(audio, target_freq_hz, max_cand)` or
-  `SniperRequest::<P>::new(...)` directly; `.depth(...)`,
+  `SniperRequest::<P>::new(...)` directly; `.osd(bool)`,
   `.strictness(...)`, `.eq_mode(...)`, and `.ap_hint(...)` where the
   protocol's message codec implements `WsjtApCompatible` (no SIC
   variant — sniper mode is inherently single-candidate). `.decode()`
@@ -693,6 +696,22 @@ points, §6.3/§6.5):
 This replaced FT8's `decode_frame*`/`decode_frame_subtract*`/
 `decode_sniper*` family (15 public functions) and FT4/FST4's own
 suffix-exploded equivalents — see §6.2/§6.4 for worked examples.
+
+`DecodeDepth` (`llr_effort`/`osd`) itself is still a real type — it's
+what `decode_block`/`decode_block_into` (the embedded/host-shared
+plain-function FT8 API, §10) take positionally — but `DecodeRequest`/
+`SniperRequest` no longer expose it directly: no host caller has ever
+needed `LlrEffort::Minimal` (that variant exists solely for
+`decode_block_into`'s ESP32 power budget), so the builders hardcode
+`Full` and only surface the `osd` toggle.
+
+**`WsjtxDepth`** (`mfsk_core::ft8::decode::WsjtxDepth`,
+`DecodeRequest::<Ft8>::wsjtx_depth(...)`) bundles `.osd(...)` +
+`.flat()`/`.staged()` + `.ap_hint()` into three named tiers
+(`D1`/`D2`/`D3`) mirroring real WSJT-X's `jt9 -d 1/2/3` CLI flag, for
+benchmarking against a real `jt9` build — see the type's own doc
+comment for the exact tier→builder-method mapping and its known
+limitations (pass-count and OSD-strength don't exactly match jt9's).
 
 ### DSP (`mfsk_core::engine::dsp`)
 
@@ -883,7 +902,6 @@ enable several for illustration.
 
 ```rust
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
@@ -900,8 +918,8 @@ for (i, &s) in frame.iter().enumerate() {
 }
 
 // 2. Decode it back. new(audio, freq_min, freq_max, sync_min, max_cand).
+// OSD defaults to on; call `.osd(false)` for a cheaper BP-only decode.
 let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3_000.0, 1.0, 50)
-    .depth(DecodeDepth::FULL)
     .decode()
     .results;
 for r in &results {
@@ -959,12 +977,11 @@ known station:
 
 ```rust
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, EqMode, ApHint};
+use mfsk_core::ft8::decode::{EqMode, ApHint};
 use mfsk_core::msg::decode_request::SniperRequest;
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
-    .depth(DecodeDepth::FULL)
     .eq_mode(EqMode::Local)
     .ap_hint(&ap)
     .decode()

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::DecodeStrictness;
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -22,7 +22,6 @@ use common::load_wav_i16;
 fn check_decode_frame_subtract_full_qso3() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .decode()

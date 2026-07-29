@@ -55,7 +55,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::DecodeStrictness;
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -94,7 +94,6 @@ use common::load_wav_i16;
 fn staged_sic_matches_flat_pass_golden_floor() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .decode()
@@ -155,7 +154,6 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
     // shape of WebFT8's `decode_phase1`. Captures both the decoded
     // messages and the FFT cache for reuse.
     let phase1 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .decode();
     assert!(
@@ -175,7 +173,6 @@ fn staged_with_known_and_cache_finds_dl8yhr() {
     // Phase 2: staged SIC seeded with phase 1's results + cache — the
     // exact combination issue #191 reported as unreachable.
     let phase2 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .known(&phase1.results)

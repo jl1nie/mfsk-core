@@ -308,11 +308,8 @@ pub unsafe extern "C" fn mfsk_decode_options_free(opts: *mut MfskDecodeOptions) 
     }
 }
 
-fn map_depth(d: MfskDecodeDepth) -> ft8::DecodeDepth {
-    match d {
-        MfskDecodeDepth::BpAll => ft8::DecodeDepth::BP_ONLY,
-        MfskDecodeDepth::BpAllOsd => ft8::DecodeDepth::FULL,
-    }
+fn map_osd(d: MfskDecodeDepth) -> bool {
+    matches!(d, MfskDecodeDepth::BpAllOsd)
 }
 
 /// Free a [`MfskResultList`] populated by a decode call. Passing NULL
@@ -610,21 +607,21 @@ fn decode_i16_wsjt77(
     match protocol {
         MfskProtocol::Ft8 => {
             let ht = mfsk_core::msg::CallsignHashTable::new();
-            let (fmin, fmax, smin, mc, depth) = match o {
+            let (fmin, fmax, smin, mc, osd) = match o {
                 Some(o) => (
                     o.freq_min_hz,
                     o.freq_max_hz,
                     o.sync_min,
                     o.max_cand as usize,
-                    map_depth(o.depth),
+                    map_osd(o.depth),
                 ),
-                None => (200.0, 3_000.0, 2.0, 50, ft8::DecodeDepth::FULL),
+                None => (200.0, 3_000.0, 2.0, 50, true),
             };
             let results =
                 mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
                     audio, fmin, fmax, smin, mc,
                 )
-                .depth(depth)
+                .osd(osd)
                 .decode()
                 .results;
             for r in results {

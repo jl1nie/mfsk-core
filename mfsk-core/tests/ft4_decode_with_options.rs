@@ -1,4 +1,4 @@
-//! Integration test for `DecodeRequest<Ft4>::depth` (issue #191 rewrite
+//! Integration test for `DecodeRequest<Ft4>::osd` (issue #191 rewrite
 //! of the original PR #21 test, which covered
 //! `ft4::decode::decode_frame_with_options` before that function family
 //! was consolidated into `DecodeRequest`).
@@ -8,10 +8,9 @@
 //! validate that the parameter actually flows through the decode
 //! pipeline. This test synthesises a clean FT4 signal and asserts every
 //! rung decodes it back, so a future refactor that silently drops
-//! `depth` on the floor would break the assertion.
+//! `osd` on the floor would break the assertion.
 
 use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields};
-use mfsk_core::ft4::decode::DecodeDepth;
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
@@ -50,9 +49,9 @@ fn every_depth_decodes_clean_signal() {
     let audio = synth_slot(&msg, 1500.0, 25_000);
 
     let mut decoded_text = None;
-    for depth in [DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+    for osd in [false, true] {
         let results = DecodeRequest::<Ft4>::new(&audio, 100.0, 3000.0, 0.6, 5)
-            .depth(depth)
+            .osd(osd)
             .decode()
             .results;
         let hit = results
@@ -60,8 +59,8 @@ fn every_depth_decodes_clean_signal() {
             .find(|r| r.message77() == msg)
             .unwrap_or_else(|| {
                 panic!(
-                    "no clean-signal decode for depth={:?} (got {} results)",
-                    depth,
+                    "no clean-signal decode for osd={:?} (got {} results)",
+                    osd,
                     results.len()
                 )
             });
@@ -75,8 +74,8 @@ fn every_depth_decodes_clean_signal() {
         assert_eq!(
             text,
             decoded_text.as_deref().unwrap(),
-            "depth={:?} produced a different decode",
-            depth
+            "osd={:?} produced a different decode",
+            osd
         );
     }
     assert!(decoded_text.unwrap_or_default().contains("K1ABC"));

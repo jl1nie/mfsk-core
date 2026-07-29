@@ -190,23 +190,23 @@ mod tests {
     use super::*;
     use crate::msg::decode_request::DecodeRequest;
 
-    /// Compile-time check that `DecodeRequest<Ft4>` accepts every
-    /// `DecodeDepth` rung across single-pass, flat SIC, and sniper. No
-    /// actual decoding happens — empty audio returns no candidates fast
-    /// — but this guards against future signature drift.
+    /// Compile-time check that `DecodeRequest<Ft4>` accepts every `osd`
+    /// setting across single-pass, flat SIC, and sniper. No actual
+    /// decoding happens — empty audio returns no candidates fast — but
+    /// this guards against future signature drift.
     #[test]
     fn decode_request_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 7500]; // 7.5 s of silence at 12 kHz
-        for &depth in &[DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+        for osd in [false, true] {
             let _ = DecodeRequest::<Ft4>::new(&empty, 100.0, 3000.0, 1.0, 5)
-                .depth(depth)
+                .osd(osd)
                 .decode();
             let _ = DecodeRequest::<Ft4>::new(&empty, 100.0, 3000.0, 1.0, 5)
-                .depth(depth)
+                .osd(osd)
                 .flat()
                 .decode();
             let _ = DecodeRequest::<Ft4>::sniper(&empty, 1500.0, 5)
-                .depth(depth)
+                .osd(osd)
                 .decode();
         }
     }

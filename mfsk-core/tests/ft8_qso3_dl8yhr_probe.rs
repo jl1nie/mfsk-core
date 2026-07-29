@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::DecodeStrictness;
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -68,7 +68,6 @@ fn probe_dl8yhr_decode_sweep() {
         ("wider dt_tol + more candidates", 3.0, 400),
     ] {
         let single = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
-            .depth(DecodeDepth::FULL)
             .decode()
             .results;
         let hit_single = single
@@ -77,7 +76,6 @@ fn probe_dl8yhr_decode_sweep() {
             .any(|m| m == target);
 
         let sub = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
-            .depth(DecodeDepth::FULL)
             .strictness(DecodeStrictness::Normal)
             .staged()
             .decode()
@@ -88,7 +86,6 @@ fn probe_dl8yhr_decode_sweep() {
             .any(|m| m == target);
 
         let sub_deep = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
-            .depth(DecodeDepth::FULL)
             .strictness(DecodeStrictness::Deep)
             .staged()
             .decode()

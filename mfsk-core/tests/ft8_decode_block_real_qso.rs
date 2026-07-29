@@ -70,7 +70,6 @@ fn decode_block_matches_decode_frame_on_real_qso() {
         let slot = load_wav_i16(Path::new(e.path));
 
         let truth: BTreeSet<String> = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.0, 200)
-            .depth(DecodeDepth::FULL)
             .decode()
             .results
             .iter()

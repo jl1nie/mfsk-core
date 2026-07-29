@@ -6,7 +6,6 @@
 //! in a crate that depends on `ft8-core::decode`.
 
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::params::{MSG_BITS, NMAX};
 use mfsk_core::ft8::resample::{resample_f32_to_12k, resample_to_12k};
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_f32};
@@ -86,7 +85,6 @@ fn resample_decode_48k_weak_signal() {
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 1);
 
     let results = DecodeRequest::<Ft8>::new(&resampled, 800.0, 1200.0, 1.0, 50)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results;
     assert!(
@@ -108,7 +106,6 @@ fn resample_f32_decode_48k_weak_signal() {
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 1);
 
     let results = DecodeRequest::<Ft8>::new(&resampled, 800.0, 1200.0, 1.0, 50)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results;
     assert!(
@@ -129,7 +126,6 @@ fn resample_decode_44100_weak_signal() {
     assert!((resampled.len() as i32 - NMAX as i32).abs() <= 2);
 
     let results = DecodeRequest::<Ft8>::new(&resampled, 800.0, 1200.0, 1.0, 50)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results;
     assert!(

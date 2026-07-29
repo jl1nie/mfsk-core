@@ -653,7 +653,10 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
 
 * **`DecodeRequest<P>`** — `freq_min..freq_max` に対する wide-band
   探索。`DecodeRequest::<P>::new(audio, freq_min, freq_max, sync_min,
-  max_cand)` の後、`.depth(...)`、`.strictness(...)`、`.eq_mode(...)`、
+  max_cand)` の後、`.osd(bool)` (デフォルト `true`。BP staircase が
+  失敗した際のOSDフォールバックの有無を切り替える — hostのdecodeでは
+  `LlrEffort`は常に`Full`固定。詳細は`.osd`自体のdoc comment参照)、
+  `.strictness(...)`、`.eq_mode(...)`、
   `.known(...)` (前パスで既に復号済みのメッセージをスキップ/減算)、
   `.fft_cache(...)` (直前呼び出しの forward FFT を再利用)、
   プロトコルが `SupportsWideBandAp` を実装していれば `.ap_hint(...)`
@@ -665,7 +668,7 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
   `.fft_cache` も含む) を得る。
 * **`SniperRequest<P>`** — narrow-band、単一ターゲット探索。
   `DecodeRequest::<P>::sniper(audio, target_freq_hz, max_cand)` または
-  `SniperRequest::<P>::new(...)` を直接呼ぶ。`.depth(...)`、
+  `SniperRequest::<P>::new(...)` を直接呼ぶ。`.osd(bool)`、
   `.strictness(...)`、`.eq_mode(...)`、プロトコルのメッセージ
   コーデックが `WsjtApCompatible` を実装していれば `.ap_hint(...)`
   (SIC バリアントは無し — sniper モードは元々単一候補)。
@@ -674,6 +677,22 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
 これにより FT8 の `decode_frame*`/`decode_frame_subtract*`/
 `decode_sniper*` 系 (公開関数 15 個) と FT4/FST4 独自の同種の
 suffix 展開を置き換えた — §6.2/§6.4 に実例がある。
+
+`DecodeDepth` (`llr_effort`/`osd`) という型自体は残っている ——
+`decode_block`/`decode_block_into` (embedded/host共通のプレーン関数
+FT8 API、§10) が位置引数として受け取る型。ただし `DecodeRequest`/
+`SniperRequest` はもう直接は公開しない — hostで`LlrEffort::Minimal`
+を必要とした呼び出しは一つも無かった (`decode_block_into`のESP32
+電力予算のためだけに存在する variant) ので、builder側は`Full`固定に
+し、`osd`トグルだけを公開する。
+
+**`WsjtxDepth`** (`mfsk_core::ft8::decode::WsjtxDepth`、
+`DecodeRequest::<Ft8>::wsjtx_depth(...)`) は `.osd(...)` +
+`.flat()`/`.staged()` + `.ap_hint()` を、実際のWSJT-Xの`jt9 -d 1/2/3`
+CLIフラグに対応する3段階の named tier (`D1`/`D2`/`D3`) にまとめたもの
+——実際の`jt9`ビルドとのベンチマーク比較用。tierとbuilderメソッドの
+正確な対応、既知の限界（pass数・OSD強度がjt9と厳密には一致しない点）
+は型自身のdoc commentを参照。
 
 ### DSP (`mfsk_core::engine::dsp`)
 
@@ -855,7 +874,6 @@ mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
 
 ```rust
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
@@ -872,8 +890,8 @@ for (i, &s) in frame.iter().enumerate() {
 }
 
 // 2. デコードする。new(audio, freq_min, freq_max, sync_min, max_cand)。
+// OSDはデフォルトでon。BP-onlyの軽量デコードにしたければ `.osd(false)`。
 let results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3_000.0, 1.0, 50)
-    .depth(DecodeDepth::FULL)
     .decode()
     .results;
 for r in &results {
@@ -930,12 +948,11 @@ for d in decodes {
 
 ```rust
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, EqMode, ApHint};
+use mfsk_core::ft8::decode::{EqMode, ApHint};
 use mfsk_core::msg::decode_request::SniperRequest;
 
 let ap = ApHint::new().with_call1("CQ").with_call2("JA1ABC");
 let results = SniperRequest::<Ft8>::new(&audio, /*target_hz*/ 1000.0, /*max_cand*/ 15)
-    .depth(DecodeDepth::FULL)
     .eq_mode(EqMode::Local)
     .ap_hint(&ap)
     .decode()

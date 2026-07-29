@@ -376,19 +376,19 @@ mod tests {
     }
 
     /// Compile-time check that `DecodeRequest<Fst4s60>` accepts every
-    /// `DecodeDepth` rung across single-pass and sniper. No actual
-    /// decoding happens — empty audio returns no candidates fast — but
-    /// this guards against future signature drift breaking downstream
+    /// `osd` setting across single-pass and sniper. No actual decoding
+    /// happens — empty audio returns no candidates fast — but this
+    /// guards against future signature drift breaking downstream
     /// callers that do parameterised dispatch.
     #[test]
     fn decode_request_accepts_all_param_combos() {
         let empty = vec![0i16; 12 * 60 * 1000]; // 60 s of silence
-        for &depth in &[DecodeDepth::BP_ONLY, DecodeDepth::FULL] {
+        for osd in [false, true] {
             let _ = DecodeRequest::<crate::fst4::Fst4s60>::new(&empty, 100.0, 3000.0, 0.8, 5)
-                .depth(depth)
+                .osd(osd)
                 .decode();
             let _ = DecodeRequest::<crate::fst4::Fst4s60>::sniper(&empty, 1500.0, 5)
-                .depth(depth)
+                .osd(osd)
                 .decode();
         }
     }

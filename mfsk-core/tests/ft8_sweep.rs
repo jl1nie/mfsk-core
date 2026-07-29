@@ -66,10 +66,9 @@ const CHANNELS: &[&str] = &["awgn", "ccir_good", "ccir_moderate", "ccir_poor"];
 
 fn decode_wav_ft8(audio: &[i16]) -> bool {
     use mfsk_core::ft8::Ft8;
-    use mfsk_core::ft8::decode::DecodeDepth;
+
     use mfsk_core::msg::decode_request::DecodeRequest;
     DecodeRequest::<Ft8>::new(audio, 100.0, 3000.0, 0.8, 50)
-        .depth(DecodeDepth::FULL)
         .decode()
         .results
         .iter()

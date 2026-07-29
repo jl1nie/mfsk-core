@@ -107,7 +107,7 @@ pub fn refine_signal_freq(audio: &[i16], result: &DecodeResult) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::decode::{DecodeDepth, DecodeStrictness};
+    use super::super::decode::DecodeStrictness;
     use super::super::wave_gen::{message_to_tones, tones_to_i16};
     use super::*;
 
@@ -216,7 +216,7 @@ mod tests {
         }
 
         let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1700.0, 1.0, 50)
-            .depth(DecodeDepth::BP_ONLY)
+            .osd(false)
             .strictness(DecodeStrictness::Normal)
             .staged()
             .decode()

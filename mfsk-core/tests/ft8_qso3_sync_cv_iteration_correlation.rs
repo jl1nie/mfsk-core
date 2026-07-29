@@ -20,7 +20,7 @@ use std::path::Path;
 use mfsk_core::FrameLayout;
 use mfsk_core::engine::sync::{SyncDims, make_costas_ref, score_costas_block};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{DecodeDepth, DecodeStrictness};
+use mfsk_core::ft8::decode::DecodeStrictness;
 use mfsk_core::ft8::downsample::downsample;
 use mfsk_core::ft8::message::unpack77;
 use mfsk_core::ft8::subtract::{refine_signal_freq, subtract_signal_lpf};
@@ -38,7 +38,6 @@ use common::load_wav_i16;
 fn correlate_sync_cv_with_iteration_convergence() {
     let audio = load_wav_i16(Path::new(QSO3_PATH));
     let mut results = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 200)
-        .depth(DecodeDepth::FULL)
         .strictness(DecodeStrictness::Normal)
         .staged()
         .decode()

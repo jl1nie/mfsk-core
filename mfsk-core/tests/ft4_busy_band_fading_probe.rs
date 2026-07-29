@@ -54,7 +54,7 @@
 use std::collections::BTreeSet;
 
 use mfsk_core::engine::{FrameLayout, MessageCodec, MessageFields, ModulationParams};
-use mfsk_core::ft4::decode::{DecodeDepth, DecodeResult};
+use mfsk_core::ft4::decode::DecodeResult;
 use mfsk_core::ft4::{Ft4, encode};
 use mfsk_core::msg::Wsjt77Message;
 use mfsk_core::msg::decode_request::DecodeRequest;
@@ -82,11 +82,9 @@ fn decode_frame_with_options(
     freq_max: f32,
     sync_min: f32,
     freq_hint: Option<f32>,
-    depth: DecodeDepth,
     max_cand: usize,
 ) -> Vec<DecodeResult> {
-    let mut req =
-        DecodeRequest::<Ft4>::new(audio, freq_min, freq_max, sync_min, max_cand).depth(depth);
+    let mut req = DecodeRequest::<Ft4>::new(audio, freq_min, freq_max, sync_min, max_cand);
     if let Some(f) = freq_hint {
         req = req.freq_hint(f);
     }
@@ -222,8 +220,7 @@ fn busy_band_fading_single_pass_reference() {
     let pad = (<Ft4 as FrameLayout>::TX_START_OFFSET_S * 12_000.0) as usize;
     let mut audio = vec![0i16; SLOT_SAMPLES];
     mix_i16(&mut audio, &tone_pcm(&target_msg, 1600.0, 4_500), pad);
-    let results =
-        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::FULL, 15);
+    let results = decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, 15);
     let hit = results
         .iter()
         .any(|r| r.message77() == target_msg.as_slice());
@@ -251,8 +248,7 @@ fn diag_crowd_only_no_strong_interferer() {
     let target_msg = pack("CQ", "DL8YHR", "JO41");
     mix_i16(&mut audio, &tone_pcm(&target_msg, 1600.0, 4_500), pad);
 
-    let results =
-        decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, DecodeDepth::FULL, 15);
+    let results = decode_frame_with_options(&audio, 100.0, 3000.0, 0.6, None, 15);
     let hit = results
         .iter()
         .any(|r| r.message77() == target_msg.as_slice());
@@ -456,8 +452,7 @@ fn diag_seed4_why_still_missing() {
     }
 
     // Does a second decode pass on this manually-cleaned residual find it?
-    let pass2 =
-        decode_frame_with_options(&residual, 100.0, 3000.0, 0.5, None, DecodeDepth::FULL, 15);
+    let pass2 = decode_frame_with_options(&residual, 100.0, 3000.0, 0.5, None, 15);
     let hit2 = pass2.iter().any(|r| r.message77() == target.as_slice());
     println!(
         "\nmanual-residual re-decode: {} results, target hit: {hit2}",

@@ -27,7 +27,6 @@
 //!
 //! ```no_run
 //! use mfsk_core::ft8::Ft8;
-//! use mfsk_core::ft8::decode::DecodeDepth;
 //! use mfsk_core::msg::decode_request::DecodeRequest;
 //! use mfsk_core::msg::wsjt77::unpack77;
 //!
@@ -40,7 +39,6 @@
 //!     /* sync_min */ 1.0,
 //!     /* max_cand */ 200,
 //! )
-//! .depth(DecodeDepth::FULL)
 //! .decode()
 //! .results;
 //! for r in &results {

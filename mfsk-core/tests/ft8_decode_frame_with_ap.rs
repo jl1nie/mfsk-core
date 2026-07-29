@@ -9,7 +9,7 @@
 
 use mfsk_core::engine::{MessageCodec, MessageFields};
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::{ApHint, DecodeDepth};
+use mfsk_core::ft8::decode::ApHint;
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::{Wsjt77Message, wsjt77};
@@ -53,7 +53,6 @@ fn matching_ap_hint_decodes_clean_signal() {
     let ap = ApHint::new().with_call1("CQ").with_call2("K1ABC");
 
     let results = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
-        .depth(DecodeDepth::FULL)
         .ap_hint(&ap)
         .decode()
         .results;
@@ -79,7 +78,6 @@ fn wrong_ap_hint_does_not_corrupt_clean_decode() {
     let wrong = ApHint::new().with_call1("CQ").with_call2("3Y0Z");
 
     let results_wrong = DecodeRequest::<Ft8>::new(&audio, 300.0, 2700.0, 1.5, 15)
-        .depth(DecodeDepth::FULL)
         .ap_hint(&wrong)
         .decode()
         .results;
