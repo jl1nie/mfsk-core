@@ -48,6 +48,31 @@ row); every other row was confirmed unchanged within run-to-run noise
 (≤~15%) **except FT4**, which turned out to already be stale for an
 unrelated reason — see its row below.
 
+**Re-verified again 2026-07-29** (median of 3-5 runs per row, same
+harnesses/methodology as above) after a cluster of `perf(...)` commits
+landed 2026-07-26 through 2026-07-28, none reflected in the previous
+pass: `17e7583`/`7adaed8` (issue #182 fine-sync + FT4 refine-radius
+fixes, already folded into the FT4/FT8 notes below), `ac67d29`/
+`4801722`/`b93b16c` (`fill_bmet_for_nsym` Vec-alloc removal + lazy
+nsym LLR staircase + incremental ladder-rung summation in the shared
+`engine::llr`/generic-pipeline code FT4 and FST4 both route through),
+`43954e9` (issue #197, FST4 `SYNC_Q_MIN` tightened 10→16 to match
+WSJT-X's own pre-ladder gate), `97b96a1`/`7d5eb5e` (issues #199/#201,
+`BpScratch` reuse across `decode_block_multipass`'s and
+`sic_inner_passes_with_cache`'s per-candidate calls), `4bbd188` (issue
+#200, the same lazy-LLR-staircase treatment for `pipeline_ap`'s AP
+sniper path), and `eabbf03` (issue #211/#208, `downsample_cached`'s
+FFT-planner cache — the same fix already documented as a WASM win
+below, but it applies to every target including this table's own
+Ryzen9 host row, not just WASM). FT8, FT4, and FST4-60A all dropped
+substantially; Q65/WSPR/JT9/MSK144 don't call any of the touched code
+(`fill_bmet_for_nsym`, `process_candidate_ap`, `decode_block_multipass`'s
+`BpScratch` path) and were left at their existing figures rather than
+re-run. Recall byte-identical at every re-measured row (FT8 ship-config
+7/8 golden + 7 phantom + 14 total; FT8 full-parity 8/8 golden; FT4 6/6
+golden + 14/14 total; FST4-60A 2/2 golden messages) — these are pure
+throughput wins, not tightened/loosened decode behavior.
+
 **Compute environment**: AMD Ryzen 9 9900X (12C/24T), 32 GB RAM,
 Ubuntu 24.04.2 LTS under WSL2 (kernel 6.6.87.2-microsoft-standard-WSL2),
 rustc 1.97.1, `cargo test --release --features full` (includes the
@@ -56,13 +81,13 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
-| FT4 | 000000_000002.wav | 7.5 s | 0.11 s (was 0.049 s pre-#178-180, briefly regressed to ~0.53-0.58 s then ~0.28 s — see note) |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.06 s (was 0.10 s — see 2026-07-29 note below) |
+| FST4-60A | 210115_0058.wav | 60 s | 0.08 s (was 0.27 s — see 2026-07-29 note below) |
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.08 s |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.10 s |
+| FT4 | 000000_000002.wav | 7.5 s | 0.10 s (was 0.28 s — see 2026-07-29 note below) |
 | Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.12 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.12 s |
 | Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.26 s |
-| FST4-60A | 210115_0058.wav | 60 s | 0.27 s |
 | JT9 | 130418_1742.wav | 60 s | 0.33 s |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.34 s |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.56 s |
@@ -70,6 +95,55 @@ is wall time on a many-core host, not a single-thread figure).
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
 | WSPR | 150426_0918.wav | 120 s | 0.93 s |
+
+**2026-07-29 re-measurement** (median of 3-5 runs, same box/build as
+the rest of this table; see the intro paragraph above for which
+`perf(...)` commits this captures):
+
+- **FST4-60A**: `decode_frame` wall-clock **75-82 ms** (median ~76 ms),
+  down from 0.27 s (~3.5×) — dominated by the `SYNC_Q_MIN` 10→16
+  tightening (issue #197) plus the lazy nsym-LLR-staircase + incremental
+  ladder-rung changes to the shared `engine::llr`/generic-pipeline code
+  FST4 routes through. Still 50 coarse candidates, 2/2 golden decodes
+  (`CQ N5TM EL29`, `CQ K9KFR EN71`), measured via
+  `tests/fst4_sweep.rs::fst4_60_diag_candidate_cost_split`'s own
+  `DecodeRequest::<Fst4s60>` production-path timer.
+- **FT4**: `000000_000002.wav` flat-SIC wall-clock **100-105 ms**
+  (median ~104 ms), down from ~0.28 s (~2.7×) — same shared-pipeline
+  LLR changes as FST4, plus `downsample_cached`'s FFT-planner cache
+  (issue #211). 14/14 total decodes (6/6 golden), measured via
+  `tests/ft4_sweep.rs::ft4_diag_candidate_cost_split`'s own
+  `DecodeRequest::<Ft4>::new(...).sic_rounds(3)` production-path timer.
+- **FT8 ship-config** (`decode_block`, `DecodeDepth::EMBEDDED`,
+  `max_cand=15` — the exact call `ft8_qso3_apoff_recall.rs` uses):
+  **58.8-60.5 ms** (median ~60 ms), down from 0.10 s (~1.7×) — the
+  `BpScratch`-reuse fixes (issues #199/#201) plus the FFT-planner
+  cache. 14 total decodes (7/8 golden + 7 phantom), unchanged.
+- **FT8 full-parity** (`DecodeDepth::FULL`, `sync_min=0.8`,
+  `max_cand=60`, `tests/ft8_qso3_full_parity_recall.rs`): **118-127 ms**
+  (median ~118 ms), down from ~165-175 ms. Still 8/8 golden hit
+  (including `K1BZM DK8NE`); phantom count 11 this pass vs. not
+  separately tracked before — not a regression signal on its own since
+  this row has never gated on phantom count, only golden-hit floor.
+- Q65/WSPR/JT9/MSK144 rows are unchanged from 2026-07-20/26 — none of
+  the perf commits since touch code any of those four protocols call
+  (confirmed by `grep` for `fill_bmet_for_nsym`/`process_candidate_ap`
+  under `src/q65`, `src/wspr`, `src/jt9`, `src/msk144`: no hits).
+- **AWGN sweep sensitivity double-checked too, not just golden-WAV
+  recall.** The lazy-LLR-staircase refactors (`ac67d29`/`4801722`/
+  `b93b16c`/`4bbd188`) and FST4's `SYNC_Q_MIN` gate tightening
+  (`43954e9`) are the two changes with any plausible path to shifting
+  a decode outcome, not just its speed (the `BpScratch`-reuse and
+  FFT-planner-cache fixes only change allocation/caching, not any
+  math). Re-ran `tests/ft4_sweep.rs::ft4_snr_sweep` (AWGN channel only,
+  full existing SNR grid, `parallel` rayon) and
+  `tests/fst4_sweep.rs::fst4_snr_sweep` (FST4-60 only, all 4 channels)
+  against current `main`: FT4 AWGN 50% crossing ≈ **−16.89 dB**
+  (documented: ≈−16.9 dB) and FST4-60 AWGN ≈ **−27.56 dB** (matches the
+  figure already recorded in the FST4 section's own SYNC_Q_MIN note
+  below, reproduced independently here after the further perf changes
+  landed) — both within noise of, in FST4's case exactly matching, the
+  documented figures. No sweep-table update needed.
 
 Notes:
 
@@ -563,10 +637,12 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
   including `K1BZM DK8NE -10`, which ship-config's `DecodeDepth::
   EMBEDDED` structurally cannot reach with OSD compiled out) in
   **~165-175 ms** (was ~139-148 ms before the issue #190 fix below
-  made the blind-CQ AP pass always-on) — still ~6-7× faster than real
-  `jt9 -8 -d3`'s own ~1.1 s total file decode time, at full recall
-  parity. Distinct from the `0.10 s` ship-config row below, which is
-  the real Core2/S3 production path and floors at 7/8 by design.
+  made the blind-CQ AP pass always-on; dropped further to ~118-127 ms
+  2026-07-29 — see the "Decode speed" table's own re-measurement note
+  above) — still faster than real `jt9 -8 -d3`'s own ~1.1 s total file
+  decode time, at full recall parity. Distinct from the ship-config row
+  above, which is the real Core2/S3 production path and floors at 7/8
+  by design.
 - **Issue #190 fix (2026-07-26): the blind-CQ AP pass (WSJT-X
   iaptype-1, "Pass 12" in `process_one_candidate_inner`'s Step 4) now
   runs when the blind BP/OSD staircase fails and `nsync ≥
@@ -593,13 +669,14 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 ## FT4
 
 - **6/6 WSJT-X golden** (`samples/FT4/000000_000002.wav`), decoded in
-  **~0.28 s** as of 2026-07-26 (briefly 0.049 s right after the
-  `getcandidates4.f90`-port fix, up from 1.20 s before it — see
-  "Decode speed" notes above and `FT4_BENCHMARK.md` section 13 — then a
-  later LPF-subtract migration re-inflated it to ~0.53-0.58 s via a
-  redundant-resynthesis bug in `refine_freq`, fixed same-day, issue
-  #182; see the "Decode speed" table's own FT4 note for the full
-  account).
+  **~0.10 s** as of 2026-07-29 (was ~0.28 s as of 2026-07-26; briefly
+  0.049 s right after the `getcandidates4.f90`-port fix, up from
+  1.20 s before it — see "Decode speed" notes above and
+  `FT4_BENCHMARK.md` section 13 — then a later LPF-subtract migration
+  re-inflated it to ~0.53-0.58 s via a redundant-resynthesis bug in
+  `refine_freq`, fixed same-day, issue #182; see the "Decode speed"
+  table's own FT4 note for the full account and its 2026-07-29
+  re-measurement note for the latest drop).
 - **AWGN sensitivity gap: ~0.6 dB** (was ~0.3 dB before the coarse-sync
   algorithm swap, ~1.8 dB pre-0.7.3) — 50% recall crossing moved from
   −15.5 dB to −17.2 dB after a coherent Costas-block scorer fix and an
@@ -658,7 +735,11 @@ depth-escalation gate for FST4's own `N_SYNC=40` (was hardcoded to a
 value calibrated for FT8's `N_SYNC=21`) — recall verified unchanged
 against the table above (re-measured this pass: FST4-60 AWGN ≈-27.56 dB,
 CCIR good/moderate/poor bit-identical to the pre-fix figures; FST4-120/
-300 AWGN spot-checked, also unchanged). See `FST4_BENCHMARK.md`
+300 AWGN spot-checked, also unchanged). Dropped further, **0.27 s →
+~0.08 s (~3.5×)**, on 2026-07-29 — see the "Decode speed" table's own
+re-measurement note above (issue #197's `SYNC_Q_MIN` tightening plus
+the shared-pipeline lazy-LLR-staircase and FFT-planner-cache fixes).
+See `FST4_BENCHMARK.md`
 section 8 for the full investigation, including a first-attempt fix
 that measured as a real ~0.5 dB regression and was corrected before
 shipping.
