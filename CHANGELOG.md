@@ -912,6 +912,13 @@
   clean pre-#218 `main` worktree); new `tests/ft8_sic_rounds_recall.rs`
   locks in both that golden and a `sic_rounds(1) ⊆ sic_rounds(2) ⊆
   sic_rounds(3)` monotonicity invariant (measured 13/19/20 decodes).
+  `&[1.0, 0.75, 0.5][..max_rounds]` is genuinely new slicing logic on
+  FT4's side, not just a rename, and the FT8 golden above doesn't
+  exercise it — a self-contained (no external sample-tree dependency)
+  six-station synthetic scene in new `tests/ft4_sic_rounds_recall.rs`
+  covers the same monotonicity invariant there (measured 4/6/6
+  decodes; asserts `sic_rounds(1) < sic_rounds(3)` so the scenario
+  can't pass vacuously).
 
 - **`DecodeRequest`/`SniperRequest::depth(DecodeDepth)` → `.osd(bool)`
   (breaking).** `LlrEffort` was a dead lever on host — its own doc

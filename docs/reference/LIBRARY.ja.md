@@ -661,9 +661,10 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
   `.fft_cache(...)` (直前呼び出しの forward FFT を再利用)、
   プロトコルが `SupportsWideBandAp` を実装していれば `.ap_hint(...)`
   (FT8 のみ)、さらにプロトコルが対応していれば
-  `.flat()` / `.staged()` のいずれかで successive-interference-
-  cancellation 戦略を選択 (`SupportsFlatSic`: FT8+FT4、
-  `SupportsStagedSic`: FT8 のみ) をチェーンする。`.decode()` で
+  `.sic_rounds(n)` / `.sic_early()` のいずれかで successive-
+  interference-cancellation 戦略を選択 (`SupportsSicRounds`:
+  FT8+FT4、`n`は1..=3にクランプ。`SupportsSicEarly`: FT8のみ、
+  チェックポイント構造は3固定) をチェーンする。`.decode()` で
   `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`、後続呼び出し用の
   `.fft_cache` も含む) を得る。
 * **`SniperRequest<P>`** — narrow-band、単一ターゲット探索。
@@ -688,11 +689,11 @@ FT8 API、§10) が位置引数として受け取る型。ただし `DecodeReque
 
 **`WsjtxDepth`** (`mfsk_core::ft8::decode::WsjtxDepth`、
 `DecodeRequest::<Ft8>::wsjtx_depth(...)`) は `.osd(...)` +
-`.flat()`/`.staged()` + `.ap_hint()` を、実際のWSJT-Xの`jt9 -d 1/2/3`
-CLIフラグに対応する3段階の named tier (`D1`/`D2`/`D3`) にまとめたもの
-——実際の`jt9`ビルドとのベンチマーク比較用。tierとbuilderメソッドの
-正確な対応、既知の限界（pass数・OSD強度がjt9と厳密には一致しない点）
-は型自身のdoc commentを参照。
+`.sic_rounds(n)`/`.sic_early()` + `.ap_hint()` を、実際のWSJT-Xの
+`jt9 -d 1/2/3` CLIフラグに対応する3段階の named tier (`D1`/`D2`/`D3`)
+にまとめたもの——実際の`jt9`ビルドとのベンチマーク比較用。tierと
+builderメソッドの正確な対応、既知の限界（OSD強度がjt9と厳密には
+一致しない点）は型自身のdoc commentを参照。
 
 ### DSP (`mfsk_core::engine::dsp`)
 

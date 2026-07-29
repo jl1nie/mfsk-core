@@ -698,6 +698,12 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
     )
 }
 
+/// Checkpoint SIC round count — always the full 3, never caller-tunable.
+/// The A/B/C checkpoint structure itself (not this) is what varies with
+/// signal availability; see [`SupportsSicEarly`]'s doc comment for why
+/// this axis has no `.sic_rounds()`-style knob.
+const CHECKPOINT_SIC_ROUNDS: usize = 3;
+
 #[allow(clippy::too_many_arguments)]
 fn decode_frame_subtract_staged_with_ap_inner(
     audio: &[i16],
@@ -733,7 +739,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             eq_mode,
             ap_hint,
             None,
-            3,
+            CHECKPOINT_SIC_ROUNDS,
         );
         return (r, audio.to_vec());
     }
@@ -768,7 +774,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         &[],
         eq_mode,
         ap_hint,
-        3,
+        CHECKPOINT_SIC_ROUNDS,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -797,7 +803,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             eq_mode,
             ap_hint,
             None,
-            3,
+            CHECKPOINT_SIC_ROUNDS,
         );
         return (r, audio.to_vec());
     }
@@ -860,7 +866,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         &early_results,
         eq_mode,
         ap_hint,
-        3,
+        CHECKPOINT_SIC_ROUNDS,
     );
 
     let mut all_results = early_results;
