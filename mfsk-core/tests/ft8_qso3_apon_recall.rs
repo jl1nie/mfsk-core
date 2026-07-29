@@ -251,7 +251,7 @@ fn qso3_apon_subtract_jtdx_extras_diag() {
 
     let decoded = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
         .strictness(DecodeStrictness::Normal)
-        .staged()
+        .sic_early()
         .ap_hint(&ap)
         .decode()
         .results;

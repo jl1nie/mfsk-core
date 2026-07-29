@@ -13,8 +13,8 @@
 //!
 //! FST4 has no SIC (successive interference cancellation) path — no
 //! `SubtractCfg` exists for it, so
-//! [`SupportsFlatSic`](crate::msg::decode_request::SupportsFlatSic) is not
-//! implemented for any sub-mode (issue #193: new numerical work, not a
+//! [`SupportsSicRounds`](crate::msg::decode_request::SupportsSicRounds) is
+//! not implemented for any sub-mode (issue #193: new numerical work, not a
 //! refactor, kept out of this redesign's scope).
 
 use crate::engine::dsp::downsample::DownsampleCfg;

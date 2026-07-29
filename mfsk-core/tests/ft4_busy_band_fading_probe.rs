@@ -61,7 +61,7 @@ use mfsk_core::msg::decode_request::DecodeRequest;
 
 /// Local shim matching the pre-#191 `ft4::decode::decode_frame_subtract`
 /// signature — this file has many call sites, easier to keep them
-/// unchanged than thread `.flat()` through each individually.
+/// unchanged than thread `.sic_rounds()` through each individually.
 fn decode_frame_subtract(
     audio: &[i16],
     freq_min: f32,
@@ -70,7 +70,7 @@ fn decode_frame_subtract(
     max_cand: usize,
 ) -> Vec<DecodeResult> {
     DecodeRequest::<Ft4>::new(audio, freq_min, freq_max, sync_min, max_cand)
-        .flat()
+        .sic_rounds(3)
         .decode()
         .results
 }

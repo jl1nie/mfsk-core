@@ -928,6 +928,12 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     depth: DecodeDepth,
     max_cand: usize,
     strictness: DecodeStrictness,
+    // Upper bound on SIC rounds, 1..=3 (`DecodeRequest::sic_rounds`
+    // already clamps to this range — not re-validated here, this
+    // function has exactly one caller). `passes.len() == 3`, so this
+    // slices the shared progressive-`sync_min`-relaxation schedule
+    // rather than iterating all of it.
+    max_rounds: usize,
     sync_q_min: u32,
     // Channel-aware LPF subtract tuning (issue #178/#179 FT4 port).
     // Protocol-specific — mirrors WSJT-X's per-protocol `NFILT`/
@@ -941,7 +947,7 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
 ) -> Vec<DecodeResult> {
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
-    let passes: &[f32] = &[1.0, 0.75, 0.5];
+    let passes: &[f32] = &[1.0, 0.75, 0.5][..max_rounds];
     let fec = P::Fec::default();
 
     for &factor in passes {

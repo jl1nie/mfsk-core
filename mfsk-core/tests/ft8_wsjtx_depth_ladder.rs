@@ -45,7 +45,7 @@ const HISCALL: &str = "HA0DU";
 
 /// Soft recall floors — well below the reference table above, just
 /// enough to catch a catastrophic regression (e.g. a future change
-/// accidentally severing `.flat()`/`.staged()`/`.ap_hint()` from
+/// accidentally severing `.sic_rounds()`/`.sic_early()`/`.ap_hint()` from
 /// `wsjtx_depth`). Not a golden-exact-match test.
 const MIN_DECODES: [usize; 3] = [10, 15, 15];
 

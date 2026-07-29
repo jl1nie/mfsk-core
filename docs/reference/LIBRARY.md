@@ -680,9 +680,11 @@ points, §6.3/§6.5):
   already-decoded messages from an earlier pass), `.fft_cache(...)`
   (reuse a previous call's forward FFT), `.ap_hint(...)` where the
   protocol implements `SupportsWideBandAp` (FT8 only), and one of
-  `.flat()` / `.staged()` to pick a successive-interference-cancellation
-  strategy where the protocol supports it (`SupportsFlatSic`: FT8+FT4;
-  `SupportsStagedSic`: FT8 only). Call `.decode()` to get a
+  `.sic_rounds(n)` / `.sic_early()` to pick a
+  successive-interference-cancellation strategy where the protocol
+  supports it (`SupportsSicRounds`: FT8+FT4, `n` clamped 1..=3;
+  `SupportsSicEarly`: FT8 only, fixed 3-checkpoint structure). Call
+  `.decode()` to get a
   `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`, plus
   `.fft_cache` for a follow-up call).
 * **`SniperRequest<P>`** — narrow-band, single-target search.
@@ -707,11 +709,11 @@ needed `LlrEffort::Minimal` (that variant exists solely for
 
 **`WsjtxDepth`** (`mfsk_core::ft8::decode::WsjtxDepth`,
 `DecodeRequest::<Ft8>::wsjtx_depth(...)`) bundles `.osd(...)` +
-`.flat()`/`.staged()` + `.ap_hint()` into three named tiers
+`.sic_rounds(n)`/`.sic_early()` + `.ap_hint()` into three named tiers
 (`D1`/`D2`/`D3`) mirroring real WSJT-X's `jt9 -d 1/2/3` CLI flag, for
 benchmarking against a real `jt9` build — see the type's own doc
 comment for the exact tier→builder-method mapping and its known
-limitations (pass-count and OSD-strength don't exactly match jt9's).
+limitations (OSD-strength doesn't exactly match jt9's).
 
 ### DSP (`mfsk_core::engine::dsp`)
 

@@ -77,7 +77,7 @@ fn probe_dl8yhr_decode_sweep() {
 
         let sub = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
             .strictness(DecodeStrictness::Normal)
-            .staged()
+            .sic_early()
             .decode()
             .results;
         let hit_sub = sub
@@ -87,7 +87,7 @@ fn probe_dl8yhr_decode_sweep() {
 
         let sub_deep = DecodeRequest::<Ft8>::new(&audio, 200.0, 3000.0, dt_tol, max_cand)
             .strictness(DecodeStrictness::Deep)
-            .staged()
+            .sic_early()
             .decode()
             .results;
         let hit_sub_deep = sub_deep

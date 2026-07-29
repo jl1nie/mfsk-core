@@ -218,7 +218,7 @@ mod tests {
         let results = DecodeRequest::<Ft8>::new(&audio, 800.0, 1700.0, 1.0, 50)
             .osd(false)
             .strictness(DecodeStrictness::Normal)
-            .staged()
+            .sic_early()
             .decode()
             .results;
         let found_strong = results.iter().any(|r| r.message77() == msg_strong);
