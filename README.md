@@ -113,7 +113,6 @@ Synthesise an FT8 frame and decode it back:
 
 ```rust
 use mfsk_core::ft8::Ft8;
-use mfsk_core::ft8::decode::DecodeDepth;
 use mfsk_core::ft8::wave_gen::{message_to_tones, tones_to_i16};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::{pack77, unpack77};
@@ -136,7 +135,6 @@ let results = DecodeRequest::<Ft8>::new(
     /* sync_min */ 1.0,
     /* max_cand */ 50,
 )
-.depth(DecodeDepth::FULL)
 .decode()
 .results;
 for r in &results {
