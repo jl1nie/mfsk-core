@@ -13,8 +13,8 @@ cd "$(git rev-parse --show-toplevel)"
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 
-echo "==> cargo clippy --workspace --all-targets --features full -- -D warnings"
-cargo clippy --workspace --all-targets --features full --no-deps -- -D warnings
+echo "==> cargo clippy --workspace --all-targets --features full,internal-testing -- -D warnings"
+cargo clippy --workspace --all-targets --features full,internal-testing --no-deps -- -D warnings
 
 # Mirrors `.github/workflows/ci.yml::docs`. Catches broken intra-doc
 # links (e.g. `[`fine_sync_power`]` pointing at a private item) before
