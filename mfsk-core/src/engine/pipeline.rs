@@ -280,6 +280,44 @@ impl DecodeStrictness {
             (Self::Deep, false) => 36,
         }
     }
+
+    /// FT8's own flat (not `osd_depth`-tiered) hard-error acceptance
+    /// ceiling — shared by the BP staircase and the OSD fallback
+    /// (`ft8::decode_block::process_candidates`/`osd_strategy`), which
+    /// both apply the same bound WSJT-X does unconditionally on depth
+    /// (`ft8b.f90:422`). Unlike [`Self::osd_max_errors`] (FT4-specific,
+    /// depth-tiered), FT8's real dispatch has no such tiering to port —
+    /// this is a single WSJT-X-faithful number, not three.
+    ///
+    /// **`Normal = 36` is WSJT-X's own universal ceiling — do not
+    /// retune without re-running the issue #72 CCIR-fading sweep this
+    /// value was widened *to*.** It was `22` before that investigation
+    /// (see `osd_strategy.rs`'s `OSD_HARDERRORS_MAX`-era history
+    /// comment): a deliberate mfsk-core-specific tightening that
+    /// silently discarded real golden decodes under heavy fading,
+    /// found by an AWGN/CCIR sweep against a *known* golden message.
+    /// Widening back to 36 recovered them with zero regression across
+    /// the full FT8 regression suite. `Normal` must stay at 36 to
+    /// preserve that fix as the default.
+    ///
+    /// `Strict = 22` reuses that exact historical value — real prior
+    /// art from the issue #72 investigation (known effect: filters
+    /// `N1API F2VX 73`/`N1API HA6FQ -23`/`CQ EA2BFM IN83` on
+    /// `qso3_busy.wav`), not a fresh guess — for callers who explicitly
+    /// want fewer false-accepts at that recall cost.
+    ///
+    /// `Deep = 40` deliberately *exceeds* WSJT-X's own ceiling — an
+    /// mfsk-core-original extension beyond 36, since WSJT-X itself has
+    /// no looser tier to port. **Not yet swept against a fading
+    /// corpus**; treat as exploratory, same caveat as
+    /// [`Self::osd_max_errors`]'s unverified `Strict`/`Deep` arms.
+    pub fn ft8_nharderrors_max(self) -> u32 {
+        match self {
+            Self::Strict => 22,
+            Self::Normal => 36,
+            Self::Deep => 40,
+        }
+    }
 }
 
 /// One successfully decoded message. Protocol-agnostic.

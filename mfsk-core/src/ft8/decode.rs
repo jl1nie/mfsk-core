@@ -49,18 +49,30 @@ pub use crate::engine::pipeline::{DecodeDepth, LlrEffort};
 
 /// Decode strictness: controls false-positive vs sensitivity trade-off.
 ///
-/// Canonical definition lives in [`crate::engine::pipeline::DecodeStrictness`]
-/// — this used to be a separate, differently-calibrated `osd_max_errors`/
-/// `osd_score_min` (FT8's own real-WAV-bench numbers), but neither method
-/// has ever actually been called anywhere in FT8's own decode path: FT8's
-/// non-AP OSD gate uses hardcoded `OSD_HARDERRORS_MAX`/
-/// `WSJTX_NHARDERRORS_MAX` constants instead
-/// (`ft8/decode_block/osd_strategy.rs`, `process_candidates.rs`), leftover
-/// dead code from before #188 removed the `auto_ap_strategy` module that
-/// used to consume them. `ap_max_errors` *is* live (FT8's per-candidate AP
-/// loop) and was already numerically identical to the generic pipeline's
-/// copy — moved onto the canonical type, no numeric change (issue #191
-/// type consolidation).
+/// Canonical definition lives in [`crate::engine::pipeline::DecodeStrictness`].
+/// FT8 consumes two of its three methods:
+///
+/// - [`DecodeStrictness::ft8_nharderrors_max`] — the BP-staircase/OSD
+///   `nharderrors` acceptance ceiling (`ft8/decode_block/process_candidates.rs`'s
+///   four BP-variant checks, `osd_strategy.rs`'s OSD dispatch). Live on
+///   *every* FT8 decode, AP or not. Added as a strictness-wiring
+///   follow-up to #220 (issue #221) — previously this axis was a documented
+///   no-op for FT8 (a leftover, differently-calibrated `osd_max_errors`/
+///   `osd_score_min` pair that had never actually been called anywhere
+///   in FT8's own decode path, dead since #188 removed the
+///   `auto_ap_strategy` module that used to consume them; hardcoded
+///   `OSD_HARDERRORS_MAX 36`/`WSJTX_NHARDERRORS_MAX 36` ran instead,
+///   unconditionally). `Normal` still returns that same 36 — zero
+///   default-behavior change from the rewiring itself.
+/// - [`DecodeStrictness::ap_max_errors`] — FT8's per-candidate AP loop
+///   (Step 4), live only when `ap_hint` is `Some(_)`. Already live
+///   before this follow-up; numerically identical to the generic
+///   pipeline's own copy (issue #191 type consolidation).
+///
+/// [`DecodeStrictness::osd_max_errors`]/`osd_score_min` (the
+/// `osd_depth`-tiered pair) remain FT4-only — FT8's real OSD dispatch
+/// has no `osd_depth` tiering to port, so `ft8_nharderrors_max` is a
+/// separate, flat method rather than reusing that one.
 pub use crate::engine::pipeline::DecodeStrictness;
 
 /// One successfully decoded FT8 message.

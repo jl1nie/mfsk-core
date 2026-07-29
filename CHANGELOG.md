@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset + `DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()` (#218, breaking)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset + `DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()` (#218, breaking) + FT8 `DecodeStrictness` wiring for the non-AP decode path (#221)
 
 ### Added
 
@@ -1482,6 +1482,25 @@
   does internally. Issue #171 left open with this as the closing
   analysis (no further action expected; re-open if a real remaining
   gap is found with matched AP context on both sides).
+- **`DecodeRequest<Ft8>::strictness()` was a documented no-op for
+  FT8's non-AP decode path** (#221, found while benchmarking WebFT8's
+  decode presets). `.strictness(Deep)` produced identical recall and
+  wall-clock to `.strictness(Strict)` on every scenario tested — FT8's
+  BP staircase and OSD fallback used hardcoded `36`
+  (`OSD_HARDERRORS_MAX`/`WSJTX_NHARDERRORS_MAX`, WSJT-X's own
+  `ft8b.f90:422` ceiling) unconditionally, dead since #188 removed the
+  code that used to consume a strictness-tiered version;
+  `DecodeStrictness::ap_max_errors` (the AP loop's own gate) was the
+  only method FT8 ever actually called. New
+  `DecodeStrictness::ft8_nharderrors_max()` wires all four BP-variant
+  acceptance checks and the OSD dispatch to the per-request
+  strictness: `Normal = 36` (unchanged default, zero regression —
+  full FT8 golden/JTDX/full-parity/depth-ladder regression suite
+  green), `Strict = 22` (real prior art reused from the issue #72
+  investigation, not a fresh guess), `Deep = 40` (mfsk-core-original,
+  exceeds WSJT-X's own ceiling, not yet swept against a fading
+  corpus). FST4 remains unaffected by any `DecodeStrictness` method by
+  design (#146).
 
 ### Added
 

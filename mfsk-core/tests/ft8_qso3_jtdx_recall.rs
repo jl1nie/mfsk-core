@@ -138,17 +138,19 @@ const JTDX_GOLDEN: &[GoldenEntry] = &[
 /// - host f32 (research config: BpAllOsd + max_cand=60 + sync_min=0.8):
 ///   **17/18 hit** (only `WA2FZW DL5AXX RR73` missing). Was 16/18
 ///   before 0.6.3, then dropped to 13/18 when 0.6.3 added an OSD-pass
-///   `hard_errors > 22` ceiling (`OSD_HARDERRORS_MAX` in
-///   `decode_block/osd_strategy.rs`) meant to eliminate 3 assumed
-///   CRC-luck phantoms (`N1API F2VX 73` e=30, `N1API HA6FQ -23` e=25,
-///   `CQ EA2BFM IN83` e=31). A CCIR-fading sensitivity investigation
-///   (issue #72 follow-up, `docs/notes/FT8_BENCHMARK.md`) found that
-///   ceiling was also discarding genuine golden decodes under fading,
-///   traced via `ft8sim`-synthesized WAVs with known ground truth —
-///   loosening it back to WSJT-X's own 36 recovered those *and*, as a
-///   side effect, the same 3 `qso3_busy.wav` candidates at their exact
-///   JTDX-claimed text, which is strong evidence they were real, not
-///   phantoms (see `OSD_HARDERRORS_MAX`'s docstring for the full
+///   `hard_errors > 22` ceiling (`decode_block/osd_strategy.rs`, now
+///   `DecodeStrictness::ft8_nharderrors_max`'s `Strict` value) meant to
+///   eliminate 3 assumed CRC-luck phantoms (`N1API F2VX 73` e=30,
+///   `N1API HA6FQ -23` e=25, `CQ EA2BFM IN83` e=31). A CCIR-fading
+///   sensitivity investigation (issue #72 follow-up,
+///   `docs/notes/FT8_BENCHMARK.md`) found that ceiling was also
+///   discarding genuine golden decodes under fading, traced via
+///   `ft8sim`-synthesized WAVs with known ground truth — loosening it
+///   back to WSJT-X's own 36 (today's `Normal` default) recovered
+///   those *and*, as a side effect, the same 3 `qso3_busy.wav`
+///   candidates at their exact JTDX-claimed text, which is strong
+///   evidence they were real, not phantoms (see
+///   `DecodeStrictness::ft8_nharderrors_max`'s docstring for the full
 ///   account). The WSJT-X 8-entry golden floor stays at 7/8 — none of
 ///   the affected candidates appear there.
 /// - host fixed-point (embedded ship config: BpAll + max_cand=15 +

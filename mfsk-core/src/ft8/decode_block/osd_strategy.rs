@@ -43,7 +43,7 @@
 
 #![cfg(feature = "fft-rustfft")]
 
-use super::super::decode::DecodeDepth;
+use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
 use crate::fec::ldpc::bp::{BpResult, bp_llr_zsum};
@@ -58,32 +58,35 @@ use crate::fec::ldpc::params::Ldpc174_91Params;
 /// both sides.
 const Q_NDEEP3_THRESHOLD: u32 = 18;
 
-/// OSD `nharderrors` ceiling — matches WSJT-X's universal
-/// `WSJTX_NHARDERRORS_MAX = 36` (`ft8b.f90:422`) exactly, same as the
-/// BP variants in `process_one_candidate_inner`.
-///
-/// **History (issue #72 follow-up, 2026-07-18): was 22, a deliberate
-/// mfsk-core-specific deviation, now retracted.** The gate had been
-/// tightened to 22 specifically to filter 3 candidates on
-/// `qso3_busy.wav` — `N1API F2VX 73` (e=30), `N1API HA6FQ -23` (e=25),
-/// `CQ EA2BFM IN83` (e=31) — judged phantoms (CRC-14-luck false
-/// accepts) because JTDX's own 18-entry recall list wasn't independently
-/// verified for those specific entries (see issue #150). A CCIR-fading
-/// sensitivity investigation (`docs/notes/FT8_BENCHMARK.md`) using
-/// `ft8sim`-synthesized WAVs with a *known* golden message found the 22
-/// ceiling silently discarding genuine golden decodes under heavy
-/// fading — traced multiple independent LLR variants converging on the
-/// exact transmitted text at `hard_errors` in the high 20s/low 30s.
-/// Loosening back to WSJT-X's 36 recovered those, and as a direct
-/// side effect also recovered the same 3 `qso3_busy.wav` candidates at
-/// their *exact* JTDX-claimed text — independent corroboration between
-/// two separate decoders on a CRC-14-protected message is strong
-/// evidence against coincidence, resolving them as real rather than
-/// phantom. Full regression suite (host `ft8_qso3_apoff_recall`,
-/// `ft8_decode_block_real_qso`, embedded `decode_block` paths) showed
-/// zero change from this widening — nothing was relying on the
-/// tightened gate to stay green.
-const OSD_HARDERRORS_MAX: u32 = 36;
+// OSD `nharderrors` ceiling — now [`DecodeStrictness::ft8_nharderrors_max`]
+// (issue #221, strictness-wiring follow-up to #220), `Normal` (default) still
+// matching WSJT-X's universal `WSJTX_NHARDERRORS_MAX = 36`
+// (`ft8b.f90:422`) exactly, same as the BP variants in
+// `process_one_candidate_inner`.
+//
+// History (issue #72 follow-up, 2026-07-18): `Normal`'s 36 was 22
+// pre-issue-#72, a deliberate mfsk-core-specific deviation, now
+// retracted. The gate had been tightened to 22 specifically to filter 3
+// candidates on `qso3_busy.wav` — `N1API F2VX 73` (e=30), `N1API HA6FQ
+// -23` (e=25), `CQ EA2BFM IN83` (e=31) — judged phantoms (CRC-14-luck
+// false accepts) because JTDX's own 18-entry recall list wasn't
+// independently verified for those specific entries (see issue #150). A
+// CCIR-fading sensitivity investigation (`docs/notes/FT8_BENCHMARK.md`)
+// using `ft8sim`-synthesized WAVs with a *known* golden message found
+// the 22 ceiling silently discarding genuine golden decodes under heavy
+// fading — traced multiple independent LLR variants converging on the
+// exact transmitted text at `hard_errors` in the high 20s/low 30s.
+// Loosening back to WSJT-X's 36 recovered those, and as a direct side
+// effect also recovered the same 3 `qso3_busy.wav` candidates at their
+// *exact* JTDX-claimed text — independent corroboration between two
+// separate decoders on a CRC-14-protected message is strong evidence
+// against coincidence, resolving them as real rather than phantom. Full
+// regression suite (host `ft8_qso3_apoff_recall`,
+// `ft8_decode_block_real_qso`, embedded `decode_block` paths) showed
+// zero change from this widening — nothing was relying on the tightened
+// gate to stay green. That retracted `22` is exactly
+// `DecodeStrictness::Strict`'s value now — real prior art, not a fresh
+// guess, for callers who explicitly want it back.
 
 /// Pass-ID range for the `zsave(:,1)`-equivalent (BP-refined, 1
 /// iteration) OSD attempts, `14..=17` for llr-variants a/b/c/d.
@@ -125,15 +128,17 @@ pub(super) const PASS_ID_OSD_ZSAVE2_A: u8 = 19;
 /// rebuild) — yet never reached this function at all under the old
 /// `q >= 12` gate. Manually running the OSD dispatch below anyway (llr
 /// variant `d`, `osd_decode_npre1_npre2`) decodes it outright at
-/// `hard_errors=22`, comfortably under [`OSD_HARDERRORS_MAX`]. The gap
-/// was never a sync/LLR/BP/OSD sensitivity problem — mfsk-core's own
-/// OSD implementation was already capable of the decode the whole
-/// time; this one-line gate was refusing to even try.
+/// `hard_errors=22`, comfortably under `Normal`'s ceiling (see
+/// [`DecodeStrictness::ft8_nharderrors_max`]). The gap was never a
+/// sync/LLR/BP/OSD sensitivity problem — mfsk-core's own OSD
+/// implementation was already capable of the decode the whole time;
+/// this one-line gate was refusing to even try.
 pub(super) fn try_fallback(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
     precomputed_llr: Option<&super::super::llr::LlrSet<f32>>,
     depth: DecodeDepth,
     q: u32,
+    strictness: DecodeStrictness,
 ) -> Option<(BpResult, u8)> {
     if !depth.osd || q <= 6 {
         return None;
@@ -173,8 +178,9 @@ pub(super) fn try_fallback(
         } else {
             osd_decode_npre1(llr)
         };
-        // WSJT-X-faithful ceiling — see [`OSD_HARDERRORS_MAX`]'s docstring.
-        osd.filter(|o| o.hard_errors <= OSD_HARDERRORS_MAX)
+        // WSJT-X-faithful ceiling (Normal) — see
+        // `DecodeStrictness::ft8_nharderrors_max`'s docstring.
+        osd.filter(|o| o.hard_errors <= strictness.ft8_nharderrors_max())
     };
     // Reuse `osd.codeword` instead of allocating a fresh zero vec —
     // `OsdResult` already carries the actual decoded codeword bits,

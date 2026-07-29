@@ -1409,10 +1409,12 @@ where
     results
 }
 
-/// WSJT-X-faithful nharderrors gate (ft8b.f90:422). High hard-error
-/// CRC-pass decodes are the dominant phantom source on busy bands;
-/// reject above this and fall through to the next BP variant.
-pub(super) const WSJTX_NHARDERRORS_MAX: u32 = 36;
+// WSJT-X-faithful nharderrors gate (ft8b.f90:422), formerly a flat
+// `WSJTX_NHARDERRORS_MAX = 36` constant — now
+// `DecodeStrictness::ft8_nharderrors_max` (issue #221, strictness-wiring
+// follow-up to #220), consumed directly at each of the four BP-acceptance
+// call sites below and at `osd_strategy::try_fallback`'s OSD gate.
+// `Normal` still returns the same 36.
 
 /// Minimum `sync_quality` (nsync, 0..=21) required to attempt the
 /// always-on blind-CQ AP pass (Step 4 "Pass 12", issue #190). Real
@@ -1456,12 +1458,14 @@ const BLIND_CQ_MIN_NSYNC: u32 = 12;
 /// - `ap_hint` is `None` for AP-off (embedded default); `Some(_)` to
 ///   activate Step 4 AP iaptype loop. `#[cfg(feature = "fft-rustfft")]`
 ///   only — embedded fixed-point builds always pass `None`.
-/// - `strictness` controls the per-iaptype `nharderrors` cap; ignored
-///   when `ap_hint` is `None`.
+/// - `strictness` controls the BP-staircase/OSD `nharderrors` ceiling
+///   ([`DecodeStrictness::ft8_nharderrors_max`], Steps 1-3, always
+///   live) and the per-iaptype AP cap ([`DecodeStrictness::ap_max_errors`],
+///   Step 4, live only when `ap_hint` is `Some(_)`).
 /// - `sync_cv` is the Costas-array power CV (host computes it for QSB
 ///   gain attenuation; embedded passes 0.0).
 #[allow(clippy::too_many_arguments)]
-#[allow(unused_variables)] // ap_hint / strictness only used under #[cfg(feature = "fft-rustfft")]
+#[allow(unused_variables)] // ap_hint only used under #[cfg(feature = "fft-rustfft")]
 #[allow(unused_assignments)] // llrb_arr/llrc_arr only read back under #[cfg(feature = "fft-rustfft")]
 pub(in crate::ft8) fn process_one_candidate_inner(
     cs_scratch: &[[Cmplx<f32>; 8]; 79],
@@ -1500,7 +1504,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     let bp_step1 =
         bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llra, bp_max_iter, Some(check_crc14));
     if let Some(bp) = bp_step1
-        && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+        && bp.hard_errors <= strictness.ft8_nharderrors_max()
     {
         accepted = Some((bp, 0));
     }
@@ -1537,7 +1541,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         let bp_d =
             bp_step_select::<LlrT>(bp_scratch, &llr_a_fast.llrd, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_d
-            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {
             accepted = Some((bp, 3));
         }
@@ -1553,7 +1557,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 2);
         let bp_b = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_b
-            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {
             accepted = Some((bp, 1));
         }
@@ -1570,7 +1574,7 @@ pub(in crate::ft8) fn process_one_candidate_inner(
         let arr: [LlrT; LDPC_N] = super::super::llr::compute_llr_partial::<LlrT>(cs_scratch, 3);
         let bp_c = bp_step_select::<LlrT>(bp_scratch, &arr, bp_max_iter, Some(check_crc14));
         if let Some(bp) = bp_c
-            && bp.hard_errors <= WSJTX_NHARDERRORS_MAX
+            && bp.hard_errors <= strictness.ft8_nharderrors_max()
         {
             accepted = Some((bp, 2));
         }
@@ -1642,7 +1646,13 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // alone to keep it unreachable.
     #[cfg(feature = "fft-rustfft")]
     if accepted.is_none() {
-        accepted = super::osd_strategy::try_fallback(cs_scratch, prefetched_llr.as_ref(), depth, q);
+        accepted = super::osd_strategy::try_fallback(
+            cs_scratch,
+            prefetched_llr.as_ref(),
+            depth,
+            q,
+            strictness,
+        );
     }
 
     // Step 4: AP iaptype loop (host f32 only; gated on fft-rustfft).

@@ -218,13 +218,15 @@ fn qso3_apon_strict_superset_of_apoff_same_pipeline() {
 // channel-aware subtract). Cleaner residual surfaces 4 of the 5
 // missing JTDX-extras at coarse-sync stage 1 of pass 1.
 // Stepped back to 4 in 0.6.3, restored to 5 in the issue #72
-// follow-up (2026-07-18): 0.6.3's `OSD_HARDERRORS_MAX = 22` filtered
-// `CQ EA2BFM IN83` (one of the multipass extras, `hard_errors = 31`)
-// on the OSD pass, assumed to be a CRC-luck phantom. A CCIR-fading
-// sensitivity investigation found that assumption wrong — see
-// `OSD_HARDERRORS_MAX`'s docstring in `decode_block/osd_strategy.rs`
-// for the full account — and widened the ceiling back to WSJT-X's
-// 36, which restores this extra too. The other 4 extras (CQ F5RXL
+// follow-up (2026-07-18): 0.6.3's OSD hard-error ceiling of 22
+// filtered `CQ EA2BFM IN83` (one of the multipass extras,
+// `hard_errors = 31`) on the OSD pass, assumed to be a CRC-luck
+// phantom. A CCIR-fading sensitivity investigation found that
+// assumption wrong — see `decode_block/osd_strategy.rs`'s history
+// comment (now also `DecodeStrictness::ft8_nharderrors_max`'s
+// docstring) for the full account — and widened the ceiling back to
+// WSJT-X's 36 (today's `Normal` default), which restores this extra
+// too. The other 4 extras (CQ F5RXL
 // IN94, KD2UGC F6GCP, K1BZM EA3CJ, the 4 in 0.6.2) were never
 // affected by that gate either way.
 //

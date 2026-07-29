@@ -829,19 +829,39 @@ uses `subtract_signal_lpf` (WSJT-X-style channel-aware subtract) as of
 0.6.2; the previous `subtract_signal_weighted` / `qsb_partial_gain`
 path has been removed.
 
-* `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — pre-OSD
-  coarse-sync-score gate and post-OSD hard-error ceiling. Calibrated
-  against FT8 real-WAV recall (2026-04-07) and, until 0.7.1, silently
-  reused as-is by every other protocol (issue #72). FST4 bypasses
-  both gates entirely (`P::ID == ProtocolId::Fst4`) and trusts CRC-24
-  alone, matching WSJT-X's own FST4 acceptance test
-  (`fst4_decode.f90:570`: `nharderrors >= 0 && unpk77_success`, no
-  score pre-filter, no hard-error upper bound) — real near-threshold
-  FST4 candidates were being blocked from attempting OSD, or rejected
-  after OSD converged to a CRC-24-verified codeword, purely by these
-  FT8-tuned constants. FT4 still runs through the literal FT8 numbers
-  unmodified; re-tuning or bypassing them for FT4 is tracked
-  separately (issue #72, reopened).
+`DecodeStrictness` (`Strict`/`Normal`/`Deep`) exposes four methods,
+with different live-per-protocol scope — check which apply before
+assuming `.strictness(...)` does anything for a given call:
+
+* `osd_score_min()` / `osd_max_errors()` — pre-OSD coarse-sync-score
+  gate and post-OSD hard-error ceiling, `osd_depth`-tiered. **FT4-only
+  in practice.** `osd_score_min` is bypassed entirely for both FST4
+  and FT4 (`bypass_osd_score_min` in `engine/pipeline.rs` — FST4
+  trusts CRC-24 alone, matching WSJT-X's own FST4 acceptance test
+  `fst4_decode.f90:570`: `nharderrors >= 0 && unpk77_success`, no
+  score pre-filter; FT4 hit the identical symptom independently and
+  got the same bypass). `osd_max_errors` is FST4-bypassed too but
+  *live* for FT4, retuned against a real `ft4sim` AWGN/CCIR sweep
+  (issue #72, 2026-07-18) — no longer a placeholder copy of an FT8
+  calibration. **Despite the name, FT8 has never actually called
+  either method** — its own OSD dispatch used hardcoded constants
+  instead (see `ft8_nharderrors_max` below); an earlier version of
+  this doc incorrectly described these as FT8-calibrated.
+* `ap_max_errors(locked_bits)` — AP-assisted decode hard-error
+  ceiling, graded by locked-bit count. Live for FT8's per-candidate AP
+  loop and the FT4/FST4 AP sniper (`msg::pipeline_ap`) alike —
+  numerically unified across both call sites (issue #191).
+* `ft8_nharderrors_max()` — FT8's own flat (not `osd_depth`-tiered)
+  hard-error ceiling for the **non-AP** BP staircase and OSD fallback
+  (`ft8::decode_block::process_candidates`/`osd_strategy`). Added
+  issue #221: `.strictness(...)` was a documented no-op for FT8's
+  non-AP path before this — hardcoded `36` (WSJT-X's own
+  `ft8b.f90:422` ceiling) ran unconditionally, dead since issue #188
+  removed the code that used to consume a strictness-tiered version.
+  `Normal` still returns that same 36 (zero default-behavior change);
+  `Strict`/`Deep` are new, live knobs — `Strict = 22` reuses real
+  prior art from the issue #72 investigation, `Deep = 40` is
+  exploratory and not yet swept against a fading corpus.
 
 AP-aware variants live in `msg::pipeline_ap` because AP hint
 construction is 77-bit specific.

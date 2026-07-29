@@ -803,18 +803,39 @@ dedupe)、`decode_frame_subtract::<P>` (3-pass SIC ドライバ)、
 subtract) を使用。旧 `subtract_signal_weighted` /
 `qsb_partial_gain` 系は削除済。
 
-* `DecodeStrictness::osd_score_min()` / `osd_max_errors()` — OSD
-  実行前の coarse-sync スコアしきい値と、OSD 後の硬判定エラー上限
-  ゲート。2026-04-07 の FT8 実 WAV recall で較正した値で、0.7.1 まで
-  他プロトコルも無条件に流用していた (issue #72)。FST4 はこの 2 つ
-  のゲートを両方バイパスし CRC-24 のみを信頼する — WSJT-X 自身の
-  FST4 受理判定 (`fst4_decode.f90:570`: `nharderrors >= 0 &&
-  unpk77_success`。スコア事前フィルタなし、硬判定エラー上限なし)
-  に合わせた形。しきい値付近の実在する FST4 候補が OSD に到達でき
-  ずにブロックされたり、OSD が CRC-24 検証済みコードワードに収束
-  した後で棄却されたりしていたのは、この FT8 較正値がそのまま
-  原因だった。FT4 は依然として FT8 の数値をそのまま使っており、
-  再較正またはバイパスは別途追跡中 (issue #72、再オープン)。
+`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は 4 つのメソッドを持つ
+が、プロトコルごとに「実際に効くか」が異なる — `.strictness(...)`
+が何かを変えるかどうかは呼び出し先次第なので注意:
+
+* `osd_score_min()` / `osd_max_errors()` — OSD 実行前の coarse-sync
+  スコアしきい値と、OSD 後の硬判定エラー上限ゲート (`osd_depth` 別)。
+  **実質 FT4 専用。** `osd_score_min` は FST4・FT4 両方でバイパス済み
+  (`engine/pipeline.rs` の `bypass_osd_score_min` — FST4 は WSJT-X 自
+  身の FST4 受理判定 `fst4_decode.f90:570`: `nharderrors >= 0 &&
+  unpk77_success` に合わせて CRC-24 のみを信頼、スコア事前フィルタ
+  なし。FT4 も同じ症状に独立して行き当たり同じバイパスを適用)。
+  `osd_max_errors` は FST4 バイパスのままだが FT4 では**生きている**
+  — 実際の `ft4sim` AWGN/CCIR sweep で再較正済み (issue #72、
+  2026-07-18)。もはや FT8 較正値のプレースホルダーではない。**名前
+  に反して、FT8 はこの 2 メソッドをこれまで一度も呼んでいなかった**
+  — FT8 自身の OSD dispatch は hardcoded 定数を使っていた (下記
+  `ft8_nharderrors_max` 参照)。旧版の本ドキュメントが「FT8 較正値」
+  と誤って説明していた箇所を訂正。
+* `ap_max_errors(locked_bits)` — AP 付き decode の硬判定エラー上限、
+  locked-bit 数で段階化。FT8 の per-candidate AP loop と FT4/FST4 の
+  AP sniper (`msg::pipeline_ap`) 双方で生きている — 両呼び出し箇所で
+  数値統一済み (issue #191)。
+* `ft8_nharderrors_max()` — FT8 自身の flat (`osd_depth` 段階なし)
+  硬判定エラー上限、**非 AP** の BP staircase と OSD fallback 向け
+  (`ft8::decode_block::process_candidates`/`osd_strategy`)。issue
+  #221 で追加: それまで `.strictness(...)` は FT8 の非 AP 経路では
+  何もしないダミーだった — hardcoded `36` (WSJT-X 自身の
+  `ft8b.f90:422` の上限) が無条件に走っており、issue #188 で
+  strictness 段階版を消費していたコードが削除されて以来 dead code
+  化していた。`Normal` は今も同じ 36 を返す (デフォルト挙動は無変
+  更)。`Strict`/`Deep` は新規の生きた knob — `Strict = 22` は issue
+  #72 の調査で実際に使われた値の再利用、`Deep = 40` は探索的な値で
+  フェージングコーパスでの sweep はまだ未実施。
 
 AP 対応版は `msg::pipeline_ap` に配置 (AP hint 構築が
 77-bit 形式に依存するため)。
