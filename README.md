@@ -627,13 +627,12 @@ reference:
 
 ## Status
 
-**Latest published tag: `v0.7.4`** — `main` has since accumulated
-`0.8.0`-bound content (unreleased, see `CHANGELOG.md`'s top section).
-API is deliberately not frozen: breaking changes follow cargo-style
-minor bumps, while a new protocol/mode addition on its own is
-patch-level (e.g. MSK144 shipped as `0.7.4`, not `0.8.0`) — minor
-bumps mark more structural changes. See `CHANGELOG.md` for the
-per-release breakdown and `docs/notes/ROADMAP.md` for open follow-ups.
+**Latest published tag: `v0.8.0`** — API is deliberately not frozen:
+breaking changes follow cargo-style minor bumps, while a new
+protocol/mode addition on its own is patch-level (e.g. MSK144 shipped
+as `0.7.4`, not `0.8.0`) — minor bumps mark more structural changes.
+See `CHANGELOG.md` for the per-release breakdown and
+`docs/notes/ROADMAP.md` for open follow-ups.
 
 **Release cadence**: PRs merge to `main` continuously — CHANGELOG.md's
 top section always reflects the latest unreleased state, so tracking
