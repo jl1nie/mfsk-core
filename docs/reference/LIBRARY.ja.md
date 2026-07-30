@@ -915,7 +915,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.8", features = ["ft8", "ft4", "wspr"] }
 ```
 
 必要なプロトコルのフィーチャーだけ有効にすれば十分。以下では複数を

@@ -943,7 +943,7 @@ which inner steps they enable:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.7", features = ["ft8", "ft4", "wspr"] }
+mfsk-core = { version = "0.8", features = ["ft8", "ft4", "wspr"] }
 ```
 
 Pull in only the protocol features you need; the examples below
