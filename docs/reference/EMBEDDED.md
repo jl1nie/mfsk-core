@@ -110,7 +110,7 @@ those off and pick the embedded baseline:
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.6", default-features = false, features = [
+mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — required for decode
     "ft8",              # FT8 protocol glue
     "fft-extern",       # caller supplies the FFT backend

@@ -101,7 +101,7 @@ worked example。
 
 ```toml
 [dependencies]
-mfsk-core = { version = "0.6", default-features = false, features = [
+mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode 必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # 呼び出し側が FFT バックエンドを供給
