@@ -75,6 +75,18 @@ pub struct Jt9Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
     pub start_sample: usize,
+    /// Decode-side SNR estimate in dB, from the softsym pipeline's
+    /// per-symbol signal-tone vs. other-tones power ratio. **Not**
+    /// WSJT-X's 2500 Hz-referenced convention (unlike the FT8/FT4/
+    /// FST4/JT65/WSPR/Q65 `snr_db` fields) — the multi-stage AGC/IFFT/
+    /// coherent-sum gain chain in `softsym.rs` doesn't reduce to a
+    /// simple bandwidth offset the way a single per-symbol FFT bin
+    /// does, and deriving the correct one needs either WSJT-X's own
+    /// JT9 SNR formula or an empirical `jt9sim` corpus (unavailable in
+    /// this environment). Useful for comparing JT9 decodes against
+    /// each other; not comparable in absolute terms to other modes'
+    /// `snr_db`. See `symspec2_from_ss2` in `softsym.rs`.
+    pub snr_db: f32,
 }
 
 /// Scan an audio buffer for any JT9 frames: runs coarse (freq, time)

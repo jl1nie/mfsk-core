@@ -246,7 +246,7 @@ pub fn chkss2(ss2: &[[f32; 85]; 9]) -> f32 {
 /// `NSPSD` samples per symbol, then compute max-log-MAP LLRs from
 /// the resulting `ss3[0..7][0..69]` table. Returns 207 LLRs in
 /// channel-symbol (interleaved) order.
-fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> [f32; 207] {
+fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> ([f32; 207], f32) {
     // Build ss3[0..7][0..69] = power for data-tone i+1, data-symbol m+1.
     let mut ss3 = [[0.0f32; 69]; 8];
     for i in 1..9usize {
@@ -260,7 +260,14 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> [f32; 207] {
     }
 
     // Baseline: average of the seven non-max ss3 entries per symbol.
+    // Also accumulate the same signal (winning tone) / noise (mean of
+    // the other 7 tones) sums used for `snr_db` below — same
+    // opposite-tone-average shape as JT65's
+    // `demodulate_aligned_with_confidence_and_snr` and
+    // `compute_snr_db_generic` (FT8/FT4/FST4).
     let mut ss_total = 0.0f32;
+    let mut xsig_sum = 0.0f32;
+    let mut xnoi_sum = 0.0f32;
     for j in 0..69 {
         let mut smax = 0.0f32;
         let mut col_sum = 0.0f32;
@@ -272,6 +279,8 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> [f32; 207] {
             col_sum += v;
         }
         ss_total += col_sum - smax;
+        xsig_sum += smax;
+        xnoi_sum += (col_sum - smax) / 7.0;
     }
     let ave = (ss_total / (69.0 * 7.0)).max(1e-9);
     for col in ss3.iter_mut() {
@@ -279,6 +288,43 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> [f32; 207] {
             *v /= ave;
         }
     }
+
+    // NOT a WSJT-X 2500 Hz-referenced dB figure: unlike JT65 (one
+    // per-symbol FFT bin ≡ TONE_SPACING_HZ of noise bandwidth, so a
+    // `10·log10(2500/df)` offset is well-defined), `ss3` here has
+    // already passed through `downsam9`'s AGC scaling (`fac =
+    // 1/√avenoise`), an unnormalised IFFT, and `peakdt9`'s NSPSD=16
+    // coherent sum — the effective noise bandwidth those stages imply
+    // isn't simply the tone spacing, and re-deriving it needs either
+    // the real WSJT-X `jt9.f90` SNR formula or an empirical jt9sim
+    // corpus (unavailable in this environment; see
+    // `tests/jt9_sweep.rs`). A first attempt that borrowed JT65's
+    // bandwidth-offset shape produced an implausible reading
+    // (clean noiseless synth ≈ −4 dB) — this raw ratio is reported
+    // instead so the value stays honestly relative-only rather than
+    // silently wrong: use it to compare JT9 decodes against each
+    // other, not against FT8/JT65/WSPR/Q65's dB2500-referenced values.
+    const SNR_FLOOR_DB: f32 = -24.0;
+    // Ceiling also doubles as the answer when `xnoi_sum` is (near)
+    // exactly zero: a perfectly clean synthetic signal can leave zero
+    // measurable leakage in the other 7 tones — "no measurable noise"
+    // (best case), not the floor. See the identical fix + explanation
+    // in `q65::rx::snr_db_from_sig_noi`.
+    const SNR_CEIL_DB: f32 = 49.0;
+    let snr_db = if xnoi_sum < f32::EPSILON {
+        if xsig_sum < f32::EPSILON {
+            SNR_FLOOR_DB
+        } else {
+            SNR_CEIL_DB
+        }
+    } else {
+        let ratio = xsig_sum / xnoi_sum - 1.0;
+        if ratio <= 0.001 {
+            SNR_FLOOR_DB
+        } else {
+            (10.0 * ratio.log10()).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
+        }
+    };
 
     // Max-log-MAP LLRs. WSJT-X convention: positive ⇒ bit=1 likely.
     // We adopt the OPPOSITE sign (positive ⇒ bit=0) to stay
@@ -327,22 +373,24 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> [f32; 207] {
         }
     }
 
-    out_207
+    (out_207, snr_db)
 }
 
 /// Full pipeline: feed `c5` into `symspec2`, deinterleave the
 /// resulting 207 LLRs in place, drop the padding bit, and return
 /// the 206 LLRs ready for `ConvFano232::decode_soft`. Also returns
 /// the [`chkss2`] sync-quality score so callers can apply the
-/// WSJT-X two-stage gate before invoking the Fano decoder.
-pub fn llrs_from_c5(c5: &[Complex<f32>]) -> (f32, [f32; 206]) {
+/// WSJT-X two-stage gate before invoking the Fano decoder, and a
+/// decode-side SNR estimate (dB) — see the doc comment inside
+/// [`symspec2_from_ss2`] for the formula and its calibration caveat.
+pub fn llrs_from_c5(c5: &[Complex<f32>]) -> (f32, [f32; 206], f32) {
     let ss2 = compute_ss2(c5);
     let schk = chkss2(&ss2);
-    let s207 = symspec2_from_ss2(&ss2);
+    let (s207, snr_db) = symspec2_from_ss2(&ss2);
     let mut s206 = [0f32; 206];
     s206.copy_from_slice(&s207[..206]);
     deinterleave_llrs(&mut s206);
-    (schk, s206)
+    (schk, s206, snr_db)
 }
 
 /// `twkfreq` (polynomial WSJT-X form): apply
@@ -573,7 +621,7 @@ mod tests {
                 grid,
                 sc
             );
-            let (_schk, llrs) = llrs_from_c5(&c3);
+            let (_schk, llrs, _snr_db) = llrs_from_c5(&c3);
             let res = ConvFano232
                 .decode_soft(&llrs, &FecOpts::default())
                 .unwrap_or_else(|| panic!("Fano failed for {} {} {}", c1, c2, grid));
@@ -796,7 +844,7 @@ mod tests {
             sc
         );
 
-        let (_schk, llrs) = llrs_from_c5(&c3);
+        let (_schk, llrs, _snr_db) = llrs_from_c5(&c3);
         let res = ConvFano232
             .decode_soft(&llrs, &FecOpts::default())
             .expect("Fano must converge on clean synth via WSJT-X-faithful pipeline");

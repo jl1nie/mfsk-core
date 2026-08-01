@@ -1006,19 +1006,23 @@ assert!(!decodes.is_empty(), "roundtrip must decode");
 for d in decodes {
     match d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
-            println!("{:7.2} Hz  {} {} {}dBm", d.freq_hz, callsign, grid, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  {} {} {}dBm", d.freq_hz, d.snr_db, callsign, grid, power_dbm);
         }
         WsprMessage::Type2 { callsign, power_dbm } => {
-            println!("{:7.2} Hz  {} {}dBm", d.freq_hz, callsign, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  {} {}dBm", d.freq_hz, d.snr_db, callsign, power_dbm);
         }
         WsprMessage::Type3 { callsign_hash, grid6, power_dbm } => {
-            println!("{:7.2} Hz  <#{:05x}> {} {}dBm",
-                     d.freq_hz, callsign_hash, grid6, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  <#{:05x}> {} {}dBm",
+                     d.freq_hz, d.snr_db, callsign_hash, grid6, power_dbm);
         }
     }
 }
 # }
 ```
+
+`snr_db` is a wsprd-calibrated candidate SNR (dB, 2500 Hz reference)
+carried through from the coarse search — the same figure wsprd
+itself reports next to a spot.
 
 `decode_scan_default` runs the (frequency × time) coarse search over
 the whole slot internally. If the frequency and start sample are
@@ -1083,7 +1087,7 @@ let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
 let decodes = decode_scan_default(&audio_f32, 12_000);
 assert!(!decodes.is_empty(), "roundtrip must decode");
 for d in decodes {
-    println!("{:7.2} Hz  {}", d.freq_hz, d.message);
+    println!("{:7.2} Hz  {:+.0} dB  {}", d.freq_hz, d.snr_db, d.message);
 }
 # }
 ```
@@ -1091,6 +1095,14 @@ for d in decodes {
 JT65 additionally offers `decode_at_with_erasures` for low-SNR
 signals where RS erasure decoding can recover frames that the
 standard decoder misses.
+
+`Jt65Result::snr_db` and JT9's `Jt9Result::snr_db` are both
+decode-side estimates from the per-symbol signal-tone vs. other-tones
+power ratio; JT65's is converted to WSJT-X's 2500 Hz reference
+bandwidth the same way Q65's is, but JT9's is **not** — its
+multi-stage AGC/IFFT/coherent-sum pipeline doesn't reduce to a simple
+bandwidth offset, so `Jt9Result::snr_db` is relative-only (compare JT9
+decodes against each other, not against other protocols' `snr_db`).
 
 ## 7. Runtime registry & trait-surface verification
 

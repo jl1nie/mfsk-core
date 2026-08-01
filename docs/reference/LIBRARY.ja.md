@@ -977,20 +977,23 @@ assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず")
 for d in decodes {
     match d.message {
         WsprMessage::Type1 { callsign, grid, power_dbm } => {
-            println!("{:7.2} Hz  {} {} {}dBm", d.freq_hz, callsign, grid, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  {} {} {}dBm", d.freq_hz, d.snr_db, callsign, grid, power_dbm);
         }
         WsprMessage::Type2 { callsign, power_dbm } => {
-            println!("{:7.2} Hz  {} {}dBm", d.freq_hz, callsign, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  {} {}dBm", d.freq_hz, d.snr_db, callsign, power_dbm);
         }
         WsprMessage::Type3 { callsign_hash, grid6, power_dbm } => {
             // ハッシュは過去の Type-1 受信から解決できる場合がある
-            println!("{:7.2} Hz  <#{:05x}> {} {}dBm",
-                     d.freq_hz, callsign_hash, grid6, power_dbm);
+            println!("{:7.2} Hz  {:+.0} dB  <#{:05x}> {} {}dBm",
+                     d.freq_hz, d.snr_db, callsign_hash, grid6, power_dbm);
         }
     }
 }
 # }
 ```
+
+`snr_db` は粗同期の段階で計算済みの wsprd 準拠 SNR (dB, 2500 Hz
+基準) — wsprd 自身がスポットに添えて報告する値と同じもの。
 
 `decode_scan_default` が粗同期 (周波数×時刻探索) を込みでスロット全体を
 スキャンする。周波数・開始サンプルが既知の場合は
@@ -1053,7 +1056,7 @@ let audio_f32 = synthesize_standard("CQ", "K1ABC", "FN42", 12_000, 1270.0, 0.3)
 let decodes = decode_scan_default(&audio_f32, 12_000);
 assert!(!decodes.is_empty(), "ラウンドトリップは復号できるはず");
 for d in decodes {
-    println!("{:7.2} Hz  {}", d.freq_hz, d.message);
+    println!("{:7.2} Hz  {:+.0} dB  {}", d.freq_hz, d.snr_db, d.message);
 }
 # }
 ```
@@ -1061,6 +1064,16 @@ for d in decodes {
 JT65 はさらに `decode_at_with_erasures` を提供しており、
 低 SNR 環境で RS 消失復号が通常デコーダでは落とすフレームを
 回復できる。
+
+`Jt65Result::snr_db` と JT9 の `Jt9Result::snr_db` はどちらも、
+各シンボルで復号されたトーンの電力と他トーンの電力比から算出する
+decode 側の推定値。JT65 側は Q65 と同じ方法で WSJT-X の 2500 Hz
+基準帯域に変換しているが、JT9 側は変換していない —
+`jt9::softsym` の downsam9 → peakdt9 → symspec2 パイプラインは
+AGC スケーリング・非正規化 IFFT・コヒーレント和を経ており、
+JT65/Q65 で成立する帯域幅オフセットがそのまま適用できないため。
+`Jt9Result::snr_db` は相対値としてのみ扱うこと (JT9 同士の比較には
+使えるが、他プロトコルの `snr_db` とは比較不可)。
 
 ## 7. ランタイム registry と trait 面の検証
 

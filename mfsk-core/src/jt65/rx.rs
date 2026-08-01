@@ -41,7 +41,7 @@ pub fn demodulate_aligned(
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
 
-    let (syms, _conf) = demodulate_aligned_with_confidence_inner(
+    let (syms, _conf, _snr_db) = demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
         start_sample,
@@ -68,6 +68,31 @@ pub fn demodulate_aligned_with_confidence(
     start_sample: usize,
     base_freq_hz: f32,
 ) -> Option<([u8; 63], [f32; 63])> {
+    let (syms, conf, _snr_db) =
+        demodulate_aligned_with_confidence_and_snr(audio, sample_rate, start_sample, base_freq_hz)?;
+    Some((syms, conf))
+}
+
+/// Like [`demodulate_aligned_with_confidence`] but also returns a
+/// decode-side SNR estimate (dB): signal = power at each symbol's
+/// winning tone, noise = mean power of the other 63 candidate tones
+/// in the same symbol slot (same "opposite-bin" logic as
+/// [`crate::engine::llr::compute_snr_db_generic`] for FT8/FT4/FST4,
+/// generalised from a single opposite tone to a 63-tone average since
+/// JT65's data alphabet has no natural comb midpoint). Converted to
+/// WSJT-X's 2500 Hz reference bandwidth by `10·log10(2500/df)`, the
+/// same bandwidth-normalisation shape as FT8's `-27 dB` and wsprd's
+/// `-26.3 dB` constants (`engine/llr.rs`, `wspr/coarse_baseband.rs`) —
+/// **not independently calibrated** against a real JT65 signal corpus
+/// (`jt65sim` isn't buildable in this environment; see
+/// `tests/jt65_sweep.rs`), so treat as accurate to roughly ±1-2 dB
+/// versus WSJT-X's own JT65 SNR readout until validated.
+pub fn demodulate_aligned_with_confidence_and_snr(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<([u8; 63], [f32; 63], f32)> {
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
     let base_bin = (base_freq_hz / df).round() as usize;
@@ -102,11 +127,13 @@ fn demodulate_aligned_with_confidence_inner(
     buf: &mut [Complex<f32>],
     scratch: &mut [Complex<f32>],
     fft: &dyn rustfft::Fft<f32>,
-) -> Option<([u8; 63], [f32; 63])> {
+) -> Option<([u8; 63], [f32; 63], f32)> {
     // Walk 126 symbol windows. Data positions (NPRC[i] == 0) each get
     // argmax of 64 data-tone magnitudes (+ runner-up for confidence).
     let mut symbols = [0u8; 63];
     let mut conf = [0f32; 63];
+    let mut xsig_sum = 0.0f32;
+    let mut xnoi_sum = 0.0f32;
     let mut k = 0usize;
     for sym_idx in 0..126 {
         let sym_start = start_sample + sym_idx * nsps;
@@ -120,9 +147,11 @@ fn demodulate_aligned_with_confidence_inner(
         let mut best_tone = 0u8;
         let mut best_pwr = f32::NEG_INFINITY;
         let mut second_pwr = f32::NEG_INFINITY;
+        let mut total_pwr = 0.0f32;
         for tone in 0u8..64 {
             let bin = base_bin + 2 + tone as usize;
             let p = buf[bin].norm_sqr();
+            total_pwr += p;
             if p > best_pwr {
                 second_pwr = best_pwr;
                 best_pwr = p;
@@ -137,6 +166,8 @@ fn demodulate_aligned_with_confidence_inner(
         } else {
             0.0
         };
+        xsig_sum += best_pwr;
+        xnoi_sum += (total_pwr - best_pwr) / 63.0;
         k += 1;
     }
     debug_assert_eq!(k, 63);
@@ -152,7 +183,34 @@ fn demodulate_aligned_with_confidence_inner(
             }
         }
     }
-    Some((symbols, conf_perm))
+
+    const SNR_FLOOR_DB: f32 = -24.0;
+    // WSJT-X's own display convention ceiling. Also the answer when
+    // `xnoi_sum` is (near) exactly zero: a perfectly clean synthetic
+    // signal sampled with an integer number of cycles per FFT window
+    // can leave *zero* measurable leakage in the non-winning tones —
+    // that means "no measurable noise" (best case), not the worst
+    // case the floor implies. See the identical fix + explanation in
+    // `q65::rx::snr_db_from_sig_noi`.
+    const SNR_CEIL_DB: f32 = 49.0;
+    let snr_db = if xnoi_sum < f32::EPSILON {
+        if xsig_sum < f32::EPSILON {
+            SNR_FLOOR_DB
+        } else {
+            SNR_CEIL_DB
+        }
+    } else {
+        let ratio = xsig_sum / xnoi_sum - 1.0;
+        if ratio <= 0.001 {
+            SNR_FLOOR_DB
+        } else {
+            let bw_offset_db =
+                10.0 * (2500.0 / <Jt65 as ModulationParams>::TONE_SPACING_HZ).log10();
+            (10.0 * ratio.log10() - bw_offset_db).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
+        }
+    };
+
+    Some((symbols, conf_perm, snr_db))
 }
 
 #[cfg(test)]

@@ -418,8 +418,8 @@ fn push_ft4(r: &ft4::DecodeResult, vec: &mut Vec<MfskResult>) {
     vec.push(rec);
 }
 
-fn push_simple(freq_hz: f32, dt_sec: f32, text: String, vec: &mut Vec<MfskResult>) {
-    let mut rec = empty_result(freq_hz, dt_sec, 0.0, 0, 0);
+fn push_simple(freq_hz: f32, dt_sec: f32, snr_db: f32, text: String, vec: &mut Vec<MfskResult>) {
+    let mut rec = empty_result(freq_hz, dt_sec, snr_db, 0, 0);
     write_text(&mut rec.text, &text);
     vec.push(rec);
 }
@@ -689,6 +689,7 @@ fn decode_wspr(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
         push_simple(
             d.freq_hz,
             d.start_sample as f32 / 12_000.0,
+            d.snr_db,
             d.message.to_string(),
             &mut vec,
         );
@@ -700,20 +701,24 @@ fn decode_wspr(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
 /// JT9 decode at the canonical 1500 Hz carrier, slot-aligned at sample 0.
 /// Callers that want (freq × time) search should build that on top of
 /// `mfsk_core::jt9::decode_at` directly — the FFI takes the fixed-alignment
-/// path because it's the one the roundtrip test needs.
+/// path because it's the one the roundtrip test needs. This path uses the
+/// bare `decode_at` (not `decode_scan`/`Jt9Result`), which has no SNR
+/// estimate available; `snr_db` is `0.0` here, unlike `decode_jt9` (Q65-style
+/// scan) which would carry a real value if wired up.
 fn decode_jt9_aligned(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
     let mut vec: Vec<MfskResult> = Vec::new();
     if let Some(msg) = mfsk_core::jt9::decode_at(audio, 12_000, 0, 1500.0) {
-        push_simple(1500.0, 0.0, msg.to_string(), &mut vec);
+        push_simple(1500.0, 0.0, 0.0, msg.to_string(), &mut vec);
     }
     finalise(vec, out);
     MfskStatus::Ok
 }
 
+/// See [`decode_jt9_aligned`] — same fixed-alignment / no-SNR caveat.
 fn decode_jt65_aligned(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
     let mut vec: Vec<MfskResult> = Vec::new();
     if let Some(msg) = mfsk_core::jt65::decode_at(audio, 12_000, 0, 1270.0) {
-        push_simple(1270.0, 0.0, msg.to_string(), &mut vec);
+        push_simple(1270.0, 0.0, 0.0, msg.to_string(), &mut vec);
     }
     finalise(vec, out);
     MfskStatus::Ok
@@ -727,6 +732,7 @@ fn push_q65_decode(d: &mfsk_core::q65::Q65Result, vec: &mut Vec<MfskResult>) {
     push_simple(
         d.freq_hz,
         d.start_sample as f32 / 12_000.0,
+        d.snr_db,
         d.message.clone(),
         vec,
     );

@@ -97,6 +97,37 @@ pub fn decode_at(
     crate::msg::Jt72Codec::default().unpack(&payload, &DecodeContext::default())
 }
 
+/// Like [`decode_at`] but also returns the decode-side SNR estimate
+/// from [`rx::demodulate_aligned_with_confidence_and_snr`]. Used by
+/// [`decode_scan`] to populate [`Jt65Result::snr_db`]; kept private
+/// since [`decode_at`]'s return type is part of the stable surface
+/// mirrored by `jt9::decode_at`.
+fn decode_at_with_snr(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<(crate::msg::Jt72Message, f32)> {
+    use crate::engine::{DecodeContext, MessageCodec};
+
+    let (received, _conf, snr_db) = rx::demodulate_aligned_with_confidence_and_snr(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+    )?;
+    let rs = Rs63_12::new();
+    let (info, _nerr) = rs.decode_jt65(&received)?;
+    let mut payload = [0u8; 72];
+    for (i, bit) in payload.iter_mut().enumerate() {
+        let word = info[i / 6];
+        let shift = 5 - (i % 6);
+        *bit = (word >> shift) & 1;
+    }
+    let msg = crate::msg::Jt72Codec::default().unpack(&payload, &DecodeContext::default())?;
+    Some((msg, snr_db))
+}
+
 /// Decode a JT65 signal at a known alignment, trying progressively
 /// larger erasure counts until Reed-Solomon converges or the bound
 /// is exhausted. Unlike [`decode_at`], this method exploits
@@ -181,6 +212,11 @@ pub struct Jt65Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
     pub start_sample: usize,
+    /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
+    /// bandwidth convention) — see
+    /// [`rx::demodulate_aligned_with_confidence_and_snr`] for the
+    /// formula and its calibration caveat.
+    pub snr_db: f32,
 }
 
 /// Scan an audio buffer for JT65 frames at any (freq, time) within
@@ -198,7 +234,8 @@ pub fn decode_scan(
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Jt65Result> = Vec::new();
     for c in cands {
-        let Some(msg) = decode_at(audio, sample_rate, c.start_sample, c.freq_hz) else {
+        let Some((msg, snr_db)) = decode_at_with_snr(audio, sample_rate, c.start_sample, c.freq_hz)
+        else {
             continue;
         };
         let dup = seen.iter().any(|prev| {
@@ -211,6 +248,7 @@ pub fn decode_scan(
                 message: msg,
                 freq_hz: c.freq_hz,
                 start_sample: c.start_sample,
+                snr_db,
             });
         }
     }
