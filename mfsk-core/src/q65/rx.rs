@@ -201,8 +201,9 @@ pub struct Q65Result {
     /// BP iterations consumed by the QRA decoder.
     pub iterations: u32,
     /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
-    /// bandwidth convention) — see [`snr_db_narrow`]/[`snr_db_wide`].
-    /// Closes issue #226.
+    /// bandwidth convention), from the per-symbol signal-tone vs.
+    /// other-tones power ratio (`snr_db_narrow`/`snr_db_wide` in
+    /// `q65::rx`). Closes issue #226.
     pub snr_db: f32,
 }
 

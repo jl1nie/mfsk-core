@@ -8,9 +8,9 @@ use alloc::vec::Vec;
 
 use crate::msg::WsprMessage;
 
+use super::search::SearchParams;
 #[cfg(any())]
 use super::search::coarse_search;
-use super::search::SearchParams;
 
 /// One successful WSPR decode.
 #[derive(Clone, Debug)]
