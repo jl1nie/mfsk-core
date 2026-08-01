@@ -10,7 +10,7 @@ use crate::msg::WsprMessage;
 
 #[cfg(any())]
 use super::search::coarse_search;
-use super::search::{SearchParams, SyncCandidate}; // kept for synth round-trip lib tests
+use super::search::SearchParams;
 
 /// One successful WSPR decode.
 #[derive(Clone, Debug)]
@@ -33,6 +33,16 @@ pub struct WsprResult {
     /// `decode_scan_subtract` to reconstruct the 162-channel-symbol
     /// stream and subtract the signal from the audio for SIC.
     pub info_bits: [u8; 50],
+    /// wsprd-calibrated SNR estimate (dB, WSPR→2500 Hz reference
+    /// bandwidth), from the coarse-search candidate that produced this
+    /// decode — same `10·log10(smspec) − 26.3` formula wsprd itself
+    /// reports next to a spot (`wsprd.c:1093`, see
+    /// [`super::coarse_baseband::BasebandCandidate::snr_db`]). Set by
+    /// [`decode_scan`] / [`decode_scan_subtract`], which always go
+    /// through the coarse search; direct [`decode_at`] /
+    /// [`decode_at_baseband`] / [`decode_at_baseband_nblocks`] calls
+    /// have no coarse candidate to derive it from and leave this `0.0`.
+    pub snr_db: f32,
 }
 
 /// Decode one WSPR frame at a known (freq, start_sample). Returns `None`
@@ -213,6 +223,7 @@ pub fn decode_at_baseband_nblocks(
             start_sample: lag_audio.max(0) as usize,
             dt_sec,
             info_bits,
+            snr_db: 0.0,
         };
         let he = hard_errors;
         match message {
@@ -298,19 +309,11 @@ pub fn decode_scan(
     // baseband path. Kept the legacy module for synth round-trip
     // tests; not invoked here.
     let _ = nominal_shifted;
-    let mut cands: Vec<SyncCandidate> = bb_cands
-        .iter()
-        .map(|c| SyncCandidate {
-            start_sample: c.start_sample,
-            freq_hz: c.freq_hz,
-            score: c.sync,
-        })
-        .collect();
-    cands.sort_unstable_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
+    // `coarse_baseband` already returns candidates sorted by sync score
+    // descending — no remap/re-sort needed; keeping `BasebandCandidate`
+    // itself (rather than the legacy `SyncCandidate`) preserves each
+    // candidate's `snr_db` through to the decode below.
+    let mut cands = bb_cands;
     cands.truncate(params.max_candidates);
     let _audio = &padded[..]; // shadow so all downstream reads use padded buffer
     let mut seen: Vec<WsprResult> = Vec::new();
@@ -366,6 +369,7 @@ pub fn decode_scan(
         let start_refined = d.start_sample;
         d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
         d.start_sample = start_refined.saturating_sub(pad);
+        d.snr_db = c.snr_db;
         let dup = seen.iter().any(|prev| {
             prev.message == d.message
                 && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
@@ -430,6 +434,7 @@ pub fn decode_scan(
             let start_refined = d.start_sample;
             d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
             d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
             let dup = seen.iter().any(|prev| {
                 prev.message == d.message
                     && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ

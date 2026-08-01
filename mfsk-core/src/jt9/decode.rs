@@ -47,7 +47,7 @@ pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<J
     if !sync.is_finite() || sync < 1.0 {
         return None;
     }
-    let (schk, llrs) = llrs_from_c5(&c3);
+    let (schk, llrs, snr_db) = llrs_from_c5(&c3);
     if !schk.is_finite() || schk < 1.5 {
         return None;
     }
@@ -71,6 +71,7 @@ pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<J
         message: msg,
         freq_hz: freq_corrected,
         start_sample,
+        snr_db,
     })
 }
 
@@ -156,7 +157,7 @@ mod gate_diag {
                 let afc = super::super::softsym::afc9(&mut c3);
                 super::super::softsym::twkfreq_poly(&mut c3, [afc.a0, afc.a1, 0.0]);
                 let sync = (afc.syncpk + 1.0) / 4.0;
-                let (schk, llrs) = super::super::softsym::llrs_from_c5(&c3);
+                let (schk, llrs, _snr_db) = super::super::softsym::llrs_from_c5(&c3);
 
                 let mut hits = Vec::new();
                 for &lim in &[10_000u64, 30_000, 100_000] {

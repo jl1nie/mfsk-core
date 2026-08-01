@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset + `DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()` (#218, breaking) + FT8 `DecodeStrictness` wiring for the non-AP decode path (#221)
+## 0.8.0 — JT65 decode-chain bug fix (#24) + JT9 AWGN SNR sweep + Q65-15A/120D/120E/300A + fine-timing sensitivity fix + CQ-AP-hint parity note (#171) + BASIS removal (#162, breaking FFI change) + FT8 `DecodeDepth` redesign + auto-AP removal (issue #182 follow-up, breaking) + CCIR moderate/poor sweep gap closed (#190) + `DecodeRequest`/`SniperRequest` consolidation (#191, breaking) + `core::pipeline` dead-code cleanup (#192, breaking) + pre-#191 raw decode API demotion (#203, breaking) + `core` → `engine` module rename (#206, breaking) + FT8/FT4/FST4 `DecodeResult` unification (#194, breaking) + sealed `FecCodec` (#198) + Q65 `DecodeRequest`/`SniperRequest`/`MultiPeriodRequest` builder migration (#204, breaking) + unified `mfsk-ffi`/`mfsk-ffi-ft8` C-ABI conventions via new `mfsk-ffi-abi` shared crate (#205, breaking) + WSPR/JT9/JT65/Q65 decode-result naming convention (#206, breaking) + `downsample_cached` FFT-plan caching fix (#211) + wasm `+simd128` LLR vectorization (#208) + embedded-poc `+esp` compile fix (#215) + `DecodeRequest`/`SniperRequest::depth` → `.osd(bool)` (breaking) + FT8 `WsjtxDepth`/`wsjtx_depth` jt9-comparison preset + `DecodeRequest::flat()`/`.staged()` → `.sic_rounds(n)`/`.sic_early()` (#218, breaking) + FT8 `DecodeStrictness` wiring for the non-AP decode path (#221) + decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226, breaking)
 
 ### Added
 
@@ -859,6 +859,68 @@
   host figure in top-level summary tables (they're different code
   paths by construction now, not a temporary gap — see `DecodeDepth`'s
   own doc comment).
+
+- **`snr_db: f32` on `WsprResult`, `Jt65Result`, `Jt9Result`, and
+  `Q65Result`** (issue #226, breaking — new required struct field on
+  four public types). FT8/FT4/FST4 already share `engine::pipeline::
+  DecodeResult`, which carries `snr_db`; MSK144 has its own
+  (`SlotDecode::snr_db`, WSJT-X `mskrtd.f90` formula). The other four
+  WSJT-family decoders had **no** decode-side signal-quality field at
+  all — `mfsk-ffi`'s `push_simple` (used for WSPR, and the fixed-
+  alignment JT9/JT65 FFI entry points) was hardcoding `snr_db: 0.0`
+  for every one of them, which is why the gap wasn't visible from the
+  FFI surface. Filed after WebFT8 tried to wire up Q65 QSO-exchange
+  reports ("+NN"/"-NN") and found there was no SNR to report from —
+  auditing the sibling protocols for the same gap (prompted by "is a
+  missing field like this really just one mode's bug?") turned up all
+  three others too.
+
+  - **WSPR**: `wspr::coarse_baseband::BasebandCandidate` already
+    computed a wsprd-calibrated candidate SNR (`10·log10(smspec) −
+    26.3`, `wsprd.c:1093`) during coarse search — it was being
+    discarded before reaching `WsprResult`. `decode_scan`/
+    `decode_scan_subtract` now thread it through; direct
+    `decode_at`/`decode_at_baseband`/`decode_at_baseband_nblocks`
+    calls (no coarse candidate to derive it from) report `0.0`.
+  - **JT65** and **Q65**: new decode-side estimate — signal = power at
+    each data symbol's decoded tone, noise = mean power of the other
+    63 tones in the same per-symbol FFT bin (same "opposite-tone"
+    shape as `engine::llr::compute_snr_db_generic`, FT8/FT4/FST4),
+    converted to WSJT-X's 2500 Hz reference bandwidth via `10·log10
+    (2500/tone_spacing_hz)` — cross-checked against FT8's literal
+    `-27 dB` @ 6.25 Hz and wsprd's literal `-26.3 dB` @ ~5.1 Hz, both
+    within ~1 dB of that formula, so expect similar-order accuracy
+    pending real calibration. Q65's four wide-energies decode paths
+    (fast-fading metric, grid search) get a layout-aware variant of
+    the same estimator; Q65's info-symbols are re-encoded back to the
+    63-symbol channel codeword via `Q65Codec::encode` to know which
+    tone was "decoded" at each slot (AP-list paths use the winning
+    candidate codeword directly, no re-encode needed).
+  - **JT9**: same signal/noise decomposition, but **not** WSJT-X
+    2500 Hz-referenced — `jt9::softsym`'s `downsam9`→`peakdt9`→
+    `symspec2` pipeline runs the per-symbol power through AGC scaling,
+    an unnormalised IFFT, and a coherent sample sum before the tone
+    comparison, so the tone-spacing bandwidth offset that works for
+    JT65/Q65 doesn't apply; an initial attempt that borrowed it
+    produced an implausible reading (clean noiseless synth ≈ −4 dB).
+    `Jt9Result::snr_db` is documented as relative-only: useful to
+    compare JT9 decodes against each other, not against the other
+    protocols' dB2500 values.
+  - Caught in testing: the shared floor/ratio formula returned the
+    **-24 dB floor** for a perfectly clean noiseless synth signal
+    across all three new estimators, because an exactly-orthogonal
+    synthetic tone can leave literally zero measured power in the
+    non-signal bins — "no measurable noise" (the *best* case), which
+    the original floor-on-zero-noise branch (mirroring `engine::llr::
+    compute_snr_db_generic`'s existing behavior) reported as the
+    *worst* case instead. Fixed by returning a `+49 dB` ceiling
+    (matching WSJT-X's own display-clamp convention) when noise is
+    zero and signal isn't, in `q65::rx::snr_db_from_sig_noi`,
+    `jt65::rx`, and `jt9::softsym::symspec2_from_ss2`.
+  - `mfsk-ffi`'s `push_simple` now takes `snr_db` explicitly (WSPR and
+    Q65 pass the real value; the JT9/JT65 fixed-alignment entry points
+    still pass `0.0` — that path uses the bare `decode_at`, which has
+    no SNR estimate available, not `decode_scan`).
 
 ### Changed
 

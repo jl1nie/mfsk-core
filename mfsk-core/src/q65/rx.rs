@@ -200,6 +200,118 @@ pub struct Q65Result {
     pub start_sample: usize,
     /// BP iterations consumed by the QRA decoder.
     pub iterations: u32,
+    /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
+    /// bandwidth convention) — see [`snr_db_narrow`]/[`snr_db_wide`].
+    /// Closes issue #226.
+    pub snr_db: f32,
+}
+
+/// Shared floor/ratio/dB-conversion step for [`snr_db_narrow`] and
+/// [`snr_db_wide`]: `10·log10(xsig/xnoi − 1) − bw_offset_db`, clamped
+/// to a −24 dB floor — the same shape as
+/// [`crate::engine::llr::compute_snr_db_generic`] (FT8/FT4/FST4) and
+/// [`crate::jt65::rx::demodulate_aligned_with_confidence_and_snr`].
+fn snr_db_from_sig_noi(xsig: f32, xnoi: f32, bw_offset_db: f32) -> f32 {
+    const SNR_FLOOR_DB: f32 = -24.0;
+    // WSJT-X's own display convention ceiling (see e.g. WebFT8's
+    // `_autoReport()` clamp cited in issue #226). Also serves as this
+    // function's answer when `xnoi` is (near) exactly zero: for a
+    // perfectly clean synthetic signal sampled with an integer number
+    // of cycles per FFT window, DFT orthogonality can leave *zero*
+    // measurable leakage in the non-signal bins — that means "no
+    // measurable noise", the best case, not the worst. Reporting the
+    // floor there (an earlier version of this function did) is
+    // backwards, caught by `q65::rx::tests` decoding a noiseless
+    // synth and reading `-24 dB` instead of a very clean number.
+    const SNR_CEIL_DB: f32 = 49.0;
+    if xnoi < f32::EPSILON {
+        return if xsig < f32::EPSILON {
+            SNR_FLOOR_DB
+        } else {
+            SNR_CEIL_DB
+        };
+    }
+    let ratio = xsig / xnoi - 1.0;
+    if ratio <= 0.001 {
+        return SNR_FLOOR_DB;
+    }
+    (10.0 * ratio.log10() - bw_offset_db).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
+}
+
+/// Bandwidth-normalisation offset to WSJT-X's 2500 Hz reference:
+/// `10·log10(2500/df)` where `df` is the per-tone FFT bin bandwidth —
+/// same derivation as JT65's estimate (cross-checked against FT8's
+/// literal `-27 dB` @ 6.25 Hz and wsprd's literal `-26.3 dB` @ ~5.1 Hz,
+/// both within ~1 dB of this formula). Valid for Q65 because
+/// [`extract_data_energies`] puts each tone in exactly one per-symbol
+/// FFT bin, same as JT65's single-FFT demod — unlike JT9's multi-stage
+/// AGC/IFFT/coherent-sum pipeline, where this shape does *not* hold
+/// (see `jt9::softsym::symspec2_from_ss2`).
+fn q65_bw_offset_db<P: ModulationParams>() -> f32 {
+    10.0 * (2500.0 / P::TONE_SPACING_HZ).log10()
+}
+
+/// Decode-side SNR from **narrow** per-symbol energies
+/// ([`extract_data_energies`] / [`averaged_data_energies`] layout,
+/// `energies[64*k + t]`): signal = power at each data symbol's
+/// decoded tone (from `codeword`, the 63-symbol channel codeword —
+/// either re-encoded via [`fec::qra::Q65Codec::encode`] from the
+/// recovered info symbols, or the winning AP-list candidate), noise =
+/// mean power of the other 63 tones in the same symbol slot.
+fn snr_db_narrow<P: ModulationParams>(energies: &[f32], codeword: &[i32]) -> f32 {
+    let mut xsig = 0.0f32;
+    let mut xnoi = 0.0f32;
+    for (k, &sym) in codeword.iter().enumerate() {
+        let t = sym as usize;
+        if t >= 64 || 64 * (k + 1) > energies.len() {
+            continue;
+        }
+        let row = &energies[64 * k..64 * (k + 1)];
+        let sig = row[t];
+        let total: f32 = row.iter().sum();
+        xsig += sig;
+        xnoi += (total - sig) / 63.0;
+    }
+    snr_db_from_sig_noi(xsig, xnoi, q65_bw_offset_db::<P>())
+}
+
+/// Like [`snr_db_narrow`] but for the **wide** per-symbol energies
+/// layout from [`extract_data_energies_wide`] /
+/// [`averaged_data_energies_wide`] (used by every fast-fading-metric
+/// decode path). Each tone's bin sits at row offset `64 + tone *
+/// bins_per_tone` within the `64 * (2 + bins_per_tone)`-wide window —
+/// see [`extract_data_energies_wide`]'s doc comment for the layout
+/// derivation.
+fn snr_db_wide<P: ModulationParams>(energies: &[f32], sample_rate: u32, codeword: &[i32]) -> f32 {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let df = sample_rate as f32 / nsps as f32;
+    let bins_per_tone = (P::TONE_SPACING_HZ / df).round().max(1.0) as usize;
+    let bins_per_symbol = 64 * (2 + bins_per_tone);
+    let mut xsig = 0.0f32;
+    let mut xnoi = 0.0f32;
+    for (k, &sym) in codeword.iter().enumerate() {
+        let t = sym as usize;
+        if t >= 64 || bins_per_symbol * (k + 1) > energies.len() {
+            continue;
+        }
+        let row = &energies[bins_per_symbol * k..bins_per_symbol * (k + 1)];
+        let mut sig = 0.0f32;
+        let mut total = 0.0f32;
+        for tone in 0..64usize {
+            let idx = 64 + tone * bins_per_tone;
+            if idx >= row.len() {
+                continue;
+            }
+            let v = row[idx];
+            total += v;
+            if tone == t {
+                sig = v;
+            }
+        }
+        xsig += sig;
+        xnoi += (total - sig) / 63.0;
+    }
+    snr_db_from_sig_noi(xsig, xnoi, q65_bw_offset_db::<P>())
 }
 
 /// Decode a Q65 signal at a known `(start_sample, base_freq_hz)`
@@ -276,11 +388,16 @@ fn decode_at_inner<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
+    let mut codeword = [0_i32; 63];
+    codec.encode(&info_syms, &mut codeword);
+    let snr_db = snr_db_narrow::<P>(&energies, &codeword);
+
     Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
         iterations,
+        snr_db,
     })
 }
 
@@ -339,11 +456,16 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
+    let mut codeword = [0_i32; 63];
+    codec.encode(&info_syms, &mut codeword);
+    let snr_db = snr_db_wide::<P>(&energies, sample_rate, &codeword);
+
     Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
         iterations,
+        snr_db,
     })
 }
 
@@ -423,10 +545,12 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
-    let (_idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
+    let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+
+    let snr_db = snr_db_narrow::<P>(&energies, &candidates[idx]);
 
     Some(Q65Result {
         message: text,
@@ -436,6 +560,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
         // callers can still distinguish "decoded via templates" from
         // "decoded via BP" if they care.
         iterations: 0,
+        snr_db,
     })
 }
 
@@ -722,11 +847,15 @@ fn decode_at_grid_for<P: ModulationParams>(
                 let Some(text) = Q65Message.unpack(&bits77, &DecodeContext::default()) else {
                     continue;
                 };
+                let mut codeword = [0_i32; 63];
+                codec.encode(&info_syms, &mut codeword);
+                let snr_db = snr_db_wide::<P>(&energies, sample_rate, &codeword);
                 return Some(Q65Result {
                     message: text,
                     freq_hz: freq_shift,
                     start_sample: shifted_start,
                     iterations,
+                    snr_db,
                 });
             }
         }
@@ -862,16 +991,19 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
-    let (_idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
+    let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+
+    let snr_db = snr_db_narrow::<P>(&energies, &candidates[idx]);
 
     Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
         iterations: 0,
+        snr_db,
     })
 }
 
@@ -889,6 +1021,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
 /// 6 times over.
 fn decode_fading_with_energies<P: ModulationParams>(
     energies: &[f32],
+    sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
     b90_ts: f32,
@@ -915,11 +1048,16 @@ fn decode_fading_with_energies<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
+    let mut codeword = [0_i32; 63];
+    codec.encode(&info_syms, &mut codeword);
+    let snr_db = snr_db_wide::<P>(energies, sample_rate, &codeword);
+
     Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
         iterations,
+        snr_db,
     })
 }
 
@@ -946,11 +1084,16 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
+    let mut codeword = [0_i32; 63];
+    codec.encode(&info_syms, &mut codeword);
+    let snr_db = snr_db_narrow::<P>(&energies, &codeword);
+
     Some(Q65Result {
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
         iterations,
+        snr_db,
     })
 }
 
@@ -1065,6 +1208,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                     for &model in &fading_models {
                         if let Some(d) = decode_fading_with_energies::<P>(
                             &energies,
+                            sample_rate,
                             cand.start_sample,
                             cand.freq_hz,
                             b90,
