@@ -18,9 +18,8 @@ Q65, MSK144) behind a single generic core. The core
 (`engine` / `fec` / `msg`) is protocol-agnostic; each protocol is a
 small zero-sized type that plugs a FEC codec, a message codec and a
 sync mode into it. One receive flow runs for every wired protocol —
-`coarse-sync → refine → LLR → FEC decode → message unpack` (full
-diagram in §4) — with per-protocol strategy variations layered on top
-(§3). If you read nothing else, read **§0.3** (the layering), **§0.5**
+`coarse-sync → refine → LLR → FEC decode → message unpack` (diagram in
+§0.3) — with per-protocol strategy variations layered on top (§3). If you read nothing else, read **§0.3** (the layering), **§0.5**
 (what each protocol reuses vs. brings itself), **§1** (module & crate
 map) and **§3** (decode strategies).
 
@@ -79,6 +78,35 @@ plug-in that selects which pieces of that core it uses.
    `mfsk-ffi` (full C ABI, all protocols) and `mfsk-ffi-ft8` (FT8-only,
    embedded-friendly C ABI). Embedded targets under `embedded-poc/` are
    separate Cargo projects outside the workspace (§1, §8).
+
+At decode time those layers execute as one receive flow, shared by
+every wired protocol — free functions in `engine`, each generic over
+`P: Protocol` (function-level notes in §4):
+
+```text
+┌─────────┐  coarse_sync   ┌──────────────┐  refine_candidate  ┌──────────┐
+│ samples │ ─────────────▶ │  candidates  │ ─────────────────▶ │ candidate│
+│ i16/f32 │  (FFT/Costas)  │ (f, dt, snr) │   (fine sync)      │ refined  │
+└─────────┘                └──────────────┘                    └────┬─────┘
+                                                                    │  symbol_spectra
+                                                                    ▼
+                  ┌─────────────┐  compute_llr  ┌──────────────┐  equalize_local
+                  │   LLR vec   │ ◀───────────  │     cs[]     │ ◀──────────┐
+                  │  (4 vars)   │   (per WSJT)  │   Complex    │ (per-tone  │
+                  └──────┬──────┘               │  per-symbol  │  Wiener)   │
+                         │                      └──────────────┘            │
+                         │  P::Fec::decode_soft  (LDPC BP / Fano / RS /     │
+                         │                        QRA-symbol-level)         │
+                         ▼                                                  │
+                  ┌─────────────┐                                           │
+                  │ info bits   │                                           │
+                  └──────┬──────┘                                           │
+                         │  P::Msg::unpack                                  │
+                         ▼                                                  │
+                  ┌─────────────┐                                           │
+                  │ message txt │ ──── (subtract for next iter) ────────────┘
+                  └─────────────┘
+```
 
 Because `P: Protocol` is a **compile-time** type parameter,
 monomorphisation emits one fully-specialised copy per protocol — the
@@ -538,7 +566,7 @@ existing infrastructure it can reuse.
 ## 3. Decoder strategies (Q65 case study)
 
 **The shape of the decode across protocols.** Every protocol runs the
-same underlying flow (§4), but the *strategy* wrapped around it varies.
+same underlying flow (§0.3), but the *strategy* wrapped around it varies.
 Most protocols are a single pass; only Q65 exposes several parallel
 receiver chains for one FEC frame, and MSK144 replaces the slot model
 with a burst scan.
@@ -668,36 +696,14 @@ not yet part of the C ABI.
 
 ## 4. Shared primitives (`engine`)
 
-### Receive pipeline at a glance
+### Receive pipeline — the engine functions
 
-The complete receive flow for any wired protocol — from raw audio
-samples to decoded message text — is a chain of free functions in
-the `engine` submodules below, parameterised by `P: Protocol`:
-
-```text
-┌─────────┐  coarse_sync   ┌──────────────┐  refine_candidate  ┌──────────┐
-│ samples │ ─────────────▶ │  candidates  │ ─────────────────▶ │ candidate│
-│ i16/f32 │  (FFT/Costas)  │ (f, dt, snr) │   (fine sync)      │ refined  │
-└─────────┘                └──────────────┘                    └────┬─────┘
-                                                                    │  symbol_spectra
-                                                                    ▼
-                  ┌─────────────┐  compute_llr  ┌──────────────┐  equalize_local
-                  │   LLR vec   │ ◀───────────  │     cs[]     │ ◀──────────┐
-                  │  (4 vars)   │   (per WSJT)  │   Complex    │ (per-tone  │
-                  └──────┬──────┘               │  per-symbol  │  Wiener)   │
-                         │                      └──────────────┘            │
-                         │  P::Fec::decode_soft  (LDPC BP / Fano / RS /     │
-                         │                        QRA-symbol-level)         │
-                         ▼                                                  │
-                  ┌─────────────┐                                           │
-                  │ info bits   │                                           │
-                  └──────┬──────┘                                           │
-                         │  P::Msg::unpack                                  │
-                         ▼                                                  │
-                  ┌─────────────┐                                           │
-                  │ message txt │ ──── (subtract for next iter) ────────────┘
-                  └─────────────┘
-```
+The receive flow diagrammed in **§0.3** — `coarse_sync` →
+`refine_candidate` → `symbol_spectra` → `equalize_local` →
+`compute_llr` → `P::Fec::decode_soft` → `P::Msg::unpack`, with a
+`subtract` step feeding the next SIC iteration — is realised as a chain
+of free functions in the `engine` submodules, each parameterised by
+`P: Protocol`.
 
 There is no `Demodulator` or `Receiver` trait. The receive path is
 realised as free functions in `engine::sync`, `engine::llr`,
@@ -715,7 +721,7 @@ protocol type as a parameter and read `P`'s associated constants
 
 ### The public decode entry point: `DecodeRequest` / `SniperRequest`
 
-The engine functions in the diagram above (`coarse_sync`,
+The engine functions in the §0.3 diagram (`coarse_sync`,
 `decode_frame`, `process_candidate_basic`, …) are internal —
 `pub(crate)` since issue #191/#203. Applications drive them through
 two generic builders in `mfsk_core::msg::decode_request`, implemented

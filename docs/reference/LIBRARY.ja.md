@@ -18,7 +18,7 @@ FST4, WSPR, JT9, JT65, Q65, MSK144) を、1 つの汎用コアの上に純 Rust 
 各プロトコルは FEC コーデック・メッセージコーデック・sync mode をそこに
 差し込む小さな zero-sized type にすぎない。すべての実装済みプロトコルが
 同一の受信フロー — `coarse-sync → refine → LLR → FEC 復号 →
-メッセージ展開` (完全な図は §4) — を通り、その上にプロトコル毎の戦略
+メッセージ展開` (図は §0.3) — を通り、その上にプロトコル毎の戦略
 差分が載る (§3)。他を読まないなら、**§0.3** (層構造)、**§0.5** (各
 プロトコルが何を再利用し何を持ち込むか)、**§1** (モジュール & クレート
 地図)、**§3** (デコード戦略) を読むとよい。
@@ -75,6 +75,35 @@ mfsk-core は WSJT-X のアルゴリズムを Rust で再実装し、それを�
    `mfsk-ffi` (全プロトコルの C ABI) と `mfsk-ffi-ft8` (FT8 のみ、
    組込み向け C ABI)。`embedded-poc/` 以下の組込みターゲットは
    ワークスペース外の独立した Cargo プロジェクト (§1, §8)。
+
+デコード時、これらの層は 1 つの受信フローとして実行される。すべての
+実装済みプロトコルが共有し、`engine` 内の `P: Protocol` に対して汎用な
+自由関数の連なりである (関数レベルの注記は §4):
+
+```text
+┌─────────┐  coarse_sync   ┌──────────────┐  refine_candidate  ┌──────────┐
+│ samples │ ─────────────▶ │  candidates  │ ─────────────────▶ │ candidate│
+│ i16/f32 │  (FFT/Costas)  │ (f, dt, snr) │   (fine sync)      │ refined  │
+└─────────┘                └──────────────┘                    └────┬─────┘
+                                                                    │  symbol_spectra
+                                                                    ▼
+                  ┌─────────────┐  compute_llr  ┌──────────────┐  equalize_local
+                  │   LLR vec   │ ◀───────────  │     cs[]     │ ◀──────────┐
+                  │  (4 vars)   │   (per WSJT)  │   Complex    │ (per-tone  │
+                  └──────┬──────┘               │  per-symbol  │  Wiener)   │
+                         │                      └──────────────┘            │
+                         │  P::Fec::decode_soft  (LDPC BP / Fano / RS /     │
+                         │                        QRA-symbol-level)         │
+                         ▼                                                  │
+                  ┌─────────────┐                                           │
+                  │ info bits   │                                           │
+                  └──────┬──────┘                                           │
+                         │  P::Msg::unpack                                  │
+                         ▼                                                  │
+                  ┌─────────────┐                                           │
+                  │ message txt │ ──── (subtract for next iter) ────────────┘
+                  └─────────────┘
+```
 
 `P: Protocol` は**コンパイル時**の型パラメータなので、monomorphize が
 プロトコルごとに完全特殊化されたコピーを生成する—抽象化にランタイム
@@ -520,7 +549,7 @@ const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 ## 3. デコード戦略 (Q65 ケーススタディ)
 
 **プロトコル横断で見たデコードの形.** どのプロトコルも同一の下層フロー
-(§4) を回すが、その周りに巻く*戦略*は異なる。大半は単一パスで、同一 FEC
+(§0.3) を回すが、その周りに巻く*戦略*は異なる。大半は単一パスで、同一 FEC
 フレームに複数の並列受信経路を持つのは Q65 だけ、MSK144 はスロット
 モデルをバースト走査で置き換える。
 
@@ -645,37 +674,13 @@ C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
 
 ## 4. 共有プリミティブ (`engine`)
 
-### 受信パイプライン概観
+### 受信パイプライン — engine 関数群
 
-任意の wired プロトコルにおける受信フロー全体 — 生オーディオ
-サンプルから復号メッセージ文字列まで — は、以下に挙げる `engine`
-サブモジュール内のフリー関数群を `P: Protocol` でパラメタライズ
-して鎖状に呼び出した形になっている:
-
-```text
-┌─────────┐  coarse_sync   ┌──────────────┐  refine_candidate  ┌──────────┐
-│ samples │ ─────────────▶ │  candidates  │ ─────────────────▶ │ candidate│
-│ i16/f32 │  (FFT/Costas)  │ (f, dt, snr) │   (fine sync)      │ refined  │
-└─────────┘                └──────────────┘                    └────┬─────┘
-                                                                    │  symbol_spectra
-                                                                    ▼
-                  ┌─────────────┐  compute_llr  ┌──────────────┐  equalize_local
-                  │   LLR vec   │ ◀───────────  │     cs[]     │ ◀──────────┐
-                  │  (4 vars)   │   (per WSJT)  │   Complex    │ (per-tone  │
-                  └──────┬──────┘               │  per-symbol  │  Wiener)   │
-                         │                      └──────────────┘            │
-                         │  P::Fec::decode_soft  (LDPC BP / Fano / RS /     │
-                         │                        QRA-symbol-level)         │
-                         ▼                                                  │
-                  ┌─────────────┐                                           │
-                  │ info bits   │                                           │
-                  └──────┬──────┘                                           │
-                         │  P::Msg::unpack                                  │
-                         ▼                                                  │
-                  ┌─────────────┐                                           │
-                  │ message txt │ ──── (subtract for next iter) ────────────┘
-                  └─────────────┘
-```
+**§0.3** で図示した受信フロー — `coarse_sync` → `refine_candidate` →
+`symbol_spectra` → `equalize_local` → `compute_llr` →
+`P::Fec::decode_soft` → `P::Msg::unpack`、および次の SIC 反復に渡す
+`subtract` — は、`engine` サブモジュール内のフリー関数群を
+`P: Protocol` でパラメタライズして鎖状に呼び出した形で実現されている。
 
 `Demodulator` や `Receiver` という trait はない。受信経路は
 `engine::sync` / `engine::llr` / `engine::equalize` / `engine::pipeline` の
@@ -693,7 +698,7 @@ equalize / pipeline ドライバも同じスタイルで、プロトコル型を
 
 ### パブリックデコードエントリポイント: `DecodeRequest` / `SniperRequest`
 
-上図の engine 関数群 (`coarse_sync`、`decode_frame`、
+§0.3 の図の engine 関数群 (`coarse_sync`、`decode_frame`、
 `process_candidate_basic`、…) は issue #191/#203 以降内部実装
 (`pub(crate)`) である。アプリケーションはこれらを
 `mfsk_core::msg::decode_request` にある 2 つの generic builder 経由で
