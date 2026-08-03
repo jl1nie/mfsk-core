@@ -84,8 +84,9 @@ transient-burst timing don't fit the static-slot model every other
 protocol here shares, so no ZST implements `Protocol` for it — its own
 `msk144::decode::decode_slot` driver bypasses `engine::pipeline`
 entirely by design (see
-[`docs/reference/LIBRARY.md` §0.6](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#06-msk144--the-protocol-that-doesnt-use-the-abstraction)
-for why).
+[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+for why — see the MSK144 row and its footnote in the generic-vs-bespoke
+table).
 [`PROTOCOLS`](https://docs.rs/mfsk-core/latest/mfsk_core/static.PROTOCOLS.html)
 exposes one entry per wired ZST (so MSK144 doesn't appear there);
 `uvpacket` (when enabled) adds four more for its rate ladder. See
@@ -231,7 +232,10 @@ Decoded Message    77-/72-/50-bit unpack → callsign / grid / report
 This is the same shape for FT8's LDPC(174,91) and JT65's
 Reed-Solomon(63,12) — only the boxes' contents change per protocol.
 See [Design Philosophy](#design-philosophy) for how that's expressed
-in code (a `Protocol` trait, not per-mode copy-paste), and
+in code (a `Protocol` trait, not per-mode copy-paste),
+[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+for a per-protocol table of exactly which boxes are shared vs. bespoke,
+and
 [`docs/reference/LIBRARY.md` §4](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#4-shared-primitives-core)
 for the full data-flow diagram down to function level.
 

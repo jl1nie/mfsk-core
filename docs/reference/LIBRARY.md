@@ -40,28 +40,46 @@ runtimes (native Rust, WebAssembly, Android JNI, C ABI). The aim is
 to keep algorithmic equivalence with the upstream C++/Fortran code
 while broadening the set of platforms that can host it.
 
-### 0.3 Design approach
+### 0.3 The design in one picture: a generic core + per-protocol plug-ins
 
-Protocol-independent algorithms — DSP, sync, LLR, the equaliser,
-LDPC BP / OSD, Fano convolutional decoding, Reed-Solomon erasure
-decoding, and the shared parts of the message codec — live in the
-`engine`, `fec`, and `msg` modules. Each protocol is a comparatively
-small zero-sized type (ZST) that declares its own constants and the
-specific FEC / message codec it uses. The pipeline is driven through
-`DecodeRequest::<P>` (§4), taking `P: Protocol` as a compile-time type
-parameter so that monomorphisation produces specialised code per
-protocol. The abstraction does not add runtime cost.
+Read the crate bottom-up. There is a **generic core** that knows
+nothing about any specific protocol, and each protocol is a thin
+plug-in that selects which pieces of that core it uses.
 
-Some direct consequences of this approach:
+1. **`engine/`** — protocol-agnostic DSP, sync, LLR, the equaliser,
+   and the decode pipeline. Every function here is generic over
+   `P: Protocol` and reads the protocol's constants; it contains no
+   per-protocol branches.
+2. **`fec/`** — the forward-error-correction codec families, each an
+   `impl FecCodec`: LDPC (three sizes) + BP/OSD, convolutional + Fano,
+   Reed-Solomon, and the Q-ary QRA codec.
+3. **`msg/`** — the message codecs, each an `impl MessageCodec`, plus
+   the generic `DecodeRequest`/`SniperRequest` builders (§4) that drive
+   the whole pipeline.
+4. **A protocol** is a zero-sized type (ZST) implementing three
+   composable traits (`ModulationParams` + `FrameLayout` → `Protocol`,
+   §2). It carries only constants and two associated-type choices —
+   `type Fec` and `type Msg` — plus a `SYNC_MODE`. That is the entire
+   act of "adding a protocol": pick a FEC, pick a message codec, pick a
+   sync mode, declare the numbers.
+5. **The FFI crates** stack on top of `mfsk-core`:
+   `mfsk-ffi-abi` (shared `#[repr(C)]` status/result/options types) →
+   `mfsk-ffi` (full C ABI, all protocols) and `mfsk-ffi-ft8` (FT8-only,
+   embedded-friendly C ABI). Embedded targets under `embedded-poc/` are
+   separate Cargo projects outside the workspace (§1, §8).
 
-- The same algorithm implementation runs under native Rust, WASM,
-  Android, and C / C++.
-- Improvements to a shared path (e.g. LDPC BP) automatically benefit
-  every protocol that uses it.
-- Adding a new protocol tends to keep the diff confined to that
-  protocol's own code (see §2 for the concrete steps).
-- The C ABI in `mfsk-ffi` branches only once via `match protocol_id`;
-  past that point, the code is already specialised.
+Because `P: Protocol` is a **compile-time** type parameter,
+monomorphisation emits one fully-specialised copy per protocol — the
+abstraction has no runtime cost (§2, "Monomorphisation & zero cost").
+Direct consequences: the same algorithm runs under native Rust, WASM,
+Android and C/C++; an improvement to a shared path (e.g. LDPC BP)
+benefits every protocol that uses it; adding a protocol keeps the diff
+confined to that protocol's plug-in; and the C ABI branches once on
+`protocol_id`, already-specialised past that point.
+
+**§0.5 below is the payoff of this design** — a single table showing,
+for every protocol, exactly which core pieces it reuses (generic) and
+which it brings itself (bespoke).
 
 ### 0.4 Currently supported protocols
 
@@ -98,120 +116,83 @@ beacon variant (LDPC(240, 74), periods 120/300/900/1800 s), is a
 separate message format not covered here — see issue #23.
 
 **MSK144** is deliberately not in this table — no ZST implements
-`Protocol` for it. See §0.6.
+`Protocol` for it. See the MSK144 row and its footnote in §0.5.
 
-### 0.5 Checking that the design actually works — WSPR and Q65 as stress tests
+### 0.5 Generic vs bespoke, per protocol
 
-FT8, FT4 and FST4 share so much (LDPC FEC, 77-bit messages, block
-Costas sync) that their common code is unavoidable rather than a
-test of the abstraction. **WSPR** and **Q65** each push the trait
-surface along independent axes, and were absorbed without touching
-the FT-family code paths.
+This is the map to read first. Each row is one protocol; each cell
+says whether that layer is **shared** (reused verbatim from the
+generic core in §0.3) or **own** (code that lives in the protocol's
+own module). "Generic" and "bespoke" here mean exactly that — a shared
+cell costs the protocol nothing to author; an own cell is the work
+that protocol had to bring.
 
-#### WSPR — three orthogonal differences from the FT family
+| Protocol | FEC codec | Message codec | Sync mode | Decode entry point |
+|----------|-----------|---------------|-----------|--------------------|
+| **FT8**  | shared `Ldpc174_91` | shared `Wsjt77Message` (77-bit) | `Block` — 3×Costas-7 | generic `DecodeRequest`, dispatching to FT8's own `ft8::decode_block` engine [^ft8] |
+| **FT4**  | shared `Ldpc174_91` | shared `Wsjt77Message` (77-bit) | `Block` — 4×Costas-4 | generic `DecodeRequest` / `engine::pipeline` |
+| **FST4** | shared `Ldpc240_101` | shared `Wsjt77Message` (77-bit) | `Block` — 5×Costas-8 | generic `DecodeRequest` / `engine::pipeline` |
+| **WSPR** | own `ConvFano` (conv r=½ K=32 + Fano) | own `Wspr50Message` (50-bit) | own `Interleaved` [^wspr] | bespoke `wspr::decode` |
+| **JT9**  | own `ConvFano232` (conv, 206-bit framing) | shared `Jt72Codec` (72-bit) | `Block` (length-1 slots) | bespoke `jt9` entry |
+| **JT65** | own `Rs63_12` (RS GF(2⁶), erasure-aware) | shared `Jt72Codec` (72-bit) | `Block` (length-1 slots) | bespoke `jt65` entry |
+| **Q65**  | own `Q65Fec` + QRA codec over GF(64) [^q65] | own `Q65Message` (77-bit) | `Block` | bespoke `q65::rx` + Q65-local `DecodeRequest` |
+| **uvpacket** | shared `Ldpc240_101` (punctured) | own `UvPacketRawMessage` (byte-pipe) | `Block` — Costas-4 [^uv] | bespoke `uvpacket::rx` |
+| **MSK144** | shared `Ldpc128_90` + CRC-13 | shared `msg::wsjt77` (77-bit) | **none — opts out of `Protocol`** [^msk] | bespoke `msk144::decode::decode_slot` |
 
-1. **Different FEC family** — convolutional (r=½, K=32) with Fano
-   sequential decoding instead of LDPC. Added as
-   `mfsk_core::fec::conv::ConvFano`.
-2. **Different message length** — 50 bits instead of 77. Types 1, 2
-   and 3 are implemented in `mfsk_core::msg::wspr::Wspr50Message`.
-3. **Different sync structure** — the lower bit of every channel
-   symbol carries one bit of a fixed 162-bit sync vector, so sync is
-   not a block of Costas arrays. Captured by adding an `Interleaved`
-   variant to `FrameLayout::SYNC_MODE`.
+The pattern the table makes visible:
 
-#### Q65 — a third FEC family plus a five-way decoder-strategy axis
+- **FT8 / FT4 / FST4** are the "cheap" additions — LDPC + 77-bit
+  message + block-Costas sync, so almost everything is shared. Their
+  common code is a consequence of shared structure, not a test of the
+  abstraction.
+- **WSPR** swaps all three of *FEC family*, *message width* and *sync
+  mode* independently — the proof that those axes are genuinely
+  orthogonal.
+- **Q65** adds a third FEC family (non-binary QRA over GF(64)), ten
+  sub-modes from one macro, and five parallel decoder strategies (§3),
+  all still inside the same `Protocol` super-trait.
+- **uvpacket** is a non-WSJT applied example: it reuses only the FEC
+  mother code and bypasses the generic TX/RX pipeline (§10.1).
+- **MSK144** is the one protocol that opts out of the trait surface
+  entirely, yet still reuses the FEC and message layers.
 
-Q65 came later and stresses the abstraction along axes WSPR did not
-exercise:
+`§3` expands the Q65 decoder strategies; `§7` covers the `PROTOCOLS`
+registry and the generic `tests/protocol_invariants.rs` checker that
+enumerate and validate every wired ZST (24 in total: 20 WSJT-family
+protocols/sub-modes plus 4 `uvpacket` sub-modes).
 
-1. **Yet another FEC family** — Q-ary repeat-accumulate codes over
-   GF(64), running belief propagation on probability vectors via
-   non-binary Walsh-Hadamard messages. Added as
-   `mfsk_core::fec::qra` (the QRA codec) plus
-   `mfsk_core::fec::qra15_65_64` (Q65's specific code instance).
-2. **65-tone FSK with one reserved sync tone** — `NTONES = 65` while
-   `BITS_PER_SYMBOL = 6`. The data alphabet is GF(64); tone 0 is
-   the dedicated sync tone. This is the case that surfaced (and
-   fixed) the trait-doc inconsistency for `GRAY_MAP` length —
-   neither `== NTONES` nor `== 2^BITS_PER_SYMBOL` holds for every
-   protocol uniformly, so the contract was loosened to
-   `[2^BITS_PER_SYMBOL, NTONES]`.
-3. **Ten sub-modes sharing one impl block** — Q65-15A / Q65-30A for
-   terrestrial work, Q65-60A‥E for EME at 6 m / 70 cm / 23 cm
-   / 5.7 GHz / 10 GHz / 24 GHz+, and Q65-120D / Q65-120E / Q65-300A
-   for longer-period scatter modes. They differ only in NSPS and tone
-   spacing. The `q65_submode!` macro emits the per-sub-mode ZSTs
-   and their trait impls in one line each — no per-mode code
-   duplication.
-4. **Five parallel decoder strategies** — Q65 is the first protocol
-   in the library where the receiver chain has multiple legitimate
-   paths through the same FEC. They are listed in §3:
-   plain AWGN BP, AP-hint BP, fast-fading metric, AP-list
-   template matching, and multi-period EMA averaging. Each is a
-   builder method combination on `DecodeRequest`/`SniperRequest`/
-   `MultiPeriodRequest`, generic over the sub-mode ZST; the
-   underlying FEC and message codec are shared.
+[^ft8]: FT8 uses the generic `DecodeRequest` builder like FT4/FST4, but
+    internally routes through its own hand-tuned `ft8::decode_block`
+    engine (host + embedded shared) rather than `engine::pipeline`;
+    see §4 "FT8 block-decoder entry points" and §10.
 
-Where WSPR proved that *FEC family + message width + sync mode*
-could each be swapped independently, Q65 proves that adding a third
-FEC family, ten sub-modes and (now) five parallel decoder strategies
-all still fit inside the same `Protocol` super-trait without bespoke
-plumbing. §3 expands on the decoder strategies; §7 covers the
-`PROTOCOLS` registry that lets consumers enumerate every wired
-protocol (24 ZSTs in total: 20 WSJT-family protocols/sub-modes plus
-4 `uvpacket` sub-modes, §10.1) and the
-`tests/protocol_invariants.rs` generic checker that holds the trait
-contract honest.
+[^wspr]: `SyncMode::Interleaved` — the lower bit of every channel
+    symbol carries one bit of a fixed 162-bit sync vector, so sync is
+    not a block of Costas arrays. WSPR is the only user of this variant.
 
-### 0.6 MSK144 — the protocol that doesn't use the abstraction
+[^q65]: `Q65Fec::decode_soft` returns `None` **by design** — the real
+    decode runs over GF(64) probability vectors via the QRA codec
+    (`fec::qra` + `fec::qra15_65_64`), not bit-LLRs. `NTONES = 65` with
+    `BITS_PER_SYMBOL = 6` (tone 0 is a reserved sync tone) is the case
+    that loosened the `GRAY_MAP` length contract to
+    `[2^BITS_PER_SYMBOL, NTONES]`. See §1 "`FecCodec` is
+    symbol-agnostic" and §3.
 
-Every protocol in §0.4 shares one property underneath their
-differences: a coarse-sync → LLR → FEC pipeline running over one
-fixed-length slot, with 0..N frames sitting at (or near) a known
-nominal offset. **MSK144** (issue #25) breaks both halves of that
-assumption at once, and rather than force a fit, `msk144::decode`
-is its own top-level driver — it never touches `engine::pipeline`,
-`ModulationParams`, or `FrameLayout`, and no ZST implements
-`Protocol` for it at all. This is a step further than WSPR or Q65:
-those still adopt the trait surface (§0.5) even where their real
-decode logic bypasses the shared pipeline; MSK144 opts out of the
-trait surface itself.
+[^uv]: uvpacket bypasses the generic pipeline, so several of its
+    `ModulationParams` constants are decorative — present only to
+    satisfy the trait and the invariant test. See §10.1.
 
-1. **Not M-ary FSK.** MSK144 is continuous-phase binary MSK,
-   transmitted as offset-QPSK: bits map onto I/Q rails, each shaped
-   with a half-sine pulse. `ModulationParams`'s tone-index /
-   Gray-map / GFSK-shaping model has no useful mapping onto that
-   waveform. The modulator and matched-filter demodulator live in
-   `engine::dsp::msk` as plain functions, not a trait impl.
-2. **Not a static slot.** Every other protocol assumes a frame sits
-   at a known nominal offset inside one fixed-length slot buffer.
-   MSK144 instead repeats its 864-sample (72 ms) frame continuously
-   through the whole 15 s (or 30 s) T/R period — real transmissions
-   loop the same content back-to-back for the entire period — and a
-   receiver has to scan for wherever an ionized-trail ping happens to
-   land. `msk144::spd::detect_burst_candidates` (a squared-signal
-   two-tone spectral scan) plus `msk144::sync::msk144_sync` (a joint
-   CFO/symbol-timing matched-filter correlation) do that scanning,
-   ported from WSJT-X's `msk144spd.f90`/`msk144sync.f90` — not from
-   `engine::sync::coarse_sync`.
-
-What it *does* share with the rest of the library: the 77-bit
-`pack77`/`unpack77` message payload (`msg::wsjt77`, completely
-unchanged — MSK144's real WSJT-X encoder calls the same function
-FT8/FT4/FST4 do), and the generic LDPC belief-propagation/OSD engine
-(`fec::ldpc::bp`/`osd`), parameterised by a fourth `LdpcParams` impl
-for LDPC(128, 90) + CRC-13 (`fec::ldpc_128_90`) — added exactly the
-way `Ldpc240_101Params` was added for FST4, per that trait's own
-documented extension recipe. So the FEC and message layers extend
-the same way every prior addition has; only the modulation and
-frame-timing layers opt out, because there's nothing in
-`ModulationParams`/`FrameLayout` for a transient-burst, non-FSK
-protocol to plug into.
-
-Golden-WAV recall against both WSJT-X `samples/MSK144/*.wav`
-recordings is 3/3 (`tests/msk144_wsjtx_samples.rs`) — the divergent
-architecture doesn't cost recall.
+[^msk]: MSK144 (issue #25) is continuous-phase binary MSK sent as
+    offset-QPSK, and repeats an 864-sample frame through the whole T/R
+    period rather than sitting at a known offset in a fixed slot — so
+    neither `ModulationParams`/`FrameLayout` nor `engine::pipeline`
+    fit, and no ZST implements `Protocol` for it. Its own
+    `msk144::decode::decode_slot` driver scans for pings via
+    `msk144::spd`/`msk144::sync`. It still reuses the 77-bit
+    `msg::wsjt77` codec and the generic LDPC BP/OSD engine
+    (`fec::ldpc_128_90`, added the same way `Ldpc240_101` was for
+    FST4). Golden-WAV recall vs WSJT-X `samples/MSK144/*.wav` is 3/3
+    (`tests/msk144_wsjtx_samples.rs`).
 
 ## 1. Module layout
 
@@ -267,7 +248,7 @@ mfsk_core
 │   ├── tx.rs           65-FSK synthesiser (sub-mode-aware)
 │   ├── search.rs       coarse 22-symbol Costas-block search
 │   └── sync_pattern.rs Q65 distributed sync layout
-├── msk144/           MSK144 — no Protocol impl; own top-level driver (§0.6)
+├── msk144/           MSK144 — no Protocol impl; own top-level driver (§0.5)
 │   ├── tx.rs           codeword -> 864-sample complex OQPSK frame
 │   ├── sync.rs         joint (CFO, timing) matched-filter search
 │   ├── spd.rs          burst-candidate detector + short-ping decode loop
@@ -289,9 +270,14 @@ Each protocol module is gated behind a feature flag (`ft8`, `ft4`,
 `uvpacket`). The `engine`, `fec`, `msg` and `registry` modules are
 always available.
 
-The `mfsk-ffi` sibling crate in this workspace builds a C ABI
-shared library (`libmfsk.{so,a,dylib}` + `mfsk.h`) on top of the
-same crate.
+The workspace stacks three sibling crates on top of `mfsk-core`
+(§0.3): `mfsk-ffi-abi` holds the shared `#[repr(C)]` status / result /
+options types; `mfsk-ffi` builds the full C ABI shared library
+(`libmfsk.{so,a,dylib}` + `mfsk.h`, all protocols) on top of them; and
+`mfsk-ffi-ft8` builds a smaller FT8-only, embedded-friendly C ABI
+(`libmfsk_ft8`). Embedded application crates under `embedded-poc/` are
+separate Cargo projects outside the workspace and depend on
+`mfsk-core` by path.
 
 #### `FecCodec` is symbol-agnostic
 
@@ -931,7 +917,7 @@ which inner steps they enable:
 | `jt9`           | off     | JT9 ZST, decode                                              |
 | `jt65`          | off     | JT65 ZST, decode (+ erasure-aware RS)                        |
 | `q65`           | off     | Q65-15A/30A + Q65-60A‥E + Q65-120D/E/300A ZSTs, five decode strategies (§3), synth |
-| `msk144`        | off     | MSK144 — no `Protocol` ZST; own top-level driver (§0.6)       |
+| `msk144`        | off     | MSK144 — no `Protocol` ZST; own top-level driver (§0.5)       |
 | `packet-bytes`  | off     | `PacketBytesMessage` — byte-payload example `MessageCodec`    |
 | `uvpacket`      | off     | uvpacket — applied non-WSJT example, 4 sub-mode ZSTs (§10.1); pulls in `fst4` |
 | `full`          | off     | Aggregate of all protocol features above                      |
@@ -1371,53 +1357,34 @@ Full build instructions in `mfsk-ffi/examples/kotlin_jni/README.md`.
 | Q65-120E   | 120 s  | 65    | 85      | 12.0 Hz    | (same QRA codec) | 77 b  | (same)     | implemented (6 m ionoscatter) |
 | Q65-300A   | 300 s  | 65    | 85      | 0.289 Hz   | (same QRA codec) | 77 b  | (same)     | implemented (optical scatter, deepest AWGN) |
 
-FST4 does not share FT8's LDPC(174, 91); it uses a separate
-LDPC(240, 101) + 24-bit CRC, implemented as `fec::ldpc240_101`.
-The BP / OSD algorithms are structurally the same across LDPC
-sizes, so the new material is essentially the parity-check and
-generator tables together with the code dimensions. All five wired
-sub-modes (FST4-15/30/60A/120/300) are complete end-to-end,
-differing only in `NSPS` / `SYMBOL_DT` / `TONE_SPACING_HZ` (and
-`TX_START_OFFSET_S` for FST4-15 alone, which starts 0.5 s rather
-than 1.0 s into the slot); the `fst4_submode!` macro emits each ZST
-the same way `q65_submode!` does for Q65. FST4-900 and FST4-1800
-remain unwired (no user demand as of writing) but would follow the
-same pattern. FST4W — the WSPR-style one-way 50-bit beacon variant,
-LDPC(240, 74), periods 120/300/900/1800 s — is a separate message
-format entirely and is out of scope here; see issue #23 for status.
+The shared-vs-bespoke split for every protocol is the §0.5 table; the
+notes below add only the protocol-specific facts that table can't hold.
 
-WSPR is structurally different from the FT modes: it uses
-convolutional coding (`fec::conv::ConvFano`, ported from WSJT-X
-`lib/wsprd/fano.c`) rather than LDPC, a 50-bit message rather than
-77-bit (`msg::wspr::Wspr50Message`, covering Types 1 / 2 / 3), and
-a per-symbol interleaved sync (`SyncMode::Interleaved`) rather than
-block Costas arrays. The `wspr` module contributes its own TX
-synthesiser, RX demodulator, and a quarter-symbol spectrogram used
-to keep the coarse search over a 120-s slot within a reasonable time
-budget.
-
-JT9 reuses the same convolutional FEC family as WSPR, but as its own
-`ConvFano232` type (`fec::conv`) rather than literally sharing
-`ConvFano` — JT9's 206-bit codeword framing differs from WSPR's —
-plus a 72-bit JT message codec (`msg::jt72::Jt72Codec`). JT65 uses
-Reed-Solomon `fec::rs::Rs63_12` (re-exported as `fec::Rs63_12`) with
-erasure-aware decoding based on Karn's Berlekamp-Massey algorithm.
-
-Q65 introduces a third FEC family: Q-ary repeat-accumulate codes
-over GF(64), running non-binary belief propagation in the
-probability domain via Walsh-Hadamard messages
-(`fec::qra::QraCode` plus the concrete code instance
-`fec::qra15_65_64::QRA15_65_64_IRR_E23`). The application layer
-adds a CRC-12 over 13 user information symbols and punctures the
-two CRC symbols out of the 65-symbol codeword, giving the 63
-channel symbols actually transmitted. Ten wired sub-modes share
-the same FEC + sync layout + 77-bit message; only `NSPS`
-(15-s / 30-s / 60-s / 120-s / 300-s slot) and tone spacing
-(×1, ×2, ×4, ×8, ×16) differ between them. The five parallel decoder
-strategies introduced in
-§3 (AWGN BP, AP-hint BP, fast-fading metric, AP-list template
-matching, multi-period EMA averaging) all share the same QRA codec
-under the hood.
+- **FST4** — LDPC(240, 101) + 24-bit CRC (`fec::ldpc240_101`); the
+  BP/OSD code is the same across LDPC sizes, so the new material is
+  just the parity-check/generator tables and code dimensions. The five
+  wired sub-modes (FST4-15/30/60A/120/300) differ only in `NSPS` /
+  `SYMBOL_DT` / `TONE_SPACING_HZ` — plus `TX_START_OFFSET_S` for
+  FST4-15 alone (0.5 s rather than 1.0 s into the slot) — and are
+  emitted by the `fst4_submode!` macro, the same way `q65_submode!`
+  emits Q65's. FST4-900 / FST4-1800 remain unwired (no user demand).
+  FST4W — the WSPR-style one-way 50-bit beacon variant, LDPC(240, 74),
+  periods 120/300/900/1800 s — is a separate message format and out of
+  scope; see issue #23.
+- **WSPR** — `ConvFano` ported from WSJT-X `lib/wsprd/fano.c`;
+  `Wspr50Message` covers Types 1 / 2 / 3. The `wspr` module adds a
+  quarter-symbol spectrogram to keep the 120-s-slot coarse search
+  within a reasonable time budget.
+- **JT9 / JT65** — JT9's `ConvFano232` differs from WSPR's `ConvFano`
+  only in its 206-bit codeword framing; both feed the 72-bit
+  `Jt72Codec`. JT65's `Rs63_12` (re-exported `fec::Rs63_12`) does
+  erasure-aware decoding via Karn's Berlekamp-Massey.
+- **Q65** — QRA over GF(64) (`fec::qra::QraCode` + the code instance
+  `fec::qra15_65_64::QRA15_65_64_IRR_E23`); the application layer adds
+  a CRC-12 over 13 information symbols and punctures the two CRC
+  symbols out of the 65-symbol codeword, leaving the 63 channel symbols
+  transmitted. Ten sub-modes differ only in `NSPS` and tone spacing
+  (×1…×16); all five decoder strategies (§3) share the one QRA codec.
 
 ### 10.1 Scope boundary: `uvpacket` as an applied example
 
@@ -1461,32 +1428,16 @@ the trait surface is satisfied for enumeration/invariant purposes
 even though `tx::encode`/`rx::decode_known_layout` never read most
 of it.
 
-#### Dual-probe view of the trait scope
-
-The 0.4.0 release shipped two independent stress tests of the
-trait abstractions, in opposite directions:
-
-- **Q65 family expansion — *positive* probe.** Pushed the trait
-  surface to a non-binary code (QRA over GF(2⁶)) and four parallel
-  decoder strategies (AWGN / AP-hint / fast-fading / AP-list) without
-  bending the trait shape. The `Protocol` / `ModulationParams` /
-  `FrameLayout` / `FecCodec` / `MessageCodec` layers carried
-  through unchanged for six sub-modes generated from one macro.
-- **`uvpacket` — *negative* probe.** Stepped outside the WSJT
-  family on every axis (modulation, sync, message format, slot
-  policy) and observed where the abstraction naturally peels away.
-  FEC + DSP + channel-test infrastructure carried over; the
-  generic TX/RX pipeline and the message-codec / AP-compat traits
-  did not.
-
-The peeling is evidence that the trait surface is **right-sized
-for the WSJT protocol family**, not evidence of a missing
-generalisation. A general-purpose PHY framework would have to
-abstract `SYNC_MODE` beyond "Costas blocks or interleaved" to
-cover m-sequences, equaliser state, RRC pulse shaping, etc.; the
-WSJT code paths would pay the indirection cost for no in-family
-benefit. See [`docs/reference/UVPACKET.md`](UVPACKET.md) §0 for the same
-view from the applied-example side.
+Where Q65 (§0.5) shows the trait surface absorbing a third FEC family
+and ten sub-modes *without* bending, uvpacket shows where it naturally
+peels away: FEC + DSP + channel-test infrastructure carry over, but the
+generic TX/RX pipeline and the message-codec / AP-compat traits do not.
+That peeling is a sign the trait surface is **right-sized for the WSJT
+family**, not a missing generalisation — abstracting `SYNC_MODE` beyond
+"Costas blocks or interleaved" to cover m-sequences, equaliser state
+and RRC shaping would make the WSJT paths pay indirection for no
+in-family benefit. See [`docs/reference/UVPACKET.md`](UVPACKET.md) §0
+for the same view from the applied-example side.
 
 For the full uvpacket design narrative, AX.25 / M17 / D-STAR / DMR
 / VARA comparison, and characterisation curves, see
