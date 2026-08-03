@@ -12,6 +12,17 @@ C/C++ から `libmfsk.so` をリンクする場合、Kotlin/Android で JNI 雛�
 
 ## 0. はじめに
 
+**mfsk-core を一段落で.** WSJT-X の弱信号デジタル復号器 (FT8, FT4,
+FST4, WSPR, JT9, JT65, Q65, MSK144) を、1 つの汎用コアの上に純 Rust で
+再実装したもの。コア (`engine` / `fec` / `msg`) はプロトコル非依存で、
+各プロトコルは FEC コーデック・メッセージコーデック・sync mode をそこに
+差し込む小さな zero-sized type にすぎない。すべての実装済みプロトコルが
+同一の受信フロー — `coarse-sync → refine → LLR → FEC 復号 →
+メッセージ展開` (完全な図は §4) — を通り、その上にプロトコル毎の戦略
+差分が載る (§3)。他を読まないなら、**§0.3** (層構造)、**§0.5** (各
+プロトコルが何を再利用し何を持ち込むか)、**§1** (モジュール & クレート
+地図)、**§3** (デコード戦略) を読むとよい。
+
 ### 0.1 背景
 
 FT8 / FT4 / FST4 / WSPR / JT9 / JT65 をはじめとする弱信号デジタル
@@ -259,13 +270,20 @@ mfsk_core
 `wspr`、`jt9`、`jt65`、`q65`、`msk144`、`packet-bytes`、`uvpacket`)
 で gate されている。`engine`、`fec`、`msg`、`registry` は常時利用可能。
 
-ワークスペースは `mfsk-core` の上に 3 つの兄弟クレートを積み重ねる
-(§0.3): `mfsk-ffi-abi` が共有の `#[repr(C)]` status / result / options
-型を持ち、`mfsk-ffi` がその上に全プロトコルの C ABI 共有ライブラリ
-(`libmfsk.{so,a,dylib}` + `mfsk.h`) を構築し、`mfsk-ffi-ft8` はより
-小さい FT8 のみ・組込み向け C ABI (`libmfsk_ft8`) を構築する。
-`embedded-poc/` 以下の組込みアプリクレートはワークスペース外の独立した
-Cargo プロジェクトで、`mfsk-core` に path 依存する。
+### ワークスペースのクレート
+
+Cargo ワークスペースは `mfsk-core` の上に積み重なる 4 クレート:
+
+| クレート | 責務 | いつ使う |
+|---------|------|---------|
+| `mfsk-core` | ライブラリ本体: 全復号器 / 合成器と汎用 `Protocol` コア (`engine` / `fec` / `msg`)。ホスト (rustfft) または差し替え可能な FFT バックエンドで `no_std` + alloc。 | Rust / WASM / 組込みから利用する。他のすべての土台。 |
+| `mfsk-ffi-abi` | 共有の `#[repr(C)]` status / result / options 型 (ロジックなし)。 | 内部用 — 2 つの FFI クレートが同じ ABI 形状を共有するため。 |
+| `mfsk-ffi` | 全プロトコルの C ABI: `libmfsk.{so,a,dylib}` + 生成 `mfsk.h` (`features = ["full"]`)。 | 任意のプロトコルが要る C / C++ / Kotlin から (§8, §9)。 |
+| `mfsk-ffi-ft8` | より小さい **FT8 のみ**・組込み向け C ABI: `libmfsk_ft8`、ホストまたは `no_std` 固定小数点。 | MCU / サイズ制約があり FT8 だけでよいビルド。 |
+
+`embedded-poc/` 以下の組込みアプリクレート (ESP32-S3, RP2350,
+Cortex-M) はワークスペース**外**の独立した Cargo プロジェクトで、
+`mfsk-core` に path 依存する。
 
 #### `FecCodec` はシンボル粒度から独立
 
@@ -500,6 +518,24 @@ const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
    1 行追加するだけで構造健全性チェックが自動的に走る。
 
 ## 3. デコード戦略 (Q65 ケーススタディ)
+
+**プロトコル横断で見たデコードの形.** どのプロトコルも同一の下層フロー
+(§4) を回すが、その周りに巻く*戦略*は異なる。大半は単一パスで、同一 FEC
+フレームに複数の並列受信経路を持つのは Q65 だけ、MSK144 はスロット
+モデルをバースト走査で置き換える。
+
+| プロトコル | 汎用 (既定) 戦略 | 特殊 / 任意の戦略 |
+|-----------|-----------------|------------------|
+| **FT8**  | 単一パス BP + OSD | AP iaptype ループ (1–12); SIC 1–3 ラウンド (`.sic_rounds`/`.sic_early`) — §4 |
+| **FT4**  | 単一パス BP + OSD | SIC 1–3 ラウンド; 全スロット coherent 同期 (`sync2d`) — §4 |
+| **FST4** | 単一パス BP + OSD | 全スロット 2 段 coherent 同期探索 — §4 |
+| **WSPR** | 単一の専用パス (四半シンボル スペクトログラム走査) | — |
+| **JT9**  | 単一の専用パス | — |
+| **JT65** | 単一の専用パス | RS 消失復号 (`decode_at_with_erasures`) — §6.5 |
+| **Q65**  | `(Δf,Δt,b90)` グリッド + Lorentzian fading BP (scan) | AP-hint, 明示 fast-fading, AP-list, multi-period — **本節** |
+| **MSK144** | T/R 期間全体のバースト走査 (静的スロットではない) | — |
+
+以下は最も豊富なケースである Q65 を詳述する。
 
 このライブラリの大半のプロトコルはデコード経路が 1 通りしかない
 (FT 系列の `DecodeRequest::<P>` (§4「パブリックデコードエントリ

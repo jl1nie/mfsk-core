@@ -12,6 +12,18 @@ into *why* and *how*.
 
 ## 0. Introduction
 
+**mfsk-core in one paragraph.** A pure-Rust reimplementation of the
+WSJT-X weak-signal digital decoders (FT8, FT4, FST4, WSPR, JT9, JT65,
+Q65, MSK144) behind a single generic core. The core
+(`engine` / `fec` / `msg`) is protocol-agnostic; each protocol is a
+small zero-sized type that plugs a FEC codec, a message codec and a
+sync mode into it. One receive flow runs for every wired protocol —
+`coarse-sync → refine → LLR → FEC decode → message unpack` (full
+diagram in §4) — with per-protocol strategy variations layered on top
+(§3). If you read nothing else, read **§0.3** (the layering), **§0.5**
+(what each protocol reuses vs. brings itself), **§1** (module & crate
+map) and **§3** (decode strategies).
+
 ### 0.1 Background
 
 The weak-signal digital modes addressed by this library — FT8, FT4,
@@ -270,14 +282,20 @@ Each protocol module is gated behind a feature flag (`ft8`, `ft4`,
 `uvpacket`). The `engine`, `fec`, `msg` and `registry` modules are
 always available.
 
-The workspace stacks three sibling crates on top of `mfsk-core`
-(§0.3): `mfsk-ffi-abi` holds the shared `#[repr(C)]` status / result /
-options types; `mfsk-ffi` builds the full C ABI shared library
-(`libmfsk.{so,a,dylib}` + `mfsk.h`, all protocols) on top of them; and
-`mfsk-ffi-ft8` builds a smaller FT8-only, embedded-friendly C ABI
-(`libmfsk_ft8`). Embedded application crates under `embedded-poc/` are
-separate Cargo projects outside the workspace and depend on
-`mfsk-core` by path.
+### Workspace crates
+
+The Cargo workspace is four crates stacked on `mfsk-core`:
+
+| Crate | Responsibility | Use when |
+|-------|----------------|----------|
+| `mfsk-core` | The library itself: every decoder / synthesiser plus the generic `Protocol` core (`engine` / `fec` / `msg`). Host (rustfft) or `no_std` + alloc via a pluggable FFT backend. | You consume it from Rust, WASM, or embedded — the base everything else builds on. |
+| `mfsk-ffi-abi` | The shared `#[repr(C)]` status / result / options types (no logic). | Internal — depended on by both FFI crates so they share one ABI shape. |
+| `mfsk-ffi` | The full C ABI: `libmfsk.{so,a,dylib}` + generated `mfsk.h`, **all** protocols (`features = ["full"]`). | C / C++ / Kotlin consumers needing any protocol (§8, §9). |
+| `mfsk-ffi-ft8` | A smaller **FT8-only**, embedded-friendly C ABI: `libmfsk_ft8`, host or `no_std` fixed-point. | MCUs / size-constrained builds that only need FT8. |
+
+Embedded application crates under `embedded-poc/` (ESP32-S3, RP2350,
+Cortex-M) are separate Cargo projects **outside** the workspace and
+depend on `mfsk-core` by path.
 
 #### `FecCodec` is symbol-agnostic
 
@@ -518,6 +536,25 @@ existing infrastructure it can reuse.
    ZST after a one-line addition there.
 
 ## 3. Decoder strategies (Q65 case study)
+
+**The shape of the decode across protocols.** Every protocol runs the
+same underlying flow (§4), but the *strategy* wrapped around it varies.
+Most protocols are a single pass; only Q65 exposes several parallel
+receiver chains for one FEC frame, and MSK144 replaces the slot model
+with a burst scan.
+
+| Protocol | Generic (default) strategy | Special / optional strategies |
+|----------|----------------------------|-------------------------------|
+| **FT8**  | single-pass BP + OSD | AP iaptype loop (1–12); SIC 1–3 rounds (`.sic_rounds`/`.sic_early`) — §4 |
+| **FT4**  | single-pass BP + OSD | SIC 1–3 rounds; full-slot coherent sync (`sync2d`) — §4 |
+| **FST4** | single-pass BP + OSD | full-slot two-stage coherent sync search — §4 |
+| **WSPR** | single bespoke pass (quarter-symbol spectrogram scan) | — |
+| **JT9**  | single bespoke pass | — |
+| **JT65** | single bespoke pass | RS erasure decode (`decode_at_with_erasures`) — §6.5 |
+| **Q65**  | `(Δf,Δt,b90)` grid + Lorentzian fading BP (scan) | AP-hint, explicit fast-fading, AP-list, multi-period — **this section** |
+| **MSK144** | burst-scan over the whole T/R period (not a static slot) | — |
+
+The rest of this section details Q65, the richest case.
 
 Most protocols in this library expose a single decoder entry point:
 `DecodeRequest::<P>` for the FT family (§4, "The public decode entry
