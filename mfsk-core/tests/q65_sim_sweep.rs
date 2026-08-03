@@ -36,7 +36,7 @@
 //! (10 GHz rainscatter), Q65-120E (6 m ionoscatter), Q65-300A
 //! (optical scatter) — chosen because WSJT-X ships real off-air
 //! reference recordings for exactly these three (see
-//! `docs/reference/LIBRARY.md` §0.5). This sweep intentionally
+//! `docs/reference/LIBRARY.md` §0.4). This sweep intentionally
 //! covers only what's shipped, not a hypothetical superset — same
 //! scoping call as `tests/jt65_sweep.rs`/`tests/jt9_sweep.rs`.
 //!
