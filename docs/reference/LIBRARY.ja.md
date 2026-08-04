@@ -858,24 +858,24 @@ dedupe)、`decode_frame_subtract::<P>` (3-pass SIC ドライバ)、
 subtract) を使用。旧 `subtract_signal_weighted` /
 `qsb_partial_gain` 系は削除済。
 
-`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は 4 つのメソッドを持つ
-が、プロトコルごとに「実際に効くか」が異なる — `.strictness(...)`
-が何かを変えるかどうかは呼び出し先次第なので注意:
+`DecodeStrictness` (`Strict`/`Normal`/`Deep`) は 3 つのメソッドを持つ
+(4 つ目の `osd_score_min()` — OSD 実行前の coarse-sync スコアゲート
+— は issue #230 で完全に削除済み: FST4・FT4 両方でバイパスされてお
+り、どのプロトコルにも生きた呼び出し元が残っていなかったため)。
+プロトコルごとに「実際に効くか」が異なる — `.strictness(...)` が何
+かを変えるかどうかは呼び出し先次第なので注意:
 
-* `osd_score_min()` / `osd_max_errors()` — OSD 実行前の coarse-sync
-  スコアしきい値と、OSD 後の硬判定エラー上限ゲート (`osd_depth` 別)。
-  **実質 FT4 専用。** `osd_score_min` は FST4・FT4 両方でバイパス済み
-  (`engine/pipeline.rs` の `bypass_osd_score_min` — FST4 は WSJT-X 自
-  身の FST4 受理判定 `fst4_decode.f90:570`: `nharderrors >= 0 &&
-  unpk77_success` に合わせて CRC-24 のみを信頼、スコア事前フィルタ
-  なし。FT4 も同じ症状に独立して行き当たり同じバイパスを適用)。
-  `osd_max_errors` は FST4 バイパスのままだが FT4 では**生きている**
-  — 実際の `ft4sim` AWGN/CCIR sweep で再較正済み (issue #72、
-  2026-07-18)。もはや FT8 較正値のプレースホルダーではない。**名前
-  に反して、FT8 はこの 2 メソッドをこれまで一度も呼んでいなかった**
-  — FT8 自身の OSD dispatch は hardcoded 定数を使っていた (下記
-  `ft8_nharderrors_max` 参照)。旧版の本ドキュメントが「FT8 較正値」
-  と誤って説明していた箇所を訂正。
+* `osd_max_errors()` — OSD 後の硬判定エラー上限ゲート (`osd_depth`
+  別)。**実質 FT4 専用。** FST4 ではバイパス済み
+  (`engine/pipeline.rs` の `is_fst4` — FST4 は WSJT-X 自身の FST4
+  受理判定 `fst4_decode.f90:570`: `nharderrors >= 0 &&
+  unpk77_success` に合わせて CRC-24 のみを信頼、そのようなゲートは
+  無し) だが FT4 では**生きている** — 実際の `ft4sim` AWGN/CCIR
+  sweep で再較正済み (issue #72、2026-07-18)。もはや FT8 較正値の
+  プレースホルダーではない。**名前に反して、FT8 はこのメソッドを
+  これまで一度も呼んでいなかった** — FT8 自身の OSD dispatch は
+  hardcoded 定数を使っていた (下記 `ft8_nharderrors_max` 参照)。旧版
+  の本ドキュメントが「FT8 較正値」と誤って説明していた箇所を訂正。
 * `ap_max_errors(locked_bits)` — AP 付き decode の硬判定エラー上限、
   locked-bit 数で段階化。FT8 の per-candidate AP loop と FT4/FST4 の
   AP sniper (`msg::pipeline_ap`) 双方で生きている — 両呼び出し箇所で

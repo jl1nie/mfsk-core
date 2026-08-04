@@ -500,10 +500,12 @@ fn ft4_diag_weak_trials() {
 /// `try_decode_at` that mirrors `process_candidate_basic`'s LLR/BP/OSD
 /// tail (symbol_spectra -> sync_quality -> BP variants -> OSD) for an
 /// explicit `(freq_hz, i0)` rather than re-running the full search — the
-/// gate is intentionally permissive (skips the `cand.score >=
-/// osd_score_min` check) to give a segment-2/3 rescue its best possible
-/// chance. A rescue here means WSJT-X's literal per-segment retry
-/// structure is worth porting; a clean floor rules it out for pure AWGN.
+/// gate is intentionally permissive (no pre-OSD score check — matches
+/// production since issue #230 removed the `osd_score_min` gate this
+/// diagnostic used to skip around) to give a segment-2/3 rescue its best
+/// possible chance. A rescue here means WSJT-X's literal per-segment
+/// retry structure is worth porting; a clean floor rules it out for pure
+/// AWGN.
 #[test]
 #[ignore = "manual diagnostic — 3-segment Δt-search retry hypothesis (issue #72)"]
 fn ft4_diag_segment_retry() {
@@ -672,11 +674,12 @@ fn ft4_diag_segment_retry() {
                     if seg_idx > 0 && s2.score < smax1 {
                         continue;
                     }
-                    // Same OSD-attempt score gate production uses
-                    // (`cand.score >= strictness.osd_score_min()`,
-                    // `core/pipeline.rs`) — BP is still attempted
-                    // unconditionally either way, matching production.
-                    let allow_osd = c.score >= DecodeStrictness::Normal.osd_score_min();
+                    // Production has no pre-OSD score gate at all since
+                    // issue #230 (`osd_score_min` removed — it had no
+                    // live caller). Always attempt OSD once BP fails,
+                    // matching production; BP itself is still attempted
+                    // unconditionally either way.
+                    let allow_osd = true;
                     if let Some((hard_errors, msg77)) =
                         try_decode_at(&cd0, s2.freq_hz, c.freq_hz, s2.i0, ds_rate, allow_osd)
                     {
