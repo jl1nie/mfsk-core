@@ -210,9 +210,9 @@ fn osd_escalation_gates_impl<P: Protocol>() -> (u32, u32) {
 
 /// Decode strictness: trades off sensitivity vs false-positive rate.
 ///
-/// `process_candidate_basic` bypasses both `osd_score_min` and
-/// `osd_max_errors` for FST4 (see the `is_fst4` gate below — issue #146:
-/// WSJT-X's own FST4 decoder has no such gates), so in practice these
+/// `process_candidate_basic` bypasses `osd_max_errors` for FST4 (see the
+/// `is_fst4` gate below — issue #146: WSJT-X's own FST4 decoder has no
+/// such gate), so in practice these
 /// numbers are FT4-exclusive. `Normal` (FT4's hardcoded strictness,
 /// issue #72) was retuned 2026-07-18 against a `ft4sim` AWGN/CCIR sweep
 /// (`docs/notes/FT4_BENCHMARK.md`) — no longer a placeholder copy of the
@@ -248,17 +248,6 @@ impl DecodeStrictness {
             (Self::Deep, 3) => 30,
             (Self::Deep, 4) => 36,
             (Self::Deep, _) => 40,
-        }
-    }
-
-    /// Minimum coarse-sync score to enter OSD fallback.
-    ///
-    /// `Normal` retuned alongside `osd_max_errors` above (issue #72).
-    pub fn osd_score_min(self) -> f32 {
-        match self {
-            Self::Strict => 3.0,
-            Self::Normal => 1.8,
-            Self::Deep => 2.0,
         }
     }
 
@@ -609,49 +598,31 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
             variants.push((&llr_set.llrc, 2));
             variants.push((&llr_set.llrd, 3));
 
-            // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has neither of
-            // the gates below: `decode240_101` is called unconditionally
-            // after BP fails (no coarse-sync-score pre-filter), and its
-            // only acceptance test is `nharderrors.ge.0 .and.
-            // unpk77_success` (`fst4_decode.f90:570`) — i.e. "OSD
-            // converged to a CRC-24-verified codeword", full stop, no
-            // upper bound on how many bits OSD had to flip to get there.
-            // `osd_score_min`/`osd_max_errors` are FT8-calibrated
-            // (doc'd as "can re-tune later", issue #72) and were never
-            // re-tuned for FST4: near its own sensitivity threshold,
-            // every real candidate's coarse-sync score sat below
-            // `osd_score_min` (blocking OSD entirely) and every OSD
-            // result that *did* run had a CRC-verified hard-error count
-            // above `osd_max_errors` (rejected despite being provably
-            // correct) — issue #146. Bypass both for FST4 to match
-            // WSJT-X: attempt OSD whenever plain BP fails (still gated on
-            // `nsync` the same as every other protocol), and trust the
-            // CRC-24 verification inside `decode_soft` alone.
+            // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
+            // post-OSD hard-error gate: `decode240_101` is called
+            // unconditionally after BP fails, and its only acceptance
+            // test is `nharderrors.ge.0 .and. unpk77_success`
+            // (`fst4_decode.f90:570`) — i.e. "OSD converged to a
+            // CRC-24-verified codeword", full stop, no upper bound on how
+            // many bits OSD had to flip to get there. `osd_max_errors` is
+            // FT8-calibrated (doc'd as "can re-tune later", issue #72)
+            // and was never re-tuned for FST4: near its own sensitivity
+            // threshold, every OSD result that did run had a
+            // CRC-verified hard-error count above `osd_max_errors`
+            // (rejected despite being provably correct) — issue #146.
+            // Bypass it for FST4 to match WSJT-X: trust the CRC-24
+            // verification inside `decode_soft` alone.
+            //
+            // (A parallel pre-OSD *attempt* score gate, `osd_score_min`,
+            // used to sit here too, bypassed for both FST4 and FT4 for
+            // the identical reason — issue #146/#72 section 12. It ended
+            // up with no live caller on any protocol once both bypassed
+            // it and was removed outright, issue #230.)
             let is_fst4 = P::ID == super::ProtocolId::Fst4;
-            // FT4 hit the identical `osd_score_min` symptom FST4 already
-            // worked around: `cand.score` is `coarse_sync`'s non-coherent
-            // score (unrelated to the coherent `ft4_sync_search` score
-            // computed above), and `1.8` was tuned against it back when
-            // that was the only score in play (section 5/6). Empirically
-            // confirmed (`ft4_diag_weak_trials`, issue #72,
-            // `docs/notes/FT4_BENCHMARK.md` section 12): 13/17 currently-
-            // failing near-crossing AWGN candidates have `cand.score <
-            // 1.8` and so never even attempt OSD, despite all 17 clearing
-            // WSJT-X's own `syncmin=1.2` easily (real signals, not
-            // noise). WSJT-X's own FT4 decoder has no OSD-attempt score
-            // gate at all either (`decode174_91` runs BP+OSD together,
-            // governed by `ndepth`, not by a score check) — bypass
-            // `osd_score_min` for FT4 too, same as FST4, keeping
-            // `osd_max_errors` (a real hard-error ceiling, not a stale-
-            // quantity gate) as the false-accept safety net.
-            let bypass_osd_score_min = is_fst4 || P::ID == super::ProtocolId::Ft4;
             // See `osd_escalation_gates`'s doc comment for the full
             // derivation/history of these two thresholds.
             let (osd_attempt_min, osd_depth3_min) = osd_escalation_gates::<P>();
-            if depth.osd
-                && nsync >= osd_attempt_min
-                && (bypass_osd_score_min || cand.score >= strictness.osd_score_min())
-            {
+            if depth.osd && nsync >= osd_attempt_min {
                 let freq_dup = known
                     .iter()
                     .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);

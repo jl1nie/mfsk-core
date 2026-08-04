@@ -55,10 +55,21 @@ pub trait FrameDecodable: Protocol {
 }
 
 /// Protocols with a calibrated flat SIC (fixed sync_min, sequential
-/// subtract, up to 3 rounds — see [`DecodeRequest::sic_rounds`]). FST4 has
-/// no `SubtractCfg` yet — enabling it there is new numerical work requiring
-/// WSJT-X-reference calibration, not a refactor, so it's deliberately not
-/// implemented here (tracked separately, issue #193).
+/// subtract, up to 3 rounds — see [`DecodeRequest::sic_rounds`]). FT8/FT4
+/// only — not any FST4 sub-mode.
+///
+/// This isn't an unfinished mfsk-core port: WSJT-X's own `fst4_decode.f90`
+/// has no subtract/SIC path at all (confirmed directly against the WSJT-X
+/// source), because FST4 targets point-to-point links (EME/troposcatter/
+/// LF-MF) rather than WSPR/FT8-style crowded shared bands where
+/// simultaneous-signal collisions are the normal case — upstream never
+/// needed it. If FST4 SIC is ever added (tracked separately, issue #193),
+/// the short sub-modes (FST4-15/30, whose SNR regime sits close to FT8's
+/// — matching issue #143's own scoping to just those two) are the more
+/// plausible candidates than the long ones (FST4-120/300): the existing
+/// LPF-based gain-tracking subtract approach has a real tension there
+/// between the long averaging window deep SNR needs and the short window
+/// real fading (EME libration, ionospheric variation) needs.
 pub trait SupportsSicRounds: FrameDecodable {
     #[doc(hidden)]
     fn __flat_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self>
@@ -209,6 +220,13 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
 
 impl<'a, P: SupportsWideBandAp> DecodeRequest<'a, P> {
     /// A-priori callsign/grid/report hint applied to every candidate.
+    ///
+    /// `Ft8` only — see [`SupportsWideBandAp`]'s doc comment for why
+    /// (FT4/FST4's AP sniper has an early-exit-after-first-hit
+    /// optimization only valid for single-target search, so wide-band AP
+    /// there would be new, unvalidated capability). For FT4/FST4/Q65, use
+    /// [`SniperRequest::ap_hint`] instead — narrow-band AP is already
+    /// validated for all three.
     pub fn ap_hint(mut self, ap: &'a ApHint) -> Self {
         self.ap_hint = Some(ap);
         self
@@ -232,6 +250,10 @@ impl<'a, P: SupportsSicRounds> DecodeRequest<'a, P> {
     /// settable field) so `.sic_rounds(_).sic_early()` can't compile a
     /// combination where the round count is silently ignored — see issue
     /// #218 for the design discussion.
+    ///
+    /// Implemented for `Ft8`/`Ft4` only — not any FST4 sub-mode; see
+    /// [`SupportsSicRounds`]'s doc comment for why (an upstream WSJT-X
+    /// absence, not an mfsk-core gap).
     pub fn sic_rounds(mut self, n: usize) -> Self {
         self.strategy = P::__flat_sic;
         self.sic_rounds = n.clamp(1, 3);
@@ -247,6 +269,12 @@ impl<'a, P: SupportsSicEarly> DecodeRequest<'a, P> {
     /// WSJT-X's disk-decode architecture. Recall superset of
     /// `.sic_rounds()`. Checkpoint structure (A/B/C) is fixed — no
     /// tunable count, matching jt9 `-d2`/`-d3`'s `npass=3` either way.
+    ///
+    /// `Ft8` only — FT4/FST4 have no equivalent checkpoint architecture
+    /// to port (see [`SupportsSicEarly`]'s doc comment). For FT4, use
+    /// [`DecodeRequest::sic_rounds`] instead — a recall subset of the
+    /// same underlying idea (flat multi-pass SIC) without the checkpoint
+    /// structure.
     pub fn sic_early(mut self) -> Self {
         self.strategy = P::__staged_sic;
         self

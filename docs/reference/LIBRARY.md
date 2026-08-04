@@ -887,24 +887,24 @@ uses `subtract_signal_lpf` (WSJT-X-style channel-aware subtract) as of
 0.6.2; the previous `subtract_signal_weighted` / `qsb_partial_gain`
 path has been removed.
 
-`DecodeStrictness` (`Strict`/`Normal`/`Deep`) exposes four methods,
-with different live-per-protocol scope — check which apply before
-assuming `.strictness(...)` does anything for a given call:
+`DecodeStrictness` (`Strict`/`Normal`/`Deep`) exposes three methods
+(a fourth, `osd_score_min()` — a pre-OSD coarse-sync-score gate — was
+removed outright in issue #230: bypassed for both FST4 and FT4, it had
+no live caller left on any protocol), with different live-per-protocol
+scope — check which apply before assuming `.strictness(...)` does
+anything for a given call:
 
-* `osd_score_min()` / `osd_max_errors()` — pre-OSD coarse-sync-score
-  gate and post-OSD hard-error ceiling, `osd_depth`-tiered. **FT4-only
-  in practice.** `osd_score_min` is bypassed entirely for both FST4
-  and FT4 (`bypass_osd_score_min` in `engine/pipeline.rs` — FST4
-  trusts CRC-24 alone, matching WSJT-X's own FST4 acceptance test
-  `fst4_decode.f90:570`: `nharderrors >= 0 && unpk77_success`, no
-  score pre-filter; FT4 hit the identical symptom independently and
-  got the same bypass). `osd_max_errors` is FST4-bypassed too but
-  *live* for FT4, retuned against a real `ft4sim` AWGN/CCIR sweep
-  (issue #72, 2026-07-18) — no longer a placeholder copy of an FT8
-  calibration. **Despite the name, FT8 has never actually called
-  either method** — its own OSD dispatch used hardcoded constants
-  instead (see `ft8_nharderrors_max` below); an earlier version of
-  this doc incorrectly described these as FT8-calibrated.
+* `osd_max_errors()` — post-OSD hard-error ceiling, `osd_depth`-tiered.
+  **FT4-only in practice.** FST4-bypassed (`is_fst4` in
+  `engine/pipeline.rs` — FST4 trusts CRC-24 alone, matching WSJT-X's
+  own FST4 acceptance test `fst4_decode.f90:570`: `nharderrors >= 0 &&
+  unpk77_success`, no such gate) but *live* for FT4, retuned against a
+  real `ft4sim` AWGN/CCIR sweep (issue #72, 2026-07-18) — no longer a
+  placeholder copy of an FT8 calibration. **Despite the name, FT8 has
+  never actually called this method** — its own OSD dispatch used
+  hardcoded constants instead (see `ft8_nharderrors_max` below); an
+  earlier version of this doc incorrectly described it as
+  FT8-calibrated.
 * `ap_max_errors(locked_bits)` — AP-assisted decode hard-error
   ceiling, graded by locked-bit count. Live for FT8's per-candidate AP
   loop and the FT4/FST4 AP sniper (`msg::pipeline_ap`) alike —
