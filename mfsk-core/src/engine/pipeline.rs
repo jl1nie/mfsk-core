@@ -23,6 +23,7 @@ use super::llr::{
     compute_llr_fast, compute_llr_partial, compute_snr_db, descramble_info, symbol_spectra,
     sync_quality,
 };
+use super::protocol::BpPooledFec;
 use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -361,9 +362,17 @@ impl DecodeResult {
 /// `pub` only under the `internal-testing` feature (issue #203) — see
 /// [`decode_frame`]'s doc comment for the feature-gating rationale.
 #[cfg(feature = "internal-testing")]
-pub trait GenericPipelineProtocol: Protocol {}
+pub trait GenericPipelineProtocol: Protocol
+where
+    Self::Fec: BpPooledFec,
+{
+}
 #[cfg(not(feature = "internal-testing"))]
-pub(crate) trait GenericPipelineProtocol: Protocol {}
+pub(crate) trait GenericPipelineProtocol: Protocol
+where
+    Self::Fec: BpPooledFec,
+{
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Per-candidate processing
@@ -386,7 +395,10 @@ pub fn process_candidate_basic<P: GenericPipelineProtocol>(
     known: &[DecodeResult],
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> Option<DecodeResult> {
+) -> Option<DecodeResult>
+where
+    P::Fec: BpPooledFec,
+{
     process_candidate_basic_impl::<P>(
         cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
     )
@@ -406,7 +418,10 @@ pub(crate) fn process_candidate_basic<P: GenericPipelineProtocol>(
     known: &[DecodeResult],
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> Option<DecodeResult> {
+) -> Option<DecodeResult>
+where
+    P::Fec: BpPooledFec,
+{
     process_candidate_basic_impl::<P>(
         cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
     )
@@ -421,7 +436,10 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     known: &[DecodeResult],
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> Option<DecodeResult> {
+) -> Option<DecodeResult>
+where
+    P::Fec: BpPooledFec,
+{
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let ds_rate = 12_000.0 / P::NDOWN as f32;
@@ -497,6 +515,12 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
 
         let decode = |cs: &[Complex<f32>]| -> Option<DecodeResult> {
             let fec = P::Fec::default();
+            // Reused across every `decode_soft_pooled` call below (up to
+            // 15 for FST4's full LLR-variant × OSD-escalation ladder, 12
+            // for FT4) — one allocation per candidate instead of one per
+            // call. See `BpPooledFec`'s doc comment (issue #199/#201's
+            // shape, ported to the generic pipeline).
+            let mut bp_scratch = <P::Fec as BpPooledFec>::Scratch::default();
             let bp_opts = FecOpts {
                 bp_max_iter,
                 osd_depth: 0,
@@ -518,8 +542,8 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
                     deinterleave_llr_vec(v, table);
                 }
             };
-            let try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
-                let mut r = fec.decode_soft(llr, &bp_opts)?;
+            let mut try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
+                let mut r = fec.decode_soft_pooled(llr, &bp_opts, &mut bp_scratch)?;
                 let itone = encode_tones_for_snr::<P>(&r.info, &fec);
                 let snr_db = compute_snr_db::<P>(cs, &itone);
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
@@ -636,7 +660,8 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
                         ..FecOpts::default()
                     };
                     for (llr, _) in &variants {
-                        if let Some(mut r) = fec.decode_soft(llr, &osd_opts) {
+                        if let Some(mut r) = fec.decode_soft_pooled(llr, &osd_opts, &mut bp_scratch)
+                        {
                             if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(osd_depth) {
                                 continue;
                             }
@@ -665,7 +690,9 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
                             ..FecOpts::default()
                         };
                         for (llr, _) in &variants {
-                            if let Some(mut r) = fec.decode_soft(llr, &osd4_opts) {
+                            if let Some(mut r) =
+                                fec.decode_soft_pooled(llr, &osd4_opts, &mut bp_scratch)
+                            {
                                 if !is_fst4 && r.hard_errors >= strictness.osd_max_errors(4) {
                                     continue;
                                 }
@@ -800,7 +827,10 @@ pub fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> (Vec<DecodeResult>, FftCache) {
+) -> (Vec<DecodeResult>, FftCache)
+where
+    P::Fec: BpPooledFec,
+{
     decode_frame_impl::<P>(
         audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
         sync_q_min,
@@ -823,7 +853,10 @@ pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> (Vec<DecodeResult>, FftCache) {
+) -> (Vec<DecodeResult>, FftCache)
+where
+    P::Fec: BpPooledFec,
+{
     decode_frame_impl::<P>(
         audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
         sync_q_min,
@@ -842,7 +875,10 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
-) -> (Vec<DecodeResult>, FftCache) {
+) -> (Vec<DecodeResult>, FftCache)
+where
+    P::Fec: BpPooledFec,
+{
     // FT4's own coarse-candidate stage (`engine::ft4_coarse::ft4_coarse_sync`,
     // a faithful `getcandidates4.f90` port) replaces the generic 2-D
     // (freq × lag) Costas-correlation search: WSJT-X's FT4 candidate
@@ -953,7 +989,10 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     lpf_half: usize,
     lpf_endcorrection: bool,
     refine_freq_radius_hz: f32,
-) -> Vec<DecodeResult> {
+) -> Vec<DecodeResult>
+where
+    P::Fec: BpPooledFec,
+{
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let passes: &[f32] = &[1.0, 0.75, 0.5][..max_rounds];
