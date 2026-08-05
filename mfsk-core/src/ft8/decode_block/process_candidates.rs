@@ -1776,10 +1776,8 @@ pub(in crate::ft8) fn process_one_candidate_inner(
                 // three separate bounds-checked `[i]` indexes; run up
                 // to ~28x per Step-4 candidate (4 LLR variants × up to
                 // ~7 AP passes).
-                for ((dst, &locked), &val) in llr_ap
-                    .iter_mut()
-                    .zip(ap_mask.iter())
-                    .zip(ap_values.iter())
+                for ((dst, &locked), &val) in
+                    llr_ap.iter_mut().zip(ap_mask.iter()).zip(ap_values.iter())
                 {
                     if locked {
                         *dst = if val == 1 { apmag } else { -apmag };

@@ -615,10 +615,7 @@ std::thread_local! {
 #[cfg(feature = "std")]
 fn cached_costas_ref(pattern: &'static [u8], ds_spb: usize) -> Vec<Vec<Complex<f32>>> {
     COSTAS_REF_CACHE.with_borrow_mut(|cache| {
-        if let Some((_, _, csync)) = cache
-            .iter()
-            .find(|(p, d, _)| *p == pattern && *d == ds_spb)
-        {
+        if let Some((_, _, csync)) = cache.iter().find(|(p, d, _)| *p == pattern && *d == ds_spb) {
             return csync.clone();
         }
         let csync = make_costas_ref(pattern, ds_spb);

@@ -492,6 +492,16 @@ pub trait FecCodec: sealed::Sealed + Default + 'static {
 /// set (Rust's `private_bounds` lint) — not because any external
 /// caller ever names `BpPooledFec` itself; the bound is satisfied
 /// automatically by `P: GenericPipelineProtocol` alone.
+///
+/// `#[allow(dead_code)]`: unlike `GenericPipelineProtocol` (an empty
+/// marker trait, nothing for the lint to flag), this trait has a real
+/// method (`decode_soft_pooled`). Under a feature set with no protocol
+/// that reaches `GenericPipelineProtocol`'s generic pipeline (e.g.
+/// `--no-default-features`, `--features wspr`) nothing ever calls it,
+/// even though `impl BpPooledFec for Ldpc174_91`/`Ldpc240_101` are
+/// unconditionally compiled — caught by CI's `-D warnings` build
+/// matrix, not by the `full`/`full,internal-testing` combo this was
+/// developed against.
 #[cfg(feature = "internal-testing")]
 pub trait BpPooledFec: FecCodec {
     /// Reusable working memory for [`Self::decode_soft_pooled`] —
@@ -510,6 +520,7 @@ pub trait BpPooledFec: FecCodec {
     ) -> Option<FecResult>;
 }
 #[cfg(not(feature = "internal-testing"))]
+#[allow(dead_code)] // see the `internal-testing` branch's doc comment above
 pub(crate) trait BpPooledFec: FecCodec {
     type Scratch: Default;
 

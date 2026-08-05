@@ -780,10 +780,11 @@ pub fn bp_llr_zsum<P: LdpcParams>(llr: &[f32], n_iter: u32) -> Vec<f32> {
 
 /// [`bp_llr_zsum`] with caller-provided scratch — eliminates the 5-Vec
 /// per-call allocation churn (`tov`/`toc`/`tanhtoc`/`zn`/`zsum`) on both
-/// this function's call sites: [`crate::fec::Ldpc240_101::decode_soft`]
-/// (every FST4 candidate that reaches OSD, via
-/// [`crate::engine::pipeline`]'s [`BpPooledFec::decode_soft_pooled`])
-/// and FT8's `ft8::decode_block::osd_strategy::try_fallback` (8× per
+/// this function's call sites: `Ldpc240_101::decode_soft` (every FST4
+/// candidate that reaches OSD, via `engine::protocol::BpPooledFec::
+/// decode_soft_pooled` — not a doc link since that trait is `pub(crate)`
+/// outside the `internal-testing` feature) and FT8's
+/// `ft8::decode_block::osd_strategy::try_fallback` (8× per
 /// OSD-attempted candidate).
 ///
 /// Returns a borrow of `scratch`'s `zsum` buffer instead of an owned
@@ -985,8 +986,8 @@ pub struct BpScratch<P: LdpcParams, T: LlrScalar> {
 impl<P: LdpcParams, T: LlrScalar> BpScratch<P, T> {
     /// Allocate the seven scratch buffers at the right capacities for
     /// `P`. Single instance can be reused across many BP calls.
-    /// `tanhtoc`/`zsum` start empty — see [`Self::ensure_tanhtoc`] /
-    /// [`Self::ensure_zsum`].
+    /// `tanhtoc`/`zsum` start empty — grown lazily on first use by the
+    /// (private) `ensure_tanhtoc`/`ensure_zsum` helpers.
     pub fn new() -> Self {
         let n = P::N;
         let m_checks = P::M;
