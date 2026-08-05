@@ -667,8 +667,15 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
     cands
         .into_iter()
         .map(|c| {
-            let (cd0, _) =
-                crate::ft8::downsample::downsample(&audio_i16, c.freq_hz, Some(&fft_cache));
+            // Use `downsample_cached` directly so the FT8 wrapper's
+            // `cache.to_vec()` clone (~1.5 MB) on the `Some(_)` branch is
+            // bypassed — same pattern as `decode.rs::process_candidate_with_scratch`
+            // (that fix's scope never covered this sibling call site).
+            let cd0 = crate::engine::dsp::downsample::downsample_cached(
+                &fft_cache,
+                c.freq_hz,
+                &crate::ft8::downsample::FT8_CFG,
+            );
             let r = crate::ft8::refine_fine::fine_refine_3stage(&cd0, c.dt_sec);
             crate::engine::sync::SyncCandidate {
                 freq_hz: c.freq_hz + r.delf_hz,

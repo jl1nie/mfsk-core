@@ -31,13 +31,15 @@ pub struct LlrSet<T: LlrScalar = f32> {
     pub llrd: [T; LDPC_N],
 }
 
+/// Zero-cost layout cast: `cs` is already contiguous with the flat
+/// `[Cmplx<f32>; 632]` layout `compute_llr_generic`/etc. consume — no
+/// allocation or copy needed, just a reinterpreted view. Replaces a
+/// former `flatten_cs` that allocated+copied a fresh `Vec` on every
+/// call (this function runs 3-5+ times per candidate, up to ~1200
+/// candidates/decode via `sync_quality` alone).
 #[inline]
-fn flatten_cs(cs: &[[Cmplx<f32>; 8]; 79]) -> Vec<Cmplx<f32>> {
-    let mut out: Vec<Cmplx<f32>> = Vec::with_capacity(79 * 8);
-    for sym in cs.iter() {
-        out.extend_from_slice(sym);
-    }
-    out
+fn flatten_cs(cs: &[[Cmplx<f32>; 8]; 79]) -> &[Cmplx<f32>] {
+    cs.as_slice().as_flattened()
 }
 
 #[inline]
@@ -55,7 +57,7 @@ fn inflate_llr<T: LlrScalar>(v: Vec<T>) -> [T; LDPC_N] {
 /// `&[Cmplx<f32>]` view via `flatten_cs`.
 pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 3);
+    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(flat, 3);
     // Sanity check scale consistency at build time.
     debug_assert!((crate::engine::llr::LLR_SCALE - LLR_SCALE).abs() < 1e-6);
     LlrSet {
@@ -71,7 +73,7 @@ pub fn compute_llr<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// `llra` and `llrd` are valid.
 pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
     let flat = flatten_cs(cs);
-    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(&flat, 1);
+    let g = crate::engine::llr::compute_llr_generic::<Ft8, f32, T>(flat, 1);
     LlrSet {
         llra: inflate_llr(g.llra),
         llrb: inflate_llr(g.llrb),
@@ -89,20 +91,20 @@ pub fn compute_llr_fast<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79]) -> LlrSet<T> {
 /// `nsym = 2` and `nsym = 3`.
 pub fn compute_llr_partial<T: LlrScalar>(cs: &[[Cmplx<f32>; 8]; 79], nsym: usize) -> [T; LDPC_N] {
     let flat = flatten_cs(cs);
-    let v = crate::engine::llr::compute_llr_partial::<Ft8, f32, T>(&flat, nsym);
+    let v = crate::engine::llr::compute_llr_partial::<Ft8, f32, T>(flat, nsym);
     inflate_llr(v)
 }
 
 /// WSJT-X compatible SNR from 8-tone spectra + decoded 79-tone sequence.
 pub fn compute_snr_db(cs: &[[Cmplx<f32>; 8]; 79], itone: &[u8; 79]) -> f32 {
     let flat = flatten_cs(cs);
-    crate::engine::llr::compute_snr_db_generic::<Ft8, f32>(&flat, itone)
+    crate::engine::llr::compute_snr_db_generic::<Ft8, f32>(flat, itone)
 }
 
 /// Hard-decision sync quality (0..21). FT8 threshold ≤ 6 → bail out.
 pub fn sync_quality(cs: &[[Cmplx<f32>; 8]; 79]) -> u32 {
     let flat = flatten_cs(cs);
-    crate::engine::llr::sync_quality_generic::<Ft8, f32>(&flat)
+    crate::engine::llr::sync_quality_generic::<Ft8, f32>(flat)
 }
 
 #[cfg(test)]
