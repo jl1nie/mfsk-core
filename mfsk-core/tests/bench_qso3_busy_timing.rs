@@ -3,9 +3,12 @@
 //! throughput across machines (e.g. Ryzen 9 vs Apple M5) — not a
 //! correctness regression, no assertions.
 //!
-//! Run:
+//! Run (needs `full` — `timing_fst4_300`/`timing_fst4_300_sanity_strong_signal`
+//! import `mfsk_core::fst4::Fst4s300`, which the default feature set
+//! doesn't enable; `--test bench_qso3_busy_timing` alone as documented
+//! here previously fails to compile with `E0432`):
 //! ```sh
-//! cargo test --release -p mfsk-core --test bench_qso3_busy_timing -- --nocapture
+//! cargo test --release -p mfsk-core --features full --test bench_qso3_busy_timing -- --nocapture
 //! ```
 
 use std::path::Path;

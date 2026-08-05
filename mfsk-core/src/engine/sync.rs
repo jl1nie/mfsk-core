@@ -577,6 +577,67 @@ pub fn coarse_sync<P: Protocol>(
 // Fine sync (Costas correlation on downsampled complex baseband)
 // ──────────────────────────────────────────────────────────────────────────
 
+// Small fixed-capacity cross-call cache for `make_costas_ref`'s output,
+// keyed by content equality on `(pattern, ds_spb)`. 2 slots is enough
+// for every pattern combination that exists in this crate today: FT8/
+// FT4 reuse one pattern across all their sync blocks (already cached
+// *within* one `fine_sync_power_per_block` call, see that function's
+// own doc comment), FST4 alternates exactly two (SYNC_A/SYNC_B) — so 2
+// slots never thrash for any protocol actually wired here. Perf review:
+// `fine_sync_power_per_block` runs once per candidate from three call
+// sites (`ft8/decode.rs`, `engine/pipeline.rs`, `msg/pipeline_ap.rs`),
+// and the within-call cache above always started empty — every call
+// rebuilt each pattern's trig table from scratch even when the
+// previous call used the identical `(pattern, ds_spb)` pair. Making
+// the cache persist across calls (same idea as #211's FFT-planner
+// cache) skips that recomputation; the clone on a cache hit is a
+// memcpy of already-computed values, much cheaper than the sin/cos
+// calls it replaces. This also fixes `refine_candidate`'s AP/sniper-
+// path loop for free: it calls `fine_sync_power` (→ this function) at
+// every one of ~83 offsets (`msg/pipeline_ap.rs`'s `REFINE_STEPS`),
+// previously rebuilding the same Costas reference from scratch at each
+// one despite it never depending on the loop variable — no separate
+// fix needed there once this cache exists.
+#[cfg(feature = "std")]
+type CostasRefCacheEntry = (&'static [u8], usize, Vec<Vec<Complex<f32>>>);
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static COSTAS_REF_CACHE: core::cell::RefCell<Vec<CostasRefCacheEntry>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// [`make_costas_ref`] with a small cross-call cache — see
+/// `COSTAS_REF_CACHE`'s doc comment. `pattern` must be `'static` (true
+/// of every real caller: `Protocol::SYNC_MODE.blocks()` entries are all
+/// `const`/`static` table data) so the cache can hold a reference to it
+/// past this call's return.
+#[cfg(feature = "std")]
+fn cached_costas_ref(pattern: &'static [u8], ds_spb: usize) -> Vec<Vec<Complex<f32>>> {
+    COSTAS_REF_CACHE.with_borrow_mut(|cache| {
+        if let Some((_, _, csync)) = cache.iter().find(|(p, d, _)| *p == pattern && *d == ds_spb) {
+            return csync.clone();
+        }
+        let csync = make_costas_ref(pattern, ds_spb);
+        if cache.len() >= 2 {
+            cache.remove(0);
+        }
+        cache.push((pattern, ds_spb, csync.clone()));
+        csync
+    })
+}
+
+/// `no_std` (embedded, `fft-extern`) fallback — `thread_local!` needs
+/// `std`. Those builds don't reach this hot path today anyway (every
+/// `fine_sync_power_per_block` caller is on the host `fft-rustfft`
+/// path), so a plain uncached rebuild is fine here, matching
+/// `downsample_cached`'s own `no_std` fallback (`engine/dsp/
+/// downsample.rs`).
+#[cfg(not(feature = "std"))]
+fn cached_costas_ref(pattern: &'static [u8], ds_spb: usize) -> Vec<Vec<Complex<f32>>> {
+    make_costas_ref(pattern, ds_spb)
+}
+
 /// Build complex sinusoidal references (one per Costas tone) for a sync block.
 pub fn make_costas_ref(pattern: &[u8], ds_spb: usize) -> Vec<Vec<Complex<f32>>> {
     pattern
@@ -653,7 +714,7 @@ pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> 
         let csync = match &last {
             Some((p, c)) if *p == block.pattern => c,
             _ => {
-                last = Some((block.pattern, make_costas_ref(block.pattern, d.ds_spb)));
+                last = Some((block.pattern, cached_costas_ref(block.pattern, d.ds_spb)));
                 &last.as_ref().unwrap().1
             }
         };

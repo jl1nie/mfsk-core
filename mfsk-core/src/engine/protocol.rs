@@ -466,6 +466,72 @@ pub trait FecCodec: sealed::Sealed + Default + 'static {
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult>;
 }
 
+/// `Fec` codecs with a pooled-scratch `decode_soft` sibling (perf
+/// review: `engine::pipeline::process_candidate_basic_impl`'s LLR/OSD
+/// staircase calls `decode_soft` up to 15× per FST4 candidate, 12× for
+/// FT4, each allocating ~9 fresh `Vec`s internally with no pooling —
+/// the same shape of problem `fec::ldpc::bp::BpScratch`/issue #199/#201
+/// already fixed for FT8's own `NormalizedMinSum` kernel, just never
+/// ported to the generic pipeline or to the `SumProduct` kernel
+/// [`FecOpts::default`] actually selects). Not on the sealed
+/// [`FecCodec`] itself — that would force a `Scratch` type onto
+/// `Q65Fec`/`ConvFano`/`Ldpc128_90` too, none of which want LDPC BP
+/// scratch. Implemented for `Ldpc174_91`/`Ldpc240_101`
+/// (`crate::fec::ldpc`/`crate::fec::ldpc240_101`) only — the two `Fec`
+/// types `Ft4` and every FST4 sub-mode actually use. Lives next to
+/// [`FecCodec`] (not in `engine::pipeline`, where it's consumed) so
+/// its implementors — `fec::ldpc`/`fec::ldpc240_101` — don't need a
+/// new dependency on `engine::pipeline`, only their existing one on
+/// this module.
+///
+/// `pub` only under the `internal-testing` feature (issue #203) —
+/// mirrors `engine::pipeline::GenericPipelineProtocol`'s own gating,
+/// since that trait's `where Self::Fec: BpPooledFec` bound needs
+/// `BpPooledFec` to be at least as visible as whatever visibility
+/// `GenericPipelineProtocol`-bounded functions have on a given feature
+/// set (Rust's `private_bounds` lint) — not because any external
+/// caller ever names `BpPooledFec` itself; the bound is satisfied
+/// automatically by `P: GenericPipelineProtocol` alone.
+///
+/// `#[allow(dead_code)]`: unlike `GenericPipelineProtocol` (an empty
+/// marker trait, nothing for the lint to flag), this trait has a real
+/// method (`decode_soft_pooled`). Under a feature set with no protocol
+/// that reaches `GenericPipelineProtocol`'s generic pipeline (e.g.
+/// `--no-default-features`, `--features wspr`) nothing ever calls it,
+/// even though `impl BpPooledFec for Ldpc174_91`/`Ldpc240_101` are
+/// unconditionally compiled — caught by CI's `-D warnings` build
+/// matrix, not by the `full`/`full,internal-testing` combo this was
+/// developed against.
+#[cfg(feature = "internal-testing")]
+pub trait BpPooledFec: FecCodec {
+    /// Reusable working memory for [`Self::decode_soft_pooled`] —
+    /// concretely `fec::ldpc::bp::BpScratch` for both current
+    /// implementors.
+    type Scratch: Default;
+
+    /// [`FecCodec::decode_soft`] with caller-provided scratch, reused
+    /// across every call for one candidate instead of reallocated per
+    /// call.
+    fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        opts: &FecOpts,
+        scratch: &mut Self::Scratch,
+    ) -> Option<FecResult>;
+}
+#[cfg(not(feature = "internal-testing"))]
+#[allow(dead_code)] // see the `internal-testing` branch's doc comment above
+pub(crate) trait BpPooledFec: FecCodec {
+    type Scratch: Default;
+
+    fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        opts: &FecOpts,
+        scratch: &mut Self::Scratch,
+    ) -> Option<FecResult>;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Message codec
 // ──────────────────────────────────────────────────────────────────────────

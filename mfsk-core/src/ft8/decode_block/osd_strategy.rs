@@ -46,7 +46,7 @@
 use super::super::decode::{DecodeDepth, DecodeStrictness};
 use crate::engine::scalar::Cmplx;
 use crate::fec::ldpc::LDPC_N;
-use crate::fec::ldpc::bp::{BpResult, bp_llr_zsum};
+use crate::fec::ldpc::bp::{BpResult, BpScratch, bp_llr_zsum_with_scratch};
 use crate::fec::ldpc::osd::{OsdResult, osd_decode_npre1, osd_decode_npre1_npre2};
 use crate::fec::ldpc::params::Ldpc174_91Params;
 
@@ -226,6 +226,20 @@ pub(super) fn try_fallback(
     // Pass-ID space (post-0.6.1): BP variants 0..3, AP iaptypes 5..12
     // (mirroring WSJT-X ipass 5..12), host OSD-Deep 13, embedded OSD
     // zsave(1) a/b/c/d 14..17, auto-AP 18, zsave(2) a/b/c/d 19..22.
+    //
+    // `zsum_scratch` is local to this call (not caller-threaded like
+    // `process_one_candidate_inner`'s `bp_scratch`): `try_fallback`
+    // runs once per candidate, and the loop below already calls
+    // `bp_llr_zsum_with_scratch` 8× (4 llr variants × 2 `n_iter`) per
+    // call, so one scratch here already captures the whole win —
+    // threading it in from the caller would only additionally pool
+    // across candidates, which a real-WAV before/after measurement
+    // (perf review, `MFSK_BP_KIND=nms` vs default on
+    // `bench_qso3_busy_timing.rs`) found made no measurable wall-clock
+    // difference for FT8's BP stage, so the extra plumbing through
+    // `process_one_candidate_inner` and its five callers isn't
+    // justified by anything measured.
+    let mut zsum_scratch = BpScratch::<Ldpc174_91Params, f32>::new();
     for (idx, llr) in [
         &llr_full_f32.llra,
         &llr_full_f32.llrb,
@@ -236,9 +250,10 @@ pub(super) fn try_fallback(
     .enumerate()
     {
         for (n_iter, base) in [(1u32, PASS_ID_OSD_ZSAVE1_A), (2u32, PASS_ID_OSD_ZSAVE2_A)] {
-            let zsum_vec = bp_llr_zsum::<Ldpc174_91Params>(llr, n_iter);
+            let zsum_slice =
+                bp_llr_zsum_with_scratch::<Ldpc174_91Params>(&mut zsum_scratch, llr, n_iter);
             let mut zsum = [0f32; LDPC_N];
-            zsum.copy_from_slice(&zsum_vec);
+            zsum.copy_from_slice(zsum_slice);
             if let Some(osd) = dispatch(&zsum) {
                 return Some((to_bp(osd), base + idx as u8));
             }

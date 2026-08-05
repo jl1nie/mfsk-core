@@ -380,7 +380,9 @@ fn fst4_diag_weak_trials() {
         dir: &std::path::Path,
         file_prefix: &str,
         cfg: &mfsk_core::engine::dsp::downsample::DownsampleCfg,
-    ) {
+    ) where
+        P::Fec: mfsk_core::engine::protocol::BpPooledFec,
+    {
         for trial in 1..=5 {
             let path = dir.join(format!("{file_prefix}_{trial:02}.wav"));
             let Some(audio) = load_wav_i16_opt(&path) else {
@@ -484,7 +486,7 @@ fn fst4_diag_nsym4_ladder() {
         tally: &mut Tally,
     ) where
         P: mfsk_core::engine::pipeline::GenericPipelineProtocol,
-        P::Fec: FecCodec,
+        P::Fec: FecCodec + mfsk_core::engine::protocol::BpPooledFec,
         P::Msg: MessageCodec,
     {
         for trial in trials {
@@ -946,6 +948,118 @@ fn fst4_60_diag_candidate_cost_split() {
     let dt = t0.elapsed();
     eprintln!(
         "FST4-60A golden: decode_frame wall-clock = {:.1} ms, {} decode(s)",
+        dt.as_secs_f64() * 1000.0,
+        decodes.len()
+    );
+}
+
+/// Same cost-split methodology as [`fst4_60_diag_candidate_cost_split`],
+/// applied to FST4-300 (5-min slot, longest sub-mode) — issue
+/// mfsk-core#perf-review Phase 0: `fst4_60_diag_candidate_cost_split`'s
+/// original investigation (FST4_BENCHMARK.md §8) only ever profiled
+/// FST4-60A; no per-stage breakdown exists for the long sub-modes,
+/// which have no comparable prior perf-tuning pass either. Uses the
+/// first slot of the WSJT-X sample `201230_0300.wav`, same asset
+/// `bench_qso3_busy_timing.rs::timing_fst4_300` already depends on
+/// (sibling `../../WSJT-X` checkout — skips cleanly if absent).
+#[test]
+#[ignore = "manual diagnostic — FST4-300 coarse-sync cost split (perf-review Phase 0)"]
+fn fst4_300_diag_candidate_cost_split() {
+    use std::time::{Duration, Instant};
+
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync2d::fst4_sync_search;
+    use mfsk_core::fst4::Fst4s300;
+    use mfsk_core::fst4::decode::FST4_300_DOWNSAMPLE;
+
+    const SYNC_Q_MIN: u32 = 10;
+
+    fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
+        let mut buckets: Vec<i32> = cands
+            .iter()
+            .map(|c| (c.freq_hz / 4.0).round() as i32)
+            .collect();
+        buckets.sort_unstable();
+        buckets.dedup();
+        buckets.len()
+    }
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/201230_0300.wav");
+    let Ok(golden_path) = golden_path.canonicalize() else {
+        eprintln!("skipping: WSJT-X FST4 sample not found (sibling checkout)");
+        return;
+    };
+    let Some(full) = load_wav_i16_opt(&golden_path) else {
+        eprintln!("skipping: WAV not 12 kHz mono PCM-16");
+        return;
+    };
+    let audio: Vec<i16> = full.iter().take(300 * 12_000).copied().collect();
+
+    let t0 = Instant::now();
+    let cands = coarse_sync::<Fst4s300>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let coarse_dt = t0.elapsed();
+
+    eprintln!(
+        "FST4-300 golden (slot 0): {} candidates, {} distinct freq buckets (avg {:.1} cand/freq), coarse_sync={:.1}ms",
+        cands.len(),
+        freq_bucket_count(&cands),
+        cands.len() as f32 / freq_bucket_count(&cands).max(1) as f32,
+        coarse_dt.as_secs_f64() * 1000.0
+    );
+
+    let fft_cache = build_fft_cache(&audio, &FST4_300_DOWNSAMPLE);
+    let mut total_downsample = Duration::ZERO;
+    let mut total_sync_search = Duration::ZERO;
+    let mut total_process = Duration::ZERO;
+    let mut n_decoded = 0usize;
+    for c in &cands {
+        let t0 = Instant::now();
+        let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_300_DOWNSAMPLE);
+        total_downsample += t0.elapsed();
+
+        let t0 = Instant::now();
+        let _ = fst4_sync_search::<Fst4s300>(&cd0, c);
+        total_sync_search += t0.elapsed();
+
+        let t0 = Instant::now();
+        let r = process_candidate_basic::<Fst4s300>(
+            c,
+            &fft_cache,
+            &FST4_300_DOWNSAMPLE,
+            DecodeDepth::FULL,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+        );
+        total_process += t0.elapsed();
+        if r.is_some() {
+            n_decoded += 1;
+        }
+    }
+    let llr_bp_osd = total_process
+        .saturating_sub(total_downsample)
+        .saturating_sub(total_sync_search);
+    eprintln!(
+        "  per-cand[downsample={:.1}ms sync_search={:.1}ms llr+bp+osd(inferred)={:.1}ms] decoded={n_decoded}",
+        total_downsample.as_secs_f64() * 1000.0,
+        total_sync_search.as_secs_f64() * 1000.0,
+        llr_bp_osd.as_secs_f64() * 1000.0
+    );
+
+    let t0 = Instant::now();
+    let decodes = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s300>::new(
+        &audio, 100.0, 3000.0, 1.0, 50,
+    )
+    .decode()
+    .results;
+    let dt = t0.elapsed();
+    eprintln!(
+        "FST4-300 golden: decode_frame wall-clock = {:.1} ms, {} decode(s)",
         dt.as_secs_f64() * 1000.0,
         decodes.len()
     );

@@ -14,7 +14,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::Protocol;
-use crate::engine::fft::default_planner;
+use crate::engine::dsp::downsample::with_default_planner;
 use crate::engine::scalar::{Cmplx, ComplexSpec, LlrScalar, SpecScalar};
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -97,8 +97,16 @@ pub fn symbol_spectra<P: Protocol>(cd0: &[Complex<f32>], i_start: i32) -> Vec<Cm
     let n_sym = P::N_SYMBOLS as usize;
     let ds_spb = (P::NSPS / P::NDOWN) as usize;
 
-    let mut planner = default_planner();
-    let fft = planner.plan_forward(ds_spb);
+    // Reuse the same thread_local planner `downsample_cached` caches
+    // (#211) instead of building a fresh one every call — rustfft's own
+    // `FftPlanner` caches per size internally, so sharing one instance
+    // across both call sites' different sizes is free. `symbol_spectra`
+    // runs once per candidate from `engine/pipeline.rs` and
+    // `msg/pipeline_ap.rs`, rebuilding this size's twiddle table from
+    // scratch every time before this fix (smaller than
+    // `downsample_cached`'s FFT, so a smaller absolute cost per call,
+    // but the same anti-pattern at the same call frequency).
+    let fft = with_default_planner(|planner| planner.plan_forward(ds_spb));
 
     // cs is spec-scalar storage (`Cmplx<f32>`); buf is an FFT scratch
     // (`Complex<f32>`) — the alias makes them the same machine type

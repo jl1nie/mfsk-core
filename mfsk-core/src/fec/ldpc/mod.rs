@@ -29,7 +29,9 @@ pub use bp::{BpResult, bp_decode, bp_decode_kind, check_crc14, crc14};
 pub use osd::{OsdResult, ldpc_encode, osd_decode, osd_decode_deep, osd_decode_deep4};
 pub use params::{Ldpc174_91Params, Ldpc240_101Params, LdpcParams};
 
+use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
+use bp::{BpScratch, bp_decode_generic_kind_with_scratch};
 
 /// Codeword length of the WSJT LDPC code.
 pub const LDPC_N: usize = 174;
@@ -60,36 +62,11 @@ impl FecCodec for Ldpc174_91 {
     }
 
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts<'_>) -> Option<FecResult> {
-        assert_eq!(llr.len(), LDPC_N, "llr must be {} values", LDPC_N);
-        let mut llr_arr = [0f32; LDPC_N];
-        llr_arr.copy_from_slice(llr);
-
-        // Apply AP hint: for every `mask[i] == 1`, clamp LLR to ±apmag
-        // according to `values[i]` (1 → +apmag, 0 → −apmag).
-        // `apmag = max(|llr|) · 1.01` gives the AP bits a stronger vote than
-        // any channel observation, matching WSJT-X convention.
-        let ap_storage;
-        let ap_mask: Option<&[bool; LDPC_N]> = match opts.ap_mask {
-            Some((mask, values)) => {
-                assert_eq!(mask.len(), LDPC_N, "ap mask must be {} bits", LDPC_N);
-                assert_eq!(values.len(), LDPC_N, "ap values must be {} bits", LDPC_N);
-                let apmag = llr_arr.iter().map(|x| x.abs()).fold(0.0f32, f32::max) * 1.01;
-                let mut a = [false; LDPC_N];
-                for i in 0..LDPC_N {
-                    if mask[i] != 0 {
-                        a[i] = true;
-                        llr_arr[i] = if values[i] != 0 { apmag } else { -apmag };
-                    }
-                }
-                ap_storage = a;
-                Some(&ap_storage)
-            }
-            None => None,
-        };
+        let (llr_arr, ap_mask) = prepare_ap_llr(llr, opts);
 
         if let Some(r) = bp_decode_kind(
             &llr_arr,
-            ap_mask,
+            ap_mask.as_ref(),
             opts.bp_max_iter,
             opts.verify_info,
             opts.bp_kind,
@@ -118,4 +95,81 @@ impl FecCodec for Ldpc174_91 {
             iterations: 0,
         })
     }
+}
+
+impl BpPooledFec for Ldpc174_91 {
+    type Scratch = BpScratch<Ldpc174_91Params, f32>;
+
+    fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        opts: &FecOpts<'_>,
+        scratch: &mut Self::Scratch,
+    ) -> Option<FecResult> {
+        let (llr_arr, ap_mask) = prepare_ap_llr(llr, opts);
+        let ap_mask_slice: Option<&[bool]> = ap_mask.as_ref().map(|a| a.as_slice());
+
+        if let Some(r) = bp_decode_generic_kind_with_scratch::<Ldpc174_91Params>(
+            scratch,
+            &llr_arr,
+            ap_mask_slice,
+            opts.bp_max_iter,
+            opts.verify_info,
+            opts.bp_kind,
+        ) {
+            return Some(FecResult {
+                info: r.info,
+                hard_errors: r.hard_errors,
+                iterations: r.iterations,
+            });
+        }
+
+        // OSD fallback stays unpooled — out of scope for this pass
+        // (identical to `decode_soft`'s tail above).
+        if opts.osd_depth == 0 {
+            return None;
+        }
+
+        let r = if opts.osd_depth >= 4 {
+            osd_decode_deep4(&llr_arr, 30, opts.verify_info)?
+        } else {
+            osd_decode_deep(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info)?
+        };
+        Some(FecResult {
+            info: r.info,
+            hard_errors: r.hard_errors,
+            iterations: 0,
+        })
+    }
+}
+
+/// Shared AP-hint LLR preparation for [`Ldpc174_91`]'s pooled and
+/// unpooled `decode_soft`: for every `mask[i] == 1`, clamps LLR to
+/// ±apmag according to `values[i]` (1 → +apmag, 0 → −apmag);
+/// `apmag = max(|llr|) · 1.01` gives the AP bits a stronger vote than
+/// any channel observation, matching WSJT-X convention. Returns an
+/// owned array (not a borrow tied to `opts`) so both callers can build
+/// their own `Option<&[bool; N]>`/`Option<&[bool]>` view over it.
+fn prepare_ap_llr(llr: &[f32], opts: &FecOpts<'_>) -> ([f32; LDPC_N], Option<[bool; LDPC_N]>) {
+    assert_eq!(llr.len(), LDPC_N, "llr must be {} values", LDPC_N);
+    let mut llr_arr = [0f32; LDPC_N];
+    llr_arr.copy_from_slice(llr);
+
+    let ap_mask = match opts.ap_mask {
+        Some((mask, values)) => {
+            assert_eq!(mask.len(), LDPC_N, "ap mask must be {} bits", LDPC_N);
+            assert_eq!(values.len(), LDPC_N, "ap values must be {} bits", LDPC_N);
+            let apmag = llr_arr.iter().map(|x| x.abs()).fold(0.0f32, f32::max) * 1.01;
+            let mut a = [false; LDPC_N];
+            for i in 0..LDPC_N {
+                if mask[i] != 0 {
+                    a[i] = true;
+                    llr_arr[i] = if values[i] != 0 { apmag } else { -apmag };
+                }
+            }
+            Some(a)
+        }
+        None => None,
+    };
+    (llr_arr, ap_mask)
 }

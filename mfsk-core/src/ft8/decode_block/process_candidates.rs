@@ -667,8 +667,15 @@ pub(super) fn fine_refine_pass1<S: AudioSample>(
     cands
         .into_iter()
         .map(|c| {
-            let (cd0, _) =
-                crate::ft8::downsample::downsample(&audio_i16, c.freq_hz, Some(&fft_cache));
+            // Use `downsample_cached` directly so the FT8 wrapper's
+            // `cache.to_vec()` clone (~1.5 MB) on the `Some(_)` branch is
+            // bypassed — same pattern as `decode.rs::process_candidate_with_scratch`
+            // (that fix's scope never covered this sibling call site).
+            let cd0 = crate::engine::dsp::downsample::downsample_cached(
+                &fft_cache,
+                c.freq_hz,
+                &crate::ft8::downsample::FT8_CFG,
+            );
             let r = crate::ft8::refine_fine::fine_refine_3stage(&cd0, c.dt_sec);
             crate::engine::sync::SyncCandidate {
                 freq_hz: c.freq_hz + r.delf_hz,
@@ -1764,9 +1771,16 @@ pub(in crate::ft8) fn process_one_candidate_inner(
 
             for &base_llr in &llr_variants {
                 let mut llr_ap = *base_llr;
-                for i in 0..LDPC_N {
-                    if ap_mask[i] {
-                        llr_ap[i] = if ap_values[i] == 1 { apmag } else { -apmag };
+                // Iterator form (issue #208-style — same shape as
+                // `fill_bmet_for_nsym`'s max-reduction fix) instead of
+                // three separate bounds-checked `[i]` indexes; run up
+                // to ~28x per Step-4 candidate (4 LLR variants × up to
+                // ~7 AP passes).
+                for ((dst, &locked), &val) in
+                    llr_ap.iter_mut().zip(ap_mask.iter()).zip(ap_values.iter())
+                {
+                    if locked {
+                        *dst = if val == 1 { apmag } else { -apmag };
                     }
                 }
                 // Inline AP-result validator: hard-error gate, unpack,

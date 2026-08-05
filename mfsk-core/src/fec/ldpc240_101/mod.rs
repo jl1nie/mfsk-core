@@ -13,9 +13,14 @@
 pub mod tables;
 
 use alloc::vec;
+use alloc::vec::Vec;
 
+use crate::engine::protocol::BpPooledFec;
 use crate::engine::{FecCodec, FecOpts, FecResult};
-use crate::fec::ldpc::bp::bp_decode_generic_kind;
+use crate::fec::ldpc::bp::{
+    BpScratch, bp_decode_generic_kind, bp_decode_generic_kind_with_scratch, bp_llr_zsum,
+    bp_llr_zsum_with_scratch,
+};
 use crate::fec::ldpc::osd::{ldpc_encode_generic, osd_decode_generic};
 use crate::fec::ldpc::params::Ldpc240_101Params;
 
@@ -105,32 +110,8 @@ impl FecCodec for Ldpc240_101 {
     }
 
     fn decode_soft(&self, llr: &[f32], opts: &FecOpts<'_>) -> Option<FecResult> {
-        assert_eq!(llr.len(), LDPC_N, "llr must be {} values", LDPC_N);
-        let mut llr_arr = vec![0f32; LDPC_N];
-        llr_arr.copy_from_slice(llr);
-
-        // AP hint injection (same convention as Ldpc174_91): clamp the
-        // masked bits to ±apmag where apmag dominates any channel
-        // observation, then build a parallel bool mask the BP loop
-        // consults to skip variable-node updates on those bits.
-        let ap_storage_holder;
-        let ap_slice: Option<&[bool]> = match opts.ap_mask {
-            Some((mask, values)) => {
-                assert_eq!(mask.len(), LDPC_N, "ap mask must be {} bits", LDPC_N);
-                assert_eq!(values.len(), LDPC_N, "ap values must be {} bits", LDPC_N);
-                let apmag = llr_arr.iter().map(|x| x.abs()).fold(0.0f32, f32::max) * 1.01;
-                let mut a = vec![false; LDPC_N];
-                for i in 0..LDPC_N {
-                    if mask[i] != 0 {
-                        a[i] = true;
-                        llr_arr[i] = if values[i] != 0 { apmag } else { -apmag };
-                    }
-                }
-                ap_storage_holder = a;
-                Some(ap_storage_holder.as_slice())
-            }
-            None => None,
-        };
+        let (llr_arr, ap_storage) = prepare_ap_llr(llr, opts);
+        let ap_slice: Option<&[bool]> = ap_storage.as_deref();
 
         if let Some(r) = bp_decode_generic_kind::<Ldpc240_101Params>(
             &llr_arr,
@@ -182,7 +163,7 @@ impl FecCodec for Ldpc240_101 {
         // BP loop does, so running it under an AP mask would drift
         // those bits away from their hinted value.
         if ap_slice.is_none() {
-            let zsum = crate::fec::ldpc::bp::bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
+            let zsum = bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
             if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
                 &zsum,
                 opts.osd_depth.min(3) as u8,
@@ -199,6 +180,104 @@ impl FecCodec for Ldpc240_101 {
 
         None
     }
+}
+
+impl BpPooledFec for Ldpc240_101 {
+    type Scratch = BpScratch<Ldpc240_101Params, f32>;
+
+    fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        opts: &FecOpts<'_>,
+        scratch: &mut Self::Scratch,
+    ) -> Option<FecResult> {
+        let (llr_arr, ap_storage) = prepare_ap_llr(llr, opts);
+        let ap_slice: Option<&[bool]> = ap_storage.as_deref();
+
+        if let Some(r) = bp_decode_generic_kind_with_scratch::<Ldpc240_101Params>(
+            scratch,
+            &llr_arr,
+            ap_slice,
+            opts.bp_max_iter,
+            opts.verify_info,
+            opts.bp_kind,
+        ) {
+            return Some(FecResult {
+                info: r.info,
+                hard_errors: r.hard_errors,
+                iterations: r.iterations,
+            });
+        }
+
+        // OSD fallback (raw-LLR attempt) stays unpooled — out of scope
+        // for this pass, identical to `decode_soft`'s tail above.
+        if opts.osd_depth == 0 {
+            return None;
+        }
+
+        if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
+            &llr_arr,
+            opts.osd_depth.min(3) as u8,
+            LDPC_K,
+            opts.verify_info,
+        ) {
+            return Some(FecResult {
+                info: r.info,
+                hard_errors: r.hard_errors,
+                iterations: 0,
+            });
+        }
+
+        // zsum-seeded OSD retry (issue #146 — see `decode_soft`'s doc
+        // comment for the full rationale) — pooled: `bp_llr_zsum_with_scratch`
+        // reuses the same `scratch` the BP staircase above already used,
+        // and returns a borrow instead of a fresh `Vec`.
+        if ap_slice.is_none() {
+            let zsum = bp_llr_zsum_with_scratch::<Ldpc240_101Params>(scratch, &llr_arr, 2);
+            if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
+                zsum,
+                opts.osd_depth.min(3) as u8,
+                LDPC_K,
+                opts.verify_info,
+            ) {
+                return Some(FecResult {
+                    info: r.info,
+                    hard_errors: r.hard_errors,
+                    iterations: 0,
+                });
+            }
+        }
+
+        None
+    }
+}
+
+/// Shared AP-hint LLR preparation for [`Ldpc240_101`]'s pooled and
+/// unpooled `decode_soft` — same convention as
+/// `crate::fec::ldpc::prepare_ap_llr` for [`crate::fec::ldpc::Ldpc174_91`],
+/// just `Vec`-backed (`LDPC_N` = 240 here) instead of array-backed.
+fn prepare_ap_llr(llr: &[f32], opts: &FecOpts<'_>) -> (Vec<f32>, Option<Vec<bool>>) {
+    assert_eq!(llr.len(), LDPC_N, "llr must be {} values", LDPC_N);
+    let mut llr_arr = vec![0f32; LDPC_N];
+    llr_arr.copy_from_slice(llr);
+
+    let ap_mask = match opts.ap_mask {
+        Some((mask, values)) => {
+            assert_eq!(mask.len(), LDPC_N, "ap mask must be {} bits", LDPC_N);
+            assert_eq!(values.len(), LDPC_N, "ap values must be {} bits", LDPC_N);
+            let apmag = llr_arr.iter().map(|x| x.abs()).fold(0.0f32, f32::max) * 1.01;
+            let mut a = vec![false; LDPC_N];
+            for i in 0..LDPC_N {
+                if mask[i] != 0 {
+                    a[i] = true;
+                    llr_arr[i] = if values[i] != 0 { apmag } else { -apmag };
+                }
+            }
+            Some(a)
+        }
+        None => None,
+    };
+    (llr_arr, ap_mask)
 }
 
 #[cfg(test)]

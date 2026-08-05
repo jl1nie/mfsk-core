@@ -69,13 +69,13 @@ std::thread_local! {
 
 #[cfg(feature = "std")]
 #[inline]
-fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
+pub(crate) fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
     DOWNSAMPLE_PLANNER.with_borrow_mut(|planner| f(planner.as_mut()))
 }
 
 #[cfg(not(feature = "std"))]
 #[inline]
-fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
+pub(crate) fn with_default_planner<R>(f: impl FnOnce(&mut dyn FftPlanner) -> R) -> R {
     f(default_planner().as_mut())
 }
 
