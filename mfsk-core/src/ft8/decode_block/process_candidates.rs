@@ -1771,9 +1771,18 @@ pub(in crate::ft8) fn process_one_candidate_inner(
 
             for &base_llr in &llr_variants {
                 let mut llr_ap = *base_llr;
-                for i in 0..LDPC_N {
-                    if ap_mask[i] {
-                        llr_ap[i] = if ap_values[i] == 1 { apmag } else { -apmag };
+                // Iterator form (issue #208-style — same shape as
+                // `fill_bmet_for_nsym`'s max-reduction fix) instead of
+                // three separate bounds-checked `[i]` indexes; run up
+                // to ~28x per Step-4 candidate (4 LLR variants × up to
+                // ~7 AP passes).
+                for ((dst, &locked), &val) in llr_ap
+                    .iter_mut()
+                    .zip(ap_mask.iter())
+                    .zip(ap_values.iter())
+                {
+                    if locked {
+                        *dst = if val == 1 { apmag } else { -apmag };
                     }
                 }
                 // Inline AP-result validator: hard-error gate, unpack,
