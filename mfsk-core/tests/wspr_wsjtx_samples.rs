@@ -142,3 +142,60 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
         GOLDEN.len()
     );
 }
+
+/// Ad-hoc wall-clock timing probe for `decode_scan_subtract` on the
+/// real WSJT-X golden WAV — same params as
+/// `wspr_wsjtx_sample_recall_vs_golden`. Modeled on
+/// `bench_qso3_busy_timing.rs`'s warm-up-then-N-iteration structure
+/// (perf-review Phase 0, WSPR round — no prior WSPR timing harness
+/// existed before this).
+///
+/// Run: `cargo test --release --features full --test
+/// wspr_wsjtx_samples wspr_speed_diag -- --ignored --nocapture`
+#[test]
+#[ignore = "manual diagnostic — WSPR decode_scan_subtract timing (perf-review Phase 0)"]
+fn wspr_speed_diag() {
+    use std::time::Instant;
+
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+
+    // Warm-up (page faults, allocator, etc.) — excluded from timing.
+    let n = decode_scan_subtract(&audio, 12_000, 0, &params).len();
+    eprintln!("warm-up: {n} decodes");
+
+    const N_ITERS: usize = 5;
+    let mut times = Vec::with_capacity(N_ITERS);
+    for i in 0..N_ITERS {
+        let t0 = Instant::now();
+        let r = decode_scan_subtract(&audio, 12_000, 0, &params);
+        let dt = t0.elapsed();
+        eprintln!(
+            "iter {i:2}: {:8.3} ms  ({} decodes)",
+            dt.as_secs_f64() * 1000.0,
+            r.len()
+        );
+        times.push(dt.as_secs_f64() * 1000.0);
+    }
+
+    let total: f64 = times.iter().sum();
+    let avg = total / times.len() as f64;
+    let min = times.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    eprintln!(
+        "\n=== WSPR 150426_0918.wav decode_scan_subtract timing (n={}) ===\navg={avg:.3} ms  min={min:.3} ms  max={max:.3} ms",
+        times.len()
+    );
+}
