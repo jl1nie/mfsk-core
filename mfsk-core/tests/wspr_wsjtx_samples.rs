@@ -190,7 +190,10 @@ fn wspr_scan_subtract_streaming_matches_batch_exactly() {
          exactly match the batch result, same order (sequential outer SIC \
          accept point, no divergence mechanism exists on this path)"
     );
-    assert!(!batch.is_empty(), "expected real decodes on the WSPR golden WAV");
+    assert!(
+        !batch.is_empty(),
+        "expected real decodes on the WSPR golden WAV"
+    );
 }
 
 /// `decode_scan_streaming`'s `on_result` callback — real-signal
@@ -242,7 +245,10 @@ fn wspr_scan_streaming_superset_of_batch() {
         "every batch result must have fired via callback at least once: missing {:?}",
         missing_from_stream
     );
-    assert!(!batch_msgs.is_empty(), "expected real decodes on the WSPR golden WAV");
+    assert!(
+        !batch_msgs.is_empty(),
+        "expected real decodes on the WSPR golden WAV"
+    );
     assert_eq!(
         streamed, batch_msgs,
         "no duplicate-delivery case expected on this golden WAV (if this starts \
