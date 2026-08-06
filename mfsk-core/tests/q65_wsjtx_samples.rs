@@ -940,6 +940,124 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
     }
 }
 
+/// `DecodeRequest::on_result` streaming callback — real-signal
+/// verification, mirroring `tests/ft8_streaming_decode.rs`'s
+/// sequential-exact-match contract. Q65's wide-band scan
+/// (`decode_scan_for` → `decode_scan_inner`) is sequential and
+/// dedup-then-push with no early exit, so — same as FT8's
+/// `.sic_rounds()` path — the callback-delivered set must exactly
+/// equal the batch `Vec`, no divergence mechanism exists.
+#[test]
+fn q65_scan_streaming_matches_batch_exactly() {
+    let Some(dir) = samples_dir("60A_EME_6m") else {
+        eprintln!("skipping: WSJT-X 6m EME sample tree not found");
+        return;
+    };
+    let Some(path) = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+    else {
+        eprintln!("skipping: no .wav files in 60A_EME_6m sample dir");
+        return;
+    };
+    let Some(audio) = read_wsjtx_wav(&path) else {
+        eprintln!("skipping: WAV format not recognised");
+        return;
+    };
+
+    let nominal_mid = 12_000 * 30;
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 16,
+    };
+
+    let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let on_result = |r: &mfsk_core::q65::Q65Result| {
+        streamed.lock().unwrap().push(r.message.clone());
+    };
+    let batch = DecodeRequest::<Q65a60>::new(&audio, 12_000, nominal_mid, params)
+        .on_result(&on_result)
+        .decode();
+
+    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.clone()).collect();
+    let streamed = streamed.into_inner().unwrap();
+    eprintln!(
+        "{}: batch={} streamed={}",
+        path.file_name().unwrap().to_string_lossy(),
+        batch_msgs.len(),
+        streamed.len()
+    );
+    assert_eq!(
+        streamed, batch_msgs,
+        "Q65 wide-band scan: streamed callback deliveries must exactly \
+         match the batch result, same order (sequential dedup-then-push, \
+         no divergence mechanism exists on this path)"
+    );
+}
+
+/// `MultiPeriodRequest::on_result` streaming callback — real-signal
+/// verification. Unlike the plain wide-band scan, this fires once
+/// per *slot* that yields an accepted decode (see the field doc
+/// comment on `MultiPeriodRequest::on_result` for why slots are the
+/// natural streaming unit here) — still an exact-match contract
+/// against the batch `Vec` since `decode_multi_period_for`'s
+/// candidate loop is sequential with no cross-thread duplication.
+#[test]
+fn q65_multi_period_streaming_matches_batch_exactly() {
+    let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
+        eprintln!("skipping: WSJT-X sample tree not found");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .expect("read samples dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wav"))
+        .collect();
+    paths.sort();
+    let audios: Vec<Vec<f32>> = paths.iter().filter_map(read_wsjtx_wav).collect();
+    if audios.is_empty() {
+        eprintln!("skipping: no readable WAVs in 30A_Ionoscatter_6m sample dir");
+        return;
+    }
+    let slot_refs: Vec<&[f32]> = audios.iter().map(|v| v.as_slice()).collect();
+
+    let nominal_mid = 12_000 * 15;
+    let params = SearchParams {
+        freq_min_hz: 200.0,
+        freq_max_hz: 3_000.0,
+        time_tolerance_symbols: 50,
+        score_threshold: 0.05,
+        max_candidates: 8,
+    };
+
+    let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let on_result = |r: &mfsk_core::q65::Q65Result| {
+        streamed.lock().unwrap().push(r.message.clone());
+    };
+    let batch = MultiPeriodRequest::<Q65a30>::new(&slot_refs, 12_000, nominal_mid, params)
+        .on_result(&on_result)
+        .decode();
+
+    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.clone()).collect();
+    let streamed = streamed.into_inner().unwrap();
+    eprintln!(
+        "ionoscatter multi-period: batch={} streamed={}",
+        batch_msgs.len(),
+        streamed.len()
+    );
+    assert_eq!(
+        streamed, batch_msgs,
+        "Q65 multi-period scan: per-slot streamed callback deliveries must \
+         exactly match the batch result, same order"
+    );
+}
+
 #[test]
 #[ignore = "manual diagnostic — Q65-60D/120D/120E/300A fading-metric candidate-score calibration (2026-07-20 speed follow-up)"]
 fn q65_fading_candidate_score_calibration_diag() {
