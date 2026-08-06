@@ -323,6 +323,7 @@ fn process_candidate_with_scratch(
 ///
 /// Returns `(decoded_results, fft_cache)`.  Callers that don't need the cache
 /// can simply ignore the second element.
+#[allow(clippy::too_many_arguments)]
 fn decode_frame_inner(
     audio: &[i16],
     freq_min: f32,
@@ -336,6 +337,7 @@ fn decode_frame_inner(
     eq_mode: EqMode,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
     ap_hint: Option<&ApHint>,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, Vec<num_complex::Complex<f32>>) {
     // `freq_hint` is intentionally not forwarded — the WSJT-X-faithful
     // decode_block::coarse_sync (the only FT8 coarse-sync after the v0.6
@@ -358,22 +360,34 @@ fn decode_frame_inner(
         return (Vec::new(), fft_cache);
     }
 
+    // `on_result` fires here, inside the per-candidate closure, *before*
+    // the cross-candidate dedup pass below — see `DecodeRequest::
+    // on_result`'s doc comment for why that ordering means a result can
+    // fire via callback but not survive into the returned `Vec`.
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
         .filter_map(|cand| {
-            process_candidate(
+            let r = process_candidate(
                 cand, audio, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let raw: Vec<DecodeResult> = candidates
         .iter()
         .filter_map(|cand| {
-            process_candidate(
+            let r = process_candidate(
                 cand, audio, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
 
@@ -431,6 +445,7 @@ fn flat_sic_inner(
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
     n_rounds: usize,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut residual = audio.to_vec();
     sic_inner_passes_with_cache(
@@ -446,6 +461,7 @@ fn flat_sic_inner(
         ap_hint,
         precomputed_fft,
         n_rounds,
+        on_result,
     )
 }
 
@@ -477,10 +493,11 @@ fn sic_inner_passes(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     n_rounds: usize,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> Vec<DecodeResult> {
     sic_inner_passes_with_cache(
         residual, freq_min, freq_max, sync_min, depth, max_cand, strictness, known, eq_mode,
-        ap_hint, None, n_rounds,
+        ap_hint, None, n_rounds, on_result,
     )
     .0
 }
@@ -514,6 +531,7 @@ fn sic_inner_passes_with_cache(
     ap_hint: Option<&ApHint>,
     precomputed_fft: Option<&[num_complex::Complex<f32>]>,
     n_rounds: usize,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache) {
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let mut pass0_cache: Option<FftCache> = None;
@@ -609,6 +627,9 @@ fn sic_inner_passes_with_cache(
             // the FT4 busy-band-fading synthetic 10/10) passes
             // identically or better with the single-shot call.
             subtract_signal_lpf(residual, &r);
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
             all_results.push(r);
         }
     }
@@ -707,6 +728,7 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
         strictness,
         EqMode::Off,
         ap_hint,
+        None,
     )
 }
 
@@ -728,6 +750,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
 
@@ -752,6 +775,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             ap_hint,
             None,
             CHECKPOINT_SIC_ROUNDS,
+            on_result,
         );
         return (r, audio.to_vec());
     }
@@ -787,6 +811,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         eq_mode,
         ap_hint,
         CHECKPOINT_SIC_ROUNDS,
+        on_result,
     );
     // Checkpoint A's own residual is not carried forward — only its
     // decoded results are (ft8_decode.f90 reloads `dd=iwave` fresh at
@@ -816,6 +841,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             ap_hint,
             None,
             CHECKPOINT_SIC_ROUNDS,
+            on_result,
         );
         return (r, audio.to_vec());
     }
@@ -879,6 +905,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         eq_mode,
         ap_hint,
         CHECKPOINT_SIC_ROUNDS,
+        on_result,
     );
 
     let mut all_results = early_results;
@@ -902,6 +929,7 @@ fn decode_sniper_inner(
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
     sync_min: f32,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache) {
     let freq_min = (target_freq - 250.0).max(100.0);
     let freq_max = (target_freq + 250.0).min(5900.0);
@@ -919,11 +947,13 @@ fn decode_sniper_inner(
         return (Vec::new(), fft_cache);
     }
 
+    // Same on_result-fires-before-dedup ordering as decode_frame_inner —
+    // see its comment above the analogous par_iter block.
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
         .filter_map(|cand| {
-            process_candidate(
+            let r = process_candidate(
                 cand,
                 audio,
                 fft_cache.as_slice(),
@@ -932,14 +962,18 @@ fn decode_sniper_inner(
                 &[],
                 eq_mode,
                 ap_hint,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let raw: Vec<DecodeResult> = candidates
         .iter()
         .filter_map(|cand| {
-            process_candidate(
+            let r = process_candidate(
                 cand,
                 audio,
                 fft_cache.as_slice(),
@@ -948,7 +982,11 @@ fn decode_sniper_inner(
                 &[],
                 eq_mode,
                 ap_hint,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
 
@@ -981,6 +1019,7 @@ impl FrameDecodable for Ft8 {
             req.eq_mode,
             req.fft_cache.as_ref().map(FftCache::as_slice),
             req.ap_hint,
+            req.on_result,
         );
         DecodeOutcome {
             results,
@@ -998,6 +1037,7 @@ impl FrameDecodable for Ft8 {
             req.eq_mode,
             req.ap_hint,
             req.sync_min,
+            req.on_result,
         );
         DecodeOutcome { results, fft_cache }
     }
@@ -1028,6 +1068,7 @@ impl SupportsSicRounds for Ft8 {
                 req.ap_hint,
                 req.fft_cache.as_ref().map(FftCache::as_slice),
                 req.sic_rounds,
+                req.on_result,
             );
             DecodeOutcome { results, fft_cache }
         } else {
@@ -1048,6 +1089,7 @@ impl SupportsSicRounds for Ft8 {
                 req.ap_hint,
                 None,
                 req.sic_rounds,
+                req.on_result,
             );
             DecodeOutcome { results, fft_cache }
         }
@@ -1095,6 +1137,7 @@ impl SupportsSicEarly for Ft8 {
             req.strictness,
             req.eq_mode,
             req.ap_hint,
+            req.on_result,
         );
         // Belt-and-braces dedup: subtraction above should already
         // prevent `known` signals from re-decoding, but an imperfect
