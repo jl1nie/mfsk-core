@@ -286,7 +286,7 @@ pub fn decode_scan(
     // Decimate ONCE up-front; the wsprd-equivalent coarse and the
     // demod both consume the same baseband buffer, so we save 32×
     // FFT work vs running each separately.
-    let (idat, qdat) = super::baseband::decimate_to_baseband(&padded);
+    let (mut idat, mut qdat) = super::baseband::decimate_to_baseband(&padded);
     // wsprd-equivalent coarse: 512-pt windowed FFT on the 375 Hz
     // baseband, time-averaged spectrum + 30 th-percentile noise
     // floor, peak detection on smspec, 3-D (freq, time, drift)
@@ -388,15 +388,19 @@ pub fn decode_scan(
     // neighbours' noise floor — the only path that recovers W3BI on
     // the WSJT-X golden (-27 dB SNR, hidden by ND6P / KI7CI / etc.).
     if !pass1.is_empty() {
-        let mut idat2 = idat.clone();
-        let mut qdat2 = qdat.clone();
+        // `idat`/`qdat` are locally owned (from `decimate_to_baseband`
+        // above) and never read again after pass 1's loop — subtract
+        // the pass-1 decodes in place instead of cloning both ~180KB
+        // buffers first. (Pass 1's own borrows of `&idat`/`&qdat` are
+        // all scoped to that loop's iterations, so they've ended by
+        // the time we get here.)
         for (d, start_refined) in &pass1 {
             let symbols = super::encode_channel_symbols(&d.info_bits);
             let f0_audio = d.freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
             let shift_baseband = (*start_refined as i32) / 32;
             super::subtract::subtract_signal_baseband(
-                &mut idat2,
-                &mut qdat2,
+                &mut idat,
+                &mut qdat,
                 f0_audio,
                 shift_baseband,
                 0.0,
@@ -408,8 +412,8 @@ pub fn decode_scan(
         // residual buffer, and reconstructing 12 kHz from baseband is
         // pointless for the same coarse_search call.
         let bb_cands2 = super::coarse_baseband::coarse_baseband(
-            &idat2,
-            &qdat2,
+            &idat,
+            &qdat,
             pad,
             params.max_candidates,
             max_drift,
@@ -421,8 +425,8 @@ pub fn decode_scan(
             // exposed them in the spectrum, but they still need the
             // coherent gain to clear the Fano convergence threshold.
             let Some(mut d) = decode_at_baseband_nblocks(
-                &idat2,
-                &qdat2,
+                &idat,
+                &qdat,
                 sample_rate,
                 c.start_sample,
                 c.freq_hz,
