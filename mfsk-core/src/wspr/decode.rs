@@ -6,6 +6,9 @@
 
 use alloc::vec::Vec;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use crate::msg::WsprMessage;
 
 use super::search::SearchParams;
@@ -275,6 +278,50 @@ pub fn decode_at_with_drift(
 /// for the same reason.
 const NEGATIVE_DT_PAD_SEC: f32 = 3.0;
 
+/// Per-candidate pass-1 decode step, factored out of [`decode_scan`]'s
+/// pass-1 loop so it can run under `par_iter()` (feature `parallel`)
+/// or plain `.iter()` identically — pure function of its arguments, no
+/// shared mutable state, so parallelizing this doesn't change behavior.
+fn decode_pass1_candidate(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    pad: usize,
+    c: &super::coarse_baseband::BasebandCandidate,
+) -> Option<(WsprResult, usize)> {
+    let mut d = decode_at_baseband(idat, qdat, sample_rate, c.start_sample, c.freq_hz, 0.0)?;
+    let start_refined = d.start_sample;
+    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+    d.start_sample = start_refined.saturating_sub(pad);
+    d.snr_db = c.snr_db;
+    Some((d, start_refined))
+}
+
+/// Per-candidate pass-2 decode step — same parallelization rationale
+/// as [`decode_pass1_candidate`], for [`decode_scan`]'s pass-2 loop.
+fn decode_pass2_candidate(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    pad: usize,
+    c: &super::coarse_baseband::BasebandCandidate,
+) -> Option<WsprResult> {
+    let mut d = decode_at_baseband_nblocks(
+        idat,
+        qdat,
+        sample_rate,
+        c.start_sample,
+        c.freq_hz,
+        c.drift_hz,
+        &[1, 2, 3],
+    )?;
+    let start_refined = d.start_sample;
+    d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+    d.start_sample = start_refined.saturating_sub(pad);
+    d.snr_db = c.snr_db;
+    Some(d)
+}
+
 pub fn decode_scan(
     audio: &[f32],
     sample_rate: u32,
@@ -365,17 +412,29 @@ pub fn decode_scan(
     );
     // pass-1 decodes carry their padded-buffer alignment so we can
     // subtract them from the baseband for pass 2.
+    //
+    // Each candidate's decode_at_baseband call is a pure function of
+    // (idat, qdat, sample_rate, candidate) — no shared mutable state
+    // during the loop body, so the decode step runs in parallel
+    // (mirroring ft8::decode's own par_iter()/filter_map()/collect()
+    // pattern, src/ft8/decode.rs:361-368). The dedup pass below stays
+    // strictly sequential afterward, over `raw1` in its original
+    // (order-preserving) candidate order, so "first occurrence wins"
+    // semantics are unchanged — this doesn't alter behavior, only
+    // parallelizes independent work.
+    #[cfg(feature = "parallel")]
+    let raw1: Vec<(WsprResult, usize)> = cands
+        .par_iter()
+        .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let raw1: Vec<(WsprResult, usize)> = cands
+        .iter()
+        .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+        .collect();
+
     let mut pass1: Vec<(WsprResult, usize)> = Vec::new();
-    for c in &cands {
-        let Some(mut d) =
-            decode_at_baseband(&idat, &qdat, sample_rate, c.start_sample, c.freq_hz, 0.0)
-        else {
-            continue;
-        };
-        let start_refined = d.start_sample;
-        d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
-        d.start_sample = start_refined.saturating_sub(pad);
-        d.snr_db = c.snr_db;
+    for (d, start_refined) in raw1 {
         let dup = seen.iter().any(|prev| {
             prev.message == d.message
                 && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
@@ -424,27 +483,27 @@ pub fn decode_scan(
             params.max_candidates,
             max_drift,
         );
-        for c in bb_cands2 {
-            // Pass 2 uses nblock = 1, 2, 3 (coherent block detection)
-            // for the +3..+4.8 dB margin needed to decode signals like
-            // W3BI at -27 dB SNR. The strong-signal subtract above has
-            // exposed them in the spectrum, but they still need the
-            // coherent gain to clear the Fano convergence threshold.
-            let Some(mut d) = decode_at_baseband_nblocks(
-                &idat,
-                &qdat,
-                sample_rate,
-                c.start_sample,
-                c.freq_hz,
-                c.drift_hz,
-                &[1, 2, 3],
-            ) else {
-                continue;
-            };
-            let start_refined = d.start_sample;
-            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
-            d.start_sample = start_refined.saturating_sub(pad);
-            d.snr_db = c.snr_db;
+        // Pass 2 uses nblock = 1, 2, 3 (coherent block detection) for
+        // the +3..+4.8 dB margin needed to decode signals like W3BI at
+        // -27 dB SNR. The strong-signal subtract above has exposed
+        // them in the spectrum, but they still need the coherent gain
+        // to clear the Fano convergence threshold. Same parallelize-
+        // the-decode-step / dedup-sequentially-after shape as pass 1
+        // above — this is pass 2's own per-candidate cost that's ~4x
+        // pass 1's (3 nblock values vs 1), the dominant single cost in
+        // `decode_scan` per `docs/notes/WSPR_BENCHMARK.md`'s Finding 2.
+        #[cfg(feature = "parallel")]
+        let raw2: Vec<WsprResult> = bb_cands2
+            .par_iter()
+            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c))
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let raw2: Vec<WsprResult> = bb_cands2
+            .iter()
+            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c))
+            .collect();
+
+        for d in raw2 {
             let dup = seen.iter().any(|prev| {
                 prev.message == d.message
                     && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
