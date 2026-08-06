@@ -17,11 +17,16 @@ all 4 items) found only **~1-2% overall wall-clock improvement**
 other 3 items barely moved the needle: none of them touched the
 dominant cost.
 
-**This is a proposal document, not a completed fix** — the options
-below are analyzed and ranked but none are implemented yet. Treat this
-the way `Q65_BENCHMARK.md`'s "Q65-60A: deferred" section treats its own
-unimplemented follow-up: real diagnostic data backing each option, but
-a decision on which to pursue (and in what order) is still open.
+**Update (2026-08-06, same day)**: Option A (candidate-loop
+parallelization) is now implemented and merged into
+`perf/wspr-jt9-hotpath-pass` — measured ~2.4x speedup, by far the
+largest single win of the whole FT8/FST4/FT4/Q65/WSPR campaign.
+Option C's calibration diagnostic is also done, with a clean result
+recommending implementation (see that section below). The rest of this
+document's "proposal, not completed fix" framing still applies to
+Options B and D and to Option C's *implementation* (only its
+calibration is done) — see "Recommended sequencing" at the bottom for
+current status of each.
 
 ## Methodology: a real cost-split diagnostic
 
@@ -169,24 +174,59 @@ claim about the *inner* pass 2 doing most of the work, not evidence
 that the *outer* pass 2 (a second full `decode_scan` call, i.e. up to
 2 more full inner passes) earns its ~2x cost.
 
-**Confidence**: low-to-medium on the *direction* (there's likely real
-redundancy here), very low on knowing the *right* fix without
-measuring — this needs its own dedicated investigation (which recall
-gains, if any, does dropping/merging a layer cost — the W3BI-class
-signal specifically motivated the *inner* pass 2 per the code
-comments, but the *outer* pass 2's marginal contribution isn't
-documented anywhere and should be measured directly: run
-`decode_scan_subtract` with `NPASSES=1` against the golden WAV and see
-which of the 8 golden messages, if any, only the outer pass 2 finds).
+**Calibration run** (`wspr_diag_pass_ablation`,
+`tests/wspr_wsjtx_samples.rs`, added 2026-08-06): 3 conditions on the
+golden WAV, all via `pub` building blocks (`decode_scan` itself already
+*is* "inner=1+2, outer=1" — no new helper needed for that half):
 
-**Risk**: highest of the four — this is an architectural question
-about the decode strategy, not a mechanical optimization, and getting
-it wrong costs real recall on weak/crowded-band signals, which is
-WSPR's whole reason for existing as a mode. Do not attempt without a
-dedicated calibration pass first (same spirit as Option B, but at a
-coarser granularity), and treat a "no measurable recall loss" result
-on one golden WAV as necessary, not sufficient, given only 8
-transmitters are in it.
+```
+A inner=1only outer=1            83.7 ms  7/8 golden  [...all but W3BI...]
+B inner=1+2   outer=1           130.2 ms  8/8 golden  [...+ W3BI...]
+D inner=1+2   outer=2 (prod)    330.9 ms  8/8 golden  [same set as B]
+
+inner pass-2 contributes (B \ A): ["W3BI FN20 30"]
+outer pass-2 contributes (D \ B): []
+```
+
+Reproduced 3x, deterministic (no run-to-run variation in which golden
+messages hit, only timing). **The inner pass 2 earns its cost exactly
+as the code comments claim — it's the only thing that recovers W3BI
+(-27 dB SNR).** The outer pass 2, on this golden WAV, recovers
+**nothing** beyond what a single `decode_scan` call already finds,
+while costing an extra ~201ms — roughly **2.5x** condition B's own
+cost, for zero measured benefit here.
+
+**Caveat, unchanged from before the calibration run**: this is one
+golden WAV with 8 transmitters (the only real WSPR sample in this
+repo's `WSJT-X/samples/WSPR/` — no second sample exists to
+cross-check against). A "0 marginal recall" result on 8 signals is
+suggestive, not proof, that the outer pass never helps on a busier or
+differently-conditioned band — WSPR slots can carry many more
+concurrent transmitters than this one does, and the outer pass's
+whole justification is recovering signals masked by *other* signals'
+subtraction residue, which a sparser slot exercises less. Treat this
+as strong evidence to act on with an appropriate fallback (see below),
+not as license to delete the outer pass outright without further
+safety margin.
+
+**Recommendation**: this now has enough evidence to implement, but
+conservatively — not by deleting `NPASSES=2` outright. A reasonable
+shape: keep the outer loop but make its second iteration
+*conditional* (e.g. skip it when pass-1's own inner-pass-2 already
+found signals covering a configurable fraction of the coarse
+candidates, or simply expose `NPASSES` as tunable and default it to 1
+while keeping 2 available for callers who want maximum recall on busy
+bands at 2.5x the cost) rather than a blanket removal — this keeps the
+"more real evidence might change this" caveat above from becoming a
+silent regression for someone else's use case. Still needs the full
+recall suite (`wspr_wsjtx_sample_recall_vs_golden`, 8/8) as a hard
+gate regardless of which shape is chosen.
+
+**Risk**: was rated highest of the four before this calibration run;
+now downgraded to medium given the clean, reproduced 0-contribution
+result — but the single-sample caveat above keeps it above Option A's
+risk floor. Do not skip the recall-suite gate even though the
+diagnostic already ran it once.
 
 ### Option D — OSD fallback cost
 
@@ -213,28 +253,32 @@ trade-off like Option B, needing the same calibration discipline).
 
 ## Recommended sequencing
 
-1. **Option A first** — parallelize the candidate loops. Highest
-   confidence, lowest risk, no recall-invariance question at all (it's
-   not an algorithm change), and the plumbing already exists in this
-   crate (FT8's exact pattern to copy). This alone, on a multi-core
-   host, could meaningfully cut into the ~918ms pass-2-across-both-outer-passes
-   component without touching anything that needs new measurement
-   discipline beyond "still 8/8 golden, still same messages."
-2. **Then split Option D's OSD-vs-Fano cost** inside pass 2's sweep —
+1. ~~**Option A first**~~ — **done** (`perf/wspr-jt9-hotpath-pass`,
+   commit `71fc382`). Parallelized the candidate loops via
+   `par_iter()`, mirroring FT8's existing pattern. Measured ~2.4x
+   speedup (git worktree A/B, alternating, same session), no algorithm
+   change, 8/8 golden held.
+2. ~~**Option C's calibration**~~ — **done** (`wspr_diag_pass_ablation`,
+   see the updated Option C section above). Clean, reproduced result:
+   the outer `NPASSES=2` pass contributes 0 marginal golden recall on
+   the one real WSPR sample available, at ~2.5x the cost of stopping
+   after one `decode_scan` call. **Now the top implementation
+   candidate** given both its measured impact (bigger than Option A's,
+   on paper — cutting straight to ~130ms vs today's ~330ms on this
+   golden) and now-downgraded risk, but still needs the conditional/
+   tunable-rather-than-deleted shape discussed in that section, plus
+   the full recall gate, before landing.
+3. **Then split Option D's OSD-vs-Fano cost** inside pass 2's sweep —
    cheap to add (a few more `Instant` timers in
    `wspr_diag_candidate_cost_split` or a dedicated variant), and tells
-   us whether Option D is worth a dedicated pass or can be folded into
-   whatever Option B/C work follows.
-3. **Option B and C are architectural/algorithmic and need their own
-   calibration diagnostics before any code changes** — do not
-   implement either from the reasoning in this document alone. Build
-   the calibration diagnostics described in each section first (hard-
-   error-count distribution across `nblock` values for B; an
-   `NPASSES=1` vs `NPASSES=2` golden-recall diff for C), review what
-   they show, *then* decide whether either is worth pursuing — matching
-   this campaign's own established discipline (measure before
-   implementing, not after).
+   us whether Option D is worth a dedicated pass.
+4. **Option B still needs its own calibration diagnostic before any
+   code changes** — hard-error-count distribution across `nblock`
+   values, not yet built. Do not implement from the reasoning in that
+   section alone.
 
-None of this is scheduled — this document exists so the next session
-picking up WSPR speed work starts from real profiled data instead of
+Only Option A is actually landed — the rest (including Option C, whose
+calibration is now done but whose implementation is not) exists here
+so the next session picking up WSPR speed work starts from real
+profiled data instead of
 re-deriving it.
