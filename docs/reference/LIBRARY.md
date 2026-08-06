@@ -782,6 +782,23 @@ final cross-candidate dedup pass — on the rare occasion two different
 sync candidates converge on the same message, `cb` may fire for both
 even though only one survives into the returned `Vec`.
 
+**Does delivery order favour strong signals?** Tends to, on *both*
+strategy families — `ft8::decode_block::coarse_sync` returns
+candidates sorted by Costas sync score descending, and both the
+sequential SIC loop and the parallel sweep process/dispatch that list
+in-order, so higher-scored (typically stronger) candidates tend to
+surface first either way (sync score correlates with SNR). But it's a
+correlation, not a guarantee: sync score is a pre-demod
+correlation-power measurement, not a direct predictor of post-demod
+BP/OSD cost, so a highly-scored candidate can still need the full OSD
+escalation while a lower-scored one converges in one BP pass. On the
+**sequential** strategies specifically this has a real consequence the
+parallel ones don't share — a candidate ahead in the list that needs
+deep OSD blocks every candidate behind it (including ones that would
+individually decode in microseconds), since there's only one thread;
+the parallel strategies have no such blocking, each candidate's cost
+is independent of every other's.
+
 **Design decision: a synchronous callback, not `async`/a channel —
 portability first.** §0.2's stated goal is a single crate "consumed
 identically from several runtimes (native Rust, WebAssembly, Android

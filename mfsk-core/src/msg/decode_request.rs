@@ -250,6 +250,31 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
     ///   dedup by `.message77()` on their side, the same key the
     ///   crate's own dedup already uses.
     ///
+    /// **Does "delivery order" mean strong signals report first?**
+    /// Tends to, on both strategies, but it's a correlation, not a
+    /// guarantee, for two independent reasons:
+    /// - `coarse_sync` (`ft8::decode_block::coarse_sync`) returns
+    ///   candidates sorted by Costas sync score *descending* — both
+    ///   the sequential SIC loop and the parallel `par_iter()` sweep
+    ///   process/dispatch that list in-order, and sync score does
+    ///   correlate with SNR, so higher-scoring (typically stronger)
+    ///   candidates tend to appear earlier either way.
+    /// - Sync score is a pre-demod correlation-power measurement, not
+    ///   a direct predictor of post-demod BP/OSD cost — fading,
+    ///   interference, and frequency drift can decouple the two for
+    ///   any individual signal, so a highly-scored candidate can still
+    ///   need the full OSD escalation while a slightly-lower-scored
+    ///   one converges in one BP pass.
+    /// - On the **sequential** strategies specifically, this residual
+    ///   mismatch has a real consequence the parallel strategies don't
+    ///   share: a candidate ahead in the (mostly-but-not-perfectly)
+    ///   strength-ordered list that needs deep OSD blocks every
+    ///   candidate behind it — including ones that would individually
+    ///   decode in microseconds — since there's only one thread. The
+    ///   parallel strategies don't have this blocking problem; each
+    ///   candidate's processing is independent of every other
+    ///   candidate's cost.
+    ///
     /// `cb` must be `Sync` for this reason — it may be called
     /// concurrently from multiple `rayon` worker threads.
     pub fn on_result(mut self, cb: OnResultCallback<'a, P>) -> Self {
