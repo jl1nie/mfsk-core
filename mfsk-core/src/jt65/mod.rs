@@ -229,6 +229,49 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &search::SearchParams,
 ) -> Vec<Jt65Result> {
+    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
+}
+
+/// Streaming variant of [`decode_scan`]: fires `on_result` once per
+/// candidate as it's accepted, *in addition to* (not instead of) the
+/// returned `Vec` — purely additive, same shape as
+/// [`crate::msg::decode_request::DecodeRequest::on_result`] (see that
+/// method's doc comment and `docs/reference/LIBRARY.md`'s "public
+/// decode entry point" section for the full portability rationale).
+///
+/// A `_streaming` sibling rather than a new parameter on
+/// [`decode_scan`] itself, matching
+/// `ft8::decode_block::decode_block_streaming`'s precedent — bolting
+/// a parameter onto an existing plain `pub fn` is a breaking change.
+///
+/// **Delivery order/dedup contract**: `decode_scan`'s candidate loop
+/// is sequential with no early exit and no parallelism — `cb` fires
+/// exactly once per result that ends up in the returned `Vec`, in the
+/// same order. No divergence mechanism exists here (unlike WSPR's/
+/// FT8's parallel strategies).
+pub fn decode_scan_streaming(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    on_result: &(dyn Fn(&Jt65Result) + Sync),
+) -> Vec<Jt65Result> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Some(on_result),
+    )
+}
+
+fn decode_scan_inner(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
+) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
@@ -244,12 +287,16 @@ pub fn decode_scan(
                 && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
-            seen.push(Jt65Result {
+            let result = Jt65Result {
                 message: msg,
                 freq_hz: c.freq_hz,
                 start_sample: c.start_sample,
                 snr_db,
-            });
+            };
+            if let Some(cb) = on_result {
+                cb(&result);
+            }
+            seen.push(result);
         }
     }
     seen
@@ -344,6 +391,52 @@ mod tests {
             msg,
             Jt72Message::Standard { ref call1, ref call2, ref grid_or_report }
                 if call1 == "CQ" && call2 == "K1ABC" && grid_or_report == "FN42"
+        ));
+    }
+
+    /// `decode_scan_streaming`'s `on_result` callback — synthetic
+    /// round-trip verification, matching this module's own existing
+    /// synth-test convention (no real-sample WSJT-X recording is
+    /// wired for JT65 today — see `tests/jt65_sweep.rs`'s doc comment
+    /// for why, it needs an out-of-tree `jt65sim` build). `decode_scan`
+    /// is sequential with no early exit and no parallelism, so the
+    /// callback-delivered set must exactly equal the batch `Vec`.
+    #[test]
+    fn decode_scan_streaming_matches_batch_exactly() {
+        use std::sync::Mutex;
+
+        let freq = 1500.0;
+        let audio = synthesize_standard("CQ", "JL1NIE", "PM95", 12_000, freq, 0.3).expect("synth");
+        // Drop the signal 1 s into a zeroed slot so decode_scan must
+        // actually search rather than decode at (start_sample=0).
+        let mut slot = vec![0.0f32; 12_000 + audio.len()];
+        slot[12_000..12_000 + audio.len()].copy_from_slice(&audio);
+
+        let streamed_acc: Mutex<Vec<Jt72Message>> = Mutex::new(Vec::new());
+        let on_result = |r: &Jt65Result| streamed_acc.lock().unwrap().push(r.message.clone());
+        let batch = decode_scan_streaming(
+            &slot,
+            12_000,
+            0,
+            &search::SearchParams::default(),
+            &on_result,
+        );
+        let streamed = streamed_acc.into_inner().unwrap();
+        let batch_msgs: Vec<Jt72Message> = batch.iter().map(|d| d.message.clone()).collect();
+        assert_eq!(
+            streamed, batch_msgs,
+            "JT65 decode_scan_streaming: streamed callback deliveries must \
+             exactly match the batch result, same order (sequential, no \
+             early exit, no parallelism — no divergence mechanism exists)"
+        );
+        assert!(
+            !streamed.is_empty(),
+            "expected at least one streamed decode on the synth signal"
+        );
+        assert!(matches!(
+            &streamed[0],
+            Jt72Message::Standard { call1, call2, grid_or_report }
+                if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
         ));
     }
 

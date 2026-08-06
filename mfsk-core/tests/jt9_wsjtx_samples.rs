@@ -143,3 +143,45 @@ fn jt9_wsjtx_sample_recall_vs_golden() {
         GOLDEN.len()
     );
 }
+
+/// `decode_scan_streaming`'s `on_result` callback — real-signal
+/// verification, mirroring `tests/ft8_streaming_decode.rs`'s
+/// sequential-exact-match contract. `decode_scan`'s candidate loop is
+/// sequential with no early exit and no parallelism, so the
+/// callback-delivered set must exactly equal the batch `Vec`.
+#[test]
+fn jt9_scan_streaming_matches_batch_exactly() {
+    use mfsk_core::jt9::Jt9Result;
+    use mfsk_core::jt9::decode_scan_streaming;
+
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let params = SearchParams {
+        freq_min_hz: 1050.0,
+        freq_max_hz: 1550.0,
+        time_tolerance_symbols: 3,
+        score_threshold: 0.05,
+        max_candidates: 200,
+    };
+
+    let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let on_result = |r: &Jt9Result| streamed.lock().unwrap().push(r.message.to_string());
+    let batch = decode_scan_streaming(&audio, 12_000, 0, &params, &on_result);
+
+    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.to_string()).collect();
+    let streamed = streamed.into_inner().unwrap();
+    eprintln!(
+        "JT9 decode_scan_streaming: batch={} streamed={}",
+        batch_msgs.len(),
+        streamed.len()
+    );
+    assert_eq!(
+        streamed, batch_msgs,
+        "JT9 decode_scan_streaming: streamed callback deliveries must exactly \
+         match the batch result, same order (sequential, no early exit, no \
+         parallelism — no divergence mechanism exists on this path)"
+    );
+    assert!(
+        !batch.is_empty(),
+        "expected real decodes on the JT9 golden WAV"
+    );
+}

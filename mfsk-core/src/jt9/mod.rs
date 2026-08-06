@@ -100,6 +100,53 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &search::SearchParams,
 ) -> Vec<Jt9Result> {
+    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
+}
+
+/// Streaming variant of [`decode_scan`]: fires `on_result` once per
+/// candidate as it's accepted, *in addition to* (not instead of) the
+/// returned `Vec` — purely additive, same shape as
+/// [`crate::msg::decode_request::DecodeRequest::on_result`] (see that
+/// method's doc comment and `docs/reference/LIBRARY.md`'s "public
+/// decode entry point" section for the full portability rationale).
+///
+/// A `_streaming` sibling rather than a new parameter on
+/// [`decode_scan`] itself, matching
+/// `ft8::decode_block::decode_block_streaming`'s precedent — bolting
+/// a parameter onto an existing plain `pub fn` is a breaking change.
+///
+/// **Delivery order/dedup contract**: `decode_scan`'s candidate loop
+/// is sequential with no early exit and no parallelism (unlike WSPR's
+/// `decode_scan`, which uses `rayon::par_iter()`) — `cb` fires exactly
+/// once per result that ends up in the returned `Vec`, in the same
+/// order. No divergence mechanism exists here. Candidates are tried in
+/// coarse-score-descending order (same `cands.sort_unstable_by`
+/// below), so `cb` also tends to favor stronger signals first, same
+/// correlation-not-guarantee caveat documented on
+/// [`crate::msg::decode_request::DecodeRequest::on_result`].
+pub fn decode_scan_streaming(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    on_result: &(dyn Fn(&Jt9Result) + Sync),
+) -> Vec<Jt9Result> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Some(on_result),
+    )
+}
+
+fn decode_scan_inner(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    on_result: Option<&(dyn Fn(&Jt9Result) + Sync)>,
+) -> Vec<Jt9Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
 
@@ -139,6 +186,9 @@ pub fn decode_scan(
                 && (prev.start_sample as i64 - d.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&d);
+            }
             seen.push(d);
         }
     }

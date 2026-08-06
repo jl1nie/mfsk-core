@@ -742,8 +742,9 @@ points, §6.3/§6.5):
   successive-interference-cancellation strategy where the protocol
   supports it (`SupportsSicRounds`: FT8+FT4, `n` clamped 1..=3;
   `SupportsSicEarly`: FT8 only, fixed 3-checkpoint structure), and
-  `.on_result(cb)` (FT8 only today — see below) for streaming
-  delivery. Call
+  `.on_result(cb)` for streaming delivery — see below; Q65/WSPR/
+  JT65/JT9 get the same *pattern* through their own bespoke entry
+  points (§10), not this trait. Call
   `.decode()` to get a
   `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`, plus
   `.fft_cache` for a follow-up call).
@@ -762,12 +763,29 @@ suffix-exploded equivalents — see §6.2/§6.4 for worked examples.
 
 #### Streaming delivery: `.on_result(cb)`
 
-FT8 only (`DecodeRequest<Ft8>`/`SniperRequest<Ft8>`, plus the embedded
-`ft8::decode_block::decode_block_streaming` sibling to `decode_block`)
-— `cb: &(dyn Fn(&P::DecodeResult) + Sync)` fires once per candidate as
-it's accepted, *alongside* (not instead of) `decode()`'s own returned
-`DecodeOutcome`. Purely additive: the batch API is unchanged, callers
-who don't call `.on_result()` see zero behavioural difference.
+Originated on FT8 (`DecodeRequest<Ft8>`/`SniperRequest<Ft8>`, plus the
+embedded `ft8::decode_block::decode_block_streaming` sibling to
+`decode_block`) — `cb: &(dyn Fn(&P::DecodeResult) + Sync)` fires once
+per candidate as it's accepted, *alongside* (not instead of)
+`decode()`'s own returned `DecodeOutcome`. Purely additive: the batch
+API is unchanged, callers who don't call `.on_result()` see zero
+behavioural difference.
+
+The same conceptual API — a synchronous callback firing once per
+accepted result, additive alongside the batch return — now also
+covers Q65, WSPR, JT65, and JT9, each through its own bespoke entry
+point rather than this trait (§0.5/§10 explain why those four don't
+implement `FrameDecodable`): Q65's `DecodeRequest`/`SniperRequest`/
+`MultiPeriodRequest` builders gained the same `.on_result(cb)` method;
+WSPR/JT65/JT9 have no builder, so each gained a `decode_scan_streaming`
+(and, for WSPR, `decode_scan_subtract_streaming`) sibling next to its
+existing `decode_scan`, matching `decode_block_streaming`'s own
+sibling-not-a-parameter precedent. No shared callback *type* exists
+across protocols — `Q65Result`/`WsprResult`/`Jt65Result`/`Jt9Result`
+are structurally distinct structs — so this is a consistent *pattern*
+to code against (same method/function name and semantics per
+protocol's own API family), not a single trait to abstract over. See
+§10's per-protocol notes for exactly which function/builder to call.
 
 **Delivery order and dedup contract differs by strategy** — see
 `DecodeRequest::on_result`'s own doc comment for the authoritative
@@ -781,6 +799,19 @@ thread decoded that candidate, in completion order, and *before* the
 final cross-candidate dedup pass — on the rare occasion two different
 sync candidates converge on the same message, `cb` may fire for both
 even though only one survives into the returned `Vec`.
+
+The same two contracts, not a third: Q65's scan builders, JT65's and
+JT9's `decode_scan_streaming` are all sequential-exhaustive candidate
+loops with no parallelism — exact-match, same as FT8's SIC strategies.
+WSPR's `decode_scan_streaming` runs both its coarse-search passes
+under `rayon::par_iter()` — same completion-order/possible-duplicate
+caveat as FT8's default strategy; `decode_scan_subtract_streaming`
+fires only at its own outer SIC-pass accept point (sequential,
+exact-match), not inside the per-pass `decode_scan` calls it makes
+internally. Q65's `MultiPeriodRequest::on_result` is a variant of the
+sequential shape: it fires once per **slot** that yields an accepted
+decode (its own natural streaming unit for multi-period EME/
+ionoscatter averaging), rather than once per candidate.
 
 **Does delivery order favour strong signals?** Tends to, on *both*
 strategy families — `ft8::decode_block::coarse_sync` returns
@@ -1486,17 +1517,22 @@ notes below add only the protocol-specific facts that table can't hold.
 - **WSPR** — `ConvFano` ported from WSJT-X `lib/wsprd/fano.c`;
   `Wspr50Message` covers Types 1 / 2 / 3. The `wspr` module adds a
   quarter-symbol spectrogram to keep the 120-s-slot coarse search
-  within a reasonable time budget.
+  within a reasonable time budget. Streaming delivery (§4):
+  `wspr::decode::{decode_scan_streaming, decode_scan_subtract_streaming}`.
 - **JT9 / JT65** — JT9's `ConvFano232` differs from WSPR's `ConvFano`
   only in its 206-bit codeword framing; both feed the 72-bit
   `Jt72Codec`. JT65's `Rs63_12` (re-exported `fec::Rs63_12`) does
-  erasure-aware decoding via Karn's Berlekamp-Massey.
+  erasure-aware decoding via Karn's Berlekamp-Massey. Streaming
+  delivery (§4): `jt9::decode_scan_streaming` /
+  `jt65::decode_scan_streaming`.
 - **Q65** — QRA over GF(64) (`fec::qra::QraCode` + the code instance
   `fec::qra15_65_64::QRA15_65_64_IRR_E23`); the application layer adds
   a CRC-12 over 13 information symbols and punctures the two CRC
   symbols out of the 65-symbol codeword, leaving the 63 channel symbols
   transmitted. Ten sub-modes differ only in `NSPS` and tone spacing
   (×1…×16); all five decoder strategies (§3) share the one QRA codec.
+  Streaming delivery (§4): `.on_result(cb)` on `q65::{DecodeRequest,
+  SniperRequest, MultiPeriodRequest}`.
 
 ### 10.1 Scope boundary: `uvpacket` as an applied example
 

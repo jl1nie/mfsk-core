@@ -481,6 +481,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     b90_ts: f32,
     model: FadingModel,
     ap_hint: Option<&ApHint>,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
@@ -504,6 +505,9 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }
@@ -574,6 +578,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     candidates: &[[i32; 63]],
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
     if candidates.is_empty() {
         return Vec::new();
@@ -598,6 +603,9 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }
@@ -614,8 +622,16 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
-    decode_scan_inner::<P>(audio, sample_rate, nominal_start_sample, params, None)
+    decode_scan_inner::<P>(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        None,
+        on_result,
+    )
 }
 
 /// AP-hint variant of [`decode_scan_for`]. Same coarse search; each
@@ -628,6 +644,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: &ApHint,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
@@ -635,6 +652,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
         nominal_start_sample,
         params,
         Some(ap_hint),
+        on_result,
     )
 }
 
@@ -644,6 +662,7 @@ fn decode_scan_inner<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_hint: Option<&ApHint>,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
@@ -666,6 +685,9 @@ fn decode_scan_inner<P: ModulationParams>(
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }
@@ -1153,6 +1175,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     ap_codewords: Option<&[[i32; 63]]>,
+    on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
 ) -> Vec<Q65Result> {
     use super::search::{Spectrogram, coarse_search_on_spec_for};
 
@@ -1306,6 +1329,9 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                 .iter()
                 .any(|prev| prev.message == d.message && (prev.freq_hz - d.freq_hz).abs() <= 4.0);
             if !dup {
+                if let Some(cb) = on_result {
+                    cb(&d);
+                }
                 output.push(d);
             }
         }

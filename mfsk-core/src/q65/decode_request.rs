@@ -83,6 +83,9 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     ap_hint: Option<&'a ApHint>,
     ap_list: Option<&'a [[i32; 63]]>,
     fading: Option<(FadingModel, f32)>,
+    /// Set via [`DecodeRequest::on_result`] — see that method's doc
+    /// comment for the delivery-order/dedup contract.
+    on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
     _marker: PhantomData<P>,
 }
 
@@ -101,6 +104,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             ap_hint: None,
             ap_list: None,
             fading: None,
+            on_result: None,
             _marker: PhantomData,
         }
     }
@@ -141,6 +145,28 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         self
     }
 
+    /// Fire `cb` once per candidate as it's accepted, *in addition to*
+    /// (not instead of) `decode()`'s own returned `Vec` — purely
+    /// additive streaming delivery alongside the existing batch
+    /// result, same shape as
+    /// [`crate::msg::decode_request::DecodeRequest::on_result`] (see
+    /// that method's doc comment and `docs/reference/LIBRARY.md`'s
+    /// "public decode entry point" section for the full portability
+    /// rationale — synchronous callback, not async/channel, so
+    /// `mfsk-core`'s engine layers stay usable on `no_std` targets).
+    ///
+    /// **Delivery order/dedup contract**: `q65::rx`'s scan loops
+    /// (`decode_scan_for`/`decode_scan_with_ap_for`/
+    /// `decode_scan_fading_for`/`decode_scan_with_ap_list_for`) are
+    /// sequential and dedup-then-push, with no early exit — `cb`
+    /// fires exactly once per result that ends up in the returned
+    /// `Vec`, in the same order. No divergence mechanism exists here
+    /// (unlike FT8's parallel single-pass strategy).
+    pub fn on_result(mut self, cb: &'a (dyn Fn(&Q65Result) + Sync)) -> Self {
+        self.on_result = Some(cb);
+        self
+    }
+
     /// Resolves to `decode_scan_with_ap_list_for` if [`Self::ap_list`]
     /// was set, else `decode_scan_fading_for` if [`Self::fading`] was
     /// set (carrying any `.ap_hint()` along), else
@@ -154,6 +180,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.nominal_start_sample,
                 &self.params,
                 candidates,
+                self.on_result,
             );
         }
         if let Some((model, b90_ts)) = self.fading {
@@ -165,6 +192,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 b90_ts,
                 model,
                 self.ap_hint,
+                self.on_result,
             );
         }
         match self.ap_hint {
@@ -174,12 +202,14 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.nominal_start_sample,
                 &self.params,
                 hint,
+                self.on_result,
             ),
             None => super::rx::decode_scan_for::<P>(
                 self.audio,
                 self.sample_rate,
                 self.nominal_start_sample,
                 &self.params,
+                self.on_result,
             ),
         }
     }
@@ -200,6 +230,14 @@ pub struct SniperRequest<'a, P: Q65SubMode> {
     ap_hint: Option<&'a ApHint>,
     ap_list: Option<&'a [[i32; 63]]>,
     fading: Option<(FadingModel, f32)>,
+    /// Set via [`SniperRequest::on_result`] — see
+    /// [`DecodeRequest::on_result`]'s doc comment for the delivery-
+    /// order/dedup contract (this request always yields at most one
+    /// result, so `cb` fires 0 or 1 times, simultaneously with
+    /// `decode()`'s own return — kept for API consistency with
+    /// [`DecodeRequest`]/[`MultiPeriodRequest`], not because it buys
+    /// a timing head start here).
+    on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
     _marker: PhantomData<P>,
 }
 
@@ -213,6 +251,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
             ap_hint: None,
             ap_list: None,
             fading: None,
+            on_result: None,
             _marker: PhantomData,
         }
     }
@@ -235,20 +274,26 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         self
     }
 
+    /// See [`DecodeRequest::on_result`] and this struct's `on_result`
+    /// field doc comment for why this fires at most once here.
+    pub fn on_result(mut self, cb: &'a (dyn Fn(&Q65Result) + Sync)) -> Self {
+        self.on_result = Some(cb);
+        self
+    }
+
     /// Precedence: ap_list > fading (+ ap_hint) > ap_hint > plain — see
     /// [`DecodeRequest::decode`].
     pub fn decode(&self) -> Option<Q65Result> {
-        if let Some(candidates) = self.ap_list {
-            return super::rx::decode_at_with_ap_list_for::<P>(
+        let result = if let Some(candidates) = self.ap_list {
+            super::rx::decode_at_with_ap_list_for::<P>(
                 self.audio,
                 self.sample_rate,
                 self.start_sample,
                 self.base_freq_hz,
                 candidates,
-            );
-        }
-        if let Some((model, b90_ts)) = self.fading {
-            return super::rx::decode_at_fading_for::<P>(
+            )
+        } else if let Some((model, b90_ts)) = self.fading {
+            super::rx::decode_at_fading_for::<P>(
                 self.audio,
                 self.sample_rate,
                 self.start_sample,
@@ -256,23 +301,28 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
                 b90_ts,
                 model,
                 self.ap_hint,
-            );
+            )
+        } else {
+            match self.ap_hint {
+                Some(hint) => super::rx::decode_at_with_ap_for::<P>(
+                    self.audio,
+                    self.sample_rate,
+                    self.start_sample,
+                    self.base_freq_hz,
+                    hint,
+                ),
+                None => super::rx::decode_at_for::<P>(
+                    self.audio,
+                    self.sample_rate,
+                    self.start_sample,
+                    self.base_freq_hz,
+                ),
+            }
+        };
+        if let (Some(cb), Some(r)) = (self.on_result, &result) {
+            cb(r);
         }
-        match self.ap_hint {
-            Some(hint) => super::rx::decode_at_with_ap_for::<P>(
-                self.audio,
-                self.sample_rate,
-                self.start_sample,
-                self.base_freq_hz,
-                hint,
-            ),
-            None => super::rx::decode_at_for::<P>(
-                self.audio,
-                self.sample_rate,
-                self.start_sample,
-                self.base_freq_hz,
-            ),
-        }
+        result
     }
 }
 
@@ -294,6 +344,14 @@ pub struct MultiPeriodRequest<'a, P: Q65SubMode> {
     nominal_start_sample: usize,
     params: SearchParams,
     ap_list: Option<&'a [[i32; 63]]>,
+    /// Set via [`MultiPeriodRequest::on_result`] — see
+    /// [`DecodeRequest::on_result`]'s doc comment for the general
+    /// contract. Here, `cb` fires once per *slot* that yields an
+    /// accepted (non-duplicate) decode — a natural streaming unit for
+    /// multi-period EME/ionoscatter decode, where each T/R period's
+    /// own result (if any) is worth surfacing as soon as that period
+    /// finishes, rather than waiting for every slot in `audio_slots`.
+    on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
     _marker: PhantomData<P>,
 }
 
@@ -310,6 +368,7 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             nominal_start_sample,
             params,
             ap_list: None,
+            on_result: None,
             _marker: PhantomData,
         }
     }
@@ -322,6 +381,13 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
         self
     }
 
+    /// See this struct's `on_result` field doc comment for the
+    /// per-slot delivery unit this type uses.
+    pub fn on_result(mut self, cb: &'a (dyn Fn(&Q65Result) + Sync)) -> Self {
+        self.on_result = Some(cb);
+        self
+    }
+
     pub fn decode(&self) -> Vec<Q65Result> {
         super::rx::decode_multi_period_for::<P>(
             self.audio_slots,
@@ -329,6 +395,7 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             self.nominal_start_sample,
             &self.params,
             self.ap_list,
+            self.on_result,
         )
     }
 }
