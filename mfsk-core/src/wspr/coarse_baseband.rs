@@ -40,7 +40,7 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::engine::fft::default_planner;
+use crate::engine::dsp::downsample::with_default_planner;
 
 use super::WSPR_SYNC_VECTOR;
 use super::baseband::{BASEBAND_RATE, CENTER_HZ};
@@ -129,8 +129,7 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
         *w = (PI * j as f32 / NFFT as f32).sin();
     }
 
-    let mut planner = default_planner();
-    let fft = planner.plan_forward(NFFT);
+    let fft = with_default_planner(|planner| planner.plan_forward(NFFT));
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); NFFT];
     let mut ps = vec![0.0f32; n_time * NFFT];
 

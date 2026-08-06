@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use num_complex::Complex;
 
-use crate::engine::fft::default_planner;
+use crate::engine::dsp::downsample::with_default_planner;
 
 /// Baseband sample rate. Matches wsprd `dt = 1.0/375.0` throughout.
 pub const BASEBAND_RATE: f32 = 375.0;
@@ -57,9 +57,7 @@ pub fn decimate_to_baseband(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
     }
     buf.resize(NFFT1, Complex::new(0.0, 0.0));
 
-    let mut planner = default_planner();
-    let fft = planner.plan_forward(NFFT1);
-    fft.process(&mut buf);
+    with_default_planner(|planner| planner.plan_forward(NFFT1)).process(&mut buf);
 
     let df = 12_000.0 / NFFT1 as f32;
     let i0 = (CENTER_HZ / df).round() as usize;
@@ -82,8 +80,7 @@ pub fn decimate_to_baseband(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
         }
     }
 
-    let ifft = planner.plan_inverse(NFFT2);
-    ifft.process(&mut fftin);
+    with_default_planner(|planner| planner.plan_inverse(NFFT2)).process(&mut fftin);
 
     const NORM: f32 = 1.0 / 1000.0;
     let mut idat = vec![0.0f32; NFFT2];
