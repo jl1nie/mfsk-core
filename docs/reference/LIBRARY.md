@@ -741,21 +741,73 @@ points, §6.3/§6.5):
   `.sic_rounds(n)` / `.sic_early()` to pick a
   successive-interference-cancellation strategy where the protocol
   supports it (`SupportsSicRounds`: FT8+FT4, `n` clamped 1..=3;
-  `SupportsSicEarly`: FT8 only, fixed 3-checkpoint structure). Call
+  `SupportsSicEarly`: FT8 only, fixed 3-checkpoint structure), and
+  `.on_result(cb)` (FT8 only today — see below) for streaming
+  delivery. Call
   `.decode()` to get a
   `DecodeOutcome<P>` (`.results: Vec<P::DecodeResult>`, plus
   `.fft_cache` for a follow-up call).
 * **`SniperRequest<P>`** — narrow-band, single-target search.
   `DecodeRequest::<P>::sniper(audio, target_freq_hz, max_cand)` or
   `SniperRequest::<P>::new(...)` directly; `.osd(bool)`,
-  `.strictness(...)`, `.eq_mode(...)`, and `.ap_hint(...)` where the
+  `.strictness(...)`, `.eq_mode(...)`, `.ap_hint(...)` where the
   protocol's message codec implements `WsjtApCompatible` (no SIC
-  variant — sniper mode is inherently single-candidate). `.decode()`
+  variant — sniper mode is inherently single-candidate), and
+  `.on_result(cb)` (same as above). `.decode()`
   returns the same `DecodeOutcome<P>` shape.
 
 This replaced FT8's `decode_frame*`/`decode_frame_subtract*`/
 `decode_sniper*` family (15 public functions) and FT4/FST4's own
 suffix-exploded equivalents — see §6.2/§6.4 for worked examples.
+
+#### Streaming delivery: `.on_result(cb)`
+
+FT8 only (`DecodeRequest<Ft8>`/`SniperRequest<Ft8>`, plus the embedded
+`ft8::decode_block::decode_block_streaming` sibling to `decode_block`)
+— `cb: &(dyn Fn(&P::DecodeResult) + Sync)` fires once per candidate as
+it's accepted, *alongside* (not instead of) `decode()`'s own returned
+`DecodeOutcome`. Purely additive: the batch API is unchanged, callers
+who don't call `.on_result()` see zero behavioural difference.
+
+**Delivery order and dedup contract differs by strategy** — see
+`DecodeRequest::on_result`'s own doc comment for the authoritative
+version, summarised here: on the sequential SIC strategies
+(`.sic_rounds()`/`.sic_early()`) and the embedded
+`decode_block_streaming`, `cb` fires exactly once per result that ends
+up in the returned `Vec`, in the same order — zero divergence. On the
+default single-pass strategy and `SniperRequest` (both parallelized
+via `rayon` under `feature = "parallel"`), `cb` fires from whichever
+thread decoded that candidate, in completion order, and *before* the
+final cross-candidate dedup pass — on the rare occasion two different
+sync candidates converge on the same message, `cb` may fire for both
+even though only one survives into the returned `Vec`.
+
+**Design decision: a synchronous callback, not `async`/a channel —
+portability first.** §0.2's stated goal is a single crate "consumed
+identically from several runtimes (native Rust, WebAssembly, Android
+JNI, C ABI)," broadening the set of platforms that can host it — an
+`async fn`/`Future`-based API (or anything requiring a channel/executor
+by default) would need `std` and a runtime everywhere in the call
+graph, which breaks the no_std embedded targets
+(`embedded-poc/m5stack-*-app`) that are first-class consumers of this
+exact decode path. `process_candidates_with_ap`'s existing fill-closure
+parameter already established the plain-callback idiom for this
+codebase (`F: FnMut(&mut [[Cmplx<f32>;8];79], &SyncCandidate,
+SymMask)`) — `.on_result()` follows the same shape rather than
+introducing a second, async-flavoured pattern next to it.
+
+This also means `mfsk-core` never needs to know *how* a caller wants
+results delivered across a thread — a host application wanting to feed
+a GUI wraps the callback itself (e.g. `Sender::send` inside the
+closure body) rather than the crate baking in a channel type. This
+mirrors §0.3's "generic core + per-protocol plug-ins" framing: `engine`
+and the protocol modules stay ignorant of their caller's runtime
+environment, and cross-slot-boundary background continuation (the
+WSJT-X "Fast"-mode shape — decoding keeps running after the next
+slot's capture has already started) is achievable today purely at the
+application layer (`std::thread::spawn` + call `.decode()`/
+`decode_block_streaming` there) without any core-library support for
+it.
 
 `DecodeDepth` (`llr_effort`/`osd`) itself is still a real type — it's
 what `decode_block`/`decode_block_into` (the embedded/host-shared
