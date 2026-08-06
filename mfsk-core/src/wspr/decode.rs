@@ -109,7 +109,7 @@ pub fn decode_at_baseband_nblocks(
     drift_hz: f32,
     nblocks: &[usize],
 ) -> Option<WsprResult> {
-    use crate::engine::{FecCodec, FecOpts, MessageCodec};
+    use crate::engine::{FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
     // takes the signal CENTER, so we add 1.5·tone_spacing here and sweep
@@ -126,6 +126,11 @@ pub fn decode_at_baseband_nblocks(
     let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
     let lag_baseband_init = start_sample as i32 / 32;
     let codec = crate::fec::ConvFano;
+    // Pooled across the whole `nblocks` sweep below (up to 3 values in
+    // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
+    // scratch per call — see `fano::fano_decode_with_scratch`'s doc
+    // comment for why reuse is safe here.
+    let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
 
     // Mode 0: lag refine. wsprd uses lagstep=64 baseband-samples,
     // ±128 around shift1 → 5 lags. Per cell: tone_amplitudes
@@ -177,39 +182,40 @@ pub fn decode_at_baseband_nblocks(
         // (Ordered-Statistics Decoding, port of `osdwspr.f90`). OSD
         // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
         // golden) where Fano alone hits the convergence threshold.
-        let (info_bits, hard_errors) =
-            if let Some(fec_res) = codec.decode_soft(&llrs, &FecOpts::default()) {
-                let mut info = [0u8; 50];
-                info.copy_from_slice(&fec_res.info);
-                (info, fec_res.hard_errors)
-            } else if let Some((info, nhardmin)) = super::osd::osd_decode(&llrs) {
-                // OSD-2 will synthesise a valid codeword for *any* input;
-                // gate by:
-                //   1. `nhardmin ≤ 44` — at -27 dB the real signal lands
-                //      around 35-40 hard errors after pass-2 subtract;
-                //      pure noise produces ≥ 50.
-                //   2. Reject Type-3 (hashed-callsign) messages — they're
-                //      the dominant phantom class because the 13-bit hash
-                //      space produces a nominally valid message for ~15 %
-                //      of all 50-bit info vectors. We have no hash table
-                //      so any Type-3 that pops out of OSD is overwhelmingly
-                //      likely to be garbage.
-                const OSD_HARD_ERR_MAX: u32 = 44;
-                if nhardmin > OSD_HARD_ERR_MAX {
-                    continue;
-                }
-                let Some(msg) = crate::msg::Wspr50Message
-                    .unpack(&info, &crate::engine::DecodeContext::default())
-                else {
-                    continue;
-                };
-                if matches!(msg, crate::msg::WsprMessage::Type3 { .. }) {
-                    continue;
-                }
-                (info, nhardmin)
-            } else {
+        let (info_bits, hard_errors) = if let Some(fec_res) =
+            codec.decode_soft_pooled(&llrs, &FecOpts::default(), &mut fano_scratch)
+        {
+            let mut info = [0u8; 50];
+            info.copy_from_slice(&fec_res.info);
+            (info, fec_res.hard_errors)
+        } else if let Some((info, nhardmin)) = super::osd::osd_decode(&llrs) {
+            // OSD-2 will synthesise a valid codeword for *any* input;
+            // gate by:
+            //   1. `nhardmin ≤ 44` — at -27 dB the real signal lands
+            //      around 35-40 hard errors after pass-2 subtract;
+            //      pure noise produces ≥ 50.
+            //   2. Reject Type-3 (hashed-callsign) messages — they're
+            //      the dominant phantom class because the 13-bit hash
+            //      space produces a nominally valid message for ~15 %
+            //      of all 50-bit info vectors. We have no hash table
+            //      so any Type-3 that pops out of OSD is overwhelmingly
+            //      likely to be garbage.
+            const OSD_HARD_ERR_MAX: u32 = 44;
+            if nhardmin > OSD_HARD_ERR_MAX {
+                continue;
+            }
+            let Some(msg) =
+                crate::msg::Wspr50Message.unpack(&info, &crate::engine::DecodeContext::default())
+            else {
                 continue;
             };
+            if matches!(msg, crate::msg::WsprMessage::Type3 { .. }) {
+                continue;
+            }
+            (info, nhardmin)
+        } else {
+            continue;
+        };
         let Some(message) =
             crate::msg::Wspr50Message.unpack(&info_bits, &crate::engine::DecodeContext::default())
         else {

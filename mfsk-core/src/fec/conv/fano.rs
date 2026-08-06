@@ -114,7 +114,63 @@ pub struct FanoDecodeResult {
 /// i-th coded-bit position (`branch_metrics.len() == 2 * nbits`). The last
 /// `K_CONSTRAINT - 1` input bits (the "tail") are assumed to be zero — the
 /// decoder exploits that to prune the 1-branch.
+///
+/// Allocates a fresh [`FanoScratch`] every call — for a hot loop that
+/// calls this repeatedly with the same `nbits` (WSPR: once per
+/// `nblock` value per candidate, up to ~100 calls/decode), use
+/// [`fano_decode_with_scratch`] with a caller-pooled scratch instead.
 pub fn fano_decode(
+    branch_metrics: &[[i32; 2]],
+    nbits: usize,
+    delta: i32,
+    max_cycles_per_bit: u64,
+) -> FanoDecodeResult {
+    let mut scratch = FanoScratch::new();
+    fano_decode_with_scratch(
+        &mut scratch,
+        branch_metrics,
+        nbits,
+        delta,
+        max_cycles_per_bit,
+    )
+}
+
+/// Reusable working memory for [`fano_decode_with_scratch`] — the
+/// `Vec<Node>` search-tree buffer, pooled across calls that share the
+/// same `nbits` instead of reallocated (~`nbits+1` `Node`s, ~32B each)
+/// every time.
+#[derive(Default)]
+pub struct FanoScratch {
+    nodes: Vec<Node>,
+}
+
+impl FanoScratch {
+    pub fn new() -> Self {
+        Self { nodes: Vec::new() }
+    }
+}
+
+/// [`fano_decode`] with caller-provided scratch, reused across calls
+/// that share `nbits` (constant for a given code — 81 for WSPR,
+/// [`crate::fec::ConvFano::NBITS`]) instead of reallocating
+/// `Vec<Node>` every call.
+///
+/// Safe to pool: the precompute loop below unconditionally rewrites
+/// `.metrics` for every node index `0..nbits`, and every node's
+/// `.gamma`/`.encstate`/`.tm`/`.i` are set on first visit *before* any
+/// read, both going forward (the `while cycles < max_cycles` loop's
+/// "look forward" branch) and on backtrack (which only revisits nodes
+/// already touched earlier *in the same call*) — no field is ever read
+/// before this call has written it, so nothing leaks from a prior
+/// call's leftover values as long as `nbits` (hence `nodes.len()`)
+/// stays constant. `nodes[nbits]` itself is the one exception: its
+/// `.metrics` is never rewritten by the precompute loop (which only
+/// touches `0..nbits`) *and* never read either (the forward loop
+/// breaks with `converged = true` the instant `np` reaches `nbits`,
+/// before ever reaching the "look forward" read at the top of the
+/// next iteration) — so its stale contents are inert either way.
+pub fn fano_decode_with_scratch(
+    scratch: &mut FanoScratch,
     branch_metrics: &[[i32; 2]],
     nbits: usize,
     delta: i32,
@@ -126,7 +182,10 @@ pub fn fano_decode(
         "branch_metrics length mismatch"
     );
 
-    let mut nodes: Vec<Node> = (0..=nbits).map(|_| Node::default()).collect();
+    if scratch.nodes.len() != nbits + 1 {
+        scratch.nodes = (0..=nbits).map(|_| Node::default()).collect();
+    }
+    let nodes = &mut scratch.nodes;
 
     // Precompute all 4 branch-metric sums per node position.
     for (k, node) in nodes.iter_mut().take(nbits).enumerate() {
