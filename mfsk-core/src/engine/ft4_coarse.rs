@@ -67,7 +67,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use super::baseline::fit_baseline;
-use super::fft::default_planner;
+use super::dsp::downsample::with_default_planner;
 use super::sync::{SyncCandidate, nuttall_window, parabolic_peak};
 
 /// `NSPS` (samples/symbol at 12 kHz) — `ft4_params.f90:9`.
@@ -98,8 +98,7 @@ const FREQ_HARD_MAX_HZ: f32 = 4910.0;
 fn symbol_spectra_avg(audio: &[i16]) -> Vec<f32> {
     let window = nuttall_window(NFFT1);
     let fac = 1.0f32 / 300.0;
-    let mut planner = default_planner();
-    let fft = planner.plan_forward(NFFT1);
+    let fft = with_default_planner(|planner| planner.plan_forward(NFFT1));
 
     let nhsym = if audio.len() > NFFT1 {
         (audio.len() - NFFT1) / NSTEP

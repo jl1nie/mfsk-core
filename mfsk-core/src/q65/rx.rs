@@ -103,9 +103,9 @@ fn extract_data_energies<P: ModulationParams>(
         // The 6-bit symbol value `s` is on bin
         // `base_bin + (s + 1) * bins_per_tone`.
         let row = &mut energies[64 * k..64 * (k + 1)];
-        for tone in 0..64 {
+        for (tone, slot) in row.iter_mut().enumerate() {
             let bin = base_bin + (tone + 1) * bins_per_tone;
-            row[tone] = buf[bin].norm_sqr();
+            *slot = buf[bin].norm_sqr();
         }
         k += 1;
     }
@@ -298,12 +298,11 @@ fn snr_db_wide<P: ModulationParams>(energies: &[f32], sample_rate: u32, codeword
         let row = &energies[bins_per_symbol * k..bins_per_symbol * (k + 1)];
         let mut sig = 0.0f32;
         let mut total = 0.0f32;
-        for tone in 0..64usize {
-            let idx = 64 + tone * bins_per_tone;
-            if idx >= row.len() {
-                continue;
-            }
-            let v = row[idx];
+        // `bins_per_tone >= 1` (clamped above), so `step_by` is safe;
+        // the slice naturally runs out at `row.len()`, matching the
+        // original manually-indexed loop's `idx >= row.len()` skip.
+        let tail = row.get(64..).unwrap_or(&[]);
+        for (tone, &v) in tail.iter().step_by(bins_per_tone).take(64).enumerate() {
             total += v;
             if tone == t {
                 sig = v;
@@ -972,9 +971,16 @@ fn averaged_data_energies_wide<P: ModulationParams>(
 }
 
 /// Run the AP-list decoder against averaged narrow energies.
+///
+/// `energies` is the caller's already-extracted
+/// [`averaged_data_energies`] output — see [`decode_multi_period_for`]'s
+/// candidate loop, which extracts it once per candidate and passes the
+/// same slice into this function and [`decode_averaged_plain_for`]
+/// (Stage B and Stage C-plain used to each call `averaged_data_energies`
+/// independently with identical arguments, extracting the same FFT
+/// energies twice per candidate that reaches Stage C-plain).
 fn decode_averaged_ap_list_for<P: ModulationParams>(
-    audio_slots: &[&[f32]],
-    sample_rate: u32,
+    energies: &[f32],
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
@@ -985,11 +991,9 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     if candidates.is_empty() {
         return None;
     }
-    let energies =
-        averaged_data_energies::<P>(audio_slots, sample_rate, start_sample, base_freq_hz)?;
 
     let mut intrinsics = vec![0.0_f32; 64 * 63];
-    QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
+    QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, energies, 63, default_es_no_metric());
 
     let codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
@@ -997,7 +1001,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
 
-    let snr_db = snr_db_narrow::<P>(&energies, &candidates[idx]);
+    let snr_db = snr_db_narrow::<P>(energies, &candidates[idx]);
 
     Some(Q65Result {
         message: text,
@@ -1020,6 +1024,23 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
 /// `(audio_slots, start_sample, base_freq_hz)`, never on `b90_ts`/
 /// `model`, so those 6 calls were doing bit-identical extraction work
 /// 6 times over.
+///
+/// `codec`/`intrinsics` are allocated fresh per call — **deliberately
+/// not** hoisted/reused across the `b90 × model` sweep the way
+/// [`decode_at_grid_for`]'s own `(Δf,Δt,ibw)` sweep hoists its codec.
+/// That hoist was tried (perf-review follow-up to the FT8/FST4 pass)
+/// and measured a real, reproducible ~8% regression on the Q65-30A
+/// golden test (`q65_multi_period_speed_diag`) despite `Q65Codec::
+/// decode`/`intrinsics_fast_fading` both fully overwriting their
+/// output buffers every call — reusing the same codec across 6 calls
+/// with similar-but-different intrinsics apparently perturbs
+/// `Q65Codec`'s internal BP scratch/extrinsic-message state enough to
+/// change the *convergence path* (not the final answer — recall tests
+/// stayed byte-identical) in a way that costs more than the ~32KB
+/// allocation it was meant to save. Not investigated further: BP
+/// iteration cost dominating over allocation cost is the same
+/// conclusion yesterday's FT8/FST4 pass reached for its own BP-scratch
+/// item, just here the reuse made things *worse* instead of neutral.
 fn decode_fading_with_energies<P: ModulationParams>(
     energies: &[f32],
     sample_rate: u32,
@@ -1063,20 +1084,19 @@ fn decode_fading_with_energies<P: ModulationParams>(
 }
 
 /// Run plain Bessel-metric BP against averaged narrow energies.
+///
+/// `energies` — see [`decode_averaged_ap_list_for`]'s doc comment;
+/// same already-extracted-by-the-caller convention.
 fn decode_averaged_plain_for<P: ModulationParams>(
-    audio_slots: &[&[f32]],
-    sample_rate: u32,
-    start_sample: usize,
+    energies: &[f32],
     base_freq_hz: f32,
+    start_sample: usize,
 ) -> Option<Q65Result> {
     use crate::engine::{DecodeContext, MessageCodec};
     use crate::msg::Q65Message;
 
-    let energies =
-        averaged_data_energies::<P>(audio_slots, sample_rate, start_sample, base_freq_hz)?;
-
     let mut intrinsics = vec![0.0_f32; 64 * 63];
-    QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, &energies, 63, default_es_no_metric());
+    QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, energies, 63, default_es_no_metric());
 
     let mut codec = Q65Codec::new(&QRA15_65_64_IRR_E23);
     let mut info_syms = [0_i32; 13];
@@ -1087,7 +1107,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
-    let snr_db = snr_db_narrow::<P>(&energies, &codeword);
+    let snr_db = snr_db_narrow::<P>(energies, &codeword);
 
     Some(Q65Result {
         message: text,
@@ -1180,11 +1200,43 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
         let mut slot_decode: Option<Q65Result> = None;
 
         'candidate_loop: for cand in candidates {
+            // Narrow energies feed both Stage B and Stage C-plain below
+            // — extraction depends only on `(history, cand.start_sample,
+            // cand.freq_hz)`, never on `ap_codewords`/the BP metric used,
+            // so it's shared instead of each stage extracting
+            // independently (was 2 redundant extractions per candidate
+            // that reached Stage C-plain, mirroring the wide/fading-path
+            // fix directly below). Lazy (`Option<Option<Vec<f32>>>` via
+            // `get_or_insert_with`), not eager: Stage B is skipped
+            // entirely when `ap_codewords` is `None`, and Stage C-plain
+            // is never reached when Stage B or Stage C-fading already
+            // succeeded — an eager extraction here would pay for work
+            // neither stage ends up needing in either of those common
+            // cases (caught by a same-session A/B measurement showing a
+            // small but consistent regression vs. computing it eagerly).
+            // Outer `Option` tracks "extracted yet?", inner tracks
+            // "did extraction succeed?" — plain lazy-init, no closure
+            // (a closure returning a borrow of its own captured state,
+            // called from two different points in this loop body, runs
+            // into exactly the streaming-iterator borrow-checker
+            // friction Rust is known for; inlining the two call sites
+            // is simpler than working around it).
+            let mut energies_narrow: Option<Option<Vec<f32>>> = None;
+
             // Stage B — AP-list decode on averaged narrow energies.
             if let Some(codewords) = ap_codewords
+                && let Some(energies) = energies_narrow
+                    .get_or_insert_with(|| {
+                        averaged_data_energies::<P>(
+                            history,
+                            sample_rate,
+                            cand.start_sample,
+                            cand.freq_hz,
+                        )
+                    })
+                    .as_deref()
                 && let Some(d) = decode_averaged_ap_list_for::<P>(
-                    history,
-                    sample_rate,
+                    energies,
                     cand.start_sample,
                     cand.freq_hz,
                     codewords,
@@ -1199,6 +1251,10 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
             // `(history, cand.start_sample, cand.freq_hz)`, not on
             // `b90`/`model` — computed once here and reused across all
             // 6 sweep combinations (was 6 redundant extractions).
+            // `codec`/`intrinsics` are allocated fresh inside
+            // `decode_fading_with_energies` on every one of the 6 sweep
+            // calls below — see that function's doc comment for why
+            // this is deliberate, not an oversight.
             if let Some(energies) = averaged_data_energies_wide::<P>(
                 history,
                 sample_rate,
@@ -1222,13 +1278,24 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                 }
             }
 
-            // Stage C-plain — Bessel-metric BP fallback.
-            if let Some(d) = decode_averaged_plain_for::<P>(
-                history,
-                sample_rate,
-                cand.start_sample,
-                cand.freq_hz,
-            ) {
+            // Stage C-plain — Bessel-metric BP fallback. Reuses Stage
+            // B's extraction if it already ran (`ap_codewords: Some`),
+            // or computes it fresh here on first use otherwise (never
+            // computed at all if Stage B or Stage C-fading already
+            // succeeded above, since this line is then unreached).
+            if let Some(energies) = energies_narrow
+                .get_or_insert_with(|| {
+                    averaged_data_energies::<P>(
+                        history,
+                        sample_rate,
+                        cand.start_sample,
+                        cand.freq_hz,
+                    )
+                })
+                .as_deref()
+                && let Some(d) =
+                    decode_averaged_plain_for::<P>(energies, cand.freq_hz, cand.start_sample)
+            {
                 slot_decode = Some(d);
                 break 'candidate_loop;
             }
