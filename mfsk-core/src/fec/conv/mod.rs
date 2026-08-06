@@ -85,6 +85,38 @@ impl FecCodec for ConvFano {
             Self::DEFAULT_DELTA,
             Self::DEFAULT_MAX_CYCLES,
         );
+        self.finish_decode(llr, res)
+    }
+}
+
+impl ConvFano {
+    /// [`FecCodec::decode_soft`] with caller-provided [`fano::FanoScratch`],
+    /// reused across every call for one candidate's `nblock` sweep
+    /// instead of reallocated per call — see
+    /// [`fano::fano_decode_with_scratch`]'s doc comment for why this is
+    /// safe to pool.
+    pub fn decode_soft_pooled(
+        &self,
+        llr: &[f32],
+        _opts: &FecOpts,
+        scratch: &mut fano::FanoScratch,
+    ) -> Option<FecResult> {
+        assert_eq!(llr.len(), Self::N);
+        let bm = fano::build_branch_metrics(llr, Self::METRIC_BIAS, Self::METRIC_SCALE);
+        let res = fano::fano_decode_with_scratch(
+            scratch,
+            &bm,
+            Self::NBITS,
+            Self::DEFAULT_DELTA,
+            Self::DEFAULT_MAX_CYCLES,
+        );
+        self.finish_decode(llr, res)
+    }
+
+    /// Shared post-processing for [`FecCodec::decode_soft`] /
+    /// [`Self::decode_soft_pooled`]: recover the info vector, re-encode
+    /// to count hard errors, and reject on non-convergence.
+    fn finish_decode(&self, llr: &[f32], res: fano::FanoDecodeResult) -> Option<FecResult> {
         if !res.converged {
             return None;
         }
