@@ -328,6 +328,55 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<WsprResult> {
+    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
+}
+
+/// Streaming variant of [`decode_scan`]: fires `on_result` once per
+/// candidate as it's accepted, *in addition to* (not instead of) the
+/// returned `Vec` — purely additive, same shape as
+/// [`crate::msg::decode_request::DecodeRequest::on_result`] (see that
+/// method's doc comment and `docs/reference/LIBRARY.md`'s "public
+/// decode entry point" section for the full portability rationale).
+///
+/// A `_streaming` sibling rather than a new parameter on [`decode_scan`]
+/// itself: `decode_scan` is a plain `pub fn`, not a builder, so adding
+/// a parameter would be a breaking signature change (same reasoning as
+/// `ft8::decode_block::decode_block_streaming` alongside `decode_block`).
+///
+/// **Delivery order/dedup contract**: both pass 1 and pass 2's
+/// per-candidate decode step run under `rayon::par_iter()` (feature
+/// `parallel`) — same completion-order/possible-duplicate caveat
+/// documented on
+/// [`crate::msg::decode_request::DecodeRequest::on_result`]'s parallel
+/// single-pass strategy: `cb` fires from whichever thread decoded that
+/// candidate, in completion order, *before* the dedup-then-push step
+/// that decides what lands in the returned `Vec` — a same-message
+/// duplicate found by two different candidates could fire `cb` twice
+/// even though only one survives into the batch result. `cb` must be
+/// `Sync` for this reason.
+pub fn decode_scan_streaming(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    on_result: &(dyn Fn(&WsprResult) + Sync),
+) -> Vec<WsprResult> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Some(on_result),
+    )
+}
+
+fn decode_scan_inner(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
+) -> Vec<WsprResult> {
     // Prepend zeros so signals that started before audio[0] (negative
     // dt) become reachable. Internal `start_sample`s are shifted by
     // `pad`; we subtract `pad` back out before returning so callers
@@ -441,6 +490,9 @@ pub fn decode_scan(
                 && (prev.start_sample as i64 - d.start_sample as i64).abs() <= TIME_DEDUP_SAMPLES
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&d);
+            }
             pass1.push((d.clone(), start_refined));
             seen.push(d);
         }
@@ -511,6 +563,9 @@ pub fn decode_scan(
                         <= TIME_DEDUP_SAMPLES
             });
             if !dup {
+                if let Some(cb) = on_result {
+                    cb(&d);
+                }
                 seen.push(d);
             }
         }
@@ -562,6 +617,46 @@ pub fn decode_scan_subtract(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &SearchParams,
+) -> Vec<WsprResult> {
+    decode_scan_subtract_inner(audio, sample_rate, nominal_start_sample, params, None)
+}
+
+/// Streaming variant of [`decode_scan_subtract`] — see
+/// [`decode_scan_streaming`]'s doc comment for the general rationale
+/// (`_streaming` sibling, not a new parameter, since this is a plain
+/// `pub fn` not a builder).
+///
+/// **Delivery order/dedup contract**: `cb` fires once per accepted
+/// decode, at *this* function's own SIC-pass dedup-then-push point
+/// (`all.push(d)` below) — not inside the per-pass `decode_scan` call
+/// each SIC round makes internally, which stays a plain (non-
+/// streaming) call. This matches FT8's `.sic_rounds()` contract: the
+/// outer SIC accept point is the final-acceptance point, so `cb` fires
+/// exactly once per result that ends up in the returned `Vec`, in the
+/// same order — no divergence, unlike [`decode_scan_streaming`]'s
+/// parallel-strategy caveat.
+pub fn decode_scan_subtract_streaming(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    on_result: &(dyn Fn(&WsprResult) + Sync),
+) -> Vec<WsprResult> {
+    decode_scan_subtract_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Some(on_result),
+    )
+}
+
+fn decode_scan_subtract_inner(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
 ) -> Vec<WsprResult> {
     use crate::engine::dsp::subtract::subtract_tones;
 
@@ -619,6 +714,9 @@ pub fn decode_scan_subtract(
                 1.0,
                 &WSPR_SUBTRACT,
             );
+            if let Some(cb) = on_result {
+                cb(&d);
+            }
             all.push(d);
             added += 1;
         }

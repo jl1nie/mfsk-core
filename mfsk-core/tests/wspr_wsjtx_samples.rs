@@ -9,7 +9,10 @@
 use std::path::{Path, PathBuf};
 
 use mfsk_core::wspr::SearchParams;
-use mfsk_core::wspr::decode::decode_scan_subtract;
+use mfsk_core::wspr::WsprResult;
+use mfsk_core::wspr::decode::{
+    decode_scan, decode_scan_streaming, decode_scan_subtract, decode_scan_subtract_streaming,
+};
 
 #[allow(dead_code)]
 mod common;
@@ -140,6 +143,120 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
         "WSPR WSJT-X sample recall regressed: {}/{}",
         hits,
         GOLDEN.len()
+    );
+}
+
+/// `decode_scan_subtract_streaming`'s `on_result` callback — real-
+/// signal verification, mirroring `tests/ft8_streaming_decode.rs`'s
+/// sequential-exact-match contract. `decode_scan_subtract`'s own
+/// SIC-pass dedup-then-push loop is sequential (each pass's
+/// `decode_scan` call is internally parallel, but its results are
+/// *not* streamed — only `decode_scan_subtract`'s own outer
+/// accept point fires `on_result`, see that function's doc comment),
+/// so the callback-delivered set must exactly equal the batch `Vec`.
+#[test]
+fn wspr_scan_subtract_streaming_matches_batch_exactly() {
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+
+    let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let on_result = |r: &WsprResult| {
+        streamed.lock().unwrap().push(r.message.to_string());
+    };
+    let batch = decode_scan_subtract_streaming(&audio, 12_000, 0, &params, &on_result);
+
+    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.to_string()).collect();
+    let streamed = streamed.into_inner().unwrap();
+    eprintln!(
+        "WSPR decode_scan_subtract_streaming: batch={} streamed={}",
+        batch_msgs.len(),
+        streamed.len()
+    );
+    assert_eq!(
+        streamed, batch_msgs,
+        "WSPR decode_scan_subtract_streaming: streamed callback deliveries must \
+         exactly match the batch result, same order (sequential outer SIC \
+         accept point, no divergence mechanism exists on this path)"
+    );
+    assert!(!batch.is_empty(), "expected real decodes on the WSPR golden WAV");
+}
+
+/// `decode_scan_streaming`'s `on_result` callback — real-signal
+/// verification of the *parallel* strategy's superset/possible-
+/// duplicate contract (both pass 1 and pass 2's per-candidate decode
+/// step run under `rayon::par_iter()`, same shape as FT8's default
+/// single-pass strategy). On this golden WAV the parallel path
+/// happens not to hit the documented same-message-two-candidates
+/// duplicate case (verified equal, not just superset, below) — the
+/// assertion is a superset check because that's the documented
+/// contract, not because equality is expected to fail here (mirrors
+/// `ft8_streaming_single_pass_superset_of_batch`'s own reasoning).
+#[test]
+fn wspr_scan_streaming_superset_of_batch() {
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+
+    let streamed: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let on_result = |r: &WsprResult| {
+        streamed.lock().unwrap().push(r.message.to_string());
+    };
+    let batch = decode_scan_streaming(&audio, 12_000, 0, &params, &on_result);
+
+    let batch_msgs: std::collections::BTreeSet<String> =
+        batch.iter().map(|d| d.message.to_string()).collect();
+    let streamed: std::collections::BTreeSet<String> =
+        streamed.into_inner().unwrap().into_iter().collect();
+    eprintln!(
+        "WSPR decode_scan_streaming: batch={} streamed={}",
+        batch_msgs.len(),
+        streamed.len()
+    );
+
+    let missing_from_stream: Vec<&String> = batch_msgs.difference(&streamed).collect();
+    assert!(
+        missing_from_stream.is_empty(),
+        "every batch result must have fired via callback at least once: missing {:?}",
+        missing_from_stream
+    );
+    assert!(!batch_msgs.is_empty(), "expected real decodes on the WSPR golden WAV");
+    assert_eq!(
+        streamed, batch_msgs,
+        "no duplicate-delivery case expected on this golden WAV (if this starts \
+         failing, the superset contract is what's guaranteed, not this equality)"
+    );
+
+    // Also confirm decode_scan_streaming's own return matches plain
+    // decode_scan's (the streaming sibling must not change behavior).
+    let plain = decode_scan(&audio, 12_000, 0, &params);
+    let plain_msgs: std::collections::BTreeSet<String> =
+        plain.iter().map(|d| d.message.to_string()).collect();
+    assert_eq!(
+        batch_msgs, plain_msgs,
+        "decode_scan_streaming's returned Vec must match plain decode_scan's"
     );
 }
 
