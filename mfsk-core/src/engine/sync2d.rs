@@ -84,6 +84,49 @@ fn make_costas_ref_continuous(pattern: &[u8], ds_spb: usize) -> Vec<Complex<f32>
     out
 }
 
+// `ft4_sync_search_window` calls `make_costas_ref_continuous` once per
+// call (not per grid cell — that per-cell cost was already eliminated,
+// see the module comments inside that function) to build `blocks_ref`,
+// but the function itself is called once per *candidate* (~31/decode
+// on the real FT4 golden WAV), and `(pattern, ds_spb)` never varies
+// within one decode call — every candidate for a given protocol `P`
+// rebuilds an identical reference from scratch. Mirrors
+// `engine::sync::cached_costas_ref`'s exact rationale and shape
+// (2-slot thread_local, content-keyed, std-gated with an uncached
+// no_std fallback) for this module's own phase-continuous variant.
+#[cfg(feature = "std")]
+type CostasRefContinuousCacheEntry = (&'static [u8], usize, Vec<Complex<f32>>);
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static COSTAS_REF_CONTINUOUS_CACHE: core::cell::RefCell<Vec<CostasRefContinuousCacheEntry>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "std")]
+fn cached_costas_ref_continuous(pattern: &'static [u8], ds_spb: usize) -> Vec<Complex<f32>> {
+    COSTAS_REF_CONTINUOUS_CACHE.with_borrow_mut(|cache| {
+        if let Some((_, _, flat)) = cache.iter().find(|(p, d, _)| *p == pattern && *d == ds_spb) {
+            return flat.clone();
+        }
+        let flat = make_costas_ref_continuous(pattern, ds_spb);
+        if cache.len() >= 2 {
+            cache.remove(0);
+        }
+        cache.push((pattern, ds_spb, flat.clone()));
+        flat
+    })
+}
+
+/// `no_std` (embedded) fallback — `thread_local!` needs `std`. FT4's
+/// generic pipeline doesn't reach embedded builds today (same
+/// reasoning as `cached_costas_ref`'s own no_std fallback), so a plain
+/// uncached rebuild is fine here.
+#[cfg(not(feature = "std"))]
+fn cached_costas_ref_continuous(pattern: &[u8], ds_spb: usize) -> Vec<Complex<f32>> {
+    make_costas_ref_continuous(pattern, ds_spb)
+}
+
 /// Apply a carrier twiddle to a flat continuous reference.
 /// Returns a new Vec; if `df_hz ≈ 0` returns the input unchanged.
 fn twiddle_flat_ref(flat_ref: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Complex<f32>> {
@@ -307,7 +350,7 @@ pub fn ft4_sync_search_window<P: Protocol>(
         .iter()
         .map(|b| {
             let off = b.start_symbol as i32 * ds_spb as i32;
-            (off, make_costas_ref_continuous(b.pattern, ds_spb))
+            (off, cached_costas_ref_continuous(b.pattern, ds_spb))
         })
         .collect();
 
