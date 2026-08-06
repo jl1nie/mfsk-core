@@ -148,6 +148,18 @@ rustfft     = { version = "6", optional = true }
 crc         = { version = "3", default-features = false }
 rayon       = { version = "1", optional = true }
 
+[dev-dependencies]
+# Only for tests/ft8_decode_block_streaming.rs, which exercises the
+# true no_std decode_block_multipass arm (needs `fft-extern`, not the
+# host-default `fft-rustfft`) — that arm still needs *some* FftPlanner,
+# and `fft-extern`'s contract is that the final binary supplies
+# `mfsk_core_make_default_fft_planner` itself (see
+# `engine::fft::default_planner`'s doc comment: "tests / unusual
+# targets can return any Box<dyn FftPlanner> impl"). This dev-only
+# rustfft lets that one test provide it without touching the main
+# `fft-rustfft` feature/dependency.
+rustfft = "6"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',

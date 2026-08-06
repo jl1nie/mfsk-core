@@ -100,6 +100,12 @@ pub trait SupportsSicEarly: FrameDecodable {
 /// is already validated for all three protocols.
 pub trait SupportsWideBandAp: FrameDecodable {}
 
+/// Callback type for [`DecodeRequest::on_result`]/[`SniperRequest::on_result`]
+/// — factored into a named alias purely to keep `clippy::type_complexity`
+/// quiet at the two struct-field sites; see `on_result`'s own doc comment
+/// for the actual delivery contract.
+type OnResultCallback<'a, P> = &'a (dyn Fn(&<P as FrameDecodable>::DecodeResult) + Sync);
+
 /// Decoded messages plus the FFT cache built along the way, reusable by a
 /// follow-up pipelined [`DecodeRequest::fft_cache`] call. The cache is
 /// always returned (it's already computed internally regardless of
@@ -138,6 +144,9 @@ pub struct DecodeRequest<'a, P: FrameDecodable> {
     /// structure is fixed. Not independently settable — see
     /// `sic_rounds`'s doc comment for why.
     pub(crate) sic_rounds: usize,
+    /// Set via [`DecodeRequest::on_result`] — see that method's doc
+    /// comment for the delivery-order/dedup contract.
+    pub(crate) on_result: Option<OnResultCallback<'a, P>>,
     strategy: fn(&DecodeRequest<'a, P>) -> DecodeOutcome<P>,
 }
 
@@ -165,6 +174,7 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
             known: &[],
             fft_cache: None,
             sic_rounds: 3,
+            on_result: None,
             strategy: P::__single_pass,
         }
     }
@@ -210,6 +220,40 @@ impl<'a, P: FrameDecodable> DecodeRequest<'a, P> {
     /// [`DecodeOutcome::fft_cache`]) instead of rebuilding it from `audio`.
     pub fn fft_cache(mut self, c: FftCache) -> Self {
         self.fft_cache = Some(c);
+        self
+    }
+    /// Fire `cb` once per candidate as it's accepted, *in addition to*
+    /// (not instead of) `decode()`'s own returned `DecodeOutcome` —
+    /// this is purely additive, streaming delivery alongside the
+    /// existing batch result, not a replacement for it.
+    ///
+    /// A plain synchronous callback, not an async/channel primitive —
+    /// see `docs/reference/LIBRARY.md`'s "public decode entry point"
+    /// section for why (portability: `mfsk-core`'s `engine`/protocol
+    /// layers stay `std`-and-executor-free so embedded targets keep
+    /// working; a host caller wanting cross-thread delivery to e.g. a
+    /// GUI wraps `cb` itself, such as a `Sender::send` inside the
+    /// closure — `mfsk-core` doesn't need to know about that).
+    ///
+    /// **Delivery order and dedup contract differs by strategy:**
+    /// - `.sic_rounds(_)`/`.sic_early()` (sequential SIC): `cb` fires
+    ///   exactly once per result that ends up in the returned `Vec`,
+    ///   in the same order — zero divergence from the batch result.
+    /// - the default single-pass strategy and [`SniperRequest`]
+    ///   (parallelized via `rayon` under `feature = "parallel"`): `cb`
+    ///   fires from whichever thread decoded that candidate, in
+    ///   completion order (not candidate-exploration order), and
+    ///   *before* the final cross-candidate dedup pass — on the rare
+    ///   occasion two different sync candidates converge on the same
+    ///   message, `cb` may fire for both even though only one survives
+    ///   into the returned `Vec`. Callers wanting exact parity should
+    ///   dedup by `.message77()` on their side, the same key the
+    ///   crate's own dedup already uses.
+    ///
+    /// `cb` must be `Sync` for this reason — it may be called
+    /// concurrently from multiple `rayon` worker threads.
+    pub fn on_result(mut self, cb: OnResultCallback<'a, P>) -> Self {
+        self.on_result = Some(cb);
         self
     }
 
@@ -304,6 +348,10 @@ pub struct SniperRequest<'a, P: FrameDecodable> {
     pub(crate) strictness: DecodeStrictness,
     pub(crate) eq_mode: EqMode,
     pub(crate) ap_hint: Option<&'a ApHint>,
+    /// Set via [`SniperRequest::on_result`] — see
+    /// [`DecodeRequest::on_result`]'s doc comment for the delivery-
+    /// order/dedup contract (same rules apply here).
+    pub(crate) on_result: Option<OnResultCallback<'a, P>>,
     _protocol: core::marker::PhantomData<P>,
 }
 
@@ -318,6 +366,7 @@ impl<'a, P: FrameDecodable> SniperRequest<'a, P> {
             strictness: DecodeStrictness::Normal,
             eq_mode: EqMode::Off,
             ap_hint: None,
+            on_result: None,
             _protocol: core::marker::PhantomData,
         }
     }
@@ -341,6 +390,13 @@ impl<'a, P: FrameDecodable> SniperRequest<'a, P> {
     }
     pub fn eq_mode(mut self, e: EqMode) -> Self {
         self.eq_mode = e;
+        self
+    }
+    /// See [`DecodeRequest::on_result`] — same contract (this request
+    /// type is always parallel-strategy-shaped, so the "may fire for a
+    /// duplicate that's later excluded" caveat always applies here).
+    pub fn on_result(mut self, cb: OnResultCallback<'a, P>) -> Self {
+        self.on_result = Some(cb);
         self
     }
 

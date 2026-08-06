@@ -91,6 +91,48 @@ pub fn decode_block<S: AudioSample>(
     )
 }
 
+/// [`decode_block`] with a per-candidate streaming callback — fires
+/// `on_result` once per accepted candidate, in candidate-processing
+/// order, immediately before that candidate's result is pushed into
+/// the returned `Vec` (this path is always sequential — no
+/// `parallel`/rayon on embedded — so every callback delivery is
+/// guaranteed to also appear in the returned `Vec`, unlike the host
+/// `DecodeRequest::on_result`'s single-pass/sniper strategies, which
+/// are parallelized and can fire on a same-slot duplicate that's later
+/// excluded — see that method's doc comment for the full contrast).
+///
+/// Not available under `fft-rustfft` (the host-shaped multipass/
+/// subtract driver, `decode_block_with_ap`'s engine) — that variant
+/// has a post-hoc `retain_mut` SNR re-gate after all subtract passes
+/// finish, which can drop or mutate a result *after* it would have
+/// already been streamed. Streaming that surface would need a
+/// revise/retract event this callback doesn't provide; use the
+/// non-streaming `decode_block`/`decode_block_with_ap` there instead.
+#[cfg(not(feature = "fft-rustfft"))]
+pub fn decode_block_streaming<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    on_result: &mut dyn FnMut(&DecodeResult),
+) -> Vec<DecodeResult> {
+    let spec = compute_spectrogram(audio, freq_max);
+    let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
+    drop(spec);
+    let pass1 = fine_refine_pass1(audio, pass1);
+    let pass2 = refine_candidates(audio, pass1, max_cand, None);
+    process_candidates_tuned_streaming(
+        audio,
+        pass2,
+        depth,
+        DEFAULT_Q_THRESH,
+        DEFAULT_BP_MAX_ITER,
+        on_result,
+    )
+}
+
 /// Variant of [`decode_block`] that accepts a runtime `bp_max_iter`
 /// (= per-LLR-variant BP iteration cap, default
 /// [`DEFAULT_BP_MAX_ITER`]). Useful on time-budgeted targets.
@@ -279,6 +321,7 @@ fn decode_block_multipass<S: AudioSample>(
                 strictness,
                 fft_cache.as_deref(),
                 &mut bp_scratch,
+                None,
             );
             for r in single_results {
                 if all.iter().any(|x| x.message77() == r.message77()) {
@@ -1078,6 +1121,41 @@ pub fn process_candidates_tuned<S: AudioSample>(
         None,
         DecodeStrictness::Normal,
         None,
+        None,
+    )
+}
+
+/// [`process_candidates_tuned`] with a per-candidate streaming
+/// callback — fires `on_result` once per accepted candidate, in
+/// candidate-processing order (this loop is always sequential, no
+/// `parallel`/rayon involved on the embedded path), immediately after
+/// the existing `results.push(r)` site inside
+/// [`process_candidates_with_ap`] — so, unlike the host's parallel
+/// `par_iter()` sites, every callback delivery here is guaranteed to
+/// also appear in the returned `Vec`, in the same order.
+///
+/// `#[cfg(not(feature = "fft-rustfft"))]`: this exists solely to back
+/// [`decode_block_streaming`], which is gated the same way — see that
+/// function's doc comment for why.
+#[cfg(not(feature = "fft-rustfft"))]
+pub(crate) fn process_candidates_tuned_streaming<S: AudioSample>(
+    audio: &[S],
+    cands: Vec<RefinedCandidate>,
+    depth: DecodeDepth,
+    q_thresh: u32,
+    bp_max_iter: u32,
+    on_result: &mut dyn FnMut(&DecodeResult),
+) -> Vec<DecodeResult> {
+    process_candidates_tuned_with_ap(
+        audio,
+        cands,
+        depth,
+        q_thresh,
+        bp_max_iter,
+        None,
+        DecodeStrictness::Normal,
+        None,
+        Some(on_result),
     )
 }
 
@@ -1102,6 +1180,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
     fft_cache: Option<&[Complex<f32>]>,
+    on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     let mut bp_scratch =
         crate::fec::ldpc::bp::BpScratch::<crate::fec::ldpc::params::Ldpc174_91Params, LlrT>::new();
@@ -1115,6 +1194,7 @@ pub(super) fn process_candidates_tuned_with_ap<S: AudioSample>(
         strictness,
         fft_cache,
         &mut bp_scratch,
+        on_result,
     )
 }
 
@@ -1137,6 +1217,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         crate::fec::ldpc::params::Ldpc174_91Params,
         LlrT,
     >,
+    on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     let mut cs_scratch: alloc::boxed::Box<[[Cmplx<f32>; 8]; 79]> =
         alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
@@ -1155,6 +1236,7 @@ pub(super) fn process_candidates_tuned_with_ap_scratch<S: AudioSample>(
         },
         ap_hint,
         strictness,
+        on_result,
     )
 }
 
@@ -1284,6 +1366,7 @@ pub fn process_candidates_into_with_cs_scratch_tuned<S: AudioSample>(
         },
         None,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -1328,6 +1411,7 @@ where
         fill,
         None,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -1356,6 +1440,7 @@ fn process_candidates_with_ap<S: AudioSample, F>(
     mut fill: F,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
+    mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult>
 where
     F: FnMut(&mut [[Cmplx<f32>; 8]; 79], &SyncCandidate, SymMask),
@@ -1409,6 +1494,9 @@ where
             strictness,
             0.0,
         ) {
+            if let Some(cb) = on_result.as_mut() {
+                cb(&r);
+            }
             results.push(r);
         }
     }
