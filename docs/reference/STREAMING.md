@@ -248,7 +248,9 @@ Two facts drive the shape:
 
 ```toml
 [dependencies]
-mfsk-core = "0.8"
+# `Decoded` + `to_decoded` land in 0.9; add `features = ["serde"]` if you
+# want to serialize decode rows to JSON.
+mfsk-core = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # Optional, only for the Stream adaptor in §5.3:
 tokio-stream = "0.1"
@@ -257,22 +259,13 @@ tokio-stream = "0.1"
 ### 5.1 The bridge
 
 ```rust
+use mfsk_core::engine::protocol::ProtocolId;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::msg::wsjt77::unpack77;
+use mfsk_core::msg::decoded::Decoded; // the crate's owned, Send UI row
 
 use tokio::sync::mpsc;
-
-/// One decoded FT8 message, lifted out of the borrow-scoped, non-`Send`
-/// `DecodeResult` into an owned value we can move across the channel.
-#[derive(Debug, Clone)]
-pub struct Decoded {
-    pub freq_hz: f32,
-    pub dt_sec: f32,
-    pub snr_db: f32,
-    pub text: String,
-}
 
 /// Decode one 15 s FT8 slot (12 kHz mono i16 PCM) on a blocking worker,
 /// streaming each accepted message back to the async caller as it lands.
@@ -293,20 +286,20 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
         // default wide-band strategy dispatches candidates across rayon
         // worker threads and may call this concurrently.
         let on_result = move |r: &DecodeResult| {
-            let text = unpack77(r.message77())
-                .unwrap_or_else(|| "<unpack-fail>".into());
-
-            // `blocking_send` is correct here: this runs on a spawn_blocking
-            // thread (and, for the parallel strategy, possibly a rayon
-            // worker) — never a Tokio runtime worker — so it will not panic
-            // the way `blocking_send` does inside async context. A send
-            // error means the receiver was dropped; nothing more to do.
-            let _ = tx.blocking_send(Decoded {
-                freq_hz: r.freq_hz,
-                dt_sec: r.dt_sec,
-                snr_db: r.snr_db,
-                text,
-            });
+            // `DecodeResult::to_decoded` unpacks the 77-bit payload and returns
+            // an owned, `Send` `Decoded` row (text + freq + dt + snr + protocol)
+            // — exactly what we want to move across the channel. `None` means
+            // the payload didn't unpack; skip it rather than send a junk row.
+            // (Before this crate exposed `Decoded`, this closure hand-rolled an
+            // owned struct and called `unpack77` itself — one call now.)
+            if let Some(d) = r.to_decoded(ProtocolId::Ft8, None) {
+                // `blocking_send` is correct here: this runs on a spawn_blocking
+                // thread (and, for the parallel strategy, possibly a rayon
+                // worker) — never a Tokio runtime worker — so it will not panic
+                // the way `blocking_send` does inside async context. A send
+                // error means the receiver was dropped; nothing more to do.
+                let _ = tx.blocking_send(d);
+            }
         };
 
         // Wide-band search 100–3000 Hz, sync_min 1.5, up to 100 candidates.
@@ -322,6 +315,14 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
     rx
 }
 ```
+
+> `Decoded` (`mfsk_core::msg::decoded::Decoded`) is the crate's unified,
+> owned decode row — `text` / `freq_hz` / `dt_sec` / `snr_db` /
+> `protocol`, `Clone` + `Send`, and `Serialize`/`Deserialize` under
+> `--features serde`. Every protocol's native result has a
+> `to_decoded(..)` conversion into it (WSPR/Q65/JT65/JT9 too), so the
+> same bridge shape works for any mode. See
+> [LIBRARY.md](LIBRARY.md) and `docs/notes/DECODED_ROW.md`.
 
 ### 5.2 Consuming the stream
 

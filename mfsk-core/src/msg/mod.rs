@@ -13,6 +13,8 @@
 //! is shared by every message unpack invocation.
 
 pub mod ap;
+/// Unified owned decode row for host UIs — see [`decoded::Decoded`].
+pub mod decoded;
 // `DecodeRequest`/`SniperRequest` builder (issue #191); depends on
 // `pipeline_ap`'s generic AP engine, so declared after it. Also needs
 // at least one `FrameDecodable` implementor (`ft8`/`ft4`/`fst4`) or its
@@ -39,6 +41,7 @@ pub mod wsjt77;
 pub mod wspr;
 
 pub use ap::ApHint;
+pub use decoded::Decoded;
 pub use hash_table::CallsignHashTable;
 pub use jt72::{Jt72Codec, Jt72Message};
 #[cfg(feature = "packet-bytes")]
