@@ -163,6 +163,7 @@ macro_rules! impl_frame_decodable {
                     req.strictness,
                     req.eq_mode,
                     SYNC_Q_MIN,
+                    req.on_result,
                 );
                 DecodeOutcome {
                     results: dedup_known(raw, req.known),
@@ -184,6 +185,7 @@ macro_rules! impl_frame_decodable {
                     REFINE_STEPS,
                     SYNC_Q_MIN / 2,
                     req.ap_hint,
+                    req.on_result,
                 );
                 let fft_cache = FftCache(crate::engine::dsp::downsample::build_fft_cache(
                     req.audio, &$cfg,

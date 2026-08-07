@@ -61,19 +61,44 @@ effect on any decode path.
     call). JT65/JT9's loops are sequential with no parallelism, so
     their streamed delivery is an exact match against the batch `Vec`,
     same order, with no divergence mechanism.
-  - **Known gap, not yet closed**: `on_result` is a field on the shared
+  - **Bug, found and fixed same day (2026-08-08): `on_result` silently
+    never fired for `Ft4`/FST4.** `on_result` is a field on the shared
     `DecodeRequest`/`SniperRequest<P>` structs (issue #191's generic
-    builder, so it type-checks and builds for any `P: FrameDecodable` —
-    `Ft8` and every `Ft4`/FST4 sub-mode), but only FT8's `FrameDecodable`
-    impl actually reads it; `Ft4`/FST4's `__single_pass`/`__sniper`
-    never pass `req.on_result` down into `pipeline::decode_frame`/
-    `pipeline_ap::decode_sniper_ap`. Calling `.on_result(cb)` on an
-    `Ft4`/FST4 `DecodeRequest` compiles cleanly and silently never
-    invokes `cb` — no compile error, no panic, no doc-comment warning
-    at the call site today. FT4/FST4's own candidate loops already run
-    through `engine::pipeline`, the same generic engine this callback
-    was designed to slot into, so wiring it through is expected to be
-    small — just not done yet.
+    builder, so it type-checked and built for any `P: FrameDecodable` —
+    `Ft8` and every `Ft4`/FST4 sub-mode), but the doc comment on
+    `DecodeRequest::on_result` promised delivery unconditionally, with
+    no protocol scoping (unlike e.g. `ap_hint`, which does document
+    itself as "FT8 only"). Only FT8's `FrameDecodable` impl actually
+    read the field; `Ft4`/FST4's `__single_pass`/`__sniper`/
+    `__flat_sic` never passed `req.on_result` down into
+    `engine::pipeline::decode_frame`/`decode_frame_subtract`/
+    `msg::pipeline_ap::decode_sniper_ap` — calling `.on_result(cb)` on
+    an `Ft4`/FST4 `DecodeRequest` compiled cleanly and silently never
+    invoked `cb`. No compile error (the field genuinely is read, by
+    FT8's impl, so `dead_code` never fires for a struct-level field
+    across every generic instantiation), and no test caught it: the
+    entire test suite's `.on_result(` call sites were `ft8_streaming_
+    decode.rs` and `q65_wsjtx_samples.rs` only — nothing exercised the
+    `Ft4`/FST4 combination that silently broke the contract.
+
+    Fixed by threading `on_result: Option<&(dyn Fn(&DecodeResult) +
+    Sync)>` through all three call sites (`decode_frame_impl`'s two
+    `filter_map` closures — same "before dedup, possible transient
+    duplicate" contract as FT8's own parallel single-pass strategy;
+    `decode_frame_subtract`'s per-pass `all_results.extend(deduped)`
+    point — sequential exact-match, same as FT8's `.sic_rounds()`;
+    `decode_sniper_ap`'s `results.push(r)` point — sequential,
+    0-or-1+ depending on the AP early-exit) and wiring `req.on_result`
+    through from `Ft4`'s and every FST4 sub-mode's `FrameDecodable`/
+    `SupportsSicRounds` impls. New regression coverage:
+    `tests/ft4_streaming_decode.rs` (all three FT4 strategies —
+    single-pass, `.sic_rounds()`, sniper) and
+    `tests/fst4_streaming_decode.rs` (FST4 has no SIC path, issue
+    #193, so only single-pass applies); the sniper test is also the
+    first in the suite to exercise `SniperRequest::on_result` for
+    *any* protocol, FT8 included. Byte-identical recall verified via
+    the existing golden-WAV suites (FT4 6/6, FST4-60A 1/1) plus the
+    full `scripts/pre-push-check.sh` matrix.
 
 - **`msg::decoded::Decoded`** — a unified, owned, human-readable decode
   row for host UIs, plus a `to_decoded(..)` conversion on every

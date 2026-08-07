@@ -358,6 +358,11 @@ pub(crate) fn decode_sniper_ap<P: Protocol>(
     refine_steps: i32,
     sync_q_min: u32,
     ap_hint: Option<&ApHint>,
+    // Fires once per accepted result, right before it's pushed into
+    // `results` — sequential, exact-match contract (same shape as
+    // FT8's sniper strategy). 0-or-1+ calls depending on `has_ap`'s
+    // early exit below.
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> Vec<DecodeResult>
 where
     P::Msg: WsjtApCompatible,
@@ -393,6 +398,9 @@ where
         ) {
             let new = !results.iter().any(|x| x.info == r.info);
             if new {
+                if let Some(cb) = on_result {
+                    cb(&r);
+                }
                 results.push(r);
                 // Early-exit: in sniper+AP mode we're hunting ONE target.
                 // Once any AP-verified decode lands, further candidates are

@@ -88,6 +88,7 @@ impl FrameDecodable for Ft4 {
             req.strictness,
             req.eq_mode,
             SYNC_Q_MIN,
+            req.on_result,
         );
         DecodeOutcome {
             results: dedup_known(raw, req.known),
@@ -116,6 +117,7 @@ impl FrameDecodable for Ft4 {
             // decision, so weak sync-quality signals may still succeed.
             SYNC_Q_MIN / 2,
             req.ap_hint,
+            req.on_result,
         );
         // `pipeline_ap::decode_sniper_ap` doesn't return its FFT cache;
         // sniper mode never exposed one before this redesign either
@@ -171,6 +173,7 @@ impl SupportsSicRounds for Ft4 {
             700,
             false,
             1.0,
+            req.on_result,
         );
         // Multi-pass SIC has no single "the" cache (residual changes every
         // pass) — rebuild from the original audio, matching the shape

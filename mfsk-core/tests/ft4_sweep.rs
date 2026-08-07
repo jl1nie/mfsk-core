@@ -334,6 +334,7 @@ fn ft4_strictness_probe() {
                     strictness,
                     EqMode::Off,
                     SYNC_Q_MIN,
+                    None,
                 );
                 any_hits += !results.is_empty() as u32;
                 let is_golden = results.iter().any(|d| {

@@ -815,6 +815,7 @@ fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
 /// default feature set it's `pub(crate)`, since #191's `DecodeRequest`
 /// is the supported public entry point.
 #[cfg(feature = "internal-testing")]
+#[allow(clippy::too_many_arguments)]
 pub fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
@@ -827,13 +828,14 @@ pub fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache)
 where
     P::Fec: BpPooledFec,
 {
     decode_frame_impl::<P>(
         audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
-        sync_q_min,
+        sync_q_min, on_result,
     )
 }
 
@@ -841,6 +843,7 @@ where
 // Only called by `ft4`/`fst4`'s `decode` modules — dead code under any
 // feature combination excluding both (e.g. `jt9`/`jt65`/`q65`-only).
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
@@ -853,16 +856,18 @@ pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache)
 where
     P::Fec: BpPooledFec,
 {
     decode_frame_impl::<P>(
         audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
-        sync_q_min,
+        sync_q_min, on_result,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_frame_impl<P: GenericPipelineProtocol>(
     audio: &[i16],
     cfg: &DownsampleCfg,
@@ -875,6 +880,13 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    // Fires once per accepted candidate, inside the per-candidate
+    // closure below and *before* the cross-candidate dedup pass that
+    // follows — same "possible transient duplicate" contract as FT8's
+    // own parallel single-pass strategy (`ft8::decode::decode_frame_inner`),
+    // not the sequential exact-match one. See `DecodeRequest::on_result`'s
+    // doc comment for the full delivery-order writeup.
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache)
 where
     P::Fec: BpPooledFec,
@@ -901,7 +913,7 @@ where
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
         .filter_map(|cand| {
-            process_candidate_basic::<P>(
+            let r = process_candidate_basic::<P>(
                 cand,
                 fft_cache.as_slice(),
                 cfg,
@@ -910,14 +922,18 @@ where
                 &[],
                 eq_mode,
                 sync_q_min,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let raw: Vec<DecodeResult> = candidates
         .iter()
         .filter_map(|cand| {
-            process_candidate_basic::<P>(
+            let r = process_candidate_basic::<P>(
                 cand,
                 fft_cache.as_slice(),
                 cfg,
@@ -926,7 +942,11 @@ where
                 &[],
                 eq_mode,
                 sync_q_min,
-            )
+            )?;
+            if let Some(cb) = on_result {
+                cb(&r);
+            }
+            Some(r)
         })
         .collect();
 
@@ -989,6 +1009,11 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     lpf_half: usize,
     lpf_endcorrection: bool,
     refine_freq_radius_hz: f32,
+    // Fires once per result as it's added to `all_results` below — the
+    // final acceptance point for this sequential SIC loop, so delivery
+    // is an exact match against the returned `Vec`, same order, same
+    // contract as FT8's `.sic_rounds()`/`.sic_early()` strategies.
+    on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> Vec<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -1129,6 +1154,11 @@ where
                 lpf_half,
                 lpf_endcorrection,
             );
+        }
+        if let Some(cb) = on_result {
+            for r in &deduped {
+                cb(r);
+            }
         }
         all_results.extend(deduped);
     }
