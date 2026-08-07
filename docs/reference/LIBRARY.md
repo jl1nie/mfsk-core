@@ -857,6 +857,13 @@ application layer (`std::thread::spawn` + call `.decode()`/
 `decode_block_streaming` there) without any core-library support for
 it.
 
+> **Dedicated guide:** [STREAMING.md](STREAMING.md)
+> ([日本語](STREAMING.ja.md)) collects the per-protocol streaming
+> entry points, both delivery contracts, the full "why a synchronous
+> callback, not `async`/Tokio/a channel" rationale, and a complete
+> worked example of bridging `.on_result` into a Tokio async client
+> (`spawn_blocking` + `mpsc` + optional `Stream` adaptor).
+
 `DecodeDepth` (`llr_effort`/`osd`) itself is still a real type — it's
 what `decode_block`/`decode_block_into` (the embedded/host-shared
 plain-function FT8 API, §10) take positionally — but `DecodeRequest`/

@@ -593,6 +593,13 @@ reference:
      layout: docs/ lives at the repo root, not under the crate). -->
 - **English:** [`docs/reference/LIBRARY.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md)
 - **日本語:** [`docs/reference/LIBRARY.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.ja.md)
+- **Streaming decode interface (`.on_result` + async bridge):**
+  [English `docs/reference/STREAMING.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.md)
+  / [日本語 `docs/reference/STREAMING.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/STREAMING.ja.md)
+  — per-protocol streaming entry points, the delivery contract
+  (sequential exact-match vs. parallel completion-order), why it's a
+  synchronous callback rather than `async`/Tokio/a channel, and a
+  complete worked example of driving it from a Tokio async client.
 - **Benchmarks vs. WSJT-X, full per-protocol detail:**
   [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md)
   — golden-WAV recall + AWGN sensitivity sweep results for every
