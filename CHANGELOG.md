@@ -10,6 +10,71 @@ effect on any decode path.
 
 ### Added
 
+- **Streaming decode delivery: `.on_result(cb)` / `*_streaming` siblings**
+  (issue #204; PRs #237/#239/#240) — a synchronous callback fired once
+  per accepted decode result, delivered as candidates resolve instead
+  of only after the whole slot finishes. Purely additive: every
+  existing batch `decode()`/`decode_scan(...)` call keeps returning its
+  full `Vec`/`DecodeOutcome` unchanged, callers who don't opt in see
+  zero difference. Deliberately a plain `Fn(&Result) + Sync` callback,
+  not async/a channel/Tokio — `engine`/`protocol` stay executor-free so
+  the `no_std` embedded targets that are first-class consumers of this
+  same decode path keep working; a host wanting cross-thread delivery
+  (e.g. into a GUI) wraps the callback itself. Design rationale and the
+  two delivery contracts (sequential exact-match vs. parallel
+  completion-order-with-possible-transient-duplicate) are written up in
+  the new `docs/reference/STREAMING.md`/`.ja.md`, including a worked
+  Tokio `spawn_blocking` + `mpsc` example.
+
+  - **FT8**: `DecodeRequest`/`SniperRequest::on_result`, plus a new
+    `decode_block_streaming` sibling to embedded's `decode_block`
+    (`#[cfg(not(feature = "fft-rustfft"))]`). Threaded through all four
+    decode strategies (`.decode()`/sniper/`.sic_rounds()`/
+    `.sic_early()`). On the two `rayon`-parallel strategies the callback
+    fires inside the per-candidate closure, before the later
+    cross-candidate dedup pass — documented as a possible transient
+    duplicate the returned `Vec` later excludes. On the three
+    sequential/SIC strategies the fire point already is final
+    acceptance, so delivery is an exact match with zero divergence.
+    Candidates are visited in Costas-sync-score-descending order on
+    every strategy (`coarse_sync` sorts before returning), so results
+    also *tend* to favor strong signals first — a correlation, not a
+    guarantee (sync score isn't a direct predictor of post-demod
+    BP/OSD cost, and the sequential strategies still suffer
+    head-of-line blocking behind a high-scored-but-OSD-needing
+    candidate).
+  - **Q65**: `.on_result()` on `DecodeRequest`, `SniperRequest`, and
+    `MultiPeriodRequest` (`src/q65/decode_request.rs`) — the first two
+    fire per accepted candidate (exact-match, sequential, no early
+    exit); `MultiPeriodRequest` fires once per *slot* that yields an
+    accepted decode, the natural streaming unit for its multi-period
+    EME/ionoscatter averaging. `SniperRequest` fires 0-or-1 times
+    (single-candidate decode, no loop to stream across) — kept for
+    builder-API consistency, documented as such.
+  - **WSPR/JT9/JT65**: none of the three have a builder API (plain `pub
+    fn` families), so — matching FT8's own `decode_block`/
+    `decode_block_streaming` precedent — each gains a non-breaking
+    `decode_scan_streaming` sibling instead of a new parameter on the
+    existing function. WSPR additionally gets
+    `decode_scan_subtract_streaming` (fires at the outer SIC-pass
+    accept point only, not inside each pass's internal `decode_scan`
+    call). JT65/JT9's loops are sequential with no parallelism, so
+    their streamed delivery is an exact match against the batch `Vec`,
+    same order, with no divergence mechanism.
+  - **Known gap, not yet closed**: `on_result` is a field on the shared
+    `DecodeRequest`/`SniperRequest<P>` structs (issue #191's generic
+    builder, so it type-checks and builds for any `P: FrameDecodable` —
+    `Ft8` and every `Ft4`/FST4 sub-mode), but only FT8's `FrameDecodable`
+    impl actually reads it; `Ft4`/FST4's `__single_pass`/`__sniper`
+    never pass `req.on_result` down into `pipeline::decode_frame`/
+    `pipeline_ap::decode_sniper_ap`. Calling `.on_result(cb)` on an
+    `Ft4`/FST4 `DecodeRequest` compiles cleanly and silently never
+    invokes `cb` — no compile error, no panic, no doc-comment warning
+    at the call site today. FT4/FST4's own candidate loops already run
+    through `engine::pipeline`, the same generic engine this callback
+    was designed to slot into, so wiring it through is expected to be
+    small — just not done yet.
+
 - **`msg::decoded::Decoded`** — a unified, owned, human-readable decode
   row for host UIs, plus a `to_decoded(..)` conversion on every
   protocol's native result type (`engine::pipeline::DecodeResult` for
