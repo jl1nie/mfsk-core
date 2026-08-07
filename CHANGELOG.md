@@ -1218,6 +1218,22 @@ effect on any decode path.
     cleanup. Issue #192 closed with this narrower fix instead; FST4 SIC
     and `DecodeResult` semantic unification remain tracked separately
     in #193/#194.
+
+    **Correction, next day (2026-07-27): #192 reopened.** A re-audit
+    against the then-current code found 3 of the above close
+    rationale's 4 "FT8-only, no second consumer" claims didn't hold
+    up — the blind-CQ AP pass and non-AP OSD fallback both already had
+    independent, parallel implementations serving FT4/FST4
+    (`msg::pipeline_ap`'s pass 7, `core::pipeline::osd_escalation_gates`
+    respectively) at the time this entry was written, and the lazy
+    LLR-effort staircase was ported into `core::pipeline` the very
+    next day (`4801722`, folded into this same 0.8.0 cycle) — only the
+    frequency-aware 3-stage refine (`fine_refine_3stage`) is still
+    genuinely FT8-only. Closing #192 made this duplication invisible
+    instead of resolving it; it remains open as of this writing, not
+    resolved by the narrower fix described above. As of 2026-08-08,
+    still unstarted (`fine_refine_3stage` has had zero commits since
+    the reopen) — see the issue thread for the full re-audit.
 - **Breaking**: demoted the pre-#191 raw engine functions `DecodeRequest`/
   `SniperRequest` wrap to `pub(crate)` (issue #203, part of the pre-0.8.0
   public-API review tracked in #206) — `core::pipeline::{decode_frame,
