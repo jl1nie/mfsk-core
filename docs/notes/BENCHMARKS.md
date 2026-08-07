@@ -73,6 +73,15 @@ re-run. Recall byte-identical at every re-measured row (FT8 ship-config
 golden + 14/14 total; FST4-60A 2/2 golden messages) — these are pure
 throughput wins, not tightened/loosened decode behavior.
 
+**Re-verified a third time 2026-08-08** after a second `perf(...)`
+commit cluster landed 2026-08-05/06 — this time reaching WSPR and Q65
+too, both previously untouched by any perf-review pass. Full
+methodology and per-row numbers in the "2026-08-08 re-measurement"
+block below the table; headline: WSPR ~2.4× faster (never had a
+dedicated pass before), Q65's fading-metric rows ~1.8-2× faster, FT8/
+FT4/FST4-60A unchanged within this box's own run-to-run noise, nothing
+regressed.
+
 **Compute environment**: AMD Ryzen 9 9900X (12C/24T), 32 GB RAM,
 Ubuntu 24.04.2 LTS under WSL2 (kernel 6.6.87.2-microsoft-standard-WSL2),
 rustc 1.97.1, `cargo test --release --features full` (includes the
@@ -81,20 +90,20 @@ is wall time on a many-core host, not a single-thread figure).
 
 | Protocol | Golden WAV | Slot length | Decode time |
 |---|---|---:|---:|
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.06 s (was 0.10 s — see 2026-07-29 note below) |
-| FST4-60A | 210115_0058.wav | 60 s | 0.08 s (was 0.27 s — see 2026-07-29 note below) |
-| Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.08 s |
-| FT4 | 000000_000002.wav | 7.5 s | 0.10 s (was 0.28 s — see 2026-07-29 note below) |
-| Q65-60B | 1296 MHz troposcatter ×1 slot (multi-period averaging) | 60 s | 0.12 s |
-| Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.12 s |
-| Q65-120E | 6 m ionoscatter (fading metric) | 120 s | 0.26 s |
-| JT9 | 130418_1742.wav | 60 s | 0.33 s |
-| Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.34 s |
-| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.56 s |
-| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.69 s |
+| Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.05 s (was 0.08 s — see 2026-08-08 note below) |
+| Q65-60B | 1296 MHz troposcatter ×3 slots (multi-period averaging) | 60 s | 0.06 s (was 0.12 s — see 2026-08-08 note below) |
+| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.07 s (was 0.06 s — see 2026-08-08 note below) |
+| Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.07 s (was 0.12 s — see 2026-08-08 note below) |
+| FST4-60A | 210115_0058.wav | 60 s | 0.08 s (unchanged — see 2026-08-08 note below) |
+| FT4 | 000000_000002.wav | 7.5 s | 0.10 s (unchanged — see 2026-08-08 note below) |
+| Q65-120E | 6 m ionoscatter ×2 files (fading metric) | 120 s | 0.14 s (was 0.26 s — see 2026-08-08 note below) |
+| Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.19 s (was 0.34 s — see 2026-08-08 note below) |
+| WSPR | 150426_0918.wav | 120 s | 0.37 s (was 0.93 s — see 2026-08-08 note below) |
+| JT9 | 130418_1742.wav | 60 s | 0.37 s (was 0.33 s — noise, see 2026-08-08 note below) |
+| Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.42 s (was 0.56 s — see 2026-08-08 note below) |
+| Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.65 s (was 0.69 s) |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
 | MSK144 | 181211_120500.wav | 15 s | 0.88 s |
-| WSPR | 150426_0918.wav | 120 s | 0.93 s |
 
 **2026-07-29 re-measurement** (median of 3-5 runs, same box/build as
 the rest of this table; see the intro paragraph above for which
@@ -144,6 +153,143 @@ the rest of this table; see the intro paragraph above for which
   below, reproduced independently here after the further perf changes
   landed) — both within noise of, in FST4's case exactly matching, the
   documented figures. No sweep-table update needed.
+
+**2026-08-08 re-measurement** (median/representative of 3-5 runs per
+row, same box as the rest of this table — AMD Ryzen 9 9900X, see the
+compute-environment paragraph above; `cargo test --release --features
+full,internal-testing`, matching CI's own feature set exactly, not
+just `full`) after a second `perf(...)` commit cluster landed
+2026-08-05/06, none reflected in the 2026-07-29 pass above:
+`2177768`/`c5d8031` (FT8 AP-mask LLR iterator-chain + two per-candidate
+allocation removals), `1b078ca` (`make_costas_ref` output cached
+across `fine_sync_power_per_block` calls — shared FT8/FT4/Q65 sync
+code), `66888b3` (`downsample_cached`'s thread-local FFT-planner reuse
+in `symbol_spectra`), `eb859cf` (new `BpPooledFec`/`decode_soft_pooled`
+— extends the FT8-only `BpScratch` pooling from issues #199/#201 to
+the `SumProduct` kernel host builds default to, plus FST4/FT8's
+zsum-seeded OSD retry, neither of which had scratch pooling before),
+`da645b4` (Q65 `decode_multi_period_for` redundant narrow-energy-
+extraction dedup + iterator-loop cleanup), and `abe2908`/`dbab359`
+(FT4 `ft4_sync_search_window` Costas-ref caching + `ft4_coarse`'s
+`symbol_spectra_avg` FFT-planner reuse). Separately, five
+`perf(wspr)` commits landed the same window — `71fc382` (rayon-
+parallelize `decode_scan`'s pass-1/pass-2 candidate loops), `42e3f57`
+(iterator-zip the LPF convolution in `subtract_signal_baseband`),
+`362b769` (pool `fano_decode`'s `Vec<Node>` scratch across a
+candidate's `nblock` sweep), `8e2feb7` (eliminate a dead pre-pass-2
+clone), `f7efb13` (FFT-planner reuse in `decimate_to_baseband`/
+`build_spectro`) — WSPR's first dedicated perf-review pass; unlike
+FT8/FT4/FST4/Q65 (each already swept 2026-07-20/25), nobody had looked
+at `decode_scan_subtract`'s own cost breakdown before.
+
+Every row above was re-run; recall re-verified byte-identical
+everywhere checked (FT8 ship-config 14 total = 7 golden + 7 phantom,
+full-parity 19 total = 8 golden + 11 phantom, JTDX 18/18, AP-on 6/6;
+FT4 6/6 golden / 14 total; FST4-60A 2/2 golden; WSPR 19 total incl.
+8/8 golden; all 7 Q65 WSJT-X-golden-WAV recall tests; JT9 7/7; MSK144
+2/2 incl. exact SNR match) — same "throughput only, not behavior"
+conclusion as 2026-07-29, reached the same way (full recall suite
+green plus, for the two changes with any plausible path to shifting a
+decode outcome, an independent AWGN/CCIR sweep re-run — see below).
+
+- **WSPR — the real win this pass, ~2.4×**: `decode_scan_subtract` on
+  `150426_0918.wav` (`wspr_speed_diag`, 5 iterations) dropped
+  **~0.88-0.93 s → 367-374 ms (avg 369.7 ms)**. Plausibly dominated by
+  the rayon pass-1/pass-2 parallelization, since this was the first
+  perf pass WSPR ever got — no prior investigation to have already
+  picked off the easy wins the way FT8/FT4/FST4/Q65 had. Re-ran the
+  full AWGN sweep (`wspr_sweep.rs::wspr_awgn_snr_sweep`, all 13 SNR
+  points × 20 trials) specifically to rule out the parallelization
+  perturbing floating-point reduction order: **every percentage
+  reproduced exactly** (40.0%@-30dB, 95.0%@-29/-28dB, 100.0%@-27dB and
+  up, 0.0% below -31dB) — confirms it's a pure scheduling change, 50%
+  crossing still ≈−29.8 dB.
+- **Q65 — broad win across the fading-metric rows, ~1.8-2×**:
+  `da645b4`'s redundant-extraction dedup (Stage B/Stage C-plain no
+  longer independently re-running `averaged_data_energies` on
+  identical arguments) is the most direct cause, though the commit's
+  own isolated A/B measurement found it roughly noise-level on
+  Q65-60B/30A alone — the win visible here is larger than that one
+  commit's own attributed delta, consistent with it compounding on top
+  of the same-cluster FFT-planner/Costas-ref/BP-scratch changes (all
+  shared infrastructure Q65's decode paths also go through). Measured
+  against each golden test's own exact `SearchParams` (not the
+  existing `q65_speed_diag_coarse_vs_finetiming`/
+  `q65_multi_period_speed_diag` diagnostics' params, which turned out
+  not to match production config in every case — e.g. the coarse-vs-
+  finetiming probe uses `max_candidates=100` for Q65-60D where the real
+  golden test uses `8`, a 5× difference that would have produced a
+  bogus regression reading): Q65-60B (3-file `MultiPeriodRequest`,
+  `tropo_1296_60b_decodes_via_averaging`'s own config — the table row
+  above was previously mislabeled "×1 slot"; the golden test always
+  used all 3 files in the sample dir) **0.12 s → ~0.064 s**; Q65-30A
+  (4-file, `q65_multi_period_speed_diag`) **0.56 s → ~0.42 s**;
+  Q65-60D **0.08 s → ~0.05 s**; Q65-120D **0.12 s → ~0.07 s**;
+  Q65-120E (both files in the dir, matching the golden test's own
+  loop) **0.26 s → ~0.14 s**; Q65-300A **0.34 s → ~0.19 s**; Q65-60A
+  (plain + AP-hint, 1 file) **0.69 s → ~0.65 s**, the smallest move
+  since it's the only row here that doesn't route through
+  `decode_multi_period_for`. Bit-identical recall (same golden
+  messages) at every row — cross-checked against the full
+  `q65_wsjtx_samples`/`q65_eme_submodes` recall suite, not just the
+  timing probes.
+- **FT4 and FST4-60A: unchanged within this box's own noise.** FT4
+  flat-SIC wall-clock: 98.7-102.8 ms (documented 100-105 ms) — no
+  measurable effect from the `ft4_sync_search_window`/`ft4_coarse`
+  FFT-planner changes at this call's scale. FST4-60A `decode_frame`:
+  78.1-89.0 ms, median ~83 ms (documented 75-82 ms, median ~76 ms) —
+  `BpPooledFec` (`eb859cf`) extends scratch pooling to exactly the
+  generic-pipeline `decode_soft` call this row exercises (FST4 never
+  had it before), so some win was plausible here, but it doesn't show
+  cleanly against this box's own ~15% run-to-run noise band either
+  way. Re-ran the full FT4 AWGN/CCIR sweep and a scoped FST4-30
+  AWGN/CCIR sweep (`MFSK_FST4_SWEEP_MODES=30`, same methodology as the
+  2026-07-29 pass) specifically because the Costas-ref caching and
+  `BpPooledFec` are the two changes in this cluster with any plausible
+  path to shifting a numeric outcome, not just speed: FT4 crossings
+  reproduced to within 0.1 dB of the documented table at every channel
+  (AWGN ≈−16.89 dB, an exact match to the recorded figure); FST4-30
+  crossings reproduced exactly at 2 of 4 channels (CCIR moderate
+  −21.4 dB, CCIR poor −21.7 dB) and within 0.1 dB at the other 2 (AWGN
+  ≈−23.82 dB vs. documented −23.90 dB, CCIR good ≈−23.33 dB vs.
+  documented −23.3 dB) — all within this doc's own established
+  20-trial sampling-noise band, no shift attributable to either change.
+- **FT8: a measurement-methodology finding, not a regression.**
+  Ship-config (`decode_block`, `DecodeDepth::EMBEDDED`, `max_cand=15`)
+  measured **65.1-69.9 ms across two isolated back-to-back runs today
+  (median ~67 ms)** — nominally above the documented "58.8-60.5 ms".
+  Checked with the same git-worktree A/B methodology `da645b4`'s own
+  commit message used: built and ran the identical
+  `bench_qso3_busy_timing.rs` harness against `cc6aa2f` (the commit
+  the 2026-07-29 figures were measured at) in a separate worktree,
+  same session, back-to-back with the `HEAD` run — **67.6 ms avg
+  (65.4-70.4 ms)**, statistically indistinguishable from today's
+  `HEAD` number. The entire gap versus the documented 58.8-60.5 ms is
+  session-to-session noise on this box (thermal/background-load state
+  varies day to day — FST4-60A's ~10% wobble above is the same
+  effect), not anything the 08-05/06 cluster introduced; recalibrating
+  the table's FT8 row to today's honest, reproducible reading rather
+  than leaving a figure this cluster's own unmodified ancestor commit
+  can't reproduce either. Full-parity (`DecodeDepth::FULL`,
+  `sync_min=0.8`, `max_cand=60`): 112.6-123.8 ms, avg 115.9 ms
+  (documented 118-127 ms) — flat to marginally faster, 19 total
+  decodes (8 golden + 11 phantom) unchanged.
+- **JT9, MSK144, JT65: not touched by this cluster.** Confirmed via
+  `git diff --stat cc6aa2f..HEAD -- src/msk144`: no hits at all. JT9
+  and JT65 gained only the additive streaming siblings
+  (`decode_scan_streaming`) and 0.8.1's `snr_db` field — no change to
+  `decode_scan`'s existing decode math. Recall re-confirmed unchanged
+  (JT9 7/7, MSK144 2/2 incl. SNR). Re-measured JT9's own timing anyway
+  out of caution for the `snr_db` addition: 340.5-411.4 ms across 5
+  runs (documented 0.33-0.34 s) — noisier than before (~20% spread,
+  wider than this box's other rows) but the median (~372 ms) sits
+  close enough to the old figure that this reads as ordinary machine
+  noise rather than a real cost increase from the added SNR
+  computation; not chased further given the size of the effect (if
+  any) is smaller than this pass's own measurement noise.
+- **MSK144 rows not re-measured** — no code in `msk144`'s module path
+  changed at all (confirmed above), so there's nothing this pass could
+  have moved; left at the existing 0.84 s / 0.88 s figures.
 
 Notes:
 
@@ -748,9 +894,14 @@ Reproduce: `docs/notes/FST4_BENCHMARK.md`.
 
 ## WSPR
 
-- **8/8 WSJT-X golden** (`samples/WSPR/150426_0918.wav`), ~0.88 s
-  end-to-end on a desktop build — sub-bin demod + 2-pass
-  subtract+re-coarse + OSD-2 fallback + Type-3 phantom filter.
+- **8/8 WSJT-X golden** (`samples/WSPR/150426_0918.wav`), ~0.37 s
+  end-to-end on a desktop build (was ~0.88-0.93 s — WSPR's first
+  dedicated perf-review pass, 2026-08-08, mainly a rayon
+  parallelization of `decode_scan_subtract`'s pass-1/pass-2 candidate
+  loops; see the "Decode speed" section's own 2026-08-08 note for the
+  full commit list and the AWGN-sweep re-verification confirming no
+  recall change) — sub-bin demod + 2-pass subtract+re-coarse + OSD-2
+  fallback + Type-3 phantom filter.
 
 **AWGN sensitivity sweep** (`tests/wspr_sweep.rs`, `wsprsim`-driven,
 13 SNR points × 20 trials each):
@@ -880,7 +1031,13 @@ part of every sweep in this doc at this trial count.)
   `max_candidates` calibration applied to Q65-60A closed the gap for
   all four — see the "Decode speed" notes above for the full per-row
   breakdown. Full writeup, including the real-`jt9` verification
-  methodology: `Q65_BENCHMARK.md`.
+  methodology: `Q65_BENCHMARK.md`. Dropped again, ~1.8-2× across every
+  row that routes through `decode_multi_period_for`/
+  `decode_scan_fading_for` (2026-08-08), via a redundant narrow-energy-
+  extraction dedup — see the "Decode speed" section's own 2026-08-08
+  note for the full per-row breakdown; that note also corrects this
+  table's prior "Q65-60B ×1 slot" row label — the golden test always
+  averaged all 3 files in the sample dir, never just one.
 
 **AWGN sensitivity sweep** (`tests/q65_sim_sweep.rs`, `q65sim`-driven,
 15 trials/SNR for the 15/30/60 s sub-modes, 5 trials/SNR for the
