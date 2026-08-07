@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.0 (unreleased) — streaming ergonomics for host UIs
+
+Theme for this cycle: make the streaming decode surface easier to
+build desktop/host UIs on. Redundant-processing cleanup from recent
+PRs rides along as internal hygiene (it shrinks the surface these
+additive APIs sit on); it is not the headline and has no behavioural
+effect on any decode path.
+
+### Added
+
+- **`msg::decoded::Decoded`** — a unified, owned, human-readable decode
+  row for host UIs, plus a `to_decoded(..)` conversion on every
+  protocol's native result type (`engine::pipeline::DecodeResult` for
+  FT8/FT4/FST4, `WsprResult`, `Q65Result`, `Jt65Result`, `Jt9Result`).
+  Each native result is structurally distinct with a different
+  message-text path (FT8-family `unpack77`, `Display` for WSPR/JT65/JT9,
+  an already-resolved `String` for Q65); `Decoded` resolves that once at
+  the conversion boundary into the columns a decode list binds to for
+  *every* mode — `text` / `freq_hz` / `dt_sec` / `snr_db` / `protocol`
+  (`ProtocolId`). Owned (`Clone` + `Send`), so it drops straight into a
+  channel from inside a streaming `.on_result` callback without the
+  hand-rolled per-mode extraction the Tokio example in
+  `docs/reference/STREAMING.md` previously spelled out.
+
+  Additive, not a replacement: the native result types stay and keep
+  their mode-specific diagnostics (`sync_score`, `hard_errors`,
+  `iterations`, …). `Decoded` deliberately carries only the cross-mode
+  intersection — those extras don't generalise into clean shared
+  columns. Conversion signatures differ where the modes genuinely do:
+  FT8/FT4/FST4 is fallible (`Option<Decoded>` — an unpack failure yields
+  no row) and takes the caller's `ProtocolId` + an optional
+  `CallsignHashTable`; WSPR is infallible; Q65/JT65/JT9 take
+  `(sample_rate, nominal_start_sample)` to derive `dt_sec` from their
+  sample-index `start_sample`. Design note: `docs/notes/DECODED_ROW.md`.
+
+- **`serde` feature** (off by default) — derives `Serialize`/
+  `Deserialize` on `Decoded` and `ProtocolId`, `no_std`-clean via
+  serde's `alloc` feature, so a UI can emit decode rows as JSON for
+  spotting / websocket / IPC. Folded into `full`. Purely additive.
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added

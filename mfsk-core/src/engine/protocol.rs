@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 /// the C ABI. Order is stable; append new variants at the end.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ProtocolId {
     /// FT8 — 15 s slot, 8-FSK, LDPC(174,91), 77-bit message.
     Ft8 = 0,

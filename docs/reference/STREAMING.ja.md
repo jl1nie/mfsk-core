@@ -237,7 +237,9 @@ mfsk-core は*あなたが*供給するクロージャを通じて結果を配�
 
 ```toml
 [dependencies]
-mfsk-core = "0.8"
+# `Decoded` + `to_decoded` は 0.9 で導入。デコード行を JSON 化したいなら
+# `features = ["serde"]` を足す。
+mfsk-core = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # 任意、§5.3 の Stream アダプタ用のみ:
 tokio-stream = "0.1"
@@ -246,22 +248,13 @@ tokio-stream = "0.1"
 ### 5.1 橋渡し
 
 ```rust
+use mfsk_core::engine::protocol::ProtocolId;
 use mfsk_core::ft8::Ft8;
 use mfsk_core::ft8::decode::DecodeResult;
 use mfsk_core::msg::decode_request::DecodeRequest;
-use mfsk_core::msg::wsjt77::unpack77;
+use mfsk_core::msg::decoded::Decoded; // クレート提供の所有・Send な UI 行
 
 use tokio::sync::mpsc;
-
-/// デコードされた FT8 メッセージ 1 件。借用スコープに縛られ `Send` でない
-/// `DecodeResult` から、チャネル越しに move できる所有値へ持ち上げたもの。
-#[derive(Debug, Clone)]
-pub struct Decoded {
-    pub freq_hz: f32,
-    pub dt_sec: f32,
-    pub snr_db: f32,
-    pub text: String,
-}
 
 /// 1 つの 15 秒 FT8 スロット（12 kHz モノラル i16 PCM）をブロッキングワーカ
 /// 上でデコードし、受理されたメッセージを届き次第 async 呼び出し側へ流す。
@@ -282,20 +275,19 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
         // 広帯域戦略が候補を rayon ワーカスレッドへ分配し、これを並行に
         // 呼びうるため必須。
         let on_result = move |r: &DecodeResult| {
-            let text = unpack77(r.message77())
-                .unwrap_or_else(|| "<unpack-fail>".into());
-
-            // ここでの `blocking_send` は正しい: これは spawn_blocking スレッド
-            // （並列戦略では rayon ワーカでもありうる）上で走り、Tokio ランタイム
-            // ワーカでは決してない —— よって async コンテキスト内で `blocking_send`
-            // が起こすようなパニックはしない。送信エラーは受信側が drop された
-            // ことを意味し、それ以上することはない。
-            let _ = tx.blocking_send(Decoded {
-                freq_hz: r.freq_hz,
-                dt_sec: r.dt_sec,
-                snr_db: r.snr_db,
-                text,
-            });
+            // `DecodeResult::to_decoded` が 77 ビットペイロードを unpack し、
+            // 所有・Send な `Decoded` 行（text + freq + dt + snr + protocol）を返す
+            // —— まさにチャネル越しに move したいもの。`None` は unpack 不能を意味し、
+            // ゴミ行を送らずスキップする。（クレートが `Decoded` を出す前は、この
+            // クロージャは所有構造体を手組みし `unpack77` を自前で呼んでいた。今は1呼び出し。）
+            if let Some(d) = r.to_decoded(ProtocolId::Ft8, None) {
+                // ここでの `blocking_send` は正しい: これは spawn_blocking スレッド
+                // （並列戦略では rayon ワーカでもありうる）上で走り、Tokio ランタイム
+                // ワーカでは決してない —— よって async コンテキスト内で `blocking_send`
+                // が起こすようなパニックはしない。送信エラーは受信側が drop された
+                // ことを意味し、それ以上することはない。
+                let _ = tx.blocking_send(d);
+            }
         };
 
         // 広帯域探索 100–3000 Hz、sync_min 1.5、最大 100 候補。
@@ -311,6 +303,13 @@ pub fn decode_slot_stream(audio: Vec<i16>) -> mpsc::Receiver<Decoded> {
     rx
 }
 ```
+
+> `Decoded`（`mfsk_core::msg::decoded::Decoded`）はクレートの統一・所有
+> デコード行 —— `text` / `freq_hz` / `dt_sec` / `snr_db` / `protocol`、
+> `Clone` + `Send`、`--features serde` で `Serialize`/`Deserialize`。
+> 各プロトコルのネイティブ結果に `to_decoded(..)` 変換があり
+> （WSPR/Q65/JT65/JT9 も）、同じ橋渡し形が全モードで使える。
+> [LIBRARY.ja.md](LIBRARY.ja.md) と `docs/notes/DECODED_ROW.md` を参照。
 
 ### 5.2 ストリームを消費する
 

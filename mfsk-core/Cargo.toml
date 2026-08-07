@@ -26,7 +26,14 @@ std          = ["alloc"]
 alloc        = []
 
 # Aggregate features.
-full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144", "packet-bytes", "uvpacket", "parallel"]
+full         = ["std", "fft-rustfft", "ft8", "ft4", "fst4", "wspr", "jt9", "jt65", "q65", "msk144", "packet-bytes", "uvpacket", "parallel", "serde"]
+
+# Optional derive of `serde::{Serialize, Deserialize}` on the host-facing
+# `msg::decoded::Decoded` UI row and `engine::protocol::ProtocolId`. Off by
+# default; purely additive (no behavioural change to any decode path). Folded
+# into `full` so the published docs show the impls and CI exercises the
+# round-trip.
+serde        = ["dep:serde"]
 
 # FFT backend selection. `mfsk-core::core::fft::FftPlanner` is the
 # trait every decode-side caller talks to; one of these features must
@@ -147,6 +154,11 @@ num-traits  = { version = "0.2", default-features = false, features = ["libm"] }
 rustfft     = { version = "6", optional = true }
 crc         = { version = "3", default-features = false }
 rayon       = { version = "1", optional = true }
+# Optional `Serialize`/`Deserialize` for the host-facing `msg::decoded::Decoded`
+# UI row (and `ProtocolId`). `default-features = false` + `alloc` keeps it
+# no_std-clean (Decoded carries a `String`); host consumers wanting JSON for
+# spotting / websocket / IPC turn on `--features serde`.
+serde       = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
 # Only for tests/ft8_decode_block_streaming.rs, which exercises the
