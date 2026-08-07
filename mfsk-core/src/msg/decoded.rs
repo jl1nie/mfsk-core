@@ -57,7 +57,10 @@ use alloc::string::String;
 // `ToString` is only used by the modes whose message text comes via `Display`
 // (WSPR / JT65 / JT9); gate the import so an FT8/FT4/FST4-only build (whose
 // text path is `unpack77`, returning `String` directly) doesn't warn on it.
-#[cfg(any(feature = "wspr", feature = "jt65", feature = "jt9"))]
+#[cfg(all(
+    any(feature = "wspr", feature = "jt65", feature = "jt9"),
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 use alloc::string::ToString;
 
 use crate::engine::protocol::ProtocolId;
@@ -96,7 +99,10 @@ pub struct Decoded {
 // (the crate-wide dependency direction), so authoring the conversion here keeps
 // that arrow pointing the right way while still giving `result.to_decoded(..)`
 // method syntax.
-#[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
+#[cfg(all(
+    any(feature = "ft8", feature = "ft4", feature = "fst4"),
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 impl crate::engine::pipeline::DecodeResult {
     /// Resolve into a [`Decoded`] UI row, unpacking the 77-bit payload.
     ///
@@ -128,7 +134,7 @@ impl crate::engine::pipeline::DecodeResult {
 }
 
 // ── WSPR ─────────────────────────────────────────────────────────────────────
-#[cfg(feature = "wspr")]
+#[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::wspr::WsprResult {
     /// Resolve into a [`Decoded`] UI row. Infallible: text via the message's
     /// `Display`, `dt_sec` copied through from the result.
@@ -144,7 +150,7 @@ impl crate::wspr::WsprResult {
 }
 
 // ── Q65 ──────────────────────────────────────────────────────────────────────
-#[cfg(feature = "q65")]
+#[cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::q65::Q65Result {
     /// Resolve into a [`Decoded`] UI row.
     ///
@@ -164,7 +170,7 @@ impl crate::q65::Q65Result {
 }
 
 // ── JT65 ─────────────────────────────────────────────────────────────────────
-#[cfg(feature = "jt65")]
+#[cfg(all(feature = "jt65", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::jt65::Jt65Result {
     /// Resolve into a [`Decoded`] UI row. Text via the message's `Display`;
     /// `dt_sec` derived from `start_sample` the same way Q65's conversion does.
@@ -180,7 +186,7 @@ impl crate::jt65::Jt65Result {
 }
 
 // ── JT9 ──────────────────────────────────────────────────────────────────────
-#[cfg(feature = "jt9")]
+#[cfg(all(feature = "jt9", any(feature = "fft-rustfft", feature = "fft-extern")))]
 impl crate::jt9::Jt9Result {
     /// Resolve into a [`Decoded`] UI row. Text via the message's `Display`;
     /// `dt_sec` derived from `start_sample` the same way Q65's conversion does.
@@ -221,7 +227,10 @@ mod tests {
         assert_serde::<ProtocolId>();
     }
 
-    #[cfg(any(feature = "ft8", feature = "ft4", feature = "fst4"))]
+    #[cfg(all(
+        any(feature = "ft8", feature = "ft4", feature = "fst4"),
+        any(feature = "fft-rustfft", feature = "fft-extern")
+    ))]
     #[test]
     fn ft8_family_to_decoded_carries_unpacked_text_and_fields() {
         use crate::engine::pipeline::DecodeResult;
@@ -254,7 +263,7 @@ mod tests {
         assert_eq!(d.protocol, ProtocolId::Ft8);
     }
 
-    #[cfg(feature = "wspr")]
+    #[cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
     #[test]
     fn wspr_to_decoded_is_infallible_and_passes_dt_through() {
         use crate::msg::wspr::WsprMessage;
@@ -283,7 +292,7 @@ mod tests {
         assert_eq!(d.protocol, ProtocolId::Wspr);
     }
 
-    #[cfg(feature = "q65")]
+    #[cfg(all(feature = "q65", any(feature = "fft-rustfft", feature = "fft-extern")))]
     #[test]
     fn q65_to_decoded_derives_dt_from_sample_rate() {
         use crate::q65::Q65Result;
