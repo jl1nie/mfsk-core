@@ -1,6 +1,78 @@
-# Roadmap (post-0.7.4)
+# Roadmap (post-0.9.0)
 
-## Current line (0.7.x) — shipped through 0.7.4 (2026-07-19)
+## Strategic state (2026-08-07)
+
+Three tracks, at very different maturities:
+
+1. **Host DSP / protocol — mature, effectively maintenance.** All eight
+   protocol families sit at or near WSJT-X sensitivity parity (the one
+   disclosed exception, JT65 vs. `ftrsdap`, is deprioritised because Q65
+   covers the same niche). Golden lockdowns and the FST4 / FT4 / Q65
+   sensitivity closes all landed across the 0.6.x–0.7.x line. What's
+   still open here (#143 / #193 FST4 AP+SIC, #192 FT8 engine
+   unification, #169 JT65, #224 JT4, #148 research) is **tail work** —
+   calibration, behaviour-preserving refactor, or low-demand modes — not
+   a frontier. Advances here should be demand-driven (e.g. VK3NV's
+   FST4-15/30 use case behind #143), not pursued for their own sake.
+
+2. **Host application / ergonomics — newly opened, consumer-driven.**
+   0.9.0's theme ("make the streaming decode surface easy to build host
+   UIs on") added `msg::decoded::Decoded`, per-protocol `to_decoded`, the
+   `serde` feature, and completed streaming `.on_result` /
+   `decode_scan_streaming` across all protocols. `session::SlotAssembler`
+   (audio ingestion) is written and **parked pending a real consumer**.
+   This track only advances when an actual host UI (WebFT8, a desktop
+   app) needs the next piece — building further ahead of a consumer
+   risks fixing an API shape nothing has validated.
+
+3. **Embedded controller (Phase B-Core) — the real frontier, stalled.**
+   The main production target (M5Stack CoreS3 UAC FT8 controller) has its
+   crate skeleton and UAC host code shipped and compiling clean, but
+   **#163 — live IC-705 hardware verification — has never been done**,
+   and no cores3-app feature commit has landed in ~2 months. The whole
+   downstream sequence (shared UAC hoist → BLE CI-V → ADIF → touch UI →
+   TX keying) is blocked behind that single verification step. #163 is a
+   human-at-the-bench task, which is why it hasn't moved on its own.
+
+The open strategic question this doc deliberately does **not** decide
+(it's the maintainer's call, not to be inferred from momentum): whether
+the next cycle's centre of gravity is **finishing the embedded product**
+(drive #163 through and unblock Phase B-Core) or **serving the library's
+host-UI consumers** (extend track 2). The two aren't exclusive, but
+attention is.
+
+## Current line — 0.8.x shipped, 0.9.0 accumulating
+
+- **0.8.0** — legacy BASIS `fill_symbol_spectra_into` path removed
+  (#162; a breaking FFI change to `mfsk_ft8_decode_i16`'s signature),
+  bundled with the accumulated 0.7.5 content rather than cutting 0.7.5
+  separately: JT65 interleave TX/RX-convention fix (#24), the JT9 AWGN
+  sweep, and the new Q65 sub-modes.
+- **0.8.1** — decode-side `snr_db` added to `WsprResult`, `Jt65Result`,
+  `Jt9Result`, `Q65Result` (#226; breaking — a new required field on
+  four public types). Closes the gap where only the FT8-family shared
+  `DecodeResult` and MSK144 carried an SNR estimate; `mfsk-ffi`'s
+  `push_simple` had been hardcoding `0.0` for the other four.
+- **0.9.0 (unreleased) — streaming ergonomics for host UIs.**
+  `msg::decoded::Decoded` (a unified, owned, `Send` decode row for host
+  UIs) + a `to_decoded(..)` conversion on every protocol's native result
+  type; the `serde` feature (off by default, `no_std`-clean) deriving
+  Serialize/Deserialize on `Decoded` + `ProtocolId`; streaming
+  `.on_result` / `decode_scan_streaming` now complete across all
+  protocols, documented in `docs/reference/STREAMING.md` (+ `.ja`).
+  Minor bump per this crate's "new cross-cutting public API surface =
+  minor" convention (cf. 0.7.0's generic-API landing); the actual
+  `v0.9.0` tag is cut on the next biweekly cadence slot, not
+  opportunistically.
+  - **Parked, not in 0.9.0**: `session::SlotAssembler` (streaming audio
+    ingestion — resample-to-12k + slot windowing + sample-counted slot
+    timing). Code-complete and tested on branch
+    `claude/streaming-interface-docs-vuet32`, held unmerged until a real
+    consumer (a desktop UI, or a refactor of the embedded `audio.rs`
+    slot statics onto it) validates the `push`/`poll`/`mark_slot_start`
+    API shape. See track 2 above.
+
+## Prior line (0.7.x) — shipped through 0.7.4 (2026-07-19)
 
 Numeric recall/sensitivity figures for every protocol are **not**
 duplicated here — `README.md`'s "What's solid" section is the
@@ -166,75 +238,75 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-07-19, re-checked
-directly against `gh issue list`/`gh issue view` — this is the live
-worklist; if you're reading this file to decide what to work on next,
-this section is the one to trust over any recall numbers or hardware
-status stated elsewhere in it):
+Currently open GitHub issues (state:open as of 2026-08-07, verified
+directly against the GitHub API — this is the live worklist; if you're
+reading this file to decide what to work on next, trust this section
+over any recall numbers or hardware status stated elsewhere in it).
+Grouped by the three tracks in **Strategic state** above.
 
-- **#169** — JT65 sensitivity gap vs. WSJT-X's `ftrsdap` stochastic
-  Chase decoder — follow-up from closing #24, filed 2026-07-19. With the
-  interleave bug fixed (#24), a 15-point AWGN sweep
-  (`tests/jt65_sweep.rs`, `scripts/gen_jt65_sweep_wavs.sh`) shows this
-  crate's hard-decision `decode_at`/`decode_at_with_erasures` at 50%
-  recall around -14 dB and near-zero below -19 dB, while WSJT-X's own
-  no-`kvasd` path (`jt9 -6`) holds ~100% down to -22 dB on the
-  identical corpus. Root cause: `jt9 -6` isn't plain hard-decision RS
-  either — `lib/extract.f90` calls `ftrsdap` (`lib/ftrsd/ftrsdap.c`),
-  a stochastic Chase decoder that runs many randomized soft-symbol
-  erasure-pattern trials around Berlekamp-Massey RS, using both the
-  most- and second-most-reliable symbol per position
-  (`demod64a`'s `mrsym`/`mr2sym`). This crate's
-  `decode_at_with_erasures` only tries a single deterministic
-  increasing-erasure-count ordering — a materially weaker algorithm.
-  **Deprioritized 2026-07-19**: Q65 already covers JT65's deep-SNR
-  narrowband use case at a wider sensitivity range (10 wired
-  sub-modes, see #171's closing analysis), and JT65 on-air traffic has
-  largely migrated to it. Porting `ftrsdap` is a substantial,
-  JT65-specific algorithmic port with no other payoff — left open as
-  documentation of the traced root cause, not planned unless there's
-  an actual request for deeper JT65 recall.
-- **#24** — JT65 total-decode-failure bug: **fixed 2026-07-19**. Root
-  cause was `jt65::interleave::{interleave,deinterleave}` (the 7×9
-  transpose WSJT-X's `interleave63.f90` implements) having their
-  permutations swapped relative to WSJT-X's TX/RX convention — self-
-  consistent (so self-roundtrip tests passed 100%) but not matching
-  real channel symbol order, so every independently-generated
-  (`jt65sim`) signal failed to decode regardless of SNR. Same shape as
-  the JT9 encoder bug (#19): a decode path only ever self-roundtrip-
-  tested, never cross-checked against an independent reference. See
-  CHANGELOG's 0.7.5 entry and the sensitivity-gap follow-up above for
-  what's still open.
-- **#125** — License question (GPLv3 vs. a more permissive license
-  for broader/proprietary adoption). Needs a decision, not code.
-- **#143** — FST4 AP decode + SIC for FST4-15/30, design &
-  implementation tracking. Motivated by VK3NV's real-time
-  weak-signal-messaging use of those two sub-modes; building blocks
-  exist elsewhere in the codebase but aren't applied to FST4 yet.
-  Active design discussion in the issue comments as of 2026-07-19.
-- **#148** — Research idea (not a commitment): blind-paired FST4-120
-  with soft combining, as a Doppler-robust alternative to FST4-300.
-- **#162** — Remove the legacy BASIS `fill_symbol_spectra_into` path.
-  Filed 2026-07-19 after this same accuracy pass found the "removal
-  scheduled for 0.7.0" promise (twice, in two different sections of
-  this file) was never followed through. Priority downgraded same day
-  after checking the 3 embedded app crates directly: all of them
-  already passed empty slices / null pointers for `basis_re`/
-  `basis_im` (dead since the 0.6.4 Goertzel migration — the scratch
-  allocation was eliminated then, the function *signatures* just
-  hadn't been updated to drop the now-vestigial parameters). **Done
-  2026-07-19**: deleted `fill_symbol_spectra_into`/`_generic`,
-  `BASIS_SCRATCH_LEN`, `symbol_spectra_direct_into`, the
-  `mfsk_core::core::dotprod` module (and its esp-dsp asm bridge in
-  `embedded-shared::esp_dsp_fft`), and the `basis_re`/`basis_im`
-  parameters from every function in the call chain down to
-  `mfsk_ft8_decode_i16`'s C ABI — a breaking FFI change, bundled into
-  the 0.8.0 minor bump alongside the already-accumulated 0.7.5
-  content (JT65 fix, JT9 sweep, Q65 new sub-modes) rather than
-  cutting 0.7.5 separately.
+**Embedded (frontier):**
+
 - **#163** — CoreS3 Phase 1-Verify: live IC-705 hardware RX
-  confirmation. Filed 2026-07-19 for the same reason — see **Phase
-  B-Core** below for the full status this replaces.
+  confirmation. **The bottleneck for the entire Phase B-Core line** —
+  the UAC host code compiles clean but has never run against real
+  hardware, and there's been no cores3-app feature commit since
+  2026-06-07. Everything downstream (Phase 1.5 / 2 / 5 / 6 / 7-Core) is
+  sequenced behind it. A human-at-the-bench task (1500 Hz tone injection
+  → PCM reaches the pipeline → FT8 candidate in the decoded list → live
+  antenna). See **Phase B-Core** below.
+
+**Host DSP / protocol (maturity — tail, not frontier):**
+
+- **#143** — FST4 AP decode + SIC for FST4-15/30. Real user demand
+  (VK3NV's real-time weak-signal messaging); the building blocks all
+  exist (`msg/ap.rs`, `msg/pipeline_ap.rs`, `core/dsp/subtract.rs`),
+  missing only the FST4 wiring + per-sub-mode `SubtractCfg` calibration.
+  Low priority until crowded-band use materialises; active design
+  discussion in-issue.
+- **#193** — FST4 has no SIC path (no `SubtractCfg`, no
+  `decode_frame_subtract`). The SIC half of #143; needs numerical
+  calibration against WSJT-X's FST4 subtract path, after which
+  `impl SupportsFlatSic for Fst4s60 {}` (+ siblings) is trivial.
+- **#192** — FT8 decode engine never unified with `engine::pipeline`
+  (`fine_refine_3stage` needs `<P>` generalisation). Behaviour-preserving
+  refactor; not urgent, not blocked by anything. Requires
+  numerical-diff-from-reference rigor so a careless port doesn't regress
+  FT4/FST4's independently-calibrated OSD gates.
+- **#169** — JT65 ~7-8 dB gap vs. WSJT-X's `ftrsdap` stochastic Chase
+  decoder. Root-caused (this crate's `decode_at_with_erasures` tries a
+  single deterministic erasure ordering; `ftrsdap` runs randomized
+  soft-symbol trials using the 2nd-most-reliable symbol too).
+  **Deprioritised**: Q65 covers JT65's deep-SNR niche and on-air traffic
+  has migrated. Left open as documentation of the traced cause; not
+  planned unless a real request for deeper JT65 recall appears.
+- **#224** — JT4 not implemented (WSJT-X ships JT4A/JT4F golden WAVs).
+  "Doable but demand unclear" — every usage signal found was WSJT-X
+  boilerplate, not dated on-air data, and Q65 has partly superseded its
+  role. Track, don't commit.
+- **#148** — Research idea (not a commitment, from VK3NV): blind-paired
+  FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
+  Q65's multi-period averaging (`q65/rx.rs`) is the architectural
+  precedent.
+
+**Host application / ergonomics (emerging, consumer-driven):**
+
+- *No open issue yet.* 0.9.0 shipped the `Decoded` row + streaming
+  surface; `session::SlotAssembler` is parked on branch
+  `claude/streaming-interface-docs-vuet32` pending a real consumer
+  (desktop UI, or the embedded `audio.rs` slot-statics replacement) to
+  validate its shape before landing. File an issue if/when a reference
+  host UI is committed to.
+
+**Non-code decision:**
+
+- **#125** — License (GPLv3 vs. a permissive license for
+  broader/proprietary adoption). Needs a decision, not code.
+
+Recently closed since the 2026-07-19 snapshot (see the closed issue /
+`git log` for fix commits): **#24** — JT65 interleave TX/RX-convention
+bug, fixed, shipped in 0.8.0; **#162** — legacy BASIS
+`fill_symbol_spectra_into` path removed, done, shipped in 0.8.0 (a
+breaking `mfsk_ft8_decode_i16` FFI change).
 
 Closed since the 2026-05-18 snapshot (see the closed issue / `git
 log` for the fix commit, not re-derived here):
