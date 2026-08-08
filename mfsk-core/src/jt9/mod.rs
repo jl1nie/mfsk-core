@@ -115,14 +115,24 @@ pub fn decode_scan(
 /// `ft8::decode_block::decode_block_streaming`'s precedent — bolting
 /// a parameter onto an existing plain `pub fn` is a breaking change.
 ///
-/// **Delivery order/dedup contract**: `decode_scan`'s candidate loop
-/// is sequential with no early exit and no parallelism (unlike WSPR's
-/// `decode_scan`, which uses `rayon::par_iter()`) — `cb` fires exactly
-/// once per result that ends up in the returned `Vec`, in the same
-/// order. No divergence mechanism exists here. Candidates are tried in
-/// coarse-score-descending order (same `cands.sort_unstable_by`
-/// below), so `cb` also tends to favor stronger signals first, same
-/// correlation-not-guarantee caveat documented on
+/// **Delivery order/dedup contract**: candidate decoding runs via
+/// `rayon` under `feature = "parallel"` (falls back to a plain
+/// sequential loop otherwise) — same shape as
+/// [`crate::msg::decode_request::DecodeRequest::on_result`]'s "default
+/// single-pass strategy" (see that method's doc comment for the full
+/// rationale). `cb` fires from whichever thread decoded that
+/// candidate, in completion order (not candidate-score order), and
+/// *before* the final cross-candidate dedup pass — on the rare
+/// occasion two different sync candidates converge on the same
+/// message, `cb` may fire for both even though only one survives into
+/// the returned `Vec`. Callers wanting exact parity should dedup by
+/// `.message` on their side, the same key this function's own dedup
+/// uses. `cb` must be `Sync` for this reason — it may be called
+/// concurrently from multiple `rayon` worker threads. Candidates are
+/// *dispatched* in coarse-score-descending order (same
+/// `cands.sort_unstable_by` below) even though completion order isn't
+/// guaranteed, so `cb` still tends to favor stronger signals first,
+/// same correlation-not-guarantee caveat documented on
 /// [`crate::msg::decode_request::DecodeRequest::on_result`].
 pub fn decode_scan_streaming(
     audio: &[f32],
@@ -173,22 +183,42 @@ fn decode_scan_inner(
 
     // Build the big FFT once for the whole slot — `downsam9` extracts
     // one baseband per candidate frequency from this cached spectrum.
+    // Shared read-only across candidates (no per-candidate mutable
+    // state), so the decode step below is safe to run in parallel.
     let big_fft = softsym::AudioFft::build(audio);
 
+    let decode_one = |c: &search::SyncCandidate| -> Option<Jt9Result> {
+        let d = decode::decode_at_baseband_with_fft(&big_fft, c.freq_hz)?;
+        // Fires here, before dedup below — see `decode_scan_streaming`'s
+        // doc comment for the possible-transient-duplicate contract
+        // this implies.
+        if let Some(cb) = on_result {
+            cb(&d);
+        }
+        Some(d)
+    };
+
+    // `cands` is sorted by score descending just above; rayon's
+    // `par_iter().collect()` preserves that input order in the output
+    // Vec even though execution/callback-firing order across threads
+    // isn't guaranteed — so the dedup pass below sees the same
+    // deterministic candidate order either way.
+    #[cfg(feature = "parallel")]
+    let raw: Vec<Jt9Result> = {
+        use rayon::prelude::*;
+        cands.par_iter().filter_map(decode_one).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let raw: Vec<Jt9Result> = cands.iter().filter_map(decode_one).collect();
+
     let mut seen: Vec<Jt9Result> = Vec::new();
-    for c in cands {
-        let Some(d) = decode::decode_at_baseband_with_fft(&big_fft, c.freq_hz) else {
-            continue;
-        };
+    for d in raw {
         let dup = seen.iter().any(|prev| {
             prev.message == d.message
                 && (prev.freq_hz - d.freq_hz).abs() <= 4.0
                 && (prev.start_sample as i64 - d.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
-            if let Some(cb) = on_result {
-                cb(&d);
-            }
             seen.push(d);
         }
     }

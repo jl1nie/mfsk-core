@@ -145,10 +145,12 @@ fn jt9_wsjtx_sample_recall_vs_golden() {
 }
 
 /// `decode_scan_streaming`'s `on_result` callback — real-signal
-/// verification, mirroring `tests/ft8_streaming_decode.rs`'s
-/// sequential-exact-match contract. `decode_scan`'s candidate loop is
-/// sequential with no early exit and no parallelism, so the
-/// callback-delivered set must exactly equal the batch `Vec`.
+/// verification. `decode_scan`'s candidate loop runs via `rayon` under
+/// `feature = "parallel"` (this crate's own CI default), so — same as
+/// FT8/FT4's own parallel-strategy tests — comparison is set-based
+/// (every batch result must have fired the callback at least once),
+/// not exact `Vec` equality; see `decode_scan_streaming`'s doc comment
+/// for the full possible-transient-duplicate contract.
 #[test]
 fn jt9_scan_streaming_matches_batch_exactly() {
     use mfsk_core::jt9::Jt9Result;
@@ -167,18 +169,19 @@ fn jt9_scan_streaming_matches_batch_exactly() {
     let on_result = |r: &Jt9Result| streamed.lock().unwrap().push(r.message.to_string());
     let batch = decode_scan_streaming(&audio, 12_000, 0, &params, &on_result);
 
-    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.to_string()).collect();
     let streamed = streamed.into_inner().unwrap();
     eprintln!(
         "JT9 decode_scan_streaming: batch={} streamed={}",
-        batch_msgs.len(),
+        batch.len(),
         streamed.len()
     );
-    assert_eq!(
-        streamed, batch_msgs,
-        "JT9 decode_scan_streaming: streamed callback deliveries must exactly \
-         match the batch result, same order (sequential, no early exit, no \
-         parallelism — no divergence mechanism exists on this path)"
+    let batch_set: std::collections::BTreeSet<String> =
+        batch.iter().map(|d| d.message.to_string()).collect();
+    let streamed_set: std::collections::BTreeSet<String> = streamed.into_iter().collect();
+    assert!(
+        batch_set.is_subset(&streamed_set),
+        "every batch result must have fired the streaming callback \
+         at least once: batch={batch_set:?} streamed={streamed_set:?}"
     );
     assert!(
         !batch.is_empty(),
