@@ -39,15 +39,24 @@ use crate::engine::dsp::msk::{NSPM, sync_waveform};
 /// either convention, but literal fidelity keeps this cross-checkable
 /// against WSJT-X test vectors later.
 pub fn tweak1(input: &[Complex32], f0_hz: f32) -> Vec<Complex32> {
+    let mut out = vec![Complex32::new(0.0, 0.0); input.len()];
+    tweak1_into(&mut out, input, f0_hz);
+    out
+}
+
+/// [`tweak1`], writing into a caller-supplied buffer instead of
+/// allocating a fresh `Vec` — lets a per-trial CFO search loop (see
+/// [`msk144_freq_search`]) reuse one buffer across every trial instead
+/// of allocating one per trial. `out.len()` must equal `input.len()`.
+fn tweak1_into(out: &mut [Complex32], input: &[Complex32], f0_hz: f32) {
+    debug_assert_eq!(out.len(), input.len());
     let dphi = 2.0 * core::f32::consts::PI * f0_hz / 12_000.0;
     let wstep = Complex32::new(dphi.cos(), dphi.sin());
-    let mut out = Vec::with_capacity(input.len());
     let mut w = Complex32::new(1.0, 0.0);
-    for &x in input {
+    for (o, &x) in out.iter_mut().zip(input) {
         w *= wstep;
-        out.push(w * x);
+        *o = w * x;
     }
-    out
 }
 
 /// Result of [`msk144_freq_search`]: the coherently-averaged,
@@ -108,12 +117,27 @@ pub fn msk144_freq_search(
     let mut best_frame = vec![Complex32::new(0.0, 0.0); NSPM];
     let mut best_xcc = vec![0.0f32; NSPM];
 
+    // Scratch buffers reused across every CFO trial instead of
+    // allocated fresh per trial — this loop runs `if2-if1+1` times per
+    // call, and this function itself runs once per (candidate, dither,
+    // navmask) combination in the outer decode loop, so the four
+    // `vec![...]` allocations this replaces (`mixed`/`c`/`ct2`/`xcc`)
+    // were a real hot-loop allocation source, same class as the
+    // `fill_sync2d_row!`/`fill_sync2d_row!`-adjacent fix in
+    // `engine::sync::coarse_sync`. `best_frame`/`best_xcc` only copy
+    // from the scratch buffers on an actual improvement (rare relative
+    // to the trial count), not every iteration.
+    let mut mixed = vec![Complex32::new(0.0, 0.0); cdat.len()];
+    let mut c = vec![Complex32::new(0.0, 0.0); NSPM];
+    let mut ct2 = vec![Complex32::new(0.0, 0.0); 2 * NSPM];
+    let mut xcc = vec![0.0f32; NSPM];
+
     for ifr in if1..=if2 {
         let ferr = ifr as f32 * delf;
-        let mixed = tweak1(cdat, -(fc + ferr));
+        tweak1_into(&mut mixed, cdat, -(fc + ferr));
 
         // Coherent sum of the selected frames.
-        let mut c = vec![Complex32::new(0.0, 0.0); NSPM];
+        c.fill(Complex32::new(0.0, 0.0));
         for i in 0..nframes {
             if navmask[i] {
                 let ib = i * NSPM;
@@ -125,13 +149,11 @@ pub fn msk144_freq_search(
 
         // Doubled buffer: a circular shift by `ish` samples over the
         // NSPM-periodic `c` is a plain slice of `[c, c]` at offset `ish`.
-        let mut ct2 = vec![Complex32::new(0.0, 0.0); 2 * NSPM];
         ct2[0..NSPM].copy_from_slice(&c);
         ct2[NSPM..2 * NSPM].copy_from_slice(&c);
 
         // Correlate both embedded sync words (42-sample template, 336
         // samples = 56 symbols apart) simultaneously at every shift.
-        let mut xcc = vec![0.0f32; NSPM];
         let mut xmax_this = 0.0f32;
         for ish in 0..NSPM {
             let mut cc = Complex32::new(0.0, 0.0);
@@ -151,8 +173,8 @@ pub fn msk144_freq_search(
         if xb > best_xmax {
             best_xmax = xb;
             best_fest = fc + ferr;
-            best_frame = c;
-            best_xcc = xcc;
+            best_frame.copy_from_slice(&c);
+            best_xcc.copy_from_slice(&xcc);
         }
     }
 
@@ -255,10 +277,15 @@ pub fn msk144_sync(
 /// ready for [`crate::engine::dsp::msk::matched_filter_softbits`].
 pub fn rotate_to_shift(frame: &[Complex32], shift: usize) -> Vec<Complex32> {
     assert_eq!(frame.len(), NSPM, "frame must hold exactly NSPM samples");
+    // Two contiguous copies instead of a per-element `% NSPM` index —
+    // the access pattern is already two contiguous runs (`ct2`'s own
+    // doubled-buffer copy a few lines above this function uses exactly
+    // this shape), the per-element modulo just obscured it from the
+    // optimizer.
+    let shift = shift % NSPM;
     let mut out = vec![Complex32::new(0.0, 0.0); NSPM];
-    for k in 0..NSPM {
-        out[k] = frame[(k + shift) % NSPM];
-    }
+    out[..NSPM - shift].copy_from_slice(&frame[shift..]);
+    out[NSPM - shift..].copy_from_slice(&frame[..shift]);
     out
 }
 

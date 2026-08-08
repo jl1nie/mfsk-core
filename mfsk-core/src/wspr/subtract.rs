@@ -107,14 +107,24 @@ pub fn subtract_signal_baseband(
     let nc2 = nsig + 2 * NFILT;
     let mut ci = vec![0.0f32; nc2];
     let mut cq = vec![0.0f32; nc2];
-    for i in 0..nsig {
-        let k = shift_baseband + i as i32;
-        if k > 0 && k < np {
-            let id = idat[k as usize];
-            let qd = qdat[k as usize];
-            ci[i + pad] = id * refi[i] + qd * refq[i];
-            cq[i + pad] = qd * refi[i] - id * refq[i];
-        }
+    // `k = shift_baseband + i` is in-bounds (`0 < k < np`) only for `i`
+    // in `i_lo..i_hi` — clamp once instead of re-checking `k > 0 &&
+    // k < np` on every one of the `2 × nsig` iterations below (same
+    // fix already applied to `engine::dsp::subtract::apply_at_offset`;
+    // this file has the identical anti-pattern, just never got it).
+    // Out-of-range `i` leaves `ci[i+pad]`/`cq[i+pad]` at their
+    // zero-init value in the first loop, and has no `idat`/`qdat` to
+    // touch in the second, so the clamped range is a complete
+    // substitute for the branch, not just a fast path alongside it.
+    // i64 arithmetic avoids overflow for extreme `shift_baseband`.
+    let i_lo = (1_i64 - shift_baseband as i64).clamp(0, nsig as i64) as usize;
+    let i_hi = (np as i64 - shift_baseband as i64).clamp(0, nsig as i64) as usize;
+    for i in i_lo..i_hi {
+        let k = (shift_baseband + i as i32) as usize;
+        let id = idat[k];
+        let qd = qdat[k];
+        ci[i + pad] = id * refi[i] + qd * refq[i];
+        cq[i + pad] = qd * refi[i] - id * refq[i];
     }
 
     // LPF: cfi[i] = Σ w[j] · ci[i − nfilt/2 + j]. wsprd `wsprd.c:619-624`.
@@ -149,7 +159,13 @@ pub fn subtract_signal_baseband(
     // correction (`norm = partial[half + i]` for i < half, mirrored at
     // the tail) compensates for the LPF's running sum being short of
     // unity at the boundaries. Matches `wsprd.c:632-660`.
-    for i in 0..nsig {
+    // Same `i_lo..i_hi` clamp as the camp-build loop above — identical
+    // `k` formula, so identical bounds. `n`'s own `> 0.0` guard stays a
+    // per-iteration check (unlike `k`'s range, `n` is a value, not a
+    // pure index boundary — `partial[]`'s startup-transient correction
+    // could in principle be non-positive for a differently-tuned
+    // `NFILT`, so this isn't safe to hoist away).
+    for i in i_lo..i_hi {
         let n = if i < half {
             partial[half + i]
         } else if i > nsig - 1 - half {
@@ -157,11 +173,11 @@ pub fn subtract_signal_baseband(
         } else {
             1.0
         };
-        let k = shift_baseband + i as i32;
-        let j = i + pad;
-        if k > 0 && k < np && n > 0.0 {
-            idat[k as usize] -= (cfi[j] * refi[i] - cfq[j] * refq[i]) / n;
-            qdat[k as usize] -= (cfi[j] * refq[i] + cfq[j] * refi[i]) / n;
+        if n > 0.0 {
+            let k = (shift_baseband + i as i32) as usize;
+            let j = i + pad;
+            idat[k] -= (cfi[j] * refi[i] - cfq[j] * refq[i]) / n;
+            qdat[k] -= (cfi[j] * refq[i] + cfq[j] * refi[i]) / n;
         }
     }
 }

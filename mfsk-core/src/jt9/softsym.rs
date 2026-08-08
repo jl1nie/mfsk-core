@@ -73,11 +73,13 @@ impl AudioFft {
         let mut envelope = vec![0.0f32; env_len];
         for i in 0..env_len {
             let j_start = ((i as f32) / df1).round() as usize;
-            for n_off in 0..nadd {
-                let j = j_start + n_off;
-                if j < buf.len() {
-                    envelope[i] += buf[j].norm_sqr();
-                }
+            // `j = j_start + n_off` is monotonic in `n_off`, so the
+            // `j < buf.len()` check only ever matters once, at the top
+            // of the range — clamp `n_off`'s bound once instead of
+            // re-checking every one of the `nadd` inner iterations.
+            let n_off_max = nadd.min(buf.len().saturating_sub(j_start));
+            for n_off in 0..n_off_max {
+                envelope[i] += buf[j_start + n_off].norm_sqr();
             }
         }
 
@@ -102,17 +104,31 @@ impl AudioFft {
         let fac = (1.0 / avenoise).sqrt();
 
         // Place selected bins into c2 with FFT-shift convention so that
-        // the IFFT yields a baseband centred at fpk.
+        // the IFFT yields a baseband centred at fpk. `i in 0..=nh2` maps
+        // to `j = i0+i` and `i in (nh2, NFFT2)` maps to `j = i0+i-NFFT2`
+        // — each piece is a separately-monotonic (contiguous) run, so
+        // clamp each piece's valid `i` range to `0 <= j < c1_len` once
+        // instead of re-checking the bound on every one of the NFFT2
+        // iterations. `i`s outside both ranges leave `c2[i]` at its
+        // zero-init value, matching the original per-element skip.
         let mut c2 = vec![Complex::new(0.0, 0.0); NFFT2];
         let c1_len = self.c1.len() as i64;
-        for i in 0..NFFT2 as i64 {
-            let mut j = i0 + i;
-            if i > nh2 {
-                j -= NFFT2 as i64;
-            }
-            if j >= 0 && j < c1_len {
-                c2[i as usize] = self.c1[j as usize] * fac;
-            }
+        let nfft2 = NFFT2 as i64;
+
+        // Piece 1: i in [0, nh2], j = i0 + i.
+        let p1_lo = (-i0).clamp(0, nh2 + 1);
+        let p1_hi = (c1_len - i0).clamp(0, nh2 + 1);
+        for i in p1_lo..p1_hi {
+            let j = (i0 + i) as usize;
+            c2[i as usize] = self.c1[j] * fac;
+        }
+
+        // Piece 2: i in (nh2, NFFT2), j = i0 + i - NFFT2.
+        let p2_lo = (nfft2 - i0).clamp(nh2 + 1, nfft2);
+        let p2_hi = (c1_len - i0 + nfft2).clamp(nh2 + 1, nfft2);
+        for i in p2_lo..p2_hi {
+            let j = (i0 + i - nfft2) as usize;
+            c2[i as usize] = self.c1[j] * fac;
         }
 
         // IFFT to time domain.

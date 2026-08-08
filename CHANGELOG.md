@@ -262,6 +262,70 @@ effect on any decode path.
   all 7 Q65 WSJT-X-golden-WAV tests), full `scripts/pre-push-check.sh`
   matrix clean.
 
+### Changed
+
+- **The remaining WSPR/JT9/MSK144 hot-loop findings from the same
+  vectorization audit that produced `engine::sync::coarse_sync`'s and
+  `engine::dsp::subtract::apply_at_offset`'s fixes above.** All six are
+  the same two anti-patterns applied to different files — per-element
+  index-only bounds branches (hoistable, same fix shape as
+  `apply_at_offset`) and heap allocation inside a hot loop (same fix
+  shape as `fill_sync2d_row!`) — not new vectorization work of their
+  own. Byte-identical recall and AWGN sweep crossings on every affected
+  protocol's golden/sweep suite (WSPR 8/8 golden + full 13-point AWGN
+  sweep, MSK144 3/3 golden + full short/long-ping sweep, JT9 7/7 golden
+  + full AWGN sweep) — all reproduced their documented BENCHMARKS.md
+  percentages exactly.
+  - **`wspr::subtract::subtract_signal_baseband`**: its two per-sample
+    loops (`camp` build, final subtract) branched on `k > 0 && k < np`
+    every iteration — the identical anti-pattern
+    `apply_at_offset` had before today's earlier fix, just never
+    applied here. Clamped the valid `i` range once per loop instead;
+    the second loop's `n > 0.0` guard (a *value*, not a pure index
+    boundary — `partial[]`'s startup-transient correction) stays a
+    per-iteration check, not hoisted.
+  - **`msk144::sync::msk144_freq_search`**'s per-CFO-trial loop
+    allocated four fresh `Vec`s (`mixed`/`c`/`ct2`/`xcc`) every trial.
+    Added `tweak1_into` (writes into a caller buffer instead of
+    allocating) and hoisted all four buffers outside the trial loop,
+    reused via `.fill`/`.copy_from_slice`; `best_frame`/`best_xcc` now
+    copy from the scratch buffers only on an actual improvement
+    (rarer than every trial) instead of moving a freshly-allocated
+    buffer out of the loop unconditionally.
+  - **`msk144::sync::rotate_to_shift`** used a per-element `%
+    NSPM` index for what's structurally two contiguous copies (the
+    same file's own `ct2` doubled-buffer build, a few lines above,
+    already uses the correct two-`copy_from_slice` idiom for an
+    equivalent wraparound — this function just didn't reuse it).
+  - **`msk144::spd::detect_burst_candidates`**'s per-offset scan
+    allocated two fresh buffers (`ctmp`/`tonespec`) every offset;
+    `NFFT == NSPM` makes both fixed-size for the whole scan, so
+    they're now allocated once and reused.
+  - **`jt9::softsym::AudioFft::build`**'s envelope loop and
+    **`AudioFft::downsam9`**'s FFT-shift bin remap both had an
+    index-only `j < buf.len()` / `j >= 0 && j < c1_len` branch inside
+    their hot inner loop, monotonic in the loop variable — same
+    "boundary only, never mid-range" shape as `apply_at_offset`'s
+    original bug. `downsam9`'s remap in particular is two
+    separately-monotonic contiguous pieces (an FFT-shift split, `i in
+    0..=nh2` vs. `i in (nh2, NFFT2)`) rather than one, so it's clamped
+    as two ranges. Both now compute the valid sub-range once and loop
+    branch-free over it.
+
+  Not touched, per the same audit's own explicit "don't" list (see the
+  `### Changed` entry above this one and the audit's own findings):
+  `wspr::coarse_baseband`'s `refine_alignment_top_k` (gather-bound,
+  matches `wsprd.c`'s own scattered access, no restructuring
+  available without diverging from the reference algorithm), JT65's
+  `score_candidate`/`decode_at_with_erasures`/demodulate argmax
+  (gather-bound sync-position table / inherently sequential retry
+  ladder / stateful reduction — none restructurable), and
+  `msk144::sync::tweak1`'s NCO recurrence (loop-carried, single
+  channel, no independent lane to interleave against — would need a
+  materially bigger redesign, e.g. batching multiple CFO trials'
+  rotors as parallel lanes, tracked as a future idea rather than done
+  here).
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added

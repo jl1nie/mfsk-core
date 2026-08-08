@@ -153,6 +153,15 @@ pub fn detect_burst_candidates(cbig: &[Complex32], fc: f32, ntol: f32) -> Vec<Bu
     let mut detmet2 = vec![0.0f32; nstep];
     let mut detfer = vec![-999.99f32; nstep];
 
+    // `ctmp`/`tonespec` reused across every offset in the scan below
+    // instead of allocated fresh per offset — `NFFT == NSPM`, so both
+    // are fixed-size for the whole loop. Same allocation-in-hot-loop
+    // class as `engine::sync::coarse_sync`'s `fill_sync2d_row!` fix;
+    // smaller magnitude here (2 allocs/offset vs. 4 for
+    // `msk144_freq_search`'s CFO loop) but the same pattern.
+    let mut ctmp: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); NSPM];
+    let mut tonespec: Vec<f32> = vec![0.0f32; NFFT];
+
     for (istp, (dm, (dm2, df_))) in detmet
         .iter_mut()
         .zip(detmet2.iter_mut().zip(detfer.iter_mut()))
@@ -164,7 +173,7 @@ pub fn detect_burst_candidates(cbig: &[Complex32], fc: f32, ntol: f32) -> Vec<Bu
             break;
         }
 
-        let mut ctmp: Vec<Complex32> = cbig[ns..ne].to_vec();
+        ctmp.copy_from_slice(&cbig[ns..ne]);
         for c in ctmp.iter_mut() {
             *c *= *c;
         }
@@ -176,7 +185,9 @@ pub fn detect_burst_candidates(cbig: &[Complex32], fc: f32, ntol: f32) -> Vec<Bu
         }
 
         fft.process(&mut ctmp);
-        let tonespec: Vec<f32> = ctmp.iter().map(|c| c.norm_sqr()).collect();
+        for (t, c) in tonespec.iter_mut().zip(ctmp.iter()) {
+            *t = c.norm_sqr();
+        }
 
         let (ihpk, ah, ahavp) = peak_in_window(&tonespec, ihlo, ihhi, NFFT);
         let deltah = parabolic_delta(&ctmp, ihpk, NFFT);
