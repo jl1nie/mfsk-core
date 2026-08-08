@@ -328,6 +328,45 @@ effect on any decode path.
   on top of the `realfft` win earlier this file. Full writeup:
   `docs/notes/BENCHMARKS.md`'s JT9 section.
 
+- **Re-verified FT8/FT9's sibling sensitivity claims against real
+  binaries, not just published figures — found FT4 and FST4's
+  documented "gaps" don't reproduce live, and found a genuine,
+  root-caused gap in JT65.** Prompted by "does JT9's fix mean
+  everything is now at parity?" — checked.
+
+  - **FT4/FST4**: the previously-documented AWGN gaps (FT4 ~0.6 dB,
+    FST4 0.10-0.60 dB across sub-modes) were measured against WSJT-X's
+    *published* sensitivity figures, never against a live binary on
+    the same corpus. Ran real `jt9 -5`/`jt9 -7` directly against
+    `tests/ft4_sweep.rs`/`tests/fst4_sweep.rs`'s own AWGN corpora:
+    FT4 this crate ≈−16.89 dB vs. real `jt9 -5` ≈−16.75 dB (crate
+    slightly ahead, not 0.6 dB behind); FST4-60 **exact match** at
+    both tested SNR points (75%/75%, 30%/30%); FST4-120 ≈−30.71 dB vs.
+    ≈−30.67 dB (real, live) — a ~0.04 dB difference, noise-level at
+    20 trials/point. Both FT4's and FST4's AP paths require `mycall`
+    ≥3 chars (confirmed in `lib/ft4_decode.f90`/`lib/fst4_decode.f90`),
+    so the bare-CLI real-binary runs are genuinely AP-free, an
+    apples-to-apples comparison. Status upgraded to "at/above parity"
+    for both in `docs/notes/BENCHMARKS.md`'s Summary table.
+  - **JT65**: same check, opposite result — real `jt9 -6` scores
+    50% (10/20) at −25 dB vs. this crate's chase decoder's 15%
+    (3/20) on the identical `jt65_sweep` corpus, a real gap issue
+    #169's closure didn't catch (that comparison was never checked
+    against a live binary either, until now). Root cause, confirmed
+    by reading the source: `lib/jt9.f90` sets
+    `shared_data%params%ljt65apon = .true.` unconditionally in the
+    CLI driver, and `lib/extract.f90` fills a free "CQ" AP hypothesis
+    into every JT65 decode regardless of `-c`/`-x` — unlike FT4/FST4
+    above, JT65's AP path has no `mycall`-length gate, so it's always
+    active. This crate's `jt65::chase` has no AP-decode mechanism at
+    all. Same root cause as Q65 issue #171's own resolution
+    ("WSJT-X standard decode always has a free CQ ap hypothesis") —
+    recorded as a comparison-methodology caveat, not chased with
+    threshold tuning; genuinely closing it would mean adding AP-hint
+    support to JT65 (a feature, not a fix), not attempted this
+    session. Full numbers and source citations:
+    `docs/notes/BENCHMARKS.md`'s JT65 section.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its

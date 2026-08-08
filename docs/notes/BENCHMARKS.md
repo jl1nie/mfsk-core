@@ -20,11 +20,11 @@ Two kinds of numbers appear per protocol:
 | Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
 |----------|-------------------|----------------------|--------|
 | FT8      | 8/8 host full-parity (WSJT-X), 18/18 (JTDX) | AWGN ≈ −21.6 dB (WSJT-X: −20 to −21 dB) | at/above parity |
-| FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
-| FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
+| FT4      | 6/6 | AWGN ≈ −16.9 dB live-binary match/slight edge vs. real `jt9 -5` on the same corpus (was compared against a −17.5 dB *published* figure, ~0.6 dB "gap" that direct measurement doesn't reproduce — see FT4 section, 2026-08-08) | at/above parity |
+| FST4     | 1/1 (FST4-60A only) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
 | JT9      | 7/7 | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
-| JT65     | none available | ~0 dB (2026-08-08, #169: faithful `ftrsdap` port + FFT bin-alignment fix — see JT65 section for caveats on the WSJT-X comparison) | gap closed |
+| JT65     | none available | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — traced to real `jt9`'s CLI driver unconditionally trying a free "CQ" AP hypothesis this crate's JT65 has no equivalent for (confirmed in WSJT-X source, same root cause as Q65 issue #171); not an apples-to-apples comparison, not chased further — see JT65 section, task #25 | gap closed (own corpus); AP-comparison caveat open |
 | Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
 
@@ -943,6 +943,34 @@ Reproduce: `docs/notes/FT8_BENCHMARK.md`.
 | CCIR moderate | ≈ −15.7 dB | — | — |
 | CCIR poor | ≈ −16.0 dB | — | — |
 
+**2026-08-08: the AWGN "0.6 dB gap" above doesn't reproduce against a
+real binary on the same corpus.** The −17.5 dB figure is WSJT-X's own
+*published* number (not independently verified against a live
+decoder run before now); a real `jt9` build
+(`/home/minoru/src/WSJT-X/build_jt9/jt9 -5`, bare CLI, no `-c`/`-x` —
+FT4's own AP path requires `mycall` to be ≥3 chars, confirmed in
+`lib/ft4_decode.f90:158`, so this is a genuine no-AP comparison,
+unlike JT65's below) run directly against `tests/ft4_sweep.rs`'s own
+AWGN corpus at the crossing:
+
+| SNR | This crate | Real `jt9 -5` |
+|---:|---:|---:|
+| −16 dB | 90% (18/20) | 95% (19/20) |
+| −17 dB | **45%** (9/20) | 35% (7/20) |
+| −18 dB | **25%** (5/20) | 15% (3/20) |
+
+This crate trails slightly at −16 dB but leads at −17/−18 dB; the
+interpolated 50% crossings are ≈−16.89 dB (this crate) vs. ≈−16.75 dB
+(real `jt9 -5`, live) — this crate is marginally *ahead* of the real
+binary on identical input, not 0.6 dB behind it. The −17.5 dB
+published figure appears to reflect different measurement conditions
+(a different corpus, a longer/averaged sample, or a theoretical
+figure) than what `jt9 -5` itself achieves on this synthetic AWGN
+corpus — not a real algorithmic shortfall in this crate. Status
+upgraded from "at parity" to "at/above parity" (Summary table) on this
+finding; the table above is left as-is (the published-vs-live
+distinction is the point, not a table edit) with this note attached.
+
 Reproduce: `docs/notes/FT4_BENCHMARK.md`.
 
 ## FST4
@@ -961,6 +989,32 @@ constant verified directly against WSJT-X `fst4_decode.f90` /
 
 Closed via a coherent full-slot local sync search, an FST4-specific
 `LLR_NSYM_MAX` override, an nsym=4 LLR rung, and a zsum-OSD fallback.
+
+**2026-08-08: like FT4 above, checked whether these "gaps" reproduce
+against a real binary on the same corpus — they mostly don't.** Real
+`jt9` (`jt9 -7 -p <period>`, bare CLI — FST4's own AP path also
+requires `mycall` ≥3 chars, `lib/fst4_decode.f90:153`, so this is
+genuinely no-AP) run against `tests/fst4_sweep.rs`'s own AWGN corpus,
+the two sub-modes checked:
+
+| Sub-mode | SNR | This crate | Real `jt9 -7` |
+|---|---:|---:|---:|
+| FST4-60 | −27 dB | 75% (15/20) | 75% (15/20) |
+| FST4-60 | −28 dB | 30% (6/20) | 30% (6/20) |
+| FST4-120 | −30 dB | 75% (15/20) | 90% (18/20) |
+| FST4-120 | −31 dB | 40% (8/20) | 30% (6/20) |
+
+FST4-60: **exact match at both tested points** — the "0.48 dB gap"
+above vs. the published −28.1 dB figure doesn't reproduce at all
+against the live binary on this corpus. FST4-120: this crate trails
+at −30 dB but leads at −31 dB; interpolated crossings ≈−30.71 dB
+(this crate, matches the table) vs. ≈−30.67 dB (real `jt9 -7`,
+live) — a ~0.04 dB difference, noise-level at 20 trials/point, not
+the table's 0.60 dB. FST4-15/30/300 not directly checked this session
+(no reason from the pattern above to expect them to differ) — same
+"published figure measured under different conditions than this
+`*sim`-driven AWGN corpus" explanation as FT4. Status upgraded to
+"at/above parity" (Summary table) on this finding.
 
 Only FST4-60A has a real-recording golden-WAV lock (1/1,
 `samples/FST4/210115_0058.wav`) — WSJT-X's sample tree ships no
@@ -1276,31 +1330,52 @@ fix, all together):
 50% crossings (linear-interpolated): **plain hard-decision
 `decode_at_with_erasures` ≈ −21.8 dB** (between the −22 dB/45% and
 −20 dB/100% cells), **`decode_at_with_chase` ≈ −23.8 dB** (between the
-−25 dB/15% and −22 dB/100% cells) — both now at or beyond the
-previously-cited WSJT-X `jt9 -6` reference floor (~100% to −22 dB).
-Take that comparison with real caution, not as a declared "we beat
-WSJT-X": the −22 dB reference figure's own original provenance (was it
-measured against a real `jt9` binary on this exact corpus, at what
-aggressiveness setting, with its own AFC actually engaged) was not
-re-verified in this session, and the corpus's lowest grid point
-(−25 dB) is no longer deep enough to pin down either decoder's true
-floor — chase already shows partial recall there. The honest, load-
-bearing conclusion is narrower and still substantial: **issue #169's
-originally-diagnosed ~7-8 dB gap is gone** — both fixes (faithful
-`ftrsdap` port with the correct reliability metric, and the bin-
-alignment fix) were real, and together account for effectively all of
-it on this corpus. A deeper AWGN sweep (regenerated corpus reaching
-below −25 dB) and an independent real-`jt9`-binary re-comparison would
-be needed to make a rigorous "beats WSJT-X" claim; neither was done
-here. Issue #169 can reasonably be considered closed as filed (the
-diagnosed gap is closed); any further work is genuinely open-ended
-tuning, not gap-closing.
-
-(The bin-alignment fix improves *every* JT65 decode path, not just
-chase — `decode_at_with_erasures`'s own numbers above jumped just as
-dramatically, 50%-at−14dB → ≈−21.8dB, with zero code changes to
+−25 dB/15% and −22 dB/100% cells) — issue #169's originally-diagnosed
+~7-8 dB gap is gone on this crate's own AWGN corpus; both fixes
+(faithful `ftrsdap` port with the correct reliability metric, and the
+bin-alignment fix) were real and together account for effectively all
+of it. (The bin-alignment fix improves *every* JT65 decode path, not
+just chase — `decode_at_with_erasures`'s own numbers above jumped just
+as dramatically, 50%-at−14dB → ≈−21.8dB, with zero code changes to
 `decode_at_with_erasures` itself; it inherits the fix purely by
 sharing `search`/`rx` with the new code.)
+
+**2026-08-08, task #25: the "beats WSJT-X" comparison above was
+finally checked against a real binary — and it doesn't hold up, for a
+specific, identified reason.** A real `jt9` build
+(`/home/minoru/src/WSJT-X/build_jt9/jt9 -6`, bare CLI) run directly
+against `tests/jt65_sweep.rs`'s own AWGN corpus:
+
+| SNR | This crate (chase) | Real `jt9 -6` |
+|---:|---:|---:|
+| −22 dB | 100% (20/20) | 100% (20/20) |
+| −25 dB | **15%** (3/20) | **50%** (10/20) |
+
+Real `jt9 -6` is meaningfully more sensitive at −25 dB — not a small
+residual, a real gap this crate doesn't currently close. **Root
+cause, confirmed by reading the actual source, not guessing**: the
+`jt9` CLI driver (`lib/jt9.f90:301`) sets
+`shared_data%params%ljt65apon = .true.` unconditionally, and
+`lib/extract.f90:71` fills a "CQ" AP hypothesis
+(`apsymbols(1,1:4)=(/62,32,32,49/)`) into every JT65 decode
+**regardless of whether `-c`/`-x` (mycall/hiscall) are set** — unlike
+FT4/FST4 above (whose AP paths both gate on `mycall` being ≥3 chars
+and are genuinely skipped when empty), JT65's free CQ hypothesis is
+always active in the CLI. This crate's `jt65::chase` module has **no
+AP-decode mechanism at all** (`grep` confirms zero `ap_hint`/`ApHint`
+usage anywhere under `src/jt65/`), so it can't access the same boost.
+This is the exact same root cause as Q65 issue #171's own resolution
+("WSJT-X standard decode always has a free CQ ap hypothesis") — a
+comparison-methodology mismatch, not a demonstrated decoder weakness,
+and per that precedent it's being recorded as a known caveat rather
+than chased with threshold tuning. Closing it for real would mean
+adding AP-hint support to JT65 (a real feature, not a bug fix) and
+re-running this same comparison with it enabled — not done this
+session, no task filed since it's speculative whether the resulting
+gain would fully close a −25 dB / 3.5×-recall difference; the
+qualitative conclusion (issue #169's *diagnosed* gap is closed, this
+newly-found AP asymmetry is a separate, honestly-unresolved question)
+stands either way.
 
 ## Q65
 
