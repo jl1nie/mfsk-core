@@ -828,14 +828,26 @@ pub fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    precomputed_fft: Option<&[Complex<f32>]>,
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache)
 where
     P::Fec: BpPooledFec,
 {
     decode_frame_impl::<P>(
-        audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
-        sync_q_min, on_result,
+        audio,
+        cfg,
+        freq_min,
+        freq_max,
+        sync_min,
+        freq_hint,
+        depth,
+        max_cand,
+        strictness,
+        eq_mode,
+        sync_q_min,
+        precomputed_fft,
+        on_result,
     )
 }
 
@@ -856,14 +868,26 @@ pub(crate) fn decode_frame<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    precomputed_fft: Option<&[Complex<f32>]>,
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, FftCache)
 where
     P::Fec: BpPooledFec,
 {
     decode_frame_impl::<P>(
-        audio, cfg, freq_min, freq_max, sync_min, freq_hint, depth, max_cand, strictness, eq_mode,
-        sync_q_min, on_result,
+        audio,
+        cfg,
+        freq_min,
+        freq_max,
+        sync_min,
+        freq_hint,
+        depth,
+        max_cand,
+        strictness,
+        eq_mode,
+        sync_q_min,
+        precomputed_fft,
+        on_result,
     )
 }
 
@@ -880,6 +904,15 @@ fn decode_frame_impl<P: GenericPipelineProtocol>(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     sync_q_min: u32,
+    // Reuse a caller-supplied FFT cache (e.g. from an earlier
+    // `DecodeOutcome::fft_cache`) instead of rebuilding it from `audio`
+    // — mirrors FT8's own `decode_frame_inner`'s `precomputed_fft`
+    // parameter (`ft8::decode`). Was silently accepted-but-ignored here
+    // before this fix: `DecodeRequest::fft_cache` is an ungated field on
+    // the shared `DecodeRequest<P>` struct, but only `Ft8`'s
+    // `FrameDecodable` impl ever threaded it through — `Ft4`/FST4 always
+    // rebuilt from `audio` regardless of what the caller passed.
+    precomputed_fft: Option<&[Complex<f32>]>,
     // Fires once per accepted candidate, inside the per-candidate
     // closure below and *before* the cross-candidate dedup pass that
     // follows — same "possible transient duplicate" contract as FT8's
@@ -904,7 +937,10 @@ where
     } else {
         coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     };
-    let fft_cache = FftCache(build_fft_cache(audio, cfg));
+    let fft_cache = FftCache(match precomputed_fft {
+        Some(c) => c.to_vec(),
+        None => build_fft_cache(audio, cfg),
+    });
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
@@ -1009,6 +1045,16 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
     lpf_half: usize,
     lpf_endcorrection: bool,
     refine_freq_radius_hz: f32,
+    // Reuse a caller-supplied FFT cache for pass 0 only — every
+    // subsequent pass's cache must be rebuilt regardless, since
+    // `residual` has been mutated by subtraction by then. Safe to trust
+    // unconditionally for pass 0 (no `known`-emptiness gate like FT8's
+    // analog needs): unlike FT8, this function never pre-subtracts
+    // `known` from `residual` before pass 0 (`known` is only used as a
+    // post-filter — see `dedup_known` at each caller), so pass 0's
+    // `residual` always equals `audio` verbatim, exactly what a
+    // caller-supplied cache built from `audio` represents.
+    precomputed_fft: Option<&[Complex<f32>]>,
     // Fires once per result as it's added to `all_results` below — the
     // final acceptance point for this sequential SIC loop, so delivery
     // is an exact match against the returned `Vec`, same order, same
@@ -1023,7 +1069,7 @@ where
     let passes: &[f32] = &[1.0, 0.75, 0.5][..max_rounds];
     let fec = P::Fec::default();
 
-    for &factor in passes {
+    for (pass_idx, &factor) in passes.iter().enumerate() {
         // See the identical `P::ID == Ft4` branch in `decode_frame` above.
         let candidates = if P::ID == super::ProtocolId::Ft4 {
             super::ft4_coarse::ft4_coarse_sync(
@@ -1047,7 +1093,10 @@ where
         if candidates.is_empty() {
             continue;
         }
-        let fft_cache = build_fft_cache(&residual, ds_cfg);
+        let fft_cache = match (pass_idx, precomputed_fft) {
+            (0, Some(c)) => c.to_vec(),
+            _ => build_fft_cache(&residual, ds_cfg),
+        };
 
         #[cfg(feature = "parallel")]
         let new: Vec<DecodeResult> = candidates

@@ -100,6 +100,33 @@ effect on any decode path.
     the existing golden-WAV suites (FT4 6/6, FST4-60A 1/1) plus the
     full `scripts/pre-push-check.sh` matrix.
 
+  - **Same-day audit turned up a second, lower-severity instance of the
+    same root cause: `DecodeRequest::fft_cache` was also a silent
+    `Ft4`/FST4 no-op.** Unlike `on_result` this one didn't break
+    correctness — the fix's own original 0.8.0-era CHANGELOG entry
+    (`### Added`, `#191`, above) already called it out in passing
+    ("`fft_cache` is reused where the underlying engine's buffer shape
+    permits (FT8 single-pass/flat pass 0); elsewhere it's a documented
+    no-op degrade… since `core::pipeline`'s generic engine has no
+    cache injection point") — but that caveat was never propagated
+    into `DecodeRequest::fft_cache`'s own doc comment (the surface a
+    docs.rs/IDE-hover reader actually sees), unlike `ap_hint`'s
+    equivalent "`Ft8` only" note on the same struct. Gave
+    `engine::pipeline::decode_frame`/`decode_frame_subtract` the cache-
+    injection point they'd never had (`decode_frame_subtract` only
+    trusts it for pass 0 — later passes' residual has been mutated by
+    subtraction, so their cache must always be rebuilt regardless) and
+    wired `req.fft_cache` through the same `Ft4`/FST4 call sites.
+    `SniperRequest` has no `fft_cache` field at all, so
+    `decode_sniper_ap` is unaffected. New coverage:
+    `tests/ft4_fft_cache_decode.rs` / `fst4_fft_cache_decode.rs` — a
+    same-audio round-trip can't distinguish "reused" from "silently
+    rebuilt" (both give the same answer when the audio hasn't
+    changed), so these use a differential test instead: hand the
+    decoder a real-but-*wrong* `FftCache` built from silence and
+    assert the golden message stops decoding, proving the supplied
+    cache is actually consumed rather than quietly discarded.
+
 - **`msg::decoded::Decoded`** — a unified, owned, human-readable decode
   row for host UIs, plus a `to_decoded(..)` conversion on every
   protocol's native result type (`engine::pipeline::DecodeResult` for

@@ -163,6 +163,7 @@ macro_rules! impl_frame_decodable {
                     req.strictness,
                     req.eq_mode,
                     SYNC_Q_MIN,
+                    req.fft_cache.as_ref().map(FftCache::as_slice),
                     req.on_result,
                 );
                 DecodeOutcome {

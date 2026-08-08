@@ -74,8 +74,6 @@ impl FrameDecodable for Ft4 {
     type DecodeResult = DecodeResult;
 
     fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
-        // `precomputed_fft` isn't reusable: `pipeline::decode_frame::<Ft4>`
-        // always builds its own cache internally, with no injection point.
         let (raw, fft_cache) = pipeline::decode_frame::<Ft4>(
             req.audio,
             &FT4_DOWNSAMPLE,
@@ -88,6 +86,7 @@ impl FrameDecodable for Ft4 {
             req.strictness,
             req.eq_mode,
             SYNC_Q_MIN,
+            req.fft_cache.as_ref().map(FftCache::as_slice),
             req.on_result,
         );
         DecodeOutcome {
@@ -173,6 +172,7 @@ impl SupportsSicRounds for Ft4 {
             700,
             false,
             1.0,
+            req.fft_cache.as_ref().map(FftCache::as_slice),
             req.on_result,
         );
         // Multi-pass SIC has no single "the" cache (residual changes every
