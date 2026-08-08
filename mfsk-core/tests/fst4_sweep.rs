@@ -861,7 +861,17 @@ fn fst4_60_diag_candidate_cost_split() {
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
-    const SYNC_Q_MIN: u32 = 10;
+    // Was `10`, not production's real `16` (`fst4/decode.rs::SYNC_Q_MIN`)
+    // — a real diagnostic/production mismatch found during the issue
+    // #244/#245 investigation: this test's own looser gate let more
+    // candidates through to the expensive LLR/BP/OSD stages than
+    // `decode_frame` actually does, so its per-stage cost breakdown
+    // didn't reproduce production's real cost distribution. Fixed to
+    // match; see `~/.claude/plans/moonlit-snuggling-puzzle.md` and
+    // `engine::pipeline::decode_frame_impl`'s `MFSK_TRACE_STAGE_FST4`
+    // env var for the now-authoritative real-production-path measurement
+    // this standalone loop was meant to approximate.
+    const SYNC_Q_MIN: u32 = 16;
 
     fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
         let mut buckets: Vec<i32> = cands
@@ -975,7 +985,17 @@ fn fst4_300_diag_candidate_cost_split() {
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::fst4::decode::FST4_300_DOWNSAMPLE;
 
-    const SYNC_Q_MIN: u32 = 10;
+    // Was `10`, not production's real `16` (`fst4/decode.rs::SYNC_Q_MIN`)
+    // — a real diagnostic/production mismatch found during the issue
+    // #244/#245 investigation: this test's own looser gate let more
+    // candidates through to the expensive LLR/BP/OSD stages than
+    // `decode_frame` actually does, so its per-stage cost breakdown
+    // didn't reproduce production's real cost distribution. Fixed to
+    // match; see `~/.claude/plans/moonlit-snuggling-puzzle.md` and
+    // `engine::pipeline::decode_frame_impl`'s `MFSK_TRACE_STAGE_FST4`
+    // env var for the now-authoritative real-production-path measurement
+    // this standalone loop was meant to approximate.
+    const SYNC_Q_MIN: u32 = 16;
 
     fn freq_bucket_count(cands: &[SyncCandidate]) -> usize {
         let mut buckets: Vec<i32> = cands

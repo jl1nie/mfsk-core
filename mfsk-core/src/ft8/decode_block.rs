@@ -67,6 +67,10 @@ pub use process_candidates::{process_candidates, process_candidates_tuned, sync_
 // `super::decode::*` (host frame decoder) reaches into this internal
 // per-candidate inner entry — keep visible to the parent `ft8` module.
 pub(in crate::ft8) use process_candidates::process_one_candidate_inner;
+#[cfg(feature = "std")]
+pub(in crate::ft8) use process_candidates::{
+    TRACE_NSYNC_FAIL, TRACE_NSYNC_PASS, TRACE_OSD_ATTEMPT, stage_trace_enabled,
+};
 pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
 pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
 

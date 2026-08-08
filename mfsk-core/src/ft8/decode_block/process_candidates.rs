@@ -43,6 +43,34 @@ use crate::fec::ldpc::bp::check_crc14;
 use crate::fec::ldpc::osd::osd_decode_deep;
 use num_complex::Complex;
 
+// ── Stage-timing trace (host diagnostic only) ───────────────────────────────
+//
+// `MFSK_TRACE_STAGE_FT8` env var — same idiom as this file's own
+// `MFSK_TRACE_PHANTOM` and `engine::pipeline`'s
+// `MFSK_TRACE_STAGE_FT4`/`_FST4`: zero cost when unset, `eprintln!`s
+// per-stage wall-clock + candidate counts. Covers *both* FT8 host
+// engines — `ft8::decode::decode_frame_inner` (default/parallel
+// strategy) and `decode_block_multipass` below (`.sic_rounds()`/
+// `.sic_early()`) — since both funnel through `process_one_candidate_inner`
+// for the OSD-attempt count. `pub(in crate::ft8)` so `ft8::decode`'s
+// own nsync-gate call site can share the same counters. See
+// `~/.claude/plans/moonlit-snuggling-puzzle.md`'s phase-wise benchmark
+// plan.
+#[cfg(feature = "std")]
+pub(in crate::ft8) static TRACE_NSYNC_FAIL: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+pub(in crate::ft8) static TRACE_NSYNC_PASS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+pub(in crate::ft8) static TRACE_OSD_ATTEMPT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(feature = "std")]
+pub(in crate::ft8) fn stage_trace_enabled() -> bool {
+    std::env::var("MFSK_TRACE_STAGE_FT8").is_ok()
+}
+
 // Phase 1.7.7-Stick: both `refine_candidates_into` (pass-2) and the
 // embedded branch of `process_candidates_into_with_cs_scratch_tuned`
 // (stage-3) call `fill_symbol_spectra_goertzel` (zero scratch). The
@@ -303,6 +331,8 @@ fn decode_block_multipass<S: AudioSample>(
     mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
+    #[cfg(feature = "std")]
+    let trace_stage = stage_trace_enabled();
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
     let mut prev_total: usize = 0;
@@ -345,9 +375,20 @@ fn decode_block_multipass<S: AudioSample>(
             };
             Some((sbase_v, spec_clone))
         };
+        #[cfg(feature = "std")]
+        let __trace_t0 = trace_stage.then(std::time::Instant::now);
         let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
         drop(spec);
         let cands = fine_refine_pass1(work.as_slice(), cands);
+        #[cfg(feature = "std")]
+        if let Some(t0) = __trace_t0 {
+            eprintln!(
+                "TRACE_STAGE_FT8_MP pass={} coarse_sync+fine_refine={:.1}ms n_candidates={}",
+                ipass,
+                t0.elapsed().as_secs_f64() * 1000.0,
+                cands.len()
+            );
+        }
         // Wide-band 192k-FFT cache, shared across every `refine_candidates`
         // / `process_candidates_tuned_with_ap` call in this pass — valid
         // as long as `work` hasn't changed. Rebuilt lazily (only when the
@@ -355,7 +396,28 @@ fn decode_block_multipass<S: AudioSample>(
         // every subtract, since most candidates in a pass don't decode.
         let mut fft_cache: Option<alloc::vec::Vec<Complex<f32>>> =
             Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
+        #[cfg(feature = "std")]
+        let __trace_t1 = trace_stage.then(std::time::Instant::now);
         let pass2 = refine_candidates(work.as_slice(), cands, max_cand, fft_cache.as_deref());
+        #[cfg(feature = "std")]
+        if let Some(t1) = __trace_t1 {
+            eprintln!(
+                "TRACE_STAGE_FT8_MP pass={} refine_candidates={:.1}ms n_after={}",
+                ipass,
+                t1.elapsed().as_secs_f64() * 1000.0,
+                pass2.len()
+            );
+        }
+        #[cfg(feature = "std")]
+        if trace_stage {
+            TRACE_NSYNC_FAIL.store(0, core::sync::atomic::Ordering::Relaxed);
+            TRACE_NSYNC_PASS.store(0, core::sync::atomic::Ordering::Relaxed);
+            TRACE_OSD_ATTEMPT.store(0, core::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(feature = "std")]
+        let __trace_t2 = trace_stage.then(std::time::Instant::now);
+        #[cfg(feature = "std")]
+        let __trace_pass_start_len = all.len();
 
         // **WSJT-X ft8b.f90:432-437 sequential subtract**: each
         // accepted decode immediately subtracts from `work` so the
@@ -488,6 +550,18 @@ fn decode_block_multipass<S: AudioSample>(
                 }
                 all.push(r);
             }
+        }
+        #[cfg(feature = "std")]
+        if let Some(t2) = __trace_t2 {
+            eprintln!(
+                "TRACE_STAGE_FT8_MP pass={} decode_loop={:.1}ms nsync_fail={} nsync_pass={} osd_attempt={} n_new={}",
+                ipass,
+                t2.elapsed().as_secs_f64() * 1000.0,
+                TRACE_NSYNC_FAIL.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_NSYNC_PASS.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_OSD_ATTEMPT.load(core::sync::atomic::Ordering::Relaxed),
+                all.len() - __trace_pass_start_len
+            );
         }
     }
     all
@@ -1561,8 +1635,12 @@ where
         fill(cs_scratch, cand, SymMask::SyncBlocks12);
         let q = sync_quality(cs_scratch);
         if q <= q_thresh {
+            #[cfg(feature = "std")]
+            TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             continue;
         }
+        #[cfg(feature = "std")]
+        TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         fill(cs_scratch, cand, SymMask::DataOnly);
         if let Some(r) = process_one_candidate_inner(
             cs_scratch,
@@ -1824,6 +1902,10 @@ pub(in crate::ft8) fn process_one_candidate_inner(
     // alone to keep it unreachable.
     #[cfg(feature = "fft-rustfft")]
     if accepted.is_none() {
+        #[cfg(feature = "std")]
+        if depth.osd && q > 6 {
+            TRACE_OSD_ATTEMPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         accepted = super::osd_strategy::try_fallback(
             cs_scratch,
             prefetched_llr.as_ref(),

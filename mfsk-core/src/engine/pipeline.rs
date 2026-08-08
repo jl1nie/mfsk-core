@@ -28,6 +28,38 @@ use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 
+// ── Stage-timing trace (host diagnostic only) ───────────────────────────────
+//
+// `MFSK_TRACE_STAGE_FT4`/`MFSK_TRACE_STAGE_FST4` env vars, same idiom as
+// `ft8::decode_block::process_candidates`'s existing `MFSK_TRACE_PHANTOM`:
+// zero cost when unset (one `env::var` check per `decode_frame_impl` call),
+// `eprintln!`s the per-stage wall-clock + candidate counts that found
+// FST4's real hotspot (issue #245: OSD escalation attempts mostly failing,
+// not the redundant-candidate pattern issue #244 fixed). Left in
+// permanently rather than added-and-reverted so future investigations
+// don't have to rebuild this from scratch — see
+// `~/.claude/plans/moonlit-snuggling-puzzle.md`'s phase-wise benchmark
+// plan. `NSYNC_FAIL`/`NSYNC_PASS`/`OSD_ATTEMPT` are global counters (not
+// thread-local): fine for a debug env var read by one investigation at a
+// time, not designed for isolating concurrent decode_frame_impl calls
+// from different application threads.
+#[cfg(feature = "std")]
+static TRACE_NSYNC_FAIL: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_NSYNC_PASS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_OSD_ATTEMPT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(feature = "std")]
+fn stage_trace_enabled<P: Protocol>() -> bool {
+    let var = match P::ID {
+        super::ProtocolId::Ft4 => "MFSK_TRACE_STAGE_FT4",
+        super::ProtocolId::Fst4 => "MFSK_TRACE_STAGE_FST4",
+        _ => return false,
+    };
+    std::env::var(var).is_ok()
+}
+
 /// FFT cache for the initial large forward transform; reusable across passes.
 ///
 /// Opaque wrapper (issue #206, part of the pre-0.8.0 public-API review):
@@ -522,8 +554,12 @@ where
         let cs_raw = symbol_spectra::<P>(&cd0, i0);
         let nsync = sync_quality::<P>(&cs_raw);
         if nsync <= sync_q_min {
+            #[cfg(feature = "std")]
+            TRACE_NSYNC_FAIL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             return None;
         }
+        #[cfg(feature = "std")]
+        TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
         let per_block = fine_sync_power_per_block::<P>(&cd0, i0);
         let sync_cv = if !per_block.is_empty() {
@@ -677,6 +713,8 @@ where
                     .iter()
                     .any(|r| (r.freq_hz - cand.freq_hz).abs() < 20.0);
                 if !freq_dup {
+                    #[cfg(feature = "std")]
+                    TRACE_OSD_ATTEMPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                     let osd_depth: u8 = if nsync >= osd_depth3_min { 3 } else { 2 };
                     let osd_opts = FecOpts {
                         bp_max_iter,
@@ -1122,17 +1160,38 @@ where
     // downstream for FT4 — `ft4_sync_search` (below) already searches
     // Δt absolutely, ignoring each candidate's own `dt_sec`. See
     // `engine::ft4_coarse` module doc / `~/.claude/plans/dapper-soaring-nest.md`.
+    #[cfg(feature = "std")]
+    let trace = stage_trace_enabled::<P>();
+    #[cfg(not(feature = "std"))]
+    #[allow(unused_variables)]
+    let trace = false;
+    #[cfg(feature = "std")]
+    let __trace_t0 = trace.then(std::time::Instant::now);
     let candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {
         coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     };
+    #[cfg(feature = "std")]
+    if let Some(t0) = __trace_t0 {
+        eprintln!(
+            "TRACE_STAGE coarse_sync={:.1}ms n_candidates={}",
+            t0.elapsed().as_secs_f64() * 1000.0,
+            candidates.len()
+        );
+    }
     let fft_cache = FftCache(match precomputed_fft {
         Some(c) => c.to_vec(),
         None => build_fft_cache(audio, cfg),
     });
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
+    }
+    #[cfg(feature = "std")]
+    if trace {
+        TRACE_NSYNC_FAIL.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_NSYNC_PASS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_OSD_ATTEMPT.store(0, core::sync::atomic::Ordering::Relaxed);
     }
 
     // FT4 and FST4 diverge here: FT4 decodes its raw candidates
@@ -1144,8 +1203,10 @@ where
     // matters: an earlier version of this fix let survivors recompute
     // it, which measurably cost more than the BP/OSD it saved).
     let raw: Vec<DecodeResult> = if P::ID == super::ProtocolId::Ft4 {
+        #[cfg(feature = "std")]
+        let __trace_t1 = trace.then(std::time::Instant::now);
         #[cfg(feature = "parallel")]
-        let raw = candidates
+        let raw: Vec<DecodeResult> = candidates
             .par_iter()
             .filter_map(|cand| {
                 let r = process_candidate_basic::<P>(
@@ -1165,7 +1226,7 @@ where
             })
             .collect();
         #[cfg(not(feature = "parallel"))]
-        let raw = candidates
+        let raw: Vec<DecodeResult> = candidates
             .iter()
             .filter_map(|cand| {
                 let r = process_candidate_basic::<P>(
@@ -1184,11 +1245,39 @@ where
                 Some(r)
             })
             .collect();
+        #[cfg(feature = "std")]
+        if let Some(t1) = __trace_t1 {
+            eprintln!(
+                "TRACE_STAGE decode_loop={:.1}ms nsync_fail={} nsync_pass={} osd_attempt={} n_decoded={}",
+                t1.elapsed().as_secs_f64() * 1000.0,
+                TRACE_NSYNC_FAIL.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_NSYNC_PASS.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_OSD_ATTEMPT.load(core::sync::atomic::Ordering::Relaxed),
+                raw.len()
+            );
+        }
         raw
     } else {
+        #[cfg(feature = "std")]
+        let __trace_t1 = trace.then(std::time::Instant::now);
+        #[cfg(feature = "std")]
+        let candidates_len = candidates.len();
         let deduped = dedup_refined_candidates::<P>(candidates, fft_cache.as_slice(), cfg);
+        #[cfg(feature = "std")]
+        let deduped_len = deduped.len();
+        #[cfg(feature = "std")]
+        if let Some(t1) = __trace_t1 {
+            eprintln!(
+                "TRACE_STAGE dedup_refined_candidates={:.1}ms n_before={} n_after={}",
+                t1.elapsed().as_secs_f64() * 1000.0,
+                candidates_len,
+                deduped_len
+            );
+        }
+        #[cfg(feature = "std")]
+        let __trace_t2 = trace.then(std::time::Instant::now);
         #[cfg(feature = "parallel")]
-        let raw = deduped
+        let raw: Vec<DecodeResult> = deduped
             .into_par_iter()
             .filter_map(|(cand, cd0, freq_hz, i0, score)| {
                 let r = process_candidate_basic_impl::<P>(
@@ -1209,7 +1298,7 @@ where
             })
             .collect();
         #[cfg(not(feature = "parallel"))]
-        let raw = deduped
+        let raw: Vec<DecodeResult> = deduped
             .into_iter()
             .filter_map(|(cand, cd0, freq_hz, i0, score)| {
                 let r = process_candidate_basic_impl::<P>(
@@ -1229,6 +1318,17 @@ where
                 Some(r)
             })
             .collect();
+        #[cfg(feature = "std")]
+        if let Some(t2) = __trace_t2 {
+            eprintln!(
+                "TRACE_STAGE decode_loop={:.1}ms nsync_fail={} nsync_pass={} osd_attempt={} n_decoded={}",
+                t2.elapsed().as_secs_f64() * 1000.0,
+                TRACE_NSYNC_FAIL.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_NSYNC_PASS.load(core::sync::atomic::Ordering::Relaxed),
+                TRACE_OSD_ATTEMPT.load(core::sync::atomic::Ordering::Relaxed),
+                raw.len()
+            );
+        }
         raw
     };
 
@@ -1310,12 +1410,26 @@ pub(crate) fn decode_frame_subtract<P: GenericPipelineProtocol>(
 where
     P::Fec: BpPooledFec,
 {
+    #[cfg(feature = "std")]
+    let trace = stage_trace_enabled::<P>();
+    #[cfg(not(feature = "std"))]
+    #[allow(unused_variables)]
+    let trace = false;
+    #[cfg(feature = "std")]
+    if trace {
+        TRACE_NSYNC_FAIL.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_NSYNC_PASS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_OSD_ATTEMPT.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+
     let mut residual = audio.to_vec();
     let mut all_results: Vec<DecodeResult> = Vec::new();
     let passes: &[f32] = &[1.0, 0.75, 0.5][..max_rounds];
     let fec = P::Fec::default();
 
     for (pass_idx, &factor) in passes.iter().enumerate() {
+        #[cfg(feature = "std")]
+        let __trace_tp = trace.then(std::time::Instant::now);
         // See the identical `P::ID == Ft4` branch in `decode_frame` above.
         let candidates = if P::ID == super::ProtocolId::Ft4 {
             super::ft4_coarse::ft4_coarse_sync(
@@ -1336,6 +1450,15 @@ where
                 max_cand,
             )
         };
+        #[cfg(feature = "std")]
+        if let Some(tp) = __trace_tp {
+            eprintln!(
+                "TRACE_STAGE_SIC pass={} coarse_sync={:.1}ms n_candidates={}",
+                pass_idx,
+                tp.elapsed().as_secs_f64() * 1000.0,
+                candidates.len()
+            );
+        }
         if candidates.is_empty() {
             continue;
         }
@@ -1344,6 +1467,8 @@ where
             _ => build_fft_cache(&residual, ds_cfg),
         };
 
+        #[cfg(feature = "std")]
+        let __trace_tp2 = trace.then(std::time::Instant::now);
         #[cfg(feature = "parallel")]
         let new: Vec<DecodeResult> = candidates
             .par_iter()
@@ -1376,6 +1501,18 @@ where
                 )
             })
             .collect();
+        #[cfg(feature = "std")]
+        if let Some(tp2) = __trace_tp2 {
+            eprintln!(
+                "TRACE_STAGE_SIC pass={} decode_loop={:.1}ms nsync_fail={} nsync_pass={} osd_attempt={} n_new={}",
+                pass_idx,
+                tp2.elapsed().as_secs_f64() * 1000.0,
+                TRACE_NSYNC_FAIL.swap(0, core::sync::atomic::Ordering::Relaxed),
+                TRACE_NSYNC_PASS.swap(0, core::sync::atomic::Ordering::Relaxed),
+                TRACE_OSD_ATTEMPT.swap(0, core::sync::atomic::Ordering::Relaxed),
+                new.len()
+            );
+        }
 
         let mut deduped: Vec<DecodeResult> = Vec::new();
         for r in new {

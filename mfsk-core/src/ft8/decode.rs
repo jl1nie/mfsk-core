@@ -261,8 +261,13 @@ fn process_candidate_with_scratch(
     );
     let nsync = sync_quality(&cs_raw);
     if nsync <= 6 {
+        #[cfg(feature = "std")]
+        crate::ft8::decode_block::TRACE_NSYNC_FAIL
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return None;
     }
+    #[cfg(feature = "std")]
+    crate::ft8::decode_block::TRACE_NSYNC_PASS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     crate::ft8::decode_block::fill_symbol_spectra(
         &mut cs_raw,
         audio,
@@ -345,9 +350,21 @@ fn decode_frame_inner(
     // Sniper paths in this file constrain freq_min/freq_max around the
     // target instead, so the loss is contained.
     let _ = freq_hint;
+    #[cfg(feature = "std")]
+    let trace_stage = crate::ft8::decode_block::stage_trace_enabled();
+    #[cfg(feature = "std")]
+    let __trace_t0 = trace_stage.then(std::time::Instant::now);
     let spec = crate::ft8::decode_block::compute_spectrogram(audio, freq_max);
     let candidates =
         crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
+    #[cfg(feature = "std")]
+    if let Some(t0) = __trace_t0 {
+        eprintln!(
+            "TRACE_STAGE_FT8_SP coarse_sync={:.1}ms n_candidates={}",
+            t0.elapsed().as_secs_f64() * 1000.0,
+            candidates.len()
+        );
+    }
     // Build (or clone) the FFT cache exactly once. The cache is needed both
     // when there are no candidates (early return) and when running BP/OSD
     // per candidate, so do it before the early-exit branch to avoid a
@@ -359,6 +376,14 @@ fn decode_frame_inner(
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
+    #[cfg(feature = "std")]
+    if trace_stage {
+        crate::ft8::decode_block::TRACE_NSYNC_FAIL.store(0, core::sync::atomic::Ordering::Relaxed);
+        crate::ft8::decode_block::TRACE_NSYNC_PASS.store(0, core::sync::atomic::Ordering::Relaxed);
+        crate::ft8::decode_block::TRACE_OSD_ATTEMPT.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(feature = "std")]
+    let __trace_t1 = trace_stage.then(std::time::Instant::now);
 
     // `on_result` fires here, inside the per-candidate closure, *before*
     // the cross-candidate dedup pass below — see `DecodeRequest::
@@ -390,6 +415,17 @@ fn decode_frame_inner(
             Some(r)
         })
         .collect();
+    #[cfg(feature = "std")]
+    if let Some(t1) = __trace_t1 {
+        eprintln!(
+            "TRACE_STAGE_FT8_SP decode_loop={:.1}ms nsync_fail={} nsync_pass={} osd_attempt={} n_decoded={}",
+            t1.elapsed().as_secs_f64() * 1000.0,
+            crate::ft8::decode_block::TRACE_NSYNC_FAIL.load(core::sync::atomic::Ordering::Relaxed),
+            crate::ft8::decode_block::TRACE_NSYNC_PASS.load(core::sync::atomic::Ordering::Relaxed),
+            crate::ft8::decode_block::TRACE_OSD_ATTEMPT.load(core::sync::atomic::Ordering::Relaxed),
+            raw.len()
+        );
+    }
 
     // Deduplicate: preserve first occurrence; drop messages already in `known`.
     let mut results: Vec<DecodeResult> = Vec::new();

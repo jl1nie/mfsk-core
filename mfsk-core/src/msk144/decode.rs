@@ -41,6 +41,47 @@ use crate::msk144::{frame_decode::decode_frame, spd::short_ping_decode};
 const BLOCK_SIZE: usize = 7168;
 const STEP_SIZE: usize = BLOCK_SIZE / 2; // 3584
 
+// ── Stage-timing trace (host diagnostic only) ───────────────────────────────
+//
+// `MFSK_TRACE_STAGE_MSK144` env var — same idiom as `engine::pipeline`'s
+// `MFSK_TRACE_STAGE_FT4`/`_FST4` and `ft8::decode_block::process_candidates`'s
+// `MFSK_TRACE_STAGE_FT8`: zero cost when unset. MSK144's structure has
+// no "coarse candidate list" concept the other protocols share — it's
+// a fixed-stride sliding-window scan (`BLOCK_SIZE`/`STEP_SIZE`) calling
+// `decode_block` once per position, each of which tries Stage A (cheap
+// short-ping decode) then Stage B (frame-averaging: `depth.npat()`
+// `iavg` patterns × up to 3 sync peaks × 3 dither offsets, each a full
+// BP attempt) on failure. Counters below track blocks scanned / Stage A
+// hits / Stage B sync successes / Stage B BP attempts+successes; see
+// `~/.claude/plans/moonlit-snuggling-puzzle.md`'s phase-wise benchmark
+// plan.
+#[cfg(feature = "std")]
+static TRACE_BLOCKS_SCANNED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_STAGE_A_SUCCESS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_STAGE_B_SYNC_SUCCESS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_STAGE_B_BP_ATTEMPT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+#[cfg(feature = "std")]
+static TRACE_STAGE_B_BP_SUCCESS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+// Nanoseconds, accumulated via `fetch_add` — cheap enough per-block to
+// leave the increment unconditional rather than threading a `trace`
+// bool through `decode_block`'s many call sites; only the final
+// `eprintln!` is gated on the env var.
+#[cfg(feature = "std")]
+static TRACE_STAGE_A_NANOS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "std")]
+static TRACE_STAGE_B_NANOS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "std")]
+fn stage_trace_enabled() -> bool {
+    std::env::var("MFSK_TRACE_STAGE_MSK144").is_ok()
+}
+
 /// The 8-frame averaging masks `mskrtd.f90:49-53` tries in Stage B
 /// (`iavpatterns`) when Stage A (the short-ping decoder) fails to
 /// find anything.
@@ -150,12 +191,27 @@ fn decode_block(
 
     let cbig = &cdat[0..8 * NSPM];
 
+    #[cfg(feature = "std")]
+    TRACE_BLOCKS_SCANNED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
     // Stage A: short-ping decoder.
-    if let Some(spd) = short_ping_decode(cbig, fc, ntol, ctx) {
+    #[cfg(feature = "std")]
+    let __trace_ta = std::time::Instant::now();
+    let stage_a = short_ping_decode(cbig, fc, ntol, ctx);
+    #[cfg(feature = "std")]
+    TRACE_STAGE_A_NANOS.fetch_add(
+        __trace_ta.elapsed().as_nanos() as u64,
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    if let Some(spd) = stage_a {
+        #[cfg(feature = "std")]
+        TRACE_STAGE_A_SUCCESS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         return finish_decode(spd.message, pmax, state, spd.tdec_sec, spd.fest);
     }
 
     // Stage B: longer frame-averaging fallback.
+    #[cfg(feature = "std")]
+    let __trace_tb = std::time::Instant::now();
     let tframe = NSPM as f32 / 12_000.0;
     for iavg in 0..depth.npat() {
         let navmask = IAVPATTERNS[iavg];
@@ -166,6 +222,8 @@ fn decode_block(
         if !sync_result.success {
             continue;
         }
+        #[cfg(feature = "std")]
+        TRACE_STAGE_B_SYNC_SUCCESS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         for peak in &sync_result.peaks {
             for dither in 0..3 {
                 let ic0 = match dither {
@@ -177,13 +235,29 @@ fn decode_block(
                 let softbits = crate::engine::dsp::msk::matched_filter_softbits(
                     aligned.as_slice().try_into().expect("NSPM samples"),
                 );
+                #[cfg(feature = "std")]
+                TRACE_STAGE_B_BP_ATTEMPT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 if let Some(result) = decode_frame(&softbits, ctx) {
+                    #[cfg(feature = "std")]
+                    {
+                        TRACE_STAGE_B_BP_SUCCESS
+                            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        TRACE_STAGE_B_NANOS.fetch_add(
+                            __trace_tb.elapsed().as_nanos() as u64,
+                            core::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                     let tdec_sec = XMC[iavg] * tframe;
                     return finish_decode(result.message, pmax, state, tdec_sec, sync_result.fest);
                 }
             }
         }
     }
+    #[cfg(feature = "std")]
+    TRACE_STAGE_B_NANOS.fetch_add(
+        __trace_tb.elapsed().as_nanos() as u64,
+        core::sync::atomic::Ordering::Relaxed,
+    );
 
     // No decode: update the noise floor (`mskrtd.f90:172-179`) --
     // slow to rise, quick to fall.
@@ -288,6 +362,21 @@ pub fn decode_slot_with_hash_table(
         return out;
     }
 
+    #[cfg(feature = "std")]
+    let trace_stage = stage_trace_enabled();
+    #[cfg(feature = "std")]
+    if trace_stage {
+        TRACE_BLOCKS_SCANNED.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_A_SUCCESS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_B_SYNC_SUCCESS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_B_BP_ATTEMPT.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_B_BP_SUCCESS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_A_NANOS.store(0, core::sync::atomic::Ordering::Relaxed);
+        TRACE_STAGE_B_NANOS.store(0, core::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(feature = "std")]
+    let __trace_t0 = trace_stage.then(std::time::Instant::now);
+
     let mut position = 0usize;
     while position + BLOCK_SIZE <= audio.len() {
         let block = &audio[position..position + BLOCK_SIZE];
@@ -297,6 +386,24 @@ pub fn decode_slot_with_hash_table(
             out.push(r);
         }
         position += STEP_SIZE;
+    }
+
+    #[cfg(feature = "std")]
+    if let Some(t0) = __trace_t0 {
+        eprintln!(
+            "TRACE_STAGE_MSK144 total={:.1}ms stage_a={:.1}ms stage_b={:.1}ms \
+             blocks_scanned={} stage_a_success={} stage_b_sync_success={} \
+             stage_b_bp_attempt={} stage_b_bp_success={} n_decoded={}",
+            t0.elapsed().as_secs_f64() * 1000.0,
+            TRACE_STAGE_A_NANOS.load(core::sync::atomic::Ordering::Relaxed) as f64 / 1e6,
+            TRACE_STAGE_B_NANOS.load(core::sync::atomic::Ordering::Relaxed) as f64 / 1e6,
+            TRACE_BLOCKS_SCANNED.load(core::sync::atomic::Ordering::Relaxed),
+            TRACE_STAGE_A_SUCCESS.load(core::sync::atomic::Ordering::Relaxed),
+            TRACE_STAGE_B_SYNC_SUCCESS.load(core::sync::atomic::Ordering::Relaxed),
+            TRACE_STAGE_B_BP_ATTEMPT.load(core::sync::atomic::Ordering::Relaxed),
+            TRACE_STAGE_B_BP_SUCCESS.load(core::sync::atomic::Ordering::Relaxed),
+            out.len()
+        );
     }
 
     out
