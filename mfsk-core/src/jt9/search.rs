@@ -149,26 +149,83 @@ impl Default for SearchParams {
     }
 }
 
-/// Score one candidate using the precomputed spectrogram.
-///
-/// `start_row` is the spectrogram row index of symbol 0. Because the
-/// spectrogram step is NSPS/4, consecutive symbols are 4 rows apart.
-pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) -> f32 {
-    const ROWS_PER_SYMBOL: usize = 4;
-    // Last sync position uses row offset SYNC_POSITIONS[15] * 4.
-    let last_row = start_row + (JT9_SYNC_POSITIONS[15] as usize) * ROWS_PER_SYMBOL;
-    if last_row >= spec.n_time || base_bin >= spec.n_freq {
+const ROWS_PER_SYMBOL: usize = 4;
+
+/// Sum of sync-tone (tone 0) FFT-bin power at `bin`, across the 16
+/// sync-position rows starting at spectrogram row `start_row`. The
+/// un-normalised quantity [`score_candidate`] sums before dividing by
+/// the noise floor — factored out so [`refine_freq_hz`] can read it at
+/// the neighbouring bins too.
+fn sync_power_at_bin(spec: &Spectrogram, start_row: usize, bin: usize) -> f32 {
+    if bin >= spec.n_freq {
         return 0.0;
     }
     let mut sync_pwr = 0.0f32;
     for &sym_idx in &JT9_SYNC_POSITIONS {
         let row = start_row + (sym_idx as usize) * ROWS_PER_SYMBOL;
-        sync_pwr += spec.get(row, base_bin);
+        sync_pwr += spec.get(row, bin);
     }
+    sync_pwr
+}
+
+/// Score one candidate using the precomputed spectrogram.
+///
+/// `start_row` is the spectrogram row index of symbol 0. Because the
+/// spectrogram step is NSPS/4, consecutive symbols are 4 rows apart.
+pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) -> f32 {
+    // Last sync position uses row offset SYNC_POSITIONS[15] * 4.
+    let last_row = start_row + (JT9_SYNC_POSITIONS[15] as usize) * ROWS_PER_SYMBOL;
+    if last_row >= spec.n_time || base_bin >= spec.n_freq {
+        return 0.0;
+    }
+    let sync_pwr = sync_power_at_bin(spec, start_row, base_bin);
     // Normalise against the expected noise floor at tone 0 over
     // 16 sync symbols. Score saturates near 1 for clean signals.
     let noise_floor = spec.noise_per_bin * JT9_SYNC_POSITIONS.len() as f32;
     sync_pwr / (sync_pwr + noise_floor)
+}
+
+/// Refine a candidate's frequency to sub-bin precision via 3-point
+/// log-power parabolic ("Jacobsen") interpolation of the sync-tone
+/// power around `base_bin`.
+///
+/// `coarse_search`'s frequency grid is one bin wide (`df` ≈ 1.736 Hz,
+/// exactly the tone spacing) — the true signal frequency can land
+/// anywhere within that bin, but unlike `downsam9`'s later big-FFT
+/// extraction (~0.018 Hz resolution), nothing before this refinement
+/// step narrows it down. Measured (task #24, `jt9_awgn_m26_09.wav`):
+/// the coarse candidate landed at 1399.3 Hz, which never converges in
+/// Fano at any [`super::Jt9Depth`] tier, while frequencies just
+/// 0.3-1.2 Hz away (1399.0 Hz, 1400.5 Hz) converge easily — the same
+/// "coarse bin center isn't close enough to the true frequency, and
+/// nothing downstream fully recovers from it" shape as JT65's own
+/// scalloping-loss fix (issue #169,
+/// `crate::jt65::search::refine_freq_hz`), reused here with the same
+/// technique (interpolate the already-computed spectrogram, no extra
+/// FFTs) and the same non-peak-shaped fallback (keep the coarse
+/// bin-center frequency rather than extrapolate from noise).
+fn refine_freq_hz(spec: &Spectrogram, start_row: usize, base_bin: usize, df: f32) -> f32 {
+    if base_bin == 0 || base_bin + 1 >= spec.n_freq {
+        return base_bin as f32 * df;
+    }
+    let y_lo = sync_power_at_bin(spec, start_row, base_bin - 1)
+        .max(1e-12)
+        .ln();
+    let y_mid = sync_power_at_bin(spec, start_row, base_bin).max(1e-12).ln();
+    let y_hi = sync_power_at_bin(spec, start_row, base_bin + 1)
+        .max(1e-12)
+        .ln();
+    let denom = y_lo - 2.0 * y_mid + y_hi;
+    // `denom < 0` at a genuine local peak (concave-down parabola); a
+    // non-negative denom means the 3-point fit isn't peak-shaped
+    // (noise-dominated or `base_bin` isn't actually the local max) —
+    // don't extrapolate, just keep the coarse bin-center frequency.
+    let delta = if denom < -1e-9 {
+        (0.5 * (y_lo - y_hi) / denom).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    (base_bin as f32 + delta) * df
 }
 
 /// Sweep (freq × time) and return top-scored candidates.
@@ -194,9 +251,8 @@ pub fn coarse_search_on_spec(
     }
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
-    let rows_per_symbol = 4usize;
 
-    let t_span_rows = params.time_tolerance_symbols as i64 * rows_per_symbol as i64;
+    let t_span_rows = params.time_tolerance_symbols as i64 * ROWS_PER_SYMBOL as i64;
     let nominal_row = (nominal_start_sample / spec.t_step) as i64;
     let row_min = (nominal_row - t_span_rows).max(0);
     let row_max = nominal_row + t_span_rows;
@@ -221,7 +277,7 @@ pub fn coarse_search_on_spec(
                 continue;
             }
             let row_u = row as usize;
-            if row_u + 84 * rows_per_symbol >= spec.n_time {
+            if row_u + 84 * ROWS_PER_SYMBOL >= spec.n_time {
                 continue;
             }
             let score = score_candidate(spec, row_u, fb as usize);
@@ -233,7 +289,7 @@ pub fn coarse_search_on_spec(
         if best_row >= 0 && best_score >= params.score_threshold {
             out.push(SyncCandidate {
                 start_sample: best_row as usize * spec.t_step,
-                freq_hz: fb as f32 * df,
+                freq_hz: refine_freq_hz(spec, best_row as usize, fb as usize, df),
                 score: best_score,
             });
         }

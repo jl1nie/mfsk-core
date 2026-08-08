@@ -37,20 +37,30 @@ const SYNC_GATE: f32 = 1.5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Jt9Depth {
     /// `limit=5000` — WSJT-X's own automatic per-slot scan default
-    /// (`jt9 -d1`, `jt9_decode.f90:84`).
-    Fast,
-    /// `limit=10000` — this crate's long-standing default before depth
-    /// became configurable (2026-08-08). Kept as the crate default:
-    /// checked against real `jt9 -9` (which defaults to `-d1`, i.e.
-    /// [`Jt9Depth::Fast`]) on the AWGN sweep corpus's two lowest
-    /// crossing points and found *not* to close the gap to real `jt9`
-    /// at either tier (`Fast` fell further behind; `Normal` matched at
-    /// one point, still trailed at the other) — so there's a small
-    /// pre-existing sensitivity gap independent of this setting, and
-    /// dropping the default to match WSJT-X's own `-d1` number would
-    /// not have brought us to parity with it. See
-    /// `docs/notes/BENCHMARKS.md` for the numbers.
+    /// (`jt9 -d1`, `jt9_decode.f90:84`). **The crate default** as of
+    /// task #24's fix — see that variant's own doc comment for why
+    /// `Fast` and `Normal` turned out to perform identically once the
+    /// real bug was found and fixed.
     #[default]
+    Fast,
+    /// `limit=10000` — this crate's original hardcoded default before
+    /// depth became configurable (2026-08-08). Initially *kept* as the
+    /// crate default over `Fast` after finding `Normal` closer (but
+    /// not equal) to real `jt9 -9 -d1`'s sensitivity — but that
+    /// comparison's real cause turned out to be unrelated to cycle
+    /// budget at all (task #24): `jt9::search::coarse_search`'s
+    /// frequency grid (one bin = one tone spacing, ≈1.736 Hz) had no
+    /// sub-bin refinement, so candidates routinely landed 0.3-1 Hz
+    /// off the true frequency — inside Fano's sharp non-convergence
+    /// zone regardless of cycle budget. Fixed via
+    /// `search::refine_freq_hz` (3-point parabolic interpolation,
+    /// same technique as JT65's own scalloping-loss fix, issue #169).
+    /// Post-fix, `Fast` and `Normal` score identically on the AWGN
+    /// sweep (both now *exceed* real `jt9 -d1`'s own −26/−27 dB
+    /// numbers) — so `Normal`'s extra cycle budget buys nothing
+    /// measurable anymore; `Fast` moved to being the default since
+    /// it's strictly cheaper for the same result. See
+    /// `docs/notes/BENCHMARKS.md` for the before/after numbers.
     Normal,
     /// `limit=30000` — WSJT-X `-d3`.
     Deep,
@@ -174,8 +184,8 @@ mod depth_tests {
     }
 
     #[test]
-    fn default_is_normal() {
-        assert_eq!(Jt9Depth::default(), Jt9Depth::Normal);
+    fn default_is_fast() {
+        assert_eq!(Jt9Depth::default(), Jt9Depth::Fast);
     }
 }
 
@@ -278,6 +288,166 @@ mod gate_diag {
                     peakdt_score,
                     sync,
                     schk,
+                    hits.join(" / ")
+                );
+            }
+        }
+    }
+
+    /// Task #24 follow-up: for the specific `jt9_awgn_m26_*.wav` files
+    /// this crate misses, run `decode_at_baseband_with_fft_depth` at
+    /// the *exact* frequency `coarse_search` actually returns (not an
+    /// approximate 0.5 Hz grid) across every [`super::Jt9Depth`] tier,
+    /// to see whether the production candidate itself ever converges.
+    #[test]
+    #[ignore]
+    fn probe_exact_candidate_freq_m26_files() {
+        use super::super::search::{SearchParams, coarse_search};
+        use super::Jt9Depth;
+
+        fn load_wav(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).unwrap();
+            let mut i = 12;
+            loop {
+                let id = &bytes[i..i + 4];
+                let len =
+                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
+                        as usize;
+                if id == b"data" {
+                    let start = i + 8;
+                    let samples: &[u8] = &bytes[start..start + len];
+                    return samples
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                        .collect();
+                }
+                i += 8 + len + (len % 2);
+            }
+        }
+
+        for n in [9, 13, 17] {
+            let path = format!(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../embedded-poc/assets/jt9_sweep/jt9_awgn_m26_{:02}.wav"
+                ),
+                n
+            );
+            let mut audio = load_wav(&path);
+            audio.resize(720_000, 0.0);
+
+            let sp = SearchParams {
+                score_threshold: 0.001,
+                max_candidates: 50_000,
+                ..Default::default()
+            };
+            let mut cands = coarse_search(&audio, 12_000, 0, &sp);
+            cands.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            cands.truncate(5); // just the top few — the real signal should be near the top
+
+            let big_fft = AudioFft::build(&audio);
+            eprintln!("\n=== m26_{n:02}.wav: top candidates ===");
+            for c in &cands {
+                let mut results = Vec::new();
+                for depth in [
+                    Jt9Depth::Fast,
+                    Jt9Depth::Normal,
+                    Jt9Depth::Deep,
+                    Jt9Depth::Max,
+                ] {
+                    let r = super::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth);
+                    results.push(format!("{depth:?}={}", r.is_some()));
+                }
+                eprintln!(
+                    "  freq={:.3} score={:.4} | {}",
+                    c.freq_hz,
+                    c.score,
+                    results.join(" ")
+                );
+            }
+        }
+    }
+
+    /// Walk specific frequencies (the missing JT9 goldens) through the
+    /// pipeline manually so we can see *where* they drop: peakdt9
+    /// sync_score → afc9 syncpk + sync = (syncpk+1)/4 → schk → Fano
+    /// hard_errors at three retry depths.
+    #[test]
+    #[ignore]
+    fn probe_missing_m26_files() {
+        fn load_wav(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).unwrap();
+            let mut i = 12;
+            loop {
+                let id = &bytes[i..i + 4];
+                let len =
+                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
+                        as usize;
+                if id == b"data" {
+                    let start = i + 8;
+                    let samples: &[u8] = &bytes[start..start + len];
+                    return samples
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                        .collect();
+                }
+                i += 8 + len + (len % 2);
+            }
+        }
+
+        // 09, 13, 17: this crate misses these at Jt9Depth::Normal;
+        // real `jt9 -d1` decodes all three. jt9sim's signal is always
+        // at 1400 Hz.
+        for n in [9, 13, 17] {
+            let path = format!(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../embedded-poc/assets/jt9_sweep/jt9_awgn_m26_{:02}.wav"
+                ),
+                n
+            );
+            eprintln!("\n=== jt9_awgn_m26_{n:02}.wav ===");
+            let mut audio = load_wav(&path);
+            audio.resize(720_000, 0.0);
+            let big_fft = AudioFft::build(&audio);
+
+            for df_i in -6..=6i32 {
+                let freq = 1400.0 + df_i as f32 * 0.5;
+                let c2 = big_fft.downsam9(freq);
+                let (_lagpk, peakdt_score, mut c3) = peakdt9(&c2);
+                if !peakdt_score.is_finite() || peakdt_score < 0.3 {
+                    continue;
+                }
+                let afc = afc9(&mut c3);
+                twkfreq_poly(&mut c3, [afc.a0, afc.a1, 0.0]);
+                let sync = (afc.syncpk + 1.0) / 4.0;
+                let (schk, llrs, _snr_db) = llrs_from_c5(&c3);
+
+                let mut hits = Vec::new();
+                for &lim in &[5_000u64, 10_000, 30_000, 100_000] {
+                    let opts = FecOpts {
+                        max_cycles_per_bit: Some(lim),
+                        ..FecOpts::default()
+                    };
+                    let dec = ConvFano232.decode_soft(&llrs, &opts);
+                    let s = match dec {
+                        Some(r) => {
+                            let mut p = [0u8; 72];
+                            p.copy_from_slice(&r.info);
+                            let m = Jt72Codec::default().unpack(&p, &DecodeContext::default());
+                            format!(
+                                "limit={} hard={} msg={:?}",
+                                lim,
+                                r.hard_errors,
+                                m.map(|x| x.to_string())
+                            )
+                        }
+                        None => format!("limit={lim} no-converge"),
+                    };
+                    hits.push(s);
+                }
+                eprintln!(
+                    "  freq={freq:.1} peakdt={peakdt_score:.3} sync={sync:.3} schk={schk:.3} | {}",
                     hits.join(" / ")
                 );
             }
