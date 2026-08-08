@@ -276,20 +276,11 @@ pub fn decode_scan(
 /// `ft8::decode_block::decode_block_streaming`'s precedent — bolting
 /// a parameter onto an existing plain `pub fn` is a breaking change.
 ///
-/// **Delivery order/dedup contract**: candidate decoding runs via
-/// `rayon` under `feature = "parallel"` (falls back to a plain
-/// sequential loop otherwise) — same shape as
-/// [`crate::msg::decode_request::DecodeRequest::on_result`]'s "default
-/// single-pass strategy" (see that method's doc comment for the full
-/// rationale). `cb` fires from whichever thread decoded that
-/// candidate, in completion order (not candidate-score order), and
-/// *before* the final cross-candidate dedup pass — on the rare
-/// occasion two different sync candidates converge on the same
-/// message, `cb` may fire for both even though only one survives into
-/// the returned `Vec`. Callers wanting exact parity should dedup by
-/// `.message` on their side, the same key this function's own dedup
-/// uses. `cb` must be `Sync` for this reason — it may be called
-/// concurrently from multiple `rayon` worker threads.
+/// **Delivery order/dedup contract**: `decode_scan`'s candidate loop
+/// is sequential with no early exit and no parallelism — `cb` fires
+/// exactly once per result that ends up in the returned `Vec`, in the
+/// same order. No divergence mechanism exists here (unlike WSPR's/
+/// FT8's parallel strategies).
 pub fn decode_scan_streaming(
     audio: &[f32],
     sample_rate: u32,
@@ -316,45 +307,27 @@ fn decode_scan_inner(
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
-
-    let decode_one = |c: &search::SyncCandidate| -> Option<Jt65Result> {
-        let (msg, snr_db) = decode_at_with_snr(audio, sample_rate, c.start_sample, c.freq_hz)?;
-        let result = Jt65Result {
-            message: msg,
-            freq_hz: c.freq_hz,
-            start_sample: c.start_sample,
-            snr_db,
-        };
-        // Fires here, before dedup below — see `decode_scan_streaming`'s
-        // doc comment for the possible-transient-duplicate contract
-        // this implies.
-        if let Some(cb) = on_result {
-            cb(&result);
-        }
-        Some(result)
-    };
-
-    // `coarse_search` sorts candidates by score descending; rayon's
-    // `par_iter().collect()` preserves that input order in the output
-    // Vec even though execution/callback-firing order across threads
-    // isn't guaranteed — so the dedup pass below sees the same
-    // deterministic candidate order either way.
-    #[cfg(feature = "parallel")]
-    let raw: Vec<Jt65Result> = {
-        use rayon::prelude::*;
-        cands.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<Jt65Result> = cands.iter().filter_map(decode_one).collect();
-
     let mut seen: Vec<Jt65Result> = Vec::new();
-    for result in raw {
+    for c in cands {
+        let Some((msg, snr_db)) = decode_at_with_snr(audio, sample_rate, c.start_sample, c.freq_hz)
+        else {
+            continue;
+        };
         let dup = seen.iter().any(|prev| {
-            prev.message == result.message
-                && (prev.freq_hz - result.freq_hz).abs() <= 2.0
-                && (prev.start_sample as i64 - result.start_sample as i64).abs() <= nsps as i64
+            prev.message == msg
+                && (prev.freq_hz - c.freq_hz).abs() <= 2.0
+                && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            let result = Jt65Result {
+                message: msg,
+                freq_hz: c.freq_hz,
+                start_sample: c.start_sample,
+                snr_db,
+            };
+            if let Some(cb) = on_result {
+                cb(&result);
+            }
             seen.push(result);
         }
     }
@@ -372,10 +345,8 @@ pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
 /// [`chase`]'s module doc for the algorithm and its relationship to
 /// WSJT-X's `ftrsdap`.
 ///
-/// A mirroring sibling trio (`decode_scan_chase`/`_streaming`/
-/// `_default` — same `rayon`-under-`feature = "parallel"` shape as
-/// [`decode_scan`] itself) rather than a parameter on [`decode_scan`]
-/// directly, for
+/// A parallel sibling trio (`decode_scan_chase`/`_streaming`/
+/// `_default`) rather than a parameter on [`decode_scan`] itself, for
 /// the same reason [`decode_scan_streaming`] is its own sibling
 /// (mod.rs's own doc comment above): both the extra [`chase::ChaseParams`]
 /// and the different internal decode engine argue against bolting
@@ -429,49 +400,32 @@ fn decode_scan_chase_inner(
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, search_params);
-
-    let decode_one = |c: &search::SyncCandidate| -> Option<Jt65Result> {
-        let (msg, snr_db) = chase::decode_at_with_chase_and_snr(
+    let mut seen: Vec<Jt65Result> = Vec::new();
+    for c in cands {
+        let Some((msg, snr_db)) = chase::decode_at_with_chase_and_snr(
             audio,
             sample_rate,
             c.start_sample,
             c.freq_hz,
             chase_params,
-        )?;
-        let result = Jt65Result {
-            message: msg,
-            freq_hz: c.freq_hz,
-            start_sample: c.start_sample,
-            snr_db,
+        ) else {
+            continue;
         };
-        // Fires here, before dedup below — see `decode_scan_streaming`'s
-        // doc comment for the possible-transient-duplicate contract
-        // this implies. Especially relevant here: each candidate's own
-        // `decode_at_with_chase_and_snr` call can run up to
-        // `chase_params.max_trials` RS-decode attempts, so this is the
-        // stage parallelism actually pays for.
-        if let Some(cb) = on_result {
-            cb(&result);
-        }
-        Some(result)
-    };
-
-    #[cfg(feature = "parallel")]
-    let raw: Vec<Jt65Result> = {
-        use rayon::prelude::*;
-        cands.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<Jt65Result> = cands.iter().filter_map(decode_one).collect();
-
-    let mut seen: Vec<Jt65Result> = Vec::new();
-    for result in raw {
         let dup = seen.iter().any(|prev| {
-            prev.message == result.message
-                && (prev.freq_hz - result.freq_hz).abs() <= 2.0
-                && (prev.start_sample as i64 - result.start_sample as i64).abs() <= nsps as i64
+            prev.message == msg
+                && (prev.freq_hz - c.freq_hz).abs() <= 2.0
+                && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            let result = Jt65Result {
+                message: msg,
+                freq_hz: c.freq_hz,
+                start_sample: c.start_sample,
+                snr_db,
+            };
+            if let Some(cb) = on_result {
+                cb(&result);
+            }
             seen.push(result);
         }
     }
@@ -580,20 +534,11 @@ mod tests {
     /// round-trip verification, matching this module's own existing
     /// synth-test convention (no real-sample WSJT-X recording is
     /// wired for JT65 today — see `tests/jt65_sweep.rs`'s doc comment
-    /// for why, it needs an out-of-tree `jt65sim` build).
-    ///
-    /// Set-based (not `Vec`-exact) comparison: `decode_scan_inner` runs
-    /// via `rayon` under `feature = "parallel"` (this crate's own CI
-    /// default, `--features full,...`), so `cb`'s firing order and the
-    /// possibility of a transient duplicate (a message that fires the
-    /// callback but doesn't survive the final dedup pass) are both
-    /// real, not hypothetical — see `decode_scan_streaming`'s doc
-    /// comment for the full contract. `Jt72Message` has no `Ord`, so
-    /// compare via its `Debug` string, mirroring
-    /// `ft4_streaming_decode.rs`'s own `BTreeSet`-of-strings pattern.
+    /// for why, it needs an out-of-tree `jt65sim` build). `decode_scan`
+    /// is sequential with no early exit and no parallelism, so the
+    /// callback-delivered set must exactly equal the batch `Vec`.
     #[test]
     fn decode_scan_streaming_matches_batch_exactly() {
-        use std::collections::BTreeSet;
         use std::sync::Mutex;
 
         let freq = 1500.0;
@@ -613,28 +558,22 @@ mod tests {
             &on_result,
         );
         let streamed = streamed_acc.into_inner().unwrap();
-        let streamed_set: BTreeSet<String> = streamed.iter().map(|m| format!("{m:?}")).collect();
-        let batch_set: BTreeSet<String> =
-            batch.iter().map(|d| format!("{:?}", d.message)).collect();
-        assert!(
-            batch_set.is_subset(&streamed_set),
-            "every batch result must have fired the streaming callback \
-             at least once: batch={batch_set:?} streamed={streamed_set:?}"
+        let batch_msgs: Vec<Jt72Message> = batch.iter().map(|d| d.message.clone()).collect();
+        assert_eq!(
+            streamed, batch_msgs,
+            "JT65 decode_scan_streaming: streamed callback deliveries must \
+             exactly match the batch result, same order (sequential, no \
+             early exit, no parallelism — no divergence mechanism exists)"
         );
         assert!(
             !streamed.is_empty(),
             "expected at least one streamed decode on the synth signal"
         );
-        // Membership, not `streamed[0]` — under `feature = "parallel"`
-        // the firing order across threads isn't guaranteed.
-        assert!(
-            streamed.iter().any(|m| matches!(
-                m,
-                Jt72Message::Standard { call1, call2, grid_or_report }
-                    if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
-            )),
-            "expected the golden message among the streamed deliveries: {streamed:?}"
-        );
+        assert!(matches!(
+            &streamed[0],
+            Jt72Message::Standard { call1, call2, grid_or_report }
+                if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
+        ));
     }
 
     /// `decode_scan_chase` end-to-end: proves the scan wiring actually
@@ -659,60 +598,6 @@ mod tests {
             Jt72Message::Standard { call1, call2, grid_or_report }
                 if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
         ));
-    }
-
-    /// `decode_scan_chase_streaming`'s `on_result` callback —
-    /// mirrors `decode_scan_streaming_matches_batch_exactly` above
-    /// (including its set-based, order-independent comparison — see
-    /// that test's doc comment), but for the chase family. Written
-    /// after the user flagged this gap directly ("コールバックの配線
-    /// 忘れとかない？"): the streaming variant compiled and its
-    /// callback plumbing *looked* right by inspection, but until this
-    /// test, nothing ever actually called `decode_scan_chase_streaming`
-    /// — an easy way for a real wiring bug to go unnoticed, exactly as
-    /// happened for real with FT4/FST4's `on_result` earlier this
-    /// session (see CHANGELOG).
-    #[test]
-    fn decode_scan_chase_streaming_matches_batch_exactly() {
-        use std::collections::BTreeSet;
-        use std::sync::Mutex;
-
-        let freq = 1500.0;
-        let audio = synthesize_standard("CQ", "JL1NIE", "PM95", 12_000, freq, 0.3).expect("synth");
-        let mut slot = vec![0.0f32; 12_000 + audio.len()];
-        slot[12_000..12_000 + audio.len()].copy_from_slice(&audio);
-
-        let streamed_acc: Mutex<Vec<Jt72Message>> = Mutex::new(Vec::new());
-        let on_result = |r: &Jt65Result| streamed_acc.lock().unwrap().push(r.message.clone());
-        let batch = decode_scan_chase_streaming(
-            &slot,
-            12_000,
-            0,
-            &search::SearchParams::default(),
-            &chase::ChaseParams::default(),
-            &on_result,
-        );
-        let streamed = streamed_acc.into_inner().unwrap();
-        let streamed_set: BTreeSet<String> = streamed.iter().map(|m| format!("{m:?}")).collect();
-        let batch_set: BTreeSet<String> =
-            batch.iter().map(|d| format!("{:?}", d.message)).collect();
-        assert!(
-            batch_set.is_subset(&streamed_set),
-            "every batch result must have fired the streaming callback \
-             at least once: batch={batch_set:?} streamed={streamed_set:?}"
-        );
-        assert!(
-            !streamed.is_empty(),
-            "expected at least one streamed decode on the synth signal"
-        );
-        assert!(
-            streamed.iter().any(|m| matches!(
-                m,
-                Jt72Message::Standard { call1, call2, grid_or_report }
-                    if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
-            )),
-            "expected the golden message among the streamed deliveries: {streamed:?}"
-        );
     }
 
     /// Scan-level false-decode guardrail (see `chase.rs`'s own

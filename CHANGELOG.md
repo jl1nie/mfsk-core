@@ -272,27 +272,6 @@ effect on any decode path.
   complete phase-by-phase writeup: `docs/notes/BENCHMARKS.md`'s JT65
   section.
 
-  **Candidate-level parallelism, same day, follow-up question**
-  ("なんでpar_iterないの？"): JT65 never had `rayon`/`parallel`-feature
-  candidate parallelism at all, unlike FT8/FT4/FST4/WSPR/JT9 — a
-  pre-existing gap, not a regression from today's work. Added
-  `#[cfg(feature = "parallel")]` `par_iter()` to `decode_scan_inner`/
-  `decode_scan_chase_inner`, mirroring `engine::pipeline`'s established
-  fire-callback-before-dedup contract (`on_result` may now fire for a
-  transient duplicate a later dedup pass excludes, same caveat as
-  `DecodeRequest::on_result`'s "default single-pass strategy" — the two
-  streaming tests were rewritten to a set-based comparison
-  accordingly, and a previously-missing `decode_scan_chase_streaming`
-  test was added, since it turned out nothing had ever actually called
-  that function before). Measured honestly: **no meaningful speedup**
-  on this corpus (isolated single-call timing, not nested inside the
-  sweep's own outer parallelism) — `coarse_search`'s `max_candidates=8`
-  cap plus each candidate's inherently-cheap decode (a few ms even at
-  the full 1000-trial chase budget) leaves little parallelizable work,
-  unlike FT8's much denser candidate grid. Kept anyway for correctness
-  and architectural consistency with the rest of the crate; recall
-  confirmed byte-identical.
-
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its
