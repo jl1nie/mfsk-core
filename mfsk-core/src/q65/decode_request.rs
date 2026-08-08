@@ -37,15 +37,30 @@
 //! `.decode()` resolves precedence as ap_list > fading > ap_hint > plain,
 //! documented on each builder's `decode()`.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::engine::Protocol;
+use crate::engine::protocol::DecodeContext;
 use crate::fec::qra::FadingModel;
 use crate::msg::ApHint;
+use crate::msg::hash_table::CallsignHashTable;
 
 use super::Q65Result;
 use super::search::SearchParams;
+
+/// Build a [`DecodeContext`] from an optional caller-supplied hash
+/// table, without cloning the table's contents — `Arc::clone` is a
+/// refcount bump regardless of how many entries the table holds, so
+/// this is cheap to call once per `decode()` even for a session-long
+/// table that's grown to hundreds of entries.
+fn ctx_from_hash_table(hash_table: Option<&Arc<CallsignHashTable>>) -> DecodeContext {
+    DecodeContext {
+        callsign_hash_table: hash_table
+            .map(|ht| Arc::clone(ht) as Arc<dyn core::any::Any + Send + Sync>),
+    }
+}
 
 /// Protocols usable with the Q65 builders — sealed to the Q65 sub-mode
 /// ZSTs (`Q65a15`, `Q65a30`, …). Every one of `q65::rx`'s functions
@@ -86,6 +101,11 @@ pub struct DecodeRequest<'a, P: Q65SubMode> {
     /// Set via [`DecodeRequest::on_result`] — see that method's doc
     /// comment for the delivery-order/dedup contract.
     on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
+    /// Set via [`DecodeRequest::hash_table`] — resolves `<...>`
+    /// hashed-callsign placeholders (WSJT-X Type 4). `None` by
+    /// default: `<...>` stays unresolved, matching every `q65::rx`
+    /// entry point's pre-existing behavior.
+    hash_table: Option<Arc<CallsignHashTable>>,
     _marker: PhantomData<P>,
 }
 
@@ -105,6 +125,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
             ap_list: None,
             fading: None,
             on_result: None,
+            hash_table: None,
             _marker: PhantomData,
         }
     }
@@ -167,12 +188,25 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         self
     }
 
+    /// Session [`CallsignHashTable`] to resolve `<...>` hashed-callsign
+    /// (WSJT-X Type 4) placeholders. `None` by default — matches every
+    /// `q65::rx` entry point's pre-existing behavior of leaving them
+    /// unresolved. `Arc`-shared so passing the same table into repeated
+    /// `decode()` calls across a session is a cheap refcount bump, not
+    /// a table clone; the caller owns the table's lifecycle and grows
+    /// it across the session as standard-format calls are heard.
+    pub fn hash_table(mut self, ht: Arc<CallsignHashTable>) -> Self {
+        self.hash_table = Some(ht);
+        self
+    }
+
     /// Resolves to `decode_scan_with_ap_list_for` if [`Self::ap_list`]
     /// was set, else `decode_scan_fading_for` if [`Self::fading`] was
     /// set (carrying any `.ap_hint()` along), else
     /// `decode_scan_with_ap_for`/`decode_scan_for` depending on
     /// [`Self::ap_hint`].
     pub fn decode(&self) -> Vec<Q65Result> {
+        let ctx = ctx_from_hash_table(self.hash_table.as_ref());
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_scan_with_ap_list_for::<P>(
                 self.audio,
@@ -181,6 +215,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 &self.params,
                 candidates,
                 self.on_result,
+                &ctx,
             );
         }
         if let Some((model, b90_ts)) = self.fading {
@@ -193,6 +228,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 model,
                 self.ap_hint,
                 self.on_result,
+                &ctx,
             );
         }
         match self.ap_hint {
@@ -203,6 +239,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 &self.params,
                 hint,
                 self.on_result,
+                &ctx,
             ),
             None => super::rx::decode_scan_for::<P>(
                 self.audio,
@@ -210,6 +247,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
                 self.nominal_start_sample,
                 &self.params,
                 self.on_result,
+                &ctx,
             ),
         }
     }
@@ -238,6 +276,8 @@ pub struct SniperRequest<'a, P: Q65SubMode> {
     /// [`DecodeRequest`]/[`MultiPeriodRequest`], not because it buys
     /// a timing head start here).
     on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
+    /// See [`DecodeRequest::hash_table`].
+    hash_table: Option<Arc<CallsignHashTable>>,
     _marker: PhantomData<P>,
 }
 
@@ -252,6 +292,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
             ap_list: None,
             fading: None,
             on_result: None,
+            hash_table: None,
             _marker: PhantomData,
         }
     }
@@ -281,9 +322,16 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
         self
     }
 
+    /// See [`DecodeRequest::hash_table`].
+    pub fn hash_table(mut self, ht: Arc<CallsignHashTable>) -> Self {
+        self.hash_table = Some(ht);
+        self
+    }
+
     /// Precedence: ap_list > fading (+ ap_hint) > ap_hint > plain — see
     /// [`DecodeRequest::decode`].
     pub fn decode(&self) -> Option<Q65Result> {
+        let ctx = ctx_from_hash_table(self.hash_table.as_ref());
         let result = if let Some(candidates) = self.ap_list {
             super::rx::decode_at_with_ap_list_for::<P>(
                 self.audio,
@@ -291,6 +339,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
                 self.start_sample,
                 self.base_freq_hz,
                 candidates,
+                &ctx,
             )
         } else if let Some((model, b90_ts)) = self.fading {
             super::rx::decode_at_fading_for::<P>(
@@ -301,6 +350,7 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
                 b90_ts,
                 model,
                 self.ap_hint,
+                &ctx,
             )
         } else {
             match self.ap_hint {
@@ -310,12 +360,14 @@ impl<'a, P: Q65SubMode> SniperRequest<'a, P> {
                     self.start_sample,
                     self.base_freq_hz,
                     hint,
+                    &ctx,
                 ),
                 None => super::rx::decode_at_for::<P>(
                     self.audio,
                     self.sample_rate,
                     self.start_sample,
                     self.base_freq_hz,
+                    &ctx,
                 ),
             }
         };
@@ -352,6 +404,8 @@ pub struct MultiPeriodRequest<'a, P: Q65SubMode> {
     /// own result (if any) is worth surfacing as soon as that period
     /// finishes, rather than waiting for every slot in `audio_slots`.
     on_result: Option<&'a (dyn Fn(&Q65Result) + Sync)>,
+    /// See [`DecodeRequest::hash_table`].
+    hash_table: Option<Arc<CallsignHashTable>>,
     _marker: PhantomData<P>,
 }
 
@@ -369,6 +423,7 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             params,
             ap_list: None,
             on_result: None,
+            hash_table: None,
             _marker: PhantomData,
         }
     }
@@ -388,7 +443,14 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
         self
     }
 
+    /// See [`DecodeRequest::hash_table`].
+    pub fn hash_table(mut self, ht: Arc<CallsignHashTable>) -> Self {
+        self.hash_table = Some(ht);
+        self
+    }
+
     pub fn decode(&self) -> Vec<Q65Result> {
+        let ctx = ctx_from_hash_table(self.hash_table.as_ref());
         super::rx::decode_multi_period_for::<P>(
             self.audio_slots,
             self.sample_rate,
@@ -396,6 +458,7 @@ impl<'a, P: Q65SubMode> MultiPeriodRequest<'a, P> {
             &self.params,
             self.ap_list,
             self.on_result,
+            &ctx,
         )
     }
 }

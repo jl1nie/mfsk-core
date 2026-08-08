@@ -239,8 +239,48 @@ fn finish_decode(
 /// `fc` is the nominal center frequency (Hz) to search around, `ntol`
 /// the search half-width (Hz), and `depth` how hard to try once the
 /// fast short-ping path fails on a given block (see [`Depth`]).
+///
+/// Decodes with no session hash table — hashed-callsign tokens (WSJT-X
+/// Type 4, `<...>` placeholders) never resolve. Use
+/// [`decode_slot_with_hash_table`] to supply one; see its doc comment
+/// for why this crate can't just do that internally.
 pub fn decode_slot(audio: &[i16], fc: f32, ntol: f32, depth: Depth) -> Vec<SlotDecode> {
-    let ctx = DecodeContext::default();
+    decode_slot_with_hash_table(audio, fc, ntol, depth, None)
+}
+
+/// Same as [`decode_slot`], with an optional session
+/// [`CallsignHashTable`](crate::msg::hash_table::CallsignHashTable) to
+/// resolve `<...>` hashed-callsign placeholders.
+///
+/// MSK144 frames unpack via the same [`crate::msg::wsjt77::unpack77`]/
+/// [`crate::msg::wsjt77::unpack77_with_hash`] dispatch FT8/FT4/FST4
+/// use (`frame_decode::decode_frame`'s own doc comment already
+/// documented this parity — `decode_slot` just never had a parameter
+/// to actually supply the table through). Unlike FT8/FT4/FST4's
+/// `engine::pipeline::DecodeResult`, which keeps the raw 77-bit
+/// payload and defers unpacking to `to_decoded(..., hash)` so a table
+/// can be supplied *after* the decode, MSK144's message text is
+/// resolved to a `String` inside the decode call itself (`SlotDecode`
+/// stores the finished text, not raw bits) — so there's no way to
+/// resolve a hashed callsign after the fact here; the table has to be
+/// on hand before the frame's message is unpacked.
+///
+/// The caller owns the table's lifecycle (typically one built and
+/// grown across a whole session, registering standard-format calls as
+/// they're heard, per WSJT-X's own real-time behavior) — `Arc` so
+/// passing it into repeated `decode_slot_with_hash_table` calls across
+/// a session is a cheap refcount bump, not a table clone.
+pub fn decode_slot_with_hash_table(
+    audio: &[i16],
+    fc: f32,
+    ntol: f32,
+    depth: Depth,
+    hash_table: Option<alloc::sync::Arc<crate::msg::hash_table::CallsignHashTable>>,
+) -> Vec<SlotDecode> {
+    let ctx = DecodeContext {
+        callsign_hash_table: hash_table
+            .map(|ht| ht as alloc::sync::Arc<dyn core::any::Any + Send + Sync>),
+    };
     let mut state = ScanState::default();
     let mut out = Vec::new();
 
@@ -341,8 +381,12 @@ mod tests {
 
     fn build_codeword_bitseq(call1: &str, call2: &str, report: &str) -> [u8; 144] {
         let msg77 = crate::msg::wsjt77::pack77(call1, call2, report).expect("valid message");
+        build_codeword_bitseq_from_msg77(&msg77)
+    }
+
+    fn build_codeword_bitseq_from_msg77(msg77: &[u8; 77]) -> [u8; 144] {
         let mut info = [0u8; 90];
-        info[..77].copy_from_slice(&msg77);
+        info[..77].copy_from_slice(msg77);
         let mut bytes = [0u8; 12];
         for (i, &b) in info[..77].iter().enumerate() {
             let byte_idx = i / 8;
@@ -400,6 +444,67 @@ mod tests {
                 "tsec out of slot range: {d:?}"
             );
         }
+    }
+
+    /// `decode_slot_with_hash_table` — proves `.callsign_hash_table`
+    /// actually reaches `frame_decode::decode_frame`'s `unpack77`/
+    /// `unpack77_with_hash` dispatch, not just that it compiles. Same
+    /// differential-test shape used earlier today for
+    /// `DecodeRequest::fft_cache`: `decode_slot` (no table) must show
+    /// the unresolved `<...>` placeholder, and
+    /// `decode_slot_with_hash_table` with a table pre-seeded with the
+    /// hashed callsign must resolve it — proving the table is
+    /// genuinely consulted, not silently ignored the way it was
+    /// before this fix.
+    #[test]
+    fn decode_slot_with_hash_table_resolves_hashed_callsign() {
+        // Type 4: non-standard call "JL1NIE/1" + hashed standard call
+        // "JA1ABC" (see msg::wsjt77's own `type4_hash_register_then_resolve`
+        // unit test for the same recipe at the message-codec level).
+        let msg77 = crate::msg::wsjt77::pack77_type4("JL1NIE/1", "JA1ABC", "", false)
+            .expect("pack77_type4 failed");
+        let bitseq = build_codeword_bitseq_from_msg77(&msg77);
+        let itone = build_i4tone(&bitseq);
+
+        const NREPS: usize = 20;
+        let itone_repeated: Vec<u8> = itone.iter().copied().cycle().take(144 * NREPS).collect();
+        let fc_true = 1500.0f32;
+        let audio_f32 = msk144sim_reference_audio(&itone_repeated, fc_true);
+
+        let slot_len = 15 * 12_000;
+        let mut audio_i16 = pseudo_gaussian_noise_i16(slot_len, 300.0, 43);
+        let true_start = 3 * 12_000;
+        const AMPLITUDE: f32 = 3000.0;
+        for (k, &s) in audio_f32.iter().enumerate() {
+            let v = audio_i16[true_start + k] as f32 + AMPLITUDE * s;
+            audio_i16[true_start + k] = v.clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        }
+
+        // Without a hash table: unresolved placeholder.
+        let no_ht = decode_slot(&audio_i16, fc_true, 8.0, Depth::Deep);
+        assert!(
+            no_ht
+                .iter()
+                .any(|d| d.message.contains("JL1NIE/1") && d.message.contains("<...>")),
+            "expected an unresolved '<...>' decode without a hash table: {no_ht:?}"
+        );
+
+        // With a hash table pre-seeded with the standard call: resolved.
+        let mut ht = crate::msg::hash_table::CallsignHashTable::new();
+        ht.insert("JA1ABC");
+        let with_ht = decode_slot_with_hash_table(
+            &audio_i16,
+            fc_true,
+            8.0,
+            Depth::Deep,
+            Some(alloc::sync::Arc::new(ht)),
+        );
+        assert!(
+            with_ht
+                .iter()
+                .any(|d| d.message.contains("JL1NIE/1") && d.message.contains("<JA1ABC>")),
+            "expected the hashed callsign to resolve via the supplied table: {with_ht:?}"
+        );
     }
 
     /// CRC-13 plus the `n3`/`i3` plausibility filter makes a false

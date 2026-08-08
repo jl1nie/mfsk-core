@@ -29,10 +29,11 @@
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
-use crate::engine::ModulationParams;
+use crate::engine::{DecodeContext, MessageCodec, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::ApHint;
+use crate::msg::Q65Message;
 use crate::msg::q65::{ap_hint_to_q65_mask, unpack_symbols_to_bits77};
 
 #[cfg(test)]
@@ -327,8 +328,9 @@ pub(crate) fn decode_at_for<P: ModulationParams>(
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    decode_at_inner::<P>(audio, sample_rate, start_sample, base_freq_hz, None)
+    decode_at_inner::<P>(audio, sample_rate, start_sample, base_freq_hz, None, ctx)
 }
 
 /// Like [`decode_at_for`] but biases the QRA decoder with an AP
@@ -345,6 +347,7 @@ pub(crate) fn decode_at_with_ap_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     ap_hint: &ApHint,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     decode_at_inner::<P>(
         audio,
@@ -352,6 +355,7 @@ pub(crate) fn decode_at_with_ap_for<P: ModulationParams>(
         start_sample,
         base_freq_hz,
         Some(ap_hint),
+        ctx,
     )
 }
 
@@ -361,10 +365,8 @@ fn decode_at_inner<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     ap_hint: Option<&ApHint>,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     let energies = extract_data_energies::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
 
     // Energies → intrinsic probability distributions over GF(64).
@@ -386,7 +388,7 @@ fn decode_at_inner<P: ModulationParams>(
 
     // 13 GF(64) symbols → 77-bit Wsjt77 → human-readable.
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
@@ -423,10 +425,8 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     b90_ts: f32,
     model: FadingModel,
     ap_hint: Option<&ApHint>,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     let energies = extract_data_energies_wide::<P>(audio, sample_rate, start_sample, base_freq_hz)?;
 
     // Wide energies → fast-fading intrinsic distributions over GF(64).
@@ -454,7 +454,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
     };
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
@@ -473,6 +473,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
 /// fast-fading metric. Mirrors [`decode_scan_for`] but routes each
 /// candidate through [`decode_at_fading_for`] with the supplied
 /// spread parameters.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -482,6 +483,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     model: FadingModel,
     ap_hint: Option<&ApHint>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
@@ -496,6 +498,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
             b90_ts,
             model,
             ap_hint,
+            ctx,
         ) else {
             continue;
         };
@@ -535,10 +538,8 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     if candidates.is_empty() {
         return None;
     }
@@ -552,7 +553,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let snr_db = snr_db_narrow::<P>(&energies, &candidates[idx]);
 
@@ -572,6 +573,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
 /// AP-list decoding on every coarse-search candidate. Mirrors
 /// [`decode_scan_for`] but routes each candidate through
 /// [`decode_at_with_ap_list_for`].
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -579,6 +581,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     params: &super::search::SearchParams,
     candidates: &[[i32; 63]],
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     if candidates.is_empty() {
         return Vec::new();
@@ -594,6 +597,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
             c.start_sample,
             c.freq_hz,
             candidates,
+            ctx,
         ) else {
             continue;
         };
@@ -623,6 +627,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &super::search::SearchParams,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
@@ -631,6 +636,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
         params,
         None,
         on_result,
+        ctx,
     )
 }
 
@@ -638,6 +644,7 @@ pub(crate) fn decode_scan_for<P: ModulationParams>(
 /// candidate is decoded with the AP hint applied, which lifts the
 /// effective decode threshold by 2–4 dB on Q65-30A and is essential
 /// for EME on 6 m and above.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -645,6 +652,7 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
     params: &super::search::SearchParams,
     ap_hint: &ApHint,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     decode_scan_inner::<P>(
         audio,
@@ -653,9 +661,11 @@ pub(crate) fn decode_scan_with_ap_for<P: ModulationParams>(
         params,
         Some(ap_hint),
         on_result,
+        ctx,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_scan_inner<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -663,6 +673,7 @@ fn decode_scan_inner<P: ModulationParams>(
     params: &super::search::SearchParams,
     ap_hint: Option<&ApHint>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
@@ -676,6 +687,7 @@ fn decode_scan_inner<P: ModulationParams>(
             c.freq_hz,
             nsps,
             ap_hint,
+            ctx,
         ) else {
             continue;
         };
@@ -763,6 +775,7 @@ fn zigzag_offset(idx1: i32) -> i32 {
 /// `q65_dec2` inside the nested `ibw` loop) and the same
 /// extract-once-reuse-many pattern already applied to
 /// `decode_multi_period_for`'s fading sweep.
+#[allow(clippy::too_many_arguments)]
 fn decode_at_grid_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -770,10 +783,8 @@ fn decode_at_grid_for<P: ModulationParams>(
     base_freq_hz: f32,
     depth: GridDepth,
     ap_hint: Option<&ApHint>,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let baud = 1.0 / P::SYMBOL_DT;
     let dt_step = (nsps / 16).max(1) as i64;
@@ -866,7 +877,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                 let Ok(iterations) = result else { continue };
 
                 let bits77 = unpack_symbols_to_bits77(&info_syms);
-                let Some(text) = Q65Message.unpack(&bits77, &DecodeContext::default()) else {
+                let Some(text) = Q65Message.unpack(&bits77, ctx) else {
                     continue;
                 };
                 let mut codeword = [0_i32; 63];
@@ -890,6 +901,7 @@ fn decode_at_grid_for<P: ModulationParams>(
 /// [`decode_at_grid_for`]. Uses `GridDepth::Fast`, matching WSJT-X's
 /// own automatic per-slot decode depth (confirmed against `jt9`'s CLI
 /// default, `-d 1`).
+#[allow(clippy::too_many_arguments)]
 fn decode_at_with_fine_timing_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -897,6 +909,7 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
     freq_hz: f32,
     _nsps: usize,
     ap_hint: Option<&ApHint>,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
     decode_at_grid_for::<P>(
         audio,
@@ -905,6 +918,7 @@ fn decode_at_with_fine_timing_for<P: ModulationParams>(
         freq_hz,
         GridDepth::Fast,
         ap_hint,
+        ctx,
     )
 }
 
@@ -1006,10 +1020,8 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     if candidates.is_empty() {
         return None;
     }
@@ -1021,7 +1033,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     let (idx, info_syms) = codec.decode_with_codeword_list(&intrinsics, candidates)?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let snr_db = snr_db_narrow::<P>(energies, &candidates[idx]);
 
@@ -1063,6 +1075,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
 /// iteration cost dominating over allocation cost is the same
 /// conclusion yesterday's FT8/FST4 pass reached for its own BP-scratch
 /// item, just here the reuse made things *worse* instead of neutral.
+#[allow(clippy::too_many_arguments)]
 fn decode_fading_with_energies<P: ModulationParams>(
     energies: &[f32],
     sample_rate: u32,
@@ -1070,10 +1083,8 @@ fn decode_fading_with_energies<P: ModulationParams>(
     base_freq_hz: f32,
     b90_ts: f32,
     model: FadingModel,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     let _state = intrinsics_fast_fading(
         &QRA15_65_64_IRR_E23,
@@ -1090,7 +1101,7 @@ fn decode_fading_with_energies<P: ModulationParams>(
     let iterations = codec.decode(&intrinsics, &mut info_syms, 50).ok()?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
@@ -1113,10 +1124,8 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     energies: &[f32],
     base_freq_hz: f32,
     start_sample: usize,
+    ctx: &DecodeContext,
 ) -> Option<Q65Result> {
-    use crate::engine::{DecodeContext, MessageCodec};
-    use crate::msg::Q65Message;
-
     let mut intrinsics = vec![0.0_f32; 64 * 63];
     QRA15_65_64_IRR_E23.mfsk_bessel_metric(&mut intrinsics, energies, 63, default_es_no_metric());
 
@@ -1125,7 +1134,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
     let iterations = codec.decode(&intrinsics, &mut info_syms, 50).ok()?;
 
     let bits77 = unpack_symbols_to_bits77(&info_syms);
-    let text = Q65Message.unpack(&bits77, &DecodeContext::default())?;
+    let text = Q65Message.unpack(&bits77, ctx)?;
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
@@ -1169,6 +1178,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 /// [`decode_scan_for`] / [`decode_scan_fading_for`] separately.
 ///
 /// Empty `audio_slots` returns an empty Vec.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     audio_slots: &[&[f32]],
     sample_rate: u32,
@@ -1176,6 +1186,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     params: &super::search::SearchParams,
     ap_codewords: Option<&[[i32; 63]]>,
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+    ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
     use super::search::{Spectrogram, coarse_search_on_spec_for};
 
@@ -1263,6 +1274,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                     cand.start_sample,
                     cand.freq_hz,
                     codewords,
+                    ctx,
                 )
             {
                 slot_decode = Some(d);
@@ -1293,6 +1305,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                             cand.freq_hz,
                             b90,
                             model,
+                            ctx,
                         ) {
                             slot_decode = Some(d);
                             break 'candidate_loop;
@@ -1317,7 +1330,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                 })
                 .as_deref()
                 && let Some(d) =
-                    decode_averaged_plain_for::<P>(energies, cand.freq_hz, cand.start_sample)
+                    decode_averaged_plain_for::<P>(energies, cand.freq_hz, cand.start_sample, ctx)
             {
                 slot_decode = Some(d);
                 break 'candidate_loop;
@@ -1381,6 +1394,53 @@ mod tests {
         assert!(
             decodes.is_empty(),
             "got false decodes from silence: {decodes:#?}"
+        );
+    }
+
+    /// `.hash_table(..)` — proves it actually reaches
+    /// `Q65Message.unpack`'s hash-table-aware dispatch, not just that
+    /// it compiles. Same differential-test shape used for MSK144's
+    /// `decode_slot_with_hash_table` and, earlier the same day, for
+    /// `DecodeRequest::fft_cache`: a same-audio round-trip can't
+    /// distinguish "resolved" from "left unresolved" when there's
+    /// nothing to resolve, so this pins a message with a genuinely
+    /// hashed callsign and checks both the without- and with-table
+    /// outcomes.
+    #[test]
+    fn sniper_hash_table_resolves_hashed_callsign() {
+        use super::super::tx::{encode_channel_symbols, synthesize_audio_for};
+        use crate::msg::hash_table::CallsignHashTable;
+        use crate::msg::wsjt77::pack77_type4;
+        use alloc::sync::Arc;
+
+        // Type 4: non-standard call "JL1NIE/1" + hashed standard call
+        // "JA1ABC" — same recipe as msg::wsjt77's own
+        // `type4_hash_register_then_resolve` and MSK144's
+        // `decode_slot_with_hash_table_resolves_hashed_callsign`.
+        let bits77 = pack77_type4("JL1NIE/1", "JA1ABC", "", false).expect("pack77_type4 failed");
+        let tones = encode_channel_symbols(&bits77);
+        let freq = 1500.0;
+        let audio = synthesize_audio_for::<Q65a30>(&tones, 12_000, freq, 0.3);
+
+        // Without a hash table: unresolved placeholder.
+        let no_ht = DecodeRequest::<Q65a30>::sniper(&audio, 12_000, 0, freq)
+            .decode()
+            .expect("clean aligned decode must succeed");
+        assert!(
+            no_ht.message.contains("JL1NIE/1") && no_ht.message.contains("<...>"),
+            "expected an unresolved '<...>' decode without a hash table: {no_ht:?}"
+        );
+
+        // With a hash table pre-seeded with the standard call: resolved.
+        let mut ht = CallsignHashTable::new();
+        ht.insert("JA1ABC");
+        let with_ht = DecodeRequest::<Q65a30>::sniper(&audio, 12_000, 0, freq)
+            .hash_table(Arc::new(ht))
+            .decode()
+            .expect("clean aligned decode must succeed");
+        assert!(
+            with_ht.message.contains("JL1NIE/1") && with_ht.message.contains("<JA1ABC>"),
+            "expected the hashed callsign to resolve via the supplied table: {with_ht:?}"
         );
     }
 }

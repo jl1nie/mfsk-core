@@ -203,6 +203,65 @@ effect on any decode path.
   to the code complexity of forcing it — noted here so it isn't
   re-investigated from scratch, not acted on.
 
+### Fixed
+
+- **Q65 and MSK144 can now resolve `<...>` hashed-callsign
+  placeholders — a gap this session first mis-scoped as "5 protocols
+  wide" (Q65/WSPR/JT65/JT9/MSK144) before actually checking each
+  protocol's own message format.** The hashed-callsign mechanism
+  (WSJT-X's 77-bit message Type 4: one non-standard callsign + one
+  12-bit-hashed standard callsign) is specific to
+  `msg::wsjt77::Wsjt77Message`'s packing, not a cross-protocol concept
+  — so the real scope, once checked, was narrower:
+  - **MSK144** unpacks via the exact same `Wsjt77Message`/
+    `unpack77_with_hash` dispatch FT8/FT4/FST4 use
+    (`frame_decode::decode_frame`'s own doc comment already claimed
+    this parity), but `decode_slot` — the crate's only public MSK144
+    driver — had no parameter to supply a table, so every session
+    permanently showed `<...>` for any hashed callsign heard. Fixed
+    with an additive sibling, `decode_slot_with_hash_table` (same
+    "`_streaming`-sibling-not-a-breaking-parameter" precedent used
+    throughout this crate) — `decode_slot` now just calls it with
+    `None`.
+  - **Q65** packs its 77-bit payload through the same `Wsjt77Message`
+    format internally, and `msg::q65::Q65Message::unpack` already
+    honored `ctx.callsign_hash_table` when given one (`msg/q65.rs:150-153`)
+    — but none of `q65::rx`'s nine decode functions, nor
+    `q65::decode_request`'s three builders (`DecodeRequest`/
+    `SniperRequest`/`MultiPeriodRequest`), had any way to build that
+    `ctx` with a real table; every call site hardcoded
+    `DecodeContext::default()`. Fixed by threading `ctx: &DecodeContext`
+    through the full call chain (`decode_at_inner`/`decode_at_grid_for`/
+    `decode_scan_inner`/the three `decode_averaged_*`/`decode_multi_period_for`
+    helpers) and adding `.hash_table(Arc<CallsignHashTable>)` to all
+    three builders — built once per `decode()` call from the caller's
+    `Arc` (a refcount bump, not a table clone), not per grid cell,
+    since `decode_at_grid_for`'s `(Δf,Δt,b90)` sweep can reach the
+    unpack call site dozens of times in one decode attempt.
+  - **WSPR** was *not* a gap: its own Type-3 hashed-callsign scheme
+    (a distinct 15-bit `nhash`, not `Wsjt77Message`'s 12-bit hash) is
+    deliberately exposed raw on the decoded message
+    (`WsprMessage::Type3 { callsign_hash: u32, .. }`, `msg/wspr.rs:50-54`,
+    "exposed raw so callers with a compatible WSPR hash table can
+    resolve it") — already a complete design, caller-side resolution
+    by intent, not an oversight.
+  - **JT65/JT9** were *not* a gap either: `msg::jt72::Jt72Codec` (the
+    72-bit `packjt.f90`-derived format both share) has no hashed-
+    callsign concept in its wire format at all — an older WSJT
+    message layout that predates the Type-4 compression scheme FT8
+    introduced, not a crate limitation.
+
+  New coverage: a differential test per fixed protocol (a same-audio
+  round-trip can't distinguish "resolved" from "nothing to resolve"
+  when the golden message has no hashed callsign, so both pin a
+  message built via `pack77_type4`/`unpack77_with_hash`'s own recipe
+  and assert the placeholder only resolves when a table is supplied) —
+  `msk144::decode::tests::decode_slot_with_hash_table_resolves_hashed_callsign`
+  and `q65::rx::tests::sniper_hash_table_resolves_hashed_callsign`.
+  Byte-identical recall on every existing golden-WAV suite (MSK144 2/2,
+  all 7 Q65 WSJT-X-golden-WAV tests), full `scripts/pre-push-check.sh`
+  matrix clean.
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added
