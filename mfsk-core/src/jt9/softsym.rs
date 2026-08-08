@@ -612,6 +612,88 @@ mod tests {
     use crate::jt9::tx::synthesize_standard;
     use crate::msg::{Jt72Codec, Jt72Message};
 
+    fn load_wav(path: &std::path::Path) -> Option<Vec<f32>> {
+        let bytes = std::fs::read(path).ok()?;
+        let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+        let data = &bytes[44..44 + data_len];
+        Some(
+            data.chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect(),
+        )
+    }
+
+    /// Timing probe isolating `AudioFft::build` (once per `decode_scan`
+    /// call) from `downsam9` (once per coarse-search candidate — ~50
+    /// simulated here). Added while investigating an apparent JT9
+    /// `decode_scan` slowdown after the branch-hoisting fix to both
+    /// functions (issue: their own indexing bound checks, same shape
+    /// already fixed in `engine::dsp::subtract::apply_at_offset`) —
+    /// isolated per-function timing here showed **no** regression in
+    /// either function (statistically indistinguishable before/after,
+    /// multiple runs). A properly *interleaved* re-measurement of the
+    /// full `decode_scan` end-to-end (the original signal) then also
+    /// came back flat. The initial ~5% "regression" reading was a
+    /// same-machine A/B methodology artifact: measuring all of one
+    /// side's runs, then all of the other's, let ordinary run-to-run
+    /// noise on this box look like a systematic difference — kept as a
+    /// standing probe/lesson, not because these two functions turned
+    /// out to need fixing.
+    #[test]
+    #[ignore = "manual timing probe — AudioFft::build vs downsam9, see doc comment"]
+    fn probe_isolate_build_vs_downsam9() {
+        use std::time::Instant;
+        let path = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        ));
+        let audio = load_wav(path).expect("golden WAV must load");
+
+        fn median(mut v: Vec<f64>) -> f64 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        }
+
+        let _ = AudioFft::build(&audio);
+        let mut build_times = Vec::with_capacity(10);
+        for _ in 0..10 {
+            let t0 = Instant::now();
+            let f = AudioFft::build(&audio);
+            build_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+            std::hint::black_box(&f);
+        }
+        eprintln!(
+            "AudioFft::build: median={:.3}ms min={:.3}ms max={:.3}ms",
+            median(build_times.clone()),
+            build_times.iter().cloned().fold(f64::INFINITY, f64::min),
+            build_times
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max),
+        );
+
+        let big = AudioFft::build(&audio);
+        let freqs: Vec<f32> = (0..50).map(|i| 1050.0 + i as f32 * 10.0).collect();
+        let _ = big.downsam9(freqs[0]);
+        let mut ds_times = Vec::with_capacity(10);
+        for _ in 0..10 {
+            let t0 = Instant::now();
+            for &f in &freqs {
+                let c2 = big.downsam9(f);
+                std::hint::black_box(&c2);
+            }
+            ds_times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!(
+            "downsam9 x{}: median={:.3}ms min={:.3}ms max={:.3}ms ({:.4}ms/call)",
+            freqs.len(),
+            median(ds_times.clone()),
+            ds_times.iter().cloned().fold(f64::INFINITY, f64::min),
+            ds_times.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            median(ds_times) / freqs.len() as f64,
+        );
+    }
+
     #[test]
     fn softsym_golden_grid_roundtrips() {
         let cases = &[

@@ -326,6 +326,31 @@ effect on any decode path.
   rotors as parallel lanes, tracked as a future idea rather than done
   here).
 
+- **Actually measured the above, not just asserted it — findings were
+  mixed, and one initial reading was itself a measurement artifact.**
+  Same-session git-worktree A/B, `msk144::decode::decode_slot` on both
+  WSJT-X golden WAVs: **~13-15% faster** (843→730 ms, 804→680 ms) —
+  `msk144_freq_search`'s CFO loop turned out to be a genuinely hot
+  path (once per candidate × navmask × dither combination), so
+  removing its four-alloc-per-trial cost was a real win, not just
+  hygiene. `wspr::decode::decode_scan_subtract` on its golden WAV:
+  flat (369.5 ms vs. the already-recorded 369.7 ms, within noise) —
+  the LPF convolution step this doesn't touch already dominates.
+  `jt9::decode_scan` on its golden WAV **initially measured ~5%
+  slower** (311→325 ms) — investigated by isolating `AudioFft::build`
+  and `downsam9` with a dedicated timing probe
+  (`jt9::softsym::tests::probe_isolate_build_vs_downsam9`, kept as a
+  standing diagnostic) and found **no regression in either function**,
+  then re-ran the original end-to-end comparison *properly
+  interleaved* (alternating worktrees every run instead of measuring
+  one side's whole block, then the other's) and it also came back
+  flat. The initial reading was this box's own run-to-run noise
+  (already documented elsewhere in this file as ~15%) lining up
+  against block-grouped measurement order, not a real effect from the
+  code change — a live example of why every dated re-measurement
+  entry in this file uses interleaved/isolated methodology rather
+  than sequential before/after blocks.
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added
