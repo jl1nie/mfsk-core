@@ -35,17 +35,20 @@ collaborators), which remains the reference implementation — see
 
 ## Why mfsk-core
 
-- **At or near WSJT-X sensitivity parity on every mode but one.**
+- **At or near WSJT-X sensitivity parity on every mode.**
   FST4 is within 0.1-0.6 dB of WSJT-X's published thresholds across
   all five sub-modes; FT4's AWGN gap is ~0.3 dB; MSK144 matches a real
   WSJT-X `jt9` build on 25/28 AWGN cross-check cells exactly; FT8
   matches the WSJT-X golden set 8/8 and JTDX's 18/18; WSPR
-  and JT9 are 8/8 and 7/7 on their WSJT-X reference recordings. The
-  one exception is disclosed, not hidden: JT65's plain hard-decision
-  path trails WSJT-X's stochastic `ftrsdap` decoder by ~7-8 dB at deep
-  SNR; a faithful port of `ftrsdap` itself, magic numbers included
-  (`jt65::decode_at_with_chase`, [#169](https://github.com/jl1nie/mfsk-core/issues/169))
-  closes most of that, to ~3-4 dB. Full numbers, per protocol:
+  and JT9 are 8/8 and 7/7 on their WSJT-X reference recordings. JT65's
+  own long-disclosed ~7-8 dB gap vs. WSJT-X's stochastic `ftrsdap`
+  decoder was closed 2026-08-08
+  ([#169](https://github.com/jl1nie/mfsk-core/issues/169)): a faithful
+  port of `ftrsdap` itself (`jt65::decode_at_with_chase`, magic numbers
+  included) plus an FFT bin-alignment fix that turned out to be the
+  bigger factor (affecting every JT65 decode path, not just the new
+  one). Full numbers, per protocol, including the honest caveats on
+  the WSJT-X comparison methodology:
   [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
 - **Runs where WSJT-X can't.** Same algorithms, `no_std`-portable:
   a real shipping product
@@ -412,7 +415,7 @@ sweep was generated and reproduced, in
 | FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
 | WSPR     | 8/8 | matches published sensitivity floor |
 | JT9      | 7/7 | no measurable gap |
-| JT65     | none available | plain: ~7-8 dB; `decode_at_with_chase`: **~3-4 dB** (faithful `ftrsdap` port, narrowed 2026-08-08 — see [#169](https://github.com/jl1nie/mfsk-core/issues/169)) |
+| JT65     | none available | ~0 dB (2026-08-08, #169: faithful `ftrsdap` port + FFT bin-alignment fix — see BENCHMARKS.md for comparison caveats) |
 | Q65      | 2 real EME recordings | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
 | MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build |
 

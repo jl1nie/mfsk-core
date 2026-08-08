@@ -18,11 +18,26 @@ use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
 
-/// `(symbols, conf, second_sym, raw_pwr, snr_db)` — the richer demod
-/// tuple [`demodulate_aligned_with_runnerup`] and the internal
+/// `(symbols, conf, second_sym, rel, raw_pwr, snr_db)` — the richer
+/// demod tuple [`demodulate_aligned_with_runnerup`] and the internal
 /// `_inner` helper return. Factored into a named alias purely to keep
 /// `clippy::type_complexity` quiet; see those functions' own doc
 /// comments for what each element means.
+///
+/// `rel[k]` is WSJT-X `demod64a.f90`'s real `mrprob`/`p1` reliability
+/// metric — `best_pwr / total_pwr` where `total_pwr` sums *all 64*
+/// tone powers at that position, not just the top two. **Not the same
+/// quantity as `conf`** (`(best−second)/best`, a top-2-only margin):
+/// `rel` also captures how much energy leaked into the other 62 tones
+/// (i.e. the position's own local noise floor), which `conf` discards
+/// entirely. This distinction matters — `chase::decode_at_with_chase`
+/// initially (incorrectly) used `conf` where WSJT-X's `ftrsdap` uses
+/// `rxprob`/`mrprob` (i.e. this `rel`), for both the erasure-priority
+/// ordering and the `nsoft` soft-distance weighting; see `chase`'s
+/// module doc for the fix and what it changed. `conf` is still needed
+/// separately (WSJT-X's `rxprob2/rxprob` ratio *is* just
+/// `second_pwr/best_pwr` regardless of the `psum` normalization, so
+/// `1 - conf` remains the right quantity for that one piece).
 ///
 /// `raw_pwr[j][tone]` is the un-thresholded FFT-bin power for data
 /// tone `tone` (0..64) at the `j`-th data symbol position (0..63) **in
@@ -33,7 +48,14 @@ use super::sync_pattern::JT65_NPRC;
 /// keeps a raw copy `s3a=s3` for exactly this purpose). 63×64 `f32` =
 /// ~16 KB — JT65 already requires `std`/`fft-rustfft`, so this isn't
 /// an embedded/no_std concern.
-type DemodWithRunnerup = ([u8; 63], [f32; 63], [u8; 63], [[f32; 64]; 63], f32);
+type DemodWithRunnerup = (
+    [u8; 63],
+    [f32; 63],
+    [u8; 63],
+    [f32; 63],
+    [[f32; 64]; 63],
+    f32,
+);
 
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
@@ -58,17 +80,18 @@ pub fn demodulate_aligned(
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
 
-    let (syms, _conf, _second_sym, _raw_pwr, _snr_db) = demodulate_aligned_with_confidence_inner(
-        audio,
-        sample_rate,
-        start_sample,
-        base_freq_hz,
-        nsps,
-        base_bin,
-        &mut buf,
-        &mut scratch,
-        &*fft,
-    )?;
+    let (syms, _conf, _second_sym, _rel, _raw_pwr, _snr_db) =
+        demodulate_aligned_with_confidence_inner(
+            audio,
+            sample_rate,
+            start_sample,
+            base_freq_hz,
+            nsps,
+            base_bin,
+            &mut buf,
+            &mut scratch,
+            &*fft,
+        )?;
     Some(syms)
 }
 
@@ -92,13 +115,14 @@ pub fn demodulate_aligned_with_confidence(
 
 /// Like [`demodulate_aligned_with_confidence`] but also returns the
 /// *identity* of each position's second-most-reliable tone (not just
-/// its power), the raw un-thresholded power spectrum, and the
-/// decode-side SNR estimate. Used by
-/// [`crate::jt65::chase::decode_at_with_chase`]'s stochastic erasure
-/// search: the runner-up tone's identity and the raw spectrum feed
-/// WSJT-X `ftrsdap`'s `nsoft`/`getpp` candidate-ranking metrics (see
-/// `DemodWithRunnerup` and the `chase` module's doc comment for the
-/// full rationale).
+/// its power), WSJT-X's real `mrprob`-equivalent reliability metric
+/// (`rel` — **not** the same as `conf`, see `DemodWithRunnerup`'s doc),
+/// the raw un-thresholded power spectrum, and the decode-side SNR
+/// estimate. Used by [`crate::jt65::chase::decode_at_with_chase`]'s
+/// stochastic erasure search: `rel` and the raw spectrum feed WSJT-X
+/// `ftrsdap`'s erasure-ordering/`nsoft`/`getpp` candidate-ranking
+/// metrics (see `DemodWithRunnerup` and the `chase` module's doc
+/// comment for the full rationale).
 pub fn demodulate_aligned_with_runnerup(
     audio: &[f32],
     sample_rate: u32,
@@ -160,25 +184,26 @@ pub fn demodulate_aligned_with_confidence_and_snr(
     let fft = planner.plan_fft_forward(nsps);
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-    let (syms, conf, _second_sym, _raw_pwr, snr_db) = demodulate_aligned_with_confidence_inner(
-        audio,
-        sample_rate,
-        start_sample,
-        base_freq_hz,
-        nsps,
-        base_bin,
-        &mut buf,
-        &mut scratch,
-        &*fft,
-    )?;
+    let (syms, conf, _second_sym, _rel, _raw_pwr, snr_db) =
+        demodulate_aligned_with_confidence_inner(
+            audio,
+            sample_rate,
+            start_sample,
+            base_freq_hz,
+            nsps,
+            base_bin,
+            &mut buf,
+            &mut scratch,
+            &*fft,
+        )?;
     Some((syms, conf, snr_db))
 }
 
 fn demodulate_aligned_with_confidence_inner(
     audio: &[f32],
-    _sample_rate: u32,
+    sample_rate: u32,
     start_sample: usize,
-    _base_freq_hz: f32,
+    base_freq_hz: f32,
     nsps: usize,
     base_bin: usize,
     buf: &mut [Complex<f32>],
@@ -193,6 +218,7 @@ fn demodulate_aligned_with_confidence_inner(
     // checks whether a correction landed on the 2nd-best guess).
     let mut symbols = [0u8; 63];
     let mut conf = [0f32; 63];
+    let mut rel = [0f32; 63];
     let mut second_tone_sym = [0u8; 63];
     // Raw un-thresholded power per (temporal position, tone) — kept in
     // WSJT-X's `s3a` order (temporal, i.e. *not* deinterleaved) since
@@ -202,10 +228,39 @@ fn demodulate_aligned_with_confidence_inner(
     let mut xsig_sum = 0.0f32;
     let mut xnoi_sum = 0.0f32;
     let mut k = 0usize;
+
+    // Sub-bin frequency correction. `base_bin` is `base_freq_hz`
+    // rounded to the nearest FFT bin — for a caller passing a
+    // fractional (refined) frequency, `residual_hz` is the leftover
+    // offset (≤ half a bin, ≈1.35 Hz worst case at this NSPS/rate).
+    // Left uncorrected, that residual costs real detection sensitivity
+    // — a rectangular-window FFT's worst-case (exact half-bin) power
+    // loss is a well-known ≈3.9 dB "scalloping loss", confirmed by
+    // measurement on this crate's own AWGN corpus (see
+    // `docs/notes/BENCHMARKS.md`'s JT65 section). WSJT-X avoids this
+    // by correcting the residual on the *time-domain* signal before
+    // any FFT (`twkfreq65.f90`, driven by `afc65b`'s continuous
+    // frequency fit) — this mirrors that, via a running-phase NCO
+    // applied while converting each real sample to complex, so the
+    // correction is phase-continuous across all 126 symbol windows
+    // (they tile the buffer with no gaps, so a per-sample running
+    // phase computed once here stays exact throughout — no need to
+    // reset or re-derive it per window). Same running-accumulator
+    // pattern as `engine::dsp::subtract`'s NCO loops.
+    let residual_hz = base_freq_hz - base_bin as f32 * (sample_rate as f32 / nsps as f32);
+    let dphi = -core::f32::consts::TAU * residual_hz / sample_rate as f32;
+    let mut phase = 0.0f32;
+
     for sym_idx in 0..126 {
         let sym_start = start_sample + sym_idx * nsps;
         for (slot, &s) in buf.iter_mut().zip(&audio[sym_start..sym_start + nsps]) {
-            *slot = Complex::new(s, 0.0);
+            *slot = Complex::new(s, 0.0) * Complex::new(phase.cos(), phase.sin());
+            phase += dphi;
+            if phase > core::f32::consts::PI {
+                phase -= core::f32::consts::TAU;
+            } else if phase < -core::f32::consts::PI {
+                phase += core::f32::consts::TAU;
+            }
         }
         fft.process_with_scratch(buf, scratch);
         if JT65_NPRC[sym_idx] == 1 {
@@ -238,6 +293,14 @@ fn demodulate_aligned_with_confidence_inner(
         } else {
             0.0
         };
+        // WSJT-X `demod64a.f90`: `if(psum.eq.0.0) psum=1.e-6` — avoid
+        // div-by-zero on a fully silent position; degenerate case, no
+        // real reliability signal either way.
+        rel[k] = if total_pwr > 0.0 {
+            (best_pwr / total_pwr).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         xsig_sum += best_pwr;
         xnoi_sum += (total_pwr - best_pwr) / 63.0;
         k += 1;
@@ -245,15 +308,16 @@ fn demodulate_aligned_with_confidence_inner(
     debug_assert_eq!(k, 63);
     deinterleave(&mut symbols);
     deinterleave(&mut second_tone_sym);
-    // Apply the same permutation to confidence so positions line up.
+    // Apply the same permutation to confidence/reliability so
+    // positions line up. Re-run the same 7×9 transpose `deinterleave`
+    // uses (it's `[u8;63]`-only, so `f32` arrays can't call it
+    // directly) so both stay aligned with the permuted symbols.
     let mut conf_perm = [0f32; 63];
-    {
-        // Re-run the same 7×9 transpose `deinterleave` uses so
-        // confidence stays aligned with the permuted symbols.
-        for i in 0..7 {
-            for j in 0..9 {
-                conf_perm[j * 7 + i] = conf[i * 9 + j];
-            }
+    let mut rel_perm = [0f32; 63];
+    for i in 0..7 {
+        for j in 0..9 {
+            conf_perm[j * 7 + i] = conf[i * 9 + j];
+            rel_perm[j * 7 + i] = rel[i * 9 + j];
         }
     }
 
@@ -283,7 +347,14 @@ fn demodulate_aligned_with_confidence_inner(
         }
     };
 
-    Some((symbols, conf_perm, second_tone_sym, raw_pwr, snr_db))
+    Some((
+        symbols,
+        conf_perm,
+        second_tone_sym,
+        rel_perm,
+        raw_pwr,
+        snr_db,
+    ))
 }
 
 #[cfg(test)]

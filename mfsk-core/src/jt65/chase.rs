@@ -50,6 +50,28 @@
 //! sensitivity is reported honestly in `docs/notes/BENCHMARKS.md`,
 //! whatever it turns out to be — this doc comment describes the
 //! *algorithm* being ported, not a promised outcome.
+//!
+//! ## Correction: `rel` vs. `conf` (same-day follow-up)
+//!
+//! The reliability metric this module actually needs is WSJT-X
+//! `demod64a.f90`'s `mrprob` — `best_pwr / total_pwr` across **all 64**
+//! tones at a position, an SNR-like peakiness measure that reflects
+//! how much energy leaked into the noise floor everywhere, not just
+//! into the runner-up tone. An initial version of this port instead
+//! reused [`super::rx`]'s pre-existing `conf` (`(best−second)/best`, a
+//! top-2-only margin) for the erasure-priority ordering and the
+//! `nsoft` weighting — a real mismatch, not just a naming difference:
+//! two positions with the same top-2 margin can have very different
+//! `mrprob` if one has a quiet noise floor and the other doesn't, and
+//! `conf` can't tell them apart. Fixed by adding `rel` (WSJT-X's real
+//! `mrprob`) to [`super::rx::demodulate_aligned_with_runnerup`]'s
+//! return and using it everywhere WSJT-X uses `rxprob`/`mrprob` —
+//! `conf` is *still* correct and still used for the `PERR` table's
+//! `ii` ratio bucket, since `rxprob2/rxprob` algebraically reduces to
+//! `second_pwr/best_pwr` regardless of the `total_pwr` normalization,
+//! which is exactly what `1 - conf` already gives. Measured effect:
+//! a further ~0.9 dB of 50%-crossing improvement — see
+//! `docs/notes/BENCHMARKS.md`'s JT65 section for the corrected numbers.
 
 use crate::engine::{DecodeContext, MessageCodec};
 use crate::fec::Rs63_12;
@@ -299,7 +321,7 @@ pub(super) fn decode_at_with_chase_and_snr(
     base_freq_hz: f32,
     params: &ChaseParams,
 ) -> Option<(Jt72Message, f32)> {
-    let (symbols, conf, second_sym, raw_pwr, snr_db) =
+    let (symbols, conf, second_sym, rel, raw_pwr, snr_db) =
         rx::demodulate_aligned_with_runnerup(audio, sample_rate, start_sample, base_freq_hz)?;
 
     let rs = Rs63_12::new();
@@ -313,14 +335,17 @@ pub(super) fn decode_at_with_chase_and_snr(
         return Some((msg, snr_db));
     }
 
-    // `ftrsdap.c:149`: `if(nsum<=0) return;` — no usable confidence
-    // signal at all (e.g. a fully silent slot).
-    let nsum: f32 = conf.iter().sum();
+    // `ftrsdap.c:149`: `if(nsum<=0) return;` — no usable reliability
+    // signal at all (e.g. a fully silent slot). `nsum` sums `rel`
+    // (WSJT-X's real `rxprob`/`mrprob`), **not** `conf` — see `rel`'s
+    // doc comment on `DemodWithRunnerup` for why these differ and why
+    // `rel` is the correct quantity here.
+    let nsum: f32 = rel.iter().sum();
     if nsum <= 0.0 {
         return None;
     }
 
-    let order = confidence_order(&conf);
+    let order = confidence_order(&rel);
     let thresh0 = build_thresh0(&order, &conf);
     let max_erasures = params.max_erasures.min(Rs63_12::NROOTS);
     let mut lcg = Lcg::new(params.seed);
@@ -356,14 +381,15 @@ pub(super) fn decode_at_with_chase_and_snr(
         // position that differs from the received hard decision but
         // *matches* the runner-up guess contributes to `nhard` only,
         // not `nsoft` — a cheap correction. One that matches neither
-        // costs its full confidence weight.
+        // costs its full `rel` weight (WSJT-X's `rxprob[i]`, not the
+        // top-2 margin `conf` — same distinction as `order` above).
         let mut nhard = 0u32;
         let mut nsoft_raw = 0.0f32;
         for i in 0..63 {
             if cand_sent[i] != symbols[i] {
                 nhard += 1;
                 if cand_sent[i] != second_sym[i] {
-                    nsoft_raw += conf[i];
+                    nsoft_raw += rel[i];
                 }
             }
         }

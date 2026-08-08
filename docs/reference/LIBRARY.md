@@ -1236,11 +1236,17 @@ standard decoder misses, and — for deeper SNR still —
 magic numbers included (erasure-probability table, `getpp`
 spectral-power candidate ranking, literal acceptance-gate constants —
 not just the algorithmic shape). Same call shape as the plain
-`decode_scan` family, with an extra `&ChaseParams` argument; see
-`chase`'s module doc for the algorithm and
-`docs/notes/BENCHMARKS.md`'s JT65 section for the measured recall
-improvement (50% crossing moved ~4.3 dB lower, closing most — not all —
-of the previously-documented ~7-8 dB gap).
+`decode_scan` family, with an extra `&ChaseParams` argument. A second,
+independent fix landed the same day: `search`/`rx` gained a fine
+sub-bin frequency refinement + NCO correction that eliminates FFT
+"scalloping loss" — this benefits *every* JT65 decode path, not just
+`decode_at_with_chase` (`decode_at_with_erasures`'s own recall jumped
+just as much, with zero code changes to that function). See `chase`'s
+module doc for the chase algorithm and `docs/notes/BENCHMARKS.md`'s
+JT65 section for the full measured story — together, the two fixes
+closed the previously-documented ~7-8 dB gap essentially entirely on
+this crate's AWGN corpus (with appropriate caveats on the WSJT-X
+comparison methodology, spelled out there).
 
 `Jt65Result::snr_db` and JT9's `Jt9Result::snr_db` are both
 decode-side estimates from the per-symbol signal-tone vs. other-tones

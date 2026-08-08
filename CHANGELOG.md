@@ -194,22 +194,83 @@ effect on any decode path.
 
   Measured on the existing `tests/jt65_sweep.rs` AWGN corpus (300
   files, 20 trials/SNR) at the faithful port's literal 1000-trial
-  default: 50% recall crossing moved from −14 dB to ≈ −18.3 dB, closing
-  roughly 4.3 dB of the previously-documented ~7-8 dB gap vs. WSJT-X's
-  `jt9 -6`; ~3-4 dB remains at the deepest cells. Honest comparison:
-  at an *equal* trial budget the faithful port is only modestly ahead
-  of the discarded first pass's simplified approximation (not
-  dramatically better) — literal fidelity to WSJT-X's algorithm didn't
-  turn out to be a decisive advantage on this crate's own demodulator/
-  confidence distribution, for whatever that's worth as a data point.
-  The ≥0 dB cells are unchanged (the fast zero-erasure path is
-  unaffected). Issue #169 is not closed by this — the residual gap is
-  real and left open, plausibly demodulator-level or from WSJT-X's
-  much larger aggressive-mode trial budgets (up to 100 000), not from
-  anything left un-ported inside `ftrsdap` itself — but the
-  practically-relevant portion of the original gap is gone. Full
-  before/after tables and the equal-budget comparison:
-  `docs/notes/BENCHMARKS.md`'s JT65 section.
+  default, before the reliability-metric fix below: 50% recall
+  crossing moved from −14 dB to ≈ −18.3 dB.
+
+  **Follow-up fix, same day, user-prompted**: asked "なぜこんなに
+  ギャップがあるの？何か見落としていると考えるのが合理的な結論だと
+  思うけど？" over the still-sizeable residual — a fair challenge that
+  turned up a real bug. The "faithful" pass above had reused this
+  crate's pre-existing `conf` metric (`(best−second)/best`, a top-2
+  -tone-only margin) everywhere WSJT-X's real `demod64a.f90` uses a
+  materially different quantity: `mrprob = best_pwr/total_pwr` summed
+  over *all 64* tones at a position, not just the top two — an
+  SNR-like peakiness measure that reflects the local noise floor
+  across the whole spectrum, which `conf` can't see (two positions
+  with an identical top-2 margin can have very different `mrprob`
+  depending on how much power sits in the other 62 tones). This fed
+  the wrong quantity into both the erasure-priority ordering and the
+  `nsoft` soft-distance weighting. Fixed by adding a `rel` field
+  (`best_pwr/total_pwr`, cheap — `total_pwr` was already computed for
+  the SNR estimate) to `rx::demodulate_aligned_with_runnerup` and using
+  it everywhere WSJT-X uses `rxprob`/`mrprob`; `conf` was still correct
+  and unchanged for the `PERR` table's ratio bucket, since
+  `rxprob2/rxprob` algebraically reduces to `second_pwr/best_pwr`
+  regardless of the `psum` normalization.
+
+  50% recall crossing after this fix: −14 dB → ≈ −19.1 dB (~5.1 dB of
+  the ~7-8 dB gap), ~2-3 dB still remaining at the deepest cells.
+
+  **Second follow-up, same day, further user pushback**: still not
+  satisfied with the residual gap, the user asked for a phase-by-phase
+  comparison against WSJT-X's *real* pipeline, not just `ftrsdap.c` in
+  isolation. That comparison (`decode65a.f90` → `decode65b.f90` →
+  `extract.f90`) found the actual dominant cause, unrelated to
+  `ftrsdap`: WSJT-X applies a continuous (non-quantized) frequency+
+  drift correction to the *time-domain* signal (`afc65b.f90`'s
+  chi-square fit + `twkfreq65.f90`'s phase-continuous correction)
+  before any FFT. This crate's JT65 demod had no equivalent at all —
+  every candidate frequency got rounded to the nearest FFT bin and
+  stopped there. A rectangular window pays a well-known worst-case
+  ≈3.9 dB "scalloping loss" for a tone sitting exactly half a bin off
+  center — and this crate's own AWGN sweep golden frequency, 1500 Hz,
+  sits at *exactly* bin 557.5 (NSPS=4460 @ 12 kHz ⇒ 2.6906 Hz/bin),
+  the worst possible case, on every single trial in the corpus.
+  Confirmed directly: a throwaway A/B probe (identical synth signal +
+  identical noise, differing only in whether the frequency landed on a
+  bin center) measured 100% vs. 43-50% recall at identical SNRs — the
+  true scale of "what was being missed," bigger than anything found
+  inside `ftrsdap` itself.
+
+  Fixed with two additive pieces that apply to *every* JT65 decode
+  path (not just chase, since they all share `search`/`rx`):
+  `search::refine_freq_hz` (3-point log-power parabolic "Jacobsen"
+  interpolation of the sync-tone power around the coarse bin, reusing
+  the already-built spectrogram, no extra FFTs) gives candidate
+  frequencies genuine sub-bin precision; a running-phase NCO in
+  `rx::demodulate_aligned_with_confidence_inner` (same accumulator
+  pattern as `engine::dsp::subtract`'s NCO loops) cancels the residual
+  sub-bin offset on the audio before each symbol's FFT, phase-
+  continuous across the whole 126-symbol frame — mirroring WSJT-X's
+  `twkfreq65` (without the drift term; this crate's search doesn't
+  estimate drift, and the AWGN corpus has none). Exactly a no-op for
+  any caller already passing a bin-aligned frequency.
+
+  **Final measured result**: plain `decode_at_with_erasures`'s 50%
+  crossing moved −14 dB → ≈ −21.8 dB — with **zero code changes to
+  that function itself**, purely by sharing the fixed `search`/`rx`.
+  `decode_at_with_chase`'s moved to ≈ −23.8 dB. Both now at or beyond
+  the previously-cited WSJT-X `jt9 -6` reference floor (~100% to
+  −22 dB) — treated with real caution, not declared as "beats
+  WSJT-X": that reference figure's own provenance wasn't independently
+  re-verified against a real `jt9` binary this session, and the
+  corpus's −25 dB floor is no longer deep enough to fully characterize
+  either decoder (chase already shows partial recall there). The
+  honest, load-bearing conclusion: **the originally-diagnosed ~7-8 dB
+  gap is gone** on this crate's AWGN corpus — issue #169 can reasonably
+  be considered closed as filed. Full before/after tables and the
+  complete phase-by-phase writeup: `docs/notes/BENCHMARKS.md`'s JT65
+  section.
 
 ### Changed
 

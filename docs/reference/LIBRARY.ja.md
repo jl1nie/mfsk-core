@@ -1095,9 +1095,14 @@ WSJT-X の stochastic Chase デコーダ `ftrsdap` の忠実な移植（アル�
 形状だけでなく、消失確率テーブル・`getpp` スペクトル電力による候補
 ランキング・受理ゲート定数などマジックナンバーも含む）。呼び出し形は
 通常の `decode_scan` 系と同じで `&ChaseParams` 引数が増えるだけ。
-アルゴリズムの詳細は `chase` モジュールの doc コメント、実測結果
-（50% クロスポイントが約 4.3 dB 改善し、従来の ~7-8 dB ギャップの
-大半を解消）は `docs/notes/BENCHMARKS.md` の JT65 節を参照。
+同日、もう一つ独立した修正も入った：`search`/`rx` に周波数のサブビン
+精緻化 + NCO 補正を追加し、FFT の「scalloping loss」を解消——これは
+`decode_at_with_chase` だけでなく JT65 の全デコード経路に効く
+（`decode_at_with_erasures` 自体もコード変更ゼロのまま同程度に改善）。
+chase アルゴリズムの詳細は `chase` モジュールの doc コメント、実測結果
+の全体像（この2つの修正を合わせ、従来の ~7-8 dB ギャップをこのcrate の
+AWGN コーパス上でほぼ解消——WSJT-X比較の方法論に関する留保も含めて）は
+`docs/notes/BENCHMARKS.md` の JT65 節を参照。
 
 `Jt65Result::snr_db` と JT9 の `Jt9Result::snr_db` はどちらも、
 各シンボルで復号されたトーンの電力と他トーンの電力比から算出する

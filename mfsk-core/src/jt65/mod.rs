@@ -66,9 +66,17 @@
 //! magic numbers included, not just the algorithmic shape: WSJT-X's
 //! own erasure-probability table, its `getpp` spectral-power candidate
 //! ranking, and its literal acceptance-gate constants (see [`chase`]'s
-//! module doc for the full list). Measured on the AWGN sweep
-//! (`docs/notes/BENCHMARKS.md`), this closes most — not all — of the
-//! ~7-8 dB sensitivity gap vs. real WSJT-X's `jt9 -6`.
+//! module doc for the full list). A second, independent fix landed the
+//! same day: [`search`]/[`rx`] gained a sub-bin frequency refinement +
+//! NCO correction that eliminates FFT "scalloping loss" — this
+//! benefits *every* decode path in this module, not just
+//! `decode_at_with_chase` (`decode_at_with_erasures` inherits it too,
+//! with no code changes of its own). Measured on the AWGN sweep
+//! (`docs/notes/BENCHMARKS.md`), the two fixes together closed the
+//! previously-documented ~7-8 dB sensitivity gap vs. real WSJT-X's
+//! `jt9 -6` essentially entirely on this crate's corpus — see that
+//! doc's JT65 section for the full story and honest caveats on the
+//! WSJT-X comparison.
 //!
 //! ```no_run
 //! use mfsk_core::jt65::decode_scan_chase_default;
