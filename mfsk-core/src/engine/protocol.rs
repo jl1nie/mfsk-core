@@ -368,10 +368,11 @@ pub struct FecOpts<'a> {
     /// for substantially faster decode on f32 / fixed-point math.
     pub bp_kind: BpKind,
     /// Override for the Fano sequential decoder's per-information-bit
-    /// cycle budget. `None` = codec-supplied default
-    /// (`ConvFano232::DEFAULT_MAX_CYCLES = 10_000`, matching WSJT-X's
-    /// standard `limit=10000`). Used by JT9's deep-search retry path
-    /// (`lib/jt9_decode.f90:84-101`: 10k → 30k → 100k).
+    /// cycle budget. `None` = codec-supplied default. WSJT-X's own
+    /// `jt9_decode.f90:84-101` ladder is `limit=5000` (base/`-d1`) →
+    /// `10000` (`-d2`) → `30000` (`-d3`) → `100000` ("Decode Again");
+    /// JT9's [`crate::jt9::decode::Jt9Depth`] exposes the same four
+    /// tiers.
     pub max_cycles_per_bit: Option<u64>,
 }
 

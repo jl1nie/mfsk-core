@@ -18,10 +18,78 @@ use super::softsym::{AudioFft, FSAMPLE_DOWN, afc9, llrs_from_c5, peakdt9, twkfre
 /// signals score 1.5..15, phantoms < 0.8).
 const SYNC_GATE: f32 = 1.5;
 
+/// JT9 Fano-decode depth — mirrors WSJT-X `jt9_decode.f90`'s `ndepth`
+/// cycle-per-bit budget tiers (the `-d`/`--depth` CLI flag, plus
+/// "Decode Again" which uses the deepest tier unconditionally). Only
+/// the cycle *budget* is ported here, not WSJT-X's own `ccflim`/
+/// `schklim` gate-loosening at deeper tiers — this crate's own
+/// sync-score/`sync`/`schk` thresholds were calibrated separately
+/// against this crate's own candidate pipeline and are unchanged by
+/// depth (see `docs/notes/BENCHMARKS.md`'s JT9 section for the
+/// measured tradeoff and the real-`jt9`-at-`-d1` comparison this
+/// default was checked against).
+///
+/// Every non-`Fast` tier costs more only on candidates that
+/// ultimately fail to converge — a real signal converges in
+/// microseconds regardless of the budget (measured,
+/// `jt9::tests::candidate_loop_stage_diag`), so raising depth mainly
+/// costs time on a busy/noisy band, not on a quiet one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Jt9Depth {
+    /// `limit=5000` — WSJT-X's own automatic per-slot scan default
+    /// (`jt9 -d1`, `jt9_decode.f90:84`).
+    Fast,
+    /// `limit=10000` — this crate's long-standing default before depth
+    /// became configurable (2026-08-08). Kept as the crate default:
+    /// checked against real `jt9 -9` (which defaults to `-d1`, i.e.
+    /// [`Jt9Depth::Fast`]) on the AWGN sweep corpus's two lowest
+    /// crossing points and found *not* to close the gap to real `jt9`
+    /// at either tier (`Fast` fell further behind; `Normal` matched at
+    /// one point, still trailed at the other) — so there's a small
+    /// pre-existing sensitivity gap independent of this setting, and
+    /// dropping the default to match WSJT-X's own `-d1` number would
+    /// not have brought us to parity with it. See
+    /// `docs/notes/BENCHMARKS.md` for the numbers.
+    #[default]
+    Normal,
+    /// `limit=30000` — WSJT-X `-d3`.
+    Deep,
+    /// `limit=100000` — WSJT-X's "Decode Again" tier (`nagain`,
+    /// unconditional deepest budget, not gated by `-d`).
+    Max,
+}
+
+impl Jt9Depth {
+    fn max_cycles_per_bit(self) -> u64 {
+        match self {
+            Jt9Depth::Fast => 5_000,
+            Jt9Depth::Normal => 10_000,
+            Jt9Depth::Deep => 30_000,
+            Jt9Depth::Max => 100_000,
+        }
+    }
+}
+
 /// Try to decode a JT9 signal centred at `freq_hz` using a pre-built
 /// audio FFT. Returns `None` when the sync gate is missed, Fano fails
 /// to converge, or the message is not `Jt72Message::Standard`.
+///
+/// `decode_scan`'s production candidate loop calls
+/// [`decode_at_baseband_with_fft_depth`] directly (it always has an
+/// explicit [`Jt9Depth`] to hand); this default-depth convenience is
+/// currently only exercised by tests (`decode_at_baseband` below).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<Jt9Result> {
+    decode_at_baseband_with_fft_depth(big_fft, freq_hz, Jt9Depth::default())
+}
+
+/// [`decode_at_baseband_with_fft`] with an explicit [`Jt9Depth`]
+/// instead of the crate default.
+pub fn decode_at_baseband_with_fft_depth(
+    big_fft: &AudioFft,
+    freq_hz: f32,
+    depth: Jt9Depth,
+) -> Option<Jt9Result> {
     if freq_hz <= 0.0 {
         return None;
     }
@@ -51,7 +119,11 @@ pub fn decode_at_baseband_with_fft(big_fft: &AudioFft, freq_hz: f32) -> Option<J
     if !schk.is_finite() || schk < 1.5 {
         return None;
     }
-    let res = ConvFano232.decode_soft(&llrs, &FecOpts::default())?;
+    let opts = FecOpts {
+        max_cycles_per_bit: Some(depth.max_cycles_per_bit()),
+        ..FecOpts::default()
+    };
+    let res = ConvFano232.decode_soft(&llrs, &opts)?;
     let mut payload = [0u8; 72];
     payload.copy_from_slice(&res.info);
     let msg = Jt72Codec::default().unpack(&payload, &DecodeContext::default())?;
@@ -87,6 +159,24 @@ pub fn decode_at_baseband(
 ) -> Option<Jt9Result> {
     let big = AudioFft::build(audio);
     decode_at_baseband_with_fft(&big, freq_hz)
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::Jt9Depth;
+
+    #[test]
+    fn cycle_budgets_match_wsjtx_ndepth_ladder() {
+        assert_eq!(Jt9Depth::Fast.max_cycles_per_bit(), 5_000);
+        assert_eq!(Jt9Depth::Normal.max_cycles_per_bit(), 10_000);
+        assert_eq!(Jt9Depth::Deep.max_cycles_per_bit(), 30_000);
+        assert_eq!(Jt9Depth::Max.max_cycles_per_bit(), 100_000);
+    }
+
+    #[test]
+    fn default_is_normal() {
+        assert_eq!(Jt9Depth::default(), Jt9Depth::Normal);
+    }
 }
 
 /// Convert peakdt9 lag (in 27.78 Hz baseband samples) back to a

@@ -45,6 +45,7 @@ pub(crate) mod softsym;
 pub mod sync_pattern;
 pub mod tx;
 
+pub use decode::Jt9Depth;
 pub use interleave::{deinterleave, deinterleave_llrs, interleave};
 pub use rx::demodulate_aligned;
 pub use search::{SearchParams, SyncCandidate, coarse_search};
@@ -100,7 +101,38 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &search::SearchParams,
 ) -> Vec<Jt9Result> {
-    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        Jt9Depth::default(),
+        None,
+    )
+}
+
+/// [`decode_scan`] with an explicit [`Jt9Depth`] instead of the crate
+/// default — trades candidate-loop CPU cost for extra sensitivity on
+/// candidates that don't converge (a real signal converges in
+/// microseconds regardless of depth, so this only costs more on a
+/// busy/noisy band). See [`Jt9Depth`]'s own doc comment for the
+/// measured tradeoff and WSJT-X's own `-d`/"Decode Again" precedent
+/// this mirrors.
+pub fn decode_scan_with_depth(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    depth: Jt9Depth,
+) -> Vec<Jt9Result> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        depth,
+        None,
+    )
 }
 
 /// Streaming variant of [`decode_scan`]: fires `on_result` once per
@@ -136,6 +168,27 @@ pub fn decode_scan_streaming(
         sample_rate,
         nominal_start_sample,
         params,
+        Jt9Depth::default(),
+        Some(on_result),
+    )
+}
+
+/// [`decode_scan_streaming`] with an explicit [`Jt9Depth`] — see
+/// [`decode_scan_with_depth`].
+pub fn decode_scan_streaming_with_depth(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &search::SearchParams,
+    depth: Jt9Depth,
+    on_result: &(dyn Fn(&Jt9Result) + Sync),
+) -> Vec<Jt9Result> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        depth,
         Some(on_result),
     )
 }
@@ -145,6 +198,7 @@ fn decode_scan_inner(
     sample_rate: u32,
     nominal_start_sample: usize,
     params: &search::SearchParams,
+    depth: Jt9Depth,
     on_result: Option<&(dyn Fn(&Jt9Result) + Sync)>,
 ) -> Vec<Jt9Result> {
     use crate::engine::ModulationParams;
@@ -177,7 +231,7 @@ fn decode_scan_inner(
 
     let mut seen: Vec<Jt9Result> = Vec::new();
     for c in cands {
-        let Some(d) = decode::decode_at_baseband_with_fft(&big_fft, c.freq_hz) else {
+        let Some(d) = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth) else {
             continue;
         };
         let dup = seen.iter().any(|prev| {
@@ -280,6 +334,32 @@ mod tests {
 
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::N, 206);
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::K, 72);
+    }
+
+    /// `decode_scan_with_depth` wiring sanity — every depth tier must
+    /// still recover a clean, strong synthetic signal (a real signal
+    /// converges in Fano almost instantly regardless of cycle budget,
+    /// see `Jt9Depth`'s own doc comment; this only checks the plumbing
+    /// reaches `ConvFano232`, not sensitivity — that's the AWGN
+    /// sweep's job).
+    #[test]
+    fn decode_scan_with_depth_finds_clean_signal_at_every_tier() {
+        let freq = 1500.0;
+        let audio =
+            tx::synthesize_standard("CQ", "K1ABC", "FN42", 12_000, freq, 0.3).expect("pack+synth");
+        let params = search::SearchParams::default();
+        for depth in [
+            Jt9Depth::Fast,
+            Jt9Depth::Normal,
+            Jt9Depth::Deep,
+            Jt9Depth::Max,
+        ] {
+            let decodes = decode_scan_with_depth(&audio, 12_000, 0, &params, depth);
+            assert!(
+                !decodes.is_empty(),
+                "depth={depth:?} found no decodes on a clean synthetic signal"
+            );
+        }
     }
 
     #[test]
