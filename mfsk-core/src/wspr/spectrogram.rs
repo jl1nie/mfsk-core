@@ -88,10 +88,21 @@ impl Spectrogram {
         // Noise reference: mean power across all bins and times,
         // discarding the top 5 % to avoid strong signals dragging the
         // estimate up. Cheap approximation of median-filter noise floor.
+        // Only the *set* of bottom-95% values is needed (order within
+        // that set is irrelevant, we just sum them), not a full
+        // ascending order — `select_nth_unstable_by` partitions in
+        // O(n) average instead of `sort_unstable_by`'s O(n log n), same
+        // fix applied to JT65/JT9's structurally identical
+        // `Spectrogram`/`AudioFft::build` and Q65's `build_for`. Bigger
+        // win here than any of those: this table is ~700 × 4096 ≈ 2.9M
+        // elements per slot (`n_time × n_freq`, see the module doc
+        // comment), the largest of the four.
         let mut sorted = mags_sqr.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
         let keep = (sorted.len() as f32 * 0.95) as usize;
         let noise_per_bin = if keep > 0 {
+            sorted.select_nth_unstable_by(keep - 1, |a, b| {
+                a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
+            });
             sorted[..keep].iter().sum::<f32>() / keep as f32
         } else {
             1.0
