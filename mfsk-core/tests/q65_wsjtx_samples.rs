@@ -941,12 +941,13 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
 }
 
 /// `DecodeRequest::on_result` streaming callback — real-signal
-/// verification, mirroring `tests/ft8_streaming_decode.rs`'s
-/// sequential-exact-match contract. Q65's wide-band scan
-/// (`decode_scan_for` → `decode_scan_inner`) is sequential and
-/// dedup-then-push with no early exit, so — same as FT8's
-/// `.sic_rounds()` path — the callback-delivered set must exactly
-/// equal the batch `Vec`, no divergence mechanism exists.
+/// verification. Q65's wide-band scan (`decode_scan_for` →
+/// `decode_scan_inner`) runs via `rayon` under `feature = "parallel"`
+/// (this crate's own CI default), so — same as FT8/FT4's own
+/// parallel-strategy tests — comparison is set-based (every batch
+/// result must have fired the callback at least once), not exact
+/// `Vec` equality; see `DecodeRequest::on_result`'s doc comment for
+/// the full possible-transient-duplicate contract.
 #[test]
 fn q65_scan_streaming_matches_batch_exactly() {
     let Some(dir) = samples_dir("60A_EME_6m") else {
@@ -984,19 +985,20 @@ fn q65_scan_streaming_matches_batch_exactly() {
         .on_result(&on_result)
         .decode();
 
-    let batch_msgs: Vec<String> = batch.iter().map(|d| d.message.clone()).collect();
     let streamed = streamed.into_inner().unwrap();
     eprintln!(
         "{}: batch={} streamed={}",
         path.file_name().unwrap().to_string_lossy(),
-        batch_msgs.len(),
+        batch.len(),
         streamed.len()
     );
-    assert_eq!(
-        streamed, batch_msgs,
-        "Q65 wide-band scan: streamed callback deliveries must exactly \
-         match the batch result, same order (sequential dedup-then-push, \
-         no divergence mechanism exists on this path)"
+    let batch_set: std::collections::BTreeSet<String> =
+        batch.iter().map(|d| d.message.clone()).collect();
+    let streamed_set: std::collections::BTreeSet<String> = streamed.into_iter().collect();
+    assert!(
+        batch_set.is_subset(&streamed_set),
+        "every batch result must have fired the streaming callback \
+         at least once: batch={batch_set:?} streamed={streamed_set:?}"
     );
 }
 

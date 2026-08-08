@@ -178,11 +178,21 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     ///
     /// **Delivery order/dedup contract**: `q65::rx`'s scan loops
     /// (`decode_scan_for`/`decode_scan_with_ap_for`/
-    /// `decode_scan_fading_for`/`decode_scan_with_ap_list_for`) are
-    /// sequential and dedup-then-push, with no early exit — `cb`
-    /// fires exactly once per result that ends up in the returned
-    /// `Vec`, in the same order. No divergence mechanism exists here
-    /// (unlike FT8's parallel single-pass strategy).
+    /// `decode_scan_fading_for`/`decode_scan_with_ap_list_for`) run via
+    /// `rayon` under `feature = "parallel"` (falls back to a plain
+    /// sequential loop otherwise) — same shape as
+    /// [`crate::msg::decode_request::DecodeRequest::on_result`]'s
+    /// "default single-pass strategy" (see that method's doc comment
+    /// for the full rationale). `cb` fires from whichever thread
+    /// decoded that candidate, in completion order (not
+    /// candidate-score order), and *before* the final cross-candidate
+    /// dedup pass — on the rare occasion two different sync candidates
+    /// converge on the same message, `cb` may fire for both even
+    /// though only one survives into the returned `Vec`. Callers
+    /// wanting exact parity should dedup by `.message` on their side,
+    /// the same key this crate's own dedup already uses. `cb` must be
+    /// `Sync` for this reason — it may be called concurrently from
+    /// multiple `rayon` worker threads.
     pub fn on_result(mut self, cb: &'a (dyn Fn(&Q65Result) + Sync)) -> Self {
         self.on_result = Some(cb);
         self

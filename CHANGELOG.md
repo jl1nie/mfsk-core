@@ -293,6 +293,23 @@ effect on any decode path.
   and architectural consistency with the rest of the crate; recall
   confirmed byte-identical.
 
+- **Q65 candidate-level parallelism** (same day, same investigation) —
+  Q65 had the identical pre-existing gap. Added
+  `#[cfg(feature = "parallel")]` `par_iter()` to `decode_scan_inner`
+  (shared by `decode_scan_for`/`decode_scan_with_ap_for`),
+  `decode_scan_fading_for`, and `decode_scan_with_ap_list_for`
+  (`decode_multi_period_for` deliberately untouched — its EMA
+  spectrogram accumulation is inherently sequential across slots by
+  design). `DecodeRequest::on_result`'s doc comment updated to the
+  same fire-before-dedup/possible-transient-duplicate contract as
+  JT65's; `q65_wsjtx_samples.rs`'s
+  `q65_scan_streaming_matches_batch_exactly` rewritten to a set-based
+  comparison accordingly. Measured on a real WSJT-X sample
+  (`60A_EME_6m/210106_1621.wav`, 4 real decodes): again **no
+  meaningful speedup** (64.2 ms → 62.9 ms/call, within noise) — same
+  pattern as JT65. Recall confirmed unchanged: full WSJT-X sample
+  suite and the Q65-30A SNR sweep both pass identically.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its
