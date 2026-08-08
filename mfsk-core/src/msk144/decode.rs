@@ -114,62 +114,23 @@ impl Default for ScanState {
     }
 }
 
-/// A block's raw decode attempt, before any of `ScanState`'s
-/// cross-block bookkeeping is applied. See [`decode_block_raw`].
-struct RawDecode {
-    message: String,
-    pmax: f32,
-    tdec_sec: f32,
-    fest: f32,
-}
-
-/// One block's outcome: the mean power (`pavg`, always present —
-/// needed either way for the `pnoise` update in
-/// [`apply_scan_state`]) plus a raw decode if Stage A/B found one.
-/// `None` at the outer level means the block was silent
-/// (`rms < 1.0`) — WSJT-X doesn't touch `pnoise` for those at all, so
-/// this crate doesn't either (matches the original `decode_block`'s
-/// early `return None`, which skipped the state update entirely, not
-/// just the decode).
-struct BlockOutcome {
-    pavg: f32,
-    raw: Option<RawDecode>,
-}
-
-/// Decode one `BLOCK_SIZE`-sample (0.597 s) analysis block, minus the
-/// `ScanState`-dependent parts (`pnoise`-based SNR, `msglast`/
-/// `nsnrlast` dedup gate) — see [`apply_scan_state`] for those. Ported
+/// Decode one `BLOCK_SIZE`-sample (0.597 s) analysis block. Ported
 /// from `mskrtd.f90:92-233` (minus the RX-equalizer training and
 /// MSK40/SWL paths — see the module doc).
-///
-/// Split out from the original single `decode_block` (issue: "そもそも
-/// parallelはあるの？" → "Jt9とmsk144") specifically so the expensive
-/// part — `analytic_signal` + Stage A/B sync search + FEC decode — can
-/// run in parallel across blocks: `pnoise`/`msglast`/`nsnrlast` are
-/// the *only* state genuinely threaded across blocks in the original
-/// algorithm, and neither one feeds into whether Stage A/B finds a
-/// decode at all — `pnoise` is read only inside `finish_decode`'s SNR
-/// formula (a post-hoc reporting computation), and `msglast`/
-/// `nsnrlast` only gate whether an already-found decode gets reported.
-/// [`decode_slot_with_hash_table`] runs this function per block (in
-/// parallel under `feature = "parallel"`), then
-/// [`apply_scan_state`] replays the original sequential state
-/// machine over the results in block order — same final output as the
-/// original single-pass version, verified by
-/// `decode_slot_parallel_matches_sequential_synth`/`_awgn` below.
-fn decode_block_raw(
+fn decode_block(
     audio_i16: &[i16],
     fc: f32,
     ntol: f32,
     depth: Depth,
     ctx: &DecodeContext,
-) -> Option<BlockOutcome> {
+    state: &mut ScanState,
+) -> Option<SlotDecode> {
     assert_eq!(audio_i16.len(), BLOCK_SIZE);
 
     let d: Vec<f32> = audio_i16.iter().map(|&x| x as f32).collect();
     let rms = (d.iter().map(|&x| x * x).sum::<f32>() / BLOCK_SIZE as f32).sqrt();
     if rms < 1.0 {
-        return None; // effectively silent block — no pnoise update either
+        return None; // effectively silent block
     }
     let fac = 1.0 / rms;
     let d_norm: Vec<f32> = d.iter().map(|&x| x * fac).collect();
@@ -191,15 +152,7 @@ fn decode_block_raw(
 
     // Stage A: short-ping decoder.
     if let Some(spd) = short_ping_decode(cbig, fc, ntol, ctx) {
-        return Some(BlockOutcome {
-            pavg,
-            raw: Some(RawDecode {
-                message: spd.message,
-                pmax,
-                tdec_sec: spd.tdec_sec,
-                fest: spd.fest,
-            }),
-        });
+        return finish_decode(spd.message, pmax, state, spd.tdec_sec, spd.fest);
     }
 
     // Stage B: longer frame-averaging fallback.
@@ -226,45 +179,22 @@ fn decode_block_raw(
                 );
                 if let Some(result) = decode_frame(&softbits, ctx) {
                     let tdec_sec = XMC[iavg] * tframe;
-                    return Some(BlockOutcome {
-                        pavg,
-                        raw: Some(RawDecode {
-                            message: result.message,
-                            pmax,
-                            tdec_sec,
-                            fest: sync_result.fest,
-                        }),
-                    });
+                    return finish_decode(result.message, pmax, state, tdec_sec, sync_result.fest);
                 }
             }
         }
     }
 
-    Some(BlockOutcome { pavg, raw: None })
-}
-
-/// Replays the original sequential `ScanState` machine over one
-/// block's [`BlockOutcome`], in block order — see
-/// [`decode_block_raw`]'s doc comment for why this split is safe.
-/// `None` (silent block) is a no-op, matching the original's early
-/// return.
-fn apply_scan_state(outcome: Option<BlockOutcome>, state: &mut ScanState) -> Option<SlotDecode> {
-    let outcome = outcome?;
-    match outcome.raw {
-        Some(raw) => finish_decode(raw.message, raw.pmax, state, raw.tdec_sec, raw.fest),
-        None => {
-            // No decode: update the noise floor (`mskrtd.f90:172-179`)
-            // -- slow to rise, quick to fall.
-            if state.pnoise < 0.0 {
-                state.pnoise = outcome.pavg;
-            } else if outcome.pavg > state.pnoise {
-                state.pnoise = 0.9 * state.pnoise + 0.1 * outcome.pavg;
-            } else {
-                state.pnoise = outcome.pavg;
-            }
-            None
-        }
+    // No decode: update the noise floor (`mskrtd.f90:172-179`) --
+    // slow to rise, quick to fall.
+    if state.pnoise < 0.0 {
+        state.pnoise = pavg;
+    } else if pavg > state.pnoise {
+        state.pnoise = 0.9 * state.pnoise + 0.1 * pavg;
+    } else {
+        state.pnoise = pavg;
     }
+    None
 }
 
 /// SNR estimate + dupe-check gate (`mskrtd.f90:182-216`), shared by
@@ -351,42 +281,22 @@ pub fn decode_slot_with_hash_table(
         callsign_hash_table: hash_table
             .map(|ht| ht as alloc::sync::Arc<dyn core::any::Any + Send + Sync>),
     };
+    let mut state = ScanState::default();
     let mut out = Vec::new();
 
     if audio.len() < BLOCK_SIZE {
         return out;
     }
 
-    let mut positions: Vec<usize> = Vec::new();
     let mut position = 0usize;
     while position + BLOCK_SIZE <= audio.len() {
-        positions.push(position);
-        position += STEP_SIZE;
-    }
-
-    // Phase 1: the expensive per-block decode attempt (analytic_signal
-    // + Stage A/B sync search + FEC decode) — independent per block,
-    // safe to run in parallel. See `decode_block_raw`'s doc comment.
-    let decode_one =
-        |&pos: &usize| decode_block_raw(&audio[pos..pos + BLOCK_SIZE], fc, ntol, depth, &ctx);
-    #[cfg(feature = "parallel")]
-    let outcomes: Vec<Option<BlockOutcome>> = {
-        use rayon::prelude::*;
-        positions.par_iter().map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let outcomes: Vec<Option<BlockOutcome>> = positions.iter().map(decode_one).collect();
-
-    // Phase 2: cheap, strictly sequential — replays the original
-    // pnoise/msglast/nsnrlast state machine over the (now
-    // precomputed) per-block outcomes in block order.
-    let mut state = ScanState::default();
-    for (&pos, outcome) in positions.iter().zip(outcomes) {
-        let tsec = pos as f32 / 12_000.0;
-        if let Some(mut r) = apply_scan_state(outcome, &mut state) {
+        let block = &audio[position..position + BLOCK_SIZE];
+        let tsec = position as f32 / 12_000.0;
+        if let Some(mut r) = decode_block(block, fc, ntol, depth, &ctx, &mut state) {
             r.tsec += tsec;
             out.push(r);
         }
+        position += STEP_SIZE;
     }
 
     out
@@ -534,19 +444,6 @@ mod tests {
                 "tsec out of slot range: {d:?}"
             );
         }
-
-        // `msglast`/`nsnrlast` dedup must have collapsed the ~8
-        // overlapping sliding-window blocks the repeated ~1.44 s ping
-        // spans down to exactly 1 decode — a strong, exact check on
-        // `apply_scan_state`'s replayed dedup logic (`decodes.len()`
-        // is 1, not "some number ≥ 1" — a dedup regression would show
-        // up as extra near-identical decodes here).
-        assert_eq!(
-            decodes.len(),
-            1,
-            "expected msglast/nsnrlast dedup to collapse the repeated \
-             burst to exactly one decode: {decodes:?}"
-        );
     }
 
     /// `decode_slot_with_hash_table` — proves `.callsign_hash_table`

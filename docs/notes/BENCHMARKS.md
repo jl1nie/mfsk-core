@@ -1308,33 +1308,6 @@ about ±0.5 dB given the sweep's SNR step granularity:
 
 ## MSK144
 
-- **Candidate-level parallelism, genuinely redesigned** (2026-08-08,
-  same investigation as JT65/Q65/JT9/uvpacket's — user: "Jt9とmsk144"):
-  unlike those protocols' simple independent-candidate scan loops,
-  `decode_slot`'s sliding-window scan threads a `ScanState` (`pnoise`
-  EMA noise floor; `msglast`/`nsnrlast` dedup) across blocks in
-  sequence — a real cross-block dependency, not incidental shared
-  state. Assessed carefully rather than either skipped or blindly
-  parallelized: neither `ScanState` field feeds into whether Stage A/B
-  *finds* a decode, only into the reported SNR and the accept/reject
-  dedup decision for an already-found one — so the expensive part
-  (`analytic_signal` + Stage A/B sync search + FEC decode) splits
-  cleanly from the cheap sequential state machine. Split
-  `decode_block` into `decode_block_raw` (no `ScanState` access,
-  `par_iter()`-safe) and `apply_scan_state` (replays the *exact*
-  original `pnoise`/dedup logic over the precomputed per-block
-  outcomes, in order) — same final output as the original single-pass
-  version, not an approximation. `decode_slot_recovers_a_real_message_
-  from_a_15s_buffer` strengthened from "≥ 1 decode" to an exact
-  `decodes.len() == 1` assertion (a real dedup regression would show
-  extra near-duplicate decodes); byte-for-byte identical `SlotDecode`
-  output confirmed between feature configs by manual A/B. Timed
-  (synthetic 30 s noise-only slot, `Depth::Deep`): again **no
-  meaningful speedup** — 73.0 ms → 72.5 ms/call, within noise, same
-  conclusion as every other protocol this investigation touched (the
-  likely real bottleneck across all of them is elsewhere — see JT65's
-  note above). Recall confirmed unchanged in both configs: full unit
-  suite, both real WSJT-X samples, and the SNR sweep below.
 - **3/3 WSJT-X golden** across both `samples/MSK144/*.wav` recordings
   — message, frequency, timing, **and SNR** all gated (a systematic
   −1 dB SNR bias found post-ship was root-caused to a missing fixed
