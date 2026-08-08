@@ -328,29 +328,6 @@ effect on any decode path.
   FFT/spectrogram build, not the candidate-decode loop this change
   actually parallelizes.
 
-- **uvpacket candidate-level parallelism** (same day, user: "最後に
-  uvpacketも") — `uvpacket::rx::decode_multichannel` had the same
-  pre-existing gap, in *two* independent loops inside
-  `decode_multichannel_inner`: the outer per-frequency-centre coarse
-  scan (each centre only reads the shared `audio` and returns its own
-  best-peak/score-list pair, no cross-iteration mutable state) and the
-  final per-peak decode loop (each peak's `decode_at_inner` call is
-  independently pure). Both got `#[cfg(feature = "parallel")]`
-  `par_iter()`. The outer scan previously accumulated a single growing
-  `all_scores: Vec<f32>` across all centres (used for the band-wide
-  sync-gate median) directly inside the loop — restructured to have
-  each centre return its own local scores, flattened into the same
-  `all_scores` afterward (identical final content, order-independent
-  for a median). No `on_result` callback exists on this API, so no
-  streaming-contract change was needed here, unlike JT65/Q65/JT9.
-  Measured on a synthetic 4-simultaneous-frame case (spread across the
-  default 300–2700 Hz band, near the max peak count the default
-  600 Hz NMS radius allows): **no meaningful speedup** — stable at
-  ~40–42 ms/call across 6 repeated runs, both feature configs
-  statistically indistinguishable. Same conclusion as JT65/Q65/JT9.
-  Recall confirmed unchanged: all `uvpacket_multichannel.rs` and
-  in-crate `uvpacket::` unit tests pass identically in both configs.
-
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its

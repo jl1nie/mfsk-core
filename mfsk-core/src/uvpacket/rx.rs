@@ -684,15 +684,6 @@ fn decode_inner(audio: &[f32], audio_centre_hz: f32, fec_opts: &FecOpts) -> Vec<
     frames
 }
 
-/// `(centre_hz, audio_offset, mode, score)` — one coarse-search peak.
-/// Factored into a named alias purely to keep `clippy::type_complexity`
-/// quiet at the several sites below that pass this shape around.
-type PeakEntry = (f32, usize, Mode, f32);
-/// One centre's scan result: its best peak (if any cleared
-/// `best_score > 0.0`) plus every raw score it saw, for the
-/// caller-side band-wide median.
-type CentreScanResult = (Option<PeakEntry>, Vec<f32>);
-
 fn decode_multichannel_inner(
     audio: &[f32],
     mc_opts: &MultiChannelOpts,
@@ -701,24 +692,13 @@ fn decode_multichannel_inner(
     // For each centre, find the strongest peak across both nsps
     // values (NSPS_BASE for Robust/Standard/Express, NSPS_ULTRA for
     // UltraRobust). Peak audio_offset = mf_offset − sym_peak_offset.
-    //
-    // Each centre's scan only reads the shared `audio` and returns its
-    // own (best peak, all scores seen) pair — no mutable state shared
-    // across centres — so this is safe to run in parallel. Materialize
-    // the centre list first since a float-stepped `while` loop isn't
-    // directly a parallel iterator.
-    let mut centres: Vec<f32> = Vec::new();
+    let mut peaks: Vec<(f32, usize, Mode, f32)> = Vec::new();
+    let mut all_scores: Vec<f32> = Vec::new();
     let mut centre = mc_opts.band_lo_hz;
     while centre <= mc_opts.band_hi_hz {
-        centres.push(centre);
-        centre += mc_opts.coarse_step_hz;
-    }
-
-    let scan_centre = |&centre: &f32| -> CentreScanResult {
         let mut best_audio_off = 0usize;
         let mut best_mode = Mode::Robust;
         let mut best_score = 0.0_f32;
-        let mut local_scores: Vec<f32> = Vec::new();
         for &nsps in ALL_NSPS.iter() {
             let mf_out = downconvert_and_matched_filter(audio, centre, nsps);
             let max_corr_offset = mf_out.len().saturating_sub((PREAMBLE_LEN - 1) * nsps + 1);
@@ -735,7 +715,7 @@ fn decode_multichannel_inner(
                     preamble_differential_scores_multi(&mf_out, mf_offset, &nsps_bits[..np], nsps);
                 for j in 0..np {
                     let s = scores[j];
-                    local_scores.push(s);
+                    all_scores.push(s);
                     if s > best_score
                         && let Some(audio_off) = mf_offset.checked_sub(peak_off)
                     {
@@ -746,25 +726,10 @@ fn decode_multichannel_inner(
                 }
             }
         }
-        let peak = (best_score > 0.0).then_some((centre, best_audio_off, best_mode, best_score));
-        (peak, local_scores)
-    };
-
-    #[cfg(feature = "parallel")]
-    let scan_results: Vec<CentreScanResult> = {
-        use rayon::prelude::*;
-        centres.par_iter().map(scan_centre).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let scan_results: Vec<CentreScanResult> = centres.iter().map(scan_centre).collect();
-
-    let mut peaks: Vec<PeakEntry> = Vec::new();
-    let mut all_scores: Vec<f32> = Vec::new();
-    for (peak, local_scores) in scan_results {
-        if let Some(p) = peak {
-            peaks.push(p);
+        if best_score > 0.0 {
+            peaks.push((centre, best_audio_off, best_mode, best_score));
         }
-        all_scores.extend(local_scores);
+        centre += mc_opts.coarse_step_hz;
     }
     if peaks.is_empty() {
         return Vec::new();
@@ -793,32 +758,21 @@ fn decode_multichannel_inner(
         }
     }
 
-    // Per-peak decode. Each peak's decode only reads the shared
-    // `audio`/`fec_opts` and returns its own result — no mutable state
-    // shared across peaks — so this is safe to run in parallel.
+    // Per-peak decode.
     let afc_opts = AfcOpts::default();
-    let decode_one =
-        |&(centre, audio_off, mode): &(f32, usize, Mode)| -> Option<(f32, DecodedFrame)> {
-            let nsps = mode.nsps();
-            let needed = (PREAMBLE_LEN + HEADER_BLOCK_SYMS) * nsps + rrc_len_for(nsps);
-            if audio_off + needed > audio.len() {
-                return None;
-            }
-            let delta_hz =
-                estimate_freq_offset_for_mode(audio, audio_off, needed, centre, mode, &afc_opts);
-            decode_at_inner(audio, audio_off, centre + delta_hz, mode, fec_opts)
-                .ok()
-                .map(|frame| (centre + delta_hz, frame))
-        };
-
-    #[cfg(feature = "parallel")]
-    let out: Vec<(f32, DecodedFrame)> = {
-        use rayon::prelude::*;
-        kept.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let out: Vec<(f32, DecodedFrame)> = kept.iter().filter_map(decode_one).collect();
-
+    let mut out: Vec<(f32, DecodedFrame)> = Vec::new();
+    for (centre, audio_off, mode) in kept {
+        let nsps = mode.nsps();
+        let needed = (PREAMBLE_LEN + HEADER_BLOCK_SYMS) * nsps + rrc_len_for(nsps);
+        if audio_off + needed > audio.len() {
+            continue;
+        }
+        let delta_hz =
+            estimate_freq_offset_for_mode(audio, audio_off, needed, centre, mode, &afc_opts);
+        if let Ok(frame) = decode_at_inner(audio, audio_off, centre + delta_hz, mode, fec_opts) {
+            out.push((centre + delta_hz, frame));
+        }
+    }
     out
 }
 
