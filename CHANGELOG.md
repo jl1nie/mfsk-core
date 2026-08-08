@@ -302,6 +302,32 @@ effect on any decode path.
   corrects a stale "80% at −26 dB" figure for real `jt9` to a freshly
   re-verified 70%.
 
+- **JT9: fixed the small sensitivity gap above (task #24), and it
+  wasn't cycle-budget-related at all.** Root-caused via two
+  `jt9::decode::gate_diag` probes on the specific AWGN files this
+  crate missed but real `jt9 -d1` decoded: `jt9::search::coarse_search`'s
+  frequency grid is one bin wide (~1.736 Hz, exactly the tone spacing)
+  with no sub-bin refinement, so candidates routinely landed 0.3-1 Hz
+  off the true frequency — inside Fano's sharp non-convergence zone
+  regardless of `Jt9Depth`. The same "coarse bin center isn't close
+  enough, and nothing downstream recovers it" shape as JT65's own
+  scalloping-loss fix (issue #169) — fixed with the identical
+  technique, ported directly: `search::refine_freq_hz`, 3-point
+  log-power parabolic interpolation of the sync-tone power across the
+  already-built spectrogram (no extra FFTs, no new algorithm).
+
+  Result: this crate now **exceeds** real `jt9 -d1` at both points
+  that used to trail it — −26 dB 65%→**85%** (13/20→17/20), −27 dB
+  10%→**25%** (2/20→5/20). Golden WAV recall unchanged (7/7). With the
+  bug gone, `Jt9Depth::Fast` and `Normal` score *identically* on the
+  full sweep — the extra cycle budget `Normal` was kept for above
+  turned out to have been silently compensating for this bug, not
+  buying real sensitivity — so `Jt9Depth::default()` moved to `Fast`
+  (same result, half the non-converging-candidate cost). Golden-WAV
+  `decode_scan` wall time: ~302 ms → **~159 ms**, roughly halved again
+  on top of the `realfft` win earlier this file. Full writeup:
+  `docs/notes/BENCHMARKS.md`'s JT9 section.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its

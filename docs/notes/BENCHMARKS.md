@@ -23,7 +23,7 @@ Two kinds of numbers appear per protocol:
 | FT4      | 6/6 | AWGN ≈ −16.9 dB (WSJT-X: −17.5 dB, ~0.6 dB gap) | at parity |
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
-| JT9      | 7/7 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
+| JT9      | 7/7 | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
 | JT65     | none available | ~0 dB (2026-08-08, #169: faithful `ftrsdap` port + FFT bin-alignment fix — see JT65 section for caveats on the WSJT-X comparison) | gap closed |
 | Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
@@ -99,7 +99,7 @@ is wall time on a many-core host, not a single-thread figure).
 | Q65-120E | 6 m ionoscatter ×2 files (fading metric) | 120 s | 0.14 s (was 0.26 s — see 2026-08-08 note below) |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.19 s (was 0.34 s — see 2026-08-08 note below) |
 | WSPR | 150426_0918.wav | 120 s | 0.37 s (was 0.93 s — see 2026-08-08 note below) |
-| JT9 | 130418_1742.wav | 60 s | 0.30 s (was 0.37 s / 0.33 s — see the second 2026-08-08 note below) |
+| JT9 | 130418_1742.wav | 60 s | 0.16 s (was 0.37 s / 0.33 s — see the second 2026-08-08 note below) |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.42 s (was 0.56 s — see 2026-08-08 note below) |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.65 s (was 0.69 s) |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
@@ -332,9 +332,10 @@ parallelism…" entry) led to profiling JT65/JT9's `Spectrogram`/
   the ~25-27% seen on the lower-candidate-count diagnostic file
   because this file's candidate loop (up to 200 candidates on a busy
   band) is proportionally a much larger share of total time than in
-  the simpler case. Recall unchanged at every point (7/7 golden).
-  AWGN sweep crossing point unchanged (still ≈−26.3 dB, exact
-  percentage match at every SNR point — see the JT9 section below).
+  the simpler case. Recall unchanged at every point (7/7 golden). AWGN
+  sweep crossing point unaffected by *this* fix specifically (still
+  ≈−26.3 dB at this point in the day — later moved to ≈−26.6 dB by
+  the unrelated frequency-refinement fix below, task #24).
 - **`msk144::spd`'s noise-floor quantile** got the identical
   `sort_by`→`select_nth_unstable_by` fix (same audit), but on an
   array sized `nstep ≈ 833` (15 s slot, `STEP=216`) the absolute time
@@ -353,12 +354,25 @@ parallelism…" entry) led to profiling JT65/JT9's `Spectrogram`/
   `max_cycles_per_bit` budget (~5.7ms each); the 10 that converge
   finish in ~4µs each (0.04ms total). This led to `Jt9Depth`
   (`Fast`/`Normal`/`Deep`/`Max` = 5000/10000/30000/100000 cycles/bit,
-  mirroring WSJT-X's own `-d`/"Decode Again" ladder) — see the JT9
-  section below for the real-`jt9`-comparison numbers behind keeping
-  `Normal` (10 000, unchanged) as the default rather than switching to
-  `Fast` (5 000, WSJT-X's own default). New `decode_scan_with_depth`/
-  `decode_scan_streaming_with_depth`/`decode_at_baseband_with_fft_depth`
-  siblings; existing `decode_scan`/`decode_scan_streaming` unchanged.
+  mirroring WSJT-X's own `-d`/"Decode Again" ladder) — new
+  `decode_scan_with_depth`/`decode_scan_streaming_with_depth`/
+  `decode_at_baseband_with_fft_depth` siblings; existing `decode_scan`/
+  `decode_scan_streaming` unchanged in signature/callers.
+- **Task #24, same day: root-caused *why* so many candidates never
+  converge, closing a ~5pt AWGN sensitivity gap vs. real `jt9 -9` at
+  −26 dB found while choosing `Jt9Depth`'s default** — not a cycle-
+  budget problem at all: `coarse_search`'s frequency grid (one bin =
+  one tone spacing, ~1.736 Hz) had no sub-bin refinement, so
+  candidates routinely landed 0.3-1 Hz off the true frequency, inside
+  Fano's sharp non-convergence zone regardless of budget — the same
+  shape as JT65's own scalloping-loss fix (issue #169), fixed with the
+  literal same technique (`search::refine_freq_hz`, reused). AWGN
+  sweep −26 dB 65%→**85%**, −27 dB 10%→**25%** — this crate now
+  *exceeds* real `jt9 -d1`'s own 70%/10% at both points. With the bug
+  gone, `Fast` and `Normal` score identically, so `Jt9Depth::default()`
+  moved to `Fast` (cheaper, same result) — golden-WAV `decode_scan`:
+  **~302 ms → ~159 ms**, roughly halved again. Full writeup, probe
+  methodology, and the exact per-file numbers: JT9 section below.
 
 Also investigated, same pass: candidate-loop `rayon` parallelism for
 all five of JT65/Q65/JT9/uvpacket/MSK144 (none had it before), and,
@@ -1013,22 +1027,22 @@ reference bandwidth).
   `sync9` per-freq collapse). This table previously said 5/5 — stale;
   `jt9_wsjtx_samples.rs`'s own comment records 7/7 as of 2026-05-08,
   well before this row was last touched. Found and corrected
-  2026-07-26 during an unrelated cross-protocol re-verification pass;
-  decode speed re-confirmed unchanged (0.33 s → 0.34 s, within noise)
-  at the time. Still 7/7 as of 2026-08-08's `select_nth_unstable_by` +
-  `realfft` speed fixes (~340 ms → ~302 ms on this same golden WAV —
-  see the "Decode speed" section's second 2026-08-08 note).
+  2026-07-26 during an unrelated cross-protocol re-verification pass.
+  Still 7/7 through every 2026-08-08 fix below (`select_nth_unstable_by`,
+  `realfft`, and the frequency-refinement fix that closed issue/task
+  #24) — golden-WAV recall never moved all day; every win below is
+  speed or AWGN-floor sensitivity, not this row.
 
 **AWGN sensitivity sweep** (`tests/jt9_sweep.rs`, `jt9sim`-driven,
-20 trials/SNR):
+20 trials/SNR) — **current, post task #24 fix** (2026-08-08):
 
 | SNR | Recall |
 |---:|---:|
 | −30 dB | 0.0% |
 | −28 dB | 0.0% |
-| −27 dB | 10.0% |
-| −26 dB | 65.0% |
-| −25 dB | 90.0% |
+| −27 dB | 25.0% |
+| −26 dB | 85.0% |
+| −25 dB | 100.0% |
 | −24 dB | 100.0% |
 | −22 dB | 100.0% |
 | −20 dB | 100.0% |
@@ -1040,27 +1054,60 @@ reference bandwidth).
 | +5 dB | 100.0% |
 | +10 dB | 100.0% |
 
-50% crossing ≈ −26.3 dB.
+50% crossing ≈ **−26.6 dB** (was ≈−26.3 dB pre-fix — see below; the
+shape moved meaningfully, not just the crossing point: −26 dB alone
+went 65%→85%).
 
-**2026-08-08, re-verified directly against the real `jt9 -9` build**
-(`/home/minoru/src/WSJT-X/build_jt9/jt9`, default depth = `-d1`, the
-same 20-file-per-SNR corpus `tests/jt9_sweep.rs` uses) while
-investigating `Jt9Depth` (see "Decode speed" section below): real
-`jt9 -d1` scores **14/20 (70%) at −26 dB, 2/20 (10%) at −27 dB** —
-corrects this doc's previous "80% at −26 dB" figure (stale/imprecise,
-source not re-traceable) to a number re-derived from a fresh run,
-output double-checked line-by-line, not just grep-counted. This
-crate's own numbers at the two `Jt9Depth` tiers on the identical
-files: `Normal` (10 000 cycles/bit, the crate default) 13/20 (65%) at
-−26 dB, 2/20 (10%) at −27 dB; `Fast` (5 000, matching WSJT-X's own
-`-d1` cycle budget exactly) 12/20 (60%) at −26 dB, 1/20 (5%) at
-−27 dB. So there's a small (~5-10 point), not-yet-investigated
-sensitivity gap at `Normal` vs. real `jt9 -d1` at −26 dB specifically
-(exact match at −27 dB) — independent of the cycle-budget question,
-since `Normal` already uses double WSJT-X's own `-d1` budget and
-still trails there. Not chased further this session; a candidate for
-a future dedicated investigation (phase-by-phase comparison against
-`jt9_decode.f90`, the same methodology that closed JT65's #169 gap).
+**2026-08-08, task #24: root-caused and closed the small gap vs. real
+`jt9 -9` found while choosing `Jt9Depth`'s default.** Re-verified
+directly against a real `jt9` build
+(`/home/minoru/src/WSJT-X/build_jt9/jt9`, default depth `-d1`, the
+same 20-file-per-SNR corpus `tests/jt9_sweep.rs` uses): real `jt9 -d1`
+scores **14/20 (70%) at −26 dB, 2/20 (10%) at −27 dB** — corrects this
+doc's previous "80% at −26 dB" figure (stale/imprecise, source not
+re-traceable) to a number re-derived from a fresh run, output
+double-checked line-by-line. At the time, this crate trailed at both
+`Jt9Depth` tiers (`Normal` 65%/10%, `Fast` 60%/5%) — matching real
+`jt9` only at −27 dB with `Normal`'s double cycle budget, never at
+−26 dB regardless of budget, so the gap wasn't cycle-budget-related.
+
+**Root cause, found via two `gate_diag` probes** on the specific files
+this crate missed but real `jt9 -d1` decoded
+(`jt9_awgn_m26_09/13/17.wav`): a manual 0.5 Hz frequency sweep showed
+Fano convergence flipping sharply between adjacent 0.5 Hz steps (e.g.
+file 09: converges at 1399.0 Hz and 1400.5 Hz, never at 1399.5/1400.0
+Hz in between) — then `probe_exact_candidate_freq_m26_files` confirmed
+`coarse_search`'s own top candidate frequency (1399.306 Hz for file
+09) landed exactly in one of these non-converging gaps, between two
+much more favorable frequencies its own candidate grid never samples
+near. `jt9::search::coarse_search`'s frequency resolution is one bin
+wide (~1.736 Hz, exactly the tone spacing — `downsam9`'s later big-FFT
+extraction is ~0.018 Hz, but nothing narrows the frequency down
+*before* that) — the same "coarse bin center isn't close enough, and
+nothing downstream recovers it" shape as JT65's own scalloping-loss
+fix (issue #169). Fixed with the identical technique, ported directly:
+`search::refine_freq_hz`, 3-point log-power parabolic interpolation of
+the sync-tone power across the already-built spectrogram's
+neighbouring bins (no extra FFTs, no new algorithm — literally
+JT65's `refine_freq_hz` reused for JT9's own spectrogram shape). All
+three probe files now converge, several even at `Jt9Depth::Fast`.
+
+**Result: this crate now *exceeds* real `jt9 -d1` at both points**,
+not just matches it — −26 dB 65%→**85%** (13/20→17/20), −27 dB
+10%→**25%** (2/20→5/20), −28 dB 0%→5% (0/20→1/20, single-trial, not
+significant on its own). Golden WAV recall unchanged (7/7) throughout.
+
+**Follow-up in the same fix**: with the frequency bug gone, `Jt9Depth::
+Fast` (5 000 cycles, WSJT-X's own `-d1` budget) and `Normal` (10 000)
+now score **identically** on the full sweep — the extra budget
+`Normal` was originally kept for turns out to have been silently
+compensating for this bug, not buying real sensitivity. Moved
+`Jt9Depth::default()` to `Fast` (same result, half the non-converging-
+candidate cost). Golden-WAV `decode_scan` wall time
+(`130418_1742.wav`, real busy band, `max_candidates=200`): **~302 ms
+→ ~159 ms** — roughly halved again on top of the same day's earlier
+`realfft` win (~340 ms baseline at the very start of the day). Task
+#24 closed.
 
 ## JT65 — gap closed: chase decoder + FFT-bin scalloping-loss fix (2026-08-08, issue #169)
 
