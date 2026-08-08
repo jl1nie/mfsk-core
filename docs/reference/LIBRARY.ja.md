@@ -933,7 +933,7 @@ FT8 モジュールは共有パイプラインの上に並列のエントリ群�
 | `packet-bytes`    | off        | `PacketBytesMessage` — バイトペイロード例示 `MessageCodec`    |
 | `uvpacket`        | off        | uvpacket — 非 WSJT 応用例、4 sub-mode ZST (§10.1)、`fst4` を要求 |
 | `full`            | off        | 上記全プロトコル系フィーチャーの集約                          |
-| `parallel`        | on         | パイプラインで rayon `par_iter` (WASM は無効化)              |
+| `parallel`        | on         | `engine::pipeline`・WSPR・JT65・Q65 の scan 戦略で rayon `par_iter`（WASM は無効化） |
 
 ## 6. Rust から利用する
 

@@ -800,18 +800,34 @@ final cross-candidate dedup pass — on the rare occasion two different
 sync candidates converge on the same message, `cb` may fire for both
 even though only one survives into the returned `Vec`.
 
-The same two contracts, not a third: Q65's scan builders, JT65's and
-JT9's `decode_scan_streaming` are all sequential-exhaustive candidate
-loops with no parallelism — exact-match, same as FT8's SIC strategies.
-WSPR's `decode_scan_streaming` runs both its coarse-search passes
-under `rayon::par_iter()` — same completion-order/possible-duplicate
-caveat as FT8's default strategy; `decode_scan_subtract_streaming`
-fires only at its own outer SIC-pass accept point (sequential,
-exact-match), not inside the per-pass `decode_scan` calls it makes
-internally. Q65's `MultiPeriodRequest::on_result` is a variant of the
-sequential shape: it fires once per **slot** that yields an accepted
-decode (its own natural streaming unit for multi-period EME/
-ionoscatter averaging), rather than once per candidate.
+The same two contracts, not a third — but the split isn't static:
+JT9's `decode_scan_streaming` is the one remaining sequential-
+exhaustive candidate loop with no parallelism — exact-match, same as
+FT8's SIC strategies. **Q65's scan builders and JT65's
+`decode_scan_streaming`/`decode_scan_chase_streaming` gained
+`rayon::par_iter()` 2026-08-08** (issue #169's follow-up: "そもそも
+parallelはあるの？"/"なんでpar_iterないの？" — both protocols had simply
+never received the same treatment as FT8/FT4/FST4/WSPR/JT9) — now the
+completion-order/possible-duplicate contract, same as FT8's default
+strategy and WSPR below. Measured honestly at the time: no measurable
+wall-clock speedup on either protocol's available real test data
+(`docs/notes/BENCHMARKS.md`'s JT65/Q65 sections) — `max_candidates`
+caps plus inherently-cheap per-candidate decode leave little
+parallelizable work compared to FT8's much denser candidate grid — but
+the contract change is real regardless of whether it currently pays
+off in practice, so it's documented here, not deferred. WSPR's
+`decode_scan_streaming` runs both its coarse-search passes under
+`rayon::par_iter()` too — same completion-order/possible-duplicate
+caveat; `decode_scan_subtract_streaming` fires only at its own outer
+SIC-pass accept point (sequential, exact-match), not inside the
+per-pass `decode_scan` calls it makes internally. Q65's
+`MultiPeriodRequest::on_result` is a variant of the sequential shape
+regardless of the change above — `decode_multi_period_for` was
+deliberately left untouched (its EMA-spectrogram accumulation across
+slots is inherently sequential by design, not a parallelism gap): it
+fires once per **slot** that yields an accepted decode (its own
+natural streaming unit for multi-period EME/ionoscatter averaging),
+rather than once per candidate, still exact-match.
 
 **Does delivery order favour strong signals?** Tends to, on *both*
 strategy families — `ft8::decode_block::coarse_sync` returns
@@ -1071,7 +1087,7 @@ which inner steps they enable:
 | `packet-bytes`  | off     | `PacketBytesMessage` — byte-payload example `MessageCodec`    |
 | `uvpacket`      | off     | uvpacket — applied non-WSJT example, 4 sub-mode ZSTs (§10.1); pulls in `fst4` |
 | `full`          | off     | Aggregate of all protocol features above                      |
-| `parallel`      | on      | Enables rayon `par_iter` in pipeline (no-op under WASM)       |
+| `parallel`      | on      | Enables rayon `par_iter` in `engine::pipeline`, WSPR, JT65, Q65's scan strategies (no-op under WASM) |
 
 ## 6. Using from Rust
 
