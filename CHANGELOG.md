@@ -674,6 +674,35 @@ effect on any decode path.
   exact, -34.78 dB measured vs -34.78 dB documented) — normal
   sampling noise at n=20 trials/point, not a shift.
 
+  **Follow-up, same day**: a user question ("BENCHMARKS.md should be
+  updated — do we have the data?") prompted an actual before/after
+  wall-clock measurement, which the `on_result` firing-count metric
+  above never was. First result: the fix above was a **21% wall-clock
+  regression** (369ms → 447ms, single-threaded, git-worktree A/B, 3
+  runs each) on the same golden file — `refine_candidate_position`'s
+  result was discarded after the dedup decision, so every surviving
+  candidate paid the downsample+`fst4_sync_search` refine cost *twice*
+  (once in the new dedup pass, once again inside
+  `process_candidate_basic_impl`, unchanged). Fixed by threading the
+  already-computed `cd0`/refined position through
+  `process_candidate_basic_impl`'s new `precomputed_refine` parameter
+  instead of discarding it — survivors now pay that cost exactly once,
+  same as before this whole change. Re-measured with proper sample
+  sizes (8-10 runs each, not 3): before ≈378.95ms, after ≈379.05ms —
+  statistically indistinguishable, i.e. **wall-clock neutral on this
+  file**, not a regression and not a measured speedup either. The
+  earlier "worse" 3-sample measurements this correction itself relied
+  on turned out to be as noisy as the original 3-sample "regression"
+  reading — small sample counts on a ~370-450ms task aren't reliable
+  here; 8+ samples were needed to separate signal from noise in both
+  directions. No BENCHMARKS.md update: the honest conclusion is
+  "eliminates wasted redundant compute (verified via the 9→2
+  firing-count metric), wall-clock-neutral on the one file measured,
+  no user-visible speedup claim to make." Golden-WAV output
+  (message/freq/dt for both signals) verified byte-identical before
+  and after this correction — pure performance refactor, no decode
+  logic changed.
+
 - **Q65 and MSK144 can now resolve `<...>` hashed-callsign
   placeholders — a gap this session first mis-scoped as "5 protocols
   wide" (Q65/WSPR/JT65/JT9/MSK144) before actually checking each

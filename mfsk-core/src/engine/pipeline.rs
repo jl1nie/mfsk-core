@@ -400,7 +400,7 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None,
     )
 }
 
@@ -423,7 +423,7 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None,
     )
 }
 
@@ -436,6 +436,19 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     known: &[DecodeResult],
     eq_mode: EqMode,
     sync_q_min: u32,
+    // When `Some`, reuses a refine result [`dedup_refined_candidates`]
+    // already computed for this candidate — downsample + RMS-normalise
+    // + `fst4_sync_search`/`ft4_sync_search` — instead of recomputing
+    // it here (issue #244 follow-up: without this, every surviving
+    // candidate paid that refine cost *twice*, once in the pre-decode
+    // dedup pass and once again here, which measurably outweighed the
+    // BP/OSD savings the dedup pass itself achieves on files with only
+    // a handful of true near-duplicates — a real perf regression, not
+    // a hypothetical one, caught by a controlled single-threaded
+    // wall-clock A/B after the fact). `None` for every other caller
+    // (FT4, and every `internal-testing` direct caller) — behaves
+    // exactly as before.
+    precomputed_refine: Option<(Vec<Complex<f32>>, f32, i32, f32)>,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -445,24 +458,37 @@ where
     let ds_rate = 12_000.0 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
 
-    let mut cd0 = downsample_cached(fft_cache, cand.freq_hz, cfg);
-    // RMS-normalise the downsampled baseband to unit power.
-    // Matches WSJT-X `ft4_decode.f90:231-232`:
-    //   sum2 = sum(|cd2|²) / (NMAX/NDOWN)
-    //   cd2  = cd2 / sqrt(sum2)
-    // The LLR_SCALE=2.83 used by `compute_llr` is calibrated against
-    // unit-RMS input; without this normalisation the per-tone
-    // magnitudes feeding `tanh(llr/2)` inside BP land at the wrong
-    // scale and the decoder converges on systematically wrong
-    // codewords that just happen to satisfy CRC-14 (the 4-CRC-false-
-    // positive symptom on the FT4 reference WAV — issue #18).
-    let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
-    if sum2 > f32::EPSILON {
-        let inv = 1.0 / sum2.sqrt();
-        for c in cd0.iter_mut() {
-            *c *= inv;
+    let precomputed_freq = precomputed_refine
+        .as_ref()
+        .map(|&(_, freq_hz, i0, score)| (freq_hz, i0, score));
+    let cd0 = match precomputed_refine {
+        Some((cd0, ..)) => cd0,
+        None => {
+            let mut cd0 = downsample_cached(fft_cache, cand.freq_hz, cfg);
+            // RMS-normalise the downsampled baseband to unit power.
+            // Matches WSJT-X `ft4_decode.f90:231-232`:
+            //   sum2 = sum(|cd2|²) / (NMAX/NDOWN)
+            //   cd2  = cd2 / sqrt(sum2)
+            // The LLR_SCALE=2.83 used by `compute_llr` is calibrated
+            // against unit-RMS input; without this normalisation the
+            // per-tone magnitudes feeding `tanh(llr/2)` inside BP land
+            // at the wrong scale and the decoder converges on
+            // systematically wrong codewords that just happen to
+            // satisfy CRC-14 (the 4-CRC-false-positive symptom on the
+            // FT4 reference WAV — issue #18). `refine_candidate_position`
+            // applies this same normalisation before handing back a
+            // `precomputed_refine` cd0, so this branch and that one
+            // always agree on scale.
+            let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for c in cd0.iter_mut() {
+                    *c *= inv;
+                }
+            }
+            cd0
         }
-    }
+    };
 
     let _ = ntones;
     let _ = n_sym;
@@ -751,7 +777,12 @@ where
     // `P: GenericPipelineProtocol` is implemented only for `Ft4` and each
     // FST4 sub-mode (issue #192) — no third case exists to fall back to,
     // so this is a plain two-way dispatch, not a `P::ID`-exhaustive match.
-    let (freq_hz, i0, score) = if P::ID == super::ProtocolId::Ft4 {
+    //
+    // Skipped entirely when `precomputed_refine` already carries this
+    // candidate's refined position — see that parameter's doc comment.
+    let (freq_hz, i0, score) = if let Some(r) = precomputed_freq {
+        r
+    } else if P::ID == super::ProtocolId::Ft4 {
         let s2 = super::sync2d::ft4_sync_search::<P>(&cd0_base, cand);
         (s2.freq_hz, s2.i0, s2.score)
     } else {
@@ -926,26 +957,31 @@ where
 /// Cheap refine-only step for [`dedup_refined_candidates`]: downsample +
 /// RMS-normalise + sync-search only, mirroring the same steps at the top
 /// of [`process_candidate_basic_impl`] but stopping *before*
-/// `symbol_spectra`/LLR/BP/OSD. Returns the refined `(freq_hz, i0,
-/// score)` triple `process_candidate_basic_impl` would also compute (and
-/// does compute again for whichever candidates survive dedup — see that
-/// function's own call to `fst4_sync_search`/`ft4_sync_search` a few
-/// lines in; this is deliberately not threaded through to avoid
-/// reshaping the well-tested decode function for what is, for
-/// survivors, a cheap re-computation relative to the LLR/BP/OSD
-/// staircase it precedes).
+/// `symbol_spectra`/LLR/BP/OSD. Returns the already-normalised `cd0`
+/// alongside the refined `(freq_hz, i0, score)` triple — the caller
+/// threads both back into `process_candidate_basic_impl`'s
+/// `precomputed_refine` parameter for whichever candidates survive
+/// dedup, so that function's own downsample/normalise/sync-search
+/// block is skipped entirely rather than redone (issue #244 follow-up:
+/// an earlier version of this function returned only the triple,
+/// discarding `cd0` and letting `process_candidate_basic_impl`
+/// recompute everything for survivors — doubling the refine cost for
+/// every one of them, which a controlled single-threaded wall-clock
+/// A/B measured as a net *regression*, exceeding the BP/OSD savings on
+/// a file with few true near-duplicates).
 fn refine_candidate_position<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
-) -> (f32, i32, f32)
+) -> (Vec<Complex<f32>>, f32, i32, f32)
 where
     P::Fec: BpPooledFec,
 {
     let mut cd0 = downsample_cached(fft_cache, cand.freq_hz, cfg);
     // Same RMS-normalisation `process_candidate_basic_impl` applies —
     // keeps `score` on a comparable scale across candidates so the
-    // dedup tie-break below is meaningful.
+    // dedup tie-break below is meaningful, and keeps this `cd0` at the
+    // same scale `process_candidate_basic_impl` expects when reused.
     let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
     if sum2 > f32::EPSILON {
         let inv = 1.0 / sum2.sqrt();
@@ -958,7 +994,7 @@ where
     } else {
         super::sync2d::fst4_sync_search::<P>(&cd0, cand)
     };
-    (s2.freq_hz, s2.i0, s2.score)
+    (cd0, s2.freq_hz, s2.i0, s2.score)
 }
 
 /// Pre-decode near-duplicate dedup on *refined* sync positions —
@@ -986,25 +1022,29 @@ where
 /// WSJT-X sample and a clean synthetic signal (issue #244's own
 /// investigation), so this stays where it was actually measured to
 /// help rather than being applied on spec.
+///
+/// Returns `(SyncCandidate, cd0, freq_hz, i0, score)` for survivors
+/// only — the refine result callers thread into
+/// `process_candidate_basic_impl`'s `precomputed_refine` parameter, so
+/// it's never recomputed for anything this function already computed
+/// it for.
+type RefinedSurvivor = (SyncCandidate, Vec<Complex<f32>>, f32, i32, f32);
+
 fn dedup_refined_candidates<P: GenericPipelineProtocol>(
     candidates: Vec<SyncCandidate>,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
-) -> Vec<SyncCandidate>
+) -> Vec<RefinedSurvivor>
 where
     P::Fec: BpPooledFec,
 {
-    if candidates.len() <= 1 {
-        return candidates;
-    }
-
     #[cfg(feature = "parallel")]
-    let refined: Vec<(f32, i32, f32)> = candidates
+    let refined: Vec<(Vec<Complex<f32>>, f32, i32, f32)> = candidates
         .par_iter()
         .map(|c| refine_candidate_position::<P>(c, fft_cache, cfg))
         .collect();
     #[cfg(not(feature = "parallel"))]
-    let refined: Vec<(f32, i32, f32)> = candidates
+    let refined: Vec<(Vec<Complex<f32>>, f32, i32, f32)> = candidates
         .iter()
         .map(|c| refine_candidate_position::<P>(c, fft_cache, cfg))
         .collect();
@@ -1015,28 +1055,29 @@ where
     let mut order: Vec<usize> = (0..candidates.len()).collect();
     order.sort_by(|&a, &b| {
         refined[b]
-            .2
-            .partial_cmp(&refined[a].2)
+            .3
+            .partial_cmp(&refined[a].3)
             .unwrap_or(core::cmp::Ordering::Equal)
     });
 
     let mut kept_positions: Vec<(f32, i32)> = Vec::new();
     let mut keep = vec![false; candidates.len()];
     for idx in order {
-        let (f, i0, _) = refined[idx];
+        let (_, f, i0, _) = &refined[idx];
         let dup = kept_positions
             .iter()
             .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL);
         if !dup {
-            kept_positions.push((f, i0));
+            kept_positions.push((*f, *i0));
             keep[idx] = true;
         }
     }
 
     candidates
         .into_iter()
+        .zip(refined)
         .zip(keep)
-        .filter_map(|(c, k)| if k { Some(c) } else { None })
+        .filter_map(|((c, (cd0, f, i0, s)), k)| if k { Some((c, cd0, f, i0, s)) } else { None })
         .collect()
 }
 
@@ -1093,52 +1134,103 @@ where
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
-    let candidates = if P::ID == super::ProtocolId::Ft4 {
-        candidates
-    } else {
-        dedup_refined_candidates::<P>(candidates, fft_cache.as_slice(), cfg)
-    };
 
-    #[cfg(feature = "parallel")]
-    let raw: Vec<DecodeResult> = candidates
-        .par_iter()
-        .filter_map(|cand| {
-            let r = process_candidate_basic::<P>(
-                cand,
-                fft_cache.as_slice(),
-                cfg,
-                depth,
-                strictness,
-                &[],
-                eq_mode,
-                sync_q_min,
-            )?;
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
-            Some(r)
-        })
-        .collect();
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<DecodeResult> = candidates
-        .iter()
-        .filter_map(|cand| {
-            let r = process_candidate_basic::<P>(
-                cand,
-                fft_cache.as_slice(),
-                cfg,
-                depth,
-                strictness,
-                &[],
-                eq_mode,
-                sync_q_min,
-            )?;
-            if let Some(cb) = on_result {
-                cb(&r);
-            }
-            Some(r)
-        })
-        .collect();
+    // FT4 and FST4 diverge here: FT4 decodes its raw candidates
+    // directly (measured zero redundant near-duplicates — issue #244).
+    // FST4 first runs `dedup_refined_candidates`, then threads each
+    // survivor's already-computed refine result into
+    // `process_candidate_basic_impl` via `precomputed_refine` so it's
+    // never recomputed (see that parameter's doc comment for why this
+    // matters: an earlier version of this fix let survivors recompute
+    // it, which measurably cost more than the BP/OSD it saved).
+    let raw: Vec<DecodeResult> = if P::ID == super::ProtocolId::Ft4 {
+        #[cfg(feature = "parallel")]
+        let raw = candidates
+            .par_iter()
+            .filter_map(|cand| {
+                let r = process_candidate_basic::<P>(
+                    cand,
+                    fft_cache.as_slice(),
+                    cfg,
+                    depth,
+                    strictness,
+                    &[],
+                    eq_mode,
+                    sync_q_min,
+                )?;
+                if let Some(cb) = on_result {
+                    cb(&r);
+                }
+                Some(r)
+            })
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let raw = candidates
+            .iter()
+            .filter_map(|cand| {
+                let r = process_candidate_basic::<P>(
+                    cand,
+                    fft_cache.as_slice(),
+                    cfg,
+                    depth,
+                    strictness,
+                    &[],
+                    eq_mode,
+                    sync_q_min,
+                )?;
+                if let Some(cb) = on_result {
+                    cb(&r);
+                }
+                Some(r)
+            })
+            .collect();
+        raw
+    } else {
+        let deduped = dedup_refined_candidates::<P>(candidates, fft_cache.as_slice(), cfg);
+        #[cfg(feature = "parallel")]
+        let raw = deduped
+            .into_par_iter()
+            .filter_map(|(cand, cd0, freq_hz, i0, score)| {
+                let r = process_candidate_basic_impl::<P>(
+                    &cand,
+                    fft_cache.as_slice(),
+                    cfg,
+                    depth,
+                    strictness,
+                    &[],
+                    eq_mode,
+                    sync_q_min,
+                    Some((cd0, freq_hz, i0, score)),
+                )?;
+                if let Some(cb) = on_result {
+                    cb(&r);
+                }
+                Some(r)
+            })
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let raw = deduped
+            .into_iter()
+            .filter_map(|(cand, cd0, freq_hz, i0, score)| {
+                let r = process_candidate_basic_impl::<P>(
+                    &cand,
+                    fft_cache.as_slice(),
+                    cfg,
+                    depth,
+                    strictness,
+                    &[],
+                    eq_mode,
+                    sync_q_min,
+                    Some((cd0, freq_hz, i0, score)),
+                )?;
+                if let Some(cb) = on_result {
+                    cb(&r);
+                }
+                Some(r)
+            })
+            .collect();
+        raw
+    };
 
     // Dedup by decoded message, keeping the candidate with the highest
     // `sync_score` (the post-refine coherent Costas correlation) rather
