@@ -116,7 +116,16 @@ msk144       = []
 # the embedded port). Pulling them implies the host build via
 # `fft-rustfft` (which transitively requires `std`).
 fst4         = ["fft-rustfft"]
-jt9          = ["fft-rustfft"]
+# `dep:realfft`: JT9's `softsym::AudioFft::build` runs one
+# 653,184-point FFT per scan on real-valued audio — a plain
+# `rustfft` complex-to-complex transform wastes ~2x the work a
+# real-input FFT (Hermitian symmetry) needs, and that FFT is ~57% of
+# `decode_scan`'s wall time (measured, `jt9::tests::phase_breakdown_diag`).
+# `realfft` wraps `rustfft` itself (same numerics, exact same
+# resolved version via Cargo's unifier) so this is a performance-only
+# swap, not a new algorithm — JT9 is already host-only/`fft-rustfft`-
+# gated (see comment above), so no embedded/no_std impact.
+jt9          = ["fft-rustfft", "dep:realfft"]
 jt65         = ["fft-rustfft"]
 q65          = ["fft-rustfft"]
 
@@ -159,6 +168,13 @@ rayon       = { version = "1", optional = true }
 # no_std-clean (Decoded carries a `String`); host consumers wanting JSON for
 # spotting / websocket / IPC turn on `--features serde`.
 serde       = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
+# Real-input FFT for `jt9::softsym::AudioFft::build` — see the `jt9`
+# feature's doc comment above. `default-features = false`: this crate
+# only needs the portable scalar path, not the `avx`/`neon`/`sse`/
+# `wasm_simd` rustfft-passthrough features (those just forward to
+# rustfft's own SIMD feature flags, which are already on by default
+# via our plain `rustfft = { version = "6" }` dependency).
+realfft     = { version = "3.5.0", default-features = false, optional = true }
 
 [dev-dependencies]
 # Only for tests/ft8_decode_block_streaming.rs, which exercises the

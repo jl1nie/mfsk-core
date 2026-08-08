@@ -54,17 +54,25 @@ impl AudioFft {
         // Pad/truncate to NFFT1; scale to int16-equivalent so noise
         // estimates land in WSJT-X's calibrated regime (downsam9
         // ingests int16 samples directly).
+        //
+        // `audio` is real-valued, and only the first `NFFT1/2 + 1` bins
+        // of its spectrum are ever used below (the old code ran a full
+        // `NFFT1`-point complex-to-complex FFT via `rustfft` and threw
+        // away the upper (redundant, Hermitian-symmetric) half) —
+        // `realfft` computes exactly those same `NFFT1/2 + 1` complex
+        // values directly, in roughly half the work. Measured as ~57%
+        // of `decode_scan`'s wall time before this fix
+        // (`jt9::tests::phase_breakdown_diag`).
+        let mut real_planner = realfft::RealFftPlanner::<f32>::new();
+        let r2c = real_planner.plan_fft_forward(NFFT1);
+        let mut indata = r2c.make_input_vec();
         let n = audio.len().min(NFFT1);
-        let mut buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); NFFT1];
         for i in 0..n {
-            buf[i].re = audio[i] * 32_768.0;
+            indata[i] = audio[i] * 32_768.0;
         }
-
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(NFFT1);
-        let mut scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
-        fft.process_with_scratch(&mut buf, &mut scratch);
-        buf.truncate(NFFT1 / 2 + 1);
+        let mut buf = r2c.make_output_vec();
+        r2c.process(&mut indata, &mut buf)
+            .expect("fixed NFFT1-length input/output, shape always matches");
 
         // 1 Hz-resolution power envelope across 0..5 kHz.
         let df1 = 12_000.0 / NFFT1 as f32;

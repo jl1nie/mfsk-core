@@ -300,6 +300,67 @@ effect on any decode path.
   out-of-range case has nothing to do in either loop (no fallback
   value, no `audio[j]` to touch). Byte-identical recall verified on
   the same FT8/FT4 golden suites.
+- **JT65's and JT9's `Spectrogram`/`AudioFft::build` no longer sort
+  the entire FFT-magnitude array just to read a bottom-95%
+  trimmed-mean noise floor.** Found while auditing where a
+  candidate-loop `rayon` parallelism pass (added, measured as zero
+  benefit across 5 protocols, and reverted — see the entry below) would
+  actually have paid off: profiling showed this `sort_unstable_by`
+  step was itself *larger* than the FFT loop it was meant to be a
+  minor adjunct to (JT65: 13-14.5ms sort vs. 7-7.7ms FFT). Only the
+  *set* of bottom-95% values is needed, not their order, so
+  `select_nth_unstable_by` (O(n) average partition) replaces the full
+  O(n log n) sort — the same fix Q65's `Spectrogram::build_for` and
+  FT8's `xsnr2_db_simple` noise median already had. `msk144::spd`'s
+  noise-floor quantile had the identical pattern (a single order
+  statistic, not even a range) and got the same fix. Measured:
+  `jt65::search::Spectrogram::build` 22ms→10.4ms on the AWGN sweep
+  corpus (release). No output change (order-independent sum / single
+  index), all tests pass unmodified.
+- **`jt9::softsym::AudioFft::build`'s big per-slot FFT now uses a
+  real-input transform (`realfft`, new optional dependency gated
+  behind the already-host-only `jt9` feature) instead of packing real
+  audio into a full complex buffer.** Found via a phase-breakdown
+  diagnostic (`jt9::tests::phase_breakdown_diag`) written to chase
+  down a stale "unexplained ~61% of `decode_scan` time" note from the
+  parallelism audit below — that figure predated the
+  `select_nth_unstable_by` fix above and never accounted for this
+  *second*, separate 653,184-point FFT (distinct from
+  `jt9::search::AudioFft`). Real breakdown: `coarse_search` ~36%, this
+  FFT ~57%, the actual per-candidate loop only ~7% — explaining why
+  candidate-loop parallelism never helped JT9 either. The old code ran
+  a full `rustfft` complex-to-complex transform and threw away the
+  upper (Hermitian-redundant) half; `realfft` computes exactly the
+  same `NFFT1/2+1` bins directly, in ~half the work — same numerics
+  (it wraps `rustfft` itself), not a new algorithm. Measured:
+  `AudioFft::build` ~9.4-10.0ms→~5.1ms, `decode_scan` total
+  ~17-18ms→~12.8-13ms (release, real `jt9_sweep` AWGN WAVs).
+  Byte-identical recall (`jt9_wsjtx_sample_recall_vs_golden`, both
+  softsym golden-grid roundtrip tests) and unchanged AWGN sweep
+  crossing point confirm correctness.
+- **Investigated candidate-loop `rayon` parallelism across all 5
+  protocols still missing it (JT65/Q65/JT9/uvpacket/MSK144) —
+  measured zero benefit everywhere, including a deeper attempt at
+  Q65's per-candidate `(Δf,Δt,b90)` grid search, and reverted all of
+  it.** The first pass added `par_iter()` to each protocol's top-level
+  candidate-decode loop on the (untested) assumption that independent
+  candidates parallelize well; real timing showed no speedup on any of
+  the five (MSK144's genuine `ScanState` cross-block dependency was
+  also correctly identified and handled, for no eventual benefit). A
+  second, better-informed pass profiled Q65's `decode_at_grid_for`
+  specifically (its `Spectrogram::build_for` was already optimized,
+  unlike JT65/JT9 above) and parallelized its `ibw`/`b90` sub-sweep —
+  correct (`find_map_first` preserves the exact sequential
+  first-success semantics; every real off-air recording still
+  decoded identically) but, measured against real WSJT-X sample WAVs,
+  also showed no speedup: `GridDepth::Fast` only ever has ≤7 candidate
+  cells, called repeatedly inside a sequential outer loop, so
+  `rayon`'s per-region dispatch overhead ate the gain — the same
+  too-small-parallel-region failure mode as the first pass, one level
+  deeper. Nothing from either pass shipped; the two real wins that did
+  ship are the `select_nth_unstable_by` and `realfft` entries above,
+  found *while* profiling for a parallelism target rather than by
+  adding threads.
 - Investigated, on host x86_64 (`objdump`, address-bounded to each
   symbol to avoid mis-attributing neighbouring/inlined code — an
   earlier unbounded capture falsely suggested AVX/FMA usage that
