@@ -95,6 +95,62 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
     );
 }
 
+/// Regression for issue #244: before the pre-decode `dedup_refined_candidates`
+/// pass (`engine::pipeline::decode_frame_impl`), this exact WAV fired
+/// `on_result` **9 times** for the same 2 real signals (`CQ K9KFR EN71`
+/// ×4, `CQ N5TM EL29` ×5) — every one of the redundant candidates paid
+/// the full LLR/BP/OSD staircase before a *post-decode* message-based
+/// dedup threw the extras away. This is the precise real-world number
+/// a user report reproduced independently of this crate's own
+/// investigation. Now fixed to fire exactly once per final decode —
+/// asserted exactly, not just "fewer than 9", so any regression back
+/// toward redundant firings is caught immediately rather than needing
+/// its own rediscovery.
+#[test]
+fn fst4_60_wsjtx_sample_on_result_fires_once_per_decode() {
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X FST4 sample not found at \
+             ../../WSJT-X/samples/FST4+FST4W/210115_0058.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+
+    let fired: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let cb = |r: &mfsk_core::fst4::decode::DecodeResult| {
+        let mut m77 = [0u8; 77];
+        m77.copy_from_slice(r.message77());
+        if let Some(t) = unpack77(&m77) {
+            fired.lock().unwrap().push(t);
+        }
+    };
+    let outcome = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+        .on_result(&cb)
+        .decode();
+
+    let fired = fired.into_inner().unwrap();
+    println!(
+        "batch: {} decode(s), on_result firings: {}",
+        outcome.results.len(),
+        fired.len()
+    );
+    for m in &fired {
+        println!("  fired: {m}");
+    }
+
+    assert_eq!(
+        fired.len(),
+        outcome.results.len(),
+        "on_result should fire exactly once per final decode on this golden \
+         WAV (pre-#244 fix this was 9 firings for 2 decodes)"
+    );
+    assert!(
+        !outcome.results.is_empty(),
+        "expected real decodes on the FST4-60 golden WAV"
+    );
+}
+
 /// Diagnostic probe for FST4-60A sync/timing regressions (issue #23's
 /// original root cause: `Fst4s60`'s `NSPS`/`NDOWN`/`GFSK_BT` didn't match
 /// WSJT-X `fst4_decode.f90`, so real-audio decodes drifted ~0.3-0.6 s off

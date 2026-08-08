@@ -923,6 +923,123 @@ where
     )
 }
 
+/// Cheap refine-only step for [`dedup_refined_candidates`]: downsample +
+/// RMS-normalise + sync-search only, mirroring the same steps at the top
+/// of [`process_candidate_basic_impl`] but stopping *before*
+/// `symbol_spectra`/LLR/BP/OSD. Returns the refined `(freq_hz, i0,
+/// score)` triple `process_candidate_basic_impl` would also compute (and
+/// does compute again for whichever candidates survive dedup — see that
+/// function's own call to `fst4_sync_search`/`ft4_sync_search` a few
+/// lines in; this is deliberately not threaded through to avoid
+/// reshaping the well-tested decode function for what is, for
+/// survivors, a cheap re-computation relative to the LLR/BP/OSD
+/// staircase it precedes).
+fn refine_candidate_position<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+) -> (f32, i32, f32)
+where
+    P::Fec: BpPooledFec,
+{
+    let mut cd0 = downsample_cached(fft_cache, cand.freq_hz, cfg);
+    // Same RMS-normalisation `process_candidate_basic_impl` applies —
+    // keeps `score` on a comparable scale across candidates so the
+    // dedup tie-break below is meaningful.
+    let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+    if sum2 > f32::EPSILON {
+        let inv = 1.0 / sum2.sqrt();
+        for c in cd0.iter_mut() {
+            *c *= inv;
+        }
+    }
+    let s2 = if P::ID == super::ProtocolId::Ft4 {
+        super::sync2d::ft4_sync_search::<P>(&cd0, cand)
+    } else {
+        super::sync2d::fst4_sync_search::<P>(&cd0, cand)
+    };
+    (s2.freq_hz, s2.i0, s2.score)
+}
+
+/// Pre-decode near-duplicate dedup on *refined* sync positions —
+/// WSJT-X `fst4_decode.f90:339-353`'s "remove duplicate candidates"
+/// pass, ported (issue #244). Coarse candidates a few Hz apart can
+/// independently refine onto the *same* true `(freq, dt)` once
+/// `fst4_sync_search`'s wide coherent search locks them all onto the
+/// real signal — without this, every one of them pays the full
+/// LLR/BP/OSD staircase before a *post-decode*, message-based dedup
+/// (`decode_frame_impl`'s own dedup further down) throws away all but
+/// one. Measured (issue #244): up to 9x redundant BP/OSD calls for one
+/// real FST4 signal, all but one immediately discarded.
+///
+/// Tolerance matches WSJT-X: `0.10 * baud` in frequency, `±2`
+/// downsampled samples in the refined sync position
+/// (`fst4_decode.f90:344,348`). Unlike WSJT-X's index-order tie-break
+/// (which relies on its own candidate list already being
+/// strength-sorted by the CLEAN algorithm), candidates here are sorted
+/// by refined `score` descending first, so survivorship is
+/// deterministic and score-driven regardless of `coarse_sync`'s own
+/// ordering.
+///
+/// Scoped to the non-FT4 branch (i.e. FST4 today) — FT4's own
+/// `ft4_coarse_sync` measured *zero* redundant firings on both a real
+/// WSJT-X sample and a clean synthetic signal (issue #244's own
+/// investigation), so this stays where it was actually measured to
+/// help rather than being applied on spec.
+fn dedup_refined_candidates<P: GenericPipelineProtocol>(
+    candidates: Vec<SyncCandidate>,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+) -> Vec<SyncCandidate>
+where
+    P::Fec: BpPooledFec,
+{
+    if candidates.len() <= 1 {
+        return candidates;
+    }
+
+    #[cfg(feature = "parallel")]
+    let refined: Vec<(f32, i32, f32)> = candidates
+        .par_iter()
+        .map(|c| refine_candidate_position::<P>(c, fft_cache, cfg))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let refined: Vec<(f32, i32, f32)> = candidates
+        .iter()
+        .map(|c| refine_candidate_position::<P>(c, fft_cache, cfg))
+        .collect();
+
+    let freq_tol = 0.10 * P::TONE_SPACING_HZ;
+    const I0_TOL: i32 = 2;
+
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .2
+            .partial_cmp(&refined[a].2)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let mut kept_positions: Vec<(f32, i32)> = Vec::new();
+    let mut keep = vec![false; candidates.len()];
+    for idx in order {
+        let (f, i0, _) = refined[idx];
+        let dup = kept_positions
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL);
+        if !dup {
+            kept_positions.push((f, i0));
+            keep[idx] = true;
+        }
+    }
+
+    candidates
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(c, k)| if k { Some(c) } else { None })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_frame_impl<P: GenericPipelineProtocol>(
     audio: &[i16],
@@ -976,6 +1093,11 @@ where
     if candidates.is_empty() {
         return (Vec::new(), fft_cache);
     }
+    let candidates = if P::ID == super::ProtocolId::Ft4 {
+        candidates
+    } else {
+        dedup_refined_candidates::<P>(candidates, fft_cache.as_slice(), cfg)
+    };
 
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates

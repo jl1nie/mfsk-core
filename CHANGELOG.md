@@ -624,6 +624,56 @@ effect on any decode path.
   `known = &[]` path (all existing FT4/FST4 recall + streaming tests
   pass unchanged).
 
+- **FST4 could independently re-decode the same real signal up to 9x
+  via distinct sync candidates that converge on the same true `(freq,
+  dt)` only after per-candidate refinement — each redundant candidate
+  paid the full LLR/BP/OSD staircase before a post-decode,
+  message-based dedup threw all but one away.** Found auditing
+  `on_result`'s §3b "possible transient duplicate" contract (issue
+  #244) — the duplicates are legitimate per that contract (nothing
+  incorrect ends up in the returned `Vec`), but the *compute cost* of
+  redundantly decoding the same signal several times over is real and,
+  compared to WSJT-X, avoidable.
+
+  WSJT-X's own `fst4_decode.f90:310-353` never hits this: after a
+  cheap per-candidate sync-refine (`fst4_sync_search`, no BP/OSD), an
+  explicit "remove duplicate candidates" pass collapses any two
+  candidates whose *refined* `(freq, isbest)` land within `0.10*baud`
+  Hz / ±2 samples — only survivors ever reach the expensive decode
+  loop. `engine::pipeline::decode_frame_impl` (FST4's shared engine)
+  had no equivalent stage: coarse candidates went straight from
+  `coarse_sync`'s own (coarser, pre-refine) NMS into full decode.
+  Tightening that pre-refine NMS tolerance to match WSJT-X's ratio was
+  tried first and measured *worse* (5→7 redundant firings on a test
+  signal) — a tighter coarse filter lets more raw candidates survive
+  into the expensive path, which `fst4_sync_search`'s own wide
+  coherent search then independently pulls onto the same true position
+  anyway. Ported WSJT-X's actual two-stage mechanism instead: a new
+  `refine_candidate_position` (downsample + RMS-normalise +
+  `fst4_sync_search` only) run for every coarse candidate, followed by
+  `dedup_refined_candidates` — pre-decode NMS on the refined position,
+  WSJT-X's exact tolerance, greedy by refined score. Scoped to the
+  non-FT4 branch only; FT4's own `ft4_coarse_sync` measured zero
+  redundant firings already (both a real WSJT-X sample and a clean
+  synthetic signal) and wasn't touched.
+
+  Measured on the real WSJT-X `FST4+FST4W/210115_0058.wav` golden
+  sample: `on_result` firing count for the file's 2 real signals went
+  from **9 → 2** — the redundancy is fully eliminated on this file, not
+  just reduced (a separate clean-synthetic test went 5→2; the residual
+  pair there sits outside even WSJT-X's own tolerance window, so
+  WSJT-X's algorithm wouldn't catch it either — not a gap in the port).
+  New regression test `fst4_60_wsjtx_sample_on_result_fires_once_per_decode`
+  asserts this exactly (not just "fewer than 9") so a future regression
+  is caught immediately. Every existing FST4 recall/golden test
+  (`fst4_wsjtx_samples`, `fst4_sim_roundtrip` all 5 sub-modes,
+  `fst4_streaming_decode`, `fst4_fft_cache_decode`) unchanged; full lib
+  suite and `pre-push-check.sh`'s full feature matrix clean. Full AWGN
+  sweep (`fst4_snr_sweep`, all 5 sub-modes) 50% crossing points land
+  within 0.15 dB of the documented baseline table (FST4-300 essentially
+  exact, -34.78 dB measured vs -34.78 dB documented) — normal
+  sampling noise at n=20 trials/point, not a shift.
+
 - **Q65 and MSK144 can now resolve `<...>` hashed-callsign
   placeholders — a gap this session first mis-scoped as "5 protocols
   wide" (Q65/WSPR/JT65/JT9/MSK144) before actually checking each
