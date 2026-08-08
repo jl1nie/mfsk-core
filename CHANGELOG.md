@@ -157,6 +157,38 @@ effect on any decode path.
   serde's `alloc` feature, so a UI can emit decode rows as JSON for
   spotting / websocket / IPC. Folded into `full`. Purely additive.
 
+- **JT65 stochastic Chase decoder** (`jt65::chase`, issue #169) — an
+  opt-in port of WSJT-X's `ftrsdap` stochastic Chase decoder's
+  *algorithmic shape* (not its literal hand-tuned magic numbers):
+  `decode_at_with_chase`/`decode_scan_chase`/`_streaming`/`_default`,
+  fully additive siblings of the existing `decode_at_with_erasures`/
+  `decode_scan*` family (zero changes to any existing function or
+  signature). Randomized multi-trial erasure search (a POSIX-style LCG
+  matching WSJT-X's own recurrence, already present test-only in
+  `fec/ldpc/bp.rs`, promoted to production use here) ranked by RS
+  correction count (`nerr`, free from `Rs63_12::decode_jt65_erasures`)
+  plus a soft-distance tiebreaker using a newly-retained
+  runner-up-tone identity (`rx::demodulate_aligned_with_runnerup`),
+  with a hit-count/margin acceptance gate against a random trial
+  spuriously satisfying the RS syndrome for a wrong codeword — covered
+  by two new always-run (not `#[ignore]`d) false-decode-rate tests,
+  each asserting exactly zero false decodes (not a tolerance) across
+  20 seeds of pure noise and 20 seeds of a signal synthesized well
+  below the measured sensitivity floor.
+
+  Measured on the existing `tests/jt65_sweep.rs` AWGN corpus (300
+  files, 20 trials/SNR), untuned linear defaults: 50% recall crossing
+  moved from −14 dB to ≈ −19.5 dB, closing roughly 5 dB of the
+  previously-documented ~7-8 dB gap vs. WSJT-X's `jt9 -6`; ~2-3 dB
+  remains at the deepest cells, plausibly from WSJT-X's literal
+  spectral-power candidate ranking (deliberately not ported — see
+  `chase`'s module doc for the tradeoff) and/or much larger trial
+  budgets. The ≥0 dB cells are unchanged (the fast zero-erasure path
+  is unaffected). Issue #169 is not closed by this — the residual gap
+  is real and left open — but the practically-relevant portion is
+  gone. Full before/after table: `docs/notes/BENCHMARKS.md`'s JT65
+  section.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its

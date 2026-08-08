@@ -56,11 +56,34 @@
 //!     &[0, 8, 16, 24, 32],
 //! );
 //! ```
+//!
+//! ## Stochastic Chase decode
+//!
+//! For signals still too weak for [`decode_at_with_erasures`]'s single
+//! deterministic ordering, [`chase::decode_at_with_chase`] ports the
+//! algorithmic shape of WSJT-X's `ftrsdap` stochastic Chase decoder
+//! ([issue #169](https://github.com/jl1nie/mfsk-core/issues/169)):
+//! randomized multi-trial erasure search, ranked by RS correction
+//! count plus a soft-distance tiebreaker, with an acceptance-margin
+//! gate against false decodes. Measured on the AWGN sweep
+//! (`docs/notes/BENCHMARKS.md`), this closes most — not all — of the
+//! ~7-8 dB sensitivity gap vs. real WSJT-X's `jt9 -6`.
+//!
+//! ```no_run
+//! use mfsk_core::jt65::decode_scan_chase_default;
+//!
+//! # let audio: Vec<f32> = vec![];
+//! for r in decode_scan_chase_default(&audio, 12_000) {
+//!     println!("{:+7.1} Hz  start={:>8} sample  {}",
+//!              r.freq_hz, r.start_sample, r.message);
+//! }
+//! ```
 
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Rs63_12;
 use crate::msg::Jt72Codec;
 
+pub mod chase;
 pub mod gray;
 pub mod interleave;
 pub mod rx;
@@ -68,9 +91,12 @@ pub mod search;
 pub mod sync_pattern;
 pub mod tx;
 
+pub use chase::{ChaseParams, decode_at_with_chase};
 pub use gray::{gray6, inv_gray6};
 pub use interleave::{deinterleave, interleave};
-pub use rx::{demodulate_aligned, demodulate_aligned_with_confidence};
+pub use rx::{
+    demodulate_aligned, demodulate_aligned_with_confidence, demodulate_aligned_with_runnerup,
+};
 pub use sync_pattern::{JT65_DATA_POSITIONS, JT65_NPRC, JT65_SYNC_BLOCKS, JT65_SYNC_POSITIONS};
 pub use tx::{encode_channel_symbols, synthesize_audio, synthesize_standard};
 
@@ -152,14 +178,11 @@ pub fn decode_at_with_erasures(
 
     let (symbols, conf) =
         rx::demodulate_aligned_with_confidence(audio, sample_rate, start_sample, base_freq_hz)?;
-    // Build an ordering of symbol positions from least → most
-    // confident; the caller's erasure budget eats from the start.
-    let mut order: Vec<usize> = (0..63).collect();
-    order.sort_by(|&a, &b| {
-        conf[a]
-            .partial_cmp(&conf[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Ordering of symbol positions from least → most confident; the
+    // caller's erasure budget eats from the start. Shared with
+    // `chase::decode_at_with_chase`, which sorts on the same
+    // confidence array the same way.
+    let order = chase::confidence_order(&conf);
 
     let rs = Rs63_12::new();
     let codec = crate::msg::Jt72Codec::default();
@@ -306,6 +329,110 @@ pub fn decode_scan_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
     decode_scan(audio, sample_rate, 0, &search::SearchParams::default())
 }
 
+/// Like [`decode_scan`] but decodes each candidate via
+/// [`chase::decode_at_with_chase`]'s randomized multi-trial erasure
+/// search instead of `decode_at_with_snr`'s plain zero-erasure hard
+/// decision — trades decode time for sensitivity on weak signals. See
+/// [`chase`]'s module doc for the algorithm and its relationship to
+/// WSJT-X's `ftrsdap`.
+///
+/// A parallel sibling trio (`decode_scan_chase`/`_streaming`/
+/// `_default`) rather than a parameter on [`decode_scan`] itself, for
+/// the same reason [`decode_scan_streaming`] is its own sibling
+/// (mod.rs's own doc comment above): both the extra [`chase::ChaseParams`]
+/// and the different internal decode engine argue against bolting
+/// onto the existing plain `pub fn`.
+pub fn decode_scan_chase(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    search_params: &search::SearchParams,
+    chase_params: &chase::ChaseParams,
+) -> Vec<Jt65Result> {
+    decode_scan_chase_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        search_params,
+        chase_params,
+        None,
+    )
+}
+
+/// Streaming variant of [`decode_scan_chase`] — same contract as
+/// [`decode_scan_streaming`] (see that function's doc comment for the
+/// delivery-order/dedup guarantee, which applies identically here).
+pub fn decode_scan_chase_streaming(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    search_params: &search::SearchParams,
+    chase_params: &chase::ChaseParams,
+    on_result: &(dyn Fn(&Jt65Result) + Sync),
+) -> Vec<Jt65Result> {
+    decode_scan_chase_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        search_params,
+        chase_params,
+        Some(on_result),
+    )
+}
+
+fn decode_scan_chase_inner(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    search_params: &search::SearchParams,
+    chase_params: &chase::ChaseParams,
+    on_result: Option<&(dyn Fn(&Jt65Result) + Sync)>,
+) -> Vec<Jt65Result> {
+    use crate::engine::ModulationParams;
+    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, search_params);
+    let mut seen: Vec<Jt65Result> = Vec::new();
+    for c in cands {
+        let Some((msg, snr_db)) = chase::decode_at_with_chase_and_snr(
+            audio,
+            sample_rate,
+            c.start_sample,
+            c.freq_hz,
+            chase_params,
+        ) else {
+            continue;
+        };
+        let dup = seen.iter().any(|prev| {
+            prev.message == msg
+                && (prev.freq_hz - c.freq_hz).abs() <= 2.0
+                && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
+        });
+        if !dup {
+            let result = Jt65Result {
+                message: msg,
+                freq_hz: c.freq_hz,
+                start_sample: c.start_sample,
+                snr_db,
+            };
+            if let Some(cb) = on_result {
+                cb(&result);
+            }
+            seen.push(result);
+        }
+    }
+    seen
+}
+
+pub fn decode_scan_chase_default(audio: &[f32], sample_rate: u32) -> Vec<Jt65Result> {
+    decode_scan_chase(
+        audio,
+        sample_rate,
+        0,
+        &search::SearchParams::default(),
+        &chase::ChaseParams::default(),
+    )
+}
+
 /// JT65A protocol marker.
 ///
 /// The `A` sub-mode uses the native baud ≈ 2.69 Hz tone spacing
@@ -438,6 +565,72 @@ mod tests {
             Jt72Message::Standard { call1, call2, grid_or_report }
                 if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
         ));
+    }
+
+    /// `decode_scan_chase` end-to-end: proves the scan wiring actually
+    /// reaches `chase::decode_at_with_chase_and_snr` (not just that
+    /// the function compiles) by requiring a genuine search — same
+    /// "signal dropped 1s into a zeroed slot" shape as
+    /// `decode_scan_streaming_matches_batch_exactly` above.
+    #[test]
+    fn decode_scan_chase_finds_signal_via_search() {
+        let freq = 1500.0;
+        let audio = synthesize_standard("CQ", "JL1NIE", "PM95", 12_000, freq, 0.3).expect("synth");
+        let mut slot = vec![0.0f32; 12_000 + audio.len()];
+        slot[12_000..12_000 + audio.len()].copy_from_slice(&audio);
+
+        let results = decode_scan_chase_default(&slot, 12_000);
+        assert!(
+            !results.is_empty(),
+            "expected at least one chase-decoded result on the synth signal"
+        );
+        assert!(matches!(
+            &results[0].message,
+            Jt72Message::Standard { call1, call2, grid_or_report }
+                if call1 == "CQ" && call2 == "JL1NIE" && grid_or_report == "PM95"
+        ));
+    }
+
+    /// Scan-level false-decode guardrail (see `chase.rs`'s own
+    /// `chase_never_false_decodes_*` tests for the bounded, always-run
+    /// version). `#[ignore]`d: a coarse-search-driven scan over noise
+    /// can turn up many spurious frequency/time candidates, each
+    /// burning up to `ChaseParams::max_trials` RS-decode attempts —
+    /// too slow for the default (non-`--ignored`) suite, but worth
+    /// the extra end-to-end confidence as an explicit, runnable check.
+    #[test]
+    #[ignore]
+    fn decode_scan_chase_never_false_decodes_on_noise() {
+        struct NoiseGen(u32);
+        impl NoiseGen {
+            fn next_u32(&mut self) -> u32 {
+                let mut x = self.0;
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                self.0 = x;
+                x
+            }
+            fn next_f32(&mut self) -> f32 {
+                (self.next_u32() as f32) / (u32::MAX as f32)
+            }
+            fn gaussian(&mut self) -> f32 {
+                let u1 = self.next_f32().max(1e-9);
+                let u2 = self.next_f32();
+                (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+            }
+        }
+
+        const NSAMPLES: usize = 60 * 12_000; // one full 60 s JT65 slot
+        for seed in 1..=5u32 {
+            let mut rng = NoiseGen(seed.wrapping_mul(2_654_435_761) | 1);
+            let audio: Vec<f32> = (0..NSAMPLES).map(|_| 0.3 * rng.gaussian()).collect();
+            let results = decode_scan_chase_default(&audio, 12_000);
+            assert!(
+                results.is_empty(),
+                "decode_scan_chase must not decode pure noise (seed={seed}), got {results:?}"
+            );
+        }
     }
 
     #[test]

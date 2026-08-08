@@ -578,7 +578,7 @@ with a burst scan.
 | **FST4** | single-pass BP + OSD | full-slot two-stage coherent sync search — §4 |
 | **WSPR** | single bespoke pass (quarter-symbol spectrogram scan) | — |
 | **JT9**  | single bespoke pass | — |
-| **JT65** | single bespoke pass | RS erasure decode (`decode_at_with_erasures`) — §6.5 |
+| **JT65** | single bespoke pass | RS erasure decode (`decode_at_with_erasures`); stochastic Chase decoder (`decode_at_with_chase`, #169) — §6.5 |
 | **Q65**  | `(Δf,Δt,b90)` grid + Lorentzian fading BP (scan) | AP-hint, explicit fast-fading, AP-list, multi-period — **this section** |
 | **MSK144** | burst-scan over the whole T/R period (not a static slot) | — |
 
@@ -1230,7 +1230,15 @@ for d in decodes {
 
 JT65 additionally offers `decode_at_with_erasures` for low-SNR
 signals where RS erasure decoding can recover frames that the
-standard decoder misses.
+standard decoder misses, and — for deeper SNR still —
+`decode_at_with_chase`/`decode_scan_chase*` (`jt65::chase`, issue
+#169): a randomized multi-trial erasure search port of WSJT-X's
+`ftrsdap` stochastic Chase decoder. Same call shape as the plain
+`decode_scan` family, with an extra `&ChaseParams` argument; see
+`chase`'s module doc for the algorithm and
+`docs/notes/BENCHMARKS.md`'s JT65 section for the measured recall
+improvement (50% crossing moved ~5 dB lower, closing most — not all —
+of the previously-documented ~7-8 dB gap).
 
 `Jt65Result::snr_db` and JT9's `Jt9Result::snr_db` are both
 decode-side estimates from the per-symbol signal-tone vs. other-tones

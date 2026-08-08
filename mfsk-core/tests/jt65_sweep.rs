@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod common;
 use common::load_wav_f32_opt;
-use mfsk_core::jt65::decode_scan_default;
+use mfsk_core::jt65::{decode_scan_chase_default, decode_scan_default};
 
 const GOLDEN_CALL1: &str = "CQ";
 const GOLDEN_CALL2: &str = "JL1NIE";
@@ -85,14 +85,24 @@ fn parse_snr_tag(tag: &str) -> Option<i32> {
     }
 }
 
+fn is_golden(d: &mfsk_core::jt65::Jt65Result) -> bool {
+    matches!(
+        &d.message,
+        mfsk_core::msg::Jt72Message::Standard { call1, call2, grid_or_report }
+            if call1 == GOLDEN_CALL1 && call2 == GOLDEN_CALL2 && grid_or_report == GOLDEN_GRID
+    ) && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+}
+
 fn decode_wav_jt65(audio: &[f32]) -> bool {
-    decode_scan_default(audio, 12_000).iter().any(|d| {
-        matches!(
-            &d.message,
-            mfsk_core::msg::Jt72Message::Standard { call1, call2, grid_or_report }
-                if call1 == GOLDEN_CALL1 && call2 == GOLDEN_CALL2 && grid_or_report == GOLDEN_GRID
-        ) && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
-    })
+    decode_scan_default(audio, 12_000).iter().any(is_golden)
+}
+
+/// Like [`decode_wav_jt65`] but via the stochastic Chase decoder
+/// (`decode_scan_chase_default`) — see `jt65_chase_awgn_snr_sweep`.
+fn decode_wav_jt65_chase(audio: &[f32]) -> bool {
+    decode_scan_chase_default(audio, 12_000)
+        .iter()
+        .any(is_golden)
 }
 
 struct Job {
@@ -100,19 +110,8 @@ struct Job {
     path: PathBuf,
 }
 
-#[test]
-#[ignore]
-fn jt65_awgn_snr_sweep() {
-    let dir = sweep_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!(
-            "skipping jt65_awgn_snr_sweep: corpus dir not found at {:?}\n\
-             Run scripts/gen_jt65_sweep_wavs.sh ~/wsjtx-build/jt65sim",
-            dir
-        );
-        return;
-    };
-
+fn collect_jobs(dir: &Path) -> Option<Vec<Job>> {
+    let entries = std::fs::read_dir(dir).ok()?;
     let mut jobs = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -130,6 +129,25 @@ fn jt65_awgn_snr_sweep() {
         };
         jobs.push(Job { snr, path });
     }
+    Some(jobs)
+}
+
+/// Runs the AWGN corpus through `decode_wav` and prints a recall
+/// table, `label`-tagged. Shared by [`jt65_awgn_snr_sweep`] (plain
+/// zero-erasure hard decision, via `decode_scan_default`) and
+/// [`jt65_chase_awgn_snr_sweep`] (stochastic Chase decoder, via
+/// `decode_scan_chase_default`) so both run identical methodology
+/// against the same corpus — the only difference is `decode_wav`.
+fn run_sweep(label: &str, decode_wav: impl Fn(&[f32]) -> bool + Sync) {
+    let dir = sweep_dir();
+    let Some(jobs) = collect_jobs(&dir) else {
+        eprintln!(
+            "skipping {label}: corpus dir not found at {:?}\n\
+             Run scripts/gen_jt65_sweep_wavs.sh ~/wsjtx-build/jt65sim",
+            dir
+        );
+        return;
+    };
 
     // Corpus is small enough that a sequential run finishes in
     // seconds, but the load+decode step parallelizes for free with
@@ -141,17 +159,13 @@ fn jt65_awgn_snr_sweep() {
     #[cfg(feature = "parallel")]
     let results: Vec<(i32, bool)> = jobs
         .par_iter()
-        .filter_map(|job| {
-            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_jt65(&audio)))
-        })
+        .filter_map(|job| load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav(&audio))))
         .collect();
 
     #[cfg(not(feature = "parallel"))]
     let results: Vec<(i32, bool)> = jobs
         .iter()
-        .filter_map(|job| {
-            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_jt65(&audio)))
-        })
+        .filter_map(|job| load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav(&audio))))
         .collect();
 
     // snr -> (hits, trials)
@@ -166,13 +180,13 @@ fn jt65_awgn_snr_sweep() {
 
     if cells.is_empty() {
         eprintln!(
-            "skipping jt65_awgn_snr_sweep: no jt65_awgn_*.wav files found in {:?}",
+            "skipping {label}: no jt65_awgn_*.wav files found in {:?}",
             dir
         );
         return;
     }
 
-    println!("JT65A AWGN SNR sweep — {:?}", dir);
+    println!("{label} — {:?}", dir);
     println!("{:>6}  {:>10}  {:>6}", "SNR", "hits/trials", "pct");
     for (snr, (hits, trials)) in &cells {
         let pct = *hits as f32 / *trials as f32 * 100.0;
@@ -183,4 +197,28 @@ fn jt65_awgn_snr_sweep() {
             pct
         );
     }
+}
+
+#[test]
+#[ignore]
+fn jt65_awgn_snr_sweep() {
+    run_sweep(
+        "JT65A AWGN SNR sweep (decode_scan_default)",
+        decode_wav_jt65,
+    );
+}
+
+/// Same corpus, same methodology as [`jt65_awgn_snr_sweep`], but via
+/// the stochastic Chase decoder (issue #169 port —
+/// `mfsk_core::jt65::chase`). Run both and compare tables directly to
+/// measure the real recall improvement (or lack thereof) — see that
+/// module's doc comment for why this is an honest-measurement
+/// deliverable, not an assumed one.
+#[test]
+#[ignore]
+fn jt65_chase_awgn_snr_sweep() {
+    run_sweep(
+        "JT65A AWGN SNR sweep (decode_scan_chase_default)",
+        decode_wav_jt65_chase,
+    );
 }

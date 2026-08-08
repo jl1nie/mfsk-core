@@ -24,7 +24,7 @@ Two kinds of numbers appear per protocol:
 | FST4     | 1/1 (FST4-60A only) | 0.10-0.60 dB across 5 sub-modes | at parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
 | JT9      | 7/7 | AWGN 50% ≈ −26.3 dB, no measurable gap vs. `jt9 -9` | at parity |
-| JT65     | none available | **~7-8 dB** at deep SNR | known gap, deprioritized |
+| JT65     | none available | plain: **~7-8 dB**; `decode_at_with_chase` (2026-08-08, #169): **~2-3 dB** at deep SNR | narrowed, chase decoder opt-in |
 | Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
 
@@ -962,53 +962,85 @@ build on the identical 300-file corpus (100% to −25 dB, 80% at
 −26 dB there; per-cell differences are within 20-trial sampling noise
 at the steep part of the curve).
 
-## JT65 — known gap, deliberately not closed
+## JT65 — stochastic Chase decoder closed most of the gap (2026-08-08, issue #169)
 
 - No real-recording golden WAV available: WSJT-X's own v3 reference
   samples need soft-symbol erasure metadata that lives in private
-  WSJT-X branches.
-- This crate's hard-decision `decode_at`/`decode_at_with_erasures` hits
-  50% recall around **−14 dB** and near-zero below −19 dB, while
-  WSJT-X's own no-`kvasd` path (`jt9 -6`) holds ~100% down to −22 dB on
-  the identical corpus — a real **~7-8 dB gap**.
-- **Root cause**: `jt9 -6` isn't plain hard-decision RS either —
-  `lib/extract.f90` calls `ftrsdap` (`lib/ftrsd/ftrsdap.c`), a
+  WSJT-X branches. AWGN sweep (`tests/jt65_sweep.rs`, `jt65sim`-driven,
+  20 trials/SNR) remains the sensitivity instrument.
+- **Root cause** (unchanged from the original writeup): WSJT-X's own
+  no-`kvasd` path (`jt9 -6`) isn't plain hard-decision RS — it's
+  `lib/extract.f90` calling `ftrsdap` (`lib/ftrsd/ftrsdap.c`), a
   stochastic Chase decoder that runs many randomized soft-symbol
   erasure-pattern trials around Berlekamp-Massey RS, using both the
-  most- and second-most-reliable symbol per position. This crate only
-  tries a single deterministic increasing-erasure-count ordering — a
-  materially weaker algorithm.
-- **Deliberately deprioritized** ([#169](https://github.com/jl1nie/mfsk-core/issues/169)):
-  Q65 already covers JT65's deep-SNR narrowband use case across a
-  wider sensitivity range (10 wired sub-modes), and JT65 on-air
-  traffic has largely migrated to it. Porting `ftrsdap` is a
-  substantial, JT65-specific algorithmic port with no other payoff —
-  not planned unless there's an actual request for deeper JT65 recall.
+  most- and second-most-reliable symbol per position, then ranking
+  candidates and applying an acceptance-margin gate. The old
+  `decode_at_with_erasures` only ever tried one deterministic
+  increasing-erasure-count ordering.
+- **Ported the algorithmic shape, not WSJT-X's literal hand-tuned
+  magic numbers** (`mfsk_core::jt65::chase`, `decode_at_with_chase`/
+  `decode_scan_chase*`): randomized multi-trial erasure search (LCG
+  matching WSJT-X's own POSIX recurrence), a soft-distance quality
+  proxy using `nerr` (free from the RS decoder) plus a cost weighted
+  by whether a correction lands on the retained runner-up-tone guess,
+  and a hit-count/margin acceptance gate to guard against a random
+  trial spuriously satisfying the RS syndrome for a *wrong* codeword
+  (covered by two new always-run false-decode-rate tests,
+  `jt65::chase::tests::chase_never_false_decodes_*`, 20 seeds each of
+  pure noise and a signal synthesized far below the measured floor —
+  both assert zero false decodes, not a tolerance). Additive-only: the
+  original `decode_at`/`decode_at_with_erasures`/`decode_scan*`
+  functions and their tests are untouched and still byte-identical.
+- **Measured result, untuned linear defaults** (`ChaseParams::default()`,
+  2000 trials, `CHASE_PERR_MAX=0.85`, `CHASE_PERR_GAMMA=1.0` — a
+  concave `GAMMA<1.0` curve was tried during tuning and measured
+  *worse* mid-range recall, so the linear default was kept): 50%
+  crossing moved from **−14 dB to ≈ −19.5 dB**, and the ≥0 dB 100%
+  cells are unchanged (confirmed, not assumed — the fast zero-erasure
+  path is tried first and is unaffected by the chase machinery). Of
+  the original ~7-8 dB gap vs. WSJT-X's `jt9 -6` floor (~100% to
+  −22 dB), roughly **5 dB closed**; ~2-3 dB remains at the deepest
+  cells (−20/−22 dB), where WSJT-X's real `ftrsdap` still has an edge
+  — plausibly from its literal `pp` spectral-power candidate ranking
+  (deliberately not ported here, see `chase`'s module doc for the
+  tradeoff) and/or its much larger trial budgets in aggressive mode
+  (up to 100 000 vs. this port's 2000). A trial-count bump to 8000 was
+  tried and only marginally improved −19 dB (35%→60%) with no change
+  at −20/−22 dB and a ~4× runtime cost — diminishing returns, not
+  pursued further. Issue #169 is not being closed by this work (the
+  remaining ~2-3 dB is real), but the practically-relevant portion of
+  the gap is gone.
 
-**AWGN sensitivity sweep** (`tests/jt65_sweep.rs`, `jt65sim`-driven,
-20 trials/SNR):
+**AWGN sensitivity sweep, before/after** (`tests/jt65_sweep.rs`,
+`jt65_awgn_snr_sweep` vs. `jt65_chase_awgn_snr_sweep`, same 300-file
+corpus, 20 trials/SNR):
 
-| SNR | Recall |
-|---:|---:|
-| −25 dB | 0.0% |
-| −22 dB | 0.0% |
-| −20 dB | 0.0% |
-| −19 dB | 0.0% |
-| −18 dB | 5.0% |
-| −17 dB | 15.0% |
-| −16 dB | 30.0% |
-| −15 dB | 25.0% |
-| −14 dB | 50.0% |
-| −12 dB | 45.0% |
-| −10 dB | 60.0% |
-| −5 dB | 80.0% |
-| 0 dB | 100.0% |
-| +5 dB | 100.0% |
-| +10 dB | 100.0% |
+| SNR | Before (`decode_at_with_erasures`) | After (`decode_at_with_chase`) |
+|---:|---:|---:|
+| −25 dB | 0.0% | 0.0% |
+| −22 dB | 0.0% | 0.0% |
+| −20 dB | 0.0% | 15.0% |
+| −19 dB | 0.0% | 35.0% |
+| −18 dB | 5.0% | 100.0% |
+| −17 dB | 15.0% | 100.0% |
+| −16 dB | 30.0% | 100.0% |
+| −15 dB | 25.0% | 100.0% |
+| −14 dB | 50.0% | 100.0% |
+| −12 dB | 45.0% | 100.0% |
+| −10 dB | 60.0% | 100.0% |
+| −5 dB | 80.0% | 100.0% |
+| 0 dB | 100.0% | 100.0% |
+| +5 dB | 100.0% | 100.0% |
+| +10 dB | 100.0% | 100.0% |
 
-(The −15 dB / −12 dB dips relative to their neighbors are 20-trial
-sampling noise, not a non-monotonic decoder — visible on the steep
-part of every sweep in this doc at this trial count.)
+(The pre-existing −15 dB / −12 dB dips in the "before" column relative
+to their neighbors are 20-trial sampling noise, not a non-monotonic
+decoder — visible on the steep part of every sweep in this doc at this
+trial count. The "after" column crosses that same steep region so
+sharply — 0%→100% between −19 dB and −18 dB — that its own sampling
+noise mostly disappears into the step; the true 50% crossing sits
+somewhere in the −20…−18 dB band, roughly estimated at ≈ −19.5 dB from
+the −19 dB cell's 35%.)
 
 ## Q65
 

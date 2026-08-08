@@ -560,7 +560,7 @@ const WSPR_SYNC_VECTOR: [u8; 162] = [0u8; 162];
 | **FST4** | 単一パス BP + OSD | 全スロット 2 段 coherent 同期探索 — §4 |
 | **WSPR** | 単一の専用パス (四半シンボル スペクトログラム走査) | — |
 | **JT9**  | 単一の専用パス | — |
-| **JT65** | 単一の専用パス | RS 消失復号 (`decode_at_with_erasures`) — §6.5 |
+| **JT65** | 単一の専用パス | RS 消失復号 (`decode_at_with_erasures`)、stochastic Chase デコーダ (`decode_at_with_chase`, #169) — §6.5 |
 | **Q65**  | `(Δf,Δt,b90)` グリッド + Lorentzian fading BP (scan) | AP-hint, 明示 fast-fading, AP-list, multi-period — **本節** |
 | **MSK144** | T/R 期間全体のバースト走査 (静的スロットではない) | — |
 
@@ -1089,7 +1089,14 @@ for d in decodes {
 
 JT65 はさらに `decode_at_with_erasures` を提供しており、
 低 SNR 環境で RS 消失復号が通常デコーダでは落とすフレームを
-回復できる。
+回復できる。さらに深い SNR 向けに `decode_at_with_chase` /
+`decode_scan_chase*`（`jt65::chase`、issue #169）も用意している —
+WSJT-X の stochastic Chase デコーダ `ftrsdap` のアルゴリズム形状を
+移植した、ランダム化多試行の消失探索。呼び出し形は通常の
+`decode_scan` 系と同じで `&ChaseParams` 引数が増えるだけ。
+アルゴリズムの詳細は `chase` モジュールの doc コメント、実測結果
+（50% クロスポイントが約 5 dB 改善し、従来の ~7-8 dB ギャップの
+大半を解消）は `docs/notes/BENCHMARKS.md` の JT65 節を参照。
 
 `Jt65Result::snr_db` と JT9 の `Jt9Result::snr_db` はどちらも、
 各シンボルで復号されたトーンの電力と他トーンの電力比から算出する

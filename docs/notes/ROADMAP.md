@@ -5,12 +5,16 @@
 Three tracks, at very different maturities:
 
 1. **Host DSP / protocol — mature, effectively maintenance.** All eight
-   protocol families sit at or near WSJT-X sensitivity parity (the one
-   disclosed exception, JT65 vs. `ftrsdap`, is deprioritised because Q65
-   covers the same niche). Golden lockdowns and the FST4 / FT4 / Q65
-   sensitivity closes all landed across the 0.6.x–0.7.x line. What's
-   still open here (#143 / #193 FST4 AP+SIC, #192 FT8 engine
-   unification, #169 JT65, #224 JT4, #148 research) is **tail work** —
+   protocol families sit at or near WSJT-X sensitivity parity. The one
+   disclosed exception, JT65 vs. `ftrsdap`, was narrowed (not fully
+   closed) 2026-08-08: the stochastic Chase decoder port
+   (`jt65::chase::decode_at_with_chase`, #169) cut the gap from ~7-8 dB
+   to ~2-3 dB at deep SNR — see `docs/notes/BENCHMARKS.md`'s JT65
+   section for the measured before/after table. Golden lockdowns and
+   the FST4 / FT4 / Q65 sensitivity closes all landed across the
+   0.6.x–0.7.x line. What's still open here (#143 / #193 FST4 AP+SIC,
+   #192 FT8 engine unification, #224 JT4, #148 research, and the
+   residual ~2-3 dB JT65 gap if #169 is reopened) is **tail work** —
    calibration, behaviour-preserving refactor, or low-demand modes — not
    a frontier. Advances here should be demand-driven (e.g. VK3NV's
    FST4-15/30 use case behind #143), not pursued for their own sake.
@@ -272,13 +276,21 @@ Grouped by the three tracks in **Strategic state** above.
   refactor; not urgent, not blocked by anything. Requires
   numerical-diff-from-reference rigor so a careless port doesn't regress
   FT4/FST4's independently-calibrated OSD gates.
-- **#169** — JT65 ~7-8 dB gap vs. WSJT-X's `ftrsdap` stochastic Chase
-  decoder. Root-caused (this crate's `decode_at_with_erasures` tries a
-  single deterministic erasure ordering; `ftrsdap` runs randomized
-  soft-symbol trials using the 2nd-most-reliable symbol too).
-  **Deprioritised**: Q65 covers JT65's deep-SNR niche and on-air traffic
-  has migrated. Left open as documentation of the traced cause; not
-  planned unless a real request for deeper JT65 recall appears.
+- **#169** — JT65 gap vs. WSJT-X's `ftrsdap` stochastic Chase decoder.
+  Root-caused (the old `decode_at_with_erasures` tries a single
+  deterministic erasure ordering; `ftrsdap` runs randomized soft-symbol
+  trials using the 2nd-most-reliable symbol too). **Narrowed
+  2026-08-08**: ported the algorithmic shape (not WSJT-X's literal
+  magic numbers) as an additive opt-in, `jt65::chase::decode_at_with_chase`
+  / `decode_scan_chase*`. Measured on the same AWGN corpus: 50%
+  crossing moved −14 dB → ≈−19.5 dB, closing ~5 dB of the ~7-8 dB gap;
+  ~2-3 dB remains at the deepest cells (−20/−22 dB), plausibly from
+  WSJT-X's literal spectral-power candidate ranking (`pp`, deliberately
+  not ported — see `chase`'s module doc) and/or its much larger trial
+  budgets. See `docs/notes/BENCHMARKS.md`'s JT65 section for the full
+  before/after table. Remaining ~2-3 dB left open, same
+  demand-driven bar as before — Q65 still covers JT65's deep-SNR niche
+  for most on-air use.
 - **#224** — JT4 not implemented (WSJT-X ships JT4A/JT4F golden WAVs).
   "Doable but demand unclear" — every usage signal found was WSJT-X
   boilerplate, not dated on-air data, and Q65 has partly superseded its

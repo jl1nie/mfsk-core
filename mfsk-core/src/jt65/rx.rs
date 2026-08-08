@@ -18,6 +18,13 @@ use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
 
+/// `(symbols, conf, second_sym, snr_db)` — the richer demod tuple
+/// [`demodulate_aligned_with_runnerup`] and the internal `_inner`
+/// helper return. Factored into a named alias purely to keep
+/// `clippy::type_complexity` quiet; see those functions' own doc
+/// comments for what each element means.
+type DemodWithRunnerup = ([u8; 63], [f32; 63], [u8; 63], f32);
+
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
 /// de-interleaved), ready for [`crate::fec::Rs63_12::decode_jt65`].
@@ -41,7 +48,7 @@ pub fn demodulate_aligned(
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
 
-    let (syms, _conf, _snr_db) = demodulate_aligned_with_confidence_inner(
+    let (syms, _conf, _second_sym, _snr_db) = demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
         start_sample,
@@ -71,6 +78,44 @@ pub fn demodulate_aligned_with_confidence(
     let (syms, conf, _snr_db) =
         demodulate_aligned_with_confidence_and_snr(audio, sample_rate, start_sample, base_freq_hz)?;
     Some((syms, conf))
+}
+
+/// Like [`demodulate_aligned_with_confidence`] but also returns the
+/// *identity* of each position's second-most-reliable tone (not just
+/// its power) and the decode-side SNR estimate. Used by
+/// [`crate::jt65::chase::decode_at_with_chase`]'s stochastic erasure
+/// search: the runner-up tone's identity feeds a soft-distance
+/// candidate-ranking metric, mirroring how WSJT-X's `ftrsdap` uses
+/// both the most- and second-most-reliable symbol per position (see
+/// that module's doc comment for the full rationale).
+pub fn demodulate_aligned_with_runnerup(
+    audio: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+) -> Option<DemodWithRunnerup> {
+    let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let df = sample_rate as f32 / nsps as f32;
+    let base_bin = (base_freq_hz / df).round() as usize;
+    if start_sample + 126 * nsps > audio.len() || base_bin + 66 >= nsps / 2 {
+        return None;
+    }
+
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(nsps);
+    let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
+    let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
+    demodulate_aligned_with_confidence_inner(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        nsps,
+        base_bin,
+        &mut buf,
+        &mut scratch,
+        &*fft,
+    )
 }
 
 /// Like [`demodulate_aligned_with_confidence`] but also returns a
@@ -104,7 +149,7 @@ pub fn demodulate_aligned_with_confidence_and_snr(
     let fft = planner.plan_fft_forward(nsps);
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-    demodulate_aligned_with_confidence_inner(
+    let (syms, conf, _second_sym, snr_db) = demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
         start_sample,
@@ -114,7 +159,8 @@ pub fn demodulate_aligned_with_confidence_and_snr(
         &mut buf,
         &mut scratch,
         &*fft,
-    )
+    )?;
+    Some((syms, conf, snr_db))
 }
 
 fn demodulate_aligned_with_confidence_inner(
@@ -127,11 +173,16 @@ fn demodulate_aligned_with_confidence_inner(
     buf: &mut [Complex<f32>],
     scratch: &mut [Complex<f32>],
     fft: &dyn rustfft::Fft<f32>,
-) -> Option<([u8; 63], [f32; 63], f32)> {
+) -> Option<DemodWithRunnerup> {
     // Walk 126 symbol windows. Data positions (NPRC[i] == 0) each get
     // argmax of 64 data-tone magnitudes (+ runner-up for confidence).
+    // `second_tone` tracks the runner-up's *identity* (not just its
+    // power) — needed by `chase::decode_at_with_chase`'s soft-distance
+    // candidate ranking (mirrors WSJT-X `ftrsdap`'s `nsoft`, which
+    // checks whether a correction landed on the 2nd-best guess).
     let mut symbols = [0u8; 63];
     let mut conf = [0f32; 63];
+    let mut second_tone_sym = [0u8; 63];
     let mut xsig_sum = 0.0f32;
     let mut xnoi_sum = 0.0f32;
     let mut k = 0usize;
@@ -146,6 +197,7 @@ fn demodulate_aligned_with_confidence_inner(
         }
         let mut best_tone = 0u8;
         let mut best_pwr = f32::NEG_INFINITY;
+        let mut second_tone = 0u8;
         let mut second_pwr = f32::NEG_INFINITY;
         let mut total_pwr = 0.0f32;
         for tone in 0u8..64 {
@@ -154,13 +206,16 @@ fn demodulate_aligned_with_confidence_inner(
             total_pwr += p;
             if p > best_pwr {
                 second_pwr = best_pwr;
+                second_tone = best_tone;
                 best_pwr = p;
                 best_tone = tone;
             } else if p > second_pwr {
                 second_pwr = p;
+                second_tone = tone;
             }
         }
         symbols[k] = inv_gray6(best_tone);
+        second_tone_sym[k] = inv_gray6(second_tone);
         conf[k] = if best_pwr > 0.0 {
             ((best_pwr - second_pwr.max(0.0)) / best_pwr).clamp(0.0, 1.0)
         } else {
@@ -172,6 +227,7 @@ fn demodulate_aligned_with_confidence_inner(
     }
     debug_assert_eq!(k, 63);
     deinterleave(&mut symbols);
+    deinterleave(&mut second_tone_sym);
     // Apply the same permutation to confidence so positions line up.
     let mut conf_perm = [0f32; 63];
     {
@@ -210,7 +266,7 @@ fn demodulate_aligned_with_confidence_inner(
         }
     };
 
-    Some((symbols, conf_perm, snr_db))
+    Some((symbols, conf_perm, second_tone_sym, snr_db))
 }
 
 #[cfg(test)]
