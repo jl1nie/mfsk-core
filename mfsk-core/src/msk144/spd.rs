@@ -207,10 +207,14 @@ pub fn detect_burst_candidates(cbig: &[Complex32], fc: f32, ntol: f32) -> Vec<Bu
 
     // Noise floor: WSJT-X picks the value at ascending-sorted position
     // `nstep/4` (1-based) — a low quantile, not the median despite the
-    // comment (`msk144spd.f90:122-124`).
+    // comment (`msk144spd.f90:122-124`). Only that single order
+    // statistic is needed, not a full ascending order —
+    // `select_nth_unstable_by` finds it in O(n) average instead of
+    // `sort_by`'s O(n log n), same class of fix applied to
+    // JT65/JT9/Q65's `Spectrogram::build`.
     let mut sorted = detmet.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let pos0 = (nstep / 4).saturating_sub(1);
+    sorted.select_nth_unstable_by(pos0, |a, b| a.partial_cmp(b).unwrap());
     let xmed = sorted[pos0].max(1e-9);
     for v in detmet.iter_mut() {
         *v /= xmed;

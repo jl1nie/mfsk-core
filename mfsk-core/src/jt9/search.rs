@@ -73,11 +73,19 @@ impl Spectrogram {
         }
 
         // Noise reference: drop the top 5 % (strong bins) and average
-        // the rest. Cheap median-ish estimator.
+        // the rest. Cheap median-ish estimator. Only the *set* of
+        // bottom-95% values is needed (order within that set doesn't
+        // matter, we just sum them), not a full ascending order —
+        // `select_nth_unstable_by` partitions in O(n) average instead
+        // of `sort_unstable_by`'s O(n log n); same fix applied to
+        // JT65's structurally identical `Spectrogram::build` and
+        // Q65's `Spectrogram::build_for`.
         let mut sorted = mags_sqr.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let keep = (sorted.len() as f32 * 0.95) as usize;
         let noise_per_bin = if keep > 0 {
+            sorted.select_nth_unstable_by(keep - 1, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
             sorted[..keep].iter().sum::<f32>() / keep as f32
         } else {
             1.0

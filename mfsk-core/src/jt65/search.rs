@@ -72,10 +72,22 @@ impl Spectrogram {
             }
         }
 
+        // Noise floor estimate: trimmed-mean of the bottom 95% of FFT
+        // magnitudes (rejects strong narrow-band signals). Only the
+        // *set* of bottom-95% values is needed (order within that set
+        // is irrelevant, we just sum them), not a full ascending
+        // order — `select_nth_unstable_by` partitions in O(n) average
+        // instead of `sort_unstable_by`'s O(n log n). Measured as the
+        // dominant cost of `Spectrogram::build` (13-14ms vs the FFT
+        // loop's 7-8ms on a 300-file JT65 AWGN sweep) before this fix;
+        // same fix already applied to Q65's `Spectrogram::build_for`
+        // and FT8's `xsnr2_db_simple` noise median.
         let mut sorted = mags_sqr.clone();
-        sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let keep = (sorted.len() as f32 * 0.95) as usize;
         let noise_per_bin = if keep > 0 {
+            sorted.select_nth_unstable_by(keep - 1, |a, b| {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            });
             sorted[..keep].iter().sum::<f32>() / keep as f32
         } else {
             1.0
