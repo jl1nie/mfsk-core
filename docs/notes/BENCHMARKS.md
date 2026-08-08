@@ -343,6 +343,23 @@ parallelism…" entry) led to profiling JT65/JT9's `Spectrogram`/
   below; correctness confirmed via the full MSK144 test suite
   (unchanged), not a speed claim.
 
+- **JT9 candidate-loop stage breakdown, found the real remaining
+  cost**: `jt9::tests::candidate_loop_stage_diag` isolated the
+  candidate loop itself (not the once-per-scan big FFT) on this
+  table's own golden WAV with production `SearchParams` (200 max
+  candidates). `ConvFano232::decode_soft` is ~92% of it (~281ms of
+  ~305ms) — and almost all of *that* is candidates that never
+  converge: 49 of 59 candidates reaching Fano fail and burn the full
+  `max_cycles_per_bit` budget (~5.7ms each); the 10 that converge
+  finish in ~4µs each (0.04ms total). This led to `Jt9Depth`
+  (`Fast`/`Normal`/`Deep`/`Max` = 5000/10000/30000/100000 cycles/bit,
+  mirroring WSJT-X's own `-d`/"Decode Again" ladder) — see the JT9
+  section below for the real-`jt9`-comparison numbers behind keeping
+  `Normal` (10 000, unchanged) as the default rather than switching to
+  `Fast` (5 000, WSJT-X's own default). New `decode_scan_with_depth`/
+  `decode_scan_streaming_with_depth`/`decode_at_baseband_with_fft_depth`
+  siblings; existing `decode_scan`/`decode_scan_streaming` unchanged.
+
 Also investigated, same pass: candidate-loop `rayon` parallelism for
 all five of JT65/Q65/JT9/uvpacket/MSK144 (none had it before), and,
 after that measured zero benefit everywhere, a second attempt at
@@ -1023,10 +1040,27 @@ reference bandwidth).
 | +5 dB | 100.0% |
 | +10 dB | 100.0% |
 
-50% crossing ≈ −26.3 dB — no measurable gap vs. a real WSJT-X `jt9 -9`
-build on the identical 300-file corpus (100% to −25 dB, 80% at
-−26 dB there; per-cell differences are within 20-trial sampling noise
-at the steep part of the curve).
+50% crossing ≈ −26.3 dB.
+
+**2026-08-08, re-verified directly against the real `jt9 -9` build**
+(`/home/minoru/src/WSJT-X/build_jt9/jt9`, default depth = `-d1`, the
+same 20-file-per-SNR corpus `tests/jt9_sweep.rs` uses) while
+investigating `Jt9Depth` (see "Decode speed" section below): real
+`jt9 -d1` scores **14/20 (70%) at −26 dB, 2/20 (10%) at −27 dB** —
+corrects this doc's previous "80% at −26 dB" figure (stale/imprecise,
+source not re-traceable) to a number re-derived from a fresh run,
+output double-checked line-by-line, not just grep-counted. This
+crate's own numbers at the two `Jt9Depth` tiers on the identical
+files: `Normal` (10 000 cycles/bit, the crate default) 13/20 (65%) at
+−26 dB, 2/20 (10%) at −27 dB; `Fast` (5 000, matching WSJT-X's own
+`-d1` cycle budget exactly) 12/20 (60%) at −26 dB, 1/20 (5%) at
+−27 dB. So there's a small (~5-10 point), not-yet-investigated
+sensitivity gap at `Normal` vs. real `jt9 -d1` at −26 dB specifically
+(exact match at −27 dB) — independent of the cycle-budget question,
+since `Normal` already uses double WSJT-X's own `-d1` budget and
+still trails there. Not chased further this session; a candidate for
+a future dedicated investigation (phase-by-phase comparison against
+`jt9_decode.f90`, the same methodology that closed JT65's #169 gap).
 
 ## JT65 — gap closed: chase decoder + FFT-bin scalloping-loss fix (2026-08-08, issue #169)
 

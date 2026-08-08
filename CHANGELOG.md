@@ -272,6 +272,36 @@ effect on any decode path.
   complete phase-by-phase writeup: `docs/notes/BENCHMARKS.md`'s JT65
   section.
 
+- **JT9: configurable decode depth (`Jt9Depth`)** — found while
+  profiling why JT9's candidate loop dominates real-recording decode
+  time (`jt9::tests::candidate_loop_stage_diag`): `ConvFano232::
+  decode_soft` is ~92% of it, almost entirely non-converging
+  candidates burning the full `max_cycles_per_bit` budget before
+  giving up (a real signal converges in microseconds regardless of the
+  budget). WSJT-X's own `jt9_decode.f90` doesn't use one flat budget
+  either — it escalates `limit=5000` (its own automatic-scan default,
+  `-d1`) → `10000` (`-d2`) → `30000` (`-d3`) → `100000` ("Decode
+  Again"). `Jt9Depth::{Fast,Normal,Deep,Max}` exposes the same four
+  tiers; new `decode_scan_with_depth`/`decode_scan_streaming_with_depth`/
+  `decode_at_baseband_with_fft_depth` siblings (existing `decode_scan`/
+  `decode_scan_streaming` unchanged, `Jt9Depth::default()` = `Normal`
+  = 10 000, this crate's pre-existing value, so default behavior is
+  identical to before).
+
+  Checked whether the default should move to `Fast` (WSJT-X's own
+  `-d1`) by running a real `jt9 -9` build (defaults to `-d1`) against
+  the same 20-file-per-SNR AWGN corpus `tests/jt9_sweep.rs` uses:
+  real `jt9 -d1` scores 70%/10% (14/20, 2/20) at −26/−27 dB; this
+  crate at `Fast` (5 000, matching WSJT-X's cycle budget exactly) gets
+  60%/5%, at `Normal` (10 000) gets 65%/10% — so `Fast` would trail
+  real `jt9` by *more* at both points, not close a gap to it, and
+  `Normal` already falls ~5 points short of real `jt9 -d1` at −26 dB
+  even at double its cycle budget (a small, separate, not-yet-
+  investigated sensitivity gap). Kept `Normal` as the default.
+  `docs/notes/BENCHMARKS.md`'s JT9 section has the full numbers and
+  corrects a stale "80% at −26 dB" figure for real `jt9` to a freshly
+  re-verified 70%.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its
