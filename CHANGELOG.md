@@ -310,24 +310,6 @@ effect on any decode path.
   pattern as JT65. Recall confirmed unchanged: full WSJT-X sample
   suite and the Q65-30A SNR sweep both pass identically.
 
-- **JT9 candidate-level parallelism** (same day, user explicitly
-  extended the ask: "JT9とmsk144") — JT9 had the identical pre-existing
-  gap. Added `#[cfg(feature = "parallel")]` `par_iter()` to
-  `decode_scan_inner`: each candidate reads the shared, once-per-slot
-  `softsym::AudioFft` with no mutable state of its own, same
-  embarrassingly-parallel shape as JT65/Q65. `decode_scan_streaming`'s
-  doc comment and `jt9_wsjtx_samples.rs`'s
-  `jt9_scan_streaming_matches_batch_exactly` updated to the same
-  contract/set-based comparison. Measured on the real WSJT-X golden
-  (`samples/JT9/130418_1742.wav`, wide search matching the streaming
-  test's own `max_candidates=200` — 25× JT65/Q65's typical cap): again
-  **no meaningful speedup** (47.6 ms → 48.0 ms/call, within noise).
-  Recall confirmed unchanged: 7/7 golden and the full AWGN sweep both
-  pass identically. Same conclusion as JT65/Q65 — the real bottleneck
-  for all three appears to be the unparallelized upfront per-slot
-  FFT/spectrogram build, not the candidate-decode loop this change
-  actually parallelizes.
-
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its

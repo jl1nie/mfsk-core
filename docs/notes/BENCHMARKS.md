@@ -928,30 +928,6 @@ reference bandwidth).
 
 ## JT9
 
-- **Candidate-level parallelism** (2026-08-08, same investigation as
-  JT65/Q65's — user explicitly asked to check JT9 too, "JT9とmsk144"):
-  JT9 had the same pre-existing gap. Added
-  `#[cfg(feature = "parallel")]` `par_iter()` to `decode_scan_inner` —
-  each candidate reads the shared, pre-built `softsym::AudioFft` (built
-  once per slot) with no mutable state of its own, same
-  embarrassingly-parallel shape as JT65/Q65. `decode_scan_streaming`'s
-  doc comment and `jt9_wsjtx_samples.rs`'s
-  `jt9_scan_streaming_matches_batch_exactly` updated to the same
-  fire-before-dedup/possible-transient-duplicate contract (set-based
-  comparison, not strict `Vec` equality). Measured on the real WSJT-X
-  golden (`samples/JT9/130418_1742.wav`, wide search params matching
-  the streaming test's own `max_candidates=200`): **again no
-  meaningful speedup** — 47.6 ms → 48.0 ms per `decode_scan()` call,
-  within noise, even at 200 candidates (25× JT65/Q65's typical cap).
-  Recall confirmed unchanged: 7/7 golden and the full AWGN sweep
-  (−27dB 10% → −24dB 100%, matching the existing documented curve)
-  both pass identically. Same conclusion as JT65/Q65: kept for
-  correctness and crate-wide architectural consistency, not a
-  demonstrated performance win on today's available test corpora — the
-  bottleneck for all three protocols appears to be elsewhere (likely
-  the upfront per-slot FFT/spectrogram build, itself a single
-  unparallelized call before the candidate loop even starts), not the
-  per-candidate decode step this change actually parallelizes.
 - **7/7 WSJT-X golden** (`samples/JT9/130418_1742.wav`) via the full
   WSJT-X-faithful softsym pipeline (`afc9` + `chkss2` + `xx0` mettab +
   `sync9` per-freq collapse). This table previously said 5/5 — stale;

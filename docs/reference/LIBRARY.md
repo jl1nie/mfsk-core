@@ -800,29 +800,22 @@ final cross-candidate dedup pass — on the rare occasion two different
 sync candidates converge on the same message, `cb` may fire for both
 even though only one survives into the returned `Vec`.
 
-The same two contracts, not a third — but the split isn't static.
-**Q65's scan builders, JT65's `decode_scan_streaming`/
-`decode_scan_chase_streaming`, and JT9's `decode_scan_streaming` all
-gained `rayon::par_iter()` 2026-08-08** (issue #169's follow-up —
-"そもそもparallelはあるの？"/"なんでpar_iterないの？", then explicitly
-"JT9とmsk144" too — none of the three had ever received the same
-treatment as FT8/FT4/FST4/WSPR) — now the completion-order/possible-
-duplicate contract, same as FT8's default strategy and WSPR below.
-Measured honestly at the time: no measurable wall-clock speedup on any
-of the three protocols' available real test data
-(`docs/notes/BENCHMARKS.md`'s JT65/Q65/JT9 sections; JT9 tested up to
-`max_candidates=200`, 25× JT65/Q65's typical cap, still no difference)
-— `max_candidates` caps plus inherently-cheap per-candidate decode
-leave little parallelizable work compared to FT8's much denser
-candidate grid, and for all three the likely real bottleneck is the
-single unparallelized upfront per-slot FFT/spectrogram build that runs
-*before* the candidate loop, not the loop itself — but the contract
-change is real regardless of whether it currently pays off in
-practice, so it's documented here, not deferred. MSK144's own
-candidate scan (`decode_slot`) was assessed the same day and
-deliberately **not** given the same treatment — see its own note in
-§10's MSK144 entry for why (a stateful sliding-window scan, not an
-embarrassingly-parallel independent-candidate loop). WSPR's
+The same two contracts, not a third — but the split isn't static:
+JT9's `decode_scan_streaming` is the one remaining sequential-
+exhaustive candidate loop with no parallelism — exact-match, same as
+FT8's SIC strategies. **Q65's scan builders and JT65's
+`decode_scan_streaming`/`decode_scan_chase_streaming` gained
+`rayon::par_iter()` 2026-08-08** (issue #169's follow-up: "そもそも
+parallelはあるの？"/"なんでpar_iterないの？" — both protocols had simply
+never received the same treatment as FT8/FT4/FST4/WSPR/JT9) — now the
+completion-order/possible-duplicate contract, same as FT8's default
+strategy and WSPR below. Measured honestly at the time: no measurable
+wall-clock speedup on either protocol's available real test data
+(`docs/notes/BENCHMARKS.md`'s JT65/Q65 sections) — `max_candidates`
+caps plus inherently-cheap per-candidate decode leave little
+parallelizable work compared to FT8's much denser candidate grid — but
+the contract change is real regardless of whether it currently pays
+off in practice, so it's documented here, not deferred. WSPR's
 `decode_scan_streaming` runs both its coarse-search passes under
 `rayon::par_iter()` too — same completion-order/possible-duplicate
 caveat; `decode_scan_subtract_streaming` fires only at its own outer
@@ -1094,7 +1087,7 @@ which inner steps they enable:
 | `packet-bytes`  | off     | `PacketBytesMessage` — byte-payload example `MessageCodec`    |
 | `uvpacket`      | off     | uvpacket — applied non-WSJT example, 4 sub-mode ZSTs (§10.1); pulls in `fst4` |
 | `full`          | off     | Aggregate of all protocol features above                      |
-| `parallel`      | on      | Enables rayon `par_iter` in `engine::pipeline`, WSPR, JT65, Q65, JT9's scan strategies (no-op under WASM) |
+| `parallel`      | on      | Enables rayon `par_iter` in `engine::pipeline`, WSPR, JT65, Q65's scan strategies (no-op under WASM) |
 
 ## 6. Using from Rust
 
