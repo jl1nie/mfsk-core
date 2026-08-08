@@ -152,16 +152,24 @@ pub fn peakdt9(c2: &[Complex<f32>]) -> (i64, f32, Vec<Complex<f32>>) {
     // Sliding-window coherent sum over `NSPSD` samples → integrated
     // power at each lag. WSJT-X scales by 1e-3 to keep magnitudes
     // away from f32 overflow when downsam9 amplified them.
+    //
+    // Running sum instead of recomputing the up-to-`NSPSD`-wide window
+    // from scratch at every `i` (O(NFFT2·NSPSD) → O(NFFT2)): the
+    // window's `lo(i) = max(0, i-(NSPSD-1))` bound means each step
+    // either grows the window by one sample (the first `NSPSD-1`
+    // steps, `lo` pinned at 0) or slides it by one (`lo`/`hi` both
+    // advance together thereafter) — either way, exactly one sample
+    // enters (`c2[i]`) and at most one leaves (`c2[i-NSPSD]`, once
+    // `i >= NSPSD`) per step.
     let mut p = vec![0.0f32; NFFT2 + 5 * NSPSD];
     let i0 = 5 * NSPSD;
+    let mut z = Complex::new(0.0f32, 0.0);
     for i in 0..NFFT2 {
-        let lo = (i + 1).saturating_sub(NSPSD);
-        let mut z = Complex::new(0.0f32, 0.0);
-        for k in lo..=i {
-            z += c2[k];
+        z += c2[i];
+        if i >= NSPSD {
+            z -= c2[i - NSPSD];
         }
-        z *= 1e-3;
-        p[i0 + i] = z.norm_sqr();
+        p[i0 + i] = (z * 1e-3).norm_sqr();
     }
 
     // Lag bounds match WSJT-X getlags for nsps8=864 (NSPSD=16):
@@ -174,12 +182,15 @@ pub fn peakdt9(c2: &[Complex<f32>]) -> (i64, f32, Vec<Complex<f32>>) {
     for lag in lag1..=lag2 {
         let mut sum0 = 0.0f32;
         let mut sum1 = 0.0f32;
-        for sym in 0..85usize {
-            let idx = (sym * NSPSD) as i64 + lag;
-            if idx < 0 || idx as usize >= p.len() {
-                continue;
-            }
-            let v = p[idx as usize];
+        // `idx = sym*NSPSD + lag` is monotonic increasing in `sym` and
+        // never negative (`lag >= lag1 = 39 > 0`), so the only edge
+        // that can trigger is the upper one, only for `sym` near 85 at
+        // large `lag` — clamp `sym`'s range once instead of checking
+        // `idx` every one of the 85 inner iterations.
+        let sym_hi = ((p.len() as i64 - lag + NSPSD as i64 - 1) / NSPSD as i64).clamp(0, 85);
+        for sym in 0..sym_hi as usize {
+            let idx = ((sym * NSPSD) as i64 + lag) as usize;
+            let v = p[idx];
             if JT9_ISYNC[sym] == 1 {
                 sum1 += v;
             } else {
@@ -197,13 +208,18 @@ pub fn peakdt9(c2: &[Complex<f32>]) -> (i64, f32, Vec<Complex<f32>>) {
     }
 
     // Extract NZ3 samples starting at lagpk (with the WSJT-X offsetting
-    // convention: c3(i) = c2(i + lagpk - i0 - NSPSD + 1)).
+    // convention: c3(i) = c2(i + lagpk - i0 - NSPSD + 1)). `j` is
+    // monotonic in `i` (fixed offset per call), so clamp the valid `i`
+    // range once instead of checking `j`'s bounds every iteration —
+    // `i` outside the range leaves `c3[i]` at its zero-init value,
+    // matching the original skip.
+    let offset = lagpk - i0 as i64 - NSPSD as i64 + 1;
+    let i_lo = (-offset).clamp(0, NZ3 as i64) as usize;
+    let i_hi = (NFFT2 as i64 - offset).clamp(0, NZ3 as i64) as usize;
     let mut c3 = vec![Complex::new(0.0, 0.0); NZ3];
-    for i in 0..NZ3 as i64 {
-        let j = i + lagpk - i0 as i64 - NSPSD as i64 + 1;
-        if j >= 0 && (j as usize) < NFFT2 {
-            c3[i as usize] = c2[j as usize];
-        }
+    for i in i_lo..i_hi {
+        let j = (i as i64 + offset) as usize;
+        c3[i] = c2[j];
     }
     (lagpk, smax, c3)
 }

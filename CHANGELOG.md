@@ -351,6 +351,29 @@ effect on any decode path.
   entry in this file uses interleaved/isolated methodology rather
   than sequential before/after blocks.
 
+- **`jt9::softsym::peakdt9`** — found while writing the isolation probe
+  above, not part of the original audit, and a different fix shape
+  from the rest of this cluster: its sliding-window coherent-sum loop
+  recomputed the whole up-to-`NSPSD`-wide window from scratch at every
+  one of `NFFT2` positions (O(NFFT2·NSPSD)); replaced with a running
+  sum that adds the entering sample and subtracts the one that fell
+  out of the window each step (O(NFFT2)), verified equivalent via the
+  window's own `lo(i) = max(0, i-(NSPSD-1))` growth/slide structure.
+  Also hoisted two more instances of the same index-only-branch
+  pattern already fixed elsewhere in this file: the sync-score search
+  loop's `idx >= p.len()` bound (monotonic in `sym`, only the upper
+  edge ever triggers, and only for large `lag`) and the `c3` extraction
+  loop's `j` bound (monotonic in `i`, a single fixed per-call offset).
+  Properly interleaved measurement (git-worktree A/B, alternating every
+  run — the methodology the entry above this one exists to justify)
+  showed a modest but consistent ~1-2% `decode_scan` speedup across 4
+  rounds, smaller than hoped for a supposedly-16x-fewer-ops change,
+  but real and in the right direction (unlike the `AudioFft::build`/
+  `downsam9` hoists, which measured as genuinely flat). Byte-identical
+  recall (JT9 7/7 golden) and AWGN sweep (exact percentage match at
+  every SNR point) confirm the running-sum rewrite is equivalent, not
+  just faster.
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added
