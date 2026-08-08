@@ -363,4 +363,128 @@ mod tests {
             );
         }
     }
+
+    /// Manual diagnostic: on the real busy-band golden WAV with the
+    /// real production `SearchParams` (200 max candidates), where does
+    /// the per-candidate loop's time actually go? Follow-up to
+    /// `phase_breakdown_diag` above — that probe used a simpler
+    /// low-candidate-count AWGN file where the once-per-scan big FFT
+    /// dominates; on this golden file the candidate loop itself is the
+    /// large majority of `decode_scan`'s wall time (per
+    /// `docs/notes/BENCHMARKS.md`'s 2026-08-08 note: ~300ms total,
+    /// only ~11ms in search+big-FFT). Breaks each candidate down into
+    /// its four pipeline stages (`downsam9`+`peakdt9` / `afc9`+
+    /// `twkfreq_poly` / `llrs_from_c5` / `ConvFano232::decode_soft`),
+    /// and counts how many candidates each gate rejects vs. lets
+    /// through, to find where the real cost concentrates.
+    #[test]
+    #[ignore = "manual diagnostic — JT9 candidate-loop stage breakdown on the real golden WAV"]
+    fn candidate_loop_stage_diag() {
+        use std::time::Instant;
+
+        use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
+        use crate::fec::ConvFano232;
+        use crate::msg::Jt72Codec;
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/130418_1742.wav"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
+        let audio: Vec<f32> = bytes[44..44 + dl]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
+            .collect();
+
+        let sp = search::SearchParams {
+            freq_min_hz: 1050.0,
+            freq_max_hz: 1550.0,
+            time_tolerance_symbols: 3,
+            score_threshold: 0.05,
+            max_candidates: 200,
+        };
+        let mut cands = search::coarse_search(&audio, 12_000, 0, &sp);
+        cands.sort_unstable_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        cands.truncate(sp.max_candidates.max(32));
+
+        let big_fft = softsym::AudioFft::build(&audio);
+
+        let (mut t_downsam_peak, mut t_afc, mut t_llrs, mut t_fano) = (0f64, 0f64, 0f64, 0f64);
+        let (mut t_fano_converged, mut t_fano_failed) = (0f64, 0f64);
+        let (mut n_total, mut n_sync_pass, mut n_schk_pass, mut n_fano_converge, mut n_msg_ok) =
+            (0usize, 0usize, 0usize, 0usize, 0usize);
+
+        for c in &cands {
+            n_total += 1;
+            if c.freq_hz <= 0.0 {
+                continue;
+            }
+
+            let t0 = Instant::now();
+            let c2 = big_fft.downsam9(c.freq_hz);
+            let (_lagpk, sync_score, mut c3) = softsym::peakdt9(&c2);
+            t_downsam_peak += t0.elapsed().as_secs_f64() * 1000.0;
+            if !sync_score.is_finite() || sync_score < 1.5 {
+                continue;
+            }
+            n_sync_pass += 1;
+
+            let t0 = Instant::now();
+            let afc = softsym::afc9(&mut c3);
+            softsym::twkfreq_poly(&mut c3, [afc.a0, afc.a1, 0.0]);
+            t_afc += t0.elapsed().as_secs_f64() * 1000.0;
+            let sync = (afc.syncpk + 1.0) / 4.0;
+            if !sync.is_finite() || sync < 1.0 {
+                continue;
+            }
+
+            let t0 = Instant::now();
+            let (schk, llrs, _snr_db) = softsym::llrs_from_c5(&c3);
+            t_llrs += t0.elapsed().as_secs_f64() * 1000.0;
+            if !schk.is_finite() || schk < 1.5 {
+                continue;
+            }
+            n_schk_pass += 1;
+
+            let t0 = Instant::now();
+            let res = ConvFano232.decode_soft(&llrs, &FecOpts::default());
+            let this_fano_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            t_fano += this_fano_ms;
+            match &res {
+                Some(_) => t_fano_converged += this_fano_ms,
+                None => t_fano_failed += this_fano_ms,
+            }
+            let Some(res) = res else { continue };
+            n_fano_converge += 1;
+
+            let mut payload = [0u8; 72];
+            payload.copy_from_slice(&res.info);
+            if Jt72Codec::default()
+                .unpack(&payload, &DecodeContext::default())
+                .is_some()
+            {
+                n_msg_ok += 1;
+            }
+        }
+
+        eprintln!(
+            "candidates: total={n_total} sync_pass={n_sync_pass} schk_pass={n_schk_pass} \
+             fano_converge={n_fano_converge} msg_ok={n_msg_ok}"
+        );
+        eprintln!(
+            "stage time (ms): downsam9+peakdt9={t_downsam_peak:.2} afc9+twkfreq={t_afc:.2} \
+             llrs_from_c5={t_llrs:.2} fano_decode_soft={t_fano:.2} total={:.2}",
+            t_downsam_peak + t_afc + t_llrs + t_fano
+        );
+        eprintln!(
+            "fano_decode_soft split: converged={t_fano_converged:.2}ms (n={n_fano_converge}) \
+             failed={t_fano_failed:.2}ms (n={})",
+            n_schk_pass - n_fano_converge
+        );
+    }
 }
