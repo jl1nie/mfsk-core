@@ -157,6 +157,52 @@ effect on any decode path.
   serde's `alloc` feature, so a UI can emit decode rows as JSON for
   spotting / websocket / IPC. Folded into `full`. Purely additive.
 
+### Changed
+
+- **`engine::sync::coarse_sync` no longer heap-allocates inside its
+  hottest loop.** `fill_sync2d_row!`'s per-(freq-bin, lag)-cell
+  accumulators (`t_blocks`/`t0_blocks`, `sync.rs`) were a fresh
+  `vec![0.0f32; num_blocks]` pair allocated on every one of the
+  `n_freq × (2·d.jz+1)` cells a candidate search visits — thousands of
+  tiny allocations per call, shared by every protocol routing through
+  `coarse_sync` (FT8/FT4/FST4). Replaced with fixed-size stack arrays
+  (`[f32; 8]`, `num_blocks` ≤ 5 across every wired protocol) reused
+  across the lag loop via `.fill(0.0)`. Behavior-preserving (same
+  scores, byte-identical recall on FT8 `qso3_busy`/JTDX/full-parity/
+  AP-on, FT4, FST4-60A; AWGN/CCIR 50%-crossings for FT8/FT4/FST4-30
+  reproduced to the documented BENCHMARKS.md figures). No measurable
+  wall-clock change on this box (same-session git-worktree A/B,
+  `tests/coarse_sync_alloc_timing_probe.rs`, added alongside this fix)
+  — consistent with `eb859cf`'s own finding that this class of loop's
+  cost is dominated by arithmetic, not allocation churn; landed as a
+  real elimination of allocator-call optimization barriers and
+  needless churn regardless, not for a benchmark delta.
+- **`engine::dsp::subtract::apply_at_offset`'s two per-sample loops**
+  (the host `subtract_tones_lpf_fft` production path, shared by FT8's
+  and FT4's SIC subtract) no longer branch on `j >= 0 && j <
+  audio.len()` every iteration — the valid `i` range is computed once
+  (`i_lo..i_hi`) and both loops run branch-free over it, since the
+  out-of-range case has nothing to do in either loop (no fallback
+  value, no `audio[j]` to touch). Byte-identical recall verified on
+  the same FT8/FT4 golden suites.
+- Investigated, on host x86_64 (`objdump`, address-bounded to each
+  symbol to avoid mis-attributing neighbouring/inlined code — an
+  earlier unbounded capture falsely suggested AVX/FMA usage that
+  turned out to be `rustfft`'s own kernels bleeding into the dump):
+  `engine::sync::score_costas_block` already auto-vectorizes (packed
+  SSE `mulps`/`addps`/`subps`/`shufps` complex multiply-conjugate, 2
+  elements/iteration) with no code change needed.
+  `engine::llr::fill_bmet_for_nsym`'s max-reduction — vectorized for
+  `wasm32 +simd128` in PR #213 — does **not** carry the same win to
+  host as currently built: its reduction runs scalar (`maxss`/`addss`/
+  `subss`), not packed, under this crate's default `target-cpu=generic`
+  (SSE2-baseline, no explicit vectorization hint). Left unchanged: the
+  wasm measurement found this function is only ~2.9% of total decode
+  time even *with* vectorization enabled there (CHANGELOG.md's #208
+  entry), so a host fix's expected payoff is similarly small relative
+  to the code complexity of forcing it — noted here so it isn't
+  re-investigated from scratch, not acted on.
+
 ## 0.8.1 — decode-side `snr_db` for WSPR/JT65/JT9/Q65 (#226)
 
 ### Added

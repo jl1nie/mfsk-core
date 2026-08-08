@@ -714,14 +714,23 @@ mod fft_lpf {
         let signed_start =
             ((cfg.base_offset_s + dt_sec) * cfg.sample_rate).round() as i64 + idt_offset;
 
+        // `j = signed_start + i` is in-bounds (`0..audio.len()`) only for
+        // `i` in `i_lo..i_hi` — clamp once instead of re-checking
+        // `j >= 0 && j < audio.len()` on every one of the `2 × nframe`
+        // iterations below. Out-of-range `i` has nothing to do in either
+        // loop (the camp build leaves `cfilt[i]` at its zero-init value;
+        // the subtract loop has no `audio[j]` to touch), so clamping the
+        // range is a complete substitute for the branch, not just a fast
+        // path alongside it. Only non-empty near a slot's start/end.
+        let i_lo = (-signed_start).clamp(0, nframe as i64) as usize;
+        let i_hi = (audio.len() as i64 - signed_start).clamp(0, nframe as i64) as usize;
+
         let mut cfilt = vec![Complex32::new(0.0, 0.0); nfft];
-        for i in 0..nframe {
-            let j = signed_start + i as i64;
-            if j >= 0 && (j as usize) < audio.len() {
-                let rx = audio[j as usize] as f32;
-                // camp = audio * conjg(cref) = rx*(cref_re - j*cref_im)
-                cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
-            }
+        for i in i_lo..i_hi {
+            let j = (signed_start + i as i64) as usize;
+            let rx = audio[j] as f32;
+            // camp = audio * conjg(cref) = rx*(cref_re - j*cref_im)
+            cfilt[i] = Complex32::new(rx * cref_re[i], -rx * cref_im[i]);
         }
 
         let cw = cached_window_fft(nfft, lpf_half);
@@ -744,15 +753,14 @@ mod fft_lpf {
         }
 
         // Subtract: audio[j] -= 2*Re[cfilt(i) * cref(i)] for i=0..nframe,
-        // j = signed_start + i (same bounds check as the camp build above).
-        for i in 0..nframe {
-            let j = signed_start + i as i64;
-            if j >= 0 && (j as usize) < audio.len() {
-                let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
-                let sub = 2.0 * z.re;
-                let v = audio[j as usize] as f32 - sub;
-                audio[j as usize] = v.clamp(-32_768.0, 32_767.0) as i16;
-            }
+        // j = signed_start + i (same `i_lo..i_hi` range as the camp build
+        // above — identical `j` formula, so identical bounds).
+        for i in i_lo..i_hi {
+            let j = (signed_start + i as i64) as usize;
+            let z = cfilt[i] * Complex32::new(cref_re[i], cref_im[i]);
+            let sub = 2.0 * z.re;
+            let v = audio[j] as f32 - sub;
+            audio[j] = v.clamp(-32_768.0, 32_767.0) as i16;
         }
     }
 

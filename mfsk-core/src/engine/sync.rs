@@ -304,15 +304,31 @@ pub fn coarse_sync<P: Protocol>(
     // Σ t/Σ t0_mean. Trailing-(N-1)-blocks score excludes block 0 (the
     // FT8 heuristic that a late start can still sync on blocks 1..).
     let num_blocks = P::SYNC_MODE.blocks().len();
+    // Upper bound on any protocol's block count (FT8=3, FT4=4, FST4=5 —
+    // see each protocol's `SYNC_MODE`/`mod.rs` sync-block table) with
+    // headroom. Stack arrays sized to this bound let `t_blocks`/
+    // `t0_blocks` below be reused across every (freq-bin, lag) cell
+    // instead of heap-allocated per cell — this loop runs `n_freq ×
+    // (2·d.jz+1)` times per candidate search (thousands of cells), so a
+    // fresh `Vec` per cell was thousands of small allocations, and an
+    // opaque allocator call is also an optimization barrier LLVM can't
+    // see through.
+    const MAX_SYNC_BLOCKS: usize = 8;
+    debug_assert!(
+        num_blocks <= MAX_SYNC_BLOCKS,
+        "protocol has more sync blocks than MAX_SYNC_BLOCKS accounts for"
+    );
 
     // Compute correlation scores for every (freq-bin, lag) cell.
     // Each cell is fully independent, so the outer fi loop is safe to parallelise.
     macro_rules! fill_sync2d_row {
         ($fi:expr, $row:expr) => {{
             let i = ia + $fi;
+            let mut t_blocks = [0.0f32; MAX_SYNC_BLOCKS];
+            let mut t0_blocks = [0.0f32; MAX_SYNC_BLOCKS];
             for (jlag, lag) in (-d.jz..=d.jz).enumerate() {
-                let mut t_blocks = vec![0.0f32; num_blocks];
-                let mut t0_blocks = vec![0.0f32; num_blocks];
+                t_blocks[..num_blocks].fill(0.0);
+                t0_blocks[..num_blocks].fill(0.0);
 
                 for (bk, block) in P::SYNC_MODE.blocks().iter().enumerate() {
                     let block_offset = d.nssy as i32 * block.start_symbol as i32;
@@ -331,8 +347,8 @@ pub fn coarse_sync<P: Protocol>(
                 }
 
                 // All blocks combined.
-                let t_all: f32 = t_blocks.iter().sum();
-                let t0_all: f32 = t0_blocks.iter().sum();
+                let t_all: f32 = t_blocks[..num_blocks].iter().sum();
+                let t0_all: f32 = t0_blocks[..num_blocks].iter().sum();
                 // Zero-denominator: clean synthetic signal lies entirely on
                 // Costas tones (t0_all == t_all).  Report t_all directly so
                 // round-trip tests score above noise-floor candidates.
@@ -347,8 +363,8 @@ pub fn coarse_sync<P: Protocol>(
 
                 // Trailing N-1 blocks (drop block 0) tolerate an early-block loss.
                 let score = if num_blocks > 1 {
-                    let t_tail: f32 = t_blocks[1..].iter().sum();
-                    let t0_tail: f32 = t0_blocks[1..].iter().sum();
+                    let t_tail: f32 = t_blocks[1..num_blocks].iter().sum();
+                    let t0_tail: f32 = t0_blocks[1..num_blocks].iter().sum();
                     let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
                     let sync_tail = if t0_tail_ref > f32::EPSILON {
                         t_tail / t0_tail_ref
