@@ -24,7 +24,7 @@ Two kinds of numbers appear per protocol:
 | FST4     | 1/1 (FST4-60A only) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
 | WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
 | JT9      | 7/7 | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
-| JT65     | none available | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — traced to real `jt9`'s CLI driver unconditionally trying a free "CQ" AP hypothesis this crate's JT65 has no equivalent for (confirmed in WSJT-X source, same root cause as Q65 issue #171); not an apples-to-apples comparison, not chased further — see JT65 section, task #25 | gap closed (own corpus); AP-comparison caveat open |
+| JT65     | none available | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
 | Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
 | MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
 
@@ -1352,30 +1352,45 @@ against `tests/jt65_sweep.rs`'s own AWGN corpus:
 | −25 dB | **15%** (3/20) | **50%** (10/20) |
 
 Real `jt9 -6` is meaningfully more sensitive at −25 dB — not a small
-residual, a real gap this crate doesn't currently close. **Root
-cause, confirmed by reading the actual source, not guessing**: the
-`jt9` CLI driver (`lib/jt9.f90:301`) sets
-`shared_data%params%ljt65apon = .true.` unconditionally, and
-`lib/extract.f90:71` fills a "CQ" AP hypothesis
-(`apsymbols(1,1:4)=(/62,32,32,49/)`) into every JT65 decode
-**regardless of whether `-c`/`-x` (mycall/hiscall) are set** — unlike
-FT4/FST4 above (whose AP paths both gate on `mycall` being ≥3 chars
-and are genuinely skipped when empty), JT65's free CQ hypothesis is
-always active in the CLI. This crate's `jt65::chase` module has **no
-AP-decode mechanism at all** (`grep` confirms zero `ap_hint`/`ApHint`
-usage anywhere under `src/jt65/`), so it can't access the same boost.
-This is the exact same root cause as Q65 issue #171's own resolution
-("WSJT-X standard decode always has a free CQ ap hypothesis") — a
-comparison-methodology mismatch, not a demonstrated decoder weakness,
-and per that precedent it's being recorded as a known caveat rather
-than chased with threshold tuning. Closing it for real would mean
-adding AP-hint support to JT65 (a real feature, not a bug fix) and
-re-running this same comparison with it enabled — not done this
-session, no task filed since it's speculative whether the resulting
-gain would fully close a −25 dB / 3.5×-recall difference; the
-qualitative conclusion (issue #169's *diagnosed* gap is closed, this
-newly-found AP asymmetry is a separate, honestly-unresolved question)
-stands either way.
+residual, a real gap this crate doesn't currently close.
+
+**AP hypothesis initially suspected, then ruled out by reading the
+control flow more carefully, not just the `apsymbols` fill-in code**:
+`lib/extract.f90` does unconditionally populate `apsymbols(1,:)` with
+a "CQ" hypothesis (line 71), but that array is only ever *read* inside
+`if(ipass.gt.1)` (line 150) — and `npass` (line 142) only exceeds 1
+when `ljt65apon .and. len_trim(mycall).gt.0`. With the bare CLI
+invocation used for this comparison (no `-c`), `mycall` is empty, so
+`npass=1`, the loop runs once with `ap=-1` (line 148), and
+`apsymbols` is never consulted. **JT65's AP path gates on `mycall`
+length exactly like FT4/FST4's do** — this comparison is genuinely
+AP-free on both sides, not the asymmetry first suspected.
+
+Also checked: WSJT-X's actual `ftrsdap` trial count at the CLI's
+default depth (`ndepth=1`, `jt9.f90:26`) is **100**
+(`jt65_decode.f90:106-119`: `nvec=100` for `ndepth=1`, only `1000` for
+`ndepth=2` and up) — not `1000` as this crate's own `ChaseParams`
+default assumed/documented. Real `jt9 -6` gets 50% at −25 dB with 10×
+*fewer* trials than this crate's chase decoder's default 1000 — so
+trial count isn't the explanation either (if anything it argues the
+opposite direction).
+
+**Direct probe** (`decode_at_with_erasures`/`decode_at_with_chase`
+tried at every one of `coarse_search`'s candidates, for the 7 files
+in the −25 dB corpus that real `jt9 -6` decodes but this crate
+misses): the correct candidate — exact `freq_hz=1500.000`, matching
+`start_sample` — is present in every file's candidate list (this is
+*not* a repeat of JT9's coarse-frequency-grid issue; search finds the
+right spot), yet **both** plain and chase decode fail at every single
+candidate on every file. The gap is downstream of candidate discovery
+— in `rx.rs`'s demod/confidence quality, or `chase.rs`'s own
+`ftrsdap` calibration (the `PERR` table, `nd0`/`r0` acceptance gate,
+or `getpp` ranking) — not yet isolated further. Closing it needs the
+same phase-by-phase methodology that closed issue #169 originally
+(itself a multi-round investigation): comparing `demod64a.f90`/
+`ftrsdap.c` against this crate's `rx.rs`/`chase.rs` port stage by
+stage. Not attempted this session — task #26 tracks it, correctly
+re-scoped away from the AP theory above.
 
 ## Q65
 

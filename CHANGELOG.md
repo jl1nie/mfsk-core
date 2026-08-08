@@ -352,20 +352,29 @@ effect on any decode path.
     50% (10/20) at −25 dB vs. this crate's chase decoder's 15%
     (3/20) on the identical `jt65_sweep` corpus, a real gap issue
     #169's closure didn't catch (that comparison was never checked
-    against a live binary either, until now). Root cause, confirmed
-    by reading the source: `lib/jt9.f90` sets
-    `shared_data%params%ljt65apon = .true.` unconditionally in the
-    CLI driver, and `lib/extract.f90` fills a free "CQ" AP hypothesis
-    into every JT65 decode regardless of `-c`/`-x` — unlike FT4/FST4
-    above, JT65's AP path has no `mycall`-length gate, so it's always
-    active. This crate's `jt65::chase` has no AP-decode mechanism at
-    all. Same root cause as Q65 issue #171's own resolution
-    ("WSJT-X standard decode always has a free CQ ap hypothesis") —
-    recorded as a comparison-methodology caveat, not chased with
-    threshold tuning; genuinely closing it would mean adding AP-hint
-    support to JT65 (a feature, not a fix), not attempted this
-    session. Full numbers and source citations:
-    `docs/notes/BENCHMARKS.md`'s JT65 section.
+    against a live binary either, until now). **Initially misdiagnosed
+    as a free CQ-AP-hypothesis asymmetry** (`lib/extract.f90`
+    unconditionally *populates* a CQ AP entry) — corrected on closer
+    reading: that entry is only ever *consulted* when `npass>1`, which
+    itself requires non-empty `mycall` (`lib/extract.f90:142-150`) —
+    JT65's AP path gates on `mycall` length exactly like FT4/FST4's,
+    so the bare-CLI comparison above is genuinely AP-free on both
+    sides. Also checked and ruled out: WSJT-X's real trial count at
+    the CLI default depth is 100 (`jt65_decode.f90:106-119`), not the
+    1000 this crate's `ChaseParams` assumed — yet real `jt9` still
+    wins with 10× fewer trials, so trial count isn't it either. A
+    direct probe (tried every `coarse_search` candidate, both
+    `decode_at_with_erasures` and `decode_at_with_chase`, on the 7
+    files real `jt9` decodes but this crate misses) found the correct
+    candidate (exact frequency/timing) present in every file's
+    candidate list — ruling out a repeat of JT9's coarse-frequency-grid
+    issue — yet decode fails at every candidate regardless: the real
+    gap is downstream, in demod confidence quality or `chase.rs`'s own
+    `ftrsdap` calibration, not yet isolated. Needs the same
+    phase-by-phase methodology that closed issue #169 originally;
+    tracked as task #26, not attempted further this session. Full
+    numbers and source citations: `docs/notes/BENCHMARKS.md`'s JT65
+    section.
 
 ### Changed
 
