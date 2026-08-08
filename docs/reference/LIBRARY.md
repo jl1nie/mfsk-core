@@ -818,11 +818,12 @@ candidate grid, and for all three the likely real bottleneck is the
 single unparallelized upfront per-slot FFT/spectrogram build that runs
 *before* the candidate loop, not the loop itself — but the contract
 change is real regardless of whether it currently pays off in
-practice, so it's documented here, not deferred. MSK144's own
-candidate scan (`decode_slot`) was assessed the same day and
-deliberately **not** given the same treatment — see its own note in
-§10's MSK144 entry for why (a stateful sliding-window scan, not an
-embarrassingly-parallel independent-candidate loop). WSPR's
+practice, so it's documented here, not deferred. MSK144's own scan
+(`decode_slot`) has no `on_result` callback at all, so this contract
+discussion doesn't apply to it directly — but it *did* gain
+`rayon::par_iter()` the same day too, via a genuine redesign rather
+than a drop-in: see §10's MSK144 entry for the `ScanState` split that
+made that safe. WSPR's
 `decode_scan_streaming` runs both its coarse-search passes under
 `rayon::par_iter()` too — same completion-order/possible-duplicate
 caveat; `decode_scan_subtract_streaming` fires only at its own outer
@@ -1579,6 +1580,34 @@ notes below add only the protocol-specific facts that table can't hold.
   (×1…×16); all five decoder strategies (§3) share the one QRA codec.
   Streaming delivery (§4): `.on_result(cb)` on `q65::{DecodeRequest,
   SniperRequest, MultiPeriodRequest}`.
+- **MSK144** — `msk144::decode::decode_slot` scans a whole T/R period
+  as overlapping 7168-sample analysis blocks (`decode_block_raw`,
+  Stage A short-ping decoder then Stage B frame-averaging fallback),
+  threading a `ScanState` (`pnoise` EMA noise floor;
+  `msglast`/`nsnrlast` duplicate-suppression) across blocks in order.
+  **2026-08-08** (issue #169's parallelism follow-up, extended to every
+  protocol in one investigation): unlike JT65/Q65/JT9's simple
+  independent-candidate scan loops, `ScanState` genuinely couples
+  consecutive blocks — but neither field feeds into whether Stage A/B
+  *finds* a decode, only into the SNR reported for one
+  (`pnoise`, read inside `finish_decode`'s formula) and whether an
+  already-found decode gets reported (`msglast`/`nsnrlast`'s dedup
+  gate). That let the expensive part split cleanly:
+  `decode_block_raw` (per block: `analytic_signal` + Stage A/B sync
+  search + FEC decode, no `ScanState` access at all, `#[cfg(feature =
+  "parallel")]` `par_iter()`-safe) runs first for every block, then
+  `apply_scan_state` cheaply replays the *exact* original sequential
+  `pnoise`/dedup state machine over the precomputed per-block outcomes,
+  in block order — same final output as the original single-pass
+  version, not an approximation. Verified: existing recall tests plus
+  a new exact-count assertion (`decode_slot_recovers_a_real_message_
+  from_a_15s_buffer` now asserts `decodes.len() == 1`, not just
+  "≥ 1" — a real dedup regression would show extra near-duplicate
+  decodes) pass identically under both feature configs, byte-for-byte
+  identical `SlotDecode` field values confirmed by hand across a
+  manual A/B run. Timed (synthetic 30 s noise-only slot, `Depth::Deep`):
+  again **no meaningful speedup** — 73.0 ms → 72.5 ms/call, within
+  noise, same conclusion as JT65/Q65/JT9/uvpacket.
 
 ### 10.1 Scope boundary: `uvpacket` as an applied example
 

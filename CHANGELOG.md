@@ -351,6 +351,44 @@ effect on any decode path.
   Recall confirmed unchanged: all `uvpacket_multichannel.rs` and
   in-crate `uvpacket::` unit tests pass identically in both configs.
 
+- **MSK144 parallelism — assessed, then genuinely redesigned, not just
+  wired up** (same day, user: "Jt9とmsk144") — unlike JT65/Q65/JT9/
+  uvpacket's simple independent-candidate scan loops, MSK144's
+  `decode_slot`'s sliding-window scan threads a `ScanState` (`pnoise`
+  EMA noise floor; `msglast`/`nsnrlast` duplicate-suppression) across
+  blocks in sequence — a real, not incidental, cross-block dependency.
+  Assessed rather than skipped or blindly parallelized: neither
+  `ScanState` field feeds into whether Stage A/B *finds* a decode,
+  only into the SNR reported for one and whether an already-found
+  decode gets reported. Split `decode_block` into
+  `decode_block_raw` (the expensive part — `analytic_signal` + Stage
+  A/B sync search + FEC decode — with zero `ScanState` access,
+  `#[cfg(feature = "parallel")]` `par_iter()`-safe) and
+  `apply_scan_state` (cheap, strictly sequential — replays the
+  *exact* original `pnoise`/dedup state machine over the precomputed
+  per-block outcomes, in block order). Same final output as the
+  original single-pass version, not an approximation.
+
+  `decode_slot_recovers_a_real_message_from_a_15s_buffer` (which
+  already exercised the dedup path via a repeated ~1.44 s ping)
+  strengthened from "at least one decode" to an exact
+  `decodes.len() == 1` assertion — a real dedup regression would show
+  extra near-duplicate decodes, not just "still finds something."
+  Confirmed byte-for-byte identical `SlotDecode` output (message,
+  `snr_db`, `freq_hz`, `tsec`) between the two feature configs by a
+  manual A/B run. Timed (synthetic 30 s noise-only slot,
+  `Depth::Deep`): again **no meaningful speedup** (73.0 ms → 72.5 ms/
+  call, within noise) — same conclusion as every other protocol this
+  investigation touched. Recall confirmed unchanged: full
+  `msk144::` unit suite, both real WSJT-X samples, and the
+  short/long-ping SNR sweep (50% crossing still ≈ −5 to −6 dB,
+  matching the documented curve) all pass identically in both configs.
+
+  With this, every protocol in the crate has now had its candidate/
+  block-scan parallelism opportunity explicitly assessed — FT8/FT4/
+  FST4/WSPR already had it; JT65/Q65/JT9/uvpacket/MSK144 gained or
+  confirmed it today.
+
 ### Changed
 
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its
