@@ -79,7 +79,7 @@ each protocol's own API family), not one trait to abstract over.
 | WSPR                 | `decode_scan_streaming` / `decode_scan_subtract_streaming`             | `&(dyn Fn(&WsprResult) + Sync)`        |
 | JT65                 | `decode_scan_streaming`                                                | `&(dyn Fn(&Jt65Result) + Sync)`        |
 | JT9                  | `decode_scan_streaming`                                                | `&(dyn Fn(&Jt9Result) + Sync)`         |
-| FT8 (embedded no_std)| `ft8::decode_block::decode_block_streaming`                            | `&mut dyn FnMut(&DecodeResult)`        |
+| FT8 (`ft8::decode_block`) | `ft8::decode_block::decode_block_streaming`                       | `&mut dyn FnMut(&DecodeResult)`        |
 
 Notes:
 
@@ -92,14 +92,25 @@ Notes:
   `decode_scan_subtract`). The sibling takes the same arguments plus a
   trailing `on_result` reference and returns the same `Vec` the
   non-streaming version does.
-- **The embedded FT8 path** (`decode_block_streaming`, only compiled
-  when `fft-rustfft` is *off*) takes `&mut dyn FnMut` rather than
-  `&dyn Fn + Sync`: that path is strictly sequential (no rayon on
-  no_std), so a `FnMut` closure that mutates captured state is safe and
-  the `Sync` bound is unnecessary. Not available under `fft-rustfft` —
-  the host multipass/subtract driver has a post-hoc SNR re-gate that
-  can drop or mutate a result *after* it would already have streamed,
-  which this callback has no revise/retract event for.
+- **`ft8::decode_block::decode_block_streaming`** takes `&mut dyn
+  FnMut` rather than `&dyn Fn + Sync` in *both* its feature-gated
+  variants: the embedded (`not(fft-rustfft)`) single-pass pipeline is
+  strictly sequential (no rayon on no_std), and the host (`fft-rustfft`)
+  multipass/subtract driver (`decode_block_multipass`) is also always
+  sequential — it has no rayon inside it, unlike `DecodeRequest`'s
+  single-pass/sniper strategies — so a `FnMut` closure that mutates
+  captured state is safe on both, and the `Sync` bound is unnecessary
+  either way. Before issue #243 the host variant couldn't safely expose
+  a callback here: its `xsnr2` SNR validity gate (`ft8b.f90:456`) ran
+  as a post-hoc batch *after* subtracting had finished, which could
+  drop or mutate a result *after* it would already have streamed, with
+  no revise/retract event this callback provides. The gate now runs
+  inline, immediately per candidate — right after that candidate's
+  signal is subtracted and before it is accepted — so both feature
+  variants share the same §3a exact-match contract below. See
+  `tests/ft8_decode_block_streaming_host.rs` for the host-side
+  exact-match verification (mirrors
+  `tests/ft8_decode_block_streaming.rs`'s embedded one).
 
 ---
 
@@ -117,7 +128,8 @@ authoritative version is the doc comment on
 what the batch return holds.
 
 Covers: `.sic_rounds(n)` and `.sic_early()` (FT8/FT4 SIC strategies);
-the embedded `decode_block_streaming`; JT65 and JT9
+`ft8::decode_block::decode_block_streaming` (both the embedded and host
+`fft-rustfft` variants, since issue #243); JT65 and JT9
 `decode_scan_streaming`; every Q65 builder; WSPR's
 `decode_scan_subtract_streaming` (fires only at its own outer SIC-pass
 accept point). Q65's `MultiPeriodRequest` is a variant of the
@@ -409,6 +421,8 @@ while let Some(msg) = stream.next().await {
   always-current delivery contract.
 - `mfsk-core/tests/ft8_decode_block_streaming.rs` — the embedded
   `decode_block_streaming` exact-match test.
+- `mfsk-core/tests/ft8_decode_block_streaming_host.rs` — the host
+  `fft-rustfft` `decode_block_streaming` exact-match test (issue #243).
 - `mfsk-core/tests/wspr_wsjtx_samples.rs` — WSPR
   `decode_scan_streaming` / `decode_scan_subtract_streaming` against
   real signals.

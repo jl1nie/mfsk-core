@@ -77,7 +77,7 @@ let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
 | WSPR                 | `decode_scan_streaming` / `decode_scan_subtract_streaming`             | `&(dyn Fn(&WsprResult) + Sync)`         |
 | JT65                 | `decode_scan_streaming`                                                | `&(dyn Fn(&Jt65Result) + Sync)`         |
 | JT9                  | `decode_scan_streaming`                                                | `&(dyn Fn(&Jt9Result) + Sync)`          |
-| FT8（組込み no_std） | `ft8::decode_block::decode_block_streaming`                            | `&mut dyn FnMut(&DecodeResult)`         |
+| FT8（`ft8::decode_block`） | `ft8::decode_block::decode_block_streaming`                      | `&mut dyn FnMut(&DecodeResult)`         |
 
 補足:
 
@@ -89,14 +89,22 @@ let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
   `decode_scan_subtract` に対する `decode_scan_subtract_streaming` もあ
   る）。兄弟関数は同じ引数に末尾の `on_result` 参照を足したもので、非ス
   トリーミング版と同じ `Vec` を返す。
-- **組込み FT8 パス**（`decode_block_streaming`、`fft-rustfft` が*オフ*
-  のときだけコンパイルされる）は `&dyn Fn + Sync` ではなく
-  `&mut dyn FnMut` を取る。このパスは厳密に逐次（no_std では rayon なし）
-  なので、捕捉した状態を変更する `FnMut` クロージャで安全であり、`Sync`
-  境界は不要。`fft-rustfft` 下では利用不可 — ホストのマルチパス/減算ド
-  ライバは事後の SNR 再ゲートを持ち、結果が*すでにストリームされた後*に
-  それを破棄・変更しうる。このコールバックには修正/撤回イベントがないた
-  め。
+- **`ft8::decode_block::decode_block_streaming`** は 2 つの feature 分岐
+  版どちらでも `&dyn Fn + Sync` ではなく `&mut dyn FnMut` を取る:
+  組込み（`not(fft-rustfft)`）の単一パスパイプラインは厳密に逐次
+  （no_std では rayon なし）であり、ホスト（`fft-rustfft`）のマルチパス/
+  減算ドライバ（`decode_block_multipass`）も同様に常に逐次（`DecodeRequest`
+  の単一パス/sniper 戦略と異なり内部に rayon を持たない）なので、捕捉し
+  た状態を変更する `FnMut` クロージャはどちらでも安全であり、`Sync`
+  境界はどちらにも不要。issue #243 以前はホスト版でここにコールバックを
+  安全に出せなかった: `xsnr2` SNR 妥当性ゲート（`ft8b.f90:456`）が減算が
+  終わった*後*に事後バッチとして走っており、結果が*すでにストリームさ
+  れた後*にそれを破棄・変更しうる一方、このコールバックには修正/撤回イ
+  ベントがなかったため。現在はこのゲートを候補ごとに即座に（その候補の
+  信号を減算した直後、受理する前に）インラインで走らせるようにしたため、
+  両方の feature 分岐が下記 §3a の完全一致契約を共有する。ホスト側の完
+  全一致検証は `tests/ft8_decode_block_streaming_host.rs` を参照（組込
+  み側の `tests/ft8_decode_block_streaming.rs` と対をなす）。
 
 ---
 
@@ -111,8 +119,9 @@ let outcome = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 100)
 `cb` は**返される `Vec` に最終的に載る結果ごとに、同じ順序でちょうど
 1 回**発火する。ストリームした内容とバッチ返り値の間に乖離はゼロ。
 
-対象: `.sic_rounds(n)` と `.sic_early()`（FT8/FT4 の SIC 戦略）、組込み
-の `decode_block_streaming`、JT65 と JT9 の `decode_scan_streaming`、
+対象: `.sic_rounds(n)` と `.sic_early()`（FT8/FT4 の SIC 戦略）、
+`ft8::decode_block::decode_block_streaming`（issue #243 以降、組込み・
+ホスト `fft-rustfft` 両分岐とも）、JT65 と JT9 の `decode_scan_streaming`、
 Q65 の全ビルダ、WSPR の `decode_scan_subtract_streaming`（自身の外側
 SIC パスの受理点でのみ発火）。Q65 の `MultiPeriodRequest` は逐次形の一
 変種で、候補ごとではなく受理デコードを生む**スロットごと**に 1 回発火
@@ -391,6 +400,8 @@ while let Some(msg) = stream.next().await {
   契約。
 - `mfsk-core/tests/ft8_decode_block_streaming.rs` —— 組込み
   `decode_block_streaming` の完全一致テスト。
+- `mfsk-core/tests/ft8_decode_block_streaming_host.rs` —— ホスト
+  `fft-rustfft` 版 `decode_block_streaming` の完全一致テスト（issue #243）。
 - `mfsk-core/tests/wspr_wsjtx_samples.rs` —— 実信号に対する WSPR
   `decode_scan_streaming` / `decode_scan_subtract_streaming`。
 - [EMBEDDED.ja.md](EMBEDDED.ja.md) —— `mfsk-ffi-ft8` FFI 成果物向けの

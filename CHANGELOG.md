@@ -27,8 +27,11 @@ effect on any decode path.
   Tokio `spawn_blocking` + `mpsc` example.
 
   - **FT8**: `DecodeRequest`/`SniperRequest::on_result`, plus a new
-    `decode_block_streaming` sibling to embedded's `decode_block`
-    (`#[cfg(not(feature = "fft-rustfft"))]`). Threaded through all four
+    `decode_block_streaming` sibling to `decode_block` — originally
+    embedded-only (`#[cfg(not(feature = "fft-rustfft"))]`), given a
+    host `fft-rustfft` sibling with the same signature and contract
+    later in this same cycle (issue #243's follow-up, see Fixed
+    below). Threaded through all four
     decode strategies (`.decode()`/sniper/`.sic_rounds()`/
     `.sic_early()`). On the two `rayon`-parallel strategies the callback
     fires inside the per-candidate closure, before the later
@@ -521,6 +524,34 @@ effect on any decode path.
   AWGN/CCIR sweep (50% crossing unchanged at ≈−21.6 dB) all confirm no
   recall regression. `--features fixed-point` (embedded, which doesn't
   run this gate at all) unaffected.
+
+- **FT8 host `decode_block_multipass`'s `xsnr2` gate is now atomic
+  per candidate, not per pass — the streaming-unsafe window from the
+  entry above is fully closed, not just narrowed.** Follow-up to
+  issue #243: applying the gate per-pass (previous entry) still left
+  a batch boundary *within* a pass — a candidate decoded early in a
+  pass could still, in principle, be reported and then dropped by
+  that same pass's own end-of-pass gate before the pass finished. The
+  gate now runs inline, immediately after each candidate's signal is
+  subtracted from the working buffer and before it is accepted, so a
+  result is fully final — accepted or dropped — the instant it is
+  processed, matching WSJT-X's own `ft8b.f90` one-candidate-per-call
+  decode→gate→return atomicity exactly rather than approximating it
+  at pass granularity.
+
+  This removes the only reason `decode_block_streaming` wasn't
+  available under `fft-rustfft`: `ft8::decode_block::decode_block_streaming`
+  now has a host `#[cfg(feature = "fft-rustfft")]` implementation
+  alongside the existing embedded `#[cfg(not(feature = "fft-rustfft"))]`
+  one, same signature (`&mut dyn FnMut(&DecodeResult)`, both variants
+  are always sequential — no rayon inside `decode_block_multipass`), same
+  exact-match delivery contract. `docs/reference/STREAMING.md` updated;
+  new `tests/ft8_decode_block_streaming_host.rs` verifies exact
+  callback/batch equality (message order and `snr_db`) on
+  `qso3_busy.wav`. `qso3_apoff`/`qso3_apon`/`qso3_full_parity`/JTDX
+  golden suites and the full lib test suite confirm byte-identical
+  output to the per-pass fix above — this is a pure restructuring of
+  *when* a result becomes final, not a change to any computed value.
 
 - **Q65 and MSK144 can now resolve `<...>` hashed-callsign
   placeholders — a gap this session first mis-scoped as "5 protocols

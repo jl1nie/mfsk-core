@@ -88,6 +88,7 @@ pub fn decode_block<S: AudioSample>(
         DEFAULT_BP_MAX_ITER,
         None,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -101,13 +102,10 @@ pub fn decode_block<S: AudioSample>(
 /// are parallelized and can fire on a same-slot duplicate that's later
 /// excluded — see that method's doc comment for the full contrast).
 ///
-/// Not available under `fft-rustfft` (the host-shaped multipass/
-/// subtract driver, `decode_block_with_ap`'s engine) — that variant
-/// has a post-hoc `retain_mut` SNR re-gate after all subtract passes
-/// finish, which can drop or mutate a result *after* it would have
-/// already been streamed. Streaming that surface would need a
-/// revise/retract event this callback doesn't provide; use the
-/// non-streaming `decode_block`/`decode_block_with_ap` there instead.
+/// Embedded (`not(fft-rustfft)`) build — see [`decode_block_streaming`]
+/// below for the host `fft-rustfft` sibling with the same signature and
+/// contract, now that issue #243 made the multipass driver's SNR gate
+/// atomic per-candidate.
 #[cfg(not(feature = "fft-rustfft"))]
 pub fn decode_block_streaming<S: AudioSample>(
     audio: &[S],
@@ -130,6 +128,55 @@ pub fn decode_block_streaming<S: AudioSample>(
         DEFAULT_Q_THRESH,
         DEFAULT_BP_MAX_ITER,
         on_result,
+    )
+}
+
+/// [`decode_block`] with a per-candidate streaming callback — host
+/// `fft-rustfft` sibling of the embedded `decode_block_streaming`
+/// above, same signature, same contract: `on_result` fires once per
+/// accepted candidate, in processing order, immediately before that
+/// candidate is pushed into the returned `Vec`.
+///
+/// Until issue #243 this driver's `xsnr2` SNR validity gate
+/// (`ft8b.f90:456`) ran as a post-hoc batch *after* an entire pass (or,
+/// in the very first cut of the fix, an entire multipass loop)
+/// finished — a candidate could be streamed and then later dropped or
+/// have its `snr_db` rewritten by that batch gate, with no
+/// revise/retract event this callback could deliver. The gate now runs
+/// inline, immediately per candidate — right after that candidate's
+/// signal is subtracted from the working buffer and before it is
+/// pushed into `all` — so a result reaching `on_result` here is exactly
+/// as final as one reaching the returned `Vec`, matching WSJT-X's own
+/// `ft8b.f90` one-candidate-per-call decode→gate→return atomicity.
+///
+/// Runs `depth`/`max_cand` with `ap_hint = None`, `strictness =
+/// DecodeStrictness::Normal`, `bp_max_iter = DEFAULT_BP_MAX_ITER` —
+/// mirrors plain [`decode_block`], not the AP-aware or tuned variants.
+/// Use `decode_block_with_ap`/`decode_block_with_ap_tuned` (currently
+/// non-streaming) if AP rescue or custom tuning is needed; those can
+/// grow their own `_streaming` siblings the same way if a caller needs
+/// it — ask before assuming this one covers it.
+#[cfg(feature = "fft-rustfft")]
+pub fn decode_block_streaming<S: AudioSample>(
+    audio: &[S],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    depth: DecodeDepth,
+    max_cand: usize,
+    on_result: &mut dyn FnMut(&DecodeResult),
+) -> Vec<DecodeResult> {
+    decode_block_multipass(
+        audio,
+        freq_min,
+        freq_max,
+        sync_min,
+        depth,
+        max_cand,
+        DEFAULT_BP_MAX_ITER,
+        None,
+        DecodeStrictness::Normal,
+        Some(on_result),
     )
 }
 
@@ -156,6 +203,7 @@ pub fn decode_block_tuned<S: AudioSample>(
         bp_max_iter,
         None,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -189,6 +237,7 @@ pub fn decode_block_with_ap<S: AudioSample>(
         DEFAULT_BP_MAX_ITER,
         ap_hint,
         DecodeStrictness::Normal,
+        None,
     )
 }
 
@@ -217,6 +266,7 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
         bp_max_iter,
         ap_hint,
         strictness,
+        None,
     )
 }
 
@@ -232,6 +282,12 @@ pub fn decode_block_with_ap_tuned<S: AudioSample>(
 /// On host (`fft-rustfft`) the audio is cloned to a working `Vec<i16>`
 /// (subtract operates on i16 samples). Embedded targets compile through
 /// the same path; the clone cost is dominated by the BP work it enables.
+///
+/// `on_result`, when `Some`, fires once per candidate immediately after
+/// that candidate clears the xsnr2 validity gate below and right before
+/// it is pushed into `all` — see [`decode_block_streaming`]'s doc
+/// comment (issue #243) for why this is safe to expose as a streaming
+/// callback.
 #[cfg(feature = "fft-rustfft")]
 #[allow(clippy::too_many_arguments)]
 fn decode_block_multipass<S: AudioSample>(
@@ -244,6 +300,7 @@ fn decode_block_multipass<S: AudioSample>(
     bp_max_iter: u32,
     ap_hint: Option<&ApHint>,
     strictness: DecodeStrictness,
+    mut on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     use alloc::vec::Vec as AllocVec;
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
@@ -313,10 +370,6 @@ fn decode_block_multipass<S: AudioSample>(
         let trace = std::env::var("MFSK_TRACE_PHANTOM").is_ok();
         #[cfg(not(feature = "std"))]
         let trace = false;
-        // Only consumed by the xsnr2 re-gate below, which is
-        // `#[cfg(not(feature = "fixed-point"))]`.
-        #[cfg_attr(feature = "fixed-point", allow(unused_variables))]
-        let pass_start = all.len();
         for cand in pass2 {
             if fft_cache.is_none() {
                 fft_cache = Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
@@ -333,7 +386,8 @@ fn decode_block_multipass<S: AudioSample>(
                 &mut bp_scratch,
                 None,
             );
-            for r in single_results {
+            #[cfg_attr(feature = "fixed-point", allow(unused_mut))]
+            for mut r in single_results {
                 if all.iter().any(|x| x.message77() == r.message77()) {
                     continue;
                 }
@@ -346,59 +400,49 @@ fn decode_block_multipass<S: AudioSample>(
                         );
                     }
                 }
+                // WSJT-X `ft8b.f90:432-437` subtracts *before* its own
+                // xsnr2 gate check (below) runs — matched here too, not
+                // just for residual cleanliness: this crate's own
+                // sequential-subtract design already relied on it.
                 crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
                 fft_cache = None; // `work` changed — cache is stale.
-                all.push(r);
-            }
-        }
 
-        // Replace each of *this pass's* new results' snr_db with
-        // WSJT-X xsnr2, and drop the ones that fail its validity gate
-        // — using *this pass's own* spectrogram + baseline (issue
-        // #243), not a frozen pass-1 snapshot. `xsig` is read from the
-        // same spectrogram `sbase` came from, so the two always share
-        // an absolute scale. Applying this at the end of every pass
-        // (not once, globally, after all 3) also means a result is
-        // fully finalised — accepted or dropped — before the *next*
-        // pass's subtraction and decoding begins, matching WSJT-X's
-        // own per-pass `sync8`→`ft8b` structure
-        // (`ft8_decode.f90:196-222`) where each candidate's decode,
-        // xsnr2 gate, and return are one atomic subroutine call, never
-        // revisited by a later pass.
-        //
-        // **WSJT-X post-decode validity gates (#63).** Mirrors
-        // `ft8b.f90:422-459`:
-        //   - msg-type `i3 / n3` validity (lines 425-428)
-        //   - `unpack77` success (line 430)
-        //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
-        // The xsnr gate has to run on the RAW (un-clamped) `xsnr2` because
-        // both WSJT-X (line 460) and our previous attempt clamp the value
-        // to -24 dB for display *after* the gate. Clamping first would
-        // collapse every "below floor" result to exactly -24, dead-letter
-        // the `xsnr < -24.0` test, and let exactly the phantoms the gate
-        // was designed to catch slip through (= the qso3_busy phantoms
-        // named in issue #63's body).
-        //
-        // xsnr2/xbase post-process is f32-only. Fixed-point Spectrogram
-        // cells are quantised post `>> FP_SPEC_SHIFT`, putting many noise
-        // cells at u16 zero — `fit_baseline`'s `log10(p.max(1e-30))` then
-        // produces sbase ≈ -250 dB and xsnr2 explodes. The original
-        // adjacent-tone SNR from `process_candidates_into` (compute_snr_db)
-        // is already on a sensible scale, so leave it untouched on the
-        // fixed-point path; the msg-type / unpack77 / nsync gates also
-        // run only on the f32 path (the fixed-point pipeline doesn't
-        // surface OSD-pass results, so the phantom set doesn't apply).
-        #[cfg(not(feature = "fixed-point"))]
-        if let Some((sbase, spec)) = sbase_and_spec {
-            let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-            let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-            let nsps_steps = (NSPS / NSTEP) as f32;
-            let mut this_pass: AllocVec<DecodeResult> = all.split_off(pass_start);
-            this_pass.retain_mut(|r| {
+                // WSJT-X xsnr2 validity gate (issue #243, ft8b.f90:456),
+                // applied *immediately*, per candidate — not deferred to
+                // a later batch pass. This is what makes `on_result`
+                // streaming safe to wire for this driver (see
+                // `decode_block_streaming`'s own doc comment): a result
+                // is fully finalised, accepted or dropped, in this same
+                // iteration, before the next candidate is even looked
+                // at — matching `ft8b.f90`'s own one-candidate-per-call,
+                // decode→gate→return atomicity exactly, not just
+                // approximating it at pass granularity.
+                //
+                // Replace this result's snr_db with WSJT-X xsnr2, and
+                // drop it if it fails the validity gate — using *this
+                // pass's own* spectrogram + baseline (issue #243), not a
+                // frozen pass-1 snapshot. `xsig` is read from the same
+                // spectrogram `sbase` came from, so the two always share
+                // an absolute scale.
+                //
+                // **WSJT-X post-decode validity gates (#63).** Mirrors
+                // `ft8b.f90:422-459`:
+                //   - msg-type `i3 / n3` validity (lines 425-428)
+                //   - `unpack77` success (line 430)
+                //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
+                // The xsnr gate has to run on the RAW (un-clamped) `xsnr2`
+                // because both WSJT-X (line 460) and our previous attempt
+                // clamp the value to -24 dB for display *after* the gate.
+                // Clamping first would collapse every "below floor" result
+                // to exactly -24, dead-letter the `xsnr < -24.0` test, and
+                // let exactly the phantoms the gate was designed to catch
+                // slip through (= the qso3_busy phantoms named in issue
+                // #63's body).
+                //
                 // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
-                // gates are intentionally omitted here: every `DecodeResult`
-                // in `all` came through `process_one_candidate_inner`,
-                // which already rejects via `unpack77(&bp.message77)?` (line
+                // gates are intentionally omitted here: every `r` here
+                // came through `process_one_candidate_inner`, which
+                // already rejects via `unpack77(&bp.message77)?` (line
                 // ~1565). `unpack77` returns `None` for all-zero messages
                 // (i3=0 n3=0 → free text → empty string → None) and for
                 // every invalid i3/n3 combination (`i3 > 5` falls through
@@ -408,20 +452,42 @@ fn decode_block_multipass<S: AudioSample>(
                 // (Gemini PR #88 review). The xsnr2 gate stays — it needs
                 // the raw-pre-clamp value that `process_one_candidate_inner`
                 // can't compute (no sbase / spec at that scope).
+                //
+                // xsnr2/xbase post-process is f32-only. Fixed-point
+                // Spectrogram cells are quantised post `>> FP_SPEC_SHIFT`,
+                // putting many noise cells at u16 zero — `fit_baseline`'s
+                // `log10(p.max(1e-30))` then produces sbase ≈ -250 dB and
+                // xsnr2 explodes. The original adjacent-tone SNR from
+                // `process_candidates_into` (compute_snr_db) is already
+                // on a sensible scale, so leave it untouched on the
+                // fixed-point path; the msg-type / unpack77 / nsync gates
+                // also run only on the f32 path (the fixed-point pipeline
+                // doesn't surface OSD-pass results, so the phantom set
+                // doesn't apply).
+                #[cfg(not(feature = "fixed-point"))]
+                if let Some((sbase, spec)) = &sbase_and_spec {
+                    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+                    let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
+                    let nsps_steps = (NSPS / NSTEP) as f32;
 
-                // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
-                // The clamp here MUST happen after the gate test — see the
-                // function-level comment on `recompute_snr_xsnr2` for why
-                // the pre-clamp ordering used to dead-letter the gate.
-                let raw_snr = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
-                let nsync = recompute_nsync(r, &spec, df, tstep, nsps_steps);
-                if nsync <= 10 && raw_snr < -24.0 {
-                    return false;
+                    // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then
+                    // clamp. The clamp here MUST happen after the gate
+                    // test — see `recompute_snr_xsnr2`'s own doc comment
+                    // for why the pre-clamp ordering used to dead-letter
+                    // the gate.
+                    let raw_snr = recompute_snr_xsnr2(&r, spec, sbase, df, tstep, nsps_steps, 1.0);
+                    let nsync = recompute_nsync(&r, spec, df, tstep, nsps_steps);
+                    if nsync <= 10 && raw_snr < -24.0 {
+                        continue;
+                    }
+                    r.snr_db = raw_snr.max(-24.0);
                 }
-                r.snr_db = raw_snr.max(-24.0);
-                true
-            });
-            all.extend(this_pass);
+
+                if let Some(cb) = on_result.as_deref_mut() {
+                    cb(&r);
+                }
+                all.push(r);
+            }
         }
     }
     all
@@ -699,6 +765,7 @@ fn decode_block_multipass<S: AudioSample>(
     bp_max_iter: u32,
     _ap_hint: Option<&ApHint>,
     _strictness: DecodeStrictness,
+    _on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
     let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());

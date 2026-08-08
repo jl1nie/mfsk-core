@@ -764,8 +764,9 @@ suffix-exploded equivalents — see §6.2/§6.4 for worked examples.
 #### Streaming delivery: `.on_result(cb)`
 
 Originated on FT8 (`DecodeRequest<Ft8>`/`SniperRequest<Ft8>`, plus the
-embedded `ft8::decode_block::decode_block_streaming` sibling to
-`decode_block`) — `cb: &(dyn Fn(&P::DecodeResult) + Sync)` fires once
+`ft8::decode_block::decode_block_streaming` sibling to `decode_block` —
+available under both the embedded and host `fft-rustfft` feature
+gates since issue #243) — `cb: &(dyn Fn(&P::DecodeResult) + Sync)` fires once
 per candidate as it's accepted, *alongside* (not instead of)
 `decode()`'s own returned `DecodeOutcome`. Purely additive: the batch
 API is unchanged, callers who don't call `.on_result()` see zero
@@ -790,8 +791,8 @@ protocol's own API family), not a single trait to abstract over. See
 **Delivery order and dedup contract differs by strategy** — see
 `DecodeRequest::on_result`'s own doc comment for the authoritative
 version, summarised here: on the sequential SIC strategies
-(`.sic_rounds()`/`.sic_early()`) and the embedded
-`decode_block_streaming`, `cb` fires exactly once per result that ends
+(`.sic_rounds()`/`.sic_early()`) and `decode_block_streaming` (both
+feature gates), `cb` fires exactly once per result that ends
 up in the returned `Vec`, in the same order — zero divergence. On the
 default single-pass strategy and `SniperRequest` (both parallelized
 via `rayon` under `feature = "parallel"`), `cb` fires from whichever
