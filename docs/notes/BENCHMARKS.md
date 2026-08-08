@@ -1155,6 +1155,27 @@ dramatically, 50%-at−14dB → ≈−21.8dB, with zero code changes to
 `decode_at_with_erasures` itself; it inherits the fix purely by
 sharing `search`/`rx` with the new code.)
 
+**Candidate-level parallelism** (same day, follow-up question: "なんで
+par_iterないの？"): JT65 never had `rayon`/`parallel`-feature candidate
+parallelism at all, unlike FT8/FT4/FST4/WSPR/JT9 — not a regression
+from today's work, just a gap JT65 never got the same treatment for.
+Added `#[cfg(feature = "parallel")]` `par_iter()` to `decode_scan_inner`
+and `decode_scan_chase_inner`, mirroring `engine::pipeline`'s
+established fire-callback-before-dedup contract (`on_result` may now
+fire for a transient duplicate a later dedup pass excludes — same
+caveat as `DecodeRequest::on_result`'s "default single-pass strategy").
+Measured directly (isolated single-call timing, not nested inside the
+sweep's own outer file-level parallelism): **no meaningful speedup** on
+this corpus — `decode_scan_chase_default` timed at 30.2 ms → 30.0 ms
+(−19 dB) and 52.8 ms → 50.2 ms (−25 dB), both within noise. Root cause:
+`coarse_search`'s `max_candidates = 8` cap plus each candidate's own
+decode being inherently cheap (a few ms, even with the full 1000-trial
+chase search) leaves little parallelizable work — unlike FT8's coarse
+grid, which routinely produces dozens to hundreds of candidates per
+slot. The change is kept (correct, safe, zero recall impact, real
+architectural consistency with the rest of the crate) but isn't a
+performance win on JT65's own workload shape.
+
 ## Q65
 
 - Real recordings: WSJT-X's 6 m EME (W7GJ exchanges) and 10 GHz EME
