@@ -681,6 +681,23 @@ effect on any decode path.
   all 7 Q65 WSJT-X-golden-WAV tests), full `scripts/pre-push-check.sh`
   matrix clean.
 
+### Docs
+
+- **`docs/reference/STREAMING.md`/`.ja.md` §3 gained a "revoke-less
+  retract" audit section** documenting the failure mode behind the two
+  `on_result` fixes above (a callback fires for a candidate that a
+  *separate*, later post-processing step then silently excludes from
+  the returned `Vec`, with no revise/retract event) and a line-cited
+  table confirming every other `on_result`/`cb` call site in the crate
+  (WSPR ×2, Q65 ×5, JT65, JT9, plus FT8/FT4/FST4's own non-`known`
+  paths) commits the callback-fired value/set to the returned
+  collection with no filtering step in between — checked directly, not
+  inferred from the fixes. Written up so a future `_streaming` sibling
+  added to a protocol that also gains a `.known(...)`-style
+  cross-phase-dedup parameter has a concrete pattern to check against,
+  instead of every consumer needing their own reproduction experiment
+  to confirm it.
+
 ### Changed
 
 - **The remaining WSPR/JT9/MSK144 hot-loop findings from the same

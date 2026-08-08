@@ -157,7 +157,82 @@ BP/OSD コストの予測子ではない。よってスコアの高い候補が�
 ての候補をブロックする（単一スレッド）; 並列戦略にこのヘッドオブライン
 ブロッキングはない。
 
+### 監査済み: 「revoke-less retract」の欠陥はどこにも存在しない（2026-08-09）
+
+*revoke-less retract*（取り消しイベントなしの遡及的除外）は上記のどち
+らの契約とも異なる特有の失敗モードである: `cb` がある候補に対して発火
+した後、発火点より別の後処理ステップによって、その候補が最終的に返さ
+れる `Vec` に一切現れない、というもの——§3b の「完了順で重複しうる」
+という文書化済みの挙動ではなく、コールバックが配信を確定した後にゲー
+トやフィルタが走った結果として起きる、修正/撤回イベントの一切ない黙示
+的な除外である。これはどちらの契約よりも悪い: §3b の弱い保証（バッチ
+の結果は必ず1回以上発火する）すら暗黙のうちに破りうる——呼び出し側が
+「ストリームされた=本物」に依存し始めた途端、配信集合とバッチ `Vec` が
+食い違う。
+
+この形の不具合は実際に2回、FT8/FT4/FST4（`.known(...)` というフェー
+ズ横断dedupビルダメソッドを持つ唯一のプロトコル群——WSPR/Q65/JT65/JT9
+にはこの概念自体が存在しないため、そもそも晒されようがなかった）で発生
+した:
+
+1. **FT8ホストのマルチパスドライバ**（issue #243）—— `xsnr2` SNR妥当
+   性ゲートが、1パス全体（あるいは修正初期段階では3パス全体）が終
+   わった後にバッチとして走っており、その時点ですでに候補に対して
+   `on_result` が発火済みだった。候補ごとに、受理される前にインライ
+   ンでゲートを走らせるよう修正した。
+2. **FT8の`.sic_early()`、FT4の`.sic_rounds()`/単一パス、FST4の単
+   一パス**—— `.known(...)` は入力オーディオから事前に減算されていた
+   （これ自体は正しい）が、実際の候補ごとのdedupには一切組み込まれ
+   ておらず、呼び出し側レベルの事後フィルタ（FT8では
+   `results.retain(...)`、FT4/FST4では `dedup_known(...)`）が `known`
+   に一致するものを黙って落としていた——`on_result` がすでに発火した
+   後に。`known` による判定をコールバック発火点より前でアトミックに
+   行うよう修正した（FT8: 既存の候補ごとdedupに `known` を組み込み;
+   FT4/FST4: 下層の共有ジェネリックエンジンには `known` を通すパラメー
+   タが存在しないため、`pipeline::known_filtered_on_result` というラッ
+   パで対応）。
+
+どちらも机上の検討だけでなく、実信号に対する再現実験で見つけたもの
+——常設の回帰テストとして
+`tests/ft8_streaming_sic_early_with_known_matches_batch_exactly` と
+`tests/ft4_streaming_sic_rounds_with_known_matches_batch_exactly` を参
+照。
+
+両修正の後、クレート内の全ての `on_result`/`cb` 呼び出し箇所を（上
+記修正からの推測ではなく）直接再監査した。いずれも、`cb` が発火する値/
+集合と、その後返されるコレクションにコミットされる値/集合が完全に一致
+し、両者の間にフィルタリングステップが一切存在しない——多くは
+`if let Some(cb) = on_result { cb(&r); } vec.push(r);` という単一ブロッ
+ク、まれに（FT4/FST4の `decode_frame_subtract`）`for r in &deduped {
+cb(r); }` ループの直後に何も挟まず `all_results.extend(deduped)` が続
+く形。どちらの形でも同じ保証が得られる: コールバックがすでに発火した値
+は、その後いかなる手段によっても集合から取り除かれえない。
+
+| 箇所 | 場所（行番号はコミット `1a4cbda` 時点。このファイルがそれ以降変化していたら要再確認） |
+|---|---|
+| FT8 `decode_block_multipass`/`decode_block_streaming` | `ft8/decode_block/process_candidates.rs:486` |
+| FT8 `sic_inner_passes_with_cache`（`.sic_rounds()`/`.sic_early()` を担当） | `ft8/decode.rs:630` |
+| FT8 `decode_frame_inner`（並列/逐次の単一パス） | `ft8/decode.rs:374,387` |
+| FT8 `decode_sniper_inner`（並列/逐次のsniper） | `ft8/decode.rs:996,1016` |
+| FT4/FST4 `decode_frame`（並列/逐次の単一パス、ジェネリックエンジン） | `engine/pipeline.rs:994,1014` |
+| FT4/FST4 `decode_frame_subtract`（`.sic_rounds()`、ジェネリックエンジン） | `engine/pipeline.rs:1239` |
+| WSPR `decode_scan_streaming`（並列/逐次） / `decode_scan_subtract_streaming` | `wspr/decode.rs:493,566,717` |
+| Q65 `DecodeRequest`/`SniperRequest` | `q65/decode_request.rs:374` |
+| Q65 `MultiPeriodRequest`（`decode_multi_period_for`） | `q65/rx.rs:1345` |
+| Q65内部スキャンヘルパ（`decode_scan_fading_for`、`decode_scan_with_ap_list_for`、`decode_scan_inner`） | `q65/rx.rs:511,610,700` |
+| JT65 `decode_scan_streaming`（並列/逐次） | `jt65/mod.rs:328,426` |
+| JT9 `decode_scan_streaming` | `jt9/mod.rs:243` |
+
+新しく `_streaming` 兄弟関数や `.on_result(cb)` ビルダメソッドをあるプ
+ロトコルに追加する際、そのプロトコルが `.known(...)` のようなフェーズ
+横断dedupパラメータも持つ（または将来持つ）なら、その組み合わせこそ
+がこのバグクラスの温床である——コールバックが、上記の全行がそうしてい
+るように、返すコレクションへのコミットと同じ分岐から発火しているか
+を確認すること。「戻り値だけをフィルタしているから無害」と決めつけて
+はいけない。
+
 ---
+
 
 ## 4. なぜ同期コールバックで、`async` / Tokio / チャネルではないのか
 

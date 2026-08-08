@@ -168,6 +168,82 @@ On the sequential strategies specifically, a candidate ahead in the
 list that needs deep OSD blocks every candidate behind it (single
 thread); the parallel strategies have no such head-of-line blocking.
 
+### Audited: no "revoke-less retract" gap exists anywhere else (2026-08-09)
+
+A *revoke-less retract* is a specific failure mode distinct from
+either contract above: `cb` fires for a candidate that later, via some
+**separate** post-processing step downstream of the firing point,
+never makes it into the returned `Vec` — not because of the
+documented §3b duplicate-completion-order behaviour, but because a
+gate or filter ran *after* the callback had already committed to
+delivering that result, with no revise/retract event to tell the
+caller so. This is worse than either documented contract: it silently
+breaks even §3b's weaker guarantee (every batch result fires *at
+least* once — a revoke-less retract can make the delivered set and
+the batch `Vec` disagree in the other direction too, once a caller
+starts relying on "streamed implies real").
+
+This shape bit real code twice, both on FT8/FT4/FST4 (the only
+protocols with a `.known(...)` cross-phase-dedup builder method —
+WSPR/Q65/JT65/JT9 don't have the concept at all, so they were never
+exposed to it):
+
+1. **FT8 host multipass driver** (issue #243) — the `xsnr2` SNR
+   validity gate used to run as a batch *after* an entire pass (or,
+   in an early cut of the fix, after the whole 3-pass loop) had
+   already fired `on_result` for its candidates. Fixed by moving the
+   gate inline, immediately per candidate, before it's ever accepted.
+2. **FT8's `.sic_early()`, FT4's `.sic_rounds()`/single-pass, FST4's
+   single-pass** — `.known(...)` was subtracted from the input audio
+   up front (correct) but never threaded into the actual per-candidate
+   dedup; a caller-level post-filter (`results.retain(...)` on FT8,
+   `dedup_known(...)` on FT4/FST4) silently dropped anything that
+   matched `known`, *after* `on_result` had already fired for it.
+   Fixed by gating on `known` atomically, before the callback point
+   (FT8: threaded `known` into the existing per-candidate dedup; FT4/
+   FST4: a `pipeline::known_filtered_on_result` wrapper, since the
+   shared generic engine underneath has no `known` parameter to thread
+   it into).
+
+Both were found by direct reproduction against real signals, not
+inspection alone — see `tests/ft8_streaming_sic_early_with_known_matches_batch_exactly`
+and `tests/ft4_streaming_sic_rounds_with_known_matches_batch_exactly`
+for standing regression coverage.
+
+Following both fixes, **every** `on_result`/`cb` call site in the
+crate was re-audited directly (not by inference from the fix above).
+Each one fires `cb` on exactly the value/set that is then committed to
+the returned collection, with no filtering step running in between —
+usually `if let Some(cb) = on_result { cb(&r); } vec.push(r);` in one
+block, occasionally (FT4/FST4's `decode_frame_subtract`) a `for r in
+&deduped { cb(r); }` loop immediately followed by
+`all_results.extend(deduped)` with nothing else between the two. Both
+shapes give the same guarantee: nothing can remove a value from the
+committed set after its callback has already fired.
+
+| Site | Location (line numbers as of commit `1a4cbda`, re-check if this file has since diverged) |
+|---|---|
+| FT8 `decode_block_multipass`/`decode_block_streaming` | `ft8/decode_block/process_candidates.rs:486` |
+| FT8 `sic_inner_passes_with_cache` (covers `.sic_rounds()`/`.sic_early()`) | `ft8/decode.rs:630` |
+| FT8 `decode_frame_inner` (parallel/sequential single-pass) | `ft8/decode.rs:374,387` |
+| FT8 `decode_sniper_inner` (parallel/sequential sniper) | `ft8/decode.rs:996,1016` |
+| FT4/FST4 `decode_frame` (parallel/sequential single-pass, generic engine) | `engine/pipeline.rs:994,1014` |
+| FT4/FST4 `decode_frame_subtract` (`.sic_rounds()`, generic engine) | `engine/pipeline.rs:1239` |
+| WSPR `decode_scan_streaming` (parallel/sequential) / `decode_scan_subtract_streaming` | `wspr/decode.rs:493,566,717` |
+| Q65 `DecodeRequest`/`SniperRequest` | `q65/decode_request.rs:374` |
+| Q65 `MultiPeriodRequest` (`decode_multi_period_for`) | `q65/rx.rs:1345` |
+| Q65 internal scan helpers (`decode_scan_fading_for`, `decode_scan_with_ap_list_for`, `decode_scan_inner`) | `q65/rx.rs:511,610,700` |
+| JT65 `decode_scan_streaming` (parallel/sequential) | `jt65/mod.rs:328,426` |
+| JT9 `decode_scan_streaming` | `jt9/mod.rs:243` |
+
+If you're adding a new `_streaming` sibling or `.on_result(cb)`
+builder method to a protocol that also has (or gains) a `.known(...)`-
+style cross-phase-dedup parameter, that combination is exactly where
+this bug class lives — verify the callback fires from the same branch
+that commits the value to the returned collection, the way every row
+above does, rather than assuming a later post-filter is harmless just
+because it's "only" filtering the return value.
+
 ---
 
 ## 4. Why a synchronous callback, and not `async` / Tokio / a channel
