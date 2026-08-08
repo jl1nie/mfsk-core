@@ -488,9 +488,9 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-
-    let decode_one = |c: &super::search::SyncCandidate| -> Option<Q65Result> {
-        let decode = decode_at_fading_for::<P>(
+    let mut seen: Vec<Q65Result> = Vec::new();
+    for c in cands {
+        let Some(decode) = decode_at_fading_for::<P>(
             audio,
             sample_rate,
             c.start_sample,
@@ -499,29 +499,18 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
             model,
             ap_hint,
             ctx,
-        )?;
-        if let Some(cb) = on_result {
-            cb(&decode);
-        }
-        Some(decode)
-    };
-
-    #[cfg(feature = "parallel")]
-    let raw: Vec<Q65Result> = {
-        use rayon::prelude::*;
-        cands.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<Q65Result> = cands.iter().filter_map(decode_one).collect();
-
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for decode in raw {
+        ) else {
+            continue;
+        };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
                 && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }
@@ -600,38 +589,27 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-
-    let decode_one = |c: &super::search::SyncCandidate| -> Option<Q65Result> {
-        let decode = decode_at_with_ap_list_for::<P>(
+    let mut seen: Vec<Q65Result> = Vec::new();
+    for c in cands {
+        let Some(decode) = decode_at_with_ap_list_for::<P>(
             audio,
             sample_rate,
             c.start_sample,
             c.freq_hz,
             candidates,
             ctx,
-        )?;
-        if let Some(cb) = on_result {
-            cb(&decode);
-        }
-        Some(decode)
-    };
-
-    #[cfg(feature = "parallel")]
-    let raw: Vec<Q65Result> = {
-        use rayon::prelude::*;
-        cands.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<Q65Result> = cands.iter().filter_map(decode_one).collect();
-
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for decode in raw {
+        ) else {
+            continue;
+        };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
                 && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }
@@ -700,9 +678,9 @@ fn decode_scan_inner<P: ModulationParams>(
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let cands =
         super::search::coarse_search_for::<P>(audio, sample_rate, nominal_start_sample, params);
-
-    let decode_one = |c: &super::search::SyncCandidate| -> Option<Q65Result> {
-        let decode = decode_at_with_fine_timing_for::<P>(
+    let mut seen: Vec<Q65Result> = Vec::new();
+    for c in cands {
+        let Some(decode) = decode_at_with_fine_timing_for::<P>(
             audio,
             sample_rate,
             c.start_sample,
@@ -710,32 +688,18 @@ fn decode_scan_inner<P: ModulationParams>(
             nsps,
             ap_hint,
             ctx,
-        )?;
-        // Fires here, before dedup below — see `DecodeRequest::on_result`'s
-        // doc comment for the possible-transient-duplicate contract
-        // this implies.
-        if let Some(cb) = on_result {
-            cb(&decode);
-        }
-        Some(decode)
-    };
-
-    #[cfg(feature = "parallel")]
-    let raw: Vec<Q65Result> = {
-        use rayon::prelude::*;
-        cands.par_iter().filter_map(decode_one).collect()
-    };
-    #[cfg(not(feature = "parallel"))]
-    let raw: Vec<Q65Result> = cands.iter().filter_map(decode_one).collect();
-
-    let mut seen: Vec<Q65Result> = Vec::new();
-    for decode in raw {
+        ) else {
+            continue;
+        };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
                 && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
+            if let Some(cb) = on_result {
+                cb(&decode);
+            }
             seen.push(decode);
         }
     }

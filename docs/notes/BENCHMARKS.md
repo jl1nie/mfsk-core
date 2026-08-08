@@ -1178,30 +1178,6 @@ performance win on JT65's own workload shape.
 
 ## Q65
 
-- **Candidate-level parallelism** (2026-08-08, same investigation as
-  JT65's): Q65 also had no `rayon`/`parallel`-feature candidate
-  parallelism, same pre-existing gap. Added
-  `#[cfg(feature = "parallel")]` `par_iter()` to `decode_scan_inner`
-  (shared by `decode_scan_for`/`decode_scan_with_ap_for`),
-  `decode_scan_fading_for`, and `decode_scan_with_ap_list_for` — the
-  three candidate-loop scan strategies (`decode_multi_period_for`
-  deliberately left untouched: its EMA-spectrogram accumulation is
-  inherently sequential across slots by design, not a parallelism
-  gap). `DecodeRequest::on_result`'s doc comment updated to the same
-  fire-before-dedup/possible-transient-duplicate contract as JT65's
-  and `engine::pipeline`'s; `q65_wsjtx_samples.rs`'s
-  `q65_scan_streaming_matches_batch_exactly` rewritten from strict
-  `Vec` equality to a set-based (`is_subset`) comparison accordingly.
-  Measured honestly on a real WSJT-X sample
-  (`60A_EME_6m/210106_1621.wav`, `max_candidates=16`, 4 real decodes):
-  **no meaningful speedup** — 64.2 ms → 62.9 ms per `decode()` call,
-  within noise, the same pattern JT65 showed. Recall confirmed
-  unchanged: full WSJT-X sample suite (24 tests) and the Q65-30A SNR
-  sweep (8/8 down to −22 dB, 5/8 at −24 dB, matching the existing
-  documented curve) both pass identically. Kept for the same reason as
-  JT65's: correctness and architectural consistency with the rest of
-  the crate, not a demonstrated performance win on today's available
-  test corpora.
 - Real recordings: WSJT-X's 6 m EME (W7GJ exchanges) and 10 GHz EME
   reference both decode.
 - Fast-fading metric (Gaussian/Lorentzian channel models) recovers
