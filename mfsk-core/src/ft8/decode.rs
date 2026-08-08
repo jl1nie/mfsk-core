@@ -728,6 +728,7 @@ pub(crate) fn decode_frame_subtract_staged_with_ap_debug_residual(
         strictness,
         EqMode::Off,
         ap_hint,
+        &[],
         None,
     )
 }
@@ -750,6 +751,23 @@ fn decode_frame_subtract_staged_with_ap_inner(
     strictness: DecodeStrictness,
     eq_mode: EqMode,
     ap_hint: Option<&ApHint>,
+    // Caller-level `known` (`DecodeRequest::known`, e.g. an earlier
+    // phase's already-reported results). Threaded into *every*
+    // checkpoint's own dedup below rather than relied on solely via
+    // the caller's upfront `subtract_signal_lpf_refine_dt` pass — see
+    // this function's own doc comment / `__staged_sic` for why: an
+    // imperfect subtraction on a strong `outer_known` carrier can
+    // leave enough residual for a checkpoint to independently
+    // re-derive the *same* message, and unless that re-derivation is
+    // caught by the message77 dedup *before* `on_result` fires, the
+    // caller sees a callback delivery for a result that then silently
+    // never appears in the returned `Vec` — a revoke-less retract of
+    // exactly the kind issue #243 closed on the `decode_block`
+    // engine. `known.iter().any(...)` (inside `sic_inner_passes_with_cache`)
+    // already runs *before* the subtract+callback point for whatever
+    // slice it's given; passing `outer_known` here (rather than `&[]`)
+    // is what makes that existing atomic gate also cover this case.
+    outer_known: &[DecodeResult],
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
@@ -770,7 +788,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             depth,
             max_cand,
             strictness,
-            &[],
+            outer_known,
             eq_mode,
             ap_hint,
             None,
@@ -807,7 +825,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         depth,
         max_cand,
         strictness,
-        &[],
+        outer_known,
         eq_mode,
         ap_hint,
         CHECKPOINT_SIC_ROUNDS,
@@ -836,7 +854,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             depth,
             max_cand,
             strictness,
-            &[],
+            outer_known,
             eq_mode,
             ap_hint,
             None,
@@ -893,6 +911,18 @@ fn decode_frame_subtract_staged_with_ap_inner(
         subtract_signal_lpf_refine_dt(&mut buf_c, r);
     }
 
+    // Combine `outer_known` (the caller's earlier-phase results) with
+    // this call's own `early_results` (checkpoint A) so checkpoint C's
+    // dedup gate — which runs *before* subtract/on_result, same as
+    // every other `sic_inner_passes` call site above — catches a
+    // candidate matching either set atomically, not via the
+    // post-hoc `results.retain` `__staged_sic` used to rely on for
+    // `outer_known` alone.
+    let known_c: alloc::vec::Vec<DecodeResult> = outer_known
+        .iter()
+        .cloned()
+        .chain(early_results.iter().cloned())
+        .collect();
     let new_results = sic_inner_passes(
         &mut buf_c,
         freq_min,
@@ -901,7 +931,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
         depth,
         max_cand,
         strictness,
-        &early_results,
+        &known_c,
         eq_mode,
         ap_hint,
         CHECKPOINT_SIC_ROUNDS,
@@ -1126,7 +1156,21 @@ impl SupportsSicEarly for Ft8 {
         for r in req.known {
             subtract_signal_lpf_refine_dt(&mut audio_clean, r);
         }
-        let (mut results, residual) = decode_frame_subtract_staged_with_ap_inner(
+        // `req.known` is also threaded into every checkpoint's own
+        // message77 dedup below (not just used for the subtraction
+        // above) — an imperfect subtraction on a strong `known` carrier
+        // can still leave enough residual for a checkpoint to
+        // independently re-derive the same message, and unless that
+        // re-derivation is caught *before* `on_result` fires for it,
+        // `.on_result(cb)` delivers a callback for a result the
+        // returned `Vec` then silently never contains — the exact
+        // revoke-less-retract hazard issue #243 closed on the
+        // `decode_block` engine. A previous version of this function
+        // relied on a post-hoc `results.retain(...)` here instead,
+        // which is exactly that hazard: it ran *after*
+        // `decode_frame_subtract_staged_with_ap_inner` had already
+        // fired `on_result` for every checkpoint's raw candidates.
+        let (results, residual) = decode_frame_subtract_staged_with_ap_inner(
             &audio_clean,
             req.freq_min,
             req.freq_max,
@@ -1137,13 +1181,9 @@ impl SupportsSicEarly for Ft8 {
             req.strictness,
             req.eq_mode,
             req.ap_hint,
+            req.known,
             req.on_result,
         );
-        // Belt-and-braces dedup: subtraction above should already
-        // prevent `known` signals from re-decoding, but an imperfect
-        // subtraction on a very strong carrier could still leave enough
-        // residual to re-cross the CRC/OSD threshold.
-        results.retain(|r| !req.known.iter().any(|k| k.message77() == r.message77()));
         let fft_cache = FftCache(build_fft_cache(&residual));
         DecodeOutcome { results, fft_cache }
     }

@@ -156,6 +156,71 @@ fn ft4_streaming_single_pass_superset_of_batch() {
     );
 }
 
+/// Regression for the FT4/FST4 sibling of the `.sic_early()`+`.known()`
+/// bug found on FT8 (issue #243 follow-up): `Ft4`'s `__single_pass`/
+/// `__flat_sic` called `dedup_known` on the *returned* `Vec` only,
+/// after `req.on_result` had already been threaded straight into
+/// `engine::pipeline::decode_frame`/`decode_frame_subtract` and fired
+/// there — so a candidate matching a caller-supplied `.known(...)`
+/// entry could fire via callback and then be silently absent from the
+/// returned `Vec`. Fixed via `pipeline::known_filtered_on_result`,
+/// which wraps the callback itself so a `known`-duplicate never
+/// reaches it in the first place. Exercises `.sic_rounds()`
+/// specifically since that strategy is held to `on_result`'s
+/// exact-match contract (unlike the parallel single-pass strategy's
+/// weaker superset contract).
+#[test]
+fn ft4_streaming_sic_rounds_with_known_matches_batch_exactly() {
+    let Some(audio) = load_slot() else {
+        eprintln!(
+            "skipping: WSJT-X FT4 sample not found at ../../WSJT-X/samples/FT4/000000_000002.wav"
+        );
+        return;
+    };
+
+    // Phase 1: plain decode, no callback — seeds phase 2's `known`.
+    let phase1 = DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 0.05, 100)
+        .sic_rounds(3)
+        .decode();
+    assert!(
+        !phase1.results.is_empty(),
+        "expected real decodes on the FT4 golden WAV"
+    );
+
+    let streamed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let on_result = |r: &mfsk_core::ft4::decode::DecodeResult| {
+        if let Some(text) = unpack77(r.message77()) {
+            streamed.lock().unwrap().push(text);
+        }
+    };
+
+    let phase2 = DecodeRequest::<Ft4>::new(&audio, 100.0, 2700.0, 0.05, 100)
+        .sic_rounds(3)
+        .known(&phase1.results)
+        .on_result(&on_result)
+        .decode();
+
+    let batch: BTreeSet<String> = phase2
+        .results
+        .iter()
+        .filter_map(|r| unpack77(r.message77()))
+        .collect();
+    let streamed: BTreeSet<String> = streamed.into_inner().unwrap().into_iter().collect();
+
+    println!(
+        "phase2 batch: {} decode(s), streamed: {} callback(s)",
+        batch.len(),
+        streamed.len()
+    );
+
+    assert_eq!(
+        streamed, batch,
+        "sic_rounds + known: streamed callback deliveries must exactly \
+         match the batch result — no candidate should fire on_result \
+         and then be silently dropped by known-dedup"
+    );
+}
+
 /// `SniperRequest::on_result` — the third call site `pipeline_ap::
 /// decode_sniper_ap` threads `on_result` through, shared by both FT4
 /// and FST4's `__sniper`. No existing test anywhere in the suite

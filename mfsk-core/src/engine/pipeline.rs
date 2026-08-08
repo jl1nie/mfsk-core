@@ -803,6 +803,38 @@ fn encode_tones_for_snr<P: Protocol>(info: &[u8], fec: &P::Fec) -> Vec<u8> {
     codeword_to_itone::<P>(&cw)
 }
 
+/// Wrap `cb` so it only forwards results not already present in `known`
+/// (by `info` equality) — `None` in, `None` out.
+///
+/// This engine has no `known` parameter of its own (`decode_frame`/
+/// `decode_frame_subtract` below don't take one) — `ft4`/`fst4`'s
+/// `dedup_known` post-filters the *returned* `Vec` against `known`
+/// after the fact instead. That's fine for the returned `Vec`, but
+/// `on_result` fires *inside* this engine, before that post-filter
+/// ever runs — so without this wrapper, a candidate matching `known`
+/// still fires the caller's callback and then silently never appears
+/// in the returned `Vec`, violating `DecodeRequest::on_result`'s own
+/// documented contract (exact-match for the sequential SIC strategies;
+/// even the parallel single-pass strategy's weaker "superset" contract
+/// doesn't license dropping something the caller explicitly named via
+/// `.known(...)`). Same root pattern as issue #243's `decode_block`
+/// fix and its `ft8::decode`/`SupportsSicEarly::__staged_sic`
+/// follow-up — closed here at the wrapper level instead of threading
+/// `known` through this generic (protocol-agnostic) engine itself.
+#[cfg(any(feature = "ft4", feature = "fst4"))]
+pub(crate) fn known_filtered_on_result<'a>(
+    known: &'a [DecodeResult],
+    cb: Option<&'a (dyn Fn(&DecodeResult) + Sync)>,
+) -> Option<impl Fn(&DecodeResult) + Sync + use<'a>> {
+    cb.map(move |cb| {
+        move |r: &DecodeResult| {
+            if !known.iter().any(|k| k.info == r.info) {
+                cb(r);
+            }
+        }
+    })
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Frame-level entry points
 // ──────────────────────────────────────────────────────────────────────────

@@ -553,6 +553,77 @@ effect on any decode path.
   output to the per-pass fix above — this is a pure restructuring of
   *when* a result becomes final, not a change to any computed value.
 
+- **`DecodeRequest::sic_early().on_result(cb)` combined with
+  `.known(...)` could deliver a callback for a result that then never
+  appeared in the returned `Vec` — a second, distinct instance of the
+  revoke-less-retract hazard issue #243 closed on the `decode_block`
+  engine, this time in `SupportsSicEarly::__staged_sic`
+  (`ft8/decode.rs`), a completely different code path from
+  `decode_block_multipass`.** Found from a real user report against
+  the #243 fix above, reproduced with the exact two messages
+  reported (`K1BZM DK8NE -10`, `XE2X HA2NP RR73` — both real,
+  marginal-SNR decodes at `hard_errors` 20/16 on `qso3_busy.wav`).
+
+  `__staged_sic` subtracted `.known(...)` from the audio up front
+  (correct), but never threaded `known` into any of the three
+  checkpoints' own message77 dedup — instead relying on a *post-hoc*
+  `results.retain(|r| !known.iter().any(...))` after
+  `decode_frame_subtract_staged_with_ap_inner` had already fired
+  `on_result` for every checkpoint's raw candidates. When subtraction
+  of a `known` signal left enough residual for a checkpoint to
+  independently re-decode that same message — routine for
+  marginal/high-hard-error signals — the callback fired and the
+  retain then silently dropped the result before it reached the
+  returned `Vec`, violating `.on_result`'s own documented "exact
+  match, zero divergence" contract for this sequential strategy.
+
+  Fixed by threading `known` (renamed `outer_known` inside the inner
+  function) into every checkpoint's own `sic_inner_passes` call —
+  combined with each checkpoint's own already-decoded set at
+  checkpoint C — so the message77 dedup that already ran atomically
+  *before* the subtract/callback point (same shape the #243 fix
+  established) now also covers caller-supplied `known`, not just
+  same-call duplicates. The post-hoc `retain` is removed entirely
+  rather than kept as a backstop — keeping it would have re-admitted
+  exactly the hazard being closed.
+
+  New tests `ft8_streaming_sic_early_matches_batch_exactly` and
+  `ft8_streaming_sic_early_with_known_matches_batch_exactly`
+  (`tests/ft8_streaming_decode.rs`) — the latter directly reproduces
+  the reported bug (fails on the pre-fix code, passes after).
+  `qso3_apoff`/`qso3_apon`/`qso3_full_parity` golden suites, the
+  `.sic_early()`-specific probes (`ft8_qso3_dl8yhr_probe`,
+  `ft8_qso3_dk8ne_probe`, `ft8_qso3_staged_sic_check`,
+  `ft8_qso3_subtract_fix_check`, `ft8_wsjtx_depth_ladder`,
+  `ft8_qso3_sync_cv_iteration_correlation`) and the full lib suite all
+  confirm no recall change on the (much more common) `known = &[]`
+  path — this only changes behaviour when `.known(...)` is combined
+  with `.sic_early()`, and even then only removes phantom callback
+  deliveries, never removes anything from the returned `Vec`.
+
+- **The same revoke-less-retract pattern also existed on FT4's
+  `.sic_rounds()`/default single-pass strategies and FST4's default
+  single-pass strategy — found by grepping for the pattern rather than
+  assuming the FT8 fix above was exhaustive, per the retrospective
+  above.** `Ft4`/FST4's `dedup_known` post-filtered the *returned*
+  `Vec` against `.known(...)` after `req.on_result` had already been
+  threaded straight into the shared `engine::pipeline::decode_frame`/
+  `decode_frame_subtract` and fired there — the generic pipeline has
+  no `known` parameter of its own, so nothing gated the callback
+  before it fired. Fixed with a new `pipeline::known_filtered_on_result`
+  helper: wraps the caller's callback so a `known`-duplicate never
+  reaches it, closing the gap without threading `known` through the
+  protocol-agnostic engine itself. New regression test
+  `ft4_streaming_sic_rounds_with_known_matches_batch_exactly`
+  (`tests/ft4_streaming_decode.rs`); FST4 has no `.sic_rounds()` (no
+  `SubtractCfg` exists for it) so its only affected strategy is the
+  default single-pass one, already covered by the existing superset
+  contract but tightened to exact anyway for consistency. Q65/WSPR/
+  JT65/JT9 checked and confirmed unaffected — none of them has a
+  `known`/cross-phase-dedup concept at all. No recall change on the
+  `known = &[]` path (all existing FT4/FST4 recall + streaming tests
+  pass unchanged).
+
 - **Q65 and MSK144 can now resolve `<...>` hashed-callsign
   placeholders — a gap this session first mis-scoped as "5 protocols
   wide" (Q65/WSPR/JT65/JT9/MSK144) before actually checking each

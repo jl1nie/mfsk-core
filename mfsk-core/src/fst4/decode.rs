@@ -151,6 +151,15 @@ macro_rules! impl_frame_decodable {
             type DecodeResult = DecodeResult;
 
             fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
+                // See `pipeline::known_filtered_on_result`'s doc comment
+                // (same rationale as `ft4::decode`'s copy of this fix):
+                // without this, `on_result` could fire for a candidate
+                // `dedup_known` below then silently drops from the
+                // returned `Vec`.
+                let filtered_cb = pipeline::known_filtered_on_result(req.known, req.on_result);
+                let on_result: Option<&(dyn Fn(&DecodeResult) + Sync)> = filtered_cb
+                    .as_ref()
+                    .map(|f| f as &(dyn Fn(&DecodeResult) + Sync));
                 let (raw, fft_cache) = pipeline::decode_frame::<$proto>(
                     req.audio,
                     &$cfg,
@@ -164,7 +173,7 @@ macro_rules! impl_frame_decodable {
                     req.eq_mode,
                     SYNC_Q_MIN,
                     req.fft_cache.as_ref().map(FftCache::as_slice),
-                    req.on_result,
+                    on_result,
                 );
                 DecodeOutcome {
                     results: dedup_known(raw, req.known),

@@ -7,11 +7,16 @@
 //! Two contracts to check, matching the two different delivery
 //! guarantees `on_result`'s own doc comment documents:
 //!
-//! 1. **Sequential SIC path** (`.sic_rounds(n)`): callback-delivered
-//!    messages must be *exactly* the batch result, same set, no more
-//!    no less — the push point inside `sic_inner_passes_with_cache`
-//!    *is* the final-acceptance point, so there's no divergence
-//!    mechanism at all.
+//! 1. **Sequential SIC path** (`.sic_rounds(n)`/`.sic_early()`):
+//!    callback-delivered messages must be *exactly* the batch result,
+//!    same set, no more no less — the push point inside
+//!    `sic_inner_passes_with_cache` *is* the final-acceptance point,
+//!    so there's no divergence mechanism at all. This *used* to be
+//!    false for `.sic_early()` when combined with `.known(...)` — see
+//!    `ft8_streaming_sic_early_with_known_matches_batch_exactly`
+//!    below (issue #243 follow-up: a *different* post-hoc gate than
+//!    the one #243 itself fixed, in `SupportsSicEarly::__staged_sic`
+//!    rather than `decode_block::decode_block_multipass`).
 //! 2. **Parallel single-pass path** (`DecodeRequest::new(...)` with no
 //!    `.sic_rounds()`/`.sic_early()`): callback-delivered messages must
 //!    be a *superset* of the batch result — the callback fires inside
@@ -81,6 +86,105 @@ fn ft8_streaming_sic_rounds_matches_batch_exactly() {
     );
     // Sanity: this is a real decode, not a vacuously-true empty-set match.
     assert!(!batch.is_empty(), "expected real decodes on qso3_busy.wav");
+}
+
+#[test]
+fn ft8_streaming_sic_early_matches_batch_exactly() {
+    let slot = load_wav_i16(Path::new(QSO3_PATH));
+
+    let streamed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let on_result = |r: &mfsk_core::ft8::decode::DecodeResult| {
+        if let Some(text) = unpack77(r.message77()) {
+            streamed.lock().unwrap().push(text);
+        }
+    };
+
+    let outcome = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
+        .sic_early()
+        .on_result(&on_result)
+        .decode();
+
+    let batch: BTreeSet<String> = outcome
+        .results
+        .iter()
+        .filter_map(|r| unpack77(r.message77()))
+        .collect();
+    let streamed: BTreeSet<String> = streamed.into_inner().unwrap().into_iter().collect();
+
+    assert_eq!(
+        streamed, batch,
+        "sic_early: streamed callback deliveries must exactly match the batch result"
+    );
+    assert!(!batch.is_empty(), "expected real decodes on qso3_busy.wav");
+}
+
+/// Regression for the bug reported against b087902: `.sic_early()`
+/// combined with `.known(...)` (a plausible two-phase pipeline shape —
+/// re-decode the same audio seeded with an earlier phase's results,
+/// looking for more in the residual) could fire `on_result` for a
+/// candidate that then never appeared in the returned `Vec`.
+///
+/// Root cause: `SupportsSicEarly::__staged_sic` subtracted `known`
+/// from the audio up front, but never threaded `known` into any
+/// checkpoint's own message77 dedup — instead relying on a *post-hoc*
+/// `results.retain(...)` after `decode_frame_subtract_staged_with_ap_inner`
+/// had already fired `on_result` for every checkpoint's raw
+/// candidates. When subtraction of a `known` signal left enough
+/// residual for a checkpoint to independently re-decode that same
+/// message (real for marginal/high-hard-error signals — this WAV's
+/// `K1BZM DK8NE -10` and `XE2X HA2NP RR73` both reproduced it, at
+/// `hard_errors` 20 and 16 respectively), the callback fired and the
+/// retain then silently dropped the result — a revoke-less retract of
+/// exactly the kind issue #243 closed on the `decode_block` engine,
+/// just in a different function. Fixed by threading `known` into
+/// every checkpoint's dedup so it gates *before* the subtract/
+/// callback point, same as every other `sic_inner_passes` caller.
+#[test]
+fn ft8_streaming_sic_early_with_known_matches_batch_exactly() {
+    let slot = load_wav_i16(Path::new(QSO3_PATH));
+
+    // Phase 1: plain decode, no callback — its results seed phase 2's
+    // `known`, reproducing a "second pass looking for more" shape.
+    let phase1 = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
+        .sic_early()
+        .decode();
+    assert!(
+        !phase1.results.is_empty(),
+        "expected real decodes on qso3_busy.wav"
+    );
+
+    let streamed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let on_result = |r: &mfsk_core::ft8::decode::DecodeResult| {
+        if let Some(text) = unpack77(r.message77()) {
+            streamed.lock().unwrap().push(text);
+        }
+    };
+
+    let phase2 = DecodeRequest::<Ft8>::new(&slot, 100.0, 3000.0, 1.3, 50)
+        .sic_early()
+        .known(&phase1.results)
+        .on_result(&on_result)
+        .decode();
+
+    let batch: BTreeSet<String> = phase2
+        .results
+        .iter()
+        .filter_map(|r| unpack77(r.message77()))
+        .collect();
+    let streamed: BTreeSet<String> = streamed.into_inner().unwrap().into_iter().collect();
+
+    println!(
+        "phase2 batch: {} decode(s), streamed: {} callback(s)",
+        batch.len(),
+        streamed.len()
+    );
+
+    assert_eq!(
+        streamed, batch,
+        "sic_early + known: streamed callback deliveries must exactly \
+         match the batch result — no candidate should fire on_result \
+         and then be silently dropped by known-dedup"
+    );
 }
 
 #[test]
