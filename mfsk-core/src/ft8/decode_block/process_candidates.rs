@@ -249,7 +249,6 @@ fn decode_block_multipass<S: AudioSample>(
     let mut work: AllocVec<i16> = audio.iter().map(|s| s.to_i16()).collect();
     let mut all: AllocVec<DecodeResult> = AllocVec::new();
     let mut prev_total: usize = 0;
-    let mut sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = None;
     // Shared across every pass's per-candidate loop below (issue #199):
     // this driver calls the per-candidate decode entry once per
     // candidate (1-element `vec![cand]`), so without a caller-owned
@@ -266,12 +265,19 @@ fn decode_block_multipass<S: AudioSample>(
         prev_total = all.len();
 
         let spec = compute_spectrogram(work.as_slice(), freq_max);
-        // Capture pass 1's spectrogram + per-bin baseline (= ORIGINAL
-        // audio, before any subtract) for WSJT-X-faithful xsnr2 SNR.
-        // ft8b.f90:449 reads sbase from the pre-subtract baseline so
-        // xsnr2 stays stable across passes; xsig is also read from
-        // the same spectrogram so the two share an absolute scale.
-        if ipass == 0 {
+        // Capture *this pass's own* spectrogram + per-bin baseline for
+        // WSJT-X-faithful xsnr2 SNR (issue #243). `ft8_decode.f90:217`
+        // calls `sync8` (which produces `sbase`) *inside* the pass
+        // loop, once per pass, against that pass's then-current audio
+        // — already reflecting whatever subtraction the *prior*
+        // pass(es) did. An earlier version of this port captured this
+        // only once, at `ipass == 0`, and reused that stale
+        // pre-subtraction snapshot for every later pass's candidates
+        // too; xsig is read from the same spectrogram as sbase so the
+        // two always share an absolute scale, this pass's or any
+        // other's.
+        #[cfg(not(feature = "fixed-point"))]
+        let sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = {
             let mut avg = alloc::vec![0.0_f32; spec.n_freq];
             crate::ft8::baseline::avg_spectrum(&spec, &mut avg);
             let sbase_v = crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1);
@@ -280,8 +286,8 @@ fn decode_block_multipass<S: AudioSample>(
                 n_time: spec.n_time,
                 data: spec.data.clone(),
             };
-            sbase_and_spec = Some((sbase_v, spec_clone));
-        }
+            Some((sbase_v, spec_clone))
+        };
         let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
         drop(spec);
         let cands = fine_refine_pass1(work.as_slice(), cands);
@@ -307,6 +313,10 @@ fn decode_block_multipass<S: AudioSample>(
         let trace = std::env::var("MFSK_TRACE_PHANTOM").is_ok();
         #[cfg(not(feature = "std"))]
         let trace = false;
+        // Only consumed by the xsnr2 re-gate below, which is
+        // `#[cfg(not(feature = "fixed-point"))]`.
+        #[cfg_attr(feature = "fixed-point", allow(unused_variables))]
+        let pass_start = all.len();
         for cand in pass2 {
             if fft_cache.is_none() {
                 fft_cache = Some(crate::ft8::downsample::build_fft_cache(work.as_slice()));
@@ -341,73 +351,79 @@ fn decode_block_multipass<S: AudioSample>(
                 all.push(r);
             }
         }
-    }
 
-    // Replace each result's snr_db with WSJT-X xsnr2 (pre-subtract
-    // spectrogram + baseline). `xsig` is read directly from the
-    // captured pass-1 spectrogram at each tone position, so xsig
-    // and xbase share the exact same absolute scale (= the original
-    // sync8 spectrogram). This is critical: feeding xsig from a
-    // different chain (e.g. cd0 downsampled per-symbol DFT) loses
-    // the calibration.
-    //
-    // **WSJT-X post-decode validity gates (#63).** Mirrors
-    // `ft8b.f90:422-459`:
-    //   - msg-type `i3 / n3` validity (lines 425-428)
-    //   - `unpack77` success (line 430)
-    //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
-    // The xsnr gate has to run on the RAW (un-clamped) `xsnr2` because
-    // both WSJT-X (line 460) and our previous attempt clamp the value
-    // to -24 dB for display *after* the gate. Clamping first would
-    // collapse every "below floor" result to exactly -24, dead-letter
-    // the `xsnr < -24.0` test, and let exactly the phantoms the gate
-    // was designed to catch slip through (= the qso3_busy phantoms
-    // named in issue #63's body).
-    //
-    // xsnr2/xbase post-process is f32-only. Fixed-point Spectrogram
-    // cells are quantised post `>> FP_SPEC_SHIFT`, putting many noise
-    // cells at u16 zero — `fit_baseline`'s `log10(p.max(1e-30))` then
-    // produces sbase ≈ -250 dB and xsnr2 explodes. The original
-    // adjacent-tone SNR from `process_candidates_into` (compute_snr_db)
-    // is already on a sensible scale, so leave it untouched on the
-    // fixed-point path; the msg-type / unpack77 / nsync gates also
-    // run only on the f32 path (the fixed-point pipeline doesn't
-    // surface OSD-pass results, so the phantom set doesn't apply).
-    #[cfg(not(feature = "fixed-point"))]
-    if let Some((sbase, spec)) = sbase_and_spec {
-        let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-        let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-        let nsps_steps = (NSPS / NSTEP) as f32;
-        all.retain_mut(|r| {
-            // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
-            // gates are intentionally omitted here: every `DecodeResult`
-            // in `all` came through `process_one_candidate_inner`,
-            // which already rejects via `unpack77(&bp.message77)?` (line
-            // ~1565). `unpack77` returns `None` for all-zero messages
-            // (i3=0 n3=0 → free text → empty string → None) and for
-            // every invalid i3/n3 combination (`i3 > 5` falls through
-            // the outer match's `_ => None`; `i3=0 n3=2` falls through
-            // the inner match's `_ => None`). Repeating those checks
-            // here just paid for a second `unpack77` call per result
-            // (Gemini PR #88 review). The xsnr2 gate stays — it needs
-            // the raw-pre-clamp value that `process_one_candidate_inner`
-            // can't compute (no sbase / spec at that scope).
+        // Replace each of *this pass's* new results' snr_db with
+        // WSJT-X xsnr2, and drop the ones that fail its validity gate
+        // — using *this pass's own* spectrogram + baseline (issue
+        // #243), not a frozen pass-1 snapshot. `xsig` is read from the
+        // same spectrogram `sbase` came from, so the two always share
+        // an absolute scale. Applying this at the end of every pass
+        // (not once, globally, after all 3) also means a result is
+        // fully finalised — accepted or dropped — before the *next*
+        // pass's subtraction and decoding begins, matching WSJT-X's
+        // own per-pass `sync8`→`ft8b` structure
+        // (`ft8_decode.f90:196-222`) where each candidate's decode,
+        // xsnr2 gate, and return are one atomic subroutine call, never
+        // revisited by a later pass.
+        //
+        // **WSJT-X post-decode validity gates (#63).** Mirrors
+        // `ft8b.f90:422-459`:
+        //   - msg-type `i3 / n3` validity (lines 425-428)
+        //   - `unpack77` success (line 430)
+        //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
+        // The xsnr gate has to run on the RAW (un-clamped) `xsnr2` because
+        // both WSJT-X (line 460) and our previous attempt clamp the value
+        // to -24 dB for display *after* the gate. Clamping first would
+        // collapse every "below floor" result to exactly -24, dead-letter
+        // the `xsnr < -24.0` test, and let exactly the phantoms the gate
+        // was designed to catch slip through (= the qso3_busy phantoms
+        // named in issue #63's body).
+        //
+        // xsnr2/xbase post-process is f32-only. Fixed-point Spectrogram
+        // cells are quantised post `>> FP_SPEC_SHIFT`, putting many noise
+        // cells at u16 zero — `fit_baseline`'s `log10(p.max(1e-30))` then
+        // produces sbase ≈ -250 dB and xsnr2 explodes. The original
+        // adjacent-tone SNR from `process_candidates_into` (compute_snr_db)
+        // is already on a sensible scale, so leave it untouched on the
+        // fixed-point path; the msg-type / unpack77 / nsync gates also
+        // run only on the f32 path (the fixed-point pipeline doesn't
+        // surface OSD-pass results, so the phantom set doesn't apply).
+        #[cfg(not(feature = "fixed-point"))]
+        if let Some((sbase, spec)) = sbase_and_spec {
+            let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+            let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
+            let nsps_steps = (NSPS / NSTEP) as f32;
+            let mut this_pass: AllocVec<DecodeResult> = all.split_off(pass_start);
+            this_pass.retain_mut(|r| {
+                // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
+                // gates are intentionally omitted here: every `DecodeResult`
+                // in `all` came through `process_one_candidate_inner`,
+                // which already rejects via `unpack77(&bp.message77)?` (line
+                // ~1565). `unpack77` returns `None` for all-zero messages
+                // (i3=0 n3=0 → free text → empty string → None) and for
+                // every invalid i3/n3 combination (`i3 > 5` falls through
+                // the outer match's `_ => None`; `i3=0 n3=2` falls through
+                // the inner match's `_ => None`). Repeating those checks
+                // here just paid for a second `unpack77` call per result
+                // (Gemini PR #88 review). The xsnr2 gate stays — it needs
+                // the raw-pre-clamp value that `process_one_candidate_inner`
+                // can't compute (no sbase / spec at that scope).
 
-            // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
-            // The clamp here MUST happen after the gate test — see the
-            // function-level comment on `recompute_snr_xsnr2` for why
-            // the pre-clamp ordering used to dead-letter the gate.
-            let raw_snr = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
-            let nsync = recompute_nsync(r, &spec, df, tstep, nsps_steps);
-            if nsync <= 10 && raw_snr < -24.0 {
-                return false;
-            }
-            r.snr_db = raw_snr.max(-24.0);
-            true
-        });
+                // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then clamp.
+                // The clamp here MUST happen after the gate test — see the
+                // function-level comment on `recompute_snr_xsnr2` for why
+                // the pre-clamp ordering used to dead-letter the gate.
+                let raw_snr = recompute_snr_xsnr2(r, &spec, &sbase, df, tstep, nsps_steps, 1.0);
+                let nsync = recompute_nsync(r, &spec, df, tstep, nsps_steps);
+                if nsync <= 10 && raw_snr < -24.0 {
+                    return false;
+                }
+                r.snr_db = raw_snr.max(-24.0);
+                true
+            });
+            all.extend(this_pass);
+        }
     }
-    #[cfg(feature = "fixed-point")]
-    let _ = sbase_and_spec;
     all
 }
 

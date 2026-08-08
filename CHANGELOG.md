@@ -485,6 +485,43 @@ effect on any decode path.
 
 ### Fixed
 
+- **FT8 host `decode_block_multipass`'s `xsnr2` SNR-gate baseline was
+  frozen at pass 1 instead of recomputed every pass (issue #243).**
+  Found investigating why the host multipass path can't safely expose
+  a streaming callback (`docs/reference/STREAMING.md` already
+  documents the symptom). This crate captured the noise-floor
+  baseline (`sbase`/`spec`) only once, at `ipass == 0`, then reused
+  that single pre-subtraction snapshot for the final `xsnr2` gate
+  applied to *every* candidate from *all 3* passes, in one batch,
+  after the whole multipass loop finished. WSJT-X's own
+  `ft8_decode.f90` calls `sync8` (which produces the baseline)
+  *inside* the pass loop, once per pass, against that pass's
+  then-current (already-subtracted-by-prior-passes) audio — pass-2/3
+  candidates get judged against a cleaner baseline than pass-1's, and
+  each candidate's decode→gate→return happens atomically inside one
+  `ft8b` call, never revisited by a later pass.
+
+  Fixed to match: `sbase`/`spec` are now recomputed at the top of
+  *every* pass, and the `xsnr2` gate is applied *per pass* (right
+  after that pass's own candidate loop, using that pass's own fresh
+  baseline) instead of once, globally, after all 3 passes. This also
+  means a candidate is fully finalised — accepted or dropped — before
+  the *next* pass's subtraction and decoding begins, narrowing (though
+  not on its own fully closing) the streaming-unsafe window
+  `STREAMING.md` documents.
+
+  Verified via git-worktree A/B on the `qso3_busy.wav` JTDX 18-entry
+  golden: **recall byte-identical** (18/18 JTDX hit, 1 extra, both
+  before and after), but several pass-2/3 candidates' reported
+  `snr_db` changed to be visibly more accurate against the JTDX gold
+  reference — most notably `WA2FZW DL5AXX RR73` (previously flagged
+  as this suite's one lingering possible-false-positive suspect,
+  `-6.4 dB → -16.0 dB`, now close to JTDX's own `-15.0 dB`). Full
+  `qso3_apoff`/`qso3_apon`/`qso3_full_parity` golden suites and the
+  AWGN/CCIR sweep (50% crossing unchanged at ≈−21.6 dB) all confirm no
+  recall regression. `--features fixed-point` (embedded, which doesn't
+  run this gate at all) unaffected.
+
 - **Q65 and MSK144 can now resolve `<...>` hashed-callsign
   placeholders — a gap this session first mis-scoped as "5 protocols
   wide" (Q65/WSPR/JT65/JT9/MSK144) before actually checking each
