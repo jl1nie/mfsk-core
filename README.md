@@ -43,9 +43,9 @@ collaborators), which remains the reference implementation — see
   and JT9 are 8/8 and 7/7 on their WSJT-X reference recordings. The
   one exception is disclosed, not hidden: JT65's plain hard-decision
   path trails WSJT-X's stochastic `ftrsdap` decoder by ~7-8 dB at deep
-  SNR; an opt-in port of `ftrsdap`'s algorithmic shape
+  SNR; a faithful port of `ftrsdap` itself, magic numbers included
   (`jt65::decode_at_with_chase`, [#169](https://github.com/jl1nie/mfsk-core/issues/169))
-  closes most of that, to ~2-3 dB. Full numbers, per protocol:
+  closes most of that, to ~3-4 dB. Full numbers, per protocol:
   [`docs/notes/BENCHMARKS.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/notes/BENCHMARKS.md).
 - **Runs where WSJT-X can't.** Same algorithms, `no_std`-portable:
   a real shipping product
@@ -412,7 +412,7 @@ sweep was generated and reproduced, in
 | FST4     | 1/1 (FST4-60A) | 0.10-0.60 dB across 5 sub-modes |
 | WSPR     | 8/8 | matches published sensitivity floor |
 | JT9      | 7/7 | no measurable gap |
-| JT65     | none available | plain: ~7-8 dB; `decode_at_with_chase`: **~2-3 dB** (narrowed 2026-08-08 — see [#169](https://github.com/jl1nie/mfsk-core/issues/169)) |
+| JT65     | none available | plain: ~7-8 dB; `decode_at_with_chase`: **~3-4 dB** (faithful `ftrsdap` port, narrowed 2026-08-08 — see [#169](https://github.com/jl1nie/mfsk-core/issues/169)) |
 | Q65      | 2 real EME recordings | matches WSJT-X with AP hint; 2 sub-modes measurably beat WSJT-X's own plain decode |
 | MSK144   | 3/3 (incl. exact SNR match) | 25/28 cells exact match vs. a real `jt9` build |
 

@@ -18,12 +18,22 @@ use super::gray::inv_gray6;
 use super::interleave::deinterleave;
 use super::sync_pattern::JT65_NPRC;
 
-/// `(symbols, conf, second_sym, snr_db)` — the richer demod tuple
-/// [`demodulate_aligned_with_runnerup`] and the internal `_inner`
-/// helper return. Factored into a named alias purely to keep
+/// `(symbols, conf, second_sym, raw_pwr, snr_db)` — the richer demod
+/// tuple [`demodulate_aligned_with_runnerup`] and the internal
+/// `_inner` helper return. Factored into a named alias purely to keep
 /// `clippy::type_complexity` quiet; see those functions' own doc
 /// comments for what each element means.
-type DemodWithRunnerup = ([u8; 63], [f32; 63], [u8; 63], f32);
+///
+/// `raw_pwr[j][tone]` is the un-thresholded FFT-bin power for data
+/// tone `tone` (0..64) at the `j`-th data symbol position (0..63) **in
+/// raw temporal order** — the same order WSJT-X's `s3(64,63)` array
+/// is in, i.e. *before* [`deinterleave`] permutes positions. Needed by
+/// [`crate::jt65::chase`]'s `getpp` port, which re-consults the
+/// original spectrum to score candidate codewords (WSJT-X `extract.f90`
+/// keeps a raw copy `s3a=s3` for exactly this purpose). 63×64 `f32` =
+/// ~16 KB — JT65 already requires `std`/`fft-rustfft`, so this isn't
+/// an embedded/no_std concern.
+type DemodWithRunnerup = ([u8; 63], [f32; 63], [u8; 63], [[f32; 64]; 63], f32);
 
 /// Demodulate 63 data symbols from aligned audio. Returns the 63
 /// hard-decision symbols in **RS codeword order** (Gray-decoded and
@@ -48,7 +58,7 @@ pub fn demodulate_aligned(
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
 
-    let (syms, _conf, _second_sym, _snr_db) = demodulate_aligned_with_confidence_inner(
+    let (syms, _conf, _second_sym, _raw_pwr, _snr_db) = demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
         start_sample,
@@ -82,12 +92,13 @@ pub fn demodulate_aligned_with_confidence(
 
 /// Like [`demodulate_aligned_with_confidence`] but also returns the
 /// *identity* of each position's second-most-reliable tone (not just
-/// its power) and the decode-side SNR estimate. Used by
+/// its power), the raw un-thresholded power spectrum, and the
+/// decode-side SNR estimate. Used by
 /// [`crate::jt65::chase::decode_at_with_chase`]'s stochastic erasure
-/// search: the runner-up tone's identity feeds a soft-distance
-/// candidate-ranking metric, mirroring how WSJT-X's `ftrsdap` uses
-/// both the most- and second-most-reliable symbol per position (see
-/// that module's doc comment for the full rationale).
+/// search: the runner-up tone's identity and the raw spectrum feed
+/// WSJT-X `ftrsdap`'s `nsoft`/`getpp` candidate-ranking metrics (see
+/// `DemodWithRunnerup` and the `chase` module's doc comment for the
+/// full rationale).
 pub fn demodulate_aligned_with_runnerup(
     audio: &[f32],
     sample_rate: u32,
@@ -149,7 +160,7 @@ pub fn demodulate_aligned_with_confidence_and_snr(
     let fft = planner.plan_fft_forward(nsps);
     let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
     let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
-    let (syms, conf, _second_sym, snr_db) = demodulate_aligned_with_confidence_inner(
+    let (syms, conf, _second_sym, _raw_pwr, snr_db) = demodulate_aligned_with_confidence_inner(
         audio,
         sample_rate,
         start_sample,
@@ -183,6 +194,11 @@ fn demodulate_aligned_with_confidence_inner(
     let mut symbols = [0u8; 63];
     let mut conf = [0f32; 63];
     let mut second_tone_sym = [0u8; 63];
+    // Raw un-thresholded power per (temporal position, tone) — kept in
+    // WSJT-X's `s3a` order (temporal, i.e. *not* deinterleaved) since
+    // that's the order `chase::getpp` re-projects a candidate codeword
+    // into before looking values up. See `DemodWithRunnerup`'s doc.
+    let mut raw_pwr = [[0f32; 64]; 63];
     let mut xsig_sum = 0.0f32;
     let mut xnoi_sum = 0.0f32;
     let mut k = 0usize;
@@ -203,6 +219,7 @@ fn demodulate_aligned_with_confidence_inner(
         for tone in 0u8..64 {
             let bin = base_bin + 2 + tone as usize;
             let p = buf[bin].norm_sqr();
+            raw_pwr[k][tone as usize] = p;
             total_pwr += p;
             if p > best_pwr {
                 second_pwr = best_pwr;
@@ -266,7 +283,7 @@ fn demodulate_aligned_with_confidence_inner(
         }
     };
 
-    Some((symbols, conf_perm, second_tone_sym, snr_db))
+    Some((symbols, conf_perm, second_tone_sym, raw_pwr, snr_db))
 }
 
 #[cfg(test)]

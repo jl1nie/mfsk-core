@@ -8,13 +8,15 @@ Three tracks, at very different maturities:
    protocol families sit at or near WSJT-X sensitivity parity. The one
    disclosed exception, JT65 vs. `ftrsdap`, was narrowed (not fully
    closed) 2026-08-08: the stochastic Chase decoder port
-   (`jt65::chase::decode_at_with_chase`, #169) cut the gap from ~7-8 dB
-   to ~2-3 dB at deep SNR — see `docs/notes/BENCHMARKS.md`'s JT65
-   section for the measured before/after table. Golden lockdowns and
-   the FST4 / FT4 / Q65 sensitivity closes all landed across the
-   0.6.x–0.7.x line. What's still open here (#143 / #193 FST4 AP+SIC,
-   #192 FT8 engine unification, #224 JT4, #148 research, and the
-   residual ~2-3 dB JT65 gap if #169 is reopened) is **tail work** —
+   (`jt65::chase::decode_at_with_chase`, #169 — a faithful port of
+   WSJT-X's `ftrsdap` including its literal magic numbers, not just
+   the algorithmic shape) cut the gap from ~7-8 dB to ~3-4 dB at deep
+   SNR — see `docs/notes/BENCHMARKS.md`'s JT65 section for the
+   measured before/after table. Golden lockdowns and the FST4 / FT4 /
+   Q65 sensitivity closes all landed across the 0.6.x–0.7.x line.
+   What's still open here (#143 / #193 FST4 AP+SIC, #192 FT8 engine
+   unification, #224 JT4, #148 research, and the residual ~3-4 dB JT65
+   gap if #169 is reopened) is **tail work** —
    calibration, behaviour-preserving refactor, or low-demand modes — not
    a frontier. Advances here should be demand-driven (e.g. VK3NV's
    FST4-15/30 use case behind #143), not pursued for their own sake.
@@ -280,17 +282,26 @@ Grouped by the three tracks in **Strategic state** above.
   Root-caused (the old `decode_at_with_erasures` tries a single
   deterministic erasure ordering; `ftrsdap` runs randomized soft-symbol
   trials using the 2nd-most-reliable symbol too). **Narrowed
-  2026-08-08**: ported the algorithmic shape (not WSJT-X's literal
-  magic numbers) as an additive opt-in, `jt65::chase::decode_at_with_chase`
-  / `decode_scan_chase*`. Measured on the same AWGN corpus: 50%
-  crossing moved −14 dB → ≈−19.5 dB, closing ~5 dB of the ~7-8 dB gap;
-  ~2-3 dB remains at the deepest cells (−20/−22 dB), plausibly from
-  WSJT-X's literal spectral-power candidate ranking (`pp`, deliberately
-  not ported — see `chase`'s module doc) and/or its much larger trial
-  budgets. See `docs/notes/BENCHMARKS.md`'s JT65 section for the full
-  before/after table. Remaining ~2-3 dB left open, same
-  demand-driven bar as before — Q65 still covers JT65's deep-SNR niche
-  for most on-air use.
+  2026-08-08**, in two passes the same day: an initial port of the
+  algorithmic *shape* only, then — on explicit request for literal
+  fidelity — replaced with a faithful port of `ftrsdap` including its
+  magic numbers (`perr[8][8]` erasure table, the real `getpp`
+  spectral-power candidate ranking via a newly-retained raw spectrum,
+  literal `nhard`/`nsoft`/`ntotal`/`nd0`/`r0`/early-exit constants,
+  `jt9 -6`'s actual 1000-trial budget). Additive opt-in either way,
+  `jt65::chase::decode_at_with_chase`/`decode_scan_chase*`. Measured on
+  the same AWGN corpus at the faithful port's literal defaults: 50%
+  crossing moved −14 dB → ≈−18.3 dB, closing ~4.3 dB of the ~7-8 dB
+  gap; ~3-4 dB remains at the deepest cells. Honest note: at an
+  equal trial budget the faithful port is only modestly ahead of the
+  first pass's own simplified approximation, not dramatically better —
+  see `docs/notes/BENCHMARKS.md`'s JT65 section for the full
+  before/after tables and that comparison. Remaining ~3-4 dB left
+  open, same demand-driven bar as before — Q65 still covers JT65's
+  deep-SNR niche for most on-air use, and the residual gap is
+  plausibly demodulator-level (not something left inside `ftrsdap`
+  itself to still port) or from WSJT-X's much larger aggressive-mode
+  trial budgets (up to 100 000).
 - **#224** — JT4 not implemented (WSJT-X ships JT4A/JT4F golden WAVs).
   "Doable but demand unclear" — every usage signal found was WSJT-X
   boilerplate, not dated on-air data, and Q65 has partly superseded its

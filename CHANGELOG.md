@@ -157,37 +157,59 @@ effect on any decode path.
   serde's `alloc` feature, so a UI can emit decode rows as JSON for
   spotting / websocket / IPC. Folded into `full`. Purely additive.
 
-- **JT65 stochastic Chase decoder** (`jt65::chase`, issue #169) — an
-  opt-in port of WSJT-X's `ftrsdap` stochastic Chase decoder's
-  *algorithmic shape* (not its literal hand-tuned magic numbers):
+- **JT65 stochastic Chase decoder** (`jt65::chase`, issue #169) — a
+  faithful port of WSJT-X's `ftrsdap` stochastic Chase decoder,
+  literal hand-tuned magic numbers included (not just the algorithmic
+  shape — an initial same-day pass shipped a simplified approximation,
+  then was rewritten for literal fidelity on request):
   `decode_at_with_chase`/`decode_scan_chase`/`_streaming`/`_default`,
   fully additive siblings of the existing `decode_at_with_erasures`/
   `decode_scan*` family (zero changes to any existing function or
-  signature). Randomized multi-trial erasure search (a POSIX-style LCG
-  matching WSJT-X's own recurrence, already present test-only in
-  `fec/ldpc/bp.rs`, promoted to production use here) ranked by RS
-  correction count (`nerr`, free from `Rs63_12::decode_jt65_erasures`)
-  plus a soft-distance tiebreaker using a newly-retained
-  runner-up-tone identity (`rx::demodulate_aligned_with_runnerup`),
-  with a hit-count/margin acceptance gate against a random trial
-  spuriously satisfying the RS syndrome for a wrong codeword — covered
-  by two new always-run (not `#[ignore]`d) false-decode-rate tests,
-  each asserting exactly zero false decodes (not a tolerance) across
-  20 seeds of pure noise and 20 seeds of a signal synthesized well
-  below the measured sensitivity floor.
+  signature). Ported: WSJT-X's `perr[8][8]` erasure-probability table
+  (`ftrsdap.c`, ×1.3 scale, keyed by confidence-ratio and reliability-
+  rank buckets); the real `getpp` candidate-quality metric (re-encodes
+  each successful trial's codeword, walks it through the same
+  interleave+Gray-encode the transmitter uses, and averages the
+  *original* raw FFT-bin power at the resulting positions — needed
+  retaining the full 63×64 pre-decision spectrum through the demod
+  step, `rx::demodulate_aligned_with_runnerup`, ~16 KB, not an
+  embedded/no_std concern since JT65 already requires `std`); the
+  literal `nhard`/`nsoft`/`ntotal` soft-distance formula using a
+  newly-retained runner-up-tone identity; the literal acceptance gate
+  (`ntotal ≤ nd0(81) && pp2/pp1 ≤ r0(0.87)`, tracking best/second-best
+  candidate quality directly across all trials rather than a per-
+  message tally — WSJT-X doesn't dedup by message at all); the literal
+  `nhard ≤ 41 && ntotal ≤ 71` early exit; the exact LCG/`ir`-extraction
+  RNG (a POSIX-style recurrence already present test-only in
+  `fec/ldpc/bp.rs`, promoted to production use here); and WSJT-X's own
+  `jt9 -6` trial count (`1000`, via `decoder.f90`'s
+  `nranera=6 → ntrials=10**(6/2)=1000` formula — the initial pass had
+  guessed `2000` with no real derivation). Not ported: AP-hint passes
+  and the `hint65` correlation fallback (out of scope, no request for
+  them). Covered by two always-run (not `#[ignore]`d) false-decode-rate
+  tests, each asserting exactly zero false decodes (not a tolerance)
+  across 20 seeds of pure noise and 20 seeds of a signal synthesized
+  well below the measured sensitivity floor — re-verified against the
+  ported acceptance gate.
 
   Measured on the existing `tests/jt65_sweep.rs` AWGN corpus (300
-  files, 20 trials/SNR), untuned linear defaults: 50% recall crossing
-  moved from −14 dB to ≈ −19.5 dB, closing roughly 5 dB of the
-  previously-documented ~7-8 dB gap vs. WSJT-X's `jt9 -6`; ~2-3 dB
-  remains at the deepest cells, plausibly from WSJT-X's literal
-  spectral-power candidate ranking (deliberately not ported — see
-  `chase`'s module doc for the tradeoff) and/or much larger trial
-  budgets. The ≥0 dB cells are unchanged (the fast zero-erasure path
-  is unaffected). Issue #169 is not closed by this — the residual gap
-  is real and left open — but the practically-relevant portion is
-  gone. Full before/after table: `docs/notes/BENCHMARKS.md`'s JT65
-  section.
+  files, 20 trials/SNR) at the faithful port's literal 1000-trial
+  default: 50% recall crossing moved from −14 dB to ≈ −18.3 dB, closing
+  roughly 4.3 dB of the previously-documented ~7-8 dB gap vs. WSJT-X's
+  `jt9 -6`; ~3-4 dB remains at the deepest cells. Honest comparison:
+  at an *equal* trial budget the faithful port is only modestly ahead
+  of the discarded first pass's simplified approximation (not
+  dramatically better) — literal fidelity to WSJT-X's algorithm didn't
+  turn out to be a decisive advantage on this crate's own demodulator/
+  confidence distribution, for whatever that's worth as a data point.
+  The ≥0 dB cells are unchanged (the fast zero-erasure path is
+  unaffected). Issue #169 is not closed by this — the residual gap is
+  real and left open, plausibly demodulator-level or from WSJT-X's
+  much larger aggressive-mode trial budgets (up to 100 000), not from
+  anything left un-ported inside `ftrsdap` itself — but the
+  practically-relevant portion of the original gap is gone. Full
+  before/after tables and the equal-budget comparison:
+  `docs/notes/BENCHMARKS.md`'s JT65 section.
 
 ### Changed
 

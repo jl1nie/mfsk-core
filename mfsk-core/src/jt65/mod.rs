@@ -60,12 +60,13 @@
 //! ## Stochastic Chase decode
 //!
 //! For signals still too weak for [`decode_at_with_erasures`]'s single
-//! deterministic ordering, [`chase::decode_at_with_chase`] ports the
-//! algorithmic shape of WSJT-X's `ftrsdap` stochastic Chase decoder
-//! ([issue #169](https://github.com/jl1nie/mfsk-core/issues/169)):
-//! randomized multi-trial erasure search, ranked by RS correction
-//! count plus a soft-distance tiebreaker, with an acceptance-margin
-//! gate against false decodes. Measured on the AWGN sweep
+//! deterministic ordering, [`chase::decode_at_with_chase`] is a
+//! faithful port of WSJT-X's `ftrsdap` stochastic Chase decoder
+//! ([issue #169](https://github.com/jl1nie/mfsk-core/issues/169)) —
+//! magic numbers included, not just the algorithmic shape: WSJT-X's
+//! own erasure-probability table, its `getpp` spectral-power candidate
+//! ranking, and its literal acceptance-gate constants (see [`chase`]'s
+//! module doc for the full list). Measured on the AWGN sweep
 //! (`docs/notes/BENCHMARKS.md`), this closes most — not all — of the
 //! ~7-8 dB sensitivity gap vs. real WSJT-X's `jt9 -6`.
 //!

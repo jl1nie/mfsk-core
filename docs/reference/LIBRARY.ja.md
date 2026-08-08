@@ -1091,11 +1091,12 @@ JT65 はさらに `decode_at_with_erasures` を提供しており、
 低 SNR 環境で RS 消失復号が通常デコーダでは落とすフレームを
 回復できる。さらに深い SNR 向けに `decode_at_with_chase` /
 `decode_scan_chase*`（`jt65::chase`、issue #169）も用意している —
-WSJT-X の stochastic Chase デコーダ `ftrsdap` のアルゴリズム形状を
-移植した、ランダム化多試行の消失探索。呼び出し形は通常の
-`decode_scan` 系と同じで `&ChaseParams` 引数が増えるだけ。
+WSJT-X の stochastic Chase デコーダ `ftrsdap` の忠実な移植（アルゴリズム
+形状だけでなく、消失確率テーブル・`getpp` スペクトル電力による候補
+ランキング・受理ゲート定数などマジックナンバーも含む）。呼び出し形は
+通常の `decode_scan` 系と同じで `&ChaseParams` 引数が増えるだけ。
 アルゴリズムの詳細は `chase` モジュールの doc コメント、実測結果
-（50% クロスポイントが約 5 dB 改善し、従来の ~7-8 dB ギャップの
+（50% クロスポイントが約 4.3 dB 改善し、従来の ~7-8 dB ギャップの
 大半を解消）は `docs/notes/BENCHMARKS.md` の JT65 節を参照。
 
 `Jt65Result::snr_db` と JT9 の `Jt9Result::snr_db` はどちらも、

@@ -1232,12 +1232,14 @@ JT65 additionally offers `decode_at_with_erasures` for low-SNR
 signals where RS erasure decoding can recover frames that the
 standard decoder misses, and — for deeper SNR still —
 `decode_at_with_chase`/`decode_scan_chase*` (`jt65::chase`, issue
-#169): a randomized multi-trial erasure search port of WSJT-X's
-`ftrsdap` stochastic Chase decoder. Same call shape as the plain
+#169): a faithful port of WSJT-X's `ftrsdap` stochastic Chase decoder,
+magic numbers included (erasure-probability table, `getpp`
+spectral-power candidate ranking, literal acceptance-gate constants —
+not just the algorithmic shape). Same call shape as the plain
 `decode_scan` family, with an extra `&ChaseParams` argument; see
 `chase`'s module doc for the algorithm and
 `docs/notes/BENCHMARKS.md`'s JT65 section for the measured recall
-improvement (50% crossing moved ~5 dB lower, closing most — not all —
+improvement (50% crossing moved ~4.3 dB lower, closing most — not all —
 of the previously-documented ~7-8 dB gap).
 
 `Jt65Result::snr_db` and JT9's `Jt9Result::snr_db` are both
