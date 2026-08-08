@@ -281,4 +281,86 @@ mod tests {
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::N, 206);
         assert_eq!(<<Jt9 as Protocol>::Fec as FecCodec>::K, 72);
     }
+
+    #[test]
+    #[ignore = "manual diagnostic — phase breakdown probe for JT9's unexplained decode_scan cost"]
+    fn phase_breakdown_diag() {
+        use std::time::Instant;
+
+        fn load_wav(path: &str) -> Vec<f32> {
+            let bytes = std::fs::read(path).unwrap();
+            let mut i = 12;
+            loop {
+                let id = &bytes[i..i + 4];
+                let len =
+                    u32::from_le_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
+                        as usize;
+                if id == b"data" {
+                    let start = i + 8;
+                    let samples: &[u8] = &bytes[start..start + len];
+                    return samples
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                        .collect();
+                }
+                i += 8 + len + (len % 2);
+            }
+        }
+
+        let files = [
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../embedded-poc/assets/jt9_sweep/jt9_awgn_m05_01.wav"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../embedded-poc/assets/jt9_sweep/jt9_awgn_m05_02.wav"
+            ),
+        ];
+        for path in files {
+            let mut audio = load_wav(path);
+            audio.resize(720_000, 0.0);
+            let n = 10;
+
+            let t0 = Instant::now();
+            let mut n_cands = 0;
+            for _ in 0..n {
+                let sp = search::SearchParams {
+                    score_threshold: 0.001,
+                    max_candidates: 50_000,
+                    ..Default::default()
+                };
+                let mut c = search::coarse_search(&audio, 12000, 0, &sp);
+                c.truncate(32);
+                n_cands = c.len();
+                std::hint::black_box(&c);
+            }
+            let search_elapsed = t0.elapsed();
+
+            let t0 = Instant::now();
+            for _ in 0..n {
+                let fft = softsym::AudioFft::build(&audio);
+                std::hint::black_box(&fft);
+            }
+            let bigfft_elapsed = t0.elapsed();
+
+            let t0 = Instant::now();
+            let mut last_len = 0;
+            for _ in 0..n {
+                let r = decode_scan_default(&audio, 12000);
+                last_len = r.len();
+            }
+            let total_elapsed = t0.elapsed();
+
+            let search_ms = search_elapsed.as_secs_f64() * 1000.0 / n as f64;
+            let bigfft_ms = bigfft_elapsed.as_secs_f64() * 1000.0 / n as f64;
+            let total_ms = total_elapsed.as_secs_f64() * 1000.0 / n as f64;
+            eprintln!(
+                "{path}: candidates={n_cands} decodes={last_len} coarse_search={search_ms:.2}ms \
+                 big_fft_build={bigfft_ms:.2}ms total={total_ms:.2}ms \
+                 per_candidate_loop(rest)={:.2}ms",
+                total_ms - search_ms - bigfft_ms
+            );
+        }
+    }
 }
