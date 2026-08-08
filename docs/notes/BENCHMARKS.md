@@ -99,7 +99,7 @@ is wall time on a many-core host, not a single-thread figure).
 | Q65-120E | 6 m ionoscatter ×2 files (fading metric) | 120 s | 0.14 s (was 0.26 s — see 2026-08-08 note below) |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.19 s (was 0.34 s — see 2026-08-08 note below) |
 | WSPR | 150426_0918.wav | 120 s | 0.37 s (was 0.93 s — see 2026-08-08 note below) |
-| JT9 | 130418_1742.wav | 60 s | 0.37 s (was 0.33 s — noise, see 2026-08-08 note below) |
+| JT9 | 130418_1742.wav | 60 s | 0.30 s (was 0.37 s / 0.33 s — see the second 2026-08-08 note below) |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.42 s (was 0.56 s — see 2026-08-08 note below) |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.65 s (was 0.69 s) |
 | MSK144 | 181211_120800.wav | 30 s | 0.84 s |
@@ -290,6 +290,69 @@ decode outcome, an independent AWGN/CCIR sweep re-run — see below).
 - **MSK144 rows not re-measured** — no code in `msk144`'s module path
   changed at all (confirmed above), so there's nothing this pass could
   have moved; left at the existing 0.84 s / 0.88 s figures.
+
+**Second 2026-08-08 re-measurement, later same day** (median of 5
+runs, same box/methodology, git-worktree A/B against the exact
+pre-session commit to isolate this pass's own effect from ordinary
+run-to-run noise): a per-protocol parallelism audit (candidate-loop
+`rayon` parallelism added and measured across JT65/Q65/JT9/uvpacket/
+MSK144, found to help none of them, reverted everywhere — see
+`CHANGELOG.md`'s 0.9.0 "Investigated candidate-loop `rayon`
+parallelism…" entry) led to profiling JT65/JT9's `Spectrogram`/
+`AudioFft::build` and finding two real, non-parallelism wins:
+
+- **JT65 and JT9's `Spectrogram`/`AudioFft::build`**: the bottom-95%
+  trimmed-mean noise-floor step was a full `sort_unstable_by` (O(n log
+  n)) where only `select_nth_unstable_by` (O(n) average partition) is
+  needed — the sort was itself larger than the FFT loop it was a minor
+  adjunct to. No golden-WAV row exists for JT65 to update (none
+  available, see the JT65 section), but this fix underlies part of
+  JT9's row move below.
+- **JT9's `softsym::AudioFft::build`** — a *second*, separate
+  653,184-point FFT (distinct from `jt9::search::AudioFft`, used once
+  per `decode_scan` call for `downsam9`'s baseband extraction) — moved
+  to a real-input transform (`realfft` crate) instead of running a
+  full complex-to-complex `rustfft` transform on real-valued audio and
+  discarding the Hermitian-redundant upper half. Isolated
+  (`jt9::tests::phase_breakdown_diag`, a smaller/cleaner AWGN file,
+  default `SearchParams` → 32 candidates): `AudioFft::build` itself
+  ~9.4-10.0ms→~5.1ms, ~57% of that file's `decode_scan` total.
+
+  **On this table's own golden-WAV row** (`130418_1742.wav`,
+  `max_candidates=200`, a real busy band — several genuine signals
+  clear the sync gate and reach the expensive `afc9`/Fano stages, so
+  the once-per-scan big FFT is a much smaller share of the total here
+  than on the simpler diagnostic file above): three-point git-worktree
+  A/B, 5 runs each — pre-session (`2288d1d`) **338.8-369.7 ms (median
+  340.4 ms)**, matching the previously-documented "noise" reading;
+  after `select_nth_unstable_by` alone (`30e63e1`) **317.1-319.7 ms
+  (median 317.7 ms)**, a real ~7% drop, not noise; after `realfft` too
+  (`d3eaf15`, current `HEAD`) **300.8-304.8 ms (median 302.0 ms)**, a
+  further ~5% drop — **~340 ms → ~302 ms, ~11% total**, smaller than
+  the ~25-27% seen on the lower-candidate-count diagnostic file
+  because this file's candidate loop (up to 200 candidates on a busy
+  band) is proportionally a much larger share of total time than in
+  the simpler case. Recall unchanged at every point (7/7 golden).
+  AWGN sweep crossing point unchanged (still ≈−26.3 dB, exact
+  percentage match at every SNR point — see the JT9 section below).
+- **`msk144::spd`'s noise-floor quantile** got the identical
+  `sort_by`→`select_nth_unstable_by` fix (same audit), but on an
+  array sized `nstep ≈ 833` (15 s slot, `STEP=216`) the absolute time
+  is already sub-millisecond either way — not expected, and not
+  separately re-measured, to move the 0.84 s / 0.88 s golden-WAV rows
+  below; correctness confirmed via the full MSK144 test suite
+  (unchanged), not a speed claim.
+
+Also investigated, same pass: candidate-loop `rayon` parallelism for
+all five of JT65/Q65/JT9/uvpacket/MSK144 (none had it before), and,
+after that measured zero benefit everywhere, a second attempt at
+Q65's per-candidate `(Δf,Δt,b90)` grid search specifically. Both
+correct where implemented (verified against every real off-air Q65
+recording) but **neither shipped** — real-data timing showed no
+speedup either time (too few independent work items per `rayon`
+region, `≤7` cells for Q65's grid search, dispatch overhead ate the
+gain) — see `CHANGELOG.md`'s 0.9.0 entry for the full writeup. No
+protocol's recall table below changed as a result.
 
 Notes:
 
@@ -934,7 +997,10 @@ reference bandwidth).
   `jt9_wsjtx_samples.rs`'s own comment records 7/7 as of 2026-05-08,
   well before this row was last touched. Found and corrected
   2026-07-26 during an unrelated cross-protocol re-verification pass;
-  decode speed re-confirmed unchanged (0.33 s → 0.34 s, within noise).
+  decode speed re-confirmed unchanged (0.33 s → 0.34 s, within noise)
+  at the time. Still 7/7 as of 2026-08-08's `select_nth_unstable_by` +
+  `realfft` speed fixes (~340 ms → ~302 ms on this same golden WAV —
+  see the "Decode speed" section's second 2026-08-08 note).
 
 **AWGN sensitivity sweep** (`tests/jt9_sweep.rs`, `jt9sim`-driven,
 20 trials/SNR):
