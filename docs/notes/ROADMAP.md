@@ -30,14 +30,28 @@ Three tracks, at very different maturities:
    timing across FT8/FT4/FST4/MSK144) found MSK144's OSD-tier
    fallback firing on ~68% doomed attempts and FST4's OSD escalation
    similarly wasteful (#245) — both faithful ports of WSJT-X's own
-   shape, not bugs, so filed as open measurement issues rather than
-   fixed outright; a related FST4 SIC feasibility experiment (#252)
-   found no technical blocker. What's still open here (#143 / #193
-   FST4 AP+SIC, #192 FT8 engine unification, #224 JT4, #148 research,
-   #245 / #246 / #252 perf investigation) is **tail work** —
-   calibration, behaviour-preserving refactor, or low-demand modes — not
-   a frontier. Advances here should be demand-driven (e.g. VK3NV's
-   FST4-15/30 use case behind #143), not pursued for their own sake.
+   shape, not bugs. A follow-up effect-vs-usage review (2026-08-10)
+   closed both **without fixing them**: FST4's slot period (60s) and
+   MSK144's T/R period (15-30s) both dwarf the ~370ms/~750ms decode
+   cost the waste is a fraction of, and neither protocol runs on
+   embedded or WASM — the two paths with real latency pressure. The
+   same review tried two more speed avenues on FT8/WASM specifically
+   (the protocol/platform pair that *does* have latency pressure) and
+   found both negative: `rustfft`'s `wasm_simd` feature (already
+   shipped, real +15-30% win, unrelated finding) and swapping the BP
+   kernel from `SumProduct` to `NormalizedMinSum` to skip per-iteration
+   `tanh`/`atanh` — re-verified with clean single-threaded native
+   timing *and* a real `wasm32` build (`bench/wasm`), both showing no
+   measurable difference and unchanged recall. BP's own compute is too
+   small a fraction of total decode wall-clock for the kernel choice to
+   matter on either platform. A related FST4 SIC feasibility experiment
+   (#252) found no technical blocker, still open pending real demand.
+   What's still open here (#143 / #193 FST4 AP+SIC, #192 FT8 engine
+   unification, #224 JT4, #148 research, #252 SIC feasibility) is
+   **tail work** — calibration, behaviour-preserving refactor, or
+   low-demand modes — not a frontier. Advances here should be
+   demand-driven (e.g. VK3NV's FST4-15/30 use case behind #143), not
+   pursued for their own sake.
 
 2. **Host application / ergonomics — newly opened, consumer-driven.**
    0.9.0's theme ("make the streaming decode surface easy to build host
@@ -49,9 +63,11 @@ Three tracks, at very different maturities:
    `mfsk-ffi` vs. `DecodeRequest` gap for FT8/FT4/FST4-60A's scalar/
    strategy/AP knobs (issue #162 follow-up). Deliberately left for
    later, now their own open issues: `.known()` cross-phase dedup
-   (#247), `.fft_cache()` reuse (#248), `SniperRequest` exposure
-   (#249), Q65's `.hash_table()` (#250) — none urgent, no consumer
-   asking yet. `session::SlotAssembler` (audio ingestion) is written
+   (#247), `SniperRequest` exposure (#249), Q65's `.hash_table()`
+   (#250) — none urgent, no consumer asking yet. `.fft_cache()` reuse
+   was also deferred here but closed outright 2026-08-10 (#248,
+   no consumer materialized — see *Open follow-ups*' closed list).
+   `session::SlotAssembler` (audio ingestion) is written
    and **parked pending a real consumer**. This track only advances
    when an actual host UI (WebFT8, a desktop app) needs the next
    piece — building further ahead of a consumer risks fixing an API
@@ -304,24 +320,6 @@ Grouped by the three tracks in **Strategic state** above.
   refactor; not urgent, not blocked by anything. Requires
   numerical-diff-from-reference rigor so a careless port doesn't regress
   FT4/FST4's independently-calibrated OSD gates.
-- **#245** — FST4 `decode_loop` OSD-escalation hotspot: on the
-  FST4-60A golden WAV, 6 candidates escalate to OSD but only 2
-  succeed (70% of wall-clock in a stage that mostly fails). Measured
-  via the new `MFSK_TRACE_STAGE_FST4` hook; not yet fixed — filed as
-  a measurement, per the "measure and report, don't jump to a fix"
-  discipline this survey established.
-- **#246** — Phase-wise hotspot survey (FT8/FT4/FST4/MSK144, real
-  production decode paths, permanent `MFSK_TRACE_STAGE_*` env-gated
-  timing hooks). Follow-up to #245, checking whether its finding
-  generalizes. It does, unevenly: MSK144 is the extreme case (two
-  golden WAVs, 1044-1116 OSD-tier attempts, **zero** successes, 68%
-  of wall-clock) but confirmed a faithful port of WSJT-X's own
-  `msk144sync.f90:98` shape — not a bug, not fixed. FT8's default
-  single-pass is healthy by contrast (14/17 nsync-passers decode).
-  Candidate follow-ups (MSK144 Stage-B gating, later-SIC-pass OSD
-  waste on FT4/FT8) need a broader SNR sweep before concluding
-  they're fixable rather than inherent to a last-resort fallback —
-  not scoped yet.
 - **#252** — FST4 SIC feasibility experiment (coherent full-slot sync
   from #146 + subtraction residue, 4 scenarios: moderate/tone-spacing
   +QSB/co-channel/3-station multi-subtract). No technical blocker
@@ -343,8 +341,6 @@ Grouped by the three tracks in **Strategic state** above.
 - **#247** — expose `DecodeRequest::known()` for cross-phase dedup via
   `mfsk-ffi`. No open design question blocking it beyond scoping the
   raw `DecodeResult` passthrough shape.
-- **#248** — expose `fft_cache` reuse across `mfsk_decode_i16`/`_f32`
-  calls. Pure perf, no consumer motivation yet.
 - **#249** — expose `SniperRequest` (single-frequency-target decode)
   via `mfsk-ffi`. A wholly new function family, not a setter.
 - **#250** — expose Q65's `DecodeRequest::hash_table` (Type-4
@@ -368,9 +364,13 @@ breaking `mfsk_ft8_decode_i16` FFI change); **#243** — FT8 host
 multipass `xsnr2` SNR-gate frozen at pass 1, fixed to recompute every
 pass, 2026-08-08; **#244** — redundant BP/OSD on near-duplicate
 refined FST4 sync candidates (9→2 on the qso3 golden), 2026-08-08;
-**#169** — JT65 `ftrsdap` sensitivity gap, fix landed 2026-08-08 (see
-*Strategic state* above and `docs/notes/BENCHMARKS.md`'s JT65
-section), issue itself closed 2026-08-10 after a doc audit caught it
+**#245** / **#246** / **#248** — closed 2026-08-10 without fixing,
+per the effect-vs-usage review in *Strategic state* above (real
+measured waste, but on protocols/paths without real latency or
+consumer pressure); **#169** — JT65 `ftrsdap` sensitivity gap, fix
+landed 2026-08-08 (see *Strategic state* above and
+`docs/notes/BENCHMARKS.md`'s JT65 section), issue itself closed
+2026-08-10 after a doc audit caught it
 sitting open past the fix.
 
 Closed since the 2026-05-18 snapshot (see the closed issue / `git
