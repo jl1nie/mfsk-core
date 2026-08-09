@@ -77,6 +77,31 @@ effect on any decode path.
     parallel/rayon strategy invokes the callback from worker threads).
     Verified via `tests/streaming_ffi.rs` and a new `cpp_smoke`
     section exercising the real generated header from compiled C++.
+  - **`mfsk-ffi`: `MfskDecodeOptions` builder parity** (issue #162
+    follow-up) — `MfskDecodeOptions` hadn't grown a single setter
+    since its creation (issue #205), despite its own doc comment
+    anticipating exactly that; `mfsk_core`'s `DecodeRequest` builder
+    grew `.strictness()`/`.eq_mode()`/`.freq_hint()`/`.ap_hint()`
+    (FT8)/`.sic_rounds()`/`.sic_early()` over many sessions with zero
+    FFI follow-through. New setters, each mutating an existing
+    `MfskDecodeOptions` handle in place (one Rust builder-chain call ↔
+    one C setter call before the handle is passed to a decode
+    function): `mfsk_decode_options_set_strictness`/`_eq_mode`/
+    `_freq_hint` (FT8/FT4/FST4-60A), `_sic_rounds`/`_sic_early`
+    (FT8, `_sic_rounds` also FT4), `_ap_hint` (FT8 only, wide-band —
+    reuses `mfsk_q65_decode_with_ap`'s existing 4-string convention via
+    a new shared `build_ap_hint_from_cstrs` helper). Wired into every
+    relevant `mfsk_decode_i16`/`_f32` branch and
+    `mfsk_decode_i16_streaming`. New two new enums, `MfskStrictness`/
+    `MfskEqMode` (`mfsk-ffi-abi`, alongside the existing
+    `MfskDecodeDepth`). Verified with real recall-gain proofs on
+    `qso3_busy.wav` for `sic_rounds`/`sic_early` (more stations than
+    default) and `ap_hint` (reuses `mfsk-core`'s own already-proven
+    AP-on gain, strict-superset + a known JTDX extra) — not just
+    round-trip wiring checks. `.known()` (#247), `.fft_cache()` reuse
+    (#248), `SniperRequest` exposure (#249), and Q65's `.hash_table()`
+    (#250) are deliberately still deferred (each is a real design
+    question of its own, not just a missing setter).
   - **Bug, found and fixed same day (2026-08-08): `on_result` silently
     never fired for `Ft4`/FST4.** `on_result` is a field on the shared
     `DecodeRequest`/`SniperRequest<P>` structs (issue #191's generic
