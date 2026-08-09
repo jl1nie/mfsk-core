@@ -139,11 +139,10 @@ void test_ft8_streaming() {
 //
 // MfskDecodeOptions hadn't grown a single setter since its creation
 // (issue #205) despite its own doc comment anticipating exactly that —
-// this proves mfsk_decode_options_set_strictness/_eq_mode/_freq_hint/
-// _sic_rounds/_sic_early actually reach a real decode call from
-// compiled C++, not just that they link.
+// this proves every mfsk_decode_options_set_* setter actually reaches
+// a real decode call from compiled C++, not just that they link.
 void test_builder_options() {
-    std::printf("— FFI builder-parity: mfsk_decode_options_set_* (strictness/eq_mode/freq_hint/sic_rounds/sic_early)\n");
+    std::printf("— FFI builder-parity: mfsk_decode_options_set_* (strictness/eq_mode/freq_hint/sic_rounds/sic_early/ap_hint)\n");
     MfskSamples pcm{};
     if (mfsk_encode_ft8("CQ", "JA1ABC", "PM95", 1500.0f, &pcm) != MFSK_STATUS_OK) {
         fail("builder-options", mfsk_last_error());
@@ -175,6 +174,12 @@ void test_builder_options() {
     }
     if (mfsk_decode_options_set_sic_early(opts) != MFSK_STATUS_OK) {
         fail("builder-options", "set_sic_early failed");
+    }
+    // Wide-band AP hint — string marshalling across the C boundary is
+    // the most novel part of this setter family, worth its own
+    // real-compiler proof. grid/report left NULL (call1/call2 only).
+    if (mfsk_decode_options_set_ap_hint(opts, "JA1ABC", "CQ", nullptr, nullptr) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_ap_hint failed");
     }
 
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);

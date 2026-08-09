@@ -19,10 +19,10 @@ use std::ptr;
 use mfsk::{
     MfskDecodeDepth, MfskEqMode, MfskProtocol, MfskResultList, MfskSamples, MfskStatus,
     MfskStrictness, mfsk_decode_i16, mfsk_decode_options_free, mfsk_decode_options_new,
-    mfsk_decode_options_set_eq_mode, mfsk_decode_options_set_freq_hint,
-    mfsk_decode_options_set_sic_early, mfsk_decode_options_set_sic_rounds,
-    mfsk_decode_options_set_strictness, mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_ft8,
-    mfsk_result_list_free, mfsk_samples_free,
+    mfsk_decode_options_set_ap_hint, mfsk_decode_options_set_eq_mode,
+    mfsk_decode_options_set_freq_hint, mfsk_decode_options_set_sic_early,
+    mfsk_decode_options_set_sic_rounds, mfsk_decode_options_set_strictness, mfsk_decoder_free,
+    mfsk_decoder_new, mfsk_encode_ft8, mfsk_result_list_free, mfsk_samples_free,
 };
 
 fn empty_list() -> MfskResultList {
@@ -305,5 +305,78 @@ fn sic_rounds_and_sic_early_recover_more_stations_than_default() {
     assert!(
         sic_rounds_n > default_n,
         "sic_rounds(3) ({sic_rounds_n}) should recover more qso3_busy stations than default ({default_n})"
+    );
+}
+
+/// `mfsk_decode_options_set_ap_hint`'s real behavioural effect, same
+/// technique as the SIC test above: reuses `mfsk-core`'s own already-
+/// proven AP-on recall gain on `qso3_busy.wav`
+/// (`tests/ft8_qso3_apon_recall.rs::qso3_apon_strict_superset_of_apoff_same_pipeline`,
+/// `mycall=K1JT`/`hiscall=HA0DU`, freq 100-3000 Hz, `sync_min=1.3`) —
+/// same parameters, same expected extra (`CQ F5RXL IN94`, the
+/// single-pass-reachable JTDX AP-on extra per that test's own
+/// `JTDX_EXTRAS_HARD_FLOOR` docstring).
+#[test]
+fn ap_hint_recovers_an_extra_station_on_qso3_busy() {
+    let audio = load_wav_i16(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/qso3_busy.wav"
+    ));
+
+    let decode_with_ap = |mycall: Option<&str>, hiscall: Option<&str>| -> Vec<String> {
+        let opts = mfsk_decode_options_new(100.0, 3_000.0, 1.3, 50, MfskDecodeDepth::BpAllOsd);
+        assert!(!opts.is_null());
+        if mycall.is_some() || hiscall.is_some() {
+            let c1 = mycall.map(|s| CString::new(s).unwrap());
+            let c2 = hiscall.map(|s| CString::new(s).unwrap());
+            unsafe {
+                assert_eq!(
+                    mfsk_decode_options_set_ap_hint(
+                        opts,
+                        c1.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                        c2.as_ref().map_or(ptr::null(), |c| c.as_ptr()),
+                        ptr::null(),
+                        ptr::null(),
+                    ),
+                    MfskStatus::Ok
+                );
+            }
+        }
+        let dec = mfsk_decoder_new(MfskProtocol::Ft8);
+        let mut list = empty_list();
+        let st =
+            unsafe { mfsk_decode_i16(dec, audio.as_ptr(), audio.len(), 12_000, opts, &mut list) };
+        assert_eq!(st, MfskStatus::Ok);
+        let texts = if list.items.is_null() {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(list.items, list.len) }
+                .iter()
+                .map(|m| unsafe { cstr_to_string(m.text.as_ptr()) })
+                .collect()
+        };
+        unsafe {
+            mfsk_result_list_free(&mut list);
+            mfsk_decoder_free(dec);
+            mfsk_decode_options_free(opts);
+        }
+        texts
+    };
+
+    let ap_off = decode_with_ap(None, None);
+    let ap_on = decode_with_ap(Some("K1JT"), Some("HA0DU"));
+
+    // Strict-superset invariant, same as the mfsk-core-level test.
+    for m in &ap_off {
+        assert!(
+            ap_on.contains(m),
+            "AP-on lost a decode AP-off caught: {m:?} (ap_off={ap_off:?} ap_on={ap_on:?})"
+        );
+    }
+    assert!(
+        ap_on.iter().any(|m| m.contains("F5RXL")),
+        "AP-on (mycall=K1JT, hiscall=HA0DU) should surface CQ F5RXL IN94 via iaptype-1 \
+         blind-CQ, same as mfsk-core's own qso3_apon_recall test (ap_off={ap_off:?} \
+         ap_on={ap_on:?})"
     );
 }

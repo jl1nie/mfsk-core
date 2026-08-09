@@ -499,6 +499,34 @@ enum MfskStatus mfsk_decode_options_set_sic_rounds(struct MfskDecodeOptions *opt
 enum MfskStatus mfsk_decode_options_set_sic_early(struct MfskDecodeOptions *opts);
 
 /**
+ * Set a wide-band a-priori hint (mirrors
+ * `mfsk_core::DecodeRequest::ap_hint`) — applied to every candidate
+ * during the search, not just one target frequency (contrast with
+ * `mfsk_q65_decode_with_ap`'s narrow-band AP, a different mechanism
+ * entirely). **FT8 only** (`SupportsWideBandAp` isn't implemented
+ * for FT4/FST4 — this crate has no `SniperRequest`-equivalent
+ * exposed today, which is where their narrow-band AP would need to
+ * live); silently ignored for other protocols at decode time.
+ *
+ * Each of `call1`/`call2`/`grid`/`report` may be NULL (no hint for
+ * that field) or a NUL-terminated UTF-8 string; an empty string is
+ * treated the same as NULL. A hint where every field is NULL/empty
+ * is stored but has no effect (equivalent to not calling this
+ * function at all), matching `mfsk_q65_decode_with_ap`'s own
+ * empty-hint-falls-through convention.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`]. Each
+ * non-null string argument must point to a valid NUL-terminated C
+ * string.
+ */
+enum MfskStatus mfsk_decode_options_set_ap_hint(struct MfskDecodeOptions *opts,
+                                                const char *call1,
+                                                const char *call2,
+                                                const char *grid,
+                                                const char *report);
+
+/**
  * Free a [`MfskResultList`] populated by a decode call. Passing NULL
  * or an already-freed list is safe.
  *

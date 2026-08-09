@@ -260,6 +260,13 @@ struct DecodeOptionsInner {
     // decode time, same convention as every other option here.
     sic_rounds: Option<u8>,
     sic_early: bool,
+    // Wide-band AP hint (mfsk_core::DecodeRequest::ap_hint, FT8 only —
+    // SupportsWideBandAp isn't implemented for FT4/FST4). `None` means
+    // "no hint set"; a `Some` with no fields actually populated is
+    // possible too (all-null/all-empty setter call) and is treated the
+    // same as `None` at decode time via `ApHint::has_info()`, matching
+    // the existing `mfsk_q65_decode_with_ap` convention exactly.
+    ap_hint: Option<mfsk_core::msg::ApHint>,
 }
 
 /// Matches this crate's pre-0.8.0 hardcoded per-protocol defaults for
@@ -279,6 +286,7 @@ impl Default for DecodeOptionsInner {
             freq_hint: None,
             sic_rounds: None,
             sic_early: false,
+            ap_hint: None,
         }
     }
 }
@@ -440,6 +448,46 @@ pub unsafe extern "C" fn mfsk_decode_options_set_sic_early(
     };
     inner.sic_early = true;
     inner.sic_rounds = None;
+    MfskStatus::Ok
+}
+
+/// Set a wide-band a-priori hint (mirrors
+/// `mfsk_core::DecodeRequest::ap_hint`) — applied to every candidate
+/// during the search, not just one target frequency (contrast with
+/// `mfsk_q65_decode_with_ap`'s narrow-band AP, a different mechanism
+/// entirely). **FT8 only** (`SupportsWideBandAp` isn't implemented
+/// for FT4/FST4 — this crate has no `SniperRequest`-equivalent
+/// exposed today, which is where their narrow-band AP would need to
+/// live); silently ignored for other protocols at decode time.
+///
+/// Each of `call1`/`call2`/`grid`/`report` may be NULL (no hint for
+/// that field) or a NUL-terminated UTF-8 string; an empty string is
+/// treated the same as NULL. A hint where every field is NULL/empty
+/// is stored but has no effect (equivalent to not calling this
+/// function at all), matching `mfsk_q65_decode_with_ap`'s own
+/// empty-hint-falls-through convention.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`]. Each
+/// non-null string argument must point to a valid NUL-terminated C
+/// string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_ap_hint(
+    opts: *mut MfskDecodeOptions,
+    call1: *const c_char,
+    call2: *const c_char,
+    grid: *const c_char,
+    report: *const c_char,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_ap_hint: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    let hint = match unsafe { build_ap_hint_from_cstrs(call1, call2, grid, report) } {
+        Ok(h) => h,
+        Err(st) => return st,
+    };
+    inner.ap_hint = Some(hint);
     MfskStatus::Ok
 }
 
@@ -872,6 +920,7 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
     let freq_hint = o.and_then(|o| o.freq_hint);
     let sic_early = o.is_some_and(|o| o.sic_early);
     let sic_rounds = o.and_then(|o| o.sic_rounds);
+    let ap_hint = o.and_then(|o| o.ap_hint.as_ref()).filter(|h| h.has_info());
 
     let ud = SyncUserData(user_data);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -897,6 +946,9 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
             req = req.sic_early();
         } else if let Some(n) = sic_rounds {
             req = req.sic_rounds(n as usize);
+        }
+        if let Some(hint) = ap_hint {
+            req = req.ap_hint(hint);
         }
         let results = req.on_result(&fire).decode().results;
         let mut vec: Vec<MfskResult> = Vec::new();
@@ -960,6 +1012,9 @@ fn decode_i16_wsjt77(
                 req = req.sic_early();
             } else if let Some(n) = o.and_then(|o| o.sic_rounds) {
                 req = req.sic_rounds(n as usize);
+            }
+            if let Some(hint) = o.and_then(|o| o.ap_hint.as_ref()).filter(|h| h.has_info()) {
+                req = req.ap_hint(hint);
             }
             let results = req.decode().results;
             for r in results {
@@ -1278,6 +1333,44 @@ fn cstr_to_str<'a>(p: *const c_char) -> Result<&'a str, MfskStatus> {
             MfskStatus::InvalidArg
         })
     }
+}
+
+/// Build an [`mfsk_core::msg::ApHint`] from up to 4 optional
+/// NUL-terminated C strings (call1/call2/grid/report) — each may be
+/// NULL (skip) or a valid UTF-8 string (empty also skips, matching
+/// `ApHint`'s own builder semantics). Shared by
+/// [`mfsk_q65_decode_with_ap`] and
+/// [`mfsk_decode_options_set_ap_hint`], which independently
+/// duplicated this exact pattern before it was factored out here
+/// (issue #162 follow-up).
+///
+/// # Safety
+/// Each non-null pointer must point to a valid NUL-terminated C string.
+unsafe fn build_ap_hint_from_cstrs(
+    call1: *const c_char,
+    call2: *const c_char,
+    grid: *const c_char,
+    report: *const c_char,
+) -> Result<mfsk_core::msg::ApHint, MfskStatus> {
+    let mut hint = mfsk_core::msg::ApHint::new();
+    let mut maybe_attach = |p: *const c_char,
+                            f: fn(mfsk_core::msg::ApHint, &str) -> mfsk_core::msg::ApHint|
+     -> Result<(), MfskStatus> {
+        if p.is_null() {
+            return Ok(());
+        }
+        let s = cstr_to_str(p)?;
+        if !s.is_empty() {
+            // Builder consumes by value, so we replace via temporary.
+            hint = f(std::mem::take(&mut hint), s);
+        }
+        Ok(())
+    };
+    maybe_attach(call1, |h, s| h.with_call1(s))?;
+    maybe_attach(call2, |h, s| h.with_call2(s))?;
+    maybe_attach(grid, |h, s| h.with_grid(s))?;
+    maybe_attach(report, |h, s| h.with_report(s))?;
+    Ok(hint)
 }
 
 fn finalise_samples(mut v: Vec<f32>, out: &mut MfskSamples) {
@@ -1656,33 +1749,10 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap(
     };
     let out = unsafe { &mut *out };
 
-    // Build the AP hint from optional NUL-terminated strings.
-    let mut hint = mfsk_core::msg::ApHint::new();
-    let mut maybe_attach = |p: *const c_char,
-                            f: fn(mfsk_core::msg::ApHint, &str) -> mfsk_core::msg::ApHint|
-     -> Result<(), MfskStatus> {
-        if p.is_null() {
-            return Ok(());
-        }
-        let s = cstr_to_str(p)?;
-        if !s.is_empty() {
-            // Builder consumes by value, so we replace via temporary.
-            hint = f(std::mem::take(&mut hint), s);
-        }
-        Ok(())
+    let hint = match unsafe { build_ap_hint_from_cstrs(ap_call1, ap_call2, ap_grid, ap_report) } {
+        Ok(h) => h,
+        Err(st) => return st,
     };
-    if let Err(st) = maybe_attach(ap_call1, |h, s| h.with_call1(s)) {
-        return st;
-    }
-    if let Err(st) = maybe_attach(ap_call2, |h, s| h.with_call2(s)) {
-        return st;
-    }
-    if let Err(st) = maybe_attach(ap_grid, |h, s| h.with_grid(s)) {
-        return st;
-    }
-    if let Err(st) = maybe_attach(ap_report, |h, s| h.with_report(s)) {
-        return st;
-    }
 
     let mut vec: Vec<MfskResult> = Vec::new();
     let decodes = if hint.has_info() {
