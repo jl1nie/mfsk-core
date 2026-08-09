@@ -1255,6 +1255,25 @@ void              mfsk_decoder_free(MfskDecoder* dec);
 MfskDecodeOptions* mfsk_decode_options_new(float freq_min_hz, float freq_max_hz,
                                   float sync_min, int max_cand,
                                   MfskDecodeDepth depth);
+
+// builder-parity setter 群 (issue #162 follow-up, 0.9.0) — 各関数は
+// `opts` を in-place で変更する。DecodeRequest のビルダーメソッド
+// 1 個につき C setter 1 個。strictness/eq_mode/freq_hint は
+// FT8/FT4/FST4-60A に適用、sic_rounds は FT8/FT4、sic_early と
+// ap_hint は FT8 専用。sic_rounds/sic_early は排他 (後勝ち)。
+MfskStatus mfsk_decode_options_set_strictness(MfskDecodeOptions* opts,
+                                  MfskStrictness strictness);
+MfskStatus mfsk_decode_options_set_eq_mode(MfskDecodeOptions* opts,
+                                  MfskEqMode eq_mode);
+MfskStatus mfsk_decode_options_set_freq_hint(MfskDecodeOptions* opts,
+                                  float freq_hz);
+MfskStatus mfsk_decode_options_set_sic_rounds(MfskDecodeOptions* opts,
+                                  uint8_t rounds);       // 1..=3 にclamp
+MfskStatus mfsk_decode_options_set_sic_early(MfskDecodeOptions* opts);
+MfskStatus mfsk_decode_options_set_ap_hint(MfskDecodeOptions* opts,
+                                  const char* call1, const char* call2,
+                                  const char* grid, const char* report);
+
 void              mfsk_decode_options_free(MfskDecodeOptions* opts);
 
 MfskStatus        mfsk_decode_i16(MfskDecoder*, const int16_t* samples,
@@ -1324,7 +1343,11 @@ const char*       mfsk_last_error(void);
    `mfsk_samples_free` で解放。
 4. **デコードオプション**: `mfsk_decode_options_new` で確保する
    任意の `MfskDecodeOptions*` ハンドル、`mfsk_decode_options_free`
-   で解放。NULL は常に有効 (プロトコル既定値を使う)。
+   で解放。NULL は常に有効 (プロトコル既定値を使う)。0.9.0 以降、
+   6 個の `mfsk_decode_options_set_*` 関数がハンドルを decode 呼び出し
+   前に in-place で変更できる — `DecodeRequest` のビルダーチェーン
+   (§4) の C 側ミラー。まだ未対応: `.known()`, `.fft_cache()`,
+   `SniperRequest` 露出、Q65 の `.hash_table()` (issue #247-#250)。
 5. **エラー**: `MfskStatus` が非ゼロの場合、**同じスレッド** で
    `mfsk_last_error` を呼ぶと診断メッセージが得られる。返される
    ポインタは次の fallible 呼び出しまで有効。

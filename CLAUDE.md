@@ -10,12 +10,19 @@ The active production crates are `embedded-poc/m5stack-s3-app/` (S3
 LX7, repositioned as **demo / acoustic-fallback** in the 2026-05-17
 pivot — the StickS3 board can't do USB host),
 `embedded-poc/m5stack-core2-app/` (Core2 LX6, wav_sim only — no USB
-peripheral on classic ESP32), and the planned
-`embedded-poc/m5stack-cores3-app/` (S3 LX7, **main UAC controller
-target** — CoreS3 has AXP2101 + AW9523B for proper USB-OTG host mode;
-see `docs/notes/ROADMAP.md` Phase B-Core). Each has its own `CLAUDE.md`
-covering board-specific bring-up; this section captures the shared
-workflow that's easy to forget between sessions.
+peripheral on classic ESP32), and `embedded-poc/m5stack-cores3-app/`
+(S3 LX7, **main UAC controller target** — CoreS3 has AXP2101 +
+AW9523B for proper USB-OTG host mode). Phase 0-Core (board bring-up)
+and Phase 1-Core (UAC host code) both shipped 2026-05-23; what's
+still open is Phase 1-Verify — live IC-705 hardware confirmation,
+tracked as issue #163 and, as of this writing, the single blocker for
+the rest of the Phase B-Core sequence (see `docs/notes/ROADMAP.md`
+Phase B-Core for the live status). `m5stack-s3-app` and
+`m5stack-core2-app` each have their own `CLAUDE.md` covering
+board-specific bring-up; `m5stack-cores3-app` does not yet — read
+`docs/notes/ROADMAP.md` Phase B-Core for its status instead. This
+section captures the shared workflow that's easy to forget between
+sessions.
 
 - **Build & flash via `espflash`**, not host cargo. Both crates'
   `.cargo/config.toml` set `runner = "espflash flash --monitor"`, so the

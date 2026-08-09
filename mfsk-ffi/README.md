@@ -127,6 +127,12 @@ bash examples/cpp_smoke/build.sh
 | `mfsk_decoder_new`         | Construct opaque decoder handle for one protocol.                 |
 | `mfsk_decoder_free`        | Destroy decoder handle.                                           |
 | `mfsk_decode_options_new`  | Construct an optional decode-tuning handle (search range / threshold / depth). |
+| `mfsk_decode_options_set_strictness` | Override the accept/reject threshold profile (`MfskStrictness`: Strict/Normal/Deep). FT8/FT4/FST4-60A only. |
+| `mfsk_decode_options_set_eq_mode` | Override the equalisation mode (`MfskEqMode`: Off/Local). FT8/FT4/FST4-60A only. |
+| `mfsk_decode_options_set_freq_hint` | Set a preferred carrier frequency tried first (does not narrow the search range). FT8/FT4/FST4-60A only. |
+| `mfsk_decode_options_set_sic_rounds` | Switch to the sequential multi-round SIC strategy (1..=3 rounds). FT8/FT4 only; mutually exclusive with `_set_sic_early`. |
+| `mfsk_decode_options_set_sic_early` | Switch to the checkpointed early-decode SIC strategy. FT8 only; mutually exclusive with `_set_sic_rounds`. |
+| `mfsk_decode_options_set_ap_hint` | Set a wide-band a-priori hint (call1/call2/grid/report, each optional) applied to every search candidate. FT8 only. |
 | `mfsk_decode_options_free` | Destroy a decode-tuning handle.                                    |
 | `mfsk_decode_f32`          | Decode one slot of `f32` PCM. `options` may be NULL.               |
 | `mfsk_decode_i16`          | Decode one slot of `i16` PCM (same semantics as `_f32`).          |
@@ -145,6 +151,23 @@ bash examples/cpp_smoke/build.sh
 | `mfsk_samples_free`        | Release the `f32` buffer returned by an encode.                   |
 | `mfsk_last_error`          | Thread-local last-error string (UTF-8, NUL-terminated).           |
 | `mfsk_version`             | Library version (major << 16 \| minor << 8 \| patch).             |
+
+### Decode-options setters
+
+The six `mfsk_decode_options_set_*` functions each mutate an existing
+`MfskDecodeOptions*` handle in place, one C call per
+`mfsk_core::DecodeRequest` builder method
+(`.strictness()`/`.eq_mode()`/`.freq_hint()`/`.sic_rounds()`/`.sic_early()`/`.ap_hint()`)
+— call them on a handle from `mfsk_decode_options_new` before passing
+it to `mfsk_decode_f32`/`mfsk_decode_i16`/`mfsk_decode_i16_streaming`.
+`sic_rounds`/`sic_early` are mutually exclusive (last call on the
+handle wins); `ap_hint` is FT8-only, the rest apply to
+FT8/FT4/FST4-60A and are silently ignored elsewhere. See the doc
+comments in `mfsk-ffi/include/mfsk.h` for full per-function semantics,
+and `mfsk-ffi/tests/builder_options_ffi.rs` / `examples/cpp_smoke/main.cpp`
+for worked examples. Not yet mirrored: `.known()`, `.fft_cache()`,
+`SniperRequest` exposure, Q65's `.hash_table()` (tracked as issues
+[#247](https://github.com/jl1nie/mfsk-core/issues/247)-[#250](https://github.com/jl1nie/mfsk-core/issues/250)).
 
 ## Memory ownership
 

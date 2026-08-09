@@ -671,10 +671,17 @@ checker run across every wired ZST. Run with `--features full` for
 full coverage; the default features (`ft8`, `ft4`) only exercise the
 two default protocols.
 
-`embedded-poc/m5stack-s3-app/` and `embedded-poc/m5stack-core2-app/`
-are the production FT8 controller crates (LCD UI + QSO FSM + WiFi-UDP
-log streaming), both consuming the board-agnostic
-`embedded-poc/mfsk-app-shared/`. `embedded-poc/m5stack-s3/` is a
+`embedded-poc/m5stack-s3-app/` (demo / acoustic-fallback, since the
+StickS3 board can't do USB host) and `embedded-poc/m5stack-core2-app/`
+(wav_sim-only LX6 sibling) are production FT8 controller crates (LCD
+UI + QSO FSM + WiFi-UDP log streaming), both consuming the
+board-agnostic `embedded-poc/mfsk-app-shared/`.
+`embedded-poc/m5stack-cores3-app/` is the **main UAC controller
+target** (M5Stack CoreS3 has the PMIC/IO-expander wiring StickS3
+lacks) — board bring-up and UAC host code are shipped, but live
+IC-705 hardware verification hasn't happened yet (issue #163). See
+`docs/notes/ROADMAP.md`'s Phase B-Core section for the current
+status. `embedded-poc/m5stack-s3/` is a
 decoder-only compute-bench crate for S3 timing-regression tracking.
 See
 [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)

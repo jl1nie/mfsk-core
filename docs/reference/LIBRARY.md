@@ -1411,6 +1411,25 @@ void              mfsk_decoder_free(MfskDecoder* dec);
 MfskDecodeOptions* mfsk_decode_options_new(float freq_min_hz, float freq_max_hz,
                                   float sync_min, int max_cand,
                                   MfskDecodeDepth depth);
+
+// Builder-parity setters (issue #162 follow-up, 0.9.0) — each mutates
+// `opts` in place, one C call per DecodeRequest builder method.
+// strictness/eq_mode/freq_hint apply to FT8/FT4/FST4-60A; sic_rounds
+// applies to FT8/FT4; sic_early and ap_hint are FT8-only.
+// sic_rounds/sic_early are mutually exclusive (last call wins).
+MfskStatus mfsk_decode_options_set_strictness(MfskDecodeOptions* opts,
+                                  MfskStrictness strictness);
+MfskStatus mfsk_decode_options_set_eq_mode(MfskDecodeOptions* opts,
+                                  MfskEqMode eq_mode);
+MfskStatus mfsk_decode_options_set_freq_hint(MfskDecodeOptions* opts,
+                                  float freq_hz);
+MfskStatus mfsk_decode_options_set_sic_rounds(MfskDecodeOptions* opts,
+                                  uint8_t rounds);       // clamped 1..=3
+MfskStatus mfsk_decode_options_set_sic_early(MfskDecodeOptions* opts);
+MfskStatus mfsk_decode_options_set_ap_hint(MfskDecodeOptions* opts,
+                                  const char* call1, const char* call2,
+                                  const char* grid, const char* report);
+
 void              mfsk_decode_options_free(MfskDecodeOptions* opts);
 
 MfskStatus        mfsk_decode_i16(MfskDecoder*, const int16_t* samples,
@@ -1464,7 +1483,12 @@ See `mfsk-ffi/examples/cpp_smoke/` for a minimal end-to-end demo.
 4. **Decode options**: an optional `MfskDecodeOptions*` handle from
    `mfsk_decode_options_new`, released with
    `mfsk_decode_options_free`. NULL is always valid (uses the
-   protocol's built-in default).
+   protocol's built-in default). Since 0.9.0, the six
+   `mfsk_decode_options_set_*` functions mutate the handle in place
+   before it's passed to a decode call — the C-side mirror of
+   `DecodeRequest`'s builder chain (§4). Not yet mirrored: `.known()`,
+   `.fft_cache()`, `SniperRequest` exposure, Q65's `.hash_table()`
+   (issues #247-#250).
 5. **Errors**: on non-zero `MfskStatus`, call `mfsk_last_error` on the
    **same thread** to retrieve a human-readable diagnostic. The
    returned pointer is valid until the next fallible call on that
