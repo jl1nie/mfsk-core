@@ -78,6 +78,63 @@ void test_ft8() {
     mfsk_samples_free(&pcm);
 }
 
+// ── FT8 streaming (mfsk_decode_i16_streaming, issue #246 follow-up) ───
+//
+// A real C callback invoked from actual C++-compiled code, through the
+// generated header — the one thing the Rust-side `tests/streaming_ffi.rs`
+// suite can't exercise (it calls the same crate's own functions
+// directly, never crossing an actual compiler/ABI boundary the way a
+// separate C++ translation unit does).
+extern "C" void streaming_collect(const MfskResult* result, void* user_data) {
+    auto* out = static_cast<std::vector<std::string>*>(user_data);
+    out->emplace_back(result->text);
+}
+
+void test_ft8_streaming() {
+    std::printf("— FT8 streaming: encode 'CQ JA1ABC PM95' at 1650 Hz → mfsk_decode_i16_streaming\n");
+    MfskSamples pcm{};
+    if (mfsk_encode_ft8("CQ", "JA1ABC", "PM95", 1650.0f, &pcm) != MFSK_STATUS_OK) {
+        fail("FT8-streaming", mfsk_last_error());
+        return;
+    }
+    std::vector<int16_t> i16_samples(pcm.len);
+    for (size_t i = 0; i < pcm.len; ++i) {
+        float s = pcm.samples[i] * 32767.0f;
+        if (s > 32767.0f) s = 32767.0f;
+        if (s < -32768.0f) s = -32768.0f;
+        i16_samples[i] = static_cast<int16_t>(s);
+    }
+
+    MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);
+    MfskResultList list{};
+    std::vector<std::string> streamed;
+    const MfskStatus st = mfsk_decode_i16_streaming(
+        dec, i16_samples.data(), i16_samples.size(), 12000, nullptr,
+        streaming_collect, &streamed, &list);
+    if (st != MFSK_STATUS_OK) {
+        fail("FT8-streaming", mfsk_last_error() ? mfsk_last_error() : "decode failed");
+    } else {
+        print_decodes("FT8-streaming (batch list)", list);
+        std::printf("  streamed via callback: %zu\n", streamed.size());
+        bool streamed_ok = false;
+        for (const auto& s : streamed) {
+            if (s.find("JA1ABC") != std::string::npos) streamed_ok = true;
+        }
+        if (!streamed_ok) {
+            fail("FT8-streaming", "callback never delivered JA1ABC");
+        }
+        if (!any_contains(list, "JA1ABC") || !any_contains(list, "PM95")) {
+            fail("FT8-streaming", "batch list missing expected callsign/grid");
+        }
+        if (streamed.size() != list.len) {
+            fail("FT8-streaming", "streamed count != batch list count for one clean candidate");
+        }
+    }
+    mfsk_result_list_free(&list);
+    mfsk_decoder_free(dec);
+    mfsk_samples_free(&pcm);
+}
+
 // ── FT4 ──────────────────────────────────────────────────────────────
 void test_ft4() {
     std::printf("— FT4 roundtrip: encode 'CQ JA1ABC PM95' at 1500 Hz → decode\n");
@@ -360,6 +417,7 @@ int main() {
                 ver & 0xff);
 
     test_ft8();
+    test_ft8_streaming();
     test_ft4();
     test_fst4();
     test_wspr();

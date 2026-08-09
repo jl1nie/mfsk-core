@@ -309,6 +309,35 @@ typedef struct MfskSamples {
     uintptr_t _cap;
 } MfskSamples;
 
+/**
+ * C callback for [`mfsk_decode_i16_streaming`], invoked once per
+ * accepted decode result *as it is found*, in addition to (not
+ * instead of) the full [`MfskResultList`] the call still populates —
+ * mirrors `mfsk_core`'s own `DecodeRequest::on_result`'s "streaming
+ * is additive" contract exactly. Pass `None` to skip streaming
+ * delivery entirely (equivalent to, but slower than, just calling
+ * [`mfsk_decode_i16`]).
+ *
+ * `result` points to a stack-local [`MfskResult`] valid only for the
+ * duration of this specific call — copy the struct if you need to
+ * keep it past the callback returning. `user_data` is passed through
+ * unchanged from the call site, opaque to this crate.
+ *
+ * **May be invoked from multiple threads concurrently.** This
+ * crate's default build enables `parallel` (rayon), and FT8's
+ * default single-pass decode strategy — the one this function always
+ * uses — fans candidates out across worker threads; each firing sees
+ * a distinct candidate, but the callback implementation itself, and
+ * anything `user_data` points to, must tolerate concurrent
+ * invocation. See `docs/reference/STREAMING.md` §3 for the exact
+ * ordering/duplicate guarantees this mirrors (parallel strategies:
+ * completion order, possible transient duplicate against the
+ * eventual `out` list — never a value `out` omits that the callback
+ * never saw, see STREAMING.md's "revoke-less retract" audit).
+ */
+typedef void (*MfskResultCallback)(const struct MfskResult *result,
+                                   void *user_data);
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -462,6 +491,43 @@ enum MfskStatus mfsk_decode_i16(const struct MfskDecoder *dec,
                                 uint32_t sample_rate,
                                 const struct MfskDecodeOptions *options,
                                 struct MfskResultList *out);
+
+/**
+ * Streaming variant of [`mfsk_decode_i16`] — **FT8 only for now**;
+ * other protocols return [`MfskStatus::UnknownProtocol`] (streaming
+ * is exposed protocol-by-protocol as call sites need it, matching
+ * this crate's established additive-growth convention — see
+ * [`mfsk_decode_options_new`]'s doc comment).
+ *
+ * In addition to populating `out` exactly as [`mfsk_decode_i16`]
+ * does, invokes `callback` (if non-`None`) once per accepted decode
+ * result before the whole slot finishes decoding. See
+ * [`MfskResultCallback`] for the callback's threading/lifetime
+ * contract.
+ *
+ * A Rust panic during decode (a bug, not an expected outcome) is
+ * caught and reported as [`MfskStatus::Internal`] rather than
+ * unwinding across the FFI boundary (undefined behaviour for
+ * `extern "C"` functions) — unlike [`mfsk_decode_i16`], which has
+ * never previously needed this because it runs no caller-supplied
+ * code mid-call.
+ *
+ * # Safety
+ *
+ * See [`mfsk_decode_i16`]. Additionally: if `callback` is
+ * non-`None`, it must be safely callable (per the C calling
+ * convention) from any thread, any number of times including zero,
+ * for the duration of this call; `user_data` must remain valid for
+ * the duration of this call if `callback` dereferences it.
+ */
+enum MfskStatus mfsk_decode_i16_streaming(const struct MfskDecoder *dec,
+                                          const int16_t *samples,
+                                          uintptr_t n_samples,
+                                          uint32_t sample_rate,
+                                          const struct MfskDecodeOptions *options,
+                                          MfskResultCallback callback,
+                                          void *user_data,
+                                          struct MfskResultList *out);
 
 /**
  * Synthesise a standard FT8 message ("CALL1 CALL2 REPORT") at `freq_hz`

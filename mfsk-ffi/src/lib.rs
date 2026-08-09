@@ -592,6 +592,167 @@ pub unsafe extern "C" fn mfsk_decode_i16(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Streaming decode (issue #246 follow-up: `.on_result()` was never
+// exposed across this FFI — a real gap, not a deliberate omission)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// C callback for [`mfsk_decode_i16_streaming`], invoked once per
+/// accepted decode result *as it is found*, in addition to (not
+/// instead of) the full [`MfskResultList`] the call still populates —
+/// mirrors `mfsk_core`'s own `DecodeRequest::on_result`'s "streaming
+/// is additive" contract exactly. Pass `None` to skip streaming
+/// delivery entirely (equivalent to, but slower than, just calling
+/// [`mfsk_decode_i16`]).
+///
+/// `result` points to a stack-local [`MfskResult`] valid only for the
+/// duration of this specific call — copy the struct if you need to
+/// keep it past the callback returning. `user_data` is passed through
+/// unchanged from the call site, opaque to this crate.
+///
+/// **May be invoked from multiple threads concurrently.** This
+/// crate's default build enables `parallel` (rayon), and FT8's
+/// default single-pass decode strategy — the one this function always
+/// uses — fans candidates out across worker threads; each firing sees
+/// a distinct candidate, but the callback implementation itself, and
+/// anything `user_data` points to, must tolerate concurrent
+/// invocation. See `docs/reference/STREAMING.md` §3 for the exact
+/// ordering/duplicate guarantees this mirrors (parallel strategies:
+/// completion order, possible transient duplicate against the
+/// eventual `out` list — never a value `out` omits that the callback
+/// never saw, see STREAMING.md's "revoke-less retract" audit).
+pub type MfskResultCallback =
+    Option<unsafe extern "C" fn(result: *const MfskResult, user_data: *mut c_void)>;
+
+/// Wraps a C `user_data` pointer to make it `Sync`, which
+/// `DecodeRequest::on_result`'s callback bound (`Fn(&DecodeResult) +
+/// Sync`) requires since the parallel strategy calls it from multiple
+/// rayon worker threads. Sound because this crate never dereferences
+/// the pointer itself — it passes straight through to the caller's C
+/// callback, whose thread-safety is the caller's own responsibility
+/// (documented on [`MfskResultCallback`]).
+struct SyncUserData(*mut c_void);
+unsafe impl Sync for SyncUserData {}
+unsafe impl Send for SyncUserData {}
+
+impl SyncUserData {
+    /// Accessor rather than a direct `.0` field read at the call site:
+    /// edition-2021 disjoint closure captures would otherwise capture
+    /// the bare `*mut c_void` field itself (not `Sync`) instead of the
+    /// whole `SyncUserData` wrapper, silently defeating the `unsafe
+    /// impl Sync` above at the closure-creation site below.
+    fn ptr(&self) -> *mut c_void {
+        self.0
+    }
+}
+
+/// Streaming variant of [`mfsk_decode_i16`] — **FT8 only for now**;
+/// other protocols return [`MfskStatus::UnknownProtocol`] (streaming
+/// is exposed protocol-by-protocol as call sites need it, matching
+/// this crate's established additive-growth convention — see
+/// [`mfsk_decode_options_new`]'s doc comment).
+///
+/// In addition to populating `out` exactly as [`mfsk_decode_i16`]
+/// does, invokes `callback` (if non-`None`) once per accepted decode
+/// result before the whole slot finishes decoding. See
+/// [`MfskResultCallback`] for the callback's threading/lifetime
+/// contract.
+///
+/// A Rust panic during decode (a bug, not an expected outcome) is
+/// caught and reported as [`MfskStatus::Internal`] rather than
+/// unwinding across the FFI boundary (undefined behaviour for
+/// `extern "C"` functions) — unlike [`mfsk_decode_i16`], which has
+/// never previously needed this because it runs no caller-supplied
+/// code mid-call.
+///
+/// # Safety
+///
+/// See [`mfsk_decode_i16`]. Additionally: if `callback` is
+/// non-`None`, it must be safely callable (per the C calling
+/// convention) from any thread, any number of times including zero,
+/// for the duration of this call; `user_data` must remain valid for
+/// the duration of this call if `callback` dereferences it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_i16_streaming(
+    dec: *const MfskDecoder,
+    samples: *const i16,
+    n_samples: usize,
+    sample_rate: u32,
+    options: *const MfskDecodeOptions,
+    callback: MfskResultCallback,
+    user_data: *mut c_void,
+    out: *mut MfskResultList,
+) -> MfskStatus {
+    let Some(inner_ref) = inner(dec) else {
+        set_error("mfsk_decode_i16_streaming: null decoder handle");
+        return MfskStatus::InvalidArg;
+    };
+    if samples.is_null() || out.is_null() {
+        set_error("mfsk_decode_i16_streaming: null buffer pointer");
+        return MfskStatus::InvalidArg;
+    }
+    if !matches!(inner_ref.protocol, MfskProtocol::Ft8) {
+        set_error("mfsk_decode_i16_streaming: streaming only implemented for FT8 so far");
+        return MfskStatus::UnknownProtocol;
+    }
+
+    let slice_i16 = unsafe { slice::from_raw_parts(samples, n_samples) };
+    let audio: Vec<i16> = if sample_rate == 12_000 {
+        slice_i16.to_vec()
+    } else {
+        mfsk_core::engine::dsp::resample::resample_to_12k(slice_i16, sample_rate)
+    };
+    let out = unsafe { &mut *out };
+
+    let o = options_inner(options);
+    let (fmin, fmax, smin, mc, osd) = match o {
+        Some(o) => (
+            o.freq_min_hz,
+            o.freq_max_hz,
+            o.sync_min,
+            o.max_cand as usize,
+            map_osd(o.depth),
+        ),
+        None => (200.0, 3_000.0, 2.0, 50, true),
+    };
+
+    let ud = SyncUserData(user_data);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ht = mfsk_core::msg::CallsignHashTable::new();
+        let fire = |r: &ft8::DecodeResult| {
+            let Some(cb) = callback else { return };
+            let text =
+                mfsk_core::msg::wsjt77::unpack77_with_hash(r.message77(), &ht).unwrap_or_default();
+            let mut rec = empty_result(r.freq_hz, r.dt_sec, r.snr_db, r.hard_errors, r.pass);
+            write_text(&mut rec.text, &text);
+            unsafe { cb(&rec, ud.ptr()) };
+        };
+        let results = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
+            &audio, fmin, fmax, smin, mc,
+        )
+        .osd(osd)
+        .on_result(&fire)
+        .decode()
+        .results;
+        let mut vec: Vec<MfskResult> = Vec::new();
+        for r in &results {
+            push_wsjt77(r, &ht, &mut vec);
+        }
+        vec
+    }));
+
+    match outcome {
+        Ok(vec) => {
+            finalise(vec, out);
+            MfskStatus::Ok
+        }
+        Err(_) => {
+            set_error("mfsk_decode_i16_streaming: internal panic during decode (this is a bug)");
+            MfskStatus::Internal
+        }
+    }
+}
+
 /// `options` overrides this crate's per-protocol default search range /
 /// threshold / depth (each of FT8/FT4/FST4-60A previously had its own
 /// hardcoded values here — NULL preserves each protocol's own
