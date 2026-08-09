@@ -471,6 +471,34 @@ enum MfskStatus mfsk_decode_options_set_freq_hint(struct MfskDecodeOptions *opts
                                                   float freq_hz);
 
 /**
+ * Switch to the sequential multi-round SIC strategy: `n` rounds of
+ * coarse-sync + per-candidate decode + subtract over the shrinking
+ * residual, clamped to 1..=3 (mirrors `mfsk_core::DecodeRequest::sic_rounds`
+ * exactly, including its own clamp). Mutually exclusive with
+ * [`mfsk_decode_options_set_sic_early`] — whichever is called last on
+ * this handle wins, same as chaining `.sic_rounds(_).sic_early()` (or
+ * the reverse) on the Rust side. FT8 and FT4 only; ignored for other
+ * protocols at decode time.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`].
+ */
+enum MfskStatus mfsk_decode_options_set_sic_rounds(struct MfskDecodeOptions *opts,
+                                                   uint8_t rounds);
+
+/**
+ * Switch to the checkpointed early-decode SIC strategy (WSJT-X-style
+ * `nzhsym`-staged subtract-and-resync; mirrors
+ * `mfsk_core::DecodeRequest::sic_early`). Mutually exclusive with
+ * [`mfsk_decode_options_set_sic_rounds`] — see that function's doc
+ * comment for the overwrite semantics. FT8 only; ignored elsewhere.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`].
+ */
+enum MfskStatus mfsk_decode_options_set_sic_early(struct MfskDecodeOptions *opts);
+
+/**
  * Free a [`MfskResultList`] populated by a decode call. Passing NULL
  * or an already-freed list is safe.
  *

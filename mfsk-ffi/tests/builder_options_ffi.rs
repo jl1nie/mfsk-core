@@ -20,6 +20,7 @@ use mfsk::{
     MfskDecodeDepth, MfskEqMode, MfskProtocol, MfskResultList, MfskSamples, MfskStatus,
     MfskStrictness, mfsk_decode_i16, mfsk_decode_options_free, mfsk_decode_options_new,
     mfsk_decode_options_set_eq_mode, mfsk_decode_options_set_freq_hint,
+    mfsk_decode_options_set_sic_early, mfsk_decode_options_set_sic_rounds,
     mfsk_decode_options_set_strictness, mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_ft8,
     mfsk_result_list_free, mfsk_samples_free,
 };
@@ -211,4 +212,98 @@ fn freq_hint_setter_reaches_decode_and_does_not_exclude_candidates() {
             mfsk_decode_options_free(opts);
         }
     }
+}
+
+/// `mfsk_decode_options_set_sic_rounds`/`_set_sic_early`'s real
+/// behavioural effect: a weak signal masked by a much stronger nearby
+/// one is invisible to the default single-pass strategy but recovered
+/// once the strong signal is subtracted first. Same amplitude/
+/// frequency choices as `mfsk-core`'s own
+/// `ft8::subtract::tests::subtract_reveals_hidden_signal` (already
+/// proven to reproduce this masking reliably) — reused rather than
+/// re-derived.
+/// Minimal RIFF/WAVE mono-i16 loader, standalone (mfsk-ffi's test
+/// crate can't reach `mfsk-core/tests/common/mod.rs`'s version —
+/// different crate). Path convention matches `CLAUDE.md`'s own
+/// documented rule for non-`mfsk-core`-internal test code:
+/// `CARGO_MANIFEST_DIR`-relative into `embedded-poc/assets/`, never a
+/// hardcoded absolute path.
+fn load_wav_i16(path: &str) -> Vec<i16> {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    assert!(
+        bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
+        "{path}: not a RIFF/WAVE file"
+    );
+    let mut offset = 12usize;
+    let mut data: Option<&[u8]> = None;
+    while offset + 8 <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let body = offset + 8;
+        if id == b"data" {
+            data = Some(&bytes[body..body + size]);
+        }
+        offset = body + size + (size % 2);
+    }
+    let data = data.unwrap_or_else(|| panic!("{path}: missing data chunk"));
+    data.chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect()
+}
+
+/// `mfsk_decode_options_set_sic_early`/`_set_sic_rounds`'s real
+/// behavioural effect, using the same real busy-band recording (and
+/// the same default-vs-SIC recall gap, ~14-15 vs ~20-22 stations)
+/// this session's WASM/streaming investigation (issue #246) measured
+/// repeatedly on the Rust side — reused here rather than
+/// hand-constructing a synthetic masked-signal scenario, which turned
+/// out to be finicky (see git history of this file: a two-signal
+/// strong/weak construction either decoded both with or without SIC,
+/// or neither, across every amplitude/frequency combination tried;
+/// masking a single weak signal behind one strong one apparently
+/// isn't as reliably reproducible as this real multi-station
+/// recording's own natural overlap).
+#[test]
+fn sic_rounds_and_sic_early_recover_more_stations_than_default() {
+    let audio = load_wav_i16(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/qso3_busy.wav"
+    ));
+
+    let decode_with = |configure: Option<fn(*mut mfsk::MfskDecodeOptions)>| -> usize {
+        let opts = mfsk_decode_options_new(200.0, 3_000.0, 2.0, 50, MfskDecodeDepth::BpAllOsd);
+        assert!(!opts.is_null());
+        if let Some(f) = configure {
+            f(opts);
+        }
+        let dec = mfsk_decoder_new(MfskProtocol::Ft8);
+        let mut list = empty_list();
+        let st =
+            unsafe { mfsk_decode_i16(dec, audio.as_ptr(), audio.len(), 12_000, opts, &mut list) };
+        assert_eq!(st, MfskStatus::Ok);
+        let n = list.len;
+        unsafe {
+            mfsk_result_list_free(&mut list);
+            mfsk_decoder_free(dec);
+            mfsk_decode_options_free(opts);
+        }
+        n
+    };
+
+    let default_n = decode_with(None);
+    let sic_early_n = decode_with(Some(|opts| unsafe {
+        assert_eq!(mfsk_decode_options_set_sic_early(opts), MfskStatus::Ok);
+    }));
+    let sic_rounds_n = decode_with(Some(|opts| unsafe {
+        assert_eq!(mfsk_decode_options_set_sic_rounds(opts, 3), MfskStatus::Ok);
+    }));
+
+    assert!(
+        sic_early_n > default_n,
+        "sic_early ({sic_early_n}) should recover more qso3_busy stations than default ({default_n})"
+    );
+    assert!(
+        sic_rounds_n > default_n,
+        "sic_rounds(3) ({sic_rounds_n}) should recover more qso3_busy stations than default ({default_n})"
+    );
 }

@@ -139,11 +139,11 @@ void test_ft8_streaming() {
 //
 // MfskDecodeOptions hadn't grown a single setter since its creation
 // (issue #205) despite its own doc comment anticipating exactly that —
-// this proves mfsk_decode_options_set_strictness/_eq_mode/_freq_hint
-// actually reach a real decode call from compiled C++, not just that
-// they link.
+// this proves mfsk_decode_options_set_strictness/_eq_mode/_freq_hint/
+// _sic_rounds/_sic_early actually reach a real decode call from
+// compiled C++, not just that they link.
 void test_builder_options() {
-    std::printf("— FFI builder-parity: mfsk_decode_options_set_strictness/_eq_mode/_freq_hint\n");
+    std::printf("— FFI builder-parity: mfsk_decode_options_set_* (strictness/eq_mode/freq_hint/sic_rounds/sic_early)\n");
     MfskSamples pcm{};
     if (mfsk_encode_ft8("CQ", "JA1ABC", "PM95", 1500.0f, &pcm) != MFSK_STATUS_OK) {
         fail("builder-options", mfsk_last_error());
@@ -165,6 +165,16 @@ void test_builder_options() {
     }
     if (mfsk_decode_options_set_freq_hint(opts, 1500.0f) != MFSK_STATUS_OK) {
         fail("builder-options", "set_freq_hint failed");
+    }
+    // sic_early overwrites whatever sic_rounds set, matching
+    // DecodeRequest's own .sic_rounds(_).sic_early() overwrite
+    // semantics — call both to prove the "last one wins" contract
+    // doesn't error either way, not just that one setter works alone.
+    if (mfsk_decode_options_set_sic_rounds(opts, 2) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_sic_rounds failed");
+    }
+    if (mfsk_decode_options_set_sic_early(opts) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_sic_early failed");
     }
 
     MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);

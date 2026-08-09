@@ -252,6 +252,14 @@ struct DecodeOptionsInner {
     strictness: MfskStrictness,
     eq_mode: MfskEqMode,
     freq_hint: Option<f32>,
+    // `sic_rounds`/`sic_early` mirror mfsk_core::DecodeRequest's own
+    // mutual-overwrite semantics exactly: both `.sic_rounds(n)` and
+    // `.sic_early()` just overwrite one `strategy` field there, so
+    // setting one here clears the other (see the two setters below).
+    // FT8 (+FT4 for sic_rounds only) — silently ignored elsewhere at
+    // decode time, same convention as every other option here.
+    sic_rounds: Option<u8>,
+    sic_early: bool,
 }
 
 /// Matches this crate's pre-0.8.0 hardcoded per-protocol defaults for
@@ -269,6 +277,8 @@ impl Default for DecodeOptionsInner {
             strictness: MfskStrictness::Normal,
             eq_mode: MfskEqMode::Off,
             freq_hint: None,
+            sic_rounds: None,
+            sic_early: false,
         }
     }
 }
@@ -384,6 +394,52 @@ pub unsafe extern "C" fn mfsk_decode_options_set_freq_hint(
         return MfskStatus::InvalidArg;
     };
     inner.freq_hint = Some(freq_hz);
+    MfskStatus::Ok
+}
+
+/// Switch to the sequential multi-round SIC strategy: `n` rounds of
+/// coarse-sync + per-candidate decode + subtract over the shrinking
+/// residual, clamped to 1..=3 (mirrors `mfsk_core::DecodeRequest::sic_rounds`
+/// exactly, including its own clamp). Mutually exclusive with
+/// [`mfsk_decode_options_set_sic_early`] — whichever is called last on
+/// this handle wins, same as chaining `.sic_rounds(_).sic_early()` (or
+/// the reverse) on the Rust side. FT8 and FT4 only; ignored for other
+/// protocols at decode time.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_sic_rounds(
+    opts: *mut MfskDecodeOptions,
+    rounds: u8,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_sic_rounds: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.sic_rounds = Some(rounds.clamp(1, 3));
+    inner.sic_early = false;
+    MfskStatus::Ok
+}
+
+/// Switch to the checkpointed early-decode SIC strategy (WSJT-X-style
+/// `nzhsym`-staged subtract-and-resync; mirrors
+/// `mfsk_core::DecodeRequest::sic_early`). Mutually exclusive with
+/// [`mfsk_decode_options_set_sic_rounds`] — see that function's doc
+/// comment for the overwrite semantics. FT8 only; ignored elsewhere.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_sic_early(
+    opts: *mut MfskDecodeOptions,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_sic_early: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.sic_early = true;
+    inner.sic_rounds = None;
     MfskStatus::Ok
 }
 
@@ -814,6 +870,8 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
     let strictness = map_strictness(o.map(|o| o.strictness).unwrap_or_default());
     let eq_mode = map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default());
     let freq_hint = o.and_then(|o| o.freq_hint);
+    let sic_early = o.is_some_and(|o| o.sic_early);
+    let sic_rounds = o.and_then(|o| o.sic_rounds);
 
     let ud = SyncUserData(user_data);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -834,6 +892,11 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
         .eq_mode(eq_mode);
         if let Some(fh) = freq_hint {
             req = req.freq_hint(fh);
+        }
+        if sic_early {
+            req = req.sic_early();
+        } else if let Some(n) = sic_rounds {
+            req = req.sic_rounds(n as usize);
         }
         let results = req.on_result(&fire).decode().results;
         let mut vec: Vec<MfskResult> = Vec::new();
@@ -890,6 +953,14 @@ fn decode_i16_wsjt77(
             if let Some(fh) = o.and_then(|o| o.freq_hint) {
                 req = req.freq_hint(fh);
             }
+            // sic_early takes priority if both were somehow set (can't
+            // happen through the setters, which clear each other, but
+            // stay defensive rather than relying on that invariant).
+            if o.is_some_and(|o| o.sic_early) {
+                req = req.sic_early();
+            } else if let Some(n) = o.and_then(|o| o.sic_rounds) {
+                req = req.sic_rounds(n as usize);
+            }
             let results = req.decode().results;
             for r in results {
                 push_wsjt77(&r, &ht, &mut vec);
@@ -913,6 +984,13 @@ fn decode_i16_wsjt77(
                 .eq_mode(map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default()));
             if let Some(fh) = o.and_then(|o| o.freq_hint) {
                 req = req.freq_hint(fh);
+            }
+            // FT4 has no .sic_early() (SupportsSicEarly isn't
+            // implemented for Ft4) — sic_early is silently ignored
+            // here, matching every other inapplicable-option
+            // convention in this file.
+            if let Some(n) = o.and_then(|o| o.sic_rounds) {
+                req = req.sic_rounds(n as usize);
             }
             let results = req.decode().results;
             for r in results {
