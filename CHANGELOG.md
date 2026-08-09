@@ -381,6 +381,17 @@ effect on any decode path.
 
 ### Changed
 
+- **wasm32 builds now enable rustfft's `wasm_simd` feature** — unlike
+  `avx`/`sse`/`neon` on their native targets (auto-detected by rustfft
+  at compile time, no flag needed), `wasm_simd` is a separate opt-in
+  that the plain `rustfft` dependency did not previously enable, despite
+  a stale comment in `Cargo.toml` claiming otherwise. Measured via a
+  fresh A/B in `bench/wasm/` under `wasm32-unknown-unknown` + Node:
+  ~15-17% faster on FT8's default decode path, ~23-30% faster on
+  `.sic_early()` (the FFT-heavier multipass strategy — a `node --prof`
+  breakdown showed ~66% of its wall-clock in FFT/subtract). Recall
+  unchanged. No caller action needed — reaches every wasm32 consumer of
+  mfsk-core via Cargo feature unification. Follow-up to issue #246.
 - **`engine::sync::coarse_sync` no longer heap-allocates inside its
   hottest loop.** `fill_sync2d_row!`'s per-(freq-bin, lag)-cell
   accumulators (`t_blocks`/`t0_blocks`, `sync.rs`) were a fresh
