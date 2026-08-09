@@ -170,11 +170,27 @@ rayon       = { version = "1", optional = true }
 serde       = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
 # Real-input FFT for `jt9::softsym::AudioFft::build` — see the `jt9`
 # feature's doc comment above. `default-features = false`: this crate
-# only needs the portable scalar path, not the `avx`/`neon`/`sse`/
-# `wasm_simd` rustfft-passthrough features (those just forward to
-# rustfft's own SIMD feature flags, which are already on by default
-# via our plain `rustfft = { version = "6" }` dependency).
+# only needs the portable scalar path, not the `avx`/`neon`/`sse`
+# rustfft-passthrough features (those are auto-detected by rustfft at
+# compile time on their native targets via our plain
+# `rustfft = { version = "6" }` dependency above, no feature flag
+# needed — but see the wasm32-only override below: `wasm_simd` is NOT
+# implied the same way and needs an explicit opt-in).
 realfft     = { version = "3.5.0", default-features = false, optional = true }
+
+# rustfft's `wasm_simd` feature is a real, separate opt-in — unlike
+# avx/sse/neon on their native targets, it is NOT enabled by the plain
+# dependency above. Verified 2026-08-09 (A/B via Cargo feature
+# unification in bench/wasm/, `node --prof` under wasm32-unknown-unknown):
+# forcing it on measurably speeds up FT8 decode — ~15-17% on the
+# default single-pass strategy, ~23-30% on `.sic_early()` (the
+# FFT-heavier multipass strategy, per a `node --prof` breakdown showing
+# ~66% of its wall-clock in FFT/subtract), on `qso3_busy.wav`. Recall
+# unchanged (14/22 stations either way). This override reaches
+# mfsk-core's own `rustfft` dependency for any wasm32 build via Cargo
+# feature unification — no caller action needed.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rustfft     = { version = "6", optional = true, features = ["wasm_simd"] }
 
 [dev-dependencies]
 # Only for tests/ft8_decode_block_streaming.rs, which exercises the
