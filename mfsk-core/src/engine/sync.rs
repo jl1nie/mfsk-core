@@ -143,22 +143,47 @@ impl SyncDims {
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Flat (n_freq × n_time) spectrogram stored row-major by frequency.
+///
+/// Cropped to `[freq_offset, freq_offset + n_freq)` in absolute bin
+/// terms — `compute_spectra` no longer materialises every
+/// positive-frequency bin (issue #143, VK3NV: the un-cropped version
+/// cost 11.4 MB for FST4-120 alone). `get`/`avg_power_per_bin`'s
+/// callers keep using absolute bin indices; the offset subtraction
+/// happens once, here.
 pub struct Spectrogram {
     pub n_freq: usize,
     pub n_time: usize,
+    /// Absolute bin index the cropped `data` starts at (0 = no crop).
+    freq_offset: usize,
     data: Vec<f32>,
 }
 
 impl Spectrogram {
     #[inline]
     fn get(&self, freq: usize, time: usize) -> f32 {
-        self.data[freq * self.n_time + time]
+        debug_assert!(
+            freq >= self.freq_offset,
+            "Spectrogram::get: freq {freq} below cropped range starting at {}",
+            self.freq_offset
+        );
+        self.data[(freq - self.freq_offset) * self.n_time + time]
+    }
+
+    /// Absolute bin index [`Self::avg_power_per_bin`]'s output (and
+    /// `get`'s `freq` argument) is offset from — 0 if the spectrogram
+    /// wasn't cropped. Callers holding an absolute bin index `i` read
+    /// `avg_power_per_bin()[i - freq_offset()]`.
+    #[inline]
+    pub fn freq_offset(&self) -> usize {
+        self.freq_offset
     }
 
     /// Mean linear power per FFT bin, averaged across all time slices.
     ///
-    /// Returns `Vec<f32>` of length [`Self::n_freq`]. Used by
-    /// [`crate::engine::baseline::fit_baseline`] to compute the
+    /// Returns `Vec<f32>` of length [`Self::n_freq`], indexed
+    /// **relative to [`Self::freq_offset`]** (not an absolute bin
+    /// index — subtract `freq_offset()` from an absolute bin first).
+    /// Used by [`crate::engine::baseline::fit_baseline`] to compute the
     /// per-frequency noise floor (WSJT-X `ft4_baseline.f90` /
     /// `baseline.f90` first input). Memory layout is row-major by
     /// frequency, so each output entry is a contiguous reduction.
@@ -209,13 +234,26 @@ pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
 
 /// Compute per-time-step power spectra from raw 12 kHz PCM.
 ///
+/// Only bins `[bin_lo, bin_hi_incl]` (absolute, inclusive) are kept —
+/// this crop is the caller's job to size correctly (`coarse_sync`
+/// passes `[ia, ib + headroom]`, matching the range its own
+/// correlation/candidate search ever reads; see its doc comment for
+/// the `headroom` derivation). Cropping here rather than after the
+/// fact is the whole point (issue #143, VK3NV): a full-band
+/// spectrogram for e.g. FST4-120 is 11.4 MB even though `coarse_sync`
+/// only ever touches a narrow slice of it.
+///
 /// The per-NSPS-sample chunk is multiplied by `Protocol::SPECTRUM_WINDOW`
 /// before the NFFT1-point FFT. FT4 uses [`SpectrumWindow::Nuttall4`] to
 /// match WSJT-X `getcandidates4.f90:22` (sidelobe leakage from strong
 /// signals would otherwise inflate the per-bin polynomial baseline and
 /// mask weak signals); FT8 stays on `Rectangular` (its synth-roundtrip
 /// path is calibrated against rectangular).
-pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
+pub fn compute_spectra<P: Protocol>(
+    audio: &[i16],
+    bin_lo: usize,
+    bin_hi_incl: usize,
+) -> Spectrogram {
     let d = SyncDims::of::<P>();
     let fac = 1.0f32 / 300.0;
     let mut planner = default_planner();
@@ -226,7 +264,11 @@ pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
         SpectrumWindow::Nuttall4 => Some(nuttall_window(d.nsps)),
     };
 
-    let mut data = vec![0.0f32; d.nh1 * d.nhsym];
+    let bin_lo = bin_lo.min(d.nh1.saturating_sub(1));
+    let bin_hi_incl = bin_hi_incl.min(d.nh1.saturating_sub(1)).max(bin_lo);
+    let n_freq = bin_hi_incl - bin_lo + 1;
+
+    let mut data = vec![0.0f32; n_freq * d.nhsym];
     let mut buf = vec![Complex::new(0.0f32, 0.0); d.nfft1];
 
     for j in 0..d.nhsym {
@@ -248,14 +290,15 @@ pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
             };
         }
         fft.process(&mut buf);
-        for i in 0..d.nh1 {
-            data[i * d.nhsym + j] = buf[i].norm_sqr();
+        for i in bin_lo..=bin_hi_incl {
+            data[(i - bin_lo) * d.nhsym + j] = buf[i].norm_sqr();
         }
     }
 
     Spectrogram {
-        n_freq: d.nh1,
+        n_freq,
         n_time: d.nhsym,
+        freq_offset: bin_lo,
         data,
     }
 }
@@ -270,10 +313,22 @@ pub fn compute_spectra<P: Protocol>(audio: &[i16]) -> Spectrogram {
 /// coarse-sync is owned by [`crate::ft8::decode_block::coarse_sync`],
 /// which uses the WSJT-X `sync8.f90`-faithful 16-bin sliding-window
 /// allsum noise estimator instead of the same-time-slot non-Costas
-/// reference this generic function uses. The generic function stays
-/// for FT4 / FST4 / JT9 / Q65 / WSPR / uvpacket where the busy-band
-/// recall gap that motivated the FT8 swap (see #40) has not been
-/// observed.
+/// reference this generic function uses.
+///
+/// **FT4 mostly doesn't use this function either** (corrected 2026-08-09,
+/// issue #143 — this doc comment previously claimed otherwise). FT4's
+/// main decode strategies (single-pass, `.sic_rounds()`) route through
+/// `engine::ft4_coarse::ft4_coarse_sync` instead, a separate
+/// `getcandidates4.f90`-faithful port with its own spectrogram
+/// construction — see that module's doc comment for why. FT4's
+/// `SniperRequest::ap_hint` path (`msg::pipeline_ap`) still calls this
+/// function, unconditionally, for any `P: WsjtApCompatible` — so FT4
+/// isn't *entirely* off this path, just off it for the common case.
+/// FST4 (all 5 sub-modes) is the one protocol still fully on this path
+/// today; JT9/Q65/WSPR/uvpacket each have their own separate coarse-sync
+/// implementations (verified via `grep coarse_sync::<` — nothing outside
+/// `engine/pipeline.rs` and `msg/pipeline_ap.rs` calls this generic
+/// function with a non-FST4/FT4 protocol).
 pub fn coarse_sync<P: Protocol>(
     audio: &[i16],
     freq_min: f32,
@@ -283,7 +338,6 @@ pub fn coarse_sync<P: Protocol>(
     max_cand: usize,
 ) -> Vec<SyncCandidate> {
     let d = SyncDims::of::<P>();
-    let s = compute_spectra::<P>(audio);
     let ntones = P::NTONES as usize;
     let pattern_len = P::SYNC_MODE.blocks()[0].pattern.len();
 
@@ -294,6 +348,13 @@ pub fn coarse_sync<P: Protocol>(
     if ib < ia {
         return Vec::new();
     }
+
+    // Crop to exactly the range the correlation loop below and the
+    // FST4 stage1 augmentation ever read: candidate bins `ia..=ib`
+    // plus `headroom` bins above `ib` for their reference tones.
+    // `Spectrogram::get` stays absolute-bin-indexed (subtracts
+    // `freq_offset` internally) so nothing below needs to change.
+    let s = compute_spectra::<P>(audio, ia, (ib + headroom).min(d.nh1.saturating_sub(1)));
 
     let n_freq = ib - ia + 1;
     let n_lag = (2 * d.jz + 1) as usize;
@@ -477,11 +538,20 @@ pub fn coarse_sync<P: Protocol>(
     // are unaffected.
     let stage1_norm: Vec<f32> = if P::ID == super::ProtocolId::Fst4 {
         let avg_power = s.avg_power_per_bin();
+        // `avg_power` is offset-relative (indexed from `s.freq_offset()`,
+        // not an absolute bin) — see `Spectrogram::avg_power_per_bin`'s
+        // doc comment. The `.min(d.nh1 - 1)` clamp is still against the
+        // *absolute* full-band bound (matches `coarse_sync`'s own
+        // `headroom` derivation, which sizes the crop to always cover
+        // this read), so the offset subtraction happens last.
         let ccf: Vec<f32> = (0..n_freq)
             .map(|fi| {
                 let i = ia + fi;
                 (0..ntones)
-                    .map(|k| avg_power[(i + d.nfos * k).min(d.nh1 - 1)])
+                    .map(|k| {
+                        let abs_bin = (i + d.nfos * k).min(d.nh1 - 1);
+                        avg_power[(abs_bin - s.freq_offset()).min(avg_power.len() - 1)]
+                    })
                     .sum()
             })
             .collect();
