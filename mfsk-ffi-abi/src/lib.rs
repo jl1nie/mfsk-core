@@ -90,6 +90,40 @@ pub enum MfskDecodeDepth {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Strictness / equalisation (FFI builder-parity pass, issue #162 follow-up)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Accept/reject threshold profile, mirrors `mfsk_core`'s
+/// `engine::pipeline::DecodeStrictness`. Applies to FT8/FT4/FST4-60A;
+/// ignored (accepted but unused) for protocols with no tunable
+/// threshold, same convention as [`MfskDecodeDepth`].
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum MfskStrictness {
+    /// Tightest acceptance thresholds, fewest false-accepts.
+    Strict = 0,
+    /// Default — WSJT-X's own ceiling for FT8; independently-tuned
+    /// values for FT4/FST4.
+    #[default]
+    Normal = 1,
+    /// Loosest; deliberately exceeds WSJT-X's own FT8 ceiling
+    /// (mfsk-core-original extension, exploratory).
+    Deep = 2,
+}
+
+/// Equalisation mode, mirrors `mfsk_core`'s `engine::equalize::EqMode`.
+/// Applies to FT8/FT4/FST4-60A; ignored elsewhere.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum MfskEqMode {
+    /// No equalisation (passthrough).
+    #[default]
+    Off = 0,
+    /// Per-signal equalisation using local Costas pilot tones.
+    Local = 1,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Result record + list
 // ──────────────────────────────────────────────────────────────────────────
 

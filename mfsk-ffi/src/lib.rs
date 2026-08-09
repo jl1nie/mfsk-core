@@ -65,7 +65,8 @@ use mfsk_core::ft4::decode as ft4;
 use mfsk_core::ft8::decode as ft8;
 
 pub use mfsk_ffi_abi::{
-    MfskDecodeDepth, MfskDecodeOptions, MfskResult, MfskResultList, MfskStatus,
+    MfskDecodeDepth, MfskDecodeOptions, MfskEqMode, MfskResult, MfskResultList, MfskStatus,
+    MfskStrictness,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -244,6 +245,13 @@ struct DecodeOptionsInner {
     sync_min: f32,
     max_cand: c_int,
     depth: MfskDecodeDepth,
+    // Builder-parity fields (issue #162 follow-up) — each mirrors one
+    // mfsk_core::DecodeRequest builder method, set via a dedicated
+    // mfsk_decode_options_set_* function rather than a constructor
+    // parameter, per this struct's own stated growth plan above.
+    strictness: MfskStrictness,
+    eq_mode: MfskEqMode,
+    freq_hint: Option<f32>,
 }
 
 /// Matches this crate's pre-0.8.0 hardcoded per-protocol defaults for
@@ -258,12 +266,21 @@ impl Default for DecodeOptionsInner {
             sync_min: 2.0,
             max_cand: 50,
             depth: MfskDecodeDepth::BpAllOsd,
+            strictness: MfskStrictness::Normal,
+            eq_mode: MfskEqMode::Off,
+            freq_hint: None,
         }
     }
 }
 
 fn options_inner(opts: *const MfskDecodeOptions) -> Option<&'static DecodeOptionsInner> {
     unsafe { (opts as *const DecodeOptionsInner).as_ref() }
+}
+
+/// Mutable counterpart of [`options_inner`], used by the
+/// `mfsk_decode_options_set_*` family below.
+fn options_inner_mut(opts: *mut MfskDecodeOptions) -> Option<&'static mut DecodeOptionsInner> {
+    unsafe { (opts as *mut DecodeOptionsInner).as_mut() }
 }
 
 /// Construct a decode-options handle overriding
@@ -292,6 +309,7 @@ pub extern "C" fn mfsk_decode_options_new(
         sync_min,
         max_cand,
         depth,
+        ..Default::default()
     });
     Box::into_raw(inner) as *mut MfskDecodeOptions
 }
@@ -308,8 +326,86 @@ pub unsafe extern "C" fn mfsk_decode_options_free(opts: *mut MfskDecodeOptions) 
     }
 }
 
+/// Override the accept/reject threshold profile (default `Normal`,
+/// matches [`mfsk_decode_options_new`]'s own pre-existing default).
+/// Mirrors `mfsk_core::DecodeRequest::strictness`. Applies to
+/// FT8/FT4/FST4-60A; ignored for protocols with no tunable threshold.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_strictness(
+    opts: *mut MfskDecodeOptions,
+    strictness: MfskStrictness,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_strictness: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.strictness = strictness;
+    MfskStatus::Ok
+}
+
+/// Override the equalisation mode (default `Off`). Mirrors
+/// `mfsk_core::DecodeRequest::eq_mode`. Applies to FT8/FT4/FST4-60A;
+/// ignored elsewhere.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_eq_mode(
+    opts: *mut MfskDecodeOptions,
+    eq_mode: MfskEqMode,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_eq_mode: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.eq_mode = eq_mode;
+    MfskStatus::Ok
+}
+
+/// Set a preferred carrier frequency (Hz) — matching candidates are
+/// tried first, but every candidate in range is still searched (not a
+/// narrowing of `freq_min_hz`/`freq_max_hz`). Mirrors
+/// `mfsk_core::DecodeRequest::freq_hint`. Applies to FT8/FT4/FST4-60A;
+/// ignored elsewhere. No getter to clear it back to "unset" — construct
+/// a fresh [`MfskDecodeOptions`] if that's needed.
+///
+/// # Safety
+/// `opts` must be a live handle from [`mfsk_decode_options_new`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_decode_options_set_freq_hint(
+    opts: *mut MfskDecodeOptions,
+    freq_hz: f32,
+) -> MfskStatus {
+    let Some(inner) = options_inner_mut(opts) else {
+        set_error("mfsk_decode_options_set_freq_hint: null options handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.freq_hint = Some(freq_hz);
+    MfskStatus::Ok
+}
+
 fn map_osd(d: MfskDecodeDepth) -> bool {
     matches!(d, MfskDecodeDepth::BpAllOsd)
+}
+
+fn map_strictness(s: MfskStrictness) -> mfsk_core::engine::pipeline::DecodeStrictness {
+    use mfsk_core::engine::pipeline::DecodeStrictness as S;
+    match s {
+        MfskStrictness::Strict => S::Strict,
+        MfskStrictness::Normal => S::Normal,
+        MfskStrictness::Deep => S::Deep,
+    }
+}
+
+fn map_eq_mode(e: MfskEqMode) -> mfsk_core::engine::equalize::EqMode {
+    use mfsk_core::engine::equalize::EqMode as E;
+    match e {
+        MfskEqMode::Off => E::Off,
+        MfskEqMode::Local => E::Local,
+    }
 }
 
 /// Free a [`MfskResultList`] populated by a decode call. Passing NULL
@@ -715,6 +811,9 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
         ),
         None => (200.0, 3_000.0, 2.0, 50, true),
     };
+    let strictness = map_strictness(o.map(|o| o.strictness).unwrap_or_default());
+    let eq_mode = map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default());
+    let freq_hint = o.and_then(|o| o.freq_hint);
 
     let ud = SyncUserData(user_data);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -727,13 +826,16 @@ pub unsafe extern "C" fn mfsk_decode_i16_streaming(
             write_text(&mut rec.text, &text);
             unsafe { cb(&rec, ud.ptr()) };
         };
-        let results = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
+        let mut req = mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
             &audio, fmin, fmax, smin, mc,
         )
         .osd(osd)
-        .on_result(&fire)
-        .decode()
-        .results;
+        .strictness(strictness)
+        .eq_mode(eq_mode);
+        if let Some(fh) = freq_hint {
+            req = req.freq_hint(fh);
+        }
+        let results = req.on_result(&fire).decode().results;
         let mut vec: Vec<MfskResult> = Vec::new();
         for r in &results {
             push_wsjt77(r, &ht, &mut vec);
@@ -778,13 +880,17 @@ fn decode_i16_wsjt77(
                 ),
                 None => (200.0, 3_000.0, 2.0, 50, true),
             };
-            let results =
+            let mut req =
                 mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft8::Ft8>::new(
                     audio, fmin, fmax, smin, mc,
                 )
                 .osd(osd)
-                .decode()
-                .results;
+                .strictness(map_strictness(o.map(|o| o.strictness).unwrap_or_default()))
+                .eq_mode(map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default()));
+            if let Some(fh) = o.and_then(|o| o.freq_hint) {
+                req = req.freq_hint(fh);
+            }
+            let results = req.decode().results;
             for r in results {
                 push_wsjt77(&r, &ht, &mut vec);
             }
@@ -799,12 +905,16 @@ fn decode_i16_wsjt77(
                 ),
                 None => (200.0, 3_000.0, 1.2, 50),
             };
-            let results =
+            let mut req =
                 mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::ft4::Ft4>::new(
                     audio, fmin, fmax, smin, mc,
                 )
-                .decode()
-                .results;
+                .strictness(map_strictness(o.map(|o| o.strictness).unwrap_or_default()))
+                .eq_mode(map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default()));
+            if let Some(fh) = o.and_then(|o| o.freq_hint) {
+                req = req.freq_hint(fh);
+            }
+            let results = req.decode().results;
             for r in results {
                 push_ft4(&r, &mut vec);
             }
@@ -825,12 +935,16 @@ fn decode_i16_wsjt77(
                 ),
                 None => (100.0, 3_000.0, 0.8, 30),
             };
-            let results =
+            let mut req =
                 mfsk_core::msg::decode_request::DecodeRequest::<mfsk_core::fst4::Fst4s60>::new(
                     audio, fmin, fmax, smin, mc,
                 )
-                .decode()
-                .results;
+                .strictness(map_strictness(o.map(|o| o.strictness).unwrap_or_default()))
+                .eq_mode(map_eq_mode(o.map(|o| o.eq_mode).unwrap_or_default()));
+            if let Some(fh) = o.and_then(|o| o.freq_hint) {
+                req = req.freq_hint(fh);
+            }
+            let results = req.decode().results;
             for r in results {
                 let text = codec.unpack(r.message77(), &ctx).unwrap_or_default();
                 let mut rec = empty_result(r.freq_hz, r.dt_sec, r.snr_db, r.hard_errors, r.pass);

@@ -114,6 +114,44 @@ typedef enum MfskStatus {
 } MfskStatus;
 
 /**
+ * Accept/reject threshold profile, mirrors `mfsk_core`'s
+ * `engine::pipeline::DecodeStrictness`. Applies to FT8/FT4/FST4-60A;
+ * ignored (accepted but unused) for protocols with no tunable
+ * threshold, same convention as [`MfskDecodeDepth`].
+ */
+typedef enum MfskStrictness {
+    /**
+     * Tightest acceptance thresholds, fewest false-accepts.
+     */
+    MFSK_STRICTNESS_STRICT = 0,
+    /**
+     * Default — WSJT-X's own ceiling for FT8; independently-tuned
+     * values for FT4/FST4.
+     */
+    MFSK_STRICTNESS_NORMAL = 1,
+    /**
+     * Loosest; deliberately exceeds WSJT-X's own FT8 ceiling
+     * (mfsk-core-original extension, exploratory).
+     */
+    MFSK_STRICTNESS_DEEP = 2,
+} MfskStrictness;
+
+/**
+ * Equalisation mode, mirrors `mfsk_core`'s `engine::equalize::EqMode`.
+ * Applies to FT8/FT4/FST4-60A; ignored elsewhere.
+ */
+typedef enum MfskEqMode {
+    /**
+     * No equalisation (passthrough).
+     */
+    MFSK_EQ_MODE_OFF = 0,
+    /**
+     * Per-signal equalisation using local Costas pilot tones.
+     */
+    MFSK_EQ_MODE_LOCAL = 1,
+} MfskEqMode;
+
+/**
  * Q65 sub-mode selector for the dedicated `mfsk_q65_*` function
  * family. All sub-modes share the same FEC, sync layout and
  * message format — only the T/R period and tone spacing change.
@@ -394,6 +432,43 @@ struct MfskDecodeOptions *mfsk_decode_options_new(float freq_min_hz,
  * [`mfsk_decode_options_new`], or NULL.
  */
 void mfsk_decode_options_free(struct MfskDecodeOptions *opts);
+
+/**
+ * Override the accept/reject threshold profile (default `Normal`,
+ * matches [`mfsk_decode_options_new`]'s own pre-existing default).
+ * Mirrors `mfsk_core::DecodeRequest::strictness`. Applies to
+ * FT8/FT4/FST4-60A; ignored for protocols with no tunable threshold.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`].
+ */
+enum MfskStatus mfsk_decode_options_set_strictness(struct MfskDecodeOptions *opts,
+                                                   enum MfskStrictness strictness);
+
+/**
+ * Override the equalisation mode (default `Off`). Mirrors
+ * `mfsk_core::DecodeRequest::eq_mode`. Applies to FT8/FT4/FST4-60A;
+ * ignored elsewhere.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`].
+ */
+enum MfskStatus mfsk_decode_options_set_eq_mode(struct MfskDecodeOptions *opts,
+                                                enum MfskEqMode eq_mode);
+
+/**
+ * Set a preferred carrier frequency (Hz) — matching candidates are
+ * tried first, but every candidate in range is still searched (not a
+ * narrowing of `freq_min_hz`/`freq_max_hz`). Mirrors
+ * `mfsk_core::DecodeRequest::freq_hint`. Applies to FT8/FT4/FST4-60A;
+ * ignored elsewhere. No getter to clear it back to "unset" — construct
+ * a fresh [`MfskDecodeOptions`] if that's needed.
+ *
+ * # Safety
+ * `opts` must be a live handle from [`mfsk_decode_options_new`].
+ */
+enum MfskStatus mfsk_decode_options_set_freq_hint(struct MfskDecodeOptions *opts,
+                                                  float freq_hz);
 
 /**
  * Free a [`MfskResultList`] populated by a decode call. Passing NULL

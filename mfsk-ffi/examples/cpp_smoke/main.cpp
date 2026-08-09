@@ -135,6 +135,55 @@ void test_ft8_streaming() {
     mfsk_samples_free(&pcm);
 }
 
+// ── FFI builder-parity setters (issue #162 follow-up) ──────────────────
+//
+// MfskDecodeOptions hadn't grown a single setter since its creation
+// (issue #205) despite its own doc comment anticipating exactly that —
+// this proves mfsk_decode_options_set_strictness/_eq_mode/_freq_hint
+// actually reach a real decode call from compiled C++, not just that
+// they link.
+void test_builder_options() {
+    std::printf("— FFI builder-parity: mfsk_decode_options_set_strictness/_eq_mode/_freq_hint\n");
+    MfskSamples pcm{};
+    if (mfsk_encode_ft8("CQ", "JA1ABC", "PM95", 1500.0f, &pcm) != MFSK_STATUS_OK) {
+        fail("builder-options", mfsk_last_error());
+        return;
+    }
+
+    MfskDecodeOptions* opts = mfsk_decode_options_new(
+        200.0f, 3000.0f, 2.0f, 50, MFSK_DECODE_DEPTH_BP_ALL_OSD);
+    if (opts == nullptr) {
+        fail("builder-options", "mfsk_decode_options_new returned null");
+        mfsk_samples_free(&pcm);
+        return;
+    }
+    if (mfsk_decode_options_set_strictness(opts, MFSK_STRICTNESS_DEEP) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_strictness failed");
+    }
+    if (mfsk_decode_options_set_eq_mode(opts, MFSK_EQ_MODE_LOCAL) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_eq_mode failed");
+    }
+    if (mfsk_decode_options_set_freq_hint(opts, 1500.0f) != MFSK_STATUS_OK) {
+        fail("builder-options", "set_freq_hint failed");
+    }
+
+    MfskDecoder* dec = mfsk_decoder_new(MFSK_PROTOCOL_FT8);
+    MfskResultList list{};
+    const MfskStatus st = mfsk_decode_f32(dec, pcm.samples, pcm.len, 12000, opts, &list);
+    if (st != MFSK_STATUS_OK) {
+        fail("builder-options", mfsk_last_error() ? mfsk_last_error() : "decode failed");
+    } else {
+        print_decodes("builder-options", list);
+        if (!any_contains(list, "JA1ABC")) {
+            fail("builder-options", "setters broke a clean decode");
+        }
+    }
+    mfsk_result_list_free(&list);
+    mfsk_decoder_free(dec);
+    mfsk_decode_options_free(opts);
+    mfsk_samples_free(&pcm);
+}
+
 // ── FT4 ──────────────────────────────────────────────────────────────
 void test_ft4() {
     std::printf("— FT4 roundtrip: encode 'CQ JA1ABC PM95' at 1500 Hz → decode\n");
@@ -418,6 +467,7 @@ int main() {
 
     test_ft8();
     test_ft8_streaming();
+    test_builder_options();
     test_ft4();
     test_fst4();
     test_wspr();
