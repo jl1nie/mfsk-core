@@ -64,6 +64,19 @@ effect on any decode path.
     call). JT65/JT9's loops are sequential with no parallelism, so
     their streamed delivery is an exact match against the batch `Vec`,
     same order, with no divergence mechanism.
+  - **`mfsk-ffi`: `mfsk_decode_i16_streaming`** — the streaming surface
+    above was never exposed across the C ABI at all (found while
+    auditing the FFI layer, issue #246 follow-up). FT8 only for now
+    (other protocols return `MfskStatus::UnknownProtocol`); additive
+    to `mfsk_decode_i16` in every sense `DecodeRequest::on_result`
+    already establishes (`out` still gets the full batch list,
+    `callback` is optional). First function in this crate to run
+    caller-supplied code mid-decode, so it's also the first to need
+    `catch_unwind` (a Rust panic must not unwind across an `extern
+    "C"` boundary) and a `Sync`-asserted `user_data` wrapper (the
+    parallel/rayon strategy invokes the callback from worker threads).
+    Verified via `tests/streaming_ffi.rs` and a new `cpp_smoke`
+    section exercising the real generated header from compiled C++.
   - **Bug, found and fixed same day (2026-08-08): `on_result` silently
     never fired for `Ft4`/FST4.** `on_result` is a field on the shared
     `DecodeRequest`/`SniperRequest<P>` structs (issue #191's generic
