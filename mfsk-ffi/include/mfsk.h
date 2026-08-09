@@ -376,6 +376,29 @@ typedef struct MfskSamples {
 typedef void (*MfskResultCallback)(const struct MfskResult *result,
                                    void *user_data);
 
+/**
+ * Opaque callsign hash-table handle. Resolves `<...>` Type-4
+ * hashed-callsign placeholders (WSJT-X's compact encoding for a
+ * non-standard call paired with a standard one) in Q65 decode output.
+ *
+ * Construct with [`mfsk_callsign_hash_table_new`], populate with
+ * [`mfsk_callsign_hash_table_insert`] as real callsigns become known
+ * (e.g. from earlier decodes, a station log, or any other source the
+ * caller trusts), then pass into any `mfsk_q65_decode_*` function's
+ * `hash_table` parameter. NULL there (the pre-#250 behaviour) leaves
+ * hashed callsigns unresolved as literal `<...>` text — nothing else
+ * about decode success or timing changes; this only affects how the
+ * final message *text* renders. Free with
+ * [`mfsk_callsign_hash_table_free`].
+ *
+ * Mirrors `mfsk_core::q65::decode_request::DecodeRequest::hash_table`
+ * (`Arc<CallsignHashTable>`) — deliberately not folded into
+ * [`MfskDecodeOptions`], which Q65's own function family never uses.
+ */
+typedef struct MfskCallsignHashTable {
+    uint8_t _priv[0];
+} MfskCallsignHashTable;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -661,6 +684,35 @@ enum MfskStatus mfsk_decode_i16_streaming(const struct MfskDecoder *dec,
                                           struct MfskResultList *out);
 
 /**
+ * Construct an empty callsign hash table. Free with
+ * [`mfsk_callsign_hash_table_free`].
+ */
+struct MfskCallsignHashTable *mfsk_callsign_hash_table_new(void);
+
+/**
+ * Free a handle from [`mfsk_callsign_hash_table_new`]. NULL is a no-op.
+ *
+ * # Safety
+ * `ht` must be a pointer previously returned by
+ * [`mfsk_callsign_hash_table_new`], or NULL.
+ */
+void mfsk_callsign_hash_table_free(struct MfskCallsignHashTable *ht);
+
+/**
+ * Register a known callsign so a later `<...>` hashed placeholder
+ * that matches it resolves to the real call. Mirrors
+ * `CallsignHashTable::insert` exactly, including its documented skip
+ * rules (empty strings, `<...>` itself, strings under 2 characters,
+ * and `CQ`-prefixed calls are all silently ignored — not an error).
+ *
+ * # Safety
+ * `ht` must be a live handle from [`mfsk_callsign_hash_table_new`].
+ * `call` must be a NUL-terminated UTF-8 string.
+ */
+enum MfskStatus mfsk_callsign_hash_table_insert(struct MfskCallsignHashTable *ht,
+                                                const char *call);
+
+/**
  * Synthesise a standard FT8 message ("CALL1 CALL2 REPORT") at `freq_hz`
  * carrier. Writes 12 kHz f32 PCM into `out`.
  *
@@ -763,9 +815,15 @@ enum MfskStatus mfsk_encode_q65(enum MfskQ65SubMode submode,
  * computational cost or extra inputs for a few dB of threshold gain
  * against this baseline.
  *
+ * `hash_table` may be NULL (hashed `<...>` callsigns stay
+ * unresolved, the pre-#250 behaviour) or a handle from
+ * [`mfsk_callsign_hash_table_new`] — see that type's doc comment.
+ *
  * # Safety
  *
  * `samples` must point to `n_samples` valid `f32` values.
+ * `hash_table`, if non-NULL, must be a live handle from
+ * [`mfsk_callsign_hash_table_new`].
  * `out` must point to a writable [`MfskResultList`]; pair with
  * [`mfsk_result_list_free`] when done.
  */
@@ -773,6 +831,7 @@ enum MfskStatus mfsk_q65_decode(enum MfskQ65SubMode submode,
                                 const float *samples,
                                 uintptr_t n_samples,
                                 uint32_t sample_rate,
+                                const struct MfskCallsignHashTable *hash_table,
                                 struct MfskResultList *out);
 
 /**
@@ -780,6 +839,8 @@ enum MfskStatus mfsk_q65_decode(enum MfskQ65SubMode submode,
  * (`call1`, `call2`, `grid`, `report`) — each may be NULL when
  * unknown. Lifts the effective decode threshold by ~2 dB when the
  * supplied hints are correct.
+ *
+ * `hash_table`: see [`mfsk_q65_decode`]'s doc.
  *
  * # Safety
  *
@@ -794,6 +855,7 @@ enum MfskStatus mfsk_q65_decode_with_ap(enum MfskQ65SubMode submode,
                                         const char *ap_call2,
                                         const char *ap_grid,
                                         const char *ap_report,
+                                        const struct MfskCallsignHashTable *hash_table,
                                         struct MfskResultList *out);
 
 /**
@@ -802,7 +864,7 @@ enum MfskStatus mfsk_q65_decode_with_ap(enum MfskQ65SubMode submode,
  * microwave EME at 5.7 GHz / 10 GHz / 24 GHz. `b90_ts` is the
  * spread bandwidth × symbol period (typical: 0.05 = near-AWGN,
  * 1.0 = moderate, 5.0+ = severe). `model` chooses the calibration
- * shape.
+ * shape. `hash_table`: see [`mfsk_q65_decode`]'s doc.
  *
  * # Safety
  *
@@ -814,6 +876,7 @@ enum MfskStatus mfsk_q65_decode_fading(enum MfskQ65SubMode submode,
                                        uint32_t sample_rate,
                                        float b90_ts,
                                        enum MfskQ65FadingModel fading_model,
+                                       const struct MfskCallsignHashTable *hash_table,
                                        struct MfskResultList *out);
 
 /**
@@ -822,7 +885,8 @@ enum MfskStatus mfsk_q65_decode_fading(enum MfskQ65SubMode submode,
  * `(my_call, his_call, his_grid)` and picks the matching exchange,
  * if any. `his_grid` may be NULL or empty to skip the two
  * grid-bearing templates. Yields ~3 dB threshold gain over plain
- * BP when the truth is in the candidate set.
+ * BP when the truth is in the candidate set. `hash_table`: see
+ * [`mfsk_q65_decode`]'s doc.
  *
  * # Safety
  *
@@ -837,6 +901,7 @@ enum MfskStatus mfsk_q65_decode_with_ap_list(enum MfskQ65SubMode submode,
                                              const char *my_call,
                                              const char *his_call,
                                              const char *his_grid,
+                                             const struct MfskCallsignHashTable *hash_table,
                                              struct MfskResultList *out);
 
 /**

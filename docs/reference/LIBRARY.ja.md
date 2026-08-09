@@ -672,6 +672,15 @@ C ABI には上記のうち 4 戦略が `mfsk_q65_decode`、
 (`Gaussian` / `Lorentzian`) 引数を取る (§8)。Multi-period averaging は
 まだ C ABI に含まれていない。
 
+4関数いずれも任意の `hash_table` 引数を取る (issue #250) —
+`DecodeRequest::hash_table` の `Arc<CallsignHashTable>` を写した opaque
+`MfskCallsignHashTable*` ハンドル
+(`mfsk_callsign_hash_table_new`/`_insert`/`_free`)。NULL (#250 以前の
+既定動作) では Type-4 のハッシュ化コールサイン `<...>` プレースホルダ
+が未解決のまま残る。テーブルを渡せば `_insert` で登録済みの実コール
+サインに解決される。デコード成否やタイミングには影響しない、テキスト
+表示のみの機能。
+
 ## 4. 共有プリミティブ (`engine`)
 
 ### 受信パイプライン — engine 関数群
@@ -1300,18 +1309,29 @@ MfskStatus        mfsk_encode_q65(MfskQ65SubMode submode,
                                   MfskSamples* out);
 
 // Q65 専用 4 戦略 (sub-mode 引数で 10 sub-mode のいずれにも適用。
-// multi-period averaging はまだ C ABI 未公開、§3 参照):
-MfskStatus        mfsk_q65_decode(MfskQ65SubMode, ...);              // AWGN
+// multi-period averaging はまだ C ABI 未公開、§3 参照。いずれも末尾
+// 直前に任意の hash_table 引数を取る、issue #250、§3 参照):
+MfskStatus        mfsk_q65_decode(MfskQ65SubMode, ...,
+                                  const MfskCallsignHashTable*, ...); // AWGN
 MfskStatus        mfsk_q65_decode_with_ap(MfskQ65SubMode, ...,
                                   const char* ap_call1, ap_call2,
-                                  ap_grid, ap_report, ...);          // AP-hint BP
+                                  ap_grid, ap_report,
+                                  const MfskCallsignHashTable*, ...); // AP-hint BP
 MfskStatus        mfsk_q65_decode_fading(MfskQ65SubMode, ...,
                                   float b90_ts,
-                                  MfskQ65FadingModel, ...);          // fast-fading
+                                  MfskQ65FadingModel,
+                                  const MfskCallsignHashTable*, ...); // fast-fading
 MfskStatus        mfsk_q65_decode_with_ap_list(MfskQ65SubMode, ...,
                                   const char* my_call,
                                   const char* his_call,
-                                  const char* his_grid, ...);        // AP-list
+                                  const char* his_grid,
+                                  const MfskCallsignHashTable*, ...); // AP-list
+
+// コールサインハッシュテーブル (opaque handle, issue #250):
+MfskCallsignHashTable* mfsk_callsign_hash_table_new(void);
+MfskStatus        mfsk_callsign_hash_table_insert(MfskCallsignHashTable*,
+                                  const char* call);
+void              mfsk_callsign_hash_table_free(MfskCallsignHashTable*);
 
 void              mfsk_result_list_free(MfskResultList* list);
 void              mfsk_samples_free(MfskSamples* s);
@@ -1346,8 +1366,11 @@ const char*       mfsk_last_error(void);
    で解放。NULL は常に有効 (プロトコル既定値を使う)。0.9.0 以降、
    6 個の `mfsk_decode_options_set_*` 関数がハンドルを decode 呼び出し
    前に in-place で変更できる — `DecodeRequest` のビルダーチェーン
-   (§4) の C 側ミラー。まだ未対応: `.known()`, `.fft_cache()`,
-   `SniperRequest` 露出、Q65 の `.hash_table()` (issue #247-#250)。
+   (§4) の C 側ミラー。まだ未対応: `.known()` (#247)、`SniperRequest`
+   露出 (#249)。Q65 の `.hash_table()` は別途出荷済み (#250、§3) —
+   `MfskDecodeOptions` とは別の opaque ハンドル
+   (`MfskCallsignHashTable*`)、Q65 の関数ファミリーはそもそも
+   `MfskDecodeOptions` を使わないため。
 5. **エラー**: `MfskStatus` が非ゼロの場合、**同じスレッド** で
    `mfsk_last_error` を呼ぶと診断メッセージが得られる。返される
    ポインタは次の fallible 呼び出しまで有効。

@@ -62,11 +62,15 @@ Three tracks, at very different maturities:
    `mfsk_decode_options_set_*` builder-parity setters closing the
    `mfsk-ffi` vs. `DecodeRequest` gap for FT8/FT4/FST4-60A's scalar/
    strategy/AP knobs (issue #162 follow-up). Deliberately left for
-   later, now their own open issues: `.known()` cross-phase dedup
-   (#247), `SniperRequest` exposure (#249), Q65's `.hash_table()`
-   (#250) — none urgent, no consumer asking yet. `.fft_cache()` reuse
-   was also deferred here but closed outright 2026-08-10 (#248,
-   no consumer materialized — see *Open follow-ups*' closed list).
+   later, still open: `.known()` cross-phase dedup (#247),
+   `SniperRequest` exposure (#249) — neither urgent, no consumer
+   asking yet. Of the pass's other two deferred items: `.fft_cache()`
+   reuse was closed outright 2026-08-10 (#248, no consumer
+   materialized), and Q65's `.hash_table()` shipped 2026-08-10 (#250 —
+   despite `mfsk-ffi`'s own near-zero download signal at review time,
+   picked as the one cheap, self-contained, mechanically-scoped item
+   worth doing regardless of demand; see *Open follow-ups* below and
+   `mfsk-ffi/README.md` for the shipped shape).
    `session::SlotAssembler` (audio ingestion) is written
    and **parked pending a real consumer**. This track only advances
    when an actual host UI (WebFT8, a desktop app) needs the next
@@ -343,9 +347,6 @@ Grouped by the three tracks in **Strategic state** above.
   raw `DecodeResult` passthrough shape.
 - **#249** — expose `SniperRequest` (single-frequency-target decode)
   via `mfsk-ffi`. A wholly new function family, not a setter.
-- **#250** — expose Q65's `DecodeRequest::hash_table` (Type-4
-  callsign resolution) via `mfsk-ffi`. Separate builder family from
-  the FT8/FT4/FST4 one #247-#249 concern.
 - `session::SlotAssembler` is parked on branch
   `claude/streaming-interface-docs-vuet32` pending a real consumer
   (desktop UI, or the embedded `audio.rs` slot-statics replacement) to
@@ -367,7 +368,9 @@ refined FST4 sync candidates (9→2 on the qso3 golden), 2026-08-08;
 **#245** / **#246** / **#248** — closed 2026-08-10 without fixing,
 per the effect-vs-usage review in *Strategic state* above (real
 measured waste, but on protocols/paths without real latency or
-consumer pressure); **#169** — JT65 `ftrsdap` sensitivity gap, fix
+consumer pressure); **#250** — Q65 callsign hash-table exposure via
+`mfsk-ffi`, shipped 2026-08-10 (see *Strategic state* above and
+`mfsk-ffi/README.md`); **#169** — JT65 `ftrsdap` sensitivity gap, fix
 landed 2026-08-08 (see *Strategic state* above and
 `docs/notes/BENCHMARKS.md`'s JT65 section), issue itself closed
 2026-08-10 after a doc audit caught it

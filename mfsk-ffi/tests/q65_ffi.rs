@@ -20,6 +20,7 @@ use std::ptr;
 
 use mfsk::{
     MfskProtocol, MfskQ65FadingModel, MfskQ65SubMode, MfskResultList, MfskSamples, MfskStatus,
+    mfsk_callsign_hash_table_free, mfsk_callsign_hash_table_insert, mfsk_callsign_hash_table_new,
     mfsk_decode_f32, mfsk_decoder_free, mfsk_decoder_new, mfsk_encode_q65, mfsk_q65_decode,
     mfsk_q65_decode_fading, mfsk_q65_decode_with_ap, mfsk_q65_decode_with_ap_list,
     mfsk_result_list_free, mfsk_samples_free,
@@ -139,8 +140,16 @@ fn encode_q65_roundtrips_for_every_submode() {
 fn q65_plain_decode_recovers_clean_signal() {
     let mut pcm = encode_q65a30("CQ", "K1ABC", "FN42");
     let mut list = empty_list();
-    let st =
-        unsafe { mfsk_q65_decode(MfskQ65SubMode::A30, pcm.samples, pcm.len, 12_000, &mut list) };
+    let st = unsafe {
+        mfsk_q65_decode(
+            MfskQ65SubMode::A30,
+            pcm.samples,
+            pcm.len,
+            12_000,
+            ptr::null(),
+            &mut list,
+        )
+    };
     assert_eq!(st, MfskStatus::Ok);
     assert!(
         unsafe { list_any_contains(&list, "K1ABC") } && unsafe { list_any_contains(&list, "FN42") },
@@ -164,6 +173,7 @@ fn q65_decode_with_ap_handles_null_hints() {
             pcm.samples,
             pcm.len,
             12_000,
+            ptr::null(),
             ptr::null(),
             ptr::null(),
             ptr::null(),
@@ -194,6 +204,7 @@ fn q65_decode_with_ap_uses_call1_hint() {
             ptr::null(),
             ptr::null(),
             ptr::null(),
+            ptr::null(),
             &mut list,
         )
     };
@@ -217,6 +228,7 @@ fn q65_decode_fading_recovers_clean_signal() {
             12_000,
             0.05, // tight spread → near-AWGN
             MfskQ65FadingModel::Gaussian,
+            ptr::null(),
             &mut list,
         )
     };
@@ -249,6 +261,7 @@ fn q65_decode_with_ap_list_picks_matching_template() {
             mc.as_ptr(),
             hc.as_ptr(),
             hg.as_ptr(),
+            ptr::null(),
             &mut list,
         )
     };
@@ -280,6 +293,7 @@ fn q65_decode_with_ap_list_returns_decode_failed_on_bad_calls() {
             bad.as_ptr(),
             hc.as_ptr(),
             ptr::null(),
+            ptr::null(),
             &mut list,
         )
     };
@@ -292,6 +306,79 @@ fn q65_decode_with_ap_list_returns_decode_failed_on_bad_calls() {
     unsafe {
         mfsk_result_list_free(&mut list);
         mfsk_samples_free(&mut pcm);
+    }
+}
+
+/// Proves the FFI `hash_table` parameter reaches
+/// `mfsk_core::msg::q65`'s hash-table-aware unpack, not just that it
+/// compiles — same shape as `mfsk_core::q65::rx`'s own
+/// `sniper_hash_table_resolves_hashed_callsign` test, replayed through
+/// the C ABI. Builds a Type-4 message ("JL1NIE/1" non-standard call +
+/// hashed "JA1ABC") directly via `mfsk_core`'s Rust API (issue #250 —
+/// `mfsk_encode_q65` only packs standard messages, so there's no FFI
+/// encoder for this case) and decodes it twice: once with a NULL
+/// `hash_table` (must show the unresolved `<...>` placeholder) and
+/// once with a table pre-seeded via `mfsk_callsign_hash_table_insert`
+/// (must show the resolved `<JA1ABC>`).
+#[test]
+fn q65_decode_hash_table_resolves_hashed_callsign() {
+    use mfsk_core::msg::wsjt77::pack77_type4;
+    use mfsk_core::q65::Q65a30;
+    use mfsk_core::q65::tx::{encode_channel_symbols, synthesize_audio_for};
+
+    let bits77 = pack77_type4("JL1NIE/1", "JA1ABC", "", false).expect("pack77_type4 failed");
+    let tones = encode_channel_symbols(&bits77);
+    let audio = synthesize_audio_for::<Q65a30>(&tones, 12_000, 1500.0, 0.3);
+
+    // Without a hash table: unresolved placeholder.
+    let mut list = empty_list();
+    let st = unsafe {
+        mfsk_q65_decode(
+            MfskQ65SubMode::A30,
+            audio.as_ptr(),
+            audio.len(),
+            12_000,
+            ptr::null(),
+            &mut list,
+        )
+    };
+    assert_eq!(st, MfskStatus::Ok);
+    assert!(
+        unsafe { list_any_contains(&list, "JL1NIE/1") }
+            && unsafe { list_any_contains(&list, "<...>") },
+        "expected an unresolved '<...>' decode without a hash table"
+    );
+    unsafe {
+        mfsk_result_list_free(&mut list);
+    }
+
+    // With a hash table pre-seeded with the standard call: resolved.
+    let ht = mfsk_callsign_hash_table_new();
+    assert!(!ht.is_null());
+    let ja1abc = CString::new("JA1ABC").unwrap();
+    let ins_st = unsafe { mfsk_callsign_hash_table_insert(ht, ja1abc.as_ptr()) };
+    assert_eq!(ins_st, MfskStatus::Ok);
+
+    let mut list2 = empty_list();
+    let st2 = unsafe {
+        mfsk_q65_decode(
+            MfskQ65SubMode::A30,
+            audio.as_ptr(),
+            audio.len(),
+            12_000,
+            ht,
+            &mut list2,
+        )
+    };
+    assert_eq!(st2, MfskStatus::Ok);
+    assert!(
+        unsafe { list_any_contains(&list2, "JL1NIE/1") }
+            && unsafe { list_any_contains(&list2, "<JA1ABC>") },
+        "expected the hashed callsign to resolve via the supplied table"
+    );
+    unsafe {
+        mfsk_result_list_free(&mut list2);
+        mfsk_callsign_hash_table_free(ht);
     }
 }
 

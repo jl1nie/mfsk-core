@@ -98,10 +98,31 @@ effect on any decode path.
     `qso3_busy.wav` for `sic_rounds`/`sic_early` (more stations than
     default) and `ap_hint` (reuses `mfsk-core`'s own already-proven
     AP-on gain, strict-superset + a known JTDX extra) — not just
-    round-trip wiring checks. `.known()` (#247), `.fft_cache()` reuse
-    (#248), `SniperRequest` exposure (#249), and Q65's `.hash_table()`
-    (#250) are deliberately still deferred (each is a real design
-    question of its own, not just a missing setter).
+    round-trip wiring checks. `.known()` (#247) and `SniperRequest`
+    exposure (#249) are deliberately still deferred (each is a real
+    design question of its own, not just a missing setter);
+    `.fft_cache()` reuse (#248) was closed outright (no consumer
+    materialized).
+  - **`mfsk-ffi`: Q65 callsign hash-table exposure** (issue #250,
+    the builder-parity pass's one deferred item that did ship). New
+    opaque `MfskCallsignHashTable` handle
+    (`mfsk_callsign_hash_table_new`/`_insert`/`_free`, same
+    handle-pair shape as `MfskDecodeOptions`) mirroring
+    `q65::DecodeRequest::hash_table`'s `Arc<CallsignHashTable>` —
+    resolves `<...>` Type-4 hashed-callsign placeholders in decoded
+    message text. Threaded through all four `mfsk_q65_decode_*`
+    functions as a new optional trailing parameter (before `out`);
+    NULL keeps the pre-#250 unresolved-placeholder behaviour, a
+    breaking signature change for existing callers of those four
+    functions (recompile + pass NULL to keep current behaviour).
+    Deliberately not folded into `MfskDecodeOptions` — Q65's function
+    family doesn't use that type at all. Verified with the same
+    differential-test shape as `q65::rx`'s own Rust-side hash-table
+    test: a Type-4 message built directly via `mfsk_core`'s Rust API
+    (`mfsk_encode_q65` only packs standard messages) decodes to a
+    literal `<...>` with `hash_table = NULL` and to the resolved
+    `<JA1ABC>` once the same callsign is registered via
+    `mfsk_callsign_hash_table_insert`.
   - **Bug, found and fixed same day (2026-08-08): `on_result` silently
     never fired for `Ft4`/FST4.** `on_result` is a field on the shared
     `DecodeRequest`/`SniperRequest<P>` structs (issue #191's generic

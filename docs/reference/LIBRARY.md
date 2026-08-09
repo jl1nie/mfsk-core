@@ -694,6 +694,15 @@ parameter so any of the ten sub-modes is reachable from C/C++/Kotlin;
 (`Gaussian` / `Lorentzian`) parameter (§8). Multi-period averaging is
 not yet part of the C ABI.
 
+Each of the four also takes an optional `hash_table` parameter
+(issue #250) — an opaque `MfskCallsignHashTable*` handle
+(`mfsk_callsign_hash_table_new`/`_insert`/`_free`) mirroring
+`DecodeRequest::hash_table`'s `Arc<CallsignHashTable>`. NULL (the
+pre-#250 default) leaves `<...>` Type-4 hashed-callsign placeholders
+unresolved in the decoded message text; a populated table resolves
+them to real callsigns registered via `_insert`. Purely a text-
+rendering concern — it doesn't affect decode success or timing.
+
 ## 4. Shared primitives (`engine`)
 
 ### Receive pipeline — the engine functions
@@ -1486,9 +1495,11 @@ See `mfsk-ffi/examples/cpp_smoke/` for a minimal end-to-end demo.
    protocol's built-in default). Since 0.9.0, the six
    `mfsk_decode_options_set_*` functions mutate the handle in place
    before it's passed to a decode call — the C-side mirror of
-   `DecodeRequest`'s builder chain (§4). Not yet mirrored: `.known()`,
-   `.fft_cache()`, `SniperRequest` exposure, Q65's `.hash_table()`
-   (issues #247-#250).
+   `DecodeRequest`'s builder chain (§4). Not yet mirrored: `.known()`
+   (#247), `SniperRequest` exposure (#249). Q65's `.hash_table()`
+   shipped separately (#250, §3) — a different opaque handle
+   (`MfskCallsignHashTable*`), since Q65's function family doesn't use
+   `MfskDecodeOptions` at all.
 5. **Errors**: on non-zero `MfskStatus`, call `mfsk_last_error` on the
    **same thread** to retrieve a human-readable diagnostic. The
    returned pointer is valid until the next fallible call on that

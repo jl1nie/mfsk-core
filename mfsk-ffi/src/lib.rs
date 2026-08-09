@@ -1133,6 +1133,90 @@ fn decode_jt65_aligned(audio: &[f32], out: &mut MfskResultList) -> MfskStatus {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Q65 callsign hash table (opaque handle, issue #250)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Opaque callsign hash-table handle. Resolves `<...>` Type-4
+/// hashed-callsign placeholders (WSJT-X's compact encoding for a
+/// non-standard call paired with a standard one) in Q65 decode output.
+///
+/// Construct with [`mfsk_callsign_hash_table_new`], populate with
+/// [`mfsk_callsign_hash_table_insert`] as real callsigns become known
+/// (e.g. from earlier decodes, a station log, or any other source the
+/// caller trusts), then pass into any `mfsk_q65_decode_*` function's
+/// `hash_table` parameter. NULL there (the pre-#250 behaviour) leaves
+/// hashed callsigns unresolved as literal `<...>` text — nothing else
+/// about decode success or timing changes; this only affects how the
+/// final message *text* renders. Free with
+/// [`mfsk_callsign_hash_table_free`].
+///
+/// Mirrors `mfsk_core::q65::decode_request::DecodeRequest::hash_table`
+/// (`Arc<CallsignHashTable>`) — deliberately not folded into
+/// [`MfskDecodeOptions`], which Q65's own function family never uses.
+#[repr(C)]
+pub struct MfskCallsignHashTable {
+    _priv: [u8; 0],
+    _marker: core::marker::PhantomData<*mut ()>,
+}
+
+fn hash_table_inner(
+    ht: *const MfskCallsignHashTable,
+) -> Option<&'static mfsk_core::msg::hash_table::CallsignHashTable> {
+    unsafe { (ht as *const mfsk_core::msg::hash_table::CallsignHashTable).as_ref() }
+}
+
+fn hash_table_inner_mut(
+    ht: *mut MfskCallsignHashTable,
+) -> Option<&'static mut mfsk_core::msg::hash_table::CallsignHashTable> {
+    unsafe { (ht as *mut mfsk_core::msg::hash_table::CallsignHashTable).as_mut() }
+}
+
+/// Construct an empty callsign hash table. Free with
+/// [`mfsk_callsign_hash_table_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn mfsk_callsign_hash_table_new() -> *mut MfskCallsignHashTable {
+    let inner = Box::new(mfsk_core::msg::hash_table::CallsignHashTable::new());
+    Box::into_raw(inner) as *mut MfskCallsignHashTable
+}
+
+/// Free a handle from [`mfsk_callsign_hash_table_new`]. NULL is a no-op.
+///
+/// # Safety
+/// `ht` must be a pointer previously returned by
+/// [`mfsk_callsign_hash_table_new`], or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_callsign_hash_table_free(ht: *mut MfskCallsignHashTable) {
+    if !ht.is_null() {
+        drop(unsafe { Box::from_raw(ht as *mut mfsk_core::msg::hash_table::CallsignHashTable) });
+    }
+}
+
+/// Register a known callsign so a later `<...>` hashed placeholder
+/// that matches it resolves to the real call. Mirrors
+/// `CallsignHashTable::insert` exactly, including its documented skip
+/// rules (empty strings, `<...>` itself, strings under 2 characters,
+/// and `CQ`-prefixed calls are all silently ignored — not an error).
+///
+/// # Safety
+/// `ht` must be a live handle from [`mfsk_callsign_hash_table_new`].
+/// `call` must be a NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mfsk_callsign_hash_table_insert(
+    ht: *mut MfskCallsignHashTable,
+    call: *const c_char,
+) -> MfskStatus {
+    let Ok(s) = cstr_to_str(call) else {
+        return MfskStatus::InvalidArg;
+    };
+    let Some(inner) = hash_table_inner_mut(ht) else {
+        set_error("mfsk_callsign_hash_table_insert: null handle");
+        return MfskStatus::InvalidArg;
+    };
+    inner.insert(s);
+    MfskStatus::Ok
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Q65 helpers (sub-mode dispatch + decoded-message push)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -1200,44 +1284,31 @@ fn q65_nominal_mid(submode: MfskQ65SubMode) -> usize {
 
 /// Plain-AWGN sub-mode-aware scan. Dispatches at runtime to the right
 /// `DecodeRequest::<Q65*>` instantiation in `mfsk_core::q65`.
-fn q65_scan_for(submode: MfskQ65SubMode, audio: &[f32]) -> Vec<mfsk_core::q65::Q65Result> {
-    use mfsk_core::q65::{
-        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
-        Q65e120,
-    };
-    let params = q65_default_search();
-    let mid = q65_nominal_mid(submode);
-    match submode {
-        MfskQ65SubMode::A15 => DecodeRequest::<Q65a15>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::A30 => DecodeRequest::<Q65a30>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::A60 => DecodeRequest::<Q65a60>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::B60 => DecodeRequest::<Q65b60>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::C60 => DecodeRequest::<Q65c60>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::D60 => DecodeRequest::<Q65d60>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::E60 => DecodeRequest::<Q65e60>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::D120 => DecodeRequest::<Q65d120>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::E120 => DecodeRequest::<Q65e120>::new(audio, 12_000, mid, params).decode(),
-        MfskQ65SubMode::A300 => DecodeRequest::<Q65a300>::new(audio, 12_000, mid, params).decode(),
-    }
-}
-
-fn q65_scan_with_ap_for(
+///
+/// `hash_table`, when `Some`, resolves `<...>` Type-4 hashed-callsign
+/// placeholders in the output message text (issue #250) — a clone of
+/// the caller's table is wrapped in a fresh `Arc` per call, matching
+/// `DecodeRequest::hash_table`'s own `Arc<CallsignHashTable>` shape.
+fn q65_scan_for(
     submode: MfskQ65SubMode,
     audio: &[f32],
-    hint: &mfsk_core::msg::ApHint,
+    hash_table: Option<&mfsk_core::msg::hash_table::CallsignHashTable>,
 ) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
     };
+    use std::sync::Arc;
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
-        ($p:ty) => {
-            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
-                .ap_hint(hint)
-                .decode()
-        };
+        ($p:ty) => {{
+            let mut req = DecodeRequest::<$p>::new(audio, 12_000, mid, params);
+            if let Some(ht) = hash_table {
+                req = req.hash_table(Arc::new(ht.clone()));
+            }
+            req.decode()
+        }};
     }
     match submode {
         MfskQ65SubMode::A15 => scan!(Q65a15),
@@ -1253,24 +1324,67 @@ fn q65_scan_with_ap_for(
     }
 }
 
+/// See [`q65_scan_for`]'s `hash_table` doc — same convention here.
+fn q65_scan_with_ap_for(
+    submode: MfskQ65SubMode,
+    audio: &[f32],
+    hint: &mfsk_core::msg::ApHint,
+    hash_table: Option<&mfsk_core::msg::hash_table::CallsignHashTable>,
+) -> Vec<mfsk_core::q65::Q65Result> {
+    use mfsk_core::q65::{
+        DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
+        Q65e120,
+    };
+    use std::sync::Arc;
+    let params = q65_default_search();
+    let mid = q65_nominal_mid(submode);
+    macro_rules! scan {
+        ($p:ty) => {{
+            let mut req = DecodeRequest::<$p>::new(audio, 12_000, mid, params).ap_hint(hint);
+            if let Some(ht) = hash_table {
+                req = req.hash_table(Arc::new(ht.clone()));
+            }
+            req.decode()
+        }};
+    }
+    match submode {
+        MfskQ65SubMode::A15 => scan!(Q65a15),
+        MfskQ65SubMode::A30 => scan!(Q65a30),
+        MfskQ65SubMode::A60 => scan!(Q65a60),
+        MfskQ65SubMode::B60 => scan!(Q65b60),
+        MfskQ65SubMode::C60 => scan!(Q65c60),
+        MfskQ65SubMode::D60 => scan!(Q65d60),
+        MfskQ65SubMode::E60 => scan!(Q65e60),
+        MfskQ65SubMode::D120 => scan!(Q65d120),
+        MfskQ65SubMode::E120 => scan!(Q65e120),
+        MfskQ65SubMode::A300 => scan!(Q65a300),
+    }
+}
+
+/// See [`q65_scan_for`]'s `hash_table` doc — same convention here.
 fn q65_scan_fading_for(
     submode: MfskQ65SubMode,
     audio: &[f32],
     b90_ts: f32,
     model: mfsk_core::fec::qra::FadingModel,
+    hash_table: Option<&mfsk_core::msg::hash_table::CallsignHashTable>,
 ) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
     };
+    use std::sync::Arc;
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
-        ($p:ty) => {
-            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
-                .fading(model, b90_ts)
-                .decode()
-        };
+        ($p:ty) => {{
+            let mut req =
+                DecodeRequest::<$p>::new(audio, 12_000, mid, params).fading(model, b90_ts);
+            if let Some(ht) = hash_table {
+                req = req.hash_table(Arc::new(ht.clone()));
+            }
+            req.decode()
+        }};
     }
     match submode {
         MfskQ65SubMode::A15 => scan!(Q65a15),
@@ -1286,23 +1400,28 @@ fn q65_scan_fading_for(
     }
 }
 
+/// See [`q65_scan_for`]'s `hash_table` doc — same convention here.
 fn q65_scan_with_ap_list_for(
     submode: MfskQ65SubMode,
     audio: &[f32],
     candidates: &[[i32; 63]],
+    hash_table: Option<&mfsk_core::msg::hash_table::CallsignHashTable>,
 ) -> Vec<mfsk_core::q65::Q65Result> {
     use mfsk_core::q65::{
         DecodeRequest, Q65a15, Q65a30, Q65a60, Q65a300, Q65b60, Q65c60, Q65d60, Q65d120, Q65e60,
         Q65e120,
     };
+    use std::sync::Arc;
     let params = q65_default_search();
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
-        ($p:ty) => {
-            DecodeRequest::<$p>::new(audio, 12_000, mid, params)
-                .ap_list(candidates)
-                .decode()
-        };
+        ($p:ty) => {{
+            let mut req = DecodeRequest::<$p>::new(audio, 12_000, mid, params).ap_list(candidates);
+            if let Some(ht) = hash_table {
+                req = req.hash_table(Arc::new(ht.clone()));
+            }
+            req.decode()
+        }};
     }
     match submode {
         MfskQ65SubMode::A15 => scan!(Q65a15),
@@ -1686,9 +1805,15 @@ unsafe fn q65_prepare_audio(
 /// computational cost or extra inputs for a few dB of threshold gain
 /// against this baseline.
 ///
+/// `hash_table` may be NULL (hashed `<...>` callsigns stay
+/// unresolved, the pre-#250 behaviour) or a handle from
+/// [`mfsk_callsign_hash_table_new`] — see that type's doc comment.
+///
 /// # Safety
 ///
 /// `samples` must point to `n_samples` valid `f32` values.
+/// `hash_table`, if non-NULL, must be a live handle from
+/// [`mfsk_callsign_hash_table_new`].
 /// `out` must point to a writable [`MfskResultList`]; pair with
 /// [`mfsk_result_list_free`] when done.
 #[unsafe(no_mangle)]
@@ -1697,6 +1822,7 @@ pub unsafe extern "C" fn mfsk_q65_decode(
     samples: *const f32,
     n_samples: usize,
     sample_rate: u32,
+    hash_table: *const MfskCallsignHashTable,
     out: *mut MfskResultList,
 ) -> MfskStatus {
     let audio =
@@ -1707,7 +1833,7 @@ pub unsafe extern "C" fn mfsk_q65_decode(
         };
     let out = unsafe { &mut *out };
     let mut vec: Vec<MfskResult> = Vec::new();
-    for d in q65_scan_for(submode, &audio) {
+    for d in q65_scan_for(submode, &audio, hash_table_inner(hash_table)) {
         push_q65_decode(&d, &mut vec);
     }
     finalise(vec, out);
@@ -1718,6 +1844,8 @@ pub unsafe extern "C" fn mfsk_q65_decode(
 /// (`call1`, `call2`, `grid`, `report`) — each may be NULL when
 /// unknown. Lifts the effective decode threshold by ~2 dB when the
 /// supplied hints are correct.
+///
+/// `hash_table`: see [`mfsk_q65_decode`]'s doc.
 ///
 /// # Safety
 ///
@@ -1733,6 +1861,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap(
     ap_call2: *const c_char,
     ap_grid: *const c_char,
     ap_report: *const c_char,
+    hash_table: *const MfskCallsignHashTable,
     out: *mut MfskResultList,
 ) -> MfskStatus {
     let audio = match unsafe {
@@ -1754,13 +1883,14 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap(
         Err(st) => return st,
     };
 
+    let ht = hash_table_inner(hash_table);
     let mut vec: Vec<MfskResult> = Vec::new();
     let decodes = if hint.has_info() {
-        q65_scan_with_ap_for(submode, &audio, &hint)
+        q65_scan_with_ap_for(submode, &audio, &hint, ht)
     } else {
         // Empty hint → fall through to the plain path so callers
         // don't need to special-case it.
-        q65_scan_for(submode, &audio)
+        q65_scan_for(submode, &audio, ht)
     };
     for d in decodes {
         push_q65_decode(&d, &mut vec);
@@ -1774,7 +1904,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap(
 /// microwave EME at 5.7 GHz / 10 GHz / 24 GHz. `b90_ts` is the
 /// spread bandwidth × symbol period (typical: 0.05 = near-AWGN,
 /// 1.0 = moderate, 5.0+ = severe). `model` chooses the calibration
-/// shape.
+/// shape. `hash_table`: see [`mfsk_q65_decode`]'s doc.
 ///
 /// # Safety
 ///
@@ -1787,6 +1917,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_fading(
     sample_rate: u32,
     b90_ts: f32,
     fading_model: MfskQ65FadingModel,
+    hash_table: *const MfskCallsignHashTable,
     out: *mut MfskResultList,
 ) -> MfskStatus {
     let audio = match unsafe {
@@ -1807,7 +1938,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_fading(
         MfskQ65FadingModel::Lorentzian => mfsk_core::fec::qra::FadingModel::Lorentzian,
     };
     let mut vec: Vec<MfskResult> = Vec::new();
-    for d in q65_scan_fading_for(submode, &audio, b90_ts, model) {
+    for d in q65_scan_fading_for(submode, &audio, b90_ts, model, hash_table_inner(hash_table)) {
         push_q65_decode(&d, &mut vec);
     }
     finalise(vec, out);
@@ -1819,7 +1950,8 @@ pub unsafe extern "C" fn mfsk_q65_decode_fading(
 /// `(my_call, his_call, his_grid)` and picks the matching exchange,
 /// if any. `his_grid` may be NULL or empty to skip the two
 /// grid-bearing templates. Yields ~3 dB threshold gain over plain
-/// BP when the truth is in the candidate set.
+/// BP when the truth is in the candidate set. `hash_table`: see
+/// [`mfsk_q65_decode`]'s doc.
 ///
 /// # Safety
 ///
@@ -1835,6 +1967,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap_list(
     my_call: *const c_char,
     his_call: *const c_char,
     his_grid: *const c_char,
+    hash_table: *const MfskCallsignHashTable,
     out: *mut MfskResultList,
 ) -> MfskStatus {
     let audio = match unsafe {
@@ -1873,7 +2006,7 @@ pub unsafe extern "C" fn mfsk_q65_decode_with_ap_list(
     }
 
     let mut vec: Vec<MfskResult> = Vec::new();
-    for d in q65_scan_with_ap_list_for(submode, &audio, &candidates) {
+    for d in q65_scan_with_ap_list_for(submode, &audio, &candidates, hash_table_inner(hash_table)) {
         push_q65_decode(&d, &mut vec);
     }
     finalise(vec, out);

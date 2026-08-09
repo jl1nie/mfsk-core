@@ -144,10 +144,13 @@ bash examples/cpp_smoke/build.sh
 | `mfsk_encode_jt9`          | Synthesise a standard JT9 message.                                |
 | `mfsk_encode_jt65`         | Synthesise a standard JT65 message.                               |
 | `mfsk_encode_q65`          | Synthesise a Q65 message (sub-mode selected via `MfskQ65SubMode`). |
-| `mfsk_q65_decode`          | Q65 plain BP decode (basic strategy).                             |
-| `mfsk_q65_decode_with_ap`  | Q65 BP decode with a-priori call-sign / grid hints (~2 dB gain).  |
-| `mfsk_q65_decode_fading`   | Q65 fast-fading metric (Gaussian / Lorentzian) for high-Doppler EME. |
-| `mfsk_q65_decode_with_ap_list` | Q65 AP-list (template-matching) decode (~3 dB gain when call pair is known). |
+| `mfsk_q65_decode`          | Q65 plain BP decode (basic strategy). Takes an optional `hash_table`. |
+| `mfsk_q65_decode_with_ap`  | Q65 BP decode with a-priori call-sign / grid hints (~2 dB gain). Takes an optional `hash_table`. |
+| `mfsk_q65_decode_fading`   | Q65 fast-fading metric (Gaussian / Lorentzian) for high-Doppler EME. Takes an optional `hash_table`. |
+| `mfsk_q65_decode_with_ap_list` | Q65 AP-list (template-matching) decode (~3 dB gain when call pair is known). Takes an optional `hash_table`. |
+| `mfsk_callsign_hash_table_new` | Construct an empty callsign hash table for resolving Q65 `<...>` Type-4 placeholders. |
+| `mfsk_callsign_hash_table_insert` | Register a known callsign into a hash table handle. |
+| `mfsk_callsign_hash_table_free` | Destroy a callsign hash table handle. |
 | `mfsk_samples_free`        | Release the `f32` buffer returned by an encode.                   |
 | `mfsk_last_error`          | Thread-local last-error string (UTF-8, NUL-terminated).           |
 | `mfsk_version`             | Library version (major << 16 \| minor << 8 \| patch).             |
@@ -166,8 +169,10 @@ FT8/FT4/FST4-60A and are silently ignored elsewhere. See the doc
 comments in `mfsk-ffi/include/mfsk.h` for full per-function semantics,
 and `mfsk-ffi/tests/builder_options_ffi.rs` / `examples/cpp_smoke/main.cpp`
 for worked examples. Not yet mirrored: `.known()`, `.fft_cache()`,
-`SniperRequest` exposure, Q65's `.hash_table()` (tracked as issues
-[#247](https://github.com/jl1nie/mfsk-core/issues/247)-[#250](https://github.com/jl1nie/mfsk-core/issues/250)).
+`SniperRequest` exposure (tracked as issues
+[#247](https://github.com/jl1nie/mfsk-core/issues/247)/[#249](https://github.com/jl1nie/mfsk-core/issues/249)).
+Q65's `.hash_table()` shipped separately — see
+`mfsk_callsign_hash_table_new`/`_insert`/`_free` above (issue #250).
 
 ## Memory ownership
 
