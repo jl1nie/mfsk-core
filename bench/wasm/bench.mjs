@@ -75,25 +75,43 @@ async function main() {
     process.env.MFSK_BENCH_WAV ??
     path.join(__dirname, "../../embedded-poc/assets/qso3_busy.wav");
 
-  const { decode_wav } = await import(path.join(__dirname, "pkg/mfsk_wasm_bench.js"));
+  const { decode_wav, decode_wav_subtract } = await import(
+    path.join(__dirname, "pkg/mfsk_wasm_bench.js")
+  );
 
   const audio = parseWavMonoI16(readFileSync(wavPath));
   console.log(`WAV: ${wavPath} (${audio.length} samples)`);
 
-  // Warmup — discarded, not steady-state.
-  const warmupOut = decode_wav(audio);
+  const variants = [
+    ["decode_wav (default, no SIC)", decode_wav],
+    ["decode_wav_subtract (.sic_early())", decode_wav_subtract],
+  ];
 
-  const times = [];
-  for (let i = 0; i < runs; i++) {
-    const t0 = performance.now();
-    decode_wav(audio);
-    times.push(performance.now() - t0);
+  const medians = {};
+  for (const [label, fn] of variants) {
+    // Warmup — discarded, not steady-state.
+    const warmupOut = fn(audio);
+    const nStations = warmupOut ? warmupOut.split("\n").length : 0;
+
+    const times = [];
+    for (let i = 0; i < runs; i++) {
+      const t0 = performance.now();
+      fn(audio);
+      times.push(performance.now() - t0);
+    }
+
+    const m = median(times);
+    medians[label] = m;
+    console.log(`\n=== ${label} ===`);
+    console.log(`runs: ${times.map((t) => t.toFixed(1)).join(", ")} ms`);
+    console.log(`median: ${m.toFixed(1)} ms -> ${nStations} station(s)`);
+    console.log(warmupOut || "(none)");
   }
 
-  console.log(`runs: ${times.map((t) => t.toFixed(1)).join(", ")} ms`);
-  console.log(`median: ${median(times).toFixed(1)} ms`);
-  console.log("decodes (from warmup run):");
-  console.log(warmupOut || "(none)");
+  const labels = variants.map(([label]) => label);
+  console.log(
+    `\nratio (${labels[1]} / ${labels[0]}): ${(medians[labels[1]] / medians[labels[0]]).toFixed(2)}x`,
+  );
 }
 
 main().catch((err) => {
