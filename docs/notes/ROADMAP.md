@@ -233,8 +233,9 @@ rather than re-promising a version number here.
   `OSD_HARDERRORS_MAX = 22` ceiling on the OSD path
   (mfsk-core-specific deviation from WSJT-X's universal 36) that
   eliminates the qso3_busy phantoms `npre1`/`npre2` alone did not
-  filter. See `CHANGELOG.md` 0.6.3 entry for the
-  WSJT-X-faithfulness / phantom-elimination trade-off rationale.
+  filter. See `docs/historical/CHANGELOG-0.6-0.7.md`'s 0.6.3 entry
+  for the WSJT-X-faithfulness / phantom-elimination trade-off
+  rationale.
 - **ε `decode_block.rs` restructure** — 6 stacked PRs (#77 types,
   #83 spectrogram, #79 coarse_sync, #80 fill_symbol_spectra, #81
   process_candidates, #82 osd_strategy). 3,517 lines → 423-line

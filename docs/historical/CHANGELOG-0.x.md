@@ -2,8 +2,10 @@
 
 Pre-0.6.0 releases, split out from the top-level `CHANGELOG.md` in
 0.7.2 (issue #147) to keep the current changelog skimmable. Full
-detail preserved verbatim, just relocated — see
-[`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.6.0 onward.
+detail preserved verbatim, just relocated. 0.6.0 – 0.7.4 were later
+split out the same way into
+[`CHANGELOG-0.6-0.7.md`](CHANGELOG-0.6-0.7.md) — see
+[`../../CHANGELOG.md`](../../CHANGELOG.md) for 0.8.0 onward.
 
 ## 0.5.12 — FT8 SIC correctness, FT4 WSJT-X parity, JT9 7/7, AP iaptype-1
 

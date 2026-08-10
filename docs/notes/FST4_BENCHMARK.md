@@ -256,8 +256,9 @@ OSD: **8054 ms** summed across all 50 candidates, out of a
    succeeded, 2.1 s combined) — on a WAV whose real signals were all
    found comfortably under either threshold.
    The comment this replaced claimed FST4's depth-escalation gate "was
-   already tuned separately" (issue #146) — checked `CHANGELOG.md` for
-   that tuning and found none: issue #146 tuned `bypass_osd_score_min`
+   already tuned separately" (issue #146) — checked
+   `docs/historical/CHANGELOG-0.6-0.7.md` for that tuning and found
+   none: issue #146 tuned `bypass_osd_score_min`
    and AWGN sensitivity, never the `(12, 18)` pair, which appears to
    have been an untouched FT8 inheritance all along (the same kind of
    stale-comment trap the FT4 investigation hit more than once).
@@ -269,7 +270,8 @@ OSD: **8054 ms** summed across all 50 candidates, out of a
 identical code** (git-stash the pipeline.rs change, rerun the exact same
 `fst4_snr_sweep` AWGN cells, restore) showed a real regression: 50%
 crossing moved **-27.6 dB → -27.1 dB** (~0.5 dB) — confirmed against
-`CHANGELOG.md`'s documented 0.7.2 baseline (`-27.62 dB`), which the
+`docs/historical/CHANGELOG-0.6-0.7.md`'s documented 0.7.2 baseline
+(`-27.62 dB`), which the
 pre-fix rerun reproduced almost exactly (`-27.625 dB`), ruling out a
 stale-baseline explanation. Unlike FT4's identical-looking fix (which
 only ever *raised* a threshold nsync could never reach, pure upside),

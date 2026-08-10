@@ -152,8 +152,12 @@ call, not something to infer on your own from "this seems important."
 
 **Versioning within this cadence**: a new protocol/mode addition is
 patch-level by this crate's own established convention (MSK144
-shipped as `0.7.4`, not `0.8.0` — grep `CHANGELOG.md` for prior
-protocol additions before assuming otherwise). Minor bumps
+shipped as `0.7.4`, not `0.8.0` — grep `CHANGELOG.md` **and**
+`docs/historical/CHANGELOG-0.6-0.7.md`/`CHANGELOG-0.x.md` for prior
+protocol additions before assuming otherwise; older releases get
+split out of the top-level file periodically to keep it skimmable,
+see `CHANGELOG.md`'s own footer for the current archive list).
+Minor bumps
 (`0.6→0.7`) have historically marked a more structural change (e.g.
 `0.7.0`'s generic `decode_frame_for::<P>` API landing alongside FST4's
 remaining sub-modes), not simply "a release with new capability in
