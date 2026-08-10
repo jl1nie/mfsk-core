@@ -164,9 +164,26 @@ const MIN_JTDX_HITS: usize = 17;
 #[cfg(feature = "fixed-point")]
 const MIN_JTDX_HITS: usize = 8;
 
-/// Tolerance. host f32 SNR (xsnr2/xbase) sits ~3-7 dB below JTDX,
-/// fixed-point uses adjacent-tone SNR with no xsnr2 post-process
-/// (cell quantisation breaks log10 baseline) — wider envelope.
+/// Tolerance. Host f32 SNR (xsnr2/xbase) used to sit ~3-7 dB
+/// systematically *below* JTDX before the `compute_baseline_spectrum`
+/// fix (issue #253 follow-up, 2026-08-10 — `get_spectrum_baseline.f90`
+/// faithful Nuttall-window baseline + `xsig` via the real `cd0`/
+/// per-symbol-FFT pipeline instead of the coarse rectangular
+/// spectrogram). Post-fix, deltas against a real local `jt9 -8 -d3`
+/// build's own internal `xsnr2` (probed directly, not just its final
+/// display) land within ~3 dB on a clean isolated synthetic signal —
+/// the residual is floating-point-summation-order / independent-
+/// sync-convergence noise, not a calibration bug (see
+/// `project_ft8_xsnr2_wsjtx_calibration_253.md` memory / issue for the
+/// full writeup). Against *this* JTDX golden specifically the spread
+/// is still up to ~11 dB on some entries — JTDX's own SNR figure
+/// doesn't reliably track vanilla WSJT-X's (see `WM3PEN`/`W1FC` below,
+/// where a real jt9 build's own internal xsnr2 reads 12+ dB while
+/// JTDX's reported value is 0 dB), so the *tolerance* here stays wide
+/// deliberately — tightening it would just be fitting mfsk-core to
+/// JTDX's specific quirks rather than to WSJT-X. Fixed-point uses
+/// adjacent-tone SNR with no xsnr2 post-process (cell quantisation
+/// breaks log10 baseline) — wider envelope again.
 #[cfg(not(feature = "fixed-point"))]
 const SNR_TOL_DB: f32 = 12.0;
 #[cfg(feature = "fixed-point")]
@@ -174,6 +191,19 @@ const SNR_TOL_DB: f32 = 14.0;
 const DF_TOL_HZ: f32 = 5.0;
 
 use common::load_wav_i16;
+
+/// Entries where JTDX's own `snr_db` isn't a trustworthy ground truth
+/// to check *mfsk-core's* WSJT-X-faithful `xsnr2` against — a real
+/// local `jt9 -8 -d3` build (vanilla WSJT-X) doesn't decode either of
+/// these on `qso3_busy.wav` at all (JTDX-only finds), yet its own
+/// internal `xsnr2` for the WM3PEN candidate (probed directly via a
+/// temporary `SNRAUDIT_PROBE` in `ft8b.f90`/`ft8_decode.f90`, not just
+/// the final display) reads **12.4 dB**, not JTDX's claimed 0.0 dB —
+/// and no coarse-sync candidate is even generated near W1FC's 2571 Hz
+/// in vanilla WSJT-X. Excluded from the SNR-drift assertion only (they
+/// still count toward the hit-rate floor above) — see `SNR_TOL_DB`'s
+/// doc comment for the full investigation (2026-08-10).
+const JTDX_SNR_GOLDEN_UNRELIABLE: &[&str] = &["WM3PEN EA6VQ -9", "W1FC F5BZB -8"];
 
 // JTDX-aggressive recall is a research-ceiling guard, not a ship-config
 // budget check (uses BpAllOsd + sync_min=0.8 + max_cand=60 — ~34 s
@@ -234,7 +264,7 @@ fn qso3_apoff_meets_jtdx_recall_floor() {
                     r.hard_errors,
                     g.msg,
                 );
-                if !snr_ok {
+                if !snr_ok && !JTDX_SNR_GOLDEN_UNRELIABLE.contains(&g.msg) {
                     snr_outliers.push(format!("{} (Δ={:+.1} dB)", g.msg, dsnr));
                 }
                 if !df_ok {

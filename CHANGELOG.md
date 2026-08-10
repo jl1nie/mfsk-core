@@ -59,6 +59,69 @@
   Doesn't by itself explain the anecdote above (see that entry), but
   stands on its own sweep evidence regardless.
 
+- **FT8 host `xsnr2` SNR systematically under-reported vs WSJT-X**
+  (issue #253 follow-up) — `qso3_busy.wav`'s host-f32 SNR used to sit
+  ~3-7 dB below WSJT-X/JTDX (a long-standing, previously-undiagnosed
+  gap; `SNR_TOL_DB` in the `qso3` recall tests was widened to 12 dB
+  years ago to tolerate it rather than fix it). Root-caused to two
+  independent, *compounding* non-faithful simplifications, both found
+  by comparing against a real local `jt9 -8 -d3` build's own internal
+  values (via a temporary `SNRAUDIT_PROBE` instrumented directly into
+  `ft8b.f90`/`ft8_decode.f90`, not just its final display — essential,
+  since real `jt9` doesn't even decode 2 of the JTDX-golden's most
+  divergent entries, so their JTDX-reported SNR alone couldn't be
+  trusted as ground truth either):
+
+  1. `xsig` (signal power) was read from `compute_spectrogram`'s
+     rectangular-window coarse-sync spectrum. WSJT-X's real `xsig`
+     comes from an entirely different pipeline — the `cd0`/per-symbol
+     32-point-FFT chain (`ft8_downsample` + `ft8b.f90:154-161`) that
+     also produces the soft-symbol LLRs. mfsk-core already has a
+     faithful port of that exact pipeline (`fill_symbol_spectra`'s
+     `fill_symbol_spectra_via_cd0`) — it just wasn't being reused for
+     `xsig`, only for LLR (where an absolute-scale bug is invisible:
+     LLR is a same-candidate relative comparison, `.sic_rounds()`
+     never had anything to catch this).
+  2. `xbase` (noise-floor baseline) was fit from that same rectangular
+     spectrum too. WSJT-X's real `sbase` comes from
+     `get_spectrum_baseline.f90` — a *dedicated* Nuttall-windowed, 50%-
+     overlap spectrum, deliberately not `sync8.f90`'s own rectangular
+     one, for much lower far-sidelobe leakage from other, frequency-
+     distant signals on a busy band. A first attempt at porting this
+     (`compute_baseline_spectrum`) introduced its own new ~19.6 dB
+     bug: `get_spectrum_baseline.f90`'s `savg=savg+s(1:NH1,j)` frame
+     loop is a raw *sum* over `NF≈93` frames despite its own "Average
+     spectrum" comment — no `/NF` anywhere in the real subroutine. The
+     port added the missing-looking division, which is wrong
+     (`10·log10(93) ≈ 19.7 dB`, matching the measured miscalibration
+     almost exactly once found).
+
+  Both must be fixed *together* — verified experimentally that fixing
+  only #2 first made things worse (xsig and xbase's absolute gains
+  don't match by construction across different windows, so an
+  inconsistent pairing adds a spurious offset rather than cancelling
+  one out; this is also why the historical baseline-only ~3-7 dB gap
+  looked "smaller" than either individual bug — the old rectangular-
+  spectrum reuse put both `xsig` and `xbase` on the *same* miscalibrated
+  scale, which mostly cancelled in the ratio). Post-fix, deltas against
+  real `jt9`'s own probed internal `xsnr2` land within ~3 dB on a clean
+  isolated synthetic signal (down from the pre-fix ~18-24 dB this
+  investigation's own intermediate, reverted attempts produced when
+  only one side was corrected). `qso3_busy.wav` recall entries mostly
+  land within ±3.5 dB of their WSJT-X/JTDX golden (down from the
+  systematic 3-7 dB low bias); `ft8_qso3_jtdx_recall.rs` /
+  `..._high_sensitivity_recall.rs`'s `SNR_TOL_DB` stays at 12 dB
+  (JTDX's own SNR figure doesn't reliably track vanilla WSJT-X's on
+  every entry — tightening it would fit mfsk-core to JTDX's quirks,
+  not WSJT-X's), with two known-unreliable JTDX-only entries
+  (`WM3PEN`/`W1FC`, absent from real `jt9`'s own decode list on this
+  file entirely) excluded from the SNR-drift assertion specifically
+  via a documented `JTDX_SNR_GOLDEN_UNRELIABLE` list. Zero recall
+  regression across every `qso3_busy.wav` suite, `ft8_sic_early`
+  regression guards (issue #253's own false-decode fix), and streaming
+  contract tests; full `cargo test --lib --features full` (392 passed)
+  and `scripts/pre-push-check.sh`'s full feature matrix clean.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

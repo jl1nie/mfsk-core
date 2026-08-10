@@ -164,7 +164,9 @@ const MIN_HITS: usize = 8;
 /// Same envelope as `ft8_qso3_jtdx_recall.rs` — JTDX's own SNR
 /// estimate barely shifts between default and High sensitivity (the
 /// entries shared with the default-18 golden differ by ≤1 dB here),
-/// so no separate tolerance is needed for this profile.
+/// so no separate tolerance is needed for this profile. See that
+/// file's own `SNR_TOL_DB` doc comment for the post-issue-#253-
+/// follow-up `xsnr2` calibration fix this tolerance now reflects.
 #[cfg(not(feature = "fixed-point"))]
 const SNR_TOL_DB: f32 = 12.0;
 #[cfg(feature = "fixed-point")]
@@ -172,6 +174,13 @@ const SNR_TOL_DB: f32 = 14.0;
 const DF_TOL_HZ: f32 = 5.0;
 
 use common::load_wav_i16;
+
+/// See `ft8_qso3_jtdx_recall.rs`'s identically-named constant — same
+/// two entries, same reason (JTDX-only finds; a real local `jt9 -8
+/// -d3` build's own internal `xsnr2` for WM3PEN reads 12.4 dB, not
+/// JTDX's claimed 0.0 dB, and generates no candidate near W1FC at
+/// all). Excluded from the SNR-drift assertion only.
+const JTDX_SNR_GOLDEN_UNRELIABLE: &[&str] = &["WM3PEN EA6VQ -9", "W1FC F5BZB -8"];
 
 // Research-ceiling guard, not a ship-config budget check — same
 // rationale as ft8_qso3_jtdx_recall.rs. Run explicitly:
@@ -223,7 +232,7 @@ fn qso3_apoff_meets_jtdx_high_sensitivity_recall_floor() {
                     r.hard_errors,
                     g.msg,
                 );
-                if !snr_ok {
+                if !snr_ok && !JTDX_SNR_GOLDEN_UNRELIABLE.contains(&g.msg) {
                     snr_outliers.push(format!("{} (Δ={:+.1} dB)", g.msg, dsnr));
                 }
                 if !df_ok {

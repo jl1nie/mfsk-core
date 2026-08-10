@@ -360,13 +360,25 @@ fn decode_block_multipass<S: AudioSample>(
         // pass(es) did. An earlier version of this port captured this
         // only once, at `ipass == 0`, and reused that stale
         // pre-subtraction snapshot for every later pass's candidates
-        // too; xsig is read from the same spectrogram as sbase so the
-        // two always share an absolute scale, this pass's or any
-        // other's.
+        // too.
+        //
+        // `sbase` comes from `compute_baseline_spectrum`
+        // (`get_spectrum_baseline.f90`-faithful: Nuttall window, 50%
+        // overlap), *not* `avg_spectrum` over this pass's own `spec`
+        // (rectangular window) — see that function's doc comment for
+        // why reusing `spec` under-reports SNR on busy/crowded bands
+        // (issue #253 follow-up, 2026-08-10, verified against real
+        // `jt9` ground truth). `spec` (rectangular) is kept only for
+        // `recompute_nsync`'s sync-quality gate below — unrelated to
+        // the xsig/xbase scale calibration. `xsig` no longer comes
+        // from `spec` either (see the per-candidate block below) — it
+        // now reads the same WSJT-X `cd0`/per-symbol-FFT pipeline
+        // `fill_symbol_spectra` already computes for LLR, per
+        // `compute_baseline_spectrum`'s doc comment on why the two
+        // must be paired.
         #[cfg(not(feature = "fixed-point"))]
         let sbase_and_spec: Option<(AllocVec<f32>, Spectrogram)> = {
-            let mut avg = alloc::vec![0.0_f32; spec.n_freq];
-            crate::ft8::baseline::avg_spectrum(&spec, &mut avg);
+            let avg = crate::ft8::baseline::compute_baseline_spectrum(work.as_slice());
             let sbase_v = crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1);
             let spec_clone = Spectrogram {
                 n_freq: spec.n_freq,
@@ -462,6 +474,57 @@ fn decode_block_multipass<S: AudioSample>(
                         );
                     }
                 }
+                // `xsig` for the xsnr2 gate below, computed via the
+                // WSJT-X-faithful `cd0`/per-symbol-FFT pipeline
+                // (`fill_symbol_spectra`, `ft8b.f90:154-161`) — the same
+                // one `s8`/`xsig` come from in real WSJT-X, and the same
+                // one this codebase already uses for LLR. Must run
+                // *before* the subtract below: WSJT-X fills `s8` early
+                // in `ft8b`, well before `subtractft8` runs for this
+                // candidate, so it reflects audio with every *earlier*
+                // candidate in this pass already subtracted (sequential
+                // SIC) but not this one's own signal yet. Paired with
+                // `compute_baseline_spectrum`'s Nuttall-window `sbase`
+                // (issue #253 follow-up, 2026-08-10) — see that
+                // function's doc comment for why reading `xsig` from
+                // `compute_spectrogram`'s rectangular spectrum instead
+                // (the previous approach) doesn't calibrate against it.
+                #[cfg(not(feature = "fixed-point"))]
+                let xsig_wsjtx: f32 = {
+                    let itone = crate::ft8::wave_gen::message_to_tones(r.message77());
+                    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
+                        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
+                            .try_into()
+                            .unwrap();
+                    fill_symbol_spectra(
+                        &mut cs,
+                        work.as_slice(),
+                        r.freq_hz,
+                        r.dt_sec,
+                        SymMask::SyncOnly,
+                        fft_cache.as_deref(),
+                    );
+                    fill_symbol_spectra(
+                        &mut cs,
+                        work.as_slice(),
+                        r.freq_hz,
+                        r.dt_sec,
+                        SymMask::DataOnly,
+                        fft_cache.as_deref(),
+                    );
+                    let mut xsig = 0.0f32;
+                    for (k, tones) in cs.iter().enumerate() {
+                        // Undo `fill_symbol_spectra`'s `CS_SCALE = 1/1000`
+                        // (`ft8b.f90:159`'s `cs = csymb/1e3`) — `xsig`
+                        // needs the raw, unscaled `s8 = abs(csymb)`.
+                        let c = tones[itone[k] as usize];
+                        let re = c.re * 1000.0;
+                        let im = c.im * 1000.0;
+                        xsig += re * re + im * im;
+                    }
+                    xsig
+                };
+
                 // WSJT-X `ft8b.f90:432-437` subtracts *before* its own
                 // xsnr2 gate check (below) runs — matched here too, not
                 // just for residual cleanliness: this crate's own
@@ -482,9 +545,9 @@ fn decode_block_multipass<S: AudioSample>(
                 //
                 // Replace this result's snr_db with WSJT-X xsnr2, and
                 // drop it if it fails the validity gate — using *this
-                // pass's own* spectrogram + baseline (issue #243), not a
-                // frozen pass-1 snapshot. `xsig` is read from the same
-                // spectrogram `sbase` came from, so the two always share
+                // pass's own* baseline (issue #243) plus the `xsig_wsjtx`
+                // computed above, not a frozen pass-1 snapshot.
+                //
                 // an absolute scale.
                 //
                 // **WSJT-X post-decode validity gates (#63).** Mirrors
@@ -537,7 +600,7 @@ fn decode_block_multipass<S: AudioSample>(
                     // test — see `recompute_snr_xsnr2`'s own doc comment
                     // for why the pre-clamp ordering used to dead-letter
                     // the gate.
-                    let raw_snr = recompute_snr_xsnr2(&r, spec, sbase, df, tstep, nsps_steps, 1.0);
+                    let raw_snr = recompute_snr_xsnr2(r.freq_hz, xsig_wsjtx, sbase, df);
                     let nsync = recompute_nsync(&r, spec, df, tstep, nsps_steps);
                     if nsync <= 10 && raw_snr < -24.0 {
                         continue;
@@ -746,11 +809,7 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
     snr.max(-24.0)
 }
 
-/// WSJT-X `ft8b.f90:449-454` xsnr2 SNR formula. Reads the signal's
-/// per-symbol power from the pass-1 spectrogram (= pre-subtract,
-/// matching WSJT-X's sync8 spectrogram convention) at each of the
-/// 79 expected tones, then divides by the per-frequency baseline
-/// `sbase`:
+/// WSJT-X `ft8b.f90:449-454` xsnr2 SNR formula:
 ///
 /// ```text
 ///   xbase = 10^((sbase[round(f1/df)] - 40) / 10)
@@ -758,9 +817,17 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
 ///   xsnr2_db = 10·log10(xsnr2) - 27
 /// ```
 ///
-/// Both `xsig` and `xbase` are on the same spectrogram scale, so the
-/// formula's `/3e6 - 27` calibration (WSJT-X's "2.5 kHz reference"
-/// convention) maps directly into a WSJT-X-compatible dB number.
+/// `xsig` (the caller-supplied per-candidate signal power) and `sbase`
+/// (from [`crate::ft8::baseline::compute_baseline_spectrum`]) must both
+/// come from their WSJT-X-faithful source pipelines — the `cd0`/
+/// per-symbol-FFT chain for `xsig`, the Nuttall-window
+/// `get_spectrum_baseline.f90` chain for `sbase` — for the `/3e6 - 27`
+/// calibration to map onto a WSJT-X-compatible dB number. Pairing
+/// either with `compute_spectrogram`'s rectangular-window spectrum
+/// instead measurably breaks this (verified 2026-08-10, issue #253
+/// follow-up): the two pipelines' absolute gains don't match by
+/// construction (different windows), so an inconsistent pairing adds a
+/// spurious offset rather than cancelling one out.
 ///
 /// Falls back to `-24 dB` if the ratio degenerates.
 ///
@@ -768,42 +835,10 @@ pub fn xsnr2_db_simple(spec: &Spectrogram, result: &DecodeResult, cell_scale: f3
 /// cells at zero and breaking the `log10` baseline; see the comment
 /// block at the `retain_mut` caller for the full rationale.
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
-fn recompute_snr_xsnr2(
-    result: &DecodeResult,
-    spec: &Spectrogram,
-    sbase: &[f32],
-    df: f32,
-    tstep: f32,
-    nsps_steps: f32,
-    cell_scale: f32,
-) -> f32 {
-    let itone = crate::ft8::wave_gen::message_to_tones(result.message77());
-    let carrier_bin_f = result.freq_hz / df;
-    let tone_step = TONE_SPACING_HZ / df;
-    let t0 = (TX_START_OFFSET_S + result.dt_sec) / tstep;
-
-    let mut xsig = 0.0_f32;
-    for k in 0..79_usize {
-        let t = itone[k] as f32;
-        let f_bin = (carrier_bin_f + t * tone_step).round() as i32;
-        let m_bin = (t0 + (k as f32) * nsps_steps).round() as i32;
-        if f_bin < 0 || f_bin as usize >= spec.n_freq || m_bin < 0 || m_bin as usize >= spec.n_time
-        {
-            continue;
-        }
-        xsig += spec.power_acc(f_bin as usize, m_bin as usize);
-    }
-    // `cell_scale` reverts the fixed-point spectrogram's
-    // `>> FP_SPEC_SHIFT` so xsig and xbase live in WSJT-X's calibration
-    // regime. For the f32 spectrogram cell_scale=1.0 (no-op).
-    xsig *= cell_scale;
-
-    let bin = carrier_bin_f.round() as i32;
+fn recompute_snr_xsnr2(freq_hz: f32, xsig: f32, sbase: &[f32], df: f32) -> f32 {
+    let bin = (freq_hz / df).round() as i32;
     let bin = bin.clamp(0, sbase.len() as i32 - 1) as usize;
-    // Same compensation on xbase: sbase_db came from `fit_baseline` of
-    // post-shift cells, so its log10 reads ~36 dB low in fixed-point.
-    let sbase_db_compensated = sbase[bin] + 10.0 * cell_scale.log10();
-    let xbase = 10f32.powf(0.1 * (sbase_db_compensated - 40.0));
+    let xbase = 10f32.powf(0.1 * (sbase[bin] - 40.0));
     let arg = xsig / xbase / 3.0e6 - 1.0;
     // WSJT-X `ft8b.f90:445-454`: `xsnr2 = max(0.001, xsig/xbase/3e6 - 1)`
     // then `xsnr2_db = 10·log10(xsnr2) - 27` → floors at -57 dB.
