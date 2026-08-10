@@ -1214,7 +1214,7 @@ where
 /// every one of them, which a controlled single-threaded wall-clock
 /// A/B measured as a net *regression*, exceeding the BP/OSD savings on
 /// a file with few true near-duplicates).
-fn refine_candidate_position<P: GenericPipelineProtocol>(
+pub(crate) fn refine_candidate_position<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,

@@ -18,15 +18,14 @@ use num_complex::Complex;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-use crate::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
+use crate::engine::dsp::downsample::{DownsampleCfg, build_fft_cache};
 use crate::engine::equalize::{EqMode, equalize_local};
 use crate::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
 use crate::engine::pipeline::{
     DecodeDepth, DecodeResult, DecodeStrictness, GenericPipelineProtocol, SnrCtx,
+    refine_candidate_position,
 };
-use crate::engine::sync::{
-    SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate,
-};
+use crate::engine::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use crate::engine::tx::codeword_to_itone;
 use crate::engine::{FecCodec, FecOpts, Protocol};
 
@@ -101,10 +100,42 @@ where
 {
     let ds_rate = 12_000.0 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
+    let _ = refine_steps; // superseded by refine_candidate_position's own P-specific search below
 
-    let cd0 = downsample_cached(fft_cache, cand.freq_hz, ds_cfg);
-    let refined = refine_candidate::<P>(&cd0, cand, refine_steps);
-    let i_start = ((refined.dt_sec + tx_start) * ds_rate).round() as i32;
+    // FT4/FST4's own 2-D (frequency + time) coherent refine
+    // (`refine_candidate_position`, `engine::sync2d::ft4_sync_search`/
+    // `fst4_sync_search`), matching `engine::pipeline::
+    // process_candidate_basic_impl`'s wide-band path exactly (issue
+    // #255 follow-up, WebFT8 downstream report). This AP/sniper path
+    // previously used the generic, time-only `refine_candidate` (no
+    // frequency correction at all) plus a raw, non-RMS-normalised
+    // `cd0` — this closes both gaps.
+    //
+    // A companion fix (swapping this path's *coarse* search from
+    // generic `coarse_sync` to `ft4_coarse_sync`, matching wide-band's
+    // own `getcandidates4.f90`-faithful mechanism, so `ft4_snr_db`
+    // would receive the score formula it actually expects) was tried
+    // and reverted: `ft4_coarse_sync`'s coarse-frequency estimate is
+    // only accurate to roughly its own 15-bin (~78 Hz) smoothing
+    // width — fine for wide-band search, where a real signal usually
+    // has *some* candidate close enough for this function's own
+    // ±12 Hz fine-frequency refine to lock onto, but demonstrably not
+    // for a narrow, single-target sniper search: a real synthetic
+    // regression (`ft4_streaming_sniper_matches_batch_exactly`) showed
+    // `ft4_coarse_sync` locking a clean 1000 Hz signal's only
+    // candidates 60+ Hz away, outside that refine range, losing the
+    // decode entirely. `cand.score` reaching `SnrCtx` in this path is
+    // therefore still `coarse_sync`'s Costas-correlation score, not
+    // `getcandidates4.f90`'s own value `ft4_snr_db` was written
+    // against — a known, deliberately-not-fixed SNR-accuracy gap on
+    // this path specifically (issue #255 follow-up discussion).
+    let (cd0, refined_freq_hz, i_start, refined_score) =
+        refine_candidate_position::<P>(cand, fft_cache, ds_cfg);
+    let refined = SyncCandidate {
+        freq_hz: refined_freq_hz,
+        dt_sec: (i_start as f32) / ds_rate - tx_start,
+        score: refined_score,
+    };
     let cs_raw = symbol_spectra::<P>(&cd0, i_start);
     let nsync = sync_quality::<P>(&cs_raw);
     if nsync <= sync_q_min {

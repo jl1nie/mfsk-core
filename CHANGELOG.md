@@ -4,6 +4,33 @@
 
 ### Fixed
 
+- **FT4/FST4 AP-hint decode path (`msg::pipeline_ap::process_candidate_ap`)
+  used a coarser, non-frequency-correcting refine than the wide-band
+  path, and skipped the RMS-normalisation `compute_llr`'s scale
+  calibration expects** (issue #255 follow-up, prompted by a WebFT8
+  downstream deployment report on `dd934b8`/`e1200b6`). This path
+  previously called the generic, time-only `refine_candidate` (no
+  frequency correction) on a raw, non-normalised `cd0`; wide-band's
+  own `process_candidate_basic_impl` has used FT4/FST4's real 2-D
+  (frequency + time) coherent refine (`refine_candidate_position`,
+  `engine::sync2d::ft4_sync_search`/`fst4_sync_search`) plus RMS
+  normalisation for a while. Now shared via the same function.
+  A companion fix (swapping this path's *coarse* candidate search
+  from generic `coarse_sync` to `ft4_coarse_sync`, so `ft4_snr_db`
+  would see the score formula it's actually written against) was
+  tried and reverted after a real regression: `ft4_coarse_sync`'s own
+  coarse-frequency estimate is only accurate to its own ~78 Hz
+  smoothing width, fine for wide-band search but not for a narrow,
+  single-target sniper search — a controlled test showed it locking a
+  clean 1000 Hz synthetic signal's only nearby candidates 60+ Hz away,
+  outside the ±12 Hz fine-refine capture range, losing the decode
+  entirely. Left as a known, documented gap (`process_candidate_ap`'s
+  own doc comment): the AP/sniper path's reported SNR still uses
+  `coarse_sync`'s Costas-correlation score rather than
+  `getcandidates4.f90`'s own value, which the wide-band path already
+  gets right. Zero regression: full `cargo test --release --features
+  full,internal-testing --all-targets` clean (74 binaries, 0 failed).
+
 - **FT8 `.sic_early()` false decode, actually eliminated** (issue #253
   follow-up) — the `Deep`-threshold retune below turned out not to fix
   the reported anecdote (`hard_errors=31` clears even `Normal`'s 36);
