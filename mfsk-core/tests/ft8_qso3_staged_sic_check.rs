@@ -208,3 +208,76 @@ fn sic_early_with_known_and_cache_finds_dl8yhr() {
          which cannot reach DL8YHR structurally)"
     );
 }
+
+/// Regression guard for issue #253: a reproducible false decode
+/// (`7Y8CIH HN1GD OP30` @509 Hz, `hard_errors=31`) found via WebFT8's
+/// `decode_phase2` pipeline — `DecodeStrictness::Deep` + `.known()` +
+/// `.fft_cache()` + `.sic_early()`, seeded from a fast preliminary
+/// phase-1 decode. Root cause: `__staged_sic` used to pre-subtract
+/// `known` from the *entire* audio before checkpoint A ran — checkpoint
+/// A (the `nzhsym=41` truncated/zero-tailed early pass) in a real `jt9`
+/// build is *always* the first decode attempt on fully raw audio for a
+/// Rx cycle, so feeding it pre-subtracted audio was an mfsk-core-original
+/// composition with no WSJT-X counterpart. Fixed by scoping the
+/// `known`-subtraction to checkpoints B/C only (which already rebuild
+/// their own buffers fresh from the original audio each time, so this
+/// doesn't lose the "known signals don't mask weaker ones" capability —
+/// see `sic_early_with_known_and_cache_finds_dl8yhr` above, which still
+/// finds `CQ DX DL8YHR JO41` this way), leaving checkpoint A on
+/// unmodified audio.
+///
+/// This test replays the *exact* WebFT8 `decode_phase1`/`decode_phase2`
+/// shape (`sync_min=1.5` for phase 1, `1.0` for phase 2, `max_cand=200`,
+/// `Deep` strictness) — not the `Normal`/`sync_min=0.8` shape the test
+/// above uses — since the false decode was specific to that combination.
+#[test]
+fn sic_early_deep_with_known_and_cache_does_not_false_decode() {
+    let audio = load_wav_i16(Path::new(QSO3_PATH));
+
+    let phase1 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.5, 200).decode();
+    assert!(
+        !phase1.results.is_empty(),
+        "phase 1 must decode something for this test to be meaningful"
+    );
+
+    let phase2 = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 1.0, 200)
+        .strictness(DecodeStrictness::Deep)
+        .known(&phase1.results)
+        .fft_cache(phase1.fft_cache)
+        .sic_early()
+        .decode();
+
+    let phase2_msgs: BTreeSet<String> = phase2
+        .results
+        .iter()
+        .filter_map(|r| unpack77(r.message77()))
+        .collect();
+    println!(
+        "phase2 Deep+known+cache(qso3_busy.wav): {} new decodes: {:?}",
+        phase2_msgs.len(),
+        phase2_msgs
+    );
+
+    assert!(
+        !phase2_msgs.iter().any(|m| m.contains("7Y8CIH")),
+        "issue #253 regression: the false decode '7Y8CIH HN1GD OP30' \
+         reappeared in phase 2 (got: {phase2_msgs:?})"
+    );
+
+    // The real incremental signals this combination should still find
+    // beyond phase 1 (issue #253's own investigation confirmed all six
+    // remain reachable after the fix, including DL8YHR).
+    for expected in [
+        "KD2UGC F6GCP R-23",
+        "K1BZM EA3CJ JN01",
+        "CQ EA2BFM IN83",
+        "CQ DX DL8YHR JO41",
+        "K1JT HA5WA 73",
+        "WA2FZW DL5AXX RR73",
+    ] {
+        assert!(
+            phase2_msgs.contains(expected),
+            "issue #253 fix regressed real recall: '{expected}' missing from phase 2 (got: {phase2_msgs:?})"
+        );
+    }
+}

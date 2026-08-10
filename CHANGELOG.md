@@ -4,28 +4,60 @@
 
 ### Fixed
 
-- **FT8 `DecodeStrictness::Deep` false-decode calibration** (issue #253)
-  — prompted by a reproducible false decode found via WebFT8's
-  `decode_phase2` pipeline (`Deep` + `.known()` + `.fft_cache()` +
-  `.sic_early()`) on `qso3_busy.wav`: `7Y8CIH HN1GD OP30` @509 Hz,
-  `hard_errors=31`. New `ft8_strictness_probe` (`tests/ft8_sweep.rs`,
-  mirrors issue #72's FT4 methodology) swept `DecodeStrictness`'s
-  effect on both golden recall and false-accept count across 320
-  `ft8sim` AWGN/CCIR trials at Strict/Normal/Deep — found `Deep`'s
-  golden-recall gain over `Normal` saturates entirely by
-  `ft8_nharderrors_max=37` (bit-for-bit identical 37→40) while
-  false-accepts keep climbing past that point with zero further
-  benefit. Retuned `Deep`: `40 → 37`. **Does not eliminate the
-  original anecdote** — `hard_errors=31` clears even `Normal`'s 36
-  (confirmed: `Normal` reproduces the same false decode on the same
-  pipeline, only `Strict`'s 22 rejects it) — it's a false accept
-  sitting inside WSJT-X's own accepted ceiling, surfaced by
-  `.sic_early()`'s residual-search architecture on this file, not a
-  `Deep`-specific bug. The retune is independently justified by the
-  sweep regardless. Zero regression: full `cargo test --lib --features
-  full` (392 passed) + all `qso3_busy.wav` recall suites unchanged
-  (`Normal` is the default, untouched) + `scripts/pre-push-check.sh`'s
-  full feature matrix, all clean.
+- **FT8 `.sic_early()` false decode, actually eliminated** (issue #253
+  follow-up) — the `Deep`-threshold retune below turned out not to fix
+  the reported anecdote (`hard_errors=31` clears even `Normal`'s 36);
+  further investigation traced it to the wrong layer entirely.
+  Root cause: `__staged_sic`'s checkpoint-A/B/C engine used to
+  pre-subtract the caller's `.known()` list from the *entire* audio
+  buffer once, before checkpoint A (the `nzhsym=41` truncated/
+  zero-tailed early pass) ever ran. A real `jt9` build's own disk-read
+  "Early" pass is *always* the first decode attempt on fully raw,
+  unmodified audio for a Rx cycle (`jt9.f90` builds its zero-tailed
+  buffer straight from the freshly-read WAV) — there is no WSJT-X code
+  path where checkpoint A ever sees audio some earlier, external pass
+  has already subtracted from. Feeding it pre-subtracted audio is an
+  mfsk-core-original composition with no WSJT-X counterpart to validate
+  against, and it produced a real CRC-14 false-accept
+  (`7Y8CIH HN1GD OP30` @509 Hz on `qso3_busy.wav`, reproduced via
+  WebFT8's `decode_phase2` pipeline: `Deep` + `.known()` +
+  `.fft_cache()` + `.sic_early()`). Confirmed via a controlled A/B
+  (identical `sync_min`/`max_cand`/strictness, only variable was
+  whether `known` was pre-subtracted before checkpoint A): with
+  pre-subtraction, 7 results including the false one; without, 22
+  results — a strict superset of the pre-subtraction run's *real*
+  signals, none false. Cross-checked against a real local `jt9 -8 -d3`
+  build on the same file: 9 clean decodes, nothing near 509 Hz.
+
+  Fixed by scoping the `known` pre-subtraction *away* from checkpoint A
+  specifically, keeping it for checkpoints B/C only (which already
+  rebuild their own buffers fresh from the original audio each call,
+  never reusing checkpoint A's discarded residual — routing *that*
+  fresh copy through a `known`-subtracted buffer instead of raw audio
+  restores the "known signals don't mask weaker ones underneath"
+  capability without ever exposing checkpoint A to anything
+  WSJT-X-unvalidated). New regression test
+  `sic_early_deep_with_known_and_cache_does_not_false_decode`
+  (`tests/ft8_qso3_staged_sic_check.rs`) replays the exact WebFT8
+  pipeline shape and asserts both that `7Y8CIH` never reappears *and*
+  all 6 real incremental signals (including `CQ DX DL8YHR JO41`,
+  issue #191's own regression signal) still decode. Zero regression:
+  full `cargo test --lib --features full` (392 passed), every
+  `qso3_busy.wav` recall suite unchanged from pre-fix numbers,
+  `scripts/pre-push-check.sh`'s full feature matrix clean.
+
+- **FT8 `DecodeStrictness::Deep` false-decode ceiling calibration**
+  (issue #253) — a separate, independently-justified fix alongside the
+  one above. New `ft8_strictness_probe` (`tests/ft8_sweep.rs`, mirrors
+  issue #72's FT4 methodology) swept `DecodeStrictness`'s effect on
+  both golden recall and false-accept count across 320 `ft8sim`
+  AWGN/CCIR trials at Strict/Normal/Deep, across both the single-pass
+  and `.sic_early()` strategies — found `Deep`'s golden-recall gain
+  over `Normal` saturates entirely by `ft8_nharderrors_max=37`
+  (bit-for-bit identical 37→40) while false-accepts keep climbing past
+  that point with zero further benefit. Retuned `Deep`: `40 → 37`.
+  Doesn't by itself explain the anecdote above (see that entry), but
+  stands on its own sweep evidence regardless.
 
 ### Added
 

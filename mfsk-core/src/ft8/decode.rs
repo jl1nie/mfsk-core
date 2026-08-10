@@ -808,16 +808,43 @@ fn decode_frame_subtract_staged_with_ap_inner(
 ) -> (Vec<DecodeResult>, Vec<i16>) {
     use staged_checkpoint::{A_SAMPLES, B_SAMPLES, C_SAMPLES};
 
+    // `outer_known` pre-subtracted once, up front — used everywhere
+    // *except* checkpoint A below (2026-08-10, issue #253). A real
+    // `jt9` build's own disk-read "Early" pass (`nearly=41`, the
+    // structure checkpoint A ports) is *always* the first decode
+    // attempt on freshly-read, unmodified audio for a Rx cycle —
+    // there is no code path in WSJT-X where it ever runs against
+    // audio some earlier, external pass has already subtracted from.
+    // Feeding checkpoint A's zero-tailed truncated buffer
+    // pre-subtracted audio is an mfsk-core-original composition with
+    // no WSJT-X counterpart to validate it against, and was
+    // root-caused to a reproducible false decode (`7Y8CIH HN1GD OP30`
+    // on `qso3_busy.wav`, `hard_errors=31` — a garden-variety CRC-14
+    // false-accept that a truncation-boundary artefact in the
+    // pre-subtracted residual apparently made reachable). Checkpoints
+    // B/C don't have this problem — they already rebuild their own
+    // buffers fresh from `audio` each time rather than reusing
+    // checkpoint A's residual, so routing *their* fresh copy through
+    // `audio_clean` instead keeps the "known signals don't mask
+    // weaker ones" capability the original design wanted, without
+    // exposing checkpoint A to anything unvalidated.
+    let mut audio_clean = audio.to_vec();
+    for r in outer_known {
+        subtract_signal_lpf_refine_dt(&mut audio_clean, r);
+    }
+
     // Buffers shorter than checkpoint A can't be staged meaningfully —
     // there's no "early, incomplete" window smaller than the whole thing.
     // Must call the *flat* fallback (`flat_sic_inner`), not `.sic_early()`
     // itself — that dispatches to this very function (issue #180), so
     // calling it here would recurse indefinitely (stack overflow, caught
-    // by `sic_early_with_ap_silence_shape`).
+    // by `sic_early_with_ap_silence_shape`). A flat pass has none of
+    // checkpoint A's truncation-boundary exposure, so `audio_clean` is
+    // fine here.
     let _ = freq_hint;
     if audio.len() < A_SAMPLES {
         let (r, _) = flat_sic_inner(
-            audio,
+            &audio_clean,
             freq_min,
             freq_max,
             sync_min,
@@ -831,7 +858,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             CHECKPOINT_SIC_ROUNDS,
             on_result,
         );
-        return (r, audio.to_vec());
+        return (r, audio_clean);
     }
 
     // ---- Checkpoint A (nearly=41): early pass on a full-length buffer
@@ -881,9 +908,11 @@ fn decode_frame_subtract_staged_with_ap_inner(
         // (rather than reproducing jt9.f90's own checkpoint-47-sized
         // truncation quirk in this branch) can only find as much or
         // more, never less. Must be the *flat* fallback here too — same
-        // recursion hazard as the `A_SAMPLES` branch above.
+        // recursion hazard as the `A_SAMPLES` branch above. `audio_clean`
+        // (not raw `audio`) — same rationale as the short-buffer
+        // fallback above, no truncation exposure in a flat pass.
         let (r, _) = flat_sic_inner(
-            audio,
+            &audio_clean,
             freq_min,
             freq_max,
             sync_min,
@@ -897,7 +926,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
             CHECKPOINT_SIC_ROUNDS,
             on_result,
         );
-        return (r, audio.to_vec());
+        return (r, audio_clean);
     }
 
     // ---- Checkpoint B (nearly=47): subtract-prep only, no search.
@@ -909,7 +938,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
     // checkpoint C, where the raw tail is available.
     let b_len = B_SAMPLES.min(audio.len());
     let mut buf_b = vec![0i16; audio.len()];
-    buf_b[..b_len].copy_from_slice(&audio[..b_len]);
+    buf_b[..b_len].copy_from_slice(&audio_clean[..b_len]);
     // Message duration (`params::NZ` samples at 12 kHz) plus the 0.5 s
     // frame-start offset must fit before the checkpoint-B buffer's real
     // content ends. Mirrors `ft8_decode.f90`'s `xdt_save(i)-0.5 < 0.396`
@@ -940,7 +969,7 @@ fn decode_frame_subtract_staged_with_ap_inner(
     let c_len = C_SAMPLES.min(audio.len());
     let mut buf_c = vec![0i16; audio.len()];
     buf_c[..b_len].copy_from_slice(&buf_b[..b_len]);
-    buf_c[b_len..c_len].copy_from_slice(&audio[b_len..c_len]);
+    buf_c[b_len..c_len].copy_from_slice(&audio_clean[b_len..c_len]);
     // `ft8_decode.f90:162` — same `lrefinedt=.true.` re-search as
     // checkpoint B above, for the late-`dt` decodes deferred to here.
     for r in &deferred {
@@ -1179,19 +1208,20 @@ impl SupportsSicEarly for Ft8 {
     /// impl above, whose single full-buffer round 0 has the matching
     /// shape.) Recomputing here is always correct, just not free.
     fn __staged_sic(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
-        // `subtract_signal_lpf_refine_dt`, not the plain single-shot
-        // variant: `known` is conceptually the same kind of carried-
-        // forward decode checkpoint B/C already re-subtract with
-        // `lrefinedt=.true.` (±90-sample best-alignment search) rather
-        // than trusting the original `dt_sec` verbatim. A `known` signal
-        // sitting only ~35 Hz from a marginal candidate (as W1FC does
-        // next to `CQ DX DL8YHR JO41`, issue #180) needs that same
-        // precision — plain `subtract_signal_lpf` measurably left enough
-        // residual to lose DL8YHR entirely in end-to-end testing here.
-        let mut audio_clean = req.audio.to_vec();
-        for r in req.known {
-            subtract_signal_lpf_refine_dt(&mut audio_clean, r);
-        }
+        // `req.known`'s pre-subtraction now happens *inside*
+        // `decode_frame_subtract_staged_with_ap_inner` (2026-08-10,
+        // issue #253) — scoped away from checkpoint A specifically, see
+        // that function's own doc comment for why. `subtract_signal_lpf_refine_dt`
+        // (not the plain single-shot variant) is what it uses: `known`
+        // is conceptually the same kind of carried-forward decode
+        // checkpoint B/C already re-subtract with `lrefinedt=.true.`
+        // (±90-sample best-alignment search) rather than trusting the
+        // original `dt_sec` verbatim. A `known` signal sitting only
+        // ~35 Hz from a marginal candidate (as W1FC does next to
+        // `CQ DX DL8YHR JO41`, issue #180) needs that same precision —
+        // plain `subtract_signal_lpf` measurably left enough residual
+        // to lose DL8YHR entirely in end-to-end testing here.
+        //
         // `req.known` is also threaded into every checkpoint's own
         // message77 dedup below (not just used for the subtraction
         // above) — an imperfect subtraction on a strong `known` carrier
@@ -1207,7 +1237,7 @@ impl SupportsSicEarly for Ft8 {
         // `decode_frame_subtract_staged_with_ap_inner` had already
         // fired `on_result` for every checkpoint's raw candidates.
         let (results, residual) = decode_frame_subtract_staged_with_ap_inner(
-            &audio_clean,
+            req.audio,
             req.freq_min,
             req.freq_max,
             req.sync_min,
