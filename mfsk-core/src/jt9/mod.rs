@@ -398,6 +398,10 @@ mod tests {
             ),
         ];
         for path in files {
+            if !std::path::Path::new(path).exists() {
+                eprintln!("skipping {path} — sample not found (gitignored local corpus)");
+                continue;
+            }
             let mut audio = load_wav(path);
             audio.resize(720_000, 0.0);
             let n = 10;

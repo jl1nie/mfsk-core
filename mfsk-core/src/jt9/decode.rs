@@ -333,6 +333,10 @@ mod gate_diag {
                 ),
                 n
             );
+            if !std::path::Path::new(&path).exists() {
+                eprintln!("skipping m26_{n:02}.wav — sample not found (gitignored local corpus)");
+                continue;
+            }
             let mut audio = load_wav(&path);
             audio.resize(720_000, 0.0);
 
@@ -406,6 +410,10 @@ mod gate_diag {
                 ),
                 n
             );
+            if !std::path::Path::new(&path).exists() {
+                eprintln!("skipping m26_{n:02}.wav — sample not found (gitignored local corpus)");
+                continue;
+            }
             eprintln!("\n=== jt9_awgn_m26_{n:02}.wav ===");
             let mut audio = load_wav(&path);
             audio.resize(720_000, 0.0);
