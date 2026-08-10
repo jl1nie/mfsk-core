@@ -67,10 +67,16 @@ pub use process_candidates::{process_candidates, process_candidates_tuned, sync_
 // `super::decode::*` (host frame decoder) reaches into this internal
 // per-candidate inner entry — keep visible to the parent `ft8` module.
 pub(in crate::ft8) use process_candidates::process_one_candidate_inner;
+// Same reason (issue #253 SNR-calibration follow-up, 2026-08-10):
+// `super::decode::*`'s own SIC/single-pass/sniper engines share the
+// WSJT-X-faithful xsnr2 gate `decode_block_multipass` uses, so every
+// FT8 entry point reports the same SNR for the same signal.
 #[cfg(feature = "std")]
 pub(in crate::ft8) use process_candidates::{
     TRACE_NSYNC_FAIL, TRACE_NSYNC_PASS, TRACE_OSD_ATTEMPT, stage_trace_enabled,
 };
+#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
+pub(in crate::ft8) use process_candidates::{apply_wsjtx_xsnr2, compute_xsig_wsjtx};
 pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
 pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
 

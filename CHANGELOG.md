@@ -122,6 +122,34 @@
   contract tests; full `cargo test --lib --features full` (392 passed)
   and `scripts/pre-push-check.sh`'s full feature matrix clean.
 
+- **FT8 host `xsnr2` now shared by every entry point, not just
+  `decode_block`** (issue #253 follow-up, same day) — found via a
+  production consumer: WebFT8 (`decode.rs`'s `DecodeRequest`/
+  `SniperRequest` engines: `.sic_rounds()`, `.sic_early()`, plain
+  single-pass `.decode()`, `.sniper()`) reported a visibly different
+  SNR than `decode_block()` for the same signal on the same commit,
+  because those four engines never called the `xsnr2` fix above at
+  all — they still used `engine::llr::compute_snr_db`'s adjacent-tone
+  metric, an entirely different WSJT-X quantity (`ft8b.f90`'s `xsnr`,
+  vs. `xsnr2` — WSJT-X itself overwrites `xsnr` with `xsnr2` for every
+  non-AP-retry decode, `ft8b.f90:459`, so `xsnr2` is the one real
+  WSJT-X actually displays in the normal case). Extracted the
+  `xsnr2` computation into two shared, reusable functions
+  (`compute_xsig_wsjtx`, `apply_wsjtx_xsnr2`) and wired them into all
+  four `decode.rs` engines the same way `decode_block_multipass`
+  already used it, so every FT8 entry point now reports the same SNR
+  for the same signal (verified: `decode_block()` and all four
+  `DecodeRequest`/`SniperRequest` strategies now agree within ~1 dB of
+  each other on `qso3_busy.wav`, where before this fix the plain
+  single-pass `.decode()` read ~15 dB lower than `decode_block()` for
+  the same strong signal). Zero regression: full `cargo test --lib
+  --features full` (392 passed), every `qso3_busy.wav` suite,
+  `ft8_sic_early` regression guards, streaming-contract tests, and
+  `scripts/pre-push-check.sh`'s full feature matrix (including
+  `fft-extern`/no-`std`/`fixed-point` combos, which don't compile the
+  new code at all — `compute_snr_db` stays the only SNR source there,
+  unchanged) all clean.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

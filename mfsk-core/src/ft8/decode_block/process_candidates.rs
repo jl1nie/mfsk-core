@@ -474,61 +474,26 @@ fn decode_block_multipass<S: AudioSample>(
                         );
                     }
                 }
-                // `xsig` for the xsnr2 gate below, computed via the
-                // WSJT-X-faithful `cd0`/per-symbol-FFT pipeline
-                // (`fill_symbol_spectra`, `ft8b.f90:154-161`) — the same
-                // one `s8`/`xsig` come from in real WSJT-X, and the same
-                // one this codebase already uses for LLR. Must run
-                // *before* the subtract below: WSJT-X fills `s8` early
-                // in `ft8b`, well before `subtractft8` runs for this
-                // candidate, so it reflects audio with every *earlier*
-                // candidate in this pass already subtracted (sequential
-                // SIC) but not this one's own signal yet. Paired with
-                // `compute_baseline_spectrum`'s Nuttall-window `sbase`
-                // (issue #253 follow-up, 2026-08-10) — see that
-                // function's doc comment for why reading `xsig` from
-                // `compute_spectrogram`'s rectangular spectrum instead
-                // (the previous approach) doesn't calibrate against it.
+                // `xsig` for the xsnr2 gate below (issue #253 follow-up,
+                // 2026-08-10) — must run *before* the subtract: WSJT-X
+                // fills `s8` early in `ft8b`, well before `subtractft8`
+                // runs for this candidate, so it reflects audio with
+                // every *earlier* candidate in this pass already
+                // subtracted (sequential SIC) but not this one's own
+                // signal yet. See `compute_xsig_wsjtx`'s doc comment for
+                // why this needs the `cd0`/per-symbol-FFT pipeline rather
+                // than `compute_spectrogram`'s rectangular one.
                 #[cfg(not(feature = "fixed-point"))]
-                let xsig_wsjtx: f32 = {
-                    let itone = crate::ft8::wave_gen::message_to_tones(r.message77());
-                    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> =
-                        alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
-                            .try_into()
-                            .unwrap();
-                    fill_symbol_spectra(
-                        &mut cs,
-                        work.as_slice(),
-                        r.freq_hz,
-                        r.dt_sec,
-                        SymMask::SyncOnly,
-                        fft_cache.as_deref(),
-                    );
-                    fill_symbol_spectra(
-                        &mut cs,
-                        work.as_slice(),
-                        r.freq_hz,
-                        r.dt_sec,
-                        SymMask::DataOnly,
-                        fft_cache.as_deref(),
-                    );
-                    let mut xsig = 0.0f32;
-                    for (k, tones) in cs.iter().enumerate() {
-                        // Undo `fill_symbol_spectra`'s `CS_SCALE = 1/1000`
-                        // (`ft8b.f90:159`'s `cs = csymb/1e3`) — `xsig`
-                        // needs the raw, unscaled `s8 = abs(csymb)`.
-                        let c = tones[itone[k] as usize];
-                        let re = c.re * 1000.0;
-                        let im = c.im * 1000.0;
-                        xsig += re * re + im * im;
-                    }
-                    xsig
-                };
+                let xsig_wsjtx: f32 = compute_xsig_wsjtx(&r, work.as_slice(), fft_cache.as_deref());
 
                 // WSJT-X `ft8b.f90:432-437` subtracts *before* its own
                 // xsnr2 gate check (below) runs — matched here too, not
                 // just for residual cleanliness: this crate's own
-                // sequential-subtract design already relied on it.
+                // sequential-subtract design already relied on it. This
+                // ordering only matters for computing `xsig_wsjtx` above
+                // (which needs pre-subtract audio); `apply_wsjtx_xsnr2`
+                // below consumes the already-captured value, so it's
+                // order-independent relative to the subtract itself.
                 crate::ft8::subtract::subtract_signal_lpf(work.as_mut_slice(), &r);
                 fft_cache = None; // `work` changed — cache is stale.
 
@@ -543,41 +508,6 @@ fn decode_block_multipass<S: AudioSample>(
                 // decode→gate→return atomicity exactly, not just
                 // approximating it at pass granularity.
                 //
-                // Replace this result's snr_db with WSJT-X xsnr2, and
-                // drop it if it fails the validity gate — using *this
-                // pass's own* baseline (issue #243) plus the `xsig_wsjtx`
-                // computed above, not a frozen pass-1 snapshot.
-                //
-                // an absolute scale.
-                //
-                // **WSJT-X post-decode validity gates (#63).** Mirrors
-                // `ft8b.f90:422-459`:
-                //   - msg-type `i3 / n3` validity (lines 425-428)
-                //   - `unpack77` success (line 430)
-                //   - `nsync <= 10 && xsnr < -24.0 dB` bail-out (line 456)
-                // The xsnr gate has to run on the RAW (un-clamped) `xsnr2`
-                // because both WSJT-X (line 460) and our previous attempt
-                // clamp the value to -24 dB for display *after* the gate.
-                // Clamping first would collapse every "below floor" result
-                // to exactly -24, dead-letter the `xsnr < -24.0` test, and
-                // let exactly the phantoms the gate was designed to catch
-                // slip through (= the qso3_busy phantoms named in issue
-                // #63's body).
-                //
-                // WSJT-X `ft8b.f90:423-430` all-zero / i3 / n3 / unpack77
-                // gates are intentionally omitted here: every `r` here
-                // came through `process_one_candidate_inner`, which
-                // already rejects via `unpack77(&bp.message77)?` (line
-                // ~1565). `unpack77` returns `None` for all-zero messages
-                // (i3=0 n3=0 → free text → empty string → None) and for
-                // every invalid i3/n3 combination (`i3 > 5` falls through
-                // the outer match's `_ => None`; `i3=0 n3=2` falls through
-                // the inner match's `_ => None`). Repeating those checks
-                // here just paid for a second `unpack77` call per result
-                // (Gemini PR #88 review). The xsnr2 gate stays — it needs
-                // the raw-pre-clamp value that `process_one_candidate_inner`
-                // can't compute (no sbase / spec at that scope).
-                //
                 // xsnr2/xbase post-process is f32-only. Fixed-point
                 // Spectrogram cells are quantised post `>> FP_SPEC_SHIFT`,
                 // putting many noise cells at u16 zero — `fit_baseline`'s
@@ -585,27 +515,12 @@ fn decode_block_multipass<S: AudioSample>(
                 // xsnr2 explodes. The original adjacent-tone SNR from
                 // `process_candidates_into` (compute_snr_db) is already
                 // on a sensible scale, so leave it untouched on the
-                // fixed-point path; the msg-type / unpack77 / nsync gates
-                // also run only on the f32 path (the fixed-point pipeline
-                // doesn't surface OSD-pass results, so the phantom set
-                // doesn't apply).
+                // fixed-point path.
                 #[cfg(not(feature = "fixed-point"))]
-                if let Some((sbase, spec)) = &sbase_and_spec {
-                    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
-                    let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
-                    let nsps_steps = (NSPS / NSTEP) as f32;
-
-                    // xsnr2 gate (ft8b.f90:456). Compute raw, gate, then
-                    // clamp. The clamp here MUST happen after the gate
-                    // test — see `recompute_snr_xsnr2`'s own doc comment
-                    // for why the pre-clamp ordering used to dead-letter
-                    // the gate.
-                    let raw_snr = recompute_snr_xsnr2(r.freq_hz, xsig_wsjtx, sbase, df);
-                    let nsync = recompute_nsync(&r, spec, df, tstep, nsps_steps);
-                    if nsync <= 10 && raw_snr < -24.0 {
-                        continue;
-                    }
-                    r.snr_db = raw_snr.max(-24.0);
+                if let Some((sbase, spec)) = &sbase_and_spec
+                    && !apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, sbase, spec)
+                {
+                    continue;
                 }
 
                 if let Some(cb) = on_result.as_deref_mut() {
@@ -854,6 +769,119 @@ fn recompute_snr_xsnr2(freq_hz: f32, xsig: f32, sbase: &[f32], df: f32) -> f32 {
     // is continuous from -57 dB upward via the simple `max`.
     let xsnr2 = arg.max(0.001);
     10.0 * xsnr2.log10() - 27.0
+}
+
+/// `xsig` (WSJT-X `ft8b.f90:154-161`'s `s8`) via the real `cd0`/
+/// per-symbol-FFT pipeline (`fill_symbol_spectra`) — the same one this
+/// codebase already uses for LLR, and the same one real WSJT-X's own
+/// `xsig` comes from. **Not** `compute_spectrogram`'s rectangular
+/// coarse-sync spectrum (the previous approach): see
+/// [`crate::ft8::baseline::compute_baseline_spectrum`]'s doc comment
+/// for why that doesn't calibrate against
+/// [`recompute_snr_xsnr2`]/`sbase`.
+///
+/// `audio` must be the state *before* this candidate's own signal is
+/// subtracted from it (matches WSJT-X: `s8` is filled early in `ft8b`,
+/// well before `subtractft8` runs for the same candidate).
+///
+/// Shared by every FT8 entry point (`decode_block`, `.sic_rounds()`,
+/// `.sic_early()`, the plain single-pass `.decode()`, `.sniper()`) so
+/// they all report the same SNR for the same signal — before this
+/// (issue #253 SNR-calibration follow-up, 2026-08-10) `decode_block`
+/// and `DecodeRequest` used two different metrics entirely (this one
+/// vs. the adjacent-tone `compute_snr_db` in `super::super::llr`),
+/// confirmed by a real production consumer (WebFT8) seeing visibly
+/// different SNR for the same signal depending on which entry point it
+/// called.
+#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
+pub(crate) fn compute_xsig_wsjtx(
+    result: &DecodeResult,
+    audio: &[i16],
+    fft_cache: Option<&[Complex<f32>]>,
+) -> f32 {
+    let itone = crate::ft8::wave_gen::message_to_tones(result.message77());
+    let mut cs: Box<[[Cmplx<f32>; 8]; 79]> = alloc::vec![[Cmplx::<f32>::default(); 8]; 79]
+        .try_into()
+        .unwrap();
+    fill_symbol_spectra(
+        &mut cs,
+        audio,
+        result.freq_hz,
+        result.dt_sec,
+        SymMask::SyncOnly,
+        fft_cache,
+    );
+    fill_symbol_spectra(
+        &mut cs,
+        audio,
+        result.freq_hz,
+        result.dt_sec,
+        SymMask::DataOnly,
+        fft_cache,
+    );
+    let mut xsig = 0.0f32;
+    for (k, tones) in cs.iter().enumerate() {
+        // Undo `fill_symbol_spectra`'s `CS_SCALE = 1/1000`
+        // (`ft8b.f90:159`'s `cs = csymb/1e3`) — `xsig` needs the raw,
+        // unscaled `s8 = abs(csymb)`.
+        let c = tones[itone[k] as usize];
+        let re = c.re * 1000.0;
+        let im = c.im * 1000.0;
+        xsig += re * re + im * im;
+    }
+    xsig
+}
+
+/// Replaces `result.snr_db` with WSJT-X's `xsnr2` and applies its
+/// validity gate — the shared finishing step every FT8 entry point
+/// runs on an already-CRC-passed candidate. `xsig` must come from
+/// [`compute_xsig_wsjtx`] called *before* the candidate's own
+/// subtract; `sbase`/`spec` are this pass's already-captured baseline
+/// and coarse-sync spectrum (order-independent relative to the
+/// subtract — both are frozen snapshots by the time this runs).
+///
+/// Returns `false` if the candidate fails WSJT-X's `nsync <= 10 &&
+/// xsnr < -24.0 dB` bail-out (`ft8b.f90:456`) — caller should drop it.
+/// `result.snr_db` is updated (clamped to -24 dB floor) whenever this
+/// returns `true`.
+///
+/// **WSJT-X post-decode validity gates (#63).** Mirrors
+/// `ft8b.f90:422-459`'s `nsync <= 10 && xsnr < -24.0` bail-out (line
+/// 456) specifically — the msg-type `i3`/`n3` validity (lines
+/// 425-428) and `unpack77` success (line 430) gates are intentionally
+/// omitted here: every `result` this is called with already came
+/// through `process_one_candidate_inner`, which already rejects via
+/// `unpack77(&bp.message77)?`. `unpack77` returns `None` for all-zero
+/// messages (i3=0 n3=0 → free text → empty string → None) and for
+/// every invalid i3/n3 combination, so repeating those checks here
+/// would just pay for a second `unpack77` call per result (Gemini PR
+/// #88 review).
+///
+/// The gate runs on the RAW (un-clamped) `xsnr2` because both WSJT-X
+/// (line 460) and an earlier version of this port clamp the value to
+/// -24 dB for display *after* the gate — clamping first would collapse
+/// every "below floor" result to exactly -24, dead-letter the `xsnr <
+/// -24.0` test, and let exactly the phantoms the gate was designed to
+/// catch slip through (the qso3_busy phantoms named in issue #63's
+/// body).
+#[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
+pub(crate) fn apply_wsjtx_xsnr2(
+    result: &mut DecodeResult,
+    xsig: f32,
+    sbase: &[f32],
+    spec: &Spectrogram,
+) -> bool {
+    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+    let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
+    let nsps_steps = (NSPS / NSTEP) as f32;
+
+    let raw_snr = recompute_snr_xsnr2(result.freq_hz, xsig, sbase, df);
+    let nsync = recompute_nsync(result, spec, df, tstep, nsps_steps);
+    if nsync <= 10 && raw_snr < -24.0 {
+        return false;
+    }
+    result.snr_db = raw_snr.max(-24.0);
+    true
 }
 
 /// Embedded path: single-pass `decode_block` (matches the previous

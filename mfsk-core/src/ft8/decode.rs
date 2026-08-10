@@ -385,6 +385,18 @@ fn decode_frame_inner(
     #[cfg(feature = "std")]
     let __trace_t1 = trace_stage.then(std::time::Instant::now);
 
+    // `sbase` (WSJT-X-faithful Nuttall-window baseline), captured once
+    // for the whole single pass — no subtract happens in this engine, so
+    // `audio` never changes and one capture suffices (issue #253
+    // SNR-calibration follow-up, 2026-08-10; see `apply_wsjtx_xsnr2`'s
+    // doc comment for why `decode_block`/`.sic_early()`/`.sic_rounds()`
+    // and this plain single-pass engine must agree on SNR).
+    #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+    let sbase: alloc::vec::Vec<f32> = {
+        let avg = crate::ft8::baseline::compute_baseline_spectrum(audio);
+        crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+    };
+
     // `on_result` fires here, inside the per-candidate closure, *before*
     // the cross-candidate dedup pass below — see `DecodeRequest::
     // on_result`'s doc comment for why that ordering means a result can
@@ -393,9 +405,21 @@ fn decode_frame_inner(
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
         .filter_map(|cand| {
-            let r = process_candidate(
+            #[cfg_attr(
+                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                allow(unused_mut)
+            )]
+            let mut r = process_candidate(
                 cand, audio, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
             )?;
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            {
+                let xsig =
+                    crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(&fft_cache));
+                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+                    return None;
+                }
+            }
             if let Some(cb) = on_result {
                 cb(&r);
             }
@@ -406,9 +430,21 @@ fn decode_frame_inner(
     let raw: Vec<DecodeResult> = candidates
         .iter()
         .filter_map(|cand| {
-            let r = process_candidate(
+            #[cfg_attr(
+                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                allow(unused_mut)
+            )]
+            let mut r = process_candidate(
                 cand, audio, &fft_cache, depth, strictness, known, eq_mode, ap_hint,
             )?;
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            {
+                let xsig =
+                    crate::ft8::decode_block::compute_xsig_wsjtx(&r, audio, Some(&fft_cache));
+                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+                    return None;
+                }
+            }
             if let Some(cb) = on_result {
                 cb(&r);
             }
@@ -591,10 +627,21 @@ fn sic_inner_passes_with_cache(
         let spec = crate::ft8::decode_block::compute_spectrogram(residual, freq_max);
         let candidates =
             crate::ft8::decode_block::coarse_sync(&spec, freq_min, freq_max, sync_min, max_cand);
-        drop(spec);
         if candidates.is_empty() {
             continue;
         }
+        // `sbase` (WSJT-X-faithful Nuttall-window baseline) captured once
+        // per pass, from this pass's then-current `residual` — same
+        // per-pass-not-per-candidate cadence as `decode_block_multipass`
+        // (issue #253 SNR-calibration follow-up, 2026-08-10). `spec`
+        // (rectangular) is kept alive (not dropped early like before)
+        // only for the `nsync` validity gate below — unrelated to the
+        // xsig/xbase scale calibration.
+        #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+        let sbase: alloc::vec::Vec<f32> = {
+            let avg = crate::ft8::baseline::compute_baseline_spectrum(residual);
+            crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+        };
 
         let fft_cache = if ipass == 0
             && let Some(c) = precomputed_fft
@@ -607,7 +654,11 @@ fn sic_inner_passes_with_cache(
             pass0_cache = Some(FftCache(fft_cache.clone()));
         }
         for cand in &candidates {
-            let r = match process_candidate_with_scratch(
+            #[cfg_attr(
+                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                allow(unused_mut)
+            )]
+            let mut r = match process_candidate_with_scratch(
                 cand,
                 residual,
                 &fft_cache,
@@ -628,6 +679,11 @@ fn sic_inner_passes_with_cache(
             {
                 continue;
             }
+            // `xsig` for the xsnr2 gate below — must run *before* the
+            // subtract (see `compute_xsig_wsjtx`'s doc comment).
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            let xsig_wsjtx: f32 =
+                crate::ft8::decode_block::compute_xsig_wsjtx(&r, residual, Some(&fft_cache));
             // Sequential subtract — clean residual for next candidate.
             // Use the WSJT-X-style channel-aware LPF subtract (matches
             // `decode_block::decode_block_multipass`'s sequential
@@ -663,6 +719,15 @@ fn sic_inner_passes_with_cache(
             // the FT4 busy-band-fading synthetic 10/10) passes
             // identically or better with the single-shot call.
             subtract_signal_lpf(residual, &r);
+            // WSJT-X xsnr2 validity gate (issue #253 SNR-calibration
+            // follow-up, 2026-08-10) — see `apply_wsjtx_xsnr2`'s doc
+            // comment. Applied *before* `on_result` fires, matching the
+            // same revoke-less-retract discipline `decode_block`'s own
+            // driver already follows (issue #243).
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig_wsjtx, &sbase, &spec) {
+                continue;
+            }
             if let Some(cb) = on_result {
                 cb(&r);
             }
@@ -1042,13 +1107,26 @@ fn decode_sniper_inner(
         return (Vec::new(), fft_cache);
     }
 
+    // `sbase`, same rationale as `decode_frame_inner`'s own (issue #253
+    // SNR-calibration follow-up, 2026-08-10) — no subtract in this
+    // engine either, one capture for the whole call suffices.
+    #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+    let sbase: alloc::vec::Vec<f32> = {
+        let avg = crate::ft8::baseline::compute_baseline_spectrum(audio);
+        crate::ft8::baseline::fit_baseline(&avg, 0, spec.n_freq - 1)
+    };
+
     // Same on_result-fires-before-dedup ordering as decode_frame_inner —
     // see its comment above the analogous par_iter block.
     #[cfg(feature = "parallel")]
     let raw: Vec<DecodeResult> = candidates
         .par_iter()
         .filter_map(|cand| {
-            let r = process_candidate(
+            #[cfg_attr(
+                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                allow(unused_mut)
+            )]
+            let mut r = process_candidate(
                 cand,
                 audio,
                 fft_cache.as_slice(),
@@ -1058,6 +1136,17 @@ fn decode_sniper_inner(
                 eq_mode,
                 ap_hint,
             )?;
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            {
+                let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(
+                    &r,
+                    audio,
+                    Some(fft_cache.as_slice()),
+                );
+                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+                    return None;
+                }
+            }
             if let Some(cb) = on_result {
                 cb(&r);
             }
@@ -1068,7 +1157,11 @@ fn decode_sniper_inner(
     let raw: Vec<DecodeResult> = candidates
         .iter()
         .filter_map(|cand| {
-            let r = process_candidate(
+            #[cfg_attr(
+                not(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point"))),
+                allow(unused_mut)
+            )]
+            let mut r = process_candidate(
                 cand,
                 audio,
                 fft_cache.as_slice(),
@@ -1078,6 +1171,17 @@ fn decode_sniper_inner(
                 eq_mode,
                 ap_hint,
             )?;
+            #[cfg(all(feature = "fft-rustfft", feature = "std", not(feature = "fixed-point")))]
+            {
+                let xsig = crate::ft8::decode_block::compute_xsig_wsjtx(
+                    &r,
+                    audio,
+                    Some(fft_cache.as_slice()),
+                );
+                if !crate::ft8::decode_block::apply_wsjtx_xsnr2(&mut r, xsig, &sbase, &spec) {
+                    return None;
+                }
+            }
             if let Some(cb) = on_result {
                 cb(&r);
             }
