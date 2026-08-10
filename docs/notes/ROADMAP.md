@@ -93,7 +93,7 @@ the next cycle's centre of gravity is **finishing the embedded product**
 host-UI consumers** (extend track 2). The two aren't exclusive, but
 attention is.
 
-## Current line — 0.8.x shipped, 0.9.0 accumulating
+## Current line — 0.9.0 shipped
 
 - **0.8.0** — legacy BASIS `fill_symbol_spectra_into` path removed
   (#162; a breaking FFI change to `mfsk_ft8_decode_i16`'s signature),
@@ -105,17 +105,18 @@ attention is.
   four public types). Closes the gap where only the FT8-family shared
   `DecodeResult` and MSK144 carried an SNR estimate; `mfsk-ffi`'s
   `push_simple` had been hardcoding `0.0` for the other four.
-- **0.9.0 (unreleased) — streaming ergonomics for host UIs.**
+- **0.9.0 — streaming ergonomics for host UIs.**
   `msg::decoded::Decoded` (a unified, owned, `Send` decode row for host
   UIs) + a `to_decoded(..)` conversion on every protocol's native result
   type; the `serde` feature (off by default, `no_std`-clean) deriving
   Serialize/Deserialize on `Decoded` + `ProtocolId`; streaming
   `.on_result` / `decode_scan_streaming` now complete across all
-  protocols, documented in `docs/reference/STREAMING.md` (+ `.ja`).
-  Minor bump per this crate's "new cross-cutting public API surface =
-  minor" convention (cf. 0.7.0's generic-API landing); the actual
-  `v0.9.0` tag is cut on the next biweekly cadence slot, not
-  opportunistically.
+  protocols, documented in `docs/reference/STREAMING.md` (+ `.ja`);
+  `mfsk-ffi` builder parity for `MfskDecodeOptions` (#162 follow-up)
+  plus Q65 callsign hash-table exposure (#250). Minor bump per this
+  crate's "new cross-cutting public API surface = minor" convention
+  (cf. 0.7.0's generic-API landing). Tagged 2026-08-10, 8 days after
+  v0.8.1 — within the biweekly cadence window, not opportunistic.
   - **Parked, not in 0.9.0**: `session::SlotAssembler` (streaming audio
     ingestion — resample-to-12k + slot windowing + sample-counted slot
     timing). Code-complete and tested on branch

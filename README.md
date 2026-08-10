@@ -642,7 +642,7 @@ reference:
 
 ## Status
 
-**Latest published tag: `v0.8.1`** — API is deliberately not frozen:
+**Latest published tag: `v0.9.0`** — API is deliberately not frozen:
 breaking changes follow cargo-style minor bumps, while a new
 protocol/mode addition on its own is patch-level (e.g. MSK144 shipped
 as `0.7.4`, not `0.8.0`) — minor bumps mark more structural changes.

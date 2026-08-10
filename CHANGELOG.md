@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased) — streaming ergonomics for host UIs
+## 0.9.0 — streaming ergonomics for host UIs
 
 Theme for this cycle: make the streaming decode surface easier to
 build desktop/host UIs on. Redundant-processing cleanup from recent
