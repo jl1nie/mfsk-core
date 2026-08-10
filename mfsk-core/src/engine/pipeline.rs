@@ -487,6 +487,43 @@ where
     )
 }
 
+/// FT4's own SNR formula (`ft4_decode.f90:226,452-457`):
+///
+/// ```text
+///   snr = candidate(2,icand) - 1.0
+///   xsnr = 10·log10(snr) - 14.8   (snr > 0.0, else -21.0)
+///   nsnr = nint(max(-21.0, xsnr))
+/// ```
+///
+/// `cand_score` must be the *coarse* `getcandidates4.f90`-equivalent
+/// candidate score (`SyncCandidate::score` as returned by
+/// [`crate::engine::ft4_coarse::ft4_coarse_sync`], already a faithful
+/// port of that subroutine) — **not** `ft4_sync_search`'s own later
+/// coherent Δt-search score (stored separately as `DecodeResult::
+/// sync_score`), a different WSJT-X quantity entirely.
+///
+/// Replaces the generic adjacent-tone `compute_snr_db` for FT4
+/// specifically (issue #255 follow-up, 2026-08-10 — found via the same
+/// investigation that fixed FT8's `xsnr2`: `compute_snr_db` is a
+/// single heuristic standing in for every `GenericPipelineProtocol`
+/// implementor's own real WSJT-X formula, and FT4's real one is this,
+/// not an adjacent-tone ratio). Verified against a real local `jt9 -5`
+/// build on a clean isolated synthetic signal: this formula lands
+/// within ~1.1 dB of jt9's own probed `xsnr` (`-1.77` vs `-0.655`,
+/// `nsnr` displayed `-1`), down from `compute_snr_db`'s ~6.9 dB gap
+/// (`-7.52` dB) on the same signal. FST4 and any future
+/// `GenericPipelineProtocol` implementor keep `compute_snr_db` for
+/// now — each has its own distinct real formula, not ported yet, and
+/// not assumed to be a variant of this one (see issue #255).
+fn ft4_snr_db(cand_score: f32) -> f32 {
+    let snr = cand_score - 1.0;
+    if snr > 0.0 {
+        (10.0 * snr.log10() - 14.8).max(-21.0)
+    } else {
+        -21.0
+    }
+}
+
 fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
@@ -635,7 +672,11 @@ where
             let mut try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
                 let mut r = fec.decode_soft_pooled(llr, &bp_opts, &mut bp_scratch)?;
                 let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                let snr_db = compute_snr_db::<P>(cs, &itone);
+                let snr_db = if P::ID == super::ProtocolId::Ft4 {
+                    ft4_snr_db(cand.score)
+                } else {
+                    compute_snr_db::<P>(cs, &itone)
+                };
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
                 // the rvec XOR before presenting the 77-bit payload.
                 descramble_info::<P>(&mut r.info);
@@ -758,7 +799,11 @@ where
                                 continue;
                             }
                             let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                            let snr_db = compute_snr_db::<P>(cs, &itone);
+                            let snr_db = if P::ID == super::ProtocolId::Ft4 {
+                                ft4_snr_db(cand.score)
+                            } else {
+                                compute_snr_db::<P>(cs, &itone)
+                            };
                             descramble_info::<P>(&mut r.info);
                             return Some(DecodeResult {
                                 info: r.info.into_boxed_slice(),
@@ -789,7 +834,11 @@ where
                                     continue;
                                 }
                                 let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                                let snr_db = compute_snr_db::<P>(cs, &itone);
+                                let snr_db = if P::ID == super::ProtocolId::Ft4 {
+                                    ft4_snr_db(cand.score)
+                                } else {
+                                    compute_snr_db::<P>(cs, &itone)
+                                };
                                 descramble_info::<P>(&mut r.info);
                                 return Some(DecodeResult {
                                     info: r.info.into_boxed_slice(),

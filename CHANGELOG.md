@@ -150,6 +150,38 @@
   new code at all — `compute_snr_db` stays the only SNR source there,
   unchanged) all clean.
 
+- **FT4 SNR systematically under-reported by ~6.9 dB** (issue #255,
+  first protocol tackled from the audit the FT8 `xsnr2` work above
+  prompted: does every `GenericPipelineProtocol` implementor's shared
+  `engine::llr::compute_snr_db` adjacent-tone heuristic actually match
+  its own protocol's real WSJT-X formula, or is FT8 not the only one
+  standing in for something it isn't?). Real WSJT-X's FT4 SNR
+  (`ft4_decode.f90:226,452-457`) turns out not to be an adjacent-tone
+  ratio at all: `snr = candidate(2,icand) - 1.0` → `xsnr =
+  10·log10(snr) - 14.8` (`-21.0` floor) — computed directly from the
+  coarse-sync *candidate's own score*, no separate baseline pass. A
+  lucky find: `engine::ft4_coarse::ft4_coarse_sync` (a faithful port of
+  WSJT-X's `getcandidates4.f90`, already shipped) already computes
+  exactly that score as `SyncCandidate::score` — it just wasn't being
+  read for SNR, only for candidate ranking. (Careful: `DecodeResult::
+  sync_score` is a *different* WSJT-X quantity — `ft4_sync_search`'s
+  own later coherent Δt-search score, `sync4d.f90`-equivalent — using
+  it here would be wrong.) New `engine::pipeline::ft4_snr_db(cand_score)`
+  ports the real formula and replaces `compute_snr_db` at all three
+  `P::ID == Ft4` call sites in `process_candidate_basic_impl`; FST4 (the
+  same generic pipeline's other implementor) is untouched, still on
+  `compute_snr_db` — its own real formula is a different, submode-
+  dependent one (tracked separately, issue #255). Verified two ways:
+  a clean synthetic signal against a real local `jt9 -5` build's own
+  probed values (`-1.77` dB vs. `-0.655` dB / displayed `-1`, down from
+  `-7.52` dB), and all 6 entries of the real WSJT-X-recorded
+  `WSJT-X/samples/FT4/000000_000002.wav` golden (previously "SNR
+  calibration unconfirmed, reference only" — now confirmed, every
+  entry within ±1.5 dB). Zero regression: full `cargo test --lib
+  --features full` (392 passed), every FT4 recall/streaming/subtract
+  test, FST4's own test suite (untouched code path, confirmed
+  unaffected), `scripts/pre-push-check.sh`'s full feature matrix clean.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX
