@@ -436,11 +436,21 @@ pub struct SnrCtx<'a> {
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
     pub cand_score: f32,
-    /// `candidates(icand,5)`-equivalent linear baseline at the
-    /// candidate's bin. `None` until a protocol ports its own
-    /// baseline extraction (FST4, issue #255 §4).
-    #[allow(dead_code)] // populated once FST4's port lands
-    pub baseline_lin: Option<f32>,
+    /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
+    /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
+    /// keyed by this, not the fine-refined frequency.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub cand_freq_hz: f32,
+    /// Big forward-FFT of the whole slot's raw audio
+    /// ([`build_fft_cache`]'s output) — WSJT-X `c_bigfft` equivalent.
+    /// Already computed by the caller for downsampling; FST4's
+    /// baseline extraction reuses it rather than requiring its own.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub fft_cache: &'a [Complex<f32>],
+    /// The [`DownsampleCfg`] `fft_cache` was built from — supplies
+    /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub ds_cfg: &'a DownsampleCfg,
 }
 #[cfg(not(feature = "internal-testing"))]
 pub(crate) struct SnrCtx<'a> {
@@ -451,11 +461,21 @@ pub(crate) struct SnrCtx<'a> {
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
     pub cand_score: f32,
-    /// `candidates(icand,5)`-equivalent linear baseline at the
-    /// candidate's bin. `None` until a protocol ports its own
-    /// baseline extraction (FST4, issue #255 §4).
-    #[allow(dead_code)] // populated once FST4's port lands
-    pub baseline_lin: Option<f32>,
+    /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
+    /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
+    /// keyed by this, not the fine-refined frequency.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub cand_freq_hz: f32,
+    /// Big forward-FFT of the whole slot's raw audio
+    /// ([`build_fft_cache`]'s output) — WSJT-X `c_bigfft` equivalent.
+    /// Already computed by the caller for downsampling; FST4's
+    /// baseline extraction reuses it rather than requiring its own.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub fft_cache: &'a [Complex<f32>],
+    /// The [`DownsampleCfg`] `fft_cache` was built from — supplies
+    /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub ds_cfg: &'a DownsampleCfg,
 }
 
 /// `pub` only under the `internal-testing` feature (issue #203) — see
@@ -743,7 +763,9 @@ where
                     cs,
                     itone: &itone,
                     cand_score: cand.score,
-                    baseline_lin: None,
+                    cand_freq_hz: cand.freq_hz,
+                    fft_cache,
+                    ds_cfg: cfg,
                 });
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
                 // the rvec XOR before presenting the 77-bit payload.
@@ -871,7 +893,9 @@ where
                                 cs,
                                 itone: &itone,
                                 cand_score: cand.score,
-                                baseline_lin: None,
+                                cand_freq_hz: cand.freq_hz,
+                                fft_cache,
+                                ds_cfg: cfg,
                             });
                             descramble_info::<P>(&mut r.info);
                             return Some(DecodeResult {
@@ -907,7 +931,9 @@ where
                                     cs,
                                     itone: &itone,
                                     cand_score: cand.score,
-                                    baseline_lin: None,
+                                    cand_freq_hz: cand.freq_hz,
+                                    fft_cache,
+                                    ds_cfg: cfg,
                                 });
                                 descramble_info::<P>(&mut r.info);
                                 return Some(DecodeResult {

@@ -213,6 +213,32 @@
   SIC/streaming integration tests, `cargo clippy --features
   full,internal-testing --all-targets -- -D warnings` clean.
 
+- **FST4 SNR real-formula port attempted (issue #255 §4), investigated
+  but not shipped.** New `fst4::baseline` module ports
+  `get_candidates_fst4.f90`'s noise-baseline extraction (local-window
+  simplification of its whole-band fit, see the module's own doc
+  comment) and `fst4_decode.f90:592-621`'s `xsig`/`arg`/`xsnr` formula,
+  with a `snr_calfac` literal added per sub-mode to `fst4_submode!`.
+  Verified against a real local `jt9 -7 -d3` build's own probed
+  `xsig`/`base`/`arg`/`xsnr` on both of
+  `WSJT-X/samples/FST4+FST4W/210115_0058.wav`'s real decodes: the
+  baseline extraction matched jt9's within ~30-50% on the first try,
+  but `xsig` came out ~constant regardless of a real ~23 dB SNR
+  difference between the two signals — root-caused to this crate's
+  shared decode pipeline RMS-normalising the downsampled baseband
+  before computing per-symbol spectra (needed for `compute_llr`'s
+  scale calibration, issue #18), which WSJT-X's own FST4 path never
+  does. Correcting for that got the *direction* right but left a
+  **non-constant** 20-36 dB residual gap between the two signals — not
+  something a single calibration constant can close, so there's no
+  honest fudge factor available. Left in the tree
+  (`#![allow(dead_code)]`, not called from `fst4/decode.rs`'s
+  `GenericPipelineProtocol::snr_db`) as verified groundwork rather
+  than shipped: FST4 keeps reporting SNR via the trait's generic
+  adjacent-tone default, unchanged from before this investigation.
+  Full residual-gap writeup and numbers in `fst4::baseline`'s module
+  doc comment for whoever picks this back up.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

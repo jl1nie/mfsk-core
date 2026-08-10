@@ -145,6 +145,20 @@ fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResu
 /// `SYNC_Q_MIN` — only the downsample geometry differs.
 macro_rules! impl_frame_decodable {
     ($proto:ty, $cfg:expr) => {
+        // Deliberately *not* overriding `snr_db` here — stays on the
+        // trait's generic `compute_snr_db` default. `fst4::baseline`
+        // has a real-formula port (`fst4_snr_db`, issue #255 §4) that
+        // isn't wired in yet: verified against a real local `jt9 -7`
+        // build's own probed values on both of
+        // `WSJT-X/samples/FST4+FST4W/210115_0058.wav`'s decodes, its
+        // `xsig` term still lands 19-35 dB off jt9's own after the
+        // RMS-normalisation correction `fst4::baseline`'s doc comment
+        // describes — a real, non-constant residual gap, not merely
+        // an uncalibrated additive offset, so there's no honest fudge
+        // factor to bridge it with. See `fst4::baseline`'s module doc
+        // for the full investigation and what's still unaccounted
+        // for; wiring this override back in is future work once that
+        // gap is closed.
         impl pipeline::GenericPipelineProtocol for $proto {}
 
         impl FrameDecodable for $proto {

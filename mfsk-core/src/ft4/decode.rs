@@ -251,12 +251,15 @@ mod tests {
     fn snr_db_dispatches_to_ft4_formula() {
         let cs: [num_complex::Complex<f32>; 0] = [];
         let itone: [u8; 0] = [];
+        let fft_cache: [num_complex::Complex<f32>; 0] = [];
         for &cand_score in &[0.5f32, 1.0, 1.5, 3.0, 10.0] {
             let via_trait = <Ft4 as pipeline::GenericPipelineProtocol>::snr_db(pipeline::SnrCtx {
                 cs: &cs,
                 itone: &itone,
                 cand_score,
-                baseline_lin: None,
+                cand_freq_hz: 1000.0,
+                fft_cache: &fft_cache,
+                ds_cfg: &FT4_DOWNSAMPLE,
             });
             assert_eq!(via_trait, pipeline::ft4_snr_db(cand_score));
         }

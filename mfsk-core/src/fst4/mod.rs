@@ -53,6 +53,7 @@ use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlo
 use crate::fec::Ldpc240_101;
 use crate::msg::Wsjt77Message;
 
+pub(crate) mod baseline;
 pub mod decode;
 pub mod encode;
 
@@ -115,10 +116,28 @@ macro_rules! fst4_submode {
         ndown = $ndown:literal,
         tr_period_s = $period:literal,
         tx_start_offset_s = $tx_start:literal,
+        snr_calfac = $snr_calfac:literal,
     ) => {
         $(#[$attr])*
         #[derive(Copy, Clone, Debug, Default)]
         pub struct $name;
+
+        impl $name {
+            /// `fst4_decode.f90`'s `select case (ntrperiod)` constant
+            /// feeding [`crate::fst4::baseline::fst4_snr_db`]'s `arg =
+            /// snr_calfac·xsig/base - 1.0`. Per sub-mode, not derived
+            /// from anything else — see the `fst4_submode!` invocation
+            /// below for this sub-mode's literal.
+            ///
+            /// Currently unread — `fst4_snr_db` isn't wired into
+            /// `GenericPipelineProtocol::snr_db` yet, see
+            /// `fst4::baseline`'s module doc for why. Kept (rather
+            /// than deleted) so the WSJT-X-sourced literal survives
+            /// alongside the rest of that verified-but-not-yet-
+            /// accurate groundwork.
+            #[allow(dead_code)]
+            pub(crate) const SNR_CALFAC: f32 = $snr_calfac;
+        }
 
         impl ModulationParams for $name {
             const NTONES: u32 = 4;
@@ -183,6 +202,7 @@ fst4_submode! {
     ndown = 18,
     tr_period_s = 15,
     tx_start_offset_s = 0.5,
+    snr_calfac = 800.0,
 }
 
 fst4_submode! {
@@ -194,6 +214,7 @@ fst4_submode! {
     ndown = 42,
     tr_period_s = 30,
     tx_start_offset_s = 1.0,
+    snr_calfac = 600.0,
 }
 
 fst4_submode! {
@@ -206,6 +227,7 @@ fst4_submode! {
     ndown = 108,
     tr_period_s = 60,
     tx_start_offset_s = 1.0,
+    snr_calfac = 430.0,
 }
 
 fst4_submode! {
@@ -217,6 +239,7 @@ fst4_submode! {
     ndown = 205,
     tr_period_s = 120,
     tx_start_offset_s = 1.0,
+    snr_calfac = 390.0,
 }
 
 fst4_submode! {
@@ -229,6 +252,7 @@ fst4_submode! {
     ndown = 512,
     tr_period_s = 300,
     tx_start_offset_s = 1.0,
+    snr_calfac = 340.0,
 }
 
 #[cfg(test)]
