@@ -182,6 +182,37 @@
   test, FST4's own test suite (untouched code path, confirmed
   unaffected), `scripts/pre-push-check.sh`'s full feature matrix clean.
 
+- **FT4 AP-hint decode path was still reporting the wrong SNR**
+  (issue #255 follow-up to the entry above) — the FT4 SNR fix landed
+  as three `if P::ID == ProtocolId::Ft4 {...} else {...}` branches
+  inside `engine::pipeline`'s basic decode path, but missed a 4th call
+  site in `msg::pipeline_ap::finalise_result` (the AP-assisted /
+  sniper path), which kept calling the generic adjacent-tone
+  `compute_snr_db` directly. Exactly the branch-duplication risk that
+  fix's own commit message flagged as the motivation for a non-ad-hoc
+  mechanism, playing out for real. Replaced with a
+  `GenericPipelineProtocol::snr_db(SnrCtx)` trait method (default =
+  today's `compute_snr_db`, cited WSJT-X-formula overrides per
+  protocol) — all 4 call sites (3 in `engine/pipeline.rs` + the
+  `pipeline_ap.rs` one) now dispatch through the same
+  `P::snr_db(SnrCtx { cs, itone, cand_score, baseline_lin })` call, so
+  there is no longer a second copy of the branch to miss. `Ft4`'s
+  override wraps the existing `ft4_snr_db`; FST4 keeps the trait's
+  default for now (its own real formula, submode-dependent, is a
+  separate piece of issue #255 not yet ported). New pinning unit test
+  `ft4::decode::tests::snr_db_dispatches_to_ft4_formula` guards the
+  override wiring directly (a full-decode A/B comparison of the two
+  paths turned out to be confounded by search-bandwidth-dependent
+  candidate scoring, not a reliable regression signal). Also
+  generalised `engine::baseline::fit_baseline` into
+  `fit_baseline_with`/`BaselineParams` (zero behavior change for
+  existing FT8/FT4 callers, confirmed via the existing
+  `engine::baseline::tests`) — infrastructure for FST4's own baseline
+  port, still to come. Zero regression: full `cargo test --lib
+  --features full` (393 passed), FT4/FST4 golden-sample and
+  SIC/streaming integration tests, `cargo clippy --features
+  full,internal-testing --all-targets -- -D warnings` clean.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

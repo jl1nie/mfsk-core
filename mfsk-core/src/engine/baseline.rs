@@ -26,11 +26,36 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
-const NSEG: usize = 10;
-const NPCT: usize = 10; // percentile, 0..100
-const NTERMS: usize = 5;
-/// Matches WSJT-X `ft4_baseline.f90:43` (`sbase = poly(t) + 0.65`).
-const POLY_OFFSET_DB: f32 = 0.65;
+/// Tuning knobs for [`fit_baseline_with`] — same percentile+polyfit
+/// algorithm shape, different constants per WSJT-X source file. Plain
+/// runtime loop bounds (not const generics — no monomorphization win
+/// for NSEG/NPCT/NTERMS, and mixing families in one binary is normal:
+/// FT8 + FT4 + FST4 all decode from the same process).
+#[derive(Clone, Copy, Debug)]
+pub struct BaselineParams {
+    pub nseg: usize,
+    pub npct: usize,
+    pub nterms: usize,
+    pub offset_db: f32,
+}
+
+impl BaselineParams {
+    /// `WSJT-X/lib/ft8/baseline.f90` / `WSJT-X/lib/ft4/ft4_baseline.f90`
+    /// — identical constants in both files.
+    pub const FT8_FT4: Self = Self {
+        nseg: 10,
+        npct: 10,
+        nterms: 5,
+        offset_db: 0.65,
+    };
+    /// `WSJT-X/lib/fst4/fst4_baseline.f90`.
+    pub const FST4: Self = Self {
+        nseg: 8,
+        npct: 30,
+        nterms: 3,
+        offset_db: 0.2,
+    };
+}
 
 /// Per-bin baseline in **dB** for `avg_spectrum_power[freq_min_bin..=freq_max_bin]`.
 /// Returns a vec the same length as the input range.
@@ -40,11 +65,39 @@ const POLY_OFFSET_DB: f32 = 0.65;
 /// `freq_max_bin` are inclusive bin indices into `avg_spectrum_power`.
 ///
 /// Output indexing: `out[i - freq_min_bin]` is the baseline at bin `i`.
+///
+/// Thin wrapper over [`fit_baseline_with`] using
+/// [`BaselineParams::FT8_FT4`] — existing FT8/FT4 callers are
+/// unaffected by the generalisation.
 pub fn fit_baseline(
     avg_spectrum_power: &[f32],
     freq_min_bin: usize,
     freq_max_bin: usize,
 ) -> Vec<f32> {
+    fit_baseline_with(
+        avg_spectrum_power,
+        freq_min_bin,
+        freq_max_bin,
+        BaselineParams::FT8_FT4,
+    )
+}
+
+/// Generalised form of [`fit_baseline`] parameterised by
+/// [`BaselineParams`] — see that type's docs for which WSJT-X source
+/// file each preset matches.
+pub fn fit_baseline_with(
+    avg_spectrum_power: &[f32],
+    freq_min_bin: usize,
+    freq_max_bin: usize,
+    params: BaselineParams,
+) -> Vec<f32> {
+    let BaselineParams {
+        nseg,
+        npct,
+        nterms,
+        offset_db,
+    } = params;
+
     let ia = freq_min_bin.min(avg_spectrum_power.len().saturating_sub(1));
     let ib = freq_max_bin.min(avg_spectrum_power.len().saturating_sub(1));
     if ib <= ia {
@@ -58,7 +111,7 @@ pub fn fit_baseline(
         .map(|&p| 10.0 * p.max(1e-30).log10())
         .collect();
 
-    let nlen = n / NSEG;
+    let nlen = n / nseg;
     if nlen == 0 {
         return s_db;
     }
@@ -67,7 +120,7 @@ pub fn fit_baseline(
     // Collect lower-envelope (x, y) points across all segments.
     let mut xs: Vec<f64> = Vec::with_capacity(n);
     let mut ys: Vec<f64> = Vec::with_capacity(n);
-    for seg in 0..NSEG {
+    for seg in 0..nseg {
         let ja = seg * nlen;
         let jb = (ja + nlen).min(n);
         if jb <= ja {
@@ -75,7 +128,7 @@ pub fn fit_baseline(
         }
         let mut sorted: Vec<f32> = s_db[ja..jb].to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let pct_idx = (NPCT * sorted.len()) / 100;
+        let pct_idx = (npct * sorted.len()) / 100;
         let base = sorted[pct_idx.min(sorted.len() - 1)];
 
         for j in ja..jb {
@@ -86,67 +139,67 @@ pub fn fit_baseline(
         }
     }
 
-    if xs.len() < NTERMS {
+    if xs.len() < nterms {
         // Not enough points; fall back to flat baseline = median of s_db.
         let mut flat = s_db.clone();
         flat.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let med = flat[flat.len() / 2];
-        return vec![med + POLY_OFFSET_DB; n];
+        return vec![med + offset_db; n];
     }
 
-    // 5-term polynomial fit via normal equations
+    // nterms-term polynomial fit via normal equations
     // (Vandermonde A[i][k] = xs[i]^k, solve A^T A · a = A^T y).
-    let coeffs = polyfit_5term(&xs, &ys);
+    let coeffs = polyfit_nterm(&xs, &ys, nterms);
 
     // Evaluate at each bin.
     (0..n)
         .map(|i| {
             let t = i as f64 - i0 as f64;
-            let mut p = coeffs[NTERMS - 1];
-            for k in (0..NTERMS - 1).rev() {
-                p = p * t + coeffs[k];
+            let mut p = coeffs[nterms - 1];
+            for &c in coeffs[..nterms - 1].iter().rev() {
+                p = p * t + c;
             }
-            p as f32 + POLY_OFFSET_DB
+            p as f32 + offset_db
         })
         .collect()
 }
 
-/// Polynomial fit y = sum_{k=0..NTERMS-1} a[k] * x^k  via normal equations.
-/// Direct Gauss elimination on the 5x5 system. NTERMS=5 fixed.
-fn polyfit_5term(xs: &[f64], ys: &[f64]) -> [f64; NTERMS] {
+/// Polynomial fit y = sum_{k=0..nterms-1} a[k] * x^k  via normal equations.
+/// Direct Gauss elimination on the `nterms`x`nterms` system.
+fn polyfit_nterm(xs: &[f64], ys: &[f64], nterms: usize) -> Vec<f64> {
     debug_assert_eq!(xs.len(), ys.len());
-    debug_assert!(xs.len() >= NTERMS);
+    debug_assert!(xs.len() >= nterms);
 
-    // Compute moments: mom[k] = sum xs^k for k = 0..2*(NTERMS-1) = 0..8
-    let mut mom = [0.0f64; 2 * NTERMS - 1];
-    let mut rhs = [0.0f64; NTERMS];
+    // Compute moments: mom[k] = sum xs^k for k = 0..2*(nterms-1)
+    let mut mom = vec![0.0f64; 2 * nterms - 1];
+    let mut rhs = vec![0.0f64; nterms];
     for (i, &x) in xs.iter().enumerate() {
         let mut xp = 1.0f64;
-        for k in 0..NTERMS {
+        for k in 0..nterms {
             mom[k] += xp;
             rhs[k] += xp * ys[i];
             xp *= x;
         }
-        // Continue past NTERMS for the upper moments.
-        for k in NTERMS..2 * NTERMS - 1 {
+        // Continue past nterms for the upper moments.
+        for k in nterms..2 * nterms - 1 {
             mom[k] += xp;
             xp *= x;
         }
     }
 
     // Build augmented matrix [A | rhs] where A[i][j] = mom[i+j].
-    let mut aug = [[0.0f64; NTERMS + 1]; NTERMS];
+    let mut aug = vec![vec![0.0f64; nterms + 1]; nterms];
     for (i, row) in aug.iter_mut().enumerate() {
-        row[..NTERMS].copy_from_slice(&mom[i..i + NTERMS]);
-        row[NTERMS] = rhs[i];
+        row[..nterms].copy_from_slice(&mom[i..i + nterms]);
+        row[nterms] = rhs[i];
     }
 
     // Gauss elimination with partial pivot.
-    for i in 0..NTERMS {
+    for i in 0..nterms {
         // Pivot.
         let mut max_row = i;
         let mut max_abs = aug[i][i].abs();
-        for r in (i + 1)..NTERMS {
+        for r in (i + 1)..nterms {
             if aug[r][i].abs() > max_abs {
                 max_abs = aug[r][i].abs();
                 max_row = r;
@@ -156,22 +209,22 @@ fn polyfit_5term(xs: &[f64], ys: &[f64]) -> [f64; NTERMS] {
             aug.swap(i, max_row);
         }
         if aug[i][i].abs() < 1e-30 {
-            return [0.0; NTERMS];
+            return vec![0.0; nterms];
         }
         // Eliminate.
-        for r in (i + 1)..NTERMS {
+        for r in (i + 1)..nterms {
             let factor = aug[r][i] / aug[i][i];
-            for c in i..=NTERMS {
+            for c in i..=nterms {
                 aug[r][c] -= factor * aug[i][c];
             }
         }
     }
 
     // Back-substitute.
-    let mut a = [0.0f64; NTERMS];
-    for i in (0..NTERMS).rev() {
-        let mut s = aug[i][NTERMS];
-        for j in (i + 1)..NTERMS {
+    let mut a = vec![0.0f64; nterms];
+    for i in (0..nterms).rev() {
+        let mut s = aug[i][nterms];
+        for j in (i + 1)..nterms {
             s -= aug[i][j] * a[j];
         }
         a[i] = s / aug[i][i];

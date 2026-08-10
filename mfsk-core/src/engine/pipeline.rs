@@ -419,6 +419,45 @@ impl DecodeResult {
 /// all. Adding a new protocol here means giving it a real `*_sync_search`
 /// function first, not falling back to an unvalidated generic path.
 ///
+/// Everything any current or foreseeable [`GenericPipelineProtocol`]
+/// implementor's real WSJT-X SNR formula could need, gathered once at
+/// the call site (issue #255). Unused fields cost nothing — all
+/// borrowed, not owned.
+///
+/// Visibility mirrors [`GenericPipelineProtocol`] itself (issue #203):
+/// `pub` only under `internal-testing`, `pub(crate)` otherwise — it
+/// only ever appears in that trait's `snr_db` method signature.
+#[cfg(feature = "internal-testing")]
+pub struct SnrCtx<'a> {
+    /// [`symbol_spectra`]`::<P>` output, `/1000`-scaled.
+    pub cs: &'a [Complex<f32>],
+    /// [`encode_tones_for_snr`]`::<P>` output.
+    pub itone: &'a [u8],
+    /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
+    /// `candidate(2,icand)` equivalent.
+    pub cand_score: f32,
+    /// `candidates(icand,5)`-equivalent linear baseline at the
+    /// candidate's bin. `None` until a protocol ports its own
+    /// baseline extraction (FST4, issue #255 §4).
+    #[allow(dead_code)] // populated once FST4's port lands
+    pub baseline_lin: Option<f32>,
+}
+#[cfg(not(feature = "internal-testing"))]
+pub(crate) struct SnrCtx<'a> {
+    /// [`symbol_spectra`]`::<P>` output, `/1000`-scaled.
+    pub cs: &'a [Complex<f32>],
+    /// [`encode_tones_for_snr`]`::<P>` output.
+    pub itone: &'a [u8],
+    /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
+    /// `candidate(2,icand)` equivalent.
+    pub cand_score: f32,
+    /// `candidates(icand,5)`-equivalent linear baseline at the
+    /// candidate's bin. `None` until a protocol ports its own
+    /// baseline extraction (FST4, issue #255 §4).
+    #[allow(dead_code)] // populated once FST4's port lands
+    pub baseline_lin: Option<f32>,
+}
+
 /// `pub` only under the `internal-testing` feature (issue #203) — see
 /// [`decode_frame`]'s doc comment for the feature-gating rationale.
 #[cfg(feature = "internal-testing")]
@@ -426,12 +465,32 @@ pub trait GenericPipelineProtocol: Protocol
 where
     Self::Fec: BpPooledFec,
 {
+    /// Reported SNR (dB) for a decoded candidate. Default is the
+    /// generic adjacent-tone-ratio heuristic ([`compute_snr_db`]) —
+    /// known *not* to match any current protocol's real WSJT-X
+    /// formula (issue #255's finding), kept only as a fallback for
+    /// protocols not yet individually ported. **Overrides MUST cite
+    /// the WSJT-X source file:line** their formula matches (see
+    /// [`ft4_snr_db`]'s doc comment for the expected style).
+    fn snr_db(ctx: SnrCtx<'_>) -> f32 {
+        compute_snr_db::<Self>(ctx.cs, ctx.itone)
+    }
 }
 #[cfg(not(feature = "internal-testing"))]
 pub(crate) trait GenericPipelineProtocol: Protocol
 where
     Self::Fec: BpPooledFec,
 {
+    /// Reported SNR (dB) for a decoded candidate. Default is the
+    /// generic adjacent-tone-ratio heuristic ([`compute_snr_db`]) —
+    /// known *not* to match any current protocol's real WSJT-X
+    /// formula (issue #255's finding), kept only as a fallback for
+    /// protocols not yet individually ported. **Overrides MUST cite
+    /// the WSJT-X source file:line** their formula matches (see
+    /// [`ft4_snr_db`]'s doc comment for the expected style).
+    fn snr_db(ctx: SnrCtx<'_>) -> f32 {
+        compute_snr_db::<Self>(ctx.cs, ctx.itone)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -502,20 +561,28 @@ where
 /// coherent Δt-search score (stored separately as `DecodeResult::
 /// sync_score`), a different WSJT-X quantity entirely.
 ///
-/// Replaces the generic adjacent-tone `compute_snr_db` for FT4
-/// specifically (issue #255 follow-up, 2026-08-10 — found via the same
-/// investigation that fixed FT8's `xsnr2`: `compute_snr_db` is a
-/// single heuristic standing in for every `GenericPipelineProtocol`
-/// implementor's own real WSJT-X formula, and FT4's real one is this,
-/// not an adjacent-tone ratio). Verified against a real local `jt9 -5`
-/// build on a clean isolated synthetic signal: this formula lands
-/// within ~1.1 dB of jt9's own probed `xsnr` (`-1.77` vs `-0.655`,
-/// `nsnr` displayed `-1`), down from `compute_snr_db`'s ~6.9 dB gap
-/// (`-7.52` dB) on the same signal. FST4 and any future
-/// `GenericPipelineProtocol` implementor keep `compute_snr_db` for
-/// now — each has its own distinct real formula, not ported yet, and
-/// not assumed to be a variant of this one (see issue #255).
-fn ft4_snr_db(cand_score: f32) -> f32 {
+/// Overrides the generic adjacent-tone `compute_snr_db` for FT4
+/// specifically, via `Ft4`'s [`GenericPipelineProtocol::snr_db`]
+/// override in `ft4/decode.rs` (issue #255 follow-up, 2026-08-10 —
+/// found via the same investigation that fixed FT8's `xsnr2`:
+/// `compute_snr_db` is a single heuristic standing in for every
+/// `GenericPipelineProtocol` implementor's own real WSJT-X formula,
+/// and FT4's real one is this, not an adjacent-tone ratio). Verified
+/// against a real local `jt9 -5` build on a clean isolated synthetic
+/// signal: this formula lands within ~1.1 dB of jt9's own probed
+/// `xsnr` (`-1.77` vs `-0.655`, `nsnr` displayed `-1`), down from
+/// `compute_snr_db`'s ~6.9 dB gap (`-7.52` dB) on the same signal.
+/// FST4 and any future `GenericPipelineProtocol` implementor keep the
+/// trait's default (`compute_snr_db`) for now — each has its own
+/// distinct real formula, not ported yet, and not assumed to be a
+/// variant of this one (see issue #255).
+///
+/// `pub(crate)` (not `fn` private to this module) so the override in
+/// `ft4/decode.rs` can call it — the override itself must live next
+/// to `Ft4`'s `impl GenericPipelineProtocol` block, not here, so a
+/// reader scanning that impl sees every protocol-specific override in
+/// one place rather than half of them hidden in the generic engine.
+pub(crate) fn ft4_snr_db(cand_score: f32) -> f32 {
     let snr = cand_score - 1.0;
     if snr > 0.0 {
         (10.0 * snr.log10() - 14.8).max(-21.0)
@@ -672,11 +739,12 @@ where
             let mut try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
                 let mut r = fec.decode_soft_pooled(llr, &bp_opts, &mut bp_scratch)?;
                 let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                let snr_db = if P::ID == super::ProtocolId::Ft4 {
-                    ft4_snr_db(cand.score)
-                } else {
-                    compute_snr_db::<P>(cs, &itone)
-                };
+                let snr_db = P::snr_db(SnrCtx {
+                    cs,
+                    itone: &itone,
+                    cand_score: cand.score,
+                    baseline_lin: None,
+                });
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
                 // the rvec XOR before presenting the 77-bit payload.
                 descramble_info::<P>(&mut r.info);
@@ -799,11 +867,12 @@ where
                                 continue;
                             }
                             let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                            let snr_db = if P::ID == super::ProtocolId::Ft4 {
-                                ft4_snr_db(cand.score)
-                            } else {
-                                compute_snr_db::<P>(cs, &itone)
-                            };
+                            let snr_db = P::snr_db(SnrCtx {
+                                cs,
+                                itone: &itone,
+                                cand_score: cand.score,
+                                baseline_lin: None,
+                            });
                             descramble_info::<P>(&mut r.info);
                             return Some(DecodeResult {
                                 info: r.info.into_boxed_slice(),
@@ -834,11 +903,12 @@ where
                                     continue;
                                 }
                                 let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                                let snr_db = if P::ID == super::ProtocolId::Ft4 {
-                                    ft4_snr_db(cand.score)
-                                } else {
-                                    compute_snr_db::<P>(cs, &itone)
-                                };
+                                let snr_db = P::snr_db(SnrCtx {
+                                    cs,
+                                    itone: &itone,
+                                    cand_score: cand.score,
+                                    baseline_lin: None,
+                                });
                                 descramble_info::<P>(&mut r.info);
                                 return Some(DecodeResult {
                                     info: r.info.into_boxed_slice(),

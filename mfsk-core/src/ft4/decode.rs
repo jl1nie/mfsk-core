@@ -68,7 +68,14 @@ fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResu
         .collect()
 }
 
-impl pipeline::GenericPipelineProtocol for Ft4 {}
+impl pipeline::GenericPipelineProtocol for Ft4 {
+    /// `ft4_decode.f90:226,452-457` — see [`pipeline::ft4_snr_db`]'s doc
+    /// comment for the formula and its verification against a real
+    /// local `jt9` build (issue #255).
+    fn snr_db(ctx: pipeline::SnrCtx<'_>) -> f32 {
+        pipeline::ft4_snr_db(ctx.cand_score)
+    }
+}
 
 impl FrameDecodable for Ft4 {
     type DecodeResult = DecodeResult;
@@ -227,6 +234,31 @@ mod tests {
             let _ = DecodeRequest::<Ft4>::sniper(&empty, 1500.0, 5)
                 .osd(osd)
                 .decode();
+        }
+    }
+
+    /// Pins `Ft4`'s `GenericPipelineProtocol::snr_db` override to the
+    /// real-formula `ft4_snr_db` (issue #255) — a direct, non-flaky
+    /// check that both of FT4's call paths (basic pipeline,
+    /// `msg::pipeline_ap`'s AP path) go through the *same* function.
+    /// The AP path used to call the generic adjacent-tone
+    /// `compute_snr_db` directly instead (a missed 4th call site left
+    /// over from a pre-trait ad-hoc fix); that regression would show up
+    /// here as this test failing, without needing a full synthetic
+    /// decode (whose reported SNR is also sensitive to search-bandwidth
+    /// -dependent candidate scoring, an unrelated confound).
+    #[test]
+    fn snr_db_dispatches_to_ft4_formula() {
+        let cs: [num_complex::Complex<f32>; 0] = [];
+        let itone: [u8; 0] = [];
+        for &cand_score in &[0.5f32, 1.0, 1.5, 3.0, 10.0] {
+            let via_trait = <Ft4 as pipeline::GenericPipelineProtocol>::snr_db(pipeline::SnrCtx {
+                cs: &cs,
+                itone: &itone,
+                cand_score,
+                baseline_lin: None,
+            });
+            assert_eq!(via_trait, pipeline::ft4_snr_db(cand_score));
         }
     }
 }

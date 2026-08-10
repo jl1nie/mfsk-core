@@ -20,10 +20,10 @@ use num_traits::Float;
 
 use crate::engine::dsp::downsample::{DownsampleCfg, build_fft_cache, downsample_cached};
 use crate::engine::equalize::{EqMode, equalize_local};
-use crate::engine::llr::{
-    compute_llr_fast, compute_llr_partial, compute_snr_db, symbol_spectra, sync_quality,
+use crate::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
+use crate::engine::pipeline::{
+    DecodeDepth, DecodeResult, DecodeStrictness, GenericPipelineProtocol, SnrCtx,
 };
-use crate::engine::pipeline::{DecodeDepth, DecodeResult, DecodeStrictness};
 use crate::engine::sync::{
     SyncCandidate, coarse_sync, fine_sync_power_per_block, refine_candidate,
 };
@@ -84,7 +84,7 @@ pub(crate) fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
 /// 77-bit message layout matches the Wsjt77 family — `ApHint` writes
 /// call1/call2/grid bits at hardcoded positions that would be nonsense
 /// for a different layout.
-pub(crate) fn process_candidate_ap<P: Protocol>(
+pub(crate) fn process_candidate_ap<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     ds_cfg: &DownsampleCfg,
@@ -96,6 +96,7 @@ pub(crate) fn process_candidate_ap<P: Protocol>(
     ap_hint: Option<&ApHint>,
 ) -> Option<DecodeResult>
 where
+    P::Fec: crate::engine::protocol::BpPooledFec,
     P::Msg: WsjtApCompatible,
 {
     let ds_rate = 12_000.0 / P::NDOWN as f32;
@@ -267,7 +268,7 @@ where
     None
 }
 
-fn finalise_result<P: Protocol>(
+fn finalise_result<P: GenericPipelineProtocol>(
     fec_result: &crate::engine::FecResult,
     cand: &SyncCandidate,
     refined: &SyncCandidate,
@@ -276,7 +277,10 @@ fn finalise_result<P: Protocol>(
     cs: &[Complex<f32>],
     ap_cfg: Option<&ApHint>,
     fec: &P::Fec,
-) -> Option<DecodeResult> {
+) -> Option<DecodeResult>
+where
+    P::Fec: crate::engine::protocol::BpPooledFec,
+{
     // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo the rvec
     // XOR on the 77 message bits before unpacking text. SNR re-
     // encode below still uses the *scrambled* `fec_result.info`
@@ -315,7 +319,12 @@ fn finalise_result<P: Protocol>(
     let mut cw = vec![0u8; P::Fec::N];
     fec.encode(&fec_result.info, &mut cw);
     let itone = codeword_to_itone::<P>(&cw);
-    let snr_db = compute_snr_db::<P>(cs, &itone);
+    let snr_db = P::snr_db(SnrCtx {
+        cs,
+        itone: &itone,
+        cand_score: cand.score,
+        baseline_lin: None,
+    });
 
     Some(DecodeResult {
         info: info_unscrambled.into_boxed_slice(),
@@ -345,7 +354,7 @@ fn finalise_result<P: Protocol>(
 // which would otherwise separately warn once this entry point is
 // unreachable.
 #[allow(dead_code)]
-pub(crate) fn decode_sniper_ap<P: Protocol>(
+pub(crate) fn decode_sniper_ap<P: GenericPipelineProtocol>(
     audio: &[i16],
     ds_cfg: &DownsampleCfg,
     target_freq: f32,
@@ -365,6 +374,7 @@ pub(crate) fn decode_sniper_ap<P: Protocol>(
     on_result: Option<&(dyn Fn(&DecodeResult) + Sync)>,
 ) -> Vec<DecodeResult>
 where
+    P::Fec: crate::engine::protocol::BpPooledFec,
     P::Msg: WsjtApCompatible,
 {
     let freq_min = (target_freq - search_hz).max(100.0);
