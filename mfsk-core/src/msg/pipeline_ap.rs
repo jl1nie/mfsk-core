@@ -172,7 +172,7 @@ where
                 if let Some(r) = fec.decode_soft($llr, &bp_opts)
                     && let Some(res) = finalise_result::<P>(
                         &r, cand, &refined, sync_cv, $pass_id, cs_ref, None, &fec, fft_cache,
-                        ds_cfg,
+                        ds_cfg, i_start,
                     )
                 {
                     return Some(res);
@@ -228,6 +228,7 @@ where
                             &fec,
                             fft_cache,
                             ds_cfg,
+                            i_start,
                         )
                     {
                         return Some(res);
@@ -259,6 +260,7 @@ where
                                     &fec,
                                     fft_cache,
                                     ds_cfg,
+                                    i_start,
                                 )
                             {
                                 return Some(res);
@@ -284,6 +286,7 @@ fn finalise_result<P: GenericPipelineProtocol>(
     fec: &P::Fec,
     fft_cache: &[Complex<f32>],
     ds_cfg: &DownsampleCfg,
+    i_start: i32,
 ) -> Option<DecodeResult>
 where
     P::Fec: crate::engine::protocol::BpPooledFec,
@@ -333,6 +336,8 @@ where
         cand_freq_hz: cand.freq_hz,
         fft_cache,
         ds_cfg,
+        refined_freq_hz: refined.freq_hz,
+        i_start,
     });
 
     Some(DecodeResult {

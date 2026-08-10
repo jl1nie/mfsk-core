@@ -128,14 +128,6 @@ macro_rules! fst4_submode {
             /// snr_calfac·xsig/base - 1.0`. Per sub-mode, not derived
             /// from anything else — see the `fst4_submode!` invocation
             /// below for this sub-mode's literal.
-            ///
-            /// Currently unread — `fst4_snr_db` isn't wired into
-            /// `GenericPipelineProtocol::snr_db` yet, see
-            /// `fst4::baseline`'s module doc for why. Kept (rather
-            /// than deleted) so the WSJT-X-sourced literal survives
-            /// alongside the rest of that verified-but-not-yet-
-            /// accurate groundwork.
-            #[allow(dead_code)]
             pub(crate) const SNR_CALFAC: f32 = $snr_calfac;
         }
 

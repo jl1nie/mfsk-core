@@ -2,46 +2,63 @@
 //! baseline extraction (not its CLEAN candidate-detection loop) and
 //! `fst4_decode.f90:585-621`'s `xsnr` formula (issue #255).
 //!
-//! `#![allow(dead_code)]`: every item here is currently unreachable —
-//! see below for why this isn't wired into `fst4/decode.rs` yet.
+//! Wired into `fst4/decode.rs`'s `GenericPipelineProtocol::snr_db`
+//! override. Verified against a real local `jt9 -7 -d3` build's own
+//! probed values (`WSJT-X/samples/FST4+FST4W/210115_0058.wav`,
+//! `SNRAUDIT_FST4_PROBE`/`SNRAUDIT_FST4_BM` instrumentation added to
+//! `fst4_decode.f90` for this investigation, not committed there —
+//! issue #255's stated verification discipline):
 //!
-//! **Not wired in yet** (`fst4/decode.rs`'s `impl_frame_decodable!`
-//! deliberately does *not* override `GenericPipelineProtocol::snr_db`
-//! with [`fst4_snr_db`] — FST4 still reports SNR via the trait's
-//! generic `compute_snr_db` default). Verified against a real local
-//! `jt9 -7 -d3` build's own probed values
-//! (`WSJT-X/samples/FST4+FST4W/210115_0058.wav`, `SNRAUDIT_FST4_PROBE`
-//! instrumentation added to `fst4_decode.f90` for this investigation,
-//! not committed — issue #255's stated verification discipline):
+//! | candidate | jt9 `xsnr` | this module's `xsnr` |
+//! |-----------|------------|-----------------------|
+//! | N5TM      | -6.90 dB   | -8.61 dB              |
+//! | K9KFR     | 16.14 dB   | 16.82 dB              |
 //!
-//! | candidate | jt9 `xsig` | jt9 `base` | jt9 `arg` | jt9 `xsnr` | this module's `xsnr` |
-//! |-----------|------------|------------|-----------|------------|----------------------|
-//! | N5TM      | 1.621e13   | 4.180e13   | 165.7     | -6.90 dB   | -42.53 dB            |
-//! | K9KFR     | 3.836e15   | 4.942e13   | 3.337e4   | 16.14 dB   | -3.53 dB             |
+//! Getting there took two corrections past the naive port:
 //!
-//! [`fst4_baseline_lin`]'s `base` matched jt9's within ~30-50% on the
-//! first attempt — that part of the port holds up. [`fst4_xsig`]
-//! didn't: initially near-*constant* across both real signals despite
-//! their ~23 dB real SNR difference (root-caused to this crate's
-//! shared pipeline RMS-normalising the downsampled baseband before
-//! [`crate::engine::llr::symbol_spectra`] ever runs, destroying the
-//! absolute-power information `xsig` needs — see [`cd0_rms_pow`]'s
-//! doc comment). Correcting for that produced the *directionally*
-//! right answer (K9KFR now reports higher than N5TM) but the
-//! **residual gap is not a constant offset** — 35.6 dB for N5TM,
-//! 19.7 dB for K9KFR — so there is no honest single fudge factor left
-//! to calibrate away; something else in the `xsig` derivation (most
-//! likely a remaining scale or windowing difference between this
-//! crate's `downsample_cached`/`symbol_spectra` and WSJT-X's own
-//! `fst4_downsample`/`get_fst4_bitmetrics` — e.g. WSJT-X's raised-
-//! cosine-free rectangular window vs. this crate's `edge_taper_bins`
-//! taper, or per-symbol correlation-gain differences) is still
-//! unaccounted for. Left in place, `#[allow(dead_code)]`, as verified
-//! groundwork for whoever picks this back up — re-deriving the
-//! `base`-side match and the RMS-normalisation root cause from scratch
-//! would waste real effort. Do **not** wire this in as-is: for real
-//! signals it currently reports *worse* numbers than the existing
-//! generic-heuristic default it would replace.
+//! 1. **RMS-normalisation mismatch.** This crate's shared pipeline
+//!    RMS-normalises the downsampled baseband before
+//!    [`crate::engine::llr::symbol_spectra`] ever runs (needed for
+//!    `compute_llr`'s scale calibration elsewhere, issue #18);
+//!    WSJT-X's own FST4 path never does this. Left as-is, `xsig` came
+//!    out ~constant across both real signals despite their ~23 dB
+//!    real SNR difference. Fixed by [`fst4_raw_cs`] rebuilding `cs`
+//!    fresh from `fft_cache` without that normalisation step, rather
+//!    than trying to algebraically undo it on the already-normalised
+//!    version — see its own doc comment for why an earlier "multiply
+//!    by the mean pre-normalisation power" attempt wasn't quite right
+//!    either (it's algebraically exact only when the fine-refine
+//!    frequency offset is negligible, which happened to be true for
+//!    both of this file's candidates but isn't guaranteed in general).
+//! 2. **Downsample scale convention mismatch.** Even with (1) fixed,
+//!    both candidates' `xsig` were still short by a *consistent*
+//!    ~100-115× in power — confirmed via a deeper `SNRAUDIT_FST4_BM`
+//!    probe comparing individual `s4(tone,symbol)` values directly
+//!    (not just the final `xsnr`), which is what separated "one
+//!    missing constant factor" from the false impression a coarser,
+//!    dB-space-only comparison first gave (issue #255's earlier
+//!    investigation pass mis-read this as a *non-constant* residual
+//!    gap — an artifact of comparing highly nonlinear final `dB`
+//!    values instead of the underlying linear-scale quantities).
+//!    Root cause: `downsample_cached`'s `fac = 1/sqrt(fft1_size·
+//!    fft2_size)` pre-scale vs. WSJT-X's own `fst4_downsample`'s
+//!    `c1 = c1/nfft2` — different normalisation conventions for
+//!    otherwise-equivalent unnormalised-IDFT downsamples. Worked out
+//!    analytically (not fitted) to an exact `NDOWN`-in-power
+//!    correction — see [`fst4_snr_db`]'s own doc comment for the
+//!    derivation — which lines up with the empirical 100-115× (vs.
+//!    `NDOWN=108` for FST4-60) to within the residual `fft1_size`
+//!    padding difference between the two implementations.
+//!
+//! Both real off-air signals above are FST4-60 — the only real-signal
+//! FST4 sample WAV available locally
+//! (`WSJT-X/samples/FST4+FST4W/210115_0058.wav`). Fst4s15/30/120/300
+//! share this exact formula and the same `NDOWN`-in-power derivation
+//! (§2 above doesn't special-case FST4-60's own `NDOWN`; it's a
+//! function of each sub-mode's own `NDOWN`/`fft1_size`/`fft2_size`),
+//! but haven't themselves been checked against a real `jt9` decode —
+//! worth a real-WAV cross-check for at least one other sub-mode if
+//! one ever turns up.
 //!
 //! ## What's ported, what isn't (Phase 4a vs 4b)
 //!
@@ -72,8 +89,6 @@
 //! value at the candidate's own bin. Revisit with a real 4b CLEAN
 //! port if accuracy against ground truth (real `jt9`, golden WAVs)
 //! turns out to need the whole-band version specifically.
-
-#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec;
@@ -220,44 +235,63 @@ fn fst4_xsig(cs: &[Complex<f32>], itone: &[u8], ntones: usize) -> f32 {
     xsig
 }
 
-/// Mean power of the downsampled baseband **before**
+/// Recomputes `cs` fresh, **without**
 /// `engine::pipeline::process_candidate_basic_impl`'s RMS-normalisation
-/// (`cd0 = cd0 / sqrt(sum2)`, matching WSJT-X `ft4_decode.f90:231-232` —
-/// applied uniformly by this crate's generic pipeline for every
-/// `GenericPipelineProtocol` implementor, needed for `compute_llr`'s
-/// `LLR_SCALE` calibration, issue #18). `SnrCtx::cs` is downstream of
-/// that normalisation, so its absolute scale carries **no** SNR
-/// information — every candidate's downsampled baseband ends up at
-/// ~unit RMS regardless of how weak or strong the real signal was.
+/// step (`cd0 = cd0 / sqrt(sum2)`, matching WSJT-X `ft4_decode.f90:
+/// 231-232` — applied uniformly by this crate's generic pipeline for
+/// every `GenericPipelineProtocol` implementor, needed for
+/// `compute_llr`'s `LLR_SCALE` calibration, issue #18). `SnrCtx::cs`
+/// is downstream of that normalisation, so its absolute scale carries
+/// **no** SNR information — every candidate's downsampled baseband
+/// ends up at ~unit RMS regardless of how weak or strong the real
+/// signal was.
 ///
 /// WSJT-X's own FST4 path does *not* apply this normalisation before
 /// computing bitmetrics/`xsig` (`fst4_decode.f90`'s `cframe=c2(is0:iend)`
 /// is a bare slice, no `sum2`/RMS step — confirmed by reading the
 /// source; contrast `ft4_decode.f90:231-232`, which does normalise,
-/// same as this crate's shared pipeline). So `fst4_xsig`'s output needs
-/// re-scaling by this function's returned `sum2` (`xsig_absolute =
-/// xsig_normalised · sum2`) to land back on the same absolute-power
-/// scale WSJT-X's real `xsig`/`snr_calfac` were calibrated against —
-/// discovered via the real `jt9 -7` SNRAUDIT probe this function's
-/// caller doc references (issue #255): without this correction, `xsig`
-/// came out ~constant across wildly different real-SNR candidates
-/// (both `WSJT-X/samples/FST4+FST4W/210115_0058.wav` decodes landed
-/// within 4% of each other despite a real ~23 dB SNR difference),
-/// while `base` (computed straight from the un-normalised `fft_cache`)
-/// was already on the right scale — exactly the asymmetry this
-/// corrects.
+/// same as this crate's shared pipeline). So a WSJT-X-faithful `xsig`
+/// needs a `cs` built the same way: downsample fresh (no RMS step),
+/// frequency-shift to the **fine-refined** frequency
+/// (`fst4_decode.f90`'s bitmetrics input is downsampled at `fc_synced`,
+/// not the coarse candidate frequency `get_candidates_fst4.f90`'s
+/// baseline is keyed by — a real distinction in the original, not
+/// sloppiness here), then run [`crate::engine::llr::symbol_spectra`]
+/// at the exact same `i_start` the real (normalised) `cs` used.
 ///
-/// Recomputes the downsample fresh from `fft_cache`/`ds_cfg`/
-/// `cand_freq_hz` (deterministic, same inputs `process_candidate_basic_impl`
-/// used) rather than threading the value through `SnrCtx` — keeps this
-/// fix entirely inside FST4's own protocol-owned module instead of
-/// touching the generic engine's hot per-candidate path.
-fn cd0_rms_pow(fft_cache: &[Complex<f32>], ds_cfg: &DownsampleCfg, cand_freq_hz: f32) -> f32 {
-    let cd0 = downsample_cached(fft_cache, cand_freq_hz, ds_cfg);
-    if cd0.is_empty() {
-        return 1.0;
-    }
-    cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32
+/// Recomputing from `fft_cache`/`ds_cfg`/`cand_freq_hz`/
+/// `refined_freq_hz`/`i_start` (deterministic, same inputs
+/// `process_candidate_basic_impl` used) rather than threading a second
+/// `cs` array through `SnrCtx` keeps this entirely inside FST4's own
+/// protocol-owned module instead of doubling the generic engine's
+/// per-candidate allocation for every protocol, not just this one.
+///
+/// An earlier version of this function instead multiplied the
+/// *already-normalised* `xsig` by the downsampled baseband's mean
+/// power as an algebraic undo — a single scalar multiply applied
+/// uniformly across the whole array, so mathematically exact whenever
+/// `refined_freq_hz == cand_freq_hz` (both this module's two real test
+/// candidates happened to land close enough to that for the two
+/// versions to produce byte-identical output). Rebuilding `cs` from
+/// scratch at the correct frequency, as this version does, is more
+/// principled for candidates with a larger fine-refine correction
+/// (matching WSJT-X's own distinction between `fc_synced` and the
+/// coarse candidate frequency, see above) even though it didn't turn
+/// out to be what closed this module's real residual gap — that was a
+/// separate downsample-scale-convention mismatch, see the module doc
+/// comment.
+fn fst4_raw_cs<P: crate::engine::Protocol>(
+    fft_cache: &[Complex<f32>],
+    ds_cfg: &DownsampleCfg,
+    cand_freq_hz: f32,
+    refined_freq_hz: f32,
+    i_start: i32,
+) -> Vec<Complex<f32>> {
+    let raw_cd0_base = downsample_cached(fft_cache, cand_freq_hz, ds_cfg);
+    let ds_rate = ds_cfg.input_rate as f32 * ds_cfg.fft2_size as f32 / ds_cfg.fft1_size as f32;
+    let df_hz = refined_freq_hz - cand_freq_hz;
+    let raw_cd0 = crate::engine::sync2d::freq_shift_cd0(&raw_cd0_base, df_hz, ds_rate);
+    crate::engine::llr::symbol_spectra::<P>(&raw_cd0, i_start)
 }
 
 /// FST4's real SNR formula (`fst4_decode.f90:592-621`):
@@ -272,9 +306,8 @@ fn cd0_rms_pow(fft_cache: &[Complex<f32>], ds_cfg: &DownsampleCfg, cand_freq_hz:
 ///
 /// `snr_calfac` is per sub-mode (`fst4_decode.f90`'s `select case
 /// (ntrperiod)`: 800/600/430/390/340 for 15/30/60/120/300 — see the
-/// `fst4_submode!` invocations in `fst4/mod.rs`). `nsps` is the
-/// sub-mode's un-downsampled samples-per-symbol
-/// ([`crate::engine::ModulationParams::NSPS`]).
+/// `fst4_submode!` invocations in `fst4/mod.rs`). `NSPS` is read from
+/// `P` directly ([`crate::engine::ModulationParams::NSPS`]).
 ///
 /// Falls back to the WSJT-X `-99.9` sentinel (an explicit "not a real
 /// SNR" marker in the original, not this crate's own invention) both
@@ -282,33 +315,57 @@ fn cd0_rms_pow(fft_cache: &[Complex<f32>], ds_cfg: &DownsampleCfg, cand_freq_hz:
 /// baseline at all (candidate too close to a band edge for this
 /// module's local-window simplification — see its own doc comment).
 ///
-/// **Not wired in** — see this module's own doc comment for the real
-/// `jt9` ground-truth comparison and the residual gap that's kept it
-/// out of `fst4/decode.rs`'s `GenericPipelineProtocol::snr_db`
-/// override so far.
+/// `itone` (from `encode_tones_for_snr::<P>`, same as every other
+/// `GenericPipelineProtocol::snr_db` override reads via `SnrCtx`) is
+/// the only piece of `SnrCtx` this function still needs — `cs` itself
+/// is *not* used; [`fst4_raw_cs`] rebuilds the version this formula
+/// actually needs instead (see its own doc comment for why).
+///
+/// See this module's own doc comment for the real `jt9` ground-truth
+/// comparison this was verified against, including the derivation of
+/// this function's own `NDOWN`-in-power downsample-scale correction
+/// on `xsig` below.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn fst4_snr_db(
-    cs: &[Complex<f32>],
+pub(crate) fn fst4_snr_db<P: crate::engine::Protocol>(
     itone: &[u8],
     cand_freq_hz: f32,
+    refined_freq_hz: f32,
+    i_start: i32,
     fft_cache: &[Complex<f32>],
     ds_cfg: &DownsampleCfg,
-    ntones: usize,
-    tone_spacing_hz: f32,
-    nsps: u32,
     snr_calfac: f32,
 ) -> f32 {
     const WSJTX_INVALID_SENTINEL: f32 = -99.9;
-    let Some(base) = fst4_baseline_lin(fft_cache, ds_cfg, cand_freq_hz, tone_spacing_hz) else {
+    let Some(base) = fst4_baseline_lin(fft_cache, ds_cfg, cand_freq_hz, P::TONE_SPACING_HZ) else {
         return WSJTX_INVALID_SENTINEL;
     };
-    let rms_pow = cd0_rms_pow(fft_cache, ds_cfg, cand_freq_hz);
-    let xsig = fst4_xsig(cs, itone, ntones) * rms_pow;
+    let raw_cs = fst4_raw_cs::<P>(fft_cache, ds_cfg, cand_freq_hz, refined_freq_hz, i_start);
+    // `downsample_cached`'s own scale convention
+    // (`fac = 1/sqrt(fft1_size·fft2_size)`, `engine::dsp::downsample`'s
+    // module doc) differs from WSJT-X's `fst4_downsample`
+    // (`c1 = c1/nfft2`, a plain `1/fft2_size` divide with *no* sqrt).
+    // Both apply an *unnormalised* inverse FFT after that pre-scale, and
+    // an unnormalised IDFT of a single nonzero bin reproduces that
+    // bin's magnitude at *every* output sample regardless of transform
+    // length — so, given both downsamples extract the same underlying
+    // big-FFT bins (same physical audio; `fft1_size` differs slightly
+    // between the two implementations' padding choices, close enough
+    // not to matter here), the amplitude ratio between this crate's
+    // downsampled baseband and WSJT-X's own is `(1/sqrt(fft1·fft2)) /
+    // (1/fft2) = fft2/sqrt(fft1·fft2) = sqrt(fft2/fft1) = 1/sqrt(NDOWN)`
+    // (since `fft2 = fft1/NDOWN`). In power (`xsig` is a squared-
+    // magnitude sum) that's a factor of `NDOWN`. Confirmed against the
+    // real `jt9` SNRAUDIT_FST4_BM probe (issue #255): per-symbol,
+    // per-tone `s4` power ratios (jt9/ours) landed at 86-125 across
+    // both real signals and multiple symbols, clustering right around
+    // `NDOWN=108` for FST4-60 — an analytically-derived, protocol-
+    // parameter constant, not a fitted one.
+    let xsig = fst4_xsig(&raw_cs, itone, P::NTONES as usize) * P::NDOWN as f32;
     let arg = snr_calfac * xsig / base - 1.0;
     if arg > 0.0 {
         10.0 * arg.log10()
             + 10.0 * (1.46f32 / 2500.0).log10()
-            + 10.0 * (8200.0 / nsps as f32).log10()
+            + 10.0 * (8200.0 / P::NSPS as f32).log10()
     } else {
         WSJTX_INVALID_SENTINEL
     }

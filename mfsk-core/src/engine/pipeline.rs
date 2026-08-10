@@ -451,6 +451,20 @@ pub struct SnrCtx<'a> {
     /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
     #[allow(dead_code)] // read once FST4's override lands
     pub ds_cfg: &'a DownsampleCfg,
+    /// Fine-refined candidate frequency (Hz) — the frequency `cs` was
+    /// actually computed at (`WSJT-X`'s `fc_synced`), as opposed to
+    /// `cand_freq_hz`'s coarse pre-refine value. FST4's own `xsig`
+    /// re-derivation needs this: WSJT-X's `fst4_decode.f90` downsamples
+    /// its bitmetrics input at `fc_synced`, not the coarse candidate
+    /// frequency `get_candidates_fst4.f90`'s baseline is keyed by.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub refined_freq_hz: f32,
+    /// Sample index (in the *downsampled* baseband) of the first
+    /// symbol — the `i_start`/`i0` [`symbol_spectra`] was actually
+    /// called with. Needed alongside `refined_freq_hz` to recompute a
+    /// fresh, deterministic `cs` at the exact same alignment.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub i_start: i32,
 }
 #[cfg(not(feature = "internal-testing"))]
 pub(crate) struct SnrCtx<'a> {
@@ -476,6 +490,20 @@ pub(crate) struct SnrCtx<'a> {
     /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
     #[allow(dead_code)] // read once FST4's override lands
     pub ds_cfg: &'a DownsampleCfg,
+    /// Fine-refined candidate frequency (Hz) — the frequency `cs` was
+    /// actually computed at (`WSJT-X`'s `fc_synced`), as opposed to
+    /// `cand_freq_hz`'s coarse pre-refine value. FST4's own `xsig`
+    /// re-derivation needs this: WSJT-X's `fst4_decode.f90` downsamples
+    /// its bitmetrics input at `fc_synced`, not the coarse candidate
+    /// frequency `get_candidates_fst4.f90`'s baseline is keyed by.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub refined_freq_hz: f32,
+    /// Sample index (in the *downsampled* baseband) of the first
+    /// symbol — the `i_start`/`i0` [`symbol_spectra`] was actually
+    /// called with. Needed alongside `refined_freq_hz` to recompute a
+    /// fresh, deterministic `cs` at the exact same alignment.
+    #[allow(dead_code)] // read once FST4's override lands
+    pub i_start: i32,
 }
 
 /// `pub` only under the `internal-testing` feature (issue #203) — see
@@ -766,6 +794,8 @@ where
                     cand_freq_hz: cand.freq_hz,
                     fft_cache,
                     ds_cfg: cfg,
+                    refined_freq_hz: refined.freq_hz,
+                    i_start: i0,
                 });
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
                 // the rvec XOR before presenting the 77-bit payload.
@@ -896,6 +926,8 @@ where
                                 cand_freq_hz: cand.freq_hz,
                                 fft_cache,
                                 ds_cfg: cfg,
+                                refined_freq_hz: refined.freq_hz,
+                                i_start: i0,
                             });
                             descramble_info::<P>(&mut r.info);
                             return Some(DecodeResult {
@@ -934,6 +966,8 @@ where
                                     cand_freq_hz: cand.freq_hz,
                                     fft_cache,
                                     ds_cfg: cfg,
+                                    refined_freq_hz: refined.freq_hz,
+                                    i_start: i0,
                                 });
                                 descramble_info::<P>(&mut r.info);
                                 return Some(DecodeResult {

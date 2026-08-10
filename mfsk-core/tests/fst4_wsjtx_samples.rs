@@ -95,6 +95,84 @@ fn fst4_60_wsjtx_sample_recall_vs_golden() {
     );
 }
 
+/// SNR ground truth for issue #255's FST4 real-formula port
+/// (`fst4::baseline::fst4_snr_db`): a real local `jt9 -7 -d3` build's
+/// own reported SNR for both of this WAV's real decodes
+/// (`SNRAUDIT_FST4_PROBE` instrumentation added to `fst4_decode.f90`
+/// for that investigation, not committed there). `±3.0` dB tolerance
+/// — generous relative to the `~1-2` dB gap the investigation actually
+/// landed on, since this is a regression gate, not a precision claim.
+struct SnrGolden {
+    msg: &'static str,
+    jt9_snr_db: f32,
+}
+
+const SNR_GOLDEN: &[SnrGolden] = &[
+    SnrGolden {
+        msg: "CQ N5TM EL29",
+        jt9_snr_db: -6.90,
+    },
+    SnrGolden {
+        msg: "CQ K9KFR EN71",
+        jt9_snr_db: 16.14,
+    },
+];
+
+const SNR_TOL_DB: f32 = 3.0;
+
+#[test]
+fn fst4_60_wsjtx_sample_snr_matches_jt9_ground_truth() {
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X FST4 sample not found at \
+             ../../WSJT-X/samples/FST4+FST4W/210115_0058.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+
+    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
+        .decode()
+        .results;
+
+    let decoded: Vec<(String, f32)> = decodes
+        .iter()
+        .filter_map(|d| {
+            let mut m77 = [0u8; 77];
+            m77.copy_from_slice(d.message77());
+            unpack77(&m77).map(|s| (s, d.snr_db))
+        })
+        .collect();
+
+    for g in SNR_GOLDEN {
+        let hit = decoded.iter().find(|(m, _)| m == g.msg);
+        let Some((_, snr_db)) = hit else {
+            panic!(
+                "'{}' not decoded at all — recall regression, see \
+                 fst4_60_wsjtx_sample_recall_vs_golden",
+                g.msg
+            );
+        };
+        eprintln!(
+            "{}: ours={:.2} dB, jt9={:.2} dB, diff={:.2} dB",
+            g.msg,
+            snr_db,
+            g.jt9_snr_db,
+            (snr_db - g.jt9_snr_db).abs()
+        );
+        assert!(
+            (snr_db - g.jt9_snr_db).abs() <= SNR_TOL_DB,
+            "'{}' SNR diverged from jt9 ground truth by {:.2} dB \
+             (ours={:.2}, jt9={:.2}) — beyond the {} dB regression gate",
+            g.msg,
+            (snr_db - g.jt9_snr_db).abs(),
+            snr_db,
+            g.jt9_snr_db,
+            SNR_TOL_DB
+        );
+    }
+}
+
 /// Regression for issue #244: before the pre-decode `dedup_refined_candidates`
 /// pass (`engine::pipeline::decode_frame_impl`), this exact WAV fired
 /// `on_result` **9 times** for the same 2 real signals (`CQ K9KFR EN71`

@@ -260,6 +260,8 @@ mod tests {
                 cand_freq_hz: 1000.0,
                 fft_cache: &fft_cache,
                 ds_cfg: &FT4_DOWNSAMPLE,
+                refined_freq_hz: 1000.0,
+                i_start: 0,
             });
             assert_eq!(via_trait, pipeline::ft4_snr_db(cand_score));
         }
