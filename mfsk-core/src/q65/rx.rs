@@ -392,7 +392,15 @@ fn decode_at_inner<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
-    let snr_db = snr_db_narrow::<P>(&energies, &codeword);
+    let fallback = snr_db_narrow::<P>(&energies, &codeword);
+    let snr_db = super::snr::q65_snr_db::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &codeword,
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -458,7 +466,15 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
-    let snr_db = snr_db_wide::<P>(&energies, sample_rate, &codeword);
+    let fallback = snr_db_wide::<P>(&energies, sample_rate, &codeword);
+    let snr_db = super::snr::q65_snr_db::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &codeword,
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -555,7 +571,15 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, ctx)?;
 
-    let snr_db = snr_db_narrow::<P>(&energies, &candidates[idx]);
+    let fallback = snr_db_narrow::<P>(&energies, &candidates[idx]);
+    let snr_db = super::snr::q65_snr_db::<P>(
+        audio,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &candidates[idx],
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -882,7 +906,15 @@ fn decode_at_grid_for<P: ModulationParams>(
                 };
                 let mut codeword = [0_i32; 63];
                 codec.encode(&info_syms, &mut codeword);
-                let snr_db = snr_db_wide::<P>(&energies, sample_rate, &codeword);
+                let fallback = snr_db_wide::<P>(&energies, sample_rate, &codeword);
+                let snr_db = super::snr::q65_snr_db::<P>(
+                    audio,
+                    sample_rate,
+                    shifted_start,
+                    freq_shift,
+                    &codeword,
+                    fallback,
+                );
                 return Some(Q65Result {
                     message: text,
                     freq_hz: freq_shift,
@@ -1035,6 +1067,15 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, ctx)?;
 
+    // Still the adjacent-tone heuristic, not `q65::snr::q65_snr_db`
+    // (issue #255 §5) — this multi-period-averaging path only has
+    // `energies` (already averaged across slots), not a single
+    // `audio` buffer `q65_snr_db`'s own per-symbol FFT extraction
+    // needs. Real WSJT-X's own `iavg` path presumably builds its `s1`
+    // from one representative slot rather than an average, but
+    // threading `audio_slots` through this call chain to check is out
+    // of scope here — same "single-slot decode paths first" scoping
+    // FST4's own port used (issue #255 §4's 4a/4b split).
     let snr_db = snr_db_narrow::<P>(energies, &candidates[idx]);
 
     Some(Q65Result {
@@ -1105,6 +1146,9 @@ fn decode_fading_with_energies<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
+    // Adjacent-tone heuristic, not `q65_snr_db` — see
+    // `decode_averaged_ap_list_for`'s doc comment for why (no
+    // single-slot `audio` buffer available on this averaged path).
     let snr_db = snr_db_wide::<P>(energies, sample_rate, &codeword);
 
     Some(Q65Result {
@@ -1138,6 +1182,9 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
+    // Adjacent-tone heuristic, not `q65_snr_db` — see
+    // `decode_averaged_ap_list_for`'s doc comment for why (no
+    // single-slot `audio` buffer available on this averaged path).
     let snr_db = snr_db_narrow::<P>(energies, &codeword);
 
     Some(Q65Result {

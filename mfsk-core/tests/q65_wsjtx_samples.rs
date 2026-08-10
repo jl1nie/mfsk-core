@@ -579,6 +579,142 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
     );
 }
 
+/// SNR ground truth for issue #255's Q65 real-formula port
+/// (`q65::snr::q65_snr_db`): a real local `jt9 -3 -d3` build's own
+/// displayed SNR for four real off-air decodes, one per sub-mode
+/// (`SNRAUDIT`-style verification done for this investigation, no
+/// Fortran instrumentation needed this time — `jt9`'s own CLI output
+/// already prints the SNR column). `±3.0` dB tolerance — generous
+/// relative to the `~1` dB gap the investigation actually landed on,
+/// since this is a regression gate, not a precision claim.
+#[test]
+fn q65_snr_matches_jt9_ground_truth() {
+    const SNR_TOL_DB: f32 = 3.0;
+
+    // Q65-60D: WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav,
+    // "VK7MO K6QPV DM12" — jt9: -15 dB.
+    if let Some(dir) = samples_dir("60D_EME_10GHz") {
+        let path = dir.join("201212_1838.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 10,
+                score_threshold: 0.05,
+                max_candidates: 8,
+            };
+            let fading = DecodeRequest::<Q65d60>::new(&audio, 12_000, 0, params)
+                .fading(FadingModel::Gaussian, 10.0)
+                .decode();
+            let hit = fading
+                .iter()
+                .find(|d| d.message.contains("VK7MO") && d.message.contains("K6QPV"));
+            match hit {
+                Some(d) => assert_snr_close("Q65-60D VK7MO/K6QPV", d.snr_db, -15.0, SNR_TOL_DB),
+                None => panic!(
+                    "Q65-60D VK7MO/K6QPV not decoded — see eme_10ghz_60d_decodes_with_fading_metric"
+                ),
+            }
+        }
+    }
+
+    // Q65-120D: WSJT-X/samples/Q65/120D_Rainscatter_10_GHz/210117_0920.wav,
+    // "VK3WE VK7MO QE37" — jt9: -16 dB.
+    if let Some(dir) = samples_dir("120D_Rainscatter_10_GHz") {
+        let path = dir.join("210117_0920.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 10,
+                score_threshold: 0.0,
+                max_candidates: 8,
+            };
+            let fading = DecodeRequest::<Q65d120>::new(&audio, 12_000, 0, params)
+                .fading(FadingModel::Gaussian, 20.0)
+                .decode();
+            let hit = fading
+                .iter()
+                .find(|d| d.message.contains("VK3WE") && d.message.contains("VK7MO"));
+            match hit {
+                Some(d) => assert_snr_close("Q65-120D VK3WE/VK7MO", d.snr_db, -16.0, SNR_TOL_DB),
+                None => panic!(
+                    "Q65-120D VK3WE/VK7MO not decoded — see rainscatter_10ghz_120d_decodes_with_fading_metric"
+                ),
+            }
+        }
+    }
+
+    // Q65-120E: WSJT-X/samples/Q65/120E_Ionoscatter_6m/210130_1442.wav,
+    // "KB7IJ N0AN 73" — jt9: -17 dB.
+    if let Some(dir) = samples_dir("120E_Ionoscatter_6m") {
+        let path = dir.join("210130_1442.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 10,
+                score_threshold: 0.0,
+                max_candidates: 8,
+            };
+            let fading = DecodeRequest::<Q65e120>::new(&audio, 12_000, 0, params)
+                .fading(FadingModel::Gaussian, 12.0)
+                .decode();
+            let hit = fading
+                .iter()
+                .find(|d| d.message.contains("KB7IJ") && d.message.contains("N0AN"));
+            match hit {
+                Some(d) => assert_snr_close("Q65-120E KB7IJ/N0AN", d.snr_db, -17.0, SNR_TOL_DB),
+                None => panic!(
+                    "Q65-120E KB7IJ/N0AN not decoded — see ionoscatter_6m_120e_decodes_with_fading_metric"
+                ),
+            }
+        }
+    }
+
+    // Q65-300A: WSJT-X/samples/Q65/300A_Optical_Scatter/201210_0505.wav,
+    // "VK7MO VK7PD QE38" — jt9: -34 dB.
+    if let Some(dir) = samples_dir("300A_Optical_Scatter") {
+        let path = dir.join("201210_0505.wav");
+        if let Some(audio) = read_wsjtx_wav(&path) {
+            let params = SearchParams {
+                freq_min_hz: 200.0,
+                freq_max_hz: 3_000.0,
+                time_tolerance_symbols: 60,
+                score_threshold: 0.0,
+                max_candidates: 20,
+            };
+            let fading = DecodeRequest::<Q65a300>::new(&audio, 12_000, 0, params)
+                .fading(FadingModel::Gaussian, 5.0)
+                .decode();
+            let hit = fading
+                .iter()
+                .find(|d| d.message.contains("VK7MO") && d.message.contains("VK7PD"));
+            match hit {
+                Some(d) => assert_snr_close("Q65-300A VK7MO/VK7PD", d.snr_db, -34.0, SNR_TOL_DB),
+                None => panic!(
+                    "Q65-300A VK7MO/VK7PD not decoded — see optical_scatter_300a_decodes_with_fading_metric"
+                ),
+            }
+        }
+    }
+}
+
+fn assert_snr_close(label: &str, ours: f32, jt9: f32, tol_db: f32) {
+    eprintln!(
+        "{label}: ours={ours:.2} dB, jt9={jt9:.2} dB, diff={:.2} dB",
+        (ours - jt9).abs()
+    );
+    assert!(
+        (ours - jt9).abs() <= tol_db,
+        "{label} SNR diverged from jt9 ground truth by {:.2} dB (ours={:.2}, jt9={:.2}) — \
+         beyond the {tol_db} dB regression gate",
+        (ours - jt9).abs(),
+        ours,
+        jt9,
+    );
+}
+
 /// Diagnostic (new investigation, mirrors the FT4/FST4 speed
 /// methodology): `BENCHMARKS.md`'s "Decode speed" table has Q65-60A
 /// (1.57 s), Q65-60B (1.89 s), Q65-30A (2.55 s) far slower than

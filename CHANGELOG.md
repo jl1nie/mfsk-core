@@ -248,6 +248,33 @@
   `s4(tone,symbol)` values caught the actual constant factor. Full
   derivation in `fst4::baseline`'s module doc comment.
 
+- **Q65 real displayed SNR, ported and shipped (issue #255 §5).** New
+  `q65::snr` module ports `q65_snr` (`q65.f90:744-793`) — the value
+  WSJT-X actually displays, confirmed distinct from (and always
+  overwriting) the `esnodb`-based value computed inside `q65_dec_q3`/
+  `q65_dec_q012` that `fec::qra::fast_fading::esnodb_fast_fading`
+  already faithfully ports and which stays intentionally unused.
+  Unlike FT8/FT4/FST4's formulas (signal power at the one decoded tone
+  vs. a baseline), `q65_snr` builds a composite tone-aligned spectrum
+  across all 85 symbols (22 sync + 63 data) and reads a guard-band
+  baseline + integrated excess power off that. Wired into the four
+  single-slot decode paths that have direct `audio` access
+  (`decode_at_inner`, `decode_at_fading_for`,
+  `decode_at_with_ap_list_for`, `decode_at_grid_for`); the three
+  multi-period-averaging (`iavg=1,2`) call sites only receive
+  already-averaged energies, not a raw audio buffer this formula's own
+  per-symbol FFT extraction needs, and keep reporting the existing
+  adjacent-tone heuristic (documented at each call site, follow-up if
+  ever revisited). Verified against a real local `jt9 -3 -d3` build's
+  own displayed SNR on four real off-air recordings, one per sub-mode
+  (`WSJT-X/samples/Q65/{60D_EME_10GHz,120D_Rainscatter_10_GHz,
+  120E_Ionoscatter_6m,300A_Optical_Scatter}`) — landed within ~1 dB on
+  the *first* implementation attempt, no scale-factor archaeology
+  needed this time: unlike FST4, Q65's own energy extraction FFTs the
+  raw audio directly with no shared downsample/RMS-normalisation
+  pipeline in between to introduce a mismatch. New regression test
+  `q65_snr_matches_jt9_ground_truth` (±3 dB gate) guards all four.
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

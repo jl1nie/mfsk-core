@@ -72,6 +72,7 @@ pub mod decode_request;
 pub mod protocol;
 pub mod rx;
 pub mod search;
+pub(crate) mod snr;
 pub mod sync_pattern;
 pub mod tx;
 
