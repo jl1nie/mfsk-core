@@ -102,10 +102,11 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     );
     for d in &decodes_no_ap {
         eprintln!(
-            "  → freq={:.1} Hz dt={:.2} s iter={} : {}",
+            "  → freq={:.1} Hz dt={:.2} s iter={} snr={:.1} dB : {}",
             d.freq_hz,
             d.start_sample as f32 / 12_000.0,
             d.iterations,
+            d.snr_db,
             d.message
         );
     }
@@ -125,10 +126,11 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     );
     for d in &decodes_ap {
         eprintln!(
-            "  → freq={:.1} Hz dt={:.2} s iter={} : {}",
+            "  → freq={:.1} Hz dt={:.2} s iter={} snr={:.1} dB : {}",
             d.freq_hz,
             d.start_sample as f32 / 12_000.0,
             d.iterations,
+            d.snr_db,
             d.message
         );
     }
@@ -366,7 +368,10 @@ fn tropo_1296_60b_decodes_via_averaging() {
         slot_refs.len(),
     );
     for d in &decodes_no_ap {
-        eprintln!("  → freq={:.1} Hz : {}", d.freq_hz, d.message);
+        eprintln!(
+            "  → freq={:.1} Hz snr={:.1} dB : {}",
+            d.freq_hz, d.snr_db, d.message
+        );
     }
 
     use mfsk_core::q65::standard_qso_codewords;
@@ -379,7 +384,10 @@ fn tropo_1296_60b_decodes_via_averaging() {
         decodes_ap.len(),
     );
     for d in &decodes_ap {
-        eprintln!("  → freq={:.1} Hz : {}", d.freq_hz, d.message);
+        eprintln!(
+            "  → freq={:.1} Hz snr={:.1} dB : {}",
+            d.freq_hz, d.snr_db, d.message
+        );
     }
 
     let hit = |ds: &[mfsk_core::q65::Q65Result]| {

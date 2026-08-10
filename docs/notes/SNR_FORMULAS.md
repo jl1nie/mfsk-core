@@ -17,7 +17,7 @@ read the linked function for the details, don't duplicate them here.
 | FT8 | `ft8b.f90`'s `xsnr2` gate/formula | `ft8::baseline::compute_baseline_spectrum` + `ft8/decode_block/process_candidates.rs`'s `compute_xsig_wsjtx`/`apply_wsjtx_xsnr2` | **Shipped**, all 5 FT8 entry points (issue #243/#253) |
 | FT4 | `ft4_decode.f90:226,452-457` | `engine::pipeline::ft4_snr_db`, via `Ft4`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, all 4 call sites incl. AP path (issue #255) |
 | FST4 | `fst4_decode.f90:592-621` (`xsig`/`arg`/`xsnr`) + `get_candidates_fst4.f90` (baseline) | `fst4::baseline::fst4_snr_db`, via every `Fst4s*`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, FST4-60-verified (issue #255 §4) |
-| Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` | **Shipped** on the 4 single-slot decode paths; the 3 `iavg=1,2` multi-period-averaging call sites still report the adjacent-tone heuristic (issue #255 §5) |
+| Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` (single-slot) / `q65::snr::q65_snr_db_averaged` (`iavg=1,2` multi-period) | **Shipped**, all 7 decode paths — the 3 multi-period call sites use an EMA-averaged composite spectrum (`q65_composite_spectrum_averaged`), matching WSJT-X's own `s1a` accumulation formula (issue #255 §5, #256) |
 | JT65 / JT9 / WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope for issue #255 — issue #226 gave these protocols *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited here. |
 
 ## Why FT8 and Q65 aren't `GenericPipelineProtocol` implementors
@@ -52,7 +52,16 @@ work around.
 Every entry above marked "Shipped" was checked against a real local
 `jt9` build's own reported SNR (or, for FT8/FT4's earlier work,
 internal-value SNRAUDIT-style probes) on real off-air WSJT-X sample
-recordings — not just synthetic signals. `/home/minoru/src/WSJT-X`
+recordings — not just synthetic signals. One exception: Q65's
+multi-period (`iavg=1,2`) averaging path has no `jt9` CLI equivalent
+to check against — `jt9`'s batch mode has no flag driving the
+GUI-only Rx-cycle-to-Rx-cycle accumulation state `iavg` depends on
+(confirmed empirically: passing the same multi-slot recording to one
+`jt9` invocation across several files produces independent single-slot
+decode attempts, not an averaged one). That path is verified
+structurally (read against `q65.f90`'s own `s1a` accumulation) and for
+recall (existing golden tests still decode), not against a real
+`jt9`-reported number. `/home/minoru/src/WSJT-X`
 (this crate's development machine) has a buildable WSJT-X checkout
 with a working `build_jt9/` tree; adding a temporary `write(0,...)`
 probe line to the relevant `.f90` file and running `make jt9` rebuilds

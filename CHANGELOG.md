@@ -275,6 +275,36 @@
   pipeline in between to introduce a mismatch. New regression test
   `q65_snr_matches_jt9_ground_truth` (±3 dB gate) guards all four.
 
+- **Q65 real SNR extended to the multi-period-averaging (`iavg=1,2`)
+  decode path** (issue #255 §5 follow-up, issue #256). Read WSJT-X's
+  own `q65_dec0`/`q65_symspec` (`q65.f90:30,265-304`) to check whether
+  the multi-period path's real SNR reuses one representative slot or
+  an average: it's a genuine average — `s1 = s1a(:,:,iseq)` when
+  `iavg>=1`, accumulated via `s1a = u·s1 + (1-u)·s1a` with
+  `u = 1/min(navg,4)`, the *same* EMA weight formula
+  `q65::search::Spectrogram`-based multi-period coarse search already
+  implements. New `q65::snr::q65_composite_spectrum_averaged`/
+  `q65_snr_db_averaged` apply that identical EMA directly to the
+  composite spectrum (mathematically equivalent to averaging the
+  underlying per-symbol energies first, since the composite-spectrum
+  sum is linear) rather than switching to `Spectrogram`'s own
+  coarser grid — WSJT-X's `s1` also applies `smo121` frequency
+  smoothing and a time-domain interpolation trick neither this
+  crate's `Spectrogram` nor its existing single-slot extraction
+  replicate, and the single-slot verification data (4 real signals
+  spanning `mode_q65` 1/8/8/16, i.e. WSJT-X's own `smo121` pass count
+  1/32/32/128) showed no correlation between that gap and the
+  reported-dB accuracy, so porting it wasn't judged worth the risk of
+  a bigger rewrite. Wired into all 3 multi-period call sites
+  (`decode_averaged_ap_list_for`, `decode_fading_with_energies`,
+  `decode_averaged_plain_for`). Not checked against real `jt9` output
+  for this path specifically — `jt9`'s CLI batch mode has no flag
+  driving the GUI-only Rx-cycle accumulation `iavg` depends on
+  (confirmed empirically); verified structurally against `q65.f90`
+  and for recall (existing multi-period golden tests still decode,
+  reported SNR values sane: -19 to -28 dB range for signals that only
+  decode via averaging at all).
+
 ### Added
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX

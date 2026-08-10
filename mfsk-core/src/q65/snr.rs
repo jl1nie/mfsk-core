@@ -39,14 +39,22 @@
 //! WSJT-X's own `q65_snr` reuses the *same* coarse `s1` array its
 //! sync search already built (`NSTEP=8` time bins per symbol,
 //! `q65.f90:3`) rather than computing anything fresh — an efficiency
-//! choice, not a precision requirement. This module instead computes
-//! a fresh FFT at the exact decoded `(start_sample, base_freq_hz)`
-//! per symbol, matching [`extract_data_energies`]'s own full-precision
-//! convention (already proven correct for the BP decode itself) rather
-//! than WSJT-X's `NSTEP=8`-quantised grid. Not yet cross-checked
-//! against whether this precision difference itself changes the
-//! reported dB by a measurable amount — see this module's own
-//! verification note below.
+//! choice, not a precision requirement (see `q65_symspec`,
+//! `q65.f90:265-302` — it also applies `smo121` frequency-domain
+//! smoothing and a 2×-time-subsample-then-interpolate trick that
+//! `Spectrogram::build_for` doesn't). This module instead computes a
+//! fresh FFT at the exact decoded `(start_sample, base_freq_hz)` per
+//! symbol, matching [`extract_data_energies`]'s own full-precision
+//! convention (already proven correct for the BP decode itself)
+//! rather than WSJT-X's `NSTEP=8`-quantised-and-smoothed grid. The
+//! precision difference doesn't appear to change the reported dB by a
+//! measurable amount in practice: the four real recordings verified
+//! below span `mode_q65` = 1, 8, 8, 16 (i.e. WSJT-X's own `nsmo` =
+//! 1, 32, 32, 128 for those same signals — `smo121`'s pass count
+//! grows with `mode_q65²`) and all four land within 0.6-0.8 dB of
+//! `jt9` regardless; if smoothing/interpolation mattered for the
+//! final number, the `mode_q65=16` case would be expected to diverge
+//! the most, and it doesn't (issue #255 / #256 discussion).
 //!
 //! ## Verification
 //!
@@ -55,19 +63,23 @@
 //! verification discipline) — see [`q65_snr_db`]'s doc comment for
 //! the numbers.
 //!
-//! ## Not wired into the multi-period-averaging path
+//! ## Multi-period averaging (`iavg=1,2`)
 //!
 //! [`super::rx`]'s three `decode_averaged_*`/`decode_fading_with_energies`
-//! functions (the `iavg=1,2` EMA-on-spectrogram path,
-//! `super::rx::decode_multi_period_for`) only receive already-averaged
-//! `energies`, not a single-slot `audio` buffer — [`q65_snr_db`]'s own
-//! per-symbol FFT extraction needs the latter. Those call sites still
-//! report the generic adjacent-tone heuristic (each has a doc comment
-//! pointing back here). WSJT-X's own `iavg` path presumably builds its
-//! `s1` from one representative slot rather than an average, but
-//! threading `audio_slots` through that call chain to check wasn't
-//! done here — the four single-slot decode paths this module *is*
-//! wired into cover the common case.
+//! functions (`super::rx::decode_multi_period_for`'s candidate loop)
+//! use [`q65_snr_db_averaged`] instead of [`q65_snr_db`]. WSJT-X's own
+//! `iavg` path (`q65_dec0`, `q65.f90:141-142`: `s1 = s1a(:,:,iseq)`)
+//! reads its module-level `s1` from an accumulated array rather than a
+//! fresh single-slot one, built via the exact same EMA weight
+//! (`u = 1.0/min(navg,4)`, `q65_symspec` `q65.f90:298-304`) this
+//! crate's own `Spectrogram`-based coarse search already implements
+//! for `decode_multi_period_for`'s running-average sync search.
+//! [`q65_composite_spectrum_averaged`] applies that identical EMA
+//! directly to the *composite* spectrum rather than to the underlying
+//! per-symbol energies first — mathematically equivalent, since the
+//! "sum 85 symbols' shifted spectra" step the composite spectrum is
+//! built from is linear, so averaging its output commutes with
+//! averaging its input.
 
 extern crate alloc;
 use alloc::vec;
@@ -246,6 +258,94 @@ pub(crate) fn q65_snr_db<P: ModulationParams>(
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps.max(1) as f32;
     match q65_composite_spectrum::<P>(audio, sample_rate, start_sample, base_freq_hz, codeword) {
+        Some((spec, nsum)) => q65_snr_from_spectrum(&spec, nsum, df).unwrap_or(fallback_db),
+        None => fallback_db,
+    }
+}
+
+/// EMA-average [`q65_composite_spectrum`] across `audio_slots`,
+/// matching WSJT-X's own `s1a` accumulation (`q65.f90:298-304`):
+/// `weight = 1.0/min(navg,4)` where `navg` is the 1-based slot index,
+/// capped at 4 (the time constant saturates after the 4th slot, so
+/// older history decays at a fixed ~25%/slot rate — same formula
+/// `q65::search::Spectrogram`-based `decode_multi_period_for` already
+/// uses for its own coarse-search EMA).
+///
+/// Averages the *composite* spectrum directly rather than the
+/// underlying per-symbol energies (WSJT-X's own `s1`) — see this
+/// module's own doc comment for why that's mathematically equivalent
+/// here (the composite-spectrum sum is linear in the per-symbol
+/// energies, so EMA-averaging commutes through it).
+///
+/// `start_sample`/`base_freq_hz`/`codeword` are assumed constant
+/// across `audio_slots` (the same candidate position and decoded
+/// message recurring slot to slot) — the same assumption
+/// `decode_multi_period_for`'s own EMA-on-spectrogram coarse search
+/// already makes. A slot whose own [`q65_composite_spectrum`] returns
+/// `None` (e.g. too short) or whose geometry (`nsum`/window width)
+/// doesn't match the running average is skipped for the composite
+/// step but doesn't abort the whole accumulation — best-effort, same
+/// spirit as [`super::rx::averaged_data_energies`]'s own per-slot
+/// `continue`-on-failure loop.
+pub(crate) fn q65_composite_spectrum_averaged<P: ModulationParams>(
+    audio_slots: &[&[f32]],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    codeword: &[i32],
+) -> Option<(Vec<f32>, i64)> {
+    let mut acc: Option<(Vec<f32>, i64)> = None;
+    let mut navg = 0u32;
+    for &audio in audio_slots {
+        let Some((spec, nsum)) =
+            q65_composite_spectrum::<P>(audio, sample_rate, start_sample, base_freq_hz, codeword)
+        else {
+            continue;
+        };
+        match &mut acc {
+            None => {
+                navg = 1;
+                acc = Some((spec, nsum));
+            }
+            Some((acc_spec, acc_nsum)) if acc_spec.len() == spec.len() && *acc_nsum == nsum => {
+                navg += 1;
+                let weight = 1.0f32 / navg.min(4) as f32;
+                let one_minus = 1.0 - weight;
+                for (a, s) in acc_spec.iter_mut().zip(&spec) {
+                    *a = weight * s + one_minus * *a;
+                }
+            }
+            // Geometry mismatch (shouldn't happen in practice — same
+            // sub-mode/sample_rate/base_freq_hz every call) — keep the
+            // running average rather than let one odd slot corrupt it.
+            Some(_) => {}
+        }
+    }
+    acc
+}
+
+/// [`q65_snr_db`]'s multi-period-averaging counterpart — see this
+/// module's own doc comment (`## Multi-period averaging`) for the
+/// derivation. Used by [`super::rx`]'s `decode_averaged_*`/
+/// `decode_fading_with_energies` (`decode_multi_period_for`'s
+/// candidate loop).
+pub(crate) fn q65_snr_db_averaged<P: ModulationParams>(
+    audio_slots: &[&[f32]],
+    sample_rate: u32,
+    start_sample: usize,
+    base_freq_hz: f32,
+    codeword: &[i32],
+    fallback_db: f32,
+) -> f32 {
+    let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
+    let df = sample_rate as f32 / nsps.max(1) as f32;
+    match q65_composite_spectrum_averaged::<P>(
+        audio_slots,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        codeword,
+    ) {
         Some((spec, nsum)) => q65_snr_from_spectrum(&spec, nsum, df).unwrap_or(fallback_db),
         None => fallback_db,
     }

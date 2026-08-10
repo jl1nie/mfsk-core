@@ -1047,8 +1047,11 @@ fn averaged_data_energies_wide<P: ModulationParams>(
 /// (Stage B and Stage C-plain used to each call `averaged_data_energies`
 /// independently with identical arguments, extracting the same FFT
 /// energies twice per candidate that reaches Stage C-plain).
+#[allow(clippy::too_many_arguments)]
 fn decode_averaged_ap_list_for<P: ModulationParams>(
     energies: &[f32],
+    history: &[&[f32]],
+    sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
     candidates: &[[i32; 63]],
@@ -1067,16 +1070,15 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
     let bits77 = unpack_symbols_to_bits77(&info_syms);
     let text = Q65Message.unpack(&bits77, ctx)?;
 
-    // Still the adjacent-tone heuristic, not `q65::snr::q65_snr_db`
-    // (issue #255 §5) — this multi-period-averaging path only has
-    // `energies` (already averaged across slots), not a single
-    // `audio` buffer `q65_snr_db`'s own per-symbol FFT extraction
-    // needs. Real WSJT-X's own `iavg` path presumably builds its `s1`
-    // from one representative slot rather than an average, but
-    // threading `audio_slots` through this call chain to check is out
-    // of scope here — same "single-slot decode paths first" scoping
-    // FST4's own port used (issue #255 §4's 4a/4b split).
-    let snr_db = snr_db_narrow::<P>(energies, &candidates[idx]);
+    let fallback = snr_db_narrow::<P>(energies, &candidates[idx]);
+    let snr_db = super::snr::q65_snr_db_averaged::<P>(
+        history,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &candidates[idx],
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -1119,6 +1121,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
 #[allow(clippy::too_many_arguments)]
 fn decode_fading_with_energies<P: ModulationParams>(
     energies: &[f32],
+    history: &[&[f32]],
     sample_rate: u32,
     start_sample: usize,
     base_freq_hz: f32,
@@ -1146,10 +1149,15 @@ fn decode_fading_with_energies<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
-    // Adjacent-tone heuristic, not `q65_snr_db` — see
-    // `decode_averaged_ap_list_for`'s doc comment for why (no
-    // single-slot `audio` buffer available on this averaged path).
-    let snr_db = snr_db_wide::<P>(energies, sample_rate, &codeword);
+    let fallback = snr_db_wide::<P>(energies, sample_rate, &codeword);
+    let snr_db = super::snr::q65_snr_db_averaged::<P>(
+        history,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &codeword,
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -1166,6 +1174,8 @@ fn decode_fading_with_energies<P: ModulationParams>(
 /// same already-extracted-by-the-caller convention.
 fn decode_averaged_plain_for<P: ModulationParams>(
     energies: &[f32],
+    history: &[&[f32]],
+    sample_rate: u32,
     base_freq_hz: f32,
     start_sample: usize,
     ctx: &DecodeContext,
@@ -1182,10 +1192,15 @@ fn decode_averaged_plain_for<P: ModulationParams>(
 
     let mut codeword = [0_i32; 63];
     codec.encode(&info_syms, &mut codeword);
-    // Adjacent-tone heuristic, not `q65_snr_db` — see
-    // `decode_averaged_ap_list_for`'s doc comment for why (no
-    // single-slot `audio` buffer available on this averaged path).
-    let snr_db = snr_db_narrow::<P>(energies, &codeword);
+    let fallback = snr_db_narrow::<P>(energies, &codeword);
+    let snr_db = super::snr::q65_snr_db_averaged::<P>(
+        history,
+        sample_rate,
+        start_sample,
+        base_freq_hz,
+        &codeword,
+        fallback,
+    );
 
     Some(Q65Result {
         message: text,
@@ -1318,6 +1333,8 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                     .as_deref()
                 && let Some(d) = decode_averaged_ap_list_for::<P>(
                     energies,
+                    history,
+                    sample_rate,
                     cand.start_sample,
                     cand.freq_hz,
                     codewords,
@@ -1347,6 +1364,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                     for &model in &fading_models {
                         if let Some(d) = decode_fading_with_energies::<P>(
                             &energies,
+                            history,
                             sample_rate,
                             cand.start_sample,
                             cand.freq_hz,
@@ -1376,8 +1394,14 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
                     )
                 })
                 .as_deref()
-                && let Some(d) =
-                    decode_averaged_plain_for::<P>(energies, cand.freq_hz, cand.start_sample, ctx)
+                && let Some(d) = decode_averaged_plain_for::<P>(
+                    energies,
+                    history,
+                    sample_rate,
+                    cand.freq_hz,
+                    cand.start_sample,
+                    ctx,
+                )
             {
                 slot_decode = Some(d);
                 break 'candidate_loop;
