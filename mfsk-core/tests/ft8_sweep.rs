@@ -1,19 +1,24 @@
 //! FT8 SNR sweep + fading benchmark against `ft8sim`-generated signals.
 //!
 //! This test is `#[ignore]` — run it manually when investigating FT8
-//! sensitivity. Unlike the FT4/FST4 sweeps, this one does **not** include a
-//! `DecodeStrictness` calibration probe: FT8's production `decode_frame`
-//! path (`decode_block::coarse_sync` + `process_candidate`, the WSJT-X-
-//! faithful pipeline from the #48 consolidation) uses its own
-//! already-calibrated `ft8::decode::DecodeStrictness` (see the "Calibrated
-//! from real WAV bench 2026-04-07" doc comment there), not the uncalibrated
-//! copy in `engine::pipeline` that FT4/FST4 share (issue #72) — `process_candidate`
-//! isn't `pub`, so there's no external hook to vary it from this test. What
-//! this sweep *does* give FT8 for the first time: a true Watterson-fading
+//! sensitivity. What this sweep gives FT8: a true Watterson-fading
 //! AWGN/CCIR corpus generated from WSJT-X's own `ft8sim`, as opposed to the
 //! existing CI "ft8 characterization" suite (`ft8_decode_block_snr_sweep`
 //! and friends), which is homegrown LCG-noise synthesis — not validated
 //! against any WSJT-X-native ground truth.
+//!
+//! **Update (2026-08-10, issue #253)**: the claim that used to sit here —
+//! that FT8's OSD gate isn't reachable from an external probe because
+//! `process_candidate` isn't `pub` — was wrong for the `DecodeRequest`
+//! entry point specifically: `.strictness(s)` on `DecodeRequest<Ft8>`
+//! reaches the exact same shared gate (`DecodeStrictness::ft8_nharderrors_max`,
+//! called from `ft8::decode_block::process_candidates`/`osd_strategy`,
+//! which `ft8::decode::decode_frame_inner` also routes through). See
+//! `ft8_strictness_probe` below, added after a reproducible false decode
+//! (`7Y8CIH HN1GD OP30` on `qso3_busy.wav` via WebFT8's `Deep` +
+//! `.sic_early()` phase-2 pipeline, `hard_errors=31` under `Deep`'s
+//! `ft8_nharderrors_max=40` — a ceiling the type's own doc comment already
+//! flagged as "not yet swept against a fading corpus").
 //!
 //! ```sh
 //! # 1. Generate WAVs (once, or when widening the SNR grid):
@@ -372,4 +377,199 @@ fn ft8_diag_weak_trials() {
             eprintln!("  -> full pipeline (decode_frame) decode: false");
         }
     }
+}
+
+/// `DecodeStrictness` calibration probe (issue #253, prompted by a
+/// reproducible false decode found via WebFT8's `Deep` + `.sic_early()`
+/// phase-2 pipeline on `qso3_busy.wav`: `7Y8CIH HN1GD OP30` @509 Hz,
+/// `hard_errors=31`, admitted by `Deep`'s `ft8_nharderrors_max=40` —
+/// a ceiling documented as "not yet swept against a fading corpus"
+/// since it was introduced). Mirrors `ft4_strictness_probe`'s
+/// methodology: drives `DecodeRequest<Ft8>` with each of
+/// `Strict`/`Normal`/`Deep`, across **both** the plain single-pass
+/// strategy and `.sic_early()` (the false-decode above only
+/// reproduced under SIC — plain single-pass may not show the same
+/// false-accept growth, since only `.sic_early()`'s later passes
+/// search a subtraction *residual* rather than the raw trial).
+///
+/// Every trial in this corpus encodes exactly one real signal
+/// (`GOLDEN_MSG` at `GOLDEN_FREQ_HZ`), so any additional distinct
+/// decoded message is a false accept by construction — no ambiguity
+/// about whether a "phantom" is secretly a second real signal, unlike
+/// `qso3_busy.wav`'s own multi-station busy band.
+///
+/// ```sh
+/// cargo test --test ft8_sweep --release --features ft8,fft-rustfft,parallel,uvpacket \
+///   ft8_strictness_probe -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "manual calibration probe — run with --ignored --nocapture"]
+fn ft8_strictness_probe() {
+    use mfsk_core::engine::pipeline::DecodeStrictness;
+    use mfsk_core::ft8::Ft8;
+    use mfsk_core::msg::decode_request::DecodeRequest;
+
+    let dir = sweep_dir();
+    let all_wavs = collect_wavs(&dir);
+    if all_wavs.is_empty() {
+        eprintln!(
+            "No WAVs found in {:?}\n\
+             Run: scripts/build_ft8sim.sh && scripts/gen_ft8_sweep_wavs.sh",
+            dir
+        );
+        return;
+    }
+
+    // Cells: near/below the AWGN/CCIR ~-20..-22 dB 50% crossings
+    // (docs/notes/BENCHMARKS.md) plus deep-noise cells where the real
+    // signal essentially never decodes — any positive result there is
+    // almost certainly a false accept, isolating Deep's risk cleanly
+    // from its real recall gain.
+    const CELLS: &[i32] = &[-19, -21, -24, -26];
+    let wavs: Vec<&WavMeta> = all_wavs
+        .iter()
+        .filter(|w| CELLS.contains(&w.snr_db))
+        .collect();
+
+    #[derive(Default, Clone, Copy)]
+    struct Cell {
+        trials: u32,
+        golden: u32,
+        false_accept: u32,
+    }
+
+    use std::collections::BTreeMap;
+    // (channel, snr, strategy, strictness) -> Cell
+    let mut table: BTreeMap<(String, i32, &'static str, &'static str), Cell> = BTreeMap::new();
+
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    let strategies: &[(&str, bool)] = &[("single_pass", false), ("sic_early", true)];
+    let levels: &[(&str, DecodeStrictness)] = &[
+        ("Strict", DecodeStrictness::Strict),
+        ("Normal", DecodeStrictness::Normal),
+        ("Deep", DecodeStrictness::Deep),
+    ];
+
+    type TrialRow = (
+        (String, i32),
+        Vec<((&'static str, &'static str), (bool, bool))>,
+    );
+
+    #[cfg(feature = "parallel")]
+    let per_trial: Vec<TrialRow> = wavs
+        .par_iter()
+        .filter_map(|wav| {
+            let audio = load_wav_i16_opt(&wav.path)?;
+            let mut row = Vec::with_capacity(strategies.len() * levels.len());
+            for &(strat_name, use_sic) in strategies {
+                for &(strict_name, strictness) in levels {
+                    let req = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 50)
+                        .strictness(strictness);
+                    let results = if use_sic {
+                        req.sic_early().decode().results
+                    } else {
+                        req.decode().results
+                    };
+                    let mut golden = false;
+                    let mut false_accept = false;
+                    for r in &results {
+                        let Some(text) = unpack77(r.message77()) else {
+                            continue;
+                        };
+                        let is_golden = text == GOLDEN_MSG
+                            && (r.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+                            && r.dt_sec.abs() <= DT_TOL_SEC;
+                        if is_golden {
+                            golden = true;
+                        } else {
+                            false_accept = true;
+                        }
+                    }
+                    row.push(((strat_name, strict_name), (golden, false_accept)));
+                }
+            }
+            Some(((wav.channel.clone(), wav.snr_db), row))
+        })
+        .collect();
+
+    #[cfg(not(feature = "parallel"))]
+    let per_trial: Vec<TrialRow> = wavs
+        .iter()
+        .filter_map(|wav| {
+            let audio = load_wav_i16_opt(&wav.path)?;
+            let mut row = Vec::with_capacity(strategies.len() * levels.len());
+            for &(strat_name, use_sic) in strategies {
+                for &(strict_name, strictness) in levels {
+                    let req = DecodeRequest::<Ft8>::new(&audio, 100.0, 3000.0, 0.8, 50)
+                        .strictness(strictness);
+                    let results = if use_sic {
+                        req.sic_early().decode().results
+                    } else {
+                        req.decode().results
+                    };
+                    let mut golden = false;
+                    let mut false_accept = false;
+                    for r in &results {
+                        let Some(text) = unpack77(r.message77()) else {
+                            continue;
+                        };
+                        let is_golden = text == GOLDEN_MSG
+                            && (r.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+                            && r.dt_sec.abs() <= DT_TOL_SEC;
+                        if is_golden {
+                            golden = true;
+                        } else {
+                            false_accept = true;
+                        }
+                    }
+                    row.push(((strat_name, strict_name), (golden, false_accept)));
+                }
+            }
+            Some(((wav.channel.clone(), wav.snr_db), row))
+        })
+        .collect();
+
+    for ((chan, snr), row) in per_trial {
+        for ((strat_name, strict_name), (golden, false_accept)) in row {
+            let cell = table
+                .entry((chan.clone(), snr, strat_name, strict_name))
+                .or_default();
+            cell.trials += 1;
+            cell.golden += golden as u32;
+            cell.false_accept += false_accept as u32;
+        }
+    }
+
+    eprintln!("\n{:-<86}", "");
+    eprintln!(
+        "  {:<14} {:>4} {:<11} {:<7} {:>10} {:>14}",
+        "Channel", "SNR", "Strategy", "Level", "golden", "false_accept"
+    );
+    eprintln!("{:-<86}", "");
+    let mut last_key: Option<(String, i32)> = None;
+    for ((chan, snr, strat_name, strict_name), cell) in &table {
+        if last_key.as_ref() != Some(&(chan.clone(), *snr)) {
+            eprintln!("{:-<86}", "");
+            last_key = Some((chan.clone(), *snr));
+        }
+        eprintln!(
+            "  {:<14} {:>3}dB {:<11} {:<7} {:>7}/{:<2} {:>10}/{:<2}",
+            chan,
+            snr,
+            strat_name,
+            strict_name,
+            cell.golden,
+            cell.trials,
+            cell.false_accept,
+            cell.trials,
+        );
+    }
+    eprintln!("{:-<86}", "");
+    eprintln!(
+        "\nfalse_accept = trials with a CRC-passing decode that is NOT the golden \
+         message — every trial here encodes exactly one real signal, so this is \
+         an unambiguous false-accept count, not a suspected-phantom guess."
+    );
 }

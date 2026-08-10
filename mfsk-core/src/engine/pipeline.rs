@@ -328,16 +328,44 @@ impl DecodeStrictness {
     /// `qso3_busy.wav`), not a fresh guess — for callers who explicitly
     /// want fewer false-accepts at that recall cost.
     ///
-    /// `Deep = 40` deliberately *exceeds* WSJT-X's own ceiling — an
+    /// `Deep = 37` deliberately *exceeds* WSJT-X's own ceiling — an
     /// mfsk-core-original extension beyond 36, since WSJT-X itself has
-    /// no looser tier to port. **Not yet swept against a fading
-    /// corpus**; treat as exploratory, same caveat as
-    /// [`Self::osd_max_errors`]'s unverified `Strict`/`Deep` arms.
+    /// no looser tier to port.
+    ///
+    /// **Retuned 40 → 37 (2026-08-10, issue #253)**, prompted by a
+    /// reproducible false decode via WebFT8's `Deep` + `.sic_early()`
+    /// phase-2 pipeline (`7Y8CIH HN1GD OP30` on `qso3_busy.wav`,
+    /// `hard_errors=31`). **This retune does not eliminate that specific
+    /// decode** — 31 clears even `Normal`'s 36, so it isn't a `Deep`-
+    /// specific problem; it's a garden-variety false accept sitting
+    /// inside WSJT-X's own accepted 36-error ceiling, one that happens to
+    /// only surface via `.sic_early()`'s residual-search architecture on
+    /// this file (plain single-pass/`Strict` don't produce it; `Strict`
+    /// at 22 does reject it). The retune below is independently justified
+    /// by a real sweep, not a fix for that one anecdote. Calibrated the
+    /// same way issue #72 calibrated FT4's numbers: `ft8_strictness_probe`
+    /// (`tests/ft8_sweep.rs`) drives `DecodeRequest<Ft8>` with each level
+    /// across both the plain single-pass strategy and `.sic_early()` over
+    /// 16 `ft8sim` AWGN/CCIR cells (320 trials/level/strategy) at/below
+    /// the sensitivity crossing, and reports golden recall (the known
+    /// transmitted message) alongside false-accept count (any CRC-passing
+    /// decode that *isn't* the golden message — unambiguous here, since
+    /// each trial encodes exactly one real signal). Sweeping the ceiling
+    /// value itself (37/38/39/40) found **golden recall was already
+    /// saturated at 37** (105/320 single-pass, 108/320 sic_early — bit-
+    /// for-bit identical from 37 through 40) while false-accepts kept
+    /// climbing (single-pass 15→16, sic_early 20→21) — i.e. every value
+    /// above 37 was pure false-accept risk with zero additional real
+    /// recall on this corpus. At 36 (`Normal`) golden drops to 99/103;
+    /// the entire `Normal → Deep` recall gain happens in the single
+    /// 36 → 37 step. No longer "not yet swept" — this *is* the sweep,
+    /// same discipline as [`Self::osd_max_errors`]'s FT4 retune, though
+    /// that method's own `Strict`/`Deep` arms remain unswept placeholders.
     pub fn ft8_nharderrors_max(self) -> u32 {
         match self {
             Self::Strict => 22,
             Self::Normal => 36,
-            Self::Deep => 40,
+            Self::Deep => 37,
         }
     }
 }

@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.1 (unreleased)
+
+### Fixed
+
+- **FT8 `DecodeStrictness::Deep` false-decode calibration** (issue #253)
+  — prompted by a reproducible false decode found via WebFT8's
+  `decode_phase2` pipeline (`Deep` + `.known()` + `.fft_cache()` +
+  `.sic_early()`) on `qso3_busy.wav`: `7Y8CIH HN1GD OP30` @509 Hz,
+  `hard_errors=31`. New `ft8_strictness_probe` (`tests/ft8_sweep.rs`,
+  mirrors issue #72's FT4 methodology) swept `DecodeStrictness`'s
+  effect on both golden recall and false-accept count across 320
+  `ft8sim` AWGN/CCIR trials at Strict/Normal/Deep — found `Deep`'s
+  golden-recall gain over `Normal` saturates entirely by
+  `ft8_nharderrors_max=37` (bit-for-bit identical 37→40) while
+  false-accepts keep climbing past that point with zero further
+  benefit. Retuned `Deep`: `40 → 37`. **Does not eliminate the
+  original anecdote** — `hard_errors=31` clears even `Normal`'s 36
+  (confirmed: `Normal` reproduces the same false decode on the same
+  pipeline, only `Strict`'s 22 rejects it) — it's a false accept
+  sitting inside WSJT-X's own accepted ceiling, surfaced by
+  `.sic_early()`'s residual-search architecture on this file, not a
+  `Deep`-specific bug. The retune is independently justified by the
+  sweep regardless. Zero regression: full `cargo test --lib --features
+  full` (392 passed) + all `qso3_busy.wav` recall suites unchanged
+  (`Normal` is the default, untouched) + `scripts/pre-push-check.sh`'s
+  full feature matrix, all clean.
+
+### Added
+
+- **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX
+  Sensitivity = High" 20-entry golden for `qso3_busy.wav` (superset of
+  the existing default-sensitivity 18: adds `CQ F5RXL IN94` and `K1JT
+  HA5WA 73`). Current floor 19/20 host research-config single-pass
+  (only `K1JT HA5WA 73` missing); confirmed 20/20 reachable via
+  `.sic_early()`/`.sic_rounds(3)` during the investigation above.
+  Source: `reference_qso3_busy_jtdx_decode.md`'s 2026-08-10 addendum —
+  a separate reference profile, not a correction of the existing
+  default-sensitivity WSJT-X-8/JTDX-18 goldens.
+
 ## 0.9.0 — streaming ergonomics for host UIs
 
 Theme for this cycle: make the streaming decode surface easier to
