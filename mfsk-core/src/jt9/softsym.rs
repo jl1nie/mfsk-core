@@ -299,15 +299,11 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> ([f32; 207], f32) {
         }
     }
 
-    // Baseline: average of the seven non-max ss3 entries per symbol.
-    // Also accumulate the same signal (winning tone) / noise (mean of
-    // the other 7 tones) sums used for `snr_db` below — same
-    // opposite-tone-average shape as JT65's
-    // `demodulate_aligned_with_confidence_and_snr` and
-    // `compute_snr_db_generic` (FT8/FT4/FST4).
+    // Baseline: average of the seven non-max ss3 entries per symbol
+    // (WSJT-X `ave`), plus `xsig_sum`, the running total of per-symbol
+    // strongest-tone power that becomes WSJT-X's `sig` below.
     let mut ss_total = 0.0f32;
     let mut xsig_sum = 0.0f32;
-    let mut xnoi_sum = 0.0f32;
     for j in 0..69 {
         let mut smax = 0.0f32;
         let mut col_sum = 0.0f32;
@@ -320,7 +316,6 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> ([f32; 207], f32) {
         }
         ss_total += col_sum - smax;
         xsig_sum += smax;
-        xnoi_sum += (col_sum - smax) / 7.0;
     }
     let ave = (ss_total / (69.0 * 7.0)).max(1e-9);
     for col in ss3.iter_mut() {
@@ -329,42 +324,41 @@ fn symspec2_from_ss2(ss2: &[[f32; 85]; 9]) -> ([f32; 207], f32) {
         }
     }
 
-    // NOT a WSJT-X 2500 Hz-referenced dB figure: unlike JT65 (one
-    // per-symbol FFT bin ≡ TONE_SPACING_HZ of noise bandwidth, so a
-    // `10·log10(2500/df)` offset is well-defined), `ss3` here has
-    // already passed through `downsam9`'s AGC scaling (`fac =
-    // 1/√avenoise`), an unnormalised IFFT, and `peakdt9`'s NSPSD=16
-    // coherent sum — the effective noise bandwidth those stages imply
-    // isn't simply the tone spacing, and re-deriving it needs either
-    // the real WSJT-X `jt9.f90` SNR formula or an empirical jt9sim
-    // corpus (unavailable in this environment; see
-    // `tests/jt9_sweep.rs`). A first attempt that borrowed JT65's
-    // bandwidth-offset shape produced an implausible reading
-    // (clean noiseless synth ≈ −4 dB) — this raw ratio is reported
-    // instead so the value stays honestly relative-only rather than
-    // silently wrong: use it to compare JT9 decodes against each
-    // other, not against FT8/JT65/WSPR/Q65's dB2500-referenced values.
-    const SNR_FLOOR_DB: f32 = -24.0;
-    // Ceiling also doubles as the answer when `xnoi_sum` is (near)
-    // exactly zero: a perfectly clean synthetic signal can leave zero
-    // measurable leakage in the other 7 tones — "no measurable noise"
-    // (best case), not the floor. See the identical fix + explanation
-    // in `q65::rx::snr_db_from_sig_noi`.
-    const SNR_CEIL_DB: f32 = 49.0;
-    let snr_db = if xnoi_sum < f32::EPSILON {
-        if xsig_sum < f32::EPSILON {
-            SNR_FLOOR_DB
-        } else {
-            SNR_CEIL_DB
-        }
-    } else {
-        let ratio = xsig_sum / xnoi_sum - 1.0;
-        if ratio <= 0.001 {
-            SNR_FLOOR_DB
-        } else {
-            (10.0 * ratio.log10()).clamp(SNR_FLOOR_DB, SNR_CEIL_DB)
-        }
-    };
+    // Real WSJT-X displayed SNR (`symspec2.f90:52-54`, the tail of the
+    // very subroutine this function ports):
+    //
+    //     sig   = sig/69.              !Signal
+    //     t     = max(1.0, sig - 1.0)
+    //     snrdb = db(t) - 61.3
+    //
+    // `sig` is the mean over the 69 data symbols of that symbol's
+    // strongest tone power, taken in the **raw** `ss2`/`ss3` scale —
+    // note WSJT-X accumulates it *before* the `ss3 = ss3/ave`
+    // normalisation two lines above, so the `- 1.0` and the `- 61.3`
+    // together carry the absolute scale of the whole `downsam9` →
+    // `peakdt9` → coherent-sum chain, not a noise-relative ratio.
+    // That makes this the one protocol whose SNR port is only valid
+    // because the upstream chain is itself scale-faithful; verified by
+    // instrumenting a real local `jt9` build's own `symspec2.f90` with
+    // a `write(0,...)` probe on `WSJT-X/samples/JT9/130418_1742.wav`
+    // and confirming its `sig` lands in the same magnitude range this
+    // port produces (real: 4.2e3-9.6e5 across the file's five decodes;
+    // ours: same range), so no rescaling term is needed or wanted.
+    //
+    // Supersedes a raw signal/noise power ratio that was explicitly
+    // documented as *not* WSJT-X-referenced ("use it to compare JT9
+    // decodes against each other, not against FT8/JT65/WSPR/Q65's
+    // dB2500-referenced values"). That caveat rested on the real
+    // formula being unavailable — it is `symspec2.f90:54`, three
+    // lines past where this port previously stopped (issue #255).
+    //
+    // No clamping: `jt9_decode.f90:148` is a bare `nsnr=nint(snrdb)`,
+    // with none of the `[-30,-1]` clamping JT65's own path applies
+    // (`jt65_decode.f90:254-255`). `max(1.0, ...)` inside makes the
+    // floor -61.3 dB, which is far enough below any real decode to
+    // never bind.
+    let sig = xsig_sum / 69.0;
+    let snr_db = 10.0 * (sig - 1.0).max(1.0).log10() - 61.3;
 
     // Max-log-MAP LLRs. WSJT-X convention: positive ⇒ bit=1 likely.
     // We adopt the OPPOSITE sign (positive ⇒ bit=0) to stay

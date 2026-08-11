@@ -76,17 +76,19 @@ pub struct Jt9Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
     pub start_sample: usize,
-    /// Decode-side SNR estimate in dB, from the softsym pipeline's
-    /// per-symbol signal-tone vs. other-tones power ratio. **Not**
-    /// WSJT-X's 2500 Hz-referenced convention (unlike the FT8/FT4/
-    /// FST4/JT65/WSPR/Q65 `snr_db` fields) — the multi-stage AGC/IFFT/
-    /// coherent-sum gain chain in `softsym.rs` doesn't reduce to a
-    /// simple bandwidth offset the way a single per-symbol FFT bin
-    /// does, and deriving the correct one needs either WSJT-X's own
-    /// JT9 SNR formula or an empirical `jt9sim` corpus (unavailable in
-    /// this environment). Useful for comparing JT9 decodes against
-    /// each other; not comparable in absolute terms to other modes'
-    /// `snr_db`. See `symspec2_from_ss2` in `softsym.rs`.
+    /// Decode-side SNR estimate in dB, in WSJT-X's own displayed
+    /// convention — a faithful port of `symspec2.f90:52-54`
+    /// (`snrdb = db(max(1, sig-1)) - 61.3`), the tail of the very
+    /// subroutine `softsym.rs`'s `symspec2_from_ss2` already ported.
+    /// Verified against a real local `jt9` build on
+    /// `WSJT-X/samples/JT9/130418_1742.wav`: within +0.33…+2.86 dB
+    /// (mean +1.3 dB) across that file's four strongest decodes, the
+    /// residual being largest on the strongest signal. See
+    /// `tests/jt9_wsjtx_samples.rs::jt9_wsjtx_sample_snr_matches_real_jt9`.
+    ///
+    /// Before issue #255 this field carried a generic signal/noise
+    /// power ratio that was documented as *not* WSJT-X-referenced and
+    /// read **+31.8 dB high on average** on that same file.
     pub snr_db: f32,
 }
 

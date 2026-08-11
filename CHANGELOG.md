@@ -4,6 +4,29 @@
 
 ### Fixed
 
+- **JT9's reported SNR was ~32 dB high** (issue #255). `jt9::softsym::
+  symspec2_from_ss2` ports WSJT-X `symspec2.f90`, but stopped three
+  lines short of that subroutine's own displayed-SNR formula
+  (`symspec2.f90:52-54` — `sig = sig/69`, `t = max(1, sig-1)`,
+  `snrdb = db(t) - 61.3`, reached via `jt9_decode.f90:148`'s bare
+  `nsnr = nint(snrdb)`). A generic signal/noise power ratio stood in
+  for it, reading **+31.8 dB high on average** against real `jt9` on
+  `WSJT-X/samples/JT9/130418_1742.wav` — e.g. `+16.9` dB reported for
+  `TF3G N7MQ CN84`, which real `jt9` calls `-18`. Now +0.33…+2.86 dB
+  (mean +1.3), residual largest on the strongest signal. The formula
+  reads `sig` in the raw `ss2` scale, *before* the `ss3 /= ave`
+  normalisation, so the `-1.0` and `-61.3` together carry the absolute
+  scale of the whole `downsam9` → `peakdt9` → coherent-sum chain; it
+  works unmodified only because this crate's port of that chain is
+  itself scale-faithful, confirmed by instrumenting a real local
+  `jt9`'s own `symspec2.f90` with a `write(0,...)` probe and matching
+  its `sig` magnitude range. `Jt9Result::snr_db`'s doc comment
+  previously said deriving the real value "needs either WSJT-X's own
+  JT9 SNR formula or an empirical `jt9sim` corpus (unavailable in this
+  environment)" — both halves were stale; the formula is in the file
+  already being ported. Regression test
+  `tests/jt9_wsjtx_samples.rs::jt9_wsjtx_sample_snr_matches_real_jt9`.
+
 - **FT4 sniper mode was blind to signals 15-99 Hz off the aim point**
   (issue #257, reported from a WebFT8 downstream synthetic harness).
   `SniperRequest::<Ft4>` asks `coarse_sync` for a ±250 Hz search

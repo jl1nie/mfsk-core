@@ -18,7 +18,8 @@ read the linked function for the details, don't duplicate them here.
 | FT4 | `ft4_decode.f90:226,452-457` | `engine::pipeline::ft4_snr_db`, via `Ft4`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, all 4 call sites incl. AP path (issue #255) |
 | FST4 | `fst4_decode.f90:592-621` (`xsig`/`arg`/`xsnr`) + `get_candidates_fst4.f90` (baseline) | `fst4::baseline::fst4_snr_db`, via every `Fst4s*`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, FST4-60-verified (issue #255 §4) |
 | Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` (single-slot) / `q65::snr::q65_snr_db_averaged` (`iavg=1,2` multi-period) | **Shipped**, all 7 decode paths — the 3 multi-period call sites use an EMA-averaged composite spectrum (`q65_composite_spectrum_averaged`), matching WSJT-X's own `s1a` accumulation formula (issue #255 §5, #256) |
-| JT65 / JT9 / WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope for issue #255 — issue #226 gave these protocols *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited here. |
+| JT9 | `symspec2.f90:52-54` (`sig`/`t`/`snrdb`), reached via `jt9_decode.f90:148`'s `nsnr=nint(snrdb)` | `jt9::softsym::symspec2_from_ss2` | **Shipped**, real-`jt9`-verified within +0.33…+2.86 dB (mean +1.3) on `130418_1742.wav` (issue #255) |
+| JT65 / WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope so far — issue #226 gave these protocols *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited here. |
 
 ## Why FT8 and Q65 aren't `GenericPipelineProtocol` implementors
 

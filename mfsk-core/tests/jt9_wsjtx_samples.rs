@@ -185,3 +185,81 @@ fn jt9_scan_streaming_matches_batch_exactly() {
         "expected real decodes on the JT9 golden WAV"
     );
 }
+
+/// Reported SNR must track real `jt9`'s own displayed value (issue
+/// #255).
+///
+/// `jt9::softsym::symspec2_from_ss2` ports WSJT-X `symspec2.f90`,
+/// whose last three lines (`52-54`) are the real displayed-SNR
+/// formula — `sig = sig/69`, `t = max(1, sig-1)`, `snrdb = db(t) -
+/// 61.3`. That tail used to be missing, and a generic
+/// signal/noise-power ratio stood in for it, reading **+31.8 dB high
+/// on average** on this very file (e.g. `+16.9` dB reported for
+/// `TF3G N7MQ CN84`, which real `jt9` calls `-18`). The formula reads
+/// `sig` in the raw `ss2` scale, *before* the `ss3 /= ave`
+/// normalisation, so it only works because this crate's `downsam9` →
+/// `peakdt9` → coherent-sum chain is itself scale-faithful — which is
+/// exactly what this test pins down. A rescaling anywhere upstream
+/// would show up here as a constant dB offset.
+///
+/// Reference values are the real WSJT-X `jt9` decoder's own output for
+/// this recording (`memory/reference_jt9_wsjtx_sample_decode.md`,
+/// re-confirmed 2026-08-11 against a local `jt9 -9 -p 60 -L 1100
+/// -H 1400 -d 3` build).
+#[test]
+fn jt9_wsjtx_sample_snr_matches_real_jt9() {
+    // (freq_hz, message, real jt9's reported SNR in dB)
+    const SNR_GOLDEN: &[(f32, &str, f32)] = &[
+        (1186.0, "TF3G N7MQ CN84", -18.0),
+        (1224.0, "K1JT KF4RWA 73", -19.0),
+        (1290.0, "CQ M0WAY IO82", -22.0),
+        (1346.0, "K1JT N5KDV EM41", -1.0),
+    ];
+    // Real `jt9` reports integers (`nint(snrdb)`), and the residual is
+    // largest on the strongest signal (+2.9 dB on the -1 dB decode,
+    // where an AGC-chain difference shows up most). Generous enough to
+    // absorb that without being loose enough to let the old
+    // +30-something-dB heuristic back in.
+    const SNR_TOL_DB: f32 = 4.0;
+
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let params = SearchParams {
+        freq_min_hz: 1050.0,
+        freq_max_hz: 1550.0,
+        time_tolerance_symbols: 3,
+        score_threshold: 0.05,
+        max_candidates: 200,
+    };
+    let decodes = decode_scan(&audio, 12_000, 0, &params);
+
+    let mut checked = 0usize;
+    for &(freq, msg, real_snr) in SNR_GOLDEN {
+        let Some(d) = decodes
+            .iter()
+            .find(|d| d.message.to_string() == msg && (d.freq_hz - freq).abs() <= FREQ_TOL_HZ)
+        else {
+            // Recall is asserted by `jt9_wsjtx_sample_recall_vs_golden`;
+            // don't double-fail here if a decode goes missing.
+            continue;
+        };
+        let err = d.snr_db - real_snr;
+        eprintln!(
+            "  {msg:<18} freq={freq:6.1} ours={:+6.2} real={real_snr:+5.1} err={err:+.2} dB",
+            d.snr_db
+        );
+        assert!(
+            err.abs() <= SNR_TOL_DB,
+            "JT9 SNR for {msg:?} is {:+.2} dB vs real jt9's {real_snr:+.1} dB \
+             (err {err:+.2} dB, tolerance ±{SNR_TOL_DB}) — check that \
+             `symspec2_from_ss2` still applies `snrdb = db(max(1, sig-1)) - 61.3` \
+             with `sig` in the raw pre-`ave`-normalisation scale",
+            d.snr_db
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "expected at least 3 of the 4 SNR-golden decodes to be present, got {checked} \
+         — recall regressed, so this test could not measure what it exists to measure"
+    );
+}
