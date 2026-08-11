@@ -144,7 +144,7 @@ mod tests {
             "wspr/150426_0918.wav",
             "msk144/181211_120500.wav",
             "msk144/181211_120800.wav",
-            "jt65/000000_0004.wav",
+            "jt65/jt65a_5sig_m18.wav",
         ] {
             assert!(
                 golden_dir().join(rel).exists(),
