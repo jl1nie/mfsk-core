@@ -156,3 +156,58 @@ fn msk144_181211_120800_wsjtx_sample() {
         ],
     );
 }
+
+/// Precision: nothing beyond the known signals may be emitted, on
+/// both recordings.
+///
+/// MSK144 had no false-decode guard. Its own `check()` above asserts
+/// recall only — and MSK144 is the protocol most exposed to this
+/// class of bug, because `msk144sync.f90`-faithful search attempts
+/// OSD on the order of a thousand times per file (measured under
+/// issue #246: 1044-1116 attempts, 0 successes on these very
+/// recordings). Every one of those is an opportunity to synthesise a
+/// codeword out of noise, exactly as WSPR's OSD path did.
+#[test]
+fn msk144_wsjtx_samples_precision() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    for (file, expected, floor) in [
+        (
+            "181211_120500.wav",
+            &[GoldenEntry::msg("K1JT WA4CQG EM72")][..],
+            1usize,
+        ),
+        (
+            "181211_120800.wav",
+            &[
+                GoldenEntry::msg("CQ W4IMD EM84"),
+                GoldenEntry::msg("CQ KD9VV EN71"),
+            ][..],
+            2,
+        ),
+    ] {
+        let Some(path) = sample_path(file) else {
+            eprintln!("skipping: MSK144 golden {file} not found");
+            continue;
+        };
+        let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+        let decodes = decode_slot(&audio, 1477.0, 60.0, Depth::Deep);
+
+        assert_golden(
+            &decodes,
+            &GoldenSet {
+                name: "MSK144",
+                expected: Box::leak(expected.to_vec().into_boxed_slice()),
+                min_hits: floor,
+                max_extra: 0,
+            },
+            Tolerances::default(),
+            |d| DecodeView {
+                msg: d.message.clone(),
+                freq_hz: d.freq_hz,
+                dt_sec: d.tsec,
+                snr_db: None,
+            },
+        );
+    }
+}

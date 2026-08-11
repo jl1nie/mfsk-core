@@ -159,3 +159,66 @@ fn ft4_wsjtx_sample_recall_vs_golden() {
         GOLDEN.len()
     );
 }
+
+/// Precision: the decoder must emit **nothing** the reference decoder
+/// doesn't.
+///
+/// FT4 had no false-decode guard of any kind. This file's `GOLDEN`
+/// list holds only 6 of the recording's signals, so "extra" had to be
+/// measured against something authoritative: a real local
+/// `jt9 -5 -p 15 -L 300 -H 2700 -d 3` run over the same WAV finds the
+/// 14 below. Against that set this crate emits **11 decodes, all
+/// real, zero phantom** — so the budget is 0, and the recall floor
+/// states the 3 it does not reach rather than hiding them.
+///
+/// Written through `common::golden::assert_golden`, which asserts
+/// recall and precision together — see its module doc for why that is
+/// one call and not two.
+#[test]
+fn ft4_wsjtx_sample_precision_vs_reference_decoder() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    /// Every decode real `jt9` reports on this recording.
+    static REFERENCE: &[GoldenEntry] = &[
+        GoldenEntry::msg("AC6BW KR9A R 559 WI"),
+        GoldenEntry::msg("CQ RU AB5XS EM12"),
+        GoldenEntry::msg("CQ RU N9OY EN43"),
+        GoldenEntry::msg("CQ RU W0FRC DM79"),
+        GoldenEntry::msg("K1JT WB4HXE 559 GA"),
+        GoldenEntry::msg("KB0VHA KA1YQC R 539 MA"),
+        GoldenEntry::msg("N1TRK KB7RUQ RR73"),
+        GoldenEntry::msg("N1TRK N4FKH 569 VA"),
+        GoldenEntry::msg("NI6G W7DRW 569 AZ"),
+        GoldenEntry::msg("NZ7P WA7JAY 589 CA"),
+        GoldenEntry::msg("VE3LON K7RL R 549 WA"),
+        GoldenEntry::msg("W7BOB KJ7G RR73"),
+        GoldenEntry::msg("W9JA PY2APK RRR"),
+        GoldenEntry::msg("WD9IGY KX1X 73"),
+    ];
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: FT4 golden recording not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let out = DecodeRequest::<Ft4>::new(&audio, 300.0, 2700.0, 1.2, 50).decode();
+
+    assert_golden(
+        &out.results,
+        &GoldenSet {
+            name: "FT4 000000_000002.wav",
+            expected: REFERENCE,
+            // 11 of jt9's 14. Raising this is a sensitivity win;
+            // lowering it is a regression.
+            min_hits: 11,
+            max_extra: 0,
+        },
+        Tolerances::default(),
+        |d| DecodeView {
+            msg: unpack77(d.message77()).unwrap_or_default(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
+    );
+}

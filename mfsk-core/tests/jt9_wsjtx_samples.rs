@@ -263,3 +263,51 @@ fn jt9_wsjtx_sample_snr_matches_real_jt9() {
          — recall regressed, so this test could not measure what it exists to measure"
     );
 }
+
+/// Precision: nothing beyond the seven real signals may be emitted.
+///
+/// JT9 had no false-decode guard. This crate emits exactly the seven
+/// golden messages on this recording and nothing else, so the budget
+/// is 0 at full recall — the state a protocol should be in, now
+/// actually asserted rather than assumed.
+#[test]
+fn jt9_wsjtx_sample_precision() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    static REFERENCE: &[GoldenEntry] = &[
+        GoldenEntry::msg("CQ GM7GAX IO75"),
+        GoldenEntry::msg("TF3G N7MQ CN84"),
+        GoldenEntry::msg("K1JT KF4RWA 73"),
+        GoldenEntry::msg("CQ M0WAY IO82"),
+        GoldenEntry::msg("K1JT N5KDV EM41"),
+        GoldenEntry::msg("G7CNF N4HFA EL89"),
+        GoldenEntry::msg("JA1KAU PD0JAC -23"),
+    ];
+
+    let audio = read_wsjtx_wav_f32(Path::new(SAMPLE_PATH));
+    let params = SearchParams {
+        freq_min_hz: 1050.0,
+        freq_max_hz: 1550.0,
+        time_tolerance_symbols: 3,
+        score_threshold: 0.05,
+        max_candidates: 200,
+    };
+    let decodes = decode_scan(&audio, 12_000, 0, &params);
+
+    assert_golden(
+        &decodes,
+        &GoldenSet {
+            name: "JT9 130418_1742.wav",
+            expected: REFERENCE,
+            min_hits: 7,
+            max_extra: 0,
+        },
+        Tolerances::default(),
+        |d| DecodeView {
+            msg: d.message.to_string(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.start_sample as f32 / 12_000.0,
+            snr_db: Some(d.snr_db),
+        },
+    );
+}
