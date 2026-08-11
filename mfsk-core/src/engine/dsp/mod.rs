@@ -12,6 +12,7 @@
 pub mod analytic;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod downsample;
+pub mod envelope;
 pub mod fft_15;
 pub mod fft_mixed_3840;
 pub mod fft_mixed_3840_sc16;

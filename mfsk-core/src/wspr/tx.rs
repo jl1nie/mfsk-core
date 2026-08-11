@@ -3,13 +3,17 @@
 //! Pragmatic first-pass synthesiser for end-to-end decoder tests. Each
 //! symbol emits one continuous-phase sinusoid at
 //! `base_freq + symbol * tone_spacing` for `NSPS / sample_rate` seconds.
-//! No GFSK shaping yet — plain CPFSK is close enough in the narrowband
-//! limit that WSPR's FFT-based demod sees the same spectral peaks.
+//! **No GFSK symbol shaping, deliberately** — WSJT-X does not shape
+//! WSPR either. `mainwindow.cpp` passes a *positive* `toneSpacing` for
+//! WSPR, selecting `Modulator::modulate`'s plain-CPFSK branch rather
+//! than the `toneSpacing < 0` "pre-computed, filtered waveform" branch
+//! that FT8/FT4/FST4 use. Adding a raised-cosine frequency pulse here
+//! would measurably lower close-in sidelobes (issue #259 measured
+//! −53.8 → −85.9 dBc at +25 Hz for a T/8 pulse) but would emit a
+//! different waveform than the reference implementation. See
+//! `engine::dsp::envelope`'s module doc for the full comparison.
 //!
-//! A real over-the-air WSPR transmitter applies a raised-cosine pulse to
-//! smooth symbol transitions; adding that here is straightforward follow
-//! up (pre-compute a pulse table, convolve symbol-boundary regions) but
-//! not required for the decode-roundtrip tests this module enables.
+//! The burst envelope *is* ramped — see [`synthesize_audio_into`].
 
 use alloc::vec::Vec;
 use core::f32::consts::TAU;
@@ -17,6 +21,7 @@ use core::f32::consts::TAU;
 use num_traits::Float;
 
 use crate::engine::ModulationParams;
+use crate::engine::dsp::envelope;
 
 use super::Wspr;
 
@@ -76,6 +81,13 @@ pub fn synthesize_audio_into(
             }
         }
     }
+
+    // Transmit-envelope ramp (issue #259). Without it the burst starts
+    // and ends on a step discontinuity — a broadband click at both
+    // edges, independent of symbol-transition shaping. See
+    // `engine::dsp::envelope` for why WSPR gets an envelope ramp but
+    // deliberately no GFSK symbol shaping.
+    crate::engine::dsp::envelope::apply_ramp(out, envelope::ramp_samples(sample_rate, nsps));
 }
 
 /// Synthesize a WSPR transmission as mono `f32` audio samples.

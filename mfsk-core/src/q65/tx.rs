@@ -17,6 +17,7 @@
 use core::f32::consts::TAU;
 
 use crate::engine::ModulationParams;
+use crate::engine::dsp::envelope;
 use crate::fec::qra::Q65Codec;
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
 use crate::msg::q65::pack77_to_symbols;
@@ -80,7 +81,7 @@ pub fn synthesize_audio_for<P: ModulationParams>(
 ) -> Vec<f32> {
     let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
     let tone_spacing = P::TONE_SPACING_HZ;
-    let mut out = Vec::with_capacity(nsps * 85);
+    let mut out: Vec<f32> = Vec::with_capacity(nsps * 85);
     let mut phase = 0.0_f32;
     for &sym in tones {
         assert!(sym <= 64, "Q65 tone must be in 0..=64, got {sym}");
@@ -96,6 +97,13 @@ pub fn synthesize_audio_for<P: ModulationParams>(
             }
         }
     }
+
+    // Transmit-envelope ramp (issue #259): without it the burst starts
+    // and ends on a step discontinuity — a broadband click at both
+    // edges. WSJT-X's modulator fades this path out; see
+    // `engine::dsp::envelope` for why both ends are ramped here and
+    // why this protocol deliberately gets no symbol shaping.
+    envelope::apply_ramp(&mut out, envelope::ramp_samples(sample_rate, nsps));
     out
 }
 

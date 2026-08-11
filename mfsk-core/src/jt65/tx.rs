@@ -13,6 +13,7 @@
 use core::f32::consts::TAU;
 
 use crate::engine::ModulationParams;
+use crate::engine::dsp::envelope;
 use crate::fec::Rs63_12;
 
 use super::Jt65;
@@ -56,7 +57,7 @@ pub fn synthesize_audio(
 ) -> Vec<f32> {
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let tone_spacing = <Jt65 as ModulationParams>::TONE_SPACING_HZ;
-    let mut out = Vec::with_capacity(nsps * 126);
+    let mut out: Vec<f32> = Vec::with_capacity(nsps * 126);
     let mut phase = 0.0f32;
     for &sym in tones {
         assert!(sym <= 65, "JT65 tone must be in 0..=65");
@@ -72,6 +73,13 @@ pub fn synthesize_audio(
             }
         }
     }
+
+    // Transmit-envelope ramp (issue #259): without it the burst starts
+    // and ends on a step discontinuity — a broadband click at both
+    // edges. WSJT-X's modulator fades this path out; see
+    // `engine::dsp::envelope` for why both ends are ramped here and
+    // why this protocol deliberately gets no symbol shaping.
+    envelope::apply_ramp(&mut out, envelope::ramp_samples(sample_rate, nsps));
     out
 }
 

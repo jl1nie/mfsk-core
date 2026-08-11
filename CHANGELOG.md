@@ -4,6 +4,36 @@
 
 ### Fixed
 
+- **No transmit-envelope ramp on WSPR, JT65, JT9 and Q65** (issue
+  #259, reported from a WebFT8 WSPR-beacon evaluation). Every one of
+  these `synthesize_audio` paths wrote `amplitude · cos(phase)` from
+  the first sample to the last, so a transmission began and ended on a
+  step discontinuity in the envelope — a broadband click at both
+  edges, independent of symbol-transition shaping. Measured on WSPR,
+  windowing the burst *start* embedded in silence (16384-pt Hann,
+  dBc relative to the in-band peak): +100 Hz `-46.2 → -55.2`,
+  +250 Hz `-53.9 → -101.7`, +500 Hz `-59.5 → -100.3`, +1000 Hz
+  `-64.7 → -118.4`. Close-in (+50 Hz) barely moves, correctly — that
+  region is set by the CPFSK symbol structure, not the transient.
+  New `engine::dsp::envelope` applies the same raised-cosine shape
+  `gen_ft8wave.f90` / `gen_fst4wave.f90` use, so all transmit paths in
+  the crate now taper identically. Ramp is 10 ms (bracketed by WSJT-X's
+  own choices — its modulator's exponential fade-out reaches -60 dB in
+  ≈7.1 ms, `gen_ft8wave`'s `nsps/8` is 20 ms), capped at `nsps/8`.
+  No decode regression: full suite clean, and WSPR/JT65/JT9/Q65
+  roundtrips unaffected. Guard: `tests/tx_envelope_ramp.rs`.
+
+  **GFSK symbol shaping was deliberately *not* added**, though #259
+  requested it and measured a real gain (`-53.8 → -85.9` dBc at
+  +25 Hz for a T/8 pulse). WSJT-X does not shape these four either:
+  `mainwindow.cpp` passes a *positive* `toneSpacing` for WSPR/JT65/
+  JT9/Q65, selecting `Modulator::modulate`'s plain-CPFSK branch rather
+  than the `toneSpacing < 0` "pre-computed, filtered waveform" branch
+  FT8/FT4/FST4 use — so the measured `-53.8` dBc is the reference
+  implementation's own figure, and shaping here would emit a different
+  waveform than WSJT-X. FT8/FT4/FST4 were audited and already match
+  WSJT-X on both shaping and ramp.
+
 ### Verified
 
 - **FST4 SNR confirmed across all five sub-modes** (issue #255 §4
