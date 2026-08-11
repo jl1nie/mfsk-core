@@ -32,6 +32,14 @@ pub struct WsprResult {
     /// = signal arrived late, negative = arrived early. Range that
     /// `decode_scan` can express: `−NEGATIVE_DT_PAD_SEC .. +∞`.
     pub dt_sec: f32,
+    /// Linear drift the successful demodulation ran at, in Hz across
+    /// the 110.6 s frame — wsprd's `drift1`.
+    ///
+    /// Load-bearing for subtraction, not decoration: wsprd hands this
+    /// straight to `subtract_signal2` (`wsprd.c:1446`) so the replica
+    /// it removes drifts the same way the signal did. Reconstructing a
+    /// drifting signal as a stationary one leaves most of it behind.
+    pub drift_hz: f32,
     /// 50-bit FEC info payload returned by Fano. Used by
     /// `decode_scan_subtract` to reconstruct the 162-channel-symbol
     /// stream and subtract the signal from the audio for SIC.
@@ -537,6 +545,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
                     - 1.5 * super::demod::TONE_SPACING_HZ,
                 start_sample: lag_audio.max(0) as usize,
                 dt_sec,
+                drift_hz: best_drift,
                 info_bits,
                 snr_db: 0.0,
             };
@@ -921,7 +930,7 @@ fn decode_scan_inner(
                 &mut qdat,
                 f0_audio,
                 shift_baseband,
-                0.0,
+                d.drift_hz,
                 &symbols,
             );
         }

@@ -281,6 +281,7 @@ mod tests {
             freq_hz: 1400.0,
             start_sample: 0,
             dt_sec: 1.0,
+            drift_hz: 0.0,
             info_bits: [0u8; 50],
             snr_db: -20.0,
         };

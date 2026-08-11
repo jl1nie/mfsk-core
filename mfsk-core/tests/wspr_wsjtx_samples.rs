@@ -73,6 +73,15 @@ const GOLDEN: &[Golden] = &[
         freq_hz: 1594.0,
         dt_sec: 0.7,
     },
+    // wsprd's 9th spot on this file: `0918 -23 2.2 10.140165 0
+    // G8VDQ IO91 37` at dial 10.1387 MHz, i.e. 1465.0 Hz audio. It was
+    // absent from this table only because we could not reach it; the
+    // reference decoder always could.
+    Golden {
+        msg: "G8VDQ IO91 37",
+        freq_hz: 1465.0,
+        dt_sec: 2.2,
+    },
 ];
 
 const FREQ_TOL_HZ: f32 = 4.0;
@@ -148,27 +157,33 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
     }
     eprintln!("recall: {}/{} golden WSPR decodes", hits, GOLDEN.len());
 
-    // All 8, from a single isolated slot and without a carried table.
+    // All 9 — every spot `wsprd` reports on this file — from a single
+    // isolated slot and without a carried table.
     //
-    // This used to be 7. `W3BI FN20 30` at -25 dB was reachable only by
-    // OSD, and OSD is gated the way `wsprd.c:1396` gates it — a result
-    // is accepted only for a callsign an earlier Fano decode confirmed
-    // (`WsprCallsignTable`) — so within one slot nothing confirmed it.
-    // (The gate itself is not negotiable: the `nhardmin <= 44`
-    // threshold it replaced recovered W3BI *and* admitted 8 phantoms on
-    // this same 8-signal recording, a 50% false-decode rate reported
-    // from live operation. W3BI landed at `nhardmin = 39`, the phantoms
-    // at 40/40/40/41/41/41/42/42 — not separable.)
+    // This was 7 for a long time, and the two it was missing each had a
+    // different cause:
     //
-    // W3BI is now a plain Fano decode, so the gate never comes up. Two
-    // wsprd parity fixes got it there: the final pass runs with
-    // `maxdrift = 0` (`wsprd.c:1005-1009`), and the per-candidate
-    // refine cascade gained the three stages it was missing — drift
-    // refine, fine lag, fine freq (`wsprd.c:1236-1272`).
+    // `W3BI FN20 30` (-25 dB) was reachable only by OSD, and OSD is
+    // gated the way `wsprd.c:1396` gates it — accepted only for a
+    // callsign an earlier Fano decode confirmed (`WsprCallsignTable`) —
+    // so within one slot nothing confirmed it. (The gate is not
+    // negotiable: the `nhardmin <= 44` threshold it replaced recovered
+    // W3BI *and* admitted 8 phantoms on this same recording, a 50%
+    // false-decode rate reported from live operation. W3BI landed at
+    // `nhardmin = 39`, the phantoms at 40/40/40/41/41/41/42/42 — not
+    // separable.) It is now a plain Fano decode and the gate never
+    // comes up.
     //
-    // `wspr_carried_table_recovers_osd_only_decode` still covers the
-    // cross-slot table path; it just no longer has W3BI as its example.
-    const EXPECTED_RECALL: usize = 8;
+    // `G8VDQ IO91 37` (-23 dB) needed the subtraction of the *other*
+    // signals to be right: we were reconstructing every replica as
+    // stationary while decoding it with a drift estimate, so what got
+    // removed did not match what was there, and the residue sat on top
+    // of G8VDQ.
+    //
+    // `wspr_carried_table_does_not_perturb_a_fully_fano_slot` still
+    // covers the cross-slot table path; it just no longer has an
+    // OSD-only decode to use as its example.
+    const EXPECTED_RECALL: usize = 9;
     assert_eq!(
         hits,
         EXPECTED_RECALL,
