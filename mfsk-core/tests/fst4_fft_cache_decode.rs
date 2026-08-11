@@ -11,7 +11,7 @@
 
 #![cfg(all(feature = "fst4", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::decode_request::DecodeRequest;
@@ -24,12 +24,10 @@ use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 const GOLDEN_MSG: &str = "CQ N5TM EL29"; // see fst4_wsjtx_samples.rs
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    )
 }
 
 fn recovers_golden(results: &[mfsk_core::fst4::decode::DecodeResult]) -> bool {

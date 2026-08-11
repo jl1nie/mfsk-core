@@ -241,6 +241,10 @@ fn ap_list_threshold_scales_with_list_size() {
 // ─── WSJT-X 6 m EME reference (optional) ─────────────────────────────
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
+    let vendored = common::corpus::golden_dir().join("q65").join(rel);
+    if vendored.is_dir() {
+        return Some(vendored);
+    }
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let dir = Path::new(&manifest)
         .join("../../WSJT-X/samples/Q65")

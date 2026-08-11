@@ -6,7 +6,7 @@
 
 #![cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::wspr::SearchParams;
 use mfsk_core::wspr::WsprResult;
@@ -20,12 +20,7 @@ mod common;
 use common::load_wav_f32_opt as read_wsjtx_wav_f32;
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/WSPR/150426_0918.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    common::corpus::golden_path_or_upstream("wspr/150426_0918.wav", Some("WSPR/150426_0918.wav"))
 }
 
 /// Each golden entry carries the WSPR Type-1 message string in its

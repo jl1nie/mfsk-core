@@ -19,7 +19,7 @@
 
 #![cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::decode_request::DecodeRequest;
@@ -32,12 +32,7 @@ use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 const SLOT_SAMPLES: usize = 90_000; // 7.5 s × 12 kHz
 
 fn sample_path() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/FT4/000000_000002.wav")
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    common::corpus::golden_path_or_upstream("ft4/000000_000002.wav", Some("FT4/000000_000002.wav"))
 }
 
 /// WSJT-X-published golden decode list (see

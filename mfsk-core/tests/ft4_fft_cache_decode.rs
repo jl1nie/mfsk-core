@@ -29,7 +29,7 @@
 
 #![cfg(all(feature = "ft4", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::decode_request::DecodeRequest;
@@ -43,12 +43,10 @@ const SLOT_SAMPLES: usize = 90_000; // 7.5 s × 12 kHz
 const GOLDEN_MSG: &str = "N1TRK N4FKH 569 VA"; // see ft4_wsjtx_samples.rs
 
 fn load_slot() -> Option<Vec<i16>> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let path = Path::new(&manifest)
-        .join("../../WSJT-X/samples/FT4/000000_000002.wav")
-        .canonicalize()
-        .ok()?;
-    let path: PathBuf = path;
+    let path: PathBuf = common::corpus::golden_path_or_upstream(
+        "ft4/000000_000002.wav",
+        Some("FT4/000000_000002.wav"),
+    )?;
     let raw = read_wsjtx_wav_i16(&path)?;
     let mut audio = vec![0i16; SLOT_SAMPLES];
     let copy = raw.len().min(SLOT_SAMPLES);
