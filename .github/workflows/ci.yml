@@ -143,6 +143,10 @@ jobs:
               - 'mfsk-core/src/uvpacket/**'
               - 'mfsk-core/tests/uvpacket_*'
               - 'mfsk-core/tests/common/**'
+            # Gates the tier-C characterization suite only. Tier A+B
+            # is gated by `src` above, which already covers every
+            # protocol's sources — so a change to any protocol here
+            # always runs the merge gate regardless of this filter.
             catchall:
               - '.github/workflows/**'
               - 'mfsk-core/Cargo.toml'
@@ -279,7 +283,12 @@ jobs:
           # protocol's non-ignored tests, but is skipped entirely on
           # docs-only PRs (README / CHANGELOG / docs/** / rustdoc) since
           # the inputs to the compiler/test binaries did not move.
-          - name: default
+          # Tiers A + B (see CONTRIBUTING.md "Testing philosophy"):
+          # every non-ignored test, i.e. all invariants (unit,
+          # roundtrip, bit-exact parity, TX waveform) plus all golden
+          # fidelity (recall + precision + SNR accuracy). This is the
+          # merge gate; everything else in this matrix is tier C.
+          - name: tier A+B — invariants + golden
             kind: default
             changes_key: src
             push_only: false
@@ -314,7 +323,7 @@ jobs:
           # fast_fading, snr_sweep). Recall protection sits in the
           # non-ignored `q65_roundtrip` / `q65_eme_submodes` /
           # `q65_wsjtx_samples` which already run in default.
-          - name: q65 sweeps
+          - name: tier C — q65 sweeps
             kind: ignored-integration
             globs: "q65_*"
             changes_key: q65
@@ -323,17 +332,19 @@ jobs:
           # pi4_dqpsk_eq, ssb_channel, fm_channel, ldpc_direct,
           # snr_calibration). Recall in `uvpacket_multichannel` is
           # non-ignored and covered by default.
-          - name: uvpacket sweeps
+          - name: tier C — uvpacket sweeps
             kind: ignored-integration
             globs: "uvpacket_*"
             changes_key: uvpacket
             push_only: true
-          # catchall recall — FST4 WSJT-X reference WAV recall.
-          - name: catchall recall
-            kind: ignored-integration
-            globs: "fst4_wsjtx_samples"
-            changes_key: catchall
-            push_only: false
+          # The former "catchall recall" tier is gone. It claimed to be
+          # FST4 golden recall protection but ran `--ignored` tests in
+          # `fst4_wsjtx_samples`, of which there is exactly one:
+          # `fst4_60_diagnose_golden`, whose own ignore reason reads
+          # "diagnostic probe, not a recall gate — run manually". So it
+          # executed a print-only probe on every PR under a name that
+          # misrepresented it. FST4's actual recall/precision/SNR
+          # assertions are not `#[ignore]`d and run in tier A+B above.
           # catchall characterization — tier C sensitivity sweeps plus
           # the lib-level #[ignore] tests. `ft4_coherent_wide_search_diag`
           # and the FT8 `qso3_*` probes used to sit adjacent to these;
@@ -344,7 +355,7 @@ jobs:
           # measurements. They are kept because a release wants the
           # numbers (see `scripts/` sweep generators and
           # `docs/notes/*BENCHMARK.md`), not because they gate a merge.
-          - name: catchall characterization
+          - name: tier C — characterization
             kind: catchall
             globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget msk144_snr_sweep ldpc_min_sum bench_qso3_busy_timing"
             changes_key: catchall
