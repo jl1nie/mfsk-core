@@ -389,6 +389,21 @@ where
 /// `P::Msg: WsjtApCompatible` mirrors [`process_candidate_ap`]'s bound:
 /// the underlying AP path writes to Wsjt77 bit positions and only makes
 /// sense for protocols whose 77-bit message field shares that layout.
+///
+/// **`search_hz` is load-bearing for reported SNR, not just for
+/// recall.** Both callers pass `250.0`, so the search spans 500 Hz —
+/// and `coarse_sync` draws its 40th-percentile noise reference from
+/// exactly this window, which is what `SyncCandidate::score`, and
+/// therefore `Ft4`'s `snr_db`, is normalised against. 500 Hz centred
+/// on the operator's aim point is also the roofing-filter passband a
+/// sniper deployment is premised on (the operator tuned the rig so the
+/// target sits in it), so the noise floor gets estimated over real
+/// noise rather than over filter stopband. Widening this would start
+/// averaging in stopband and bias SNR high; narrowing it would let
+/// FT4's own 83.3 Hz occupied bandwidth contaminate the percentile.
+/// Measured both directions in `docs/notes/SNR_FORMULAS.md`
+/// ("Band-limited (roofing-filtered) input") — change it only with
+/// that table re-measured.
 #[allow(clippy::too_many_arguments)]
 // Only `ft4::decode`/`fst4::decode` call this (issue #203's pub(crate)
 // demotion made that reachability-dependent-on-feature visible to

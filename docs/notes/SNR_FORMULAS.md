@@ -70,3 +70,66 @@ values (not just the final displayed number) be compared directly
 against this crate's own. Revert the probe edit with `git checkout --
 lib/<file>.f90` afterwards — it's a local development aid, never
 committed to the WSJT-X tree.
+
+## Band-limited (roofing-filtered) input
+
+Every formula above estimates a noise floor from a *band* of the
+audio, so what happens when the audio is not full-bandwidth matters.
+This is the normal case for sniper mode: the premise of a
+`SniperRequest` deployment is a rig whose roofing filter has already
+narrowed the RF to ~500 Hz before the ADC, so the decoder never sees
+2.5 kHz of anything. Estimating a noise floor "wide" is then not
+merely wasteful — most of the band being averaged is the filter's own
+stopband, which is quieter than the real noise floor, so the estimate
+comes out low and the reported SNR comes out high.
+
+Measured on FT4, synthetic AWGN, 8 seeds per cell, signal at 1000 Hz,
+against a 4-pole Butterworth 750-1250 Hz applied to the f32 mix before
+i16 quantisation (the same roofing-filter model WebFT8's harness
+uses). Error = reported − injected:
+
+| path | noise-reference band | no filter | 500 Hz filter |
+|---|---|---:|---:|
+| `SniperRequest` (`coarse_sync`, 40th-percentile over the search window) | ±250 Hz = **500 Hz** | +0.16 dB | **+0.56 dB** |
+| `DecodeRequest` 300-2700 Hz (`ft4_coarse_sync`, polynomial baseline) | 2400 Hz | −1.54 dB | **+2.69 dB** |
+| `DecodeRequest` 750-1250 Hz (same, told the real passband) | 500 Hz | — | **−3.96 dB** |
+
+Three things follow, none of them obvious from the un-filtered
+measurements alone:
+
+1. **Sniper is already right, structurally.** `decode_sniper_ap`
+   passes `search_hz = 250.0`, so `coarse_sync`'s 40th-percentile
+   noise reference spans exactly 500 Hz centred on the operator's aim
+   point — which is the roofing filter's passband, because that is
+   what the operator tuned. The filter costs it only ~0.4 dB. Nothing
+   to fix here, and the width is worth preserving deliberately rather
+   than by accident.
+
+2. **Wide-band is the path that breaks under a roofing filter**, not
+   sniper — and it degrades *with* the signal (+1.9 dB at −2 dB
+   injected, +3.9 dB at −14 dB), because the deflated noise floor is a
+   larger share of a weaker ratio. A caller feeding band-limited audio
+   to a full-width `DecodeRequest` is the misconfiguration.
+
+3. **But narrowing `freq_min`/`freq_max` to match is not the fix** —
+   it is worse (−4.0 dB). `ft4_coarse_sync` fits a *polynomial
+   baseline* rather than taking a percentile, and FT4's 83.3 Hz
+   occupied bandwidth is a third of a 500 Hz analysis band, so the
+   signal drags its own baseline up and the reported SNR down. The
+   percentile estimator sniper uses tolerates this; the polynomial one
+   does not.
+
+Consequence for issue #255's open "wide-band and sniper disagree by
+~2.8 dB" question: **do not close that gap by moving sniper toward
+wide-band.** Those two figures were measured under different input
+conditions — wide-band un-filtered, sniper filtered. Under the same
+realistic (filtered) input, sniper is the accurate path and wide-band
+is the one ~2 dB out. The proposal floated there (extract
+`getcandidates4.f90`'s per-bin scoring so the sniper path reports the
+same value wide-band does) would have dragged the accurate number
+toward the inaccurate one.
+
+Caveat, same as the rest of this page's synthetic work: absolute
+constants here carry the harness's own SNR convention, so the
+trustworthy part is the *deltas between configurations*, all of which
+are computed over bit-identical audio buffers.
