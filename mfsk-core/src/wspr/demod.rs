@@ -202,6 +202,34 @@ pub fn tone_amplitudes(
 /// `LLR_SCALE` so the same Fano metric calibration that works for
 /// FT4 / FT8 in `core::fec::ConvFano` works here.
 pub fn nblock1_bit_metrics(isqs: &IsQs) -> [f32; N_SYMBOLS] {
+    nblock1_bit_metrics_opt(isqs, false)
+}
+
+/// [`nblock1_bit_metrics`] with wsprd's `bitmetric` (`bitbybit`)
+/// normalisation — the fourth rung of its blocksize ladder.
+///
+/// `wsprd.c:465-468`:
+///
+/// ```c
+/// fsymb[i+ib] = xm1 - xm0;
+/// if (bitbybit == 1) {
+///     fsymb[i+ib] = fsymb[i+ib] / (xm1 > xm0 ? xm1 : xm0);
+/// }
+/// ```
+///
+/// Dividing each symbol's metric by the larger of its two tone powers
+/// turns an *absolute* difference into a *relative* one, so a symbol's
+/// confidence stops scaling with its own instantaneous amplitude. The
+/// z-score normalisation applied to the whole 162-symbol vector
+/// afterwards cannot do this — it only removes overall scale, not
+/// symbol-to-symbol amplitude variation. That is why the rung exists
+/// and why it should matter most on a fading channel.
+///
+/// `wsprd` reaches it via `ib == 4` → `blocksize = 1, bitmetric = 1`
+/// (`wsprd.c:1318-1319`), and only on passes ≥ 1 — `nblocksize` is 1
+/// on pass 0 and 4 afterwards (`wsprd.c:1001,1006`). This crate had
+/// the `blocksize` axis of that ladder but not this one.
+pub fn nblock1_bit_metrics_opt(isqs: &IsQs, bit_by_bit: bool) -> [f32; N_SYMBOLS] {
     let mut bm = [0.0f32; N_SYMBOLS];
     for i in 0..N_SYMBOLS {
         let sync = WSPR_SYNC_VECTOR[i] as usize;
@@ -212,6 +240,12 @@ pub fn nblock1_bit_metrics(isqs: &IsQs) -> [f32; N_SYMBOLS] {
         // LLR convention: positive → bit 0 more likely (matches our
         // existing `mags_to_llrs`, `core::fec::ConvFano::build_branch_metrics`).
         bm[i] = p0 - p1;
+        if bit_by_bit {
+            let m = p0.max(p1);
+            if m > 0.0 {
+                bm[i] /= m;
+            }
+        }
     }
     // z-score normalise
     let n = N_SYMBOLS as f32;
@@ -412,4 +446,74 @@ pub fn bit_metrics_from_audio(
 fn _silence_unused_imports() {
     let _ = vec![0u8];
     let _: Vec<u8> = Vec::new();
+}
+
+#[cfg(test)]
+mod bitmetric_tests {
+    use super::*;
+
+    /// Build an `IsQs` where every symbol carries the same *relative*
+    /// tone contrast but wildly different absolute amplitude.
+    fn contrast_isqs() -> IsQs {
+        let mut z = IsQs {
+            is: [[0.0; N_SYMBOLS]; 4],
+            qs: [[0.0; N_SYMBOLS]; 4],
+            cf: [[0.0; N_SYMBOLS]; 4],
+            sf: [[0.0; N_SYMBOLS]; 4],
+        };
+        for i in 0..N_SYMBOLS {
+            // Amplitude swings 1x .. 100x across the frame — a stand-in
+            // for the deep fading `bitbybit` exists to handle.
+            let amp = 1.0 + (i as f32) * 0.6;
+            let sync = WSPR_SYNC_VECTOR[i] as usize;
+            // data = 0 twice as strong as data = 1, at every symbol.
+            z.is[sync][i] = 2.0 * amp;
+            z.is[sync + 2][i] = amp;
+        }
+        z
+    }
+
+    /// wsprd's `bitbybit` divides each symbol's metric by the larger of
+    /// its two tone powers (`wsprd.c:465-468`), turning an absolute
+    /// difference into a relative one. With constant tone contrast and
+    /// varying amplitude, that must flatten the metric vector — which
+    /// the plain metric cannot do, because it tracks amplitude.
+    ///
+    /// Both rungs run through this module's own z-score pass
+    /// afterwards, so compare *spread*, not absolute values: the
+    /// z-score removes overall scale but cannot remove symbol-to-symbol
+    /// amplitude variation, which is precisely why the rung exists.
+    #[test]
+    fn bitbybit_normalises_away_per_symbol_amplitude() {
+        let z = contrast_isqs();
+        let plain = nblock1_bit_metrics_opt(&z, false);
+        let bybit = nblock1_bit_metrics_opt(&z, true);
+
+        let spread = |v: &[f32; N_SYMBOLS]| {
+            let min = v.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            max - min
+        };
+
+        // Plain: metric tracks the 1x..~97x amplitude ramp.
+        assert!(
+            spread(&plain) > 1.0,
+            "plain metric should track amplitude, spread was {}",
+            spread(&plain)
+        );
+        // bitbybit: p0 = 2·p1 at every symbol, so every relative metric
+        // is (2a − a) / 2a = 0.5 regardless of `a` — a flat vector.
+        assert!(
+            spread(&bybit) < 1e-4,
+            "bitbybit should flatten the metric, spread was {}",
+            spread(&bybit)
+        );
+    }
+
+    /// `nblock1_bit_metrics` must stay exactly the un-normalised rung.
+    #[test]
+    fn plain_wrapper_matches_opt_false() {
+        let z = contrast_isqs();
+        assert_eq!(nblock1_bit_metrics(&z), nblock1_bit_metrics_opt(&z, false));
+    }
 }

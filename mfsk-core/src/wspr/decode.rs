@@ -286,8 +286,15 @@ pub fn decode_at_baseband_nblocks_gated(
     // build) runs per variant.
     let mut best_type1: Option<(u32, WsprResult)> = None;
     let mut best_other: Option<(u32, WsprResult)> = None;
+    // `nblock == 0` is this crate's spelling of wsprd's fourth ladder
+    // rung (`ib == 4` → `blocksize = 1, bitmetric = 1`) — see
+    // `demod::nblock1_bit_metrics_opt`.
     for &nblock in nblocks {
-        let bm = super::demod::nblock_bit_metrics(&best_isqs, nblock);
+        let bm = if nblock == 0 {
+            super::demod::nblock1_bit_metrics_opt(&best_isqs, true)
+        } else {
+            super::demod::nblock_bit_metrics(&best_isqs, nblock)
+        };
         let mut llrs = bm;
         deinterleave_llrs(&mut llrs);
         // Fano first; if it fails to converge, fall back to OSD-1
@@ -415,7 +422,7 @@ fn decode_pass2_candidate(
         c.start_sample,
         c.freq_hz,
         c.drift_hz,
-        &[1, 2, 3],
+        &[1, 2, 3, 0],
         Some(confirmed),
     )?;
     let start_refined = d.start_sample;
