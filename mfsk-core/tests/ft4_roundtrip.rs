@@ -75,6 +75,20 @@ fn encode_decode_clean_signal_1000hz() {
         !results.is_empty(),
         "FT4 decode produced no results for clean 1000 Hz signal"
     );
+    // Precision, not just recall: a clean synth slot carries exactly one
+    // signal, so any other message is a phantom. FT4's tier-B golden
+    // guards this on the real recording; without it here, a regression
+    // that only shows up on synthetic audio would pass unnoticed.
+    let phantoms: Vec<&[u8]> = results
+        .iter()
+        .map(|r| r.message77())
+        .filter(|m| *m != &msg[..])
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced {} phantom decode(s)",
+        phantoms.len()
+    );
     let got = results
         .iter()
         .find(|r| r.message77() == msg)
@@ -102,6 +116,20 @@ fn encode_decode_mid_band_1500hz() {
             .results;
     assert!(!results.is_empty());
     assert!(results.iter().any(|r| r.message77() == msg));
+    // Precision, not just recall: a clean synth slot carries exactly one
+    // signal, so any other message is a phantom. FT4's tier-B golden
+    // guards this on the real recording; without it here, a regression
+    // that only shows up on synthetic audio would pass unnoticed.
+    let phantoms: Vec<&[u8]> = results
+        .iter()
+        .map(|r| r.message77())
+        .filter(|m| *m != &msg[..])
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced {} phantom decode(s)",
+        phantoms.len()
+    );
 }
 
 #[test]

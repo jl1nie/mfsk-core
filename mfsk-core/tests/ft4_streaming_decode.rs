@@ -289,6 +289,11 @@ fn ft4_streaming_sniper_matches_batch_exactly() {
         "sniper path: streamed callback deliveries must exactly match \
          the batch result (sequential, push-point-is-final-acceptance)"
     );
+    let phantoms: Vec<&String> = batch.iter().filter(|m| *m != "CQ JA1ABC PM95").collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+    );
     assert!(
         batch.iter().any(|m| m == "CQ JA1ABC PM95"),
         "expected the sniper to recover the clean synthetic 'CQ JA1ABC PM95', got {:?}",

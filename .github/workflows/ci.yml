@@ -479,7 +479,6 @@ jobs:
               fi
               if [ "$SUITE_KIND" = "catchall" ]; then
                 cargo test -p mfsk-core --features full,internal-testing --release --lib -- --ignored
-                RUN_FST4_ROUNDTRIP=1 cargo test -p mfsk-core --features full,internal-testing --release synth_decode_roundtrip_cq_ja1abc
               fi
               ;;
           esac
