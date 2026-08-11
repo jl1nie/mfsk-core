@@ -144,6 +144,65 @@ impl WsprCallsignTable {
     }
 }
 
+#[cfg(test)]
+mod callsign_table_tests {
+    use super::WsprCallsignTable;
+    use crate::msg::WsprMessage;
+
+    fn t1(callsign: &str, grid: &str) -> WsprMessage {
+        WsprMessage::Type1 {
+            callsign: callsign.into(),
+            grid: grid.into(),
+            power_dbm: 30,
+        }
+    }
+
+    /// The OSD gate (`wsprd.c:1396`) admits a result only for a
+    /// callsign an earlier Fano decode confirmed. Nothing else may
+    /// open it — that is the entire reason OSD is safe to keep.
+    #[test]
+    fn accepts_only_recorded_callsigns() {
+        let mut table = WsprCallsignTable::new();
+        assert!(!table.accepts(&t1("W3BI", "FN20")), "empty table accepted");
+
+        table.record(&t1("W3BI", "FN20"));
+        assert!(table.accepts(&t1("W3BI", "FN20")));
+        assert!(
+            !table.accepts(&t1("ZZ9ZZZ", "AA00")),
+            "unrecorded callsign accepted"
+        );
+    }
+
+    /// Type 1 carries a grid, so wsprd requires both to match; Type 2
+    /// carries a prefix/suffix instead and matches on callsign alone.
+    #[test]
+    fn type1_matches_on_grid_too_type2_does_not() {
+        let mut table = WsprCallsignTable::new();
+        table.record(&t1("W3BI", "FN20"));
+        assert!(
+            !table.accepts(&t1("W3BI", "AA00")),
+            "Type 1 accepted a mismatched grid"
+        );
+        assert!(table.accepts(&WsprMessage::Type2 {
+            callsign: "W3BI".into(),
+            power_dbm: 30,
+        }));
+    }
+
+    /// Type 3 is a hashed callsign with nothing to resolve it against,
+    /// so wsprd's OSD path refuses it outright (`itype` must be 1 or 2).
+    #[test]
+    fn hashed_callsigns_are_never_accepted() {
+        let mut table = WsprCallsignTable::new();
+        table.record(&t1("W3BI", "FN20"));
+        assert!(!table.accepts(&WsprMessage::Type3 {
+            callsign_hash: 0x05c31,
+            grid6: "FN20aa".into(),
+            power_dbm: 30,
+        }));
+    }
+}
+
 /// Same as [`decode_at`] but with an explicit drift estimate
 /// (`drift_hz` is total drift across the 110.6 s frame; matches
 /// wsprd's `drift1`). The caller supplies the drift for now; a
@@ -221,6 +280,40 @@ pub fn decode_at_baseband_nblocks_gated(
     nblocks: &[usize],
     confirmed: Option<&WsprCallsignTable>,
 ) -> Option<WsprResult> {
+    decode_at_baseband_nblocks_gated_drift(
+        idat,
+        qdat,
+        sample_rate,
+        start_sample,
+        freq_hz,
+        drift_hz,
+        nblocks,
+        confirmed,
+        true,
+    )
+}
+
+/// [`decode_at_baseband_nblocks_gated`] with wsprd's per-pass drift
+/// switch.
+///
+/// `refine_drift` mirrors `wsprd.c:1236`'s `if (ipass < 2)`: the first
+/// two passes try `drift ± 0.5` around the coarse estimate and keep
+/// whichever scores better on sync, while the final pass does not —
+/// it runs with `maxdrift = 0` throughout, trading drift tracking for
+/// a lower-variance frequency estimate on the weak signals that are
+/// all that remain by then.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_at_baseband_nblocks_gated_drift(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    freq_hz: f32,
+    drift_hz: f32,
+    nblocks: &[usize],
+    confirmed: Option<&WsprCallsignTable>,
+    refine_drift: bool,
+) -> Option<WsprResult> {
     use crate::engine::{FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
@@ -244,38 +337,101 @@ pub fn decode_at_baseband_nblocks_gated(
     // comment for why reuse is safe here.
     let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
 
-    // Mode 0: lag refine. wsprd uses lagstep=64 baseband-samples,
-    // ±128 around shift1 → 5 lags. Per cell: tone_amplitudes
-    // (≈ 700 k float ops) + sync_score — no Fano.
-    let mut best_lag = lag_baseband_init;
-    let mut best_lag_sync = f32::NEG_INFINITY;
-    let mut best_lag_isqs = None;
-    for &dlag in &[-128i32, -64, 0, 64, 128] {
-        let lag = lag_baseband_init + dlag;
-        let isqs = super::demod::tone_amplitudes(idat, qdat, f0_baseband_init, lag, drift_hz);
+    // wsprd's refine cascade (`wsprd.c:1221-1277`), in full. Each
+    // stage is `sync_and_demodulate` in mode 0 (search lag, freq
+    // fixed) or mode 1 (search freq, lag fixed), keeping whichever
+    // cell scores highest on the sync metric:
+    //
+    //   1. coarse lag   ±128 baseband samples, step 64
+    //   2. coarse freq  ±2 × 0.25 Hz
+    //   3. drift refine drift ± 0.5 (passes 0 and 1 only)
+    //   4. fine lag     ±32 baseband samples, step 16
+    //   5. fine freq    ±2 × 0.05 Hz
+    //
+    // Stages 3-5 were missing here, and stage 2 ran at ±1.0 Hz in
+    // 0.5 Hz steps rather than ±0.5 Hz in 0.25 Hz steps. That
+    // combination is why handing this function the coarse stage's
+    // drift estimate used to *hurt*: without stage 3 there is nothing
+    // to correct a drift the ±4 Hz coarse grid got wrong, and without
+    // stages 4-5 the alignment stays a coarse-grid cell away from the
+    // true one.
+    let eval = |f: f32, lag: i32, drift: f32| {
+        let isqs = super::demod::tone_amplitudes(idat, qdat, f, lag, drift);
         let sync = super::demod::sync_score_isqs(&isqs);
-        if sync > best_lag_sync {
-            best_lag_sync = sync;
-            best_lag = lag;
-            best_lag_isqs = Some(isqs);
+        (isqs, sync)
+    };
+
+    let mut best_freq = f0_baseband_init;
+    let mut best_lag = lag_baseband_init;
+    let mut best_drift = drift_hz;
+    let (mut best_isqs, mut best_sync) = eval(best_freq, best_lag, best_drift);
+
+    // 1. Coarse lag.
+    for &dlag in &[-128i32, -64, 64, 128] {
+        let (isqs, sync) = eval(best_freq, lag_baseband_init + dlag, best_drift);
+        if sync > best_sync {
+            best_sync = sync;
+            best_lag = lag_baseband_init + dlag;
+            best_isqs = isqs;
         }
     }
 
-    // Mode 1: freq refine at the best lag. wsprd uses fstep=0.25 Hz
-    // ± 2 → 5 freqs; we use ±1.0 Hz at 0.5 Hz step (slightly wider
-    // since coarse's freq grid is 0.73 Hz/bin). 4 new evals (+1 reuse
-    // at df=0 from mode 0).
-    let mut best_freq = f0_baseband_init;
-    let mut best_freq_sync = best_lag_sync;
-    let mut best_isqs = best_lag_isqs.expect("at least one lag eval succeeded");
-    for &df in &[-1.0f32, -0.5, 0.5, 1.0] {
-        let f = f0_baseband_init + df;
-        let isqs = super::demod::tone_amplitudes(idat, qdat, f, best_lag, drift_hz);
-        let sync = super::demod::sync_score_isqs(&isqs);
-        if sync > best_freq_sync {
-            best_freq_sync = sync;
+    // 2. Coarse freq — wsprd's `fstep = 0.25, ifmin = -2, ifmax = 2`.
+    for i in -2i32..=2 {
+        if i == 0 {
+            continue;
+        }
+        let f = f0_baseband_init + i as f32 * 0.25;
+        let (isqs, sync) = eval(f, best_lag, best_drift);
+        if sync > best_sync {
+            best_sync = sync;
             best_freq = f;
             best_isqs = isqs;
+        }
+    }
+
+    // 3. Drift refine — `wsprd.c:1236-1255`, passes 0 and 1 only. wsprd
+    // tries `drift ± 0.5` and keeps the better, checking `+` first so a
+    // tie goes to `+` exactly as the C's `else if` does.
+    if refine_drift {
+        for &dd in &[0.5f32, -0.5] {
+            let (isqs, sync) = eval(best_freq, best_lag, drift_hz + dd);
+            if sync > best_sync {
+                best_sync = sync;
+                best_drift = drift_hz + dd;
+                best_isqs = isqs;
+                break;
+            }
+        }
+    }
+
+    // Stages 4-5 run only above wsprd's `minsync1` (`wsprd.c:800,1259`);
+    // below it the candidate is noise and the extra evals are wasted.
+    const MINSYNC1: f32 = 0.10;
+    if best_sync > MINSYNC1 {
+        // 4. Fine lag — ±32, step 16.
+        let centre_lag = best_lag;
+        for &dlag in &[-32i32, -16, 16, 32] {
+            let (isqs, sync) = eval(best_freq, centre_lag + dlag, best_drift);
+            if sync > best_sync {
+                best_sync = sync;
+                best_lag = centre_lag + dlag;
+                best_isqs = isqs;
+            }
+        }
+        // 5. Fine freq — `fstep = 0.05, ifmin = -2, ifmax = 2`.
+        let centre_freq = best_freq;
+        for i in -2i32..=2 {
+            if i == 0 {
+                continue;
+            }
+            let f = centre_freq + i as f32 * 0.05;
+            let (isqs, sync) = eval(f, best_lag, best_drift);
+            if sync > best_sync {
+                best_sync = sync;
+                best_freq = f;
+                best_isqs = isqs;
+            }
         }
     }
 
@@ -397,7 +553,19 @@ fn decode_pass1_candidate(
     pad: usize,
     c: &super::coarse_baseband::BasebandCandidate,
 ) -> Option<(WsprResult, usize)> {
-    let mut d = decode_at_baseband(idat, qdat, sample_rate, c.start_sample, c.freq_hz, 0.0)?;
+    // wsprd's passes 0 and 1 hand `candidates[j].drift` — the value its
+    // ±4 Hz coarse drift search picked — straight to the demodulator
+    // (`wsprd.c:1216`). Passing 0.0 here instead discarded that search's
+    // entire output, leaving the drift axis of the coarse grid costing
+    // runtime and buying nothing.
+    let mut d = decode_at_baseband(
+        idat,
+        qdat,
+        sample_rate,
+        c.start_sample,
+        c.freq_hz,
+        c.drift_hz,
+    )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
     d.start_sample = start_refined.saturating_sub(pad);
@@ -415,7 +583,7 @@ fn decode_pass2_candidate(
     c: &super::coarse_baseband::BasebandCandidate,
     confirmed: &WsprCallsignTable,
 ) -> Option<WsprResult> {
-    let mut d = decode_at_baseband_nblocks_gated(
+    let mut d = decode_at_baseband_nblocks_gated_drift(
         idat,
         qdat,
         sample_rate,
@@ -424,6 +592,8 @@ fn decode_pass2_candidate(
         c.drift_hz,
         &[1, 2, 3, 0],
         Some(confirmed),
+        // wsprd's `ipass < 2` gate: the final pass does not refine drift.
+        false,
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
@@ -609,75 +779,92 @@ fn decode_scan_inner(
         refine_time_radius,
         refine_time_step,
     );
-    // pass-1 decodes carry their padded-buffer alignment so we can
-    // subtract them from the baseband for pass 2.
+    // wsprd runs **three** passes (`npasses = 3`, `wsprd.c:805`), not
+    // two, and they are not all configured alike (`wsprd.c:998-1010`):
     //
-    // Each candidate's decode_at_baseband call is a pure function of
+    //   pass 0, 1 : nblocksize = 1, maxdrift = 4, minsync2 = 0.12
+    //   pass 2    : nblocksize = 4, maxdrift = 0, minsync2 = 0.10
+    //
+    // Each pass subtracts what it decoded before the next one re-runs
+    // the coarse search, so pass 2 sees a residual with *two* rounds of
+    // strong signals removed. This crate previously collapsed that into
+    // two passes, which cost both of the WSJT-X golden's weakest
+    // signals: W3BI (−27 dB) needs the extra subtraction round, and
+    // G8VDQ (−23 dB) needs pass 2's zero-drift estimate.
+    //
+    // `wsprd.c:999` skips pass 1 entirely when pass 0 decoded nothing,
+    // on the reasoning that with nothing subtracted the residual is the
+    // input and re-searching it cannot find anything new.
+    //
+    // Each candidate's decode call is a pure function of
     // (idat, qdat, sample_rate, candidate) — no shared mutable state
     // during the loop body, so the decode step runs in parallel
     // (mirroring ft8::decode's own par_iter()/filter_map()/collect()
-    // pattern, src/ft8/decode.rs:361-368). The dedup pass below stays
-    // strictly sequential afterward, over `raw1` in its original
-    // (order-preserving) candidate order, so "first occurrence wins"
-    // semantics are unchanged — this doesn't alter behavior, only
-    // parallelizes independent work.
-    #[cfg(feature = "parallel")]
-    let raw1: Vec<(WsprResult, usize)> = cands
-        .par_iter()
-        .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
-        .collect();
-    #[cfg(not(feature = "parallel"))]
-    let raw1: Vec<(WsprResult, usize)> = cands
-        .iter()
-        .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
-        .collect();
-
-    let mut pass1: Vec<(WsprResult, usize)> = Vec::new();
-    for (d, start_refined) in raw1 {
-        let dup = seen.iter().any(|prev| {
-            prev.message == d.message
-                && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
-                && (prev.start_sample as i64 - d.start_sample as i64).abs() <= TIME_DEDUP_SAMPLES
-        });
-        if !dup {
-            if let Some(cb) = on_result {
-                cb(&d);
-            }
-            pass1.push((d.clone(), start_refined));
-            seen.push(d);
+    // pattern, src/ft8/decode.rs:361-368). The dedup pass stays
+    // strictly sequential afterward, in the original (order-preserving)
+    // candidate order, so "first occurrence wins" semantics hold.
+    //
+    // Decodes carry their padded-buffer alignment alongside, so the
+    // subtraction at the end of each pass knows where to aim.
+    let mut found: Vec<(WsprResult, usize)> = Vec::new();
+    for early_pass in 0..2 {
+        // `wsprd.c:999`.
+        if early_pass == 1 && found.is_empty() {
+            break;
         }
-    }
+        // Pass 0 works on the coarse candidates computed above; pass 1
+        // re-runs the coarse over the residual left by pass 0's
+        // subtraction.
+        let pass_cands = if early_pass == 0 {
+            core::mem::take(&mut cands)
+        } else {
+            let mut c = super::coarse_baseband::coarse_baseband(
+                &idat,
+                &qdat,
+                pad,
+                params.max_candidates,
+                max_drift,
+            );
+            c.truncate(params.max_candidates);
+            c
+        };
 
-    // Pass 1 runs Fano-only (its `decode_at_baseband` wrapper passes
-    // no table, so OSD is rejected outright). Every callsign it
-    // produced is therefore Fano-confirmed and may unlock an OSD
-    // decode of the *same* station in pass 2 — wsprd's own
-    // `hashtab` semantics, where earlier successful decodes are what
-    // make later OSD attempts trustworthy.
-    // Seed from the caller's cross-slot table (if any) before adding
-    // this slot's own Fano confirmations.
-    let mut confirmed = match &carried {
-        Some(t) => (*t).clone(),
-        None => WsprCallsignTable::new(),
-    };
-    for (d, _) in &pass1 {
-        confirmed.record(&d.message);
-    }
+        #[cfg(feature = "parallel")]
+        let raw: Vec<(WsprResult, usize)> = pass_cands
+            .par_iter()
+            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let raw: Vec<(WsprResult, usize)> = pass_cands
+            .iter()
+            .filter_map(|c| decode_pass1_candidate(&idat, &qdat, sample_rate, pad, c))
+            .collect();
 
-    // Pass 2 — wsprd's 3rd pass equivalent. Subtract every pass-1
-    // decode from the baseband (port of `subtract_signal2`,
-    // `wsprd.c:541-705`), then re-run the coarse search on the cleaned
-    // residual. This exposes signals that were buried under stronger
-    // neighbours' noise floor — the only path that recovers W3BI on
-    // the WSJT-X golden (-27 dB SNR, hidden by ND6P / KI7CI / etc.).
-    if !pass1.is_empty() {
-        // `idat`/`qdat` are locally owned (from `decimate_to_baseband`
-        // above) and never read again after pass 1's loop — subtract
-        // the pass-1 decodes in place instead of cloning both ~180KB
-        // buffers first. (Pass 1's own borrows of `&idat`/`&qdat` are
-        // all scoped to that loop's iterations, so they've ended by
-        // the time we get here.)
-        for (d, start_refined) in &pass1 {
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for (d, start_refined) in raw {
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            if !dup {
+                if let Some(cb) = on_result {
+                    cb(&d);
+                }
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+
+        // Subtract this pass's decodes so the next pass sees a cleaner
+        // residual — wsprd calls `subtract_signal2` inline on each
+        // accepted decode, which amounts to the same thing by the time
+        // the pass ends. `idat`/`qdat` are locally owned (from
+        // `decimate_to_baseband`) and every earlier borrow is scoped to
+        // the loop iteration that took it, so this can mutate in place
+        // rather than cloning both ~180 KB buffers.
+        for (d, start_refined) in &this_pass {
             let symbols = super::encode_channel_symbols(&d.info_bits);
             let f0_audio = d.freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
             let shift_baseband = (*start_refined as i32) / 32;
@@ -690,16 +877,46 @@ fn decode_scan_inner(
                 &symbols,
             );
         }
+        found.extend(this_pass);
+    }
+
+    // Passes 0 and 1 ran Fano-only (`decode_pass1_candidate` passes no
+    // table, so OSD is rejected outright). Every callsign they produced
+    // is therefore Fano-confirmed and may unlock an OSD decode of the
+    // *same* station in pass 2 — wsprd's own `hashtab` semantics, where
+    // earlier successful decodes are what make later OSD attempts
+    // trustworthy.
+    // Seed from the caller's cross-slot table (if any) before adding
+    // this slot's own Fano confirmations.
+    let mut confirmed = match &carried {
+        Some(t) => (*t).clone(),
+        None => WsprCallsignTable::new(),
+    };
+    for (d, _) in &found {
+        confirmed.record(&d.message);
+    }
+
+    // Pass 2 — wsprd's final pass. The residual now has both earlier
+    // passes' decodes removed; what is left are the signals that were
+    // buried under stronger neighbours.
+    if !found.is_empty() {
         // Re-run coarse on the cleaned baseband. Skip the legacy
         // 12 kHz coarse here — pass 2 runs against an already-decimated
         // residual buffer, and reconstructing 12 kHz from baseband is
         // pointless for the same coarse_search call.
+        // wsprd's pass 2 sets `maxdrift = 0` — "no drift for smaller
+        // frequency estimator variance" (`wsprd.c:1005-1009`). Passes 0
+        // and 1 search ±4; the final pass deliberately does not, because
+        // by then the strong signals have been subtracted and the
+        // remaining weak ones are better served by a lower-variance
+        // frequency estimate than by a wider search.
+        const PASS2_MAX_DRIFT: i32 = 0;
         let bb_cands2 = super::coarse_baseband::coarse_baseband(
             &idat,
             &qdat,
             pad,
             params.max_candidates,
-            max_drift,
+            PASS2_MAX_DRIFT,
         );
         // Pass 2 uses nblock = 1, 2, 3 (coherent block detection) for
         // the +3..+4.8 dB margin needed to decode signals like W3BI at
