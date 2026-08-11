@@ -20,7 +20,7 @@ read the linked function for the details, don't duplicate them here.
 | Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` (single-slot) / `q65::snr::q65_snr_db_averaged` (`iavg=1,2` multi-period) | **Shipped**, all 7 decode paths — the 3 multi-period call sites use an EMA-averaged composite spectrum (`q65_composite_spectrum_averaged`), matching WSJT-X's own `s1a` accumulation formula (issue #255 §5, #256) |
 | JT9 | `symspec2.f90:52-54` (`sig`/`t`/`snrdb`), reached via `jt9_decode.f90:148`'s `nsnr=nint(snrdb)` | `jt9::softsym::symspec2_from_ss2` | **Shipped**, real-`jt9`-verified within +0.33…+2.86 dB (mean +1.3) on `130418_1742.wav` (issue #255) |
 | JT65 | `jt65_decode.f90:251,254-255` (`s2db = 10·log10(sync2) - 35`, then clamp to `[-30,-1]`) | `jt65::rx::demodulate_aligned_with_confidence_and_snr` — **own** estimator, not the generic heuristic | **Audited, formula deliberately not ported** — the existing estimator already lands within ~0.7 dB of real `jt9`; only WSJT-X's display clamp was adopted (issue #255) |
-| WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope — issue #226 gave this protocol *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited. |
+| WSPR | `wsprd.c:1058,1063` (`smspec` local SNR, `-26.3` dB WSPR→2500 Hz reference) | `wspr::coarse_baseband` (`SNR_SCALING_DB`) | **Already faithful** — a `wsprd.c` port carrying the real scaling constant, so `snr_db` has the same calibration as wsprd's own spot output. Never on the generic heuristic. Not independently re-measured against `wsprd` here. |
 
 ## Why FT8 and Q65 aren't `GenericPipelineProtocol` implementors
 
@@ -179,3 +179,43 @@ asserts the per-cell mean over -22…-10 dB (the range where `jt9`
 tracks injected SNR to ~1 dB, so asserting against the injected value
 is asserting against `jt9`). It skips cleanly when the gitignored
 corpus is absent, like the recall sweeps beside it.
+
+## Who is still on the generic heuristic
+
+After issue #255, `engine::llr::compute_snr_db` is reached by exactly
+two things. Neither JT65 nor WSPR is among them, despite issue #255's
+own text saying otherwise — both have always had their own estimator,
+and the issue's protocol list was written from the call-graph of
+`engine/pipeline.rs` rather than from each protocol's actual code.
+
+1. **`GenericPipelineProtocol::snr_db`'s default body**
+   (`engine/pipeline.rs:532,548`). FT4 and FST4 both override it, and
+   they are the only implementors today — so this is currently a
+   default nothing uses, kept as the honest fallback for a future
+   protocol joining the generic pipeline before its real formula is
+   known.
+
+2. **`ft8::decode_block::process_candidates_with_ap`**
+   (`process_candidates.rs:2177`) — see below. This one is a real gap.
+
+### FT8's `decode_block` AP path still reports the generic heuristic
+
+`apply_wsjtx_xsnr2` is applied at five sites: the four host
+`ft8::decode` entry points and `decode_block_multipass`.
+`process_candidates_with_ap` is not one of them — it assigns
+`snr_db` from `compute_snr_db` and never post-processes it. That
+function backs `decode_block_with_ap` / `decode_block_with_ap_tuned`
+(public API) and `process_candidates_into_with_cs_scratch_tuned*`,
+which is what the ESP32 apps call
+(`embedded-poc/embedded-shared/src/dual_core.rs`,
+`m5stack-s3-app/src/decode_pipeline.rs`).
+
+This is structurally the same hole as the FT4 one fixed in `dd934b8`:
+the wide-band/non-AP path got the real formula and the AP-capable
+sibling was missed. Issue #253 measured the generic heuristic as
+reading 3-7 dB low on FT8 (much more on strong signals), so the
+embedded display is expected to be off by about that much. Not yet
+fixed — unlike the host path it has no `sbase`/`spec` in scope, so it
+needs either plumbing those through or accepting the same deliberate
+exemption the `fixed-point` path already documents (where quantised
+`Spectrogram` cells break `fit_baseline` outright).
