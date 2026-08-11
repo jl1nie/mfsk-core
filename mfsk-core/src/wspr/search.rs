@@ -74,7 +74,12 @@ impl Default for SearchParams {
             // the candidate count.
             time_tolerance_symbols: 8,
             score_threshold: DEFAULT_SCORE_THRESHOLD,
-            max_candidates: 16,
+            // wsprd's own cap (`wsprd.c:1088`, `npk < 200`). 16 was
+            // far too tight for a busy band: the coarse ranks by sync,
+            // and on an 8-signal recording the strong stations plus
+            // noise peaks fill the list long before a -23 dB signal
+            // gets a look in.
+            max_candidates: 200,
         }
     }
 }
