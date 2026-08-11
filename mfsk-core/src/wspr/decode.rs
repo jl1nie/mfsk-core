@@ -435,81 +435,129 @@ pub fn decode_at_baseband_nblocks_gated_drift(
         }
     }
 
-    // Mode 2: bit metrics + Fano at the refined alignment. Try each
-    // requested nblock value (caller controls; pass 1 = [1], pass 2 =
-    // [1, 2, 3] for coherent-block gain). IsQs is reused across
-    // nblocks — only `nblock_bit_metrics` (cheap, no oscillator
-    // build) runs per variant.
+    // Mode 2: bit metrics + Fano. wsprd does *not* stop at the refined
+    // alignment — `wsprd.c:1329-1423` wraps the demod-and-decode step in
+    // a **DT peak-up loop**, retrying at `shift1 ± 8k` baseband samples
+    // for `k = 0 .. 8` (`iifac = 8`, `idt <= 128 / iifac`), in the order
+    // 0, +8, −8, +16, −16, … ±64. Seventeen positions, and it is the
+    // inner loop: every `ib` rung gets the full sweep.
+    //
+    // This is not a refinement of the refinement — the refine cascade
+    // maximises *sync*, and the alignment that maximises sync is not
+    // always the one Fano converges from. On the WSJT-X golden, wsprd
+    // wins `G8VDQ IO91 37` at `shift1 + 16`, the third position it
+    // tries, having already scored position 0 higher on sync.
+    //
+    // Both loops exit on the first success, exactly as the C's
+    // `while (ib <= nblocksize && not_decoded)` /
+    // `while (not_decoded && idt <= ...)` do, so the cost below is
+    // what a *failing* candidate pays, not a succeeding one.
     let mut best_type1: Option<(u32, WsprResult)> = None;
     let mut best_other: Option<(u32, WsprResult)> = None;
+    /// `iifac`, `wsprd.c:802` — step size in the final DT peak-up.
+    const IIFAC: i32 = 8;
+    /// `idt <= 128 / iifac`, `wsprd.c:1322`.
+    const N_JITTER: i32 = 128 / IIFAC;
     // `nblock == 0` is this crate's spelling of wsprd's fourth ladder
     // rung (`ib == 4` → `blocksize = 1, bitmetric = 1`) — see
     // `demod::nblock1_bit_metrics_opt`.
-    for &nblock in nblocks {
-        let bm = if nblock == 0 {
-            super::demod::nblock1_bit_metrics_opt(&best_isqs, true)
-        } else {
-            super::demod::nblock_bit_metrics(&best_isqs, nblock)
-        };
-        let mut llrs = bm;
-        deinterleave_llrs(&mut llrs);
-        // Fano first; if it fails to converge, fall back to OSD-1
-        // (Ordered-Statistics Decoding, port of `osdwspr.f90`). OSD
-        // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
-        // golden) where Fano alone hits the convergence threshold.
-        let (info_bits, hard_errors) = if let Some(fec_res) =
-            codec.decode_soft_pooled(&llrs, &FecOpts::default(), &mut fano_scratch)
-        {
-            let mut info = [0u8; 50];
-            info.copy_from_slice(&fec_res.info);
-            (info, fec_res.hard_errors)
-        } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
-            // Single lazy `and_then`, deliberately not `Option::zip`:
-            // `zip` evaluates its argument eagerly, which would run the
-            // (expensive) OSD decode on every candidate even when no
-            // table exists — i.e. on the whole of pass 1, which always
-            // passes `None`.
-            let (info, nhardmin) = super::osd::osd_decode(&llrs)?;
-            // wsprd's structural gate (`wsprd.c:1396`): an OSD result
-            // is accepted only for a callsign an earlier Fano decode
-            // already confirmed. Replaces an `nhardmin ≤ 44` threshold
-            // that measurement showed cannot separate the two
-            // populations — see `WsprCallsignTable`'s doc comment.
-            let msg = crate::msg::Wspr50Message
-                .unpack(&info, &crate::engine::DecodeContext::default())?;
-            table.accepts(&msg).then_some((info, nhardmin))
-        }) {
-            (info, nhardmin)
-        } else {
-            continue;
-        };
-        let Some(message) =
-            crate::msg::Wspr50Message.unpack(&info_bits, &crate::engine::DecodeContext::default())
-        else {
-            continue;
-        };
-        let lag_audio = best_lag * 32;
-        let dt_sec = lag_audio as f32 / sample_rate as f32 - 1.0;
-        let candidate = WsprResult {
-            message: message.clone(),
-            freq_hz: best_freq + super::baseband::CENTER_HZ - 1.5 * super::demod::TONE_SPACING_HZ,
-            start_sample: lag_audio.max(0) as usize,
-            dt_sec,
-            info_bits,
-            snr_db: 0.0,
-        };
-        let he = hard_errors;
-        match message {
-            crate::msg::WsprMessage::Type1 { .. } | crate::msg::WsprMessage::Type2 { .. } => {
-                if best_type1.as_ref().is_none_or(|(b, _)| he < *b) {
-                    best_type1 = Some((he, candidate));
+    'rungs: for &nblock in nblocks {
+        for idt in 0..=N_JITTER {
+            // wsprd's `ii = (idt+1)/2; if (idt%2 == 1) ii = -ii; ii *= iifac;`
+            let mut ii = (idt + 1) / 2;
+            if idt % 2 == 1 {
+                ii = -ii;
+            }
+            let lag = best_lag + IIFAC * ii;
+            // Position 0 is the refined alignment, whose `IsQs` the
+            // cascade already built.
+            let isqs_owned;
+            let isqs = if idt == 0 {
+                &best_isqs
+            } else {
+                isqs_owned = super::demod::tone_amplitudes(idat, qdat, best_freq, lag, best_drift);
+                &isqs_owned
+            };
+            let bm = if nblock == 0 {
+                super::demod::nblock1_bit_metrics_opt(isqs, true)
+            } else {
+                super::demod::nblock_bit_metrics(isqs, nblock)
+            };
+            let mut llrs = bm;
+            deinterleave_llrs(&mut llrs);
+            // wsprd's `if (rms > minrms)` plausibility gate
+            // (`wsprd.c:1338-1345`) — skip the Fano attempt outright
+            // when the normalised soft symbols are dominated by
+            // saturating outliers.
+            if crate::fec::conv::fano::wsprd_soft_symbol_rms(&llrs)
+                <= crate::fec::conv::fano::WSPRD_MIN_RMS
+            {
+                continue;
+            }
+            // Fano first; if it fails to converge, fall back to OSD-1
+            // (Ordered-Statistics Decoding, port of `osdwspr.f90`). OSD
+            // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
+            // golden) where Fano alone hits the convergence threshold.
+            let (info_bits, hard_errors) = if let Some(fec_res) =
+                codec.decode_soft_pooled(&llrs, &FecOpts::default(), &mut fano_scratch)
+            {
+                let mut info = [0u8; 50];
+                info.copy_from_slice(&fec_res.info);
+                (info, fec_res.hard_errors)
+            } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
+                // Single lazy `and_then`, deliberately not `Option::zip`:
+                // `zip` evaluates its argument eagerly, which would run the
+                // (expensive) OSD decode on every candidate even when no
+                // table exists — i.e. on the whole of pass 1, which always
+                // passes `None`.
+                let (info, nhardmin) = super::osd::osd_decode(&llrs)?;
+                // wsprd's structural gate (`wsprd.c:1396`): an OSD result
+                // is accepted only for a callsign an earlier Fano decode
+                // already confirmed. Replaces an `nhardmin ≤ 44` threshold
+                // that measurement showed cannot separate the two
+                // populations — see `WsprCallsignTable`'s doc comment.
+                let msg = crate::msg::Wspr50Message
+                    .unpack(&info, &crate::engine::DecodeContext::default())?;
+                table.accepts(&msg).then_some((info, nhardmin))
+            }) {
+                (info, nhardmin)
+            } else {
+                continue;
+            };
+            let Some(message) = crate::msg::Wspr50Message
+                .unpack(&info_bits, &crate::engine::DecodeContext::default())
+            else {
+                continue;
+            };
+            let lag_audio = lag * 32;
+            let dt_sec = lag_audio as f32 / sample_rate as f32 - 1.0;
+            let candidate = WsprResult {
+                message: message.clone(),
+                freq_hz: best_freq + super::baseband::CENTER_HZ
+                    - 1.5 * super::demod::TONE_SPACING_HZ,
+                start_sample: lag_audio.max(0) as usize,
+                dt_sec,
+                info_bits,
+                snr_db: 0.0,
+            };
+            let he = hard_errors;
+            match message {
+                crate::msg::WsprMessage::Type1 { .. } | crate::msg::WsprMessage::Type2 { .. } => {
+                    if best_type1.as_ref().is_none_or(|(b, _)| he < *b) {
+                        best_type1 = Some((he, candidate));
+                    }
+                }
+                crate::msg::WsprMessage::Type3 { .. } => {
+                    if best_other.as_ref().is_none_or(|(b, _)| he < *b) {
+                        best_other = Some((he, candidate));
+                    }
                 }
             }
-            crate::msg::WsprMessage::Type3 { .. } => {
-                if best_other.as_ref().is_none_or(|(b, _)| he < *b) {
-                    best_other = Some((he, candidate));
-                }
-            }
+            // wsprd stops at the first success: its `while` conditions
+            // are `ib <= nblocksize && not_decoded` and
+            // `not_decoded && idt <= ...`, so neither loop keeps going
+            // once a codeword is accepted.
+            break 'rungs;
         }
     }
     best_type1.map(|(_, d)| d).or(best_other.map(|(_, d)| d))
@@ -899,7 +947,14 @@ fn decode_scan_inner(
     // Pass 2 — wsprd's final pass. The residual now has both earlier
     // passes' decodes removed; what is left are the signals that were
     // buried under stronger neighbours.
-    if !found.is_empty() {
+    //
+    // It runs unconditionally. `wsprd.c:999` skips **pass 1** when pass
+    // 0 decoded nothing (`ipass = 2`), never pass 2 — a slot where the
+    // early passes found nothing is exactly the one that most needs the
+    // final pass's coherent-block ladder and zero-drift estimate. This
+    // used to be gated on the early passes having produced something,
+    // which cost every weak single-signal slot its best chance.
+    {
         // Re-run coarse on the cleaned baseband. Skip the legacy
         // 12 kHz coarse here — pass 2 runs against an already-decimated
         // residual buffer, and reconstructing 12 kHz from baseband is

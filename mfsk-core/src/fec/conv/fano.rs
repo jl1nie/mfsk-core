@@ -112,29 +112,57 @@ pub fn build_branch_metrics(llrs: &[f32], bias: f32, scale: f32) -> Vec<[i32; 2]
 /// the opposite, so the sign flips on the way in.
 pub fn build_branch_metrics_wsprd(llrs: &[f32], bias: f32) -> Vec<[i32; 2]> {
     use super::metric_table::WSPRD_METRIC_TABLE as T;
-    /// `symfac`, `wsprd.c:816`.
-    const SYMFAC: f32 = 50.0;
-    let n = llrs.len() as f32;
-    // Work in wsprd's sign so the constants below can be read straight
-    // off the C.
-    let fsum: f32 = llrs.iter().map(|l| -l).sum::<f32>() / n;
-    let f2sum: f32 = llrs.iter().map(|l| l * l).sum::<f32>() / n;
-    let fac = (f2sum - fsum * fsum).max(0.0).sqrt();
-    llrs.iter()
-        .map(|&l| {
-            let v = if fac > 0.0 {
-                (SYMFAC * -l / fac).clamp(-128.0, 127.0)
-            } else {
-                0.0
-            };
-            let sym = (v + 128.0) as usize;
-            let sym = sym.min(255);
+    wsprd_normalised_symbols(llrs)
+        .map(|v| {
+            let sym = ((v + 128.0) as usize).min(255);
             let m0 = (10.0 * (T[sym] - bias)).round() as i32;
             let m1 = (10.0 * (T[255 - sym] - bias)).round() as i32;
             [m0, m1]
         })
         .collect()
 }
+
+/// `symfac`, `wsprd.c:816`.
+const SYMFAC: f32 = 50.0;
+
+/// Step 1 of [`build_branch_metrics_wsprd`] on its own: the soft
+/// symbols wsprd's `fsymb` holds after normalisation, in wsprd's sign
+/// and on wsprd's `[-128, 127]` scale.
+///
+/// Split out because `wsprd.c:1338-1345` measures the RMS of exactly
+/// this vector before deciding whether a Fano attempt is worth making,
+/// and that gate has to see the same numbers the metric does.
+pub fn wsprd_normalised_symbols(llrs: &[f32]) -> impl Iterator<Item = f32> + '_ {
+    let n = llrs.len() as f32;
+    // Work in wsprd's sign so the constants can be read straight off
+    // the C. Note wsprd divides by the RMS *without* subtracting the
+    // mean — `fsum` is computed but only ever used inside `fac`.
+    let fsum: f32 = llrs.iter().map(|l| -l).sum::<f32>() / n;
+    let f2sum: f32 = llrs.iter().map(|l| l * l).sum::<f32>() / n;
+    let fac = (f2sum - fsum * fsum).max(0.0).sqrt();
+    llrs.iter().map(move |&l| {
+        if fac > 0.0 {
+            (SYMFAC * -l / fac).clamp(-128.0, 127.0)
+        } else {
+            0.0
+        }
+    })
+}
+
+/// RMS of the normalised soft symbols — `wsprd.c:1338-1345`'s `rms`.
+///
+/// Normalisation alone would put this at or just above `symfac = 50`;
+/// the clamp to `[-128, 127]` is what pulls it down, so a low value
+/// means the vector is dominated by a handful of saturating outliers
+/// rather than carrying evenly-distributed evidence. wsprd uses it as a
+/// cheap plausibility gate before spending a Fano attempt.
+pub fn wsprd_soft_symbol_rms(llrs: &[f32]) -> f32 {
+    let n = llrs.len() as f32;
+    (wsprd_normalised_symbols(llrs).map(|v| v * v).sum::<f32>() / n).sqrt()
+}
+
+/// `minrms`, `wsprd.c:808`: `52.0 * (symfac / 64.0)`.
+pub const WSPRD_MIN_RMS: f32 = 52.0 * (SYMFAC / 64.0);
 
 #[derive(Default)]
 struct Node {
