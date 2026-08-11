@@ -236,6 +236,10 @@ fn fast_fading_does_not_decode_pure_silence() {
 // ─── WSJT-X reference sample (optional) ─────────────────────────
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
+    let vendored = common::corpus::golden_dir().join("q65").join(rel);
+    if vendored.is_dir() {
+        return Some(vendored);
+    }
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let dir = Path::new(&manifest)
         .join("../../WSJT-X/samples/Q65")

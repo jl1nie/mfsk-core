@@ -32,6 +32,14 @@ fn samples_dir(rel: &str) -> Option<PathBuf> {
     // Tests run from `mfsk-core/mfsk-core/`; the WSJT-X tree is at
     // `mfsk-core/../WSJT-X/`. Use `CARGO_MANIFEST_DIR` so the lookup
     // is independent of the caller's working directory.
+    // Only 60A_EME_6m and 60D_EME_10GHz are vendored (the full Q65
+    // sample tree is ~25 MB); the rest still resolve from an upstream
+    // checkout when one is present. `optional_corpus`-style semantics
+    // deliberately: a sub-mode that is not vendored must not fail CI.
+    let vendored = common::corpus::golden_dir().join("q65").join(rel);
+    if vendored.is_dir() {
+        return Some(vendored);
+    }
     let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
     let dir = Path::new(&manifest)
         .join("../../WSJT-X/samples/Q65")
@@ -238,15 +246,16 @@ fn eme_6m_sample_yields_decode_with_ap() {
 /// which matches WSJT-X's "No_AP" count ≤ 9/14 on the full dataset).
 #[test]
 fn eme_10ghz_60d_decodes_with_fading_metric() {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok().unwrap_or_default();
-    let path = std::path::Path::new(&manifest)
-        .join("../../WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav");
-    let path = match path.canonicalize() {
-        Ok(p) if p.is_file() => p,
-        _ => {
+    let path = common::corpus::golden_path_or_upstream(
+        "q65/60D_EME_10GHz/201212_1838.wav",
+        Some("Q65/60D_EME_10GHz/201212_1838.wav"),
+    );
+    let path = match path {
+        Some(p) => p,
+        None => {
             eprintln!(
-                "skipping: WSJT-X 60D_EME_10GHz sample not found at {}",
-                path.display()
+                "skipping: Q65 60D_EME_10GHz sample not found under {}",
+                common::corpus::golden_dir().display()
             );
             return;
         }

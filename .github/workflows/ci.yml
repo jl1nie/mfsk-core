@@ -99,6 +99,12 @@ jobs:
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
               - 'mfsk-core/src/core/**'
+              # Shared DSP/decode engine: a change here reaches every
+              # protocol that routes through `engine::pipeline` /
+              # `engine::sync`, so it must trip every protocol filter.
+              # Omitting it meant an `engine/sync.rs` edit ran no
+              # protocol tier (issue: FT4 sniper `rank_candidates`).
+              - 'mfsk-core/src/engine/**'
               - 'mfsk-core/src/fec/**'
               - 'mfsk-core/src/msg/**'
               - 'mfsk-core/src/ft8/**'
@@ -110,6 +116,12 @@ jobs:
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
               - 'mfsk-core/src/core/**'
+              # Shared DSP/decode engine: a change here reaches every
+              # protocol that routes through `engine::pipeline` /
+              # `engine::sync`, so it must trip every protocol filter.
+              # Omitting it meant an `engine/sync.rs` edit ran no
+              # protocol tier (issue: FT4 sniper `rank_candidates`).
+              - 'mfsk-core/src/engine/**'
               - 'mfsk-core/src/fec/**'
               - 'mfsk-core/src/msg/**'
               - 'mfsk-core/src/q65/**'
@@ -121,6 +133,12 @@ jobs:
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
               - 'mfsk-core/src/core/**'
+              # Shared DSP/decode engine: a change here reaches every
+              # protocol that routes through `engine::pipeline` /
+              # `engine::sync`, so it must trip every protocol filter.
+              # Omitting it meant an `engine/sync.rs` edit ran no
+              # protocol tier (issue: FT4 sniper `rank_candidates`).
+              - 'mfsk-core/src/engine/**'
               - 'mfsk-core/src/fec/**'
               - 'mfsk-core/src/uvpacket/**'
               - 'mfsk-core/tests/uvpacket_*'
@@ -131,6 +149,12 @@ jobs:
               - 'mfsk-core/build.rs'
               - 'mfsk-core/src/lib.rs'
               - 'mfsk-core/src/core/**'
+              # Shared DSP/decode engine: a change here reaches every
+              # protocol that routes through `engine::pipeline` /
+              # `engine::sync`, so it must trip every protocol filter.
+              # Omitting it meant an `engine/sync.rs` edit ran no
+              # protocol tier (issue: FT4 sniper `rank_candidates`).
+              - 'mfsk-core/src/engine/**'
               - 'mfsk-core/src/fec/**'
               - 'mfsk-core/src/msg/**'
               - 'mfsk-core/src/ft4/**'
@@ -400,6 +424,15 @@ jobs:
         env:
           SUITE_KIND: ${{ matrix.suite.kind }}
           SUITE_GLOBS: ${{ matrix.suite.globs }}
+          # Turn a missing golden corpus into a hard failure instead of
+          # a silent skip. Before the recordings were vendored under
+          # `embedded-poc/assets/golden/`, every WSJT-X-sample test
+          # resolved from a sibling `../../WSJT-X/` checkout that CI
+          # does not have — so FT4/FST4/Q65/WSPR/MSK144 golden tests
+          # all skipped and reported success, and the only protocols
+          # genuinely covered here were FT8 and JT9. See
+          # `tests/common/corpus.rs`.
+          MFSK_REQUIRE_CORPUS: "1"
         # The `default` suite runs every non-ignored test (lib +
         # integration) across every protocol — no substring filter so
         # cargo test runs the lot. The `ignored-integration` suites

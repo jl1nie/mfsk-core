@@ -35,7 +35,7 @@
     any(feature = "fft-rustfft", feature = "fft-extern")
 ))]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mfsk_core::msk144::decode::{Depth, decode_slot};
 
@@ -44,13 +44,10 @@ mod common;
 use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path(name: &str) -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let p = Path::new(&manifest)
-        .join("../../WSJT-X/samples/MSK144")
-        .join(name)
-        .canonicalize()
-        .ok()?;
-    if p.is_file() { Some(p) } else { None }
+    common::corpus::golden_path_or_upstream(
+        &format!("msk144/{name}"),
+        Some(&format!("MSK144/{name}")),
+    )
 }
 
 /// WSJT-X-published golden decode (see
