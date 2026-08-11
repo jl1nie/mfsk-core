@@ -334,14 +334,19 @@ jobs:
             globs: "fst4_wsjtx_samples"
             changes_key: catchall
             push_only: false
-          # catchall characterization — FT4 SNR/timing sweeps,
-          # MSK144 SNR sweep, ldpc_min_sum AWGN sweep, lib-level
-          # #[ignore] tests (jt9 demod/decode/search/softsym +
-          # uvpacket::puncture AWGN sweeps), env-gated FST4 60-s
-          # roundtrip.
+          # catchall characterization — tier C sensitivity sweeps plus
+          # the lib-level #[ignore] tests. `ft4_coherent_wide_search_diag`
+          # and the FT8 `qso3_*` probes used to sit adjacent to these;
+          # they were deleted, not moved, because they asserted nothing
+          # and belonged to investigations that have since closed.
+          #
+          # What remains here still asserts nothing either — these are
+          # measurements. They are kept because a release wants the
+          # numbers (see `scripts/` sweep generators and
+          # `docs/notes/*BENCHMARK.md`), not because they gate a merge.
           - name: catchall characterization
             kind: catchall
-            globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget msk144_snr_sweep ldpc_min_sum"
+            globs: "ft4_diag_low_snr ft4_snr_sweep ft4_timing_budget msk144_snr_sweep ldpc_min_sum bench_qso3_busy_timing"
             changes_key: catchall
             push_only: true
     steps:
