@@ -5,7 +5,12 @@
 pub mod air_channel;
 pub mod channel;
 pub mod corpus;
+// uvpacket is an experimental example, not a feature of this crate —
+// its Eb/N0 helpers are gated so the shared scaffolding stays usable
+// without it.
 pub mod golden;
+#[cfg(feature = "uvpacket")]
+pub mod uvpacket_channel;
 
 /// Minimal RIFF/WAVE loader — parses the standard `fmt ` + `data`
 /// chunks (plus any `JUNK` / `LIST` / `bext` chunks ahead of `data`)

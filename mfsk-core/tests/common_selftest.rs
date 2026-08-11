@@ -21,7 +21,23 @@
 //! were widened to `pub` — `common` is test-only scaffolding, so that
 //! costs nothing.
 
-#![cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+// Deliberately **no** `#![cfg(...)]` gate on this binary.
+//
+// A crate-level `#![cfg(any(feature = "fft-rustfft", feature =
+// "fft-extern"))]` was tried and removed: under
+// `cargo test -p mfsk-core --no-default-features --test
+// common_selftest` it silently reduced this file to "0 passed; ok" —
+// the exact green-lie this suite's restructure exists to eliminate,
+// reintroduced by the very commit meant to make the pass count
+// honest.
+//
+// Ungated, an unsupported feature set fails to *compile* instead,
+// which is loud. That is not a regression: `common/channel.rs`
+// imports `mfsk_core::uvpacket::Mode` at file scope, so every one of
+// the 43 binaries that write `mod common;` already requires the
+// `uvpacket` feature — verified on an untouched one
+// (`ft8_streaming_decode` fails the same way without it). This binary
+// simply shares its siblings' constraint rather than hiding from it.
 
 #[allow(dead_code)]
 mod common;
@@ -29,7 +45,6 @@ mod common;
 mod channel_selftest {
     #[allow(unused_imports)]
     use crate::common::channel::*;
-    use mfsk_core::uvpacket::Mode;
 
     /// AWGN channel with σ = 0 must be a no-op (modulo the f32
     /// representation of `0.0 × x = 0.0`).
@@ -61,60 +76,10 @@ mod channel_selftest {
     /// At a high Eb/N0 (= 100 dB) the σ for every mode should be
     /// vanishingly small; at 0 dB it should be a meaningful fraction
     /// of the signal envelope.
-    #[test]
-    fn sigma_decreases_with_eb_n0() {
-        // Use a representative 4-FSK-era signal power (P = 0.5) so
-        // the test bounds are absolute rather than measurement-tied.
-        let p = 0.5;
-        for mode in [
-            Mode::Robust,
-            Mode::Standard,
-            Mode::UltraRobust,
-            Mode::Express,
-        ] {
-            let sigma_clean = awgn_sigma_for_eb_n0_info(mode, 100.0, p);
-            let sigma_zero = awgn_sigma_for_eb_n0_info(mode, 0.0, p);
-            assert!(sigma_clean < 1e-3, "{mode:?}: clean σ {sigma_clean}");
-            assert!(sigma_zero > 0.5, "{mode:?}: 0-dB σ {sigma_zero}");
-            assert!(
-                sigma_clean < sigma_zero,
-                "{mode:?}: σ should decrease as Eb/N0 grows",
-            );
-        }
-    }
-
     /// Higher-rate modes spend less channel energy per info bit, so
     /// at a fixed Eb/N0_info the channel-domain noise must be lower
     /// for them — i.e. σ decreases with rate.
-    #[test]
-    fn sigma_decreases_with_rate() {
-        // UltraRobust shares Robust's FEC rate (only the symbol
-        // rate differs), so σ at fixed Eb/N0 is identical between
-        // them — exclude UltraRobust from this strict-monotonic
-        // test and check only the FEC-rate-distinct modes.
-        let eb_n0 = 0.0;
-        let p = 0.5;
-        let sigmas: Vec<f32> = [Mode::Robust, Mode::Standard, Mode::Express]
-            .iter()
-            .map(|&m| awgn_sigma_for_eb_n0_info(m, eb_n0, p))
-            .collect();
-        for w in sigmas.windows(2) {
-            assert!(
-                w[0] > w[1],
-                "expected σ to decrease across rates: {sigmas:?}",
-            );
-        }
-    }
-
     /// σ scales as `√P` (since variance scales as P at fixed Eb/N0).
-    #[test]
-    fn sigma_scales_with_signal_power() {
-        let s1 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 1.0);
-        let s4 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 4.0);
-        // 4× power → 2× σ (within float epsilon).
-        assert!((s4 / s1 - 2.0).abs() < 1e-3, "s1={s1}, s4={s4}");
-    }
-
     /// Rayleigh envelope statistics: over a long buffer, the
     /// magnitude has E[|h|²] ≈ 1 by construction.
     #[test]
@@ -448,5 +413,66 @@ mod golden_selftest {
             v("SOMETHING ELSE", 1600.0, None),
         ];
         assert_golden(&d, &set(1, 1), Tolerances::default(), |x| x.clone());
+    }
+}
+
+/// uvpacket's Eb/N0 helper lives in its own gated module (it is built
+/// on uvpacket's π/4-DQPSK PHY constants, not on anything shared), so
+/// its self-tests are gated the same way.
+#[cfg(feature = "uvpacket")]
+mod uvpacket_channel_selftest {
+    #[allow(unused_imports)]
+    use crate::common::channel::*;
+    use crate::common::uvpacket_channel::*;
+    use mfsk_core::uvpacket::Mode;
+
+    #[test]
+    fn sigma_decreases_with_eb_n0() {
+        // Use a representative 4-FSK-era signal power (P = 0.5) so
+        // the test bounds are absolute rather than measurement-tied.
+        let p = 0.5;
+        for mode in [
+            Mode::Robust,
+            Mode::Standard,
+            Mode::UltraRobust,
+            Mode::Express,
+        ] {
+            let sigma_clean = awgn_sigma_for_eb_n0_info(mode, 100.0, p);
+            let sigma_zero = awgn_sigma_for_eb_n0_info(mode, 0.0, p);
+            assert!(sigma_clean < 1e-3, "{mode:?}: clean σ {sigma_clean}");
+            assert!(sigma_zero > 0.5, "{mode:?}: 0-dB σ {sigma_zero}");
+            assert!(
+                sigma_clean < sigma_zero,
+                "{mode:?}: σ should decrease as Eb/N0 grows",
+            );
+        }
+    }
+
+    #[test]
+    fn sigma_decreases_with_rate() {
+        // UltraRobust shares Robust's FEC rate (only the symbol
+        // rate differs), so σ at fixed Eb/N0 is identical between
+        // them — exclude UltraRobust from this strict-monotonic
+        // test and check only the FEC-rate-distinct modes.
+        let eb_n0 = 0.0;
+        let p = 0.5;
+        let sigmas: Vec<f32> = [Mode::Robust, Mode::Standard, Mode::Express]
+            .iter()
+            .map(|&m| awgn_sigma_for_eb_n0_info(m, eb_n0, p))
+            .collect();
+        for w in sigmas.windows(2) {
+            assert!(
+                w[0] > w[1],
+                "expected σ to decrease across rates: {sigmas:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn sigma_scales_with_signal_power() {
+        let s1 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 1.0);
+        let s4 = awgn_sigma_for_eb_n0_info(Mode::Robust, 0.0, 4.0);
+        // 4× power → 2× σ (within float epsilon).
+        assert!((s4 / s1 - 2.0).abs() < 1e-3, "s1={s1}, s4={s4}");
     }
 }

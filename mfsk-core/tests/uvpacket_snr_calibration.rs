@@ -25,7 +25,8 @@ use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
 // `tests/common_selftest.rs`.
 #[allow(dead_code)]
 mod common;
-use common::channel::{AwgnChannel, awgn_sigma_for_eb_n0_info, signal_power};
+use common::channel::{AwgnChannel, signal_power};
+use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 
 const N_BLOCKS: u8 = 4;
 const N_TRIALS: usize = 20;

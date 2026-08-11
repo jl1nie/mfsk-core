@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Channel models for the uvpacket characterisation harness.
+//! Protocol-agnostic channel models (AWGN, flat Rayleigh) and
+//! signal-power measurement, shared by every protocol's tests.
+//!
+//! uvpacket's Eb/N0 helpers used to live here and moved to
+//! `common/uvpacket_channel.rs` — see that module for why.
 //!
 //! - [`AwgnChannel`] — additive white Gaussian noise (Phase 2a).
 //! - [`RayleighFlatChannel`] — flat Rayleigh fading (frequency-non-
@@ -8,25 +12,11 @@
 //!   real and imaginary parts of the fading envelope; the audio
 //!   signal is multiplied by the resulting complex magnitude.
 //!   Followed by AWGN. Phase 2b.
-//!
-//! Eb/N0 sign convention: **Eb is per information bit** (not per
-//! channel bit). This is the cross-mode-fair convention used in the
-//! WSJT family — at the same Eb/N0 the noise variance per audio
-//! sample varies by mode because higher rates spend less channel
-//! energy per info bit.
 
 use std::f32::consts::PI;
 
-use mfsk_core::uvpacket::Mode;
-
-/// `Ldpc240_101` info-bit count — used to compute the per-mode
-/// info rate (`K / ch_bits_per_block`).
-const K_INFO: f32 = 101.0;
-
-/// uvpacket modulation parameters (for the AWGN-σ derivation).
-const SAMPLE_RATE_HZ: f32 = 12_000.0;
-const SYMBOL_RATE_HZ: f32 = 1_200.0;
-const BITS_PER_SYMBOL: f32 = 2.0;
+/// Audio sample rate the channel models operate at.
+pub(crate) const SAMPLE_RATE_HZ: f32 = 12_000.0;
 
 /// Box-Muller AWGN channel with a deterministic LCG seed. Apply
 /// to a buffer of f32 audio samples in-place.
@@ -67,48 +57,15 @@ impl AwgnChannel {
     }
 }
 
-/// Per-mode info-rate (information bits per channel bit).
-fn info_rate(mode: Mode) -> f32 {
-    K_INFO / mode.ch_bits_per_block() as f32
-}
-
-/// Mean-square (= average power) of an audio buffer. Used to feed
-/// [`awgn_sigma_for_eb_n0_info`] from the actual transmitted burst.
+/// Mean-square (= average power) of an audio buffer. Feeds the
+/// per-protocol Eb/N0 helpers (e.g.
+/// `uvpacket_channel::awgn_sigma_for_eb_n0_info`) from the actual
+/// transmitted burst.
 pub fn signal_power(audio: &[f32]) -> f32 {
     if audio.is_empty() {
         return 0.0;
     }
     audio.iter().map(|s| s * s).sum::<f32>() / audio.len() as f32
-}
-
-/// Compute the per-sample AWGN standard deviation that yields a
-/// target `Eb/N0` *per information bit*, given the **measured**
-/// signal power of the burst about to be noised.
-///
-/// Phase 2'a recalibration: the previous formula assumed a unit-
-/// envelope sinusoid (`P = 0.5`), which was approximately right for
-/// the old 4-FSK design but is ~10 dB off for the QPSK + RRC modem
-/// (peak-normalised burst has RMS ≈ 0.2 → P ≈ 0.04). To make
-/// stated Eb/N0 numbers comparable across modulations, callers now
-/// pass `signal_power = mean(audio²)` of the as-transmitted burst
-/// and the formula derives σ from that.
-///
-/// Derivation:
-///
-/// - Average signal power      `P = signal_power`         (caller-supplied)
-/// - Energy per channel bit    `Eb_ch = P / (R_s · b/sym)`
-/// - Energy per info bit       `Eb_info = Eb_ch / r_info` where
-///   `r_info = K / ch_bits_per_block`
-/// - Target ratio              `linear = 10^(eb_n0_db / 10)`
-/// - One-sided AWGN PSD        `N0 = Eb_info / linear`
-/// - Per-sample variance       `σ² = N0 · fs / 2`
-pub fn awgn_sigma_for_eb_n0_info(mode: Mode, eb_n0_db: f32, signal_power: f32) -> f32 {
-    let e_b_ch = signal_power / (SYMBOL_RATE_HZ * BITS_PER_SYMBOL);
-    let e_b_info = e_b_ch / info_rate(mode);
-    let target_linear = 10f32.powf(eb_n0_db / 10.0);
-    let n0 = e_b_info / target_linear;
-    let sigma_sq = n0 * SAMPLE_RATE_HZ / 2.0;
-    sigma_sq.sqrt()
 }
 
 /// Flat (non-frequency-selective) Rayleigh fading channel.
