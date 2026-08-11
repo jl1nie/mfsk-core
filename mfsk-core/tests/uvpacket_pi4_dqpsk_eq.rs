@@ -31,7 +31,8 @@ use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
 #[allow(dead_code)]
 mod common;
 use common::air_channel::{FmChannel, PhaseFadingModel, SsbChannel};
-use common::channel::{AwgnChannel, awgn_sigma_for_eb_n0_info, signal_power};
+use common::channel::{AwgnChannel, signal_power};
+use common::uvpacket_channel::awgn_sigma_for_eb_n0_info;
 
 const N_BLOCKS: u8 = 4;
 
