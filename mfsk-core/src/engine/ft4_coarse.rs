@@ -214,20 +214,11 @@ pub fn ft4_coarse_sync(
     }
 
     // Score-sort (freq_hint-priority first), then truncate — see the
-    // module-doc "Deviation from WSJT-X" note.
-    if let Some(fhint) = freq_hint {
-        out.sort_by(|a, b| {
-            let a_near = (a.freq_hz - fhint).abs() <= 10.0;
-            let b_near = (b.freq_hz - fhint).abs() <= 10.0;
-            match (a_near, b_near) {
-                (true, false) => core::cmp::Ordering::Less,
-                (false, true) => core::cmp::Ordering::Greater,
-                _ => b.score.partial_cmp(&a.score).unwrap(),
-            }
-        });
-    } else {
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    }
-    out.truncate(max_cand);
-    out
+    // module-doc "Deviation from WSJT-X" note. Shares
+    // `engine::sync::rank_candidates` with the generic `coarse_sync`
+    // so both paths get the same non-starving hint policy (issue
+    // #257); this port emits one candidate per frequency peak rather
+    // than up to 8 lag peaks per bin, so it could not hit #257's
+    // annulus as hard, but there is no reason for the two to disagree.
+    crate::engine::sync::rank_candidates(out, freq_hint, max_cand)
 }

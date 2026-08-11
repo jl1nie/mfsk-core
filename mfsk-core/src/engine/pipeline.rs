@@ -435,6 +435,10 @@ pub struct SnrCtx<'a> {
     pub itone: &'a [u8],
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
+    // FT4's `snr_db` override is this field's only reader, so a build
+    // with `fst4` but not `ft4` — a real CI feature-matrix cell — sees
+    // it as dead.
+    #[cfg_attr(not(feature = "ft4"), allow(dead_code))]
     pub cand_score: f32,
     /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
     /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
@@ -474,6 +478,10 @@ pub(crate) struct SnrCtx<'a> {
     pub itone: &'a [u8],
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
+    // FT4's `snr_db` override is this field's only reader, so a build
+    // with `fst4` but not `ft4` — a real CI feature-matrix cell — sees
+    // it as dead.
+    #[cfg_attr(not(feature = "ft4"), allow(dead_code))]
     pub cand_score: f32,
     /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
     /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
@@ -630,6 +638,12 @@ where
 /// to `Ft4`'s `impl GenericPipelineProtocol` block, not here, so a
 /// reader scanning that impl sees every protocol-specific override in
 /// one place rather than half of them hidden in the generic engine.
+// `ft4/decode.rs`'s `snr_db` override is the only caller, so a build
+// with `fst4` but not `ft4` — a real CI feature-matrix cell — sees
+// this as dead. Silenced rather than `cfg`'d away so the intra-doc
+// links to it from `GenericPipelineProtocol::snr_db` (two of them)
+// keep resolving under every feature set.
+#[cfg_attr(not(feature = "ft4"), allow(dead_code))]
 pub(crate) fn ft4_snr_db(cand_score: f32) -> f32 {
     let snr = cand_score - 1.0;
     if snr > 0.0 {

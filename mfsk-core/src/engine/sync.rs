@@ -641,22 +641,73 @@ pub fn coarse_sync<P: Protocol>(
         stage1_pass(fi)
     });
 
-    if let Some(fhint) = freq_hint {
-        cands.sort_by(|a, b| {
-            let a_near = (a.freq_hz - fhint).abs() <= 10.0;
-            let b_near = (b.freq_hz - fhint).abs() <= 10.0;
-            match (a_near, b_near) {
-                (true, false) => core::cmp::Ordering::Less,
-                (false, true) => core::cmp::Ordering::Greater,
-                _ => b.score.partial_cmp(&a.score).unwrap(),
-            }
-        });
-    } else {
-        cands.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    }
+    rank_candidates(cands, freq_hint, max_cand)
+}
 
-    cands.truncate(max_cand);
-    cands
+/// A candidate this far (Hz) from `freq_hint` counts as "at the aim
+/// point" for [`rank_candidates`]'s priority group.
+pub(crate) const FREQ_HINT_NEAR_HZ: f32 = 10.0;
+
+/// Score-rank candidates for output, honouring an optional aim-point
+/// hint, and truncate to `max_cand`.
+///
+/// Without a hint this is a plain best-score-first sort. With one,
+/// candidates within [`FREQ_HINT_NEAR_HZ`] of the hint get priority —
+/// but only over the first *half* of the `max_cand` budget. The
+/// remaining slots are filled by global score order, and any leftover
+/// near-aim candidates trail behind that. Within every group the
+/// ordering is by score, best first.
+///
+/// **Why the half-budget reservation** (issue #257): the previous
+/// policy was strict lexicographic "near-aim first, score second",
+/// which let arbitrarily *weak* candidates near the aim point evict an
+/// arbitrarily *strong* one just outside it. That was not hypothetical.
+/// `SniperRequest` runs at `sync_min = 0.8` with `max_cand` clamped to
+/// 15, and this function's per-bin NMS emits up to 8 lag peaks per
+/// frequency bin — so on FT4 (`df` = 5.21 Hz, three bins inside
+/// ±10 Hz) the aim point alone could produce well over 15 candidates,
+/// most of them noise-floor lags scoring ~1.0. All 15 slots went to
+/// them, and a real signal 16-99 Hz away scoring 12-17 was truncated
+/// away before it was ever decoded: a blind annulus between the
+/// ±12 Hz that `refine_candidate_position` can pull in from the aim
+/// point and the ~±100 Hz beyond which the aim-adjacent bins are clean
+/// enough noise to fall under `sync_min` and vanish on their own.
+/// Reserving rather than monopolising keeps the hint's actual intent —
+/// a weak signal at the aim point should not be ranked out by stronger
+/// QRM elsewhere in the search window — without the starvation.
+pub(crate) fn rank_candidates(
+    mut cands: Vec<SyncCandidate>,
+    freq_hint: Option<f32>,
+    max_cand: usize,
+) -> Vec<SyncCandidate> {
+    cands.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let Some(fhint) = freq_hint else {
+        cands.truncate(max_cand);
+        return cands;
+    };
+
+    // `partition` preserves relative order, so both halves stay
+    // score-sorted from the sort above.
+    let (near, far): (Vec<SyncCandidate>, Vec<SyncCandidate>) = cands
+        .into_iter()
+        .partition(|c| (c.freq_hz - fhint).abs() <= FREQ_HINT_NEAR_HZ);
+
+    let reserved = near.len().min(max_cand.div_ceil(2));
+    let mut out = Vec::with_capacity(max_cand.min(near.len() + far.len()));
+    out.extend_from_slice(&near[..reserved]);
+    out.extend(far);
+    // Leftover near-aim candidates trail the score-ordered remainder
+    // rather than being dropped outright — with no competition (`far`
+    // empty, e.g. the target really is at the aim point) this degrades
+    // to exactly the old behaviour.
+    out.extend_from_slice(&near[reserved..]);
+    out.truncate(max_cand);
+    out
 }
 
 // ──────────────────────────────────────────────────────────────────────────

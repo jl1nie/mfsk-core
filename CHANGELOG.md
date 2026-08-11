@@ -4,6 +4,48 @@
 
 ### Fixed
 
+- **FT4 sniper mode was blind to signals 15-99 Hz off the aim point**
+  (issue #257, reported from a WebFT8 downstream synthetic harness).
+  `SniperRequest::<Ft4>` asks `coarse_sync` for a ±250 Hz search
+  window, but in practice decoded only within ~±14 Hz of
+  `target_freq` or beyond ~±100 Hz — returning nothing at all in
+  between, at any SNR, on buffers wide-band decoded 8/8. Root cause
+  was `coarse_sync`'s `freq_hint` *ranking*, not its scoring: the
+  hint applied strict lexicographic precedence ("within 10 Hz of the
+  aim point" first, score only as a tie-break). Sniper runs at
+  `sync_min = 0.8` with `max_cand` clamped to 15, and `coarse_sync`'s
+  per-bin NMS emits up to 8 lag peaks per frequency bin — so on FT4
+  (`df` = 5.21 Hz, three bins inside ±10 Hz) the aim point alone
+  produced more than 15 candidates, nearly all noise-floor lags
+  scoring ~1.0. They took every slot, and the real signal 16-99 Hz
+  away — scoring 12-17, by far the strongest candidate in the band —
+  was truncated off the list before any decoder ever saw it. The
+  annulus's edges follow from that: below ~14 Hz the promoted
+  aim-point candidates are within `refine_candidate_position`'s own
+  ±12 Hz frequency pull-in, and beyond ~100 Hz (just past FT4's
+  83.3 Hz occupied bandwidth) the aim-adjacent bins stop catching the
+  signal's energy, fall under `sync_min`, and stop crowding the list
+  on their own. New `engine::sync::rank_candidates` reserves the aim
+  point at most *half* the candidate budget and fills the rest by
+  score, keeping the hint's actual intent (a weak signal at the aim
+  point should not be ranked out by stronger QRM elsewhere in the
+  window) without the starvation; `engine::ft4_coarse::ft4_coarse_sync`
+  now shares it so the two coarse-sync paths cannot disagree.
+  Regression test `tests/ft4_sniper_aim_offset.rs` covers the former
+  annulus (16/20/40/60 Hz) and the offsets that already worked
+  (0/12/100 Hz); it fails on the parent commit. Note the issue's own
+  `max_cand` sweep (15/30/50/100/200) was inert — `Ft4::__sniper`
+  clamps `req.max_cand.min(15)` — which is why raising it looked like
+  it made no difference.
+
+- **`--features fst4` (without `ft4`) failed to build** — `ft4_snr_db`
+  and `SnrCtx::cand_score`, added by issue #255's FT4 work, are read
+  only by FT4's `snr_db` override, so that CI feature-matrix cell hit
+  `-D dead-code`. Silenced under `cfg(not(feature = "ft4"))` rather
+  than `cfg`'d away, so the intra-doc links to `ft4_snr_db` from
+  `GenericPipelineProtocol::snr_db` keep resolving under every
+  feature set.
+
 - **FT4/FST4 AP-hint decode path (`msg::pipeline_ap::process_candidate_ap`)
   used a coarser, non-frequency-correcting refine than the wide-band
   path, and skipped the RMS-normalisation `compute_llr`'s scale
