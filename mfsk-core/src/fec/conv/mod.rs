@@ -9,6 +9,7 @@
 //! shape WSPR needs: 50 info bits, 31 zero-tail bits, 162 coded bits.
 
 pub mod fano;
+mod metric_table;
 
 use alloc::vec;
 
@@ -29,23 +30,22 @@ pub struct ConvFano;
 impl ConvFano {
     /// Total input bits the Fano decoder runs over (50 message + 31 tail).
     pub const NBITS: usize = 81;
-    /// Default Fano threshold step. 17 is a pragmatic starting point for
-    /// our `build_branch_metrics` scale (16.0) and closely mirrors WSJT-X's
-    /// 60/10 ≈ 6 ratio when you account for the different quantisation.
-    pub const DEFAULT_DELTA: i32 = 17;
+    /// Fano threshold step — `wsprd.c:822`'s `delta = 60`, usable
+    /// verbatim now that [`fano::build_branch_metrics_wsprd`] puts the
+    /// branch metrics on wsprd's own `10 ×` quantisation. (It was 17
+    /// while the metric was a linear approximation on an
+    /// input-dependent scale.)
+    pub const DEFAULT_DELTA: i32 = 60;
     /// Default "max cycles per bit" — 10000 matches WSJT-X's wsprd default.
     pub const DEFAULT_MAX_CYCLES: u64 = 10_000;
     /// LLR → branch-metric quantisation scale.
     pub const METRIC_SCALE: f32 = 16.0;
-    /// Fano bias, subtracted from each per-bit metric. WSJT-X
-    /// `wsprd/fano.c` uses `bias = 0.42` on a ±1 soft-symbol scale.
-    /// Our LLR pipeline runs at a higher scale (≈ ±20 clamp), and a
-    /// proportional bias of 4.2 breaks synthetic-low-magnitude tests
-    /// (`tolerates_a_few_errors` runs at LLR magnitude 6). 1.0 is the
-    /// largest value that keeps both synthetic and real-WAV decodes
-    /// healthy; raising further would need an LLR-normalisation pass
-    /// before Fano (deferred — see `wspr_wsjtx_samples.rs`).
-    pub const METRIC_BIAS: f32 = 1.0;
+    /// Fano metric bias — `wsprd.c:823`'s `bias = 0.45`, applied
+    /// inside [`fano::build_branch_metrics_wsprd`] against the
+    /// empirical table. The old value (1.0) belonged to the linear
+    /// metric and was, per its own comment, capped by the lack of a
+    /// normalisation pass; that pass now exists.
+    pub const METRIC_BIAS: f32 = 0.45;
 }
 
 /// Pack the message bits + 31 zero tail into the 11-byte buffer that
@@ -78,7 +78,7 @@ impl FecCodec for ConvFano {
 
     fn decode_soft(&self, llr: &[f32], _opts: &FecOpts) -> Option<FecResult> {
         assert_eq!(llr.len(), Self::N);
-        let bm = fano::build_branch_metrics(llr, Self::METRIC_BIAS, Self::METRIC_SCALE);
+        let bm = fano::build_branch_metrics_wsprd(llr, Self::METRIC_BIAS);
         let res = fano::fano_decode(
             &bm,
             Self::NBITS,
@@ -102,7 +102,7 @@ impl ConvFano {
         scratch: &mut fano::FanoScratch,
     ) -> Option<FecResult> {
         assert_eq!(llr.len(), Self::N);
-        let bm = fano::build_branch_metrics(llr, Self::METRIC_BIAS, Self::METRIC_SCALE);
+        let bm = fano::build_branch_metrics_wsprd(llr, Self::METRIC_BIAS);
         let res = fano::fano_decode_with_scratch(
             scratch,
             &bm,

@@ -86,6 +86,56 @@ pub fn build_branch_metrics(llrs: &[f32], bias: f32, scale: f32) -> Vec<[i32; 2]
         .collect()
 }
 
+/// wsprd's soft-symbol normalisation + `mettab` lookup — the faithful
+/// replacement for [`build_branch_metrics`]'s linear approximation on
+/// the WSPR code.
+///
+/// Two steps, both from `wsprd.c`:
+///
+/// 1. **Normalise** (`wsprd.c:472-481`). Divide every soft symbol by
+///    the RMS `fac = sqrt(f2sum − fsum²)` of the 162-symbol vector,
+///    scale by `symfac = 50`, clamp to `[−128, 127]`, offset by
+///    `+128`. Note wsprd divides by the RMS *without* subtracting the
+///    mean — `fsum` is computed but only ever used inside `fac`. This
+///    port keeps that quirk deliberately.
+///
+///    Normalising here is what makes the metric scale-invariant, which
+///    is why the table can be shared across every input level: the
+///    caller no longer has to hand us LLRs on a particular scale.
+///
+/// 2. **Look up** (`wsprd.c:912-913`):
+///    `mettab[0][i] = round(10·(T[i] − bias))`,
+///    `mettab[1][i] = round(10·(T[255 − i] − bias))`.
+///
+/// `llrs` arrives in *this crate's* sign convention (positive → bit 0,
+/// matching `wspr::demod`'s `p0 − p1`); wsprd's `fsymb` is `xm1 − xm0`,
+/// the opposite, so the sign flips on the way in.
+pub fn build_branch_metrics_wsprd(llrs: &[f32], bias: f32) -> Vec<[i32; 2]> {
+    use super::metric_table::WSPRD_METRIC_TABLE as T;
+    /// `symfac`, `wsprd.c:816`.
+    const SYMFAC: f32 = 50.0;
+    let n = llrs.len() as f32;
+    // Work in wsprd's sign so the constants below can be read straight
+    // off the C.
+    let fsum: f32 = llrs.iter().map(|l| -l).sum::<f32>() / n;
+    let f2sum: f32 = llrs.iter().map(|l| l * l).sum::<f32>() / n;
+    let fac = (f2sum - fsum * fsum).max(0.0).sqrt();
+    llrs.iter()
+        .map(|&l| {
+            let v = if fac > 0.0 {
+                (SYMFAC * -l / fac).clamp(-128.0, 127.0)
+            } else {
+                0.0
+            };
+            let sym = (v + 128.0) as usize;
+            let sym = sym.min(255);
+            let m0 = (10.0 * (T[sym] - bias)).round() as i32;
+            let m1 = (10.0 * (T[255 - sym] - bias)).round() as i32;
+            [m0, m1]
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct Node {
     encstate: u32,
