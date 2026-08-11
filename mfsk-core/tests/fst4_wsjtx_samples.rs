@@ -346,3 +346,43 @@ fn fst4_60_diagnose_golden() {
         );
     }
 }
+
+/// Precision: nothing beyond the two real signals may be emitted.
+///
+/// FST4 had no false-decode guard. Real `jt9 -7 -p 60` reports exactly
+/// the two decodes below on this recording, and so does this crate —
+/// so the budget is 0 with full recall, and any future candidate-
+/// selection change that starts inventing signals fails here.
+#[test]
+fn fst4_wsjtx_sample_precision_vs_reference_decoder() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    static REFERENCE: &[GoldenEntry] = &[
+        GoldenEntry::msg("CQ N5TM EL29"),
+        GoldenEntry::msg("CQ K9KFR EN71"),
+    ];
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: FST4 golden recording not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let out = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.2, 50).decode();
+
+    assert_golden(
+        &out.results,
+        &GoldenSet {
+            name: "FST4-60 210115_0058.wav",
+            expected: REFERENCE,
+            min_hits: 2,
+            max_extra: 0,
+        },
+        Tolerances::default(),
+        |d| DecodeView {
+            msg: unpack77(d.message77()).unwrap_or_default(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
+    );
+}
