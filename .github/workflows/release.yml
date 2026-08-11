@@ -116,7 +116,12 @@ jobs:
               return;
             }
 
-            const wanted = 'Test (default)';
+            // Must track ci.yml's matrix entry name exactly — the job
+            // renders as `Test (<suite.name>)`. Renaming the suite
+            // without updating this string would silently disable the
+            // gate, so the check below fails closed when the job is
+            // absent rather than assuming it passed.
+            const wanted = 'Test (tier A+B — invariants + golden)';
             let found = null;
             for (const run of ciRuns) {
               const jobs = await github.paginate(
