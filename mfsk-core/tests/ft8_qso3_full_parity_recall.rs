@@ -53,7 +53,7 @@ const WSJTX_GOLDEN: &[GoldenEntry] = &[
         df_hz: 1197.0,
     },
     GoldenEntry {
-        msg: "N1JFU EA6EE R-7",
+        msg: "N1JFU EA6EE R-07",
         snr_db: -13.0,
         df_hz: 641.0,
     },

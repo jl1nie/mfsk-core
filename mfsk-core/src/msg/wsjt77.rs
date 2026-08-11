@@ -82,6 +82,35 @@ fn read_bits_u64(msg: &[u8], start: usize, len: usize) -> u64 {
     n
 }
 
+/// Render a signal report the way WSJT-X does.
+///
+/// `packjt77.f90:504-505`:
+///
+/// ```fortran
+/// write(crpt,'(i3.2)') isnr
+/// if(crpt(1:1).eq.' ') crpt(1:1)='+'
+/// ```
+///
+/// Fortran's `i3.2` is width 3 with a **minimum of two digits**, so
+/// both signs come out two-digit: `-8` → `-08`, `8` → ` 08` → `+08`.
+///
+/// This existed inline at two call sites and got it wrong at both, in
+/// a way that only showed on single-digit magnitudes: the positive
+/// branch put `+` in a separate literal so `{:02}` padded the digits,
+/// but the negative branch left `-` inside the formatted integer,
+/// where Rust counts it toward the width — `-8` is already 2 wide, so
+/// nothing was padded. Formatting the *magnitude* and prepending the
+/// sign makes both branches the same shape and the bug unrepresentable.
+///
+/// Caught measuring FT8 recall against a real `jt9` build, where four
+/// decodes looked like misses purely because of this (`W1FC F5BZB -8`
+/// vs `-08`).
+fn fmt_report(isnr: i32, ir: u8) -> String {
+    let sign = if isnr >= 0 { '+' } else { '-' };
+    let prefix = if ir == 1 { "R" } else { "" };
+    format!("{prefix}{sign}{:02}", isnr.abs())
+}
+
 /// Decode a 28-bit packed callsign token.
 ///
 /// Returns the human-readable callsign, "DE", "QRZ", "CQ", "CQ NNN",
@@ -304,12 +333,7 @@ pub fn unpack77(msg: &[u8]) -> Option<String> {
                         if isnr > 50 {
                             isnr -= 101;
                         }
-                        let sign = if isnr >= 0 { "+" } else { "" };
-                        if ir == 1 {
-                            format!("R{}{:02}", sign, isnr)
-                        } else {
-                            format!("{}{:02}", sign, isnr)
-                        }
+                        fmt_report(isnr, ir)
                     }
                 }
             };
@@ -478,12 +502,7 @@ pub fn unpack77_with_hash(msg: &[u8], ht: &CallsignHashTable) -> Option<String> 
                         if isnr > 50 {
                             isnr -= 101;
                         }
-                        let sign = if isnr >= 0 { "+" } else { "" };
-                        if ir == 1 {
-                            format!("R{}{:02}", sign, isnr)
-                        } else {
-                            format!("{}{:02}", sign, isnr)
-                        }
+                        fmt_report(isnr, ir)
                     }
                 }
             };
@@ -1230,6 +1249,55 @@ pub fn pack77_free_text(text: &str) -> Option<[u8; 77]> {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod report_format_tests {
+    use super::fmt_report;
+
+    /// WSJT-X renders both signs with two digits (`packjt77.f90:504`'s
+    /// `i3.2`). Single-digit magnitudes are the only ones this ever got
+    /// wrong, and they are common in real traffic.
+    #[test]
+    fn single_digit_reports_are_zero_padded_like_wsjtx() {
+        assert_eq!(fmt_report(-8, 0), "-08");
+        assert_eq!(fmt_report(-8, 1), "R-08");
+        assert_eq!(fmt_report(8, 0), "+08");
+        assert_eq!(fmt_report(8, 1), "R+08");
+        assert_eq!(fmt_report(0, 0), "+00");
+    }
+
+    /// Two-digit magnitudes were already correct; pin them so a fix to
+    /// the above can't regress them.
+    #[test]
+    fn two_digit_reports_are_unchanged() {
+        assert_eq!(fmt_report(-23, 0), "-23");
+        assert_eq!(fmt_report(-23, 1), "R-23");
+        assert_eq!(fmt_report(15, 0), "+15");
+        assert_eq!(fmt_report(-30, 0), "-30");
+    }
+
+    /// The exact strings real `jt9` printed for the four FT8 decodes
+    /// that exposed this, on `qso3_busy.wav`.
+    #[test]
+    fn matches_the_jt9_strings_that_exposed_the_bug() {
+        assert_eq!(
+            format!("W1FC F5BZB {}", fmt_report(-8, 0)),
+            "W1FC F5BZB -08"
+        );
+        assert_eq!(
+            format!("WM3PEN EA6VQ {}", fmt_report(-9, 0)),
+            "WM3PEN EA6VQ -09"
+        );
+        assert_eq!(
+            format!("N1JFU EA6EE {}", fmt_report(-7, 1)),
+            "N1JFU EA6EE R-07"
+        );
+        assert_eq!(
+            format!("K1BZM EA3GP {}", fmt_report(-9, 0)),
+            "K1BZM EA3GP -09"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
