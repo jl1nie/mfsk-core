@@ -18,7 +18,7 @@ use std::f32::consts::PI;
 use num_complex::Complex32;
 use rustfft::FftPlanner;
 
-const SAMPLE_RATE_HZ: f32 = 12_000.0;
+pub const SAMPLE_RATE_HZ: f32 = 12_000.0;
 
 /// Phase-domain impairments shared between SSB and FM compound
 /// channels. Set fields to zero / empty / `INFINITY` to disable a
@@ -125,7 +125,7 @@ impl Pcg64 {
 /// Compute the analytic signal `x_a[n] = x[n] + j · H{x}[n]` via
 /// FFT (zero negative frequencies, double positive ones, leave DC
 /// and Nyquist unchanged).
-fn analytic_signal(x: &[f32]) -> Vec<Complex32> {
+pub fn analytic_signal(x: &[f32]) -> Vec<Complex32> {
     let n = x.len();
     if n == 0 {
         return Vec::new();
@@ -155,7 +155,7 @@ fn analytic_signal(x: &[f32]) -> Vec<Complex32> {
 
 /// FFT-domain bandpass filter with raised-cosine edges
 /// (`transition_hz` wide on each side). Real-in → real-out.
-fn bpf(audio: &[f32], low_hz: f32, high_hz: f32, transition_hz: f32, fs: f32) -> Vec<f32> {
+pub fn bpf(audio: &[f32], low_hz: f32, high_hz: f32, transition_hz: f32, fs: f32) -> Vec<f32> {
     let n = audio.len();
     if n == 0 {
         return Vec::new();
@@ -412,173 +412,5 @@ impl FmChannel {
         for sample in audio.iter_mut() {
             *sample += self.awgn_sigma * rng.gaussian();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn analytic_signal_real_part_matches_input() {
-        let n = 512;
-        let f = 1500.0 / SAMPLE_RATE_HZ;
-        let x: Vec<f32> = (0..n).map(|i| (2.0 * PI * f * i as f32).cos()).collect();
-        let anal = analytic_signal(&x);
-        // Skip edges (FFT-Hilbert has wrap-around there).
-        for (i, (a, xi)) in anal[64..n - 64].iter().zip(&x[64..n - 64]).enumerate() {
-            assert!((a.re - xi).abs() < 0.05, "i={i}: re={} vs x={xi}", a.re,);
-        }
-    }
-
-    #[test]
-    fn analytic_signal_quadrature_is_sine_for_cosine_input() {
-        let n = 512;
-        let f = 1500.0 / SAMPLE_RATE_HZ;
-        let x: Vec<f32> = (0..n).map(|i| (2.0 * PI * f * i as f32).cos()).collect();
-        let anal = analytic_signal(&x);
-        for (offset, a) in anal[64..n - 64].iter().enumerate() {
-            let i = offset + 64;
-            let want = (2.0 * PI * f * i as f32).sin();
-            assert!(
-                (a.im - want).abs() < 0.05,
-                "i={i}: im={} vs sin={want}",
-                a.im,
-            );
-        }
-    }
-
-    #[test]
-    fn bpf_passes_in_band_blocks_out_of_band() {
-        let n = 4096;
-        let fs = SAMPLE_RATE_HZ;
-        // 1500 Hz tone (in the SSB passband) and 100 Hz tone (out).
-        let in_band: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * 1500.0 * i as f32 / fs).cos())
-            .collect();
-        let out_band: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * 100.0 * i as f32 / fs).cos())
-            .collect();
-        let in_filtered = bpf(&in_band, 300.0, 2700.0, 100.0, fs);
-        let out_filtered = bpf(&out_band, 300.0, 2700.0, 100.0, fs);
-        let pwr =
-            |buf: &[f32]| buf[200..n - 200].iter().map(|s| s * s).sum::<f32>() / (n - 400) as f32;
-        let in_pwr = pwr(&in_filtered);
-        let out_pwr = pwr(&out_filtered);
-        assert!(in_pwr > 0.4, "in-band power {in_pwr} too low");
-        assert!(out_pwr < 0.05, "out-of-band power {out_pwr} too high");
-    }
-
-    #[test]
-    fn ssb_channel_off_preserves_passband_signal() {
-        let n = 2048;
-        let fs = SAMPLE_RATE_HZ;
-        let original: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * 1500.0 * i as f32 / fs).cos())
-            .collect();
-        let mut audio = original.clone();
-        let chan = SsbChannel {
-            bpf_hz: (300.0, 2700.0),
-            bpf_transition_hz: 100.0,
-            clarifier_offset_hz: 0.0,
-            awgn_sigma: 0.0,
-            phase_fading: PhaseFadingModel::off(),
-            seed: 1,
-        };
-        chan.apply(&mut audio);
-        let pwr =
-            |buf: &[f32]| buf[300..n - 300].iter().map(|s| s * s).sum::<f32>() / (n - 600) as f32;
-        let r = pwr(&audio) / pwr(&original);
-        assert!(
-            (r - 1.0).abs() < 0.15,
-            "SSB-off should preserve power within 15%, got ratio {r}",
-        );
-    }
-
-    #[test]
-    fn ssb_channel_with_phase_walk_introduces_phase_drift() {
-        // A 1500 Hz cosine through SSB with walk should accumulate
-        // measurable instantaneous phase deviation by burst-end.
-        let n = 12_000; // 1 sec
-        let fs = SAMPLE_RATE_HZ;
-        let original: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * 1500.0 * i as f32 / fs).cos())
-            .collect();
-        let mut audio = original.clone();
-        let chan = SsbChannel {
-            bpf_hz: (300.0, 2700.0),
-            bpf_transition_hz: 100.0,
-            clarifier_offset_hz: 0.0,
-            awgn_sigma: 0.0,
-            phase_fading: PhaseFadingModel {
-                lo_phase_walk_rad_per_sqrt_s: 2.0,
-                ..PhaseFadingModel::off()
-            },
-            seed: 7,
-        };
-        chan.apply(&mut audio);
-        // Compare the late-burst correlation against the early-burst
-        // correlation. Phase walk should de-correlate them.
-        let early: f32 = audio[1000..2000]
-            .iter()
-            .zip(&original[1000..2000])
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
-            / 1000.0;
-        let late: f32 = audio[10_000..11_000]
-            .iter()
-            .zip(&original[10_000..11_000])
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
-            / 1000.0;
-        // Early correlation should be close to 0.5 (cos² mean), late
-        // should be reduced (or sign-reversed) by accumulated phase
-        // drift.
-        assert!(
-            (early - late).abs() > 0.1 || late.abs() < 0.3,
-            "phase walk produced no measurable drift: early={early} late={late}",
-        );
-    }
-
-    #[test]
-    fn ssb_default_channel_does_not_nan() {
-        let mut audio = vec![0.5_f32; 12_000];
-        SsbChannel::default().apply(&mut audio);
-        assert!(audio.iter().all(|s| s.is_finite()));
-    }
-
-    #[test]
-    fn fm_default_channel_does_not_nan() {
-        let mut audio = vec![0.5_f32; 12_000];
-        FmChannel::default().apply(&mut audio);
-        assert!(audio.iter().all(|s| s.is_finite()));
-    }
-
-    #[test]
-    fn rician_k_infinity_gives_unit_envelope() {
-        // K = +∞ + Doppler 5 Hz: should still be near-unit envelope
-        // (since LOS component dominates).
-        let n = 12_000;
-        let fs = SAMPLE_RATE_HZ;
-        let original: Vec<f32> = (0..n)
-            .map(|i| (2.0 * PI * 1500.0 * i as f32 / fs).cos())
-            .collect();
-        let mut audio = original.clone();
-        let chan = SsbChannel {
-            bpf_hz: (300.0, 2700.0),
-            bpf_transition_hz: 100.0,
-            clarifier_offset_hz: 0.0,
-            awgn_sigma: 0.0,
-            phase_fading: PhaseFadingModel {
-                doppler_hz: 5.0,
-                rician_k_db: f32::INFINITY,
-                ..PhaseFadingModel::off()
-            },
-            seed: 11,
-        };
-        chan.apply(&mut audio);
-        let r = audio[400..n - 400].iter().map(|s| s * s).sum::<f32>()
-            / original[400..n - 400].iter().map(|s| s * s).sum::<f32>();
-        assert!((r - 1.0).abs() < 0.2, "unit-K envelope ratio {r}");
     }
 }

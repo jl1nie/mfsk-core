@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// Env var CI sets to turn a missing tier-B corpus into a hard failure.
 pub const REQUIRE_ENV: &str = "MFSK_REQUIRE_CORPUS";
 
-fn require_enabled() -> bool {
+pub fn require_enabled() -> bool {
     std::env::var(REQUIRE_ENV).is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
@@ -128,40 +128,4 @@ pub fn golden_subdir(rel: &str) -> Option<PathBuf> {
 pub fn optional_corpus(rel: &str) -> Option<PathBuf> {
     let p = manifest_dir().join("../embedded-poc/assets").join(rel);
     p.is_dir().then_some(p)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn vendored_golden_assets_are_present() {
-        // These are committed to the repo, so their absence is a real
-        // failure on any machine, not a skip.
-        for rel in [
-            "ft4/000000_000002.wav",
-            "fst4/210115_0058.wav",
-            "wspr/150426_0918.wav",
-            "msk144/181211_120500.wav",
-            "msk144/181211_120800.wav",
-            "jt65/jt65a_5sig_m18.wav",
-        ] {
-            assert!(
-                golden_dir().join(rel).exists(),
-                "vendored golden asset {rel} is missing from {}",
-                golden_dir().display()
-            );
-        }
-    }
-
-    #[test]
-    fn missing_asset_is_none_without_the_env_var() {
-        // Guard the developer-machine half of the contract. (The
-        // panicking half is exercised by CI itself running the whole
-        // tier-B suite with MFSK_REQUIRE_CORPUS=1.)
-        if require_enabled() {
-            return;
-        }
-        assert!(golden_path("nope/does-not-exist.wav").is_none());
-    }
 }

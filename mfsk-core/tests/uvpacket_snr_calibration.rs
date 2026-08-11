@@ -17,6 +17,13 @@
 use mfsk_core::uvpacket::framing::FrameHeader;
 use mfsk_core::uvpacket::{AUDIO_CENTRE_HZ, Mode, rx, tx};
 
+// `common` is shared scaffolding included by 43 test binaries, each
+// using a different subset — dead-code analysis of it is per-binary
+// noise. Every other consumer already carries this attribute; these
+// six only compiled without it because `common`'s own `#[cfg(test)]`
+// blocks kept the helpers "used" until they moved to
+// `tests/common_selftest.rs`.
+#[allow(dead_code)]
 mod common;
 use common::channel::{AwgnChannel, awgn_sigma_for_eb_n0_info, signal_power};
 
