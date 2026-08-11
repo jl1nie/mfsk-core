@@ -88,6 +88,18 @@ fn scan_finds_signal_at_low_dial_frequency() {
     let audio = synthesize_standard("CQ", "K1ABC", "FN42", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize);
     let decodes = scan_default(&slot, FS);
+    // Precision, not just recall: one signal went into a clean synth
+    // slot, so any other message coming out is a phantom. A
+    // recall-only `any(...)` cannot see them.
+    let phantoms: Vec<&str> = decodes
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| *m != "CQ K1ABC FN42")
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+    );
     assert!(
         decodes.iter().any(|d| d.message == "CQ K1ABC FN42"),
         "expected CQ K1ABC FN42 not in {decodes:#?}"
@@ -101,6 +113,18 @@ fn scan_finds_signal_at_high_dial_frequency() {
     let audio = synthesize_standard("W1AW", "JA1XYZ", "QM06", FS, freq, 0.3).expect("pack + synth");
     let slot = make_slot(&audio, FS as usize);
     let decodes = scan_default(&slot, FS);
+    // Precision, not just recall: one signal went into a clean synth
+    // slot, so any other message coming out is a phantom. A
+    // recall-only `any(...)` cannot see them.
+    let phantoms: Vec<&str> = decodes
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| *m != "W1AW JA1XYZ QM06")
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+    );
     assert!(
         decodes.iter().any(|d| d.message == "W1AW JA1XYZ QM06"),
         "expected W1AW JA1XYZ QM06 not in {decodes:#?}"

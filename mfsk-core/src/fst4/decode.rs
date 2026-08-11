@@ -265,6 +265,27 @@ mod tests {
                 unpack77(msg77)
             })
             .collect();
+        // Precision, not just recall. One signal went in, so anything
+        // else that comes out is a phantom — and a decoder with no CRC
+        // slack can pass a recall-only assertion while emitting them.
+        // This is the cheapest place to notice that per sub-mode:
+        // a clean synth slot has no interferer to blame.
+        let phantoms: Vec<&String> = texts
+            .iter()
+            .filter(|t| !(t.contains("JA1ABC") && t.contains("PM95")))
+            .collect();
+        assert!(
+            phantoms.is_empty(),
+            "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+        );
+        let phantoms: Vec<&String> = texts
+            .iter()
+            .filter(|t| !(t.contains("JA1ABC") && t.contains("PM95")))
+            .collect();
+        assert!(
+            phantoms.is_empty(),
+            "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+        );
         assert!(
             texts
                 .iter()

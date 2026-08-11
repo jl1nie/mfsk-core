@@ -50,6 +50,18 @@ fn q65_15a_scan_recovers_at_offset() {
         max_candidates: 8,
     };
     let decodes = DecodeRequest::<Q65a15>::new(&slot, FS, start, params).decode();
+    // Precision, not just recall: one signal went into a clean synth
+    // slot, so any other message coming out is a phantom. A
+    // recall-only `any(...)` cannot see them.
+    let phantoms: Vec<&str> = decodes
+        .iter()
+        .map(|d| d.message.as_str())
+        .filter(|m| *m != "CQ JA1ABC PM95")
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "clean single-signal synth produced phantom decode(s): {phantoms:?}"
+    );
     assert!(
         decodes.iter().any(|d| d.message == "CQ JA1ABC PM95"),
         "Q65-15A scan must find offset signal, got {decodes:#?}"
