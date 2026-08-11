@@ -222,3 +222,91 @@ fn ft4_wsjtx_sample_precision_vs_reference_decoder() {
         },
     );
 }
+
+/// Reported SNR must track real `jt9`'s on the same recording.
+///
+/// FT4 was the only implemented protocol with **no SNR check of any
+/// kind** — neither against a reference decoder nor against an
+/// injected value. That is the gap issue #255 walked into: FT4's
+/// reported SNR was ~6.9 dB low for as long as the crate had existed,
+/// because `engine::llr::compute_snr_db`'s generic adjacent-tone
+/// heuristic stood in for `ft4_decode.f90`'s real
+/// `10·log10(candidate_score − 1) − 14.8`, and nothing measured it.
+///
+/// This pins the fixed formula (`engine::pipeline::ft4_snr_db`).
+/// Reference values are real `jt9 -5 -p 15 -L 300 -H 2700 -d 3` on
+/// the vendored recording. Measured agreement across the 11 decodes
+/// this crate and `jt9` share, spanning −17…+16 dB:
+///
+/// ```text
+///   mean error  +0.06 dB      max |error|  0.46 dB
+/// ```
+///
+/// — the closest SNR agreement of any protocol here. Tolerance is set
+/// at 2 dB: loose enough that a refactor or a rebuilt corpus won't
+/// trip it, tight enough that the ~6.9 dB error #255 fixed could
+/// never pass again.
+#[test]
+fn ft4_wsjtx_sample_snr_matches_real_jt9() {
+    const SNR_TOL_DB: f32 = 2.0;
+    /// `(message, jt9's reported SNR)`.
+    const REFERENCE: &[(&str, f32)] = &[
+        ("N1TRK N4FKH 569 VA", -10.0),
+        ("N1TRK KB7RUQ RR73", -10.0),
+        ("CQ RU AB5XS EM12", -7.0),
+        ("NZ7P WA7JAY 589 CA", -13.0),
+        ("KB0VHA KA1YQC R 539 MA", 16.0),
+        ("CQ RU N9OY EN43", -4.0),
+        ("K1JT WB4HXE 559 GA", -11.0),
+        ("VE3LON K7RL R 549 WA", 5.0),
+        ("WD9IGY KX1X 73", -1.0),
+        ("W7BOB KJ7G RR73", -17.0),
+        ("NI6G W7DRW 569 AZ", -7.0),
+        ("W9JA PY2APK RRR", -9.0),
+        ("AC6BW KR9A R 559 WI", -15.0),
+        ("CQ RU W0FRC DM79", -15.0),
+    ];
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: FT4 golden recording not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let out = DecodeRequest::<Ft4>::new(&audio, 300.0, 2700.0, 1.2, 50).decode();
+
+    let mut checked = 0usize;
+    let mut bad = Vec::new();
+    for d in &out.results {
+        let Some(msg) = unpack77(d.message77()) else {
+            continue;
+        };
+        let Some((_, reference)) = REFERENCE.iter().find(|(t, _)| *t == msg) else {
+            continue;
+        };
+        let err = d.snr_db - reference;
+        eprintln!(
+            "  {msg:<24} ours {:+6.1}  jt9 {reference:+5.1}  err {err:+.1}",
+            d.snr_db
+        );
+        checked += 1;
+        if err.abs() > SNR_TOL_DB {
+            bad.push(format!(
+                "{msg:?}: {:+.1} vs {reference:+.1} (err {err:+.1})",
+                d.snr_db
+            ));
+        }
+    }
+
+    assert!(
+        checked >= 8,
+        "only {checked} decode(s) could be compared against jt9's SNR — recall \
+         regressed, so this test could not measure what it exists to measure"
+    );
+    assert!(
+        bad.is_empty(),
+        "FT4 reported SNR is more than ±{SNR_TOL_DB} dB from real jt9's on \
+         {} decode(s): {bad:#?}. Check `engine::pipeline::ft4_snr_db` and that \
+         `SnrCtx::cand_score` still carries `ft4_coarse_sync`'s score.",
+        bad.len()
+    );
+}
