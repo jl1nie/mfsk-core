@@ -118,8 +118,38 @@ let CD do it.
 Sequence:
 1. Merge release PR into `main`.
 2. `git checkout main && git pull`.
-3. `git tag vX.Y.Z <merge-sha>` then `git push origin vX.Y.Z`.
-4. Watch the Actions tab for the `Release` workflow.
+3. **Run the tier-C sensitivity sweeps** (see below).
+4. `git tag vX.Y.Z <merge-sha>` then `git push origin vX.Y.Z`.
+5. Watch the Actions tab for the `Release` workflow.
+
+### Step 3: tier-C sensitivity sweeps, before every tag
+
+```sh
+scripts/run-sensitivity-sweeps.sh              # everything present
+scripts/run-sensitivity-sweeps.sh ft4 fst4     # or just what moved
+```
+
+CI never runs these. They need the generated corpora under
+`embedded-poc/assets/*_sweep/` (~17 GB, gitignored, built by
+`scripts/gen_*_sweep_wavs.sh` on top of WSJT-X's Fortran simulators),
+so on CI every one of them silently skips. A release is the interval
+where that gap actually matters — shipping a sensitivity regression to
+crates.io is the outcome the sweeps exist to prevent, and it is
+irreversible once published.
+
+They **assert nothing** by design: sensitivity is a curve, and a
+threshold that moved 0.3 dB is a judgement call rather than a boolean.
+Compare the printed tables against `docs/notes/*BENCHMARK.md` and the
+previous release's numbers; a move worse than ~0.5 dB is worth
+explaining before tagging. Update `docs/notes/BENCHMARKS.md` when the
+numbers move for a reason you understand (new hardware counts — the
+table records the machine).
+
+A nightly workflow was considered and rejected: on a solo, bursty repo
+most nights would re-measure unchanged code, and this project already
+deleted one scheduled tier for precisely that reason (see `ci.yml`'s
+note that it "only ever cost wall-clock for output nobody was
+routinely reading").
 
 ### Release cadence — biweekly, decoupled from merging
 
