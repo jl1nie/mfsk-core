@@ -47,7 +47,7 @@ struct GoldenEntry {
 /// `K1JT HA5WA 73`.
 const JTDX_HIGH_GOLDEN: &[GoldenEntry] = &[
     GoldenEntry {
-        msg: "W1FC F5BZB -8",
+        msg: "W1FC F5BZB -08",
         snr_db: 0.0,
         df_hz: 2571.0,
     },
@@ -67,7 +67,7 @@ const JTDX_HIGH_GOLDEN: &[GoldenEntry] = &[
         df_hz: 1196.0,
     },
     GoldenEntry {
-        msg: "WM3PEN EA6VQ -9",
+        msg: "WM3PEN EA6VQ -09",
         snr_db: 0.0,
         df_hz: 2157.0,
     },
@@ -82,7 +82,7 @@ const JTDX_HIGH_GOLDEN: &[GoldenEntry] = &[
         df_hz: 1648.0,
     },
     GoldenEntry {
-        msg: "N1JFU EA6EE R-7",
+        msg: "N1JFU EA6EE R-07",
         snr_db: -14.0,
         df_hz: 641.0,
     },
@@ -97,7 +97,7 @@ const JTDX_HIGH_GOLDEN: &[GoldenEntry] = &[
         df_hz: 244.0,
     },
     GoldenEntry {
-        msg: "K1BZM EA3GP -9",
+        msg: "K1BZM EA3GP -09",
         snr_db: -11.0,
         df_hz: 2695.0,
     },
@@ -180,7 +180,7 @@ use common::load_wav_i16;
 /// -d3` build's own internal `xsnr2` for WM3PEN reads 12.4 dB, not
 /// JTDX's claimed 0.0 dB, and generates no candidate near W1FC at
 /// all). Excluded from the SNR-drift assertion only.
-const JTDX_SNR_GOLDEN_UNRELIABLE: &[&str] = &["WM3PEN EA6VQ -9", "W1FC F5BZB -8"];
+const JTDX_SNR_GOLDEN_UNRELIABLE: &[&str] = &["WM3PEN EA6VQ -09", "W1FC F5BZB -08"];
 
 // Research-ceiling guard, not a ship-config budget check — same
 // rationale as ft8_qso3_jtdx_recall.rs. Run explicitly:
