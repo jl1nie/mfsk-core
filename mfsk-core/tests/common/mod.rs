@@ -5,6 +5,7 @@
 pub mod air_channel;
 pub mod channel;
 pub mod corpus;
+pub mod golden;
 
 /// Minimal RIFF/WAVE loader — parses the standard `fmt ` + `data`
 /// chunks (plus any `JUNK` / `LIST` / `bext` chunks ahead of `data`)

@@ -88,14 +88,60 @@ in doubt.
 
 ## Testing philosophy
 
-- **Unit tests** live next to the code they cover.
-- **Integration tests** in `mfsk-core/tests/` cover protocol-level
-  behaviour (synth → decode round-trips, SNR sweeps, timing budget).
-- **FFI smoke tests** live in `mfsk-ffi/examples/cpp_smoke/`; they
-  exercise every protocol through the C ABI and include
-  multi-threaded stress tests.
-- CI runs everything on each push. Keeping the full suite green is
-  the baseline expectation for a merge.
+Tests are organised by **the property they assert**, not by where the
+file lives. The previous split (unit / integration / FFI) described
+location only, and left the suite overwhelmingly weighted toward one
+property — recall — with no vocabulary for the others.
+
+That gap was measurable. In a single session (2026-08-11) seven
+defects were found and shipped fixes for; **zero** were caught by the
+existing suite. The clearest case: WSPR's recall test reported 8/8 on
+the WSJT-X golden while the decoder simultaneously emitted 8 phantom
+decodes on the same audio — a 50 % false-decode rate, green the whole
+time, because recall only ever asks "did the expected messages come
+out?" and never "did anything else?".
+
+### The four tiers
+
+| Tier | Property | When it runs | Corpus |
+|---|---|---|---|
+| **A — Invariants** | unit tests, `protocol_invariants`, encode→decode roundtrips, bit-exact parity (streaming == batch, no-alloc == `Vec`), TX waveform properties | every PR | none (synthetic) |
+| **B — Golden fidelity** | **recall** (floor) + **precision** (phantom ceiling) + **SNR accuracy** vs a reference decoder, on real recordings | every PR | vendored in `embedded-poc/assets/golden/`; **missing = failure** in CI |
+| **C — Sensitivity** | AWGN / fading threshold curves | **before a release**, locally | generated, ~17 GB, gitignored |
+| **D — none** | print-only probes and diagnostics | — | deleted; a test that cannot fail is not a test |
+
+**Tier B is written through `tests/common/golden.rs::assert_golden`,
+which takes recall and precision together.** There is deliberately no
+recall-only entry point: adding a golden test for a protocol forces a
+decision about its phantom budget. Target `max_extra: 0`; a non-zero
+budget is a documented debt, not a default.
+
+Tier B must not silently skip. `tests/common/corpus.rs` panics on a
+missing asset when `MFSK_REQUIRE_CORPUS=1`, which CI sets. Before the
+recordings were vendored, every WSJT-X-sample test resolved from a
+sibling checkout CI does not have, so five protocols' golden tests
+skipped and reported success.
+
+Tier C is **not** run by CI — the corpora need WSJT-X's Fortran
+simulators built and are far too large. Run it locally before cutting
+a release, or when you have changed something that moves sensitivity.
+
+### Which tests to run for a given change
+
+| You changed | Run |
+|---|---|
+| `src/<proto>/decode*` — candidate selection, acceptance, dedup | that protocol's tier A + B, **especially precision** |
+| `src/engine/**` — shared DSP/pipeline | tier A + B for **every** protocol on that path (FT4, FST4 and the generic pipeline all share it) |
+| an SNR formula | that protocol's tier B SNR check, against real `jt9`/`wsprd` |
+| `src/<proto>/tx.rs`, `engine::dsp::{gfsk,envelope}` | tier A TX waveform tests for **all** protocols |
+| FEC / LLR / decoding algorithm | tier A + B, **plus tier C before the next release** — these move the threshold |
+| a new protocol | fill every tier A and B cell, precision included |
+
+FFI smoke tests (`mfsk-ffi/examples/cpp_smoke/`) exercise every
+protocol through the C ABI, including multi-threaded stress, and run
+in CI's `ffi` job.
+
+Keeping tiers A and B green is the baseline expectation for a merge.
 
 ## Commit messages
 
