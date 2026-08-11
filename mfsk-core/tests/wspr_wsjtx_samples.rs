@@ -83,6 +83,22 @@ const GOLDEN: &[Golden] = &[
 const FREQ_TOL_HZ: f32 = 4.0;
 const DT_TOL_SEC: f32 = 0.5;
 
+/// The recall test's audio + params, shared by the phantom and
+/// carried-table tests so all three measure the same configuration.
+fn sample_and_params() -> Option<(Vec<f32>, SearchParams)> {
+    let path = sample_path()?;
+    let audio = read_wsjtx_wav_f32(&path)?;
+    Some((
+        audio,
+        SearchParams {
+            freq_min_hz: 1400.0,
+            freq_max_hz: 1620.0,
+            max_candidates: 100,
+            ..SearchParams::default()
+        },
+    ))
+}
+
 #[test]
 fn wspr_wsjtx_sample_recall_vs_golden() {
     let Some(path) = sample_path() else {
@@ -137,12 +153,114 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
     }
     eprintln!("recall: {}/{} golden WSPR decodes", hits, GOLDEN.len());
 
+    // 7 of 8, not 8 — and deliberately so.
+    //
+    // `W3BI FN20 30` at -25 dB is decodable only by OSD, which no
+    // amount of Fano sensitivity reaches on this file. OSD used to be
+    // gated by `nhardmin ≤ 44`, which recovered W3BI *and* admitted
+    // **8 phantom decodes** on this same 8-signal recording — a 50 %
+    // false-decode rate, and the defect a downstream reported from
+    // live operation. That threshold cannot be tuned into working:
+    // W3BI lands at `nhardmin = 39` and the phantoms at 40/40/40/41/
+    // 41/41/42/42.
+    //
+    // OSD is now gated the way `wsprd.c:1396` gates it — a result is
+    // accepted only for a callsign an earlier Fano decode confirmed
+    // (`WsprCallsignTable`). Within one isolated slot nothing
+    // confirms W3BI, so it is lost here; real `wsprd` recovers it
+    // because its `hashtab` persists across slots and invocations.
+    // `wspr_carried_table_recovers_osd_only_decode` below covers that
+    // path, and `decode_scan_with_table` is the API for it.
+    const RECALL_WITHOUT_CARRIED_TABLE: usize = 7;
     assert_eq!(
         hits,
-        GOLDEN.len(),
-        "WSPR WSJT-X sample recall regressed: {}/{}",
+        RECALL_WITHOUT_CARRIED_TABLE,
+        "WSPR WSJT-X sample recall changed: {}/{} (expected {} — W3BI is \
+         OSD-only and needs a carried WsprCallsignTable)",
         hits,
-        GOLDEN.len()
+        GOLDEN.len(),
+        RECALL_WITHOUT_CARRIED_TABLE
+    );
+}
+
+/// The decoder must emit **nothing beyond** the real signals.
+///
+/// WSPR has no CRC, so this is the property that actually matters in
+/// operation and the one that regressed: before the OSD gate was
+/// fixed this file produced 16 decodes — 8 real, 8 phantom, with
+/// callsigns like `UZC/7D0DKY` and `05S/C30EQG`. Real `wsprd` reports
+/// 9 real and 0 phantom on the same audio.
+#[test]
+fn wspr_wsjtx_sample_has_no_phantom_decodes() {
+    let Some((audio, params)) = sample_and_params() else {
+        return;
+    };
+    let decodes = decode_scan(&audio, 12_000, 0, &params);
+    let phantoms: Vec<String> = decodes
+        .iter()
+        .map(|d| d.message.to_string())
+        .filter(|m| !GOLDEN.iter().any(|g| g.msg == m))
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "WSPR emitted {} phantom decode(s) on an 8-signal recording: {phantoms:?}",
+        phantoms.len()
+    );
+}
+
+/// A callsign confirmed in an earlier slot must unlock its own
+/// OSD-only decode — and nothing else.
+///
+/// This is `wsprd`'s persisted-`hashtab` behaviour, and the reason
+/// OSD is worth keeping at all: it lets a station already established
+/// by Fano be recovered in slots where Fano cannot reach it, while
+/// still making it impossible for OSD to invent a callsign.
+#[test]
+fn wspr_carried_table_recovers_osd_only_decode() {
+    use mfsk_core::wspr::decode::{WsprCallsignTable, decode_scan_with_table};
+
+    let Some((audio, params)) = sample_and_params() else {
+        return;
+    };
+
+    // A table naming a station that is *not* in this recording must
+    // not open the gate for anything.
+    let mut bogus = WsprCallsignTable::new();
+    bogus.record(&mfsk_core::msg::WsprMessage::Type1 {
+        callsign: "ZZ9ZZZ".into(),
+        grid: "AA00".into(),
+        power_dbm: 30,
+    });
+    let n_bogus = decode_scan_with_table(&audio, 12_000, 0, &params, &mut bogus).len();
+
+    // A table naming W3BI — as a previous slot's Fano decode would —
+    // recovers exactly that one extra decode.
+    let mut known = WsprCallsignTable::new();
+    known.record(&mfsk_core::msg::WsprMessage::Type1 {
+        callsign: "W3BI".into(),
+        grid: "FN20".into(),
+        power_dbm: 30,
+    });
+    let with = decode_scan_with_table(&audio, 12_000, 0, &params, &mut known);
+    let msgs: Vec<String> = with.iter().map(|d| d.message.to_string()).collect();
+
+    assert_eq!(
+        n_bogus,
+        with.len() - 1,
+        "seeding an absent callsign changed the decode count — the OSD gate \
+         is not actually keyed on the table contents"
+    );
+    assert!(
+        msgs.iter().any(|m| m.starts_with("W3BI")),
+        "carried table did not recover the OSD-only W3BI decode; got {msgs:?}"
+    );
+    let phantoms: Vec<&String> = msgs
+        .iter()
+        .filter(|m| !GOLDEN.iter().any(|g| g.msg == m.as_str()))
+        .collect();
+    assert!(
+        phantoms.is_empty(),
+        "carried table admitted phantom decode(s): {phantoms:?}"
     );
 }
 

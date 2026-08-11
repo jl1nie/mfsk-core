@@ -4,6 +4,40 @@
 
 ### Fixed
 
+- **WSPR emitted one phantom decode for every real one** (50 % false-
+  decode rate). On the WSJT-X golden `150426_0918.wav` — 9 real
+  signals — `decode_scan` returned 16 decodes: 8 real and 8 invented,
+  with callsigns like `UZC/7D0DKY`, `IWR/4B2BBE`, `05S/C30EQG`. Real
+  `wsprd` reports 9 real and 0 phantom on the same audio. Reported
+  from live operation, where the symptom was a decode list dominated
+  by nonsense.
+
+  All 8 came from the **OSD** path; the Fano path produced none
+  (verified by sweeping `ConvFano::METRIC_BIAS` 1.0→6.0, which changed
+  nothing, then by disabling OSD, which removed every phantom). OSD
+  synthesises a valid codeword for *any* input, and WSPR has no CRC,
+  so the only thing standing between it and a well-formed callsign was
+  an `nhardmin ≤ 44` threshold. **That threshold cannot work**: the
+  one genuine OSD decode (W3BI, -25 dB) lands at `nhardmin = 39` and
+  the phantoms at 40/40/40/41/41/41/42/42 — a separation of one hard
+  error.
+
+  Now gated the way `wsprd.c:1396` gates it — structurally rather than
+  by threshold. New `wspr::decode::WsprCallsignTable` records
+  Fano-confirmed callsigns, and an OSD result is accepted only for a
+  callsign already in it, so OSD can re-find a known station but never
+  invent one. Result on the golden: **7 real / 0 phantom**.
+
+  W3BI is OSD-only and unreachable by Fano in that file, so a single
+  isolated slot loses it. Real `wsprd` keeps it because its `hashtab`
+  persists across slots and invocations; new
+  `wspr::decode::decode_scan_with_table` gives callers the same
+  ability — feed one `WsprCallsignTable` back each slot and a station
+  confirmed once stays recoverable (verified: seeding W3BI restores
+  8 real / 0 phantom, while seeding an absent callsign changes
+  nothing). Guards: `wspr_wsjtx_sample_has_no_phantom_decodes` and
+  `wspr_carried_table_recovers_osd_only_decode`.
+
 - **No transmit-envelope ramp on WSPR, JT65, JT9 and Q65** (issue
   #259, reported from a WebFT8 WSPR-beacon evaluation). Every one of
   these `synthesize_audio` paths wrote `amplitude · cos(phase)` from

@@ -66,6 +66,84 @@ pub fn decode_at(
     decode_at_with_drift(audio, sample_rate, start_sample, freq_hz, 0.0)
 }
 
+/// Callsigns confirmed by a **Fano** decode earlier in the same scan.
+///
+/// WSPR carries no CRC, so nothing in the codeword itself distinguishes
+/// a real decode from a plausible-looking one. That is survivable for
+/// Fano — a sequential decoder simply fails to converge on noise — but
+/// not for OSD, which by construction synthesises a valid codeword for
+/// *any* input and will happily emit a well-formed callsign built from
+/// noise.
+///
+/// `wsprd.c:1396` guards it structurally rather than by threshold:
+///
+/// ```c
+/// ihash = nhash(callsign, strlen(callsign), 146);
+/// if (strncmp(hashtab + ihash*13, callsign, 13) == 0) { … not_decoded = 0; }
+/// ```
+///
+/// — an OSD result is accepted only if that callsign is *already* in
+/// the table, i.e. was confirmed by an earlier successful decode. OSD
+/// can therefore re-find a known station under conditions Fano can't
+/// reach, but can never invent a new one.
+///
+/// The threshold this replaces (`nhardmin ≤ 44`) cannot work, and that
+/// is measurable rather than theoretical: on `150426_0918.wav` the one
+/// genuine OSD decode (W3BI, -25 dB) lands at `nhardmin = 39` while
+/// the phantoms land at 40, 40, 40, 41, 41, 41, 42, 42 — a separation
+/// of one hard error. That gate let 8 phantoms through against 8 real
+/// decodes; real `wsprd` reports 9 real and 0 phantom on the same file.
+///
+/// This crate stores callsign strings rather than `nhash` buckets:
+/// same semantics without wsprd's hash-collision risk. Type 1
+/// additionally requires the grid to match, mirroring wsprd's
+/// `loctab` check.
+#[derive(Debug, Clone, Default)]
+pub struct WsprCallsignTable {
+    /// `(callsign, grid)` — grid is `None` for Type 2 (compound call,
+    /// no grid transmitted).
+    entries: Vec<(String, Option<String>)>,
+}
+
+impl WsprCallsignTable {
+    /// Empty table: every OSD result will be rejected.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a Fano-confirmed decode. Type 3 is never recorded — it
+    /// carries a hash rather than a callsign, so it can confirm
+    /// nothing.
+    pub fn record(&mut self, msg: &crate::msg::WsprMessage) {
+        let entry = match msg {
+            crate::msg::WsprMessage::Type1 { callsign, grid, .. } => {
+                (callsign.clone(), Some(grid.clone()))
+            }
+            crate::msg::WsprMessage::Type2 { callsign, .. } => (callsign.clone(), None),
+            crate::msg::WsprMessage::Type3 { .. } => return,
+        };
+        if !self.entries.contains(&entry) {
+            self.entries.push(entry);
+        }
+    }
+
+    /// Whether an OSD-derived message may be accepted.
+    pub fn accepts(&self, msg: &crate::msg::WsprMessage) -> bool {
+        match msg {
+            crate::msg::WsprMessage::Type1 { callsign, grid, .. } => self
+                .entries
+                .iter()
+                .any(|(c, g)| c == callsign && g.as_deref() == Some(grid.as_str())),
+            crate::msg::WsprMessage::Type2 { callsign, .. } => {
+                self.entries.iter().any(|(c, _)| c == callsign)
+            }
+            // Type 3 is a hashed callsign with no table to resolve it
+            // against — wsprd's own OSD path requires `itype` 1 or 2.
+            crate::msg::WsprMessage::Type3 { .. } => false,
+        }
+    }
+}
+
 /// Same as [`decode_at`] but with an explicit drift estimate
 /// (`drift_hz` is total drift across the 110.6 s frame; matches
 /// wsprd's `drift1`). The caller supplies the drift for now; a
@@ -111,6 +189,37 @@ pub fn decode_at_baseband_nblocks(
     freq_hz: f32,
     drift_hz: f32,
     nblocks: &[usize],
+) -> Option<WsprResult> {
+    decode_at_baseband_nblocks_gated(
+        idat,
+        qdat,
+        sample_rate,
+        start_sample,
+        freq_hz,
+        drift_hz,
+        nblocks,
+        None,
+    )
+}
+
+/// [`decode_at_baseband_nblocks`] with an explicit OSD gate.
+///
+/// `confirmed` is the set of callsigns an earlier Fano decode already
+/// established (see [`WsprCallsignTable`]). `None` — what the
+/// un-gated wrappers pass — rejects every OSD result outright, which
+/// is the only safe default for a caller with no scan-level context:
+/// OSD synthesises a valid codeword for any input, so ungated it is a
+/// phantom generator, not a sensitivity feature.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_at_baseband_nblocks_gated(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    freq_hz: f32,
+    drift_hz: f32,
+    nblocks: &[usize],
+    confirmed: Option<&WsprCallsignTable>,
 ) -> Option<WsprResult> {
     use crate::engine::{FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
@@ -191,30 +300,22 @@ pub fn decode_at_baseband_nblocks(
             let mut info = [0u8; 50];
             info.copy_from_slice(&fec_res.info);
             (info, fec_res.hard_errors)
-        } else if let Some((info, nhardmin)) = super::osd::osd_decode(&llrs) {
-            // OSD-2 will synthesise a valid codeword for *any* input;
-            // gate by:
-            //   1. `nhardmin ≤ 44` — at -27 dB the real signal lands
-            //      around 35-40 hard errors after pass-2 subtract;
-            //      pure noise produces ≥ 50.
-            //   2. Reject Type-3 (hashed-callsign) messages — they're
-            //      the dominant phantom class because the 13-bit hash
-            //      space produces a nominally valid message for ~15 %
-            //      of all 50-bit info vectors. We have no hash table
-            //      so any Type-3 that pops out of OSD is overwhelmingly
-            //      likely to be garbage.
-            const OSD_HARD_ERR_MAX: u32 = 44;
-            if nhardmin > OSD_HARD_ERR_MAX {
-                continue;
-            }
-            let Some(msg) =
-                crate::msg::Wspr50Message.unpack(&info, &crate::engine::DecodeContext::default())
-            else {
-                continue;
-            };
-            if matches!(msg, crate::msg::WsprMessage::Type3 { .. }) {
-                continue;
-            }
+        } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
+            // Single lazy `and_then`, deliberately not `Option::zip`:
+            // `zip` evaluates its argument eagerly, which would run the
+            // (expensive) OSD decode on every candidate even when no
+            // table exists — i.e. on the whole of pass 1, which always
+            // passes `None`.
+            let (info, nhardmin) = super::osd::osd_decode(&llrs)?;
+            // wsprd's structural gate (`wsprd.c:1396`): an OSD result
+            // is accepted only for a callsign an earlier Fano decode
+            // already confirmed. Replaces an `nhardmin ≤ 44` threshold
+            // that measurement showed cannot separate the two
+            // populations — see `WsprCallsignTable`'s doc comment.
+            let msg = crate::msg::Wspr50Message
+                .unpack(&info, &crate::engine::DecodeContext::default())?;
+            table.accepts(&msg).then_some((info, nhardmin))
+        }) {
             (info, nhardmin)
         } else {
             continue;
@@ -305,8 +406,9 @@ fn decode_pass2_candidate(
     sample_rate: u32,
     pad: usize,
     c: &super::coarse_baseband::BasebandCandidate,
+    confirmed: &WsprCallsignTable,
 ) -> Option<WsprResult> {
-    let mut d = decode_at_baseband_nblocks(
+    let mut d = decode_at_baseband_nblocks_gated(
         idat,
         qdat,
         sample_rate,
@@ -314,6 +416,7 @@ fn decode_pass2_candidate(
         c.freq_hz,
         c.drift_hz,
         &[1, 2, 3],
+        Some(confirmed),
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
@@ -328,7 +431,45 @@ pub fn decode_scan(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<WsprResult> {
-    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None)
+    decode_scan_inner(audio, sample_rate, nominal_start_sample, params, None, None)
+}
+
+/// [`decode_scan`] with a caller-owned [`WsprCallsignTable`] that
+/// persists **across slots**.
+///
+/// This is what makes OSD worth having. Within a single slot the
+/// table can only be populated by that slot's own pass-1 Fano
+/// decodes, so a station too weak for Fano anywhere in the file is
+/// simply lost — on `150426_0918.wav` that costs W3BI at -25 dB,
+/// which real `wsprd` does report. `wsprd` gets it because its
+/// `hashtab` outlives the file: it is carried across decode passes
+/// *and* persisted to `hashtable.txt` between invocations, so a
+/// station confirmed once stays confirmable.
+///
+/// A WSPR receiver sees the same beacons every 2 minutes for hours.
+/// Feed the same table back in each slot and OSD recovers those
+/// stations in slots where Fano cannot reach them — with the phantom
+/// risk still closed, because OSD can only ever re-find a callsign
+/// some Fano decode already established.
+///
+/// The table grows by one entry per distinct station heard; a busy
+/// band is a few hundred entries over a session, so callers can hold
+/// it for the whole session without managing its size.
+pub fn decode_scan_with_table(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    params: &SearchParams,
+    confirmed: &mut WsprCallsignTable,
+) -> Vec<WsprResult> {
+    decode_scan_inner(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params,
+        None,
+        Some(confirmed),
+    )
 }
 
 /// Streaming variant of [`decode_scan`]: fires `on_result` once per
@@ -367,6 +508,7 @@ pub fn decode_scan_streaming(
         nominal_start_sample,
         params,
         Some(on_result),
+        None,
     )
 }
 
@@ -376,6 +518,7 @@ fn decode_scan_inner(
     nominal_start_sample: usize,
     params: &SearchParams,
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
+    carried: Option<&mut WsprCallsignTable>,
 ) -> Vec<WsprResult> {
     // Prepend zeros so signals that started before audio[0] (negative
     // dt) become reachable. Internal `start_sample`s are shifted by
@@ -498,6 +641,22 @@ fn decode_scan_inner(
         }
     }
 
+    // Pass 1 runs Fano-only (its `decode_at_baseband` wrapper passes
+    // no table, so OSD is rejected outright). Every callsign it
+    // produced is therefore Fano-confirmed and may unlock an OSD
+    // decode of the *same* station in pass 2 — wsprd's own
+    // `hashtab` semantics, where earlier successful decodes are what
+    // make later OSD attempts trustworthy.
+    // Seed from the caller's cross-slot table (if any) before adding
+    // this slot's own Fano confirmations.
+    let mut confirmed = match &carried {
+        Some(t) => (*t).clone(),
+        None => WsprCallsignTable::new(),
+    };
+    for (d, _) in &pass1 {
+        confirmed.record(&d.message);
+    }
+
     // Pass 2 — wsprd's 3rd pass equivalent. Subtract every pass-1
     // decode from the baseband (port of `subtract_signal2`,
     // `wsprd.c:541-705`), then re-run the coarse search on the cleaned
@@ -547,12 +706,12 @@ fn decode_scan_inner(
         #[cfg(feature = "parallel")]
         let raw2: Vec<WsprResult> = bb_cands2
             .par_iter()
-            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c))
+            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed))
             .collect();
         #[cfg(not(feature = "parallel"))]
         let raw2: Vec<WsprResult> = bb_cands2
             .iter()
-            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c))
+            .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed))
             .collect();
 
         for d in raw2 {
@@ -568,6 +727,19 @@ fn decode_scan_inner(
                 }
                 seen.push(d);
             }
+        }
+    }
+
+    // Hand this slot's confirmations back to the caller's cross-slot
+    // table. `seen` holds OSD-derived results too, but recording them
+    // cannot widen the table: `WsprCallsignTable::accepts` only
+    // admits an OSD result whose callsign is *already* an entry, so
+    // re-recording it is a no-op. No OSD decode can therefore
+    // bootstrap a new callsign into the table for the next slot —
+    // every entry still traces back to a Fano decode.
+    if let Some(t) = carried {
+        for d in &seen {
+            t.record(&d.message);
         }
     }
 
