@@ -310,3 +310,80 @@ fn ft4_wsjtx_sample_snr_matches_real_jt9() {
         bad.len()
     );
 }
+
+/// With SIC enabled, FT4 reaches **full parity with real `jt9`** on
+/// this recording — 14/14, zero phantoms.
+///
+/// `ft4_wsjtx_sample_precision_vs_reference_decoder` above asserts
+/// 11/14, which is what the *default* single-pass strategy reaches.
+/// That is not a decoder deficiency: all three it misses are weak
+/// signals sitting inside a stronger neighbour's 83 Hz occupied
+/// bandwidth, which is exactly what successive interference
+/// cancellation exists to recover:
+///
+/// | missed | SNR | masked by | Δf |
+/// |---|---:|---|---:|
+/// | `W9JA PY2APK RRR` @ 520 Hz | -9 | `CQ RU AB5XS EM12` @ 560, -7 | 40 Hz |
+/// | `AC6BW KR9A R 559 WI` @ 2300 Hz | -15 | `WD9IGY KX1X 73` @ 2310, -1 | 10 Hz |
+/// | `CQ RU W0FRC DM79` @ 2560 Hz | -15 | `NI6G W7DRW 569 AZ` @ 2567, -7 | 7 Hz |
+///
+/// The comparison against `jt9` was therefore not like-for-like:
+/// real `jt9` runs its own multi-pass subtraction by default, and
+/// `DecodeRequest`'s default strategy is `__single_pass` (for FT8
+/// too — `sic_rounds` is a field default that only takes effect once
+/// `.sic_rounds()` switches the strategy). A caller wanting
+/// WSJT-X-equivalent recall must ask for it.
+///
+/// Two rounds suffice; three costs more and finds nothing extra.
+/// Measured on this file: 5.0 ms default → 71.3 ms with
+/// `.sic_rounds(2)`, against a 7.5 s slot — about 1 % of the slot for
+/// a 27 % recall gain.
+#[test]
+fn ft4_wsjtx_sample_reaches_jt9_parity_with_sic() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    static REFERENCE: &[GoldenEntry] = &[
+        GoldenEntry::msg("AC6BW KR9A R 559 WI"),
+        GoldenEntry::msg("CQ RU AB5XS EM12"),
+        GoldenEntry::msg("CQ RU N9OY EN43"),
+        GoldenEntry::msg("CQ RU W0FRC DM79"),
+        GoldenEntry::msg("K1JT WB4HXE 559 GA"),
+        GoldenEntry::msg("KB0VHA KA1YQC R 539 MA"),
+        GoldenEntry::msg("N1TRK KB7RUQ RR73"),
+        GoldenEntry::msg("N1TRK N4FKH 569 VA"),
+        GoldenEntry::msg("NI6G W7DRW 569 AZ"),
+        GoldenEntry::msg("NZ7P WA7JAY 589 CA"),
+        GoldenEntry::msg("VE3LON K7RL R 549 WA"),
+        GoldenEntry::msg("W7BOB KJ7G RR73"),
+        GoldenEntry::msg("W9JA PY2APK RRR"),
+        GoldenEntry::msg("WD9IGY KX1X 73"),
+    ];
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: FT4 golden recording not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let out = DecodeRequest::<Ft4>::new(&audio, 300.0, 2700.0, 1.2, 50)
+        .sic_rounds(2)
+        .decode();
+
+    assert_golden(
+        &out.results,
+        &GoldenSet {
+            name: "FT4 000000_000002.wav + sic_rounds(2)",
+            expected: REFERENCE,
+            // Full parity with real jt9. This is a hard floor: SIC is
+            // the whole point of this test, so 13 is a regression.
+            min_hits: 14,
+            max_extra: 0,
+        },
+        Tolerances::default(),
+        |d| DecodeView {
+            msg: unpack77(d.message77()).unwrap_or_default(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
+    );
+}

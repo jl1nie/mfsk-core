@@ -126,6 +126,29 @@ Tier C is **not** run by CI — the corpora need WSJT-X's Fortran
 simulators built and are far too large. Run it locally before cutting
 a release, or when you have changed something that moves sensitivity.
 
+### Decode strategies must each be guarded
+
+A protocol's `DecodeRequest` exposes more than one decode strategy,
+and **the phantom-prone code lives in the non-default ones**. Both
+false-decode bugs this suite has actually shipped were in a
+subtraction path, not the plain one: issue #243's was in
+`__staged_sic`'s post-hoc `retain`, and #253's in `.sic_early()`.
+Guarding only `decode()` therefore tests the path least likely to
+break.
+
+Current coverage — every cell must stay filled:
+
+| protocol | default | `.sic_rounds(n)` | `.sic_early()` |
+|---|---|---|---|
+| FT8 | total-decode ceiling | exact-set golden | ceiling + named `7Y8CIH` guard |
+| FT4 | precision budget 0 | precision budget 0 | *not implemented* |
+
+FST4/Q65/WSPR/JT9/JT65/MSK144 have no SIC strategy to guard —
+`SupportsSicRounds`/`SupportsSicEarly` are implemented for FT8/FT4
+only, mirroring an upstream WSJT-X absence.
+
+When adding a strategy, add its precision guard in the same PR.
+
 ### Which tests to run for a given change
 
 | You changed | Run |
