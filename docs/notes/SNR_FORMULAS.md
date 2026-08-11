@@ -198,24 +198,59 @@ and the issue's protocol list was written from the call-graph of
 2. **`ft8::decode_block::process_candidates_with_ap`**
    (`process_candidates.rs:2177`) — see below. This one is a real gap.
 
-### FT8's `decode_block` AP path still reports the generic heuristic
+### FT8's `decode_block` AP path — generic heuristic, deliberately
 
 `apply_wsjtx_xsnr2` is applied at five sites: the four host
 `ft8::decode` entry points and `decode_block_multipass`.
-`process_candidates_with_ap` is not one of them — it assigns
-`snr_db` from `compute_snr_db` and never post-processes it. That
-function backs `decode_block_with_ap` / `decode_block_with_ap_tuned`
-(public API) and `process_candidates_into_with_cs_scratch_tuned*`,
-which is what the ESP32 apps call
-(`embedded-poc/embedded-shared/src/dual_core.rs`,
-`m5stack-s3-app/src/decode_pipeline.rs`).
+`process_candidates_with_ap` is not one of them — it assigns `snr_db`
+from `compute_snr_db` and never post-processes it. That function backs
+`decode_block_with_ap` / `decode_block_with_ap_tuned` (public API) and
+`process_candidates_into_with_cs_scratch_tuned*`, which is what the
+ESP32 apps call.
 
-This is structurally the same hole as the FT4 one fixed in `dd934b8`:
-the wide-band/non-AP path got the real formula and the AP-capable
-sibling was missed. Issue #253 measured the generic heuristic as
-reading 3-7 dB low on FT8 (much more on strong signals), so the
-embedded display is expected to be off by about that much. Not yet
-fixed — unlike the host path it has no `sbase`/`spec` in scope, so it
-needs either plumbing those through or accepting the same deliberate
-exemption the `fixed-point` path already documents (where quantised
-`Spectrogram` cells break `fit_baseline` outright).
+**This is not a user-facing gap, because the embedded apps do not
+display that field.** `m5stack-{s3,cores3,core2}-app`'s
+`decode_pipeline.rs` calls `ft8::decode_block::xsnr2_db_simple(&spec,
+r, cell_scale)` and shows *that*; `r.snr_db` appears only as the
+`raw=` term in a log line. `xsnr2_db_simple` is a separate,
+purpose-built estimator with its own median-window (P50) local
+baseline — chosen precisely because a mean baseline is dragged upward
+by the signal being measured — and it is empirically calibrated:
+`mfsk-app-shared`'s `snr_norm` module documents it landing within
+±3 dB of WSJT-X / JTDX across the `qso3_busy` reference, which is why
+`DEFAULT_CALIBRATION_OFFSET_DB` sits at `0.0` rather than carrying a
+fudge term.
+
+So the ordering is deliberate: the embedded display path was solved
+separately, and earlier, by an empirically-validated estimator, and
+`r.snr_db` on this code path is effectively a legacy field no consumer
+reads for display. Wiring `apply_wsjtx_xsnr2` in here would also need
+`sbase`/`spec` plumbed through, and on the `fixed-point` path it
+cannot work at all — quantised `Spectrogram` cells put many noise
+cells at u16 zero, so `fit_baseline`'s `log10(p.max(1e-30))` yields
+sbase ≈ -250 dB and xsnr2 explodes (already documented at
+`decode_block_multipass`'s own `cfg(not(feature = "fixed-point"))`
+guard).
+
+**Left as-is on purpose.** If a future consumer starts reading
+`DecodeResult::snr_db` off `decode_block_with_ap`, revisit — but do
+not "fix" it speculatively.
+
+## A note on this page's own error rate
+
+Three separate claims on this page have now been wrong in the same
+direction, and all three were written by reading a description instead
+of the code:
+
+- Issue #255 listed **JT65** as being on `compute_snr_db`. It never
+  was — `jt65::rx` has always had its own estimator.
+- This page then listed **WSPR** the same way, copied from that issue.
+  Also never true — `wspr::coarse_baseband` is a `wsprd.c` port with
+  the real 26.3 dB scaling.
+- This page then described the **FT8 `decode_block` AP path** as an
+  unfixed 3-7 dB user-facing gap. Also wrong — the embedded apps never
+  display that field.
+
+The check that would have caught all three is the same one: grep for
+the field's actual readers before describing what a user sees. Prefer
+that over trusting any prose, including this page's.
