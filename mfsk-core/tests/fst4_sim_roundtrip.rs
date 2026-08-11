@@ -73,18 +73,24 @@ fn sim_wav(nsec: u32) -> Option<Vec<i16>> {
 // FST4-60 (existing sub-mode, always exercised)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Shared "where do these WAVs come from" message for the skip path.
+fn sim_corpus_hint() -> String {
+    format!(
+        "fst4sim WAV not found in {:?} — run scripts/build_fst4sim.sh \
+         then scripts/gen_fst4_sim_wavs.sh",
+        sim_asset_dir()
+    )
+}
+
 #[test]
+#[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_60_sim_roundtrip() {
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::msg::decode_request::DecodeRequest;
     use mfsk_core::msg::wsjt77::unpack77;
 
     let Some(audio) = sim_wav(60) else {
-        eprintln!(
-            "skipping fst4_60_sim_roundtrip: WAV not found in {:?}\n\
-             Run scripts/build_fst4sim.sh && scripts/gen_fst4_sim_wavs.sh",
-            sim_asset_dir()
-        );
+        common::corpus::missing("fst4_60_sim_roundtrip", &sim_corpus_hint());
         return;
     };
 
@@ -122,12 +128,13 @@ fn fst4_60_sim_roundtrip() {
 // ────────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_15_sim_roundtrip() {
     use mfsk_core::fst4::Fst4s15;
     use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(15) else {
-        eprintln!("skipping fst4_15_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
+        common::corpus::missing("fst4_15_sim_roundtrip", &sim_corpus_hint());
         return;
     };
     let decodes = DecodeRequest::<Fst4s15>::new(&audio, 100.0, 3000.0, 0.8, 50)
@@ -141,12 +148,13 @@ fn fst4_15_sim_roundtrip() {
 // ────────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_30_sim_roundtrip() {
     use mfsk_core::fst4::Fst4s30;
     use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(30) else {
-        eprintln!("skipping fst4_30_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
+        common::corpus::missing("fst4_30_sim_roundtrip", &sim_corpus_hint());
         return;
     };
     let decodes = DecodeRequest::<Fst4s30>::new(&audio, 100.0, 3000.0, 0.8, 50)
@@ -160,12 +168,13 @@ fn fst4_30_sim_roundtrip() {
 // ────────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_120_sim_roundtrip() {
     use mfsk_core::fst4::Fst4s120;
     use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(120) else {
-        eprintln!("skipping fst4_120_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
+        common::corpus::missing("fst4_120_sim_roundtrip", &sim_corpus_hint());
         return;
     };
     let decodes = DecodeRequest::<Fst4s120>::new(&audio, 100.0, 3000.0, 0.8, 50)
@@ -179,12 +188,13 @@ fn fst4_120_sim_roundtrip() {
 // ────────────────────────────────────────────────────────────────────────────
 
 #[test]
+#[ignore = "tier C — needs the generated fst4sim corpus (scripts/gen_fst4_sim_wavs.sh); CI covers every sub-mode via the synth roundtrips in fst4::decode::tests"]
 fn fst4_300_sim_roundtrip() {
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::msg::decode_request::DecodeRequest;
 
     let Some(audio) = sim_wav(300) else {
-        eprintln!("skipping fst4_300_sim_roundtrip: run scripts/gen_fst4_sim_wavs.sh");
+        common::corpus::missing("fst4_300_sim_roundtrip", &sim_corpus_hint());
         return;
     };
     let decodes = DecodeRequest::<Fst4s300>::new(&audio, 100.0, 3000.0, 0.8, 50)

@@ -129,3 +129,20 @@ pub fn optional_corpus(rel: &str) -> Option<PathBuf> {
     let p = manifest_dir().join("../embedded-poc/assets").join(rel);
     p.is_dir().then_some(p)
 }
+
+/// Report a corpus that could not be found.
+///
+/// Skips quietly when the corpus is genuinely optional for a local
+/// developer, and **panics** under `MFSK_REQUIRE_CORPUS=1` so CI cannot
+/// report a green run for a test that never executed. A test whose only
+/// assertions sit behind a corpus check is otherwise indistinguishable
+/// from a passing one: `fst4_sim_roundtrip` reported "5 passed" in
+/// 0.00 s with no corpus at all, which is how FST4-15/30/120/300 came
+/// to be unexercised in CI while looking covered.
+pub fn missing(test: &str, detail: &str) {
+    assert!(
+        !require_enabled(),
+        "{test}: {REQUIRE_ENV}=1 but the corpus is absent — {detail}"
+    );
+    eprintln!("skipping {test}: {detail}");
+}

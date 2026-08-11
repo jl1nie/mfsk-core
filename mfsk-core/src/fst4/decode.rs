@@ -236,15 +236,8 @@ mod tests {
 
     /// Synth → decode_frame roundtrip for a clean FST4-60A signal.
     ///
-    /// Gated behind `RUN_FST4_ROUNDTRIP=1` because the 60-s slot +
-    /// 746 496-point outer FFT makes this a multi-second test.
     #[test]
     fn synth_decode_roundtrip_cq_ja1abc() {
-        if std::env::var("RUN_FST4_ROUNDTRIP").is_err() {
-            eprintln!("skipping FST4 roundtrip (set RUN_FST4_ROUNDTRIP=1 to enable)");
-            return;
-        }
-
         use super::super::encode::{message_to_tones, tones_to_i16};
         use crate::msg::wsjt77::{pack77, unpack77};
 
@@ -345,14 +338,8 @@ mod tests {
         );
     }
 
-    /// Gated behind `RUN_FST4_ROUNDTRIP=1` (see
-    /// `synth_decode_roundtrip_cq_ja1abc`).
     #[test]
     fn synth_decode_roundtrip_fst4_15() {
-        if std::env::var("RUN_FST4_ROUNDTRIP").is_err() {
-            eprintln!("skipping FST4-15 roundtrip (set RUN_FST4_ROUNDTRIP=1 to enable)");
-            return;
-        }
         synth_roundtrip_for::<super::super::Fst4s15>(
             &super::super::encode::FST4_15_GFSK,
             1000.0,
@@ -360,13 +347,8 @@ mod tests {
         );
     }
 
-    /// Gated behind `RUN_FST4_ROUNDTRIP=1`.
     #[test]
     fn synth_decode_roundtrip_fst4_30() {
-        if std::env::var("RUN_FST4_ROUNDTRIP").is_err() {
-            eprintln!("skipping FST4-30 roundtrip (set RUN_FST4_ROUNDTRIP=1 to enable)");
-            return;
-        }
         synth_roundtrip_for::<super::super::Fst4s30>(
             &super::super::encode::FST4_30_GFSK,
             1000.0,
@@ -374,14 +356,8 @@ mod tests {
         );
     }
 
-    /// Gated behind `RUN_FST4_ROUNDTRIP=1`. Slower than the 15/30/60 s
-    /// variants (109 s of audio, ~1.44M-point outer FFT).
     #[test]
     fn synth_decode_roundtrip_fst4_120() {
-        if std::env::var("RUN_FST4_ROUNDTRIP").is_err() {
-            eprintln!("skipping FST4-120 roundtrip (set RUN_FST4_ROUNDTRIP=1 to enable)");
-            return;
-        }
         synth_roundtrip_for::<super::super::Fst4s120>(
             &super::super::encode::FST4_120_GFSK,
             1000.0,
@@ -389,15 +365,8 @@ mod tests {
         );
     }
 
-    /// Gated behind `RUN_FST4_ROUNDTRIP=1`. Slowest of the roundtrip
-    /// tests (287 s of audio, ~4.19M-point outer FFT) — expect several
-    /// seconds.
     #[test]
     fn synth_decode_roundtrip_fst4_300() {
-        if std::env::var("RUN_FST4_ROUNDTRIP").is_err() {
-            eprintln!("skipping FST4-300 roundtrip (set RUN_FST4_ROUNDTRIP=1 to enable)");
-            return;
-        }
         synth_roundtrip_for::<super::super::Fst4s300>(
             &super::super::encode::FST4_300_GFSK,
             1000.0,
