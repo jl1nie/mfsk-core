@@ -83,6 +83,65 @@ jobs:
             }
             core.setFailed(`Timed out (30 min) waiting for CI on ${ref}`);
 
+      # The poll above only looks at *workflow-run* conclusions, and it
+      # deliberately treats `skipped` as acceptable — a docs-only push
+      # legitimately skips the build matrix. That tolerance is too wide
+      # for the one job that carries the golden (tier-B) assertions:
+      # a `Test (default)` that never ran would sail through, and this
+      # crate has already shipped with those tests passing vacuously
+      # (before the recordings were vendored they resolved from a
+      # sibling WSJT-X checkout CI does not have, so five protocols'
+      # golden tests skipped and reported success).
+      #
+      # So require, at job granularity, that `Test (default)` actually
+      # ran and succeeded. Combined with `MFSK_REQUIRE_CORPUS=1` in
+      # ci.yml — which turns a missing corpus into a failure rather
+      # than a skip — a green `Test (default)` is a positive statement
+      # that the tier-B assertions executed against real recordings.
+      - name: Require Test (default) to have actually run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ref = context.sha;
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: ref,
+              event: 'push',
+              per_page: 100,
+            });
+            const ciRuns = data.workflow_runs.filter(r => r.name === 'CI');
+            if (ciRuns.length === 0) {
+              core.setFailed(`No CI run for ${ref} to inspect`);
+              return;
+            }
+
+            const wanted = 'Test (default)';
+            let found = null;
+            for (const run of ciRuns) {
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 },
+              );
+              const job = jobs.find(j => j.name === wanted);
+              if (job) { found = job; break; }
+            }
+
+            if (!found) {
+              core.setFailed(
+                `CI on ${ref} has no '${wanted}' job. The tier-B golden ` +
+                `assertions therefore did not run; refusing to publish.`);
+              return;
+            }
+            if (found.conclusion !== 'success') {
+              core.setFailed(
+                `'${wanted}' concluded '${found.conclusion}' (not success) on ` +
+                `${ref}: ${found.html_url}. Tier-B golden assertions did not ` +
+                `pass; refusing to publish.`);
+              return;
+            }
+            core.info(`'${wanted}' succeeded on ${ref}: ${found.html_url}`);
+
   # ── Gate 2 ─────────────────────────────────────────────────────────
   # Tag must be reachable from main and the version embedded in the
   # tag must match `mfsk-core/Cargo.toml`. Cheap; runs in parallel
