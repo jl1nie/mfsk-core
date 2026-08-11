@@ -767,10 +767,9 @@ const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
         gfsk: None,
     };
 
-/// LPF kernel half-width for the channel-aware subtract (currently
-/// unused — see comment in [`decode_scan_subtract`] for why we use
-/// the constant-amplitude path instead).
-#[allow(dead_code)]
+/// LPF kernel half-width for the channel-aware subtract, in audio
+/// samples. Chosen by measuring residual suppression on the WSJT-X
+/// golden — see the call site in `decode_scan_subtract_inner`.
 const WSPR_SUBTRACT_LPF_HALF: usize = 600;
 
 /// Multi-pass WSPR decode with successive interference cancellation.
@@ -830,7 +829,7 @@ fn decode_scan_subtract_inner(
     params: &SearchParams,
     on_result: Option<&(dyn Fn(&WsprResult) + Sync)>,
 ) -> Vec<WsprResult> {
-    use crate::engine::dsp::subtract::subtract_tones;
+    use crate::engine::dsp::subtract::subtract_tones_lpf;
 
     // The subtract helper takes `&mut [i16]`; convert once, mutate
     // across passes, work on `f32` for `decode_scan` per pass.
@@ -872,19 +871,52 @@ fn decode_scan_subtract_inner(
             // residual at the decoded (freq, dt). Mirrors wsprd.c:1432-
             // 1437 `subtract_signal2(idat, qdat, …, channel_symbols)`.
             let symbols = super::encode_channel_symbols(&d.info_bits);
-            // Constant-amplitude LS subtract; ignores QSB / drift but
-            // is O(N) and avoids the multi-second convolution that
-            // `subtract_tones_lpf` (direct conv, kernel ~600 samples)
-            // would cost on a 1.4 M-sample WSPR slot. WSJT-X uses the
-            // LPF version on a decimated signal — we'll match once we
-            // have FFT-conv or a decimate-process-interpolate path.
-            subtract_tones(
+            // Channel-aware LPF subtract, matching wsprd's
+            // `subtract_signal2` (`wsprd.c:549-602`): it estimates a
+            // *time-varying* amplitude by low-pass filtering the
+            // product of residual and reference, so it tracks QSB and
+            // drift across the 110.6 s transmission.
+            //
+            // This replaces a constant-amplitude least-squares
+            // subtract that was measurably not doing its job. On the
+            // WSJT-X golden, subtracting W5BIT and measuring the
+            // residual at its own four tone frequencies:
+            //
+            //   const-amplitude   +9.0  -7.7  -5.8  -4.2  dB
+            //   LPF (this)       -25.4 -28.6 -30.0 -19.7  dB
+            //
+            // — the old path *amplified* the first tone by 9 dB and
+            // removed only a few dB from the rest, leaving most of
+            // the interferer in the residual it was supposed to
+            // clean.
+            //
+            // The comment this replaces said the LPF path was avoided
+            // because it "would cost a multi-second convolution on a
+            // 1.4 M-sample WSPR slot". That stopped being true when
+            // `subtract_tones_lpf` gained its FFT fast path for
+            // FT8/FT4 (one forward + inverse FFT per call, O(N log N));
+            // WSPR was simply never migrated. Measured cost of the
+            // whole `decode_scan_subtract` on that slot is unchanged
+            // at ~0.3-0.4 s.
+            //
+            // `lpf_half = 600` was chosen by measurement, not
+            // inherited: 5760 (wsprd's `nfilt=360` scaled from its
+            // 375 Hz baseband to 12 kHz) removes 10-15 dB less,
+            // because our reference is built at audio rate where a
+            // proportionally longer kernel over-smooths the amplitude
+            // estimate.
+            //
+            // `endcorrection = false`: measured identical either way
+            // here, and WSPR's transmission is long enough that edge
+            // handling is negligible.
+            subtract_tones_lpf(
                 &mut residual_i16,
                 &symbols,
                 d.freq_hz,
                 d.dt_sec,
-                1.0,
                 &WSPR_SUBTRACT,
+                WSPR_SUBTRACT_LPF_HALF,
+                false,
             );
             if let Some(cb) = on_result {
                 cb(&d);

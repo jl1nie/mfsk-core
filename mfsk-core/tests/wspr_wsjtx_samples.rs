@@ -726,3 +726,81 @@ fn wspr_diag_pass_ablation() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Carrying a callsign table **across slots** must not manufacture
+/// decodes.
+///
+/// This is the flow `decode_scan_with_table` exists for — a WSPR
+/// receiver hears the same beacons every 2 minutes, so a station
+/// confirmed by Fano in one slot stays OSD-recoverable in later ones.
+/// The existing `wspr_carried_table_recovers_osd_only_decode` seeds
+/// the table by hand and so tests the *gate*; this tests the *flow*,
+/// where the table is built by decoding and then fed forward.
+///
+/// The hazard being guarded is specific and real: OSD synthesises a
+/// valid codeword for any input, and the gate lets a result through
+/// whenever its callsign is already in the table. Every slot that
+/// carries the table forward therefore widens the set of callsigns
+/// OSD is permitted to emit, so a bug here would show up as phantoms
+/// that *accumulate with slot count* — invisible to any single-slot
+/// test.
+///
+/// Repeating one recording is a fair model of that: the same
+/// callsigns recur, which is exactly the real condition, and it holds
+/// the signal content constant so any growth in the output is
+/// attributable to the table rather than to new audio.
+///
+/// (A synthetic two-slot version — strong slot populates the table,
+/// weak slot is recovered from it — was tried and abandoned: across
+/// -25…-27 dB and six noise seeds, a clean single-signal slot never
+/// produced a case where the table added a decode. OSD's advantage on
+/// the real recording comes from the pass-2 environment after eight
+/// stronger signals have been subtracted, which a lone synthetic tone
+/// cannot reproduce. Recording that here so the absence is not
+/// mistaken for an untried idea.)
+#[test]
+fn wspr_carried_table_across_slots_adds_no_phantoms() {
+    use mfsk_core::wspr::decode::{WsprCallsignTable, decode_scan_with_table};
+
+    let Some((audio, params)) = sample_and_params() else {
+        return;
+    };
+
+    let mut table = WsprCallsignTable::new();
+    let mut per_slot: Vec<(usize, Vec<String>)> = Vec::new();
+
+    // Five slots of the same beacons, table fed forward each time.
+    for slot in 0..5 {
+        let d = decode_scan_with_table(&audio, 12_000, 0, &params, &mut table);
+        let msgs: Vec<String> = d.iter().map(|r| r.message.to_string()).collect();
+        let phantoms: Vec<&String> = msgs
+            .iter()
+            .filter(|m| !GOLDEN.iter().any(|g| g.msg == m.as_str()))
+            .collect();
+        eprintln!(
+            "  slot {slot}: {} decode(s), {} phantom(s)",
+            msgs.len(),
+            phantoms.len()
+        );
+        assert!(
+            phantoms.is_empty(),
+            "slot {slot} of a carried-table run emitted phantom(s): {phantoms:?}. \
+             The table grows every slot, so this is the direction the OSD gate \
+             fails in — a single-slot test cannot see it."
+        );
+        per_slot.push((msgs.len(), msgs));
+    }
+
+    // Decode count must not grow with slot count. Growth would mean
+    // the table is admitting results it did not admit before, which
+    // on identical audio can only be table-driven.
+    let first = per_slot[0].0;
+    for (i, (n, _)) in per_slot.iter().enumerate() {
+        assert_eq!(
+            *n, first,
+            "slot {i} returned {n} decodes vs slot 0's {first} on identical audio — \
+             the carried table is changing the outcome, which it must only ever do \
+             by recovering a *known* callsign, not by finding new ones"
+        );
+    }
+}

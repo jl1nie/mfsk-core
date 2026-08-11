@@ -323,6 +323,25 @@ impl<'a, P: SupportsSicRounds> DecodeRequest<'a, P> {
     /// Implemented for `Ft8`/`Ft4` only — not any FST4 sub-mode; see
     /// [`SupportsSicRounds`]'s doc comment for why (an upstream WSJT-X
     /// absence, not an mfsk-core gap).
+    ///
+    /// # You probably want this if you are comparing against WSJT-X
+    ///
+    /// The default strategy is single-pass, so a plain
+    /// `DecodeRequest::new(…).decode()` does **no** subtraction —
+    /// while real `jt9`/`wsjtx` run their multi-pass subtraction by
+    /// default. Comparing the two without calling this is not
+    /// like-for-like, and the difference is not small: on
+    /// `WSJT-X/samples/FT4/000000_000002.wav` the default reaches
+    /// 11 of the 14 decodes `jt9` reports, and `.sic_rounds(2)`
+    /// reaches all 14 with no false decodes.
+    ///
+    /// The three it recovers are the ones subtraction exists for —
+    /// weak signals inside a stronger neighbour's 83 Hz occupied
+    /// bandwidth (`-15 dB` at 2300 Hz masked by `-1 dB` at 2310 Hz,
+    /// and so on). Cost on that file: 5.0 ms → 71.3 ms against a
+    /// 7.5 s slot. Two rounds suffice; three find nothing more.
+    /// Pinned by `tests/ft4_wsjtx_samples.rs::
+    /// ft4_wsjtx_sample_reaches_jt9_parity_with_sic`.
     pub fn sic_rounds(mut self, n: usize) -> Self {
         self.strategy = P::__flat_sic;
         self.sic_rounds = n.clamp(1, 3);
