@@ -284,6 +284,59 @@ result whose per-cell numbers were all *exactly* -42.85 dB reported —
 a constant-valued false decode, not a signal. The constant is what
 gave it away; a noisier artifact would have been reported as real.
 
+## FT4 sniper SNR: variance, not a level-dependent bias (issue #258)
+
+`msg::pipeline_ap::process_candidate_ap` feeds `SnrCtx::cand_score`
+from the generic `coarse_sync` Costas-correlation score, not from
+`ft4_coarse_sync`'s `getcandidates4.f90` value that `ft4_snr_db`'s
+`10·log10(score − 1) − 14.8` is written against. That swap was tried
+and reverted (see that function's own comment). Issue #258 asked
+whether the residual is worth closing, characterising it downstream as
+a **level-dependent "arch"** — ~1.2 dB of curvature peaking mid-range,
+on top of a +1.78 dB mean gap — and therefore not correctable by a
+constant.
+
+Re-measured here against the `ft4sim` corpus, which real `jt9 -5`
+tracks to ~1 dB (injected -5/-10/-14/-17 → reported -5/-11/-14/-18).
+Both paths read the **same** buffers; sniper aimed exactly, with
+`EqMode::Local` and a CQ AP hint, matching the downstream request
+shape. 20 trials/cell:
+
+| | mean | **sd** | n |
+|---|---:|---:|---:|
+| wide-band (`DecodeRequest`) | -0.30 | **0.44** | 134 |
+| sniper (`SniperRequest`) | -0.50 | **1.73** | 126 |
+
+Two things differ from the downstream characterisation:
+
+1. **There is essentially no systematic gap** — 0.2 dB, not 1.78 dB.
+2. **What distinguishes the sniper path is scatter, not bias.** Its
+   per-file standard deviation is ~4× wide-band's, and grows as the
+   signal weakens (0.88 dB at -5 dB injected, 2.45 dB at -16 dB).
+
+That also explains the reported arch. At n=8 seeds/level with
+sd ≈ 1.7 dB, the standard error of each level's mean is ~0.6 dB —
+precisely the amplitude of the "curvature". A smooth-looking arch
+across 7 levels is what sampling noise of that size looks like when
+each point is a mean of 8. The same trap is worth remembering
+generally: an apparent smooth trend in per-level means says nothing
+until the per-level *spread* is quoted alongside it.
+
+The remaining +1.64 dB flat wide-band offset reported downstream does
+not reproduce here either (-0.30 dB on `ft4sim`). The likely cause is
+a difference between that harness's own SNR convention and `ft4sim`'s
+— worth checking by running real `jt9 -5` over that harness's own
+output before treating it as a decoder offset.
+
+**Not fixed, deliberately.** The residual is specific to the sniper
+path, is dominated by variance rather than a correctable bias, and the
+narrower fix #258 proposes (evaluating a `getcandidates4`-scale score
+at the already-refined position, purely to feed `ft4_snr_db`) would
+address a bias that the pooled measurement does not show. Consumers
+should treat FT4 sniper SNR as carrying roughly ±1.7 dB of per-decode
+scatter — which matters if a single decode's SNR becomes an on-air
+signal report, and does not if it is averaged or displayed.
+
 ## A note on this page's own error rate
 
 Three separate claims on this page have now been wrong in the same
