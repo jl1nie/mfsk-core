@@ -4,6 +4,26 @@
 
 ### Fixed
 
+### Verified
+
+- **FST4 SNR confirmed across all five sub-modes** (issue #255 §4
+  follow-up). `fst4::baseline::fst4_snr_db` shipped FST4-60-verified
+  only — the one sub-mode with a real off-air recording available
+  locally — with 15/30/120/300 left as "share the same formula but
+  aren't individually confirmed". Now closed against the `fst4sim`
+  corpus, with real `jt9 -7` confirming injected SNR is a valid
+  reference (within ~1 dB on every sub-mode). Mean error, AWGN /
+  CCIR-moderate: FST4-15 -0.45/-0.35, FST4-30 +0.43/-0.01, FST4-60
+  -0.01/-0.44, FST4-120 -0.19/+0.07, FST4-300 **-1.26/-1.92**. Four of
+  five inside ±0.5 dB including under fading; FST4-300 carries a real
+  SNR-independent ~1.3 dB offset, *not* a wrong parameter (`nsps`,
+  `ndown`, `snr_calfac` all verified identical to
+  `fst4_decode.f90:182-214,597-613` for every sub-mode) but most
+  likely the `xsig · NDOWN` scale correction, which was derived on
+  FST4-60 — the sub-mode that now reads -0.01 dB. Recorded as a
+  measured residual rather than fitted away. No code change; new guard
+  `tests/fst4_sweep.rs::fst4_reported_snr_tracks_injected_all_submodes`.
+
 - **JT65's reported-SNR clamp was ad-hoc `[-24, +49]`, not WSJT-X's
   real `[-30, -1]`** (issue #255). `jt65_decode.f90:254-255` pins the
   displayed value to `[-30, -1]`, and both ends of the old pair were

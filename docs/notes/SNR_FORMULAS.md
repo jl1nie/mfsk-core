@@ -16,7 +16,7 @@ read the linked function for the details, don't duplicate them here.
 |----------|------------------------|---------------------|--------|
 | FT8 | `ft8b.f90`'s `xsnr2` gate/formula | `ft8::baseline::compute_baseline_spectrum` + `ft8/decode_block/process_candidates.rs`'s `compute_xsig_wsjtx`/`apply_wsjtx_xsnr2` | **Shipped**, all 5 FT8 entry points (issue #243/#253) |
 | FT4 | `ft4_decode.f90:226,452-457` | `engine::pipeline::ft4_snr_db`, via `Ft4`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, all 4 call sites incl. AP path (issue #255) |
-| FST4 | `fst4_decode.f90:592-621` (`xsig`/`arg`/`xsnr`) + `get_candidates_fst4.f90` (baseline) | `fst4::baseline::fst4_snr_db`, via every `Fst4s*`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, FST4-60-verified (issue #255 §4) |
+| FST4 | `fst4_decode.f90:592-621` (`xsig`/`arg`/`xsnr`) + `get_candidates_fst4.f90` (baseline) | `fst4::baseline::fst4_snr_db`, via every `Fst4s*`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, **all 5 sub-modes verified** against `fst4sim` + real `jt9` (issue #255 §4) |
 | Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` (single-slot) / `q65::snr::q65_snr_db_averaged` (`iavg=1,2` multi-period) | **Shipped**, all 7 decode paths — the 3 multi-period call sites use an EMA-averaged composite spectrum (`q65_composite_spectrum_averaged`), matching WSJT-X's own `s1a` accumulation formula (issue #255 §5, #256) |
 | JT9 | `symspec2.f90:52-54` (`sig`/`t`/`snrdb`), reached via `jt9_decode.f90:148`'s `nsnr=nint(snrdb)` | `jt9::softsym::symspec2_from_ss2` | **Shipped**, real-`jt9`-verified within +0.33…+2.86 dB (mean +1.3) on `130418_1742.wav` (issue #255) |
 | JT65 | `jt65_decode.f90:251,254-255` (`s2db = 10·log10(sync2) - 35`, then clamp to `[-30,-1]`) | `jt65::rx::demodulate_aligned_with_confidence_and_snr` — **own** estimator, not the generic heuristic | **Audited, formula deliberately not ported** — the existing estimator already lands within ~0.7 dB of real `jt9`; only WSJT-X's display clamp was adopted (issue #255) |
@@ -235,6 +235,54 @@ guard).
 **Left as-is on purpose.** If a future consumer starts reading
 `DecodeResult::snr_db` off `decode_block_with_ap`, revisit — but do
 not "fix" it speculatively.
+
+## FST4: all five sub-modes verified
+
+When `fst4_snr_db` shipped, only FST4-60 had been checked — the one
+sub-mode with a real off-air recording available locally — and the
+other four were left as "share the same formula/derivation but aren't
+individually confirmed". Closed using the `fst4sim` corpus
+(`scripts/gen_fst4_sweep_wavs.sh`).
+
+Injected SNR is a valid reference here because a real local `jt9 -7`
+build reports within ~1 dB of it on this same corpus across every
+sub-mode (measured: FST4-15 m10→-10, m18→-18; FST4-30 m15→-14,
+m22→-21; FST4-60 m15→-15, m25→-25; FST4-120 m20→-20, m28→-28;
+FST4-300 m24→-24, m32→-32).
+
+Mean error, 3 trials/cell over the full SNR ladder:
+
+| sub-mode | 15 | 30 | 60 | 120 | 300 |
+|---|---:|---:|---:|---:|---:|
+| AWGN | -0.45 | +0.43 | **-0.01** | -0.19 | **-1.26** |
+| CCIR moderate | -0.35 | -0.01 | -0.44 | +0.07 | **-1.92** |
+
+Four of the five sit inside ±0.5 dB, including under fading. **FST4-300
+carries a real, SNR-independent ~1.3 dB offset** (~1.9 dB fading) the
+others don't.
+
+That offset is *not* a wrong parameter: `nsps`, `ndown` and
+`snr_calfac` were each checked against `fst4_decode.f90:182-214` and
+`:597-613` and all five sub-modes match WSJT-X exactly
+(800/600/430/390/340; 720/1680/3888/8200/21504;
+18/42/108/205/512). The likely origin is `fst4_snr_db`'s `xsig · NDOWN`
+scale correction, which was derived and confirmed on FST4-60 — note
+that sub-mode reads -0.01 dB here, i.e. exactly where it was pinned.
+Left as a measured, documented residual rather than absorbed into a
+per-sub-mode fudge factor, which is what fitting it would amount to.
+
+Guard: `tests/fst4_sweep.rs::fst4_reported_snr_tracks_injected_all_submodes`.
+
+### Method note: match the message, not `results.first()`
+
+Worth recording because it produced a convincing false finding before
+it was caught. Taking `results.first()` instead of the decode carrying
+the corpus message silently admits spurious low-SNR decodes. Doing so
+inflated FST4-15's `max |err|` from 1.45 dB to 6.43 dB, and generated
+an apparent "FST4-300 is -5 dB off under fading, worsening with SNR"
+result whose per-cell numbers were all *exactly* -42.85 dB reported —
+a constant-valued false decode, not a signal. The constant is what
+gave it away; a noisier artifact would have been reported as real.
 
 ## A note on this page's own error rate
 

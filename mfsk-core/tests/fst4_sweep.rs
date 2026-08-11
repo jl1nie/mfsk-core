@@ -1406,3 +1406,127 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
         depth3_or_4.iter().min()
     );
 }
+
+/// Reported SNR must track the injected SNR, **for every sub-mode**
+/// (issue #255 §4 follow-up).
+///
+/// `fst4::baseline::fst4_snr_db` ports `fst4_decode.f90:592-621`, whose
+/// calibration is per sub-mode (`snr_calfac` = 800/600/430/390/340 for
+/// 15/30/60/120/300, plus a `10·log10(8200/nsps)` term). When it
+/// shipped, only FST4-60 had been checked — the only sub-mode with a
+/// real off-air recording available locally — and the other four were
+/// left as "share the same formula/derivation but aren't individually
+/// confirmed". This closes that gap using the `fst4sim` corpus.
+///
+/// Why injected SNR is a valid reference: a real local `jt9 -7` build
+/// reports within ~1 dB of the injected value on this same corpus
+/// across all five sub-modes (measured 2026-08-11 — FST4-15 m10→-10,
+/// m18→-18; FST4-30 m15→-14, m22→-21; FST4-60 m15→-15, m25→-25;
+/// FST4-120 m20→-20, m28→-28; FST4-300 m24→-24, m32→-32).
+///
+/// Measured mean error over the AWGN corpus (3 trials/cell):
+///
+/// | sub-mode | 15 | 30 | 60 | 120 | 300 |
+/// |---|---:|---:|---:|---:|---:|
+/// | mean err | -0.45 | +0.43 | -0.01 | -0.19 | **-1.26** |
+///
+/// FST4-300 carries a real, SNR-independent ~1.3 dB offset (~1.9 dB
+/// under CCIR-moderate fading) that the other four don't. It is *not*
+/// a wrong parameter — `nsps`/`ndown`/`snr_calfac` were each checked
+/// against `fst4_decode.f90:182-214,597-613` and all match exactly.
+/// The likely origin is `fst4_snr_db`'s `xsig · NDOWN` scale
+/// correction, which was derived and confirmed on FST4-60 (note that
+/// sub-mode's -0.01 dB here). Left as a measured, documented residual
+/// rather than absorbed into a per-sub-mode fudge factor.
+///
+/// **Message-matching is load-bearing.** Taking `results.first()`
+/// instead of the decode that carries the corpus message silently
+/// admits spurious low-SNR decodes: doing so inflated FST4-15's
+/// `max |err|` from 1.45 dB to 6.43 dB and produced a fake
+/// "FST4-300 is -5 dB off under fading" signal that was entirely an
+/// artifact of a constant-valued false decode.
+#[test]
+fn fst4_reported_snr_tracks_injected_all_submodes() {
+    /// Per-sub-mode mean error budget. Wide enough for FST4-300's
+    /// known ~1.3 dB residual plus corpus-regeneration noise, tight
+    /// enough that losing the formula entirely (the pre-`e1200b6`
+    /// state was ~2 dB out, the generic heuristic far more) fails.
+    const MEAN_ERR_TOL_DB: f32 = 2.5;
+    /// Keep the default `cargo test` run bounded — FST4-300 files are
+    /// 300 s of audio each.
+    const MAX_FILES_PER_SUBMODE: usize = 4;
+    const EXPECT_MSG: &str = "CQ JL1NIE PM95";
+
+    let wavs = collect_wavs(&sweep_dir());
+    if wavs.is_empty() {
+        eprintln!(
+            "skipping fst4_reported_snr_tracks_injected_all_submodes: no fst4_*.wav in {:?} \
+             (regenerate with scripts/gen_fst4_sweep_wavs.sh)",
+            sweep_dir()
+        );
+        return;
+    }
+
+    macro_rules! check {
+        ($proto:ty, $nsec:expr) => {{
+            let mut picked: Vec<&WavMeta> = wavs
+                .iter()
+                .filter(|w| {
+                    w.nsec == $nsec
+                        && w.channel == "awgn"
+                        && w.trial == 1
+                        // Mid-range cells: strong enough to decode
+                        // reliably, weak enough to be a real test.
+                        && (-30..=-10).contains(&w.snr_db)
+                })
+                .collect();
+            picked.sort_by_key(|w| w.snr_db);
+            let step = (picked.len() / MAX_FILES_PER_SUBMODE).max(1);
+            let picked: Vec<&&WavMeta> = picked
+                .iter()
+                .step_by(step)
+                .take(MAX_FILES_PER_SUBMODE)
+                .collect();
+
+            let mut errs = Vec::new();
+            for w in &picked {
+                let Some(audio) = load_wav_i16_opt(&w.path) else {
+                    continue;
+                };
+                let out = mfsk_core::msg::decode_request::DecodeRequest::<$proto>::new(
+                    &audio, 100.0, 3000.0, 1.2, 50,
+                )
+                .decode();
+                if let Some(d) = out.results.iter().find(|d| {
+                    mfsk_core::msg::wsjt77::unpack77(d.message77()).as_deref() == Some(EXPECT_MSG)
+                }) {
+                    errs.push(d.snr_db - w.snr_db as f32);
+                }
+            }
+
+            if errs.is_empty() {
+                eprintln!("  FST4-{}: no decodes in the sampled cells — skipped", $nsec);
+            } else {
+                let mean = errs.iter().sum::<f32>() / errs.len() as f32;
+                eprintln!(
+                    "  FST4-{:<3} n={:<2} mean err {mean:+.2} dB",
+                    $nsec,
+                    errs.len()
+                );
+                assert!(
+                    mean.abs() <= MEAN_ERR_TOL_DB,
+                    "FST4-{} reported SNR is off by {mean:+.2} dB on average \
+                     (tolerance ±{MEAN_ERR_TOL_DB}) — check `fst4::baseline::fst4_snr_db`'s \
+                     `snr_calfac` for this sub-mode and its `xsig · NDOWN` scale correction",
+                    $nsec
+                );
+            }
+        }};
+    }
+
+    check!(mfsk_core::fst4::Fst4s15, 15);
+    check!(mfsk_core::fst4::Fst4s30, 30);
+    check!(mfsk_core::fst4::Fst4s60, 60);
+    check!(mfsk_core::fst4::Fst4s120, 120);
+    check!(mfsk_core::fst4::Fst4s300, 300);
+}
