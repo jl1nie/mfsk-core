@@ -3,6 +3,15 @@
 //! throughput across machines (e.g. Ryzen 9 vs Apple M5) — not a
 //! correctness regression, no assertions.
 //!
+//! **Tier C — `#[ignore]`d, run before a release.** These asserted
+//! nothing yet ran in the default suite, where
+//! `timing_fst4_300_sanity_strong_signal` alone cost **41 s** — 40 %
+//! of the whole suite's wall clock — for output nobody read on a
+//! routine run. A test that cannot fail is not a regression gate; it
+//! is a measurement, and measurements belong to the release
+//! checklist alongside the other sensitivity work. Feeds
+//! `docs/notes/BENCHMARKS.md`.
+//!
 //! Run (needs `full` — `timing_fst4_300`/`timing_fst4_300_sanity_strong_signal`
 //! import `mfsk_core::fst4::Fst4s300`, which the default feature set
 //! doesn't enable; `--test bench_qso3_busy_timing` alone as documented
@@ -25,6 +34,7 @@ use common::load_wav_i16;
 const N_ITERS: usize = 10;
 
 #[test]
+#[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_qso3_busy() {
     let slot = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
 
@@ -59,6 +69,7 @@ fn timing_qso3_busy() {
 /// fallback, host-only), `sync_min=0.8`, `max_cand=60` — the exact
 /// call `ft8_qso3_full_parity_recall.rs` uses.
 #[test]
+#[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_qso3_busy_full_parity() {
     let slot = load_wav_i16(Path::new(asset_path!("qso3_busy.wav")));
 
@@ -98,6 +109,7 @@ fn timing_qso3_busy_full_parity() {
 /// periods). Same params as `tests/fst4_sweep.rs::decode_wav_fst4`
 /// (sync_min=0.8, max_cand=50).
 #[test]
+#[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_fst4_300() {
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::msg::decode_request::DecodeRequest;
@@ -173,6 +185,7 @@ fn timing_fst4_300() {
 /// -5 dB — should be trivially decodable if the FST4-300 path works
 /// at all).
 #[test]
+#[ignore = "tier C: wall-clock measurement, no assertions — run before a release"]
 fn timing_fst4_300_sanity_strong_signal() {
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::msg::decode_request::DecodeRequest;
