@@ -19,7 +19,8 @@ read the linked function for the details, don't duplicate them here.
 | FST4 | `fst4_decode.f90:592-621` (`xsig`/`arg`/`xsnr`) + `get_candidates_fst4.f90` (baseline) | `fst4::baseline::fst4_snr_db`, via every `Fst4s*`'s `GenericPipelineProtocol::snr_db` override | **Shipped**, FST4-60-verified (issue #255 §4) |
 | Q65 | `q65.f90:744-793`'s `q65_snr` (the value WSJT-X actually displays — not the `esnodb`-based one computed inside `q65_dec_q3`/`q65_dec_q012`, which is always overwritten before display) | `q65::snr::q65_snr_db` (single-slot) / `q65::snr::q65_snr_db_averaged` (`iavg=1,2` multi-period) | **Shipped**, all 7 decode paths — the 3 multi-period call sites use an EMA-averaged composite spectrum (`q65_composite_spectrum_averaged`), matching WSJT-X's own `s1a` accumulation formula (issue #255 §5, #256) |
 | JT9 | `symspec2.f90:52-54` (`sig`/`t`/`snrdb`), reached via `jt9_decode.f90:148`'s `nsnr=nint(snrdb)` | `jt9::softsym::symspec2_from_ss2` | **Shipped**, real-`jt9`-verified within +0.33…+2.86 dB (mean +1.3) on `130418_1742.wav` (issue #255) |
-| JT65 / WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope so far — issue #226 gave these protocols *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited here. |
+| JT65 | `jt65_decode.f90:251,254-255` (`s2db = 10·log10(sync2) - 35`, then clamp to `[-30,-1]`) | `jt65::rx::demodulate_aligned_with_confidence_and_snr` — **own** estimator, not the generic heuristic | **Audited, formula deliberately not ported** — the existing estimator already lands within ~0.7 dB of real `jt9`; only WSJT-X's display clamp was adopted (issue #255) |
+| WSPR | not investigated under issue #255 | `engine::llr::compute_snr_db` (generic adjacent-tone heuristic), wired in under issue #226 | Out of scope — issue #226 gave this protocol *a* decode-side `snr_db` at all, not necessarily WSJT-X's exact formula. Not audited. |
 
 ## Why FT8 and Q65 aren't `GenericPipelineProtocol` implementors
 
@@ -134,3 +135,47 @@ Caveat, same as the rest of this page's synthetic work: absolute
 constants here carry the harness's own SNR convention, so the
 trustworthy part is the *deltas between configurations*, all of which
 are computed over bit-identical audio buffers.
+
+## JT65: audited, and deliberately *not* ported
+
+Issue #255 listed JT65 as running on `engine::llr::compute_snr_db`,
+the generic adjacent-tone heuristic. **That was wrong** — checking the
+code rather than the issue text, `jt65::rx::
+demodulate_aligned_with_confidence_and_snr` has always had its own
+estimator: a signal / non-winning-tone power ratio carrying a real
+`10·log10(2500/TONE_SPACING_HZ)` bandwidth offset, i.e. already
+converted into WSJT-X's 2500 Hz reference convention rather than left
+as a bare ratio.
+
+Measured against a real local `jt9 -6 -b A` build over a 283-decode
+`jt65sim` corpus (`scripts/gen_jt65_sweep_wavs.sh`), error vs `jt9`'s
+own displayed value:
+
+| injected | -22 | -20 | -18 | -16 | -14 | -12 | -10 | -5 | 0 | +5 | +10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| err vs real `jt9` | +0.65 | -0.14 | -0.18 | -0.17 | -0.22 | -0.38 | -0.64 | -1.86 | -2.29 | -3.09 | -2.64 |
+
+Within **±0.7 dB across -22…-10 dB**, which is where JT65 operates —
+better than the FST4 port achieved (1.71 dB) and comparable to Q65's
+(0.6-0.8 dB). Porting the real formula would mean reproducing
+`sync2 = 3.7e-4·ccfbest/sq0` (`decode65a.f90:55`, an empirical
+constant on a coherent-AFC cross-correlation this crate computes
+differently) to replace a number that is already accurate. Not done,
+on purpose.
+
+What *was* adopted is the display clamp: `jt65_decode.f90:254-255`
+pins the reported value to `[-30, -1]`, replacing an ad-hoc
+`[-24, +49]`. Both ends were wrong, in opposite ways. The `-24` floor
+bound before WSJT-X's own `-30` did, truncating the weakest decodes.
+And JT65 is the one protocol here whose displayed SNR **saturates by
+design** — verified directly, a `jt65sim` signal injected at +10 dB
+and one at +5 dB both come back `-1` from real `jt9`. The widening
+error at the strong end of the table above is this crate's estimator
+compressing where `jt9` simply stops counting; it is invisible to an
+operator, since everything up there displays as `-1` either way.
+
+Regression guard: `tests/jt65_sweep.rs::jt65_reported_snr_tracks_injected`
+asserts the per-cell mean over -22…-10 dB (the range where `jt9`
+tracks injected SNR to ~1 dB, so asserting against the injected value
+is asserting against `jt9`). It skips cleanly when the gitignored
+corpus is absent, like the recall sweeps beside it.

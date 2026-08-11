@@ -321,15 +321,30 @@ fn demodulate_aligned_with_confidence_inner(
         }
     }
 
-    const SNR_FLOOR_DB: f32 = -24.0;
-    // WSJT-X's own display convention ceiling. Also the answer when
-    // `xnoi_sum` is (near) exactly zero: a perfectly clean synthetic
-    // signal sampled with an integer number of cycles per FFT window
-    // can leave *zero* measurable leakage in the non-winning tones —
-    // that means "no measurable noise" (best case), not the worst
-    // case the floor implies. See the identical fix + explanation in
-    // `q65::rx::snr_db_from_sig_noi`.
-    const SNR_CEIL_DB: f32 = 49.0;
+    // WSJT-X's real JT65 display clamp, `jt65_decode.f90:254-255`:
+    //
+    //     nsnr=nint(s2db)
+    //     if(nsnr.lt.-30) nsnr=-30
+    //     if(nsnr.gt.-1) nsnr=-1
+    //
+    // JT65 is the one protocol here whose displayed SNR *saturates by
+    // design*: real `jt9` reports `-1` for anything stronger, verified
+    // directly (a `jt65sim` signal injected at +10 dB and at +5 dB
+    // both come back `-1`; 0 dB comes back `-3`). Reproducing the
+    // clamp matters for matching what a JT65 operator actually sees —
+    // and the floor matters too: the previous ad-hoc `-24` floor bound
+    // before WSJT-X's own `-30` did, truncating the weakest decodes.
+    //
+    // Replaces an ad-hoc `[-24, +49]` pair. The ceiling also doubles
+    // as the answer when `xnoi_sum` is (near) exactly zero: a
+    // perfectly clean synthetic signal sampled with an integer number
+    // of cycles per FFT window can leave *zero* measurable leakage in
+    // the non-winning tones — that means "no measurable noise" (best
+    // case), not the worst case the floor implies. See the identical
+    // fix + explanation in `q65::rx::snr_db_from_sig_noi`, which keeps
+    // its own `49.0` because Q65 has no such display clamp.
+    const SNR_FLOOR_DB: f32 = -30.0;
+    const SNR_CEIL_DB: f32 = -1.0;
     let snr_db = if xnoi_sum < f32::EPSILON {
         if xsig_sum < f32::EPSILON {
             SNR_FLOOR_DB

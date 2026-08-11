@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **JT65's reported-SNR clamp was ad-hoc `[-24, +49]`, not WSJT-X's
+  real `[-30, -1]`** (issue #255). `jt65_decode.f90:254-255` pins the
+  displayed value to `[-30, -1]`, and both ends of the old pair were
+  wrong in opposite ways: the `-24` floor bound before WSJT-X's own
+  `-30` did, truncating the weakest decodes, while JT65 is the one
+  protocol here whose display **saturates by design** — verified
+  directly against a real local `jt9 -6 -b A` build, a `jt65sim`
+  signal injected at +10 dB and one at +5 dB both come back `-1`.
+  The underlying estimator was **audited and deliberately left
+  alone**: issue #255 listed JT65 as running on the generic
+  `engine::llr::compute_snr_db` adjacent-tone heuristic, but
+  `jt65::rx::demodulate_aligned_with_confidence_and_snr` has always
+  had its own, carrying a real `10·log10(2500/TONE_SPACING_HZ)`
+  bandwidth offset — and over a 283-decode `jt65sim` corpus it lands
+  within **±0.7 dB of real `jt9` across -22…-10 dB**, where JT65
+  operates. Porting `sync2 = 3.7e-4·ccfbest/sq0` (`decode65a.f90:55`,
+  an empirical constant on a coherent-AFC cross-correlation this crate
+  computes differently) to replace an already-accurate number was not
+  worth it. New guard
+  `tests/jt65_sweep.rs::jt65_reported_snr_tracks_injected`; details in
+  `docs/notes/SNR_FORMULAS.md`.
+
 - **JT9's reported SNR was ~32 dB high** (issue #255). `jt9::softsym::
   symspec2_from_ss2` ports WSJT-X `symspec2.f90`, but stopped three
   lines short of that subroutine's own displayed-SNR formula

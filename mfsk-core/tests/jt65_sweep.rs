@@ -56,6 +56,7 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 mod common;
 use common::load_wav_f32_opt;
+use mfsk_core::jt65::search::SearchParams;
 use mfsk_core::jt65::{decode_scan_chase_default, decode_scan_default};
 
 const GOLDEN_CALL1: &str = "CQ";
@@ -220,5 +221,112 @@ fn jt65_chase_awgn_snr_sweep() {
     run_sweep(
         "JT65A AWGN SNR sweep (decode_scan_chase_default)",
         decode_wav_jt65_chase,
+    );
+}
+
+/// Reported SNR must track the injected SNR the corpus was generated
+/// at (issue #255).
+///
+/// Unlike the recall sweeps above this one **asserts**, because it is
+/// guarding a number that was measured against real `jt9` and can
+/// silently drift. Not `#[ignore]`d for the same reason — but it
+/// skips cleanly when the (gitignored, regenerable) corpus is absent,
+/// exactly like they do.
+///
+/// Provenance of the reference: `jt65sim`'s `-s` is an S/N in WSJT-X's
+/// 2500 Hz reference bandwidth, and a real local `jt9 -6 -b A` build
+/// reports within ~1 dB of it across this range (measured 2026-08-11:
+/// injected -8/-12/-16/-20/-23 came back -9/-13/-17/-20/-24). So
+/// asserting against the injected value is asserting against real
+/// `jt9`, to within that ~1 dB.
+///
+/// **Restricted to -22…-10 dB on purpose.** Outside it the injected
+/// value stops being a usable reference:
+///
+/// - Above ~-5 dB real `jt9` *saturates* — `jt65_decode.f90:254-255`
+///   clamps its display to `-1`, and a +10 dB and a +5 dB signal both
+///   come back `-1`. Nothing to track there.
+/// - Below -22 dB decodes get too sparse for a stable per-cell mean.
+///
+/// That -22…-10 window is where JT65 actually operates, and where
+/// `jt65::rx::demodulate_aligned_with_confidence_and_snr`'s estimator
+/// (a signal/noise power ratio with a `10·log10(2500/TONE_SPACING_HZ)`
+/// bandwidth offset — *not* the generic `engine::llr::compute_snr_db`
+/// heuristic issue #255 assumed) lands within ~0.7 dB of real `jt9`.
+#[test]
+fn jt65_reported_snr_tracks_injected() {
+    /// Per-cell mean error budget. Measured spread is -0.35…-1.64 dB
+    /// across the window, so this catches a real break (the JT9
+    /// sibling bug was ~32 dB) with room for corpus-regeneration
+    /// noise, without being loose enough to be meaningless.
+    const MEAN_ERR_TOL_DB: f32 = 2.5;
+    const MIN_DECODES_PER_CELL: usize = 5;
+
+    let jobs = collect_jobs(&sweep_dir()).unwrap_or_default();
+    if jobs.is_empty() {
+        eprintln!(
+            "skipping jt65_reported_snr_tracks_injected: no jt65_awgn_*.wav in {:?} \
+             (regenerate with scripts/gen_jt65_sweep_wavs.sh)",
+            sweep_dir()
+        );
+        return;
+    }
+
+    let params = SearchParams {
+        freq_min_hz: GOLDEN_FREQ_HZ - 100.0,
+        freq_max_hz: GOLDEN_FREQ_HZ + 100.0,
+        ..SearchParams::default()
+    };
+
+    let mut cells: std::collections::BTreeMap<i32, Vec<f32>> = std::collections::BTreeMap::new();
+    for job in &jobs {
+        if !(-22..=-10).contains(&job.snr) {
+            continue;
+        }
+        let Some(audio) = load_wav_f32_opt(&job.path) else {
+            continue;
+        };
+        let decodes = mfsk_core::jt65::decode_scan(&audio, 12_000, 0, &params);
+        if let Some(d) = decodes
+            .iter()
+            .find(|d| (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
+            cells
+                .entry(job.snr)
+                .or_default()
+                .push(d.snr_db - job.snr as f32);
+        }
+    }
+
+    assert!(
+        !cells.is_empty(),
+        "corpus present but produced no JT65 decodes in -22..-10 dB — recall regressed, \
+         so this test could not measure what it exists to measure"
+    );
+
+    let mut worst: Option<(i32, f32)> = None;
+    for (snr, errs) in &cells {
+        if errs.len() < MIN_DECODES_PER_CELL {
+            continue;
+        }
+        let mean = errs.iter().sum::<f32>() / errs.len() as f32;
+        eprintln!(
+            "  injected {snr:>4} dB  n={:<3} mean err {mean:+.2} dB",
+            errs.len()
+        );
+        if worst.is_none_or(|(_, w)| mean.abs() > w.abs()) {
+            worst = Some((*snr, mean));
+        }
+    }
+
+    let Some((snr, mean)) = worst else {
+        panic!("no -22..-10 dB cell reached {MIN_DECODES_PER_CELL} decodes");
+    };
+    assert!(
+        mean.abs() <= MEAN_ERR_TOL_DB,
+        "JT65 reported SNR at injected {snr} dB is off by {mean:+.2} dB on average \
+         (tolerance ±{MEAN_ERR_TOL_DB}) — check \
+         `jt65::rx::demodulate_aligned_with_confidence_and_snr`'s bandwidth offset \
+         and the WSJT-X [-30,-1] display clamp (jt65_decode.f90:254-255)"
     );
 }
