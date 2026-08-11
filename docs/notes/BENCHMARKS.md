@@ -17,16 +17,53 @@ Two kinds of numbers appear per protocol:
 
 ## Summary
 
-| Protocol | Golden-WAV recall | AWGN gap vs. WSJT-X | Status |
-|----------|-------------------|----------------------|--------|
-| FT8      | 8/8 host full-parity (WSJT-X), 18/18 (JTDX) | AWGN ≈ −21.6 dB (WSJT-X: −20 to −21 dB) | at/above parity |
-| FT4      | 6/6 | AWGN ≈ −16.9 dB live-binary match/slight edge vs. real `jt9 -5` on the same corpus (was compared against a −17.5 dB *published* figure, ~0.6 dB "gap" that direct measurement doesn't reproduce — see FT4 section, 2026-08-08) | at/above parity |
-| FST4     | 1/1 (FST4-60A only) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
-| WSPR     | 8/8 | AWGN 50% ≈ −29.8 dB, matches published sensitivity floor | at parity |
-| JT9      | 7/7 | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
-| JT65     | none available | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
-| Q65      | 2 real EME recordings | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
-| MSK144   | 3/3 (incl. exact SNR match) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
+**Recall alone is not a benchmark.** Until 2026-08-11 this table
+reported recall only, and said "WSPR 8/8 … at parity" for a decoder
+that was simultaneously emitting eight invented callsigns per slot — a
+50 % false-decode rate, reported from live operation (issue #275). A
+recall-only table cannot distinguish that from a working decoder, so
+precision is now a column.
+
+**FT8 has two configurations and they are listed as two rows.** Mixing
+their numbers is the single easiest mistake to make with this table, so
+they are never combined in one cell:
+
+- **host** — `DecodeDepth::FULL`, `sync_min = 0.8`, `max_cand = 60`.
+  The desktop research config. Test: `ft8_qso3_full_parity_recall`.
+- **ship** — `DecodeDepth::EMBEDDED`, `sync_min = 1.3`, `max_cand = 15`.
+  What actually runs on the Core2/S3 boards; never runs OSD. Test:
+  `ft8_qso3_apoff_recall`.
+
+`DecodeDepth::FULL` is host-only by construction, so the ship row is not
+a degraded host result — it is a different, deliberately cheaper decoder
+sized to the ESP32 time budget.
+
+"Extra decodes" means decodes not in the reference decoder's list for
+that recording. That is *not* the same as false decodes, and FT8 is the
+case that shows why: on `qso3_busy.wav` the host config produces 20
+decodes against a WSJT-X golden of 8, and **every one of the 12 extras
+appears in the JTDX 20-entry golden** for the same audio. They are
+signals WSJT-X missed, not inventions.
+
+Where no second reference decoder is available the budget is 0 and the
+measured value is 0 — the stricter test, since those protocols have no
+corroborating list to appeal to.
+
+Figures are asserted, not just observed — see each protocol's
+`*_wsjtx_samples` test.
+
+
+| Protocol | Golden-WAV recall | Precision (extra decodes) | AWGN gap vs. WSJT-X | Status |
+|----------|-------------------|---------------------------|----------------------|--------|
+| FT8 *(host)* | 8/8 (WSJT-X), 18/18 (JTDX) | 20 total, **0 uncorroborated** — all 12 beyond the WSJT-X 8 are in the JTDX 20-entry golden | AWGN ≈ −21.6 dB (WSJT-X: −20 to −21 dB) | at/above parity |
+| FT8 *(ship)* | 7/8 (WSJT-X) — misses `K1BZM DK8NE -10` at −17 dB, which needs AP context (issue #150) | 14 total, **0 uncorroborated** — all 7 extras are in the JTDX 20-entry golden | Not separately swept; the ship config trades recall for the ESP32 time budget | by design |
+| FT4      | 6/6 | **0** (budget 0) | AWGN ≈ −16.9 dB live-binary match/slight edge vs. real `jt9 -5` on the same corpus (was compared against a −17.5 dB *published* figure, ~0.6 dB "gap" that direct measurement doesn't reproduce — see FT4 section, 2026-08-08) | at/above parity |
+| FST4     | 1/1 (FST4-60A only) | **0** (budget 0) | Live-binary match vs. real `jt9 -7` on the same corpus at 2 of 3 tested sub-modes (FST4-60 exact match, FST4-120 ~0.04 dB); the previously-documented 0.10-0.60 dB "gaps" were vs. *published* figures, not verified against a real binary until 2026-08-08 — see FST4 section | at/above parity |
+| WSPR     | 9/9 | **0 phantoms**, and 0 across 5 chained slots with a carried callsign table | AWGN 50% ≈ −31.5 dB, matches live `wsprd` cell for cell | at parity |
+| JT9      | 7/7 | **0** (budget 0) | AWGN 50% ≈ −26.6 dB, exceeds real `jt9 -9` at its own default depth (`-d1`) — see JT9 section, task #24 | above parity |
+| JT65     | none available | **0** (budget 0) | ~0 dB per the crate's own AWGN corpus, but real `jt9 -6` scores meaningfully higher still (−25 dB: 50% vs. this crate's 15%) — a real, un-closed gap; the initial "free CQ-AP hypothesis" explanation was checked and ruled out (JT65's AP path gates on `mycall` length exactly like FT4/FST4's), root cause not yet isolated — see JT65 section, task #26 | gap closed (own corpus); real gap vs. live binary open |
+| Q65      | 2 real EME recordings | no aggregate figure; guarded per sub-mode on clean synth | 0.2-1.4 dB vs. analytical target across 10 sub-modes; matches/beats WSJT-X's own decode with CQ-AP hint | at/above parity |
+| MSK144   | 3/3 (incl. exact SNR match) | **0** (budget 0) | AWGN 50% ≈ −5.2 to −5.8 dB, 25/28 cells exact match vs. a real `jt9` build | at parity |
 
 All AWGN 50%-crossing figures below are linear-interpolated between the
 nearest swept SNR points, in each `*sim` generator's 2500 Hz
@@ -92,13 +129,14 @@ is wall time on a many-core host, not a single-thread figure).
 |---|---|---:|---:|
 | Q65-60D | 201212_1838.wav (10 GHz EME, fading metric) | 60 s | 0.05 s (was 0.08 s — see 2026-08-08 note below) |
 | Q65-60B | 1296 MHz troposcatter ×3 slots (multi-period averaging) | 60 s | 0.06 s (was 0.12 s — see 2026-08-08 note below) |
-| FT8 | qso3_busy.wav (16-signal busy band) | 15 s | 0.07 s (was 0.06 s — see 2026-08-08 note below) |
+| FT8 *(ship)* | qso3_busy.wav (16-signal busy band) | 15 s | 0.07 s (was 0.06 s — see 2026-08-08 note below) |
+| FT8 *(host)* | qso3_busy.wav (16-signal busy band) | 15 s | 0.18 s |
 | Q65-120D | 210117_0920.wav (rainscatter, fading metric) | 120 s | 0.07 s (was 0.12 s — see 2026-08-08 note below) |
 | FST4-60A | 210115_0058.wav | 60 s | 0.08 s (unchanged — see 2026-08-08 note below) |
 | FT4 | 000000_000002.wav | 7.5 s | 0.10 s (unchanged — see 2026-08-08 note below) |
 | Q65-120E | 6 m ionoscatter ×2 files (fading metric) | 120 s | 0.14 s (was 0.26 s — see 2026-08-08 note below) |
 | Q65-300A | 201210_0505.wav (optical scatter, fading metric) | 293.8 s | 0.19 s (was 0.34 s — see 2026-08-08 note below) |
-| WSPR | 150426_0918.wav | 120 s | 0.37 s (was 0.93 s — see 2026-08-08 note below) |
+| WSPR | 150426_0918.wav | 120 s | 0.76 s (was 0.37 s — **deliberate**, see the WSPR section: `wsprd`'s DT peak-up loop, ~1 dB of sensitivity) |
 | JT9 | 130418_1742.wav | 60 s | 0.16 s (was 0.37 s / 0.33 s — see the second 2026-08-08 note below) |
 | Q65-30A | 6 m ionoscatter ×4 slots (multi-period averaging) | 4×30 s | 0.42 s (was 0.56 s — see 2026-08-08 note below) |
 | Q65-60A | 6 m EME (plain BP + AP) | 60 s | 0.65 s (was 0.69 s) |
@@ -1042,37 +1080,52 @@ Reproduce: `docs/notes/FST4_BENCHMARK.md`.
 
 ## WSPR
 
-- **8/8 WSJT-X golden** (`samples/WSPR/150426_0918.wav`), ~0.37 s
-  end-to-end on a desktop build (was ~0.88-0.93 s — WSPR's first
-  dedicated perf-review pass, 2026-08-08, mainly a rayon
-  parallelization of `decode_scan_subtract`'s pass-1/pass-2 candidate
-  loops; see the "Decode speed" section's own 2026-08-08 note for the
-  full commit list and the AWGN-sweep re-verification confirming no
-  recall change) — sub-bin demod + 2-pass subtract+re-coarse + OSD-2
-  fallback + Type-3 phantom filter.
+- **9/9 WSJT-X golden** (`samples/WSPR/150426_0918.wav`), ~0.76 s
+  end-to-end on a desktop build.
+
+  Both numbers moved on 2026-08-11 (issue #275). The golden table
+  itself grew from 8 entries to 9: it had been trimmed to what this
+  crate could reach, while `wsprd` has always reported nine spots on
+  that recording. All nine now decode, with 0 phantoms.
+
+  The ~0.37 s → ~0.76 s regression is deliberate and is the price of
+  `wsprd`'s DT peak-up loop (`wsprd.c:1321-1327`), which retries the
+  demod-and-decode step at seventeen `shift1 ± 8k` positions per rung.
+  Both loops exit on first success, so the cost falls on *failing*
+  candidates. Against a 120 s slot it is not a constraint, and it buys
+  roughly 1 dB — see the sweep below.
+
+  Pipeline: sub-bin demod + 3-pass subtract+re-coarse + `wsprd`'s
+  empirical Fano metric table + OSD gated on Fano-confirmed callsigns.
 
 **AWGN sensitivity sweep** (`tests/wspr_sweep.rs`, `wsprsim`-driven,
 13 SNR points × 20 trials each):
 
-| SNR | Recall |
-|---:|---:|
-| −34 dB | 0.0% |
-| −32 dB | 0.0% |
-| −31 dB | 0.0% |
-| −30 dB | 40.0% |
-| −29 dB | 95.0% |
-| −28 dB | 95.0% |
-| −27 dB | 100.0% |
-| −26 dB | 100.0% |
-| −24 dB | 100.0% |
-| −20 dB | 100.0% |
-| −15 dB | 100.0% |
-| −10 dB | 100.0% |
-| 0 dB | 100.0% |
+| SNR | Recall | was (pre-#275) | `wsprd` |
+|---:|---:|---:|---:|
+| −34 dB | 0.0% | 0.0% | 0.0% |
+| −32 dB | 25.0% | 0.0% | 20.0% |
+| −31 dB | 80.0% | 0.0% | 80.0% |
+| −30 dB | 100.0% | 40.0% | 100.0% |
+| −29 dB | 100.0% | 95.0% | 100.0% |
+| −28 dB | 100.0% | 95.0% | 100.0% |
+| −27 dB | 100.0% | 100.0% | — |
+| −26 dB | 100.0% | 100.0% | — |
+| −24 dB | 100.0% | 100.0% | — |
+| −20 dB | 100.0% | 100.0% | — |
+| −15 dB | 100.0% | 100.0% | — |
+| −10 dB | 100.0% | 100.0% | — |
+| 0 dB | 100.0% | 100.0% | — |
 
-50% crossing ≈ −29.8 dB — consistent with WSJT-X's published WSPR
-sensitivity floor (commonly cited around −28 to −30 dB, 2500 Hz
-reference bandwidth).
+50% crossing ≈ **−31.5 dB**, moved from ≈ −29.8 dB on 2026-08-11.
+
+The `wsprd` column is the reference decoder run over the *same* WAVs
+(`build_jt9/wsprd -f 10.1387`), not a published figure — the point of
+issue #275 was that "consistent with the published floor" had been
+hiding a real ~2 dB deficit against the actual implementation. The two
+now agree cell for cell, including −31 dB at 16/20 in both. This is a
+sensitivity *floor* comparison against a live reference, which is the
+only form of it worth recording.
 
 ## JT9
 

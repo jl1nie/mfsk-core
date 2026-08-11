@@ -1,8 +1,96 @@
 # Changelog
 
-## 0.9.1 (unreleased)
+## 0.9.1 — WSPR parity with `wsprd` (#275) + phantom elimination, TX envelope ramps (#259), FT4 sniper aim (#257), SNR formula close-out (#255), test taxonomy rework, FST4/Q65 sub-mode coverage
 
 ### Fixed
+
+- **WSPR reached full parity with `wsprd`** (issue #275, closed). The
+  WSJT-X golden `150426_0918.wav` goes **7/9 → 9/9** — every spot the
+  reference decoder reports on that file — with 0 phantoms, and the
+  AWGN sensitivity curve now matches `wsprd` cell for cell (same
+  corpus, reference decoder run over the identical WAVs):
+
+  | SNR | wsprd | before | after |
+  |---|---|---|---|
+  | −28 dB | 20/20 | 20/20 | 20/20 |
+  | −29 dB | 20/20 | 11/20 | 20/20 |
+  | −30 dB | 20/20 | 4/20 | 20/20 |
+  | −31 dB | 16/20 | 0/20 | 16/20 |
+  | −32 dB | 4/20 | 0/20 | 5/20 |
+
+  Six faithful ports, no tuning. In descending order of effect:
+
+  - **The Fano branch metric was linear in the LLR.** `wsprd` uses a
+    *measured* log-likelihood table (`metric_tables.c` row 2, selected
+    at `wsprd.c:912-913`) indexed by the soft symbol after normalising
+    it to `[0, 255]` (`wsprd.c:472-481`). The table is strongly
+    asymmetric and saturating (`T[0] = +1.0`, `T[255] = −13.25`); a
+    linear metric cannot express that, so one confident-but-wrong
+    symbol dominates the path metric and Fano — a sequential search —
+    settles on a *wrong codeword* rather than failing. WSPR has no CRC,
+    so nothing downstream catches it. Diagnosed by dumping `wsprd`'s own
+    `symbols[162]` and feeding it to our decoder: before, it returned
+    `W65/G9MNK 33`; after, `G8VDQ IO91 37`, `wsprd`'s own answer.
+    Normalising inside the metric build also makes it scale-invariant,
+    retiring the constraint recorded in `METRIC_BIAS`'s old comment
+    ("would need an LLR-normalisation pass before Fano — deferred").
+
+  - **The final pass was conditional on the earlier passes decoding
+    something.** `wsprd.c:999` skips *pass 1* when pass 0 comes up
+    empty, never pass 2 — a slot where the early passes found nothing is
+    exactly the one that needs the final pass's coherent-block ladder
+    and zero-drift estimate. −31 dB goes 0/20 → 16/20 on this alone.
+
+  - **No DT peak-up loop.** `wsprd.c:1321-1327` retries the whole
+    demod-and-decode step at `shift1 ± 8k`, `k = 0..8`, as the *inner*
+    loop, so every rung gets all seventeen positions. Not redundant with
+    the refine cascade: the cascade maximises *sync*, and the alignment
+    Fano converges from is not always the one with the best sync —
+    `wsprd` wins `G8VDQ` at `shift1 + 16` having scored position 0
+    higher. Worth ~1 dB.
+
+  - **Subtraction discarded the decoded drift.** `subtract_signal_baseband`
+    has always taken `drift_hz`; both call sites passed `0.0`, where
+    `wsprd` passes `drift1` (`wsprd.c:1446`). A stationary replica walks
+    away from a drifting signal across the 110.6 s frame, so most of it
+    survives. Every station on the golden decodes at −0.5 or −1.5 Hz
+    drift, so *every* subtraction left residue, and the leftovers sat on
+    the weakest signal in the band. This is the one that recovers
+    `G8VDQ IO91 37`.
+
+  - **Two passes instead of three**, and the per-pass configuration was
+    wrong in both directions (`wsprd.c:998-1010`): passes 0/1 use
+    `maxdrift = 4` and discarded the coarse drift estimate; the final
+    pass uses `maxdrift = 0` ("no drift for smaller frequency estimator
+    variance") and we were handing it 4. Fixing the latter is what
+    recovers `W3BI FN20 30` at −25 dB, which stops being an OSD-only
+    decode.
+
+  - **Three of five refine stages missing** (`wsprd.c:1221-1272`): drift
+    refine (`drift ± 0.5`), fine lag (±32, step 16) and fine freq
+    (±0.1 Hz, step 0.05), plus coarse freq running at ±1.0 Hz/0.5 Hz
+    instead of ±0.5 Hz/0.25 Hz. Also added `wsprd`'s `minrms`
+    plausibility gate (`wsprd.c:1338-1345`) and the fourth demod rung
+    `bitmetric` (`wsprd.c:465-468`), completing the blocksize ladder.
+
+  Cost: the golden slot goes ~0.15 s → ~0.76 s, against a 120 s slot.
+
+  The sync scorer was *not* at fault, contrary to an intermediate
+  diagnosis recorded on the issue: `sync_score_isqs` matches
+  `wsprd.c:280-320` in formula, magnitude-not-power convention and
+  normalisation.
+
+- **FST4-15/30/120/300 were never decoded in CI**, and two mechanisms
+  hid it. `tests/fst4_sim_roundtrip.rs` reported "5 passed" in 0.00 s
+  with no corpus — its WAVs are generated and untracked, and its skip
+  path predated `MFSK_REQUIRE_CORPUS` — while the in-crate synth
+  roundtrips covering every sub-mode were gated behind an opt-in
+  `RUN_FST4_ROUNDTRIP=1` on the grounds of being slow (measured: 2.4 s
+  for all five). The synth roundtrips are now un-gated and the
+  corpus-dependent sim roundtrips are tier C, `#[ignore]`d and wired
+  into `scripts/run-sensitivity-sweeps.sh`. Q65 was audited for the
+  same defect across its ten sub-modes and does not have it.
+
 
 - **WSPR emitted one phantom decode for every real one** (50 % false-
   decode rate). On the WSJT-X golden `150426_0918.wav` — 9 real
@@ -503,7 +591,53 @@
   reported SNR values sane: -19 to -28 dB range for signals that only
   decode via averaging at all).
 
+### Changed
+
+- **`wspr::SearchParams::default().max_candidates` 16 → 200**, matching
+  `wsprd`'s own cap (`wsprd.c:1088`). Measured effect on both corpora:
+  none — `smspec` is smoothed before peak detection, so the number of
+  local maxima is under either cap on the material we have. Changed
+  anyway because 16 would bind on a genuinely crowded band.
+
+- **`fec::ConvFano::METRIC_BIAS` 1.0 → 0.45 and `DEFAULT_DELTA` 17 →
+  60**, i.e. `wsprd`'s own `bias` and `delta` (`wsprd.c:822-823`). The
+  previous values were fitted around the linear metric's
+  input-dependent scale; the normalisation added above makes the real
+  ones usable. `ConvFano` backs WSPR only — JT9 uses `ConvFano232`,
+  which already carried an equivalent LUT.
+
 ### Added
+
+- **`wspr::WsprResult::drift_hz`** — the linear drift the successful
+  demodulation ran at, `wsprd`'s `drift1`. Load-bearing rather than
+  informational: it is what the subtraction needs to reconstruct a
+  replica that drifts the same way the signal did.
+
+  Note for anyone *constructing* `WsprResult` with a struct literal:
+  this is a new required field. Code that only reads decode results —
+  which is what the type is for — is unaffected.
+
+- **Precision guards on every FST4 and Q65 sub-mode.** Both protocols
+  now execute a decode per sub-mode in CI (above), but the assertions
+  were recall-only: "the expected message is somewhere in the results".
+  A clean single-signal synth slot is the cheapest place to check the
+  other half — one signal in, so anything else out is a phantom, with no
+  interferer to blame. Added to FST4's `synth_roundtrip_for` (15/30/120/
+  300) and the FST4-60 test that predates it, and to the scan-path tests
+  in `q65_roundtrip`, `q65_a15_roundtrip` and `q65_eme_submodes`. FT4's
+  clean-synth paths gained the same. All pass with zero phantoms, so
+  these pin current behaviour rather than fix a defect — which is the
+  point: FST4-60's guard had been the only one of fifteen sub-modes
+  across the two protocols.
+
+  JT65/JT9/MSK144 needed none: their in-crate roundtrips go through
+  `demodulate_aligned`, a single-target demod returning one codeword
+  asserted for exact content, so there is no set of extra decodes for a
+  phantom to hide in.
+
+- **`tests/common/corpus.rs::missing()`** — skips quietly by default and
+  **panics** under `MFSK_REQUIRE_CORPUS=1`, so a corpus-gated test
+  cannot report a green run for assertions it never reached.
 
 - **`tests/ft8_qso3_jtdx_high_sensitivity_recall.rs`** — a JTDX "RX
   Sensitivity = High" 20-entry golden for `qso3_busy.wav` (superset of
