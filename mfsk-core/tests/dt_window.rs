@@ -63,6 +63,27 @@ const REFERENCE_JT65_LATE_SEC: f32 = 5.0;
 /// guard, not a fix.
 const REFERENCE_JT9_LATE_SEC: f32 = 0.6;
 
+/// Additive deterministic pseudo-noise.
+///
+/// Needed because a *silent* slot is not a valid input to these
+/// decoders' coarse searches: they normalise candidate scores against
+/// a noise-floor estimate taken from the spectrogram itself, which is
+/// degenerate when the only non-signal content is exact zeros. On a
+/// noiseless Q65-120D slot the scan finds nothing at all while
+/// `SniperRequest` at the known alignment decodes fine — an artifact
+/// of the fixture, not a defect. (The same trap produced phantom
+/// decodes on noiseless JT9/FT4 fixtures while investigating #283.)
+fn add_noise(slot: &mut [f32], amplitude: f32) {
+    // LCG — deterministic, no dev-dependency, adequate for a
+    // noise-floor that just needs to be non-degenerate.
+    let mut s: u32 = 0x1234_5678;
+    for x in slot.iter_mut() {
+        s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let u = (s >> 8) as f32 / 16_777_216.0 - 0.5;
+        *x += u * amplitude;
+    }
+}
+
 /// Place `signal` into a `slot_sec`-long silent slot starting at
 /// `start_sec`, and return the slot.
 fn place(signal: &[f32], start_sec: f32, slot_sec: f32) -> Vec<f32> {
@@ -275,5 +296,50 @@ fn q65_60a_default_window_reaches_reference_late_edge() {
         hit.is_some(),
         "Q65-60A must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
          `jt9 -3 -p 60 -b A` reaches +5.5 s. A symmetric ±1.0 s default fails this."
+    );
+}
+
+/// Latest Δt real `jt9 -3 -p 120 -b D -d 3` decoded on a `q65sim`
+/// sweep at −12 dB (measured 2026-08-13; it failed at +3.0).
+///
+/// Guards the *long* sub-modes' side of the same default. The
+/// symbol-denominated tolerance this default replaced gave Q65-120
+/// ±6.7 s and Q65-300 ±17.3 s, so moving to a uniform +5.5 s late is a
+/// narrowing for them — measured to be harmless, since the reference
+/// itself only reaches ~+2.0 s here, but it is a narrowing and wants a
+/// test rather than an argument.
+const REFERENCE_Q65_120_LATE_SEC: f32 = 2.0;
+
+#[test]
+#[cfg(feature = "q65")]
+fn q65_120d_default_window_reaches_reference_late_edge() {
+    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::{Q65d120, tx::synthesize_standard_for};
+
+    let signal = synthesize_standard_for::<Q65d120>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
+        .expect("Q65-120D synth must succeed");
+    let nominal = 1.0f32;
+    let dt = REFERENCE_Q65_120_LATE_SEC;
+    let mut slot = place(&signal, nominal + dt, 120.0);
+    add_noise(&mut slot, 0.05);
+
+    let decodes = DecodeRequest::<Q65d120>::new(
+        &slot,
+        FS,
+        (nominal * FS as f32) as usize,
+        SearchParams::default(),
+    )
+    .decode();
+    let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
+    println!(
+        "  Q65-120D Δt={dt:>+5.1}s under SearchParams::default()  {}",
+        hit.map(|h| format!("yes, dt_sec={:+.2}", h.dt_sec))
+            .unwrap_or_else(|| "NO".into())
+    );
+    assert!(
+        hit.is_some(),
+        "Q65-120D must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
+         `jt9 -3 -p 120 -b D` reaches it"
     );
 }

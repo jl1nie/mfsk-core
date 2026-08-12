@@ -147,7 +147,30 @@
   survived a green suite because **every in-tree Q65 test passes
   explicit tolerances and none exercised the default**;
   `dt_window.rs::q65_60a_default_window_reaches_reference_late_edge`
-  now does, and is verified to fail at the symmetric value.
+  and its Q65-120D sibling now do, and both are verified to fail at
+  the symmetric value.
+
+  The long sub-modes were checked too, since a uniform +5.5 s late is
+  a *narrowing* for them (the old symbol unit gave Q65-120 ±6.7 s and
+  Q65-300 ±17.3 s). Measured harmless — the reference itself only
+  reaches ~+2.0 s there, and this crate covers +5.0 s:
+
+  | | Q65-120D | Q65-300A |
+  |---|---|---|
+  | `jt9` | −1.5 … +2.0 | −1.5 … +2.0 |
+  | after | −1.5 … +5.0 | −1.5 … +5.0 |
+
+  Q65-60B/C/D/E need no separate measurement: the window is
+  denominated in seconds and tone spacing does not enter it, so they
+  are identical to Q65-60A by construction (all `NSPS = 7200`).
+
+  A note on method, since these edges are quoted as if they were
+  crisp: **they move with SNR.** Q65-120D measured −1.0…0.0 at −25 dB
+  and −1.5…+2.0 at −12 dB, because near the edge only part of the
+  frame is inside the slot and sync degrades gradually rather than
+  cutting off. A *positive* result at low SNR is therefore solid
+  evidence the window reaches that far; a failure is ambiguous between
+  the window and plain sensitivity.
 
   Guarded by `q65_a15_roundtrip::q65_15a_default_window_covers_wsjtx_plus_one_second`,
   which decodes at Δt = +1.0 s under the *default* `SearchParams` —
