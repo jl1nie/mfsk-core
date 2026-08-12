@@ -302,6 +302,7 @@ mod tests {
             message: "K1ABC W9XYZ FN42".into(),
             freq_hz: 1000.0,
             start_sample: 12_000,
+            dt_sec: 1.0,
             iterations: 3,
             snr_db: -24.0,
         };

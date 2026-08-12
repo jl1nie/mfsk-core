@@ -17,15 +17,15 @@
 //! asserts the decoder still finds it out to the edge the *reference
 //! decoder* reaches.
 //!
-//! ## Why only the late side
+//! ## Both sides, since #283
 //!
-//! Placing a frame *earlier* than nominal eventually pushes its start
-//! before sample 0, where it is truncated and effectively re-anchors
-//! at 0 — so an "early" miss cannot be distinguished from a window
-//! limit. Placing it later is unambiguous as long as the slot has
-//! tail room, which these do. The late side is also where the real
-//! divergence was: WSJT-X's JT65 and JT9 windows are both deliberately
-//! asymmetric toward late starts.
+//! This file originally asserted the late side only: placing a frame
+//! earlier than nominal eventually pushed its start before sample 0,
+//! which the decoders could not represent at all, so an "early" miss
+//! could not be told apart from a window limit. #283 fixed that (the
+//! scan front-pads, so an early frame has a real index and a signed
+//! `dt_sec`), and the early edge became assertable — so it is
+//! asserted here.
 //!
 //! ## Provenance of the edges asserted below
 //!
@@ -37,9 +37,10 @@
 //! window looked like a gap and was a superset; Q65's was worse than
 //! the source implied).
 //!
-//! Q65's equivalent guard lives in
-//! `q65_a15_roundtrip::q65_15a_default_window_covers_wsjtx_plus_one_second`
-//! — same idea, kept next to that sub-mode's other roundtrip tests.
+//! Q65's *late*-edge guard lives in
+//! `q65_a15_roundtrip::q65_15a_default_window_covers_wsjtx_plus_one_second`,
+//! kept next to that sub-mode's other roundtrip tests; its early edge
+//! is asserted here alongside JT65's.
 
 #![cfg(all(feature = "jt65", feature = "jt9"))]
 
@@ -138,5 +139,96 @@ fn jt9_window_reaches_reference_late_edge() {
         missed.is_empty(),
         "JT9 must decode out to Δt = {REFERENCE_JT9_LATE_SEC:+.2} s, the last step real \
          `jt9 -9` decoded on the same kind of input — missed {missed:?}"
+    );
+}
+
+/// Earliest Δt real `jt9 -6 -p 60 -d 3` decoded on the same
+/// `jt65sim -t` sweep (measured 2026-08-13; it failed at −4.0).
+const REFERENCE_JT65_EARLY_SEC: f32 = -3.0;
+
+/// Earliest Δt real `jt9 -3 -p 15 -b A -d 3` decoded on a `q65sim`
+/// sweep at −20 dB (measured 2026-08-12; it failed at −1.25).
+/// Matches `q65.f90:127`'s `lag1 = -1.0/dtstep`.
+const REFERENCE_Q65_EARLY_SEC: f32 = -1.0;
+
+/// A frame that starts *before* the caller's buffer must still decode
+/// — real `jt9` recovers it from the part that landed inside the
+/// slot, and before #283 this crate could not represent the alignment
+/// at all (`row_min` clamped at 0, so its low edge sat at exactly
+/// `−nominal`).
+///
+/// Asserted through `dt_sec`, since `start_sample` saturates at 0 for
+/// exactly these frames and so cannot express the case under test.
+#[test]
+fn jt65_decodes_frame_starting_before_the_buffer() {
+    use mfsk_core::jt65::search::SearchParams;
+    use mfsk_core::jt65::{decode_scan, tx::synthesize_standard};
+
+    let signal = synthesize_standard("K1ABC", "W9XYZ", "EN37", FS, 1500.0, 0.3)
+        .expect("JT65 synth must succeed");
+    let nominal = 1.0f32;
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1600.0,
+        ..Default::default()
+    };
+
+    // Δt = −3.0 s with a 1.0 s nominal puts the frame start 2.0 s
+    // before sample 0: the leading 2 s are simply gone.
+    let dt = REFERENCE_JT65_EARLY_SEC;
+    let drop = (-(nominal + dt) * FS as f32).round() as usize;
+    assert!(drop > 0, "test only meaningful when the frame is truncated");
+    let slot = place(&signal[drop..], 0.0, 60.0);
+
+    let decodes = decode_scan(&slot, FS, (nominal * FS as f32) as usize, &params);
+    let hit = decodes
+        .iter()
+        .find(|d| d.message.to_string().contains("W9XYZ"));
+    println!(
+        "  JT65 Δt={dt:>+5.1}s (first {:.1} s of the frame cut)  {}",
+        drop as f32 / FS as f32,
+        hit.map(|h| format!("yes, dt_sec={:+.2}", h.dt_sec))
+            .unwrap_or_else(|| "NO".into())
+    );
+    assert!(
+        hit.is_some(),
+        "JT65 must decode a frame starting {:.1} s before the buffer — real `jt9 -6` does",
+        drop as f32 / FS as f32
+    );
+}
+
+#[test]
+fn q65_decodes_frame_starting_before_the_buffer() {
+    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::{Q65a15, tx::synthesize_standard_for};
+
+    let signal = synthesize_standard_for::<Q65a15>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
+        .expect("Q65-15A synth must succeed");
+    // Q65-15's nominal frame start is 0.5 s into the slot.
+    let nominal = 0.5f32;
+    let dt = REFERENCE_Q65_EARLY_SEC;
+    let drop = (-(nominal + dt) * FS as f32).round() as usize;
+    assert!(drop > 0, "test only meaningful when the frame is truncated");
+    let slot = place(&signal[drop..], 0.0, 15.0);
+
+    let decodes = DecodeRequest::<Q65a15>::new(
+        &slot,
+        FS,
+        (nominal * FS as f32) as usize,
+        SearchParams::default(),
+    )
+    .decode();
+    let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
+    println!(
+        "  Q65-15A Δt={dt:>+5.1}s (first {:.1} s of the frame cut)  {}",
+        drop as f32 / FS as f32,
+        hit.map(|h| format!("yes, dt_sec={:+.2}", h.dt_sec))
+            .unwrap_or_else(|| "NO".into())
+    );
+    assert!(
+        hit.is_some(),
+        "Q65-15A must decode a frame starting {:.1} s before the buffer — real `jt9 -3` does",
+        drop as f32 / FS as f32
     );
 }

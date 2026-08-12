@@ -197,8 +197,23 @@ pub struct Q65Result {
     pub message: String,
     /// Tone-0 frequency in Hz.
     pub freq_hz: f32,
-    /// Sample index where the frame's symbol 0 begins.
+    /// Frame start as an index into the audio buffer that was passed
+    /// in.
+    ///
+    /// **Saturates at 0** for a frame that began *before* the buffer —
+    /// which the scan can now find (issue #283). Such a frame has no
+    /// valid index here; use [`Self::dt_sec`], which is signed and
+    /// always authoritative.
     pub start_sample: usize,
+    /// Frame start in seconds from the start of the audio buffer —
+    /// the signed form of [`Self::start_sample`], and the only field
+    /// that can express a frame beginning *before* the buffer
+    /// (issue #283), where `start_sample` saturates at 0.
+    ///
+    /// To compare against a reference decoder's DT column, subtract
+    /// your own nominal start: `dt_sec - nominal_start_sample as f32
+    /// / sample_rate as f32`.
+    pub dt_sec: f32,
     /// BP iterations consumed by the QRA decoder.
     pub iterations: u32,
     /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
@@ -406,6 +421,7 @@ fn decode_at_inner<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         iterations,
         snr_db,
     })
@@ -480,6 +496,7 @@ pub(crate) fn decode_at_fading_for<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         iterations,
         snr_db,
     })
@@ -585,6 +602,7 @@ pub(crate) fn decode_at_with_ap_list_for<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         // The list path does not run BP; report 0 iterations so
         // callers can still distinguish "decoded via templates" from
         // "decoded via BP" if they care.
@@ -919,6 +937,7 @@ fn decode_at_grid_for<P: ModulationParams>(
                     message: text,
                     freq_hz: freq_shift,
                     start_sample: shifted_start,
+                    dt_sec: shifted_start as f32 / sample_rate as f32,
                     iterations,
                     snr_db,
                 });
@@ -1084,6 +1103,7 @@ fn decode_averaged_ap_list_for<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         iterations: 0,
         snr_db,
     })
@@ -1163,6 +1183,7 @@ fn decode_fading_with_energies<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         iterations,
         snr_db,
     })
@@ -1206,6 +1227,7 @@ fn decode_averaged_plain_for<P: ModulationParams>(
         message: text,
         freq_hz: base_freq_hz,
         start_sample,
+        dt_sec: start_sample as f32 / sample_rate as f32,
         iterations,
         snr_db,
     })

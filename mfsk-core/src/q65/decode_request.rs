@@ -207,47 +207,118 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
     /// [`Self::ap_hint`].
     pub fn decode(&self) -> Vec<Q65Result> {
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
+
+        // Front-pad with silence so a frame starting up to
+        // `time_tolerance_sec` *before* `nominal_start_sample` still
+        // has a non-negative index (issue #283). Without it the coarse
+        // search clamps `row_min` at 0 and never scores such a frame,
+        // while real `jt9` decodes it from the part that landed inside
+        // the slot: measured on a `q65sim` Δt sweep, `jt9 -3 -p 15 -b A`
+        // decoded Δt = −1.0 s where this crate's low edge sat at
+        // exactly `−nominal`, the clamp's signature.
+        //
+        // Padding rather than signed start indices throughout: the
+        // leading silence *is* the erasure, so every
+        // `extract_*_energies` keeps its unsigned arithmetic and
+        // full-frame bounds check untouched. WSJT-X gets there
+        // differently — it scores the hypothesis and skips
+        // out-of-buffer terms inline (`xcor.f90:49-50`) — but the
+        // numerics come out the same.
+        //
+        // Done here rather than in `q65::rx`'s four scan entries
+        // because this is the only public path into them, and the
+        // `on_result` callback has to see translated coordinates too.
+        let pad = {
+            let want = (self.params.time_tolerance_sec.max(0.0) * self.sample_rate as f32).round()
+                as usize;
+            want.saturating_sub(self.nominal_start_sample)
+        };
+        let padded: Option<Vec<f32>> = (pad > 0).then(|| {
+            let mut v = alloc::vec![0.0f32; pad];
+            v.extend_from_slice(self.audio);
+            v
+        });
+        let audio: &[f32] = padded.as_deref().unwrap_or(self.audio);
+        let nominal = self.nominal_start_sample + pad;
+
+        // Translate a result from padded coordinates back to the
+        // caller's. `start_sample` has nowhere to put a negative, so
+        // it saturates and `dt_sec` carries the truth.
+        let sample_rate = self.sample_rate;
+        let untranslate = move |r: &mut Q65Result| {
+            r.dt_sec = (r.start_sample as f32 - pad as f32) / sample_rate as f32;
+            r.start_sample = r.start_sample.saturating_sub(pad);
+        };
+        let wrapped;
+        let on_result: Option<&(dyn Fn(&Q65Result) + Sync)> = match self.on_result {
+            Some(cb) if pad > 0 => {
+                wrapped = move |r: &Q65Result| {
+                    let mut t = r.clone();
+                    untranslate(&mut t);
+                    cb(&t);
+                };
+                Some(&wrapped)
+            }
+            other => other,
+        };
+
+        let mut out = self.decode_dispatch(audio, nominal, on_result, &ctx);
+        if pad > 0 {
+            for r in &mut out {
+                untranslate(r);
+            }
+        }
+        out
+    }
+
+    fn decode_dispatch(
+        &self,
+        audio: &[f32],
+        nominal_start_sample: usize,
+        on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
+        ctx: &DecodeContext,
+    ) -> Vec<Q65Result> {
         if let Some(candidates) = self.ap_list {
             return super::rx::decode_scan_with_ap_list_for::<P>(
-                self.audio,
+                audio,
                 self.sample_rate,
-                self.nominal_start_sample,
+                nominal_start_sample,
                 &self.params,
                 candidates,
-                self.on_result,
-                &ctx,
+                on_result,
+                ctx,
             );
         }
         if let Some((model, b90_ts)) = self.fading {
             return super::rx::decode_scan_fading_for::<P>(
-                self.audio,
+                audio,
                 self.sample_rate,
-                self.nominal_start_sample,
+                nominal_start_sample,
                 &self.params,
                 b90_ts,
                 model,
                 self.ap_hint,
-                self.on_result,
-                &ctx,
+                on_result,
+                ctx,
             );
         }
         match self.ap_hint {
             Some(hint) => super::rx::decode_scan_with_ap_for::<P>(
-                self.audio,
+                audio,
                 self.sample_rate,
-                self.nominal_start_sample,
+                nominal_start_sample,
                 &self.params,
                 hint,
-                self.on_result,
-                &ctx,
+                on_result,
+                ctx,
             ),
             None => super::rx::decode_scan_for::<P>(
-                self.audio,
+                audio,
                 self.sample_rate,
-                self.nominal_start_sample,
+                nominal_start_sample,
                 &self.params,
-                self.on_result,
-                &ctx,
+                on_result,
+                ctx,
             ),
         }
     }

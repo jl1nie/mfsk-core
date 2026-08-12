@@ -243,7 +243,25 @@ pub fn decode_at_with_erasures(
 pub struct Jt65Result {
     pub message: crate::msg::Jt72Message,
     pub freq_hz: f32,
+    /// Frame start as an index into the audio buffer that was passed
+    /// in.
+    ///
+    /// **Saturates at 0** for a frame that began *before* the buffer —
+    /// which the scan can now find (issue #283), because a JT65 frame
+    /// arriving several seconds early is still decodable from the part
+    /// of it that landed inside the slot. Such a frame has no valid
+    /// index here; use [`Self::dt_sec`], which is signed and always
+    /// authoritative.
     pub start_sample: usize,
+    /// Frame start in seconds from the start of the audio buffer —
+    /// the signed form of [`Self::start_sample`], and the only field
+    /// that can express a frame beginning *before* the buffer
+    /// (issue #283), where `start_sample` saturates at 0.
+    ///
+    /// To compare against a reference decoder's DT column, subtract
+    /// your own nominal start: `dt_sec - nominal_start_sample as f32
+    /// / sample_rate as f32`.
+    pub dt_sec: f32,
     /// Decode-side SNR estimate in dB (WSJT-X 2500 Hz reference
     /// bandwidth convention) — see
     /// [`rx::demodulate_aligned_with_confidence_and_snr`] for the
@@ -297,6 +315,45 @@ pub fn decode_scan_streaming(
     )
 }
 
+/// Front-pad `audio` with silence so that a frame starting up to
+/// `params.time_tolerance_sec` *before* `nominal_start_sample` still
+/// has a non-negative index, and return the padded buffer with the
+/// shifted nominal.
+///
+/// Issue #283: without this the coarse search clamps `row_min` at 0
+/// and never scores an early frame at all, while real `jt9` decodes
+/// it from whatever part of the frame landed inside the slot —
+/// measured on a `jt65sim -t` sweep, `jt9 -6` decoded Δt down to
+/// −3.0 s where this crate stopped at exactly `−nominal`, the clamp's
+/// signature.
+///
+/// Padding rather than signed start indices throughout: the leading
+/// silence *is* the erasure, so `extract_*_energies`' existing
+/// unsigned arithmetic and full-frame bounds check keep working
+/// untouched. WSJT-X reaches the same result differently, by scoring
+/// the hypothesis and skipping out-of-buffer terms in the inner loop
+/// (`xcor.f90:49-50`, `sync9.f90:40`); this crate's FT8 coarse sync
+/// already does it that way, but JT65's demod is not structured for
+/// it and the numerics come out identical either way.
+///
+/// Returns `None` when no padding is needed, so the common path keeps
+/// borrowing the caller's slice with no copy.
+fn pad_for_early_frames(
+    audio: &[f32],
+    sample_rate: u32,
+    nominal_start_sample: usize,
+    time_tolerance_sec: f32,
+) -> Option<(Vec<f32>, usize)> {
+    let want = (time_tolerance_sec.max(0.0) * sample_rate as f32).round() as usize;
+    let pad = want.saturating_sub(nominal_start_sample);
+    if pad == 0 {
+        return None;
+    }
+    let mut padded = vec![0.0f32; pad];
+    padded.extend_from_slice(audio);
+    Some((padded, pad))
+}
+
 fn decode_scan_inner(
     audio: &[f32],
     sample_rate: u32,
@@ -306,6 +363,17 @@ fn decode_scan_inner(
 ) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let padding = pad_for_early_frames(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        params.time_tolerance_sec,
+    );
+    let (audio, pad) = match &padding {
+        Some((buf, pad)) => (buf.as_slice(), *pad),
+        None => (audio, 0),
+    };
+    let nominal_start_sample = nominal_start_sample + pad;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, params);
     let mut seen: Vec<Jt65Result> = Vec::new();
     for c in cands {
@@ -322,7 +390,8 @@ fn decode_scan_inner(
             let result = Jt65Result {
                 message: msg,
                 freq_hz: c.freq_hz,
-                start_sample: c.start_sample,
+                start_sample: c.start_sample.saturating_sub(pad),
+                dt_sec: (c.start_sample as f32 - pad as f32) / sample_rate as f32,
                 snr_db,
             };
             if let Some(cb) = on_result {
@@ -399,6 +468,17 @@ fn decode_scan_chase_inner(
 ) -> Vec<Jt65Result> {
     use crate::engine::ModulationParams;
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
+    let padding = pad_for_early_frames(
+        audio,
+        sample_rate,
+        nominal_start_sample,
+        search_params.time_tolerance_sec,
+    );
+    let (audio, pad) = match &padding {
+        Some((buf, pad)) => (buf.as_slice(), *pad),
+        None => (audio, 0),
+    };
+    let nominal_start_sample = nominal_start_sample + pad;
     let cands = search::coarse_search(audio, sample_rate, nominal_start_sample, search_params);
     let mut seen: Vec<Jt65Result> = Vec::new();
     for c in cands {
@@ -420,7 +500,8 @@ fn decode_scan_chase_inner(
             let result = Jt65Result {
                 message: msg,
                 freq_hz: c.freq_hz,
-                start_sample: c.start_sample,
+                start_sample: c.start_sample.saturating_sub(pad),
+                dt_sec: (c.start_sample as f32 - pad as f32) / sample_rate as f32,
                 snr_db,
             };
             if let Some(cb) = on_result {

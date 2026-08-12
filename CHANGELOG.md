@@ -1,8 +1,41 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283)
 
 ### Fixed
+
+- **Q65 and JT65 decode a frame that started before the audio buffer**
+  (issue #283). Both coarse searches clamped `row_min` at 0 and never
+  scored such an alignment at all, so their early edge sat at exactly
+  `−nominal_start` — the clamp's signature, not a window limit.
+  Measured against real `jt9` on the reference simulators' Δt sweeps:
+
+  | | ours before | ours after | `jt9` |
+  |---|---|---|---|
+  | Q65-15A | −0.50 s | **−1.00 s** | −1.00 s |
+  | JT65 | −1.00 s | **−4.00 s** | −3.00 s |
+
+  Q65 now matches the reference exactly; JT65 exceeds it. WSJT-X gets
+  there by scoring the hypothesis and skipping out-of-buffer terms
+  inline (`xcor.f90:49-50`, `sync9.f90:40`); this crate front-pads the
+  buffer instead, so the leading silence *is* the erasure and every
+  `extract_*_energies` keeps its unsigned arithmetic and full-frame
+  bounds check untouched. The numerics come out the same. Padding is
+  allocated only when the search window actually reaches past the
+  buffer start, so the common path still borrows the caller's slice.
+
+  Costs nothing measurable: the tier-A+B suite is 91-94 s across
+  before/after runs.
+
+### Added
+
+- **`Q65Result::dt_sec` / `Jt65Result::dt_sec`** — frame start in
+  seconds from the buffer origin, i.e. the *signed* form of
+  `start_sample`. `start_sample` saturates at 0 for a frame that began
+  before the buffer, so it cannot express the case #283 added; `dt_sec`
+  can, and is what to compare against a reference decoder's DT column
+  (subtract your own nominal start). Additive — these structs are
+  outputs, constructed only inside the crate.
 
 - **JT65's Δt search window reaches WSJT-X's late edge** (issue #282,
   **breaking**: `jt65::search::SearchParams::time_tolerance_symbols:
