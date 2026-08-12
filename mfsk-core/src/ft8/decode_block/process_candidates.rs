@@ -145,7 +145,13 @@ pub fn decode_block_streaming<S: AudioSample>(
     on_result: &mut dyn FnMut(&DecodeResult),
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
-    let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
+    let pass1 = coarse_sync(
+        &spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        pass1_limit_for(max_cand),
+    );
     drop(spec);
     let pass1 = fine_refine_pass1(audio, pass1);
     let pass2 = refine_candidates(audio, pass1, max_cand, None);
@@ -389,7 +395,13 @@ fn decode_block_multipass<S: AudioSample>(
         };
         #[cfg(feature = "std")]
         let __trace_t0 = trace_stage.then(std::time::Instant::now);
-        let cands = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
+        let cands = coarse_sync(
+            &spec,
+            freq_min,
+            freq_max,
+            sync_min,
+            pass1_limit_for(max_cand),
+        );
         drop(spec);
         let cands = fine_refine_pass1(work.as_slice(), cands);
         #[cfg(feature = "std")]
@@ -905,7 +917,13 @@ fn decode_block_multipass<S: AudioSample>(
     _on_result: Option<&mut dyn FnMut(&DecodeResult)>,
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
-    let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
+    let pass1 = coarse_sync(
+        &spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        pass1_limit_for(max_cand),
+    );
     drop(spec);
     let pass1 = fine_refine_pass1(audio, pass1);
     let pass2 = refine_candidates(audio, pass1, max_cand, None);
@@ -1008,7 +1026,13 @@ pub fn decode_block_into_tuned<S: AudioSample>(
     bp_max_iter: u32,
 ) -> Vec<DecodeResult> {
     let spec = compute_spectrogram(audio, freq_max);
-    let pass1 = coarse_sync(&spec, freq_min, freq_max, sync_min, pass1_limit());
+    let pass1 = coarse_sync(
+        &spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        pass1_limit_for(max_cand),
+    );
     drop(spec);
     let pass2 = refine_candidates_into(audio, pass1, max_cand);
     process_candidates_into_tuned(audio, pass2, depth, DEFAULT_Q_THRESH, bp_max_iter)
@@ -1034,6 +1058,28 @@ pub fn decode_block_into_tuned<S: AudioSample>(
 /// 1.0 s at PASS1=75). Override per-call via `MFSK_PASS1_LIMIT`
 /// when std is enabled.
 const PASS1_LIMIT_DEFAULT: usize = 30;
+
+/// Pass-1 cap for a caller that asked stage 3 for `max_cand`
+/// candidates. Never supplies *fewer* coarse candidates than the
+/// caller's own budget (issue #280).
+///
+/// Feeding coarse_sync a smaller cap than `max_cand` makes
+/// [`refine_candidates`]' `sync_quality` re-rank the binding
+/// truncation instead of an inert pass-through, and that re-rank is
+/// lossy: measured on `qso3_busy.wav`, `PASS1_LIMIT=150` +
+/// `max_cand=60` drops `K1BZM DK8NE -10` (and two more golden
+/// entries, 8/8 → 6/8) that the *same* run keeps at
+/// `PASS1_LIMIT=max_cand=150`. WSJT-X has no analog of the re-rank at
+/// all — `ft8_decode.f90:217-228` calls `ft8b` on every one of
+/// `sync8`'s (up to `MAXCAND=600`) candidates, in coarse-score order.
+///
+/// Embedded callers pass `max_cand` ≤ 15, so this is
+/// [`PASS1_LIMIT_DEFAULT`] for them exactly as before; only host
+/// research configs (`max_cand=60`) actually widen.
+pub(super) fn pass1_limit_for(max_cand: usize) -> usize {
+    pass1_limit().max(max_cand)
+}
+
 pub(super) fn pass1_limit() -> usize {
     #[cfg(feature = "std")]
     {
