@@ -135,9 +135,12 @@ pub struct SearchParams {
     pub freq_min_hz: f32,
     /// Upper edge of the frequency search band, Hz.
     pub freq_max_hz: f32,
-    /// ± this many symbol times around the nominal start sample are
-    /// tested as candidate frame starts.
-    pub time_tolerance_symbols: u32,
+    /// ±Δt search window around the nominal start sample, **in
+    /// seconds**. Seconds rather than symbols for the same reason
+    /// Q65's is (issue #282): symbol counts do not transfer between
+    /// protocols or sub-modes, and the reference decoder states this
+    /// window in time.
+    pub time_tolerance_sec: f32,
     /// Minimum candidate score (normalised); see [`SyncCandidate::score`].
     pub score_threshold: f32,
     /// Maximum number of candidates returned, best-score first.
@@ -150,9 +153,38 @@ impl Default for SearchParams {
             // JT65 typically lives 1000–2000 Hz on the dial.
             freq_min_hz: 1000.0,
             freq_max_hz: 2000.0,
-            // Symbols are long (683 ms); ±3 symbols covers ~2 s drift.
-            time_tolerance_symbols: 3,
+            // WSJT-X `sync65.f90:29-30` searches `lag1=-32 .. lag2=82`
+            // in units of `1024/11025` s = 92.9 ms, i.e. **−2.97 s to
+            // +7.62 s** — deliberately asymmetric, because a JT65
+            // frame is 46.8 s inside a 60 s slot and a late start has
+            // far more room than an early one.
+            //
+            // Searched symmetrically here at the wider (late) half.
+            // `row_min` clamps at row 0 for any realistic nominal
+            // start (~1 s), so the extra negative span costs nothing
+            // reachable; the alternative — carrying two fields to
+            // mirror the asymmetry exactly — buys no behaviour.
+            //
+            // Was `time_tolerance_symbols: 3` (±1.11 s) until issue
+            // #282. Measured against real `jt9 -6 -p 60 -d 3` over a
+            // `jt65sim -t` Δt sweep at −10 dB: `jt9` decoded out to
+            // Δt = +5.0 s; this crate stopped at Δt = 0.0.
+            time_tolerance_sec: 7.62,
             score_threshold: DEFAULT_SCORE_THRESHOLD,
+            // Stays at 8, *not* raised toward `sync65.f90:3`'s
+            // `MAXCAND=300` (issue #282 proposed that; measurement
+            // withdrew it). The two numbers are not comparable:
+            // WSJT-X's is an array bound for candidates emitted only
+            // at local maxima above `thresh0`, while this one
+            // truncates a ranked list in which *every* entry costs a
+            // full decode attempt.
+            //
+            // Measured on ten `jt65sim` files at −22 dB (the SNR
+            // where recall is partial, so a cap change can show):
+            // 8 → 5/10 in 0.4 s, 300 → 5/10 in 11.0 s. Identical
+            // recall, 27× the time. `tests/jt65_sweep.rs` alone went
+            // 7.4 s → 189 s with the raise, on a test that gates
+            // every PR.
             max_candidates: 8,
         }
     }
@@ -263,7 +295,8 @@ pub fn coarse_search_on_spec(
     let nsps = (sample_rate as f32 * <Jt65 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
 
-    let t_span_rows = params.time_tolerance_symbols as i64 * ROWS_PER_SYMBOL as i64;
+    let t_span_rows =
+        (params.time_tolerance_sec * sample_rate as f32 / spec.t_step.max(1) as f32).round() as i64;
     let nominal_row = (nominal_start_sample / spec.t_step) as i64;
     let row_min = (nominal_row - t_span_rows).max(0);
     let row_max = nominal_row + t_span_rows;

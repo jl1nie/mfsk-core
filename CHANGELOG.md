@@ -1,8 +1,58 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65 Δt window (#282)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282)
 
 ### Fixed
+
+- **JT65's Δt search window reaches WSJT-X's late edge** (issue #282,
+  **breaking**: `jt65::search::SearchParams::time_tolerance_symbols:
+  u32` → `time_tolerance_sec: f32`). It was `3` symbols ≈ ±1.11 s.
+  Measured against real `jt9 -6 -p 60 -d 3` over a `jt65sim -t` Δt
+  sweep at −10 dB: `jt9` decoded every step out to **Δt = +5.0 s**;
+  this crate stopped at **Δt = 0.0**. Now 7.62 s, from
+  `sync65.f90:29-30`'s `lag1=-32, lag2=82` (× `1024/11025` s), and the
+  same sweep decodes out to +6.0 s.
+
+  A JT65 frame is 46.8 s inside a 60 s slot, so a late start has far
+  more room than an early one and WSJT-X's window is deliberately
+  asymmetric (−2.97 / +7.62 s). Searched symmetrically at the wider
+  half here: `row_min` clamps at row 0 for any realistic nominal
+  start, so the extra negative span costs nothing reachable.
+
+  **Free**: `jt65_sweep` is 7.40 s before and 7.44 s after; the whole
+  tier-A+B suite is unchanged at ~93 s.
+
+- **JT9's window is unchanged in span but now stated in seconds**
+  (**breaking**, same rename). 1.728 s is numerically identical to the
+  previous `3` symbols. `jt9_decode.f90:69-70` reads
+  `lag1=-2.5/tstep, lag2=+5.0/tstep`, which the #282 audit took at
+  face value and flagged as a 4.3× gap — but real `jt9 -9` on a
+  shifted `jt9sim` sweep decodes only out to **Δt ≈ +0.6 s**. The
+  apparent late reach is not usable reach, and this crate already
+  covered it (out to +1.5 s). No behaviour change; the audit's JT9
+  entry was wrong.
+
+### Added
+
+- **`tests/dt_window.rs` — the Δt regression harness** the #282 audit
+  said was the prerequisite for everything else. Synthesises a signal
+  in-crate, places it progressively later in the slot, and asserts the
+  decoder still finds it out to the edge *real `jt9`* reaches. No
+  corpus, runs in CI, ~0.2 s.
+
+  This closes the hole the audit's most important finding named: every
+  sweep corpus is generated at Δt = 0 (`gen_ft8_sweep_wavs.sh:37` and
+  `gen_fst4_sweep_wavs.sh:34` hardcode `DT=0.0`; `jt9sim.f90:124`
+  hardcodes `k=12000` and takes no Δt argument), so a too-narrow time
+  window was invisible to the entire suite by construction. JT9
+  measured "at or above parity" in #20/#23-#26 while carrying a window
+  the audit believed was 4.3× too narrow, and nothing could have
+  flagged either the belief or its refutation.
+
+  Asserts the late side only: placing a frame early enough eventually
+  pushes its start before sample 0, where truncation and a window
+  limit are indistinguishable. The late side is also where both
+  reference windows are deliberately asymmetric.
 
 - **Q65's Δt search window is WSJT-X's ±1.0 s again, and is now
   denominated in seconds** (issue #282, **breaking**:

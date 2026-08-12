@@ -486,7 +486,7 @@ mod tests {
         let sp = search::SearchParams {
             freq_min_hz: 1050.0,
             freq_max_hz: 1550.0,
-            time_tolerance_symbols: 3,
+            time_tolerance_sec: 1.728,
             score_threshold: 0.05,
             max_candidates: 200,
         };

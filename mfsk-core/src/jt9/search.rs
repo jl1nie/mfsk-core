@@ -130,9 +130,11 @@ pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
 pub struct SearchParams {
     pub freq_min_hz: f32,
     pub freq_max_hz: f32,
-    /// ± symbols around `nominal_start_sample`. JT9 tx offset is ≤ 1 s
-    /// (~1.7 symbols); default 3 covers the common drift cases.
-    pub time_tolerance_symbols: u32,
+    /// ±Δt search window around `nominal_start_sample`, **in
+    /// seconds**. Seconds rather than symbols (issue #282) — the
+    /// symbol-denominated form is what let Q65's equivalent window
+    /// silently become a different span per sub-mode.
+    pub time_tolerance_sec: f32,
     pub score_threshold: f32,
     pub max_candidates: usize,
 }
@@ -142,7 +144,19 @@ impl Default for SearchParams {
         Self {
             freq_min_hz: 1400.0,
             freq_max_hz: 1600.0,
-            time_tolerance_symbols: 3,
+            // 1.728 s — numerically identical to the previous
+            // `time_tolerance_symbols: 3` (JT9 symbols are 0.576 s),
+            // so this is a unit change, not a behaviour change.
+            //
+            // `jt9_decode.f90:69-70` reads `lag1=-2.5/tstep`,
+            // `lag2=+5.0/tstep`, which looks far wider. Measured
+            // (issue #282), real `jt9 -9 -p 60 -d 3` on a shifted
+            // `jt9sim` sweep decodes only out to Δt ≈ +0.6 s — so
+            // the source's apparent late reach is not usable reach,
+            // and this window already covers what the reference
+            // actually achieves. Guarded by
+            // `tests/dt_window.rs::jt9_window_reaches_reference_late_edge`.
+            time_tolerance_sec: 1.728,
             score_threshold: DEFAULT_SCORE_THRESHOLD,
             max_candidates: 8,
         }
@@ -252,7 +266,8 @@ pub fn coarse_search_on_spec(
     let nsps = (sample_rate as f32 * <Jt9 as ModulationParams>::SYMBOL_DT).round() as usize;
     let df = sample_rate as f32 / nsps as f32;
 
-    let t_span_rows = params.time_tolerance_symbols as i64 * ROWS_PER_SYMBOL as i64;
+    let t_span_rows =
+        (params.time_tolerance_sec * sample_rate as f32 / spec.t_step.max(1) as f32).round() as i64;
     let nominal_row = (nominal_start_sample / spec.t_step) as i64;
     let row_min = (nominal_row - t_span_rows).max(0);
     let row_max = nominal_row + t_span_rows;
@@ -351,7 +366,7 @@ mod diag_tests {
         let params = SearchParams {
             freq_min_hz: 1050.0,
             freq_max_hz: 1500.0,
-            time_tolerance_symbols: 3,
+            time_tolerance_sec: 1.728,
             score_threshold: 0.001,
             max_candidates: 5000,
         };

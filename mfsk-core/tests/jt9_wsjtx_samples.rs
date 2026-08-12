@@ -92,7 +92,7 @@ fn jt9_wsjtx_sample_recall_vs_golden() {
     let params = SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_symbols: 3,
+        time_tolerance_sec: 1.728,
         score_threshold: 0.05,
         max_candidates: 200,
     };
@@ -158,7 +158,7 @@ fn jt9_scan_streaming_matches_batch_exactly() {
     let params = SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_symbols: 3,
+        time_tolerance_sec: 1.728,
         score_threshold: 0.05,
         max_candidates: 200,
     };
@@ -226,7 +226,7 @@ fn jt9_wsjtx_sample_snr_matches_real_jt9() {
     let params = SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_symbols: 3,
+        time_tolerance_sec: 1.728,
         score_threshold: 0.05,
         max_candidates: 200,
     };
@@ -288,7 +288,7 @@ fn jt9_wsjtx_sample_precision() {
     let params = SearchParams {
         freq_min_hz: 1050.0,
         freq_max_hz: 1550.0,
-        time_tolerance_symbols: 3,
+        time_tolerance_sec: 1.728,
         score_threshold: 0.05,
         max_candidates: 200,
     };
