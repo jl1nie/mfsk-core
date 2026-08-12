@@ -142,8 +142,21 @@ pub struct SearchParams {
 impl Default for SearchParams {
     fn default() -> Self {
         Self {
-            freq_min_hz: 1400.0,
-            freq_max_hz: 1600.0,
+            // `jt9`'s own CLI defaults (`--lowest` 200, `--highest`
+            // 4007). Was 1400-1600 Hz, which is narrower than any
+            // real JT9 sub-band and **could not decode this crate's
+            // own JT9 golden recording**: `tests/jt9_wsjtx_samples.rs`
+            // had to override it, with a comment saying the default
+            // "excludes every" golden decode.
+            //
+            // Measured on `130418_1742.wav` (issue #282 follow-up):
+            // 1400-1600 Hz found 2 decodes, every wider band found 5,
+            // and the wall clock was flat at ~60 ms from 200 Hz wide
+            // to 3800 Hz wide — the coarse search's cost is the
+            // whole-buffer spectrogram build, not the per-bin scan,
+            // so the narrow band was buying nothing at all.
+            freq_min_hz: 200.0,
+            freq_max_hz: 4000.0,
             // 1.728 s — numerically identical to the previous
             // `time_tolerance_symbols: 3` (JT9 symbols are 0.576 s),
             // so this is a unit change, not a behaviour change.

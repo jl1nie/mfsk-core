@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **JT9's default search band is 200-4000 Hz**, `jt9`'s own CLI
+  defaults (`--lowest` 200, `--highest` 4007). It was 1400-1600 Hz —
+  narrower than any real JT9 sub-band, and narrow enough that it
+  **could not decode this crate's own JT9 golden recording**;
+  `tests/jt9_wsjtx_samples.rs` had to override it, with a comment
+  saying the default "excludes every" golden decode.
+
+  Measured on `130418_1742.wav`: 1400-1600 Hz found 2 decodes, every
+  wider band found 5, and wall clock was flat at ~60 ms from 200 Hz
+  wide to 3800 Hz wide. The coarse search's cost is the whole-buffer
+  spectrogram build, not the per-bin scan, so the narrow band was
+  buying nothing.
+
 - **Q65 and JT65 decode a frame that started before the audio buffer**
   (issue #283). Both coarse searches clamped `row_min` at 0 and never
   scored such an alignment at all, so their early edge sat at exactly
