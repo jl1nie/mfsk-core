@@ -484,28 +484,83 @@ fn coarse_sync_inner(
 
     const MLAG: i32 = 10;
 
-    // Per-bin peak + 40-percentile noise floor.
-    let mut red = vec![0.0f32; n_freq];
+    // Two independent noise-floor channels, matching WSJT-X `sync8.f90`
+    // exactly (issue #280). Collapsing these into a single
+    // `±jz`-dependent channel — the pre-#280 shape of this function —
+    // let the noise floor `base` scale with the requested lag window:
+    // widening `MFSK_SYNC_LAG_S` toward WSJT-X's own `±2.5s` inflated
+    // the *only* floor available here (per-bin max over a wider window
+    // has a higher expected value under basic extreme-value
+    // statistics), silently pushing weak real decodes below `sync_min`
+    // even though WSJT-X's actual primary channel — anchored to a
+    // fixed `mlag=10` regardless of `JZ` — would still have caught
+    // them. `red_primary`/`base_primary` restores that JZ-independent
+    // anchor; `red_secondary`/`base_secondary` (the old sole channel)
+    // now plays its correct WSJT-X role: a supplementary second
+    // candidate per bin, contributed only when its peak lag disagrees
+    // with the primary's.
+    let primary_half = MLAG.min(jz);
+    let mut red_primary = vec![0.0f32; n_freq];
+    let mut jpeak_primary = vec![0i32; n_freq];
+    let mut red_secondary = vec![0.0f32; n_freq];
+    let mut jpeak_secondary = vec![0i32; n_freq];
     for fi in 0..n_freq {
-        red[fi] = (-jz..=jz)
-            .map(|lag| sync2d[idx(fi, lag)])
-            .fold(0.0f32, f32::max);
+        let mut best_p = f32::NEG_INFINITY;
+        let mut lag_p = -primary_half;
+        let mut best_s = f32::NEG_INFINITY;
+        let mut lag_s = -jz;
+        for lag in -jz..=jz {
+            let v = sync2d[idx(fi, lag)];
+            if v > best_s {
+                best_s = v;
+                lag_s = lag;
+            }
+            if (-primary_half..=primary_half).contains(&lag) && v > best_p {
+                best_p = v;
+                lag_p = lag;
+            }
+        }
+        red_primary[fi] = best_p;
+        jpeak_primary[fi] = lag_p;
+        red_secondary[fi] = best_s;
+        jpeak_secondary[fi] = lag_s;
     }
-    let base = {
-        // 40th-percentile noise floor: `select_nth_unstable_by` is O(N)
-        // average vs the previous full-sort's O(N log N). Pivot
-        // ordering inside the percentile isn't load-bearing
-        // (downstream only uses `red[pct_idx]` as a normaliser), so
-        // unstable selection is fine. `unwrap_or(Ordering::Equal)`
-        // for NaN safety — matches the same pattern at
-        // `process_candidates.rs` xsnr2_db_simple median.
-        // Gemini PR #79 + #101 review.
-        let mut sorted = red.clone();
+
+    // 40th-percentile noise floor: `select_nth_unstable_by` is O(N)
+    // average vs a full sort's O(N log N). Pivot ordering inside the
+    // percentile isn't load-bearing (downstream only uses the selected
+    // element as a normaliser), so unstable selection is fine.
+    // `unwrap_or(Ordering::Equal)` for NaN safety — matches the same
+    // pattern at `process_candidates.rs` xsnr2_db_simple median.
+    // Gemini PR #79 + #101 review.
+    let percentile_floor = |red: &[f32]| -> f32 {
+        let mut sorted = red.to_vec();
         let pct_idx = ((0.40 * n_freq as f32) as usize).min(n_freq - 1);
         sorted.select_nth_unstable_by(pct_idx, |a, b| {
             a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal)
         });
         sorted[pct_idx].max(f32::EPSILON)
+    };
+    let base_primary = percentile_floor(&red_primary);
+    let base_secondary = percentile_floor(&red_secondary);
+
+    // Parabolic sub-quantum interpolation around a chosen peak lag —
+    // shared by both channels. Only valid strictly inside the searched
+    // window (needs both neighbours); falls back to 0 at the edge.
+    let dt_quanta_at = |fi: usize, lag: i32| -> f32 {
+        if lag > -jz && lag < jz {
+            let y_lo = sync2d[idx(fi, lag - 1)];
+            let y_mi = sync2d[idx(fi, lag)];
+            let y_hi = sync2d[idx(fi, lag + 1)];
+            let denom = y_lo - 2.0 * y_mi + y_hi;
+            if denom.abs() > f32::EPSILON {
+                (0.5 * (y_lo - y_hi) / denom).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
     };
 
     let mut cands: Vec<SyncCandidate> = Vec::new();
@@ -513,56 +568,30 @@ fn coarse_sync_inner(
         let i_carrier = ia + fi;
         let freq_hz = i_carrier as f32 * df;
 
-        let mut peaks: Vec<(i32, f32)> = (-jz..=jz)
-            .filter_map(|lag| {
-                let raw = sync2d[idx(fi, lag)];
-                let norm = raw / base;
-                if norm.is_finite() && norm >= sync_min {
-                    Some((lag, norm))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-        let mut picked: Vec<i32> = Vec::new();
-        for (lag, score) in peaks {
-            if picked.iter().any(|&pl| (lag - pl).abs() <= MLAG) {
-                continue;
-            }
-            picked.push(lag);
-            let dt_quanta = if lag > -jz && lag < jz {
-                let y_lo = sync2d[idx(fi, lag - 1)];
-                let y_mi = sync2d[idx(fi, lag)];
-                let y_hi = sync2d[idx(fi, lag + 1)];
-                let denom = y_lo - 2.0 * y_mi + y_hi;
-                if denom.abs() > f32::EPSILON {
-                    let off = 0.5 * (y_lo - y_hi) / denom;
-                    off.clamp(-1.0, 1.0)
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            let dt_lag = lag as f32 + dt_quanta;
+        let lag_p = jpeak_primary[fi];
+        let norm_p = red_primary[fi] / base_primary;
+        if norm_p.is_finite() && norm_p >= sync_min {
+            let dt_lag = lag_p as f32 + dt_quanta_at(fi, lag_p);
             cands.push(SyncCandidate {
                 freq_hz,
                 dt_sec: (dt_lag - 0.5) * tstep,
-                score,
+                score: norm_p,
             });
-            // WSJT-X sync8.f90 emits at most 2 candidates per freq:
-            // one from `red` (narrow ±MLAG window) and one from `red2`
-            // (full ±jz window) when the peak lags differ. We don't
-            // run two windows separately; the `picked` greedy NMS with
-            // cap 2 produces equivalent recall on `qso3_busy.wav` —
-            // empirically verified during the v0.6.2 plan (a
-            // dual-window prototype produced identical 16/18 JTDX
-            // hit, so the additional separate normalization wasn't
-            // worth the code volume). Dropped from 0.6.2 scope.
-            if picked.len() >= 2 {
-                break;
+        }
+
+        // Secondary candidate only when the full-window peak actually
+        // disagrees with the fixed-window one — matches `sync8.f90`'s
+        // `if (jpeak2(n)==jpeak(n)) cycle`.
+        let lag_s = jpeak_secondary[fi];
+        if lag_s != lag_p {
+            let norm_s = red_secondary[fi] / base_secondary;
+            if norm_s.is_finite() && norm_s >= sync_min {
+                let dt_lag = lag_s as f32 + dt_quanta_at(fi, lag_s);
+                cands.push(SyncCandidate {
+                    freq_hz,
+                    dt_sec: (dt_lag - 0.5) * tstep,
+                    score: norm_s,
+                });
             }
         }
     }
