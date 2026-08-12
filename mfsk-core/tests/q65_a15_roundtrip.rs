@@ -45,7 +45,8 @@ fn q65_15a_scan_recovers_at_offset() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 0.75,
+        time_tolerance_early_sec: 0.75,
+        time_tolerance_late_sec: 0.75,
         score_threshold: 0.1,
         max_candidates: 8,
     };

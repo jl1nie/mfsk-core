@@ -82,7 +82,7 @@ impl Q65SubMode for super::Q65e120 {}
 impl Q65SubMode for super::Q65a300 {}
 
 /// Wide-band Q65 decode request: search `nominal_start_sample` ±
-/// `params.time_tolerance_sec` across `params.freq_min_hz
+/// `params.time_tolerance_early_sec`/`_late_sec` across `params.freq_min_hz
 /// ..params.freq_max_hz` for every candidate signal. Construct with
 /// [`DecodeRequest::new`], chain builder methods, call
 /// [`DecodeRequest::decode`].
@@ -209,7 +209,7 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         let ctx = ctx_from_hash_table(self.hash_table.as_ref());
 
         // Front-pad with silence so a frame starting up to
-        // `time_tolerance_sec` *before* `nominal_start_sample` still
+        // `time_tolerance_early_sec` *before* `nominal_start_sample` still
         // has a non-negative index (issue #283). Without it the coarse
         // search clamps `row_min` at 0 and never scores such a frame,
         // while real `jt9` decodes it from the part that landed inside
@@ -229,8 +229,8 @@ impl<'a, P: Q65SubMode> DecodeRequest<'a, P> {
         // because this is the only public path into them, and the
         // `on_result` callback has to see translated coordinates too.
         let pad = {
-            let want = (self.params.time_tolerance_sec.max(0.0) * self.sample_rate as f32).round()
-                as usize;
+            let want = (self.params.time_tolerance_early_sec.max(0.0) * self.sample_rate as f32)
+                .round() as usize;
             want.saturating_sub(self.nominal_start_sample)
         };
         let padded: Option<Vec<f32>> = (pad > 0).then(|| {

@@ -232,3 +232,48 @@ fn q65_decodes_frame_starting_before_the_buffer() {
         drop as f32 / FS as f32
     );
 }
+
+/// Latest Δt real `jt9 -3 -p 60 -b A -d 3` decoded on a `q65sim`
+/// sweep at −25 dB (measured 2026-08-13; it failed at +6.0).
+///
+/// **The reference Q65 window is asymmetric and sub-mode dependent**:
+/// Q65-15A and Q65-30A were measured at −1.0…+1.0, Q65-60A at
+/// −1.0…+5.5. Nothing in the suite exercised `SearchParams::default()`
+/// before this test, which is how the default went out wrong twice in
+/// one issue (#282: too narrow on Q65-15; then its own fix cut
+/// Q65-60A's late reach from +3.0 to +1.0).
+const REFERENCE_Q65_60_LATE_SEC: f32 = 5.0;
+
+#[test]
+#[cfg(feature = "q65")]
+fn q65_60a_default_window_reaches_reference_late_edge() {
+    use mfsk_core::q65::decode_request::DecodeRequest;
+    use mfsk_core::q65::search::SearchParams;
+    use mfsk_core::q65::{Q65a60, tx::synthesize_standard_for};
+
+    let signal = synthesize_standard_for::<Q65a60>("CQ", "JA1ABC", "PM95", FS, 1500.0, 0.3)
+        .expect("Q65-60A synth must succeed");
+    // q65sim places TR>=60 at t = Δt + 1.0 s.
+    let nominal = 1.0f32;
+    let dt = REFERENCE_Q65_60_LATE_SEC;
+    let slot = place(&signal, nominal + dt, 60.0);
+
+    let decodes = DecodeRequest::<Q65a60>::new(
+        &slot,
+        FS,
+        (nominal * FS as f32) as usize,
+        SearchParams::default(),
+    )
+    .decode();
+    let hit = decodes.iter().find(|d| d.message.contains("JA1ABC"));
+    println!(
+        "  Q65-60A Δt={dt:>+5.1}s under SearchParams::default()  {}",
+        hit.map(|h| format!("yes, dt_sec={:+.2}", h.dt_sec))
+            .unwrap_or_else(|| "NO".into())
+    );
+    assert!(
+        hit.is_some(),
+        "Q65-60A must decode at Δt = {dt:+.1} s under the *default* SearchParams — real \
+         `jt9 -3 -p 60 -b A` reaches +5.5 s. A symmetric ±1.0 s default fails this."
+    );
+}

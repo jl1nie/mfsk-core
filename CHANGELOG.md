@@ -100,35 +100,54 @@
   limit are indistinguishable. The late side is also where both
   reference windows are deliberately asymmetric.
 
-- **Q65's Δt search window is WSJT-X's ±1.0 s again, and is now
-  denominated in seconds** (issue #282, **breaking**:
+- **Q65's Δt search window matches the reference, which is
+  asymmetric** (issue #282, **breaking**:
   `q65::search::SearchParams::time_tolerance_symbols: u32` →
-  `time_tolerance_sec: f32`).
+  `time_tolerance_early_sec` + `time_tolerance_late_sec: f32`,
+  defaulting to 1.0 / 5.5).
 
-  `q65.f90:127-128` sets `lag1 = -1.0/dtstep`, `lag2 = 1.0/dtstep` —
-  ±1.0 s, identical for every sub-mode. This crate expressed the same
-  idea as `time_tolerance_symbols: 5`, which is not the same thing:
-  Q65 symbols run 0.15 s (Q65-15) to 3.456 s (Q65-300), so the window
-  silently became ±0.75 s on the shortest sub-mode and ±17.3 s on the
-  longest — narrower than the reference exactly where the symbols are
-  shortest, and 17× wider where the extra span only costs time.
+  The window was `time_tolerance_symbols: 5`, and symbols are not a
+  transferable unit: Q65 symbols run 0.15 s (Q65-15) to 3.456 s
+  (Q65-300), so one constant silently meant ±0.75 s on the shortest
+  sub-mode and ±17.3 s on the longest.
 
-  Measured against real `jt9 -3 -p 15 -b A -d 3` over a `q65sim` Δt
-  sweep at −20 dB (Δt stepped, everything else held):
+  Measured by running real `jt9 -3 -d 3` over `q65sim` Δt sweeps:
 
-  | | −1.00 | −0.75 | −0.50 | 0.00 | +0.50 | +1.00 | +1.50 |
-  |---|---|---|---|---|---|---|---|
-  | `jt9` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-  | before | — | — | ✓ | ✓ | ✓ | — | — |
-  | after | — | — | ✓ | ✓ | ✓ | **✓** | — |
+  | sub-mode | reference window |
+  |---|---|
+  | Q65-15A (`nsps=1800`) | −1.0 … +1.0 s |
+  | Q65-30A (`nsps=3600`) | −1.0 … +1.0 s |
+  | Q65-60A (`nsps=7200`) | −1.0 … **+5.5 s** |
 
-  The positive edge now matches the reference exactly. The remaining
-  −1.00/−0.75 cells are a *different* limitation — a frame starting
-  before sample 0 cannot be indexed at all (`row_min` clamps at 0), so
-  the truncated-frame case `jt9` handles is still open; it is not the
-  window constant. Callers doing EME still pass their own wider
-  tolerance explicitly (WSJT-X's own `lag2 = 5.5/dtstep` extension is
-  gated on an `emedelay` this crate has no equivalent for).
+  `q65.f90:127-129` extends `lag2` to `5.5/dtstep` when
+  `nsps >= 3600 .and. emedelay > 0`. The measurement says that
+  extension is live for TR≥60 and not for TR=30 — which the
+  `nsps >= 3600` half alone does not explain, since Q65-30A *is*
+  `nsps=3600` — so these constants follow the measurement rather than
+  the source, per `tests/dt_window.rs`'s own doctrine. +5.5 s is
+  applied uniformly rather than gated on NSPS: on the short sub-modes
+  the extra span is geometrically self-limiting (a Q65-15 frame placed
+  +5.5 s late does not fit in a 15 s slot, so those rows are rejected
+  by the frame-fits guard for the cost of a scan).
+
+  Result, on the same sweeps — Q65-60A now matches the reference
+  exactly, and Q65-15A slightly exceeds it:
+
+  | | Q65-15A | Q65-60A |
+  |---|---|---|
+  | `jt9` | −1.0 … +1.0 | −1.0 … +5.5 |
+  | before | −0.75 … +0.75 | −3.0 … +3.0 |
+  | after | −1.0 … +1.5 | −1.0 … +5.5 |
+
+  **This default has now been wrong twice in one issue.** The first
+  fix replaced the symbol unit with a symmetric `time_tolerance_sec:
+  1.0`, which fixed Q65-15 and cut Q65-60A's late reach from +3.0 to
+  +1.0 against a reference that reaches +5.5 — a regression on the
+  sub-modes EME uses, where multi-second Δt is normal. Both mistakes
+  survived a green suite because **every in-tree Q65 test passes
+  explicit tolerances and none exercised the default**;
+  `dt_window.rs::q65_60a_default_window_reaches_reference_late_edge`
+  now does, and is verified to fail at the symmetric value.
 
   Guarded by `q65_a15_roundtrip::q65_15a_default_window_covers_wsjtx_plus_one_second`,
   which decodes at Δt = +1.0 s under the *default* `SearchParams` —

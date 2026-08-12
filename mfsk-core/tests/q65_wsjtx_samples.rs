@@ -96,7 +96,8 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 15.0,
+        time_tolerance_early_sec: 15.0,
+        time_tolerance_late_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -182,7 +183,8 @@ fn eme_6m_sample_yields_decode_with_ap() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 30.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 16,
     };
@@ -273,7 +275,8 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 6.0,
+        time_tolerance_early_sec: 6.0,
+        time_tolerance_late_sec: 6.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -364,7 +367,8 @@ fn tropo_1296_60b_decodes_via_averaging() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 30.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -433,7 +437,8 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 13.333,
+        time_tolerance_early_sec: 13.333,
+        time_tolerance_late_sec: 13.333,
         score_threshold: 0.0,
         max_candidates: 8,
     };
@@ -495,7 +500,8 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 13.333,
+        time_tolerance_early_sec: 13.333,
+        time_tolerance_late_sec: 13.333,
         score_threshold: 0.0,
         max_candidates: 8,
     };
@@ -560,7 +566,8 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 207.36,
+        time_tolerance_early_sec: 207.36,
+        time_tolerance_late_sec: 207.36,
         score_threshold: 0.0,
         max_candidates: 20,
     };
@@ -616,7 +623,8 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 6.0,
+                time_tolerance_early_sec: 6.0,
+                time_tolerance_late_sec: 6.0,
                 score_threshold: 0.05,
                 max_candidates: 8,
             };
@@ -643,7 +651,8 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 13.333,
+                time_tolerance_early_sec: 13.333,
+                time_tolerance_late_sec: 13.333,
                 score_threshold: 0.0,
                 max_candidates: 8,
             };
@@ -670,7 +679,8 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 13.333,
+                time_tolerance_early_sec: 13.333,
+                time_tolerance_late_sec: 13.333,
                 score_threshold: 0.0,
                 max_candidates: 8,
             };
@@ -697,7 +707,8 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 207.36,
+                time_tolerance_early_sec: 207.36,
+                time_tolerance_late_sec: 207.36,
                 score_threshold: 0.0,
                 max_candidates: 20,
             };
@@ -768,10 +779,10 @@ fn q65_speed_diag_coarse_vs_finetiming() {
         let plain_dt = t0.elapsed();
 
         eprintln!(
-            "{label}: {} candidates (time_tolerance_sec={}, max_cand={}), coarse={:.1}ms, \
+            "{label}: {} candidates (tol_early={} s, max_cand={}), coarse={:.1}ms, \
              DecodeRequest::decode(plain)={:.1}ms, {} decode(s)",
             cands.len(),
-            params.time_tolerance_sec,
+            params.time_tolerance_early_sec,
             params.max_candidates,
             coarse_dt.as_secs_f64() * 1000.0,
             plain_dt.as_secs_f64() * 1000.0,
@@ -788,7 +799,8 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 30.0,
+                time_tolerance_early_sec: 30.0,
+                time_tolerance_late_sec: 30.0,
                 score_threshold: 0.05,
                 max_candidates: 16,
             };
@@ -797,7 +809,8 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             // Same audio, Q65-60D's much narrower time-tolerance,
             // to isolate the coarse-search-window effect alone.
             let params_narrow = SearchParams {
-                time_tolerance_sec: 6.0,
+                time_tolerance_early_sec: 6.0,
+                time_tolerance_late_sec: 6.0,
                 max_candidates: 100,
                 ..params
             };
@@ -820,7 +833,8 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_sec: 6.0,
+                time_tolerance_early_sec: 6.0,
+                time_tolerance_late_sec: 6.0,
                 score_threshold: 0.05,
                 max_candidates: 100,
             };
@@ -871,7 +885,8 @@ fn q65_multi_period_speed_diag() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_sec: 30.0,
+            time_tolerance_early_sec: 30.0,
+            time_tolerance_late_sec: 30.0,
             score_threshold: 0.05,
             max_candidates: 8,
         };
@@ -900,7 +915,8 @@ fn q65_multi_period_speed_diag() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_sec: 15.0,
+            time_tolerance_early_sec: 15.0,
+            time_tolerance_late_sec: 15.0,
             score_threshold: 0.05,
             max_candidates: 8,
         };
@@ -944,7 +960,8 @@ fn q65_multi_period_candidate_count_diag() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 15.0,
+        time_tolerance_early_sec: 15.0,
+        time_tolerance_late_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 32,
     };
@@ -995,7 +1012,8 @@ fn q65_candidate_score_calibration_diag() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 15.0,
+        time_tolerance_early_sec: 15.0,
+        time_tolerance_late_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 100_000,
     };
@@ -1058,7 +1076,8 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
     let unbounded = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 30.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
         score_threshold: 0.0,
         max_candidates: 100_000,
     };
@@ -1124,7 +1143,8 @@ fn q65_scan_streaming_matches_batch_exactly() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 30.0,
+        time_tolerance_early_sec: 30.0,
+        time_tolerance_late_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 16,
     };
@@ -1184,7 +1204,8 @@ fn q65_multi_period_streaming_matches_batch_exactly() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 15.0,
+        time_tolerance_early_sec: 15.0,
+        time_tolerance_late_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -1234,7 +1255,8 @@ fn q65_fading_candidate_score_calibration_diag() {
         let unbounded = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_sec,
+            time_tolerance_early_sec: time_tolerance_sec,
+            time_tolerance_late_sec: time_tolerance_sec,
             score_threshold: 0.0,
             max_candidates: 100_000,
         };

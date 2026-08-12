@@ -1252,7 +1252,8 @@ fn q65_default_search(submode: MfskQ65SubMode) -> mfsk_core::q65::SearchParams {
     mfsk_core::q65::SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_sec: 50.0 * symbol_dt,
+        time_tolerance_early_sec: 50.0,
+        time_tolerance_late_sec: 50.0 * symbol_dt,
         score_threshold: 0.05,
         max_candidates: 32,
     }
