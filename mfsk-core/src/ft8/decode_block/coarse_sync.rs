@@ -44,6 +44,44 @@ pub fn coarse_sync(
     coarse_sync_inner(spec, freq_min, freq_max, sync_min, max_cand, None, None)
 }
 
+/// [`coarse_sync`] with an explicit ±lag search window in seconds,
+/// instead of the crate default (`SYNC_LAG_S_DEFAULT` /
+/// `MFSK_SYNC_LAG_S`, WSJT-X's own ±2.5 s).
+///
+/// The window is not purely a speed knob — it changes *which*
+/// candidates exist and how they rank, so a caller whose downstream
+/// use has its own timing assumptions should state them here rather
+/// than inherit the decoder's. Two real cases (issue #280):
+///
+/// - [`bootstrap_dt_median`](crate::engine::sync::bootstrap_dt_median)
+///   needs a window comparable to the timing error it is trying to
+///   estimate. At ±2.5 s a strong signal's far-lag ghost (secondary
+///   channel, see this module's `coarse_sync_inner`) can outscore its own true
+///   peak — verified as WSJT-X behaviour too, by probing real `jt9`'s
+///   `sync8` on `qso3_busy.wav` — which invalidates a top-K DT
+///   median over the raw list.
+/// - Clock-synced deployments (NTP / GPS embedded targets) live well
+///   within ±1 s and pay for the wider scan in `n_lag`-linear
+///   `sync2d` work for nothing.
+pub fn coarse_sync_with_lag(
+    spec: &Spectrogram,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+    sync_lag_s: f32,
+) -> Vec<SyncCandidate> {
+    coarse_sync_inner(
+        spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        max_cand,
+        None,
+        Some(sync_lag_s),
+    )
+}
+
 /// Phase-E2 entry point — like [`coarse_sync`] but consumes a
 /// caller-built allsum table instead of recomputing it. Saves the
 /// 280-300 ms allsum precompute on Core2 by hiding it under the
@@ -76,6 +114,32 @@ pub fn coarse_sync_with_allsum(
         max_cand,
         Some(allsum),
         None,
+    )
+}
+
+/// [`coarse_sync_with_allsum`] with an explicit ±lag search window in
+/// seconds. See [`coarse_sync_with_lag`] for when a caller should pin
+/// the window rather than inherit the crate default.
+///
+/// `allsum` is indexed by `(fi, m)` only, so the same table is valid
+/// at any lag window — no need to rebuild it when pinning.
+pub fn coarse_sync_with_allsum_and_lag(
+    spec: &Spectrogram,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    max_cand: usize,
+    allsum: &[CoarseAcc],
+    sync_lag_s: f32,
+) -> Vec<SyncCandidate> {
+    coarse_sync_inner(
+        spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        max_cand,
+        Some(allsum),
+        Some(sync_lag_s),
     )
 }
 

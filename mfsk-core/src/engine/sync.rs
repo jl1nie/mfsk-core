@@ -42,9 +42,23 @@ pub struct SyncCandidate {
 /// while top-10/20 wash out under false-candidate noise (see
 /// `mfsk-core/tests/ft8_coarse_sync_bootstrap.rs`).
 ///
-/// `cands` does not need to be sorted; callers pass the raw output of
-/// `decode_block::coarse_sync` or `engine::sync::coarse_sync`. Returns
-/// `None` if `cands` is empty or `top_k == 0`.
+/// **Feed this a candidate list from a lag window comparable to the
+/// timing error you are estimating** — ±1 s is what the ±70 ms figure
+/// above was measured at, via
+/// [`coarse_sync_with_lag`](crate::ft8::decode_block::coarse_sync_with_lag).
+/// It is *not* valid over a list built at FT8's default (WSJT-X's own
+/// ±2.5 s) window: there a strong signal's far-lag ghost can outscore
+/// its own true-lag peak and crowd the top ranks, and the top-5 DT
+/// median on `qso3_busy.wav` lands 1.9 s away from truth. That is not
+/// a defect in this crate's coarse sync — probing real `jt9`'s
+/// `sync8` on the same recording shows the identical ghosts at the
+/// identical frequencies (e.g. 2534.38 Hz scoring higher at
+/// `xdt=+2.38` than at its true `+0.14`); WSJT-X simply never uses a
+/// top-K statistic over that list, it calls `ft8b` on every entry.
+/// See issue #280.
+///
+/// `cands` does not need to be sorted. Returns `None` if `cands` is
+/// empty or `top_k == 0`.
 pub fn bootstrap_dt_median(cands: &[SyncCandidate], top_k: usize) -> Option<f32> {
     if cands.is_empty() || top_k == 0 {
         return None;

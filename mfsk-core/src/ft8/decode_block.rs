@@ -42,8 +42,8 @@ mod types;
 // integration tests, sibling modules under `ft8/`) see the same
 // `mfsk_core::ft8::decode_block::*` paths.
 pub use coarse_sync::{
-    coarse_allsum_len, coarse_sync, coarse_sync_with_allsum, precompute_coarse_allsum,
-    precompute_coarse_allsum_into,
+    coarse_allsum_len, coarse_sync, coarse_sync_with_allsum, coarse_sync_with_allsum_and_lag,
+    coarse_sync_with_lag, precompute_coarse_allsum, precompute_coarse_allsum_into,
 };
 pub use fill_symbol_spectra::{
     SymMask, fill_symbol_spectra, fill_symbol_spectra_generic, fill_symbol_spectra_goertzel,

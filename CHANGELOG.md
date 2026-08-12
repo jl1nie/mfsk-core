@@ -1,5 +1,106 @@
 # Changelog
 
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280)
+
+### Fixed
+
+- **FT8's coarse-sync lag window is WSJT-X's own ±2.5 s again**
+  (`SYNC_LAG_S_DEFAULT`, issue #280). It had been ±1.0 s as an embedded
+  compute trade, on the assumption that the narrower window cost only
+  time. It didn't: at ±2.5 s `qso3_busy.wav` lost `K1BZM DK8NE -10`
+  and `K1JT HA5WA 73`, so the narrow window was quietly load-bearing
+  for golden recall. All seven FT8 golden/recall suites now produce
+  identical results at either width (8/8 WSJT-X golden, 18/18 JTDX,
+  20/20 JTDX-High, exact `sic_rounds` golden-set match).
+
+  Root-caused by probing the real `jt9` binary, not by reasoning about
+  our port. Temporary `write(0,…)` probes in `sync8.f90` /
+  `ft8_decode.f90`, run over the same recording, settle three things
+  the issue had been guessing at:
+
+  - `K1BZM DK8NE` reaches WSJT-X **only through the secondary
+    (full-`±JZ`) channel** — `red2 = 2.92-3.85` at `jpeak2 = 14`. Its
+    fixed-`±mlag=10` primary channel scores `0.95`, far under
+    `syncmin = 1.3`, at `jpeak = -7`. The fixed-window primary channel
+    restored in #281 is faithful to `sync8.f90`, but it is structurally
+    incapable of producing this decode — on either side.
+  - It is **not a single-pass catch**: WSJT-X decodes it at
+    `nzhsym=50, ipass=2, ndeep=3`, after 18 earlier decodes have been
+    subtracted — the same multi-pass SIC shape this crate's
+    `decode_block_multipass` runs.
+  - WSJT-X applies **no pass-1 truncation at all** (`MAXCAND=600`,
+    `ft8_decode.f90:217-228` calls `ft8b` on every `sync8` candidate in
+    coarse-score order). It decodes `DK8NE` from rank 35 of 337.
+
+  Ours produced the same candidate at both window widths
+  (243.75 Hz, `dt +0.466`); what dropped it was `PASS1_LIMIT_DEFAULT`.
+  Instrumenting our own passes: at ±1.0 s the candidate's rank climbs
+  57 → 34 → 20 over the three SIC passes and enters the top-30 in time;
+  at ±2.5 s it climbs 93 → 61 → 38 and never does.
+
+- **`coarse_sync` is no longer asked for fewer candidates than the
+  caller's own `max_cand`** (`pass1_limit_for`). Pass 1 capped at 30
+  regardless, so a host caller passing `max_cand=60` silently got 30 —
+  and once `PASS1_LIMIT > max_cand`, `refine_candidates`' `sync_quality`
+  re-rank becomes the binding truncation instead of an inert
+  pass-through. That re-rank is lossy and has no WSJT-X analog:
+  measured on `qso3_busy.wav`, `PASS1_LIMIT=150` with `max_cand=60`
+  drops three golden entries (8/8 → 6/8) that the same run keeps at
+  `PASS1_LIMIT = max_cand = 150`. With both raised together, recall is
+  flat at 8/8 out to 400 candidates.
+
+  Decode-identical at the old ±1.0 s window (8/8 golden + 12 phantom +
+  20 total; ship config 7/8 + 7 phantom + 14 total). Embedded callers
+  pass `max_cand ≤ 15`, so their pass-1 cap is unchanged at 30. Host
+  full-parity config costs 113 → 162 ms on a Ryzen 9 9900X — still
+  ~7× faster than `jt9 -8 -d3`'s own ~1.1 s on the same file.
+
+### Added
+
+- **`coarse_sync_with_lag` / `coarse_sync_with_allsum_and_lag`** — the
+  ±lag search window as an explicit argument rather than a crate-wide
+  default. The window is not purely a speed knob: it changes which
+  candidates exist and how they rank, so a caller whose downstream use
+  carries its own timing assumptions should state them.
+  `allsum` is indexed by `(fi, m)` only, so one table stays valid at
+  any width.
+
+### Changed
+
+- **`bootstrap_dt_median`'s contract now names its lag window.** The
+  cold-start slot-alignment helper takes a top-K DT median, which is
+  only meaningful over a window comparable to the timing error being
+  estimated. Over a ±2.5 s list its top-5 median on `qso3_busy.wav`
+  lands 1.9 s from truth, because a strong signal's far-lag ghost can
+  outscore its own true-lag peak and crowd the top ranks. Real `jt9`
+  shows the identical ghosts at the identical frequencies (2534.38 Hz
+  scoring higher at `xdt=+2.38` than at its true `+0.14`) — WSJT-X just
+  never takes a top-K statistic over that list. Both in-tree consumers
+  (`ft8_coarse_sync_bootstrap`, `embedded-shared::dual_core`) now pin
+  ±1.0 s explicitly, and a new test asserts the wide-window divergence
+  so the boundary can't be silently "simplified" away.
+
+  `embedded-shared` pins it for a second, independent reason: the
+  streaming pipeline's `stage1_inc::SPEC_EMIT_PAIR` is derived from
+  `SYNC_LAG_S=1.0 → jz=13` (`needed_m = 162 + 13 = 175`). At ±2.5 s
+  `jz` is 31 and `needed_m` runs past `N_TIME=184` entirely.
+
+- `ft8_coarse_sync_bootstrap`'s host-f32 budget 100 → 130 ms, matching
+  the `fixed-point` path. The estimator did not get worse — its K=5
+  answer on `191111_110130.wav` is unchanged at +0.820 s. The
+  *reference* moved: the wider decode window finds a 6th decode there,
+  shifting the confirmed-decode median +0.910 → +0.940 s. The old
+  budget had 10 ms of headroom on that fixture.
+
+- #281 (merged after 0.9.1, no entry at the time): `coarse_sync_inner`
+  now runs WSJT-X's two independent noise-floor channels — a primary
+  anchored to a fixed `±MLAG=10` window regardless of `jz`, and the
+  full-`±jz` secondary contributing a second candidate per bin only
+  when its peak lag disagrees (`sync8.f90`'s
+  `if (jpeak2(n)==jpeak(n)) cycle`). #279 (from @nicksbar) restored the
+  trailing-block lag bounds that made a widened window safe in the
+  first place.
+
 ## 0.9.1 — WSPR parity with `wsprd` (#275) + phantom elimination, TX envelope ramps (#259), FT4 sniper aim (#257), SNR formula close-out (#255), test taxonomy rework, FST4/Q65 sub-mode coverage
 
 ### Fixed

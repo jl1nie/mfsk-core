@@ -43,12 +43,31 @@ use alloc::vec::Vec;
 use mfsk_core::engine::sync::{bootstrap_dt_median, SyncCandidate};
 use mfsk_core::ft8::decode::{DecodeDepth, DecodeResult};
 use mfsk_core::ft8::decode_block::{
-    coarse_sync, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
+    coarse_sync_with_lag, process_candidates_into_with_cs_scratch_tuned, refine_candidates_into,
     RefinedCandidate, Spectrogram,
 };
 
 use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
 use crate::pipeline::{self, Slot, SpecBundle};
+
+/// ±lag window every coarse-sync call on this path pins, instead of
+/// inheriting `mfsk_core`'s FT8 default (WSJT-X's own ±2.5 s).
+///
+/// Not a preference — the streaming pipeline is built around it.
+/// `stage1_inc::SPEC_EMIT_PAIR` emits the SpecBundle once `m=0..173`
+/// is filled, which is derived from `SYNC_LAG_S=1.0 → jz=13` giving
+/// `needed_m = 162 + 13 = 175` (see that constant's own comment).
+/// At ±2.5 s, `jz` is 31 and `needed_m` runs past `N_TIME=184`
+/// entirely, so block-2 would silently flatten for far-lag
+/// candidates and the whole 160 ms audio-tail overlap gain would be
+/// built on a bound that no longer holds.
+///
+/// Both boards also run NTP/GPS-synced with dt well inside ±0.5 s,
+/// and `time_sync::record_decode_dt` re-anchors slot phase, so the
+/// tight window is right here on its own merits too — and it keeps
+/// [`SpeculativeOut::bootstrap_dt_med`] valid, which a ±2.5 s list
+/// would not be (issue #280).
+const EMBEDDED_SYNC_LAG_S: f32 = 1.0;
 
 /// One slot's Phase-C output. Both apps consume it identically:
 /// `spec` for `xsnr2_db_simple`, `slot` for `wav_idx` /
@@ -375,8 +394,14 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
             } => {
                 let spec_ref = unsafe { &*spec };
                 let allsum = unsafe { core::slice::from_raw_parts(allsum_ptr, allsum_len) };
-                let result = mfsk_core::ft8::decode_block::coarse_sync_with_allsum(
-                    spec_ref, freq_min, freq_max, sync_min, max_cand, allsum,
+                let result = mfsk_core::ft8::decode_block::coarse_sync_with_allsum_and_lag(
+                    spec_ref,
+                    freq_min,
+                    freq_max,
+                    sync_min,
+                    max_cand,
+                    allsum,
+                    EMBEDDED_SYNC_LAG_S,
                 );
                 let raw = Box::into_raw(Box::new(result));
                 unsafe { queue_send_ptr(COARSE_RESULT_Q.get(), raw) };
@@ -431,8 +456,9 @@ pub fn coarse_sync_split(
     max_cand: usize,
 ) -> Vec<SyncCandidate> {
     let mid = 0.5 * (freq_min + freq_max);
-    let mut head = coarse_sync(spec, freq_min, mid, sync_min, max_cand);
-    let tail = coarse_sync(spec, mid, freq_max, sync_min, max_cand);
+    let mut head =
+        coarse_sync_with_lag(spec, freq_min, mid, sync_min, max_cand, EMBEDDED_SYNC_LAG_S);
+    let tail = coarse_sync_with_lag(spec, mid, freq_max, sync_min, max_cand, EMBEDDED_SYNC_LAG_S);
     head.extend(tail);
     head.sort_by(|a, b| {
         b.score
@@ -455,7 +481,7 @@ pub fn coarse_sync_split_with_allsum(
     allsum_head: &[f32],
     allsum_tail: &[f32],
 ) -> Vec<SyncCandidate> {
-    use mfsk_core::ft8::decode_block::coarse_sync_with_allsum;
+    use mfsk_core::ft8::decode_block::coarse_sync_with_allsum_and_lag;
     let mid = 0.5 * (freq_min + freq_max);
 
     let job = Box::new(Job::CoarseSyncWithAllsum {
@@ -469,7 +495,15 @@ pub fn coarse_sync_split_with_allsum(
     });
     unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(job)) };
 
-    let mut local = coarse_sync_with_allsum(spec, freq_min, mid, sync_min, max_cand, allsum_head);
+    let mut local = coarse_sync_with_allsum_and_lag(
+        spec,
+        freq_min,
+        mid,
+        sync_min,
+        max_cand,
+        allsum_head,
+        EMBEDDED_SYNC_LAG_S,
+    );
 
     let worker_ptr = unsafe { queue_recv_ptr::<Vec<SyncCandidate>>(COARSE_RESULT_Q.get()) };
     let worker = unsafe { *Box::from_raw(worker_ptr) };

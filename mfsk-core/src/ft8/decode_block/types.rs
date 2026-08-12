@@ -161,14 +161,36 @@ pub(super) const SAMPLE_RATE_HZ: f32 = 12_000.0;
 /// Slot start offset (FT8 transmits 0.5 s into the slot).
 pub(super) const TX_START_OFFSET_S: f32 = 0.5;
 
-/// Coarse-sync ±lag search window (s).
+/// Coarse-sync ±lag search window (s) — WSJT-X's own `sync8.f90`
+/// `JZ=62` window, i.e. ±2.5 s relative to the 0.5 s TX start.
+/// Covers operators with sloppy slot timing or slow rigs.
 ///
-/// WSJT-X uses ±2.5 s — covers operators with sloppy slot timing
-/// or slow rigs. Embedded targets running on a synced clock (NTP /
-/// GPS) live well within ±1 s; halving the lag range cuts
-/// `coarse_sync` work by ~60 % (linear in `n_lag`). If the live
-/// timing source is loose, raise this back to 2.5.
-const SYNC_LAG_S_DEFAULT: f32 = 1.0;
+/// Was 1.0 until issue #280. The narrower window was an embedded
+/// compute trade (`coarse_sync` is linear in `n_lag`: 51 lag steps
+/// at 1.0 s vs 127 at 2.5 s), taken on the assumption that recall
+/// was otherwise unaffected. It wasn't: at 2.5 s, `qso3_busy.wav`
+/// lost `K1BZM DK8NE -10` and `K1JT HA5WA 73`, which made the
+/// narrow window quietly load-bearing for golden recall rather than
+/// a pure speed knob.
+///
+/// That coupling is gone. Probing the real `jt9` binary
+/// (`sync8.f90` + `ft8_decode.f90`, issue #280) showed WSJT-X finds
+/// `K1BZM DK8NE` only through its *secondary* (full-`±JZ`) channel
+/// at `jpeak2=14` — its fixed-`±mlag=10` primary scores 0.95, far
+/// under `syncmin` — and only on its second subtraction pass
+/// (`nzhsym=50, ipass=2`), from candidate rank 35 of 337 with no
+/// pass-1 truncation at all (`MAXCAND=600`). The equivalent
+/// candidate is present in our list at every window width; what
+/// dropped it at 2.5 s was `PASS1_LIMIT_DEFAULT=30` truncating
+/// before it climbed the ranks. See
+/// [`pass1_limit_for`](super::process_candidates::pass1_limit_for).
+///
+/// Embedded ship config (`max_cand ≤ 15`) keeps the 30-candidate
+/// pass-1 cap unchanged, so the cost of this default is the wider
+/// `sync2d` scan alone. Override per-call with `MFSK_SYNC_LAG_S`
+/// when std is enabled — set it to 1.0 to recover the old window on
+/// a tightly clock-synced deployment.
+const SYNC_LAG_S_DEFAULT: f32 = 2.5;
 pub(super) fn sync_lag_s() -> f32 {
     #[cfg(feature = "std")]
     {
