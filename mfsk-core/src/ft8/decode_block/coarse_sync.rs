@@ -41,7 +41,7 @@ pub fn coarse_sync(
     sync_min: f32,
     max_cand: usize,
 ) -> Vec<SyncCandidate> {
-    coarse_sync_inner(spec, freq_min, freq_max, sync_min, max_cand, None)
+    coarse_sync_inner(spec, freq_min, freq_max, sync_min, max_cand, None, None)
 }
 
 /// Phase-E2 entry point — like [`coarse_sync`] but consumes a
@@ -68,7 +68,15 @@ pub fn coarse_sync_with_allsum(
     max_cand: usize,
     allsum: &[CoarseAcc],
 ) -> Vec<SyncCandidate> {
-    coarse_sync_inner(spec, freq_min, freq_max, sync_min, max_cand, Some(allsum))
+    coarse_sync_inner(
+        spec,
+        freq_min,
+        freq_max,
+        sync_min,
+        max_cand,
+        Some(allsum),
+        None,
+    )
 }
 
 /// Length of the allsum buffer that [`coarse_sync_with_allsum`]
@@ -236,11 +244,15 @@ fn coarse_sync_inner(
     sync_min: f32,
     max_cand: usize,
     external_allsum: Option<&[CoarseAcc]>,
+    sync_lag_override_s: Option<f32>,
 ) -> Vec<SyncCandidate> {
     let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
     let tstep = NSTEP as f32 / SAMPLE_RATE_HZ;
     let jstrt = (TX_START_OFFSET_S / tstep).round() as i32;
-    let jz = (sync_lag_s() / tstep).round() as i32;
+    let requested_jz = (sync_lag_override_s.unwrap_or_else(sync_lag_s) / tstep).round() as i32;
+    let Some(jz) = bounded_sync_lag_steps(spec.n_time, jstrt, requested_jz) else {
+        return Vec::new();
+    };
     let tone_step_bins = TONE_SPACING_HZ / df;
 
     // Carrier-bin search range. Reserve room above the carrier for the
@@ -373,13 +385,12 @@ fn coarse_sync_inner(
     //   block 1: m = lag + jstrt + 144 + NSSY*n  ∈ [65..103]
     //   block 2: m = lag + jstrt + 288 + NSSY*n  ∈ [137..175]
     //
-    // Only block 0 can dip below 0 (and only at large negative lag).
-    // Compute the smallest valid `n` per lag once, then iterate
-    // n_start..NTONES_C without per-iter checks. Blocks 1 and 2 are
-    // always fully in range. Sanity-check the upper bound at function
-    // entry so the unchecked-as-usize is safe.
+    // Block 0 can dip below 0 and block 2 can run past `n_time`, exactly
+    // the two bounds guarded by WSJT-X `sync8.f90`. Compute the valid
+    // symbol ranges once per lag instead of checking every inner read.
+    // Block 1 remains fully in range for every accepted lag window.
     debug_assert!(
-        m_base[2][COSTAS.len() - 1] + jz < spec.n_time as i32,
+        m_base[1][0] - jz >= 0 && m_base[1][COSTAS.len() - 1] + jz < spec.n_time as i32,
         "n_time too small for SYNC_LAG_S/jstrt"
     );
     let n_time = spec.n_time;
@@ -417,14 +428,21 @@ fn coarse_sync_inner(
                 t_blocks[0] += spec.power_acc(tbin_lo, m_u);
                 t0_blocks[0] += allsum_row[m_u];
             }
-            // Blocks 1, 2: always fully in range — no per-iter check.
-            for bk in 1..COSTAS_POS.len() {
-                for n in 0..COSTAS.len() {
-                    let m_u = (m_base[bk][n] + lag) as usize;
-                    let tbin_lo = tbin_lo_arr[n];
-                    t_blocks[bk] += spec.power_acc(tbin_lo, m_u);
-                    t0_blocks[bk] += allsum_row[m_u];
-                }
+            // Block 1 is always fully in range.
+            for n in 0..COSTAS.len() {
+                let m_u = (m_base[1][n] + lag) as usize;
+                let tbin_lo = tbin_lo_arr[n];
+                t_blocks[1] += spec.power_acc(tbin_lo, m_u);
+                t0_blocks[1] += allsum_row[m_u];
+            }
+            // Block 2: WSJT-X guards `m + nssy*72 <= NHSYM` because
+            // positive lag can push its trailing symbols past the slot.
+            let bk2_n_end = valid_trailing_symbol_count(m_base[2][0], lag, n_time);
+            for n in 0..bk2_n_end {
+                let m_u = (m_base[2][n] + lag) as usize;
+                let tbin_lo = tbin_lo_arr[n];
+                t_blocks[2] += spec.power_acc(tbin_lo, m_u);
+                t0_blocks[2] += allsum_row[m_u];
             }
 
             // Regularised ratio `t / (mean_others + ε)`.
@@ -595,4 +613,66 @@ fn coarse_sync_inner(
         );
     }
     cands
+}
+
+/// Keep the requested symmetric lag window when the always-read middle Costas
+/// block fits. Only pathological overrides need clamping; the first and third
+/// blocks have the same conditional bounds as WSJT-X `sync8.f90`.
+fn bounded_sync_lag_steps(
+    spec_n_time: usize,
+    start_step: i32,
+    requested_steps: i32,
+) -> Option<i32> {
+    let requested_steps = requested_steps.max(0);
+    let second_block_base = start_step + NSSY * COSTAS_POS[1] as i32;
+    let second_block_end = second_block_base + NSSY * (COSTAS.len() as i32 - 1);
+    let max_positive_steps = (spec_n_time as i32 - 1).checked_sub(second_block_end)?;
+    let safe_steps = second_block_base.min(max_positive_steps);
+    (safe_steps >= 0).then(|| requested_steps.min(safe_steps))
+}
+
+fn valid_trailing_symbol_count(base_step: i32, lag: i32, n_time: usize) -> usize {
+    let available = (n_time as i32 - 1) - (base_step + lag);
+    if available < 0 {
+        0
+    } else {
+        (available / NSSY + 1).min(COSTAS.len() as i32) as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Spectrogram, bounded_sync_lag_steps, coarse_sync_inner, valid_trailing_symbol_count,
+    };
+
+    #[test]
+    fn coarse_sync_accepts_wsjtx_lag_window_without_out_of_bounds_access() {
+        // A standard 15 s FT8 spectrogram has 372 quarter-symbol rows.
+        // Before the trailing-block guard was restored, requesting WSJT-X's
+        // +/-2.5 s window made coarse_sync index beyond the final row.
+        let n_freq = 128;
+        let n_time = 372;
+        let spec =
+            Spectrogram::from_parts(n_freq, n_time, vec![Default::default(); n_freq * n_time]);
+
+        let candidates = coarse_sync_inner(&spec, 200.0, 300.0, 1.5, 10, None, Some(2.5));
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn sync_lag_preserves_wsjtx_window_when_middle_block_fits() {
+        assert_eq!(bounded_sync_lag_steps(372, 13, 63), Some(63));
+        assert_eq!(bounded_sync_lag_steps(372, 13, 500), Some(157));
+        assert_eq!(bounded_sync_lag_steps(181, 13, 25), None);
+        assert_eq!(bounded_sync_lag_steps(372, 13, -10), Some(0));
+    }
+
+    #[test]
+    fn trailing_block_skips_symbols_beyond_spectrogram() {
+        assert_eq!(valid_trailing_symbol_count(301, 0, 372), 7);
+        assert_eq!(valid_trailing_symbol_count(301, 63, 372), 2);
+        assert_eq!(valid_trailing_symbol_count(301, 80, 372), 0);
+    }
 }
