@@ -97,6 +97,93 @@ just relocates the bug.
   `/tmp/...` literals are fine — the human-in-the-loop step assumes a
   known location. Don't replace these with `tempfile`.
 
+## Running tests — pick the tier, never blanket `--ignored`
+
+`CONTRIBUTING.md` "Testing philosophy" defines the four tiers (A
+invariants / B golden fidelity / C sensitivity / D deleted). This
+section is the operational half: which command to actually type.
+
+**The merge gate — use this by default.** Every non-ignored test
+across every protocol, i.e. tiers A + B. ~90 s on a Ryzen 9 9900X.
+This is exactly what CI's `Test (default)` job runs:
+
+```sh
+MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing --release
+```
+
+`MFSK_REQUIRE_CORPUS=1` turns a missing golden recording into a
+failure instead of a silent skip. Set it locally too — without it a
+mis-resolved asset path reports green (that is exactly how five
+protocols' golden tests skipped unnoticed before the recordings were
+vendored).
+
+**Iterating on one protocol**: scope with `--test`, don't reach for
+`--ignored`.
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release --test ft8_qso3_full_parity_recall -- --nocapture
+```
+
+**The trap: a blanket `-- --ignored` locally escalates into tier C.**
+
+```sh
+# DON'T — this is a sensitivity measurement campaign, not a check.
+cargo test -p mfsk-core --features full,internal-testing --release -- --ignored
+```
+
+`--ignored` with no `--test` scope runs *every* `#[ignore]`d function
+in the crate, which includes the tier-C sensitivity sweeps
+(`fst4_sweep`, `ft8_sweep`, `jt9_sweep`, `jt65_sweep`, `wspr_sweep`,
+`q65_*_sweep`, …). Those are the ones that consume the ~17 GB
+generated corpora under `embedded-poc/assets/*_sweep/`. **On CI they
+silently skip** — the corpora aren't there, and most of those
+binaries aren't in any CI glob anyway — so the command looks harmless
+in `ci.yml` and is not harmless here. `fst4_sweep` **alone** had not
+finished after 35 minutes when it was killed (2026-08-12), and it is
+one of a dozen such binaries.
+
+CI does run some `--ignored` suites, but always scoped per binary
+(`--test q65_ap_sweep --test q65_snr_sweep … -- --ignored`) and
+push-only. If you want a specific ignored test, name its binary the
+same way.
+
+**Tier C** belongs to two moments only: before a release tag, and
+after a change that plausibly moves sensitivity. It has its own
+runner, which checks the corpora are present up front instead of
+producing a wall of silent skips:
+
+```sh
+scripts/run-sensitivity-sweeps.sh              # everything present
+scripts/run-sensitivity-sweeps.sh ft4 fst4     # or just what moved
+```
+
+**"Plausibly moves sensitivity" means the code path, not the
+protocol name.** Before running a protocol's sweep, check it actually
+shares the code you touched. FT8's `decode_block::coarse_sync` /
+`SYNC_LAG_S` is FT8-only — FST4 reaches sync through
+`engine::sync::coarse_sync` + `engine::sync2d::fst4_sync_search`, so
+an FT8 coarse-sync change cannot move an FST4 curve and running that
+sweep buys nothing (issue #280, where this was learned the expensive
+way).
+
+**Other feature sets.** `fixed-point` is the numeric path embedded
+ships and is worth a second run whenever you touch the decode
+pipeline — it reorders candidates through `SpecCell = u16`
+quantisation, so it can diverge from host f32 on the same fixture:
+
+```sh
+cargo test -p mfsk-core --features full,fixed-point --release --test ft8_qso3_apoff_recall
+```
+
+**`internal-testing` is not optional for whole-crate commands.**
+`cargo clippy --all-targets --features full` (without it) reports
+`E0603` private-item errors in `fst4_sweep` / `ft4_sweep` /
+`fst4_wsjtx_samples` — those tests reach into crate internals. That is
+a missing feature flag, not a regression you introduced; use the
+pre-commit hook's own invocation
+(`--workspace --all-targets --features full,internal-testing`) before
+concluding anything is broken.
+
 ## Releases — go through CD, never `cargo publish` locally
 
 `mfsk-core` ships to crates.io via `.github/workflows/release.yml`,
