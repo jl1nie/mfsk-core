@@ -70,7 +70,7 @@ fn q65_60a_scan_recovers_at_offset() {
         freq_max_hz: 3_000.0,
         // Q65-60A symbols are 0.6 s; a few-symbol search around
         // sample 0 would miss the 1 s offset. Cover comfortably.
-        time_tolerance_symbols: 5,
+        time_tolerance_sec: 3.0,
         score_threshold: 0.1,
         max_candidates: 8,
     };

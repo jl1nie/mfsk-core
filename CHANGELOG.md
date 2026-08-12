@@ -1,8 +1,48 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65 Δt window (#282)
 
 ### Fixed
+
+- **Q65's Δt search window is WSJT-X's ±1.0 s again, and is now
+  denominated in seconds** (issue #282, **breaking**:
+  `q65::search::SearchParams::time_tolerance_symbols: u32` →
+  `time_tolerance_sec: f32`).
+
+  `q65.f90:127-128` sets `lag1 = -1.0/dtstep`, `lag2 = 1.0/dtstep` —
+  ±1.0 s, identical for every sub-mode. This crate expressed the same
+  idea as `time_tolerance_symbols: 5`, which is not the same thing:
+  Q65 symbols run 0.15 s (Q65-15) to 3.456 s (Q65-300), so the window
+  silently became ±0.75 s on the shortest sub-mode and ±17.3 s on the
+  longest — narrower than the reference exactly where the symbols are
+  shortest, and 17× wider where the extra span only costs time.
+
+  Measured against real `jt9 -3 -p 15 -b A -d 3` over a `q65sim` Δt
+  sweep at −20 dB (Δt stepped, everything else held):
+
+  | | −1.00 | −0.75 | −0.50 | 0.00 | +0.50 | +1.00 | +1.50 |
+  |---|---|---|---|---|---|---|---|
+  | `jt9` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+  | before | — | — | ✓ | ✓ | ✓ | — | — |
+  | after | — | — | ✓ | ✓ | ✓ | **✓** | — |
+
+  The positive edge now matches the reference exactly. The remaining
+  −1.00/−0.75 cells are a *different* limitation — a frame starting
+  before sample 0 cannot be indexed at all (`row_min` clamps at 0), so
+  the truncated-frame case `jt9` handles is still open; it is not the
+  window constant. Callers doing EME still pass their own wider
+  tolerance explicitly (WSJT-X's own `lag2 = 5.5/dtstep` extension is
+  gated on an `emedelay` this crate has no equivalent for).
+
+  Guarded by `q65_a15_roundtrip::q65_15a_default_window_covers_wsjtx_plus_one_second`,
+  which decodes at Δt = +1.0 s under the *default* `SearchParams` —
+  verified to fail at the old ±0.75 s window.
+
+  **FST4 was audited in the same pass and needs no change.** WSJT-X's
+  `fst4_sync_search` covers Δt −1.0…+2.0 s; this crate covers
+  −2.0…+3.0 s and decodes correctly across all of it, matching `jt9`
+  5/5 per cell down to −24 dB. Ours is a strict superset, so clamping
+  it to the reference would remove working range, not add fidelity.
 
 - **FT8's coarse-sync lag window is WSJT-X's own ±2.5 s again**
   (`SYNC_LAG_S_DEFAULT`, issue #280). It had been ±1.0 s as an embedded

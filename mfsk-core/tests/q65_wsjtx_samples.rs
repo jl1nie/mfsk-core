@@ -96,7 +96,7 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -182,7 +182,7 @@ fn eme_6m_sample_yields_decode_with_ap() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 16,
     };
@@ -273,7 +273,7 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 10,
+        time_tolerance_sec: 6.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -364,7 +364,7 @@ fn tropo_1296_60b_decodes_via_averaging() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -433,7 +433,7 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 10,
+        time_tolerance_sec: 13.333,
         score_threshold: 0.0,
         max_candidates: 8,
     };
@@ -495,7 +495,7 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 10,
+        time_tolerance_sec: 13.333,
         score_threshold: 0.0,
         max_candidates: 8,
     };
@@ -560,7 +560,7 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 60,
+        time_tolerance_sec: 207.36,
         score_threshold: 0.0,
         max_candidates: 20,
     };
@@ -616,7 +616,7 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 10,
+                time_tolerance_sec: 6.0,
                 score_threshold: 0.05,
                 max_candidates: 8,
             };
@@ -643,7 +643,7 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 10,
+                time_tolerance_sec: 13.333,
                 score_threshold: 0.0,
                 max_candidates: 8,
             };
@@ -670,7 +670,7 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 10,
+                time_tolerance_sec: 13.333,
                 score_threshold: 0.0,
                 max_candidates: 8,
             };
@@ -697,7 +697,7 @@ fn q65_snr_matches_jt9_ground_truth() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 60,
+                time_tolerance_sec: 207.36,
                 score_threshold: 0.0,
                 max_candidates: 20,
             };
@@ -741,7 +741,7 @@ fn assert_snr_close(label: &str, ours: f32, jt9: f32, tol_db: f32) {
 /// BP. Measures `coarse_search_for`'s candidate count/time separately
 /// from the full `DecodeRequest::decode`/`.ap_hint(..).decode()` wall-clock,
 /// to see whether the gap is coarse-search grid size (Q65-60A's
-/// `SearchParams::time_tolerance_symbols=50` vs Q65-60D's `10` — a 5×
+/// `SearchParams::time_tolerance_sec=30.0` vs Q65-60D's `6.0` — a 5×
 /// larger coarse time-search window, `coarse_search_on_spec_for`,
 /// `q65/search.rs:202-236`, O(time_span × freq_span)) or the
 /// per-candidate fine-timing retry (`decode_at_with_fine_timing_for`,
@@ -768,10 +768,10 @@ fn q65_speed_diag_coarse_vs_finetiming() {
         let plain_dt = t0.elapsed();
 
         eprintln!(
-            "{label}: {} candidates (time_tolerance_symbols={}, max_cand={}), coarse={:.1}ms, \
+            "{label}: {} candidates (time_tolerance_sec={}, max_cand={}), coarse={:.1}ms, \
              DecodeRequest::decode(plain)={:.1}ms, {} decode(s)",
             cands.len(),
-            params.time_tolerance_symbols,
+            params.time_tolerance_sec,
             params.max_candidates,
             coarse_dt.as_secs_f64() * 1000.0,
             plain_dt.as_secs_f64() * 1000.0,
@@ -788,7 +788,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 50,
+                time_tolerance_sec: 30.0,
                 score_threshold: 0.05,
                 max_candidates: 16,
             };
@@ -797,7 +797,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             // Same audio, Q65-60D's much narrower time-tolerance,
             // to isolate the coarse-search-window effect alone.
             let params_narrow = SearchParams {
-                time_tolerance_symbols: 10,
+                time_tolerance_sec: 6.0,
                 max_candidates: 100,
                 ..params
             };
@@ -820,7 +820,7 @@ fn q65_speed_diag_coarse_vs_finetiming() {
             let params = SearchParams {
                 freq_min_hz: 200.0,
                 freq_max_hz: 3_000.0,
-                time_tolerance_symbols: 10,
+                time_tolerance_sec: 6.0,
                 score_threshold: 0.05,
                 max_candidates: 100,
             };
@@ -871,7 +871,7 @@ fn q65_multi_period_speed_diag() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_symbols: 50,
+            time_tolerance_sec: 30.0,
             score_threshold: 0.05,
             max_candidates: 8,
         };
@@ -900,7 +900,7 @@ fn q65_multi_period_speed_diag() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_symbols: 50,
+            time_tolerance_sec: 15.0,
             score_threshold: 0.05,
             max_candidates: 8,
         };
@@ -944,7 +944,7 @@ fn q65_multi_period_candidate_count_diag() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 32,
     };
@@ -995,7 +995,7 @@ fn q65_candidate_score_calibration_diag() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 100_000,
     };
@@ -1058,7 +1058,7 @@ fn q65_60a_eme6m_candidate_score_calibration_diag() {
     let unbounded = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.0,
         max_candidates: 100_000,
     };
@@ -1124,7 +1124,7 @@ fn q65_scan_streaming_matches_batch_exactly() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 16,
     };
@@ -1184,7 +1184,7 @@ fn q65_multi_period_streaming_matches_batch_exactly() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 15.0,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -1226,7 +1226,7 @@ fn q65_fading_candidate_score_calibration_diag() {
     fn probe<P: mfsk_core::q65::Q65SubMode + Sync>(
         label: &str,
         audio: &[f32],
-        time_tolerance_symbols: u32,
+        time_tolerance_sec: f32,
         b90_ts: f32,
         model: FadingModel,
         golden: Golden,
@@ -1234,7 +1234,7 @@ fn q65_fading_candidate_score_calibration_diag() {
         let unbounded = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_symbols,
+            time_tolerance_sec,
             score_threshold: 0.0,
             max_candidates: 100_000,
         };
@@ -1279,7 +1279,7 @@ fn q65_fading_candidate_score_calibration_diag() {
             probe::<Q65d60>(
                 "Q65-60D 201212_1838.wav",
                 &audio,
-                10,
+                6.0,
                 10.0,
                 FadingModel::Gaussian,
                 Golden {
@@ -1297,7 +1297,7 @@ fn q65_fading_candidate_score_calibration_diag() {
             probe::<Q65d120>(
                 "Q65-120D 210117_0920.wav",
                 &audio,
-                10,
+                13.33,
                 20.0,
                 FadingModel::Gaussian,
                 Golden {
@@ -1322,7 +1322,7 @@ fn q65_fading_candidate_score_calibration_diag() {
                 probe::<Q65e120>(
                     &format!("Q65-120E {}", path.file_name().unwrap().to_string_lossy()),
                     &audio,
-                    10,
+                    13.33,
                     12.0,
                     FadingModel::Gaussian,
                     Golden {
@@ -1341,7 +1341,7 @@ fn q65_fading_candidate_score_calibration_diag() {
             probe::<Q65a300>(
                 "Q65-300A 201210_0505.wav",
                 &audio,
-                60,
+                207.4,
                 5.0,
                 FadingModel::Gaussian,
                 Golden {

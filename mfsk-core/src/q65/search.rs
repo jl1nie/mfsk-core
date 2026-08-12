@@ -137,7 +137,14 @@ pub const DEFAULT_SCORE_THRESHOLD: f32 = 0.1;
 pub struct SearchParams {
     pub freq_min_hz: f32,
     pub freq_max_hz: f32,
-    pub time_tolerance_symbols: u32,
+    /// ±Δt search window around `nominal_start_sample`, **in seconds**.
+    ///
+    /// Seconds, not symbols, because that is the unit WSJT-X uses and
+    /// the two are not interchangeable across sub-modes: Q65 symbol
+    /// length ranges 0.15 s (Q65-15) to 3.456 s (Q65-300), so a
+    /// symbol-denominated tolerance silently becomes a different
+    /// window per sub-mode. See [`Self::default`] for what that cost.
+    pub time_tolerance_sec: f32,
     pub score_threshold: f32,
     pub max_candidates: usize,
 }
@@ -149,9 +156,24 @@ impl Default for SearchParams {
             // SSB passband. Callers can narrow this further.
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            // Symbols are 0.3 s; ±5 symbols covers ±1.5 s of timing
-            // error, comfortably more than typical PC-clock drift.
-            time_tolerance_symbols: 5,
+            // WSJT-X's own Q65 window: `lib/qra/q65/q65.f90:127-128`
+            //   lag1 = -1.0/dtstep
+            //   lag2 =  1.0/dtstep + 0.9999
+            // i.e. ±1.0 s, identical for every sub-mode. (`lag2`
+            // extends to +5.5 s for EME, but only when
+            // `nsps >= 3600 .and. emedelay > 0`; this crate has no
+            // `emedelay` equivalent, so callers doing EME pass their
+            // own wider tolerance explicitly — see
+            // `tests/q65_fast_fading.rs`.)
+            //
+            // Was `time_tolerance_symbols: 5` until issue #282. Five
+            // symbols means ±0.75 s on Q65-15 and ±17.3 s on
+            // Q65-300 — narrower than the reference where it matters
+            // and 17× wider where it only costs time. Measured
+            // against real `jt9` on a `q65sim` Δt sweep: at ±5
+            // symbols Q65-15A decoded Δt ∈ [-0.50, +0.50] where
+            // `jt9 -3 -p 15 -b A` decoded [-1.00, +1.00].
+            time_tolerance_sec: 1.0,
             score_threshold: DEFAULT_SCORE_THRESHOLD,
             max_candidates: 8,
         }
@@ -218,7 +240,8 @@ pub fn coarse_search_on_spec_for<P: ModulationParams>(
     // we will accept a candidate base bin.
     let bins_per_tone = (P::TONE_SPACING_HZ / df).round() as usize;
 
-    let t_span_rows = params.time_tolerance_symbols as i64 * rows_per_symbol as i64;
+    let t_span_rows =
+        (params.time_tolerance_sec * sample_rate as f32 / spec.t_step.max(1) as f32).round() as i64;
     let nominal_row = (nominal_start_sample / spec.t_step) as i64;
     let row_min = (nominal_row - t_span_rows).max(0);
     let row_max = nominal_row + t_span_rows;

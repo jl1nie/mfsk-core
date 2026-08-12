@@ -1233,11 +1233,26 @@ fn push_q65_decode(d: &mfsk_core::q65::Q65Result, vec: &mut Vec<MfskResult>) {
 /// Wide search params used by every `mfsk_q65_*` decode entry point —
 /// matches the Rust-side defaults that work across both terrestrial
 /// Q65-30A and EME 60A‥E recordings.
-fn q65_default_search() -> mfsk_core::q65::SearchParams {
+fn q65_default_search(submode: MfskQ65SubMode) -> mfsk_core::q65::SearchParams {
+    // Was a flat `time_tolerance_symbols: 50` before issue #282 moved
+    // the field to seconds. Symbols are sub-mode-dependent, so the
+    // conversion is per sub-mode (50 × that sub-mode's symbol length)
+    // to keep every FFI entry point's effective window byte-identical
+    // to what it searched before. This is a deliberately *wide*
+    // scan — much wider than `SearchParams::default()`'s WSJT-X-parity
+    // ±1.0 s — because these entry points take no alignment hint and
+    // are documented to work on unaligned EME recordings.
+    let symbol_dt = match submode {
+        MfskQ65SubMode::A15 => 0.15,
+        MfskQ65SubMode::A30 => 0.30,
+        MfskQ65SubMode::D120 | MfskQ65SubMode::E120 => 16_000.0 / 12_000.0,
+        MfskQ65SubMode::A300 => 41_472.0 / 12_000.0,
+        _ => 0.60,
+    };
     mfsk_core::q65::SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 50.0 * symbol_dt,
         score_threshold: 0.05,
         max_candidates: 32,
     }
@@ -1245,7 +1260,7 @@ fn q65_default_search() -> mfsk_core::q65::SearchParams {
 
 /// Q65a30 default scan (used by the generic-handle path). `options`
 /// overrides the search frequency range and candidate cap; Q65's
-/// `SearchParams::time_tolerance_symbols`/`score_threshold` have no
+/// `SearchParams::time_tolerance_sec`/`score_threshold` have no
 /// equivalent knob in [`MfskDecodeOptions`] and stay at their default.
 fn decode_q65_default(
     audio: &[f32],
@@ -1299,7 +1314,7 @@ fn q65_scan_for(
         Q65e120,
     };
     use std::sync::Arc;
-    let params = q65_default_search();
+    let params = q65_default_search(submode);
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
         ($p:ty) => {{
@@ -1336,7 +1351,7 @@ fn q65_scan_with_ap_for(
         Q65e120,
     };
     use std::sync::Arc;
-    let params = q65_default_search();
+    let params = q65_default_search(submode);
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
         ($p:ty) => {{
@@ -1374,7 +1389,7 @@ fn q65_scan_fading_for(
         Q65e120,
     };
     use std::sync::Arc;
-    let params = q65_default_search();
+    let params = q65_default_search(submode);
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
         ($p:ty) => {{
@@ -1412,7 +1427,7 @@ fn q65_scan_with_ap_list_for(
         Q65e120,
     };
     use std::sync::Arc;
-    let params = q65_default_search();
+    let params = q65_default_search(submode);
     let mid = q65_nominal_mid(submode);
     macro_rules! scan {
         ($p:ty) => {{

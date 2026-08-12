@@ -102,7 +102,7 @@ fn q65_30a_ap_sweep_call1_call2() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 5,
+        time_tolerance_sec: 1.5,
         score_threshold: 0.1,
         max_candidates: 8,
     };

@@ -170,7 +170,7 @@ fn fast_fading_handles_moderate_spread_better_than_bessel() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_symbols: 8,
+            time_tolerance_sec: 2.4,
             score_threshold: 0.05,
             max_candidates: 16,
         };
@@ -220,7 +220,7 @@ fn fast_fading_does_not_decode_pure_silence() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 4,
+        time_tolerance_sec: 1.2,
         score_threshold: 0.05,
         max_candidates: 8,
     };
@@ -274,7 +274,7 @@ fn eme_10ghz_reference_decodes_with_fast_fading() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 32,
     };
@@ -345,7 +345,7 @@ fn eme_6m_sample_does_not_regress_with_fast_fading() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 32,
     };

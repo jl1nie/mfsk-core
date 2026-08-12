@@ -166,7 +166,7 @@ fn ap_list_lifts_threshold_versus_plain_decode() {
         let params = SearchParams {
             freq_min_hz: 200.0,
             freq_max_hz: 3_000.0,
-            time_tolerance_symbols: 8,
+            time_tolerance_sec: 2.4,
             score_threshold: 0.05,
             max_candidates: 16,
         };
@@ -285,7 +285,7 @@ fn ap_list_decodes_eme_6m_w7gj_exchanges() {
     let params = SearchParams {
         freq_min_hz: 200.0,
         freq_max_hz: 3_000.0,
-        time_tolerance_symbols: 50,
+        time_tolerance_sec: 30.0,
         score_threshold: 0.05,
         max_candidates: 32,
     };

@@ -82,7 +82,7 @@ impl Q65SubMode for super::Q65e120 {}
 impl Q65SubMode for super::Q65a300 {}
 
 /// Wide-band Q65 decode request: search `nominal_start_sample` ±
-/// `params.time_tolerance_symbols` across `params.freq_min_hz
+/// `params.time_tolerance_sec` across `params.freq_min_hz
 /// ..params.freq_max_hz` for every candidate signal. Construct with
 /// [`DecodeRequest::new`], chain builder methods, call
 /// [`DecodeRequest::decode`].
