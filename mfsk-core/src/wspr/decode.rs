@@ -1066,17 +1066,39 @@ const WSPR_SUBTRACT: crate::engine::dsp::subtract::SubtractCfg =
 /// golden — see the call site in `decode_scan_subtract_inner`.
 const WSPR_SUBTRACT_LPF_HALF: usize = 600;
 
-/// Multi-pass WSPR decode with successive interference cancellation.
+/// A second SIC layer wrapped around [`decode_scan`], at 12 kHz.
 ///
-/// Mirrors WSJT-X `wsprd.c` `npasses=3` SIC loop (`wsprd.c:998-1438`):
-/// each pass runs `decode_scan` on the current residual audio, decodes
-/// every signal that survives Fano + (eventually) callsign sanity,
-/// reconstructs the on-air channel-symbol sequence via
-/// [`super::encode_channel_symbols`], and subtracts a channel-aware
-/// LPF reference from the audio so subsequent passes can expose
-/// previously-masked weak signals.
+/// **This is not part of the reference decoder, and
+/// [`decode_scan`] is the wsprd-equivalent entry point.** The doc
+/// comment here used to claim this function "mirrors WSJT-X
+/// `wsprd.c`'s `npasses=3` SIC loop (`wsprd.c:998-1438`)". That was
+/// true when it was written, and stopped being true in
+/// [#275](https://github.com/jl1nie/mfsk-core/issues/275): porting
+/// wsprd's three-pass structure faithfully put that same loop
+/// *inside* `decode_scan_inner`, citing the same `wsprd.c:805` /
+/// `wsprd.c:999` lines, down to the "skip pass 1 when pass 0 decoded
+/// nothing" rule. The wrapper was left in place and its comment was
+/// not revisited, so two nested layers ended up claiming the same
+/// construct. wsprd has one such loop; this ran three inner passes
+/// twice.
+///
+/// What it costs, measured on the WSJT-X golden
+/// (`wspr_diag_pass_ablation`, Ryzen 9 9900X): `decode_scan` 0.71 s
+/// for 9/9 goldens, this 2.38 s for the same 9/9 — **3.3× for zero
+/// marginal recall**. `WSPR_BENCHMARK.md`'s "Option C" reached the
+/// same conclusion by ablation before #275 landed.
+///
+/// Nothing in this crate calls it: [`decode_scan_default`] and the
+/// `mfsk-ffi` C ABI both route to [`decode_scan`]. It is kept, for
+/// now, only because it is `pub` and removing it is a breaking
+/// change — prefer [`decode_scan`] in new code.
 ///
 /// Returns deduplicated decodes from all passes.
+#[deprecated(
+    note = "not the wsprd-equivalent decoder — `decode_scan` is. This wraps a second \
+            SIC layer around it that the reference has no counterpart for, costing 3.3x \
+            for zero marginal recall on the WSJT-X golden. Use `decode_scan`."
+)]
 pub fn decode_scan_subtract(
     audio: &[f32],
     sample_rate: u32,
@@ -1086,8 +1108,12 @@ pub fn decode_scan_subtract(
     decode_scan_subtract_inner(audio, sample_rate, nominal_start_sample, params, None)
 }
 
-/// Streaming variant of [`decode_scan_subtract`] — see
-/// [`decode_scan_streaming`]'s doc comment for the general rationale
+/// Streaming variant of [`decode_scan_subtract`], and therefore
+/// carrying the same caveat: the extra SIC layer is **not** part of
+/// the reference decoder — see [`decode_scan_subtract`]. Prefer
+/// [`decode_scan_streaming`].
+///
+/// See [`decode_scan_streaming`]'s doc comment for the general rationale
 /// (`_streaming` sibling, not a new parameter, since this is a plain
 /// `pub fn` not a builder).
 ///
@@ -1100,6 +1126,7 @@ pub fn decode_scan_subtract(
 /// exactly once per result that ends up in the returned `Vec`, in the
 /// same order — no divergence, unlike [`decode_scan_streaming`]'s
 /// parallel-strategy caveat.
+#[deprecated(note = "see `decode_scan_subtract` — use `decode_scan_streaming`.")]
 pub fn decode_scan_subtract_streaming(
     audio: &[f32],
     sample_rate: u32,

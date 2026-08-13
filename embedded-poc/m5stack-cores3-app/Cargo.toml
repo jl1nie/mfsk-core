@@ -28,9 +28,29 @@ path = "src/bin/wspr_bench.rs"
 harness = false
 
 [profile.release]
-# Same LX7 LLVM regression workaround as sibling crates: opt-level=1 avoids
-# the f32-select code-gen bug in `mfsk-core::core::pipeline`.
-opt-level = 1
+# **Experiment, 2026-08-13** — issue #260. Was `1`, on this comment:
+#
+#   "Same LX7 LLVM regression workaround as sibling crates: opt-level=1
+#    avoids the f32-select code-gen bug in `mfsk-core::core::pipeline`."
+#
+# Tracing that to its source (`embedded-poc/m5stack-s3/Cargo.toml`) says
+# something different: the regression is at opt-level **"s"/"z"**, not
+# at 2/3; the arithmetic-form workaround already in `core::pipeline`
+# "dodges the trigger"; and the actual reason given for staying low is
+# that it "keeps the ELF debuggable". The paraphrase above dropped both
+# qualifiers and turned a debuggability preference into a correctness
+# requirement.
+#
+# That matters beyond WSPR: every embedded crate here carries the same
+# line, so if `3` is both correct and faster, the published FT8 timings
+# in `docs/notes/BENCHMARKS.md` are also measured under a handicap. The
+# WSPR bench is the cheapest place to find out, because it reports
+# per-stage wall-clock *and* a 9/9 decode check that would expose the
+# f32-select bug if it were real on this path.
+#
+# Sibling crates deliberately untouched — changing them invalidates
+# published numbers and is a re-measurement job of its own.
+opt-level = 3
 
 [profile.dev]
 debug = true

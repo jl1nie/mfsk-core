@@ -10,9 +10,12 @@ use std::path::PathBuf;
 
 use mfsk_core::wspr::SearchParams;
 use mfsk_core::wspr::WsprResult;
-use mfsk_core::wspr::decode::{
-    decode_scan, decode_scan_streaming, decode_scan_subtract, decode_scan_subtract_streaming,
-};
+use mfsk_core::wspr::decode::{decode_scan, decode_scan_streaming};
+// The deprecated double-SIC wrappers are still exercised here on
+// purpose: two diagnostics measure them, and one test guards their
+// streaming parity. See `decode_scan_subtract`'s doc comment.
+#[allow(deprecated)]
+use mfsk_core::wspr::decode::{decode_scan_subtract, decode_scan_subtract_streaming};
 
 #[allow(dead_code)]
 mod common;
@@ -127,7 +130,16 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
         ..SearchParams::default()
     };
 
-    let decodes = decode_scan_subtract(&audio, 12_000, 0, &params);
+    // `decode_scan`, not `decode_scan_subtract`: this is the tier-B
+    // golden, so it has to guard the path that actually ships.
+    // `decode_scan_default` and the `mfsk-ffi` C ABI both route here,
+    // and nothing in the crate calls `decode_scan_subtract` — whose
+    // extra SIC layer turned out to duplicate the wsprd three-pass loop
+    // that #275 moved *inside* `decode_scan` (see that function's doc
+    // comment). Guarding the wrapper meant the shipped decoder's recall
+    // was never actually asserted; it passes either way on this file,
+    // but that was luck rather than coverage.
+    let decodes = decode_scan(&audio, 12_000, 0, &params);
 
     let decoded: Vec<(String, f32, f32)> = decodes
         .iter()
@@ -305,6 +317,7 @@ fn wspr_carried_table_does_not_perturb_a_fully_fano_slot() {
 /// accept point fires `on_result`, see that function's doc comment),
 /// so the callback-delivered set must exactly equal the batch `Vec`.
 #[test]
+#[allow(deprecated)] // deliberately covers the deprecated wrapper
 fn wspr_scan_subtract_streaming_matches_batch_exactly() {
     let Some(path) = sample_path() else {
         eprintln!(
@@ -427,6 +440,7 @@ fn wspr_scan_streaming_superset_of_batch() {
 /// wspr_wsjtx_samples wspr_speed_diag -- --ignored --nocapture`
 #[test]
 #[ignore = "manual diagnostic — WSPR decode_scan_subtract timing (perf-review Phase 0)"]
+#[allow(deprecated)] // this diagnostic exists to time the wrapper
 fn wspr_speed_diag() {
     use std::time::Instant;
 
@@ -639,6 +653,7 @@ fn wspr_diag_candidate_cost_split() {
 /// wspr_diag_pass_ablation -- --ignored --nocapture`
 #[test]
 #[ignore = "manual diagnostic — WSPR outer/inner 2-pass ablation (WSPR_BENCHMARK.md Option C)"]
+#[allow(deprecated)] // the ablation's whole point is to compare against the wrapper
 fn wspr_diag_pass_ablation() {
     use std::time::Instant;
 
