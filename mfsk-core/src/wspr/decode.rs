@@ -301,68 +301,38 @@ pub fn decode_at_baseband_nblocks_gated(
     )
 }
 
-/// [`decode_at_baseband_nblocks_gated`] with wsprd's per-pass drift
-/// switch.
+/// wsprd's refine cascade (`wsprd.c:1221-1277`), in full. Each stage is
+/// `sync_and_demodulate` in mode 0 (search lag, freq fixed) or mode 1
+/// (search freq, lag fixed), keeping whichever cell scores highest on
+/// the sync metric:
 ///
-/// `refine_drift` mirrors `wsprd.c:1236`'s `if (ipass < 2)`: the first
-/// two passes try `drift ± 0.5` around the coarse estimate and keep
-/// whichever scores better on sync, while the final pass does not —
-/// it runs with `maxdrift = 0` throughout, trading drift tracking for
-/// a lower-variance frequency estimate on the weak signals that are
-/// all that remain by then.
-#[allow(clippy::too_many_arguments)]
-pub fn decode_at_baseband_nblocks_gated_drift(
+///   1. coarse lag   ±128 baseband samples, step 64
+///   2. coarse freq  ±2 × 0.25 Hz
+///   3. drift refine drift ± 0.5 (passes 0 and 1 only)
+///   4. fine lag     ±32 baseband samples, step 16
+///   5. fine freq    ±2 × 0.05 Hz
+///
+/// Stages 3-5 were missing here, and stage 2 ran at ±1.0 Hz in 0.5 Hz
+/// steps rather than ±0.5 Hz in 0.25 Hz steps. That combination is why
+/// handing this function the coarse stage's drift estimate used to
+/// *hurt*: without stage 3 there is nothing to correct a drift the
+/// ±4 Hz coarse grid got wrong, and without stages 4-5 the alignment
+/// stays a coarse-grid cell away from the true one.
+///
+/// Extracted out of [`decode_at_baseband_nblocks_gated_drift`] so
+/// [`debug_refined_sync`] can call it without duplicating the cascade
+/// — the two need to agree on the exact value `minsync2` is compared
+/// against, or a diagnostic built against a near-copy is answering a
+/// slightly different question than the one being asked.
+#[allow(clippy::type_complexity)]
+fn refine_cascade(
     idat: &[f32],
     qdat: &[f32],
-    sample_rate: u32,
-    start_sample: usize,
-    freq_hz: f32,
+    f0_baseband_init: f32,
+    lag_baseband_init: i32,
     drift_hz: f32,
-    nblocks: &[usize],
-    confirmed: Option<&WsprCallsignTable>,
     refine_drift: bool,
-) -> Option<WsprResult> {
-    use crate::engine::{FecOpts, MessageCodec};
-    // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
-    // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
-    // takes the signal CENTER, so we add 1.5·tone_spacing here and sweep
-    // around that point. A wide ±4 Hz sweep is needed because real-world
-    // coarse picks can land 2-4 Hz off the true centre when nearby
-    // signals or sub-bin offsets perturb the score landscape.
-    // wsprd-style refine→demod cascade. Replaces the previous
-    // brute-force 15×7 (Δf, Δdt) sweep, which ran Fano on every cell
-    // and burnt seconds of CPU per candidate. Architecture follows
-    // `wsprd.c:1217-1280`: mode 0 (lag refine) → mode 1 (freq refine)
-    // → mode 2 (final demod), with Fano run only at the refined
-    // alignment (not per cell).
-    let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
-    let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
-    let lag_baseband_init = start_sample as i32 / 32;
-    let codec = crate::fec::ConvFano;
-    // Pooled across the whole `nblocks` sweep below (up to 3 values in
-    // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
-    // scratch per call — see `fano::fano_decode_with_scratch`'s doc
-    // comment for why reuse is safe here.
-    let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
-
-    // wsprd's refine cascade (`wsprd.c:1221-1277`), in full. Each
-    // stage is `sync_and_demodulate` in mode 0 (search lag, freq
-    // fixed) or mode 1 (search freq, lag fixed), keeping whichever
-    // cell scores highest on the sync metric:
-    //
-    //   1. coarse lag   ±128 baseband samples, step 64
-    //   2. coarse freq  ±2 × 0.25 Hz
-    //   3. drift refine drift ± 0.5 (passes 0 and 1 only)
-    //   4. fine lag     ±32 baseband samples, step 16
-    //   5. fine freq    ±2 × 0.05 Hz
-    //
-    // Stages 3-5 were missing here, and stage 2 ran at ±1.0 Hz in
-    // 0.5 Hz steps rather than ±0.5 Hz in 0.25 Hz steps. That
-    // combination is why handing this function the coarse stage's
-    // drift estimate used to *hurt*: without stage 3 there is nothing
-    // to correct a drift the ±4 Hz coarse grid got wrong, and without
-    // stages 4-5 the alignment stays a coarse-grid cell away from the
-    // true one.
+) -> (f32, i32, f32, f32, super::demod::IsQs) {
     super::instrument::bump(&super::instrument::CANDIDATES);
     let eval = |f: f32, lag: i32, drift: f32| {
         let isqs = super::demod::tone_amplitudes(idat, qdat, f, lag, drift);
@@ -444,6 +414,93 @@ pub fn decode_at_baseband_nblocks_gated_drift(
             }
         }
     }
+
+    (best_freq, best_lag, best_drift, best_sync, best_isqs)
+}
+
+/// Refined `best_sync` for one candidate — the exact value `minsync2`
+/// gates on — without running Fano/OSD. Diagnostic-only: written to
+/// answer "where does a known weak decode rank among the candidates
+/// `minsync2` keeps", which needs the per-candidate refined sync, not
+/// just the aggregate pass/fail counters `wspr::instrument` tracks.
+///
+/// `freq_hz`/`start_sample` follow [`decode_at_baseband_nblocks_gated_drift`]'s
+/// own conventions (tone-0 audio Hz; audio-rate sample index).
+#[cfg(any(test, feature = "internal-testing"))]
+pub fn debug_refined_sync(
+    idat: &[f32],
+    qdat: &[f32],
+    start_sample: usize,
+    freq_hz: f32,
+    drift_hz: f32,
+    refine_drift: bool,
+) -> f32 {
+    let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
+    let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
+    let lag_baseband_init = start_sample as i32 / 32;
+    refine_cascade(
+        idat,
+        qdat,
+        f0_baseband_init,
+        lag_baseband_init,
+        drift_hz,
+        refine_drift,
+    )
+    .3
+}
+
+/// [`decode_at_baseband_nblocks_gated`] with wsprd's per-pass drift
+/// switch.
+///
+/// `refine_drift` mirrors `wsprd.c:1236`'s `if (ipass < 2)`: the first
+/// two passes try `drift ± 0.5` around the coarse estimate and keep
+/// whichever scores better on sync, while the final pass does not —
+/// it runs with `maxdrift = 0` throughout, trading drift tracking for
+/// a lower-variance frequency estimate on the weak signals that are
+/// all that remain by then.
+#[allow(clippy::too_many_arguments)]
+pub fn decode_at_baseband_nblocks_gated_drift(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    start_sample: usize,
+    freq_hz: f32,
+    drift_hz: f32,
+    nblocks: &[usize],
+    confirmed: Option<&WsprCallsignTable>,
+    refine_drift: bool,
+) -> Option<WsprResult> {
+    use crate::engine::{FecOpts, MessageCodec};
+    // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
+    // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
+    // takes the signal CENTER, so we add 1.5·tone_spacing here and sweep
+    // around that point. A wide ±4 Hz sweep is needed because real-world
+    // coarse picks can land 2-4 Hz off the true centre when nearby
+    // signals or sub-bin offsets perturb the score landscape.
+    // wsprd-style refine→demod cascade. Replaces the previous
+    // brute-force 15×7 (Δf, Δdt) sweep, which ran Fano on every cell
+    // and burnt seconds of CPU per candidate. Architecture follows
+    // `wsprd.c:1217-1280`: mode 0 (lag refine) → mode 1 (freq refine)
+    // → mode 2 (final demod), with Fano run only at the refined
+    // alignment (not per cell).
+    let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
+    let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
+    let lag_baseband_init = start_sample as i32 / 32;
+    let codec = crate::fec::ConvFano;
+    // Pooled across the whole `nblocks` sweep below (up to 3 values in
+    // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
+    // scratch per call — see `fano::fano_decode_with_scratch`'s doc
+    // comment for why reuse is safe here.
+    let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
+
+    let (best_freq, best_lag, best_drift, best_sync, best_isqs) = refine_cascade(
+        idat,
+        qdat,
+        f0_baseband_init,
+        lag_baseband_init,
+        drift_hz,
+        refine_drift,
+    );
 
     // wsprd's candidate-list filter (`wsprd.c:1294`), applied here
     // rather than up front: it runs on `candidates[j].sync` *after*
