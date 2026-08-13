@@ -10,23 +10,40 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
 
 ## Headline
 
-1. **It does not fit.** One `decode_scan` costs **1 214 s** on the
-   device against WSPR's 120 s slot — 10.1× over budget, 1 755× the
-   host. Bottom row of the plan's decision table.
+1. **It does not fit — but the gap closed by 4.9× today.** One
+   `decode_scan` started at **1 214 s** against WSPR's 120 s slot
+   (10.1× over, 1 755× the host) and now stands at **249 s** (2.08×
+   over) after two independent, additive, recall-neutral fixes:
+   `opt-level=3` (1.19×) and implementing `minsync2` (a further 4.1×,
+   stacking to **4.9× combined**). Both verified 9/9 golden, decode-
+   for-decode identical to the un-optimised baseline.
 2. **The loop is compute-bound, not bandwidth-bound.** Moving half the
    baseband traffic to internal SRAM buys 5 %. So **#260's Phase 3
    (within-stage hypothesis fusion) should not be built** — its entire
    value was amortising memory traffic, and traffic is not the cost.
 3. **The cost is not where the plan looked.** `tone_amplitudes` — the
-   routine the whole plan is about — is **8.5 %** of decode time.
-   Pass-2 Fano is **51 % of the entire scan** and OSD another 20 %,
-   both spent almost entirely on candidates that never decode. Pass 2
-   alone is 76 % of the scan, attempts OSD **896 times, succeeds 0
-   times**, and returns one decode.
-4. **That failure population is separable.** Every successful decode
-   converges inside 20 % of the Fano budget; essentially every failure
-   burns 99 % of it. A lower `max_cycles_per_bit` — an existing knob —
-   is the cheapest thing to test next.
+   routine the whole plan is about — is **8.5 %** of decode time (of
+   the pre-`minsync2` total). Pass-2 Fano is **51 % of the entire
+   scan** and OSD another 20 %, both spent almost entirely on
+   candidates that never decode. Pass 2 alone was 76 % of the scan,
+   attempting OSD **896 times for 0 successes**, and returning one
+   decode.
+4. **That failure population was separable — and wsprd already knew
+   it.** Every successful decode converges inside 20 % of the Fano
+   budget; essentially every failure burns 99 % of it. The candidate-
+   list filter that removes most of that failure population before it
+   ever reaches Fano turned out to already be part of the reference
+   decoder (`wsprd.c:1294`'s `minsync2`) — documented in this crate's
+   own source comment and never implemented. Implementing it is what
+   produced the 4.1× above, with **0 phantoms** as a side effect (see
+   below).
+5. **Dual-core is real but smaller than hoped, and pass 2 isn't safe
+   yet.** A work-steal port of the FT8 dual-core pattern measured
+   1.35-1.47× on passes 0/1, then **crashed pass 2 with a stack
+   overflow** — a genuine resource conflict (two ~100-125 KB task
+   stacks don't fit the chip's ~236 KB largest contiguous free block),
+   not a tuning slip. Reverted, not shipped; see "Dual-core" below for
+   the full account and what it would take to make safe.
 
 ## Hardware
 
@@ -371,6 +388,69 @@ Changed for `m5stack-cores3-app` on this evidence. Not extended to the
 sibling crates, whose f32-select-bearing FT8 code this measurement
 does not exercise.
 
+## `minsync2`: the reference decoder's own candidate filter, missing
+
+`wsprd.c:1294` drops a candidate from its list — before Fano, before
+OSD, before any of the DT-peak-up ladder — if its **refined** sync
+(post the same 5-stage cascade this crate's `best_sync` already
+computes) doesn't clear 0.12 (passes 0/1) or 0.10 (the final pass).
+`decode_scan_inner`'s own source comment already documented these two
+thresholds (`wsprd.c:1002-1009`); nothing applied them. Every coarse
+candidate paid the full Fano + DT-peak-up ladder regardless of how
+weak its refined sync was.
+
+Applied inside `decode_at_baseband_nblocks_gated_drift`, right after
+`best_sync` is finalised and before Fano starts, reusing the existing
+`refine_drift` flag to pick the threshold — wsprd ties `minsync2` to
+the identical `ipass < 2` conditional it ties `maxdrift` to, so no new
+parameter was needed.
+
+**Host** (Ryzen 9 9900X), same 9/9 golden recall throughout:
+
+| condition | before | after | speedup |
+|---|---:|---:|---:|
+| inner=1 only, outer=1 | 496.6 ms | 100.6 ms | **4.9×** |
+| `decode_scan` (outer=1) | 709.5 ms | 601.1 ms | 1.18× |
+| `decode_scan_subtract` (outer=2) | 2 378.6 ms | 944.5 ms | **2.52×** |
+
+`decode_scan_subtract` benefits most — its double SIC re-decodes the
+same non-decoding candidates every round, so `minsync2` compounds.
+
+**Device** (CoreS3, 240 MHz, `opt-level=3`), one `decode_scan`:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| pass 2 alone | 763.9 s | 133.9 s | **5.7×** |
+| pass 2 Fano/OSD attempts | 897 | 149 | 6.0× |
+| **total** | **1 024.6 s** | **249.2 s** | **4.1×** |
+
+Still 9/9 golden, decode-for-decode identical.
+
+**A real precision gap this exposed, and fixed.** `decode_scan_subtract`
+was producing two decodes outside the curated golden list on this file
+— `68K/YJ0WKZ 30` and a Type-3 hashed `<#054f9> GR42IR 21` — that no
+existing test caught: the recall test used `decode_scan_subtract`, the
+phantom test used `decode_scan`, so between the two tests neither
+function's recall-and-precision pair was ever checked together. This
+is exactly the failure mode `common::golden::assert_golden` was written
+to prevent — its own doc comment names WSPR's 2026-08-11 phantom
+incident as the motivating case — and WSPR's own tests had never been
+migrated to it. Migrated: the two tests collapse into one
+`assert_golden` call, 9/9 recall and 0 phantoms asserted together.
+`minsync2` removed both extras with no recall cost.
+
+**Also found, unrelated to `minsync2` but load-bearing for interpreting
+it**: `decode_scan_subtract`'s doc comment claimed it "mirrors WSJT-X
+`wsprd.c`'s `npasses=3` SIC loop". True when written, false since an
+earlier change (#275) ported that same three-pass loop *inside*
+`decode_scan` itself — citing the identical `wsprd.c` lines. Two nested
+layers ended up claiming the same construct; wsprd has one, this ran it
+twice. Nothing shipped was affected (`decode_scan_default` and the
+`mfsk-ffi` C ABI both already routed to `decode_scan`), but the golden
+test had been guarding the *wrapper*, so the shipped decoder's own
+recall had never actually been asserted. Fixed alongside `minsync2`;
+the wrapper is now `#[deprecated]`.
+
 ## The clock nobody set
 
 `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` defaults to **160** on esp32s3, and
@@ -398,22 +478,124 @@ carry the published FT8 timings in `docs/notes/BENCHMARKS.md` and
 their clocks invalidates every one of those numbers, which is a
 re-measurement job of its own rather than a drive-by.
 
-## Stack: the candidate loop needs ~93 KB
+## Stack: the candidate loop needs ~93 KB — up to ~124 KB once OSD runs
 
-`uxTaskGetStackHighWaterMark` after pass 0, on a 128 KB task: 35 716 B
-free — 92.3 KB used. The cascade holds several 10 368-byte `IsQs` live
-at once (`best_isqs`, the current `eval` result, `isqs_owned` in the DT
-peak-up loop) on top of `tone_amplitudes`'s own 8 224 B of tables, at
-`opt-level = 1`.
+`uxTaskGetStackHighWaterMark`, cumulative minimum free since task
+start, at three points in one sequential 128 KB-stack run:
+
+| point reached | used | free |
+|---|---:|---:|
+| after pass 0 (Fano only) | 92.3 KB | 35.7 KB |
+| after pass 1 (Fano only) | 102.8 KB | 25.2 KB |
+| **after pass 2 (Fano + OSD)** | **123.3 KB** | **4.7 KB** |
+
+The cascade holds several 10 368-byte `IsQs` live at once (`best_isqs`,
+the current `eval` result, `isqs_owned` in the DT peak-up loop) on top
+of `tone_amplitudes`'s own 8 224 B of tables. That alone explains
+passes 0/1's ~93-103 KB. Passes 0 and 1 never call `osd_decode` —
+`decode_pass1_candidate` passes no callsign table, so the `.and_then`
+gating OSD short-circuits before it — so the **+20.5 KB jump at pass 2
+has no structural explanation other than OSD**, confirmed by source
+audit below.
 
 Not bench overhead — any production embedded WSPR path pays it. It is a
-hard constraint on where the baseband can live: 93 KB of stack plus
-360 KiB of baseband does not fit internal DRAM, so an embedded WSPR
-decoder has a PSRAM-resident baseband whether it wants one or not.
+hard constraint on where the baseband can live: even 93 KB of stack
+plus 360 KiB of baseband does not fit internal DRAM, so an embedded
+WSPR decoder has a PSRAM-resident baseband whether it wants one or not.
 
 The first attempt died on this: the 32 KB ESP-IDF main task faulted
 inside the *first* `log::info!` — `LoadProhibited` in
 `multi_heap_internal_lock`, with SP already 42 KB below the stack.
+
+### What OSD's own frame costs, audited
+
+`wspr::osd::osd_decode`'s local arrays sum to **~12.2 KB**, two-thirds
+of it one array: `g: [[u8; 162]; 50]` at **8 100 B** — a full
+byte-per-bit copy of the GF(2) generator matrix, permuted by
+reliability order and then mutated in place by Gaussian elimination.
+
+The nested Fano call at the end of `osd_decode` (`codec.decode_soft`,
+recovering info bits from the zero-error codeword) does **not** add
+meaningfully to this: `fano_decode` constructs a fresh `FanoScratch`
+whose `nodes: Vec<Node>` is heap-allocated, and
+`build_branch_metrics_wsprd` / `wsprd_normalised_symbols` return a
+`Vec` and a lazy iterator respectively — no large stack arrays on that
+path. (An earlier pass at this audit assumed the nested call was a
+major contributor; it is not.)
+
+So ~12.2 KB of `osd_decode`'s own frame accounts for roughly 60 % of
+the measured +20.5 KB pass-2 jump. The remaining ~8 KB was not
+resolved by source inspection alone — compiler stack-slot reuse and
+closure-capture layout are not reliably hand-computable — and would
+need an instrumented on-device measurement to close.
+
+**A real, partial lever exists**: bit-packing `g` from `[[u8;162];50]`
+to word-packed GF(2) rows (`[[u32;6];50]`, 162 bits → 6 words) would
+cut that array from 8 100 B to ~1 200 B, recovering ~6.9 KB — real, but
+only about a third of the observed gap, and it requires rewriting the
+Gaussian-elimination row-XOR to operate on packed words plus
+re-verifying bit-exact OSD correctness against the golden. Not done —
+audited and left for whoever picks up the dual-core work next.
+
+## Dual-core: 1.35-1.47× on passes 0/1, then a stack overflow on pass 2
+
+Attempted a direct port of the FT8 embedded pipeline's own dual-core
+pattern (`dual_core.rs`'s `Stage3WorkSteal`): a shared
+`Vec<Option<BasebandCandidate>>` and an `AtomicUsize` both the main
+core and a persistent APP_CPU worker task `fetch_add` against, so a
+pass's candidates drain dynamically across both cores instead of a
+static half-and-half split. Dynamic dispatch matters here for the same
+reason it matters for FT8 stage 3: per-candidate cost is sharply
+bimodal (a `minsync2`-rejected or Fano-converged candidate finishes in
+~1 s; one that reaches the full Fano + DT-peak-up ladder and fails
+takes 10+ seconds), and a static split would strand whichever core
+drew the slow candidates.
+
+Simpler than FT8's version in one respect — WSPR's `tone_amplitudes`
+builds its oscillator tables as call-local stack arrays, so there is no
+per-candidate scratch buffer to share between cores (FT8 needs 5 KB
+`cs Box` staging in each of `CS_SCRATCH_MAIN`/`_WORKER`) — but harder
+in the one that matters: **stack**. FT8's worker task runs at 16 KB;
+WSPR's refine cascade needs 93-124 KB (see above), so it could not
+reuse FT8's worker or its tuned stack size, and needed an independent
+queue + persistent task (`wspr_dual_core.rs`, not committed).
+
+**Measured, on passes 0 and 1 (which don't reach OSD):**
+
+| pass | sequential (O3+`minsync2`) | dual-core | speedup |
+|---|---:|---:|---:|
+| 0 | 22.0 s | 16.3 s | 1.35× |
+| 1 | 43.5 s | 29.6 s | 1.47× |
+
+Below the hoped-for ~2×, and for a specific, honest reason: after
+`minsync2`, each pass has only 13-14 dispatchable candidates, and the
+"slow" subset among them (the ones that reach the full Fano ladder) is
+small — 1-2 per pass. Work-steal's worst case with a single dominant
+straggler is close to `max(fast_total / 2, slow_item)`, not
+`total / 2` — with so few slow items, one core finishing everything
+else while the other is still on the straggler is close to the
+observed outcome, not a bug.
+
+**Pass 2 crashed**: `***ERROR*** A stack overflow in task wspr_scan has
+been detected`, reproduced across 4 automatic reboots before the
+capture window ran out. Root cause, not a sizing slip that a bigger
+number would have fixed: `wspr_scan` (the task issuing work) itself
+holds a stack for its entire life, and a worker task needs a
+*second*, comparably-sized stack concurrently — two ~100-125 KB
+allocations do not both fit inside the ~236 KB largest contiguous free
+block this build measures (`heap_caps_get_largest_free_block`), no
+matter how the two are individually sized. Restricting the worker to
+passes 0/1 only (which peak at ~103 KB, no OSD) and tearing it down
+before pass 2 starts is the structurally sound fix, but was not
+implemented or re-verified before this write-up — the attempt was
+reverted rather than shipped in a state that had only been proven to
+crash.
+
+**Net assessment**: dual-core is a real, additive lever — 1.4×-ish on
+two of three passes, for free once built safely — but it is not close
+to enough on its own, and pass 2 (76 % of the scan) needs either the
+scoped pass-0/1-only redesign above, a reduction in OSD's own stack
+footprint (see the audit above), or both, before it can run at all.
 
 ## A latent bug in the shipped FFT backend, found on the way
 
