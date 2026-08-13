@@ -19,10 +19,14 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
    value was amortising memory traffic, and traffic is not the cost.
 3. **The cost is not where the plan looked.** `tone_amplitudes` — the
    routine the whole plan is about — is **8.5 %** of decode time.
-   **Fano is 51 % of the entire scan**, OSD another 20 %, both spent
-   almost entirely on candidates that never decode. Pass 2 alone is
-   76 % of the scan, attempts OSD **896 times, succeeds 0 times**, and
-   returns one decode.
+   Pass-2 Fano is **51 % of the entire scan** and OSD another 20 %,
+   both spent almost entirely on candidates that never decode. Pass 2
+   alone is 76 % of the scan, attempts OSD **896 times, succeeds 0
+   times**, and returns one decode.
+4. **That failure population is separable.** Every successful decode
+   converges inside 20 % of the Fano budget; essentially every failure
+   burns 99 % of it. A lower `max_cycles_per_bit` — an existing knob —
+   is the cheapest thing to test next.
 
 ## Hardware
 
@@ -257,6 +261,71 @@ Neither is addressed by anything #260 proposes, and neither is
 addressed by the oscillator-table hoist. The lever that matters is a
 cheaper *reject* path: something that decides "this candidate is noise"
 before paying 691 ms of Fano, 68 times per candidate.
+
+## Fano convergence budget — the failure population is separable
+
+Measured on VK3NV's prompt (issue #260, 2026-08-13): if successful
+decodes finish early and failures run to exhaustion, a lower budget
+rejects most of the workload without needing a classifier.
+
+`FanoDecodeResult` already carries `cycles`, `max_np` and `converged`,
+and the budget is already a `FecOpts` knob (`max_cycles_per_bit`,
+default 10 000 → 810 000 cycles over WSPR's 81 bits), so this needed
+counters, not a decoder change: `fec::conv::fano::instrument` buckets
+every attempt into deciles of budget, keeping converged and failed
+apart.
+
+| pass | converged | budget used | failed | budget used |
+|---|---:|---|---:|---|
+| 0 | 7 | all in the first decile, **max < 1 %** | 101 | mean **99 %** |
+| 1 | 1 | **7 %** | 191 | mean **99 %** |
+| 2 | 1 (G8VDQ) | **~20 %** (third decile) | 896 | mean **99 %** |
+
+The separation is about as clean as it could be:
+
+- **every successful decode converges inside 20 % of the budget** —
+  eight of nine inside 10 %, seven inside 1 %;
+- **essentially no failure terminates early**; the mean failed attempt
+  burns 99 % of its allowance.
+
+G8VDQ, the −23 dB decode that pass 2 exists to find and that costs
+920 s to get, lands at ~20 %.
+
+### Reading the pass-2 raw counts
+
+Pass 2's counters show 898 converged and 1 792 failed against 897
+decode attempts. That is not a contradiction: `osd_decode` **re-runs
+Fano internally** to extract info bits from the hard codeword
+(`osd.rs:16` — "zero hard errors → trivial Fano convergence"), and this
+run also replays the pass for the OSD split. So the total decomposes
+exactly as 897 (OSD-off replay) + 897 (real loop) + 896 (inside OSD) =
+2 690, and the 896 first-decile "convergences" are OSD's own round-trip,
+not decode attempts. The two third-decile entries are G8VDQ, found once
+in each loop. Passes 0 and 1 have neither OSD nor a replay, so their
+counts map 1:1 onto the `wspr::instrument` figures (7/108, 1/192) and
+need no such unpicking.
+
+### What it implies, and what it does not
+
+A ladder is not even needed in the form proposed. With successes at
+≤ 20 % and failures at 99 %, **almost nothing would be promoted**, so a
+single lower budget does the same work as a 5 % → 20 % → full ladder
+without needing `ConvFano` to be checkpointable. `max_cycles_per_bit`
+is already public; testing this costs a parameter, not a rewrite.
+
+Two things this does **not** establish.
+
+**Wall-clock.** Pass 2's 619.8 s covers Fano *and*
+`nblock*_bit_metrics`, and only the former scales with the cycle
+budget. 619.8 s is therefore an upper bound on what a quarter-budget
+could save, not an estimate. Splitting those two is the next cheap
+measurement.
+
+**Recall.** This is one recording. That every decode on it fits in
+20 % of budget says nothing about a weaker signal on a different one,
+and the WSPR corpus — single-signal, DT = 0, f0 = 0, all four tones on
+exact bin centres — cannot currently answer that. The corpus gap gates
+this exactly as it gates everything else here.
 
 ## The clock nobody set
 
