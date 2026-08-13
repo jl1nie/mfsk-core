@@ -904,3 +904,48 @@ fn wspr_bake_golden_baseband() {
         pad / 32,
     );
 }
+
+/// How many coarse candidates would wsprd's `minsync2` gate drop?
+///
+/// `wsprd.c:1294` filters the candidate list *before* the decode loop:
+/// a candidate whose coarse `sync` is below `minsync2` (0.12 for passes
+/// 0 and 1, 0.10 for pass 2) never reaches the Fano / DT-peak-up ladder
+/// at all. `decode_scan_inner` describes that gate in a comment and
+/// does not apply it — every coarse candidate pays the full ladder.
+///
+/// The S3 measurement (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`)
+/// makes the size of that omission worth knowing: on device, the ladder
+/// costs ~69 s per candidate in pass 2.
+#[test]
+#[ignore = "manual diagnostic — coarse sync distribution vs wsprd's minsync2"]
+fn wspr_diag_minsync2_would_drop() {
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let pad = 36_000usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (idat, qdat) = decimate_to_baseband(&padded);
+
+    for (label, max_drift, minsync2) in [("pass 0/1", 4i32, 0.12f32), ("pass 2", 0, 0.10)] {
+        let cands = coarse_baseband(&idat, &qdat, pad, 100, max_drift);
+        let kept = cands.iter().filter(|c| c.sync > minsync2).count();
+        let mut syncs: Vec<f32> = cands.iter().map(|c| c.sync).collect();
+        syncs.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        eprintln!(
+            "{label} (minsync2 = {minsync2}): {} candidates, {kept} kept, {} dropped\n  sync: {}",
+            cands.len(),
+            cands.len() - kept,
+            syncs
+                .iter()
+                .map(|s| format!("{s:.3}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+}
