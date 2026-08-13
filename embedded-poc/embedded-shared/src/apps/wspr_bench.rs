@@ -800,9 +800,35 @@ fn fft_multisize_selftest() {
     }
 }
 
+/// Install the ESP-IDF logger, at most once per boot.
+///
+/// `EspLogger::initialize_default` ends in `log::set_logger(..).unwrap()`,
+/// so calling it twice aborts the process — a boot loop whose only
+/// visible cause is a panic inside `esp-idf-svc`'s `log.rs`. A bin that
+/// has to do its own setup before [`run`] (bringing WiFi up, for
+/// instance, which needs the logger live to report what it did) must go
+/// through here rather than calling the ESP-IDF function directly.
+///
+/// `no_std` crate, hence an atomic rather than `std::sync::Once`.
+pub fn init_logger_once() {
+    static LOGGER_READY: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    if LOGGER_READY
+        .compare_exchange(
+            false,
+            true,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        esp_idf_svc::log::EspLogger::initialize_default();
+    }
+}
+
 pub fn run(bin: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    init_logger_once();
 
     fft_multisize_selftest();
 

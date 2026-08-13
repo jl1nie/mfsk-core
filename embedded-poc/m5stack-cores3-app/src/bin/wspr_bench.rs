@@ -27,6 +27,66 @@
 
 const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseband.bin");
 
+const WIFI_SSID: &str = env!("WIFI_SSID");
+const WIFI_PSK: &str = env!("WIFI_PSK");
+
+/// Bring WiFi up before the bench when `MFSK_WSPR_BENCH_WIFI` is set at
+/// build time, so the run measures the decoder **as it would actually
+/// ship** rather than on a board with the radio switched off.
+///
+/// This is a memory question before it is a CPU one. The candidate loop
+/// needs two large task stacks live at once — `SCAN_STACK` 90 KB plus
+/// `PASS01_WORKER_STACK` 80 KB, then `PASS2_WORKER_STACK` 88 KB — and
+/// FreeRTOS task stacks must come out of *internal* DRAM in one
+/// contiguous piece. A radio-off boot leaves 328 KB free with a 236 KB
+/// largest block, so 178 KB of stacks fits with ~58 KB to spare. The
+/// WiFi driver plus LwIP claim tens of KB of that same internal pool,
+/// and `wspr_dual_core`'s `have_room_for(PASS2_WORKER_STACK)` guard
+/// responds to a shortfall by **silently falling back to sequential** —
+/// which costs the 1.17x dual-core speedup and pushes TOTAL back over
+/// the 120 s slot. Nothing in the bench log would say why.
+///
+/// So: measure the heap with the radio up, before deciding how much of
+/// the slot to reserve for spot upload.
+fn maybe_start_wifi() -> Option<mfsk_app_shared::wifi::WifiHandle> {
+    if option_env!("MFSK_WSPR_BENCH_WIFI").is_none() {
+        log::info!("wspr_bench: WiFi off (set MFSK_WSPR_BENCH_WIFI=1 to measure with the radio up)");
+        return None;
+    }
+    if WIFI_SSID.is_empty() {
+        log::warn!("wspr_bench: MFSK_WSPR_BENCH_WIFI set but WIFI_SSID empty (no cfg.toml)");
+        return None;
+    }
+    let peripherals = esp_idf_hal::peripherals::Peripherals::take().ok()?;
+    let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take().ok()?;
+    let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().ok();
+    match mfsk_app_shared::wifi::connect_sta(
+        peripherals.modem,
+        sysloop,
+        nvs,
+        WIFI_SSID,
+        WIFI_PSK,
+    ) {
+        Ok(h) => {
+            log::info!("wspr_bench: WiFi up, ip {}", h.ip);
+            Some(h)
+        }
+        Err(e) => {
+            log::warn!("wspr_bench: WiFi bring-up failed: {e:#}");
+            None
+        }
+    }
+}
+
 fn main() -> ! {
+    esp_idf_svc::sys::link_patches();
+    // Must go through the shared guard, not `EspLogger::initialize_
+    // default` directly — `run` installs the logger too, and the second
+    // install aborts the process.
+    embedded_shared::apps::wspr_bench::init_logger_once();
+    // Held for the process lifetime — dropping the handle tears the
+    // association down, and the point is to keep the radio's memory
+    // claimed for the whole measurement.
+    let _wifi = maybe_start_wifi();
     embedded_shared::apps::wspr_bench::run(GOLDEN_BASEBAND)
 }
