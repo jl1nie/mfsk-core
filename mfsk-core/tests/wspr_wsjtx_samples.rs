@@ -1354,3 +1354,233 @@ fn wspr_diag_rank_by_pass() {
         println!("  rank {rank:2}: refined_sync={sync:.4} kept={kept} decode={msg:?}{tag}");
     }
 }
+
+/// The ladder budget mechanism (`decode_from_refined`'s `budget`
+/// param, exposed via `deep_decode_pass2_candidate`): pass 2's own
+/// hard candidate — its highest-refined-sync survivor, which never
+/// converges — pays the full DT-peak-up x nblocks sweep (up to
+/// 4 x 17 = 68 positions) every time it fails, which is exactly what
+/// dominates pass 2's wall-clock on embedded (see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Dual-core,
+/// take two" — 48.1 s for this file's hard candidate vs 11.1 s for
+/// the one that converges). This proves three things about the
+/// cutoff, on the real golden-file candidates rather than a synthetic
+/// stand-in:
+///
+/// 1. an exhausted-from-the-start budget (`|| false`) aborts
+///    immediately and bumps `LADDER_BUDGET_ABORTED` — even for the
+///    *converging* candidate, which is correct: an already-exhausted
+///    budget means "don't even try", not "try a little".
+/// 2. a budget generous enough to outlast the converging candidate's
+///    own position count still finds it (recall preserved).
+/// 3. a budget tighter than that position count reliably fails to
+///    find it — the cutoff actually changes the outcome, not a
+///    no-op that happens to never bind.
+///
+/// Position count is measured empirically (an always-true counting
+/// budget) rather than hardcoded, so this doesn't rot into a magic
+/// number if the ladder's search order ever changes.
+#[test]
+#[cfg(feature = "wspr-pass2-topn")]
+fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one() {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    use mfsk_core::wspr::WsprResult;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, decode_at_baseband, deep_decode_pass2_candidate, rank_pass2_candidates,
+    };
+    use mfsk_core::wspr::encode_channel_symbols;
+    use mfsk_core::wspr::instrument;
+    use mfsk_core::wspr::subtract::subtract_signal_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+    let sample_rate = 12_000u32;
+    const FREQ_DEDUP_HZ: f32 = 5.0;
+    const TIME_DEDUP_SAMPLES: i64 = 8192;
+
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (mut idat, mut qdat) = decimate_to_baseband(&padded);
+
+    let mut seen: Vec<WsprResult> = Vec::new();
+    let mut confirmed = WsprCallsignTable::new();
+
+    // Reproduce pass 2's real residual: early passes 0/1 decode +
+    // subtract, exactly as decode_scan_inner does.
+    for _ in 0..2 {
+        let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
+        cands.truncate(params.max_candidates);
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for c in &cands {
+            let Some(mut d) = decode_at_baseband(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+            ) else {
+                continue;
+            };
+            let start_refined = d.start_sample;
+            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+            d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            if !dup {
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+        for (d, start_refined) in &this_pass {
+            confirmed.record(&d.message);
+            let symbols = encode_channel_symbols(&d.info_bits);
+            let f0_audio = d.freq_hz + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let shift_baseband = (*start_refined as i32) / 32;
+            subtract_signal_baseband(
+                &mut idat,
+                &mut qdat,
+                f0_audio,
+                shift_baseband,
+                d.drift_hz,
+                &symbols,
+            );
+        }
+    }
+
+    // Pass 2's real candidate set, ranked exactly as production does.
+    let cands2 = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 0);
+    let ranked = rank_pass2_candidates(&idat, &qdat, &cands2);
+    assert!(
+        ranked.len() >= 2,
+        "golden file should have >= 2 minsync2 survivors in pass 2"
+    );
+
+    // rank[1] is the converging survivor (G8VDQ); rank[0] is the
+    // "hard" one that never does — see `PASS2_DEEP_LADDER_TOP_N`'s own
+    // doc comment for this exact pairing on the golden file.
+    let hard = &ranked[0];
+    let easy = &ranked[1];
+
+    // Baseline (budget = None): easy converges, hard doesn't.
+    let baseline_easy =
+        deep_decode_pass2_candidate(&idat, &qdat, sample_rate, pad, &confirmed, easy, None);
+    assert!(
+        baseline_easy.is_some(),
+        "rank-1 survivor should still decode with no budget"
+    );
+    let baseline_hard =
+        deep_decode_pass2_candidate(&idat, &qdat, sample_rate, pad, &confirmed, hard, None);
+    assert!(
+        baseline_hard.is_none(),
+        "rank-0 survivor is the non-converging one on this file"
+    );
+
+    // 1. An exhausted-from-the-start budget aborts immediately, even
+    // for the candidate that would otherwise have converged.
+    instrument::reset();
+    let exhausted: &(dyn Fn() -> bool + Sync) = &|| false;
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(exhausted),
+    );
+    assert!(
+        r.is_none(),
+        "an already-exhausted budget must not decode anything"
+    );
+    assert!(
+        instrument::snapshot().ladder_budget_aborted >= 1,
+        "budget cutoff should be counted"
+    );
+
+    // Count how many ladder positions the converging candidate
+    // actually needs — an always-true budget that counts its own
+    // calls, so the margins below don't depend on a hardcoded magic
+    // number.
+    let calls = AtomicU32::new(0);
+    let counting: &(dyn Fn() -> bool + Sync) = &|| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        true
+    };
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(counting),
+    );
+    assert!(
+        r.is_some(),
+        "an unconstrained-in-practice budget must still decode"
+    );
+    let needed = calls.load(Ordering::Relaxed);
+    assert!(needed >= 1, "should have made at least one attempt");
+
+    // 2. A budget generous enough to outlast that position count
+    // still finds it.
+    let generous_calls = AtomicU32::new(0);
+    let generous: &(dyn Fn() -> bool + Sync) =
+        &|| generous_calls.fetch_add(1, Ordering::Relaxed) < needed + 5;
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(generous),
+    );
+    assert!(
+        r.is_some(),
+        "a budget with margin over the real position count must still decode"
+    );
+
+    // 3. A budget tighter than that position count reliably fails —
+    // the cutoff actually changes the outcome, not a no-op.
+    if needed > 1 {
+        let tight_calls = AtomicU32::new(0);
+        let tight: &(dyn Fn() -> bool + Sync) =
+            &|| tight_calls.fetch_add(1, Ordering::Relaxed) < needed - 1;
+        instrument::reset();
+        let r = deep_decode_pass2_candidate(
+            &idat,
+            &qdat,
+            sample_rate,
+            pad,
+            &confirmed,
+            easy,
+            Some(tight),
+        );
+        assert!(
+            r.is_none(),
+            "a budget tighter than the real position count must give up before converging"
+        );
+        assert!(instrument::snapshot().ladder_budget_aborted >= 1);
+    }
+}

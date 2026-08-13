@@ -53,6 +53,15 @@ pub static OSD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// OSD attempts that both decoded and cleared the callsign-table gate.
 pub static OSD_OK: AtomicU32 = AtomicU32::new(0);
 
+/// Times a caller-supplied ladder budget (see
+/// `wspr::decode::decode_pass2_top_n`'s own doc comment, behind
+/// feature `wspr-pass2-topn`) cut the DT peak-up × nblocks sweep
+/// short instead of letting it run to exhaustion. Zero for every
+/// existing caller — they all pass `None` — so a nonzero count here
+/// is exactly the
+/// signal that time-budget control fired on this run.
+pub static LADDER_BUDGET_ABORTED: AtomicU32 = AtomicU32::new(0);
+
 const ALL: &[&AtomicU32] = &[
     &TONE_AMPLITUDES,
     &CANDIDATES,
@@ -62,6 +71,7 @@ const ALL: &[&AtomicU32] = &[
     &FANO_OK,
     &OSD_ATTEMPTS,
     &OSD_OK,
+    &LADDER_BUDGET_ABORTED,
 ];
 
 /// One reading of every counter.
@@ -75,6 +85,7 @@ pub struct Counts {
     pub fano_ok: u32,
     pub osd_attempts: u32,
     pub osd_ok: u32,
+    pub ladder_budget_aborted: u32,
 }
 
 impl Counts {
@@ -94,6 +105,9 @@ impl Counts {
             fano_ok: self.fano_ok.saturating_sub(earlier.fano_ok),
             osd_attempts: self.osd_attempts.saturating_sub(earlier.osd_attempts),
             osd_ok: self.osd_ok.saturating_sub(earlier.osd_ok),
+            ladder_budget_aborted: self
+                .ladder_budget_aborted
+                .saturating_sub(earlier.ladder_budget_aborted),
         }
     }
 
@@ -119,6 +133,7 @@ pub fn snapshot() -> Counts {
         fano_ok: FANO_OK.load(Ordering::Relaxed),
         osd_attempts: OSD_ATTEMPTS.load(Ordering::Relaxed),
         osd_ok: OSD_OK.load(Ordering::Relaxed),
+        ladder_budget_aborted: LADDER_BUDGET_ABORTED.load(Ordering::Relaxed),
     }
 }
 

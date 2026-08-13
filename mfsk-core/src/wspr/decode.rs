@@ -510,6 +510,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
         &best_isqs,
         nblocks,
         confirmed,
+        None,
     )
 }
 
@@ -527,6 +528,26 @@ pub fn decode_at_baseband_nblocks_gated_drift(
 /// [`decode_at_baseband_nblocks_gated_drift`]'s own contract; this is
 /// a pure extraction, not a behaviour change — see that function's
 /// remaining body for the minsync2 gate this is called after.
+///
+/// `budget`: checked before every (nblock, idt) position in the DT
+/// peak-up ladder below; `Some(check)` returning `false` aborts the
+/// ladder early, equivalent to this candidate simply failing to
+/// decode rather than an error. Exists for the ladder's *failing*
+/// path specifically — a candidate that never converges pays the
+/// full sweep (up to 4 × 17 = 68 positions; ~48 s on CoreS3 for one
+/// such candidate, see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Dual-core,
+/// take two") since neither loop's wsprd-faithful exit condition
+/// (`while (... && not_decoded)`) has any notion of giving up early.
+/// `None` runs the exhaustive, wsprd-faithful sweep unconditionally —
+/// every existing caller of this function passes `None`; the check is
+/// additive, not a default behaviour change.
+///
+/// `&(dyn Fn() -> bool + Sync)`, not `FnMut`: callers build the check
+/// from a fixed captured deadline (embedded: `esp_timer_get_time() <
+/// deadline`) rather than mutable state, so it can be shared as-is
+/// across [`decode_pass2_top_n`]'s `par_iter()` batch instead of
+/// needing one exclusive borrow per candidate.
 #[allow(clippy::too_many_arguments)]
 fn decode_from_refined(
     idat: &[f32],
@@ -538,6 +559,7 @@ fn decode_from_refined(
     best_isqs: &super::demod::IsQs,
     nblocks: &[usize],
     confirmed: Option<&WsprCallsignTable>,
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Option<WsprResult> {
     use crate::engine::{FecOpts, MessageCodec};
     let codec = crate::fec::ConvFano;
@@ -575,6 +597,12 @@ fn decode_from_refined(
     // `demod::nblock1_bit_metrics_opt`.
     'rungs: for &nblock in nblocks {
         for idt in 0..=N_JITTER {
+            if let Some(check) = budget
+                && !check()
+            {
+                super::instrument::bump(&super::instrument::LADDER_BUDGET_ABORTED);
+                break 'rungs;
+            }
             // wsprd's `ii = (idt+1)/2; if (idt%2 == 1) ii = -ii; ii *= iifac;`
             let mut ii = (idt + 1) / 2;
             if idt % 2 == 1 {
@@ -936,6 +964,15 @@ pub fn rank_pass2_candidates<'c>(
 /// [`WsprPass2Candidate`] — lets a caller run this on a different
 /// core per candidate instead of [`decode_pass2_top_n`]'s sequential
 /// loop over all survivors.
+///
+/// `budget`: forwarded to [`decode_from_refined`] unchanged — see its
+/// own doc comment for the contract. `None` runs the full wsprd-
+/// faithful ladder, unconditionally; this is the only place a caller
+/// can bound a single candidate's *failing*-path wall-clock, which is
+/// exactly the case that dominates pass 2 (see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Dual-core,
+/// take two" — a non-converging candidate can cost 4-5x a converging
+/// one).
 #[cfg(feature = "wspr-pass2-topn")]
 pub fn deep_decode_pass2_candidate(
     idat: &[f32],
@@ -944,6 +981,7 @@ pub fn deep_decode_pass2_candidate(
     pad: usize,
     confirmed: &WsprCallsignTable,
     r: &WsprPass2Candidate<'_>,
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Option<WsprResult> {
     let mut d = decode_from_refined(
         idat,
@@ -955,6 +993,7 @@ pub fn deep_decode_pass2_candidate(
         &r.isqs,
         &[1, 2, 3, 0],
         Some(confirmed),
+        budget,
     )?;
     let start_refined = d.start_sample;
     d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
@@ -972,6 +1011,13 @@ pub fn deep_decode_pass2_candidate(
 /// loop — the "D pattern", avoiding a `tlsf_malloc` corruption bug
 /// when `decode_block`-shaped helpers are called from a long bench
 /// loop — rather than going through `decode_scan`).
+///
+/// `budget`: the same budget passed to every survivor's
+/// [`deep_decode_pass2_candidate`] call — one shared check, not one
+/// per candidate, since `&(dyn Fn() -> bool + Sync)` is a plain
+/// shared reference and `par_iter()` needs `Sync` regardless. `None`
+/// (host's own default, see [`decode_scan_inner`]) runs the full
+/// wsprd-faithful ladder on every survivor.
 #[cfg(feature = "wspr-pass2-topn")]
 pub fn decode_pass2_top_n(
     idat: &[f32],
@@ -980,6 +1026,7 @@ pub fn decode_pass2_top_n(
     pad: usize,
     cands: &[super::coarse_baseband::BasebandCandidate],
     confirmed: &WsprCallsignTable,
+    budget: Option<&(dyn Fn() -> bool + Sync)>,
 ) -> Vec<WsprResult> {
     let survivors = rank_pass2_candidates(idat, qdat, cands);
 
@@ -998,12 +1045,16 @@ pub fn decode_pass2_top_n(
     #[cfg(feature = "parallel")]
     let out: Vec<WsprResult> = survivors
         .par_iter()
-        .filter_map(|r| deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r))
+        .filter_map(|r| {
+            deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
+        })
         .collect();
     #[cfg(not(feature = "parallel"))]
     let out: Vec<WsprResult> = survivors
         .iter()
-        .filter_map(|r| deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r))
+        .filter_map(|r| {
+            deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
+        })
         .collect();
     out
 }
@@ -1356,7 +1407,7 @@ fn decode_scan_inner(
         // `PASS2_DEEP_LADDER_TOP_N` by refined sync.
         #[cfg(feature = "wspr-pass2-topn")]
         let raw2: Vec<WsprResult> =
-            decode_pass2_top_n(&idat, &qdat, sample_rate, pad, &bb_cands2, &confirmed);
+            decode_pass2_top_n(&idat, &qdat, sample_rate, pad, &bb_cands2, &confirmed, None);
         #[cfg(not(feature = "wspr-pass2-topn"))]
         #[cfg(feature = "parallel")]
         let raw2: Vec<WsprResult> = bb_cands2
