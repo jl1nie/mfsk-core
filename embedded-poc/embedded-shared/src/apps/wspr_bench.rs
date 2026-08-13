@@ -741,9 +741,70 @@ extern "C" fn scan_task(arg: *mut core::ffi::c_void) {
 }
 
 /// `bin` is the baked baseband asset (`include_bytes!`).
+/// Device round-trip check for the `EspDspPlanner` fc32 fix (issue
+/// #260 follow-up): plans a small FFT, then a much bigger one, then
+/// the small size again in the same process — exactly the
+/// interleaving that silently produced garbage before
+/// `esp_dsp_fft::ensure_fc32_table` started forcing a real
+/// `dsps_fft2r_deinit_fc32` + `dsps_fft2r_init_fc32` on every size
+/// change instead of trusting the C library's one-shot init gate.
+/// Logs PASS/FAIL over serial; does not panic on failure so the rest
+/// of the bench still runs and the log is still captured.
+fn fft_multisize_selftest() {
+    use core::f32::consts::TAU;
+    use mfsk_core::engine::fft::default_planner;
+    use num_complex::Complex32;
+
+    fn tone(n: usize, bin: usize) -> Vec<Complex32> {
+        (0..n)
+            .map(|k| Complex32::from_polar(1.0, TAU * bin as f32 * k as f32 / n as f32))
+            .collect()
+    }
+
+    fn peak_bin(buf: &[Complex32]) -> usize {
+        buf.iter()
+            .enumerate()
+            .max_by(|a, b| a.1.norm_sqr().partial_cmp(&b.1.norm_sqr()).unwrap())
+            .unwrap()
+            .0
+    }
+
+    fn check(label: &str, n: usize, bin: usize) -> bool {
+        let mut planner = default_planner();
+        let mut buf = tone(n, bin);
+        planner.plan_forward(n).process(&mut buf);
+        let got = peak_bin(&buf);
+        log::info!("fft self-test [{label}]: N={n} bin={bin} -> peak {got}");
+        got == bin
+    }
+
+    log::info!("=== fft multisize self-test (issue #260 follow-up) ===");
+    let mut ok = true;
+    // Matches production `coarse_baseband`'s own size.
+    ok &= check("a", 512, 7);
+    // Well above 512 and well inside `CONFIG_DSP_MAX_FFT_SIZE_8192`
+    // (this repo's actual configured ceiling — see
+    // `esp_dsp_fft`'s module doc for why the WSPR LPF experiment's
+    // 32768 was never really valid here). Any size other than 512
+    // exercises the interleaving that used to corrupt silently
+    // (reading past a 512-entry twiddle table); 4096 keeps this test
+    // inside the ceiling that's actually configured today.
+    ok &= check("b", 4096, 100);
+    // Back to 512 — a smaller size requested again right after a
+    // bigger one, the other half of the same interleaving.
+    ok &= check("c", 512, 3);
+    if ok {
+        log::info!("fft multisize self-test: PASS");
+    } else {
+        log::error!("fft multisize self-test: FAIL");
+    }
+}
+
 pub fn run(bin: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+
+    fft_multisize_selftest();
 
     // The candidate loop runs compute-bound for minutes at a time
     // without yielding, so IDLE0 starves and the task watchdog fires

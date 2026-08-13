@@ -8,12 +8,25 @@
 //! ## Sizes
 //!
 //! `dsps_fft2r_fc32_ae32` is a radix-2 FFT and supports any
-//! power-of-2 length up to 4096 in the default build, or 32768 if
-//! `CONFIG_DSP_TABLE_SIZE_4096_TO_32768` is enabled (we set it via
-//! `sdkconfig.defaults`). Plans for non-power-of-2 sizes panic —
-//! `mfsk-core`'s wide-band FFT cache (192 000 for FT8 / 92 160 for
-//! FT4) is unsupported, but the narrow-band sniper / WSPR aligned
-//! paths fit comfortably under the 8192-point cap.
+//! power-of-2 length up to `CONFIG_DSP_MAX_FFT_SIZE` — this repo's
+//! `sdkconfig.defaults` sets `CONFIG_DSP_MAX_FFT_SIZE_8192`, so 8192
+//! is the actual ceiling on every board here today. (An earlier
+//! version of this comment claimed 32768 via a
+//! `CONFIG_DSP_TABLE_SIZE_4096_TO_32768` symbol that doesn't exist in
+//! the pinned `espressif/esp-dsp` 1.8.2 Kconfig — that symbol was
+//! never real for this version, and the claim went unnoticed because
+//! the one-shot-init bug `ensure_fc32_table` fixes, see
+//! [`FC32_TABLE_LEN`], made `dsps_fft2r_init_fc32` short-circuit
+//! before it ever reached its own `table_size > CONFIG_DSP_MAX_FFT_SIZE`
+//! bounds check whenever a smaller size like `coarse_baseband`'s 512
+//! had already been requested first — so a genuine call for 32768 was
+//! never actually *tried* on real hardware until that fix went in.
+//! Raise `CONFIG_DSP_MAX_FFT_SIZE_32768` in `sdkconfig.defaults`
+//! first if a future caller genuinely needs a plan past 8192.)
+//! Plans for non-power-of-2 sizes panic — `mfsk-core`'s wide-band FFT
+//! cache (192 000 for FT8 / 92 160 for FT4) is unsupported, but the
+//! narrow-band sniper / WSPR aligned paths fit comfortably under the
+//! 8192-point cap.
 //!
 //! ## Memory
 //!
@@ -23,6 +36,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use mfsk_core::engine::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
 use num_complex::{Complex, Complex32};
@@ -121,16 +135,13 @@ pub fn prewarm(len: usize) {
     } else {
         panic!("prewarm: unsupported len {len}");
     };
-    unsafe {
-        assert_eq!(
-            dsps_fft2r_init_fc32(core::ptr::null_mut(), radix2_len as i32),
-            ESP_OK
-        );
-        assert_eq!(
-            dsps_fft2r_init_sc16(core::ptr::null_mut(), radix2_len as i32),
-            ESP_OK
-        );
-    }
+    // Route through the tracked helpers (not the raw FFI calls) so
+    // `FC32_TABLE_LEN` / `SC16_TABLE_LEN` agree with what's actually
+    // initialised — see `ensure_fc32_table`'s doc comment. A caller
+    // that later requests a *different* size still gets a real
+    // regenerate instead of a silent no-op.
+    ensure_fc32_table(radix2_len);
+    ensure_sc16_table(radix2_len);
 }
 
 /// i16 sibling factory for the `fixed-point` build path. Wraps
@@ -187,8 +198,15 @@ unsafe extern "C" {
     /// `dsps_fft2r_init_fc32`. Pointer becomes valid after init.
     static dsps_fft_w_table_fc32: *const f32;
 
+    /// Frees the table and clears `dsps_fft2r_initialized`, so the
+    /// *next* `dsps_fft2r_init_fc32` call actually regenerates
+    /// instead of no-opping. See [`ensure_fc32_table`].
+    fn dsps_fft2r_deinit_fc32();
+
     // ── i16 (sc16) variants ──────────────────────────────────
     fn dsps_fft2r_init_sc16(fft_table_buff: *mut i16, table_size: i32) -> i32;
+    /// sc16 sibling of `dsps_fft2r_deinit_fc32`.
+    fn dsps_fft2r_deinit_sc16();
     fn dsps_fft2r_sc16_ae32_(data: *mut i16, N: i32, w: *const i16) -> i32;
     /// LX7 PIE sc16 FFT. Requires 16-byte aligned input — caller must use
     /// an aligned buffer (see `Aligned16Rows` in `MixedRadix3840Sc16Fft`).
@@ -198,32 +216,103 @@ unsafe extern "C" {
     static dsps_fft_w_table_sc16: *const i16;
 }
 
-/// `esp-dsp` FFT planner. Construct once per session, share across
-/// all decode invocations so the twiddle table inits exactly once.
-pub struct EspDspPlanner {
-    /// Largest table size already initialised. `0` = uninitialised.
-    /// The init API is one-shot per max size; we re-call when a
-    /// larger plan is requested (the lib handles it gracefully).
-    initialised_max: usize,
+/// Exact length the process-global esp-dsp fc32 twiddle table is
+/// *actually* built for right now. `0` = never initialised.
+///
+/// This has to live here, at module (process) scope, rather than on
+/// [`EspDspPlanner`] — `dsps_fft2r_init_fc32` guards its work with a
+/// **C file-scope static** (`dsps_fft2r_initialized` in
+/// `dsps_fft2r_fc32_ansi.c`), not anything keyed by the `table_size`
+/// argument:
+/// ```c
+/// esp_err_t dsps_fft2r_init_fc32(float *fft_table_buff, int table_size) {
+///     if (dsps_fft2r_initialized != 0) { return result; }  // <- no-op regardless of table_size
+///     ...
+///     dsps_fft_w_table_size = table_size;
+///     result = dsps_gen_w_r2_fc32(dsps_fft_w_table_fc32, dsps_fft_w_table_size);
+///     dsps_fft2r_initialized = 1;
+/// }
+/// ```
+/// So *whichever* size is requested **first, from anywhere in the
+/// process**, wins forever — every later call for a *different* size
+/// silently returns `ESP_OK` without touching the table, and the
+/// kernel (`dsps_fft2r_fc32_ae32_`/`_aes3_`) then runs against a
+/// twiddle table sized (and allocated!) for the wrong N. For a
+/// smaller N this reads nonsense angles (the front slice of a bigger
+/// table is not a smaller table); for a bigger N it reads **out of
+/// bounds of the original, too-small allocation**.
+///
+/// `EspDspPlanner::ensure_table` used to track only its own
+/// `initialised_max` and assume `dsps_fft2r_init_fc32` would "grow"
+/// the table on a bigger request — a reasonable-sounding API but not
+/// what the C side does, and doubly misleading because a *fresh*
+/// `EspDspPlanner` (the common case — see `downsample.rs`'s
+/// `with_default_planner` on `no_std`, which constructs one per
+/// call) starts remembering nothing, so it can't even self-consistently
+/// detect "the process-wide table is already the wrong size for me".
+/// Found 2026-08-14 (issue #260): the WSPR overlap-save LPF experiment
+/// planned a 32768-pt FFT into the same process as `coarse_baseband`'s
+/// existing 512-pt plans; the Rust wrapper only ever saw the 512-pt
+/// table it *thought* had grown, while the kernel actually walked off
+/// the end of the original 512-entry allocation. Three independent,
+/// real fixes to the LPF code itself (kernel-placement off-by-one,
+/// the 32768-pt hardware ceiling, forward/inverse normalisation) left
+/// the on-device symptom byte-for-byte unchanged, because none of
+/// them touched this.
+///
+/// The fix: track the *actually-initialised* size at module (i.e.
+/// process) scope, matching where the real C-side state lives, and
+/// force a real regenerate — `dsps_fft2r_deinit_fc32()` then
+/// `dsps_fft2r_init_fc32()` — whenever the requested size differs
+/// from it, not just when it's bigger.
+///
+/// **Caveat**: `dsps_fft2r_initialized` and friends are plain C
+/// globals with no locking. If two cores ever plan *different* fc32
+/// sizes concurrently (they don't today — `wspr_dual_core`'s workers
+/// share one post-subtract candidate loop with no FFT in it, and FT8
+/// decode is single-core through the spectrogram stage), the
+/// deinit/reinit dance here would race exactly like the original bug
+/// did. Not fixed here; flagging for whoever adds the next
+/// concurrent FFT caller.
+static FC32_TABLE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Force the process-global fc32 twiddle table to be exactly `len`
+/// entries, regenerating it if it currently isn't. See
+/// [`FC32_TABLE_LEN`] for why this can't just be "call init if we
+/// haven't seen this size before" on a per-planner-instance basis.
+fn ensure_fc32_table(len: usize) {
+    if FC32_TABLE_LEN.load(Ordering::Relaxed) == len {
+        return;
+    }
+    // SAFETY: `dsps_fft2r_deinit_fc32` is safe to call even when
+    // nothing was ever initialised (it checks its own "allocated"
+    // flag first) and NULL asks the lib to alloc+size its own table
+    // for exactly `len`, a power of 2 ≤ `CONFIG_DSP_MAX_FFT_SIZE`
+    // (`CONFIG_DSP_TABLE_SIZE_*` in sdkconfig.defaults).
+    unsafe {
+        dsps_fft2r_deinit_fc32();
+        let r = dsps_fft2r_init_fc32(core::ptr::null_mut(), len as i32);
+        assert_eq!(r, ESP_OK, "dsps_fft2r_init_fc32({len}) returned {r}");
+    }
+    FC32_TABLE_LEN.store(len, Ordering::Relaxed);
 }
+
+/// `esp-dsp` FFT planner. Construct once per session, share across
+/// all decode invocations so the twiddle table inits exactly once —
+/// or construct fresh per call (`no_std`'s `with_default_planner`
+/// does); either way is safe, since the table itself is tracked at
+/// process scope by [`FC32_TABLE_LEN`], not on this struct. See
+/// [`FC32_TABLE_LEN`] for why a per-instance cache alone is not
+/// enough.
+pub struct EspDspPlanner;
 
 impl EspDspPlanner {
     pub fn new() -> Self {
-        Self { initialised_max: 0 }
+        Self
     }
 
     fn ensure_table(&mut self, len: usize) {
-        if len <= self.initialised_max {
-            return;
-        }
-        // SAFETY: NULL buffer asks the lib to alloc its own table.
-        // `len` must be a power of 2 ≤ `CONFIG_DSP_TABLE_SIZE_*`
-        // (we set 4096-32768 in sdkconfig.defaults).
-        unsafe {
-            let r = dsps_fft2r_init_fc32(core::ptr::null_mut(), len as i32);
-            assert_eq!(r, ESP_OK, "dsps_fft2r_init_fc32({len}) returned {r}");
-        }
-        self.initialised_max = len;
+        ensure_fc32_table(len);
     }
 }
 
@@ -409,24 +498,72 @@ impl Fft for EspDspFft {
 
 // ── i16 / sc16 planner ──────────────────────────────────────────────────
 
-pub struct EspDspPlanner16 {
-    initialised_max: usize,
+/// sc16 sibling of [`FC32_TABLE_LEN`] / [`ensure_fc32_table`] — same
+/// one-shot-gate structure on the C side (`dsps_fft2r_sc16_initialized`
+/// in `dsps_fft2r_sc16_ansi.c`), same fix (deinit+reinit on any size
+/// change, tracked at process scope, not per-`EspDspPlanner16`).
+///
+/// **Does not track what size the table is actually generated for.**
+/// Unlike fc32, `dsps_fft2r_init_sc16`'s `fft_table_buff == NULL`
+/// branch ignores its own `table_size` argument for generation and
+/// always builds `CONFIG_DSP_MAX_FFT_SIZE` entries:
+/// ```c
+/// } else {
+///     if (!dsps_fft2r_sc16_mem_allocated) {
+///         dsps_fft_w_table_sc16 = memalign(16, CONFIG_DSP_MAX_FFT_SIZE * sizeof(int16_t));
+///     }
+///     dsps_fft_w_table_sc16_size = CONFIG_DSP_MAX_FFT_SIZE;  // <- not `table_size`
+///     ...
+/// }
+/// result = dsps_gen_w_r2_sc16(dsps_fft_w_table_sc16, dsps_fft_w_table_sc16_size);
+/// ```
+/// (confirmed against the actual pinned component,
+/// `espressif/esp-dsp` 1.8.2, `CONFIG_DSP_MAX_FFT_SIZE=8192` per this
+/// project's `sdkconfig.defaults`). Read at face value, every sc16
+/// FFT shorter than 8192 — including the 256-pt inner stage of
+/// `MixedRadix3840Sc16Fft`, on the critical path of every FT8
+/// decode, since `fixed-point` is on by default for every app crate
+/// — would run against twiddle "factors" that are actually a tiny
+/// low-angle slice of an 8192-point table, not a valid 256-point
+/// table.
+///
+/// That contradicts this project's own repeatedly-verified real-
+/// hardware FT8 recall under `fixed-point` (7/7, multiple sessions),
+/// so something in this reading is very likely incomplete — a
+/// platform-specific override this survey didn't find, or a detail
+/// of how the asm kernel actually walks the table. It is being left
+/// **unfixed and unactioned** rather than "corrected" against a
+/// mechanism that provably works on real silicon today; the fc32 fix
+/// above is applied to sc16 only for the *identical, independently-
+/// confirmed* one-shot-gate structure, which is a no-op for every
+/// current sc16 caller (all of them request exactly one size, 256,
+/// for the process's lifetime). Whoever revisits this should start
+/// with a device round-trip dump of `dsps_fft_w_table_sc16` itself
+/// rather than more source-reading.
+static SC16_TABLE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+fn ensure_sc16_table(len: usize) {
+    if SC16_TABLE_LEN.load(Ordering::Relaxed) == len {
+        return;
+    }
+    // SAFETY: see `ensure_fc32_table` — same contract, sc16 sibling.
+    unsafe {
+        dsps_fft2r_deinit_sc16();
+        let r = dsps_fft2r_init_sc16(core::ptr::null_mut(), len as i32);
+        assert_eq!(r, ESP_OK, "dsps_fft2r_init_sc16({len}) returned {r}");
+    }
+    SC16_TABLE_LEN.store(len, Ordering::Relaxed);
 }
+
+pub struct EspDspPlanner16;
 
 impl EspDspPlanner16 {
     pub fn new() -> Self {
-        Self { initialised_max: 0 }
+        Self
     }
 
     fn ensure_table(&mut self, len: usize) {
-        if len <= self.initialised_max {
-            return;
-        }
-        unsafe {
-            let r = dsps_fft2r_init_sc16(core::ptr::null_mut(), len as i32);
-            assert_eq!(r, ESP_OK, "dsps_fft2r_init_sc16({len}) returned {r}");
-        }
-        self.initialised_max = len;
+        ensure_sc16_table(len);
     }
 }
 

@@ -1037,6 +1037,123 @@ by instrumenting `EspDspFft` directly (a known-input round-trip dumped
 over serial, compared sample-by-sample against the host `rustfft`
 result) rather than iterating on `subtract.rs` itself again.
 
+### Follow-up: the fourth bug, root-caused
+
+Asked to actually root-cause the fourth discrepancy rather than leave
+it as a documented mystery — `esp_dsp_fft` is a shared backend, not a
+WSPR-only concern, and "revert and move on" doesn't serve whoever
+reaches for it next.
+
+Found by reading the actual vendored `esp-dsp` source (the pinned
+managed component, `espressif/esp-dsp` 1.8.2 — confirmed against
+`idf_component.yml`'s `^1.4` resolving to that exact version for this
+project's builds), not by more on-device guessing:
+`dsps_fft2r_init_fc32` guards its work with a **C file-scope static**,
+`dsps_fft2r_initialized`, that is set once and never keyed by the
+`table_size` argument:
+
+```c
+esp_err_t dsps_fft2r_init_fc32(float *fft_table_buff, int table_size) {
+    if (dsps_fft2r_initialized != 0) { return result; }  // <- no-op regardless of table_size
+    ...
+    dsps_fft_w_table_size = table_size;
+    result = dsps_gen_w_r2_fc32(dsps_fft_w_table_fc32, dsps_fft_w_table_size);
+    dsps_fft2r_initialized = 1;
+}
+```
+
+Whichever size is requested **first, from anywhere in the process**,
+wins forever. `EspDspPlanner::ensure_table` tracked only its own
+`initialised_max` and assumed a bigger request would "grow" the table
+— reasonable-sounding, not what the C side does. Worse, `no_std`'s
+`with_default_planner` constructs a *fresh* `EspDspPlanner` per call
+(see `downsample.rs`), so even that per-instance tracking couldn't
+have caught it: a fresh instance remembers nothing about what a
+previous instance already asked for.
+
+Sequence on device: `wspr_bench` calls `esp_dsp_fft::prewarm(512)`,
+which really does build a 512-entry table. `coarse_baseband`'s own
+512-pt plans keep matching it, so nothing looked wrong for the entire
+life of this project until the LPF rewrite planned 32768. The Rust
+wrapper dutifully bumped `initialised_max` to 32768 and believed the
+table had grown; the C side silently no-opped, leaving the *real*
+table at 512 entries. The kernel then read **~32 KiB past a
+2 KiB allocation** for every LPF FFT/IFFT — not a crash (no MMU
+protection on that heap range), just deterministic garbage, which is
+exactly why all three of the real, independently-verified fixes above
+left the symptom byte-for-byte unchanged: none of them touched this.
+
+**Fix**: track the *actually-initialised* size at module (process)
+scope — matching where the real C-side state lives — and force a
+genuine regenerate, `dsps_fft2r_deinit_fc32()` then
+`dsps_fft2r_init_fc32()`, whenever the requested size differs from it,
+not just when it's bigger. Applied to both `EspDspPlanner` (fc32) and,
+defensively, `EspDspPlanner16` (sc16, identical one-shot-gate
+structure on the C side) — see `FC32_TABLE_LEN` / `ensure_fc32_table`
+in `embedded_shared::esp_dsp_fft` for the implementation and full
+reasoning, including a documented concurrency caveat (two cores
+planning *different* fc32 sizes at once would race the same way the
+original bug did — not currently possible on any call path in this
+repo, flagged for whoever adds the next concurrent FFT caller).
+
+**Verified on real CoreS3 hardware** with a self-test built into
+`wspr-bench` (`fft_multisize_selftest`, runs before the WSPR pipeline
+every boot): plans a 512-pt FFT, then a 4096-pt FFT, then 512 again —
+the exact interleaving that used to corrupt — checking each against
+its known analytic peak bin. First flash with the fix caught a
+**second, previously-masked bug**: the self-test's original "big"
+size, 32768, made `dsps_fft2r_init_fc32` return
+`ESP_ERR_DSP_PARAM_OUTOFRANGE` (`table_size > CONFIG_DSP_MAX_FFT_SIZE`).
+This project's `sdkconfig.defaults` sets `CONFIG_DSP_MAX_FFT_SIZE_8192`,
+not `_32768` — the module's own doc comment claiming a 32768 ceiling
+via `CONFIG_DSP_TABLE_SIZE_4096_TO_32768` was simply wrong (that
+symbol doesn't exist in 1.8.2's Kconfig) and had gone unnoticed
+because the one-shot-gate bug made `dsps_fft2r_init_fc32` short-circuit
+before it ever reached its own bounds check, whenever a smaller size
+(512) had already been requested first — so a genuine 32768 request
+had never actually been *tried* on this hardware until this fix made
+the C call honest again. Corrected the doc comment, re-pointed the
+self-test at 4096 (inside the real ceiling), reflashed: self-test
+**PASS**, full WSPR pipeline **9/9** golden decodes, TOTAL 120.2 s —
+unchanged from the pre-fix baseline, as expected (WSPR's own call
+pattern never mixed sizes, so this fix is a no-op for it; only a
+*future* multi-size caller, like the reverted LPF rewrite, would ever
+exercise the new deinit/reinit path in production).
+
+**On the reverted LPF rewrite specifically**: this fix makes it
+*structurally* viable to revisit — the mechanism that silently broke
+it is gone — but two things would need to happen first, not just a
+re-flash: raise `CONFIG_DSP_MAX_FFT_SIZE_32768` in `sdkconfig.defaults`
+(today's 8192 ceiling is below the block size that rewrite used), and
+re-verify the other two real fixes (kernel-placement, normalisation)
+still hold given the twiddle table is now genuinely regenerated
+per-size rather than silently reused. Not attempted here — the
+instruction for this follow-up was root-cause the backend, not
+re-ship the WSPR feature, and `mfsk-core/src/wspr/subtract.rs` is
+staying in its shipped (direct-convolution) state.
+
+**Left open, deliberately not touched**: reading `dsps_fft2r_init_sc16`
+(the fc32 sibling used by every FT8 embedded decode via
+`fixed-point`'s `MixedRadix3840Sc16Fft`, on by default in every app
+crate) turned up a second, structurally *different* and much odder
+detail — its `fft_table_buff == NULL` branch ignores its own
+`table_size` argument for table *generation* and always builds
+`CONFIG_DSP_MAX_FFT_SIZE` (8192) entries, not the requested size (256
+for FT8's inner mixed-radix stage). Taken at face value that would
+mean every sc16 FFT shorter than 8192 runs against the wrong twiddle
+angles — which flatly contradicts this project's own repeatedly-
+verified real-hardware FT8 recall under `fixed-point` (7/7, multiple
+independent sessions). That contradiction means the reading above is
+missing something, not that the recall numbers are wrong. Applied the
+same *safe* one-shot-gate defensive fix to `EspDspPlanner16` (identical
+structure to the confirmed fc32 bug, and a no-op for every current
+sc16 caller — they all request exactly 256, forever), but did **not**
+touch the `CONFIG_DSP_MAX_FFT_SIZE`-forcing behavior itself. Whoever
+picks this up should start with a device round-trip dump of
+`dsps_fft_w_table_sc16`'s actual contents rather than more source-
+reading — see `EspDspPlanner16`'s doc comment in `esp_dsp_fft.rs` for
+the full citation.
+
 ## A latent bug in the shipped FFT backend, found on the way
 
 Not a WSPR finding, and arguably the most consequential half of the day.
