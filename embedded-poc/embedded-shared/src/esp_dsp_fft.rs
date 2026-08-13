@@ -159,6 +159,23 @@ pub extern "Rust" fn mfsk_core_make_default_fft_planner_16() -> Box<dyn FftPlann
 // upstream esp-dsp 1.4 source.
 const ESP_OK: i32 = 0;
 
+/// Decode an `esp-dsp` error code for panic messages. Values from
+/// `modules/common/include/dsp_err_codes.h` in the vendored source
+/// (`ESP_ERR_DSP_BASE = 0x70000`); not exposed as an FFI symbol, so
+/// hand-transcribed here rather than declared `extern`.
+fn describe_esp_dsp_err(code: i32) -> &'static str {
+    match code {
+        0x70001 => "ESP_ERR_DSP_INVALID_LENGTH (not a power of 2?)",
+        0x70002 => "ESP_ERR_DSP_INVALID_PARAM",
+        0x70003 => "ESP_ERR_DSP_PARAM_OUTOFRANGE (len > CONFIG_DSP_MAX_FFT_SIZE — \
+                     raise the CONFIG_DSP_MAX_FFT_SIZE_* choice in sdkconfig.defaults)",
+        0x70004 => "ESP_ERR_DSP_UNINITIALIZED",
+        0x70005 => "ESP_ERR_DSP_REINITIALIZED",
+        0x70006 => "ESP_ERR_DSP_ARRAY_NOT_ALIGNED",
+        _ => "unknown esp-dsp error code",
+    }
+}
+
 unsafe extern "C" {
     /// Pre-compute the twiddle table for radix-2 FFTs up to `table_size`
     /// points. Pass a NULL buffer to let the lib `malloc` its own table.
@@ -292,7 +309,12 @@ fn ensure_fc32_table(len: usize) {
     unsafe {
         dsps_fft2r_deinit_fc32();
         let r = dsps_fft2r_init_fc32(core::ptr::null_mut(), len as i32);
-        assert_eq!(r, ESP_OK, "dsps_fft2r_init_fc32({len}) returned {r}");
+        assert_eq!(
+            r,
+            ESP_OK,
+            "dsps_fft2r_init_fc32({len}) returned {r} = {}",
+            describe_esp_dsp_err(r)
+        );
     }
     FC32_TABLE_LEN.store(len, Ordering::Relaxed);
 }
@@ -550,7 +572,12 @@ fn ensure_sc16_table(len: usize) {
     unsafe {
         dsps_fft2r_deinit_sc16();
         let r = dsps_fft2r_init_sc16(core::ptr::null_mut(), len as i32);
-        assert_eq!(r, ESP_OK, "dsps_fft2r_init_sc16({len}) returned {r}");
+        assert_eq!(
+            r,
+            ESP_OK,
+            "dsps_fft2r_init_sc16({len}) returned {r} = {}",
+            describe_esp_dsp_err(r)
+        );
     }
     SC16_TABLE_LEN.store(len, Ordering::Relaxed);
 }
