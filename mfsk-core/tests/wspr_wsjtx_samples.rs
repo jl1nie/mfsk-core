@@ -1193,9 +1193,25 @@ fn wspr_diag_osd_decode_host_timing() {
     }
     let elapsed = t0.elapsed();
     eprintln!(
-        "osd_decode: {:.1} us/call ({} reps, {:.2} ms total)",
+        "osd_decode:        {:.1} us/call ({} reps, {:.2} ms total)",
         elapsed.as_secs_f64() * 1e6 / REPS as f64,
         REPS,
         elapsed.as_secs_f64() * 1000.0,
+    );
+
+    let _ = mfsk_core::wspr::osd::osd_decode_packed(&llrs);
+    let t0 = Instant::now();
+    for _ in 0..REPS {
+        let _ = std::hint::black_box(mfsk_core::wspr::osd::osd_decode_packed(
+            std::hint::black_box(&llrs),
+        ));
+    }
+    let elapsed_packed = t0.elapsed();
+    eprintln!(
+        "osd_decode_packed: {:.1} us/call ({} reps, {:.2} ms total, {:.2}x)",
+        elapsed_packed.as_secs_f64() * 1e6 / REPS as f64,
+        REPS,
+        elapsed_packed.as_secs_f64() * 1000.0,
+        elapsed.as_secs_f64() / elapsed_packed.as_secs_f64(),
     );
 }

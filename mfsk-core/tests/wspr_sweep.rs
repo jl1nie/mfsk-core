@@ -188,16 +188,21 @@ fn wspr_awgn_snr_sweep() {
 /// Prints the harvested count per SNR cell — that count *is* the
 /// answer to "how much real coverage would a differential test have":
 /// large and this is a strong validation harness, thin and it isn't.
-#[test]
-#[ignore]
+/// Shared by [`wspr_osd_input_harvest`] and
+/// [`wspr_osd_packed_matches_unpacked`]: resets the capture buffer,
+/// decodes the whole sweep with a pre-seeded callsign table (opening
+/// `osd_decode`'s gate legitimately — see the module doc comment
+/// above), and returns per-SNR-cell `(trials, osd_calls, fano_hits)`.
+/// The harvested inputs themselves are left in `capture::snapshot()`
+/// for the caller to read afterward.
 #[cfg(feature = "internal-testing")]
-fn wspr_osd_input_harvest() {
+fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32)>> {
     use mfsk_core::msg::WsprMessage;
 
     let dir = sweep_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        eprintln!("skipping wspr_osd_input_harvest: corpus dir not found at {dir:?}");
-        return;
+        eprintln!("corpus dir not found at {dir:?}");
+        return None;
     };
 
     let mut jobs = Vec::new();
@@ -218,8 +223,8 @@ fn wspr_osd_input_harvest() {
         jobs.push(Job { snr, path });
     }
     if jobs.is_empty() {
-        eprintln!("skipping wspr_osd_input_harvest: no wspr_awgn_*.wav files found in {dir:?}");
-        return;
+        eprintln!("no wspr_awgn_*.wav files found in {dir:?}");
+        return None;
     }
 
     mfsk_core::wspr::osd::capture::reset();
@@ -266,6 +271,19 @@ fn wspr_osd_input_harvest() {
         }
     }
 
+    Some(per_snr_osd)
+}
+
+#[test]
+#[ignore]
+#[cfg(feature = "internal-testing")]
+fn wspr_osd_input_harvest() {
+    let dir = sweep_dir();
+    let Some(per_snr_osd) = harvest_osd_inputs() else {
+        eprintln!("skipping wspr_osd_input_harvest");
+        return;
+    };
+
     println!("WSPR OSD-input harvest — {dir:?}");
     println!(
         "{:>6}  {:>7}  {:>14}  {:>9}",
@@ -284,4 +302,41 @@ fn wspr_osd_input_harvest() {
 
     let total = mfsk_core::wspr::osd::capture::snapshot().len();
     println!("\ntotal osd_decode() inputs harvested: {total}");
+}
+
+/// The differential test the harvest exists for: every real LLR
+/// vector `osd_decode` was actually handed during the sweep must
+/// produce a bit-identical result from `osd_decode_packed` — same
+/// `Option` variant, same `info`, same `nhardmin`.
+///
+/// This is the bar the bit-packed rewrite (issue #260's OSD stack
+/// audit) has to clear before it can replace the original: not "looks
+/// right on a hand-picked case", but "identical on every input the
+/// reference implementation was actually asked to solve across an
+/// SNR sweep".
+#[test]
+#[ignore]
+#[cfg(feature = "internal-testing")]
+fn wspr_osd_packed_matches_unpacked() {
+    let Some(_) = harvest_osd_inputs() else {
+        eprintln!("skipping wspr_osd_packed_matches_unpacked");
+        return;
+    };
+    let inputs = mfsk_core::wspr::osd::capture::snapshot();
+    assert!(!inputs.is_empty(), "harvested zero osd_decode inputs");
+
+    let mut mismatches = 0usize;
+    for (i, llrs) in inputs.iter().enumerate() {
+        let a = mfsk_core::wspr::osd::osd_decode(llrs);
+        let b = mfsk_core::wspr::osd::osd_decode_packed(llrs);
+        if a != b {
+            mismatches += 1;
+            eprintln!("mismatch at input {i}: unpacked={a:?} packed={b:?}");
+        }
+    }
+    println!(
+        "checked {} harvested inputs, {mismatches} mismatches",
+        inputs.len()
+    );
+    assert_eq!(mismatches, 0, "osd_decode_packed diverged from osd_decode");
 }

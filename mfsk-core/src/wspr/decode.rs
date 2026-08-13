@@ -613,7 +613,17 @@ pub fn decode_at_baseband_nblocks_gated_drift(
                 // (expensive) OSD decode on every candidate even when no
                 // table exists — i.e. on the whole of pass 1, which always
                 // passes `None`.
-                let (info, nhardmin) = super::osd::osd_decode(&llrs)?;
+                // `osd_decode_packed`: bit-packed GF(2) rows, verified
+                // bit-identical to `osd_decode` on 1626 real LLR
+                // vectors harvested from an AWGN sweep
+                // (`wspr_osd_packed_matches_unpacked`,
+                // `tests/wspr_sweep.rs`) — 8.5x faster on host, and
+                // the ~12.2 KB `osd_decode` stack frame this crate's
+                // embedded stack audit found (two-thirds of it one
+                // unpacked `[[u8;162];50]` matrix) drops to ~5 KB. See
+                // `osd_decode_packed`'s own doc comment for why each
+                // stage does or doesn't benefit from packing.
+                let (info, nhardmin) = super::osd::osd_decode_packed(&llrs)?;
                 // wsprd's structural gate (`wsprd.c:1396`): an OSD result
                 // is accepted only for a callsign an earlier Fano decode
                 // already confirmed. Replaces an `nhardmin ≤ 44` threshold
