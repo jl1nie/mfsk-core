@@ -10,25 +10,30 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
 
 ## Headline
 
-1. **It now fits — on the slot deadline, exactly.** One `decode_scan`
-   started at **1 214 s** against WSPR's 120 s slot (10.1× over,
-   1 755× the host) and now finishes at **120.3 s** (1.002× the slot)
-   with the shipped `DeadlineDriven` default — one ladder-position's
-   granularity over 120 s, not under, because that default's whole
-   point is racing the deadline rather than promising a hard number.
-   Six independent, additive fixes: `opt-level=3` (1.19×), `minsync2`
-   (4.1×), ranking pass-2 candidates by refined sync to deep-process
-   only the strongest 2 (1.25× further — evidence-bounded, not
-   provably lossless like the first two), a ping-pong rewrite of
+1. **It now fits, with real margin instead of a corpus-specific
+   coincidence.** One `decode_scan` started at **1 214 s** against
+   WSPR's 120 s slot (10.1× over, 1 755× the host) and now finishes at
+   **101.6 s** (0.85× the slot) with the shipped `DeadlineDriven`
+   default. Eight independent, additive fixes: `opt-level=3` (1.19×),
+   `minsync2` (4.1×), ranking pass-2 candidates by refined sync to
+   deep-process only the strongest 2 (1.25× further — evidence-bounded,
+   not provably lossless like the first two), a ping-pong rewrite of
    `refine_cascade`'s stack usage (112.1 KB peak → 61.5 KB, no wall-
    clock change by itself but the enabler for the next line), genuine
    dual-core dispatch on all three passes (1.17× further, real —
-   152.3 s), and a slot-deadline-aware time budget on pass 2's
-   failing-candidate ladder (152.3 s → 120.3 s). An AWGN-sweep-backed
-   alternative, `RecallPriority`, trades the deadline guarantee for a
-   fixed recall-safety margin instead (136.5 s, not slot-bounded) —
-   see "The AWGN sweep, and a deadline-vs-recall choice instead of one
-   number" below. 9/9 golden held at every step, on both budget modes.
+   152.3 s), a slot-deadline-aware time budget on pass 2's
+   failing-candidate ladder (152.3 s → 120.3 s), a Fano cycle-budget
+   cap on passes 0/1/2 (120.3 s → 106.0 s, −12.2 %, and — the point of
+   doing it — closes the structural gap that let pass 0/1 burn an
+   *unbounded, uncapped* Fano+OSD ladder on every `minsync2` survivor
+   regardless of how busy the band is; see "Pass 0/1 get a Fano
+   cycle-budget cap" below), and a re-implemented FFT-based LPF in
+   `subtract` (106.0 s → 101.6 s, −4.1 %, now that the esp-dsp bug
+   blocking it is fixed; see "The FFT-based LPF, re-implemented"
+   below). An AWGN-sweep-backed alternative,
+   `RecallPriority`, trades the deadline guarantee for a fixed
+   recall-safety margin instead (105.6 s on the current build, not
+   slot-bounded). 9/9 golden held at every step, on both budget modes.
 2. **The loop is compute-bound, not bandwidth-bound.** Moving half the
    baseband traffic to internal SRAM buys 5 %. So **#260's Phase 3
    (within-stage hypothesis fusion) should not be built** — its entire
