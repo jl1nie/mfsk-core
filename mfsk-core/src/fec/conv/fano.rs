@@ -377,6 +377,7 @@ pub fn fano_decode_with_scratch(
     }
 
     let final_metric = nodes[np.min(nbits)].gamma;
+    instrument::record(cycles, max_cycles, converged);
     FanoDecodeResult {
         data,
         metric: final_metric,
@@ -430,6 +431,166 @@ mod tests {
             let a = encode_step(state);
             let b = encode_step(state ^ 1);
             assert_eq!(a ^ b, 0b11, "not complementary for state {:#x}", state);
+        }
+    }
+}
+
+/// Cycle-budget histogram for the sequential decoder.
+///
+/// Written 2026-08-13 for issue
+/// [#260](https://github.com/jl1nie/mfsk-core/issues/260), which the S3
+/// candidate-loop measurement narrowed to one question: WSPR spends
+/// most of its embedded decode time in Fano attempts that never
+/// converge, so *how much of the budget does a successful decode
+/// actually need, and do the failures run to exhaustion?* If the
+/// successes finish early and the failures do not, a progressive
+/// budget ladder rejects most of the workload without needing a
+/// classifier.
+///
+/// [`FanoDecodeResult`] already carries `cycles`, `max_np` and
+/// `converged`, so nothing new has to be computed — these counters
+/// only aggregate what the decoder already returns, at one relaxed
+/// atomic add per call.
+pub mod instrument {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// Cycle sums are accumulated in units of 1024 cycles.
+    ///
+    /// Xtensa has no 64-bit atomics, and a raw sum would be tight in
+    /// `u32`: a WSPR budget is `10_000 × 81 = 810_000` cycles and one
+    /// scan makes ~1 200 attempts, so an exact sum reaches ~9.7e8 —
+    /// inside `u32` but with under a decade of margin. Shifting by 10
+    /// buys three decades and costs nothing a histogram cares about.
+    pub const CYCLE_SUM_SHIFT: u32 = 10;
+
+    /// `max_cycles_per_bit × nbits` of the most recent call — the
+    /// denominator the deciles below are fractions of.
+    pub static BUDGET: AtomicU32 = AtomicU32::new(0);
+
+    pub static OK_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Sum of converged attempts' cycles, in `1 << CYCLE_SUM_SHIFT` units.
+    pub static OK_CYCLES_SUM: AtomicU32 = AtomicU32::new(0);
+    /// Raw cycles of the most expensive converged attempt.
+    pub static OK_CYCLES_MAX: AtomicU32 = AtomicU32::new(0);
+    pub static FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Sum of failed attempts' cycles, same units as [`OK_CYCLES_SUM`].
+    pub static FAIL_CYCLES_SUM: AtomicU32 = AtomicU32::new(0);
+
+    /// Converged attempts bucketed by tenth of budget consumed;
+    /// `OK_DECILE[0]` is "finished inside the first 10 %".
+    pub static OK_DECILE: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+    /// Failed attempts, same bucketing. `FAIL_DECILE[9]` is
+    /// "ran essentially to exhaustion".
+    pub static FAIL_DECILE: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+
+    pub(super) fn record(cycles: u64, budget: u64, converged: bool) {
+        let cycles32 = u32::try_from(cycles).unwrap_or(u32::MAX);
+        let budget32 = u32::try_from(budget).unwrap_or(u32::MAX);
+        BUDGET.store(budget32, Ordering::Relaxed);
+        let decile = (cycles * 10)
+            .checked_div(budget)
+            .map_or(0, |d| (d as usize).min(9));
+        let scaled = cycles32 >> CYCLE_SUM_SHIFT;
+        if converged {
+            OK_COUNT.fetch_add(1, Ordering::Relaxed);
+            OK_CYCLES_SUM.fetch_add(scaled, Ordering::Relaxed);
+            OK_CYCLES_MAX.fetch_max(cycles32, Ordering::Relaxed);
+            OK_DECILE[decile].fetch_add(1, Ordering::Relaxed);
+        } else {
+            FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+            FAIL_CYCLES_SUM.fetch_add(scaled, Ordering::Relaxed);
+            FAIL_DECILE[decile].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Zero every counter.
+    pub fn reset() {
+        for c in [
+            &BUDGET,
+            &OK_COUNT,
+            &OK_CYCLES_SUM,
+            &OK_CYCLES_MAX,
+            &FAIL_COUNT,
+            &FAIL_CYCLES_SUM,
+        ] {
+            c.store(0, Ordering::Relaxed);
+        }
+        for b in OK_DECILE.iter().chain(FAIL_DECILE.iter()) {
+            b.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// One reading, flattened for logging.
+    #[must_use]
+    pub fn snapshot() -> Snapshot {
+        let mut ok = [0u32; 10];
+        let mut fail = [0u32; 10];
+        for i in 0..10 {
+            ok[i] = OK_DECILE[i].load(Ordering::Relaxed);
+            fail[i] = FAIL_DECILE[i].load(Ordering::Relaxed);
+        }
+        Snapshot {
+            budget: BUDGET.load(Ordering::Relaxed),
+            ok_count: OK_COUNT.load(Ordering::Relaxed),
+            ok_cycles_sum: OK_CYCLES_SUM.load(Ordering::Relaxed),
+            ok_cycles_max: OK_CYCLES_MAX.load(Ordering::Relaxed),
+            fail_count: FAIL_COUNT.load(Ordering::Relaxed),
+            fail_cycles_sum: FAIL_CYCLES_SUM.load(Ordering::Relaxed),
+            ok_decile: ok,
+            fail_decile: fail,
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct Snapshot {
+        pub budget: u32,
+        pub ok_count: u32,
+        /// In `1 << CYCLE_SUM_SHIFT` cycle units.
+        pub ok_cycles_sum: u32,
+        pub ok_cycles_max: u32,
+        pub fail_count: u32,
+        /// In `1 << CYCLE_SUM_SHIFT` cycle units.
+        pub fail_cycles_sum: u32,
+        pub ok_decile: [u32; 10],
+        pub fail_decile: [u32; 10],
+    }
+
+    impl Snapshot {
+        /// `self - earlier`, for bracketing one pass.
+        #[must_use]
+        pub fn since(self, e: Snapshot) -> Snapshot {
+            let mut ok = [0u32; 10];
+            let mut fail = [0u32; 10];
+            for i in 0..10 {
+                ok[i] = self.ok_decile[i].saturating_sub(e.ok_decile[i]);
+                fail[i] = self.fail_decile[i].saturating_sub(e.fail_decile[i]);
+            }
+            Snapshot {
+                budget: self.budget,
+                ok_count: self.ok_count.saturating_sub(e.ok_count),
+                ok_cycles_sum: self.ok_cycles_sum.saturating_sub(e.ok_cycles_sum),
+                // A max cannot be differenced; carry the running value.
+                ok_cycles_max: self.ok_cycles_max,
+                fail_count: self.fail_count.saturating_sub(e.fail_count),
+                fail_cycles_sum: self.fail_cycles_sum.saturating_sub(e.fail_cycles_sum),
+                ok_decile: ok,
+                fail_decile: fail,
+            }
+        }
+
+        /// Mean cycles of converged attempts, back in raw units.
+        #[must_use]
+        pub fn ok_cycles_mean(self) -> u32 {
+            self.ok_cycles_sum.checked_div(self.ok_count).unwrap_or(0) << CYCLE_SUM_SHIFT
+        }
+
+        /// Mean cycles of failed attempts, back in raw units.
+        #[must_use]
+        pub fn fail_cycles_mean(self) -> u32 {
+            self.fail_cycles_sum
+                .checked_div(self.fail_count)
+                .unwrap_or(0)
+                << CYCLE_SUM_SHIFT
         }
     }
 }

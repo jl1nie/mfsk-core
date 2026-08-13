@@ -61,6 +61,7 @@ use mfsk_core::wspr::decode::{
     WsprCallsignTable, WsprResult, decode_at_baseband, decode_at_baseband_nblocks_gated_drift,
 };
 use mfsk_core::wspr::demod::{IsQs, N_SYMBOLS, NSPS_BASEBAND, TONE_SPACING_HZ, tone_amplitudes};
+use mfsk_core::fec::conv::fano::instrument as fano_hist;
 use mfsk_core::wspr::instrument;
 use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
@@ -153,6 +154,7 @@ struct PassStats {
     n_cand: usize,
     n_decoded: usize,
     counts: instrument::Counts,
+    fano: fano_hist::Snapshot,
 }
 
 impl PassStats {
@@ -201,6 +203,22 @@ impl PassStats {
             c.osd_ok,
             c.osd_attempts,
         );
+        let f = &self.fano;
+        let pct = |n: u32, d: u32| if d > 0 { n / (d / 100).max(1) } else { 0 };
+        log::info!(
+            "          fano cycles (budget {}): converged {} [mean {}% max {}%] | failed {} [mean {}%]",
+            f.budget,
+            f.ok_count,
+            pct(f.ok_cycles_mean(), f.budget),
+            pct(f.ok_cycles_max, f.budget),
+            f.fail_count,
+            pct(f.fail_cycles_mean(), f.budget),
+        );
+        log::info!(
+            "          decile  ok {:?}\n          decile fail {:?}",
+            f.ok_decile,
+            f.fail_decile,
+        );
     }
 }
 
@@ -226,6 +244,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
             break;
         }
         let c0 = instrument::snapshot();
+        let f0 = fano_hist::snapshot();
 
         let t = now_us();
         let mut cands: Vec<BasebandCandidate> = coarse_baseband(
@@ -315,6 +334,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
             n_cand: cands.len(),
             n_decoded,
             counts: instrument::snapshot().since(c0),
+            fano: fano_hist::snapshot().since(f0),
         });
     }
 
@@ -325,6 +345,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
         confirmed.record(&d.message);
     }
     let c0 = instrument::snapshot();
+    let f0 = fano_hist::snapshot();
 
     let t = now_us();
     let cands2: Vec<BasebandCandidate> =
@@ -462,6 +483,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
         n_cand: cands2.len(),
         n_decoded: n_new,
         counts: instrument::snapshot().since(c0),
+        fano: fano_hist::snapshot().since(f0),
     });
 
     (stats, seen)
@@ -473,6 +495,7 @@ fn arm(name: &str, bin: &[u8], idat: &mut [f32], qdat: &mut [f32]) -> i64 {
     log::info!("--- arm {name} ---");
     load_baseband(bin, idat, qdat);
     instrument::reset();
+    fano_hist::reset();
 
     let t0 = now_us();
     let (stats, results) = run_scan(idat, qdat);
