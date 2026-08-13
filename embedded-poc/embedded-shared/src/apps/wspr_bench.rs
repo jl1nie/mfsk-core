@@ -247,7 +247,8 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
 
         let t = now_us();
         let mut raw: Vec<(WsprResult, usize)> = Vec::new();
-        for c in &cands {
+        for (ci, c) in cands.iter().enumerate() {
+            let t_c = now_us();
             if let Some(mut d) = decode_at_baseband(
                 idat,
                 qdat,
@@ -263,6 +264,12 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
                 d.snr_db = c.snr_db;
                 raw.push((d, start_refined));
             }
+            log::info!(
+                "      p{early_pass} cand {}/{}: {} ms",
+                ci + 1,
+                cands.len(),
+                (now_us() - t_c) / 1000,
+            );
         }
         let decode_us = now_us() - t;
         log::info!("    [decode {early_pass} done: stack headroom {} B]", stack_headroom());
@@ -323,10 +330,17 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     let cands2: Vec<BasebandCandidate> =
         coarse_baseband(idat, qdat, PAD_AUDIO, MAX_CANDIDATES, PASS2_MAX_DRIFT);
     let coarse_us = now_us() - t;
+    log::info!(
+        "    [coarse 2 done: {} cand, {} ms, stack headroom {} B]",
+        cands2.len(),
+        coarse_us / 1000,
+        stack_headroom(),
+    );
 
     let t = now_us();
     let mut raw2: Vec<WsprResult> = Vec::new();
-    for c in &cands2 {
+    for (ci, c) in cands2.iter().enumerate() {
+        let t_c = now_us();
         if let Some(mut d) = decode_at_baseband_nblocks_gated_drift(
             idat,
             qdat,
@@ -344,6 +358,12 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
             d.snr_db = c.snr_db;
             raw2.push(d);
         }
+        log::info!(
+            "      p2 cand {}/{}: {} ms",
+            ci + 1,
+            cands2.len(),
+            (now_us() - t_c) / 1000,
+        );
     }
     let decode_us = now_us() - t;
     log::info!("    [pass 2 decode done: stack headroom {} B]", stack_headroom());
