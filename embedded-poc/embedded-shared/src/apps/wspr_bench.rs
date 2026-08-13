@@ -59,13 +59,14 @@ use alloc::vec::Vec;
 use mfsk_core::fec::conv::fano::instrument as fano_hist;
 use mfsk_core::wspr::coarse_baseband::{coarse_baseband, BasebandCandidate};
 use mfsk_core::wspr::decode::{
-    decode_at_baseband, decode_pass2_top_n, WsprCallsignTable, WsprResult,
+    decode_at_baseband, rank_pass2_candidates, WsprCallsignTable, WsprResult,
 };
 use mfsk_core::wspr::demod::{tone_amplitudes, IsQs, NSPS_BASEBAND, N_SYMBOLS, TONE_SPACING_HZ};
 use mfsk_core::wspr::instrument;
 use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
 use crate::esp_dsp_fft;
+use crate::wspr_dual_core;
 
 /// 46080 — `wspr::baseband::NFFT2`, the fixed baseband length.
 const NBB: usize = 46_080;
@@ -265,32 +266,49 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
         );
         assert_heap_ok("coarse_baseband");
 
+        // `wspr_dual_core::pass01_split` work-steals `cands` across
+        // both cores when the runtime guard finds room; falls back to
+        // the sequential loop (unchanged from before dual-core
+        // existed) otherwise — never a crash, just no speedup for
+        // this particular run. See that module's doc comment for why
+        // pass 0/1 specifically (not pass 2) uses work-steal.
         let t = now_us();
-        let mut raw: Vec<(WsprResult, usize)> = Vec::new();
-        for (ci, c) in cands.iter().enumerate() {
-            let t_c = now_us();
-            if let Some(mut d) = decode_at_baseband(
-                idat,
-                qdat,
-                SAMPLE_RATE,
-                c.start_sample,
-                c.freq_hz,
-                c.drift_hz,
-            ) {
-                let start_refined = d.start_sample;
-                d.dt_sec =
-                    (start_refined as i64 - PAD_AUDIO as i64) as f32 / SAMPLE_RATE as f32 - 1.0;
-                d.start_sample = start_refined.saturating_sub(PAD_AUDIO);
-                d.snr_db = c.snr_db;
-                raw.push((d, start_refined));
-            }
+        let raw: Vec<(WsprResult, usize)> = if let Some(r) =
+            wspr_dual_core::pass01_split(idat, qdat, SAMPLE_RATE, PAD_AUDIO, cands.clone())
+        {
             log::info!(
-                "      p{early_pass} cand {}/{}: {} ms",
-                ci + 1,
-                cands.len(),
-                (now_us() - t_c) / 1000,
+                "      p{early_pass}: dual-core work-steal over {} cand",
+                cands.len()
             );
-        }
+            r
+        } else {
+            let mut raw = Vec::new();
+            for (ci, c) in cands.iter().enumerate() {
+                let t_c = now_us();
+                if let Some(mut d) = decode_at_baseband(
+                    idat,
+                    qdat,
+                    SAMPLE_RATE,
+                    c.start_sample,
+                    c.freq_hz,
+                    c.drift_hz,
+                ) {
+                    let start_refined = d.start_sample;
+                    d.dt_sec =
+                        (start_refined as i64 - PAD_AUDIO as i64) as f32 / SAMPLE_RATE as f32 - 1.0;
+                    d.start_sample = start_refined.saturating_sub(PAD_AUDIO);
+                    d.snr_db = c.snr_db;
+                    raw.push((d, start_refined));
+                }
+                log::info!(
+                    "      p{early_pass} cand {}/{}: {} ms",
+                    ci + 1,
+                    cands.len(),
+                    (now_us() - t_c) / 1000,
+                );
+            }
+            raw
+        };
         let decode_us = now_us() - t;
         log::info!(
             "    [decode {early_pass} done: stack headroom {} B]",
@@ -362,21 +380,25 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     // runs, and that cost was what pushed the opt-level A/B past its
     // capture window before it could print the decode list.
     //
-    // `decode_pass2_top_n`, not a manual per-candidate loop like the
-    // one this replaced: refines + `minsync2`-filters every candidate
-    // (cheap), then runs the full Fano/OSD ladder only on the top
-    // `PASS2_DEEP_LADDER_TOP_N` by refined sync — this bench predates
-    // that function (see its own doc comment for why it's `pub`) and
-    // was still running the full ladder on every candidate here,
-    // silently missing the whole optimization this bench exists to
-    // measure.
+    // Stage 1 (`rank_pass2_candidates`): refine + `minsync2`-filter
+    // every coarse candidate (cheap), rank by refined sync, keep the
+    // top `PASS2_DEEP_LADDER_TOP_N`. Stage 2
+    // (`wspr_dual_core::pass2_split`): the expensive Fano/OSD ladder,
+    // one survivor per core when the runtime guard finds room —
+    // `PASS2_DEEP_LADDER_TOP_N` (2) is chosen to exactly match the
+    // core count, so this is a static 1-1 split, not work-steal (see
+    // that module's doc comment for why). Falls back to running both
+    // survivors on `wspr_scan` sequentially (still faster than the
+    // pre-topN full ladder over every candidate) if there's no room.
     let t = now_us();
+    let ranked = rank_pass2_candidates(idat, qdat, &cands2);
     let raw2: Vec<WsprResult> =
-        decode_pass2_top_n(idat, qdat, SAMPLE_RATE, PAD_AUDIO, &cands2, &confirmed);
+        wspr_dual_core::pass2_split(idat, qdat, SAMPLE_RATE, PAD_AUDIO, &ranked, &confirmed);
     let decode_us = now_us() - t;
     log::info!(
-        "      p2 deep-ladder over {} candidates: {} decoded, {} ms",
+        "      p2 deep-ladder over {} candidates ({} ranked): {} decoded, {} ms",
         cands2.len(),
+        ranked.len(),
         raw2.len(),
         decode_us / 1000,
     );
@@ -594,17 +616,28 @@ fn log_heap(tag: &str) {
 /// Stack for the bench task.
 ///
 /// The candidate loop is stack-hungry in a way the FT8 benches are
-/// not: `IsQs` is 10 368 B and the refine cascade holds two live
-/// (`best_isqs` plus the current `eval`), while `tone_amplitudes`
-/// itself carries 8 × 257 f32 = 8 224 B of oscillator tables in its
-/// own frame. The first attempt ran on the 32 KB main task and died
-/// in the *first* `log::info!` — LoadProhibited inside
-/// `multi_heap_internal_lock`, with SP already 42 KB below the task
-/// stack, which is what a blown frame looks like from the outside.
+/// not: `IsQs` is 10 368 B and `tone_amplitudes` itself carries
+/// 8 × 257 f32 = 8 224 B of oscillator tables in its own frame. The
+/// first attempt ran on the 32 KB main task and died in the *first*
+/// `log::info!` — LoadProhibited inside `multi_heap_internal_lock`,
+/// with SP already 42 KB below the task stack, which is what a blown
+/// frame looks like from the outside.
+///
+/// 90 KiB, not the original 128 KiB: `refine_cascade`'s ping-pong
+/// rewrite (`tone_amplitudes_into` + `core::mem::swap`, replacing a
+/// by-value-returning closure called from five distinct source
+/// locations) cut the measured cumulative peak from 112.1 KB to
+/// **61.5 KB** (128 KiB stack, 68 148 B headroom on a full pass-0/1/2
+/// run through `osd_decode_packed`) — see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`, "refine_cascade
+/// stack audit". 90 KiB keeps ~27 KB of margin over that measured
+/// peak while freeing the ~38 KB the old 128 KiB reservation was
+/// carrying unused — room `wspr_dual_core`'s workers need to fit
+/// inside the ~236 KB largest contiguous free block at all.
 ///
 /// This is a measured cost of the loop, not bench overhead: any
 /// production embedded WSPR path pays the same stack.
-const SCAN_STACK: u32 = 128 * 1024;
+const SCAN_STACK: u32 = 90 * 1024;
 
 /// Stack for the bandwidth/oscillator task.
 ///
@@ -656,6 +689,7 @@ pub fn run(bin: &'static [u8]) -> ! {
     // same way and has to make the same call.
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
+    wspr_dual_core::init();
     log_heap("boot");
 
     let arg: &'static &'static [u8] = alloc::boxed::Box::leak(alloc::boxed::Box::new(bin));
