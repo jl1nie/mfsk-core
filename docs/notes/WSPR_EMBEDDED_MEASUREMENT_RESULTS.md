@@ -795,7 +795,51 @@ other (here, 48.1 s vs 11.1 s) — work-steal doesn't help at N=2 either
 (there's nothing to steal once both cores have their one item), so
 closing that gap further would need either a smarter top-N candidate
 selection (rank by *expected* cost, not just refined sync) or
-accepting the bottleneck. Not pursued today.
+accepting the bottleneck.
+
+That bottleneck is exactly the candidate that never converges — see
+the next section.
+
+## Pass 2's ladder gets a time budget — and a 20 s demo lands under the slot
+
+The remaining gap is concentrated in one place: pass 2's 48.1 s
+non-converging candidate. wsprd's own DT peak-up × nblocks ladder has
+no early-exit for "this clearly isn't going anywhere" — every position
+runs before a candidate is given up on. Added an optional per-position
+check to `decode_from_refined` (`budget: Option<&(dyn Fn() -> bool +
+Sync)>`, `None` everywhere by default — every existing caller is
+unaffected) and wired an absolute-deadline version through
+`wspr_dual_core::pass2_split` down to each candidate's own worker.
+
+**On-device demo, `PASS2_CANDIDATE_TIME_BUDGET_US = Some(20_000_000)`
+(20 s), reverted before commit — not the shipped default:**
+
+| | unbudgeted | 20 s budget |
+|---|---:|---:|
+| worker (converges) | 11.1 s | 11.1 s, unaffected |
+| main (never converges) | 48.1 s | cut off at 12.1 s |
+| pass 2 decode | 56.5 s | 20.4 s |
+| **`decode_scan` TOTAL** | **152.3 s** | **116.3 s** |
+| golden recall | 9/9 | 9/9, unchanged |
+
+116.3 s is **under the 120 s slot** — on this file, with this budget.
+That qualifier matters: the reason recall didn't move is that the
+candidate the budget cut off was never going to decode regardless of
+how long it ran (its refined sync ranks it *above* the real signal
+purely on sync strength, not because it *is* a signal — see "Where
+G8VDQ ranks after `minsync2`" above for the same distinction). A
+20 s cutoff has zero cost on a file where the truncated candidate is
+genuinely noise. It is **not** proven safe on a file where the
+rank-0-by-sync candidate is a real, weak signal that happens to need
+more than 20 s of DT-peak-up search to converge — the AWGN sweep
+behind `PASS2_DEEP_LADDER_TOP_N` established that the real signal
+never ranks worse than 1 by sync, but says nothing about how long a
+*genuine* signal's own ladder search can take in the worst case, only
+that this file's specific failing candidate happens to be slow.
+`PASS2_CANDIDATE_TIME_BUDGET_US` ships `None` (off) pending that
+separate measurement — sizing it correctly is AWGN-sweep work, not
+something to infer from one file's single data point, however
+suggestive.
 
 ## A latent bug in the shipped FFT backend, found on the way
 
