@@ -1245,6 +1245,71 @@ real ceiling (previously none), and this measurement's TOTAL gained
 primary goal, but a genuine, disclosed win alongside the structural
 one.
 
+### The cap's -3 % *is* cap-proportional — and 10 000/bit was never a ceiling
+
+The section above shipped `WSPR_FANO_CYCLE_BUDGET = 5_000` while
+disclosing a cost at the sensitivity floor (-32 dB 22 %→19 %, -31 dB
+70 %→67 %) and dismissed it with: *"Tried 7 000/bit: -31 dB partially
+recovered, -32 dB did not move at all, so that cell's shortfall isn't
+cap-proportional."* That is an observation of non-monotonicity, not an
+explanation, and it was **wrong** — it rested on a single alternative
+sample that happened to land on a flat stretch of the curve. Sweeping
+the cap properly (same 100-trial corpus, host):
+
+| cap (cycles/bit) | -32 dB | -31 dB | -30 dB | golden | host wall |
+|---|---:|---:|---:|:--:|---:|
+| **5 000 (shipped)** | 19 % | 67 % | 96 % | 9/9 | 1.7 s |
+| 6 000 | 19 % | 69 % | 96 % | — | — |
+| 7 000 | 19 % | 69 % | 96 % | — | — |
+| 8 000 | **21 %** | 69 % | 96 % | — | — |
+| 10 000 (`DEFAULT_MAX_CYCLES`) | 22 % | 70 % | 96 % | — | — |
+| 20 000 | 24 % | 73 % | 96 % | — | — |
+| 50 000 | 27 % | 76 % | 98 % | — | — |
+| 100 000 | 31 % | 75 % | 98 % | 9/9 | 28.8 s |
+| 200 000 | **32 %** | 73 % | **99 %** | — | — |
+| 500 000 | 23 % | 61 % | 91 % | **FAILS** | 54.7 s |
+
+Monotonic from 5 000 to ~200 000. The -32 dB column is simply flat
+between 5 000 and 7 000 and starts moving at 8 000 — one more sample
+point would have shown it.
+
+**Why capping costs recall at all** is structural, and visible in
+`wspr/decode.rs`'s ladder: when Fano fails, the only fallback is
+`osd_decode_packed`, and it is gated twice — on `confirmed` being
+`Some` (a callsign table built by an *earlier* Fano decode) and then
+on `table.accepts(&msg)`. An AWGN sweep trial contains one signal, so
+there is no earlier decode, no table, and no rescue path. A capped
+Fano failure at the floor is therefore an outright loss, not a
+downgrade to a slower decoder.
+
+**The larger finding: the pre-existing default was leaving sensitivity
+on the table.** `ConvFano::DEFAULT_MAX_CYCLES = 10_000` was never
+measured as a ceiling — it was just the default nobody had swept past.
+At 100-200 k the same corpus yields **-32 dB 19 %→32 %, -31 dB
+67 %→73-75 %, -30 dB 96 %→99 %**. The whole cap discussion was framed
+as "how much sensitivity does 5 000 cost against 10 000", when 10 000
+was itself costing ~10 points at the floor.
+
+**And there is a real ceiling, now located.** At 500 000 everything
+reverses: -30 dB drops to 91 % and the golden file fails three tests,
+emitting four CRC-passing garbage decodes —
+`"<#077ff> DRH1U  7"`, `"<#06dcf> UA94MJ 60"`, `"461/Y11DRI 0"`,
+`"<#05b7b> ITM6XF 22"`. Given long enough, Fano finds a codeword that
+satisfies the CRC but is not the transmitted message; those then
+poison both the carried callsign table and the SIC residual, which is
+why recall collapses rather than merely plateauing. "More cycles is
+always safer" is false, and the failure mode is a precision failure,
+not a timeout.
+
+So the cap is a three-way trade — floor sensitivity, wall-clock, and
+false-decode risk — with an interior optimum somewhere near 100 k on
+host, not the boundary value the shipped constant sits at. **Nothing
+is changed here**: 5 000 was chosen for the embedded deadline it buys
+(-12.2 % TOTAL), and moving it is a product decision about which
+target pays which cost, not a bug fix. What is now on record is the
+actual curve instead of a two-point guess, and the fact that host and
+embedded have no reason to share one constant.
+
 ## The FFT-based LPF, re-implemented — now that the fourth bug is fixed
 
 Directed to do both, in order: apply the cycle-budget cap above, then
