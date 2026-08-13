@@ -10,15 +10,19 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
 
 ## Headline
 
-1. **It does not fit — but the gap closed by 6.8× today.** One
+1. **It does not fit — but the gap closed by 8.0× today.** One
    `decode_scan` started at **1 214 s** against WSPR's 120 s slot
-   (10.1× over, 1 755× the host) and now stands at **177.6 s** (1.48×
-   over) after three independent, additive fixes: `opt-level=3`
-   (1.19×), `minsync2` (4.1×), and ranking pass-2 candidates by
-   refined sync to deep-process only the strongest 2 (a further 1.25×
-   on the whole scan, 1.73× on pass 2 alone — evidence-bounded, not
-   provably lossless like the first two; see below). 9/9 golden held
-   at every step.
+   (10.1× over, 1 755× the host) and now stands at **152.3 s** (1.27×
+   over) after five independent, additive fixes: `opt-level=3`
+   (1.19×), `minsync2` (4.1×), ranking pass-2 candidates by refined
+   sync to deep-process only the strongest 2 (1.25× further —
+   evidence-bounded, not provably lossless like the first two), a
+   ping-pong rewrite of `refine_cascade`'s stack usage (112.1 KB peak
+   → 61.5 KB, no wall-clock change by itself but the enabler for the
+   next line), and genuine dual-core dispatch on all three passes
+   (1.17× further, real — see "Pass 2 candidate-ladder truncation"
+   and "Dual-core, take two" below for both). 9/9 golden held at every
+   step.
 2. **The loop is compute-bound, not bandwidth-bound.** Moving half the
    baseband traffic to internal SRAM buys 5 %. So **#260's Phase 3
    (within-stage hypothesis fusion) should not be built** — its entire
@@ -708,6 +712,90 @@ Stack headroom stayed healthy post-decode (16.3 KB free, no crash).
 real progress toward sub-2-minute, not yet there. Host: 9/9 golden with
 and without the feature; the wsprd-faithful default path is unaffected
 (866-871 ms, matching the pre-change baseline exactly).
+
+## Dual-core, take two: the `refine_cascade` stack fix unlocked it
+
+The first dual-core attempt (above) crashed on pass 2 and was
+reverted. Revisited the same day after the pass-2 top-N work, on the
+hypothesis that fewer deep-ladder candidates might leave more stack
+headroom — it doesn't, directly: per-candidate peak stack is set by
+what the candidate's *own* code path needs, not by how many other
+candidates exist. Confirmed by flashing the dual-core dispatcher
+(rebuilt with the `wspr-pass2-topn` `pub` split below) unchanged: the
+runtime safety guard (see next paragraph) correctly found no room and
+fell back to sequential on every pass, zero crashes, zero speedup —
+proof the guard works, not proof dual-core was viable yet.
+
+**The runtime guard, added specifically because of the first crash**:
+every worker spawn now checks `heap_caps_get_largest_free_block`
+against the stack size it's about to request before attempting
+`xTaskCreatePinnedToCore`; if the block isn't there, that phase falls
+back to sequential instead of attempting an allocation that either
+fails outright or (worse) succeeds too small. This is what made it
+safe to iterate on stack sizing live on hardware instead of getting it
+exactly right on paper first.
+
+**What actually unlocked it**: auditing `refine_cascade` itself,
+which the earlier stack audit had flagged but not fixed ("the
+remaining ~8 KB was not resolved by source inspection alone").
+`refine_cascade`'s 13-eval search called a closure (`eval`) from five
+distinct source locations, each returning a fresh `IsQs` (10 368 B) by
+value — exactly the shape that defeats naive stack-slot reuse, since
+each call site is a separate `let` binding the optimizer has no
+obligation to coalesce with the others. Rewrote `tone_amplitudes` into
+an `_into` variant that writes through `&mut IsQs`, and
+`refine_cascade` to hold exactly two such buffers
+(`best_isqs`/`scratch`) ping-ponged via `core::mem::swap` — bit-
+identical output (verified against golden before/after), but the
+cumulative stack peak through a full pass-0/1/2 run dropped from
+**112.1 KB to 61.5 KB**. Far bigger than OSD bit-packing's own ~7 KB —
+the audit's "several `IsQs` live at once" language was right, just
+underestimating how many "several" was.
+
+That 50 KB is what actually mattered: `SCAN_STACK` (the task's own
+fixed reservation) doesn't shrink on its own just because the code
+inside it needs less — it was still reserving the old 128 KiB, none
+of which returns to the heap for a worker to use. Dropped it to 90 KiB
+(≈27 KB margin over the new measured peak), which is what freed real
+room in the ~236 KB largest contiguous free block. With that, both
+worker sizes (`PASS01_WORKER_STACK` 80 KiB, `PASS2_WORKER_STACK`
+88 KiB — both generously margined now that there was margin to give)
+cleared the guard on the next flash.
+
+**Confirmed genuinely parallel, not a coincidentally-plausible
+sequential sum**: added start/stop timestamps on both sides of pass
+2's split. `pass2 main started` and `pass2 worker started` log at the
+identical millisecond; the worker's candidate (one that converges)
+finishes in 11.1 s while main's candidate (one that exhausts the full
+Fano+OSD ladder without converging) takes 48.1 s. Wall-clock for the
+pass is `max(48.1, 11.1)`, not their sum — exactly what real 2-core
+overlap predicts, and readily distinguishable from a bug that
+happened to produce a plausible-looking number.
+
+**Measured, CoreS3, full stack (O3 + `minsync2` + top-N + ping-pong +
+dual-core):**
+
+| pass | before (sequential) | after (dual-core) | speedup |
+|---|---:|---:|---:|
+| 0 (coarse+subtract sequential, decode dual-core) | 53.1 s | 47.4 s | 1.12× |
+| 1 (coarse+subtract sequential, decode dual-core) | 60.5 s | 46.7 s | 1.29× |
+| 2 (coarse+rank sequential, ladder dual-core) | 64.1 s | 58.3 s | 1.10× |
+| **one `decode_scan` TOTAL** | **177.6 s** | **152.3 s** | **1.17×** |
+
+9/9 golden recall unchanged (same 9 callsigns; discovery order differs
+run-to-run under concurrent dispatch, which is expected and harmless —
+`decode_scan`'s dedup is order-independent).
+
+**Where this leaves sub-2-minute**: 152.3 s is 1.27× the 120 s slot,
+down from 2.08× at this investigation's start and 1.48× after the
+top-N commit alone. Pass 2's dual-core speedup (1.10×) is the
+weakest of the three specifically because its 1-1 static split has no
+mechanism to rebalance when one candidate is much slower than the
+other (here, 48.1 s vs 11.1 s) — work-steal doesn't help at N=2 either
+(there's nothing to steal once both cores have their one item), so
+closing that gap further would need either a smarter top-N candidate
+selection (rank by *expected* cost, not just refined sync) or
+accepting the bottleneck. Not pursued today.
 
 ## A latent bug in the shipped FFT backend, found on the way
 
