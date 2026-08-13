@@ -1240,6 +1240,89 @@ real ceiling (previously none), and this measurement's TOTAL gained
 primary goal, but a genuine, disclosed win alongside the structural
 one.
 
+## The FFT-based LPF, re-implemented — now that the fourth bug is fixed
+
+Directed to do both, in order: apply the cycle-budget cap above, then
+retry the FFT-based LPF rewrite ("Waste audit" above) now that its
+blocking fourth bug (`esp-dsp`'s process-global one-shot twiddle
+table) is root-caused and fixed. `mfsk-core/src/wspr/subtract.rs`'s
+module doc comment carries the full technical account; this section
+is the result.
+
+**Design choice**: `LPF_NFFT = 8192`, not the first attempt's 32768.
+Raising `CONFIG_DSP_MAX_FFT_SIZE_32768` in `sdkconfig.defaults` would
+let `nc2 ≈ 42192` fit in a single block, but that's a shared,
+project-wide config knob every other embedded FFT caller
+(`coarse_baseband`'s 512-point spectrogram included) also lives under
+— changing it needs its own memory/impact investigation, and six
+overlap-save blocks at 8192 already work. Kept the first attempt's two
+independently-correct fixes verbatim: kernel placement
+(`h[d] = window[half-d]`, the even-length-window off-by-one) and the
+cross-backend inverse-FFT normalisation `#[cfg]`.
+
+**Host**: a new differential test (`lpf_fft_matches_direct`,
+`mfsk-core/src/wspr/subtract.rs`) at the realistic `nc2 ≈ 42192` size
+— the first attempt's own test size, which exercises all six blocks,
+not a single-block toy — passes at max relative error `< 1e-4`
+against the direct-convolution reference on a structured (slow +
+fast + pseudo-noise) synthetic signal. Full merge gate, `fixed-point`
+variant, clippy, and the WSPR AWGN sweep all green; the sweep's
+numbers are identical to the cycle-budget-only baseline cell for cell,
+confirming the FFT path doesn't move sensitivity at all on host.
+
+**Device (CoreS3)**: flashed clean, no crash, **9/9 golden held** —
+the failure mode that ended the first attempt (silently corrupted
+residual, 0 pass-1 candidates) does not reproduce.
+
+| | cap-only | cap + FFT LPF | Δ |
+|---|---:|---:|---:|
+| pass 0 subtract | 10 660 ms | 10 293 ms | −3.4 % |
+| pass 1 subtract | 1 522 ms | 1 475 ms | −3.1 % |
+| **TOTAL** (`DeadlineDriven`) | **105 969 ms** | **101 599 ms** | **−4.1 % (−4.4 s)** |
+
+**The subtract speedup itself is much smaller than the flop count
+predicted** — `O(nc2 × NFILT)` (~30 M mult-adds) vs `O(nc2 log
+LPF_NFFT)` (~7 M mult-add-equivalents across 13 FFT calls per
+subtract) suggested close to an order of magnitude, not 3-4 %. The
+likely reason: `Vec<Complex32>` buffers aren't 16-byte aligned, and
+`esp_dsp_fft.rs`'s own doc comment (`Align16Quad`/`AlignedStaging`)
+documents that the accelerated LX7 PIE (`aes3`) kernel this project's
+`sdkconfig.defaults` enables needs exactly that alignment — an
+unaligned buffer likely falls back to a slower copy-through-staging
+path instead of the fast kernel. Not chased further here (out of this
+follow-up's scope); flagging for whoever revisits this that an aligned
+buffer type (this crate already has one, `AlignedStaging`) is the
+next thing to try before concluding FFT genuinely isn't worth it here.
+
+**Where the rest of the −4.4 s TOTAL actually came from, found by
+comparing two back-to-back flashes**: measuring `RecallPriority(40s)`
+for completeness (same pattern as the cycle-budget section) turned up
+pass 1's Fano-attempt count differing between the `DeadlineDriven` and
+`RecallPriority` builds of the *identical* FFT-LPF source — 35 vs 52,
+despite `PASS2_BUDGET` only touching pass 2's dispatch. Re-flashing
+the exact same `DeadlineDriven` binary a second time reproduced 35
+attempts bit-for-bit both times, ruling out a race condition —
+the two *different* compiled binaries simply don't agree on
+floating-point results down to the last bit (ordinary IEEE754
+non-associativity interacting with whatever the optimizer chose to
+inline/vectorise differently elsewhere in the binary), and that
+difference happened to land close enough to `minsync2`'s 0.12
+threshold to flip a few marginal candidates' fate. Recall (9/9) was
+unaffected either way — this is a pre-existing sensitivity of
+threshold-based filtering to float-level noise, not something the FFT
+rewrite introduced, but it means the measured TOTAL delta is not
+purely "FFT is N% faster at the subtract step" — part of it is this
+same noise, in the same direction this run. `RecallPriority(40s)`
+itself: 105 569 ms (also −4.1 s vs its own cap-only baseline).
+
+**Net**: safe (no crash, no recall regression, host-verified before
+ever touching hardware), a real if modest win, and the alignment gap
+above is the concrete next lever if more is wanted from this same
+approach. `mfsk-core/src/wspr/subtract.rs` now ships the FFT-based
+LPF in production — direct convolution remains as
+[`lpf_apply_direct`], the differential test's reference, not on the
+call path.
+
 ## A latent bug in the shipped FFT backend, found on the way
 
 Not a WSPR finding, and arguably the most consequential half of the day.

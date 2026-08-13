@@ -20,7 +20,7 @@
 //! out. A run-length-correction (`norm = partialsum[…]`) compensates
 //! for the LPF's startup transient at the first/last `nfilt/2` samples.
 //!
-//! ## The LPF is a direct `O(nc2 × NFILT)` convolution — an FFT rewrite was tried and reverted
+//! ## The LPF: FFT-based overlap-save, after a first attempt that didn't survive contact with hardware
 //!
 //! The naive per-sample loop (`Σ_j window[j]·ci[i−half+j]`) costs
 //! `O(nc2 × NFILT)` — ~15 M mult-adds per channel, ~30 M total for the
@@ -31,38 +31,46 @@
 //! This is the same shape as an anti-pattern `engine::dsp::subtract`'s
 //! `subtract_tones_lpf_fft` already solved for FT8/FT4 (an `O(N log
 //! N)` FFT-based circular convolution instead of `O(N × filter_
-//! width)`), so an FFT version of this LPF was implemented, ported to
+//! width)`), so an FFT version was implemented, ported to
 //! `crate::engine::fft::FftPlanner` (portable to embedded, unlike
 //! `engine::dsp::subtract`'s host-only `rustfft` usage) with overlap-
-//! save blocking to fit the ESP32-S3 `esp-dsp` backend's 32 768-point
-//! hardware ceiling. It passed every host differential test against
-//! this direct convolution (bit-exact to float tolerance, including
-//! at the realistic `nc2 > 32768` size that exercises the blocking
-//! logic) — and then produced silently corrupted residuals on the
-//! actual device (pass 1's `coarse_baseband` finding 0 candidates)
-//! through **three** distinct embedded-only bugs in turn: an off-by-
-//! one in the circular-delay kernel placement (caught by the host
-//! differential test, fixed), the 32 768-point hardware ceiling
-//! itself (silently computes with truncated twiddle data past that
-//! size rather than erroring — caught by an on-device flash), and a
-//! forward/inverse-FFT normalisation convention that differs between
-//! the `rustfft` (host) and `esp-dsp` (embedded) backends behind the
-//! same `engine::fft::FftPlanner` trait (also caught on-device). After
-//! fixing all three, the residual was *still* wrong, pointing at a
-//! fourth, undiagnosed embedded-only discrepancy — reverted at that
-//! point rather than continue guessing against real hardware on
-//! subtract logic, where a silent bug means missed or phantom
-//! decodes, not just a slower pass. Full account, including the
-//! evidence for each of the three found bugs, is in
+//! save blocking. **A first attempt** (`nfft = 32768`, chosen only
+//! because it comfortably covered `nc2 ≈ 42192` in a single block)
+//! passed every host differential test and then produced silently
+//! corrupted residuals on the actual device through three distinct
+//! embedded-only bugs (kernel-placement off-by-one, the hardware FFT
+//! ceiling, a forward/inverse normalisation mismatch between backends)
+//! — and *still* corrupted after fixing all three, which pointed at a
+//! fourth, undiagnosed bug and led to a full revert to the direct
+//! convolution above rather than continue guessing on safety-critical
+//! subtract logic. That fourth bug — `esp-dsp`'s fc32 twiddle table is
+//! a process-global one-shot, so a size switch after
+//! `coarse_baseband`'s 512-point plans corrupted the *next* differently
+//! -sized plan, not this LPF's own math — is now root-caused and fixed
+//! (`embedded_shared::esp_dsp_fft::ensure_fc32_table`, issue #260). See
 //! `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Waste audit"
-//! section — worth reading before attempting this again.
+//! section for the full account of the first attempt.
+//!
+//! **This implementation** uses `LPF_NFFT = 8192` — this project's
+//! `sdkconfig.defaults` ceiling (`CONFIG_DSP_MAX_FFT_SIZE_8192`,
+//! unchanged deliberately: raising it to fit `nc2` in one block was
+//! not worth the memory/config-impact investigation when blocking
+//! already works and this size is what `coarse_baseband` and every
+//! other embedded FFT caller already share) — with six overlap-save
+//! blocks covering `nc2 ≈ 42192`. Kernel placement
+//! (`h[d] = window[half − d]`) and the cross-backend normalisation
+//! `#[cfg]` both carry forward from the first attempt's (independently
+//! correct, host-verified) fixes.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use core::f32::consts::PI;
+use num_complex::Complex32;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
+
+use crate::engine::dsp::downsample::with_default_planner;
 
 use super::baseband::CENTER_HZ;
 use super::demod::{N_SYMBOLS, NSPS_BASEBAND, TONE_SPACING_HZ};
@@ -191,32 +199,8 @@ pub fn subtract_signal_baseband(
     }
 
     // LPF: cfi[i] = Σ w[j] · ci[i − nfilt/2 + j]. wsprd `wsprd.c:619-624`.
-    let mut cfi = vec![0.0f32; nc2];
-    let mut cfq = vec![0.0f32; nc2];
     let half = NFILT / 2;
-    for i in half..(nc2 - half) {
-        // `i - half + j` for `j in 0..NFILT` spans exactly
-        // `[i-half, i-half+NFILT)`, which the outer loop's
-        // `half..(nc2-half)` bound keeps within `ci`/`cq` — a plain
-        // slice zip instead of `NFILT` manually-indexed accesses per
-        // sample. Fused into one `fold` (not two separate `.sum()`
-        // chains) so `window[j]` is read once per `j` and reused for
-        // both products, matching the original single-pass loop —
-        // two separate chains measured a real ~5-6% regression
-        // (doubles the loop's iteration count, breaks whatever
-        // fused vectorization the original got).
-        let ci_win = &ci[i - half..i - half + NFILT];
-        let cq_win = &cq[i - half..i - half + NFILT];
-        let (acc_i, acc_q) = window
-            .iter()
-            .zip(ci_win)
-            .zip(cq_win)
-            .fold((0.0f32, 0.0f32), |(ai, aq), ((&w, &c_i), &c_q)| {
-                (ai + w * c_i, aq + w * c_q)
-            });
-        cfi[i] = acc_i;
-        cfq[i] = acc_q;
-    }
+    let (cfi, cfq) = lpf_apply_fft(&ci, &cq, &window);
 
     // Subtract c(t) · r(t) from idat/qdat. The startup-transient
     // correction (`norm = partial[half + i]` for i < half, mirrored at
@@ -243,6 +227,145 @@ pub fn subtract_signal_baseband(
             qdat[k] -= (cfi[j] * refq[i] + cfq[j] * refi[i]) / n;
         }
     }
+}
+
+/// Reference implementation: direct `O(nc2 × NFILT)` convolution.
+/// `cfi[i] = Σ w[j] · ci[i − nfilt/2 + j]`, `wsprd.c:619-624`. Only
+/// `half..(nc2-half)` is filled (matching wsprd's own convention —
+/// the edges are handled separately by the caller's startup-transient
+/// correction); the returned vectors are zero outside that range.
+///
+/// Kept as the differential-test reference for [`lpf_apply_fft`] —
+/// not on the production call path (see that function's doc comment
+/// for why an earlier FFT rewrite needed exactly this kind of
+/// ongoing cross-check).
+#[cfg_attr(not(test), allow(dead_code))]
+fn lpf_apply_direct(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Vec<f32>) {
+    let nc2 = ci.len();
+    debug_assert_eq!(cq.len(), nc2);
+    let half = NFILT / 2;
+    let mut cfi = vec![0.0f32; nc2];
+    let mut cfq = vec![0.0f32; nc2];
+    for i in half..(nc2 - half) {
+        let ci_win = &ci[i - half..i - half + NFILT];
+        let cq_win = &cq[i - half..i - half + NFILT];
+        let (acc_i, acc_q) = window
+            .iter()
+            .zip(ci_win)
+            .zip(cq_win)
+            .fold((0.0f32, 0.0f32), |(ai, aq), ((&w, &c_i), &c_q)| {
+                (ai + w * c_i, aq + w * c_q)
+            });
+        cfi[i] = acc_i;
+        cfq[i] = acc_q;
+    }
+    (cfi, cfq)
+}
+
+/// FFT-based overlap-save convolution — same math as
+/// [`lpf_apply_direct`], `O(nc2 log LPF_NFFT)` instead of `O(nc2 ×
+/// NFILT)`. See the module doc comment for the history (a first
+/// `nfft = 32768` attempt found three real bugs, then a fourth,
+/// undiagnosed one forced a full revert to the direct version; that
+/// fourth bug — `esp-dsp`'s process-global one-shot twiddle table —
+/// is now fixed at its source, `embedded_shared::esp_dsp_fft`).
+///
+/// `LPF_NFFT = 8192`: this project's `sdkconfig.defaults` ceiling
+/// (`CONFIG_DSP_MAX_FFT_SIZE_8192`), shared with every other embedded
+/// FFT caller (`coarse_baseband`'s 512-point spectrogram included) —
+/// deliberately not raised, since blocking already covers `nc2` and
+/// raising the ceiling would need its own memory/config-impact
+/// investigation for a size no other caller needs. Six overlap-save
+/// blocks cover `nc2 ≈ 42192`.
+fn lpf_apply_fft(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Vec<f32>) {
+    const LPF_NFFT: usize = 8192;
+    let nc2 = ci.len();
+    debug_assert_eq!(cq.len(), nc2);
+    let half = NFILT / 2;
+    let mut cfi = vec![0.0f32; nc2];
+    let mut cfq = vec![0.0f32; nc2];
+    if nc2 <= 2 * half {
+        // No valid output range (pathologically short input) — same
+        // no-op as the direct version's `half..(nc2-half)` being empty.
+        return (cfi, cfq);
+    }
+
+    // Kernel in FFT-domain circular placement: the direct form sums
+    // `window[j] * x[i - half + j]`, i.e. `window[j]` weights the
+    // sample `half - j` positions *before* `x[i]` — so in a
+    // circular buffer of length `LPF_NFFT`, `window[j]` belongs at
+    // index `(half - j) mod LPF_NFFT`, not `j + half`. The two
+    // coincide only for an odd-length kernel exactly centred on an
+    // integer index (e.g. FT8/FT4's cosine² window); `NFILT = 360` is
+    // even, so this project's own sin window's centre sits at 179.5,
+    // off-integer, and the naive placement is off by one tap.
+    let mut kernel = vec![Complex32::new(0.0, 0.0); LPF_NFFT];
+    for (j, &w) in window.iter().enumerate() {
+        let d = half as isize - j as isize;
+        let idx = d.rem_euclid(LPF_NFFT as isize) as usize;
+        kernel[idx] = Complex32::new(w, 0.0);
+    }
+
+    let fft_fwd = with_default_planner(|planner| planner.plan_forward(LPF_NFFT));
+    let fft_inv = with_default_planner(|planner| planner.plan_inverse(LPF_NFFT));
+    fft_fwd.process(&mut kernel);
+
+    // Cross-backend inverse-FFT normalisation: `rustfft` (host)
+    // leaves forward *and* inverse unscaled, so the caller divides by
+    // `N` once. `EspDspFft::process`'s inverse path (embedded) already
+    // divides by `len` internally (its only way to emulate an inverse
+    // via the hardware's forward-only kernel) — dividing again here
+    // would silently halve-then-halve-again, removing essentially
+    // nothing. Neither the trait nor its doc comment specifies a
+    // convention, so this has to stay an explicit `#[cfg]`, not
+    // something the type system catches.
+    #[cfg(feature = "fft-rustfft")]
+    let fac = 1.0f32 / LPF_NFFT as f32;
+    #[cfg(not(feature = "fft-rustfft"))]
+    let fac = 1.0f32;
+
+    // Overlap-save: each `LPF_NFFT`-point block's circular convolution
+    // is only trustworthy in its middle `LPF_NFFT - NFILT` samples
+    // (the first/last `half` are contaminated by circular wraparound);
+    // discard the rest and advance by the trustworthy width. Mirrors
+    // `lpf_apply_direct`'s own `half..(nc2-half)` fill range exactly,
+    // one block-worth of output at a time instead of one sample.
+    let valid_per_block = LPF_NFFT - NFILT;
+    let out_lo = half;
+    let out_hi = nc2 - half;
+    let mut block = vec![Complex32::new(0.0, 0.0); LPF_NFFT];
+    let mut out_start = out_lo;
+    while out_start < out_hi {
+        let block_len = valid_per_block.min(out_hi - out_start);
+        // This block's trustworthy output `[out_start, out_start+block_len)`
+        // needs input samples `[out_start-half, out_start-half+LPF_NFFT)`
+        // — `y[i]` depends on `x[i-half..i-half+NFILT)`, so the first
+        // `half` and last `NFILT-1-half` samples of this block's own
+        // uncontaminated middle come from data at the input window's
+        // edges, which is exactly what the full `LPF_NFFT`-wide window
+        // (rather than just `block_len` samples) provides.
+        let in_start = out_start as isize - half as isize;
+        for (n, b) in block.iter_mut().enumerate() {
+            let src = in_start + n as isize;
+            *b = if src >= 0 && (src as usize) < nc2 {
+                Complex32::new(ci[src as usize], cq[src as usize])
+            } else {
+                Complex32::new(0.0, 0.0)
+            };
+        }
+        fft_fwd.process(&mut block);
+        for (b, k) in block.iter_mut().zip(kernel.iter()) {
+            *b *= *k;
+        }
+        fft_inv.process(&mut block);
+        for n in 0..block_len {
+            let v = block[half + n] * fac;
+            cfi[out_start + n] = v.re;
+            cfq[out_start + n] = v.im;
+        }
+        out_start += block_len;
+    }
+    (cfi, cfq)
 }
 
 /// Run subtract_signal_baseband for each of `decodes` against
@@ -280,6 +403,83 @@ mod tests {
     use super::*;
     use crate::wspr::baseband::{NPOINTS_MAX, decimate_to_baseband};
     use crate::wspr::tx::synthesize_type1;
+
+    /// `lpf_apply_fft` must match `lpf_apply_direct` to float tolerance
+    /// on a realistic, non-trivial signal — not a toy. Uses `nc2 ≈
+    /// 42192` (real WSPR shape: `nsig + 2·NFILT` with `nsig = 162 ×
+    /// 256`), so the overlap-save blocking path (six `LPF_NFFT = 8192`
+    /// blocks) is actually exercised, not just a single-block case
+    /// that would hide a blocking bug. Content: a slowly-varying
+    /// envelope (what the LPF is meant to pass) plus a fast component
+    /// (what it's meant to reject) plus a deterministic pseudo-noise
+    /// term, on both channels independently — closer to a real
+    /// `s(t)·conj(r(t))` product than a single clean tone.
+    #[test]
+    fn lpf_fft_matches_direct() {
+        let nsig = super::N_SYMBOLS * super::NSPS_BASEBAND;
+        let nc2 = nsig + 2 * NFILT;
+        let mut ci = vec![0.0f32; nc2];
+        let mut cq = vec![0.0f32; nc2];
+        // Deterministic (no external RNG dependency), non-trivial:
+        // a slow ~1 Hz-equivalent envelope, a fast ~50-sample-period
+        // component, and a cheap xorshift-style pseudo-noise term.
+        let mut state: u32 = 0x1234_5678;
+        for i in 0..nc2 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let noise = (state as f32 / u32::MAX as f32) - 0.5;
+            let slow = (i as f32 / 4000.0).sin();
+            let fast = (i as f32 / 25.0).cos();
+            ci[i] = 0.6 * slow + 0.05 * fast + 0.02 * noise;
+            cq[i] = 0.4 * slow.cos() - 0.03 * fast + 0.02 * noise;
+        }
+
+        let mut window = [0.0f32; NFILT];
+        let mut norm = 0.0f32;
+        for i in 0..NFILT {
+            window[i] = (PI * i as f32 / (NFILT - 1) as f32).sin();
+            norm += window[i];
+        }
+        for w in window.iter_mut() {
+            *w /= norm;
+        }
+
+        let (direct_i, direct_q) = lpf_apply_direct(&ci, &cq, &window);
+        let (fft_i, fft_q) = lpf_apply_fft(&ci, &cq, &window);
+
+        assert_eq!(direct_i.len(), fft_i.len());
+        let half = NFILT / 2;
+        let mut max_abs_err = 0.0f32;
+        let mut max_val = 0.0f32;
+        for i in half..(nc2 - half) {
+            max_abs_err = max_abs_err
+                .max((direct_i[i] - fft_i[i]).abs())
+                .max((direct_q[i] - fft_q[i]).abs());
+            max_val = max_val.max(direct_i[i].abs()).max(direct_q[i].abs());
+        }
+        // Same bar the first attempt's differential test used: this is
+        // where the kernel-placement off-by-one showed up as a ~1%
+        // relative error. A correct implementation should be several
+        // orders of magnitude tighter than that (float rounding only).
+        assert!(
+            max_abs_err < max_val * 1e-4,
+            "FFT LPF diverges from direct convolution: max_abs_err={:.3e} max_val={:.3e} (ratio {:.3e})",
+            max_abs_err,
+            max_val,
+            max_abs_err / max_val
+        );
+        // Outside `half..(nc2-half)` both must be exactly zero (same
+        // no-fill convention).
+        for i in 0..half {
+            assert_eq!(direct_i[i], 0.0);
+            assert_eq!(fft_i[i], 0.0, "fft LPF should leave the pre-half edge at 0");
+        }
+        for i in (nc2 - half)..nc2 {
+            assert_eq!(direct_i[i], 0.0);
+            assert_eq!(fft_i[i], 0.0, "fft LPF should leave the post-edge at 0");
+        }
+    }
 
     #[test]
     fn subtract_attenuates_synth_tone() {
