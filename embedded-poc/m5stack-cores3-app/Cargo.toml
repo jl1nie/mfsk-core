@@ -28,28 +28,35 @@ path = "src/bin/wspr_bench.rs"
 harness = false
 
 [profile.release]
-# **Experiment, 2026-08-13** — issue #260. Was `1`, on this comment:
+# **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
+# on this comment:
 #
 #   "Same LX7 LLVM regression workaround as sibling crates: opt-level=1
 #    avoids the f32-select code-gen bug in `mfsk-core::core::pipeline`."
 #
-# Tracing that to its source (`embedded-poc/m5stack-s3/Cargo.toml`) says
+# Tracing that to its source (`embedded-poc/m5stack-s3/Cargo.toml`) said
 # something different: the regression is at opt-level **"s"/"z"**, not
 # at 2/3; the arithmetic-form workaround already in `core::pipeline`
-# "dodges the trigger"; and the actual reason given for staying low is
-# that it "keeps the ELF debuggable". The paraphrase above dropped both
-# qualifiers and turned a debuggability preference into a correctness
-# requirement.
+# "dodges the trigger"; and the actual reason given for staying low was
+# that it "keeps the ELF debuggable". The paraphrase above had dropped
+# both qualifiers and turned a debuggability preference into a
+# correctness requirement.
 #
-# That matters beyond WSPR: every embedded crate here carries the same
-# line, so if `3` is both correct and faster, the published FT8 timings
-# in `docs/notes/BENCHMARKS.md` are also measured under a handicap. The
-# WSPR bench is the cheapest place to find out, because it reports
-# per-stage wall-clock *and* a 9/9 decode check that would expose the
-# f32-select bug if it were real on this path.
+# Measured on the S3 WSPR candidate-loop bench (`wspr-bench`,
+# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`), which reports
+# per-stage wall-clock *and* a 9/9 golden-decode check that would have
+# caught the f32-select bug if it were real on this path:
 #
-# Sibling crates deliberately untouched — changing them invalidates
-# published numbers and is a re-measurement job of its own.
+#   one decode_scan, 240 MHz / 80 MHz PSRAM, opt-level=1: 1 214.3 s
+#   same, opt-level=3:                                    1 024.6 s  (1.19x)
+#   both: 9/9 golden decodes, decode-for-decode identical
+#
+# So on this path the bug does not fire and `3` is a clean win. That
+# does not generalise to the DSP pipeline `core::pipeline` actually
+# warns about — FT8's f32-select code lives in the sibling crates,
+# which are deliberately untouched here (changing them invalidates the
+# published timings in `docs/notes/BENCHMARKS.md`/`ROADMAP.md` and is a
+# re-measurement + correctness-check job of its own).
 opt-level = 3
 
 [profile.dev]

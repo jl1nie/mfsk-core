@@ -327,6 +327,50 @@ and the WSPR corpus — single-signal, DT = 0, f0 = 0, all four tones on
 exact bin centres — cannot currently answer that. The corpus gap gates
 this exactly as it gates everything else here.
 
+## opt-level — codegen mattered too, but on the search code, not the DSP
+
+VK3NV's follow-up on #260 asked whether the `opt-level = 1` every
+embedded crate here carries — attributed to an LX7 LLVM f32-select
+regression, `embedded-poc/m5stack-s3/Cargo.toml`'s original comment —
+is a ceiling on the *algorithm* or a *code-generation* one, since
+1.51× on a 1.5× clock bump looks like execution-limited behaviour
+rather than something pinned on PSRAM latency.
+
+Ran the identical build at `opt-level = 3` (`m5stack-cores3-app` only;
+see "The clock nobody set" for why sibling crates are untouched):
+
+| | O1 | O3 | speedup |
+|---|---:|---:|---:|
+| `tone_amplitudes`, PSRAM (Phase 2) | 59 126 µs | 55 309 µs | 1.07× |
+| table-free inline (arm C) | 42 011 µs | 42 582 µs | **0.99×** |
+| pass 0 (successful candidates only, 7) | 7 529 ms | 7 041 ms | 1.07× |
+| pass 0 (failed candidates only, 6) | 81 300 ms | 69 659 ms | 1.17× |
+| pass 2 | 922 631 ms | 763 876 ms | **1.21×** |
+| **one decode_scan** | **1 214 262 ms** | **1 024 550 ms** | **1.19×** |
+
+Both builds: **9/9 golden decodes, decode-for-decode identical.** The
+f32-select regression the comment attributed `opt-level = 1` to does
+not fire on this path.
+
+The pattern answers the question directly: dense `f32` arithmetic
+(`tone_amplitudes`, the successful-candidate subset that is almost
+entirely `tone_amplitudes`) gains **~1.07×**, essentially the noise
+floor — the inline recurrence variant gained *nothing*, meaning O1 was
+already extracting what there was to extract from that code. The
+Fano-dominated failing-candidate subset gains **1.17×**, and pass 2
+(51 % Fano, 20 % OSD) gains **1.21×**, the largest of any stage — OSD's
+smaller functions are exactly the shape codegen quality helps most.
+
+So: **a ceiling on the search code, not the DSP.** 1.19× is real and
+worth taking, but it does not change the decision table — 1 024.6 s is
+still an order of magnitude over the 120 s slot, and the compute-bound
+finding above is unaffected (arm C's 0.99× if anything reinforces it:
+the hand-tightened FP loop had nothing left for the compiler to find).
+
+Changed for `m5stack-cores3-app` on this evidence. Not extended to the
+sibling crates, whose f32-select-bearing FT8 code this measurement
+does not exercise.
+
 ## The clock nobody set
 
 `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` defaults to **160** on esp32s3, and
