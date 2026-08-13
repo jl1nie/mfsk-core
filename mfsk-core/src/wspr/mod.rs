@@ -51,6 +51,8 @@ pub mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod demod;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod instrument;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod osd;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod rx;

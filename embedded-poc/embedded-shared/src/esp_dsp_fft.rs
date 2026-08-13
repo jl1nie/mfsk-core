@@ -22,9 +22,77 @@
 //! `plan_forward` / `plan_inverse` call.
 
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use mfsk_core::engine::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
 use num_complex::{Complex, Complex32};
+
+/// Four `Complex32` under a 16-byte alignment guarantee.
+///
+/// The LX7 PIE kernels (`_aes3_`) move float **pairs** with
+/// `ee.ldf.64.ip` / `ee.stf.64.ip`, which require an 8-byte-aligned
+/// address. `Complex32` is `repr(C)` over two `f32`, so its alignment
+/// is 4 — a `Vec<Complex32>` is free to land on a 4-mod-8 boundary,
+/// and when it does, the kernel's very first `ee.stf.64.ip` writes
+/// four bytes *below* the allocation, directly into the preceding TLSF
+/// block header. The failure surfaces much later as `StoreProhibited`
+/// inside an unrelated `tlsf_free`, with the header holding what are
+/// recognisably float samples.
+///
+/// Found 2026-08-13 by the WSPR candidate-loop bench (issue #260),
+/// whose `coarse_baseband` plans a 512-point FFT over a plain
+/// `vec![Complex::new(0.0, 0.0); 512]`. The FT8 path never tripped it
+/// because its only PIE FFT is the 256-point inner stage of
+/// `MixedRadix3840Fft`, working on rows *inside* a 3840-element
+/// buffer: a 4-byte underrun there lands in the same allocation and is
+/// invisible. That makes this a latent bug in the shipped FT8 path
+/// too, one allocator decision away from the same corruption — the
+/// staging below covers both.
+#[repr(align(16))]
+#[derive(Clone, Copy)]
+struct Align16Quad(
+    // Read only through the reinterpreting slice in
+    // `AlignedStaging::as_slice` — the field exists to size and align
+    // the backing store.
+    #[allow(dead_code)] [Complex32; 4],
+);
+
+impl Align16Quad {
+    const ZERO: Self = Self([Complex32::new(0.0, 0.0); 4]);
+}
+
+/// Lazily-grown 16-byte-aligned staging for one FFT.
+///
+/// Only used when the caller's buffer is not already 16-byte aligned,
+/// so the aligned-input case keeps the in-place zero-copy path and the
+/// timings this backend is measured with stay honest.
+struct AlignedStaging {
+    quads: Vec<Align16Quad>,
+}
+
+impl AlignedStaging {
+    const fn new() -> Self {
+        Self { quads: Vec::new() }
+    }
+
+    /// `len` must be a multiple of 4 — true for every power-of-2 ≥ 4,
+    /// which is all this backend plans.
+    fn as_slice(&mut self, len: usize) -> &mut [Complex32] {
+        debug_assert_eq!(len % 4, 0);
+        if self.quads.len() * 4 < len {
+            self.quads.resize(len / 4, Align16Quad::ZERO);
+        }
+        // SAFETY: `Align16Quad` is `repr(align(16))` over
+        // `[Complex32; 4]`, so the backing store is exactly `len`
+        // contiguous `Complex32` with 16-byte alignment.
+        unsafe { core::slice::from_raw_parts_mut(self.quads.as_mut_ptr() as *mut Complex32, len) }
+    }
+}
+
+/// Is `buf` safe to hand a PIE kernel directly?
+fn pie_aligned(buf: &[Complex32]) -> bool {
+    (buf.as_ptr() as usize) % 16 == 0
+}
 
 /// Factory called by `mfsk_core::engine::fft::default_planner()` when
 /// the crate is built with `fft-extern` (and no built-in backend like
@@ -180,7 +248,7 @@ impl FftPlanner for EspDspPlanner {
             "esp-dsp FFT requires power-of-2 length ≥ 4 (got {len})"
         );
         self.ensure_table(len);
-        Box::new(EspDspFft { len, forward: true })
+        Box::new(EspDspFft::new(len, true))
     }
 
     fn plan_inverse(&mut self, len: usize) -> Box<dyn Fft> {
@@ -194,10 +262,7 @@ impl FftPlanner for EspDspPlanner {
             "esp-dsp FFT requires power-of-2 length ≥ 4 (got {len})"
         );
         self.ensure_table(len);
-        Box::new(EspDspFft {
-            len,
-            forward: false,
-        })
+        Box::new(EspDspFft::new(len, false))
     }
 }
 
@@ -206,12 +271,18 @@ impl FftPlanner for EspDspPlanner {
 /// [`mfsk_core::engine::dsp::fft_15`]. Inter-stage twiddles cached.
 struct MixedRadix3840Fft {
     twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_3840::N]>,
+    /// 256-`Complex32` staging for the PIE kernel — see
+    /// [`Align16Quad`]. Rows sit at a multiple of 256 `Complex32` from
+    /// the caller's base pointer, so they inherit its alignment: if the
+    /// caller's 3840-element buffer lands 4-mod-8, *every* row does.
+    staging: core::cell::UnsafeCell<AlignedStaging>,
 }
 
 impl MixedRadix3840Fft {
     fn new() -> Self {
         Self {
             twiddles: mfsk_core::engine::dsp::fft_mixed_3840::build_twiddles(),
+            staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
         }
     }
 }
@@ -224,14 +295,27 @@ impl Fft for MixedRadix3840Fft {
 
         // Inner 256-pt forward FFT via esp-dsp asm path. Mirrors
         // `EspDspFft::process` but specialised to len=256.
-        let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
-            let ptr = row.as_mut_ptr() as *mut f32;
+        let run_256 = |slice: &mut [Complex32]| {
+            let ptr = slice.as_mut_ptr() as *mut f32;
             unsafe {
                 #[cfg(not(feature = "aes3"))]
                 dsps_fft2r_fc32_ae32_(ptr, 256, dsps_fft_w_table_fc32);
                 #[cfg(feature = "aes3")]
                 dsps_fft2r_fc32_aes3_(ptr, 256, dsps_fft_w_table_fc32);
                 dsps_bit_rev_fc32_ansi(ptr, 256);
+            }
+        };
+        let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
+            if cfg!(feature = "aes3") && !pie_aligned(row) {
+                // SAFETY: `dyn Fft` carries no `Sync` bound and a
+                // planned instance is owned by a single caller.
+                let staging = unsafe { &mut *self.staging.get() };
+                let work = staging.as_slice(256);
+                work.copy_from_slice(row);
+                run_256(work);
+                row.copy_from_slice(work);
+            } else {
+                run_256(row);
             }
         };
 
@@ -250,22 +334,27 @@ impl Fft for MixedRadix3840Fft {
 struct EspDspFft {
     len: usize,
     forward: bool,
+    /// See [`Align16Quad`]. `UnsafeCell` because [`Fft::process`] takes
+    /// `&self`; a planned `Box<dyn Fft>` is owned by one caller and
+    /// `dyn Fft` carries no `Sync` bound, so there is no sharing to
+    /// race against.
+    staging: core::cell::UnsafeCell<AlignedStaging>,
 }
 
-impl Fft for EspDspFft {
-    fn process(&self, buf: &mut [Complex32]) {
-        assert_eq!(buf.len(), self.len, "FFT input length mismatch");
-        // esp-dsp expects an interleaved {re, im, re, im, ...} f32
-        // array of length 2*N. Complex32 is repr(C) with this exact
-        // layout, so we can cast in place.
-        let ptr = buf.as_mut_ptr() as *mut f32;
-        if !self.forward {
-            // Emulate inverse via conjugate-flip (esp-dsp has no
-            // inverse-mode FFT for the radix-2 routine).
-            for c in buf.iter_mut() {
-                c.im = -c.im;
-            }
+impl EspDspFft {
+    fn new(len: usize, forward: bool) -> Self {
+        Self {
+            len,
+            forward,
+            staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
         }
+    }
+
+    /// Forward radix-2 kernel + bit-reverse, in place on `work`.
+    /// `work` must be 16-byte aligned when the PIE path is compiled in.
+    fn kernel(&self, work: &mut [Complex32]) {
+        debug_assert!(!cfg!(feature = "aes3") || pie_aligned(work));
+        let ptr = work.as_mut_ptr() as *mut f32;
         // SAFETY: ptr points to 2*N contiguous f32 (Complex32 layout).
         // `dsps_fft_w_table_fc32` is valid because `ensure_table` has
         // already called `dsps_fft2r_init_fc32` which populates it.
@@ -276,6 +365,33 @@ impl Fft for EspDspFft {
             dsps_fft2r_fc32_aes3_(ptr, self.len as i32, dsps_fft_w_table_fc32);
             // Bit-reverse the in-place output to get natural order.
             dsps_bit_rev_fc32_ansi(ptr, self.len as i32);
+        }
+    }
+}
+
+impl Fft for EspDspFft {
+    fn process(&self, buf: &mut [Complex32]) {
+        assert_eq!(buf.len(), self.len, "FFT input length mismatch");
+        // esp-dsp expects an interleaved {re, im, re, im, ...} f32
+        // array of length 2*N. Complex32 is repr(C) with this exact
+        // layout, so we can cast in place — subject to alignment, see
+        // `Align16Quad`.
+        if !self.forward {
+            // Emulate inverse via conjugate-flip (esp-dsp has no
+            // inverse-mode FFT for the radix-2 routine).
+            for c in buf.iter_mut() {
+                c.im = -c.im;
+            }
+        }
+        if cfg!(feature = "aes3") && !pie_aligned(buf) {
+            // SAFETY: see the field comment on `staging`.
+            let staging = unsafe { &mut *self.staging.get() };
+            let work = staging.as_slice(self.len);
+            work.copy_from_slice(buf);
+            self.kernel(work);
+            buf.copy_from_slice(work);
+        } else {
+            self.kernel(buf);
         }
         if !self.forward {
             let scale = 1.0 / self.len as f32;

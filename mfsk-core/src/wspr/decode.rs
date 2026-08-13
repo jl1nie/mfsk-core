@@ -363,6 +363,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
     // to correct a drift the ±4 Hz coarse grid got wrong, and without
     // stages 4-5 the alignment stays a coarse-grid cell away from the
     // true one.
+    super::instrument::bump(&super::instrument::CANDIDATES);
     let eval = |f: f32, lag: i32, drift: f32| {
         let isqs = super::demod::tone_amplitudes(idat, qdat, f, lag, drift);
         let sync = super::demod::sync_score_isqs(&isqs);
@@ -417,6 +418,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
     // below it the candidate is noise and the extra evals are wasted.
     const MINSYNC1: f32 = 0.10;
     if best_sync > MINSYNC1 {
+        super::instrument::bump(&super::instrument::MINSYNC1_PASS);
         // 4. Fine lag — ±32, step 16.
         let centre_lag = best_lag;
         for &dlag in &[-32i32, -16, 16, 32] {
@@ -506,13 +508,16 @@ pub fn decode_at_baseband_nblocks_gated_drift(
             // (Ordered-Statistics Decoding, port of `osdwspr.f90`). OSD
             // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
             // golden) where Fano alone hits the convergence threshold.
+            super::instrument::bump(&super::instrument::FANO_ATTEMPTS);
             let (info_bits, hard_errors) = if let Some(fec_res) =
                 codec.decode_soft_pooled(&llrs, &FecOpts::default(), &mut fano_scratch)
             {
+                super::instrument::bump(&super::instrument::FANO_OK);
                 let mut info = [0u8; 50];
                 info.copy_from_slice(&fec_res.info);
                 (info, fec_res.hard_errors)
             } else if let Some((info, nhardmin)) = confirmed.and_then(|table| {
+                super::instrument::bump(&super::instrument::OSD_ATTEMPTS);
                 // Single lazy `and_then`, deliberately not `Option::zip`:
                 // `zip` evaluates its argument eagerly, which would run the
                 // (expensive) OSD decode on every candidate even when no
@@ -528,6 +533,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
                     .unpack(&info, &crate::engine::DecodeContext::default())?;
                 table.accepts(&msg).then_some((info, nhardmin))
             }) {
+                super::instrument::bump(&super::instrument::OSD_OK);
                 (info, nhardmin)
             } else {
                 continue;

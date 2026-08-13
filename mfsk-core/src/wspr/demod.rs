@@ -81,6 +81,7 @@ pub fn tone_amplitudes(
     lag: i32,
     drift_hz: f32,
 ) -> IsQs {
+    super::instrument::bump(&super::instrument::TONE_AMPLITUDES);
     debug_assert_eq!(idat.len(), qdat.len());
     let np = idat.len() as i32;
     let dt = 1.0 / BASEBAND_RATE;

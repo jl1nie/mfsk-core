@@ -841,3 +841,66 @@ fn wspr_carried_table_across_slots_adds_no_phantoms() {
         );
     }
 }
+
+/// Bake the WSJT-X golden's 375 Hz baseband to a flat `f32` binary for
+/// the ESP32-S3 candidate-loop bench.
+///
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` Phase 1, host side.
+/// The device bench is `wspr_diag_candidate_cost_split` minus
+/// `decimate_to_baseband` — the one stage the ESP-DSP FFT backend
+/// cannot serve, since `NFFT1 = 1_474_560` is far past any planner it
+/// has. Running it here and vendoring the result is what makes the
+/// device measurement possible without a streaming DDC existing first.
+///
+/// Layout, little-endian throughout (both host and Xtensa are LE, so
+/// the device reads it with a plain transmute of `include_bytes!`):
+///
+/// ```text
+/// idat[46080] f32 LE, then qdat[46080] f32 LE  =  368 640 bytes
+/// ```
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full --release --test
+///  wspr_wsjtx_samples wspr_bake_golden_baseband -- --ignored --nocapture`
+#[test]
+#[ignore = "asset generator — writes embedded-poc/assets/wspr_golden_baseband.bin"]
+fn wspr_bake_golden_baseband() {
+    use mfsk_core::wspr::baseband::{NFFT2, decimate_to_baseband};
+
+    let Some(path) = sample_path() else {
+        panic!("WSPR golden not found — this generator needs the real recording");
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let sample_rate = 12_000u32;
+
+    // Mirror decode_scan_inner's NEGATIVE_DT_PAD_SEC padding exactly:
+    // the baked baseband must be sample-for-sample what the production
+    // path hands the candidate loop, or every `start_sample` the bench
+    // feeds `decode_at_baseband*` is off by `pad / 32`.
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+
+    let (idat, qdat) = decimate_to_baseband(&padded);
+    assert_eq!(idat.len(), NFFT2, "baseband length is fixed by NFFT2");
+    assert_eq!(qdat.len(), NFFT2);
+
+    let mut bytes = Vec::with_capacity(NFFT2 * 2 * 4);
+    for v in idat.iter().chain(qdat.iter()) {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let out = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/wspr_golden_baseband.bin"
+    ));
+    std::fs::write(&out, &bytes).expect("write baseband asset");
+    eprintln!(
+        "wrote {} ({} bytes = {} KiB), pad = {} audio samples = {} baseband samples",
+        out.display(),
+        bytes.len(),
+        bytes.len() / 1024,
+        pad,
+        pad / 32,
+    );
+}

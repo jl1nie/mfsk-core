@@ -27,6 +27,13 @@ name = "embedded_shared"
 # Enabled by m5stack-s3 and m5stack-s3-app via features = ["aes3"].
 aes3 = []
 
+# `apps::wspr_bench` — the issue #260 Phase 1/2 candidate-loop
+# measurement. Off by default: only `m5stack-s3` (LX7) enables it, and
+# it is the only consumer that also brings `mfsk-core/std`, which
+# `wspr::osd`'s `OnceLock` needs. See
+# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` "Build feasibility".
+wspr-bench = ["mfsk-core/wspr", "mfsk-core/std"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
