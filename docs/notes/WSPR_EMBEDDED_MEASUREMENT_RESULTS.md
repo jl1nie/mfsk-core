@@ -1301,14 +1301,61 @@ why recall collapses rather than merely plateauing. "More cycles is
 always safer" is false, and the failure mode is a precision failure,
 not a timeout.
 
-So the cap is a three-way trade — floor sensitivity, wall-clock, and
-false-decode risk — with an interior optimum somewhere near 100 k on
-host, not the boundary value the shipped constant sits at. **Nothing
-is changed here**: 5 000 was chosen for the embedded deadline it buys
-(-12.2 % TOTAL), and moving it is a product decision about which
-target pays which cost, not a bug fix. What is now on record is the
-actual curve instead of a two-point guess, and the fact that host and
-embedded have no reason to share one constant.
+### The recall curve was the wrong instrument. Phantoms end the usable range an order of magnitude earlier.
+
+Everything above measures recall — whether the transmitted message was
+found. It cannot see a setting that buys hits by accepting more false
+codewords, which is precisely how this knob fails. Every corpus file
+holds exactly one transmitted message, so any other decode is a
+phantom by construction; `wspr_awgn_snr_sweep` now counts them
+alongside recall (a permanent column, not a one-off diagnostic):
+
+| cycles/bit | -32 dB | -31 dB | -30 dB | **phantoms / 500 trials** |
+|---:|---:|---:|---:|---:|
+| 5 000 | 19 % | 67 % | 96 % | **0** |
+| **10 000** | 22 % | 70 % | 96 % | **0** |
+| 20 000 | 24 % | 73 % | 96 % | **0** |
+| 50 000 | 27 % | 76 % | 98 % | **2** |
+| 100 000 | 31 % | 75 % | 98 % | **7** |
+| 500 000 | 23 % | 61 % | 91 % | golden fails (4) |
+
+Read on recall alone, "higher is better up to ~200 000". Read with the
+phantom column, **the usable range ends between 20 000 and 50 000** —
+and in a multi-pass SIC decoder a false decode is not a cosmetic
+error: it enters the carried callsign table and gets subtracted from
+the residual, which is why recall itself eventually collapses.
+
+**Shipped: host = 10 000, which is `wsprd`'s own number.**
+`lib/wsprd/wsprd.c:799` reads
+`unsigned int maxcycles=10000; //Decoder timeout limit`, overridable
+there by a CLI flag exactly as it is here by a feature. So the host
+default is neither slower nor less faithful than the reference
+decoder, and it is also what this path effectively ran at before the
+cap was wired up (`ConvFano::DEFAULT_MAX_CYCLES` is the same 10 000).
+20 000 measured clean as well, but there is no principled reason to
+sit between the reference decoder's timeout and the onset of false
+decodes.
+
+| | cycles/bit | -32 dB | -31 dB | -30 dB | phantoms | golden |
+|---|---:|---:|---:|---:|---:|:--:|
+| host (default) | 10 000 | 22 % | 70 % | 96 % | 0/500 | 9/9, 3.5 s |
+| embedded (`wspr-fano-cap-fast`) | 5 000 | 19 % | 67 % | 96 % | 0/500 | 9/9, 1.7 s |
+
+Embedded's 5 000 stays: it is what keeps a CoreS3 `decode_scan` inside
+the 120 s slot (-12.2 % TOTAL), it is phantom-free, and what it costs
+is floor recall — it hears less, it does not invent. Verified both
+directions by `compile_error!` probe (the feature reaches `mfsk-core`
+in the CoreS3 build, and is off on host), and re-measured on device:
+**TOTAL 103 955 ms, coarse 13 312 / 14 291 / 1 806 ms and subtract
+8 985 / 1 288 ms all identical to the pre-split build, 9/9 golden.**
+
+The first attempt at this section shipped 50 000 for host, picked off
+the recall curve because -31 dB peaks there. It produces two phantoms
+in 500 trials and is 4.5× slower than the reference decoder's own
+budget. Both facts were available; neither was measured before
+choosing. That is the reusable lesson here, and it is why the phantom
+column is now part of the sweep rather than something to remember to
+check.
 
 ## The FFT-based LPF, re-implemented — now that the fourth bug is fixed
 

@@ -653,12 +653,57 @@ fn decode_from_refined(
             // the full, uncapped Fano+OSD ladder regardless of how
             // many candidates a busier band produced.
             //
-            // `WSPR_FANO_CYCLE_BUDGET` reuses JT9's own `Fast` tier
-            // (`Jt9Depth::Fast`, `jt9/decode.rs`) rather than inventing
-            // a new number — 5 000/bit gives 2.5x margin over the
-            // measured worst case here. Safety net, not a tuned
-            // threshold: verified against the WSPR AWGN sweep (see the
-            // doc above) rather than assumed safe from one recording.
+            // **Host is wsprd's own number**: `wsprd.c:799`,
+            // `unsigned int maxcycles=10000; //Decoder timeout limit`
+            // (overridable there by a CLI flag, same as here by the
+            // feature below). It is also what this path effectively ran
+            // at before issue #260 wired the cap up, since
+            // `ConvFano::DEFAULT_MAX_CYCLES` is the same 10 000.
+            //
+            // Raising it above the reference buys floor recall and then
+            // starts manufacturing decodes. Swept over the AWGN corpus
+            // (`wspr_awgn_snr_sweep`, 100 trials/cell at the floor,
+            // 500 total — every file holds exactly one transmitted
+            // message, so any other decode is a phantom by
+            // construction):
+            //
+            // ```text
+            //   cycles/bit   -32 dB  -31 dB  -30 dB   phantoms/500
+            //        5 000     19 %    67 %    96 %          0
+            //       10 000     22 %    70 %    96 %          0   <- wsprd, host
+            //       20 000     24 %    73 %    96 %          0
+            //       50 000     27 %    76 %    98 %          2
+            //      100 000     31 %    75 %    98 %          7
+            //      500 000     23 %    61 %    91 %   golden FAILS (4)
+            // ```
+            //
+            // The recall column alone reads as "higher is better up to
+            // ~200 000"; the phantom column says the usable range ends
+            // an order of magnitude earlier, between 20 000 and 50 000.
+            // Given long enough, Fano finds codewords that satisfy the
+            // CRC but are not the transmitted message — and in a
+            // multi-pass SIC decoder those do compounding damage, since
+            // they enter the carried callsign table and get subtracted
+            // from the residual. At 500 000 recall ends up *below* the
+            // capped value for exactly that reason. 20 000 measured
+            // clean too, but there is no principled reason to sit
+            // between the reference decoder's timeout and the onset of
+            // false decodes.
+            //
+            // Capping *below* the reference costs real recall, and
+            // costs it outright: the only fallback below is
+            // `osd_decode_packed`, gated on `confirmed` being `Some` —
+            // a callsign table built by an **earlier** Fano decode — so
+            // a lone weak signal that Fano gives up on has no rescue
+            // path at all. Embedded accepts that (5 000 via
+            // `wspr-fano-cap-fast`) because it is what keeps a CoreS3
+            // `decode_scan` inside the 120 s slot (-12.2 % TOTAL, see
+            // `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`); it
+            // stays phantom-free, it just hears less. Same split shape
+            // as `wspr-pass2-topn`.
+            #[cfg(not(feature = "wspr-fano-cap-fast"))]
+            const WSPR_FANO_CYCLE_BUDGET: u64 = 10_000;
+            #[cfg(feature = "wspr-fano-cap-fast")]
             const WSPR_FANO_CYCLE_BUDGET: u64 = 5_000;
             let fec_opts = FecOpts {
                 max_cycles_per_bit: Some(WSPR_FANO_CYCLE_BUDGET),

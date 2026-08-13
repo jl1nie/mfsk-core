@@ -35,7 +35,9 @@
 //! which each have a `*sim`-driven AWGN sweep giving a real
 //! SNR-vs-recall curve. This closes that gap.
 //!
-//! Output is a recall table — no assertions, statistics only.
+//! Output is a recall **and precision** table — no assertions,
+//! statistics only. Every corpus file holds exactly one transmitted
+//! message, so any other decode is a phantom by construction.
 
 #![cfg(all(feature = "wspr", any(feature = "fft-rustfft", feature = "fft-extern")))]
 
@@ -73,10 +75,30 @@ fn parse_snr_tag(tag: &str) -> Option<i32> {
     }
 }
 
-fn decode_wav_wspr(audio: &[f32]) -> bool {
-    decode_scan_default(audio, 12_000).iter().any(|d| {
-        d.message.to_string() == GOLDEN_MSG && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
-    })
+/// `(found the transmitted signal, number of decodes that are not it)`.
+///
+/// Each corpus file contains exactly one transmitted message, so every
+/// other decode is a phantom by construction — there is no ambiguity
+/// about ground truth the way there is on a real off-air recording.
+/// Recall alone cannot see a decoder setting that buys hits by
+/// accepting more false codewords, which is exactly the failure mode
+/// the Fano cycle budget has at the top of its range (issue #260: at
+/// 500 000 cycles/bit the golden file emits four CRC-passing garbage
+/// decodes). A recall-only sweep reports that as a *win* right up
+/// until recall itself collapses.
+fn decode_wav_wspr(audio: &[f32]) -> (bool, u32) {
+    let decodes = decode_scan_default(audio, 12_000);
+    let mut hit = false;
+    let mut phantoms = 0;
+    for d in &decodes {
+        if d.message.to_string() == GOLDEN_MSG && (d.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ
+        {
+            hit = true;
+        } else {
+            phantoms += 1;
+        }
+    }
+    (hit, phantoms)
 }
 
 struct Job {
@@ -123,7 +145,7 @@ fn wspr_awgn_snr_sweep() {
     use rayon::prelude::*;
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(i32, bool)> = jobs
+    let results: Vec<(i32, (bool, u32))> = jobs
         .par_iter()
         .filter_map(|job| {
             load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_wspr(&audio)))
@@ -131,20 +153,25 @@ fn wspr_awgn_snr_sweep() {
         .collect();
 
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(i32, bool)> = jobs
+    let results: Vec<(i32, (bool, u32))> = jobs
         .iter()
         .filter_map(|job| {
             load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_wspr(&audio)))
         })
         .collect();
 
-    // snr -> (hits, trials)
-    let mut cells: std::collections::BTreeMap<i32, (u32, u32)> = std::collections::BTreeMap::new();
-    for (snr, hit) in results {
-        let cell = cells.entry(snr).or_insert((0, 0));
+    // snr -> (hits, trials, phantoms, trials_with_a_phantom)
+    let mut cells: std::collections::BTreeMap<i32, (u32, u32, u32, u32)> =
+        std::collections::BTreeMap::new();
+    for (snr, (hit, phantoms)) in results {
+        let cell = cells.entry(snr).or_insert((0, 0, 0, 0));
         cell.1 += 1;
         if hit {
             cell.0 += 1;
+        }
+        cell.2 += phantoms;
+        if phantoms > 0 {
+            cell.3 += 1;
         }
     }
 
@@ -157,16 +184,28 @@ fn wspr_awgn_snr_sweep() {
     }
 
     println!("WSPR AWGN SNR sweep — {:?}", dir);
-    println!("{:>6}  {:>10}  {:>6}", "SNR", "hits/trials", "pct");
-    for (snr, (hits, trials)) in &cells {
+    println!(
+        "{:>6}  {:>10}  {:>6}  {:>9}  {:>10}",
+        "SNR", "hits/trials", "pct", "phantoms", "dirty/tr"
+    );
+    let (mut tot_ph, mut tot_dirty, mut tot_tr) = (0u32, 0u32, 0u32);
+    for (snr, (hits, trials, phantoms, dirty)) in &cells {
         let pct = *hits as f32 / *trials as f32 * 100.0;
         println!(
-            "{:>+5}dB  {:>10}  {:5.1}%",
+            "{:>+5}dB  {:>10}  {:5.1}%  {:>9}  {:>10}",
             snr,
             format!("{hits}/{trials}"),
-            pct
+            pct,
+            phantoms,
+            format!("{dirty}/{trials}"),
         );
+        tot_ph += phantoms;
+        tot_dirty += dirty;
+        tot_tr += trials;
     }
+    // Every corpus file holds one transmitted message, so this is a
+    // true false-decode count, not an estimate.
+    println!("  TOTAL phantoms {tot_ph} across {tot_tr} trials ({tot_dirty} trial(s) affected)");
 }
 
 /// Harvest every LLR vector that reaches `osd_decode` across the AWGN

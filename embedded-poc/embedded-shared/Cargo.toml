@@ -36,7 +36,7 @@ aes3 = []
 # is embedded-only (host stays wsprd-faithful, see that feature's own
 # doc comment in `mfsk-core/Cargo.toml`) — this is the one place it's
 # turned on for real, not just for host differential testing.
-wspr-bench = ["mfsk-core/wspr", "mfsk-core/std", "mfsk-core/wspr-pass2-topn"]
+wspr-bench = ["mfsk-core/wspr", "mfsk-core/std", "mfsk-core/wspr-pass2-topn", "mfsk-core/wspr-fano-cap-fast"]
 
 [dependencies]
 log = "0.4"

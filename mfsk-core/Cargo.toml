@@ -111,6 +111,24 @@ packet-bytes = []
 # an explicit `--features` list; it is not part of `full`.
 wspr-pass2-topn = []
 
+# WSPR Fano cycle-budget: trade floor sensitivity for wall-clock
+# (issue #260). Off by default — host gets `WSPR_FANO_CYCLE_BUDGET =
+# 10_000` cycles/bit, which is `wsprd.c:799`'s own `maxcycles` and
+# therefore neither slower nor less faithful than the reference
+# decoder. Embedded targets turn this on (see `embedded-shared`'s
+# `wspr-bench` feature) to drop to 5_000, which is what keeps a CoreS3
+# `decode_scan` inside WSPR's 120 s slot; it costs floor recall
+# (-32 dB 22 % -> 19 %) and stays phantom-free.
+#
+# **Not a free knob upward.** Raising the budget past the reference
+# buys floor recall and then starts manufacturing decodes: on the
+# 500-trial AWGN corpus phantoms appear between 20_000 and 50_000, and
+# by 500_000 the golden file emits four and recall drops below the
+# capped value. See `wspr::decode`'s `WSPR_FANO_CYCLE_BUDGET` for the
+# swept table. Same "host stays faithful, embedded opts into the
+# cheaper path" split as `wspr-pass2-topn` above.
+wspr-fano-cap-fast = []
+
 # MSK144 (issue #25) — full port landed: LDPC(128,90) + MSK/OQPSK DSP
 # (Phase 1-2), burst-scan sync search (Phase 3, needs `fft-rustfft` /
 # `fft-extern` for the sub-modules that use it), per-frame decode
@@ -219,7 +237,7 @@ rustfft = "6"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn","wspr-fano-cap-fast"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing
