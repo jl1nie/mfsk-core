@@ -25,8 +25,41 @@ use alloc::vec;
 use crate::engine::{FecCodec, FecOpts};
 use crate::fec::ConvFano;
 
-const N: usize = 162;
-const K: usize = 50;
+pub(crate) const N: usize = 162;
+pub(crate) const K: usize = 50;
+
+/// Captures every LLR vector that actually reaches [`osd_decode`]
+/// during a test run — the differential-testing input a bit-packing
+/// rewrite of `g` (see `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s
+/// stack audit) would need.
+///
+/// Why capture rather than hand-construct test vectors: `osd_decode`
+/// is reached only when Fano fails *and* the candidate's callsign is
+/// already confirmed, so an artificial "encode a message, flip some
+/// bits" input carries the flipper's assumptions about what a
+/// realistic failure pattern looks like — exactly the kind of guess
+/// this crate's own history (the `nhardmin ≤ 44` threshold this
+/// module's own doc comment describes replacing) has shown to be
+/// unreliable. Real LLR vectors from an AWGN sweep, harvested by
+/// running the existing production call path, carry no such
+/// assumption: whatever a rewrite is diffed against is exactly what
+/// production would have handed the old implementation.
+#[cfg(any(test, feature = "internal-testing"))]
+pub mod capture {
+    use alloc::vec::Vec;
+    use std::sync::Mutex;
+
+    pub static INPUTS: Mutex<Vec<[f32; super::N]>> = Mutex::new(Vec::new());
+
+    pub fn reset() {
+        INPUTS.lock().expect("capture mutex poisoned").clear();
+    }
+
+    #[must_use]
+    pub fn snapshot() -> Vec<[f32; super::N]> {
+        INPUTS.lock().expect("capture mutex poisoned").clone()
+    }
+}
 
 /// Generator matrix `G[K][N]`: row `i` = the codeword produced by
 /// encoding the unit vector with `1` at position `i`. K=50 info bits
@@ -64,6 +97,12 @@ fn gen_matrix() -> &'static [[u8; N]; K] {
 /// Gaussian elimination fails (rare, signals a degenerate reliability
 /// ordering) or the info-extraction Fano round-trip fails.
 pub fn osd_decode(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
+    #[cfg(any(test, feature = "internal-testing"))]
+    capture::INPUTS
+        .lock()
+        .expect("capture mutex poisoned")
+        .push(*llrs);
+
     // Hard decisions and reliability magnitudes. Our LLR sign is
     // "positive = bit 0", so hard bit = (llr < 0) as u8 (bit 1 when
     // negative).

@@ -1158,3 +1158,44 @@ fn wspr_diag_g8vdq_rank_after_minsync2() {
         None => eprintln!("\nG8VDQ: not decoded in this run (unexpected — check golden still 9/9)"),
     }
 }
+
+/// Host-only per-call cost of `osd_decode`, to weigh the bit-packing
+/// investment: is the payoff big enough on host alone to matter, or
+/// is it purely an embedded-stack argument that happens to also be a
+/// "free" host speedup?
+#[test]
+#[ignore = "manual diagnostic — host osd_decode per-call timing"]
+fn wspr_diag_osd_decode_host_timing() {
+    use std::time::Instant;
+
+    // Representative LLR magnitudes: WSJT-X-scale soft symbols, not
+    // pathological all-same-sign input (which short-circuits some
+    // branches atypically). Deterministic pseudo-random pattern, no
+    // dependency on external corpus.
+    let mut llrs = [0.0f32; 162];
+    let mut x: u32 = 0x2545F491;
+    for l in llrs.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *l = ((x % 2000) as f32 - 1000.0) / 40.0; // spread over ~[-25, 25]
+    }
+
+    // Warm-up (lazy gen_matrix() OnceLock init).
+    let _ = mfsk_core::wspr::osd::osd_decode(&llrs);
+
+    const REPS: usize = 2000;
+    let t0 = Instant::now();
+    for _ in 0..REPS {
+        let _ = std::hint::black_box(mfsk_core::wspr::osd::osd_decode(std::hint::black_box(
+            &llrs,
+        )));
+    }
+    let elapsed = t0.elapsed();
+    eprintln!(
+        "osd_decode: {:.1} us/call ({} reps, {:.2} ms total)",
+        elapsed.as_secs_f64() * 1e6 / REPS as f64,
+        REPS,
+        elapsed.as_secs_f64() * 1000.0,
+    );
+}

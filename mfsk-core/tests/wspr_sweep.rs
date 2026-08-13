@@ -45,6 +45,8 @@ use std::path::{Path, PathBuf};
 mod common;
 use common::load_wav_f32_opt;
 use mfsk_core::wspr::decode::decode_scan_default;
+#[cfg(feature = "internal-testing")]
+use mfsk_core::wspr::decode::{WsprCallsignTable, decode_scan_with_table};
 
 const GOLDEN_MSG: &str = "JL1NIE PM95 37";
 const GOLDEN_FREQ_HZ: f32 = 1500.0;
@@ -165,4 +167,121 @@ fn wspr_awgn_snr_sweep() {
             pct
         );
     }
+}
+
+/// Harvest every LLR vector that reaches `osd_decode` across the AWGN
+/// sweep — real inputs for differential-testing a future bit-packing
+/// rewrite of its generator matrix (issue #260, the OSD stack audit
+/// in `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`).
+///
+/// `decode_scan_default` (the sweep's normal driver) never lets OSD
+/// fire: OSD only runs when the candidate's callsign is *already*
+/// Fano-confirmed, and each sweep trial is a lone, independent file.
+/// Seeding a [`WsprCallsignTable`] with the known transmitted
+/// callsign+grid *before* decoding — simulating "we've heard this
+/// station on an earlier, easier slot", exactly the scenario the
+/// cross-slot table exists for — opens that gate legitimately, not as
+/// a shortcut: it's the same mechanism `wspr_carried_table_across_
+/// slots_adds_no_phantoms` exercises, just applied across an SNR
+/// sweep instead of a handful of hand-picked slots.
+///
+/// Prints the harvested count per SNR cell — that count *is* the
+/// answer to "how much real coverage would a differential test have":
+/// large and this is a strong validation harness, thin and it isn't.
+#[test]
+#[ignore]
+#[cfg(feature = "internal-testing")]
+fn wspr_osd_input_harvest() {
+    use mfsk_core::msg::WsprMessage;
+
+    let dir = sweep_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("skipping wspr_osd_input_harvest: corpus dir not found at {dir:?}");
+        return;
+    };
+
+    let mut jobs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(rest) = stem.strip_prefix("wspr_awgn_") else {
+            continue;
+        };
+        let Some((tag, _trial)) = rest.split_once('_') else {
+            continue;
+        };
+        let Some(snr) = parse_snr_tag(tag) else {
+            continue;
+        };
+        jobs.push(Job { snr, path });
+    }
+    if jobs.is_empty() {
+        eprintln!("skipping wspr_osd_input_harvest: no wspr_awgn_*.wav files found in {dir:?}");
+        return;
+    }
+
+    mfsk_core::wspr::osd::capture::reset();
+
+    // Callsign/grid parsed straight out of GOLDEN_MSG ("JL1NIE PM95
+    // 37") rather than hand-copied, so this can't drift out of sync
+    // with the sweep's own transmitted message.
+    let (callsign, grid) = {
+        let mut parts = GOLDEN_MSG.split_whitespace();
+        (
+            parts.next().unwrap().to_string(),
+            parts.next().unwrap().to_string(),
+        )
+    };
+
+    let params = mfsk_core::wspr::SearchParams::default();
+    let mut per_snr_osd: std::collections::BTreeMap<i32, (u32, u32, u32)> =
+        std::collections::BTreeMap::new(); // snr -> (trials, osd_attempts_delta, fano_hits)
+
+    for job in &jobs {
+        let Some(audio) = load_wav_f32_opt(&job.path) else {
+            continue;
+        };
+        // Fresh table per trial, seeded with the known station —
+        // "we already confirmed this callsign", not "this trial
+        // confirmed itself" (which would need Fano to already have
+        // succeeded, at which point OSD is moot for that trial).
+        let mut table = WsprCallsignTable::new();
+        table.record(&WsprMessage::Type1 {
+            callsign: callsign.clone(),
+            grid: grid.clone(),
+            power_dbm: 37,
+        });
+        let before = mfsk_core::wspr::osd::capture::snapshot().len();
+        let results = decode_scan_with_table(&audio, 12_000, 0, &params, &mut table);
+        let after = mfsk_core::wspr::osd::capture::snapshot().len();
+        let fano_hit = results.iter().any(|d| d.message.to_string() == GOLDEN_MSG);
+
+        let cell = per_snr_osd.entry(job.snr).or_insert((0, 0, 0));
+        cell.0 += 1;
+        cell.1 += (after - before) as u32;
+        if fano_hit {
+            cell.2 += 1;
+        }
+    }
+
+    println!("WSPR OSD-input harvest — {dir:?}");
+    println!(
+        "{:>6}  {:>7}  {:>14}  {:>9}",
+        "SNR", "trials", "osd calls/trial", "fano hit"
+    );
+    for (snr, (trials, osd_calls, fano_hits)) in &per_snr_osd {
+        println!(
+            "{:>+5}dB  {:>7}  {:>14.1}  {:>8}/{}",
+            snr,
+            trials,
+            *osd_calls as f32 / *trials as f32,
+            fano_hits,
+            trials,
+        );
+    }
+
+    let total = mfsk_core::wspr::osd::capture::snapshot().len();
+    println!("\ntotal osd_decode() inputs harvested: {total}");
 }
