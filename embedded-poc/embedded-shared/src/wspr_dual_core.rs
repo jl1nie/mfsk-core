@@ -379,6 +379,13 @@ struct Pass2Job {
     isqs: mfsk_core::wspr::demod::IsQs,
     snr_db: f32,
     confirmed: *const WsprCallsignTable,
+    /// Absolute `esp_timer_get_time()` deadline for this candidate's
+    /// ladder — passed as a plain `i64` (not a closure) because a
+    /// `&dyn Fn` reference can't safely cross the raw-pointer task
+    /// boundary this job travels over; the worker builds its own
+    /// closure from this value instead. `None` = no cutoff, run the
+    /// full wsprd-faithful ladder.
+    deadline_us: Option<i64>,
 }
 unsafe impl Send for Pass2Job {}
 
@@ -410,10 +417,29 @@ extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
         drift: job.drift,
         isqs: job.isqs,
     };
-    let out = deep_decode_pass2_candidate(idat, qdat, job.sample_rate, job.pad, confirmed, &r);
+    // `worker_budget_check` is a plain `fn` item, not a capturing
+    // closure: a closure over `job.deadline_us` can't cross this
+    // task's own creation boundary without `Box<dyn Fn>`, so the
+    // deadline instead travels as the plain `i64` already on `job`
+    // (set into `WORKER_DEADLINE_US` here, just before use) and the
+    // checker reads it back. Safe under this module's single-
+    // pass-2-worker-at-a-time invariant — see the module doc comment.
+    unsafe { WORKER_DEADLINE_US.set(job.deadline_us.unwrap_or(i64::MAX)) };
+    let budget: Option<&(dyn Fn() -> bool + Sync)> = if job.deadline_us.is_some() {
+        Some(&worker_budget_check)
+    } else {
+        None
+    };
+    let out =
+        deep_decode_pass2_candidate(idat, qdat, job.sample_rate, job.pad, confirmed, &r, budget);
     log::info!(
-        "wspr_dual_core: pass2 worker done, {} ms",
-        (now_us() - t0) / 1000
+        "wspr_dual_core: pass2 worker done, {} ms{}",
+        (now_us() - t0) / 1000,
+        if job.deadline_us.is_some() {
+            " (budgeted)"
+        } else {
+            ""
+        },
     );
     let raw = Box::into_raw(Box::new(out));
     unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
@@ -422,6 +448,58 @@ extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
+}
+
+/// `i64`-holding cell, same `UnsafeCell` shape as [`QueueCell`] just
+/// above (this target has no `AtomicI64`/`AtomicU64` — Xtensa's
+/// `max_atomic_width` tops out at 32 bits — so the deadline can't be
+/// a plain atomic the way [`AtomicUsize`] is used elsewhere in this
+/// file).
+struct DeadlineCell(core::cell::UnsafeCell<i64>);
+unsafe impl Sync for DeadlineCell {}
+impl DeadlineCell {
+    const fn new() -> Self {
+        Self(core::cell::UnsafeCell::new(i64::MAX))
+    }
+    fn get(&self) -> i64 {
+        unsafe { *self.0.get() }
+    }
+    /// SAFETY: only ever called from the single writer for this cell
+    /// (main for `MAIN_DEADLINE_US`, `pass2_worker_main` for
+    /// `WORKER_DEADLINE_US`), strictly before the corresponding
+    /// reader can run — main's write happens-before its own
+    /// subsequent call; the worker's write happens-before its own
+    /// subsequent call on the same task, with no cross-core write to
+    /// this cell at all. Never written concurrently with a read.
+    unsafe fn set(&self, v: i64) {
+        unsafe { *self.0.get() = v };
+    }
+}
+
+/// Deadline for whichever pass-2 candidate the worker task is
+/// currently processing, in [`now_us`] units. Written by
+/// [`pass2_worker_main`] right before use; read by
+/// [`worker_budget_check`]. Global rather than a captured closure
+/// because a closure can't cross the raw-pointer task-creation
+/// boundary the worker's job travels over without boxing — safe here
+/// under this module's own single-pass-2-worker-at-a-time invariant
+/// (see the module doc comment): nothing else touches this while a
+/// worker is alive.
+static WORKER_DEADLINE_US: DeadlineCell = DeadlineCell::new();
+
+fn worker_budget_check() -> bool {
+    now_us() < WORKER_DEADLINE_US.get()
+}
+
+/// [`WORKER_DEADLINE_US`]'s counterpart for `pass2_split`'s own
+/// (main-side, rank-0) candidate. Two separate cells rather than one
+/// shared: main sets its own before entering its own call, the worker
+/// sets its own inside `pass2_worker_main` on a different core —
+/// sharing one would race.
+static MAIN_DEADLINE_US: DeadlineCell = DeadlineCell::new();
+
+fn main_budget_check() -> bool {
+    now_us() < MAIN_DEADLINE_US.get()
 }
 
 fn current_core() -> i32 {
@@ -439,6 +517,21 @@ pub fn pass2_room_available() -> bool {
 /// Falls back to running everything on `wspr_scan` sequentially if
 /// the runtime guard finds no room, or if there's only 0/1 survivor
 /// to begin with (nothing to split).
+///
+/// `deadline_us`: absolute [`now_us`] deadline applied to *every*
+/// survivor's own DT peak-up ladder — `None` (the default everywhere
+/// this crate calls in) runs each survivor's full wsprd-faithful
+/// sweep unconditionally, matching `pass2_split`'s behaviour before
+/// this parameter existed. `Some(t)` bounds each candidate's own
+/// worst-case (failing) cost independently — this is not a total
+/// pass-2 deadline; two candidates each given the same deadline can
+/// each spend up to that much time, one per core, concurrently. See
+/// `mfsk_core::wspr::decode::deep_decode_pass2_candidate`'s `budget`
+/// parameter for the underlying mechanism and
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Dual-core,
+/// take two" for why pass 2's *failing* candidate — not the
+/// converging one — is what a deadline here actually bounds (48.1 s
+/// vs 11.1 s on the golden file).
 pub fn pass2_split(
     idat: &[f32],
     qdat: &[f32],
@@ -446,11 +539,22 @@ pub fn pass2_split(
     pad: usize,
     ranked: &[WsprPass2Candidate<'_>],
     confirmed: &WsprCallsignTable,
+    deadline_us: Option<i64>,
 ) -> Vec<WsprResult> {
     let mut out = Vec::new();
     if ranked.is_empty() {
         return out;
     }
+    // Same global-plus-fn-item pattern as `WORKER_DEADLINE_US` /
+    // `worker_budget_check` — main's own call never leaves this
+    // function so a captured closure *would* work here, but sharing
+    // the pattern with the worker keeps the two sides visibly
+    // symmetric instead of one being a closure and one a static.
+    if let Some(deadline) = deadline_us {
+        unsafe { MAIN_DEADLINE_US.set(deadline) };
+    }
+    let budget: Option<&(dyn Fn() -> bool + Sync)> =
+        deadline_us.map(|_| &main_budget_check as &(dyn Fn() -> bool + Sync));
     if ranked.len() == 1 || !have_room_for(PASS2_WORKER_STACK) {
         if ranked.len() > 1 {
             log::warn!(
@@ -460,7 +564,8 @@ pub fn pass2_split(
             );
         }
         for r in ranked {
-            if let Some(d) = deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r)
+            if let Some(d) =
+                deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
             {
                 out.push(d);
             }
@@ -485,6 +590,7 @@ pub fn pass2_split(
         isqs: worker_cand.isqs.clone(),
         snr_db: worker_cand.c.snr_db,
         confirmed: confirmed as *const WsprCallsignTable,
+        deadline_us,
     });
     let mut handle: esp_idf_svc::sys::TaskHandle_t = ptr::null_mut();
     let r = unsafe {
@@ -503,7 +609,8 @@ pub fn pass2_split(
             "wspr_dual_core: xTaskCreatePinnedToCore(wspr_p2) failed: {r}, falling back to sequential"
         );
         for r in ranked {
-            if let Some(d) = deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r)
+            if let Some(d) =
+                deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
             {
                 out.push(d);
             }
@@ -518,7 +625,7 @@ pub fn pass2_split(
         current_core()
     );
     if let Some(d) =
-        deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, &ranked[0])
+        deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, &ranked[0], budget)
     {
         out.push(d);
     }

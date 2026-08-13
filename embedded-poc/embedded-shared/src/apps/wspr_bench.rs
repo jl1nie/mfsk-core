@@ -392,8 +392,16 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     // pre-topN full ladder over every candidate) if there's no room.
     let t = now_us();
     let ranked = rank_pass2_candidates(idat, qdat, &cands2);
-    let raw2: Vec<WsprResult> =
-        wspr_dual_core::pass2_split(idat, qdat, SAMPLE_RATE, PAD_AUDIO, &ranked, &confirmed);
+    let deadline_us = PASS2_CANDIDATE_TIME_BUDGET_US.map(|budget| t + budget);
+    let raw2: Vec<WsprResult> = wspr_dual_core::pass2_split(
+        idat,
+        qdat,
+        SAMPLE_RATE,
+        PAD_AUDIO,
+        &ranked,
+        &confirmed,
+        deadline_us,
+    );
     let decode_us = now_us() - t;
     log::info!(
         "      p2 deep-ladder over {} candidates ({} ranked): {} decoded, {} ms",
@@ -638,6 +646,21 @@ fn log_heap(tag: &str) {
 /// This is a measured cost of the loop, not bench overhead: any
 /// production embedded WSPR path pays the same stack.
 const SCAN_STACK: u32 = 90 * 1024;
+
+/// Per-candidate time budget for pass 2's deep ladder, in
+/// microseconds — `None` here (unlimited, wsprd-faithful) is the
+/// value this bench has always run with; every measurement in
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` used it. Set to
+/// `Some(t)` to cap each survivor's own DT peak-up ladder at `t` from
+/// when `rank_pass2_candidates` finishes, bounding the *failing*
+/// candidate's worst case (48.1 s on the golden file, see "Dual-core,
+/// take two" in that doc) at the cost of recall on candidates that
+/// need more than `t` to converge — this is this crate's own
+/// time/recall trade, not a wsprd behaviour, so it stays off by
+/// default. Threaded to [`wspr_dual_core::pass2_split`]'s
+/// `deadline_us` parameter; see that function's own doc comment for
+/// the exact semantics (per-candidate, not a total-pass-2 budget).
+const PASS2_CANDIDATE_TIME_BUDGET_US: Option<i64> = None;
 
 /// Stack for the bandwidth/oscillator task.
 ///
