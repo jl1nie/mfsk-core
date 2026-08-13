@@ -925,6 +925,118 @@ its margin fixed but not the deadline. Shipped default is
 `RecallPriority` stays in the source as the documented alternative,
 one line to switch.
 
+## Waste audit: subtract's reference generation, and an FFT rewrite that didn't survive contact with hardware
+
+Asked, at this point, for a detailed audit of computational waste
+across pass 0/1/2 rather than another specific lever. Two findings in
+`subtract_signal_baseband`, the per-decode coherent-subtraction step
+(called once per accepted decode, so 7-8 times a scan on this file):
+
+1. **Reference-signal generation called `.cos()`/`.sin()` on every
+   one of 41 472 samples** (82 944 transcendental calls) instead of
+   the per-symbol rotation recurrence `demod::tone_amplitudes_into`
+   already uses elsewhere in this crate (one `cos`/`sin` pair per
+   symbol, 324 total, then cheap multiply-adds for the other 255
+   samples in that symbol).
+2. **The 360-tap sin-window LPF was a direct `O(nc2 × NFILT)`
+   convolution** (~15 M mult-adds per channel, ~30 M for the complex
+   pair, per call) — the exact anti-pattern `engine::dsp::subtract`
+   already solved for FT8/FT4 with an FFT-based `O(N log N)` circular
+   convolution.
+
+**Finding 1 shipped.** Per-symbol rotation recurrence, renormalised
+once per symbol (`(c, s) /= |c, s|`) since a pure-multiply recurrence
+run continuously across 41 472 samples would otherwise drift off the
+unit circle — bounds the drift to what one 256-sample run can
+accumulate rather than letting the whole reference compound it.
+Verified against the golden file (9/9, byte-identical decode list)
+before and after. **Measured on CoreS3**: pass 0 subtract 17.7 s ->
+**10.7 s** (−40 %), pass 1 subtract 2.6 s -> **1.5 s** (−42 %). TOTAL
+stayed ~120 s (`DeadlineDriven` targets the slot deadline regardless
+of how the budget is spent inside it) — the ~8 s saved bought pass 2's
+ladder more time before the cutoff instead (main candidate 16.1 s ->
+23.5 s), a better allocation of the same wall-clock, not a lower one.
+
+**Finding 2 was implemented, verified correct on host, and then
+reverted after breaking on the actual device — worth recording in
+full, since it's a real trap for whoever revisits FFT-based rewrites
+on this embedded target.** Ported the same technique
+`engine::dsp::subtract::subtract_tones_lpf_fft` uses for FT8/FT4
+(cached circular-delay window placement + one forward/inverse FFT
+pair), but through `crate::engine::fft::FftPlanner` rather than
+`rustfft` directly, since that trait is the portable abstraction
+WSPR's own `coarse_baseband.rs` already uses and FT8/FT4's subtract
+path is host-only. Packed `(ci, cq)` as one complex signal
+(`ci + i·cq`) so both channels shared a single FFT pair — valid by
+linearity regardless of whether the window's own FFT is real.
+
+It passed every host differential test against the direct-convolution
+reference (bit-exact to float tolerance), including at the realistic
+`nc2 = 42 192` size that exercises overlap-save blocking. On the
+actual S3 it produced a **silently corrupted residual** — pass 1's
+`coarse_baseband` found 0 candidates instead of ~14 — through three
+distinct embedded-only bugs, found and fixed one at a time across
+several flash cycles:
+
+1. **Off-by-one in the circular-delay kernel placement.** The target
+   sum `y[i] = Σ_j window[j]·ci[i−half+j]` is `(ci ⊛ h)[i]` for
+   `h[d] = window[half−d]`, not the simpler `window[d+half]` this
+   function first shipped with. For an *odd*-length, exactly-centred
+   kernel (FT8/FT4's cosine² window, centred on index `lpf_half`) the
+   two placements coincide by symmetry — but `NFILT = 360` is even, so
+   WSPR's sin window's symmetry point sits at index 179.5, not on an
+   integer index, and the two placements diverge by one tap. Caught by
+   the host differential test (a ~1 % discrepancy on a slowly-varying
+   test signal, exactly consistent with a one-sample shift, not FFT
+   rounding noise) — fixed before ever reaching hardware.
+2. **The `esp-dsp` backend's hardware FFT ceiling.** `embedded_shared
+   ::esp_dsp_fft`'s own doc comment states it plainly:
+   `dsps_fft2r_fc32_ae32` "supports any power-of-2 length up to 4096
+   in the default build, or 32768 if
+   `CONFIG_DSP_TABLE_SIZE_4096_TO_32768` is enabled" — the largest
+   Kconfig option `esp-dsp` ships, full stop. The first version used
+   `nfft = 65 536` (comfortably ≥ `nc2` for a single-block transform,
+   no blocking needed) because that's what the *math* wanted and
+   `fft-rustfft` (host) has no such ceiling. A plan request past the
+   compiled table size doesn't panic — it silently computes with
+   truncated/wrapped twiddle data. Invisible on host by construction
+   (different backend entirely); only visible as a corrupted residual
+   on the real device. Fixed by capping at 32 768 and adding overlap-
+   save blocking (two blocks cover `nc2`), re-verified against the
+   direct-convolution reference on host at the now-block-exercising
+   size.
+3. **A cross-backend FFT normalisation mismatch.** `rustfft` (host,
+   `fft-rustfft`) leaves both forward and inverse transforms
+   unscaled — the caller divides by `N` once, which is what this
+   code did. But `embedded_shared::esp_dsp_fft::EspDspFft::process`'s
+   inverse path (`if !self.forward { ... let scale = 1.0/self.len;
+   ... }`) already divides by `len` internally, as part of
+   implementing "inverse via conjugate-flip" (`esp-dsp` has no native
+   inverse-mode kernel). Scaling by `1/nfft` again on top of that —
+   correct for `rustfft`, silently wrong for `esp-dsp` — made
+   `cfi`/`cfq` land `nfft`× too small, so "subtraction" removed
+   essentially nothing. `engine::fft::FftPlanner`'s own trait doc
+   comment doesn't specify a normalisation convention either way, so
+   nothing about the type signature would have caught this — found
+   by reading `EspDspFft::process`'s source directly after ruling out
+   the first two causes.
+
+After fixing all three (confirmed via the exact `--cfg` flags rustc
+was invoked with, to rule out a stale-build artifact), the residual
+was **still** wrong — same symptom, same magnitude, unchanged. That
+points at a fourth, undiagnosed embedded-only discrepancy between
+`rustfft` and `esp-dsp` behind the same trait. Reverted at that point:
+subtract is safety-critical in a way that's easy to underweight —
+getting it wrong doesn't crash or slow anything down, it silently
+changes *which signals decode*, and continuing to guess against real
+hardware on that kind of bug, one flash cycle at a time, was no longer
+a responsible use of the remaining time. `docs/notes/` is where this
+belongs recorded rather than left as dead code with elaborate
+comments in the shipped module — whoever revisits this should start
+by instrumenting `EspDspFft` directly (a known-input round-trip dumped
+over serial, compared sample-by-sample against the host `rustfft`
+result) rather than iterating on `subtract.rs` itself again.
+
 ## A latent bug in the shipped FFT backend, found on the way
 
 Not a WSPR finding, and arguably the most consequential half of the day.
