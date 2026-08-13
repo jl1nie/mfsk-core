@@ -561,14 +561,39 @@ fn log_heap(tag: &str) {
 ///
 /// This is a measured cost of the loop, not bench overhead: any
 /// production embedded WSPR path pays the same stack.
-const BENCH_STACK: u32 = 96 * 1024;
+const SCAN_STACK: u32 = 128 * 1024;
 
-extern "C" fn bench_task(arg: *mut core::ffi::c_void) {
-    // SAFETY: `run` passes the `&'static [u8]` asset as a thin
-    // pointer + length pair boxed into a `'static` tuple that outlives
-    // the task.
+/// Stack for the bandwidth/oscillator task.
+///
+/// `tone_amplitudes` alone needs ~25 KB (8 × 257 f32 of tables in its
+/// own frame, plus the 10 368 B `IsQs` return slot). 48 KB covers it
+/// with margin **and** leaves a 180 KiB contiguous internal-DRAM block
+/// free, which is the whole point: at `SCAN_STACK` there is no such
+/// block left, so the Phase 2 A/B has to happen before the scan task
+/// exists. Measured: with a 96 KB stack the largest free internal
+/// block is 136 KB; with 48 KB it is 184 KB.
+const BW_STACK: u32 = 48 * 1024;
+
+/// Set by the bandwidth task when it is done, so the scan task (whose
+/// stack is too big to coexist with a 180 KiB internal buffer) is not
+/// created until the internal DRAM is free again.
+static BW_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn bw_task(arg: *mut core::ffi::c_void) {
+    // SAFETY: `run` leaks a `&'static &'static [u8]` that outlives
+    // every task created here.
     let bin: &'static [u8] = unsafe { *(arg as *const &'static [u8]) };
-    bench_body(bin);
+    bandwidth_body(bin);
+    BW_DONE.store(true, core::sync::atomic::Ordering::Release);
+    // Deleting the task returns its stack to the internal heap, which
+    // is what makes room for the scan task.
+    unsafe { esp_idf_svc::sys::vTaskDelete(core::ptr::null_mut()) };
+}
+
+extern "C" fn scan_task(arg: *mut core::ffi::c_void) {
+    // SAFETY: as above.
+    let bin: &'static [u8] = unsafe { *(arg as *const &'static [u8]) };
+    scan_body(bin);
     loop {
         unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
     }
@@ -579,28 +604,155 @@ pub fn run(bin: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    // The candidate loop runs compute-bound for minutes at a time
+    // without yielding, so IDLE0 starves and the task watchdog fires
+    // every 5 s — printing a full symbolised backtrace over the serial
+    // link from an ISR, inside the timed regions. Deinit it rather than
+    // measure the watchdog's console traffic. Not a bench artefact to
+    // wave away: a production embedded WSPR decoder hogs a core the
+    // same way and has to make the same call.
+    let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
+    log::info!("task watchdog deinit -> {r}");
+    log_heap("boot");
+
     let arg: &'static &'static [u8] = alloc::boxed::Box::leak(alloc::boxed::Box::new(bin));
+    let argp = arg as *const _ as *mut core::ffi::c_void;
+
+    spawn(c"wspr_bw", bw_task, BW_STACK, argp);
+    while !BW_DONE.load(core::sync::atomic::Ordering::Acquire) {
+        unsafe { esp_idf_svc::sys::vTaskDelay(100) };
+    }
+    // Give the idle task a moment to reap the deleted task's stack.
+    unsafe { esp_idf_svc::sys::vTaskDelay(100) };
+    log_heap("post-bandwidth");
+
+    spawn(c"wspr_scan", scan_task, SCAN_STACK, argp);
+    loop {
+        unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
+    }
+}
+
+fn spawn(
+    name: &core::ffi::CStr,
+    entry: extern "C" fn(*mut core::ffi::c_void),
+    stack: u32,
+    arg: *mut core::ffi::c_void,
+) {
     let created = unsafe {
         esp_idf_svc::sys::xTaskCreatePinnedToCore(
-            Some(bench_task),
-            c"wspr_bench".as_ptr(),
-            BENCH_STACK,
-            arg as *const _ as *mut core::ffi::c_void,
+            Some(entry),
+            name.as_ptr(),
+            stack,
+            arg,
             5,
             core::ptr::null_mut(),
             0,
         )
     };
     if created != 1 {
-        log::error!("failed to create the bench task ({BENCH_STACK} B stack)");
-    }
-    loop {
-        unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
+        log::error!("failed to create {name:?} ({stack} B stack)");
     }
 }
 
-fn bench_body(bin: &'static [u8]) {
-    log::info!("=== WSPR candidate-loop bench (issue #260 Phase 1/2) ===");
+/// Phase 2 + arm C, in a task small enough to leave a 180 KiB
+/// contiguous internal-DRAM block free.
+///
+/// The plan's Phase 2 runs the *whole scan* twice, once per memory
+/// tier. That is not available on this hardware: the refine cascade
+/// needs ~93 KB of stack (measured — see `SCAN_STACK`), and 93 KB plus
+/// two 180 KiB buffers does not fit the S3's internal DRAM, of which
+/// ~326 KB is free to an application. So Phase 2 is measured on
+/// `tone_amplitudes` directly instead. That is not a weaker
+/// substitute: `tone_amplitudes` **is** the loop's traffic — every one
+/// of its calls streams 162 x 256 x 2 x 4 B = 324 KiB of baseband, and
+/// the whole scan is a few thousand of them.
+///
+/// Arms, all on identical data at an identical hypothesis:
+///   - both buffers in PSRAM,
+///   - `idat` internal / `qdat` PSRAM (half the traffic moved),
+///   - both internal, when the memory happens to allow it.
+fn bandwidth_body(bin: &'static [u8]) {
+    log::info!("=== Phase 2: is the candidate loop bandwidth-bound? ===");
+    // `coarse_baseband`'s FFT is 512-point — well inside the ESP-DSP
+    // backend's range. `decimate_to_baseband`'s NFFT1 = 1_474_560 is
+    // not, which is exactly why the baseband arrives baked.
+    esp_dsp_fft::prewarm(512);
+
+    let ps_i_raw = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM idat");
+    let ps_q_raw = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM qdat");
+    let (ps_i, ps_q) = unsafe {
+        (
+            core::slice::from_raw_parts_mut(ps_i_raw, NBB),
+            core::slice::from_raw_parts_mut(ps_q_raw, NBB),
+        )
+    };
+    load_baseband(bin, ps_i, ps_q);
+
+    let int_i_raw = alloc_caps(NBB, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    let int_q_raw = int_i_raw.and_then(|_| alloc_caps(NBB, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    log::info!(
+        "internal 180 KiB blocks obtained: idat = {}, qdat = {}",
+        int_i_raw.is_some(),
+        int_q_raw.is_some(),
+    );
+
+    let both_psram = time_tone_amplitudes("both PSRAM", ps_i, ps_q);
+
+    if let Some(i) = int_i_raw {
+        let int_i = unsafe { core::slice::from_raw_parts_mut(i, NBB) };
+        int_i.copy_from_slice(ps_i);
+        let split = time_tone_amplitudes("idat internal, qdat PSRAM", int_i, ps_q);
+
+        if let Some(q) = int_q_raw {
+            let int_q = unsafe { core::slice::from_raw_parts_mut(q, NBB) };
+            int_q.copy_from_slice(ps_q);
+            let both_int = time_tone_amplitudes("both internal SRAM", int_i, int_q);
+            report_bandwidth(both_psram, both_int, "both internal");
+            free_caps(q);
+        }
+        report_bandwidth(both_psram, split, "idat internal only (half the traffic)");
+        free_caps(i);
+    } else {
+        log::warn!("no 180 KiB internal block free — Phase 2 A/B not runnable");
+    }
+
+    arm_c(ps_i, ps_q);
+
+    free_caps(ps_i_raw);
+    free_caps(ps_q_raw);
+}
+
+/// Mean microseconds per `tone_amplitudes` call over `REPS`.
+fn time_tone_amplitudes(label: &str, idat: &[f32], qdat: &[f32]) -> i64 {
+    const REPS: usize = 20;
+    // A plausible mid-band alignment. The arm measures per-call cost,
+    // which does not depend on the hypothesis.
+    let (f0, lag, drift) = (0.0f32, 1125i32, 0.0f32);
+    // Warm anything cacheable before the timed loop.
+    core::hint::black_box(tone_amplitudes(idat, qdat, f0, lag, drift));
+    let t = now_us();
+    for _ in 0..REPS {
+        core::hint::black_box(tone_amplitudes(idat, qdat, f0, lag, drift));
+    }
+    let per_call = (now_us() - t) / REPS as i64;
+    log::info!("  tone_amplitudes [{label}] = {per_call} us/call");
+    per_call
+}
+
+fn report_bandwidth(psram_us: i64, faster_us: i64, kind: &str) {
+    let delta_pct = if faster_us > 0 {
+        (psram_us - faster_us) * 100 / faster_us
+    } else {
+        0
+    };
+    log::info!(
+        "  => PSRAM vs {kind}: {psram_us} us vs {faster_us} us  ->  PSRAM is {delta_pct}% slower \
+         (plan's reading: < ~15% compute-bound, > ~40% bandwidth-bound)"
+    );
+}
+
+fn scan_body(bin: &'static [u8]) {
+    log::info!("=== Phase 1: one decode_scan, PSRAM-resident baseband ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
     log::info!(
         "baked baseband: {} bytes, {} samples/channel, max_candidates = {}",
@@ -608,12 +760,6 @@ fn bench_body(bin: &'static [u8]) {
         NBB,
         MAX_CANDIDATES,
     );
-    log_heap("boot");
-
-    // `coarse_baseband`'s FFT is 512-point — well inside the ESP-DSP
-    // backend's range. `decimate_to_baseband`'s NFFT1 = 1_474_560 is
-    // not, which is exactly why the baseband arrives baked.
-    esp_dsp_fft::prewarm(512);
 
     let ps_i = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM idat");
     let ps_q = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM qdat");
@@ -624,56 +770,7 @@ fn bench_body(bin: &'static [u8]) {
         )
     };
 
-    let a_total = arm("A (PSRAM)", bin, ps_i, ps_q);
-
-    // Arm C runs against the PSRAM buffers, freshly reloaded — arm A
-    // left them holding its own subtraction residual.
-    load_baseband(bin, ps_i, ps_q);
-    arm_c(ps_i, ps_q);
-
-    // Arm B. Try both buffers internal; fall back to a split arm.
-    log_heap("pre-B");
-    let int_i = alloc_caps(NBB, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    let int_q = int_i.and_then(|_| alloc_caps(NBB, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-
-    let b_total = match (int_i, int_q) {
-        (Some(i), Some(q)) => {
-            let (bi, bq) =
-                unsafe { (core::slice::from_raw_parts_mut(i, NBB), core::slice::from_raw_parts_mut(q, NBB)) };
-            let t = arm("B (both internal SRAM)", bin, bi, bq);
-            free_caps(i);
-            free_caps(q);
-            Some((t, "both internal"))
-        }
-        (Some(i), None) => {
-            log::warn!(
-                "only one 180 KiB internal block available — running the split arm \
-                 (idat internal, qdat PSRAM). Half the traffic moves, so read the \
-                 delta as roughly half of a full arm B."
-            );
-            let bi = unsafe { core::slice::from_raw_parts_mut(i, NBB) };
-            let t = arm("B' (idat internal, qdat PSRAM)", bin, bi, ps_q);
-            free_caps(i);
-            Some((t, "split (idat only)"))
-        }
-        _ => {
-            log::warn!("no 180 KiB internal block free — arm B not runnable");
-            None
-        }
-    };
-
-    if let Some((b, kind)) = b_total {
-        // Positive = PSRAM cost. The plan's reading: < ~15 % compute-
-        // bound, > ~40 % bandwidth-bound.
-        let delta_pct = if b > 0 { (a_total - b) * 100 / b } else { 0 };
-        log::info!(
-            "=== Phase 2: A (PSRAM) {} ms vs B ({}) {} ms  ->  A is {}% slower ===",
-            a_total / 1000,
-            kind,
-            b / 1000,
-            delta_pct,
-        );
-    }
+    arm("A (PSRAM)", bin, ps_i, ps_q);
 
     log::info!("=== bench complete ===");
 }
