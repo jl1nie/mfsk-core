@@ -187,7 +187,7 @@ impl PassStats {
         };
         log::info!(
             "          tone_amplitudes {:>6} ({:>4} /cand, {} MiB read) | minsync1 {}/{} = {}% \
-             | fano {}/{} | osd {}/{}",
+             | minsync2 rejected {}/{} | fano {}/{} | osd {}/{}",
             c.tone_amplitudes,
             if c.candidates > 0 {
                 c.tone_amplitudes / c.candidates
@@ -198,6 +198,8 @@ impl PassStats {
             c.minsync1_pass,
             c.candidates,
             minsync_pct,
+            c.minsync2_rejected,
+            c.candidates,
             c.fano_ok,
             c.fano_attempts,
             c.osd_ok,

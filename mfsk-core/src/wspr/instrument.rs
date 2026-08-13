@@ -35,6 +35,11 @@ pub static CANDIDATES: AtomicU32 = AtomicU32::new(0);
 /// and so paid for refine stages 4 and 5.
 pub static MINSYNC1_PASS: AtomicU32 = AtomicU32::new(0);
 
+/// Candidates whose fully-refined `best_sync` failed to clear
+/// `minsync2` and so never reached Fano/OSD — wsprd's own
+/// candidate-list filter (`wsprd.c:1294`).
+pub static MINSYNC2_REJECTED: AtomicU32 = AtomicU32::new(0);
+
 /// Fano attempts that survived the `minrms` plausibility gate.
 pub static FANO_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 
@@ -52,6 +57,7 @@ const ALL: &[&AtomicU32] = &[
     &TONE_AMPLITUDES,
     &CANDIDATES,
     &MINSYNC1_PASS,
+    &MINSYNC2_REJECTED,
     &FANO_ATTEMPTS,
     &FANO_OK,
     &OSD_ATTEMPTS,
@@ -64,6 +70,7 @@ pub struct Counts {
     pub tone_amplitudes: u32,
     pub candidates: u32,
     pub minsync1_pass: u32,
+    pub minsync2_rejected: u32,
     pub fano_attempts: u32,
     pub fano_ok: u32,
     pub osd_attempts: u32,
@@ -80,6 +87,9 @@ impl Counts {
             tone_amplitudes: self.tone_amplitudes.saturating_sub(earlier.tone_amplitudes),
             candidates: self.candidates.saturating_sub(earlier.candidates),
             minsync1_pass: self.minsync1_pass.saturating_sub(earlier.minsync1_pass),
+            minsync2_rejected: self
+                .minsync2_rejected
+                .saturating_sub(earlier.minsync2_rejected),
             fano_attempts: self.fano_attempts.saturating_sub(earlier.fano_attempts),
             fano_ok: self.fano_ok.saturating_sub(earlier.fano_ok),
             osd_attempts: self.osd_attempts.saturating_sub(earlier.osd_attempts),
@@ -104,6 +114,7 @@ pub fn snapshot() -> Counts {
         tone_amplitudes: TONE_AMPLITUDES.load(Ordering::Relaxed),
         candidates: CANDIDATES.load(Ordering::Relaxed),
         minsync1_pass: MINSYNC1_PASS.load(Ordering::Relaxed),
+        minsync2_rejected: MINSYNC2_REJECTED.load(Ordering::Relaxed),
         fano_attempts: FANO_ATTEMPTS.load(Ordering::Relaxed),
         fano_ok: FANO_OK.load(Ordering::Relaxed),
         osd_attempts: OSD_ATTEMPTS.load(Ordering::Relaxed),

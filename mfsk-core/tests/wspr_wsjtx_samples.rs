@@ -106,8 +106,62 @@ fn sample_and_params() -> Option<(Vec<f32>, SearchParams)> {
     ))
 }
 
+/// Recall and precision together, via the shared helper — see
+/// `common::golden`'s doc comment for why these are one assertion and
+/// not two: this file's own 2026-08-11 phantom incident (8/8 recall
+/// reported while 8 phantoms went unchecked) is the motivating case
+/// `assert_golden` was written to prevent, and WSPR's own tests had
+/// not been migrated to use it until now.
+///
+/// `decode_scan`, not `decode_scan_subtract`: this is the tier-B
+/// golden, so it has to guard the path that actually ships.
+/// `decode_scan_default` and the `mfsk-ffi` C ABI both route here, and
+/// nothing in the crate calls `decode_scan_subtract` — whose extra SIC
+/// layer turned out to duplicate the wsprd three-pass loop that #275
+/// moved *inside* `decode_scan` (see that function's doc comment).
+/// Guarding the wrapper meant the shipped decoder's recall was never
+/// actually asserted, and its own precision was never checked at all
+/// — `wspr_diag_list_all_decodes` found two phantoms on it
+/// (`68K/YJ0WKZ 30`, a Type-3 hashed `<#054f9> GR42IR 21`) that no
+/// test had ever caught, because the recall test used the wrapper and
+/// the precision test used `decode_scan`, so between them neither
+/// function's precision-and-recall pair was ever checked together.
+/// `minsync2` removed both.
+///
+/// **Recall: all 9** — every spot `wsprd` reports on this file — from
+/// a single isolated slot and without a carried table.
+///
+/// This was 7 for a long time, and the two it was missing each had a
+/// different cause:
+///
+/// `W3BI FN20 30` (-25 dB) was reachable only by OSD, and OSD is gated
+/// the way `wsprd.c:1396` gates it — accepted only for a callsign an
+/// earlier Fano decode confirmed (`WsprCallsignTable`) — so within one
+/// slot nothing confirmed it. (The gate is not negotiable: the
+/// `nhardmin <= 44` threshold it replaced recovered W3BI *and*
+/// admitted 8 phantoms on this same recording, a 50% false-decode rate
+/// reported from live operation. W3BI landed at `nhardmin = 39`, the
+/// phantoms at 40/40/40/41/41/41/42/42 — not separable.) It is now a
+/// plain Fano decode and the gate never comes up.
+///
+/// `G8VDQ IO91 37` (-23 dB) needed the subtraction of the *other*
+/// signals to be right: we were reconstructing every replica as
+/// stationary while decoding it with a drift estimate, so what got
+/// removed did not match what was there, and the residue sat on top of
+/// G8VDQ.
+///
+/// **Precision: 0.** WSPR has no CRC, so this is the property that
+/// actually matters in operation and the one that regressed before:
+/// this file produced 16 decodes — 8 real, 8 phantom, with callsigns
+/// like `UZC/7D0DKY` and `05S/C30EQG` — before the OSD gate was fixed.
+///
+/// `wspr_carried_table_does_not_perturb_a_fully_fano_slot` still
+/// covers the cross-slot table path; it just no longer has an
+/// OSD-only decode to use as its example.
 #[test]
-fn wspr_wsjtx_sample_recall_vs_golden() {
+fn wspr_golden_recall_and_precision() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
     let Some(path) = sample_path() else {
         eprintln!(
             "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
@@ -130,104 +184,45 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
         ..SearchParams::default()
     };
 
-    // `decode_scan`, not `decode_scan_subtract`: this is the tier-B
-    // golden, so it has to guard the path that actually ships.
-    // `decode_scan_default` and the `mfsk-ffi` C ABI both route here,
-    // and nothing in the crate calls `decode_scan_subtract` — whose
-    // extra SIC layer turned out to duplicate the wsprd three-pass loop
-    // that #275 moved *inside* `decode_scan` (see that function's doc
-    // comment). Guarding the wrapper meant the shipped decoder's recall
-    // was never actually asserted; it passes either way on this file,
-    // but that was luck rather than coverage.
     let decodes = decode_scan(&audio, 12_000, 0, &params);
 
-    let decoded: Vec<(String, f32, f32)> = decodes
-        .iter()
-        .map(|d| (d.message.to_string(), d.freq_hz, d.dt_sec))
-        .collect();
-
-    eprintln!("WSPR sample decoded {} message(s):", decoded.len());
-    for (m, f, dt) in &decoded {
-        eprintln!("  freq={:6.1} Hz dt={:+.2} s : {}", f, dt, m);
+    eprintln!("WSPR sample decoded {} message(s):", decodes.len());
+    for d in &decodes {
+        eprintln!(
+            "  freq={:6.1} Hz dt={:+.2} s : {}",
+            d.freq_hz, d.dt_sec, d.message
+        );
     }
 
-    let mut hits = 0usize;
-    for g in GOLDEN {
-        let hit = decoded.iter().any(|(m, f, dt)| {
-            m == g.msg
-                && (f - g.freq_hz).abs() <= FREQ_TOL_HZ
-                && (dt - g.dt_sec).abs() <= DT_TOL_SEC
-        });
-        if hit {
-            hits += 1;
-        } else {
-            eprintln!(
-                "  MISSING: '{}' @ {:.1} Hz dt={:+.2}",
-                g.msg, g.freq_hz, g.dt_sec
-            );
-        }
-    }
-    eprintln!("recall: {}/{} golden WSPR decodes", hits, GOLDEN.len());
-
-    // All 9 — every spot `wsprd` reports on this file — from a single
-    // isolated slot and without a carried table.
-    //
-    // This was 7 for a long time, and the two it was missing each had a
-    // different cause:
-    //
-    // `W3BI FN20 30` (-25 dB) was reachable only by OSD, and OSD is
-    // gated the way `wsprd.c:1396` gates it — accepted only for a
-    // callsign an earlier Fano decode confirmed (`WsprCallsignTable`) —
-    // so within one slot nothing confirmed it. (The gate is not
-    // negotiable: the `nhardmin <= 44` threshold it replaced recovered
-    // W3BI *and* admitted 8 phantoms on this same recording, a 50%
-    // false-decode rate reported from live operation. W3BI landed at
-    // `nhardmin = 39`, the phantoms at 40/40/40/41/41/41/42/42 — not
-    // separable.) It is now a plain Fano decode and the gate never
-    // comes up.
-    //
-    // `G8VDQ IO91 37` (-23 dB) needed the subtraction of the *other*
-    // signals to be right: we were reconstructing every replica as
-    // stationary while decoding it with a drift estimate, so what got
-    // removed did not match what was there, and the residue sat on top
-    // of G8VDQ.
-    //
-    // `wspr_carried_table_does_not_perturb_a_fully_fano_slot` still
-    // covers the cross-slot table path; it just no longer has an
-    // OSD-only decode to use as its example.
-    const EXPECTED_RECALL: usize = 9;
-    assert_eq!(
-        hits,
-        EXPECTED_RECALL,
-        "WSPR WSJT-X sample recall changed: {}/{} (expected {})",
-        hits,
-        GOLDEN.len(),
-        EXPECTED_RECALL
-    );
-}
-
-/// The decoder must emit **nothing beyond** the real signals.
-///
-/// WSPR has no CRC, so this is the property that actually matters in
-/// operation and the one that regressed: before the OSD gate was
-/// fixed this file produced 16 decodes — 8 real, 8 phantom, with
-/// callsigns like `UZC/7D0DKY` and `05S/C30EQG`. Real `wsprd` reports
-/// 9 real and 0 phantom on the same audio.
-#[test]
-fn wspr_wsjtx_sample_has_no_phantom_decodes() {
-    let Some((audio, params)) = sample_and_params() else {
-        return;
-    };
-    let decodes = decode_scan(&audio, 12_000, 0, &params);
-    let phantoms: Vec<String> = decodes
+    let expected: Vec<GoldenEntry> = GOLDEN
         .iter()
-        .map(|d| d.message.to_string())
-        .filter(|m| !GOLDEN.iter().any(|g| g.msg == m))
+        .map(|g| GoldenEntry {
+            msg: g.msg,
+            freq_hz: Some(g.freq_hz),
+            dt_sec: Some(g.dt_sec),
+            snr_db: None,
+        })
         .collect();
-    assert!(
-        phantoms.is_empty(),
-        "WSPR emitted {} phantom decode(s) on an 8-signal recording: {phantoms:?}",
-        phantoms.len()
+
+    assert_golden(
+        &decodes,
+        &GoldenSet {
+            name: "WSPR 150426_0918.wav",
+            expected: Box::leak(expected.into_boxed_slice()),
+            min_hits: GOLDEN.len(),
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: FREQ_TOL_HZ,
+            dt_sec: DT_TOL_SEC,
+            ..Tolerances::default()
+        },
+        |d| DecodeView {
+            msg: d.message.to_string(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
     );
 }
 
@@ -963,4 +958,32 @@ fn wspr_diag_minsync2_would_drop() {
                 .join(" "),
         );
     }
+}
+
+/// Every decode `decode_scan_subtract` produces, golden or not.
+///
+/// Written to check `minsync2`'s effect (issue #260): before that
+/// gate, this recording produced two decodes outside the curated
+/// `GOLDEN` list — `68K/YJ0WKZ 30` and a Type-3 hashed `<#054f9>
+/// GR42IR 21` — that `wspr_wsjtx_sample_has_no_phantom_decodes` never
+/// caught, because that test only runs `decode_scan`, not the
+/// subtract-wrapped variant. `minsync2` removed both with the 9
+/// golden decodes untouched — see the commit that added the gate for
+/// the pass-ablation timing this bought.
+#[test]
+#[ignore = "manual diagnostic — lists decode_scan_subtract's full output incl. non-golden entries"]
+fn wspr_diag_list_all_decodes() {
+    let Some((audio, params)) = sample_and_params() else {
+        return;
+    };
+    #[allow(deprecated)]
+    let decodes = decode_scan_subtract(&audio, 12_000, 0, &params);
+    for d in &decodes {
+        let golden = GOLDEN.iter().any(|g| g.msg == d.message.to_string());
+        eprintln!(
+            "{} | {:.1} Hz | dt {:.2} s | {:.1} dB | golden={golden}",
+            d.message, d.freq_hz, d.dt_sec, d.snr_db
+        );
+    }
+    eprintln!("total: {}", decodes.len());
 }

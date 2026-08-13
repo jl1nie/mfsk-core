@@ -445,6 +445,39 @@ pub fn decode_at_baseband_nblocks_gated_drift(
         }
     }
 
+    // wsprd's candidate-list filter (`wsprd.c:1294`), applied here
+    // rather than up front: it runs on `candidates[j].sync` *after*
+    // the refine cascade above (the same post-refine value wsprd's own
+    // loop computes it from, `wsprd.c:1220-1262`), not on the coarse
+    // peak-search score. A candidate whose refined sync doesn't clear
+    // this never reaches Fano/OSD at all in wsprd — unlike `MINSYNC1`
+    // above, which only gates the *fine* lag/freq sub-stages while
+    // still letting every candidate through to decode.
+    //
+    // Threshold: 0.12 for `ipass < 2` (`wsprd.c:1003`), 0.10 for the
+    // final pass (`wsprd.c:1008`) — the same conditional wsprd ties
+    // `maxdrift` to, so `refine_drift` (already the early/final-pass
+    // signal this function takes) selects it without a new parameter.
+    //
+    // This crate did not implement this gate until now: every coarse
+    // candidate paid the full Fano + DT-peak-up ladder regardless of
+    // how weak its refined sync was. On the WSJT-X golden's pass-0
+    // list that was 5 of 13 candidates (38 %) doing work the reference
+    // decoder skips entirely (see `wspr_diag_minsync2_would_drop`,
+    // though that diagnostic measured *coarse* sync — a different,
+    // looser proxy for the value gated here).
+    const MINSYNC2_EARLY: f32 = 0.12;
+    const MINSYNC2_FINAL: f32 = 0.10;
+    let minsync2 = if refine_drift {
+        MINSYNC2_EARLY
+    } else {
+        MINSYNC2_FINAL
+    };
+    if best_sync <= minsync2 {
+        super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);
+        return None;
+    }
+
     // Mode 2: bit metrics + Fano. wsprd does *not* stop at the refined
     // alignment — `wsprd.c:1329-1423` wraps the demod-and-decode step in
     // a **DT peak-up loop**, retrying at `shift1 ± 8k` baseband samples
@@ -847,6 +880,12 @@ fn decode_scan_inner(
     //
     //   pass 0, 1 : nblocksize = 1, maxdrift = 4, minsync2 = 0.12
     //   pass 2    : nblocksize = 4, maxdrift = 0, minsync2 = 0.10
+    //
+    // `minsync2` is applied inside
+    // `decode_at_baseband_nblocks_gated_drift`, keyed off the same
+    // `refine_drift` flag this file already threads through for
+    // `maxdrift` — see that function's doc comment for why the two
+    // reuse one boolean rather than taking a separate parameter.
     //
     // Each pass subtracts what it decoded before the next one re-runs
     // the coarse search, so pass 2 sees a residual with *two* rounds of
