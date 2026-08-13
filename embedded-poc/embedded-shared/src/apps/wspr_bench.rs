@@ -954,6 +954,69 @@ fn report_bandwidth(psram_us: i64, faster_us: i64, kind: &str) {
     );
 }
 
+/// Which heap does a `Complex32` FFT buffer actually land in, and does
+/// asking for 16-byte alignment change the answer?
+///
+/// Issue #260: aligning `wspr::subtract`'s 8 192-point buffers cut that
+/// stage 12.7 %, but the identical change on `coarse_baseband`'s
+/// 512-point buffer *cost* 219 ms. The suspected mechanism is
+/// placement, not alignment — ESP-IDF's `malloc` applies
+/// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` (4 096 bytes here) to keep
+/// small allocations in internal DRAM, while Rust routes any request
+/// with alignment above its 8-byte minimum through `posix_memalign`,
+/// which need not honour the same policy. A 512-point buffer is
+/// exactly 4 096 bytes, i.e. exactly at that threshold; an 8 192-point
+/// one is 64 KB and belongs in PSRAM either way.
+///
+/// The address decides it. On ESP32-S3, internal DRAM is
+/// `0x3FC8_0000..0x3FD0_0000` and mapped PSRAM is
+/// `0x3C00_0000..0x3E00_0000`.
+fn probe_alloc_placement() {
+    fn where_is(p: usize) -> &'static str {
+        match p {
+            0x3FC8_0000..0x3FD0_0000 => "internal DRAM",
+            0x3C00_0000..0x3E00_0000 => "PSRAM",
+            _ => "other",
+        }
+    }
+    log::info!("=== alloc placement probe (issue #260) ===");
+
+    // Does perturbing the allocation order move `coarse_baseband`'s
+    // 735 KB `ps` array, and by how much? `build_spectro` allocates a
+    // 4 096-byte FFT buffer and then `ps = vec![0.0f32; n_time*NFFT]`;
+    // `refine_alignment_top_k` then reads `ps` ~10^8 times from PSRAM
+    // in a 7-float window per inner step. Rows are 2 048 B apart, so
+    // every row inherits the base's 32-byte cache-line phase — which
+    // makes `ps`'s base address, not the FFT buffer's alignment, the
+    // thing that moved when an extra allocation was introduced.
+    const PS_BYTES: usize = 359 * 512 * 4;
+    for extra in [0usize, 1] {
+        let _pad: alloc::vec::Vec<alloc::vec::Vec<u8>> =
+            (0..extra).map(|_| alloc::vec![0u8; 4096]).collect();
+        let _fftbuf = alloc::vec![num_complex::Complex32::new(0.0, 0.0); 512];
+        let ps = alloc::vec![0.0f32; PS_BYTES / 4];
+        let p = ps.as_ptr() as usize;
+        log::info!("  ps replica, {extra} extra 4K alloc(s): {p:#010x} (mod 32 = {})", p % 32);
+    }
+
+    for len in [512usize, 8192] {
+        let plain = alloc::vec![num_complex::Complex32::new(0.0, 0.0); len];
+        let mut aligned = mfsk_core::engine::fft::AlignedComplexBuf::zeroed(len);
+        let (pp, pa) = (
+            plain.as_ptr() as usize,
+            aligned.as_mut_slice().as_ptr() as usize,
+        );
+        log::info!(
+            "  len {len:>5} ({:>6} B): plain {pp:#010x} [{}] align%16={} | aligned {pa:#010x} [{}] align%16={}",
+            len * 8,
+            where_is(pp),
+            pp % 16,
+            where_is(pa),
+            pa % 16,
+        );
+    }
+}
+
 fn scan_body(bin: &'static [u8]) {
     log::info!("=== Phase 1: one decode_scan, PSRAM-resident baseband ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
@@ -963,6 +1026,8 @@ fn scan_body(bin: &'static [u8]) {
         NBB,
         MAX_CANDIDATES,
     );
+
+    probe_alloc_placement();
 
     let ps_i = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM idat");
     let ps_q = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM qdat");
@@ -974,6 +1039,20 @@ fn scan_body(bin: &'static [u8]) {
     };
 
     arm("A (PSRAM)", bin, ps_i, ps_q);
+
+    // Issue #260 open question: does the FFT-based LPF in
+    // `wspr::subtract` actually reach the PIE kernel in place, or does
+    // every call pay `AlignedStaging`'s copy round-trip? `lpf_apply_fft`
+    // works out of plain `Vec<Complex32>` (alignment 4), and a staged
+    // 8192-point call copies 64 KB in and 64 KB back out, 13 times per
+    // subtract. Whether the allocator hands back a 16-byte-aligned block
+    // anyway is only answerable here, on the device.
+    let (aligned_calls, aligned_mask, staged_calls, staged_mask) =
+        crate::esp_dsp_fft::pie_alignment_report();
+    log::info!(
+        "  PIE alignment: in-place {aligned_calls} calls (len mask {aligned_mask:#x}) \
+         | staged {staged_calls} calls (len mask {staged_mask:#x})",
+    );
 
     log::info!("=== bench complete ===");
 }

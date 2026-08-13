@@ -71,6 +71,7 @@ use num_complex::Complex32;
 use num_traits::Float;
 
 use crate::engine::dsp::downsample::with_default_planner;
+use crate::engine::fft::AlignedComplexBuf;
 
 use super::baseband::CENTER_HZ;
 use super::demod::{N_SYMBOLS, NSPS_BASEBAND, TONE_SPACING_HZ};
@@ -299,7 +300,14 @@ fn lpf_apply_fft(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Ve
     // integer index (e.g. FT8/FT4's cosine² window); `NFILT = 360` is
     // even, so this project's own sin window's centre sits at 179.5,
     // off-integer, and the naive placement is off by one tap.
-    let mut kernel = vec![Complex32::new(0.0, 0.0); LPF_NFFT];
+    // 16-byte aligned, not `vec![Complex32; _]`: the LX7 PIE kernels
+    // this ships against need that alignment, and the backend's
+    // fallback for an under-aligned buffer is to copy 64 KB into
+    // staging and 64 KB back out, on every one of the 13 transforms
+    // below. A device probe (issue #260) measured that fallback firing
+    // on essentially every call. See [`AlignedComplexBuf`].
+    let mut kernel_buf = AlignedComplexBuf::zeroed(LPF_NFFT);
+    let kernel = kernel_buf.as_mut_slice();
     for (j, &w) in window.iter().enumerate() {
         let d = half as isize - j as isize;
         let idx = d.rem_euclid(LPF_NFFT as isize) as usize;
@@ -308,7 +316,7 @@ fn lpf_apply_fft(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Ve
 
     let fft_fwd = with_default_planner(|planner| planner.plan_forward(LPF_NFFT));
     let fft_inv = with_default_planner(|planner| planner.plan_inverse(LPF_NFFT));
-    fft_fwd.process(&mut kernel);
+    fft_fwd.process(kernel);
 
     // Cross-backend inverse-FFT normalisation: `rustfft` (host)
     // leaves forward *and* inverse unscaled, so the caller divides by
@@ -333,7 +341,8 @@ fn lpf_apply_fft(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Ve
     let valid_per_block = LPF_NFFT - NFILT;
     let out_lo = half;
     let out_hi = nc2 - half;
-    let mut block = vec![Complex32::new(0.0, 0.0); LPF_NFFT];
+    let mut block_buf = AlignedComplexBuf::zeroed(LPF_NFFT);
+    let block = block_buf.as_mut_slice();
     let mut out_start = out_lo;
     while out_start < out_hi {
         let block_len = valid_per_block.min(out_hi - out_start);
@@ -353,11 +362,11 @@ fn lpf_apply_fft(ci: &[f32], cq: &[f32], window: &[f32; NFILT]) -> (Vec<f32>, Ve
                 Complex32::new(0.0, 0.0)
             };
         }
-        fft_fwd.process(&mut block);
+        fft_fwd.process(block);
         for (b, k) in block.iter_mut().zip(kernel.iter()) {
             *b *= *k;
         }
-        fft_inv.process(&mut block);
+        fft_inv.process(block);
         for n in 0..block_len {
             let v = block[half + n] * fac;
             cfi[out_start + n] = v.re;

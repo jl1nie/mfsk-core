@@ -55,6 +55,82 @@ pub trait Fft {
     }
 }
 
+/// Four `Complex32` carrying a 16-byte alignment guarantee. Backing
+/// store for [`AlignedComplexBuf`]; not useful on its own.
+#[repr(align(16))]
+#[derive(Clone, Copy)]
+struct Align16Quad(
+    // Only ever read through the reinterpreting slice in
+    // `AlignedComplexBuf::as_mut_slice` — the field exists to size and
+    // align the allocation.
+    #[allow(dead_code)] [Complex32; 4],
+);
+
+impl Align16Quad {
+    const ZERO: Self = Self([Complex32::new(0.0, 0.0); 4]);
+}
+
+/// A zeroed `Complex32` working buffer guaranteed to start on a
+/// 16-byte boundary.
+///
+/// [`Fft::process`] takes a plain `&mut [Complex32]`, and `Complex32`
+/// is `repr(C)` over two `f32`, so its alignment is only 4. Backends
+/// that dispatch to SIMD kernels generally want more: the ESP32-S3
+/// (LX7) PIE kernels `esp-dsp` compiles under `aes3` move float
+/// *pairs* with `ee.ldf.64.ip` / `ee.stf.64.ip` and require 16, and
+/// the `mfsk-core`-side backend in `embedded-shared` honours that by
+/// copying any under-aligned caller buffer through an aligned staging
+/// area and copying the result back.
+///
+/// That fallback is correct but not free, and on issue #260 it was
+/// measured firing on **every** call: a device probe of the WSPR
+/// candidate loop counted 1 182 staged transforms against 2 in-place
+/// ones, i.e. the allocator hands back a 16-byte-aligned block only
+/// by luck. For the 8 192-point transforms in [`crate::wspr::subtract`]
+/// that is 64 KB copied in and 64 KB copied back out per call, 13
+/// times per subtraction, against PSRAM-resident buffers.
+///
+/// Callers that plan a hot, repeatedly-transformed buffer should
+/// allocate it through this type instead of `vec![Complex32; n]`.
+/// Backends with no alignment requirement (`rustfft` on the host) are
+/// unaffected — an over-aligned buffer is still a valid one.
+pub struct AlignedComplexBuf {
+    quads: alloc::vec::Vec<Align16Quad>,
+    len: usize,
+}
+
+impl AlignedComplexBuf {
+    /// Allocate `len` zeroed `Complex32`, 16-byte aligned.
+    ///
+    /// `len` is rounded up to a multiple of 4 internally; the slice
+    /// handed back is exactly `len` long. Every size an FFT backend
+    /// plans is a power of two ≥ 4, so in practice no rounding occurs.
+    pub fn zeroed(len: usize) -> Self {
+        Self {
+            quads: alloc::vec![Align16Quad::ZERO; len.div_ceil(4)],
+            len,
+        }
+    }
+
+    /// The buffer as a `Complex32` slice — what [`Fft::process`] takes.
+    pub fn as_mut_slice(&mut self) -> &mut [Complex32] {
+        // SAFETY: `Align16Quad` is `repr(align(16))` over
+        // `[Complex32; 4]` with no padding, so `quads` is exactly
+        // `4 * quads.len()` contiguous `Complex32` starting on a
+        // 16-byte boundary, and `len <= 4 * quads.len()` by
+        // construction in `zeroed`.
+        unsafe {
+            core::slice::from_raw_parts_mut(self.quads.as_mut_ptr() as *mut Complex32, self.len)
+        }
+    }
+
+    /// Read-only view of the same buffer.
+    pub fn as_slice(&self) -> &[Complex32] {
+        // SAFETY: as in `as_mut_slice`.
+        unsafe { core::slice::from_raw_parts(self.quads.as_ptr() as *const Complex32, self.len) }
+    }
+}
+
 /// Plans (and typically caches) [`Fft`] instances on demand.
 ///
 /// Callers should construct one planner per decode session and reuse
@@ -336,6 +412,45 @@ pub fn default_planner_16() -> Box<dyn FftPlanner16> {
 }
 
 // ── tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests_aligned_buf {
+    use super::*;
+
+    /// The whole point of the type. A plain `vec![Complex32; n]` makes
+    /// no such promise — that is what the ESP32-S3 PIE backend has to
+    /// defend against by copying through staging.
+    #[test]
+    fn zeroed_is_16_byte_aligned_and_the_requested_length() {
+        // Several sizes, including the 8192 `wspr::subtract` plans and
+        // a non-multiple-of-4 to exercise the round-up in `zeroed`.
+        for len in [4usize, 512, 4096, 8192, 7] {
+            let mut buf = AlignedComplexBuf::zeroed(len);
+            assert_eq!(buf.as_mut_slice().len(), len, "len {len}");
+            assert_eq!(buf.as_slice().len(), len, "len {len}");
+            assert_eq!(
+                buf.as_mut_slice().as_ptr() as usize % 16,
+                0,
+                "len {len} not 16-byte aligned",
+            );
+            assert!(
+                buf.as_slice().iter().all(|c| c.re == 0.0 && c.im == 0.0),
+                "len {len} not zeroed",
+            );
+        }
+    }
+
+    /// Writes must survive the reinterpreting slice — i.e. the two
+    /// views really do alias one allocation, rather than the mutable
+    /// one handing out a temporary.
+    #[test]
+    fn writes_are_visible_through_the_shared_view() {
+        let mut buf = AlignedComplexBuf::zeroed(8);
+        buf.as_mut_slice()[5] = Complex32::new(1.5, -2.5);
+        assert_eq!(buf.as_slice()[5], Complex32::new(1.5, -2.5));
+        assert_eq!(buf.as_slice()[4], Complex32::new(0.0, 0.0));
+    }
+}
 
 #[cfg(all(test, feature = "fft-rustfft"))]
 mod tests_rustfft {

@@ -1328,6 +1328,132 @@ LPF in production — direct convolution remains as
 [`lpf_apply_direct`], the differential test's reference, not on the
 call path.
 
+## The alignment lever, measured: −12.7 % on subtract, and the 512-point half is a *regression*
+
+The section above closed by flagging an unaligned `Vec<Complex32>` as
+the likely reason the FFT LPF returned 3-4 % where its flop count
+suggested an order of magnitude, and named [`AlignedComplexBuf`]-style
+staging as "the next thing to try before concluding FFT genuinely
+isn't worth it here". That was a hypothesis about the *allocator* —
+whether a 64 KB `Vec<Complex32>` actually lands off a 16-byte
+boundary is not something host code can answer — so it was measured
+before anything was rewritten to chase it.
+
+**The probe**: `esp_dsp_fft.rs` gained a counter pair
+(`pie_alignment_report`, two relaxed atomics per transform, `aes3`
+only) splitting `EspDspFft::process` calls into in-place vs
+staged-round-trip, each with an OR-mask of the lengths involved. Every
+length the backend plans is a power of two, so the mask reads back as
+an exact set.
+
+```
+PIE alignment: in-place 2 calls (len mask 0x200) | staged 1182 (len mask 0x3200)
+```
+
+**Confirmed, and worse than assumed**: 1 182 of 1 184 transforms took
+the staging path. The allocator returns a 16-byte-aligned block only
+by luck — twice, both 512-point. The staged set is exactly
+`{512, 4096, 8192}`, and the arithmetic lines up: 104 of them are the
+LPF's (13 transforms × 8 subtractions across passes 0/1), 1 077 are
+`coarse_baseband`'s 512-point spectrogram (`n_time` ≈ 359 × 3 passes).
+
+`AlignedComplexBuf` (new, `mfsk-core/src/engine/fft.rs` — a
+`Vec<Align16Quad>` reinterpreted as `[Complex32]`, with unit tests
+asserting the alignment, length and zeroing) replaces the two
+`vec![Complex32; 8192]` buffers in `lpf_apply_fft`:
+
+| | staged LPF | aligned LPF | Δ |
+|---|---:|---:|---:|
+| pass 0 subtract | 10 293 ms | 8 985 ms | **−12.7 %** |
+| pass 1 subtract | 1 475 ms | 1 288 ms | **−12.7 %** |
+| coarse (all passes) | 29 409 ms | 29 409 ms | 0 |
+| **TOTAL** | **105 459 ms** | **103 959 ms** | **−1 500 ms (−1.4 %)** |
+| PIE in-place / staged | 2 / 1 182 | 106 / 1 078 | −104 staged |
+
+9/9 golden held. This A/B is unusually clean: every non-subtract stage
+came back bit-identical, and the −1 495 ms summed subtract delta
+accounts for essentially the whole −1 500 ms TOTAL — none of the
+build-to-build float noise the previous section had to reason around.
+
+### The 512-point half looked like a regression. It is a measurement floor.
+
+The same change on `coarse_baseband`'s 512-point buffer drove staging
+to near-zero (1 183 in-place, 1 staged) and appeared to cost
+**+219 ms**, consistently across all three passes — TOTAL 104 179 ms,
+with a revert restoring 13 312 / 14 291 / 1 806 ms and 103 959 ms
+*exactly*. Reproducible, so not run-to-run noise. It was still the
+wrong conclusion, and four controls were needed to say why. Each
+measures pass-0 `coarse` between the same two log markers:
+
+| build | pass 0 coarse | what it changes |
+|---|---:|---|
+| pristine | 13 370 ms | — |
+| code-shape control | 13 370 ms | slice bound outside the loop, `process(buf)`; allocation-neutral |
+| **null edit** | **13 430 ms** | `black_box(&spec.n_time)` — semantically nothing |
+| `Vec::with_capacity` for `cells` | 13 470 ms | removes ~6 600 reallocations |
+| aligned 512-pt buffer | 13 414 ms | the "regression" |
+
+**A provably semantics-free edit reproduces the effect.** The
+`black_box` line allocates nothing, touches no buffer, and changes no
+value; its only effect is to shift every instruction after it. That
+is enough to move this stage ~60 ms. The code-shape control, which
+compiles to the same machine code as pristine, reproduces pristine
+*bit-for-bit* — so the split is not "edited vs unedited" but "same
+instruction layout vs different one".
+
+Each competing explanation was tested and killed on its own:
+
+- **Allocation placement** — a device probe printed the addresses.
+  Plain and aligned land in the *same heap* (512-pt: `0x3fceb038` vs
+  `0x3fcec050`, both internal DRAM; 8 192-pt: both PSRAM). Asking for
+  16-byte alignment does not re-route the allocation.
+- **Extra allocation count** — an allocate-but-never-use control
+  reproduced the swing (+282 ms) with the FFT still running on the
+  unaligned buffer, and a *plain* extra allocation of the same size
+  reproduced it equally (+242 ms). So not the aligned path either.
+- **`ps` moving** — the 735 KB array `refine_alignment_top_k` reads
+  ~10⁸ times was the best remaining suspect, since its rows are
+  2 048 B apart and all inherit the base's 32-byte cache-line phase.
+  Probed directly: base `0x3c0f49b4` **unchanged** with or without an
+  extra 4 KB allocation. Different heaps — the 4 KB blocks are
+  internal DRAM, `ps` is PSRAM. Killed.
+- **Reallocation churn** in `cells` (~6 600 per scan) — real, and
+  worth fixing on its own merits, but `with_capacity` did not recover
+  the baseline either. Not the mechanism.
+
+**Root cause: instruction-cache / code-layout sensitivity of
+`refine_alignment_top_k`.** Its loop nest (`dfreq` × `k0` × `idrift` ×
+162 symbols, four strided PSRAM reads per innermost step) runs from
+flash through the S3's instruction cache, and this stage's wall-clock
+has a ~60-130 ms (~0.5-1 %) floor set purely by where those
+instructions land. **The 512-point alignment change sits inside that
+floor.** It is not a regression; it is not measurable either way with
+this instrument.
+
+Two consequences worth carrying forward. First, the shipped LPF
+result is unaffected — its −1 500 ms is an order of magnitude outside
+the floor, and it was measured across two builds whose `coarse`
+numbers were *identical* (13 312 / 14 291 / 1 806 both times), so no
+layout shift is folded into it. Second, **any future `coarse`-stage
+change under ~150 ms cannot be attributed from TOTAL or from the
+stage timer alone** — it needs a control that isolates layout, the way
+the null edit does here. That is the reusable finding; the
+512-point buffer itself is left unaligned, not because alignment
+hurts, but because there is no evidence it does anything.
+
+The PIE counter stays in the tree. It is what turned the first half
+of this from argument into measurement, and it is how the next caller
+gets checked rather than assumed.
+
+**A correction to the previous section's headline number.** Rebuilding
+that exact source today reproduces its subtract stages bit-for-bit
+(10 293 / 1 475 ms) but totals **105 459 ms, not the 101 599 ms
+recorded**. The FFT-LPF's own gain is solid; the TOTAL it was
+attributed to carried ~4 s of the build-to-build float sensitivity
+that section documents, in the favourable direction. Treat the
+per-stage numbers as the reproducible ones and TOTAL as ±4 s. The
+current shipped figure is **103 959 ms**.
+
 ## A latent bug in the shipped FFT backend, found on the way
 
 Not a WSPR finding, and arguably the most consequential half of the day.

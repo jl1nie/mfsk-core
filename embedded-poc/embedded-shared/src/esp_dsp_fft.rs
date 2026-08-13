@@ -108,6 +108,63 @@ fn pie_aligned(buf: &[Complex32]) -> bool {
     (buf.as_ptr() as usize) % 16 == 0
 }
 
+/// How often the PIE path got a caller buffer it could use in place,
+/// versus how often it paid [`AlignedStaging`]'s copy-in/copy-out.
+///
+/// Diagnostic for issue #260's open question: the FFT-based LPF in
+/// `wspr::subtract` sped the subtract step up only 3-4 %, far less
+/// than its flop count predicted, and an unaligned `Vec<Complex32>`
+/// falling back to staging on every call is the leading suspect. That
+/// is a *hypothesis about the allocator* — whether a 64 KB
+/// `Vec<Complex32>` actually lands off a 16-byte boundary is not
+/// something host code can answer — so it gets measured before
+/// anything is rewritten to chase it.
+///
+/// `*_LEN_MASK` is an OR of the observed lengths, not a count. Every
+/// length this backend plans is a power of two, so the mask reads back
+/// as an exact set of lengths without needing a per-length table.
+///
+/// Two relaxed atomics per call, and only under `aes3` — negligible
+/// against even the 256-point kernel they sit in front of.
+#[cfg(feature = "aes3")]
+static PIE_ALIGNED_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "aes3")]
+static PIE_ALIGNED_LEN_MASK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "aes3")]
+static PIE_STAGED_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "aes3")]
+static PIE_STAGED_LEN_MASK: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "aes3")]
+fn record_pie_path(len: usize, aligned: bool) {
+    let (calls, mask) = if aligned {
+        (&PIE_ALIGNED_CALLS, &PIE_ALIGNED_LEN_MASK)
+    } else {
+        (&PIE_STAGED_CALLS, &PIE_STAGED_LEN_MASK)
+    };
+    calls.fetch_add(1, Ordering::Relaxed);
+    mask.fetch_or(len, Ordering::Relaxed);
+}
+
+/// `(aligned_calls, aligned_len_mask, staged_calls, staged_len_mask)`
+/// — see [`record_pie_path`]. All zero when `aes3` is off, where the
+/// non-PIE kernel has no alignment requirement to begin with.
+pub fn pie_alignment_report() -> (usize, usize, usize, usize) {
+    #[cfg(feature = "aes3")]
+    {
+        (
+            PIE_ALIGNED_CALLS.load(Ordering::Relaxed),
+            PIE_ALIGNED_LEN_MASK.load(Ordering::Relaxed),
+            PIE_STAGED_CALLS.load(Ordering::Relaxed),
+            PIE_STAGED_LEN_MASK.load(Ordering::Relaxed),
+        )
+    }
+    #[cfg(not(feature = "aes3"))]
+    {
+        (0, 0, 0, 0)
+    }
+}
+
 /// Factory called by `mfsk_core::engine::fft::default_planner()` when
 /// the crate is built with `fft-extern` (and no built-in backend like
 /// `fft-rustfft`). Symbol name + signature are the link-time contract;
@@ -495,6 +552,8 @@ impl Fft for EspDspFft {
             }
         }
         if cfg!(feature = "aes3") && !pie_aligned(buf) {
+            #[cfg(feature = "aes3")]
+            record_pie_path(self.len, false);
             // SAFETY: see the field comment on `staging`.
             let staging = unsafe { &mut *self.staging.get() };
             let work = staging.as_slice(self.len);
@@ -502,6 +561,8 @@ impl Fft for EspDspFft {
             self.kernel(work);
             buf.copy_from_slice(work);
         } else {
+            #[cfg(feature = "aes3")]
+            record_pie_path(self.len, true);
             self.kernel(buf);
         }
         if !self.forward {
