@@ -344,6 +344,36 @@ and the WSPR corpus — single-signal, DT = 0, f0 = 0, all four tones on
 exact bin centres — cannot currently answer that. The corpus gap gates
 this exactly as it gates everything else here.
 
+## Where G8VDQ ranks after `minsync2` — near the top, not buried
+
+VK3NV's follow-up: if the eventual weak decode stays near the top of
+`minsync2`'s survivors, ranked-deep processing (process the top N by
+sync, deepest ladder first) is a simpler lever than anything
+budget-adaptive.
+
+Needed the exact post-refine `best_sync` `minsync2` gates on — not the
+coarse peak-search score `wspr_diag_minsync2_would_drop` used earlier,
+which is a looser proxy for the same thing. Extracted the refine
+cascade (`decode_at_baseband_nblocks_gated_drift`'s stages 1-5) into
+its own function so a diagnostic could call the *exact* value being
+gated, not a hand-reconstructed approximation of it, then replicated
+`decode_scan_inner`'s real sequence (both early passes, each
+subtracting its own decodes) to reach the actual pass-2 residual:
+
+```
+G8VDQ: rank 1 of 14 by refined sync (3 of 14 candidates survive minsync2)
+```
+
+Second-highest refined sync of any pass-2 candidate (0.2142, behind
+one non-decoding candidate at 0.2294), and comfortably inside the 3
+that clear `minsync2`. On this file the weak decode pass 2 exists to
+find is not buried in the tail — a plain top-N-by-sync cutoff would
+have reached it without needing the Fano-budget classifier either of
+us had been assuming was necessary.
+
+One recording, so this is directional rather than conclusive — same
+corpus caveat as everywhere else in this document.
+
 ## opt-level — codegen mattered too, but on the search code, not the DSP
 
 VK3NV's follow-up on #260 asked whether the `opt-level = 1` every
