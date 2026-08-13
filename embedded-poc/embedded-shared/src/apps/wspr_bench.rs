@@ -337,6 +337,53 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
         stack_headroom(),
     );
 
+    // Fano vs OSD split — the plan's fourth "what to record" row, and
+    // the one the counters made urgent: pass 2 attempts OSD 896 times
+    // and succeeds 0 times, while `tone_amplitudes` accounts for well
+    // under a tenth of the pass.
+    //
+    // Running the identical loop with `confirmed = None` is an exact
+    // controlled experiment rather than an estimate: `None` is the only
+    // thing that changes, and it makes the `and_then` short-circuit
+    // before `osd_decode` instead of running it and rejecting the
+    // result. Every other operation — the refine cascade, the DT
+    // peak-up loop, `nblock*_bit_metrics`, Fano — is identical. Sound
+    // here only because pass 2's OSD produced no decodes, so removing
+    // it cannot change which candidates succeed.
+    //
+    // It runs *before* the real pass-2 loop, not after, purely so its
+    // per-candidate numbers appear early in a run that takes 20 minutes
+    // to reach this point. Neither loop mutates `idat`/`qdat`, so the
+    // order cannot matter.
+    let c_osd = instrument::snapshot();
+    let t = now_us();
+    let mut n_noosd = 0;
+    for (ci, c) in cands2.iter().enumerate() {
+        let t_c = now_us();
+        if decode_at_baseband_nblocks_gated_drift(
+            idat,
+            qdat,
+            SAMPLE_RATE,
+            c.start_sample,
+            c.freq_hz,
+            c.drift_hz,
+            &[1, 2, 3, 0],
+            None,
+            false,
+        )
+        .is_some()
+        {
+            n_noosd += 1;
+        }
+        log::info!(
+            "      p2-noosd cand {}/{}: {} ms",
+            ci + 1,
+            cands2.len(),
+            (now_us() - t_c) / 1000,
+        );
+    }
+    let decode_noosd_us = now_us() - t;
+    let c_noosd = instrument::snapshot().since(c_osd);
     let t = now_us();
     let mut raw2: Vec<WsprResult> = Vec::new();
     for (ci, c) in cands2.iter().enumerate() {
@@ -368,6 +415,31 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     let decode_us = now_us() - t;
     log::info!("    [pass 2 decode done: stack headroom {} B]", stack_headroom());
     assert_heap_ok("pass-2 decode loop");
+
+    log::info!(
+        "  pass 2 OSD split: with OSD {} ms | without OSD {} ms | OSD = {} ms ({}% of pass 2), \
+         {} attempts, {} decodes lost",
+        decode_us / 1000,
+        decode_noosd_us / 1000,
+        (decode_us - decode_noosd_us) / 1000,
+        if decode_us > 0 {
+            (decode_us - decode_noosd_us) * 100 / decode_us
+        } else {
+            0
+        },
+        c_noosd.osd_attempts,
+        raw2.len() as i32 - n_noosd,
+    );
+    log::info!(
+        "          replay counters: tone_amplitudes {} (vs {}), fano {}/{} (vs {}/{})",
+        c_noosd.tone_amplitudes,
+        994,
+        c_noosd.fano_ok,
+        c_noosd.fano_attempts,
+        1,
+        897,
+    );
+
 
     let mut n_new = 0;
     for d in raw2 {
