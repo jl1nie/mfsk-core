@@ -10,19 +10,25 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
 
 ## Headline
 
-1. **It does not fit — but the gap closed by 8.0× today.** One
-   `decode_scan` started at **1 214 s** against WSPR's 120 s slot
-   (10.1× over, 1 755× the host) and now stands at **152.3 s** (1.27×
-   over) after five independent, additive fixes: `opt-level=3`
-   (1.19×), `minsync2` (4.1×), ranking pass-2 candidates by refined
-   sync to deep-process only the strongest 2 (1.25× further —
-   evidence-bounded, not provably lossless like the first two), a
-   ping-pong rewrite of `refine_cascade`'s stack usage (112.1 KB peak
-   → 61.5 KB, no wall-clock change by itself but the enabler for the
-   next line), and genuine dual-core dispatch on all three passes
-   (1.17× further, real — see "Pass 2 candidate-ladder truncation"
-   and "Dual-core, take two" below for both). 9/9 golden held at every
-   step.
+1. **It now fits — on the slot deadline, exactly.** One `decode_scan`
+   started at **1 214 s** against WSPR's 120 s slot (10.1× over,
+   1 755× the host) and now finishes at **120.3 s** (1.002× the slot)
+   with the shipped `DeadlineDriven` default — one ladder-position's
+   granularity over 120 s, not under, because that default's whole
+   point is racing the deadline rather than promising a hard number.
+   Six independent, additive fixes: `opt-level=3` (1.19×), `minsync2`
+   (4.1×), ranking pass-2 candidates by refined sync to deep-process
+   only the strongest 2 (1.25× further — evidence-bounded, not
+   provably lossless like the first two), a ping-pong rewrite of
+   `refine_cascade`'s stack usage (112.1 KB peak → 61.5 KB, no wall-
+   clock change by itself but the enabler for the next line), genuine
+   dual-core dispatch on all three passes (1.17× further, real —
+   152.3 s), and a slot-deadline-aware time budget on pass 2's
+   failing-candidate ladder (152.3 s → 120.3 s). An AWGN-sweep-backed
+   alternative, `RecallPriority`, trades the deadline guarantee for a
+   fixed recall-safety margin instead (136.5 s, not slot-bounded) —
+   see "The AWGN sweep, and a deadline-vs-recall choice instead of one
+   number" below. 9/9 golden held at every step, on both budget modes.
 2. **The loop is compute-bound, not bandwidth-bound.** Moving half the
    baseband traffic to internal SRAM buys 5 %. So **#260's Phase 3
    (within-stage hypothesis fusion) should not be built** — its entire
@@ -840,6 +846,84 @@ that this file's specific failing candidate happens to be slow.
 separate measurement — sizing it correctly is AWGN-sweep work, not
 something to infer from one file's single data point, however
 suggestive.
+
+## The AWGN sweep, and a deadline-vs-recall choice instead of one number
+
+Ran that separate measurement. `wspr_pass2_ladder_position_sweep`
+(`tests/wspr_sweep.rs`) counts how many DT peak-up × nblocks positions
+a *converging* signal actually needs, using the same
+`rank_pass2_candidates` + `deep_decode_pass2_candidate` pair
+production calls, across the AWGN corpus — 20 trials/SNR first pass,
+then 80 more each at -30/-31/-32 dB (the sensitivity-floor band where
+it matters, 20 → 100 trials there) specifically to check whether the
+first pass's max was a small-sample artifact:
+
+```
+   SNR   trials   found   max pos   mean pos   p90 pos
+ -32dB      100      41        43       22.2        38
+ -31dB      100      84        42       15.6        35
+ -30dB      100      99        44        7.0        20
+ -29dB and above: max 13, dropping to 1 by -28 dB
+```
+
+Max moved 43 → 44 with 5× the sample — essentially unchanged — and
+p90 dropped clearly below max (35-38 vs the first pass's 42-43,
+where p90 ≈ max was itself a symptom of too few "found" trials to
+resolve the tail). This is a real, stable worst case, not a small-
+sample fluke: **44 of 68 positions**, `docs/notes` cross-referencing
+its own earlier caution (`feedback_sparse_snr_sampling_looks_like_bug`
+memory) about exactly this failure mode.
+
+44 positions × 0.7071 s/position (S3's measured per-position cost,
+from the 68-position full-ladder run above) × 1.3 margin ≈ 40.5 s,
+rounded down to **40 s** — verified on-device (`RecallPriority
+(40_000_000)`): pass 2 decode 56.5 s → 40.6 s, TOTAL 152.3 s →
+**136.5 s**, 9/9 golden unchanged. Materially smaller than the 20 s
+demo's gain (116.3 s) — because the 20 s demo was, by this evidence,
+actually **unsafe**: 20 s is below the un-margined 43-position figure
+(30.4 s) the first sweep pass already implied, before the 44-position
+re-check even happened.
+
+**Then the user reframed the goal**: meeting the 120 s deadline is
+the first priority; a recall-preserving fixed budget is a second,
+explicitly-selectable option, not the default. A fixed budget
+anchored to pass 2's own start (what both demos above used) is blind
+to how much of the slot pass 0/1 already spent — on a run where they
+happen to take longer, it doesn't adapt, and TOTAL can still miss the
+deadline. Replaced the single constant with `Pass2Budget`, an enum
+`wspr_bench` selects explicitly:
+
+- **`DeadlineDriven` (now the default)** — `deadline_us = scan_start_us
+  + SLOT_US` (120 s), captured once at the very top of `run_scan` so
+  it reflects the whole scan's elapsed time, not just pass 2's own.
+  Cuts pass 2's ladder off exactly when the slot boundary arrives,
+  whatever that leaves — guarantees on-time completion; pass-2 recall
+  risk varies run-to-run with what pass 0/1 consumed.
+- **`RecallPriority(40_000_000)`** — the AWGN-sweep number above,
+  fixed regardless of the slot. Choose this when losing a real weak
+  decode is worse than running over.
+
+**Both verified back to back on the same golden file:**
+
+| | `DeadlineDriven` | `RecallPriority(40s)` |
+|---|---:|---:|
+| pass 2 main (non-converging) | cut at 16.1 s | cut at 32.2 s |
+| pass 2 decode | 24.4 s | 40.6 s |
+| **TOTAL** | **120.3 s** | 136.5 s |
+| golden recall | 9/9 | 9/9 |
+
+This run happened to have pass 0/1 consume 94.1 s of the 120 s budget
+— more than `RecallPriority`'s 40 s assumes will be left — so
+`DeadlineDriven` only had 16.1 s for pass 2's hard candidate, *less*
+margin over the 44-position worst case than the fixed number gives.
+That is exactly the tradeoff the two names describe, demonstrated on
+one real run rather than asserted: `DeadlineDriven` hits the slot
+almost exactly (120.3 s, one ladder-position's worth over) but its
+recall margin shrinks or grows with pass 0/1; `RecallPriority` holds
+its margin fixed but not the deadline. Shipped default is
+`DeadlineDriven`, per the explicit priority order the user set —
+`RecallPriority` stays in the source as the documented alternative,
+one line to switch.
 
 ## A latent bug in the shipped FFT backend, found on the way
 
