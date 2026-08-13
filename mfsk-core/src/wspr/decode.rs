@@ -639,8 +639,33 @@ fn decode_from_refined(
             // can recover signals at -27 dB SNR (e.g. W3BI on the WSJT-X
             // golden) where Fano alone hits the convergence threshold.
             super::instrument::bump(&super::instrument::FANO_ATTEMPTS);
+            // Cycle-budget cap (issue #260): every real decode in the
+            // WSJT-X golden converges inside 20 % of the uncapped
+            // budget (measured worst case — G8VDQ, the -23 dB decode
+            // pass 2 exists for — is 162 075 cycles = 2 001/bit,
+            // 20.01 % of the 10 000/bit default), while a failing
+            // candidate burns essentially the whole budget before
+            // giving up (mean 99 %, `docs/notes/
+            // WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Fano
+            // convergence budget" section). Unlike pass 2's own
+            // minsync2 + top-N + deadline-budget triage, passes 0 and
+            // 1 had no cap at all: every minsync2 (0.12) survivor paid
+            // the full, uncapped Fano+OSD ladder regardless of how
+            // many candidates a busier band produced.
+            //
+            // `WSPR_FANO_CYCLE_BUDGET` reuses JT9's own `Fast` tier
+            // (`Jt9Depth::Fast`, `jt9/decode.rs`) rather than inventing
+            // a new number — 5 000/bit gives 2.5x margin over the
+            // measured worst case here. Safety net, not a tuned
+            // threshold: verified against the WSPR AWGN sweep (see the
+            // doc above) rather than assumed safe from one recording.
+            const WSPR_FANO_CYCLE_BUDGET: u64 = 5_000;
+            let fec_opts = FecOpts {
+                max_cycles_per_bit: Some(WSPR_FANO_CYCLE_BUDGET),
+                ..FecOpts::default()
+            };
             let (info_bits, hard_errors) = if let Some(fec_res) =
-                codec.decode_soft_pooled(&llrs, &FecOpts::default(), &mut fano_scratch)
+                codec.decode_soft_pooled(&llrs, &fec_opts, &mut fano_scratch)
             {
                 super::instrument::bump(&super::instrument::FANO_OK);
                 let mut info = [0u8; 50];

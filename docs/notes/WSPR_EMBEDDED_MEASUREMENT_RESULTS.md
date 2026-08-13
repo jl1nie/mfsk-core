@@ -1154,6 +1154,92 @@ picks this up should start with a device round-trip dump of
 reading — see `EspDspPlanner16`'s doc comment in `esp_dsp_fft.rs` for
 the full citation.
 
+## Pass 0/1 get a Fano cycle-budget cap — and a real bug in `ConvFano` it exposed
+
+Prompted by a direct question: the 120.3 s "fits the slot" result was
+measured on one recording with 9 real signals. Pass 0 (47.4 s) + pass
+1 (46.7 s) — 78 % of the scan — had *no* triage at all beyond
+`minsync2`: every survivor paid the full, uncapped Fano+OSD ladder,
+unlike pass 2 (`minsync2` + top-N + a deadline budget). Nothing bounds
+that cost as a busier band produces more `minsync2` survivors.
+
+The lever was already measured and sitting unused: "Fano convergence
+budget" above found every real decode on the golden converges inside
+20 % of the uncapped budget (worst case, G8VDQ: 162 075 cycles = 2 001
+cycles/bit, exactly 20.01 % of 10 000/bit, confirmed by a direct
+`fec::conv::fano::instrument::OK_CYCLES_MAX` read), while failing
+candidates burn a mean 99 %. `FecOpts::max_cycles_per_bit` exists for
+exactly this (`Jt9Depth`'s `Fast`/`Normal`/`Deep`/`Max` ladder already
+uses it for JT9) and is `None` (uncapped) at every WSPR call site.
+
+**The cap that went in**: `WSPR_FANO_CYCLE_BUDGET = 5_000` cycles/bit
+— JT9's own `Fast` tier, reused rather than inventing a number, giving
+2.5× margin over the measured worst real case. Applied at the one hot
+-path call (`decode_from_refined`'s `decode_soft_pooled`, shared by
+all three passes). OSD's own internal Fano re-run (`osd.rs`, trivial
+convergence against an already-zero-hard-error codeword) and the
+test-only `decode_from_deinterleaved_llrs` were deliberately left on
+`FecOpts::default()` — capping an always-fast, always-converging call
+buys nothing and only adds risk.
+
+**First attempt did nothing — `ConvFano` was silently ignoring
+`FecOpts` entirely.** `decode_soft`/`decode_soft_pooled`'s `opts`
+parameter was named `_opts`: both hardcoded
+`Self::DEFAULT_MAX_CYCLES`, never reading `max_cycles_per_bit` at all.
+JT9's own `ConvFano232::decode_soft` does this correctly
+(`opts.max_cycles_per_bit.unwrap_or(Self::DEFAULT_MAX_CYCLES)`) two
+codecs down in the same file — `ConvFano` (WSPR's codec) never got the
+same wiring. Caught because a before/after AWGN sweep and a before
+/after device flash both came back **byte-identical**, which a genuine
+cap should not do; traced to the unused parameter by inspection, not
+guesswork. Fixed in `mfsk-core/src/fec/conv/mod.rs` for both
+`decode_soft` and `decode_soft_pooled`, mirroring the JT9 pattern —
+this also fixes the same latent gap for any other future `ConvFano`
+caller, not just this one.
+
+**AWGN sweep, before vs. after the (real) cap**, same 100-trial
+corpus used earlier in this doc:
+
+| SNR | uncapped | capped (5 000/bit) |
+|---:|---:|---:|
+| −32 dB | 22/100 (22.0 %) | 19/100 (19.0 %) |
+| −31 dB | 70/100 (70.0 %) | 67/100 (67.0 %) |
+| −30 dB | 96/100 (96.0 %) | 96/100 (96.0 %) |
+| −29 dB and up | 100 % | 100 % (unchanged, all cells) |
+
+A real, small cost, concentrated at the extreme floor. Tried widening
+to 7 000/bit: −31 dB partially recovered (69/100), −32 dB did not move
+at all (19/100 either way) — that cell's shortfall isn't proportional
+to the cap, so it isn't worth trading away most of the speed gain to
+chase. 5 000/bit ships. The 50 % crossing (≈ −31.5 dB) does not
+visibly move. Golden recall unaffected (9/9, `wspr_golden_recall_and_
+precision`) at every cap value tried.
+
+**Device, CoreS3, same golden file, `opt-level=3` + `minsync2` + top-N
++ ping-pong + dual-core + the earlier subtract fix already baked in**
+(before/after isolates only this change):
+
+| | before | after | Δ |
+|---|---:|---:|---:|
+| pass 0 decode | 16 273 ms | 11 203 ms | −31 % |
+| pass 1 decode | 29 690 ms | 17 587 ms | −41 % |
+| pass 2 decode | 33 012 ms | 35 459 ms | +7 % (`DeadlineDriven` spends the freed time here, same reallocation behaviour as the earlier subtract fix) |
+| **TOTAL** | **120 679 ms** | **105 969 ms** | **−12.2 % (−14.7 s)** |
+
+9/9 golden held. Measured `RecallPriority(40 000 000)` too, back to
+back on the same flash: **also 105 969 ms, bit-identical to
+`DeadlineDriven`** — pass 0/1 finishing faster now hands pass 2 enough
+natural slack that neither budget is the binding constraint for this
+candidate mix, so the two policies converge here. They remain
+conceptually different (one is deadline-anchored, one isn't) and would
+still diverge on a mix where pass 2's ladder is the bottleneck.
+
+Net effect on the question that prompted this: pass 0/1 now have a
+real ceiling (previously none), and this measurement's TOTAL gained
+~14.7 s of margin against the 120 s slot as a side effect — not the
+primary goal, but a genuine, disclosed win alongside the structural
+one.
+
 ## A latent bug in the shipped FFT backend, found on the way
 
 Not a WSPR finding, and arguably the most consequential half of the day.
