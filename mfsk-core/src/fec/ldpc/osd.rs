@@ -1395,6 +1395,120 @@ pub fn osd_decode_npre1_npre2(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
     osd_result_from_best(llr, best)
 }
 
+/// Packed-elimination setup for [`osd_decode_generic`], generic over
+/// [`LdpcParams`] — the same technique `osd_setup_ldpc174_91` applies
+/// to FT8's specific LDPC(174,91), made reusable across every code
+/// that shares the generic path (MSK144's LDPC(128,90), uvpacket's
+/// LDPC(240,101), FST4).
+///
+/// Returns `(perm, g, pivot_col)` — identical shape and identical
+/// values to what `osd_decode_generic` used to compute inline (steps
+/// 1-3): `perm` the reliability-descending column order, `g` the
+/// row-reduced generator in byte-per-bit form (every downstream
+/// consumer — order-0 encode, `try_candidate`, the `k1..k4` search —
+/// is unchanged and still reads `g` this way), `pivot_col[r]` the
+/// permuted-space column that row `r` pivoted on.
+///
+/// **Row-swap elimination, not column-swap** — this is the one place
+/// this function's packing differs in *shape* from `osd_setup_
+/// ldpc174_91`'s, because the algorithm it is packing differs: this
+/// crate's generic path scans columns left-to-right and swaps *rows*
+/// into place (`g.swap(r, pivot_row)` below), where FT8's own
+/// `osd_setup_ldpc174_91` fixes each row in turn and swaps *columns*.
+/// Both reach a valid RREF; they are not required to (and in general
+/// won't) select the same pivot positions, so this function does not
+/// try to reproduce FT8's specific choice — it packs *this* function's
+/// existing algorithm, unchanged, which is what
+/// `osd_generic_setup_matches_reference` (this module's test suite)
+/// verifies against the pre-packing implementation kept there as a
+/// reference.
+///
+/// Row-swap turns out to be the easier case to pack: swapping two
+/// entire packed rows is one `Vec::swap` call, versus the per-bit
+/// extract-and-set a column swap needs (see `osd_decode_packed` in
+/// `wspr::osd` for that harder case, packing WSPR's column-swap
+/// elimination). The row XOR during elimination — this function's
+/// hottest inner loop, up to `k·(k−1)` times — is the same class of
+/// win either way: `n.div_ceil(64)` word-XORs instead of `n` per-byte
+/// ones.
+fn osd_setup_generic_packed<P: LdpcParams>(
+    llr: &[f32],
+) -> Option<(Vec<usize>, Vec<u8>, Vec<usize>)> {
+    let n = P::N;
+    let k = P::K;
+    let words = n.div_ceil(64);
+
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_unstable_by(|&a, &b| {
+        llr[b]
+            .abs()
+            .partial_cmp(&llr[a].abs())
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    let mut g_packed: Vec<Vec<u64>> = vec![vec![0u64; words]; k];
+    for row in 0..k {
+        for col in 0..n {
+            let j = perm[col];
+            let bit = if j < k {
+                (row == j) as u64
+            } else {
+                P::gen_parity(j - k, row) as u64
+            };
+            if bit == 1 {
+                g_packed[row][col / 64] |= 1 << (col % 64);
+            }
+        }
+    }
+
+    let mut pivot_col: Vec<usize> = vec![0; k];
+    let mut pivot_row = 0usize;
+    for col in 0..n {
+        if pivot_row >= k {
+            break;
+        }
+        let word = col / 64;
+        let bit = col % 64;
+        let mut found: Option<usize> = None;
+        for r in pivot_row..k {
+            if (g_packed[r][word] >> bit) & 1 != 0 {
+                found = Some(r);
+                break;
+            }
+        }
+        let Some(r) = found else { continue };
+        if r != pivot_row {
+            g_packed.swap(r, pivot_row);
+        }
+        let pivot = g_packed[pivot_row].clone();
+        for r2 in 0..k {
+            if r2 != pivot_row && (g_packed[r2][word] >> bit) & 1 != 0 {
+                for c in 0..words {
+                    g_packed[r2][c] ^= pivot[c];
+                }
+            }
+        }
+        pivot_col[pivot_row] = col;
+        pivot_row += 1;
+    }
+
+    if pivot_row < k {
+        return None; // degenerate (shouldn't happen with a valid LDPC code)
+    }
+
+    // Unpack to the byte-per-bit format every downstream consumer
+    // expects — one linear O(k*n) pass, negligible next to the O(k²*n)
+    // elimination it replaces.
+    let mut g: Vec<u8> = vec![0u8; k * n];
+    for row in 0..k {
+        for col in 0..n {
+            g[row * n + col] = ((g_packed[row][col / 64] >> (col % 64)) & 1) as u8;
+        }
+    }
+
+    Some((perm, g, pivot_col))
+}
+
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
 ///
 /// `ndeep`: search depth (1..=4). `k4_limit`: upper bound (exclusive)
@@ -1416,68 +1530,16 @@ pub fn osd_decode_generic<P: LdpcParams>(
     let n = P::N;
     let k = P::K;
 
-    // ── Step 1: sort bit indices by |LLR| descending ────────────────
-    let mut perm: Vec<usize> = (0..n).collect();
-    perm.sort_unstable_by(|&a, &b| {
-        llr[b]
-            .abs()
-            .partial_cmp(&llr[a].abs())
-            .unwrap_or(core::cmp::Ordering::Equal)
-    });
-
-    // ── Step 2: build permuted generator matrix G'[K][N] (flat) ─────
-    // G[row][col] in original space:
-    //   col <  K → identity: G[row][col] = (row == col) as u8
-    //   col >= K → parity:   G[row][col] = gen_parity(col - K, row)
-    // Flat index: g[row * n + col].
-    let mut g: Vec<u8> = vec![0u8; k * n];
-    for row in 0..k {
-        for col in 0..n {
-            let j = perm[col];
-            g[row * n + col] = if j < k {
-                (row == j) as u8
-            } else {
-                P::gen_parity(j - k, row)
-            };
-        }
-    }
-
-    // ── Step 3: GF(2) Gaussian elimination (RREF, no column swaps) ──
-    let mut pivot_col: Vec<usize> = vec![0; k];
-    let mut pivot_row = 0usize;
-
-    for col in 0..n {
-        if pivot_row >= k {
-            break;
-        }
-        let mut found: Option<usize> = None;
-        for r in pivot_row..k {
-            if g[r * n + col] != 0 {
-                found = Some(r);
-                break;
-            }
-        }
-        if let Some(r) = found {
-            if r != pivot_row {
-                for c in 0..n {
-                    g.swap(r * n + c, pivot_row * n + c);
-                }
-            }
-            for r2 in 0..k {
-                if r2 != pivot_row && g[r2 * n + col] != 0 {
-                    for c in 0..n {
-                        g[r2 * n + c] ^= g[pivot_row * n + c];
-                    }
-                }
-            }
-            pivot_col[pivot_row] = col;
-            pivot_row += 1;
-        }
-    }
-
-    if pivot_row < k {
+    // Steps 1-3 (sort, build, GF(2) eliminate) live in
+    // `osd_setup_generic_packed` — see its doc comment for why this
+    // is a packed *representation* of exactly the same row-swap
+    // elimination this function used to run inline, not a different
+    // algorithm. Everything from here on (order-0 encode, the k1..k4
+    // search, `try_candidate`) is unchanged and still consumes `g` as
+    // plain byte-per-bit, exactly as before.
+    let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
-    }
+    };
 
     // ── Step 4: hard decisions on MRB bits ──────────────────────────
     let mut mrb: Vec<u8> = vec![0u8; k];
@@ -1966,5 +2028,215 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod packed_setup_differential {
+    use super::*;
+    use crate::fec::ldpc::params::{Ldpc128_90Params, Ldpc240_101Params};
+
+    /// The setup `osd_decode_generic` used before packing, preserved
+    /// here verbatim as the reference `osd_setup_generic_packed` is
+    /// checked against — the same "keep the old implementation as the
+    /// diff target" pattern `wspr::osd::osd_decode` is kept for.
+    pub(super) fn osd_setup_generic_reference<P: LdpcParams>(
+        llr: &[f32],
+    ) -> Option<(Vec<usize>, Vec<u8>, Vec<usize>)> {
+        let n = P::N;
+        let k = P::K;
+
+        let mut perm: Vec<usize> = (0..n).collect();
+        perm.sort_unstable_by(|&a, &b| {
+            llr[b]
+                .abs()
+                .partial_cmp(&llr[a].abs())
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+
+        let mut g: Vec<u8> = vec![0u8; k * n];
+        for row in 0..k {
+            for col in 0..n {
+                let j = perm[col];
+                g[row * n + col] = if j < k {
+                    (row == j) as u8
+                } else {
+                    P::gen_parity(j - k, row)
+                };
+            }
+        }
+
+        let mut pivot_col: Vec<usize> = vec![0; k];
+        let mut pivot_row = 0usize;
+        for col in 0..n {
+            if pivot_row >= k {
+                break;
+            }
+            let mut found: Option<usize> = None;
+            for r in pivot_row..k {
+                if g[r * n + col] != 0 {
+                    found = Some(r);
+                    break;
+                }
+            }
+            if let Some(r) = found {
+                if r != pivot_row {
+                    for c in 0..n {
+                        g.swap(r * n + c, pivot_row * n + c);
+                    }
+                }
+                for r2 in 0..k {
+                    if r2 != pivot_row && g[r2 * n + col] != 0 {
+                        for c in 0..n {
+                            g[r2 * n + c] ^= g[pivot_row * n + c];
+                        }
+                    }
+                }
+                pivot_col[pivot_row] = col;
+                pivot_row += 1;
+            }
+        }
+
+        if pivot_row < k {
+            return None;
+        }
+        Some((perm, g, pivot_col))
+    }
+
+    /// Deterministic xorshift32 — no external RNG dependency, and
+    /// reproducible across runs so a failure is re-diagnosable.
+    struct Xorshift32(u32);
+    impl Xorshift32 {
+        fn next_f32(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            (self.0 % 4000) as f32 / 100.0 - 20.0 // spread over [-20, 20)
+        }
+    }
+
+    /// Real codewords (valid, so elimination never degenerates by
+    /// construction) plus synthetic LLR noise, covering both concrete
+    /// `LdpcParams` the generic path serves. Not a hand-picked case:
+    /// `REPS` distinct random info vectors × independent noise draws
+    /// per protocol.
+    fn check_matches<P: LdpcParams>(seed: u32) {
+        const REPS: usize = 200;
+        let mut rng = Xorshift32(seed);
+        let mut mismatches = 0usize;
+        for t in 0..REPS {
+            let mut info = alloc::vec![0u8; P::K];
+            for b in info.iter_mut() {
+                rng.0 ^= rng.0 << 13;
+                rng.0 ^= rng.0 >> 17;
+                rng.0 ^= rng.0 << 5;
+                *b = (rng.0 & 1) as u8;
+            }
+            let mut cw = alloc::vec![0u8; P::N];
+            ldpc_encode_generic::<P>(&info, &mut cw);
+
+            let llr: alloc::vec::Vec<f32> = cw
+                .iter()
+                .map(|&b| {
+                    let noise = rng.next_f32();
+                    // Sign convention matches `mrb`'s: bit=1 -> llr>0
+                    // (`mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 }`).
+                    (if b == 1 { 10.0 } else { -10.0 }) + noise
+                })
+                .collect();
+
+            let reference = osd_setup_generic_reference::<P>(&llr);
+            let packed = osd_setup_generic_packed::<P>(&llr);
+            if reference != packed {
+                mismatches += 1;
+                eprintln!("trial {t}: reference={reference:?}\npacked={packed:?}");
+            }
+        }
+        assert_eq!(mismatches, 0, "{mismatches}/{REPS} trials diverged");
+    }
+
+    #[test]
+    fn matches_reference_ldpc128_90() {
+        check_matches::<Ldpc128_90Params>(0xC0FF_EE01);
+    }
+
+    #[test]
+    fn matches_reference_ldpc240_101() {
+        check_matches::<Ldpc240_101Params>(0xC0FF_EE02);
+    }
+
+    #[test]
+    fn matches_reference_ldpc174_91() {
+        check_matches::<Ldpc174_91Params>(0xC0FF_EE03);
+    }
+
+    /// End-to-end, not just the setup: `osd_decode_generic` itself
+    /// (packed setup + unchanged encode/search/verify) must recover
+    /// the exact transmitted info bits from a clean (noise-free)
+    /// codeword — the property the setup differential can't see on
+    /// its own, since a setup bug that happens to still produce *some*
+    /// valid RREF wouldn't necessarily show up as a `(perm, g,
+    /// pivot_col)` mismatch against a differently-parameterised
+    /// reference call.
+    #[test]
+    fn osd_decode_generic_recovers_clean_codeword() {
+        let info: alloc::vec::Vec<u8> = (0..Ldpc128_90Params::K)
+            .map(|i| (i % 3 == 0) as u8)
+            .collect();
+        let mut cw = alloc::vec![0u8; Ldpc128_90Params::N];
+        ldpc_encode_generic::<Ldpc128_90Params>(&info, &mut cw);
+        let llr: alloc::vec::Vec<f32> = cw
+            .iter()
+            .map(|&b| if b == 1 { 10.0 } else { -10.0 })
+            .collect();
+        let result = osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None)
+            .expect("clean codeword must decode");
+        assert_eq!(result.info, info);
+    }
+}
+
+#[cfg(test)]
+mod packed_setup_timing {
+    use super::packed_setup_differential::*;
+    use super::*;
+    use crate::fec::ldpc::params::Ldpc128_90Params;
+    use std::time::Instant;
+
+    /// Host per-call cost of the setup step alone (sort + build +
+    /// eliminate), reference vs packed, for MSK144's LDPC(128,90).
+    /// `#[ignore]`d: prints, asserts nothing — a speed number, not a
+    /// correctness gate (that's `packed_setup_differential`).
+    #[test]
+    #[ignore = "manual diagnostic — osd setup host timing, reference vs packed"]
+    fn setup_timing_ldpc128_90() {
+        let llr: alloc::vec::Vec<f32> = (0..Ldpc128_90Params::N)
+            .map(|i| ((i as f32 * 37.0) % 41.0) - 20.0)
+            .collect();
+
+        let _ = osd_setup_generic_reference::<Ldpc128_90Params>(&llr);
+        const REPS: usize = 5000;
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            let _ = std::hint::black_box(osd_setup_generic_reference::<Ldpc128_90Params>(
+                std::hint::black_box(&llr),
+            ));
+        }
+        let reference = t0.elapsed();
+
+        let _ = osd_setup_generic_packed::<Ldpc128_90Params>(&llr);
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            let _ = std::hint::black_box(osd_setup_generic_packed::<Ldpc128_90Params>(
+                std::hint::black_box(&llr),
+            ));
+        }
+        let packed = t0.elapsed();
+
+        eprintln!(
+            "reference: {:.2} us/call | packed: {:.2} us/call | {:.2}x",
+            reference.as_secs_f64() * 1e6 / REPS as f64,
+            packed.as_secs_f64() * 1e6 / REPS as f64,
+            reference.as_secs_f64() / packed.as_secs_f64(),
+        );
     }
 }
