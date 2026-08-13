@@ -19,6 +19,43 @@
 //! ~1 Hz envelope of `c(t)` so we don't subtract our own noise back
 //! out. A run-length-correction (`norm = partialsum[…]`) compensates
 //! for the LPF's startup transient at the first/last `nfilt/2` samples.
+//!
+//! ## The LPF is a direct `O(nc2 × NFILT)` convolution — an FFT rewrite was tried and reverted
+//!
+//! The naive per-sample loop (`Σ_j window[j]·ci[i−half+j]`) costs
+//! `O(nc2 × NFILT)` — ~15 M mult-adds per channel, ~30 M total for the
+//! complex `(ci, cq)` pair, per subtract call. Measured on CoreS3: one
+//! pass's worth of subtracts (7 decodes) cost **17.7 s**, comparable to
+//! that pass's own coarse search (13.4 s) and decode step (16.3 s).
+//!
+//! This is the same shape as an anti-pattern `engine::dsp::subtract`'s
+//! `subtract_tones_lpf_fft` already solved for FT8/FT4 (an `O(N log
+//! N)` FFT-based circular convolution instead of `O(N × filter_
+//! width)`), so an FFT version of this LPF was implemented, ported to
+//! `crate::engine::fft::FftPlanner` (portable to embedded, unlike
+//! `engine::dsp::subtract`'s host-only `rustfft` usage) with overlap-
+//! save blocking to fit the ESP32-S3 `esp-dsp` backend's 32 768-point
+//! hardware ceiling. It passed every host differential test against
+//! this direct convolution (bit-exact to float tolerance, including
+//! at the realistic `nc2 > 32768` size that exercises the blocking
+//! logic) — and then produced silently corrupted residuals on the
+//! actual device (pass 1's `coarse_baseband` finding 0 candidates)
+//! through **three** distinct embedded-only bugs in turn: an off-by-
+//! one in the circular-delay kernel placement (caught by the host
+//! differential test, fixed), the 32 768-point hardware ceiling
+//! itself (silently computes with truncated twiddle data past that
+//! size rather than erroring — caught by an on-device flash), and a
+//! forward/inverse-FFT normalisation convention that differs between
+//! the `rustfft` (host) and `esp-dsp` (embedded) backends behind the
+//! same `engine::fft::FftPlanner` trait (also caught on-device). After
+//! fixing all three, the residual was *still* wrong, pointing at a
+//! fourth, undiagnosed embedded-only discrepancy — reverted at that
+//! point rather than continue guessing against real hardware on
+//! subtract logic, where a silent bug means missed or phantom
+//! decodes, not just a slower pass. Full account, including the
+//! evidence for each of the three found bugs, is in
+//! `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Waste audit"
+//! section — worth reading before attempting this again.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -61,12 +98,35 @@ pub fn subtract_signal_baseband(
     // Build the reference signal r(t) = exp(j·φ(t)) at the per-symbol
     // tone, with linear drift across the 162 symbols. Matches
     // `wsprd.c:573-589`.
+    //
+    // Per-sample rotation recurrence (`c[j] = c[j-1]·cdφ − s[j-1]·sdφ`),
+    // not a fresh `.cos()`/`.sin()` call every sample: within one
+    // symbol `dphi` is constant, so the whole 256-sample run needs only
+    // one `cos`/`sin` pair (for `cdphi`/`sdphi`) instead of 512
+    // transcendental calls — the same technique
+    // `demod::tone_amplitudes_into` already uses for its own oscillator
+    // tables. 162 symbols × 2 transcendental calls = 324 total, not
+    // `nsig × 2` = 82 944.
+    //
+    // `(c, s)` persists *across* symbol boundaries (unlike
+    // `tone_amplitudes_into`'s per-symbol-fresh oscillators) — this
+    // reference needs one phase-continuous 41 472-sample waveform, not
+    // 162 independent per-symbol mixes. A pure multiply recurrence that
+    // long drifts off the unit circle (each step's rounding error
+    // compounds), so `(c, s)` is renormalised to unit magnitude once
+    // per symbol (at the point `cdphi`/`sdphi` are recomputed anyway) —
+    // bounds the drift to what one 256-sample run can accumulate,
+    // rather than letting 41 472 samples' worth compound unchecked.
     let mut refi = vec![0.0f32; nsig];
     let mut refq = vec![0.0f32; nsig];
     let dt = 1.0 / super::baseband::BASEBAND_RATE;
     let twopidt = 2.0 * PI * dt;
-    let mut phi = 0.0f32;
+    let mut c = 1.0f32;
+    let mut s = 0.0f32;
     for i in 0..N_SYMBOLS {
+        let norm = (c * c + s * s).sqrt();
+        c /= norm;
+        s /= norm;
         let cs = channel_symbols[i] as f32;
         // wsprd `wsprd.c:577-582`: per-symbol phase increment
         // (cs - 1.5)·df = tone offset from carrier centre. Drift folds
@@ -76,11 +136,14 @@ pub fn subtract_signal_baseband(
                 + (drift_hz / 2.0) * (i as f32 - N_SYMBOLS as f32 / 2.0)
                     / (N_SYMBOLS as f32 / 2.0)
                 + (cs - 1.5) * TONE_SPACING_HZ);
+        let (sdphi, cdphi) = dphi.sin_cos();
         for j in 0..NSPS_BASEBAND {
             let ii = NSPS_BASEBAND * i + j;
-            refi[ii] = phi.cos();
-            refq[ii] = phi.sin();
-            phi += dphi;
+            refi[ii] = c;
+            refq[ii] = s;
+            let (c_next, s_next) = (c * cdphi - s * sdphi, c * sdphi + s * cdphi);
+            c = c_next;
+            s = s_next;
         }
     }
 
