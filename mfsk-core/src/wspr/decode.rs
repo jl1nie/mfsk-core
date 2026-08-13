@@ -470,28 +470,13 @@ pub fn decode_at_baseband_nblocks_gated_drift(
     confirmed: Option<&WsprCallsignTable>,
     refine_drift: bool,
 ) -> Option<WsprResult> {
-    use crate::engine::{FecOpts, MessageCodec};
     // `freq_hz` follows our tone-0 convention (matches `synthesize_audio`
     // and `coarse_search.freq_hz`); wsprd's `noncoherent_sequence_detection`
     // takes the signal CENTER, so we add 1.5·tone_spacing here and sweep
-    // around that point. A wide ±4 Hz sweep is needed because real-world
-    // coarse picks can land 2-4 Hz off the true centre when nearby
-    // signals or sub-bin offsets perturb the score landscape.
-    // wsprd-style refine→demod cascade. Replaces the previous
-    // brute-force 15×7 (Δf, Δdt) sweep, which ran Fano on every cell
-    // and burnt seconds of CPU per candidate. Architecture follows
-    // `wsprd.c:1217-1280`: mode 0 (lag refine) → mode 1 (freq refine)
-    // → mode 2 (final demod), with Fano run only at the refined
-    // alignment (not per cell).
+    // around that point.
     let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
     let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
     let lag_baseband_init = start_sample as i32 / 32;
-    let codec = crate::fec::ConvFano;
-    // Pooled across the whole `nblocks` sweep below (up to 3 values in
-    // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
-    // scratch per call — see `fano::fano_decode_with_scratch`'s doc
-    // comment for why reuse is safe here.
-    let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
 
     let (best_freq, best_lag, best_drift, best_sync, best_isqs) = refine_cascade(
         idat,
@@ -502,27 +487,6 @@ pub fn decode_at_baseband_nblocks_gated_drift(
         refine_drift,
     );
 
-    // wsprd's candidate-list filter (`wsprd.c:1294`), applied here
-    // rather than up front: it runs on `candidates[j].sync` *after*
-    // the refine cascade above (the same post-refine value wsprd's own
-    // loop computes it from, `wsprd.c:1220-1262`), not on the coarse
-    // peak-search score. A candidate whose refined sync doesn't clear
-    // this never reaches Fano/OSD at all in wsprd — unlike `MINSYNC1`
-    // above, which only gates the *fine* lag/freq sub-stages while
-    // still letting every candidate through to decode.
-    //
-    // Threshold: 0.12 for `ipass < 2` (`wsprd.c:1003`), 0.10 for the
-    // final pass (`wsprd.c:1008`) — the same conditional wsprd ties
-    // `maxdrift` to, so `refine_drift` (already the early/final-pass
-    // signal this function takes) selects it without a new parameter.
-    //
-    // This crate did not implement this gate until now: every coarse
-    // candidate paid the full Fano + DT-peak-up ladder regardless of
-    // how weak its refined sync was. On the WSJT-X golden's pass-0
-    // list that was 5 of 13 candidates (38 %) doing work the reference
-    // decoder skips entirely (see `wspr_diag_minsync2_would_drop`,
-    // though that diagnostic measured *coarse* sync — a different,
-    // looser proxy for the value gated here).
     const MINSYNC2_EARLY: f32 = 0.12;
     const MINSYNC2_FINAL: f32 = 0.10;
     let minsync2 = if refine_drift {
@@ -534,6 +498,53 @@ pub fn decode_at_baseband_nblocks_gated_drift(
         super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);
         return None;
     }
+
+    decode_from_refined(
+        idat,
+        qdat,
+        sample_rate,
+        best_freq,
+        best_lag,
+        best_drift,
+        &best_isqs,
+        nblocks,
+        confirmed,
+    )
+}
+
+/// Mode 2 of the refine→demod cascade: bit metrics + Fano/OSD at an
+/// *already*-refined alignment. Split out of
+/// [`decode_at_baseband_nblocks_gated_drift`] so callers that need to
+/// **rank candidates by refined sync before deciding which ones are
+/// worth the ladder** — [`decode_pass2_top_n`]'s whole reason for
+/// existing — can call [`refine_cascade`] once per candidate, sort,
+/// and only pay this function's cost for the survivors, instead of
+/// this always running unconditionally per candidate the way it did
+/// when the two were one function.
+///
+/// `nblocks`/`confirmed` and the return value are unchanged from
+/// [`decode_at_baseband_nblocks_gated_drift`]'s own contract; this is
+/// a pure extraction, not a behaviour change — see that function's
+/// remaining body for the minsync2 gate this is called after.
+#[allow(clippy::too_many_arguments)]
+fn decode_from_refined(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    best_freq: f32,
+    best_lag: i32,
+    best_drift: f32,
+    best_isqs: &super::demod::IsQs,
+    nblocks: &[usize],
+    confirmed: Option<&WsprCallsignTable>,
+) -> Option<WsprResult> {
+    use crate::engine::{FecOpts, MessageCodec};
+    let codec = crate::fec::ConvFano;
+    // Pooled across the whole `nblocks` sweep below (up to 3 values in
+    // pass 2) instead of `fano_decode` allocating a fresh `Vec<Node>`
+    // scratch per call — see `fano::fano_decode_with_scratch`'s doc
+    // comment for why reuse is safe here.
+    let mut fano_scratch = crate::fec::conv::fano::FanoScratch::new();
 
     // Mode 2: bit metrics + Fano. wsprd does *not* stop at the refined
     // alignment — `wsprd.c:1329-1423` wraps the demod-and-decode step in
@@ -573,7 +584,7 @@ pub fn decode_at_baseband_nblocks_gated_drift(
             // cascade already built.
             let isqs_owned;
             let isqs = if idt == 0 {
-                &best_isqs
+                best_isqs
             } else {
                 isqs_owned = super::demod::tone_amplitudes(idat, qdat, best_freq, lag, best_drift);
                 &isqs_owned
@@ -738,6 +749,11 @@ fn decode_pass1_candidate(
 
 /// Per-candidate pass-2 decode step — same parallelization rationale
 /// as [`decode_pass1_candidate`], for [`decode_scan`]'s pass-2 loop.
+/// wsprd-faithful: runs the full Fano + DT-peak-up + OSD ladder on
+/// every `minsync2` survivor, no further cut. This is the host/default
+/// path — see [`decode_pass2_top_n`] (feature `wspr-pass2-topn`) for
+/// the embedded-motivated, evidence-bounded alternative.
+#[cfg(not(feature = "wspr-pass2-topn"))]
 fn decode_pass2_candidate(
     idat: &[f32],
     qdat: &[f32],
@@ -763,6 +779,196 @@ fn decode_pass2_candidate(
     d.start_sample = start_refined.saturating_sub(pad);
     d.snr_db = c.snr_db;
     Some(d)
+}
+
+/// **Embedded-only** (feature `wspr-pass2-topn`; off by default, host
+/// stays on [`decode_pass2_candidate`]'s wsprd-faithful full ladder).
+/// How many pass-2 candidates, ranked by *refined* sync descending,
+/// get the full Fano + DT-peak-up + OSD ladder. The rest are refined
+/// (cheap — refine_cascade + minsync2 only) and then dropped.
+///
+/// Not a wsprd-faithful number — wsprd runs the ladder on every
+/// `minsync2` survivor, no further cut. This is this crate's own
+/// addition, and it costs real (if bounded) recall risk rather than
+/// being provably safe the way `minsync2` is, so the number is
+/// deliberately conservative and the evidence for it is recorded
+/// here rather than assumed:
+///
+/// - the WSJT-X golden's own G8VDQ (rank 1 of 3 minsync2 survivors)
+///   and W3BI (rank 2 of 4, in pass 1 — not gated by this constant,
+///   which applies to pass 2 only, but the same population) show the
+///   real decode is not always the single strongest candidate;
+/// - a 260-trial AWGN sweep across 13 SNR levels
+///   (`wspr_rank_sweep`, `tests/wspr_sweep.rs`) found the real
+///   transmitted signal, whenever it decoded at all, landed at rank 0
+///   or rank 1 in **every** trial — never rank 2 or beyond. That
+///   sweep is single-signal (no SIC residual, no competing stations),
+///   so it brackets pass 2's *isolated weak candidate* case rather
+///   than reproducing pass 2 exactly, but it is the broadest evidence
+///   available and it never once needed more than rank 1.
+///
+/// 2 is therefore the minimum this evidence supports, not a round
+/// number. On the golden file this drops pass 2 wall-clock from
+/// 107.5 s to roughly 72 s (measured 3→2 kept candidates), while
+/// keeping the file's 9/9 recall (see the doc comment update in
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`).
+///
+/// **Also crucial, from the same sweep**: OSD is *not* dead weight
+/// here the way it looked from the golden file alone (where its
+/// success count was 0/0) — at -32/-31 dB, the marginal-detection
+/// transition zone, OSD accounted for the *majority* of hits (7/8 and
+/// 13/15). This constant trims *which candidates* reach the ladder;
+/// it does not touch the ladder itself, and OSD stays in it.
+#[cfg(feature = "wspr-pass2-topn")]
+const PASS2_DEEP_LADDER_TOP_N: usize = 2;
+
+/// Pass 2's own candidate loop: refine + `minsync2`-filter every
+/// coarse candidate first (cheap), rank the survivors by refined
+/// sync, and run the full Fano/OSD ladder only on the top
+/// [`PASS2_DEEP_LADDER_TOP_N`] — see that constant's doc comment for
+/// the evidence this is built on.
+///
+/// Reuses each survivor's already-computed refine-cascade result
+/// (`best_freq`/`best_lag`/`best_drift`/`best_isqs`) when calling
+/// [`decode_from_refined`], so ranking does not cost a second cascade
+/// pass over the candidates that do get deep-processed.
+///
+/// `pub`: [`decode_scan`]/[`decode_scan_inner`] use this internally
+/// when the feature is on, but `embedded_shared::apps::wspr_bench`
+/// also calls it directly — that bench predates this function and
+/// runs its own hand-inlined pass 0/1/2 loop (the "D pattern",
+/// avoiding a `tlsf_malloc` corruption bug when `decode_block`-shaped
+/// helpers are called from a long bench loop) rather than going
+/// through `decode_scan`, so it needs this exposed rather than
+/// re-deriving pass 2's candidate loop a second time.
+#[cfg(feature = "wspr-pass2-topn")]
+pub fn decode_pass2_top_n(
+    idat: &[f32],
+    qdat: &[f32],
+    sample_rate: u32,
+    pad: usize,
+    cands: &[super::coarse_baseband::BasebandCandidate],
+    confirmed: &WsprCallsignTable,
+) -> Vec<WsprResult> {
+    struct Refined<'c> {
+        sync: f32,
+        c: &'c super::coarse_baseband::BasebandCandidate,
+        freq: f32,
+        lag: i32,
+        drift: f32,
+        isqs: super::demod::IsQs,
+    }
+
+    const MINSYNC2_FINAL: f32 = 0.10; // matches decode_at_baseband_nblocks_gated_drift's own, refine_drift=false
+
+    // Stage 1 (refine + minsync2-filter every coarse candidate) is
+    // embarrassingly parallel exactly like pass 0/1's own per-candidate
+    // decode already is — same rationale, same `par_iter()` pattern.
+    // This matters here specifically: cutting stage 2 down to
+    // `PASS2_DEEP_LADDER_TOP_N` candidates only pays off if stage 1
+    // (now run over *every* coarse candidate, not just survivors)
+    // doesn't itself become a sequential bottleneck on a many-core
+    // host — an earlier version of this function ran stage 1 as a
+    // plain sequential loop and measured *slower* wall-clock overall
+    // despite doing less total work, purely from losing parallelism.
+    // A plain `fn`, not a closure: closures infer one concrete lifetime
+    // for their signature from first use, not the
+    // `for<'a> Fn(&'a Candidate) -> Option<Refined<'a>>` this call site
+    // needs (`par_iter`/`iter` hand a fresh borrow per item) — a `fn`
+    // item gets that generality for free via ordinary lifetime elision.
+    fn refine_one<'c>(
+        idat: &[f32],
+        qdat: &[f32],
+        c: &'c super::coarse_baseband::BasebandCandidate,
+    ) -> Option<Refined<'c>> {
+        let f0_center_init = c.freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
+        let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
+        let lag_baseband_init = c.start_sample as i32 / 32;
+        let (freq, lag, drift, sync, isqs) = refine_cascade(
+            idat,
+            qdat,
+            f0_baseband_init,
+            lag_baseband_init,
+            c.drift_hz,
+            false,
+        );
+        if sync <= MINSYNC2_FINAL {
+            super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);
+            return None;
+        }
+        Some(Refined {
+            sync,
+            c,
+            freq,
+            lag,
+            drift,
+            isqs,
+        })
+    }
+    #[cfg(feature = "parallel")]
+    let mut survivors: Vec<Refined<'_>> = cands
+        .par_iter()
+        .filter_map(|c| refine_one(idat, qdat, c))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let mut survivors: Vec<Refined<'_>> = cands
+        .iter()
+        .filter_map(|c| refine_one(idat, qdat, c))
+        .collect();
+
+    survivors.sort_by(|a, b| {
+        b.sync
+            .partial_cmp(&a.sync)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    survivors.truncate(PASS2_DEEP_LADDER_TOP_N);
+
+    // Stage 2 (the Fano/OSD ladder) is the expensive half — this is
+    // exactly the work the old per-candidate `decode_pass2_candidate`
+    // ran under `par_iter()`. Losing that here (a plain sequential
+    // `for` over `PASS2_DEEP_LADDER_TOP_N` survivors) was the second
+    // half of the same regression stage 1's fn-conversion fixed: two
+    // candidates run one-after-another cost roughly 2x one candidate's
+    // wall-clock even though the total work dropped; run them
+    // concurrently instead now that there are only ever
+    // `PASS2_DEEP_LADDER_TOP_N` of them.
+    fn deep_decode(
+        idat: &[f32],
+        qdat: &[f32],
+        sample_rate: u32,
+        pad: usize,
+        confirmed: &WsprCallsignTable,
+        r: &Refined<'_>,
+    ) -> Option<WsprResult> {
+        let mut d = decode_from_refined(
+            idat,
+            qdat,
+            sample_rate,
+            r.freq,
+            r.lag,
+            r.drift,
+            &r.isqs,
+            &[1, 2, 3, 0],
+            Some(confirmed),
+        )?;
+        let start_refined = d.start_sample;
+        d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+        d.start_sample = start_refined.saturating_sub(pad);
+        d.snr_db = r.c.snr_db;
+        Some(d)
+    }
+
+    #[cfg(feature = "parallel")]
+    let out: Vec<WsprResult> = survivors
+        .par_iter()
+        .filter_map(|r| deep_decode(idat, qdat, sample_rate, pad, confirmed, r))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let out: Vec<WsprResult> = survivors
+        .iter()
+        .filter_map(|r| deep_decode(idat, qdat, sample_rate, pad, confirmed, r))
+        .collect();
+    out
 }
 
 pub fn decode_scan(
@@ -1098,16 +1304,29 @@ fn decode_scan_inner(
         // the +3..+4.8 dB margin needed to decode signals like W3BI at
         // -27 dB SNR. The strong-signal subtract above has exposed
         // them in the spectrum, but they still need the coherent gain
-        // to clear the Fano convergence threshold. Same parallelize-
-        // the-decode-step / dedup-sequentially-after shape as pass 1
-        // above — this is pass 2's own per-candidate cost that's ~4x
-        // pass 1's (3 nblock values vs 1), the dominant single cost in
-        // `decode_scan` per `docs/notes/WSPR_BENCHMARK.md`'s Finding 2.
+        // to clear the Fano convergence threshold — this is pass 2's
+        // own per-candidate cost that's ~4x pass 1's (3 nblock values
+        // vs 1), the dominant single cost in `decode_scan` per
+        // `docs/notes/WSPR_BENCHMARK.md`'s Finding 2.
+        //
+        // wsprd-faithful by default: full ladder on every `minsync2`
+        // survivor, same parallelize-the-decode-step /
+        // dedup-sequentially-after shape as pass 1 above. Feature
+        // `wspr-pass2-topn` (embedded targets only — see that
+        // function's doc comment) swaps in `decode_pass2_top_n`
+        // instead: refines and `minsync2`-filters every candidate
+        // first, then runs the expensive ladder only on the top
+        // `PASS2_DEEP_LADDER_TOP_N` by refined sync.
+        #[cfg(feature = "wspr-pass2-topn")]
+        let raw2: Vec<WsprResult> =
+            decode_pass2_top_n(&idat, &qdat, sample_rate, pad, &bb_cands2, &confirmed);
+        #[cfg(not(feature = "wspr-pass2-topn"))]
         #[cfg(feature = "parallel")]
         let raw2: Vec<WsprResult> = bb_cands2
             .par_iter()
             .filter_map(|c| decode_pass2_candidate(&idat, &qdat, sample_rate, pad, c, &confirmed))
             .collect();
+        #[cfg(not(feature = "wspr-pass2-topn"))]
         #[cfg(not(feature = "parallel"))]
         let raw2: Vec<WsprResult> = bb_cands2
             .iter()

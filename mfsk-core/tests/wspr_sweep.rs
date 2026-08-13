@@ -340,3 +340,179 @@ fn wspr_osd_packed_matches_unpacked() {
     );
     assert_eq!(mismatches, 0, "osd_decode_packed diverged from osd_decode");
 }
+
+/// Where does the real transmitted signal rank among *all* coarse
+/// candidates, by refined (post-cascade) sync — across the whole AWGN
+/// sweep, not just the one golden file's G8VDQ/W3BI cases?
+///
+/// Directly extends `wspr_diag_g8vdq_rank_after_minsync2` /
+/// `wspr_diag_rank_by_pass` (`wspr_wsjtx_samples.rs`) with real
+/// coverage across the marginal-SNR range those two single-file
+/// diagnostics couldn't provide — the concern issue #260 kept raising
+/// about this corpus applies here too (single-signal, no residual
+/// SIC context), so this brackets pass 2's *isolated-weak-candidate*
+/// case rather than reproducing pass 2 exactly. `coarse_baseband`'s
+/// `maxdrift = 0` matches pass 2's own config either way.
+///
+/// Also settles a question the golden file alone couldn't: OSD's
+/// `osd_ok` counter reads 0 in every device measurement so far
+/// (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s Fano/OSD
+/// split) — never seen to contribute a single decode on that one
+/// file. `real_decoded_via` records whether each SNR cell's hits come
+/// from Fano or OSD, so this checks whether that's a one-file fluke
+/// or holds across the sweep.
+#[test]
+#[ignore]
+#[cfg(feature = "internal-testing")]
+fn wspr_rank_sweep() {
+    use mfsk_core::msg::WsprMessage;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, debug_refined_sync, decode_at_baseband_nblocks_gated_drift,
+    };
+    use mfsk_core::wspr::instrument;
+
+    let dir = sweep_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("skipping wspr_rank_sweep: corpus dir not found at {dir:?}");
+        return;
+    };
+
+    let mut jobs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(rest) = stem.strip_prefix("wspr_awgn_") else {
+            continue;
+        };
+        let Some((tag, _trial)) = rest.split_once('_') else {
+            continue;
+        };
+        let Some(snr) = parse_snr_tag(tag) else {
+            continue;
+        };
+        jobs.push(Job { snr, path });
+    }
+    if jobs.is_empty() {
+        eprintln!("skipping wspr_rank_sweep: no wspr_awgn_*.wav files found in {dir:?}");
+        return;
+    }
+
+    // Callsign/grid for the OSD-seeded table, parsed from GOLDEN_MSG.
+    let (callsign, grid) = {
+        let mut parts = GOLDEN_MSG.split_whitespace();
+        (
+            parts.next().unwrap().to_string(),
+            parts.next().unwrap().to_string(),
+        )
+    };
+
+    const MINSYNC2_FINAL: f32 = 0.10;
+    const PAD_SEC: f32 = 3.0;
+    let sample_rate = 12_000u32;
+
+    // snr -> Vec<(rank, n_candidates, kept_count, via)>, via: "fano"/"osd"/"none"
+    type RankCell<'a> = (Option<usize>, usize, usize, &'a str);
+    let mut cells: std::collections::BTreeMap<i32, Vec<RankCell<'_>>> =
+        std::collections::BTreeMap::new();
+
+    for job in &jobs {
+        let Some(audio) = load_wav_f32_opt(&job.path) else {
+            continue;
+        };
+        let pad = (PAD_SEC * sample_rate as f32) as usize;
+        let mut padded = vec![0.0f32; pad + audio.len()];
+        padded[pad..].copy_from_slice(&audio);
+        let (idat, qdat) = decimate_to_baseband(&padded);
+
+        // Pass-2 config: maxdrift = 0, and a pre-confirmed table —
+        // this models a station already heard on an earlier, easier
+        // slot, the scenario OSD exists for (same seeding
+        // `wspr_osd_input_harvest` uses).
+        let mut table = WsprCallsignTable::new();
+        table.record(&WsprMessage::Type1 {
+            callsign: callsign.clone(),
+            grid: grid.clone(),
+            power_dbm: 37,
+        });
+
+        let mut cands = coarse_baseband(&idat, &qdat, pad, 100, 0);
+        cands.truncate(100);
+
+        let mut ranked: Vec<(f32, bool, &'static str)> = Vec::new(); // (sync, kept, via)
+        for c in &cands {
+            let sync =
+                debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
+            let kept = sync > MINSYNC2_FINAL;
+            let before = instrument::snapshot();
+            let msg = decode_at_baseband_nblocks_gated_drift(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+                &[1, 2, 3, 0],
+                Some(&table),
+                false,
+            )
+            .filter(|d| d.message.to_string() == GOLDEN_MSG);
+            let after = instrument::snapshot();
+            let via = if msg.is_none() {
+                "none"
+            } else if after.osd_ok > before.osd_ok {
+                "osd"
+            } else {
+                "fano"
+            };
+            ranked.push((sync, kept, via));
+        }
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+        let n_kept = ranked.iter().filter(|r| r.1).count();
+        let hit = ranked
+            .iter()
+            .enumerate()
+            .find(|(_, (_, _, via))| *via != "none");
+        let entry = match hit {
+            Some((rank, (_, _, via))) => (Some(rank), ranked.len(), n_kept, *via),
+            None => (None, ranked.len(), n_kept, "none"),
+        };
+        cells.entry(job.snr).or_default().push(entry);
+    }
+
+    println!("WSPR pass-2-style rank sweep — {dir:?}");
+    println!(
+        "{:>6}  {:>7}  {:>10}  {:>10}  {:>10}  {:>8}",
+        "SNR", "trials", "found", "rank<=1", "rank<=2", "via fano/osd/none"
+    );
+    for (snr, entries) in &cells {
+        let trials = entries.len();
+        let found = entries.iter().filter(|(r, ..)| r.is_some()).count();
+        let rank_le1 = entries
+            .iter()
+            .filter(|(r, ..)| r.is_some_and(|r| r <= 1))
+            .count();
+        let rank_le2 = entries
+            .iter()
+            .filter(|(r, ..)| r.is_some_and(|r| r <= 2))
+            .count();
+        let fano = entries.iter().filter(|(.., v)| *v == "fano").count();
+        let osd = entries.iter().filter(|(.., v)| *v == "osd").count();
+        let none = entries.iter().filter(|(.., v)| *v == "none").count();
+        println!(
+            "{:>+5}dB  {:>7}  {:>10}  {:>10}  {:>10}  {fano:>4}/{osd:>4}/{none:>4}",
+            snr, trials, found, rank_le1, rank_le2,
+        );
+        for (rank, n_cand, n_kept, via) in entries {
+            if let Some(r) = rank
+                && *r > 1
+            {
+                println!("    ^ rank {r} outlier: {n_cand} candidates, {n_kept} kept, via={via}");
+            }
+        }
+    }
+}

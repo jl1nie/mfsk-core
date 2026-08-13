@@ -98,6 +98,19 @@ ft4          = []
 wspr         = []
 packet-bytes = []
 
+# WSPR pass-2 candidate-ladder truncation (issue #260 Phase 2). Off by
+# default — host stays wsprd-faithful: the full Fano + DT-peak-up +
+# OSD ladder runs on every candidate that clears `minsync2`, matching
+# `wsprd.c` exactly. Embedded targets turn this on (see
+# `embedded-shared`'s `wspr-bench` feature) to rank pass-2 candidates
+# by refined sync and run that ladder only on the top
+# `PASS2_DEEP_LADDER_TOP_N` — see `wspr::decode::decode_pass2_top_n`'s
+# doc comment for the AWGN-sweep evidence this is bounded by. To
+# exercise this path on host (e.g. before flashing, mirroring how
+# `fixed-point` lets host simulate embedded's numeric path), add it to
+# an explicit `--features` list; it is not part of `full`.
+wspr-pass2-topn = []
+
 # MSK144 (issue #25) — full port landed: LDPC(128,90) + MSK/OQPSK DSP
 # (Phase 1-2), burst-scan sync search (Phase 3, needs `fft-rustfft` /
 # `fft-extern` for the sub-modules that use it), per-frame decode
@@ -206,7 +219,7 @@ rustfft = "6"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing

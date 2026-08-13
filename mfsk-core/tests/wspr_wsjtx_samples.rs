@@ -1215,3 +1215,142 @@ fn wspr_diag_osd_decode_host_timing() {
         elapsed.as_secs_f64() / elapsed_packed.as_secs_f64(),
     );
 }
+
+/// [`wspr_diag_g8vdq_rank_after_minsync2`] generalised to every pass:
+/// for pass 0, 1 and 2, rank *all* coarse candidates by refined sync
+/// and report where the pass's own successful decode(s) land. Answers
+/// the question a rank-limited "only deep-process the top N" ladder
+/// depends on: does the real decode consistently rank near the top,
+/// or was that only true for pass 2 / G8VDQ?
+#[test]
+#[ignore = "manual diagnostic — per-pass rank of the real decode among minsync2 survivors"]
+fn wspr_diag_rank_by_pass() {
+    use mfsk_core::wspr::WsprResult;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, debug_refined_sync, decode_at_baseband,
+        decode_at_baseband_nblocks_gated_drift,
+    };
+    use mfsk_core::wspr::encode_channel_symbols;
+    use mfsk_core::wspr::subtract::subtract_signal_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+    let sample_rate = 12_000u32;
+    const FREQ_DEDUP_HZ: f32 = 5.0;
+    const TIME_DEDUP_SAMPLES: i64 = 8192;
+    const MINSYNC2_EARLY: f32 = 0.12;
+    const MINSYNC2_FINAL: f32 = 0.10;
+
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (mut idat, mut qdat) = decimate_to_baseband(&padded);
+
+    let mut seen: Vec<WsprResult> = Vec::new();
+    let mut confirmed = WsprCallsignTable::new();
+
+    for early_pass in 0..2 {
+        let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
+        cands.truncate(params.max_candidates);
+
+        let mut ranked: Vec<(f32, bool, Option<String>)> = Vec::new(); // (sync, kept, decode)
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for c in &cands {
+            let refined_sync =
+                debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, true);
+            let kept = refined_sync > MINSYNC2_EARLY;
+            let Some(mut d) = decode_at_baseband(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+            ) else {
+                ranked.push((refined_sync, kept, None));
+                continue;
+            };
+            let start_refined = d.start_sample;
+            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+            d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            ranked.push((refined_sync, kept, Some(d.message.to_string())));
+            if !dup {
+                confirmed.record(&d.message);
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+        if early_pass == 1 && this_pass.is_empty() {
+            break;
+        }
+
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        println!("=== pass {early_pass}: {} candidates ===", ranked.len());
+        for (rank, (sync, kept, msg)) in ranked.iter().enumerate() {
+            let tag = if msg.is_some() { "  <-- DECODED" } else { "" };
+            println!("  rank {rank:2}: refined_sync={sync:.4} kept={kept} decode={msg:?}{tag}");
+        }
+
+        for (d, start_refined) in &this_pass {
+            let symbols = encode_channel_symbols(&d.info_bits);
+            let f0_audio = d.freq_hz + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let shift_baseband = (*start_refined as i32) / 32;
+            subtract_signal_baseband(
+                &mut idat,
+                &mut qdat,
+                f0_audio,
+                shift_baseband,
+                d.drift_hz,
+                &symbols,
+            );
+        }
+    }
+
+    // Pass 2.
+    let mut cands2 = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 0);
+    cands2.truncate(params.max_candidates);
+    let mut ranked2: Vec<(f32, bool, Option<String>)> = Vec::new();
+    for c in &cands2 {
+        let refined_sync =
+            debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
+        let kept = refined_sync > MINSYNC2_FINAL;
+        let msg = decode_at_baseband_nblocks_gated_drift(
+            &idat,
+            &qdat,
+            sample_rate,
+            c.start_sample,
+            c.freq_hz,
+            c.drift_hz,
+            &[1, 2, 3, 0],
+            Some(&confirmed),
+            false,
+        )
+        .map(|d| d.message.to_string());
+        ranked2.push((refined_sync, kept, msg));
+    }
+    ranked2.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!("=== pass 2: {} candidates ===", ranked2.len());
+    for (rank, (sync, kept, msg)) in ranked2.iter().enumerate() {
+        let tag = if msg.is_some() { "  <-- DECODED" } else { "" };
+        println!("  rank {rank:2}: refined_sync={sync:.4} kept={kept} decode={msg:?}{tag}");
+    }
+}

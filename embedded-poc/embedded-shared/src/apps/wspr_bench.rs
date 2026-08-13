@@ -56,12 +56,12 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use mfsk_core::wspr::coarse_baseband::{BasebandCandidate, coarse_baseband};
-use mfsk_core::wspr::decode::{
-    WsprCallsignTable, WsprResult, decode_at_baseband, decode_at_baseband_nblocks_gated_drift,
-};
-use mfsk_core::wspr::demod::{IsQs, N_SYMBOLS, NSPS_BASEBAND, TONE_SPACING_HZ, tone_amplitudes};
 use mfsk_core::fec::conv::fano::instrument as fano_hist;
+use mfsk_core::wspr::coarse_baseband::{coarse_baseband, BasebandCandidate};
+use mfsk_core::wspr::decode::{
+    decode_at_baseband, decode_pass2_top_n, WsprCallsignTable, WsprResult,
+};
+use mfsk_core::wspr::demod::{tone_amplitudes, IsQs, NSPS_BASEBAND, N_SYMBOLS, TONE_SPACING_HZ};
 use mfsk_core::wspr::instrument;
 use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
@@ -118,7 +118,11 @@ fn assert_heap_ok(where_: &str) {
 /// experiment.
 fn alloc_caps(n: usize, caps: u32) -> Option<*mut f32> {
     let p = unsafe { esp_idf_svc::sys::heap_caps_malloc(n * 4, caps) } as *mut f32;
-    if p.is_null() { None } else { Some(p) }
+    if p.is_null() {
+        None
+    } else {
+        Some(p)
+    }
 }
 
 fn free_caps(p: *mut f32) {
@@ -249,13 +253,8 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
         let f0 = fano_hist::snapshot();
 
         let t = now_us();
-        let mut cands: Vec<BasebandCandidate> = coarse_baseband(
-            idat,
-            qdat,
-            PAD_AUDIO,
-            MAX_CANDIDATES,
-            EARLY_MAX_DRIFT,
-        );
+        let mut cands: Vec<BasebandCandidate> =
+            coarse_baseband(idat, qdat, PAD_AUDIO, MAX_CANDIDATES, EARLY_MAX_DRIFT);
         cands.truncate(MAX_CANDIDATES);
         let coarse_us = now_us() - t;
         log::info!(
@@ -293,7 +292,10 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
             );
         }
         let decode_us = now_us() - t;
-        log::info!("    [decode {early_pass} done: stack headroom {} B]", stack_headroom());
+        log::info!(
+            "    [decode {early_pass} done: stack headroom {} B]",
+            stack_headroom()
+        );
         assert_heap_ok("pass-1 decode loop");
 
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
@@ -315,14 +317,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
             let symbols = mfsk_core::wspr::encode_channel_symbols(&d.info_bits);
             let f0_audio = d.freq_hz + 1.5 * TONE_SPACING_HZ;
             let shift_baseband = (*start_refined as i32) / 32;
-            subtract_signal_baseband(
-                idat,
-                qdat,
-                f0_audio,
-                shift_baseband,
-                d.drift_hz,
-                &symbols,
-            );
+            subtract_signal_baseband(idat, qdat, f0_audio, shift_baseband, d.drift_hz, &symbols);
         }
         let subtract_us = now_us() - t;
 
@@ -366,36 +361,29 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     // most expensive pass for a number that does not change between
     // runs, and that cost was what pushed the opt-level A/B past its
     // capture window before it could print the decode list.
+    //
+    // `decode_pass2_top_n`, not a manual per-candidate loop like the
+    // one this replaced: refines + `minsync2`-filters every candidate
+    // (cheap), then runs the full Fano/OSD ladder only on the top
+    // `PASS2_DEEP_LADDER_TOP_N` by refined sync — this bench predates
+    // that function (see its own doc comment for why it's `pub`) and
+    // was still running the full ladder on every candidate here,
+    // silently missing the whole optimization this bench exists to
+    // measure.
     let t = now_us();
-    let mut raw2: Vec<WsprResult> = Vec::new();
-    for (ci, c) in cands2.iter().enumerate() {
-        let t_c = now_us();
-        if let Some(mut d) = decode_at_baseband_nblocks_gated_drift(
-            idat,
-            qdat,
-            SAMPLE_RATE,
-            c.start_sample,
-            c.freq_hz,
-            c.drift_hz,
-            &[1, 2, 3, 0],
-            Some(&confirmed),
-            false,
-        ) {
-            let start_refined = d.start_sample;
-            d.dt_sec = (start_refined as i64 - PAD_AUDIO as i64) as f32 / SAMPLE_RATE as f32 - 1.0;
-            d.start_sample = start_refined.saturating_sub(PAD_AUDIO);
-            d.snr_db = c.snr_db;
-            raw2.push(d);
-        }
-        log::info!(
-            "      p2 cand {}/{}: {} ms",
-            ci + 1,
-            cands2.len(),
-            (now_us() - t_c) / 1000,
-        );
-    }
+    let raw2: Vec<WsprResult> =
+        decode_pass2_top_n(idat, qdat, SAMPLE_RATE, PAD_AUDIO, &cands2, &confirmed);
     let decode_us = now_us() - t;
-    log::info!("    [pass 2 decode done: stack headroom {} B]", stack_headroom());
+    log::info!(
+        "      p2 deep-ladder over {} candidates: {} decoded, {} ms",
+        cands2.len(),
+        raw2.len(),
+        decode_us / 1000,
+    );
+    log::info!(
+        "    [pass 2 decode done: stack headroom {} B]",
+        stack_headroom()
+    );
     assert_heap_ok("pass-2 decode loop");
 
     let mut n_new = 0;
@@ -582,7 +570,11 @@ fn arm_c(idat: &[f32], qdat: &[f32]) {
     log::info!(
         "  tone_amplitudes: tabled {tabled} us, recurrence-inline {inlined} us \
          ({}% of tabled), bit-identical = {identical}",
-        if tabled > 0 { inlined * 100 / tabled } else { 0 },
+        if tabled > 0 {
+            inlined * 100 / tabled
+        } else {
+            0
+        },
     );
 }
 
