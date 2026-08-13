@@ -222,6 +222,17 @@ mutates the baseband, so their order does not matter.
 | without OSD | 678.6 | 73.7 % |
 | **OSD** | **242.2** | **26.3 %** |
 
+*Provenance*: both figures are sums of the per-candidate timings the
+bench logs, taken from two runs of the same build — the OSD-on loop
+from `wspr-bench_cores3_240mhz_osdsplit_*.log` (its 920.7 s sum agrees
+with the bench's own `decode_us` of 920.795 s) and the OSD-off loop
+from `wspr-bench_cores3_osdsplit2_*.log`, whose 3 300 s capture window
+closed before the summary line. Combining them is sound because the
+work is deterministic and demonstrably so: the four OSD-on candidates
+present in *both* logs agree to within 2 ms (69 717/69 715,
+67 778/67 777, 69 230/69 229, 69 522/69 520), and every counter matched
+exactly across the 160 MHz and 240 MHz runs.
+
 Per-candidate the ratio is strikingly uniform — 51.1-51.7 s without OSD
 against 67.8-71.3 s with it, for 13 of the 14 candidates, and
 10.4 vs 14.1 s for the one early-exiting outlier. This is a decoder
