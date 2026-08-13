@@ -10,13 +10,15 @@ Raw logs: `embedded-poc/m5stack-cores3-app/logs/wspr-bench_cores3_*.log`.
 
 ## Headline
 
-1. **It does not fit — but the gap closed by 4.9× today.** One
+1. **It does not fit — but the gap closed by 6.8× today.** One
    `decode_scan` started at **1 214 s** against WSPR's 120 s slot
-   (10.1× over, 1 755× the host) and now stands at **249 s** (2.08×
-   over) after two independent, additive, recall-neutral fixes:
-   `opt-level=3` (1.19×) and implementing `minsync2` (a further 4.1×,
-   stacking to **4.9× combined**). Both verified 9/9 golden, decode-
-   for-decode identical to the un-optimised baseline.
+   (10.1× over, 1 755× the host) and now stands at **177.6 s** (1.48×
+   over) after three independent, additive fixes: `opt-level=3`
+   (1.19×), `minsync2` (4.1×), and ranking pass-2 candidates by
+   refined sync to deep-process only the strongest 2 (a further 1.25×
+   on the whole scan, 1.73× on pass 2 alone — evidence-bounded, not
+   provably lossless like the first two; see below). 9/9 golden held
+   at every step.
 2. **The loop is compute-bound, not bandwidth-bound.** Moving half the
    baseband traffic to internal SRAM buys 5 %. So **#260's Phase 3
    (within-stage hypothesis fusion) should not be built** — its entire
@@ -626,6 +628,86 @@ two of three passes, for free once built safely — but it is not close
 to enough on its own, and pass 2 (76 % of the scan) needs either the
 scoped pass-0/1-only redesign above, a reduction in OSD's own stack
 footprint (see the audit above), or both, before it can run at all.
+
+## Pass 2 candidate-ladder truncation: rank by refined sync, deep-process the top 2
+
+Dual-core stalled on pass 2 specifically (stack, above); the
+alternative lever is spending less per candidate rather than more
+cores. Pass 2 already refines and `minsync2`-filters every coarse
+candidate before Fano/OSD — the question is whether every survivor
+needs the *full* ladder, or whether ranking by refined sync and
+deep-processing only the strongest few is safe.
+
+**Evidence, not a guess.** A 260-trial AWGN sweep across 13 SNR levels
+(`wspr_rank_sweep`, `tests/wspr_sweep.rs`) seeded a
+[`WsprCallsignTable`] with the known transmitted callsign+grid (opening
+OSD's gate the same way a cross-slot "heard this station before" does
+in production) and ranked every `minsync2` survivor by refined sync:
+
+```
+   SNR   trials       found     rank<=1     rank<=2  via fano/osd/none
+  -34dB       20           0           0           0     0/   0/  20
+  -32dB       20           8           8           8     1/   7/  12
+  -31dB       20          15          15          15     2/  13/   5
+  -30dB       20          20          20          20    12/   8/   0
+  -29dB       20          20          20          20    18/   2/   0
+  -28dB..+0dB (all)  20          20          20          20    20/   0/   0
+```
+
+The real signal, whenever it decoded at all, **never ranked worse than
+1** — never rank 2 or beyond, in any of 260 trials. This sweep is
+single-signal (no SIC residual, no competing stations), so it brackets
+pass 2's isolated-weak-candidate case rather than reproducing pass 2
+exactly, but it's the broadest evidence available and it never once
+needed more than rank 1. `PASS2_DEEP_LADDER_TOP_N = 2` is therefore the
+minimum this evidence supports, not a round number.
+
+**The same sweep reverses an earlier over-generalization.** The
+WSJT-X golden file alone showed OSD succeeding 0/0 times, which read
+as "OSD is dead weight on pass 2." At -32/-31 dB — the marginal-
+detection transition zone — OSD instead accounts for the *majority* of
+hits (7/8 and 13/15 in the table above). This constant trims *which*
+candidates reach the ladder; it does not touch the ladder itself, and
+OSD stays in it.
+
+**Not wsprd-faithful**, unlike `minsync2` above — wsprd runs the
+ladder on every `minsync2` survivor with no further cut, and this
+crate's own top-N cut costs real (if evidence-bounded) recall risk
+rather than being provably safe. Gated behind a new feature,
+`wspr-pass2-topn`, off by default: host stays on the full-ladder path
+(not part of `full`), embedded turns it on via `embedded-shared`'s
+`wspr-bench` feature. Same pattern `fixed-point` already established
+for letting host simulate embedded's behavior byte-for-byte — add
+`wspr-pass2-topn` to an explicit `--features` list to exercise it
+without flashing.
+
+**First flash showed nothing — because the bench bypasses
+`decode_scan`.** `embedded_shared::apps::wspr_bench` predates this
+function and runs its own hand-inlined pass 0/1/2 loop (the "D
+pattern" noted in `embedded-poc/CLAUDE.md` — avoids a `tlsf_malloc`
+corruption bug when `decode_block`-shaped helpers are called from a
+long bench loop), not `decode_scan_inner`'s dispatch. The change was
+correctly gated and host-verified, but the first on-device run showed
+pass 2 unchanged at 107.5 s / 14 full-ladder candidates — the bench's
+manual loop never called the new code at all. Fix: made
+`decode_pass2_top_n` `pub` and switched the bench's own pass-2 loop to
+call it directly instead of re-deriving the candidate loop a second
+time.
+
+**Measured, CoreS3, O3 + `minsync2` already applied:**
+
+| | before (full ladder, 3 survivors) | after (top 2) |
+|---|---:|---:|
+| pass 2 decode | 107.5 s | **62.25 s** (−42 %) |
+| pass 2 fano/osd attempts | 149/148 | 81/80 |
+| one `decode_scan` TOTAL | 222.8 s | **177.6 s** (−20 %) |
+| golden recall | 9/9 | **9/9**, unchanged |
+
+Stack headroom stayed healthy post-decode (16.3 KB free, no crash).
+177.6 s is 1.48× the 120 s slot, down from 2.08× before this change —
+real progress toward sub-2-minute, not yet there. Host: 9/9 golden with
+and without the feature; the wsprd-faithful default path is unaffected
+(866-871 ms, matching the pre-change baseline exactly).
 
 ## A latent bug in the shipped FFT backend, found on the way
 
