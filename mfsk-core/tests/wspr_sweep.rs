@@ -516,3 +516,169 @@ fn wspr_rank_sweep() {
         }
     }
 }
+
+/// How many DT peak-up x nblocks ladder positions a *real, converging*
+/// signal needs, across the AWGN corpus — the number
+/// `PASS2_CANDIDATE_TIME_BUDGET_US` (`embedded-shared`'s wspr_bench)
+/// needs to safely exceed. Companion to `wspr_rank_sweep`, which
+/// proved a real signal always ranks <= 1 among `minsync2` survivors
+/// but says nothing about how *long* its own ladder search can take
+/// once it's there — that's what this sweep measures, on the exact
+/// same corpus and the exact same `rank_pass2_candidates` +
+/// `deep_decode_pass2_candidate` pair production uses (`--features
+/// wspr-pass2-topn`), not `decode_at_baseband_nblocks_gated_drift`'s
+/// unbudgeted path.
+///
+/// Position count, not wall-clock: portable across host and S3 (the
+/// number of `(nblock, idt)` cells visited before Fano/OSD converges
+/// is a property of the signal and the search order, not the CPU) —
+/// converting to an S3 time budget is a separate, deliberately
+/// manual step against S3's own measured per-position cost (see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`).
+///
+/// Uses a counting budget (`Fn`, always returns `true`) rather than
+/// `None`, so the exact position where convergence happens is
+/// visible — matches this session's `wspr_ladder_budget_*` unit
+/// test's own technique (`wspr_wsjtx_samples.rs`), just run across
+/// the whole corpus instead of one golden file's one candidate.
+#[test]
+#[ignore = "manual sweep — WSPR pass-2 ladder position count for a converging signal, needs the AWGN corpus"]
+#[cfg(feature = "wspr-pass2-topn")]
+fn wspr_pass2_ladder_position_sweep() {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    use mfsk_core::msg::WsprMessage;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, deep_decode_pass2_candidate, rank_pass2_candidates,
+    };
+
+    let dir = sweep_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("skipping wspr_pass2_ladder_position_sweep: corpus dir not found at {dir:?}");
+        return;
+    };
+
+    let mut jobs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(rest) = stem.strip_prefix("wspr_awgn_") else {
+            continue;
+        };
+        let Some((tag, _trial)) = rest.split_once('_') else {
+            continue;
+        };
+        let Some(snr) = parse_snr_tag(tag) else {
+            continue;
+        };
+        jobs.push(Job { snr, path });
+    }
+    if jobs.is_empty() {
+        eprintln!(
+            "skipping wspr_pass2_ladder_position_sweep: no wspr_awgn_*.wav files found in {dir:?}"
+        );
+        return;
+    }
+
+    let (callsign, grid) = {
+        let mut parts = GOLDEN_MSG.split_whitespace();
+        (
+            parts.next().unwrap().to_string(),
+            parts.next().unwrap().to_string(),
+        )
+    };
+
+    const PAD_SEC: f32 = 3.0;
+    let sample_rate = 12_000u32;
+
+    // snr -> Vec<Option<positions>> (None = this trial's real signal
+    // never converged inside the top-N survivors at all — a rank
+    // failure, not a ladder-length one; excluded from the max below,
+    // reported separately).
+    let mut cells: std::collections::BTreeMap<i32, Vec<Option<u32>>> =
+        std::collections::BTreeMap::new();
+
+    for job in &jobs {
+        let Some(audio) = load_wav_f32_opt(&job.path) else {
+            continue;
+        };
+        let pad = (PAD_SEC * sample_rate as f32) as usize;
+        let mut padded = vec![0.0f32; pad + audio.len()];
+        padded[pad..].copy_from_slice(&audio);
+        let (idat, qdat) = decimate_to_baseband(&padded);
+
+        let mut table = WsprCallsignTable::new();
+        table.record(&WsprMessage::Type1 {
+            callsign: callsign.clone(),
+            grid: grid.clone(),
+            power_dbm: 37,
+        });
+
+        let mut cands = coarse_baseband(&idat, &qdat, pad, 100, 0);
+        cands.truncate(100);
+        let ranked = rank_pass2_candidates(&idat, &qdat, &cands);
+
+        let mut found: Option<u32> = None;
+        for r in &ranked {
+            let calls = AtomicU32::new(0);
+            let counting: &(dyn Fn() -> bool + Sync) = &|| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                true
+            };
+            let d = deep_decode_pass2_candidate(
+                &idat,
+                &qdat,
+                sample_rate,
+                pad,
+                &table,
+                r,
+                Some(counting),
+            );
+            if d.is_some_and(|d| d.message.to_string() == GOLDEN_MSG) {
+                found = Some(calls.load(Ordering::Relaxed));
+                break;
+            }
+        }
+        cells.entry(job.snr).or_default().push(found);
+    }
+
+    println!("WSPR pass-2 ladder position count for a converging signal — {dir:?}");
+    println!(
+        "{:>6}  {:>7}  {:>10}  {:>12}  {:>12}  {:>12}",
+        "SNR", "trials", "found", "max pos", "mean pos", "p90 pos"
+    );
+    let mut overall_max = 0u32;
+    for (snr, entries) in &cells {
+        let trials = entries.len();
+        let mut positions: Vec<u32> = entries.iter().filter_map(|e| *e).collect();
+        let found = positions.len();
+        positions.sort_unstable();
+        let max_pos = positions.last().copied().unwrap_or(0);
+        let mean_pos = if found > 0 {
+            positions.iter().sum::<u32>() as f64 / found as f64
+        } else {
+            0.0
+        };
+        let p90_pos = if found > 0 {
+            positions[(found * 9 / 10).min(found - 1)]
+        } else {
+            0
+        };
+        overall_max = overall_max.max(max_pos);
+        println!(
+            "{:>+5}dB  {:>7}  {:>10}  {:>12}  {:>12.1}  {:>12}",
+            snr, trials, found, max_pos, mean_pos, p90_pos,
+        );
+    }
+    println!(
+        "\noverall max ladder positions across every SNR level, every converging trial: {overall_max}"
+    );
+    println!(
+        "(4 nblocks x 17 idt = 68 total positions possible; a real signal needing all 68 \
+         would mean no time budget below the unbudgeted default is ever safe)"
+    );
+}
