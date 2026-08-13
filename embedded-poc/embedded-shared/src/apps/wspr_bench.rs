@@ -237,6 +237,13 @@ impl PassStats {
 /// be measuring different work, not different memory.
 #[inline(never)]
 fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResult>) {
+    // Slot-deadline anchor for `Pass2Budget::DeadlineDriven` — see
+    // that variant's own doc comment. Captured here, not inside the
+    // pass-2 block, so it reflects the *whole* scan's start (matches
+    // a production controller calling `decode_scan` once at slot
+    // end), not just pass 2's own local start.
+    let scan_start_us = now_us();
+
     let mut stats = Vec::new();
     let mut seen: Vec<WsprResult> = Vec::new();
     let mut found: Vec<(WsprResult, usize)> = Vec::new();
@@ -392,7 +399,11 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     // pre-topN full ladder over every candidate) if there's no room.
     let t = now_us();
     let ranked = rank_pass2_candidates(idat, qdat, &cands2);
-    let deadline_us = PASS2_CANDIDATE_TIME_BUDGET_US.map(|budget| t + budget);
+    let deadline_us = match PASS2_BUDGET {
+        Pass2Budget::Unlimited => None,
+        Pass2Budget::DeadlineDriven => Some(scan_start_us + SLOT_US),
+        Pass2Budget::RecallPriority(budget) => Some(t + budget),
+    };
     let raw2: Vec<WsprResult> = wspr_dual_core::pass2_split(
         idat,
         qdat,
@@ -647,20 +658,51 @@ fn log_heap(tag: &str) {
 /// production embedded WSPR path pays the same stack.
 const SCAN_STACK: u32 = 90 * 1024;
 
-/// Per-candidate time budget for pass 2's deep ladder, in
-/// microseconds — `None` here (unlimited, wsprd-faithful) is the
-/// value this bench has always run with; every measurement in
-/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` used it. Set to
-/// `Some(t)` to cap each survivor's own DT peak-up ladder at `t` from
-/// when `rank_pass2_candidates` finishes, bounding the *failing*
-/// candidate's worst case (48.1 s on the golden file, see "Dual-core,
-/// take two" in that doc) at the cost of recall on candidates that
-/// need more than `t` to converge — this is this crate's own
-/// time/recall trade, not a wsprd behaviour, so it stays off by
-/// default. Threaded to [`wspr_dual_core::pass2_split`]'s
-/// `deadline_us` parameter; see that function's own doc comment for
-/// the exact semantics (per-candidate, not a total-pass-2 budget).
-const PASS2_CANDIDATE_TIME_BUDGET_US: Option<i64> = None;
+/// WSPR slot period — the wall-clock deadline a production embedded
+/// decoder is racing against, matching the protocol's own slot
+/// length. Anchor for [`Pass2Budget::DeadlineDriven`].
+const SLOT_US: i64 = 120_000_000;
+
+/// How pass 2's failing-candidate ladder (up to 4 x 17 = 68 DT
+/// peak-up x nblocks positions, ~48.1 s on the golden file's own
+/// non-converging candidate — see "Dual-core, take two" in
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`) is bounded.
+/// Threaded to [`wspr_dual_core::pass2_split`]'s `deadline_us`
+/// parameter — see that function's own doc comment for the exact
+/// semantics (per-candidate, not a total-pass-2 budget: main and the
+/// worker each get their own independent deadline check).
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // both non-default variants are real, selectable configurations
+enum Pass2Budget {
+    /// No cutoff — wsprd-faithful, full ladder always. What every
+    /// measurement in `WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` before
+    /// this mechanism existed used.
+    Unlimited,
+    /// **Deadline priority.** Cuts pass 2's ladder off exactly when
+    /// the slot boundary (`scan_start_us + SLOT_US`) arrives, however
+    /// much of that budget pass 0/1/coarse already consumed —
+    /// guarantees on-time completion as the first priority, the way
+    /// a production controller racing the next slot needs. Real-
+    /// signal recall risk on pass 2's own candidates therefore VARIES
+    /// run-to-run with how much time the earlier stages actually
+    /// took, unlike `RecallPriority`'s fixed number; a run where
+    /// pass 0/1 ran unusually long leaves pass 2 less room, not more.
+    DeadlineDriven,
+    /// **Recall priority.** A fixed per-candidate budget (µs) that
+    /// ignores the slot deadline — if pass 0/1 already ran long,
+    /// TOTAL can still exceed 120 s. 40 000 000 (40 s) = 44 ladder
+    /// positions (the measured worst case a converging signal needed
+    /// across a 300-trial AWGN sweep concentrated at the -30/-31/
+    /// -32 dB sensitivity floor — see `wspr_pass2_ladder_position_
+    /// sweep`, `tests/wspr_sweep.rs`) x 0.7071 s/position (S3's own
+    /// measured per-position cost, from the golden file's 68-position
+    /// full-ladder run) x 1.3 margin, rounded down. Choose this over
+    /// `DeadlineDriven` when losing a real weak decode is worse than
+    /// running over the slot.
+    RecallPriority(i64),
+}
+
+const PASS2_BUDGET: Pass2Budget = Pass2Budget::DeadlineDriven;
 
 /// Stack for the bandwidth/oscillator task.
 ///
