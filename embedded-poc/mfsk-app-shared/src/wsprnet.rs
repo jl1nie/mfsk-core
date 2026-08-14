@@ -1,5 +1,5 @@
-//! wsprnet.org spot reporting — request construction, and a sink that
-//! does not send.
+//! wsprnet.org spot reporting — request construction, and sinks that
+//! range from "build nothing" to an actual upload.
 //!
 //! Port of WSJT-X's `Network/wsprnet.cpp`, which is the only normative
 //! description of this interface there is: wsprnet.org publishes no
@@ -27,17 +27,17 @@
 //! | `mode` | `2` = WSPR-2, `15` = WSPR-15, else FST4W TR minutes | config |
 //! | `version` | reporting software version | config |
 //!
-//! ## What this module does *not* do
+//! ## Reporting is opt-in
 //!
-//! **It does not upload.** [`SpotSink::Dummy`] formats the request and
-//! logs it; that is the shipped default and the only sink wired
-//! anywhere. Sending real spots means claiming on a public database
-//! that a station was heard, so a decoder that is still being measured
-//! has no business doing it as a side effect of a bench run — the
-//! encoder is the part worth having under test, and it is testable
-//! without a network. [`SpotSink::Endpoint`] exists for pointing at a
-//! local receiver; it carries no default and `wsprnet.org` appears in
-//! this file only in documentation.
+//! **Reporting is off unless asked for.** [`SpotSink`] defaults to
+//! [`SpotSink::Disabled`], which builds nothing. [`SpotSink::Dummy`]
+//! formats and logs, which is what exercises the encoder against real
+//! decoder output without asserting anything to anyone.
+//! [`SpotSink::Http`] does upload — the URL is explicit and has no
+//! default, and `wsprnet.org` appears in this file only in
+//! documentation. A spot is a public claim that a named station was
+//! heard at a time and a frequency; which endpoint hears that claim,
+//! and whether one is made at all, belongs at the call site.
 
 use core::fmt::Write as _;
 
@@ -205,28 +205,86 @@ pub fn encode_no_spot(reporter: &Reporter, tx_pct: u32, tx_mhz: f64, tx_dbm: i32
     body
 }
 
-/// Where a built request goes.
-#[derive(Clone, Debug)]
+/// Where a built request goes — and whether it goes anywhere.
+///
+/// Reporting is **off unless asked for**. A spot is a public claim that
+/// a named station was heard at a time and frequency, so the decision
+/// to make one belongs at the call site, not in a default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SpotSink {
-    /// Format and log, send nothing. The default, and the only sink
-    /// currently wired — see this module's header for why a decoder
-    /// under measurement should not be claiming receptions on a public
-    /// database.
+    /// Build nothing, send nothing. The default.
+    #[default]
+    Disabled,
+    /// Build the requests and log them. Exercises the encoder against
+    /// real decoder output without asserting anything to anyone.
     Dummy,
-    /// POST to an explicit endpoint. No default value: a caller that
-    /// wants a real upload has to name the host, which keeps
-    /// "where do these go?" a decision at the call site rather than a
-    /// constant buried here.
-    Endpoint(String),
+    /// Build and POST. The URL is explicit and has no default — see
+    /// this module's header for why `wsprnet.org` is not written down
+    /// as one.
+    Http { url: String },
+}
+
+impl SpotSink {
+    /// Parse a configuration string: `off`/empty, `dummy`, or a URL.
+    ///
+    /// Anything that is not a recognised keyword is taken as an
+    /// endpoint, so pointing a build at a local receiver is one env
+    /// var and needs no code change.
+    pub fn from_config(v: Option<&str>) -> Self {
+        match v.map(str::trim) {
+            None | Some("") | Some("off") | Some("0") | Some("disabled") => SpotSink::Disabled,
+            Some("dummy") | Some("log") => SpotSink::Dummy,
+            Some(url) => SpotSink::Http { url: url.into() },
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, SpotSink::Disabled)
+    }
+}
+
+/// POST one form body. Returns the HTTP status.
+///
+/// Only compiled for the ESP-IDF target: the encoder above is pure and
+/// is unit-tested on the host (`hosttest/mfsk-app-shared`), which it
+/// could not be if this pulled `esp-idf-svc` unconditionally.
+#[cfg(target_os = "espidf")]
+fn post_form(url: &str, body: &str) -> anyhow::Result<u16> {
+    use esp_idf_svc::http::Method;
+    use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
+
+    let mut conn = EspHttpConnection::new(&Configuration {
+        // wsprnet's own endpoint is plain HTTP; a TLS endpoint would
+        // additionally need a root-cert bundle wired here.
+        crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
+        ..Default::default()
+    })?;
+    let len = body.len().to_string();
+    conn.initiate_request(
+        Method::Post,
+        url,
+        &[
+            ("Content-Type", "application/x-www-form-urlencoded"),
+            ("Content-Length", &len),
+        ],
+    )?;
+    conn.write(body.as_bytes())?;
+    conn.initiate_response()?;
+    Ok(conn.status())
 }
 
 /// Hand a slot's decodes to the configured sink.
 ///
-/// Returns the bodies it built, so a caller (or a test) can assert on
-/// them without caring which sink is in use.
+/// Returns the bodies it built — empty when reporting is disabled, so a
+/// caller can tell "nothing to report" from "not reporting" by asking
+/// the sink rather than by counting.
 pub fn report_slot(spots: &[Spot], reporter: &Reporter, sink: &SpotSink) -> Vec<String> {
+    if !sink.is_enabled() {
+        return Vec::new();
+    }
     let bodies: Vec<String> = spots.iter().map(|s| encode_spot(s, reporter)).collect();
     match sink {
+        SpotSink::Disabled => unreachable!("returned above"),
         SpotSink::Dummy => {
             if bodies.is_empty() {
                 log::info!("wsprnet[dummy]: no decodes this slot (would send wsprstat)");
@@ -235,17 +293,29 @@ pub fn report_slot(spots: &[Spot], reporter: &Reporter, sink: &SpotSink) -> Vec<
                 log::info!("wsprnet[dummy] {}/{}: POST /post/ {b}", i + 1, bodies.len());
             }
         }
-        SpotSink::Endpoint(url) => {
-            // Intentionally not implemented. Wiring an HTTP client here
-            // is a small change; deciding that this decoder should
-            // start asserting receptions to a live database is not, and
-            // that decision has not been made. Leaving the arm loud
-            // rather than silently dropping keeps the gap visible.
-            log::warn!(
-                "wsprnet: {} spot(s) built for {url}, but upload is not implemented \
-                 (dummy-only by design — see module docs)",
-                bodies.len()
-            );
+        SpotSink::Http { url } => {
+            // One request per spot, sequentially, matching
+            // `WSPRNet::work`'s single-dequeue loop. A failure is
+            // reported and skipped rather than retried: the next slot
+            // is 120 s away and a stale spot is worth less than the
+            // time spent resending it.
+            for (i, b) in bodies.iter().enumerate() {
+                #[cfg(target_os = "espidf")]
+                match post_form(url, b) {
+                    Ok(status) if (200..300).contains(&status) => {
+                        log::info!("wsprnet {}/{}: {status}", i + 1, bodies.len())
+                    }
+                    Ok(status) => {
+                        log::warn!("wsprnet {}/{}: HTTP {status}", i + 1, bodies.len())
+                    }
+                    Err(e) => log::warn!("wsprnet {}/{}: {e:#}", i + 1, bodies.len()),
+                }
+                #[cfg(not(target_os = "espidf"))]
+                {
+                    let _ = (i, b, url);
+                    log::warn!("wsprnet: upload is ESP-IDF-only; nothing sent");
+                }
+            }
         }
     }
     bodies
@@ -367,7 +437,43 @@ mod tests {
         }
     }
 
-    /// The shipped sink builds the same bodies it would send, and sends
+    #[test]
+    fn disabled_is_the_default_and_builds_nothing() {
+        assert_eq!(SpotSink::default(), SpotSink::Disabled);
+        assert!(!SpotSink::default().is_enabled());
+        let spots = vec![Spot {
+            date: "150426".into(),
+            time: "0918".into(),
+            call: "G8VDQ".into(),
+            grid: "IO91".into(),
+            dbm: 37,
+            snr_db: -23,
+            dt_sec: 0.0,
+            drift_hz: 0,
+            audio_hz: 1500.0,
+        }];
+        assert!(report_slot(&spots, &reporter(), &SpotSink::Disabled).is_empty());
+    }
+
+    #[test]
+    fn config_string_selects_the_sink() {
+        for off in [None, Some(""), Some("off"), Some("0"), Some("disabled")] {
+            assert_eq!(SpotSink::from_config(off), SpotSink::Disabled, "{off:?}");
+        }
+        assert_eq!(SpotSink::from_config(Some("dummy")), SpotSink::Dummy);
+        assert_eq!(SpotSink::from_config(Some("log")), SpotSink::Dummy);
+        // Anything else is an endpoint, so aiming a build at a local
+        // receiver needs no code change.
+        assert_eq!(
+            SpotSink::from_config(Some("http://127.0.0.1:5000/post/")),
+            SpotSink::Http {
+                url: "http://127.0.0.1:5000/post/".into()
+            }
+        );
+        assert!(SpotSink::from_config(Some("http://127.0.0.1:5000/post/")).is_enabled());
+    }
+
+    /// The dummy sink builds the same bodies it would send, and sends
     /// nothing.
     #[test]
     fn dummy_sink_builds_one_body_per_spot() {

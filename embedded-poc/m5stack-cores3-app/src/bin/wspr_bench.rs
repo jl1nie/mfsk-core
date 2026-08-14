@@ -150,14 +150,26 @@ const GOLDEN_DIAL_MHZ: f64 = 14.095_600;
 
 /// Hand each slot's decodes to the wsprnet encoder.
 ///
-/// **Nothing is uploaded** — [`SpotSink::Dummy`] formats the request
-/// and logs it. This bench replays one recording from 2015 on a loop;
-/// posting that to a live database would be asserting receptions that
-/// are neither current nor this station's. The encoder is the part
-/// worth exercising against real decoder output, and it is exercised
-/// fully by building the body.
+/// Selected at build time by `MFSK_WSPR_SPOT`:
+///
+/// | value | effect |
+/// |---|---|
+/// | unset, `off`, `0`, `disabled` | build nothing — **the default** |
+/// | `dummy` / `log` | build and log, send nothing |
+/// | anything else | treated as an endpoint URL and POSTed to |
+///
+/// Off by default on purpose, and it should stay off for this bin in
+/// particular: the bench replays one recording from 2015 on a loop, so
+/// uploading it would assert receptions that are neither current nor
+/// this station's. `dummy` is what exercises the encoder against real
+/// decoder output; a URL is for pointing at a local receiver.
 fn report_spots(results: &[mfsk_core::wspr::decode::WsprResult]) {
     use mfsk_app_shared::wsprnet::{Mode, Reporter, Spot, SpotSink, report_slot};
+
+    let sink = SpotSink::from_config(option_env!("MFSK_WSPR_SPOT"));
+    if !sink.is_enabled() {
+        return;
+    }
 
     let reporter = Reporter {
         call: "N0CALL".into(),
@@ -197,5 +209,5 @@ fn report_spots(results: &[mfsk_core::wspr::decode::WsprResult]) {
         })
         .collect();
 
-    report_slot(&spots, &reporter, &SpotSink::Dummy);
+    report_slot(&spots, &reporter, &sink);
 }
