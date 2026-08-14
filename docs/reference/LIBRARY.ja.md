@@ -234,6 +234,12 @@ mfsk_core
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (トーン毎 Wiener)
+│   ├── spectrogram.rs  Spectrogram 構築/スコアリングカーネル — JT9, JT65, Q65
+│   │                   (WSPR は独自実装を維持 — fixed-point FFT backend +
+│   │                   baseline-fit 正規化という実質的な差異があるため)
+│   ├── interleave.rs   bit-reversal interleave_bitrev/deinterleave_bitrev
+│   │                   — WSPR, JT9 (JT65 は別アルゴリズム — 7×9 行列転置
+│   │                   — のため jt65/ に独自実装を維持)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) 内部実装 — §4 参照。呼び出しは
 │                       msg::decode_request::DecodeRequest/SniperRequest 経由)
@@ -259,6 +265,10 @@ mfsk_core
 │   ├── wsjt77.rs       77 bit WSJT メッセージ (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50 bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72 bit JT メッセージ — JT9, JT65
+│   ├── callsign28.rs   共有 base-37/36/10/27³ コールサイン pack/unpack
+│   │                   コア — jt72 (JT9/JT65) と wspr の両方がラップ。
+│   │                   上流の単一ルーチン (`packjt.f90` の
+│   │                   packcall/unpackcall) に由来
 │   ├── q65.rs          77 bit <-> 13×GF(64) symbol パッキング (QRA codec 用)
 │   ├── ap.rs           ApHint — a-priori ヒントビルダー (with_call1/call2/grid/report)
 │   ├── pipeline_ap.rs  AP 対応マルチパス decode pipeline (77-bit 系プロトコル)
