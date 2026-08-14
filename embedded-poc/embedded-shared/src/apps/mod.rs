@@ -9,3 +9,5 @@ pub mod compute_bench;
 pub mod rx_wavsim;
 #[cfg(feature = "wspr-bench")]
 pub mod wspr_bench;
+#[cfg(feature = "wspr-bench")]
+pub mod wspr_scan;

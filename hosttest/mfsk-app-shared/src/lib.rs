@@ -18,3 +18,7 @@
 /// wsprnet.org spot encoding — pure string building, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wsprnet.rs"]
 pub mod wsprnet;
+
+/// WSPR band/dial-frequency table — pure data, no I/O.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
+pub mod wspr_bands;
