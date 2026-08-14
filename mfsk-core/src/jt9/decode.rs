@@ -1,7 +1,9 @@
 //! JT9 decode pipeline: WSJT-X-faithful softsym (downsam9 → peakdt9 →
 //! AFC → twkfreq → symspec2 → fano232).
 //!
-//! Replaces the earlier box-car path in `baseband.rs` + `demod_bb.rs`.
+//! Replaces the earlier box-car path in `baseband.rs` + `demod_bb.rs`
+//! (the latter removed 2026-08-14 — issue #19, which it was kept
+//! around for, closed months prior).
 //! The big audio FFT is computed once and reused across candidates.
 
 use crate::engine::{DecodeContext, FecCodec, FecOpts, MessageCodec};
