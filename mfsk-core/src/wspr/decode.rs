@@ -1777,23 +1777,13 @@ fn decode_scan_subtract_inner(
 }
 
 /// Deinterleave 162 LLRs in place (same permutation as [`deinterleave`]
-/// but for `f32` values).
+/// but for `f32` values). Thin wrapper over
+/// [`crate::engine::interleave::deinterleave_bitrev`] — was its own
+/// third inline copy of the bit-reversal formula ("avoid exposing a
+/// pub helper"), no longer needed now that the shared version is
+/// itself the pub helper.
 fn deinterleave_llrs(llrs: &mut [f32; 162]) {
-    let mut tmp = [0f32; 162];
-    let mut p = 0u8;
-    let mut i = 0u8;
-    while p < 162 {
-        // Inline the bit-reverse-8 to avoid exposing a pub helper.
-        let i64 = i as u64;
-        let j = ((((i64 * 0x8020_0802u64) & 0x0884_4221_10u64).wrapping_mul(0x0101_0101_01u64))
-            >> 32) as u8 as usize;
-        if j < 162 {
-            tmp[p as usize] = llrs[j];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    *llrs = tmp;
+    crate::engine::interleave::deinterleave_bitrev(llrs);
 }
 
 #[cfg(test)]

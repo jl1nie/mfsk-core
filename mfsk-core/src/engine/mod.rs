@@ -34,6 +34,10 @@ pub mod equalize;
 pub mod fft;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod ft4_coarse;
+// Pure bit-permutation, no FFT/complex-number dependency — ungated
+// like `protocol`/`tx`/`scalar` so embedded TX-only builds can use it
+// too (WSPR's own TX path is a potential future consumer).
+pub mod interleave;
 // Decode-side modules go through the `engine::fft` trait abstraction;
 // gated on the meta-feature (true if any of fft-rustfft / fft-microfft
 // / fft-extern is on). Embedded TX-only builds with no FFT backend

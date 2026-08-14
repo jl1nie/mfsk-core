@@ -4,62 +4,30 @@
 //! `interleave9.f90`); only the frame length changes from 162 to
 //! 206. The permutation is its own inverse-pair: calling
 //! [`interleave`] on a buffer and then [`deinterleave`] restores it.
+//!
+//! Thin wrapper over [`crate::engine::interleave`] (extracted
+//! 2026-08-14, code-sharing audit — this module's `bit_reverse_8` was
+//! byte-identical to `wspr::bit_reverse_8`, and this module's loop
+//! shape was the same permutation walk modulo frame length).
+
+use crate::engine::interleave::{deinterleave_bitrev, interleave_bitrev};
 
 const FRAME: usize = 206;
-
-#[inline]
-fn bit_reverse_8(i: u8) -> u8 {
-    let i64 = i as u64;
-    (((i64 * 0x8020_0802u64) & 0x0884_4221_10u64).wrapping_mul(0x0101_0101_01u64) >> 32) as u8
-}
 
 /// Permute 206 bits: `tmp[bit_reverse_8(i)] = src[p]`, iterating `i`
 /// skipping positions whose bit-reverse ≥ 206.
 pub fn interleave(bits: &mut [u8; FRAME]) {
-    let mut tmp = [0u8; FRAME];
-    let mut p = 0usize;
-    let mut i: u32 = 0;
-    while p < FRAME {
-        let j = bit_reverse_8((i & 0xff) as u8) as usize;
-        if j < FRAME {
-            tmp[j] = bits[p];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    bits.copy_from_slice(&tmp);
+    interleave_bitrev(bits);
 }
 
 /// Inverse permutation — `tmp[p] = src[bit_reverse_8(i)]`.
 pub fn deinterleave(bits: &mut [u8; FRAME]) {
-    let mut tmp = [0u8; FRAME];
-    let mut p = 0usize;
-    let mut i: u32 = 0;
-    while p < FRAME {
-        let j = bit_reverse_8((i & 0xff) as u8) as usize;
-        if j < FRAME {
-            tmp[p] = bits[j];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    bits.copy_from_slice(&tmp);
+    deinterleave_bitrev(bits);
 }
 
 /// f32 variant for LLR arrays.
 pub fn deinterleave_llrs(llrs: &mut [f32; FRAME]) {
-    let mut tmp = [0f32; FRAME];
-    let mut p = 0usize;
-    let mut i: u32 = 0;
-    while p < FRAME {
-        let j = bit_reverse_8((i & 0xff) as u8) as usize;
-        if j < FRAME {
-            tmp[p] = llrs[j];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    *llrs = tmp;
+    deinterleave_bitrev(llrs);
 }
 
 #[cfg(test)]
