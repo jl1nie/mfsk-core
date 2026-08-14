@@ -509,6 +509,7 @@ jobs:
           - "jt9"
           - "jt65"
           - "q65"
+          - "msk144"
           - "uvpacket"
           - "alloc ft8"            # no_std + alloc baseline (TX-side host compile)
           - "alloc ft8 fft-extern" # no_std + alloc + caller-supplied FFT (RX preset)

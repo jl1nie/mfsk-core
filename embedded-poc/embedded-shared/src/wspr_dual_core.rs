@@ -124,7 +124,14 @@ const WORKER_STACK_BYTES: usize = 81_920;
 /// pointer, and so PIE-aligned buffers placed at the bottom of a frame
 /// keep their alignment.
 #[repr(align(16))]
-struct WorkerStack([u8; WORKER_STACK_BYTES]);
+struct WorkerStack(
+    // Never read as a normal field — only its address is taken
+    // (`addr_of_mut!(WORKER_STACK) as *mut u8` below) and handed to
+    // FreeRTOS as a raw stack pointer. The field exists purely to
+    // size and align the static allocation, same shape as
+    // `engine::fft::Align16Quad` on the host side.
+    #[allow(dead_code)] [u8; WORKER_STACK_BYTES],
+);
 
 static mut WORKER_STACK: WorkerStack = WorkerStack([0; WORKER_STACK_BYTES]);
 static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
