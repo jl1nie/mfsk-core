@@ -27,6 +27,14 @@ name = "wspr-bench"
 path = "src/bin/wspr_bench.rs"
 harness = false
 
+# WSPR receiver app (CoreS3 WSPR app plan, steps 1-8) — the actual UI
+# built on top of the WSPR embedded RX work above. See
+# `docs/notes/ROADMAP.md` Phase E and this crate's own CLAUDE.md.
+[[bin]]
+name = "wspr-app"
+path = "src/bin/wspr_app.rs"
+harness = false
+
 [profile.release]
 # **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
 # on this comment:

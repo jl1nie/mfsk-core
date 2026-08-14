@@ -19,6 +19,10 @@
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wsprnet.rs"]
 pub mod wsprnet;
 
+/// Unix-epoch → UTC calendar time — pure integer arithmetic, no I/O.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/civil_time.rs"]
+pub mod civil_time;
+
 /// WSPR band/dial-frequency table — pure data, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
 pub mod wspr_bands;

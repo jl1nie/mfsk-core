@@ -136,7 +136,15 @@ is what the user types under tee / piped redirection.
   WSPR embedded RX work (Phase E in `docs/notes/ROADMAP.md`, issue
   #260) — decoder-level, not part of the FT8 controller line above;
   build-time switches `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI`. See
-  `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section.
+  `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section. A third
+  bin, `src/bin/wspr_app.rs` (`wspr-app`), is the actual receiver UI
+  built on top of that decode work — stations display + spot history
+  on the CoreS3's own 320×240 panel, settings edited from a browser
+  (`mfsk-app-shared`'s `http_config`/`ntp`/`settings` modules) rather
+  than any on-device input (CoreS3 has none). Live audio capture is
+  still out of scope (blocked on #163, same as `wspr-bench`) — every
+  slot decodes the same baked golden baseband. See memory
+  `project_wspr_app_cores3_ui` for the full design/status.
 - **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
   (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
   HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's
