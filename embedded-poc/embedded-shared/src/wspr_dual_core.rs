@@ -89,13 +89,13 @@ const APP_CPU: i32 = 1;
 /// contiguous free block has real room to spare (unlike before it,
 /// when every KB was accounted for), so there's no reason to run this
 /// close to the measured number the way the pre-fix constants had to.
-const PASS01_WORKER_STACK: u32 = 81_920;
+const PASS01_WORKER_STACK: u32 = 65_536;
 
 /// Stack for the pass-2 worker (reaches `osd_decode_packed`). 88 KiB
 /// = 61.45 KB (measured pass-0/1/2 cumulative peak, post-ping-pong —
 /// 68 148 B headroom on a 128 KiB stack) + ~43 % margin. Same
 /// generous-margin reasoning as [`PASS01_WORKER_STACK`].
-const PASS2_WORKER_STACK: u32 = 90_112;
+const PASS2_WORKER_STACK: u32 = 57_344;
 
 /// Bytes required *beyond* the worker's own stack before a spawn is
 /// attempted — covers `wspr_scan`'s own transient allocations (job
@@ -269,7 +269,29 @@ extern "C" fn pass01_worker_main(arg: *mut core::ffi::c_void) {
     };
     let raw = Box::into_raw(Box::new(out));
     unsafe { queue_send_ptr(PASS01_RESULT_Q.get(), raw) };
+    log_worker_stack("p01", PASS01_WORKER_STACK);
     unsafe { vTaskDelete(ptr::null_mut()) };
+}
+
+/// Report what a worker task actually used, against what it reserved.
+///
+/// The main scan task has had this since the stack audit; the workers
+/// never did, which left the two largest allocations in the system
+/// (80 KB and 88 KB) sized by estimate. That matters now: FreeRTOS task
+/// stacks come out of internal DRAM in one contiguous piece, and once
+/// WiFi has been initialised the largest such block on a CoreS3 is
+/// 156 KB — less than the 170-178 KB this pair plus the scan task need,
+/// so the dual-core path silently declines to spawn (issue #260).
+/// Right-sizing needs measured peaks, not estimates.
+fn log_worker_stack(who: &str, reserved: u32) {
+    // `uxTaskGetStackHighWaterMark(NULL)` = smallest free the *calling*
+    // task ever had, in bytes on this port.
+    let headroom = unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(ptr::null_mut()) };
+    log::info!(
+        "wspr_dual_core: {who} stack peak {} B of {reserved} B reserved ({} B headroom)",
+        reserved.saturating_sub(headroom),
+        headroom,
+    );
 }
 
 /// True if [`pass01_split`] is likely to find room. Check before
@@ -443,6 +465,7 @@ extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
     );
     let raw = Box::into_raw(Box::new(out));
     unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
+    log_worker_stack("p2", PASS2_WORKER_STACK);
     unsafe { vTaskDelete(ptr::null_mut()) };
 }
 

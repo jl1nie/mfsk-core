@@ -656,7 +656,7 @@ fn log_heap(tag: &str) {
 ///
 /// This is a measured cost of the loop, not bench overhead: any
 /// production embedded WSPR path pays the same stack.
-const SCAN_STACK: u32 = 90 * 1024;
+const SCAN_STACK: u32 = 76 * 1024;
 
 /// WSPR slot period — the wall-clock deadline a production embedded
 /// decoder is racing against, matching the protocol's own slot

@@ -48,15 +48,48 @@ const WIFI_PSK: &str = env!("WIFI_PSK");
 ///
 /// So: measure the heap with the radio up, before deciding how much of
 /// the slot to reserve for spot upload.
+///
+/// `MFSK_WSPR_BENCH_WIFI=cycle` measures the configuration a real
+/// receiver would actually use instead: **the radio does not have to be
+/// up while decoding.** Spots only need to leave the box once, after
+/// the decode, so WiFi can be brought up, used, and torn down between
+/// slots — the two never need the memory at the same time.
+///
+/// That only works if the memory comes back *contiguous*. Internal DRAM
+/// is where FreeRTOS task stacks must live, and the loop needs one
+/// 170-178 KB run of it; if WiFi's static allocations leave a hole in
+/// the middle, the pool can report plenty free while the largest block
+/// stays under what a stack needs. `cycle` brings WiFi up, drops it,
+/// and prints free/largest at each step, which answers that directly.
+fn log_internal(label: &str) {
+    use esp_idf_svc::sys::{
+        MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL, heap_caps_get_free_size,
+        heap_caps_get_largest_free_block,
+    };
+    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    let (free, largest) = unsafe {
+        (
+            heap_caps_get_free_size(caps),
+            heap_caps_get_largest_free_block(caps),
+        )
+    };
+    log::info!(
+        "[mem] {label}: free_internal {} KB, largest contig {} KB",
+        free / 1024,
+        largest / 1024
+    );
+}
+
 fn maybe_start_wifi() -> Option<mfsk_app_shared::wifi::WifiHandle> {
-    if option_env!("MFSK_WSPR_BENCH_WIFI").is_none() {
-        log::info!("wspr_bench: WiFi off (set MFSK_WSPR_BENCH_WIFI=1 to measure with the radio up)");
+    let Some(mode) = option_env!("MFSK_WSPR_BENCH_WIFI") else {
+        log::info!("wspr_bench: WiFi off (MFSK_WSPR_BENCH_WIFI=1 to hold it up, =cycle to up/down)");
         return None;
-    }
+    };
     if WIFI_SSID.is_empty() {
         log::warn!("wspr_bench: MFSK_WSPR_BENCH_WIFI set but WIFI_SSID empty (no cfg.toml)");
         return None;
     }
+    log_internal("pre-wifi");
     let peripherals = esp_idf_hal::peripherals::Peripherals::take().ok()?;
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take().ok()?;
     let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().ok();
@@ -69,6 +102,16 @@ fn maybe_start_wifi() -> Option<mfsk_app_shared::wifi::WifiHandle> {
     ) {
         Ok(h) => {
             log::info!("wspr_bench: WiFi up, ip {}", h.ip);
+            log_internal("wifi-up");
+            if mode == "cycle" {
+                // What a real receiver does between slots: the spot has
+                // left, so give the radio's internal DRAM back before
+                // the decode claims its stacks.
+                drop(h);
+                unsafe { esp_idf_svc::sys::vTaskDelay(200) };
+                log_internal("wifi-dropped");
+                return None;
+            }
             Some(h)
         }
         Err(e) => {
