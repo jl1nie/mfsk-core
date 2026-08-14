@@ -13,6 +13,7 @@ use mfsk_core::msg::wsjt77::unpack77;
 
 #[allow(dead_code)]
 mod common;
+use common::golden::GoldenEntry;
 use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path() -> Option<PathBuf> {
@@ -23,6 +24,10 @@ fn sample_path() -> Option<PathBuf> {
 }
 
 struct Golden {
+    // Only used by `fst4_60_diagnose_golden` below (an `--ignored`
+    // diagnostic probe), which reads `freq_hz`/`dt_sec` but not `msg` —
+    // kept for readability of the literal at its definition site.
+    #[allow(dead_code)]
     msg: &'static str,
     freq_hz: f32,
     dt_sec: f32,
@@ -36,140 +41,37 @@ const GOLDEN: &[Golden] = &[Golden {
 
 const FREQ_TOL_HZ: f32 = 4.0;
 const DT_TOL_SEC: f32 = 0.5;
-
-#[test]
-fn fst4_60_wsjtx_sample_recall_vs_golden() {
-    let Some(path) = sample_path() else {
-        eprintln!(
-            "skipping: WSJT-X FST4 sample not found at \
-             ../../WSJT-X/samples/FST4+FST4W/210115_0058.wav"
-        );
-        return;
-    };
-    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
-
-    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
-        .decode()
-        .results;
-
-    let decoded: Vec<(String, f32, f32)> = decodes
-        .iter()
-        .filter_map(|d| {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            unpack77(&m77).map(|s| (s, d.freq_hz, d.dt_sec))
-        })
-        .collect();
-
-    eprintln!("FST4-60 sample decoded {} message(s):", decoded.len());
-    for (m, f, dt) in &decoded {
-        eprintln!("  freq={:6.1} Hz dt={:+.2} s : {}", f, dt, m);
-    }
-
-    let mut hits = 0usize;
-    for g in GOLDEN {
-        let hit = decoded.iter().any(|(m, f, dt)| {
-            m == g.msg
-                && (f - g.freq_hz).abs() <= FREQ_TOL_HZ
-                && (dt - g.dt_sec).abs() <= DT_TOL_SEC
-        });
-        if hit {
-            hits += 1;
-        } else {
-            eprintln!(
-                "  MISSING: '{}' @ {:.1} Hz dt={:+.2}",
-                g.msg, g.freq_hz, g.dt_sec
-            );
-        }
-    }
-    eprintln!("recall: {}/{} golden FST4-60 decodes", hits, GOLDEN.len());
-
-    assert_eq!(
-        hits,
-        GOLDEN.len(),
-        "FST4-60 WSJT-X sample recall regressed: {}/{}",
-        hits,
-        GOLDEN.len()
-    );
-}
-
-/// SNR ground truth for issue #255's FST4 real-formula port
-/// (`fst4::baseline::fst4_snr_db`): a real local `jt9 -7 -d3` build's
-/// own reported SNR for both of this WAV's real decodes
-/// (`SNRAUDIT_FST4_PROBE` instrumentation added to `fst4_decode.f90`
-/// for that investigation, not committed there). `±3.0` dB tolerance
-/// — generous relative to the `~1-2` dB gap the investigation actually
-/// landed on, since this is a regression gate, not a precision claim.
-struct SnrGolden {
-    msg: &'static str,
-    jt9_snr_db: f32,
-}
-
-const SNR_GOLDEN: &[SnrGolden] = &[
-    SnrGolden {
-        msg: "CQ N5TM EL29",
-        jt9_snr_db: -6.90,
-    },
-    SnrGolden {
-        msg: "CQ K9KFR EN71",
-        jt9_snr_db: 16.14,
-    },
-];
-
 const SNR_TOL_DB: f32 = 3.0;
 
-#[test]
-fn fst4_60_wsjtx_sample_snr_matches_jt9_ground_truth() {
-    let Some(path) = sample_path() else {
-        eprintln!(
-            "skipping: WSJT-X FST4 sample not found at \
-             ../../WSJT-X/samples/FST4+FST4W/210115_0058.wav"
-        );
-        return;
-    };
-    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
-
-    let decodes = DecodeRequest::<Fst4s60>::new(&audio, 100.0, 3000.0, 1.0, 50)
-        .decode()
-        .results;
-
-    let decoded: Vec<(String, f32)> = decodes
-        .iter()
-        .filter_map(|d| {
-            let mut m77 = [0u8; 77];
-            m77.copy_from_slice(d.message77());
-            unpack77(&m77).map(|s| (s, d.snr_db))
-        })
-        .collect();
-
-    for g in SNR_GOLDEN {
-        let hit = decoded.iter().find(|(m, _)| m == g.msg);
-        let Some((_, snr_db)) = hit else {
-            panic!(
-                "'{}' not decoded at all — recall regression, see \
-                 fst4_60_wsjtx_sample_recall_vs_golden",
-                g.msg
-            );
-        };
-        eprintln!(
-            "{}: ours={:.2} dB, jt9={:.2} dB, diff={:.2} dB",
-            g.msg,
-            snr_db,
-            g.jt9_snr_db,
-            (snr_db - g.jt9_snr_db).abs()
-        );
-        assert!(
-            (snr_db - g.jt9_snr_db).abs() <= SNR_TOL_DB,
-            "'{}' SNR diverged from jt9 ground truth by {:.2} dB \
-             (ours={:.2}, jt9={:.2}) — beyond the {} dB regression gate",
-            g.msg,
-            (snr_db - g.jt9_snr_db).abs(),
-            snr_db,
-            g.jt9_snr_db,
-            SNR_TOL_DB
-        );
-    }
-}
+/// Both real signals on this recording, freq/dt/SNR from a local
+/// `jt9 -7 -p 60 -b A -d 3` run over the vendored WAV (2026-08-14):
+///
+/// ```text
+/// 0058  16  0.4 1331 `  CQ K9KFR EN71
+/// 0058  -7  0.3 1101 `  CQ N5TM EL29
+/// ```
+///
+/// SNR is kept at the finer precision from issue #255's FST4
+/// real-formula port investigation (`SNRAUDIT_FST4_PROBE`
+/// instrumentation added to `fst4_decode.f90`, not committed there:
+/// -6.90 / 16.14 vs. the CLI's rounded -7 / 16). `±3.0` dB tolerance
+/// is generous relative to the `~1-2` dB gap that investigation
+/// actually landed on, since this is a regression gate, not a
+/// precision claim.
+static FST4_60_FULL_REFERENCE: &[GoldenEntry] = &[
+    GoldenEntry {
+        msg: "CQ N5TM EL29",
+        freq_hz: Some(1101.0),
+        dt_sec: Some(0.3),
+        snr_db: Some(-6.90),
+    },
+    GoldenEntry {
+        msg: "CQ K9KFR EN71",
+        freq_hz: Some(1331.0),
+        dt_sec: Some(0.4),
+        snr_db: Some(16.14),
+    },
+];
 
 /// Regression for issue #244: before the pre-decode `dedup_refined_candidates`
 /// pass (`engine::pipeline::decode_frame_impl`), this exact WAV fired
@@ -347,20 +249,19 @@ fn fst4_60_diagnose_golden() {
     }
 }
 
-/// Precision: nothing beyond the two real signals may be emitted.
-///
-/// FST4 had no false-decode guard. Real `jt9 -7 -p 60` reports exactly
-/// the two decodes below on this recording, and so does this crate —
-/// so the budget is 0 with full recall, and any future candidate-
-/// selection change that starts inventing signals fails here.
+/// Recall, precision, and SNR together: real `jt9 -7 -p 60` reports
+/// exactly the two decodes in `FST4_60_FULL_REFERENCE` on this
+/// recording, and so does this crate — full recall, budget 0, and
+/// freq/dt/SNR must land within tolerance of jt9's own numbers. FST4
+/// had no false-decode guard before this test, and no SNR check
+/// before issue #255's real-formula port
+/// (`fst4::baseline::fst4_snr_db`) — this single `assert_golden` call
+/// covers what used to be three separate checks (a message+freq+dt
+/// recall test with only 1 of the 2 golden entries populated, a
+/// message-only precision test, and a standalone SNR-vs-jt9 test).
 #[test]
 fn fst4_wsjtx_sample_precision_vs_reference_decoder() {
-    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
-
-    static REFERENCE: &[GoldenEntry] = &[
-        GoldenEntry::msg("CQ N5TM EL29"),
-        GoldenEntry::msg("CQ K9KFR EN71"),
-    ];
+    use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
 
     let Some(path) = sample_path() else {
         eprintln!("skipping: FST4 golden recording not found");
@@ -373,16 +274,20 @@ fn fst4_wsjtx_sample_precision_vs_reference_decoder() {
         &out.results,
         &GoldenSet {
             name: "FST4-60 210115_0058.wav",
-            expected: REFERENCE,
+            expected: FST4_60_FULL_REFERENCE,
             min_hits: 2,
             max_extra: 0,
         },
-        Tolerances::default(),
+        Tolerances {
+            freq_hz: FREQ_TOL_HZ,
+            dt_sec: DT_TOL_SEC,
+            snr_db: SNR_TOL_DB,
+        },
         |d| DecodeView {
             msg: unpack77(d.message77()).unwrap_or_default(),
             freq_hz: d.freq_hz,
             dt_sec: d.dt_sec,
-            snr_db: None,
+            snr_db: Some(d.snr_db),
         },
     );
 }
