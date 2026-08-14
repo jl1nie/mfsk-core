@@ -210,6 +210,18 @@ impl PassStats {
             c.osd_ok,
             c.osd_attempts,
         );
+        // The decomposition issue #260 left open on 2026-08-13: pass 2's
+        // "Fano + bit metrics" was derived by subtraction, and it lumps
+        // the one term that responds to `max_cycles_per_bit` with one
+        // that does not. Measured directly now, so a cycle-budget
+        // histogram can be turned into wall-clock instead of an upper
+        // bound.
+        log::info!(
+            "          decode split: fano {} ms | bit_metrics {} ms | osd {} ms",
+            c.fano_us / 1000,
+            c.bit_metrics_us / 1000,
+            c.osd_us / 1000,
+        );
         // Coarse split: is this stage FFT-bound or `ps`-read-bound?
         // `refine_alignment_top_k` walks the 735 KB PSRAM-resident `ps`
         // ~10^8 times; if it dominates, FT8's internal-DRAM staging

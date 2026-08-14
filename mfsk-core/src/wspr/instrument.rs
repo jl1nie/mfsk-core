@@ -53,6 +53,29 @@ pub static OSD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// OSD attempts that both decoded and cleared the callsign-table gate.
 pub static OSD_OK: AtomicU32 = AtomicU32::new(0);
 
+/// Microseconds inside `ConvFano::decode_soft_pooled` — the sequential
+/// convolutional decode, and the only term here that responds to
+/// `max_cycles_per_bit`.
+///
+/// Paired with [`BIT_METRICS_US`] and [`OSD_US`] to answer the question
+/// issue #260 left open on 2026-08-13: pass 2's "Fano + bit metrics"
+/// was a **derived** number (decode minus `tone_amplitudes` minus OSD),
+/// and it lumps a budget-sensitive term with a fixed one. Without the
+/// split, a cycle-budget histogram cannot be turned into a wall-clock
+/// prediction — "cut Fano by 90 %" saves nothing on the metrics half.
+/// These three make the decomposition direct instead of subtractive.
+pub static FANO_US: AtomicU32 = AtomicU32::new(0);
+
+/// Microseconds inside `nblock1_bit_metrics_opt` /
+/// `nblock_bit_metrics` — building the soft symbols Fano consumes.
+/// Fixed cost per attempt; does not move with the Fano budget. See
+/// [`FANO_US`].
+pub static BIT_METRICS_US: AtomicU32 = AtomicU32::new(0);
+
+/// Microseconds inside `osd_decode_packed`. Previously only inferable
+/// by subtraction. See [`FANO_US`].
+pub static OSD_US: AtomicU32 = AtomicU32::new(0);
+
 /// Microseconds inside `coarse_baseband`'s `build_spectro` — the
 /// ~359 windowed 512-point FFTs that fill `ps`.
 ///
@@ -110,6 +133,9 @@ const ALL: &[&AtomicU32] = &[
 pub struct Counts {
     pub coarse_spectro_us: u32,
     pub coarse_refine_us: u32,
+    pub fano_us: u32,
+    pub bit_metrics_us: u32,
+    pub osd_us: u32,
     pub tone_amplitudes: u32,
     pub candidates: u32,
     pub minsync1_pass: u32,
@@ -134,6 +160,9 @@ impl Counts {
             coarse_refine_us: self
                 .coarse_refine_us
                 .saturating_sub(earlier.coarse_refine_us),
+            fano_us: self.fano_us.saturating_sub(earlier.fano_us),
+            bit_metrics_us: self.bit_metrics_us.saturating_sub(earlier.bit_metrics_us),
+            osd_us: self.osd_us.saturating_sub(earlier.osd_us),
             tone_amplitudes: self.tone_amplitudes.saturating_sub(earlier.tone_amplitudes),
             candidates: self.candidates.saturating_sub(earlier.candidates),
             minsync1_pass: self.minsync1_pass.saturating_sub(earlier.minsync1_pass),
@@ -166,6 +195,9 @@ pub fn snapshot() -> Counts {
     Counts {
         coarse_spectro_us: COARSE_SPECTRO_US.load(Ordering::Relaxed),
         coarse_refine_us: COARSE_REFINE_US.load(Ordering::Relaxed),
+        fano_us: FANO_US.load(Ordering::Relaxed),
+        bit_metrics_us: BIT_METRICS_US.load(Ordering::Relaxed),
+        osd_us: OSD_US.load(Ordering::Relaxed),
         tone_amplitudes: TONE_AMPLITUDES.load(Ordering::Relaxed),
         candidates: CANDIDATES.load(Ordering::Relaxed),
         minsync1_pass: MINSYNC1_PASS.load(Ordering::Relaxed),
@@ -185,6 +217,9 @@ pub fn reset() {
     }
     COARSE_SPECTRO_US.store(0, Ordering::Relaxed);
     COARSE_REFINE_US.store(0, Ordering::Relaxed);
+    FANO_US.store(0, Ordering::Relaxed);
+    BIT_METRICS_US.store(0, Ordering::Relaxed);
+    OSD_US.store(0, Ordering::Relaxed);
 }
 
 /// Bump a counter by one. Relaxed: these are diagnostics, and no

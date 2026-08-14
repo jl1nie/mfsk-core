@@ -618,11 +618,18 @@ fn decode_from_refined(
                 isqs_owned = super::demod::tone_amplitudes(idat, qdat, best_freq, lag, best_drift);
                 &isqs_owned
             };
+            #[cfg(feature = "std")]
+            let t_bm = std::time::Instant::now();
             let bm = if nblock == 0 {
                 super::demod::nblock1_bit_metrics_opt(isqs, true)
             } else {
                 super::demod::nblock_bit_metrics(isqs, nblock)
             };
+            #[cfg(feature = "std")]
+            super::instrument::add_us(
+                &super::instrument::BIT_METRICS_US,
+                t_bm.elapsed().as_micros() as u32,
+            );
             let mut llrs = bm;
             deinterleave_llrs(&mut llrs);
             // wsprd's `if (rms > minrms)` plausibility gate
@@ -709,9 +716,15 @@ fn decode_from_refined(
                 max_cycles_per_bit: Some(WSPR_FANO_CYCLE_BUDGET),
                 ..FecOpts::default()
             };
-            let (info_bits, hard_errors) = if let Some(fec_res) =
-                codec.decode_soft_pooled(&llrs, &fec_opts, &mut fano_scratch)
-            {
+            #[cfg(feature = "std")]
+            let t_fano = std::time::Instant::now();
+            let fano_res = codec.decode_soft_pooled(&llrs, &fec_opts, &mut fano_scratch);
+            #[cfg(feature = "std")]
+            super::instrument::add_us(
+                &super::instrument::FANO_US,
+                t_fano.elapsed().as_micros() as u32,
+            );
+            let (info_bits, hard_errors) = if let Some(fec_res) = fano_res {
                 super::instrument::bump(&super::instrument::FANO_OK);
                 let mut info = [0u8; 50];
                 info.copy_from_slice(&fec_res.info);
@@ -733,7 +746,15 @@ fn decode_from_refined(
                 // unpacked `[[u8;162];50]` matrix) drops to ~5 KB. See
                 // `osd_decode_packed`'s own doc comment for why each
                 // stage does or doesn't benefit from packing.
-                let (info, nhardmin) = super::osd::osd_decode_packed(&llrs)?;
+                #[cfg(feature = "std")]
+                let t_osd = std::time::Instant::now();
+                let osd_res = super::osd::osd_decode_packed(&llrs);
+                #[cfg(feature = "std")]
+                super::instrument::add_us(
+                    &super::instrument::OSD_US,
+                    t_osd.elapsed().as_micros() as u32,
+                );
+                let (info, nhardmin) = osd_res?;
                 // wsprd's structural gate (`wsprd.c:1396`): an OSD result
                 // is accepted only for a callsign an earlier Fano decode
                 // already confirmed. Replaces an `nhardmin ≤ 44` threshold
