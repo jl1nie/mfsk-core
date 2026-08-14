@@ -270,11 +270,18 @@ want to run the decoders *somewhere else*:
 
 ### Why a `Protocol` trait
 
-The seven protocols share roughly 80 % of their signal path: 8-GFSK /
-FSK demodulation, soft-decision LDPC / convolutional / Reed-Solomon /
-QRA decoding, 77- / 72- / 50-bit WSJT message packing, spectrogram-based
-sync search. In the Fortran codebase that commonality is expressed by
-copy-and-paste between per-mode source files; here it is expressed by
+Measured (`wc -l`, excluding the experimental uvpacket example, 2026-08-14):
+about a third of `src/` (18.7k / 58.9k lines) is generic over `P:
+Protocol` — the LDPC BP/OSD kernel, the `wsjt77`/`jt72` message codecs,
+FFT/resample/GFSK DSP. The rest is protocol-specific by necessity
+(different FEC math — LDPC / convolutional Fano / Reed-Solomon / QRA
+over GF(64) — and different message widths, 77- / 72- / 50-bit) or by
+how far each protocol has migrated onto the shared decode pipeline so
+far — currently FT4 and FST4; see
+[`docs/reference/LIBRARY.md` §0.5](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/LIBRARY.md#05-generic-vs-bespoke-per-protocol)
+for the per-protocol breakdown, which this paragraph is kept in sync
+with. In the Fortran codebase the *possible* commonality is expressed
+by copy-and-paste between per-mode source files; here it is expressed by
 traits, split by what actually varies per protocol:
 
 - **Shared** (lives in `engine`, generic over any `P: Protocol`): coarse

@@ -11,10 +11,15 @@
 //!   sync is not a block Costas array — the decoder recovers timing by
 //!   correlating every symbol's LSB against the known vector.
 //!
-//! All protocol-invariant pieces (FFT/downsample DSP, generic pipeline
-//! scaffolding, FEC codec, message codec) are shared with the other modes.
-//! This module provides the [`Wspr`] ZST plus WSPR-specific TX/RX helpers
-//! that handle the interleaver and sync-bit embedding.
+//! FFT is shared with the other modes; the FEC codec (`ConvFano`, above)
+//! and message codec (50-bit, above) are WSPR's own — they don't match
+//! any other protocol here closely enough to plug into the shared
+//! `fec`/`msg` machinery, and WSPR's decode path (`decode.rs`) doesn't
+//! route through `engine::pipeline` either (see
+//! `docs/reference/LIBRARY.md` §0.5 for the per-protocol shared-vs-
+//! bespoke breakdown this crate keeps). This module provides the
+//! [`Wspr`] ZST plus WSPR-specific TX/RX helpers that handle the
+//! interleaver and sync-bit embedding.
 //!
 //! ## Quick example
 //!

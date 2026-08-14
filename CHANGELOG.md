@@ -101,6 +101,24 @@
   Costs nothing measurable: the tier-A+B suite is 91-94 s across
   before/after runs.
 
+- **The "roughly 80% of code is shared across protocols" claim
+  (`README.md`, `lib.rs` crate doc) was never measured** — introduced
+  as scene-setting prose in commit `929114c` and never revisited, not
+  even when Q65 (one of the least-shared protocols) was added and the
+  protocol count changed from six to seven with the percentage left
+  untouched. Measured (`wc -l`, excluding the experimental uvpacket
+  example): about a third of `src/` (18.7k / 58.9k lines) is generic
+  over `P: Protocol`; only FT4 and FST4 actually route through the
+  shared `engine::pipeline` decode driver. Both doc sites now cite the
+  measured figure and point at `docs/reference/LIBRARY.md` §0.5's
+  per-protocol table, which was already accurate and is now the
+  source of truth for future edits. Also fixed a flatly incorrect
+  claim in `wspr/mod.rs`'s module doc (dating to the initial commit,
+  never revised) that WSPR's FEC and message codecs are "shared with
+  the other modes" — they are not; WSPR has its own `ConvFano` and
+  `Wspr50Message`, as the same module doc's own preceding paragraph
+  already said.
+
 ### Added
 
 - **`Q65Result::dt_sec` / `Jt65Result::dt_sec`** — frame start in
