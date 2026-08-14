@@ -1146,6 +1146,91 @@ pub(crate) fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec
         .collect()
 }
 
+/// True if `cand` duplicates an entry already in `seen`: same message,
+/// frequency within `freq_tol_hz`, start sample within
+/// `time_tol_samples` of some earlier-accepted decode from the same
+/// scan pass.
+///
+/// This is the "same real signal, decoded twice by two nearby
+/// coarse-search candidates" check every bespoke decode-scan loop in
+/// this crate performs on its own accumulating `seen: Vec<_>` — a
+/// different concern from [`dedup_known`]'s job of filtering against a
+/// *caller-supplied* known-decodes list (the two aren't unified; a
+/// protocol can and does need both).
+///
+/// Extracted (2026-08-14, code-sharing audit) from four independent,
+/// near-identical copies: `jt9::mod` (1 site), `jt65::mod` (2 sites —
+/// see [`scan_dedup_match_cross`], which those use instead of this),
+/// `wspr::decode` (3 sites, one per SIC-pass shape), and `q65::rx` (3
+/// sites, one per decode strategy) — 9 call sites total, each
+/// reimplementing the same three-line predicate with its own
+/// tolerance constants. Tolerances stay exactly what each protocol
+/// used before this extraction (now explicit parameters instead of
+/// scattered local `const`s, so a future change to one is a visible
+/// diff instead of a silent divergence) — issue #287 is what a
+/// tolerance that doesn't scale with a protocol's own parameter range
+/// costs, but changing any of them here is out of scope: this moves
+/// code, not thresholds.
+#[cfg(any(feature = "jt9", feature = "wspr", feature = "q65"))]
+pub(crate) fn scan_dedup_match<T, M: PartialEq>(
+    seen: &[T],
+    cand: &T,
+    msg: impl Fn(&T) -> &M,
+    freq_hz: impl Fn(&T) -> f32,
+    start_sample: impl Fn(&T) -> i64,
+    freq_tol_hz: f32,
+    time_tol_samples: i64,
+) -> bool {
+    scan_dedup_match_cross(
+        seen,
+        cand,
+        &msg,
+        &freq_hz,
+        &start_sample,
+        &msg,
+        &freq_hz,
+        &start_sample,
+        freq_tol_hz,
+        time_tol_samples,
+    )
+}
+
+/// [`scan_dedup_match`], but `seen: &[S]` and `cand: &C` may be
+/// different types.
+///
+/// `jt65::mod`'s two call sites need this rather than the same-type
+/// form: they compare a not-yet-built candidate (raw `(message,
+/// freq_hz, start_sample)` straight from the coarse-search candidate
+/// and the decode call, before a `Jt65Result` exists to hold them)
+/// against the already-pushed `Jt65Result`s in `seen`. Those two also
+/// happen to disagree on `start_sample`'s reference frame whenever
+/// early-frame padding is active (`seen` entries are already
+/// pad-adjusted, the not-yet-built candidate isn't) — a pre-existing
+/// property of the original code, preserved here rather than
+/// "corrected" in what is meant to be a pure extraction.
+#[cfg(any(feature = "jt9", feature = "jt65", feature = "wspr", feature = "q65"))]
+pub(crate) fn scan_dedup_match_cross<S, C, M: PartialEq>(
+    seen: &[S],
+    cand: &C,
+    seen_msg: impl Fn(&S) -> &M,
+    seen_freq_hz: impl Fn(&S) -> f32,
+    seen_start_sample: impl Fn(&S) -> i64,
+    cand_msg: impl Fn(&C) -> &M,
+    cand_freq_hz: impl Fn(&C) -> f32,
+    cand_start_sample: impl Fn(&C) -> i64,
+    freq_tol_hz: f32,
+    time_tol_samples: i64,
+) -> bool {
+    let cand_msg = cand_msg(cand);
+    let cand_freq = cand_freq_hz(cand);
+    let cand_time = cand_start_sample(cand);
+    seen.iter().any(|prev| {
+        seen_msg(prev) == cand_msg
+            && (seen_freq_hz(prev) - cand_freq).abs() <= freq_tol_hz
+            && (seen_start_sample(prev) - cand_time).abs() <= time_tol_samples
+    })
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Frame-level entry points
 // ──────────────────────────────────────────────────────────────────────────

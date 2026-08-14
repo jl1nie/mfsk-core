@@ -88,6 +88,7 @@
 //! }
 //! ```
 
+use crate::engine::pipeline::scan_dedup_match_cross;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::Rs63_12;
 use crate::msg::Jt72Codec;
@@ -381,11 +382,18 @@ fn decode_scan_inner(
         else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == msg
-                && (prev.freq_hz - c.freq_hz).abs() <= 2.0
-                && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match_cross(
+            &seen,
+            &(msg.clone(), c.freq_hz, c.start_sample as i64),
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            |(m, _, _)| m,
+            |(_, f, _)| *f,
+            |(_, _, t)| *t,
+            2.0,
+            nsps as i64,
+        );
         if !dup {
             let result = Jt65Result {
                 message: msg,
@@ -491,11 +499,18 @@ fn decode_scan_chase_inner(
         ) else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == msg
-                && (prev.freq_hz - c.freq_hz).abs() <= 2.0
-                && (prev.start_sample as i64 - c.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match_cross(
+            &seen,
+            &(msg.clone(), c.freq_hz, c.start_sample as i64),
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            |(m, _, _)| m,
+            |(_, f, _)| *f,
+            |(_, _, t)| *t,
+            2.0,
+            nsps as i64,
+        );
         if !dup {
             let result = Jt65Result {
                 message: msg,
