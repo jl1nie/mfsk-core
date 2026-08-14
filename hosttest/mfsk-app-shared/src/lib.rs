@@ -22,3 +22,10 @@ pub mod wsprnet;
 /// WSPR band/dial-frequency table — pure data, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
 pub mod wspr_bands;
+
+/// WSPR UI row formatting — pure string building, no I/O, no
+/// `embedded-graphics` draw calls (those live in `wspr_list.rs`,
+/// which does need this crate's `esp_idf_svc`-adjacent draw stack and
+/// so is not pulled in here).
+#[path = "../../../embedded-poc/mfsk-app-shared/src/ui/wspr_row.rs"]
+pub mod wspr_row;
