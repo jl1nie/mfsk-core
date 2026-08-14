@@ -5,8 +5,6 @@
 //! via the shared [`crate::msg::decode_request::DecodeRequest`] /
 //! [`crate::msg::decode_request::SniperRequest`] builders (issue #191).
 
-use alloc::vec::Vec;
-
 use super::Ft4;
 use crate::engine::dsp::downsample::DownsampleCfg;
 use crate::engine::dsp::subtract::SubtractCfg;
@@ -57,17 +55,6 @@ const REFINE_STEPS: i32 = 32;
 /// FT4 has 16 sync symbols (4 × 4); require at least half correct.
 const SYNC_Q_MIN: u32 = 8;
 
-/// Dedup `raw` against caller-supplied `known` (by `info` equality) — the
-/// generic engine has no `known`/AP-hint parameter at all, so this is a
-/// best-effort post-filter rather than an in-loop skip. Always correct
-/// (never mis-reports a known signal as new), just cannot save the work
-/// of re-decoding it the way FT8's engine-level `known` handling can.
-fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
-    raw.into_iter()
-        .filter(|r| !known.iter().any(|k| k.info == r.info))
-        .collect()
-}
-
 impl pipeline::GenericPipelineProtocol for Ft4 {
     /// `ft4_decode.f90:226,452-457` — see [`pipeline::ft4_snr_db`]'s doc
     /// comment for the formula and its verification against a real
@@ -82,7 +69,7 @@ impl FrameDecodable for Ft4 {
 
     fn __single_pass(req: &DecodeRequest<'_, Self>) -> DecodeOutcome<Self> {
         // See `pipeline::known_filtered_on_result`'s doc comment: without
-        // this, `on_result` could fire for a candidate `dedup_known`
+        // this, `on_result` could fire for a candidate `pipeline::dedup_known`
         // below then silently drops from the returned `Vec`.
         let filtered_cb = pipeline::known_filtered_on_result(req.known, req.on_result);
         let on_result: Option<&(dyn Fn(&DecodeResult) + Sync)> = filtered_cb
@@ -104,7 +91,7 @@ impl FrameDecodable for Ft4 {
             on_result,
         );
         DecodeOutcome {
-            results: dedup_known(raw, req.known),
+            results: pipeline::dedup_known(raw, req.known),
             fft_cache,
         }
     }
@@ -205,7 +192,7 @@ impl SupportsSicRounds for Ft4 {
             &FT4_DOWNSAMPLE,
         ));
         DecodeOutcome {
-            results: dedup_known(raw, req.known),
+            results: pipeline::dedup_known(raw, req.known),
             fft_cache,
         }
     }

@@ -886,6 +886,61 @@ pub fn parabolic_peak(y_neg: f32, y_0: f32, y_pos: f32) -> (f32, f32) {
     (offset.clamp(-0.5, 0.5), peak)
 }
 
+/// Refine a coarse-search frequency bin to sub-bin precision via
+/// 3-point log-power parabolic ("Jacobsen") interpolation of power
+/// around `base_bin`. `power_at(bin)` supplies the (linear-domain,
+/// un-normalised) power at a neighbouring bin — callers pass a closure
+/// over their own already-computed spectrogram rather than this
+/// function owning any spectrogram type, since that type (and how
+/// "power at a bin" is defined — which sync positions get summed) is
+/// protocol-specific.
+///
+/// Extracted (2026-08-14, code-sharing audit) from two byte-identical
+/// copies that had independently accreted in `jt65::search` and
+/// `jt9::search` — the second copy was deliberately written to match
+/// the first (see the historical `jt9::search::refine_freq_hz` doc:
+/// "reused here with the same technique... and the same non-peak-shaped
+/// fallback"), so unifying them changes nothing behaviourally, only
+/// where the one copy lives.
+///
+/// **Not the same estimator as [`parabolic_peak`]**, despite solving a
+/// superficially similar problem: `parabolic_peak` fits a parabola in
+/// the *linear* power domain and always returns an interpolated offset
+/// (the near-zero-denominator guard exists only to avoid a division by
+/// zero); this fits in the *log*-power domain and explicitly declines
+/// to extrapolate — falling back to the untouched bin center — when
+/// the 3-point curve isn't concave-down (`denom >= -1e-9`), i.e. isn't
+/// actually peak-shaped. That fallback matters here specifically:
+/// coarse-search candidates can be noise-dominated or off the true
+/// local max, and extrapolating a non-peak-shaped curve would invent
+/// a frequency offset from noise rather than declining to guess.
+/// Collapsing the two into one function would be an algorithm change,
+/// not a refactor — they stay separate on purpose.
+pub fn refine_freq_hz_log_power(
+    base_bin: usize,
+    bin_count: usize,
+    df: f32,
+    power_at: impl Fn(usize) -> f32,
+) -> f32 {
+    if base_bin == 0 || base_bin + 1 >= bin_count {
+        return base_bin as f32 * df;
+    }
+    let y_lo = power_at(base_bin - 1).max(1e-12).ln();
+    let y_mid = power_at(base_bin).max(1e-12).ln();
+    let y_hi = power_at(base_bin + 1).max(1e-12).ln();
+    let denom = y_lo - 2.0 * y_mid + y_hi;
+    // `denom < 0` at a genuine local peak (concave-down parabola); a
+    // non-negative denom means the 3-point fit isn't peak-shaped
+    // (noise-dominated or `base_bin` isn't actually the local max) —
+    // don't extrapolate, just keep the coarse bin-center frequency.
+    let delta = if denom < -1e-9 {
+        (0.5 * (y_lo - y_hi) / denom).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    (base_bin as f32 + delta) * df
+}
+
 /// Refine timing by scanning ±`search_steps` downsampled samples, then
 /// applying parabolic sub-sample interpolation around the peak for a
 /// fractional-sample refinement. The sub-sample shift is used to report a

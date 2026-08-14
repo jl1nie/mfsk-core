@@ -129,16 +129,6 @@ const SYNC_Q_MIN: u32 = 16;
 /// search window across all of them — no per-sub-mode retuning needed.
 const REFINE_STEPS: i32 = 40;
 
-/// Dedup `raw` against caller-supplied `known` (by `info` equality) — the
-/// generic engine has no `known` parameter at all, so this is a
-/// best-effort post-filter rather than an in-loop skip (same rationale as
-/// `ft4::decode`'s copy of this helper).
-fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
-    raw.into_iter()
-        .filter(|r| !known.iter().any(|k| k.info == r.info))
-        .collect()
-}
-
 /// Implements [`FrameDecodable`] for one FST4 sub-mode ZST, wiring in its
 /// `DownsampleCfg`. Every sub-mode shares the same generic engine
 /// (`engine::pipeline`/`msg::pipeline_ap`), `REFINE_STEPS`, and
@@ -172,7 +162,7 @@ macro_rules! impl_frame_decodable {
                 // See `pipeline::known_filtered_on_result`'s doc comment
                 // (same rationale as `ft4::decode`'s copy of this fix):
                 // without this, `on_result` could fire for a candidate
-                // `dedup_known` below then silently drops from the
+                // `pipeline::dedup_known` below then silently drops from the
                 // returned `Vec`.
                 let filtered_cb = pipeline::known_filtered_on_result(req.known, req.on_result);
                 let on_result: Option<&(dyn Fn(&DecodeResult) + Sync)> = filtered_cb
@@ -194,7 +184,7 @@ macro_rules! impl_frame_decodable {
                     on_result,
                 );
                 DecodeOutcome {
-                    results: dedup_known(raw, req.known),
+                    results: pipeline::dedup_known(raw, req.known),
                     fft_cache,
                 }
             }

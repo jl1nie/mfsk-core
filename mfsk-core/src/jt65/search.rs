@@ -10,6 +10,7 @@
 //! are the sync-positions list and the per-frame symbol count.
 
 use crate::engine::ModulationParams;
+use crate::engine::sync::refine_freq_hz_log_power;
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
@@ -224,9 +225,9 @@ pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) ->
     sync_pwr / (sync_pwr + noise_floor)
 }
 
-/// Refine a candidate's frequency to sub-bin precision via 3-point
-/// log-power parabolic ("Jacobsen") interpolation of the sync-tone
-/// power around `base_bin`.
+/// Refine a candidate's frequency to sub-bin precision — see
+/// [`refine_freq_hz_log_power`] for the estimator itself (shared with
+/// `jt9::search`, issue #169's original fix).
 ///
 /// `coarse_search`'s frequency grid is one bin wide (`df` ≈ 2.69 Hz at
 /// JT65A's NSPS/rate) — a signal landing between two bins pays a real
@@ -244,27 +245,9 @@ pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) ->
 /// signal not landing exactly on a bin center pays some fraction of
 /// the same loss).
 fn refine_freq_hz(spec: &Spectrogram, start_row: usize, base_bin: usize, df: f32) -> f32 {
-    if base_bin == 0 || base_bin + 1 >= spec.n_freq {
-        return base_bin as f32 * df;
-    }
-    let y_lo = sync_power_at_bin(spec, start_row, base_bin - 1)
-        .max(1e-12)
-        .ln();
-    let y_mid = sync_power_at_bin(spec, start_row, base_bin).max(1e-12).ln();
-    let y_hi = sync_power_at_bin(spec, start_row, base_bin + 1)
-        .max(1e-12)
-        .ln();
-    let denom = y_lo - 2.0 * y_mid + y_hi;
-    // `denom < 0` at a genuine local peak (concave-down parabola); a
-    // non-negative denom means the 3-point fit isn't peak-shaped
-    // (noise-dominated or `base_bin` isn't actually the local max) —
-    // don't extrapolate, just keep the coarse bin-center frequency.
-    let delta = if denom < -1e-9 {
-        (0.5 * (y_lo - y_hi) / denom).clamp(-0.5, 0.5)
-    } else {
-        0.0
-    };
-    (base_bin as f32 + delta) * df
+    refine_freq_hz_log_power(base_bin, spec.n_freq, df, |bin| {
+        sync_power_at_bin(spec, start_row, bin)
+    })
 }
 
 /// Build a spectrogram of `audio` and return the best-scoring
