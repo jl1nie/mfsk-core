@@ -5,6 +5,11 @@
 pub mod air_channel;
 pub mod channel;
 pub mod corpus;
+// FT8-specific (qso3_busy.wav golden reference shared across
+// tests/ft8_qso3_*.rs) but lives alongside the other shared fixtures
+// rather than duplicated per file — see its own module doc for why.
+#[allow(dead_code)]
+pub mod ft8_qso3;
 // uvpacket is an experimental example, not a feature of this crate —
 // its Eb/N0 helpers are gated so the shared scaffolding stays usable
 // without it.
