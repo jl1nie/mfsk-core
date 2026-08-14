@@ -416,6 +416,104 @@ mod golden_selftest {
     }
 }
 
+mod golden_coverage_selftest {
+    //! The permanent fix for a pattern that kept recurring across
+    //! protocols: a real-signal test file that checks recall (did the
+    //! expected message decode) without ever checking precision (did
+    //! *only* the expected messages decode). FT4/FST4/JT9/MSK144 all
+    //! independently reinvented `GoldenEntry::msg()`-only calls to
+    //! `assert_golden` that skipped freq/dt/SNR too — three separate
+    //! bespoke recall-only checks per protocol was the norm before this
+    //! session's sweep, and Q65/FT8 had no precision check *at all*
+    //! until then. This test makes it structural: any real-signal
+    //! golden test file must call `assert_golden(` or say why not, so
+    //! the gap can't quietly reopen the next time a protocol test is
+    //! added or edited.
+    //!
+    //! Scope is intentionally narrow — the two file-naming conventions
+    //! already established for external-reference-decoder comparisons
+    //! (`*_wsjtx_samples.rs` per protocol, `ft8_qso3_*_recall.rs` for
+    //! FT8's qso3_busy.wav family, which predates and doesn't fit the
+    //! first pattern). Other files that load a real WAV for a different
+    //! purpose — embedded-vs-host consistency, SIC round-count
+    //! monotonicity, wall-clock timing — use different, already-settled
+    //! naming and are correctly outside this net; broadening the
+    //! trigger to "loads any real WAV" would flag those for no reason.
+    //!
+    //! A file that has a real, considered reason not to use
+    //! `assert_golden` (e.g. an `#[ignore]`d research-ceiling probe with
+    //! no phantom-budget concept, or a strict-superset-across-two-runs
+    //! invariant that doesn't fit the single-`expected`-list model) opts
+    //! out with a `GOLDEN-EXEMPT:` marker comment explaining why —
+    //! `ft8_qso3_jtdx_recall.rs`, `ft8_qso3_jtdx_high_sensitivity_recall.rs`
+    //! and `ft8_qso3_apon_recall.rs` are the three current exemptions.
+    //! The marker exists so an exemption is a decision on record, not a
+    //! silent gap this test can't tell apart from one.
+
+    use std::fs;
+    use std::path::Path;
+
+    const TESTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+    const EXEMPT_MARKER: &str = "GOLDEN-EXEMPT:";
+    const REQUIRED_CALL: &str = "assert_golden(";
+
+    /// True for the two established real-signal-golden naming
+    /// conventions. See the module doc above for why the net isn't
+    /// wider than this.
+    fn is_real_signal_golden_file(name: &str) -> bool {
+        (name.ends_with("_wsjtx_samples.rs"))
+            || (name.starts_with("ft8_qso3_") && name.ends_with("_recall.rs"))
+    }
+
+    #[test]
+    fn every_real_signal_golden_file_uses_assert_golden_or_is_exempt() {
+        let dir = Path::new(TESTS_DIR);
+        let entries =
+            fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {} failed: {e}", dir.display()));
+
+        let mut checked: Vec<String> = Vec::new();
+        let mut offenders: Vec<String> = Vec::new();
+        for entry in entries {
+            let entry = entry.expect("readdir entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".rs") || !is_real_signal_golden_file(&name) {
+                continue;
+            }
+            let src = fs::read_to_string(entry.path())
+                .unwrap_or_else(|e| panic!("reading {name} failed: {e}"));
+            checked.push(name.clone());
+            if !src.contains(REQUIRED_CALL) && !src.contains(EXEMPT_MARKER) {
+                offenders.push(name);
+            }
+        }
+
+        // Sanity check on the scan itself — if the naming convention
+        // ever changes and this stops matching anything, the test would
+        // trivially "pass" while checking nothing, exactly the
+        // green-lie this file exists to prevent.
+        assert!(
+            checked.len() >= 10,
+            "expected at least 10 real-signal golden test files under {}, found {}: {checked:?} \
+             — did the naming convention change? Update `is_real_signal_golden_file`.",
+            dir.display(),
+            checked.len()
+        );
+
+        assert!(
+            offenders.is_empty(),
+            "{} real-signal golden test file(s) call neither `{REQUIRED_CALL}` nor carry a \
+             `{EXEMPT_MARKER}` comment explaining why not: {offenders:#?}\n\
+             Every test that checks a decoder's output against a real recording's known \
+             messages must assert precision (no extra decodes), not just recall (all \
+             expected decodes present) — see `common::golden`'s module doc for the exact \
+             failure mode this catches (WSPR's 50% phantom rate behind a green recall test). \
+             Either wire the file through `common::golden::assert_golden`, or add a \
+             `{EXEMPT_MARKER}` comment stating the considered reason it doesn't fit that model.",
+            offenders.len()
+        );
+    }
+}
+
 /// uvpacket's Eb/N0 helper lives in its own gated module (it is built
 /// on uvpacket's π/4-DQPSK PHY constants, not on anything shared), so
 /// its self-tests are gated the same way.
