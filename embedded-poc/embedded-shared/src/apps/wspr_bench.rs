@@ -465,7 +465,13 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
 
 /// Run one arm end-to-end and log it.
 #[inline(never)]
-fn arm(name: &str, bin: &[u8], idat: &mut [f32], qdat: &mut [f32]) -> i64 {
+fn arm(
+    name: &str,
+    bin: &[u8],
+    idat: &mut [f32],
+    qdat: &mut [f32],
+    on_decodes: &dyn Fn(&[WsprResult]),
+) -> i64 {
     log::info!("--- arm {name} ---");
     load_baseband(bin, idat, qdat);
     instrument::reset();
@@ -492,6 +498,13 @@ fn arm(name: &str, bin: &[u8], idat: &mut [f32], qdat: &mut [f32]) -> i64 {
         results.len(),
         two_pass / 1000,
     );
+    // Hand the slot to whatever reports spots. Done through a
+    // callback rather than calling `mfsk_app_shared::wsprnet` here:
+    // this crate is the decoder layer and `mfsk-app-shared` is the
+    // controller layer above it, so the dependency has to point that
+    // way round (`embedded-shared` does not, and should not, depend on
+    // `mfsk-app-shared`).
+    on_decodes(&results);
     for r in &results {
         log::info!(
             "    {} | {:.1} Hz | dt {:.2} s | {} dB",
@@ -872,7 +885,7 @@ pub fn init_logger_once() {
 }
 
 pub fn run(bin: &'static [u8]) -> ! {
-    run_with_post_spawn(bin, || {})
+    run_with_hooks(bin, || {}, &|_| {})
 }
 
 /// [`run`], plus a hook invoked once the decode task stacks are
@@ -885,6 +898,16 @@ pub fn run(bin: &'static [u8]) -> ! {
 /// supervisor loop, so whatever it returns must own itself (leak it, or
 /// keep it in a `static`); the bench never exits.
 pub fn run_with_post_spawn(bin: &'static [u8], post_spawn: impl FnOnce()) -> ! {
+    run_with_hooks(bin, post_spawn, &|_| {})
+}
+
+/// [`run_with_post_spawn`], plus a callback handed each slot's decodes
+/// once the scan finishes — where spot reporting hangs.
+pub fn run_with_hooks(
+    bin: &'static [u8],
+    post_spawn: impl FnOnce(),
+    on_decodes: &'static (dyn Fn(&[WsprResult]) + Sync),
+) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 
@@ -901,6 +924,9 @@ pub fn run_with_post_spawn(bin: &'static [u8], post_spawn: impl FnOnce()) -> ! {
     log::info!("task watchdog deinit -> {r}");
     wspr_dual_core::init();
     log_heap("boot");
+
+    // SAFETY: before any task that reads it exists.
+    unsafe { core::ptr::addr_of_mut!(ON_DECODES).write(Some(on_decodes)) };
 
     let arg: &'static &'static [u8] = alloc::boxed::Box::leak(alloc::boxed::Box::new(bin));
     let argp = arg as *const _ as *mut core::ffi::c_void;
@@ -1114,6 +1140,13 @@ fn probe_alloc_placement() {
     }
 }
 
+/// Set once by [`run_with_hooks`] before the scan task is spawned, read
+/// only from that task. `extern "C"` task entries take a raw pointer
+/// and cannot carry a closure, and the argument slot is already taken
+/// by the baseband; a write-before-spawn static is the plain way to get
+/// one more thing across.
+static mut ON_DECODES: Option<&'static (dyn Fn(&[WsprResult]) + Sync)> = None;
+
 fn scan_body(bin: &'static [u8]) {
     log::info!("=== Phase 1: one decode_scan, PSRAM-resident baseband ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
@@ -1135,7 +1168,14 @@ fn scan_body(bin: &'static [u8]) {
         )
     };
 
-    arm("A (PSRAM)", bin, ps_i, ps_q);
+    // SAFETY: written once in `run_with_hooks` before this task
+    // existed, never written again.
+    let on_decodes: &dyn Fn(&[WsprResult]) =
+        match unsafe { core::ptr::addr_of!(ON_DECODES).read() } {
+            Some(f) => f,
+            None => &|_: &[WsprResult]| {},
+        };
+    arm("A (PSRAM)", bin, ps_i, ps_q, on_decodes);
 
     // Issue #260 open question: does the FFT-based LPF in
     // `wspr::subtract` actually reach the PIE kernel in place, or does

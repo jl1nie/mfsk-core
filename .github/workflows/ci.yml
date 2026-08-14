@@ -564,6 +564,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # `embedded-poc/mfsk-app-shared` is excluded from the workspace
+      # (esp-idf-svc, Xtensa-only), so unit tests written inside it run
+      # nowhere. `hosttest/mfsk-app-shared` compiles its
+      # target-independent modules on the host so they do — same reason
+      # `MFSK_REQUIRE_CORPUS` exists.
+      - name: cargo test -p mfsk-app-shared-hosttest
+        run: cargo test -p mfsk-app-shared-hosttest --release
+
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release
 

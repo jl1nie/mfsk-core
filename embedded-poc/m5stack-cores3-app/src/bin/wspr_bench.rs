@@ -127,9 +127,75 @@ fn main() -> ! {
     // the radio starts claiming any (issue #260). Leaked rather than
     // held in a local because the hook returns and the bench never
     // exits — dropping the handle would tear the association down.
-    embedded_shared::apps::wspr_bench::run_with_post_spawn(GOLDEN_BASEBAND, || {
-        if let Some(h) = maybe_start_wifi() {
-            core::mem::forget(h);
-        }
-    })
+    embedded_shared::apps::wspr_bench::run_with_hooks(
+        GOLDEN_BASEBAND,
+        || {
+            if let Some(h) = maybe_start_wifi() {
+                core::mem::forget(h);
+            }
+        },
+        &report_spots,
+    )
+}
+
+/// Slot start of the baked golden recording, `150426_0918.wav` — the
+/// bench replays one fixed capture, so the timestamp is the file's, not
+/// the clock's. A live receiver substitutes its own slot start.
+const GOLDEN_SLOT_DATE: &str = "150426";
+const GOLDEN_SLOT_TIME: &str = "0918";
+
+/// Dial frequency the golden recording was made on: the 20 m WSPR
+/// segment, 14.0956 MHz USB.
+const GOLDEN_DIAL_MHZ: f64 = 14.095_600;
+
+/// Hand each slot's decodes to the wsprnet encoder.
+///
+/// **Nothing is uploaded** — [`SpotSink::Dummy`] formats the request
+/// and logs it. This bench replays one recording from 2015 on a loop;
+/// posting that to a live database would be asserting receptions that
+/// are neither current nor this station's. The encoder is the part
+/// worth exercising against real decoder output, and it is exercised
+/// fully by building the body.
+fn report_spots(results: &[mfsk_core::wspr::decode::WsprResult]) {
+    use mfsk_app_shared::wsprnet::{Mode, Reporter, Spot, SpotSink, report_slot};
+
+    let reporter = Reporter {
+        call: "N0CALL".into(),
+        grid: "PM95".into(),
+        dial_mhz: GOLDEN_DIAL_MHZ,
+        // The decoder's version, not this bin's — that is what a
+        // spot is a claim about.
+        version: format!("mfsk-core-{}", mfsk_core::VERSION),
+        mode: Mode::Wspr2,
+    };
+
+    let spots: Vec<Spot> = results
+        .iter()
+        .map(|r| {
+            // `WsprResult.message` is the decoded 50-bit payload
+            // rendered as text — "<call> <grid> <dbm>" for a type-1
+            // message. Split rather than re-derive: the decoder already
+            // did the unpacking, and wsprnet wants the same three
+            // fields back out.
+            let mut parts = r.message.to_string();
+            let mut it = parts.split_whitespace();
+            let call = it.next().unwrap_or("").to_string();
+            let grid = it.next().unwrap_or("").to_string();
+            let dbm = it.next().and_then(|d| d.parse().ok()).unwrap_or(0);
+            parts.clear();
+            Spot {
+                date: GOLDEN_SLOT_DATE.into(),
+                time: GOLDEN_SLOT_TIME.into(),
+                call,
+                grid,
+                dbm,
+                snr_db: r.snr_db as i32,
+                dt_sec: r.dt_sec,
+                drift_hz: r.drift_hz as i32,
+                audio_hz: r.freq_hz,
+            }
+        })
+        .collect();
+
+    report_slot(&spots, &reporter, &SpotSink::Dummy);
 }

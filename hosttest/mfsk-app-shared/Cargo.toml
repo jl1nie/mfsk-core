@@ -1,0 +1,10 @@
+[package]
+name        = "mfsk-app-shared-hosttest"
+version.workspace = true
+edition     = "2024"
+license     = "GPL-3.0-or-later"
+publish     = false
+description = "Runs the host-testable parts of embedded-poc/mfsk-app-shared on the host. Not a library."
+
+[dependencies]
+log = "0.4"
