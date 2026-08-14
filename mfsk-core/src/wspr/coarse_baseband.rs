@@ -90,8 +90,16 @@ pub struct BasebandCandidate {
 
 /// Time-averaged baseband spectrogram + smoothed/normalised spectrum.
 struct Spectro {
-    /// `ps[t * NFFT + j]` = |FFT|² at time slice `t`, bin `j` (DC at
+    /// `ps[t * NFFT + j]` = **|FFT|** at time slice `t`, bin `j` (DC at
     /// bin `NFFT/2 = 256`, matching wsprd's k+256 mod 512 rotation).
+    ///
+    /// Magnitude, not power, despite being filled with `norm_sqr()`:
+    /// `build_spectro` converts it in place once `psavg` — the only
+    /// consumer that wants power — has been accumulated. The other
+    /// consumer, `refine_alignment_top_k`, read `row[..].sqrt()` on
+    /// every access and is the hottest loop in the scan, so it was
+    /// paying ~933 000 square roots per peak for values that never
+    /// change. Converting is `n_time * NFFT` = 183 808 roots, once.
     ps: Vec<f32>,
     n_time: usize,
     /// Smoothed + renormalised spectrum, length `WORKING_BINS = 411`.
@@ -153,13 +161,21 @@ fn build_spectro(idat: &[f32], qdat: &[f32]) -> Spectro {
         }
     }
 
-    // Time-averaged power spectrum.
+    // Time-averaged power spectrum. Must run before the conversion
+    // below — this is the one place that wants |FFT|², not |FFT|.
     let mut psavg = [0.0f32; NFFT];
     for t in 0..n_time {
         let row = &ps[t * NFFT..(t + 1) * NFFT];
         for j in 0..NFFT {
             psavg[j] += row[j];
         }
+    }
+
+    // Power → magnitude, in place. See `Spectro::ps`. Bit-exact
+    // against taking the root at each use: same input, same function,
+    // just evaluated once instead of once per read.
+    for v in ps.iter_mut() {
+        *v = v.sqrt();
     }
 
     // 7-pt smooth, restricted to ±150 Hz (411 bins around DC bin 256).
@@ -284,6 +300,7 @@ fn refine_alignment_top_k(
                 if kindex < 0 || (kindex as usize) >= spec.n_time {
                     continue;
                 }
+                // `spec.ps` already holds magnitudes — see its doc.
                 let row = &spec.ps[kindex as usize * NFFT..(kindex as usize + 1) * NFFT];
                 let kfrac = (k as f32 - 81.0) / 81.0;
                 let pr3 = WSPR_SYNC_VECTOR[k as usize] as f32;
@@ -298,10 +315,10 @@ fn refine_alignment_top_k(
                     if ifd - 3 < 0 || (ifd + 3) as usize >= NFFT {
                         continue;
                     }
-                    let p0 = row[(ifd - 3) as usize].sqrt();
-                    let p1 = row[(ifd - 1) as usize].sqrt();
-                    let p2 = row[(ifd + 1) as usize].sqrt();
-                    let p3 = row[(ifd + 3) as usize].sqrt();
+                    let p0 = row[(ifd - 3) as usize];
+                    let p1 = row[(ifd - 1) as usize];
+                    let p2 = row[(ifd + 1) as usize];
+                    let p3 = row[(ifd + 3) as usize];
                     ss[di] += w * ((p1 + p3) - (p0 + p2));
                     pow[di] += p0 + p1 + p2 + p3;
                 }
