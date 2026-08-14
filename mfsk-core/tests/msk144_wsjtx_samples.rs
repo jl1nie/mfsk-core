@@ -41,6 +41,7 @@ use mfsk_core::msk144::decode::{Depth, decode_slot};
 
 #[allow(dead_code)]
 mod common;
+use common::golden::GoldenEntry;
 use common::load_wav_i16_opt as read_wsjtx_wav_i16;
 
 fn sample_path(name: &str) -> Option<PathBuf> {
@@ -50,163 +51,105 @@ fn sample_path(name: &str) -> Option<PathBuf> {
     )
 }
 
-/// WSJT-X-published golden decode (see
-/// `reference_msk144_jt65_wsjtx_sample_decode.md`).
-struct Golden {
-    msg: &'static str,
-    freq_hz: f32,
-    tsec: f32,
-    snr_db: i32,
-}
-
 const FREQ_TOL_HZ: f32 = 15.0;
 const TSEC_TOL: f32 = 1.0;
-const SNR_TOL_DB: i32 = 1;
+const SNR_TOL_DB: f32 = 1.0;
 
-fn check(name: &str, golden: &[Golden]) {
-    let Some(path) = sample_path(name) else {
-        eprintln!("skipping: WSJT-X MSK144 sample not found at ../../WSJT-X/samples/MSK144/{name}");
-        return;
-    };
-    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+/// WSJT-X-published golden decode for `181211_120500.wav` (see
+/// `reference_msk144_jt65_wsjtx_sample_decode.md`).
+static MSK144_120500_REFERENCE: &[GoldenEntry] = &[GoldenEntry {
+    msg: "K1JT WA4CQG EM72",
+    freq_hz: Some(1488.0),
+    dt_sec: Some(8.7),
+    snr_db: Some(8.0),
+}];
 
-    // fc/ntol: a single nominal-center-frequency guess wide enough to
-    // cover all of this file's signals (1458-1496 Hz observed in the
-    // golden list) -- `ntol` here is the coarse squared-signal search
-    // tolerance (`detect_burst_candidates`), independent of
-    // `msk144_sync`'s own tighter internal fine-search width.
-    let decodes = decode_slot(&audio, 1477.0, 60.0, Depth::Deep);
+/// WSJT-X-published golden decodes for `181211_120800.wav`.
+static MSK144_120800_REFERENCE: &[GoldenEntry] = &[
+    GoldenEntry {
+        msg: "CQ W4IMD EM84",
+        freq_hz: Some(1458.0),
+        dt_sec: Some(4.6),
+        snr_db: Some(5.0),
+    },
+    GoldenEntry {
+        msg: "CQ KD9VV EN71",
+        freq_hz: Some(1496.0),
+        dt_sec: Some(12.2),
+        snr_db: Some(7.0),
+    },
+];
 
-    eprintln!("MSK144 {name} decoded {} message(s):", decodes.len());
-    for d in &decodes {
-        eprintln!(
-            "  freq={:6.1} Hz tsec={:5.1} snr={:+3} : {}",
-            d.freq_hz, d.tsec, d.snr_db, d.message
-        );
-    }
-
-    let mut hits = 0usize;
-    let mut misses: Vec<&Golden> = Vec::new();
-    for g in golden {
-        let hit = decodes.iter().any(|d| {
-            d.message == g.msg
-                && (d.freq_hz - g.freq_hz).abs() <= FREQ_TOL_HZ
-                && (d.tsec - g.tsec).abs() <= TSEC_TOL
-                && (d.snr_db - g.snr_db).abs() <= SNR_TOL_DB
-        });
-        if hit {
-            hits += 1;
-        } else {
-            misses.push(g);
-        }
-    }
-    eprintln!(
-        "recall: {hits}/{} golden MSK144 decodes for {name}",
-        golden.len()
-    );
-    for g in &misses {
-        eprintln!(
-            "  MISSING: '{}' @ {:.1} Hz tsec={:.1} snr={:+}",
-            g.msg, g.freq_hz, g.tsec, g.snr_db
-        );
-    }
-
-    // Strict gate: WSJT-X decodes every golden message from these
-    // files, and so does this port (verified 2026-07-18) — a drop
-    // means the MSK144 receive chain has regressed.
-    assert_eq!(
-        hits,
-        golden.len(),
-        "MSK144 WSJT-X sample recall regressed for {name}: {}/{}",
-        hits,
-        golden.len()
-    );
-}
-
-#[test]
-fn msk144_181211_120500_wsjtx_sample() {
-    check(
-        "181211_120500.wav",
-        &[Golden {
-            msg: "K1JT WA4CQG EM72",
-            freq_hz: 1488.0,
-            tsec: 8.7,
-            snr_db: 8,
-        }],
-    );
-}
-
-#[test]
-fn msk144_181211_120800_wsjtx_sample() {
-    check(
-        "181211_120800.wav",
-        &[
-            Golden {
-                msg: "CQ W4IMD EM84",
-                freq_hz: 1458.0,
-                tsec: 4.6,
-                snr_db: 5,
-            },
-            Golden {
-                msg: "CQ KD9VV EN71",
-                freq_hz: 1496.0,
-                tsec: 12.2,
-                snr_db: 7,
-            },
-        ],
-    );
-}
-
-/// Precision: nothing beyond the known signals may be emitted, on
-/// both recordings.
+/// Recall, precision, and SNR together, on both golden recordings —
+/// one `assert_golden` call per file, replacing what used to be three
+/// separate tests (two bespoke recall-only checks sharing a hand-
+/// rolled `Golden`/`check()`, plus a third message-only precision
+/// test duplicating the same two file loads).
 ///
-/// MSK144 had no false-decode guard. Its own `check()` above asserts
-/// recall only — and MSK144 is the protocol most exposed to this
-/// class of bug, because `msk144sync.f90`-faithful search attempts
-/// OSD on the order of a thousand times per file (measured under
-/// issue #246: 1044-1116 attempts, 0 successes on these very
-/// recordings). Every one of those is an opportunity to synthesise a
-/// codeword out of noise, exactly as WSPR's OSD path did.
+/// Phase 3's burst-detection thresholds were flagged from the start
+/// as the highest-risk, most-likely-to-need-iteration part of the
+/// whole MSK144 port (hand-tuned WSJT-X magic constants with no
+/// principled derivation, validated against synthetic/independent-
+/// oracle signals only up to that point) — but the first real-WAV run
+/// recovered all 3 golden messages across both files with no tuning
+/// needed (freq within a few Hz, `tsec` exact), so this is a strict
+/// gate like the other protocols' golden-WAV tests: `max_extra: 0`.
+///
+/// MSK144 is also the protocol most exposed to phantom decodes,
+/// because `msk144sync.f90`-faithful search attempts OSD on the order
+/// of a thousand times per file (measured under issue #246:
+/// 1044-1116 attempts, 0 successes on these very recordings). Every
+/// one of those is an opportunity to synthesise a codeword out of
+/// noise, exactly as WSPR's OSD path did.
+///
+/// SNR is gated too, exact-match after the `analytic_signal` fixed
+/// bandpass filter fix (`core/dsp/analytic.rs` — WSJT-X's
+/// `analytic()` always applies a 1500 Hz-centered raised-cosine
+/// bandpass before computing `pmax`/`pnoise`; the initial port
+/// omitted it, producing a systematic -1dB bias on all 3 golden
+/// decodes). `SNR_TOL_DB` leaves headroom for future incidental
+/// changes upstream of the SNR computation (e.g. FFT backend swaps)
+/// without making this an exact-bit-match gate.
 #[test]
-fn msk144_wsjtx_samples_precision() {
-    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+fn msk144_wsjtx_samples_recall_precision_and_snr() {
+    use common::golden::{DecodeView, GoldenSet, Tolerances, assert_golden};
 
     for (file, expected, floor) in [
-        (
-            "181211_120500.wav",
-            &[GoldenEntry::msg("K1JT WA4CQG EM72")][..],
-            1usize,
-        ),
-        (
-            "181211_120800.wav",
-            &[
-                GoldenEntry::msg("CQ W4IMD EM84"),
-                GoldenEntry::msg("CQ KD9VV EN71"),
-            ][..],
-            2,
-        ),
+        ("181211_120500.wav", MSK144_120500_REFERENCE, 1usize),
+        ("181211_120800.wav", MSK144_120800_REFERENCE, 2),
     ] {
         let Some(path) = sample_path(file) else {
             eprintln!("skipping: MSK144 golden {file} not found");
             continue;
         };
         let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+
+        // fc/ntol: a single nominal-center-frequency guess wide enough
+        // to cover all of this file's signals (1458-1496 Hz observed
+        // in the golden list) -- `ntol` here is the coarse
+        // squared-signal search tolerance (`detect_burst_candidates`),
+        // independent of `msk144_sync`'s own tighter internal
+        // fine-search width.
         let decodes = decode_slot(&audio, 1477.0, 60.0, Depth::Deep);
 
         assert_golden(
             &decodes,
             &GoldenSet {
-                name: "MSK144",
-                expected: Box::leak(expected.to_vec().into_boxed_slice()),
+                name: file,
+                expected,
                 min_hits: floor,
                 max_extra: 0,
             },
-            Tolerances::default(),
+            Tolerances {
+                freq_hz: FREQ_TOL_HZ,
+                dt_sec: TSEC_TOL,
+                snr_db: SNR_TOL_DB,
+            },
             |d| DecodeView {
                 msg: d.message.clone(),
                 freq_hz: d.freq_hz,
                 dt_sec: d.tsec,
-                snr_db: None,
+                snr_db: Some(d.snr_db as f32),
             },
         );
     }
