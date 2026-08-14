@@ -18,3 +18,4 @@ pub mod tx_picker;
 pub mod udp_log;
 pub mod ui;
 pub mod wifi;
+pub mod wsprnet;

@@ -57,6 +57,22 @@ pub struct IsQs {
     pub sf: [[f32; N_SYMBOLS]; 4],
 }
 
+impl IsQs {
+    /// All-zero table, for a scratch buffer whose contents are about
+    /// to be overwritten by [`tone_amplitudes_into`] — not a
+    /// `#[derive(Default)]` because array `Default` impls for
+    /// arbitrary `N` are a newer addition and this crate's MSRV isn't
+    /// pinned to require it.
+    pub(crate) fn zeroed() -> Self {
+        IsQs {
+            is: [[0.0f32; N_SYMBOLS]; 4],
+            qs: [[0.0f32; N_SYMBOLS]; 4],
+            cf: [[0.0f32; N_SYMBOLS]; 4],
+            sf: [[0.0f32; N_SYMBOLS]; 4],
+        }
+    }
+}
+
 /// Build per-tone complex amplitudes for all 162 WSPR symbols on a
 /// 375 Hz complex baseband. `f0_baseband_hz` is the tone-CENTER
 /// frequency relative to the 1500 Hz dial (so `f0 = 0` means tone
@@ -81,6 +97,36 @@ pub fn tone_amplitudes(
     lag: i32,
     drift_hz: f32,
 ) -> IsQs {
+    let mut isqs = IsQs::zeroed();
+    tone_amplitudes_into(idat, qdat, f0_baseband_hz, lag, drift_hz, &mut isqs);
+    isqs
+}
+
+/// [`tone_amplitudes`], writing into a caller-owned `out` instead of
+/// returning a fresh `IsQs`.
+///
+/// Exists so a caller doing repeated evaluations against a moving
+/// alignment — `wspr::decode::refine_cascade`'s 13-eval search — can
+/// hold exactly **two** `IsQs`-sized buffers (a "current" and a
+/// "best", ping-ponged via [`core::mem::swap`]) for the whole search
+/// instead of one fresh by-value return per call site. Each `IsQs` is
+/// 10 368 B; this crate's own embedded stack audit
+/// (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`, "Stack") found
+/// `refine_cascade`'s peak dominated by "several 10 368-byte `IsQs`
+/// live at once" — plausible with the old by-value `eval` closure
+/// called from five distinct source locations (one `let` binding per
+/// call site is exactly the shape that defeats naive stack-slot
+/// reuse), and this fixes it by construction rather than hoping the
+/// optimizer coalesces temporaries it has no obligation to.
+pub fn tone_amplitudes_into(
+    idat: &[f32],
+    qdat: &[f32],
+    f0_baseband_hz: f32,
+    lag: i32,
+    drift_hz: f32,
+    out: &mut IsQs,
+) {
+    super::instrument::bump(&super::instrument::TONE_AMPLITUDES);
     debug_assert_eq!(idat.len(), qdat.len());
     let np = idat.len() as i32;
     let dt = 1.0 / BASEBAND_RATE;
@@ -88,13 +134,7 @@ pub fn tone_amplitudes(
     let twopidt = 2.0 * PI * dt;
     let df15 = df * 1.5;
     let df05 = df * 0.5;
-
-    let mut isqs = IsQs {
-        is: [[0.0f32; N_SYMBOLS]; 4],
-        qs: [[0.0f32; N_SYMBOLS]; 4],
-        cf: [[0.0f32; N_SYMBOLS]; 4],
-        sf: [[0.0f32; N_SYMBOLS]; 4],
-    };
+    let isqs = out;
 
     // Per-tone oscillator lookup (reused across symbols when the
     // drift-corrected freq fp is unchanged from the previous symbol —
@@ -185,8 +225,6 @@ pub fn tone_amplitudes(
         isqs.is[3][i] = i3_acc;
         isqs.qs[3][i] = q3_acc;
     }
-
-    isqs
 }
 
 /// Per-symbol non-coherent bit metric (`nblock = 1` path of

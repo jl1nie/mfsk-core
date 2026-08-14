@@ -1,6 +1,67 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260)
+
+### Changed
+
+- **WSPR's Fano cycle budget is now `wsprd`'s own 10 000 cycles/bit on
+  host, with embedded opting into 5 000 via `wspr-fano-cap-fast`**
+  (issue #260). The cap introduced during embedded work was a single
+  constant shared by both, chosen for the CoreS3 slot deadline it buys;
+  host has no deadline reason to pay for it. 10 000 is
+  `lib/wsprd/wsprd.c:799`'s `maxcycles`, so the host default is neither
+  slower nor less faithful than the reference decoder, and it is what
+  this path effectively ran at before the cap was wired up.
+
+  Raising it further is not free, which is why it is a feature and not
+  a number to tune. Swept over the 500-trial AWGN corpus — every file
+  holds one transmitted message, so any other decode is a false one by
+  construction:
+
+  | cycles/bit | -32 dB | -31 dB | -30 dB | phantoms/500 |
+  |---:|---:|---:|---:|---:|
+  | 5 000 | 19 % | 67 % | 96 % | 0 |
+  | **10 000** | 22 % | 70 % | 96 % | 0 |
+  | 20 000 | 24 % | 73 % | 96 % | 0 |
+  | 50 000 | 27 % | 76 % | 98 % | **2** |
+  | 100 000 | 31 % | 75 % | 98 % | **7** |
+
+  On recall alone this reads "higher is better"; the phantom column
+  says the usable range ends between 20 000 and 50 000. Given long
+  enough, Fano finds codewords that satisfy the CRC but are not the
+  transmitted message, and in a multi-pass SIC decoder those enter the
+  carried callsign table and are subtracted from the residual.
+
+  `wspr_awgn_snr_sweep` now reports phantoms alongside recall, so this
+  cannot be measured one-eyed again.
+
+### Added
+
+- **`mfsk_app_shared::wsprnet`** — wsprnet.org spot reporting, ported
+  from WSJT-X's `Network/wsprnet.cpp` (wsprnet.org publishes no
+  specification, so that is the only normative source for the field
+  names, formats and units). Covers the `function=wspr` spot and the
+  `function=wsprstat` heartbeat.
+
+  Reporting is **off by default**: `SpotSink` is `Disabled` unless
+  configured, with `Dummy` (build and log) and `Http { url }` (build
+  and POST, explicit URL, no default) as the other states. A spot is a
+  public claim that a named station was heard at a time and frequency,
+  so making one is a call-site decision.
+
+  Two details that are easy to get wrong and are therefore tested:
+  `tqrg = dial + (audio − 1500) / 1e6` — the field is the
+  *transmitter's* frequency, derived from the audio tone — and `mode`,
+  where a 2-minute FST4W reports as `3` because `2` already means
+  WSPR-2.
+
+- **`hosttest/mfsk-app-shared`** — runs the target-independent parts of
+  `embedded-poc/mfsk-app-shared` on the host. That crate pulls
+  `esp-idf-svc` and is excluded from the workspace, so unit tests
+  written inside it would execute nowhere — the same shape as the
+  golden tests that silently skipped in CI before `MFSK_REQUIRE_CORPUS`.
+  Modules are pulled in by `#[path]`, so there is one source file and
+  it is the one that ships.
 
 ### Fixed
 

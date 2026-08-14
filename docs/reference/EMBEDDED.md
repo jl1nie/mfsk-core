@@ -59,7 +59,8 @@ and optimisations land once and apply everywhere.
 | LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — works for FT8 LDPC(174,91) and FST4/uvpacket LDPC(240,101) |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
-| **FT4 / WSPR / Q65 / JT9 / JT65** | (host f32 only) | ❌ — these protocols don't go through `decode_block` today |
+| WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
+| **FT4 / Q65 / JT9 / JT65** | (host f32 only) | ❌ — these protocols don't go through `decode_block` today, and have no embedded path at all yet |
 
 So: **the trait infrastructure is protocol-agnostic, but the only
 protocol that actually flips into the integer path on the embedded
@@ -67,6 +68,13 @@ build is FT8.** Adding FT4 (next-most-likely candidate, since it
 shares the same Costas/Gray/LDPC pieces) is a port of the
 `decode_block` shape to FT4-specific symbol layout — nothing new
 in the trait layer.
+
+WSPR reached embedded by a different route entirely (below), worth
+noting here since the table above could otherwise be read as "only
+FT8 runs on a chip": it doesn't need `decode_block`'s spectrogram/DFT
+machinery or the integer pipeline, because the S3's dual-core headroom
+covers WSPR's much slower cadence (a 120 s slot vs FT8's ~1.2 s
+post-SlotEnd target) comfortably in plain f32.
 
 ## What we test
 
@@ -738,6 +746,54 @@ The **120 KB of internal DRAM freed by the BASIS drop** is exactly
 what M5StickS3 Qso-mode bidirectional I2S DMA needs to allocate;
 that allocation now succeeds on the first try.
 
+## WSPR on embedded
+
+A second, structurally separate embedded story from everything above
+— WSPR never goes through `decode_block`, `fixed-point`, or
+`mfsk-ffi-ft8`'s C ABI. It runs the same host `wspr::decode` f32 path
+on-device via `fft-extern`, plus one new piece: `wspr::ddc`, a
+streaming down-converter that the reference decoder's whole-slot FFT
+channelizer (`wspr::baseband::decimate_to_baseband`) cannot supply on
+an S3 at all — an 11.25 MiB `Complex<f32>` buffer at a
+1 474 560-point FFT is neither a power of two nor within `esp-dsp`'s
+8 192 ceiling. `wspr::ddc` mixes by 1500 Hz (exactly Fs/8, an
+eight-entry table, no trig per sample), runs a single-stage FIR
+low-pass, and keeps every 32nd sample — ~25 KB of state, independent
+of slot length. Verified against the reference channelizer rather than
+assumed equivalent: golden 9/9, AWGN sweep within one trial at every
+SNR against 500 trials/cell, 0 phantoms either way.
+
+Cargo features (see [Cargo features for embedded use](#cargo-features-for-embedded-use)
+above for the general shape):
+
+| Feature | What it changes | Default |
+|---|---|---|
+| `wspr` | WSPR protocol glue. Alone, this is a TX-only embedded-beacon build — no FFT backend required. | off |
+| `wspr-ddc` | Selects the streaming down-converter over the reference whole-slot channelizer. Host keeps the exact reference; embedded has no choice — the reference cannot run there. | off (embedded's `wspr-bench` turns it on) |
+| `wspr-fano-cap-fast` | Caps the Fano decoder's cycle budget at 5 000 cycles/bit (`wsprd`'s own default is 10 000, which host uses) — trades floor-SNR recall for the wall-clock a 120 s slot deadline needs. | off |
+| `wspr-pass2-topn` | Ranks pass-2 candidates by refined sync and deep-processes only the top 2 (matching the dual-core split), instead of the full ladder over every survivor. | off |
+
+Device (M5Stack CoreS3, WiFi associated throughout, dual-core):
+steady state over 4 consecutive slots lands the decode at 82.8–90.1 s
+against a 110 s deadline (120 s slot − a 10 s spot-upload reserve),
+9/9 golden held every slot. Down-conversion, running at its real duty
+cycle beside the previous slot's decode (the two overlap — a slot's
+~114 s capture window is longer than one decode), costs 18.5–24.1 s.
+Full measurement account — including several attempts that didn't
+pan out, kept rather than deleted so they aren't retried — is
+[`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md);
+`embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs` is the
+runnable bench these numbers come from.
+
+**Not yet verified**: live audio capture. Everything above is
+measured against a WAV-fed / synthetic baseband, the same gap issue
+[#163](https://github.com/jl1nie/mfsk-core/issues/163) tracks for the
+FT8 controller line — UAC hardware verification is a shared, still-open
+dependency for both. `mfsk_app_shared::wsprnet` (wsprnet.org spot
+upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
+off by default; its `SpotSink::Http` path is implemented but untested
+against a real endpoint.
+
 ## Where to go next
 
 By reader intent:
@@ -759,3 +815,7 @@ By reader intent:
   [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) Phase B-Stick (M5StickS3 demo /
   acoustic fallback) and Phase B-Core (M5Stack CoreS3 main UAC
   controller) sections.
+- **I want WSPR, not FT8** → [WSPR on embedded](#wspr-on-embedded)
+  above, then `docs/notes/ROADMAP.md` Phase E and
+  [`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)
+  for the full measurement journal.

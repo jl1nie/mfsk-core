@@ -10,9 +10,12 @@ use std::path::PathBuf;
 
 use mfsk_core::wspr::SearchParams;
 use mfsk_core::wspr::WsprResult;
-use mfsk_core::wspr::decode::{
-    decode_scan, decode_scan_streaming, decode_scan_subtract, decode_scan_subtract_streaming,
-};
+use mfsk_core::wspr::decode::{decode_scan, decode_scan_streaming};
+// The deprecated double-SIC wrappers are still exercised here on
+// purpose: two diagnostics measure them, and one test guards their
+// streaming parity. See `decode_scan_subtract`'s doc comment.
+#[allow(deprecated)]
+use mfsk_core::wspr::decode::{decode_scan_subtract, decode_scan_subtract_streaming};
 
 #[allow(dead_code)]
 mod common;
@@ -103,8 +106,62 @@ fn sample_and_params() -> Option<(Vec<f32>, SearchParams)> {
     ))
 }
 
+/// Recall and precision together, via the shared helper — see
+/// `common::golden`'s doc comment for why these are one assertion and
+/// not two: this file's own 2026-08-11 phantom incident (8/8 recall
+/// reported while 8 phantoms went unchecked) is the motivating case
+/// `assert_golden` was written to prevent, and WSPR's own tests had
+/// not been migrated to use it until now.
+///
+/// `decode_scan`, not `decode_scan_subtract`: this is the tier-B
+/// golden, so it has to guard the path that actually ships.
+/// `decode_scan_default` and the `mfsk-ffi` C ABI both route here, and
+/// nothing in the crate calls `decode_scan_subtract` — whose extra SIC
+/// layer turned out to duplicate the wsprd three-pass loop that #275
+/// moved *inside* `decode_scan` (see that function's doc comment).
+/// Guarding the wrapper meant the shipped decoder's recall was never
+/// actually asserted, and its own precision was never checked at all
+/// — `wspr_diag_list_all_decodes` found two phantoms on it
+/// (`68K/YJ0WKZ 30`, a Type-3 hashed `<#054f9> GR42IR 21`) that no
+/// test had ever caught, because the recall test used the wrapper and
+/// the precision test used `decode_scan`, so between them neither
+/// function's precision-and-recall pair was ever checked together.
+/// `minsync2` removed both.
+///
+/// **Recall: all 9** — every spot `wsprd` reports on this file — from
+/// a single isolated slot and without a carried table.
+///
+/// This was 7 for a long time, and the two it was missing each had a
+/// different cause:
+///
+/// `W3BI FN20 30` (-25 dB) was reachable only by OSD, and OSD is gated
+/// the way `wsprd.c:1396` gates it — accepted only for a callsign an
+/// earlier Fano decode confirmed (`WsprCallsignTable`) — so within one
+/// slot nothing confirmed it. (The gate is not negotiable: the
+/// `nhardmin <= 44` threshold it replaced recovered W3BI *and*
+/// admitted 8 phantoms on this same recording, a 50% false-decode rate
+/// reported from live operation. W3BI landed at `nhardmin = 39`, the
+/// phantoms at 40/40/40/41/41/41/42/42 — not separable.) It is now a
+/// plain Fano decode and the gate never comes up.
+///
+/// `G8VDQ IO91 37` (-23 dB) needed the subtraction of the *other*
+/// signals to be right: we were reconstructing every replica as
+/// stationary while decoding it with a drift estimate, so what got
+/// removed did not match what was there, and the residue sat on top of
+/// G8VDQ.
+///
+/// **Precision: 0.** WSPR has no CRC, so this is the property that
+/// actually matters in operation and the one that regressed before:
+/// this file produced 16 decodes — 8 real, 8 phantom, with callsigns
+/// like `UZC/7D0DKY` and `05S/C30EQG` — before the OSD gate was fixed.
+///
+/// `wspr_carried_table_does_not_perturb_a_fully_fano_slot` still
+/// covers the cross-slot table path; it just no longer has an
+/// OSD-only decode to use as its example.
 #[test]
-fn wspr_wsjtx_sample_recall_vs_golden() {
+fn wspr_golden_recall_and_precision() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
     let Some(path) = sample_path() else {
         eprintln!(
             "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
@@ -127,95 +184,45 @@ fn wspr_wsjtx_sample_recall_vs_golden() {
         ..SearchParams::default()
     };
 
-    let decodes = decode_scan_subtract(&audio, 12_000, 0, &params);
-
-    let decoded: Vec<(String, f32, f32)> = decodes
-        .iter()
-        .map(|d| (d.message.to_string(), d.freq_hz, d.dt_sec))
-        .collect();
-
-    eprintln!("WSPR sample decoded {} message(s):", decoded.len());
-    for (m, f, dt) in &decoded {
-        eprintln!("  freq={:6.1} Hz dt={:+.2} s : {}", f, dt, m);
-    }
-
-    let mut hits = 0usize;
-    for g in GOLDEN {
-        let hit = decoded.iter().any(|(m, f, dt)| {
-            m == g.msg
-                && (f - g.freq_hz).abs() <= FREQ_TOL_HZ
-                && (dt - g.dt_sec).abs() <= DT_TOL_SEC
-        });
-        if hit {
-            hits += 1;
-        } else {
-            eprintln!(
-                "  MISSING: '{}' @ {:.1} Hz dt={:+.2}",
-                g.msg, g.freq_hz, g.dt_sec
-            );
-        }
-    }
-    eprintln!("recall: {}/{} golden WSPR decodes", hits, GOLDEN.len());
-
-    // All 9 — every spot `wsprd` reports on this file — from a single
-    // isolated slot and without a carried table.
-    //
-    // This was 7 for a long time, and the two it was missing each had a
-    // different cause:
-    //
-    // `W3BI FN20 30` (-25 dB) was reachable only by OSD, and OSD is
-    // gated the way `wsprd.c:1396` gates it — accepted only for a
-    // callsign an earlier Fano decode confirmed (`WsprCallsignTable`) —
-    // so within one slot nothing confirmed it. (The gate is not
-    // negotiable: the `nhardmin <= 44` threshold it replaced recovered
-    // W3BI *and* admitted 8 phantoms on this same recording, a 50%
-    // false-decode rate reported from live operation. W3BI landed at
-    // `nhardmin = 39`, the phantoms at 40/40/40/41/41/41/42/42 — not
-    // separable.) It is now a plain Fano decode and the gate never
-    // comes up.
-    //
-    // `G8VDQ IO91 37` (-23 dB) needed the subtraction of the *other*
-    // signals to be right: we were reconstructing every replica as
-    // stationary while decoding it with a drift estimate, so what got
-    // removed did not match what was there, and the residue sat on top
-    // of G8VDQ.
-    //
-    // `wspr_carried_table_does_not_perturb_a_fully_fano_slot` still
-    // covers the cross-slot table path; it just no longer has an
-    // OSD-only decode to use as its example.
-    const EXPECTED_RECALL: usize = 9;
-    assert_eq!(
-        hits,
-        EXPECTED_RECALL,
-        "WSPR WSJT-X sample recall changed: {}/{} (expected {})",
-        hits,
-        GOLDEN.len(),
-        EXPECTED_RECALL
-    );
-}
-
-/// The decoder must emit **nothing beyond** the real signals.
-///
-/// WSPR has no CRC, so this is the property that actually matters in
-/// operation and the one that regressed: before the OSD gate was
-/// fixed this file produced 16 decodes — 8 real, 8 phantom, with
-/// callsigns like `UZC/7D0DKY` and `05S/C30EQG`. Real `wsprd` reports
-/// 9 real and 0 phantom on the same audio.
-#[test]
-fn wspr_wsjtx_sample_has_no_phantom_decodes() {
-    let Some((audio, params)) = sample_and_params() else {
-        return;
-    };
     let decodes = decode_scan(&audio, 12_000, 0, &params);
-    let phantoms: Vec<String> = decodes
+
+    eprintln!("WSPR sample decoded {} message(s):", decodes.len());
+    for d in &decodes {
+        eprintln!(
+            "  freq={:6.1} Hz dt={:+.2} s : {}",
+            d.freq_hz, d.dt_sec, d.message
+        );
+    }
+
+    let expected: Vec<GoldenEntry> = GOLDEN
         .iter()
-        .map(|d| d.message.to_string())
-        .filter(|m| !GOLDEN.iter().any(|g| g.msg == m))
+        .map(|g| GoldenEntry {
+            msg: g.msg,
+            freq_hz: Some(g.freq_hz),
+            dt_sec: Some(g.dt_sec),
+            snr_db: None,
+        })
         .collect();
-    assert!(
-        phantoms.is_empty(),
-        "WSPR emitted {} phantom decode(s) on an 8-signal recording: {phantoms:?}",
-        phantoms.len()
+
+    assert_golden(
+        &decodes,
+        &GoldenSet {
+            name: "WSPR 150426_0918.wav",
+            expected: Box::leak(expected.into_boxed_slice()),
+            min_hits: GOLDEN.len(),
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: FREQ_TOL_HZ,
+            dt_sec: DT_TOL_SEC,
+            ..Tolerances::default()
+        },
+        |d| DecodeView {
+            msg: d.message.to_string(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
     );
 }
 
@@ -305,6 +312,7 @@ fn wspr_carried_table_does_not_perturb_a_fully_fano_slot() {
 /// accept point fires `on_result`, see that function's doc comment),
 /// so the callback-delivered set must exactly equal the batch `Vec`.
 #[test]
+#[allow(deprecated)] // deliberately covers the deprecated wrapper
 fn wspr_scan_subtract_streaming_matches_batch_exactly() {
     let Some(path) = sample_path() else {
         eprintln!(
@@ -427,6 +435,7 @@ fn wspr_scan_streaming_superset_of_batch() {
 /// wspr_wsjtx_samples wspr_speed_diag -- --ignored --nocapture`
 #[test]
 #[ignore = "manual diagnostic — WSPR decode_scan_subtract timing (perf-review Phase 0)"]
+#[allow(deprecated)] // this diagnostic exists to time the wrapper
 fn wspr_speed_diag() {
     use std::time::Instant;
 
@@ -639,6 +648,7 @@ fn wspr_diag_candidate_cost_split() {
 /// wspr_diag_pass_ablation -- --ignored --nocapture`
 #[test]
 #[ignore = "manual diagnostic — WSPR outer/inner 2-pass ablation (WSPR_BENCHMARK.md Option C)"]
+#[allow(deprecated)] // the ablation's whole point is to compare against the wrapper
 fn wspr_diag_pass_ablation() {
     use std::time::Instant;
 
@@ -839,5 +849,738 @@ fn wspr_carried_table_across_slots_adds_no_phantoms() {
              the carried table is changing the outcome, which it must only ever do \
              by recovering a *known* callsign, not by finding new ones"
         );
+    }
+}
+
+/// Bake the WSJT-X golden's 375 Hz baseband to a flat `f32` binary for
+/// the ESP32-S3 candidate-loop bench.
+///
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md` Phase 1, host side.
+/// The device bench is `wspr_diag_candidate_cost_split` minus
+/// `decimate_to_baseband` — the one stage the ESP-DSP FFT backend
+/// cannot serve, since `NFFT1 = 1_474_560` is far past any planner it
+/// has. Running it here and vendoring the result is what makes the
+/// device measurement possible without a streaming DDC existing first.
+///
+/// Layout, little-endian throughout (both host and Xtensa are LE, so
+/// the device reads it with a plain transmute of `include_bytes!`):
+///
+/// ```text
+/// idat[46080] f32 LE, then qdat[46080] f32 LE  =  368 640 bytes
+/// ```
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full --release --test
+///  wspr_wsjtx_samples wspr_bake_golden_baseband -- --ignored --nocapture`
+#[test]
+#[ignore = "asset generator — writes embedded-poc/assets/wspr_golden_baseband.bin"]
+fn wspr_bake_golden_baseband() {
+    use mfsk_core::wspr::baseband::{NFFT2, decimate_to_baseband};
+
+    let Some(path) = sample_path() else {
+        panic!("WSPR golden not found — this generator needs the real recording");
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let sample_rate = 12_000u32;
+
+    // Mirror decode_scan_inner's NEGATIVE_DT_PAD_SEC padding exactly:
+    // the baked baseband must be sample-for-sample what the production
+    // path hands the candidate loop, or every `start_sample` the bench
+    // feeds `decode_at_baseband*` is off by `pad / 32`.
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+
+    let (idat, qdat) = decimate_to_baseband(&padded);
+    assert_eq!(idat.len(), NFFT2, "baseband length is fixed by NFFT2");
+    assert_eq!(qdat.len(), NFFT2);
+
+    let mut bytes = Vec::with_capacity(NFFT2 * 2 * 4);
+    for v in idat.iter().chain(qdat.iter()) {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let out = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/wspr_golden_baseband.bin"
+    ));
+    std::fs::write(&out, &bytes).expect("write baseband asset");
+    eprintln!(
+        "wrote {} ({} bytes = {} KiB), pad = {} audio samples = {} baseband samples",
+        out.display(),
+        bytes.len(),
+        bytes.len() / 1024,
+        pad,
+        pad / 32,
+    );
+}
+
+/// How many coarse candidates would wsprd's `minsync2` gate drop?
+///
+/// `wsprd.c:1294` filters the candidate list *before* the decode loop:
+/// a candidate whose coarse `sync` is below `minsync2` (0.12 for passes
+/// 0 and 1, 0.10 for pass 2) never reaches the Fano / DT-peak-up ladder
+/// at all. `decode_scan_inner` describes that gate in a comment and
+/// does not apply it — every coarse candidate pays the full ladder.
+///
+/// The S3 measurement (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`)
+/// makes the size of that omission worth knowing: on device, the ladder
+/// costs ~69 s per candidate in pass 2.
+#[test]
+#[ignore = "manual diagnostic — coarse sync distribution vs wsprd's minsync2"]
+fn wspr_diag_minsync2_would_drop() {
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let pad = 36_000usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (idat, qdat) = decimate_to_baseband(&padded);
+
+    for (label, max_drift, minsync2) in [("pass 0/1", 4i32, 0.12f32), ("pass 2", 0, 0.10)] {
+        let cands = coarse_baseband(&idat, &qdat, pad, 100, max_drift);
+        let kept = cands.iter().filter(|c| c.sync > minsync2).count();
+        let mut syncs: Vec<f32> = cands.iter().map(|c| c.sync).collect();
+        syncs.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        eprintln!(
+            "{label} (minsync2 = {minsync2}): {} candidates, {kept} kept, {} dropped\n  sync: {}",
+            cands.len(),
+            cands.len() - kept,
+            syncs
+                .iter()
+                .map(|s| format!("{s:.3}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+}
+
+/// Every decode `decode_scan_subtract` produces, golden or not.
+///
+/// Written to check `minsync2`'s effect (issue #260): before that
+/// gate, this recording produced two decodes outside the curated
+/// `GOLDEN` list — `68K/YJ0WKZ 30` and a Type-3 hashed `<#054f9>
+/// GR42IR 21` — that `wspr_wsjtx_sample_has_no_phantom_decodes` never
+/// caught, because that test only runs `decode_scan`, not the
+/// subtract-wrapped variant. `minsync2` removed both with the 9
+/// golden decodes untouched — see the commit that added the gate for
+/// the pass-ablation timing this bought.
+#[test]
+#[ignore = "manual diagnostic — lists decode_scan_subtract's full output incl. non-golden entries"]
+fn wspr_diag_list_all_decodes() {
+    let Some((audio, params)) = sample_and_params() else {
+        return;
+    };
+    #[allow(deprecated)]
+    let decodes = decode_scan_subtract(&audio, 12_000, 0, &params);
+    for d in &decodes {
+        let golden = GOLDEN.iter().any(|g| g.msg == d.message.to_string());
+        eprintln!(
+            "{} | {:.1} Hz | dt {:.2} s | {:.1} dB | golden={golden}",
+            d.message, d.freq_hz, d.dt_sec, d.snr_db
+        );
+    }
+    eprintln!("total: {}", decodes.len());
+}
+
+/// Where does G8VDQ rank among pass 2's candidates by *refined* sync
+/// (the value `minsync2` actually gates on), after `minsync2`
+/// filtering? Asked on issue #260: if the eventual weak decode stays
+/// near the top of the survivors, "process the top N deepest" is a
+/// simple lever with no classifier needed.
+///
+/// Replicates `decode_scan_inner`'s real sequence — both early passes
+/// (0 and 1), each subtracting its own decodes before the next
+/// coarse search — so pass 2 sees the same twice-subtracted residual
+/// production does, not an approximation of it.
+#[test]
+#[ignore = "manual diagnostic — G8VDQ's rank among pass-2 survivors by refined sync"]
+fn wspr_diag_g8vdq_rank_after_minsync2() {
+    use mfsk_core::wspr::WsprResult;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, debug_refined_sync, decode_at_baseband,
+        decode_at_baseband_nblocks_gated_drift,
+    };
+    use mfsk_core::wspr::encode_channel_symbols;
+    use mfsk_core::wspr::subtract::subtract_signal_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+    let sample_rate = 12_000u32;
+    const FREQ_DEDUP_HZ: f32 = 5.0;
+    const TIME_DEDUP_SAMPLES: i64 = 8192;
+
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (mut idat, mut qdat) = decimate_to_baseband(&padded);
+
+    let mut seen: Vec<WsprResult> = Vec::new();
+    let mut confirmed = WsprCallsignTable::new();
+
+    // Early passes 0 and 1 — decode + subtract, exactly as
+    // decode_scan_inner does, so pass 2's residual matches production.
+    for early_pass in 0..2 {
+        let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
+        cands.truncate(params.max_candidates);
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for c in &cands {
+            let Some(mut d) = decode_at_baseband(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+            ) else {
+                continue;
+            };
+            let start_refined = d.start_sample;
+            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+            d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            if !dup {
+                confirmed.record(&d.message);
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+        if early_pass == 1 && this_pass.is_empty() {
+            break;
+        }
+        for (d, start_refined) in &this_pass {
+            let symbols = encode_channel_symbols(&d.info_bits);
+            let f0_audio = d.freq_hz + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let shift_baseband = (*start_refined as i32) / 32;
+            subtract_signal_baseband(
+                &mut idat,
+                &mut qdat,
+                f0_audio,
+                shift_baseband,
+                d.drift_hz,
+                &symbols,
+            );
+        }
+        eprintln!(
+            "early pass {early_pass}: {} decoded, {} coarse cands",
+            this_pass.len(),
+            cands.len()
+        );
+    }
+
+    // Pass 2 — the real residual, maxdrift=0.
+    let mut cands2 = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 0);
+    cands2.truncate(params.max_candidates);
+
+    struct Row {
+        rank_by_coarse: usize,
+        refined_sync: f32,
+        message: Option<String>,
+        kept_by_minsync2: bool,
+    }
+    const MINSYNC2_FINAL: f32 = 0.10;
+
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, c) in cands2.iter().enumerate() {
+        let refined_sync =
+            debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
+        let message = decode_at_baseband_nblocks_gated_drift(
+            &idat,
+            &qdat,
+            sample_rate,
+            c.start_sample,
+            c.freq_hz,
+            c.drift_hz,
+            &[1, 2, 3, 0],
+            Some(&confirmed),
+            false,
+        )
+        .map(|d| d.message.to_string());
+        rows.push(Row {
+            rank_by_coarse: i,
+            refined_sync,
+            message,
+            kept_by_minsync2: refined_sync > MINSYNC2_FINAL,
+        });
+    }
+
+    // Rank by REFINED sync descending — the value minsync2 gates on,
+    // which is not necessarily the same order coarse_baseband already
+    // sorted `cands2` in.
+    let mut by_refined = rows;
+    by_refined.sort_by(|a, b| b.refined_sync.partial_cmp(&a.refined_sync).unwrap());
+
+    eprintln!("\n=== pass 2 candidates ranked by refined sync (minsync2 = {MINSYNC2_FINAL}) ===");
+    let mut g8vdq_rank: Option<usize> = None;
+    for (rank, row) in by_refined.iter().enumerate() {
+        let tag = if row.message.as_deref() == Some("G8VDQ IO91 37") {
+            g8vdq_rank = Some(rank);
+            "  <-- G8VDQ"
+        } else {
+            ""
+        };
+        eprintln!(
+            "  rank {:2} (coarse-order #{:2}): refined_sync={:.4} kept={} decode={:?}{}",
+            rank, row.rank_by_coarse, row.refined_sync, row.kept_by_minsync2, row.message, tag,
+        );
+    }
+    let n_kept = by_refined.iter().filter(|r| r.kept_by_minsync2).count();
+    match g8vdq_rank {
+        Some(r) => eprintln!(
+            "\nG8VDQ: rank {r} of {} by refined sync ({} of {} candidates survive minsync2)",
+            by_refined.len(),
+            n_kept,
+            by_refined.len()
+        ),
+        None => eprintln!("\nG8VDQ: not decoded in this run (unexpected — check golden still 9/9)"),
+    }
+}
+
+/// Host-only per-call cost of `osd_decode`, to weigh the bit-packing
+/// investment: is the payoff big enough on host alone to matter, or
+/// is it purely an embedded-stack argument that happens to also be a
+/// "free" host speedup?
+#[test]
+#[ignore = "manual diagnostic — host osd_decode per-call timing"]
+fn wspr_diag_osd_decode_host_timing() {
+    use std::time::Instant;
+
+    // Representative LLR magnitudes: WSJT-X-scale soft symbols, not
+    // pathological all-same-sign input (which short-circuits some
+    // branches atypically). Deterministic pseudo-random pattern, no
+    // dependency on external corpus.
+    let mut llrs = [0.0f32; 162];
+    let mut x: u32 = 0x2545F491;
+    for l in llrs.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *l = ((x % 2000) as f32 - 1000.0) / 40.0; // spread over ~[-25, 25]
+    }
+
+    // Warm-up (lazy gen_matrix() OnceLock init).
+    let _ = mfsk_core::wspr::osd::osd_decode(&llrs);
+
+    const REPS: usize = 2000;
+    let t0 = Instant::now();
+    for _ in 0..REPS {
+        let _ = std::hint::black_box(mfsk_core::wspr::osd::osd_decode(std::hint::black_box(
+            &llrs,
+        )));
+    }
+    let elapsed = t0.elapsed();
+    eprintln!(
+        "osd_decode:        {:.1} us/call ({} reps, {:.2} ms total)",
+        elapsed.as_secs_f64() * 1e6 / REPS as f64,
+        REPS,
+        elapsed.as_secs_f64() * 1000.0,
+    );
+
+    let _ = mfsk_core::wspr::osd::osd_decode_packed(&llrs);
+    let t0 = Instant::now();
+    for _ in 0..REPS {
+        let _ = std::hint::black_box(mfsk_core::wspr::osd::osd_decode_packed(
+            std::hint::black_box(&llrs),
+        ));
+    }
+    let elapsed_packed = t0.elapsed();
+    eprintln!(
+        "osd_decode_packed: {:.1} us/call ({} reps, {:.2} ms total, {:.2}x)",
+        elapsed_packed.as_secs_f64() * 1e6 / REPS as f64,
+        REPS,
+        elapsed_packed.as_secs_f64() * 1000.0,
+        elapsed.as_secs_f64() / elapsed_packed.as_secs_f64(),
+    );
+}
+
+/// [`wspr_diag_g8vdq_rank_after_minsync2`] generalised to every pass:
+/// for pass 0, 1 and 2, rank *all* coarse candidates by refined sync
+/// and report where the pass's own successful decode(s) land. Answers
+/// the question a rank-limited "only deep-process the top N" ladder
+/// depends on: does the real decode consistently rank near the top,
+/// or was that only true for pass 2 / G8VDQ?
+#[test]
+#[ignore = "manual diagnostic — per-pass rank of the real decode among minsync2 survivors"]
+fn wspr_diag_rank_by_pass() {
+    use mfsk_core::wspr::WsprResult;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, debug_refined_sync, decode_at_baseband,
+        decode_at_baseband_nblocks_gated_drift,
+    };
+    use mfsk_core::wspr::encode_channel_symbols;
+    use mfsk_core::wspr::subtract::subtract_signal_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+    let sample_rate = 12_000u32;
+    const FREQ_DEDUP_HZ: f32 = 5.0;
+    const TIME_DEDUP_SAMPLES: i64 = 8192;
+    const MINSYNC2_EARLY: f32 = 0.12;
+    const MINSYNC2_FINAL: f32 = 0.10;
+
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (mut idat, mut qdat) = decimate_to_baseband(&padded);
+
+    let mut seen: Vec<WsprResult> = Vec::new();
+    let mut confirmed = WsprCallsignTable::new();
+
+    for early_pass in 0..2 {
+        let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
+        cands.truncate(params.max_candidates);
+
+        let mut ranked: Vec<(f32, bool, Option<String>)> = Vec::new(); // (sync, kept, decode)
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for c in &cands {
+            let refined_sync =
+                debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, true);
+            let kept = refined_sync > MINSYNC2_EARLY;
+            let Some(mut d) = decode_at_baseband(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+            ) else {
+                ranked.push((refined_sync, kept, None));
+                continue;
+            };
+            let start_refined = d.start_sample;
+            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+            d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            ranked.push((refined_sync, kept, Some(d.message.to_string())));
+            if !dup {
+                confirmed.record(&d.message);
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+        if early_pass == 1 && this_pass.is_empty() {
+            break;
+        }
+
+        ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        println!("=== pass {early_pass}: {} candidates ===", ranked.len());
+        for (rank, (sync, kept, msg)) in ranked.iter().enumerate() {
+            let tag = if msg.is_some() { "  <-- DECODED" } else { "" };
+            println!("  rank {rank:2}: refined_sync={sync:.4} kept={kept} decode={msg:?}{tag}");
+        }
+
+        for (d, start_refined) in &this_pass {
+            let symbols = encode_channel_symbols(&d.info_bits);
+            let f0_audio = d.freq_hz + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let shift_baseband = (*start_refined as i32) / 32;
+            subtract_signal_baseband(
+                &mut idat,
+                &mut qdat,
+                f0_audio,
+                shift_baseband,
+                d.drift_hz,
+                &symbols,
+            );
+        }
+    }
+
+    // Pass 2.
+    let mut cands2 = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 0);
+    cands2.truncate(params.max_candidates);
+    let mut ranked2: Vec<(f32, bool, Option<String>)> = Vec::new();
+    for c in &cands2 {
+        let refined_sync =
+            debug_refined_sync(&idat, &qdat, c.start_sample, c.freq_hz, c.drift_hz, false);
+        let kept = refined_sync > MINSYNC2_FINAL;
+        let msg = decode_at_baseband_nblocks_gated_drift(
+            &idat,
+            &qdat,
+            sample_rate,
+            c.start_sample,
+            c.freq_hz,
+            c.drift_hz,
+            &[1, 2, 3, 0],
+            Some(&confirmed),
+            false,
+        )
+        .map(|d| d.message.to_string());
+        ranked2.push((refined_sync, kept, msg));
+    }
+    ranked2.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    println!("=== pass 2: {} candidates ===", ranked2.len());
+    for (rank, (sync, kept, msg)) in ranked2.iter().enumerate() {
+        let tag = if msg.is_some() { "  <-- DECODED" } else { "" };
+        println!("  rank {rank:2}: refined_sync={sync:.4} kept={kept} decode={msg:?}{tag}");
+    }
+}
+
+/// The ladder budget mechanism (`decode_from_refined`'s `budget`
+/// param, exposed via `deep_decode_pass2_candidate`): pass 2's own
+/// hard candidate — its highest-refined-sync survivor, which never
+/// converges — pays the full DT-peak-up x nblocks sweep (up to
+/// 4 x 17 = 68 positions) every time it fails, which is exactly what
+/// dominates pass 2's wall-clock on embedded (see
+/// `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s "Dual-core,
+/// take two" — 48.1 s for this file's hard candidate vs 11.1 s for
+/// the one that converges). This proves three things about the
+/// cutoff, on the real golden-file candidates rather than a synthetic
+/// stand-in:
+///
+/// 1. an exhausted-from-the-start budget (`|| false`) aborts
+///    immediately and bumps `LADDER_BUDGET_ABORTED` — even for the
+///    *converging* candidate, which is correct: an already-exhausted
+///    budget means "don't even try", not "try a little".
+/// 2. a budget generous enough to outlast the converging candidate's
+///    own position count still finds it (recall preserved).
+/// 3. a budget tighter than that position count reliably fails to
+///    find it — the cutoff actually changes the outcome, not a
+///    no-op that happens to never bind.
+///
+/// Position count is measured empirically (an always-true counting
+/// budget) rather than hardcoded, so this doesn't rot into a magic
+/// number if the ladder's search order ever changes.
+#[test]
+#[cfg(feature = "wspr-pass2-topn")]
+fn wspr_ladder_budget_cuts_off_the_failing_candidate_without_losing_the_real_one() {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    use mfsk_core::wspr::WsprResult;
+    use mfsk_core::wspr::baseband::decimate_to_baseband;
+    use mfsk_core::wspr::coarse_baseband::coarse_baseband;
+    use mfsk_core::wspr::decode::{
+        WsprCallsignTable, decode_at_baseband, deep_decode_pass2_candidate, rank_pass2_candidates,
+    };
+    use mfsk_core::wspr::encode_channel_symbols;
+    use mfsk_core::wspr::instrument;
+    use mfsk_core::wspr::subtract::subtract_signal_baseband;
+
+    let Some(path) = sample_path() else {
+        eprintln!("skipping: WSPR golden not found");
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+    let sample_rate = 12_000u32;
+    const FREQ_DEDUP_HZ: f32 = 5.0;
+    const TIME_DEDUP_SAMPLES: i64 = 8192;
+
+    let pad = (3.0 * sample_rate as f32) as usize;
+    let mut padded = vec![0.0f32; pad + audio.len()];
+    padded[pad..].copy_from_slice(&audio);
+    let (mut idat, mut qdat) = decimate_to_baseband(&padded);
+
+    let mut seen: Vec<WsprResult> = Vec::new();
+    let mut confirmed = WsprCallsignTable::new();
+
+    // Reproduce pass 2's real residual: early passes 0/1 decode +
+    // subtract, exactly as decode_scan_inner does.
+    for _ in 0..2 {
+        let mut cands = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 4);
+        cands.truncate(params.max_candidates);
+        let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
+        for c in &cands {
+            let Some(mut d) = decode_at_baseband(
+                &idat,
+                &qdat,
+                sample_rate,
+                c.start_sample,
+                c.freq_hz,
+                c.drift_hz,
+            ) else {
+                continue;
+            };
+            let start_refined = d.start_sample;
+            d.dt_sec = (start_refined as i64 - pad as i64) as f32 / sample_rate as f32 - 1.0;
+            d.start_sample = start_refined.saturating_sub(pad);
+            d.snr_db = c.snr_db;
+            let dup = seen.iter().any(|prev| {
+                prev.message == d.message
+                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
+                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
+                        <= TIME_DEDUP_SAMPLES
+            });
+            if !dup {
+                this_pass.push((d.clone(), start_refined));
+                seen.push(d);
+            }
+        }
+        for (d, start_refined) in &this_pass {
+            confirmed.record(&d.message);
+            let symbols = encode_channel_symbols(&d.info_bits);
+            let f0_audio = d.freq_hz + 1.5 * mfsk_core::wspr::demod::TONE_SPACING_HZ;
+            let shift_baseband = (*start_refined as i32) / 32;
+            subtract_signal_baseband(
+                &mut idat,
+                &mut qdat,
+                f0_audio,
+                shift_baseband,
+                d.drift_hz,
+                &symbols,
+            );
+        }
+    }
+
+    // Pass 2's real candidate set, ranked exactly as production does.
+    let cands2 = coarse_baseband(&idat, &qdat, pad, params.max_candidates, 0);
+    let ranked = rank_pass2_candidates(&idat, &qdat, &cands2);
+    assert!(
+        ranked.len() >= 2,
+        "golden file should have >= 2 minsync2 survivors in pass 2"
+    );
+
+    // rank[1] is the converging survivor (G8VDQ); rank[0] is the
+    // "hard" one that never does — see `PASS2_DEEP_LADDER_TOP_N`'s own
+    // doc comment for this exact pairing on the golden file.
+    let hard = &ranked[0];
+    let easy = &ranked[1];
+
+    // Baseline (budget = None): easy converges, hard doesn't.
+    let baseline_easy =
+        deep_decode_pass2_candidate(&idat, &qdat, sample_rate, pad, &confirmed, easy, None);
+    assert!(
+        baseline_easy.is_some(),
+        "rank-1 survivor should still decode with no budget"
+    );
+    let baseline_hard =
+        deep_decode_pass2_candidate(&idat, &qdat, sample_rate, pad, &confirmed, hard, None);
+    assert!(
+        baseline_hard.is_none(),
+        "rank-0 survivor is the non-converging one on this file"
+    );
+
+    // 1. An exhausted-from-the-start budget aborts immediately, even
+    // for the candidate that would otherwise have converged.
+    instrument::reset();
+    let exhausted: &(dyn Fn() -> bool + Sync) = &|| false;
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(exhausted),
+    );
+    assert!(
+        r.is_none(),
+        "an already-exhausted budget must not decode anything"
+    );
+    assert!(
+        instrument::snapshot().ladder_budget_aborted >= 1,
+        "budget cutoff should be counted"
+    );
+
+    // Count how many ladder positions the converging candidate
+    // actually needs — an always-true budget that counts its own
+    // calls, so the margins below don't depend on a hardcoded magic
+    // number.
+    let calls = AtomicU32::new(0);
+    let counting: &(dyn Fn() -> bool + Sync) = &|| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        true
+    };
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(counting),
+    );
+    assert!(
+        r.is_some(),
+        "an unconstrained-in-practice budget must still decode"
+    );
+    let needed = calls.load(Ordering::Relaxed);
+    assert!(needed >= 1, "should have made at least one attempt");
+
+    // 2. A budget generous enough to outlast that position count
+    // still finds it.
+    let generous_calls = AtomicU32::new(0);
+    let generous: &(dyn Fn() -> bool + Sync) =
+        &|| generous_calls.fetch_add(1, Ordering::Relaxed) < needed + 5;
+    let r = deep_decode_pass2_candidate(
+        &idat,
+        &qdat,
+        sample_rate,
+        pad,
+        &confirmed,
+        easy,
+        Some(generous),
+    );
+    assert!(
+        r.is_some(),
+        "a budget with margin over the real position count must still decode"
+    );
+
+    // 3. A budget tighter than that position count reliably fails —
+    // the cutoff actually changes the outcome, not a no-op.
+    if needed > 1 {
+        let tight_calls = AtomicU32::new(0);
+        let tight: &(dyn Fn() -> bool + Sync) =
+            &|| tight_calls.fetch_add(1, Ordering::Relaxed) < needed - 1;
+        instrument::reset();
+        let r = deep_decode_pass2_candidate(
+            &idat,
+            &qdat,
+            sample_rate,
+            pad,
+            &confirmed,
+            easy,
+            Some(tight),
+        );
+        assert!(
+            r.is_none(),
+            "a budget tighter than the real position count must give up before converging"
+        );
+        assert!(instrument::snapshot().ladder_budget_aborted >= 1);
     }
 }

@@ -42,6 +42,19 @@ use crate::msg::Wspr50Message;
 pub mod baseband;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod coarse_baseband;
+
+// Doc lives in `ddc.rs` itself (`//!`) — an outer `///` here as well
+// makes rustdoc resolve the merged text in *this* module's context,
+// where `super::` is the crate root and the intra-doc links break.
+//
+// FFT-gated for the same reason as `baseband` above: `ddc.rs` pulls
+// `NFFT1`/`NFFT2`/`NPOINTS_MAX` from it to stay a drop-in replacement,
+// so it cannot compile without it. `ddc` itself needs no FFT backend
+// (it's a FIR, not a channelizer), but there is no decode path to feed
+// in the TX-only embedded-beacon build (`--features wspr` alone) this
+// gate exists for, so nothing is lost.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod ddc;
 // `decode` and `demod` pull in the FFT-gated baseband / search /
 // subtract / osd modules — only compile them when an FFT backend
 // is selected, so the `--features wspr` (TX-only embedded beacon)
@@ -50,6 +63,8 @@ pub mod coarse_baseband;
 pub mod decode;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod demod;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod instrument;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod osd;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]

@@ -25,8 +25,41 @@ use alloc::vec;
 use crate::engine::{FecCodec, FecOpts};
 use crate::fec::ConvFano;
 
-const N: usize = 162;
-const K: usize = 50;
+pub(crate) const N: usize = 162;
+pub(crate) const K: usize = 50;
+
+/// Captures every LLR vector that actually reaches [`osd_decode`]
+/// during a test run — the differential-testing input a bit-packing
+/// rewrite of `g` (see `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`'s
+/// stack audit) would need.
+///
+/// Why capture rather than hand-construct test vectors: `osd_decode`
+/// is reached only when Fano fails *and* the candidate's callsign is
+/// already confirmed, so an artificial "encode a message, flip some
+/// bits" input carries the flipper's assumptions about what a
+/// realistic failure pattern looks like — exactly the kind of guess
+/// this crate's own history (the `nhardmin ≤ 44` threshold this
+/// module's own doc comment describes replacing) has shown to be
+/// unreliable. Real LLR vectors from an AWGN sweep, harvested by
+/// running the existing production call path, carry no such
+/// assumption: whatever a rewrite is diffed against is exactly what
+/// production would have handed the old implementation.
+#[cfg(any(test, feature = "internal-testing"))]
+pub mod capture {
+    use alloc::vec::Vec;
+    use std::sync::Mutex;
+
+    pub static INPUTS: Mutex<Vec<[f32; super::N]>> = Mutex::new(Vec::new());
+
+    pub fn reset() {
+        INPUTS.lock().expect("capture mutex poisoned").clear();
+    }
+
+    #[must_use]
+    pub fn snapshot() -> Vec<[f32; super::N]> {
+        INPUTS.lock().expect("capture mutex poisoned").clone()
+    }
+}
 
 /// Generator matrix `G[K][N]`: row `i` = the codeword produced by
 /// encoding the unit vector with `1` at position `i`. K=50 info bits
@@ -64,6 +97,12 @@ fn gen_matrix() -> &'static [[u8; N]; K] {
 /// Gaussian elimination fails (rare, signals a degenerate reliability
 /// ordering) or the info-extraction Fano round-trip fails.
 pub fn osd_decode(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
+    #[cfg(any(test, feature = "internal-testing"))]
+    capture::INPUTS
+        .lock()
+        .expect("capture mutex poisoned")
+        .push(*llrs);
+
     // Hard decisions and reliability magnitudes. Our LLR sign is
     // "positive = bit 0", so hard bit = (llr < 0) as u8 (bit 1 when
     // negative).
@@ -224,6 +263,230 @@ pub fn osd_decode(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
     Some((info, nhardmin))
 }
 
+/// Bit-packed variant of [`osd_decode`], same algorithm, same output
+/// on every input — see `wspr_osd_packed_matches_unpacked`
+/// (`tests/wspr_sweep.rs`) for the differential test this is meant to
+/// pass, run against 1626+ real LLR vectors harvested from an AWGN
+/// sweep rather than hand-picked cases.
+///
+/// Written for the embedded stack budget: `osd_decode`'s own frame is
+/// ~12.2 KB, two-thirds of it `g: [[u8; N]; K]` at 8100 B — a
+/// byte-per-bit copy of a matrix whose entries are only ever 0 or 1.
+/// Packing each row into `PACKED_WORDS` `u32`s cuts that to ~1.2 KB,
+/// and the same packing shrinks every other N-bit codeword this
+/// function carries (`c0`, `best_cw`, `cw` inside `encode`) from
+/// [u8; N] (162 B) to `[u32; PACKED_WORDS]` (24 B) — the *whole*
+/// frame comes in under ~5 KB, not just the matrix term.
+///
+/// Row XOR during Gaussian elimination — the hottest inner loop,
+/// O(N) per elimination and up to K·(K−1) eliminations — goes from
+/// 162 per-byte XORs to `PACKED_WORDS` per-word XORs, correctness-
+/// preserving because XOR is bitwise regardless of how the bits are
+/// grouped. `distance` similarly turns a 162-iteration branch-per-bit
+/// loop into a packed XOR plus a scan over only the *differing* bits
+/// (`trailing_zeros` + clear-lowest-set-bit), touching fewer positions
+/// whenever the two codewords are close — which they usually are,
+/// since OSD's whole premise is searching near the hard-decision
+/// starting point.
+///
+/// Column *permutation* (building the initial packed `g` from the
+/// reliability-sorted `indices`) and column *swap* (during pivoting)
+/// stay bit-at-a-time — packing buys nothing there, since those steps
+/// touch one column across all `K` rows rather than one row across
+/// all `N` columns, and `K` = 50 is already small.
+pub fn osd_decode_packed(llrs: &[f32; N]) -> Option<([u8; K], u32)> {
+    #[cfg(any(test, feature = "internal-testing"))]
+    capture::INPUTS
+        .lock()
+        .expect("capture mutex poisoned")
+        .push(*llrs);
+
+    const PACKED_WORDS: usize = N.div_ceil(32);
+    type Packed = [u32; PACKED_WORDS];
+
+    #[inline]
+    fn get_bit(row: &Packed, i: usize) -> u8 {
+        ((row[i / 32] >> (i % 32)) & 1) as u8
+    }
+    #[inline]
+    fn set_bit(row: &mut Packed, i: usize, v: u8) {
+        let mask = 1u32 << (i % 32);
+        if v == 1 {
+            row[i / 32] |= mask;
+        } else {
+            row[i / 32] &= !mask;
+        }
+    }
+    #[inline]
+    fn xor_into(a: &mut Packed, b: &Packed) {
+        for w in 0..PACKED_WORDS {
+            a[w] ^= b[w];
+        }
+    }
+    fn pack(bits: &[u8]) -> Packed {
+        let mut out = [0u32; PACKED_WORDS];
+        for (i, &b) in bits.iter().enumerate() {
+            if b == 1 {
+                out[i / 32] |= 1 << (i % 32);
+            }
+        }
+        out
+    }
+
+    let mut hard = [0u8; N];
+    let mut absllr = [0.0f32; N];
+    for i in 0..N {
+        hard[i] = if llrs[i] < 0.0 { 1 } else { 0 };
+        absllr[i] = llrs[i].abs();
+    }
+
+    let mut indices: [usize; N] = core::array::from_fn(|i| i);
+    indices.sort_by(|&a, &b| {
+        absllr[b]
+            .partial_cmp(&absllr[a])
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+
+    // Permute-and-pack in one pass: g[row] is g0[row] with columns
+    // reordered by `indices`, packed directly — no unpacked
+    // intermediate the way `osd_decode` builds one.
+    let g0 = gen_matrix();
+    let mut g: [Packed; K] = [[0u32; PACKED_WORDS]; K];
+    let mut hard_perm = [0u8; N];
+    let mut abs_perm = [0.0f32; N];
+    let mut perm = indices;
+    for (col_out, &col_src) in indices.iter().enumerate() {
+        for row in 0..K {
+            if g0[row][col_src] == 1 {
+                set_bit(&mut g[row], col_out, 1);
+            }
+        }
+        hard_perm[col_out] = hard[col_src];
+        abs_perm[col_out] = absllr[col_src];
+    }
+
+    // Gaussian elimination — identical structure to `osd_decode`'s,
+    // operating on packed rows. Pivot search / column swap stay
+    // bit-at-a-time (see doc comment); row elimination is the packed
+    // win.
+    for id in 0..K {
+        let mut pivot_col = None;
+        for icol in id..(K + 20).min(N) {
+            if get_bit(&g[id], icol) == 1 {
+                pivot_col = Some(icol);
+                break;
+            }
+        }
+        let icol = pivot_col?;
+        if icol != id {
+            for row in 0..K {
+                let a = get_bit(&g[row], id);
+                let b = get_bit(&g[row], icol);
+                set_bit(&mut g[row], id, b);
+                set_bit(&mut g[row], icol, a);
+            }
+            hard_perm.swap(id, icol);
+            abs_perm.swap(id, icol);
+            perm.swap(id, icol);
+        }
+        let pivot_row = g[id];
+        for row in 0..K {
+            if row != id && get_bit(&g[row], id) == 1 {
+                xor_into(&mut g[row], &pivot_row);
+            }
+        }
+    }
+
+    let mut m0 = [0u8; K];
+    m0.copy_from_slice(&hard_perm[..K]);
+    let hard_perm_packed = pack(&hard_perm);
+
+    // Full-width row XOR reproduces cw[0..K] = me automatically: after
+    // elimination, column j < K has a 1 only in row j, so XORing rows
+    // where me[row] == 1 picks out exactly me[j] in column j. Same
+    // result as `osd_decode`'s `cw[..K].copy_from_slice(me)` +
+    // explicit `cw[c] ^= g[i][c]` for c in K..N, just derived from one
+    // packed XOR instead of two separate steps.
+    let encode = |me: &[u8; K]| -> Packed {
+        let mut cw = [0u32; PACKED_WORDS];
+        for i in 0..K {
+            if me[i] == 1 {
+                xor_into(&mut cw, &g[i]);
+            }
+        }
+        cw
+    };
+
+    let distance = |cw: &Packed| -> f32 {
+        let mut d = 0.0f32;
+        for w in 0..PACKED_WORDS {
+            let mut diff = cw[w] ^ hard_perm_packed[w];
+            while diff != 0 {
+                let bit = diff.trailing_zeros() as usize;
+                let i = w * 32 + bit;
+                if i < N {
+                    d += abs_perm[i];
+                }
+                diff &= diff - 1; // clear lowest set bit
+            }
+        }
+        d
+    };
+
+    let c0 = encode(&m0);
+    let mut best_d = distance(&c0);
+    let mut best_cw = c0;
+
+    for n1 in 0..K {
+        let mut me = m0;
+        me[n1] ^= 1;
+        let cw = encode(&me);
+        let d = distance(&cw);
+        if d < best_d {
+            best_d = d;
+            best_cw = cw;
+        }
+    }
+
+    for n1 in 0..K {
+        for n2 in (n1 + 1)..K {
+            let mut me = m0;
+            me[n1] ^= 1;
+            me[n2] ^= 1;
+            let cw = encode(&me);
+            let d = distance(&cw);
+            if d < best_d {
+                best_d = d;
+                best_cw = cw;
+            }
+        }
+    }
+
+    let mut cw_natural = [0u8; N];
+    for (perm_i, &orig_i) in perm.iter().enumerate() {
+        cw_natural[orig_i] = get_bit(&best_cw, perm_i);
+    }
+
+    let mut hard_llrs = [0.0f32; N];
+    for i in 0..N {
+        hard_llrs[i] = if cw_natural[i] == 0 { 127.0 } else { -127.0 };
+    }
+    let codec = ConvFano;
+    let res = codec.decode_soft(&hard_llrs, &FecOpts::default())?;
+    if res.hard_errors > 0 {
+        return None;
+    }
+    let mut info = [0u8; K];
+    info.copy_from_slice(&res.info);
+    let mut nhardmin = 0u32;
+    for i in 0..N {
+        if cw_natural[i] != hard[i] {
+            nhardmin += 1;
+        }
+    }
+    Some((info, nhardmin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +500,31 @@ mod tests {
         // correctness for a non-systematic convolutional code.
         let llrs = [1.0f32; N];
         let _ = osd_decode(&llrs); // None or Some — both fine
+    }
+
+    #[test]
+    fn osd_packed_runs_without_panic() {
+        let llrs = [1.0f32; N];
+        let _ = osd_decode_packed(&llrs);
+    }
+
+    /// Cheap smoke check with a handful of synthetic LLR patterns —
+    /// the real bar is `wspr_osd_packed_matches_unpacked`
+    /// (`tests/wspr_sweep.rs`) against harvested real inputs; this
+    /// just catches a gross break early, in a unit test that runs on
+    /// every `cargo test` rather than only `--ignored`.
+    #[test]
+    fn osd_packed_matches_unpacked_on_synthetic_inputs() {
+        let patterns: [[f32; N]; 4] = [
+            [1.0f32; N],
+            [-1.0f32; N],
+            core::array::from_fn(|i| if i % 2 == 0 { 3.0 } else { -3.0 }),
+            core::array::from_fn(|i| ((i as f32 * 37.0) % 41.0) - 20.0),
+        ];
+        for (i, llrs) in patterns.iter().enumerate() {
+            let a = osd_decode(llrs);
+            let b = osd_decode_packed(llrs);
+            assert_eq!(a, b, "pattern {i} diverged: unpacked={a:?} packed={b:?}");
+        }
     }
 }

@@ -24,6 +24,15 @@ name = "rx-wavsim"
 path = "src/bin/rx_wavsim.rs"
 harness = false
 
+# WSPR candidate-loop bench — issue #260 Phase 1/2, see
+# `docs/notes/WSPR_EMBEDDED_MEASUREMENT_PLAN.md`. Fed a host-baked
+# 375 Hz baseband so no streaming DDC has to exist first. Build:
+#   cargo build --release --bin wspr-bench
+[[bin]]
+name = "wspr-bench"
+path = "src/bin/wspr_bench.rs"
+harness = false
+
 [profile.release]
 # `opt-level = 1` mirrors the ESP32-S3 PoC: same Xtensa-Rust LLVM
 # regression at opt-level "s"/"z" with f32-select patterns. The
@@ -63,7 +72,7 @@ num-complex = { version = "0.4", default-features = false }
 
 # Shared embedded glue (wav_sim / esp_dsp_fft / dual_core / stage1_inc /
 # internal_pool). Compiled per-target alongside this binary.
-embedded-shared = { path = "../embedded-shared", features = ["aes3"] }
+embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench"] }
 
 [build-dependencies]
 embuild = "0.33"

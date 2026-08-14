@@ -513,6 +513,7 @@ jobs:
           - "alloc ft8"            # no_std + alloc baseline (TX-side host compile)
           - "alloc ft8 fft-extern" # no_std + alloc + caller-supplied FFT (RX preset)
           - "alloc ft8 fft-extern fixed-point" # full embedded integer pipeline
+          - "wspr wspr-pass2-topn" # embedded WSPR pass-2 candidate-ladder truncation + budget
           - "full"
     steps:
       - uses: actions/checkout@v4
@@ -562,6 +563,14 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      # `embedded-poc/mfsk-app-shared` is excluded from the workspace
+      # (esp-idf-svc, Xtensa-only), so unit tests written inside it run
+      # nowhere. `hosttest/mfsk-app-shared` compiles its
+      # target-independent modules on the host so they do — same reason
+      # `MFSK_REQUIRE_CORPUS` exists.
+      - name: cargo test -p mfsk-app-shared-hosttest
+        run: cargo test -p mfsk-app-shared-hosttest --release
 
       - name: Build mfsk-ffi
         run: cargo build -p mfsk-ffi --release

@@ -1,5 +1,11 @@
 # WSPR decode-speed investigation
 
+**Host-only.** For the embedded (ESP32-S3) story — streaming
+down-converter, dual-core, device timings — see
+[`WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)
+and `ROADMAP.md` Phase E (issue #260). This document predates that
+work and stays host-focused.
+
 New investigation (2026-08-06), same "diagnose against real WSJT-X
 audio, profile, propose, verify against recall before implementing"
 methodology as `FT4_BENCHMARK.md`/`FST4_BENCHMARK.md`/`Q65_BENCHMARK.md`'s

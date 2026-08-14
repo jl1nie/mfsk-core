@@ -86,6 +86,21 @@ Three tracks, at very different maturities:
    TX keying) is blocked behind that single verification step. #163 is a
    human-at-the-bench task, which is why it hasn't moved on its own.
 
+4. **WSPR embedded RX (Phase E, #260) — a separate frontier, and
+   unstalled.** Not part of Phase B-Core: WSPR never goes through
+   `decode_block`/`fixed-point`/the UAC controller stack, so this is a
+   distinct decoder-level effort rather than the FT8-controller product
+   line above. Opened 2026-08-11; a device that had no path from
+   "audio arrives" to "WSPR decodes" at all now runs the whole thing —
+   capture, down-conversion, decode — inside the 120 s slot with margin
+   (steady state: 82.8–90.1 s against a 110 s deadline, 9/9 golden
+   held). See
+   **Phase E** below. Shares #163 as an unverified dependency for live
+   audio (currently WAV-fed/synthetic baseband only) but is otherwise
+   independent — most of what closed here (dual-core safety, task-stack
+   placement, a streaming down-converter) generalizes to any future
+   embedded decode-heavy protocol, not just WSPR.
+
 The open strategic question this doc deliberately does **not** decide
 (it's the maintainer's call, not to be inferred from momentum): whether
 the next cycle's centre of gravity is **finishing the embedded product**
@@ -679,6 +694,45 @@ stage1_inc). Detailed plan in [`docs/notes/PHASE_D_PIE_SIMD.md`](PHASE_D_PIE_SIM
 CoreS3 dual-core wav_sim (qso3, 2026-06-05): **post_slotend 136〜138 ms, 7/7 decodes**.
 Log: `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log`.
 
+## Phase E — WSPR embedded RX (#260)
+
+Opened 2026-08-11, resolved 2026-08-14. Distinct from Phase B: WSPR
+never goes through `decode_block`/`fixed-point`/the UAC controller
+stack this phase's app crates are built around, so nothing here
+required cores3-app or the UAC path to move — it's a
+`wspr::decode`/`wspr::ddc` decoder-level effort, running the same host
+f32 pipeline on-device via `fft-extern`.
+
+**The blocker this phase closed**: no channelizer. `wsprd`'s own
+whole-slot FFT channelizer (`wspr::baseband::decimate_to_baseband`)
+needs an 11.25 MiB `Complex<f32>` buffer at a 1 474 560-point FFT —
+neither a power of two nor within `esp-dsp`'s 8 192 ceiling — so
+there was no path from "audio arrives" to "baseband exists" on any
+target this crate ships for. Every WSPR device timing before this
+phase was measured against a host-baked baseband as a stand-in.
+
+| Item | Status |
+|---|---|
+| Streaming down-converter (`wspr::ddc`) | **Done** — single-stage FIR, ~25 KB state. Verified against the reference channelizer: golden 9/9, AWGN sweep within 1 trial/cell of 500, 0 phantoms either way. |
+| Dual-core safety | **Done** — persistent worker + job queue (was spawn-per-pass, which silently fell back to sequential once WiFi held memory); worker stack moved to `.bss`; scan-task stack placed before WiFi starts. |
+| Fano cycle-budget split | **Done** — host now runs `wsprd`'s own 10 000 cycles/bit (`wsprd.c:799`); embedded keeps 5 000 via `wspr-fano-cap-fast`, paying floor recall for the slot deadline. Swept with a phantom-count column added to `wspr_awgn_snr_sweep` (a false-decode cliff exists above ~200 000; not visible from recall alone). |
+| Coarse-stage perf | **Done** — loop interchange + a redundant-sqrt hoist in `refine_alignment_top_k` (97.5 % of the coarse stage was PSRAM re-reads, not FFTs); bit-exact, no new memory. |
+| wsprnet spot reporting (`mfsk_app_shared::wsprnet`) | **Done**, off by default — ported from WSJT-X's own `Network/wsprnet.cpp`. `SpotSink::Http` upload path implemented but unverified against a real endpoint. |
+| Steady-state pipeline measurement | **Done** — 4 consecutive slots, WiFi associated, front end running at its real duty cycle beside the decoder: decode 82.8–90.1 s against a 110 s deadline (120 s slot − 10 s spot-upload reserve), DDC 18.5–24.1 s under that load. 9/9 golden held every slot. |
+| Live audio capture | **Not done** — shares #163 (UAC hardware verification) as an unverified dependency with Phase B-Core. Everything above is measured against WAV-fed/synthetic baseband. |
+| Two-stage DDC decimation (more margin) | **Deferred, not abandoned** — a first estimate (4× filter-cost reduction) didn't survive re-derivation by hand; steady-state margin measured at 19.9 s made it not worth chasing further this round. |
+
+Full measurement account, including several attempts that measured
+negative and were kept rather than deleted (an over-aggressive Fano
+cap, a `.bss`-everything attempt that broke the heap, a DRAM-placement
+experiment for the DDC that made things worse) so they aren't
+re-attempted, is
+[`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](WSPR_EMBEDDED_MEASUREMENT_RESULTS.md).
+Branch `bench/wspr-s3-candidate-loop`, landed via PR
+[#286](https://github.com/jl1nie/mfsk-core/pull/286). Narrative
+writeup on the issue itself:
+[#260](https://github.com/jl1nie/mfsk-core/issues/260).
+
 ## Quick file-path index
 
 - Host FT8 reference (post-ε split, 0.6.3):
@@ -707,6 +761,14 @@ Log: `embedded-poc/m5stack-cores3-app/logs/cores3_phaseD1_2026-06-05.log`.
   (M5StickS3, demo / acoustic fallback per Phase B-Stick);
   `embedded-poc/m5stack-core2-app/src/` (Core2 sibling,
   wav_sim only).
+- WSPR embedded (Phase E, board-agnostic): `mfsk-core/src/wspr/ddc.rs`
+  (streaming down-converter), `embedded-poc/embedded-shared/src/wspr_dual_core.rs`
+  (persistent worker), `embedded-poc/embedded-shared/src/apps/wspr_bench.rs`
+  (the bench body — steady-state pipeline mode is `run_with_hooks`/
+  `PIPELINE_SLOTS`), `embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs`
+  (the bin, incl. `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI` build-time
+  switches), `embedded-poc/mfsk-app-shared/src/wsprnet.rs` (spot
+  reporting).
 - User manual: [`docs/reference/MANUAL_M5STICKS3.md`](../reference/MANUAL_M5STICKS3.md)
   ([JA](../reference/MANUAL_M5STICKS3.ja.md)).
 - Infra: `.github/workflows/{ci,release}.yml`.

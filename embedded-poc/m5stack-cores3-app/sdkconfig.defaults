@@ -9,6 +9,16 @@
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
 
+# ── Clocks ───────────────────────────────────────────────────────────
+# ESP-IDF's default for esp32s3 is 160 MHz, and no crate in this tree
+# ever overrode it — every device log in `embedded-poc/*/logs/` reports
+# `cpu freq: 160000000 Hz`. The CoreS3's LX7 is rated for 240 MHz, so
+# the default was leaving a third of the chip on the floor. Found
+# 2026-08-13 while measuring the WSPR candidate loop
+# (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`).
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
 # ── Flash + partition table ──────────────────────────────────────────
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
@@ -34,6 +44,11 @@ CONFIG_LWIP_UDP_ENABLED=y
 # ── PSRAM (Quad 8 MB) ─────────────────────────────────────────────────
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
+# Same story as the CPU clock: IDF defaults Quad PSRAM to 40 MHz. The
+# CoreS3's part runs at 80 MHz, which is what M5Stack's own board
+# support uses.
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_SPEED=80
 CONFIG_SPIRAM_USE_MALLOC=y
 # Mandatory for dual-core decode: same constraint as both sibling crates.
 # Keeps allocations ≤4096 B in internal DRAM, preventing TLSF corruption

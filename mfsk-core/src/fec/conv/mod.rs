@@ -76,15 +76,11 @@ impl FecCodec for ConvFano {
         codeword.copy_from_slice(&out);
     }
 
-    fn decode_soft(&self, llr: &[f32], _opts: &FecOpts) -> Option<FecResult> {
+    fn decode_soft(&self, llr: &[f32], opts: &FecOpts) -> Option<FecResult> {
         assert_eq!(llr.len(), Self::N);
         let bm = fano::build_branch_metrics_wsprd(llr, Self::METRIC_BIAS);
-        let res = fano::fano_decode(
-            &bm,
-            Self::NBITS,
-            Self::DEFAULT_DELTA,
-            Self::DEFAULT_MAX_CYCLES,
-        );
+        let max_cycles = opts.max_cycles_per_bit.unwrap_or(Self::DEFAULT_MAX_CYCLES);
+        let res = fano::fano_decode(&bm, Self::NBITS, Self::DEFAULT_DELTA, max_cycles);
         self.finish_decode(llr, res)
     }
 }
@@ -98,17 +94,18 @@ impl ConvFano {
     pub fn decode_soft_pooled(
         &self,
         llr: &[f32],
-        _opts: &FecOpts,
+        opts: &FecOpts,
         scratch: &mut fano::FanoScratch,
     ) -> Option<FecResult> {
         assert_eq!(llr.len(), Self::N);
         let bm = fano::build_branch_metrics_wsprd(llr, Self::METRIC_BIAS);
+        let max_cycles = opts.max_cycles_per_bit.unwrap_or(Self::DEFAULT_MAX_CYCLES);
         let res = fano::fano_decode_with_scratch(
             scratch,
             &bm,
             Self::NBITS,
             Self::DEFAULT_DELTA,
-            Self::DEFAULT_MAX_CYCLES,
+            max_cycles,
         );
         self.finish_decode(llr, res)
     }
