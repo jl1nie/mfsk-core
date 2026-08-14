@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260), code-sharing audit + cleanup (#290-298)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
 
 ### Changed
 
@@ -441,6 +441,25 @@
   Also removed `jt9::demod_bb` (606 lines), the box-car demod path
   `softsym.rs` superseded in 0.5.9 — self-documented as due for removal
   once issue #19 closed, which it had, months earlier.
+
+- **FT8's OSD-escalation threshold is now ratchet-tested against the
+  generic FT4/FST4 gate** (issue #285, split from #192, closed). FT8's
+  own `Q_NDEEP3_THRESHOLD = 18` (`ft8::decode_block::osd_strategy`) and
+  `engine::pipeline::osd_escalation_gates<P>` (FT4/FST4's equivalent —
+  its default-branch value, which `osd_escalation_gates::<Ft8>()`
+  turns out to already reach cleanly, since the function only requires
+  `P: Protocol`) are two independently-tuned implementations of the
+  same decision that happened to agree only because neither had been
+  retuned recently. A new in-crate test asserts they match, so a
+  future silent divergence fails CI instead of relying on a doc
+  comment being reread — verified the ratchet actually catches drift
+  before shipping it. The blind-CQ pair (`BLIND_CQ_MIN_NSYNC` /
+  `msg::pipeline_ap::ap_passes`'s pass 7) has no equivalent paired
+  numeric threshold to ratchet the same way; documented why instead.
+  Deliberately did not attempt reconciling the two OSD-gate *shapes*
+  (FT8's single threshold vs. the generic `(low, high)` pair) — same
+  WSJT-X-fidelity regression risk the issue itself flagged, the
+  reason #192's narrower version of this proposal was rejected.
 
 ## 0.9.1 — WSPR parity with `wsprd` (#275) + phantom elimination, TX envelope ramps (#259), FT4 sniper aim (#257), SNR formula close-out (#255), test taxonomy rework, FST4/Q65 sub-mode coverage
 
