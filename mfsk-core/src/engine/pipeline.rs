@@ -1125,6 +1125,27 @@ pub(crate) fn known_filtered_on_result<'a>(
     })
 }
 
+/// Dedup `raw` against caller-supplied `known` (by `info` equality) —
+/// the generic engine has no `known`/AP-hint parameter at all, so this
+/// is a best-effort post-filter rather than an in-loop skip. Always
+/// correct (never mis-reports a known signal as new), just cannot save
+/// the work of re-decoding it the way FT8's engine-level `known`
+/// handling can. [`known_filtered_on_result`] above is this same idea
+/// applied to the streaming `on_result` callback instead of the
+/// returned `Vec`.
+///
+/// Extracted (2026-08-14, code-sharing audit) from two byte-identical
+/// copies in `ft4::decode` and `fst4::decode`, both operating on this
+/// same concrete `DecodeResult` type (not just structurally similar —
+/// literally the same function body, `use`-imported from here in both
+/// modules).
+#[cfg(any(feature = "ft4", feature = "fst4"))]
+pub(crate) fn dedup_known(raw: Vec<DecodeResult>, known: &[DecodeResult]) -> Vec<DecodeResult> {
+    raw.into_iter()
+        .filter(|r| !known.iter().any(|k| k.info == r.info))
+        .collect()
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Frame-level entry points
 // ──────────────────────────────────────────────────────────────────────────
