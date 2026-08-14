@@ -152,51 +152,20 @@ impl Protocol for Wspr {
 // WSPR-specific interleaver
 // ─────────────────────────────────────────────────────────────────────────
 
-/// 8-bit bit-reversal by SWAR magic-constant multiplication — the
-/// identity used by WSJT-X's interleaver (and a classic Hacker's Delight
-/// trick). Input `i` only needs to be considered modulo 256.
-#[inline]
-fn bit_reverse_8(i: u8) -> u8 {
-    // Matches `j = ((i * 0x80200802) & 0x0884422110) * 0x0101010101 >> 32`
-    // from wsprsim_utils.c, with the implicit truncation to `unsigned char`
-    // made explicit via `as u8` on the final result.
-    let i64 = i as u64;
-    (((i64 * 0x8020_0802u64) & 0x0884_4221_10u64).wrapping_mul(0x0101_0101_01u64) >> 32) as u8
-}
-
-/// Permute the 162-symbol stream using WSJT-X's bit-reversal interleaver:
-/// position `p` goes to position `j = bit_reverse_8(i)` where `i` walks
-/// from 0 counting only those where `j < 162`.
+/// Permute the 162-symbol stream using WSJT-X's bit-reversal interleaver.
+/// Thin wrapper over [`crate::engine::interleave`] (extracted
+/// 2026-08-14, code-sharing audit — this was one of five independent
+/// copies of the same SWAR magic-constant formula in the crate,
+/// including a *second* copy within this same protocol,
+/// `decode::deinterleave_llrs`'s own "avoid exposing a pub helper"
+/// inlining).
 pub fn interleave(bits: &mut [u8; 162]) {
-    let mut tmp = [0u8; 162];
-    let mut p = 0u8;
-    let mut i = 0u8;
-    while p < 162 {
-        let j = bit_reverse_8(i) as usize;
-        if j < 162 {
-            tmp[j] = bits[p as usize];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    bits.copy_from_slice(&tmp);
+    crate::engine::interleave::interleave_bitrev(bits);
 }
 
-/// Inverse interleaver — walks the same (p, j) sequence but gathers
-/// `tmp[p] = bits[j]`. `deinterleave(interleave(x)) == x`.
+/// Inverse of [`interleave`].
 pub fn deinterleave(bits: &mut [u8; 162]) {
-    let mut tmp = [0u8; 162];
-    let mut p = 0u8;
-    let mut i = 0u8;
-    while p < 162 {
-        let j = bit_reverse_8(i) as usize;
-        if j < 162 {
-            tmp[p as usize] = bits[j];
-            p += 1;
-        }
-        i = i.wrapping_add(1);
-    }
-    bits.copy_from_slice(&tmp);
+    crate::engine::interleave::deinterleave_bitrev(bits);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

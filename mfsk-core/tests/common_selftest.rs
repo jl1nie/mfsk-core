@@ -560,6 +560,15 @@ mod sharing_ratchet_selftest {
     /// floor — a real algorithmic difference, not just a naming one.
     const EXPECTED_SPECTROGRAM_ADOPTERS: &[&str] = &["jt9", "jt65", "q65"];
 
+    /// Protocols using the shared `engine::interleave::{interleave_bitrev,
+    /// deinterleave_bitrev}` bit-reversal permutation (found in the same
+    /// DSP-level sweep as the Spectrogram kernel) rather than their own
+    /// copy of the SWAR magic-constant formula. JT65 is a deliberate
+    /// non-adopter: its own interleaver is a 7×9 matrix transpose
+    /// (`interleave63.f90`), a genuinely different algorithm, not bit
+    /// reversal.
+    const EXPECTED_INTERLEAVE_ADOPTERS: &[&str] = &["jt9", "wspr"];
+
     fn assert_no_regression(
         mechanism: &str,
         expected_adopters: &[&str],
@@ -623,6 +632,15 @@ mod sharing_ratchet_selftest {
             "engine::spectrogram::Spectrogram",
             EXPECTED_SPECTROGRAM_ADOPTERS,
             |src| src.contains("engine::spectrogram") || src.contains("spectrogram::Spectrogram"),
+        );
+    }
+
+    #[test]
+    fn interleave_adoption_does_not_regress() {
+        assert_no_regression(
+            "engine::interleave bit-reversal",
+            EXPECTED_INTERLEAVE_ADOPTERS,
+            |src| src.contains("engine::interleave"),
         );
     }
 
