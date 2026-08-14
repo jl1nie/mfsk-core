@@ -65,6 +65,8 @@ use mfsk_core::wspr::demod::{tone_amplitudes, IsQs, NSPS_BASEBAND, N_SYMBOLS, TO
 use mfsk_core::wspr::instrument;
 use mfsk_core::wspr::subtract::subtract_signal_baseband;
 
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use crate::esp_dsp_fft;
 use crate::wspr_dual_core;
 
@@ -970,6 +972,116 @@ pub fn run_with_hooks(
     }
 }
 
+/// Consecutive slots to run in the steady-state measurement. 1 keeps
+/// the historical single-shot arm.
+///
+/// Each slot costs one `decode_scan` (~95 s), so 4 is ~6.5 minutes.
+const PIPELINE_SLOTS: usize = 4;
+
+/// Set once the pipeline run has finished, so the DDC load task stops.
+static PIPELINE_DONE: AtomicBool = AtomicBool::new(false);
+/// Milliseconds the DDC spent on its most recent slot.
+static DDC_LAST_MS: AtomicU32 = AtomicU32::new(0);
+/// Slots the DDC has completed.
+static DDC_SLOTS: AtomicU32 = AtomicU32::new(0);
+
+/// Stack for the DDC load task. It streams through heap buffers and
+/// keeps almost nothing on the stack.
+const DDC_TASK_STACK: u32 = 8 * 1024;
+
+/// The front end, running at its real duty cycle beside the decoder.
+///
+/// Every number on this bench so far has been a *single* `decode_scan`
+/// with nothing else on the chip. A WSPR receiver does not work that
+/// way: a slot is 120 s, capture takes ~114 s of it and the decode of
+/// the *previous* slot takes ~95 s, so the two necessarily overlap.
+/// Whatever the down-converter costs is therefore contention with a
+/// decode that already has both cores busy, not spare time in an idle
+/// capture window — which is exactly the mistake behind the earlier
+/// "10 % of the capture window, so affordable" reading.
+///
+/// This task reproduces that: one slot's worth of audio through the
+/// DDC, then sleep until 120 s after it started, forever. Synthetic
+/// audio, because the cost is per-sample and data-independent.
+extern "C" fn ddc_load_task(_arg: *mut core::ffi::c_void) {
+    use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc, AUDIO_RATE_HZ};
+    const N: usize = 114 * 12_000;
+    const SLOT_MS: i64 = 120_000;
+
+    let mut chunk = alloc::vec![0.0f32; 4096];
+    let w = 2.0 * core::f64::consts::PI * 1_540.0 / AUDIO_RATE_HZ as f64;
+    for (k, v) in chunk.iter_mut().enumerate() {
+        *v = (0.3 * (w * k as f64).cos()) as f32;
+    }
+    let mut bufs = DdcBufs::new();
+
+    while !PIPELINE_DONE.load(Ordering::Acquire) {
+        let t0 = now_us();
+        {
+            let (t, hi, hq) = bufs.as_parts();
+            let mut ddc = StreamingDdc::new_in(t, hi, hq);
+            let mut oi = Vec::with_capacity(N / 32 + 64);
+            let mut oq = Vec::with_capacity(N / 32 + 64);
+            let mut fed = 0usize;
+            while fed < N {
+                ddc.push(&chunk, &mut oi, &mut oq);
+                fed += chunk.len();
+            }
+        }
+        let ms = ((now_us() - t0) / 1000) as u32;
+        DDC_LAST_MS.store(ms, Ordering::Relaxed);
+        DDC_SLOTS.fetch_add(1, Ordering::Relaxed);
+        // Sleep out the rest of the slot, so the duty cycle is the real
+        // one rather than a busy loop.
+        let rest = SLOT_MS - (now_us() - t0) / 1000;
+        if rest > 0 {
+            unsafe { esp_idf_svc::sys::vTaskDelay((rest / 10) as u32) };
+        }
+    }
+    unsafe { esp_idf_svc::sys::vTaskDelete(core::ptr::null_mut()) };
+}
+
+/// Steady state: `PIPELINE_SLOTS` consecutive decodes with the front
+/// end running beside them.
+fn pipeline(
+    bin: &[u8],
+    idat: &mut [f32],
+    qdat: &mut [f32],
+    on_decodes: &dyn Fn(&[WsprResult]),
+) {
+    log::info!("=== pipeline: {PIPELINE_SLOTS} slots, DDC running at slot cadence ===");
+    spawn(
+        c"wspr_ddc",
+        ddc_load_task,
+        DDC_TASK_STACK,
+        core::ptr::null_mut(),
+    );
+
+    for slot in 0..PIPELINE_SLOTS {
+        let (free, largest) = heap_internal();
+        let ddc_before = DDC_SLOTS.load(Ordering::Relaxed);
+        let total = arm("A (PSRAM)", bin, idat, qdat, on_decodes);
+        log::info!(
+            "  [slot {slot}] decode {} ms | ddc slots {} (last {} ms) |              internal free {free} KB, largest {largest} KB",
+            total / 1000,
+            DDC_SLOTS.load(Ordering::Relaxed) - ddc_before,
+            DDC_LAST_MS.load(Ordering::Relaxed),
+        );
+    }
+    PIPELINE_DONE.store(true, Ordering::Release);
+}
+
+/// `(free, largest)` internal DRAM, in KB.
+fn heap_internal() -> (usize, usize) {
+    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    unsafe {
+        (
+            esp_idf_svc::sys::heap_caps_get_free_size(caps) / 1024,
+            esp_idf_svc::sys::heap_caps_get_largest_free_block(caps) / 1024,
+        )
+    }
+}
+
 fn spawn(
     name: &core::ffi::CStr,
     entry: extern "C" fn(*mut core::ffi::c_void),
@@ -1245,7 +1357,11 @@ fn scan_body(bin: &'static [u8]) {
             Some(f) => f,
             None => &|_: &[WsprResult]| {},
         };
-    arm("A (PSRAM)", bin, ps_i, ps_q, on_decodes);
+    if PIPELINE_SLOTS <= 1 {
+        arm("A (PSRAM)", bin, ps_i, ps_q, on_decodes);
+    } else {
+        pipeline(bin, ps_i, ps_q, on_decodes);
+    }
 
     // Issue #260 open question: does the FFT-based LPF in
     // `wspr::subtract` actually reach the PIE kernel in place, or does
