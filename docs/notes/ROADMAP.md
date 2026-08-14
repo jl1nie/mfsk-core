@@ -53,6 +53,38 @@ Three tracks, at very different maturities:
    demand-driven (e.g. VK3NV's FST4-15/30 use case behind #143), not
    pursued for their own sake.
 
+   A 2026-08-14 code-sharing audit (prompted by a user doubt over the
+   README's unsourced "~80% shared" claim) confirmed the doubt but not
+   the diagnosis: the true-generic fraction measures 31.8% (strict,
+   protocol-bound code excluded) / 47.7% (directory), not 80% — fixed
+   with a measured figure + methodology pointer to `LIBRARY.md` §0.5
+   (PR #290), plus a permanent `sharing_ratchet_selftest` regression
+   guard (PR #291). The root cause wasn't faithfulness-driven
+   duplication in general (WSJT-X itself repeats per-protocol code,
+   and QRA/Fano/RS/LDPC are genuinely different algorithms, not one
+   thing written four times) but a narrower, real pattern: shared
+   mechanisms built and adopted by 2-3 protocols, then left there with
+   nothing flagging the rest. Concrete, verified duplication found and
+   consolidated: `refine_freq_hz`/`dedup_known` (PR #292), 9 candidate-
+   dedup call sites across JT9/JT65/WSPR/Q65 (PR #293), a 3x-duplicated
+   `Spectrogram` build/score kernel across JT9/JT65/Q65 found via a
+   bottom-up DSP-level sweep after top-down hit a genuine wall (PR
+   #294), and a 5x-duplicated bit-reversal interleave permutation
+   across WSPR/JT9 (PR #295) — plus, as adjacent cleanup, the dead
+   `jt9::demod_bb` box-car path it should have been deleted alongside
+   in 0.5.9 (PR #296). **Migrating JT9/JT65/WSPR/Q65 onto the generic
+   `engine::pipeline` (the step that would have moved the needle most)
+   is architecturally blocked**, not merely unstarted: the pipeline's
+   `process_candidate_basic`/`decode_frame` require `P::Fec:
+   BpPooledFec`, a soft-LLR belief-propagation scratch-reuse shape
+   only `Ldpc174_91`/`Ldpc240_101` implement — Fano-sequential
+   (JT9/WSPR), Reed-Solomon (JT65), and GF(64) QRA (Q65) can't satisfy
+   it, an algorithmic mismatch rather than missing plumbing. Concluded
+   by explicit user choice rather than a numeric target: no percentage
+   was set as a stopping point, and the session's own retrospective
+   note is that chasing a number here would have meant metric-gaming
+   past this point, not more real consolidation.
+
 2. **Host application / ergonomics — newly opened, consumer-driven.**
    0.9.0's theme ("make the streaming decode surface easy to build host
    UIs on") added `msg::decoded::Decoded`, per-protocol `to_decoded`, the
