@@ -116,6 +116,11 @@ is what the user types under tee / piped redirection.
   VBUS boost — must be HIGH before `usb_host_install()`), ILI9342C
   LCD with FT6336U capacitive touch, ES7210 dual-mic codec. See
   Phase B-Core in `docs/notes/ROADMAP.md` for the work breakdown.
+  Also hosts `src/bin/wspr_bench.rs`, a **separate** binary for the
+  WSPR embedded RX work (Phase E in `docs/notes/ROADMAP.md`, issue
+  #260) — decoder-level, not part of the FT8 controller line above;
+  build-time switches `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI`. See
+  `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section.
 - **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
   (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
   HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's
@@ -136,7 +141,10 @@ is what the user types under tee / piped redirection.
   `mfsk-app-shared`: this is the decoder-level shared layer
   (FFT planner / dual_core / stage1_inc), while
   `mfsk-app-shared` is the controller-level shared layer (QSO /
-  UI / WiFi). Both are board-agnostic.
+  UI / WiFi). Both are board-agnostic. Also has `wspr_dual_core.rs`
+  (persistent dual-core worker for the WSPR candidate loop, Phase E)
+  — an FT8-independent sibling of `dual_core.rs`, not a shared
+  abstraction between the two protocols.
 - **`idf-component/`** — esp-idf component shim that wraps
   `mfsk-ffi-ft8` so C-only ESP-IDF projects can pull the FT8
   decoder in without writing Rust glue.

@@ -24,6 +24,15 @@ board-specific bring-up; `m5stack-cores3-app` does not yet — read
 section captures the shared workflow that's easy to forget between
 sessions.
 
+**WSPR embedded RX (Phase E, issue #260) is a separate track from the
+FT8-controller line above** — it never goes through `decode_block` or
+the UAC/controller stack, so it isn't blocked on #163 the way Phase
+B-Core is (both share #163 only for live audio capture; everything
+else already works against WAV-fed/synthetic baseband). Lives in the
+same `m5stack-cores3-app` crate as a separate `src/bin/wspr_bench.rs`
+binary. See `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section
+and `docs/notes/ROADMAP.md` Phase E for status.
+
 - **Build & flash via `espflash`**, not host cargo. Both crates'
   `.cargo/config.toml` set `runner = "espflash flash --monitor"`, so the
   basic user workflow is:

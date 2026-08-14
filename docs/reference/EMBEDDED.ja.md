@@ -54,12 +54,20 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 | LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point` 経由 |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — FT8 LDPC(174,91) と FST4/uvpacket LDPC(240,101) で機能 |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
-| **FT4 / WSPR / Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — これらは現状 `decode_block` を通っていない |
+| WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
+| **FT4 / Q65 / JT9 / JT65** | (host f32 のみ) | ❌ — これらは現状 `decode_block` を通っておらず、組込パス自体がまだ無い |
 
 つまり: **trait 基盤は protocol 非依存だが、組込ビルドで実際に整数
 パスに切り替わるプロトコルは FT8 のみ。** FT4 (Costas/Gray/LDPC
 piece が共通なので次の候補) を追加するのは FT4 専用シンボルレイアウト
 への `decode_block` 型移植であって、trait レイヤに新規要素はない。
+
+WSPR は全く別経路で組込に到達した（詳細は後述）。上の表だけ見ると
+「FT8 しかチップ上で動かない」と読めてしまうのでここで一言添えておく
+——`decode_block` のスペクトログラム/DFT 機構も整数パイプラインも
+不要で、理由は S3 の dual-core の余裕が WSPR のずっと遅いケイデンス
+（120 秒スロット vs FT8 の post-SlotEnd ~1.2 秒目標）を plain f32
+のままで十分吸収するから。
 
 ## テスト対象
 
@@ -712,6 +720,51 @@ spectrogram を回せない — 本番向け WAV 入力に対し組込パスは 
 Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回で
 成功する。
 
+## WSPR on embedded
+
+上記とは構造的に別の、2つ目の組込ストーリー — WSPR は `decode_block`
+も `fixed-point` も `mfsk-ffi-ft8` の C ABI も一切通らない。host と
+同じ `wspr::decode` の f32 パスを `fft-extern` 経由でそのまま
+device 上で走らせ、新規追加は 1 つだけ: `wspr::ddc`、streaming
+down-converter。参照デコーダのスロット全体 FFT チャネライザ
+(`wspr::baseband::decimate_to_baseband`) は S3 上で全く動かせない
+— 11.25 MiB の `Complex<f32>` バッファを 1,474,560 点 FFT で必要と
+し、2 の冪でもなく `esp-dsp` の 8,192 上限も超える。`wspr::ddc` は
+1500 Hz でミックス (ちょうど Fs/8 なので 8 要素テーブル、毎サンプル
+の三角関数なし)、単段 FIR ローパス、32 サンプルごとの間引き —
+状態は約 25 KB、スロット長に非依存。参照チャネライザとの等価性は
+仮定ではなく実測: golden 9/9、AWGN sweep は全 SNR で 500 trial/セル
+に対し 1 trial 差以内、phantom は双方 0。
+
+Cargo feature ([組込利用向け Cargo feature](#組込利用向け-cargo-feature)
+の一般形も参照):
+
+| Feature | 変わるもの | 既定 |
+|---|---|---|
+| `wspr` | WSPR プロトコルの配線。単体では TX-only 組込ビーコンビルド — FFT backend 不要。 | off |
+| `wspr-ddc` | 参照のスロット全体チャネライザではなく streaming down-converter を選択。host は正確な参照実装のまま。組込は選択の余地なし — 参照実装はそこでは動かない。 | off (組込の `wspr-bench` が on にする) |
+| `wspr-fano-cap-fast` | Fano デコーダの cycle budget を 5,000 cycles/bit に制限 (`wsprd` 自身の既定は 10,000、host はこちらを使用) — 120 秒スロットの締切が必要とする wall-clock と引き換えに床の感度を払う。 | off |
+| `wspr-pass2-topn` | pass-2 候補を refined sync でランク付けし上位 2 件のみ deep-process (dual-core の分割と一致)、全 survivor に対するフルラダーの代わりに。 | off |
+
+Device (M5Stack CoreS3、WiFi associate 継続、dual-core): 4 スロット
+連続の定常状態でデコードは 110 秒締切 (120 秒スロット − spot
+アップロード予約 10 秒) に対し 82.8〜90.1 秒、全スロットで golden
+9/9 維持。ダウンコンバートは実際のデューティサイクルで前スロットの
+デコードと並走し (両者は重なる — 1 スロットの ~114 秒キャプチャ
+窓は 1 回のデコードより長い)、18.5〜24.1 秒かかる。うまくいかな
+かった試みも含めた計測の全記録 (再挑戦を防ぐため削除せず保持) は
+[`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)、
+これらの数字が出てくる実行可能なベンチは
+`embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs`。
+
+**まだ未検証**: 実音声キャプチャ。上記は全て WAV 給餌 / 合成
+ベースバンドに対する計測で、FT8 controller ライン向けに issue
+[#163](https://github.com/jl1nie/mfsk-core/issues/163) が追跡して
+いるのと同じ穴 — UAC 実機検証は両者共通の未解決依存。
+`mfsk_app_shared::wsprnet` (wsprnet.org へのスポット送信、WSJT-X
+自身の `Network/wsprnet.cpp` から移植) は実装済みで既定 off。
+`SpotSink::Http` パスは実装済みだが実エンドポイントに対しては未検証。
+
 ## 次に読むべきもの
 
 読者の意図別:
@@ -733,3 +786,7 @@ Qso モードの双方向 I2S DMA に必要な量。この alloc が今は初回
   [`docs/notes/ROADMAP.md`](../notes/ROADMAP.md) Phase B-Stick (M5StickS3 demo /
   音響 fallback) と Phase B-Core (M5Stack CoreS3 main UAC
   controller) セクション。
+- **FT8 でなく WSPR が知りたい** → 上記 [WSPR on embedded](#wspr-on-embedded)、
+  それから `docs/notes/ROADMAP.md` Phase E と
+  [`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`](../notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md)
+  (計測の全記録)。
