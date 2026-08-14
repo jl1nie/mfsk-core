@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260), code-sharing audit + cleanup (#290-298)
 
 ### Changed
 
@@ -357,6 +357,90 @@
   `if (jpeak2(n)==jpeak(n)) cycle`). #279 (from @nicksbar) restored the
   trailing-block lag bounds that made a widened window safe in the
   first place.
+
+### Fixed
+
+- **Q65's cross-candidate dedup window now scales to tone spacing**
+  (issue #287, no entry at the time). It was a fixed ±4 Hz regardless
+  of sub-mode — tighter than one tone spacing on the wide sub-modes
+  (Q65-...D/E), so two lobes of a single Doppler-spread signal could
+  each independently survive coarse search's own local-max suppression
+  (±1×`TONE_SPACING_HZ`, matching WSJT-X's `q65_ccf_22` admission rule)
+  while still being more than one tone spacing apart, and dedup — being
+  narrower — didn't catch it. Measured on Q65-120D 10 GHz rainscatter
+  (`210117_0920.wav`, `TONE_SPACING_HZ=6.0`): two candidates 7.4 Hz
+  apart both decoded the identical message. Now `(2 ×
+  TONE_SPACING_HZ).max(4.0)`, applied at all three dedup call sites via
+  a shared `dedup_freq_tol_hz<P>()` helper; message-text equality
+  (CRC-protected) remains the real safety net against merging distinct
+  signals, so widening the window carries negligible risk.
+
+- **WSPR's `pack_call` was missing three slot-alphabet checks**
+  `packjt.f90:97-116` performs (slot 1 must not be a space, slot 2 must
+  be a digit, slots 3-5 must not be digits) — found incidentally while
+  extracting the shared `msg::callsign28` core below. Only ever
+  affected malformed input; every real callsign this crate's golden
+  corpus exercises was already well-formed, so this changes no golden
+  test's output, only what previously-invalid input now correctly
+  rejects instead of silently mis-encoding.
+
+### Changed
+
+- **Code-sharing audit** (issues raised by a "does faithful WSJT-X
+  porting cause excess per-protocol divergence?" review): the
+  README/crate-doc's unsourced "~80% shared" claim (fixed above) turned
+  out to have the right instinct but the wrong cause — most of the
+  crate's protocol-bound code is *genuinely* protocol-bound (QRA, Fano,
+  Reed-Solomon and LDPC are different algorithms, not one thing written
+  four times, and WSJT-X's own Fortran repeats itself per-protocol the
+  same way), but a handful of shared mechanisms had quietly stalled at
+  2-3 adopting protocols with nothing flagging the rest. Consolidated,
+  each verified byte-identical (or behaviour-preserving modulo an
+  explicit per-protocol parameter) against golden tests before and
+  after:
+
+  - `engine::sync::refine_freq_hz_log_power` — a scalloping-loss fix
+    independently reinvented three times (WSPR, then JT65 issue #169,
+    then JT9), now one function JT65 and JT9 both call.
+  - `engine::pipeline::scan_dedup_match` / `scan_dedup_match_cross` —
+    9 candidate-dedup call sites across JT9/JT65/WSPR/Q65, each
+    protocol's own frequency/time tolerance preserved as an explicit
+    argument rather than a silently-different inline constant.
+  - `engine::spectrogram::Spectrogram` — a 3x-duplicated coarse-search
+    kernel (JT9/JT65/Q65) found by diffing actual file contents rather
+    than a category-level "this looks shareable" audit, which had
+    missed it entirely. WSPR keeps its own (a real difference: a
+    fixed-point FFT backend plus baseline-fit normalisation).
+  - `engine::interleave::{interleave_bitrev, deinterleave_bitrev}` — a
+    5x-duplicated bit-reversal permutation (WSPR ×3, including a
+    self-documented "duplicate of a duplicate", plus JT9 ×1), tracing
+    to one upstream routine (`packjt.f90`'s `packcall`/`unpackcall`
+    interleave, also called from `wsprcode/wspr_old_subs.f90`). JT65's
+    own interleave is a different algorithm (matrix transpose) and is
+    correctly untouched.
+  - `msg::callsign28::{pack_call28, unpack_call28}` — WSPR's own third
+    independent copy of the same base-37/36/10/27³ callsign encoding
+    JT9 and JT65 already shared via `msg::jt72`.
+
+  A permanent `sharing_ratchet_selftest` (in `tests/common_selftest.rs`)
+  now fails if a protocol that adopted one of these loses the evidence,
+  without blocking non-adoption elsewhere — the failure mode this audit
+  exists to catch is a mechanism quietly built and then only ever used
+  by 2-3 of the 8 protocols.
+
+  Migrating JT9/JT65/WSPR/Q65 onto the generic `engine::pipeline` (the
+  step that would have consolidated the most) turned out to be
+  architecturally blocked, not merely unstarted: the pipeline requires
+  `P::Fec: BpPooledFec`, a belief-propagation scratch-reuse shape only
+  the two LDPC codecs implement — Fano-sequential, Reed-Solomon and
+  GF(64) QRA codes have no equivalent operation. Closed without a
+  numeric sharing target by explicit choice: the audit's own honest
+  ceiling under either measure (protocol-generic vs. shared-directory
+  line count) is capped by that same wall.
+
+  Also removed `jt9::demod_bb` (606 lines), the box-car demod path
+  `softsym.rs` superseded in 0.5.9 — self-documented as due for removal
+  once issue #19 closed, which it had, months earlier.
 
 ## 0.9.1 — WSPR parity with `wsprd` (#275) + phantom elimination, TX envelope ramps (#259), FT4 sniper aim (#257), SNR formula close-out (#255), test taxonomy rework, FST4/Q65 sub-mode coverage
 
