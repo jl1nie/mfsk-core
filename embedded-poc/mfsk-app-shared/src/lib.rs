@@ -9,7 +9,9 @@
 pub mod adif;
 pub mod boot_mode;
 pub mod flash_log;
+pub mod http_config;
 pub mod log_sink;
+pub mod ntp;
 pub mod parity;
 pub mod qso;
 pub mod settings;
