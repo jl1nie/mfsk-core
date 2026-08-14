@@ -38,7 +38,6 @@ use crate::msg::Jt72Codec;
 
 pub mod baseband;
 pub(crate) mod decode;
-pub(crate) mod demod_bb;
 pub mod interleave;
 pub mod rx;
 pub mod search;

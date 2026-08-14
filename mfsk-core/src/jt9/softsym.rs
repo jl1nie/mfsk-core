@@ -3,7 +3,8 @@
 //! Direct port of `lib/softsym.f90` and the subroutines it calls
 //! (`downsam9`, `peakdt9`, `afc9`, `twkfreq`, `symspec2`,
 //! `interleave9`). Replaces the `baseband.rs` + `demod_bb.rs`
-//! box-car path. The decisive step is **`downsam9`**: a single
+//! box-car path (the latter removed 2026-08-14). The decisive step
+//! is **`downsam9`**: a single
 //! NFFT1=653184-point FFT of the entire 60-s slot, from which we
 //! select NFFT2=1512 bins centred at the candidate carrier and
 //! IFFT back to a 27.78-Hz complex baseband. That brick-wall band
