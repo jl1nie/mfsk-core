@@ -339,7 +339,7 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-08-10, verified
+Currently open GitHub issues (state:open as of 2026-08-15, verified
 directly against the GitHub API — this is the live worklist; if you're
 reading this file to decide what to work on next, trust this section
 over any recall numbers or hardware status stated elsewhere in it).
@@ -368,11 +368,6 @@ Grouped by the three tracks in **Strategic state** above.
   `decode_frame_subtract`). The SIC half of #143; needs numerical
   calibration against WSJT-X's FST4 subtract path, after which
   `impl SupportsFlatSic for Fst4s60 {}` (+ siblings) is trivial.
-- **#192** — FT8 decode engine never unified with `engine::pipeline`
-  (`fine_refine_3stage` needs `<P>` generalisation). Behaviour-preserving
-  refactor; not urgent, not blocked by anything. Requires
-  numerical-diff-from-reference rigor so a careless port doesn't regress
-  FT4/FST4's independently-calibrated OSD gates.
 - **#252** — FST4 SIC feasibility experiment (coherent full-slot sync
   from #146 + subtraction residue, 4 scenarios: moderate/tone-spacing
   +QSB/co-channel/3-station multi-subtract). No technical blocker
@@ -424,6 +419,28 @@ landed 2026-08-08 (see *Strategic state* above and
 `docs/notes/BENCHMARKS.md`'s JT65 section), issue itself closed
 2026-08-10 after a doc audit caught it
 sitting open past the fix.
+
+Closed since the 2026-08-10 snapshot (caught this section's own
+staleness the same way #169 caught its own — #192 sat listed as open
+above for several days after it actually closed): **#260** — WSPR RX
+on ESP32-S3, closed 2026-08-14 once the whole receive path (capture,
+down-conversion, decode) was measured running inside the slot with
+margin on real device data, see **Phase E** below; **#192** — FT8/
+`engine::pipeline` unification, closed 2026-08-14 narrowly (the
+literal `fine_refine_3stage<P>` proposal — no second consumer, so
+unifying it would have bought no duplication removal, only
+WSJT-X-fidelity risk) but split into **#285** — FT8's OSD-escalation
+gate and blind-CQ pass vs. their FT4/FST4 generic equivalents, itself
+closed same-day after shipping an in-crate ratchet test
+(`Q_NDEEP3_THRESHOLD == osd_escalation_gates::<Ft8>().1`) so a future
+silent divergence between the two fails CI instead of relying on a
+doc comment; **#287** — Q65 cross-candidate dedup window was a fixed
+±4 Hz regardless of sub-mode, tighter than one tone spacing on the
+wide sub-modes and letting a single Doppler-spread signal's two lobes
+both survive as separate decodes, fixed same-day by scaling the
+window to `(2 × TONE_SPACING_HZ).max(4.0)`. Also closed 2026-08-14,
+not a GitHub issue: a code-sharing audit (#290-298) — see *Strategic
+state*, track 1, for the full account.
 
 Closed since the 2026-05-18 snapshot (see the closed issue / `git
 log` for the fix commit, not re-derived here):
