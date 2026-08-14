@@ -29,6 +29,7 @@
 use num_complex::Complex;
 use rustfft::FftPlanner;
 
+use crate::engine::pipeline::scan_dedup_match;
 use crate::engine::{DecodeContext, MessageCodec, ModulationParams};
 use crate::fec::qra::{FadingModel, Q65Codec, intrinsics_fast_fading};
 use crate::fec::qra15_65_64::QRA15_65_64_IRR_E23;
@@ -535,11 +536,15 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
         ) else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
-                && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match(
+            &seen,
+            &decode,
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            dedup_freq_tol_hz::<P>(),
+            nsps as i64,
+        );
         if !dup {
             if let Some(cb) = on_result {
                 cb(&decode);
@@ -643,11 +648,15 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
         ) else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
-                && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match(
+            &seen,
+            &decode,
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            dedup_freq_tol_hz::<P>(),
+            nsps as i64,
+        );
         if !dup {
             if let Some(cb) = on_result {
                 cb(&decode);
@@ -765,11 +774,15 @@ fn decode_scan_inner<P: ModulationParams>(
         ) else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
-                && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match(
+            &seen,
+            &decode,
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            dedup_freq_tol_hz::<P>(),
+            nsps as i64,
+        );
         if !dup {
             if let Some(cb) = on_result {
                 cb(&decode);

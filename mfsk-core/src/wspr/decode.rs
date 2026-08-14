@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
+use crate::engine::pipeline::scan_dedup_match;
 use crate::msg::WsprMessage;
 
 use super::search::SearchParams;
@@ -1406,12 +1407,15 @@ fn decode_scan_inner(
 
         let mut this_pass: Vec<(WsprResult, usize)> = Vec::new();
         for (d, start_refined) in raw {
-            let dup = seen.iter().any(|prev| {
-                prev.message == d.message
-                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
-                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
-                        <= TIME_DEDUP_SAMPLES
-            });
+            let dup = scan_dedup_match(
+                &seen,
+                &d,
+                |r| &r.message,
+                |r| r.freq_hz,
+                |r| r.start_sample as i64,
+                FREQ_DEDUP_HZ,
+                TIME_DEDUP_SAMPLES,
+            );
             if !dup {
                 if let Some(cb) = on_result {
                     cb(&d);
@@ -1523,12 +1527,15 @@ fn decode_scan_inner(
             .collect();
 
         for d in raw2 {
-            let dup = seen.iter().any(|prev| {
-                prev.message == d.message
-                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
-                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
-                        <= TIME_DEDUP_SAMPLES
-            });
+            let dup = scan_dedup_match(
+                &seen,
+                &d,
+                |r| &r.message,
+                |r| r.freq_hz,
+                |r| r.start_sample as i64,
+                FREQ_DEDUP_HZ,
+                TIME_DEDUP_SAMPLES,
+            );
             if !dup {
                 if let Some(cb) = on_result {
                     cb(&d);
@@ -1692,12 +1699,15 @@ fn decode_scan_subtract_inner(
         }
         let mut added = 0usize;
         for d in new_decodes {
-            let dup = all.iter().any(|prev| {
-                prev.message == d.message
-                    && (prev.freq_hz - d.freq_hz).abs() <= FREQ_DEDUP_HZ
-                    && (prev.start_sample as i64 - d.start_sample as i64).abs()
-                        <= TIME_DEDUP_SAMPLES
-            });
+            let dup = scan_dedup_match(
+                &all,
+                &d,
+                |r| &r.message,
+                |r| r.freq_hz,
+                |r| r.start_sample as i64,
+                FREQ_DEDUP_HZ,
+                TIME_DEDUP_SAMPLES,
+            );
             if dup {
                 continue;
             }
