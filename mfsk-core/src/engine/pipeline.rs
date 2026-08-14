@@ -443,17 +443,22 @@ pub struct SnrCtx<'a> {
     /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
     /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
     /// keyed by this, not the fine-refined frequency.
-    #[allow(dead_code)] // read once FST4's override lands
+    // FST4's `snr_db` override is this field's only reader (mirrors
+    // `cand_score` above, just for the other protocol) — dead in any
+    // build without `fst4`.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub cand_freq_hz: f32,
     /// Big forward-FFT of the whole slot's raw audio
     /// ([`build_fft_cache`]'s output) — WSJT-X `c_bigfft` equivalent.
     /// Already computed by the caller for downsampling; FST4's
     /// baseline extraction reuses it rather than requiring its own.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub fft_cache: &'a [Complex<f32>],
     /// The [`DownsampleCfg`] `fft_cache` was built from — supplies
     /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub ds_cfg: &'a DownsampleCfg,
     /// Fine-refined candidate frequency (Hz) — the frequency `cs` was
     /// actually computed at (`WSJT-X`'s `fc_synced`), as opposed to
@@ -461,13 +466,15 @@ pub struct SnrCtx<'a> {
     /// re-derivation needs this: WSJT-X's `fst4_decode.f90` downsamples
     /// its bitmetrics input at `fc_synced`, not the coarse candidate
     /// frequency `get_candidates_fst4.f90`'s baseline is keyed by.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub refined_freq_hz: f32,
     /// Sample index (in the *downsampled* baseband) of the first
     /// symbol — the `i_start`/`i0` [`symbol_spectra`] was actually
     /// called with. Needed alongside `refined_freq_hz` to recompute a
     /// fresh, deterministic `cs` at the exact same alignment.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub i_start: i32,
 }
 #[cfg(not(feature = "internal-testing"))]
@@ -486,17 +493,22 @@ pub(crate) struct SnrCtx<'a> {
     /// Coarse-sync candidate frequency (Hz) — `candidates(icand,1)`
     /// equivalent. FST4's baseline lookup (`candidates(icand,5)`) is
     /// keyed by this, not the fine-refined frequency.
-    #[allow(dead_code)] // read once FST4's override lands
+    // FST4's `snr_db` override is this field's only reader (mirrors
+    // `cand_score` above, just for the other protocol) — dead in any
+    // build without `fst4`.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub cand_freq_hz: f32,
     /// Big forward-FFT of the whole slot's raw audio
     /// ([`build_fft_cache`]'s output) — WSJT-X `c_bigfft` equivalent.
     /// Already computed by the caller for downsampling; FST4's
     /// baseline extraction reuses it rather than requiring its own.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub fft_cache: &'a [Complex<f32>],
     /// The [`DownsampleCfg`] `fft_cache` was built from — supplies
     /// `fft1_size` (⇒ WSJT-X's `df1`) to FST4's baseline extraction.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub ds_cfg: &'a DownsampleCfg,
     /// Fine-refined candidate frequency (Hz) — the frequency `cs` was
     /// actually computed at (`WSJT-X`'s `fc_synced`), as opposed to
@@ -504,13 +516,15 @@ pub(crate) struct SnrCtx<'a> {
     /// re-derivation needs this: WSJT-X's `fst4_decode.f90` downsamples
     /// its bitmetrics input at `fc_synced`, not the coarse candidate
     /// frequency `get_candidates_fst4.f90`'s baseline is keyed by.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub refined_freq_hz: f32,
     /// Sample index (in the *downsampled* baseband) of the first
     /// symbol — the `i_start`/`i0` [`symbol_spectra`] was actually
     /// called with. Needed alongside `refined_freq_hz` to recompute a
     /// fresh, deterministic `cs` at the exact same alignment.
-    #[allow(dead_code)] // read once FST4's override lands
+    // Same as `cand_freq_hz` above — FST4-only reader.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
     pub i_start: i32,
 }
 

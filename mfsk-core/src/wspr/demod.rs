@@ -18,7 +18,6 @@
 //!    in pass 3 and what gets us the W5BIT / NM7J / W3BI weak decodes.
 
 use alloc::vec;
-use alloc::vec::Vec;
 
 use core::f32::consts::PI;
 #[cfg(not(feature = "std"))]
@@ -478,12 +477,6 @@ pub fn bit_metrics_from_audio(
 ) -> [f32; N_SYMBOLS] {
     let (idat, qdat) = super::baseband::decimate_to_baseband(audio);
     bit_metrics_from_baseband(&idat, &qdat, f0_audio_hz, lag_audio, drift_hz)
-}
-
-#[allow(dead_code)]
-fn _silence_unused_imports() {
-    let _ = vec![0u8];
-    let _: Vec<u8> = Vec::new();
 }
 
 #[cfg(test)]
