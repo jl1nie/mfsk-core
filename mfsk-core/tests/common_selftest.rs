@@ -416,6 +416,205 @@ mod golden_selftest {
     }
 }
 
+mod sharing_ratchet_selftest {
+    //! A code-sharing audit (2026-08-14, prompted by a user question
+    //! about whether faithful WSJT-X porting has caused excessive
+    //! per-protocol divergence) found the same shape of problem this
+    //! file's `golden_coverage_selftest` already fixes on the test
+    //! side, one layer down: a shared mechanism gets built, 2-3
+    //! protocols adopt it, and the rest silently never do. Four
+    //! examples found: `GenericPipelineProtocol` (2/8 protocols),
+    //! `known_filtered_on_result` (2/8), the `snr_db` trait override
+    //! (3/8), `engine::scalar::Cmplx` fixed-point support (3/8).
+    //!
+    //! This is the ratchet for that: it doesn't require every
+    //! protocol adopt every mechanism (much of the divergence is
+    //! inherent — see `docs/reference/LIBRARY.md` §0.5, the source of
+    //! truth this table is kept in sync with), but it fails loudly if
+    //! a protocol that *currently* uses a shared mechanism silently
+    //! stops — the same silent-regression shape `golden_coverage_selftest`
+    //! guards against for test precision coverage.
+    //!
+    //! Adoption is detected by scanning source text for evidence
+    //! (`impl … for`, a specific call site) rather than by runtime
+    //! trait-object reflection, which Rust doesn't offer across a
+    //! heterogeneous set of unrelated ZSTs. This is the same technique
+    //! `golden_coverage_selftest` uses and has the same tradeoff: it
+    //! can be fooled by a renamed identifier, but nothing here is
+    //! trying to be adversarial, and a false pass just means this test
+    //! itself needs updating alongside whatever renamed the thing.
+    //!
+    //! **If you land a new adoption**: update the relevant
+    //! `EXPECTED_ADOPTERS` list here, `docs/reference/LIBRARY.md` §0.5,
+    //! and the measured-sharing-percentage paragraphs in `README.md` /
+    //! `lib.rs` (`docs/reference/LIBRARY.md` §0.5 is the one table all
+    //! three of those should trace back to). This test does not fail
+    //! when adoption *increases* — only when it decreases — so
+    //! updating those is on the honor system, not enforced here.
+
+    use std::fs;
+    use std::path::Path;
+
+    const SRC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+
+    /// Every protocol directory under `src/`, gated the same way its
+    /// `pub mod` declaration in `lib.rs` is (feature name == dir name
+    /// for all of these). uvpacket is excluded — it's an experimental
+    /// non-WSJT-X example, not a protocol this ratchet tracks.
+    ///
+    /// Only consumed under `full` (its sole caller below is gated the
+    /// same way) — gated identically so it isn't dead code under a
+    /// narrower feature set.
+    #[cfg(feature = "full")]
+    fn protocol_dirs() -> Vec<&'static str> {
+        let mut dirs = vec![];
+        if cfg!(feature = "ft8") {
+            dirs.push("ft8");
+        }
+        if cfg!(feature = "ft4") {
+            dirs.push("ft4");
+        }
+        if cfg!(feature = "fst4") {
+            dirs.push("fst4");
+        }
+        if cfg!(feature = "jt9") {
+            dirs.push("jt9");
+        }
+        if cfg!(feature = "jt65") {
+            dirs.push("jt65");
+        }
+        if cfg!(feature = "q65") {
+            dirs.push("q65");
+        }
+        if cfg!(feature = "wspr") {
+            dirs.push("wspr");
+        }
+        if cfg!(feature = "msk144") {
+            dirs.push("msk144");
+        }
+        dirs
+    }
+
+    /// Concatenated source of every `.rs` file directly or indirectly
+    /// under `src/<dir>/` (single level of subdirectories, matching
+    /// this crate's actual module nesting — e.g. `ft8/decode_block/`).
+    fn dir_source(dir: &str) -> String {
+        fn collect(path: &Path, out: &mut String) {
+            let Ok(entries) = fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    collect(&p, out);
+                } else if p.extension().is_some_and(|e| e == "rs")
+                    && let Ok(s) = fs::read_to_string(&p)
+                {
+                    out.push_str(&s);
+                    out.push('\n');
+                }
+            }
+        }
+        let mut out = String::new();
+        collect(&Path::new(SRC_DIR).join(dir), &mut out);
+        out
+    }
+
+    /// Protocols currently routing decode through the shared
+    /// `engine::pipeline::GenericPipelineProtocol` trait. FT8
+    /// implements the request/outcome *builder* shape
+    /// (`FrameDecodable`) but not this — it keeps its own bespoke
+    /// decode engine (`ft8::decode_block`), tracked as issue #192.
+    const EXPECTED_GENERIC_PIPELINE_ADOPTERS: &[&str] = &["ft4", "fst4"];
+
+    /// Protocols using `engine::pipeline::known_filtered_on_result`
+    /// (issue #243's fix) rather than a bespoke post-filter.
+    const EXPECTED_KNOWN_FILTER_ADOPTERS: &[&str] = &["ft4", "fst4"];
+
+    /// Protocols whose SNR is computed via the shared
+    /// `GenericPipelineProtocol::snr_db` trait method (issue #255)
+    /// rather than an inline formula in the protocol's own module.
+    /// Note this trait itself only exists on `GenericPipelineProtocol`,
+    /// so it can't be wider than `EXPECTED_GENERIC_PIPELINE_ADOPTERS`
+    /// without the trait surface changing too.
+    const EXPECTED_SNR_TRAIT_ADOPTERS: &[&str] = &["ft4", "fst4"];
+
+    fn assert_no_regression(
+        mechanism: &str,
+        expected_adopters: &[&str],
+        detect: impl Fn(&str) -> bool,
+    ) {
+        let mut regressed: Vec<&str> = Vec::new();
+        for &dir in expected_adopters {
+            let src = dir_source(dir);
+            if !detect(&src) {
+                regressed.push(dir);
+            }
+        }
+        assert!(
+            regressed.is_empty(),
+            "{mechanism}: previously-adopting protocol(s) no longer show adoption \
+             evidence in their source: {regressed:?}. If this is intentional (the \
+             protocol moved off the shared mechanism for a documented reason), \
+             remove it from this test's expected-adopters list and update \
+             `docs/reference/LIBRARY.md` §0.5 to match. If it's accidental, this \
+             is exactly the silent-regression shape this test exists to catch."
+        );
+    }
+
+    #[test]
+    fn generic_pipeline_adoption_does_not_regress() {
+        assert_no_regression(
+            "GenericPipelineProtocol",
+            EXPECTED_GENERIC_PIPELINE_ADOPTERS,
+            |src| src.contains("GenericPipelineProtocol for"),
+        );
+    }
+
+    #[test]
+    fn known_filter_adoption_does_not_regress() {
+        assert_no_regression(
+            "known_filtered_on_result",
+            EXPECTED_KNOWN_FILTER_ADOPTERS,
+            |src| src.contains("known_filtered_on_result"),
+        );
+    }
+
+    #[test]
+    fn snr_trait_adoption_does_not_regress() {
+        assert_no_regression(
+            "snr_db trait override",
+            EXPECTED_SNR_TRAIT_ADOPTERS,
+            |src| src.contains("fn snr_db(ctx"),
+        );
+    }
+
+    /// Sanity check on the scan itself, mirroring
+    /// `golden_coverage_selftest`'s own guard: if `protocol_dirs()`
+    /// ever returns nothing (e.g. run with `--no-default-features`),
+    /// every check above trivially "passes" by having nothing to
+    /// check — which is not evidence of anything. This crate's own
+    /// `full` feature set is what CI's merge-gate test runs under, so
+    /// assert the full protocol set is actually present under it.
+    #[test]
+    #[cfg(feature = "full")]
+    fn protocol_dir_scan_finds_something() {
+        let dirs = protocol_dirs();
+        assert!(
+            dirs.len() >= 8,
+            "expected at least 8 protocol directories under `full`, found {}: {dirs:?} \
+             — did a protocol directory get renamed or a feature gate change?",
+            dirs.len()
+        );
+        for &dir in &dirs {
+            assert!(
+                !dir_source(dir).is_empty(),
+                "protocol dir {dir:?} scanned as empty — check SRC_DIR / feature gating"
+            );
+        }
+    }
+}
+
 mod golden_coverage_selftest {
     //! The permanent fix for a pattern that kept recurring across
     //! protocols: a real-signal test file that checks recall (did the
