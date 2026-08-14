@@ -4,119 +4,48 @@
 //! Q65's distributed sync (22 symbols all on tone 0) is the
 //! cleanest correlation target across the WSJT family — every sync
 //! symbol carries the full symbol energy on the same frequency bin.
-//! This module mirrors the structure of [`crate::jt65::search`]:
-//! build an NSPS-sized spectrogram at `nsps/8`-symbol time steps
-//! (matching WSJT-X's own `NSTEP=8` sync resolution,
-//! `lib/qra/q65/q65.f90:3`), score each candidate `(start_row,
-//! base_bin)` by summing the tone-0 power across the 22 sync
-//! positions, and return the top-scoring candidates.
+//! The spectrogram build and per-candidate scoring are literally
+//! shared with `crate::jt9::search` and `crate::jt65::search` (see
+//! [`crate::engine::spectrogram`]), built here at `nsps/8`-symbol time
+//! steps (matching WSJT-X's own `NSTEP=8` sync resolution,
+//! `lib/qra/q65/q65.f90:3`) instead of their `nsps/4` — only the
+//! sync-positions list and the candidate-selection loop below are
+//! this protocol's own.
 
 use crate::engine::ModulationParams;
-use num_complex::Complex;
-use rustfft::FftPlanner;
+use crate::engine::spectrogram;
 
-use super::Q65a30;
 use super::sync_pattern::Q65_SYNC_POSITIONS;
 
 /// FFT-bin spectrogram covering the audio buffer at `nsps/8`-symbol
-/// time steps. `mags_sqr[t * n_freq + f]` is `|FFT[f]|²` at time `t`.
-pub struct Spectrogram {
-    pub mags_sqr: Vec<f32>,
-    pub n_time: usize,
-    pub n_freq: usize,
-    pub t_step: usize,
-    pub nsps: usize,
-    pub df: f32,
-    pub noise_per_bin: f32,
-}
+/// time steps. Thin alias — see
+/// [`crate::engine::spectrogram::Spectrogram`] for the shared
+/// implementation (extracted 2026-08-14, code-sharing audit; was
+/// structurally identical to `jt9::search::Spectrogram` /
+/// `jt65::search::Spectrogram`, differing only in the time-step
+/// divisor — [`NSTEP_PER_SYMBOL`] here vs. their fixed 4).
+pub type Spectrogram = spectrogram::Spectrogram;
 
-impl Spectrogram {
-    /// Build the spectrogram from `audio` for Q65 sub-mode `P`. Time
-    /// step = `nsps / NSTEP_PER_SYMBOL`, matching WSJT-X's own sync
-    /// spectrogram resolution (`NSTEP=8`, `lib/qra/q65/q65.f90:3`,
-    /// "Number of time bins per symbol in s1, s1a, s1b") — an earlier
-    /// `nsps/2` here under-resolved the sync search 4× relative to
-    /// `q65_ccf_22`'s own lag search, which was root-caused (verified
-    /// against real jt9) as the source of a multi-dB AWGN sensitivity
-    /// gap at `GridDepth::Fast`'s single-shot decode (no further Δt
-    /// retry to compensate); see `docs/notes/Q65_BENCHMARK.md`.
-    /// Frequency resolution = `sample_rate / nsps` ≈ tone spacing.
-    pub fn build_for<P: ModulationParams>(audio: &[f32], sample_rate: u32) -> Self {
-        const NSTEP_PER_SYMBOL: usize = 8;
-        let nsps = (sample_rate as f32 * P::SYMBOL_DT).round() as usize;
-        let t_step = (nsps / NSTEP_PER_SYMBOL).max(1);
-        let n_freq = nsps / 2;
-        if audio.len() < nsps || t_step == 0 {
-            return Self {
-                mags_sqr: Vec::new(),
-                n_time: 0,
-                n_freq: 0,
-                t_step: 0,
-                nsps,
-                df: sample_rate as f32 / nsps as f32,
-                noise_per_bin: 1.0,
-            };
-        }
-        let n_time = (audio.len() - nsps) / t_step + 1;
-        let mut mags_sqr = vec![0f32; n_time * n_freq];
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(nsps);
-        let mut scratch = vec![Complex::new(0f32, 0f32); fft.get_inplace_scratch_len()];
-        let mut buf: Vec<Complex<f32>> = vec![Complex::new(0f32, 0f32); nsps];
+/// Time step matching WSJT-X's own sync spectrogram resolution
+/// (`NSTEP=8`, `lib/qra/q65/q65.f90:3`, "Number of time bins per
+/// symbol in s1, s1a, s1b") — an earlier `nsps/2` here under-resolved
+/// the sync search 4× relative to `q65_ccf_22`'s own lag search, which
+/// was root-caused (verified against real jt9) as the source of a
+/// multi-dB AWGN sensitivity gap at `GridDepth::Fast`'s single-shot
+/// decode (no further Δt retry to compensate); see
+/// `docs/notes/Q65_BENCHMARK.md`.
+pub const NSTEP_PER_SYMBOL: usize = 8;
 
-        for t in 0..n_time {
-            let start = t * t_step;
-            for (slot, &s) in buf.iter_mut().zip(&audio[start..start + nsps]) {
-                *slot = Complex::new(s, 0.0);
-            }
-            fft.process_with_scratch(&mut buf, &mut scratch);
-            let row = &mut mags_sqr[t * n_freq..(t + 1) * n_freq];
-            for (slot, c) in row.iter_mut().zip(buf.iter().take(n_freq)) {
-                *slot = c.norm_sqr();
-            }
-        }
-
-        // Noise floor estimate: trimmed-mean of the bottom 95 % of
-        // FFT magnitudes (rejects strong narrow-band signals). Only
-        // the *set* of bottom-95% values (order within that set is
-        // irrelevant, we just sum them) is needed, not a full
-        // ascending order — `select_nth_unstable_by` partitions in
-        // O(n) average instead of `sort_unstable_by`'s O(n log n),
-        // same fix already applied to FT8's `xsnr2_db_simple` noise
-        // median. Measured as 64% of `decode_multi_period_for`'s
-        // wall-clock on Q65-60B (short-slot, `build_for` called once
-        // per audio slot).
-        let mut sorted = mags_sqr.clone();
-        let keep = (sorted.len() as f32 * 0.95) as usize;
-        let noise_per_bin = if keep > 0 {
-            sorted.select_nth_unstable_by(keep - 1, |a, b| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            sorted[..keep].iter().sum::<f32>() / keep as f32
-        } else {
-            1.0
-        };
-
-        Self {
-            mags_sqr,
-            n_time,
-            n_freq,
-            t_step,
-            nsps,
-            df: sample_rate as f32 / nsps as f32,
-            noise_per_bin: noise_per_bin.max(1e-6),
-        }
-    }
-
-    /// Q65-30A convenience wrapper for [`Self::build_for`].
-    pub fn build(audio: &[f32], sample_rate: u32) -> Self {
-        Self::build_for::<Q65a30>(audio, sample_rate)
-    }
-
-    #[inline]
-    pub fn get(&self, t: usize, f: usize) -> f32 {
-        self.mags_sqr[t * self.n_freq + f]
-    }
+/// Build a spectrogram for Q65 sub-mode `P`. Frequency resolution =
+/// `sample_rate / nsps` ≈ tone spacing.
+///
+/// The previous `Spectrogram::build` Q65-30A convenience wrapper
+/// (calling this with `P = Q65a30` hardcoded) had zero callers
+/// anywhere in the crate or its tests — dropped rather than carried
+/// through this extraction, predating the crate's now-10-wired-
+/// sub-mode reality (issue tracking session, 2026-08-14).
+pub fn build_spectrogram<P: ModulationParams>(audio: &[f32], sample_rate: u32) -> Spectrogram {
+    Spectrogram::build_for::<P>(audio, sample_rate, NSTEP_PER_SYMBOL)
 }
 
 /// One candidate surviving the coarse sync search.
@@ -206,17 +135,13 @@ impl Default for SearchParams {
 /// 22 sync positions, divide by `(sum + noise_floor)`.
 pub fn score_candidate(spec: &Spectrogram, start_row: usize, base_bin: usize) -> f32 {
     let rows_per_symbol = (spec.nsps / spec.t_step).max(1);
-    let last_row = start_row + (Q65_SYNC_POSITIONS[21] as usize) * rows_per_symbol;
-    if last_row >= spec.n_time || base_bin >= spec.n_freq {
-        return 0.0;
-    }
-    let mut sync_pwr = 0.0_f32;
-    for &sym_idx in &Q65_SYNC_POSITIONS {
-        let row = start_row + (sym_idx as usize) * rows_per_symbol;
-        sync_pwr += spec.get(row, base_bin);
-    }
-    let noise_floor = spec.noise_per_bin * Q65_SYNC_POSITIONS.len() as f32;
-    sync_pwr / (sync_pwr + noise_floor)
+    spectrogram::score_candidate(
+        spec,
+        start_row,
+        base_bin,
+        &Q65_SYNC_POSITIONS,
+        rows_per_symbol,
+    )
 }
 
 /// Build a spectrogram for Q65 sub-mode `P` and find the top sync
@@ -227,7 +152,7 @@ pub fn coarse_search_for<P: ModulationParams>(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
-    let spec = Spectrogram::build_for::<P>(audio, sample_rate);
+    let spec = build_spectrogram::<P>(audio, sample_rate);
     coarse_search_on_spec_for::<P>(&spec, sample_rate, nominal_start_sample, params)
 }
 
@@ -238,7 +163,7 @@ pub fn coarse_search(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
-    coarse_search_for::<Q65a30>(audio, sample_rate, nominal_start_sample, params)
+    coarse_search_for::<super::Q65a30>(audio, sample_rate, nominal_start_sample, params)
 }
 
 /// Same as [`coarse_search_for`] but accepts a pre-built spectrogram
@@ -401,7 +326,7 @@ pub fn coarse_search_on_spec(
     nominal_start_sample: usize,
     params: &SearchParams,
 ) -> Vec<SyncCandidate> {
-    coarse_search_on_spec_for::<Q65a30>(spec, sample_rate, nominal_start_sample, params)
+    coarse_search_on_spec_for::<super::Q65a30>(spec, sample_rate, nominal_start_sample, params)
 }
 
 #[cfg(test)]

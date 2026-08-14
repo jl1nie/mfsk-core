@@ -1317,7 +1317,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     on_result: Option<&(dyn Fn(&Q65Result) + Sync)>,
     ctx: &DecodeContext,
 ) -> Vec<Q65Result> {
-    use super::search::{Spectrogram, coarse_search_on_spec_for};
+    use super::search::{build_spectrogram, coarse_search_on_spec_for};
 
     let mut output: Vec<Q65Result> = Vec::new();
     if audio_slots.is_empty() {
@@ -1325,7 +1325,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
     }
 
     // Initialise EMA from slot 0.
-    let mut ema_spec = Spectrogram::build_for::<P>(audio_slots[0], sample_rate);
+    let mut ema_spec = build_spectrogram::<P>(audio_slots[0], sample_rate);
     if ema_spec.n_time == 0 {
         return output;
     }
@@ -1335,7 +1335,7 @@ pub(crate) fn decode_multi_period_for<P: ModulationParams>(
 
     for (i, &audio) in audio_slots.iter().enumerate() {
         if i > 0 {
-            let slot_spec = Spectrogram::build_for::<P>(audio, sample_rate);
+            let slot_spec = build_spectrogram::<P>(audio, sample_rate);
             // EMA update: weight = 1 / min(navg, 4) — matches WSJT-X's
             // `ntc = min(navg, 4); u = 1.0/ntc` accumulator. After the
             // 4th slot the time constant saturates, so older history
