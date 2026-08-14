@@ -244,6 +244,12 @@ mfsk_core
 │   ├── sync.rs         coarse_sync / refine_candidate
 │   ├── llr.rs          symbol_spectra / compute_llr / sync_quality
 │   ├── equalize.rs     equalize_local (Wiener per-tone)
+│   ├── spectrogram.rs  Spectrogram build/score kernel — JT9, JT65, Q65
+│   │                   (WSPR keeps its own: fixed-point FFT backend +
+│   │                   baseline-fit normalisation, a real difference)
+│   ├── interleave.rs   bit-reversal interleave_bitrev/deinterleave_bitrev
+│   │                   — WSPR, JT9 (JT65's is a different algorithm,
+│   │                   a 7×9 matrix transpose, and stays in jt65/)
 │   └── pipeline.rs     decode_frame / decode_frame_subtract / process_candidate_basic
 │                       (pub(crate) internals — see §4; call via
 │                       msg::decode_request::DecodeRequest/SniperRequest)
@@ -269,6 +275,10 @@ mfsk_core
 │   ├── wsjt77.rs       77-bit WSJT message (pack / unpack) — FT8, FT4, FST4, Q65, MSK144
 │   ├── wspr.rs         50-bit WSPR Types 1 / 2 / 3
 │   ├── jt72.rs         72-bit JT message — JT9, JT65
+│   ├── callsign28.rs   shared base-37/36/10/27³ callsign pack/unpack
+│   │                   core — jt72 (JT9/JT65) and wspr both wrap it;
+│   │                   traces to one upstream routine (`packjt.f90`'s
+│   │                   packcall/unpackcall)
 │   ├── q65.rs          77-bit <-> 13x GF(64)-symbol packing for the QRA codec
 │   ├── ap.rs           ApHint — a-priori hint builder (with_call1/call2/grid/report)
 │   ├── pipeline_ap.rs  AP-assisted multi-pass decode pipeline (77-bit-family protocols)
