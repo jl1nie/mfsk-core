@@ -1159,6 +1159,52 @@ fn probe_alloc_placement() {
 /// one more thing across.
 static mut ON_DECODES: Option<&'static (dyn Fn(&[WsprResult]) + Sync)> = None;
 
+/// What the streaming down-converter costs on this chip.
+///
+/// The bench proper is fed a baseband baked on a host, which is exactly
+/// the gap `wspr::ddc` closes: `decimate_to_baseband` needs an 11.25 MiB
+/// buffer and a 1 474 560-point FFT, so on an S3 there is no channelizer
+/// at all and every other timing here is the downstream of a stage that
+/// does not exist. This arm does not decode — it pushes one slot's worth
+/// of audio through the DDC and reports the rate, which is the number
+/// that decides whether the conversion fits inside the capture window it
+/// would run in.
+///
+/// Synthetic audio: the cost is per-sample and data-independent (a
+/// fixed-tap FIR and an eight-entry mixer table), so what it carries is
+/// irrelevant — only how much of it there is.
+fn bench_ddc() {
+    use mfsk_core::wspr::ddc::{StreamingDdc, AUDIO_RATE_HZ, NTAPS};
+
+    // One WSPR slot at 12 kHz, the real workload.
+    const N: usize = 114 * 12_000;
+    let mut audio = alloc::vec![0.0f32; 4096];
+    let w = 2.0 * core::f64::consts::PI * 1_540.0 / AUDIO_RATE_HZ as f64;
+    for (k, s) in audio.iter_mut().enumerate() {
+        *s = (0.3 * (w * k as f64).cos()) as f32;
+    }
+
+    let mut ddc = StreamingDdc::new();
+    let mut i = Vec::with_capacity(N / 32 + 64);
+    let mut q = Vec::with_capacity(N / 32 + 64);
+    let t0 = now_us();
+    let mut fed = 0usize;
+    while fed < N {
+        ddc.push(&audio, &mut i, &mut q);
+        fed += audio.len();
+    }
+    let us = now_us() - t0;
+
+    log::info!(
+        "ddc: {} taps, {fed} samples in {} ms = {:.2} us/sample -> {:.1}% of a 114 s capture;          produced {} baseband samples",
+        NTAPS,
+        us / 1000,
+        us as f32 / fed as f32,
+        (us as f32 / 1e6) / 114.0 * 100.0,
+        i.len(),
+    );
+}
+
 fn scan_body(bin: &'static [u8]) {
     log::info!("=== Phase 1: one decode_scan, PSRAM-resident baseband ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
@@ -1170,6 +1216,7 @@ fn scan_body(bin: &'static [u8]) {
     );
 
     probe_alloc_placement();
+    bench_ddc();
 
     let ps_i = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM idat");
     let ps_q = alloc_caps(NBB, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).expect("PSRAM qdat");

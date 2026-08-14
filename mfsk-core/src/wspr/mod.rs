@@ -42,6 +42,11 @@ use crate::msg::Wspr50Message;
 pub mod baseband;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod coarse_baseband;
+
+// Doc lives in `ddc.rs` itself (`//!`) — an outer `///` here as well
+// makes rustdoc resolve the merged text in *this* module's context,
+// where `super::` is the crate root and the intra-doc links break.
+pub mod ddc;
 // `decode` and `demod` pull in the FFT-gated baseband / search /
 // subtract / osd modules — only compile them when an FFT backend
 // is selected, so the `--features wspr` (TX-only embedded beacon)

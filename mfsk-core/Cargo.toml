@@ -129,6 +129,23 @@ wspr-pass2-topn = []
 # cheaper path" split as `wspr-pass2-topn` above.
 wspr-fano-cap-fast = []
 
+# Use the streaming down-converter (`wspr::ddc`) instead of wsprd's
+# whole-slot FFT channelizer (`wspr::baseband::decimate_to_baseband`).
+# Off by default — host keeps the reference, which is exact.
+#
+# Embedded has no choice: the reference needs an 11.25 MiB
+# `Complex<f32>` buffer on an 8 MB PSRAM part, at an FFT size
+# (1 474 560) that is neither a power of two nor within `esp-dsp`'s
+# 8 192 ceiling. Until this existed, the embedded WSPR bench was fed a
+# baseband baked on a host, so every device timing was the downstream
+# of a stage that did not exist there (issue #260).
+#
+# The two are not identical — bin selection is a brick wall, a FIR is
+# not — so turning this on for a host run is also how the difference
+# gets measured, against the same golden and AWGN corpus as everything
+# else.
+wspr-ddc = []
+
 # MSK144 (issue #25) — full port landed: LDPC(128,90) + MSK/OQPSK DSP
 # (Phase 1-2), burst-scan sync search (Phase 3, needs `fft-rustfft` /
 # `fft-extern` for the sub-modules that use it), per-frame decode
@@ -237,7 +254,7 @@ rustfft = "6"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn","wspr-fano-cap-fast"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn","wspr-fano-cap-fast","wspr-ddc"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing
