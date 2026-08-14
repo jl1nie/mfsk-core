@@ -7,6 +7,22 @@ for the shared setup / debug list. The repo-root `CLAUDE.md` covers
 flash-and-capture conventions (`scripts/flash-monitor.sh`,
 `logs/` layout) that apply to every embedded crate here.
 
+**No continuous lint gate.** The repo-root `Cargo.toml`'s `exclude =
+["embedded-poc", ...]` keeps these crates out of the host Cargo
+workspace (they need the `+esp` toolchain, which the fast host CI
+jobs don't have), so neither the pre-commit hook's `cargo clippy
+--workspace ...` nor CI's lint-gate job (`ci.yml`'s `rustfmt +
+clippy` job) ever touches this directory — `dead_code` and every
+other lint here accumulates silently until someone manually runs
+`cargo +esp build`/`clippy` per crate (2026-08-14 dead-code sweep
+found exactly one: a stale `field is never read` in
+`embedded-shared::wspr_dual_core::WorkerStack`, fixed). Adding a CI
+job for this was considered and declined for now — same
+cost/benefit tradeoff as the tier-C sensitivity sweeps not being in
+CI (`+esp` toolchain setup, esp-idf checkout, is not cheap for a
+lightweight runner). If you're doing any kind of cleanup/audit pass
+across the repo, remember to check here too — nothing else will.
+
 ## One-time setup (already done on this machine)
 
 - `~/.rustup/toolchains/esp/` — Xtensa-fork Rust toolchain installed
