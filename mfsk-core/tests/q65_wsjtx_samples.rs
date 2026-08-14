@@ -557,18 +557,17 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
 
     // Golden "VK3WE VK7MO QE37" @ 995 Hz, jt9 SNR -16 dB.
     //
-    // `max_extra: 1`, not the usual 0 — **tracked debt, not accepted
-    // design.** A real local `jt9 -3 -p 120 -b D -d 3` run on this file
-    // (2026-08-14) reports exactly *one* decode at 995 Hz; this crate
-    // reports the identical message twice, at two nearby frequencies
-    // (~994 Hz and ~1001 Hz, ~7 Hz apart). Root cause: `q65` has no
-    // cross-candidate dedup at all (unlike FT8/FT4/FST4, which collapse
-    // re-derivations of the same message via SIC-subtraction or a
-    // `known`-list filter) — two coarse candidates a few Hz apart both
-    // independently lock onto and decode the same real signal, and
-    // nothing downstream notices they agree. Filed as issue #287
-    // rather than fixed here or silently accepted: this test's job is
-    // to make the gap visible, not to design the fix.
+    // Was max_extra: 1 (tracked debt, issue #287): this crate used to
+    // report the identical message twice, at two nearby frequencies
+    // (~994 Hz and ~1001 Hz, ~7.4 Hz apart — more than one
+    // TONE_SPACING_HZ=6.0 Hz tone away). Root cause: two coarse
+    // candidates each independently local-maximal in their own
+    // ±1-tone-spacing neighbourhood (WSJT-X's own `q65_ccf_22`
+    // admission radius) can still be more than one tone spacing apart
+    // overall, and the post-decode dedup's fixed ±4 Hz window didn't
+    // reach that far. Fixed by scaling the dedup window to
+    // `dedup_freq_tol_hz` (`q65::rx`, `2 × TONE_SPACING_HZ` floored at
+    // the old 4 Hz) — back to the normal max_extra: 0.
     assert_golden(
         &fading,
         &GoldenSet {
@@ -580,7 +579,7 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
                 snr_db: Some(-16.0),
             }],
             min_hits: 1,
-            max_extra: 1,
+            max_extra: 0,
         },
         Tolerances {
             freq_hz: 15.0,

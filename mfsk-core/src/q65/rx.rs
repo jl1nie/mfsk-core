@@ -537,7 +537,7 @@ pub(crate) fn decode_scan_fading_for<P: ModulationParams>(
         };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
+                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
@@ -645,7 +645,7 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
         };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
+                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
@@ -658,11 +658,43 @@ pub(crate) fn decode_scan_with_ap_list_for<P: ModulationParams>(
     seen
 }
 
+/// Post-decode dedup frequency window (issue #287): two candidates
+/// decoding the *same* message within this window are treated as one
+/// real signal, not two.
+///
+/// [`super::search::coarse_search_on_spec_for`]'s own frequency-domain
+/// local-max suppression only rules out a second peak within
+/// `±bins_per_tone` (= `±P::TONE_SPACING_HZ`) of a higher one — a
+/// direct port of WSJT-X's own `q65_ccf_22` admission rule
+/// (`i3=i-mode_q65, i4=i+mode_q65`). On wide sub-modes under real
+/// fading (Q65-120D 10 GHz rainscatter, `q65_wsjtx_samples.rs`'s
+/// `rainscatter_10ghz_120d_decodes_with_fading_metric`), that leaves
+/// room for two lobes of one Doppler-spread signal to each be a local
+/// maximum in its own ±1-tone-spacing neighbourhood while still being
+/// separated by *more* than one tone spacing overall (measured: 993.8
+/// Hz and 1001.2 Hz on `210117_0920.wav`, TONE_SPACING_HZ = 6.0 Hz,
+/// 7.4 Hz apart) — both survive coarse search and both decode the
+/// identical message.
+///
+/// The old fixed `4.0 Hz` window (this function's predecessor) was too
+/// narrow to catch that on wide sub-modes; scaling to
+/// `2 × TONE_SPACING_HZ` covers it with margin. `max(_, 4.0)` keeps
+/// the previously-tested radius as a floor for narrow sub-modes
+/// (Q65-15A..Q65-300A's `A`) rather than *shrinking* it — this dedup's
+/// real safety net is exact message-text equality (a 77-bit
+/// CRC-protected Wsjt77 message colliding between two different real
+/// transmissions is not a realistic concern), so widening the
+/// frequency window carries negligible risk of merging genuinely
+/// distinct signals.
+fn dedup_freq_tol_hz<P: ModulationParams>() -> f32 {
+    (2.0 * P::TONE_SPACING_HZ).max(4.0)
+}
+
 /// Scan an audio buffer for Q65 frames in sub-mode `P` within the
 /// search window: runs [`super::search::coarse_search_for`] and tries
 /// [`decode_at_for`] on each candidate in score order, collapsing
-/// duplicate decodes (same message, frequency within ±4 Hz, start
-/// sample within ±1 symbol).
+/// duplicate decodes (same message, frequency within
+/// [`dedup_freq_tol_hz`], start sample within ±1 symbol).
 pub(crate) fn decode_scan_for<P: ModulationParams>(
     audio: &[f32],
     sample_rate: u32,
@@ -735,7 +767,7 @@ fn decode_scan_inner<P: ModulationParams>(
         };
         let dup = seen.iter().any(|prev| {
             prev.message == decode.message
-                && (prev.freq_hz - decode.freq_hz).abs() <= 4.0
+                && (prev.freq_hz - decode.freq_hz).abs() <= dedup_freq_tol_hz::<P>()
                 && (prev.start_sample as i64 - decode.start_sample as i64).abs() <= nsps as i64
         });
         if !dup {
