@@ -549,6 +549,17 @@ mod sharing_ratchet_selftest {
     /// see the plan file for why each was out of scope for this pass.
     const EXPECTED_SCAN_DEDUP_ADOPTERS: &[&str] = &["jt9", "jt65", "wspr", "q65"];
 
+    /// Protocols building their coarse-search spectrogram via the
+    /// shared `engine::spectrogram::Spectrogram` (found in a bottom-up
+    /// sweep after the top-down `BpPooledFec` blocker closed off
+    /// Stage 2/3 — see the plan file) rather than their own copy. WSPR
+    /// is a deliberate non-adopter: it uses the fixed-point-capable
+    /// `engine::fft` backend abstraction (not raw `rustfft`, which
+    /// this shared implementation hardcodes) and normalises scores
+    /// against a fitted per-bin baseline rather than a flat noise
+    /// floor — a real algorithmic difference, not just a naming one.
+    const EXPECTED_SPECTROGRAM_ADOPTERS: &[&str] = &["jt9", "jt65", "q65"];
+
     fn assert_no_regression(
         mechanism: &str,
         expected_adopters: &[&str],
@@ -604,6 +615,15 @@ mod sharing_ratchet_selftest {
         assert_no_regression("scan_dedup_match", EXPECTED_SCAN_DEDUP_ADOPTERS, |src| {
             src.contains("scan_dedup_match")
         });
+    }
+
+    #[test]
+    fn spectrogram_adoption_does_not_regress() {
+        assert_no_regression(
+            "engine::spectrogram::Spectrogram",
+            EXPECTED_SPECTROGRAM_ADOPTERS,
+            |src| src.contains("engine::spectrogram") || src.contains("spectrogram::Spectrogram"),
+        );
     }
 
     /// Sanity check on the scan itself, mirroring

@@ -1090,7 +1090,7 @@ fn q65_multi_period_speed_diag() {
 #[test]
 #[ignore = "manual diagnostic — Q65-30A/60B candidate-count profiling (new investigation)"]
 fn q65_multi_period_candidate_count_diag() {
-    use mfsk_core::q65::search::{Spectrogram, coarse_search_on_spec_for};
+    use mfsk_core::q65::search::{build_spectrogram, coarse_search_on_spec_for};
 
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
         eprintln!("skipping: sample tree not found");
@@ -1114,10 +1114,10 @@ fn q65_multi_period_candidate_count_diag() {
         max_candidates: 32,
     };
 
-    let mut ema_spec = Spectrogram::build_for::<Q65a30>(&slots[0], 12_000);
+    let mut ema_spec = build_spectrogram::<Q65a30>(&slots[0], 12_000);
     for (i, audio) in slots.iter().enumerate() {
         if i > 0 {
-            let slot_spec = Spectrogram::build_for::<Q65a30>(audio, 12_000);
+            let slot_spec = build_spectrogram::<Q65a30>(audio, 12_000);
             if slot_spec.n_time == ema_spec.n_time && slot_spec.n_freq == ema_spec.n_freq {
                 let weight = 1.0_f32 / ((i + 1).min(4) as f32);
                 let one_minus = 1.0 - weight;
@@ -1141,7 +1141,7 @@ fn q65_multi_period_candidate_count_diag() {
 #[test]
 #[ignore = "manual diagnostic — Q65-30A candidate-score calibration (new investigation)"]
 fn q65_candidate_score_calibration_diag() {
-    use mfsk_core::q65::search::{Spectrogram, coarse_search_on_spec_for};
+    use mfsk_core::q65::search::{build_spectrogram, coarse_search_on_spec_for};
 
     let Some(dir) = samples_dir("30A_Ionoscatter_6m") else {
         eprintln!("skipping: sample tree not found");
@@ -1166,10 +1166,10 @@ fn q65_candidate_score_calibration_diag() {
         max_candidates: 100_000,
     };
 
-    let mut ema_spec = Spectrogram::build_for::<Q65a30>(&slots[0], 12_000);
+    let mut ema_spec = build_spectrogram::<Q65a30>(&slots[0], 12_000);
     for (i, audio) in slots.iter().enumerate() {
         if i > 0 {
-            let slot_spec = Spectrogram::build_for::<Q65a30>(audio, 12_000);
+            let slot_spec = build_spectrogram::<Q65a30>(audio, 12_000);
             if slot_spec.n_time == ema_spec.n_time && slot_spec.n_freq == ema_spec.n_freq {
                 let weight = 1.0_f32 / ((i + 1).min(4) as f32);
                 let one_minus = 1.0 - weight;
