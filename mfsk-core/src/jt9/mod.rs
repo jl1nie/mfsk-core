@@ -31,6 +31,7 @@
 //! }
 //! ```
 
+use crate::engine::pipeline::scan_dedup_match;
 use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncMode};
 use crate::fec::ConvFano232;
 use crate::msg::Jt72Codec;
@@ -236,11 +237,15 @@ fn decode_scan_inner(
         let Some(d) = decode::decode_at_baseband_with_fft_depth(&big_fft, c.freq_hz, depth) else {
             continue;
         };
-        let dup = seen.iter().any(|prev| {
-            prev.message == d.message
-                && (prev.freq_hz - d.freq_hz).abs() <= 4.0
-                && (prev.start_sample as i64 - d.start_sample as i64).abs() <= nsps as i64
-        });
+        let dup = scan_dedup_match(
+            &seen,
+            &d,
+            |r| &r.message,
+            |r| r.freq_hz,
+            |r| r.start_sample as i64,
+            4.0,
+            nsps as i64,
+        );
         if !dup {
             if let Some(cb) = on_result {
                 cb(&d);

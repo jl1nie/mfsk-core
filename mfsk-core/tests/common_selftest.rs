@@ -539,6 +539,16 @@ mod sharing_ratchet_selftest {
     /// without the trait surface changing too.
     const EXPECTED_SNR_TRAIT_ADOPTERS: &[&str] = &["ft4", "fst4"];
 
+    /// Protocols routing their own decode-scan candidate dedup through
+    /// `engine::pipeline::scan_dedup_match`/`scan_dedup_match_cross`
+    /// (Stage 1 of the code-sharing audit) rather than a hand-rolled
+    /// `seen.iter().any(...)` predicate. FT8 (spread across multiple
+    /// inline sites in a much larger bespoke engine) and MSK144 (a
+    /// structurally different single-slot state machine, not a
+    /// `Vec`-accumulating scan) are deliberately not adopters here —
+    /// see the plan file for why each was out of scope for this pass.
+    const EXPECTED_SCAN_DEDUP_ADOPTERS: &[&str] = &["jt9", "jt65", "wspr", "q65"];
+
     fn assert_no_regression(
         mechanism: &str,
         expected_adopters: &[&str],
@@ -587,6 +597,13 @@ mod sharing_ratchet_selftest {
             EXPECTED_SNR_TRAIT_ADOPTERS,
             |src| src.contains("fn snr_db(ctx"),
         );
+    }
+
+    #[test]
+    fn scan_dedup_adoption_does_not_regress() {
+        assert_no_regression("scan_dedup_match", EXPECTED_SCAN_DEDUP_ADOPTERS, |src| {
+            src.contains("scan_dedup_match")
+        });
     }
 
     /// Sanity check on the scan itself, mirroring
