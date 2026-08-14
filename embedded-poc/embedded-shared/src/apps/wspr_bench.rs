@@ -1184,7 +1184,18 @@ fn bench_ddc() {
         *s = (0.3 * (w * k as f64).cos()) as f32;
     }
 
-    let mut ddc = StreamingDdc::new();
+    // Heap, not `.bss`. Internal DRAM was measured and is not worth
+    // it here: 7.04 -> 6.37 us/sample (-9.5 %) for 25 KB of the
+    // scarcest resource on the chip, which would take the largest
+    // contiguous block from 104 KB to 76 KB against a 72 KB scan-task
+    // stack. The DDC reads its taps and history *sequentially*, which
+    // is the pattern PSRAM's cache handles well — unlike FT8's `cs Box`
+    // or `coarse_baseband`'s 4 KB-strided `ps`, where the same move is
+    // worth 5-10x. `new_in` still takes the buffers, so a caller with
+    // spare internal DRAM can make the other choice.
+    let mut bufs = mfsk_core::wspr::ddc::DdcBufs::new();
+    let (t, hi, hq) = bufs.as_parts();
+    let mut ddc = StreamingDdc::new_in(t, hi, hq);
     let mut i = Vec::with_capacity(N / 32 + 64);
     let mut q = Vec::with_capacity(N / 32 + 64);
     let t0 = now_us();

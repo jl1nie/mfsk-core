@@ -145,45 +145,112 @@ fn design_lowpass(ntaps: usize, fc_norm: f32) -> Vec<f32> {
 /// baseband samples are appended to the caller's buffers. State is one
 /// `NTAPS`-sample complex ring buffer (~14 KB) plus two counters —
 /// nothing that scales with slot length.
-pub struct StreamingDdc {
+pub struct StreamingDdc<'a> {
     /// Taps in **reverse** order, so the dot product walks history
     /// forwards and both operands are sequential.
-    taps_rev: Vec<f32>,
+    taps_rev: &'a mut [f32],
     mixer: [(f32, f32); 8],
     /// Linear (not circular) history, compacted rarely. A ring costs a
     /// wrap test per tap, which defeats unrolling on the one loop that
     /// matters; see [`Self::dot`].
-    hist_i: Vec<f32>,
-    hist_q: Vec<f32>,
+    hist_i: &'a mut [f32],
+    hist_q: &'a mut [f32],
+    /// Live samples in `hist_*`.
+    hist_len: usize,
+    /// Index where the current `NTAPS` window begins, maintained
+    /// incrementally rather than as `hist_len - NTAPS`.
+    ///
+    /// Not a micro-optimisation: the subtraction folds into an
+    /// addressing offset of `-NTAPS*4 = -7168`, which the Xtensa
+    /// backend of the `esp` Rust fork rejects outright —
+    /// `rustc-LLVM ERROR: Cannot select: i32 = Constant<-7168>`. Host
+    /// builds are unaffected, so this only shows up when cross-building.
+    win_start: usize,
     /// Input samples consumed, for the mixer phase.
     n_in: usize,
     /// Input samples until the next output.
     to_next_out: usize,
 }
 
-/// History capacity. Compaction copies the live `NTAPS` window back to
-/// the front once the buffer fills, i.e. every `NTAPS` samples, so it
-/// amortises to one float moved per input sample — against ~56
-/// mult-adds, free.
-const HIST_CAP: usize = 2 * NTAPS;
+/// History capacity, and the length [`StreamingDdc::new_in`] requires.
+///
+/// Compaction copies the live `NTAPS` window back to the front once the
+/// buffer fills — every 512 samples here, amortising to ~3.5 floats
+/// moved per input sample against ~56 mult-adds. A larger buffer would
+/// amortise further; this is sized so the whole working set fits in a
+/// scarce internal-DRAM budget (see [`StreamingDdc::new_in`]), which
+/// matters more.
+pub const HIST_LEN: usize = NTAPS + 512;
 
-impl Default for StreamingDdc {
+/// Working set the caller supplies to [`StreamingDdc::new_in`], owned
+/// as `Vec`s.
+///
+/// The host default. Embedded wants these in internal DRAM instead —
+/// see [`StreamingDdc::new_in`].
+pub struct DdcBufs {
+    taps: alloc::vec::Vec<f32>,
+    hist_i: alloc::vec::Vec<f32>,
+    hist_q: alloc::vec::Vec<f32>,
+}
+
+impl Default for DdcBufs {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl StreamingDdc {
+impl DdcBufs {
     pub fn new() -> Self {
-        let mut taps_rev = design_lowpass(NTAPS, 1.0 / (2.0 * DECIM as f32));
-        taps_rev.reverse();
         Self {
-            taps_rev,
+            taps: vec![0.0; NTAPS],
+            hist_i: vec![0.0; HIST_LEN],
+            hist_q: vec![0.0; HIST_LEN],
+        }
+    }
+
+    /// Borrow the three buffers for [`StreamingDdc::new_in`].
+    pub fn as_parts(&mut self) -> (&mut [f32], &mut [f32], &mut [f32]) {
+        (&mut self.taps, &mut self.hist_i, &mut self.hist_q)
+    }
+}
+
+impl<'a> StreamingDdc<'a> {
+    /// Build over caller-supplied storage.
+    ///
+    /// `taps` must be [`NTAPS`] long and `hist_i`/`hist_q` [`HIST_LEN`];
+    /// contents are overwritten. **Where the caller puts them is the
+    /// point.** Every output reads all three in full — 1 793 taps plus
+    /// a 1 793-sample window per channel — and on an ESP32-S3 anything
+    /// over `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` lands in PSRAM, which
+    /// measured 7.04 us/sample, about 15 cycles per mult-add. Same
+    /// answer as FT8's `internal_pool`: keep the bulk wherever, put the
+    /// hot working set in internal DRAM. ~25 KB total.
+    pub fn new_in(taps: &'a mut [f32], hist_i: &'a mut [f32], hist_q: &'a mut [f32]) -> Self {
+        assert_eq!(taps.len(), NTAPS, "taps must be NTAPS long");
+        assert_eq!(hist_i.len(), HIST_LEN, "hist_i must be HIST_LEN long");
+        assert_eq!(hist_q.len(), HIST_LEN, "hist_q must be HIST_LEN long");
+        let designed = design_lowpass(NTAPS, 1.0 / (2.0 * DECIM as f32));
+        // Index loop, not `.iter().rev()`: a reverse iterator over a
+        // constant-length slice folds into a `-NTAPS*4` addressing
+        // offset that the `esp` fork's Xtensa backend cannot select
+        // (`rustc-LLVM ERROR: Cannot select: i32 = Constant<-7168>`).
+        // Host builds compile it fine, so this only appears when
+        // cross-building.
+        let last = NTAPS - 1;
+        for k in 0..NTAPS {
+            taps[k] = designed[last - k];
+        }
+        // Pre-filled with the zeros the filter would have seen before
+        // the stream started.
+        hist_i[..NTAPS].fill(0.0);
+        hist_q[..NTAPS].fill(0.0);
+        Self {
+            taps_rev: taps,
             mixer: mixer_table(),
-            // Pre-filled with the zeros the filter would have seen
-            // before the stream started.
-            hist_i: vec![0.0; NTAPS],
-            hist_q: vec![0.0; NTAPS],
+            hist_i,
+            hist_q,
+            hist_len: NTAPS,
+            win_start: 0,
             n_in: 0,
             // The first output is centred on input sample 0, which the
             // filter only sees once `GROUP_DELAY` more samples have
@@ -200,8 +267,10 @@ impl StreamingDdc {
     pub fn push(&mut self, audio: &[f32], out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
         for &s in audio {
             let (c, sn) = self.mixer[self.n_in % 8];
-            self.hist_i.push(s * c);
-            self.hist_q.push(s * sn);
+            self.hist_i[self.hist_len] = s * c;
+            self.hist_q[self.hist_len] = s * sn;
+            self.hist_len += 1;
+            self.win_start += 1;
             self.n_in += 1;
 
             self.to_next_out -= 1;
@@ -212,18 +281,20 @@ impl StreamingDdc {
                 out_q.push(q * REFERENCE_GAIN);
             }
 
-            if self.hist_i.len() == HIST_CAP {
+            if self.hist_len == HIST_LEN {
                 self.compact();
             }
         }
     }
 
     fn compact(&mut self) {
-        let keep = self.hist_i.len() - NTAPS;
-        self.hist_i.copy_within(keep.., 0);
-        self.hist_q.copy_within(keep.., 0);
-        self.hist_i.truncate(NTAPS);
-        self.hist_q.truncate(NTAPS);
+        // `win_start` is the same quantity, already maintained without
+        // the constant-folded subtraction — see its field comment.
+        let keep = self.win_start;
+        self.hist_i.copy_within(keep..self.hist_len, 0);
+        self.hist_q.copy_within(keep..self.hist_len, 0);
+        self.hist_len = NTAPS;
+        self.win_start = 0;
     }
 
     /// Flush the tail: feed `GROUP_DELAY` zeros so the last real input
@@ -249,9 +320,9 @@ impl StreamingDdc {
     /// operands walk forwards and the loop has no wrap test to defeat
     /// unrolling.
     fn dot(&self) -> (f32, f32) {
-        let n = self.hist_i.len();
-        let hi = &self.hist_i[n - NTAPS..];
-        let hq = &self.hist_q[n - NTAPS..];
+        let a = self.win_start;
+        let hi = &self.hist_i[a..a + NTAPS];
+        let hq = &self.hist_q[a..a + NTAPS];
         let h = &self.taps_rev[..];
 
         let mut ai = [0.0f32; 4];
@@ -281,7 +352,9 @@ impl StreamingDdc {
 /// [`decimate_to_baseband`]: super::baseband::decimate_to_baseband
 pub fn ddc_to_baseband(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
     let n_in = audio.len().min(NPOINTS_MAX);
-    let mut ddc = StreamingDdc::new();
+    let mut bufs = DdcBufs::new();
+    let (t, hi, hq) = bufs.as_parts();
+    let mut ddc = StreamingDdc::new_in(t, hi, hq);
     let mut idat = Vec::with_capacity(NFFT2);
     let mut qdat = Vec::with_capacity(NFFT2);
     ddc.push(&audio[..n_in], &mut idat, &mut qdat);
