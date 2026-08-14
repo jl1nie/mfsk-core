@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283)
+## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260)
 
 ### Changed
 
