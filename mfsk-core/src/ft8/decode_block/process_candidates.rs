@@ -1804,7 +1804,11 @@ where
 /// bespoke equivalent of [`crate::msg::pipeline_ap::ap_passes`]'s
 /// `pass 7` (CQ + DX call), which FT4/FST4 reach via
 /// `msg::pipeline_ap`. Independent implementations, independently
-/// tuned — review both when adjusting either (issue #192).
+/// tuned — review both when adjusting either (issue #285, split from
+/// #192). No shared numeric threshold to ratchet-test here (unlike
+/// FT8's OSD-escalation `Q_NDEEP3_THRESHOLD`, see
+/// `ft8::decode_block::osd_strategy`) — `ap_passes` doesn't gate pass
+/// 7 on an nsync value of its own.
 #[cfg(feature = "fft-rustfft")]
 const BLIND_CQ_MIN_NSYNC: u32 = 12;
 
