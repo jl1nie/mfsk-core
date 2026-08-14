@@ -151,73 +151,22 @@ pub fn unpack50(data: &[u8; 7]) -> (u32, u32) {
 /// Encode a callsign into a 28-bit integer. Returns `None` if the callsign
 /// doesn't fit the compressed form (must be ≤ 6 chars with a digit in
 /// position 1 or 2, and only A-Z / 0-9 / space).
+///
+/// Thin wrapper over [`crate::msg::callsign28::pack_call28`] — WSPR
+/// shares this encoding with JT9/JT65 (`crate::msg::jt72`), both
+/// tracing to WSJT-X's `packjt.f90::packcall` (called from
+/// `wsprcode/wspr_old_subs.f90` too, not just the JT65/JT9 message
+/// layer). WSPR has no CQ/QRZ/DE special-token layer (Type-1 WSPR
+/// messages are always callsign+grid+power), so there's nothing to
+/// check above the shared core here, unlike [`crate::msg::jt72::pack_call`].
 pub fn pack_call(callsign: &str) -> Option<u32> {
-    let bytes = callsign.as_bytes();
-    if bytes.len() > 6 || bytes.is_empty() {
-        return None;
-    }
-    let mut call6 = [b' '; 6];
-    // Right-align to the 3rd slot: if char[2] is a digit keep as-is,
-    // else if char[1] is a digit shift one position right.
-    if bytes.len() >= 3 && bytes[2].is_ascii_digit() {
-        for (i, &b) in bytes.iter().enumerate() {
-            call6[i] = b;
-        }
-    } else if bytes.len() >= 2 && bytes[1].is_ascii_digit() {
-        for (i, &b) in bytes.iter().enumerate() {
-            call6[i + 1] = b;
-        }
-    } else {
-        return None;
-    }
-
-    let codes: [u8; 6] = {
-        let mut c = [0u8; 6];
-        for i in 0..6 {
-            c[i] = callsign_char_code(call6[i])?;
-        }
-        c
-    };
-
-    // n = c0*36 + c1 ...       (first two slots: 37-symbol alphabet)
-    // then digit (c2, 0-9), then three letter/space (c3..c5, 27 symbols).
-    let mut n: u32 = codes[0] as u32;
-    n = n * 36 + codes[1] as u32;
-    n = n * 10 + codes[2] as u32;
-    n = n * 27 + (codes[3].wrapping_sub(10)) as u32;
-    n = n * 27 + (codes[4].wrapping_sub(10)) as u32;
-    n = n * 27 + (codes[5].wrapping_sub(10)) as u32;
-    Some(n)
+    crate::msg::callsign28::pack_call28(callsign, |c| callsign_char_code(c).map(u32::from))
 }
 
 /// Unpack a 28-bit callsign integer. Returns `None` for the "reserved"
 /// range (≥ 262_177_560) that WSJT-X treats as non-Type-1.
 pub fn unpack_call(ncall: u32) -> Option<String> {
-    if ncall >= 262_177_560 {
-        return None;
-    }
-    let mut n = ncall;
-    let mut tmp = [b' '; 6];
-    // Reverse of pack_call: pull digits/letters out LSB-first.
-    let i = (n % 27 + 10) as usize;
-    tmp[5] = CHAR37[i];
-    n /= 27;
-    let i = (n % 27 + 10) as usize;
-    tmp[4] = CHAR37[i];
-    n /= 27;
-    let i = (n % 27 + 10) as usize;
-    tmp[3] = CHAR37[i];
-    n /= 27;
-    let i = (n % 10) as usize;
-    tmp[2] = CHAR37[i];
-    n /= 10;
-    let i = (n % 36) as usize;
-    tmp[1] = CHAR37[i];
-    n /= 36;
-    tmp[0] = CHAR37[n as usize];
-
-    let s = core::str::from_utf8(&tmp).ok()?;
-    Some(s.trim().to_string())
+    crate::msg::callsign28::unpack_call28(ncall)
 }
 
 /// Pack a 4-char grid and transmit power into a 22-bit integer.

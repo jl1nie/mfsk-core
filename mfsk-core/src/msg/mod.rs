@@ -13,6 +13,7 @@
 //! is shared by every message unpack invocation.
 
 pub mod ap;
+pub mod callsign28;
 /// Unified owned decode row for host UIs — see [`decoded::Decoded`].
 pub mod decoded;
 // `DecodeRequest`/`SniperRequest` builder (issue #191); depends on

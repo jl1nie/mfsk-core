@@ -84,11 +84,13 @@ impl fmt::Display for Jt72Message {
 // Character helpers (WSJT-X `nchar` / `unpackcall` tables)
 // ─────────────────────────────────────────────────────────────────────────
 
-/// 37-char callsign alphabet: digits, uppercase letters, space.
-const CALL_ALPHA: &[u8; 37] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
-
 /// Translate a callsign char to its `nchar` index: digit→0..9,
 /// letter→10..35, space→36. Returns `None` for anything else.
+/// Accepts lowercase too — defensive; every caller here already
+/// uppercases before this runs (see [`pack_call`]'s digit-position
+/// step), so the lowercase branch never actually fires on live
+/// input, but the extraction into [`crate::msg::callsign28`]
+/// preserves it rather than narrowing behaviour.
 fn nchar(c: u8) -> Option<u32> {
     match c {
         b'0'..=b'9' => Some((c - b'0') as u32),
@@ -111,116 +113,31 @@ fn nchar(c: u8) -> Option<u32> {
 /// Returns `None` if the callsign doesn't fit the base-37/36/10/27³
 /// schema — those cases trigger the "text / compound" fallbacks in
 /// `packcall` that this MVP doesn't yet model.
+///
+/// Special tokens (`CQ`/`QRZ`/`DE`) are JT9/JT65-specific — WSPR has
+/// no bare-CQ message type — so they're handled here, above
+/// [`crate::msg::callsign28::pack_call28`]'s shared core.
 pub fn pack_call(call: &str) -> Option<u32> {
-    let bytes = call.as_bytes();
-    // Special tokens handled by WSJT-X's `packcall`.
     match call {
         "CQ" => return Some(NBASE + 1),
         "QRZ" => return Some(NBASE + 2),
         "DE" => return Some(267_796_945),
         _ => {}
     }
-    if bytes.is_empty() || bytes.len() > 6 {
-        return None;
-    }
-
-    // Build the 6-char right-aligned working copy `tmp`.
-    let mut tmp = [b' '; 6];
-    if bytes.len() >= 3 && bytes[2].is_ascii_digit() {
-        // Digit at position 3 (0-indexed 2) — left-aligned as-is.
-        for (i, &b) in bytes.iter().enumerate() {
-            tmp[i] = b;
-        }
-    } else if bytes.len() >= 2 && bytes[1].is_ascii_digit() {
-        // Digit at position 2 — shift right by one so digit lands at
-        // tmp[2]. Max source length becomes 5.
-        if bytes.len() > 5 {
-            return None;
-        }
-        for (i, &b) in bytes.iter().enumerate() {
-            tmp[i + 1] = b;
-        }
-    } else {
-        return None;
-    }
-
-    // Uppercase.
-    for t in tmp.iter_mut() {
-        if t.is_ascii_lowercase() {
-            *t -= b'a' - b'A';
-        }
-    }
-
-    // Validate slot alphabets.
-    let n = [
-        nchar(tmp[0])?,
-        nchar(tmp[1])?,
-        nchar(tmp[2])?,
-        nchar(tmp[3])?,
-        nchar(tmp[4])?,
-        nchar(tmp[5])?,
-    ];
-    // Slot 0: letter/digit/space (0..=36)
-    // Slot 1: letter/digit (0..=35)
-    if n[1] == 36 {
-        return None;
-    }
-    // Slot 2: digit (0..=9)
-    if n[2] >= 10 {
-        return None;
-    }
-    // Slots 3..=5: letter/space (10..=36)
-    for k in 3..6 {
-        if n[k] < 10 {
-            return None;
-        }
-    }
-
-    let mut ncall = n[0];
-    ncall = 36 * ncall + n[1];
-    ncall = 10 * ncall + n[2];
-    ncall = 27 * ncall + n[3] - 10;
-    ncall = 27 * ncall + n[4] - 10;
-    ncall = 27 * ncall + n[5] - 10;
-    Some(ncall)
+    crate::msg::callsign28::pack_call28(call, nchar)
 }
 
 /// Unpack a 28-bit integer back into a callsign or special token.
 /// Returns `None` for values outside the base-37/36/10/27³ range
 /// (those encode compound-callsign variants).
 pub fn unpack_call(ncall: u32) -> Option<String> {
-    // Special tokens.
     match ncall {
         v if v == NBASE + 1 => return Some("CQ".into()),
         v if v == NBASE + 2 => return Some("QRZ".into()),
         267_796_945 => return Some("DE".into()),
         _ => {}
     }
-    if ncall >= NBASE {
-        return None;
-    }
-    let mut n = ncall;
-    let mut chars = [b' '; 6];
-    let c6 = (n % 27) + 10;
-    chars[5] = CALL_ALPHA[c6 as usize];
-    n /= 27;
-    let c5 = (n % 27) + 10;
-    chars[4] = CALL_ALPHA[c5 as usize];
-    n /= 27;
-    let c4 = (n % 27) + 10;
-    chars[3] = CALL_ALPHA[c4 as usize];
-    n /= 27;
-    let c3 = n % 10;
-    chars[2] = CALL_ALPHA[c3 as usize];
-    n /= 10;
-    let c2 = n % 36;
-    chars[1] = CALL_ALPHA[c2 as usize];
-    n /= 36;
-    let c1 = n; // 0..=36
-    chars[0] = CALL_ALPHA[c1 as usize];
-
-    let s = core::str::from_utf8(&chars).ok()?;
-    Some(s.trim().to_string())
+    crate::msg::callsign28::unpack_call28(ncall)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
