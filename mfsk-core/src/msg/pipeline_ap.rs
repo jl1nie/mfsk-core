@@ -57,7 +57,14 @@ where
 /// **FT8 analog for pass 7**: `ft8::decode_block::process_candidates`'s
 /// own blind-CQ `Pass 12` (gated by `BLIND_CQ_MIN_NSYNC`) is FT8's
 /// bespoke equivalent, independently implemented and tuned — review
-/// both when adjusting either (issue #192).
+/// both when adjusting either (issue #285, split from #192). Unlike
+/// the OSD-escalation pair (`osd_escalation_gates` /
+/// `Q_NDEEP3_THRESHOLD`), this pass has no single paired numeric
+/// threshold to ratchet-test against — `ap_passes` doesn't gate pass 7
+/// on an nsync value of its own, so there's nothing here for
+/// `BLIND_CQ_MIN_NSYNC` to be asserted equal to. Prose cross-reference
+/// only; a future retune of either still needs a human to remember
+/// this comment.
 pub(crate) fn ap_passes(base: &ApHint) -> Vec<(ApHint, u8)> {
     let mut passes = Vec::new();
     if base.call1.is_some() && base.call2.is_some() {

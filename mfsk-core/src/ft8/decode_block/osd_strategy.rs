@@ -39,7 +39,11 @@
 //! (same root cause as issue #198). FT4/FST4 get their OSD escalation
 //! through [`crate::engine::pipeline::osd_escalation_gates`] instead —
 //! an independent implementation, independently calibrated. Review
-//! both when tuning either (issue #192).
+//! both when tuning either (issue #285, split from #192).
+//! [`Q_NDEEP3_THRESHOLD`]'s doc comment carries a ratchet test against
+//! `osd_escalation_gates::<Ft8>()`'s fallback-branch value so a future
+//! silent divergence fails CI instead of relying on this comment being
+//! read.
 
 #![cfg(feature = "fft-rustfft")]
 
@@ -56,6 +60,15 @@ use crate::fec::ldpc::params::Ldpc174_91Params;
 /// `q >= 18` split between `osd_decode_deep(_, 3, _)` and
 /// `osd_decode(_)` (ndeep=2), now with WSJT-X-faithful internals on
 /// both sides.
+///
+/// **Generic analog**: [`crate::engine::pipeline::osd_escalation_gates`]
+/// is FT4/FST4's equivalent gate — a `(low, high)` pair rather than
+/// this module's single threshold, structurally different but
+/// covering the same decision. They agree today (both `18` for FT8
+/// via that function's fallback branch) because neither has been
+/// retuned since the other; `tests::q_ndeep3_threshold_matches_generic_gate`
+/// below asserts it so a future silent divergence fails CI rather
+/// than waiting on someone to reread this comment (issue #285).
 const Q_NDEEP3_THRESHOLD: u32 = 18;
 
 // OSD `nharderrors` ceiling — now [`DecodeStrictness::ft8_nharderrors_max`]
@@ -261,4 +274,34 @@ pub(super) fn try_fallback(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Q_NDEEP3_THRESHOLD;
+
+    /// Issue #285: `Q_NDEEP3_THRESHOLD` and
+    /// `engine::pipeline::osd_escalation_gates`'s FT4/FST4-independent
+    /// fallback branch are two separately-tuned implementations of the
+    /// same OSD-escalation decision, with nothing keeping them in sync
+    /// beyond neither having been retuned recently. Asserting equality
+    /// here doesn't unify the mechanisms (that's the issue's "Heavier"
+    /// direction, deliberately not attempted — same WSJT-X-fidelity
+    /// regression risk as the rejected #192 proposal) — it just turns
+    /// "review both when tuning either" from a doc comment someone has
+    /// to remember to read into something CI enforces. If this ever
+    /// fails, it means one side was retuned against real WSJT-X
+    /// reference data and the other wasn't reviewed yet — go do that
+    /// review, then update whichever side is still correct to match
+    /// (or leave them intentionally different with an explanatory
+    /// comment, if the retune reveals they never should have matched).
+    #[test]
+    fn q_ndeep3_threshold_matches_generic_gate() {
+        let (_low, high) = crate::engine::pipeline::osd_escalation_gates::<crate::ft8::Ft8>();
+        assert_eq!(
+            Q_NDEEP3_THRESHOLD, high,
+            "FT8's Q_NDEEP3_THRESHOLD and the generic osd_escalation_gates \
+             fallback branch have diverged — see issue #285"
+        );
+    }
 }

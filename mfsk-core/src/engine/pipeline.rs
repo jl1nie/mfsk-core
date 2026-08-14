@@ -213,7 +213,10 @@ impl DecodeDepth {
 /// (private module), reached by bypassing [`crate::engine::FecCodec`]
 /// entirely (same root cause as issue #198). Independent
 /// implementation, independently calibrated — review both when
-/// tuning either (issue #192).
+/// tuning either (issue #285, split from #192). A test in that
+/// module (`q_ndeep3_threshold_matches_generic_gate`) asserts FT8's
+/// `Q_NDEEP3_THRESHOLD` against this function's fallback branch, so
+/// a silent divergence fails CI rather than only a doc comment.
 ///
 /// `pub` only under the `internal-testing` feature (issue #203) — no
 /// in-crate production caller (FT4/FST4 reach this gate through
