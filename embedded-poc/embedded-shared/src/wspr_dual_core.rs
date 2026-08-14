@@ -70,7 +70,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use esp_idf_svc::sys::{
-    vTaskDelay, vTaskDelete, xQueueGenericCreate,
+    vTaskDelay, xQueueGenericCreate,
     xQueueGenericSend, xQueueReceive, QueueHandle_t,
 };
 
@@ -110,9 +110,15 @@ const APP_CPU: i32 = 1;
 /// a worker's result is what makes the reuse safe: with static
 /// allocation the idle task still has to finish taking the old task off
 /// its termination list before the same `StaticTask_t` is handed back
-/// to `xTaskCreateStaticPinnedToCore`. Sized for the larger of the two
-/// measured peaks (pass 0/1: 52 860 B, pass 2: 44 460 B) plus ~20 %.
-const WORKER_STACK_BYTES: usize = 65_536;
+/// to `xTaskCreateStaticPinnedToCore`.
+///
+/// 80 KB against a measured 63 360 B peak (~29 % headroom). That peak
+/// is higher than the 53 KB / 44 KB the two *per-pass* workers used,
+/// and necessarily so: one task serving both job shapes has a frame
+/// sized for the union of them. Boxing the payloads and passing the
+/// `Box` into `run_pass2_job` recovered most of it (73 616 B → 63 360 B);
+/// what remains is the price of not spawning per pass.
+const WORKER_STACK_BYTES: usize = 81_920;
 
 /// 16-byte aligned so the Xtensa port never has to shave the base
 /// pointer, and so PIE-aligned buffers placed at the bottom of a frame
@@ -132,17 +138,13 @@ static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
 /// SAFETY: caller must guarantee no previously-spawned worker is still
 /// alive — see [`WORKER_STACK`]. Every call site is preceded by the
 /// result-queue receive plus [`TEARDOWN_DELAY_TICKS`].
-unsafe fn spawn_worker_static(
-    entry: unsafe extern "C" fn(*mut core::ffi::c_void),
-    name: *const core::ffi::c_char,
-    arg: *mut core::ffi::c_void,
-) -> bool {
+unsafe fn spawn_worker_static() -> bool {
     let h = unsafe {
         esp_idf_svc::sys::xTaskCreateStaticPinnedToCore(
-            Some(entry),
-            name,
+            Some(worker_main),
+            c"wspr_worker".as_ptr(),
             WORKER_STACK_BYTES as u32,
-            arg,
+            core::ptr::null_mut(),
             5,
             core::ptr::addr_of_mut!(WORKER_STACK) as *mut u8,
             core::ptr::addr_of_mut!(WORKER_TCB) as *mut esp_idf_svc::sys::StaticTask_t,
@@ -152,9 +154,12 @@ unsafe fn spawn_worker_static(
     !h.is_null()
 }
 
-/// Ticks to wait after a self-deleted worker's result arrives, before
-/// spawning the next (differently-sized) worker — see the module doc
-/// comment's "Safety guard" section.
+/// Ticks yielded after a result arrives.
+///
+/// Was the wait for the idle task to reap a self-deleted worker before
+/// the next spawn reused its stack. The worker is persistent now, so
+/// nothing is being reaped — this is only a yield so the worker's own
+/// post-result logging lands before main's, keeping the trace readable.
 const TEARDOWN_DELAY_TICKS: u32 = 5;
 
 #[inline]
@@ -196,13 +201,36 @@ unsafe fn queue_recv_ptr<T>(q: QueueHandle_t) -> *mut T {
 /// Workers themselves are spawned per-phase, not here.
 pub fn init() {
     unsafe {
+        JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
         PASS01_RESULT_Q.set(queue_create(core::mem::size_of::<
             *mut Vec<(WsprResult, usize)>,
         >()));
         PASS2_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Option<WsprResult>>()));
+        // SAFETY: called once at startup, before any other task exists.
+        assert!(
+            spawn_worker_static(),
+            "wspr_dual_core: worker spawn failed"
+        );
     }
-    log::info!("wspr_dual_core: result queues ready");
+    log::info!("wspr_dual_core: worker + queues ready");
 }
+
+/// Work handed to the persistent worker. One variant per pass shape;
+/// the worker blocks on [`JOB_Q`] and never exits.
+/// Payloads are boxed, so `Job` is one pointer wide.
+///
+/// Not a style choice: `Pass2Job` carries an `IsQs` (10 368 B), and an
+/// unboxed enum is sized for its largest variant — so receiving a
+/// *pass-0/1* job would move 10.4 KB onto the worker's stack for
+/// nothing. Against a measured 53 KB pass-0/1 peak in a 64 KB stack
+/// that is the difference between fitting and a `Cache error` from the
+/// overflow scribbling past the end (issue #260).
+enum Job {
+    Pass01(Box<Pass01Job>),
+    Pass2(Box<Pass2Job>),
+}
+
+static JOB_Q: QueueCell = QueueCell::new();
 
 struct QueueCell(core::cell::UnsafeCell<QueueHandle_t>);
 unsafe impl Sync for QueueCell {}
@@ -286,27 +314,51 @@ unsafe fn drain_pass01_queue(
     out
 }
 
-extern "C" fn pass01_worker_main(arg: *mut core::ffi::c_void) {
-    let job = unsafe { *Box::from_raw(arg as *mut Pass01Job) };
-    let idat = unsafe { core::slice::from_raw_parts(job.idat, job.idat_len) };
-    let qdat = unsafe { core::slice::from_raw_parts(job.qdat, job.qdat_len) };
-    let next_idx = unsafe { &*job.next_idx };
-    #[allow(static_mut_refs)]
-    let out = unsafe {
-        drain_pass01_queue(
-            idat,
-            qdat,
-            job.sample_rate,
-            job.pad,
-            job.slots_ptr,
-            job.slots_len,
-            next_idx,
-        )
-    };
-    let raw = Box::into_raw(Box::new(out));
-    unsafe { queue_send_ptr(PASS01_RESULT_Q.get(), raw) };
-    log_worker_stack("p01", WORKER_STACK_BYTES as u32);
-    unsafe { vTaskDelete(ptr::null_mut()) };
+/// The one worker task, for the process lifetime.
+///
+/// Was two tasks spawned per pass and self-deleted. That worked, but it
+/// made having a second core a per-pass event with a failure path,
+/// a `TEARDOWN_DELAY_TICKS` wait for the idle task to reap the previous
+/// one, and — while the stacks were still heap-allocated — a silent
+/// dependence on whatever WiFi had done to the heap in the meantime
+/// (issue #260). A task that is created once and blocks on a queue has
+/// none of those: same shape as FT8's `dual_core::worker_main`.
+extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
+    log::info!(
+        "wspr_dual_core: worker started on core {}",
+        current_core()
+    );
+    loop {
+        let job_ptr = unsafe { queue_recv_ptr::<Job>(JOB_Q.get()) };
+        match unsafe { *Box::from_raw(job_ptr) } {
+            Job::Pass01(job) => {
+                let idat = unsafe { core::slice::from_raw_parts(job.idat, job.idat_len) };
+                let qdat = unsafe { core::slice::from_raw_parts(job.qdat, job.qdat_len) };
+                let next_idx = unsafe { &*job.next_idx };
+                #[allow(static_mut_refs)]
+                let out = unsafe {
+                    drain_pass01_queue(
+                        idat,
+                        qdat,
+                        job.sample_rate,
+                        job.pad,
+                        job.slots_ptr,
+                        job.slots_len,
+                        next_idx,
+                    )
+                };
+                let raw = Box::into_raw(Box::new(out));
+                unsafe { queue_send_ptr(PASS01_RESULT_Q.get(), raw) };
+                log_worker_stack("p01", WORKER_STACK_BYTES as u32);
+            }
+            Job::Pass2(job) => {
+                let out = run_pass2_job(job);
+                let raw = Box::into_raw(Box::new(out));
+                unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
+                log_worker_stack("p2", WORKER_STACK_BYTES as u32);
+            }
+        }
+    }
 }
 
 /// Report what a worker task actually used, against what it reserved.
@@ -367,17 +419,7 @@ pub fn pass01_split(
         slots_len,
         next_idx: next_idx_ptr,
     });
-    // SAFETY: the previous worker's result has been received and
-    // `TEARDOWN_DELAY_TICKS` waited, so the static stack/TCB are free.
-    if !unsafe { spawn_worker_static(pass01_worker_main, c"wspr_p01".as_ptr(), Box::into_raw(job) as *mut core::ffi::c_void) } {
-        log::error!("wspr_dual_core: xTaskCreateStaticPinnedToCore(wspr_p01) failed, falling back to sequential");
-        // The job Box has already been leaked into the failed call —
-        // nothing safe to reclaim it with, but a failed spawn is rare
-        // enough (and precedes an early-boot-only phase) that this
-        // is an acceptable one-time leak versus a double-free risk.
-        return None;
-    }
-
+    unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(Box::new(Job::Pass01(job)))) };
     // Main drains the same queue concurrently.
     #[allow(static_mut_refs)]
     let mut local = unsafe {
@@ -429,13 +471,14 @@ struct Pass2Job {
 }
 unsafe impl Send for Pass2Job {}
 
-extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
+/// Pass 2's half of the worker loop.
+///
+/// Takes the `Box`, not the value. `worker_main`'s frame reserves space
+/// for every match arm's temporaries at once, so moving a `Pass2Job`
+/// (10 368 B of `IsQs`) out at the match site charges that to the
+/// *pass-0/1* path as well (issue #260).
+fn run_pass2_job(job: Box<Pass2Job>) -> Option<WsprResult> {
     let t0 = now_us();
-    log::info!(
-        "wspr_dual_core: pass2 worker started on core {}",
-        current_core()
-    );
-    let job = unsafe { *Box::from_raw(arg as *mut Pass2Job) };
     let idat = unsafe { core::slice::from_raw_parts(job.idat, job.idat_len) };
     let qdat = unsafe { core::slice::from_raw_parts(job.qdat, job.qdat_len) };
     let confirmed = unsafe { &*job.confirmed };
@@ -481,10 +524,7 @@ extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
             ""
         },
     );
-    let raw = Box::into_raw(Box::new(out));
-    unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
-    log_worker_stack("p2", WORKER_STACK_BYTES as u32);
-    unsafe { vTaskDelete(ptr::null_mut()) };
+    out
 }
 
 fn now_us() -> i64 {
@@ -626,21 +666,7 @@ pub fn pass2_split(
         confirmed: confirmed as *const WsprCallsignTable,
         deadline_us,
     });
-    // SAFETY: as in `pass01_split` — pass 0/1's worker is long gone.
-    if !unsafe { spawn_worker_static(pass2_worker_main, c"wspr_p2".as_ptr(), Box::into_raw(job) as *mut core::ffi::c_void) } {
-        log::error!(
-            "wspr_dual_core: xTaskCreateStaticPinnedToCore(wspr_p2) failed, falling back to sequential"
-        );
-        for r in ranked {
-            if let Some(d) =
-                deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
-            {
-                out.push(d);
-            }
-        }
-        return out;
-    }
-
+    unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(Box::new(Job::Pass2(job)))) };
     // Main processes rank 0 concurrently.
     let t0 = now_us();
     log::info!(

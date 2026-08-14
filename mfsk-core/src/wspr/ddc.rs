@@ -146,17 +146,26 @@ fn design_lowpass(ntaps: usize, fc_norm: f32) -> Vec<f32> {
 /// `NTAPS`-sample complex ring buffer (~14 KB) plus two counters —
 /// nothing that scales with slot length.
 pub struct StreamingDdc {
-    taps: Vec<f32>,
+    /// Taps in **reverse** order, so the dot product walks history
+    /// forwards and both operands are sequential.
+    taps_rev: Vec<f32>,
     mixer: [(f32, f32); 8],
-    /// Ring of mixed samples, newest at `head`.
+    /// Linear (not circular) history, compacted rarely. A ring costs a
+    /// wrap test per tap, which defeats unrolling on the one loop that
+    /// matters; see [`Self::dot`].
     hist_i: Vec<f32>,
     hist_q: Vec<f32>,
-    head: usize,
-    /// Input samples consumed, for the mixer phase and decimation.
+    /// Input samples consumed, for the mixer phase.
     n_in: usize,
     /// Input samples until the next output.
     to_next_out: usize,
 }
+
+/// History capacity. Compaction copies the live `NTAPS` window back to
+/// the front once the buffer fills, i.e. every `NTAPS` samples, so it
+/// amortises to one float moved per input sample — against ~56
+/// mult-adds, free.
+const HIST_CAP: usize = 2 * NTAPS;
 
 impl Default for StreamingDdc {
     fn default() -> Self {
@@ -166,12 +175,15 @@ impl Default for StreamingDdc {
 
 impl StreamingDdc {
     pub fn new() -> Self {
+        let mut taps_rev = design_lowpass(NTAPS, 1.0 / (2.0 * DECIM as f32));
+        taps_rev.reverse();
         Self {
-            taps: design_lowpass(NTAPS, 1.0 / (2.0 * DECIM as f32)),
+            taps_rev,
             mixer: mixer_table(),
+            // Pre-filled with the zeros the filter would have seen
+            // before the stream started.
             hist_i: vec![0.0; NTAPS],
             hist_q: vec![0.0; NTAPS],
-            head: 0,
             n_in: 0,
             // The first output is centred on input sample 0, which the
             // filter only sees once `GROUP_DELAY` more samples have
@@ -188,9 +200,8 @@ impl StreamingDdc {
     pub fn push(&mut self, audio: &[f32], out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
         for &s in audio {
             let (c, sn) = self.mixer[self.n_in % 8];
-            self.hist_i[self.head] = s * c;
-            self.hist_q[self.head] = s * sn;
-            self.head = (self.head + 1) % NTAPS;
+            self.hist_i.push(s * c);
+            self.hist_q.push(s * sn);
             self.n_in += 1;
 
             self.to_next_out -= 1;
@@ -200,7 +211,19 @@ impl StreamingDdc {
                 out_i.push(i * REFERENCE_GAIN);
                 out_q.push(q * REFERENCE_GAIN);
             }
+
+            if self.hist_i.len() == HIST_CAP {
+                self.compact();
+            }
         }
+    }
+
+    fn compact(&mut self) {
+        let keep = self.hist_i.len() - NTAPS;
+        self.hist_i.copy_within(keep.., 0);
+        self.hist_q.copy_within(keep.., 0);
+        self.hist_i.truncate(NTAPS);
+        self.hist_q.truncate(NTAPS);
     }
 
     /// Flush the tail: feed `GROUP_DELAY` zeros so the last real input
@@ -210,18 +233,45 @@ impl StreamingDdc {
         self.push(&zeros, out_i, out_q);
     }
 
-    /// `Σ h[k]·x[head-1-k]` over both channels.
+    /// `Σ h_rev[k]·x[n-NTAPS+k]`, over both channels.
+    ///
+    /// Four partial sums per channel rather than one. The FIR is an
+    /// accumulation chain and Xtensa's `fadd` has ~3-4 cycle latency
+    /// against 1-cycle throughput, so a single accumulator spends most
+    /// of its cycles waiting on itself; independent partials fill the
+    /// issue slots. Same reason the embedded Goertzel runs
+    /// sample-outer / tone-inner (`ft8::decode_block::
+    /// fill_symbol_spectra_goertzel`, 2.46 s → 1.47 s) — there the
+    /// independent chains are the eight tones, here they are the four
+    /// partials.
+    ///
+    /// The window is contiguous and the taps pre-reversed, so both
+    /// operands walk forwards and the loop has no wrap test to defeat
+    /// unrolling.
     fn dot(&self) -> (f32, f32) {
-        let mut acc_i = 0.0f32;
-        let mut acc_q = 0.0f32;
-        // `head` points one past the newest sample.
-        let mut idx = self.head;
-        for &h in self.taps.iter() {
-            idx = if idx == 0 { NTAPS - 1 } else { idx - 1 };
-            acc_i += h * self.hist_i[idx];
-            acc_q += h * self.hist_q[idx];
+        let n = self.hist_i.len();
+        let hi = &self.hist_i[n - NTAPS..];
+        let hq = &self.hist_q[n - NTAPS..];
+        let h = &self.taps_rev[..];
+
+        let mut ai = [0.0f32; 4];
+        let mut aq = [0.0f32; 4];
+        let chunks = NTAPS / 4;
+        for c in 0..chunks {
+            let b = c * 4;
+            for l in 0..4 {
+                ai[l] += h[b + l] * hi[b + l];
+                aq[l] += h[b + l] * hq[b + l];
+            }
         }
-        (acc_i, acc_q)
+        let mut si = ai[0] + ai[1] + ai[2] + ai[3];
+        let mut sq = aq[0] + aq[1] + aq[2] + aq[3];
+        // NTAPS is odd, so a remainder of up to 3 is left over.
+        for k in chunks * 4..NTAPS {
+            si += h[k] * hi[k];
+            sq += h[k] * hq[k];
+        }
+        (si, sq)
     }
 }
 
