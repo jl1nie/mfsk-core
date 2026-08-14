@@ -410,7 +410,7 @@ fn run_scan(idat: &mut [f32], qdat: &mut [f32]) -> (Vec<PassStats>, Vec<WsprResu
     let ranked = rank_pass2_candidates(idat, qdat, &cands2);
     let deadline_us = match PASS2_BUDGET {
         Pass2Budget::Unlimited => None,
-        Pass2Budget::DeadlineDriven => Some(scan_start_us + SLOT_US),
+        Pass2Budget::DeadlineDriven => Some(scan_start_us + SLOT_US - SPOT_RESERVE_US),
         Pass2Budget::RecallPriority(budget) => Some(t + budget),
     };
     let raw2: Vec<WsprResult> = wspr_dual_core::pass2_split(
@@ -667,9 +667,38 @@ fn log_heap(tag: &str) {
 /// production embedded WSPR path pays the same stack.
 const SCAN_STACK: u32 = 76 * 1024;
 
+/// Wall-clock held back from [`Pass2Budget::DeadlineDriven`] so the
+/// decode does not consume the whole slot.
+///
+/// A receiver that decodes is only half a receiver: the spots still
+/// have to reach wsprnet, and until this existed the deadline was the
+/// bare slot boundary, i.e. the scan was entitled to every last
+/// millisecond. On a hard slot it took them — a WiFi-up run before the
+/// stack fix landed on 120 051 ms with nothing left over.
+///
+/// **10 s assumes the radio stays associated across the decode**, which
+/// is the shipped arrangement and is not merely a convenience:
+/// bringing WiFi up costs a measured **7.9 s** (scan + connect + DHCP)
+/// and can fail outright (`ESP_ERR_TIMEOUT`, observed), so a
+/// down-during-decode design would spend almost the entire reserve on
+/// association. Nor does taking the radio down buy anything back —
+/// cycling it returns free internal DRAM (228 -> 269 KB) while the
+/// largest contiguous block stays at 156 KB, and the decode's cost with
+/// an idle association is negligible (its tasks run at priority 5,
+/// against LwIP's 18 and WiFi's 23, so the stack preempts rather than
+/// starves). See `docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`.
+///
+/// Sizing beyond "comfortably more than the POSTs need with the link
+/// already up" is not yet measured — the upload itself has never been
+/// timed on this hardware. It is deliberately generous rather than
+/// tuned; the scan currently finishes at 94.3 s, so this binds only on
+/// a band far busier than the golden file.
+const SPOT_RESERVE_US: i64 = 10_000_000;
+
 /// WSPR slot period — the wall-clock deadline a production embedded
 /// decoder is racing against, matching the protocol's own slot
-/// length. Anchor for [`Pass2Budget::DeadlineDriven`].
+/// length. Anchor for [`Pass2Budget::DeadlineDriven`], which targets
+/// `SLOT_US - SPOT_RESERVE_US`, not the raw boundary.
 const SLOT_US: i64 = 120_000_000;
 
 /// How pass 2's failing-candidate ladder (up to 4 x 17 = 68 DT
@@ -687,8 +716,9 @@ enum Pass2Budget {
     /// measurement in `WSPR_EMBEDDED_MEASUREMENT_RESULTS.md` before
     /// this mechanism existed used.
     Unlimited,
-    /// **Deadline priority.** Cuts pass 2's ladder off exactly when
-    /// the slot boundary (`scan_start_us + SLOT_US`) arrives, however
+    /// **Deadline priority.** Cuts pass 2's ladder off when
+    /// `scan_start_us + SLOT_US - SPOT_RESERVE_US` arrives — the slot
+    /// boundary less the spot-upload reserve — however
     /// much of that budget pass 0/1/coarse already consumed —
     /// guarantees on-time completion as the first priority, the way
     /// a production controller racing the next slot needs. Real-

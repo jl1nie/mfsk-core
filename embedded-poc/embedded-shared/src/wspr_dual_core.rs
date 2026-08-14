@@ -35,18 +35,23 @@
 //! survivor, the worker takes rank-1. No queue, no atomic — just two
 //! function calls.
 //!
-//! ## Safety guard
+//! ## Where the worker's stack comes from
 //!
-//! Every worker spawn is preceded by a live
-//! `heap_caps_get_largest_free_block` check against the stack it's
-//! about to request. If the block isn't there, dual-core is skipped
-//! for that phase and the candidates run sequentially on `wspr_scan`
-//! instead — a slower pass, not a crash. The stack sizes below are
-//! sized off real device measurements, but this crate's own stack
-//! audit left ~8 KB of pass 2's growth structurally unexplained
-//! (compiler stack-slot reuse isn't reliably hand-computable) — this
-//! guard is what makes shipping on that residual uncertainty
-//! acceptable instead of reckless.
+//! A single `.bss` reservation ([`WORKER_STACK`]), shared by the
+//! pass-0/1 and pass-2 workers, via `xTaskCreateStaticPinnedToCore`.
+//!
+//! It used to be a heap allocation guarded by a live
+//! `heap_caps_get_largest_free_block` check: if the contiguous block
+//! wasn't there, dual-core was skipped for that phase and the pass ran
+//! sequentially — slower, not a crash. That guard was the right call
+//! while the stacks were dynamic, but it made having the second core a
+//! property of whatever else had touched the heap recently. With a live
+//! WiFi association it started losing: measured on a CoreS3 (issue
+//! #260), pass 0's worker spawned and **pass 1's did not**, costing
+//! that pass 17 583 -> 28 246 ms and the scan 11 s, with nothing in the
+//! log to say why. Reserving the stack at link time removes the
+//! question — the guard, the fallback and the sizing uncertainty all go
+//! with it.
 //!
 //! Workers **self-delete** (`vTaskDelete(NULL)`) after pushing their
 //! result, rather than have the caller hold a `TaskHandle_t` and
@@ -65,8 +70,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use esp_idf_svc::sys::{
-    heap_caps_get_largest_free_block, vTaskDelay, vTaskDelete, xQueueGenericCreate,
-    xQueueGenericSend, xQueueReceive, xTaskCreatePinnedToCore, QueueHandle_t,
+    vTaskDelay, vTaskDelete, xQueueGenericCreate,
+    xQueueGenericSend, xQueueReceive, QueueHandle_t,
 };
 
 use mfsk_core::wspr::coarse_baseband::BasebandCandidate;
@@ -79,47 +84,78 @@ const PD_PASS: i32 = 1;
 const QUEUE_SEND_TO_BACK: i32 = 0;
 const QUEUE_TYPE_BASE: u8 = 0;
 const PORT_MAX_DELAY: u32 = u32::MAX;
-const MALLOC_CAP_INTERNAL: u32 = 1 << 11;
 const APP_CPU: i32 = 1;
 
-/// Stack for the pass-0/1 work-steal worker. 80 KiB = 52.8 KB
-/// (measured pass-0/1 cumulative peak, post-`refine_cascade`
-/// ping-pong rewrite — see `SCAN_STACK`'s own doc comment) + ~50 %
-/// margin. Generous on purpose: after the ping-pong fix the largest
-/// contiguous free block has real room to spare (unlike before it,
-/// when every KB was accounted for), so there's no reason to run this
-/// close to the measured number the way the pre-fix constants had to.
-const PASS01_WORKER_STACK: u32 = 65_536;
+/// Statically-reserved worker stack, shared by the pass-0/1 and
+/// pass-2 workers.
+///
+/// **Why `.bss` and not the heap.** FreeRTOS carves a dynamically
+/// created task's stack out of internal DRAM in one contiguous piece,
+/// and that pool is shared with everything else on the chip — including
+/// a live WiFi association, which allocates and frees RX/TX buffers
+/// continuously. Measured on a CoreS3 (issue #260): with the radio
+/// associated across the decode, pass 0's worker spawned and **pass 1's
+/// did not**, costing that pass its dual-core split (17 583 -> 28 246 ms)
+/// and the scan 11 s. Nothing had changed but the heap's shape at the
+/// moment of the second spawn. A `.bss` reservation is made by the
+/// linker, so it cannot be lost to fragmentation, cannot be raced by
+/// the WiFi driver, and turns "did we get the second core this time?"
+/// from a runtime lottery into a build-time fact. Same reasoning as
+/// FT8's [`crate::internal_pool`], one level up: that keeps a hot
+/// buffer out of the heap, this keeps a stack out of it.
+///
+/// **One buffer for both workers.** They never coexist — passes 0 and 1
+/// finish before pass 2 begins, and each pass spawns exactly one worker
+/// that self-deletes. The existing [`TEARDOWN_DELAY_TICKS`] wait after
+/// a worker's result is what makes the reuse safe: with static
+/// allocation the idle task still has to finish taking the old task off
+/// its termination list before the same `StaticTask_t` is handed back
+/// to `xTaskCreateStaticPinnedToCore`. Sized for the larger of the two
+/// measured peaks (pass 0/1: 52 860 B, pass 2: 44 460 B) plus ~20 %.
+const WORKER_STACK_BYTES: usize = 65_536;
 
-/// Stack for the pass-2 worker (reaches `osd_decode_packed`). 88 KiB
-/// = 61.45 KB (measured pass-0/1/2 cumulative peak, post-ping-pong —
-/// 68 148 B headroom on a 128 KiB stack) + ~43 % margin. Same
-/// generous-margin reasoning as [`PASS01_WORKER_STACK`].
-const PASS2_WORKER_STACK: u32 = 57_344;
+/// 16-byte aligned so the Xtensa port never has to shave the base
+/// pointer, and so PIE-aligned buffers placed at the bottom of a frame
+/// keep their alignment.
+#[repr(align(16))]
+struct WorkerStack([u8; WORKER_STACK_BYTES]);
 
-/// Bytes required *beyond* the worker's own stack before a spawn is
-/// attempted — covers `wspr_scan`'s own transient allocations (job
-/// `Box`, queue handles) made around the same time, so the guard
-/// doesn't pass on a block that's technically big enough for the
-/// stack alone but leaves nothing over for anything else.
-const SAFETY_MARGIN_BYTES: usize = 4096;
+static mut WORKER_STACK: WorkerStack = WorkerStack([0; WORKER_STACK_BYTES]);
+static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
+    core::mem::MaybeUninit::uninit();
+
+/// Spawn a worker on `APP_CPU` using the static stack + TCB above.
+/// Returns `false` if FreeRTOS refused, which with static allocation
+/// means a programming error (a live task on the same buffers), not
+/// memory pressure.
+///
+/// SAFETY: caller must guarantee no previously-spawned worker is still
+/// alive — see [`WORKER_STACK`]. Every call site is preceded by the
+/// result-queue receive plus [`TEARDOWN_DELAY_TICKS`].
+unsafe fn spawn_worker_static(
+    entry: unsafe extern "C" fn(*mut core::ffi::c_void),
+    name: *const core::ffi::c_char,
+    arg: *mut core::ffi::c_void,
+) -> bool {
+    let h = unsafe {
+        esp_idf_svc::sys::xTaskCreateStaticPinnedToCore(
+            Some(entry),
+            name,
+            WORKER_STACK_BYTES as u32,
+            arg,
+            5,
+            core::ptr::addr_of_mut!(WORKER_STACK) as *mut u8,
+            core::ptr::addr_of_mut!(WORKER_TCB) as *mut esp_idf_svc::sys::StaticTask_t,
+            APP_CPU,
+        )
+    };
+    !h.is_null()
+}
 
 /// Ticks to wait after a self-deleted worker's result arrives, before
 /// spawning the next (differently-sized) worker — see the module doc
 /// comment's "Safety guard" section.
 const TEARDOWN_DELAY_TICKS: u32 = 5;
-
-fn largest_free_internal() -> usize {
-    unsafe { heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) }
-}
-
-/// True if a block of `stack_words` (bytes) plus [`SAFETY_MARGIN_BYTES`]
-/// is available right now. Call immediately before every worker spawn
-/// — the free-block size is a live, moving quantity, not a
-/// compile-time guarantee.
-fn have_room_for(stack_bytes: u32) -> bool {
-    largest_free_internal() >= stack_bytes as usize + SAFETY_MARGIN_BYTES
-}
 
 #[inline]
 unsafe fn queue_create(item_size: usize) -> QueueHandle_t {
@@ -269,7 +305,7 @@ extern "C" fn pass01_worker_main(arg: *mut core::ffi::c_void) {
     };
     let raw = Box::into_raw(Box::new(out));
     unsafe { queue_send_ptr(PASS01_RESULT_Q.get(), raw) };
-    log_worker_stack("p01", PASS01_WORKER_STACK);
+    log_worker_stack("p01", WORKER_STACK_BYTES as u32);
     unsafe { vTaskDelete(ptr::null_mut()) };
 }
 
@@ -294,12 +330,12 @@ fn log_worker_stack(who: &str, reserved: u32) {
     );
 }
 
-/// True if [`pass01_split`] is likely to find room. Check before
-/// doing the (otherwise wasted) `Vec<Option<_>>` setup — `pass01_split`
-/// re-checks internally right before the actual spawn regardless, so
-/// this is an optimization, not the safety-critical check.
+/// Always true since the worker stack moved to `.bss` — kept so
+/// callers that branch on it keep compiling, and because "is there
+/// room?" is exactly the question [`WORKER_STACK`] exists to answer
+/// once, at link time, instead of per spawn.
 pub fn pass01_room_available() -> bool {
-    have_room_for(PASS01_WORKER_STACK)
+    true
 }
 
 /// Split pass 0 or pass 1's candidate list across both cores via
@@ -313,14 +349,6 @@ pub fn pass01_split(
     pad: usize,
     cands: Vec<BasebandCandidate>,
 ) -> Option<Vec<(WsprResult, usize)>> {
-    if !have_room_for(PASS01_WORKER_STACK) {
-        log::warn!(
-            "wspr_dual_core: skipping pass0/1 split, largest free block {} B < {} B needed",
-            largest_free_internal(),
-            PASS01_WORKER_STACK as usize + SAFETY_MARGIN_BYTES,
-        );
-        return None;
-    }
 
     let mut slots: Vec<Option<BasebandCandidate>> = cands.into_iter().map(Some).collect();
     let next_idx = AtomicUsize::new(0);
@@ -339,20 +367,10 @@ pub fn pass01_split(
         slots_len,
         next_idx: next_idx_ptr,
     });
-    let mut handle: esp_idf_svc::sys::TaskHandle_t = ptr::null_mut();
-    let r = unsafe {
-        xTaskCreatePinnedToCore(
-            Some(pass01_worker_main),
-            c"wspr_p01".as_ptr(),
-            PASS01_WORKER_STACK,
-            Box::into_raw(job) as *mut core::ffi::c_void,
-            5,
-            &mut handle,
-            APP_CPU,
-        )
-    };
-    if r != PD_PASS {
-        log::error!("wspr_dual_core: xTaskCreatePinnedToCore(wspr_p01) failed: {r}, falling back to sequential");
+    // SAFETY: the previous worker's result has been received and
+    // `TEARDOWN_DELAY_TICKS` waited, so the static stack/TCB are free.
+    if !unsafe { spawn_worker_static(pass01_worker_main, c"wspr_p01".as_ptr(), Box::into_raw(job) as *mut core::ffi::c_void) } {
+        log::error!("wspr_dual_core: xTaskCreateStaticPinnedToCore(wspr_p01) failed, falling back to sequential");
         // The job Box has already been leaked into the failed call —
         // nothing safe to reclaim it with, but a failed spawn is rare
         // enough (and precedes an early-boot-only phase) that this
@@ -465,7 +483,7 @@ extern "C" fn pass2_worker_main(arg: *mut core::ffi::c_void) {
     );
     let raw = Box::into_raw(Box::new(out));
     unsafe { queue_send_ptr(PASS2_RESULT_Q.get(), raw) };
-    log_worker_stack("p2", PASS2_WORKER_STACK);
+    log_worker_stack("p2", WORKER_STACK_BYTES as u32);
     unsafe { vTaskDelete(ptr::null_mut()) };
 }
 
@@ -529,9 +547,9 @@ fn current_core() -> i32 {
     unsafe { esp_idf_svc::sys::xTaskGetCoreID(ptr::null_mut()) }
 }
 
-/// True if [`pass2_split`] is likely to find room.
+/// Always true — see [`pass01_room_available`].
 pub fn pass2_room_available() -> bool {
-    have_room_for(PASS2_WORKER_STACK)
+    true
 }
 
 /// Run pass 2's (already-ranked, already-truncated-to-`PASS2_DEEP_
@@ -578,14 +596,7 @@ pub fn pass2_split(
     }
     let budget: Option<&(dyn Fn() -> bool + Sync)> =
         deadline_us.map(|_| &main_budget_check as &(dyn Fn() -> bool + Sync));
-    if ranked.len() == 1 || !have_room_for(PASS2_WORKER_STACK) {
-        if ranked.len() > 1 {
-            log::warn!(
-                "wspr_dual_core: skipping pass2 split, largest free block {} B < {} B needed",
-                largest_free_internal(),
-                PASS2_WORKER_STACK as usize + SAFETY_MARGIN_BYTES,
-            );
-        }
+    if ranked.len() == 1 {
         for r in ranked {
             if let Some(d) =
                 deep_decode_pass2_candidate(idat, qdat, sample_rate, pad, confirmed, r, budget)
@@ -615,21 +626,10 @@ pub fn pass2_split(
         confirmed: confirmed as *const WsprCallsignTable,
         deadline_us,
     });
-    let mut handle: esp_idf_svc::sys::TaskHandle_t = ptr::null_mut();
-    let r = unsafe {
-        xTaskCreatePinnedToCore(
-            Some(pass2_worker_main),
-            c"wspr_p2".as_ptr(),
-            PASS2_WORKER_STACK,
-            Box::into_raw(job) as *mut core::ffi::c_void,
-            5,
-            &mut handle,
-            APP_CPU,
-        )
-    };
-    if r != PD_PASS {
+    // SAFETY: as in `pass01_split` — pass 0/1's worker is long gone.
+    if !unsafe { spawn_worker_static(pass2_worker_main, c"wspr_p2".as_ptr(), Box::into_raw(job) as *mut core::ffi::c_void) } {
         log::error!(
-            "wspr_dual_core: xTaskCreatePinnedToCore(wspr_p2) failed: {r}, falling back to sequential"
+            "wspr_dual_core: xTaskCreateStaticPinnedToCore(wspr_p2) failed, falling back to sequential"
         );
         for r in ranked {
             if let Some(d) =
