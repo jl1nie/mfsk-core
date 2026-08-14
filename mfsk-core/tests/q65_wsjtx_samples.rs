@@ -26,7 +26,19 @@ use mfsk_core::q65::{
 #[allow(dead_code)]
 mod common;
 
+use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
 use common::load_wav_f32_opt as read_wsjtx_wav;
+
+/// [`Q65Result`](mfsk_core::q65::Q65Result) → [`DecodeView`], shared by
+/// every real-signal test below.
+fn q65_view(d: &mfsk_core::q65::Q65Result) -> DecodeView {
+    DecodeView {
+        msg: d.message.clone(),
+        freq_hz: d.freq_hz,
+        dt_sec: d.dt_sec,
+        snr_db: Some(d.snr_db),
+    }
+}
 
 fn samples_dir(rel: &str) -> Option<PathBuf> {
     // Tests run from `mfsk-core/mfsk-core/`; the WSJT-X tree is at
@@ -144,17 +156,38 @@ fn ionoscatter_6m_full_stack_decodes_via_averaging() {
         );
     }
 
-    // Goal: multi-period averaging recovers the signal in at least one
-    // of the strategies. Single decode counts as success because the
-    // running-EMA collapses repeated copies of the same QSO line into
-    // one output entry — once a QSO has been recovered there's no
-    // additional information from re-recovering it.
-    assert!(
-        !decodes_no_ap.is_empty() || !decodes_ap.is_empty(),
-        "0/{} ionoscatter slots produced any decode through multi-period averaging \
-         (neither without AP-list nor with K1JT/K9AN AP-list) — regression or \
-         insufficient signal recovery in the EMA-on-spectrogram path",
-        slot_refs.len(),
+    // Golden: "K1JT K9AN R-16" @ 1010 Hz — both the no-AP and AP-list
+    // paths agree on it (see the `[info]` prints above). No independent
+    // `jt9` cross-check is possible here: `jt9`'s CLI has no flag to
+    // drive the `iavg` multi-period-averaging state real WSJT-X uses
+    // for this recording (verified experimentally — feeding it several
+    // files in one invocation just runs independent single-slot
+    // attempts), so this is the crate's own two independently-computed
+    // paths agreeing with each other, not agreement with a reference
+    // decoder. `dt_sec`/`snr_db` are left unchecked for the same
+    // reason: the no-AP and AP-list runs differ slightly on `snr_db`
+    // (-20.0 vs -19.4) with nothing external to say which is "right".
+    //
+    // Precision matters here as much as recall: both runs' *only*
+    // output is this one message, so `max_extra: 0` is not a guess.
+    assert_golden(
+        &[decodes_no_ap, decodes_ap].concat(),
+        &GoldenSet {
+            name: "Q65-30A ionoscatter (30A_Ionoscatter_6m)",
+            expected: &[GoldenEntry {
+                msg: "K1JT K9AN R-16",
+                freq_hz: Some(1010.0),
+                dt_sec: None,
+                snr_db: None,
+            }],
+            min_hits: 1,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 5.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 
@@ -198,8 +231,7 @@ fn eme_6m_sample_yields_decode_with_ap() {
         ("W7GJ ??", ApHint::new().with_call1("W7GJ")),
     ];
 
-    let mut plain_count = 0usize;
-    let mut ap_count = 0usize;
+    let mut all_decodes: Vec<mfsk_core::q65::Q65Result> = Vec::new();
     for path in &entries {
         let audio = match read_wsjtx_wav(path) {
             Some(a) => a,
@@ -217,25 +249,64 @@ fn eme_6m_sample_yields_decode_with_ap() {
                 path.file_name().unwrap().to_string_lossy(),
                 decodes.len()
             );
-            if hint.has_info() {
-                ap_count += decodes.len();
-            } else {
-                plain_count += decodes.len();
-            }
+            all_decodes.extend(decodes);
         }
     }
-    // 6 m EME has the lowest Doppler spread in the EME band lineup,
-    // so the AWGN-only metric already does a respectable job on
-    // strong-ish signals — the published 210106_1621.wav reference
-    // typically yields several W7GJ exchanges on first scan. We
-    // require at least one decode to land via the plain or AP
-    // path so a regression in the receive chain trips this test.
-    assert!(
-        plain_count + ap_count > 0,
-        "6m EME reference recording produced no decodes via either \
-         plain or AP — regression in the Q65-60A receive chain"
+
+    // 6 m EME has the lowest Doppler spread in the EME band lineup, so
+    // the AWGN-only metric already does a respectable job on
+    // strong-ish signals — 210106_1621.wav captures W7GJ (a
+    // well-known prolific 6 m EME operator) working four other
+    // stations. Golden set independently verified against a locally
+    // built `jt9 -3 -p 60 -b A -d 3` (2026-08-14): depth 1 (this
+    // crate's own default effort) only reaches 3 of the 4 at the CLI's
+    // default settings, depth 3 reaches all 4, matching this crate's
+    // frequencies to within 1 Hz and SNRs to within 0.3 dB — so all
+    // four are real, not phantoms, and the golden set uses `jt9`'s own
+    // reported freq/SNR as the reference. The plain and AP-hint passes
+    // land on the identical four messages (AP-list adds nothing new
+    // for this recording), so both are folded into one assertion
+    // rather than two separate weaker ones.
+    assert_golden(
+        &all_decodes,
+        &GoldenSet {
+            name: "Q65-60A EME 6m (210106_1621.wav)",
+            expected: &[
+                GoldenEntry {
+                    msg: "W7GJ N8JX EN73",
+                    freq_hz: Some(697.0),
+                    dt_sec: None,
+                    snr_db: Some(-24.0),
+                },
+                GoldenEntry {
+                    msg: "W7GJ N0TB -15",
+                    freq_hz: Some(943.0),
+                    dt_sec: None,
+                    snr_db: Some(-24.0),
+                },
+                GoldenEntry {
+                    msg: "W7GJ W1VD FN31",
+                    freq_hz: Some(1420.0),
+                    dt_sec: None,
+                    snr_db: Some(-20.0),
+                },
+                GoldenEntry {
+                    msg: "W7GJ VE1JF RRR",
+                    freq_hz: Some(1620.0),
+                    dt_sec: None,
+                    snr_db: Some(-19.0),
+                },
+            ],
+            min_hits: 4,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 4.0,
+            snr_db: 3.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
-    eprintln!("[info] 6m EME: plain {plain_count} decode(s), AP {ap_count} decode(s)");
 }
 
 /// Q65-60D 10 GHz EME sample: `WSJT-X/samples/Q65/60D_EME_10GHz/201212_1838.wav`.
@@ -303,18 +374,29 @@ fn eme_10ghz_60d_decodes_with_fading_metric() {
         );
     }
 
-    // Must recover the golden message at the right frequency (±15 Hz)
-    // and dt (3.6 ± 1.0 s after slot start).
-    let hit = fading.iter().any(|d| {
-        d.message.contains("VK7MO")
-            && d.message.contains("K6QPV")
-            && (d.freq_hz - 1000.0).abs() <= 20.0
-    });
-    assert!(
-        hit,
-        "10 GHz EME Q65-60D fading decode did not recover 'VK7MO K6QPV' near 1000 Hz — \
-         regression in the fast-fading receive chain. Fading decodes: {:?}",
-        fading.iter().map(|d| &d.message).collect::<Vec<_>>()
+    // Golden "VK7MO K6QPV DM12" @ ~995 Hz, jt9 SNR -15 dB — same
+    // reference `q65_snr_matches_jt9_ground_truth` uses. `max_extra: 0`:
+    // a real `jt9 -3 -p 60 -b D -d 3` run on this file (2026-08-14)
+    // also reports exactly one decode.
+    assert_golden(
+        &fading,
+        &GoldenSet {
+            name: "Q65-60D EME 10GHz (201212_1838.wav)",
+            expected: &[GoldenEntry {
+                msg: "VK7MO K6QPV DM12",
+                freq_hz: Some(1000.0),
+                dt_sec: None,
+                snr_db: Some(-15.0),
+            }],
+            min_hits: 1,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 20.0,
+            snr_db: 3.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 
@@ -403,15 +485,31 @@ fn tropo_1296_60b_decodes_via_averaging() {
         );
     }
 
-    let hit = |ds: &[mfsk_core::q65::Q65Result]| {
-        ds.iter()
-            .any(|d| d.message.contains("VK7MO") && d.message.contains("VK7PD"))
-    };
-    assert!(
-        hit(&decodes_no_ap) || hit(&decodes_ap),
-        "1296 MHz troposcatter reference recording did not recover 'VK7MO VK7PD' via \
-         multi-period averaging (neither without AP-list nor with VK7MO/VK7PD AP-list) — \
-         regression in the Q65-60B receive chain"
+    // Golden "VK7MO VK7PD QE38" @ ~1002 Hz — both no-AP and AP-list
+    // agree (see the `[info]` prints above). No independent `jt9`
+    // cross-check is possible here, same `iavg` CLI limitation as
+    // `ionoscatter_6m_full_stack_decodes_via_averaging`; this is the
+    // crate's own two paths agreeing with each other. Both runs'
+    // *only* output is this one message, so `max_extra: 0` reflects
+    // what was actually measured, not a guess.
+    assert_golden(
+        &[decodes_no_ap, decodes_ap].concat(),
+        &GoldenSet {
+            name: "Q65-60B 1296 troposcatter (60B_1296_Troposcatter)",
+            expected: &[GoldenEntry {
+                msg: "VK7MO VK7PD QE38",
+                freq_hz: Some(1002.0),
+                dt_sec: None,
+                snr_db: None,
+            }],
+            min_hits: 1,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 5.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 
@@ -457,16 +555,39 @@ fn rainscatter_10ghz_120d_decodes_with_fading_metric() {
         eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
     }
 
-    let hit = fading.iter().any(|d| {
-        d.message.contains("VK3WE")
-            && d.message.contains("VK7MO")
-            && (d.freq_hz - 995.0).abs() <= 15.0
-    });
-    assert!(
-        hit,
-        "10 GHz rainscatter Q65-120D fading decode did not recover 'VK3WE VK7MO' near 995 Hz — \
-         regression in the fast-fading receive chain. Fading decodes: {:?}",
-        fading.iter().map(|d| &d.message).collect::<Vec<_>>()
+    // Golden "VK3WE VK7MO QE37" @ 995 Hz, jt9 SNR -16 dB.
+    //
+    // `max_extra: 1`, not the usual 0 — **tracked debt, not accepted
+    // design.** A real local `jt9 -3 -p 120 -b D -d 3` run on this file
+    // (2026-08-14) reports exactly *one* decode at 995 Hz; this crate
+    // reports the identical message twice, at two nearby frequencies
+    // (~994 Hz and ~1001 Hz, ~7 Hz apart). Root cause: `q65` has no
+    // cross-candidate dedup at all (unlike FT8/FT4/FST4, which collapse
+    // re-derivations of the same message via SIC-subtraction or a
+    // `known`-list filter) — two coarse candidates a few Hz apart both
+    // independently lock onto and decode the same real signal, and
+    // nothing downstream notices they agree. Filed as issue #287
+    // rather than fixed here or silently accepted: this test's job is
+    // to make the gap visible, not to design the fix.
+    assert_golden(
+        &fading,
+        &GoldenSet {
+            name: "Q65-120D 10GHz rainscatter (210117_0920.wav)",
+            expected: &[GoldenEntry {
+                msg: "VK3WE VK7MO QE37",
+                freq_hz: Some(995.0),
+                dt_sec: None,
+                snr_db: Some(-16.0),
+            }],
+            min_hits: 1,
+            max_extra: 1,
+        },
+        Tolerances {
+            freq_hz: 15.0,
+            snr_db: 3.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 
@@ -506,7 +627,7 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
         max_candidates: 8,
     };
 
-    let mut hit = false;
+    let mut all_decodes: Vec<mfsk_core::q65::Q65Result> = Vec::new();
     for path in &entries {
         let Some(audio) = read_wsjtx_wav(path) else {
             continue;
@@ -522,19 +643,34 @@ fn ionoscatter_6m_120e_decodes_with_fading_metric() {
         for d in &fading {
             eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
         }
-        if fading.iter().any(|d| {
-            d.message.contains("KB7IJ")
-                && d.message.contains("N0AN")
-                && (d.freq_hz - 1799.0).abs() <= 15.0
-        }) {
-            hit = true;
-        }
+        all_decodes.extend(fading);
     }
-    assert!(
-        hit,
-        "6 m ionoscatter Q65-120E fading decode did not recover 'KB7IJ N0AN' near 1799 Hz \
-         from any of {} recordings — regression in the fast-fading receive chain",
-        entries.len()
+
+    // Golden "KB7IJ N0AN 73" @ 1799 Hz, jt9 SNR -17 dB, confirmed via a
+    // real local `jt9 -3 -p 120 -b E -d 3` run on 210130_1442.wav
+    // (2026-08-14): exactly one decode, freq 1799 Hz. `210130_1438.wav`
+    // contributes nothing (doesn't decode even via WSJT-X's own
+    // reference), so `min_hits: 1` / `max_extra: 0` cover both files
+    // together, not per-file.
+    assert_golden(
+        &all_decodes,
+        &GoldenSet {
+            name: "Q65-120E 6m ionoscatter (120E_Ionoscatter_6m)",
+            expected: &[GoldenEntry {
+                msg: "KB7IJ N0AN 73",
+                freq_hz: Some(1799.0),
+                dt_sec: None,
+                snr_db: Some(-17.0),
+            }],
+            min_hits: 1,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 15.0,
+            snr_db: 3.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 
@@ -590,16 +726,29 @@ fn optical_scatter_300a_decodes_with_fading_metric() {
         eprintln!("  freq={:.1} Hz : {}", d.freq_hz, d.message);
     }
 
-    let hit = fading.iter().any(|d| {
-        d.message.contains("VK7MO")
-            && d.message.contains("VK7PD")
-            && (d.freq_hz - 1002.0).abs() <= 15.0
-    });
-    assert!(
-        hit,
-        "Optical scatter Q65-300A fading decode did not recover 'VK7MO VK7PD' near 1002 Hz — \
-         regression in the fast-fading receive chain. Fading decodes: {:?}",
-        fading.iter().map(|d| &d.message).collect::<Vec<_>>()
+    // Golden "VK7MO VK7PD QE38" @ 1002 Hz, jt9 SNR -34 dB — confirmed
+    // via a real local `jt9 -3 -p 300 -b A -d 3` run (2026-08-14):
+    // exactly one decode, freq 1002 Hz, SNR -34 dB, matching this
+    // crate's own output almost exactly.
+    assert_golden(
+        &fading,
+        &GoldenSet {
+            name: "Q65-300A optical scatter (201210_0505.wav)",
+            expected: &[GoldenEntry {
+                msg: "VK7MO VK7PD QE38",
+                freq_hz: Some(1002.0),
+                dt_sec: None,
+                snr_db: Some(-34.0),
+            }],
+            min_hits: 1,
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: 15.0,
+            snr_db: 3.0,
+            ..Tolerances::default()
+        },
+        q65_view,
     );
 }
 

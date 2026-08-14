@@ -21,13 +21,21 @@
 //!    on a hard floor that grows as the host coarse-sync parity gap
 //!    closes — see `JTDX_EXTRAS_HARD_FLOOR`.
 //!
-//! The 8-entry WSJT-X canonical AP-off golden lives in
-//! `ft8_qso3_apoff_recall.rs` and is checked through `decode_block`
-//! (the embedded-friendly path). That is *not* re-checked here —
-//! `decode_frame_with_ap` and `decode_block` are different pipelines
-//! with different sync-candidate selection and phantom-filtering
-//! behaviour, and conflating them would make #31's invariant
-//! sensitive to host-path tuning unrelated to AP.
+//! The `common::ft8_qso3::QSO3_KNOWN_REAL_SIGNALS` canonical golden
+//! lives in `ft8_qso3_apoff_recall.rs` / `ft8_qso3_full_parity_recall.rs`
+//! and is checked through `decode_block` (the embedded-friendly path).
+//! That is *not* re-checked here — `decode_frame_with_ap` and
+//! `decode_block` are different pipelines with different
+//! sync-candidate selection and phantom-filtering behaviour, and
+//! conflating them would make #31's invariant sensitive to host-path
+//! tuning unrelated to AP.
+//!
+//! GOLDEN-EXEMPT: deliberately not `common::golden::assert_golden`. Both tests
+//! here assert a strict-superset diff across *two decode runs of the
+//! same pipeline* (AP-off vs. AP-on, or single-pass vs. multipass),
+//! not a golden-vs-decoder match against one static reference —
+//! `assert_golden`'s model (one `expected` list, one `decodes` slice)
+//! doesn't fit a "did AP-on lose anything AP-off had" invariant.
 //!
 //! Run:
 //! ```sh

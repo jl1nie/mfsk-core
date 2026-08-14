@@ -15,6 +15,15 @@
 //! replace those with this one. Source: `reference_qso3_busy_jtdx_decode.md`'s
 //! 2026-08-10 addendum.
 //!
+//! GOLDEN-EXEMPT: deliberately not `common::golden::assert_golden` — same
+//! reasoning as `ft8_qso3_jtdx_recall.rs`: an `#[ignore]`d, host-only
+//! research-ceiling probe with no phantom-budget assertion by design.
+//! The CI-facing `max_extra: 0` gates for this recording are
+//! `ft8_qso3_apoff_recall.rs` / `ft8_qso3_full_parity_recall.rs`,
+//! against `common::ft8_qso3::QSO3_KNOWN_REAL_SIGNALS` (which now
+//! includes `K1JT HA5WA 73`, corroborated independently by both this
+//! file and the AP-on extras in `ft8_qso3_apon_recall.rs`).
+//!
 //! Run:
 //! ```sh
 //! cargo test --release -p mfsk-core \

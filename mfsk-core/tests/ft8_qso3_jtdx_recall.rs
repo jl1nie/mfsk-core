@@ -11,6 +11,20 @@
 //! mix the two reference sets** — they capture different decoder
 //! ambitions.
 //!
+//! GOLDEN-EXEMPT: deliberately not `common::golden::assert_golden`. This is an
+//! `#[ignore]`d, host-only research-ceiling probe (~34s wall-clock,
+//! `DecodeDepth::FULL` + `sync_min=0.8` + `max_cand=60`), and it
+//! prints "extras" purely as diagnostics with no phantom-budget
+//! assertion at all — by design, since a config this aggressive can
+//! legitimately surface real signals beyond even the 18-entry JTDX
+//! list (see `ft8_qso3_apoff_recall.rs`'s and
+//! `ft8_qso3_full_parity_recall.rs`'s 20-entry
+//! `common::ft8_qso3::QSO3_KNOWN_REAL_SIGNALS`, which *is* checked
+//! with `max_extra: 0` — those are the CI-facing precision gates for
+//! this recording). Forcing this file through `assert_golden` would
+//! turn an intentionally open-ended recall probe into a strict
+//! phantom-zero test it was never meant to be.
+//!
 //! Run:
 //! ```sh
 //! cargo test --release -p mfsk-core \
