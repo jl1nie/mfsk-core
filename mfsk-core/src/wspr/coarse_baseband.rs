@@ -244,18 +244,52 @@ fn refine_alignment_top_k(
     top_k: usize,
 ) -> Vec<RefinedCell> {
     let mut cells: Vec<RefinedCell> = Vec::new();
+    // One pair of accumulators per drift hypothesis, allocated once for
+    // the whole call rather than per `(dfreq, k0)` — this stage's
+    // wall-clock is sensitive to allocation churn (issue #260).
+    let n_drift = (2 * max_drift + 1).max(0) as usize;
+    let mut ss = vec![0.0f32; n_drift];
+    let mut pow = vec![0.0f32; n_drift];
     for dfreq in -2i32..=2i32 {
         let ifr = bin0 as i32 + dfreq;
         if ifr < 4 || (ifr as usize) + 4 >= NFFT {
             continue;
         }
+        // `k` outer, `idrift` inner — the reverse of the obvious
+        // nesting, and the whole cost of this function is in that
+        // choice on embedded.
+        //
+        // `kindex = k0 + 2·k` does not depend on `idrift`, so the
+        // natural `idrift → k` order walks the same 162 rows of `ps`
+        // once per drift hypothesis: `2·NFFT·4` = 4 096 B apart, i.e. a
+        // guaranteed miss per `k`, repeated `2·max_drift + 1` = 9 times.
+        // `ps` is 735 KB and PSRAM-resident on embedded, far past any
+        // cache. Hoisting `k` reads each row once and evaluates all
+        // nine drifts against it while it is still hot — the same
+        // sample-outer/hypothesis-inner shape that took embedded
+        // Goertzel stage 3 from 2.46 s to 1.47 s.
+        //
+        // Bit-exactness is preserved, not approximated: each cell's
+        // `ss`/`pow` still accumulate over `k` ascending in the same
+        // order and with the same values, they are merely nine
+        // accumulators running in step instead of nine sequential
+        // passes. The per-`k` `continue`s are per-drift (`ifd`) and
+        // per-`k` (`kindex`) respectively, so they keep their original
+        // scope: a skipped `ifd` skips that drift's contribution only.
         for k0 in -10i32..22i32 {
-            for idrift in -max_drift..=max_drift {
-                let mut ss = 0.0f32;
-                let mut pow = 0.0f32;
-                for k in 0..162i32 {
-                    let drift_offset =
-                        ((k as f32 - 81.0) / 81.0) * (idrift as f32) / (2.0 * DF_BASEBAND);
+            ss.iter_mut().for_each(|v| *v = 0.0);
+            pow.iter_mut().for_each(|v| *v = 0.0);
+            for k in 0..162i32 {
+                let kindex = k0 + 2 * k;
+                if kindex < 0 || (kindex as usize) >= spec.n_time {
+                    continue;
+                }
+                let row = &spec.ps[kindex as usize * NFFT..(kindex as usize + 1) * NFFT];
+                let kfrac = (k as f32 - 81.0) / 81.0;
+                let pr3 = WSPR_SYNC_VECTOR[k as usize] as f32;
+                let w = 2.0 * pr3 - 1.0;
+                for (di, idrift) in (-max_drift..=max_drift).enumerate() {
+                    let drift_offset = kfrac * (idrift as f32) / (2.0 * DF_BASEBAND);
                     // C truncates float→int toward zero; Rust's `as i32`
                     // does the same. Using `.round()` would shift `ifd`
                     // by ±1 bin for nonzero drift in most symbols and
@@ -264,23 +298,19 @@ fn refine_alignment_top_k(
                     if ifd - 3 < 0 || (ifd + 3) as usize >= NFFT {
                         continue;
                     }
-                    let kindex = k0 + 2 * k;
-                    if kindex < 0 || (kindex as usize) >= spec.n_time {
-                        continue;
-                    }
-                    let row = &spec.ps[kindex as usize * NFFT..(kindex as usize + 1) * NFFT];
                     let p0 = row[(ifd - 3) as usize].sqrt();
                     let p1 = row[(ifd - 1) as usize].sqrt();
                     let p2 = row[(ifd + 1) as usize].sqrt();
                     let p3 = row[(ifd + 3) as usize].sqrt();
-                    let pr3 = WSPR_SYNC_VECTOR[k as usize] as f32;
-                    ss += (2.0 * pr3 - 1.0) * ((p1 + p3) - (p0 + p2));
-                    pow += p0 + p1 + p2 + p3;
+                    ss[di] += w * ((p1 + p3) - (p0 + p2));
+                    pow[di] += p0 + p1 + p2 + p3;
                 }
-                if pow <= 0.0 {
+            }
+            for (di, idrift) in (-max_drift..=max_drift).enumerate() {
+                if pow[di] <= 0.0 {
                     continue;
                 }
-                let sync = ss / pow;
+                let sync = ss[di] / pow[di];
                 cells.push((STRIDE as i32 * (k0 + 1), dfreq, idrift, sync));
             }
         }
@@ -308,7 +338,16 @@ pub fn coarse_baseband(
     max_peaks: usize,
     max_drift_hz: i32,
 ) -> Vec<BasebandCandidate> {
+    // Split coarse into its two halves so the PSRAM-latency question
+    // on `ps` can be asked at all — see `instrument::COARSE_SPECTRO_US`.
+    #[cfg(feature = "std")]
+    let t_spectro = std::time::Instant::now();
     let spec = build_spectro(idat, qdat);
+    #[cfg(feature = "std")]
+    super::instrument::add_us(
+        &super::instrument::COARSE_SPECTRO_US,
+        t_spectro.elapsed().as_micros() as u32,
+    );
     if spec.n_time == 0 {
         return Vec::new();
     }
@@ -329,7 +368,14 @@ pub fn coarse_baseband(
     let _ = pad_baseband; // kept for API symmetry; shift_baseband is absolute
     for (j, snr_db) in peaks {
         let bin0 = smspec_to_bin(j);
+        #[cfg(feature = "std")]
+        let t_refine = std::time::Instant::now();
         let cells = refine_alignment_top_k(&spec, bin0, max_drift_hz, TOP_K_PER_PEAK);
+        #[cfg(feature = "std")]
+        super::instrument::add_us(
+            &super::instrument::COARSE_REFINE_US,
+            t_refine.elapsed().as_micros() as u32,
+        );
         for (shift_baseband, dfreq, idrift, sync) in cells {
             if !sync.is_finite() {
                 continue;

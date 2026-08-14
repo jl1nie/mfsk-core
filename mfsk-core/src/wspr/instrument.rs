@@ -53,6 +53,37 @@ pub static OSD_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
 /// OSD attempts that both decoded and cleared the callsign-table gate.
 pub static OSD_OK: AtomicU32 = AtomicU32::new(0);
 
+/// Microseconds inside `coarse_baseband`'s `build_spectro` — the
+/// ~359 windowed 512-point FFTs that fill `ps`.
+///
+/// Paired with [`COARSE_REFINE_US`] to answer a question the existing
+/// Phase-2 bandwidth arm did not: that arm measured `tone_amplitudes`
+/// in the *decode* stage and concluded the loop is compute-bound
+/// (internal-SRAM placement bought 5 %). `coarse` is a separate 28 % of
+/// the scan, and `refine_alignment_top_k` there reads the 735 KB
+/// PSRAM-resident `ps` on the order of 10^8 times in a 7-float window
+/// per innermost step. Whether that stage is latency-bound the way
+/// FT8's `cs Box` was (5-10x from staging into internal DRAM,
+/// `embedded-shared/src/internal_pool.rs`) has never been measured;
+/// splitting coarse in two is the first thing that has to be known.
+///
+/// `u32` micros — Xtensa has no 64-bit atomics, and 2^32 us is 71
+/// minutes against a stage that runs ~30 s. Only accumulated on `std`
+/// builds (`Instant` is
+/// the only clock `mfsk-core` can portably reach; the embedded WSPR
+/// bench enables `mfsk-core/std`). Zero elsewhere.
+pub static COARSE_SPECTRO_US: AtomicU32 = AtomicU32::new(0);
+
+/// Microseconds inside `refine_alignment_top_k`, summed over peaks.
+/// See [`COARSE_SPECTRO_US`].
+pub static COARSE_REFINE_US: AtomicU32 = AtomicU32::new(0);
+
+/// Add `d` to one of the coarse timers. No-op without `std`.
+#[inline]
+pub fn add_us(counter: &AtomicU32, us: u32) {
+    counter.fetch_add(us, Ordering::Relaxed);
+}
+
 /// Times a caller-supplied ladder budget (see
 /// `wspr::decode::decode_pass2_top_n`'s own doc comment, behind
 /// feature `wspr-pass2-topn`) cut the DT peak-up × nblocks sweep
@@ -77,6 +108,8 @@ const ALL: &[&AtomicU32] = &[
 /// One reading of every counter.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
+    pub coarse_spectro_us: u32,
+    pub coarse_refine_us: u32,
     pub tone_amplitudes: u32,
     pub candidates: u32,
     pub minsync1_pass: u32,
@@ -95,6 +128,12 @@ impl Counts {
     #[must_use]
     pub fn since(self, earlier: Counts) -> Counts {
         Counts {
+            coarse_spectro_us: self
+                .coarse_spectro_us
+                .saturating_sub(earlier.coarse_spectro_us),
+            coarse_refine_us: self
+                .coarse_refine_us
+                .saturating_sub(earlier.coarse_refine_us),
             tone_amplitudes: self.tone_amplitudes.saturating_sub(earlier.tone_amplitudes),
             candidates: self.candidates.saturating_sub(earlier.candidates),
             minsync1_pass: self.minsync1_pass.saturating_sub(earlier.minsync1_pass),
@@ -125,6 +164,8 @@ impl Counts {
 #[must_use]
 pub fn snapshot() -> Counts {
     Counts {
+        coarse_spectro_us: COARSE_SPECTRO_US.load(Ordering::Relaxed),
+        coarse_refine_us: COARSE_REFINE_US.load(Ordering::Relaxed),
         tone_amplitudes: TONE_AMPLITUDES.load(Ordering::Relaxed),
         candidates: CANDIDATES.load(Ordering::Relaxed),
         minsync1_pass: MINSYNC1_PASS.load(Ordering::Relaxed),
@@ -142,6 +183,8 @@ pub fn reset() {
     for c in ALL {
         c.store(0, Ordering::Relaxed);
     }
+    COARSE_SPECTRO_US.store(0, Ordering::Relaxed);
+    COARSE_REFINE_US.store(0, Ordering::Relaxed);
 }
 
 /// Bump a counter by one. Relaxed: these are diagnostics, and no

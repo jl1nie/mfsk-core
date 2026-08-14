@@ -210,6 +210,15 @@ impl PassStats {
             c.osd_ok,
             c.osd_attempts,
         );
+        // Coarse split: is this stage FFT-bound or `ps`-read-bound?
+        // `refine_alignment_top_k` walks the 735 KB PSRAM-resident `ps`
+        // ~10^8 times; if it dominates, FT8's internal-DRAM staging
+        // pattern applies here the way it did to its `cs Box`.
+        log::info!(
+            "          coarse split: build_spectro {} ms | refine {} ms",
+            c.coarse_spectro_us / 1000,
+            c.coarse_refine_us / 1000,
+        );
         let f = &self.fano;
         let pct = |n: u32, d: u32| if d > 0 { n / (d / 100).max(1) } else { 0 };
         log::info!(
