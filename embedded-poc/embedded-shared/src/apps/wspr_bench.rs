@@ -665,7 +665,13 @@ fn log_heap(tag: &str) {
 ///
 /// This is a measured cost of the loop, not bench overhead: any
 /// production embedded WSPR path pays the same stack.
-const SCAN_STACK: u32 = 76 * 1024;
+///
+/// 72 KB against a measured 63 192 B peak (~14 % headroom). Trimmed
+/// from 76 KB with the rest of the issue-#260 stack work: this one is
+/// still a heap allocation, so a smaller request is a wider margin
+/// against a largest-free-block that moves (see `post_spawn` in
+/// [`run_with_post_spawn`] for the ordering that keeps it wide).
+const SCAN_STACK: u32 = 72 * 1024;
 
 /// Wall-clock held back from [`Pass2Budget::DeadlineDriven`] so the
 /// decode does not consume the whole slot.
@@ -866,6 +872,19 @@ pub fn init_logger_once() {
 }
 
 pub fn run(bin: &'static [u8]) -> ! {
+    run_with_post_spawn(bin, || {})
+}
+
+/// [`run`], plus a hook invoked once the decode task stacks are
+/// placed.
+///
+/// Anything that claims internal DRAM — a WiFi association above all —
+/// belongs here rather than in the caller's `main`, so it competes with
+/// the decoder for what is left over instead of the other way round.
+/// The hook is called from the task that then becomes the idle
+/// supervisor loop, so whatever it returns must own itself (leak it, or
+/// keep it in a `static`); the bench never exits.
+pub fn run_with_post_spawn(bin: &'static [u8], post_spawn: impl FnOnce()) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 
@@ -895,6 +914,19 @@ pub fn run(bin: &'static [u8]) -> ! {
     log_heap("post-bandwidth");
 
     spawn(c"wspr_scan", scan_task, SCAN_STACK, argp);
+    log_heap("post-scan-spawn");
+
+    // Only now is it safe to bring anything memory-hungry up. Both
+    // long-lived task stacks are placed: the worker's is in `.bss`, and
+    // this one has just taken its contiguous block out of an internal
+    // heap nothing else has fragmented yet. A WiFi association started
+    // *before* this point leaves the largest free block at 88 KB
+    // against a 76 KB request — it fits, but the margin is whatever the
+    // driver happens to be holding, which is exactly the dependency
+    // that cost pass 1 its second core while the worker was still
+    // heap-allocated (issue #260).
+    post_spawn();
+
     loop {
         unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
     }

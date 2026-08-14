@@ -30,37 +30,32 @@ const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseb
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PSK: &str = env!("WIFI_PSK");
 
-/// Bring WiFi up before the bench when `MFSK_WSPR_BENCH_WIFI` is set at
-/// build time, so the run measures the decoder **as it would actually
-/// ship** rather than on a board with the radio switched off.
+/// Bring WiFi up when `MFSK_WSPR_BENCH_WIFI` is set at build time, so
+/// the run measures the decoder **as it would actually ship** rather
+/// than on a board with the radio switched off. Called from
+/// `run_with_post_spawn`'s hook — after both decode task stacks are
+/// placed, never before (see `main`).
 ///
-/// This is a memory question before it is a CPU one. The candidate loop
-/// needs two large task stacks live at once — `SCAN_STACK` 90 KB plus
-/// `PASS01_WORKER_STACK` 80 KB, then `PASS2_WORKER_STACK` 88 KB — and
-/// FreeRTOS task stacks must come out of *internal* DRAM in one
-/// contiguous piece. A radio-off boot leaves 328 KB free with a 236 KB
-/// largest block, so 178 KB of stacks fits with ~58 KB to spare. The
-/// WiFi driver plus LwIP claim tens of KB of that same internal pool,
-/// and `wspr_dual_core`'s `have_room_for(PASS2_WORKER_STACK)` guard
-/// responds to a shortfall by **silently falling back to sequential** —
-/// which costs the 1.17x dual-core speedup and pushes TOTAL back over
-/// the 120 s slot. Nothing in the bench log would say why.
+/// This is a memory question before it is a CPU one, and the answer
+/// moved twice while issue #260 worked it out:
 ///
-/// So: measure the heap with the radio up, before deciding how much of
-/// the slot to reserve for spot upload.
+/// - A FreeRTOS task stack is a contiguous *internal* DRAM allocation.
+///   With WiFi associated, the largest such block on a CoreS3 is 88 KB,
+///   and the loop wanted two stacks at once.
+/// - `=cycle` exists because "take the radio down for the decode" was
+///   the obvious fix. It is not one: cycling returns free internal DRAM
+///   (228 -> 269 KB) while the **largest contiguous block stays at
+///   156 KB**, merely linking WiFi costs 236 -> 184 KB before it is ever
+///   started, and re-associating takes a measured 7.9 s (and was seen
+///   failing outright with `ESP_ERR_TIMEOUT`). Kept as a diagnostic.
+/// - What actually fixed it: the dual-core worker's stack moved to
+///   `.bss` (`wspr_dual_core::WORKER_STACK`), and the scan task's is now
+///   taken before the radio starts. The radio can stay up through the
+///   decode, and does.
 ///
-/// `MFSK_WSPR_BENCH_WIFI=cycle` measures the configuration a real
-/// receiver would actually use instead: **the radio does not have to be
-/// up while decoding.** Spots only need to leave the box once, after
-/// the decode, so WiFi can be brought up, used, and torn down between
-/// slots — the two never need the memory at the same time.
-///
-/// That only works if the memory comes back *contiguous*. Internal DRAM
-/// is where FreeRTOS task stacks must live, and the loop needs one
-/// 170-178 KB run of it; if WiFi's static allocations leave a hole in
-/// the middle, the pool can report plenty free while the largest block
-/// stays under what a stack needs. `cycle` brings WiFi up, drops it,
-/// and prints free/largest at each step, which answers that directly.
+/// `=1` holds the association for the whole run — the shipped
+/// arrangement, and the configuration any spot-upload number has to be
+/// measured in.
 fn log_internal(label: &str) {
     use esp_idf_svc::sys::{
         MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL, heap_caps_get_free_size,
@@ -127,9 +122,14 @@ fn main() -> ! {
     // default` directly — `run` installs the logger too, and the second
     // install aborts the process.
     embedded_shared::apps::wspr_bench::init_logger_once();
-    // Held for the process lifetime — dropping the handle tears the
-    // association down, and the point is to keep the radio's memory
-    // claimed for the whole measurement.
-    let _wifi = maybe_start_wifi();
-    embedded_shared::apps::wspr_bench::run(GOLDEN_BASEBAND)
+    // WiFi comes up from the post-spawn hook, **not** here: the decode
+    // task stacks have to take their contiguous internal DRAM before
+    // the radio starts claiming any (issue #260). Leaked rather than
+    // held in a local because the hook returns and the bench never
+    // exits — dropping the handle would tear the association down.
+    embedded_shared::apps::wspr_bench::run_with_post_spawn(GOLDEN_BASEBAND, || {
+        if let Some(h) = maybe_start_wifi() {
+            core::mem::forget(h);
+        }
+    })
 }
