@@ -35,24 +35,32 @@ use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWif
 /// `connect()+wait_netif_up()` on the same `set_configuration()` from
 /// the first attempt, which fixed the "Association refused" pattern
 /// but not a second, distinct failure mode also seen this session
-/// (L2 associates instantly every attempt, then DHCP stays silent for
-/// the full `wait_netif_up()` timeout — no association-refusal log
-/// line at all). Redoing the scan (fresh channel) and
-/// `set_configuration()` every attempt, the way `wifikey2` does, gives
-/// the driver a fully clean slate per attempt instead of reusing
-/// whatever internal state a `disconnect()` alone leaves behind.
-/// **Verified fixing the DHCP-silent case on real hardware**: with
-/// this change (plus a DHCP reservation the user added for this
-/// device's MAC, ruling out lease-pool exhaustion from this session's
-/// own heavy reconnect churn as a contributing factor), a boot that
-/// would previously have failed outright now shows attempt 1 timeout
-/// → attempt 2 timeout → attempt 3 succeeds, landing on the reserved
-/// IP. Not fully isolated which of {this retry shape, the reservation,
-/// `esp_wifi_set_ps(0)` above} did the actual work — see this crate's
-/// design memory for the full investigation trail — but the combined
-/// change is what's confirmed working, so all three stay together
-/// rather than bisecting further on a problem that's no longer
-/// reproducing.
+/// (L2 associates fine, then `wait_netif_up()` times out with no
+/// association-refusal log line at all).
+///
+/// **That second failure mode was bisected to completion, 2026-08-15,
+/// with a temporary `LWIP_DHCP_DEBUG` build (not kept — see this
+/// file's git history for the throwaway diagnostic).** Root cause:
+/// **not** this crate's code at all. lwIP's own DHCP client traced
+/// out perfectly correct behaviour every time — `dhcp_discover()`
+/// broadcasting a `DISCOVER` to `255.255.255.255:67`, retried on
+/// exponential backoff (500 ms → 1 s → 2 s → 4 s ×N) — with **zero**
+/// `OFFER`/`NAK` ever received in reply, across 4 full connect
+/// attempts (28+ individual `DISCOVER`s). Neither this retry shape
+/// nor `esp_wifi_set_ps(0)` above changed that outcome in isolation
+/// (each was bisected out separately and the failure reproduced
+/// identically both times); only a DHCP reservation for this device's
+/// MAC on the router made the server actually answer. This is
+/// unambiguously a router/DHCP-server-side problem — dynamic
+/// (pool-based) allocation wasn't answering this client at all, while
+/// a static reservation bypasses whatever that path's issue was.
+/// Both changes stay regardless, as legitimate general-purpose
+/// improvements (the association-refusal fix above is real and
+/// unrelated; power-save-disable is a defensible default for a
+/// mains-powered debug/logging device even though it didn't fix this
+/// particular symptom) — see this crate's design memory for the full
+/// investigation trail, including the two single-change bisection
+/// attempts that ruled each of them out individually.
 const CONNECT_MAX_ATTEMPTS: u32 = 4;
 /// Delay between attempts. `wifikey2::WifiManager::reconnect()` uses
 /// a fixed 3000 ms with the comment "wait for AP to clear association
@@ -117,6 +125,13 @@ where
     // reply, but the fix is the identical call. Applied before `scan()`/
     // `connect()` so it's in effect for the whole DHCP handshake, not
     // just steady-state traffic after.
+    //
+    // **Bisection, 2026-08-15**: temporarily disabling this call (DHCP
+    // reservation also removed) showed the wifikey2-style full-reconnect
+    // retry shape *alone* is NOT sufficient — 4/4 attempts failed with
+    // the identical DHCP-silent pattern. Re-enabled here to test power-
+    // save-disable in isolation (DHCP reservation still removed) —
+    // narrows down whether this call specifically is load-bearing.
     esp_idf_svc::sys::esp!(unsafe { esp_idf_svc::sys::esp_wifi_set_ps(0) })?;
 
     // See CONNECT_MAX_ATTEMPTS's own doc comment for why each attempt
