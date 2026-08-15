@@ -43,13 +43,15 @@
 //! still decodes the baked WAV-derived golden baseband
 //! (`assets/wspr_golden_baseband.bin`, same as `wspr_bench.rs`) so
 //! the app has *some* meaningful decode to show immediately at boot
-//! rather than only ever decoding synthetic noise that carries no
-//! WSPR message. Every slot after the first goes through the real DDC
-//! pipeline — see `scan_loop`'s own comment for exactly where the
-//! switch happens. **The synthetic source is noise, not a tone** —
-//! see [`fill_noise`]'s doc comment for a real false-decode bug a
-//! fixed single-frequency placeholder caused on real hardware
-//! (2026-08-15) and why noise doesn't have the same problem.
+//! rather than waiting out a full DDC cycle first. Every slot after
+//! the first goes through the real DDC pipeline — see `scan_loop`'s
+//! own comment for exactly where the switch happens. **The synthetic
+//! source is a real, correctly-encoded WSPR test transmission
+//! (`N0CALL`), not noise and not a bare tone** — see
+//! [`build_ddc_test_track`]'s doc comment for two real false-decode/
+//! missing-load bugs (2026-08-15) that earlier placeholder choices
+//! caused on real hardware, and why "a genuine signal" is what
+//! avoids both.
 //!
 //! One consequence worth being explicit about regardless: the band
 //! selector in the web settings form changes what dial frequency gets
@@ -84,7 +86,7 @@ use mipidsi::{
     Builder,
 };
 
-use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc};
+use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc, AUDIO_RATE_HZ};
 use mfsk_core::wspr::decode::WsprResult;
 
 use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
@@ -203,37 +205,91 @@ static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] = [Mutex::new(SlotBuf::new()), Mutex::
 /// defensively for a case the real timing doesn't produce.
 static DDC_READY_IDX: Mutex<Option<usize>> = Mutex::new(None);
 
-/// **2026-08-15, real-hardware bug found + fixed**: this used to be a
-/// single fixed 1540 Hz tone (same one `wspr-bench`'s own
-/// `ddc_load_task`/`bench_ddc` still use for their own CPU-timing-only
-/// purposes, which never feed a real decoder). Feeding that tone
-/// through the *real* `run_scan` here was the root cause of a genuine
-/// bug: the coarse search found an anomalous 72 candidates against it
-/// (a real busy band doesn't produce that many), and one of those
-/// occasionally converged through Fano/OSD anyway — WSPR's
-/// convolutional code has no CRC-strength check, so a sufficiently
-/// structured, non-noise-like input has a real (if small) false-accept
-/// rate. The visible symptom: after running for a while, the
-/// "discovered stations" pane started showing entries like `<#00000>
-/// A000... 0` — not display corruption, that's `msg/wspr.rs`'s own
-/// `<#{hash:05x}>` format for a genuine (but meaningless) Type-3
-/// decode of noise bits. Switched to per-chunk pseudorandom noise
-/// (see [`fill_noise`]) instead: same per-sample DDC/FIR cost (the
-/// pipeline-timing property this task exists to exercise is
-/// unaffected), but no deterministic tone-line for the coarse search
-/// to lock onto, so `scan_loop` decoding a `ddc_loop`-produced buffer
-/// should behave like a real quiet band (occasional false accepts are
-/// still statistically possible — WSPR's code has no perfect check —
-/// just no longer artificially likely).
+/// **History, three real-hardware bugs deep (2026-08-15):**
+///
+/// 1. First cut: a single fixed 1540 Hz tone (same one `wspr-bench`'s
+///    own `ddc_load_task`/`bench_ddc` still use for their own
+///    CPU-timing-only purposes, which never feed a real decoder).
+///    Feeding that tone through the *real* `run_scan` here produced an
+///    anomalous 72 coarse candidates (a real busy band doesn't produce
+///    that many), and one of those occasionally converged through
+///    Fano/OSD anyway — WSPR's convolutional code has no CRC-strength
+///    check, so a sufficiently structured, non-noise-like input has a
+///    real (if small) false-accept rate. Symptom: after running for a
+///    while, the "discovered stations" pane started showing entries
+///    like `<#00000> A000... 0` — not display corruption, that's
+///    `msg/wspr.rs`'s own `<#{hash:05x}>` format for a genuine (but
+///    meaningless) Type-3 decode of noise bits.
+/// 2. Fixed by switching to pure per-chunk pseudorandom noise (see
+///    [`fill_noise`]) — no false decodes in a 10-minute/5-slot
+///    real-hardware verification. But pure noise also means a real
+///    quiet band: 0 coarse candidates, decode finishing in ~1 s
+///    instead of the ~80-100 s compute-bound Fano/OSD/subtract cost
+///    real audio would produce — the concurrency/timing behaviour
+///    this whole pipeline exists to validate (does the decode task
+///    starve display/WiFi/HTTP, or vice versa) became invisible past
+///    slot 0. Pointed out by the user: "デコードがないと負荷がわからない."
+/// 3. Tried streaming a real, correctly-encoded WSPR burst instead —
+///    first by building the *whole* 162-symbol waveform into one
+///    ~5.3 MB `Vec` up front (`build_ddc_test_track`, since removed).
+///    Two more real-hardware failures came out of that single attempt:
+///    the placeholder callsign `"N0CALL"` doesn't actually fit WSPR's
+///    compressed packing (6 chars with its digit at position 1 —
+///    `msg::callsign28::pack_call28` only accepts that shape at ≤5
+///    chars), so `pack_type1` returned `None` and the `.expect()`
+///    aborted every boot; and even after switching to the
+///    known-valid `K1ABC`/`FN42`/`37` (the exact combination
+///    `mfsk_core::wspr::tx`'s own `synthesizes_valid_message` test
+///    already proves packs), the 5.3 MB allocation itself failed
+///    (`memory allocation of 5472256 bytes failed` → abort) every
+///    boot — PSRAM has 8 MB nominal, but not 5.3 MB free/contiguous
+///    at the moment `ddc_loop` first runs, concurrently with
+///    `scan_loop`'s own slot-0 golden decode. **The `panicked`
+///    string this crate's own logs are usually greped for doesn't
+///    appear for this failure mode** — `handle_alloc_error` aborts
+///    directly, not through the normal panic machinery — which is
+///    why the first fix attempt looked clean in a `grep panicked`
+///    pass and needed the user's own on-device observation ("history
+///    に全くたまっていない") to catch.
+///
+/// Fixed for good by **streaming the burst incrementally**
+/// ([`DdcTestSource`]) instead of ever materializing it — same
+/// per-sample cosine-with-continuous-phase math
+/// `synthesize_audio_into` uses, just computed one [`DDC_CHUNK_LEN`]
+/// chunk at a time into the same small stack-sized buffer noise used
+/// to fill, carrying only ~200 B of generator state (symbol table +
+/// position + phase) between calls instead of the full waveform. This
+/// keeps every property the previous two attempts were chasing at
+/// once: a real signal decodes to a real, inspectable, always-correct
+/// result (no false-decode risk), it exercises the full
+/// coarse/Fano/OSD/subtract cost every DDC-fed slot same as the
+/// golden-baseband decode, *and* it no longer competes with
+/// `scan_loop`'s own concurrent PSRAM use for a multi-megabyte
+/// allocation neither task actually needs.
+const DDC_TEST_CALL: &str = "K1ABC";
+const DDC_TEST_GRID: &str = "FN42";
+const DDC_TEST_DBM: i32 = 37;
+const DDC_TEST_BASE_FREQ_HZ: f32 = 1_500.0;
+const DDC_TEST_AMPLITUDE: f32 = 0.3;
+/// Amplitude for the noise surrounding [`DDC_TEST_CALL`]'s burst in
+/// [`DdcTestSource`] (lead-in/trail pad) — same scale the original
+/// fixed-tone constant used, now applied by [`fill_noise`] instead.
 const DDC_NOISE_AMPLITUDE: f32 = 0.3;
+/// Chunk size [`ddc_loop`] feeds to [`StreamingDdc::push`].
+const DDC_CHUNK_LEN: usize = 4096;
+/// Silence-noise lead-in before the burst starts, within the slot's
+/// capture window — gives `run_scan` something resembling a realistic
+/// (if synthetic) `dt` rather than the burst landing exactly on
+/// sample 0. 1 s at `AUDIO_RATE_HZ`.
+const DDC_LEAD_PAD_SAMPLES: usize = 12_000;
 /// One WSPR slot's worth of audio at `AUDIO_RATE_HZ`, matching
 /// `wspr-bench`'s own `NPOINTS_MAX`-equivalent constant (114 s is the
 /// capture portion of a 120 s slot).
 const DDC_SLOT_AUDIO_SAMPLES: usize = 114 * 12_000;
 /// Stack for the DDC task. It streams through a small fixed chunk
-/// buffer and `DdcBufs`' own fixed-size FIR history/taps — no
-/// decode-sized stack frames, so this is deliberately much smaller
-/// than `SCAN_STACK`.
+/// buffer, [`DdcTestSource`]'s own small state struct, and `DdcBufs`'
+/// fixed-size FIR history/taps — no decode-sized or multi-megabyte
+/// frames, so this is deliberately much smaller than `SCAN_STACK`.
 const DDC_STACK: u32 = 12 * 1024;
 
 fn main() -> ! {
@@ -608,7 +664,7 @@ fn scan_loop(ctx: ScanCtx) -> ! {
         let mut idat = vec![0.0f32; NBB];
         let mut qdat = vec![0.0f32; NBB];
         load_baseband(GOLDEN_BASEBAND, &mut idat, &mut qdat);
-        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)");
+        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)", false);
     }
 
     let mut slot_num = 1u32;
@@ -641,7 +697,7 @@ fn scan_loop(ctx: ScanCtx) -> ! {
         // dropped once `run_one_slot` returns.
         drop(buf);
 
-        run_one_slot(&ctx, &mut idat, &mut qdat, &slot_num.to_string());
+        run_one_slot(&ctx, &mut idat, &mut qdat, &slot_num.to_string(), true);
         slot_num = slot_num.wrapping_add(1);
     }
 }
@@ -650,7 +706,23 @@ fn scan_loop(ctx: ScanCtx) -> ! {
 /// `scan_loop` iteration runs, factored out so the golden-baseband
 /// slot 0 and the DDC-fed slots after it share it exactly rather than
 /// duplicating the reporting/UI plumbing.
-fn run_one_slot(ctx: &ScanCtx, idat: &mut [f32], qdat: &mut [f32], slot_label: &str) {
+///
+/// `is_synthetic_source` — `true` for every DDC-fed slot (the audio is
+/// [`build_ddc_test_track`]'s fabricated [`DDC_TEST_CALL`] burst, not
+/// a real reception), `false` for slot 0 (a real, if stale, WAV-derived
+/// recording of real stations). Gates wsprnet reporting: a "station"
+/// this device fabricated itself has no business appearing in a public
+/// spot database as a real reception, identically every ~2 minutes,
+/// forever — the golden-baseband slot's *is* real (if replayed)
+/// signal content, so that path is left as this file's pre-existing
+/// behaviour rather than newly restricted here too.
+fn run_one_slot(
+    ctx: &ScanCtx,
+    idat: &mut [f32],
+    qdat: &mut [f32],
+    slot_label: &str,
+    is_synthetic_source: bool,
+) {
     let settings = {
         let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
         settings::load(&g)
@@ -679,7 +751,9 @@ fn run_one_slot(ctx: &ScanCtx, idat: &mut [f32], qdat: &mut [f32], slot_label: &
     }
 
     let ntp_synced = WSPR_UI.lock().expect("WSPR_UI mutex poisoned").ntp_synced;
-    if ntp_synced {
+    if is_synthetic_source {
+        log::info!("wspr_app: slot {slot_label} is DDC-synthetic — skipping wsprnet report");
+    } else if ntp_synced {
         report_to_wsprnet(&results, &settings, band, &date, &time);
     } else {
         log::info!("wspr_app: NTP never synced this run — skipping wsprnet report");
@@ -731,18 +805,17 @@ fn ddc_loop() -> ! {
     }
     log::info!("wspr_app: ddc loop starting");
 
-    let mut chunk = vec![0.0f32; 4096];
-    // Fixed seed: deterministic across runs (same rationale the old
-    // fixed-tone constant had), but re-rolled every chunk below rather
-    // than reused verbatim — a single precomputed buffer replayed
-    // ~330×/slot would itself be a periodic (hence structured, hence
-    // false-accept-prone) signal, exactly the failure mode this
-    // replaced. See [`DDC_NOISE_AMPLITUDE`]'s doc comment.
-    let mut rng: u32 = 0x2026_0815;
+    // Rebuilt fresh each slot (cheap — packs 50 bits + encodes 162
+    // symbols, no audio-sized work) rather than kept across
+    // iterations, so each slot's noise pad is independently seeded.
+    // See [`DdcTestSource`]'s own doc comment for why this streams
+    // instead of materializing the whole burst.
+    let mut chunk = vec![0.0f32; DDC_CHUNK_LEN];
 
     let mut write_idx = 0usize;
     loop {
         let slot_start_us = now_us();
+        let mut source = DdcTestSource::new();
 
         let (oi, oq) = {
             let mut bufs = DdcBufs::new();
@@ -752,7 +825,7 @@ fn ddc_loop() -> ! {
             let mut oq: Vec<f32> = Vec::with_capacity(NBB + 64);
             let mut fed = 0usize;
             while fed < DDC_SLOT_AUDIO_SAMPLES {
-                fill_noise(&mut chunk, &mut rng);
+                source.fill_next(&mut chunk);
                 ddc.push(&chunk, &mut oi, &mut oq);
                 fed += chunk.len();
             }
@@ -784,25 +857,109 @@ fn ddc_loop() -> ! {
     }
 }
 
-/// Fill `chunk` with fresh pseudorandom noise in `[-DDC_NOISE_AMPLITUDE,
-/// +DDC_NOISE_AMPLITUDE]`, advancing `rng` in place. xorshift32 — cheap
-/// (a handful of XORs/shifts per sample, trivial next to the DDC/decode
-/// cost this task exists to exercise) and dependency-free, matching
-/// this crate's existing preference for hand-rolled ASCII/percent-
-/// decode helpers over pulling in a crate for something this small.
-/// Not cryptographic quality; doesn't need to be — see
-/// [`DDC_NOISE_AMPLITUDE`]'s doc comment for why *not periodic* is the
-/// actual requirement.
-fn fill_noise(chunk: &mut [f32], rng: &mut u32) {
-    for v in chunk.iter_mut() {
-        let mut x = *rng;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        *rng = x;
-        let unit = (x as f32 / u32::MAX as f32) * 2.0 - 1.0; // -> [-1, 1]
-        *v = unit * DDC_NOISE_AMPLITUDE;
+/// Streams the same passband audio [`ddc_loop`] feeds every DDC-fed
+/// slot — [`DDC_LEAD_PAD_SAMPLES`] of noise, then a real,
+/// correctly-encoded WSPR Type-1 burst ([`DDC_TEST_CALL`]
+/// [`DDC_TEST_GRID`] [`DDC_TEST_DBM`]), then noise again out to
+/// [`DDC_SLOT_AUDIO_SAMPLES`] — **one [`DDC_CHUNK_LEN`] chunk at a
+/// time**, without ever materializing the whole burst. Only the 162
+/// packed symbols (162 B) plus a handful of position/phase scalars
+/// live in `self`; everything else is recomputed per sample from
+/// [`tx::synthesize_audio_into`]'s own per-sample formula (continuous
+/// phase across symbol boundaries, plus its raised-cosine ramp at the
+/// very start/end of the burst) — see this file's `DDC_TEST_CALL`
+/// doc comment for why a whole-burst `Vec` (this struct's predecessor)
+/// isn't safe to allocate here regardless of size, and `tx.rs` itself
+/// for the reference implementation this mirrors.
+///
+/// [`tx::synthesize_audio_into`]: mfsk_core::wspr::tx::synthesize_audio_into
+struct DdcTestSource {
+    symbols: [u8; 162],
+    nsps: usize,
+    nramp: usize,
+    /// Absolute sample position within the whole per-slot stream
+    /// (lead pad + burst + trail pad), advanced by [`Self::fill_next`].
+    pos: usize,
+    /// Continuous phase carried across symbol boundaries within the
+    /// burst — reset to `0.0` at the burst's first sample, otherwise
+    /// only ever incremented, matching `synthesize_audio_into`.
+    phase: f32,
+    rng: u32,
+}
+
+impl DdcTestSource {
+    fn new() -> Self {
+        let info = mfsk_core::msg::wspr::pack_type1(DDC_TEST_CALL, DDC_TEST_GRID, DDC_TEST_DBM)
+            .expect("DDC_TEST_CALL/DDC_TEST_GRID/DDC_TEST_DBM must pack as a valid WSPR type-1 message");
+        let symbols = mfsk_core::wspr::encode_channel_symbols(&info);
+        let nsps = (AUDIO_RATE_HZ as f64
+            * <mfsk_core::wspr::Wspr as mfsk_core::engine::ModulationParams>::SYMBOL_DT as f64)
+            .round() as usize;
+        let nramp = mfsk_core::engine::dsp::envelope::ramp_samples(AUDIO_RATE_HZ as u32, nsps);
+        Self { symbols, nsps, nramp, pos: 0, phase: 0.0, rng: 0x2026_0815 }
     }
+
+    fn burst_len(&self) -> usize {
+        self.nsps * self.symbols.len()
+    }
+
+    /// Fill `chunk` with the next `chunk.len()` samples of the stream,
+    /// advancing all internal state.
+    fn fill_next(&mut self, chunk: &mut [f32]) {
+        let burst_start = DDC_LEAD_PAD_SAMPLES;
+        let burst_end = burst_start + self.burst_len();
+        for v in chunk.iter_mut() {
+            *v = if self.pos < burst_start || self.pos >= burst_end {
+                noise_sample(&mut self.rng)
+            } else {
+                // Symbol boundaries only change which tone `phase`
+                // advances by (`freq`/`dphi` below) — `phase` itself
+                // is never reset here, staying continuous across the
+                // boundary exactly like `synthesize_audio_into`.
+                let i = self.pos - burst_start; // 0..burst_len
+                let symbol_idx = i / self.nsps;
+                let freq = DDC_TEST_BASE_FREQ_HZ
+                    + self.symbols[symbol_idx] as f32
+                        * <mfsk_core::wspr::Wspr as mfsk_core::engine::ModulationParams>::TONE_SPACING_HZ;
+                let dphi = core::f32::consts::TAU * freq / AUDIO_RATE_HZ;
+                let sample = DDC_TEST_AMPLITUDE * self.phase.cos();
+                self.phase += dphi;
+                if self.phase > core::f32::consts::TAU {
+                    self.phase -= core::f32::consts::TAU;
+                } else if self.phase < -core::f32::consts::TAU {
+                    self.phase += core::f32::consts::TAU;
+                }
+                let env = if i < self.nramp {
+                    (1.0 - (core::f32::consts::TAU * i as f32 / (2.0 * self.nramp as f32)).cos()) / 2.0
+                } else if i >= self.burst_len() - self.nramp {
+                    let k = i - (self.burst_len() - self.nramp);
+                    (1.0 + (core::f32::consts::TAU * k as f32 / (2.0 * self.nramp as f32)).cos()) / 2.0
+                } else {
+                    1.0
+                };
+                sample * env
+            };
+            self.pos += 1;
+        }
+    }
+}
+
+/// One fresh pseudorandom noise sample in `[-DDC_NOISE_AMPLITUDE,
+/// +DDC_NOISE_AMPLITUDE]`, advancing `rng` in place. xorshift32 —
+/// cheap and dependency-free, matching this crate's existing
+/// preference for hand-rolled ASCII/percent-decode helpers over
+/// pulling in a crate for something this small. Not cryptographic
+/// quality; doesn't need to be — used only for [`DdcTestSource`]'s
+/// lead/trail pad, where the requirement is just "not periodic," not
+/// real randomness.
+fn noise_sample(rng: &mut u32) -> f32 {
+    let mut x = *rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *rng = x;
+    let unit = (x as f32 / u32::MAX as f32) * 2.0 - 1.0; // -> [-1, 1]
+    unit * DDC_NOISE_AMPLITUDE
 }
 
 // ── Decode-result plumbing ───────────────────────────────────────────
