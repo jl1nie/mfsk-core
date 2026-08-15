@@ -36,7 +36,7 @@ use esp_idf_hal::units::FromValueType;
 
 use display_interface_spi::SPIInterface;
 use mipidsi::{
-    models::ILI9341Rgb565,
+    models::ILI9342CRgb565,
     options::{ColorInversion, Orientation, Rotation},
     Builder,
 };
@@ -130,10 +130,15 @@ fn main() -> ! {
             let dc = esp_idf_hal::gpio::PinDriver::output(peripherals.pins.gpio35).expect("DC gpio35");
             let di = SPIInterface::new(spi_dev, dc);
 
+            // Correct model this time (see `wspr_app.rs`'s 2026-08-15
+            // fix note): ILI9342CRgb565's native FRAMEBUFFER_SIZE is
+            // already (320, 240), landscape. No orientation baked in
+            // here — the loop below cycles `set_orientation` on top of
+            // this correct base to find the right *portrait* (240×320)
+            // config for the new "rotate 90°" layout request.
             let mut delay = Ets;
-            match Builder::new(ILI9341Rgb565, di)
-                .display_size(240, 320)
-                .orientation(Orientation::new().rotate(Rotation::Deg90))
+            match Builder::new(ILI9342CRgb565, di)
+                .display_size(320, 240)
                 .invert_colors(ColorInversion::Inverted)
                 .init(&mut delay)
             {
@@ -158,17 +163,16 @@ fn main() -> ! {
     };
 
     log::info!(
-        "lcd_minimal: entering landscape-orientation test — read the \
-         on-screen label directly (legible + right-side-up only if that \
-         orientation is correct), check the white border is unbroken on \
-         all 4 edges (a gap = coverage bug, seen twice already today at \
-         Deg90), 6 s per attempt."
+        "lcd_minimal: entering PORTRAIT-orientation test (240x320, \
+         'rotate 90 deg' request) — read the on-screen label directly \
+         (legible + right-side-up only if that orientation is correct), \
+         check the white border is unbroken on all 4 edges, 6 s per \
+         attempt."
     );
-    // Only the two rotations that produce a 320×240 landscape canvas —
-    // Deg0/Deg180 give 240×320 portrait, which cannot be right for a
-    // panel physically mounted landscape (ruled out by today's "bottom
-    // white" / "left white" observations, both partial-landscape
-    // symptoms, not portrait-vs-landscape ones).
+    // Deg90/Deg270 on top of the model's native 320×240 landscape base
+    // swap to a 240×320 portrait canvas — the two candidates for the
+    // requested "rotate 90°" layout. (Deg0/Deg180 would stay 320×240
+    // landscape, not what's being tested here.)
     let candidates = [
         ("R90 NORMAL", Rotation::Deg90, false),
         ("R90 MIRROR", Rotation::Deg90, true),
@@ -183,7 +187,7 @@ fn main() -> ! {
                 Orientation::new().rotate(rotation)
             };
             match display.set_orientation(orientation) {
-                Ok(()) => match draw_quadrants(&mut display, 320, 240, label) {
+                Ok(()) => match draw_quadrants(&mut display, 240, 320, label) {
                     Ok(()) => log::info!("lcd_minimal: showing [{label}] now"),
                     Err(e) => log::error!("lcd_minimal: [{label}] draw FAILED: {e:?}"),
                 },

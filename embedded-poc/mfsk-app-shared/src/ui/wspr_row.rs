@@ -6,7 +6,7 @@
 //! wsprnet.org's POST body wants (`date`/`time` as pre-split
 //! `yyMMdd`/`HHmm` strings, `dbm`/`snr_db` as `i32` because that's
 //! what `to_string()` needs). This type is shaped around what a
-//! 320×240 landscape row needs to paint fast and fit in
+//! narrow-panel row needs to paint fast and fit in
 //! [`heapless::Vec`]/[`heapless::Deque`] rings cheaply — narrower
 //! integer widths, one combined `HHMM` field instead of two strings.
 //! Both ultimately describe the same decode; the call site
@@ -50,22 +50,25 @@ pub struct WsprSpotRow {
 
 /// Column header matching [`WsprSpotRow::format_row`]'s field order
 /// and widths — draw this once above a list of formatted rows.
-pub const HEADER: &str = "UTC  CALLSIGN  GRID  DBM FREQ  SNR    DT DRIFT";
+pub const HEADER: &str = "UTC  CALL     GRID DBM FREQ SNR   DT DR";
 
 impl WsprSpotRow {
     /// Render one fixed-width line: `HHMM call grid dbm freq snr dt
     /// drift`, matching [`HEADER`]'s column layout. Truncates
-    /// `call`/`grid` to their display width (9/5 chars) rather than
+    /// `call`/`grid` to their display width (8/4 chars) rather than
     /// their storage capacity (13/6) — storage is sized for the
     /// longest realistic value (a hashed callsign, `<PJ4/K1ABC>`, is
-    /// 11 chars), display is sized to keep the whole line under the
-    /// 320 px / 6 px-per-glyph = 53-char budget of the CoreS3 panel
-    /// at `FONT_6X10`.
+    /// 11 chars; a precision Maidenhead grid is 6). Display is sized
+    /// for the CoreS3 panel's **portrait** 240 px width (240 / 6
+    /// px-per-glyph at `FONT_6X10` = 40-char budget) — narrower than
+    /// an earlier landscape (320 px / 53-char) version of this format;
+    /// switched 2026-08-15 per a layout request to use the panel
+    /// rotated 90°, trading column width for more visible rows.
     pub fn format_row(&self, buf: &mut heapless::String<56>) {
         buf.clear();
         let _ = write!(
             buf,
-            "{:<4} {:<9.9} {:<5.5} {:>3} {:>4.0} {:>+4} {:>+5.1} {:>+3}",
+            "{:<4} {:<8.8} {:<4.4} {:>3} {:>4.0} {:>+3} {:>+4.1} {:>+2}",
             self.utc_hhmm,
             self.call,
             self.grid,
@@ -87,7 +90,7 @@ mod tests {
     /// `wspr_bands` — see that crate's `#[path]` registration) rather
     /// than being trusted from a `+esp build` pass alone.
     #[test]
-    fn format_row_fits_the_53_char_budget() {
+    fn format_row_fits_the_40_char_budget() {
         let row = WsprSpotRow {
             utc_hhmm: heapless::String::try_from("1234").unwrap(),
             call: heapless::String::try_from("<PJ4/K1ABC>").unwrap(),
@@ -100,7 +103,7 @@ mod tests {
         };
         let mut buf = heapless::String::new();
         row.format_row(&mut buf);
-        assert!(buf.len() <= 53, "line too wide for the panel: {buf:?} ({} chars)", buf.len());
-        assert!(buf.starts_with("1234 <PJ4/K1AB PM95 "), "{buf}");
+        assert!(buf.len() <= 40, "line too wide for the panel: {buf:?} ({} chars)", buf.len());
+        assert!(buf.starts_with("1234 <PJ4/K1A PM95"), "{buf}");
     }
 }

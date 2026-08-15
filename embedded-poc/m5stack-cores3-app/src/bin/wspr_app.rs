@@ -60,7 +60,7 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use display_interface_spi::SPIInterface;
 use mipidsi::{
     models::ILI9342CRgb565,
-    options::ColorInversion,
+    options::{ColorInversion, Orientation, Rotation},
     Builder,
 };
 
@@ -333,12 +333,22 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // mipidsi's own internal width/height bookkeeping (every
             // symptom chased today — partial coverage, stripes, the
             // panel reporting 240×320 instead of 320×240 — traces
-            // back to this). Using the model whose native framebuffer
-            // already matches the physical panel needs no rotation
-            // hack at all.
+            // back to this).
+            //
+            // **Then, per a follow-up layout request, rotated back to
+            // portrait on purpose**: `.orientation(Deg90)` on top of
+            // this now-correct 320×240 landscape base gives a clean
+            // 240×320 canvas — confirmed via `lcd_minimal.rs`'s
+            // orientation-cycling diagnostic (`R90 NORMAL`, unmirrored)
+            // on real hardware. Different from the old bug: this
+            // rotation is layered on the *correct* native-landscape
+            // model, not used to fake landscape out of a
+            // portrait-native one, so it doesn't hit the same
+            // bookkeeping issue.
             let mut delay = Ets;
             match Builder::new(ILI9342CRgb565, di)
                 .display_size(320, 240)
+                .orientation(Orientation::new().rotate(Rotation::Deg90))
                 .invert_colors(ColorInversion::Inverted)
                 .init(&mut delay)
             {

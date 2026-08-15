@@ -1,28 +1,32 @@
-//! WSPR receiver screen — fixed vertical split for the CoreS3's full
-//! 320×240 landscape panel.
+//! WSPR receiver screen — fixed vertical split for the CoreS3's panel,
+//! run **portrait** (240×320): `.orientation(Deg90)` on top of the
+//! panel's native 320×240 landscape framebuffer, confirmed on real
+//! hardware 2026-08-15 (`lcd_minimal.rs`'s orientation-cycling
+//! diagnostic, `R90 NORMAL`). A deliberate trade of column width for
+//! more visible rows — see `wspr_row.rs`'s own doc comment for the
+//! resulting 40-char row budget (was 53 in an earlier landscape
+//! version of this file).
 //!
 //! **Not a reuse of `decoded_list`/`status_bar`**: those hardcode the
-//! M5StickS3's 135 px width (see their own doc comments) and this
-//! app runs on CoreS3's real 320×240 canvas, wide enough that a
-//! WSPR row's full field set (`wspr_row::HEADER`'s columns) fits on
-//! one line without the truncation logic the 135 px-wide FT8 list
-//! needs. Reused *structurally* instead: per-region self-contained
-//! wipe-then-draw (no separate full-frame clear, to avoid the same
-//! flicker `decoded_list`'s own doc comment describes), caller gates
-//! repaints by `WsprUiState::dirty_seq`.
+//! M5StickS3's 135 px width (see their own doc comments), a different
+//! panel with a different reason for being narrow. Reused
+//! *structurally* instead: per-region self-contained wipe-then-draw
+//! (no separate full-frame clear, to avoid the same flicker
+//! `decoded_list`'s own doc comment describes), caller gates repaints
+//! by `WsprUiState::dirty_seq`.
 //!
 //! No on-device input drives a screen switch (CoreS3 has none — see
 //! this crate's design memory), so the layout is one fixed vertical
 //! split rather than tabs:
 //!
 //! ```text
-//! y=0..16    status bar       (band / dial freq / UTC / NTP / net / heap)
-//! y=16..38   discovered header + column header
-//! y=38..110  discovered stations (6 rows, latest-slot wholesale replace)
-//! y=110..112 divider
-//! y=112..134 history header + column header
-//! y=134..230 spot history (8 rows, append-only, newest at top)
-//! y=230..240 unused margin
+//! y=0..16     status bar       (band / dial freq / UTC / NTP / net / heap)
+//! y=16..37    discovered header + column header
+//! y=37..145   discovered stations (9 rows, latest-slot wholesale replace)
+//! y=145..147  divider
+//! y=147..168  history header + column header
+//! y=168..312  spot history (12 rows, append-only, newest at top)
+//! y=312..320  unused margin
 //! ```
 
 use core::fmt::Write as _;
@@ -39,24 +43,27 @@ use heapless::String;
 use super::wspr_row::{WsprSpotRow, HEADER as ROW_HEADER};
 use super::wspr_state::WsprUiState;
 
-pub const PANEL_WIDTH: u32 = 320;
-pub const PANEL_HEIGHT: u32 = 240;
+pub const PANEL_WIDTH: u32 = 240;
+pub const PANEL_HEIGHT: u32 = 320;
 
 pub const STATUS_ORIGIN_Y: i32 = 0;
 pub const STATUS_HEIGHT: u32 = 16;
 
 const DISCOVERED_HEADER_Y: i32 = STATUS_HEIGHT as i32;
-// 12 -> 11: real-hardware fitting (2026-08-15) — freed together with
-// the panel's own unused bottom margin gives exactly one more 12 px
-// history row (240 px budget, was leaving 10 px dead at the bottom;
-// see the compile-time assert below).
 const HEADER_H: u32 = 11;
 const COL_HEADER_H: u32 = 10;
 const ROW_PX: u32 = 12;
 
 const DISCOVERED_COL_HEADER_Y: i32 = DISCOVERED_HEADER_Y + HEADER_H as i32;
 pub const DISCOVERED_ROWS_Y: i32 = DISCOVERED_COL_HEADER_Y + COL_HEADER_H as i32;
-pub const DISCOVERED_ROWS: usize = 6;
+// 9 + 12 rows: the 320 px portrait budget minus fixed chrome (status
+// bar + 2× header/col-header + divider = 60 px) leaves 260 px, i.e.
+// 21 rows of `ROW_PX` at most (252 px used, 8 px slack — the compile
+// time assert below is what actually enforces this doesn't overflow).
+// Split roughly by how each pane is used: "discovered" only ever
+// shows one slot's worth (`wspr_state::STATIONS_CAP` caps it at 16
+// anyway), "history" is the cumulative log worth showing more of.
+pub const DISCOVERED_ROWS: usize = 9;
 const DISCOVERED_REGION_H: u32 = DISCOVERED_ROWS as u32 * ROW_PX;
 
 const DIVIDER_Y: i32 = DISCOVERED_ROWS_Y + DISCOVERED_REGION_H as i32;
@@ -65,7 +72,7 @@ const DIVIDER_H: u32 = 2;
 const HISTORY_HEADER_Y: i32 = DIVIDER_Y + DIVIDER_H as i32;
 const HISTORY_COL_HEADER_Y: i32 = HISTORY_HEADER_Y + HEADER_H as i32;
 pub const HISTORY_ROWS_Y: i32 = HISTORY_COL_HEADER_Y + COL_HEADER_H as i32;
-pub const HISTORY_ROWS: usize = 9;
+pub const HISTORY_ROWS: usize = 12;
 
 const BG: Rgb565 = Rgb565::BLACK;
 const FG: Rgb565 = Rgb565::WHITE;
@@ -83,19 +90,22 @@ fn fill(display: &mut impl DrawTarget<Color = Rgb565>, y: i32, h: u32, color: Rg
 }
 
 /// Status bar: band, dial frequency, UTC clock, NTP/wsprnet
-/// indicators, free heap. All-in-one line — 320 px is wide enough
-/// that this never needs the FT8 status bar's field-dropping.
+/// indicators, free heap. All-in-one line. Compact single-letter
+/// NTP/wsprnet flags (`N`/`W`, `Y`/`N`) rather than the words the
+/// panel had room for at 320 px landscape — 240 px portrait only
+/// gives this line the same 40-char budget every other row has, see
+/// `wspr_row.rs`'s own doc comment.
 pub fn render_status<D>(display: &mut D, ui: &WsprUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
     let style = text_style(FG, HEADER_BG);
-    let mut s: String<64> = String::new();
-    let ntp = if ui.ntp_synced { "OK" } else { "--" };
-    let net = if ui.wsprnet_enabled { "ON " } else { "OFF" };
+    let mut s: String<48> = String::new();
+    let ntp = if ui.ntp_synced { 'Y' } else { 'N' };
+    let net = if ui.wsprnet_enabled { 'Y' } else { 'N' };
     let _ = write!(
         &mut s,
-        "{:<4} {:>9.4}MHz  {}  NTP:{ntp}  NET:{net}  {:>4}k",
+        "{:<4} {:>8.4}M {} N{ntp} W{net} {:>4}k",
         ui.band_label, ui.dial_mhz, ui.utc_hhmmss, ui.free_heap_kb
     );
     fill(display, STATUS_ORIGIN_Y, STATUS_HEIGHT, HEADER_BG);
