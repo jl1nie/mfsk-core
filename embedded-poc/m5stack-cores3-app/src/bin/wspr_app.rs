@@ -2,10 +2,26 @@
 //! (see memory `project_wspr_app_cores3_ui`, plan file
 //! `~/.claude/plans/mighty-chasing-castle.md`).
 //!
-//! Boot sequence: board bring-up → LCD → NVS settings → spawn the
-//! scan task (reserving its stack before WiFi, see the comment at its
-//! call site) → WiFi STA → NTP → HTTP config server → release the
-//! scan task → display loop (never returns).
+//! Boot sequence: NVS settings → spawn the display task (its own LCD
+//! bring-up, core 1) → spawn the scan task (reserving its stack
+//! before WiFi, see the comment at its call site, core 0) → WiFi STA
+//! → NTP → HTTP config server → release the scan task → `main` itself
+//! becomes an idle supervisor loop.
+//!
+//! **Display runs on its own task, pinned to core 1 — not inline in
+//! `main`.** `CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0=y` (this crate's
+//! sdkconfig) pins `main` to core 0, the same core the scan task is
+//! pinned to; the scan task runs at FreeRTOS priority 5 and is
+//! compute-bound for 90-110 s at a stretch with no yield point (that's
+//! *why* the watchdog gets disabled). A first version of this app ran
+//! the render loop inline in `main` and was starved almost the entire
+//! 2-minute cycle as a result — real-hardware observation (the LCD
+//! looked frozen most of the time), not a theoretical concern. Moving
+//! the render loop to its own core-1 task fixes it: `wspr_dual_core`'s
+//! worker also lands on core 1 (`APP_CPU = 1`), but only for the
+//! fraction of each pass spent in `pass01_split`/`pass2_split`, not
+//! the whole scan — far less contention than sharing a core with the
+//! scan task itself.
 //!
 //! A **new binary**, not folded into `main.rs`: WSPR never touches
 //! the FT8 controller's `decode_block`/UAC stack, and this app's own
@@ -83,6 +99,35 @@ const NTP_SYNC_TIMEOUT_MS: u32 = 20_000;
 /// calls the identical function, so the identical stack applies.
 const SCAN_STACK: u32 = 72 * 1024;
 
+/// Stack for the display task. `embedded_graphics`/`mipidsi` drawing
+/// is shallow compared to the decode path; this is roughly what
+/// `main`'s own 32 KiB stack (`CONFIG_ESP_MAIN_TASK_STACK_SIZE`) was
+/// covering for the same code when it ran inline, not an independent
+/// hardware measurement.
+const DISPLAY_STACK: u32 = 24 * 1024;
+
+/// Below the scan/dual-core-worker priority (5) so the display task
+/// never delays a decode — on core 1 it only ever contends with
+/// `wspr_dual_core`'s intermittent worker, and losing that contention
+/// just means a render waits a few hundred ms, not that a spot gets
+/// dropped.
+const DISPLAY_PRIORITY: u32 = 3;
+
+/// Internal-DRAM free/largest-contiguous-block snapshot, same shape
+/// as `wspr-bench`'s own `log_heap` — evidence for the task-spawn
+/// ordering this file's `main` doc comment argues for, not just a
+/// "it didn't error this run" assumption.
+fn log_heap(tag: &str) {
+    let caps = esp_idf_svc::sys::MALLOC_CAP_INTERNAL | esp_idf_svc::sys::MALLOC_CAP_8BIT;
+    unsafe {
+        log::info!(
+            "wspr_app heap {tag}: internal free {} KB (largest contig {} KB)",
+            esp_idf_svc::sys::heap_caps_get_free_size(caps) / 1024,
+            esp_idf_svc::sys::heap_caps_get_largest_free_block(caps) / 1024,
+        );
+    }
+}
+
 /// Set once WiFi/NTP/HTTP-server bring-up finishes; the scan task
 /// blocks on this before its first `run_scan`. See the comment at
 /// `spawn_scan_task`'s call site for why the task is *created* before
@@ -109,70 +154,34 @@ fn main() -> ! {
     let nvs = settings::open_nvs(nvs_part.clone()).expect("settings NVS open");
     let nvs = Arc::new(Mutex::new(nvs));
 
-    // ── LCD bring-up: AXP2101 + AW9523B → SPI2 → mipidsi. Mirrors
-    // `display.rs`'s FT8-controller sequence (same board, same panel)
-    // minus the BootMode/UAC branches this app has no use for. Drawn
-    // immediately so the panel isn't blank for the ~2 minutes the
-    // first slot takes to decode. ──────────────────────────────────
-    let mut display = match pmic::init(peripherals.i2c0, peripherals.pins.gpio12, peripherals.pins.gpio11) {
-        Ok(i2c) => {
-            drop(i2c); // reset cycle is complete; nothing else on this bus yet (no touch).
-
-            let driver = SpiDriver::new(
-                peripherals.spi2,
-                peripherals.pins.gpio36, // SCK  (board::LCD_PIN_SCK)
-                peripherals.pins.gpio37, // MOSI (board::LCD_PIN_MOSI)
-                Option::<AnyIOPin>::None,
-                &SpiDriverConfig::new(),
-            )
-            .expect("SPI2 driver");
-            let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
-            let spi_dev = SpiDeviceDriver::new(driver, Some(peripherals.pins.gpio3), &spi_cfg) // CS (board::LCD_PIN_CS)
-                .expect("SPI device (CS=3)");
-            let dc = PinDriver::output(peripherals.pins.gpio35).expect("DC gpio35"); // board::LCD_PIN_DC
-            let di = SPIInterface::new(spi_dev, dc);
-
-            let mut delay = Ets;
-            match Builder::new(ILI9341Rgb565, di)
-                .display_size(240, 320)
-                .orientation(Orientation::new().rotate(Rotation::Deg90))
-                .invert_colors(ColorInversion::Inverted)
-                .init(&mut delay)
-            {
-                Ok(d) => d,
-                Err(e) => {
-                    log::error!("display init failed: {e:?}");
-                    loop {
-                        log::info!("alive (no LCD)");
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("PMIC init failed: {e:#}");
-            loop {
-                log::info!("alive (no PMIC/LCD)");
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-        }
-    };
-    display.clear(Rgb565::BLACK).ok();
-    log::info!("LCD init OK ({}x{})", board::LCD_WIDTH, board::LCD_HEIGHT);
-    {
-        let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-        wspr_list::render_all(&mut display, &ui).ok();
-    }
-
-    // Spawn the scan task's 72 KiB stack **before** WiFi associates.
-    // `wspr-bench` (issue #260) measured that the largest contiguous
-    // internal-DRAM block shrinks once WiFi links (236 -> 184 KB
-    // *before the radio even starts*, just from linking), so a big
-    // stack claimed afterward risks not fitting at all. The task
-    // itself blocks on `SCAN_GO` until the bring-up below finishes —
-    // this is "reserve the memory now, start the work once settings/
-    // WiFi/NTP are ready," not "decode before init is done."
+    // Spawn the scan task's 72 KiB stack **before anything else can
+    // fragment internal DRAM** — WiFi is the case `wspr-bench` (issue
+    // #260) measured (largest contiguous block 236 -> 184 KB *before
+    // the radio even starts*, just from linking), but the display
+    // task's own SPI-driver/mipidsi allocations are the same kind of
+    // risk if they're left free to race this claim: a first version
+    // of this fix spawned the display task first and hit exactly that
+    // — `xTaskCreatePinnedToCore` for the scan stack failed on real
+    // hardware because the display task's concurrent bring-up (on the
+    // other core, but the same heap) was contending for the same
+    // block. Scan first, unconditionally, before anything else on
+    // either core gets a chance to allocate. The task itself blocks
+    // on `SCAN_GO` until bring-up below finishes — this is "reserve
+    // the memory now, start the work once settings/WiFi/NTP are
+    // ready," not "decode before init is done."
+    log_heap("pre-scan-spawn");
     spawn_scan_task(ScanCtx { nvs: nvs.clone() });
+    log_heap("post-scan-spawn");
+
+    // Display task: its own LCD bring-up + render loop, pinned to
+    // core 1 — see this file's top doc comment for why inline-in-
+    // `main` starved it against the scan task on real hardware.
+    spawn_display_task(DisplayCtx {
+        i2c0: peripherals.i2c0,
+        spi2: peripherals.spi2,
+        pins: peripherals.pins,
+    });
+    log_heap("post-display-spawn");
 
     // ── WiFi STA. Compile-time SSID/PSK, same as every other bin in
     // this crate — provisioning UI is explicitly out of scope. ──────
@@ -250,24 +259,123 @@ fn main() -> ! {
     }
     SCAN_GO.store(true, Ordering::Release);
 
-    // ── Display loop — never returns. Status bar repaints every tick
-    // (cheap, one line); discovered/history panes only repaint when
-    // `WsprUiState::dirty_seq` actually changed, same gating
-    // `decoded_list`/`waterfall` use for the FT8 UI. The lock is held
-    // across the SPI draw calls rather than snapshotted out first (as
-    // the FT8 display loops do) — contention is the scan task's
-    // once-per-slot `set_slot`/`update_status` against this loop's
-    // 500 ms tick, which is rare and brief enough that the simpler
-    // form was chosen over threading a full `WsprUiState` snapshot
-    // type through for this first pass. ─────────────────────────────
+    // `main` (pinned to core 0 by sdkconfig) has nothing left to do —
+    // the scan task owns core 0's real work, the display task runs
+    // independently on core 1. An idle supervisor loop, same shape as
+    // `wspr-bench`'s own `main` tail.
+    loop {
+        FreeRtos::delay_ms(1000);
+    }
+}
+
+// ── Display task ──────────────────────────────────────────────────────
+
+struct DisplayCtx {
+    i2c0: esp_idf_hal::i2c::I2C0<'static>,
+    spi2: esp_idf_hal::spi::SPI2<'static>,
+    pins: esp_idf_hal::gpio::Pins,
+}
+
+extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
+    // SAFETY: `spawn_display_task` leaked exactly this pointer via
+    // `Box::into_raw`, and this is the only place that reclaims it.
+    let ctx = unsafe { Box::from_raw(arg as *mut DisplayCtx) };
+    display_loop(*ctx);
+}
+
+fn spawn_display_task(ctx: DisplayCtx) {
+    let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(display_task_entry),
+            c"wspr_display".as_ptr(),
+            DISPLAY_STACK,
+            ptr,
+            DISPLAY_PRIORITY,
+            core::ptr::null_mut(),
+            1, // core 1 — deliberately NOT the scan task's core 0, see
+               // this file's top doc comment.
+        )
+    };
+    if created != 1 {
+        log::error!("wspr_app: failed to create wspr_display task");
+    }
+}
+
+/// LCD bring-up (AXP2101 + AW9523B → SPI2 → mipidsi, mirrors
+/// `display.rs`'s FT8-controller sequence minus the BootMode/UAC
+/// branches this app has no use for) followed by the render loop.
+/// Never returns.
+fn display_loop(ctx: DisplayCtx) -> ! {
+    let mut display = match pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
+        Ok(i2c) => {
+            drop(i2c); // reset cycle is complete; nothing else on this bus yet (no touch).
+
+            let driver = SpiDriver::new(
+                ctx.spi2,
+                ctx.pins.gpio36, // SCK  (board::LCD_PIN_SCK)
+                ctx.pins.gpio37, // MOSI (board::LCD_PIN_MOSI)
+                Option::<AnyIOPin>::None,
+                &SpiDriverConfig::new(),
+            )
+            .expect("SPI2 driver");
+            let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
+            let spi_dev = SpiDeviceDriver::new(driver, Some(ctx.pins.gpio3), &spi_cfg) // CS (board::LCD_PIN_CS)
+                .expect("SPI device (CS=3)");
+            let dc = PinDriver::output(ctx.pins.gpio35).expect("DC gpio35"); // board::LCD_PIN_DC
+            let di = SPIInterface::new(spi_dev, dc);
+
+            let mut delay = Ets;
+            match Builder::new(ILI9341Rgb565, di)
+                .display_size(240, 320)
+                .orientation(Orientation::new().rotate(Rotation::Deg90))
+                .invert_colors(ColorInversion::Inverted)
+                .init(&mut delay)
+            {
+                Ok(d) => d,
+                Err(e) => {
+                    log::error!("display init failed: {e:?}");
+                    loop {
+                        log::info!("alive (no LCD)");
+                        FreeRtos::delay_ms(2000);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("PMIC init failed: {e:#}");
+            loop {
+                log::info!("alive (no PMIC/LCD)");
+                FreeRtos::delay_ms(2000);
+            }
+        }
+    };
+    display.clear(Rgb565::BLACK).ok();
+    log::info!("LCD init OK ({}x{})", board::LCD_WIDTH, board::LCD_HEIGHT);
+    {
+        let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
+        wspr_list::render_all(&mut display, &ui).ok();
+    }
+
+    // Status bar repaints every tick (cheap, one line); discovered/
+    // history panes only repaint when `WsprUiState::dirty_seq`
+    // actually changed, same gating `decoded_list`/`waterfall` use
+    // for the FT8 UI. The lock is held across the SPI draw calls
+    // rather than snapshotted out first (as the FT8 display loops
+    // do) — contention is the scan task's once-per-slot `set_slot`/
+    // `update_status` against this loop's 500 ms tick, which is rare
+    // and brief enough that the simpler form was chosen over
+    // threading a full `WsprUiState` snapshot type through for this
+    // first pass.
     let mut last_dirty = u32::MAX;
+    let mut tick: u32 = 0;
     loop {
         let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
         let hhmmss = current_hhmmss();
         let dirty = {
             let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
             ui.free_heap_kb = heap_kb;
-            ui.utc_hhmmss = hhmmss;
+            ui.utc_hhmmss = hhmmss.clone();
             ui.dirty_seq()
         };
         {
@@ -279,7 +387,18 @@ fn main() -> ! {
                 last_dirty = dirty;
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // ~10 s cadence. Proves this task keeps running (and the UTC
+        // clock keeps advancing) through the scan task's 90-110 s
+        // compute-bound stretch on the other core, same purpose as
+        // the FT8 controller `display.rs`'s own periodic "alive"
+        // line — direct evidence over a plausible architecture, after
+        // a first cut of this fix turned out to have its own bug
+        // (see `main`'s doc comment on spawn ordering).
+        if tick % 20 == 0 {
+            log::info!("wspr_app::display: alive tick={tick} dirty={dirty} utc={hhmmss} heap={heap_kb}k");
+        }
+        tick = tick.wrapping_add(1);
+        FreeRtos::delay_ms(500);
     }
 }
 
