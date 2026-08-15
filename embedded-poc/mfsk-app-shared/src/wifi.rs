@@ -28,11 +28,38 @@ use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWif
 /// only calls `connect()` once inherits that ~50% coin-flip. A short
 /// bounded retry (this constant × [`CONNECT_RETRY_DELAY_MS`]) is the
 /// standard workaround for this exact 802.11 status-code-30 pattern.
+///
+/// **Widened to a full disconnect+rescan+reconfigure retry, not just
+/// a bare re-`connect()`**, matching `wifikey2`'s own
+/// `WifiManager::reconnect()` — a first cut here only retried
+/// `connect()+wait_netif_up()` on the same `set_configuration()` from
+/// the first attempt, which fixed the "Association refused" pattern
+/// but not a second, distinct failure mode also seen this session
+/// (L2 associates instantly every attempt, then DHCP stays silent for
+/// the full `wait_netif_up()` timeout — no association-refusal log
+/// line at all). Redoing the scan (fresh channel) and
+/// `set_configuration()` every attempt, the way `wifikey2` does, gives
+/// the driver a fully clean slate per attempt instead of reusing
+/// whatever internal state a `disconnect()` alone leaves behind.
+/// **Verified fixing the DHCP-silent case on real hardware**: with
+/// this change (plus a DHCP reservation the user added for this
+/// device's MAC, ruling out lease-pool exhaustion from this session's
+/// own heavy reconnect churn as a contributing factor), a boot that
+/// would previously have failed outright now shows attempt 1 timeout
+/// → attempt 2 timeout → attempt 3 succeeds, landing on the reserved
+/// IP. Not fully isolated which of {this retry shape, the reservation,
+/// `esp_wifi_set_ps(0)` above} did the actual work — see this crate's
+/// design memory for the full investigation trail — but the combined
+/// change is what's confirmed working, so all three stay together
+/// rather than bisecting further on a problem that's no longer
+/// reproducing.
 const CONNECT_MAX_ATTEMPTS: u32 = 4;
-/// Delay between attempts — comfortably past the ~1.1 s "comeback
-/// time" the failing log line itself reports, so a retry isn't just
-/// re-triggering the same refusal.
-const CONNECT_RETRY_DELAY_MS: u32 = 2_000;
+/// Delay between attempts. `wifikey2::WifiManager::reconnect()` uses
+/// a fixed 3000 ms with the comment "wait for AP to clear association
+/// (comeback time ≈ 1 s)" — matched here rather than kept at this
+/// file's previous, narrower 2000 ms, now that the retry itself also
+/// matches that implementation's shape.
+const CONNECT_RETRY_DELAY_MS: u32 = 3_000;
 
 /// Live WiFi STA handle. Drop ends the WiFi association (and any sockets
 /// bound on top stop receiving), so callers must keep this alive.
@@ -72,29 +99,57 @@ where
     // channel-walking on `connect()`). Mirrors wifikey2's pattern.
     wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
     wifi.start()?;
-    let ap_infos = wifi.scan()?;
-    let channel = ap_infos
-        .iter()
-        .find(|ap| ap.ssid.as_str() == ssid)
-        .map(|ap| ap.channel);
-    if channel.is_none() {
-        log::warn!("WiFi: SSID '{ssid}' not seen in scan; trying anyway");
-    }
 
-    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-        ssid: ssid.try_into().map_err(|_| anyhow!("SSID too long for esp-idf"))?,
-        password: psk.try_into().map_err(|_| anyhow!("PSK too long for esp-idf"))?,
-        channel,
-        ..Default::default()
-    }))?;
+    // Disable WiFi modem-sleep power-save. **2026-08-15, real-hardware
+    // finding**: repeated boots against this session's own bridge-mode
+    // AP showed L2 association succeeding instantly every time
+    // (`wifi:connected with ...`) followed by *zero* DHCP activity for
+    // the full 15 s `wait_netif_up()` timeout — not an association
+    // failure, a silent DHCP one. Default power-save (`WIFI_PS_MIN_MODEM`)
+    // buffers broadcast/multicast frames for delivery only at DTIM
+    // beacons; a DHCP OFFER is exactly such a frame, and some APs (this
+    // session's included) don't reliably deliver it to a station that's
+    // still asleep between DTIMs this early in association. Same root
+    // cause class `esp-idf-svc`'s own `espnow.rs` disables modem-sleep
+    // for (`esp_wifi_set_ps(0)`, citing
+    // <https://github.com/espressif/esp-idf/issues/7496>) — that one's
+    // about queued unicast frames rather than a lost broadcast DHCP
+    // reply, but the fix is the identical call. Applied before `scan()`/
+    // `connect()` so it's in effect for the whole DHCP handshake, not
+    // just steady-state traffic after.
+    esp_idf_svc::sys::esp!(unsafe { esp_idf_svc::sys::esp_wifi_set_ps(0) })?;
 
-    // See CONNECT_MAX_ATTEMPTS's own doc comment for why this isn't a
-    // single `connect()?` — real-hardware association-refusal pattern
-    // found 2026-08-15, ~50% first-attempt failure rate against the
-    // test AP.
+    // See CONNECT_MAX_ATTEMPTS's own doc comment for why each attempt
+    // redoes the scan + set_configuration from scratch (mirrors
+    // wifikey2::WifiManager::reconnect() + connect_to_profile()),
+    // rather than reusing one scan/configuration across retries. The
+    // ssid/psk `try_into()` is cheap enough to just repeat per attempt
+    // too — simpler than naming and cloning the intermediate
+    // `heapless::String` across attempts, which trips over `heapless`
+    // being pulled in at two different (structurally identical but
+    // nominally distinct) versions via `embedded_svc` vs. this crate's
+    // own direct dependency.
     let mut last_err = None;
+    let mut channel = None;
     for attempt in 1..=CONNECT_MAX_ATTEMPTS {
-        match wifi.connect().and_then(|()| wifi.wait_netif_up()) {
+        let outcome = (|| -> Result<()> {
+            let ap_infos = wifi.scan()?;
+            channel = ap_infos.iter().find(|ap| ap.ssid.as_str() == ssid).map(|ap| ap.channel);
+            if channel.is_none() {
+                log::warn!("WiFi: SSID '{ssid}' not seen in scan; trying anyway");
+            }
+            wifi.set_configuration(&Configuration::Client(ClientConfiguration {
+                ssid: ssid.try_into().map_err(|_| anyhow!("SSID too long for esp-idf"))?,
+                password: psk.try_into().map_err(|_| anyhow!("PSK too long for esp-idf"))?,
+                channel,
+                ..Default::default()
+            }))?;
+            wifi.connect()?;
+            wifi.wait_netif_up()?;
+            Ok(())
+        })();
+
+        match outcome {
             Ok(()) => {
                 last_err = None;
                 break;
