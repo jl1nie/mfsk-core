@@ -71,6 +71,12 @@ const CONNECT_RETRY_DELAY_MS: u32 = 3_000;
 
 /// Live WiFi STA handle. Drop ends the WiFi association (and any sockets
 /// bound on top stop receiving), so callers must keep this alive.
+///
+/// Only returned by [`connect_sta`]/[`connect_sta_persistent`], which
+/// own the driver for their caller's convenience. A caller using
+/// [`wifi_driver_init`]/[`connect_with_retry`] directly already holds
+/// its own `BlockingWifi` and gets [`WifiConnectedInfo`] instead — see
+/// that split's own doc comment on [`wifi_driver_init`] for why.
 pub struct WifiHandle {
     _wifi: BlockingWifi<EspWifi<'static>>,
     pub ip: std::net::Ipv4Addr,
@@ -81,8 +87,18 @@ pub struct WifiHandle {
     pub subnet_broadcast: std::net::Ipv4Addr,
 }
 
+/// Just the connection result — no driver ownership. Returned by
+/// [`connect_with_retry`] for callers that already hold their own
+/// `BlockingWifi` (constructed via [`wifi_driver_init`]) and manage
+/// its lifetime themselves.
+pub struct WifiConnectedInfo {
+    pub ip: std::net::Ipv4Addr,
+    /// See [`WifiHandle::subnet_broadcast`]'s own doc comment.
+    pub subnet_broadcast: std::net::Ipv4Addr,
+}
+
 /// Connect to one specific SSID. Blocks until DHCP returns an IP or
-/// the underlying esp-idf stack errors out.
+/// the retry budget in [`CONNECT_MAX_ATTEMPTS`] is exhausted.
 pub fn connect_sta<M>(
     modem: M,
     sysloop: EspSystemEventLoop,
@@ -93,10 +109,98 @@ pub fn connect_sta<M>(
 where
     M: WifiModemPeripheral + 'static,
 {
-    if ssid.is_empty() {
-        return Err(anyhow!("WIFI_SSID empty — cfg.toml missing or [wifi].ssid blank"));
-    }
+    connect_sta_inner(modem, sysloop, nvs, ssid, psk, Some(CONNECT_MAX_ATTEMPTS))
+}
 
+/// Like [`connect_sta`], but **retries forever** instead of giving up
+/// after [`CONNECT_MAX_ATTEMPTS`]. For a caller that can afford to
+/// wait indefinitely for WiFi in the background — never call this
+/// from a boot path that other work needs to proceed past.
+///
+/// **2026-08-15, real-hardware finding**: this AP+device combination
+/// fails to connect on the first attempt often enough that a small
+/// fixed retry budget isn't reliable — confirmed reproducing even
+/// with `wifikey2` (this file's own stated reference implementation,
+/// a previously-working, independent codebase) against the exact same
+/// AP. `wifikey2`'s own caller (`main.rs`) works around this with an
+/// *unbounded* outer `loop { ...; FreeRtos::delay_ms(5000); }` around
+/// one connect attempt — no cap at all. Ported that shape here rather
+/// than just raising [`CONNECT_MAX_ATTEMPTS`], per the user's own
+/// direction after this was diagnosed together. Symptoms seen
+/// alternating across attempts at this same AP (see this crate's
+/// design memory for the full trail): sometimes a WPA2 4-way-handshake
+/// timeout (`wifi:m f deauth reason:15`, station-side EAPOL giving
+/// up), sometimes a fully-associated station whose DHCP `DISCOVER`
+/// gets zero replies — different failure points, same AP, same
+/// resolution (keep trying).
+pub fn connect_sta_persistent<M>(
+    modem: M,
+    sysloop: EspSystemEventLoop,
+    nvs: Option<EspDefaultNvsPartition>,
+    ssid: &str,
+    psk: &str,
+) -> Result<WifiHandle>
+where
+    M: WifiModemPeripheral + 'static,
+{
+    connect_sta_inner(modem, sysloop, nvs, ssid, psk, None)
+}
+
+/// Shared implementation. `max_attempts: None` retries forever
+/// (see [`connect_sta_persistent`]); `Some(n)` gives up after `n`
+/// attempts, returning the last error (see [`connect_sta`]).
+fn connect_sta_inner<M>(
+    modem: M,
+    sysloop: EspSystemEventLoop,
+    nvs: Option<EspDefaultNvsPartition>,
+    ssid: &str,
+    psk: &str,
+    max_attempts: Option<u32>,
+) -> Result<WifiHandle>
+where
+    M: WifiModemPeripheral + 'static,
+{
+    let mut wifi = wifi_driver_init(modem, sysloop, nvs)?;
+    let info = connect_with_retry(&mut wifi, ssid, psk, max_attempts)?;
+    Ok(WifiHandle {
+        _wifi: wifi,
+        ip: info.ip,
+        subnet_broadcast: info.subnet_broadcast,
+    })
+}
+
+/// Construct the WiFi driver and bring the radio up — the part of
+/// bring-up that **cannot be retried** if it fails: `modem` is
+/// consumed by value into `EspWifi::new()`, and esp-idf-svc doesn't
+/// hand it back on `Err` (checked against the pinned checkout: the
+/// failed call's `M` is dropped along with the half-built driver).
+/// There is exactly one `Modem` peripheral for the whole process
+/// (`Peripherals::take()` is one-shot), so a caller that wants this
+/// step to be retry-safe has to call it *before* anything else can
+/// starve it of the internal DRAM it needs, not paper over a failure
+/// here after the fact.
+///
+/// **2026-08-15, real-hardware finding**: exactly this happened when
+/// `wspr-app` first moved its WiFi bring-up into a background task
+/// spawned *after* releasing `SCAN_GO` — the WiFi driver's own rx
+/// buffer allocation (`wifi:malloc buffer fail` / `Expected to init
+/// 10 rx buffer, actual is 2` → `ESP_ERR_NO_MEM`) now raced
+/// `scan_loop`'s own concurrent decode-time internal-DRAM churn
+/// instead of running before it, and the resulting failure was
+/// unrecoverable — no modem left to retry with. Fixed at the call
+/// site by keeping *this* function synchronous, early in boot
+/// (claiming WiFi's internal-DRAM needs the same way the scan/DDC/
+/// display task stacks already do), and only backgrounding
+/// [`connect_with_retry`] — the part that's actually slow/flaky and
+/// safe to retry indefinitely against an already-alive driver.
+pub fn wifi_driver_init<M>(
+    modem: M,
+    sysloop: EspSystemEventLoop,
+    nvs: Option<EspDefaultNvsPartition>,
+) -> Result<BlockingWifi<EspWifi<'static>>>
+where
+    M: WifiModemPeripheral + 'static,
+{
     // NVS が `Some` だと PHY 校正データを `phy_init/cal` キーにキャッシュ
     // できる (boot 高速化 + DRAM 節約)。`None` だと毎回フルキャリブで
     // "NVS has not been initialized" エラーが出る。
@@ -134,19 +238,39 @@ where
     // narrows down whether this call specifically is load-bearing.
     esp_idf_svc::sys::esp!(unsafe { esp_idf_svc::sys::esp_wifi_set_ps(0) })?;
 
-    // See CONNECT_MAX_ATTEMPTS's own doc comment for why each attempt
-    // redoes the scan + set_configuration from scratch (mirrors
-    // wifikey2::WifiManager::reconnect() + connect_to_profile()),
-    // rather than reusing one scan/configuration across retries. The
-    // ssid/psk `try_into()` is cheap enough to just repeat per attempt
-    // too — simpler than naming and cloning the intermediate
-    // `heapless::String` across attempts, which trips over `heapless`
-    // being pulled in at two different (structurally identical but
-    // nominally distinct) versions via `embedded_svc` vs. this crate's
-    // own direct dependency.
-    let mut last_err = None;
+    Ok(wifi)
+}
+
+/// Scan + associate + DHCP, against an already-constructed driver
+/// (see [`wifi_driver_init`]). `max_attempts: None` retries forever
+/// (see [`connect_sta_persistent`]); `Some(n)` gives up after `n`
+/// attempts, returning the last error (see [`connect_sta`]).
+///
+/// See [`CONNECT_MAX_ATTEMPTS`]'s own doc comment for why each attempt
+/// redoes the scan + `set_configuration()` from scratch (mirrors
+/// `wifikey2::WifiManager::reconnect()` + `connect_to_profile()`),
+/// rather than reusing one scan/configuration across retries. The
+/// ssid/psk `try_into()` is cheap enough to just repeat per attempt
+/// too — simpler than naming and cloning the intermediate
+/// `heapless::String` across attempts, which trips over `heapless`
+/// being pulled in at two different (structurally identical but
+/// nominally distinct) versions via `embedded_svc` vs. this crate's
+/// own direct dependency.
+pub fn connect_with_retry(
+    wifi: &mut BlockingWifi<EspWifi<'static>>,
+    ssid: &str,
+    psk: &str,
+    max_attempts: Option<u32>,
+) -> Result<WifiConnectedInfo> {
+    if ssid.is_empty() {
+        return Err(anyhow!("WIFI_SSID empty — cfg.toml missing or [wifi].ssid blank"));
+    }
+
+    let mut last_err;
     let mut channel = None;
-    for attempt in 1..=CONNECT_MAX_ATTEMPTS {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
         let outcome = (|| -> Result<()> {
             let ap_infos = wifi.scan()?;
             channel = ap_infos.iter().find(|ap| ap.ssid.as_str() == ssid).map(|ap| ap.channel);
@@ -170,15 +294,24 @@ where
                 break;
             }
             Err(e) => {
-                log::warn!("WiFi: connect attempt {attempt}/{CONNECT_MAX_ATTEMPTS} failed: {e:?}");
+                match max_attempts {
+                    Some(max) => log::warn!("WiFi: connect attempt {attempt}/{max} failed: {e:?}"),
+                    None => log::warn!("WiFi: connect attempt {attempt} failed: {e:?} (retrying forever)"),
+                }
                 // Best-effort — the driver may already be back in a
                 // disconnected state (that's the whole problem this
                 // retry works around), so a failing disconnect() here
                 // isn't itself an error worth propagating.
                 let _ = wifi.disconnect();
                 last_err = Some(e);
-                if attempt < CONNECT_MAX_ATTEMPTS {
+                let keep_going = match max_attempts {
+                    Some(max) => attempt < max,
+                    None => true,
+                };
+                if keep_going {
                     FreeRtos::delay_ms(CONNECT_RETRY_DELAY_MS);
+                } else {
+                    break;
                 }
             }
         }
@@ -210,9 +343,5 @@ where
         ip, prefix, ip_info.subnet.gateway, subnet_broadcast, channel
     );
 
-    Ok(WifiHandle {
-        _wifi: wifi,
-        ip,
-        subnet_broadcast,
-    })
+    Ok(WifiConnectedInfo { ip, subnet_broadcast })
 }
