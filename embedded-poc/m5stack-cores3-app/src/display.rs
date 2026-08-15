@@ -29,11 +29,7 @@ use esp_idf_hal::{
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI2},
     units::FromValueType,
 };
-use mipidsi::{
-    models::ILI9341Rgb565,
-    options::{ColorInversion, Orientation, Rotation},
-    Builder,
-};
+use mipidsi::{models::ILI9342CRgb565, options::ColorInversion, Builder};
 
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
@@ -101,15 +97,28 @@ pub fn run_log_panel(
     let dc = PinDriver::output(pins.gpio35).expect("DC gpio35");
     let di = SPIInterface::new(spi_dev, dc);
 
-    // ILI9342C is ILI9341-compatible — use mipidsi's ILI9341 model.
     // No reset_pin(): RST was already cycled by AW9523B in pmic::init;
     // mipidsi will send SWRESET via the command interface as fallback.
-    // display_size MUST be (240, 320) (native portrait controller dims);
-    // Deg90 rotation maps to 320×240 landscape in embedded-graphics space.
+    //
+    // **2026-08-15 real-hardware fix** (found chasing `wspr-app`'s own
+    // "LCD shows nothing" bug on the same board — see memory
+    // `project_wspr_app_cores3_ui`): this panel is genuinely ILI9342C,
+    // whose mipidsi model already has `FRAMEBUFFER_SIZE = (320, 240)`
+    // — landscape-native. The previous code used the *ILI9341* model
+    // (`FRAMEBUFFER_SIZE = (240, 320)`, portrait-native) plus a manual
+    // `.orientation(Deg90)` to compensate; that Builder-time rotation
+    // never correctly resynced mipidsi's internal width/height
+    // bookkeeping on this hardware (confirmed via `lcd_minimal.rs`'s
+    // orientation-cycling diagnostic in the wspr-app investigation —
+    // not yet independently re-verified with a photo of *this*
+    // binary's own screen, since decode_pipeline's `wav_sim` loop was
+    // never re-run against real UAC audio here to justify a full
+    // hardware session just for this). Using the model whose native
+    // framebuffer already matches the physical panel needs no
+    // rotation hack at all.
     let mut delay = Ets;
-    let mut display = match Builder::new(ILI9341Rgb565, di)
-        .display_size(240, 320)
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
+    let mut display = match Builder::new(ILI9342CRgb565, di)
+        .display_size(320, 240)
         .invert_colors(ColorInversion::Inverted) // M5GFX CoreS3: cfg.invert = true
         .init(&mut delay)
     {
@@ -124,11 +133,19 @@ pub fn run_log_panel(
     };
 
     log::info!(
-        "LCD init OK (ILI9342C/CoreS3 via ILI9341 model, {}x{})",
+        "LCD init OK (ILI9342C/CoreS3, {}x{})",
         crate::board::LCD_WIDTH,
         crate::board::LCD_HEIGHT
     );
-    display.clear(Rgb565::BLACK).ok();
+    // Explicit `Rectangle` fill, not `DrawTarget::clear()` — the
+    // latter gave unreliable/partial coverage on this mipidsi/SPI
+    // setup every time it was tried during the wspr-app investigation
+    // (see the fix note above); every other draw call in this file
+    // already used `Rectangle` fills, so this is the one holdout.
+    Rectangle::new(Point::new(0, 0), Size::new(crate::board::LCD_WIDTH as u32, crate::board::LCD_HEIGHT as u32))
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(&mut display)
+        .ok();
 
     let tx_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
