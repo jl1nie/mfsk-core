@@ -33,16 +33,34 @@
 //! task-stack placement constraints (see below) are unrelated to that
 //! binary's.
 //!
-//! **Live audio capture is out of scope** (blocked on issue #163, see
-//! this crate's `wspr_bench.rs`). What this app has instead, since
-//! 2026-08-15: a genuine double-buffered producer/consumer pipeline —
-//! a `ddc_loop` task streams *synthetic* audio through
-//! `mfsk_core::wspr::ddc::StreamingDdcCascade` into one of two
-//! baseband buffers while `scan_loop` decodes the other, handed off via
-//! [`DDC_READY_IDX`] — real concurrency and real buffer-lifetime
-//! rules, just with a placeholder source instead of a UAC capture
-//! feed. Swapping in live audio later only needs to replace what
-//! `ddc_loop` mixes in, not the pipeline shape.
+//! **Live audio capture wiring landed 2026-08-15, not yet
+//! hardware-verified** (issue #163 — needs a real IC-705 or other UAC
+//! source connected to CoreS3's USB-A port to confirm end-to-end).
+//! `uac.rs` (shared with the FT8 controller's `main.rs`, via its new
+//! `AudioSink` trait — see that file's own doc comment) installs the
+//! USB host + UAC class driver and, once a device enumerates and
+//! starts streaming, resamples 48 kHz stereo down to 12 kHz mono and
+//! pushes it into [`WsprDdcSink`], which feeds
+//! `mfsk_core::wspr::ddc::StreamingDdcCascade` and rotates
+//! [`BASEBAND_BUFS`] exactly the way `ddc_loop`'s synthetic generator
+//! already did — same double-buffered producer/consumer handoff via
+//! [`DDC_READY_IDX`], just driven by real USB arrival instead of a
+//! self-paced synthetic loop.
+//!
+//! **Until a device actually connects (or if none ever does), `ddc_loop`
+//! keeps generating the same synthetic burst as before** — real audio
+//! only takes over `BASEBAND_BUFS` production once [`UAC_AUDIO_ACTIVE`]
+//! flips true on the first real sample `WsprDdcSink` receives; see
+//! that flag's own doc comment for the handoff mechanics. This keeps
+//! the app fully functional (and host-independently testable) with no
+//! USB device attached, exactly as it was before this session.
+//!
+//! **No wall-clock slot alignment yet** for the real-audio path — same
+//! open item `uac.rs`'s FT8 `reader_thread` already carries for its
+//! own `SLOT_SAMPLES_12K`: the WSPR slot boundary is bound by raw
+//! sample count from whenever the UAC stream started, not UTC
+//! :00/:02/:04 marks. Needs the NTP-fed `time_sync` hook, same as the
+//! FT8 side's own open item.
 //!
 //! **The one slot this doesn't apply to**: the very first, which
 //! still decodes the baked WAV-derived golden baseband
@@ -51,7 +69,7 @@
 //! rather than waiting out a full DDC cycle first. Every slot after
 //! the first goes through the real DDC pipeline — see `scan_loop`'s
 //! own comment for exactly where the switch happens. **The synthetic
-//! source is a real, correctly-encoded WSPR test transmission
+//! fallback source is a real, correctly-encoded WSPR test transmission
 //! (`K1ABC`), not noise and not a bare tone** — see
 //! [`DdcTestSource`]'s doc comment for the false-decode/missing-load/
 //! OOM bugs (2026-08-15) that earlier placeholder choices caused on
@@ -80,12 +98,14 @@
 //! no live receiver behind it yet. Picking a band other than 20 m
 //! makes every spot's `tqrg` field describe a signal that was not
 //! really heard on that band.
-#![allow(dead_code)] // board.rs/pmic.rs carry fields/fns this bin doesn't use (no UAC, no touch).
+#![allow(dead_code)] // board.rs/pmic.rs/uac.rs carry fields/fns this bin doesn't use (no touch, no TX).
 
 #[path = "../board.rs"]
 mod board;
 #[path = "../pmic.rs"]
 mod pmic;
+#[path = "../uac.rs"]
+mod uac;
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -239,6 +259,18 @@ static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] = [Mutex::new(SlotBuf::new()), Mutex::
 /// defensively for a case the real timing doesn't produce.
 static DDC_READY_IDX: Mutex<Option<usize>> = Mutex::new(None);
 
+/// Set `true` on the first real sample [`WsprDdcSink`] ever receives
+/// from `uac.rs`'s reader thread. `ddc_loop` checks this at the top of
+/// every iteration and, once true, stops generating synthetic slots
+/// forever — from that point on `WsprDdcSink::push_samples` (called
+/// from the UAC reader's own thread context) is the sole
+/// [`BASEBAND_BUFS`] writer. One-way switch by design: real audio
+/// never stops arriving once a device is streaming (the reader thread
+/// only exits on disconnect, at which point there is no more audio to
+/// decode anyway — falling back to synthetic mid-session would just
+/// silently swap what a station believes it's receiving).
+static UAC_AUDIO_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// **History, three real-hardware bugs deep (2026-08-15):**
 ///
 /// 1. First cut: a single fixed 1540 Hz tone (same one `wspr-bench`'s
@@ -373,6 +405,17 @@ fn main() -> ! {
     spawn_ddc_task();
     log_heap("post-ddc-spawn");
 
+    // Register the real-audio sink **before** `spawn_display_task`
+    // below, whose task body eventually calls `uac::start_host()`
+    // (after PMIC/VBUS bring-up — see `display_loop`'s own comment).
+    // Same "wire the consumer before installing the driver" ordering
+    // `main.rs` relies on for its own `set_chunk_q` call: by the time
+    // the display task's thread actually reaches `start_host()` (real
+    // I2C/PMIC work first), this synchronous call here has long since
+    // returned, so there is no race despite the two running on
+    // different tasks.
+    uac::set_audio_sink(WsprDdcSink::new());
+
     // Display task: its own LCD bring-up + render loop, pinned to
     // core 1 — see this file's top doc comment for why inline-in-
     // `main` starved it against the scan task on real hardware.
@@ -496,8 +539,31 @@ fn spawn_display_task(ctx: DisplayCtx) {
 /// Never returns.
 fn display_loop(ctx: DisplayCtx) -> ! {
     let mut display = match pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
-        Ok(i2c) => {
+        Ok(mut i2c) => {
+            // Enable USB VBUS boost **before** `uac::start_host()` —
+            // AW9523B P0_1 (BUS_OUT_EN) HIGH drives the VBUS switch;
+            // omission leaves VBUS floating and the host stack sees no
+            // device. Same call/ordering `display.rs`'s FT8-controller
+            // sequence makes for `BootMode::Uac`, just unconditional
+            // here since this app has no other boot mode to gate on.
+            if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
+                log::error!("BUS_OUT_EN failed: {e:#}");
+            }
             drop(i2c); // reset cycle is complete; nothing else on this bus yet (no touch).
+
+            // Install USB host + UAC class driver. Detaches
+            // USB-Serial-JTAG (the serial console) the moment this
+            // returns — this is exactly why UDP log fanout was wired
+            // ahead of this call landing (see this file's own
+            // `LOGGER`/`FanoutLogger` doc comment). Unverified on real
+            // hardware as of this writing (issue #163) — if no device
+            // ever enumerates, `ddc_loop`'s synthetic generator just
+            // keeps running (see [`UAC_AUDIO_ACTIVE`]'s own doc
+            // comment), so this is safe to always attempt.
+            log::info!("wspr_app: installing USB host + UAC class driver");
+            if let Err(e) = crate::uac::start_host() {
+                log::error!("wspr_app: UAC host start failed: {e:#}");
+            }
 
             let driver = SpiDriver::new(
                 ctx.spi2,
@@ -1032,6 +1098,16 @@ fn ddc_loop() -> ! {
 
     let mut write_idx = 0usize;
     loop {
+        // Real UAC audio has taken over `BASEBAND_BUFS` production —
+        // see [`UAC_AUDIO_ACTIVE`]'s own doc comment. Idle forever
+        // rather than exit, in case a future generation-counter fix
+        // ever wants this task back; today it simply never wakes up
+        // again once real audio starts.
+        if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) {
+            FreeRtos::delay_ms(1000);
+            continue;
+        }
+
         let slot_start_us = now_us();
         let mut source = DdcTestSource::new();
 
@@ -1083,6 +1159,103 @@ fn ddc_loop() -> ! {
         let remaining_ms = ((SLOT_US - elapsed_us).max(0) / 1000) as u32;
         if remaining_ms > 0 {
             FreeRtos::delay_ms(remaining_ms);
+        }
+    }
+}
+
+// ── Real UAC audio sink ──────────────────────────────────────────────
+
+/// [`uac::AudioSink`] implementation that feeds real captured 12 kHz
+/// mono audio into a per-slot [`StreamingDdcCascade`], reusing exactly
+/// the shape `ddc_loop`'s synthetic path already used and had
+/// hardware-verified (fresh cascade each slot, [`DDC_SLOT_AUDIO_SAMPLES`]
+/// raw input then `flush()`, resize/truncate to [`NBB`]) — only the raw
+/// audio *source* changes (real UAC-resampled samples, arriving via
+/// `push_samples` calls from `uac.rs`'s reader thread, instead of
+/// [`DdcTestSource`]'s self-paced synthetic generator). See this file's
+/// top doc comment for the handoff mechanics and the still-open
+/// wall-clock-alignment / hardware-verification caveats.
+///
+/// Deliberately never materializes a full slot's raw audio up front —
+/// that shape (a ~5.3 MB `Vec`) is exactly what OOM'd `DdcTestSource`'s
+/// first cut on real hardware (see that struct's own doc comment);
+/// `push_samples` only ever holds one incoming USB read's worth of
+/// samples (≤ a few hundred) at a time.
+struct WsprDdcSink {
+    ddc: StreamingDdcCascade,
+    out_i: Vec<f32>,
+    out_q: Vec<f32>,
+    /// Raw 12 kHz input samples fed into `ddc` so far this slot.
+    fed: usize,
+    write_idx: usize,
+    /// Reused f32-conversion scratch buffer — one incoming batch's
+    /// worth at a time, never a full slot.
+    scratch: Vec<f32>,
+}
+
+impl WsprDdcSink {
+    fn new() -> Self {
+        Self {
+            ddc: StreamingDdcCascade::new(),
+            out_i: Vec::with_capacity(NBB + 64),
+            out_q: Vec::with_capacity(NBB + 64),
+            fed: 0,
+            write_idx: 0,
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Flush the current slot's cascade, hand the finished baseband to
+    /// [`BASEBAND_BUFS`]/[`DDC_READY_IDX`] exactly like `ddc_loop`
+    /// does, and start a fresh cascade for the next slot.
+    fn finish_slot(&mut self) {
+        self.ddc.flush(&mut self.out_i, &mut self.out_q);
+        self.out_i.resize(NBB, 0.0);
+        self.out_q.resize(NBB, 0.0);
+        self.out_i.truncate(NBB);
+        self.out_q.truncate(NBB);
+
+        let idat = core::mem::replace(&mut self.out_i, Vec::with_capacity(NBB + 64));
+        let qdat = core::mem::replace(&mut self.out_q, Vec::with_capacity(NBB + 64));
+        {
+            let mut buf = BASEBAND_BUFS[self.write_idx].lock().expect("ddc buf mutex poisoned");
+            buf.idat = idat;
+            buf.qdat = qdat;
+        }
+        {
+            let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
+            *ready = Some(self.write_idx);
+        }
+        log::info!("wspr_app::ddc: produced buffer {} (real UAC audio)", self.write_idx);
+        self.write_idx = 1 - self.write_idx;
+
+        // Fresh cascade per slot, matching `ddc_loop`'s own per-slot
+        // `StreamingDdcCascade::new()` — not a continuously-running
+        // filter across slot boundaries (see this struct's own doc
+        // comment for why that shape was reused rather than redesigned).
+        self.ddc = StreamingDdcCascade::new();
+        self.fed = 0;
+    }
+}
+
+impl uac::AudioSink for WsprDdcSink {
+    fn push_samples(&mut self, samples_12k_mono: &[i16]) {
+        if !UAC_AUDIO_ACTIVE.swap(true, Ordering::AcqRel) {
+            log::info!("wspr_app::ddc: real UAC audio arriving — synthetic generator handing off");
+        }
+
+        let mut remaining = samples_12k_mono;
+        while !remaining.is_empty() {
+            let room = DDC_SLOT_AUDIO_SAMPLES - self.fed;
+            let take = remaining.len().min(room);
+            self.scratch.clear();
+            self.scratch.extend(remaining[..take].iter().map(|&s| s as f32 / 32768.0));
+            self.ddc.push(&self.scratch, &mut self.out_i, &mut self.out_q);
+            self.fed += take;
+            remaining = &remaining[take..];
+            if self.fed >= DDC_SLOT_AUDIO_SAMPLES {
+                self.finish_slot();
+            }
         }
     }
 }
