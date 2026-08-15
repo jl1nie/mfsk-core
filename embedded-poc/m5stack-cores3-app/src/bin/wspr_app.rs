@@ -29,12 +29,29 @@
 //! binary's.
 //!
 //! **Live audio capture is out of scope** (blocked on issue #163, see
-//! this crate's `wspr_bench.rs`) — every slot decodes the same baked
-//! WAV-derived baseband (`assets/wspr_golden_baseband.bin`) the bench
-//! binary uses. One consequence worth being explicit about: the
-//! band selector in the web settings form changes what dial frequency
-//! gets *reported* to wsprnet, not what actually gets decoded — there
-//! is no live receiver behind it yet. Picking a band other than 20 m
+//! this crate's `wspr_bench.rs`). What this app has instead, since
+//! 2026-08-15: a genuine double-buffered producer/consumer pipeline —
+//! a `ddc_loop` task streams *synthetic* audio through
+//! `mfsk_core::wspr::ddc::StreamingDdc` into one of two baseband
+//! buffers while `scan_loop` decodes the other, handed off via
+//! [`DDC_READY_IDX`] — real concurrency and real buffer-lifetime
+//! rules, just with a placeholder source instead of a UAC capture
+//! feed. Swapping in live audio later only needs to replace what
+//! `ddc_loop` mixes in, not the pipeline shape.
+//!
+//! **The one slot this doesn't apply to**: the very first, which
+//! still decodes the baked WAV-derived golden baseband
+//! (`assets/wspr_golden_baseband.bin`, same as `wspr_bench.rs`) so
+//! the app has *some* meaningful decode to show immediately at boot
+//! rather than only ever decoding a single sine tone that carries no
+//! WSPR message and reliably yields 0 stations. Every slot after the
+//! first goes through the real DDC pipeline — see `scan_loop`'s own
+//! comment for exactly where the switch happens.
+//!
+//! One consequence worth being explicit about regardless: the band
+//! selector in the web settings form changes what dial frequency gets
+//! *reported* to wsprnet, not what actually gets decoded — there is
+//! no live receiver behind it yet. Picking a band other than 20 m
 //! makes every spot's `tqrg` field describe a signal that was not
 //! really heard on that band.
 #![allow(dead_code)] // board.rs/pmic.rs carry fields/fns this bin doesn't use (no UAC, no touch).
@@ -64,6 +81,7 @@ use mipidsi::{
     Builder,
 };
 
+use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc, AUDIO_RATE_HZ};
 use mfsk_core::wspr::decode::WsprResult;
 
 use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
@@ -131,6 +149,74 @@ fn log_heap(tag: &str) {
 /// that bring-up even though it doesn't start working until after.
 static SCAN_GO: AtomicBool = AtomicBool::new(false);
 
+// ── DDC producer / decode consumer pipeline ─────────────────────────
+//
+// Two baseband buffers, each independently lockable, so the DDC task
+// can write buffer B while the scan task still holds buffer A locked
+// for its own ~80-100 s `run_scan` call. The `Mutex` *is* the
+// correctness mechanism here, not just a formality: if `run_scan`
+// ever took longer than one DDC cycle (~120 s), the DDC task would
+// simply block on the lock rather than race it — natural backpressure
+// instead of a buffer stomp. Measured decode times (~79-103 s) leave
+// comfortable headroom under that, but the lock means the code doesn't
+// have to *assume* that margin holds.
+
+/// A `Vec` can't be heap-allocated in a `const` initializer, so the
+/// two statics below start with empty buffers — harmless, since
+/// `ddc_loop` always fully *replaces* `idat`/`qdat` (never appends or
+/// assumes a prior size) the first time it claims either index, before
+/// `scan_loop` ever reads it.
+struct SlotBuf {
+    idat: Vec<f32>,
+    qdat: Vec<f32>,
+}
+
+impl SlotBuf {
+    const fn new() -> Self {
+        Self { idat: Vec::new(), qdat: Vec::new() }
+    }
+}
+
+static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] = [Mutex::new(SlotBuf::new()), Mutex::new(SlotBuf::new())];
+
+/// Index into [`BASEBAND_BUFS`] the DDC task most recently finished
+/// writing, or `None` if nothing's ready yet. Set by `ddc_loop`,
+/// taken (cleared) by `scan_loop` — a one-slot mailbox, not a queue:
+/// if decode ever fell behind by more than one DDC cycle a second
+/// `ddc_loop` write would just overwrite this before decode read it,
+/// silently dropping a slot rather than queuing it. Not a concern at
+/// today's measured timing (DDC ~20 s vs. decode ~80-100 s against a
+/// shared ~120 s cadence).
+///
+/// **Known theoretical gap, not currently reachable**: if `run_scan`
+/// ever took longer than *two* DDC cycles (~240 s — today's measured
+/// 79-103 s leaves wide margin), `ddc_loop` could wrap back around and
+/// start overwriting the very buffer `scan_loop` is still mid-decode
+/// on (via `mem::take`'d local copies, so no data race — just a
+/// discarded DDC cycle when `scan_loop` writes its own copy back
+/// afterward). A generation counter would close this properly; not
+/// added here because nothing in this pipeline can currently trigger
+/// it, and a synthetic-source milestone isn't the place to design
+/// defensively for a case the real timing doesn't produce.
+static DDC_READY_IDX: Mutex<Option<usize>> = Mutex::new(None);
+
+/// Same tone `wspr-bench`'s own `ddc_load_task`/`bench_ddc` use — the
+/// DDC's cost is per-sample and data-independent, so what the audio
+/// carries doesn't matter for the CPU-contention/timing behaviour this
+/// pipeline exists to exercise. It does **not** carry a decodable WSPR
+/// message, so `scan_loop` decoding a `ddc_loop`-produced buffer
+/// reliably finds 0 stations — see this file's top doc comment.
+const DDC_TONE_HZ: f64 = 1_540.0;
+/// One WSPR slot's worth of audio at `AUDIO_RATE_HZ`, matching
+/// `wspr-bench`'s own `NPOINTS_MAX`-equivalent constant (114 s is the
+/// capture portion of a 120 s slot).
+const DDC_SLOT_AUDIO_SAMPLES: usize = 114 * 12_000;
+/// Stack for the DDC task. It streams through a small fixed chunk
+/// buffer and `DdcBufs`' own fixed-size FIR history/taps — no
+/// decode-sized stack frames, so this is deliberately much smaller
+/// than `SCAN_STACK`.
+const DDC_STACK: u32 = 12 * 1024;
+
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
     embedded_shared::apps::wspr_bench::init_logger_once();
@@ -169,6 +255,13 @@ fn main() -> ! {
     log_heap("pre-scan-spawn");
     spawn_scan_task(ScanCtx { nvs: nvs.clone() });
     log_heap("post-scan-spawn");
+
+    // DDC producer task — small stack (12 KiB), spawned here rather
+    // than after WiFi/display for the same "claim it before anything
+    // else can fragment the heap" reasoning as the scan task, even
+    // though its own footprint is far less likely to actually collide.
+    spawn_ddc_task();
+    log_heap("post-ddc-spawn");
 
     // Display task: its own LCD bring-up + render loop, pinned to
     // core 1 — see this file's top doc comment for why inline-in-
@@ -470,60 +563,195 @@ fn spawn_scan_task(ctx: ScanCtx) {
     }
 }
 
-/// One `run_scan` per (simulated) slot, forever. Never returns.
+/// One `run_scan` per slot, forever. Never returns.
+///
+/// **Slot 0** decodes the baked golden baseband directly, bypassing
+/// the DDC pipeline entirely — see this file's top doc comment for
+/// why. **Every slot after that** waits on [`DDC_READY_IDX`] and
+/// decodes whichever buffer `ddc_loop` most recently produced,
+/// holding that buffer's `Mutex` for the whole `run_scan` call. No
+/// separate "sleep to next slot boundary" is needed once the DDC
+/// pipeline takes over — waiting on `DDC_READY_IDX` already paces
+/// this loop to `ddc_loop`'s own `SLOT_US` cadence.
 fn scan_loop(ctx: ScanCtx) -> ! {
     while !SCAN_GO.load(Ordering::Acquire) {
         FreeRtos::delay_ms(200);
     }
     log::info!("wspr_app: scan loop starting");
 
-    // `idat`/`qdat` land in PSRAM automatically: `NBB` f32 samples is
-    // 184 320 B, well past this crate's `SPIRAM_MALLOC_ALWAYSINTERNAL`
-    // threshold (4096 B), so a plain heap `Vec` gets PSRAM without the
-    // manual `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` calls
-    // `wspr-bench` uses — that bench explicitly wants to *choose*
-    // between SRAM/PSRAM to measure the difference; this app just
-    // wants wherever the allocator already puts a buffer this size.
-    let mut idat = vec![0.0f32; NBB];
-    let mut qdat = vec![0.0f32; NBB];
+    // Slot 0 only: `idat`/`qdat` land in PSRAM automatically (`NBB`
+    // f32 samples is 184 320 B, well past this crate's
+    // `SPIRAM_MALLOC_ALWAYSINTERNAL` threshold of 4096 B), same
+    // reasoning `wspr-bench` documents for its own manually-placed
+    // buffers, just without the manual `heap_caps_malloc` call since
+    // this app isn't choosing between SRAM/PSRAM on purpose.
+    {
+        let mut idat = vec![0.0f32; NBB];
+        let mut qdat = vec![0.0f32; NBB];
+        load_baseband(GOLDEN_BASEBAND, &mut idat, &mut qdat);
+        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)");
+    }
 
+    let mut slot_num = 1u32;
+    loop {
+        // Block for `ddc_loop`'s handoff. `Option::take` clears the
+        // mailbox so a slow decode can't accidentally re-read a
+        // buffer `ddc_loop` is already partway through overwriting
+        // for the *next* slot — the two tasks only ever touch a given
+        // buffer index one at a time, enforced by `BASEBAND_BUFS`'
+        // own per-index `Mutex`, but clearing the mailbox here also
+        // stops this loop from spinning on a stale index.
+        let idx = loop {
+            let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
+            if let Some(idx) = ready.take() {
+                break idx;
+            }
+            drop(ready);
+            FreeRtos::delay_ms(200);
+        };
+        let mut buf = BASEBAND_BUFS[idx].lock().expect("ddc buf mutex poisoned");
+        let mut idat = core::mem::take(&mut buf.idat);
+        let mut qdat = core::mem::take(&mut buf.qdat);
+        // Drop the buffer lock before `run_scan` — the data itself
+        // moved out via `mem::take`, so holding the lock for the
+        // ~80-100 s decode would only block `ddc_loop` from claiming
+        // this index again for no benefit. `ddc_loop` always fully
+        // replaces `idat`/`qdat` rather than reusing them (see
+        // `SlotBuf`'s own doc comment), so there's nothing to hand
+        // back afterward — the local `idat`/`qdat` below just get
+        // dropped once `run_one_slot` returns.
+        drop(buf);
+
+        run_one_slot(&ctx, &mut idat, &mut qdat, &slot_num.to_string());
+        slot_num = slot_num.wrapping_add(1);
+    }
+}
+
+/// One slot's decode + UI update + wsprnet report — the body every
+/// `scan_loop` iteration runs, factored out so the golden-baseband
+/// slot 0 and the DDC-fed slots after it share it exactly rather than
+/// duplicating the reporting/UI plumbing.
+fn run_one_slot(ctx: &ScanCtx, idat: &mut [f32], qdat: &mut [f32], slot_label: &str) {
+    let settings = {
+        let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
+        settings::load(&g)
+    };
+    let band = &WSPR_BANDS[settings.band_idx as usize];
+
+    let (stats, results) = run_scan(idat, qdat);
+    for s in &stats {
+        s.log();
+    }
+    log::info!("wspr_app: slot {slot_label} decoded {} station(s)", results.len());
+
+    let (date, time) = current_date_time();
+    let rows: Vec<WsprSpotRow> = results.iter().map(|r| to_row(r, &time)).collect();
+
+    {
+        let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
+        ui.set_slot(time.clone(), &rows);
+        ui.update_status(|u| {
+            u.band_label = heapless::String::try_from(band.label).unwrap_or_default();
+            u.dial_mhz = band.dial_mhz;
+            u.wsprnet_enabled =
+                mfsk_app_shared::wsprnet::SpotSink::from_config(Some(&settings.wsprnet_spot_config))
+                    .is_enabled();
+        });
+    }
+
+    let ntp_synced = WSPR_UI.lock().expect("WSPR_UI mutex poisoned").ntp_synced;
+    if ntp_synced {
+        report_to_wsprnet(&results, &settings, band, &date, &time);
+    } else {
+        log::info!("wspr_app: NTP never synced this run — skipping wsprnet report");
+    }
+}
+
+// ── DDC producer task ────────────────────────────────────────────────
+
+extern "C" fn ddc_task_entry(_arg: *mut core::ffi::c_void) {
+    ddc_loop();
+}
+
+fn spawn_ddc_task() {
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(ddc_task_entry),
+            c"wspr_ddc".as_ptr(),
+            DDC_STACK,
+            core::ptr::null_mut(),
+            4, // between the display task (3) and wspr_dual_core's
+               // worker (5) — see this section's own doc comment.
+            core::ptr::null_mut(),
+            1, // core 1: pinning DDC to core 0 alongside the scan
+               // task would starve it exactly the way the display
+               // task was starved before that bug was fixed (scan is
+               // priority 5, continuous, never yields) — see this
+               // file's top doc comment on that fix. Core 1 already
+               // hosts the display task and `wspr_dual_core`'s
+               // intermittent worker; DDC only needs ~20 s spread
+               // across a ~120 s cycle (per `wspr-bench`'s own
+               // measurement), so it fits in what's left over.
+        )
+    };
+    if created != 1 {
+        log::error!("wspr_app: failed to create wspr_ddc task");
+    }
+}
+
+/// Streams synthetic audio through [`StreamingDdc`] into whichever
+/// [`BASEBAND_BUFS`] slot isn't currently checked out by `scan_loop`,
+/// alternating slots, forever. Paces itself to [`SLOT_US`] the same
+/// way `scan_loop` used to before the DDC pipeline existed — real
+/// audio would arrive at its own fixed rate regardless of whether the
+/// previous slot's decode has finished, and this keeps that property
+/// even with a synthetic source.
+fn ddc_loop() -> ! {
+    while !SCAN_GO.load(Ordering::Acquire) {
+        FreeRtos::delay_ms(200);
+    }
+    log::info!("wspr_app: ddc loop starting");
+
+    let mut chunk = vec![0.0f32; 4096];
+    let w = 2.0 * core::f64::consts::PI * DDC_TONE_HZ / AUDIO_RATE_HZ as f64;
+    for (k, v) in chunk.iter_mut().enumerate() {
+        *v = (0.3 * (w * k as f64).cos()) as f32;
+    }
+
+    let mut write_idx = 0usize;
     loop {
         let slot_start_us = now_us();
 
-        let settings = {
-            let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
-            settings::load(&g)
+        let (oi, oq) = {
+            let mut bufs = DdcBufs::new();
+            let (t, hi, hq) = bufs.as_parts();
+            let mut ddc = StreamingDdc::new_in(t, hi, hq);
+            let mut oi: Vec<f32> = Vec::with_capacity(NBB + 64);
+            let mut oq: Vec<f32> = Vec::with_capacity(NBB + 64);
+            let mut fed = 0usize;
+            while fed < DDC_SLOT_AUDIO_SAMPLES {
+                ddc.push(&chunk, &mut oi, &mut oq);
+                fed += chunk.len();
+            }
+            ddc.flush(&mut oi, &mut oq);
+            // Match `ddc_to_baseband`'s own finish: zero-pad/truncate
+            // to exactly `NBB` (== `NFFT2`), what `run_scan` expects.
+            oi.resize(NBB, 0.0);
+            oq.resize(NBB, 0.0);
+            (oi, oq)
         };
-        let band = &WSPR_BANDS[settings.band_idx as usize];
-
-        load_baseband(GOLDEN_BASEBAND, &mut idat, &mut qdat);
-        let (stats, results) = run_scan(&mut idat, &mut qdat);
-        for s in &stats {
-            s.log();
-        }
-        log::info!("wspr_app: slot decoded {} station(s)", results.len());
-
-        let (date, time) = current_date_time();
-        let rows: Vec<WsprSpotRow> = results.iter().map(|r| to_row(r, &time)).collect();
 
         {
-            let mut ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-            ui.set_slot(time.clone(), &rows);
-            ui.update_status(|u| {
-                u.band_label = heapless::String::try_from(band.label).unwrap_or_default();
-                u.dial_mhz = band.dial_mhz;
-                u.wsprnet_enabled =
-                    mfsk_app_shared::wsprnet::SpotSink::from_config(Some(&settings.wsprnet_spot_config))
-                        .is_enabled();
-            });
+            let mut buf = BASEBAND_BUFS[write_idx].lock().expect("ddc buf mutex poisoned");
+            buf.idat = oi;
+            buf.qdat = oq;
         }
-
-        let ntp_synced = WSPR_UI.lock().expect("WSPR_UI mutex poisoned").ntp_synced;
-        if ntp_synced {
-            report_to_wsprnet(&results, &settings, band, &date, &time);
-        } else {
-            log::info!("wspr_app: NTP never synced this run — skipping wsprnet report");
+        {
+            let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
+            *ready = Some(write_idx);
         }
+        log::info!("wspr_app::ddc: produced buffer {write_idx}");
+        write_idx = 1 - write_idx;
 
         let elapsed_us = now_us() - slot_start_us;
         let remaining_ms = ((SLOT_US - elapsed_us).max(0) / 1000) as u32;
