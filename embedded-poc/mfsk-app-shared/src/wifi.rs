@@ -10,10 +10,29 @@
 //! socket bound on top of it must live as long as the WiFi stack).
 
 use anyhow::{anyhow, Result};
+use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::modem::WifiModemPeripheral;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
+
+/// Association attempts before giving up. **2026-08-15, real-hardware
+/// finding**: across this session's own flash-and-capture logs, a bare
+/// single `connect()` (no retry — the behaviour this constant fixes)
+/// succeeded only ~5 of 10 independent boots against the same AP,
+/// every failure showing the identical pattern in the serial log:
+/// `wifi:Association refused temporarily time 1000, comeback time
+/// 1100 (TUs)` followed immediately by `state: assoc -> init` — the
+/// esp-idf driver gives up rather than actually waiting out the AP's
+/// requested "comeback time" and retrying itself, so a caller that
+/// only calls `connect()` once inherits that ~50% coin-flip. A short
+/// bounded retry (this constant × [`CONNECT_RETRY_DELAY_MS`]) is the
+/// standard workaround for this exact 802.11 status-code-30 pattern.
+const CONNECT_MAX_ATTEMPTS: u32 = 4;
+/// Delay between attempts — comfortably past the ~1.1 s "comeback
+/// time" the failing log line itself reports, so a retry isn't just
+/// re-triggering the same refusal.
+const CONNECT_RETRY_DELAY_MS: u32 = 2_000;
 
 /// Live WiFi STA handle. Drop ends the WiFi association (and any sockets
 /// bound on top stop receiving), so callers must keep this alive.
@@ -69,8 +88,34 @@ where
         ..Default::default()
     }))?;
 
-    wifi.connect()?;
-    wifi.wait_netif_up()?;
+    // See CONNECT_MAX_ATTEMPTS's own doc comment for why this isn't a
+    // single `connect()?` — real-hardware association-refusal pattern
+    // found 2026-08-15, ~50% first-attempt failure rate against the
+    // test AP.
+    let mut last_err = None;
+    for attempt in 1..=CONNECT_MAX_ATTEMPTS {
+        match wifi.connect().and_then(|()| wifi.wait_netif_up()) {
+            Ok(()) => {
+                last_err = None;
+                break;
+            }
+            Err(e) => {
+                log::warn!("WiFi: connect attempt {attempt}/{CONNECT_MAX_ATTEMPTS} failed: {e:?}");
+                // Best-effort — the driver may already be back in a
+                // disconnected state (that's the whole problem this
+                // retry works around), so a failing disconnect() here
+                // isn't itself an error worth propagating.
+                let _ = wifi.disconnect();
+                last_err = Some(e);
+                if attempt < CONNECT_MAX_ATTEMPTS {
+                    FreeRtos::delay_ms(CONNECT_RETRY_DELAY_MS);
+                }
+            }
+        }
+    }
+    if let Some(e) = last_err {
+        return Err(e.into());
+    }
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
     let ip = ip_info.ip;
