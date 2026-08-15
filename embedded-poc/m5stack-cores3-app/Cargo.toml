@@ -43,6 +43,18 @@ name = "lcd-minimal"
 path = "src/bin/lcd_minimal.rs"
 harness = false
 
+# WiFi-only diagnostic — repeated connect/disconnect cycles against
+# the AP, verbose lwIP DHCP trace, no scan/DDC/display tasks at all.
+# Same rationale as `lcd-minimal`: isolate the thing under
+# investigation (WiFi flakiness against this AP, see wspr-app's own
+# design memory) from wspr-app's own confounds (scan_loop's
+# decode-time internal-DRAM churn, task competition). See its own doc
+# comment.
+[[bin]]
+name = "wifi-probe"
+path = "src/bin/wifi_probe.rs"
+harness = false
+
 [profile.release]
 # **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
 # on this comment:

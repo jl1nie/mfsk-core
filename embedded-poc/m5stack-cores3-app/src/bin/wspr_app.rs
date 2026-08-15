@@ -37,8 +37,8 @@
 //! this crate's `wspr_bench.rs`). What this app has instead, since
 //! 2026-08-15: a genuine double-buffered producer/consumer pipeline —
 //! a `ddc_loop` task streams *synthetic* audio through
-//! `mfsk_core::wspr::ddc::StreamingDdc` into one of two baseband
-//! buffers while `scan_loop` decodes the other, handed off via
+//! `mfsk_core::wspr::ddc::StreamingDdcCascade` into one of two
+//! baseband buffers while `scan_loop` decodes the other, handed off via
 //! [`DDC_READY_IDX`] — real concurrency and real buffer-lifetime
 //! rules, just with a placeholder source instead of a UAC capture
 //! feed. Swapping in live audio later only needs to replace what
@@ -107,7 +107,7 @@ use mipidsi::{
     Builder,
 };
 
-use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc, AUDIO_RATE_HZ};
+use mfsk_core::wspr::ddc::{StreamingDdcCascade, AUDIO_RATE_HZ};
 use mfsk_core::wspr::decode::WsprResult;
 
 use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
@@ -307,9 +307,9 @@ const DDC_TEST_BASE_FREQ_HZ: f32 = 1_500.0;
 const DDC_TEST_AMPLITUDE: f32 = 0.3;
 /// Amplitude for the noise surrounding [`DDC_TEST_CALL`]'s burst in
 /// [`DdcTestSource`] (lead-in/trail pad) — same scale the original
-/// fixed-tone constant used, now applied by [`fill_noise`] instead.
+/// fixed-tone constant used, now applied by [`noise_sample`] instead.
 const DDC_NOISE_AMPLITUDE: f32 = 0.3;
-/// Chunk size [`ddc_loop`] feeds to [`StreamingDdc::push`].
+/// Chunk size [`ddc_loop`] feeds to [`StreamingDdcCascade::push`].
 const DDC_CHUNK_LEN: usize = 4096;
 /// Silence-noise lead-in before the burst starts, within the slot's
 /// capture window — gives `run_scan` something resembling a realistic
@@ -321,9 +321,10 @@ const DDC_LEAD_PAD_SAMPLES: usize = 12_000;
 /// capture portion of a 120 s slot).
 const DDC_SLOT_AUDIO_SAMPLES: usize = 114 * 12_000;
 /// Stack for the DDC task. It streams through a small fixed chunk
-/// buffer, [`DdcTestSource`]'s own small state struct, and `DdcBufs`'
-/// fixed-size FIR history/taps — no decode-sized or multi-megabyte
-/// frames, so this is deliberately much smaller than `SCAN_STACK`.
+/// buffer, [`DdcTestSource`]'s own small state struct, and
+/// `StreamingDdcCascade`'s own (now internal-DRAM-sized) FIR history/
+/// taps for both stages — no decode-sized or multi-megabyte frames,
+/// so this is deliberately much smaller than `SCAN_STACK`.
 const DDC_STACK: u32 = 12 * 1024;
 
 fn main() -> ! {
@@ -993,13 +994,29 @@ fn spawn_ddc_task() {
     }
 }
 
-/// Streams synthetic audio through [`StreamingDdc`] into whichever
-/// [`BASEBAND_BUFS`] slot isn't currently checked out by `scan_loop`,
-/// alternating slots, forever. Paces itself to [`SLOT_US`] the same
-/// way `scan_loop` used to before the DDC pipeline existed — real
-/// audio would arrive at its own fixed rate regardless of whether the
-/// previous slot's decode has finished, and this keeps that property
-/// even with a synthetic source.
+/// Streams synthetic audio through [`StreamingDdcCascade`] into
+/// whichever [`BASEBAND_BUFS`] slot isn't currently checked out by
+/// `scan_loop`, alternating slots, forever. Paces itself to
+/// [`SLOT_US`] the same way `scan_loop` used to before the DDC
+/// pipeline existed — real audio would arrive at its own fixed rate
+/// regardless of whether the previous slot's decode has finished, and
+/// this keeps that property even with a synthetic source.
+///
+/// **Switched from `StreamingDdc` to `StreamingDdcCascade`,
+/// 2026-08-15** — real-hardware measurement (raw-noise-only
+/// benchmark, no burst synthesis) found the single-stage filter
+/// costing ~30 s of a 120 s slot (25%), confirmed via pointer address
+/// to be running out of PSRAM (`0x3c2...`) rather than the internal
+/// DRAM its own design assumed — `DdcBufs`' buffers (7 172 B/9 220 B/
+/// 9 220 B) all clear `SPIRAM_MALLOC_ALWAYSINTERNAL`=4096 with no
+/// placement override anywhere in the codebase. The cascade
+/// (`mfsk_core::wspr::ddc::StreamingDdcCascade`) fixes both problems
+/// the same move was chasing: ~4.5× less compute (Crochiere-Rabiner
+/// two-stage design, see that type's own doc comment) *and* small
+/// enough that every buffer clears the 4 KB threshold on its own, so
+/// it lands in internal DRAM automatically — no manual placement
+/// needed here at all, unlike the old `DdcBufs`/`new_in` API this
+/// replaces.
 fn ddc_loop() -> ! {
     while !SCAN_GO.load(Ordering::Acquire) {
         FreeRtos::delay_ms(200);
@@ -1019,9 +1036,7 @@ fn ddc_loop() -> ! {
         let mut source = DdcTestSource::new();
 
         let (oi, oq) = {
-            let mut bufs = DdcBufs::new();
-            let (t, hi, hq) = bufs.as_parts();
-            let mut ddc = StreamingDdc::new_in(t, hi, hq);
+            let mut ddc = StreamingDdcCascade::new();
             let mut oi: Vec<f32> = Vec::with_capacity(NBB + 64);
             let mut oq: Vec<f32> = Vec::with_capacity(NBB + 64);
             let mut fed = 0usize;
@@ -1051,6 +1066,20 @@ fn ddc_loop() -> ! {
         write_idx = 1 - write_idx;
 
         let elapsed_us = now_us() - slot_start_us;
+        // Kept permanently (added 2026-08-15 during the task-priority
+        // redesign, see wspr-app's own design memory) — the
+        // pacing-sleep-free cost of one full slot's worth of
+        // `fill_next`+`ddc.push`+`ddc.flush` calls, exactly the number
+        // a schedulability analysis needs. This is what caught
+        // `StreamingDdc` running out of PSRAM at ~25% slot occupancy
+        // in the first place; worth watching on an ongoing basis now
+        // that `StreamingDdcCascade` should be sitting far lower.
+        log::info!(
+            "wspr_app::ddc: compute occupancy {} ms / {} ms slot budget ({:.1}%)",
+            elapsed_us / 1000,
+            SLOT_US / 1000,
+            elapsed_us as f64 / SLOT_US as f64 * 100.0
+        );
         let remaining_ms = ((SLOT_US - elapsed_us).max(0) / 1000) as u32;
         if remaining_ms > 0 {
             FreeRtos::delay_ms(remaining_ms);
