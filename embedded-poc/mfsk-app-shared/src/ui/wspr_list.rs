@@ -46,7 +46,11 @@ pub const STATUS_ORIGIN_Y: i32 = 0;
 pub const STATUS_HEIGHT: u32 = 16;
 
 const DISCOVERED_HEADER_Y: i32 = STATUS_HEIGHT as i32;
-const HEADER_H: u32 = 12;
+// 12 -> 11: real-hardware fitting (2026-08-15) — freed together with
+// the panel's own unused bottom margin gives exactly one more 12 px
+// history row (240 px budget, was leaving 10 px dead at the bottom;
+// see the compile-time assert below).
+const HEADER_H: u32 = 11;
 const COL_HEADER_H: u32 = 10;
 const ROW_PX: u32 = 12;
 
@@ -61,7 +65,7 @@ const DIVIDER_H: u32 = 2;
 const HISTORY_HEADER_Y: i32 = DIVIDER_Y + DIVIDER_H as i32;
 const HISTORY_COL_HEADER_Y: i32 = HISTORY_HEADER_Y + HEADER_H as i32;
 pub const HISTORY_ROWS_Y: i32 = HISTORY_COL_HEADER_Y + COL_HEADER_H as i32;
-pub const HISTORY_ROWS: usize = 8;
+pub const HISTORY_ROWS: usize = 9;
 
 const BG: Rgb565 = Rgb565::BLACK;
 const FG: Rgb565 = Rgb565::WHITE;
@@ -217,11 +221,24 @@ where
 /// Paint every region unconditionally — used once at boot to draw the
 /// static frame (headers, divider) before the first slot completes,
 /// so the panel doesn't sit blank for up to 2 minutes.
+///
+/// Uses an explicit `Rectangle` fill for the initial wipe, not
+/// `DrawTarget::clear()` — real-hardware testing (CoreS3, 2026-08-15)
+/// found `clear()` unreliable on this mipidsi/SPI setup (partial
+/// coverage, a "some rows never get written" pattern) while an
+/// explicit `Rectangle::new(origin, size).draw()` with a manually
+/// correct size — exactly what every region's own [`fill`] helper
+/// already does — painted every time it was tried. `render_status`/
+/// `render_discovered`/`render_history` below only repaint their own
+/// regions afterward, so this full-panel fill is what's actually
+/// responsible for covering the small bottom margin
+/// (`HISTORY_ROWS_Y + HISTORY_ROWS * ROW_PX .. PANEL_HEIGHT`) none of
+/// them touch.
 pub fn render_all<D>(display: &mut D, ui: &WsprUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    display.clear(BG)?;
+    fill(display, 0, PANEL_HEIGHT, BG);
     render_status(display, ui)?;
     render_discovered(display, ui)?;
     render_history(display, ui)?;

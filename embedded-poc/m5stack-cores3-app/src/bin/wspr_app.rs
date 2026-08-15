@@ -48,9 +48,6 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-
 use esp_idf_hal::delay::{Ets, FreeRtos};
 use esp_idf_hal::gpio::{AnyIOPin, PinDriver};
 use esp_idf_hal::peripherals::Peripherals;
@@ -62,8 +59,8 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 use display_interface_spi::SPIInterface;
 use mipidsi::{
-    models::ILI9341Rgb565,
-    options::{ColorInversion, Orientation, Rotation},
+    models::ILI9342CRgb565,
+    options::ColorInversion,
     Builder,
 };
 
@@ -325,10 +322,23 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             let dc = PinDriver::output(ctx.pins.gpio35).expect("DC gpio35"); // board::LCD_PIN_DC
             let di = SPIInterface::new(spi_dev, dc);
 
+            // **2026-08-15 real-hardware fix**: this board's chip is
+            // ILI9342C (see `board.rs`'s own doc comment), whose
+            // native `FRAMEBUFFER_SIZE` in mipidsi is already
+            // `(320, 240)` — landscape. The previous code used the
+            // *ILI9341* model instead (`FRAMEBUFFER_SIZE = (240,
+            // 320)`, portrait-native) plus a manual
+            // `.orientation(Deg90)` to compensate — a Builder-time
+            // rotation that, empirically, never correctly swapped
+            // mipidsi's own internal width/height bookkeeping (every
+            // symptom chased today — partial coverage, stripes, the
+            // panel reporting 240×320 instead of 320×240 — traces
+            // back to this). Using the model whose native framebuffer
+            // already matches the physical panel needs no rotation
+            // hack at all.
             let mut delay = Ets;
-            match Builder::new(ILI9341Rgb565, di)
-                .display_size(240, 320)
-                .orientation(Orientation::new().rotate(Rotation::Deg90))
+            match Builder::new(ILI9342CRgb565, di)
+                .display_size(320, 240)
                 .invert_colors(ColorInversion::Inverted)
                 .init(&mut delay)
             {
@@ -350,11 +360,21 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    display.clear(Rgb565::BLACK).ok();
     log::info!("LCD init OK ({}x{})", board::LCD_WIDTH, board::LCD_HEIGHT);
+
+    // The 2026-08-15 real-hardware investigation that led here (three
+    // real bugs: AXP2101 DLDO1/backlight never enabled, board.rs's
+    // LCD_RST/TP_RST bits swapped, and `DrawTarget::clear()` itself
+    // giving partial coverage on this mipidsi/SPI setup — see
+    // `pmic.rs`'s and `wspr_list::render_all`'s doc comments) used a
+    // standalone `lcd-minimal` bin for the raw-driver / orientation
+    // diagnostics rather than growing throwaway test code in this
+    // file. `render_all` below is the real first paint.
     {
         let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-        wspr_list::render_all(&mut display, &ui).ok();
+        if let Err(e) = wspr_list::render_all(&mut display, &ui) {
+            log::error!("wspr_app::display: render_all FAILED: {e:?}");
+        }
     }
 
     // Status bar repaints every tick (cheap, one line); discovered/
@@ -380,10 +400,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
         };
         {
             let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
-            wspr_list::render_status(&mut display, &ui).ok();
+            if let Err(e) = wspr_list::render_status(&mut display, &ui) {
+                log::warn!("wspr_app::display: render_status failed: {e:?}");
+            }
             if dirty != last_dirty {
-                wspr_list::render_discovered(&mut display, &ui).ok();
-                wspr_list::render_history(&mut display, &ui).ok();
+                if let Err(e) = wspr_list::render_discovered(&mut display, &ui) {
+                    log::warn!("wspr_app::display: render_discovered failed: {e:?}");
+                }
+                if let Err(e) = wspr_list::render_history(&mut display, &ui) {
+                    log::warn!("wspr_app::display: render_history failed: {e:?}");
+                }
                 last_dirty = dirty;
             }
         }

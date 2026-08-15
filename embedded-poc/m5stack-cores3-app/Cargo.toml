@@ -35,6 +35,14 @@ name = "wspr-app"
 path = "src/bin/wspr_app.rs"
 harness = false
 
+# Minimal LCD-only bring-up test — diagnostic for the 2026-08-15
+# "nothing shows on the CoreS3 screen" investigation. See its own doc
+# comment.
+[[bin]]
+name = "lcd-minimal"
+path = "src/bin/lcd_minimal.rs"
+harness = false
+
 [profile.release]
 # **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
 # on this comment:
