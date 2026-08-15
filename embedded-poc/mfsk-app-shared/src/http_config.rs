@@ -52,6 +52,27 @@ const MAX_BODY_LEN: usize = 1024;
 /// parsing) rather than assuming the default is enough.
 const HTTP_SERVER_STACK_SIZE: usize = 10240;
 
+/// **2026-08-15, real-hardware finding**: `Configuration::default()`'s
+/// own `task_caps` is `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` —
+/// internal DRAM only, no PSRAM. On `m5stack-cores3-app`'s `wspr-app`
+/// binary that consistently failed (`ESP_ERR_HTTPD_TASK` — the
+/// underlying `xTaskCreate` for this 10 KiB stack couldn't find a
+/// large-enough contiguous internal-DRAM block): that binary's own
+/// scan/DDC/display task stacks (108 KiB combined) plus WiFi's runtime
+/// buffer pools leave internal DRAM tight by the time this runs — see
+/// `wspr-app`'s own design memory for the `log_heap()` trail
+/// (171→99→86→62 KB before WiFi even starts). Requesting
+/// `MALLOC_CAP_SPIRAM` instead moves this task's stack to PSRAM (8 MB,
+/// comfortably free), sidestepping that contention entirely — an
+/// officially-supported ESP-IDF S3 feature for non-ISR task stacks
+/// (`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`, set in
+/// `m5stack-cores3-app/sdkconfig.defaults`; this crate is also
+/// consumed by `m5stack-s3-app`/`m5stack-core2-app`, whose own
+/// sdkconfigs don't set that Kconfig — `EspHttpServer::new` would
+/// simply fail there if it ever became a real constraint, same
+/// graceful-degradation path this crate's callers already handle).
+const HTTP_SERVER_TASK_CAPS: u32 = esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT;
+
 /// Start the config web server. Bound to the shared NVS handle: the
 /// `GET /` and `POST /save` handlers both lock it independently per
 /// request, not once for the server's lifetime, so a slow request
@@ -64,6 +85,7 @@ const HTTP_SERVER_STACK_SIZE: usize = 10240;
 pub fn start(nvs: Arc<Mutex<EspNvs<NvsDefault>>>) -> anyhow::Result<EspHttpServer<'static>> {
     let mut server = EspHttpServer::new(&HttpConfiguration {
         stack_size: HTTP_SERVER_STACK_SIZE,
+        task_caps: HTTP_SERVER_TASK_CAPS,
         ..Default::default()
     })?;
 

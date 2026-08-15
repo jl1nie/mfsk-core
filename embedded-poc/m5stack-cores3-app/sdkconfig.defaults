@@ -54,6 +54,20 @@ CONFIG_SPIRAM_USE_MALLOC=y
 # Keeps allocations ≤4096 B in internal DRAM, preventing TLSF corruption
 # when stage-3 cs Box buffers are placed in internal DRAM by both workers.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# Lets a task explicitly request its *stack* from PSRAM instead of
+# internal DRAM (opt-in per task via task_caps; nothing that doesn't
+# ask for MALLOC_CAP_SPIRAM is affected). Added 2026-08-15 so
+# `mfsk-app-shared::http_config`'s HTTP server task can move off
+# internal DRAM — wspr_app.rs's own scan/DDC/display task stacks
+# (108 KiB combined) plus WiFi's runtime buffer pools were leaving too
+# little contiguous internal DRAM by boot's end for the httpd task's
+# 10 KiB stack, so `EspHttpServer::new()` failed every boot
+# (`ESP_ERR_HTTPD_TASK`) — see wspr-app's own design memory for the
+# `log_heap()` trail that root-caused this (171→99→86→62 KB before
+# WiFi even starts). Officially supported on S3 for non-ISR task
+# stacks (ESP-IDF's `external-ram.rst`); httpd's handlers are plain
+# blocking calls, not ISR context, so this is the textbook case.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
 
 # ── USB Host (UAC capture, Phase 1-Core) ────────────────────────────
 # usb_host_install() consumes the USB-Serial-JTAG endpoint; BootMode::Uac
