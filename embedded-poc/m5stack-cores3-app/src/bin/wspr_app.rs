@@ -47,11 +47,27 @@
 //! the first goes through the real DDC pipeline — see `scan_loop`'s
 //! own comment for exactly where the switch happens. **The synthetic
 //! source is a real, correctly-encoded WSPR test transmission
-//! (`N0CALL`), not noise and not a bare tone** — see
-//! [`build_ddc_test_track`]'s doc comment for two real false-decode/
-//! missing-load bugs (2026-08-15) that earlier placeholder choices
-//! caused on real hardware, and why "a genuine signal" is what
-//! avoids both.
+//! (`K1ABC`), not noise and not a bare tone** — see
+//! [`DdcTestSource`]'s doc comment for the false-decode/missing-load/
+//! OOM bugs (2026-08-15) that earlier placeholder choices caused on
+//! real hardware, and why "a genuine signal, streamed incrementally"
+//! is what avoids all three.
+//!
+//! **UDP log fanout** (added 2026-08-15, ahead of wiring in real UAC
+//! capture — see this file's own `DdcTestSource` history for why that
+//! swap hasn't landed yet): once USB-OTG host mode claims the
+//! USB-Serial-JTAG endpoint for live audio, the serial console goes
+//! with it — same reason `main.rs` (the FT8 controller) installs
+//! `mfsk_app_shared::log_sink::FanoutLogger` instead of the plain
+//! `EspLogger`. This bin now does the same: `LOGGER.install()` routes
+//! every `log::info!`/`log::warn!`/etc. through console (guarded by
+//! `usb_serial_jtag_is_connected()`) *and* a UDP datagram sink once
+//! WiFi is up, so `embedded-poc/scripts/udp-log-listen.sh` on the host
+//! PC keeps showing logs even with no serial port to attach to. The
+//! LCD-scroll-panel half of `LogFanout` is left unused here (nobody
+//! calls `display::run_log_panel` — this bin's own `display_loop`
+//! draws the WSPR UI instead), which is harmless: `FanoutLogger` still
+//! pushes into it, just nothing ever reads it back out.
 //!
 //! One consequence worth being explicit about regardless: the band
 //! selector in the web settings form changes what dial frequency gets
@@ -93,17 +109,30 @@ use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLO
 use embedded_shared::wspr_dual_core;
 
 use mfsk_app_shared::civil_time::civil_from_unix;
+use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
-use mfsk_app_shared::{http_config, ntp};
+use mfsk_app_shared::{http_config, ntp, udp_log};
 
 const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseband.bin");
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
 const WIFI_PSK: &str = env!("WIFI_PSK");
+/// `"auto"` or empty → the WiFi handle's own subnet broadcast address
+/// (same fallback `main.rs` uses); anything else is parsed as a fixed
+/// unicast/broadcast target. Same `cfg.toml`-sourced env var `main.rs`
+/// already reads — one `cfg.toml` covers every bin in this crate.
+const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
+const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
+
+/// Routes every `log::*!` call through console (guarded by
+/// `usb_serial_jtag_is_connected()`) + UDP datagram, same fanout
+/// `main.rs` installs — see this file's own top doc comment for why.
+static FANOUT: LogFanout = LogFanout::new();
+static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, log::LevelFilter::Info);
 
 /// How long to wait for the boot-time NTP attempt before giving up
 /// and running without absolute time (`ntp_synced` stays false, and
@@ -294,7 +323,7 @@ const DDC_STACK: u32 = 12 * 1024;
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
-    embedded_shared::apps::wspr_bench::init_logger_once();
+    LOGGER.install();
 
     log::info!("=== mfsk-core-m5stack-cores3-app wspr-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
@@ -358,6 +387,37 @@ fn main() -> ! {
         match mfsk_app_shared::wifi::connect_sta(peripherals.modem, sysloop, Some(nvs_part), WIFI_SSID, WIFI_PSK) {
             Ok(h) => {
                 log::info!("wspr_app: WiFi up, ip {}", h.ip);
+
+                // UDP log sink — see this file's top doc comment for
+                // why (USB host mode later takes the serial console
+                // with it). Same target-resolution + staging-drain
+                // sequence `main.rs` uses.
+                let target_ip: std::net::IpAddr = if UDP_LOG_TARGET.is_empty() || UDP_LOG_TARGET == "auto" {
+                    std::net::IpAddr::V4(h.subnet_broadcast)
+                } else {
+                    match UDP_LOG_TARGET.parse() {
+                        Ok(ip) => ip,
+                        Err(e) => {
+                            log::warn!(
+                                "wspr_app: UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); using subnet bcast"
+                            );
+                            std::net::IpAddr::V4(h.subnet_broadcast)
+                        }
+                    }
+                };
+                let port: u16 = UDP_LOG_PORT.parse().unwrap_or(9999);
+                let addr = std::net::SocketAddr::new(target_ip, port);
+                match udp_log::UdpLogSink::new(addr) {
+                    Ok(sink) => {
+                        if let Ok(mut slot) = FANOUT.udp.try_lock() {
+                            *slot = Some(sink);
+                        }
+                        FANOUT.drain_staging_to_udp();
+                        log::info!("wspr_app: UDP log sink up → {addr}");
+                    }
+                    Err(e) => log::warn!("wspr_app: UDP socket bind failed: {e}"),
+                }
+
                 Some(h)
             }
             Err(e) => {
