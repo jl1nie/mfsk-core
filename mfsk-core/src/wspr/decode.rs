@@ -1261,13 +1261,18 @@ fn decode_scan_inner(
     // wsprd's own) is exact and is what every number in this crate was
     // measured against; it is also unrunnable on an ESP32-S3, whose
     // 8 MB PSRAM cannot hold its 11.25 MiB `NFFT1` buffer and whose FFT
-    // backend tops out at 8 192. Embedded turns on `wspr-ddc` and gets
-    // the streaming down-converter instead — see `wspr::ddc` for what
-    // that trades away.
-    #[cfg(not(feature = "wspr-ddc"))]
+    // backend tops out at 8 192. Embedded turns on `wspr-ddc` (single-
+    // stage streaming down-converter) or `wspr-ddc-cascade` (two-stage
+    // cascade, ~4.5x cheaper and internal-DRAM-sized) instead — see
+    // `wspr::ddc` for what each trades away.
+    #[cfg(all(feature = "wspr-ddc", feature = "wspr-ddc-cascade"))]
+    compile_error!("wspr-ddc and wspr-ddc-cascade select different channelizers — enable only one");
+    #[cfg(not(any(feature = "wspr-ddc", feature = "wspr-ddc-cascade")))]
     let (mut idat, mut qdat) = super::baseband::decimate_to_baseband(&padded);
     #[cfg(feature = "wspr-ddc")]
     let (mut idat, mut qdat) = super::ddc::ddc_to_baseband(&padded);
+    #[cfg(feature = "wspr-ddc-cascade")]
+    let (mut idat, mut qdat) = super::ddc::ddc_to_baseband_cascade(&padded);
     // wsprd-equivalent coarse: 512-pt windowed FFT on the 375 Hz
     // baseband, time-averaged spectrum + 30 th-percentile noise
     // floor, peak detection on smspec, 3-D (freq, time, drift)

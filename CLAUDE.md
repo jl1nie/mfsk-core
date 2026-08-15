@@ -184,6 +184,18 @@ quantisation, so it can diverge from host f32 on the same fixture:
 cargo test -p mfsk-core --features full,fixed-point --release --test ft8_qso3_apoff_recall
 ```
 
+`wspr-ddc` and `wspr-ddc-cascade` are the WSPR embedded channelizer
+swaps (`wspr::ddc`'s single-stage and two-stage-cascade streaming
+down-converters, replacing the host-default whole-slot FFT
+`decimate_to_baseband`) — mutually exclusive (`compile_error!` in
+`decode_scan_inner` if both are on), each with its own real-signal
+golden test against the WSJT-X recording, worth a run whenever
+`wspr::ddc` changes:
+
+```sh
+MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core --features full,internal-testing,wspr-ddc-cascade --release --test wspr_wsjtx_samples wspr_cascade_ddc_golden_recall_and_precision
+```
+
 **`internal-testing` is not optional for whole-crate commands.**
 `cargo clippy --all-targets --features full` (without it) reports
 `E0603` private-item errors in `fst4_sweep` / `ft4_sweep` /

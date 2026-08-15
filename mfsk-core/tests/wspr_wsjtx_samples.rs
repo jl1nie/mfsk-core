@@ -226,6 +226,100 @@ fn wspr_golden_recall_and_precision() {
     );
 }
 
+/// Same recall/precision assertion as
+/// [`wspr_golden_recall_and_precision`], but through the two-stage
+/// cascade channelizer (`wspr::ddc::ddc_to_baseband_cascade`, feature
+/// `wspr-ddc-cascade`) instead of the reference whole-slot FFT
+/// (`decimate_to_baseband`).
+///
+/// Only compiled/run with `--features wspr-ddc-cascade`, since the
+/// channelizer choice is a crate-wide compile-time selection (see
+/// `decode_scan_inner`'s own doc comment) — this is not part of the
+/// default merge gate, same as `wspr-ddc`'s single-stage sibling was
+/// never continuously tested against a real off-air recording before
+/// this. Run it explicitly:
+///
+/// ```sh
+/// MFSK_REQUIRE_CORPUS=1 cargo test -p mfsk-core \
+///     --features full,internal-testing,wspr-ddc-cascade --release \
+///     --test wspr_wsjtx_samples wspr_cascade_ddc_golden_recall_and_precision
+/// ```
+///
+/// Built 2026-08-15 after the cascade replaced the single-stage
+/// `StreamingDdc` in `wspr-app`'s embedded pipeline (issue #260
+/// follow-on) — `wspr-app`'s own hardware verification only ever
+/// decodes synthetic single-station bursts through the cascade, never
+/// this real 9-station recording, so this is the actual real-signal
+/// fidelity check that gap needed. Manually verified once before
+/// landing (temporary local edit to `decode_scan_inner`, reverted):
+/// cascade output is **byte-for-byte the same decode set** as both the
+/// reference and the single-stage `wspr-ddc` path on this recording —
+/// same 9 messages, same freq/dt to the printed precision, 0 phantoms.
+#[test]
+#[cfg(feature = "wspr-ddc-cascade")]
+fn wspr_cascade_ddc_golden_recall_and_precision() {
+    use common::golden::{DecodeView, GoldenEntry, GoldenSet, Tolerances, assert_golden};
+
+    let Some(path) = sample_path() else {
+        eprintln!(
+            "skipping: WSJT-X WSPR sample not found at ../../WSJT-X/samples/WSPR/150426_0918.wav"
+        );
+        return;
+    };
+    let audio = read_wsjtx_wav_f32(&path).expect("WAV must be 12 kHz mono PCM-16");
+
+    // Same widened search as the reference-channelizer golden — see
+    // that test's own comment for why.
+    let params = SearchParams {
+        freq_min_hz: 1400.0,
+        freq_max_hz: 1620.0,
+        max_candidates: 100,
+        score_threshold: 0.05,
+        ..SearchParams::default()
+    };
+
+    let decodes = decode_scan(&audio, 12_000, 0, &params);
+
+    eprintln!("WSPR sample (cascade DDC) decoded {} message(s):", decodes.len());
+    for d in &decodes {
+        eprintln!(
+            "  freq={:6.1} Hz dt={:+.2} s : {}",
+            d.freq_hz, d.dt_sec, d.message
+        );
+    }
+
+    let expected: Vec<GoldenEntry> = GOLDEN
+        .iter()
+        .map(|g| GoldenEntry {
+            msg: g.msg,
+            freq_hz: Some(g.freq_hz),
+            dt_sec: Some(g.dt_sec),
+            snr_db: None,
+        })
+        .collect();
+
+    assert_golden(
+        &decodes,
+        &GoldenSet {
+            name: "WSPR 150426_0918.wav (cascade DDC)",
+            expected: Box::leak(expected.into_boxed_slice()),
+            min_hits: GOLDEN.len(),
+            max_extra: 0,
+        },
+        Tolerances {
+            freq_hz: FREQ_TOL_HZ,
+            dt_sec: DT_TOL_SEC,
+            ..Tolerances::default()
+        },
+        |d| DecodeView {
+            msg: d.message.to_string(),
+            freq_hz: d.freq_hz,
+            dt_sec: d.dt_sec,
+            snr_db: None,
+        },
+    );
+}
+
 /// Carrying a cross-slot table must never change what this recording
 /// yields, and must never admit a phantom.
 ///
