@@ -43,10 +43,13 @@
 //! still decodes the baked WAV-derived golden baseband
 //! (`assets/wspr_golden_baseband.bin`, same as `wspr_bench.rs`) so
 //! the app has *some* meaningful decode to show immediately at boot
-//! rather than only ever decoding a single sine tone that carries no
-//! WSPR message and reliably yields 0 stations. Every slot after the
-//! first goes through the real DDC pipeline — see `scan_loop`'s own
-//! comment for exactly where the switch happens.
+//! rather than only ever decoding synthetic noise that carries no
+//! WSPR message. Every slot after the first goes through the real DDC
+//! pipeline — see `scan_loop`'s own comment for exactly where the
+//! switch happens. **The synthetic source is noise, not a tone** —
+//! see [`fill_noise`]'s doc comment for a real false-decode bug a
+//! fixed single-frequency placeholder caused on real hardware
+//! (2026-08-15) and why noise doesn't have the same problem.
 //!
 //! One consequence worth being explicit about regardless: the band
 //! selector in the web settings form changes what dial frequency gets
@@ -81,7 +84,7 @@ use mipidsi::{
     Builder,
 };
 
-use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc, AUDIO_RATE_HZ};
+use mfsk_core::wspr::ddc::{DdcBufs, StreamingDdc};
 use mfsk_core::wspr::decode::WsprResult;
 
 use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
@@ -200,13 +203,29 @@ static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] = [Mutex::new(SlotBuf::new()), Mutex::
 /// defensively for a case the real timing doesn't produce.
 static DDC_READY_IDX: Mutex<Option<usize>> = Mutex::new(None);
 
-/// Same tone `wspr-bench`'s own `ddc_load_task`/`bench_ddc` use — the
-/// DDC's cost is per-sample and data-independent, so what the audio
-/// carries doesn't matter for the CPU-contention/timing behaviour this
-/// pipeline exists to exercise. It does **not** carry a decodable WSPR
-/// message, so `scan_loop` decoding a `ddc_loop`-produced buffer
-/// reliably finds 0 stations — see this file's top doc comment.
-const DDC_TONE_HZ: f64 = 1_540.0;
+/// **2026-08-15, real-hardware bug found + fixed**: this used to be a
+/// single fixed 1540 Hz tone (same one `wspr-bench`'s own
+/// `ddc_load_task`/`bench_ddc` still use for their own CPU-timing-only
+/// purposes, which never feed a real decoder). Feeding that tone
+/// through the *real* `run_scan` here was the root cause of a genuine
+/// bug: the coarse search found an anomalous 72 candidates against it
+/// (a real busy band doesn't produce that many), and one of those
+/// occasionally converged through Fano/OSD anyway — WSPR's
+/// convolutional code has no CRC-strength check, so a sufficiently
+/// structured, non-noise-like input has a real (if small) false-accept
+/// rate. The visible symptom: after running for a while, the
+/// "discovered stations" pane started showing entries like `<#00000>
+/// A000... 0` — not display corruption, that's `msg/wspr.rs`'s own
+/// `<#{hash:05x}>` format for a genuine (but meaningless) Type-3
+/// decode of noise bits. Switched to per-chunk pseudorandom noise
+/// (see [`fill_noise`]) instead: same per-sample DDC/FIR cost (the
+/// pipeline-timing property this task exists to exercise is
+/// unaffected), but no deterministic tone-line for the coarse search
+/// to lock onto, so `scan_loop` decoding a `ddc_loop`-produced buffer
+/// should behave like a real quiet band (occasional false accepts are
+/// still statistically possible — WSPR's code has no perfect check —
+/// just no longer artificially likely).
+const DDC_NOISE_AMPLITUDE: f32 = 0.3;
 /// One WSPR slot's worth of audio at `AUDIO_RATE_HZ`, matching
 /// `wspr-bench`'s own `NPOINTS_MAX`-equivalent constant (114 s is the
 /// capture portion of a 120 s slot).
@@ -713,10 +732,13 @@ fn ddc_loop() -> ! {
     log::info!("wspr_app: ddc loop starting");
 
     let mut chunk = vec![0.0f32; 4096];
-    let w = 2.0 * core::f64::consts::PI * DDC_TONE_HZ / AUDIO_RATE_HZ as f64;
-    for (k, v) in chunk.iter_mut().enumerate() {
-        *v = (0.3 * (w * k as f64).cos()) as f32;
-    }
+    // Fixed seed: deterministic across runs (same rationale the old
+    // fixed-tone constant had), but re-rolled every chunk below rather
+    // than reused verbatim — a single precomputed buffer replayed
+    // ~330×/slot would itself be a periodic (hence structured, hence
+    // false-accept-prone) signal, exactly the failure mode this
+    // replaced. See [`DDC_NOISE_AMPLITUDE`]'s doc comment.
+    let mut rng: u32 = 0x2026_0815;
 
     let mut write_idx = 0usize;
     loop {
@@ -730,6 +752,7 @@ fn ddc_loop() -> ! {
             let mut oq: Vec<f32> = Vec::with_capacity(NBB + 64);
             let mut fed = 0usize;
             while fed < DDC_SLOT_AUDIO_SAMPLES {
+                fill_noise(&mut chunk, &mut rng);
                 ddc.push(&chunk, &mut oi, &mut oq);
                 fed += chunk.len();
             }
@@ -758,6 +781,27 @@ fn ddc_loop() -> ! {
         if remaining_ms > 0 {
             FreeRtos::delay_ms(remaining_ms);
         }
+    }
+}
+
+/// Fill `chunk` with fresh pseudorandom noise in `[-DDC_NOISE_AMPLITUDE,
+/// +DDC_NOISE_AMPLITUDE]`, advancing `rng` in place. xorshift32 — cheap
+/// (a handful of XORs/shifts per sample, trivial next to the DDC/decode
+/// cost this task exists to exercise) and dependency-free, matching
+/// this crate's existing preference for hand-rolled ASCII/percent-
+/// decode helpers over pulling in a crate for something this small.
+/// Not cryptographic quality; doesn't need to be — see
+/// [`DDC_NOISE_AMPLITUDE`]'s doc comment for why *not periodic* is the
+/// actual requirement.
+fn fill_noise(chunk: &mut [f32], rng: &mut u32) {
+    for v in chunk.iter_mut() {
+        let mut x = *rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *rng = x;
+        let unit = (x as f32 / u32::MAX as f32) * 2.0 - 1.0; // -> [-1, 1]
+        *v = unit * DDC_NOISE_AMPLITUDE;
     }
 }
 
