@@ -65,6 +65,27 @@
 
 ### Fixed
 
+- **FST4's OSD now uses WSJT-X's real `npre1`/`npre2`-pruned search**
+  (issue #198/#306), not the unpruned k1/k2/k3 combinatorial search
+  FST4 and MSK144 previously shared with FT4/FT8 by default — WSJT-X's
+  own `osd240_101.f90`/`osd128_90.f90` use the same
+  `npre1`/`npre2`/`ntheta`/`ntau`-pruned architecture FT8's
+  `osd_decode_npre1(_npre2)` already ported (issue #63), just tuned
+  differently; FST4/MSK144 had been running a different, unpruned
+  algorithm instead. `osd_decode_npre_generic<P: LdpcParams>` ports it
+  generically (FST4 wired; MSK144 not yet). Real-hardware measurement
+  (CoreS3): FST4-60's candidate loop dropped 1.25-1.5× on top of every
+  prior optimisation in this line, with recall unchanged on the AWGN
+  corpus checked and a small (recovered by the fix below) recall cost
+  under CCIR-moderate fading.
+- **FST4 now retries each candidate at `i0±1` timing offsets**
+  (issue #308), matching `fst4_decode.f90`'s own `ijitter=0,+1,-1`
+  retry at normal/deep decode depth — every FST4 candidate was
+  previously decoded at exactly one refined timing position. Found
+  while investigating the npre-port's CCIR-moderate recall cost above:
+  this recovers it fully at the SNR checked (m26: 15/100 → 20/100,
+  exactly matching the pre-port unpruned search's own 20/100) via a
+  *more* WSJT-X-faithful mechanism rather than reverting the OSD port.
 - **JT9's default search band is 200-4000 Hz**, `jt9`'s own CLI
   defaults (`--lowest` 200, `--highest` 4007). It was 1400-1600 Hz —
   narrower than any real JT9 sub-band, and narrow enough that it
