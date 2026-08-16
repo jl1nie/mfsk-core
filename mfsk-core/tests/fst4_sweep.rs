@@ -1578,6 +1578,96 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
 #[test]
 #[ignore = "manual diagnostic — FST4-60 recall trade-off: does skipping nsym=8/OSD cost real AWGN recall? (issue #306 follow-up)"]
 fn fst4_60_diag_recall_tradeoff() {
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m22", 20),
+        ("m23", 20),
+        ("m24", 20),
+        ("m25", 20),
+        ("m26", 100),
+        ("m27", 100),
+        ("m28", 20),
+        ("m29", 20),
+        ("m30", 20),
+    ];
+    recall_tradeoff_for_channel("awgn", SNR_TAGS);
+}
+
+/// Same trade-off sweep, CCIR-moderate fading — issue #306/#198
+/// follow-up: does switching FST4's OSD to the WSJT-X-faithful
+/// npre1/npre2 port change the `no8_osd` recall trade-off's picture
+/// under fading, the way the nsym-depth sweep's AWGN-vs-CCIR comparison
+/// (`fst4_60_diag_nsym_depth_sweep`/`_ccir_moderate`) found for plain
+/// depth. Corpus widened to 100 trials/SNR at m26/m27 the same way the
+/// AWGN corpus was (`fst4sim` is deterministic per trial index —
+/// trials 1-20 confirmed byte-identical to the original 20-trial CCIR-
+/// moderate corpus before generating more):
+/// ```sh
+/// for snr in -26 -27; do
+///   tag=$(printf "m%02d" $(( -snr )))
+///   tmpd=$(mktemp -d)
+///   (cd "$tmpd" && /path/to/target/fst4sim/fst4sim \
+///     "CQ JL1NIE PM95" 60 1500 0.0 0.5 1.0 100 "$snr" F >/dev/null)
+///   for T in $(seq 21 100); do
+///     src="$tmpd/000000_$(printf '%04d' $T).wav"
+///     dest="embedded-poc/assets/fst4_sweep/fst4_60_ccir_moderate_${tag}_$(printf '%02d' $T).wav"
+///     [[ -f "$src" ]] && cp "$src" "$dest"
+///   done
+///   rm -rf "$tmpd"
+/// done
+/// ```
+#[test]
+#[ignore = "manual diagnostic — FST4-60 recall trade-off, CCIR-moderate fading (issue #306/#198 follow-up)"]
+fn fst4_60_diag_recall_tradeoff_ccir_moderate() {
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 100),
+        ("m22", 100),
+        ("m23", 100),
+        ("m24", 100),
+        ("m25", 100),
+        ("m26", 100),
+        ("m27", 100),
+        ("m28", 100),
+        ("m29", 100),
+        ("m30", 100),
+    ];
+    recall_tradeoff_for_channel("ccir_moderate", SNR_TAGS);
+}
+
+/// Same as [`fst4_60_diag_recall_tradeoff_ccir_moderate`] but forced
+/// onto the pre-port unpruned combinatorial OSD search
+/// (`fst4_osd_diag_force_old`) — a same-corpus, same-code old-vs-new
+/// comparison under CCIR-moderate fading, mirroring the AWGN
+/// old-vs-new comparison already done for `full`/`no8_osd`. There was
+/// no pre-existing CCIR-moderate baseline to diff against (this
+/// diagnostic and its 100-trial m26/m27 corpus are both new), so this
+/// wrapper exists specifically to manufacture one via the override
+/// rather than trusting an absolute number alone.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 recall trade-off, CCIR-moderate, forced old OSD for old-vs-new comparison (issue #306/#198 follow-up)"]
+fn fst4_60_diag_recall_tradeoff_ccir_moderate_old_osd() {
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 100),
+        ("m22", 100),
+        ("m23", 100),
+        ("m24", 100),
+        ("m25", 100),
+        ("m26", 100),
+        ("m27", 100),
+        ("m28", 100),
+        ("m29", 100),
+        ("m30", 100),
+    ];
+    fst4_osd_diag_force_old(true);
+    recall_tradeoff_for_channel("ccir_moderate", SNR_TAGS);
+    fst4_osd_diag_force_old(false);
+}
+
+/// Shared body for [`fst4_60_diag_recall_tradeoff`] /
+/// [`fst4_60_diag_recall_tradeoff_ccir_moderate`] — everything except
+/// the channel name is identical.
+fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str, u32)]) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::coarse_sync;
@@ -1598,19 +1688,6 @@ fn fst4_60_diag_recall_tradeoff() {
     // byte-identical to the original 20-trial corpus (`fst4sim` is
     // deterministic per trial index), so this only adds statistical
     // power, it doesn't change what was already measured.
-    const SNR_TAGS: &[(&str, u32)] = &[
-        ("m20", 20),
-        ("m22", 20),
-        ("m23", 20),
-        ("m24", 20),
-        ("m25", 20),
-        ("m26", 100),
-        ("m27", 100),
-        ("m28", 20),
-        ("m29", 20),
-        ("m30", 20),
-    ];
-
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) = mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
 
@@ -1624,15 +1701,15 @@ fn fst4_60_diag_recall_tradeoff() {
     }
 
     let mut work: Vec<(&str, u32)> = Vec::new();
-    for &(snr_tag, trials) in SNR_TAGS {
+    for &(snr_tag, trials) in snr_tags {
         for trial in 1..=trials {
             work.push((snr_tag, trial));
         }
     }
 
     let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, u32, bool, bool, bool, bool) {
-        let snr_idx = SNR_TAGS.iter().position(|&(t, _)| t == snr_tag).unwrap();
-        let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
+        let snr_idx = snr_tags.iter().position(|&(t, _)| t == snr_tag).unwrap();
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, trial, false, false, false, false);
         };
@@ -1806,7 +1883,7 @@ fn fst4_60_diag_recall_tradeoff() {
     let mut no8_osd_beats_bp_only = 0u32;
     let mut bp_only_beats_no8_osd = 0u32;
     for &(idx, trial, full, bp_only, no8_osd, no8_no_osd) in &results {
-        let tag = SNR_TAGS[idx].0;
+        let tag = snr_tags[idx].0;
         if !full && (bp_only || no8_osd || no8_no_osd) {
             eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: full=false but a reduced config succeeded");
             violations += 1;
@@ -1840,7 +1917,7 @@ fn fst4_60_diag_recall_tradeoff() {
          one dominating the other."
     );
 
-    let mut tallies = vec![Tally::default(); SNR_TAGS.len()];
+    let mut tallies = vec![Tally::default(); snr_tags.len()];
     for (idx, _trial, full, bp_only, no8_osd, no8_no_osd) in results {
         let t = &mut tallies[idx];
         t.total += 1;
@@ -1850,12 +1927,12 @@ fn fst4_60_diag_recall_tradeoff() {
         t.no8_no_osd += no8_no_osd as u32;
     }
 
-    eprintln!("FST4-60 AWGN recall trade-off (n=20/SNR, n=100 at m26/m27):");
+    eprintln!("FST4-60 {channel} recall trade-off (n=20/SNR, n=100 at m26/m27):");
     eprintln!(
         "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
         "SNR", "full", "bp_only", "no8+osd", "no8_noosd", "n"
     );
-    for (&(tag, _), t) in SNR_TAGS.iter().zip(&tallies) {
+    for (&(tag, _), t) in snr_tags.iter().zip(&tallies) {
         eprintln!(
             "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
             tag, t.full, t.bp_only, t.no8_osd, t.no8_no_osd, t.total
@@ -2064,6 +2141,127 @@ fn fst4_60_diag_npre_osd_bug_hunt() {
                 (false, true) => old_only.push((snr_tag, trial)),
                 (true, false) => new_only.push((snr_tag, trial)),
             }
+        }
+    }
+
+    println!("both: {both}, neither: {neither}");
+    println!("old-only ({} trials): {:?}", old_only.len(), old_only);
+    println!("new-only ({} trials): {:?}", new_only.len(), new_only);
+}
+
+/// Digs into one concrete "old succeeds, new fails" trial from
+/// [`fst4_60_diag_npre_osd_bug_hunt_ccir_moderate`] (CCIR-moderate m26,
+/// trial 2) to characterise *why*: does the old combinatorial search's
+/// success come from an order (1/2) `npre1` should also reach (a real
+/// port bug) or genuinely from order-3 (WSJT-X's own npre1+npre2
+/// architecture's known limitation — the `npre2` hash table only
+/// surfaces weight-3 patterns whose partial-parity signature collides
+/// with another MRB pair within the `ntau`-bit window, not every
+/// possible weight-3 combination the way an unpruned search does)?
+#[test]
+#[ignore = "manual root-cause probe — one CCIR-moderate old-only trial (issue #306/#198)"]
+fn fst4_60_diag_npre_osd_ccir_trial_probe() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::fec::ldpc::osd::{osd_decode_generic, osd_decode_npre_generic};
+    use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
+    use mfsk_core::engine::{MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    let dir = sweep_dir();
+    let path = dir.join("fst4_60_ccir_moderate_m26_02.wav");
+    let audio = load_wav_i16_opt(&path).expect("trial 2 must exist");
+
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+    for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+        let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+        let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+        if sum2 > f32::EPSILON {
+            let inv = 1.0 / sum2.sqrt();
+            for z in cd0.iter_mut() {
+                *z *= inv;
+            }
+        }
+        let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+        let df_hz = s2.freq_hz - c.freq_hz;
+        let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+        let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+        let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+
+        for (label, llr) in [
+            ("llra", &llr_set.llra),
+            ("llrb", &llr_set.llrb),
+            ("llrc", &llr_set.llrc),
+            ("llrd", &llr_set.llrd),
+        ] {
+            let ord1 = osd_decode_generic::<Ldpc240_101Params>(llr, 1, 101, verify_info, false);
+            let ord2 = osd_decode_generic::<Ldpc240_101Params>(llr, 2, 101, verify_info, false);
+            let ord3 = osd_decode_generic::<Ldpc240_101Params>(llr, 3, 101, verify_info, false);
+            let npre1 = osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 0, false, verify_info);
+            let npre12 =
+                osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 14, true, verify_info);
+            println!(
+                "freq={:.1} nsync={nsync} variant={label}: ord1={} ord2={} ord3={} npre1={} npre1+2={}",
+                c.freq_hz,
+                ord1.is_some(),
+                ord2.is_some(),
+                ord3.is_some(),
+                npre1.is_some(),
+                npre12.is_some(),
+            );
+            if let Some(r) = &ord3 {
+                println!("  ord3 hard_errors={}", r.hard_errors);
+            }
+        }
+    }
+}
+
+/// Root-cause bug hunt for the CCIR-moderate recall gap
+/// [`fst4_60_diag_recall_tradeoff_ccir_moderate`] found (m26:
+/// 24/100→18/100, ~25% relative) — same shape as
+/// [`fst4_60_diag_npre_osd_bug_hunt`] but through the true production
+/// entry point (`decode_wav_fst4_60`, not `recall_tradeoff_for_channel`'s
+/// own hand-rolled pipeline) on the m26 CCIR-moderate corpus, to confirm
+/// the gap isn't an artifact of that diagnostic's own candidate-
+/// generation path (which has previously had real, independent bugs —
+/// see `fst4_60_diag_recall_tradeoff`'s doc comments on `sync_min` and
+/// `descramble_info`).
+#[test]
+#[ignore = "manual bug hunt — FST4-60 npre1/npre2 OSD port CCIR-moderate recall gap (issue #306/#198)"]
+fn fst4_60_diag_npre_osd_bug_hunt_ccir_moderate() {
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+
+    let dir = sweep_dir();
+    let mut old_only: Vec<u32> = Vec::new();
+    let mut new_only: Vec<u32> = Vec::new();
+    let mut both = 0u32;
+    let mut neither = 0u32;
+
+    for trial in 1..=100u32 {
+        let path = dir.join(format!("fst4_60_ccir_moderate_m26_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            continue;
+        };
+        fst4_osd_diag_force_old(false);
+        let ok_new = decode_wav_fst4_60(&audio);
+        fst4_osd_diag_force_old(true);
+        let ok_old = decode_wav_fst4_60(&audio);
+        fst4_osd_diag_force_old(false);
+
+        match (ok_new, ok_old) {
+            (true, true) => both += 1,
+            (false, false) => neither += 1,
+            (false, true) => old_only.push(trial),
+            (true, false) => new_only.push(trial),
         }
     }
 
