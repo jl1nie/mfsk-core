@@ -237,8 +237,56 @@
 //! restructuring, fixed-point, hand-written PIE vectorisation, a
 //! recall trade-off, dual-core) are still open — this is one
 //! confirmed data point on how much any single one of them is worth,
-//! not a closed investigation. See `docs/reference/EMBEDDED.md` and
-//! issue #306 for where this leaves the "does it fit" question.
+//! not a closed investigation.
+//!
+//! ## Follow-up 4, same day: OSD's own allocator traffic
+//!
+//! With `nsym=8` fixed, re-tallying the `FULL`/`BP_ONLY` split from
+//! earlier put OSD at 53% of the total (up from 42% — the LLR fix
+//! shrank the denominator, not OSD itself). `mfsk_core::fec::ldpc::
+//! osd::osd_decode_generic::<Ldpc240_101Params>` (FST4's OSD entry
+//! point, shared with FT8's `Ldpc174_91Params` and MSK144's
+//! `Ldpc128_90Params` instantiations of the same generic function) is
+//! an order-3 combinatorial search — `try_candidate` gets called
+//! `C(101,3) ≈ 166 650` times per call for FST4 — and its closure
+//! allocated two fresh heap `Vec<u8>` (240 B + 101 B) on *every* call,
+//! immediately freed again on the (overwhelmingly common) path where
+//! CRC verification fails. Disassembling confirmed it: 9
+//! `__rust_alloc_zeroed` call sites and 38 `__rust_dealloc` sites in
+//! one 4.2 KiB function.
+//!
+//! `P::N`/`P::K` are compile-time consts on `LdpcParams`, but `[u8;
+//! P::N]` isn't expressible in a function generic over `P` on stable
+//! Rust (`generic_const_exprs` remains nightly-only — confirmed by
+//! trying it: `error: generic parameters may not be used in const
+//! operations`). Used the same "fixed max bound + runtime-length
+//! prefix slice" idiom `engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1`
+//! already established for the identical problem: a `[u8; 256]`
+//! stack buffer (≥ 240/174/128, the three protocols' `N`), sliced to
+//! `[..n]`. Collapsed the `try_candidate` + `update_best` closure
+//! pair into one closure writing into reused scratch, copying into
+//! `best_codeword`/`best_decoded` only on an actual improvement.
+//! Bit-identical on host — confirmed against all three protocols'
+//! goldens (FT8 full-parity 8/8, FT8 ship-config, MSK144, FST4-60),
+//! not just FST4's. Re-disassembling: `__rust_alloc_zeroed` 9 → 1
+//! call sites, `__rust_dealloc` 38 → 1 (the remaining single calls
+//! are `osd_setup_generic_packed`'s one-time setup and the final
+//! `OsdResult` construction, not per-candidate).
+//!
+//! | | before | after | speedup |
+//! |---|---:|---:|---:|
+//! | **`FULL` candidate loop** | **71.312 s** | **67.789 s** | **1.052×** |
+//!
+//! Real, but smaller than the alloc-call-count reduction alone would
+//! suggest — same shape as the LLR fix: removing the allocator calls
+//! recovers only their own share of a `try_candidate` iteration, and
+//! the surrounding O(n) XOR/permute/weighted-distance work (n=240)
+//! was already there. **Cumulative from the original 89.411 s
+//! baseline: 1.319×, ≈9.7× over the ~7 s budget (down from ≈13×).**
+//! `compute_llr_partial` (LLR) and the O(n) inner loops of
+//! `osd_decode_generic` itself (not just its allocator calls) remain
+//! open — see `docs/reference/EMBEDDED.md` and issue #306 for where
+//! this leaves the "does it fit" question.
 //!
 //! Also measured in passing: peak stack usage was tiny —
 //! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched

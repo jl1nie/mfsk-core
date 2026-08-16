@@ -1541,15 +1541,32 @@ pub fn osd_decode_generic<P: LdpcParams>(
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     };
 
+    // Fixed-size scratch, sized with headroom for the largest
+    // `LdpcParams` this function serves today (FST4's `N=240`) —
+    // avoids a heap alloc/dealloc round-trip on every one of
+    // `try_and_update`'s ~166 650 calls for an order-3 FST4 search
+    // (issue #306 follow-up: measured 6.28 s/candidate for OSD on
+    // real embedded hardware, most of that spent on candidates that
+    // fail CRC immediately). `[u8; P::N]` isn't expressible here —
+    // `P::N` is a trait-associated const, and stable Rust can't use a
+    // generic parameter's associated const as an array length
+    // (`generic_const_exprs` remains nightly-only) — so this uses the
+    // same "fixed max bound + runtime-length prefix slice" idiom
+    // `engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1` already established
+    // for the identical problem.
+    const OSD_MAX_N: usize = 256; // ≥ 240 (FST4), 174 (FT8), 128 (MSK144)
+
     // ── Step 4: hard decisions on MRB bits ──────────────────────────
-    let mut mrb: Vec<u8> = vec![0u8; k];
+    let mut mrb = [0u8; OSD_MAX_N];
+    let mrb = &mut mrb[..k];
     for r in 0..k {
         let orig = perm[pivot_col[r]];
         mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
     }
 
     // ── Step 5: encode order-0 candidate ────────────────────────────
-    let mut c_perm: Vec<u8> = vec![0u8; n];
+    let mut c_perm = [0u8; OSD_MAX_N];
+    let c_perm = &mut c_perm[..n];
     for r in 0..k {
         if mrb[r] == 1 {
             for col in 0..n {
@@ -1558,19 +1575,29 @@ pub fn osd_decode_generic<P: LdpcParams>(
         }
     }
 
-    // Helper: unpermute, verify, compute weighted distance.
-    // Returned tuples carry full Vec<u8>'s for both info and codeword
-    // so any P::K / P::N works.
-    let try_candidate = |cp: &[u8]| -> Option<(Vec<u8>, Vec<u8>, f32)> {
-        let mut c = vec![0u8; n];
+    // Best-so-far, plus the scratch `try_and_update` writes each
+    // candidate into before deciding whether it's an improvement.
+    // Single closure (not a `try_candidate` + separate `update_best`
+    // pair) so there's exactly one `FnMut` capturing all of these by
+    // mutable reference, rather than two closures each needing to
+    // borrow the other's captures — simpler for the borrow checker,
+    // same logic as the previous two-closure version.
+    let mut best_wd: Option<f32> = None;
+    let mut best_codeword = [0u8; OSD_MAX_N];
+    let mut best_decoded = [0u8; OSD_MAX_N];
+    let mut scratch_c = [0u8; OSD_MAX_N];
+    let mut scratch_decoded = [0u8; OSD_MAX_N];
+    let mut try_and_update = |cp: &[u8]| {
+        let c = &mut scratch_c[..n];
         for col in 0..n {
             c[perm[col]] = cp[col];
         }
-        let decoded = c[..k].to_vec();
+        let decoded = &mut scratch_decoded[..k];
+        decoded.copy_from_slice(&c[..k]);
         if let Some(f) = verify
-            && !f(&decoded)
+            && !f(decoded)
         {
-            return None;
+            return;
         }
         let mut wd = 0.0f32;
         for col in 0..n {
@@ -1579,67 +1606,57 @@ pub fn osd_decode_generic<P: LdpcParams>(
                 wd += llr[perm[col]].abs();
             }
         }
-        Some((decoded, c, wd))
-    };
-
-    let mut best: Option<(Vec<u8>, Vec<u8>, f32)> = None;
-    let mut update_best = |decoded: Vec<u8>, cw: Vec<u8>, wd: f32| {
-        let improve = best.as_ref().is_none_or(|(_, _, bd)| wd < *bd);
-        if improve {
-            best = Some((decoded, cw, wd));
+        if best_wd.is_none_or(|bd| wd < bd) {
+            best_wd = Some(wd);
+            best_codeword[..n].copy_from_slice(&scratch_c[..n]);
+            best_decoded[..k].copy_from_slice(&scratch_decoded[..k]);
         }
     };
 
     // Order-0.
-    if let Some((d, cw, wd)) = try_candidate(&c_perm) {
-        update_best(d, cw, wd);
-    }
+    try_and_update(c_perm);
 
     // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. Reuse buffers
     // across iterations to avoid per-candidate Vec allocs.
-    let mut c1 = vec![0u8; n];
-    let mut c2 = vec![0u8; n];
-    let mut c3 = vec![0u8; n];
-    let mut c4 = vec![0u8; n];
+    let mut c1 = [0u8; OSD_MAX_N];
+    let c1 = &mut c1[..n];
+    let mut c2 = [0u8; OSD_MAX_N];
+    let c2 = &mut c2[..n];
+    let mut c3 = [0u8; OSD_MAX_N];
+    let c3 = &mut c3[..n];
+    let mut c4 = [0u8; OSD_MAX_N];
+    let c4 = &mut c4[..n];
     for k1 in 0..k {
-        c1.copy_from_slice(&c_perm);
+        c1.copy_from_slice(c_perm);
         for col in 0..n {
             c1[col] ^= g[k1 * n + col];
         }
-        if let Some((d, cw, wd)) = try_candidate(&c1) {
-            update_best(d, cw, wd);
-        }
+        try_and_update(c1);
         if ndeep < 2 {
             continue;
         }
         for k2 in (k1 + 1)..k {
-            c2.copy_from_slice(&c1);
+            c2.copy_from_slice(c1);
             for col in 0..n {
                 c2[col] ^= g[k2 * n + col];
             }
-            if let Some((d, cw, wd)) = try_candidate(&c2) {
-                update_best(d, cw, wd);
-            }
+            try_and_update(c2);
             if ndeep < 3 {
                 continue;
             }
             for k3 in (k2 + 1)..k {
-                c3.copy_from_slice(&c2);
+                c3.copy_from_slice(c2);
                 for col in 0..n {
                     c3[col] ^= g[k3 * n + col];
                 }
-                if let Some((d, cw, wd)) = try_candidate(&c3) {
-                    update_best(d, cw, wd);
-                }
+                try_and_update(c3);
                 if ndeep >= 4 && k3 + 1 < k4_limit {
                     for k4 in (k3 + 1)..k4_limit.min(k) {
-                        c4.copy_from_slice(&c3);
+                        c4.copy_from_slice(c3);
                         for col in 0..n {
                             c4[col] ^= g[k4 * n + col];
                         }
-                        if let Some((d, cw, wd)) = try_candidate(&c4) {
-                            update_best(d, cw, wd);
-                        }
+                        try_and_update(c4);
                     }
                 }
             }
@@ -1647,7 +1664,9 @@ pub fn osd_decode_generic<P: LdpcParams>(
     }
 
     // ── Step 6: return best ─────────────────────────────────────────
-    let (decoded, codeword, _) = best?;
+    best_wd?;
+    let codeword = &best_codeword[..n];
+    let decoded = &best_decoded[..k];
     let mut hard_errors = 0u32;
     for i in 0..n {
         if (codeword[i] == 1) != (llr[i] > 0.0) {
@@ -1658,8 +1677,8 @@ pub fn osd_decode_generic<P: LdpcParams>(
     message77.copy_from_slice(&decoded[..77]);
     Some(OsdResult {
         message77,
-        info: decoded,
-        codeword,
+        info: decoded.to_vec(),
+        codeword: codeword.to_vec(),
         hard_errors,
     })
 }

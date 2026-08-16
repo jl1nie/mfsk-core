@@ -1116,26 +1116,62 @@ untouched, so removing just the call recovers less than the call's
 own share of one iteration), and far short of the ~13× gap this
 session's first measurement found.
 
-**So the honest answer to issue #306: no, not as measured today** —
-71.3 s against a ~7 s budget (down from 89.4 s) is still ≈10× over,
-not a rounding error, and closing the remaining gap needs more of the
-same kind of work, not a bigger margin somewhere else.
-`compute_llr_partial`'s other levers — real algorithmic restructuring
-beyond this one call site, fixed-point, hand-written PIE
-vectorisation, a recall trade-off, dual-core — are still open; this is
-one confirmed data point on how much a single one of them is worth,
-not a closed investigation. Whether the full gap is closable the way
-WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×, across `minsync2` +
-`opt-level=3` + `160→240 MHz`) is still an open question — this
-measurement answers "does it currently fit" (no, but less no than
-before), not "could it".
+**Eleventh attempt: OSD's own allocator traffic — the fmaxf fix's
+same shape, applied to the now-larger half.** Re-tallying the
+`FULL`/`BP_ONLY` split after the LLR fix put OSD at 53% of the total
+(up from 42% — the LLR fix shrank the denominator, OSD itself was
+untouched). `osd_decode_generic::<Ldpc240_101Params>` — FST4's OSD
+entry point, generic code shared with FT8's `Ldpc174_91Params` and
+MSK144's `Ldpc128_90Params` — is an order-3 combinatorial search:
+`try_candidate` runs `C(101,3) ≈ 166 650` times per call for FST4, and
+its closure allocated two fresh heap `Vec<u8>` (240 B + 101 B) on
+*every* call, freed again immediately on the overwhelmingly common
+path where CRC verification fails. Disassembly confirmed it: 9
+`__rust_alloc_zeroed` and 38 `__rust_dealloc` call sites in one
+4.2 KiB function.
+
+`P::N`/`P::K` are compile-time consts on `LdpcParams`, but `[u8;
+P::N]` isn't expressible in a function generic over `P` on stable
+Rust — confirmed directly (`error: generic parameters may not be used
+in const operations`; `generic_const_exprs` remains nightly-only).
+Used the same "fixed max bound + runtime-length prefix slice" idiom
+`engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1` already established for
+the identical problem: a `[u8; 256]` stack buffer (≥ 240/174/128, the
+three protocols' `N`) sliced to `[..n]`, reused across all ~166 650
+calls instead of allocated fresh each time. Bit-identical on host —
+confirmed against all three protocols' goldens (FT8 full-parity 8/8,
+FT8 ship-config, MSK144, FST4-60), not just FST4's alone.
+Re-disassembling: `__rust_alloc_zeroed` 9 → 1, `__rust_dealloc` 38 → 1
+(the one remaining call of each is `osd_setup_generic_packed`'s
+one-time setup and the final `OsdResult` construction, not
+per-candidate).
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **71.312 s** | **67.789 s** | **1.052×** |
+
+Real, but smaller than the alloc-call-count reduction alone would
+suggest — the same shape as the LLR fix: removing the allocator calls
+recovers only their own share of a `try_candidate` iteration, and the
+surrounding O(n) XOR/permute/weighted-distance work (n=240) was
+already there and untouched.
+
+**Cumulative from the original 89.411 s baseline: 1.319×, ≈9.7× over
+the ~7 s budget (down from ≈13×).** `compute_llr_partial` (LLR) and
+the O(n) inner loops of `osd_decode_generic` itself (not just its
+allocator calls) remain open. So does whether the full gap is
+closable the way WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×,
+across `minsync2` + `opt-level=3` + `160→240 MHz`) — two small, cheap,
+zero-risk fixes closed ~1.3× of an ~13× gap; this measurement answers
+"does it currently fit" (no, but less no than before), not "could it
+with more of the same kind of work".
 
 A mixed-radix or Bluestein implementation for the *larger* FFT sites
 this session routed around (issue #307: `coarse_sync`'s 7776,
 `downsample_cached`'s 6912, and the equivalent pair for FST4's other
-4 submodes) is still open, and now secondary to the LLR/BP/OSD cost
+4 submodes) is still open, and secondary to the LLR/BP/OSD cost
 question above — closing #307 makes the streaming front end possible,
-but a production embedded FST4 path needs the remaining ≈10× gap
+but a production embedded FST4 path needs the remaining ≈9.7× gap
 closed first, or it fits the FFT but still misses the slot.
 `DirectDft` itself, being O(N²) and capped at 64, is not meant to grow
 into that role.
