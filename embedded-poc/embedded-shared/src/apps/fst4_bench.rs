@@ -112,9 +112,51 @@
 //! calls this "128-256× FT8/FT4's own deepest rung"), and simply that
 //! FST4 runs the generic f32 pipeline with no embedded-specific
 //! optimisation pass at all, unlike FT8's dedicated fixed-point
-//! `decode_block` or WSPR's now-four-rounds-tuned `decode_scan`. Not
-//! diagnosed further here — see `docs/reference/EMBEDDED.md` and
-//! issue #306 for where this leaves the "does it fit" question.
+//! `decode_block` or WSPR's now-four-rounds-tuned `decode_scan`.
+//!
+//! ## Follow-up, same day: per-candidate timing, and an OSD/BP split
+//!
+//! Added per-candidate wall-clock logging (collected into a `Vec`,
+//! dumped *after* the timed loop so UART writes don't contaminate the
+//! numbers) and a build-time `MFSK_FST4_BENCH_DEPTH=bp_only` switch
+//! (`DecodeDepth::BP_ONLY` vs. the default `::FULL` — differ only in
+//! `osd: bool`, since `LlrEffort` doesn't affect FST4 either way; see
+//! that enum's own doc comment). Same shape as WSPR's own issue #260
+//! controlled experiment (`confirmed = None`, short-circuiting before
+//! `osd_decode`).
+//!
+//! **The 89.4 s is not spread across all 41 candidates — 94% of it is
+//! 6 candidates, all failures:**
+//!
+//! | tier | count | each | total | decoded |
+//! |---|---:|---:|---:|---|
+//! | nsync-gate fails | 33 | 50-177 ms | ~6 s | no |
+//! | **the tail** | **6** | **13.8-14.2 s** | **84.2 s (94%)** | **no** |
+//! | real signals | 2 | 54-58 ms | 0.1 s | **yes** |
+//!
+//! Both real decodes are cheap — the entire cost is 6 candidates the
+//! decoder ultimately rejects, matching WSPR's own shape (issue #260:
+//! "OSD ran 896 times and succeeded 0 times... the cost is not where
+//! any of us was looking").
+//!
+//! **OSD vs. plain-BP split on the same 6, `BP_ONLY` vs. `FULL`:**
+//!
+//! | | total | the 6-candidate tail (avg) |
+//! |---|---:|---:|
+//! | `FULL` (OSD on) | 89.411 s | 14.04 s |
+//! | `BP_ONLY` (OSD off) | 51.755 s | 7.76 s |
+//! | OSD's share | 37.66 s (42%) | 6.28 s |
+//!
+//! Both decodes still succeed with OSD off — on this file neither real
+//! signal ever needed it. So OSD is a real cost (42% of the total) but
+//! **not the majority one**: plain BP/LLR alone is 51.8 s, already
+//! ~7.4× over the ~7 s budget by itself. Cutting OSD would help but
+//! wouldn't be sufficient on its own — whatever's expensive inside the
+//! plain LLR/BP staircase (the `LLR_NSYM_MAX = 8` rung is still the
+//! leading unmeasured suspect) has to be addressed too. Neither
+//! component was diagnosed further than this split — see
+//! `docs/reference/EMBEDDED.md` and issue #306 for where this leaves
+//! the "does it fit" question.
 //!
 //! Also measured in passing: peak stack usage was tiny —
 //! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched
@@ -281,6 +323,25 @@ pub fn run_bench(refined_bin: &[u8]) {
         "fst4_bench: baked asset refined_candidates={} bytes",
         refined_bin.len(),
     );
+    // A/B switch for the issue #306 follow-up: is the per-candidate
+    // cost tail (6 of 41 candidates, ~14 s each on the first
+    // full-depth run) OSD, or the LLR staircase underneath it?
+    // `DecodeDepth::BP_ONLY` differs from `::FULL` only in `osd:
+    // false` — `llr_effort` doesn't matter for FST4 either way
+    // (`LlrEffort` is FT8-only in practice; `process_candidate_
+    // basic_impl` always computes every LLR variant regardless, see
+    // that enum's own doc comment), so this isolates OSD's
+    // contribution the same way WSPR's issue #260 controlled
+    // experiment did (`confirmed = None`, short-circuiting before
+    // `osd_decode`) — a build-time switch here rather than a runtime
+    // one, same idiom as `wspr_bench`'s `MFSK_WSPR_BENCH_WIFI`.
+    let depth = if option_env!("MFSK_FST4_BENCH_DEPTH") == Some("bp_only") {
+        log::info!("fst4_bench: DecodeDepth::BP_ONLY (MFSK_FST4_BENCH_DEPTH=bp_only) — OSD off");
+        DecodeDepth::BP_ONLY
+    } else {
+        log::info!("fst4_bench: DecodeDepth::FULL (default) — OSD on");
+        DecodeDepth::FULL
+    };
     log_heap("boot");
 
     let t_load = now_us();
@@ -305,18 +366,38 @@ pub fn run_bench(refined_bin: &[u8]) {
     // *cross-pass* dedup, e.g. SIC rounds feeding an earlier round's
     // decodes into a later one; `known` is threaded through
     // unchanged from the caller for the whole of a single pass).
+    // Per-candidate timing, not just the loop total — issue #306
+    // follow-up: is the ~90 s roughly uniform across all 41 (something
+    // structurally expensive on every candidate, e.g. the
+    // `LLR_NSYM_MAX = 8` staircase rung's 65536-hypothesis group
+    // running further than it should) or concentrated in the few that
+    // reach OSD (WSPR's own shape, issue #260: pass 2 was 76% of that
+    // scan for one decode)? Collected into a `Vec` and dumped *after*
+    // the timed loop, not logged inline — UART writes inside the timed
+    // region would contaminate the very numbers this is trying to
+    // measure. `now_us()` itself is two syscalls per candidate,
+    // negligible next to what each candidate actually costs here.
+    struct CandidateTiming {
+        freq_hz: f32,
+        us: i64,
+        decoded: bool,
+    }
+    let mut timings: Vec<CandidateTiming> = Vec::with_capacity(41);
+
     let t0 = now_us();
     let mut results = Vec::new();
     for rc in candidates {
+        let freq_hz = rc.cand.freq_hz;
         let precomputed_refine = (rc.cd0, rc.refined_freq_hz, rc.refined_i0, rc.refined_score);
-        if let Some(res) = process_candidate_precomputed::<Fst4s60>(
+        let t_cand = now_us();
+        let decoded = process_candidate_precomputed::<Fst4s60>(
             &rc.cand,
             // Empty, not `fft_cache` — see `run_bench`'s doc comment.
             // Safe: `precomputed_refine` + `skip_snr = true` together
             // mean this call chain never dereferences `fft_cache`.
             &[],
             &FST4_60A_DOWNSAMPLE,
-            DecodeDepth::FULL,
+            depth,
             DecodeStrictness::Normal,
             &[],
             EqMode::Off,
@@ -331,11 +412,39 @@ pub fn run_bench(refined_bin: &[u8]) {
             // measurement; this bench answers the wall-clock question
             // only.
             true,
-        ) {
+        );
+        timings.push(CandidateTiming {
+            freq_hz,
+            us: now_us() - t_cand,
+            decoded: decoded.is_some(),
+        });
+        if let Some(res) = decoded {
             results.push(res);
         }
     }
     let total_us = now_us() - t0;
+
+    // Sorted slowest-first — the shape (uniform vs. a long tail) is
+    // the point, not any single candidate's identity.
+    timings.sort_by(|a, b| b.us.cmp(&a.us));
+    log::info!("fst4_bench: per-candidate timing, slowest first:");
+    for (rank, t) in timings.iter().enumerate() {
+        log::info!(
+            "    #{rank:>2} {:8.1} Hz  {:>7} ms  decoded={}",
+            t.freq_hz,
+            t.us / 1000,
+            t.decoded,
+        );
+    }
+    let mean_us: i64 = timings.iter().map(|t| t.us).sum::<i64>() / timings.len() as i64;
+    let median_us = timings[timings.len() / 2].us;
+    log::info!(
+        "fst4_bench: per-candidate mean {} ms, median {} ms, max {} ms, min {} ms",
+        mean_us / 1000,
+        median_us / 1000,
+        timings.first().map_or(0, |t| t.us) / 1000,
+        timings.last().map_or(0, |t| t.us) / 1000,
+    );
 
     log::info!(
         "fst4_bench: candidate loop (LLR/BP/OSD only, no FFT) TOTAL = {} ms  ({} decodes)",

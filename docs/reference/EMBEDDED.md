@@ -1002,6 +1002,46 @@ Peak stack usage, measured in passing: `BENCH_STACK`'s 96 KiB guess
 left 95 064 B untouched — only ~3.2 KiB actually used, a wide margin
 unlike `wspr_bench`'s own stack history.
 
+**Seventh and eighth attempts: where the 89.7 s actually goes.** Added
+per-candidate wall-clock logging (dumped after the timed loop, not
+during it, so UART writes don't contaminate the numbers) and a
+build-time `MFSK_FST4_BENCH_DEPTH=bp_only` switch
+(`DecodeDepth::BP_ONLY` vs. the default `::FULL` — the two differ only
+in `osd: bool` for FST4, `LlrEffort` doesn't apply to it — same shape
+as WSPR's own issue #260 controlled experiment, `confirmed = None`
+short-circuiting before `osd_decode`).
+
+The 89.4 s is not spread across all 41 candidates. 94% of it is 6
+candidates, every one a failure:
+
+| tier | count | each | total | decoded |
+|---|---:|---:|---:|---|
+| nsync-gate fails | 33 | 50-177 ms | ~6 s | no |
+| **the tail** | **6** | **13.8-14.2 s** | **84.2 s (94%)** | **no** |
+| real signals | 2 | 54-58 ms | 0.1 s | **yes** |
+
+Both real decodes are cheap. The entire cost is 6 candidates the
+decoder ultimately rejects — the same shape WSPR's issue #260 found
+("OSD ran 896 times and succeeded 0 times... the cost is not where any
+of us was looking").
+
+Re-running those same 41 candidates with OSD off splits that tail:
+
+| | total | tail avg | share |
+|---|---:|---:|---:|
+| `FULL` (OSD on) | 89.411 s | 14.04 s | — |
+| `BP_ONLY` (OSD off) | 51.755 s | 7.76 s | — |
+| OSD's contribution | 37.66 s | 6.28 s | **42%** |
+
+Both decodes still succeed with OSD off — neither real signal on this
+file ever needed it. So OSD is a real cost, but not the majority one:
+**plain BP/LLR alone is 51.8 s, already ≈7.4× over the ~7 s budget by
+itself.** Cutting OSD would help (42% of the total) but wouldn't be
+sufficient on its own. Neither component was diagnosed further than
+this split — the `LLR_NSYM_MAX = 8` staircase rung is still the
+leading unmeasured suspect for the BP-side cost, untouched by this
+comparison.
+
 **So the honest answer to issue #306: no, not as measured today** —
 89.7 s against a ~7 s budget is not a rounding error, and closing a
 13× gap needs real optimization work, not a bigger margin somewhere
