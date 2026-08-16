@@ -594,6 +594,16 @@ pub fn run_bench(refined_bin: &[u8]) {
         return;
     }
 
+    // Fifth mode: rung-major scheduling (issue #306 item 3, VK3NV) —
+    // real-hardware confirmation of `tests/fst4_sweep.rs::fst4_60_diag_
+    // rung_major_scheduling`'s host-timing projection. See
+    // `run_rung_major`'s own doc comment.
+    if option_env!("MFSK_FST4_BENCH_DEPTH") == Some("rung_major") {
+        log::info!("fst4_bench: rung-major scheduling (MFSK_FST4_BENCH_DEPTH=rung_major)");
+        run_rung_major(refined_bin);
+        return;
+    }
+
     // A/B switch for the issue #306 follow-up: is the per-candidate
     // cost tail (6 of 41 candidates, ~14 s each on the first
     // full-depth run) OSD, or the LLR staircase underneath it?
@@ -871,6 +881,76 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
     log::info!("fst4_bench: stack headroom after llr_probe = {} B", stack_headroom());
     log_heap("post-probe");
     log::info!("=== fst4_bench (llr_probe) complete ===");
+}
+
+/// `MFSK_FST4_BENCH_DEPTH=rung_major` mode -- issue #306 item 3 (VK3NV),
+/// step 3 of the two-step host-then-device plan
+/// (`tests/fst4_sweep.rs::fst4_60_diag_rung_major_scheduling` did steps
+/// 1-2 host-side). Calls the real, host-verified
+/// `mfsk_core::fst4::rung_major::decode_rung_major` (correctness +
+/// AWGN/CCIR-moderate recall checked against production in
+/// `tests/fst4_sweep.rs::fst4_60_diag_decode_rung_major_correctness`)
+/// instead of reimplementing the stage sequence in this bench a second
+/// time -- the earlier hand-rolled version here (see git history) is
+/// what that real implementation replaced, after review found its first
+/// draft only approximated production's variant sequence closely enough
+/// to demonstrate the *concept*, not closely enough for a comparable
+/// total.
+///
+/// `decode_rung_major` drops `llrd` unconditionally (five stages:
+/// llra/llrb/llre/llrc/OSD, not six) -- a targeted ablation found it
+/// never contributes additional recall on real AWGN or CCIR-moderate
+/// data (`fst4_60_diag_stage_ablation[_ccir_moderate]`), so it isn't
+/// scheduled at all rather than being reordered. `skip_llrc` (the
+/// `no8_osd` trade-off) is a real caller choice, not free -- this mode
+/// runs both `false` and `true` so the two totals are directly
+/// comparable to `full` (43.134 s) and `no8_osd` (17.147 s) above.
+fn run_rung_major(refined_bin: &[u8]) {
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
+
+    log_heap("boot");
+    let candidates = load_refined_candidates(refined_bin);
+    log::info!("fst4_bench: rung_major over {} candidates", candidates.len());
+    log_heap("post-load");
+
+    let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
+    log::info!("task watchdog deinit -> {r}");
+
+    let inputs: Vec<RungMajorCandidate> = candidates
+        .into_iter()
+        .map(|rc| RungMajorCandidate {
+            cand: rc.cand,
+            cd0: rc.cd0,
+            refined_freq_hz: rc.refined_freq_hz,
+            i0: rc.refined_i0,
+        })
+        .collect();
+
+    for skip_llrc in [false, true] {
+        let label = if skip_llrc { "no8_osd (skip_llrc=true)" } else { "full (skip_llrc=false)" };
+        let t0 = now_us();
+        let results = decode_rung_major::<Fst4s60>(&inputs, skip_llrc);
+        let total_us = now_us() - t0;
+        let decoded_count = results.iter().flatten().count();
+        log::info!(
+            "fst4_bench: rung_major[{label}] TOTAL = {} ms ({} decodes)",
+            total_us / 1000,
+            decoded_count,
+        );
+        for r in results.iter().flatten() {
+            let text = r
+                .message77()
+                .try_into()
+                .ok()
+                .and_then(|m77: &[u8; 77]| unpack77(m77));
+            log::info!("    {:?} | {:.1} Hz | dt {:.2} s", text, r.freq_hz, r.dt_sec);
+        }
+        log_heap(if skip_llrc { "post-rung-major-no8osd" } else { "post-rung-major-full" });
+    }
+
+    log::info!("fst4_bench: stack headroom after rung_major = {} B", stack_headroom());
+    log::info!("=== fst4_bench (rung_major) complete ===");
 }
 
 /// Stack for the bench task. Unmeasured starting point, not a

@@ -56,6 +56,8 @@ use crate::msg::Wsjt77Message;
 pub(crate) mod baseline;
 pub mod decode;
 pub mod encode;
+#[cfg(feature = "internal-testing")]
+pub mod rung_major;
 
 /// FST4's 77-bit pre-LDPC scrambler — identical to [`crate::ft4::FT4_RVEC`]
 /// (WSJT-X `genfst4.f90:29-31` uses the same literal array as

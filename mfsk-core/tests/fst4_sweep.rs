@@ -2967,3 +2967,498 @@ fn fst4_60_diag_rung_major_scheduling() {
     }
     eprintln!("  rung-major total: {cum:.3}s (must equal depth-first total -- same total work, different order)");
 }
+
+/// Ablation: does `llrd` (normalised nsym=1 — tried *last* in
+/// production's BP staircase, and as the last OSD variant too) ever
+/// decode something `llra`/`llrb`/`llre`(mid)/`llrc`(max) + OSD on
+/// those four wouldn't have found on their own? Prompted directly by
+/// issue #306 item 3 (VK3NV, rung-major scheduling): before committing
+/// to a "6-stage" rung-major design (BP: llra/llrb/llre/llrc/llrd, then
+/// OSD on all 5), check whether the embedded config even needs all six
+/// stages — a stage that never contributes shouldn't be scheduled at
+/// all, regardless of order.
+///
+/// Tests all four `(keep llrc, keep llrd)` combinations against the
+/// same real FST4-60 AWGN corpus already used for the `no8_osd`
+/// trade-off (m26/m27, n=100) so results are directly comparable to
+/// that earlier measurement.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 llrd/llrc stage ablation for rung-major design (issue #306 item 3, VK3NV)"]
+fn fst4_60_diag_stage_ablation() {
+    stage_ablation_for_channel("awgn");
+}
+
+/// Same ablation, CCIR-moderate — `llrc` (nsym=8) is fading-sensitive
+/// (this investigation's own earlier finding), so before concluding
+/// `llrd` is droppable in general (not just under AWGN), check whether
+/// it behaves differently under fading too.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 llrd/llrc stage ablation, CCIR-moderate (issue #306 item 3, VK3NV)"]
+fn fst4_60_diag_stage_ablation_ccir_moderate() {
+    stage_ablation_for_channel("ccir_moderate");
+}
+
+fn stage_ablation_for_channel(channel: &str) {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    const BP_MAX_ITER: u32 = 30;
+    const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
+    // (keep_llrc, keep_llrd) -- llra/llrb/llre are always kept, matching
+    // every config this investigation has considered so far (nobody
+    // proposed dropping the cheap rungs).
+    const CONFIGS: [(bool, bool); 4] = [
+        (true, true),   // full (production's actual 5-variant set)
+        (true, false),  // full minus llrd
+        (false, true),  // no8_osd (production's skip_llr_nsym_max shape)
+        (false, false), // no8_osd minus llrd
+    ];
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    let mut work: Vec<(&str, u32)> = Vec::new();
+    for &(snr_tag, trials) in SNR_TAGS {
+        for trial in 1..=trials {
+            work.push((snr_tag, trial));
+        }
+    }
+
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, [bool; 4]) {
+        let snr_idx = SNR_TAGS.iter().position(|&(t, _)| t == snr_tag).unwrap();
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            return (snr_idx, [false; 4]);
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let fec = <Fst4s60 as Protocol>::Fec::default();
+        let verify_info =
+            Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+        let mut ok = [false; 4];
+
+        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let df_hz = s2.freq_hz - c.freq_hz;
+            let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+            let llr_set = compute_llr::<Fst4s60, f32>(&cs); // llra/llrb/llrc(=nsym8)/llrd/llre(=nsym4)
+
+            let bp_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 0,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                    mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(&r.info[..77]);
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                })
+            };
+
+            for (i, &(keep_llrc, keep_llrd)) in CONFIGS.iter().enumerate() {
+                if ok[i] {
+                    continue;
+                }
+                let mut variants: Vec<&Vec<f32>> = vec![&llr_set.llra, &llr_set.llrb, &llr_set.llre];
+                if keep_llrc {
+                    variants.push(&llr_set.llrc);
+                }
+                if keep_llrd {
+                    variants.push(&llr_set.llrd);
+                }
+                if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                    ok[i] = true;
+                    continue;
+                }
+                if nsync >= osd_attempt_min {
+                    let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter: BP_MAX_ITER,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info,
+                        ..FecOpts::default()
+                    };
+                    if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                        ok[i] = true;
+                    }
+                }
+            }
+        }
+
+        (snr_idx, ok)
+    };
+
+    #[cfg(feature = "parallel")]
+    let results: Vec<(usize, [bool; 4])> = work.par_iter().map(process_one).collect();
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<(usize, [bool; 4])> = work.iter().map(process_one).collect();
+
+    #[derive(Default, Clone, Copy)]
+    struct Tally {
+        hits: [u32; 4],
+        total: u32,
+    }
+    let mut tallies = vec![Tally::default(); SNR_TAGS.len()];
+    for (idx, ok) in &results {
+        let t = &mut tallies[*idx];
+        t.total += 1;
+        for (i, &o) in ok.iter().enumerate() {
+            t.hits[i] += o as u32;
+        }
+    }
+
+    eprintln!("FST4-60 {channel} llrc/llrd stage ablation (n=100/SNR):");
+    eprintln!(
+        "{:>6} {:>18} {:>18} {:>18} {:>18} {:>5}",
+        "SNR", "full(+c+d)", "full-llrd(+c)", "no8_osd(+d)", "no8_osd-llrd", "n"
+    );
+    for (&(tag, _), t) in SNR_TAGS.iter().zip(&tallies) {
+        eprintln!(
+            "{:>6} {:>18} {:>18} {:>18} {:>18} {:>5}",
+            tag, t.hits[0], t.hits[1], t.hits[2], t.hits[3], t.total
+        );
+    }
+}
+
+/// Correctness check for the new `fst4::rung_major::decode_rung_major`
+/// (issue #306 item 3, VK3NV — the real, non-bench-only implementation,
+/// promoted from the earlier bench prototype after dropping `llrd` per
+/// `fst4_60_diag_stage_ablation`'s finding). Two checks:
+///
+/// 1. Real golden WAV: must still find exactly the same 2 real QSOs
+///    production finds (`decode_wav_fst4_60`).
+/// 2. Real AWGN corpus (m26/m27, n=100): recall should closely track
+///    production's own `full`-config number
+///    (`fst4_60_diag_npre_osd_recall_verify`: 96/100, 70/100) — not
+///    necessarily bit-identical (this is a 5-stage reimplementation
+///    sharing the same building blocks, not a call-through to
+///    `process_candidate_basic_impl`), but the stage ablation already
+///    confirmed dropping `llrd` costs nothing, so a large gap here
+///    would indicate a bug in the reimplementation, not an expected
+///    trade-off.
+#[test]
+#[ignore = "manual verification — decode_rung_major correctness (issue #306 item 3, VK3NV)"]
+fn fst4_60_diag_decode_rung_major_correctness() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::pipeline::refine_candidate_position;
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
+    use mfsk_core::msg::wsjt77::unpack77;
+
+    // ---- 1. Real golden WAV ----
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let refined: Vec<_> = raw
+        .iter()
+        .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    let mut kept: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+            kept.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    survivors.sort_unstable();
+    let cands: Vec<RungMajorCandidate> = survivors
+        .iter()
+        .map(|&i| {
+            let (cd0, refined_freq_hz, i0, _score) = refined[i].clone();
+            RungMajorCandidate {
+                cand: raw[i].clone(),
+                cd0,
+                refined_freq_hz,
+                i0,
+            }
+        })
+        .collect();
+    let results = decode_rung_major::<Fst4s60>(&cands, false);
+    let msgs: Vec<&str> = results
+        .iter()
+        .flatten()
+        .filter_map(|r| {
+            let mut m77 = [0u8; 77];
+            m77.copy_from_slice(r.message77());
+            unpack77(&m77).map(|s| Box::leak(s.into_boxed_str()) as &str)
+        })
+        .collect();
+    eprintln!("golden WAV: {} candidates, {} decoded: {:?}", cands.len(), results.iter().flatten().count(), msgs);
+    assert_eq!(results.iter().flatten().count(), 2, "must find exactly the 2 real QSOs");
+    assert!(msgs.contains(&"CQ N5TM EL29"));
+    assert!(msgs.contains(&"CQ K9KFR EN71"));
+
+    // ---- 2. Real AWGN + CCIR-moderate corpora (m26/m27, n=100 each) ----
+    let dir = sweep_dir();
+    const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
+    for channel in ["awgn", "ccir_moderate"] {
+        for &(snr_tag, trials) in SNR_TAGS {
+            let mut pass = 0u32;
+            for trial in 1..=trials {
+                let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+                let Some(audio) = load_wav_i16_opt(&path) else { continue };
+                let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+                let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+                let cands: Vec<RungMajorCandidate> = raw
+                    .iter()
+                    .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+                    .map(|c| {
+                        let (cd0, refined_freq_hz, i0, _score) =
+                            refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
+                        RungMajorCandidate {
+                            cand: c.clone(),
+                            cd0,
+                            refined_freq_hz,
+                            i0,
+                        }
+                    })
+                    .collect();
+                let results = decode_rung_major::<Fst4s60>(&cands, false);
+                let found_golden = results.iter().flatten().any(|r| {
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(r.message77());
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                });
+                if found_golden {
+                    pass += 1;
+                }
+            }
+            eprintln!("decode_rung_major {channel} {snr_tag}: {pass}/{trials}");
+        }
+    }
+}
+
+/// Sanity check for the surprisingly large `full`(5-stage, no llrd)
+/// real-hardware total (12.500s vs the 6-stage `full`'s 43.134s --
+/// bigger than dropping one cheap stage should plausibly explain) --
+/// counts how many of the golden WAV's 41 candidates actually clear
+/// `nsync > SYNC_Q_MIN` (the gate before any BP/OSD work happens at
+/// all), to check against this investigation's own earlier "8 of 41
+/// reach the expensive stage" finding rather than trusting the
+/// embedded number blind.
+#[test]
+#[ignore = "manual sanity check — decode_rung_major nsync-gate candidate count (issue #306 item 3)"]
+fn fst4_60_diag_rung_major_nsync_gate_count() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::refine_candidate_position;
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let refined: Vec<_> = raw
+        .iter()
+        .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    let mut kept: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+            kept.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    survivors.sort_unstable();
+
+    const SYNC_Q_MIN: u32 = 16;
+    let mut n_pass = 0;
+    for &i in &survivors {
+        let (cd0, _freq_hz, i0, _score) = &refined[i];
+        let cs = symbol_spectra::<Fst4s60>(cd0, *i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+        if nsync > SYNC_Q_MIN {
+            n_pass += 1;
+            eprintln!("  candidate idx={i} nsync={nsync} PASSES gate");
+        }
+    }
+    eprintln!("{} of {} candidates pass nsync > {SYNC_Q_MIN}", n_pass, survivors.len());
+}
+
+/// Cross-check for `fst4_60_diag_rung_major_nsync_gate_count`: parses
+/// the *actual baked asset* `fst4_bench` embeds
+/// (`embedded-poc/assets/fst4_60_golden_refined_candidates.bin`)
+/// directly, host-side, instead of re-running coarse_sync/refine/dedup
+/// fresh — checks whether the embedded binary's candidate set matches
+/// (same nsync>16 count) or has drifted from a fresh run (e.g. a stale
+/// bake from before some earlier refine/dedup fix this session).
+#[test]
+#[ignore = "manual sanity check — baked asset vs fresh candidate set (issue #306 item 3)"]
+fn fst4_60_diag_baked_asset_nsync_gate_count() {
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::fst4::Fst4s60;
+
+    let bin = std::fs::read("../embedded-poc/assets/fst4_60_golden_refined_candidates.bin")
+        .expect("baked refined-candidates asset must exist");
+    eprintln!("baked asset: {} bytes", bin.len());
+
+    let mut off = 0usize;
+    let n = u32::from_le_bytes(bin[off..off + 4].try_into().unwrap()) as usize;
+    off += 4;
+    eprintln!("baked asset claims {n} candidates");
+
+    const FFT2_SIZE: usize = 6912; // FST4_60A_DOWNSAMPLE.fft2_size
+    const SYNC_Q_MIN: u32 = 16;
+    let mut n_pass = 0;
+    for i in 0..n {
+        let _freq_hz = f32::from_le_bytes(bin[off..off + 4].try_into().unwrap());
+        let _dt_sec = f32::from_le_bytes(bin[off + 4..off + 8].try_into().unwrap());
+        let _score = f32::from_le_bytes(bin[off + 8..off + 12].try_into().unwrap());
+        let _refined_freq_hz = f32::from_le_bytes(bin[off + 12..off + 16].try_into().unwrap());
+        let refined_i0 = i32::from_le_bytes(bin[off + 16..off + 20].try_into().unwrap());
+        let _refined_score = f32::from_le_bytes(bin[off + 20..off + 24].try_into().unwrap());
+        off += 24;
+        let mut cd0 = Vec::with_capacity(FFT2_SIZE);
+        for _ in 0..FFT2_SIZE {
+            let re = f32::from_le_bytes(bin[off..off + 4].try_into().unwrap());
+            let im = f32::from_le_bytes(bin[off + 4..off + 8].try_into().unwrap());
+            cd0.push(num_complex::Complex32::new(re, im));
+            off += 8;
+        }
+        let cs = symbol_spectra::<Fst4s60>(&cd0, refined_i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+        if nsync > SYNC_Q_MIN {
+            n_pass += 1;
+            eprintln!("  candidate #{i} nsync={nsync} PASSES gate");
+        }
+    }
+    assert_eq!(off, bin.len(), "byte accounting mismatch");
+    eprintln!("{n_pass} of {n} baked candidates pass nsync > {SYNC_Q_MIN}");
+}
+
+fn host_clock_us() -> i64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    start.elapsed().as_micros() as i64
+}
+
+/// Digs into the surprisingly large gap between the old 6-stage
+/// `full` bench (43.134s, real hardware) and the new 5-stage
+/// `decode_rung_major` `full` (12.500s, real hardware) -- host-side
+/// per-candidate, per-stage timing via `decode_rung_major_timed`, on
+/// the same 41 golden-WAV candidates both real-hardware runs used.
+/// Host absolute numbers aren't embedded-calibrated, but the *relative*
+/// shape (which stage costs what, which candidates reach OSD) should
+/// carry over and is enough to tell a genuine bug from a real
+/// algorithmic saving.
+#[test]
+#[ignore = "manual root-cause probe — decode_rung_major per-stage timing (issue #306 item 3)"]
+fn fst4_60_diag_rung_major_stage_timing_probe() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::pipeline::refine_candidate_position;
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major_timed};
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let refined: Vec<_> = raw
+        .iter()
+        .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    let mut kept: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+            kept.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    survivors.sort_unstable();
+    let cands: Vec<RungMajorCandidate> = survivors
+        .iter()
+        .map(|&i| {
+            let (cd0, refined_freq_hz, i0, _score) = refined[i].clone();
+            RungMajorCandidate {
+                cand: raw[i].clone(),
+                cd0,
+                refined_freq_hz,
+                i0,
+            }
+        })
+        .collect();
+
+    let (results, timings) = decode_rung_major_timed::<Fst4s60>(&cands, false, Some(host_clock_us));
+    let timings = timings.unwrap();
+    eprintln!("decoded: {}/{}", results.iter().flatten().count(), cands.len());
+    eprintln!("{:>4} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}", "idx", "freq", "llra_us", "llrb_us", "llre_us", "llrc_us", "osd_us", "decoded");
+    for (i, (c, t)) in cands.iter().zip(&timings).enumerate() {
+        let total: i64 = t.iter().sum();
+        if total > 0 {
+            eprintln!(
+                "{:>4} {:>8.1} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+                i, c.cand.freq_hz, t[0], t[1], t[2], t[3], t[4], results[i].is_some()
+            );
+        }
+    }
+}
