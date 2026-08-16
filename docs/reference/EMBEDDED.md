@@ -1543,6 +1543,29 @@ device the way the host projection did. That would need a depth-first
 counterpart built on the same 5-stage set for a fair on-device A/B —
 not done this round.
 
+**Eighteenth attempt: issue #308's `i0` jitter retry, tried and
+reverted for embedded specifically.** The same day #308 landed on host
+(FST4 candidates now retried at `i0 ∈ {refined, +1, -1}`, matching
+WSJT-X's `fst4_decode.f90`), it was ported into `decode_rung_major` too
+— straightforward given both go through the same `symbol_spectra`/BP/
+OSD building blocks. Real-hardware measurement found the cost
+disproportionate to the recall gain: `full` 40.102 s → **121.281 s**
+(3.02×), `no8_osd` 13.643 s → **34.200 s** (2.51×), versus a recall
+gain of only a few points at the SNRs checked
+(`fst4_60_diag_i0_offset_ablation`: AWGN m27 74→82/100, CCIR-moderate
+m26 18→23/100 — real, not proportional to a 2-3× cost). An ablation of
+the two offsets individually found neither is a clean free cut the way
+`llrd` was: `{0,-1}` alone captures most of the combined benefit but
+still costs roughly double `{0}` alone, and `{0,+1}` captures less
+while costing about the same.
+
+Reverted: `decode_rung_major` stays at `i0={0}` only. Host (`process_
+candidate_basic_impl`, issue #308) and embedded (`decode_rung_major`)
+are deliberately allowed to diverge here — WSJT-X-fidelity and
+embedded feasibility are different questions once a fix's cost and
+its recall value are both measured. `no8_osd` remains 13.643 s (≈1.95×
+over budget), the same figure the Seventeenth attempt closed with.
+
 ## Where to go next
 
 By reader intent:
