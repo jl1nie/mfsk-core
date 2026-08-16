@@ -54,6 +54,24 @@
 //! set it is a real sensitivity trade-off, not free — see
 //! `docs/reference/EMBEDDED.md`'s "Fourteenth attempt" for the AWGN/
 //! CCIR recall cost this carries.
+//!
+//! **Deliberately does *not* include issue #308's `i0±1` timing-jitter
+//! retry**, even though that fix landed in `process_candidate_basic_
+//! impl` (host) the same day and is a genuine WSJT-X-fidelity
+//! improvement there. Tried it here first — real-hardware measurement
+//! found it triples `full`'s total (40.102s → 121.281s) and more than
+//! doubles `no8_osd`'s (13.643s → 34.200s), for a recall gain of only a
+//! few points at the SNRs checked (`fst4_60_diag_i0_offset_ablation`:
+//! AWGN m27 74→82/100, CCIR-moderate m26 18→23/100 — real, but nowhere
+//! near proportional to a 2-3× cost). Host has no ~7s deadline to
+//! protect, so #308's fix is unconditionally worth it there; embedded's
+//! tight budget means the same fix is a bad trade *for this specific
+//! constraint*, not a bad fix in general. This is why the two call
+//! sites are allowed to diverge instead of one "more faithful" ladder
+//! serving both: WSJT-X-fidelity and embedded feasibility are different
+//! questions here, and conflating them would have made either the host
+//! recall fix contingent on embedded's budget, or the embedded ladder
+//! contingent on a cost it can't afford.
 
 use alloc::vec;
 use alloc::vec::Vec;
