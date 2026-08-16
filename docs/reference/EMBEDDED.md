@@ -939,28 +939,87 @@ N=42, ~1e-6 max error — f32-level precision, no sign/indexing bug.
 
 With all three FFT sites closed (candidate refine baked, SNR skipped,
 symbol-spectra FFT replaced), the on-device path has zero FFT calls
-left. **Still not measured end-to-end.** The fourth flash attempt
-(after adding `DirectDft`) stalled mid-write — `espflash`'s progress
-bar stopped advancing partway through a full post-erase write, and the
-board stopped responding to `espflash board-info` afterward
-(`/dev/serial/by-id/` still showed the USB-JTAG device node, so this
-reads as a firmware/protocol hang rather than a physical
-disconnect — dmesg showed no USB detach around the stall). Did not
-self-recover after 5+ minutes of polling. Diagnosed as an unrelated
-USB/serial-level issue, not a regression from `DirectDft` or any of
-the three fixes above — none of them were reached yet when the stall
-happened (it hung during the flash *write*, before the app ever
-booted). Left for a physical USB replug / board reset, which needs
-the user present; not attempted further in this session.
+left. The fourth flash attempt (after adding `DirectDft`) stalled
+mid-write — `espflash`'s progress bar stopped advancing partway
+through a full post-erase write, and the board stopped responding to
+`espflash board-info` afterward. Diagnosed as an unrelated USB/serial
+hang (device node stayed present, no USB detach in dmesg), not a code
+regression — confirmed once the user power-cycled the board and it
+came back immediately, no further recovery steps needed.
+
+**Fifth attempt, PSRAM this time.** Rebuilt, reflashed clean, assets
+loaded fine — then `memory allocation of 524288 bytes failed` inside
+the candidate loop. Both baked assets were still being shipped:
+`fft_cache` (5.7 MiB, from the *first* attempt's fix, `fst4_bake_
+golden_precomputed`) plus the 2.16 MiB of baked `cd0` buffers left
+only 87 KiB PSRAM free post-load, and the loop's own transient BP/OSD
+allocations didn't fit. `fft_cache` turned out to be genuinely dead
+weight on this path — `precomputed_refine` skips the one call that
+would read it (`downsample_cached`) and `skip_snr = true` skips the
+other (`fst4_raw_cs`, inside `P::snr_db`) — so it was never
+dereferenced, only occupying space. Dropped it from the bench
+entirely (`run_bench` no longer takes it); PSRAM free post-load went
+87 KiB → 5.97 MiB.
+
+**Sixth attempt: a complete run, first ever FST4-on-embedded wall-clock
+number.** CoreS3 @ 240 MHz / `opt-level = 3`, single core, no FFT
+calls anywhere in the path:
+
+| | value |
+|---|---:|
+| candidates | 41 (post-dedup, of 50 raw `coarse_sync`) |
+| decodes | 2/2 — `CQ N5TM EL29`, `CQ K9KFR EN71` (matches host exactly) |
+| candidate-loop wall-clock | **89.691 s** |
+| host `decode_loop` for the same 41 candidates | 51.9 ms (`MFSK_TRACE_STAGE_FST4=1`, this box) |
+| device/host ratio | **≈1728×** |
+| vs. FST4-60's ~7 s post-slot margin | **≈13× over** |
+
+**The ratio is the finding, not just the seconds.** It lands close to
+WSPR's own *first*, wholly-unoptimized measurement (issue #260:
+1214.3 s against a 709.5 ms host baseline, ≈1712× — before
+`minsync2`, `opt-level=3`, or the 160→240 MHz clock fix, the three
+biggest levers that investigation eventually found). This FST4 bench's
+build already carries two of those three (`opt-level=3` and the clock
+fix are both `m5stack-cores3-app`-wide, not per-bin) — so it starts
+from a more favourable position than WSPR's raw first number did, and
+still landed in the same territory. Earlier text in this section (and
+in `embedded-shared::apps::fst4_bench`'s own module doc) repeated the
+premise that FST4's bounded LDPC/BP/OSD "fails cheaply by
+construction" and so shouldn't need WSPR's kind of dedicated tuning
+pass, explicitly flagged as *"an untested claim, not a measured one."*
+It is now tested, and at this unoptimized state it does not hold —
+something in FST4's LLR/BP/OSD path costs about as much per real-world
+candidate as WSPR's Fano-sequential search did before WSPR's own
+four-round optimization campaign. Two unmeasured suspects, not
+diagnosed further here: the `LLR_NSYM_MAX = 8` staircase rung (`4⁸ =
+65536` tone-combination hypotheses per group — `fst4::decode`'s own
+lazy-staircase code calls this "128-256× FT8/FT4's own deepest rung"),
+and that FST4 here runs the plain f32 generic pipeline with *zero*
+embedded-specific optimization work done on it, unlike FT8's dedicated
+fixed-point `decode_block` or WSPR's now-tuned `decode_scan`.
+
+Peak stack usage, measured in passing: `BENCH_STACK`'s 96 KiB guess
+left 95 064 B untouched — only ~3.2 KiB actually used, a wide margin
+unlike `wspr_bench`'s own stack history.
+
+**So the honest answer to issue #306: no, not as measured today** —
+89.7 s against a ~7 s budget is not a rounding error, and closing a
+13× gap needs real optimization work, not a bigger margin somewhere
+else. Whether that gap is closable the way WSPR's was (WSPR went
+1214.3 s → 249.2 s, 4.9×, across `minsync2` + `opt-level=3` +
+`160→240 MHz`, none of which had an FST4 equivalent applied here
+beyond the two already baked into this build) is an open question this
+measurement doesn't answer by itself — it answers "does it currently
+fit" (no), not "could it".
 
 A mixed-radix or Bluestein implementation for the *larger* FFT sites
 this session routed around (issue #307: `coarse_sync`'s 7776,
 `downsample_cached`'s 6912, and the equivalent pair for FST4's other
-4 submodes) is still open and still the right fix for a *production*
-embedded FST4 path — the precomputed-candidate/skip-SNR bench above is
-a measurement shortcut for issue #306's specific wall-clock question,
-not a substitute for it. `DirectDft` itself, being O(N²) and capped at
-64, is not meant to grow into that role.
+4 submodes) is still open, and now secondary to the LLR/BP/OSD cost
+question above — closing #307 makes the streaming front end possible,
+but a production embedded FST4 path needs the ≈13× gap closed first,
+or it fits the FFT but still misses the slot. `DirectDft` itself,
+being O(N²) and capped at 64, is not meant to grow into that role.
 
 ## Where to go next
 

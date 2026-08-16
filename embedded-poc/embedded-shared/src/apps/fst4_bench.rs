@@ -41,10 +41,6 @@
 //! exactly the "decoder" issue #306 asked about, isolated instead of
 //! blocked.
 //!
-//! `fft_cache` (the wideband forward-FFT output, baked by
-//! `fst4_bake_golden_precomputed`) is still shipped, but not FFT'd —
-//! it's only ever *read* here, never transformed.
-//!
 //! Two more FFT sites turned up past that first fix, both closed the
 //! same day:
 //!
@@ -72,10 +68,59 @@
 //!   at N=36/42 to ~1e-6 (f32-level precision) before flashing.
 //!
 //! With all three closed, the on-device path genuinely has zero FFT
-//! calls left. **Still not measured end-to-end**, though — see
-//! `docs/reference/EMBEDDED.md`'s "FST4 on embedded" section for
-//! where the real-device attempt currently stands (a USB/serial
-//! stall mid-flash, not a code issue as far as diagnosed so far).
+//! calls left. One more thing turned up before a number came back —
+//! `fft_cache` (5.7 MiB) was still being loaded and shipped even
+//! though nothing on this path reads it once `precomputed_refine` +
+//! `skip_snr = true` are both set; PSRAM math that had looked fine on
+//! paper (893 KiB free post-load, per an earlier version of this
+//! comment) turned out to leave the candidate loop's own transient
+//! BP/OSD allocations no room at all — a 512 KiB request failed.
+//! Dropped `fft_cache` from this bench entirely (`run_bench` no
+//! longer takes it, `&[]` goes to `process_candidate_precomputed`
+//! instead — safe exactly because nothing on this path dereferences
+//! it); PSRAM free jumped from 87 KiB to 5.97 MiB post-load.
+//!
+//! **Measured, 2026-08-16, CoreS3 @ 240 MHz / opt-level 3, single
+//! core:** the candidate loop — all 41 baked candidates, LLR/BP/OSD
+//! only, zero FFT calls — took **89.691 s** and reached both real
+//! decodes (`CQ N5TM EL29`, `CQ K9KFR EN71`), matching the host
+//! golden exactly. Host `decode_loop` for the same 41 candidates is
+//! 51.9 ms (`MFSK_TRACE_STAGE_FST4=1`, this box) — a **~1728×**
+//! device/host ratio, roughly **13× over** FST4-60's ~7 s post-slot
+//! margin.
+//!
+//! That ratio is the real finding here, not just the raw seconds:
+//! it's close to WSPR's own *first*, wholly-unoptimized measurement
+//! (issue #260: 1214.3 s against a 709.5 ms host baseline, ~1712× —
+//! before `minsync2`, `opt-level=3`, the 160→240 MHz clock fix, or
+//! any of that investigation's other four-and-a-half-times-total
+//! speedup landed). This bench's build already has `opt-level = 3`
+//! and the 240 MHz clock fix (both are `m5stack-cores3-app`-wide, not
+//! per-bin) — so this *is* already past two of WSPR's early wins, and
+//! the ratio still landed in WSPR's pre-optimization territory. The
+//! premise this module's own earlier text repeated — that FST4's
+//! bounded LDPC/BP/OSD "fails cheaply by construction" and so
+//! shouldn't need WSPR's kind of optimization pass — was explicitly
+//! flagged elsewhere as *"an untested claim, not a measured one"*
+//! (`docs/reference/EMBEDDED.md`). It is now tested, and at this
+//! unoptimized state it does not hold: something in FST4's LLR/BP/OSD
+//! path costs about as much per real-world candidate as WSPR's
+//! Fano-sequential search did before WSPR's own dedicated tuning
+//! pass. Candidate suspects, unmeasured: the `LLR_NSYM_MAX = 8`
+//! staircase rung (`4⁸ = 65536` tone-combination hypotheses per
+//! group — the module doc for `fst4::decode`'s lazy-staircase code
+//! calls this "128-256× FT8/FT4's own deepest rung"), and simply that
+//! FST4 runs the generic f32 pipeline with no embedded-specific
+//! optimisation pass at all, unlike FT8's dedicated fixed-point
+//! `decode_block` or WSPR's now-four-rounds-tuned `decode_scan`. Not
+//! diagnosed further here — see `docs/reference/EMBEDDED.md` and
+//! issue #306 for where this leaves the "does it fit" question.
+//!
+//! Also measured in passing: peak stack usage was tiny —
+//! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched
+//! (only ~3.2 KiB actually used), a wide margin unlike `wspr_bench`'s
+//! own stack history. Worth right-sizing down for a future run, not
+//! urgent for a single-shot bench.
 //!
 //! ## What this does *not* attempt
 //!
@@ -146,22 +191,6 @@ fn log_heap(tag: &str) {
     }
 }
 
-/// `bin` is the baked FFT-cache asset (`include_bytes!`) — `(f32 re,
-/// f32 im)` pairs, LE, no header. Byte-wise, not a transmute:
-/// `include_bytes!` gives 1-byte alignment and Xtensa faults on an
-/// unaligned `f32` load.
-fn load_fft_cache(bin: &[u8]) -> Vec<Complex32> {
-    assert_eq!(bin.len() % 8, 0, "baked fft_cache has the wrong byte length");
-    bin.chunks_exact(8)
-        .map(|b| {
-            Complex32::new(
-                f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-                f32::from_le_bytes([b[4], b[5], b[6], b[7]]),
-            )
-        })
-        .collect()
-}
-
 /// One baked, already-refined candidate — see the module doc and
 /// `fst4_bake_golden_refined_candidates`'s own doc comment for the
 /// exact byte layout this parses.
@@ -174,7 +203,8 @@ struct RefinedCandidate {
 }
 
 /// `bin` is the baked refined-candidates asset (`include_bytes!`).
-/// Byte-wise for the same alignment reason as [`load_fft_cache`].
+/// Byte-wise, not a transmute: `include_bytes!` gives 1-byte alignment
+/// and Xtensa faults on an unaligned `f32`/`i32` load.
 fn load_refined_candidates(bin: &[u8]) -> Vec<RefinedCandidate> {
     let mut off = 0usize;
     let n = u32::from_le_bytes(bin[off..off + 4].try_into().unwrap()) as usize;
@@ -231,24 +261,32 @@ pub fn init_logger_once() {
 
 /// Runs `process_candidate_precomputed::<Fst4s60>` over every baked,
 /// already-refined candidate — no FFT anywhere in this call chain
-/// (see the module doc for why). `fft_cache_bin`/`refined_bin` are
-/// the two `include_bytes!` blobs produced by
-/// `fst4_bake_golden_precomputed` / `fst4_bake_golden_refined_candidates`.
-pub fn run_bench(fft_cache_bin: &[u8], refined_bin: &[u8]) {
+/// (see the module doc for why). `refined_bin` is the `include_bytes!`
+/// blob produced by `fst4_bake_golden_refined_candidates`.
+///
+/// No `fft_cache` here, deliberately — the first real-device run
+/// (2026-08-16) loaded it anyway (5.7 MiB) alongside the 2.16 MiB of
+/// baked `cd0` buffers, leaving only ~87 KiB PSRAM free, and the
+/// candidate loop's own transient allocations (BP/OSD scratch) then
+/// failed a 512 KiB request. `fft_cache` was never actually *read* on
+/// this path: `precomputed_refine` already skips the one call
+/// (`downsample_cached`) that would use it, and `skip_snr = true`
+/// skips the other (`fst4_raw_cs`, inside `P::snr_db`) — so it was
+/// PSRAM spent on a buffer nothing touches. Dropping it is what turns
+/// "peak usage was never actually the risk" (this module's earlier,
+/// wrong conclusion — see below) into true.
+pub fn run_bench(refined_bin: &[u8]) {
     log::info!("mfsk-core {}", mfsk_core::VERSION);
     log::info!(
-        "fst4_bench: baked assets fft_cache={} bytes, refined_candidates={} bytes",
-        fft_cache_bin.len(),
+        "fst4_bench: baked asset refined_candidates={} bytes",
         refined_bin.len(),
     );
     log_heap("boot");
 
     let t_load = now_us();
-    let fft_cache = load_fft_cache(fft_cache_bin);
     let candidates = load_refined_candidates(refined_bin);
     log::info!(
-        "fst4_bench: loaded {} fft_cache bins + {} refined candidates in {} ms",
-        fft_cache.len(),
+        "fst4_bench: loaded {} refined candidates in {} ms",
         candidates.len(),
         (now_us() - t_load) / 1000,
     );
@@ -273,7 +311,10 @@ pub fn run_bench(fft_cache_bin: &[u8], refined_bin: &[u8]) {
         let precomputed_refine = (rc.cd0, rc.refined_freq_hz, rc.refined_i0, rc.refined_score);
         if let Some(res) = process_candidate_precomputed::<Fst4s60>(
             &rc.cand,
-            &fft_cache,
+            // Empty, not `fft_cache` — see `run_bench`'s doc comment.
+            // Safe: `precomputed_refine` + `skip_snr = true` together
+            // mean this call chain never dereferences `fft_cache`.
+            &[],
             &FST4_60A_DOWNSAMPLE,
             DecodeDepth::FULL,
             DecodeStrictness::Normal,
@@ -334,27 +375,25 @@ pub fn run_bench(fft_cache_bin: &[u8], refined_bin: &[u8]) {
 pub const BENCH_STACK: u32 = 96 * 1024;
 
 extern "C" fn bench_task(arg: *mut core::ffi::c_void) {
-    // SAFETY: `run` leaks a `&'static (&'static [u8], &'static [u8])`
-    // that outlives this task, mirroring wspr_bench's own arg-passing
-    // shape for `extern "C"` task entries.
-    let (fft_cache_bin, refined_bin): (&'static [u8], &'static [u8]) =
-        unsafe { *(arg as *const (&'static [u8], &'static [u8])) };
-    run_bench(fft_cache_bin, refined_bin);
+    // SAFETY: `run` leaks a `&'static &'static [u8]` that outlives
+    // this task, mirroring wspr_bench's own arg-passing shape for
+    // `extern "C"` task entries.
+    let refined_bin: &'static [u8] = unsafe { *(arg as *const &'static [u8]) };
+    run_bench(refined_bin);
     loop {
         unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
     }
 }
 
-/// `fft_cache_bin`/`refined_bin` are the two baked golden assets
-/// (`include_bytes!`). Spawns [`bench_task`] on a dedicated stack
-/// (see [`BENCH_STACK`]'s doc comment on why that size is a starting
-/// guess) pinned to core 0, then idles forever.
-pub fn run(fft_cache_bin: &'static [u8], refined_bin: &'static [u8]) -> ! {
+/// `refined_bin` is the baked golden asset (`include_bytes!`). Spawns
+/// [`bench_task`] on a dedicated stack (see [`BENCH_STACK`]'s doc
+/// comment on why that size is a starting guess) pinned to core 0,
+/// then idles forever.
+pub fn run(refined_bin: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 
-    let arg: &'static (&'static [u8], &'static [u8]) =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new((fft_cache_bin, refined_bin)));
+    let arg: &'static &'static [u8] = alloc::boxed::Box::leak(alloc::boxed::Box::new(refined_bin));
     let argp = arg as *const _ as *mut core::ffi::c_void;
 
     let created = unsafe {
