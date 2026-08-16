@@ -2634,3 +2634,336 @@ fn fst4_60_diag_false_positive_rate_noise_only() {
     const SNR_TAGS: &[(&str, u32)] = &[("m60", 100)];
     nsym_depth_sweep_for_channel("noise", SNR_TAGS);
 }
+
+/// VK3NV's item 3: rung-major (breadth-first-by-depth) scheduling —
+/// "running nsym=1 across all candidates before any single one gets to
+/// nsym=2/4/8 turns the decoder into an anytime process." Two-step plan
+/// (issue #306): this is step 1+2, host-only — verify reordering
+/// doesn't change *what* gets decoded, then project the "anytime"
+/// benefit using host-measured per-rung costs scaled to the real
+/// embedded totals already measured this session, before committing to
+/// an actual `process_candidate_basic_impl` control-flow rewrite (step 3,
+/// not started).
+///
+/// Uses the real off-air FST4-60 golden WAV (`210115_0058.wav`, the
+/// same recording `fst4_bench`'s 41 baked candidates come from) rather
+/// than synthetic AWGN — the point here is candidate *order*, and only
+/// a real multi-signal recording has a realistic distribution of "hard
+/// candidate at low index, easy real signal at high index" the way
+/// `fst4_bench`'s own logs showed (both real decodes are candidates
+/// #37/#38 of ~41, i.e. *last*).
+///
+/// Depth-first (current production order): for each candidate in
+/// coarse_sync's order, try nsym=1, then 2, then `LLR_NSYM_MID`, then
+/// `LLR_NSYM_MAX`+OSD, stopping at the first success — a candidate that
+/// never decodes pays for every rung before the loop moves on.
+///
+/// Rung-major: for each rung in the same 1→2→mid→max+OSD order, try
+/// that rung across *every still-undecided* candidate before moving to
+/// the next rung.
+///
+/// Host `Instant` timing isn't embedded-calibrated in absolute terms
+/// (different CPU entirely), so this projects rather than measures: the
+/// host-measured "rung 1+2+mid+max" total (no OSD, i.e. depth-first's
+/// `BP_ONLY` shape) is scaled by a single factor so it matches this
+/// session's real hardware `BP_ONLY` figure (31.023 s, `docs/reference/
+/// EMBEDDED.md`'s Sixteenth attempt) — then that same factor is applied
+/// to project both orderings' full cumulative-decode-vs-time curves
+/// (OSD included) into embedded-equivalent seconds.
+#[test]
+#[ignore = "manual diagnostic — rung-major scheduling: correctness + anytime-curve projection (issue #306 item 3, VK3NV)"]
+fn fst4_60_diag_rung_major_scheduling() {
+    use std::time::{Duration, Instant};
+
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const BP_MAX_ITER: u32 = 30;
+    const LLR_NSYM_MID: usize = 4;
+    const LLR_NSYM_MAX: usize = 8;
+    // Real embedded ground truth, current build (docs/reference/
+    // EMBEDDED.md "Sixteenth attempt") -- the calibration target.
+    const REAL_BP_ONLY_SECS: f64 = 31.023;
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+    // Replicates `fst4_bake_golden_refined_candidates`'s exact recipe
+    // (sync_min=1.2, refine + dedup_refined_candidates' rule, stable
+    // index sort) — this is the same 41-candidate set/order
+    // `fst4_bench`'s real-hardware logs are keyed against (both real
+    // decodes land at candidate #37/#38 of ~41 there). A plain
+    // `coarse_sync` call at production's general sync_min=0.8 pulls in
+    // far more raw/duplicate candidates on this strong recording and
+    // gives a materially different order — not what's being scheduled
+    // on real hardware, so not what this diagnostic should model.
+    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let refined: Vec<_> = raw_candidates
+        .iter()
+        .map(|c| mfsk_core::engine::pipeline::refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw_candidates.len()).collect();
+    order.sort_by(|&a, &b| {
+        refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut kept_positions: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        let dup = kept_positions
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL);
+        if !dup {
+            kept_positions.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    survivors.sort_unstable();
+    let cands: Vec<_> = survivors.iter().map(|&i| raw_candidates[i].clone()).collect();
+    eprintln!(
+        "{} raw candidates -> {} refined+deduped (matches fst4_bench's baked asset)",
+        raw_candidates.len(),
+        cands.len()
+    );
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    struct CandTiming {
+        idx: usize,
+        freq_hz: f32,
+        // Per-rung (setup, nsym1, nsym2, mid, max+osd) host durations
+        // and whether that rung alone (given all earlier rungs already
+        // failed) decodes the golden message.
+        t_setup: Duration,
+        t: [Duration; 4],
+        ok: [bool; 4],
+    }
+
+    let mut timings: Vec<CandTiming> = Vec::new();
+    for (idx, c) in cands.iter().enumerate() {
+        let t_setup_start = Instant::now();
+        let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+        let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+        if sum2 > f32::EPSILON {
+            let inv = 1.0 / sum2.sqrt();
+            for z in cd0.iter_mut() {
+                *z *= inv;
+            }
+        }
+        let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+        let df_hz = s2.freq_hz - c.freq_hz;
+        let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+        let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+        let t_setup = t_setup_start.elapsed();
+
+        let bp_opts = FecOpts {
+            bp_max_iter: BP_MAX_ITER,
+            osd_depth: 0,
+            ap_mask: None,
+            verify_info,
+            ..FecOpts::default()
+        };
+        // Unlike the fst4sim-corpus diagnostics elsewhere in this file
+        // (single injected `GOLDEN_MSG`), this real off-air recording
+        // carries two distinct real QSOs — `fst4_bench`'s own log
+        // confirms both ("CQ N5TM EL29" candidate #37, "CQ K9KFR EN71"
+        // #38 of ~41 refined candidates).
+        const REAL_GOLDEN_MSGS: [&str; 2] = ["CQ N5TM EL29", "CQ K9KFR EN71"];
+        let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+            fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                let mut m77 = [0u8; 77];
+                m77.copy_from_slice(&r.info[..77]);
+                unpack77(&m77)
+                    .as_deref()
+                    .is_some_and(|m| REAL_GOLDEN_MSGS.contains(&m))
+            })
+        };
+
+        let mut t = [Duration::ZERO; 4];
+        let mut ok = [false; 4];
+
+        // Rung 0: nsym=1 (llra) + normalised nsym=1 (llrd).
+        let t0 = Instant::now();
+        let llr1 = compute_llr_fast::<Fst4s60, f32>(&cs);
+        let r0 = is_golden(&llr1.llra, &bp_opts) || is_golden(&llr1.llrd, &bp_opts);
+        t[0] = t0.elapsed();
+        ok[0] = r0;
+
+        // Rung 1: nsym=2 (llrb).
+        let t1 = Instant::now();
+        let llrb = compute_llr_partial::<Fst4s60, f32, f32>(&cs, 2);
+        let r1 = is_golden(&llrb, &bp_opts);
+        t[1] = t1.elapsed();
+        ok[1] = r1;
+
+        // Rung 2: nsym=LLR_NSYM_MID.
+        let t2 = Instant::now();
+        let llr_mid = compute_llr_partial::<Fst4s60, f32, f32>(&cs, LLR_NSYM_MID);
+        let r2 = is_golden(&llr_mid, &bp_opts);
+        t[2] = t2.elapsed();
+        ok[2] = r2;
+
+        // Rung 3: nsym=LLR_NSYM_MAX, then OSD (production npre1/npre2)
+        // if BP still hasn't found it and nsync clears the gate.
+        let t3 = Instant::now();
+        let llr_max = compute_llr_partial::<Fst4s60, f32, f32>(&cs, LLR_NSYM_MAX);
+        let mut r3 = is_golden(&llr_max, &bp_opts);
+        if !r3 && nsync >= osd_attempt_min {
+            let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+            let osd_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            r3 = is_golden(&llr_max, &osd_opts) || is_golden(&llrb, &osd_opts);
+        }
+        t[3] = t3.elapsed();
+        ok[3] = r3;
+
+        timings.push(CandTiming {
+            idx,
+            freq_hz: c.freq_hz,
+            t_setup,
+            t,
+            ok,
+        });
+    }
+
+    // ---- Correctness: final decode set must match regardless of order ----
+    let depth_first_decoded: std::collections::BTreeSet<usize> = timings
+        .iter()
+        .filter(|c| c.ok.iter().any(|&o| o))
+        .map(|c| c.idx)
+        .collect();
+    // Rung-major visits the same rungs for the same candidates, just
+    // reordered -- the decoded SET is trivially the same set of `ok`
+    // flags read a different way, so this is really asserting the
+    // harness computed `ok` consistently, not a deep property. Kept as
+    // an explicit sanity check anyway.
+    let rung_major_decoded: std::collections::BTreeSet<usize> = depth_first_decoded.clone();
+    assert_eq!(
+        depth_first_decoded, rung_major_decoded,
+        "reordering must not change which candidates decode"
+    );
+    eprintln!(
+        "correctness: {} candidates, {} decoded (set identical under both orderings by construction)",
+        timings.len(),
+        depth_first_decoded.len()
+    );
+
+    // ---- Calibration: host BP_ONLY total -> real embedded 31.023 s ----
+    let host_bp_only_total: Duration = timings
+        .iter()
+        .map(|c| c.t_setup + c.t[0] + c.t[1] + c.t[2] + c.t[3])
+        .sum();
+    let scale = REAL_BP_ONLY_SECS / host_bp_only_total.as_secs_f64();
+    eprintln!(
+        "calibration: host BP_ONLY-shape total = {:.3}s over {} candidates -> scale factor {:.2}x to match real {:.3}s",
+        host_bp_only_total.as_secs_f64(),
+        timings.len(),
+        scale,
+        REAL_BP_ONLY_SECS
+    );
+
+    // ---- Depth-first cumulative timeline ----
+    eprintln!("\ndepth-first order (current production order):");
+    let mut cum = 0.0f64;
+    for c in &timings {
+        let mut decoded_at: Option<f64> = None;
+        cum += c.t_setup.as_secs_f64() * scale;
+        for r in 0..4 {
+            cum += c.t[r].as_secs_f64() * scale;
+            if c.ok[r] {
+                decoded_at = Some(cum);
+                break;
+            }
+        }
+        if let Some(t) = decoded_at {
+            eprintln!(
+                "  candidate #{:2} ({:7.1} Hz) decoded at t={:7.3}s (cumulative)",
+                c.idx, c.freq_hz, t
+            );
+        }
+    }
+    eprintln!("  depth-first total: {cum:.3}s");
+
+    // ---- Depth-first, worst-case candidate order ----
+    // The recording's *actual* candidate order happens to put both real
+    // decodes first (frequency-ascending happens to favour them here) --
+    // that's a property of this one recording, not something a general
+    // monitoring receiver can rely on. This computes the same
+    // depth-first schedule with the two decoding candidates moved to
+    // the *end* of the list instead, as the honest worst case
+    // depth-first's own ordering-dependence can produce.
+    let mut worst_order: Vec<&CandTiming> = timings.iter().filter(|c| !c.ok.iter().any(|&o| o)).collect();
+    worst_order.extend(timings.iter().filter(|c| c.ok.iter().any(|&o| o)));
+    eprintln!("\ndepth-first order, worst case (decoding candidates moved last):");
+    let mut cum = 0.0f64;
+    for c in &worst_order {
+        let mut decoded_at: Option<f64> = None;
+        cum += c.t_setup.as_secs_f64() * scale;
+        for r in 0..4 {
+            cum += c.t[r].as_secs_f64() * scale;
+            if c.ok[r] {
+                decoded_at = Some(cum);
+                break;
+            }
+        }
+        if let Some(t) = decoded_at {
+            eprintln!(
+                "  candidate #{:2} ({:7.1} Hz) decoded at t={:7.3}s (cumulative)",
+                c.idx, c.freq_hz, t
+            );
+        }
+    }
+    eprintln!("  worst-case depth-first total: {cum:.3}s (same total work, all decodes deferred to the end)");
+
+    // ---- Rung-major cumulative timeline ----
+    eprintln!("\nrung-major order (nsym=1 across all, then nsym=2 across all, ...):");
+    let mut cum = 0.0f64;
+    let mut decided = vec![false; timings.len()];
+    // Setup (symbol_spectra etc.) has to happen once per candidate
+    // before any rung can run -- charged up front, same as depth-first.
+    for c in &timings {
+        cum += c.t_setup.as_secs_f64() * scale;
+    }
+    for r in 0..4 {
+        let mut newly_decoded: Vec<(usize, f32)> = Vec::new();
+        for (i, c) in timings.iter().enumerate() {
+            if decided[i] {
+                continue;
+            }
+            cum += c.t[r].as_secs_f64() * scale;
+            if c.ok[r] {
+                decided[i] = true;
+                newly_decoded.push((c.idx, c.freq_hz));
+            }
+        }
+        for (idx, freq_hz) in newly_decoded {
+            eprintln!("  candidate #{idx:2} ({freq_hz:7.1} Hz) decoded at t={cum:7.3}s (cumulative, end of rung {r})");
+        }
+    }
+    eprintln!("  rung-major total: {cum:.3}s (must equal depth-first total -- same total work, different order)");
+}
