@@ -1467,11 +1467,25 @@ fn fst4_60_diag_recall_tradeoff() {
     const BP_MAX_ITER: u32 = 30;
     // Dense near the known ~-27.6 dB FST4-60 AWGN crossing, plus one
     // point well above it as a sanity ceiling (all four configs should
-    // read ~20/20 there).
-    const SNR_TAGS: &[&str] = &[
-        "m20", "m22", "m23", "m24", "m25", "m26", "m27", "m28", "m29", "m30",
+    // read ~20/20 there). m26/m27 use the wider 100-trial corpus
+    // generated for VK3NV's statistical-power follow-up (the original
+    // 7/20 vs 10/20 `no8_osd`-vs-`bp_only` read at -27 dB was "pretty
+    // under-powered," per VK3NV's own comment) — trials 1-20 are
+    // byte-identical to the original 20-trial corpus (`fst4sim` is
+    // deterministic per trial index), so this only adds statistical
+    // power, it doesn't change what was already measured.
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m22", 20),
+        ("m23", 20),
+        ("m24", 20),
+        ("m25", 20),
+        ("m26", 100),
+        ("m27", 100),
+        ("m28", 20),
+        ("m29", 20),
+        ("m30", 20),
     ];
-    const TRIALS: u32 = 20;
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) = mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
@@ -1486,14 +1500,14 @@ fn fst4_60_diag_recall_tradeoff() {
     }
 
     let mut work: Vec<(&str, u32)> = Vec::new();
-    for &snr_tag in SNR_TAGS {
-        for trial in 1..=TRIALS {
+    for &(snr_tag, trials) in SNR_TAGS {
+        for trial in 1..=trials {
             work.push((snr_tag, trial));
         }
     }
 
     let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, u32, bool, bool, bool, bool) {
-        let snr_idx = SNR_TAGS.iter().position(|&t| t == snr_tag).unwrap();
+        let snr_idx = SNR_TAGS.iter().position(|&(t, _)| t == snr_tag).unwrap();
         let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, trial, false, false, false, false);
@@ -1668,7 +1682,7 @@ fn fst4_60_diag_recall_tradeoff() {
     let mut no8_osd_beats_bp_only = 0u32;
     let mut bp_only_beats_no8_osd = 0u32;
     for &(idx, trial, full, bp_only, no8_osd, no8_no_osd) in &results {
-        let tag = SNR_TAGS[idx];
+        let tag = SNR_TAGS[idx].0;
         if !full && (bp_only || no8_osd || no8_no_osd) {
             eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: full=false but a reduced config succeeded");
             violations += 1;
@@ -1712,15 +1726,260 @@ fn fst4_60_diag_recall_tradeoff() {
         t.no8_no_osd += no8_no_osd as u32;
     }
 
-    eprintln!("FST4-60 AWGN recall trade-off (n={TRIALS}/SNR):");
+    eprintln!("FST4-60 AWGN recall trade-off (n=20/SNR, n=100 at m26/m27):");
     eprintln!(
         "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
         "SNR", "full", "bp_only", "no8+osd", "no8_noosd", "n"
     );
-    for (tag, t) in SNR_TAGS.iter().zip(&tallies) {
+    for (&(tag, _), t) in SNR_TAGS.iter().zip(&tallies) {
         eprintln!(
             "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
             tag, t.full, t.bp_only, t.no8_osd, t.no8_no_osd, t.total
+        );
+    }
+}
+
+/// VK3NV's follow-up (issue #306): rather than the binary "nsym=8 or
+/// nsym≤4" choice `fst4_60_diag_recall_tradeoff` above tested, is
+/// there a better middle ground? `compute_llr_partial` already accepts
+/// any `nsym` — `LLR_NSYM_MAX=8`/`LLR_NSYM_MID=4` are `Fst4s60`'s own
+/// protocol consts, not a limit on the underlying LLR machinery — so
+/// `nsym=5`/`6` (both divide FST4-60's 120 data symbols cleanly,
+/// unlike odd depths in general) are free to test as a pure
+/// diagnostic, no production code change. VK3NV's own visit-count
+/// derivation: `(120/n groups) × (2n bit positions) × 4^n hypotheses =
+/// 240 × 4^n` — nsym=8: 15.73M, nsym=6: 983k (16× less), nsym=5: 246k
+/// (64× less), nsym=4: 61.4k (256× less).
+///
+/// Also answers VK3NV's statistical-power concern on `no8_osd` vs
+/// `bp_only`'s -26/-27 dB asymmetry in the previous diagnostic (20
+/// trials/SNR was "pretty under-powered" for a 7/20 vs 10/20 read) —
+/// this sweep runs those two SNRs against a wider 100-trial corpus
+/// generated for this follow-up
+/// (`embedded-poc/assets/fst4_sweep/fst4_60_awgn_m26/m27_*.wav`,
+/// trials 21-100 added; trials 1-20 confirmed byte-identical to the
+/// original 20-trial corpus before generating more — `fst4sim` is
+/// deterministic per trial index, so this extends rather than
+/// replaces the existing data). `embedded-poc/assets/fst4_sweep/` is
+/// gitignored (regenerated locally, not checked in — same as the rest
+/// of the sweep corpora); reproduce the extra 80 trials/SNR with:
+/// ```sh
+/// for snr in -26 -27; do
+///   tag=$(printf "m%02d" $(( -snr )))
+///   tmpd=$(mktemp -d)
+///   (cd "$tmpd" && /path/to/target/fst4sim/fst4sim \
+///     "CQ JL1NIE PM95" 60 1500 0.0 0.0 0.0 100 "$snr" F >/dev/null)
+///   for T in $(seq 1 100); do
+///     src="$tmpd/000000_$(printf '%04d' $T).wav"
+///     dest="embedded-poc/assets/fst4_sweep/fst4_60_awgn_${tag}_$(printf '%02d' $T).wav"
+///     [[ -f "$src" && ! -f "$dest" ]] && cp "$src" "$dest"
+///   done
+///   rm -rf "$tmpd"
+/// done
+/// ```
+///
+/// Each `cap` in `{4, 5, 6, 8}` is tested as `{nsym=1, nsym=2,
+/// nsym=cap, normalised nsym=1} + OSD` — the same shape as `full`
+/// (cap=8) and `no8_osd` (cap=4) in the diagnostic above, generalised
+/// to the two new intermediate depths. Unlike that diagnostic's
+/// `full`/`no8_osd` pair (which only ever *added* a variant, so
+/// `full ⊇ no8_osd` held by construction), different `cap`s here
+/// *swap* which deep rung is tried — there is no subset relationship
+/// between them, so no monotonicity is asserted or expected across
+/// `cap` values (only across the same `cap`'s BP-then-OSD escalation,
+/// which mirrors the earlier diagnostic's already-verified shape).
+///
+/// AWGN here; see [`fst4_60_diag_nsym_depth_sweep_ccir_moderate`] for the
+/// CCIR-fading confirmation pass VK3NV's own caution recommended
+/// before calling any AWGN-derived depth an embedded profile —
+/// FST4-60's 8-symbol coherent integration spans ~2.6 s, so "deeper
+/// correlation" isn't necessarily equivalent to "more AWGN SNR" once
+/// channel variation over that interval matters.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 intermediate nsym depths (issue #306 follow-up, VK3NV)"]
+fn fst4_60_diag_nsym_depth_sweep() {
+    // m26/m27 use the wider 100-trial corpus generated for this
+    // follow-up; the rest keep the original 20.
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m22", 20),
+        ("m23", 20),
+        ("m24", 20),
+        ("m25", 20),
+        ("m26", 100),
+        ("m27", 100),
+        ("m28", 20),
+        ("m29", 20),
+        ("m30", 20),
+    ];
+    nsym_depth_sweep_for_channel("awgn", SNR_TAGS);
+}
+
+/// Same sweep, CCIR-moderate fading channel — VK3NV's own caution on
+/// the AWGN-only version above: FST4-60's 8-symbol coherent
+/// integration spans ~2.6 s, so "deeper correlation" isn't necessarily
+/// equivalent to "more AWGN SNR" once channel variation over that
+/// interval matters; recommended confirming any promising AWGN depth
+/// against at least the existing moderate CCIR fading corpus before
+/// calling it an embedded profile. Same 20 trials/SNR as the standard
+/// corpus (`scripts/gen_fst4_sweep_wavs.sh`'s default) — not widened
+/// like AWGN's m26/m27, since this run's purpose is checking whether
+/// the AWGN-derived ranking/shape survives fading at all, not
+/// re-deriving a precise crossing point under fading.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 intermediate nsym depths, CCIR-moderate fading (issue #306 follow-up, VK3NV)"]
+fn fst4_60_diag_nsym_depth_sweep_ccir_moderate() {
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m22", 20),
+        ("m23", 20),
+        ("m24", 20),
+        ("m25", 20),
+        ("m26", 20),
+        ("m27", 20),
+        ("m28", 20),
+        ("m29", 20),
+        ("m30", 20),
+    ];
+    nsym_depth_sweep_for_channel("ccir_moderate", SNR_TAGS);
+}
+
+/// Shared body for [`fst4_60_diag_nsym_depth_sweep`] /
+/// [`fst4_60_diag_nsym_depth_sweep_ccir_moderate`] — everything except
+/// the channel name and the (SNR tag, trial count) grid is identical.
+fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    const BP_MAX_ITER: u32 = 30;
+    const CAPS: [usize; 4] = [4, 5, 6, 8];
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    let mut work: Vec<(&str, u32)> = Vec::new();
+    for &(snr_tag, trials) in snr_tags {
+        for trial in 1..=trials {
+            work.push((snr_tag, trial));
+        }
+    }
+
+    // Returns (snr_idx, per-cap pass/fail in CAPS order).
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, [bool; 4]) {
+        let snr_idx = snr_tags.iter().position(|&(t, _)| t == snr_tag).unwrap();
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            return (snr_idx, [false; 4]);
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let fec = <Fst4s60 as Protocol>::Fec::default();
+        let verify_info =
+            Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+        let mut ok = [false; 4];
+
+        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let df_hz = s2.freq_hz - c.freq_hz;
+            let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+
+            let llr_set = compute_llr_fast::<Fst4s60, f32>(&cs); // nsym=1 -> llra, llrd
+            let llrb = compute_llr_partial::<Fst4s60, f32, f32>(&cs, 2);
+
+            let bp_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 0,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                    mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(&r.info[..77]);
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                })
+            };
+
+            for (i, &cap) in CAPS.iter().enumerate() {
+                if ok[i] {
+                    continue; // already succeeded via an earlier candidate this file
+                }
+                let llr_cap = compute_llr_partial::<Fst4s60, f32, f32>(&cs, cap);
+                let variants: [&Vec<f32>; 4] = [&llr_set.llra, &llrb, &llr_cap, &llr_set.llrd];
+                let bp_ok = variants.iter().any(|llr| is_golden(llr, &bp_opts));
+                if bp_ok {
+                    ok[i] = true;
+                    continue;
+                }
+                if nsync >= osd_attempt_min {
+                    let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter: BP_MAX_ITER,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info,
+                        ..FecOpts::default()
+                    };
+                    if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                        ok[i] = true;
+                    }
+                }
+            }
+        }
+
+        (snr_idx, ok)
+    };
+
+    #[cfg(feature = "parallel")]
+    let results: Vec<(usize, [bool; 4])> = work.par_iter().map(process_one).collect();
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<(usize, [bool; 4])> = work.iter().map(process_one).collect();
+
+    #[derive(Default, Clone, Copy)]
+    struct Tally {
+        hits: [u32; 4],
+        total: u32,
+    }
+    let mut tallies = vec![Tally::default(); snr_tags.len()];
+    for (idx, ok) in &results {
+        let t = &mut tallies[*idx];
+        t.total += 1;
+        for (i, &o) in ok.iter().enumerate() {
+            t.hits[i] += o as u32;
+        }
+    }
+
+    eprintln!("FST4-60 {channel} nsym-depth sweep (cap in {{4,5,6,8}}, OSD on for all):");
+    eprintln!(
+        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>5}",
+        "SNR", "cap=4", "cap=5", "cap=6", "cap=8", "n"
+    );
+    for (&(tag, _), t) in snr_tags.iter().zip(&tallies) {
+        eprintln!(
+            "{:>6} {:>8} {:>8} {:>8} {:>8} {:>5}",
+            tag, t.hits[0], t.hits[1], t.hits[2], t.hits[3], t.total
         );
     }
 }
