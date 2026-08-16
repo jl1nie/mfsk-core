@@ -3462,3 +3462,109 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
         }
     }
 }
+
+/// VK3NV's issue #306 item 2 follow-up: WSJT-X's FST4 decoder retries
+/// each candidate at timing offsets `i0-1, i0, i0+1` (building fresh
+/// 1/2/4/8-symbol bit-metric sets at each), which mfsk-core's own
+/// single-position dispatch doesn't do. For the 5 CCIR-moderate m26
+/// "old-only" trials found by `fst4_60_diag_npre_osd_bug_hunt_ccir_
+/// moderate` (old unpruned OSD decoded; new npre1/npre2 OSD didn't) --
+/// does giving the *new* npre decoder the same `i0±1` timing diversity
+/// recover any of them? If so, part of the apparent npre/CCIR recall
+/// gap is really a missing-timing-diversity gap, not an OSD-pruning
+/// gap.
+#[test]
+#[ignore = "manual diagnostic — WSJT-X-style i0±1 timing retry on CCIR-moderate old-only trials (issue #306 item 2, VK3NV)"]
+fn fst4_60_diag_i0_retry_ccir_old_only() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const OLD_ONLY_TRIALS: &[u32] = &[2, 15, 33, 45, 67];
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+    for &trial in OLD_ONLY_TRIALS {
+        let path = dir.join(format!("fst4_60_ccir_moderate_m26_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            eprintln!("trial {trial}: WAV missing, skip");
+            continue;
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+        let mut recovered = false;
+        let mut best_nsync_by_offset = [0u32; 3];
+        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let df_hz = s2.freq_hz - c.freq_hz;
+            let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+
+            for (oi, &di0) in [-1i32, 0, 1].iter().enumerate() {
+                let i0 = s2.i0 + di0;
+                let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                let nsync = sync_quality::<Fst4s60>(&cs);
+                best_nsync_by_offset[oi] = best_nsync_by_offset[oi].max(nsync);
+                if nsync <= 16 {
+                    continue;
+                }
+                let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+                let variants: [&Vec<f32>; 4] =
+                    [&llr_set.llra, &llr_set.llrb, &llr_set.llre, &llr_set.llrc];
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                    recovered = true;
+                }
+                if !recovered && nsync >= osd_attempt_min {
+                    let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter: 30,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info,
+                        ..FecOpts::default()
+                    };
+                    if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                        recovered = true;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "trial {trial}: recovered_with_i0_retry={recovered}  best_nsync(i0-1,i0,i0+1)={:?}",
+            best_nsync_by_offset
+        );
+    }
+}
