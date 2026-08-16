@@ -1467,6 +1467,82 @@ untouched. `BP_ONLY`'s own remaining cost (31.023 s) is still ~4.4×
 over the ~7 s budget on its own — the next quantitatively meaningful
 lever, if one exists, is back on that side of the split, not OSD.
 
+**Seventeenth attempt: rung-major scheduling + a real `llrd` ablation
+(issue #306 item 3, VK3NV).** VK3NV's proposal: schedule by rung
+instead of by candidate — try every candidate's `nsym=1` before any
+candidate's `nsym=2`, and so on — so a deadline-constrained embedded
+receiver reports its easy decodes almost immediately instead of
+depending on where they happen to land in the candidate list. Two-step
+plan: (1) host-side correctness + a host-timing-projected anytime
+curve, (2) a real implementation + real-hardware measurement.
+
+Step 1 found the concept holds: on the real FST4-60 golden recording,
+the actual candidate order happens to put both real decodes first
+(lucky — depth-first decodes them in ~0.15s/0.30s), but a worst-case
+reordering (both decoding candidates moved last) pushes depth-first to
+~30.0s/30.2s of a 30.15s total, while rung-major bounds
+time-to-first-decode to ~7.4s regardless of order (same total work
+either way, confirming the reordering doesn't change *what* gets
+decoded, only *when*).
+
+Before committing to a full rung-major implementation, a stage
+ablation (`fst4_60_diag_stage_ablation`/`_ccir_moderate`, 100
+trials/SNR near crossing) asked whether all six of production's BP/OSD
+stages (`llra`, `llrb`, `llre`/mid, `llrc`/max, `llrd`, then OSD on all
+five) are worth scheduling at all: **`llrd` (the normalised-nsym=1
+variant, tried *last* in production) contributes exactly zero
+additional recall**, on both AWGN and CCIR-moderate, in every
+configuration tested (byte-identical hit counts with/without it). Not
+a rung-major-specific simplification — a genuine 5-stage design for
+this protocol, per the user's framing: this pipeline serves FST4
+embedded specifically, so it doesn't need to preserve
+`engine::pipeline::process_candidate_basic_impl`'s cross-protocol
+genericity.
+
+Step 2: `fst4::rung_major::decode_rung_major<P>` — a real,
+host-tested, FST4-specific function (not folded into the shared
+`process_candidate_basic_impl`, which stays untouched for FT4/FT8/
+FST4/MSK144). Five stages, `llrd` dropped, `skip_llrc` mirroring the
+existing `no8_osd` trade-off. Verification found a real bug before
+trusting any number: the first version never applied the frequency
+correction (`freq_shift_cd0` with `df_hz = refined_freq_hz -
+cand.freq_hz`) `process_candidate_basic_impl`'s own `try_position`
+closure applies — `RungMajorCandidate` had conflated coarse and
+refined frequency into one field, silently zeroing `df_hz` and
+mis-syncing exactly the marginal candidates this whole exercise is
+about. Surfaced because a first real-hardware total (12.500 s) looked
+implausibly good against the known 43.134 s baseline; a direct
+nsync-gate candidate count against the actual baked embedded asset
+found only 4 of 41 candidates clearing the gate instead of the
+expected 6, confirming the bug rather than a genuine algorithmic
+win — fixed, and the 6 expected hard candidates reappeared with
+sensible per-stage timings.
+
+**Corrected real-hardware measurement** (same 41 baked candidates,
+`llrd` dropped, `skip_llrc` as the only other variable):
+
+| | 6-stage (production shape) | 5-stage (`decode_rung_major`) | speedup |
+|---|---:|---:|---:|
+| `full` | 43.134 s | **40.102 s** | 1.08× |
+| `no8_osd` | 17.147 s | **13.643 s** | 1.26× |
+
+2/2 real decodes unchanged. **Cumulative from the 89.411 s baseline:
+`no8_osd` is now 6.55×, ≈1.95× over the ~7 s budget** — the best
+figure this investigation has produced. Dual-core projections: 13.643 s
+÷ WSPR's measured 1.35–1.47× yield is 9.28–10.1 s (still over budget);
+the optimistic 2.0× ceiling reaches **6.82 s — under the 7 s target
+for the first time in this investigation**, though only at that
+ceiling, not the measured dual-core yield.
+
+Rung-major scheduling itself (the ordering property, as opposed to the
+`llrd` ablation) hasn't yet been measured on real hardware in isolation
+— `decode_rung_major` runs the stages in rung-major order by
+construction, but this session's real-hardware numbers above measure
+its *total*, not a depth-first-vs-rung-major latency comparison on
+device the way the host projection did. That would need a depth-first
+counterpart built on the same 5-stage set for a fair on-device A/B —
+not done this round.
+
 ## Where to go next
 
 By reader intent:
