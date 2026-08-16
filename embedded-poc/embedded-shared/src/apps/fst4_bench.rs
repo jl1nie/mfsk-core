@@ -939,7 +939,7 @@ fn run_rung_major(refined_bin: &[u8]) {
     ] {
         let t0 = now_us();
         let results = mfsk_core::fst4::rung_major::decode_rung_major_timed::<Fst4s60>(
-            &inputs, skip_llrc, skip_osd, None,
+            &inputs, skip_llrc, skip_osd, &[0], None,
         )
         .0;
         let total_us = now_us() - t0;

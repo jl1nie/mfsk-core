@@ -55,23 +55,33 @@
 //! `docs/reference/EMBEDDED.md`'s "Fourteenth attempt" for the AWGN/
 //! CCIR recall cost this carries.
 //!
-//! **Deliberately does *not* include issue #308's `i0±1` timing-jitter
-//! retry**, even though that fix landed in `process_candidate_basic_
-//! impl` (host) the same day and is a genuine WSJT-X-fidelity
-//! improvement there. Tried it here first — real-hardware measurement
-//! found it triples `full`'s total (40.102s → 121.281s) and more than
-//! doubles `no8_osd`'s (13.643s → 34.200s), for a recall gain of only a
-//! few points at the SNRs checked (`fst4_60_diag_i0_offset_ablation`:
-//! AWGN m27 74→82/100, CCIR-moderate m26 18→23/100 — real, but nowhere
-//! near proportional to a 2-3× cost). Host has no ~7s deadline to
-//! protect, so #308's fix is unconditionally worth it there; embedded's
-//! tight budget means the same fix is a bad trade *for this specific
-//! constraint*, not a bad fix in general. This is why the two call
-//! sites are allowed to diverge instead of one "more faithful" ladder
-//! serving both: WSJT-X-fidelity and embedded feasibility are different
-//! questions here, and conflating them would have made either the host
-//! recall fix contingent on embedded's budget, or the embedded ladder
-//! contingent on a cost it can't afford.
+//! `offsets`: issue #308 ported `process_candidate_basic_impl`'s `i0±1`
+//! timing-jitter retry (WSJT-X `fst4_decode.f90`'s `ijitter ∈ {0, +1,
+//! -1}`) to host — a genuine recall win there, but real-hardware
+//! measurement found it triples `full`'s total (40.102s → 121.281s) and
+//! more than doubles `no8_osd`'s (13.643s → 34.200s) if ported here
+//! unconditionally too, for a recall gain of only a few points at the
+//! SNRs checked (`fst4_60_diag_i0_offset_ablation`: AWGN m27 74→82/100,
+//! CCIR-moderate m26 18→23/100). Host has no ~7s deadline to protect,
+//! so #308 is worth it there unconditionally; embedded is not one fixed
+//! answer — a monitoring-style deployment that can tolerate spanning
+//! slots has a very different cost/recall trade-off than one with a
+//! hard per-slot deadline. Rather than picking one policy, `offsets` is
+//! the caller's choice, same shape as `skip_llrc`/`skip_osd` below:
+//!
+//! | `offsets` | relative host cost | recall (AWGN m27 / CCIR-moderate m26) |
+//! |---|---:|---|
+//! | `&[0]` | 1.00× | 74/100 / 18/100 |
+//! | `&[0, -1]` | 1.84× | 79/100 / 21/100 |
+//! | `&[0, 1, -1]` | 2.83× (real hardware: `full` 3.02×, `no8_osd` 2.51×) | 82/100 / 23/100 |
+//!
+//! (`-1` alone consistently outperforms `+1` alone at these SNRs, which
+//! is why `&[0, -1]` is the natural two-offset middle ground rather than
+//! `&[0, 1]` — see `fst4_60_diag_i0_offset_ablation`'s full 4-way table
+//! for the `+1`-alone numbers.) `&[0]` is the deadline-tight default
+//! `decode_rung_major`'s 2-arg wrapper uses; nothing here picks `&[0,
+//! -1]` or `&[0, 1, -1]` as *the* embedded answer — that's a deployment
+//! decision, not a decoder one.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -115,8 +125,11 @@ pub struct RungMajorCandidate {
     pub i0: i32,
 }
 
-/// Decode a full candidate list rung-major instead of depth-first. See
-/// the module doc comment for the full rationale. `skip_llrc` mirrors
+/// Decode a full candidate list rung-major instead of depth-first,
+/// trying only the refined `i0` position (`offsets = &[0]`) — the
+/// deadline-tight default. See the module doc comment for the full
+/// rationale, and [`decode_rung_major_timed`] if a caller wants
+/// `offsets` or `skip_osd` control too. `skip_llrc` mirrors
 /// `engine::pipeline`'s `skip_llr_nsym_max` (the `no8_osd` trade-off) —
 /// `false` reproduces every candidate's full 4-BP-rung + OSD attempt,
 /// `true` drops the `LLR_NSYM_MAX` rung from both BP and OSD's variant
@@ -134,24 +147,28 @@ where
     P: Protocol,
     P::Fec: BpPooledFec,
 {
-    decode_rung_major_timed::<P>(candidates, skip_llrc, false, None).0
+    decode_rung_major_timed::<P>(candidates, skip_llrc, false, &[0], None).0
 }
 
-/// Same as [`decode_rung_major`], plus optional per-candidate,
-/// per-stage wall-clock timing — issue #306 item 3 follow-up (a
-/// same-candidate-set old-vs-new total came out far larger than
-/// dropping one cheap `llrd` stage should plausibly explain; this is
-/// the instrumentation to find out *which* stage the gap is actually
-/// in, rather than guessing). `clock`, when `Some`, is called
-/// immediately before and after each (candidate, stage) unit of work —
-/// a plain `fn() -> i64` so both host (`std::time::Instant`-backed) and
-/// embedded (`esp_timer_get_time`) callers can supply one without this
-/// `no_std` crate depending on either. Returns `(results,
-/// per_candidate_stage_us)` where the second element is `None` when
-/// `clock` is `None`, else one `[i64; 5]` per input candidate (stage
-/// order: llra, llrb, llre, llrc, OSD — `0` for any stage this
-/// candidate never reached, e.g. filtered by the `nsync` gate or
-/// `skip_llrc`).
+/// Same as [`decode_rung_major`], plus `offsets` (which `i0` timing
+/// positions to try — see the module doc's table for the cost/recall
+/// trade-off of `&[0]` / `&[0, -1]` / `&[0, 1, -1]`; must be non-empty)
+/// and optional per-candidate, per-stage wall-clock timing — issue #306
+/// item 3 follow-up (a same-candidate-set old-vs-new total came out far
+/// larger than dropping one cheap `llrd` stage should plausibly
+/// explain; this is the instrumentation to find out *which* stage the
+/// gap is actually in, rather than guessing). `clock`, when `Some`, is
+/// called immediately before and after each (candidate, offset,
+/// sub-stage) unit of work — a plain `fn() -> i64` so both host
+/// (`std::time::Instant`-backed) and embedded (`esp_timer_get_time`)
+/// callers can supply one without this `no_std` crate depending on
+/// either. Returns `(results, per_candidate_stage_us)` where the second
+/// element is `None` when `clock` is `None`, else one
+/// `Vec<i64>` of length `offsets.len() * 5` per input candidate,
+/// offset-major (stage `s`: `s / 5` selects the offset in `offsets`,
+/// `s % 5` selects the sub-stage in llra/llrb/llre/llrc/OSD order) — `0`
+/// for any stage this candidate never reached, e.g. filtered by the
+/// `nsync` gate or `skip_llrc`.
 pub fn decode_rung_major_timed<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
@@ -163,12 +180,17 @@ pub fn decode_rung_major_timed<P>(
     // `full`'s numbers. `false` for every other caller (behaves exactly
     // as before).
     skip_osd: bool,
+    // Which `i0` offsets to try, offset-major (see the module doc's
+    // cost/recall table) -- deployment choice, not a fixed policy.
+    offsets: &[i32],
     clock: Option<fn() -> i64>,
-) -> (Vec<Option<DecodeResult>>, Option<Vec<[i64; 5]>>)
+) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
     P: Protocol,
     P::Fec: BpPooledFec,
 {
+    assert!(!offsets.is_empty(), "decode_rung_major_timed: offsets must be non-empty");
+
     let nsym_mid = P::LLR_NSYM_MID.expect(
         "decode_rung_major is FST4-specific: P::LLR_NSYM_MID must be set (see module doc)",
     ) as usize;
@@ -178,18 +200,26 @@ where
     let (osd_attempt_min, osd_depth3_min) = osd_escalation_gates::<P>();
     let verify_info = Some(<P::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
 
-    // 5 stages: llra, llrb, llre(mid), llrc(max, unless skip_llrc), OSD.
-    // `llrd` intentionally omitted -- see module doc.
-    const N_STAGES: usize = 5;
+    // 5 sub-stages per offset: llra, llrb, llre(mid), llrc(max, unless
+    // skip_llrc), OSD. `llrd` intentionally omitted -- see module doc.
+    const N_SUBSTAGES: usize = 5;
+    let n_stages = offsets.len() * N_SUBSTAGES;
 
-    struct CandState<'a> {
-        input: &'a RungMajorCandidate,
+    #[derive(Default)]
+    struct OffsetState {
+        computed: bool,
         cs: Vec<crate::engine::scalar::Cmplx<f32>>,
         nsync: u32,
         llra: Vec<f32>,
         llrb: Vec<f32>,
         llre: Vec<f32>,
         llrc: Vec<f32>,
+    }
+
+    struct CandState<'a> {
+        input: &'a RungMajorCandidate,
+        cd0: Vec<Complex32>,
+        offsets: Vec<OffsetState>,
         decoded: Option<DecodeResult>,
     }
 
@@ -200,6 +230,7 @@ where
     fn build_result<P: Protocol>(
         mut r: crate::engine::protocol::FecResult,
         input: &RungMajorCandidate,
+        i0: i32,
         ds_rate: f32,
         tx_start: f32,
         pass: u8,
@@ -211,7 +242,7 @@ where
             // own `refined.freq_hz` -- *not* `input.cand.freq_hz` (the
             // pre-refine coarse position).
             freq_hz: input.refined_freq_hz,
-            dt_sec: (input.i0 as f32) / ds_rate - tx_start,
+            dt_sec: (i0 as f32) / ds_rate - tx_start,
             hard_errors: r.hard_errors,
             sync_score: input.cand.score,
             pass,
@@ -237,27 +268,15 @@ where
             // version of this function did) silently mis-syncs every
             // candidate whose coarse and refined frequency estimates
             // differ, which in practice is exactly the marginal ones
-            // this whole module exists to schedule better.
+            // this whole module exists to schedule better. The
+            // frequency shift doesn't depend on the timing offset, so
+            // it's still computed once per candidate, not per offset.
             let df_hz = input.refined_freq_hz - input.cand.freq_hz;
             let cd0 = super::super::engine::sync2d::freq_shift_cd0(&input.cd0, df_hz, ds_rate);
-            let cs = symbol_spectra::<P>(&cd0, input.i0);
-            let nsync = sync_quality::<P>(&cs);
-            // Lazily filled per-stage below -- computing all four up
-            // front here would defeat the whole point (the eager-vs-
-            // lazy distinction `process_candidate_basic_impl`'s own doc
-            // comment explains). Each is filled exactly once, the first
-            // time its stage runs for this candidate, regardless of
-            // which order stages run in overall. `cs` itself is the one
-            // thing every stage needs, so it's computed once here and
-            // kept, not recomputed per stage.
             CandState {
                 input,
-                cs,
-                nsync,
-                llra: Vec::new(),
-                llrb: Vec::new(),
-                llre: Vec::new(),
-                llrc: Vec::new(),
+                cd0,
+                offsets: (0..offsets.len()).map(|_| OffsetState::default()).collect(),
                 decoded: None,
             }
         })
@@ -273,53 +292,75 @@ where
         }
     };
 
-    let mut per_stage_us: Vec<[i64; 5]> = vec![[0i64; 5]; candidates.len()];
+    let mut per_stage_us: Vec<Vec<i64>> = vec![vec![0i64; n_stages]; candidates.len()];
 
-    for stage in 0..N_STAGES {
-        if stage == 3 && skip_llrc {
+    for stage in 0..n_stages {
+        let offset_idx = stage / N_SUBSTAGES;
+        let substage = stage % N_SUBSTAGES;
+        if substage == 3 && skip_llrc {
             continue;
         }
+        let ioffset = offsets[offset_idx];
         for (idx, st) in states.iter_mut().enumerate() {
-            if st.decoded.is_some() || st.nsync <= SYNC_Q_MIN {
+            if st.decoded.is_some() {
                 continue;
             }
-            let fec = P::Fec::default();
-            let mut bp_scratch = <P::Fec as BpPooledFec>::Scratch::default();
             let t0 = clock.map(|c| c());
 
-            match stage {
+            let off = &mut st.offsets[offset_idx];
+            if !off.computed {
+                let i0 = st.input.i0 + ioffset;
+                off.cs = symbol_spectra::<P>(&st.cd0, i0);
+                off.nsync = sync_quality::<P>(&off.cs);
+                off.computed = true;
+            }
+            if off.nsync <= SYNC_Q_MIN {
+                if let (Some(clk), Some(t0)) = (clock, t0) {
+                    per_stage_us[idx][stage] = clk() - t0;
+                }
+                continue;
+            }
+
+            let fec = P::Fec::default();
+            let mut bp_scratch = <P::Fec as BpPooledFec>::Scratch::default();
+            let i0 = st.input.i0 + ioffset;
+
+            match substage {
                 0 => {
-                    st.llra = compute_llr_fast::<P, f32>(&st.cs).llra;
-                    if let Some(r) = fec.decode_soft_pooled(&st.llra, &bp_opts(0), &mut bp_scratch) {
-                        st.decoded = Some(build_result::<P>(r, st.input, ds_rate, tx_start, 0));
+                    off.llra = compute_llr_fast::<P, f32>(&off.cs).llra;
+                    if let Some(r) = fec.decode_soft_pooled(&off.llra, &bp_opts(0), &mut bp_scratch) {
+                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 0));
                     }
                 }
                 1 => {
-                    st.llrb = compute_llr_partial::<P, f32, f32>(&st.cs, 2);
-                    if let Some(r) = fec.decode_soft_pooled(&st.llrb, &bp_opts(0), &mut bp_scratch) {
-                        st.decoded = Some(build_result::<P>(r, st.input, ds_rate, tx_start, 1));
+                    off.llrb = compute_llr_partial::<P, f32, f32>(&off.cs, 2);
+                    if let Some(r) = fec.decode_soft_pooled(&off.llrb, &bp_opts(0), &mut bp_scratch) {
+                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 1));
                     }
                 }
                 2 => {
-                    st.llre = compute_llr_partial::<P, f32, f32>(&st.cs, nsym_mid);
-                    if let Some(r) = fec.decode_soft_pooled(&st.llre, &bp_opts(0), &mut bp_scratch) {
-                        st.decoded = Some(build_result::<P>(r, st.input, ds_rate, tx_start, 6));
+                    off.llre = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_mid);
+                    if let Some(r) = fec.decode_soft_pooled(&off.llre, &bp_opts(0), &mut bp_scratch) {
+                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 6));
                     }
                 }
                 3 => {
-                    st.llrc = compute_llr_partial::<P, f32, f32>(&st.cs, nsym_max);
-                    if let Some(r) = fec.decode_soft_pooled(&st.llrc, &bp_opts(0), &mut bp_scratch) {
-                        st.decoded = Some(build_result::<P>(r, st.input, ds_rate, tx_start, 2));
+                    off.llrc = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_max);
+                    if let Some(r) = fec.decode_soft_pooled(&off.llrc, &bp_opts(0), &mut bp_scratch) {
+                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 2));
                     }
                 }
                 4 => {
-                    if skip_osd || st.nsync < osd_attempt_min {
+                    if skip_osd || off.nsync < osd_attempt_min {
+                        if let (Some(clk), Some(t0)) = (clock, t0) {
+                            per_stage_us[idx][stage] = clk() - t0;
+                        }
                         continue;
                     }
-                    let osd_depth: u32 = if st.nsync >= osd_depth3_min { 3 } else { 2 };
-                    let mut variants: Vec<&Vec<f32>> = vec![&st.llra, &st.llrb, &st.llre];
+                    let osd_depth: u32 = if off.nsync >= osd_depth3_min { 3 } else { 2 };
+                    let mut variants: Vec<&Vec<f32>> = vec![&off.llra, &off.llrb, &off.llre];
                     if !skip_llrc {
-                        variants.push(&st.llrc);
+                        variants.push(&off.llrc);
                     }
                     let mut hit: Option<crate::engine::protocol::FecResult> = None;
                     for llr in variants {
@@ -330,7 +371,7 @@ where
                     }
                     if let Some(r) = hit {
                         let pass = if skip_llrc { 4 } else { 5 };
-                        st.decoded = Some(build_result::<P>(r, st.input, ds_rate, tx_start, pass));
+                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, pass));
                     }
                 }
                 _ => unreachable!(),

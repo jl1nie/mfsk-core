@@ -3448,7 +3448,8 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
         })
         .collect();
 
-    let (results, timings) = decode_rung_major_timed::<Fst4s60>(&cands, false, false, Some(host_clock_us));
+    let (results, timings) =
+        decode_rung_major_timed::<Fst4s60>(&cands, false, false, &[0], Some(host_clock_us));
     let timings = timings.unwrap();
     eprintln!("decoded: {}/{}", results.iter().flatten().count(), cands.len());
     eprintln!("{:>4} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}", "idx", "freq", "llra_us", "llrb_us", "llre_us", "llrc_us", "osd_us", "decoded");
@@ -3762,4 +3763,136 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
             tag, t.hits[0], t.hits[1], t.hits[2], t.hits[3], t.total
         );
     }
+}
+
+/// Quick host-timing read (not embedded-calibrated, but relative cost
+/// across offset configs transfers reasonably per this investigation's
+/// established host-projection-then-hardware-confirm pattern) for the
+/// `{0,-1}` middle ground the offset ablation suggested might be worth
+/// its own real-hardware measurement, instead of jumping straight from
+/// `{0}` to `{0,+1,-1}`. Times each offset's full symbol_spectra+LLR+
+/// BP/OSD cost on the 6 known-hard candidates from the real golden WAV
+/// (the ones that pay for whichever offsets are tried; the other ~35
+/// candidates die at the nsync gate on offset 0 for negligible cost
+/// regardless of config).
+#[test]
+#[ignore = "manual diagnostic — host-timing read for the {0,-1} i0-jitter middle ground (issue #306 follow-up)"]
+fn fst4_60_diag_i0_offset_host_timing() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::refine_candidate_position;
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::freq_shift_cd0;
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    use std::time::Instant;
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let refined: Vec<_> = raw
+        .iter()
+        .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    let mut kept: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+            kept.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    survivors.sort_unstable();
+
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    // Time each offset independently for every candidate whose offset=0
+    // clears the nsync gate (i.e. the "hard" set this whole cost story
+    // is about) -- offsets tried unconditionally here (not short-
+    // circuited on success) so each one's *own* full cost is visible,
+    // matching what a real embedded run pays for a candidate that
+    // fails at every offset it's given.
+    let mut total_by_offset = [0u128; 3]; // [0, +1, -1], microseconds
+    let mut hard_count = 0;
+
+    for &i in &survivors {
+        let (cd0_raw, refined_freq_hz, i0, _score) = &refined[i];
+        let cand_freq_hz = raw[i].freq_hz;
+        let df_hz = refined_freq_hz - cand_freq_hz;
+        let cd0 = freq_shift_cd0(cd0_raw, df_hz, ds_rate);
+
+        let cs0 = symbol_spectra::<Fst4s60>(&cd0, *i0);
+        if sync_quality::<Fst4s60>(&cs0) <= 16 {
+            continue; // not one of the "hard" candidates -- negligible cost regardless of offset config
+        }
+        hard_count += 1;
+
+        for (oi, &dioff) in [0i32, 1, -1].iter().enumerate() {
+            let t0 = Instant::now();
+            let ioff = i0 + dioff;
+            let cs = symbol_spectra::<Fst4s60>(&cd0, ioff);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+            if nsync > 16 {
+                let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+                let variants: [&Vec<f32>; 4] =
+                    [&llr_set.llra, &llr_set.llrb, &llr_set.llre, &llr_set.llrc];
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                for llr in &variants {
+                    fec.decode_soft(llr, &bp_opts);
+                }
+                if nsync >= osd_attempt_min {
+                    let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    let osd_opts = FecOpts {
+                        bp_max_iter: 30,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info,
+                        ..FecOpts::default()
+                    };
+                    for llr in &variants {
+                        fec.decode_soft(llr, &osd_opts);
+                    }
+                }
+            }
+            total_by_offset[oi] += t0.elapsed().as_micros();
+        }
+    }
+
+    eprintln!("hard candidates (offset=0 clears nsync gate): {hard_count}");
+    eprintln!(
+        "host total: offset=0 {}us, offset=+1 {}us, offset=-1 {}us",
+        total_by_offset[0], total_by_offset[1], total_by_offset[2]
+    );
+    let t0 = total_by_offset[0] as f64;
+    let t01 = t0 + total_by_offset[2] as f64; // {0,-1}
+    let tall = t0 + total_by_offset[1] as f64 + total_by_offset[2] as f64; // {0,+1,-1}
+    eprintln!(
+        "relative cost: {{0}}=1.00x  {{0,-1}}={:.2}x  {{0,+1,-1}}={:.2}x",
+        t01 / t0,
+        tall / t0
+    );
 }
