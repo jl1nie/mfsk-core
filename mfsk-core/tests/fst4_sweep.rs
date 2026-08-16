@@ -2285,7 +2285,14 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
     use rayon::prelude::*;
 
     const BP_MAX_ITER: u32 = 30;
-    const CAPS: [usize; 4] = [4, 5, 6, 8];
+    // VK3NV's item 2: "caps something like 1/2/4/6/8". `llra`/`llrb`
+    // (nsym=1/2) and `llrd` (normalised nsym=1) are already tried as
+    // fixed baseline variants alongside whichever `cap` swaps the deep
+    // rung — cap=1/2 here just make the swapped-in deep rung redundant
+    // with an existing baseline variant, which is exactly "no rung
+    // beyond nsym=1/2" the way cap=4/5/6/8 already meant "no rung beyond
+    // nsym=cap". No special-casing needed, same shape throughout.
+    const CAPS: [usize; 5] = [1, 2, 4, 6, 8];
 
     let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
@@ -2298,12 +2305,21 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
         }
     }
 
-    // Returns (snr_idx, per-cap pass/fail in CAPS order).
-    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, [bool; 4]) {
+    // 0 = miss, 1 = correct (golden message), 2 = false positive
+    // (CRC-valid but a different message) -- VK3NV's item 2 ask: for a
+    // monitoring application, a wrong-but-valid decode is worse than a
+    // missed marginal one, so it's tracked separately rather than
+    // folded into "miss" the way a plain recall sweep would.
+    const MISS: u8 = 0;
+    const CORRECT: u8 = 1;
+    const FALSE_POSITIVE: u8 = 2;
+
+    // Returns (snr_idx, per-cap outcome in CAPS order).
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, [u8; 5]) {
         let snr_idx = snr_tags.iter().position(|&(t, _)| t == snr_tag).unwrap();
         let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
         let Some(audio) = load_wav_i16_opt(&path) else {
-            return (snr_idx, [false; 4]);
+            return (snr_idx, [MISS; 5]);
         };
         let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
@@ -2312,7 +2328,7 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
         let verify_info =
             Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
 
-        let mut ok = [false; 4];
+        let mut outcome = [MISS; 5];
 
         for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
             let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
@@ -2339,25 +2355,41 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
                 verify_info,
                 ..FecOpts::default()
             };
-            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
-                fec.decode_soft(llr, opts).is_some_and(|mut r| {
+            // Returns MISS / CORRECT / FALSE_POSITIVE for this one
+            // decode attempt (CRC failure vs. wrong-message-but-CRC-
+            // valid vs. the golden message).
+            let classify = |llr: &Vec<f32>, opts: &FecOpts| -> u8 {
+                fec.decode_soft(llr, opts).map_or(MISS, |mut r| {
                     mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
                     let mut m77 = [0u8; 77];
                     m77.copy_from_slice(&r.info[..77]);
-                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                        CORRECT
+                    } else {
+                        FALSE_POSITIVE
+                    }
                 })
+            };
+            // Best outcome across a variant set: CORRECT beats
+            // FALSE_POSITIVE beats MISS -- if any variant lands the
+            // golden message that's the outcome to report, even if a
+            // different variant landed a false positive first.
+            let best = |variants: &[&Vec<f32>], opts: &FecOpts| -> u8 {
+                variants.iter().map(|llr| classify(llr, opts)).max().unwrap_or(MISS)
             };
 
             for (i, &cap) in CAPS.iter().enumerate() {
-                if ok[i] {
-                    continue; // already succeeded via an earlier candidate this file
+                if outcome[i] == CORRECT {
+                    continue; // already golden via an earlier candidate this file
                 }
                 let llr_cap = compute_llr_partial::<Fst4s60, f32, f32>(&cs, cap);
                 let variants: [&Vec<f32>; 4] = [&llr_set.llra, &llrb, &llr_cap, &llr_set.llrd];
-                let bp_ok = variants.iter().any(|llr| is_golden(llr, &bp_opts));
-                if bp_ok {
-                    ok[i] = true;
-                    continue;
+                let bp_result = best(&variants, &bp_opts);
+                if bp_result != MISS {
+                    outcome[i] = outcome[i].max(bp_result);
+                    if outcome[i] == CORRECT {
+                        continue;
+                    }
                 }
                 if nsync >= osd_attempt_min {
                     let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
@@ -2368,44 +2400,54 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
                         verify_info,
                         ..FecOpts::default()
                     };
-                    if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
-                        ok[i] = true;
-                    }
+                    let osd_result = best(&variants, &osd_opts);
+                    outcome[i] = outcome[i].max(osd_result);
                 }
             }
         }
 
-        (snr_idx, ok)
+        (snr_idx, outcome)
     };
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(usize, [bool; 4])> = work.par_iter().map(process_one).collect();
+    let results: Vec<(usize, [u8; 5])> = work.par_iter().map(process_one).collect();
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(usize, [bool; 4])> = work.iter().map(process_one).collect();
+    let results: Vec<(usize, [u8; 5])> = work.iter().map(process_one).collect();
 
     #[derive(Default, Clone, Copy)]
     struct Tally {
-        hits: [u32; 4],
+        correct: [u32; 5],
+        false_pos: [u32; 5],
         total: u32,
     }
     let mut tallies = vec![Tally::default(); snr_tags.len()];
-    for (idx, ok) in &results {
+    for (idx, outcome) in &results {
         let t = &mut tallies[*idx];
         t.total += 1;
-        for (i, &o) in ok.iter().enumerate() {
-            t.hits[i] += o as u32;
+        for (i, &o) in outcome.iter().enumerate() {
+            match o {
+                CORRECT => t.correct[i] += 1,
+                FALSE_POSITIVE => t.false_pos[i] += 1,
+                _ => {}
+            }
         }
     }
 
-    eprintln!("FST4-60 {channel} nsym-depth sweep (cap in {{4,5,6,8}}, OSD on for all):");
+    eprintln!("FST4-60 {channel} nsym-depth sweep (cap in {{1,2,4,6,8}}, OSD on for all) -- correct/false-positive:");
     eprintln!(
-        "{:>6} {:>8} {:>8} {:>8} {:>8} {:>5}",
-        "SNR", "cap=4", "cap=5", "cap=6", "cap=8", "n"
+        "{:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>5}",
+        "SNR", "cap=1", "cap=2", "cap=4", "cap=6", "cap=8", "n"
     );
     for (&(tag, _), t) in snr_tags.iter().zip(&tallies) {
         eprintln!(
-            "{:>6} {:>8} {:>8} {:>8} {:>8} {:>5}",
-            tag, t.hits[0], t.hits[1], t.hits[2], t.hits[3], t.total
+            "{:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>5}",
+            tag,
+            format!("{}/{}", t.correct[0], t.false_pos[0]),
+            format!("{}/{}", t.correct[1], t.false_pos[1]),
+            format!("{}/{}", t.correct[2], t.false_pos[2]),
+            format!("{}/{}", t.correct[3], t.false_pos[3]),
+            format!("{}/{}", t.correct[4], t.false_pos[4]),
+            t.total
         );
     }
 }
@@ -2532,4 +2574,63 @@ fn fst4_reported_snr_tracks_injected_all_submodes() {
     check!(mfsk_core::fst4::Fst4s60, 60);
     check!(mfsk_core::fst4::Fst4s120, 120);
     check!(mfsk_core::fst4::Fst4s300, 300);
+}
+
+/// VK3NV's item 2, ccir_good: coarse recon (n=20/SNR) found its
+/// 50%-crossing sits around m25-m26 (cap=8: 15/20, 7/20) — one SNR
+/// step milder than ccir_moderate's, as expected for a gentler fading
+/// profile. Widened to n=100 at m25/m26 for the depth/cap comparison
+/// (`fst4sim` determinism confirmed as usual before extending).
+#[test]
+#[ignore = "manual diagnostic — FST4-60 nsym-depth + false-positive sweep, ccir_good near crossing (issue #306 item 2)"]
+fn fst4_60_diag_nsym_depth_sweep_ccir_good() {
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m23", 20),
+        ("m24", 20),
+        ("m25", 100),
+        ("m26", 100),
+        ("m27", 20),
+        ("m28", 20),
+    ];
+    nsym_depth_sweep_for_channel("ccir_good", SNR_TAGS);
+}
+
+/// VK3NV's item 2, ccir_poor: coarse recon found its 50%-crossing sits
+/// around m24-m25 (cap=8: 12/20, 3/20) — one SNR step harsher than
+/// ccir_moderate's. Widened to n=100 at m24/m25.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 nsym-depth + false-positive sweep, ccir_poor near crossing (issue #306 item 2)"]
+fn fst4_60_diag_nsym_depth_sweep_ccir_poor() {
+    const SNR_TAGS: &[(&str, u32)] = &[
+        ("m20", 20),
+        ("m22", 20),
+        ("m23", 20),
+        ("m24", 100),
+        ("m25", 100),
+        ("m26", 20),
+        ("m27", 20),
+    ];
+    nsym_depth_sweep_for_channel("ccir_poor", SNR_TAGS);
+}
+
+/// VK3NV's item 2: "ideally some noise-only trials" — for WhisperQSO,
+/// a CRC-valid-but-wrong decode is worse than a missed marginal one, so
+/// the false-positive *rate itself* (not just its presence relative to
+/// correct decodes) matters on its own. `fst4sim` doesn't have a
+/// dedicated "no signal" mode; `-60 dB` (100 trials) is used as a
+/// practical proxy — 60 dB below the AWGN floor is indistinguishable
+/// from pure noise for anything this decoder's LLR/BP/OSD stages can
+/// resolve (the signal is still nominally present in the generated
+/// WAV, but no test elsewhere in this corpus, even down to m30/m37,
+/// gets anywhere close to reading it out). Uses
+/// [`nsym_depth_sweep_for_channel`] unchanged — its "correct" column
+/// should read ~0 here by construction (the signal is unrecoverable);
+/// the number to actually look at is "false_pos", broken out per `cap`
+/// exactly like the fading sweeps above, at n=100.
+#[test]
+#[ignore = "manual diagnostic — FST4-60 false-positive rate on noise-only trials (issue #306 item 2, VK3NV)"]
+fn fst4_60_diag_false_positive_rate_noise_only() {
+    const SNR_TAGS: &[(&str, u32)] = &[("m60", 100)];
+    nsym_depth_sweep_for_channel("noise", SNR_TAGS);
 }
