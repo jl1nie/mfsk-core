@@ -794,6 +794,117 @@ upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
 off by default; its `SpotSink::Http` path is implemented but untested
 against a real endpoint.
 
+## FST4 on embedded
+
+A third, distinct embedded story — not started before issue #306
+asked whether it was even feasible, and not predictable from either
+of the two above. FT8's integer `decode_block`/`fixed-point` path
+doesn't apply (FST4 routes through the generic f32
+`engine::pipeline`, same as WSPR); WSPR's own measured result doesn't
+transfer either, since its dominant cost (issue #260: Fano-sequential
+search burning a full node budget per failing candidate, ~51% of a
+scan) is a failure mode specific to WSPR's convolutional decoder —
+FST4's LDPC(240,101) + bounded belief-propagation + OSD-fallback path
+fails cheaply by construction, no analogous budget blowout expected
+a priori. Untested claim, not a measured one, as of this writing.
+
+`fst4` (the Cargo feature) turned out not to need `fft-rustfft`/`std`
+at all — a stricter-than-necessary gate left over from when it was
+grouped with jt9/jt65/q65 under "heavy modes, out of scope of the
+embedded port" (those three do call `rustfft::` directly; FST4 never
+did, it just inherited the same feature bound). `mfsk-core/src/fst4/`
+had two latent `no_std` gaps this had never exercised — `encode.rs`
+and `baseline.rs` both used bare `Vec` relying on `std`'s prelude
+without an explicit `alloc::vec::Vec` import — fixed alongside
+loosening the feature.
+
+Same wideband-stage problem as WSPR, same fix shape: FST4-60A's
+`build_fft_cache` runs one `fft1_size = 746_496`-point forward FFT
+over the 60 s slot, past `esp-dsp`'s 8 192 ceiling exactly like
+WSPR's `decimate_to_baseband`. `engine::pipeline::decode_frame`
+already had a `precomputed_fft` parameter for this (mirroring FT8's
+own `decode_frame_inner`) — unlike WSPR, no new streaming front end
+was needed, just feeding a host-baked cache through an existing seam.
+The bake step (`fst4_bake_golden_precomputed` in
+`mfsk-core/tests/fst4_wsjtx_samples.rs`) round-trips both baked files
+back through `decode_frame` on the host and asserts the result
+matches `DecodeRequest`'s own fresh-computed path exactly.
+
+`embedded-poc/m5stack-cores3-app/src/bin/fst4_bench.rs` (thin shim
+over `embedded_shared::apps::fst4_bench`) is a decoder-only bench —
+deliberately narrower in scope than `wspr_bench` was even at its
+first commit: single-shot, single-core, no PSRAM/SRAM arms, no WiFi.
+Issue #306 asked for exactly that much ("I'm not suggesting a full
+embedded FST4 port... A decoder-only benchmark would be enough"), and
+`wspr_bench`'s own multi-arm shape only exists because real
+measurement rounds kept finding things worth splitting out — building
+that ahead of a first FST4 number would be guessing.
+
+**First real-device attempt (2026-08-16): blocked, cause identified,
+not a memory or compute-budget question after all.**
+
+Two infrastructure bugs surfaced and got fixed on the way to a real
+measurement, neither specific to FST4:
+
+1. **`espflash` writes a 4 MiB flash-size into the app image header
+   when `--flash-size` isn't passed**, regardless of what it
+   correctly auto-detects from the connected chip for its own log
+   output. Every app ever flashed to this CoreS3 before `fst4-bench`
+   happened to fit under 4 MiB total (factory + littlefs), so this
+   was silently wrong the whole time and never mattered — the
+   9 MiB factory partition this bench needed was the first thing to
+   expose it (`E (NN) boot: Failed to verify partition table` /
+   `flash_parts: partition N invalid ... exceeds flash chip size
+   0x400000`, persisting across a full `espflash erase-flash`, since
+   the bad header ships with every rebuild). Fixed in
+   `embedded-poc/scripts/flash-monitor.sh` — takes an optional 6th
+   `FLASH_SIZE` argument (`16mb` for this board) that becomes an
+   explicit `--flash-size` flag; see the script's own comment for the
+   diagnosis. Old callers that don't pass it keep the previous
+   (buggy-but-so-far-harmless) behaviour.
+2. `m5stack-cores3-app/partitions.csv`'s `factory` partition grew
+   from 3 MiB to 9 MiB for the ~7.7 MiB app image the baked assets
+   produce — shared across every `[[bin]]` in that crate, so
+   re-flashing `wspr-app` after this change resets its
+   littlefs-stored settings.
+
+With both fixed, the app boots and loads its baked assets cleanly
+(1 008 ms for 1.44 MiB audio + 5.7 MiB `fft_cache`, PSRAM headroom
+fine — 893 KiB free post-load against the ~14.3 MiB combined
+Vec+baked-bytes peak the module doc flagged as the open risk; that
+risk did not materialize). It then panics on the very first FFT call,
+inside `coarse_sync`'s spectrogram stage, before either the PSRAM
+question or a wall-clock number could be reached:
+
+```
+esp-dsp FFT requires power-of-2 length ≥ 4 (got 7776)
+```
+
+`7776 = NSPS(3888) × NFFT_PER_SYMBOL_FACTOR(2)` —
+`engine::sync::SyncDims::of::<Fst4s60>()`'s coarse-sync spectrogram
+FFT length, and `7776 = 2⁵ × 3⁵` is not a power of two. This is the
+exact same shape as FT8's own spectrogram FFT (`NSPS(1920) × 2 =
+3840`, also not a power of two) — which is why FT8 has a hand-rolled
+`MixedRadix3840Fft` in `embedded-shared::esp_dsp_fft` rather than
+using the ESP-DSP backend's power-of-two-only radix-2 kernel
+directly. FST4 has no equivalent, and would need a second one for
+7776 specifically (and likely a third: `downsample_cached`'s inverse
+FFT at `fft2_size = 6912 = 2⁸ × 27`, also non-power-of-two, has not
+been reached yet — `coarse_sync` panics first).
+
+**So the answer to issue #306's actual question is not yet "does it
+fit the slot" — it's "the embedded FFT backend needs a new
+non-power-of-two kernel before FST4's candidate search can run on
+device at all".** Unlike WSPR's `decimate_to_baseband`, this isn't a
+size problem `esp-dsp` was never going to solve (WSPR's 1 474 560-pt
+whole-slot FFT stays baked host-side by design) — 7776 points is
+trivially small for a per-symbol FFT, it's specifically the *radix*
+ESP-DSP's asm kernels don't support. A mixed-radix or Bluestein
+implementation the way `fft_15.rs`/`fft_mixed_3840.rs` did for FT8
+is the concrete next step, verified bit-exact against `rustfft`
+before it's trusted — real numerical DSP work, not a config change,
+and out of scope for what this session attempted.
+
 ## Where to go next
 
 By reader intent:

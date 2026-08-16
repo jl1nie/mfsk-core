@@ -249,6 +249,153 @@ fn fst4_60_diagnose_golden() {
     }
 }
 
+/// Bake the WSJT-X golden's raw audio and its FST4-60A forward-FFT
+/// cache to two flat binaries for an ESP32-S3 decoder-only bench
+/// (issue #306).
+///
+/// Mirrors `wspr_bake_golden_baseband`
+/// (`mfsk-core/tests/wspr_wsjtx_samples.rs`): `build_fft_cache`'s
+/// `fft1_size = 746_496`-point transform is exactly the stage the
+/// ESP-DSP backend cannot serve (`CONFIG_DSP_MAX_FFT_SIZE_8192`, and
+/// WSPR's `decimate_to_baseband` hit the identical ceiling at a
+/// larger size) — baking it here and feeding it back in via
+/// `decode_frame`'s `precomputed_fft` parameter is what lets the
+/// device measure `coarse_sync` + LLR/BP/OSD without that stage
+/// existing on-device first, same shape issue #260 used for WSPR.
+///
+/// Two files, both little-endian (host and Xtensa are both LE, so the
+/// device reads either with a plain transmute of `include_bytes!`):
+///
+/// ```text
+/// fst4_60_golden_audio.bin:      i16[720000] LE           = 1 440 000 bytes
+/// fst4_60_golden_fft_cache.bin:  (f32 re, f32 im)[746496]  = 5 971 968 bytes
+/// ```
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full,internal-testing --release \
+///  --test fst4_wsjtx_samples fst4_bake_golden_precomputed -- --ignored --nocapture`
+#[test]
+#[ignore = "asset generator — writes embedded-poc/assets/fst4_60_golden_{audio,fft_cache}.bin"]
+fn fst4_bake_golden_precomputed() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    let Some(path) = sample_path() else {
+        panic!("FST4 golden not found — this generator needs the real recording");
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    assert_eq!(
+        fft_cache.len(),
+        FST4_60A_DOWNSAMPLE.fft1_size,
+        "fft_cache length is fixed by fft1_size"
+    );
+
+    let mut audio_bytes = Vec::with_capacity(audio.len() * 2);
+    for &s in &audio {
+        audio_bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    let audio_out = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/fst4_60_golden_audio.bin"
+    ));
+    std::fs::write(&audio_out, &audio_bytes).expect("write audio asset");
+
+    let mut cache_bytes = Vec::with_capacity(fft_cache.len() * 8);
+    for c in &fft_cache {
+        cache_bytes.extend_from_slice(&c.re.to_le_bytes());
+        cache_bytes.extend_from_slice(&c.im.to_le_bytes());
+    }
+    let cache_out = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/fst4_60_golden_fft_cache.bin"
+    ));
+    std::fs::write(&cache_out, &cache_bytes).expect("write fft cache asset");
+
+    eprintln!(
+        "wrote {} ({} bytes = {} samples) and {} ({} bytes = {} complex bins)",
+        audio_out.display(),
+        audio_bytes.len(),
+        audio.len(),
+        cache_out.display(),
+        cache_bytes.len(),
+        fft_cache.len(),
+    );
+
+    // Round-trip check, on the host: re-load both files exactly as the
+    // device bench will, and confirm `decode_frame` fed the baked
+    // cache reaches the same 2 goldens as `DecodeRequest`'s own
+    // fresh-computed path (same params as
+    // `fst4_wsjtx_sample_precision_vs_reference_decoder`: freq_min
+    // 100.0, freq_max 3000.0, sync_min 1.2, max_cand 50; `SYNC_Q_MIN`
+    // (16) and the other defaults `DecodeRequest::new` sets —
+    // `DecodeDepth::FULL`, `DecodeStrictness::Normal`, `EqMode::Off`,
+    // no freq_hint — are threaded through explicitly here since this
+    // test calls `decode_frame` directly rather than through
+    // `DecodeRequest`).
+    let reloaded_audio: Vec<i16> = audio_bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let reloaded_cache: Vec<num_complex::Complex32> = cache_bytes
+        .chunks_exact(8)
+        .map(|b| {
+            num_complex::Complex32::new(
+                f32::from_le_bytes(b[0..4].try_into().unwrap()),
+                f32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(reloaded_audio, audio, "audio asset round-trip mismatch");
+    assert_eq!(
+        reloaded_cache.len(),
+        fft_cache.len(),
+        "fft_cache asset round-trip length mismatch"
+    );
+
+    const SYNC_Q_MIN: u32 = 16;
+    let (baked_results, _cache) = decode_frame::<Fst4s60>(
+        &reloaded_audio,
+        &FST4_60A_DOWNSAMPLE,
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        DecodeDepth::FULL,
+        50,
+        DecodeStrictness::Normal,
+        EqMode::Off,
+        SYNC_Q_MIN,
+        Some(&reloaded_cache),
+        None,
+    );
+    let mut baked_msgs: Vec<String> = baked_results
+        .iter()
+        .filter_map(|r| {
+            let m77: &[u8; 77] = r.message77().try_into().ok()?;
+            unpack77(m77)
+        })
+        .collect();
+    baked_msgs.sort();
+
+    let mut reference_msgs: Vec<String> = FST4_60_FULL_REFERENCE
+        .iter()
+        .map(|g| g.msg.to_string())
+        .collect();
+    reference_msgs.sort();
+
+    assert_eq!(
+        baked_msgs, reference_msgs,
+        "decode_frame fed the baked audio+fft_cache must reach the same \
+         decodes as the golden reference — a mismatch here means the \
+         baked assets are not what the device bench will actually see"
+    );
+}
+
 /// Recall, precision, and SNR together: real `jt9 -7 -p 60` reports
 /// exactly the two decodes in `FST4_60_FULL_REFERENCE` on this
 /// recording, and so does this crate — full recall, budget 0, and

@@ -38,6 +38,21 @@ aes3 = []
 # turned on for real, not just for host differential testing.
 wspr-bench = ["mfsk-core/wspr", "mfsk-core/std", "mfsk-core/wspr-pass2-topn", "mfsk-core/wspr-fano-cap-fast", "mfsk-core/wspr-ddc"]
 
+# `apps::fst4_bench` — the issue #306 embedded-feasibility measurement:
+# does the FST4-60 decoder (candidate search + LLR/BP/OSD, fed a
+# host-baked FFT cache — see that module's doc comment for why the
+# wideband stage can't run on-device) fit inside the ~7 s post-slot
+# margin. No `mfsk-core/std` needed, unlike `wspr-bench` above: FST4
+# routes entirely through the same FFT-backend-agnostic
+# `engine::pipeline` FT8/WSPR already use on embedded (`fst4`'s own
+# Cargo feature stopped forcing `fft-rustfft`/`std` as part of this
+# same issue — see that feature's doc comment in
+# `mfsk-core/Cargo.toml`). `mfsk-core/internal-testing` is needed
+# because `engine::pipeline::decode_frame`'s `precomputed_fft`
+# parameter — the seam this bench depends on — is only `pub` under
+# that feature (issue #203's visibility escape hatch).
+fst4-bench = ["mfsk-core/fst4", "mfsk-core/internal-testing"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }

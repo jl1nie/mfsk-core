@@ -35,6 +35,16 @@ name = "wspr-app"
 path = "src/bin/wspr_app.rs"
 harness = false
 
+# FST4-60 decoder-only bench — issue #306, embedded feasibility
+# question. Separate track from the WSPR bench above: does the FST4
+# decoder (candidate search + LLR/BP/OSD, fed a host-baked FFT cache)
+# fit the ~7 s post-slot margin. See
+# `embedded-shared::apps::fst4_bench`'s module doc comment.
+[[bin]]
+name = "fst4-bench"
+path = "src/bin/fst4_bench.rs"
+harness = false
+
 # Minimal LCD-only bring-up test — diagnostic for the 2026-08-15
 # "nothing shows on the CoreS3 screen" investigation. See its own doc
 # comment.
@@ -107,11 +117,19 @@ heapless = "0.8"
 num-complex = { version = "0.4", default-features = false }
 
 # mfsk-core / FFI: same feature set as the sibling app + bench crates.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+# `fst4`/`internal-testing`: issue #306's decoder-only bench
+# (`fst4-bench` bin) — see `embedded-shared`'s `fst4-bench` feature
+# doc comment for why `fst4` no longer needs `fft-rustfft`/`std` and
+# why `internal-testing` is required regardless (it gates
+# `decode_frame`'s `precomputed_fft` parameter, the seam that bench
+# depends on). Crate-wide like `wspr-bench`'s features below, not
+# scoped to just the `fst4-bench` bin — Cargo has no per-bin feature
+# sets within one crate.
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fst4", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 # Shared decode-pipeline layer (streaming, dual_core, stage1_inc, esp_dsp_fft).
-embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench"] }
+embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench", "fst4-bench"] }
 
 # Board-agnostic app logic (QSO FSM, time sync, TX picker, SNR norm,
 # NVS boot mode, log fanout, WiFi + UDP, UI draw routines).

@@ -173,10 +173,23 @@ wspr-ddc-cascade = []
 # gap.
 msk144       = []
 
-# Heavy modes — these still call `rustfft` directly (out of scope of
-# the embedded port). Pulling them implies the host build via
-# `fft-rustfft` (which transitively requires `std`).
-fst4         = ["fft-rustfft"]
+# Heavy modes — jt9/jt65/q65 still call `rustfft` directly (out of
+# scope of the embedded port; pulling them implies the host build via
+# `fft-rustfft`, which transitively requires `std`).
+#
+# `fst4` is NOT one of these, despite living in this block historically
+# — issue #306 (embedded FST4 feasibility) found no actual `rustfft`
+# reference anywhere under `src/fst4/`: `fst4::decode` routes entirely
+# through `engine::pipeline`/`engine::dsp::downsample`/`engine::sync`,
+# the same FFT-backend-agnostic machinery FT8/WSPR already use on
+# embedded (`with_default_planner`, gated by whichever of
+# `fft-rustfft`/`fft-extern` the caller picked). `cargo check -p
+# mfsk-core --no-default-features --features
+# alloc,fst4,fft-extern,internal-testing` type-checks clean with zero
+# `std`/`rustfft` pulled in. Left unqualified (no forced backend) to
+# match `ft8`/`ft4`/`wspr` above — a caller wanting the host default
+# still gets `fft-rustfft` via `full`/`default`, unaffected.
+fst4         = []
 # `dep:realfft`: JT9's `softsym::AudioFft::build` runs one
 # 653,184-point FFT per scan on real-valued audio — a plain
 # `rustfft` complex-to-complex transform wastes ~2x the work a
