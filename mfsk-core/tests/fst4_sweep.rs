@@ -722,11 +722,12 @@ fn fst4_diag_zsum_osd() {
                 if bp_decode_generic::<Ldpc240_101Params>(llr, None, 30, verify).is_some() {
                     continue; // BP already succeeds — not an OSD-input question for this variant.
                 }
-                let raw_ok =
-                    osd_decode_generic::<Ldpc240_101Params>(llr, 3, LDPC_K, verify).is_some();
+                let raw_ok = osd_decode_generic::<Ldpc240_101Params>(llr, 3, LDPC_K, verify, false)
+                    .is_some();
                 let zsum = bp_llr_zsum::<Ldpc240_101Params>(llr, 2);
                 let zsum_ok =
-                    osd_decode_generic::<Ldpc240_101Params>(&zsum, 3, LDPC_K, verify).is_some();
+                    osd_decode_generic::<Ldpc240_101Params>(&zsum, 3, LDPC_K, verify, false)
+                        .is_some();
 
                 tally.total_variant_attempts += 1;
                 match (raw_ok, zsum_ok) {

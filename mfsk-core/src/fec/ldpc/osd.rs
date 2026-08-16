@@ -591,7 +591,7 @@ pub fn osd_decode_deep(
     ndeep: u8,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ndeep, LDPC_K, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ndeep, LDPC_K, verify, false)
 }
 
 /// OSD order-4 decode with Top-K LLR pruning — pinned to LDPC(174, 91).
@@ -609,7 +609,7 @@ pub fn osd_decode_deep4(
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 4, k4_limit, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 4, k4_limit, verify, false)
 }
 
 /// OSD order-2 decode (default) — pinned to LDPC(174, 91) with the
@@ -621,7 +621,7 @@ pub fn osd_decode_deep4(
 /// single-bit flips and all C(91,2) = 4,095 two-bit flips.
 /// Returns the minimum-weighted CRC-passing codeword, or `None` if none passes.
 pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14))
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14), false)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1511,19 +1511,40 @@ fn osd_setup_generic_packed<P: LdpcParams>(
 
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
 ///
-/// `ndeep`: search depth (1..=4). `k4_limit`: upper bound (exclusive)
-/// on bit indices used in the order-4 extension; ignored when
-/// `ndeep < 4`. `verify`: parity-converged candidate filter; pass
-/// `Some(check_crc)` for codecs whose info bits include an inline
-/// integrity field, `None` to accept any parity-valid candidate.
+/// `ndeep`: search depth (1..=4). `k4_limit`: bound on bit indices used
+/// in the order-4 extension; ignored when `ndeep < 4`. `verify`:
+/// parity-converged candidate filter; pass `Some(check_crc)` for codecs
+/// whose info bits include an inline integrity field, `None` to accept
+/// any parity-valid candidate.
 ///
-/// Algorithm identical to the WSJT-X reference; only the working
-/// buffer shapes are runtime-sized to accommodate either LDPC code.
+/// `k4_tail`: which end of the MRB reliability ordering `k4_limit`
+/// bounds. Row index in `0..k` runs from the *most* reliable MRB bit
+/// (row 0) to the *least* reliable (row `k-1`) — confirmed empirically
+/// (issue #306 follow-up), not just asserted: a synthetic strictly-
+/// monotonic LLR fed through this function's own setup showed
+/// `|llr|` decreasing monotonically from row 0 to row `k-1`. `false`
+/// (existing behaviour, every current caller): `k4` ranges over
+/// `0..k4_limit` — the *most* reliable end — and the extension only
+/// fires when `k1`/`k2`/`k3` are themselves within that same range
+/// (transitively, via `k1<k2<k3`). `true`: `k4` ranges over
+/// `(k-k4_limit)..k` instead — the *least* reliable end, matching this
+/// function's own existing `osd_decode_deep4` doc comment's stated
+/// intent ("restricting k4 to the tail... because errors concentrate
+/// in low-|LLR| bits") — which the `false` behaviour does not actually
+/// implement, despite the doc comment describing it. Added to test
+/// that discrepancy directly (issue #306 follow-up, prompted while
+/// investigating FST4 OSD costs) rather than assume either direction;
+/// `false` for every caller until that AWGN sweep decides one way.
+///
+/// Algorithm identical to the WSJT-X reference otherwise; only the
+/// working buffer shapes are runtime-sized to accommodate either LDPC
+/// code.
 pub fn osd_decode_generic<P: LdpcParams>(
     llr: &[f32],
     ndeep: u8,
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
+    k4_tail: bool,
 ) -> Option<OsdResult> {
     debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
 
@@ -1729,12 +1750,23 @@ pub fn osd_decode_generic<P: LdpcParams>(
                     c3_packed[w] = c2_packed[w] ^ g_packed[k3][w];
                 }
                 try_and_update(&c3_packed);
-                if ndeep >= 4 && k3 + 1 < k4_limit {
-                    for k4 in (k3 + 1)..k4_limit.min(k) {
-                        for w in 0..OSD_WORDS {
-                            c4_packed[w] = c3_packed[w] ^ g_packed[k4][w];
+                if ndeep >= 4 {
+                    // See `k4_tail`'s doc comment above for which end
+                    // of the reliability ordering each branch searches.
+                    // `false` branch unchanged from before `k4_tail`
+                    // existed — same gate, same range.
+                    let (gate, k4_start, k4_end) = if k4_tail {
+                        (k1 >= k.saturating_sub(k4_limit), k3 + 1, k)
+                    } else {
+                        (k3 + 1 < k4_limit, k3 + 1, k4_limit.min(k))
+                    };
+                    if gate {
+                        for k4 in k4_start..k4_end {
+                            for w in 0..OSD_WORDS {
+                                c4_packed[w] = c3_packed[w] ^ g_packed[k4][w];
+                            }
+                            try_and_update(&c4_packed);
                         }
-                        try_and_update(&c4_packed);
                     }
                 }
             }
@@ -2286,8 +2318,9 @@ mod packed_setup_differential {
             .iter()
             .map(|&b| if b == 1 { 10.0 } else { -10.0 })
             .collect();
-        let result = osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None)
-            .expect("clean codeword must decode");
+        let result =
+            osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None, false)
+                .expect("clean codeword must decode");
         assert_eq!(result.info, info);
     }
 }

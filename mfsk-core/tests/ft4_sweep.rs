@@ -484,6 +484,175 @@ fn ft4_diag_weak_trials() {
     }
 }
 
+/// Revisits `FT4_BENCHMARK.md` section 10's "OSD depth-2/4 ... never
+/// fired at all" finding (issue #72, 2026-07-18) — found while
+/// investigating FST4 OSD costs (issue #306 follow-up): `fec::ldpc::
+/// osd::osd_decode_deep4`'s `k4_limit` restricts the order-4 extension
+/// to bit indices `0..k4_limit`, but that's the *most* reliable end of
+/// the MRB ordering (confirmed empirically — see `osd_decode_generic`'s
+/// `k4_tail` doc comment), not the *least* reliable end the function's
+/// own doc comment says it targets ("errors concentrate in low-|LLR|
+/// bits"). If depth-4 really has been searching the wrong 30 bits the
+/// whole time, "never fires" would be the expected symptom regardless
+/// of whether a correctly-directed depth-4 search would actually help —
+/// section 10's conclusion ("OSD strength isn't the source of the AWGN
+/// gap") assumed depth-4 not firing meant depth-4 wasn't useful here,
+/// which doesn't follow if it was never searching the right bits to
+/// begin with.
+///
+/// For every candidate in the same near-crossing AWGN population
+/// section 10 examined (m15-m18) that reaches the real production
+/// depth-4 gate (BP fails on every LLR variant, OSD depth-2/3 also
+/// fails, `nsync` clears `osd_depth3_min`) — i.e. genuinely a case
+/// production would attempt depth-4 OSD on — try both `k4_tail=false`
+/// (today's shipped direction) and `k4_tail=true` (the doc-comment's
+/// stated intent) directly via `osd_decode_generic`, and count which
+/// one(s) recover the golden message.
+#[test]
+#[ignore = "manual diagnostic — k4_limit reliability direction (issue #306 follow-up, revisits FT4_BENCHMARK.md section 10)"]
+fn ft4_diag_k4_tail_direction() {
+    use mfsk_core::ModulationParams;
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, descramble_info, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fec::ldpc::osd::osd_decode_generic;
+    use mfsk_core::fec::ldpc::params::Ldpc174_91Params;
+    use mfsk_core::ft4::Ft4;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+
+    const BP_MAX_ITER: u32 = 40; // FT4 outlier (section 10's own fix), matches ft4_decode.f90:194
+    const K4_LIMIT: usize = 30; // matches osd_decode_deep4's shipped call sites
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Ft4>();
+
+    let mut n_reach_depth4_gate = 0u32;
+    let mut n_head_rescues = 0u32;
+    let mut n_tail_rescues = 0u32;
+    let mut n_either_rescues = 0u32;
+
+    // Widened from section 10's original m15-m18 slice: that band alone
+    // turned out to have zero candidates reaching the real depth-4 gate
+    // at all (BP+depth-2/3 fail *and* nsync clears osd_depth3_min
+    // simultaneously) — before the direction question can be answered,
+    // the gate has to actually fire at least sometimes. m19-m22 (weaker)
+    // included for the same reason.
+    for snr_tag in ["m22", "m21", "m20", "m19", "m18", "m17", "m16", "m15", "m14"] {
+        for trial in 1..=20u32 {
+            let path = dir.join(format!("ft4_awgn_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+            let ds_rate = 12_000.0 / Ft4::NDOWN as f32;
+            let fec = <Ft4 as Protocol>::Fec::default();
+            let verify_info =
+                Some(<<Ft4 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+            for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+                let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FT4_DOWNSAMPLE);
+                // RMS-normalise — `process_candidate_basic_impl` applies
+                // this before `ft4_sync_search`; omitting it broke an
+                // earlier FST4 diagnostic in this same investigation
+                // (silently, reading as 0% recall even at strong SNR).
+                let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for z in cd0.iter_mut() {
+                        *z *= inv;
+                    }
+                }
+                let s2 = ft4_sync_search::<Ft4>(&cd0, c);
+                let df_hz = s2.freq_hz - c.freq_hz;
+                let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+                let cs = symbol_spectra::<Ft4>(&cd0, s2.i0);
+                let nsync = sync_quality::<Ft4>(&cs);
+
+                let llr_set = compute_llr::<Ft4, f32>(&cs);
+                let variants = [&llr_set.llra, &llr_set.llrb, &llr_set.llrc, &llr_set.llrd];
+
+                let bp_opts = FecOpts {
+                    bp_max_iter: BP_MAX_ITER,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                // FT4 also scrambles (`INFO_SCRAMBLE_RVEC` /
+                // `FT4_RVEC`) — descramble before checking the message,
+                // same lesson as the FST4 diagnostic bug above.
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        descramble_info::<Ft4>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+
+                if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                    continue; // plain BP already succeeds
+                }
+                if nsync < osd_attempt_min {
+                    continue; // production wouldn't even attempt OSD here
+                }
+                let osd_depth = if nsync >= osd_depth3_min { 3 } else { 2 };
+                let osd_opts = FecOpts {
+                    bp_max_iter: BP_MAX_ITER,
+                    osd_depth,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                    continue; // depth-2/3 already rescues
+                }
+                if nsync < osd_depth3_min {
+                    continue; // depth-4 gated the same as depth-3 in production
+                }
+
+                n_reach_depth4_gate += 1;
+                let try_k4 = |tail: bool| {
+                    variants.iter().any(|llr| {
+                        osd_decode_generic::<Ldpc174_91Params>(llr, 4, K4_LIMIT, verify_info, tail)
+                            .is_some_and(|mut r| {
+                                descramble_info::<Ft4>(&mut r.info);
+                                let mut m77 = [0u8; 77];
+                                m77.copy_from_slice(&r.info[..77]);
+                                unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                            })
+                    })
+                };
+                let head_ok = try_k4(false);
+                let tail_ok = try_k4(true);
+                if head_ok {
+                    n_head_rescues += 1;
+                }
+                if tail_ok {
+                    n_tail_rescues += 1;
+                }
+                if head_ok || tail_ok {
+                    n_either_rescues += 1;
+                }
+                eprintln!(
+                    "{snr_tag}_{trial:02} freq={:.1} nsync={nsync}/16: head(k4=0..30)={head_ok} tail(k4=tail-30)={tail_ok}",
+                    c.freq_hz
+                );
+            }
+        }
+    }
+    eprintln!(
+        "candidates reaching the real depth-4 gate (BP+depth2/3 all failed, nsync>=osd_depth3_min): {n_reach_depth4_gate}"
+    );
+    eprintln!("head-direction (today's shipped k4_limit, 0..30) rescues: {n_head_rescues}");
+    eprintln!("tail-direction (doc comment's stated intent) rescues: {n_tail_rescues}");
+    eprintln!("either direction rescues: {n_either_rescues}");
+}
+
 /// Hypothesis 2 from `FT4_BENCHMARK.md` section 8's closing notes: does
 /// `ft4_sync_search`'s collapsed single-pass Δt search (one global best
 /// over the full `[-344,1012]` union) ever lose recall relative to
