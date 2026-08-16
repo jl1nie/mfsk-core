@@ -45,6 +45,15 @@ name = "fst4-bench"
 path = "src/bin/fst4_bench.rs"
 harness = false
 
+# LlrScalar (f32 vs Q11i16 vs Q3i8) microbenchmark — issue #198's
+# deprioritized `FecCodec::decode_soft` genericization premise, checked
+# cheaply before committing to that work. See
+# `embedded-shared::apps::scalar_bench`'s module doc comment.
+[[bin]]
+name = "scalar-bench"
+path = "src/bin/scalar_bench.rs"
+harness = false
+
 # Minimal LCD-only bring-up test — diagnostic for the 2026-08-15
 # "nothing shows on the CoreS3 screen" investigation. See its own doc
 # comment.
