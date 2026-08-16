@@ -1363,6 +1363,70 @@ aside. The direction discrepancy is real but currently dormant —
 recorded for whenever a future change (a looser gate, CCIR fading, a
 new caller) might actually exercise it.
 
+**Fifteenth attempt: WSJT-X-faithful `npre1`/`npre2` OSD, replacing the
+unpruned combinatorial search (issue #198).** A collaborator (VK3NV,
+issue #306) asked whether `osd_decode_generic`'s plain
+k1/k2/k3-combinatorial OSD search — shared by FT4, FST4, and MSK144 —
+was even the algorithm WSJT-X itself uses, or whether FT8's own
+WSJT-X-faithful `osd_decode_npre1(_npre2)` port (issue #63) should be
+the generic one instead. Reading WSJT-X's reference sources directly
+confirmed `osd240_101.f90` (FST4) and `osd128_90.f90` (MSK144) use the
+*same* `npre1`/`npre2`/`ntheta`/`ntau` pruned-search architecture as
+FT8's `osd174_91.f90` — only the tuning constants differ. FST4/MSK144's
+`osd_decode_generic` dispatch wasn't just "a different implementation,"
+it was a real WSJT-X-fidelity gap (recorded on issue #198).
+
+With `no8_osd` making OSD the dominant remaining cost in the embedded
+FST4-60 path, this became a performance question too. Before committing
+to the multi-session generic port, a cheap ceiling estimate came first:
+`npre1_pattern_counts` (a counting-only port of `osd240_101.f90`'s
+`nord=1` pass) measured, on the real FST4-60 golden candidates, `ntotal
+= 5151` patterns visited (matching the `k(k+1)/2` closed form for
+K=101, and mfsk-core's own FT8 migration's empirical precedent of
+`~4,186 = 91×92/2` for K=91) with a mean `npostgate = 11` (0.2%)
+actually reaching the expensive full-codeword step — a ~32× reduction
+in combinatorial scale versus the unpruned `C(101,3) ≈ 166,650`.
+
+That ceiling justified the port: `osd_decode_npre_generic<P: LdpcParams>`
+generalises `osd_npre1_pass`/`osd_npre2_pass` over any `LdpcParams` via
+the same `OSD_MAX_N`-bounded fixed-array idiom `osd_decode_generic`
+already uses (`ntheta`/`ntau` as runtime parameters — WSJT-X tunes them
+per protocol *and* per `ndeep`, so they don't fit as trait constants).
+Wired into FST4's OSD dispatch for `ndeep=2` (`ntheta=12`, `npre1`
+only) and `ndeep=3` (`+ntau=14`, `npre1+npre2`) — the only two depths
+FST4 production code requests.
+
+Not bit-exact with what it replaces (a genuinely different search
+strategy), so recall needed its own check rather than a differential
+test. An initial AWGN comparison (m26/m27, 100 trials each) against an
+*earlier, differently-configured* diagnostic pipeline's baseline
+wrongly suggested a 7-point regression at m27 — caught before trusting
+it: a new `internal-testing`-only diagnostic override
+(`fst4_osd_diag_force_old`) reran the *exact* production entry point
+through both algorithms on the same 200 trials for a controlled A/B.
+Result: 96/100 vs 96/100 at m26, 71/100 vs 70/100 at m27 — no
+measurable recall cost. (The earlier "regression" was an apples-to-
+oranges baseline, not a real finding — see this issue's GitHub thread
+for the full account.)
+
+Measured on real CoreS3 hardware, same 41 baked candidates, OSD
+algorithm as the only variable:
+
+| | old (combinatorial) | new (npre1/npre2) | speedup |
+|---|---:|---:|---:|
+| **`full`** (nsym=8+OSD) | 54.087 s | **43.134 s** | 1.25× |
+| **`no8_osd`** | 25.710 s | **17.147 s** | 1.50× |
+
+2/2 real decodes unchanged in both configurations. **Cumulative from
+the original 89.411 s baseline: `full` is now 2.07× (≈6.16× over the
+~7 s budget), `no8_osd` is now 5.21× (≈2.45× over budget)** — the
+best `no8_osd` figure yet, and confirms VK3NV's own read that the
+npre1/npre2 port "looks like the larger potential performance lever."
+Dual-core projections improve accordingly: `no8_osd`'s 17.147 s ÷
+WSPR's measured 1.35–1.47× dual-core yield is 11.7–12.7 s (still over
+budget); the optimistic 2.0× ceiling reaches 8.57 s — close to, but
+not yet under, 7 s.
+
 ## Where to go next
 
 By reader intent:
