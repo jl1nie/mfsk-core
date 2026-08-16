@@ -365,6 +365,58 @@
 //! own stack history. Worth right-sizing down for a future run, not
 //! urgent for a single-shot bench.
 //!
+//! ## Follow-up 7, same day: `no8_osd` — the recall trade-off, verified
+//! then measured
+//!
+//! With the small disassembly-led fixes exhausted (~7.7× over budget),
+//! the user raised the recall-trade-off question again: skip
+//! `LLR_NSYM_MAX=8` entirely (99% of the LLR/BP-side cost)? The one
+//! observation available at the time — this file's own 2 real decodes
+//! never reach `nsym=8` or OSD, converging in 54-58 ms — is exactly a
+//! single-file result this project's own discipline says not to trust
+//! without checking against real AWGN data. `tests/fst4_sweep.rs`'s
+//! `fst4_60_diag_recall_tradeoff` (real FST4-60 AWGN corpus, 20
+//! trials/SNR) found the hypothesis **not confirmed, in the opposite
+//! direction from WSPR's `minsync2`**: near the -26..-28 dB crossing,
+//! both `nsym=8` and OSD carry real recall — but critically, dropping
+//! `nsym=8` while *keeping* OSD (`no8_osd`) recovers *more* recall than
+//! dropping OSD while keeping `nsym=8` (`bp_only`, `DecodeDepth::
+//! BP_ONLY`'s shape) at every SNR tested, despite `nsym=8` being the
+//! far more expensive rung — OSD is a structurally different fallback
+//! (bit-flip search over the LDPC systematic basis) that doesn't need
+//! BP to converge at all, so it rescues candidates `nsym=8` also
+//! misses. Per-*trial* (not just aggregate) monotonicity checks ruled
+//! out a bookkeeping bug behind that result.
+//!
+//! `no8_osd` wasn't reachable via `DecodeDepth` alone (`LlrEffort` is
+//! FT8-only in practice — see its own doc comment). Added
+//! `skip_llr_nsym_max: bool` to `process_candidate_basic_impl` /
+//! `process_candidate_precomputed` (same additive pattern as
+//! `skip_snr`): when `true`, the `LLR_NSYM_MAX` staircase rung is
+//! skipped entirely — both the BP attempt and its slot in OSD's
+//! variant list — while OSD itself runs unmodified. `false` for every
+//! existing caller, full merge gate + clippy green.
+//!
+//! Measured on real CoreS3 hardware, this bench's `MFSK_FST4_BENCH_
+//! DEPTH=no8_osd`, same 41 baked candidates:
+//!
+//! | | `full` | `no8_osd` | speedup |
+//! |---|---:|---:|---:|
+//! | **candidate loop** | **54.087 s** | **25.710 s** | **2.10×** |
+//!
+//! 2/2 real decodes unchanged. **Cumulative from the original
+//! 89.411 s baseline: 3.48×, ≈3.67× over the ~7 s budget** — a much
+//! bigger single-step win than any of the six disassembly-led fixes,
+//! but not free: this is the conscious recall trade-off `fst4_60_
+//! diag_recall_tradeoff` measured, not a zero-cost speedup.
+//!
+//! Even generous dual-core assumptions don't close the remaining gap
+//! alone: WSPR's own real dual-core yield was 1.35-1.47× (issue #260,
+//! small-N straggler effects), and `no8_osd`'s 25.71 s ÷ 1.35-1.47×
+//! is still 17.5-19.0 s (≈2.5-2.7× over budget); even the theoretical
+//! 2.0× ceiling only reaches 12.9 s (≈1.84× over). Untested territory
+//! past this point — recorded, not pursued further this round.
+//!
 //! ## What this does *not* attempt
 //!
 //! No `coarse_sync` on-device (can't yet — #307), no PSRAM-vs-SRAM
@@ -561,6 +613,21 @@ pub fn run_bench(refined_bin: &[u8]) {
         log::info!("fst4_bench: DecodeDepth::FULL (default) — OSD on");
         DecodeDepth::FULL
     };
+    // Fourth mode: recall-trade-off follow-up (issue #306). `tests/
+    // fst4_sweep.rs`'s `fst4_60_diag_recall_tradeoff` found "drop
+    // nsym=8, keep OSD" (`no8_osd`) recovers *more* real AWGN recall
+    // than "drop OSD, keep nsym=8" (`bp_only` above) near the
+    // crossing, despite `nsym=8` being the far more expensive rung —
+    // measures its actual wall-clock here, the same way every other
+    // lever this issue has considered was measured before being acted
+    // on. `depth` stays `FULL` (OSD on) regardless of the `bp_only`
+    // branch above; only `skip_llr_nsym_max` changes.
+    let skip_llr_nsym_max = option_env!("MFSK_FST4_BENCH_DEPTH") == Some("no8_osd");
+    if skip_llr_nsym_max {
+        log::info!(
+            "fst4_bench: skip_llr_nsym_max=true (MFSK_FST4_BENCH_DEPTH=no8_osd) — nsym=8 rung off, OSD on"
+        );
+    }
     log_heap("boot");
 
     let t_load = now_us();
@@ -631,6 +698,7 @@ pub fn run_bench(refined_bin: &[u8]) {
             // measurement; this bench answers the wall-clock question
             // only.
             true,
+            skip_llr_nsym_max,
         );
         timings.push(CandidateTiming {
             freq_hz,

@@ -592,7 +592,7 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false, false,
     )
 }
 
@@ -615,7 +615,7 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false, false,
     )
 }
 
@@ -648,6 +648,20 @@ where
 /// yet (issue #307) — pass `true` to measure LLR/BP/OSD wall-clock
 /// without it, at the cost of `DecodeResult::snr_db` being `NAN`
 /// rather than a real measurement.
+///
+/// `skip_llr_nsym_max`: skips the `LLR_NSYM_MAX` staircase rung
+/// (FST4's `nsym=8`, ~99% of the BP-side cost per issue #306's
+/// measurement) entirely — both the BP attempt on it and its variant
+/// in OSD's fallback list — while leaving OSD itself untouched. Added
+/// for issue #306's recall-trade-off follow-up: `tests/fst4_sweep.rs`'s
+/// `fst4_60_diag_recall_tradeoff` found this specific combination
+/// (`nsym=8` off, OSD on) recovers *more* AWGN recall near the
+/// crossing than dropping OSD instead (`DecodeDepth::BP_ONLY`) despite
+/// `nsym=8` being the far more expensive rung — OSD is a structurally
+/// different fallback (bit-flip search over the LDPC systematic basis)
+/// that doesn't need BP to converge at all, so it can rescue
+/// candidates the `nsym=8` attempt would also have missed. `false` for
+/// every existing caller (behaves exactly as before).
 #[cfg(feature = "internal-testing")]
 #[allow(clippy::too_many_arguments)]
 pub fn process_candidate_precomputed<P: GenericPipelineProtocol>(
@@ -661,6 +675,7 @@ pub fn process_candidate_precomputed<P: GenericPipelineProtocol>(
     sync_q_min: u32,
     precomputed_refine: (Vec<Complex<f32>>, f32, i32, f32),
     skip_snr: bool,
+    skip_llr_nsym_max: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -676,6 +691,7 @@ where
         sync_q_min,
         Some(precomputed_refine),
         skip_snr,
+        skip_llr_nsym_max,
     )
 }
 
@@ -768,6 +784,12 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     // measurements. Only `process_candidate_precomputed` exposes this
     // as a caller-visible choice.
     skip_snr: bool,
+    // When `true`, the `LLR_NSYM_MAX` staircase rung is skipped
+    // entirely (both the BP attempt on it and its variant in OSD's
+    // fallback list) — see `process_candidate_precomputed`'s doc
+    // comment for why (issue #306 recall-trade-off follow-up). `false`
+    // for every existing caller (behaves exactly as before).
+    skip_llr_nsym_max: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -960,10 +982,18 @@ where
                 }
             }
 
-            llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs, P::LLR_NSYM_MAX as usize);
-            deinterleave(&mut llr_set.llrc);
-            if let Some(r) = try_bp(&llr_set.llrc, 2) {
-                return Some(r);
+            // Skipped entirely under `skip_llr_nsym_max` (issue #306
+            // recall-trade-off follow-up: `process_candidate_precomputed`'s
+            // doc comment) — both the BP attempt here and its `variants`
+            // slot below. `llr_set.llrc` stays at its `LlrSet::default()`
+            // empty `Vec` in that case, same as `llre` already does for
+            // every protocol that doesn't set `LLR_NSYM_MID`.
+            if !skip_llr_nsym_max {
+                llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs, P::LLR_NSYM_MAX as usize);
+                deinterleave(&mut llr_set.llrc);
+                if let Some(r) = try_bp(&llr_set.llrc, 2) {
+                    return Some(r);
+                }
             }
 
             if let Some(r) = try_bp(&llr_set.llrd, 3) {
@@ -981,7 +1011,9 @@ where
             if !llr_set.llre.is_empty() {
                 variants.push((&llr_set.llre, 6));
             }
-            variants.push((&llr_set.llrc, 2));
+            if !skip_llr_nsym_max {
+                variants.push((&llr_set.llrc, 2));
+            }
             variants.push((&llr_set.llrd, 3));
 
             // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
@@ -1748,6 +1780,7 @@ where
                     sync_q_min,
                     Some((cd0, freq_hz, i0, score)),
                     false,
+                    false,
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -1769,6 +1802,7 @@ where
                     eq_mode,
                     sync_q_min,
                     Some((cd0, freq_hz, i0, score)),
+                    false,
                     false,
                 )?;
                 if let Some(cb) = on_result {

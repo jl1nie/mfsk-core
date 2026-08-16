@@ -1277,10 +1277,91 @@ this session routed around (issue #307: `coarse_sync`'s 7776,
 `downsample_cached`'s 6912, and the equivalent pair for FST4's other
 4 submodes) is still open, and secondary to the LLR/BP/OSD cost
 question above — closing #307 makes the streaming front end possible,
-but a production embedded FST4 path needs the remaining ≈8.5× gap
+but a production embedded FST4 path needs the remaining ≈7.7× gap
 closed first, or it fits the FFT but still misses the slot.
 `DirectDft` itself, being O(N²) and capped at 64, is not meant to grow
 into that role.
+
+**Fourteenth attempt: `no8_osd` — the recall trade-off, checked
+against real AWGN data before trusting it, then measured.** With the
+small disassembly-led fixes exhausted, the recall-trade-off question
+came up again: skip `LLR_NSYM_MAX=8` (99% of the LLR/BP-side cost)
+outright? The one data point available — this session's own 2 real
+decodes never reach `nsym=8` or OSD — is a single-file observation
+this project's own discipline says not to trust without checking
+against real AWGN data (issue #146/#255's "sparse sampling looks like
+a cliff" lesson, among others). `tests/fst4_sweep.rs`'s new
+`fst4_60_diag_recall_tradeoff` (real FST4-60 AWGN corpus, 20
+trials/SNR) checked it directly, sweeping four configurations —
+`full` (today's default), `bp_only` (`DecodeDepth::BP_ONLY`'s shape:
+`nsym`-to-8, no OSD), `no8_osd` (`nsym` capped at `LLR_NSYM_MID=4`, OSD
+on), `no8_no_osd` (both off) — and found the hypothesis **not
+confirmed, in the opposite direction from WSPR's `minsync2`**: near
+the -26..-28 dB crossing, both `nsym=8` and OSD carry real,
+substantial recall on their own. The more useful (and less intuitive)
+finding: `no8_osd` beats `bp_only` at every SNR tested, despite
+`nsym=8` being the far more expensive rung to keep — OSD is a
+structurally different fallback (bit-flip search over the LDPC
+systematic basis) that doesn't need BP to converge at all, so it
+rescues candidates every BP LLR variant (including `nsym=8`) misses,
+while `bp_only` has no fallback when all of its BP attempts fail.
+Per-*trial* (not just aggregate) monotonicity checks — `full ⊇
+no8_osd ⊇ no8_no_osd`, `full ⊇ bp_only`, guaranteed by construction —
+came back with zero violations across all 200 trials, ruling out a
+bookkeeping bug behind the counter-intuitive `no8_osd`-vs-`bp_only`
+result.
+
+`no8_osd` wasn't reachable via the existing `DecodeDepth` alone
+(`LlrEffort` is FT8-only in practice for the shared pipeline). Added
+`skip_llr_nsym_max: bool` to `process_candidate_basic_impl` /
+`process_candidate_precomputed` — same additive pattern as `skip_snr`
+earlier in this investigation: skips the `nsym=8` BP attempt and its
+slot in OSD's variant list, `false` (no behaviour change) for every
+existing caller, full merge gate + clippy green.
+
+Measured on real CoreS3 hardware, same 41 baked candidates:
+
+| | `full` | `no8_osd` | speedup |
+|---|---:|---:|---:|
+| **candidate loop** | **54.087 s** | **25.710 s** | **2.10×** |
+
+2/2 real decodes unchanged. **Cumulative from the original 89.411 s
+baseline: 3.48×, ≈3.67× over the ~7 s budget** — by far the largest
+single-step win of this whole investigation, and unlike the six
+disassembly-led fixes, not "smaller than its own justification
+suggested" — but it is a real, conscious sensitivity cost (this is
+what `fst4_60_diag_recall_tradeoff` measured), not a free speedup.
+
+Even generous dual-core assumptions don't close the remaining gap on
+their own: WSPR's own *measured* dual-core yield was 1.35-1.47× (issue
+#260, small-N straggler effects, not the theoretical 2×), and
+25.71 s ÷ 1.35–1.47× is still 17.5–19.0 s (≈2.5–2.7× over budget);
+even an optimistic 2.0× ceiling only reaches 12.9 s (≈1.84× over).
+Untested past this point — recorded as the honest state of the
+question, not pursued further this round.
+
+A related side-investigation, prompted by this session's own
+disassembly work on `osd_decode_generic`: `osd_decode_deep4`'s
+`k4_limit` parameter is documented as restricting order-4's extra
+flip to the *least* reliable MRB bits ("errors concentrate in
+low-|LLR| bits"), but empirically (a synthetic monotonic-LLR probe
+through `osd_setup_generic_packed`) row index `0..k` runs from *most*
+reliable (row 0) to *least* reliable (row `k-1`) — meaning the shipped
+`0..k4_limit` range is the *most* reliable end, the opposite of the
+doc comment's stated intent. Added a `k4_tail: bool` parameter to
+`osd_decode_generic` to test both directions directly (`false`
+everywhere existing, bit-identical). Traced the production impact
+before chasing a fix: `osd_decode_deep4` is FT4-only in practice
+(FT8's own bespoke engine uses WSJT-X-faithful `osd_decode_npre1(_
+npre2)` instead, never touching this code path — the 3 call sites in
+`ft8/decode.rs` are all inside `#[cfg(test)]`), and FT4's own
+`osd_depth3_min` gate (`nsync ≥ 14/16`) turned out to structurally
+never admit a BP+depth-2/3 failure in clean AWGN — swept m14 through
+m22 (20 trials each, near-golden-frequency candidates) and found zero
+candidates ever reaching the real depth-4 gate at all, direction
+aside. The direction discrepancy is real but currently dormant —
+recorded for whenever a future change (a looser gate, CCIR fading, a
+new caller) might actually exercise it.
 
 ## Where to go next
 

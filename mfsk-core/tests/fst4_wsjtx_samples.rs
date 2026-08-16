@@ -575,6 +575,7 @@ fn fst4_bake_golden_refined_candidates() {
             SYNC_Q_MIN,
             (cd0, rf, ri0, rscore),
             false, // real SNR — this round-trip mirrors the host decode_frame path exactly
+            false, // full nsym staircase — this round-trip mirrors the host decode_frame path exactly
         ) {
             baked_results.push(r);
         }
