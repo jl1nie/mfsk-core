@@ -1407,6 +1407,277 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
     );
 }
 
+/// Recall trade-off diagnostic (issue #306 follow-up): with FST4-60's
+/// candidate-loop cost on embedded now measured as ~99% the
+/// `LLR_NSYM_MAX=8` staircase rung plus OSD (`embedded_shared::apps::
+/// fst4_bench`'s module doc; the two real decodes on the golden WAV
+/// never reach either), does skipping the expensive parts actually
+/// cost real AWGN recall — or, like WSPR's own `minsync2` gate,
+/// mostly buy time on candidates that were never going to decode
+/// anyway? A one-file observation isn't a recall claim on its own
+/// (this project's own established caution); this sweeps the real
+/// AWGN corpus to check.
+///
+/// Four configurations, same candidate population, same
+/// `compute_llr` call (it always computes every variant regardless —
+/// this diagnostic only chooses which ones each config is *allowed*
+/// to use for BP/OSD, not which are computed; this test measures
+/// recall, not wall-clock):
+///
+/// - `full`: today's host default — nsym staircase to
+///   `LLR_NSYM_MAX=8` (`llra`/`llrb`/`llre`/`llrc`/`llrd`) + OSD
+///   escalation exactly as production dispatches it
+///   (`osd_escalation_gates`'s real `nsync`-gated depth-2/3/4 logic,
+///   matching `fst4_60_diag_osd_escalation` above).
+/// - `bp_only`: same nsym staircase, OSD off — the existing
+///   `DecodeDepth::BP_ONLY` production knob's recall shape.
+/// - `no8_osd`: nsym staircase capped at `LLR_NSYM_MID=4` (`llrc`,
+///   the `nsym=8` rung, excluded from the variant set), OSD still on —
+///   tests whether OSD alone recovers what `nsym=8` would have caught.
+/// - `no8_no_osd`: nsym capped at 4, OSD off too — the most aggressive
+///   cut, closest in spirit to FT8's ship config (`DecodeDepth::
+///   EMBEDDED` already skips OSD; this goes further and drops the
+///   deepest LLR rung as well).
+///
+/// Each config's tally is monotonic by construction: `full ⊇ no8_osd
+/// ⊇ no8_no_osd` and `full ⊇ bp_only` (a superset LLR-variant set or
+/// an added OSD-escalation pass can only add successes, never remove
+/// one) — a violation in the printed table would mean a bug in this
+/// diagnostic, not a real result.
+///
+/// AWGN only (channel-independent question), FST4-60 only (issue
+/// #306's actual embedded target — CLAUDE.md's own caution against
+/// assuming a finding generalises across sub-modes without checking
+/// the code path applies; `LLR_NSYM_MAX`/`LLR_NSYM_MID` are
+/// per-protocol consts, unconfirmed here for 15/30/120/300).
+#[test]
+#[ignore = "manual diagnostic — FST4-60 recall trade-off: does skipping nsym=8/OSD cost real AWGN recall? (issue #306 follow-up)"]
+fn fst4_60_diag_recall_tradeoff() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    #[cfg(feature = "parallel")]
+    use rayon::prelude::*;
+
+    const BP_MAX_ITER: u32 = 30;
+    // Dense near the known ~-27.6 dB FST4-60 AWGN crossing, plus one
+    // point well above it as a sanity ceiling (all four configs should
+    // read ~20/20 there).
+    const SNR_TAGS: &[&str] = &[
+        "m20", "m22", "m23", "m24", "m25", "m26", "m27", "m28", "m29", "m30",
+    ];
+    const TRIALS: u32 = 20;
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) = mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    #[derive(Default, Clone, Copy)]
+    struct Tally {
+        full: u32,
+        bp_only: u32,
+        no8_osd: u32,
+        no8_no_osd: u32,
+        total: u32,
+    }
+
+    let mut work: Vec<(&str, u32)> = Vec::new();
+    for &snr_tag in SNR_TAGS {
+        for trial in 1..=TRIALS {
+            work.push((snr_tag, trial));
+        }
+    }
+
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, bool, bool, bool, bool) {
+        let snr_idx = SNR_TAGS.iter().position(|&t| t == snr_tag).unwrap();
+        let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            return (snr_idx, false, false, false, false);
+        };
+        // sync_min=0.8, matching production's own `DecodeRequest::new`
+        // call (`decode_wav_fst4` above) — `fst4_60_diag_osd_escalation`'s
+        // 1.0 was tuned against the strong real-world golden WAV only,
+        // untested against weak AWGN-sweep candidates.
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+        let fec = <Fst4s60 as Protocol>::Fec::default();
+        let verify_info =
+            Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+        let mut ok_full = false;
+        let mut ok_bp_only = false;
+        let mut ok_no8_osd = false;
+        let mut ok_no8_no_osd = false;
+
+        for c in &cands {
+            // Freq-only pre-filter, matching both `fst4_60_diag_
+            // osd_escalation` and `_osd_depth34_nsync_floor` above — no
+            // dt filter at the coarse-candidate stage in either
+            // reference.
+            if (c.freq_hz - GOLDEN_FREQ_HZ).abs() > FREQ_TOL_HZ {
+                continue;
+            }
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            // RMS-normalise, matching `refine_candidate_position_impl`
+            // (`engine::pipeline`) exactly — omitted from both
+            // `fst4_60_diag_osd_escalation`/`_osd_depth34_nsync_floor`
+            // above (neither noticed: the first never checks the
+            // decoded message at all, the second only ran against the
+            // strong real golden WAV, where an unnormalised scale
+            // doesn't visibly break sync/BP). Missing it here read as
+            // 0/20 recall at every SNR, including m20 — confirming the
+            // step is load-bearing, not cosmetic, for `fst4_sync_search`
+            // and everything downstream of it on real (non-strong)
+            // signals.
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let df_hz = s2.freq_hz - c.freq_hz;
+            let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+            let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+
+            let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+            let variants_full: Vec<&Vec<f32>> = [
+                Some(&llr_set.llra),
+                Some(&llr_set.llrb),
+                if llr_set.llre.is_empty() {
+                    None
+                } else {
+                    Some(&llr_set.llre)
+                },
+                Some(&llr_set.llrc),
+                Some(&llr_set.llrd),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let variants_no8: Vec<&Vec<f32>> = [
+                Some(&llr_set.llra),
+                Some(&llr_set.llrb),
+                if llr_set.llre.is_empty() {
+                    None
+                } else {
+                    Some(&llr_set.llre)
+                },
+                Some(&llr_set.llrd),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            let bp_opts = FecOpts {
+                bp_max_iter: BP_MAX_ITER,
+                osd_depth: 0,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            // FST4 defines `INFO_SCRAMBLE_RVEC` (`fst4::mod::FST4_RVEC`)
+            // -- `decode_soft`'s CRC check passes on the still-scrambled
+            // bits (CRC is computed the same way on the TX side, over
+            // scrambled bits), but `unpack77` expects the raw 77-bit
+            // payload. Production's `process_candidate_basic_impl`
+            // calls `engine::llr::descramble_info::<P>(&mut r.info)`
+            // after every successful `decode_soft`, before ever reading
+            // `r.info` as a message -- omitted here first, which
+            // produced consistent, perfect-`nsync`, CRC-valid-but-wrong
+            // decodes (e.g. "CQ 2Q299KDY0GK" for every LLR variant, same
+            // candidate) that made this diagnostic read as 0/20 recall
+            // even at m20, where production gets 20/20. Confirms the
+            // scramble is load-bearing before unpack77, not just a
+            // display nicety.
+            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                    mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(&r.info[..77]);
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                })
+            };
+
+            let bp_full_ok = variants_full.iter().any(|llr| is_golden(llr, &bp_opts));
+            let bp_no8_ok = variants_no8.iter().any(|llr| is_golden(llr, &bp_opts));
+            if bp_full_ok {
+                ok_full = true;
+                ok_bp_only = true;
+            }
+            if bp_no8_ok {
+                ok_no8_osd = true;
+                ok_no8_no_osd = true;
+            }
+
+            // OSD can only add successes, never remove one (production's
+            // own dispatch shape) -- only spend it where the matching
+            // BP attempt already failed.
+            if !bp_full_ok && nsync >= osd_attempt_min {
+                let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                let osd_opts = FecOpts {
+                    bp_max_iter: BP_MAX_ITER,
+                    osd_depth,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants_full.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                    ok_full = true;
+                }
+            }
+            if !bp_no8_ok && nsync >= osd_attempt_min {
+                let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                let osd_opts = FecOpts {
+                    bp_max_iter: BP_MAX_ITER,
+                    osd_depth,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants_no8.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                    ok_no8_osd = true;
+                }
+            }
+        }
+
+        (snr_idx, ok_full, ok_bp_only, ok_no8_osd, ok_no8_no_osd)
+    };
+
+    #[cfg(feature = "parallel")]
+    let results: Vec<(usize, bool, bool, bool, bool)> = work.par_iter().map(process_one).collect();
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<(usize, bool, bool, bool, bool)> = work.iter().map(process_one).collect();
+
+    let mut tallies = vec![Tally::default(); SNR_TAGS.len()];
+    for (idx, full, bp_only, no8_osd, no8_no_osd) in results {
+        let t = &mut tallies[idx];
+        t.total += 1;
+        t.full += full as u32;
+        t.bp_only += bp_only as u32;
+        t.no8_osd += no8_osd as u32;
+        t.no8_no_osd += no8_no_osd as u32;
+    }
+
+    eprintln!("FST4-60 AWGN recall trade-off (n={TRIALS}/SNR):");
+    eprintln!(
+        "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
+        "SNR", "full", "bp_only", "no8+osd", "no8_noosd", "n"
+    );
+    for (tag, t) in SNR_TAGS.iter().zip(&tallies) {
+        eprintln!(
+            "{:>6} {:>6} {:>8} {:>8} {:>10} {:>4}",
+            tag, t.full, t.bp_only, t.no8_osd, t.no8_no_osd, t.total
+        );
+    }
+}
+
 /// Reported SNR must track the injected SNR, **for every sub-mode**
 /// (issue #255 §4 follow-up).
 ///
