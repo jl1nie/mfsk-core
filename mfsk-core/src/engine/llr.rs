@@ -319,9 +319,36 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
             // classic shape LLVM's inner-loop vectorizer handles, and
             // the branchless select (`f32::NEG_INFINITY` fed to
             // whichever accumulator the bit doesn't select, then an
-            // unconditional `max()`) is what lets it lower the
-            // per-element predicate to a vector compare-and-blend
-            // instead of scalarizing. Confirmed via `wasm-objdump`.
+            // unconditional max) is what lets it lower the per-element
+            // predicate to a vector compare-and-blend instead of
+            // scalarizing. Confirmed via `wasm-objdump` — wasm32 only;
+            // this says nothing about Xtensa, which has no SIMD
+            // auto-vectorizer LLVM targets here (every PIE win
+            // elsewhere in this codebase is hand-written assembly, not
+            // auto-vectorization) and turned out to have a much
+            // cheaper, unrelated problem on the scalar `max()` call
+            // itself — see the comment on `mo`/`mz` below.
+            // Plain `>`, not `f32::max` — this loop is the single
+            // hottest one in the whole FST4/FT4 decode path (nsym=8's
+            // 65536-entry `s2` visited 16 times = the entirety of
+            // issue #306's measured ~7.3 s/candidate LLR cost), and
+            // `f32::max`/`min` are not free on Xtensa: there's no
+            // native FPU max/min instruction, so LLVM lowers them to
+            // a real `callx8 fmaxf` — confirmed by disassembling this
+            // exact function in the issue #306 embedded bench
+            // (`xtensa-esp32s3-elf-objdump`), which showed two
+            // subroutine calls per loop iteration, ~42 M calls for one
+            // nsym=8 candidate. `v_for_one`/`v_for_zero` here are
+            // always either `sqrt(re²+im²)` (finite, ≥ 0 for any
+            // finite `s2` entry) or the literal `f32::NEG_INFINITY` —
+            // never NaN — so `f32::max`'s IEEE-754 NaN-propagation
+            // handling (the reason it can't just be a compare) is
+            // provably dead weight here, and plain `>` gives the
+            // identical result while compiling to Xtensa's native FP
+            // compare instead of a call. Bit-identical on every
+            // existing golden/AWGN test; not measured on embedded yet
+            // (issue #306 follow-up) — see that issue for whatever the
+            // real device delta turns out to be.
             let mut max_one = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
             let mut max_zero = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
             for bit_sel in 0..=ibmax {
@@ -331,8 +358,12 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
                     let bit_is_one = (i >> bit_sel) & 1 == 1;
                     let v_for_one = if bit_is_one { v } else { f32::NEG_INFINITY };
                     let v_for_zero = if bit_is_one { f32::NEG_INFINITY } else { v };
-                    mo = mo.max(v_for_one);
-                    mz = mz.max(v_for_zero);
+                    if v_for_one > mo {
+                        mo = v_for_one;
+                    }
+                    if v_for_zero > mz {
+                        mz = v_for_zero;
+                    }
                 }
                 max_one[bit_sel] = mo;
                 max_zero[bit_sel] = mz;

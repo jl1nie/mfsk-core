@@ -189,12 +189,56 @@
 //! that legitimately warrant deep decoding, not a filtering gap.
 //!
 //! So the remaining levers are in `compute_llr_partial` itself
-//! (algorithmic restructuring, fixed-point, SIMD/PIE — unexamined
-//! here), accepting a recall trade-off by skipping `nsym=8` on
-//! embedded the way FT8's ship config skips OSD, or parallelism
-//! (dual-core). Not pursued further in this session — see
-//! `docs/reference/EMBEDDED.md` and issue #306 for where this leaves
-//! the "does it fit" question.
+//! (algorithmic restructuring, fixed-point, SIMD/PIE), accepting a
+//! recall trade-off by skipping `nsym=8` on embedded the way FT8's
+//! ship config skips OSD, or parallelism (dual-core).
+//!
+//! ## Follow-up 3, same day: one of those levers, taken — `~1.25×` overall
+//!
+//! Disassembling `fill_bmet_for_nsym`'s compiled Xtensa output
+//! (`xtensa-esp32s3-elf-objdump` against this exact bench's ELF) found
+//! that its hot loop's two `f32::max()` calls each compiled to a real
+//! `callx8` to libm's `fmaxf` — Xtensa's FPU has no native float
+//! max/min instruction, so LLVM can't lower `max`'s IEEE-754
+//! NaN-propagation semantics to a single compare. At `nsym=8` that's
+//! ~42 M subroutine calls per candidate (2 calls × 65536 elements × 16
+//! bit positions), not 42 M single-cycle compares.
+//!
+//! `mfsk_core::engine::llr::fill_bmet_for_nsym`'s two operands here
+//! (`v_for_one`/`v_for_zero`) are always either `sqrt(re²+im²)`
+//! (finite, ≥ 0) or the literal `f32::NEG_INFINITY` — never NaN — so
+//! `max`'s NaN handling is provably dead weight on this specific loop.
+//! Replaced with a plain `>` comparison (bit-identical result for
+//! non-NaN inputs, confirmed: every existing golden/AWGN
+//! FT8/FT4/FST4 test still passes byte-for-byte). Re-disassembling
+//! confirmed the fix: the hot loop now compiles to Xtensa's native
+//! `ule.s` compare + `bt`/`bf` branch, zero `callx8` in that loop (one
+//! `fmaxf` call remains elsewhere in the function, for the
+//! once-per-bit-position `den = max_one.max(max_zero)` normalisation
+//! step — negligible, 16 calls/group instead of 2×65536×16, left
+//! alone).
+//!
+//! Measured effect, same CoreS3, same golden, same 41 candidates:
+//!
+//! | | before | after | speedup |
+//! |---|---:|---:|---:|
+//! | `nsym=8` (41-candidate `llr_probe` total) | 301.2 s | 178.1 s | 1.69× |
+//! | `nsym=4` (same) | 1.10 s | 0.61 s | 1.80× |
+//! | **`FULL` candidate loop (real 8-candidate population)** | **89.411 s** | **71.312 s** | **1.25×** |
+//!
+//! Still 2/2 real decodes, identical to every prior run. A genuine,
+//! zero-risk, two-line win — but far short of the ~13× this session's
+//! first measurement needed, and short of the ~1.7× its own `nsym=8`
+//! isolation would suggest (the loop's other per-element overhead —
+//! indexing, the branchless-select setup, memory traffic through
+//! `s2` — was already there and untouched, so removing just the call
+//! recovers less than the call's own share of a single iteration).
+//! `compute_llr_partial`'s remaining levers (real algorithmic
+//! restructuring, fixed-point, hand-written PIE vectorisation, a
+//! recall trade-off, dual-core) are still open — this is one
+//! confirmed data point on how much any single one of them is worth,
+//! not a closed investigation. See `docs/reference/EMBEDDED.md` and
+//! issue #306 for where this leaves the "does it fit" question.
 //!
 //! Also measured in passing: peak stack usage was tiny —
 //! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched

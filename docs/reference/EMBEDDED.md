@@ -1074,29 +1074,71 @@ intrinsic to the candidates that legitimately warrant deep decoding,
 not a filtering gap this codebase left unfilled.
 
 So the remaining levers are inside `compute_llr_partial` itself
-(algorithmic restructuring, fixed-point, SIMD/PIE — none examined
-here), accepting a recall trade-off by skipping `nsym=8` on embedded
-the way FT8's ship config skips OSD entirely, or parallelism
-(dual-core, unexplored for FST4). Not pursued further in this session.
+(algorithmic restructuring, fixed-point, SIMD/PIE), accepting a recall
+trade-off by skipping `nsym=8` on embedded the way FT8's ship config
+skips OSD entirely, or parallelism (dual-core).
+
+**Tenth attempt: one of those levers, taken.** Disassembling
+`fill_bmet_for_nsym`'s compiled Xtensa output
+(`xtensa-esp32s3-elf-objdump` against the bench's own ELF) found that
+its hot loop's two `f32::max()` calls each compiled to a real
+`callx8 fmaxf` — Xtensa's FPU has no native float max/min instruction,
+so LLVM can't lower `max`'s IEEE-754 NaN-propagation semantics to a
+single compare. At `nsym=8` that's ~42 M subroutine calls per
+candidate (2 calls × 65536 elements × 16 bit positions), not 42 M
+single-cycle compares.
+
+The two operands at that call site (`v_for_one`/`v_for_zero`) are
+always either `sqrt(re²+im²)` (finite, ≥ 0) or the literal
+`f32::NEG_INFINITY` — never NaN — so `max`'s NaN handling is provably
+dead weight on this specific loop. Replaced with a plain `>` compare
+(bit-identical for non-NaN inputs — confirmed against every existing
+golden/AWGN FT8/FT4/FST4 test, all byte-for-byte unchanged).
+Re-disassembling confirmed the fix: the hot loop compiles to Xtensa's
+native `ule.s` compare + `bt`/`bf` branch now, zero `callx8` in that
+loop (one `fmaxf` call remains elsewhere in the function, for the
+once-per-bit-position normalisation step — 16 calls/group instead of
+2×65536×16, left alone as negligible).
+
+Measured, same CoreS3, same golden, same 41 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| `nsym=8` (41-candidate `llr_probe` total) | 301.2 s | 178.1 s | 1.69× |
+| `nsym=4` (same) | 1.10 s | 0.61 s | 1.80× |
+| **`FULL` candidate loop (real 8-candidate population)** | **89.411 s** | **71.312 s** | **1.25×** |
+
+Still 2/2 real decodes, identical to every prior run. A genuine,
+zero-risk, two-line win — but well short of the ~1.7× its own `nsym=8`
+isolation would suggest (the loop's other per-element cost — indexing,
+the branchless-select setup, `s2` traffic — was already there and
+untouched, so removing just the call recovers less than the call's
+own share of one iteration), and far short of the ~13× gap this
+session's first measurement found.
 
 **So the honest answer to issue #306: no, not as measured today** —
-89.7 s against a ~7 s budget is not a rounding error, and closing a
-13× gap needs real optimization work, not a bigger margin somewhere
-else. Whether that gap is closable the way WSPR's was (WSPR went
-1214.3 s → 249.2 s, 4.9×, across `minsync2` + `opt-level=3` +
-`160→240 MHz`, none of which had an FST4 equivalent applied here
-beyond the two already baked into this build) is an open question this
-measurement doesn't answer by itself — it answers "does it currently
-fit" (no), not "could it".
+71.3 s against a ~7 s budget (down from 89.4 s) is still ≈10× over,
+not a rounding error, and closing the remaining gap needs more of the
+same kind of work, not a bigger margin somewhere else.
+`compute_llr_partial`'s other levers — real algorithmic restructuring
+beyond this one call site, fixed-point, hand-written PIE
+vectorisation, a recall trade-off, dual-core — are still open; this is
+one confirmed data point on how much a single one of them is worth,
+not a closed investigation. Whether the full gap is closable the way
+WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×, across `minsync2` +
+`opt-level=3` + `160→240 MHz`) is still an open question — this
+measurement answers "does it currently fit" (no, but less no than
+before), not "could it".
 
 A mixed-radix or Bluestein implementation for the *larger* FFT sites
 this session routed around (issue #307: `coarse_sync`'s 7776,
 `downsample_cached`'s 6912, and the equivalent pair for FST4's other
 4 submodes) is still open, and now secondary to the LLR/BP/OSD cost
 question above — closing #307 makes the streaming front end possible,
-but a production embedded FST4 path needs the ≈13× gap closed first,
-or it fits the FFT but still misses the slot. `DirectDft` itself,
-being O(N²) and capped at 64, is not meant to grow into that role.
+but a production embedded FST4 path needs the remaining ≈10× gap
+closed first, or it fits the FFT but still misses the slot.
+`DirectDft` itself, being O(N²) and capped at 64, is not meant to grow
+into that role.
 
 ## Where to go next
 
