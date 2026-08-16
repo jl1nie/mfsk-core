@@ -876,7 +876,7 @@ risk did not materialize). It then panics on the very first FFT call,
 inside `coarse_sync`'s spectrogram stage, before either the PSRAM
 question or a wall-clock number could be reached:
 
-```
+```text
 esp-dsp FFT requires power-of-2 length ≥ 4 (got 7776)
 ```
 
@@ -1156,22 +1156,77 @@ recovers only their own share of a `try_candidate` iteration, and the
 surrounding O(n) XOR/permute/weighted-distance work (n=240) was
 already there and untouched.
 
-**Cumulative from the original 89.411 s baseline: 1.319×, ≈9.7× over
-the ~7 s budget (down from ≈13×).** `compute_llr_partial` (LLR) and
-the O(n) inner loops of `osd_decode_generic` itself (not just its
-allocator calls) remain open. So does whether the full gap is
-closable the way WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×,
-across `minsync2` + `opt-level=3` + `160→240 MHz`) — two small, cheap,
-zero-risk fixes closed ~1.3× of an ~13× gap; this measurement answers
-"does it currently fit" (no, but less no than before), not "could it
-with more of the same kind of work".
+Cumulative at this point: 89.411 s → 67.789 s, 1.319×, ≈9.7× over the
+~7 s budget (down from ≈13×).
+
+**Twelfth attempt: one lever on each side — VK3NV's `bit_sel` block
+reduction on the LLR side, and reordering OSD's `verify` gate ahead of
+its own O(n) scatter.**
+
+*LLR side.* VK3NV (issue #306) pointed out that `fill_bmet_for_nsym`'s
+inner loop still had a shift, a mask and two branchless selects per
+element even after the `fmaxf` fix — and that for a fixed `bit_sel =
+b`, `(i >> b) & 1` isn't data-dependent at all: it's the known
+periodic pattern `2^b` zeros then `2^b` ones, repeating. `nt =
+ntones^nsym` is always a power of 2 (every protocol's `ntones` is), so
+`block = 2^bit_sel` always divides `nt` evenly — the loop can walk
+`s2` in `2^bit_sel`-sized contiguous blocks instead, alternating which
+accumulator (`mo`/`mz`) each block feeds, with a single compare per
+element and no per-element predicate machinery at all. Same
+element-visit count as before (`nt` per `bit_sel`), only the
+per-element overhead collapses. Bit-identical on host across FT8, FT4,
+FST4 and MSK144's shared code path — this loop is used by all three.
+
+*OSD side.* `try_and_update`'s scatter (`c[perm[col]] = cp[col]`,
+`O(n)=240`) ran on *every* one of the ~166 650 calls, before the
+`verify` (CRC-style) gate that rejects nearly all of them — the
+scatter's whole purpose was producing `decoded = c[..k]` for `verify`
+to check, but building the full `n`-length codeword to get the first
+`k` bits is unnecessary: an inverse permutation (`inv_perm[perm[col]]
+= col`, computed once) lets `decoded[i] = cp[inv_perm[i]]` be gathered
+directly in `O(k)=101`, and the full `O(n)` scatter can be deferred to
+the rare candidate that actually passes `verify`. Separately, the
+weighted-distance loop (only reached on that same rare pass) was
+recomputing `llr[perm[col]] > 0.0` and `.abs()` from scratch on every
+call, even though `perm`/`llr` never change across candidates —
+precomputed `hdec_perm`/`absrx_perm` once instead. Both changes
+bit-identical on host across FT8 (full-parity 8/8, ship-config),
+MSK144 and FST4-60, and the full 435-test lib suite.
+Re-disassembling: `osd_decode_generic`'s closure shrank from the prior
+4.2 KiB down to ~450 bytes, and the scatter/weighted-distance code is
+now visibly gated behind the `verify` call rather than running
+unconditionally ahead of it.
+
+Measured on real CoreS3 hardware, same 41 baked FST4-60 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **67.789 s** | **59.775 s** | **1.134×** |
+
+2/2 real decodes unchanged (`CQ N5TM EL29`, `CQ K9KFR EN71`).
+
+**Cumulative from the original 89.411 s baseline: 1.496×, ≈8.5× over
+the ~7 s budget (down from ≈13×).** Four small, cheap, disassembly-led
+fixes have now closed ~1.5× of the original ~13× gap — real
+progress, but still short of a fit, and each individual fix has come
+in smaller than its own naive justification would suggest (call-count
+reduction, element-visit-count unchanged) because the surrounding
+per-element work was already there and untouched. `osd_decode_generic`
+still has an unconditional `O(n)` XOR-construction step in the
+combinatorial search itself (building `c1`/`c2`/`c3` from
+`g[row*n+col]`, distinct from the scatter fixed this round) that has
+not been touched. So does whether the full gap is closable the way
+WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×, across `minsync2` +
+`opt-level=3` + `160→240 MHz`) — this measurement answers "does it
+currently fit" (no, but less no than before), not "could it with more
+of the same kind of work".
 
 A mixed-radix or Bluestein implementation for the *larger* FFT sites
 this session routed around (issue #307: `coarse_sync`'s 7776,
 `downsample_cached`'s 6912, and the equivalent pair for FST4's other
 4 submodes) is still open, and secondary to the LLR/BP/OSD cost
 question above — closing #307 makes the streaming front end possible,
-but a production embedded FST4 path needs the remaining ≈9.7× gap
+but a production embedded FST4 path needs the remaining ≈8.5× gap
 closed first, or it fits the FFT but still misses the slot.
 `DirectDft` itself, being O(N²) and capped at 64, is not meant to grow
 into that role.

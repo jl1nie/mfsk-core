@@ -303,66 +303,74 @@ fn fill_bmet_for_nsym<P: Protocol, S: SpecScalar>(
             // `2 * (ibmax + 1)` independent full scans (one
             // `filter().fold()` pair per bit position) — `nt * (ibmax +
             // 1)` element visits here vs. `2 * (ibmax + 1) * nt` before.
+            // Loop order is `bit_sel` outer, `i` inner (issue #208
+            // Stage D — swapped from the original `i`-outer nesting;
+            // `i`-outer needs LLVM to vectorize across `i` while
+            // re-running the whole runtime-bounded `bit_sel` loop per
+            // lane, which it doesn't attempt on any target this crate
+            // ships for).
             //
-            // Loop order is `bit_sel` outer, `i` inner (issue #208 Stage
-            // D — swapped from the original `i`-outer/`bit_sel`-inner
-            // nesting). With `i` outer, LLVM would need to vectorize
-            // across `i` while re-running the whole (runtime-bounded)
-            // `bit_sel` loop per lane — an outer-loop vectorization it
-            // doesn't attempt here regardless of the inner branch shape
-            // (confirmed empirically: making the original branch
-            // branchless without also flipping the loop order left the
-            // compiled `v128` count for this function unchanged). With
-            // `bit_sel` outer, the inner loop is a single flat max-
-            // reduction over `s2` with a loop-invariant `bit_sel` and a
-            // regular period-`2^(bit_sel+1)` predicate on `i` — the
-            // classic shape LLVM's inner-loop vectorizer handles, and
-            // the branchless select (`f32::NEG_INFINITY` fed to
-            // whichever accumulator the bit doesn't select, then an
-            // unconditional max) is what lets it lower the per-element
-            // predicate to a vector compare-and-blend instead of
-            // scalarizing. Confirmed via `wasm-objdump` — wasm32 only;
-            // this says nothing about Xtensa, which has no SIMD
-            // auto-vectorizer LLVM targets here (every PIE win
-            // elsewhere in this codebase is hand-written assembly, not
-            // auto-vectorization) and turned out to have a much
-            // cheaper, unrelated problem on the scalar `max()` call
-            // itself — see the comment on `mo`/`mz` below.
-            // Plain `>`, not `f32::max` — this loop is the single
-            // hottest one in the whole FST4/FT4 decode path (nsym=8's
-            // 65536-entry `s2` visited 16 times = the entirety of
-            // issue #306's measured ~7.3 s/candidate LLR cost), and
-            // `f32::max`/`min` are not free on Xtensa: there's no
-            // native FPU max/min instruction, so LLVM lowers them to
-            // a real `callx8 fmaxf` — confirmed by disassembling this
-            // exact function in the issue #306 embedded bench
-            // (`xtensa-esp32s3-elf-objdump`), which showed two
-            // subroutine calls per loop iteration, ~42 M calls for one
-            // nsym=8 candidate. `v_for_one`/`v_for_zero` here are
-            // always either `sqrt(re²+im²)` (finite, ≥ 0 for any
-            // finite `s2` entry) or the literal `f32::NEG_INFINITY` —
-            // never NaN — so `f32::max`'s IEEE-754 NaN-propagation
-            // handling (the reason it can't just be a compare) is
-            // provably dead weight here, and plain `>` gives the
-            // identical result while compiling to Xtensa's native FP
-            // compare instead of a call. Bit-identical on every
-            // existing golden/AWGN test; not measured on embedded yet
-            // (issue #306 follow-up) — see that issue for whatever the
-            // real device delta turns out to be.
+            // Two more rounds on top of that (issue #306, chasing
+            // FST4's nsym=8 candidate-loop cost on Xtensa/ESP32-S3,
+            // where `s2`'s 65536-entry sweep at nsym=8 runs 16 times
+            // and is the entirety of the measured ~7.3 s/candidate LLR
+            // cost — both confirmed bit-identical on every existing
+            // golden/AWGN test each time, and both found by
+            // disassembling this exact function, not guessed):
+            //
+            // 1. Plain `>`, not `f32::max`/`min` — Xtensa's FPU has no
+            //    native float max/min instruction, so LLVM lowers
+            //    `f32::max` to a real `callx8 fmaxf`, ~42M calls for
+            //    one nsym=8 candidate. Every value here is always
+            //    either `sqrt(re²+im²)` (finite, ≥ 0) or the literal
+            //    `f32::NEG_INFINITY` — never NaN — so `f32::max`'s
+            //    IEEE-754 NaN-propagation handling is provably dead
+            //    weight and a plain compare gives the identical
+            //    result while compiling to a native FP compare
+            //    instead of a call.
+            // 2. Block-structured reduction (VK3NV, issue #306) — for
+            //    a fixed `bit_sel = b`, `(i >> b) & 1` is not a
+            //    data-dependent predicate — it's the known periodic
+            //    pattern `2^b` zeros then `2^b` ones, repeating (`nt =
+            //    ntones^nsym` is always a power of 2 here, since every
+            //    protocol's `ntones` is; `block = 2^bit_sel` therefore
+            //    always divides `nt` evenly, so `chunks_exact` never
+            //    drops a tail). So instead of evaluating the shift,
+            //    mask and two selects for every `s2[i]`, walk `s2` in
+            //    `2^bit_sel`-sized blocks directly: even-indexed
+            //    blocks feed `mz` (bit=0), odd-indexed blocks feed
+            //    `mo` (bit=1) — at `bit_sel = ibmax` that's two
+            //    contiguous halves; at `bit_sel = 0` it's alternating
+            //    single elements. Same element-visit count (`nt` per
+            //    `bit_sel`, unchanged from before), only the
+            //    per-element overhead (shift, mask, two selects)
+            //    collapses to one compare — the inner loop is now a
+            //    plain max reduction over a contiguous,
+            //    loop-invariant-length chunk. Bit-identical: this
+            //    changes which comparisons run, not their values or
+            //    order of ties (the running max only cares about the
+            //    maximum found in each half, and `mo`/`mz` accumulate
+            //    across blocks exactly as the flat scan accumulated
+            //    across elements filtered on the same predicate).
             let mut max_one = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
             let mut max_zero = [f32::NEG_INFINITY; MAX_IBMAX_PLUS_1];
             for bit_sel in 0..=ibmax {
+                let block = 1usize << bit_sel;
                 let mut mo = f32::NEG_INFINITY;
                 let mut mz = f32::NEG_INFINITY;
-                for (i, &v) in s2.iter().enumerate() {
-                    let bit_is_one = (i >> bit_sel) & 1 == 1;
-                    let v_for_one = if bit_is_one { v } else { f32::NEG_INFINITY };
-                    let v_for_zero = if bit_is_one { f32::NEG_INFINITY } else { v };
-                    if v_for_one > mo {
-                        mo = v_for_one;
+                for (block_idx, chunk) in s2.chunks_exact(block).enumerate() {
+                    let mut m = f32::NEG_INFINITY;
+                    for &v in chunk {
+                        if v > m {
+                            m = v;
+                        }
                     }
-                    if v_for_zero > mz {
-                        mz = v_for_zero;
+                    if block_idx & 1 == 1 {
+                        if m > mo {
+                            mo = m;
+                        }
+                    } else if m > mz {
+                        mz = m;
                     }
                 }
                 max_one[bit_sel] = mo;

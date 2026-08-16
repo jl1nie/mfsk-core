@@ -281,12 +281,51 @@
 //! suggest — same shape as the LLR fix: removing the allocator calls
 //! recovers only their own share of a `try_candidate` iteration, and
 //! the surrounding O(n) XOR/permute/weighted-distance work (n=240)
-//! was already there. **Cumulative from the original 89.411 s
-//! baseline: 1.319×, ≈9.7× over the ~7 s budget (down from ≈13×).**
-//! `compute_llr_partial` (LLR) and the O(n) inner loops of
-//! `osd_decode_generic` itself (not just its allocator calls) remain
-//! open — see `docs/reference/EMBEDDED.md` and issue #306 for where
-//! this leaves the "does it fit" question.
+//! was already there. Cumulative at this point: 89.411 s → 67.789 s,
+//! 1.319×, ≈9.7× over the ~7 s budget (down from ≈13×).
+//!
+//! ## Follow-up 5, same day: one lever on each side
+//!
+//! @VK3NV (issue #306) pointed out `fill_bmet_for_nsym`'s inner loop
+//! still had a shift, a mask and two branchless selects per element
+//! even after the `fmaxf` fix, and that for a fixed `bit_sel = b`,
+//! `(i >> b) & 1` isn't data-dependent — it's the known periodic
+//! pattern `2^b` zeros then `2^b` ones. `nt = ntones^nsym` is always a
+//! power of 2, so `block = 2^bit_sel` always divides `nt` evenly — the
+//! loop now walks `s2` in `2^bit_sel`-sized contiguous blocks,
+//! alternating which accumulator each block feeds, with one compare
+//! per element and no per-element predicate machinery. Bit-identical
+//! across FT8/FT4/FST4/MSK144's shared code path.
+//!
+//! On the OSD side: `try_and_update`'s scatter
+//! (`c[perm[col]]=cp[col]`, O(n)=240) ran on every one of the
+//! ~166 650 calls before the `verify` (CRC-style) gate that rejects
+//! nearly all of them — its only purpose was producing `decoded =
+//! c[..k]` for `verify`. An inverse permutation
+//! (`inv_perm[perm[col]]=col`, computed once) lets `decoded[i] =
+//! cp[inv_perm[i]]` be gathered directly in O(k)=101, deferring the
+//! full O(n) scatter to the rare candidate that actually passes
+//! `verify`. Separately, the weighted-distance loop (reached only on
+//! that same rare pass) was recomputing `llr[perm[col]] > 0.0` /
+//! `.abs()` fresh on every call despite `perm`/`llr` never changing —
+//! precomputed `hdec_perm`/`absrx_perm` once instead. Both
+//! bit-identical on host (FT8 full-parity 8/8, ship-config, MSK144,
+//! FST4-60, full 435-test lib suite). Re-disassembling:
+//! `osd_decode_generic`'s closure shrank from 4.2 KiB to ~450 bytes,
+//! and the scatter/weighted-distance code is now visibly gated behind
+//! the `verify` call.
+//!
+//! | | before | after | speedup |
+//! |---|---:|---:|---:|
+//! | **`FULL` candidate loop** | **67.789 s** | **59.775 s** | **1.134×** |
+//!
+//! 2/2 real decodes unchanged. **Cumulative from the original
+//! 89.411 s baseline: 1.496×, ≈8.5× over the ~7 s budget (down from
+//! ≈13×).** `osd_decode_generic` still has an unconditional O(n)
+//! XOR-construction step (building `c1`/`c2`/`c3`, distinct from the
+//! scatter fixed this round) untouched — see `docs/reference/
+//! EMBEDDED.md` and issue #306 for where this leaves the "does it
+//! fit" question.
 //!
 //! Also measured in passing: peak stack usage was tiny —
 //! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched

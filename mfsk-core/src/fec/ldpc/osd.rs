@@ -1575,6 +1575,45 @@ pub fn osd_decode_generic<P: LdpcParams>(
         }
     }
 
+    // Permuted hard-decisions and |LLR| — depend only on `perm`/`llr`,
+    // both fixed for the rest of this call, so precomputing them once
+    // here (O(n)) instead of inside `try_and_update` removes a branch,
+    // an `.abs()` call and a double indirection (`llr[perm[col]]`)
+    // from the ~166,650-call weighted-distance loop below (issue #306
+    // follow-up: the previous per-call heap-alloc fix left this
+    // redundant recomputation in place — same closure, different
+    // waste). Bit-identical: `try_and_update` used to compute exactly
+    // these two values fresh on every call from the same unchanging
+    // `perm`/`llr`.
+    let mut hdec_perm = [0u8; OSD_MAX_N];
+    let hdec_perm = &mut hdec_perm[..n];
+    let mut absrx_perm = [0.0f32; OSD_MAX_N];
+    let absrx_perm = &mut absrx_perm[..n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    // Inverse permutation: `inv_perm[i]` is the permuted-space column
+    // holding unpermuted (systematic) position `i`. `decoded[i]` for
+    // `i < k` only ever needs `cp[inv_perm[i]]` — this lets
+    // `try_and_update` gather just the `k` bits `verify` needs instead
+    // of scattering the full `n`-length codeword (and copying its
+    // first `k`) on every call before even checking whether `verify`
+    // will reject the candidate a moment later. `verify` (`check_crc14`
+    // and its FST4/MSK144 equivalents) is a strong filter — a
+    // 14..24-bit CRC rejects essentially every one of the ~166,650
+    // wrong FST4 candidates — so this turns the previously
+    // always-executed `O(n)` scatter into an `O(k)` gather for the
+    // overwhelming majority of calls, deferring the `O(n)` codeword
+    // build to the rare (effectively: only the true candidate) path
+    // that actually needs it.
+    let mut inv_perm = [0usize; OSD_MAX_N];
+    let inv_perm = &mut inv_perm[..n];
+    for (col, &p) in perm.iter().enumerate() {
+        inv_perm[p] = col;
+    }
+
     // Best-so-far, plus the scratch `try_and_update` writes each
     // candidate into before deciding whether it's an improvement.
     // Single closure (not a `try_candidate` + separate `update_best`
@@ -1588,22 +1627,23 @@ pub fn osd_decode_generic<P: LdpcParams>(
     let mut scratch_c = [0u8; OSD_MAX_N];
     let mut scratch_decoded = [0u8; OSD_MAX_N];
     let mut try_and_update = |cp: &[u8]| {
-        let c = &mut scratch_c[..n];
-        for col in 0..n {
-            c[perm[col]] = cp[col];
-        }
         let decoded = &mut scratch_decoded[..k];
-        decoded.copy_from_slice(&c[..k]);
+        for (i, d) in decoded.iter_mut().enumerate() {
+            *d = cp[inv_perm[i]];
+        }
         if let Some(f) = verify
             && !f(decoded)
         {
             return;
         }
+        let c = &mut scratch_c[..n];
+        for col in 0..n {
+            c[perm[col]] = cp[col];
+        }
         let mut wd = 0.0f32;
         for col in 0..n {
-            let hard = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
-            if cp[col] != hard {
-                wd += llr[perm[col]].abs();
+            if cp[col] != hdec_perm[col] {
+                wd += absrx_perm[col];
             }
         }
         if best_wd.is_none_or(|bd| wd < bd) {
