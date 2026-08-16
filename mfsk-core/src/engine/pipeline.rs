@@ -1189,7 +1189,54 @@ where
     // spread far below it, so there's no safe gap wide enough to filter
     // much without risking a real signal.
 
-    try_position(freq_hz, i0, score)
+    let result = try_position(freq_hz, i0, score);
+    if result.is_some() {
+        return result;
+    }
+
+    // FST4 timing-jitter retry (issue #308): WSJT-X's `fst4_decode.f90`
+    // retries each candidate at `ioffset ∈ {0, +1, -1}` samples around
+    // its refined position (`is0 = isbest + ioffset`, lines ~396-403),
+    // rebuilding the full bit-metric set fresh at each offset, before
+    // moving on — but only at "normal"/"deep" decode depth (`jittermax
+    // = 2` for `ndepth ∈ {2,3}`; `jittermax = 0`, i.e. no retry, at the
+    // fastest `ndepth = 1`). mfsk-core had no equivalent: every FST4
+    // candidate was decoded at exactly one `i0`. Found while
+    // investigating issue #306 (VK3NV) — 2 of 5 CCIR-moderate "old-only"
+    // trials from that investigation's OSD-pruning root-cause work
+    // recovered once given this same timing diversity
+    // (`fst4_60_diag_i0_retry_ccir_old_only`, `tests/fst4_sweep.rs`),
+    // meaning part of what looked like a pure OSD-pruning recall gap
+    // under fading was really a missing-timing-diversity gap.
+    //
+    // `depth.osd` is the closest existing proxy for WSJT-X's
+    // fast-vs-normal/deep `ndepth` split (`DecodeDepth::BP_ONLY`/
+    // `EMBEDDED` — OSD off — being the cheap baseline) — not a claimed
+    // exact match, since `ndepth` also gates AP-pass count, which this
+    // crate controls separately.
+    //
+    // `try_position` already tolerates an out-of-range `i0` gracefully
+    // (`symbol_spectra` zero-fills past either end of `cd0`, per its own
+    // doc comment) rather than needing WSJT-X's explicit bounds `cycle`
+    // — a degraded (low-`nsync`, gate-rejected) attempt costs a little
+    // wasted work at the very edges of a slot, not a panic.
+    //
+    // FT8 never reaches this function (its own bespoke engine); FT4's
+    // own multi-position idea (`ft4_diag_segment_retry`) was tried and
+    // reverted for 0/17 measured rescues (see this function's own doc
+    // comment above) — that finding doesn't transfer here, since it
+    // tested a different retry axis (segment boundary, not timing
+    // jitter) on a different protocol, but it's why this is scoped to
+    // FST4 only rather than assumed for FT4 too.
+    if P::ID != super::ProtocolId::Ft4 && depth.osd {
+        for ioffset in [1i32, -1i32] {
+            if let Some(r) = try_position(freq_hz, i0 + ioffset, score) {
+                return Some(r);
+            }
+        }
+    }
+
+    None
 }
 
 /// `llr[INTERLEAVE[j]] = channel_llr[j]` — inverse of the TX-side

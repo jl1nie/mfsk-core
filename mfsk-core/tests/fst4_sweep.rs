@@ -3568,3 +3568,28 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
         );
     }
 }
+
+/// Real recall check for the issue #308 fix (FST4 i0+/-1 timing-jitter
+/// retry) through the *true* production entry point
+/// (`decode_wav_fst4_60`/`DecodeRequest`), not the hand-rolled
+/// diagnostic pipelines elsewhere in this file (which reimplement sync
+/// themselves and wouldn't exercise `process_candidate_basic_impl`'s
+/// new retry loop at all). CCIR-moderate m26/m27, n=100 each -- the
+/// corpus where the missing-timing-diversity gap was found.
+#[test]
+#[ignore = "manual verification — FST4 i0 jitter retry recall (issue #308)"]
+fn fst4_60_diag_i0_jitter_recall_verify() {
+    let dir = sweep_dir();
+    const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
+    for &(snr_tag, trials) in SNR_TAGS {
+        let mut pass = 0u32;
+        for trial in 1..=trials {
+            let path = dir.join(format!("fst4_60_ccir_moderate_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else { continue };
+            if decode_wav_fst4_60(&audio) {
+                pass += 1;
+            }
+        }
+        eprintln!("post-fix ccir_moderate {snr_tag}: {pass}/{trials}");
+    }
+}
