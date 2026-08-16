@@ -1427,6 +1427,26 @@ WSPR's measured 1.35–1.47× dual-core yield is 11.7–12.7 s (still over
 budget); the optimistic 2.0× ceiling reaches 8.57 s — close to, but
 not yet under, 7 s.
 
+**Caveat, found the same day widening the check to CCIR-moderate
+fading:** the "no measurable recall cost" verdict above is AWGN-scoped,
+not general. A same-pipeline old-vs-new comparison (100 trials/SNR,
+`fst4_osd_diag_force_old`) under CCIR-moderate found a real, growing
+decline from m23 through m26 (`full`: 24→18 at m26, -25%; `no8_osd`:
+23→18, -22%) that AWGN doesn't show (m26 tied, m27 within 1 trial).
+`bp_only`/`no8_no_osd` — configs that never call OSD — are byte-
+identical old vs new at every SNR, isolating the cause to the OSD
+algorithm itself. Root-caused on a concrete old-only trial: the
+unpruned combinatorial search finds a genuine order-3 codeword
+(`hard_errors=55/240`, consistent with severe fading-induced
+corruption) that `npre1+npre2` misses. Not a port bug — WSJT-X's own
+`npre2` hash table only surfaces weight-3 patterns whose partial-
+parity signature collides with another MRB pair within the `ntau`-bit
+window, not every possible weight-3 combination; under AWGN this
+rarely matters (errors concentrate in low-|LLR| bits, matching
+`npre1`/`npre2`'s assumption), but a single deeply-faded symbol can
+produce an error geometry that assumption doesn't cover. Recorded on
+#306/#198; no action taken yet.
+
 ## Where to go next
 
 By reader intent:
