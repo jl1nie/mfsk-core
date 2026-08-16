@@ -1491,11 +1491,11 @@ fn fst4_60_diag_recall_tradeoff() {
         }
     }
 
-    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, bool, bool, bool, bool) {
+    let process_one = |&(snr_tag, trial): &(&str, u32)| -> (usize, u32, bool, bool, bool, bool) {
         let snr_idx = SNR_TAGS.iter().position(|&t| t == snr_tag).unwrap();
         let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
         let Some(audio) = load_wav_i16_opt(&path) else {
-            return (snr_idx, false, false, false, false);
+            return (snr_idx, trial, false, false, false, false);
         };
         // sync_min=0.8, matching production's own `DecodeRequest::new`
         // call (`decode_wav_fst4` above) — `fst4_60_diag_osd_escalation`'s
@@ -1647,16 +1647,62 @@ fn fst4_60_diag_recall_tradeoff() {
             }
         }
 
-        (snr_idx, ok_full, ok_bp_only, ok_no8_osd, ok_no8_no_osd)
+        (snr_idx, trial, ok_full, ok_bp_only, ok_no8_osd, ok_no8_no_osd)
     };
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(usize, bool, bool, bool, bool)> = work.par_iter().map(process_one).collect();
+    let results: Vec<(usize, u32, bool, bool, bool, bool)> =
+        work.par_iter().map(process_one).collect();
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(usize, bool, bool, bool, bool)> = work.iter().map(process_one).collect();
+    let results: Vec<(usize, u32, bool, bool, bool, bool)> =
+        work.iter().map(process_one).collect();
+
+    // Sanity: `full ⊇ no8_osd ⊇ no8_no_osd` and `full ⊇ bp_only` must hold
+    // per-*trial*, not just in the aggregate counts — a bookkeeping bug
+    // could easily preserve monotonic totals while crossing individual
+    // trials' flags. `no8_osd` vs `bp_only` has NO such guarantee either
+    // direction (different variant sets *and* different OSD on/off, not
+    // a superset relationship) -- reported, not asserted.
+    let mut violations = 0u32;
+    let mut no8_osd_beats_bp_only = 0u32;
+    let mut bp_only_beats_no8_osd = 0u32;
+    for &(idx, trial, full, bp_only, no8_osd, no8_no_osd) in &results {
+        let tag = SNR_TAGS[idx];
+        if !full && (bp_only || no8_osd || no8_no_osd) {
+            eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: full=false but a reduced config succeeded");
+            violations += 1;
+        }
+        if bp_only && !full {
+            eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: bp_only=true but full=false");
+            violations += 1;
+        }
+        if no8_osd && !full {
+            eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: no8_osd=true but full=false");
+            violations += 1;
+        }
+        if no8_no_osd && !no8_osd {
+            eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: no8_no_osd=true but no8_osd=false");
+            violations += 1;
+        }
+        if no8_osd && !bp_only {
+            no8_osd_beats_bp_only += 1;
+        }
+        if bp_only && !no8_osd {
+            bp_only_beats_no8_osd += 1;
+        }
+    }
+    eprintln!(
+        "sanity: {violations} monotonicity violations (must be 0). \
+         no8_osd vs bp_only have no superset relationship either \
+         direction (different variant sets *and* different OSD on/off): \
+         no8_osd-only wins {no8_osd_beats_bp_only} trials, \
+         bp_only-only wins {bp_only_beats_no8_osd} trials — both nonzero \
+         confirms they're catching genuinely different candidates, not \
+         one dominating the other."
+    );
 
     let mut tallies = vec![Tally::default(); SNR_TAGS.len()];
-    for (idx, full, bp_only, no8_osd, no8_no_osd) in results {
+    for (idx, _trial, full, bp_only, no8_osd, no8_no_osd) in results {
         let t = &mut tallies[idx];
         t.total += 1;
         t.full += full as u32;
