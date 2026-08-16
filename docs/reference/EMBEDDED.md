@@ -1543,28 +1543,39 @@ device the way the host projection did. That would need a depth-first
 counterpart built on the same 5-stage set for a fair on-device A/B —
 not done this round.
 
-**Eighteenth attempt: issue #308's `i0` jitter retry, tried and
-reverted for embedded specifically.** The same day #308 landed on host
+**Eighteenth attempt: issue #308's `i0` jitter retry — made a caller
+choice instead of a fixed policy.** The same day #308 landed on host
 (FST4 candidates now retried at `i0 ∈ {refined, +1, -1}`, matching
 WSJT-X's `fst4_decode.f90`), it was ported into `decode_rung_major` too
 — straightforward given both go through the same `symbol_spectra`/BP/
 OSD building blocks. Real-hardware measurement found the cost
-disproportionate to the recall gain: `full` 40.102 s → **121.281 s**
-(3.02×), `no8_osd` 13.643 s → **34.200 s** (2.51×), versus a recall
-gain of only a few points at the SNRs checked
+disproportionate to the recall gain if applied unconditionally: `full`
+40.102 s → **121.281 s** (3.02×), `no8_osd` 13.643 s → **34.200 s**
+(2.51×), versus a recall gain of only a few points at the SNRs checked
 (`fst4_60_diag_i0_offset_ablation`: AWGN m27 74→82/100, CCIR-moderate
 m26 18→23/100 — real, not proportional to a 2-3× cost). An ablation of
 the two offsets individually found neither is a clean free cut the way
-`llrd` was: `{0,-1}` alone captures most of the combined benefit but
-still costs roughly double `{0}` alone, and `{0,+1}` captures less
-while costing about the same.
+`llrd` was: `{0,-1}` alone captures most of the combined benefit
+(AWGN m27 79/100, CCIR-moderate m26 21/100) but still costs a real
+1.84× on a quick host-timing read (`fst4_60_diag_i0_offset_host_
+timing`), and `{0,+1}` captures less while costing about the same.
 
-Reverted: `decode_rung_major` stays at `i0={0}` only. Host (`process_
-candidate_basic_impl`, issue #308) and embedded (`decode_rung_major`)
-are deliberately allowed to diverge here — WSJT-X-fidelity and
-embedded feasibility are different questions once a fix's cost and
-its recall value are both measured. `no8_osd` remains 13.643 s (≈1.95×
-over budget), the same figure the Seventeenth attempt closed with.
+Rather than mfsk-core picking one answer, `decode_rung_major` exposes
+`offsets: &[i32]` as an explicit caller parameter — same shape as the
+existing `skip_llrc`/`skip_osd` choices. A monitoring-style deployment
+that can tolerate spanning slots has a very different cost/recall
+trade-off than one with a hard per-slot deadline, so this is a
+deployment decision, not a decoder one. The 2-arg `decode_rung_major`
+wrapper keeps `&[0]` as the deadline-tight default (`no8_osd`: 13.643 s,
+≈1.95× over the ~7 s budget, the same figure the Seventeenth attempt
+closed with); `&[0, -1]` and `&[0, 1, -1]` are available to a caller
+that wants more recall and can spend more time, with the cost/recall
+numbers above already measured rather than needing to be re-derived.
+Host (`process_candidate_basic_impl`, issue #308, unconditional `i0±1`)
+and embedded's *default* are still allowed to diverge — WSJT-X-fidelity
+and a hard embedded deadline are different questions — but embedded is
+no longer locked out of the fidelity fix if a given deployment can
+afford it.
 
 ## Where to go next
 
