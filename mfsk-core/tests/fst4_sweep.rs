@@ -3380,6 +3380,187 @@ fn fst4_60_diag_baked_asset_nsync_gate_count() {
     eprintln!("{n_pass} of {n} baked candidates pass nsync > {SYNC_Q_MIN}");
 }
 
+/// VK3NV's issue #306 candidate-population question (2026-08-16
+/// comment): "raw candidates / candidates surviving the sniper gate /
+/// candidates entering deep LLR/OSD / real vs false among those
+/// survivors / total candidate-loop time", swept across search widths
+/// (±250/100/50/25 Hz — the ±250 matches the literal at `fst4::decode`'s
+/// `__sniper` dispatch, `SNIPER_SYNC_MIN`/`SNIPER_SYNC_Q_MIN` match its
+/// `req.sync_min`/`SYNC_Q_MIN / 2`) around each of the golden WAV's two
+/// known real signals. Explicitly *not* a stand-in for the wide-band/
+/// unknown-frequency path (VK3NV's own comment already scopes it that
+/// way) — this only answers the known-target architecture question:
+/// does narrowing candidate generation reduce the false-survivor
+/// population reaching expensive decode.
+///
+/// Three checkpoints per width, matching what the code actually has
+/// (not five distinct stages — "surviving the gate" and "entering deep
+/// LLR/OSD" are two different gates in the real code, `sync_min` inside
+/// `coarse_sync` then `sync_q_min` inside `process_candidate_basic_impl`,
+/// not the same population):
+///   - "raw": `coarse_sync`'s full NMS-surviving candidate population in
+///     the window, `sync_min = -inf` so nothing is score-gated;
+///   - "gate": `coarse_sync`'s real output at sniper's actual `sync_min`
+///     (0.8) — the same `Vec<SyncCandidate>` `decode_sniper_ap`'s loop
+///     iterates, not a separate downstream filter;
+///   - "nsyncOK": of the gate survivors, how many clear
+///     `SYNC_Q_MIN / 2` (8) — computed exactly as
+///     `process_candidate_basic_impl` does internally
+///     (`symbol_spectra` + `sync_quality`), immediately before LLR/OSD.
+/// Real vs false is decided by matching each nsync-pass survivor's
+/// refined frequency against both known (freq) golden entries (±4 Hz,
+/// matching `fst4_wsjtx_samples.rs`'s own `FREQ_TOL_HZ`).
+#[test]
+#[ignore = "manual diagnostic — sniper search-width vs false-candidate population (issue #306, VK3NV 2026-08-16)"]
+fn fst4_60_diag_sniper_gate_width_sweep() {
+    use std::time::Instant;
+
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SYNC_Q_MIN: u32 = 16; // fst4/decode.rs's own constant
+    const SNIPER_SYNC_MIN: f32 = 0.8; // SniperRequest::new's default
+    const SNIPER_SYNC_Q_MIN: u32 = SYNC_Q_MIN / 2; // fst4::decode's __sniper literal
+    const WIDTHS_HZ: &[f32] = &[250.0, 100.0, 50.0, 25.0];
+    const FREQ_TOL_HZ: f32 = 4.0;
+
+    struct Target {
+        name: &'static str,
+        freq_hz: f32,
+    }
+    // Same two real signals as `fst4_wsjtx_samples.rs::GOLDEN`
+    // (jt9 -7 -p 60 -b A -d 3 ground truth on this WAV).
+    const TARGETS: &[Target] = &[
+        Target {
+            name: "N5TM",
+            freq_hz: 1101.0,
+        },
+        Target {
+            name: "K9KFR",
+            freq_hz: 1331.0,
+        },
+    ];
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+    eprintln!(
+        "{:>6} {:>7} {:>6} {:>5} {:>6} {:>8} {:>6} {:>7} {:>9} {:>9}",
+        "target",
+        "width",
+        "maxcand",
+        "raw",
+        "gate",
+        "nsyncOK",
+        "real",
+        "false",
+        "decoded",
+        "loop_ms"
+    );
+
+    for t in TARGETS {
+        for &width in WIDTHS_HZ {
+            let freq_min = (t.freq_hz - width).max(100.0);
+            let freq_max = (t.freq_hz + width).min(3000.0);
+
+            let raw = coarse_sync::<Fst4s60>(
+                &audio,
+                freq_min,
+                freq_max,
+                f32::NEG_INFINITY,
+                Some(t.freq_hz),
+                5000,
+            );
+
+            // Both `SniperRequest`'s real `max_cand` default (50, to
+            // reproduce production truncation behaviour) and an
+            // effectively-uncapped run (5000, larger than any `raw`
+            // count observed at any width here) — the 50-cap row alone
+            // conflates "narrower window" with "hit the cap", since
+            // sniper's real `sync_min=0.8` is loose enough that even
+            // the ±25 Hz window's `raw` population (85) has ≥50
+            // candidates clearing it.
+            for max_cand in [50usize, 5000] {
+                let gated = coarse_sync::<Fst4s60>(
+                    &audio,
+                    freq_min,
+                    freq_max,
+                    SNIPER_SYNC_MIN,
+                    Some(t.freq_hz),
+                    max_cand,
+                );
+
+                let t0 = Instant::now();
+                let mut n_nsync_pass = 0usize;
+                let mut n_real = 0usize;
+                let mut n_false = 0usize;
+                let mut n_decoded = 0usize;
+                for c in &gated {
+                    let (cd0, refined_freq_hz, i0, _refined_score) =
+                        refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
+                    let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                    let nsync = sync_quality::<Fst4s60>(&cs);
+                    if nsync <= SNIPER_SYNC_Q_MIN {
+                        continue;
+                    }
+                    n_nsync_pass += 1;
+                    let is_real = TARGETS
+                        .iter()
+                        .any(|g| (refined_freq_hz - g.freq_hz).abs() < FREQ_TOL_HZ);
+                    if is_real {
+                        n_real += 1;
+                    } else {
+                        n_false += 1;
+                    }
+
+                    let r = process_candidate_basic::<Fst4s60>(
+                        c,
+                        &fft_cache,
+                        &FST4_60A_DOWNSAMPLE,
+                        DecodeDepth::FULL,
+                        DecodeStrictness::Normal,
+                        &[],
+                        EqMode::Off,
+                        SNIPER_SYNC_Q_MIN,
+                    );
+                    if r.is_some() {
+                        n_decoded += 1;
+                    }
+                }
+                let loop_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+                eprintln!(
+                    "{:>6} {:>6.0}Hz {:>7} {:>5} {:>6} {:>8} {:>6} {:>7} {:>9} {:>9.1}",
+                    t.name,
+                    width,
+                    max_cand,
+                    raw.len(),
+                    gated.len(),
+                    n_nsync_pass,
+                    n_real,
+                    n_false,
+                    n_decoded,
+                    loop_ms
+                );
+            }
+        }
+    }
+}
+
 fn host_clock_us() -> i64 {
     use std::sync::OnceLock;
     use std::time::Instant;
