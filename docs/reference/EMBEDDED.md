@@ -1447,6 +1447,26 @@ rarely matters (errors concentrate in low-|LLR| bits, matching
 produce an error geometry that assumption doesn't cover. Recorded on
 #306/#198; no action taken yet.
 
+**Sixteenth attempt: fresh `FULL`/`BP_ONLY` timing split on the
+npre1/npre2 build (VK3NV's request — "where does the bottleneck sit
+now?").** `BP_ONLY` doesn't call OSD at all, so it's unaffected by the
+port; re-flashed anyway for a same-build number rather than reusing a
+pre-port measurement. `full` from the Fifteenth attempt above:
+
+| | time | share of `full` |
+|---|---:|---:|
+| `BP_ONLY` (LLR/BP only) | 31.023 s | 71.9% |
+| `full` − `BP_ONLY` (OSD, inferred) | 12.111 s | 28.1% |
+| `full` (both) | 43.134 s | 100% |
+
+Versus the pre-port split (`old full` 54.087 s − same 31.023 s
+`BP_ONLY` = 23.064 s OSD, 42.6%): OSD's *absolute* cost dropped 1.90×
+(23.064 s → 12.111 s), and its *share* dropped from 42.6% to 28.1% —
+the bottleneck has moved back to the BP/LLR side, which the port left
+untouched. `BP_ONLY`'s own remaining cost (31.023 s) is still ~4.4×
+over the ~7 s budget on its own — the next quantitatively meaningful
+lever, if one exists, is back on that side of the split, not OSD.
+
 ## Where to go next
 
 By reader intent:
