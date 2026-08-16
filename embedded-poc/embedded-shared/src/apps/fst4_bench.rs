@@ -319,13 +319,45 @@
 //! |---|---:|---:|---:|
 //! | **`FULL` candidate loop** | **67.789 s** | **59.775 s** | **1.134×** |
 //!
-//! 2/2 real decodes unchanged. **Cumulative from the original
-//! 89.411 s baseline: 1.496×, ≈8.5× over the ~7 s budget (down from
-//! ≈13×).** `osd_decode_generic` still has an unconditional O(n)
-//! XOR-construction step (building `c1`/`c2`/`c3`, distinct from the
-//! scatter fixed this round) untouched — see `docs/reference/
-//! EMBEDDED.md` and issue #306 for where this leaves the "does it
-//! fit" question.
+//! 2/2 real decodes unchanged. Cumulative at this point: 89.411 s →
+//! 59.775 s, 1.496×, ≈8.5× over the ~7 s budget (down from ≈13×).
+//!
+//! ## Follow-up 6, same day: bit-packing OSD's XOR construction
+//!
+//! The one unconditional O(n) step Follow-up 5's `verify`-gate
+//! reordering couldn't reach: codeword *construction*
+//! (`c1[col]^=g[k1*n+col]`, and again for `c2`/`c3`/`c4`) can't be
+//! deferred behind `verify` the way the scatter was — it's not
+//! consuming a candidate, it *is* the candidate, run unconditionally
+//! on every one of the ~166 650 order-3 combinations. Unlike the
+//! scatter, no permutation is involved here — both `c*` and `g`'s
+//! rows are already in the same permuted-column order — so it's a
+//! plain elementwise XOR of two equal-length byte arrays, exactly the
+//! shape `osd_setup_generic_packed` already bit-packs for its own
+//! row-XOR during elimination. Repacked `g` into `OSD_WORDS=4` `u64`
+//! words per row once per call (O(k·n), negligible), turning each
+//! `c1`/`c2`/`c3`/`c4` construction from a 240-byte copy + 240-byte
+//! XOR loop into 4 word-XORs with no copy at all (`child = parent ^
+//! g_packed[row]` directly). `try_and_update` moved to the packed
+//! representation too — the O(k) gather trades a byte load for a
+//! bit-extract (same asymptotic cost), and the scatter +
+//! weighted-distance loop collapsed from two passes into one.
+//! Bit-identical on host (FT8 full-parity 8/8, ship-config, MSK144,
+//! FST4-60, full 435-test lib suite, `fixed-point` spot-check).
+//!
+//! | | before | after | speedup |
+//! |---|---:|---:|---:|
+//! | **`FULL` candidate loop** | **59.775 s** | **54.087 s** | **1.105×** |
+//!
+//! 2/2 real decodes unchanged. Stack headroom dropped ~90 KB → ~83 KB
+//! (new `g_packed` scratch ≈ 8 KB) — still wide margin.
+//! **Cumulative from the original 89.411 s baseline: 1.653×, ≈7.7×
+//! over the ~7 s budget (down from ≈13×).** `compute_llr_partial`'s
+//! own recursive amplitude-table build (`build_group_amplitudes`) is
+//! the last identified-but-untouched micro-lever, though at ~300
+//! calls/candidate vs. OSD's ~166 650 its share is much smaller — see
+//! `docs/reference/EMBEDDED.md` and issue #306 for where this leaves
+//! the "does it fit" question.
 //!
 //! Also measured in passing: peak stack usage was tiny —
 //! `BENCH_STACK`'s 96 KiB guess left 95 064 B of headroom untouched

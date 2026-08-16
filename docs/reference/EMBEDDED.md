@@ -1205,21 +1205,72 @@ Measured on real CoreS3 hardware, same 41 baked FST4-60 candidates:
 
 2/2 real decodes unchanged (`CQ N5TM EL29`, `CQ K9KFR EN71`).
 
-**Cumulative from the original 89.411 s baseline: 1.496×, ≈8.5× over
-the ~7 s budget (down from ≈13×).** Four small, cheap, disassembly-led
-fixes have now closed ~1.5× of the original ~13× gap — real
-progress, but still short of a fit, and each individual fix has come
-in smaller than its own naive justification would suggest (call-count
-reduction, element-visit-count unchanged) because the surrounding
-per-element work was already there and untouched. `osd_decode_generic`
-still has an unconditional `O(n)` XOR-construction step in the
-combinatorial search itself (building `c1`/`c2`/`c3` from
-`g[row*n+col]`, distinct from the scatter fixed this round) that has
-not been touched. So does whether the full gap is closable the way
-WSPR's was (WSPR went 1214.3 s → 249.2 s, 4.9×, across `minsync2` +
-`opt-level=3` + `160→240 MHz`) — this measurement answers "does it
+Cumulative at this point: 89.411 s → 59.775 s, 1.496×, ≈8.5× over the
+~7 s budget (down from ≈13×).
+
+**Thirteenth attempt: bit-packing `osd_decode_generic`'s XOR
+construction — the one unconditional `O(n)` step the `verify`-gate
+reordering above couldn't reach.** That reordering deferred the
+scatter to the rare `verify`-passing candidate, but the codeword
+*construction* itself (`c1[col] ^= g[k1*n+col]`, and again for
+`c2`/`c3`/`c4`) can't be deferred the same way — it's not consuming a
+candidate, it *is* the candidate, run unconditionally on every one of
+the ~166 650 order-3 combinations. Unlike the scatter, though, no
+permutation is involved here: both `c*` and `g`'s rows are already in
+the same permuted-column order, so it's a plain elementwise XOR of two
+equal-length byte arrays — exactly the shape `osd_setup_generic_packed`
+already bit-packs for its own row-XOR during Gaussian elimination
+(same file, same reasoning, already in production). Repacking `g`
+(byte-per-bit, as `osd_setup_generic_packed` returns it — that
+function's own return type stays untouched, since
+`packed_setup_differential`'s tests check it against a byte-per-bit
+reference) into `OSD_WORDS = 4` `u64` words per row, once per
+`osd_decode_generic` call (`O(k·n)`, negligible), turns each `c1`/
+`c2`/`c3`/`c4` construction from a 240-byte copy + 240-byte XOR loop
+into 4 word-XORs — no copy needed at all, since each is now computed
+directly as `parent ^ g_packed[row]`.
+
+`try_and_update` moves to the packed representation too: the `O(k)`
+gather (`decoded[i] = cp[inv_perm[i]]`) becomes a bit-extract
+(`(cp[idx/64] >> (idx%64)) & 1`) instead of a byte load — same
+asymptotic cost, a shift+mask traded for a load — and the scatter +
+weighted-distance loop (still `O(n)`, still gated behind `verify`
+exactly as before) collapsed from two passes into one, since both now
+need the same per-column bit-extract. Bit-identical on host: FT8
+(full-parity 8/8, ship-config), MSK144, FST4-60, full 435-test lib
+suite, and `fixed-point` feature spot-checked (`ft8_qso3_apoff_recall`
+floor unchanged).
+
+Measured on real CoreS3 hardware, same 41 baked FST4-60 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **59.775 s** | **54.087 s** | **1.105×** |
+
+2/2 real decodes unchanged. Stack headroom dropped from ~90 KB to
+~83 KB (the new `g_packed` scratch is `[[u64;4]; 256]` ≈ 8 KB) — still
+a wide margin against the 96 KB `BENCH_STACK` budget.
+
+**Cumulative from the original 89.411 s baseline: 1.653×, ≈7.7× over
+the ~7 s budget (down from ≈13×).** Five small, cheap, disassembly-led
+fixes have now closed ~1.65× of the original ~13× gap — real
+progress, but still short of a fit, and every individual fix so far
+has come in smaller than its own naive justification would suggest
+(call-count reduction, element-visit-count unchanged) because the
+surrounding per-element work was already there and untouched.
+`compute_llr_partial`'s own recursive amplitude-table build
+(`build_group_amplitudes`) — the one other identified-but-untouched
+hot path, though at ~300 calls/candidate vs. OSD's ~166 650, a much
+smaller share — is the last concrete micro-lever left in this class.
+Whether the full gap is closable the way WSPR's was (WSPR went
+1214.3 s → 249.2 s, 4.9×, across `minsync2` + `opt-level=3` +
+`160→240 MHz`) remains open — this measurement answers "does it
 currently fit" (no, but less no than before), not "could it with more
-of the same kind of work".
+of the same kind of work". At ≈7.7×, the gap is close enough to the
+size a genuinely different-class lever (fixed-point arithmetic,
+dual-core split of the candidate loop, or a recall trade-off) would
+plausibly close on its own, where the previous ≈13×/≈9.7× gaps made
+that less obviously true.
 
 A mixed-radix or Bluestein implementation for the *larger* FFT sites
 this session routed around (issue #307: `coarse_sync`'s 7776,

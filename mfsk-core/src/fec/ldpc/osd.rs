@@ -1535,8 +1535,9 @@ pub fn osd_decode_generic<P: LdpcParams>(
     // is a packed *representation* of exactly the same row-swap
     // elimination this function used to run inline, not a different
     // algorithm. Everything from here on (order-0 encode, the k1..k4
-    // search, `try_candidate`) is unchanged and still consumes `g` as
-    // plain byte-per-bit, exactly as before.
+    // search, `try_candidate`) used to consume `g` as plain
+    // byte-per-bit throughout; see the `g_packed` repacking below for
+    // why that's no longer true of the row-XOR construction specifically.
     let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     };
@@ -1555,6 +1556,7 @@ pub fn osd_decode_generic<P: LdpcParams>(
     // `engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1` already established
     // for the identical problem.
     const OSD_MAX_N: usize = 256; // ≥ 240 (FST4), 174 (FT8), 128 (MSK144)
+    const OSD_WORDS: usize = OSD_MAX_N.div_ceil(64); // 4
 
     // ── Step 4: hard decisions on MRB bits ──────────────────────────
     let mut mrb = [0u8; OSD_MAX_N];
@@ -1564,13 +1566,44 @@ pub fn osd_decode_generic<P: LdpcParams>(
         mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
     }
 
-    // ── Step 5: encode order-0 candidate ────────────────────────────
-    let mut c_perm = [0u8; OSD_MAX_N];
-    let c_perm = &mut c_perm[..n];
+    // Pack `g` (byte-per-bit, from `osd_setup_generic_packed` above)
+    // into `OSD_WORDS`-word rows, once, up front — O(k*n), negligible
+    // next to what it feeds. `osd_setup_generic_packed` itself already
+    // builds and Gaussian-eliminates a packed representation
+    // internally, then unpacks it to byte-per-bit before returning
+    // (its own doc comment explains why: `packed_setup_differential`'s
+    // tests check it against a byte-per-bit reference, and no other
+    // caller needs the packed form — until now). Re-packing here,
+    // rather than changing what `osd_setup_generic_packed` returns,
+    // keeps that function's tested contract untouched and confines
+    // this change to the one consumer that actually has a hot loop
+    // over `g`: every one of the ~166 650 combinatorial candidates
+    // XORs one full `g` row into a running codeword (`c1[col] ^=
+    // g[k1*n+col]` for `col in 0..n`, and again for `c2`/`c3`/`c4`) —
+    // unlike `try_and_update`'s scatter (moved behind the `verify`
+    // gate above), this construction *is* the candidate, so it can't
+    // be deferred, only made cheaper per call. No permutation is
+    // involved here (both `c*` and `g`'s rows are already in the same
+    // permuted-column order), so — same reasoning as
+    // `osd_setup_generic_packed`'s own row-XOR during elimination —
+    // it packs directly into `n.div_ceil(64)` word-XORs instead of `n`
+    // per-byte ones, with no gather/scatter complication.
+    let mut g_packed = [[0u64; OSD_WORDS]; OSD_MAX_N];
+    let g_packed = &mut g_packed[..k];
+    for (row, row_words) in g_packed.iter_mut().enumerate() {
+        for col in 0..n {
+            if g[row * n + col] != 0 {
+                row_words[col / 64] |= 1 << (col % 64);
+            }
+        }
+    }
+
+    // ── Step 5: encode order-0 candidate (packed) ───────────────────
+    let mut c_perm_packed = [0u64; OSD_WORDS];
     for r in 0..k {
         if mrb[r] == 1 {
-            for col in 0..n {
-                c_perm[col] ^= g[r * n + col];
+            for w in 0..OSD_WORDS {
+                c_perm_packed[w] ^= g_packed[r][w];
             }
         }
     }
@@ -1626,10 +1659,20 @@ pub fn osd_decode_generic<P: LdpcParams>(
     let mut best_decoded = [0u8; OSD_MAX_N];
     let mut scratch_c = [0u8; OSD_MAX_N];
     let mut scratch_decoded = [0u8; OSD_MAX_N];
-    let mut try_and_update = |cp: &[u8]| {
+    // `cp` is now `OSD_WORDS`-word packed (bit `col` lives at
+    // `cp[col/64]` bit `col%64`) rather than one byte per bit — the
+    // caller (the k1..k4 construction below) builds it via
+    // `g_packed`'s word-XORs instead of `g`'s byte-XORs. The gather
+    // step (`decoded[i] = bit(cp, inv_perm[i])`) stays `O(k)` either
+    // way, just trading a byte load for a shift+mask; the scatter and
+    // weighted-distance loops (still `O(n)`, still gated behind
+    // `verify` exactly as before) are now one combined pass instead of
+    // two, since both need the same per-column bit.
+    let mut try_and_update = |cp: &[u64]| {
         let decoded = &mut scratch_decoded[..k];
         for (i, d) in decoded.iter_mut().enumerate() {
-            *d = cp[inv_perm[i]];
+            let idx = inv_perm[i];
+            *d = ((cp[idx / 64] >> (idx % 64)) & 1) as u8;
         }
         if let Some(f) = verify
             && !f(decoded)
@@ -1637,12 +1680,11 @@ pub fn osd_decode_generic<P: LdpcParams>(
             return;
         }
         let c = &mut scratch_c[..n];
-        for col in 0..n {
-            c[perm[col]] = cp[col];
-        }
         let mut wd = 0.0f32;
         for col in 0..n {
-            if cp[col] != hdec_perm[col] {
+            let bit = ((cp[col / 64] >> (col % 64)) & 1) as u8;
+            c[perm[col]] = bit;
+            if bit != hdec_perm[col] {
                 wd += absrx_perm[col];
             }
         }
@@ -1654,49 +1696,45 @@ pub fn osd_decode_generic<P: LdpcParams>(
     };
 
     // Order-0.
-    try_and_update(c_perm);
+    try_and_update(&c_perm_packed);
 
-    // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. Reuse buffers
-    // across iterations to avoid per-candidate Vec allocs.
-    let mut c1 = [0u8; OSD_MAX_N];
-    let c1 = &mut c1[..n];
-    let mut c2 = [0u8; OSD_MAX_N];
-    let c2 = &mut c2[..n];
-    let mut c3 = [0u8; OSD_MAX_N];
-    let c3 = &mut c3[..n];
-    let mut c4 = [0u8; OSD_MAX_N];
-    let c4 = &mut c4[..n];
+    // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. `c1`/`c2`/`c3`/`c4`
+    // are packed now too — each is computed directly as a word-XOR of
+    // its parent and one `g_packed` row (`OSD_WORDS`=4 XORs) instead
+    // of a byte copy plus an `n`-element (up to 240) byte-XOR loop,
+    // for every one of the ~166 650 order-3 combinations this search
+    // makes for FST4.
+    let mut c1_packed = [0u64; OSD_WORDS];
+    let mut c2_packed = [0u64; OSD_WORDS];
+    let mut c3_packed = [0u64; OSD_WORDS];
+    let mut c4_packed = [0u64; OSD_WORDS];
     for k1 in 0..k {
-        c1.copy_from_slice(c_perm);
-        for col in 0..n {
-            c1[col] ^= g[k1 * n + col];
+        for w in 0..OSD_WORDS {
+            c1_packed[w] = c_perm_packed[w] ^ g_packed[k1][w];
         }
-        try_and_update(c1);
+        try_and_update(&c1_packed);
         if ndeep < 2 {
             continue;
         }
         for k2 in (k1 + 1)..k {
-            c2.copy_from_slice(c1);
-            for col in 0..n {
-                c2[col] ^= g[k2 * n + col];
+            for w in 0..OSD_WORDS {
+                c2_packed[w] = c1_packed[w] ^ g_packed[k2][w];
             }
-            try_and_update(c2);
+            try_and_update(&c2_packed);
             if ndeep < 3 {
                 continue;
             }
             for k3 in (k2 + 1)..k {
-                c3.copy_from_slice(c2);
-                for col in 0..n {
-                    c3[col] ^= g[k3 * n + col];
+                for w in 0..OSD_WORDS {
+                    c3_packed[w] = c2_packed[w] ^ g_packed[k3][w];
                 }
-                try_and_update(c3);
+                try_and_update(&c3_packed);
                 if ndeep >= 4 && k3 + 1 < k4_limit {
                     for k4 in (k3 + 1)..k4_limit.min(k) {
-                        c4.copy_from_slice(c3);
-                        for col in 0..n {
-                            c4[col] ^= g[k4 * n + col];
+                        for w in 0..OSD_WORDS {
+                            c4_packed[w] = c3_packed[w] ^ g_packed[k4][w];
                         }
-                        try_and_update(c4);
+                        try_and_update(&c4_packed);
                     }
                 }
             }
