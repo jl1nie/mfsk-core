@@ -150,11 +150,49 @@
 //! Both decodes still succeed with OSD off — on this file neither real
 //! signal ever needed it. So OSD is a real cost (42% of the total) but
 //! **not the majority one**: plain BP/LLR alone is 51.8 s, already
-//! ~7.4× over the ~7 s budget by itself. Cutting OSD would help but
-//! wouldn't be sufficient on its own — whatever's expensive inside the
-//! plain LLR/BP staircase (the `LLR_NSYM_MAX = 8` rung is still the
-//! leading unmeasured suspect) has to be addressed too. Neither
-//! component was diagnosed further than this split — see
+//! ~7.4× over the ~7 s budget by itself.
+//!
+//! ## Follow-up 2, same day: the `LLR_NSYM_MAX = 8` suspect confirmed
+//!
+//! `MFSK_FST4_BENCH_DEPTH=llr_probe` (see [`run_llr_stage_probe`])
+//! calls `symbol_spectra` + each `compute_llr_*` stage directly, no
+//! BP/OSD at all, timing every stage for every one of the 41
+//! candidates (not just the tail — this mode skips the real
+//! pipeline's early nsync-gate exit on purpose, to compare all four
+//! stages against each other on equal footing).
+//!
+//! | stage | total (41 candidates) | share |
+//! |---|---:|---:|
+//! | `symbol_spectra` | 1.39 s | 0.5% |
+//! | nsym=1 (`compute_llr_fast`) | 0.09 s | <0.1% |
+//! | nsym=2 | 0.14 s | <0.1% |
+//! | nsym=4 (`LLR_NSYM_MID`) | 1.10 s | 0.4% |
+//! | **nsym=8 (`LLR_NSYM_MAX`)** | **301.2 s** | **99.1%** |
+//!
+//! `nsym=8` alone costs **~7.347 s per candidate**, uniform to within
+//! 0.01% across all 41 — a pure function of the computation's size
+//! (`4⁸ = 65536` tone-combination hypotheses per symbol group), not
+//! data-dependent. That single stage accounts for essentially all of
+//! the `BP_ONLY` run's ~7.76 s/candidate tail cost
+//! (0.034+0.002+0.003+0.027+7.347 ≈ 7.41 s of it; the remaining
+//! ~0.35 s is presumably `decode_soft_pooled`'s own BP iterations,
+//! not separately measured here).
+//!
+//! One structural note this doesn't change: `SYNC_Q_MIN = 16` is
+//! already FST4's own equivalent of WSPR's `minsync2` — WSJT-X's own
+//! pre-ladder gate (`get_fst4_bitmetrics.f90`), faithfully ported
+//! (issue #197), and it's what keeps 33 of 41 candidates from ever
+//! reaching this stage in the real pipeline. The 8 that do clear it
+//! are the same population a real `jt9` would also have to run this
+//! computation on — there is no missing cheap-reject lever the way
+//! WSPR's `minsync2` gap was; the cost is intrinsic to the candidates
+//! that legitimately warrant deep decoding, not a filtering gap.
+//!
+//! So the remaining levers are in `compute_llr_partial` itself
+//! (algorithmic restructuring, fixed-point, SIMD/PIE — unexamined
+//! here), accepting a recall trade-off by skipping `nsym=8` on
+//! embedded the way FT8's ship config skips OSD, or parallelism
+//! (dual-core). Not pursued further in this session — see
 //! `docs/reference/EMBEDDED.md` and issue #306 for where this leaves
 //! the "does it fit" question.
 //!
@@ -187,7 +225,9 @@ use alloc::vec::Vec;
 
 use num_complex::Complex32;
 
+use mfsk_core::engine::ModulationParams;
 use mfsk_core::engine::equalize::EqMode;
+use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra};
 use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::fst4::Fst4s60;
@@ -323,6 +363,22 @@ pub fn run_bench(refined_bin: &[u8]) {
         "fst4_bench: baked asset refined_candidates={} bytes",
         refined_bin.len(),
     );
+
+    // Third mode, alongside FULL/BP_ONLY above: does the ~7.76 s the
+    // `BP_ONLY` run still pays per hard candidate concentrate in the
+    // `LLR_NSYM_MAX = 8` LLR-computation rung specifically, as the
+    // module doc's leading suspect predicts? Bypasses
+    // `process_candidate_precomputed` (and therefore BP/OSD) entirely
+    // — times only `symbol_spectra` + each `compute_llr_*` stage
+    // directly, the same building blocks `process_candidate_basic_
+    // impl`'s lazy staircase calls internally (`engine::pipeline.rs`
+    // lines ~926-967).
+    if option_env!("MFSK_FST4_BENCH_DEPTH") == Some("llr_probe") {
+        log::info!("fst4_bench: LLR-stage probe (MFSK_FST4_BENCH_DEPTH=llr_probe) — no BP/OSD");
+        run_llr_stage_probe(refined_bin);
+        return;
+    }
+
     // A/B switch for the issue #306 follow-up: is the per-candidate
     // cost tail (6 of 41 candidates, ~14 s each on the first
     // full-depth run) OSD, or the LLR staircase underneath it?
@@ -469,6 +525,121 @@ pub fn run_bench(refined_bin: &[u8]) {
     log::info!("fst4_bench: stack headroom after candidate loop = {} B", stack_headroom());
     log_heap("post-decode");
     log::info!("=== fst4_bench complete ===");
+}
+
+/// `MFSK_FST4_BENCH_DEPTH=llr_probe` mode — times `symbol_spectra` and
+/// each `compute_llr_*` stage directly, per candidate, with no BP/OSD
+/// call at all. Isolates whether the `BP_ONLY` run's ~7.76 s/candidate
+/// tail cost is the `LLR_NSYM_MAX = 8` rung specifically (65536
+/// tone-combination hypotheses per symbol group) or spread across the
+/// staircase — see the module doc's "Follow-up" section for why this
+/// is the next thing worth separating out.
+///
+/// Mirrors `process_candidate_basic_impl`'s own lazy-staircase call
+/// order exactly (`engine::pipeline.rs`, same file/line range as the
+/// module doc above): `compute_llr_fast` (nsym=1, gives `llra`+`llrd`
+/// together, ~5× faster than computing them separately per that
+/// function's own doc comment), then `compute_llr_partial` at nsym=2,
+/// `LLR_NSYM_MID` (4), and `LLR_NSYM_MAX` (8) in that order — but
+/// unconditionally for every candidate here, not lazily stopping at
+/// the first variant that would let BP converge, since this probe
+/// never calls BP at all and the point is comparing all four stages'
+/// costs against each other.
+fn run_llr_stage_probe(refined_bin: &[u8]) {
+    log_heap("boot");
+    let candidates = load_refined_candidates(refined_bin);
+    log::info!("fst4_bench: llr_probe over {} candidates", candidates.len());
+    log_heap("post-load");
+
+    let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
+    log::info!("task watchdog deinit -> {r}");
+
+    struct StageTiming {
+        freq_hz: f32,
+        symspec_us: i64,
+        fast_us: i64,
+        nsym2_us: i64,
+        nsym_mid_us: i64,
+        nsym_max_us: i64,
+    }
+    let mut timings: Vec<StageTiming> = Vec::with_capacity(candidates.len());
+
+    let nsym_mid = <Fst4s60 as ModulationParams>::LLR_NSYM_MID
+        .expect("FST4-60A sets LLR_NSYM_MID") as usize;
+    let nsym_max = <Fst4s60 as ModulationParams>::LLR_NSYM_MAX as usize;
+
+    let t0 = now_us();
+    for rc in &candidates {
+        let t = now_us();
+        let cs = symbol_spectra::<Fst4s60>(&rc.cd0, rc.refined_i0);
+        let symspec_us = now_us() - t;
+
+        let t = now_us();
+        core::hint::black_box(compute_llr_fast::<Fst4s60, f32>(&cs));
+        let fast_us = now_us() - t;
+
+        let t = now_us();
+        core::hint::black_box(compute_llr_partial::<Fst4s60, f32, f32>(&cs, 2));
+        let nsym2_us = now_us() - t;
+
+        let t = now_us();
+        core::hint::black_box(compute_llr_partial::<Fst4s60, f32, f32>(&cs, nsym_mid));
+        let nsym_mid_us = now_us() - t;
+
+        let t = now_us();
+        core::hint::black_box(compute_llr_partial::<Fst4s60, f32, f32>(&cs, nsym_max));
+        let nsym_max_us = now_us() - t;
+
+        timings.push(StageTiming {
+            freq_hz: rc.cand.freq_hz,
+            symspec_us,
+            fast_us,
+            nsym2_us,
+            nsym_mid_us,
+            nsym_max_us,
+        });
+    }
+    let total_us = now_us() - t0;
+
+    timings.sort_by(|a, b| b.nsym_max_us.cmp(&a.nsym_max_us));
+    log::info!("fst4_bench: llr_probe per-candidate stage timing, sorted by nsym=8 cost:");
+    for t in &timings {
+        log::info!(
+            "    {:8.1} Hz  symspec {:>5} us  nsym1(fast) {:>6} us  nsym2 {:>6} us  nsym{} {:>6} us  nsym{} {:>7} us",
+            t.freq_hz,
+            t.symspec_us,
+            t.fast_us,
+            t.nsym2_us,
+            nsym_mid,
+            t.nsym_mid_us,
+            nsym_max,
+            t.nsym_max_us,
+        );
+    }
+    let sum = |f: fn(&StageTiming) -> i64| -> i64 { timings.iter().map(f).sum() };
+    let (s_symspec, s_fast, s_2, s_mid, s_max) = (
+        sum(|t| t.symspec_us),
+        sum(|t| t.fast_us),
+        sum(|t| t.nsym2_us),
+        sum(|t| t.nsym_mid_us),
+        sum(|t| t.nsym_max_us),
+    );
+    log::info!(
+        "fst4_bench: llr_probe totals over {} candidates — symspec {} ms, nsym1 {} ms, nsym2 {} ms, nsym{} {} ms, nsym{} {} ms, stage-sum {} ms, wall {} ms",
+        timings.len(),
+        s_symspec / 1000,
+        s_fast / 1000,
+        s_2 / 1000,
+        nsym_mid,
+        s_mid / 1000,
+        nsym_max,
+        s_max / 1000,
+        (s_symspec + s_fast + s_2 + s_mid + s_max) / 1000,
+        total_us / 1000,
+    );
+    log::info!("fst4_bench: stack headroom after llr_probe = {} B", stack_headroom());
+    log_heap("post-probe");
+    log::info!("=== fst4_bench (llr_probe) complete ===");
 }
 
 /// Stack for the bench task. Unmeasured starting point, not a

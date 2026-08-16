@@ -1037,10 +1037,47 @@ Both decodes still succeed with OSD off — neither real signal on this
 file ever needed it. So OSD is a real cost, but not the majority one:
 **plain BP/LLR alone is 51.8 s, already ≈7.4× over the ~7 s budget by
 itself.** Cutting OSD would help (42% of the total) but wouldn't be
-sufficient on its own. Neither component was diagnosed further than
-this split — the `LLR_NSYM_MAX = 8` staircase rung is still the
-leading unmeasured suspect for the BP-side cost, untouched by this
-comparison.
+sufficient on its own.
+
+**Ninth attempt: the `LLR_NSYM_MAX = 8` suspect, confirmed and fully
+localized.** `MFSK_FST4_BENCH_DEPTH=llr_probe` calls `symbol_spectra` +
+each `compute_llr_*` stage directly with no BP/OSD at all, timing
+every stage for all 41 candidates (this mode skips the real pipeline's
+nsync-gate early exit on purpose, to compare every stage's cost on
+equal footing rather than only the survivors):
+
+| stage | total (41 candidates) | share |
+|---|---:|---:|
+| `symbol_spectra` | 1.39 s | 0.5% |
+| nsym=1 (`compute_llr_fast`) | 0.09 s | <0.1% |
+| nsym=2 | 0.14 s | <0.1% |
+| nsym=4 (`LLR_NSYM_MID`) | 1.10 s | 0.4% |
+| **nsym=8 (`LLR_NSYM_MAX`)** | **301.2 s** | **99.1%** |
+
+`nsym=8` alone costs **~7.347 s per candidate**, uniform to within
+0.01% regardless of which candidate — a pure function of the
+computation's size (`4⁸ = 65536` tone-combination hypotheses per
+symbol group), not data-dependent. That single stage accounts for
+essentially all of the `BP_ONLY` run's ~7.76 s/candidate tail
+(0.034+0.002+0.003+0.027+7.347 ≈ 7.41 s of it; the ~0.35 s remainder
+is presumably `decode_soft_pooled`'s own BP iterations, not separately
+measured here).
+
+One thing this *doesn't* change: `SYNC_Q_MIN = 16` is already FST4's
+own `minsync2` equivalent — WSJT-X's own pre-ladder gate
+(`get_fst4_bitmetrics.f90`), faithfully ported (issue #197) — and it's
+what keeps 33 of 41 candidates from ever reaching this stage in the
+real pipeline. The 8 that do clear it are the same population a real
+`jt9` has to run this same computation on. Unlike WSPR's `minsync2`
+gap, there's no missing cheap-reject lever here to find — the cost is
+intrinsic to the candidates that legitimately warrant deep decoding,
+not a filtering gap this codebase left unfilled.
+
+So the remaining levers are inside `compute_llr_partial` itself
+(algorithmic restructuring, fixed-point, SIMD/PIE — none examined
+here), accepting a recall trade-off by skipping `nsym=8` on embedded
+the way FT8's ship config skips OSD entirely, or parallelism
+(dual-core, unexplored for FST4). Not pursued further in this session.
 
 **So the honest answer to issue #306: no, not as measured today** —
 89.7 s against a ~7 s budget is not a rounding error, and closing a
