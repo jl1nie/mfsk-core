@@ -1884,6 +1884,303 @@ pub fn osd_decode_generic<P: LdpcParams>(
     })
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Generic WSJT-X-faithful npre1 / npre1+npre2 OSD (issue #306, VK3NV)
+//
+// `osd_decode_npre1`/`osd_decode_npre1_npre2` above (issue #63) proved
+// out the pruned-search architecture for FT8's `Ldpc174_91Params`, pinned
+// throughout to `LDPC_N`/`LDPC_K` for the fixed-array scratch. Issue #198
+// found WSJT-X uses this *same* npre1/npre2/ntheta/ntau architecture for
+// FST4 (`osd240_101.f90`) and MSK144 (`osd128_90.f90`) too — only the
+// tuning constants differ — making FST4/MSK144's `osd_decode_generic`
+// dispatch (unpruned k1/k2/k3 combinatorial search) a real WSJT-X-fidelity
+// gap, not just an equally-valid alternative implementation.
+//
+// `npre1_pattern_counts` (above) measured the actual scale of that gap on
+// real FST4-60 data before committing to this port: `ntotal=5151`
+// (matches `k(k+1)/2` for K=101, and FT8's own `osd_decode_npre1` ndeep=2
+// precedent of ~4,186 for K=91 — `cd50179`'s commit message), with a mean
+// `npostgate=11` (0.2%) actually reaching the expensive full-codeword
+// step — a ~32× reduction in combinatorial scale vs `osd_decode_generic`'s
+// unpruned `C(101,3)≈166,650`.
+//
+// [`osd_decode_npre_generic`] below is that port: the same npre1/npre2
+// pass logic as `osd_npre1_pass`/`osd_npre2_pass`, generalised over any
+// [`LdpcParams`] via [`osd_setup_generic_packed`] and the same
+// "fixed `OSD_MAX_N` bound + runtime-length slice" idiom
+// `osd_decode_generic` established (`P::N`/`P::K` can't size a `[T; P::N]`
+// array on stable Rust). `ntheta`/`ntau` are runtime parameters rather
+// than trait constants — WSJT-X tunes them per-protocol *and* per-ndeep
+// (FT8 ndeep=2 uses `ntheta=10`, FST4 ndeep=2/3 both use `ntheta=12`),
+// so baking them into `LdpcParams` would need a second axis the trait
+// doesn't otherwise have.
+//
+// Deliberately **not** shared with `osd_decode_generic`'s own setup
+// section despite the overlap — that function is the tested, currently-
+// shipping search for FT8 order-≤2 dispatch, MSK144, and (until this is
+// wired in) FST4; refactoring it to share scaffolding with a brand-new,
+// not-yet-bit-verified-against-AWGN search path is a correctness risk
+// this port doesn't need to take on. The duplication is confined to
+// plain setup arithmetic (no closures, no control flow) — the same
+// tolerance this file already extends to
+// `osd_setup_ldpc174_91_fortran_pivot` existing alongside
+// `osd_setup_ldpc174_91`.
+
+/// Fixed upper bound on `P::N` this generic OSD scratch is sized for.
+/// Shared between [`osd_decode_generic`]'s local `OSD_MAX_N` and this
+/// port so both stay in sync if a fourth, larger `LdpcParams` is ever
+/// added — see `osd_decode_generic`'s own doc comment for why `P::N`
+/// can't size the array directly on stable Rust.
+const OSD_NPRE_MAX_N: usize = 256; // ≥ 240 (FST4), 174 (FT8), 128 (MSK144)
+const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
+
+/// WSJT-X-faithful `npre1` (and, when `run_npre2` is set, `npre1+npre2`)
+/// OSD search, generic over any [`LdpcParams`] — the FST4/MSK144-capable
+/// counterpart to [`osd_decode_npre1`]/[`osd_decode_npre1_npre2`]'s
+/// FT8-pinned originals.
+///
+/// - `ntheta`: partial-parity gate threshold over the first
+///   `min(40, P::N-P::K)` parity bits (WSJT-X `nt`/`ntheta`,
+///   `osd174_91.f90`/`osd240_101.f90`). A candidate whose mismatch count
+///   in that window, plus its info-bit-flip count, exceeds `ntheta` is
+///   rejected without the expensive full encode + `verify` check.
+/// - `ntau`: hash-key width for the `npre2` pair-table second stage
+///   (`osd174_91.f90`/`osd240_101.f90`'s `ntau`). Ignored when
+///   `run_npre2` is `false`.
+/// - `run_npre2`: `false` runs only the `npre1` pass (WSJT-X `ndeep=2`
+///   equivalent); `true` adds the `npre2` hash-table pass (`ndeep=3`
+///   equivalent).
+///
+/// Algorithm identical to [`osd_npre1_pass`]/[`osd_npre2_pass`]
+/// otherwise; only the working-buffer shapes are runtime-sized
+/// (`OSD_NPRE_MAX_N`-bounded) to accommodate any `LdpcParams` instead of
+/// being pinned to `LDPC_N`/`LDPC_K`.
+pub fn osd_decode_npre_generic<P: LdpcParams>(
+    llr: &[f32],
+    ntheta: u32,
+    ntau: usize,
+    run_npre2: bool,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
+    debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
+
+    let n = P::N;
+    let k = P::K;
+
+    let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
+        return None; // degenerate (shouldn't happen with a valid LDPC code)
+    };
+
+    let mut mrb = [0u8; OSD_NPRE_MAX_N];
+    let mrb = &mut mrb[..k];
+    for r in 0..k {
+        let orig = perm[pivot_col[r]];
+        mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
+    }
+
+    let mut g_packed = [[0u64; OSD_NPRE_WORDS]; OSD_NPRE_MAX_N];
+    let g_packed = &mut g_packed[..k];
+    for (row, row_words) in g_packed.iter_mut().enumerate() {
+        for col in 0..n {
+            if g[row * n + col] != 0 {
+                row_words[col / 64] |= 1 << (col % 64);
+            }
+        }
+    }
+
+    let mut c_perm_packed = [0u64; OSD_NPRE_WORDS];
+    for r in 0..k {
+        if mrb[r] == 1 {
+            for w in 0..OSD_NPRE_WORDS {
+                c_perm_packed[w] ^= g_packed[r][w];
+            }
+        }
+    }
+
+    let mut hdec_perm = [0u8; OSD_NPRE_MAX_N];
+    let hdec_perm = &mut hdec_perm[..n];
+    let mut absrx_perm = [0.0f32; OSD_NPRE_MAX_N];
+    let absrx_perm = &mut absrx_perm[..n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    let mut inv_perm = [0usize; OSD_NPRE_MAX_N];
+    let inv_perm = &mut inv_perm[..n];
+    for (col, &p) in perm.iter().enumerate() {
+        inv_perm[p] = col;
+    }
+
+    // Same verify-gate-first, deferred-scatter `try_and_update` as
+    // `osd_decode_generic` — see that function's doc comment for the
+    // rationale. Here the `ntheta`/`ntau` gates upstream already prune
+    // to a handful of calls (measured mean 11/5151 for FST4-60), so
+    // there's no need for `osd_npre1_pass`'s original
+    // `dd < best.dd`-before-CRC micro-optimisation on top of that.
+    let mut best_wd: Option<f32> = None;
+    let mut best_codeword = [0u8; OSD_NPRE_MAX_N];
+    let mut best_decoded = [0u8; OSD_NPRE_MAX_N];
+    let mut scratch_c = [0u8; OSD_NPRE_MAX_N];
+    let mut scratch_decoded = [0u8; OSD_NPRE_MAX_N];
+    let mut try_and_update = |cp: &[u64]| {
+        let decoded = &mut scratch_decoded[..k];
+        for (i, d) in decoded.iter_mut().enumerate() {
+            let idx = inv_perm[i];
+            *d = ((cp[idx / 64] >> (idx % 64)) & 1) as u8;
+        }
+        if let Some(f) = verify
+            && !f(decoded)
+        {
+            return;
+        }
+        let c = &mut scratch_c[..n];
+        let mut wd = 0.0f32;
+        for col in 0..n {
+            let bit = ((cp[col / 64] >> (col % 64)) & 1) as u8;
+            c[perm[col]] = bit;
+            if bit != hdec_perm[col] {
+                wd += absrx_perm[col];
+            }
+        }
+        if best_wd.is_none_or(|bd| wd < bd) {
+            best_wd = Some(wd);
+            best_codeword[..n].copy_from_slice(&scratch_c[..n]);
+            best_decoded[..k].copy_from_slice(&scratch_decoded[..k]);
+        }
+    };
+
+    // Order-0 baseline.
+    try_and_update(&c_perm_packed);
+
+    // ── npre1 pass (mirrors `osd_npre1_pass`) ───────────────────────
+    let nt = NPRE1_PARITY_WINDOW.min(n - k);
+    let mut e2sub = [0u8; OSD_NPRE_MAX_N];
+    let e2sub = &mut e2sub[..(n - k)];
+    let mut e2 = [0u8; OSD_NPRE_MAX_N];
+    let e2 = &mut e2[..(n - k)];
+    let mut ce_iflag_packed = [0u64; OSD_NPRE_WORDS];
+    let mut ce_pair_packed = [0u64; OSD_NPRE_WORDS];
+
+    for iflag in (0..k).rev() {
+        for w in 0..OSD_NPRE_WORDS {
+            ce_iflag_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
+        }
+        for (j, e) in e2sub.iter_mut().enumerate() {
+            let col = k + j;
+            let bit = ((ce_iflag_packed[col / 64] >> (col % 64)) & 1) as u8;
+            *e = bit ^ hdec_perm[col];
+        }
+        let parity_err: u32 = e2sub[..nt].iter().map(|&b| b as u32).sum();
+        // WSJT-X gate is `parity_err + 1 <= ntheta` (the +1 accounts
+        // for the iflag info-bit flip); written as `parity_err <
+        // ntheta` to silence clippy::int_plus_one, same as
+        // `osd_npre1_pass`.
+        if parity_err < ntheta {
+            try_and_update(&ce_iflag_packed);
+        }
+
+        for n1 in (0..iflag).rev() {
+            for j in 0..(n - k) {
+                let col = k + j;
+                let g_bit = ((g_packed[n1][col / 64] >> (col % 64)) & 1) as u8;
+                e2[j] = e2sub[j] ^ g_bit;
+            }
+            let parity_err_pair: u32 = e2[..nt].iter().map(|&b| b as u32).sum();
+            // +2 for the two info-bit flips (iflag + n1).
+            if parity_err_pair + 2 > ntheta {
+                continue;
+            }
+            for w in 0..OSD_NPRE_WORDS {
+                ce_pair_packed[w] = ce_iflag_packed[w] ^ g_packed[n1][w];
+            }
+            try_and_update(&ce_pair_packed);
+        }
+    }
+
+    // ── npre2 pass (mirrors `build_npre2_table`/`osd_npre2_pass`) ──
+    if run_npre2 {
+        let mut table = OsdNpre2Table::new(ntau);
+        let mut row_keys = [0u16; OSD_NPRE_MAX_N];
+        let row_keys = &mut row_keys[..k];
+        for (i, rk) in row_keys.iter_mut().enumerate() {
+            let mut key: u16 = 0;
+            for j in 0..ntau {
+                let col = k + j;
+                let bit = ((g_packed[i][col / 64] >> (col % 64)) & 1) as u8;
+                if bit != 0 {
+                    key |= 1u16 << (ntau - 1 - j);
+                }
+            }
+            *rk = key;
+        }
+        for i1 in 0..k {
+            for i2 in 0..i1 {
+                let key = (row_keys[i1] ^ row_keys[i2]) as usize;
+                table.insert(key, i1 as u8, i2 as u8);
+            }
+        }
+
+        let mut ce_misub_packed = [0u64; OSD_NPRE_WORDS];
+        let mut ce_test_packed = [0u64; OSD_NPRE_WORDS];
+        for iflag in (0..k).rev() {
+            for w in 0..OSD_NPRE_WORDS {
+                ce_misub_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
+            }
+            for (j, e) in e2sub.iter_mut().enumerate() {
+                let col = k + j;
+                let bit = ((ce_misub_packed[col / 64] >> (col % 64)) & 1) as u8;
+                *e = bit ^ hdec_perm[col];
+            }
+
+            let mut base_key: usize = 0;
+            for j in 0..ntau {
+                if e2sub[j] != 0 {
+                    base_key |= 1 << (ntau - 1 - j);
+                }
+            }
+
+            for i2 in 0..=ntau {
+                let key = if i2 == 0 {
+                    base_key
+                } else {
+                    base_key ^ (1 << (ntau - i2))
+                };
+                for (in1, in2) in table.iter_pairs(key) {
+                    let in1_u = in1 as usize;
+                    let in2_u = in2 as usize;
+                    if iflag == in1_u || iflag == in2_u || in1_u == in2_u {
+                        continue;
+                    }
+                    for w in 0..OSD_NPRE_WORDS {
+                        ce_test_packed[w] =
+                            ce_misub_packed[w] ^ g_packed[in1_u][w] ^ g_packed[in2_u][w];
+                    }
+                    try_and_update(&ce_test_packed);
+                }
+            }
+        }
+    }
+
+    best_wd?;
+    let codeword = &best_codeword[..n];
+    let decoded = &best_decoded[..k];
+    let mut hard_errors = 0u32;
+    for i in 0..n {
+        if (codeword[i] == 1) != (llr[i] > 0.0) {
+            hard_errors += 1;
+        }
+    }
+    let mut message77 = [0u8; 77];
+    message77.copy_from_slice(&decoded[..77]);
+    Some(OsdResult {
+        message77,
+        info: decoded.to_vec(),
+        codeword: codeword.to_vec(),
+        hard_errors,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

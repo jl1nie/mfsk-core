@@ -21,7 +21,7 @@ use crate::fec::ldpc::bp::{
     BpScratch, bp_decode_generic_kind, bp_decode_generic_kind_with_scratch, bp_llr_zsum,
     bp_llr_zsum_with_scratch,
 };
-use crate::fec::ldpc::osd::{ldpc_encode_generic, osd_decode_generic};
+use crate::fec::ldpc::osd::{OsdResult, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic};
 use crate::fec::ldpc::params::Ldpc240_101Params;
 
 pub const LDPC_N: usize = 240;
@@ -90,6 +90,107 @@ pub fn check_crc24(decoded: &[u8]) -> bool {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// OSD dispatch (issue #306/#198): WSJT-X-faithful npre1/npre2 for
+// ndeep=2/3, replacing `osd_decode_generic`'s unpruned k1/k2/k3
+// combinatorial search for those two depths.
+//
+// `osd240_101.f90`'s ndeep table (see the module's issue #198 cross-
+// reference): ndeep=2 is `nord=1, npre1=1, npre2=0, ntheta=12`; ndeep=3
+// adds `npre2=1, ntau=14`. Both share `nt=40` with
+// `osd::NPRE1_PARITY_WINDOW`. `Ldpc240_101`'s own callers below only
+// ever request `osd_depth` 2 or 3 (`opts.osd_depth.min(3)` — order-4 was
+// already unreachable in the previous dispatch too), so `ndeep<2` is a
+// dead branch kept only for defensiveness; if hit, it falls back to the
+// (still-shipping, still order-≤3-tested) combinatorial search rather
+// than assuming a WSJT-X ndeep this port hasn't mapped a constant table
+// for.
+
+/// `ntheta` for FST4's ndeep=2 and ndeep=3 dispatch — both use 12
+/// (`osd240_101.f90`'s `ndeep=2`/`ndeep=3` branches).
+const FST4_NPRE_NTHETA: u32 = 12;
+
+/// `ntau` for FST4's ndeep=3 dispatch (`osd240_101.f90`'s `ndeep=3`
+/// branch). Ignored for ndeep=2 (no `npre2` pass).
+const FST4_NPRE_NTAU: usize = 14;
+
+/// Diagnostic-only override (issue #306/#198 bug hunt): when set, force
+/// [`fst4_osd_decode`] to run the old unpruned combinatorial search
+/// instead of the production npre1/npre2 dispatch, for the remainder of
+/// the process. `internal-testing`-gated via [`fst4_osd_diag_force_old`]
+/// below — reads as `false` (production npre1/npre2 path) in every
+/// non-`internal-testing` build, so this can't affect a real release
+/// artifact. `core::sync::atomic` rather than `std::thread_local!` since
+/// this crate is `no_std` + `alloc`.
+#[cfg(feature = "internal-testing")]
+static OSD_DIAG_FORCE_OLD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Force [`fst4_osd_decode`] (and hence the whole production decode
+/// path, `decode_soft`/`decode_soft_pooled`/`DecodeRequest`) to use the
+/// pre-port unpruned combinatorial OSD search instead of npre1/npre2,
+/// for the rest of this process. Lets a test run the *exact* production
+/// entry point (e.g. `decode_wav_fst4_60` in `tests/fst4_sweep.rs`)
+/// twice — once per algorithm — for direct end-to-end A/B comparison,
+/// without reimplementing `decode_soft`'s BP/zsum control flow
+/// separately in the test and risking that reimplementation drifting
+/// out of sync with the real thing. Diagnostic only, not thread-safe
+/// against concurrently-running tests that also decode FST4 — callers
+/// should serialise (e.g. `--test-threads=1`, or reset to `false`
+/// immediately after the comparison).
+#[cfg(feature = "internal-testing")]
+pub fn fst4_osd_diag_force_old(force_old: bool) {
+    OSD_DIAG_FORCE_OLD.store(force_old, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// FST4's OSD dispatch: WSJT-X-faithful `npre1`/`npre1+npre2` for
+/// `ndeep` 2/3 (see module-level doc comment above), falling back to
+/// [`osd_decode_generic`] for any other depth.
+fn fst4_osd_decode(
+    llr: &[f32],
+    ndeep: u8,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
+    #[cfg(feature = "internal-testing")]
+    let use_npre = !OSD_DIAG_FORCE_OLD.load(core::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "internal-testing"))]
+    let use_npre = true;
+    fst4_osd_decode_dispatch(llr, ndeep, verify, use_npre)
+}
+
+/// Shared implementation behind [`fst4_osd_decode`], parameterised on
+/// which search to run — `use_npre=true` is production (WSJT-X-faithful
+/// `npre1`/`npre1+npre2`), `use_npre=false` is the previous unpruned
+/// `osd_decode_generic` combinatorial search. The `use_npre=false` arm
+/// (driven by [`fst4_osd_diag_force_old`]) exists so a test can run the
+/// *exact* production entry point through both searches for a direct
+/// end-to-end A/B comparison, instead of reimplementing `decode_soft`'s
+/// dispatch logic separately and risking it drifting out of sync with
+/// the real thing.
+fn fst4_osd_decode_dispatch(
+    llr: &[f32],
+    ndeep: u8,
+    verify: Option<fn(&[u8]) -> bool>,
+    use_npre: bool,
+) -> Option<OsdResult> {
+    if !use_npre {
+        return osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false);
+    }
+    match ndeep {
+        2 => {
+            osd_decode_npre_generic::<Ldpc240_101Params>(llr, FST4_NPRE_NTHETA, 0, false, verify)
+        }
+        3 => osd_decode_npre_generic::<Ldpc240_101Params>(
+            llr,
+            FST4_NPRE_NTHETA,
+            FST4_NPRE_NTAU,
+            true,
+            verify,
+        ),
+        _ => osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
 // FecCodec impl
 
 /// Zero-sized LDPC(240, 101) codec — a thin wrapper that pins the
@@ -131,13 +232,7 @@ impl FecCodec for Ldpc240_101 {
             return None;
         }
 
-        if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
-            &llr_arr,
-            opts.osd_depth.min(3) as u8,
-            LDPC_K,
-            opts.verify_info,
-            false,
-        ) {
+        if let Some(r) = fst4_osd_decode(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info) {
             return Some(FecResult {
                 info: r.info,
                 hard_errors: r.hard_errors,
@@ -165,13 +260,8 @@ impl FecCodec for Ldpc240_101 {
         // those bits away from their hinted value.
         if ap_slice.is_none() {
             let zsum = bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
-            if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
-                &zsum,
-                opts.osd_depth.min(3) as u8,
-                LDPC_K,
-                opts.verify_info,
-                false,
-            ) {
+            if let Some(r) = fst4_osd_decode(&zsum, opts.osd_depth.min(3) as u8, opts.verify_info)
+            {
                 return Some(FecResult {
                     info: r.info,
                     hard_errors: r.hard_errors,
@@ -217,13 +307,7 @@ impl BpPooledFec for Ldpc240_101 {
             return None;
         }
 
-        if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
-            &llr_arr,
-            opts.osd_depth.min(3) as u8,
-            LDPC_K,
-            opts.verify_info,
-            false,
-        ) {
+        if let Some(r) = fst4_osd_decode(&llr_arr, opts.osd_depth.min(3) as u8, opts.verify_info) {
             return Some(FecResult {
                 info: r.info,
                 hard_errors: r.hard_errors,
@@ -237,13 +321,7 @@ impl BpPooledFec for Ldpc240_101 {
         // and returns a borrow instead of a fresh `Vec`.
         if ap_slice.is_none() {
             let zsum = bp_llr_zsum_with_scratch::<Ldpc240_101Params>(scratch, &llr_arr, 2);
-            if let Some(r) = osd_decode_generic::<Ldpc240_101Params>(
-                zsum,
-                opts.osd_depth.min(3) as u8,
-                LDPC_K,
-                opts.verify_info,
-                false,
-            ) {
+            if let Some(r) = fst4_osd_decode(zsum, opts.osd_depth.min(3) as u8, opts.verify_info) {
                 return Some(FecResult {
                     info: r.info,
                     hard_errors: r.hard_errors,

@@ -1968,6 +1968,110 @@ fn fst4_60_diag_nsym_depth_sweep_ccir_moderate() {
     nsym_depth_sweep_for_channel("ccir_moderate", SNR_TAGS);
 }
 
+/// Recall verification for issue #306/#198's `osd_decode_npre_generic`
+/// port: FST4's OSD dispatch (`fec/ldpc240_101/mod.rs::fst4_osd_decode`)
+/// now runs WSJT-X-faithful `npre1`/`npre1+npre2` (ntheta=12, ntau=14)
+/// instead of `osd_decode_generic`'s unpruned k1/k2/k3 combinatorial
+/// search for ndeep=2/3 — a genuinely different search strategy, so
+/// unlike the earlier bit-packing/verify-gate-reorder follow-ups in this
+/// file, this one is **not** bit-exact with what it replaces and needs
+/// its own recall check rather than a differential test.
+///
+/// Runs the full production path (`DecodeRequest::<Fst4s60>::decode()`,
+/// same entry point `decode_wav_fst4_60` above uses) against the m26/m27
+/// 100-trial AWGN corpus generated for the nsym-depth-sweep follow-up —
+/// the same corpus, same crossing-adjacent SNRs, as the pre-port
+/// baseline recorded in this investigation's #306 comments:
+///
+/// | SNR | pre-port (old combinatorial OSD) | n |
+/// |---|---:|---:|
+/// | -26 dB | 97% | 100 |
+/// | -27 dB | 77% | 100 |
+///
+/// No hard assertion (this is the crossing region — a few trials'
+/// difference either way is within the sampling noise this
+/// investigation already characterised, see the statistical-power
+/// follow-up above) — printed for direct comparison against the table.
+/// A large regression (not a couple of trials) would indicate the port
+/// dropped candidates the unpruned search still reaches; a match or
+/// improvement is the expected outcome given `npre1_pattern_counts`'
+/// measured ~32× reduction in unpruned search *volume* — the `ntheta`/
+/// `ntau` gates are WSJT-X's own tuned thresholds, not a truncation of
+/// mfsk-core's own search depth.
+#[test]
+#[ignore = "manual verification — FST4-60 npre1/npre2 OSD port recall check (issue #306/#198, VK3NV)"]
+fn fst4_60_diag_npre_osd_recall_verify() {
+    let dir = sweep_dir();
+    const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
+    for &(snr_tag, trials) in SNR_TAGS {
+        let mut pass = 0u32;
+        let mut total = 0u32;
+        for trial in 1..=trials {
+            let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            total += 1;
+            if decode_wav_fst4_60(&audio) {
+                pass += 1;
+            }
+        }
+        println!("{snr_tag}: {pass}/{total} ({:.0}%)", 100.0 * pass as f64 / total.max(1) as f64);
+    }
+}
+
+/// Bug-hunt for [`fst4_60_diag_npre_osd_recall_verify`]'s m27 gap
+/// (97→96 at m26, 77→70 at m27 — noise-plausible at m26, not at m27):
+/// find concrete trials where the old unpruned combinatorial OSD search
+/// decodes but the new npre1/npre2 port doesn't, by running the *exact*
+/// production entry point (`decode_wav_fst4_60`) twice per trial via
+/// [`mfsk_core::fec::Ldpc240_101::fst4_osd_diag_force_old`] — once as
+/// shipped (npre1/npre2), once forced back to the old search — rather
+/// than reimplementing `decode_soft`'s BP/zsum control flow separately.
+///
+/// `#[test]` (not `--ignored`) would need the corpus present; kept
+/// `#[ignore]` like every other corpus-dependent diagnostic here.
+/// Single-threaded by construction (`fst4_osd_diag_force_old` is a
+/// process-global toggle) — this function alone in the process is fine,
+/// but don't run it concurrently with another FST4-decoding test.
+#[test]
+#[ignore = "manual bug hunt — FST4-60 npre1/npre2 OSD port m27 recall gap (issue #306/#198)"]
+fn fst4_60_diag_npre_osd_bug_hunt() {
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+
+    let dir = sweep_dir();
+    const SNR_TAGS: &[(&str, u32)] = &[("m26", 100), ("m27", 100)];
+    let mut old_only: Vec<(&str, u32)> = Vec::new();
+    let mut new_only: Vec<(&str, u32)> = Vec::new();
+    let mut both = 0u32;
+    let mut neither = 0u32;
+
+    for &(snr_tag, trials) in SNR_TAGS {
+        for trial in 1..=trials {
+            let path = dir.join(format!("fst4_60_awgn_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            fst4_osd_diag_force_old(false);
+            let ok_new = decode_wav_fst4_60(&audio);
+            fst4_osd_diag_force_old(true);
+            let ok_old = decode_wav_fst4_60(&audio);
+            fst4_osd_diag_force_old(false); // restore default for anything else in-process
+
+            match (ok_new, ok_old) {
+                (true, true) => both += 1,
+                (false, false) => neither += 1,
+                (false, true) => old_only.push((snr_tag, trial)),
+                (true, false) => new_only.push((snr_tag, trial)),
+            }
+        }
+    }
+
+    println!("both: {both}, neither: {neither}");
+    println!("old-only ({} trials): {:?}", old_only.len(), old_only);
+    println!("new-only ({} trials): {:?}", new_only.len(), new_only);
+}
+
 /// Shared body for [`fst4_60_diag_nsym_depth_sweep`] /
 /// [`fst4_60_diag_nsym_depth_sweep_ccir_moderate`] — everything except
 /// the channel name and the (SNR tag, trial count) grid is identical.
