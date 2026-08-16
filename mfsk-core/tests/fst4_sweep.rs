@@ -1246,6 +1246,130 @@ fn fst4_60_diag_osd_escalation() {
     );
 }
 
+/// VK3NV's issue #306 follow-up: before committing to a full
+/// `npre1`/`npre2` genericisation, get "a cheap indication of the
+/// ceiling" — how many candidates does WSJT-X's actual pruned OSD
+/// search construct/test, on real FST4-60 data, against the
+/// unpruned `C(101,3) ≈ 166,650` the current `osd_decode_generic`
+/// combinatorial search walks? Runs
+/// [`mfsk_core::fec::ldpc::osd::npre1_pattern_counts`] (a
+/// counting-only port of `osd240_101.f90`'s `nord=1` pass — see its
+/// own doc comment) against the real LLR of every candidate on the
+/// golden WAV that reaches OSD in production (BP already failed,
+/// `nsync >= osd_attempt_min`) — the same population
+/// `fst4_60_diag_osd_escalation` above already characterises.
+#[test]
+#[ignore = "manual diagnostic — npre1 pattern-count ceiling estimate (issue #306 follow-up, VK3NV)"]
+fn fst4_60_diag_npre1_pattern_counts() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fec::ldpc::osd::npre1_pattern_counts;
+    use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const BP_MAX_ITER: u32 = 30;
+    // C(101,3) -- the unpruned order-3 combinatorial count
+    // `osd_decode_generic` currently walks per candidate for FST4.
+    const COMBINATORIAL_ORDER3: u64 = 101 * 100 * 99 / 6;
+
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let golden_path = Path::new(&manifest).join("../../WSJT-X/samples/FST4+FST4W/210115_0058.wav");
+    let Ok(golden_path) = golden_path.canonicalize() else {
+        eprintln!("skipping: WSJT-X FST4 sample not found (sibling checkout)");
+        return;
+    };
+    let Some(audio) = load_wav_i16_opt(&golden_path) else {
+        eprintln!("skipping: WAV not 12 kHz mono PCM-16");
+        return;
+    };
+
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let (osd_attempt_min, _osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+
+    let mut n_reach_osd = 0usize;
+    let mut totals: Vec<u32> = Vec::new();
+    let mut postgates: Vec<u32> = Vec::new();
+
+    for c in &cands {
+        let cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+        let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+        let df_hz = s2.freq_hz - c.freq_hz;
+        let cd0 = freq_shift_cd0(&cd0, df_hz, ds_rate);
+        let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+        let nsync = sync_quality::<Fst4s60>(&cs);
+
+        let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+        let variants: Vec<&Vec<f32>> = [
+            Some(&llr_set.llra),
+            Some(&llr_set.llrb),
+            if llr_set.llre.is_empty() {
+                None
+            } else {
+                Some(&llr_set.llre)
+            },
+            Some(&llr_set.llrc),
+            Some(&llr_set.llrd),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let bp_opts = FecOpts {
+            bp_max_iter: BP_MAX_ITER,
+            osd_depth: 0,
+            ap_mask: None,
+            verify_info,
+            ..FecOpts::default()
+        };
+        let bp_ok = variants
+            .iter()
+            .any(|llr| fec.decode_soft(llr, &bp_opts).is_some());
+        if bp_ok || nsync < osd_attempt_min {
+            continue; // not a candidate real production would send to OSD
+        }
+
+        n_reach_osd += 1;
+        // One LLR variant is enough for a scale estimate -- `llra`
+        // (nsym=1), matching the cheapest variant OSD is tried on
+        // first in production.
+        if let Some((ntotal, npostgate)) =
+            npre1_pattern_counts::<Ldpc240_101Params>(&llr_set.llra)
+        {
+            eprintln!(
+                "cand freq={:.1} nsync={nsync}: npre1 ntotal={ntotal} npostgate={npostgate} \
+                 (vs unpruned order-3 = {COMBINATORIAL_ORDER3})",
+                c.freq_hz
+            );
+            totals.push(ntotal);
+            postgates.push(npostgate);
+        }
+    }
+
+    if totals.is_empty() {
+        eprintln!("no candidates reached the OSD gate on this file — nothing to report");
+        return;
+    }
+    let mean_total = totals.iter().sum::<u32>() as f64 / totals.len() as f64;
+    let mean_postgate = postgates.iter().sum::<u32>() as f64 / postgates.len() as f64;
+    eprintln!(
+        "{n_reach_osd} candidates reached OSD. npre1 mean ntotal={mean_total:.0} \
+         (unpruned order-3={COMBINATORIAL_ORDER3}, ratio={:.1}x), \
+         mean npostgate={mean_postgate:.0} (fraction of ntotal={:.3}%)",
+        COMBINATORIAL_ORDER3 as f64 / mean_total,
+        100.0 * mean_postgate / mean_total,
+    );
+}
+
 /// Calibration diagnostic: the naive fix (reusing FT4's exact
 /// `N_SYNC`-scaled ratio — `40 * 12/21 ~ 23`, `40 * 18/21 ~ 34` — for
 /// FST4 too) measured as a real ~0.5 dB AWGN sensitivity *regression*

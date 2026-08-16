@@ -1509,6 +1509,97 @@ fn osd_setup_generic_packed<P: LdpcParams>(
     Some((perm, g, pivot_col))
 }
 
+/// Counts how many patterns WSJT-X's actual `npre1` pre-screening
+/// mechanism (`osd240_101.f90`/`osd174_91.f90`'s `nord=1, npre1=1`
+/// loop, `nt=40`/`ntheta=12` partial-parity gate) would attempt and
+/// pass for a given LLR array — without doing the expensive full
+/// codeword construction for gate-passing patterns, only counting
+/// them. Issue #306 follow-up (VK3NV): "a cheap indication of the
+/// ceiling" — how much smaller is WSJT-X's actual pruned search than
+/// `osd_decode_generic`'s unpruned order-3 combinatorial one — before
+/// committing to the full genericised port of `npre1`/`npre2`.
+///
+/// Mirrors `osd240_101.f90` lines 177-203 exactly: for each single-bit
+/// "anchor" position `p` (0-based, `0..k`, matching WSJT-X's `iflag`
+/// 1-based `1..k`), the "pure" single flip (`n1 == p`, one call
+/// equivalent to a real `mrbencode101` — counted here, not performed)
+/// plus every second flip `n1 < p` computed incrementally by XORing
+/// the single-flip base's parity mismatch against row `n1`'s own
+/// parity portion — the same linearity `osd240_101.f90` exploits
+/// (`e2 = e2sub XOR g2(k+1:N, n1)`), so no re-encoding is needed per
+/// `n1`. Reuses this module's own [`osd_setup_generic_packed`] for the
+/// permutation/RREF/order-0 setup — the same code
+/// `osd_decode_generic`'s combinatorial search already uses, so the
+/// two counts are on equal footing (same reliability ranking, same
+/// order-0 baseline).
+///
+/// Returns `(ntotal, npostgate)`: `ntotal` is the total pattern count
+/// attempted (compare against `osd_decode_generic`'s unpruned
+/// `C(k,3)` for the equivalent order — this function only replicates
+/// the `nord=1` pass, i.e., the ndeep=2/3 count, not `npre2`'s
+/// additional weight-3 hash-table pass); `npostgate` is how many of
+/// those actually clear the `ntheta` gate and would reach the
+/// expensive step in the real algorithm.
+#[cfg(feature = "internal-testing")]
+pub fn npre1_pattern_counts<P: LdpcParams>(llr: &[f32]) -> Option<(u32, u32)> {
+    const NT: usize = 40; // osd240_101.f90/osd174_91.f90 shared constant
+    const NTHETA: u32 = 12; // FST4's ndeep=2 and ndeep=3 both use 12
+
+    let n = P::N;
+    let k = P::K;
+    let (perm, g, pivot_col) = osd_setup_generic_packed::<P>(llr)?;
+
+    let mut hdec = alloc::vec![0u8; n];
+    for (col, h) in hdec.iter_mut().enumerate() {
+        *h = if llr[perm[col]] > 0.0 { 1 } else { 0 };
+    }
+    let mut mrb = alloc::vec![0u8; k];
+    for (r, m) in mrb.iter_mut().enumerate() {
+        let orig = perm[pivot_col[r]];
+        *m = if llr[orig] > 0.0 { 1 } else { 0 };
+    }
+    let mut c0 = alloc::vec![0u8; n];
+    for (r, &mr) in mrb.iter().enumerate() {
+        if mr == 1 {
+            for (col, c) in c0.iter_mut().enumerate() {
+                *c ^= g[r * n + col];
+            }
+        }
+    }
+
+    let window = NT.min(n - k);
+    let mut ntotal = 0u32;
+    let mut npostgate = 0u32;
+    let mut e2sub = alloc::vec![0u8; n - k];
+
+    for p in 0..k {
+        // n1 == p: the "pure" single-bit flip.
+        for i in 0..(n - k) {
+            e2sub[i] = (c0[k + i] ^ g[p * n + k + i]) ^ hdec[k + i];
+        }
+        let mismatches: u32 = e2sub[..window].iter().map(|&b| b as u32).sum();
+        ntotal += 1;
+        if mismatches < NTHETA {
+            npostgate += 1;
+        }
+
+        // n1 < p: incremental second flip, matching osd240_101.f90's
+        // `e2 = ieor(e2sub, g2(k+1:N,n1))` -- always against the
+        // single-flip base `e2sub`, not chained across `n1`.
+        for n1 in (0..p).rev() {
+            let mismatches: u32 = (0..window)
+                .map(|i| (e2sub[i] ^ g[n1 * n + k + i]) as u32)
+                .sum();
+            ntotal += 1;
+            if mismatches + 2 <= NTHETA {
+                npostgate += 1;
+            }
+        }
+    }
+
+    Some((ntotal, npostgate))
+}
+
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
 ///
 /// `ndeep`: search depth (1..=4). `k4_limit`: bound on bit indices used
