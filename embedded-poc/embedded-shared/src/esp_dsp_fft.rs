@@ -40,6 +40,17 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use mfsk_core::engine::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
 use num_complex::{Complex, Complex32};
+// `f32::cos`/`sin` in `DirectDft::new` below resolve without this in
+// every feature combination this crate currently builds under (Cargo
+// feature unification means some other crate in the same build graph
+// — e.g. a sibling's `mfsk-core/std` — ends up making them available
+// here too, even though this crate is itself `#![no_std]`). Kept
+// explicit anyway, same as `mfsk-core`'s own identical dependency
+// line, so a future build that genuinely has no `std` anywhere in its
+// graph doesn't silently lose trig — `#[allow]` rather than deleting
+// an import whose necessity depends on what else happens to be linked.
+#[allow(unused_imports)]
+use num_traits::Float;
 
 /// Four `Complex32` under a 16-byte alignment guarantee.
 ///
@@ -401,6 +412,80 @@ impl Default for EspDspPlanner {
     }
 }
 
+/// Naive O(N²) forward DFT — the textbook definition,
+/// `X[k] = Σₙ x[n]·e^{-2πikn/N}`, unnormalised (matches `rustfft`'s
+/// own forward-transform convention, which is what every existing
+/// caller of this planner was already verified against on host). Not
+/// an approximation or a novel algorithm — every FFT computes exactly
+/// this sum by a faster route, so implementing the sum directly
+/// carries no algorithm-specific correctness risk the way a new
+/// fast-transform derivation would.
+///
+/// Exists for lengths esp-dsp's radix-2 kernel can't serve
+/// (non-power-of-2, and not `3840`'s hand-rolled mixed-radix case)
+/// but that are cheap enough not to need a real fast algorithm at
+/// all — see [`DIRECT_DFT_MAX_LEN`]. Twiddle factors are the whole
+/// `N×N` matrix, precomputed once at plan time; `process` is then a
+/// plain matrix-vector product.
+///
+/// First use: `engine::llr::symbol_spectra`'s per-symbol FFT
+/// (`ds_spb = NSPS/NDOWN`, 36-42 across FST4's 5 submodes — issue
+/// #306/#307), planned once per candidate and `.process()`-ed once
+/// per symbol (162 times for FST4-60A). O(42²) = 1 764 complex
+/// multiply-adds per call is negligible next to the LLR/BP/OSD work
+/// each one feeds.
+struct DirectDft {
+    len: usize,
+    /// Row-major `len × len`: `twiddles[k*len + n] = e^{-2πikn/len}`.
+    twiddles: Box<[Complex32]>,
+}
+
+impl DirectDft {
+    fn new(len: usize) -> Self {
+        let mut twiddles = Vec::with_capacity(len * len);
+        for k in 0..len {
+            for n in 0..len {
+                let theta = -2.0 * core::f32::consts::PI * (k * n) as f32 / len as f32;
+                twiddles.push(Complex32::new(theta.cos(), theta.sin()));
+            }
+        }
+        Self {
+            len,
+            twiddles: twiddles.into_boxed_slice(),
+        }
+    }
+}
+
+impl Fft for DirectDft {
+    fn process(&self, buf: &mut [Complex32]) {
+        assert_eq!(buf.len(), self.len, "DirectDft input length mismatch");
+        let mut out = alloc::vec![Complex32::new(0.0, 0.0); self.len];
+        for (k, out_k) in out.iter_mut().enumerate() {
+            let row = &self.twiddles[k * self.len..(k + 1) * self.len];
+            let mut acc = Complex32::new(0.0, 0.0);
+            for (n, &x) in buf.iter().enumerate() {
+                acc += x * row[n];
+            }
+            *out_k = acc;
+        }
+        buf.copy_from_slice(&out);
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+/// Above this length, [`DirectDft`]'s O(N²) cost stops being clearly
+/// negligible and a real fast-transform algorithm (issue #307's
+/// generic non-power-of-2 kernel — Bluestein/chirp-Z looks like the
+/// right shape) is worth having instead. 64 is comfortable headroom
+/// over the 36-42 range FST4's 5 submodes actually need
+/// (`symbol_spectra`'s `ds_spb = NSPS/NDOWN`) without reaching into
+/// territory where O(N²) would compete with the FFT it's standing in
+/// for.
+const DIRECT_DFT_MAX_LEN: usize = 64;
+
 impl FftPlanner for EspDspPlanner {
     fn plan_forward(&mut self, len: usize) -> Box<dyn Fft> {
         // 3840 = 256 × 15 mixed-radix path: WSJT-X-faithful FT8 spectrogram
@@ -410,6 +495,9 @@ impl FftPlanner for EspDspPlanner {
         if len == 3840 {
             self.ensure_table(256);
             return Box::new(MixedRadix3840Fft::new());
+        }
+        if !len.is_power_of_two() && len <= DIRECT_DFT_MAX_LEN {
+            return Box::new(DirectDft::new(len));
         }
         assert!(
             len.is_power_of_two() && len >= 4,

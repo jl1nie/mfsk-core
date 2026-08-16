@@ -61,3 +61,7 @@ mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["a
 # `wav_sim::spawn` takes `*mut mfsk_ft8::MfskFt8Stream` from the bin.
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 num-complex = { version = "0.4", default-features = false }
+# `Float` trait (`.cos()`/`.sin()`) for `esp_dsp_fft::DirectDft`'s
+# twiddle-table build (issue #306/#307) — no_std needs `libm` to back
+# it, same as `mfsk-core`'s own identical dependency line.
+num-traits = { version = "0.2", default-features = false, features = ["libm"] }

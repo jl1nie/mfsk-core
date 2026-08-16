@@ -396,6 +396,211 @@ fn fst4_bake_golden_precomputed() {
     );
 }
 
+/// Bake every *refined* (post-`dedup_refined_candidates`) FST4-60A
+/// candidate's `(cd0, freq_hz, i0, score)` to a flat binary, for a
+/// decoder-only embedded bench that skips FFTs entirely (issues
+/// #306/#307).
+///
+/// `fst4_bake_golden_precomputed` above lets the device skip
+/// `build_fft_cache`'s wideband FFT; it still needs `coarse_sync`
+/// (whose spectrogram FFT — `NSPS × 2 = 7776` for FST4-60A — isn't a
+/// power of two, issue #307's actual finding) and `downsample_cached`
+/// (whose inverse FFT, `fft2_size = 6912`, isn't either) to run before
+/// LLR/BP/OSD are ever reached. Baking each real candidate already
+/// refined — the same `(cd0, freq_hz, i0, score)` tuple
+/// `process_candidate_basic_impl`'s `precomputed_refine` parameter
+/// accepts — lets the device call the new
+/// `engine::pipeline::process_candidate_precomputed` (issue #306/#307)
+/// directly, with **no FFT anywhere in the on-device path**, so a
+/// wall-clock number for the LLR/BP/OSD stage doesn't have to wait on
+/// #307's non-power-of-2 FFT kernel.
+///
+/// Baked candidates are the same set `decode_frame_impl` actually
+/// decodes — every raw `coarse_sync` candidate, refined via
+/// `refine_candidate_position`, then reduced to one-per-true-position
+/// by the identical near-duplicate rule `dedup_refined_candidates`
+/// uses (`0.10 × tone_spacing_hz` in frequency, `±2` downsampled
+/// samples, highest-`score` survivor kept) — replicated here rather
+/// than exposed from the crate, since it's ~20 lines and exposing the
+/// private `RefinedSurvivor` type alias for one caller wasn't worth
+/// the extra public surface. A wall-clock number over anything other
+/// than this real candidate population (e.g. only the 2 that decode)
+/// would understate the cost the way an early WSPR estimate did
+/// (issue #260: "the cost is not where any of us was looking" — most
+/// of a real candidate loop's time goes to candidates that *fail*).
+///
+/// Layout, little-endian:
+/// ```text
+/// n_candidates: u32
+/// per candidate:
+///     coarse freq_hz, dt_sec, score:      f32, f32, f32   (12 B)
+///     refined freq_hz, i0, score:         f32, i32, f32   (12 B)
+///     cd0[fft2_size]:                     (f32 re, f32 im) × 6912  (55 296 B)
+/// ```
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full,internal-testing --release \
+///  --test fst4_wsjtx_samples fst4_bake_golden_refined_candidates -- --ignored --nocapture`
+#[test]
+#[ignore = "asset generator — writes embedded-poc/assets/fst4_60_golden_refined_candidates.bin"]
+fn fst4_bake_golden_refined_candidates() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_precomputed, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    let Some(path) = sample_path() else {
+        panic!("FST4 golden not found — this generator needs the real recording");
+    };
+    let audio = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+    const SYNC_Q_MIN: u32 = 16;
+    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    eprintln!("coarse_sync: {} raw candidates", raw_candidates.len());
+
+    // Refine every raw candidate, then apply dedup_refined_candidates'
+    // exact rule (see this test's doc comment for why it's replicated
+    // rather than exposed).
+    let refined: Vec<(Vec<num_complex::Complex32>, f32, i32, f32)> = raw_candidates
+        .iter()
+        .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .collect();
+    let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
+    const I0_TOL: i32 = 2;
+    let mut order: Vec<usize> = (0..raw_candidates.len()).collect();
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut kept_positions: Vec<(f32, i32)> = Vec::new();
+    let mut survivors: Vec<usize> = Vec::new();
+    for idx in order {
+        let (_, f, i0, _) = &refined[idx];
+        let dup = kept_positions
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL);
+        if !dup {
+            kept_positions.push((*f, *i0));
+            survivors.push(idx);
+        }
+    }
+    // Stable order for reproducibility across bake runs, independent
+    // of the score-descending order used only for dedup tie-breaking.
+    survivors.sort_unstable();
+    eprintln!(
+        "dedup_refined_candidates: {} survivors of {} raw",
+        survivors.len(),
+        raw_candidates.len()
+    );
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(survivors.len() as u32).to_le_bytes());
+    for &idx in &survivors {
+        let cand = &raw_candidates[idx];
+        let (cd0, rf, ri0, rscore) = &refined[idx];
+        assert_eq!(
+            cd0.len(),
+            FST4_60A_DOWNSAMPLE.fft2_size,
+            "cd0 length is fixed by fft2_size"
+        );
+        bytes.extend_from_slice(&cand.freq_hz.to_le_bytes());
+        bytes.extend_from_slice(&cand.dt_sec.to_le_bytes());
+        bytes.extend_from_slice(&cand.score.to_le_bytes());
+        bytes.extend_from_slice(&rf.to_le_bytes());
+        bytes.extend_from_slice(&ri0.to_le_bytes());
+        bytes.extend_from_slice(&rscore.to_le_bytes());
+        for c in cd0 {
+            bytes.extend_from_slice(&c.re.to_le_bytes());
+            bytes.extend_from_slice(&c.im.to_le_bytes());
+        }
+    }
+
+    let out = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../embedded-poc/assets/fst4_60_golden_refined_candidates.bin"
+    ));
+    std::fs::write(&out, &bytes).expect("write refined-candidates asset");
+    eprintln!(
+        "wrote {} ({} bytes = {} candidates)",
+        out.display(),
+        bytes.len(),
+        survivors.len(),
+    );
+
+    // Round-trip check: re-load the baked bytes exactly as the device
+    // bench will, and confirm process_candidate_precomputed over the
+    // baked candidates reaches the same 2 goldens as
+    // fst4_wsjtx_sample_precision_vs_reference_decoder's DecodeRequest
+    // path (same freq window / sync_min / SYNC_Q_MIN / depth /
+    // strictness / eq_mode as every other test/bake in this file).
+    let mut off = 0usize;
+    let n = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
+    off += 4;
+    let mut baked_results = Vec::new();
+    for _ in 0..n {
+        let freq_hz = f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        let dt_sec = f32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap());
+        let score = f32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap());
+        let rf = f32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap());
+        let ri0 = i32::from_le_bytes(bytes[off + 16..off + 20].try_into().unwrap());
+        let rscore = f32::from_le_bytes(bytes[off + 20..off + 24].try_into().unwrap());
+        off += 24;
+        let mut cd0 = Vec::with_capacity(FST4_60A_DOWNSAMPLE.fft2_size);
+        for _ in 0..FST4_60A_DOWNSAMPLE.fft2_size {
+            let re = f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+            let im = f32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap());
+            cd0.push(num_complex::Complex32::new(re, im));
+            off += 8;
+        }
+        let cand = mfsk_core::engine::sync::SyncCandidate {
+            freq_hz,
+            dt_sec,
+            score,
+        };
+        if let Some(r) = process_candidate_precomputed::<Fst4s60>(
+            &cand,
+            &fft_cache,
+            &FST4_60A_DOWNSAMPLE,
+            DecodeDepth::FULL,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+            (cd0, rf, ri0, rscore),
+            false, // real SNR — this round-trip mirrors the host decode_frame path exactly
+        ) {
+            baked_results.push(r);
+        }
+    }
+    assert_eq!(off, bytes.len(), "round-trip byte accounting mismatch");
+
+    let mut baked_msgs: Vec<String> = baked_results
+        .iter()
+        .filter_map(|r| {
+            let m77: &[u8; 77] = r.message77().try_into().ok()?;
+            unpack77(m77)
+        })
+        .collect();
+    baked_msgs.sort();
+    let mut reference_msgs: Vec<String> = FST4_60_FULL_REFERENCE
+        .iter()
+        .map(|g| g.msg.to_string())
+        .collect();
+    reference_msgs.sort();
+    assert_eq!(
+        baked_msgs, reference_msgs,
+        "process_candidate_precomputed over the baked refined candidates must reach the \
+         same decodes as the golden reference"
+    );
+}
+
 /// Recall, precision, and SNR together: real `jt9 -7 -p 60` reports
 /// exactly the two decodes in `FST4_60_FULL_REFERENCE` on this
 /// recording, and so does this crate — full recall, budget 0, and

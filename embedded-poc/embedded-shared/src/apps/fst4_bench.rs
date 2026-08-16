@@ -1,84 +1,98 @@
-//! FST4-60 decoder-only bench for ESP32-S3 (LX7) — issue #306.
+//! FST4-60 decoder-only bench for ESP32-S3 (LX7) — issue #306/#307.
 //!
 //! Answers the question issue #306 actually asked: does the *decoder*
-//! — everything past the wideband FFT that produces a candidate list
-//! and then LLR/BP/OSD each one — fit inside FST4-60's ~7 s post-slot
-//! margin on real CoreS3 hardware? Not "is the whole embedded FST4
-//! port done" (it isn't attempted here) and not "is the WSPR result
-//! predictive of this" (issue #260's own closing thread argued the
-//! opposite: WSPR's dominant cost was Fano-sequential search burning a
-//! full node budget per failing candidate, a failure mode FST4's
-//! bounded LDPC/BP + OSD-fallback doesn't share).
+//! — LLR/BP/OSD over a real candidate population — fit inside
+//! FST4-60's ~7 s post-slot margin on real CoreS3 hardware? Not "is
+//! the whole embedded FST4 port done" (it isn't attempted here) and
+//! not "is the WSPR result predictive of this" (issue #260's own
+//! closing thread argued the opposite: WSPR's dominant cost was
+//! Fano-sequential search burning a full node budget per failing
+//! candidate, a failure mode FST4's bounded LDPC/BP + OSD-fallback
+//! doesn't share).
 //!
-//! ## Why there is no on-device wideband stage here
+//! ## Why there is no FFT anywhere in this bench
 //!
-//! Same shape as `wspr_bench`'s baked baseband: FST4-60A's
-//! `build_fft_cache` runs one `fft1_size = 746_496`-point forward FFT
-//! over the whole 60 s slot, and `esp-dsp`'s FFT backend has an 8 192
-//! ceiling (`CONFIG_DSP_MAX_FFT_SIZE_8192`) — nowhere close. There is
-//! no on-device path from raw audio to that cache today, and building
-//! one is out of scope here (issue #306 explicitly doesn't ask for
-//! it: "I'm not suggesting a full embedded FST4 port... A
-//! decoder-only benchmark would be enough").
+//! The first version of this bench baked only the wideband
+//! `build_fft_cache` output and ran `coarse_sync` + `decode_frame` on
+//! device — mirroring `wspr_bench`'s baked-baseband shape. On real
+//! hardware it panicked on `coarse_sync`'s very first FFT call:
+//! FST4-60A's spectrogram length (`NSPS × 2 = 7776 = 2⁵ × 3⁵`) isn't a
+//! power of two, and the embedded `fft-extern`/ESP-DSP backend only
+//! serves power-of-two lengths (plus one hand-rolled exception for
+//! FT8's own `3840`). `downsample_cached`'s inverse FFT
+//! (`fft2_size = 6912 = 2⁸ × 27`) is a second, independently-sized
+//! non-power-of-two transform in the same path. Every one of FST4's 5
+//! submodes hits this (filed as issue #307, with the full
+//! factorization table — FST4-120's carries a bare factor of 41).
 //!
-//! So the cache is baked on a host by the `#[ignore]`d
-//! `fst4_bake_golden_precomputed` in `mfsk-core/tests/fst4_wsjtx_samples.rs`
-//! (from the WSJT-X golden `210115_0058.wav`) and fed in via
-//! `engine::pipeline::decode_frame`'s `precomputed_fft` parameter —
-//! the same seam FT8's own `decode_frame_inner` already uses. The bake
-//! test round-trips both baked files back through `decode_frame` on
-//! the host and asserts the result matches `DecodeRequest`'s own
-//! fresh-computed path exactly, so what ships here is provably what
-//! the unbaked path would have produced, not an approximation of it.
+//! Rather than wait on #307's FFT kernel to get a first wall-clock
+//! number, this bench skips **both** FFT sites by baking each real
+//! candidate already refined on a host: `mfsk-core/tests/
+//! fst4_wsjtx_samples.rs::fst4_bake_golden_refined_candidates` runs
+//! `coarse_sync` + `refine_candidate_position` +
+//! `dedup_refined_candidates`'s own near-duplicate rule on the WSJT-X
+//! golden, and bakes the survivors' `(cd0, freq_hz, i0, score)`
+//! tuples — exactly what `process_candidate_basic_impl`'s
+//! `precomputed_refine` parameter accepts. `decode_frame` doesn't
+//! expose that parameter, so a new `engine::pipeline::
+//! process_candidate_precomputed` (internal-testing-gated, same
+//! visibility shape as `process_candidate_basic`) does. The result:
+//! **the on-device path here never calls an FFT**, only LLR/BP/OSD —
+//! exactly the "decoder" issue #306 asked about, isolated instead of
+//! blocked.
 //!
-//! `coarse_sync` — the candidate search — is a different story:
-//! `compute_spectra` is a per-symbol-block spectrogram, not the big
-//! FFT, and runs on raw `audio` directly (same as FT8's own coarse
-//! sync). It is timed both standalone (below) and again as part of
-//! the full `decode_frame` call — the second run repeats the first
-//! rather than reusing it, which duplicates compute but keeps each
-//! number an honest measurement of its own real path rather than a
-//! hand-optimised composite.
+//! `fft_cache` (the wideband forward-FFT output, baked by
+//! `fst4_bake_golden_precomputed`) is still shipped, but not FFT'd —
+//! it's only ever *read* here, never transformed.
+//!
+//! Two more FFT sites turned up past that first fix, both closed the
+//! same day:
+//!
+//! - `GenericPipelineProtocol::snr_db`'s FST4 override
+//!   (`fst4::baseline::fst4_snr_db`) calls `downsample_cached` a
+//!   *second*, independent time from `fft_cache` — `fst4_raw_cs` needs
+//!   the non-RMS-normalised spectrum, which the already-normalised
+//!   `cd0` from `precomputed_refine` can't substitute for. Closed by a
+//!   new `skip_snr` parameter on `process_candidate_basic_impl` /
+//!   `process_candidate_precomputed`: `true` stores `NAN` in
+//!   `DecodeResult::snr_db` instead of calling `P::snr_db` at all —
+//!   this bench's SNR values are not real measurements, only its
+//!   wall-clock is.
+//! - `engine::llr::symbol_spectra` — the actual first step of LLR
+//!   extraction, called for *every* candidate regardless of
+//!   `precomputed_refine`/`skip_snr` — plans a `ds_spb =
+//!   NSPS/NDOWN`-point FFT (36 for FST4-60A; 36-42 across all 5
+//!   submodes), also not a power of two. Closed by
+//!   `esp_dsp_fft::DirectDft`: a plain O(N²) textbook DFT (not an
+//!   approximation — every FFT computes the identical sum by a faster
+//!   route, so there is no algorithm-specific correctness risk the
+//!   way a new fast-transform derivation would carry), wired into
+//!   `EspDspPlanner::plan_forward` for any non-power-of-2 length up to
+//!   `DIRECT_DFT_MAX_LEN` (64). Verified against `numpy.fft` on host
+//!   at N=36/42 to ~1e-6 (f32-level precision) before flashing.
+//!
+//! With all three closed, the on-device path genuinely has zero FFT
+//! calls left. **Still not measured end-to-end**, though — see
+//! `docs/reference/EMBEDDED.md`'s "FST4 on embedded" section for
+//! where the real-device attempt currently stands (a USB/serial
+//! stall mid-flash, not a code issue as far as diagnosed so far).
 //!
 //! ## What this does *not* attempt
 //!
-//! No PSRAM-vs-SRAM bandwidth arms, no dual-core split, no WiFi, no
-//! spot reporting, no steady-state multi-slot pipeline. `wspr_bench`
-//! grew all of that from real on-device findings over several rounds
-//! (issue #260) — building the same scaffolding here ahead of a first
-//! real measurement would be guessing at what FST4 actually needs.
-//! This is deliberately the single-shot, single-core, single-arm
-//! shape wspr_bench started as.
+//! No `coarse_sync` on-device (can't yet — #307), no PSRAM-vs-SRAM
+//! bandwidth arms, no dual-core split, no WiFi, no spot reporting, no
+//! steady-state multi-slot pipeline. `wspr_bench` grew all of that
+//! from real on-device findings over several rounds (issue #260);
+//! building the same scaffolding here ahead of a first real
+//! measurement would be guessing at what FST4 actually needs.
 //!
-//! ## Measured on hardware (2026-08-16): PSRAM footprint was fine,
-//! the FFT backend is the actual blocker
-//!
-//! The two baked assets are 1.44 MiB (audio, `i16`) + 5.7 MiB
-//! (`fft_cache`, `Complex32`) = ~7.16 MiB, decoded into a second
-//! in-RAM copy of each (the baked bytes are 1-byte-aligned
-//! `include_bytes!` data — Xtensa faults on an unaligned `f32`/`i16`
-//! load, so they're parsed byte-wise into fresh `Vec`s rather than
-//! transmuted in place). That was the risk flagged before the first
-//! real run; it did not materialize — CoreS3 logged 893 KiB PSRAM
-//! free / 880 KiB largest-contiguous immediately after both `Vec`s
-//! were built, comfortably inside the 8 MiB part.
-//!
-//! What actually stops this bench: `coarse_sync::<Fst4s60>`'s first
-//! FFT call panics —
-//! `esp-dsp FFT requires power-of-2 length ≥ 4 (got 7776)`. `7776 =
-//! NSPS(3888) × NFFT_PER_SYMBOL_FACTOR(2)` (`engine::sync::SyncDims`)
-//! is FST4-60A's coarse-sync spectrogram FFT length, and `2⁵ × 3⁵` is
-//! not a power of two — the same shape as FT8's own `1920 × 2 = 3840`,
-//! which is why FT8 has a hand-rolled `MixedRadix3840Fft` in
-//! `esp_dsp_fft` instead of relying on the ESP-DSP backend's
-//! power-of-two-only radix-2 kernel. FST4 has no equivalent yet, and
-//! `downsample_cached`'s inverse FFT (`fft2_size = 6912 = 2⁸ × 27`,
-//! also non-power-of-two) hasn't even been reached — `coarse_sync`
-//! panics first. See `docs/reference/EMBEDDED.md`'s "FST4 on
-//! embedded" section for the full writeup, including the two
-//! unrelated infrastructure bugs (a stale-4MB `espflash` flash-size
-//! default, and the `partitions.csv` growth this bench needed) that
-//! had to be fixed before this measurement was even reachable.
+//! The candidate population processed (41 survivors of 50 raw
+//! `coarse_sync` candidates on the golden WAV, post-dedup) is the
+//! same one `decode_frame_impl` would actually decode — including
+//! every candidate that *fails*, not just the 2 real signals. WSPR's
+//! own measurement (issue #260) found that most of a real candidate
+//! loop's cost is exactly there; timing only the successes would
+//! understate this the same way.
 
 extern crate alloc;
 
@@ -87,8 +101,8 @@ use alloc::vec::Vec;
 use num_complex::Complex32;
 
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, decode_frame};
-use mfsk_core::engine::sync::coarse_sync;
+use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
+use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -101,14 +115,6 @@ use mfsk_core::msg::wsjt77::unpack77;
 /// to compile, which is the one place this file trades safety for
 /// not needing a crate change just to flash a bench.
 const SYNC_Q_MIN: u32 = 16;
-
-/// Search band + candidate cap, matching
-/// `fst4_wsjtx_sample_precision_vs_reference_decoder`'s own params so
-/// the device number is comparable to the host golden test's.
-const FREQ_MIN_HZ: f32 = 100.0;
-const FREQ_MAX_HZ: f32 = 3000.0;
-const SYNC_MIN: f32 = 1.2;
-const MAX_CANDIDATES: usize = 50;
 
 const MALLOC_CAP_8BIT: u32 = 1 << 2;
 const MALLOC_CAP_SPIRAM: u32 = 1 << 10;
@@ -140,19 +146,10 @@ fn log_heap(tag: &str) {
     }
 }
 
-/// `bin` is the baked audio asset (`include_bytes!`) — raw `i16` LE,
-/// no header. Byte-wise, not a transmute: `include_bytes!` gives
-/// 1-byte alignment and Xtensa faults on an unaligned `i16` load.
-fn load_audio(bin: &[u8]) -> Vec<i16> {
-    assert_eq!(bin.len() % 2, 0, "baked audio has an odd byte length");
-    bin.chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect()
-}
-
 /// `bin` is the baked FFT-cache asset (`include_bytes!`) — `(f32 re,
-/// f32 im)` pairs, LE, no header. Same byte-wise reasoning as
-/// [`load_audio`].
+/// f32 im)` pairs, LE, no header. Byte-wise, not a transmute:
+/// `include_bytes!` gives 1-byte alignment and Xtensa faults on an
+/// unaligned `f32` load.
 fn load_fft_cache(bin: &[u8]) -> Vec<Complex32> {
     assert_eq!(bin.len() % 8, 0, "baked fft_cache has the wrong byte length");
     bin.chunks_exact(8)
@@ -163,6 +160,55 @@ fn load_fft_cache(bin: &[u8]) -> Vec<Complex32> {
             )
         })
         .collect()
+}
+
+/// One baked, already-refined candidate — see the module doc and
+/// `fst4_bake_golden_refined_candidates`'s own doc comment for the
+/// exact byte layout this parses.
+struct RefinedCandidate {
+    cand: SyncCandidate,
+    cd0: Vec<Complex32>,
+    refined_freq_hz: f32,
+    refined_i0: i32,
+    refined_score: f32,
+}
+
+/// `bin` is the baked refined-candidates asset (`include_bytes!`).
+/// Byte-wise for the same alignment reason as [`load_fft_cache`].
+fn load_refined_candidates(bin: &[u8]) -> Vec<RefinedCandidate> {
+    let mut off = 0usize;
+    let n = u32::from_le_bytes(bin[off..off + 4].try_into().unwrap()) as usize;
+    off += 4;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let freq_hz = f32::from_le_bytes(bin[off..off + 4].try_into().unwrap());
+        let dt_sec = f32::from_le_bytes(bin[off + 4..off + 8].try_into().unwrap());
+        let score = f32::from_le_bytes(bin[off + 8..off + 12].try_into().unwrap());
+        let refined_freq_hz = f32::from_le_bytes(bin[off + 12..off + 16].try_into().unwrap());
+        let refined_i0 = i32::from_le_bytes(bin[off + 16..off + 20].try_into().unwrap());
+        let refined_score = f32::from_le_bytes(bin[off + 20..off + 24].try_into().unwrap());
+        off += 24;
+        let mut cd0 = Vec::with_capacity(FST4_60A_DOWNSAMPLE.fft2_size);
+        for _ in 0..FST4_60A_DOWNSAMPLE.fft2_size {
+            let re = f32::from_le_bytes(bin[off..off + 4].try_into().unwrap());
+            let im = f32::from_le_bytes(bin[off + 4..off + 8].try_into().unwrap());
+            cd0.push(Complex32::new(re, im));
+            off += 8;
+        }
+        out.push(RefinedCandidate {
+            cand: SyncCandidate {
+                freq_hz,
+                dt_sec,
+                score,
+            },
+            cd0,
+            refined_freq_hz,
+            refined_i0,
+            refined_score,
+        });
+    }
+    assert_eq!(off, bin.len(), "refined-candidates asset byte accounting mismatch");
+    out
 }
 
 /// Install the ESP-IDF logger, at most once per boot — same guard
@@ -183,77 +229,77 @@ pub fn init_logger_once() {
     }
 }
 
-/// One `decode_frame::<Fst4s60>` call over the baked golden, run on
-/// the calling task/stack (`main`'s, or whatever the caller already
-/// spawned it on). Logs a standalone `coarse_sync` timing, then the
-/// full decode, then the decodes themselves and stack/heap headroom.
-///
-/// `audio_bin`/`fft_cache_bin` are the two `include_bytes!` blobs
-/// produced by `fst4_bake_golden_precomputed`.
-pub fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8]) {
+/// Runs `process_candidate_precomputed::<Fst4s60>` over every baked,
+/// already-refined candidate — no FFT anywhere in this call chain
+/// (see the module doc for why). `fft_cache_bin`/`refined_bin` are
+/// the two `include_bytes!` blobs produced by
+/// `fst4_bake_golden_precomputed` / `fst4_bake_golden_refined_candidates`.
+pub fn run_bench(fft_cache_bin: &[u8], refined_bin: &[u8]) {
     log::info!("mfsk-core {}", mfsk_core::VERSION);
     log::info!(
-        "fst4_bench: baked assets audio={} bytes, fft_cache={} bytes",
-        audio_bin.len(),
+        "fst4_bench: baked assets fft_cache={} bytes, refined_candidates={} bytes",
         fft_cache_bin.len(),
+        refined_bin.len(),
     );
     log_heap("boot");
 
     let t_load = now_us();
-    let audio = load_audio(audio_bin);
     let fft_cache = load_fft_cache(fft_cache_bin);
+    let candidates = load_refined_candidates(refined_bin);
     log::info!(
-        "fst4_bench: loaded {} audio samples + {} fft_cache bins in {} ms",
-        audio.len(),
+        "fst4_bench: loaded {} fft_cache bins + {} refined candidates in {} ms",
         fft_cache.len(),
+        candidates.len(),
         (now_us() - t_load) / 1000,
     );
     log_heap("post-load");
 
-    // The candidate loop runs compute-bound for however long
-    // decode_frame takes without yielding — same reasoning wspr_bench
-    // gives for deinit-ing the watchdog rather than measuring its
-    // console traffic.
+    // The candidate loop runs compute-bound for however long it takes
+    // without yielding — same reasoning wspr_bench gives for
+    // deinit-ing the watchdog rather than measuring its console
+    // traffic.
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
 
-    // Standalone coarse_sync timing — the candidate search alone,
-    // separate from (and re-run inside) the full decode below. See
-    // the module doc for why this duplicates work rather than reusing
-    // the candidate list.
-    let t_cs = now_us();
-    let candidates = coarse_sync::<Fst4s60>(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CANDIDATES);
-    let coarse_us = now_us() - t_cs;
-    log::info!(
-        "fst4_bench: coarse_sync alone = {} ms ({} candidates)",
-        coarse_us / 1000,
-        candidates.len(),
-    );
-    log::info!("fst4_bench: stack headroom after coarse_sync = {} B", stack_headroom());
-
+    // `known: &[]` on every call, matching `decode_frame_impl`'s own
+    // per-candidate loop exactly — it does not accumulate this pass's
+    // own results into `known` as it goes (that parameter exists for
+    // *cross-pass* dedup, e.g. SIC rounds feeding an earlier round's
+    // decodes into a later one; `known` is threaded through
+    // unchanged from the caller for the whole of a single pass).
     let t0 = now_us();
-    let (results, _cache) = decode_frame::<Fst4s60>(
-        &audio,
-        &FST4_60A_DOWNSAMPLE,
-        FREQ_MIN_HZ,
-        FREQ_MAX_HZ,
-        SYNC_MIN,
-        None,
-        DecodeDepth::FULL,
-        MAX_CANDIDATES,
-        DecodeStrictness::Normal,
-        EqMode::Off,
-        SYNC_Q_MIN,
-        Some(&fft_cache),
-        None,
-    );
+    let mut results = Vec::new();
+    for rc in candidates {
+        let precomputed_refine = (rc.cd0, rc.refined_freq_hz, rc.refined_i0, rc.refined_score);
+        if let Some(res) = process_candidate_precomputed::<Fst4s60>(
+            &rc.cand,
+            &fft_cache,
+            &FST4_60A_DOWNSAMPLE,
+            DecodeDepth::FULL,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+            precomputed_refine,
+            // `skip_snr = true`: FST4's real-SNR formula needs a
+            // *second*, independent `downsample_cached` call
+            // (`fst4_raw_cs`) that `precomputed_refine` above doesn't
+            // cover — the module doc explains why this bench can't
+            // serve that FFT either yet (issue #307). `snr_db` on
+            // every `DecodeResult` below is `NAN`, not a real
+            // measurement; this bench answers the wall-clock question
+            // only.
+            true,
+        ) {
+            results.push(res);
+        }
+    }
     let total_us = now_us() - t0;
 
     log::info!(
-        "fst4_bench: decode_frame TOTAL = {} ms  ({} decodes)  [coarse_sync-alone was {} ms of that shape]",
+        "fst4_bench: candidate loop (LLR/BP/OSD only, no FFT) TOTAL = {} ms  ({} decodes)",
         total_us / 1000,
         results.len(),
-        coarse_us / 1000,
     );
     for r in &results {
         let text = r
@@ -262,14 +308,15 @@ pub fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8]) {
             .ok()
             .and_then(|m77: &[u8; 77]| unpack77(m77));
         log::info!(
-            "    {:?} | {:.1} Hz | dt {:.2} s | {} dB",
+            // snr_db is NAN (skip_snr = true, see module doc) — not
+            // logged as a number so it can't be mistaken for one.
+            "    {:?} | {:.1} Hz | dt {:.2} s | SNR not measured (skip_snr)",
             text,
             r.freq_hz,
             r.dt_sec,
-            r.snr_db as i32,
         );
     }
-    log::info!("fst4_bench: stack headroom after decode_frame = {} B", stack_headroom());
+    log::info!("fst4_bench: stack headroom after candidate loop = {} B", stack_headroom());
     log_heap("post-decode");
     log::info!("=== fst4_bench complete ===");
 }
@@ -282,7 +329,7 @@ pub fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8]) {
 /// (`Ldpc240_101` vs FT8's `Ldpc174_91`, both `BpPooledFec`), so a
 /// comparable order of magnitude is a reasonable starting guess — but
 /// it is a guess. The first real run's `stack headroom after
-/// decode_frame` log line is what turns this into a measured value;
+/// candidate loop` log line is what turns this into a measured value;
 /// resize once that number exists rather than trusting this one.
 pub const BENCH_STACK: u32 = 96 * 1024;
 
@@ -290,24 +337,24 @@ extern "C" fn bench_task(arg: *mut core::ffi::c_void) {
     // SAFETY: `run` leaks a `&'static (&'static [u8], &'static [u8])`
     // that outlives this task, mirroring wspr_bench's own arg-passing
     // shape for `extern "C"` task entries.
-    let (audio_bin, fft_cache_bin): (&'static [u8], &'static [u8]) =
+    let (fft_cache_bin, refined_bin): (&'static [u8], &'static [u8]) =
         unsafe { *(arg as *const (&'static [u8], &'static [u8])) };
-    run_bench(audio_bin, fft_cache_bin);
+    run_bench(fft_cache_bin, refined_bin);
     loop {
         unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
     }
 }
 
-/// `audio_bin`/`fft_cache_bin` are the two baked golden assets
+/// `fft_cache_bin`/`refined_bin` are the two baked golden assets
 /// (`include_bytes!`). Spawns [`bench_task`] on a dedicated stack
 /// (see [`BENCH_STACK`]'s doc comment on why that size is a starting
 /// guess) pinned to core 0, then idles forever.
-pub fn run(audio_bin: &'static [u8], fft_cache_bin: &'static [u8]) -> ! {
+pub fn run(fft_cache_bin: &'static [u8], refined_bin: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 
     let arg: &'static (&'static [u8], &'static [u8]) =
-        alloc::boxed::Box::leak(alloc::boxed::Box::new((audio_bin, fft_cache_bin)));
+        alloc::boxed::Box::leak(alloc::boxed::Box::new((fft_cache_bin, refined_bin)));
     let argp = arg as *const _ as *mut core::ffi::c_void;
 
     let created = unsafe {

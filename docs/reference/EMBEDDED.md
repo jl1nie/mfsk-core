@@ -899,11 +899,68 @@ device at all".** Unlike WSPR's `decimate_to_baseband`, this isn't a
 size problem `esp-dsp` was never going to solve (WSPR's 1 474 560-pt
 whole-slot FFT stays baked host-side by design) — 7776 points is
 trivially small for a per-symbol FFT, it's specifically the *radix*
-ESP-DSP's asm kernels don't support. A mixed-radix or Bluestein
-implementation the way `fft_15.rs`/`fft_mixed_3840.rs` did for FT8
-is the concrete next step, verified bit-exact against `rustfft`
-before it's trusted — real numerical DSP work, not a config change,
-and out of scope for what this session attempted.
+ESP-DSP's asm kernels don't support.
+
+**Second attempt, same day: route around the FFT sites entirely
+instead of building #307's kernel first.** `coarse_sync` and
+`downsample_cached`'s FFTs are only in the *sync/refine* stage, not
+LLR/BP/OSD itself — so a candidate already refined on a host (same
+`(cd0, freq_hz, i0, score)` shape `process_candidate_basic_impl`'s
+existing `precomputed_refine` parameter accepts) lets the device skip
+both without waiting on #307. `mfsk-core/tests/
+fst4_wsjtx_samples.rs::fst4_bake_golden_refined_candidates` bakes
+every real (post-dedup) candidate this way, and a new
+`engine::pipeline::process_candidate_precomputed` (`internal-testing`-
+gated, mirrors `process_candidate_basic`) exposes the seam externally.
+Flashed clean — then panicked again, same assertion, `got 36` this
+time: `GenericPipelineProtocol::snr_db`'s FST4 override
+(`fst4_snr_db`) turned out to call `downsample_cached` a *third*,
+independent time (`fst4_raw_cs` needs the non-normalised spectrum,
+which the already-normalised baked `cd0` can't substitute for) —
+closed with a new `skip_snr` parameter (`NAN` in `DecodeResult::snr_db`
+instead of calling `P::snr_db`; this bench measures wall-clock, not
+SNR accuracy). Rebuilt, reflashed — **panicked a third time, same
+assertion, still `got 36`**: `engine::llr::symbol_spectra` (the actual
+first step of LLR extraction, called for every candidate regardless of
+`precomputed_refine`) plans its own `ds_spb = NSPS/NDOWN`-point FFT
+(36 for FST4-60A) that neither fix touched.
+
+**Third attempt: 36 is small enough not to need a real FFT at all.**
+`ds_spb` is 36-42 across all five FST4 submodes (`REFINE_STEPS`'s own
+doc comment already noted this range). A plain O(N²) direct DFT —
+the textbook definition, not an approximation of one, since every FFT
+computes the identical sum by a faster route — costs at most 42² =
+1 764 complex multiply-adds per call, negligible next to the LLR/BP/OSD
+work it feeds. Added as `embedded-shared::esp_dsp_fft::DirectDft`,
+wired into `EspDspPlanner::plan_forward` for any non-power-of-2 length
+up to `DIRECT_DFT_MAX_LEN = 64`; verified against `numpy.fft` on host
+(same unnormalised forward convention `rustfft` uses) at N=36 and
+N=42, ~1e-6 max error — f32-level precision, no sign/indexing bug.
+
+With all three FFT sites closed (candidate refine baked, SNR skipped,
+symbol-spectra FFT replaced), the on-device path has zero FFT calls
+left. **Still not measured end-to-end.** The fourth flash attempt
+(after adding `DirectDft`) stalled mid-write — `espflash`'s progress
+bar stopped advancing partway through a full post-erase write, and the
+board stopped responding to `espflash board-info` afterward
+(`/dev/serial/by-id/` still showed the USB-JTAG device node, so this
+reads as a firmware/protocol hang rather than a physical
+disconnect — dmesg showed no USB detach around the stall). Did not
+self-recover after 5+ minutes of polling. Diagnosed as an unrelated
+USB/serial-level issue, not a regression from `DirectDft` or any of
+the three fixes above — none of them were reached yet when the stall
+happened (it hung during the flash *write*, before the app ever
+booted). Left for a physical USB replug / board reset, which needs
+the user present; not attempted further in this session.
+
+A mixed-radix or Bluestein implementation for the *larger* FFT sites
+this session routed around (issue #307: `coarse_sync`'s 7776,
+`downsample_cached`'s 6912, and the equivalent pair for FST4's other
+4 submodes) is still open and still the right fix for a *production*
+embedded FST4 path — the precomputed-candidate/skip-SNR bench above is
+a measurement shortcut for issue #306's specific wall-clock question,
+not a substitute for it. `DirectDft` itself, being O(N²) and capped at
+64, is not meant to grow into that role.
 
 ## Where to go next
 
