@@ -907,7 +907,7 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// comparable to `full` (43.134 s) and `no8_osd` (17.147 s) above.
 fn run_rung_major(refined_bin: &[u8]) {
     use mfsk_core::fst4::Fst4s60;
-    use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
+    use mfsk_core::fst4::rung_major::RungMajorCandidate;
 
     log_heap("boot");
     let candidates = load_refined_candidates(refined_bin);
@@ -927,10 +927,21 @@ fn run_rung_major(refined_bin: &[u8]) {
         })
         .collect();
 
-    for skip_llrc in [false, true] {
-        let label = if skip_llrc { "no8_osd (skip_llrc=true)" } else { "full (skip_llrc=false)" };
+    // Third combination (skip_llrc=true, skip_osd=true) answers VK3NV's
+    // issue #306 item 1 follow-up directly: `no8_osd`'s own BP-only
+    // total, not a subtraction from `full`'s split (dropping `llrc`
+    // changes how often BP fails and OSD is even reached, so `full`'s
+    // 71.9%/28.1% split isn't guaranteed to carry over).
+    for (skip_llrc, skip_osd, label) in [
+        (false, false, "full"),
+        (true, false, "no8_osd"),
+        (true, true, "no8_osd_bponly"),
+    ] {
         let t0 = now_us();
-        let results = decode_rung_major::<Fst4s60>(&inputs, skip_llrc);
+        let results = mfsk_core::fst4::rung_major::decode_rung_major_timed::<Fst4s60>(
+            &inputs, skip_llrc, skip_osd, None,
+        )
+        .0;
         let total_us = now_us() - t0;
         let decoded_count = results.iter().flatten().count();
         log::info!(
@@ -946,7 +957,7 @@ fn run_rung_major(refined_bin: &[u8]) {
                 .and_then(|m77: &[u8; 77]| unpack77(m77));
             log::info!("    {:?} | {:.1} Hz | dt {:.2} s", text, r.freq_hz, r.dt_sec);
         }
-        log_heap(if skip_llrc { "post-rung-major-no8osd" } else { "post-rung-major-full" });
+        log_heap(&alloc::format!("post-rung-major-{label}"));
     }
 
     log::info!("fst4_bench: stack headroom after rung_major = {} B", stack_headroom());

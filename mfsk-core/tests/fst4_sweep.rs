@@ -3448,7 +3448,7 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
         })
         .collect();
 
-    let (results, timings) = decode_rung_major_timed::<Fst4s60>(&cands, false, Some(host_clock_us));
+    let (results, timings) = decode_rung_major_timed::<Fst4s60>(&cands, false, false, Some(host_clock_us));
     let timings = timings.unwrap();
     eprintln!("decoded: {}/{}", results.iter().flatten().count(), cands.len());
     eprintln!("{:>4} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}", "idx", "freq", "llra_us", "llrb_us", "llre_us", "llrc_us", "osd_us", "decoded");

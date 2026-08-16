@@ -116,7 +116,7 @@ where
     P: Protocol,
     P::Fec: BpPooledFec,
 {
-    decode_rung_major_timed::<P>(candidates, skip_llrc, None).0
+    decode_rung_major_timed::<P>(candidates, skip_llrc, false, None).0
 }
 
 /// Same as [`decode_rung_major`], plus optional per-candidate,
@@ -137,6 +137,14 @@ where
 pub fn decode_rung_major_timed<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
+    // Drops the OSD stage entirely (BP-only) -- VK3NV's issue #306 item
+    // 1 follow-up: the `full`-config BP/OSD split doesn't necessarily
+    // carry over to `no8_osd` (dropping `llrc` changes how often BP
+    // fails and OSD is even reached), so a trustworthy `no8_osd` split
+    // needs its own direct BP-only measurement, not a subtraction from
+    // `full`'s numbers. `false` for every other caller (behaves exactly
+    // as before).
+    skip_osd: bool,
     clock: Option<fn() -> i64>,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<[i64; 5]>>)
 where
@@ -287,7 +295,7 @@ where
                     }
                 }
                 4 => {
-                    if st.nsync < osd_attempt_min {
+                    if skip_osd || st.nsync < osd_attempt_min {
                         continue;
                     }
                     let osd_depth: u32 = if st.nsync >= osd_depth3_min { 3 } else { 2 };
