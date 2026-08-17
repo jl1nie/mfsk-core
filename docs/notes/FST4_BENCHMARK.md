@@ -344,3 +344,177 @@ underlying quantity behaves differently for the new protocol — FT4's
 code that some real signals depend on. Controlled A/B against the exact
 current codebase (not a possibly-stale prior baseline) is what caught
 it before shipping.
+
+## 9. Attribution ablation — do two rescue mechanisms overlap? (2026-08-17)
+
+Sections 6-7 cover finding *where* a gap is and re-verifying *that* a
+fix moved it. This section covers a third question that neither
+answers: when you have **two** mechanisms that each rescue failing
+trials, do they rescue the *same* trials or *different* ones?
+
+That distinction decides whether an embedded escalation ladder has to
+pay for both (issue #310) or can carry only the cheaper one. It arose
+concretely from issue #306/#308/#311: FST4's OSD had two candidate
+rescue paths — WSJT-X's `i0±1` timing-jitter retry, and a selective
+fallback to the pre-#198 unpruned combinatorial OSD search.
+
+### Counts cannot answer it; only per-trial identity can
+
+Two mechanisms that each recover "2 of 5" are **indistinguishable from
+aggregate recall numbers**. They could be
+
+- **substitutable** — the same 2 trials, so either one alone buys the
+  full benefit,
+- **additive** — 2 different trials each, so the union is 4 and
+  dropping either costs recall, or
+- **interacting** — neither works alone and only the combination
+  rescues anything.
+
+So an ablation for this purpose must record **which trials** each
+configuration decodes, as sets, and print them. A table of pass counts
+is not enough, and a "both mechanisms help by about the same amount"
+summary is actively misleading.
+
+### The knobs
+
+- **OSD search**:
+  `mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old(bool)` —
+  `internal-testing`-gated, a process-global `AtomicBool`. Forces
+  `fst4_osd_decode` onto the old unpruned search. Reads `false` in any
+  non-`internal-testing` build, so it cannot affect a release artifact.
+  **Not thread-safe**: run with `--test-threads=1`.
+- **Timing offsets**: not exposed on the production entry point. See
+  trap 2.
+
+### Trap 1 — hardcoded trial indices are not portable
+
+The original finding named trials `[2, 15, 33, 45, 67]` from a
+**100-trial-per-cell** corpus. A 20-trial-per-cell generation of the
+same corpus has no trials 33/45/67 at all, and its trial 2 is a
+*different waveform* — `gen_fst4_sweep_wavs.sh` regenerates from
+`fst4sim`, it does not extend an existing set. So those indices
+silently select the wrong signals, or none, in any other environment.
+
+This is the same class of mistake as hardcoding `/home/ubuntu/...`
+asset paths (see `CLAUDE.md`, "Test fixture paths"): an index into a
+generated corpus is environment state, not a fixture identity.
+
+**Derive the trial set from whatever corpus is present, and print both
+the count found and the set used.** A run that silently skipped 3 of 5
+target trials otherwise reads as a real 0/5 result.
+
+### Trap 2 — the selection baseline must not already contain the mechanism
+
+The obvious way to pick trials is to reuse the production-path
+discovery (`decode_wav_fst4_60`, i.e. `DecodeRequest`) that found the
+disagreement in the first place. **That is now circular.**
+`DecodeRequest`'s `osd` flag defaults to `true`, and #308's `i0±1`
+retry is gated on exactly that flag — so the production "npre" arm
+*already includes timing diversity*. Trials selected that way are, by
+construction, ones where timing has already been given its chance and
+failed. The timing arm is then guaranteed to rescue nothing, and the
+run produces a confident "neither mechanism works" verdict that is an
+artifact of the selection, not a measurement.
+
+This bites specifically because the mechanism under test *shipped*
+between the original finding and the re-measurement. Whenever that is
+true, the pre-fix baseline no longer exists in the production entry
+point, and the ablation has to reconstruct it.
+
+Two ways out, in order of preference:
+
+1. **Measure the whole cell across the full configuration grid and
+   read the sets off afterwards.** No selection step, so nothing to
+   bias. This is what `fst4_60_diag_npre_timing_substitutability_ablation`
+   does — 2 timing configurations × 3 OSD configurations over every
+   present trial.
+2. If the grid is too expensive, select using a baseline you have
+   explicitly reconstructed (npre at a single `i0`), never the current
+   production path.
+
+### Why a hand-built pipeline rather than `DecodeRequest`
+
+The production entry point **cannot express "npre with OSD but without
+timing diversity"** — the two are welded together by the `depth.osd`
+gate. So the ablation calls the stages directly:
+
+```
+coarse_sync → fst4_sync_search → freq_shift_cd0
+            → symbol_spectra / sync_quality → compute_llr → decode_soft
+```
+
+Sync runs **once per trial**, cached, and every configuration is
+evaluated against that same prepared candidate set — so any difference
+between configurations is attributable to the OSD/timing axes alone
+rather than to sync jitter.
+
+Two details that are easy to get wrong here:
+
+- `cd0` must be frequency-shifted by `refined − coarse` before
+  `symbol_spectra` (`freq_shift_cd0`). Skipping it zeroes the
+  correction and artificially fails the `nsync` gate for exactly the
+  marginal candidates an ablation is about. This has already caused one
+  implausibly-good measurement in this line of work.
+- Match success against the known golden message, not "something
+  decoded" — otherwise a CRC false-accept counts as a rescue.
+
+**The hand-built path is narrower than production** (candidates filtered
+to ±5 Hz of the golden, single sync pass, no SIC), so it can decode
+fewer trials than `DecodeRequest` on the same corpus. Always
+cross-check against `fst4_60_diag_npre_osd_bug_hunt_ccir_moderate` on
+the same files before attributing a difference to the mechanisms.
+
+### Running it
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_npre_timing_substitutability_ablation \
+    -- --ignored --nocapture --test-threads=1
+```
+
+~6 min for a 20-trial cell (6 configurations × 20 trials, plus one
+sync pass each). Scoped by test name — never a blanket `-- --ignored`,
+which escalates into the full tier-C campaign (see `CLAUDE.md`).
+
+### Result, 2026-08-17 (`fst4_60_ccir_moderate_m26`, 20 trials)
+
+| configuration | decoded | trials |
+|---|---:|---|
+| `npre @{0}` | 0/20 | — |
+| `npre @{0,+1,-1}` | 0/20 | — |
+| `unpruned @{0}` | 0/20 | — |
+| **`unpruned @{0,+1,-1}`** | **3/20** | 1, 4, 17 |
+| `npre→unpruned @{0}` | 0/20 | — |
+| `npre→unpruned @{0,+1,-1}` | 3/20 | 1, 4, 17 |
+
+**Verdict: interacting, not substitutable and not independently
+additive.** Neither mechanism rescues anything on its own — timing
+diversity does nothing for `npre`, and the unpruned search does nothing
+at a single `i0`. Only the combination decodes, and the fallback
+configuration's hits are *identical* to plain `unpruned + timing`,
+i.e. `npre` contributes nothing on those three trials.
+
+For #310 this means the ladder cannot simply pick the cheaper of the
+two: on this cell the rescue is the combination, so an embedded build
+that keeps `offsets = &[0]` gets no benefit from adding an unpruned-OSD
+fallback either.
+
+**Every trial reached `osd_depth = 3`**, so `npre2` was exercised
+throughout — the remaining misses are a genuine `npre2`-pruning
+limitation, not an artifact of never escalating past `ndeep = 2`. That
+closes the npre1-vs-npre2 localisation question #311 raised.
+
+### Caveats, stated because they are load-bearing
+
+- **n=20, 3 hits.** Directional. Nothing here should move a production
+  default; that needs the near-threshold sweep.
+- **This cell does not reproduce #308's 2/5 timing win at all**
+  (`npre @{0,+1,-1}` is 0/20 here). The difference is a different
+  corpus generation and/or the narrower hand-built pipeline. Unresolved
+  — do not read the table above as contradicting #308 until the same
+  grid has been run on a 100-trial generation.
+- One cell only: FST4-60, CCIR-moderate, m26.
+- **Wall-clock is deliberately not reported.** This is recall
+  attribution. Cost numbers belong on the Ryzen 9 box or real hardware
+  — an Apple laptop's AC/battery state swings host wall-clock ~3×
+  (`BENCHMARKS.md` records the machine for exactly this reason).

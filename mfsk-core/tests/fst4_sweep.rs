@@ -4202,3 +4202,375 @@ fn fst4_60_diag_i0_offset_host_timing() {
         tall / t0
     );
 }
+
+/// **Substitutable-vs-additive ablation** for the two rescue mechanisms
+/// #308 split apart (VK3NV, issue #311).
+///
+/// #306 found CCIR-moderate m26 trials where the pre-port unpruned
+/// combinatorial OSD decoded and the WSJT-X-faithful `npre1`/`npre2`
+/// port (#198) did not. #308 showed `i0±1` timing diversity recovers
+/// some of them, so part of the apparent OSD-pruning gap was really a
+/// missing-timing-diversity gap. That leaves two independent "retry the
+/// failure with something more expensive" mechanisms:
+///
+/// - alternate timing (`i0±1`)
+/// - a selective fallback to the old unpruned OSD search
+///
+/// The question is **not** whether each helps — that is known — but
+/// whether they rescue the *same* trials or *different* ones. Aggregate
+/// recall counts cannot distinguish those: two mechanisms each
+/// recovering "2 of 5" look identical in counts. Only the per-trial
+/// identity separates
+///
+/// - **substitutable** — same trials, so the embedded escalation ladder
+///   (#310) can carry the cheaper one and lose nothing, from
+/// - **additive** — different trials, so dropping either costs recall
+///   and #310 has to budget for both.
+///
+/// Hence the 2×2, and hence per-trial sets rather than tallies.
+///
+/// ## Two traps this harness exists to avoid
+///
+/// **1. Hardcoded trial indices are not portable across corpus
+/// generations.** The original finding named trials `[2, 15, 33, 45, 67]`
+/// out of a 100-trial-per-cell corpus. A 20-trial-per-cell generation of
+/// the same corpus has no trials 33/45/67, and its trial 2 is a
+/// *different waveform* — so those indices silently select the wrong
+/// signals (or nothing) elsewhere. This test therefore **derives its own
+/// trial set from whatever corpus is present**, and prints it.
+///
+/// **2. The selection baseline must be npre *without* timing.** It is
+/// tempting to reuse `fst4_60_diag_npre_osd_bug_hunt_ccir_moderate`'s
+/// production-path discovery (`decode_wav_fst4_60`) to pick the trials.
+/// That is now circular: `DecodeRequest`'s `osd` defaults to `true`, and
+/// #308's `i0±1` retry is gated on exactly that flag, so the production
+/// "npre" arm *already includes timing diversity*. Trials selected that
+/// way are ones where timing has already been given its chance and
+/// failed, which forces arm B to rescue nothing by construction and
+/// yields a spurious "neither mechanism works" verdict. The set here is
+/// selected with arm A (npre, single `i0`) — the genuine pre-#308
+/// baseline — against the unpruned search at the same single `i0`.
+///
+/// ## Arms
+///
+/// | arm | timing | OSD |
+/// |---|---|---|
+/// | A | `{0}` | npre only — pre-#308 baseline, and the selection basis |
+/// | B | `{0,+1,-1}` | npre only — host as shipped by #308 |
+/// | C | `{0}` | npre, falling back to unpruned **on failure** |
+/// | D | `{0,+1,-1}` | npre, falling back to unpruned **on failure** |
+///
+/// C/D are a *selective* fallback (npre first, unpruned only when npre
+/// returns nothing for every LLR variant), which is what was proposed —
+/// deliberately not "unpruned instead of npre", which is what
+/// [`mfsk_core::fec::Ldpc240_101::fst4_osd_diag_force_old`] does alone.
+///
+/// ## Method
+///
+/// One hand-built pipeline (`coarse_sync` → `fst4_sync_search` →
+/// `freq_shift_cd0` → `symbol_spectra`/`sync_quality` → `compute_llr` →
+/// FEC) shared by selection and all four arms, rather than
+/// `DecodeRequest`, because the production entry point cannot express
+/// "npre with OSD but without timing diversity" (arm A) at all — see
+/// trap 2. Sync runs once per trial, so any difference between arms is
+/// attributable to the OSD/timing axes alone.
+///
+/// Success is matched against [`GOLDEN_MSG`], not merely "something
+/// decoded", so a CRC false-accept cannot be counted as a rescue.
+///
+/// ## What this cannot tell you
+///
+/// The trial set is small by construction (it is the disagreement set,
+/// not the corpus). Enough to answer same-trials-or-not; **not** enough
+/// for any recall claim, and nothing here should move a production
+/// default — that needs the near-threshold sweep VK3NV flagged.
+/// Wall-clock is deliberately not reported: this is recall attribution,
+/// and cost belongs on the Ryzen 9 box or real hardware (an Apple
+/// laptop's AC/battery state swings host wall-clock ~3×).
+///
+/// `osd_depth` reached per trial is printed because `npre2` only runs at
+/// `ndeep=3`: a trial that never got past `ndeep=2` never exercised the
+/// `npre2` pruning this is about, which localises a remaining miss to a
+/// pruning stage rather than to the architecture.
+///
+/// Single-threaded by construction (`fst4_osd_diag_force_old` is a
+/// process-global toggle): run with `--test-threads=1`.
+#[test]
+#[ignore = "manual ablation — npre-vs-timing rescue substitutability (issue #311, VK3NV)"]
+fn fst4_60_diag_npre_timing_substitutability_ablation() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    /// Upper bound on trial index to probe; missing files are skipped, so
+    /// this works against any corpus generation (20-, 100-trial, …).
+    const MAX_TRIAL: u32 = 100;
+
+    /// `sync_quality`'s pre-ladder gate — same literal
+    /// `fst4_60_diag_i0_retry_ccir_old_only` uses, matching
+    /// `fst4::decode`'s own (deliberately non-`pub`) `SYNC_Q_MIN / 2`.
+    const NSYNC_GATE: u32 = 16;
+
+    /// Which OSD search(es) an attempt may use.
+    #[derive(Copy, Clone, PartialEq)]
+    enum Osd {
+        /// Production: `npre1`/`npre2` only.
+        Npre,
+        /// Pre-port unpruned combinatorial search only.
+        Unpruned,
+        /// `npre` first; unpruned only if `npre` found nothing.
+        NpreThenUnpruned,
+    }
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+    // Per-trial cached sync so selection and all four arms share it.
+    // Each prepared candidate is (baseband already frequency-corrected to
+    // the refined estimate, refined `i0`) — sync is done once per trial so
+    // every arm sees identical input and only the OSD/timing axes vary.
+    let attempt = |cands: &[(Vec<num_complex::Complex<f32>>, i32)],
+                   offsets: &[i32],
+                   osd_mode: Osd,
+                   max_depth: &mut u32|
+     -> bool {
+        for (cd0, i0_ref) in cands {
+            for &di0 in offsets {
+                let cs = symbol_spectra::<Fst4s60>(cd0, i0_ref + di0);
+                let nsync = sync_quality::<Fst4s60>(&cs);
+                if nsync <= NSYNC_GATE {
+                    continue;
+                }
+                let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+                let variants: [&Vec<f32>; 4] =
+                    [&llr_set.llra, &llr_set.llrb, &llr_set.llre, &llr_set.llrc];
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+
+                // BP staircase first — identical in every arm, and
+                // unaffected by the OSD axis (`osd_depth: 0`).
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                    return true;
+                }
+
+                if nsync >= osd_attempt_min {
+                    let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                    *max_depth = (*max_depth).max(osd_depth);
+                    let osd_opts = FecOpts {
+                        bp_max_iter: 30,
+                        osd_depth,
+                        ap_mask: None,
+                        verify_info,
+                        ..FecOpts::default()
+                    };
+                    if osd_mode != Osd::Unpruned {
+                        fst4_osd_diag_force_old(false);
+                        if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                            return true;
+                        }
+                    }
+                    if osd_mode != Osd::Npre {
+                        fst4_osd_diag_force_old(true);
+                        let hit = variants.iter().any(|llr| is_golden(llr, &osd_opts));
+                        fst4_osd_diag_force_old(false);
+                        if hit {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    };
+
+    // ── Prepare every present trial once ─────────────────────────────
+    // One prepared candidate: baseband already frequency-corrected to the
+    // refined estimate, plus that estimate's `i0`.
+    type PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
+    let mut prepared: Vec<(u32, Vec<PreparedCand>)> = Vec::new();
+    for trial in 1..=MAX_TRIAL {
+        let path = dir.join(format!("fst4_60_ccir_moderate_m26_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            continue;
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let mut prep = Vec::new();
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let shifted = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+            prep.push((shifted, s2.i0));
+        }
+        prepared.push((trial, prep));
+    }
+
+    // ── The full 2 × 3 grid, no trial pre-selection ───────────────────
+    // Selecting a subset first is what makes this measurement circular
+    // (see trap 2 above); measuring the whole cell and reading the sets
+    // off afterwards cannot be. 6 configurations × every present trial.
+    struct Cfg {
+        label: &'static str,
+        offsets: &'static [i32],
+        osd: Osd,
+    }
+    const GRID: &[Cfg] = &[
+        Cfg {
+            label: "npre        @{0}",
+            offsets: &[0],
+            osd: Osd::Npre,
+        },
+        Cfg {
+            label: "npre        @{0,+1,-1}",
+            offsets: &[0, 1, -1],
+            osd: Osd::Npre,
+        },
+        Cfg {
+            label: "unpruned    @{0}",
+            offsets: &[0],
+            osd: Osd::Unpruned,
+        },
+        Cfg {
+            label: "unpruned    @{0,+1,-1}",
+            offsets: &[0, 1, -1],
+            osd: Osd::Unpruned,
+        },
+        Cfg {
+            label: "npre→unprun @{0}",
+            offsets: &[0],
+            osd: Osd::NpreThenUnpruned,
+        },
+        Cfg {
+            label: "npre→unprun @{0,+1,-1}",
+            offsets: &[0, 1, -1],
+            osd: Osd::NpreThenUnpruned,
+        },
+    ];
+
+    let mut hits: Vec<Vec<u32>> = vec![Vec::new(); GRID.len()];
+    let mut depth_seen: Vec<(u32, u32)> = Vec::new();
+    for (trial, prep) in &prepared {
+        let mut depth = 0u32;
+        for (gi, cfg) in GRID.iter().enumerate() {
+            if attempt(prep, cfg.offsets, cfg.osd, &mut depth) {
+                hits[gi].push(*trial);
+            }
+        }
+        depth_seen.push((*trial, depth));
+    }
+    fst4_osd_diag_force_old(false);
+
+    let n = prepared.len();
+    eprintln!();
+    eprintln!("=== npre-vs-timing rescue ablation (fst4_60_ccir_moderate_m26) ===");
+    eprintln!("corpus: {n} trials present (probed 1..={MAX_TRIAL})");
+    eprintln!();
+    for (gi, cfg) in GRID.iter().enumerate() {
+        eprintln!(
+            "{:<24} {:>2}/{n}  {:?}",
+            cfg.label,
+            hits[gi].len(),
+            hits[gi]
+        );
+    }
+    eprintln!();
+    eprintln!("max osd_depth reached per trial: {depth_seen:?}   (npre2 only runs at depth 3)");
+
+    // Read the mechanisms off the grid relative to the production
+    // baseline (npre at a single i0 — the pre-#308 shape).
+    let base = &hits[0];
+    let over_base = |set: &Vec<u32>| -> Vec<u32> {
+        set.iter().copied().filter(|t| !base.contains(t)).collect()
+    };
+    let timing_only = over_base(&hits[1]); // npre + timing
+    let fallback_only = over_base(&hits[4]); // npre + selective fallback
+    let both = over_base(&hits[5]); // npre + timing + fallback
+    let unpruned_timing = over_base(&hits[3]); // unpruned + timing
+
+    let overlap: Vec<u32> = timing_only
+        .iter()
+        .copied()
+        .filter(|t| fallback_only.contains(t))
+        .collect();
+    let mut union: Vec<u32> = timing_only.clone();
+    let extra: Vec<u32> = fallback_only
+        .iter()
+        .copied()
+        .filter(|t| !union.contains(t))
+        .collect();
+    union.extend(extra);
+    union.sort_unstable();
+
+    eprintln!();
+    eprintln!("relative to `npre @{{0}}` (the pre-#308 production shape):");
+    eprintln!("  timing alone rescues:    {timing_only:?}");
+    eprintln!("  fallback alone rescues:  {fallback_only:?}");
+    eprintln!("  overlap:                 {overlap:?}");
+    eprintln!("  union:                   {union:?}");
+    eprintln!("  both together rescue:    {both:?}");
+    eprintln!("  (unpruned+timing, for reference: {unpruned_timing:?})");
+
+    let verdict = if timing_only.is_empty() && fallback_only.is_empty() && both.is_empty() {
+        "NO MECHANISM HELPS on this corpus cell at these candidate/gate settings — \
+         see the note below before reading this as a statement about the mechanisms"
+    } else if timing_only.is_empty() && fallback_only.is_empty() {
+        "INTERACTING — neither mechanism rescues anything alone, but both together do. \
+         #310 cannot pick one: the rescue requires the combination"
+    } else if union.len() == overlap.len() && !union.is_empty() {
+        "SUBSTITUTABLE — identical trial sets; #310 can carry whichever is cheaper \
+         and lose no recall on this corpus"
+    } else if overlap.is_empty() {
+        "ADDITIVE — disjoint trial sets; dropping either costs recall, so #310 has \
+         to budget for both"
+    } else {
+        "PARTIAL OVERLAP — the second mechanism's marginal value is union minus the \
+         cheaper one's own set"
+    };
+    eprintln!();
+    eprintln!("VERDICT: {verdict}");
+    if hits.iter().all(|h| h.is_empty()) {
+        eprintln!();
+        eprintln!(
+            "NOTE: every configuration decoded 0/{n}. This hand-built pipeline is \
+             narrower than `DecodeRequest` (candidates filtered to ±{FREQ_TOL_HZ} Hz \
+             of the golden, single sync pass, no SIC), so a cell this deep into \
+             near-threshold can be empty here while the production path still finds \
+             a couple. Compare against \
+             `fst4_60_diag_npre_osd_bug_hunt_ccir_moderate` on the same corpus \
+             before concluding anything about the mechanisms."
+        );
+    }
+}
