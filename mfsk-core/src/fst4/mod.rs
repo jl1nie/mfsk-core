@@ -138,6 +138,12 @@ macro_rules! fst4_submode {
         #[derive(Copy, Clone, Debug, Default)]
         pub struct $name;
 
+        // `fst4::baseline::fst4_snr_db` is this constant's only consumer
+        // and is itself gated on the FFT meta-feature, so the constant
+        // carries the same gate — otherwise a TX-only `--features fst4`
+        // build trips `dead_code` under CI's `-D warnings` (once per
+        // sub-mode).
+        #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
         impl $name {
             /// `fst4_decode.f90`'s `select case (ntrperiod)` constant
             /// feeding [`crate::fst4::baseline::fst4_snr_db`]'s `arg =
