@@ -1342,8 +1342,7 @@ fn fst4_60_diag_npre1_pattern_counts() {
         // One LLR variant is enough for a scale estimate -- `llra`
         // (nsym=1), matching the cheapest variant OSD is tried on
         // first in production.
-        if let Some((ntotal, npostgate)) =
-            npre1_pattern_counts::<Ldpc240_101Params>(&llr_set.llra)
+        if let Some((ntotal, npostgate)) = npre1_pattern_counts::<Ldpc240_101Params>(&llr_set.llra)
         {
             eprintln!(
                 "cand freq={:.1} nsync={nsync}: npre1 ntotal={ntotal} npostgate={npostgate} \
@@ -1689,7 +1688,8 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
     // deterministic per trial index), so this only adds statistical
     // power, it doesn't change what was already measured.
     let dir = sweep_dir();
-    let (osd_attempt_min, osd_depth3_min) = mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
 
     #[derive(Default, Clone, Copy)]
     struct Tally {
@@ -1863,15 +1863,21 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
             }
         }
 
-        (snr_idx, trial, ok_full, ok_bp_only, ok_no8_osd, ok_no8_no_osd)
+        (
+            snr_idx,
+            trial,
+            ok_full,
+            ok_bp_only,
+            ok_no8_osd,
+            ok_no8_no_osd,
+        )
     };
 
     #[cfg(feature = "parallel")]
     let results: Vec<(usize, u32, bool, bool, bool, bool)> =
         work.par_iter().map(process_one).collect();
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(usize, u32, bool, bool, bool, bool)> =
-        work.iter().map(process_one).collect();
+    let results: Vec<(usize, u32, bool, bool, bool, bool)> = work.iter().map(process_one).collect();
 
     // Sanity: `full ⊇ no8_osd ⊇ no8_no_osd` and `full ⊇ bp_only` must hold
     // per-*trial*, not just in the aggregate counts — a bookkeeping bug
@@ -1885,7 +1891,9 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
     for &(idx, trial, full, bp_only, no8_osd, no8_no_osd) in &results {
         let tag = snr_tags[idx].0;
         if !full && (bp_only || no8_osd || no8_no_osd) {
-            eprintln!("MONOTONICITY VIOLATION {tag}_{trial:02}: full=false but a reduced config succeeded");
+            eprintln!(
+                "MONOTONICITY VIOLATION {tag}_{trial:02}: full=false but a reduced config succeeded"
+            );
             violations += 1;
         }
         if bp_only && !full {
@@ -2093,7 +2101,10 @@ fn fst4_60_diag_npre_osd_recall_verify() {
                 pass += 1;
             }
         }
-        println!("{snr_tag}: {pass}/{total} ({:.0}%)", 100.0 * pass as f64 / total.max(1) as f64);
+        println!(
+            "{snr_tag}: {pass}/{total} ({:.0}%)",
+            100.0 * pass as f64 / total.max(1) as f64
+        );
     }
 }
 
@@ -2165,9 +2176,9 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::coarse_sync;
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{MessageCodec, Protocol};
     use mfsk_core::fec::ldpc::osd::{osd_decode_generic, osd_decode_npre_generic};
     use mfsk_core::fec::ldpc::params::Ldpc240_101Params;
-    use mfsk_core::engine::{MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -2181,7 +2192,10 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
 
-    for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+    for c in cands
+        .iter()
+        .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+    {
         let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
         let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
         if sum2 > f32::EPSILON {
@@ -2206,7 +2220,8 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
             let ord1 = osd_decode_generic::<Ldpc240_101Params>(llr, 1, 101, verify_info, false);
             let ord2 = osd_decode_generic::<Ldpc240_101Params>(llr, 2, 101, verify_info, false);
             let ord3 = osd_decode_generic::<Ldpc240_101Params>(llr, 3, 101, verify_info, false);
-            let npre1 = osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 0, false, verify_info);
+            let npre1 =
+                osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 0, false, verify_info);
             let npre12 =
                 osd_decode_npre_generic::<Ldpc240_101Params>(llr, 12, 14, true, verify_info);
             println!(
@@ -2275,7 +2290,9 @@ fn fst4_60_diag_npre_osd_bug_hunt_ccir_moderate() {
 /// the channel name and the (SNR tag, trial count) grid is identical.
 fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
+    use mfsk_core::engine::llr::{
+        compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality,
+    };
     use mfsk_core::engine::sync::coarse_sync;
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -2330,7 +2347,10 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
 
         let mut outcome = [MISS; 5];
 
-        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
             let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
             let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
             if sum2 > f32::EPSILON {
@@ -2375,7 +2395,11 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
             // golden message that's the outcome to report, even if a
             // different variant landed a false positive first.
             let best = |variants: &[&Vec<f32>], opts: &FecOpts| -> u8 {
-                variants.iter().map(|llr| classify(llr, opts)).max().unwrap_or(MISS)
+                variants
+                    .iter()
+                    .map(|llr| classify(llr, opts))
+                    .max()
+                    .unwrap_or(MISS)
             };
 
             for (i, &cap) in CAPS.iter().enumerate() {
@@ -2433,7 +2457,9 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
         }
     }
 
-    eprintln!("FST4-60 {channel} nsym-depth sweep (cap in {{1,2,4,6,8}}, OSD on for all) -- correct/false-positive:");
+    eprintln!(
+        "FST4-60 {channel} nsym-depth sweep (cap in {{1,2,4,6,8}}, OSD on for all) -- correct/false-positive:"
+    );
     eprintln!(
         "{:>6} {:>10} {:>10} {:>10} {:>10} {:>10} {:>5}",
         "SNR", "cap=1", "cap=2", "cap=4", "cap=6", "cap=8", "n"
@@ -2676,7 +2702,9 @@ fn fst4_60_diag_rung_major_scheduling() {
     use std::time::{Duration, Instant};
 
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality};
+    use mfsk_core::engine::llr::{
+        compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality,
+    };
     use mfsk_core::engine::sync::coarse_sync;
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
@@ -2712,13 +2740,22 @@ fn fst4_60_diag_rung_major_scheduling() {
     let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
     let refined: Vec<_> = raw_candidates
         .iter()
-        .map(|c| mfsk_core::engine::pipeline::refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
+        .map(|c| {
+            mfsk_core::engine::pipeline::refine_candidate_position::<Fst4s60>(
+                c,
+                &fft_cache,
+                &FST4_60A_DOWNSAMPLE,
+            )
+        })
         .collect();
     let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
     const I0_TOL: i32 = 2;
     let mut order: Vec<usize> = (0..raw_candidates.len()).collect();
     order.sort_by(|&a, &b| {
-        refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal)
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut kept_positions: Vec<(f32, i32)> = Vec::new();
     let mut survivors: Vec<usize> = Vec::new();
@@ -2733,7 +2770,10 @@ fn fst4_60_diag_rung_major_scheduling() {
         }
     }
     survivors.sort_unstable();
-    let cands: Vec<_> = survivors.iter().map(|&i| raw_candidates[i].clone()).collect();
+    let cands: Vec<_> = survivors
+        .iter()
+        .map(|&i| raw_candidates[i].clone())
+        .collect();
     eprintln!(
         "{} raw candidates -> {} refined+deduped (matches fst4_bench's baked asset)",
         raw_candidates.len(),
@@ -2917,7 +2957,10 @@ fn fst4_60_diag_rung_major_scheduling() {
     // depth-first schedule with the two decoding candidates moved to
     // the *end* of the list instead, as the honest worst case
     // depth-first's own ordering-dependence can produce.
-    let mut worst_order: Vec<&CandTiming> = timings.iter().filter(|c| !c.ok.iter().any(|&o| o)).collect();
+    let mut worst_order: Vec<&CandTiming> = timings
+        .iter()
+        .filter(|c| !c.ok.iter().any(|&o| o))
+        .collect();
     worst_order.extend(timings.iter().filter(|c| c.ok.iter().any(|&o| o)));
     eprintln!("\ndepth-first order, worst case (decoding candidates moved last):");
     let mut cum = 0.0f64;
@@ -2938,7 +2981,9 @@ fn fst4_60_diag_rung_major_scheduling() {
             );
         }
     }
-    eprintln!("  worst-case depth-first total: {cum:.3}s (same total work, all decodes deferred to the end)");
+    eprintln!(
+        "  worst-case depth-first total: {cum:.3}s (same total work, all decodes deferred to the end)"
+    );
 
     // ---- Rung-major cumulative timeline ----
     eprintln!("\nrung-major order (nsym=1 across all, then nsym=2 across all, ...):");
@@ -2962,10 +3007,14 @@ fn fst4_60_diag_rung_major_scheduling() {
             }
         }
         for (idx, freq_hz) in newly_decoded {
-            eprintln!("  candidate #{idx:2} ({freq_hz:7.1} Hz) decoded at t={cum:7.3}s (cumulative, end of rung {r})");
+            eprintln!(
+                "  candidate #{idx:2} ({freq_hz:7.1} Hz) decoded at t={cum:7.3}s (cumulative, end of rung {r})"
+            );
         }
     }
-    eprintln!("  rung-major total: {cum:.3}s (must equal depth-first total -- same total work, different order)");
+    eprintln!(
+        "  rung-major total: {cum:.3}s (must equal depth-first total -- same total work, different order)"
+    );
 }
 
 /// Ablation: does `llrd` (normalised nsym=1 — tried *last* in
@@ -3047,7 +3096,10 @@ fn stage_ablation_for_channel(channel: &str) {
 
         let mut ok = [false; 4];
 
-        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
             let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
             let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
             if sum2 > f32::EPSILON {
@@ -3083,7 +3135,8 @@ fn stage_ablation_for_channel(channel: &str) {
                 if ok[i] {
                     continue;
                 }
-                let mut variants: Vec<&Vec<f32>> = vec![&llr_set.llra, &llr_set.llrb, &llr_set.llre];
+                let mut variants: Vec<&Vec<f32>> =
+                    vec![&llr_set.llra, &llr_set.llrb, &llr_set.llre];
                 if keep_llrc {
                     variants.push(&llr_set.llrc);
                 }
@@ -3190,12 +3243,20 @@ fn fst4_60_diag_decode_rung_major_correctness() {
     let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
     const I0_TOL: i32 = 2;
     let mut order: Vec<usize> = (0..raw.len()).collect();
-    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut kept: Vec<(f32, i32)> = Vec::new();
     let mut survivors: Vec<usize> = Vec::new();
     for idx in order {
         let (_, f, i0, _) = &refined[idx];
-        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+        if !kept
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL)
+        {
             kept.push((*f, *i0));
             survivors.push(idx);
         }
@@ -3223,8 +3284,17 @@ fn fst4_60_diag_decode_rung_major_correctness() {
             unpack77(&m77).map(|s| Box::leak(s.into_boxed_str()) as &str)
         })
         .collect();
-    eprintln!("golden WAV: {} candidates, {} decoded: {:?}", cands.len(), results.iter().flatten().count(), msgs);
-    assert_eq!(results.iter().flatten().count(), 2, "must find exactly the 2 real QSOs");
+    eprintln!(
+        "golden WAV: {} candidates, {} decoded: {:?}",
+        cands.len(),
+        results.iter().flatten().count(),
+        msgs
+    );
+    assert_eq!(
+        results.iter().flatten().count(),
+        2,
+        "must find exactly the 2 real QSOs"
+    );
     assert!(msgs.contains(&"CQ N5TM EL29"));
     assert!(msgs.contains(&"CQ K9KFR EN71"));
 
@@ -3236,23 +3306,29 @@ fn fst4_60_diag_decode_rung_major_correctness() {
             let mut pass = 0u32;
             for trial in 1..=trials {
                 let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
-                let Some(audio) = load_wav_i16_opt(&path) else { continue };
+                let Some(audio) = load_wav_i16_opt(&path) else {
+                    continue;
+                };
                 let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
                 let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
-                let cands: Vec<RungMajorCandidate> = raw
-                    .iter()
-                    .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
-                    .map(|c| {
-                        let (cd0, refined_freq_hz, i0, _score) =
-                            refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
-                        RungMajorCandidate {
-                            cand: c.clone(),
-                            cd0,
-                            refined_freq_hz,
-                            i0,
-                        }
-                    })
-                    .collect();
+                let cands: Vec<RungMajorCandidate> =
+                    raw.iter()
+                        .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+                        .map(|c| {
+                            let (cd0, refined_freq_hz, i0, _score) =
+                                refine_candidate_position::<Fst4s60>(
+                                    c,
+                                    &fft_cache,
+                                    &FST4_60A_DOWNSAMPLE,
+                                );
+                            RungMajorCandidate {
+                                cand: c.clone(),
+                                cd0,
+                                refined_freq_hz,
+                                i0,
+                            }
+                        })
+                        .collect();
                 let results = decode_rung_major::<Fst4s60>(&cands, false);
                 let found_golden = results.iter().flatten().any(|r| {
                     let mut m77 = [0u8; 77];
@@ -3303,12 +3379,20 @@ fn fst4_60_diag_rung_major_nsync_gate_count() {
     let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
     const I0_TOL: i32 = 2;
     let mut order: Vec<usize> = (0..raw.len()).collect();
-    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut kept: Vec<(f32, i32)> = Vec::new();
     let mut survivors: Vec<usize> = Vec::new();
     for idx in order {
         let (_, f, i0, _) = &refined[idx];
-        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+        if !kept
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL)
+        {
             kept.push((*f, *i0));
             survivors.push(idx);
         }
@@ -3326,7 +3410,11 @@ fn fst4_60_diag_rung_major_nsync_gate_count() {
             eprintln!("  candidate idx={i} nsync={nsync} PASSES gate");
         }
     }
-    eprintln!("{} of {} candidates pass nsync > {SYNC_Q_MIN}", n_pass, survivors.len());
+    eprintln!(
+        "{} of {} candidates pass nsync > {SYNC_Q_MIN}",
+        n_pass,
+        survivors.len()
+    );
 }
 
 /// Cross-check for `fst4_60_diag_rung_major_nsync_gate_count`: parses
@@ -3407,6 +3495,7 @@ fn fst4_60_diag_baked_asset_nsync_gate_count() {
 ///     `SYNC_Q_MIN / 2` (8) — computed exactly as
 ///     `process_candidate_basic_impl` does internally
 ///     (`symbol_spectra` + `sync_quality`), immediately before LLR/OSD.
+///
 /// Real vs false is decided by matching each nsync-pass survivor's
 /// refined frequency against both known (freq) golden entries (±4 Hz,
 /// matching `fst4_wsjtx_samples.rs`'s own `FREQ_TOL_HZ`).
@@ -3605,12 +3694,20 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
     let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
     const I0_TOL: i32 = 2;
     let mut order: Vec<usize> = (0..raw.len()).collect();
-    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut kept: Vec<(f32, i32)> = Vec::new();
     let mut survivors: Vec<usize> = Vec::new();
     for idx in order {
         let (_, f, i0, _) = &refined[idx];
-        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+        if !kept
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL)
+        {
             kept.push((*f, *i0));
             survivors.push(idx);
         }
@@ -3632,14 +3729,28 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
     let (results, timings) =
         decode_rung_major_timed::<Fst4s60>(&cands, false, false, &[0], Some(host_clock_us));
     let timings = timings.unwrap();
-    eprintln!("decoded: {}/{}", results.iter().flatten().count(), cands.len());
-    eprintln!("{:>4} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}", "idx", "freq", "llra_us", "llrb_us", "llre_us", "llrc_us", "osd_us", "decoded");
+    eprintln!(
+        "decoded: {}/{}",
+        results.iter().flatten().count(),
+        cands.len()
+    );
+    eprintln!(
+        "{:>4} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "idx", "freq", "llra_us", "llrb_us", "llre_us", "llrc_us", "osd_us", "decoded"
+    );
     for (i, (c, t)) in cands.iter().zip(&timings).enumerate() {
         let total: i64 = t.iter().sum();
         if total > 0 {
             eprintln!(
                 "{:>4} {:>8.1} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
-                i, c.cand.freq_hz, t[0], t[1], t[2], t[3], t[4], results[i].is_some()
+                i,
+                c.cand.freq_hz,
+                t[0],
+                t[1],
+                t[2],
+                t[3],
+                t[4],
+                results[i].is_some()
             );
         }
     }
@@ -3687,7 +3798,10 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
 
         let mut recovered = false;
         let mut best_nsync_by_offset = [0u32; 3];
-        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
             let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
             let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
             if sum2 > f32::EPSILON {
@@ -3767,7 +3881,9 @@ fn fst4_60_diag_i0_jitter_recall_verify() {
         let mut pass = 0u32;
         for trial in 1..=trials {
             let path = dir.join(format!("fst4_60_ccir_moderate_{snr_tag}_{trial:02}.wav"));
-            let Some(audio) = load_wav_i16_opt(&path) else { continue };
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
             if decode_wav_fst4_60(&audio) {
                 pass += 1;
             }
@@ -3844,7 +3960,10 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
         // decode work 4x).
         let mut offset_hit = [false; 3]; // [0, +1, -1]
 
-        for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
             let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
             let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
             if sum2 > f32::EPSILON {
@@ -3907,9 +4026,7 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
 
         let mut ok = [false; 4];
         for (i, &(try_p1, try_m1)) in CONFIGS.iter().enumerate() {
-            ok[i] = offset_hit[0]
-                || (try_p1 && offset_hit[1])
-                || (try_m1 && offset_hit[2]);
+            ok[i] = offset_hit[0] || (try_p1 && offset_hit[1]) || (try_m1 && offset_hit[2]);
         }
         (snr_idx, ok)
     };
@@ -3986,12 +4103,20 @@ fn fst4_60_diag_i0_offset_host_timing() {
     let freq_tol = 0.10 * FST4_60A_DOWNSAMPLE.tone_spacing_hz;
     const I0_TOL: i32 = 2;
     let mut order: Vec<usize> = (0..raw.len()).collect();
-    order.sort_by(|&a, &b| refined[b].3.partial_cmp(&refined[a].3).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        refined[b]
+            .3
+            .partial_cmp(&refined[a].3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut kept: Vec<(f32, i32)> = Vec::new();
     let mut survivors: Vec<usize> = Vec::new();
     for idx in order {
         let (_, f, i0, _) = &refined[idx];
-        if !kept.iter().any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL) {
+        if !kept
+            .iter()
+            .any(|&(kf, ki)| (f - kf).abs() < freq_tol && (i0 - ki).abs() <= I0_TOL)
+        {
             kept.push((*f, *i0));
             survivors.push(idx);
         }
