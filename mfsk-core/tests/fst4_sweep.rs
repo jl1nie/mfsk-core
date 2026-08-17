@@ -3548,12 +3548,13 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
     eprintln!(
-        "{:>6} {:>7} {:>6} {:>5} {:>6} {:>8} {:>6} {:>7} {:>9} {:>9}",
+        "{:>6} {:>7} {:>6} {:>5} {:>6} {:>7} {:>8} {:>6} {:>7} {:>9} {:>9}",
         "target",
         "width",
         "maxcand",
         "raw",
         "gate",
+        "frac",
         "nsyncOK",
         "real",
         "false",
@@ -3575,15 +3576,27 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
                 5000,
             );
 
-            // Both `SniperRequest`'s real `max_cand` default (50, to
-            // reproduce production truncation behaviour) and an
-            // effectively-uncapped run (5000, larger than any `raw`
-            // count observed at any width here) — the 50-cap row alone
-            // conflates "narrower window" with "hit the cap", since
-            // sniper's real `sync_min=0.8` is loose enough that even
-            // the ±25 Hz window's `raw` population (85) has ≥50
-            // candidates clearing it.
-            for max_cand in [50usize, 5000] {
+            // VK3NV's issue #312 cap ladder, plus `SniperRequest`'s real
+            // default (50, to reproduce production truncation) and an
+            // effectively-uncapped run (5000, larger than any `raw` count
+            // observed at any width here).
+            //
+            // Why the ladder and not just 50-vs-uncapped: the 50-cap row
+            // alone conflates "narrower window" with "hit the cap", since
+            // sniper's `sync_min = 0.8` is loose enough that even the
+            // ±25 Hz window's raw population (85) still has ≥50
+            // candidates clearing it — so at production settings the cap,
+            // not the width, is what gates deep-decode entry.
+            //
+            // The `frac` column is the point of the exercise (VK3NV,
+            // #312): an absolute cap is not comparable across widths.
+            // 50 of 842 is the top 6 %; 50 of 85 is the top 60 %. If the
+            // recall cliff sits at a similar *fraction* across widths,
+            // the cap can be derived from the width; if it doesn't — the
+            // wide window's top 6 % being drawn from a much longer noise
+            // tail than the narrow window's top 60 % — that argues for a
+            // score-based or distribution-adaptive criterion instead.
+            for max_cand in [4usize, 8, 10, 16, 32, 50, 5000] {
                 let gated = coarse_sync::<Fst4s60>(
                     &audio,
                     freq_min,
@@ -3632,13 +3645,22 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
                 }
                 let loop_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
+                // Retained fraction of *this width's* raw population —
+                // the column that makes caps comparable across widths.
+                let frac = if raw.is_empty() {
+                    0.0
+                } else {
+                    100.0 * gated.len() as f64 / raw.len() as f64
+                };
+
                 eprintln!(
-                    "{:>6} {:>6.0}Hz {:>7} {:>5} {:>6} {:>8} {:>6} {:>7} {:>9} {:>9.1}",
+                    "{:>6} {:>6.0}Hz {:>7} {:>5} {:>6} {:>6.0}% {:>8} {:>6} {:>7} {:>9} {:>9.1}",
                     t.name,
                     width,
                     max_cand,
                     raw.len(),
                     gated.len(),
+                    frac,
                     n_nsync_pass,
                     n_real,
                     n_false,
@@ -4293,11 +4315,77 @@ fn fst4_60_diag_i0_offset_host_timing() {
 /// `npre2` pruning this is about, which localises a remaining miss to a
 /// pruning stage rather than to the architecture.
 ///
+/// ## Choosing the cell — this matters more than it looks
+///
+/// Section 6 of `FST4_BENCHMARK.md` says to diagnose on a cell with
+/// *partial* recall, and that applies here with extra force: the grid
+/// can only separate mechanisms where the `npre @{0}` baseline is
+/// non-zero and non-saturated. On a cell so deep that the baseline is
+/// 0/20, every "rescue" is measured against nothing, and a mechanism
+/// that would merely *widen* an existing margin is invisible. The first
+/// run of this ablation used m26 and hit exactly that — see
+/// [`fst4_60_diag_npre_baseline_scan`], which exists to locate the
+/// usable band before spending 6 minutes per cell here.
+///
 /// Single-threaded by construction (`fst4_osd_diag_force_old` is a
 /// process-global toggle): run with `--test-threads=1`.
 #[test]
 #[ignore = "manual ablation — npre-vs-timing rescue substitutability (issue #311, VK3NV)"]
 fn fst4_60_diag_npre_timing_substitutability_ablation() {
+    // Cells to run the full grid over. Keep this pointed at the partial-
+    // recall band `fst4_60_diag_npre_baseline_scan` reports, not at
+    // whichever cell a previous finding happened to name.
+    // The partial-recall band `fst4_60_diag_npre_baseline_scan` measured
+    // for this harness on 2026-08-17 (20-trial corpus): ccir_moderate
+    // crosses between m24 (17/20) and m26 (0/20), awgn between m26
+    // (19/20) and m29 (0/20). Both channels are included to test whether
+    // the verdict is channel-dependent — the fading channel is where the
+    // original #306 finding lives, but a mechanism that only interacts
+    // under fading is a different claim from one that always does.
+    //
+    // NOT m26 ccir_moderate, despite that being the cell #306/#308 named:
+    // this harness decodes 0/20 there, so nothing can be measured against
+    // it. Production reaches deeper (timing retry + a wider candidate set
+    // + no ±FREQ_TOL_HZ pre-filter), which is why the original finding
+    // could live in a cell this one cannot use.
+    for (channel, snr_tag) in [
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ] {
+        npre_timing_grid_for_cell(channel, snr_tag);
+    }
+}
+
+/// Cheap locator for the band where the full grid is informative:
+/// `npre @{0}` recall only (1 configuration instead of 6), over every
+/// SNR cell present for a channel. Roughly a sixth of the grid's cost
+/// per cell.
+///
+/// Read it the way section 6 of `FST4_BENCHMARK.md` says: pick cells
+/// that are neither 0/n nor n/n. A 0/n cell cannot show a mechanism
+/// widening an existing margin, and an n/n cell has no failures left to
+/// rescue.
+#[test]
+#[ignore = "manual scan — locate FST4-60's partial-recall band for the npre baseline (issue #311)"]
+fn fst4_60_diag_npre_baseline_scan() {
+    for channel in ["awgn", "ccir_moderate"] {
+        eprintln!();
+        eprintln!("=== npre @{{0}} baseline recall, fst4_60_{channel} ===");
+        for snr in [
+            "m20", "m22", "m23", "m24", "m25", "m26", "m27", "m28", "m29", "m30",
+        ] {
+            let (hits, n) = npre_baseline_for_cell(channel, snr);
+            if n == 0 {
+                continue;
+            }
+            eprintln!("  {snr}: {hits}/{n}");
+        }
+    }
+}
+
+fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::sync::coarse_sync;
@@ -4412,7 +4500,7 @@ fn fst4_60_diag_npre_timing_substitutability_ablation() {
     type PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
     let mut prepared: Vec<(u32, Vec<PreparedCand>)> = Vec::new();
     for trial in 1..=MAX_TRIAL {
-        let path = dir.join(format!("fst4_60_ccir_moderate_m26_{trial:02}.wav"));
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
         let Some(audio) = load_wav_i16_opt(&path) else {
             continue;
         };
@@ -4495,7 +4583,7 @@ fn fst4_60_diag_npre_timing_substitutability_ablation() {
 
     let n = prepared.len();
     eprintln!();
-    eprintln!("=== npre-vs-timing rescue ablation (fst4_60_ccir_moderate_m26) ===");
+    eprintln!("=== npre-vs-timing rescue ablation (fst4_60_{channel}_{snr_tag}) ===");
     eprintln!("corpus: {n} trials present (probed 1..={MAX_TRIAL})");
     eprintln!();
     for (gi, cfg) in GRID.iter().enumerate() {
@@ -4534,30 +4622,57 @@ fn fst4_60_diag_npre_timing_substitutability_ablation() {
     union.extend(extra);
     union.sort_unstable();
 
+    // Trials only the *combination* reaches. Comparing `both` against the
+    // union of the two single-mechanism sets is the test for a genuine
+    // interaction, and the first version of this classifier omitted it —
+    // it compared only the two singles against each other, which labelled
+    // a cell "substitutable" (identical singles) while the combination was
+    // in fact rescuing strictly more than either. Keep this check.
+    let synergy: Vec<u32> = both
+        .iter()
+        .copied()
+        .filter(|t| !union.contains(t))
+        .collect();
+
+    // Does npre ever decode a trial the unpruned search misses? If not,
+    // npre is a pure recall loss bought for speed, and a "selective
+    // fallback to unpruned" is behaviourally identical to just running
+    // unpruned — worth knowing before designing an escalation order.
+    let npre_wins_over_unpruned: Vec<u32> = hits[0]
+        .iter()
+        .copied()
+        .filter(|t| !hits[2].contains(t))
+        .collect();
+
     eprintln!();
     eprintln!("relative to `npre @{{0}}` (the pre-#308 production shape):");
     eprintln!("  timing alone rescues:    {timing_only:?}");
     eprintln!("  fallback alone rescues:  {fallback_only:?}");
     eprintln!("  overlap:                 {overlap:?}");
-    eprintln!("  union:                   {union:?}");
+    eprintln!("  union of singles:        {union:?}");
     eprintln!("  both together rescue:    {both:?}");
+    eprintln!("  ONLY-with-both (synergy):{synergy:?}");
     eprintln!("  (unpruned+timing, for reference: {unpruned_timing:?})");
+    eprintln!("  npre wins unpruned misses: {npre_wins_over_unpruned:?}");
 
     let verdict = if timing_only.is_empty() && fallback_only.is_empty() && both.is_empty() {
         "NO MECHANISM HELPS on this corpus cell at these candidate/gate settings — \
          see the note below before reading this as a statement about the mechanisms"
+    } else if !synergy.is_empty() {
+        "SYNERGISTIC — the combination rescues trials NEITHER mechanism rescues \
+         alone, so #310 cannot reduce the ladder to one of them without losing \
+         those trials (check the magnitude before paying for it)"
     } else if timing_only.is_empty() && fallback_only.is_empty() {
-        "INTERACTING — neither mechanism rescues anything alone, but both together do. \
-         #310 cannot pick one: the rescue requires the combination"
-    } else if union.len() == overlap.len() && !union.is_empty() {
-        "SUBSTITUTABLE — identical trial sets; #310 can carry whichever is cheaper \
-         and lose no recall on this corpus"
+        "INTERACTING — neither mechanism rescues anything alone, but both together do"
+    } else if union.len() == overlap.len() {
+        "SUBSTITUTABLE — identical trial sets and no synergy; #310 can carry \
+         whichever is cheaper and lose no recall on this cell"
     } else if overlap.is_empty() {
-        "ADDITIVE — disjoint trial sets; dropping either costs recall, so #310 has \
-         to budget for both"
+        "ADDITIVE — disjoint trial sets, no synergy; dropping either costs exactly \
+         its own set"
     } else {
-        "PARTIAL OVERLAP — the second mechanism's marginal value is union minus the \
-         cheaper one's own set"
+        "PARTIAL OVERLAP, no synergy — the second mechanism's marginal value is \
+         union minus the cheaper one's own set"
     };
     eprintln!();
     eprintln!("VERDICT: {verdict}");
@@ -4573,4 +4688,111 @@ fn fst4_60_diag_npre_timing_substitutability_ablation() {
              before concluding anything about the mechanisms."
         );
     }
+}
+
+/// `npre @{0}` recall for one cell — the single configuration
+/// [`fst4_60_diag_npre_baseline_scan`] needs, without paying for the
+/// other five. Returns `(hits, trials_present)`; `(0, 0)` when the cell
+/// isn't in this corpus generation.
+///
+/// Deliberately the same hand-built pipeline
+/// [`npre_timing_grid_for_cell`] uses, not `DecodeRequest` — the point
+/// is to locate the band where *that* harness is informative, and
+/// production's own recall differs (it carries #308's timing retry, a
+/// wider candidate set, and no ±`FREQ_TOL_HZ` pre-filter).
+fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const NSYNC_GATE: u32 = 16;
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+    // Production npre path throughout.
+    fst4_osd_diag_force_old(false);
+
+    let mut hits = 0u32;
+    let mut present = 0u32;
+    for trial in 1..=100u32 {
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            continue;
+        };
+        present += 1;
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let mut ok = false;
+        'cands: for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let cd0 = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+            let cs = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+            let nsync = sync_quality::<Fst4s60>(&cs);
+            if nsync <= NSYNC_GATE {
+                continue;
+            }
+            let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+            let variants: [&Vec<f32>; 4] =
+                [&llr_set.llra, &llr_set.llrb, &llr_set.llre, &llr_set.llrc];
+            let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                    mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(&r.info[..77]);
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                })
+            };
+            let bp_opts = FecOpts {
+                bp_max_iter: 30,
+                osd_depth: 0,
+                ap_mask: None,
+                verify_info,
+                ..FecOpts::default()
+            };
+            if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                ok = true;
+                break 'cands;
+            }
+            if nsync >= osd_attempt_min {
+                let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                let osd_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                    ok = true;
+                    break 'cands;
+                }
+            }
+        }
+        if ok {
+            hits += 1;
+        }
+    }
+    (hits, present)
 }

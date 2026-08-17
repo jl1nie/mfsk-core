@@ -476,7 +476,80 @@ cargo test -p mfsk-core --features full,internal-testing --release \
 sync pass each). Scoped by test name — never a blanket `-- --ignored`,
 which escalates into the full tier-C campaign (see `CLAUDE.md`).
 
-### Result, 2026-08-17 (`fst4_60_ccir_moderate_m26`, 20 trials)
+### Trap 3 — the cell must have partial baseline recall
+
+The grid can only separate mechanisms where the `npre @{0}` baseline is
+non-zero and non-saturated. On a 0/n cell every "rescue" is measured
+against nothing and a mechanism that merely *widens* an existing margin
+is invisible; on an n/n cell there are no failures left to rescue. This
+is section 6's rule, and it applies here with extra force.
+
+The first run of this ablation used m26 CCIR-moderate — the cell #306
+and #308 both name — and it is **0/20 for this harness**.
+`fst4_60_diag_npre_baseline_scan` locates the usable band cheaply (one
+configuration instead of six). Measured 2026-08-17, 20-trial corpus:
+
+| channel | m20 | m22 | m23 | m24 | m25 | m26 | m27 | m28 | m29 |
+|---|---|---|---|---|---|---|---|---|---|
+| AWGN | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 | 19/20 | **12/20** | **3/20** | 0/20 |
+| CCIR-moderate | 20/20 | 20/20 | 20/20 | **17/20** | **7/20** | 0/20 | 0/20 | 0/20 | 0/20 |
+
+That the original finding lives in a cell this harness cannot use is
+itself the quantitative version of "the hand-built path is narrower than
+production": production reaches roughly 1–2 dB deeper, carrying #308's
+timing retry, a wider candidate set, and no ±`FREQ_TOL_HZ` pre-filter.
+
+### Trap 4 — compare the combination against the union, not the singles against each other
+
+The first classifier compared the two single-mechanism sets to each
+other and never compared the *combination* against their union. It
+therefore labelled a cell "substitutable" (identical singles) while the
+combination was in fact rescuing strictly more than either — the one
+outcome that changes the answer for #310. If you write this kind of
+2×2 by hand, the synergy set (`both \ (timing ∪ fallback)`) is the
+column that matters most; it is also the only one the naive comparison
+cannot see.
+
+### Result, 2026-08-17 — the usable band (20-trial corpus, 4 cells)
+
+Relative to the `npre @{0}` baseline in each cell:
+
+| cell | baseline | timing alone | fallback alone | both | only-with-both | verdict |
+|---|---:|---|---|---|---|---|
+| CCIR-mod m24 | 17/20 | 19 | 15, 19 | 15, 19 | — | partial overlap |
+| CCIR-mod m25 | 7/20 | 1 | — | 1, **9, 14** | **9, 14** | **synergistic** |
+| AWGN m27 | 12/20 | 15 | 15 | **3**, 15, **20** | **3, 20** | **synergistic** |
+| AWGN m28 | 3/20 | 5, 12, 18 | 5 | 5, 12, 18 | — | partial overlap |
+
+**In 2 of 4 cells the combination rescues trials that neither mechanism
+rescues alone.** Mechanistically that is coherent: the unpruned search
+explores more patterns but only helps if the LLRs it is handed are good
+enough, and an alternate `i0` is what produces better LLRs. Both
+conditions have to hold at once.
+
+**Which mechanism dominates flips between cells** — at CCIR-moderate m24
+the fallback's set contains timing's; at AWGN m28 timing's strictly
+contains the fallback's. There is no universal escalation order to
+derive from this.
+
+**`npre` never decodes a trial the unpruned search misses** — the
+`npre wins unpruned misses` column is empty in all four cells, at both
+timing settings, and `npre→unpruned` is byte-identical to plain
+`unpruned` throughout. So on this corpus `npre` is a pure recall loss
+bought for speed, and a "selective fallback to unpruned" is
+behaviourally the same thing as always running unpruned. Worth knowing
+before designing an escalation order around the distinction.
+
+**For #310**: the ladder cannot be reduced to one mechanism without
+losing the synergy trials — but the magnitude is 2–3 trials per 20 in
+the crossing band, against a measured 2.5–3× cost for full timing
+diversity on real hardware. That is a trade to make deliberately, not
+an argument that both are mandatory.
+
+### Superseded first reading (`fst4_60_ccir_moderate_m26`, 20 trials)
+
+Kept because it is how traps 3 and 4 were found, not as a result to
+cite.
 
 | configuration | decoded | trials |
 |---|---:|---|
@@ -499,22 +572,114 @@ two: on this cell the rescue is the combination, so an embedded build
 that keeps `offsets = &[0]` gets no benefit from adding an unpruned-OSD
 fallback either.
 
-**Every trial reached `osd_depth = 3`**, so `npre2` was exercised
-throughout — the remaining misses are a genuine `npre2`-pruning
-limitation, not an artifact of never escalating past `ndeep = 2`. That
-closes the npre1-vs-npre2 localisation question #311 raised.
+Every trial in *this* cell reached `osd_depth = 3`, so `npre2` was
+exercised throughout it. That does **not** generalise: in the usable
+band above, some trials decode on BP alone (`depth = 0`, e.g. m24 trials
+7 and 17) and some stop at `depth = 2` (m28 trials 4 and 10). Whether
+`npre2` is even in play is cell-dependent, so the npre1-vs-npre2
+localisation question #311 raised is answered only for the deepest
+cells, not in general.
 
 ### Caveats, stated because they are load-bearing
 
-- **n=20, 3 hits.** Directional. Nothing here should move a production
-  default; that needs the near-threshold sweep.
-- **This cell does not reproduce #308's 2/5 timing win at all**
-  (`npre @{0,+1,-1}` is 0/20 here). The difference is a different
-  corpus generation and/or the narrower hand-built pipeline. Unresolved
-  — do not read the table above as contradicting #308 until the same
-  grid has been run on a 100-trial generation.
-- One cell only: FST4-60, CCIR-moderate, m26.
+- **20 trials per cell, single-digit rescue counts.** Directional.
+  Nothing here should move a production default; that needs the
+  near-threshold sweep, and the cost side needs real hardware.
+- **The verdict is cell-dependent, so cite the cell.** Two of four
+  cells are synergistic and two are not; a single-cell run of this
+  ablation can be made to say either thing. Report the band.
+- **No cell reproduces #308's specific 2/5 timing win.** #308 measured
+  that on a 100-trial generation, naming trials 33/45/67 that this
+  corpus does not contain (trap 1). Unresolved, and **not testable
+  here**: `fst4sim` is not installed, so a 100-trial generation cannot
+  be built in this environment. Do not read these tables as
+  contradicting #308 until the grid has run on that generation.
+- One sub-mode only (FST4-60), one target message, sniper-style
+  candidate pre-filtering to ±`FREQ_TOL_HZ` of the golden frequency.
 - **Wall-clock is deliberately not reported.** This is recall
   attribution. Cost numbers belong on the Ryzen 9 box or real hardware
   — an Apple laptop's AC/battery state swings host wall-clock ~3×
   (`BENCHMARKS.md` records the machine for exactly this reason).
+
+## 10. Sniper candidate cap — retained fraction, not absolute count (2026-08-17)
+
+Issue #312, from VK3NV's follow-up on #306. `fst4_60_diag_sniper_gate_width_sweep`
+sweeps the sniper path's search width **and** its `max_cand` cap over
+the real FST4-60 golden (`210115_0058.wav`, two known signals 230 Hz
+apart: N5TM @ 1101 Hz, K9KFR @ 1331 Hz).
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_sniper_gate_width_sweep \
+    -- --ignored --nocapture
+```
+
+### Why the `frac` column is the point
+
+An absolute cap is **not comparable across widths**. Measured:
+
+| width | raw population | `max_cand = 50` is… |
+|---|---:|---|
+| ±250 Hz | 842 | top **6 %** |
+| ±100 Hz | 332 | top **15 %** |
+| ±50 Hz | 165 | top **30 %** |
+| ±25 Hz | 85 | top **59 %** |
+
+One constant, a 10× spread in retention policy. This is also why the
+false-survivor count *rises* as the window narrows at fixed cap
+(N5TM: 21 → 29 from ±250 to ±25 Hz) — the narrow window keeps a much
+larger fraction of its own smaller pool. Reading that as "narrowing
+makes things worse" is the trap the column exists to prevent.
+
+### At matched retained fraction, narrowing the window does cut false survivors
+
+Comparing cells at ~5 % retention rather than at equal cap:
+
+| width | cap | frac | false survivors (N5TM / K9KFR) |
+|---|---:|---:|---|
+| ±250 Hz | 50 | 6 % | 21 / 18 |
+| ±100 Hz | 16 | 5 % | 9 / 10 |
+| ±50 Hz | 8 | 5 % | 5 / 6 |
+| ±25 Hz | 4 | 5 % | 1 / 3 |
+
+Roughly **20× fewer** false survivors at the same retention policy, and
+monotone in width for both targets. Same shape at ~10 % retention. So
+width and cap are not interchangeable knobs: the width genuinely shrinks
+the noise pool, and the fraction is the right axis on which to compare
+caps. A cap derived from the width is defensible on this evidence; a
+fixed constant across widths is not.
+
+### What this sweep cannot answer, and why
+
+**Both golden signals are strong, and the target still decodes at every
+width down to `max_cand = 4`.** No recall cliff is reached anywhere in
+the table, so this cannot locate where truncation starts costing weak
+decodes — which is the entire question a tighter cap raises. VK3NV
+flagged this scope limit when requesting the sweep; it holds. A
+near-threshold AWGN/CCIR sweep has to run before any production default
+moves.
+
+Also note `decoded` counts decode *successes*, including several
+candidates decoding the same signal, so it is not a recall figure. At
+±100/±50/±25 Hz only one known signal is in the window, so `real ≤ 1`
+by construction there; only the ±250 Hz rows contain both.
+
+### One pathological candidate costs ~2 s, and survives at cap = 4
+
+An anomaly worth keeping: N5TM's ±100 Hz and ±50 Hz rows sit at
+~2 100 ms for *every* cap including 4, while the same target's ±250 Hz
+and ±25 Hz rows at cap 4 are 40–90 ms. K9KFR shows no such plateau.
+
+The reading is that a single candidate in the ±100/±50 Hz window costs
+~2 s on its own, ranks in the top 4 there, is crowded out of ±250 Hz's
+top 4 by stronger candidates, and falls outside ±25 Hz entirely. That is
+a concrete instance of the failure mode #310 exists to bound: **one
+pathological false survivor consuming the expensive depth budget before
+the real candidates have had their cheapest attempt.** Candidate-count
+reduction alone does not fix it — the cost is per-candidate, not
+per-population.
+
+This is a within-run comparison (25× on the same invocation), so it is
+not the host power-state confound that makes absolute host wall-clock
+unreliable here; but the absolute milliseconds still belong on the
+Ryzen 9 box before they go in a table anyone reasons from.
