@@ -5104,17 +5104,28 @@ fn prepare_fst4_60_cell(
 /// The output therefore reports `argmax nsync == offset 0` as a counted
 /// fraction, and the verdict short-circuits to DEGENERATE when it is
 /// ≥95 %. **Do not read "cheap-rank recovered nothing" as "ranking
-/// cannot work" without checking that line first.** The first run of
-/// this test (2026-08-17) hit exactly this: it printed "PROXY USELESS"
-/// on cells where the ranking had never actually chosen a non-zero
-/// offset, which is not the same claim at all.
+/// cannot work" without checking that line first.**
 ///
-/// What the degenerate case does establish is narrower but still useful
-/// for #310: a cheap proxy for "which timing will decode" **cannot be
-/// another sync-strength measure**, because the refine stage has already
-/// maximised that. It would have to be sync-orthogonal — something
-/// derived from LLR reliability, or a truncated-BP syndrome weight,
-/// rather than from Costas correlation.
+/// **Do not try to infer the degeneracy from the `units` column either**
+/// — an earlier revision of this comment did, and it was wrong. `base`
+/// and `cheap-rank` each perform exactly one `decode_at` per candidate,
+/// so their unit counts are equal *by construction* whichever offset the
+/// ranking picks; they diverge only when the two offsets fall on
+/// opposite sides of the `nsync` gate. That is why the explicit counter
+/// exists.
+///
+/// A second caveat when reading the counter: agreement is counted **per
+/// candidate**, recall **per trial**. A candidate where the ranking
+/// picks the winning offset adds no decode if another candidate in the
+/// same trial already decoded at offset 0, so high agreement alongside
+/// `cheap-rank == base` recall is not a contradiction.
+///
+/// What holds regardless of the outcome, and is the useful part for
+/// #310: a cheap proxy for "which timing will decode" is unlikely to be
+/// another **sync-strength** measure, because the refine stage has
+/// already maximised that. A promising proxy would be sync-orthogonal —
+/// LLR reliability statistics, or a truncated-BP syndrome weight, rather
+/// than Costas correlation.
 ///
 /// ## Reading the result
 ///

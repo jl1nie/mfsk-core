@@ -843,61 +843,85 @@ machine-independent and directly quotable — unlike every `loop_ms`
 column elsewhere in this document, which is relative-shape-only on a
 laptop.
 
-### The confound: `i0` is not an unranked starting point
+### The confound to check — and a correction about how to check it
 
-`i0` comes from `fst4_sync_search`, whose whole job is to **maximise a
-coherent sync score** over a (Δf, Δt) grid. `sync_quality` measures
-closely related information, so it peaks at `i0` by construction. The
-ranking therefore degenerates to "always pick offset 0", and
-`cheap-rank ≈ base` follows tautologically — it is not evidence about
-the proposal.
+`i0` does not arrive unranked. It comes from `fst4_sync_search`, whose
+job is to **maximise a coherent Costas amplitude** over a (Δf, Δt) grid.
+`sync_quality` measures related information, so it plausibly peaks at
+`i0` too — which would make `argmax nsync` degenerate to offset 0 and
+`cheap-rank ≈ base` a near-tautology rather than evidence about the
+proposal.
 
-The first run of this test printed `PROXY USELESS` on exactly such
-cells. The `units` column gave it away: at ccir_moderate m24/npre,
-`base` was 51 units and `cheap-rank` 52 — one single candidate where the
-ranking picked a non-zero offset — and at m25/npre both were 38, i.e.
-the ranking never once chose anything but offset 0.
+That is a real hazard and the test now **counts** `argmax nsync == 0`
+explicitly, short-circuiting the verdict to `DEGENERATE RANKING` at
+≥95 %.
 
-The test now **counts** `argmax nsync == offset 0` and short-circuits the
-verdict to `DEGENERATE RANKING` at ≥95 %, rather than leaving it to be
-inferred from a cost column.
+**Correction (2026-08-18).** An earlier revision of this section claimed
+the degeneracy was already demonstrated, inferring it from the `units`
+column: `base` 51 vs `cheap-rank` 52 at one cell, 38 vs 38 at another.
+**That inference is invalid.** Both configurations perform exactly one
+`decode_at` per candidate — `base` at offset 0, `cheap-rank` at the
+argmax — so their unit counts are equal *by construction*, whichever
+offset the ranking picks. The counts only diverge when the two offsets
+land on opposite sides of the `nsync` gate. Equal units say nothing
+about whether the ranking chose differently.
 
-### What the degenerate case does establish
+The evidence in fact points the other way: the `nsync picked the winning
+offset first` line reaches 2/3 and 2/2 on AWGN m28, which is impossible
+if the ranking always returned offset 0. **So the degeneracy is probably
+not what is happening, and the question is open** until the explicit
+counter has been run.
 
-Narrower than the original question, but directly useful for #310:
+A second metric caveat, for whoever reads that counter: agreement is
+counted **per candidate**, recall **per trial**. A candidate where the
+ranking picks the winning offset does not add a decode if another
+candidate in the same trial already decoded at offset 0. The two columns
+are not directly comparable, and a high agreement rate alongside
+`cheap-rank == base` recall is not a contradiction.
 
-**A cheap proxy for "which timing will decode" cannot be another
-sync-strength measure.** The refine stage has already maximised that, so
-any sync-derived ranking is spending three cheap evaluations to
-rediscover the position it started from. A usable proxy has to be
-**sync-orthogonal** — LLR reliability statistics, or a truncated-BP
-syndrome weight, rather than Costas correlation.
+### What holds regardless
 
-That leaves #310 with two honest options until such a proxy is found and
-measured: pay for exhaustive retry, or keep `&[0]` and forgo the timing
-recall. There is no free third path via sync ranking.
+Whether or not the ranking is degenerate, one thing follows from where
+`i0` comes from: **a cheap proxy for "which timing will decode" is
+unlikely to be another sync-strength measure**, since the refine stage
+has already maximised that. If a proxy is to work, the more promising
+direction is sync-orthogonal — LLR reliability statistics, or a
+truncated-BP syndrome weight, rather than Costas correlation.
 
-### Partial results (20-trial corpus, first 3 of 8 cell/mode runs)
+### Results, 20-trial corpus, all 8 runs
 
-Recorded because the degeneracy is visible in them, not as a recall
-result — the `argmax` counter was added afterwards, so these predate it:
+Recall / decode units. Measured before the `argmax` counter existed, so
+the agreement column is the only proxy-quality signal available in this
+table:
 
-| cell / OSD | base | exhaustive | cheap-rank | progressive |
-|---|---|---|---|---|
-| ccir_mod m24 / npre | 17/20, 51u | **18/20**, 83u | 17/20, 52u | 18/20, 86u |
-| ccir_mod m24 / unpruned | 19/20, 51u | 19/20, 75u | 19/20, 52u | 19/20, 77u |
-| ccir_mod m25 / npre | 7/20, 38u | **8/20**, 96u | 7/20, 38u | 8/20, 96u |
+| cell / OSD | base | exhaustive | cheap-rank | progressive | nsync picked winner |
+|---|---|---|---|---|---|
+| ccir-mod m24 / npre | 17, 51u | **18**, 83u | 17, 52u | 18, 86u | 0/6 |
+| ccir-mod m24 / unpruned | 19, 51u | 19, 75u | 19, 52u | 19, 77u | 0/5 |
+| ccir-mod m25 / npre | 7, 38u | **8**, 96u | 7, 38u | 8, 96u | 0/1 |
+| ccir-mod m25 / unpruned | — | — | 8, 38u | **10**, 89u | 1/5 |
+| AWGN m27 / npre | 12, 26u | **13**, 46u | **13, 26u** | 13, 44u | 1/1 |
+| AWGN m27 / unpruned | 13, 26u | **15**, 42u | 13, 26u | 15, 39u | 1/3 |
+| AWGN m28 / npre | 3, 23u | **6**, 61u | 3, 23u | 6, 60u | 2/3 |
+| AWGN m28 / unpruned | 4, 23u | **6**, 60u | 4, 23u | 6, 59u | 2/2 |
 
-Two things are real here independent of the confound:
+**`cheap-rank` matched `exhaustive` in 1 of 8 runs** (AWGN m27 / npre:
+13/20 at 26 units, i.e. exhaustive's recall at base's cost) and matched
+`base` in the other seven. One hit out of eight is not a working proxy,
+but it is also not the flat null the first three runs suggested.
 
-- **Exhaustive retry costs roughly 1.6–2.5× the units of `base`** for
-  +1 decode in two of the three runs. That ratio is measured in
-  algorithm-invocation counts, so it transfers across machines, and it
-  is the same order as the 2.5–3× wall-clock ratio measured on CoreS3.
+Two results hold independently of the open question above:
+
+- **Exhaustive retry costs 1.6–2.7× base in decode units** for +1 to +3
+  decodes. Measured in algorithm-invocation counts, so it transfers
+  across machines, and it is the same order as the 2.5–3× wall-clock
+  measured on CoreS3.
 - **`progressive` never beats `exhaustive` on cost** (86 vs 83, 96 vs
-  96). Reordering by a degenerate key cannot help, and where it differs
-  it is slightly worse — consistent with the ranking pushing the
-  eventual winner later.
+  96, 44 vs 46, 39 vs 42, 60 vs 61, 59 vs 60) — at best a few percent
+  either way, well inside noise for a reordering that cannot change the
+  set. It does confirm the harness: recall matches `exhaustive` in every
+  run, as it must.
 
-The full 8-run grid and the `argmax` counts belong on the Ryzen 9 box
-alongside the other jobs in section 11.
+The AWGN cells rescue more (+3 at m28) than the CCIR-moderate ones (+1),
+which is the opposite of the fading-motivated framing #308 came from and
+worth re-checking at n=100.
