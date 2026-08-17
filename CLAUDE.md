@@ -29,9 +29,13 @@ FT8-controller line above** — it never goes through `decode_block` or
 the UAC/controller stack, so it isn't blocked on #163 the way Phase
 B-Core is (both share #163 only for live audio capture; everything
 else already works against WAV-fed/synthetic baseband). Lives in the
-same `m5stack-cores3-app` crate as a separate `src/bin/wspr_bench.rs`
-binary. See `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section
-and `docs/notes/ROADMAP.md` Phase E for status.
+same `m5stack-cores3-app` crate as two separate binaries:
+`src/bin/wspr_bench.rs` (timing measurement) and `src/bin/wspr_app.rs`
+(the standalone receiver — LCD spot list, WiFi, HTTP config, NTP, and
+real UAC audio through `AudioSink`). Note that `wspr_app` *does* now
+share `uac.rs` with the FT8 line, so it shares #163 for that path too
+— open items in #313. See `docs/reference/EMBEDDED.md`'s "WSPR on
+embedded" section and `docs/notes/ROADMAP.md` Phase E for status.
 
 - **Build & flash via `espflash`**, not host cargo. Both crates'
   `.cargo/config.toml` set `runner = "espflash flash --monitor"`, so the
