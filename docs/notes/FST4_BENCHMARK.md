@@ -683,3 +683,117 @@ This is a within-run comparison (25× on the same invocation), so it is
 not the host power-state confound that makes absolute host wall-clock
 unreliable here; but the absolute milliseconds still belong on the
 Ryzen 9 box before they go in a table anyone reasons from.
+
+## 11. Ryzen 9 runbook — what needs the big machine, and why
+
+Three jobs cannot be finished on a laptop. Two are blocked on wall-clock,
+one on absolute-timing reliability (an Apple laptop's AC/battery state
+swings host wall-clock ~3×, so every absolute host number in this
+document that matters is supposed to come from the Ryzen 9 box —
+`BENCHMARKS.md` records the machine for the same reason).
+
+Run each with the corpora present under `embedded-poc/assets/*_sweep/`.
+
+### 11.1 Tier-C sensitivity sweeps — the `v0.10.0` release gate
+
+**Required before tagging** (`CLAUDE.md`, "Releases"). Not run yet for
+this release.
+
+```sh
+scripts/run-sensitivity-sweeps.sh
+```
+
+All seven protocols are in scope this cycle: WSPR (Fano cycle budget),
+FST4 (npre1/npre2 OSD port), FT8 (coarse-sync lag window), and
+JT65/JT9/Q65 (Δt windows). FT4 is the only untouched one.
+
+Compare the printed tables against `docs/notes/*BENCHMARK.md` and the
+`v0.9.1` numbers. A move worse than ~0.5 dB needs explaining before the
+tag; update `BENCHMARKS.md` for any move understood well enough to
+explain, recording the machine.
+
+### 11.2 Near-threshold sniper cap sweep — the open half of #312
+
+Section 10 answered the comparability question on strong signals but
+could not find a recall cliff there. This finds it:
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_sniper_cap_near_threshold \
+    -- --ignored --nocapture
+```
+
+Default grid is 4 cells × 4 widths × 6 caps. On a 20-trial corpus that
+is 1 920 candidate loops — **~2 h on an M5 laptop**, measured. Narrow it
+with `MFSK_CAP_SWEEP_CELLS` (`channel:snr`, comma-separated),
+`MFSK_CAP_SWEEP_WIDTHS`, `MFSK_CAP_SWEEP_CAPS` rather than editing the
+test.
+
+**Preliminary, 4 of the 96 configurations** (smoke test, ccir_moderate
+m25, 20 trials — enough to prove the sweep works, not enough to
+conclude):
+
+| width | cap | raw | frac | recall |
+|---|---:|---:|---:|---:|
+| ±250 Hz | 4 | 17 049 | 0 % | **6/20** |
+| ±250 Hz | 50 | 17 049 | 6 % | **9/20** |
+| ±25 Hz | 4 | 1 755 | 5 % | **6/20** |
+| ±25 Hz | 50 | 1 755 | 57 % | **9/20** |
+
+**A cliff exists** — truncating to 4 costs 3 of 9 decodes. And note what
+it is *not* tracking: recall is 6/20 at cap 4 and 9/20 at cap 50 at
+**both** widths, while the retained fraction at those points differs by
+an order of magnitude (0 % vs 5 %, 6 % vs 57 %).
+
+If that survives the full grid it is a direct tension with section 10's
+conclusion. Section 10 says false-survivor *cost* tracks the retained
+fraction, which argues for deriving the cap from the width. This says
+weak-signal *recall* tracks the absolute count, which argues for a
+floor on how many ranked candidates must be kept regardless of width.
+Both can be true at once — they are different columns — and if they are,
+the policy is "absolute floor for recall, fraction for cost", not either
+alone. That is the thing worth settling on the big machine, and it is
+the question VK3NV actually asked (#312: *does the cliff sit at a
+similar fraction across widths?* — preliminary answer: no).
+
+### 11.3 Resolving the #308 timing-win tension — needs `fst4sim`
+
+Section 9's open caveat: no cell here reproduces #308's 2/5 timing
+recovery, because #308 measured it on a **100-trial-per-cell**
+generation naming trials 33/45/67, and this environment's corpus has 20
+per cell. Not testable on the laptop — `fst4sim` is not installed there.
+
+On a box that has WSJT-X built:
+
+```sh
+# 100 trials per cell, at least the crossing band
+TRIALS=100 scripts/gen_fst4_sweep_wavs.sh
+
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_npre_baseline_scan \
+    -- --ignored --nocapture          # re-locate the band: it moves with n
+
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_npre_timing_substitutability_ablation \
+    -- --ignored --nocapture --test-threads=1
+```
+
+Re-run the baseline scan **first**: the partial-recall band is a
+property of the corpus generation, and pointing the ablation at a cell
+from a different generation is trap 3 all over again. Update the cell
+list in the ablation's driver to whatever the scan reports.
+
+What this settles: whether the synergy result (2 of 4 cells) holds at
+n=100, and whether #308's own 2/5 reproduces once the trials it named
+actually exist.
+
+### 11.4 What to bring back
+
+- Tier-C tables, diffed against `v0.9.1`, for the release decision.
+- The full `fst4_60_diag_sniper_cap_near_threshold` grid — specifically
+  whether the cliff sits at a fixed count or a fixed fraction.
+- The ablation re-run at n=100, with the band the scan reported.
+
+`loop_ms` columns from the Ryzen 9 are worth recording in
+`BENCHMARKS.md`; the laptop's are not, and are marked as relative-shape
+only wherever they appear above.

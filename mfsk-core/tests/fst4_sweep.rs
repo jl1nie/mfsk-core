@@ -4796,3 +4796,228 @@ fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
     }
     (hits, present)
 }
+
+/// **The near-threshold half of issue #312** — where does truncating the
+/// ranked candidate list start costing *weak* decodes?
+///
+/// [`fst4_60_diag_sniper_gate_width_sweep`] answers the comparability
+/// half (an absolute `max_cand` means a different retained fraction at
+/// every width) but cannot answer this one: both signals on the real
+/// golden are strong, and the target still decodes at `max_cand = 4` in
+/// every width, so no recall cliff appears anywhere in that table. VK3NV
+/// scoped it that way explicitly, and no production default can move on
+/// strong-signal evidence alone.
+///
+/// This runs the same width × cap grid against the *generated sweep
+/// corpus* at SNRs in the crossing band instead, where recall is
+/// partial by construction and a cliff can therefore exist.
+///
+/// ## Read the `frac` column, not the cap
+///
+/// The question is whether the cliff sits at a similar *retained
+/// fraction* across widths. If it does, the cap can be derived from the
+/// width. If it doesn't — plausible, since a wide window's top 5 % is
+/// drawn from a much longer noise tail than a narrow window's top 60 %
+/// — that argues for a score-based or distribution-adaptive criterion
+/// instead of any fixed count or fraction.
+///
+/// ## Cell choice
+///
+/// Cells come from [`fst4_60_diag_npre_baseline_scan`]: only a partial-
+/// recall cell can show a cliff, and `FST4_BENCHMARK.md` section 9's
+/// trap 3 is the account of getting this wrong. The defaults below are
+/// the band measured on a 20-trial corpus on 2026-08-17; re-run the scan
+/// if the corpus generation changes, since the band moves with it.
+///
+/// ## Cost
+///
+/// `cells × widths × caps × trials` full candidate loops — with the
+/// defaults and a 20-trial corpus that is 4 × 4 × 6 × 20 = 1 920 decode
+/// attempts, on the order of an hour or more. **This is a big-machine
+/// job**; see `FST4_BENCHMARK.md` section 11 for the runbook. Narrow it
+/// with the env overrides rather than editing the source:
+///
+/// - `MFSK_CAP_SWEEP_CELLS` — e.g. `ccir_moderate:m25,awgn:m27`
+/// - `MFSK_CAP_SWEEP_WIDTHS` — e.g. `250,25`
+/// - `MFSK_CAP_SWEEP_CAPS` — e.g. `4,16,50`
+///
+/// Unset means the documented default grid. `loop_ms` is reported for
+/// relative shape only — absolute host timing is unreliable on a laptop
+/// (AC/battery swings it ~3×), which is the other reason this belongs on
+/// the Ryzen 9 box.
+#[test]
+#[ignore = "manual sweep — near-threshold sniper cap cliff (issue #312); big-machine job, see FST4_BENCHMARK.md §11"]
+fn fst4_60_diag_sniper_cap_near_threshold() {
+    use std::time::Instant;
+
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SYNC_Q_MIN: u32 = 16;
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const SNIPER_SYNC_Q_MIN: u32 = SYNC_Q_MIN / 2;
+
+    // Defaults: the partial-recall band from `fst4_60_diag_npre_baseline_scan`
+    // on the 20-trial corpus (2026-08-17). Both channels, because a cap
+    // policy that only holds under one is a different claim.
+    const DEFAULT_CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+    const DEFAULT_WIDTHS_HZ: &[f32] = &[250.0, 100.0, 50.0, 25.0];
+    const DEFAULT_CAPS: &[usize] = &[4, 8, 10, 16, 32, 50];
+
+    let cells: Vec<(String, String)> = match std::env::var("MFSK_CAP_SWEEP_CELLS") {
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| t.split_once(':'))
+            .map(|(c, snr)| (c.trim().to_string(), snr.trim().to_string()))
+            .collect(),
+        Err(_) => DEFAULT_CELLS
+            .iter()
+            .map(|(c, s)| (c.to_string(), s.to_string()))
+            .collect(),
+    };
+    let widths: Vec<f32> = match std::env::var("MFSK_CAP_SWEEP_WIDTHS") {
+        Ok(s) => s.split(',').filter_map(|t| t.trim().parse().ok()).collect(),
+        Err(_) => DEFAULT_WIDTHS_HZ.to_vec(),
+    };
+    let caps: Vec<usize> = match std::env::var("MFSK_CAP_SWEEP_CAPS") {
+        Ok(s) => s.split(',').filter_map(|t| t.trim().parse().ok()).collect(),
+        Err(_) => DEFAULT_CAPS.to_vec(),
+    };
+    assert!(
+        !cells.is_empty() && !widths.is_empty() && !caps.is_empty(),
+        "empty sweep grid — check MFSK_CAP_SWEEP_* syntax (cells are `channel:snr`, \
+         comma-separated)"
+    );
+
+    let dir = sweep_dir();
+
+    eprintln!(
+        "{:>14} {:>5} {:>7} {:>7} {:>6} {:>7} {:>8} {:>8} {:>10}",
+        "cell", "n", "width", "maxcand", "raw", "frac", "nsyncOK", "recall", "loop_ms"
+    );
+
+    for (channel, snr_tag) in &cells {
+        // Load the cell once — every (width, cap) configuration sees the
+        // same waveforms, so differences are attributable to the grid.
+        let mut trials: Vec<Vec<i16>> = Vec::new();
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            if let Some(audio) = load_wav_i16_opt(&path) {
+                trials.push(audio);
+            }
+        }
+        if trials.is_empty() {
+            eprintln!("{channel}_{snr_tag}: no WAVs present, skip");
+            continue;
+        }
+        let n = trials.len();
+
+        for &width in &widths {
+            let freq_min = (GOLDEN_FREQ_HZ - width).max(100.0);
+            let freq_max = (GOLDEN_FREQ_HZ + width).min(3000.0);
+
+            for &max_cand in &caps {
+                let t0 = Instant::now();
+                let mut raw_total = 0usize;
+                let mut gate_total = 0usize;
+                let mut nsync_total = 0usize;
+                let mut recall = 0usize;
+
+                for audio in &trials {
+                    // `raw` with the score gate wide open, for the
+                    // retained-fraction denominator — the same shape
+                    // `fst4_60_diag_sniper_gate_width_sweep` uses.
+                    let raw = coarse_sync::<Fst4s60>(
+                        audio,
+                        freq_min,
+                        freq_max,
+                        f32::NEG_INFINITY,
+                        Some(GOLDEN_FREQ_HZ),
+                        5000,
+                    );
+                    let gated = coarse_sync::<Fst4s60>(
+                        audio,
+                        freq_min,
+                        freq_max,
+                        SNIPER_SYNC_MIN,
+                        Some(GOLDEN_FREQ_HZ),
+                        max_cand,
+                    );
+                    raw_total += raw.len();
+                    gate_total += gated.len();
+
+                    let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
+                    let mut decoded = false;
+                    for c in &gated {
+                        let (cd0, _refined_freq_hz, i0, _score) =
+                            refine_candidate_position::<Fst4s60>(
+                                c,
+                                &fft_cache,
+                                &FST4_60A_DOWNSAMPLE,
+                            );
+                        let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                        if sync_quality::<Fst4s60>(&cs) <= SNIPER_SYNC_Q_MIN {
+                            continue;
+                        }
+                        nsync_total += 1;
+                        let r = process_candidate_basic::<Fst4s60>(
+                            c,
+                            &fft_cache,
+                            &FST4_60A_DOWNSAMPLE,
+                            DecodeDepth::FULL,
+                            DecodeStrictness::Normal,
+                            &[],
+                            EqMode::Off,
+                            SNIPER_SYNC_Q_MIN,
+                        );
+                        // Recall means *the transmitted message*, not any
+                        // decode — a CRC false-accept must not count.
+                        if let Some(d) = r {
+                            let mut m77 = [0u8; 77];
+                            m77.copy_from_slice(d.message77());
+                            if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                                decoded = true;
+                                break;
+                            }
+                        }
+                    }
+                    if decoded {
+                        recall += 1;
+                    }
+                }
+
+                let loop_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                let frac = if raw_total == 0 {
+                    0.0
+                } else {
+                    100.0 * gate_total as f64 / raw_total as f64
+                };
+                eprintln!(
+                    "{:>14} {:>5} {:>6.0}Hz {:>7} {:>6} {:>6.0}% {:>8} {:>5}/{:<2} {:>10.1}",
+                    format!("{channel}_{snr_tag}"),
+                    n,
+                    width,
+                    max_cand,
+                    raw_total,
+                    frac,
+                    nsync_total,
+                    recall,
+                    n,
+                    loop_ms
+                );
+            }
+        }
+    }
+}
