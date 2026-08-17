@@ -925,3 +925,90 @@ Two results hold independently of the open question above:
 The AWGN cells rescue more (+3 at m28) than the CCIR-moderate ones (+1),
 which is the opposite of the fading-motivated framing #308 came from and
 worth re-checking at n=100.
+
+## 13. Scheduling decision — why `offsets` stays offset-major (2026-08-18)
+
+Issue #310 proposed folding `decode_rung_major_timed`'s `offsets`
+parameter into a cost-ordered priority queue, so that "cheap attempts
+across all candidates first → timing alternatives → deeper correlation →
+OSD/fallbacks as budget permits" rather than running the whole 5-rung
+ladder at `offset = 0` before touching `offset = -1`'s cheapest rung.
+
+**Current position: don't fold it in. Keep the offset-major structure
+and add a budget gate between offsets instead.** Recorded here with the
+reasoning, because it is contrary to the issue's original framing and
+should not have to be re-derived from the measurement sections above.
+
+### The three measurements this rests on
+
+1. **Timing diversity is expensive and thin** (§12). Exhaustive
+   `{0,+1,-1}` retry costs **1.6–2.7× the decode units** of `{0}` for
+   **+1 to +3 decodes per 20 trials** — same order as the 2.5–3×
+   wall-clock measured on CoreS3, and in invocation counts so it
+   transfers across machines.
+
+2. **It cannot be cheaply targeted** (§12). Ranking the offsets by
+   `sync_quality` and decoding only the best matched exhaustive in
+   **1 of 8 runs** and the single-offset baseline in the other seven.
+   There is a structural reason to expect sync-derived ranking to
+   struggle — `i0` already comes from `fst4_sync_search`, which
+   maximises a coherent sync score — so a working proxy would have to be
+   sync-orthogonal.
+
+3. **The mechanisms interact** (§9). In 2 of 4 cells, alternate timing
+   and the unpruned-OSD fallback together rescue trials that neither
+   rescues alone.
+
+### Why not fold, in order of weight
+
+1. **It would triple the first-rung sweep.** Rung-major's actual
+   contribution is the ordering-independent bound on time-to-first-decode
+   (~7.4 s projected for the first rung across 41 candidates). Mixing
+   offsets into the cheapest rung trades away the property the design
+   exists to provide.
+
+2. **Offset setup is not free.** A new offset rebuilds `symbol_spectra`
+   and the bit metrics. Interleaving individual rungs across offsets pays
+   that setup for every candidate, early, for a mechanism that pays off
+   on 1–3 trials in 20. The natural scheduling unit is
+   *offset setup + a bundle of rungs at that offset*, not a free
+   interleave — which is what offset-major already is.
+
+3. **The payoff cannot be aimed.** If cheap ranking worked, front-loading
+   one well-chosen alternate offset would be attractive. Measurement 2
+   says it doesn't, so early offset work is spent broadly rather than
+   where it will land.
+
+### What to build instead
+
+Keep offset-major; add a **deadline check between offsets**. Run
+`offset = 0`'s full ladder to completion, then spend whatever slot time
+remains on additional offsets. This preserves the first-rung bound,
+keeps the expensive mechanisms off the critical path, and degrades to
+today's `&[0]` behaviour when the slot is tight.
+
+**If a second pass is added, add timing and the unpruned fallback
+together as one escalation step** — measurement 3 says adding only the
+cheaper of the two pays real cost and collects part of the gain. This is
+the one place the measurements changed the design rather than confirming
+it.
+
+Related: `npre` never decodes a trial the unpruned search misses on any
+cell tested (§9), so it buys speed and never recall. There is no reason
+to interleave npre *depth* with timing — only to run npre first because
+it is cheap.
+
+### What would reverse this
+
+- A **sync-orthogonal cheap proxy** that actually predicts the winning
+  offset (LLR reliability statistics, truncated-BP syndrome weight).
+  That would make front-loading one targeted alternate offset cheap, and
+  the cost-ordered fold becomes attractive.
+- The n=100 run (§11.3) showing the synergy trials are a materially
+  larger fraction than 2–3 per 20, raising the second pass's value enough
+  to justify paying for it earlier.
+- Per-offset setup cost measured directly — the instrumentation already
+  exists in `decode_rung_major_timed`'s `clock` hook — showing setup is
+  small relative to a rung, which would weaken reason 2.
+
+All three are open. This decision is provisional on them.

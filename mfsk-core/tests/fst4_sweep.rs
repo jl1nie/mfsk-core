@@ -5279,8 +5279,12 @@ fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
                         }
                     }
 
-                    // cheap-rank: argmax nsync only.
-                    cheap.sort_by(|a, b| b.1.cmp(&a.1));
+                    // cheap-rank: argmax nsync only. `Reverse` for
+                    // descending — stable, so ties keep OFFSETS order
+                    // (offset 0 first), which is the conservative
+                    // tie-break: a tie must not silently prefer an
+                    // alternate offset over the refined position.
+                    cheap.sort_by_key(|&(_, nsync)| core::cmp::Reverse(nsync));
                     let best = cheap[0].0;
                     argmax_seen += 1;
                     if best == 0 {
