@@ -15,12 +15,16 @@
 //!   `uac_host_device_read` into a 4 KB stack buffer, accumulates stats,
 //!   and logs `bytes/packets/errors` to UDP every ~1 s.
 //!
-//! The reader currently **drops the samples on the floor** after counting
-//! them. Wiring the bytes into the resample + decoder push chain lands
-//! in #32 (replace the inner of `reader_thread` with the
-//! 48 k stereo → 12 k mono pipeline). Disconnect / reconnect polish is
-//! #35 (reader exits on any read error and the device handle leaks —
-//! acceptable for #31 since `BootMode::Uac` is sticky until reboot).
+//! The reader resamples 48 k stereo → 12 k mono and pushes into
+//! whichever [`AudioSink`] the running binary registered via
+//! [`set_audio_sink`] (#32) — `main.rs`'s FT8 controller wires
+//! [`set_chunk_q`] (its pre-existing chunk-queue sink, now
+//! [`Ft8ChunkSink`] under the hood), `wspr_app.rs` wires its own DDC
+//! push sink. Samples are dropped on the floor only while no sink is
+//! registered yet (race window at boot, bounded). Disconnect /
+//! reconnect polish is #35 (reader exits on any read error and the
+//! device handle leaks — acceptable for #31 since `BootMode::Uac` is
+//! sticky until reboot).
 //!
 //! ## 接続方式 (確定済)
 //!
@@ -48,18 +52,92 @@
 //! - [x] managed component + bindings (#29)
 //! - [x] host install + hot-plug callback (#30)
 //! - [x] iso IN streaming + stats logging (#31, このファイル)
-//! - [ ] 48 kHz stereo → 12 kHz mono resampler + ringbuf → decode (#32)
-//! - [ ] verification on hardware (#33-#34)
+//! - [x] 48 kHz stereo → 12 kHz mono resampler + sink push (#32, FT8
+//!   side; `wspr_app.rs` wires its own DDC-push sink the same way)
+//! - [ ] verification on hardware (#33-#34) — blocked on issue #163,
+//!   needs a real IC-705 (or other UAC source) connected
 //! - [ ] disconnect/reconnect polish (#35)
 
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use embedded_shared::pipeline::{send_box, ChunkMsg, CHUNK_LEN};
+use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
 use esp_idf_svc::sys;
 use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
+
+/// Spawn a named `std::thread` with its stack allocated from PSRAM
+/// instead of internal DRAM.
+///
+/// Root-caused during the `wspr_app` crash-loop investigation
+/// (2026-08-16): `spawn_network_task`'s own doc comment already
+/// records that `wifi_driver_init` alone drives internal DRAM from
+/// ~57 KB free down to ~10 KB free / 7 KB largest contiguous block —
+/// and that measurement predates the `fst4-bench` factory-partition
+/// growth the same day. A real device log
+/// (`wspr_app_restore_2026-08-16f.log`) showed **2 KB** free after
+/// `wifi_driver_init`, and every one of this module's three
+/// `std::thread::Builder` spawns (`uac_app` 4 KiB, `usb_events`
+/// 4 KiB, `uac_reader` 10 KiB) allocated its stack from that same
+/// internal-DRAM pool via the ESP-IDF pthread compat layer — the
+/// first (`uac_app`) failed outright (`Failed to create task!` /
+/// `Not enough space`), which was already a known, gracefully-logged
+/// condition. What wasn't understood until this investigation: with
+/// internal DRAM this tight, small (<4 KiB —
+/// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` forces anything below
+/// that size into internal DRAM regardless of PSRAM availability)
+/// allocations made later by `scan_loop`/`ddc_loop` on the *other*
+/// tasks can fail too, and on this esp-idf-svc std target an alloc
+/// failure surfaces as a genuine Rust panic rather than an abort —
+/// which then poisons whichever `std::sync::Mutex` it held
+/// (`BASEBAND_BUFS`/`DDC_READY_IDX`/`WSPR_UI`/`ctx.nvs`), so the next
+/// task to touch that lock panics too. That's the double-panic crash
+/// loop, and it explains why the observed backtrace lands in a
+/// different task on different boots — it's whichever task loses the
+/// race to be second.
+///
+/// Mirrors `spawn_network_task`'s existing PSRAM-stack fix (same
+/// `MALLOC_CAP_SPIRAM`/`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y`
+/// mechanism, just via `std::thread`'s `esp_pthread_cfg_t` hook
+/// instead of `xTaskCreatePinnedToCoreWithCaps` since these three are
+/// `std::thread`s, not raw FreeRTOS tasks) rather than inventing a
+/// new one. `ThreadSpawnConfiguration::set()` only affects spawns
+/// made by *this* calling thread (it's per-caller state in the IDF
+/// pthread layer, not global), so this is reset back to the default
+/// config immediately after spawning — the calling thread's own
+/// stack, and anything it spawns later without going through this
+/// helper, is unaffected.
+fn spawn_psram_thread<F>(
+    name: &str,
+    stack_size: usize,
+    f: F,
+) -> std::io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let psram_cfg = ThreadSpawnConfiguration {
+        stack_size,
+        stack_alloc_caps: MallocCap::Spiram | MallocCap::Cap8bit,
+        ..Default::default()
+    };
+    if let Err(e) = psram_cfg.set() {
+        log::warn!("uac: ThreadSpawnConfiguration::set (PSRAM stack) failed for {name}: {e:?} — falling back to internal-DRAM stack");
+    }
+    let result = std::thread::Builder::new()
+        .stack_size(stack_size)
+        .name(name.into())
+        .spawn(f);
+    // Restore the default (internal-DRAM) config regardless of
+    // whether the spawn above succeeded, so this calling thread's
+    // own subsequent spawns (if any) aren't silently left on PSRAM.
+    let default_cfg = ThreadSpawnConfiguration::default();
+    if let Err(e) = default_cfg.set() {
+        log::warn!("uac: ThreadSpawnConfiguration::set (restore default) failed: {e:?}");
+    }
+    result
+}
 
 /// Newtype around the IDF `uac_host_device_handle_t` (`*mut uac_interface`)
 /// to assert thread-safety for the `move` into the reader thread. The
@@ -203,20 +281,112 @@ impl Drop for ReaderActiveGuard {
 static READER_STOP_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Chunk queue handle the reader thread pushes decimated 12 kHz mono
-/// samples into. Set by [`set_chunk_q`] from the `decode_pipeline`'s
-/// source-spawn closure (`run_with_source(|q| uac::set_chunk_q(q))`).
-/// Stored as `usize` because `QueueHandle_t` is `*mut QueueDefinition`
-/// which isn't `Sync` by default; reader thread re-casts on each use.
-/// `0` = not yet wired (reader logs + drops samples until decode pipeline
-/// reaches the source-spawn step).
-static CHUNK_Q_ADDR: AtomicUsize = AtomicUsize::new(0);
+/// Receives freshly-resampled 12 kHz mono audio from `reader_thread`,
+/// one `uac_host_device_read` batch's worth at a time (length varies —
+/// not chunked to any fixed size; implementations that need fixed-size
+/// chunks buffer internally, same as the pre-abstraction reader body
+/// did inline). `uac`'s own host/driver/hot-plug machinery is
+/// otherwise consumer-agnostic; this is the one point where FT8's
+/// chunk-queue pipeline ([`Ft8ChunkSink`]) and WSPR's DDC push
+/// (`wspr_app`'s own sink, in `src/bin/wspr_app.rs`) diverge.
+///
+/// Added 2026-08-15 wiring real UAC audio into `wspr_app` — before
+/// this, `reader_thread` pushed straight into an FT8-specific
+/// `QueueHandle_t` (`CHUNK_Q_ADDR`/`set_chunk_q`), which is exactly
+/// the coupling this trait removes.
+pub trait AudioSink: Send + 'static {
+    fn push_samples(&mut self, samples_12k_mono: &[i16]);
+}
 
-/// Wire the chunk queue handle. Called once from
-/// `decode_pipeline::run_with_source`'s source-spawn closure in the
-/// pipeline thread, before the decode loop blocks on `recv_box`.
+/// Registered sink slot. `None` until [`set_audio_sink`] runs — the
+/// reader thread just drops samples until then, same "wired late,
+/// drop until ready" contract the old `CHUNK_Q_ADDR` had.
+static AUDIO_SINK: Mutex<Option<Box<dyn AudioSink>>> = Mutex::new(None);
+
+/// Register the audio sink. Call before [`start_host`] so the sink is
+/// live before the class driver can enumerate a device and spawn
+/// `reader_thread` — same ordering `main.rs` already relies on for
+/// [`set_chunk_q`] (spawn the pipeline / register the sink first,
+/// install the UAC driver second).
+pub fn set_audio_sink<S: AudioSink>(sink: S) {
+    match AUDIO_SINK.lock() {
+        Ok(mut slot) => {
+            *slot = Some(Box::new(sink));
+            log::info!("uac: audio sink registered");
+        }
+        Err(e) => log::error!("uac: AUDIO_SINK mutex poisoned, sink not registered: {e}"),
+    }
+}
+
+/// FT8 chunk-queue sink — the pre-abstraction `reader_thread` behavior
+/// verbatim: chunks resampled 12 kHz mono audio to [`CHUNK_LEN`]
+/// (100 ms) blocks and emits `ChunkMsg::SlotEnd` every
+/// [`SLOT_SAMPLES_12K`] (15 s, one FT8 slot), publishing the new slot
+/// index via `time_sync::publish_capture_slot`.
+struct Ft8ChunkSink {
+    chunk_q: sys::QueueHandle_t,
+    chunk: Vec<i16>,
+    slot_samples: usize,
+    wav_idx: usize,
+}
+// SAFETY: `QueueHandle_t` is a raw pointer into IDF-owned state; the
+// IDF queue API is thread-safe by design (that's the whole point of a
+// FreeRTOS queue), and `Ft8ChunkSink` never dereferences the pointer
+// itself — every use goes through `pipeline::send_box`, which wraps
+// the IDF `xQueueGenericSend`. Matches `DeviceHandle`'s own identical
+// `Send` rationale above.
+unsafe impl Send for Ft8ChunkSink {}
+
+impl Ft8ChunkSink {
+    fn new(chunk_q: sys::QueueHandle_t) -> Self {
+        Self {
+            chunk_q,
+            chunk: Vec::with_capacity(CHUNK_LEN),
+            slot_samples: 0,
+            wav_idx: 0,
+        }
+    }
+}
+
+impl AudioSink for Ft8ChunkSink {
+    fn push_samples(&mut self, samples: &[i16]) {
+        for &s in samples {
+            self.chunk.push(s);
+            if self.chunk.len() >= CHUNK_LEN {
+                let to_send = core::mem::replace(&mut self.chunk, Vec::with_capacity(CHUNK_LEN));
+                send_box(self.chunk_q, Box::new(ChunkMsg::Samples(to_send)));
+                self.slot_samples += CHUNK_LEN;
+                if self.slot_samples >= SLOT_SAMPLES_12K {
+                    send_box(
+                        self.chunk_q,
+                        Box::new(ChunkMsg::SlotEnd {
+                            wav_idx: self.wav_idx,
+                            total_samples: self.slot_samples,
+                        }),
+                    );
+                    self.wav_idx = self.wav_idx.wrapping_add(1);
+                    self.slot_samples = 0;
+                    // Issue #110: publish capture-slot boundary for
+                    // any TX scheduler running in this BootMode.
+                    // BootMode::Uac is currently RX-only on the S3
+                    // board, but published unconditionally to keep
+                    // the slot index live in case downstream
+                    // logging / TX wiring is added.
+                    let now_us = unsafe { sys::esp_timer_get_time() };
+                    mfsk_app_shared::time_sync::publish_capture_slot(self.wav_idx as u32, now_us);
+                }
+            }
+        }
+    }
+}
+
+/// Wire the FT8 decode pipeline's chunk queue as the audio sink.
+/// Called once from `decode_pipeline::run_with_source`'s source-spawn
+/// closure in the pipeline thread, before the decode loop blocks on
+/// `recv_box`. Thin wrapper around [`set_audio_sink`] kept under its
+/// original name so `main.rs`/`decode_pipeline.rs` need no changes.
 pub fn set_chunk_q(q: sys::QueueHandle_t) {
-    CHUNK_Q_ADDR.store(q as usize, Ordering::Release);
+    set_audio_sink(Ft8ChunkSink::new(q));
     log::info!("uac: chunk_q wired (addr={:#x})", q as usize);
 }
 
@@ -402,11 +572,9 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     RX_ERRORS.store(0, Ordering::Relaxed);
 
     let handle_wrapped = DeviceHandle(handle);
-    if let Err(e) = std::thread::Builder::new()
-        .stack_size(READER_TASK_STACK)
-        .name("uac_reader".into())
-        .spawn(move || reader_thread(handle_wrapped))
-    {
+    if let Err(e) = spawn_psram_thread("uac_reader", READER_TASK_STACK, move || {
+        reader_thread(handle_wrapped)
+    }) {
         let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
         let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
         if stop_err != sys::ESP_OK as sys::esp_err_t {
@@ -447,12 +615,6 @@ fn reader_thread(handle: DeviceHandle) {
     // of input → ~256 output samples at 48k→12k (4:1). Doubled for
     // headroom against the resampler's per-call rounding.
     let mut dst_scratch = [0i16; 512];
-    // Per-chunk accumulator. Filled to exactly `CHUNK_LEN` (1200,
-    // = 100 ms @ 12 kHz, matching wav_sim) before flushing.
-    let mut chunk: Vec<i16> = Vec::with_capacity(CHUNK_LEN);
-    // Per-slot sample count. SlotEnd emitted every SLOT_SAMPLES_12K.
-    let mut slot_samples: usize = 0;
-    let mut wav_idx: usize = 0;
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
     // Track whether we exited via DISCONNECTED so the cleanup path
@@ -522,19 +684,23 @@ fn reader_thread(handle: DeviceHandle) {
             left_scratch[i] = i16::from_le_bytes([buf[off], buf[off + 1]]);
         }
 
-        // Load the chunk_q handle each loop iteration so the reader
-        // gracefully bridges the gap between USB enumeration and
-        // decode_pipeline init. While the gate is unwired we just
+        // Route through the registered `AudioSink` (FT8's chunk
+        // queue, WSPR's DDC push, ...). While unregistered we just
         // drop the current read buffer (lossy by design — the race
-        // window is bounded by how fast pipeline thread can spawn +
-        // alloc BASIS, ~200 ms). Gemini PR #99 review fixed the
+        // window is bounded by how fast the consumer thread can spawn
+        // + register, ~200 ms). Gemini PR #99 review fixed the
         // earlier "accumulates samples" wording which contradicted
         // the actual `continue`.
-        let chunk_q_addr = CHUNK_Q_ADDR.load(Ordering::Acquire);
-        if chunk_q_addr == 0 {
+        let mut sink_guard = match AUDIO_SINK.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                log::error!("uac: AUDIO_SINK mutex poisoned: {e}");
+                continue;
+            }
+        };
+        let Some(sink) = sink_guard.as_mut() else {
             continue;
-        }
-        let chunk_q = chunk_q_addr as sys::QueueHandle_t;
+        };
 
         // Feed the resampler in a loop until the input is drained.
         // process() returns (consumed, produced); if consumed < input
@@ -543,45 +709,18 @@ fn reader_thread(handle: DeviceHandle) {
         while src_offset < stereo_samples {
             let (consumed, produced) =
                 resampler.process(&left_scratch[src_offset..stereo_samples], &mut dst_scratch);
-            for &s in &dst_scratch[..produced] {
-                chunk.push(s);
-                if chunk.len() >= CHUNK_LEN {
-                    let to_send = core::mem::replace(&mut chunk, Vec::with_capacity(CHUNK_LEN));
-                    send_box(chunk_q, Box::new(ChunkMsg::Samples(to_send)));
-                    slot_samples += CHUNK_LEN;
-                    if slot_samples >= SLOT_SAMPLES_12K {
-                        send_box(
-                            chunk_q,
-                            Box::new(ChunkMsg::SlotEnd {
-                                wav_idx,
-                                total_samples: slot_samples,
-                            }),
-                        );
-                        wav_idx = wav_idx.wrapping_add(1);
-                        slot_samples = 0;
-                        // Issue #110: publish capture-slot boundary for
-                        // any TX scheduler running in this BootMode.
-                        // BootMode::Uac is currently RX-only on the
-                        // S3 board, but published unconditionally to
-                        // keep the slot index live in case downstream
-                        // logging / TX wiring is added.
-                        let now_us = unsafe { sys::esp_timer_get_time() };
-                        mfsk_app_shared::time_sync::publish_capture_slot(
-                            wav_idx as u32,
-                            now_us,
-                        );
-                    }
-                }
+            if produced > 0 {
+                sink.push_samples(&dst_scratch[..produced]);
             }
             // Defensive: if process() makes zero progress (shouldn't,
             // given the input is non-empty), break to avoid an
-            // infinite loop. Pull the un-resampled tail to the next
-            // call's left_scratch start by shifting.
+            // infinite loop.
             if consumed == 0 && produced == 0 {
                 break;
             }
             src_offset += consumed;
         }
+        drop(sink_guard);
 
         // 1 Hz throughput log. `Instant::now()` is the FreeRTOS tick
         // count under the hood — sub-microsecond cost.
@@ -595,9 +734,7 @@ fn reader_thread(handle: DeviceHandle) {
             // streaming IC-705. The throughput delta is the diagnostic
             // we care about here (anything well below ~190 kB/s
             // suggests packet drops or wrong stream config).
-            log::info!(
-                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err / slot={slot_samples}/12k)"
-            );
+            log::info!("uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err)");
             last_log = now;
             last_bytes = bytes;
         }
@@ -702,10 +839,7 @@ pub fn start_host() -> Result<()> {
     EVENT_SENDER
         .set(tx)
         .map_err(|_| anyhow!("uac: EVENT_SENDER double init — start_host called twice?"))?;
-    std::thread::Builder::new()
-        .stack_size(APP_TASK_STACK)
-        .name("uac_app".into())
-        .spawn(move || app_task(rx))
+    spawn_psram_thread("uac_app", APP_TASK_STACK, move || app_task(rx))
         .map_err(|e| anyhow!("uac_app spawn failed: {e}"))?;
     log::info!("uac: app_task spawned (stack={APP_TASK_STACK} B)");
 
@@ -727,11 +861,7 @@ pub fn start_host() -> Result<()> {
         return Err(anyhow!("usb_host_install failed (err={err:#x})"));
     }
 
-    if let Err(e) = std::thread::Builder::new()
-        .stack_size(USB_EVENTS_TASK_STACK)
-        .name("usb_events".into())
-        .spawn(usb_events_task)
-    {
+    if let Err(e) = spawn_psram_thread("usb_events", USB_EVENTS_TASK_STACK, usb_events_task) {
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
             log::error!(

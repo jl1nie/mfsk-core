@@ -17,6 +17,7 @@ pub mod fft_15;
 pub mod fft_mixed_3840;
 pub mod fft_mixed_3840_sc16;
 pub mod fft_sc16_r2;
+pub mod fir_decimate;
 pub mod gfsk;
 pub mod msk;
 pub mod resample;

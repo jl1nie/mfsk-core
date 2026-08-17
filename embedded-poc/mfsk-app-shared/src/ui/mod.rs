@@ -18,3 +18,6 @@ pub mod menu;
 pub mod state;
 pub mod status_bar;
 pub mod waterfall;
+pub mod wspr_list;
+pub mod wspr_row;
+pub mod wspr_state;

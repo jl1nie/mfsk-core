@@ -592,7 +592,7 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false, false,
     )
 }
 
@@ -615,7 +615,83 @@ where
     P::Fec: BpPooledFec,
 {
     process_candidate_basic_impl::<P>(
-        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None,
+        cand, fft_cache, cfg, depth, strictness, known, eq_mode, sync_q_min, None, false, false,
+    )
+}
+
+/// [`process_candidate_basic`], but threading a caller-supplied
+/// [`refine_candidate_position`] result straight into
+/// `process_candidate_basic_impl`'s `precomputed_refine` parameter —
+/// skips that function's own `downsample_cached` call entirely rather
+/// than just reusing its output.
+///
+/// `internal-testing`-only, same rationale as `process_candidate_basic`
+/// itself. Added for issue #306/#307's FST4 embedded bench: with both
+/// `coarse_sync` (issue #306) and `downsample_cached` needing FFT
+/// lengths the embedded `fft-extern` backend can't serve yet (issue
+/// #307), baking each real candidate's already-refined `(cd0, freq_hz,
+/// i0, score)` on a host and feeding it through here is how the
+/// LLR/BP/OSD stage alone gets measured on real hardware without
+/// waiting on #307's FFT work to land first. `fft_cache` is still
+/// required even with `skip_snr = true` below — `symbol_spectra`
+/// doesn't need it (that's what `precomputed_refine`'s `cd0` already
+/// replaces), but nothing here stops a future caller passing
+/// `skip_snr = false`.
+///
+/// `skip_snr`: FST4's `snr_db` override calls `downsample_cached` a
+/// *second* time from `fft_cache`, independently of
+/// `precomputed_refine` — `fst4_raw_cs` needs the non-normalised
+/// spectrum, not the already-normalised `cd0` a caller might supply
+/// (see `process_candidate_basic_impl`'s own doc comment on the
+/// `skip_snr` parameter). On embedded that second downsample is a
+/// second non-power-of-2 inverse FFT `fft-extern`/ESP-DSP can't serve
+/// yet (issue #307) — pass `true` to measure LLR/BP/OSD wall-clock
+/// without it, at the cost of `DecodeResult::snr_db` being `NAN`
+/// rather than a real measurement.
+///
+/// `skip_llr_nsym_max`: skips the `LLR_NSYM_MAX` staircase rung
+/// (FST4's `nsym=8`, ~99% of the BP-side cost per issue #306's
+/// measurement) entirely — both the BP attempt on it and its variant
+/// in OSD's fallback list — while leaving OSD itself untouched. Added
+/// for issue #306's recall-trade-off follow-up: `tests/fst4_sweep.rs`'s
+/// `fst4_60_diag_recall_tradeoff` found this specific combination
+/// (`nsym=8` off, OSD on) recovers *more* AWGN recall near the
+/// crossing than dropping OSD instead (`DecodeDepth::BP_ONLY`) despite
+/// `nsym=8` being the far more expensive rung — OSD is a structurally
+/// different fallback (bit-flip search over the LDPC systematic basis)
+/// that doesn't need BP to converge at all, so it can rescue
+/// candidates the `nsym=8` attempt would also have missed. `false` for
+/// every existing caller (behaves exactly as before).
+#[cfg(feature = "internal-testing")]
+#[allow(clippy::too_many_arguments)]
+pub fn process_candidate_precomputed<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+    depth: DecodeDepth,
+    strictness: DecodeStrictness,
+    known: &[DecodeResult],
+    eq_mode: EqMode,
+    sync_q_min: u32,
+    precomputed_refine: (Vec<Complex<f32>>, f32, i32, f32),
+    skip_snr: bool,
+    skip_llr_nsym_max: bool,
+) -> Option<DecodeResult>
+where
+    P::Fec: BpPooledFec,
+{
+    process_candidate_basic_impl::<P>(
+        cand,
+        fft_cache,
+        cfg,
+        depth,
+        strictness,
+        known,
+        eq_mode,
+        sync_q_min,
+        Some(precomputed_refine),
+        skip_snr,
+        skip_llr_nsym_max,
     )
 }
 
@@ -692,6 +768,28 @@ fn process_candidate_basic_impl<P: GenericPipelineProtocol>(
     // (FT4, and every `internal-testing` direct caller) — behaves
     // exactly as before.
     precomputed_refine: Option<(Vec<Complex<f32>>, f32, i32, f32)>,
+    // When `true`, `P::snr_db` is not called on a BP success — `NAN`
+    // is stored in `DecodeResult::snr_db` instead. `false` for every
+    // existing caller (behaves exactly as before). Added for issue
+    // #306/#307: FST4's `snr_db` override (`fst4_snr_db`) calls
+    // `downsample_cached` a *second* time, independently of
+    // `precomputed_refine` above — `fst4_raw_cs` needs the
+    // non-RMS-normalised spectrum, which can't be derived from the
+    // already-normalised `cd0` a caller might supply, so it always
+    // rebuilds from `fft_cache` fresh. On embedded that is a second
+    // non-power-of-2 inverse FFT `fft-extern`/ESP-DSP can't serve
+    // (issue #307) — this flag is what let the FST4 embedded bench
+    // measure LLR/BP/OSD wall-clock at all before that lands, at the
+    // honest cost that its `DecodeResult::snr_db` values are not real
+    // measurements. Only `process_candidate_precomputed` exposes this
+    // as a caller-visible choice.
+    skip_snr: bool,
+    // When `true`, the `LLR_NSYM_MAX` staircase rung is skipped
+    // entirely (both the BP attempt on it and its variant in OSD's
+    // fallback list) — see `process_candidate_precomputed`'s doc
+    // comment for why (issue #306 recall-trade-off follow-up). `false`
+    // for every existing caller (behaves exactly as before).
+    skip_llr_nsym_max: bool,
 ) -> Option<DecodeResult>
 where
     P::Fec: BpPooledFec,
@@ -817,17 +915,21 @@ where
             };
             let mut try_bp = |llr: &Vec<f32>, pass_id: u8| -> Option<DecodeResult> {
                 let mut r = fec.decode_soft_pooled(llr, &bp_opts, &mut bp_scratch)?;
-                let itone = encode_tones_for_snr::<P>(&r.info, &fec);
-                let snr_db = P::snr_db(SnrCtx {
-                    cs,
-                    itone: &itone,
-                    cand_score: cand.score,
-                    cand_freq_hz: cand.freq_hz,
-                    fft_cache,
-                    ds_cfg: cfg,
-                    refined_freq_hz: refined.freq_hz,
-                    i_start: i0,
-                });
+                let snr_db = if skip_snr {
+                    f32::NAN
+                } else {
+                    let itone = encode_tones_for_snr::<P>(&r.info, &fec);
+                    P::snr_db(SnrCtx {
+                        cs,
+                        itone: &itone,
+                        cand_score: cand.score,
+                        cand_freq_hz: cand.freq_hz,
+                        fft_cache,
+                        ds_cfg: cfg,
+                        refined_freq_hz: refined.freq_hz,
+                        i_start: i0,
+                    })
+                };
                 // FT4 pre-LDPC scramble (WSJT-X `genft4.f90:64`): undo
                 // the rvec XOR before presenting the 77-bit payload.
                 descramble_info::<P>(&mut r.info);
@@ -880,10 +982,18 @@ where
                 }
             }
 
-            llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs, P::LLR_NSYM_MAX as usize);
-            deinterleave(&mut llr_set.llrc);
-            if let Some(r) = try_bp(&llr_set.llrc, 2) {
-                return Some(r);
+            // Skipped entirely under `skip_llr_nsym_max` (issue #306
+            // recall-trade-off follow-up: `process_candidate_precomputed`'s
+            // doc comment) — both the BP attempt here and its `variants`
+            // slot below. `llr_set.llrc` stays at its `LlrSet::default()`
+            // empty `Vec` in that case, same as `llre` already does for
+            // every protocol that doesn't set `LLR_NSYM_MID`.
+            if !skip_llr_nsym_max {
+                llr_set.llrc = compute_llr_partial::<P, f32, f32>(cs, P::LLR_NSYM_MAX as usize);
+                deinterleave(&mut llr_set.llrc);
+                if let Some(r) = try_bp(&llr_set.llrc, 2) {
+                    return Some(r);
+                }
             }
 
             if let Some(r) = try_bp(&llr_set.llrd, 3) {
@@ -901,7 +1011,9 @@ where
             if !llr_set.llre.is_empty() {
                 variants.push((&llr_set.llre, 6));
             }
-            variants.push((&llr_set.llrc, 2));
+            if !skip_llr_nsym_max {
+                variants.push((&llr_set.llrc, 2));
+            }
             variants.push((&llr_set.llrd, 3));
 
             // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
@@ -1077,7 +1189,54 @@ where
     // spread far below it, so there's no safe gap wide enough to filter
     // much without risking a real signal.
 
-    try_position(freq_hz, i0, score)
+    let result = try_position(freq_hz, i0, score);
+    if result.is_some() {
+        return result;
+    }
+
+    // FST4 timing-jitter retry (issue #308): WSJT-X's `fst4_decode.f90`
+    // retries each candidate at `ioffset ∈ {0, +1, -1}` samples around
+    // its refined position (`is0 = isbest + ioffset`, lines ~396-403),
+    // rebuilding the full bit-metric set fresh at each offset, before
+    // moving on — but only at "normal"/"deep" decode depth (`jittermax
+    // = 2` for `ndepth ∈ {2,3}`; `jittermax = 0`, i.e. no retry, at the
+    // fastest `ndepth = 1`). mfsk-core had no equivalent: every FST4
+    // candidate was decoded at exactly one `i0`. Found while
+    // investigating issue #306 (VK3NV) — 2 of 5 CCIR-moderate "old-only"
+    // trials from that investigation's OSD-pruning root-cause work
+    // recovered once given this same timing diversity
+    // (`fst4_60_diag_i0_retry_ccir_old_only`, `tests/fst4_sweep.rs`),
+    // meaning part of what looked like a pure OSD-pruning recall gap
+    // under fading was really a missing-timing-diversity gap.
+    //
+    // `depth.osd` is the closest existing proxy for WSJT-X's
+    // fast-vs-normal/deep `ndepth` split (`DecodeDepth::BP_ONLY`/
+    // `EMBEDDED` — OSD off — being the cheap baseline) — not a claimed
+    // exact match, since `ndepth` also gates AP-pass count, which this
+    // crate controls separately.
+    //
+    // `try_position` already tolerates an out-of-range `i0` gracefully
+    // (`symbol_spectra` zero-fills past either end of `cd0`, per its own
+    // doc comment) rather than needing WSJT-X's explicit bounds `cycle`
+    // — a degraded (low-`nsync`, gate-rejected) attempt costs a little
+    // wasted work at the very edges of a slot, not a panic.
+    //
+    // FT8 never reaches this function (its own bespoke engine); FT4's
+    // own multi-position idea (`ft4_diag_segment_retry`) was tried and
+    // reverted for 0/17 measured rescues (see this function's own doc
+    // comment above) — that finding doesn't transfer here, since it
+    // tested a different retry axis (segment boundary, not timing
+    // jitter) on a different protocol, but it's why this is scoped to
+    // FST4 only rather than assumed for FT4 too.
+    if P::ID != super::ProtocolId::Ft4 && depth.osd {
+        for ioffset in [1i32, -1i32] {
+            if let Some(r) = try_position(freq_hz, i0 + ioffset, score) {
+                return Some(r);
+            }
+        }
+    }
+
+    None
 }
 
 /// `llr[INTERLEAVE[j]] = channel_llr[j]` — inverse of the TX-side
@@ -1351,7 +1510,40 @@ where
 /// every one of them, which a controlled single-threaded wall-clock
 /// A/B measured as a net *regression*, exceeding the BP/OSD savings on
 /// a file with few true near-duplicates).
+///
+/// `pub` only under `internal-testing` (issue #203's escape hatch,
+/// same shape as [`decode_frame`]/[`process_candidate_basic`]) — used
+/// directly by issue #306/#307's FST4 embedded bench to bake a
+/// per-candidate refined `(cd0, freq_hz, i0, score)` on a host, so the
+/// device can call [`process_candidate_precomputed`] without ever
+/// running `downsample_cached`'s (non-power-of-2, on embedded's
+/// `fft-extern` backend, currently unrunnable — see #307) inverse FFT
+/// itself.
+#[cfg(feature = "internal-testing")]
+pub fn refine_candidate_position<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+) -> (Vec<Complex<f32>>, f32, i32, f32)
+where
+    P::Fec: BpPooledFec,
+{
+    refine_candidate_position_impl::<P>(cand, fft_cache, cfg)
+}
+
+#[cfg(not(feature = "internal-testing"))]
 pub(crate) fn refine_candidate_position<P: GenericPipelineProtocol>(
+    cand: &SyncCandidate,
+    fft_cache: &[Complex<f32>],
+    cfg: &DownsampleCfg,
+) -> (Vec<Complex<f32>>, f32, i32, f32)
+where
+    P::Fec: BpPooledFec,
+{
+    refine_candidate_position_impl::<P>(cand, fft_cache, cfg)
+}
+
+fn refine_candidate_position_impl<P: GenericPipelineProtocol>(
     cand: &SyncCandidate,
     fft_cache: &[Complex<f32>],
     cfg: &DownsampleCfg,
@@ -1634,6 +1826,8 @@ where
                     eq_mode,
                     sync_q_min,
                     Some((cd0, freq_hz, i0, score)),
+                    false,
+                    false,
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);
@@ -1655,6 +1849,8 @@ where
                     eq_mode,
                     sync_q_min,
                     Some((cd0, freq_hz, i0, score)),
+                    false,
+                    false,
                 )?;
                 if let Some(cb) = on_result {
                     cb(&r);

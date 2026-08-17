@@ -8,3 +8,4 @@ description = "Runs the host-testable parts of embedded-poc/mfsk-app-shared on t
 
 [dependencies]
 log = "0.4"
+heapless = "0.8"

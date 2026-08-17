@@ -794,6 +794,789 @@ upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
 off by default; its `SpotSink::Http` path is implemented but untested
 against a real endpoint.
 
+## FST4 on embedded
+
+A third, distinct embedded story — not started before issue #306
+asked whether it was even feasible, and not predictable from either
+of the two above. FT8's integer `decode_block`/`fixed-point` path
+doesn't apply (FST4 routes through the generic f32
+`engine::pipeline`, same as WSPR); WSPR's own measured result doesn't
+transfer either, since its dominant cost (issue #260: Fano-sequential
+search burning a full node budget per failing candidate, ~51% of a
+scan) is a failure mode specific to WSPR's convolutional decoder —
+FST4's LDPC(240,101) + bounded belief-propagation + OSD-fallback path
+fails cheaply by construction, no analogous budget blowout expected
+a priori. Untested claim, not a measured one, as of this writing.
+
+`fst4` (the Cargo feature) turned out not to need `fft-rustfft`/`std`
+at all — a stricter-than-necessary gate left over from when it was
+grouped with jt9/jt65/q65 under "heavy modes, out of scope of the
+embedded port" (those three do call `rustfft::` directly; FST4 never
+did, it just inherited the same feature bound). `mfsk-core/src/fst4/`
+had two latent `no_std` gaps this had never exercised — `encode.rs`
+and `baseline.rs` both used bare `Vec` relying on `std`'s prelude
+without an explicit `alloc::vec::Vec` import — fixed alongside
+loosening the feature.
+
+Same wideband-stage problem as WSPR, same fix shape: FST4-60A's
+`build_fft_cache` runs one `fft1_size = 746_496`-point forward FFT
+over the 60 s slot, past `esp-dsp`'s 8 192 ceiling exactly like
+WSPR's `decimate_to_baseband`. `engine::pipeline::decode_frame`
+already had a `precomputed_fft` parameter for this (mirroring FT8's
+own `decode_frame_inner`) — unlike WSPR, no new streaming front end
+was needed, just feeding a host-baked cache through an existing seam.
+The bake step (`fst4_bake_golden_precomputed` in
+`mfsk-core/tests/fst4_wsjtx_samples.rs`) round-trips both baked files
+back through `decode_frame` on the host and asserts the result
+matches `DecodeRequest`'s own fresh-computed path exactly.
+
+`embedded-poc/m5stack-cores3-app/src/bin/fst4_bench.rs` (thin shim
+over `embedded_shared::apps::fst4_bench`) is a decoder-only bench —
+deliberately narrower in scope than `wspr_bench` was even at its
+first commit: single-shot, single-core, no PSRAM/SRAM arms, no WiFi.
+Issue #306 asked for exactly that much ("I'm not suggesting a full
+embedded FST4 port... A decoder-only benchmark would be enough"), and
+`wspr_bench`'s own multi-arm shape only exists because real
+measurement rounds kept finding things worth splitting out — building
+that ahead of a first FST4 number would be guessing.
+
+**First real-device attempt (2026-08-16): blocked, cause identified,
+not a memory or compute-budget question after all.**
+
+Two infrastructure bugs surfaced and got fixed on the way to a real
+measurement, neither specific to FST4:
+
+1. **`espflash` writes a 4 MiB flash-size into the app image header
+   when `--flash-size` isn't passed**, regardless of what it
+   correctly auto-detects from the connected chip for its own log
+   output. Every app ever flashed to this CoreS3 before `fst4-bench`
+   happened to fit under 4 MiB total (factory + littlefs), so this
+   was silently wrong the whole time and never mattered — the
+   9 MiB factory partition this bench needed was the first thing to
+   expose it (`E (NN) boot: Failed to verify partition table` /
+   `flash_parts: partition N invalid ... exceeds flash chip size
+   0x400000`, persisting across a full `espflash erase-flash`, since
+   the bad header ships with every rebuild). Fixed in
+   `embedded-poc/scripts/flash-monitor.sh` — takes an optional 6th
+   `FLASH_SIZE` argument (`16mb` for this board) that becomes an
+   explicit `--flash-size` flag; see the script's own comment for the
+   diagnosis. Old callers that don't pass it keep the previous
+   (buggy-but-so-far-harmless) behaviour.
+2. `m5stack-cores3-app/partitions.csv`'s `factory` partition grew
+   from 3 MiB to 9 MiB for the ~7.7 MiB app image the baked assets
+   produce — shared across every `[[bin]]` in that crate, so
+   re-flashing `wspr-app` after this change resets its
+   littlefs-stored settings.
+
+With both fixed, the app boots and loads its baked assets cleanly
+(1 008 ms for 1.44 MiB audio + 5.7 MiB `fft_cache`, PSRAM headroom
+fine — 893 KiB free post-load against the ~14.3 MiB combined
+Vec+baked-bytes peak the module doc flagged as the open risk; that
+risk did not materialize). It then panics on the very first FFT call,
+inside `coarse_sync`'s spectrogram stage, before either the PSRAM
+question or a wall-clock number could be reached:
+
+```text
+esp-dsp FFT requires power-of-2 length ≥ 4 (got 7776)
+```
+
+`7776 = NSPS(3888) × NFFT_PER_SYMBOL_FACTOR(2)` —
+`engine::sync::SyncDims::of::<Fst4s60>()`'s coarse-sync spectrogram
+FFT length, and `7776 = 2⁵ × 3⁵` is not a power of two. This is the
+exact same shape as FT8's own spectrogram FFT (`NSPS(1920) × 2 =
+3840`, also not a power of two) — which is why FT8 has a hand-rolled
+`MixedRadix3840Fft` in `embedded-shared::esp_dsp_fft` rather than
+using the ESP-DSP backend's power-of-two-only radix-2 kernel
+directly. FST4 has no equivalent, and would need a second one for
+7776 specifically (and likely a third: `downsample_cached`'s inverse
+FFT at `fft2_size = 6912 = 2⁸ × 27`, also non-power-of-two, has not
+been reached yet — `coarse_sync` panics first).
+
+**So the answer to issue #306's actual question is not yet "does it
+fit the slot" — it's "the embedded FFT backend needs a new
+non-power-of-two kernel before FST4's candidate search can run on
+device at all".** Unlike WSPR's `decimate_to_baseband`, this isn't a
+size problem `esp-dsp` was never going to solve (WSPR's 1 474 560-pt
+whole-slot FFT stays baked host-side by design) — 7776 points is
+trivially small for a per-symbol FFT, it's specifically the *radix*
+ESP-DSP's asm kernels don't support.
+
+**Second attempt, same day: route around the FFT sites entirely
+instead of building #307's kernel first.** `coarse_sync` and
+`downsample_cached`'s FFTs are only in the *sync/refine* stage, not
+LLR/BP/OSD itself — so a candidate already refined on a host (same
+`(cd0, freq_hz, i0, score)` shape `process_candidate_basic_impl`'s
+existing `precomputed_refine` parameter accepts) lets the device skip
+both without waiting on #307. `mfsk-core/tests/
+fst4_wsjtx_samples.rs::fst4_bake_golden_refined_candidates` bakes
+every real (post-dedup) candidate this way, and a new
+`engine::pipeline::process_candidate_precomputed` (`internal-testing`-
+gated, mirrors `process_candidate_basic`) exposes the seam externally.
+Flashed clean — then panicked again, same assertion, `got 36` this
+time: `GenericPipelineProtocol::snr_db`'s FST4 override
+(`fst4_snr_db`) turned out to call `downsample_cached` a *third*,
+independent time (`fst4_raw_cs` needs the non-normalised spectrum,
+which the already-normalised baked `cd0` can't substitute for) —
+closed with a new `skip_snr` parameter (`NAN` in `DecodeResult::snr_db`
+instead of calling `P::snr_db`; this bench measures wall-clock, not
+SNR accuracy). Rebuilt, reflashed — **panicked a third time, same
+assertion, still `got 36`**: `engine::llr::symbol_spectra` (the actual
+first step of LLR extraction, called for every candidate regardless of
+`precomputed_refine`) plans its own `ds_spb = NSPS/NDOWN`-point FFT
+(36 for FST4-60A) that neither fix touched.
+
+**Third attempt: 36 is small enough not to need a real FFT at all.**
+`ds_spb` is 36-42 across all five FST4 submodes (`REFINE_STEPS`'s own
+doc comment already noted this range). A plain O(N²) direct DFT —
+the textbook definition, not an approximation of one, since every FFT
+computes the identical sum by a faster route — costs at most 42² =
+1 764 complex multiply-adds per call, negligible next to the LLR/BP/OSD
+work it feeds. Added as `embedded-shared::esp_dsp_fft::DirectDft`,
+wired into `EspDspPlanner::plan_forward` for any non-power-of-2 length
+up to `DIRECT_DFT_MAX_LEN = 64`; verified against `numpy.fft` on host
+(same unnormalised forward convention `rustfft` uses) at N=36 and
+N=42, ~1e-6 max error — f32-level precision, no sign/indexing bug.
+
+With all three FFT sites closed (candidate refine baked, SNR skipped,
+symbol-spectra FFT replaced), the on-device path has zero FFT calls
+left. The fourth flash attempt (after adding `DirectDft`) stalled
+mid-write — `espflash`'s progress bar stopped advancing partway
+through a full post-erase write, and the board stopped responding to
+`espflash board-info` afterward. Diagnosed as an unrelated USB/serial
+hang (device node stayed present, no USB detach in dmesg), not a code
+regression — confirmed once the user power-cycled the board and it
+came back immediately, no further recovery steps needed.
+
+**Fifth attempt, PSRAM this time.** Rebuilt, reflashed clean, assets
+loaded fine — then `memory allocation of 524288 bytes failed` inside
+the candidate loop. Both baked assets were still being shipped:
+`fft_cache` (5.7 MiB, from the *first* attempt's fix, `fst4_bake_
+golden_precomputed`) plus the 2.16 MiB of baked `cd0` buffers left
+only 87 KiB PSRAM free post-load, and the loop's own transient BP/OSD
+allocations didn't fit. `fft_cache` turned out to be genuinely dead
+weight on this path — `precomputed_refine` skips the one call that
+would read it (`downsample_cached`) and `skip_snr = true` skips the
+other (`fst4_raw_cs`, inside `P::snr_db`) — so it was never
+dereferenced, only occupying space. Dropped it from the bench
+entirely (`run_bench` no longer takes it); PSRAM free post-load went
+87 KiB → 5.97 MiB.
+
+**Sixth attempt: a complete run, first ever FST4-on-embedded wall-clock
+number.** CoreS3 @ 240 MHz / `opt-level = 3`, single core, no FFT
+calls anywhere in the path:
+
+| | value |
+|---|---:|
+| candidates | 41 (post-dedup, of 50 raw `coarse_sync`) |
+| decodes | 2/2 — `CQ N5TM EL29`, `CQ K9KFR EN71` (matches host exactly) |
+| candidate-loop wall-clock | **89.691 s** |
+| host `decode_loop` for the same 41 candidates | 51.9 ms (`MFSK_TRACE_STAGE_FST4=1`, this box) |
+| device/host ratio | **≈1728×** |
+| vs. FST4-60's ~7 s post-slot margin | **≈13× over** |
+
+**The ratio is the finding, not just the seconds.** It lands close to
+WSPR's own *first*, wholly-unoptimized measurement (issue #260:
+1214.3 s against a 709.5 ms host baseline, ≈1712× — before
+`minsync2`, `opt-level=3`, or the 160→240 MHz clock fix, the three
+biggest levers that investigation eventually found). This FST4 bench's
+build already carries two of those three (`opt-level=3` and the clock
+fix are both `m5stack-cores3-app`-wide, not per-bin) — so it starts
+from a more favourable position than WSPR's raw first number did, and
+still landed in the same territory. Earlier text in this section (and
+in `embedded-shared::apps::fst4_bench`'s own module doc) repeated the
+premise that FST4's bounded LDPC/BP/OSD "fails cheaply by
+construction" and so shouldn't need WSPR's kind of dedicated tuning
+pass, explicitly flagged as *"an untested claim, not a measured one."*
+It is now tested, and at this unoptimized state it does not hold —
+something in FST4's LLR/BP/OSD path costs about as much per real-world
+candidate as WSPR's Fano-sequential search did before WSPR's own
+four-round optimization campaign. Two unmeasured suspects, not
+diagnosed further here: the `LLR_NSYM_MAX = 8` staircase rung (`4⁸ =
+65536` tone-combination hypotheses per group — `fst4::decode`'s own
+lazy-staircase code calls this "128-256× FT8/FT4's own deepest rung"),
+and that FST4 here runs the plain f32 generic pipeline with *zero*
+embedded-specific optimization work done on it, unlike FT8's dedicated
+fixed-point `decode_block` or WSPR's now-tuned `decode_scan`.
+
+Peak stack usage, measured in passing: `BENCH_STACK`'s 96 KiB guess
+left 95 064 B untouched — only ~3.2 KiB actually used, a wide margin
+unlike `wspr_bench`'s own stack history.
+
+**Seventh and eighth attempts: where the 89.7 s actually goes.** Added
+per-candidate wall-clock logging (dumped after the timed loop, not
+during it, so UART writes don't contaminate the numbers) and a
+build-time `MFSK_FST4_BENCH_DEPTH=bp_only` switch
+(`DecodeDepth::BP_ONLY` vs. the default `::FULL` — the two differ only
+in `osd: bool` for FST4, `LlrEffort` doesn't apply to it — same shape
+as WSPR's own issue #260 controlled experiment, `confirmed = None`
+short-circuiting before `osd_decode`).
+
+The 89.4 s is not spread across all 41 candidates. 94% of it is 6
+candidates, every one a failure:
+
+| tier | count | each | total | decoded |
+|---|---:|---:|---:|---|
+| nsync-gate fails | 33 | 50-177 ms | ~6 s | no |
+| **the tail** | **6** | **13.8-14.2 s** | **84.2 s (94%)** | **no** |
+| real signals | 2 | 54-58 ms | 0.1 s | **yes** |
+
+Both real decodes are cheap. The entire cost is 6 candidates the
+decoder ultimately rejects — the same shape WSPR's issue #260 found
+("OSD ran 896 times and succeeded 0 times... the cost is not where any
+of us was looking").
+
+Re-running those same 41 candidates with OSD off splits that tail:
+
+| | total | tail avg | share |
+|---|---:|---:|---:|
+| `FULL` (OSD on) | 89.411 s | 14.04 s | — |
+| `BP_ONLY` (OSD off) | 51.755 s | 7.76 s | — |
+| OSD's contribution | 37.66 s | 6.28 s | **42%** |
+
+Both decodes still succeed with OSD off — neither real signal on this
+file ever needed it. So OSD is a real cost, but not the majority one:
+**plain BP/LLR alone is 51.8 s, already ≈7.4× over the ~7 s budget by
+itself.** Cutting OSD would help (42% of the total) but wouldn't be
+sufficient on its own.
+
+**Ninth attempt: the `LLR_NSYM_MAX = 8` suspect, confirmed and fully
+localized.** `MFSK_FST4_BENCH_DEPTH=llr_probe` calls `symbol_spectra` +
+each `compute_llr_*` stage directly with no BP/OSD at all, timing
+every stage for all 41 candidates (this mode skips the real pipeline's
+nsync-gate early exit on purpose, to compare every stage's cost on
+equal footing rather than only the survivors):
+
+| stage | total (41 candidates) | share |
+|---|---:|---:|
+| `symbol_spectra` | 1.39 s | 0.5% |
+| nsym=1 (`compute_llr_fast`) | 0.09 s | <0.1% |
+| nsym=2 | 0.14 s | <0.1% |
+| nsym=4 (`LLR_NSYM_MID`) | 1.10 s | 0.4% |
+| **nsym=8 (`LLR_NSYM_MAX`)** | **301.2 s** | **99.1%** |
+
+`nsym=8` alone costs **~7.347 s per candidate**, uniform to within
+0.01% regardless of which candidate — a pure function of the
+computation's size (`4⁸ = 65536` tone-combination hypotheses per
+symbol group), not data-dependent. That single stage accounts for
+essentially all of the `BP_ONLY` run's ~7.76 s/candidate tail
+(0.034+0.002+0.003+0.027+7.347 ≈ 7.41 s of it; the ~0.35 s remainder
+is presumably `decode_soft_pooled`'s own BP iterations, not separately
+measured here).
+
+One thing this *doesn't* change: `SYNC_Q_MIN = 16` is already FST4's
+own `minsync2` equivalent — WSJT-X's own pre-ladder gate
+(`get_fst4_bitmetrics.f90`), faithfully ported (issue #197) — and it's
+what keeps 33 of 41 candidates from ever reaching this stage in the
+real pipeline. The 8 that do clear it are the same population a real
+`jt9` has to run this same computation on. Unlike WSPR's `minsync2`
+gap, there's no missing cheap-reject lever here to find — the cost is
+intrinsic to the candidates that legitimately warrant deep decoding,
+not a filtering gap this codebase left unfilled.
+
+So the remaining levers are inside `compute_llr_partial` itself
+(algorithmic restructuring, fixed-point, SIMD/PIE), accepting a recall
+trade-off by skipping `nsym=8` on embedded the way FT8's ship config
+skips OSD entirely, or parallelism (dual-core).
+
+**Tenth attempt: one of those levers, taken.** Disassembling
+`fill_bmet_for_nsym`'s compiled Xtensa output
+(`xtensa-esp32s3-elf-objdump` against the bench's own ELF) found that
+its hot loop's two `f32::max()` calls each compiled to a real
+`callx8 fmaxf` — Xtensa's FPU has no native float max/min instruction,
+so LLVM can't lower `max`'s IEEE-754 NaN-propagation semantics to a
+single compare. At `nsym=8` that's ~42 M subroutine calls per
+candidate (2 calls × 65536 elements × 16 bit positions), not 42 M
+single-cycle compares.
+
+The two operands at that call site (`v_for_one`/`v_for_zero`) are
+always either `sqrt(re²+im²)` (finite, ≥ 0) or the literal
+`f32::NEG_INFINITY` — never NaN — so `max`'s NaN handling is provably
+dead weight on this specific loop. Replaced with a plain `>` compare
+(bit-identical for non-NaN inputs — confirmed against every existing
+golden/AWGN FT8/FT4/FST4 test, all byte-for-byte unchanged).
+Re-disassembling confirmed the fix: the hot loop compiles to Xtensa's
+native `ule.s` compare + `bt`/`bf` branch now, zero `callx8` in that
+loop (one `fmaxf` call remains elsewhere in the function, for the
+once-per-bit-position normalisation step — 16 calls/group instead of
+2×65536×16, left alone as negligible).
+
+Measured, same CoreS3, same golden, same 41 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| `nsym=8` (41-candidate `llr_probe` total) | 301.2 s | 178.1 s | 1.69× |
+| `nsym=4` (same) | 1.10 s | 0.61 s | 1.80× |
+| **`FULL` candidate loop (real 8-candidate population)** | **89.411 s** | **71.312 s** | **1.25×** |
+
+Still 2/2 real decodes, identical to every prior run. A genuine,
+zero-risk, two-line win — but well short of the ~1.7× its own `nsym=8`
+isolation would suggest (the loop's other per-element cost — indexing,
+the branchless-select setup, `s2` traffic — was already there and
+untouched, so removing just the call recovers less than the call's
+own share of one iteration), and far short of the ~13× gap this
+session's first measurement found.
+
+**Eleventh attempt: OSD's own allocator traffic — the fmaxf fix's
+same shape, applied to the now-larger half.** Re-tallying the
+`FULL`/`BP_ONLY` split after the LLR fix put OSD at 53% of the total
+(up from 42% — the LLR fix shrank the denominator, OSD itself was
+untouched). `osd_decode_generic::<Ldpc240_101Params>` — FST4's OSD
+entry point, generic code shared with FT8's `Ldpc174_91Params` and
+MSK144's `Ldpc128_90Params` — is an order-3 combinatorial search:
+`try_candidate` runs `C(101,3) ≈ 166 650` times per call for FST4, and
+its closure allocated two fresh heap `Vec<u8>` (240 B + 101 B) on
+*every* call, freed again immediately on the overwhelmingly common
+path where CRC verification fails. Disassembly confirmed it: 9
+`__rust_alloc_zeroed` and 38 `__rust_dealloc` call sites in one
+4.2 KiB function.
+
+`P::N`/`P::K` are compile-time consts on `LdpcParams`, but `[u8;
+P::N]` isn't expressible in a function generic over `P` on stable
+Rust — confirmed directly (`error: generic parameters may not be used
+in const operations`; `generic_const_exprs` remains nightly-only).
+Used the same "fixed max bound + runtime-length prefix slice" idiom
+`engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1` already established for
+the identical problem: a `[u8; 256]` stack buffer (≥ 240/174/128, the
+three protocols' `N`) sliced to `[..n]`, reused across all ~166 650
+calls instead of allocated fresh each time. Bit-identical on host —
+confirmed against all three protocols' goldens (FT8 full-parity 8/8,
+FT8 ship-config, MSK144, FST4-60), not just FST4's alone.
+Re-disassembling: `__rust_alloc_zeroed` 9 → 1, `__rust_dealloc` 38 → 1
+(the one remaining call of each is `osd_setup_generic_packed`'s
+one-time setup and the final `OsdResult` construction, not
+per-candidate).
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **71.312 s** | **67.789 s** | **1.052×** |
+
+Real, but smaller than the alloc-call-count reduction alone would
+suggest — the same shape as the LLR fix: removing the allocator calls
+recovers only their own share of a `try_candidate` iteration, and the
+surrounding O(n) XOR/permute/weighted-distance work (n=240) was
+already there and untouched.
+
+Cumulative at this point: 89.411 s → 67.789 s, 1.319×, ≈9.7× over the
+~7 s budget (down from ≈13×).
+
+**Twelfth attempt: one lever on each side — VK3NV's `bit_sel` block
+reduction on the LLR side, and reordering OSD's `verify` gate ahead of
+its own O(n) scatter.**
+
+*LLR side.* VK3NV (issue #306) pointed out that `fill_bmet_for_nsym`'s
+inner loop still had a shift, a mask and two branchless selects per
+element even after the `fmaxf` fix — and that for a fixed `bit_sel =
+b`, `(i >> b) & 1` isn't data-dependent at all: it's the known
+periodic pattern `2^b` zeros then `2^b` ones, repeating. `nt =
+ntones^nsym` is always a power of 2 (every protocol's `ntones` is), so
+`block = 2^bit_sel` always divides `nt` evenly — the loop can walk
+`s2` in `2^bit_sel`-sized contiguous blocks instead, alternating which
+accumulator (`mo`/`mz`) each block feeds, with a single compare per
+element and no per-element predicate machinery at all. Same
+element-visit count as before (`nt` per `bit_sel`), only the
+per-element overhead collapses. Bit-identical on host across FT8, FT4,
+FST4 and MSK144's shared code path — this loop is used by all three.
+
+*OSD side.* `try_and_update`'s scatter (`c[perm[col]] = cp[col]`,
+`O(n)=240`) ran on *every* one of the ~166 650 calls, before the
+`verify` (CRC-style) gate that rejects nearly all of them — the
+scatter's whole purpose was producing `decoded = c[..k]` for `verify`
+to check, but building the full `n`-length codeword to get the first
+`k` bits is unnecessary: an inverse permutation (`inv_perm[perm[col]]
+= col`, computed once) lets `decoded[i] = cp[inv_perm[i]]` be gathered
+directly in `O(k)=101`, and the full `O(n)` scatter can be deferred to
+the rare candidate that actually passes `verify`. Separately, the
+weighted-distance loop (only reached on that same rare pass) was
+recomputing `llr[perm[col]] > 0.0` and `.abs()` from scratch on every
+call, even though `perm`/`llr` never change across candidates —
+precomputed `hdec_perm`/`absrx_perm` once instead. Both changes
+bit-identical on host across FT8 (full-parity 8/8, ship-config),
+MSK144 and FST4-60, and the full 435-test lib suite.
+Re-disassembling: `osd_decode_generic`'s closure shrank from the prior
+4.2 KiB down to ~450 bytes, and the scatter/weighted-distance code is
+now visibly gated behind the `verify` call rather than running
+unconditionally ahead of it.
+
+Measured on real CoreS3 hardware, same 41 baked FST4-60 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **67.789 s** | **59.775 s** | **1.134×** |
+
+2/2 real decodes unchanged (`CQ N5TM EL29`, `CQ K9KFR EN71`).
+
+Cumulative at this point: 89.411 s → 59.775 s, 1.496×, ≈8.5× over the
+~7 s budget (down from ≈13×).
+
+**Thirteenth attempt: bit-packing `osd_decode_generic`'s XOR
+construction — the one unconditional `O(n)` step the `verify`-gate
+reordering above couldn't reach.** That reordering deferred the
+scatter to the rare `verify`-passing candidate, but the codeword
+*construction* itself (`c1[col] ^= g[k1*n+col]`, and again for
+`c2`/`c3`/`c4`) can't be deferred the same way — it's not consuming a
+candidate, it *is* the candidate, run unconditionally on every one of
+the ~166 650 order-3 combinations. Unlike the scatter, though, no
+permutation is involved here: both `c*` and `g`'s rows are already in
+the same permuted-column order, so it's a plain elementwise XOR of two
+equal-length byte arrays — exactly the shape `osd_setup_generic_packed`
+already bit-packs for its own row-XOR during Gaussian elimination
+(same file, same reasoning, already in production). Repacking `g`
+(byte-per-bit, as `osd_setup_generic_packed` returns it — that
+function's own return type stays untouched, since
+`packed_setup_differential`'s tests check it against a byte-per-bit
+reference) into `OSD_WORDS = 4` `u64` words per row, once per
+`osd_decode_generic` call (`O(k·n)`, negligible), turns each `c1`/
+`c2`/`c3`/`c4` construction from a 240-byte copy + 240-byte XOR loop
+into 4 word-XORs — no copy needed at all, since each is now computed
+directly as `parent ^ g_packed[row]`.
+
+`try_and_update` moves to the packed representation too: the `O(k)`
+gather (`decoded[i] = cp[inv_perm[i]]`) becomes a bit-extract
+(`(cp[idx/64] >> (idx%64)) & 1`) instead of a byte load — same
+asymptotic cost, a shift+mask traded for a load — and the scatter +
+weighted-distance loop (still `O(n)`, still gated behind `verify`
+exactly as before) collapsed from two passes into one, since both now
+need the same per-column bit-extract. Bit-identical on host: FT8
+(full-parity 8/8, ship-config), MSK144, FST4-60, full 435-test lib
+suite, and `fixed-point` feature spot-checked (`ft8_qso3_apoff_recall`
+floor unchanged).
+
+Measured on real CoreS3 hardware, same 41 baked FST4-60 candidates:
+
+| | before | after | speedup |
+|---|---:|---:|---:|
+| **`FULL` candidate loop** | **59.775 s** | **54.087 s** | **1.105×** |
+
+2/2 real decodes unchanged. Stack headroom dropped from ~90 KB to
+~83 KB (the new `g_packed` scratch is `[[u64;4]; 256]` ≈ 8 KB) — still
+a wide margin against the 96 KB `BENCH_STACK` budget.
+
+**Cumulative from the original 89.411 s baseline: 1.653×, ≈7.7× over
+the ~7 s budget (down from ≈13×).** Five small, cheap, disassembly-led
+fixes have now closed ~1.65× of the original ~13× gap — real
+progress, but still short of a fit, and every individual fix so far
+has come in smaller than its own naive justification would suggest
+(call-count reduction, element-visit-count unchanged) because the
+surrounding per-element work was already there and untouched.
+`compute_llr_partial`'s own recursive amplitude-table build
+(`build_group_amplitudes`) — the one other identified-but-untouched
+hot path, though at ~300 calls/candidate vs. OSD's ~166 650, a much
+smaller share — is the last concrete micro-lever left in this class.
+Whether the full gap is closable the way WSPR's was (WSPR went
+1214.3 s → 249.2 s, 4.9×, across `minsync2` + `opt-level=3` +
+`160→240 MHz`) remains open — this measurement answers "does it
+currently fit" (no, but less no than before), not "could it with more
+of the same kind of work". At ≈7.7×, the gap is close enough to the
+size a genuinely different-class lever (fixed-point arithmetic,
+dual-core split of the candidate loop, or a recall trade-off) would
+plausibly close on its own, where the previous ≈13×/≈9.7× gaps made
+that less obviously true.
+
+A mixed-radix or Bluestein implementation for the *larger* FFT sites
+this session routed around (issue #307: `coarse_sync`'s 7776,
+`downsample_cached`'s 6912, and the equivalent pair for FST4's other
+4 submodes) is still open, and secondary to the LLR/BP/OSD cost
+question above — closing #307 makes the streaming front end possible,
+but a production embedded FST4 path needs the remaining ≈7.7× gap
+closed first, or it fits the FFT but still misses the slot.
+`DirectDft` itself, being O(N²) and capped at 64, is not meant to grow
+into that role.
+
+**Fourteenth attempt: `no8_osd` — the recall trade-off, checked
+against real AWGN data before trusting it, then measured.** With the
+small disassembly-led fixes exhausted, the recall-trade-off question
+came up again: skip `LLR_NSYM_MAX=8` (99% of the LLR/BP-side cost)
+outright? The one data point available — this session's own 2 real
+decodes never reach `nsym=8` or OSD — is a single-file observation
+this project's own discipline says not to trust without checking
+against real AWGN data (issue #146/#255's "sparse sampling looks like
+a cliff" lesson, among others). `tests/fst4_sweep.rs`'s new
+`fst4_60_diag_recall_tradeoff` (real FST4-60 AWGN corpus, 20
+trials/SNR) checked it directly, sweeping four configurations —
+`full` (today's default), `bp_only` (`DecodeDepth::BP_ONLY`'s shape:
+`nsym`-to-8, no OSD), `no8_osd` (`nsym` capped at `LLR_NSYM_MID=4`, OSD
+on), `no8_no_osd` (both off) — and found the hypothesis **not
+confirmed, in the opposite direction from WSPR's `minsync2`**: near
+the -26..-28 dB crossing, both `nsym=8` and OSD carry real,
+substantial recall on their own. The more useful (and less intuitive)
+finding: `no8_osd` beats `bp_only` at every SNR tested, despite
+`nsym=8` being the far more expensive rung to keep — OSD is a
+structurally different fallback (bit-flip search over the LDPC
+systematic basis) that doesn't need BP to converge at all, so it
+rescues candidates every BP LLR variant (including `nsym=8`) misses,
+while `bp_only` has no fallback when all of its BP attempts fail.
+Per-*trial* (not just aggregate) monotonicity checks — `full ⊇
+no8_osd ⊇ no8_no_osd`, `full ⊇ bp_only`, guaranteed by construction —
+came back with zero violations across all 200 trials, ruling out a
+bookkeeping bug behind the counter-intuitive `no8_osd`-vs-`bp_only`
+result.
+
+`no8_osd` wasn't reachable via the existing `DecodeDepth` alone
+(`LlrEffort` is FT8-only in practice for the shared pipeline). Added
+`skip_llr_nsym_max: bool` to `process_candidate_basic_impl` /
+`process_candidate_precomputed` — same additive pattern as `skip_snr`
+earlier in this investigation: skips the `nsym=8` BP attempt and its
+slot in OSD's variant list, `false` (no behaviour change) for every
+existing caller, full merge gate + clippy green.
+
+Measured on real CoreS3 hardware, same 41 baked candidates:
+
+| | `full` | `no8_osd` | speedup |
+|---|---:|---:|---:|
+| **candidate loop** | **54.087 s** | **25.710 s** | **2.10×** |
+
+2/2 real decodes unchanged. **Cumulative from the original 89.411 s
+baseline: 3.48×, ≈3.67× over the ~7 s budget** — by far the largest
+single-step win of this whole investigation, and unlike the six
+disassembly-led fixes, not "smaller than its own justification
+suggested" — but it is a real, conscious sensitivity cost (this is
+what `fst4_60_diag_recall_tradeoff` measured), not a free speedup.
+
+Even generous dual-core assumptions don't close the remaining gap on
+their own: WSPR's own *measured* dual-core yield was 1.35-1.47× (issue
+#260, small-N straggler effects, not the theoretical 2×), and
+25.71 s ÷ 1.35–1.47× is still 17.5–19.0 s (≈2.5–2.7× over budget);
+even an optimistic 2.0× ceiling only reaches 12.9 s (≈1.84× over).
+Untested past this point — recorded as the honest state of the
+question, not pursued further this round.
+
+A related side-investigation, prompted by this session's own
+disassembly work on `osd_decode_generic`: `osd_decode_deep4`'s
+`k4_limit` parameter is documented as restricting order-4's extra
+flip to the *least* reliable MRB bits ("errors concentrate in
+low-|LLR| bits"), but empirically (a synthetic monotonic-LLR probe
+through `osd_setup_generic_packed`) row index `0..k` runs from *most*
+reliable (row 0) to *least* reliable (row `k-1`) — meaning the shipped
+`0..k4_limit` range is the *most* reliable end, the opposite of the
+doc comment's stated intent. Added a `k4_tail: bool` parameter to
+`osd_decode_generic` to test both directions directly (`false`
+everywhere existing, bit-identical). Traced the production impact
+before chasing a fix: `osd_decode_deep4` is FT4-only in practice
+(FT8's own bespoke engine uses WSJT-X-faithful `osd_decode_npre1(_
+npre2)` instead, never touching this code path — the 3 call sites in
+`ft8/decode.rs` are all inside `#[cfg(test)]`), and FT4's own
+`osd_depth3_min` gate (`nsync ≥ 14/16`) turned out to structurally
+never admit a BP+depth-2/3 failure in clean AWGN — swept m14 through
+m22 (20 trials each, near-golden-frequency candidates) and found zero
+candidates ever reaching the real depth-4 gate at all, direction
+aside. The direction discrepancy is real but currently dormant —
+recorded for whenever a future change (a looser gate, CCIR fading, a
+new caller) might actually exercise it.
+
+**Fifteenth attempt: WSJT-X-faithful `npre1`/`npre2` OSD, replacing the
+unpruned combinatorial search (issue #198).** A collaborator (VK3NV,
+issue #306) asked whether `osd_decode_generic`'s plain
+k1/k2/k3-combinatorial OSD search — shared by FT4, FST4, and MSK144 —
+was even the algorithm WSJT-X itself uses, or whether FT8's own
+WSJT-X-faithful `osd_decode_npre1(_npre2)` port (issue #63) should be
+the generic one instead. Reading WSJT-X's reference sources directly
+confirmed `osd240_101.f90` (FST4) and `osd128_90.f90` (MSK144) use the
+*same* `npre1`/`npre2`/`ntheta`/`ntau` pruned-search architecture as
+FT8's `osd174_91.f90` — only the tuning constants differ. FST4/MSK144's
+`osd_decode_generic` dispatch wasn't just "a different implementation,"
+it was a real WSJT-X-fidelity gap (recorded on issue #198).
+
+With `no8_osd` making OSD the dominant remaining cost in the embedded
+FST4-60 path, this became a performance question too. Before committing
+to the multi-session generic port, a cheap ceiling estimate came first:
+`npre1_pattern_counts` (a counting-only port of `osd240_101.f90`'s
+`nord=1` pass) measured, on the real FST4-60 golden candidates, `ntotal
+= 5151` patterns visited (matching the `k(k+1)/2` closed form for
+K=101, and mfsk-core's own FT8 migration's empirical precedent of
+`~4,186 = 91×92/2` for K=91) with a mean `npostgate = 11` (0.2%)
+actually reaching the expensive full-codeword step — a ~32× reduction
+in combinatorial scale versus the unpruned `C(101,3) ≈ 166,650`.
+
+That ceiling justified the port: `osd_decode_npre_generic<P: LdpcParams>`
+generalises `osd_npre1_pass`/`osd_npre2_pass` over any `LdpcParams` via
+the same `OSD_MAX_N`-bounded fixed-array idiom `osd_decode_generic`
+already uses (`ntheta`/`ntau` as runtime parameters — WSJT-X tunes them
+per protocol *and* per `ndeep`, so they don't fit as trait constants).
+Wired into FST4's OSD dispatch for `ndeep=2` (`ntheta=12`, `npre1`
+only) and `ndeep=3` (`+ntau=14`, `npre1+npre2`) — the only two depths
+FST4 production code requests.
+
+Not bit-exact with what it replaces (a genuinely different search
+strategy), so recall needed its own check rather than a differential
+test. An initial AWGN comparison (m26/m27, 100 trials each) against an
+*earlier, differently-configured* diagnostic pipeline's baseline
+wrongly suggested a 7-point regression at m27 — caught before trusting
+it: a new `internal-testing`-only diagnostic override
+(`fst4_osd_diag_force_old`) reran the *exact* production entry point
+through both algorithms on the same 200 trials for a controlled A/B.
+Result: 96/100 vs 96/100 at m26, 71/100 vs 70/100 at m27 — no
+measurable recall cost. (The earlier "regression" was an apples-to-
+oranges baseline, not a real finding — see this issue's GitHub thread
+for the full account.)
+
+Measured on real CoreS3 hardware, same 41 baked candidates, OSD
+algorithm as the only variable:
+
+| | old (combinatorial) | new (npre1/npre2) | speedup |
+|---|---:|---:|---:|
+| **`full`** (nsym=8+OSD) | 54.087 s | **43.134 s** | 1.25× |
+| **`no8_osd`** | 25.710 s | **17.147 s** | 1.50× |
+
+2/2 real decodes unchanged in both configurations. **Cumulative from
+the original 89.411 s baseline: `full` is now 2.07× (≈6.16× over the
+~7 s budget), `no8_osd` is now 5.21× (≈2.45× over budget)** — the
+best `no8_osd` figure yet, and confirms VK3NV's own read that the
+npre1/npre2 port "looks like the larger potential performance lever."
+Dual-core projections improve accordingly: `no8_osd`'s 17.147 s ÷
+WSPR's measured 1.35–1.47× dual-core yield is 11.7–12.7 s (still over
+budget); the optimistic 2.0× ceiling reaches 8.57 s — close to, but
+not yet under, 7 s.
+
+**Caveat, found the same day widening the check to CCIR-moderate
+fading:** the "no measurable recall cost" verdict above is AWGN-scoped,
+not general. A same-pipeline old-vs-new comparison (100 trials/SNR,
+`fst4_osd_diag_force_old`) under CCIR-moderate found a real, growing
+decline from m23 through m26 (`full`: 24→18 at m26, -25%; `no8_osd`:
+23→18, -22%) that AWGN doesn't show (m26 tied, m27 within 1 trial).
+`bp_only`/`no8_no_osd` — configs that never call OSD — are byte-
+identical old vs new at every SNR, isolating the cause to the OSD
+algorithm itself. Root-caused on a concrete old-only trial: the
+unpruned combinatorial search finds a genuine order-3 codeword
+(`hard_errors=55/240`, consistent with severe fading-induced
+corruption) that `npre1+npre2` misses. Not a port bug — WSJT-X's own
+`npre2` hash table only surfaces weight-3 patterns whose partial-
+parity signature collides with another MRB pair within the `ntau`-bit
+window, not every possible weight-3 combination; under AWGN this
+rarely matters (errors concentrate in low-|LLR| bits, matching
+`npre1`/`npre2`'s assumption), but a single deeply-faded symbol can
+produce an error geometry that assumption doesn't cover. Recorded on
+#306/#198; no action taken yet.
+
+**Sixteenth attempt: fresh `FULL`/`BP_ONLY` timing split on the
+npre1/npre2 build (VK3NV's request — "where does the bottleneck sit
+now?").** `BP_ONLY` doesn't call OSD at all, so it's unaffected by the
+port; re-flashed anyway for a same-build number rather than reusing a
+pre-port measurement. `full` from the Fifteenth attempt above:
+
+| | time | share of `full` |
+|---|---:|---:|
+| `BP_ONLY` (LLR/BP only) | 31.023 s | 71.9% |
+| `full` − `BP_ONLY` (OSD, inferred) | 12.111 s | 28.1% |
+| `full` (both) | 43.134 s | 100% |
+
+Versus the pre-port split (`old full` 54.087 s − same 31.023 s
+`BP_ONLY` = 23.064 s OSD, 42.6%): OSD's *absolute* cost dropped 1.90×
+(23.064 s → 12.111 s), and its *share* dropped from 42.6% to 28.1% —
+the bottleneck has moved back to the BP/LLR side, which the port left
+untouched. `BP_ONLY`'s own remaining cost (31.023 s) is still ~4.4×
+over the ~7 s budget on its own — the next quantitatively meaningful
+lever, if one exists, is back on that side of the split, not OSD.
+
+**Seventeenth attempt: rung-major scheduling + a real `llrd` ablation
+(issue #306 item 3, VK3NV).** VK3NV's proposal: schedule by rung
+instead of by candidate — try every candidate's `nsym=1` before any
+candidate's `nsym=2`, and so on — so a deadline-constrained embedded
+receiver reports its easy decodes almost immediately instead of
+depending on where they happen to land in the candidate list. Two-step
+plan: (1) host-side correctness + a host-timing-projected anytime
+curve, (2) a real implementation + real-hardware measurement.
+
+Step 1 found the concept holds: on the real FST4-60 golden recording,
+the actual candidate order happens to put both real decodes first
+(lucky — depth-first decodes them in ~0.15s/0.30s), but a worst-case
+reordering (both decoding candidates moved last) pushes depth-first to
+~30.0s/30.2s of a 30.15s total, while rung-major bounds
+time-to-first-decode to ~7.4s regardless of order (same total work
+either way, confirming the reordering doesn't change *what* gets
+decoded, only *when*).
+
+Before committing to a full rung-major implementation, a stage
+ablation (`fst4_60_diag_stage_ablation`/`_ccir_moderate`, 100
+trials/SNR near crossing) asked whether all six of production's BP/OSD
+stages (`llra`, `llrb`, `llre`/mid, `llrc`/max, `llrd`, then OSD on all
+five) are worth scheduling at all: **`llrd` (the normalised-nsym=1
+variant, tried *last* in production) contributes exactly zero
+additional recall**, on both AWGN and CCIR-moderate, in every
+configuration tested (byte-identical hit counts with/without it). Not
+a rung-major-specific simplification — a genuine 5-stage design for
+this protocol, per the user's framing: this pipeline serves FST4
+embedded specifically, so it doesn't need to preserve
+`engine::pipeline::process_candidate_basic_impl`'s cross-protocol
+genericity.
+
+Step 2: `fst4::rung_major::decode_rung_major<P>` — a real,
+host-tested, FST4-specific function (not folded into the shared
+`process_candidate_basic_impl`, which stays untouched for FT4/FT8/
+FST4/MSK144). Five stages, `llrd` dropped, `skip_llrc` mirroring the
+existing `no8_osd` trade-off. Verification found a real bug before
+trusting any number: the first version never applied the frequency
+correction (`freq_shift_cd0` with `df_hz = refined_freq_hz -
+cand.freq_hz`) `process_candidate_basic_impl`'s own `try_position`
+closure applies — `RungMajorCandidate` had conflated coarse and
+refined frequency into one field, silently zeroing `df_hz` and
+mis-syncing exactly the marginal candidates this whole exercise is
+about. Surfaced because a first real-hardware total (12.500 s) looked
+implausibly good against the known 43.134 s baseline; a direct
+nsync-gate candidate count against the actual baked embedded asset
+found only 4 of 41 candidates clearing the gate instead of the
+expected 6, confirming the bug rather than a genuine algorithmic
+win — fixed, and the 6 expected hard candidates reappeared with
+sensible per-stage timings.
+
+**Corrected real-hardware measurement** (same 41 baked candidates,
+`llrd` dropped, `skip_llrc` as the only other variable):
+
+| | 6-stage (production shape) | 5-stage (`decode_rung_major`) | speedup |
+|---|---:|---:|---:|
+| `full` | 43.134 s | **40.102 s** | 1.08× |
+| `no8_osd` | 17.147 s | **13.643 s** | 1.26× |
+
+2/2 real decodes unchanged. **Cumulative from the 89.411 s baseline:
+`no8_osd` is now 6.55×, ≈1.95× over the ~7 s budget** — the best
+figure this investigation has produced. Dual-core projections: 13.643 s
+÷ WSPR's measured 1.35–1.47× yield is 9.28–10.1 s (still over budget);
+the optimistic 2.0× ceiling reaches **6.82 s — under the 7 s target
+for the first time in this investigation**, though only at that
+ceiling, not the measured dual-core yield.
+
+Rung-major scheduling itself (the ordering property, as opposed to the
+`llrd` ablation) hasn't yet been measured on real hardware in isolation
+— `decode_rung_major` runs the stages in rung-major order by
+construction, but this session's real-hardware numbers above measure
+its *total*, not a depth-first-vs-rung-major latency comparison on
+device the way the host projection did. That would need a depth-first
+counterpart built on the same 5-stage set for a fair on-device A/B —
+not done this round.
+
+**Eighteenth attempt: issue #308's `i0` jitter retry — made a caller
+choice instead of a fixed policy.** The same day #308 landed on host
+(FST4 candidates now retried at `i0 ∈ {refined, +1, -1}`, matching
+WSJT-X's `fst4_decode.f90`), it was ported into `decode_rung_major` too
+— straightforward given both go through the same `symbol_spectra`/BP/
+OSD building blocks. Real-hardware measurement found the cost
+disproportionate to the recall gain if applied unconditionally: `full`
+40.102 s → **121.281 s** (3.02×), `no8_osd` 13.643 s → **34.200 s**
+(2.51×), versus a recall gain of only a few points at the SNRs checked
+(`fst4_60_diag_i0_offset_ablation`: AWGN m27 74→82/100, CCIR-moderate
+m26 18→23/100 — real, not proportional to a 2-3× cost). An ablation of
+the two offsets individually found neither is a clean free cut the way
+`llrd` was: `{0,-1}` alone captures most of the combined benefit
+(AWGN m27 79/100, CCIR-moderate m26 21/100) but still costs a real
+1.84× on a quick host-timing read (`fst4_60_diag_i0_offset_host_
+timing`), and `{0,+1}` captures less while costing about the same.
+
+Rather than mfsk-core picking one answer, `decode_rung_major` exposes
+`offsets: &[i32]` as an explicit caller parameter — same shape as the
+existing `skip_llrc`/`skip_osd` choices. A monitoring-style deployment
+that can tolerate spanning slots has a very different cost/recall
+trade-off than one with a hard per-slot deadline, so this is a
+deployment decision, not a decoder one. The 2-arg `decode_rung_major`
+wrapper keeps `&[0]` as the deadline-tight default (`no8_osd`: 13.643 s,
+≈1.95× over the ~7 s budget, the same figure the Seventeenth attempt
+closed with); `&[0, -1]` and `&[0, 1, -1]` are available to a caller
+that wants more recall and can spend more time, with the cost/recall
+numbers above already measured rather than needing to be re-derived.
+Host (`process_candidate_basic_impl`, issue #308, unconditional `i0±1`)
+and embedded's *default* are still allowed to diverge — WSJT-X-fidelity
+and a hard embedded deadline are different questions — but embedded is
+no longer locked out of the fidelity fix if a given deployment can
+afford it.
+
 ## Where to go next
 
 By reader intent:

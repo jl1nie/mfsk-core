@@ -146,6 +146,19 @@ wspr-fano-cap-fast = []
 # else.
 wspr-ddc = []
 
+# Same channelizer swap as `wspr-ddc`, but selects the two-stage
+# cascade (`wspr::ddc::ddc_to_baseband_cascade`) instead of the
+# original single-stage `StreamingDdc`. Mutually exclusive with
+# `wspr-ddc` (see the `compile_error!` in `decode_scan_inner`).
+#
+# The cascade is ~4.5x cheaper and small enough to auto-place in
+# internal DRAM on an ESP32-S3 (see `wspr::ddc`'s cascade doc comment
+# for the Crochiere-Rabiner derivation) — this feature is what lets
+# `tests/wspr_wsjtx_samples.rs`'s dedicated golden test measure its
+# real-signal recall/precision against the WSJT-X reference recording,
+# the same way `wspr-ddc` already did for the single-stage filter.
+wspr-ddc-cascade = []
+
 # MSK144 (issue #25) — full port landed: LDPC(128,90) + MSK/OQPSK DSP
 # (Phase 1-2), burst-scan sync search (Phase 3, needs `fft-rustfft` /
 # `fft-extern` for the sub-modules that use it), per-frame decode
@@ -160,10 +173,23 @@ wspr-ddc = []
 # gap.
 msk144       = []
 
-# Heavy modes — these still call `rustfft` directly (out of scope of
-# the embedded port). Pulling them implies the host build via
-# `fft-rustfft` (which transitively requires `std`).
-fst4         = ["fft-rustfft"]
+# Heavy modes — jt9/jt65/q65 still call `rustfft` directly (out of
+# scope of the embedded port; pulling them implies the host build via
+# `fft-rustfft`, which transitively requires `std`).
+#
+# `fst4` is NOT one of these, despite living in this block historically
+# — issue #306 (embedded FST4 feasibility) found no actual `rustfft`
+# reference anywhere under `src/fst4/`: `fst4::decode` routes entirely
+# through `engine::pipeline`/`engine::dsp::downsample`/`engine::sync`,
+# the same FFT-backend-agnostic machinery FT8/WSPR already use on
+# embedded (`with_default_planner`, gated by whichever of
+# `fft-rustfft`/`fft-extern` the caller picked). `cargo check -p
+# mfsk-core --no-default-features --features
+# alloc,fst4,fft-extern,internal-testing` type-checks clean with zero
+# `std`/`rustfft` pulled in. Left unqualified (no forced backend) to
+# match `ft8`/`ft4`/`wspr` above — a caller wanting the host default
+# still gets `fft-rustfft` via `full`/`default`, unaffected.
+fst4         = []
 # `dep:realfft`: JT9's `softsym::AudioFft::build` runs one
 # 653,184-point FFT per scan on real-valued audio — a plain
 # `rustfft` complex-to-complex transform wastes ~2x the work a
@@ -254,7 +280,7 @@ rustfft = "6"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn","wspr-fano-cap-fast","wspr-ddc"))',
+    'cfg(feature, values("std","alloc","ft8","ft4","fst4","wspr","jt9","jt65","q65","msk144","packet-bytes","uvpacket","parallel","full","fft-rustfft","fft-extern","fixed-point","profile-coarse","nstep-half","wspr-pass2-topn","wspr-fano-cap-fast","wspr-ddc","wspr-ddc-cascade"))',
 ] }
 
 # Build docs.rs with every protocol feature enabled so users browsing

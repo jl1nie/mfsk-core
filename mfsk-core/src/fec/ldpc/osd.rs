@@ -591,7 +591,7 @@ pub fn osd_decode_deep(
     ndeep: u8,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ndeep, LDPC_K, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), ndeep, LDPC_K, verify, false)
 }
 
 /// OSD order-4 decode with Top-K LLR pruning — pinned to LDPC(174, 91).
@@ -609,7 +609,7 @@ pub fn osd_decode_deep4(
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
 ) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 4, k4_limit, verify)
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 4, k4_limit, verify, false)
 }
 
 /// OSD order-2 decode (default) — pinned to LDPC(174, 91) with the
@@ -621,7 +621,7 @@ pub fn osd_decode_deep4(
 /// single-bit flips and all C(91,2) = 4,095 two-bit flips.
 /// Returns the minimum-weighted CRC-passing codeword, or `None` if none passes.
 pub fn osd_decode(llr: &[f32; LDPC_N]) -> Option<OsdResult> {
-    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14))
+    osd_decode_generic::<Ldpc174_91Params>(llr.as_slice(), 2, LDPC_K, Some(check_crc14), false)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1509,21 +1509,133 @@ fn osd_setup_generic_packed<P: LdpcParams>(
     Some((perm, g, pivot_col))
 }
 
+/// Counts how many patterns WSJT-X's actual `npre1` pre-screening
+/// mechanism (`osd240_101.f90`/`osd174_91.f90`'s `nord=1, npre1=1`
+/// loop, `nt=40`/`ntheta=12` partial-parity gate) would attempt and
+/// pass for a given LLR array — without doing the expensive full
+/// codeword construction for gate-passing patterns, only counting
+/// them. Issue #306 follow-up (VK3NV): "a cheap indication of the
+/// ceiling" — how much smaller is WSJT-X's actual pruned search than
+/// `osd_decode_generic`'s unpruned order-3 combinatorial one — before
+/// committing to the full genericised port of `npre1`/`npre2`.
+///
+/// Mirrors `osd240_101.f90` lines 177-203 exactly: for each single-bit
+/// "anchor" position `p` (0-based, `0..k`, matching WSJT-X's `iflag`
+/// 1-based `1..k`), the "pure" single flip (`n1 == p`, one call
+/// equivalent to a real `mrbencode101` — counted here, not performed)
+/// plus every second flip `n1 < p` computed incrementally by XORing
+/// the single-flip base's parity mismatch against row `n1`'s own
+/// parity portion — the same linearity `osd240_101.f90` exploits
+/// (`e2 = e2sub XOR g2(k+1:N, n1)`), so no re-encoding is needed per
+/// `n1`. Reuses this module's own [`osd_setup_generic_packed`] for the
+/// permutation/RREF/order-0 setup — the same code
+/// `osd_decode_generic`'s combinatorial search already uses, so the
+/// two counts are on equal footing (same reliability ranking, same
+/// order-0 baseline).
+///
+/// Returns `(ntotal, npostgate)`: `ntotal` is the total pattern count
+/// attempted (compare against `osd_decode_generic`'s unpruned
+/// `C(k,3)` for the equivalent order — this function only replicates
+/// the `nord=1` pass, i.e., the ndeep=2/3 count, not `npre2`'s
+/// additional weight-3 hash-table pass); `npostgate` is how many of
+/// those actually clear the `ntheta` gate and would reach the
+/// expensive step in the real algorithm.
+#[cfg(feature = "internal-testing")]
+pub fn npre1_pattern_counts<P: LdpcParams>(llr: &[f32]) -> Option<(u32, u32)> {
+    const NT: usize = 40; // osd240_101.f90/osd174_91.f90 shared constant
+    const NTHETA: u32 = 12; // FST4's ndeep=2 and ndeep=3 both use 12
+
+    let n = P::N;
+    let k = P::K;
+    let (perm, g, pivot_col) = osd_setup_generic_packed::<P>(llr)?;
+
+    let mut hdec = alloc::vec![0u8; n];
+    for (col, h) in hdec.iter_mut().enumerate() {
+        *h = if llr[perm[col]] > 0.0 { 1 } else { 0 };
+    }
+    let mut mrb = alloc::vec![0u8; k];
+    for (r, m) in mrb.iter_mut().enumerate() {
+        let orig = perm[pivot_col[r]];
+        *m = if llr[orig] > 0.0 { 1 } else { 0 };
+    }
+    let mut c0 = alloc::vec![0u8; n];
+    for (r, &mr) in mrb.iter().enumerate() {
+        if mr == 1 {
+            for (col, c) in c0.iter_mut().enumerate() {
+                *c ^= g[r * n + col];
+            }
+        }
+    }
+
+    let window = NT.min(n - k);
+    let mut ntotal = 0u32;
+    let mut npostgate = 0u32;
+    let mut e2sub = alloc::vec![0u8; n - k];
+
+    for p in 0..k {
+        // n1 == p: the "pure" single-bit flip.
+        for i in 0..(n - k) {
+            e2sub[i] = (c0[k + i] ^ g[p * n + k + i]) ^ hdec[k + i];
+        }
+        let mismatches: u32 = e2sub[..window].iter().map(|&b| b as u32).sum();
+        ntotal += 1;
+        if mismatches < NTHETA {
+            npostgate += 1;
+        }
+
+        // n1 < p: incremental second flip, matching osd240_101.f90's
+        // `e2 = ieor(e2sub, g2(k+1:N,n1))` -- always against the
+        // single-flip base `e2sub`, not chained across `n1`.
+        for n1 in (0..p).rev() {
+            let mismatches: u32 = (0..window)
+                .map(|i| (e2sub[i] ^ g[n1 * n + k + i]) as u32)
+                .sum();
+            ntotal += 1;
+            if mismatches + 2 <= NTHETA {
+                npostgate += 1;
+            }
+        }
+    }
+
+    Some((ntotal, npostgate))
+}
+
 /// Generic OSD with configurable order, parameterised over [`LdpcParams`].
 ///
-/// `ndeep`: search depth (1..=4). `k4_limit`: upper bound (exclusive)
-/// on bit indices used in the order-4 extension; ignored when
-/// `ndeep < 4`. `verify`: parity-converged candidate filter; pass
-/// `Some(check_crc)` for codecs whose info bits include an inline
-/// integrity field, `None` to accept any parity-valid candidate.
+/// `ndeep`: search depth (1..=4). `k4_limit`: bound on bit indices used
+/// in the order-4 extension; ignored when `ndeep < 4`. `verify`:
+/// parity-converged candidate filter; pass `Some(check_crc)` for codecs
+/// whose info bits include an inline integrity field, `None` to accept
+/// any parity-valid candidate.
 ///
-/// Algorithm identical to the WSJT-X reference; only the working
-/// buffer shapes are runtime-sized to accommodate either LDPC code.
+/// `k4_tail`: which end of the MRB reliability ordering `k4_limit`
+/// bounds. Row index in `0..k` runs from the *most* reliable MRB bit
+/// (row 0) to the *least* reliable (row `k-1`) — confirmed empirically
+/// (issue #306 follow-up), not just asserted: a synthetic strictly-
+/// monotonic LLR fed through this function's own setup showed
+/// `|llr|` decreasing monotonically from row 0 to row `k-1`. `false`
+/// (existing behaviour, every current caller): `k4` ranges over
+/// `0..k4_limit` — the *most* reliable end — and the extension only
+/// fires when `k1`/`k2`/`k3` are themselves within that same range
+/// (transitively, via `k1<k2<k3`). `true`: `k4` ranges over
+/// `(k-k4_limit)..k` instead — the *least* reliable end, matching this
+/// function's own existing `osd_decode_deep4` doc comment's stated
+/// intent ("restricting k4 to the tail... because errors concentrate
+/// in low-|LLR| bits") — which the `false` behaviour does not actually
+/// implement, despite the doc comment describing it. Added to test
+/// that discrepancy directly (issue #306 follow-up, prompted while
+/// investigating FST4 OSD costs) rather than assume either direction;
+/// `false` for every caller until that AWGN sweep decides one way.
+///
+/// Algorithm identical to the WSJT-X reference otherwise; only the
+/// working buffer shapes are runtime-sized to accommodate either LDPC
+/// code.
 pub fn osd_decode_generic<P: LdpcParams>(
     llr: &[f32],
     ndeep: u8,
     k4_limit: usize,
     verify: Option<fn(&[u8]) -> bool>,
+    k4_tail: bool,
 ) -> Option<OsdResult> {
     debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
 
@@ -1535,110 +1647,216 @@ pub fn osd_decode_generic<P: LdpcParams>(
     // is a packed *representation* of exactly the same row-swap
     // elimination this function used to run inline, not a different
     // algorithm. Everything from here on (order-0 encode, the k1..k4
-    // search, `try_candidate`) is unchanged and still consumes `g` as
-    // plain byte-per-bit, exactly as before.
+    // search, `try_candidate`) used to consume `g` as plain
+    // byte-per-bit throughout; see the `g_packed` repacking below for
+    // why that's no longer true of the row-XOR construction specifically.
     let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
         return None; // degenerate (shouldn't happen with a valid LDPC code)
     };
 
+    // Fixed-size scratch, sized with headroom for the largest
+    // `LdpcParams` this function serves today (FST4's `N=240`) —
+    // avoids a heap alloc/dealloc round-trip on every one of
+    // `try_and_update`'s ~166 650 calls for an order-3 FST4 search
+    // (issue #306 follow-up: measured 6.28 s/candidate for OSD on
+    // real embedded hardware, most of that spent on candidates that
+    // fail CRC immediately). `[u8; P::N]` isn't expressible here —
+    // `P::N` is a trait-associated const, and stable Rust can't use a
+    // generic parameter's associated const as an array length
+    // (`generic_const_exprs` remains nightly-only) — so this uses the
+    // same "fixed max bound + runtime-length prefix slice" idiom
+    // `engine::llr`'s `MAX_NSYM`/`MAX_IBMAX_PLUS_1` already established
+    // for the identical problem.
+    const OSD_MAX_N: usize = 256; // ≥ 240 (FST4), 174 (FT8), 128 (MSK144)
+    const OSD_WORDS: usize = OSD_MAX_N.div_ceil(64); // 4
+
     // ── Step 4: hard decisions on MRB bits ──────────────────────────
-    let mut mrb: Vec<u8> = vec![0u8; k];
+    let mut mrb = [0u8; OSD_MAX_N];
+    let mrb = &mut mrb[..k];
     for r in 0..k {
         let orig = perm[pivot_col[r]];
         mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
     }
 
-    // ── Step 5: encode order-0 candidate ────────────────────────────
-    let mut c_perm: Vec<u8> = vec![0u8; n];
-    for r in 0..k {
-        if mrb[r] == 1 {
-            for col in 0..n {
-                c_perm[col] ^= g[r * n + col];
+    // Pack `g` (byte-per-bit, from `osd_setup_generic_packed` above)
+    // into `OSD_WORDS`-word rows, once, up front — O(k*n), negligible
+    // next to what it feeds. `osd_setup_generic_packed` itself already
+    // builds and Gaussian-eliminates a packed representation
+    // internally, then unpacks it to byte-per-bit before returning
+    // (its own doc comment explains why: `packed_setup_differential`'s
+    // tests check it against a byte-per-bit reference, and no other
+    // caller needs the packed form — until now). Re-packing here,
+    // rather than changing what `osd_setup_generic_packed` returns,
+    // keeps that function's tested contract untouched and confines
+    // this change to the one consumer that actually has a hot loop
+    // over `g`: every one of the ~166 650 combinatorial candidates
+    // XORs one full `g` row into a running codeword (`c1[col] ^=
+    // g[k1*n+col]` for `col in 0..n`, and again for `c2`/`c3`/`c4`) —
+    // unlike `try_and_update`'s scatter (moved behind the `verify`
+    // gate above), this construction *is* the candidate, so it can't
+    // be deferred, only made cheaper per call. No permutation is
+    // involved here (both `c*` and `g`'s rows are already in the same
+    // permuted-column order), so — same reasoning as
+    // `osd_setup_generic_packed`'s own row-XOR during elimination —
+    // it packs directly into `n.div_ceil(64)` word-XORs instead of `n`
+    // per-byte ones, with no gather/scatter complication.
+    let mut g_packed = [[0u64; OSD_WORDS]; OSD_MAX_N];
+    let g_packed = &mut g_packed[..k];
+    for (row, row_words) in g_packed.iter_mut().enumerate() {
+        for col in 0..n {
+            if g[row * n + col] != 0 {
+                row_words[col / 64] |= 1 << (col % 64);
             }
         }
     }
 
-    // Helper: unpermute, verify, compute weighted distance.
-    // Returned tuples carry full Vec<u8>'s for both info and codeword
-    // so any P::K / P::N works.
-    let try_candidate = |cp: &[u8]| -> Option<(Vec<u8>, Vec<u8>, f32)> {
-        let mut c = vec![0u8; n];
-        for col in 0..n {
-            c[perm[col]] = cp[col];
-        }
-        let decoded = c[..k].to_vec();
-        if let Some(f) = verify
-            && !f(&decoded)
-        {
-            return None;
-        }
-        let mut wd = 0.0f32;
-        for col in 0..n {
-            let hard = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
-            if cp[col] != hard {
-                wd += llr[perm[col]].abs();
+    // ── Step 5: encode order-0 candidate (packed) ───────────────────
+    let mut c_perm_packed = [0u64; OSD_WORDS];
+    for r in 0..k {
+        if mrb[r] == 1 {
+            for w in 0..OSD_WORDS {
+                c_perm_packed[w] ^= g_packed[r][w];
             }
         }
-        Some((decoded, c, wd))
-    };
+    }
 
-    let mut best: Option<(Vec<u8>, Vec<u8>, f32)> = None;
-    let mut update_best = |decoded: Vec<u8>, cw: Vec<u8>, wd: f32| {
-        let improve = best.as_ref().is_none_or(|(_, _, bd)| wd < *bd);
-        if improve {
-            best = Some((decoded, cw, wd));
+    // Permuted hard-decisions and |LLR| — depend only on `perm`/`llr`,
+    // both fixed for the rest of this call, so precomputing them once
+    // here (O(n)) instead of inside `try_and_update` removes a branch,
+    // an `.abs()` call and a double indirection (`llr[perm[col]]`)
+    // from the ~166,650-call weighted-distance loop below (issue #306
+    // follow-up: the previous per-call heap-alloc fix left this
+    // redundant recomputation in place — same closure, different
+    // waste). Bit-identical: `try_and_update` used to compute exactly
+    // these two values fresh on every call from the same unchanging
+    // `perm`/`llr`.
+    let mut hdec_perm = [0u8; OSD_MAX_N];
+    let hdec_perm = &mut hdec_perm[..n];
+    let mut absrx_perm = [0.0f32; OSD_MAX_N];
+    let absrx_perm = &mut absrx_perm[..n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    // Inverse permutation: `inv_perm[i]` is the permuted-space column
+    // holding unpermuted (systematic) position `i`. `decoded[i]` for
+    // `i < k` only ever needs `cp[inv_perm[i]]` — this lets
+    // `try_and_update` gather just the `k` bits `verify` needs instead
+    // of scattering the full `n`-length codeword (and copying its
+    // first `k`) on every call before even checking whether `verify`
+    // will reject the candidate a moment later. `verify` (`check_crc14`
+    // and its FST4/MSK144 equivalents) is a strong filter — a
+    // 14..24-bit CRC rejects essentially every one of the ~166,650
+    // wrong FST4 candidates — so this turns the previously
+    // always-executed `O(n)` scatter into an `O(k)` gather for the
+    // overwhelming majority of calls, deferring the `O(n)` codeword
+    // build to the rare (effectively: only the true candidate) path
+    // that actually needs it.
+    let mut inv_perm = [0usize; OSD_MAX_N];
+    let inv_perm = &mut inv_perm[..n];
+    for (col, &p) in perm.iter().enumerate() {
+        inv_perm[p] = col;
+    }
+
+    // Best-so-far, plus the scratch `try_and_update` writes each
+    // candidate into before deciding whether it's an improvement.
+    // Single closure (not a `try_candidate` + separate `update_best`
+    // pair) so there's exactly one `FnMut` capturing all of these by
+    // mutable reference, rather than two closures each needing to
+    // borrow the other's captures — simpler for the borrow checker,
+    // same logic as the previous two-closure version.
+    let mut best_wd: Option<f32> = None;
+    let mut best_codeword = [0u8; OSD_MAX_N];
+    let mut best_decoded = [0u8; OSD_MAX_N];
+    let mut scratch_c = [0u8; OSD_MAX_N];
+    let mut scratch_decoded = [0u8; OSD_MAX_N];
+    // `cp` is now `OSD_WORDS`-word packed (bit `col` lives at
+    // `cp[col/64]` bit `col%64`) rather than one byte per bit — the
+    // caller (the k1..k4 construction below) builds it via
+    // `g_packed`'s word-XORs instead of `g`'s byte-XORs. The gather
+    // step (`decoded[i] = bit(cp, inv_perm[i])`) stays `O(k)` either
+    // way, just trading a byte load for a shift+mask; the scatter and
+    // weighted-distance loops (still `O(n)`, still gated behind
+    // `verify` exactly as before) are now one combined pass instead of
+    // two, since both need the same per-column bit.
+    let mut try_and_update = |cp: &[u64]| {
+        let decoded = &mut scratch_decoded[..k];
+        for (i, d) in decoded.iter_mut().enumerate() {
+            let idx = inv_perm[i];
+            *d = ((cp[idx / 64] >> (idx % 64)) & 1) as u8;
+        }
+        if let Some(f) = verify
+            && !f(decoded)
+        {
+            return;
+        }
+        let c = &mut scratch_c[..n];
+        let mut wd = 0.0f32;
+        for col in 0..n {
+            let bit = ((cp[col / 64] >> (col % 64)) & 1) as u8;
+            c[perm[col]] = bit;
+            if bit != hdec_perm[col] {
+                wd += absrx_perm[col];
+            }
+        }
+        if best_wd.is_none_or(|bd| wd < bd) {
+            best_wd = Some(wd);
+            best_codeword[..n].copy_from_slice(&scratch_c[..n]);
+            best_decoded[..k].copy_from_slice(&scratch_decoded[..k]);
         }
     };
 
     // Order-0.
-    if let Some((d, cw, wd)) = try_candidate(&c_perm) {
-        update_best(d, cw, wd);
-    }
+    try_and_update(&c_perm_packed);
 
-    // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. Reuse buffers
-    // across iterations to avoid per-candidate Vec allocs.
-    let mut c1 = vec![0u8; n];
-    let mut c2 = vec![0u8; n];
-    let mut c3 = vec![0u8; n];
-    let mut c4 = vec![0u8; n];
+    // Orders 1..ndeep: flip 1, 2, …, ndeep MRB bits. `c1`/`c2`/`c3`/`c4`
+    // are packed now too — each is computed directly as a word-XOR of
+    // its parent and one `g_packed` row (`OSD_WORDS`=4 XORs) instead
+    // of a byte copy plus an `n`-element (up to 240) byte-XOR loop,
+    // for every one of the ~166 650 order-3 combinations this search
+    // makes for FST4.
+    let mut c1_packed = [0u64; OSD_WORDS];
+    let mut c2_packed = [0u64; OSD_WORDS];
+    let mut c3_packed = [0u64; OSD_WORDS];
+    let mut c4_packed = [0u64; OSD_WORDS];
     for k1 in 0..k {
-        c1.copy_from_slice(&c_perm);
-        for col in 0..n {
-            c1[col] ^= g[k1 * n + col];
+        for w in 0..OSD_WORDS {
+            c1_packed[w] = c_perm_packed[w] ^ g_packed[k1][w];
         }
-        if let Some((d, cw, wd)) = try_candidate(&c1) {
-            update_best(d, cw, wd);
-        }
+        try_and_update(&c1_packed);
         if ndeep < 2 {
             continue;
         }
         for k2 in (k1 + 1)..k {
-            c2.copy_from_slice(&c1);
-            for col in 0..n {
-                c2[col] ^= g[k2 * n + col];
+            for w in 0..OSD_WORDS {
+                c2_packed[w] = c1_packed[w] ^ g_packed[k2][w];
             }
-            if let Some((d, cw, wd)) = try_candidate(&c2) {
-                update_best(d, cw, wd);
-            }
+            try_and_update(&c2_packed);
             if ndeep < 3 {
                 continue;
             }
             for k3 in (k2 + 1)..k {
-                c3.copy_from_slice(&c2);
-                for col in 0..n {
-                    c3[col] ^= g[k3 * n + col];
+                for w in 0..OSD_WORDS {
+                    c3_packed[w] = c2_packed[w] ^ g_packed[k3][w];
                 }
-                if let Some((d, cw, wd)) = try_candidate(&c3) {
-                    update_best(d, cw, wd);
-                }
-                if ndeep >= 4 && k3 + 1 < k4_limit {
-                    for k4 in (k3 + 1)..k4_limit.min(k) {
-                        c4.copy_from_slice(&c3);
-                        for col in 0..n {
-                            c4[col] ^= g[k4 * n + col];
-                        }
-                        if let Some((d, cw, wd)) = try_candidate(&c4) {
-                            update_best(d, cw, wd);
+                try_and_update(&c3_packed);
+                if ndeep >= 4 {
+                    // See `k4_tail`'s doc comment above for which end
+                    // of the reliability ordering each branch searches.
+                    // `false` branch unchanged from before `k4_tail`
+                    // existed — same gate, same range.
+                    let (gate, k4_start, k4_end) = if k4_tail {
+                        (k1 >= k.saturating_sub(k4_limit), k3 + 1, k)
+                    } else {
+                        (k3 + 1 < k4_limit, k3 + 1, k4_limit.min(k))
+                    };
+                    if gate {
+                        for k4 in k4_start..k4_end {
+                            for w in 0..OSD_WORDS {
+                                c4_packed[w] = c3_packed[w] ^ g_packed[k4][w];
+                            }
+                            try_and_update(&c4_packed);
                         }
                     }
                 }
@@ -1647,7 +1865,9 @@ pub fn osd_decode_generic<P: LdpcParams>(
     }
 
     // ── Step 6: return best ─────────────────────────────────────────
-    let (decoded, codeword, _) = best?;
+    best_wd?;
+    let codeword = &best_codeword[..n];
+    let decoded = &best_decoded[..k];
     let mut hard_errors = 0u32;
     for i in 0..n {
         if (codeword[i] == 1) != (llr[i] > 0.0) {
@@ -1658,8 +1878,305 @@ pub fn osd_decode_generic<P: LdpcParams>(
     message77.copy_from_slice(&decoded[..77]);
     Some(OsdResult {
         message77,
-        info: decoded,
-        codeword,
+        info: decoded.to_vec(),
+        codeword: codeword.to_vec(),
+        hard_errors,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Generic WSJT-X-faithful npre1 / npre1+npre2 OSD (issue #306, VK3NV)
+//
+// `osd_decode_npre1`/`osd_decode_npre1_npre2` above (issue #63) proved
+// out the pruned-search architecture for FT8's `Ldpc174_91Params`, pinned
+// throughout to `LDPC_N`/`LDPC_K` for the fixed-array scratch. Issue #198
+// found WSJT-X uses this *same* npre1/npre2/ntheta/ntau architecture for
+// FST4 (`osd240_101.f90`) and MSK144 (`osd128_90.f90`) too — only the
+// tuning constants differ — making FST4/MSK144's `osd_decode_generic`
+// dispatch (unpruned k1/k2/k3 combinatorial search) a real WSJT-X-fidelity
+// gap, not just an equally-valid alternative implementation.
+//
+// `npre1_pattern_counts` (above) measured the actual scale of that gap on
+// real FST4-60 data before committing to this port: `ntotal=5151`
+// (matches `k(k+1)/2` for K=101, and FT8's own `osd_decode_npre1` ndeep=2
+// precedent of ~4,186 for K=91 — `cd50179`'s commit message), with a mean
+// `npostgate=11` (0.2%) actually reaching the expensive full-codeword
+// step — a ~32× reduction in combinatorial scale vs `osd_decode_generic`'s
+// unpruned `C(101,3)≈166,650`.
+//
+// [`osd_decode_npre_generic`] below is that port: the same npre1/npre2
+// pass logic as `osd_npre1_pass`/`osd_npre2_pass`, generalised over any
+// [`LdpcParams`] via [`osd_setup_generic_packed`] and the same
+// "fixed `OSD_MAX_N` bound + runtime-length slice" idiom
+// `osd_decode_generic` established (`P::N`/`P::K` can't size a `[T; P::N]`
+// array on stable Rust). `ntheta`/`ntau` are runtime parameters rather
+// than trait constants — WSJT-X tunes them per-protocol *and* per-ndeep
+// (FT8 ndeep=2 uses `ntheta=10`, FST4 ndeep=2/3 both use `ntheta=12`),
+// so baking them into `LdpcParams` would need a second axis the trait
+// doesn't otherwise have.
+//
+// Deliberately **not** shared with `osd_decode_generic`'s own setup
+// section despite the overlap — that function is the tested, currently-
+// shipping search for FT8 order-≤2 dispatch, MSK144, and (until this is
+// wired in) FST4; refactoring it to share scaffolding with a brand-new,
+// not-yet-bit-verified-against-AWGN search path is a correctness risk
+// this port doesn't need to take on. The duplication is confined to
+// plain setup arithmetic (no closures, no control flow) — the same
+// tolerance this file already extends to
+// `osd_setup_ldpc174_91_fortran_pivot` existing alongside
+// `osd_setup_ldpc174_91`.
+
+/// Fixed upper bound on `P::N` this generic OSD scratch is sized for.
+/// Shared between [`osd_decode_generic`]'s local `OSD_MAX_N` and this
+/// port so both stay in sync if a fourth, larger `LdpcParams` is ever
+/// added — see `osd_decode_generic`'s own doc comment for why `P::N`
+/// can't size the array directly on stable Rust.
+const OSD_NPRE_MAX_N: usize = 256; // ≥ 240 (FST4), 174 (FT8), 128 (MSK144)
+const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
+
+/// WSJT-X-faithful `npre1` (and, when `run_npre2` is set, `npre1+npre2`)
+/// OSD search, generic over any [`LdpcParams`] — the FST4/MSK144-capable
+/// counterpart to [`osd_decode_npre1`]/[`osd_decode_npre1_npre2`]'s
+/// FT8-pinned originals.
+///
+/// - `ntheta`: partial-parity gate threshold over the first
+///   `min(40, P::N-P::K)` parity bits (WSJT-X `nt`/`ntheta`,
+///   `osd174_91.f90`/`osd240_101.f90`). A candidate whose mismatch count
+///   in that window, plus its info-bit-flip count, exceeds `ntheta` is
+///   rejected without the expensive full encode + `verify` check.
+/// - `ntau`: hash-key width for the `npre2` pair-table second stage
+///   (`osd174_91.f90`/`osd240_101.f90`'s `ntau`). Ignored when
+///   `run_npre2` is `false`.
+/// - `run_npre2`: `false` runs only the `npre1` pass (WSJT-X `ndeep=2`
+///   equivalent); `true` adds the `npre2` hash-table pass (`ndeep=3`
+///   equivalent).
+///
+/// Algorithm identical to [`osd_npre1_pass`]/[`osd_npre2_pass`]
+/// otherwise; only the working-buffer shapes are runtime-sized
+/// (`OSD_NPRE_MAX_N`-bounded) to accommodate any `LdpcParams` instead of
+/// being pinned to `LDPC_N`/`LDPC_K`.
+pub fn osd_decode_npre_generic<P: LdpcParams>(
+    llr: &[f32],
+    ntheta: u32,
+    ntau: usize,
+    run_npre2: bool,
+    verify: Option<fn(&[u8]) -> bool>,
+) -> Option<OsdResult> {
+    debug_assert_eq!(llr.len(), P::N, "llr length must equal P::N");
+
+    let n = P::N;
+    let k = P::K;
+
+    let Some((perm, g, pivot_col)) = osd_setup_generic_packed::<P>(llr) else {
+        return None; // degenerate (shouldn't happen with a valid LDPC code)
+    };
+
+    let mut mrb = [0u8; OSD_NPRE_MAX_N];
+    let mrb = &mut mrb[..k];
+    for r in 0..k {
+        let orig = perm[pivot_col[r]];
+        mrb[r] = if llr[orig] > 0.0 { 1 } else { 0 };
+    }
+
+    let mut g_packed = [[0u64; OSD_NPRE_WORDS]; OSD_NPRE_MAX_N];
+    let g_packed = &mut g_packed[..k];
+    for (row, row_words) in g_packed.iter_mut().enumerate() {
+        for col in 0..n {
+            if g[row * n + col] != 0 {
+                row_words[col / 64] |= 1 << (col % 64);
+            }
+        }
+    }
+
+    let mut c_perm_packed = [0u64; OSD_NPRE_WORDS];
+    for r in 0..k {
+        if mrb[r] == 1 {
+            for w in 0..OSD_NPRE_WORDS {
+                c_perm_packed[w] ^= g_packed[r][w];
+            }
+        }
+    }
+
+    let mut hdec_perm = [0u8; OSD_NPRE_MAX_N];
+    let hdec_perm = &mut hdec_perm[..n];
+    let mut absrx_perm = [0.0f32; OSD_NPRE_MAX_N];
+    let absrx_perm = &mut absrx_perm[..n];
+    for col in 0..n {
+        hdec_perm[col] = if llr[perm[col]] > 0.0 { 1u8 } else { 0u8 };
+        absrx_perm[col] = llr[perm[col]].abs();
+    }
+
+    let mut inv_perm = [0usize; OSD_NPRE_MAX_N];
+    let inv_perm = &mut inv_perm[..n];
+    for (col, &p) in perm.iter().enumerate() {
+        inv_perm[p] = col;
+    }
+
+    // Same verify-gate-first, deferred-scatter `try_and_update` as
+    // `osd_decode_generic` — see that function's doc comment for the
+    // rationale. Here the `ntheta`/`ntau` gates upstream already prune
+    // to a handful of calls (measured mean 11/5151 for FST4-60), so
+    // there's no need for `osd_npre1_pass`'s original
+    // `dd < best.dd`-before-CRC micro-optimisation on top of that.
+    let mut best_wd: Option<f32> = None;
+    let mut best_codeword = [0u8; OSD_NPRE_MAX_N];
+    let mut best_decoded = [0u8; OSD_NPRE_MAX_N];
+    let mut scratch_c = [0u8; OSD_NPRE_MAX_N];
+    let mut scratch_decoded = [0u8; OSD_NPRE_MAX_N];
+    let mut try_and_update = |cp: &[u64]| {
+        let decoded = &mut scratch_decoded[..k];
+        for (i, d) in decoded.iter_mut().enumerate() {
+            let idx = inv_perm[i];
+            *d = ((cp[idx / 64] >> (idx % 64)) & 1) as u8;
+        }
+        if let Some(f) = verify
+            && !f(decoded)
+        {
+            return;
+        }
+        let c = &mut scratch_c[..n];
+        let mut wd = 0.0f32;
+        for col in 0..n {
+            let bit = ((cp[col / 64] >> (col % 64)) & 1) as u8;
+            c[perm[col]] = bit;
+            if bit != hdec_perm[col] {
+                wd += absrx_perm[col];
+            }
+        }
+        if best_wd.is_none_or(|bd| wd < bd) {
+            best_wd = Some(wd);
+            best_codeword[..n].copy_from_slice(&scratch_c[..n]);
+            best_decoded[..k].copy_from_slice(&scratch_decoded[..k]);
+        }
+    };
+
+    // Order-0 baseline.
+    try_and_update(&c_perm_packed);
+
+    // ── npre1 pass (mirrors `osd_npre1_pass`) ───────────────────────
+    let nt = NPRE1_PARITY_WINDOW.min(n - k);
+    let mut e2sub = [0u8; OSD_NPRE_MAX_N];
+    let e2sub = &mut e2sub[..(n - k)];
+    let mut e2 = [0u8; OSD_NPRE_MAX_N];
+    let e2 = &mut e2[..(n - k)];
+    let mut ce_iflag_packed = [0u64; OSD_NPRE_WORDS];
+    let mut ce_pair_packed = [0u64; OSD_NPRE_WORDS];
+
+    for iflag in (0..k).rev() {
+        for w in 0..OSD_NPRE_WORDS {
+            ce_iflag_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
+        }
+        for (j, e) in e2sub.iter_mut().enumerate() {
+            let col = k + j;
+            let bit = ((ce_iflag_packed[col / 64] >> (col % 64)) & 1) as u8;
+            *e = bit ^ hdec_perm[col];
+        }
+        let parity_err: u32 = e2sub[..nt].iter().map(|&b| b as u32).sum();
+        // WSJT-X gate is `parity_err + 1 <= ntheta` (the +1 accounts
+        // for the iflag info-bit flip); written as `parity_err <
+        // ntheta` to silence clippy::int_plus_one, same as
+        // `osd_npre1_pass`.
+        if parity_err < ntheta {
+            try_and_update(&ce_iflag_packed);
+        }
+
+        for n1 in (0..iflag).rev() {
+            for j in 0..(n - k) {
+                let col = k + j;
+                let g_bit = ((g_packed[n1][col / 64] >> (col % 64)) & 1) as u8;
+                e2[j] = e2sub[j] ^ g_bit;
+            }
+            let parity_err_pair: u32 = e2[..nt].iter().map(|&b| b as u32).sum();
+            // +2 for the two info-bit flips (iflag + n1).
+            if parity_err_pair + 2 > ntheta {
+                continue;
+            }
+            for w in 0..OSD_NPRE_WORDS {
+                ce_pair_packed[w] = ce_iflag_packed[w] ^ g_packed[n1][w];
+            }
+            try_and_update(&ce_pair_packed);
+        }
+    }
+
+    // ── npre2 pass (mirrors `build_npre2_table`/`osd_npre2_pass`) ──
+    if run_npre2 {
+        let mut table = OsdNpre2Table::new(ntau);
+        let mut row_keys = [0u16; OSD_NPRE_MAX_N];
+        let row_keys = &mut row_keys[..k];
+        for (i, rk) in row_keys.iter_mut().enumerate() {
+            let mut key: u16 = 0;
+            for j in 0..ntau {
+                let col = k + j;
+                let bit = ((g_packed[i][col / 64] >> (col % 64)) & 1) as u8;
+                if bit != 0 {
+                    key |= 1u16 << (ntau - 1 - j);
+                }
+            }
+            *rk = key;
+        }
+        for i1 in 0..k {
+            for i2 in 0..i1 {
+                let key = (row_keys[i1] ^ row_keys[i2]) as usize;
+                table.insert(key, i1 as u8, i2 as u8);
+            }
+        }
+
+        let mut ce_misub_packed = [0u64; OSD_NPRE_WORDS];
+        let mut ce_test_packed = [0u64; OSD_NPRE_WORDS];
+        for iflag in (0..k).rev() {
+            for w in 0..OSD_NPRE_WORDS {
+                ce_misub_packed[w] = c_perm_packed[w] ^ g_packed[iflag][w];
+            }
+            for (j, e) in e2sub.iter_mut().enumerate() {
+                let col = k + j;
+                let bit = ((ce_misub_packed[col / 64] >> (col % 64)) & 1) as u8;
+                *e = bit ^ hdec_perm[col];
+            }
+
+            let mut base_key: usize = 0;
+            for j in 0..ntau {
+                if e2sub[j] != 0 {
+                    base_key |= 1 << (ntau - 1 - j);
+                }
+            }
+
+            for i2 in 0..=ntau {
+                let key = if i2 == 0 {
+                    base_key
+                } else {
+                    base_key ^ (1 << (ntau - i2))
+                };
+                for (in1, in2) in table.iter_pairs(key) {
+                    let in1_u = in1 as usize;
+                    let in2_u = in2 as usize;
+                    if iflag == in1_u || iflag == in2_u || in1_u == in2_u {
+                        continue;
+                    }
+                    for w in 0..OSD_NPRE_WORDS {
+                        ce_test_packed[w] =
+                            ce_misub_packed[w] ^ g_packed[in1_u][w] ^ g_packed[in2_u][w];
+                    }
+                    try_and_update(&ce_test_packed);
+                }
+            }
+        }
+    }
+
+    best_wd?;
+    let codeword = &best_codeword[..n];
+    let decoded = &best_decoded[..k];
+    let mut hard_errors = 0u32;
+    for i in 0..n {
+        if (codeword[i] == 1) != (llr[i] > 0.0) {
+            hard_errors += 1;
+        }
+    }
+    let mut message77 = [0u8; 77];
+    message77.copy_from_slice(&decoded[..77]);
+    Some(OsdResult {
+        message77,
+        info: decoded.to_vec(),
+        codeword: codeword.to_vec(),
         hard_errors,
     })
 }
@@ -2189,8 +2706,9 @@ mod packed_setup_differential {
             .iter()
             .map(|&b| if b == 1 { 10.0 } else { -10.0 })
             .collect();
-        let result = osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None)
-            .expect("clean codeword must decode");
+        let result =
+            osd_decode_generic::<Ldpc128_90Params>(&llr, 2, Ldpc128_90Params::K, None, false)
+                .expect("clean codeword must decode");
         assert_eq!(result.info, info);
     }
 }

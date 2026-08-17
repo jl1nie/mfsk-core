@@ -6,6 +6,11 @@
 //! `Cargo.toml` (target / sdkconfig) and a 5-line `bin/*.rs` shim.
 
 pub mod compute_bench;
+#[cfg(feature = "fst4-bench")]
+pub mod fst4_bench;
 pub mod rx_wavsim;
+pub mod scalar_bench;
 #[cfg(feature = "wspr-bench")]
 pub mod wspr_bench;
+#[cfg(feature = "wspr-bench")]
+pub mod wspr_scan;

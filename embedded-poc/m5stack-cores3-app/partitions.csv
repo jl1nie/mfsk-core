@@ -1,7 +1,18 @@
-# M5Stack CoreS3 = 16 MB flash. Mirrors the s3-app / Core2-app layout
-# (3 MB factory + 1 MB littlefs); trailing flash is unused for now.
+# M5Stack CoreS3 = 16 MB flash. Was 3 MB factory + 1 MB littlefs
+# (s3-app / Core2-app layout); grown 2026-08-16 for issue #306's
+# `fst4-bench` bin, which `include_bytes!`s a ~7.16 MiB pair of golden
+# assets (audio + FST4-60A FFT cache) and links to a ~7.7 MiB app
+# image — the old 3 MiB factory partition can't hold it.
+# 9 MiB factory (room to grow past the current image) + littlefs
+# shifted to follow it, still ~6.2 MiB of trailing flash unused.
+# Shared across every `[[bin]]` in this crate (Cargo has no per-bin
+# partition table), so this also reflashes `wspr-app` — its littlefs-
+# stored settings (WiFi SSID/PSK, NVS boot mode) move offset and are
+# lost on the next flash; re-enter them via the HTTP config server
+# afterward. `wspr-bench`/`lcd-minimal`/`wifi-probe` are far smaller
+# than either old or new factory size and are unaffected either way.
 # Name,     Type, SubType, Offset,  Size
 nvs,        data, nvs,     0x9000,  0x6000
 phy_init,   data, phy,     0xf000,  0x1000
-factory,    app,  factory, 0x10000, 0x330000
-littlefs,   data, spiffs,  0x340000, 0xC0000
+factory,    app,  factory, 0x10000, 0x900000
+littlefs,   data, spiffs,  0x910000, 0xC0000

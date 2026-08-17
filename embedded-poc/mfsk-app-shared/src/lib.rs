@@ -8,14 +8,19 @@
 
 pub mod adif;
 pub mod boot_mode;
+pub mod civil_time;
 pub mod flash_log;
+pub mod http_config;
 pub mod log_sink;
+pub mod ntp;
 pub mod parity;
 pub mod qso;
+pub mod settings;
 pub mod snr_norm;
 pub mod time_sync;
 pub mod tx_picker;
 pub mod udp_log;
 pub mod ui;
 pub mod wifi;
+pub mod wspr_bands;
 pub mod wsprnet;

@@ -33,11 +33,7 @@ use esp_idf_hal::{
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI3},
     units::FromValueType,
 };
-use mipidsi::{
-    models::ILI9341Rgb565,
-    options::{ColorInversion, Orientation, Rotation},
-    Builder,
-};
+use mipidsi::{models::ILI9342CRgb565, options::ColorInversion, Builder};
 
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
@@ -112,19 +108,27 @@ pub fn run_log_panel(
 
     let di = SPIInterface::new(spi_dev, dc);
 
-    // ILI9342C is mostly ILI9341-compatible — use mipidsi's ILI9341
-    // model with `ILI9341Rgb565` pixel format. No `reset_pin()` since
-    // RST is on AXP192 GPIO4 (already cycled in `pmic::init_lcd_power`)
-    // and mipidsi will fall back to SWRESET via the command interface.
+    // No `reset_pin()` since RST is on AXP192 GPIO4 (already cycled in
+    // `pmic::init_lcd_power`) and mipidsi will fall back to SWRESET
+    // via the command interface.
     //
-    // `display_size` MUST match the controller's framebuffer (240×320,
-    // the panel's native portrait), and `orientation` then rotates the
-    // embedded-graphics coordinate space to landscape 320×240 — which
-    // is the panel's physical landscape orientation on the Core2 case.
+    // **2026-08-15 real-hardware fix** (found chasing `wspr-app`'s own
+    // "LCD shows nothing" bug on the sibling CoreS3 board — see memory
+    // `project_wspr_app_cores3_ui`): this panel is genuinely ILI9342C,
+    // whose mipidsi model already has `FRAMEBUFFER_SIZE = (320, 240)`
+    // — landscape-native. The previous code used the *ILI9341* model
+    // (`FRAMEBUFFER_SIZE = (240, 320)`, portrait-native) plus a manual
+    // `.orientation(Deg90)` to compensate; that Builder-time rotation
+    // never correctly resynced mipidsi's internal width/height
+    // bookkeeping on the CoreS3 board this pattern was copied to (not
+    // yet independently re-verified with a photo of *this* binary's
+    // own Core2 screen — same caveat as the CoreS3 FT8 controller's
+    // own `display.rs`, fixed identically in the same pass). Using the
+    // model whose native framebuffer already matches the physical
+    // panel needs no rotation hack at all.
     let mut delay = Ets;
-    let mut display = match Builder::new(ILI9341Rgb565, di)
-        .display_size(240, 320)
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
+    let mut display = match Builder::new(ILI9342CRgb565, di)
+        .display_size(320, 240)
         .invert_colors(ColorInversion::Inverted) // M5GFX core2 cfg.invert = true
         .init(&mut delay)
     {
@@ -139,11 +143,19 @@ pub fn run_log_panel(
     };
 
     log::info!(
-        "LCD init OK (ILI9342C via ILI9341 model, {}x{})",
+        "LCD init OK (ILI9342C, {}x{})",
         crate::board::LCD_WIDTH,
         crate::board::LCD_HEIGHT
     );
-    display.clear(Rgb565::BLACK).ok();
+    // Explicit `Rectangle` fill, not `DrawTarget::clear()` — the
+    // latter gave unreliable/partial coverage on this mipidsi/SPI
+    // setup every time it was tried during the wspr-app investigation
+    // (see the fix note above); every other draw call in this file
+    // already used `Rectangle` fills, so this is the one holdout.
+    Rectangle::new(Point::new(0, 0), Size::new(crate::board::LCD_WIDTH as u32, crate::board::LCD_HEIGHT as u32))
+        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+        .draw(&mut display)
+        .ok();
 
     let tx_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)

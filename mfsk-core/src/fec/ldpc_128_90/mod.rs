@@ -146,6 +146,7 @@ impl FecCodec for Ldpc128_90 {
             opts.osd_depth.min(3) as u8,
             LDPC_K,
             opts.verify_info,
+            false,
         ) {
             return Some(FecResult {
                 info: r.info,

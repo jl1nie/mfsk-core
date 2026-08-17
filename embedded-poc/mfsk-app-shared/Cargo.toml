@@ -42,3 +42,11 @@ esp-idf-hal = "0.46"
 embassy-sync = "0.7"
 heapless = "0.8"
 embedded-graphics = "0.8"
+# Direct dependency (matching esp-idf-svc's own pinned version) only
+# for the `Headers` trait (`http_config.rs`'s `req.content_len()`).
+# `esp_idf_svc::http::Headers` re-exports a same-named but unrelated
+# *struct* (`embedded_svc::utils::http::Headers`, a fixed-capacity
+# header store) — the trait with `content_len()` lives at
+# `embedded_svc::http::Headers` instead, which esp-idf-svc's own
+# `http` module never re-exports under that path.
+embedded-svc = { version = "0.29", default-features = false }

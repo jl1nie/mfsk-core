@@ -67,6 +67,8 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use num_traits::Float;
 
+use crate::engine::dsp::fir_decimate::{FirStage, design_lowpass};
+
 use super::baseband::{NFFT1, NFFT2, NPOINTS_MAX};
 
 /// Input rate.
@@ -110,33 +112,6 @@ fn mixer_table() -> [(f32, f32); 8] {
         *e = (phi.cos(), phi.sin());
     }
     t
-}
-
-/// Windowed-sinc low-pass, cutoff `fc` normalised to the sample rate,
-/// Blackman window, unit DC gain.
-fn design_lowpass(ntaps: usize, fc_norm: f32) -> Vec<f32> {
-    let mut h = vec![0.0f32; ntaps];
-    let m = (ntaps - 1) as f32;
-    let mut sum = 0.0f32;
-    for (k, tap) in h.iter_mut().enumerate() {
-        let x = k as f32 - m / 2.0;
-        let sinc = if x.abs() < 1e-6 {
-            2.0 * fc_norm
-        } else {
-            (2.0 * core::f32::consts::PI * fc_norm * x).sin() / (core::f32::consts::PI * x)
-        };
-        // Blackman: better stopband than Hamming (~-74 dB vs -53 dB),
-        // which is the half that matters here — the passband is
-        // oversized on purpose.
-        let w = 0.42 - 0.5 * (2.0 * core::f32::consts::PI * k as f32 / m).cos()
-            + 0.08 * (4.0 * core::f32::consts::PI * k as f32 / m).cos();
-        *tap = sinc * w;
-        sum += *tap;
-    }
-    for tap in h.iter_mut() {
-        *tap /= sum;
-    }
-    h
 }
 
 /// Incremental 12 kHz → 375 Hz complex down-converter.
@@ -346,6 +321,163 @@ impl<'a> StreamingDdc<'a> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Two-stage cascade — decimate-by-8 then decimate-by-4
+// ─────────────────────────────────────────────────────────────────────────
+//
+// [`StreamingDdc`]'s own doc comment already named this as the road not
+// taken: "The filter is a single polyphase stage rather than a
+// decimate-by-8-then-4 cascade. A cascade is cheaper in multiplies..."
+// — true, but the reason given for not doing it ("well under a second
+// on an LX7") turned out to be wrong on real hardware: measured
+// 2026-08-15, `NTAPS`=1793's `taps`/`hist_i`/`hist_q` (7 172 B /
+// 9 220 B / 9 220 B) all clear `SPIRAM_MALLOC_ALWAYSINTERNAL` (4096 B),
+// so a plain `vec![...]` allocation for [`DdcBufs`] lands in PSRAM —
+// confirmed by pointer address on a real CoreS3 (`0x3c2...`, PSRAM's
+// mapped range, not internal DRAM's `0x3fc8...`) — at ~15 cycles/
+// mult-add instead of the fast path the estimate assumed. Measured
+// cost: ~30 s of a 120 s slot (25%), not "under a second".
+//
+// This cascade fixes both problems at once, not just the one the user
+// asked about first: cutting `NTAPS` from 1 793 to 43+223=266 total
+// (per-stage tap counts derived below via the standard Crochiere-
+// Rabiner two-stage design rule, not guessed) cuts total MACs from
+// ~153 M to ~34 M (≈4.5×) *and* shrinks every buffer below the 4 KB
+// threshold, so it lands in internal DRAM automatically — no
+// `DdcBufs`-style caller-supplied-buffer plumbing needed, unlike
+// [`StreamingDdc`].
+//
+// ## Stage split, derived not guessed
+//
+// Passband edge `fp` = 174 Hz, stopband edge `fs` = 201 Hz — the same
+// two points [`StreamingDdc`]'s own single-stage design lands on
+// (27 Hz transition, `design_lowpass`'s `4/NTAPS` rule at `NTAPS`
+// =1793 and `AUDIO_RATE_HZ`=12 000). Splitting `DECIM`=32 into
+// `CASCADE_DECIM1`×`CASCADE_DECIM2` = 8×4:
+//
+// - **Stage 2** (rate `F1`=1 500 Hz, decimates by 4 → 375 Hz): carries
+//   the *real* passband/stopband requirement, same `[fp, fs]` = 27 Hz
+//   transition as the single-stage design, just at `F1` instead of
+//   `AUDIO_RATE_HZ`. `N ≈ 4·F1/(fs-fp)` = 4·1500/27 ≈ 222.2 → 223
+//   (odd, for linear phase).
+// - **Stage 1** (rate `AUDIO_RATE_HZ`, decimates by 8 → `F1`): only
+//   needs to keep stage 2 honest — anything that would alias into
+//   `[fp, fs]` after the /8 step must already be suppressed. Standard
+//   multistage-decimator rule: stage 1's transition band is
+//   `[fp, F1 - fs]` = `[174, 1500-201]` = `[174, 1299]`, width
+//   1 125 Hz — far looser than stage 2's, because stage 2 still cleans
+//   up everything within its own Nyquist afterward. `N ≈ 4·
+//   AUDIO_RATE_HZ/1125` = 4·12000/1125 ≈ 42.7 → 43 (odd).
+//
+// Paper design is not the check that matters here — per
+// [`StreamingDdc`]'s own doc comment, "one stage is markedly easier to
+// show equivalent to the reference, which is where the risk actually
+// is." The tests below hold this cascade to the *same* reference
+// (`decimate_to_baseband`) and the *same* coherence/rejection bars the
+// single-stage implementation already had to clear.
+
+/// Stage 1 tap count. See the module-level cascade doc comment for the
+/// Crochiere-Rabiner derivation.
+pub const CASCADE_N1: usize = 43;
+/// Stage 1 decimation factor.
+pub const CASCADE_DECIM1: usize = 8;
+/// Stage 2 tap count.
+pub const CASCADE_N2: usize = 223;
+/// Stage 2 decimation factor. `CASCADE_DECIM1 * CASCADE_DECIM2` must
+/// equal [`DECIM`] — asserted in [`StreamingDdcCascade::new`].
+pub const CASCADE_DECIM2: usize = 4;
+
+/// History margin before compaction — proportionally smaller than
+/// [`StreamingDdc`]'s 512 (sized for `NTAPS`=1793): both cascade
+/// stages are already tiny, so a fixed 256-input-sample margin keeps
+/// compaction reasonably amortised without inflating the buffers this
+/// cascade's whole point is to keep under the internal-DRAM auto-
+/// placement threshold. Passed to [`FirStage::new`]'s `hist_margin`.
+const CASCADE_HIST_MARGIN: usize = 256;
+
+/// Two-stage cascade replacement for [`StreamingDdc`] — same public
+/// shape (`push`/`flush`, same input/output rates and semantics), ~4.5×
+/// less compute and small enough to place its own working set in
+/// internal DRAM automatically. See the module-level doc comment above
+/// this type for the design rationale and derivation.
+pub struct StreamingDdcCascade {
+    mixer: [(f32, f32); 8],
+    n_in: usize,
+    stage1: FirStage,
+    stage2: FirStage,
+}
+
+impl StreamingDdcCascade {
+    pub fn new() -> Self {
+        assert_eq!(CASCADE_DECIM1 * CASCADE_DECIM2, DECIM, "cascade decimation must match DECIM");
+        Self {
+            mixer: mixer_table(),
+            n_in: 0,
+            stage1: FirStage::new(CASCADE_N1, CASCADE_DECIM1, 700.0 / AUDIO_RATE_HZ, CASCADE_HIST_MARGIN),
+            stage2: FirStage::new(
+                CASCADE_N2,
+                CASCADE_DECIM2,
+                187.5 / (AUDIO_RATE_HZ / CASCADE_DECIM1 as f32),
+                CASCADE_HIST_MARGIN,
+            ),
+        }
+    }
+
+    /// Consume `audio`, appending any baseband samples it completed.
+    /// Same semantics as [`StreamingDdc::push`] — output sample `m` is
+    /// centred on input sample `32·m`, group delay already removed.
+    pub fn push(&mut self, audio: &[f32], out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
+        for &s in audio {
+            let (c, sn) = self.mixer[self.n_in % 8];
+            self.n_in += 1;
+            // `and_then`, not a `let`-chain — this crate's Xtensa fork
+            // toolchain lags stable-Rust syntax features in ways that
+            // only surface when cross-building (see e.g. `StreamingDdc`'s
+            // own `win_start` field doc comment for a past instance),
+            // so plain-old combinators are the safe default here.
+            let stage1_out = self.stage1.push_one(s * c, s * sn);
+            if let Some((i2, q2)) = stage1_out.and_then(|(i1, q1)| self.stage2.push_one(i1, q1)) {
+                out_i.push(i2 * REFERENCE_GAIN);
+                out_q.push(q2 * REFERENCE_GAIN);
+            }
+        }
+    }
+
+    /// Flush the tail: feed enough zeros through both stages that the
+    /// last real input samples reach the centre of both filters.
+    /// Combined group delay in *input* (12 kHz) samples: stage 1's own
+    /// `GROUP_DELAY1` plus stage 2's `GROUP_DELAY2` scaled back up by
+    /// `CASCADE_DECIM1` (stage 2 operates at the decimated rate).
+    pub fn flush(&mut self, out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
+        let group_delay1 = (CASCADE_N1 - 1) / 2;
+        let group_delay2 = (CASCADE_N2 - 1) / 2;
+        let zeros = vec![0.0f32; group_delay1 + group_delay2 * CASCADE_DECIM1 + 1];
+        self.push(&zeros, out_i, out_q);
+    }
+}
+
+impl Default for StreamingDdcCascade {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Block-mode convenience, [`ddc_to_baseband`]'s cascade counterpart —
+/// for the differential tests below and for host A/B comparisons.
+pub fn ddc_to_baseband_cascade(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let n_in = audio.len().min(NPOINTS_MAX);
+    let mut ddc = StreamingDdcCascade::new();
+    let mut idat = Vec::with_capacity(NFFT2);
+    let mut qdat = Vec::with_capacity(NFFT2);
+    ddc.push(&audio[..n_in], &mut idat, &mut qdat);
+    ddc.flush(&mut idat, &mut qdat);
+    idat.resize(NFFT2, 0.0);
+    qdat.resize(NFFT2, 0.0);
+    idat.truncate(NFFT2);
+    qdat.truncate(NFFT2);
+    (idat, qdat)
+}
+
 /// Block-mode convenience with [`decimate_to_baseband`]'s signature,
 /// for A/B testing and for host callers that already hold a whole slot.
 ///
@@ -523,5 +655,154 @@ mod tests {
             (ratio - 1.0).abs() < 0.05,
             "amplitude ratio ddc/reference = {ratio}"
         );
+    }
+
+    // ── Cascade: same bars as the single-stage StreamingDdc above ──────
+    //
+    // Per the module-level cascade doc comment: "one stage is markedly
+    // easier to show equivalent to the reference, which is where the
+    // risk actually is" — the paper design in that doc comment is not
+    // the check that matters, these are.
+
+    #[test]
+    fn cascade_output_shape_matches_the_reference() {
+        let audio = tone(CENTER_HZ, 0.5, 240_000);
+        let (i, q) = ddc_to_baseband_cascade(&audio);
+        assert_eq!(i.len(), NFFT2);
+        assert_eq!(q.len(), NFFT2);
+        assert!(i.iter().all(|v| v.is_finite()));
+        assert!(q.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn cascade_centre_tone_lands_at_dc_with_reference_amplitude() {
+        let amp = 0.5f32;
+        let n = 480_000;
+        let audio = tone(CENTER_HZ, amp, n);
+        let (i, q) = ddc_to_baseband_cascade(&audio);
+
+        let mid = 7_000;
+        let mag = (i[mid] * i[mid] + q[mid] * q[mid]).sqrt();
+        let expect = amp / 2.0 * REFERENCE_GAIN;
+        assert!(
+            (mag - expect).abs() / expect < 0.02,
+            "|y| = {mag}, expected ~{expect}"
+        );
+    }
+
+    #[test]
+    fn cascade_offset_tone_becomes_a_rotating_phasor_at_the_offset() {
+        let offset = 40.0f32;
+        let n = 480_000;
+        let audio = tone(CENTER_HZ + offset, 0.5, n);
+        let (i, q) = ddc_to_baseband_cascade(&audio);
+
+        let a = 5_000usize;
+        let b = a + 1000;
+        let ph = |k: usize| q[k].atan2(i[k]);
+        let mut d = ph(b) - ph(a);
+        let expect_total = 2.0 * core::f32::consts::PI * offset * (b - a) as f32 / BASEBAND_RATE;
+        while d - expect_total > core::f32::consts::PI {
+            d -= 2.0 * core::f32::consts::PI;
+        }
+        while expect_total - d > core::f32::consts::PI {
+            d += 2.0 * core::f32::consts::PI;
+        }
+        let measured_hz = d / (2.0 * core::f32::consts::PI) * BASEBAND_RATE / (b - a) as f32;
+        assert!(
+            (measured_hz - offset).abs() < 0.5,
+            "measured {measured_hz} Hz, expected {offset}"
+        );
+    }
+
+    #[test]
+    fn cascade_out_of_band_tone_is_rejected() {
+        let n = 480_000;
+        let in_band = ddc_to_baseband_cascade(&tone(CENTER_HZ, 0.5, n));
+        let out_band = ddc_to_baseband_cascade(&tone(CENTER_HZ + 400.0, 0.5, n));
+
+        let rms = |(i, q): &(Vec<f32>, Vec<f32>)| -> f32 {
+            let span = 5_000..10_000;
+            let s: f32 =
+                span.clone().map(|k| i[k] * i[k] + q[k] * q[k]).sum::<f32>() / span.len() as f32;
+            s.sqrt()
+        };
+        let db = 20.0 * (rms(&out_band) / rms(&in_band)).log10();
+        assert!(db < -60.0, "out-of-band rejection only {db} dB");
+    }
+
+    #[test]
+    fn cascade_tracks_the_reference_channelizer_on_a_multi_tone() {
+        let n = NPOINTS_MAX;
+        let mut audio = vec![0.0f32; n];
+        for (f, a) in [
+            (CENTER_HZ - 120.0, 0.30),
+            (CENTER_HZ - 20.0, 0.20),
+            (CENTER_HZ + 75.0, 0.25),
+            (CENTER_HZ + 600.0, 0.40), // out of band, must not appear
+        ] {
+            let w = 2.0 * core::f64::consts::PI * f as f64 / AUDIO_RATE_HZ as f64;
+            for (k, s) in audio.iter_mut().enumerate() {
+                *s += (a * (w * k as f64).cos()) as f32;
+            }
+        }
+
+        let (ri, rq) = decimate_to_baseband(&audio);
+        let (di, dq) = ddc_to_baseband_cascade(&audio);
+
+        let span = 2_000..40_000;
+        let (mut num_re, mut num_im, mut pr, mut pd) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for k in span {
+            let (r, d) = ((ri[k], rq[k]), (di[k], dq[k]));
+            num_re += (r.0 * d.0 + r.1 * d.1) as f64;
+            num_im += (r.1 * d.0 - r.0 * d.1) as f64;
+            pr += (r.0 * r.0 + r.1 * r.1) as f64;
+            pd += (d.0 * d.0 + d.1 * d.1) as f64;
+        }
+        let coh = (num_re * num_re + num_im * num_im).sqrt() / (pr * pd).sqrt();
+        assert!(coh > 0.99, "coherence with the reference only {coh}");
+
+        let ratio = (pd / pr).sqrt();
+        assert!(
+            (ratio - 1.0).abs() < 0.05,
+            "amplitude ratio ddc/reference = {ratio}"
+        );
+    }
+
+    /// Direct cascade-vs-single-stage comparison — the two filters have
+    /// different transition-band shapes by construction (see the
+    /// module-level cascade doc comment), so this checks they agree
+    /// with each other at least as well as either agrees with the
+    /// reference, not bit-for-bit.
+    #[test]
+    fn cascade_tracks_the_single_stage_implementation() {
+        let n = NPOINTS_MAX;
+        let mut audio = vec![0.0f32; n];
+        for (f, a) in [
+            (CENTER_HZ - 120.0, 0.30),
+            (CENTER_HZ - 20.0, 0.20),
+            (CENTER_HZ + 75.0, 0.25),
+            (CENTER_HZ + 600.0, 0.40),
+        ] {
+            let w = 2.0 * core::f64::consts::PI * f as f64 / AUDIO_RATE_HZ as f64;
+            for (k, s) in audio.iter_mut().enumerate() {
+                *s += (a * (w * k as f64).cos()) as f32;
+            }
+        }
+
+        let (si, sq) = ddc_to_baseband(&audio);
+        let (ci, cq) = ddc_to_baseband_cascade(&audio);
+
+        let span = 2_000..40_000;
+        let (mut num_re, mut num_im, mut ps, mut pc) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for k in span {
+            let (s, c) = ((si[k], sq[k]), (ci[k], cq[k]));
+            num_re += (s.0 * c.0 + s.1 * c.1) as f64;
+            num_im += (s.1 * c.0 - s.0 * c.1) as f64;
+            ps += (s.0 * s.0 + s.1 * s.1) as f64;
+            pc += (c.0 * c.0 + c.1 * c.1) as f64;
+        }
+        let coh = (num_re * num_re + num_im * num_im).sqrt() / (ps * pc).sqrt();
+        assert!(coh > 0.99, "cascade vs. single-stage coherence only {coh}");
     }
 }

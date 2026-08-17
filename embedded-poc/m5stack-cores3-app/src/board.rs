@@ -32,15 +32,34 @@ pub const IMU_I2C_ADDR: u8 = 0x69;    // BMI270
 //   P0_0 = TP_INT      (FT6336U interrupt, input)
 //   P0_1 = BUS_OUT_EN  (USB host VBUS boost, HIGH=enable; Phase 1-Core)
 //   P0_2 = BOOST_EN    (5V boost for USB VBUS)
-//   P0_4 = LCD_BL      (ILI9342C backlight, HIGH=on)
+//   P0_4 = LCD_BL      (kept as a documented guess only — see below)
 //   P0_7 = SPK_EN      (AW88298 speaker amp enable; Phase 3-Core)
-//   P1_0 = LCD_RST     (ILI9342C reset, active LOW)
-//   P1_1 = TP_RST      (FT6336U reset, active LOW; Phase 6-Core)
+//   P1_0 = TP_RST      (FT6336U reset, active LOW; Phase 6-Core)
+//   P1_1 = LCD_RST     (ILI9342C reset, active LOW)
+//
+// **2026-08-15 correction, cross-checked against M5Stack's own
+// `M5GFX.cpp` (`github.com/m5stack/M5GFX`, CoreS3 board section)**:
+// two things this table originally got wrong, found chasing a real
+// "LCD shows nothing" bug on hardware.
+//
+// 1. LCD_RST/TP_RST were swapped (P1_0/P1_1 reversed from M5GFX's
+//    `rst_control`, which uses `1 << 1` for LCD_RST). Harmless in
+//    `pmic::init` today — both bits are driven together — but wrong
+//    if Phase 6-Core ever needs to toggle TP_RST alone.
+// 2. **LCD_BL is not an AW9523 pin at all.** M5GFX's CoreS3
+//    `setBrightness` never touches an AW9523 register — the backlight
+//    is powered by AXP2101's DLDO1 rail (register `0x90` bit `0x80`
+//    to enable, `0x99` for voltage), which `pmic.rs` now writes
+//    directly. `AW9523_P0_LCD_BL` is kept below purely as a
+//    documented "this was the original, apparently-wrong guess";
+//    `pmic::init` still writes it as part of the port-0 safe-default
+//    pattern, but nothing depends on it actually controlling the
+//    backlight anymore.
 pub const AW9523_P0_BUS_OUT_EN: u8 = 1 << 1;
 pub const AW9523_P0_LCD_BL: u8     = 1 << 4;
 pub const AW9523_P0_SPK_EN: u8     = 1 << 7;
-pub const AW9523_P1_LCD_RST: u8    = 1 << 0;
-pub const AW9523_P1_TP_RST: u8     = 1 << 1;
+pub const AW9523_P1_TP_RST: u8     = 1 << 0;
+pub const AW9523_P1_LCD_RST: u8    = 1 << 1;
 
 // ── USB OTG (Phase 1-Core) ────────────────────────────────────────────
 pub const USB_OTG_DP: i32 = 20;

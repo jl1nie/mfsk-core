@@ -9,6 +9,8 @@
 //! synthesis. `tones_to_f32` / `tones_to_i16` (no suffix) are FST4-60A
 //! convenience wrappers kept for backward compatibility.
 
+use alloc::vec::Vec;
+
 use super::Fst4s60;
 use crate::engine::dsp::gfsk::{GfskCfg, synth_f32, synth_i16};
 use crate::engine::{FecCodec, FrameLayout, ModulationParams};

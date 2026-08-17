@@ -18,3 +18,18 @@
 /// wsprnet.org spot encoding — pure string building, no I/O.
 #[path = "../../../embedded-poc/mfsk-app-shared/src/wsprnet.rs"]
 pub mod wsprnet;
+
+/// Unix-epoch → UTC calendar time — pure integer arithmetic, no I/O.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/civil_time.rs"]
+pub mod civil_time;
+
+/// WSPR band/dial-frequency table — pure data, no I/O.
+#[path = "../../../embedded-poc/mfsk-app-shared/src/wspr_bands.rs"]
+pub mod wspr_bands;
+
+/// WSPR UI row formatting — pure string building, no I/O, no
+/// `embedded-graphics` draw calls (those live in `wspr_list.rs`,
+/// which does need this crate's `esp_idf_svc`-adjacent draw stack and
+/// so is not pulled in here).
+#[path = "../../../embedded-poc/mfsk-app-shared/src/ui/wspr_row.rs"]
+pub mod wspr_row;

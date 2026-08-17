@@ -1,15 +1,36 @@
 //! AXP2101 + AW9523B bring-up for M5Stack CoreS3 (Phase 0-Core).
 //!
-//! AXP2101 (0x34): main PMIC. Phase 0 verifies presence via Chip-ID
-//! (reg 0x03 → 0x4A for AXP2101) and relies on power-on defaults for all
-//! rails. Full rail tuning (ALDO voltages etc.) is a Phase 1-Core item.
+//! AXP2101 (0x34): main PMIC. Phase 0 verified presence via Chip-ID
+//! (reg 0x03 → 0x4A for AXP2101) and *assumed* power-on defaults were
+//! enough for every rail. **That assumption was wrong** (found
+//! 2026-08-15, real hardware: PMIC/AW9523B/SPI/mipidsi every step
+//! logged success, but the physical panel stayed completely dark —
+//! not even a backlight glow). Cross-checked against M5Stack's own
+//! `M5GFX.cpp` (`github.com/m5stack/M5GFX`, `M5StackCoreS3`
+//! `setBrightness`): the LCD backlight is powered by AXP2101's
+//! **DLDO1** rail, enabled via register `0x90` bit `0x80` and its
+//! voltage set via register `0x99` — a rail this module never touched
+//! at all, so DLDO1 stayed at whatever its power-on-reset state
+//! happened to be (evidently off, or too low to matter). `chip-id`
+//! is a read-only sanity check and says nothing about which rails are
+//! actually enabled; this file now writes the same two registers
+//! M5GFX does before returning.
 //!
 //! AW9523B (0x58): I/O expander. Phase 0 configures:
 //!   - Port 0 direction: P0_0 (TP_INT) = input, rest = output.
 //!   - Port 1 direction: all outputs.
 //!   - Safe defaults: BUS_OUT_EN=LOW (no USB VBUS), SPK_EN=LOW.
-//!   - LCD_BL (P0_4) = HIGH → backlight on.
-//!   - LCD_RST (P1_0): LOW → delay → HIGH → ILI9342C reset cycle.
+//!   - LCD_BL (P0_4) = HIGH. **Also found wrong 2026-08-15**: M5GFX's
+//!     CoreS3 code never touches an AW9523 pin for backlight at all —
+//!     P0_4 here does not correspond to backlight control on this
+//!     board (kept as a no-op safe-default write; not removed, since
+//!     an unverified guess about what P0_4 *actually* drives isn't
+//!     worth swapping in for another).
+//!   - LCD_RST/TP_RST: LOW → delay → HIGH → reset cycle. Which
+//!     individual Port-1 bit is which was also swapped versus M5GFX
+//!     (`AW9523_P1_LCD_RST`/`AW9523_P1_TP_RST` below) — harmless here
+//!     since both bits are driven together, but fixed for when
+//!     Phase 6-Core (touch) needs to toggle TP_RST alone.
 //!
 //! I2C bus is returned to the caller; display.rs holds it for the reset
 //! delay and then drops it (Phase 6-Core touch driver will reclaim it).
@@ -38,6 +59,16 @@ const AW9523_REG_GCR: u8  = 0x11; // Global config (push-pull vs open-drain)
 
 // AXP2101 register map (AXP2101 datasheet).
 const AXP2101_REG_CHIP_ID: u8 = 0x03; // Chip ID — 0x4A for AXP2101
+const AXP2101_REG_LDO_ONOFF0: u8 = 0x90; // LDOs ON/OFF control 0 — bit 0x80 = DLDO1 enable
+const AXP2101_REG_DLDO1_VOLTAGE: u8 = 0x99; // DLDO1 (LCD backlight) voltage setting
+const AXP2101_DLDO1_ENABLE_BIT: u8 = 0x80;
+/// `33 - 5`, matching M5GFX's own encoding for these AXP2101 LDO
+/// voltage registers (same formula it uses for ALDO3/ALDO4, both
+/// documented there as 3.3 V): register value `V` → `0.5 V + 0.1 V ×
+/// V`, so `28` is 3.3 V. Backlight brightness isn't otherwise exposed
+/// by this app yet — a fixed "on, reasonably bright" value is enough
+/// to prove/keep the panel lit.
+const AXP2101_DLDO1_VOLTAGE_3V3: u8 = 28;
 
 const I2C_TIMEOUT_TICKS: u32 = 100;
 
@@ -78,6 +109,34 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
         Err(e) => log::warn!("AXP2101 read failed: {e:#}"),
     }
 
+    // ── AXP2101 DLDO1 (LCD backlight power rail) ────────────────────────
+    // Read-modify-write, not a blind overwrite: register 0x90 also
+    // gates other LDOs (ALDO1-4 etc.) that may already be correctly
+    // configured by power-on defaults — only the DLDO1 bit should
+    // change here. Matches M5GFX's `bitOn`/`setBrightness` sequence
+    // for CoreS3 (see this module's doc comment).
+    match read_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0) {
+        Ok(cur) => {
+            let new_val = cur | AXP2101_DLDO1_ENABLE_BIT;
+            if let Err(e) = write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0, new_val) {
+                log::warn!("AXP2101 DLDO1 enable (reg 0x90) failed: {e:#}");
+            } else {
+                log::info!("AXP2101 reg 0x90: 0x{cur:02x} -> 0x{new_val:02x} (DLDO1 enabled)");
+            }
+        }
+        Err(e) => log::warn!("AXP2101 reg 0x90 read failed: {e:#} — DLDO1 enable skipped"),
+    }
+    if let Err(e) = write_reg(
+        &mut i2c,
+        AXP2101_I2C_ADDR,
+        AXP2101_REG_DLDO1_VOLTAGE,
+        AXP2101_DLDO1_VOLTAGE_3V3,
+    ) {
+        log::warn!("AXP2101 DLDO1 voltage (reg 0x99) failed: {e:#}");
+    } else {
+        log::info!("AXP2101 reg 0x99 = {AXP2101_DLDO1_VOLTAGE_3V3} (DLDO1 ~3.3V, backlight power)");
+    }
+
     // ── AW9523B init ──────────────────────────────────────────────────
     // GCR[4] = 0: push-pull mode for port 0 (default is open-drain on
     // some silicon revisions; set explicitly to guarantee output drive).
@@ -85,7 +144,7 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 
     // Port 0 direction: P0_0 (TP_INT) = input (bit=1), rest = output.
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG0, 0x01)?;
-    // Port 1 direction: all outputs (P1_0=LCD_RST, P1_1=TP_RST, ...).
+    // Port 1 direction: all outputs (P1_0=TP_RST, P1_1=LCD_RST, ...).
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG1, 0x00)?;
 
     // Safe default output state: BUS_OUT_EN (P0_1)=LOW (no USB VBUS,
