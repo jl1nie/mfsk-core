@@ -4386,14 +4386,10 @@ fn fst4_60_diag_npre_baseline_scan() {
 }
 
 fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
-    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
-    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
     use mfsk_core::fst4::Fst4s60;
-    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
     /// Upper bound on trial index to probe; missing files are skipped, so
     /// this works against any corpus generation (20-, 100-trial, …).
@@ -4415,13 +4411,11 @@ fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
         NpreThenUnpruned,
     }
 
-    let dir = sweep_dir();
     let (osd_attempt_min, osd_depth3_min) =
         mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
     let fec = <Fst4s60 as Protocol>::Fec::default();
     let verify_info =
         Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
-    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
 
     // Per-trial cached sync so selection and all four arms share it.
     // Each prepared candidate is (baseband already frequency-corrected to
@@ -4495,36 +4489,7 @@ fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
     };
 
     // ── Prepare every present trial once ─────────────────────────────
-    // One prepared candidate: baseband already frequency-corrected to the
-    // refined estimate, plus that estimate's `i0`.
-    type PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
-    let mut prepared: Vec<(u32, Vec<PreparedCand>)> = Vec::new();
-    for trial in 1..=MAX_TRIAL {
-        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
-        let Some(audio) = load_wav_i16_opt(&path) else {
-            continue;
-        };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
-        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-        let mut prep = Vec::new();
-        for c in cands
-            .iter()
-            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
-        {
-            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
-            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
-            if sum2 > f32::EPSILON {
-                let inv = 1.0 / sum2.sqrt();
-                for z in cd0.iter_mut() {
-                    *z *= inv;
-                }
-            }
-            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
-            let shifted = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
-            prep.push((shifted, s2.i0));
-        }
-        prepared.push((trial, prep));
-    }
+    let prepared = prepare_fst4_60_cell(channel, snr_tag, MAX_TRIAL);
 
     // ── The full 2 × 3 grid, no trial pre-selection ───────────────────
     // Selecting a subset first is what makes this measurement circular
@@ -5020,4 +4985,373 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
             }
         }
     }
+}
+
+/// One prepared FST4-60 candidate: baseband already frequency-corrected
+/// to the refined estimate, plus that estimate's `i0`.
+type Fst4PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
+
+/// Sync one sweep-corpus cell once, so every configuration downstream
+/// sees identical input and differences are attributable to the axis
+/// under test rather than to sync jitter.
+///
+/// Shared by [`npre_timing_grid_for_cell`] and
+/// [`fst4_60_diag_i0_cheap_rank_vs_exhaustive`]. Candidates are
+/// pre-filtered to ±[`FREQ_TOL_HZ`] of [`GOLDEN_FREQ_HZ`] — this is the
+/// known-target (sniper-shaped) question, deliberately not the wide-band
+/// unknown-frequency one, and it is why this path decodes ~1-2 dB
+/// shallower than `DecodeRequest` (see `FST4_BENCHMARK.md` §9 trap 3).
+///
+/// Returns `(trial_index, candidates)` for every trial file present;
+/// missing indices are skipped, so it works against any corpus
+/// generation.
+fn prepare_fst4_60_cell(
+    channel: &str,
+    snr_tag: &str,
+    max_trial: u32,
+) -> Vec<(u32, Vec<Fst4PreparedCand>)> {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    let dir = sweep_dir();
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let mut prepared = Vec::new();
+
+    for trial in 1..=max_trial {
+        let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+        let Some(audio) = load_wav_i16_opt(&path) else {
+            continue;
+        };
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+        let mut prep = Vec::new();
+        for c in cands
+            .iter()
+            .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+        {
+            let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for z in cd0.iter_mut() {
+                    *z *= inv;
+                }
+            }
+            let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+            let shifted = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+            prep.push((shifted, s2.i0));
+        }
+        prepared.push((trial, prep));
+    }
+    prepared
+}
+
+/// **Can timing diversity be had cheaply?** VK3NV's proposal on #308,
+/// measured.
+///
+/// #308 ported WSJT-X's control flow literally: try `i0`, then `i0+1`,
+/// then `i0-1`, rebuilding the full bit-metric ladder at each and
+/// short-circuiting on success. On host that is free enough to be
+/// unconditional. On embedded it is not — real-hardware measurement put
+/// it at 3.02× (`full`) / 2.51× (`no8_osd`) of the candidate loop, which
+/// is why `decode_rung_major`'s production default stays at `&[0]` and
+/// #310 exists.
+///
+/// VK3NV's observation was that cheap sync-quality information already
+/// exists *before* the expensive LLR/OSD work, so the offsets could be
+/// **ranked** rather than exhaustively tried:
+///
+/// > Could we score `i0`, `i0+1` and `i0-1` cheaply, choose/rank the best
+/// > timing, and run the expensive decoder only once initially?
+///
+/// This measures whether that works, i.e. whether `sync_quality` is a
+/// good enough proxy for "which offset will decode".
+///
+/// ## Configurations
+///
+/// | | offsets tried at full depth | cost shape |
+/// |---|---|---|
+/// | `base` | `{0}` | 1 unit |
+/// | `exhaustive` | `{0,+1,-1}`, short-circuit on success | ≤3 units |
+/// | `cheap-rank` | **only** the `argmax nsync` offset | 1 unit + 3 cheap `nsync` |
+/// | `progressive` | all three, ordered by `nsync` descending | ≤3 units, better ordering |
+///
+/// `progressive` must match `exhaustive` on recall by construction (same
+/// set, different order) — if it doesn't, the harness is broken. Its
+/// point is the *cost* column.
+///
+/// ## Cost is counted, not timed
+///
+/// The metric is the number of full decode units executed
+/// (`compute_llr` + the BP/OSD ladder for one (candidate, offset)), not
+/// wall-clock. That makes it machine-independent, which matters because
+/// absolute host timing on an Apple laptop swings ~3× with power state —
+/// so unlike every `loop_ms` column in this file, these numbers are
+/// directly comparable and can be quoted as-is.
+///
+/// ## The confound that has to be checked first
+///
+/// `i0` does not arrive unranked. It comes from `fst4_sync_search`,
+/// whose entire job is to **maximise a coherent sync score** over a
+/// (Δf, Δt) grid. `sync_quality` is a closely related measure of the
+/// same thing, so it is expected to peak at `i0` — which makes
+/// `argmax nsync` degenerate to offset 0, and `cheap-rank ≈ base` a
+/// near-tautology rather than evidence about the proposal.
+///
+/// The output therefore reports `argmax nsync == offset 0` as a counted
+/// fraction, and the verdict short-circuits to DEGENERATE when it is
+/// ≥95 %. **Do not read "cheap-rank recovered nothing" as "ranking
+/// cannot work" without checking that line first.** The first run of
+/// this test (2026-08-17) hit exactly this: it printed "PROXY USELESS"
+/// on cells where the ranking had never actually chosen a non-zero
+/// offset, which is not the same claim at all.
+///
+/// What the degenerate case does establish is narrower but still useful
+/// for #310: a cheap proxy for "which timing will decode" **cannot be
+/// another sync-strength measure**, because the refine stage has already
+/// maximised that. It would have to be sync-orthogonal — something
+/// derived from LLR reliability, or a truncated-BP syndrome weight,
+/// rather than from Costas correlation.
+///
+/// ## Reading the result
+///
+/// - If `cheap-rank` ≈ `exhaustive` on recall, `sync_quality` is a
+///   sufficient proxy and #310 can buy most of the timing benefit for
+///   roughly one unit instead of three.
+/// - If `cheap-rank` ≈ `base`, the proxy is useless: the offset that
+///   decodes is not the one that syncs best, and there is no cheap
+///   substitute for actually trying them.
+/// - `progressive` vs `exhaustive` shows whether ranking at least
+///   reduces the *expected* cost even when it can't reduce the worst
+///   case.
+///
+/// Both OSD searches are reported, because §9's ablation found timing
+/// diversity only pays off in combination with the unpruned search on
+/// some cells — a proxy that works for one may not work for the other.
+///
+/// Single-threaded (`fst4_osd_diag_force_old` is process-global):
+/// `--test-threads=1`.
+#[test]
+#[ignore = "manual diagnostic — cheap i0 ranking vs exhaustive retry (issue #308/#310, VK3NV)"]
+fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
+    use mfsk_core::fst4::Fst4s60;
+
+    const NSYNC_GATE: u32 = 16;
+    const OFFSETS: [i32; 3] = [0, 1, -1];
+    // Same band `fst4_60_diag_npre_baseline_scan` reported; see §9 trap 3.
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+
+    eprintln!();
+    eprintln!("=== cheap i0 ranking vs exhaustive retry (FST4-60) ===");
+    eprintln!("cost = full decode units (compute_llr + BP/OSD ladder), not wall-clock");
+
+    for &(channel, snr_tag) in CELLS {
+        let prepared = prepare_fst4_60_cell(channel, snr_tag, 100);
+        if prepared.is_empty() {
+            eprintln!("{channel}_{snr_tag}: no WAVs present, skip");
+            continue;
+        }
+        let n = prepared.len();
+
+        for use_npre in [true, false] {
+            fst4_osd_diag_force_old(!use_npre);
+            let osd_name = if use_npre { "npre    " } else { "unpruned" };
+
+            // (recall, decode units) per configuration.
+            let mut stats = [(0u32, 0u32); 4];
+            // How often the offset that decoded was also argmax nsync,
+            // among trials where an alternate offset was needed at all.
+            // Degeneracy check — see this test's doc comment. `i0` came
+            // from `fst4_sync_search`, which *maximises* a coherent sync
+            // score, so `sync_quality` (a closely related measure) is
+            // expected to peak at `i0` too. If `argmax nsync` is almost
+            // always offset 0, the ranking has no information to give and
+            // `cheap-rank ≈ base` is near-tautological rather than a
+            // finding about the proposal. Count it instead of inferring
+            // it from the `units` column.
+            let mut argmax_zero = 0u32;
+            let mut argmax_seen = 0u32;
+            let mut argmax_agreed = 0u32;
+            let mut argmax_total = 0u32;
+
+            for (_trial, cands) in &prepared {
+                // Per-configuration success flags for this trial.
+                let mut ok = [false; 4];
+
+                for (cd0, i0_ref) in cands {
+                    // Cheap pass: nsync at all three offsets. This is the
+                    // information VK3NV pointed out is already available.
+                    let mut cheap: Vec<(i32, u32)> = OFFSETS
+                        .iter()
+                        .map(|&d| {
+                            let cs = symbol_spectra::<Fst4s60>(cd0, i0_ref + d);
+                            (d, sync_quality::<Fst4s60>(&cs))
+                        })
+                        .collect();
+
+                    // One full decode attempt at one offset. Returns
+                    // whether the golden message came out, and bumps the
+                    // unit counter.
+                    let decode_at = |d: i32, units: &mut u32| -> bool {
+                        let cs = symbol_spectra::<Fst4s60>(cd0, i0_ref + d);
+                        let nsync = sync_quality::<Fst4s60>(&cs);
+                        if nsync <= NSYNC_GATE {
+                            return false;
+                        }
+                        *units += 1;
+                        let llr_set = compute_llr::<Fst4s60, f32>(&cs);
+                        let variants: [&Vec<f32>; 4] =
+                            [&llr_set.llra, &llr_set.llrb, &llr_set.llre, &llr_set.llrc];
+                        let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                            fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                                mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                                let mut m77 = [0u8; 77];
+                                m77.copy_from_slice(&r.info[..77]);
+                                unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                            })
+                        };
+                        let bp_opts = FecOpts {
+                            bp_max_iter: 30,
+                            osd_depth: 0,
+                            ap_mask: None,
+                            verify_info,
+                            ..FecOpts::default()
+                        };
+                        if variants.iter().any(|llr| is_golden(llr, &bp_opts)) {
+                            return true;
+                        }
+                        if nsync >= osd_attempt_min {
+                            let osd_depth: u32 = if nsync >= osd_depth3_min { 3 } else { 2 };
+                            let osd_opts = FecOpts {
+                                bp_max_iter: 30,
+                                osd_depth,
+                                ap_mask: None,
+                                verify_info,
+                                ..FecOpts::default()
+                            };
+                            if variants.iter().any(|llr| is_golden(llr, &osd_opts)) {
+                                return true;
+                            }
+                        }
+                        false
+                    };
+
+                    // base: offset 0 only.
+                    if decode_at(0, &mut stats[0].1) {
+                        ok[0] = true;
+                    }
+
+                    // exhaustive: WSJT-X order, short-circuit.
+                    let mut winner: Option<i32> = None;
+                    for &d in &OFFSETS {
+                        if decode_at(d, &mut stats[1].1) {
+                            ok[1] = true;
+                            winner = Some(d);
+                            break;
+                        }
+                    }
+
+                    // cheap-rank: argmax nsync only.
+                    cheap.sort_by(|a, b| b.1.cmp(&a.1));
+                    let best = cheap[0].0;
+                    argmax_seen += 1;
+                    if best == 0 {
+                        argmax_zero += 1;
+                    }
+                    if decode_at(best, &mut stats[2].1) {
+                        ok[2] = true;
+                    }
+
+                    // progressive: all three in nsync-descending order.
+                    for &(d, _) in &cheap {
+                        if decode_at(d, &mut stats[3].1) {
+                            ok[3] = true;
+                            break;
+                        }
+                    }
+
+                    // Proxy quality, counted only where the answer isn't
+                    // trivially offset 0: did nsync rank the winner first?
+                    if let Some(w) = winner
+                        && w != 0
+                    {
+                        argmax_total += 1;
+                        if best == w {
+                            argmax_agreed += 1;
+                        }
+                    }
+                }
+
+                for (i, hit) in ok.iter().enumerate() {
+                    if *hit {
+                        stats[i].0 += 1;
+                    }
+                }
+            }
+
+            eprintln!();
+            eprintln!("{channel}_{snr_tag}  n={n}  OSD={osd_name}");
+            for (i, name) in ["base {0}", "exhaustive", "cheap-rank", "progressive"]
+                .iter()
+                .enumerate()
+            {
+                eprintln!(
+                    "  {:<12} recall {:>2}/{n}   units {:>5}",
+                    name, stats[i].0, stats[i].1
+                );
+            }
+            let degenerate = argmax_seen > 0 && argmax_zero * 20 >= argmax_seen * 19;
+            eprintln!(
+                "  argmax nsync == offset 0 in {argmax_zero}/{argmax_seen} candidates{}",
+                if degenerate {
+                    "  <-- ranking is degenerate, see below"
+                } else {
+                    ""
+                }
+            );
+            if argmax_total > 0 {
+                eprintln!(
+                    "  nsync picked the winning offset first: {argmax_agreed}/{argmax_total} \
+                     (cases where an alternate offset was what decoded)"
+                );
+            } else {
+                eprintln!("  no candidate needed an alternate offset in this cell/OSD mode");
+            }
+
+            let (base_r, exh_r, cheap_r) = (stats[0].0, stats[1].0, stats[2].0);
+            let reading = if degenerate {
+                "DEGENERATE RANKING — nsync peaks at offset 0 almost always, because \
+                 fst4_sync_search already chose i0 to maximise a closely-related sync \
+                 score. cheap-rank ~ base is near-tautological here and says nothing \
+                 about the proposal; a usable cheap proxy has to be sync-orthogonal"
+            } else if exh_r <= base_r {
+                "timing buys nothing here — the proxy question is moot in this cell"
+            } else if cheap_r >= exh_r {
+                "PROXY WORKS — cheap nsync ranking matches exhaustive recall at ~1 unit"
+            } else if cheap_r <= base_r {
+                "PROXY USELESS — the offset that decodes is not the one that syncs best"
+            } else {
+                "PROXY PARTIAL — recovers some of the timing gain, not all"
+            };
+            eprintln!("  => {reading}");
+        }
+    }
+    fst4_osd_diag_force_old(false);
 }

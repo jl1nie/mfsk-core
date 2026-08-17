@@ -787,7 +787,26 @@ What this settles: whether the synergy result (2 of 4 cells) holds at
 n=100, and whether #308's own 2/5 reproduces once the trials it named
 actually exist.
 
-### 11.4 What to bring back
+### 11.4 Cheap `i0` ranking vs exhaustive retry
+
+Section 12's test, full 8-run grid (4 cells × 2 OSD searches):
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_i0_cheap_rank_vs_exhaustive \
+    -- --ignored --nocapture --test-threads=1
+```
+
+`--test-threads=1` is required (`fst4_osd_diag_force_old` is a
+process-global toggle). Costs are counted in decode units, so unlike the
+sweeps above this one's numbers are machine-independent — the reason to
+run it on the Ryzen 9 is wall-clock to completion, not measurement
+quality.
+
+Read the `argmax nsync == offset 0` line **before** the verdict; see
+section 12 for why.
+
+### 11.5 What to bring back
 
 - Tier-C tables, diffed against `v0.9.1`, for the release decision.
 - The full `fst4_60_diag_sniper_cap_near_threshold` grid — specifically
@@ -797,3 +816,88 @@ actually exist.
 `loop_ms` columns from the Ryzen 9 are worth recording in
 `BENCHMARKS.md`; the laptop's are not, and are marked as relative-shape
 only wherever they appear above.
+
+## 12. Cheap `i0` ranking vs exhaustive retry — and a degenerate metric (2026-08-18)
+
+VK3NV's #308 proposal, measured: #308 ported WSJT-X's control flow
+literally (try `i0`, `i0+1`, `i0-1` at full depth, short-circuit on
+success), which is 3.02× / 2.51× of the embedded candidate loop and is
+why `decode_rung_major` defaults to `offsets = &[0]`. The proposal was
+that cheap sync information already exists before the expensive work, so
+the offsets could be **ranked** and only the best one decoded:
+
+> Could we score `i0`, `i0+1` and `i0-1` cheaply, choose/rank the best
+> timing, and run the expensive decoder only once initially?
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_i0_cheap_rank_vs_exhaustive \
+    -- --ignored --nocapture --test-threads=1
+```
+
+### Cost is counted, not timed
+
+The metric is **full decode units** (`compute_llr` + the BP/OSD ladder
+for one candidate/offset pair), not wall-clock. That makes these numbers
+machine-independent and directly quotable — unlike every `loop_ms`
+column elsewhere in this document, which is relative-shape-only on a
+laptop.
+
+### The confound: `i0` is not an unranked starting point
+
+`i0` comes from `fst4_sync_search`, whose whole job is to **maximise a
+coherent sync score** over a (Δf, Δt) grid. `sync_quality` measures
+closely related information, so it peaks at `i0` by construction. The
+ranking therefore degenerates to "always pick offset 0", and
+`cheap-rank ≈ base` follows tautologically — it is not evidence about
+the proposal.
+
+The first run of this test printed `PROXY USELESS` on exactly such
+cells. The `units` column gave it away: at ccir_moderate m24/npre,
+`base` was 51 units and `cheap-rank` 52 — one single candidate where the
+ranking picked a non-zero offset — and at m25/npre both were 38, i.e.
+the ranking never once chose anything but offset 0.
+
+The test now **counts** `argmax nsync == offset 0` and short-circuits the
+verdict to `DEGENERATE RANKING` at ≥95 %, rather than leaving it to be
+inferred from a cost column.
+
+### What the degenerate case does establish
+
+Narrower than the original question, but directly useful for #310:
+
+**A cheap proxy for "which timing will decode" cannot be another
+sync-strength measure.** The refine stage has already maximised that, so
+any sync-derived ranking is spending three cheap evaluations to
+rediscover the position it started from. A usable proxy has to be
+**sync-orthogonal** — LLR reliability statistics, or a truncated-BP
+syndrome weight, rather than Costas correlation.
+
+That leaves #310 with two honest options until such a proxy is found and
+measured: pay for exhaustive retry, or keep `&[0]` and forgo the timing
+recall. There is no free third path via sync ranking.
+
+### Partial results (20-trial corpus, first 3 of 8 cell/mode runs)
+
+Recorded because the degeneracy is visible in them, not as a recall
+result — the `argmax` counter was added afterwards, so these predate it:
+
+| cell / OSD | base | exhaustive | cheap-rank | progressive |
+|---|---|---|---|---|
+| ccir_mod m24 / npre | 17/20, 51u | **18/20**, 83u | 17/20, 52u | 18/20, 86u |
+| ccir_mod m24 / unpruned | 19/20, 51u | 19/20, 75u | 19/20, 52u | 19/20, 77u |
+| ccir_mod m25 / npre | 7/20, 38u | **8/20**, 96u | 7/20, 38u | 8/20, 96u |
+
+Two things are real here independent of the confound:
+
+- **Exhaustive retry costs roughly 1.6–2.5× the units of `base`** for
+  +1 decode in two of the three runs. That ratio is measured in
+  algorithm-invocation counts, so it transfers across machines, and it
+  is the same order as the 2.5–3× wall-clock ratio measured on CoreS3.
+- **`progressive` never beats `exhaustive` on cost** (86 vs 83, 96 vs
+  96). Reordering by a degenerate key cannot help, and where it differs
+  it is slightly worse — consistent with the ranking pushing the
+  eventual winner later.
+
+The full 8-run grid and the `argmax` counts belong on the Ryzen 9 box
+alongside the other jobs in section 11.
