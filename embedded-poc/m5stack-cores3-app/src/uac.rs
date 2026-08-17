@@ -64,8 +64,80 @@ use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use embedded_shared::pipeline::{send_box, ChunkMsg, CHUNK_LEN};
+use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
 use esp_idf_svc::sys;
 use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
+
+/// Spawn a named `std::thread` with its stack allocated from PSRAM
+/// instead of internal DRAM.
+///
+/// Root-caused during the `wspr_app` crash-loop investigation
+/// (2026-08-16): `spawn_network_task`'s own doc comment already
+/// records that `wifi_driver_init` alone drives internal DRAM from
+/// ~57 KB free down to ~10 KB free / 7 KB largest contiguous block —
+/// and that measurement predates the `fst4-bench` factory-partition
+/// growth the same day. A real device log
+/// (`wspr_app_restore_2026-08-16f.log`) showed **2 KB** free after
+/// `wifi_driver_init`, and every one of this module's three
+/// `std::thread::Builder` spawns (`uac_app` 4 KiB, `usb_events`
+/// 4 KiB, `uac_reader` 10 KiB) allocated its stack from that same
+/// internal-DRAM pool via the ESP-IDF pthread compat layer — the
+/// first (`uac_app`) failed outright (`Failed to create task!` /
+/// `Not enough space`), which was already a known, gracefully-logged
+/// condition. What wasn't understood until this investigation: with
+/// internal DRAM this tight, small (<4 KiB —
+/// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` forces anything below
+/// that size into internal DRAM regardless of PSRAM availability)
+/// allocations made later by `scan_loop`/`ddc_loop` on the *other*
+/// tasks can fail too, and on this esp-idf-svc std target an alloc
+/// failure surfaces as a genuine Rust panic rather than an abort —
+/// which then poisons whichever `std::sync::Mutex` it held
+/// (`BASEBAND_BUFS`/`DDC_READY_IDX`/`WSPR_UI`/`ctx.nvs`), so the next
+/// task to touch that lock panics too. That's the double-panic crash
+/// loop, and it explains why the observed backtrace lands in a
+/// different task on different boots — it's whichever task loses the
+/// race to be second.
+///
+/// Mirrors `spawn_network_task`'s existing PSRAM-stack fix (same
+/// `MALLOC_CAP_SPIRAM`/`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y`
+/// mechanism, just via `std::thread`'s `esp_pthread_cfg_t` hook
+/// instead of `xTaskCreatePinnedToCoreWithCaps` since these three are
+/// `std::thread`s, not raw FreeRTOS tasks) rather than inventing a
+/// new one. `ThreadSpawnConfiguration::set()` only affects spawns
+/// made by *this* calling thread (it's per-caller state in the IDF
+/// pthread layer, not global), so this is reset back to the default
+/// config immediately after spawning — the calling thread's own
+/// stack, and anything it spawns later without going through this
+/// helper, is unaffected.
+fn spawn_psram_thread<F>(
+    name: &str,
+    stack_size: usize,
+    f: F,
+) -> std::io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    let psram_cfg = ThreadSpawnConfiguration {
+        stack_size,
+        stack_alloc_caps: MallocCap::Spiram | MallocCap::Cap8bit,
+        ..Default::default()
+    };
+    if let Err(e) = psram_cfg.set() {
+        log::warn!("uac: ThreadSpawnConfiguration::set (PSRAM stack) failed for {name}: {e:?} — falling back to internal-DRAM stack");
+    }
+    let result = std::thread::Builder::new()
+        .stack_size(stack_size)
+        .name(name.into())
+        .spawn(f);
+    // Restore the default (internal-DRAM) config regardless of
+    // whether the spawn above succeeded, so this calling thread's
+    // own subsequent spawns (if any) aren't silently left on PSRAM.
+    let default_cfg = ThreadSpawnConfiguration::default();
+    if let Err(e) = default_cfg.set() {
+        log::warn!("uac: ThreadSpawnConfiguration::set (restore default) failed: {e:?}");
+    }
+    result
+}
 
 /// Newtype around the IDF `uac_host_device_handle_t` (`*mut uac_interface`)
 /// to assert thread-safety for the `move` into the reader thread. The
@@ -500,11 +572,9 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     RX_ERRORS.store(0, Ordering::Relaxed);
 
     let handle_wrapped = DeviceHandle(handle);
-    if let Err(e) = std::thread::Builder::new()
-        .stack_size(READER_TASK_STACK)
-        .name("uac_reader".into())
-        .spawn(move || reader_thread(handle_wrapped))
-    {
+    if let Err(e) = spawn_psram_thread("uac_reader", READER_TASK_STACK, move || {
+        reader_thread(handle_wrapped)
+    }) {
         let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
         let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
         if stop_err != sys::ESP_OK as sys::esp_err_t {
@@ -769,10 +839,7 @@ pub fn start_host() -> Result<()> {
     EVENT_SENDER
         .set(tx)
         .map_err(|_| anyhow!("uac: EVENT_SENDER double init — start_host called twice?"))?;
-    std::thread::Builder::new()
-        .stack_size(APP_TASK_STACK)
-        .name("uac_app".into())
-        .spawn(move || app_task(rx))
+    spawn_psram_thread("uac_app", APP_TASK_STACK, move || app_task(rx))
         .map_err(|e| anyhow!("uac_app spawn failed: {e}"))?;
     log::info!("uac: app_task spawned (stack={APP_TASK_STACK} B)");
 
@@ -794,11 +861,7 @@ pub fn start_host() -> Result<()> {
         return Err(anyhow!("usb_host_install failed (err={err:#x})"));
     }
 
-    if let Err(e) = std::thread::Builder::new()
-        .stack_size(USB_EVENTS_TASK_STACK)
-        .name("usb_events".into())
-        .spawn(usb_events_task)
-    {
+    if let Err(e) = spawn_psram_thread("usb_events", USB_EVENTS_TASK_STACK, usb_events_task) {
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
             log::error!(
