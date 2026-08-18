@@ -89,6 +89,20 @@
 //! offsets, not a re-ordering within them. Provisional on three open
 //! measurements listed in §13.
 //!
+//! **The escalation phase after the first rung should be depth-first,
+//! not rung-major** — measured 2026-08-18, `FST4_BENCHMARK.md` §14's
+//! breadth-vs-depth table. Rung-major's value is the latency bound, and
+//! that bound is bought entirely by the *first* rung. Past it,
+//! continuing breadth-first defers OSD — where most decodes come from —
+//! until every candidate has had every cheaper stage, which costs 30
+//! decodes in 386 at a realistic ~50 % budget (350 vs 380) and far more
+//! at tighter ones (35 vs 166 at 10 %). Candidate ordering also stops
+//! mattering under breadth-first: a 10 % budget buys ~98 % of the
+//! first-stage sweep, so every ordering visits nearly the same
+//! candidates. So the two decisions are coupled — order by `nsync`
+//! (free; the first rung computed it for the gate) *and* go depth-first,
+//! or neither is worth doing.
+//!
 //! (`-1` alone consistently outperforms `+1` alone at these SNRs, which
 //! is why `&[0, -1]` is the natural two-offset middle ground rather than
 //! `&[0, 1]` — see `fst4_60_diag_i0_offset_ablation`'s full 4-way table

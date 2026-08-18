@@ -6890,3 +6890,317 @@ fn fst4_60_diag_escalation_budget_curve() {
          objection was waiting for."
     );
 }
+
+/// **The budget curve under the schedule actually proposed.**
+///
+/// [`fst4_60_diag_escalation_budget_curve`] compared priority orderings
+/// under a **depth-first** escalation — each candidate runs its whole
+/// ladder before the next one starts. `decode_rung_major` is
+/// **breadth-first**: one rung swept across every candidate before any
+/// candidate descends. Those are different schedules and they spend a
+/// budget differently, so that test's ordering conclusions do not
+/// transfer to the design this issue is actually about.
+///
+/// The distinction matters in a specific way: breadth-first gives every
+/// candidate its cheaper stages before any candidate gets an expensive
+/// one, which is *itself* a form of cost-ordering. So it should already
+/// capture part of what the oracle exploited there — and the apparent
+/// "43 % vs 93 %" headroom is probably overstated for the real schedule.
+///
+/// This measures both schedules over the same candidates and stage
+/// outcomes, so the comparison is like-for-like.
+///
+/// ## Stage ladder
+///
+/// Offset-major, matching the decision recorded in
+/// `FST4_BENCHMARK.md` §13 (and `rung_major.rs`'s module doc):
+///
+/// ```text
+/// offset  0:        llrb, llre, llrc, OSD     (llra is the sunk first rung)
+/// offset +1:  llra, llrb, llre, llrc, OSD
+/// offset -1:  llra, llrb, llre, llrc, OSD
+/// ```
+///
+/// One unit per stage executed; a candidate stops at its first success,
+/// and a candidate whose `nsync` never reaches `osd_attempt_min` simply
+/// has no OSD stage at that offset.
+///
+/// ## Schedules
+///
+/// - **depth-first** — for each candidate in priority order, run its
+///   ladder to success or exhaustion. What
+///   `process_candidate_basic_impl` does today.
+/// - **breadth-first** — for each stage index, sweep every still-undecided
+///   candidate in priority order. What `decode_rung_major` does.
+///
+/// Orderings: arrival (what `rank_candidates` returns, i.e. no priority
+/// signal), `nsync`, and an unachievable oracle (decoders first, cheapest
+/// decoder first) to bound the headroom.
+///
+/// ## What it decides
+///
+/// Whether the escalation phase should re-sort its survivors by `nsync`
+/// before descending. `nsync` is free at that point — the first rung
+/// computed it for every candidate to run the gate — so if it buys
+/// decodes under breadth-first, it is close to a free win. If
+/// breadth-first flattens the difference, the current arrival order is
+/// fine and one less thing needs justifying.
+#[test]
+#[ignore = "manual diagnostic — budget curve under rung-major (breadth-first) scheduling (issue #310)"]
+fn fst4_60_diag_budget_curve_breadth_vs_depth() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const NSYNC_GATE: u32 = 16;
+    const MAX_CAND: usize = 50;
+    const WIDTH_HZ: f32 = 250.0;
+    const OFFSETS: [i32; 3] = [0, 1, -1];
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m23"),
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m26"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    struct Cand {
+        nsync: f64,
+        /// One entry per stage this candidate would execute, in ladder
+        /// order; `true` at the stage where it decodes (there is at most
+        /// one, and nothing after it runs).
+        stages: Vec<bool>,
+    }
+    impl Cand {
+        fn cost(&self) -> f64 {
+            // Stages actually run: everything up to and including the
+            // first success, or all of them if it never decodes.
+            match self.stages.iter().position(|d| *d) {
+                Some(i) => (i + 1) as f64,
+                None => self.stages.len() as f64,
+            }
+        }
+        fn decodes(&self) -> bool {
+            self.stages.iter().any(|d| *d)
+        }
+    }
+
+    let dir = sweep_dir();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+    let mut all: Vec<Cand> = Vec::new();
+
+    for &(channel, snr_tag) in CELLS {
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            for c in &cands {
+                let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+                let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for z in cd0.iter_mut() {
+                        *z *= inv;
+                    }
+                }
+                let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+                let cd0 = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+                let cs0 = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+                let nsync = sync_quality::<Fst4s60>(&cs0);
+                if nsync <= NSYNC_GATE {
+                    continue;
+                }
+
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+
+                let llr0 = compute_llr::<Fst4s60, f32>(&cs0);
+                if is_golden(&llr0.llra, &bp_opts) {
+                    continue; // sunk first rung decoded it
+                }
+
+                // Record the outcome of every stage the ladder would run,
+                // in offset-major order, stopping at the first success.
+                let mut stages: Vec<bool> = Vec::new();
+                'ladder: for &d in &OFFSETS {
+                    let cs = if d == 0 {
+                        cs0.clone()
+                    } else {
+                        symbol_spectra::<Fst4s60>(&cd0, s2.i0 + d)
+                    };
+                    let ns = sync_quality::<Fst4s60>(&cs);
+                    if ns <= NSYNC_GATE {
+                        continue;
+                    }
+                    let ls = compute_llr::<Fst4s60, f32>(&cs);
+                    let variants: [&Vec<f32>; 4] = [&ls.llra, &ls.llrb, &ls.llre, &ls.llrc];
+                    for (vi, v) in variants.iter().enumerate() {
+                        if d == 0 && vi == 0 {
+                            continue; // sunk
+                        }
+                        let hit = is_golden(v, &bp_opts);
+                        stages.push(hit);
+                        if hit {
+                            break 'ladder;
+                        }
+                    }
+                    if ns >= osd_attempt_min {
+                        let o = FecOpts {
+                            bp_max_iter: 30,
+                            osd_depth: if ns >= osd_depth3_min { 3 } else { 2 },
+                            ap_mask: None,
+                            verify_info,
+                            ..FecOpts::default()
+                        };
+                        let hit = variants.iter().any(|v| is_golden(v, &o));
+                        stages.push(hit);
+                        if hit {
+                            break 'ladder;
+                        }
+                    }
+                }
+                all.push(Cand {
+                    nsync: nsync as f64,
+                    stages,
+                });
+            }
+        }
+    }
+
+    let total_cost: f64 = all.iter().map(|c| c.cost()).sum();
+    let total_dec = all.iter().filter(|c| c.decodes()).count();
+    let max_stage = all.iter().map(|c| c.stages.len()).max().unwrap_or(0);
+    eprintln!();
+    eprintln!("=== budget curve: breadth-first (rung-major) vs depth-first ===");
+    eprintln!(
+        "{} candidates, {total_dec} decode, {total_cost:.0} units total, \
+         longest ladder {max_stage} stages",
+        all.len()
+    );
+
+    // Depth-first: each candidate runs to success or exhaustion.
+    let depth = |order: &[usize], budget: f64| -> usize {
+        let mut spent = 0.0;
+        let mut got = 0;
+        for &i in order {
+            let c = &all[i];
+            if spent + c.cost() > budget {
+                continue;
+            }
+            spent += c.cost();
+            if c.decodes() {
+                got += 1;
+            }
+        }
+        got
+    };
+    // Breadth-first: sweep stage s across every still-active candidate.
+    let breadth = |order: &[usize], budget: f64| -> usize {
+        let mut spent = 0.0;
+        let mut got = 0;
+        let mut done = vec![false; all.len()];
+        for s in 0..max_stage {
+            for &i in order {
+                if done[i] {
+                    continue;
+                }
+                let c = &all[i];
+                if s >= c.stages.len() {
+                    done[i] = true;
+                    continue;
+                }
+                if spent + 1.0 > budget {
+                    return got;
+                }
+                spent += 1.0;
+                if c.stages[s] {
+                    got += 1;
+                    done[i] = true;
+                }
+            }
+        }
+        got
+    };
+
+    let mut ord_nsync: Vec<usize> = (0..all.len()).collect();
+    ord_nsync.sort_by(|&a, &b| {
+        all[b]
+            .nsync
+            .partial_cmp(&all[a].nsync)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
+    let ord_arrival: Vec<usize> = (0..all.len()).collect();
+    let mut ord_oracle: Vec<usize> = (0..all.len()).collect();
+    ord_oracle.sort_by(|&a, &b| {
+        all[b]
+            .decodes()
+            .cmp(&all[a].decodes())
+            .then(all[a].cost().partial_cmp(&all[b].cost()).unwrap())
+    });
+
+    eprintln!();
+    eprintln!(
+        "{:>7} | {:>17} | {:>17}",
+        "", "depth-first", "breadth-first (rung-major)"
+    );
+    eprintln!(
+        "{:>7} | {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5}",
+        "budget", "arriv", "nsync", "oracl", "arriv", "nsync", "oracl"
+    );
+    for pct in [10, 20, 30, 40, 50, 70, 100] {
+        let b = total_cost * pct as f64 / 100.0;
+        eprintln!(
+            "{:>6}% | {:>5} {:>5} {:>5} | {:>5} {:>5} {:>5}",
+            pct,
+            depth(&ord_arrival, b),
+            depth(&ord_nsync, b),
+            depth(&ord_oracle, b),
+            breadth(&ord_arrival, b),
+            breadth(&ord_nsync, b),
+            breadth(&ord_oracle, b),
+        );
+    }
+
+    eprintln!();
+    eprintln!(
+        "If breadth-first flattens the arrival-vs-nsync gap, rung-major's \
+         cheapest-stage-first sweep is already doing the prioritisation and the \
+         escalation phase does not need to re-sort. If the gap survives, re-sorting \
+         survivors by nsync is close to free -- the first rung computed it for the gate."
+    );
+}

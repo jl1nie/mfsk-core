@@ -1388,3 +1388,87 @@ budget that exists, and the oracle headroom (point 3) only becomes worth
 chasing if the budget gets much tighter — a shorter sub-mode, a slower
 target, or a wideband candidate list far larger than the sniper-shaped
 50 used here.
+
+### Breadth-first vs depth-first — the schedule matters more than the ordering
+
+The budget curve above used a **depth-first** escalation (each candidate
+runs its ladder to success before the next starts).
+`decode_rung_major` is **breadth-first** (one rung swept across every
+candidate before any descends), so those ordering conclusions could not
+be carried over to the design without checking.
+`fst4_60_diag_budget_curve_breadth_vs_depth` runs both schedules over
+the same candidates and the same per-stage outcomes.
+
+Ladder is offset-major per §13: `llrb`/`llre`/`llrc`/OSD at `i0`
+(the `llra` rung being sunk), then the full five stages at `i0+1`, then
+at `i0-1`. 1 263 candidates, 386 decode, 12 330 units, longest ladder 14
+stages.
+
+| budget | depth: arrival | depth: `nsync` | depth: oracle | breadth: arrival | breadth: `nsync` | breadth: oracle |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 % | 49 | **166** | 358 | 35 | 35 | 35 |
+| 20 % | 111 | **288** | 386 | 80 | 80 | 80 |
+| 30 % | 165 | **361** | 386 | 137 | 150 | 152 |
+| 40 % | 187 | 377 | 386 | 350 | 350 | 350 |
+| 50 % | 198 | **380** | 386 | 350 | 350 | 350 |
+| 70 % | 316 | 384 | 386 | 360 | 366 | 366 |
+| 100 % | 386 | 386 | 386 | 386 | 386 | 386 |
+
+**1. Ordering does essentially nothing under breadth-first.** All three
+orderings are identical at 10 % and 20 %, and within a couple of decodes
+everywhere else. The reason is mechanical: a 10 % budget buys ~1 233 of
+the 1 263 stage-0 evaluations, so nearly every candidate gets the first
+escalation stage regardless of the order they are visited in. **The
+"re-sort survivors by `nsync`" idea is dead for rung-major** — it buys
+nothing, and one less thing needs justifying.
+
+**2. Breadth-first is markedly worse under a tight budget.** At 10 %,
+depth-first with `nsync` returns 166 decodes against breadth-first's 35;
+at 20 %, 288 against 80; at the realistic ~50 %, **380 against 350**.
+
+**3. The mechanism is the OSD stage.** Breadth-first's jump from 137 to
+350 between the 30 % and 40 % budget points is a stage boundary:
+sweeping stages 0-3 (the offset-0 ladder, OSD included) across ~1 263
+candidates costs ~5 050 units, just under the 4 932 units that 40 %
+buys. Below that, breadth-first has spent its entire budget on cheap BP
+stages and **has not reached OSD for anybody** — and OSD is where most
+of these decodes come from. Deferring the highest-yield stage until
+every candidate has had every cheaper one is exactly what breadth-first
+is for, and under a deadline it is exactly what costs decodes.
+
+### The trade-off this quantifies, and the resulting design
+
+This is not an argument against rung-major. Rung-major exists for the
+**ordering-independent bound on time-to-first-decode** — depth-first has
+no such guarantee, and a bad candidate order pushes the first decode
+arbitrarily late (~30 s of a 30.15 s total in the worst case measured
+earlier). The two properties are in genuine tension and the numbers
+above are the price:
+
+| | time-to-first-decode | decodes at ~50 % budget |
+|---|---|---|
+| breadth-first (rung-major) | **bounded by one rung** | 350 / 386 |
+| depth-first + `nsync` | unbounded (ordering-dependent) | **380 / 386** |
+
+**Both are available at once**, and the phase split already recorded in
+§13 is where:
+
+- **Phase A — first rung, breadth-first, unconditional.** `llra` at
+  `offset 0` across every candidate. This *is* the latency invariant:
+  every candidate gets its cheapest attempt within a bounded time
+  regardless of ordering. Keep exactly as-is.
+- **Phase B — escalation, depth-first, ordered by `nsync`, budget-gated.**
+  Once the bound has been honoured, breadth-first has no remaining
+  advantage and costs 30 decodes at the realistic budget. `nsync` is free
+  here — Phase A computed it for every candidate to run the gate.
+- **Phase C — second pass (alternate timing *and* unpruned OSD together,
+  per §9), only if budget remains.**
+
+So the answer to "should the escalation phase re-sort by `nsync`" is
+**yes, but only because Phase B should be depth-first** — under
+breadth-first the sort is worthless. The two decisions are coupled and
+neither is right alone.
+
+Unmeasured: this models the escalation as sequential units and ignores
+the per-offset setup cost (`symbol_spectra` + bit-metrics rebuild) that
+§13's reason 2 turns on. Phase C's cost is therefore understated here.
