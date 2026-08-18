@@ -394,10 +394,15 @@ pub fn set_chunk_q(q: sys::QueueHandle_t) {
 /// `SLOT_SAMPLES` — 180_000 = 15 s @ 12 kHz, one FT8 slot. UAC
 /// streams continuously so the reader synthesizes the slot boundary
 /// from the post-resample sample count. **No wall-clock alignment**
-/// in #32 — the slot is bound by sample count, not by UTC :00/:15/:30/:45.
-/// Real wall-clock alignment lands with the NTP-fed time_sync hook in
-/// #34 verification (decode DT will then read as offset from the
-/// midpoint of whatever 15 s window the reader happened to start in).
+/// yet — the slot is bound by sample count, not by UTC :00/:15/:30/:45,
+/// so decode DT reads as an offset from the midpoint of whatever 15 s
+/// window the reader happened to start in, not from the real slot.
+/// Real wall-clock alignment lands with the NTP-fed time_sync hook,
+/// tracked as issue #313 (open item 1); hardware verification of this
+/// path as a whole is #163. Fixing the alignment does not need
+/// hardware and is worth doing before #163 clears — otherwise the
+/// wrong-slot DT is easy to misread as a capture fault the first time
+/// real audio flows.
 const SLOT_SAMPLES_12K: usize = 180_000;
 
 /// Driver event callback. Invoked by the UAC class-driver background
