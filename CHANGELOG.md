@@ -97,8 +97,46 @@ rather than distributing them across patches.
   `full` (40.102 s → 121.281 s) and more than doubles `no8_osd`
   (13.643 s → 34.200 s) for a few recall points, so the production default
   stays `&[0]` and a deployment that can tolerate spanning slots can opt in.
-  Folding `offsets` into cost-ordered scheduling instead of the current
-  offset-major outer loop is #310.
+  Whether to fold `offsets` into cost-ordered scheduling was #310's
+  original proposal; it was **measured and declined** — see below.
+
+- **`fst4::rung_major::Schedule`** — the escalation schedule as an
+  explicit choice, with `decode_phase_split_timed` alongside the existing
+  `decode_rung_major_timed` (issue #310). Both are `internal-testing`-gated
+  and unreachable from `DecodeRequest`, so no shipped decode path changes.
+
+  `Schedule::RungMajor` is what this module shipped with: every rung swept
+  across every candidate. That buys the ordering-independent
+  time-to-first-decode bound — but **the bound is bought entirely by the
+  first rung**. Continuing breadth-first past it defers OSD, where most
+  decodes come from, until every candidate has had every cheaper stage.
+  Measured over 1 263 post-first-rung candidates: **350 vs 380 decodes in
+  386 at a realistic ~50 % budget, 35 vs 166 at 10 %.**
+
+  `Schedule::PhaseSplit` keeps the bound and drops the cost. **Phase A** —
+  `llra` at `offsets[0]` across every candidate, breadth-first, never
+  budget-gated (making the invariant interruptible would give it away).
+  **Phase B** — the rest of that offset's ladder, depth-first, candidates
+  ordered by the `nsync` Phase A already computed for the gate. **Phase C**
+  — the remaining offsets, same order. `budget_ok` is polled before every
+  Phase B/C stage.
+
+  Ordering and schedule are one decision, not two: under breadth-first a
+  10 % budget buys ~98 % of the first-stage sweep, so every candidate
+  ordering visits nearly the same candidates and sorting is worthless. It
+  only pays once Phase B goes depth-first.
+
+  Folding `offsets` into a cost-ordered queue — #310's original shape — was
+  declined on measurement: it would triple the first-rung sweep, offset
+  setup (`symbol_spectra` + bit-metrics rebuild) is not free, and the
+  payoff cannot be aimed, since ranking offsets by sync quality matched
+  exhaustive retry in only 1 of 8 runs. `docs/notes/FST4_BENCHMARK.md`
+  §13/§14 carries the reasoning and the numbers.
+
+  A non-`#[ignore]`d test asserts the two schedules return byte-identical
+  decodes without a budget gate, across three offset configurations × both
+  `skip_llrc` settings — the change is meant to move *when* decodes
+  appear, never *whether*.
 
 ### Fixed
 
