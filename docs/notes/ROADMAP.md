@@ -339,7 +339,7 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-08-15, verified
+Currently open GitHub issues (state:open as of 2026-08-17, verified
 directly against the GitHub API — this is the live worklist; if you're
 reading this file to decide what to work on next, trust this section
 over any recall numbers or hardware status stated elsewhere in it).
@@ -347,14 +347,68 @@ Grouped by the three tracks in **Strategic state** above.
 
 **Embedded (frontier):**
 
-- **#163** — CoreS3 Phase 1-Verify: live IC-705 hardware RX
-  confirmation. **The bottleneck for the entire Phase B-Core line** —
-  the UAC host code compiles clean but has never run against real
-  hardware, and there's been no cores3-app feature commit since
-  2026-06-07. Everything downstream (Phase 1.5 / 2 / 5 / 6 / 7-Core) is
-  sequenced behind it. A human-at-the-bench task (1500 Hz tone injection
-  → PCM reaches the pipeline → FT8 candidate in the decoded list → live
-  antenna). See **Phase B-Core** below.
+- **#163** — CoreS3 Phase 1-Verify: live UAC hardware RX confirmation.
+  **The bottleneck for the entire Phase B-Core line** — the UAC host
+  code compiles clean but has never run against real hardware.
+  Everything downstream (Phase 1.5 / 2 / 5 / 6 / 7-Core) is sequenced
+  behind it. A human-at-the-bench task (tone injection → PCM reaches
+  the pipeline → candidate in the decoded list → live antenna). See
+  **Phase B-Core** below.
+
+  Two things changed 2026-08-16/17. The `AudioSink` refactor means the
+  FT8 controller and the WSPR receiver now share one unverified UAC
+  path, so this blocks **two** applications rather than one. But the
+  first checkpoint got easier: any UAC audio source will do, and the
+  WSPR app is an independent second route that needs neither a QSO
+  partner nor a band opening to produce a decode.
+
+- **#313** — CoreS3 WSPR standalone app, open items left after #260
+  closed: no wall-clock slot alignment on the real-audio path (needs
+  the NTP-fed `time_sync` hook; `uac.rs` still cites the stale `#32`/
+  `#34` numbers for it), `SpotSink::Http` never run against a real
+  wsprnet endpoint, and the two-stage DDC decimation that was deferred
+  rather than rejected.
+
+- **#306** — FST4 on ESP32-S3: embedded feasibility. The umbrella, and
+  the most active thread in the repo (VK3NV). Status as of 2026-08-17:
+  the candidate loop measures **40.102 s** (`full`) / **13.643 s**
+  (`no8_osd`) on real CoreS3 hardware over 41 candidates, against
+  FST4-60's ~7 s margin — **not fitting yet, but quantified**, and down
+  from ~13× over at the first measurement. Decoder-only figures: the
+  bench routes around all three FFT sites and is fed host-baked
+  baseband, so an end-to-end receiver still needs #307 or #309. The two
+  live levers are breadth (#312) and depth (#310).
+
+- **#310** — fold `rung_major`'s `offsets` into cost-ordered scheduling
+  instead of an offset-major outer loop. The active next work item.
+  Its real subject is the worst-case **time-to-first-decode** bound
+  (~7.4 s for the first rung, ordering-independent), not the 1.26×
+  total-time improvement. Embedded currently gets zero timing
+  diversity — every caller passes `&[0]`.
+
+- **#312** — FST4 sniper: `max_cand = 50` binds before the search
+  window width does, so narrowing the window changes nothing on the
+  production path today. Sweep the cap as a *retained fraction* across
+  ±25/50/100/250 Hz; leave `sync_min` alone first. Strong-signal
+  golden only so far — a near-threshold sweep gates any default change.
+
+- **#307** — `engine::fft` has no generic non-power-of-2 FFT.
+  `coarse_sync`'s `nfft1` is non-power-of-two for all five FST4
+  sub-modes and needs this regardless; `downsample_cached`'s
+  `fft1_size` can be solved by this *or* by #309. VK3NV's 7776 → two
+  exact 1944-point transforms derivation keeps FST4-15/30/60 under the
+  configured 8192 ESP-DSP ceiling without a Kconfig change.
+
+- **#309** — FST4-120/300 will need a streaming DDC: FST4-120's
+  whole-slot FFT buffer (~11 MiB) is essentially the scale that blocked
+  WSPR, and FST4-300 (~32 MiB) is worse. `wspr::ddc` is the template.
+  Not on any current roadmap phase — filed so the comparison isn't
+  rediscovered.
+
+- **#311** — 3 of 5 CCIR-moderate trials that the unpruned OSD search
+  decoded and the npre1/npre2 port does not remain unexplained after
+  #308's timing fix recovered the other 2. A real `npre2`-pruning
+  question, split out of #308 so it didn't close with it.
 
 **Host DSP / protocol (maturity — tail, not frontier):**
 
@@ -441,6 +495,17 @@ both survive as separate decodes, fixed same-day by scaling the
 window to `(2 × TONE_SPACING_HZ).max(4.0)`. Also closed 2026-08-14,
 not a GitHub issue: a code-sharing audit (#290-298) — see *Strategic
 state*, track 1, for the full account.
+
+Closed since the 2026-08-15 snapshot: **#308** — FST4 had no
+equivalent of WSJT-X's `i0±1` timing-jitter retry
+(`fst4_decode.f90`'s `ijitter ∈ {0, +1, -1}`); ported to
+`engine::pipeline` for FST4 at OSD depth, recovering 2 of the 5
+CCIR-moderate trials the npre1/npre2 OSD port had lost, closed
+2026-08-17. The other two halves of that issue were split out rather
+than closed with it — the remaining 3/5 pruning question to **#311**,
+and the embedded scheduling/cost half to **#310**, since the retry
+triples the real-hardware candidate loop if ported unconditionally
+and every embedded caller therefore still passes `&[0]`.
 
 Closed since the 2026-05-18 snapshot (see the closed issue / `git
 log` for the fix commit, not re-derived here):

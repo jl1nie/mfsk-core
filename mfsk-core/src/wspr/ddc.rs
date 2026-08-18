@@ -409,11 +409,20 @@ pub struct StreamingDdcCascade {
 
 impl StreamingDdcCascade {
     pub fn new() -> Self {
-        assert_eq!(CASCADE_DECIM1 * CASCADE_DECIM2, DECIM, "cascade decimation must match DECIM");
+        assert_eq!(
+            CASCADE_DECIM1 * CASCADE_DECIM2,
+            DECIM,
+            "cascade decimation must match DECIM"
+        );
         Self {
             mixer: mixer_table(),
             n_in: 0,
-            stage1: FirStage::new(CASCADE_N1, CASCADE_DECIM1, 700.0 / AUDIO_RATE_HZ, CASCADE_HIST_MARGIN),
+            stage1: FirStage::new(
+                CASCADE_N1,
+                CASCADE_DECIM1,
+                700.0 / AUDIO_RATE_HZ,
+                CASCADE_HIST_MARGIN,
+            ),
             stage2: FirStage::new(
                 CASCADE_N2,
                 CASCADE_DECIM2,

@@ -103,7 +103,11 @@ mod tests {
         };
         let mut buf = heapless::String::new();
         row.format_row(&mut buf);
-        assert!(buf.len() <= 40, "line too wide for the panel: {buf:?} ({} chars)", buf.len());
+        assert!(
+            buf.len() <= 40,
+            "line too wide for the panel: {buf:?} ({} chars)",
+            buf.len()
+        );
         assert!(buf.starts_with("1234 <PJ4/K1A PM95"), "{buf}");
     }
 }

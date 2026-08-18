@@ -280,7 +280,10 @@ fn wspr_cascade_ddc_golden_recall_and_precision() {
 
     let decodes = decode_scan(&audio, 12_000, 0, &params);
 
-    eprintln!("WSPR sample (cascade DDC) decoded {} message(s):", decodes.len());
+    eprintln!(
+        "WSPR sample (cascade DDC) decoded {} message(s):",
+        decodes.len()
+    );
     for d in &decodes {
         eprintln!(
             "  freq={:6.1} Hz dt={:+.2} s : {}",

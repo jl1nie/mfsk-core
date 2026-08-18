@@ -206,7 +206,16 @@ q65          = ["fft-rustfft"]
 # uvpacket pulls in fst4 because it reuses the Ldpc240_101 codec
 # whose `Wsjt77Message::verify_info` length-dispatch logic (CRC-24
 # vs CRC-14) is wired through fst4's path.
-uvpacket     = ["fst4"]
+#
+# `std` is declared explicitly rather than inherited: `uvpacket` reaches
+# for `std::f32::consts::PI` and std's prelude (`Vec`, `vec!`) throughout
+# `tx.rs`/`rx.rs`/`interleaver.rs`/`puncture.rs`. It used to get `std` for
+# free through the old `fst4 = ["fft-rustfft"]` grouping, which `aa59720`
+# correctly removed — leaving this feature depending on a transitive it
+# never declared, and `--features uvpacket` alone unbuildable. Making
+# uvpacket genuinely no_std-capable is separate, deliberate work; nothing
+# under `embedded-poc/` references it today.
+uvpacket     = ["fst4", "std"]
 parallel     = ["std", "dep:rayon"]
 
 # Test-only visibility escape hatch (issue #203). `core::pipeline`'s

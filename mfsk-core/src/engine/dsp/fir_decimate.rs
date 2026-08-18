@@ -81,7 +81,7 @@ impl FirStage {
     /// `ntaps` must be odd (linear phase, integer group delay).
     /// `fc_norm` is the lowpass cutoff normalised to this stage's
     /// *input* sample rate. `hist_margin` sets how many input samples
-    /// accumulate between [`Self::compact`] calls — larger amortises
+    /// accumulate between `compact` calls — larger amortises
     /// the compaction copy further at the cost of a bigger buffer; see
     /// the caller for the tradeoff against a specific memory budget.
     pub fn new(ntaps: usize, decim: usize, fc_norm: f32, hist_margin: usize) -> Self {

@@ -53,10 +53,24 @@ use crate::engine::{FrameLayout, ModulationParams, Protocol, ProtocolId, SyncBlo
 use crate::fec::Ldpc240_101;
 use crate::msg::Wsjt77Message;
 
+// Decode-side modules route through `engine::fft`'s trait and the shared
+// `engine::pipeline`, both of which are gated on the FFT meta-feature — so
+// these have to carry the same gate or `--features fst4` alone (the
+// feature matrix's TX-only single-protocol build) can't compile. `encode`
+// stays available without any FFT backend, same split `ft8`/`wspr` use.
+//
+// Note this is *not* the `fft-rustfft` requirement `aa59720` correctly
+// removed: FST4's decode path is FFT-backend-agnostic and works fine on
+// `fft-extern`. It needs *some* backend, not that specific one.
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod baseline;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 pub mod encode;
-#[cfg(feature = "internal-testing")]
+#[cfg(all(
+    feature = "internal-testing",
+    any(feature = "fft-rustfft", feature = "fft-extern")
+))]
 pub mod rung_major;
 
 /// FST4's 77-bit pre-LDPC scrambler — identical to [`crate::ft4::FT4_RVEC`]
@@ -124,6 +138,12 @@ macro_rules! fst4_submode {
         #[derive(Copy, Clone, Debug, Default)]
         pub struct $name;
 
+        // `fst4::baseline::fst4_snr_db` is this constant's only consumer
+        // and is itself gated on the FFT meta-feature, so the constant
+        // carries the same gate — otherwise a TX-only `--features fst4`
+        // build trips `dead_code` under CI's `-D warnings` (once per
+        // sub-mode).
+        #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
         impl $name {
             /// `fst4_decode.f90`'s `select case (ntrperiod)` constant
             /// feeding [`crate::fst4::baseline::fst4_snr_db`]'s `arg =

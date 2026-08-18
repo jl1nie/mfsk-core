@@ -21,4 +21,4 @@ resolver = "2"
 # CHANGELOG). `release.yml`'s tag-vs-Cargo.toml check reads this
 # field directly.
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"

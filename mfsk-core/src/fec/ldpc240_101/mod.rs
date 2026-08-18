@@ -21,7 +21,9 @@ use crate::fec::ldpc::bp::{
     BpScratch, bp_decode_generic_kind, bp_decode_generic_kind_with_scratch, bp_llr_zsum,
     bp_llr_zsum_with_scratch,
 };
-use crate::fec::ldpc::osd::{OsdResult, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic};
+use crate::fec::ldpc::osd::{
+    OsdResult, ldpc_encode_generic, osd_decode_generic, osd_decode_npre_generic,
+};
 use crate::fec::ldpc::params::Ldpc240_101Params;
 
 pub const LDPC_N: usize = 240;
@@ -145,11 +147,7 @@ pub fn fst4_osd_diag_force_old(force_old: bool) {
 /// FST4's OSD dispatch: WSJT-X-faithful `npre1`/`npre1+npre2` for
 /// `ndeep` 2/3 (see module-level doc comment above), falling back to
 /// [`osd_decode_generic`] for any other depth.
-fn fst4_osd_decode(
-    llr: &[f32],
-    ndeep: u8,
-    verify: Option<fn(&[u8]) -> bool>,
-) -> Option<OsdResult> {
+fn fst4_osd_decode(llr: &[f32], ndeep: u8, verify: Option<fn(&[u8]) -> bool>) -> Option<OsdResult> {
     #[cfg(feature = "internal-testing")]
     let use_npre = !OSD_DIAG_FORCE_OLD.load(core::sync::atomic::Ordering::Relaxed);
     #[cfg(not(feature = "internal-testing"))]
@@ -176,9 +174,7 @@ fn fst4_osd_decode_dispatch(
         return osd_decode_generic::<Ldpc240_101Params>(llr, ndeep, LDPC_K, verify, false);
     }
     match ndeep {
-        2 => {
-            osd_decode_npre_generic::<Ldpc240_101Params>(llr, FST4_NPRE_NTHETA, 0, false, verify)
-        }
+        2 => osd_decode_npre_generic::<Ldpc240_101Params>(llr, FST4_NPRE_NTHETA, 0, false, verify),
         3 => osd_decode_npre_generic::<Ldpc240_101Params>(
             llr,
             FST4_NPRE_NTHETA,
@@ -260,8 +256,7 @@ impl FecCodec for Ldpc240_101 {
         // those bits away from their hinted value.
         if ap_slice.is_none() {
             let zsum = bp_llr_zsum::<Ldpc240_101Params>(&llr_arr, 2);
-            if let Some(r) = fst4_osd_decode(&zsum, opts.osd_depth.min(3) as u8, opts.verify_info)
-            {
+            if let Some(r) = fst4_osd_decode(&zsum, opts.osd_depth.min(3) as u8, opts.verify_info) {
                 return Some(FecResult {
                     info: r.info,
                     hard_errors: r.hard_errors,

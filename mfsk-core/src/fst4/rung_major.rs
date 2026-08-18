@@ -88,7 +88,9 @@ use alloc::vec::Vec;
 
 use num_complex::Complex32;
 
-use super::super::engine::llr::{compute_llr_fast, compute_llr_partial, descramble_info, symbol_spectra, sync_quality};
+use super::super::engine::llr::{
+    compute_llr_fast, compute_llr_partial, descramble_info, symbol_spectra, sync_quality,
+};
 use super::super::engine::pipeline::{DecodeResult, osd_escalation_gates};
 use super::super::engine::protocol::{BpPooledFec, FecOpts, MessageCodec, Protocol};
 use super::super::engine::sync::SyncCandidate;
@@ -142,7 +144,10 @@ pub struct RungMajorCandidate {
 /// wall-clock/scheduling question, not the SNR-reporting one. Callers
 /// that need real SNR should re-derive it from the returned candidate
 /// positions the way `process_candidate_basic` already does.
-pub fn decode_rung_major<P>(candidates: &[RungMajorCandidate], skip_llrc: bool) -> Vec<Option<DecodeResult>>
+pub fn decode_rung_major<P>(
+    candidates: &[RungMajorCandidate],
+    skip_llrc: bool,
+) -> Vec<Option<DecodeResult>>
 where
     P: Protocol,
     P::Fec: BpPooledFec,
@@ -189,11 +194,14 @@ where
     P: Protocol,
     P::Fec: BpPooledFec,
 {
-    assert!(!offsets.is_empty(), "decode_rung_major_timed: offsets must be non-empty");
+    assert!(
+        !offsets.is_empty(),
+        "decode_rung_major_timed: offsets must be non-empty"
+    );
 
-    let nsym_mid = P::LLR_NSYM_MID.expect(
-        "decode_rung_major is FST4-specific: P::LLR_NSYM_MID must be set (see module doc)",
-    ) as usize;
+    let nsym_mid = P::LLR_NSYM_MID
+        .expect("decode_rung_major is FST4-specific: P::LLR_NSYM_MID must be set (see module doc)")
+        as usize;
     let nsym_max = P::LLR_NSYM_MAX as usize;
     let ds_rate = 12_000.0 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
@@ -328,25 +336,29 @@ where
             match substage {
                 0 => {
                     off.llra = compute_llr_fast::<P, f32>(&off.cs).llra;
-                    if let Some(r) = fec.decode_soft_pooled(&off.llra, &bp_opts(0), &mut bp_scratch) {
+                    if let Some(r) = fec.decode_soft_pooled(&off.llra, &bp_opts(0), &mut bp_scratch)
+                    {
                         st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 0));
                     }
                 }
                 1 => {
                     off.llrb = compute_llr_partial::<P, f32, f32>(&off.cs, 2);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llrb, &bp_opts(0), &mut bp_scratch) {
+                    if let Some(r) = fec.decode_soft_pooled(&off.llrb, &bp_opts(0), &mut bp_scratch)
+                    {
                         st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 1));
                     }
                 }
                 2 => {
                     off.llre = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_mid);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llre, &bp_opts(0), &mut bp_scratch) {
+                    if let Some(r) = fec.decode_soft_pooled(&off.llre, &bp_opts(0), &mut bp_scratch)
+                    {
                         st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 6));
                     }
                 }
                 3 => {
                     off.llrc = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_max);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llrc, &bp_opts(0), &mut bp_scratch) {
+                    if let Some(r) = fec.decode_soft_pooled(&off.llrc, &bp_opts(0), &mut bp_scratch)
+                    {
                         st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 2));
                     }
                 }
@@ -364,14 +376,17 @@ where
                     }
                     let mut hit: Option<crate::engine::protocol::FecResult> = None;
                     for llr in variants {
-                        if let Some(r) = fec.decode_soft_pooled(llr, &bp_opts(osd_depth), &mut bp_scratch) {
+                        if let Some(r) =
+                            fec.decode_soft_pooled(llr, &bp_opts(osd_depth), &mut bp_scratch)
+                        {
                             hit = Some(r);
                             break;
                         }
                     }
                     if let Some(r) = hit {
                         let pass = if skip_llrc { 4 } else { 5 };
-                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, pass));
+                        st.decoded =
+                            Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, pass));
                     }
                 }
                 _ => unreachable!(),

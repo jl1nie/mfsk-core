@@ -1951,7 +1951,8 @@ const OSD_NPRE_WORDS: usize = OSD_NPRE_MAX_N.div_ceil(64); // 4
 ///   equivalent); `true` adds the `npre2` hash-table pass (`ndeep=3`
 ///   equivalent).
 ///
-/// Algorithm identical to [`osd_npre1_pass`]/[`osd_npre2_pass`]
+/// Algorithm identical to `osd_npre1_pass`/`osd_npre2_pass` (both
+/// crate-private, hence unlinked here)
 /// otherwise; only the working-buffer shapes are runtime-sized
 /// (`OSD_NPRE_MAX_N`-bounded) to accommodate any `LdpcParams` instead of
 /// being pinned to `LDPC_N`/`LDPC_K`.

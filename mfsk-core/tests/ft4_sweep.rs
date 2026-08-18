@@ -540,7 +540,9 @@ fn ft4_diag_k4_tail_direction() {
     // simultaneously) — before the direction question can be answered,
     // the gate has to actually fire at least sometimes. m19-m22 (weaker)
     // included for the same reason.
-    for snr_tag in ["m22", "m21", "m20", "m19", "m18", "m17", "m16", "m15", "m14"] {
+    for snr_tag in [
+        "m22", "m21", "m20", "m19", "m18", "m17", "m16", "m15", "m14",
+    ] {
         for trial in 1..=20u32 {
             let path = dir.join(format!("ft4_awgn_{snr_tag}_{trial:02}.wav"));
             let Some(audio) = load_wav_i16_opt(&path) else {
@@ -553,7 +555,10 @@ fn ft4_diag_k4_tail_direction() {
             let verify_info =
                 Some(<<Ft4 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
 
-            for c in cands.iter().filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ) {
+            for c in cands
+                .iter()
+                .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
+            {
                 let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FT4_DOWNSAMPLE);
                 // RMS-normalise — `process_candidate_basic_impl` applies
                 // this before `ft4_sync_search`; omitting it broke an

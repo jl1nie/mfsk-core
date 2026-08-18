@@ -1,6 +1,144 @@
 # Changelog
 
-## 0.9.2 — FT8 coarse-sync lag window matches WSJT-X (#278/#280), Q65/JT65 Δt windows + Δt regression harness (#282), early-frame decode (#283), WSPR host/embedded parity + streaming front end (#260), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
+## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + CoreS3 standalone receiver (#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
+
+**Why a minor bump.** This crate's convention is that new protocols and
+capabilities are patch-level (MSK144 shipped as `0.7.4`); minor bumps mark
+structural API change. Three public search-parameter fields change type and
+name here — `jt65::search::SearchParams::time_tolerance_symbols: u32` →
+`time_tolerance_sec: f32`, the same rename on `jt9`, and
+`q65::search::SearchParams::time_tolerance_symbols` →
+`time_tolerance_early_sec` + `time_tolerance_late_sec` — because symbols are
+not a transferable unit across sub-modes whose symbol lengths differ by 20×.
+Callers that set these must update; callers that used the defaults get
+corrected (and, for Q65 and JT65, substantially wider) windows automatically.
+Same handling as `0.8.0`, which collected its breaking changes into a minor
+rather than distributing them across patches.
+
+### Added
+
+- **A standalone WSPR receiver application for the CoreS3**
+  (`embedded-poc/m5stack-cores3-app/src/bin/wspr_app.rs`). Phase E (#260)
+  answered the decoder-level question — `wspr::ddc` exists, the steady-state
+  pipeline decodes in 82.8–90.1 s against a 110 s deadline, golden 9/9 holds
+  every slot. This is the application built on top of it: a portrait
+  240×320 spot list, band selection, WiFi with unbounded background retry,
+  an HTTP configuration server, NVS-persisted settings, NTP time sync, and
+  UDP log fanout — the last because a device that has to sit on an antenna
+  for hours can't stay tethered to a serial monitor.
+
+  Real USB audio is wired in. `uac.rs`'s reader-thread → consumer coupling
+  was generalized into an **`AudioSink` trait**, so the FT8 controller
+  (`Ft8ChunkSink`, wrapping the previous behaviour verbatim — `set_chunk_q`
+  keeps its old name and signature, so `main.rs`/`decode_pipeline.rs` needed
+  no changes) and the WSPR receiver (`WsprDdcSink`, feeding a per-slot
+  `StreamingDdcCascade`) share one USB host / class driver / hot-plug /
+  resample implementation instead of two.
+
+  **Not hardware-verified against a real UAC source** — that is issue #163,
+  which this change makes load-bearing for two applications rather than one.
+  Until a device enumerates, `UAC_AUDIO_ACTIVE` never flips and the app
+  keeps running its synthetic generator, so it stays fully functional and
+  host-independently testable with nothing plugged in. Remaining open items
+  (wall-clock slot alignment, `SpotSink::Http` never run against a real
+  wsprnet endpoint) are collected in #313.
+
+- **`wspr::ddc::StreamingDdcCascade`** and the `wspr-ddc-cascade` feature —
+  a two-stage decimator, ~4.5× less compute than the single-stage
+  `StreamingDdc` it sits beside. DDC compute occupancy measured 24.8–39.2 %
+  of the 120 s slot budget on real hardware; pointer-address logging
+  root-caused it to `DdcBufs`' taps and I/Q history (7 172 B / 9 220 B /
+  9 220 B) all exceeding `SPIRAM_MALLOC_ALWAYSINTERNAL=4096` and landing in
+  PSRAM rather than internal DRAM — a gap `StreamingDdc::new_in`'s own doc
+  comment had warned about and nothing in the tree worked around.
+
+  The fix was a from-first-principles Crochiere-Rabiner derivation rather
+  than a reaction to the benchmark number: splitting `DECIM = 32` into 8×4
+  gives stage 1 `N = 43` (loose transition, only needs to keep stage 2
+  honest) and stage 2 `N = 223` (carrying the real 27 Hz [174, 201] Hz
+  requirement, same as the single-stage design). Every resulting buffer is
+  small enough to auto-place in internal DRAM, so no manual placement API
+  was needed. Six new host tests — coherence > 0.99 against the whole-slot
+  FFT reference, out-of-band rejection, and direct agreement with the
+  single-stage implementation — alongside the original five. The two DDC
+  features are mutually exclusive (`compile_error!` in `decode_scan_inner`),
+  each with its own real-signal golden test against the WSJT-X recording.
+
+- **`engine::dsp::fir_decimate`** — the generic filter-and-decimate
+  primitive (`design_lowpass` + `FirStage`) extracted from `wspr::ddc`,
+  which carries no WSPR-specific logic. The mixer table, `REFERENCE_GAIN`
+  and the cascade tap-count constants stay in `wspr/ddc.rs`; both DDC
+  implementations now share the filter core.
+
+- **`fst4::rung_major`** — rung-major candidate scheduling for FST4
+  (#306 item 3, VK3NV), as a separate FST4-specific entry point.
+  `engine::pipeline::process_candidate_basic_impl` stays exactly as-is,
+  serving FT4/FT8/FST4/MSK144 depth-first.
+
+  Depth-first pays every rung for a candidate that never decodes before
+  moving to the next, so one hard candidate early in the list can delay
+  every easy decode after it arbitrarily far. Measured on the FST4-60
+  golden: both real signals decode at ~0.15 s / ~0.30 s *only because they
+  fall early in candidate order*; a worst-case ordering pushes them to
+  ~30 s of a 30.15 s total. Rung-major sweeps each rung across every
+  still-undecided candidate before descending, which bounds worst-case
+  time-to-first-decode to one rung's cost (~7.4 s projected for the first)
+  regardless of ordering. Total work is unchanged — only the order.
+
+  Deliberately a 5-stage, not 6-stage, ladder: a targeted ablation found
+  `llrd` contributes **exactly zero** additional recall beyond
+  `llra`/`llrb`/`llre`/`llrc` + OSD — byte-identical hit counts with and
+  without it in all four configurations tested, on both the AWGN and
+  CCIR-moderate corpora. A stage that never wins shouldn't be scheduled.
+
+  `skip_llrc` and `offsets` are caller choices rather than baked policy.
+  `offsets` in particular: #308's `i0±1` timing retry is an unconditional
+  win on host, but on real hardware porting it here unconditionally triples
+  `full` (40.102 s → 121.281 s) and more than doubles `no8_osd`
+  (13.643 s → 34.200 s) for a few recall points, so the production default
+  stays `&[0]` and a deployment that can tolerate spanning slots can opt in.
+  Folding `offsets` into cost-ordered scheduling instead of the current
+  offset-major outer loop is #310.
+
+### Fixed
+
+- **The `wspr_app` crash loop — PSRAM-backed thread stacks.** With internal
+  DRAM driven down to ~2 KB free by `wifi_driver_init`, the
+  `uac_app`/`usb_events`/`uac_reader` `std::thread` spawns all pulled their
+  stacks from that same tight pool via the ESP-IDF pthread compat layer. On
+  this `esp-idf-svc` std target a later sub-4 KiB allocation failure
+  surfaces as a genuine Rust panic, which poisons whichever `Mutex` it held;
+  the next task to touch that lock panics too. The visible symptom was a
+  double-panic crash loop whose backtrace landed on whichever task lost the
+  race to be second — i.e. never on the actual cause. `spawn_psram_thread()`
+  mirrors the existing `spawn_network_task` fix via `std::thread`'s
+  `ThreadSpawnConfiguration` hook, and all three `uac.rs` spawns route
+  through it.
+
+- **The CoreS3 LCD stayed dark end-to-end — four independent root causes**,
+  none catchable by host build, clippy or test; found over ~15
+  flash-and-observe iterations against the physical panel. (1) AXP2101
+  DLDO1, the backlight power rail, was never enabled — `pmic.rs` read the
+  chip ID as a presence check and relied on power-on defaults for every
+  rail; register readback confirmed bit `0x80` of `0x90` clear beforehand,
+  so the backlight had zero power regardless of what the LCD controller's
+  SPI logic did underneath. Cross-checked against M5Stack's own M5GFX
+  source. (2) `board.rs`'s AW9523B `LCD_RST`/`TP_RST` bits were swapped
+  versus M5GFX's verified mapping (`P1_1` is `LCD_RST`) — harmless today
+  since both are driven together, fixed for when Phase 6-Core touch needs
+  `TP_RST` alone. (3) `DrawTarget::clear()` gave partial or wrapped
+  coverage on this mipidsi/SPI setup every time it was tried. (4) The
+  display task was starved by the scan task sharing its core.
+
+- **Both FT8 controllers drove their ILI9342C panels as ILI9341** — the
+  same model bug in each, fixed in both.
+
+- **WiFi bring-up on the CoreS3**: STA connect now retries on association
+  refusal with a full rescan-and-reconfigure rather than giving up, power
+  save is disabled, and the `httpd` task stack moved to PSRAM. The
+  DHCP-silent symptom that prompted the investigation was confirmed
+  router-side, not a defect in this crate — recorded so it isn't
+  re-investigated here.
 
 ### Changed
 
