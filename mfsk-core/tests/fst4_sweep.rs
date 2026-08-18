@@ -7305,3 +7305,85 @@ fn fst4_60_diag_wideband_band_recall() {
     }
     eprintln!("TOTAL: {}/{}", grand.0, grand.1);
 }
+
+/// The two schedules must return **exactly the same decodes**.
+///
+/// [`Schedule::RungMajor`] and [`Schedule::PhaseSplit`] visit the same
+/// set of (candidate, offset, sub-stage) units and do the same total
+/// work — they differ only in the order, and therefore only under a
+/// budget. With no budget gate, any difference in the result is a bug in
+/// the split, not a property of it.
+///
+/// This is the guard that makes the phase split safe to adopt: the
+/// scheduling change is supposed to move *when* decodes appear, never
+/// *whether* they do.
+///
+/// Checked on the real FST4-60 golden and across several offset
+/// configurations, since the phase boundary (`offset_idx == 0 &&
+/// substage == 0` is Phase A) is exactly where an off-by-one would hide.
+#[test]
+fn fst4_phase_split_matches_rung_major_without_a_budget() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::pipeline::refine_candidate_position;
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+    use mfsk_core::fst4::rung_major::{
+        RungMajorCandidate, decode_phase_split_timed, decode_rung_major_timed,
+    };
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: real FST4-60 golden WAV not vendored/found");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+    let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let cands: Vec<RungMajorCandidate> = raw
+        .iter()
+        .map(|c| {
+            let (cd0, refined_freq_hz, i0, _score) =
+                refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
+            RungMajorCandidate {
+                cand: c.clone(),
+                cd0,
+                refined_freq_hz,
+                i0,
+            }
+        })
+        .collect();
+    assert!(!cands.is_empty(), "golden must produce candidates");
+
+    for offsets in [&[0i32][..], &[0, -1][..], &[0, 1, -1][..]] {
+        for skip_llrc in [false, true] {
+            let (a, _) =
+                decode_rung_major_timed::<Fst4s60>(&cands, skip_llrc, false, offsets, None);
+            let (b, _) =
+                decode_phase_split_timed::<Fst4s60>(&cands, skip_llrc, false, offsets, None, None);
+            assert_eq!(
+                a.len(),
+                b.len(),
+                "offsets={offsets:?} skip_llrc={skip_llrc}: result length differs"
+            );
+            for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+                match (x, y) {
+                    (None, None) => {}
+                    (Some(x), Some(y)) => assert_eq!(
+                        x.info, y.info,
+                        "offsets={offsets:?} skip_llrc={skip_llrc} cand {i}: \
+                         different message decoded"
+                    ),
+                    _ => panic!(
+                        "offsets={offsets:?} skip_llrc={skip_llrc} cand {i}: one schedule \
+                         decoded and the other did not ({} vs {})",
+                        x.is_some(),
+                        y.is_some()
+                    ),
+                }
+            }
+        }
+    }
+}
