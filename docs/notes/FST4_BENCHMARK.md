@@ -664,6 +664,50 @@ candidates decoding the same signal, so it is not a recall figure. At
 ±100/±50/±25 Hz only one known signal is in the window, so `real ≤ 1`
 by construction there; only the ±250 Hz rows contain both.
 
+### Audit: dedup-suppressed candidates re-admitted past the cap
+
+VK3NV's #312 follow-up flagged a reachable path in `engine/sync.rs`:
+the dedup loop marks the losing near-duplicate (4 Hz / 40 ms) with
+`score = 0.0`, but the `retain` right after admits anything satisfying
+`stage1_pass(fi)` regardless of score. `stage1_norm` is only populated
+for FST4, so it is FST4-specific.
+
+`fst4_60_diag_dedup_zero_score_readmission` counts it directly — a
+`score` of exactly `0.0` in the output can only come from that dedup
+assignment, and `SyncCandidate::score` is public, so no library change
+was needed.
+
+**It fires, but not where the concern expected.** Measured over
+4 widths x 6 caps on both golden targets and two near-threshold sweep
+trials:
+
+| source | width | cap | capped | zeros | zeros in reserved near-hint group |
+|---|---|---:|---:|---:|---:|
+| golden / K9KFR | +/-250 Hz | 50 | 50 | 3 | 3 |
+| golden / K9KFR | +/-100 Hz | 50 | 50 | 3 | 3 |
+| golden / K9KFR | +/-50 Hz | 50 | 50 | 3 | 3 |
+| golden / K9KFR | +/-25 Hz | 50 | 50 | 6 | 3 |
+
+Every other row is zero — including **every cap below 50**, both
+near-threshold sweep trials, and N5TM entirely.
+
+The reason is that zeros sort last within their group, so a low cap
+truncates them away before they matter: `reserved =
+min(near.len(), cap.div_ceil(2))` takes the top of `near` *by score*,
+and `near` always held at least `reserved` non-zero candidates here.
+
+**So the caveat lands on the opposite rows from the hypothesis.** The
+low-cap rows in the tables above are unaffected, as are section 11.2's
+near-threshold recall numbers. What is affected is `max_cand = 50` —
+the production default — where on one of the two golden signals **3 of
+50 slots (6 %) go to candidates already known to be duplicates**, all
+three inside the reserved near-hint group.
+
+Not fixed here: this is a measurement of the existing behaviour, and
+whether the `retain` should test `score >= sync_min && stage1_pass(fi)`
+(or exclude zeroed entries explicitly) is a decision for #312 with its
+own recall check, since the OR-gate exists for #146 reasons.
+
 ### One pathological candidate costs ~2 s, and survives at cap = 4
 
 An anomaly worth keeping: N5TM's ±100 Hz and ±50 Hz rows sit at

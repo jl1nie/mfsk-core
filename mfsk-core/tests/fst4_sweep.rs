@@ -5370,3 +5370,139 @@ fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
     }
     fst4_osd_diag_force_old(false);
 }
+
+/// **VK3NV's #312 audit**: does `coarse_sync`'s dedup-suppressed loser
+/// come back and consume a capped slot?
+///
+/// `engine/sync.rs`'s dedup marks the losing near-duplicate (within 4 Hz
+/// / 40 ms) with `score = 0.0`, but the `retain` immediately after
+/// admits any candidate for which `stage1_pass(fi)` holds, *regardless
+/// of score*:
+///
+/// ```text
+/// if c.score >= sync_min { return true; }
+/// stage1_pass(fi)
+/// ```
+///
+/// `stage1_norm`/`stage1_pass` is only populated for FST4
+/// (`P::ID == ProtocolId::Fst4`), so this is FST4-specific rather than a
+/// property of the generic candidate path or #146's OR-gate.
+///
+/// Why it could matter for the #312 cap rows: `rank_candidates` sorts by
+/// score (so a zero sorts last *within its group*), then partitions into
+/// a near-`freq_hint` group (±10 Hz, `FREQ_HINT_NEAR_HZ`) and the rest,
+/// and reserves `min(near.len(), max_cand.div_ceil(2))` slots for the
+/// near group. At `max_cand = 4` that is **2 reserved slots** — so if
+/// the near group holds fewer than 2 non-zero candidates, a re-admitted
+/// zero-score duplicate takes a reserved slot instead of simply falling
+/// off the bottom of the score sort. The sniper path always passes a
+/// `freq_hint`, so the low-cap rows in #312 are exactly where this would
+/// bite.
+///
+/// A `score` of exactly `0.0` in the output can only come from that
+/// dedup assignment — real scores are normalised sync ratios — so
+/// counting zeros in the capped list is a direct count of re-admitted
+/// duplicates. No library change needed: `SyncCandidate::score` is
+/// public.
+///
+/// Reports, per (width, cap): capped size, zero-score entries, and how
+/// many of those sit inside the reserved near-hint group.
+#[test]
+#[ignore = "manual audit — dedup-suppressed candidates re-admitted past the cap (issue #312, VK3NV)"]
+fn fst4_60_diag_dedup_zero_score_readmission() {
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+
+    // `engine::sync::FREQ_HINT_NEAR_HZ` is pub(crate); mirrored here.
+    const NEAR_HZ: f32 = 10.0;
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const WIDTHS_HZ: &[f32] = &[250.0, 100.0, 50.0, 25.0];
+    const CAPS: &[usize] = &[4, 8, 10, 16, 32, 50];
+
+    let mut audits: Vec<(String, f32, Vec<i16>)> = Vec::new();
+
+    // 1. The real golden, both known signals — the corpus §10's table
+    //    was measured on.
+    if let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) && let Some(audio) = load_wav_i16_opt(&path)
+    {
+        audits.push(("golden/N5TM".into(), 1101.0, audio.clone()));
+        audits.push(("golden/K9KFR".into(), 1331.0, audio));
+    }
+
+    // 2. One near-threshold sweep trial — §11.2's rows come from cells
+    //    like this, and a strong-signal-only audit would not represent
+    //    them.
+    let dir = sweep_dir();
+    for (cell, trial) in [("ccir_moderate_m25", 1u32), ("awgn_m28", 1)] {
+        let path = dir.join(format!("fst4_60_{cell}_{trial:02}.wav"));
+        if let Some(audio) = load_wav_i16_opt(&path) {
+            audits.push((format!("sweep/{cell}#{trial}"), GOLDEN_FREQ_HZ, audio));
+        }
+    }
+
+    if audits.is_empty() {
+        eprintln!("skip: neither golden nor sweep corpus available");
+        return;
+    }
+
+    eprintln!(
+        "{:>22} {:>7} {:>7} {:>7} {:>7} {:>10}",
+        "source", "width", "maxcand", "capped", "zeros", "zeros_near"
+    );
+
+    let mut total_zeros = 0usize;
+    let mut total_zeros_near = 0usize;
+
+    for (name, hint, audio) in &audits {
+        for &width in WIDTHS_HZ {
+            let freq_min = (hint - width).max(100.0);
+            let freq_max = (hint + width).min(3000.0);
+            for &cap in CAPS {
+                let capped = coarse_sync::<Fst4s60>(
+                    audio,
+                    freq_min,
+                    freq_max,
+                    SNIPER_SYNC_MIN,
+                    Some(*hint),
+                    cap,
+                );
+                let zeros = capped.iter().filter(|c| c.score == 0.0).count();
+                let zeros_near = capped
+                    .iter()
+                    .filter(|c| c.score == 0.0 && (c.freq_hz - hint).abs() <= NEAR_HZ)
+                    .count();
+                total_zeros += zeros;
+                total_zeros_near += zeros_near;
+                eprintln!(
+                    "{:>22} {:>6.0}Hz {:>7} {:>7} {:>7} {:>10}",
+                    name,
+                    width,
+                    cap,
+                    capped.len(),
+                    zeros,
+                    zeros_near
+                );
+            }
+        }
+    }
+
+    eprintln!();
+    if total_zeros == 0 {
+        eprintln!(
+            "No re-admitted duplicates reached any capped list. The OR-gate is \
+             reachable in principle but not exercised here, so #312's rows stand \
+             as measured."
+        );
+    } else {
+        eprintln!(
+            "{total_zeros} zero-score entries reached capped lists, {total_zeros_near} \
+             of them inside the reserved near-hint group. The near-hint ones are the \
+             ones that displace a real candidate from a reserved slot rather than \
+             falling off the bottom of the score sort — #312's low-cap rows need a \
+             caveat proportional to that column."
+        );
+    }
+}
