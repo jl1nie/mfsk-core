@@ -389,8 +389,16 @@ Grouped by the three tracks in **Strategic state** above.
 - **#312** — FST4 sniper: `max_cand = 50` binds before the search
   window width does, so narrowing the window changes nothing on the
   production path today. Sweep the cap as a *retained fraction* across
-  ±25/50/100/250 Hz; leave `sync_min` alone first. Strong-signal
-  golden only so far — a near-threshold sweep gates any default change.
+  ±25/50/100/250 Hz; leave `sync_min` alone first.
+
+  Partly answered. At matched retention, narrowing the window does cut
+  false survivors ~20× (`FST4_BENCHMARK.md` §10), and a preliminary
+  near-threshold run suggests the recall cliff tracks the **absolute
+  cap** rather than the retained fraction — which, if it survives the
+  full grid (§11.2, queued), means "absolute floor for recall, fraction
+  for cost" rather than either alone. A separate defect VK3NV found
+  while auditing this — `coarse_sync` re-admitting candidates its own
+  dedup had rejected — is fixed and shipped in 0.10.0.
 
 - **#307** — `engine::fft` has no generic non-power-of-2 FFT.
   `coarse_sync`'s `nfft1` is non-power-of-two for all five FST4
