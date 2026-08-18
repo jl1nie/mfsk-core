@@ -634,6 +634,28 @@ pub fn coarse_sync<P: Protocol>(
     let _ = pattern_len; // currently unused; kept for future scoring weights
 
     // De-duplicate: within 4 Hz and 40 ms, keep highest score.
+    //
+    // `suppressed` records the decision separately from the score
+    // because the score alone cannot carry it past the `retain` below:
+    // that gate is an OR (issue #146 — an FST4 candidate under
+    // `sync_min` is still kept when the stage-1 normalised score passes),
+    // so a loser zeroed here would be re-admitted by the `stage1_pass`
+    // arm and go on to occupy a slot after `max_cand` truncation.
+    //
+    // Measured before this was tracked (issue #312, VK3NV): 3 of the 50
+    // slots at the production `max_cand = 50` on the golden's K9KFR
+    // target, all three inside `rank_candidates`' reserved
+    // near-`freq_hint` group — and across 80 near-threshold sweep trials
+    // not one such candidate ever decoded, so honouring the dedup here
+    // costs no recall (`fst4_60_diag_dedup_zero_score_recall_effect`,
+    // and `fst4_60_diag_wideband_band_recall` for the no-hint path).
+    //
+    // Deliberately *not* the narrower-looking `score >= sync_min &&
+    // stage1_pass(fi)`: that would also drop candidates which clear the
+    // score gate but fail stage 1, which is what the #146 OR-gate exists
+    // to keep. The defect is only that a rejected duplicate comes back,
+    // so only that is fixed.
+    let mut suppressed = alloc::vec![false; cands.len()];
     for i in 1..cands.len() {
         for j in 0..i {
             let fdiff = (cands[i].freq_hz - cands[j].freq_hz).abs();
@@ -641,13 +663,19 @@ pub fn coarse_sync<P: Protocol>(
             if fdiff < 4.0 && tdiff < 0.04 {
                 if cands[i].score >= cands[j].score {
                     cands[j].score = 0.0;
+                    suppressed[j] = true;
                 } else {
                     cands[i].score = 0.0;
+                    suppressed[i] = true;
                 }
             }
         }
     }
+    let mut keep = suppressed.iter().map(|s| !s);
     cands.retain(|c| {
+        if !keep.next().unwrap_or(true) {
+            return false;
+        }
         if c.score >= sync_min {
             return true;
         }

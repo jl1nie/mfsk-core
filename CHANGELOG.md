@@ -102,6 +102,33 @@ rather than distributing them across patches.
 
 ### Fixed
 
+- **`coarse_sync`'s de-duplication decision is now final** (issue #312,
+  found by VK3NV). The dedup pass marks the losing near-duplicate (within
+  4 Hz / 40 ms) with `score = 0.0`, but the `retain` immediately after is
+  an OR — `score >= sync_min || stage1_pass(fi)` — so on FST4, where
+  `stage1_norm` is populated, a candidate the dedup had just rejected was
+  re-admitted through the second arm and went on to occupy a slot after
+  `max_cand` truncation.
+
+  Measured before the fix: **3 of the 50 slots** at the production
+  `max_cand = 50` on the FST4-60 golden's K9KFR target, all three inside
+  `rank_candidates`' reserved near-`freq_hint` group, i.e. displacing
+  real candidates rather than falling off the bottom of the score sort.
+
+  **No sensitivity cost.** Across 80 near-threshold sweep trials not one
+  re-admitted duplicate ever decoded, and on the wideband production path
+  (`DecodeRequest`, 100-3000 Hz, no hint) recall over the partial-recall
+  band is byte-identical before and after — 82/120, unchanged in every
+  cell.
+
+  Deliberately *not* the narrower-looking `score >= sync_min &&
+  stage1_pass(fi)`: that would also drop candidates which clear the score
+  gate but fail stage 1, which is exactly what #146's OR-gate exists to
+  keep. The defect was only that a rejected duplicate came back, so the
+  suppression is now tracked separately from the score and only that is
+  fixed.
+
+
 - **The `wspr_app` crash loop — PSRAM-backed thread stacks.** With internal
   DRAM driven down to ~2 KB free by `wifi_driver_init`, the
   `uac_app`/`usb_events`/`uac_reader` `std::thread` spawns all pulled their

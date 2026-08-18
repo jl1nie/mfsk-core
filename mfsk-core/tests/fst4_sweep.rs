@@ -7204,3 +7204,104 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
          survivors by nsync is close to free -- the first rung computed it for the gate."
     );
 }
+
+/// Regression: `coarse_sync`'s de-duplication decision must be final.
+///
+/// The dedup loop marks the losing near-duplicate (within 4 Hz / 40 ms)
+/// with `score = 0.0`, but the `retain` that follows admits any candidate
+/// satisfying `stage1_pass(fi)` *regardless of score* — and `stage1_norm`
+/// is only populated for FST4. So on FST4 a candidate the dedup had just
+/// rejected could come back, sort to the bottom of its group, and still
+/// occupy a slot once `max_cand` truncated the list (issue #312, VK3NV).
+///
+/// Measured before the fix: 3 of the 50 slots at the production
+/// `max_cand = 50` on the golden's K9KFR target, all three inside
+/// `rank_candidates`' reserved near-`freq_hint` group; and across 80
+/// near-threshold sweep trials, **not one of them ever decoded**
+/// (`fst4_60_diag_dedup_zero_score_recall_effect`).
+///
+/// A `score` of exactly `0.0` in `coarse_sync`'s output can only come
+/// from that dedup assignment — real scores are normalised sync ratios —
+/// so this asserts the observable property directly.
+#[test]
+fn fst4_coarse_sync_output_has_no_deduped_candidates() {
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+
+    let Some(path) = common::corpus::golden_path_or_upstream(
+        "fst4/210115_0058.wav",
+        Some("FST4+FST4W/210115_0058.wav"),
+    ) else {
+        eprintln!("skip: FST4-60 golden not vendored");
+        return;
+    };
+    let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
+
+    // Both shapes: sniper (freq_hint set, where a zero could take a
+    // reserved slot) and wideband (no hint, what `DecodeRequest` uses).
+    for (name, lo, hi, hint) in [
+        ("sniper/K9KFR", 1081.0, 1581.0, Some(1331.0)),
+        ("wideband", 100.0, 3000.0, None),
+    ] {
+        for cap in [4usize, 16, 50, 200] {
+            let out = coarse_sync::<Fst4s60>(&audio, lo, hi, 0.8, hint, cap);
+            let zeros = out.iter().filter(|c| c.score == 0.0).count();
+            assert_eq!(
+                zeros,
+                0,
+                "{name} @max_cand={cap}: {zeros} de-duplicated candidate(s) survived \
+                 into the capped list of {} — coarse_sync's dedup decision must be \
+                 final (issue #312)",
+                out.len()
+            );
+        }
+    }
+}
+
+/// FST4-60 recall on the **wideband** production path, over the
+/// partial-recall band — the sensitivity check for the #312 dedup fix.
+///
+/// The audit that justified the fix
+/// (`fst4_60_diag_dedup_zero_score_recall_effect`) ran sniper-shaped
+/// only: one width, one cap, `freq_hint` set. `DecodeRequest` uses none
+/// of that — it searches 100-3000 Hz with no hint, where a zero-score
+/// re-admission sorts to the bottom rather than into a reserved slot.
+/// This is the same-population before/after comparison on the path that
+/// actually ships.
+///
+/// Prints rather than asserts: it is a sensitivity measurement, and the
+/// band is small enough that a one-trial move is noise. Compare the two
+/// runs directly.
+#[test]
+#[ignore = "manual verification — wideband recall across the partial-recall band (issue #312)"]
+fn fst4_60_diag_wideband_band_recall() {
+    let dir = sweep_dir();
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m23"),
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m26"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+    let mut grand = (0u32, 0u32);
+    for &(channel, snr_tag) in CELLS {
+        let (mut pass, mut n) = (0u32, 0u32);
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            n += 1;
+            if decode_wav_fst4_60(&audio) {
+                pass += 1;
+            }
+        }
+        if n > 0 {
+            eprintln!("{channel}_{snr_tag}: {pass}/{n}");
+            grand.0 += pass;
+            grand.1 += n;
+        }
+    }
+    eprintln!("TOTAL: {}/{}", grand.0, grand.1);
+}
