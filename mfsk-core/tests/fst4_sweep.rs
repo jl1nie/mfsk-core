@@ -5506,3 +5506,165 @@ fn fst4_60_diag_dedup_zero_score_readmission() {
         );
     }
 }
+
+/// **Does the re-admitted duplicate ever decode?** The question that
+/// decides whether #312's `retain` OR-gate can be tightened for free.
+///
+/// [`fst4_60_diag_dedup_zero_score_readmission`] established that
+/// dedup-suppressed candidates (`score == 0.0`) do reach the capped
+/// list. That alone doesn't say whether they are harmful, harmless, or
+/// load-bearing. Three possibilities, and they need different actions:
+///
+/// - **Never decode** → the OR-gate is buying nothing on this path and
+///   tightening `retain` to `score >= sync_min && stage1_pass(fi)` costs
+///   no recall. Free cleanup, plus whatever budget the duplicates were
+///   consuming.
+/// - **Sometimes decode** → the gate is genuinely buying recall (a
+///   near-duplicate is not always the *wrong* one of the pair), and
+///   tightening it is a sensitivity regression. Leave it.
+/// - **Decode, but only signals another candidate also decodes** →
+///   they're redundant; tightening is still free, and the dedup itself
+///   is what needs looking at.
+///
+/// Measured two ways per cell, at the production `max_cand = 50` and
+/// sniper-shaped (`freq_hint` set — that is the configuration where a
+/// zero can take a *reserved* slot rather than sorting to the bottom):
+///
+/// 1. `as-is` — the candidate list exactly as `coarse_sync` returns it.
+/// 2. `filtered` — the same list with `score == 0.0` entries dropped
+///    before any decode work, i.e. what tightening the gate would do.
+///
+/// Equal recall across those two columns is the "free to tighten"
+/// result. `zeros_decode` counts candidates that were themselves
+/// zero-score *and* produced the golden message, which is the direct
+/// form of the same question and distinguishes case 2 from case 3.
+///
+/// Cells are the partial-recall band from
+/// [`fst4_60_diag_npre_baseline_scan`] — a saturated or empty cell
+/// cannot show a recall difference either way.
+#[test]
+#[ignore = "manual audit — do dedup-suppressed candidates ever decode? (issue #312)"]
+fn fst4_60_diag_dedup_zero_score_recall_effect() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const SNIPER_SYNC_Q_MIN: u32 = 8; // fst4::decode's __sniper literal
+    const MAX_CAND: usize = 50; // production default
+    const WIDTH_HZ: f32 = 250.0; // sniper's own literal
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    let dir = sweep_dir();
+    eprintln!(
+        "{:>18} {:>4} {:>7} {:>13} {:>10} {:>10}",
+        "cell", "n", "zeros", "zeros_decode", "recall", "filtered"
+    );
+
+    for &(channel, snr_tag) in CELLS {
+        let mut n = 0u32;
+        let mut zeros_total = 0u32;
+        let mut zeros_decode = 0u32;
+        let mut recall_asis = 0u32;
+        let mut recall_filtered = 0u32;
+
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            n += 1;
+
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            let mut hit_asis = false;
+            let mut hit_filtered = false;
+            for c in &cands {
+                let is_zero = c.score == 0.0;
+                if is_zero {
+                    zeros_total += 1;
+                }
+                let (cd0, _f, i0, _s) =
+                    refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
+                let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                if sync_quality::<Fst4s60>(&cs) <= SNIPER_SYNC_Q_MIN {
+                    continue;
+                }
+                let decoded = process_candidate_basic::<Fst4s60>(
+                    c,
+                    &fft_cache,
+                    &FST4_60A_DOWNSAMPLE,
+                    DecodeDepth::FULL,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    SNIPER_SYNC_Q_MIN,
+                )
+                .is_some_and(|d| {
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(d.message77());
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                });
+                if !decoded {
+                    continue;
+                }
+                hit_asis = true;
+                if is_zero {
+                    zeros_decode += 1;
+                } else {
+                    // Only non-zero candidates survive the tightened gate.
+                    hit_filtered = true;
+                }
+            }
+            if hit_asis {
+                recall_asis += 1;
+            }
+            if hit_filtered {
+                recall_filtered += 1;
+            }
+        }
+
+        if n == 0 {
+            eprintln!("{channel}_{snr_tag}: no WAVs present, skip");
+            continue;
+        }
+        eprintln!(
+            "{:>18} {:>4} {:>7} {:>13} {:>7}/{:<2} {:>7}/{:<2}",
+            format!("{channel}_{snr_tag}"),
+            n,
+            zeros_total,
+            zeros_decode,
+            recall_asis,
+            n,
+            recall_filtered,
+            n
+        );
+    }
+
+    eprintln!();
+    eprintln!(
+        "Equal `recall` and `filtered` columns, with zeros_decode = 0, means the \
+         OR-gate re-admission buys no recall on this path and `retain` could be \
+         tightened to `score >= sync_min && stage1_pass(fi)` without a sensitivity \
+         cost. Any non-zero `zeros_decode` means it is load-bearing — leave it alone."
+    );
+}

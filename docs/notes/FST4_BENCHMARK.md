@@ -703,6 +703,33 @@ the production default — where on one of the two golden signals **3 of
 50 slots (6 %) go to candidates already known to be duplicates**, all
 three inside the reserved near-hint group.
 
+**Follow-up: do the re-admitted duplicates ever decode?**
+`fst4_60_diag_dedup_zero_score_recall_effect` answers it directly, over
+the partial-recall band at the production `max_cand = 50`, sniper-shaped
+(`freq_hint` set). Two columns: recall from the candidate list as
+`coarse_sync` returns it, and recall with `score == 0.0` entries dropped
+before any decode work — i.e. exactly what tightening the gate would do.
+
+| cell | n | zeros reaching the list | zeros that decoded | recall as-is | recall filtered |
+|---|---:|---:|---:|---:|---:|
+| CCIR-mod m24 | 20 | 1 | **0** | 18/20 | 18/20 |
+| CCIR-mod m25 | 20 | 1 | **0** | 9/20 | 9/20 |
+| AWGN m27 | 20 | 4 | **0** | 15/20 | 15/20 |
+| AWGN m28 | 20 | 3 | **0** | 6/20 | 6/20 |
+
+**No re-admitted duplicate decoded anything, and filtering them changes
+no cell's recall.** On this path the OR-gate re-admission buys nothing,
+so tightening `retain` to `score >= sync_min && stage1_pass(fi)` would
+cost no recall and would return the slots the duplicates consume.
+
+Sample is small and the scope is narrow — 9 zero-score candidates across
+80 trials, FST4-60 only, one width (+/-250 Hz), one cap, sniper-shaped
+only. It does not cover the wide-band `DecodeRequest` shape (no
+`freq_hint`, where a zero sorts to the bottom rather than into a
+reserved slot), nor the strong-signal golden case where the 3 zeros in
+the table above appeared. "Never decodes" is supported here, not
+established in general.
+
 Not fixed here: this is a measurement of the existing behaviour, and
 whether the `retain` should test `score >= sync_min && stage1_pass(fi)`
 (or exclude zeroed entries explicitly) is a decision for #312 with its
