@@ -155,6 +155,38 @@ pub struct RungMajorCandidate {
     pub i0: i32,
 }
 
+/// Which schedule [`decode_scheduled`] walks the ladder with.
+///
+/// Both visit exactly the same (candidate, offset, sub-stage) units and
+/// do the same total work — they differ only in order, and therefore
+/// only under a budget.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Schedule {
+    /// Every rung swept across every still-undecided candidate before
+    /// any candidate descends. What this module shipped with, and what
+    /// buys the ordering-independent time-to-first-decode bound.
+    RungMajor,
+    /// **Phase A** — the first rung (`llra` at `offsets[0]`) swept across
+    /// every candidate, exactly as `RungMajor` does. This *is* the
+    /// latency invariant, and it is bought entirely here.
+    ///
+    /// **Phase B** — the rest of `offsets[0]`'s ladder, depth-first, with
+    /// candidates ordered by the `nsync` Phase A already computed for the
+    /// gate.
+    ///
+    /// **Phase C** — the remaining offsets, depth-first, same order.
+    ///
+    /// Measured 2026-08-18 (`FST4_BENCHMARK.md` §14): past the first
+    /// rung, continuing breadth-first defers OSD — where most decodes
+    /// come from — until every candidate has had every cheaper stage,
+    /// costing 30 decodes in 386 at a realistic ~50 % budget and 131 in
+    /// 386 at 10 %. Candidate ordering is also worthless under
+    /// breadth-first (a 10 % budget buys ~98 % of the first-stage sweep,
+    /// so every order visits nearly the same candidates) and valuable
+    /// under depth-first, so the two changes are a package.
+    PhaseSplit,
+}
+
 /// Decode a full candidate list rung-major instead of depth-first,
 /// trying only the refined `i0` position (`offsets = &[0]`) — the
 /// deadline-tight default. See the module doc comment for the full
@@ -205,6 +237,68 @@ where
 pub fn decode_rung_major_timed<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
+    skip_osd: bool,
+    offsets: &[i32],
+    clock: Option<fn() -> i64>,
+) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
+where
+    P: Protocol,
+    P::Fec: BpPooledFec,
+{
+    decode_scheduled::<P>(
+        candidates,
+        skip_llrc,
+        skip_osd,
+        offsets,
+        clock,
+        Schedule::RungMajor,
+        None,
+    )
+}
+
+/// [`Schedule::PhaseSplit`] — bounded first rung, then depth-first
+/// escalation ordered by `nsync`, with an optional deadline gate.
+///
+/// `budget_ok`, when `Some`, is polled before every stage in Phase B and
+/// Phase C and the schedule stops the moment it returns `false`. **Phase
+/// A is never gated**: sweeping the cheapest rung across every candidate
+/// is the latency invariant this module exists for, and making it
+/// interruptible would give the guarantee away. With `budget_ok = None`
+/// this runs the whole ladder and returns exactly the same decodes as
+/// [`decode_rung_major_timed`] — only the order, and therefore only the
+/// timing breakdown, differs.
+///
+/// Same `(results, per_candidate_stage_us)` shape and the same
+/// offset-major stage indexing as [`decode_rung_major_timed`], so the
+/// two are directly comparable on one corpus.
+pub fn decode_phase_split_timed<P>(
+    candidates: &[RungMajorCandidate],
+    skip_llrc: bool,
+    skip_osd: bool,
+    offsets: &[i32],
+    clock: Option<fn() -> i64>,
+    budget_ok: Option<fn() -> bool>,
+) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
+where
+    P: Protocol,
+    P::Fec: BpPooledFec,
+{
+    decode_scheduled::<P>(
+        candidates,
+        skip_llrc,
+        skip_osd,
+        offsets,
+        clock,
+        Schedule::PhaseSplit,
+        budget_ok,
+    )
+}
+
+/// Shared implementation behind [`decode_rung_major_timed`] and
+/// [`decode_phase_split_timed`]; `schedule` picks the walk order.
+fn decode_scheduled<P>(
+    candidates: &[RungMajorCandidate],
+    skip_llrc: bool,
     // Drops the OSD stage entirely (BP-only) -- VK3NV's issue #306 item
     // 1 follow-up: the `full`-config BP/OSD split doesn't necessarily
     // carry over to `no8_osd` (dropping `llrc` changes how often BP
@@ -217,6 +311,8 @@ pub fn decode_rung_major_timed<P>(
     // cost/recall table) -- deployment choice, not a fixed policy.
     offsets: &[i32],
     clock: Option<fn() -> i64>,
+    schedule: Schedule,
+    budget_ok: Option<fn() -> bool>,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
     P: Protocol,
@@ -330,98 +426,142 @@ where
 
     let mut per_stage_us: Vec<Vec<i64>> = vec![vec![0i64; n_stages]; candidates.len()];
 
-    for stage in 0..n_stages {
-        let offset_idx = stage / N_SUBSTAGES;
-        let substage = stage % N_SUBSTAGES;
+    // One (candidate, offset, sub-stage) unit of work. Extracted so the
+    // two schedules differ only in the order they call it -- the total
+    // set of calls, and therefore the total work, is identical.
+    let run_stage = |st: &mut CandState,
+                     idx: usize,
+                     offset_idx: usize,
+                     substage: usize,
+                     per_stage: &mut [Vec<i64>]| {
         if substage == 3 && skip_llrc {
-            continue;
+            return;
         }
+        if st.decoded.is_some() {
+            return;
+        }
+        let stage = offset_idx * N_SUBSTAGES + substage;
         let ioffset = offsets[offset_idx];
-        for (idx, st) in states.iter_mut().enumerate() {
-            if st.decoded.is_some() {
-                continue;
-            }
-            let t0 = clock.map(|c| c());
+        let t0 = clock.map(|c| c());
 
-            let off = &mut st.offsets[offset_idx];
-            if !off.computed {
-                let i0 = st.input.i0 + ioffset;
-                off.cs = symbol_spectra::<P>(&st.cd0, i0);
-                off.nsync = sync_quality::<P>(&off.cs);
-                off.computed = true;
-            }
-            if off.nsync <= SYNC_Q_MIN {
-                if let (Some(clk), Some(t0)) = (clock, t0) {
-                    per_stage_us[idx][stage] = clk() - t0;
-                }
-                continue;
-            }
-
-            let fec = P::Fec::default();
-            let mut bp_scratch = <P::Fec as BpPooledFec>::Scratch::default();
+        let off = &mut st.offsets[offset_idx];
+        if !off.computed {
             let i0 = st.input.i0 + ioffset;
+            off.cs = symbol_spectra::<P>(&st.cd0, i0);
+            off.nsync = sync_quality::<P>(&off.cs);
+            off.computed = true;
+        }
+        if off.nsync <= SYNC_Q_MIN {
+            if let (Some(clk), Some(t0)) = (clock, t0) {
+                per_stage[idx][stage] = clk() - t0;
+            }
+            return;
+        }
 
-            match substage {
-                0 => {
-                    off.llra = compute_llr_fast::<P, f32>(&off.cs).llra;
-                    if let Some(r) = fec.decode_soft_pooled(&off.llra, &bp_opts(0), &mut bp_scratch)
+        let fec = P::Fec::default();
+        let mut bp_scratch = <P::Fec as BpPooledFec>::Scratch::default();
+        let i0 = st.input.i0 + ioffset;
+
+        match substage {
+            0 => {
+                off.llra = compute_llr_fast::<P, f32>(&off.cs).llra;
+                if let Some(r) = fec.decode_soft_pooled(&off.llra, &bp_opts(0), &mut bp_scratch) {
+                    st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 0));
+                }
+            }
+            1 => {
+                off.llrb = compute_llr_partial::<P, f32, f32>(&off.cs, 2);
+                if let Some(r) = fec.decode_soft_pooled(&off.llrb, &bp_opts(0), &mut bp_scratch) {
+                    st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 1));
+                }
+            }
+            2 => {
+                off.llre = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_mid);
+                if let Some(r) = fec.decode_soft_pooled(&off.llre, &bp_opts(0), &mut bp_scratch) {
+                    st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 6));
+                }
+            }
+            3 => {
+                off.llrc = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_max);
+                if let Some(r) = fec.decode_soft_pooled(&off.llrc, &bp_opts(0), &mut bp_scratch) {
+                    st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 2));
+                }
+            }
+            4 => {
+                if skip_osd || off.nsync < osd_attempt_min {
+                    if let (Some(clk), Some(t0)) = (clock, t0) {
+                        per_stage[idx][stage] = clk() - t0;
+                    }
+                    return;
+                }
+                let osd_depth: u32 = if off.nsync >= osd_depth3_min { 3 } else { 2 };
+                let mut variants: Vec<&Vec<f32>> = vec![&off.llra, &off.llrb, &off.llre];
+                if !skip_llrc {
+                    variants.push(&off.llrc);
+                }
+                let mut hit: Option<crate::engine::protocol::FecResult> = None;
+                for llr in variants {
+                    if let Some(r) =
+                        fec.decode_soft_pooled(llr, &bp_opts(osd_depth), &mut bp_scratch)
                     {
-                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 0));
+                        hit = Some(r);
+                        break;
                     }
                 }
-                1 => {
-                    off.llrb = compute_llr_partial::<P, f32, f32>(&off.cs, 2);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llrb, &bp_opts(0), &mut bp_scratch)
-                    {
-                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 1));
-                    }
+                if let Some(r) = hit {
+                    let pass = if skip_llrc { 4 } else { 5 };
+                    st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, pass));
                 }
-                2 => {
-                    off.llre = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_mid);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llre, &bp_opts(0), &mut bp_scratch)
-                    {
-                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 6));
-                    }
+            }
+            _ => unreachable!(),
+        }
+
+        if let (Some(clk), Some(t0)) = (clock, t0) {
+            per_stage[idx][stage] = clk() - t0;
+        }
+    };
+
+    match schedule {
+        Schedule::RungMajor => {
+            for stage in 0..n_stages {
+                let offset_idx = stage / N_SUBSTAGES;
+                let substage = stage % N_SUBSTAGES;
+                for (idx, st) in states.iter_mut().enumerate() {
+                    run_stage(st, idx, offset_idx, substage, &mut per_stage_us);
                 }
-                3 => {
-                    off.llrc = compute_llr_partial::<P, f32, f32>(&off.cs, nsym_max);
-                    if let Some(r) = fec.decode_soft_pooled(&off.llrc, &bp_opts(0), &mut bp_scratch)
-                    {
-                        st.decoded = Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, 2));
-                    }
-                }
-                4 => {
-                    if skip_osd || off.nsync < osd_attempt_min {
-                        if let (Some(clk), Some(t0)) = (clock, t0) {
-                            per_stage_us[idx][stage] = clk() - t0;
+            }
+        }
+        Schedule::PhaseSplit => {
+            // Phase A -- the latency invariant. Cheapest rung across
+            // every candidate, never budget-gated.
+            for (idx, st) in states.iter_mut().enumerate() {
+                run_stage(st, idx, 0, 0, &mut per_stage_us);
+            }
+
+            // `nsync` is now populated for offset 0 on every candidate
+            // (Phase A computed it to run the gate), so ordering by it
+            // costs one sort of the candidate list and nothing else.
+            let mut order: Vec<usize> = (0..states.len()).collect();
+            order.sort_by(|&a, &b| states[b].offsets[0].nsync.cmp(&states[a].offsets[0].nsync));
+
+            // Phase B -- rest of offsets[0]'s ladder, depth-first.
+            // Phase C -- the remaining offsets, same order.
+            'budget: for offset_idx in 0..offsets.len() {
+                for &idx in &order {
+                    for substage in 0..N_SUBSTAGES {
+                        if offset_idx == 0 && substage == 0 {
+                            continue; // Phase A already ran it
                         }
-                        continue;
-                    }
-                    let osd_depth: u32 = if off.nsync >= osd_depth3_min { 3 } else { 2 };
-                    let mut variants: Vec<&Vec<f32>> = vec![&off.llra, &off.llrb, &off.llre];
-                    if !skip_llrc {
-                        variants.push(&off.llrc);
-                    }
-                    let mut hit: Option<crate::engine::protocol::FecResult> = None;
-                    for llr in variants {
-                        if let Some(r) =
-                            fec.decode_soft_pooled(llr, &bp_opts(osd_depth), &mut bp_scratch)
-                        {
-                            hit = Some(r);
+                        if budget_ok.is_some_and(|ok| !ok()) {
+                            break 'budget;
+                        }
+                        let st = &mut states[idx];
+                        run_stage(st, idx, offset_idx, substage, &mut per_stage_us);
+                        if st.decoded.is_some() {
                             break;
                         }
                     }
-                    if let Some(r) = hit {
-                        let pass = if skip_llrc { 4 } else { 5 };
-                        st.decoded =
-                            Some(build_result::<P>(r, st.input, i0, ds_rate, tx_start, pass));
-                    }
                 }
-                _ => unreachable!(),
-            }
-
-            if let (Some(clk), Some(t0)) = (clock, t0) {
-                per_stage_us[idx][stage] = clk() - t0;
             }
         }
     }
