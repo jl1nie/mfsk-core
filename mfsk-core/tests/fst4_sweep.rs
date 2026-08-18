@@ -6166,3 +6166,427 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
          the broader result in §14 does not transfer to escalation ordering."
     );
 }
+
+/// **Strengthened refutation** of the soft-Costas-margin proposal
+/// (#310). [`fst4_60_diag_soft_margin_escalation_priority`] showed three
+/// hand-picked margin formulations failing to beat raw `nsync` on the
+/// post-first-rung population — but "three formulations I chose failed"
+/// cannot distinguish *the features carry no information beyond `nsync`*
+/// from *I picked the wrong formulas*. This closes that gap three ways.
+///
+/// ## 1. Conditional separation — the assumption-free test
+///
+/// If a margin adds nothing beyond `nsync`, then **within a fixed
+/// `nsync` value** it should not separate at all. So: stratify by
+/// `nsync`, compute each margin's AUC inside each stratum, and pool the
+/// strata by weight. A stratified AUC of ~0.5 means the feature is a
+/// proxy for `nsync` and nothing more; materially above 0.5 means it
+/// carries genuinely additional information even if the unconditional
+/// comparison is muddied by correlation.
+///
+/// This needs no model, no fitting, and no choice of combination rule —
+/// which is why it is the primary result here.
+///
+/// ## 2. A fitted combination, scored in-sample
+///
+/// Logistic regression on the standardised feature vector, evaluated on
+/// the data it was fitted to. That is deliberately optimistic: in-sample
+/// AUC is an **upper bound** on what any linear rule could achieve
+/// out-of-sample. If even the fitted optimum barely beats `nsync`, no
+/// linear combination of these features is going to, and the "maybe a
+/// learned model would work" objection is answered for the linear case.
+/// A 2-fold split (by candidate index parity — deterministic, no RNG in
+/// a `no_std`-adjacent test) gives the honest number alongside it.
+///
+/// ## 3. More formulations, so the choice isn't the confound
+///
+/// Nine features rather than three, spanning bounded and unbounded
+/// margins, order statistics, dispersion, and counts:
+/// mean / min / median / p25 of the normalised margin, mean and **sum**
+/// of the clamped log-ratio (the sum correlates with `nsync` very
+/// differently from the mean), margin variance, the count of symbols
+/// with margin above zero, and the mean margin over the *worst ten*
+/// symbols.
+///
+/// ## Reading it
+///
+/// The refutation is strong if: stratified AUCs sit near 0.5, **and**
+/// the in-sample fitted combination gains little over `nsync`. It is
+/// weak — and the proposal deserves a learned non-linear model — if
+/// stratified AUCs are well above 0.5 while the unconditional ones
+/// aren't, since that is the signature of a real signal being masked by
+/// correlation with `nsync`.
+#[test]
+#[ignore = "manual diagnostic — does the soft margin add anything beyond nsync? (issue #310)"]
+fn fst4_60_diag_soft_margin_conditional_value() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{
+        compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const NSYNC_GATE: u32 = 16;
+    const MAX_CAND: usize = 50;
+    const WIDTH_HZ: f32 = 250.0;
+    const OFFSETS: [i32; 3] = [0, 1, -1];
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m23"),
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m26"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+    const FEATURES: &[&str] = &[
+        "mean margin",
+        "min margin",
+        "median margin",
+        "p25 margin",
+        "mean logratio",
+        "sum logratio",
+        "margin variance",
+        "count margin>0",
+        "mean worst-10",
+    ];
+    const NF: usize = 9;
+
+    fn auc_of(scored: &[(f64, bool)]) -> f64 {
+        let pos: Vec<f64> = scored.iter().filter(|(_, d)| *d).map(|(s, _)| *s).collect();
+        let neg: Vec<f64> = scored
+            .iter()
+            .filter(|(_, d)| !*d)
+            .map(|(s, _)| *s)
+            .collect();
+        if pos.is_empty() || neg.is_empty() {
+            return f64::NAN;
+        }
+        let mut acc = 0.0;
+        for p in &pos {
+            for n in &neg {
+                acc += if p > n {
+                    1.0
+                } else if (p - n).abs() < f64::EPSILON {
+                    0.5
+                } else {
+                    0.0
+                };
+            }
+        }
+        acc / (pos.len() * neg.len()) as f64
+    }
+
+    // Batch gradient descent on standardised features. Deterministic;
+    // `train` selects which rows contribute to the gradient.
+    fn fit_logistic(rows: &[([f64; NF], f64, bool)], train: &dyn Fn(usize) -> bool) -> Vec<f64> {
+        let idx: Vec<usize> = (0..rows.len()).filter(|&i| train(i)).collect();
+        if idx.is_empty() {
+            return vec![0.0; NF + 2];
+        }
+        // Feature vector is [nsync, f0..f8, bias].
+        let dim = NF + 1;
+        let mut mean = vec![0.0; dim];
+        let mut sd = vec![0.0; dim];
+        let get =
+            |r: &([f64; NF], f64, bool), k: usize| -> f64 { if k == 0 { r.1 } else { r.0[k - 1] } };
+        for &i in &idx {
+            for (k, m) in mean.iter_mut().enumerate() {
+                *m += get(&rows[i], k);
+            }
+        }
+        for m in mean.iter_mut() {
+            *m /= idx.len() as f64;
+        }
+        for &i in &idx {
+            for k in 0..dim {
+                let d = get(&rows[i], k) - mean[k];
+                sd[k] += d * d;
+            }
+        }
+        for s in sd.iter_mut() {
+            *s = (*s / idx.len() as f64).sqrt().max(1e-9);
+        }
+        let mut w = vec![0.0f64; dim + 1]; // + bias
+        for _ in 0..4000 {
+            let mut grad = vec![0.0f64; dim + 1];
+            for &i in &idx {
+                let mut z = w[dim];
+                for k in 0..dim {
+                    z += w[k] * (get(&rows[i], k) - mean[k]) / sd[k];
+                }
+                let p = 1.0 / (1.0 + (-z).exp());
+                let e = p - if rows[i].2 { 1.0 } else { 0.0 };
+                for k in 0..dim {
+                    grad[k] += e * (get(&rows[i], k) - mean[k]) / sd[k];
+                }
+                grad[dim] += e;
+            }
+            let lr = 0.5 / idx.len() as f64;
+            for k in 0..=dim {
+                w[k] -= lr * grad[k];
+            }
+        }
+        // Return weights plus the standardisation so scoring matches.
+        let mut out = w;
+        out.extend(mean);
+        out.extend(sd);
+        out
+    }
+
+    fn score_logistic(model: &[f64], r: &([f64; NF], f64)) -> f64 {
+        let dim = NF + 1;
+        let (w, rest) = model.split_at(dim + 1);
+        let (mean, sd) = rest.split_at(dim);
+        let get = |k: usize| -> f64 { if k == 0 { r.1 } else { r.0[k - 1] } };
+        let mut z = w[dim];
+        for k in 0..dim {
+            z += w[k] * (get(k) - mean[k]) / sd[k];
+        }
+        z
+    }
+
+    let dir = sweep_dir();
+    let n_sync = sync_symbol_count::<Fst4s60>();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+    // (features, nsync, eventually_decodes)
+    let mut rows: Vec<([f64; NF], f64, bool)> = Vec::new();
+
+    for &(channel, snr_tag) in CELLS {
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            for c in &cands {
+                let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+                let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for z in cd0.iter_mut() {
+                        *z *= inv;
+                    }
+                }
+                let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+                let cd0 = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+                let cs0 = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+                let nsync = sync_quality::<Fst4s60>(&cs0);
+                if nsync <= NSYNC_GATE {
+                    continue;
+                }
+
+                let mut pairs = vec![(0.0f32, 0.0f32); n_sync];
+                assert_eq!(
+                    nsync,
+                    sync_quality_soft_generic::<Fst4s60, f32>(&cs0, &mut pairs)
+                );
+                let mut m: Vec<f64> = Vec::with_capacity(n_sync);
+                let mut lr: Vec<f64> = Vec::with_capacity(n_sync);
+                for &(e, w) in &pairs {
+                    let (a, b) = (e as f64, w as f64);
+                    let d = a + b;
+                    m.push(if d > 0.0 { (a - b) / d } else { 0.0 });
+                    lr.push(if a > 0.0 && b > 0.0 {
+                        (a / b).ln().clamp(-8.0, 8.0)
+                    } else {
+                        0.0
+                    });
+                }
+                let mut sorted = m.clone();
+                sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                let mean_m = m.iter().sum::<f64>() / m.len() as f64;
+                let var_m = m.iter().map(|v| (v - mean_m).powi(2)).sum::<f64>() / m.len() as f64;
+                let worst10 = sorted[..10.min(sorted.len())].iter().sum::<f64>() / 10.0;
+                let feats = [
+                    mean_m,
+                    sorted[0],
+                    sorted[sorted.len() / 2],
+                    sorted[sorted.len() / 4],
+                    lr.iter().sum::<f64>() / lr.len() as f64,
+                    lr.iter().sum::<f64>(),
+                    var_m,
+                    m.iter().filter(|v| **v > 0.0).count() as f64,
+                    worst10,
+                ];
+
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+                let llr0 = compute_llr::<Fst4s60, f32>(&cs0);
+                if is_golden(&llr0.llra, &bp_opts) {
+                    continue;
+                }
+
+                let mut eventually = false;
+                'esc: for &d in &OFFSETS {
+                    let cs = if d == 0 {
+                        cs0.clone()
+                    } else {
+                        symbol_spectra::<Fst4s60>(&cd0, s2.i0 + d)
+                    };
+                    let ns = sync_quality::<Fst4s60>(&cs);
+                    if ns <= NSYNC_GATE {
+                        continue;
+                    }
+                    let ls = compute_llr::<Fst4s60, f32>(&cs);
+                    let variants: [&Vec<f32>; 4] = [&ls.llra, &ls.llrb, &ls.llre, &ls.llrc];
+                    if variants.iter().any(|l| is_golden(l, &bp_opts)) {
+                        eventually = true;
+                        break 'esc;
+                    }
+                    if ns >= osd_attempt_min {
+                        let o = FecOpts {
+                            bp_max_iter: 30,
+                            osd_depth: if ns >= osd_depth3_min { 3 } else { 2 },
+                            ap_mask: None,
+                            verify_info,
+                            ..FecOpts::default()
+                        };
+                        if variants.iter().any(|l| is_golden(l, &o)) {
+                            eventually = true;
+                            break 'esc;
+                        }
+                    }
+                }
+                rows.push((feats, nsync as f64, eventually));
+            }
+        }
+    }
+
+    let np = rows.iter().filter(|r| r.2).count();
+    eprintln!();
+    eprintln!("=== does the soft margin add anything beyond nsync? ===");
+    eprintln!(
+        "post-first-rung population: {} candidates ({np} decode, {} don't), {} cells",
+        rows.len(),
+        rows.len() - np,
+        CELLS.len()
+    );
+    if np < 20 || rows.len() - np < 20 {
+        eprintln!("!! population too small for these comparisons to mean much");
+    }
+
+    let base: Vec<(f64, bool)> = rows.iter().map(|r| (r.1, r.2)).collect();
+    let base_auc = auc_of(&base);
+    eprintln!();
+    eprintln!("unconditional AUC (higher = separates decode from never-decode):");
+    eprintln!(
+        "  {:<18} {:>6}",
+        "nsync (baseline)",
+        format!("{base_auc:.3}")
+    );
+    for (k, name) in FEATURES.iter().enumerate() {
+        let s: Vec<(f64, bool)> = rows.iter().map(|r| (r.0[k], r.2)).collect();
+        eprintln!("  {name:<18} {:>6.3}", auc_of(&s));
+    }
+
+    // ── 1. Stratified by nsync ────────────────────────────────────────
+    eprintln!();
+    eprintln!("stratified AUC within fixed nsync (0.5 = no information beyond nsync):");
+    let mut strata: std::collections::BTreeMap<i64, Vec<usize>> = Default::default();
+    for (i, r) in rows.iter().enumerate() {
+        strata.entry(r.1 as i64).or_default().push(i);
+    }
+    let usable: Vec<(&i64, &Vec<usize>)> = strata
+        .iter()
+        .filter(|(_, ix)| {
+            let p = ix.iter().filter(|&&i| rows[i].2).count();
+            p > 0 && p < ix.len()
+        })
+        .collect();
+    let total_w: f64 = usable
+        .iter()
+        .map(|(_, ix)| {
+            let p = ix.iter().filter(|&&i| rows[i].2).count() as f64;
+            p * (ix.len() as f64 - p)
+        })
+        .sum();
+    eprintln!(
+        "  ({} usable strata of {}, weight = pos*neg pairs)",
+        usable.len(),
+        strata.len()
+    );
+    for (k, name) in FEATURES.iter().enumerate() {
+        let mut acc = 0.0;
+        for (_, ix) in &usable {
+            let s: Vec<(f64, bool)> = ix.iter().map(|&i| (rows[i].0[k], rows[i].2)).collect();
+            let p = ix.iter().filter(|&&i| rows[i].2).count() as f64;
+            let w = p * (ix.len() as f64 - p);
+            acc += auc_of(&s) * w;
+        }
+        eprintln!("  {name:<18} {:>6.3}", acc / total_w);
+    }
+
+    // ── 2. Fitted combination ─────────────────────────────────────────
+    let all = |_: usize| true;
+    let even = |i: usize| i.is_multiple_of(2);
+    let odd = |i: usize| !i.is_multiple_of(2);
+    let m_all = fit_logistic(&rows, &all);
+    let in_sample: Vec<(f64, bool)> = rows
+        .iter()
+        .map(|r| (score_logistic(&m_all, &(r.0, r.1)), r.2))
+        .collect();
+    let m_even = fit_logistic(&rows, &even);
+    let m_odd = fit_logistic(&rows, &odd);
+    let cv: Vec<(f64, bool)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let m = if i.is_multiple_of(2) { &m_odd } else { &m_even };
+            (score_logistic(m, &(r.0, r.1)), r.2)
+        })
+        .collect();
+
+    eprintln!();
+    eprintln!("fitted linear combination of [nsync + all 9 features]:");
+    eprintln!("  {:<18} {:>6.3}", "nsync alone", base_auc);
+    eprintln!(
+        "  {:<18} {:>6.3}   <- optimistic upper bound",
+        "in-sample fit",
+        auc_of(&in_sample)
+    );
+    eprintln!(
+        "  {:<18} {:>6.3}   <- honest (2-fold, by index parity)",
+        "cross-validated",
+        auc_of(&cv)
+    );
+
+    eprintln!();
+    eprintln!(
+        "Refutation is STRONG if the stratified AUCs sit near 0.5 and the in-sample \
+         fit barely beats nsync — no linear rule over these features can then help. \
+         It is WEAK if stratified AUCs are well above 0.5, which would mean real \
+         signal masked by correlation with nsync and would justify a learned model."
+    );
+}

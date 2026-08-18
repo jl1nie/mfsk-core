@@ -1238,3 +1238,83 @@ has, and look elsewhere for a better signal.
 **Not tested**: whether a *learned* combination of the pairs beats
 `nsync` — the proposal's original neural-net framing. Three hand-picked
 formulations failing is weak evidence against that, not strong.
+
+### Correction: the soft margin *does* carry information beyond `nsync`
+
+The section above concluded the soft features add nothing. **That was
+wrong**, and the way it was wrong is instructive: an unconditional AUC
+comparison cannot separate "no information" from "information masked by
+correlation with the baseline".
+
+`fst4_60_diag_soft_margin_conditional_value` tests it three ways on a
+larger population — 6 cells, 1 263 post-first-rung candidates (386
+decode, 877 don't), 9 feature formulations instead of 3.
+
+**1. Stratified AUC — within a fixed `nsync` value.** If a feature were
+only a proxy for `nsync`, holding `nsync` constant would leave it with
+nothing to say and the AUC would sit at 0.5. It doesn't:
+
+| feature | unconditional AUC | **stratified AUC** |
+|---|---:|---:|
+| `nsync` (baseline) | 0.920 | — |
+| mean margin | 0.932 | **0.717** |
+| mean logratio | 0.926 | **0.704** |
+| sum logratio | 0.926 | 0.704 |
+| mean worst-10 | 0.913 | 0.689 |
+| p25 margin | 0.916 | 0.638 |
+| median margin | 0.917 | 0.579 |
+| min margin | 0.724 | 0.542 |
+| count margin>0 | 0.921 | 0.530 |
+| margin variance | 0.345 | 0.412 |
+
+Within a fixed `nsync`, the mean normalised margin still orders
+decode-from-never-decode at 0.717. **VK3NV was right that collapsing the
+four-tone observation to 40 hard bits discards usable information.**
+
+(`margin variance` inverts — below 0.5 both ways — i.e. *lower*
+dispersion associates with decoding. Real but not actionable here.)
+
+**2. A fitted linear rule, and what it actually buys.** Logistic
+regression over `nsync` + all nine features:
+
+| | AUC |
+|---|---:|
+| `nsync` alone | 0.920 |
+| in-sample fit (optimistic upper bound) | 0.935 |
+| **2-fold cross-validated (honest)** | **0.934** |
+
+So the whole feature set, optimally combined, is worth **+0.014 AUC**
+over the `nsync` this crate already computes.
+
+### The decision is unchanged, and the reason is now cost, not absence
+
+Both possible outcomes of this experiment led to the same action, which
+is worth stating because it is why the elaborate version was still worth
+running:
+
+- had the stratified AUCs been ~0.5, there is no signal → use `nsync`;
+- they are ~0.7, so there is signal → **it still does not clear the cost
+  bar** → use `nsync`.
+
+`nsync` is a `u32` that is already computed on the path. The soft
+alternative costs 40 × 2 f32 = 320 B of state per candidate on a target
+where per-candidate allocation in the candidate loop has caused real
+trouble, plus fitted weights and standardisation constants that would
+have to be re-validated across sub-modes, channel conditions and corpus
+generations — a tuned constant that rots. **+0.014 AUC does not buy
+that.**
+
+Recorded this way deliberately: "measured, and not adopted because the
+gain is 1.4 points against a maintained model" is a much more durable
+answer than "tried three formulas and they lost", and it answers the
+same proposal if it comes back.
+
+**What would change it**: a use where the ranking quality translates
+into a large wall-clock saving rather than a small ordering improvement
+— e.g. if the escalation budget were tight enough that the top decile
+of the ranking is all that ever gets served. That is measurable from
+`decode_rung_major_timed`'s existing `clock` hook and has not been done.
+
+The non-linear/learned version the proposal originally framed is **not**
+ruled out by this, but the cost argument applies to it more strongly,
+not less.
