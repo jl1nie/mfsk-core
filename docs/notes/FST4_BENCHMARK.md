@@ -1083,3 +1083,86 @@ it is cheap.
   small relative to a rung, which would weaken reason 2.
 
 All three are open. This decision is provisional on them.
+
+## 14. Soft Costas margin vs raw `nsync` (2026-08-18)
+
+VK3NV's #310 proposal, implemented and measured.
+`engine::llr::sync_quality_generic` inspects all four tone energies per
+known sync symbol and then discards everything except
+`best == expected` — so `E_exp = 9.8, E_wrong = 9.5` and
+`E_exp = 9.8, E_wrong = 1.2` contribute the same `+1`.
+
+`sync_quality_soft_generic` (new, diagnostic-only, nothing in the decode
+path calls it) returns the same `nsync` **and** fills a caller-provided
+`[(E_expected, E_best_wrong); n_sync]`. No new spectral work —
+`symbol_spectra` has already produced these values — and the extra cost
+over the hard version is one comparison per tone, since the loop tracks
+the max over all tones and the max over tones *other than* the expected
+one in the same pass. The buffer is caller-provided rather than
+allocated so it stays usable on embedded, where a per-candidate `Vec` in
+the candidate loop is a shape that has caused trouble before.
+
+```sh
+cargo test -p mfsk-core --features full,internal-testing --release \
+    --test fst4_sweep fst4_60_diag_soft_costas_margin_separation \
+    -- --ignored --nocapture
+```
+
+### Metric
+
+**AUC** — the fraction of (decoding, non-decoding) candidate pairs the
+score orders correctly, ties counting half; 0.5 is chance. The right
+shape here because #310's intended use is *ranking* candidates for
+escalation budget rather than thresholding them, and because it is
+insensitive to the heavy class imbalance these cells have (~15–46
+decoders against ~700 non-decoders).
+
+Population: every candidate clearing the `nsync` gate, on the
+partial-recall band, `max_cand = 50`, sniper-shaped. "Decodes" means the
+golden message specifically.
+
+### Result — the proposal passes its own kill condition
+
+| cell | candidates (dec / not) | `nsync` | mean margin | min margin | **mean logratio** |
+|---|---|---:|---:|---:|---:|
+| CCIR-mod m24 | 724 (46 / 678) | 0.767 | 0.784 | 0.697 | **0.786** |
+| CCIR-mod m25 | 736 (18 / 718) | 0.701 | 0.779 | 0.718 | **0.800** |
+| AWGN m27 | 742 (35 / 707) | 0.722 | 0.785 | 0.685 | **0.783** |
+| AWGN m28 | 754 (15 / 739) | 0.701 | 0.706 | 0.593 | **0.727** |
+
+- `mean logratio` (mean of `ln(E_exp / E_wrong)`, clamped) beats raw
+  `nsync` in **all four cells**: +0.019, +0.099, +0.061, +0.026.
+- `mean margin` (`(E_exp − E_wrong) / (E_exp + E_wrong)`) beats it
+  clearly in three and ties in the fourth.
+- `min margin` is **worse than `nsync` everywhere** — one bad symbol is
+  not what distinguishes a decodable candidate.
+
+The gains are largest where recall is lowest (m25: 0.701 → 0.800), which
+is the regime the escalation budget is for. So collapsing the four-tone
+observation to 40 hard bits *is* discarding usable information, and the
+unbounded log-ratio form uses it better than the bounded one.
+
+It is an improvement, not a transformation: AUC 0.78–0.80 still
+mis-orders a fifth of the pairs.
+
+### Both groups have negative margins
+
+`mean(dec)` runs −0.067 to −0.153 and `mean(no)` −0.260 to −0.267, so
+the expected tone is *not* the strongest one on average even for
+candidates that go on to decode. That is unsurprising at these SNRs, and
+it means the separation lives in how negative the margin is rather than
+in a sign test — worth knowing before anyone reaches for a threshold.
+
+### The scope limit that matters for #310
+
+This population is **every gate-passing candidate**, including the ones
+that decode cheaply at the first rung. #310's actual question is
+narrower: among candidates that have *already failed* the cheap rung,
+which deserve the expensive BP/OSD/timing budget? That is a subset with
+a different class balance, and the ranking may behave differently on it.
+The result above is necessary but not sufficient for adopting this as an
+escalation-priority signal.
+
+Not wired into anything. `sync_quality` and `sync_quality_generic` are
+untouched and bit-identical; the soft variant asserts equality of the
+`nsync` it returns against the hard one on every candidate in the test.

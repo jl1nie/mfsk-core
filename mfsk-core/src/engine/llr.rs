@@ -596,3 +596,100 @@ where
     }
     count
 }
+
+/// Number of known sync symbols `sync_quality_generic` inspects — the
+/// buffer length [`sync_quality_soft_generic`] wants. 40 for FST4
+/// (5 Costas blocks x 8), 21 for FT8, and so on.
+pub fn sync_symbol_count<P: Protocol>() -> usize {
+    P::SYNC_MODE.blocks().iter().map(|b| b.pattern.len()).sum()
+}
+
+/// Soft counterpart to [`sync_quality_generic`] (issue #310, VK3NV):
+/// same `nsync` return value, plus the per-sync-symbol tone energies the
+/// hard version computes and throws away.
+///
+/// `sync_quality_generic` examines all `NTONES` energies per known sync
+/// symbol, finds the winner, and reduces the observation to
+/// `best == expected` — one bit. So
+///
+/// ```text
+/// E_expected = 9.8, best wrong = 9.5   ->  +1
+/// E_expected = 9.8, best wrong = 1.2   ->  +1
+/// ```
+///
+/// contribute identically despite carrying very different confidence.
+/// This fills `out[i] = (E_expected, E_best_wrong)` for each sync symbol
+/// so a caller can compare margin formulations
+/// (`E_exp - E_wrong`, `E_exp / E_wrong`,
+/// `(E_exp - E_wrong) / (E_exp + E_wrong)`, …) offline without another
+/// instrumentation pass.
+///
+/// **No new spectral work**: `symbol_spectra` has already produced these
+/// values before any `sync_quality*` call runs. The extra cost over the
+/// hard version is one comparison per tone — the loop tracks the maximum
+/// over all tones (for `best`, unchanged) *and* the maximum over tones
+/// other than the expected one, in the same pass.
+///
+/// `out` is caller-provided rather than allocated so this stays usable
+/// on embedded, where a per-candidate `Vec` in the candidate loop is
+/// exactly the shape that has caused trouble before. Size it with
+/// [`sync_symbol_count`]; a shorter slice is filled as far as it goes
+/// and the `nsync` return stays correct either way.
+///
+/// **Diagnostic for now.** Nothing in the decode path calls this, and
+/// whether the extra information separates expensive false survivors
+/// from decode-bearing candidates any better than raw `nsync` is the
+/// open question (#310) — see
+/// `tests/fst4_sweep.rs::fst4_60_diag_soft_costas_margin_separation`.
+pub fn sync_quality_soft_generic<P: Protocol, S: SpecScalar>(
+    cs: &[Cmplx<S>],
+    out: &mut [(f32, f32)],
+) -> u32
+where
+    S::Wide: PartialOrd,
+{
+    let ntones = P::NTONES as usize;
+    let mut count = 0u32;
+    let mut idx = 0usize;
+    for block in P::SYNC_MODE.blocks() {
+        let start = block.start_symbol as usize;
+        for (t, &expected) in block.pattern.iter().enumerate() {
+            let sym = start + t;
+            let exp = expected as usize;
+
+            // Tone 0 seeds both maxima. Same strict-`>` tie-break as
+            // `sync_quality_generic`, which matches Fortran `maxloc`
+            // returning the FIRST index on ties.
+            let v0 = cs[sym * ntones].norm_sqr_wide();
+            let mut best = 0usize;
+            let mut best_val = v0;
+            let mut e_exp = if exp == 0 { Some(v0) } else { None };
+            let mut e_wrong = if exp == 0 { None } else { Some(v0) };
+
+            for a in 1..ntones {
+                let v = cs[sym * ntones + a].norm_sqr_wide();
+                if v > best_val {
+                    best_val = v;
+                    best = a;
+                }
+                if a == exp {
+                    e_exp = Some(v);
+                } else if e_wrong.is_none_or(|w| v > w) {
+                    e_wrong = Some(v);
+                }
+            }
+
+            if best == exp {
+                count += 1;
+            }
+            if let Some(slot) = out.get_mut(idx) {
+                *slot = (
+                    e_exp.map(S::wide_to_f32).unwrap_or(0.0),
+                    e_wrong.map(S::wide_to_f32).unwrap_or(0.0),
+                );
+            }
+            idx += 1;
+        }
+    }
+    count
+}

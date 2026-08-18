@@ -5668,3 +5668,243 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
          cost. Any non-zero `zeros_decode` means it is load-bearing — leave it alone."
     );
 }
+
+/// **#310, VK3NV's soft Costas-margin proposal — does it separate?**
+///
+/// `engine::llr::sync_quality_generic` inspects all four tone energies
+/// per known sync symbol and then discards everything except
+/// `best == expected`. `sync_quality_soft_generic` keeps
+/// `(E_expected, E_best_wrong)` for each. The question this answers is
+/// the one that decides whether the extra information is worth carrying:
+/// **does a soft margin separate candidates that decode from candidates
+/// that don't, any better than raw `nsync` already does?**
+///
+/// ## Metric
+///
+/// Separation is reported as **AUC** — the fraction of
+/// (decoding, non-decoding) candidate pairs the score orders correctly,
+/// ties counting a half. 0.5 is chance, 1.0 is perfect. It is the right
+/// shape here because the intended use (#310) is *ranking* candidates
+/// for escalation budget, not thresholding them, and because it is
+/// insensitive to the class imbalance these cells have.
+///
+/// Four scores compared on the same candidate population:
+///
+/// - `nsync` — the existing hard count. **The baseline that has to be
+///   beaten**; VK3NV's kill condition, and the same discipline that
+///   retired the `llrd` rung.
+/// - `mean margin` — mean over sync symbols of
+///   `(E_exp − E_wrong) / (E_exp + E_wrong)`. Scale-free, so it doesn't
+///   just re-measure candidate amplitude.
+/// - `min margin` — the worst symbol's normalised margin. A candidate
+///   can have a good mean and one catastrophic symbol.
+/// - `mean logratio` — mean of `ln(E_exp / E_wrong)`, clamped. Weights
+///   large ratios differently from the bounded form above; included
+///   because the raw pairs are kept precisely so formulations can be
+///   compared without re-instrumenting.
+///
+/// ## Population
+///
+/// Every candidate that clears the `nsync` gate on the partial-recall
+/// band (`fst4_60_diag_npre_baseline_scan`) — a saturated or empty cell
+/// cannot show separation either way. "Decodes" means the golden message
+/// specifically, so a CRC false-accept is not counted as a positive.
+///
+/// ## Reading it
+///
+/// If `nsync` alone already separates as well as the margins, stop —
+/// there is no reason to carry the extra state. If a margin beats it
+/// materially, the next question (not answered here) is whether it also
+/// *retains* the decode-bearing candidates rather than merely finding
+/// the junk: the trials worth rescuing are the marginal ones, so a score
+/// that demotes expensive-and-real alongside expensive-and-false is
+/// worse than useless for #310's escalation ordering. The per-group
+/// means printed alongside are there to make that visible.
+#[test]
+#[ignore = "manual diagnostic — soft Costas margin vs raw nsync separation (issue #310, VK3NV)"]
+fn fst4_60_diag_soft_costas_margin_separation() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{
+        symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
+    };
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const SNIPER_SYNC_Q_MIN: u32 = 8;
+    const MAX_CAND: usize = 50;
+    const WIDTH_HZ: f32 = 250.0;
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    /// Rank-based AUC: fraction of (positive, negative) pairs ordered
+    /// correctly, ties half. O(n²) is fine at these populations.
+    fn auc(scored: &[(f64, bool)]) -> f64 {
+        let pos: Vec<f64> = scored.iter().filter(|(_, d)| *d).map(|(s, _)| *s).collect();
+        let neg: Vec<f64> = scored
+            .iter()
+            .filter(|(_, d)| !*d)
+            .map(|(s, _)| *s)
+            .collect();
+        if pos.is_empty() || neg.is_empty() {
+            return f64::NAN;
+        }
+        let mut acc = 0.0;
+        for p in &pos {
+            for n in &neg {
+                acc += if p > n {
+                    1.0
+                } else if (p - n).abs() < f64::EPSILON {
+                    0.5
+                } else {
+                    0.0
+                };
+            }
+        }
+        acc / (pos.len() * neg.len()) as f64
+    }
+
+    fn mean(v: &[f64]) -> f64 {
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    }
+
+    let dir = sweep_dir();
+    let n_sync = sync_symbol_count::<Fst4s60>();
+    eprintln!();
+    eprintln!("=== soft Costas margin vs raw nsync (FST4-60, {n_sync} sync symbols) ===");
+    eprintln!("AUC: fraction of (decoding, non-decoding) pairs ordered correctly; 0.5 = chance");
+
+    for &(channel, snr_tag) in CELLS {
+        // (nsync, mean_margin, min_margin, mean_logratio, decoded)
+        let mut rows: Vec<(f64, f64, f64, f64, bool)> = Vec::new();
+
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            for c in &cands {
+                let (cd0, _f, i0, _s) =
+                    refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE);
+                let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                let nsync = sync_quality::<Fst4s60>(&cs);
+                if nsync <= SNIPER_SYNC_Q_MIN {
+                    continue;
+                }
+
+                let mut pairs = vec![(0.0f32, 0.0f32); n_sync];
+                let nsync_soft = sync_quality_soft_generic::<Fst4s60, f32>(&cs, &mut pairs);
+                assert_eq!(
+                    nsync, nsync_soft,
+                    "soft variant must return the same nsync as the hard one"
+                );
+
+                let mut margins = Vec::with_capacity(n_sync);
+                let mut logratios = Vec::with_capacity(n_sync);
+                for &(e_exp, e_wrong) in &pairs {
+                    let (a, b) = (e_exp as f64, e_wrong as f64);
+                    let denom = a + b;
+                    margins.push(if denom > 0.0 { (a - b) / denom } else { 0.0 });
+                    // Clamped: a zero energy is a numerical artefact, not
+                    // infinite confidence.
+                    let r = if b > 0.0 && a > 0.0 {
+                        (a / b).ln()
+                    } else {
+                        0.0
+                    };
+                    logratios.push(r.clamp(-8.0, 8.0));
+                }
+                let min_margin = margins.iter().copied().fold(f64::INFINITY, f64::min);
+
+                let decoded = process_candidate_basic::<Fst4s60>(
+                    c,
+                    &fft_cache,
+                    &FST4_60A_DOWNSAMPLE,
+                    DecodeDepth::FULL,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    SNIPER_SYNC_Q_MIN,
+                )
+                .is_some_and(|d| {
+                    let mut m77 = [0u8; 77];
+                    m77.copy_from_slice(d.message77());
+                    unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                });
+
+                rows.push((
+                    nsync as f64,
+                    mean(&margins),
+                    min_margin,
+                    mean(&logratios),
+                    decoded,
+                ));
+            }
+        }
+
+        if rows.is_empty() {
+            eprintln!("{channel}_{snr_tag}: no candidates, skip");
+            continue;
+        }
+        let n_pos = rows.iter().filter(|r| r.4).count();
+        let n_neg = rows.len() - n_pos;
+
+        let pick = |f: fn(&(f64, f64, f64, f64, bool)) -> f64| -> (f64, f64, f64) {
+            let scored: Vec<(f64, bool)> = rows.iter().map(|r| (f(r), r.4)).collect();
+            let pos: Vec<f64> = rows.iter().filter(|r| r.4).map(f).collect();
+            let neg: Vec<f64> = rows.iter().filter(|r| !r.4).map(f).collect();
+            (auc(&scored), mean(&pos), mean(&neg))
+        };
+
+        eprintln!();
+        eprintln!(
+            "{channel}_{snr_tag}: {} candidates ({n_pos} decode, {n_neg} don't)",
+            rows.len()
+        );
+        eprintln!(
+            "  {:<14} {:>6}   {:>10} {:>10}",
+            "score", "AUC", "mean(dec)", "mean(no)"
+        );
+        for (name, f) in [
+            (
+                "nsync",
+                (|r: &(f64, f64, f64, f64, bool)| r.0) as fn(&_) -> f64,
+            ),
+            ("mean margin", |r: &(f64, f64, f64, f64, bool)| r.1),
+            ("min margin", |r: &(f64, f64, f64, f64, bool)| r.2),
+            ("mean logratio", |r: &(f64, f64, f64, f64, bool)| r.3),
+        ] {
+            let (a, mp, mn) = pick(f);
+            eprintln!("  {name:<14} {a:>6.3}   {mp:>10.3} {mn:>10.3}");
+        }
+    }
+
+    eprintln!();
+    eprintln!(
+        "Kill condition (VK3NV): if no margin beats `nsync`'s AUC materially, the \
+         extra per-symbol state isn't worth carrying and #310 should look elsewhere."
+    );
+}
