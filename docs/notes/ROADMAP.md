@@ -339,11 +339,22 @@ to a 0.7.x design pass.
 
 ### Open follow-ups
 
-Currently open GitHub issues (state:open as of 2026-08-17, verified
+Currently open GitHub issues (state:open as of 2026-08-19, verified
 directly against the GitHub API — this is the live worklist; if you're
 reading this file to decide what to work on next, trust this section
 over any recall numbers or hardware status stated elsewhere in it).
 Grouped by the three tracks in **Strategic state** above.
+
+Re-read end to end 2026-08-19, comment threads included, which is what
+this refresh is worth flagging: three entries below had drifted from
+what their own threads concluded (#193's premise was invalidated by a
+grep of WSJT-X, #310's title question was answered "no", #247 has a
+real ABI decision in it that this section had recorded as "no open
+design question"). Issue *titles* age badly here — several threads
+resolve their nominal subject in the first few comments and then
+spend thirty more on something else worth more. **Next actions —
+the measurement queue** at the end of this section is the short
+version if you're picking up work.
 
 **Embedded (frontier):**
 
@@ -369,6 +380,17 @@ Grouped by the three tracks in **Strategic state** above.
   wsprnet endpoint, and the two-stage DDC decimation that was deferred
   rather than rejected.
 
+  Of those four, **only the third is behind #163** — the real
+  UAC → DDC → decode path. Slot alignment is software-only and is a
+  correctness bug, not a nicety: the slot boundary is bound to raw
+  sample count from UAC stream start rather than UTC :00/:02, so DT
+  reads against the wrong slot and every spot inherits that. It is
+  worth fixing *before* #163 clears rather than after, because it is
+  otherwise indistinguishable from a hardware problem the first time
+  real audio flows. The wsprnet sink is blocked on a live third-party
+  endpoint rather than on hardware, and carries a cost the others
+  don't — a malformed spot is publicly visible on wsprnet.
+
 - **#306** — FST4 on ESP32-S3: embedded feasibility. The umbrella, and
   the most active thread in the repo (VK3NV). Status as of 2026-08-17:
   the candidate loop measures **40.102 s** (`full`) / **13.643 s**
@@ -380,11 +402,50 @@ Grouped by the three tracks in **Strategic state** above.
   live levers are breadth (#312) and depth (#310).
 
 - **#310** — fold `rung_major`'s `offsets` into cost-ordered scheduling
-  instead of an offset-major outer loop. The active next work item.
-  Its real subject is the worst-case **time-to-first-decode** bound
-  (~7.4 s for the first rung, ordering-independent), not the 1.26×
-  total-time improvement. Embedded currently gets zero timing
-  diversity — every caller passes `&[0]`.
+  instead of an offset-major outer loop. Its real subject is the
+  worst-case **time-to-first-decode** bound (~7.4 s for the first rung,
+  ordering-independent), not the 1.26× total-time improvement. Embedded
+  currently gets zero timing diversity — every caller passes `&[0]`.
+
+  **The title's question has been answered "no", and the issue is now
+  open for a different reason.** Folding offsets in would triple the
+  first-rung sweep — the exact bound the module exists to provide —
+  and the payoff can't be aimed: exhaustive `{0,+1,-1}` costs 1.6-2.7×
+  decode units for +1 to +3 decodes per 20 trials, and ranking offsets
+  cheaply by sync quality matched exhaustive in 1 of 8 runs and the
+  single-offset baseline in the other seven. Worth reading for the
+  retraction, which sharpened the result rather than reversing it: an
+  initial "the ranking test is degenerate" reading was withdrawn after
+  an explicit counter showed `argmax nsync == offset 0` in only 43-59%
+  of candidates (vs 33% blind) — sync evidence *does* distinguish
+  between offsets, its distinctions are just uninformative about
+  decodability, agreeing with the offset that actually decoded 7/26 ≈
+  27%, i.e. at chance.
+
+  VK3NV's soft-Costas-margin proposal was implemented and measured
+  rather than argued about, and **not adopted** — stratified AUC 0.717
+  against `nsync`'s 0.920 unconditional, worth +0.014 AUC over the
+  whole 9-feature set, for 320 B/candidate plus fitted weights. Two
+  wrong readings were corrected on the way (a first +0.019…+0.099 AUC
+  measured the wrong population, ~5× inflated; a follow-up "no
+  information" verdict was also wrong). The budget curve is the
+  durable part: a priority signal is worth 3.4× at a 10% budget, but
+  FST4-60's real situation (~7 s against 13.6 s) is a ~50% budget where
+  `nsync` alone already returns 380/386 = 98.4%.
+
+  What landed instead is **`Schedule::PhaseSplit` (#317)**: phase A
+  runs `llra` at `offsets[0]` breadth-first across every candidate and
+  is never budget-gated (that *is* the latency invariant), phase B runs
+  the rest of that offset's ladder depth-first ordered by the `nsync`
+  phase A already computed, phase C handles remaining offsets under the
+  budget gate. Simulated at matched budget it beats plain breadth-first
+  166 vs 35 decodes at 10%, 288 vs 80 at 20%, converging by 100% —
+  because below ~30-40% breadth-first has spent everything on cheap BP
+  stages and OSD has not run for *anybody*, and OSD is where most
+  decodes come from. `internal-testing`-gated, `decode_rung_major`
+  unchanged, equivalence test asserts the two match. Also recorded
+  in-issue as a **process error**: it was implemented before VK3NV had
+  responded to the reasoning.
 
 - **#312** — FST4 sniper: `max_cand = 50` binds before the search
   window width does, so narrowing the window changes nothing on the
@@ -398,7 +459,25 @@ Grouped by the three tracks in **Strategic state** above.
   full grid (§11.2, queued), means "absolute floor for recall, fraction
   for cost" rather than either alone. A separate defect VK3NV found
   while auditing this — `coarse_sync` re-admitting candidates its own
-  dedup had rejected — is fixed and shipped in 0.10.0.
+  dedup had rejected — is fixed and shipped in 0.10.0 (#316), with a
+  non-`#[ignore]`d regression test that fails against pre-fix code.
+  Two details worth carrying forward from that fix: it was verified
+  recall-neutral through the wideband production path (82/120
+  identical in every cell) so it should be invisible to the tier-C
+  sweeps, and both parties first reached for
+  `score >= sync_min && stage1_pass(fi)`, which would also have
+  dropped candidates that clear the score gate but fail stage 1 —
+  exactly what #146's OR-gate exists to keep. Tracking suppression in
+  its own vector was the fix; tightening the gate would have been a
+  silent sensitivity regression.
+
+  The incidental finding here is the one that matters to #310: on
+  N5TM's ±100/±50 Hz rows every cap including 4 sits at ~2100 ms while
+  ±250/±25 are 40-90 ms, i.e. **a single candidate costs ~2 s on its
+  own** and ranks top-4 in the middle widths. Candidate-count
+  reduction cannot bound per-candidate cost — which is why breadth
+  (#312) and depth (#310) are complementary levers rather than
+  substitutes.
 
 - **#307** — `engine::fft` has no generic non-power-of-2 FFT.
   `coarse_sync`'s `nfft1` is non-power-of-two for all five FST4
@@ -418,18 +497,64 @@ Grouped by the three tracks in **Strategic state** above.
   #308's timing fix recovered the other 2. A real `npre2`-pruning
   question, split out of #308 so it didn't close with it.
 
+  An n=20 ablation answered the substitutable-vs-additive question as
+  **neither: in 2 of 4 cells the two mechanisms interact**, rescuing
+  trials neither rescues alone — so "add only the cheaper of the two"
+  is the worst option, and which mechanism dominates flips between
+  cells, meaning no universal escalation order falls out of this.
+  Separately and more bluntly: **`npre` never decoded a trial the
+  unpruned search missed**, in all four cells at both timing settings,
+  so on that corpus the pruning is pure recall loss bought for speed
+  and "selective fallback to unpruned" is behaviourally identical to
+  always running unpruned.
+
+  Blocked on an n=100 re-run, which needs `fst4sim` — not installed on
+  the machine that produced the n=20 numbers. Runbook:
+  `FST4_BENCHMARK.md` §11.3. Two traps recorded there and worth
+  re-reading before regenerating anything: trial indices do not
+  survive corpus regeneration (`gen_fst4_sweep_wavs.sh` regenerates
+  rather than extends, so #306's `[2,15,33,45,67]` refer to a
+  different corpus), and selecting trials through the production path
+  is now circular, because `DecodeRequest`'s `osd` defaults true and
+  #308's retry is gated on it.
+
 **Host DSP / protocol (maturity — tail, not frontier):**
 
 - **#143** — FST4 AP decode + SIC for FST4-15/30. Real user demand
   (VK3NV's real-time weak-signal messaging); the building blocks all
   exist (`msg/ap.rs`, `msg/pipeline_ap.rs`, `core/dsp/subtract.rs`),
   missing only the FST4 wiring + per-sub-mode `SubtractCfg` calibration.
-  Low priority until crowded-band use materialises; active design
-  discussion in-issue.
+  Low priority until crowded-band use materialises.
+
+  **Read this issue for what it became, not its title** — 28 comments
+  in, no AP/SIC code has been written, and its durable output is the
+  WhisperQSO design thread plus three things now load-bearing
+  elsewhere: the **guard-time correction** that produced #306's ~7 s
+  budget (FST4-15 ≈4.9 s, -30 ≈6.6, -60 ≈7.2, -120 ≈9.7, -300 ≈12.3 —
+  the full T/R period is *not* the decode budget); the first
+  FST4-on-ESP32-S3 feasibility answer, "hard no across all five
+  sub-modes", with the PSRAM capacity/bandwidth tables #309 later
+  re-derives independently; and the `compute_spectra` frequency crop
+  (11.4 MB → 5.53 MB at the crate default, → 0.536 MB at a 276 Hz
+  segment, ~21×; wall-clock only ~10% because the crop touches the
+  0.4% `extract` phase, not the 90.3% `fft` one). Nominally waiting on
+  VK3NV's real Android/ARM timing numbers — every ARM figure in the
+  thread today is extrapolated from a single Geekbench ratio against a
+  76 ms FST4-60A host measurement.
 - **#193** — FST4 has no SIC path (no `SubtractCfg`, no
-  `decode_frame_subtract`). The SIC half of #143; needs numerical
-  calibration against WSJT-X's FST4 subtract path, after which
-  `impl SupportsFlatSic for Fst4s60 {}` (+ siblings) is trivial.
+  `decode_frame_subtract`). **The issue's own premise was invalidated
+  in-thread and this entry was wrong until 2026-08-19**: there is no
+  "WSJT-X FST4 subtract path" to calibrate against.
+  `grep -n "subtract\|npass\|SIC" lib/fst4_decode.f90` against a
+  checked-out WSJT-X tree returns zero genuine matches — WSJT-X never
+  implemented SIC for FST4 either (control: the same grep on
+  `lib/wsprd/wsprd.c` does find real `npasses`/`subtract` hits). So
+  this is not a port lagging upstream; it would be new capability, and
+  it is re-scoped from backlog item to future-feature idea. If ever
+  pursued, FST4-15/30 are the plausible candidates (SNR regime near
+  FT8's); the long sub-modes have a real tension between the long
+  averaging window deep SNR needs and the short window real fading
+  allows. `SupportsSicRounds`'s doc comment carries the correction.
 - **#252** — FST4 SIC feasibility experiment (coherent full-slot sync
   from #146 + subtraction residue, 4 scenarios: moderate/tone-spacing
   +QSB/co-channel/3-station multi-subtract). No technical blocker
@@ -438,30 +563,141 @@ Grouped by the three tracks in **Strategic state** above.
   #193 (FST4 AP+SIC) if that work is picked up — whether it's worth
   picking up depends on real busy-FST4-band demand, still unverified.
 - **#224** — JT4 not implemented (WSJT-X ships JT4A/JT4F golden WAVs).
-  "Doable but demand unclear" — every usage signal found was WSJT-X
-  boilerplate, not dated on-air data, and Q65 has partly superseded its
-  role. Track, don't commit.
+  "Doable but demand unclear" — **and the demand question has since
+  been answered, with dated sources: weak case.** The "432 and Above"
+  EME newsletter shows zero JT4/JT4F/JT4G mentions in both its 2025-02
+  and 2026-03 issues, with microwave-band QSO reports dominated by Q65
+  and JT4 absent entirely; the one surviving use is beacons (GB3SCX
+  10368.905 MHz, GB3SCK 24048.905 MHz, UK Microwave Group wiki last
+  modified 2025-12-11), which reflects an operator not reconfiguring
+  rather than decode demand. Deliberately left open as a decision
+  record, not as work: **track, don't commit.** Closing it would lose
+  the sourcing and invite the question being re-asked from scratch.
 - **#148** — Research idea (not a commitment, from VK3NV): blind-paired
   FST4-120 with soft combining, as a Doppler-robust FST4-300 alternative.
   Q65's multi-period averaging (`q65/rx.rs`) is the architectural
-  precedent.
+  precedent, and the combining point is settled: **LLR-level**, because
+  a bit LLR is phase-free by construction and FST4's 1/2/4/8-symbol
+  coherent ladder is only ever coherent *within* a slot, so the gain is
+  fully captured once each slot has its own LLR vector. That makes it
+  standard Chase/HARQ combining — sum two 240-element vectors, retry
+  BP/OSD, no change to `compute_llr_generic` or the nsym ladder.
+
+  Blocked on test infrastructure, and the blocker is the honest kind:
+  a valid measurement needs the *same continuous* fading process
+  spanning both 120 s slots, and neither `fst4sim`'s Watterson
+  generator (`watterson()` regenerates an independent process per
+  call) nor `tests/common/air_channel.rs` provides it — two
+  independent fading files would overstate the gain by removing
+  exactly the correlation the poor-channel case depends on. Also
+  worth carrying: an initial "AWGN should approach the ideal 3 dB"
+  claim was walked back with numbers — at −30/−31 dB failures are
+  almost entirely decode-limited (sync finds the candidate 39/40, the
+  regime combining helps) but by −32 dB sync failure is ~28% of
+  misses, so per-slot coarse sync becomes the second bottleneck before
+  the ideal threshold is reached. "Generate a correlated two-period
+  fading test channel" is the next piece of work and has no issue
+  number yet.
 
 **Host application / ergonomics (emerging, consumer-driven):**
 
 - **#247** — expose `DecodeRequest::known()` for cross-phase dedup via
-  `mfsk-ffi`. No open design question blocking it beyond scoping the
-  raw `DecodeResult` passthrough shape.
+  `mfsk-ffi`. **This entry used to say "no open design question"; that
+  was wrong.** `.known()` takes `&[P::DecodeResult]` — raw
+  `message77`/`info` bits, `freq_hz`, `dt_sec` — and `MfskResult` is
+  flattened display-only (`text: [c_char; 40]`, plus scalars), so a C
+  caller holding an `MfskResultList` structurally cannot feed it back.
+  Two options, neither chosen: an opaque "decode result usable as
+  input" handle (new type + ownership story) or adding the raw
+  `message77`/`info` bytes to `MfskResult` (additive and
+  non-breaking, but leaks internal representation into the public
+  ABI). Scope is FT8/FT4/FST4 only. The issue asks explicitly for its
+  own pass rather than being bundled into the next unrelated FFI
+  change.
 - **#249** — expose `SniperRequest` (single-frequency-target decode)
-  via `mfsk-ffi`. A wholly new function family, not a setter.
+  via `mfsk-ffi`. A wholly new function family, not a setter. The
+  concrete cost of not having it: narrow-band `SniperRequest::ap_hint`
+  is gated on `WsjtApCompatible` and so reaches **FT4 and FST4 too**,
+  unlike `DecodeRequest`'s wide-band AP (`SupportsWideBandAp`, FT8
+  only) — meaning **FT4/FST4 AP hinting is unreachable from the C ABI
+  until this lands**. One decision embedded in it: `SniperRequest`'s
+  knob set differs (`.sync_min()` as a setter; no `.freq_hint()`/
+  `.known()`/`.fft_cache()`/`.sic_rounds()`/`.sic_early()`), so it
+  needs either its own options type or a decision to reuse
+  `MfskDecodeOptions` and ignore inapplicable fields — the latter
+  matching crate convention.
 - `session::SlotAssembler` is parked on branch
   `claude/streaming-interface-docs-vuet32` pending a real consumer
   (desktop UI, or the embedded `audio.rs` slot-statics replacement) to
   validate its shape before landing. No issue filed for it yet.
 
-**Non-code decision:**
+**Open as records, not as work:**
 
-- **#125** — License (GPLv3 vs. a permissive license for
-  broader/proprietary adoption). Needs a decision, not code.
+- **#284** — what FT8's OSD fallback actually costs, filed with "no
+  action proposed" so future speed work starts from data rather than
+  intuition: OSD buys 6 of 20 decodes for 47 ms (147.5 ms `FULL` vs
+  103.6 ms `BP_ONLY`), and only 19 of 180 candidate-passes reach OSD at
+  all. Its value is the two negative results. WSJT-X's cheap first pass
+  (`ndeep=2`/`maxosd=0`) does not port — the nearest equivalent
+  measured 148.1 ms (a no-op) and removing OSD from pass 0 entirely
+  measured **175.0 ms, i.e. 27 ms worse**, because this crate subtracts
+  each accepted decode immediately, so an early decode shrinks later
+  candidate lists and pays for itself. Tightening the `q > 6` OSD gate
+  is also out: it already mirrors `ft8b.f90`'s only bail, and the
+  former mfsk-core-specific `q >= 12` is precisely what #180 traced
+  `K1BZM DK8NE -10` (`q=11`) to. Two items remain unmeasured
+  (`Q_NDEEP3_THRESHOLD = 18`, and the dispatch ladder order, which
+  changes *which* decode is returned first); both are sensitivity-
+  critical and need a measurement harness in front of them — the #282
+  lesson, where source-diff reasoning predicted the wrong direction for
+  2 of 5 protocols.
+- **#252** — see the FST4 research entry above. Feasibility checked and
+  closed as a question; open only to record that it was.
+
+#### Next actions — the measurement queue
+
+The single most useful thing to notice from the 2026-08-19 re-read:
+**three separate work items are queued behind the same resource** — a
+fast machine with the generated corpora and `fst4sim` present. They
+are not competing priorities, they are one scheduling problem, and
+two of them share a corpus.
+
+1. **Tier-C sensitivity sweeps** — the only documented gate on the
+   `v0.10.0` tag (see *Releases* in `CLAUDE.md` and
+   `FST4_BENCHMARK.md` §11.1). All protocols except FT4 this cycle.
+   Partially run 2026-08-19: **FST4-15 passes, all four channels, no
+   regression** — AWGN 50% crossing −20.70 dB against
+   `BENCHMARKS.md`'s −20.60 dB, inside 20-trial noise and matching
+   WSJT-X's published −20.7 dB. The CCIR-good/moderate/poor crossings
+   (−20.42 / −18.40 / −18.29 dB) are first-time records for FST4-15 —
+   `BENCHMARKS.md` has no fading rows for this sub-mode, so they
+   establish a baseline rather than confirm one. FST4-30/60/120/300
+   and the other five protocols are unrun; FST4-300 alone is ~336,000
+   audio-seconds and the whole FST4 group extrapolates to 8 h+ on an
+   8C/16T box.
+2. **#311's n=100 ablation** — needs `fst4sim` specifically, and a
+   regenerated corpus (see the two traps in that entry).
+3. **#312's 96-configuration near-threshold cap grid** —
+   `FST4_BENCHMARK.md` §11.2, ~2 h measured on an M5 laptop, narrowable
+   via `MFSK_CAP_SWEEP_CELLS`/`_WIDTHS`/`_CAPS`.
+
+Two of these bear on each other's reading and the order matters: if a
+tier-C FST4 number moves, **#311 is the pre-existing explanation to
+reach for first** — the npre1/npre2 OSD port shipped this cycle and is
+measured to cost CCIR-moderate recall (m26 24→18 before #308's timing
+fix brought it back to 20/100), and the residual 3/5 is exactly the
+un-mechanized floor that would surface as an "unexplained" shift.
+#316's dedup fix is the other candidate-gate change in this release,
+but it was verified recall-neutral through the wideband production
+path, so it should be invisible.
+
+Independent of the queue, and hardware-gated rather than
+machine-gated: **#163 remains the bottleneck for everything embedded**,
+and it got cheaper rather than harder — checkpoint 1 needs any USB
+audio class source, not an IC-705. **#313's slot-alignment fix** is the
+highest-value software item in the embedded set, because it is a real
+correctness bug that will otherwise be misread as a hardware fault the
+first time real audio flows.
 
 Recently closed since the 2026-07-19 snapshot (see the closed issue /
 `git log` for fix commits): **#24** — JT65 interleave TX/RX-convention
@@ -503,6 +739,17 @@ both survive as separate decodes, fixed same-day by scaling the
 window to `(2 × TONE_SPACING_HZ).max(4.0)`. Also closed 2026-08-14,
 not a GitHub issue: a code-sharing audit (#290-298) — see *Strategic
 state*, track 1, for the full account.
+
+Closed 2026-08-19: **#125** — License (GPLv3 vs. a permissive
+license). Not a decision that was pending: it had been **answered in
+full on 2026-06-05** and then sat open for ~2.5 months looking like an
+unanswered outside question. GPL-3.0 is a requirement rather than a
+preference — mfsk-core derives directly from WSJT-X (GPL-3.0-or-later)
+in algorithms, DSP pipeline structure and FEC logic, so relicensing
+would need permission from every upstream WSJT-X contributor. The
+alternative offered was a clean-room reimplementation, which cuts
+against source-faithfulness being a deliberate design goal for decode
+parity. Closed as answered.
 
 Closed since the 2026-08-15 snapshot: **#308** — FST4 had no
 equivalent of WSJT-X's `i0±1` timing-jitter retry
