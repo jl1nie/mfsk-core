@@ -6590,3 +6590,303 @@ fn fst4_60_diag_soft_margin_conditional_value() {
          signal masked by correlation with nsync and would justify a learned model."
     );
 }
+
+/// **The condition under which the ranking would matter**: does a better
+/// escalation order convert into more decodes *under a budget*?
+///
+/// [`fst4_60_diag_soft_margin_conditional_value`] established that the
+/// soft margin carries real information beyond `nsync` (stratified AUC
+/// ~0.72) but that an optimally-fitted linear rule is worth only +0.014
+/// AUC. AUC is an ordering metric, though, and #310's actual currency is
+/// **decodes recovered before the slot deadline**. A small ordering gain
+/// can still matter a lot if the budget is tight enough that only the
+/// head of the ranking is ever served — and not at all if the budget
+/// covers everything anyway.
+///
+/// So this measures the thing the decision actually turns on.
+///
+/// ## Model
+///
+/// Population is the same as the conditional-value test: candidates that
+/// pass the `nsync` gate and fail BP on `llra` at `offset = 0`. That
+/// first rung is sunk cost — `decode_rung_major`'s latency invariant
+/// spends it on everyone regardless — so it is excluded from the budget
+/// here.
+///
+/// Each candidate then carries a **cost in decode units**, one unit per
+/// (offset, stage) actually executed over the escalation ladder
+/// (`llrb`/`llre`/`llrc` BP attempts and the OSD attempt, at each of
+/// `i0`, `i0+1`, `i0-1`), stopping at success. A candidate that decodes
+/// early is cheap; one that never decodes pays the full ladder. Units
+/// rather than wall-clock, so the result is machine-independent and
+/// doesn't inherit this laptop's ~3x power-state swing.
+///
+/// A scheduler with budget `B` walks the candidates in its ranking's
+/// order and spends each one's cost until `B` is exhausted, counting
+/// decodes obtained. Sweeping `B` from 10 % to 100 % of the total gives
+/// a decodes-vs-budget curve per ranking.
+///
+/// ## Rankings compared
+///
+/// - `nsync` — what the crate already has.
+/// - `mean margin` — the best single soft feature from the stratified
+///   test.
+/// - `fitted` — the cross-validated logistic combination, i.e. the best
+///   linear rule available.
+/// - `oracle` — decoders first, cheapest decoder first. Not achievable;
+///   it bounds how much *any* ranking could buy, which is the number
+///   that says whether this axis is worth more work at all.
+/// - `arrival` — the candidate list order as `coarse_sync` returns it,
+///   i.e. what happens with no priority signal.
+///
+/// ## Reading it
+///
+/// If `nsync` already tracks `oracle` closely at tight budgets, ordering
+/// is not where the remaining decodes are and #310 should stop looking
+/// here. If `fitted`/`mean margin` open a real gap over `nsync` at 10-30 %
+/// budget, that is the wall-clock argument the cost objection was
+/// waiting for.
+#[test]
+#[ignore = "manual diagnostic — does escalation ordering buy decodes under a budget? (issue #310)"]
+fn fst4_60_diag_escalation_budget_curve() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::llr::{
+        compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const NSYNC_GATE: u32 = 16;
+    const MAX_CAND: usize = 50;
+    const WIDTH_HZ: f32 = 250.0;
+    const OFFSETS: [i32; 3] = [0, 1, -1];
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m23"),
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m26"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    // (nsync, mean_margin, cost_units, decodes)
+    struct Cand {
+        nsync: f64,
+        margin: f64,
+        cost: f64,
+        decodes: bool,
+    }
+    let mut cands_all: Vec<Cand> = Vec::new();
+
+    let dir = sweep_dir();
+    let n_sync = sync_symbol_count::<Fst4s60>();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+    for &(channel, snr_tag) in CELLS {
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            for c in &cands {
+                let mut cd0 = downsample_cached(&fft_cache, c.freq_hz, &FST4_60A_DOWNSAMPLE);
+                let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for z in cd0.iter_mut() {
+                        *z *= inv;
+                    }
+                }
+                let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+                let cd0 = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+                let cs0 = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+                let nsync = sync_quality::<Fst4s60>(&cs0);
+                if nsync <= NSYNC_GATE {
+                    continue;
+                }
+
+                let mut pairs = vec![(0.0f32, 0.0f32); n_sync];
+                assert_eq!(
+                    nsync,
+                    sync_quality_soft_generic::<Fst4s60, f32>(&cs0, &mut pairs)
+                );
+                let margin = pairs
+                    .iter()
+                    .map(|&(e, w)| {
+                        let (a, b) = (e as f64, w as f64);
+                        let d = a + b;
+                        if d > 0.0 { (a - b) / d } else { 0.0 }
+                    })
+                    .sum::<f64>()
+                    / pairs.len() as f64;
+
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+
+                // Sunk first rung — excluded from the budget below.
+                let llr0 = compute_llr::<Fst4s60, f32>(&cs0);
+                if is_golden(&llr0.llra, &bp_opts) {
+                    continue;
+                }
+
+                // Escalation, counting one unit per (offset, stage) run.
+                let mut cost = 0.0f64;
+                let mut decodes = false;
+                'esc: for &d in &OFFSETS {
+                    let cs = if d == 0 {
+                        cs0.clone()
+                    } else {
+                        symbol_spectra::<Fst4s60>(&cd0, s2.i0 + d)
+                    };
+                    let ns = sync_quality::<Fst4s60>(&cs);
+                    if ns <= NSYNC_GATE {
+                        continue;
+                    }
+                    let ls = compute_llr::<Fst4s60, f32>(&cs);
+                    // llra is only re-run at alternate offsets; at
+                    // offset 0 it is the sunk first rung.
+                    let variants: [&Vec<f32>; 4] = [&ls.llra, &ls.llrb, &ls.llre, &ls.llrc];
+                    for (vi, v) in variants.iter().enumerate() {
+                        if d == 0 && vi == 0 {
+                            continue;
+                        }
+                        cost += 1.0;
+                        if is_golden(v, &bp_opts) {
+                            decodes = true;
+                            break 'esc;
+                        }
+                    }
+                    if ns >= osd_attempt_min {
+                        let o = FecOpts {
+                            bp_max_iter: 30,
+                            osd_depth: if ns >= osd_depth3_min { 3 } else { 2 },
+                            ap_mask: None,
+                            verify_info,
+                            ..FecOpts::default()
+                        };
+                        cost += 1.0;
+                        if variants.iter().any(|v| is_golden(v, &o)) {
+                            decodes = true;
+                            break 'esc;
+                        }
+                    }
+                }
+
+                cands_all.push(Cand {
+                    nsync: nsync as f64,
+                    margin,
+                    cost,
+                    decodes,
+                });
+            }
+        }
+    }
+
+    let total_cost: f64 = cands_all.iter().map(|c| c.cost).sum();
+    let total_dec = cands_all.iter().filter(|c| c.decodes).count();
+    eprintln!();
+    eprintln!("=== escalation budget curve (post-first-rung, 6 cells) ===");
+    eprintln!(
+        "{} candidates, {total_dec} decode, total escalation cost {total_cost:.0} units \
+         (mean {:.1}/candidate)",
+        cands_all.len(),
+        total_cost / cands_all.len() as f64
+    );
+
+    // Order by a score descending; oracle and arrival are special.
+    let run = |order: &[usize], budget: f64| -> usize {
+        let mut spent = 0.0;
+        let mut got = 0usize;
+        for &i in order {
+            let c = &cands_all[i];
+            if spent + c.cost > budget {
+                continue; // skip what doesn't fit; keep filling
+            }
+            spent += c.cost;
+            if c.decodes {
+                got += 1;
+            }
+        }
+        got
+    };
+    let by = |key: &dyn Fn(&Cand) -> f64| -> Vec<usize> {
+        let mut ix: Vec<usize> = (0..cands_all.len()).collect();
+        ix.sort_by(|&a, &b| {
+            key(&cands_all[b])
+                .partial_cmp(&key(&cands_all[a]))
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+        ix
+    };
+
+    let ord_nsync = by(&|c| c.nsync);
+    let ord_margin = by(&|c| c.margin);
+    let ord_arrival: Vec<usize> = (0..cands_all.len()).collect();
+    let mut ord_oracle: Vec<usize> = (0..cands_all.len()).collect();
+    ord_oracle.sort_by(|&a, &b| {
+        let (x, y) = (&cands_all[a], &cands_all[b]);
+        // decoders first, cheapest decoder first
+        y.decodes.cmp(&x.decodes).then(
+            x.cost
+                .partial_cmp(&y.cost)
+                .unwrap_or(core::cmp::Ordering::Equal),
+        )
+    });
+
+    eprintln!();
+    eprintln!(
+        "{:>7} {:>9} {:>9} {:>9} {:>9}",
+        "budget", "arrival", "nsync", "margin", "oracle"
+    );
+    for pct in [10, 20, 30, 40, 50, 70, 100] {
+        let b = total_cost * pct as f64 / 100.0;
+        eprintln!(
+            "{:>6}% {:>9} {:>9} {:>9} {:>9}",
+            pct,
+            run(&ord_arrival, b),
+            run(&ord_nsync, b),
+            run(&ord_margin, b),
+            run(&ord_oracle, b)
+        );
+    }
+
+    eprintln!();
+    eprintln!(
+        "If `nsync` already tracks `oracle` at 10-30% budget, ordering is not where the \
+         remaining decodes are and #310 should stop looking here. A real gap between \
+         `margin` and `nsync` at tight budgets is the wall-clock argument the cost \
+         objection was waiting for."
+    );
+}

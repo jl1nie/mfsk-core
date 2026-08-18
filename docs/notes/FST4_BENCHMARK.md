@@ -1318,3 +1318,73 @@ of the ranking is all that ever gets served. That is measurable from
 The non-linear/learned version the proposal originally framed is **not**
 ruled out by this, but the cost argument applies to it more strongly,
 not less.
+
+### The budget curve — what ordering is actually worth
+
+AUC is an ordering metric; #310's currency is **decodes before the slot
+deadline**. Those only connect through the budget: if it covers every
+candidate, ordering changes nothing; if it covers only the head of the
+ranking, a small ordering gain can matter a lot. So the AUC results
+above could not settle the question on their own.
+
+`fst4_60_diag_escalation_budget_curve` measures the missing quantity —
+**per-candidate escalation cost** — and simulates a deadline. Population
+is the post-first-rung set (the `llra` rung at `offset = 0` is sunk: the
+latency invariant spends it on everyone, so it is outside the budget).
+Cost is counted in units of one (offset, stage) evaluation over
+`llrb`/`llre`/`llrc` + OSD at `i0`, `i0+1`, `i0-1`, stopping at success.
+6 cells, 1 263 candidates, 386 of which decode, 12 330 units total
+(mean 9.8 per candidate).
+
+| budget | arrival order | `nsync` | mean margin | **oracle** |
+|---:|---:|---:|---:|---:|
+| 10 % | 49 | 166 | 172 | **358** |
+| 20 % | 111 | 288 | 306 | 386 |
+| 30 % | 165 | 361 | 365 | 386 |
+| 40 % | 187 | 377 | 382 | 386 |
+| 50 % | 198 | 380 | **386** | 386 |
+| 70 % | 316 | 384 | 386 | 386 |
+| 100 % | 386 | 386 | 386 | 386 |
+
+`oracle` = decoders first, cheapest decoder first. Unachievable — it
+knows the answers — but it bounds what *any* ranking could buy.
+
+**Three things fall out.**
+
+**1. Having a priority signal at all is worth a great deal.** At a 10 %
+budget, `nsync` returns 166 decodes against arrival order's 49 — 3.4×.
+Whatever else is true, #310's escalation-ordering idea is sound.
+
+**2. The soft margin's advantage stays small, but is not zero.** +6
+decodes at 10 %, **+18 at 20 %** (306 vs 288, 6.3 % relative), +4 at
+30 %, and it reaches the oracle's ceiling at 50 % where `nsync` is still
+6 short. Consistent with the +0.014 AUC, and it does not change the cost
+verdict: 18 decodes in 386 at one budget point is not worth 320 B per
+candidate plus a maintained model.
+
+**3. The interesting number is the oracle gap, and it is large.** At a
+10 % budget the oracle recovers 358 of 386 (93 %) where `nsync` gets 166
+(43 %). Neither score is close. That headroom exists because the oracle
+sorts by cost as well as by decodability — **a cheap decoder is worth far
+more per unit than an expensive one, and neither `nsync` nor the margin
+knows anything about cost.**
+
+So the useful redirection for #310 is: **the missing signal is not "will
+this decode" but "will this decode cheaply".** Both scores here predict
+the former. Cost is partly structural and may be cheaper to predict than
+decodability — `nsync` already determines whether OSD runs at all
+(`osd_attempt_min`), and OSD is the expensive stage.
+
+### The qualifier that keeps this in proportion
+
+FST4-60's real situation is roughly a 7 s margin against a 13.6 s
+`no8_osd` candidate loop — call it a ~50 % budget. **At 50 %, `nsync`
+already returns 380 of 386 (98.4 %).** The dramatic ordering effects live
+at 10–20 % budgets, which would mean a deadline several times tighter
+than the one this mode actually has.
+
+So: ordering is worth having (point 1), `nsync` is enough of it at the
+budget that exists, and the oracle headroom (point 3) only becomes worth
+chasing if the budget gets much tighter — a shorter sub-mode, a slower
+target, or a wideband candidate list far larger than the sniper-shaped
+50 used here.
