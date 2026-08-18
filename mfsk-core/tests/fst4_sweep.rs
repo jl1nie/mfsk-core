@@ -5908,3 +5908,261 @@ fn fst4_60_diag_soft_costas_margin_separation() {
          extra per-symbol state isn't worth carrying and #310 should look elsewhere."
     );
 }
+
+/// **#310's actual question**, narrower than
+/// [`fst4_60_diag_soft_costas_margin_separation`]: among candidates that
+/// have **already failed the cheap first rung**, does the soft Costas
+/// margin rank the ones that go on to decode above the ones that never
+/// will?
+///
+/// The broader test scored every gate-passing candidate, which includes
+/// the ones that decode immediately at `llra` — those never reach the
+/// escalation budget, so their contribution to the AUC is irrelevant to
+/// the scheduling decision and, being the easiest candidates, inflates
+/// it. This restricts the population to exactly the set #310 has to
+/// triage:
+///
+/// - **Population**: passes the `nsync` gate, and **fails** BP on `llra`
+///   at `offset = 0` — the cheapest rung of `decode_rung_major`'s ladder
+///   and the one the latency invariant guarantees every candidate.
+/// - **Positive**: goes on to decode with the full escalation budget —
+///   the remaining LLR variants (`llrb`/`llre`/`llrc`), OSD at the depth
+///   the existing gates select, and the `i0 ± 1` timing offsets.
+/// - **Negative**: never decodes, i.e. every unit of escalation spent on
+///   it was wasted.
+///
+/// A score that ranks positives above negatives here is directly usable
+/// as "who gets the remaining budget first" once the first rung has
+/// given every retained candidate its cheap attempt — which is the shape
+/// this issue's scheduling position (`FST4_BENCHMARK.md` §13) leaves
+/// open.
+///
+/// Cells are pooled as well as reported individually: the positive class
+/// is small by construction here (these are the *hard* candidates), and
+/// a per-cell AUC over a handful of positives is noise. Read the pooled
+/// row first.
+#[test]
+#[ignore = "manual diagnostic — soft margin as escalation-priority signal, post-first-rung (issue #310)"]
+fn fst4_60_diag_soft_margin_escalation_priority() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::llr::{
+        compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
+    use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const NSYNC_GATE: u32 = 16;
+    const MAX_CAND: usize = 50;
+    const WIDTH_HZ: f32 = 250.0;
+    const OFFSETS: [i32; 3] = [0, 1, -1];
+    const CELLS: &[(&str, &str)] = &[
+        ("ccir_moderate", "m24"),
+        ("ccir_moderate", "m25"),
+        ("awgn", "m27"),
+        ("awgn", "m28"),
+    ];
+
+    fn auc(scored: &[(f64, bool)]) -> f64 {
+        let pos: Vec<f64> = scored.iter().filter(|(_, d)| *d).map(|(s, _)| *s).collect();
+        let neg: Vec<f64> = scored
+            .iter()
+            .filter(|(_, d)| !*d)
+            .map(|(s, _)| *s)
+            .collect();
+        if pos.is_empty() || neg.is_empty() {
+            return f64::NAN;
+        }
+        let mut acc = 0.0;
+        for p in &pos {
+            for n in &neg {
+                acc += if p > n {
+                    1.0
+                } else if (p - n).abs() < f64::EPSILON {
+                    0.5
+                } else {
+                    0.0
+                };
+            }
+        }
+        acc / (pos.len() * neg.len()) as f64
+    }
+
+    let dir = sweep_dir();
+    let n_sync = sync_symbol_count::<Fst4s60>();
+    let (osd_attempt_min, osd_depth3_min) =
+        mfsk_core::engine::pipeline::osd_escalation_gates::<Fst4s60>();
+    let fec = <Fst4s60 as Protocol>::Fec::default();
+    let verify_info =
+        Some(<<Fst4s60 as Protocol>::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);
+    let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
+
+    // (nsync, mean_margin, mean_logratio, eventually_decodes)
+    let mut pooled: Vec<(f64, f64, f64, bool)> = Vec::new();
+
+    eprintln!();
+    eprintln!("=== soft margin as escalation-priority signal (post-first-rung) ===");
+    eprintln!("population: passes nsync gate AND fails BP on llra at offset 0");
+
+    for &(channel, snr_tag) in CELLS {
+        let mut rows: Vec<(f64, f64, f64, bool)> = Vec::new();
+
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            let Some(audio) = load_wav_i16_opt(&path) else {
+                continue;
+            };
+            let cands = coarse_sync::<Fst4s60>(
+                &audio,
+                (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
+                (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
+                SNIPER_SYNC_MIN,
+                Some(GOLDEN_FREQ_HZ),
+                MAX_CAND,
+            );
+            let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
+
+            for c in &cands {
+                let mut cd0 = mfsk_core::engine::dsp::downsample::downsample_cached(
+                    &fft_cache,
+                    c.freq_hz,
+                    &FST4_60A_DOWNSAMPLE,
+                );
+                let sum2: f32 = cd0.iter().map(|z| z.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for z in cd0.iter_mut() {
+                        *z *= inv;
+                    }
+                }
+                let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
+                let cd0 = freq_shift_cd0(&cd0, s2.freq_hz - c.freq_hz, ds_rate);
+
+                let cs0 = symbol_spectra::<Fst4s60>(&cd0, s2.i0);
+                let nsync = sync_quality::<Fst4s60>(&cs0);
+                if nsync <= NSYNC_GATE {
+                    continue;
+                }
+
+                let mut pairs = vec![(0.0f32, 0.0f32); n_sync];
+                let nsync_soft = sync_quality_soft_generic::<Fst4s60, f32>(&cs0, &mut pairs);
+                assert_eq!(nsync, nsync_soft);
+                let mut margins = Vec::with_capacity(n_sync);
+                let mut logratios = Vec::with_capacity(n_sync);
+                for &(e_exp, e_wrong) in &pairs {
+                    let (a, b) = (e_exp as f64, e_wrong as f64);
+                    let d = a + b;
+                    margins.push(if d > 0.0 { (a - b) / d } else { 0.0 });
+                    logratios.push(if a > 0.0 && b > 0.0 {
+                        (a / b).ln().clamp(-8.0, 8.0)
+                    } else {
+                        0.0
+                    });
+                }
+                let mean_margin = margins.iter().sum::<f64>() / margins.len() as f64;
+                let mean_logratio = logratios.iter().sum::<f64>() / logratios.len() as f64;
+
+                let is_golden = |llr: &Vec<f32>, opts: &FecOpts| -> bool {
+                    fec.decode_soft(llr, opts).is_some_and(|mut r| {
+                        mfsk_core::engine::llr::descramble_info::<Fst4s60>(&mut r.info);
+                        let mut m77 = [0u8; 77];
+                        m77.copy_from_slice(&r.info[..77]);
+                        unpack77(&m77).as_deref() == Some(GOLDEN_MSG)
+                    })
+                };
+                let bp_opts = FecOpts {
+                    bp_max_iter: 30,
+                    osd_depth: 0,
+                    ap_mask: None,
+                    verify_info,
+                    ..FecOpts::default()
+                };
+
+                // Cheap first rung: llra only, offset 0.
+                let llr0 = compute_llr::<Fst4s60, f32>(&cs0);
+                if is_golden(&llr0.llra, &bp_opts) {
+                    continue; // decoded cheaply — never reaches the budget
+                }
+
+                // Everything the escalation budget would buy.
+                let mut eventually = false;
+                'esc: for &d in &OFFSETS {
+                    let cs = if d == 0 {
+                        cs0.clone()
+                    } else {
+                        symbol_spectra::<Fst4s60>(&cd0, s2.i0 + d)
+                    };
+                    let ns = sync_quality::<Fst4s60>(&cs);
+                    if ns <= NSYNC_GATE {
+                        continue;
+                    }
+                    let ls = compute_llr::<Fst4s60, f32>(&cs);
+                    let variants: [&Vec<f32>; 4] = [&ls.llra, &ls.llrb, &ls.llre, &ls.llrc];
+                    if variants.iter().any(|l| is_golden(l, &bp_opts)) {
+                        eventually = true;
+                        break 'esc;
+                    }
+                    if ns >= osd_attempt_min {
+                        let osd_opts = FecOpts {
+                            bp_max_iter: 30,
+                            osd_depth: if ns >= osd_depth3_min { 3 } else { 2 },
+                            ap_mask: None,
+                            verify_info,
+                            ..FecOpts::default()
+                        };
+                        if variants.iter().any(|l| is_golden(l, &osd_opts)) {
+                            eventually = true;
+                            break 'esc;
+                        }
+                    }
+                }
+
+                rows.push((nsync as f64, mean_margin, mean_logratio, eventually));
+            }
+        }
+
+        if rows.is_empty() {
+            eprintln!("{channel}_{snr_tag}: no candidates in population, skip");
+            continue;
+        }
+        let np = rows.iter().filter(|r| r.3).count();
+        eprintln!();
+        eprintln!(
+            "{channel}_{snr_tag}: {} post-first-rung candidates ({np} eventually decode)",
+            rows.len()
+        );
+        for (name, f) in [
+            ("nsync", (|r: &(f64, f64, f64, bool)| r.0) as fn(&_) -> f64),
+            ("mean margin", |r: &(f64, f64, f64, bool)| r.1),
+            ("mean logratio", |r: &(f64, f64, f64, bool)| r.2),
+        ] {
+            let scored: Vec<(f64, bool)> = rows.iter().map(|r| (f(r), r.3)).collect();
+            eprintln!("  {name:<14} AUC {:>6.3}", auc(&scored));
+        }
+        pooled.extend(rows);
+    }
+
+    let np = pooled.iter().filter(|r| r.3).count();
+    eprintln!();
+    eprintln!(
+        "POOLED: {} post-first-rung candidates ({np} eventually decode, {} don't)",
+        pooled.len(),
+        pooled.len() - np
+    );
+    for (name, f) in [
+        ("nsync", (|r: &(f64, f64, f64, bool)| r.0) as fn(&_) -> f64),
+        ("mean margin", |r: &(f64, f64, f64, bool)| r.1),
+        ("mean logratio", |r: &(f64, f64, f64, bool)| r.2),
+    ] {
+        let scored: Vec<(f64, bool)> = pooled.iter().map(|r| (f(r), r.3)).collect();
+        eprintln!("  {name:<14} AUC {:>6.3}", auc(&scored));
+    }
+    eprintln!();
+    eprintln!(
+        "This is the population #310 actually triages. If no score beats chance here, \
+         the broader result in §14 does not transfer to escalation ordering."
+    );
+}

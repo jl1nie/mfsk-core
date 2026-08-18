@@ -1166,3 +1166,75 @@ escalation-priority signal.
 Not wired into anything. `sync_quality` and `sync_quality_generic` are
 untouched and bit-identical; the soft variant asserts equality of the
 `nsync` it returns against the hard one on every candidate in the test.
+
+### The population #310 actually triages — and the result reverses
+
+§14's population was every gate-passing candidate, which includes the
+ones that decode immediately at `llra`. Those never reach the escalation
+budget, so they are irrelevant to the scheduling decision — and, being
+the easiest candidates in the set, they inflate the apparent benefit of
+any score.
+
+`fst4_60_diag_soft_margin_escalation_priority` restricts the population
+to exactly what #310 has to triage:
+
+- **Population**: passes the `nsync` gate *and* fails BP on `llra` at
+  `offset = 0` — the cheapest rung, the one `decode_rung_major`'s latency
+  invariant guarantees every candidate.
+- **Positive**: goes on to decode with the full escalation budget
+  (`llrb`/`llre`/`llrc`, OSD at the gate-selected depth, and `i0 ± 1`).
+- **Negative**: never decodes — every unit spent on it was wasted.
+
+| cell | post-first-rung candidates (decode) | `nsync` | mean margin | mean logratio |
+|---|---|---:|---:|---:|
+| CCIR-mod m24 | 220 (86) | 0.911 | 0.914 | **0.917** |
+| CCIR-mod m25 | 203 (28) | **0.726** | 0.709 | 0.700 |
+| AWGN m27 | 212 (66) | 0.879 | **0.905** | 0.887 |
+| AWGN m28 | 194 (19) | 0.848 | **0.854** | 0.812 |
+| **pooled** | **829 (199)** | **0.868** | **0.881** | 0.871 |
+
+**Two things change relative to §14.**
+
+**1. The population is very triageable, by any of the three scores.**
+Pooled AUC 0.87–0.88, far above chance. That is good news for #310
+independent of which score wins: after the first rung, the candidates
+worth escalating *are* distinguishable from the ones that will never
+decode.
+
+**2. The soft margin's advantage largely evaporates.** Pooled, `mean
+margin` beats raw `nsync` by **+0.013** and `mean logratio` by **+0.003**
+— against §14's +0.019 to +0.099. And it is no longer consistent: `mean
+margin` loses to `nsync` in CCIR-moderate m25 (0.709 vs 0.726), and
+`mean logratio` loses in two of four cells. The best-performing
+formulation also flips — `mean logratio` won everywhere in §14, `mean
+margin` wins pooled here.
+
+**By VK3NV's own kill condition this fails.** The condition was: *if raw
+`nsync` already separates the expensive false survivors, there is no
+reason to add anything else.* On the population that matters, it does —
+0.868 pooled — and the soft features add ~1 point of AUC inconsistently,
+for 40 extra values per candidate of state.
+
+### The methodological point, which is the more durable result
+
+§14's apparent gain was substantially an artifact of measuring on the
+wrong population. Including candidates that decode at the first rung —
+which no escalation policy ever sees — inflated the margin's advantage
+by roughly 5×.
+
+This is why VK3NV specified the `nsync`-only baseline as part of the
+proposal. Without it, the pooled 0.881 for `mean margin` reads as "the
+soft feature separates well" and would justify wiring it in; against the
+0.868 baseline it reads as "raw `nsync` was already doing this". Same
+number, opposite decision.
+
+The implementation stays in the tree (`sync_quality_soft_generic`,
+diagnostic-only, nothing calls it) because the negative result is worth
+being able to re-derive, and because the per-symbol pairs are the
+instrumentation any future proxy attempt would want. But on this
+evidence #310's escalation ordering should use `nsync`, which it already
+has, and look elsewhere for a better signal.
+
+**Not tested**: whether a *learned* combination of the pairs beats
+`nsync` — the proposal's original neural-net framing. Three hand-picked
+formulations failing is weak evidence against that, not strong.
