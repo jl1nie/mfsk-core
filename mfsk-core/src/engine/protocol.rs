@@ -15,6 +15,29 @@
 //! `FrameLayout`, so SIMD optimisations to the shared LDPC decoder
 //! automatically benefit every LDPC-based protocol.
 
+/// The PCM sample rate every protocol in this crate is defined against,
+/// in Hz.
+///
+/// Not a tunable: WSJT-X's own modes are specified at 12 kHz, and every
+/// `ModulationParams` constant here derives from it — `SYMBOL_DT =
+/// NSPS / SAMPLE_RATE_HZ`, `TONE_SPACING_HZ = SAMPLE_RATE_HZ / NSPS`.
+/// Faithful porting is the crate's premise, so this is a domain
+/// constant rather than a parameter, and nothing is set up to vary it.
+///
+/// It exists as a name because it was previously spelled three times
+/// under two names in three modules (issue #321) — `uvpacket::tx`,
+/// `ft8::decode_block::types` and `engine::dsp::msk::FS_HZ`, the last
+/// of which is `pub` and so advertised the crate's sample rate under a
+/// name suggesting it belonged to MSK144.
+///
+/// **The ~100 remaining bare `12_000.0` literals are deliberately left
+/// alone.** Each reads unambiguously in its own context, and replacing
+/// them was measured against the churn and declined — see #321 for that
+/// reasoning, and #307/#309 for the distinction (definitional rate vs
+/// analysis-grid rate) that a future refactor would actually need to
+/// draw, which naming this constant does *not* address.
+pub const SAMPLE_RATE_HZ: f32 = 12_000.0;
+
 use alloc::string::String;
 use alloc::vec::Vec;
 

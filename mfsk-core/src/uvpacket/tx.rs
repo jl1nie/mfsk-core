@@ -55,7 +55,7 @@ const K_LDPC: usize = 101;
 const PAYLOAD_BITS_PER_BLOCK: usize = INFO_BYTES_PER_BLOCK * 8;
 
 /// Sample rate (Hz).
-pub(super) const SAMPLE_RATE_HZ: f32 = 12_000.0;
+pub(super) use crate::engine::protocol::SAMPLE_RATE_HZ;
 /// RRC pulse span (symbols on each side of centre tap). Same for
 /// every mode — only the per-symbol sample count varies via
 /// [`Mode::nsps`].

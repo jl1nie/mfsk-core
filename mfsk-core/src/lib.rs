@@ -389,7 +389,7 @@ pub mod registry;
 // Flatten commonly-used types to the crate root.
 pub use crate::engine::{
     DecodeContext, FecCodec, FecOpts, FecResult, FrameLayout, MessageCodec, MessageFields,
-    ModulationParams, Protocol, ProtocolId, SyncBlock, SyncMode,
+    ModulationParams, Protocol, ProtocolId, SAMPLE_RATE_HZ, SyncBlock, SyncMode,
 };
 pub use crate::registry::{PROTOCOLS, ProtocolMeta, by_id, by_name, for_protocol_id};
 
