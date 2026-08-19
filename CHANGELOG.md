@@ -138,6 +138,23 @@ rather than distributing them across patches.
   `skip_llrc` settings — the change is meant to move *when* decodes
   appear, never *whether*.
 
+### Changed
+
+- **`SAMPLE_RATE_HZ` is now one crate-level constant** (issue #321),
+  re-exported at the crate root. It was defined three times under two
+  names — `uvpacket::tx` and `ft8::decode_block::types` privately, and
+  `engine::dsp::msk::FS_HZ` publicly, which advertised the crate's
+  sample rate under a name suggesting it belonged to MSK144. `FS_HZ`
+  remains as a `#[deprecated]` alias since it is public API, with a test
+  pinning it to the constant it now aliases so the two cannot drift.
+
+  Scope is deliberately just that. The ~100 remaining bare `12_000.0`
+  literals are left alone: each reads unambiguously in its own context,
+  and the distinction a future refactor would actually need to draw —
+  definitional rate (`SYMBOL_DT`, `TONE_SPACING_HZ`, invariant) versus
+  analysis-grid rate (`SyncDims`' `df`/`tstep`, variable) — is
+  conceptual and is not addressed by naming the constant. See #307/#309.
+
 ### Fixed
 
 - **`coarse_sync`'s de-duplication decision is now final** (issue #312,

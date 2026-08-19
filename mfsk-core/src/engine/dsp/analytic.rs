@@ -21,7 +21,7 @@ use num_complex::Complex32;
 use num_traits::Float;
 
 use super::super::fft::default_planner;
-use super::msk::FS_HZ;
+use crate::engine::protocol::SAMPLE_RATE_HZ;
 
 /// Center frequency of the fixed bandpass filter (`analytic.f90`'s
 /// `f=ff-1500.0`).
@@ -52,7 +52,7 @@ fn bandpass_gain(freq_hz: f32) -> f32 {
 /// negative-frequency bins, double the positive-frequency bins (DC,
 /// and Nyquist if `input.len()` is even, are left unscaled), then
 /// inverse FFT and normalize. Assumes `input` was sampled at
-/// [`FS_HZ`] — the only sample rate this crate's MSK144 pipeline
+/// [`SAMPLE_RATE_HZ`] — the only sample rate this crate's MSK144 pipeline
 /// uses.
 pub fn analytic_signal(input: &[f32]) -> Vec<Complex32> {
     let n = input.len();
@@ -63,7 +63,7 @@ pub fn analytic_signal(input: &[f32]) -> Vec<Complex32> {
     let mut x: Vec<Complex32> = input.iter().map(|&v| Complex32::new(v, 0.0)).collect();
     fwd.process(&mut x);
 
-    let df = FS_HZ / n as f32;
+    let df = SAMPLE_RATE_HZ / n as f32;
     let nyquist = if n.is_multiple_of(2) {
         Some(n / 2)
     } else {
@@ -97,7 +97,7 @@ mod tests {
     /// its Hilbert transform (a sine at the same frequency, 90 deg
     /// lagging) -- i.e. `analytic[n] ~= exp(i*2*pi*k0*n/N)` (positive
     /// frequency only, unit amplitude). `k0` is chosen to land at
-    /// 1500 Hz (assuming [`FS_HZ`]), the center of the fixed bandpass
+    /// 1500 Hz (assuming [`SAMPLE_RATE_HZ`]), the center of the fixed bandpass
     /// filter's full-pass band, so the filter doesn't attenuate it.
     #[test]
     fn analytic_signal_of_pure_cosine_is_a_complex_exponential() {

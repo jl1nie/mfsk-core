@@ -156,7 +156,7 @@ pub(super) fn ratio_eps() -> f32 {
 }
 
 /// 12 kHz fixed sample rate.
-pub(super) const SAMPLE_RATE_HZ: f32 = 12_000.0;
+pub(super) use crate::engine::protocol::SAMPLE_RATE_HZ;
 
 /// Slot start offset (FT8 transmits 0.5 s into the slot).
 pub(super) const TX_START_OFFSET_S: f32 = 0.5;

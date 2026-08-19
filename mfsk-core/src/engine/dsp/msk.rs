@@ -26,7 +26,15 @@ use num_traits::Float;
 pub const NSPM: usize = 864;
 
 /// PCM sample rate MSK144 operates at (Hz).
-pub const FS_HZ: f32 = 12_000.0;
+///
+/// Deprecated alias for [`crate::engine::SAMPLE_RATE_HZ`] (issue #321):
+/// the value is the crate-wide WSJT-X rate, not an MSK144 property, and
+/// this being `pub` advertised it under a misleading name.
+#[deprecated(
+    since = "0.10.1",
+    note = "not MSK144-specific — use `mfsk_core::SAMPLE_RATE_HZ`"
+)]
+pub const FS_HZ: f32 = crate::engine::protocol::SAMPLE_RATE_HZ;
 
 /// 8-bit MSK144 sync word (natural 0/1 form). Appears twice per
 /// 144-bit frame, at symbol offsets 0 and 56 (`msk144sync.f90:27`).
@@ -298,8 +306,18 @@ mod tests {
     #[test]
     fn frame_constants_match_wsjtx() {
         assert_eq!(NSPM, 864);
-        assert_eq!(FS_HZ, 12_000.0);
+        assert_eq!(crate::engine::protocol::SAMPLE_RATE_HZ, 12_000.0);
         assert_eq!(S8, [0, 1, 1, 1, 0, 0, 1, 0]);
+    }
+
+    /// `FS_HZ` is deprecated but still `pub`, so a downstream consumer
+    /// can still be reading it. Pin it to the constant it now aliases
+    /// so the two cannot drift apart while it remains exported
+    /// (issue #321).
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_fs_hz_still_tracks_the_crate_rate() {
+        assert_eq!(FS_HZ, crate::engine::protocol::SAMPLE_RATE_HZ);
     }
 
     /// Direct-arithmetic check of bit 1 (Q rail)'s frame-boundary
