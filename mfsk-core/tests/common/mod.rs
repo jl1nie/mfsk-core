@@ -131,6 +131,48 @@ pub fn sweep_csv_writer(env_var: &str, header: &str) -> Option<std::fs::File> {
     Some(f)
 }
 
+/// Maps `f` over `items`, parallel when the `parallel` feature is on
+/// (`rayon`'s `par_iter`), sequential otherwise — the exact
+/// `#[cfg(feature = "parallel")] ... #[cfg(not(...))] ...` fallback
+/// every sweep test in this suite already hand-rolls at its own call
+/// site (`ft8_sweep.rs`, `ft4_sweep.rs`, `fst4_sweep.rs`,
+/// `wspr_sweep.rs`, `jt65_sweep.rs`, `jt9_sweep.rs`,
+/// `q65_sim_sweep.rs`). Pulled out so a *new* diagnostic doesn't have
+/// to re-derive it — the reason to bother: the one-off diagnostic
+/// probes accumulated in `fst4_sweep.rs` (#306-#312) mostly don't use
+/// this pattern at all and pay for it. `fst4_60_diag_sniper_cap_near_threshold`
+/// / `fst4_60_diag_sniper_cap_per_trial`'s trial loops were fully
+/// sequential before adopting this helper — on a 24-thread machine
+/// that meant single-core speed for a ~2000-trial grid, no different
+/// from a laptop. Output order matches `items`' order regardless of
+/// which thread finishes first (`par_iter().map()` preserves index
+/// order on collect).
+///
+/// `f` must be `Sync` (safe to call from multiple threads at once);
+/// each call must be independent of every other — no shared mutable
+/// state — the same requirement `par_iter().map()` would impose
+/// directly. Return a per-item summary (counts, a bool, a small
+/// struct) and reduce *after* collecting, not by mutating a captured
+/// counter from inside `f` — that would be a data race under
+/// `parallel` and silently fine but misleading without it.
+#[allow(dead_code)]
+pub fn par_map<T, R, F>(items: &[T], f: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync + Send,
+{
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        items.par_iter().map(f).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        items.iter().map(|x| f(x)).collect()
+    }
+}
+
 /// Build a path to an asset under `embedded-poc/assets/` that resolves
 /// regardless of where the crate is checked out (CI runners, contributor
 /// dev boxes, the maintainer's `/home/ubuntu/...` tree). Equivalent to

@@ -4890,73 +4890,79 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
 
             for &max_cand in &caps {
                 let t0 = Instant::now();
-                let mut raw_total = 0usize;
-                let mut gate_total = 0usize;
-                let mut nsync_total = 0usize;
-                let mut recall = 0usize;
 
-                for audio in &trials {
-                    // `raw` with the score gate wide open, for the
-                    // retained-fraction denominator — the same shape
-                    // `fst4_60_diag_sniper_gate_width_sweep` uses.
-                    let raw = coarse_sync::<Fst4s60>(
-                        audio,
-                        freq_min,
-                        freq_max,
-                        f32::NEG_INFINITY,
-                        Some(GOLDEN_FREQ_HZ),
-                        5000,
-                    );
-                    let gated = coarse_sync::<Fst4s60>(
-                        audio,
-                        freq_min,
-                        freq_max,
-                        SNIPER_SYNC_MIN,
-                        Some(GOLDEN_FREQ_HZ),
-                        max_cand,
-                    );
-                    raw_total += raw.len();
-                    gate_total += gated.len();
+                // Each trial's decode is fully independent of every
+                // other — parallelise it (`common::par_map`, sequential
+                // fallback without the `parallel` feature) and sum the
+                // per-trial (raw, gate, nsync, decoded) tuples after
+                // collecting, rather than mutating shared counters from
+                // inside the closure (a data race under `parallel`).
+                let per_trial: Vec<(usize, usize, usize, bool)> =
+                    common::par_map(&trials, |audio| {
+                        // `raw` with the score gate wide open, for the
+                        // retained-fraction denominator — the same shape
+                        // `fst4_60_diag_sniper_gate_width_sweep` uses.
+                        let raw = coarse_sync::<Fst4s60>(
+                            audio,
+                            freq_min,
+                            freq_max,
+                            f32::NEG_INFINITY,
+                            Some(GOLDEN_FREQ_HZ),
+                            5000,
+                        );
+                        let gated = coarse_sync::<Fst4s60>(
+                            audio,
+                            freq_min,
+                            freq_max,
+                            SNIPER_SYNC_MIN,
+                            Some(GOLDEN_FREQ_HZ),
+                            max_cand,
+                        );
 
-                    let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
-                    let mut decoded = false;
-                    for c in &gated {
-                        let (cd0, _refined_freq_hz, i0, _score) =
-                            refine_candidate_position::<Fst4s60>(
+                        let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
+                        let mut decoded = false;
+                        let mut nsync = 0usize;
+                        for c in &gated {
+                            let (cd0, _refined_freq_hz, i0, _score) =
+                                refine_candidate_position::<Fst4s60>(
+                                    c,
+                                    &fft_cache,
+                                    &FST4_60A_DOWNSAMPLE,
+                                );
+                            let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                            if sync_quality::<Fst4s60>(&cs) <= SNIPER_SYNC_Q_MIN {
+                                continue;
+                            }
+                            nsync += 1;
+                            let r = process_candidate_basic::<Fst4s60>(
                                 c,
                                 &fft_cache,
                                 &FST4_60A_DOWNSAMPLE,
+                                DecodeDepth::FULL,
+                                DecodeStrictness::Normal,
+                                &[],
+                                EqMode::Off,
+                                SNIPER_SYNC_Q_MIN,
                             );
-                        let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
-                        if sync_quality::<Fst4s60>(&cs) <= SNIPER_SYNC_Q_MIN {
-                            continue;
-                        }
-                        nsync_total += 1;
-                        let r = process_candidate_basic::<Fst4s60>(
-                            c,
-                            &fft_cache,
-                            &FST4_60A_DOWNSAMPLE,
-                            DecodeDepth::FULL,
-                            DecodeStrictness::Normal,
-                            &[],
-                            EqMode::Off,
-                            SNIPER_SYNC_Q_MIN,
-                        );
-                        // Recall means *the transmitted message*, not any
-                        // decode — a CRC false-accept must not count.
-                        if let Some(d) = r {
-                            let mut m77 = [0u8; 77];
-                            m77.copy_from_slice(d.message77());
-                            if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
-                                decoded = true;
-                                break;
+                            // Recall means *the transmitted message*, not
+                            // any decode — a CRC false-accept must not
+                            // count.
+                            if let Some(d) = r {
+                                let mut m77 = [0u8; 77];
+                                m77.copy_from_slice(d.message77());
+                                if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                                    decoded = true;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    if decoded {
-                        recall += 1;
-                    }
-                }
+                        (raw.len(), gated.len(), nsync, decoded)
+                    });
+
+                let raw_total: usize = per_trial.iter().map(|&(r, ..)| r).sum();
+                let gate_total: usize = per_trial.iter().map(|&(_, g, ..)| g).sum();
+                let nsync_total: usize = per_trial.iter().map(|&(_, _, ns, _)| ns).sum();
+                let recall = per_trial.iter().filter(|&&(_, _, _, d)| d).count();
 
                 let loop_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 let frac = if raw_total == 0 {
@@ -5058,7 +5064,11 @@ fn fst4_60_diag_sniper_cap_per_trial() {
             let freq_max = (GOLDEN_FREQ_HZ + width).min(3000.0);
 
             for &max_cand in &caps {
-                for (trial, audio) in &trials {
+                // Each trial's decode is fully independent of every
+                // other — parallelise it (`common::par_map`, sequential
+                // fallback without the `parallel` feature). Output stays
+                // in trial order since `par_map` preserves input order.
+                let results: Vec<(u32, bool)> = common::par_map(&trials, |(trial, audio)| {
                     let gated = coarse_sync::<Fst4s60>(
                         audio,
                         freq_min,
@@ -5099,6 +5109,9 @@ fn fst4_60_diag_sniper_cap_per_trial() {
                             }
                         }
                     }
+                    (*trial, decoded)
+                });
+                for (trial, decoded) in results {
                     eprintln!(
                         "{:>14} {:>5.0}Hz {:>4} {:>6} {:>5}",
                         format!("{channel}_{snr_tag}"),
