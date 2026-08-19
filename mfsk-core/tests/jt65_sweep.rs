@@ -108,6 +108,7 @@ fn decode_wav_jt65_chase(audio: &[f32]) -> bool {
 
 struct Job {
     snr: i32,
+    trial: u32,
     path: PathBuf,
 }
 
@@ -122,13 +123,16 @@ fn collect_jobs(dir: &Path) -> Option<Vec<Job>> {
         let Some(rest) = stem.strip_prefix("jt65_awgn_") else {
             continue;
         };
-        let Some((tag, _trial)) = rest.split_once('_') else {
+        let Some((tag, trial)) = rest.split_once('_') else {
             continue;
         };
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        jobs.push(Job { snr, path });
+        let Ok(trial) = trial.parse::<u32>() else {
+            continue;
+        };
+        jobs.push(Job { snr, trial, path });
     }
     Some(jobs)
 }
@@ -139,7 +143,12 @@ fn collect_jobs(dir: &Path) -> Option<Vec<Job>> {
 /// [`jt65_chase_awgn_snr_sweep`] (stochastic Chase decoder, via
 /// `decode_scan_chase_default`) so both run identical methodology
 /// against the same corpus — the only difference is `decode_wav`.
-fn run_sweep(label: &str, decode_wav: impl Fn(&[f32]) -> bool + Sync) {
+/// `csv_env` names the env var (if set) to dump a
+/// `channel,snr_db,trial,pass` summary CSV to — see the FT8/FT4/FST4
+/// sweeps' `MFSK_*_SWEEP_CSV` and `scripts/sweep-regression-check.py`.
+/// The two callers use different env vars since they're different
+/// data (plain vs. Chase decoder), not two views of the same run.
+fn run_sweep(label: &str, decode_wav: impl Fn(&[f32]) -> bool + Sync, csv_env: &str) {
     let dir = sweep_dir();
     let Some(jobs) = collect_jobs(&dir) else {
         eprintln!(
@@ -158,20 +167,32 @@ fn run_sweep(label: &str, decode_wav: impl Fn(&[f32]) -> bool + Sync) {
     use rayon::prelude::*;
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(i32, bool)> = jobs
+    let results: Vec<(i32, u32, bool)> = jobs
         .par_iter()
-        .filter_map(|job| load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav(&audio))))
+        .filter_map(|job| {
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, job.trial, decode_wav(&audio)))
+        })
         .collect();
 
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(i32, bool)> = jobs
+    let results: Vec<(i32, u32, bool)> = jobs
         .iter()
-        .filter_map(|job| load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav(&audio))))
+        .filter_map(|job| {
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, job.trial, decode_wav(&audio)))
+        })
         .collect();
+
+    use std::io::Write;
+    let mut csv = common::sweep_csv_writer(csv_env, "channel,snr_db,trial,pass");
+    if let Some(f) = csv.as_mut() {
+        for (snr, trial, hit) in &results {
+            writeln!(f, "awgn,{snr},{trial},{}", *hit as u8).unwrap();
+        }
+    }
 
     // snr -> (hits, trials)
     let mut cells: std::collections::BTreeMap<i32, (u32, u32)> = std::collections::BTreeMap::new();
-    for (snr, hit) in results {
+    for (snr, _trial, hit) in results {
         let cell = cells.entry(snr).or_insert((0, 0));
         cell.1 += 1;
         if hit {
@@ -206,6 +227,7 @@ fn jt65_awgn_snr_sweep() {
     run_sweep(
         "JT65A AWGN SNR sweep (decode_scan_default)",
         decode_wav_jt65,
+        "MFSK_JT65_SWEEP_SUMMARY_CSV",
     );
 }
 
@@ -221,6 +243,7 @@ fn jt65_chase_awgn_snr_sweep() {
     run_sweep(
         "JT65A AWGN SNR sweep (decode_scan_chase_default)",
         decode_wav_jt65_chase,
+        "MFSK_JT65_CHASE_SWEEP_SUMMARY_CSV",
     );
 }
 

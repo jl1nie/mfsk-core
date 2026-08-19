@@ -767,21 +767,50 @@ Run each with the corpora present under `embedded-poc/assets/*_sweep/`.
 
 ### 11.1 Tier-C sensitivity sweeps — the `v0.10.0` release gate
 
-**Required before tagging** (`CLAUDE.md`, "Releases"). Not run yet for
-this release.
+**Required before tagging** (`CLAUDE.md`, "Releases"). Completed
+2026-08-19/20, all seven protocols, on the Ryzen 9 9900X (24 threads)
+— folded into a larger session that also rebuilt
+`scripts/run-sensitivity-sweeps.sh` into a self-diffing regression
+check (`scripts/sweep-regression-check.py` +
+`docs/notes/sweep-baseline.json`, see that script's own doc comment
+for the design) rather than a table a human re-reads by eye each time.
 
 ```sh
 scripts/run-sensitivity-sweeps.sh
 ```
 
-All seven protocols are in scope this cycle: WSPR (Fano cycle budget),
-FST4 (npre1/npre2 OSD port), FT8 (coarse-sync lag window), and
-JT65/JT9/Q65 (Δt windows). FT4 is the only untouched one.
+WSPR/FT8/JT65/JT9/Q65/MSK144 needed no re-measurement — a source diff
+against the commit those numbers were first taken from confirmed zero
+functional change in any of their decode paths since (`wspr::ddc` and
+`engine::dsp::{analytic,msk}` moved only by the `SAMPLE_RATE_HZ`
+rename, #321 — value-identical). FST4 alone got a full re-run because
+`fst4::rung_major`, `engine::sync`, `engine::llr` genuinely changed
+this cycle (`Schedule::PhaseSplit` #317, the coarse_sync dedup fix
+#316, the npre1/npre2 OSD port). Result: **every one of FST4's twenty
+(mode × channel) 50%-crossings landed byte-identical to the
+pre-change measurement** — consistent with both #317 and #316 being
+built and verified specifically to be recall-neutral (see their
+ROADMAP.md entries), now confirmed end-to-end through the real
+sweep rather than only through their own targeted equivalence tests.
+FST4-15's AWGN crossing (−20.70 dB) and the other four sub-modes all
+land within the pre-existing 0.1-0.6 dB gap band against WSJT-X's
+published figures (cross-checked against the table in section 5
+above). No `BENCHMARKS.md` update needed — nothing moved.
 
-Compare the printed tables against `docs/notes/*BENCHMARK.md` and the
-`v0.9.1` numbers. A move worse than ~0.5 dB needs explaining before the
-tag; update `BENCHMARKS.md` for any move understood well enough to
-explain, recording the machine.
+The full FST4 group (all 5 sub-modes × 4 channels, 6500 WAVs) took
+**1852-1922 s (~31 min)** end to end on this machine, both before and
+after the code change — nowhere near the "8 h+ on an 8C/16T box"
+back-of-envelope extrapolation this section used to cite. That
+estimate was never a measurement; the real number, run twice now, is
+consistent with itself.
+
+Going forward, `run-sensitivity-sweeps.sh` narrows the SNR range
+around each group's `sweep-baseline.json` crossing automatically
+(`scripts/sweep-narrow-plan.py`, `MFSK_SWEEP_FULL=1` to opt out) — a
+group with no baseline entry yet (new sub-mode, first run) always
+falls back to the full grid the way this run did, so future FST4
+sweeps should be substantially faster than the ~31 min measured here
+unless the crossing itself moves.
 
 ### 11.2 Near-threshold sniper cap sweep — the open half of #312
 

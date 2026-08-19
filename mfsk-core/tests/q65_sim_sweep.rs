@@ -191,6 +191,7 @@ fn decode_wav_q65(submode: &str, audio: &[f32], cq_hint: &ApHint) -> (bool, bool
 struct Job {
     submode: String,
     snr: i32,
+    trial: u32,
     path: PathBuf,
 }
 
@@ -222,15 +223,19 @@ fn q65_awgn_snr_sweep() {
         if !SUBMODES.contains(&submode) {
             continue;
         }
-        let Some((tag, _trial)) = rest.split_once('_') else {
+        let Some((tag, trial)) = rest.split_once('_') else {
             continue;
         };
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
+        let Ok(trial) = trial.parse::<u32>() else {
+            continue;
+        };
         jobs.push(Job {
             submode: submode.to_string(),
             snr,
+            trial,
             path,
         });
     }
@@ -246,29 +251,44 @@ fn q65_awgn_snr_sweep() {
     use rayon::prelude::*;
 
     #[cfg(feature = "parallel")]
-    let results: Vec<((String, i32), bool, bool)> = jobs
+    let results: Vec<((String, i32), u32, bool, bool)> = jobs
         .par_iter()
         .filter_map(|job| {
             let audio = load_wav_f32_opt(&job.path)?;
             let (plain_hit, cq_hit) = decode_wav_q65(&job.submode, &audio, &cq_hint);
-            Some(((job.submode.clone(), job.snr), plain_hit, cq_hit))
+            Some(((job.submode.clone(), job.snr), job.trial, plain_hit, cq_hit))
         })
         .collect();
 
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<((String, i32), bool, bool)> = jobs
+    let results: Vec<((String, i32), u32, bool, bool)> = jobs
         .iter()
         .filter_map(|job| {
             let audio = load_wav_f32_opt(&job.path)?;
             let (plain_hit, cq_hit) = decode_wav_q65(&job.submode, &audio, &cq_hint);
-            Some(((job.submode.clone(), job.snr), plain_hit, cq_hit))
+            Some(((job.submode.clone(), job.snr), job.trial, plain_hit, cq_hit))
         })
         .collect();
+
+    // Optional: MFSK_Q65_SWEEP_SUMMARY_CSV=/path/out.csv — two rows
+    // per trial (mode=plain, mode=cq), see
+    // `scripts/sweep-regression-check.py`.
+    use std::io::Write;
+    let mut csv = common::sweep_csv_writer(
+        "MFSK_Q65_SWEEP_SUMMARY_CSV",
+        "submode,mode,snr_db,trial,pass",
+    );
+    if let Some(f) = csv.as_mut() {
+        for ((sm, snr), trial, plain_hit, cq_hit) in &results {
+            writeln!(f, "{sm},plain,{snr},{trial},{}", *plain_hit as u8).unwrap();
+            writeln!(f, "{sm},cq,{snr},{trial},{}", *cq_hit as u8).unwrap();
+        }
+    }
 
     // (submode, snr) -> (plain_hits, cq_hits, trials)
     let mut cells: std::collections::BTreeMap<(String, i32), (u32, u32, u32)> =
         std::collections::BTreeMap::new();
-    for (key, plain_hit, cq_hit) in results {
+    for (key, _trial, plain_hit, cq_hit) in results {
         let cell = cells.entry(key).or_insert((0, 0, 0));
         cell.2 += 1;
         if plain_hit {

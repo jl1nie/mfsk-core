@@ -103,6 +103,34 @@ pub fn load_wav_f32_opt(path: impl AsRef<std::path::Path>) -> Option<Vec<f32>> {
     )
 }
 
+/// Opens (or reuses) a per-trial CSV for a sensitivity sweep test, for
+/// `scripts/sweep-regression-check.py` to diff against
+/// `docs/notes/sweep-baseline.json`. Returns `None` if `env_var` isn't
+/// set (the common case — this is opt-in instrumentation, see e.g.
+/// `fst4_sweep.rs`'s `MFSK_FST4_SWEEP_CSV` doc comment).
+///
+/// Append-mode, writing `header` only when the file doesn't already
+/// exist: `scripts/run-sensitivity-sweeps.sh`'s narrow per-mode/
+/// per-channel reruns (`scripts/sweep-narrow-plan.py`) invoke the same
+/// sweep binary several times with different `MFSK_*_SWEEP_MODES` /
+/// `_CHANNELS` filters, all pointed at the same output path — each
+/// invocation should add rows, not truncate the previous one's.
+#[allow(dead_code)]
+pub fn sweep_csv_writer(env_var: &str, header: &str) -> Option<std::fs::File> {
+    let path = std::env::var(env_var).ok()?;
+    let existed = std::path::Path::new(&path).exists();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("{env_var}={path}: {e}"));
+    if !existed {
+        use std::io::Write;
+        writeln!(f, "{header}").unwrap();
+    }
+    Some(f)
+}
+
 /// Build a path to an asset under `embedded-poc/assets/` that resolves
 /// regardless of where the crate is checked out (CI runners, contributor
 /// dev boxes, the maintainer's `/home/ubuntu/...` tree). Equivalent to

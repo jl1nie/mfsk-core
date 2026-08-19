@@ -662,19 +662,32 @@ fast machine with the generated corpora and `fst4sim` present. They
 are not competing priorities, they are one scheduling problem, and
 two of them share a corpus.
 
-1. **Tier-C sensitivity sweeps** — the only documented gate on the
-   `v0.10.0` tag (see *Releases* in `CLAUDE.md` and
-   `FST4_BENCHMARK.md` §11.1). All protocols except FT4 this cycle.
-   Partially run 2026-08-19: **FST4-15 passes, all four channels, no
-   regression** — AWGN 50% crossing −20.70 dB against
+1. **Tier-C sensitivity sweeps** — **done, 2026-08-19/20**, all seven
+   protocols (see *Releases* in `CLAUDE.md` and `FST4_BENCHMARK.md`
+   §11.1 for the full account). No regressions anywhere. FST4's five
+   sub-modes all landed byte-identical to the pre-#316/#317
+   measurement — both changes were built to be recall-neutral and
+   this is the first end-to-end confirmation of that beyond their own
+   targeted equivalence tests. The "8 h+ on an 8C/16T box" estimate
+   below this entry (kept for the record) never matched reality: the
+   real number, measured twice, is ~31 min on a 24-thread machine —
+   the earlier partial run's extrapolation didn't account for the
+   tier-C runner at the time also executing every accumulated
+   `#[ignore]`d diagnostic in `fst4_sweep.rs` (47 of them alongside
+   the one real gate), not just the sensitivity sweep itself; the
+   runner now filters to the one real test
+   (`scripts/run-sensitivity-sweeps.sh`'s `SUITES` comment has the
+   detail). This also seeded `docs/notes/sweep-baseline.json`, a
+   machine-readable baseline `scripts/sweep-regression-check.py` now
+   diffs future sweeps against automatically instead of a human
+   eyeballing printed tables.
+
+   Original partial-run note, kept for provenance: FST4-15 passed all
+   four channels 2026-08-19, AWGN 50% crossing −20.70 dB against
    `BENCHMARKS.md`'s −20.60 dB, inside 20-trial noise and matching
-   WSJT-X's published −20.7 dB. The CCIR-good/moderate/poor crossings
-   (−20.42 / −18.40 / −18.29 dB) are first-time records for FST4-15 —
-   `BENCHMARKS.md` has no fading rows for this sub-mode, so they
-   establish a baseline rather than confirm one. FST4-30/60/120/300
-   and the other five protocols are unrun; FST4-300 alone is ~336,000
-   audio-seconds and the whole FST4 group extrapolates to 8 h+ on an
-   8C/16T box.
+   WSJT-X's published −20.7 dB; the CCIR-good/moderate/poor crossings
+   (−20.42 / −18.40 / −18.29 dB) were first-time records for FST4-15,
+   since confirmed unchanged in the full re-run above.
 2. **#311's n=100 ablation** — needs `fst4sim` specifically, and a
    regenerated corpus (see the two traps in that entry).
 3. **#312's 96-configuration near-threshold cap grid** —

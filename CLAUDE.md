@@ -261,10 +261,21 @@ irreversible once published.
 
 They **assert nothing** by design: sensitivity is a curve, and a
 threshold that moved 0.3 dB is a judgement call rather than a boolean.
-Compare the printed tables against `docs/notes/*BENCHMARK.md` and the
-previous release's numbers; a move worse than ~0.5 dB is worth
-explaining before tagging. Update `docs/notes/BENCHMARKS.md` when the
-numbers move for a reason you understand (new hardware counts — the
+The script now diffs itself: every recall-vs-SNR sweep it runs dumps a
+per-trial CSV to `target/sweep-csv/`, and at the end it runs
+`scripts/sweep-regression-check.py` against those CSVs, which
+interpolates each channel's 50%-crossing SNR and prints the delta from
+`docs/notes/sweep-baseline.json`, flagging `!!` on any move
+`>= 0.5 dB`. This replaced manually eyeballing the printed tables (or
+spawning several agents to do it) against `docs/notes/*BENCHMARK.md` —
+see `~/.claude/projects/.../memory/project_sensitivity_sweep_pre_release_20260814.md`
+for what that used to cost. Still sanity-check the prose in
+`docs/notes/*BENCHMARK.md` too — the JSON baseline only tracks
+50%-crossing SNR, not e.g. WSPR's phantom-decode count. Once you
+understand why a number moved, refresh the baseline with
+`python3 scripts/sweep-regression-check.py --update-baseline
+target/sweep-csv/*.csv`, and update `docs/notes/BENCHMARKS.md` too if
+the reason is one worth recording there (new hardware counts — the
 table records the machine).
 
 A nightly workflow was considered and rejected: on a solo, bursty repo

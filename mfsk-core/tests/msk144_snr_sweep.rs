@@ -214,23 +214,38 @@ fn run_sweep(name: &str, ntr_period: usize, width: f32) {
         hit(&decode_slot(&audio, 1500.0, 60.0, Depth::Deep), expected)
     };
 
+    use std::io::Write;
+    let mut csv = std::env::var("MFSK_MSK144_SWEEP_SUMMARY_CSV")
+        .ok()
+        .map(|path| {
+            let append = std::path::Path::new(&path).exists();
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap_or_else(|e| panic!("MFSK_MSK144_SWEEP_SUMMARY_CSV={path}: {e}"));
+            if !append {
+                writeln!(f, "config,snr_db,trial,pass").unwrap();
+            }
+            f
+        });
+
     for snr in [-9, -8, -7, -6, -5, -4, -3] {
         #[cfg(feature = "parallel")]
-        let hits: u64 = (0..SEEDS)
+        let results: Vec<(u64, bool)> = (0..SEEDS)
             .into_par_iter()
-            .filter(|&s| trial(snr, s))
-            .count() as u64;
+            .map(|s| (s, trial(snr, s)))
+            .collect();
 
         #[cfg(not(feature = "parallel"))]
-        let hits: u64 = {
-            let mut hits = 0u64;
-            for seed in 0..SEEDS {
-                if trial(snr, seed) {
-                    hits += 1;
-                }
+        let results: Vec<(u64, bool)> = (0..SEEDS).map(|s| (s, trial(snr, s))).collect();
+
+        let hits = results.iter().filter(|&&(_, h)| h).count();
+        if let Some(f) = csv.as_mut() {
+            for (seed, hit) in &results {
+                writeln!(f, "{name},{snr},{seed},{}", *hit as u8).unwrap();
             }
-            hits
-        };
+        }
 
         println!("  {snr:>3} dB   {hits:>3}/{SEEDS}");
     }

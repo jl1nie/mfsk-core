@@ -270,12 +270,7 @@ fn fst4_snr_sweep() {
     );
     eprintln!("{:-<72}", "");
 
-    let mut csv = std::env::var("MFSK_FST4_SWEEP_CSV").ok().map(|path| {
-        let mut f = std::fs::File::create(&path)
-            .unwrap_or_else(|e| panic!("MFSK_FST4_SWEEP_CSV={path}: {e}"));
-        writeln!(f, "mode,channel,snr_db,trial,pass").unwrap();
-        f
-    });
+    let mut csv = common::sweep_csv_writer("MFSK_FST4_SWEEP_CSV", "mode,channel,snr_db,trial,pass");
 
     // Group WAVs by (nsec, channel, snr_db) so we can parallelise within each
     // group and print each row immediately when the group finishes.

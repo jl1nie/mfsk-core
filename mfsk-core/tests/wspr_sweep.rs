@@ -103,6 +103,7 @@ fn decode_wav_wspr(audio: &[f32]) -> (bool, u32) {
 
 struct Job {
     snr: i32,
+    trial: u32,
     path: PathBuf,
 }
 
@@ -128,13 +129,16 @@ fn wspr_awgn_snr_sweep() {
         let Some(rest) = stem.strip_prefix("wspr_awgn_") else {
             continue;
         };
-        let Some((tag, _trial)) = rest.split_once('_') else {
+        let Some((tag, trial)) = rest.split_once('_') else {
             continue;
         };
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        jobs.push(Job { snr, path });
+        let Ok(trial) = trial.parse::<u32>() else {
+            continue;
+        };
+        jobs.push(Job { snr, trial, path });
     }
 
     // Corpus is small enough that a sequential run finishes in
@@ -145,25 +149,40 @@ fn wspr_awgn_snr_sweep() {
     use rayon::prelude::*;
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(i32, (bool, u32))> = jobs
+    let results: Vec<(i32, u32, (bool, u32))> = jobs
         .par_iter()
         .filter_map(|job| {
-            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_wspr(&audio)))
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, job.trial, decode_wav_wspr(&audio)))
         })
         .collect();
 
     #[cfg(not(feature = "parallel"))]
-    let results: Vec<(i32, (bool, u32))> = jobs
+    let results: Vec<(i32, u32, (bool, u32))> = jobs
         .iter()
         .filter_map(|job| {
-            load_wav_f32_opt(&job.path).map(|audio| (job.snr, decode_wav_wspr(&audio)))
+            load_wav_f32_opt(&job.path).map(|audio| (job.snr, job.trial, decode_wav_wspr(&audio)))
         })
         .collect();
+
+    // Optional: MFSK_WSPR_SWEEP_SUMMARY_CSV=/path/out.csv — same
+    // `channel,snr_db,trial,pass` shape as the FT8/FT4/FST4 sweeps'
+    // `MFSK_*_SWEEP_CSV`, consumed by
+    // `scripts/sweep-regression-check.py` to auto-diff a release
+    // sweep against the last recorded baseline. `channel` is always
+    // `awgn` here (WSPR's sweep has no fading-channel dimension).
+    use std::io::Write;
+    let mut csv =
+        common::sweep_csv_writer("MFSK_WSPR_SWEEP_SUMMARY_CSV", "channel,snr_db,trial,pass");
+    if let Some(f) = csv.as_mut() {
+        for (snr, trial, (hit, _)) in &results {
+            writeln!(f, "awgn,{snr},{trial},{}", *hit as u8).unwrap();
+        }
+    }
 
     // snr -> (hits, trials, phantoms, trials_with_a_phantom)
     let mut cells: std::collections::BTreeMap<i32, (u32, u32, u32, u32)> =
         std::collections::BTreeMap::new();
-    for (snr, (hit, phantoms)) in results {
+    for (snr, _trial, (hit, phantoms)) in results {
         let cell = cells.entry(snr).or_insert((0, 0, 0, 0));
         cell.1 += 1;
         if hit {
@@ -259,7 +278,11 @@ fn harvest_osd_inputs() -> Option<std::collections::BTreeMap<i32, (u32, u32, u32
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        jobs.push(Job { snr, path });
+        jobs.push(Job {
+            snr,
+            trial: 0, // unused by this diagnostic — Job.trial exists for the CSV-export path only
+            path,
+        });
     }
     if jobs.is_empty() {
         eprintln!("no wspr_awgn_*.wav files found in {dir:?}");
@@ -433,7 +456,11 @@ fn wspr_rank_sweep() {
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        jobs.push(Job { snr, path });
+        jobs.push(Job {
+            snr,
+            trial: 0, // unused by this diagnostic — Job.trial exists for the CSV-export path only
+            path,
+        });
     }
     if jobs.is_empty() {
         eprintln!("skipping wspr_rank_sweep: no wspr_awgn_*.wav files found in {dir:?}");
@@ -614,7 +641,11 @@ fn wspr_pass2_ladder_position_sweep() {
         let Some(snr) = parse_snr_tag(tag) else {
             continue;
         };
-        jobs.push(Job { snr, path });
+        jobs.push(Job {
+            snr,
+            trial: 0, // unused by this diagnostic — Job.trial exists for the CSV-export path only
+            path,
+        });
     }
     if jobs.is_empty() {
         eprintln!(

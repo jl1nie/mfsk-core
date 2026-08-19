@@ -17,3 +17,4 @@ Cargo.lock
 
 # Claude Code scheduled-task lock (ephemeral per-session runtime state)
 /.claude/scheduled_tasks.lock
+__pycache__
