@@ -4982,6 +4982,137 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
     }
 }
 
+/// Per-trial companion to [`fst4_60_diag_sniper_cap_near_threshold`] —
+/// that test only prints an aggregate recall count per (cell, width,
+/// cap), which cannot distinguish "the n=20-corpus cliff genuinely
+/// vanished at n=100" from "it's still there in trials 1-20 but
+/// diluted into invisibility by the 80 trials added later". Same
+/// decode loop, but prints `trial,pass` for every trial instead of
+/// summing them, so trials 1-20 (the original preliminary corpus —
+/// `fst4_60_ccir_moderate_m25_01..20.wav`, generated 2026-07-15) can
+/// be read out separately from 21-100 (added 2026-08-16).
+///
+/// Scoped to the two extremes of both axes — width {250, 25} Hz, cap
+/// {4, 50} — since that's what the aggregate run flagged as
+/// interesting: `ccir_moderate/m25` at n=100 showed *zero* variation
+/// (58/100 identical) across cap 4/16/50 at every width, contradicting
+/// the issue's own preliminary n=20 finding of a real cap-4-vs-50
+/// cliff at this exact cell.
+///
+/// `MFSK_PERTRIAL_CELLS`/`_WIDTHS`/`_CAPS` narrow it the same way the
+/// parent test's env vars do; unset means the defaults above.
+#[test]
+#[ignore = "manual diagnostic — per-trial detail for issue #312's n=100 vs n=20 discrepancy"]
+fn fst4_60_diag_sniper_cap_per_trial() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
+    };
+    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::fst4::Fst4s60;
+    use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+
+    const SNIPER_SYNC_MIN: f32 = 0.8;
+    const SNIPER_SYNC_Q_MIN: u32 = 8; // SYNC_Q_MIN(16) / 2, same as the parent test
+
+    let cells: Vec<(String, String)> = match std::env::var("MFSK_PERTRIAL_CELLS") {
+        Ok(s) => s
+            .split(',')
+            .filter_map(|t| t.split_once(':'))
+            .map(|(c, snr)| (c.trim().to_string(), snr.trim().to_string()))
+            .collect(),
+        Err(_) => vec![("ccir_moderate".to_string(), "m25".to_string())],
+    };
+    let widths: Vec<f32> = match std::env::var("MFSK_PERTRIAL_WIDTHS") {
+        Ok(s) => s.split(',').filter_map(|t| t.trim().parse().ok()).collect(),
+        Err(_) => vec![250.0, 25.0],
+    };
+    let caps: Vec<usize> = match std::env::var("MFSK_PERTRIAL_CAPS") {
+        Ok(s) => s.split(',').filter_map(|t| t.trim().parse().ok()).collect(),
+        Err(_) => vec![4, 50],
+    };
+
+    let dir = sweep_dir();
+    eprintln!(
+        "{:>14} {:>6} {:>4} {:>6} {:>5}",
+        "cell", "width", "cap", "trial", "pass"
+    );
+
+    for (channel, snr_tag) in &cells {
+        let mut trials: Vec<(u32, Vec<i16>)> = Vec::new();
+        for trial in 1..=100u32 {
+            let path = dir.join(format!("fst4_60_{channel}_{snr_tag}_{trial:02}.wav"));
+            if let Some(audio) = load_wav_i16_opt(&path) {
+                trials.push((trial, audio));
+            }
+        }
+        if trials.is_empty() {
+            eprintln!("{channel}_{snr_tag}: no WAVs present, skip");
+            continue;
+        }
+
+        for &width in &widths {
+            let freq_min = (GOLDEN_FREQ_HZ - width).max(100.0);
+            let freq_max = (GOLDEN_FREQ_HZ + width).min(3000.0);
+
+            for &max_cand in &caps {
+                for (trial, audio) in &trials {
+                    let gated = coarse_sync::<Fst4s60>(
+                        audio,
+                        freq_min,
+                        freq_max,
+                        SNIPER_SYNC_MIN,
+                        Some(GOLDEN_FREQ_HZ),
+                        max_cand,
+                    );
+                    let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
+                    let mut decoded = false;
+                    for c in &gated {
+                        let (cd0, _refined_freq_hz, i0, _score) =
+                            refine_candidate_position::<Fst4s60>(
+                                c,
+                                &fft_cache,
+                                &FST4_60A_DOWNSAMPLE,
+                            );
+                        let cs = symbol_spectra::<Fst4s60>(&cd0, i0);
+                        if sync_quality::<Fst4s60>(&cs) <= SNIPER_SYNC_Q_MIN {
+                            continue;
+                        }
+                        let r = process_candidate_basic::<Fst4s60>(
+                            c,
+                            &fft_cache,
+                            &FST4_60A_DOWNSAMPLE,
+                            DecodeDepth::FULL,
+                            DecodeStrictness::Normal,
+                            &[],
+                            EqMode::Off,
+                            SNIPER_SYNC_Q_MIN,
+                        );
+                        if let Some(d) = r {
+                            let mut m77 = [0u8; 77];
+                            m77.copy_from_slice(d.message77());
+                            if unpack77(&m77).as_deref() == Some(GOLDEN_MSG) {
+                                decoded = true;
+                                break;
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "{:>14} {:>5.0}Hz {:>4} {:>6} {:>5}",
+                        format!("{channel}_{snr_tag}"),
+                        width,
+                        max_cand,
+                        trial,
+                        decoded as u8
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// One prepared FST4-60 candidate: baseband already frequency-corrected
 /// to the refined estimate, plus that estimate's `i0`.
 type Fst4PreparedCand = (Vec<num_complex::Complex<f32>>, i32);
