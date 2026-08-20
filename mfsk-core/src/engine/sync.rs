@@ -253,6 +253,22 @@ impl RxGrid {
         }
     }
 
+    /// Exact inverse of [`Self::bin_of`]: the frequency (Hz) an
+    /// absolute FFT bin index represents in this grid. `coarse_sync`
+    /// needs this the same way it needs `bin_of` — reporting a
+    /// candidate's `freq_hz` back from the bin its correlation peak
+    /// landed on is the same bin↔Hz mapping in the other direction,
+    /// so it goes through `RxGrid` too rather than the real grid's
+    /// `bin*df` shortcut alone.
+    #[inline]
+    pub fn hz_of(&self, d: &SyncDims, bin: usize) -> f32 {
+        if self.complex_input {
+            self.center_hz + (bin as f32 - d.nfft1 as f32 / 2.0) * d.df
+        } else {
+            bin as f32 * d.df
+        }
+    }
+
     /// Number of usable bins in this grid's spectrogram — the bound
     /// every `coarse_sync`/`compute_spectra` clamp against `d.nh1`
     /// used before `RxGrid` existed.
@@ -779,7 +795,7 @@ pub fn coarse_sync<P: Protocol>(
     // Extract into a closure so both serial and parallel paths share the logic.
     let fi_cands = |fi: usize| -> Vec<SyncCandidate> {
         let i = ia + fi;
-        let freq_hz = i as f32 * d.df;
+        let freq_hz = grid.hz_of(&d, i);
         let local_base = sbase[fi];
         let bin_stage1_pass = stage1_pass(fi);
 

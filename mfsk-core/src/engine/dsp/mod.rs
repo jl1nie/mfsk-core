@@ -10,6 +10,7 @@
 // once we have alloc.
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod analytic;
+pub mod ddc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod downsample;
 pub mod envelope;
