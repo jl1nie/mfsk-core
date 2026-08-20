@@ -1075,7 +1075,8 @@ mod tests {
         fn check<P: Protocol + ModulationParams>(name: &str) {
             let d = SyncDims::of::<P>(12_000.0);
             assert_eq!(
-                d.nsps, P::NSPS as usize,
+                d.nsps,
+                P::NSPS as usize,
                 "{name}: SyncDims::of(12_000.0).nsps != P::NSPS"
             );
         }
