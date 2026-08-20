@@ -3743,8 +3743,14 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
         })
         .collect();
 
-    let (results, timings) =
-        decode_rung_major_timed::<Fst4s60>(&cands, false, false, &[0], Some(host_clock_us));
+    let (results, timings) = decode_rung_major_timed::<Fst4s60>(
+        &cands,
+        false,
+        false,
+        &[0],
+        Some(host_clock_us),
+        12_000.0,
+    );
     let timings = timings.unwrap();
     eprintln!(
         "decoded: {}/{}",
@@ -7498,10 +7504,12 @@ fn fst4_phase_split_matches_rung_major_without_a_budget() {
 
     for offsets in [&[0i32][..], &[0, -1][..], &[0, 1, -1][..]] {
         for skip_llrc in [false, true] {
-            let (a, _) =
-                decode_rung_major_timed::<Fst4s60>(&cands, skip_llrc, false, offsets, None);
-            let (b, _) =
-                decode_phase_split_timed::<Fst4s60>(&cands, skip_llrc, false, offsets, None, None);
+            let (a, _) = decode_rung_major_timed::<Fst4s60>(
+                &cands, skip_llrc, false, offsets, None, 12_000.0,
+            );
+            let (b, _) = decode_phase_split_timed::<Fst4s60>(
+                &cands, skip_llrc, false, offsets, None, None, 12_000.0,
+            );
             assert_eq!(
                 a.len(),
                 b.len(),

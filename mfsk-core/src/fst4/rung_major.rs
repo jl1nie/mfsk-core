@@ -212,7 +212,10 @@ where
     P: Protocol,
     P::Fec: BpPooledFec,
 {
-    decode_rung_major_timed::<P>(candidates, skip_llrc, false, &[0], None).0
+    // 12 kHz: `candidates` here are always the canonical raw-ingest
+    // downsample (see `decode_scheduled`'s `sample_rate_hz` doc) — this
+    // convenience wrapper has no caller that varies it.
+    decode_rung_major_timed::<P>(candidates, skip_llrc, false, &[0], None, 12_000.0).0
 }
 
 /// Same as [`decode_rung_major`], plus `offsets` (which `i0` timing
@@ -234,12 +237,20 @@ where
 /// `s % 5` selects the sub-stage in llra/llrb/llre/llrc/OSD order) — `0`
 /// for any stage this candidate never reached, e.g. filtered by the
 /// `nsync` gate or `skip_llrc`.
+///
+/// `sample_rate_hz` is the input rate `candidates`' `cd0` was
+/// downsampled *from* (divide by `P::NDOWN` for `cd0`'s own rate) —
+/// `12_000.0` for every caller today, matching `DownsampleCfg::input_rate`
+/// (issue #323). Not yet reachable from a DDC-fed front end (#309);
+/// threaded through now so wiring one up later is a call-site change
+/// here, not a rediscovery of this function's own `ds_rate` hardcode.
 pub fn decode_rung_major_timed<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
     skip_osd: bool,
     offsets: &[i32],
     clock: Option<fn() -> i64>,
+    sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
     P: Protocol,
@@ -253,6 +264,7 @@ where
         clock,
         Schedule::RungMajor,
         None,
+        sample_rate_hz,
     )
 }
 
@@ -271,6 +283,8 @@ where
 /// Same `(results, per_candidate_stage_us)` shape and the same
 /// offset-major stage indexing as [`decode_rung_major_timed`], so the
 /// two are directly comparable on one corpus.
+///
+/// `sample_rate_hz`: see [`decode_rung_major_timed`]'s doc.
 pub fn decode_phase_split_timed<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
@@ -278,6 +292,7 @@ pub fn decode_phase_split_timed<P>(
     offsets: &[i32],
     clock: Option<fn() -> i64>,
     budget_ok: Option<fn() -> bool>,
+    sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
     P: Protocol,
@@ -291,6 +306,7 @@ where
         clock,
         Schedule::PhaseSplit,
         budget_ok,
+        sample_rate_hz,
     )
 }
 
@@ -313,6 +329,11 @@ fn decode_scheduled<P>(
     clock: Option<fn() -> i64>,
     schedule: Schedule,
     budget_ok: Option<fn() -> bool>,
+    // Input rate `candidates`' `cd0` was downsampled from (issue #323)
+    // — was an independent `12_000.0 / P::NDOWN` hardcode, duplicating
+    // `DownsampleCfg::input_rate` without reading it (there's no `cfg`
+    // in scope here; `candidates` arrive pre-downsampled).
+    sample_rate_hz: f32,
 ) -> (Vec<Option<DecodeResult>>, Option<Vec<Vec<i64>>>)
 where
     P: Protocol,
@@ -327,7 +348,7 @@ where
         .expect("decode_rung_major is FST4-specific: P::LLR_NSYM_MID must be set (see module doc)")
         as usize;
     let nsym_max = P::LLR_NSYM_MAX as usize;
-    let ds_rate = 12_000.0 / P::NDOWN as f32;
+    let ds_rate = sample_rate_hz / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
     let (osd_attempt_min, osd_depth3_min) = osd_escalation_gates::<P>();
     let verify_info = Some(<P::Msg as MessageCodec>::verify_info as fn(&[u8]) -> bool);

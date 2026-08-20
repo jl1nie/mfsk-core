@@ -105,7 +105,10 @@ where
     P::Fec: crate::engine::protocol::BpPooledFec,
     P::Msg: WsjtApCompatible,
 {
-    let ds_rate = 12_000.0 / P::NDOWN as f32;
+    // #323: was an independent `12_000.0 / P::NDOWN` hardcode — `ds_cfg`
+    // (already a parameter here) carries the real input rate a DDC-fed
+    // caller would set to something other than 12 kHz.
+    let ds_rate = ds_cfg.input_rate as f32 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
     let _ = refine_steps; // superseded by refine_candidate_position's own P-specific search below
 
