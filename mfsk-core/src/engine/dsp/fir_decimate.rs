@@ -150,6 +150,31 @@ impl FirStage {
         out
     }
 
+    /// Block-mode counterpart to [`push_one`](Self::push_one): consume
+    /// `xi.len()` complex input samples at once, appending any
+    /// outputs this stage completes. Behaviourally identical to
+    /// calling [`push_one`](Self::push_one) once per sample — exists
+    /// so callers can amortise per-call overhead over a block rather
+    /// than a sample, which is what an esp-dsp-backed `FirDecimator`
+    /// (`docs/notes/FST4_DDC_DESIGN.md` §4.5) needs: `dsps_fird_f32_aes3`
+    /// is itself block-shaped, so a sample-at-a-time `push_one` there
+    /// would pay the FFI hop per sample instead of per block.
+    pub fn push_block(
+        &mut self,
+        xi: &[f32],
+        xq: &[f32],
+        out_i: &mut Vec<f32>,
+        out_q: &mut Vec<f32>,
+    ) {
+        assert_eq!(xi.len(), xq.len(), "I/Q blocks must be the same length");
+        for (&i, &q) in xi.iter().zip(xq.iter()) {
+            if let Some((oi, oq)) = self.push_one(i, q) {
+                out_i.push(oi);
+                out_q.push(oq);
+            }
+        }
+    }
+
     fn compact(&mut self) {
         // `win_start` is the same quantity `hist_len - ntaps` would
         // give, already maintained without the constant-folded
@@ -195,5 +220,38 @@ impl FirStage {
             sq += h[k] * hq[k];
         }
         (si, sq)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `push_block` is defined as "the same as `push_one` in a loop" —
+    /// this pins that down bit-for-bit, including across a compaction
+    /// boundary (`hist_margin` small enough that a 500-sample block
+    /// forces at least one `compact()`).
+    #[test]
+    fn push_block_matches_repeated_push_one() {
+        let audio: Vec<f32> = (0..500).map(|k| (k as f32 * 0.037).sin()).collect();
+
+        let mut one = FirStage::new(31, 4, 0.1, 32);
+        let mut oi = Vec::new();
+        let mut oq = Vec::new();
+        for &s in &audio {
+            if let Some((i, q)) = one.push_one(s, -s) {
+                oi.push(i);
+                oq.push(q);
+            }
+        }
+
+        let mut block = FirStage::new(31, 4, 0.1, 32);
+        let neg: Vec<f32> = audio.iter().map(|&s| -s).collect();
+        let mut bi = Vec::new();
+        let mut bq = Vec::new();
+        block.push_block(&audio, &neg, &mut bi, &mut bq);
+
+        assert_eq!(oi, bi);
+        assert_eq!(oq, bq);
     }
 }
