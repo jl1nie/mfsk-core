@@ -373,21 +373,27 @@ mod tests {
         // a precise `dt_sec` does, which is refine's job (stage 4),
         // not coarse search's.
         //
-        // Not a tight ratio: measured on this synth signal, the DDC
-        // path's score lands at roughly 1/3 of the real path's
-        // (~115 vs. ~355) — a real processing-margin cost from
-        // routing through a mixer + 2-stage filter cascade instead of
-        // one direct 7776-point FFT, not a bug (this is still a
-        // factor of ~30+ above the ~1-5 noise-floor scores
-        // `coarse_sync`'s own normalisation produces — see e.g.
-        // `stage1_pass`'s `sync_min` gate). Whether that margin cost
-        // is acceptable for real (non-synthetic, noisy) signals is a
-        // sensitivity-sweep question (design doc §6 item 4), and
-        // whether the `SNIPER_*`/`WIDEBAND_*` tap counts above are
-        // the right cost/margin tradeoff is open for that sweep to
-        // answer — this assertion only guards against the DDC path
-        // going *dark* (a real bug), not against it costing SNR
-        // margin, which some cost is expected to.
+        // Not a tight ratio: measured on this *clean* (noiseless)
+        // synth signal, the DDC path's score lands at roughly 1/3 of
+        // the real path's (~115 vs. ~355) — but that ratio is
+        // misleading as a sensitivity estimate, and turned out not to
+        // generalise. `tests/fst4_ddc_sniper_sensitivity.rs` (real
+        // `fst4sim` AWGN corpus, per-SNR-bucket mean score) found the
+        // ratio *depends heavily on SNR*: DDC/real is 0.92-0.97 across
+        // -30..-22 dB (bracketing FST4-60A's actual ~-28 dB threshold)
+        // and only degrades toward this test's ~0.33 as SNR climbs
+        // toward the noiseless end (-5 dB: 0.54; noiseless: ~0.33).
+        // The likely reason: at low SNR, `t0_ref` (coarse_sync's
+        // score denominator) is dominated by *real* injected noise,
+        // which both pipelines see identically; at high/no-noise SNR
+        // it's dominated by whatever residual leakage this DDC
+        // cascade's own filtering introduces, which the direct-FFT
+        // real path doesn't have — so the ratio is worst exactly where
+        // it matters least. Near the actual sensitivity floor, the
+        // measured cost is a few percent, not 3x. This assertion only
+        // guards against the DDC path going *dark* (a real bug), not
+        // against it costing SNR margin — see the sensitivity test
+        // above for the actual measured number.
         let noise_floor_headroom = 20.0;
         assert!(
             ddc_best.score > noise_floor_headroom,
