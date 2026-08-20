@@ -338,11 +338,15 @@ fn fst4_bake_golden_precomputed() {
     // test calls `decode_frame` directly rather than through
     // `DecodeRequest`).
     let reloaded_audio: Vec<i16> = audio_bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect();
     let reloaded_cache: Vec<num_complex::Complex32> = cache_bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|b| {
             num_complex::Complex32::new(
                 f32::from_le_bytes(b[0..4].try_into().unwrap()),

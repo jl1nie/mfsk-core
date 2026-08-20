@@ -219,7 +219,9 @@ mod diag_tests {
         let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
         let data = &bytes[44..44 + dl];
         let audio: Vec<f32> = data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect();
 
@@ -264,7 +266,9 @@ mod diag_tests {
         let bytes = std::fs::read(path).unwrap();
         let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
         let audio: Vec<f32> = bytes[44..44 + dl]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect();
 
@@ -333,7 +337,9 @@ fn freq_sweep_1224hz() {
     let bytes = std::fs::read(path).unwrap();
     let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
     let audio: Vec<f32> = bytes[44..44 + dl]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
         .collect();
     use crate::engine::{DecodeContext, FecOpts, MessageCodec};
@@ -371,7 +377,9 @@ fn wide_freq_time_sweep() {
     let bytes = std::fs::read(path).unwrap();
     let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
     let audio: Vec<f32> = bytes[44..44 + dl]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
         .collect();
     use crate::engine::{DecodeContext, FecOpts, MessageCodec};
