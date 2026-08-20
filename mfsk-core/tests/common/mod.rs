@@ -86,8 +86,10 @@ pub fn load_wav_i16_opt(path: impl AsRef<std::path::Path>) -> Option<Vec<i16>> {
     let samples = &bytes[data_off..data_off + data_len];
     Some(
         samples
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect(),
     )
 }

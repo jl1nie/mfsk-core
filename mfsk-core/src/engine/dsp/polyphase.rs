@@ -36,9 +36,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std"))]
-use num_traits::Float;
-
 use super::fir_decimate::design_lowpass;
 
 /// Streaming `L`/`M` rational resampler over a complex (I, Q) stream.
@@ -189,6 +186,13 @@ impl PolyphaseResampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the test module below calls `f32` methods needing the
+    // `Float` trait in `no_std` (design_lowpass's `.sin()`/`.cos()`
+    // live in `fir_decimate`, which carries its own copy of this
+    // import) — a crate-level `use` outside `#[cfg(test)]` would be
+    // unused (and `-D warnings`-denied) on every real no_std build.
+    #[cfg(not(feature = "std"))]
+    use num_traits::Float;
 
     /// `f64` phase accumulation — see `wspr::ddc`'s own `tone` helper
     /// for why: `f32` phase noise at large sample counts would put a
