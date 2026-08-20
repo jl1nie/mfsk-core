@@ -456,6 +456,7 @@ where
         sync_min,
         Some(target_freq),
         max_cand,
+        12_000.0,
     );
     if candidates.is_empty() {
         return Vec::new();

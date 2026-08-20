@@ -181,7 +181,11 @@ pub fn fst4_sync_search<P: Protocol>(
     cd0: &[Complex<f32>],
     candidate: &SyncCandidate,
 ) -> Sync2dResult {
-    let d = SyncDims::of::<P>();
+    // Only `d.ds_spb`/`d.ds_rate` are read below — governed by
+    // `downsample_cached`'s own rate, not `SyncDims::of`'s
+    // `sample_rate_hz` parameter (see that doc comment), so the
+    // argument here is inert.
+    let d = SyncDims::of::<P>(12_000.0);
     let ds_spb = d.ds_spb;
     let ds_rate = d.ds_rate;
     let baud = P::TONE_SPACING_HZ;
@@ -340,7 +344,9 @@ pub fn ft4_sync_search_window<P: Protocol>(
     ib_min: i32,
     ib_max: i32,
 ) -> Sync2dResult {
-    let d = SyncDims::of::<P>();
+    // Only `d.ds_spb`/`d.ds_rate` are read below — see
+    // `fst4_sync_search`'s identical comment.
+    let d = SyncDims::of::<P>(12_000.0);
     let ds_spb = d.ds_spb;
     let ds_rate = d.ds_rate;
     const COARSE_DT_STEP: i32 = 4;

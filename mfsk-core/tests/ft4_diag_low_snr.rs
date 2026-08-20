@@ -95,7 +95,7 @@ fn why_does_neg16db_fail() {
         .with_call2("JA1ABC");
 
     let audio = make_slot(&msg, -16.0, 0xCAFE);
-    let cands = coarse_sync::<Ft4>(&audio, 800.0, 1200.0, 0.3, None, 200);
+    let cands = coarse_sync::<Ft4>(&audio, 800.0, 1200.0, 0.3, None, 200, 12_000.0);
     eprintln!("\n-16 dB signal: {} coarse candidates", cands.len());
 
     // Find the truth-proximate candidate

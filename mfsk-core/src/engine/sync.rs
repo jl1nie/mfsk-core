@@ -126,12 +126,40 @@ pub struct SyncDims {
 }
 
 impl SyncDims {
+    /// `sample_rate_hz` is the rate `audio` fed to
+    /// [`compute_spectra`]/[`coarse_sync`] is actually at — the
+    /// "analysis-grid" rate issue #323 classified as needing to vary
+    /// for a future DDC front end (#309), separate from
+    /// `downsample_cached`'s own rate below.
+    ///
+    /// `nfft1`/`nstep`/`nsps`/`nmax`/`nhsym`/`nh1`/`df`/`tstep`/`jstrt`/
+    /// `jz` (all derived from `sample_rate_hz`) are this rate's fields.
+    /// **`ds_spb`/`ds_rate` are not** — those describe
+    /// `downsample_cached`'s separate per-candidate baseband pipeline,
+    /// which starts from the canonical 12 kHz raw ingest via
+    /// `DownsampleCfg::input_rate` regardless of what rate `coarse_sync`
+    /// searches at (the two are independent pipeline stages that
+    /// happen to coincide at 12 kHz today). Left untouched here —
+    /// #323 already routed their three other redundant copies through
+    /// `cfg.input_rate` directly; this one stays `P::NSPS`-derived
+    /// until a caller actually needs `downsample_cached` itself fed by
+    /// something other than the canonical 12 kHz stream.
     #[inline]
-    pub const fn of<P: Protocol>() -> Self {
-        let nsps = P::NSPS as usize;
+    pub fn of<P: Protocol>(sample_rate_hz: f32) -> Self {
+        // `SYMBOL_DT = NSPS / 12_000.0` (`fst4_submode!`) is the
+        // protocol's physical symbol duration in seconds — rate
+        // independent. At `sample_rate_hz == 12_000.0` (every caller
+        // today) this recovers `P::NSPS` exactly: `SYMBOL_DT *
+        // 12_000.0 == NSPS` round-trips bit-exact in f32 for every
+        // FST4/FT4 `NSPS` value in the crate (verified by
+        // `sync_dims_of_matches_nsps_at_12khz` below).
+        let nsps = (P::SYMBOL_DT * sample_rate_hz).round() as usize;
         let nstep = nsps / P::NSTEP_PER_SYMBOL as usize;
         let nfft1 = nsps * P::NFFT_PER_SYMBOL_FACTOR as usize;
-        let nmax = (P::T_SLOT_S * 12_000.0) as usize;
+        let nmax = (P::T_SLOT_S * sample_rate_hz) as usize;
+        let tstep = nstep as f32 / sample_rate_hz;
+
+        // `downsample_cached`'s rate — see the doc comment above.
         let ndown = P::NDOWN as usize;
         Self {
             nfft1,
@@ -142,11 +170,11 @@ impl SyncDims {
             nmax,
             nhsym: nmax / nstep - 3,
             nh1: nfft1 / 2,
-            df: 12_000.0 / nfft1 as f32,
-            tstep: nstep as f32 / 12_000.0,
-            jstrt: (P::TX_START_OFFSET_S / (nstep as f32 / 12_000.0)) as i32,
-            jz: (2.5 / (nstep as f32 / 12_000.0)) as i32,
-            ds_spb: nsps / ndown,
+            df: sample_rate_hz / nfft1 as f32,
+            tstep,
+            jstrt: (P::TX_START_OFFSET_S / tstep) as i32,
+            jz: (2.5 / tstep) as i32,
+            ds_spb: P::NSPS as usize / ndown,
             ds_rate: 12_000.0 / ndown as f32,
         }
     }
@@ -263,12 +291,19 @@ pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
 /// signals would otherwise inflate the per-bin polynomial baseline and
 /// mask weak signals); FT8 stays on `Rectangular` (its synth-roundtrip
 /// path is calibrated against rectangular).
+///
+/// `sample_rate_hz`: the rate `audio` is actually sampled at —
+/// `12_000.0` for every caller today (issue #323/#309; see
+/// [`SyncDims::of`]'s doc). Not yet reachable from a DDC-fed front end;
+/// threaded through now so wiring one up later is a call-site change,
+/// not a rediscovery of this function's own rate assumption.
 pub fn compute_spectra<P: Protocol>(
     audio: &[i16],
     bin_lo: usize,
     bin_hi_incl: usize,
+    sample_rate_hz: f32,
 ) -> Spectrogram {
-    let d = SyncDims::of::<P>();
+    let d = SyncDims::of::<P>(sample_rate_hz);
     let fac = 1.0f32 / 300.0;
     let mut planner = default_planner();
     let fft = planner.plan_forward(d.nfft1);
@@ -343,6 +378,12 @@ pub fn compute_spectra<P: Protocol>(
 /// implementations (verified via `grep coarse_sync::<` — nothing outside
 /// `engine/pipeline.rs` and `msg/pipeline_ap.rs` calls this generic
 /// function with a non-FST4/FT4 protocol).
+///
+/// `sample_rate_hz`: the rate `audio` is actually sampled at —
+/// `12_000.0` for every caller today (issue #323/#309; see
+/// [`SyncDims::of`]'s doc). Not yet reachable from a DDC-fed front end;
+/// threaded through now so wiring one up later is a call-site change,
+/// not a rediscovery of this function's own rate assumption.
 pub fn coarse_sync<P: Protocol>(
     audio: &[i16],
     freq_min: f32,
@@ -350,8 +391,9 @@ pub fn coarse_sync<P: Protocol>(
     sync_min: f32,
     freq_hint: Option<f32>,
     max_cand: usize,
+    sample_rate_hz: f32,
 ) -> Vec<SyncCandidate> {
-    let d = SyncDims::of::<P>();
+    let d = SyncDims::of::<P>(sample_rate_hz);
     let ntones = P::NTONES as usize;
     let pattern_len = P::SYNC_MODE.blocks()[0].pattern.len();
 
@@ -368,7 +410,12 @@ pub fn coarse_sync<P: Protocol>(
     // plus `headroom` bins above `ib` for their reference tones.
     // `Spectrogram::get` stays absolute-bin-indexed (subtracts
     // `freq_offset` internally) so nothing below needs to change.
-    let s = compute_spectra::<P>(audio, ia, (ib + headroom).min(d.nh1.saturating_sub(1)));
+    let s = compute_spectra::<P>(
+        audio,
+        ia,
+        (ib + headroom).min(d.nh1.saturating_sub(1)),
+        sample_rate_hz,
+    );
 
     let n_freq = ib - ia + 1;
     let n_lag = (2 * d.jz + 1) as usize;
@@ -885,7 +932,10 @@ pub fn fine_sync_power<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> f32 {
 /// reference table, scoped to this smaller, protocol-generic case).
 pub fn fine_sync_power_per_block<P: Protocol>(cd0: &[Complex<f32>], i0: i32) -> Vec<f32> {
     type CachedCsync = (&'static [u8], Vec<Vec<Complex<f32>>>);
-    let d = SyncDims::of::<P>();
+    // Only `d.ds_spb` is read below — a `SyncDims::of` field that
+    // `downsample_cached`'s own rate governs, not the `sample_rate_hz`
+    // parameter (see that doc comment), so the argument here is inert.
+    let d = SyncDims::of::<P>(12_000.0);
     let blocks = P::SYNC_MODE.blocks();
     let mut out = Vec::with_capacity(blocks.len());
     let mut last: Option<CachedCsync> = None;
@@ -979,7 +1029,9 @@ pub fn refine_candidate<P: Protocol>(
     candidate: &SyncCandidate,
     search_steps: i32,
 ) -> SyncCandidate {
-    let d = SyncDims::of::<P>();
+    // Only `d.ds_rate` is read below — see `fine_sync_power_per_block`'s
+    // identical comment.
+    let d = SyncDims::of::<P>(12_000.0);
     let nominal_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * d.ds_rate).round() as i32;
     let (best_i0, best_score) = (-search_steps..=search_steps)
         .map(|delta| {
@@ -999,5 +1051,39 @@ pub fn refine_candidate<P: Protocol>(
         freq_hz: candidate.freq_hz,
         dt_sec: (best_i0 as f32 + frac) / d.ds_rate - P::TX_START_OFFSET_S,
         score: best_score,
+    }
+}
+
+#[cfg(all(test, feature = "fst4", feature = "ft4"))]
+mod tests {
+    use super::{Protocol, SyncDims};
+    use crate::engine::protocol::ModulationParams;
+    use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
+    use crate::ft4::Ft4;
+
+    /// `SyncDims::of::<P>(12_000.0)`'s `nsps` is derived from
+    /// `P::SYMBOL_DT * sample_rate_hz` (issue #309/#323), not read
+    /// directly from `P::NSPS` as before this refactor — this is the
+    /// "verified to round-trip bit-exact" claim that refactor's commit
+    /// makes. `SYMBOL_DT = NSPS / 12_000.0` (`fst4_submode!`), so at
+    /// `sample_rate_hz == 12_000.0` (every caller today) the two must
+    /// agree exactly, for every real NSPS value in the crate — a
+    /// mismatch here would silently shift `nfft1`/`nmax`/`df`/`tstep`
+    /// for every existing decode path.
+    #[test]
+    fn sync_dims_of_matches_nsps_at_12khz() {
+        fn check<P: Protocol + ModulationParams>(name: &str) {
+            let d = SyncDims::of::<P>(12_000.0);
+            assert_eq!(
+                d.nsps, P::NSPS as usize,
+                "{name}: SyncDims::of(12_000.0).nsps != P::NSPS"
+            );
+        }
+        check::<Fst4s15>("Fst4s15");
+        check::<Fst4s30>("Fst4s30");
+        check::<Fst4s60>("Fst4s60");
+        check::<Fst4s120>("Fst4s120");
+        check::<Fst4s300>("Fst4s300");
+        check::<Ft4>("Ft4");
     }
 }

@@ -1709,7 +1709,9 @@ where
     let candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {
-        coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
+        coarse_sync::<P>(
+            audio, freq_min, freq_max, sync_min, freq_hint, max_cand, 12_000.0,
+        )
     };
     #[cfg(feature = "std")]
     if let Some(t0) = __trace_t0 {
@@ -1991,6 +1993,7 @@ where
                 sync_min * factor,
                 freq_hint,
                 max_cand,
+                12_000.0,
             )
         };
         #[cfg(feature = "std")]

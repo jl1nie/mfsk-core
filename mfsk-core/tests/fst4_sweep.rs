@@ -384,7 +384,7 @@ fn fst4_diag_weak_trials() {
                 eprintln!("skip {path:?}");
                 continue;
             };
-            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -491,7 +491,7 @@ fn fst4_diag_nsym4_ladder() {
                 continue;
             };
 
-            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let Some(cand) = cands
                 .iter()
                 .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -676,7 +676,7 @@ fn fst4_diag_zsum_osd() {
                 continue;
             };
 
-            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let Some(cand) = cands
                 .iter()
                 .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -779,7 +779,7 @@ fn fst4_120_diag_sync_vs_decode_failure() {
                 continue;
             };
             n_total += 1;
-            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -891,7 +891,7 @@ fn fst4_60_diag_candidate_cost_split() {
     };
 
     let t0 = Instant::now();
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
     let coarse_dt = t0.elapsed();
 
     eprintln!(
@@ -1016,7 +1016,7 @@ fn fst4_300_diag_candidate_cost_split() {
     let audio: Vec<i16> = full.iter().take(300 * 12_000).copied().collect();
 
     let t0 = Instant::now();
-    let cands = coarse_sync::<Fst4s300>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let cands = coarse_sync::<Fst4s300>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
     let coarse_dt = t0.elapsed();
 
     eprintln!(
@@ -1123,7 +1123,7 @@ fn fst4_60_diag_osd_escalation() {
         return;
     };
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1282,7 +1282,7 @@ fn fst4_60_diag_npre1_pattern_counts() {
         return;
     };
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1402,7 +1402,7 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return Vec::new();
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1712,7 +1712,7 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
         // call (`decode_wav_fst4` above) — `fst4_60_diag_osd_escalation`'s
         // 1.0 was tuned against the strong real-world golden WAV only,
         // untested against weak AWGN-sweep candidates.
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -2181,7 +2181,7 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     let path = dir.join("fst4_60_ccir_moderate_m26_02.wav");
     let audio = load_wav_i16_opt(&path).expect("trial 2 must exist");
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let verify_info =
@@ -2333,7 +2333,7 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [MISS; 5]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -2732,7 +2732,7 @@ fn fst4_60_diag_rung_major_scheduling() {
     // far more raw/duplicate candidates on this strong recording and
     // gives a materially different order — not what's being scheduled
     // on real hardware, so not what this diagnostic should model.
-    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let refined: Vec<_> = raw_candidates
         .iter()
         .map(|c| {
@@ -3082,7 +3082,7 @@ fn stage_ablation_for_channel(channel: &str) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [false; 4]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -3230,7 +3230,7 @@ fn fst4_60_diag_decode_rung_major_correctness() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3305,7 +3305,7 @@ fn fst4_60_diag_decode_rung_major_correctness() {
                     continue;
                 };
                 let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-                let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+                let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
                 let cands: Vec<RungMajorCandidate> =
                     raw.iter()
                         .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -3366,7 +3366,7 @@ fn fst4_60_diag_rung_major_nsync_gate_count() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3569,6 +3569,7 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
                 f32::NEG_INFINITY,
                 Some(t.freq_hz),
                 5000,
+                12_000.0,
             );
 
             // VK3NV's issue #312 cap ladder, plus `SniperRequest`'s real
@@ -3599,6 +3600,7 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
                     SNIPER_SYNC_MIN,
                     Some(t.freq_hz),
                     max_cand,
+                    12_000.0,
                 );
 
                 let t0 = Instant::now();
@@ -3703,7 +3705,7 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3815,7 +3817,7 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
             eprintln!("trial {trial}: WAV missing, skip");
             continue;
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
 
@@ -3971,7 +3973,7 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [false; 4]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -4118,7 +4120,7 @@ fn fst4_60_diag_i0_offset_host_timing() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -4697,7 +4699,7 @@ fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
             continue;
         };
         present += 1;
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let mut ok = false;
         'cands: for c in cands
@@ -4915,6 +4917,7 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
                             f32::NEG_INFINITY,
                             Some(GOLDEN_FREQ_HZ),
                             5000,
+                            12_000.0,
                         );
                         let gated = coarse_sync::<Fst4s60>(
                             audio,
@@ -4923,6 +4926,7 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
                             SNIPER_SYNC_MIN,
                             Some(GOLDEN_FREQ_HZ),
                             max_cand,
+                            12_000.0,
                         );
 
                         let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
@@ -5082,6 +5086,7 @@ fn fst4_60_diag_sniper_cap_per_trial() {
                         SNIPER_SYNC_MIN,
                         Some(GOLDEN_FREQ_HZ),
                         max_cand,
+                        12_000.0,
                     );
                     let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
                     let mut decoded = false;
@@ -5170,7 +5175,7 @@ fn prepare_fst4_60_cell(
         let Some(audio) = load_wav_i16_opt(&path) else {
             continue;
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50);
+        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let mut prep = Vec::new();
         for c in cands
@@ -5613,6 +5618,7 @@ fn fst4_60_diag_dedup_zero_score_readmission() {
                     SNIPER_SYNC_MIN,
                     Some(*hint),
                     cap,
+                    12_000.0,
                 );
                 let zeros = capped.iter().filter(|c| c.score == 0.0).count();
                 let zeros_near = capped
@@ -5738,6 +5744,7 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -5948,6 +5955,7 @@ fn fst4_60_diag_soft_costas_margin_separation() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6167,6 +6175,7 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6519,6 +6528,7 @@ fn fst4_60_diag_soft_margin_conditional_value() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6849,6 +6859,7 @@ fn fst4_60_diag_escalation_budget_curve() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -7158,6 +7169,7 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
+                12_000.0,
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -7389,7 +7401,7 @@ fn fst4_coarse_sync_output_has_no_deduped_candidates() {
         ("wideband", 100.0, 3000.0, None),
     ] {
         for cap in [4usize, 16, 50, 200] {
-            let out = coarse_sync::<Fst4s60>(&audio, lo, hi, 0.8, hint, cap);
+            let out = coarse_sync::<Fst4s60>(&audio, lo, hi, 0.8, hint, cap, 12_000.0);
             let zeros = out.iter().filter(|c| c.score == 0.0).count();
             assert_eq!(
                 zeros,
@@ -7486,7 +7498,7 @@ fn fst4_phase_split_matches_rung_major_without_a_budget() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     let cands: Vec<RungMajorCandidate> = raw
         .iter()
         .map(|c| {
