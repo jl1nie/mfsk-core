@@ -367,7 +367,7 @@ fn fst4_snr_sweep() {
 fn fst4_diag_weak_trials() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
     use mfsk_core::fst4::{Fst4s30, Fst4s300};
 
@@ -384,7 +384,15 @@ fn fst4_diag_weak_trials() {
                 eprintln!("skip {path:?}");
                 continue;
             };
-            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<P>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -453,7 +461,7 @@ fn fst4_diag_nsym4_ladder() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::llr::{compute_llr_generic, symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec};
     use mfsk_core::fst4::decode::{FST4_30_DOWNSAMPLE, FST4_300_DOWNSAMPLE};
@@ -491,7 +499,15 @@ fn fst4_diag_nsym4_ladder() {
                 continue;
             };
 
-            let cands = coarse_sync::<P>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<P>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let Some(cand) = cands
                 .iter()
                 .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -640,7 +656,7 @@ fn fst4_diag_nsym4_ladder() {
 fn fst4_diag_zsum_osd() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{MessageCodec, ModulationParams, Protocol};
     use mfsk_core::fec::ldpc::bp::{bp_decode_generic, bp_llr_zsum};
@@ -676,7 +692,15 @@ fn fst4_diag_zsum_osd() {
                 continue;
             };
 
-            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<Fst4s120>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let Some(cand) = cands
                 .iter()
                 .find(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -763,7 +787,7 @@ fn fst4_diag_zsum_osd() {
 fn fst4_120_diag_sync_vs_decode_failure() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s120;
     use mfsk_core::fst4::decode::FST4_120_DOWNSAMPLE;
 
@@ -779,7 +803,15 @@ fn fst4_120_diag_sync_vs_decode_failure() {
                 continue;
             };
             n_total += 1;
-            let cands = coarse_sync::<Fst4s120>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<Fst4s120>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -852,7 +884,7 @@ fn fst4_60_diag_candidate_cost_split() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -891,7 +923,15 @@ fn fst4_60_diag_candidate_cost_split() {
     };
 
     let t0 = Instant::now();
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
+    let cands = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.0,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let coarse_dt = t0.elapsed();
 
     eprintln!(
@@ -976,7 +1016,7 @@ fn fst4_300_diag_candidate_cost_split() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::fst4_sync_search;
     use mfsk_core::fst4::Fst4s300;
     use mfsk_core::fst4::decode::FST4_300_DOWNSAMPLE;
@@ -1016,7 +1056,15 @@ fn fst4_300_diag_candidate_cost_split() {
     let audio: Vec<i16> = full.iter().take(300 * 12_000).copied().collect();
 
     let t0 = Instant::now();
-    let cands = coarse_sync::<Fst4s300>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
+    let cands = coarse_sync::<Fst4s300>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.0,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let coarse_dt = t0.elapsed();
 
     eprintln!(
@@ -1104,7 +1152,7 @@ fn fst4_60_diag_osd_escalation() {
 
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -1123,7 +1171,15 @@ fn fst4_60_diag_osd_escalation() {
         return;
     };
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
+    let cands = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.0,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1258,7 +1314,7 @@ fn fst4_60_diag_osd_escalation() {
 fn fst4_60_diag_npre1_pattern_counts() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fec::ldpc::osd::npre1_pattern_counts;
@@ -1282,7 +1338,15 @@ fn fst4_60_diag_npre1_pattern_counts() {
         return;
     };
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
+    let cands = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.0,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1379,7 +1443,7 @@ fn fst4_60_diag_npre1_pattern_counts() {
 fn fst4_60_diag_osd_depth34_nsync_floor() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -1402,7 +1466,15 @@ fn fst4_60_diag_osd_depth34_nsync_floor() {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return Vec::new();
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.0, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            1.0,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -1664,7 +1736,7 @@ fn fst4_60_diag_recall_tradeoff_ccir_moderate_old_osd() {
 fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str, u32)]) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -1712,7 +1784,15 @@ fn recall_tradeoff_for_channel(channel: &str, snr_tags: &'static [(&'static str,
         // call (`decode_wav_fst4` above) — `fst4_60_diag_osd_escalation`'s
         // 1.0 was tuned against the strong real-world golden WAV only,
         // untested against weak AWGN-sweep candidates.
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -2169,7 +2249,7 @@ fn fst4_60_diag_npre_osd_bug_hunt() {
 fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{MessageCodec, Protocol};
     use mfsk_core::fec::ldpc::osd::{osd_decode_generic, osd_decode_npre_generic};
@@ -2181,7 +2261,15 @@ fn fst4_60_diag_npre_osd_ccir_trial_probe() {
     let path = dir.join("fst4_60_ccir_moderate_m26_02.wav");
     let audio = load_wav_i16_opt(&path).expect("trial 2 must exist");
 
-    let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+    let cands = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        0.8,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
     let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
     let verify_info =
@@ -2288,7 +2376,7 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
     use mfsk_core::engine::llr::{
         compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -2333,7 +2421,15 @@ fn nsym_depth_sweep_for_channel(channel: &str, snr_tags: &[(&str, u32)]) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [MISS; 5]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -2700,7 +2796,7 @@ fn fst4_60_diag_rung_major_scheduling() {
     use mfsk_core::engine::llr::{
         compute_llr_fast, compute_llr_partial, symbol_spectra, sync_quality,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -2732,7 +2828,15 @@ fn fst4_60_diag_rung_major_scheduling() {
     // far more raw/duplicate candidates on this strong recording and
     // gives a materially different order — not what's being scheduled
     // on real hardware, so not what this diagnostic should model.
-    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw_candidates = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let refined: Vec<_> = raw_candidates
         .iter()
         .map(|c| {
@@ -3045,7 +3149,7 @@ fn fst4_60_diag_stage_ablation_ccir_moderate() {
 fn stage_ablation_for_channel(channel: &str) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -3082,7 +3186,15 @@ fn stage_ablation_for_channel(channel: &str) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [false; 4]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -3214,7 +3326,7 @@ fn stage_ablation_for_channel(channel: &str) {
 fn fst4_60_diag_decode_rung_major_correctness() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::pipeline::refine_candidate_position;
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
     use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major};
@@ -3230,7 +3342,15 @@ fn fst4_60_diag_decode_rung_major_correctness() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3305,7 +3425,15 @@ fn fst4_60_diag_decode_rung_major_correctness() {
                     continue;
                 };
                 let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-                let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+                let raw = coarse_sync::<Fst4s60>(
+                    AudioSource::Real(&audio),
+                    100.0,
+                    3000.0,
+                    0.8,
+                    None,
+                    50,
+                    RxGrid::real(12_000.0),
+                );
                 let cands: Vec<RungMajorCandidate> =
                     raw.iter()
                         .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -3353,7 +3481,7 @@ fn fst4_60_diag_rung_major_nsync_gate_count() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::refine_candidate_position;
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -3366,7 +3494,15 @@ fn fst4_60_diag_rung_major_nsync_gate_count() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3505,7 +3641,7 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -3563,13 +3699,13 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
             let freq_max = (t.freq_hz + width).min(3000.0);
 
             let raw = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 freq_min,
                 freq_max,
                 f32::NEG_INFINITY,
                 Some(t.freq_hz),
                 5000,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
 
             // VK3NV's issue #312 cap ladder, plus `SniperRequest`'s real
@@ -3594,13 +3730,13 @@ fn fst4_60_diag_sniper_gate_width_sweep() {
             // score-based or distribution-adaptive criterion instead.
             for max_cand in [4usize, 8, 10, 16, 32, 50, 5000] {
                 let gated = coarse_sync::<Fst4s60>(
-                    &audio,
+                    AudioSource::Real(&audio),
                     freq_min,
                     freq_max,
                     SNIPER_SYNC_MIN,
                     Some(t.freq_hz),
                     max_cand,
-                    12_000.0,
+                    RxGrid::real(12_000.0),
                 );
 
                 let t0 = Instant::now();
@@ -3691,7 +3827,7 @@ fn host_clock_us() -> i64 {
 fn fst4_60_diag_rung_major_stage_timing_probe() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::pipeline::refine_candidate_position;
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
     use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_rung_major_timed};
@@ -3705,7 +3841,15 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -3796,7 +3940,7 @@ fn fst4_60_diag_rung_major_stage_timing_probe() {
 fn fst4_60_diag_i0_retry_ccir_old_only() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -3817,7 +3961,15 @@ fn fst4_60_diag_i0_retry_ccir_old_only() {
             eprintln!("trial {trial}: WAV missing, skip");
             continue;
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
 
@@ -3938,7 +4090,7 @@ fn fst4_60_diag_i0_offset_ablation() {
 fn stage_ablation_i0_offsets_for_channel(channel: &str) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -3973,7 +4125,15 @@ fn stage_ablation_i0_offsets_for_channel(channel: &str) {
         let Some(audio) = load_wav_i16_opt(&path) else {
             return (snr_idx, [false; 4]);
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let ds_rate = 12_000.0 / <Fst4s60 as mfsk_core::ModulationParams>::NDOWN as f32;
         let fec = <Fst4s60 as Protocol>::Fec::default();
@@ -4104,7 +4264,7 @@ fn fst4_60_diag_i0_offset_host_timing() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::refine_candidate_position;
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::freq_shift_cd0;
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -4120,7 +4280,15 @@ fn fst4_60_diag_i0_offset_host_timing() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let refined: Vec<_> = raw
         .iter()
         .map(|c| refine_candidate_position::<Fst4s60>(c, &fft_cache, &FST4_60A_DOWNSAMPLE))
@@ -4671,7 +4839,7 @@ fn npre_timing_grid_for_cell(channel: &str, snr_tag: &str) {
 fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fec::ldpc240_101::fst4_osd_diag_force_old;
@@ -4699,7 +4867,15 @@ fn npre_baseline_for_cell(channel: &str, snr_tag: &str) -> (u32, u32) {
             continue;
         };
         present += 1;
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let mut ok = false;
         'cands: for c in cands
@@ -4824,7 +5000,7 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -4911,22 +5087,22 @@ fn fst4_60_diag_sniper_cap_near_threshold() {
                         // retained-fraction denominator — the same shape
                         // `fst4_60_diag_sniper_gate_width_sweep` uses.
                         let raw = coarse_sync::<Fst4s60>(
-                            audio,
+                            AudioSource::Real(audio),
                             freq_min,
                             freq_max,
                             f32::NEG_INFINITY,
                             Some(GOLDEN_FREQ_HZ),
                             5000,
-                            12_000.0,
+                            RxGrid::real(12_000.0),
                         );
                         let gated = coarse_sync::<Fst4s60>(
-                            audio,
+                            AudioSource::Real(audio),
                             freq_min,
                             freq_max,
                             SNIPER_SYNC_MIN,
                             Some(GOLDEN_FREQ_HZ),
                             max_cand,
-                            12_000.0,
+                            RxGrid::real(12_000.0),
                         );
 
                         let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
@@ -5026,7 +5202,7 @@ fn fst4_60_diag_sniper_cap_per_trial() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -5080,13 +5256,13 @@ fn fst4_60_diag_sniper_cap_per_trial() {
                 // in trial order since `par_map` preserves input order.
                 let results: Vec<(u32, bool)> = common::par_map(&trials, |(trial, audio)| {
                     let gated = coarse_sync::<Fst4s60>(
-                        audio,
+                        AudioSource::Real(audio),
                         freq_min,
                         freq_max,
                         SNIPER_SYNC_MIN,
                         Some(GOLDEN_FREQ_HZ),
                         max_cand,
-                        12_000.0,
+                        RxGrid::real(12_000.0),
                     );
                     let fft_cache = build_fft_cache(audio, &FST4_60A_DOWNSAMPLE);
                     let mut decoded = false;
@@ -5161,7 +5337,7 @@ fn prepare_fst4_60_cell(
     max_trial: u32,
 ) -> Vec<(u32, Vec<Fst4PreparedCand>)> {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -5175,7 +5351,15 @@ fn prepare_fst4_60_cell(
         let Some(audio) = load_wav_i16_opt(&path) else {
             continue;
         };
-        let cands = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+        let cands = coarse_sync::<Fst4s60>(
+            AudioSource::Real(&audio),
+            100.0,
+            3000.0,
+            0.8,
+            None,
+            50,
+            RxGrid::real(12_000.0),
+        );
         let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
         let mut prep = Vec::new();
         for c in cands
@@ -5560,7 +5744,7 @@ fn fst4_60_diag_i0_cheap_rank_vs_exhaustive() {
 #[test]
 #[ignore = "manual audit — dedup-suppressed candidates re-admitted past the cap (issue #312, VK3NV)"]
 fn fst4_60_diag_dedup_zero_score_readmission() {
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
 
     // `engine::sync::FREQ_HINT_NEAR_HZ` is pub(crate); mirrored here.
@@ -5612,13 +5796,13 @@ fn fst4_60_diag_dedup_zero_score_readmission() {
             let freq_max = (hint + width).min(3000.0);
             for &cap in CAPS {
                 let capped = coarse_sync::<Fst4s60>(
-                    audio,
+                    AudioSource::Real(audio),
                     freq_min,
                     freq_max,
                     SNIPER_SYNC_MIN,
                     Some(*hint),
                     cap,
-                    12_000.0,
+                    RxGrid::real(12_000.0),
                 );
                 let zeros = capped.iter().filter(|c| c.score == 0.0).count();
                 let zeros_near = capped
@@ -5702,7 +5886,7 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -5738,13 +5922,13 @@ fn fst4_60_diag_dedup_zero_score_recall_effect() {
             n += 1;
 
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -5883,7 +6067,7 @@ fn fst4_60_diag_soft_costas_margin_separation() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_basic, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -5949,13 +6133,13 @@ fn fst4_60_diag_soft_costas_margin_separation() {
                 continue;
             };
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6101,7 +6285,7 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
     use mfsk_core::engine::llr::{
         compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -6169,13 +6353,13 @@ fn fst4_60_diag_soft_margin_escalation_priority() {
                 continue;
             };
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6377,7 +6561,7 @@ fn fst4_60_diag_soft_margin_conditional_value() {
     use mfsk_core::engine::llr::{
         compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -6522,13 +6706,13 @@ fn fst4_60_diag_soft_margin_conditional_value() {
                 continue;
             };
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -6808,7 +6992,7 @@ fn fst4_60_diag_escalation_budget_curve() {
     use mfsk_core::engine::llr::{
         compute_llr, symbol_spectra, sync_quality, sync_quality_soft_generic, sync_symbol_count,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -6853,13 +7037,13 @@ fn fst4_60_diag_escalation_budget_curve() {
                 continue;
             };
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -7106,7 +7290,7 @@ fn fst4_60_diag_escalation_budget_curve() {
 fn fst4_60_diag_budget_curve_breadth_vs_depth() {
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, fst4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fst4::Fst4s60;
@@ -7163,13 +7347,13 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
                 continue;
             };
             let cands = coarse_sync::<Fst4s60>(
-                &audio,
+                AudioSource::Real(&audio),
                 (GOLDEN_FREQ_HZ - WIDTH_HZ).max(100.0),
                 (GOLDEN_FREQ_HZ + WIDTH_HZ).min(3000.0),
                 SNIPER_SYNC_MIN,
                 Some(GOLDEN_FREQ_HZ),
                 MAX_CAND,
-                12_000.0,
+                RxGrid::real(12_000.0),
             );
             let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
@@ -7382,7 +7566,7 @@ fn fst4_60_diag_budget_curve_breadth_vs_depth() {
 /// so this asserts the observable property directly.
 #[test]
 fn fst4_coarse_sync_output_has_no_deduped_candidates() {
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
 
     let Some(path) = common::corpus::golden_path_or_upstream(
@@ -7401,7 +7585,15 @@ fn fst4_coarse_sync_output_has_no_deduped_candidates() {
         ("wideband", 100.0, 3000.0, None),
     ] {
         for cap in [4usize, 16, 50, 200] {
-            let out = coarse_sync::<Fst4s60>(&audio, lo, hi, 0.8, hint, cap, 12_000.0);
+            let out = coarse_sync::<Fst4s60>(
+                AudioSource::Real(&audio),
+                lo,
+                hi,
+                0.8,
+                hint,
+                cap,
+                RxGrid::real(12_000.0),
+            );
             let zeros = out.iter().filter(|c| c.score == 0.0).count();
             assert_eq!(
                 zeros,
@@ -7482,7 +7674,7 @@ fn fst4_60_diag_wideband_band_recall() {
 fn fst4_phase_split_matches_rung_major_without_a_budget() {
     use mfsk_core::engine::dsp::downsample::build_fft_cache;
     use mfsk_core::engine::pipeline::refine_candidate_position;
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
     use mfsk_core::fst4::rung_major::{
@@ -7498,7 +7690,15 @@ fn fst4_phase_split_matches_rung_major_without_a_budget() {
     };
     let audio = load_wav_i16_opt(&path).expect("golden WAV must load");
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
-    let raw = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     let cands: Vec<RungMajorCandidate> = raw
         .iter()
         .map(|c| {

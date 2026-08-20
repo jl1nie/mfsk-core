@@ -24,7 +24,7 @@ use super::llr::{
     sync_quality,
 };
 use super::protocol::BpPooledFec;
-use super::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
+use super::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync, fine_sync_power_per_block};
 use super::tx::codeword_to_itone;
 use super::{FecCodec, FecOpts, MessageCodec, Protocol};
 
@@ -1710,7 +1710,13 @@ where
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {
         coarse_sync::<P>(
-            audio, freq_min, freq_max, sync_min, freq_hint, max_cand, 12_000.0,
+            AudioSource::Real(audio),
+            freq_min,
+            freq_max,
+            sync_min,
+            freq_hint,
+            max_cand,
+            RxGrid::real(12_000.0),
         )
     };
     #[cfg(feature = "std")]
@@ -1987,13 +1993,13 @@ where
             )
         } else {
             coarse_sync::<P>(
-                &residual,
+                AudioSource::Real(&residual),
                 freq_min,
                 freq_max,
                 sync_min * factor,
                 freq_hint,
                 max_cand,
-                12_000.0,
+                RxGrid::real(12_000.0),
             )
         };
         #[cfg(feature = "std")]

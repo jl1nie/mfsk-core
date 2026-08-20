@@ -152,7 +152,7 @@ fn fst4_60_diagnose_golden() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::{FrameLayout, ModulationParams};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
@@ -202,7 +202,15 @@ fn fst4_60_diagnose_golden() {
 
     // Cross-check against `coarse_sync` + the real decode path: is there
     // a candidate inside the golden tolerance window, and does it decode?
-    let candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.0, None, 2000, 12_000.0);
+    let candidates = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        0.0,
+        None,
+        2000,
+        RxGrid::real(12_000.0),
+    );
     let mut in_window: Vec<&SyncCandidate> = candidates
         .iter()
         .filter(|c| {
@@ -453,7 +461,7 @@ fn fst4_bake_golden_refined_candidates() {
     use mfsk_core::engine::pipeline::{
         DecodeDepth, DecodeStrictness, process_candidate_precomputed, refine_candidate_position,
     };
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 
@@ -464,7 +472,15 @@ fn fst4_bake_golden_refined_candidates() {
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
     const SYNC_Q_MIN: u32 = 16;
-    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
+    let raw_candidates = coarse_sync::<Fst4s60>(
+        AudioSource::Real(&audio),
+        100.0,
+        3000.0,
+        1.2,
+        None,
+        50,
+        RxGrid::real(12_000.0),
+    );
     eprintln!("coarse_sync: {} raw candidates", raw_candidates.len());
 
     // Refine every raw candidate, then apply dedup_refined_candidates'
