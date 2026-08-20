@@ -1990,7 +1990,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -2087,7 +2089,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -2540,7 +2544,9 @@ mod tests {
             // computation bug.
             if let Ok(raw) = std::fs::read("/tmp/jt9_post_sic_dd.raw") {
                 let jt9_residual: Vec<i16> = raw
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| i16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 println!(
@@ -2674,7 +2680,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -2839,7 +2847,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -2873,7 +2883,9 @@ mod tests {
             }
         };
         let jt9_residual: Vec<i16> = jt9_bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
 
@@ -3008,7 +3020,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -3042,7 +3056,9 @@ mod tests {
             }
         };
         let jt9_residual: Vec<i16> = jt9_bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
 
@@ -3178,7 +3194,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -3311,7 +3329,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )
@@ -3371,7 +3391,9 @@ mod tests {
             let end = off.saturating_add(data_len).min(bytes.len());
             Some(
                 bytes[off..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| i16::from_le_bytes([c[0], c[1]]))
                     .collect(),
             )

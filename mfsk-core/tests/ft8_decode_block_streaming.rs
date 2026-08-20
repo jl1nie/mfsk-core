@@ -127,7 +127,9 @@ fn load_wav_i16(path: impl AsRef<Path>) -> Vec<i16> {
         p.display()
     );
     bytes[data_off..data_off + data_len]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect()
 }

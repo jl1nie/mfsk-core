@@ -636,7 +636,9 @@ mod tests {
         let data_len = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
         let data = &bytes[44..44 + data_len];
         Some(
-            data.chunks_exact(2)
+            data.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                 .collect(),
         )

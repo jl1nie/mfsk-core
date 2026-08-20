@@ -385,7 +385,9 @@ mod tests {
                     let start = i + 8;
                     let samples: &[u8] = &bytes[start..start + len];
                     return samples
-                        .chunks_exact(2)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
                         .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                         .collect();
                 }
@@ -483,7 +485,9 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         let dl = u32::from_le_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as usize;
         let audio: Vec<f32> = bytes[44..44 + dl]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32_768.0)
             .collect();
 

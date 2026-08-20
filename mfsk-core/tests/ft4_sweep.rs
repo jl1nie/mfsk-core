@@ -426,7 +426,7 @@ fn ft4_diag_weak_trials() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -543,7 +543,7 @@ fn ft4_diag_k4_tail_direction() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
             let ds_rate = 12_000.0 / Ft4::NDOWN as f32;
             let fec = <Ft4 as Protocol>::Fec::default();
@@ -796,7 +796,7 @@ fn ft4_diag_segment_retry() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50);
+            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -953,7 +953,9 @@ fn ft4_diag_candidate_cost_split() {
         let cands = if use_new {
             ft4_coarse_sync(audio, freq_min, freq_max, sync_min, None, max_cand)
         } else {
-            coarse_sync::<Ft4>(audio, freq_min, freq_max, sync_min, None, max_cand)
+            coarse_sync::<Ft4>(
+                audio, freq_min, freq_max, sync_min, None, max_cand, 12_000.0,
+            )
         };
         let coarse_dt = t0.elapsed();
 

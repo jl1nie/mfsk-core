@@ -202,7 +202,7 @@ fn fst4_60_diagnose_golden() {
 
     // Cross-check against `coarse_sync` + the real decode path: is there
     // a candidate inside the golden tolerance window, and does it decode?
-    let candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.0, None, 2000);
+    let candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 0.0, None, 2000, 12_000.0);
     let mut in_window: Vec<&SyncCandidate> = candidates
         .iter()
         .filter(|c| {
@@ -338,11 +338,15 @@ fn fst4_bake_golden_precomputed() {
     // test calls `decode_frame` directly rather than through
     // `DecodeRequest`).
     let reloaded_audio: Vec<i16> = audio_bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect();
     let reloaded_cache: Vec<num_complex::Complex32> = cache_bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|b| {
             num_complex::Complex32::new(
                 f32::from_le_bytes(b[0..4].try_into().unwrap()),
@@ -460,7 +464,7 @@ fn fst4_bake_golden_refined_candidates() {
     let fft_cache = build_fft_cache(&audio, &FST4_60A_DOWNSAMPLE);
 
     const SYNC_Q_MIN: u32 = 16;
-    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50);
+    let raw_candidates = coarse_sync::<Fst4s60>(&audio, 100.0, 3000.0, 1.2, None, 50, 12_000.0);
     eprintln!("coarse_sync: {} raw candidates", raw_candidates.len());
 
     // Refine every raw candidate, then apply dedup_refined_candidates'

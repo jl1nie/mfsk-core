@@ -796,7 +796,10 @@ where
 {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
-    let ds_rate = 12_000.0 / P::NDOWN as f32;
+    // #323: was an independent `12_000.0 / P::NDOWN` hardcode — `cfg`
+    // (already a parameter here) carries the real input rate a DDC-fed
+    // caller would set to something other than 12 kHz.
+    let ds_rate = cfg.input_rate as f32 / P::NDOWN as f32;
     let tx_start = P::TX_START_OFFSET_S;
 
     let precomputed_freq = precomputed_refine
@@ -1706,7 +1709,9 @@ where
     let candidates = if P::ID == super::ProtocolId::Ft4 {
         super::ft4_coarse::ft4_coarse_sync(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
     } else {
-        coarse_sync::<P>(audio, freq_min, freq_max, sync_min, freq_hint, max_cand)
+        coarse_sync::<P>(
+            audio, freq_min, freq_max, sync_min, freq_hint, max_cand, 12_000.0,
+        )
     };
     #[cfg(feature = "std")]
     if let Some(t0) = __trace_t0 {
@@ -1988,6 +1993,7 @@ where
                 sync_min * factor,
                 freq_hint,
                 max_cand,
+                12_000.0,
             )
         };
         #[cfg(feature = "std")]

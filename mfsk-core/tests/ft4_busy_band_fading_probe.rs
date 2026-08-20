@@ -312,7 +312,7 @@ fn diag_target_score_before_after_subtract() {
     let target_msg = pack("CQ", "DL8YHR", "JO41");
     mix_i16(&mut audio, &tone_pcm(&target_msg, 1600.0, 4_500), pad);
 
-    let d = SyncDims::of::<Ft4>();
+    let d = SyncDims::of::<Ft4>(12_000.0); // only ds_spb/ds_rate read below
     let blocks = <Ft4 as FrameLayout>::SYNC_MODE.blocks();
     let first = &blocks[0];
     let csync = make_costas_ref(first.pattern, d.ds_spb);
@@ -436,7 +436,7 @@ fn diag_seed4_why_still_missing() {
         subtract_signal_lpf(&mut residual, &rr);
     }
 
-    let d = SyncDims::of::<Ft4>();
+    let d = SyncDims::of::<Ft4>(12_000.0); // only ds_spb/ds_rate read below
     let blocks = <Ft4 as FrameLayout>::SYNC_MODE.blocks();
     let first = &blocks[0];
     let csync = make_costas_ref(first.pattern, d.ds_spb);
