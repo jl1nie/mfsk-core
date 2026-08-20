@@ -25,7 +25,9 @@ use crate::engine::pipeline::{
     DecodeDepth, DecodeResult, DecodeStrictness, GenericPipelineProtocol, SnrCtx,
     refine_candidate_position,
 };
-use crate::engine::sync::{SyncCandidate, coarse_sync, fine_sync_power_per_block};
+use crate::engine::sync::{
+    AudioSource, RxGrid, SyncCandidate, coarse_sync, fine_sync_power_per_block,
+};
 use crate::engine::tx::codeword_to_itone;
 use crate::engine::{FecCodec, FecOpts, Protocol};
 
@@ -450,13 +452,13 @@ where
     let freq_min = (target_freq - search_hz).max(100.0);
     let freq_max = (target_freq + search_hz).min(5_900.0);
     let candidates = coarse_sync::<P>(
-        audio,
+        AudioSource::Real(audio),
         freq_min,
         freq_max,
         sync_min,
         Some(target_freq),
         max_cand,
-        12_000.0,
+        RxGrid::real(12_000.0),
     );
     if candidates.is_empty() {
         return Vec::new();

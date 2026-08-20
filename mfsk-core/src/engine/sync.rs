@@ -180,6 +180,126 @@ impl SyncDims {
     }
 }
 
+/// Analysis-grid descriptor: the bin↔Hz mapping [`compute_spectra`] and
+/// [`coarse_sync`] use, in one place.
+///
+/// `docs/notes/FST4_DDC_DESIGN.md` §4.1 — VK3NV's `RxAnalysisDescriptor`.
+/// Two grids exist:
+///
+/// - **Real** (`center_hz: 0.0, complex_input: false`): today's 12 kHz
+///   real-PCM path. `bin_of` is a plain `hz/df`; `usable_bins` is
+///   [`SyncDims::nh1`], the positive-frequency half a real FFT gives.
+///   Every existing caller uses this grid, and its numbers are
+///   unchanged bit-for-bit from before `RxGrid` existed — the
+///   non-regression bar `docs/notes/FST4_DDC_DESIGN.md` §6 item 1 sets.
+/// - **Complex** (`complex_input: true`): a DDC-fed complex baseband
+///   grid parametrised by `(center_hz, sample_rate_hz)`, covering both
+///   the wideband scan and the sniper shape with one mechanism.
+///   `compute_spectra` stores this grid's spectrogram **fftshifted**,
+///   so `bin_of` stays a monotonic affine map (`(hz-center)/df +
+///   nfft1/2`) and [`coarse_sync`]'s correlation loop — which only
+///   ever adds an offset to a bin index — needs no change to consume
+///   it; see that fftshift-on-store reasoning in this type's own
+///   `bin_of`/`usable_bins` doc comments.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RxGrid {
+    /// The rate `audio` fed to [`compute_spectra`]/[`coarse_sync`] is
+    /// actually at.
+    pub sample_rate_hz: f32,
+    /// Down-conversion centre frequency, Hz. `0.0` for the real path
+    /// (DC-referenced, matching today's 12 kHz real-PCM ingest).
+    pub center_hz: f32,
+    /// `false`: real PCM, positive-frequency-only spectrum (today's
+    /// path). `true`: complex I/Q baseband, full fftshifted spectrum
+    /// centred on `center_hz`.
+    pub complex_input: bool,
+}
+
+impl RxGrid {
+    /// The real, DC-referenced grid every caller uses today.
+    pub fn real(sample_rate_hz: f32) -> Self {
+        Self {
+            sample_rate_hz,
+            center_hz: 0.0,
+            complex_input: false,
+        }
+    }
+
+    /// A DDC-fed complex baseband grid centred on `center_hz`.
+    pub fn complex(sample_rate_hz: f32, center_hz: f32) -> Self {
+        Self {
+            sample_rate_hz,
+            center_hz,
+            complex_input: true,
+        }
+    }
+
+    /// Absolute FFT bin index a frequency `hz` maps to in this grid's
+    /// spectrogram, given `d`'s `nfft1`/`df` (from
+    /// `SyncDims::of::<P>(self.sample_rate_hz)`).
+    ///
+    /// Real grid: `hz/df`, unmodified from `coarse_sync`'s pre-`RxGrid`
+    /// arithmetic. Complex grid: `(hz-center)/df + nfft1/2` — the
+    /// fftshifted bin `compute_spectra`'s complex path actually stores
+    /// at, so this and `usable_bins` are the only two call sites
+    /// `coarse_sync` needs to change to consume either grid; its
+    /// correlation loop body (`abs_bin = i + nfos*k`) stays untouched.
+    #[inline]
+    pub fn bin_of(&self, d: &SyncDims, hz: f32) -> usize {
+        if self.complex_input {
+            (((hz - self.center_hz) / d.df) + d.nfft1 as f32 / 2.0).round() as usize
+        } else {
+            (hz / d.df).round() as usize
+        }
+    }
+
+    /// Exact inverse of [`Self::bin_of`]: the frequency (Hz) an
+    /// absolute FFT bin index represents in this grid. `coarse_sync`
+    /// needs this the same way it needs `bin_of` — reporting a
+    /// candidate's `freq_hz` back from the bin its correlation peak
+    /// landed on is the same bin↔Hz mapping in the other direction,
+    /// so it goes through `RxGrid` too rather than the real grid's
+    /// `bin*df` shortcut alone.
+    #[inline]
+    pub fn hz_of(&self, d: &SyncDims, bin: usize) -> f32 {
+        if self.complex_input {
+            self.center_hz + (bin as f32 - d.nfft1 as f32 / 2.0) * d.df
+        } else {
+            bin as f32 * d.df
+        }
+    }
+
+    /// Number of usable bins in this grid's spectrogram — the bound
+    /// every `coarse_sync`/`compute_spectra` clamp against `d.nh1`
+    /// used before `RxGrid` existed.
+    ///
+    /// Real grid: `d.nh1` (`nfft1/2`, the positive-frequency half a
+    /// real-input FFT gives — anything above is the mirrored negative
+    /// half and never valid to read). Complex grid: `d.nfft1` (the
+    /// full fftshifted spectrum is meaningful, since a complex FFT's
+    /// negative-frequency bins carry real information — content below
+    /// `center_hz`).
+    #[inline]
+    pub fn usable_bins(&self, d: &SyncDims) -> usize {
+        if self.complex_input { d.nfft1 } else { d.nh1 }
+    }
+}
+
+/// The samples [`compute_spectra`]/[`coarse_sync`] analyse: real 12 kHz
+/// PCM (today's path) or a DDC-fed complex baseband I/Q pair.
+///
+/// `Copy`/`Clone` (both variants are just slice references) so callers
+/// can pass one value into `coarse_sync`, which forwards it into
+/// `compute_spectra` unchanged.
+#[derive(Copy, Clone)]
+pub enum AudioSource<'a> {
+    /// Real PCM, paired with [`RxGrid::real`].
+    Real(&'a [i16]),
+    /// Complex baseband (I, Q), paired with [`RxGrid::complex`]. Both
+    /// slices must be the same length.
+    Complex(&'a [f32], &'a [f32]),
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Coarse sync
 // ──────────────────────────────────────────────────────────────────────────
@@ -292,18 +412,31 @@ pub(crate) fn nuttall_window(n: usize) -> Vec<f32> {
 /// mask weak signals); FT8 stays on `Rectangular` (its synth-roundtrip
 /// path is calibrated against rectangular).
 ///
-/// `sample_rate_hz`: the rate `audio` is actually sampled at —
-/// `12_000.0` for every caller today (issue #323/#309; see
-/// [`SyncDims::of`]'s doc). Not yet reachable from a DDC-fed front end;
-/// threaded through now so wiring one up later is a call-site change,
-/// not a rediscovery of this function's own rate assumption.
+/// `grid`: the rate and (for a complex `audio`) down-conversion centre
+/// [`AudioSource`] is actually at — [`RxGrid::real`] for every caller
+/// today (issue #323/#309; see [`SyncDims::of`]'s doc). The complex
+/// path isn't yet reachable from a real DDC front end (that's
+/// `docs/notes/FST4_DDC_DESIGN.md` stage 3); wiring one up later is a
+/// call-site change, not a rediscovery of this function's rate/centre
+/// assumptions.
+///
+/// [`AudioSource::Real`] behaves exactly as before `RxGrid`/
+/// `AudioSource` existed: bins are read straight off the FFT output,
+/// no shift. [`AudioSource::Complex`] stores **fftshifted** — raw FFT
+/// bin `k` (standard convention: `k < nfft1/2` positive frequencies,
+/// `k >= nfft1/2` negative, wrapped) is written to
+/// `(k + nfft1/2) % nfft1`, which is exactly [`RxGrid::bin_of`]'s
+/// complex-grid formula inverted. That keeps the stored frequency axis
+/// monotonic, which is the whole reason `coarse_sync`'s correlation
+/// loop needs no change to read either grid — see `RxGrid`'s own doc
+/// comment.
 pub fn compute_spectra<P: Protocol>(
-    audio: &[i16],
+    audio: AudioSource,
     bin_lo: usize,
     bin_hi_incl: usize,
-    sample_rate_hz: f32,
+    grid: RxGrid,
 ) -> Spectrogram {
-    let d = SyncDims::of::<P>(sample_rate_hz);
+    let d = SyncDims::of::<P>(grid.sample_rate_hz);
     let fac = 1.0f32 / 300.0;
     let mut planner = default_planner();
     let fft = planner.plan_forward(d.nfft1);
@@ -313,8 +446,9 @@ pub fn compute_spectra<P: Protocol>(
         SpectrumWindow::Nuttall4 => Some(nuttall_window(d.nsps)),
     };
 
-    let bin_lo = bin_lo.min(d.nh1.saturating_sub(1));
-    let bin_hi_incl = bin_hi_incl.min(d.nh1.saturating_sub(1)).max(bin_lo);
+    let usable = grid.usable_bins(&d);
+    let bin_lo = bin_lo.min(usable.saturating_sub(1));
+    let bin_hi_incl = bin_hi_incl.min(usable.saturating_sub(1)).max(bin_lo);
     let n_freq = bin_hi_incl - bin_lo + 1;
 
     let mut data = vec![0.0f32; n_freq * d.nhsym];
@@ -324,23 +458,46 @@ pub fn compute_spectra<P: Protocol>(
         let ia = j * d.nstep;
         for (k, c) in buf.iter_mut().enumerate() {
             *c = if k < d.nsps {
-                let sample = if ia + k < audio.len() {
-                    let raw = audio[ia + k] as f32 * fac;
-                    match &window {
-                        Some(w) => raw * w[k],
-                        None => raw,
+                match audio {
+                    AudioSource::Real(pcm) => {
+                        let sample = if ia + k < pcm.len() {
+                            let raw = pcm[ia + k] as f32 * fac;
+                            match &window {
+                                Some(w) => raw * w[k],
+                                None => raw,
+                            }
+                        } else {
+                            0.0
+                        };
+                        Complex::new(sample, 0.0)
                     }
-                } else {
-                    0.0
-                };
-                Complex::new(sample, 0.0)
+                    AudioSource::Complex(xi, xq) => {
+                        if ia + k < xi.len() {
+                            let (mut si, mut sq) = (xi[ia + k], xq[ia + k]);
+                            if let Some(w) = &window {
+                                si *= w[k];
+                                sq *= w[k];
+                            }
+                            Complex::new(si, sq)
+                        } else {
+                            Complex::new(0.0, 0.0)
+                        }
+                    }
+                }
             } else {
                 Complex::new(0.0, 0.0)
             };
         }
         fft.process(&mut buf);
-        for i in bin_lo..=bin_hi_incl {
-            data[(i - bin_lo) * d.nhsym + j] = buf[i].norm_sqr();
+        if grid.complex_input {
+            for shifted in bin_lo..=bin_hi_incl {
+                let k = (shifted + d.nfft1 / 2) % d.nfft1;
+                data[(shifted - bin_lo) * d.nhsym + j] = buf[k].norm_sqr();
+            }
+        } else {
+            for i in bin_lo..=bin_hi_incl {
+                data[(i - bin_lo) * d.nhsym + j] = buf[i].norm_sqr();
+            }
         }
     }
 
@@ -379,28 +536,39 @@ pub fn compute_spectra<P: Protocol>(
 /// `engine/pipeline.rs` and `msg/pipeline_ap.rs` calls this generic
 /// function with a non-FST4/FT4 protocol).
 ///
-/// `sample_rate_hz`: the rate `audio` is actually sampled at —
-/// `12_000.0` for every caller today (issue #323/#309; see
-/// [`SyncDims::of`]'s doc). Not yet reachable from a DDC-fed front end;
-/// threaded through now so wiring one up later is a call-site change,
-/// not a rediscovery of this function's own rate assumption.
+/// `grid`: the rate and (for a complex `audio`) down-conversion centre
+/// [`AudioSource`] is actually at — [`RxGrid::real`] for every caller
+/// today (issue #323/#309; see [`SyncDims::of`]'s doc). The complex
+/// path isn't yet reachable from a real DDC front end (that's
+/// `docs/notes/FST4_DDC_DESIGN.md` stage 3); wiring one up later is a
+/// call-site change, not a rediscovery of this function's rate/centre
+/// assumptions. `ia`/`ib` and every `nh1`-shaped clamp below go
+/// through [`RxGrid::bin_of`]/[`RxGrid::usable_bins`] — the only two
+/// places this function's logic depends on which grid it's reading;
+/// the correlation loop itself (`abs_bin = i + nfos*k`) is unchanged
+/// either way, since [`compute_spectra`]'s complex path already
+/// stores its spectrogram on a monotonic bin axis (see that function's
+/// own doc comment).
 pub fn coarse_sync<P: Protocol>(
-    audio: &[i16],
+    audio: AudioSource,
     freq_min: f32,
     freq_max: f32,
     sync_min: f32,
     freq_hint: Option<f32>,
     max_cand: usize,
-    sample_rate_hz: f32,
+    grid: RxGrid,
 ) -> Vec<SyncCandidate> {
-    let d = SyncDims::of::<P>(sample_rate_hz);
+    let d = SyncDims::of::<P>(grid.sample_rate_hz);
     let ntones = P::NTONES as usize;
     let pattern_len = P::SYNC_MODE.blocks()[0].pattern.len();
+    let usable = grid.usable_bins(&d);
 
     // Leave room for NTONES-1 tones above the candidate bin.
-    let ia = (freq_min / d.df).round() as usize;
+    let ia = grid.bin_of(&d, freq_min);
     let headroom = d.nfos * (ntones - 1) + 1;
-    let ib = ((freq_max / d.df).round() as usize).min(d.nh1.saturating_sub(headroom));
+    let ib = grid
+        .bin_of(&d, freq_max)
+        .min(usable.saturating_sub(headroom));
     if ib < ia {
         return Vec::new();
     }
@@ -413,8 +581,8 @@ pub fn coarse_sync<P: Protocol>(
     let s = compute_spectra::<P>(
         audio,
         ia,
-        (ib + headroom).min(d.nh1.saturating_sub(1)),
-        sample_rate_hz,
+        (ib + headroom).min(usable.saturating_sub(1)),
+        grid,
     );
 
     let n_freq = ib - ia + 1;
@@ -457,12 +625,12 @@ pub fn coarse_sync<P: Protocol>(
                     for (n, &costas_n) in block.pattern.iter().enumerate() {
                         let m = lag + d.jstrt + block_offset + (d.nssy * n) as i32;
                         let tone_bin = i + d.nfos * costas_n as usize;
-                        if m >= 0 && (m as usize) < d.nhsym && tone_bin < d.nh1 {
+                        if m >= 0 && (m as usize) < d.nhsym && tone_bin < usable {
                             let m = m as usize;
                             t_blocks[bk] += s.get(tone_bin, m);
                             // Reference: sum over all NTONES tones at this time slot.
                             t0_blocks[bk] += (0..ntones)
-                                .map(|k| s.get((i + d.nfos * k).min(d.nh1 - 1), m))
+                                .map(|k| s.get((i + d.nfos * k).min(usable - 1), m))
                                 .sum::<f32>();
                         }
                     }
@@ -601,7 +769,7 @@ pub fn coarse_sync<P: Protocol>(
         let avg_power = s.avg_power_per_bin();
         // `avg_power` is offset-relative (indexed from `s.freq_offset()`,
         // not an absolute bin) — see `Spectrogram::avg_power_per_bin`'s
-        // doc comment. The `.min(d.nh1 - 1)` clamp is still against the
+        // doc comment. The `.min(usable - 1)` clamp is still against the
         // *absolute* full-band bound (matches `coarse_sync`'s own
         // `headroom` derivation, which sizes the crop to always cover
         // this read), so the offset subtraction happens last.
@@ -610,7 +778,7 @@ pub fn coarse_sync<P: Protocol>(
                 let i = ia + fi;
                 (0..ntones)
                     .map(|k| {
-                        let abs_bin = (i + d.nfos * k).min(d.nh1 - 1);
+                        let abs_bin = (i + d.nfos * k).min(usable - 1);
                         avg_power[(abs_bin - s.freq_offset()).min(avg_power.len() - 1)]
                     })
                     .sum()
@@ -627,7 +795,7 @@ pub fn coarse_sync<P: Protocol>(
     // Extract into a closure so both serial and parallel paths share the logic.
     let fi_cands = |fi: usize| -> Vec<SyncCandidate> {
         let i = ia + fi;
-        let freq_hz = i as f32 * d.df;
+        let freq_hz = grid.hz_of(&d, i);
         let local_base = sbase[fi];
         let bin_stage1_pass = stage1_pass(fi);
 
@@ -1056,7 +1224,7 @@ pub fn refine_candidate<P: Protocol>(
 
 #[cfg(all(test, feature = "fst4", feature = "ft4"))]
 mod tests {
-    use super::{Protocol, SyncDims};
+    use super::{AudioSource, PI, Protocol, RxGrid, SyncDims, compute_spectra};
     use crate::engine::protocol::ModulationParams;
     use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
     use crate::ft4::Ft4;
@@ -1086,5 +1254,64 @@ mod tests {
         check::<Fst4s120>("Fst4s120");
         check::<Fst4s300>("Fst4s300");
         check::<Ft4>("Ft4");
+    }
+
+    /// `RxGrid::real`'s `bin_of`/`usable_bins` must reproduce, bit for
+    /// bit, the inline `(hz/df).round() as usize` / `d.nh1` arithmetic
+    /// `coarse_sync`/`compute_spectra` used before `RxGrid` existed —
+    /// `docs/notes/FST4_DDC_DESIGN.md` §6 item 1's non-regression bar,
+    /// pinned the same way `sync_dims_of_matches_nsps_at_12khz` pins
+    /// `SyncDims::of`'s own refactor.
+    #[test]
+    fn rx_grid_real_matches_pre_rxgrid_bin_math() {
+        let d = SyncDims::of::<Fst4s60>(12_000.0);
+        let grid = RxGrid::real(12_000.0);
+        for hz in [0.0f32, 100.0, 1500.0, 2963.34, 3000.0] {
+            let want = (hz / d.df).round() as usize;
+            assert_eq!(grid.bin_of(&d, hz), want, "hz={hz}");
+        }
+        assert_eq!(grid.usable_bins(&d), d.nh1);
+    }
+
+    /// A complex DDC-fed grid's `compute_spectra` path stores its
+    /// spectrogram fftshifted so `RxGrid::bin_of`'s complex formula
+    /// predicts where a tone lands — including a tone *below*
+    /// `center_hz` (negative baseband frequency), which is the half
+    /// the fftshift-on-store scheme exists to keep monotonic (see
+    /// `RxGrid`'s and `compute_spectra`'s own doc comments).
+    #[test]
+    fn rx_grid_complex_bin_of_predicts_compute_spectra_peak() {
+        let sample_rate_hz = 12_000.0f32;
+        let center_hz = 1500.0f32;
+        let d = SyncDims::of::<Fst4s60>(sample_rate_hz);
+        let grid = RxGrid::complex(sample_rate_hz, center_hz);
+
+        for offset_hz in [200.0f32, -200.0] {
+            let f_signal = center_hz + offset_hz;
+            let f_baseband = offset_hz; // e^{j 2*pi*f_baseband*n/Fs}
+            let n = d.nmax;
+            let w = 2.0 * PI * f_baseband / sample_rate_hz;
+            let audio_i: Vec<f32> = (0..n).map(|k| (w * k as f32).cos()).collect();
+            let audio_q: Vec<f32> = (0..n).map(|k| (w * k as f32).sin()).collect();
+
+            let s = compute_spectra::<Fst4s60>(
+                AudioSource::Complex(&audio_i, &audio_q),
+                0,
+                d.nfft1 - 1,
+                grid,
+            );
+            let avg = s.avg_power_per_bin();
+            let (peak_bin, _) = avg
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap();
+
+            let want = grid.bin_of(&d, f_signal);
+            assert!(
+                peak_bin.abs_diff(want) <= 1,
+                "offset={offset_hz}: peak_bin={peak_bin}, RxGrid predicted {want}"
+            );
+        }
     }
 }

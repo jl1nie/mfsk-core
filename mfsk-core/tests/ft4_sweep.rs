@@ -384,7 +384,7 @@ fn ft4_diag_weak_trials() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::llr::{symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
@@ -426,7 +426,15 @@ fn ft4_diag_weak_trials() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<Ft4>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -509,7 +517,7 @@ fn ft4_diag_k4_tail_direction() {
     use mfsk_core::ModulationParams;
     use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
     use mfsk_core::engine::llr::{compute_llr, descramble_info, symbol_spectra, sync_quality};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::fec::ldpc::osd::osd_decode_generic;
@@ -543,7 +551,15 @@ fn ft4_diag_k4_tail_direction() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<Ft4>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
             let ds_rate = 12_000.0 / Ft4::NDOWN as f32;
             let fec = <Ft4 as Protocol>::Fec::default();
@@ -684,7 +700,7 @@ fn ft4_diag_segment_retry() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::llr::{compute_llr, symbol_spectra, sync_quality};
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::coarse_sync;
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, coarse_sync};
     use mfsk_core::engine::sync2d::{freq_shift_cd0, ft4_sync_search_window};
     use mfsk_core::engine::{FecCodec, FecOpts, MessageCodec, Protocol};
     use mfsk_core::ft4::Ft4;
@@ -796,7 +812,15 @@ fn ft4_diag_segment_retry() {
             let Some(audio) = load_wav_i16_opt(&path) else {
                 continue;
             };
-            let cands = coarse_sync::<Ft4>(&audio, 100.0, 3000.0, 0.8, None, 50, 12_000.0);
+            let cands = coarse_sync::<Ft4>(
+                AudioSource::Real(&audio),
+                100.0,
+                3000.0,
+                0.8,
+                None,
+                50,
+                RxGrid::real(12_000.0),
+            );
             let near: Vec<_> = cands
                 .iter()
                 .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= FREQ_TOL_HZ)
@@ -909,7 +933,7 @@ fn ft4_diag_candidate_cost_split() {
     use mfsk_core::engine::equalize::EqMode;
     use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
     use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
-    use mfsk_core::engine::sync::{SyncCandidate, coarse_sync};
+    use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
     use mfsk_core::engine::sync2d::ft4_sync_search;
     use mfsk_core::ft4::Ft4;
     use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
@@ -954,7 +978,13 @@ fn ft4_diag_candidate_cost_split() {
             ft4_coarse_sync(audio, freq_min, freq_max, sync_min, None, max_cand)
         } else {
             coarse_sync::<Ft4>(
-                audio, freq_min, freq_max, sync_min, None, max_cand, 12_000.0,
+                AudioSource::Real(audio),
+                freq_min,
+                freq_max,
+                sync_min,
+                None,
+                max_cand,
+                RxGrid::real(12_000.0),
             )
         };
         let coarse_dt = t0.elapsed();

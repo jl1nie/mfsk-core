@@ -65,6 +65,8 @@ use crate::msg::Wsjt77Message;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub(crate) mod baseline;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
+pub mod ddc;
+#[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 pub mod encode;
 #[cfg(all(
