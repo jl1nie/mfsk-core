@@ -154,6 +154,82 @@ pub fn wideband_cascade(center_hz: f32) -> DdcCascadeConfig {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Refine stage — per-candidate re-centre on top of the coarse DDC baseband
+// ─────────────────────────────────────────────────────────────────────────
+//
+// `docs/notes/FST4_DDC_DESIGN.md` §4.4, §7 stage 4. `sniper_cascade`/
+// `wideband_cascade`'s baseband still spans a whole search window
+// around one `center_hz` — a specific candidate's own zero-frequency
+// baseband (what `engine::sync::fine_sync_power`'s Costas correlator
+// assumes `cd0` already is, the same convention `downsample_cached`'s
+// per-`f0` cyclic shift provides) needs a second, per-candidate
+// down-conversion: `StreamingComplexRecenter` re-centres on the
+// candidate's own offset from `center_hz` and decimates on to the
+// existing refine rate, `ds_rate = 111.11 Hz` (`ds_spb = 36`, kept for
+// WSJT-X fidelity — see the module doc comment's "Cascade split"
+// section for why this needs a small rational stage, `L=9`, rather
+// than the pure-integer stage §4.4's own heading might suggest).
+
+/// Refine re-centre ratio numerator, both configs — `Fs_c × 9/M` lands
+/// exactly on `ds_rate = 111.11 Hz` for either `K` (see
+/// `tests::refine_ratio_hits_ds_rate`).
+const REFINE_L: u32 = 9;
+const REFINE_M_SNIPER: u32 = 64;
+const REFINE_M_WIDEBAND: u32 = 256;
+
+/// Refine filter tap counts. Refine's own occupied bandwidth is small
+/// — 4 tones + 1.5+1.5 tone-spacing pad = 7×`TONE_SPACING_HZ` ≈ 21.6 Hz
+/// (design doc §4.4) — against a 111.11 Hz baseband (55.5 Hz Nyquist),
+/// so a generous 30 Hz transition still leaves the filter loose:
+/// `ntaps = ⌈4×9×Fs_c/30⌉` rounded up to odd, `Fs_c` from
+/// [`grid_for`]'s sniper/wideband values respectively.
+const REFINE_NTAPS_SNIPER: usize = 949;
+const REFINE_NTAPS_WIDEBAND: usize = 3793;
+
+/// Build the refine-stage recentre/decimate for a candidate found in
+/// the sniper coarse baseband. `candidate_freq_hz`/`coarse_center_hz`
+/// are absolute Hz (same space `RxGrid::complex`'s `center_hz` and a
+/// `SyncCandidate::freq_hz` are both in) — the mixer offset is their
+/// difference.
+pub fn sniper_refine_recenter(
+    candidate_freq_hz: f32,
+    coarse_center_hz: f32,
+) -> crate::engine::dsp::ddc::StreamingComplexRecenter {
+    let fs_c = grid_for(600.0).fs_c;
+    crate::engine::dsp::ddc::StreamingComplexRecenter::new(
+        candidate_freq_hz - coarse_center_hz,
+        fs_c,
+        REFINE_L,
+        REFINE_M_SNIPER,
+        REFINE_NTAPS_SNIPER,
+        HIST_MARGIN,
+    )
+}
+
+/// Wideband counterpart of [`sniper_refine_recenter`].
+pub fn wideband_refine_recenter(
+    candidate_freq_hz: f32,
+    coarse_center_hz: f32,
+) -> crate::engine::dsp::ddc::StreamingComplexRecenter {
+    let fs_c = grid_for(2900.0).fs_c;
+    crate::engine::dsp::ddc::StreamingComplexRecenter::new(
+        candidate_freq_hz - coarse_center_hz,
+        fs_c,
+        REFINE_L,
+        REFINE_M_WIDEBAND,
+        REFINE_NTAPS_WIDEBAND,
+        HIST_MARGIN,
+    )
+}
+
+/// `ds_rate` the existing refine pipeline (`SyncDims::ds_rate`,
+/// `NDOWN`-derived) already uses — both refine configs' `L/M` ratio
+/// lands here exactly (`tests::refine_ratio_hits_ds_rate`), which is
+/// what lets `fine_sync_power`/`refine_candidate` read this stage's
+/// output with no change to their own `ds_rate`-indexed arithmetic.
+pub const REFINE_DS_RATE_HZ: f32 = 111.111_11;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +439,145 @@ mod tests {
             .map(|k| (i[k] * i[k] + q[k] * q[k]).sqrt())
             .fold(0.0f32, f32::max);
         assert!(peak > 500.0, "centre tone peak magnitude too small: {peak}");
+    }
+
+    /// Both refine configs' `L=9/M` ratio must land exactly on
+    /// `REFINE_DS_RATE_HZ` — the invariant that lets
+    /// `fine_sync_power`/`refine_candidate` read this stage's output
+    /// with no change to their own `ds_rate`-indexed arithmetic.
+    #[test]
+    fn refine_ratio_hits_ds_rate() {
+        let sniper_out = grid_for(600.0).fs_c * REFINE_L as f32 / REFINE_M_SNIPER as f32;
+        assert!(
+            (sniper_out - REFINE_DS_RATE_HZ).abs() < 0.01,
+            "sniper refine out = {sniper_out}"
+        );
+        let wideband_out = grid_for(2900.0).fs_c * REFINE_L as f32 / REFINE_M_WIDEBAND as f32;
+        assert!(
+            (wideband_out - REFINE_DS_RATE_HZ).abs() < 0.01,
+            "wideband refine out = {wideband_out}"
+        );
+    }
+
+    /// End-to-end (design doc §6 items 3+4 combined, refine's own
+    /// half): the refine stage built on top of the coarse DDC baseband
+    /// finds the same timing `downsample_cached` + `fine_sync_power`
+    /// (the existing reference path) finds, on the same clean
+    /// synthetic FST4-60 signal `ddc_coarse_sync_matches_real_path_on_
+    /// synth_signal` uses.
+    ///
+    /// Both `StreamingComplexDdc` and `StreamingComplexRecenter`
+    /// leave their own group delay untrimmed at push/flush time (see
+    /// each's own doc comment) — this test does that trim itself,
+    /// using `group_delay_input_samples`/`group_delay_output_samples`
+    /// as a *best-effort* estimate (both are documented
+    /// underestimates), then widens the search window well past what
+    /// that estimation error should plausibly leave outstanding
+    /// (`SEARCH_STEPS`, vs. production's `REFINE_STEPS = 40`) so the
+    /// comparison doesn't depend on the trim being exact — only on the
+    /// true peak being somewhere inside the searched window.
+    #[test]
+    fn ddc_refine_matches_downsample_cached_reference() {
+        use crate::engine::dsp::ddc::StreamingComplexDdc;
+        use crate::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+        use crate::engine::sync::{SyncCandidate, refine_candidate};
+        use crate::fst4::Fst4s60;
+        use crate::fst4::decode::FST4_60A_DOWNSAMPLE;
+        use crate::fst4::encode::{message_to_tones, tones_to_i16};
+        use crate::msg::wsjt77::pack77;
+
+        let msg77 = pack77("CQ", "JA1ABC", "PM95").expect("pack77");
+        let tones = message_to_tones(&msg77);
+        let target_freq = 1500.0f32;
+        let audio = tones_to_i16(&tones, target_freq, 10_000);
+
+        let mut slot = alloc::vec![0i16; 60 * 12_000];
+        let offset = 12_000; // matches TX_START_OFFSET_S = 1.0 s
+        let copy_len = audio.len().min(slot.len() - offset);
+        slot[offset..offset + copy_len].copy_from_slice(&audio[..copy_len]);
+
+        // Reference: downsample_cached + refine_candidate.
+        let fft_cache = build_fft_cache(&slot, &FST4_60A_DOWNSAMPLE);
+        let cd0_ref = downsample_cached(&fft_cache, target_freq, &FST4_60A_DOWNSAMPLE);
+        const SEARCH_STEPS: i32 = 200;
+        let ref_refined = refine_candidate::<Fst4s60>(
+            &cd0_ref,
+            &SyncCandidate {
+                freq_hz: target_freq,
+                dt_sec: 0.0,
+                score: 0.0,
+            },
+            SEARCH_STEPS,
+        );
+
+        // DDC path: coarse DDC -> refine recentre -> ds_rate baseband,
+        // with a best-effort delay trim (see the test's own doc
+        // comment).
+        let coarse_cfg = sniper_cascade(target_freq);
+        let mut coarse = StreamingComplexDdc::new(&coarse_cfg);
+        let mut coarse_i = Vec::new();
+        let mut coarse_q = Vec::new();
+        coarse.push_i16(&slot, &mut coarse_i, &mut coarse_q);
+        coarse.flush(&mut coarse_i, &mut coarse_q);
+        let coarse_delay_orig = coarse.group_delay_input_samples();
+
+        let mut refine = sniper_refine_recenter(target_freq, target_freq);
+        let mut cd0_ddc_i = Vec::new();
+        let mut cd0_ddc_q = Vec::new();
+        refine.push(&coarse_i, &coarse_q, &mut cd0_ddc_i, &mut cd0_ddc_q);
+        refine.flush(&mut cd0_ddc_i, &mut cd0_ddc_q);
+        let refine_delay_out = refine.group_delay_output_samples();
+
+        let total_delay_out = (coarse_delay_orig as f32 * REFINE_DS_RATE_HZ / 12_000.0).round()
+            as usize
+            + refine_delay_out;
+        let trim = total_delay_out.min(cd0_ddc_i.len());
+        let cd0_ddc: Vec<num_complex::Complex<f32>> = cd0_ddc_i[trim..]
+            .iter()
+            .zip(cd0_ddc_q[trim..].iter())
+            .map(|(&i, &q)| num_complex::Complex::new(i, q))
+            .collect();
+
+        let ddc_refined = refine_candidate::<Fst4s60>(
+            &cd0_ddc,
+            &SyncCandidate {
+                freq_hz: target_freq,
+                dt_sec: 0.0,
+                score: 0.0,
+            },
+            SEARCH_STEPS,
+        );
+
+        assert!(
+            (ddc_refined.dt_sec - ref_refined.dt_sec).abs() < 0.1,
+            "reference dt_sec={}, DDC dt_sec={} (trim={trim} samples)",
+            ref_refined.dt_sec,
+            ddc_refined.dt_sec
+        );
+        // Not a cross-pipeline score comparison: `downsample_cached`
+        // applies its own `1/sqrt(fft1*fft2)` normalisation
+        // (`downsample_cached`'s own doc comment, step 6) and this
+        // DDC path applies none, so the two `.score`s sit on entirely
+        // different absolute scales — `fine_sync_power` is a raw
+        // correlation *power*, not the ratio-normalised score
+        // `coarse_sync` reports (that comparison is what the sibling
+        // `ddc_coarse_sync_matches_real_path_on_synth_signal` test
+        // already does, correctly, since `coarse_sync`'s score is
+        // scale-invariant). What this checks instead: the DDC path's
+        // own peak, at the timing `ddc_refined` found, is a real
+        // correlation peak — comfortably above its own score 30 steps
+        // away — not noise the search happened to land on.
+        use crate::engine::sync::{SyncDims, fine_sync_power};
+        let ds_rate = SyncDims::of::<Fst4s60>(12_000.0).ds_rate;
+        let peak_i0 = ((ddc_refined.dt_sec
+            + <Fst4s60 as crate::engine::FrameLayout>::TX_START_OFFSET_S)
+            * ds_rate)
+            .round() as i32;
+        let off_peak = fine_sync_power::<Fst4s60>(&cd0_ddc, peak_i0 + 30);
+        assert!(
+            ddc_refined.score > off_peak * 3.0,
+            "DDC peak score={} not distinguishable from off-peak score={off_peak}",
+            ddc_refined.score
+        );
     }
 }

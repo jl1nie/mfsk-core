@@ -50,14 +50,14 @@ const RENORM_PERIOD: u32 = 4096;
 /// `cur` is renormalised to unit magnitude every [`RENORM_PERIOD`]
 /// samples — cheap (one `sqrt` per period) and bounds the drift a long
 /// FST4 slot (thousands of samples) would otherwise accumulate.
-struct Mixer {
+pub(crate) struct Mixer {
     step: Complex<f32>,
     cur: Complex<f32>,
     since_renorm: u32,
 }
 
 impl Mixer {
-    fn new(center_hz: f32, sample_rate_hz: f32) -> Self {
+    pub(crate) fn new(center_hz: f32, sample_rate_hz: f32) -> Self {
         let dphi = -2.0 * core::f32::consts::PI * center_hz / sample_rate_hz;
         Self {
             step: Complex::new(dphi.cos(), dphi.sin()),
@@ -66,9 +66,10 @@ impl Mixer {
         }
     }
 
+    /// Advance the phasor one sample and renormalise on schedule —
+    /// the part [`Self::mix`]/[`Self::mix_complex`] share.
     #[inline]
-    fn mix(&mut self, x: f32) -> (f32, f32) {
-        let out = (x * self.cur.re, x * self.cur.im);
+    fn advance(&mut self) {
         self.cur *= self.step;
         self.since_renorm += 1;
         if self.since_renorm >= RENORM_PERIOD {
@@ -79,6 +80,30 @@ impl Mixer {
             }
             self.since_renorm = 0;
         }
+    }
+
+    /// Mix one real input sample.
+    #[inline]
+    pub(crate) fn mix(&mut self, x: f32) -> (f32, f32) {
+        let out = (x * self.cur.re, x * self.cur.im);
+        self.advance();
+        out
+    }
+
+    /// Mix one complex input sample — for re-centring an
+    /// already-complex baseband (`fst4::ddc`'s refine stage: the
+    /// coarse DDC baseband still spans a whole search window around
+    /// one `center_hz`, and pulling a specific candidate's own
+    /// zero-frequency baseband out of it needs a second,
+    /// per-candidate complex mix). `(i+jq)·cur`, same phasor as
+    /// [`Self::mix`].
+    #[inline]
+    pub(crate) fn mix_complex(&mut self, i: f32, q: f32) -> (f32, f32) {
+        let out = (
+            i * self.cur.re - q * self.cur.im,
+            i * self.cur.im + q * self.cur.re,
+        );
+        self.advance();
         out
     }
 }
@@ -157,6 +182,19 @@ impl StreamingComplexDdc {
         }
     }
 
+    /// This cascade's own estimated group delay, in *original*
+    /// (mixer-input-rate) samples — the same conservative estimate
+    /// [`Self::flush`] uses, exposed so a caller chaining more DSP
+    /// after this cascade's output (e.g. `fst4::ddc`'s refine-stage
+    /// resampler) can account for it rather than treating this
+    /// cascade's sample 0 as if it carried no delay at all. Per
+    /// [`Self::new`]'s derivation this is an *underestimate* by up to
+    /// a handful of samples per stage — not a precision to build exact
+    /// timing on without a dedicated alignment pass.
+    pub fn group_delay_input_samples(&self) -> usize {
+        self.flush_zeros.saturating_sub(1)
+    }
+
     /// Push one real sample through mixer → integer cascade → final
     /// resampler, appending any complex baseband samples this push
     /// completes.
@@ -188,6 +226,77 @@ impl StreamingComplexDdc {
     pub fn flush(&mut self, out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
         for _ in 0..self.flush_zeros {
             self.push_one(0.0, out_i, out_q);
+        }
+    }
+}
+
+/// Re-centre and further decimate an already-complex baseband —
+/// [`StreamingComplexDdc`]'s sibling for a second, per-candidate
+/// down-conversion stage on top of a first cascade's output (`fst4::
+/// ddc`'s refine stage: the coarse DDC baseband still spans a whole
+/// search window around one `center_hz`; recovering a specific
+/// candidate's own zero-frequency baseband — what a Costas correlator
+/// like [`crate::engine::sync::fine_sync_power`] assumes — needs this).
+/// Same shape as `StreamingComplexDdc` minus the real-input step
+/// (input is already complex) and the integer-cascade support (no
+/// caller needs one yet).
+pub struct StreamingComplexRecenter {
+    mixer: Mixer,
+    resampler: PolyphaseResampler,
+    flush_zeros: usize,
+}
+
+impl StreamingComplexRecenter {
+    /// `center_hz` here is relative to the *input* baseband's own
+    /// zero (i.e. the offset still present after the first DDC stage,
+    /// not an absolute audio frequency) — the candidate frequency
+    /// this stage should pull down to DC.
+    pub fn new(
+        center_hz: f32,
+        input_rate_hz: f32,
+        l: u32,
+        m: u32,
+        ntaps: usize,
+        hist_margin: usize,
+    ) -> Self {
+        let mixer = Mixer::new(center_hz, input_rate_hz);
+        let resampler = PolyphaseResampler::new(l, m, ntaps, hist_margin);
+        let delay = ((ntaps - 1) / 2) / l as usize;
+        Self {
+            mixer,
+            resampler,
+            flush_zeros: delay + 1,
+        }
+    }
+
+    /// This stage's own estimated group delay, in its *input*
+    /// (already-complex-baseband-rate) samples — same caveat as
+    /// [`StreamingComplexDdc::group_delay_input_samples`].
+    pub fn group_delay_input_samples(&self) -> usize {
+        self.flush_zeros.saturating_sub(1)
+    }
+
+    /// This stage's own group delay in its *output* samples — see
+    /// [`PolyphaseResampler::group_delay_output`], which this
+    /// forwards.
+    pub fn group_delay_output_samples(&self) -> usize {
+        self.resampler.group_delay_output()
+    }
+
+    pub fn push_one(&mut self, i: f32, q: f32, out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
+        let (mi, mq) = self.mixer.mix_complex(i, q);
+        self.resampler.push(mi, mq, out_i, out_q);
+    }
+
+    pub fn push(&mut self, xi: &[f32], xq: &[f32], out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
+        for (&i, &q) in xi.iter().zip(xq.iter()) {
+            self.push_one(i, q, out_i, out_q);
+        }
+    }
+
+    pub fn flush(&mut self, out_i: &mut Vec<f32>, out_q: &mut Vec<f32>) {
+        for _ in 0..self.flush_zeros {
+            self.push_one(0.0, 0.0, out_i, out_q);
         }
     }
 }
