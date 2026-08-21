@@ -52,6 +52,7 @@ use mfsk_core::engine::sync::{
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
+use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
 use mfsk_core::fst4::ddc::{
     REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade,
     wideband_refine_recenter,
@@ -200,6 +201,72 @@ const MONITOR_DEADLINE_MS: i64 = 45_000;
 /// -30 ~6.6, -60 ~7.2, -120 ~9.7, -300 ~12.3 — the T/R period is *not*
 /// the decode budget). Reported as a marker, not enforced.
 const TX_TURNAROUND_BUDGET_MS: i64 = 7_200;
+
+/// `MFSK_FST4_DDC_BENCH_CAP_MS=<n>` puts a **per-candidate wall-clock
+/// cap** on the decode ladder. `0`/unset keeps the uncapped path.
+///
+/// The uncapped monitor run (2026-08-22) reached only rank 13 of 50
+/// inside its 45 s deadline because two noise candidates ran the full
+/// OSD escalation for **~19 s each — 38 s of the 55 s loop**. Real
+/// signals in that same run decoded in 53-54 ms, so the ladder's long
+/// tail is spent exclusively on candidates that never decode, and
+/// cutting it costs a monitor almost nothing while roughly doubling how
+/// much of the band it covers per slot.
+///
+/// This is what `fst4::rung_major::decode_phase_split_timed`'s
+/// `budget_ok` parameter has been for since #317 — it has existed with
+/// every caller passing `None`. Wiring it is the point of this mode.
+/// **Phase A is deliberately never gated** by that function (the
+/// cheapest rung always runs), so a capped candidate still gets its
+/// `llra` attempt; the cap only truncates the escalation above it.
+const MONITOR_CAP_MS: i64 = parse_dec(option_env!("MFSK_FST4_DDC_BENCH_CAP_MS"));
+
+/// `str::parse` isn't const, and this has to be a `const` because
+/// [`MONITOR_CAP_MS`] gates a `const` code path — same reason
+/// [`is_wide`] spells its comparison out bytewise. Non-numeric input
+/// yields 0 (= disabled) rather than failing the build, matching how
+/// the other switches here treat an unrecognised value.
+const fn parse_dec(v: Option<&str>) -> i64 {
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            if b.is_empty() {
+                return 0;
+            }
+            let mut i = 0usize;
+            let mut acc = 0i64;
+            while i < b.len() {
+                let d = b[i];
+                if d < b'0' || d > b'9' {
+                    return 0;
+                }
+                acc = acc * 10 + (d - b'0') as i64;
+                i += 1;
+            }
+            acc
+        }
+        None => 0,
+    }
+}
+
+/// Absolute `esp_timer` deadline (µs) the [`budget_ok`] `fn` item reads.
+///
+/// `decode_phase_split_timed` takes `Option<fn() -> bool>` — a plain
+/// function pointer, not a closure — so the deadline cannot be captured
+/// and has to travel through a global. Xtensa's `max_atomic_width` is
+/// 32, so there is no `AtomicI64` to use; this mirrors
+/// `wspr_dual_core`'s `DeadlineCell` exactly, including why it is an
+/// `UnsafeCell` rather than an atomic. Single-threaded here (one bench
+/// task), written only between candidates.
+struct DeadlineCell(core::cell::UnsafeCell<i64>);
+// SAFETY: written only by the bench task between candidates, read only
+// by `budget_ok` on that same task. No other task touches it.
+unsafe impl Sync for DeadlineCell {}
+static DEADLINE_US: DeadlineCell = DeadlineCell(core::cell::UnsafeCell::new(i64::MAX));
+
+fn budget_ok() -> bool {
+    now_us() < unsafe { *DEADLINE_US.0.get() }
+}
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -693,20 +760,50 @@ fn run_monitor_loop(
         let refine_us = now_us() - t_r;
 
         let t_d = now_us();
-        let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
-        let result = process_candidate_precomputed::<Fst4s60>(
-            cand,
-            &[],
-            &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
-            DecodeDepth::FULL,
-            DecodeStrictness::Normal,
-            &[],
-            EqMode::Off,
-            SYNC_Q_MIN,
-            precomputed,
-            true,
-            false,
-        );
+        let result = if MONITOR_CAP_MS > 0 {
+            // Per-candidate cap: arm the deadline, then let
+            // `decode_phase_split_timed` poll it before every Phase B/C
+            // stage. One candidate per call — passing all 50 at once
+            // would be the "proper" PhaseSplit shape, but it needs every
+            // candidate's `cd0` resident simultaneously (~266 KB each,
+            // ~13 MB for 50) which this board's PSRAM cannot hold; that
+            // is the same constraint the batch path's Stage 2a/2c split
+            // exists for.
+            unsafe { *DEADLINE_US.0.get() = now_us() + MONITOR_CAP_MS * 1000 };
+            let inputs = [RungMajorCandidate {
+                cand: cand.clone(),
+                cd0,
+                refined_freq_hz: s2.freq_hz,
+                i0: s2.i0,
+            }];
+            let (mut out, _) = decode_phase_split_timed::<Fst4s60>(
+                &inputs,
+                false, // skip_llrc — keep the full ladder; the cap, not
+                // a fixed ablation, is what bounds cost here
+                false,
+                &[0],
+                None,
+                Some(budget_ok),
+                12_000.0,
+            );
+            unsafe { *DEADLINE_US.0.get() = i64::MAX };
+            out.pop().flatten()
+        } else {
+            let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
+            process_candidate_precomputed::<Fst4s60>(
+                cand,
+                &[],
+                &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
+                DecodeDepth::FULL,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                SYNC_Q_MIN,
+                precomputed,
+                true,
+                false,
+            )
+        };
         let decode_us = now_us() - t_d;
         let since_loop_ms = (now_us() - t_loop0) / 1000;
 
