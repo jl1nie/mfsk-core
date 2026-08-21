@@ -81,7 +81,11 @@ struct WavMeta {
     path: PathBuf,
 }
 
-fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
+/// `fst4_60_<channel>_m<snr>_<trial>.wav` — see the identical parser in
+/// `fst4_monitor_cap_sensitivity` for why it matches on the prefix
+/// rather than splitting on `_`.
+fn collect_wavs(dir: &Path, channel: &str) -> Vec<WavMeta> {
+    let prefix = format!("fst4_60_{channel}_m");
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -93,14 +97,13 @@ fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let parts: Vec<&str> = stem.split('_').collect();
-        if parts.len() != 5 || parts[0] != "fst4" || parts[1] != "60" || parts[2] != "awgn" {
-            continue;
-        }
-        let Some(rest) = parts[3].strip_prefix('m') else {
+        let Some(rest) = stem.strip_prefix(&prefix) else {
             continue;
         };
-        let Ok(v) = rest.parse::<i32>() else { continue };
+        let Some((snr, _trial)) = rest.split_once('_') else {
+            continue;
+        };
+        let Ok(v) = snr.parse::<i32>() else { continue };
         out.push(WavMeta { snr_db: -v, path });
     }
     out.sort_by_key(|m| -m.snr_db);
@@ -214,14 +217,39 @@ fn run_trial(audio: &[i16]) -> Trial {
     }
 }
 
+/// AWGN, the channel the rank distribution was first measured on.
 #[test]
 #[ignore = "tier C — needs the fst4_60_awgn_* sweep corpus; run with --ignored --nocapture"]
 fn fst4_60_wideband_recall_vs_max_cand() {
+    // Threshold region only — the question is about weak signals losing
+    // slot competitions.
+    run_rank_sweep("awgn", -28, -26);
+}
+
+/// The same rank distribution under CCIR-moderate fading. Ordering, the
+/// per-candidate cap and the rank-tiered decode depth (#341) all rest
+/// on the AWGN finding that the signal sits at median rank 1 and that
+/// 88% of achievable decodes are inside rank 8 — neither of which is
+/// guaranteed to survive a fading channel, where the coarse score is
+/// integrated over a slot the signal fades within.
+///
+/// Window shifted up ~2.5 dB from AWGN's, to this channel's own
+/// threshold region — measured production recall here is 20% at -26 dB,
+/// 56% at -25, 85% at -24 (`fst4_sweep`, 100 trials/cell).
+#[test]
+#[ignore = "tier C — needs the fst4_60_ccir_moderate_* sweep corpus; run with --ignored --nocapture"]
+fn fst4_60_wideband_recall_vs_max_cand_ccir_moderate() {
+    run_rank_sweep("ccir_moderate", -26, -24);
+}
+
+/// `snr_lo`/`snr_hi` are inclusive dB bounds on which corpus cells to
+/// run — that channel's threshold region.
+fn run_rank_sweep(channel: &str, snr_lo: i32, snr_hi: i32) {
     let dir = sweep_dir();
-    let wavs = collect_wavs(&dir);
+    let wavs = collect_wavs(&dir, channel);
     if wavs.is_empty() {
         eprintln!(
-            "No fst4_60_awgn_*.wav in {dir:?}\n\
+            "No fst4_60_{channel}_*.wav in {dir:?}\n\
              Run: scripts/build_fst4sim.sh && scripts/gen_fst4_sweep_wavs.sh"
         );
         return;
@@ -233,14 +261,15 @@ fn fst4_60_wideband_recall_vs_max_cand() {
 
     let mut groups: BTreeMap<i32, Vec<&WavMeta>> = BTreeMap::new();
     for w in &wavs {
-        // Threshold region only — the question is about weak signals
-        // losing slot competitions.
-        if (-28..=-26).contains(&w.snr_db) {
+        if (snr_lo..=snr_hi).contains(&w.snr_db) {
             groups.entry(w.snr_db).or_default().push(w);
         }
     }
 
-    eprintln!("\nFST4-60 AWGN wideband — recall vs max_cand truncation point");
+    eprintln!(
+        "\nFST4-60 {} wideband — recall vs max_cand truncation point",
+        channel.to_uppercase()
+    );
     eprintln!("walking a {PROBE_MAX_CAND}-deep list; production is {PROD_MAX_CAND}\n");
     eprintln!(
         "  {:>7}  {:>5}  {:>9}  {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}  {:>12}  {:>9}",

@@ -114,7 +114,12 @@ struct WavMeta {
     path: PathBuf,
 }
 
-fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
+/// `fst4_60_<channel>_m<snr>_<trial>.wav`. Matching on the whole
+/// `fst4_60_<channel>_m` prefix rather than splitting on `_` is what
+/// lets one parser serve both `awgn` and the two-word fading channels
+/// (`ccir_moderate`).
+fn collect_wavs(dir: &Path, channel: &str) -> Vec<WavMeta> {
+    let prefix = format!("fst4_60_{channel}_m");
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -126,14 +131,13 @@ fn collect_wavs(dir: &Path) -> Vec<WavMeta> {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let parts: Vec<&str> = stem.split('_').collect();
-        if parts.len() != 5 || parts[0] != "fst4" || parts[1] != "60" || parts[2] != "awgn" {
-            continue;
-        }
-        let Some(rest) = parts[3].strip_prefix('m') else {
+        let Some(rest) = stem.strip_prefix(&prefix) else {
             continue;
         };
-        let Ok(v) = rest.parse::<i32>() else { continue };
+        let Some((snr, _trial)) = rest.split_once('_') else {
+            continue;
+        };
+        let Ok(v) = snr.parse::<i32>() else { continue };
         out.push(WavMeta { snr_db: -v, path });
     }
     out.sort_by_key(|m| -m.snr_db);
@@ -274,14 +278,40 @@ fn run_trial(audio: &[i16]) -> TrialOutcome {
     }
 }
 
+/// AWGN, the channel every monitor design decision was taken on.
 #[test]
 #[ignore = "tier C — needs the fst4_60_awgn_* sweep corpus; run with --ignored --nocapture"]
 fn fst4_60_monitor_cap_recall_vs_stage_budget() {
+    // Threshold region only — above -24 dB everything decodes at every
+    // budget and the rows carry no information.
+    run_budget_sweep("awgn", i32::MIN, -23);
+}
+
+/// The same measurement under CCIR-moderate fading (0.5 Hz Doppler
+/// spread, 1.0 ms delay spread), which is where a real HF path lives
+/// and where none of the monitor work had been measured.
+///
+/// Its threshold sits ~2.5 dB above AWGN's, so the SNR window differs.
+/// Measured production recall on this corpus (`fst4_sweep`,
+/// `MFSK_FST4_SWEEP_CHANNELS=ccir_moderate`, 100 trials/cell): -27 dB
+/// 1%, -26 dB 20%, -25 dB 56%, -24 dB 85%, -23 dB 96%. So -26..-24 is
+/// this channel's threshold region, the way -28..-26 is AWGN's; at
+/// -27 dB every row would read zero.
+#[test]
+#[ignore = "tier C — needs the fst4_60_ccir_moderate_* sweep corpus; run with --ignored --nocapture"]
+fn fst4_60_monitor_cap_recall_vs_stage_budget_ccir_moderate() {
+    run_budget_sweep("ccir_moderate", -26, -24);
+}
+
+/// `snr_lo`/`snr_hi` are inclusive dB bounds on which corpus cells to
+/// run — the threshold region for that channel, since above it every
+/// budget decodes everything and below it none of them decode anything.
+fn run_budget_sweep(channel: &str, snr_lo: i32, snr_hi: i32) {
     let dir = sweep_dir();
-    let wavs = collect_wavs(&dir);
+    let wavs = collect_wavs(&dir, channel);
     if wavs.is_empty() {
         eprintln!(
-            "No fst4_60_awgn_*.wav in {dir:?}\n\
+            "No fst4_60_{channel}_*.wav in {dir:?}\n\
              Run: scripts/build_fst4sim.sh && scripts/gen_fst4_sweep_wavs.sh"
         );
         return;
@@ -293,14 +323,15 @@ fn fst4_60_monitor_cap_recall_vs_stage_budget() {
 
     let mut groups: BTreeMap<i32, Vec<&WavMeta>> = BTreeMap::new();
     for w in &wavs {
-        // Threshold region only — above -24 dB everything decodes at
-        // every budget and the rows carry no information.
-        if w.snr_db <= -23 {
+        if (snr_lo..=snr_hi).contains(&w.snr_db) {
             groups.entry(w.snr_db).or_default().push(w);
         }
     }
 
-    eprintln!("\nFST4-60 AWGN — monitor recall vs per-candidate stage budget");
+    eprintln!(
+        "\nFST4-60 {} — monitor recall vs per-candidate stage budget",
+        channel.to_uppercase()
+    );
     eprintln!("budget 4 = uncapped reference; 0 = llra only\n");
     eprintln!(
         "  {:>7}  {:>5}  {:>9}  {:>7} {:>7} {:>7} {:>7} {:>7}  {:>10}",
