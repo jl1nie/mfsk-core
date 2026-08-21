@@ -29,10 +29,20 @@
 # 0x400000` forever, even after a full `espflash erase-flash`. Every
 # app flashed through this script before that issue happened to fit
 # under 4 MB total (factory + littlefs etc.), so this was silently
-# wrong the whole time it just never mattered. `FLASH_SIZE` below
-# defaults to empty (old behaviour, for boards this hasn't been
-# verified safe on yet) — pass it explicitly for any board/partition
-# table that needs more than 4 MB.
+# wrong the whole time it just never mattered — and it recurred for
+# real on a CoreS3 fst4-ddc-bench flash (2026-08-21): board-info
+# correctly reports 16 MB, but the app header still said 4 MB and the
+# board boot-looped on the same partition-table-verification error.
+#
+# **Fixed at the root, not per-board**: when the caller doesn't pass
+# `FLASH_SIZE` explicitly, this script now runs `espflash board-info`
+# first and parses its own "Flash size: NNMB" line to build the
+# `--flash-size` flag automatically — the same value the connected
+# chip already reports, just also handed to the part of espflash that
+# was silently ignoring it. Falls back to the old (unset) behaviour
+# with a warning if `board-info` fails or its output doesn't parse, so
+# a flaky port doesn't turn this into a harder failure than before.
+# Pass `FLASH_SIZE` explicitly to override the detected value.
 #
 # Usage:
 #   embedded-poc/scripts/flash-monitor.sh <ELF> <LOG_FILE> [DURATION_SEC] [PORT] [PARTITIONS] [FLASH_SIZE]
@@ -41,7 +51,7 @@
 #   DURATION_SEC = 90
 #   PORT         = /dev/ttyACM0
 #   PARTITIONS   = ./partitions.csv
-#   FLASH_SIZE   = (unset — espflash's own default, currently 4mb regardless of chip)
+#   FLASH_SIZE   = (unset — auto-detected from the connected chip via `espflash board-info`)
 #
 # Requires `source ~/export-esp.sh` to have been run in the parent shell.
 
@@ -65,6 +75,24 @@ fi
 
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
+
+if [[ -z "$FLASH_SIZE" ]]; then
+    # `board-info`'s own line looks like "Flash size:        16MB" —
+    # take the last field, lower-case it (espflash's `--flash-size`
+    # wants e.g. `16mb`, not `16MB`). `|| true`: don't let a flaky
+    # port turn detection failure into a hard script failure under
+    # `set -e`; DETECTED simply stays empty and the fallback below
+    # warns and proceeds exactly as before this fix existed.
+    DETECTED=$(espflash board-info --port "$PORT" 2>/dev/null \
+        | grep -i '^Flash size' \
+        | awk '{print tolower($NF)}') || true
+    if [[ -n "$DETECTED" ]]; then
+        FLASH_SIZE="$DETECTED"
+        echo "[flash-monitor] auto-detected flash size: $FLASH_SIZE"
+    else
+        echo "[flash-monitor] WARNING: could not auto-detect flash size from 'espflash board-info' — falling back to espflash's own default (currently 4mb regardless of chip). Pass FLASH_SIZE explicitly if this board's factory partition exceeds 4 MB." >&2
+    fi
+fi
 
 FLASH_SIZE_FLAG=""
 if [[ -n "$FLASH_SIZE" ]]; then
