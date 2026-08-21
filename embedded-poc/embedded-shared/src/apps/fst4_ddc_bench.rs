@@ -755,9 +755,80 @@ fn run_monitor_loop(
         n_tried += 1;
 
         let t_r = now_us();
+        let t_ddcref0 = now_us();
         let cd0 = ddc_refine(cand, coarse_i, coarse_q, coarse_delay_orig);
+        let t_ddcref = now_us() - t_ddcref0;
+        let t_sync0 = now_us();
         let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
+        let t_sync = now_us() - t_sync0;
         let refine_us = now_us() - t_r;
+
+        // One-shot A/B: is `fst4_sync_search` compute-bound or bound by
+        // PSRAM reads of `cd0`?
+        //
+        // **Measured 2026-08-22: PSRAM 590 ms vs INTERNAL 589 ms —
+        // the memory hypothesis is falsified.** Kept as a standing
+        // check rather than deleted, because the hypothesis was
+        // plausible enough to be worth stating and is the kind of thing
+        // that gets re-proposed: `fst4_sync_search` does ~3.22M complex
+        // MAC (2235 grid cells x 5 Costas blocks x 288 samples) ~=
+        // 107 ms of arithmetic at 240 MHz but measures ~590 ms, `cd0`
+        // is ~53 KB, and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`
+        // puts it in PSRAM — and this repo had already found exactly
+        // that shape once, in WSPR's `refine_alignment_top_k`
+        // ("97.5% PSRAM re-reads, not FFTs"). It is simply not what is
+        // happening here.
+        //
+        // The ~5.5x gap over the arithmetic floor is therefore in the
+        // scalar kernel itself, which makes it addressable by esp-dsp
+        // PIE (`dsps_dotprod_f32_aes3`, 4-wide f32) rather than by
+        // placement. Note that kernel needs planar I/Q — `cd0` is
+        // interleaved `Complex32` today — whereas
+        // `PolyphaseResampler::dot` is already in the right layout.
+        //
+        // The copy is timed separately and is not part of the
+        // comparison.
+        if n_tried == 1 {
+            const MALLOC_CAP_8BIT_L: u32 = 1 << 2;
+            const MALLOC_CAP_INTERNAL_L: u32 = 1 << 11;
+            let bytes = core::mem::size_of_val(&cd0[..]);
+            let p = unsafe {
+                esp_idf_svc::sys::heap_caps_malloc(
+                    bytes,
+                    MALLOC_CAP_INTERNAL_L | MALLOC_CAP_8BIT_L,
+                ) as *mut Complex32
+            };
+            if p.is_null() {
+                log::info!(
+                    "fst4_ddc_bench: [diag] internal alloc of {} B failed — cd0 stays in PSRAM",
+                    bytes
+                );
+            } else {
+                let t_cp0 = now_us();
+                unsafe { core::ptr::copy_nonoverlapping(cd0.as_ptr(), p, cd0.len()) };
+                let t_cp = now_us() - t_cp0;
+                let internal_cd0: &[Complex32] = unsafe { core::slice::from_raw_parts(p, cd0.len()) };
+                let t_i0 = now_us();
+                let s_int = fst4_sync_search::<Fst4s60>(internal_cd0, cand);
+                let t_int = now_us() - t_i0;
+                log::info!(
+                    "fst4_ddc_bench: [diag] fst4_sync_search cd0 placement — PSRAM {} ms vs \
+                     INTERNAL {} ms ({} KB, copy {} ms) — score {:.1} vs {:.1}",
+                    t_sync / 1000,
+                    t_int / 1000,
+                    bytes / 1024,
+                    t_cp / 1000,
+                    s2.score,
+                    s_int.score,
+                );
+                unsafe { esp_idf_svc::sys::heap_caps_free(p as *mut core::ffi::c_void) };
+            }
+            log::info!(
+                "fst4_ddc_bench: [diag] refine split — ddc_refine {} ms + fst4_sync_search {} ms",
+                t_ddcref / 1000,
+                t_sync / 1000,
+            );
+        }
 
         let t_d = now_us();
         let result = if MONITOR_CAP_MS > 0 {
