@@ -42,10 +42,35 @@
 //! The misaligned column is the one that applies today:
 //! `PolyphaseResampler`'s window start advances by a Bresenham carry,
 //! so the history pointer lands on an arbitrary 4-byte offset.
-//! Capturing the remaining ~2.5x needs aligned history buffers and a
-//! tap depth padded to a multiple of 4, which is a separate change —
-//! deliberately not bundled here, so the cheap win lands first and the
-//! alignment work can be measured on its own.
+//!
+//! ## Why the remaining ~2.5x was costed and declined (2026-08-22)
+//!
+//! Measured the non-dot floor of each stage directly, by stubbing this
+//! function to return without computing:
+//!
+//! - wideband DDC: **905 ms** of its 1976 ms is *not* dot product. So
+//!   the dots went 2496 ms (portable) -> 1071 ms here, an in-situ 2.33x
+//!   — and aligning them would give 1976 -> ~1330 ms, **1.49x**.
+//! - per-candidate `ddc_refine`: the same accounting puts its non-dot
+//!   floor near 240 ms of 314 ms, so alignment is worth ~**1.17x**
+//!   there.
+//!
+//! The 1.49x lands on the DDC, which is the one stage that can run
+//! *during* capture (WSPR ships exactly this: `wspr_app`'s `ddc_loop`
+//! -> `DDC_READY_IDX` -> `scan_loop`), so it does not come out of the
+//! post-slot budget at all — at 1976 ms per 60 s slot it is a 3% duty
+//! cycle. The stage that actually binds the monitor deadline is
+//! per-candidate refine, where alignment is worth ~5% (905 -> 860 ms
+//! per candidate, 43 -> ~45 candidates in a 45 s deadline).
+//!
+//! Against that: the fast path needs *both* pointers 16-byte aligned,
+//! and the moving window start means fixing it requires four
+//! pre-shifted tap tables per phase — **168 KB for the wideband coarse
+//! cascade** (L=64) against ~190 KB of free internal DRAM. Copying each
+//! window into an aligned scratch instead gives back roughly a third of
+//! the gain. Neither is worth 5% on the binding stage, so dual-core
+//! (#327) was taken first. Revisit if the DDC's duty cycle ever becomes
+//! the constraint.
 
 /// Below this length the FFI hop costs more than it saves; the portable
 /// loop wins. `dotprod-bench`'s shortest measured depth is 107, where
