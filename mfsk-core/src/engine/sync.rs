@@ -760,6 +760,173 @@ pub fn spectra_crop_for<P: Protocol>(
     Some((ia, (ib + headroom).min(usable.saturating_sub(1))))
 }
 
+/// Upper bound on any protocol's sync-block count (FT8=3, FT4=4,
+/// FST4=5 — see each protocol's `SYNC_MODE`/`mod.rs` sync-block table)
+/// with headroom. Stack arrays sized to this bound let
+/// [`fill_sync2d_row`]'s `t_blocks`/`t0_blocks` be reused across every
+/// lag of a row instead of heap-allocated per cell — that loop runs
+/// `n_freq × (2·jz+1)` times per candidate search (thousands of cells),
+/// so a fresh `Vec` per cell was thousands of small allocations, and an
+/// opaque allocator call is also an optimization barrier LLVM can't see
+/// through.
+const MAX_SYNC_BLOCKS: usize = 8;
+
+/// Shape of the (freq-bin × lag) correlation matrix
+/// [`coarse_sync_from_spectra`] fills, plus the per-row parameters
+/// [`fill_sync2d_row`] reads.
+///
+/// Exposed so a caller can fill that matrix itself — one row at a time,
+/// on whichever core it likes — and hand the finished matrix to
+/// [`coarse_sync_from_sync2d`]. Rows are fully independent (the host
+/// already fills them through rayon), which is the whole reason this
+/// seam exists: on CoreS3's wideband FST4-60 search the fill is the
+/// largest post-slot item while the second core sits idle (#327).
+///
+/// Build one with [`sync2d_shape`]; the fields are read-only geometry.
+#[derive(Copy, Clone, Debug)]
+pub struct Sync2dShape {
+    /// Protocol/grid dimensions every row read goes through.
+    pub d: SyncDims,
+    /// Absolute spectrogram bin of row 0.
+    pub ia: usize,
+    /// Rows — one per candidate bin `ia..=ib`.
+    pub n_freq: usize,
+    /// Columns per row, lags `-jz..=jz`; also the row stride.
+    pub n_lag: usize,
+    /// `grid.usable_bins(&d)`, the clamp every tone read applies.
+    usable: usize,
+}
+
+impl Sync2dShape {
+    /// `f32`s in the whole matrix — `n_freq * n_lag`.
+    pub fn len(&self) -> usize {
+        self.n_freq * self.n_lag
+    }
+
+    /// Whether the band produced no candidate bins at all.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// The correlation matrix's shape for a band, or `None` when the band
+/// holds no candidate bin.
+///
+/// Derives `ia`/`ib` exactly as [`coarse_sync_from_spectra`] does —
+/// which is the point: a caller filling rows itself must index the same
+/// grid the ranking stage will. Note this is the *candidate* bin range,
+/// narrower than the spectrogram crop [`spectra_crop_for`] returns by
+/// the `headroom` bins the reference tones read above `ib`.
+pub fn sync2d_shape<P: Protocol>(
+    freq_min: f32,
+    freq_max: f32,
+    grid: RxGrid,
+) -> Option<Sync2dShape> {
+    let d = SyncDims::of::<P>(grid.sample_rate_hz);
+    let ntones = P::NTONES as usize;
+    let usable = grid.usable_bins(&d);
+
+    // Leave room for NTONES-1 tones above the candidate bin.
+    let ia = grid.bin_of(&d, freq_min);
+    let headroom = d.nfos * (ntones - 1) + 1;
+    let ib = grid
+        .bin_of(&d, freq_max)
+        .min(usable.saturating_sub(headroom));
+    if ib < ia {
+        return None;
+    }
+
+    Some(Sync2dShape {
+        d,
+        ia,
+        n_freq: ib - ia + 1,
+        n_lag: (2 * d.jz + 1) as usize,
+        usable,
+    })
+}
+
+/// Fill row `fi` of the correlation matrix: the Costas-grid score at
+/// every lag for candidate bin `shape.ia + fi`.
+///
+/// `row.len()` must be `shape.n_lag`. Every cell is a pure function of
+/// the spectrogram, so rows may be filled in any order, concurrently,
+/// by any number of threads or cores.
+#[inline]
+pub fn fill_sync2d_row<P: Protocol>(
+    s: &Spectrogram,
+    shape: &Sync2dShape,
+    fi: usize,
+    row: &mut [f32],
+) {
+    debug_assert_eq!(row.len(), shape.n_lag);
+    let d = &shape.d;
+    let ntones = P::NTONES as usize;
+    let usable = shape.usable;
+    let num_blocks = P::SYNC_MODE.blocks().len();
+    debug_assert!(
+        num_blocks <= MAX_SYNC_BLOCKS,
+        "protocol has more sync blocks than MAX_SYNC_BLOCKS accounts for"
+    );
+
+    let i = shape.ia + fi;
+    let mut t_blocks = [0.0f32; MAX_SYNC_BLOCKS];
+    let mut t0_blocks = [0.0f32; MAX_SYNC_BLOCKS];
+    for (jlag, lag) in (-d.jz..=d.jz).enumerate() {
+        t_blocks[..num_blocks].fill(0.0);
+        t0_blocks[..num_blocks].fill(0.0);
+
+        for (bk, block) in P::SYNC_MODE.blocks().iter().enumerate() {
+            let block_offset = d.nssy as i32 * block.start_symbol as i32;
+            for (n, &costas_n) in block.pattern.iter().enumerate() {
+                let m = lag + d.jstrt + block_offset + (d.nssy * n) as i32;
+                let tone_bin = i + d.nfos * costas_n as usize;
+                if m >= 0 && (m as usize) < d.nhsym && tone_bin < usable {
+                    let m = m as usize;
+                    t_blocks[bk] += s.get(tone_bin, m);
+                    // Reference: sum over all NTONES tones at this time slot.
+                    t0_blocks[bk] += (0..ntones)
+                        .map(|k| s.get((i + d.nfos * k).min(usable - 1), m))
+                        .sum::<f32>();
+                }
+            }
+        }
+
+        // All blocks combined.
+        let t_all: f32 = t_blocks[..num_blocks].iter().sum();
+        let t0_all: f32 = t0_blocks[..num_blocks].iter().sum();
+        // Zero-denominator: clean synthetic signal lies entirely on
+        // Costas tones (t0_all == t_all).  Report t_all directly so
+        // round-trip tests score above noise-floor candidates.
+        let t0_ref = (t0_all - t_all) / (ntones as f32 - 1.0);
+        let sync_all = if t0_ref > f32::EPSILON {
+            t_all / t0_ref
+        } else if t_all > 0.0 {
+            t_all
+        } else {
+            0.0
+        };
+
+        // Trailing N-1 blocks (drop block 0) tolerate an early-block loss.
+        let score = if num_blocks > 1 {
+            let t_tail: f32 = t_blocks[1..num_blocks].iter().sum();
+            let t0_tail: f32 = t0_blocks[1..num_blocks].iter().sum();
+            let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
+            let sync_tail = if t0_tail_ref > f32::EPSILON {
+                t_tail / t0_tail_ref
+            } else if t_tail > 0.0 {
+                t_tail
+            } else {
+                0.0
+            };
+            sync_all.max(sync_tail)
+        } else {
+            sync_all
+        };
+
+        row[jlag] = score;
+    }
+}
+
 /// [`coarse_sync`]'s second half: everything from a finished
 /// spectrogram to a ranked candidate list.
 ///
@@ -770,6 +937,10 @@ pub fn spectra_crop_for<P: Protocol>(
 ///
 /// `s` must have been produced with the same `P`/`grid` and the crop
 /// [`spectra_crop_for`] returns; anything else indexes wrongly.
+///
+/// Itself two stages — [`fill_sync2d_row`] across every row, then
+/// [`coarse_sync_from_sync2d`] — split apart for callers that want to
+/// spread the fill across cores; see [`Sync2dShape`].
 #[allow(clippy::too_many_arguments)]
 pub fn coarse_sync_from_spectra<P: Protocol>(
     s: &Spectrogram,
@@ -780,120 +951,53 @@ pub fn coarse_sync_from_spectra<P: Protocol>(
     max_cand: usize,
     grid: RxGrid,
 ) -> Vec<SyncCandidate> {
-    let d = SyncDims::of::<P>(grid.sample_rate_hz);
-    let ntones = P::NTONES as usize;
-    let pattern_len = P::SYNC_MODE.blocks()[0].pattern.len();
-    let usable = grid.usable_bins(&d);
-
-    // Leave room for NTONES-1 tones above the candidate bin.
-    let ia = grid.bin_of(&d, freq_min);
-    let headroom = d.nfos * (ntones - 1) + 1;
-    let ib = grid
-        .bin_of(&d, freq_max)
-        .min(usable.saturating_sub(headroom));
-    if ib < ia {
+    let Some(shape) = sync2d_shape::<P>(freq_min, freq_max, grid) else {
         return Vec::new();
-    }
-
-    let n_freq = ib - ia + 1;
-    let n_lag = (2 * d.jz + 1) as usize;
-    let mut sync2d = vec![0.0f32; n_freq * n_lag];
-    let idx = |fi: usize, lag: i32| fi * n_lag + (lag + d.jz) as usize;
-
-    // Per-block (t_block_k, t0_block_k) accumulators. All-blocks score =
-    // Σ t/Σ t0_mean. Trailing-(N-1)-blocks score excludes block 0 (the
-    // FT8 heuristic that a late start can still sync on blocks 1..).
-    let num_blocks = P::SYNC_MODE.blocks().len();
-    // Upper bound on any protocol's block count (FT8=3, FT4=4, FST4=5 —
-    // see each protocol's `SYNC_MODE`/`mod.rs` sync-block table) with
-    // headroom. Stack arrays sized to this bound let `t_blocks`/
-    // `t0_blocks` below be reused across every (freq-bin, lag) cell
-    // instead of heap-allocated per cell — this loop runs `n_freq ×
-    // (2·d.jz+1)` times per candidate search (thousands of cells), so a
-    // fresh `Vec` per cell was thousands of small allocations, and an
-    // opaque allocator call is also an optimization barrier LLVM can't
-    // see through.
-    const MAX_SYNC_BLOCKS: usize = 8;
-    debug_assert!(
-        num_blocks <= MAX_SYNC_BLOCKS,
-        "protocol has more sync blocks than MAX_SYNC_BLOCKS accounts for"
-    );
+    };
 
     // Compute correlation scores for every (freq-bin, lag) cell.
     // Each cell is fully independent, so the outer fi loop is safe to parallelise.
-    macro_rules! fill_sync2d_row {
-        ($fi:expr, $row:expr) => {{
-            let i = ia + $fi;
-            let mut t_blocks = [0.0f32; MAX_SYNC_BLOCKS];
-            let mut t0_blocks = [0.0f32; MAX_SYNC_BLOCKS];
-            for (jlag, lag) in (-d.jz..=d.jz).enumerate() {
-                t_blocks[..num_blocks].fill(0.0);
-                t0_blocks[..num_blocks].fill(0.0);
-
-                for (bk, block) in P::SYNC_MODE.blocks().iter().enumerate() {
-                    let block_offset = d.nssy as i32 * block.start_symbol as i32;
-                    for (n, &costas_n) in block.pattern.iter().enumerate() {
-                        let m = lag + d.jstrt + block_offset + (d.nssy * n) as i32;
-                        let tone_bin = i + d.nfos * costas_n as usize;
-                        if m >= 0 && (m as usize) < d.nhsym && tone_bin < usable {
-                            let m = m as usize;
-                            t_blocks[bk] += s.get(tone_bin, m);
-                            // Reference: sum over all NTONES tones at this time slot.
-                            t0_blocks[bk] += (0..ntones)
-                                .map(|k| s.get((i + d.nfos * k).min(usable - 1), m))
-                                .sum::<f32>();
-                        }
-                    }
-                }
-
-                // All blocks combined.
-                let t_all: f32 = t_blocks[..num_blocks].iter().sum();
-                let t0_all: f32 = t0_blocks[..num_blocks].iter().sum();
-                // Zero-denominator: clean synthetic signal lies entirely on
-                // Costas tones (t0_all == t_all).  Report t_all directly so
-                // round-trip tests score above noise-floor candidates.
-                let t0_ref = (t0_all - t_all) / (ntones as f32 - 1.0);
-                let sync_all = if t0_ref > f32::EPSILON {
-                    t_all / t0_ref
-                } else if t_all > 0.0 {
-                    t_all
-                } else {
-                    0.0
-                };
-
-                // Trailing N-1 blocks (drop block 0) tolerate an early-block loss.
-                let score = if num_blocks > 1 {
-                    let t_tail: f32 = t_blocks[1..num_blocks].iter().sum();
-                    let t0_tail: f32 = t0_blocks[1..num_blocks].iter().sum();
-                    let t0_tail_ref = (t0_tail - t_tail) / (ntones as f32 - 1.0);
-                    let sync_tail = if t0_tail_ref > f32::EPSILON {
-                        t_tail / t0_tail_ref
-                    } else if t_tail > 0.0 {
-                        t_tail
-                    } else {
-                        0.0
-                    };
-                    sync_all.max(sync_tail)
-                } else {
-                    sync_all
-                };
-
-                $row[jlag] = score;
-            }
-        }};
-    }
+    let mut sync2d = alloc::vec![0.0f32; shape.len()];
 
     #[cfg(feature = "parallel")]
     sync2d
-        .par_chunks_mut(n_lag)
+        .par_chunks_mut(shape.n_lag)
         .enumerate()
-        .for_each(|(fi, row)| fill_sync2d_row!(fi, row));
+        .for_each(|(fi, row)| fill_sync2d_row::<P>(s, &shape, fi, row));
 
     #[cfg(not(feature = "parallel"))]
-    for fi in 0..n_freq {
-        let start = fi * n_lag;
-        fill_sync2d_row!(fi, sync2d[start..start + n_lag]);
+    for (fi, row) in sync2d.chunks_mut(shape.n_lag).enumerate() {
+        fill_sync2d_row::<P>(s, &shape, fi, row);
     }
+
+    coarse_sync_from_sync2d::<P>(s, &sync2d, &shape, sync_min, freq_hint, max_cand, grid)
+}
+
+/// [`coarse_sync_from_spectra`]'s ranking half: peak detection,
+/// noise-floor normalisation, the FST4 stage-1 OR-gate, dedup and
+/// ranking, over an already-filled correlation matrix.
+///
+/// `sync2d` must be `shape.len()` long and row-major with stride
+/// `shape.n_lag` — i.e. exactly what [`fill_sync2d_row`] writes, and
+/// `s`/`shape` must be the same pair those rows were filled from.
+#[allow(clippy::too_many_arguments)]
+pub fn coarse_sync_from_sync2d<P: Protocol>(
+    s: &Spectrogram,
+    sync2d: &[f32],
+    shape: &Sync2dShape,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    max_cand: usize,
+    grid: RxGrid,
+) -> Vec<SyncCandidate> {
+    debug_assert_eq!(sync2d.len(), shape.len());
+    let d = shape.d;
+    let ntones = P::NTONES as usize;
+    let usable = shape.usable;
+    let ia = shape.ia;
+    let n_freq = shape.n_freq;
+    let n_lag = shape.n_lag;
+    let idx = |fi: usize, lag: i32| fi * n_lag + (lag + d.jz) as usize;
 
     // Per-frequency peak detection — non-maximum suppression.
     //
@@ -1056,8 +1160,6 @@ pub fn coarse_sync_from_spectra<P: Protocol>(
     #[cfg(not(feature = "parallel"))]
     let mut cands: Vec<SyncCandidate> = (0..n_freq).flat_map(fi_cands).collect();
 
-    let _ = pattern_len; // currently unused; kept for future scoring weights
-
     // De-duplicate: within 4 Hz and 40 ms, keep highest score.
     //
     // `suppressed` records the decision separately from the score
@@ -1080,22 +1182,7 @@ pub fn coarse_sync_from_spectra<P: Protocol>(
     // score gate but fail stage 1, which is what the #146 OR-gate exists
     // to keep. The defect is only that a rejected duplicate comes back,
     // so only that is fixed.
-    let mut suppressed = alloc::vec![false; cands.len()];
-    for i in 1..cands.len() {
-        for j in 0..i {
-            let fdiff = (cands[i].freq_hz - cands[j].freq_hz).abs();
-            let tdiff = (cands[i].dt_sec - cands[j].dt_sec).abs();
-            if fdiff < 4.0 && tdiff < 0.04 {
-                if cands[i].score >= cands[j].score {
-                    cands[j].score = 0.0;
-                    suppressed[j] = true;
-                } else {
-                    cands[i].score = 0.0;
-                    suppressed[i] = true;
-                }
-            }
-        }
-    }
+    let suppressed = dedup_suppress(&mut cands);
     let mut keep = suppressed.iter().map(|s| !s);
     cands.retain(|c| {
         if !keep.next().unwrap_or(true) {
@@ -1109,6 +1196,66 @@ pub fn coarse_sync_from_spectra<P: Protocol>(
     });
 
     rank_candidates(cands, freq_hint, max_cand)
+}
+
+/// Frequency half-window the dedup below treats as "the same signal".
+const DEDUP_HZ: f32 = 4.0;
+/// Time half-window, likewise.
+const DEDUP_SEC: f32 = 0.04;
+
+/// Mark, per candidate, whether a near-duplicate beat it — same signal
+/// within [`DEDUP_HZ`] and [`DEDUP_SEC`], loser's score zeroed.
+///
+/// A sliding window, not the O(n^2) all-pairs loop this used to be.
+/// `cands` is frequency-sorted by construction — built `fi`-major over
+/// `0..n_freq`, every candidate of one `fi` sharing that bin's
+/// `freq_hz`, and `hz_of` monotonic in the bin (rayon's `collect`
+/// preserves order, so the parallel path is sorted too) — so the
+/// partners of `cands[i]` are the contiguous run ending at `i - 1`
+/// whose frequency is within [`DEDUP_HZ`]. Every pair outside that run
+/// fails the `fdiff` test and mutates nothing, so skipping them leaves
+/// both the visitation order and the result **exactly** as the
+/// all-pairs loop had them. That equivalence is load-bearing rather
+/// than incidental: the loop mutates scores as it goes, so which pairs
+/// are compared in which order decides the outcome
+/// (`dedup_suppress_matches_all_pairs` pins it against a brute-force
+/// reference).
+///
+/// The quadratic term was not academic. On the wideband FST4-60
+/// monitor search (issue #327, real CoreS3) this ranking half cost
+/// 2989 ms against 1130 ms for the correlation fill it ranks — ~15k
+/// candidates from 1881 bins x up to 8 lag peaks each, i.e. ~112M pair
+/// tests. It is also the whole of the otherwise-unexplained 3.2x
+/// per-bin gap between the wideband search (2.147 ms/bin) and the
+/// sniper's (0.671 ms/bin), which #307 had provisionally attributed to
+/// the spectrogram working set: per-bin *fill* cost is in fact the same
+/// for both (0.60 ms/bin), and only this superlinear stage differed.
+fn dedup_suppress(cands: &mut [SyncCandidate]) -> Vec<bool> {
+    let mut suppressed = alloc::vec![false; cands.len()];
+    let mut lo = 0usize;
+    for i in 1..cands.len() {
+        debug_assert!(
+            cands[i].freq_hz >= cands[i - 1].freq_hz,
+            "dedup window assumes frequency-sorted candidates"
+        );
+        while cands[i].freq_hz - cands[lo].freq_hz >= DEDUP_HZ {
+            lo += 1;
+        }
+        for j in lo..i {
+            let fdiff = (cands[i].freq_hz - cands[j].freq_hz).abs();
+            let tdiff = (cands[i].dt_sec - cands[j].dt_sec).abs();
+            if fdiff < DEDUP_HZ && tdiff < DEDUP_SEC {
+                if cands[i].score >= cands[j].score {
+                    cands[j].score = 0.0;
+                    suppressed[j] = true;
+                } else {
+                    cands[i].score = 0.0;
+                    suppressed[i] = true;
+                }
+            }
+        }
+    }
+    suppressed
 }
 
 /// A candidate this far (Hz) from `freq_hint` counts as "at the aim
@@ -1434,10 +1581,14 @@ pub fn refine_candidate<P: Protocol>(
 
 #[cfg(all(test, feature = "fst4", feature = "ft4"))]
 mod tests {
-    use super::{AudioSource, PI, Protocol, RxGrid, SyncDims, compute_spectra};
+    use super::{
+        AudioSource, DEDUP_HZ, DEDUP_SEC, PI, Protocol, RxGrid, SyncCandidate, SyncDims,
+        compute_spectra, dedup_suppress,
+    };
     use crate::engine::protocol::ModulationParams;
     use crate::fst4::{Fst4s15, Fst4s30, Fst4s60, Fst4s120, Fst4s300};
     use crate::ft4::Ft4;
+    use alloc::vec::Vec;
 
     /// `SyncDims::of::<P>(12_000.0)`'s `nsps` is derived from
     /// `P::SYMBOL_DT * sample_rate_hz` (issue #309/#323), not read
@@ -1522,6 +1673,71 @@ mod tests {
                 peak_bin.abs_diff(want) <= 1,
                 "offset={offset_hz}: peak_bin={peak_bin}, RxGrid predicted {want}"
             );
+        }
+    }
+
+    /// The windowed dedup must reproduce the all-pairs loop it
+    /// replaced *exactly*, not merely "keep the same winners": the loop
+    /// zeroes scores as it goes, so a different visitation order can
+    /// flip later comparisons. Brute-force reference, over lists built
+    /// to stress the parts that matter — dense ties (`>=` decides
+    /// those, and it decides them in favour of the later candidate),
+    /// candidates exactly on the 4 Hz boundary, and chains where a
+    /// suppressed candidate is itself compared again afterwards.
+    #[test]
+    fn dedup_suppress_matches_all_pairs() {
+        fn reference(cands: &mut [SyncCandidate]) -> Vec<bool> {
+            let mut suppressed = alloc::vec![false; cands.len()];
+            for i in 1..cands.len() {
+                for j in 0..i {
+                    let fdiff = (cands[i].freq_hz - cands[j].freq_hz).abs();
+                    let tdiff = (cands[i].dt_sec - cands[j].dt_sec).abs();
+                    if fdiff < DEDUP_HZ && tdiff < DEDUP_SEC {
+                        if cands[i].score >= cands[j].score {
+                            cands[j].score = 0.0;
+                            suppressed[j] = true;
+                        } else {
+                            cands[i].score = 0.0;
+                            suppressed[i] = true;
+                        }
+                    }
+                }
+            }
+            suppressed
+        }
+
+        // Deterministic pseudo-random lists, frequency-sorted the way
+        // `coarse_sync_from_sync2d` builds them: `df`-spaced bins, up
+        // to 8 lag peaks per bin.
+        let mut state = 0x1234_5678u32;
+        let mut next = move || {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 16) as f32 / 65_536.0
+        };
+        for df in [0.5f32, 1.54, 4.0, 13.0] {
+            let mut cands: Vec<SyncCandidate> = Vec::new();
+            for bin in 0..40 {
+                let freq_hz = 100.0 + bin as f32 * df;
+                for _ in 0..(1 + (next() * 8.0) as usize) {
+                    cands.push(SyncCandidate {
+                        freq_hz,
+                        // Spread lags across and around the 40 ms
+                        // window so both arms of `tdiff` are exercised.
+                        dt_sec: (next() * 0.4 - 0.2 + (next() * 4.0).floor() * 0.01),
+                        // Coarse quantisation so exact ties are common.
+                        score: (next() * 5.0).floor(),
+                    });
+                }
+            }
+            let mut want = cands.clone();
+            let want_flags = reference(&mut want);
+            let mut got = cands.clone();
+            let got_flags = dedup_suppress(&mut got);
+
+            assert_eq!(want_flags, got_flags, "df={df}: suppression flags differ");
+            for (i, (w, g)) in want.iter().zip(got.iter()).enumerate() {
+                assert_eq!(w.score, g.score, "df={df}: candidate {i} score differs");
+            }
         }
     }
 }

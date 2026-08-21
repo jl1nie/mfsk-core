@@ -39,16 +39,23 @@
 //!
 //! ## Shape of the work
 //!
-//! The unit is one candidate index. Everything a candidate needs —
-//! the coarse-sync list, the DDC baseband, the group delay — is shared
-//! read-only for the whole batch, so it lives in [`Ctx`] behind a
-//! raw pointer rather than being copied per job. The per-candidate
-//! function is a plain `fn` item, not a closure: it has to be callable
-//! from the worker task, and a closure's captures cannot cross that
-//! boundary. Context reaches it through [`ctx`], the same
-//! global-plus-`fn`-item idiom `wspr_dual_core`'s `DeadlineCell` uses
-//! for its budget check (and for the same underlying reason — Xtensa's
-//! `max_atomic_width` is 32, so several of these cannot be atomics).
+//! The unit is one index of a batch — a candidate for the decode loop,
+//! a frequency row for `coarse_sync`'s correlation fill. Everything an
+//! item needs that does not vary across the batch (the coarse-sync
+//! list and DDC baseband; or the spectrogram and its `Sync2dShape`)
+//! lives in a caller-owned context `C`, shared read-only behind one
+//! raw pointer rather than copied per item. The per-item function is a
+//! plain `fn` item, not a closure: it has to be callable from the
+//! worker task, and a closure's captures cannot cross that boundary.
+//!
+//! **The job the worker receives is type-erased**, which is what lets
+//! one persistent worker serve both loops. `C` and `R` appear only in
+//! [`run_split`]'s signature and in the monomorphised `worker_body` it
+//! hands over as a plain `fn(*const c_void)`; the queues themselves
+//! carry an untyped pointer pair. The alternative — `init::<R>()`
+//! fixing one result type for the life of the worker, as the first
+//! version did — would need a second 48 KiB `.bss` stack and a second
+//! queue pair for every additional kind of batch.
 
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -146,37 +153,39 @@ unsafe fn queue_recv_ptr<T>(q: QueueHandle_t) -> *mut T {
     out
 }
 
-/// Everything one candidate needs that does not vary across the batch.
-/// Raw pointers rather than slices because this crosses a FreeRTOS task
-/// boundary; the send → work → blocking-recv discipline in
-/// [`run_split`] is what makes them valid for the whole batch.
-pub struct Ctx {
-    pub candidates: *const core::ffi::c_void,
-    pub n: usize,
-    pub coarse_i: *const f32,
-    pub coarse_q: *const f32,
-    pub coarse_len: usize,
-    pub coarse_delay_orig: usize,
+/// A batch's per-item function: a plain `fn` item, not a closure — see
+/// the module doc comment. `C` is the caller's read-only context, `i`
+/// the item index, and `None` means "nothing to report for this one".
+pub type WorkFn<C, R> = fn(&C, usize) -> Option<R>;
+
+/// One batch, as both cores see it. Lives on [`run_split`]'s stack;
+/// the send → do-my-share → blocking-recv discipline there is what
+/// makes the `ctx` pointer valid for the worker's whole run.
+struct Split<C, R> {
+    ctx: *const C,
+    n: usize,
     /// Absolute `esp_timer` deadline for the whole batch; a core that
-    /// reaches it stops claiming new candidates.
-    pub deadline_us: i64,
-    /// When the batch started, so per-candidate results can report a
-    /// loop-relative timestamp that means the same thing on both cores.
-    pub t0_us: i64,
+    /// reaches it stops claiming new items.
+    deadline_us: i64,
+    work: WorkFn<C, R>,
+    /// The worker's results. Written by the worker exactly once,
+    /// before it posts to `RESULT_Q`; read by the main core only after
+    /// that message arrives, which is the happens-before edge.
+    worker_out: UnsafeCell<Vec<R>>,
 }
 
-/// The per-candidate worker function. A `fn` item, not a closure —
-/// see the module doc comment.
-pub type CandidateFn<R> = fn(&Ctx, usize) -> Option<R>;
-
-struct Job<R: 'static> {
-    ctx: *const Ctx,
-    work: CandidateFn<R>,
+/// A type-erased batch for the worker task. `state` is a
+/// `*const Split<C, R>` and `run` the [`worker_body`] monomorphised
+/// for that same pair, so the types are recovered by construction
+/// rather than by a cast the receiver has to get right.
+struct Job {
+    state: *const core::ffi::c_void,
+    run: fn(*const core::ffi::c_void),
 }
-// SAFETY: `ctx` outlives the job — `run_split` blocks on the result
-// queue before returning, so the borrow cannot dangle. `work` is a
-// plain function pointer.
-unsafe impl<R> Send for Job<R> {}
+// SAFETY: `state` outlives the job — `run_split` blocks on the result
+// queue before returning, so the borrow cannot dangle. `run` is a plain
+// function pointer.
+unsafe impl Send for Job {}
 
 static NEXT_IDX: AtomicUsize = AtomicUsize::new(0);
 
@@ -202,51 +211,70 @@ fn log_worker_stack(who: &str, reserved: usize) {
     );
 }
 
-/// Claim candidate indices until the list or the deadline runs out.
+/// Claim item indices until the batch or the deadline runs out.
 /// Both cores run this identical loop; `fetch_add` is what grants one
 /// of them exclusive ownership of each index.
-fn drain<R>(ctx: &Ctx, work: CandidateFn<R>) -> Vec<R> {
+fn drain<C, R>(split: &Split<C, R>) -> Vec<R> {
+    // SAFETY: the caller's context outlives the batch — see `Split`.
+    let ctx = unsafe { &*split.ctx };
     let mut out = Vec::new();
     loop {
         let i = NEXT_IDX.fetch_add(1, Ordering::AcqRel);
-        if i >= ctx.n {
+        if i >= split.n {
             break;
         }
-        if now_us() >= ctx.deadline_us {
+        if now_us() >= split.deadline_us {
             break;
         }
-        if let Some(r) = work(ctx, i) {
+        if let Some(r) = (split.work)(ctx, i) {
             out.push(r);
         }
     }
     out
 }
 
+/// The worker's half of a batch, monomorphised per `(C, R)` pair and
+/// handed to the worker task as a plain `fn(*const c_void)`.
+fn worker_body<C, R>(state: *const core::ffi::c_void) {
+    // SAFETY: `run_split` built this `Job` with `state` pointing at its
+    // own `Split<C, R>` and `run` set to this instantiation, and blocks
+    // until we post our result.
+    let split = unsafe { &*(state as *const Split<C, R>) };
+    let out = drain(split);
+    log_worker_stack("worker", WORKER_STACK_BYTES);
+    // SAFETY: the main core does not touch `worker_out` until it
+    // receives from `RESULT_Q`, which happens after this write.
+    unsafe { *split.worker_out.get() = out };
+}
+
 /// Single-core equivalent of [`run_split`] — same `work`, same
 /// deadline, same claim loop, just without the second core. Exists so
 /// the dual-core comparison is one build switch over one code path
 /// rather than two separate loops that could drift apart.
-pub fn drain_single<R>(ctx: &Ctx, work: CandidateFn<R>) -> Vec<R> {
+pub fn drain_single<C, R>(ctx: &C, n: usize, deadline_us: i64, work: WorkFn<C, R>) -> Vec<R> {
     NEXT_IDX.store(0, Ordering::Release);
-    let out = drain(ctx, work);
+    let split = Split {
+        ctx: ctx as *const C,
+        n,
+        deadline_us,
+        work,
+        worker_out: UnsafeCell::new(Vec::new()),
+    };
+    let out = drain(&split);
     log_worker_stack("main(single)", 0);
     out
 }
 
-/// The generic worker body, monomorphised per result type `R` by
-/// [`spawn_worker_for`].
-extern "C" fn worker_main<R: 'static>(_arg: *mut core::ffi::c_void) {
+/// The worker task body: take type-erased jobs forever, run each one's
+/// share of the batch, and post a completion token.
+extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
     log::info!("fst4_dual_core: worker started on core {}", current_core());
     loop {
-        let job_ptr = unsafe { queue_recv_ptr::<Job<R>>(JOB_Q.get()) };
+        let job_ptr = unsafe { queue_recv_ptr::<Job>(JOB_Q.get()) };
         // SAFETY: sender boxed this and transferred ownership.
         let job = unsafe { Box::from_raw(job_ptr) };
-        // SAFETY: `run_split` blocks until it has received our result,
-        // so `ctx` is alive for the whole of this call.
-        let ctx = unsafe { &*job.ctx };
-        let out = drain(ctx, job.work);
-        log_worker_stack("worker", WORKER_STACK_BYTES);
-        unsafe { queue_send_ptr(RESULT_Q.get(), Box::into_raw(Box::new(out))) };
+        (job.run)(job.state);
+        unsafe { queue_send_ptr(RESULT_Q.get(), ptr::null_mut::<()>()) };
     }
 }
 
@@ -260,19 +288,19 @@ static INIT_DONE: AtomicUsize = AtomicUsize::new(0);
 /// stack here sidesteps that for the stack itself, but the TCB and
 /// queues are still allocations).
 ///
-/// `R` fixes the result type this worker will handle; one call site,
-/// one `R`. A second `init` with a different `R` would spawn a second
-/// worker against the same queues and is rejected.
-pub fn init<R: 'static>() {
+/// Not generic: the worker takes type-erased jobs, so one call serves
+/// every kind of batch [`run_split`] is later asked to run. A second
+/// call is a no-op rather than a second worker.
+pub fn init() {
     if INIT_DONE.swap(1, Ordering::AcqRel) != 0 {
         log::warn!("fst4_dual_core: init called twice — ignoring");
         return;
     }
     unsafe {
-        JOB_Q.set(queue_create(core::mem::size_of::<*mut Job<R>>()));
-        RESULT_Q.set(queue_create(core::mem::size_of::<*mut Vec<R>>()));
+        JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
+        RESULT_Q.set(queue_create(core::mem::size_of::<*mut ()>()));
         let h = xTaskCreateStaticPinnedToCore(
-            Some(worker_main::<R>),
+            Some(worker_main),
             c"fst4_worker".as_ptr(),
             WORKER_STACK_BYTES as u32,
             ptr::null_mut(),
@@ -289,32 +317,38 @@ pub fn init<R: 'static>() {
     );
 }
 
-/// Run `work` over `0..ctx.n` across both cores, returning every
-/// `Some` result. Order is **not** preserved — two cores complete
-/// interleaved, and the caller is expected to sort or key the results
-/// itself.
+/// Run `work` over `0..n` across both cores, returning every `Some`
+/// result. Order is **not** preserved — two cores complete interleaved,
+/// and the caller is expected to sort or key the results itself.
 ///
 /// Strictly send → do-my-own-share → blocking recv, which is the entire
-/// safety argument for the raw pointers in [`Ctx`]: this function
-/// cannot return while the worker still holds them.
-pub fn run_split<R: 'static>(ctx: &Ctx, work: CandidateFn<R>) -> Vec<R> {
+/// safety argument for the raw pointer in `Split`: this function cannot
+/// return while the worker still holds it.
+pub fn run_split<C, R>(ctx: &C, n: usize, deadline_us: i64, work: WorkFn<C, R>) -> Vec<R> {
     NEXT_IDX.store(0, Ordering::Release);
 
-    let job = Box::new(Job {
-        ctx: ctx as *const Ctx,
+    let split = Split {
+        ctx: ctx as *const C,
+        n,
+        deadline_us,
         work,
+        worker_out: UnsafeCell::new(Vec::new()),
+    };
+    let job = Box::new(Job {
+        state: (&split as *const Split<C, R>) as *const core::ffi::c_void,
+        run: worker_body::<C, R>,
     });
     unsafe { queue_send_ptr(JOB_Q.get(), Box::into_raw(job)) };
 
-    let mut mine = drain(ctx, work);
+    let mut mine = drain(&split);
     log_worker_stack("main", 0);
 
-    let theirs_ptr = unsafe { queue_recv_ptr::<Vec<R>>(RESULT_Q.get()) };
-    // SAFETY: the worker boxed this and transferred ownership.
-    let theirs = unsafe { Box::from_raw(theirs_ptr) };
+    // Blocks until the worker has finished writing `worker_out`.
+    let _token = unsafe { queue_recv_ptr::<()>(RESULT_Q.get()) };
+    let theirs = split.worker_out.into_inner();
 
     let n_worker = theirs.len();
-    mine.extend(*theirs);
+    mine.extend(theirs);
     log::info!(
         "fst4_dual_core: batch done — {} results ({} from worker)",
         mine.len(),

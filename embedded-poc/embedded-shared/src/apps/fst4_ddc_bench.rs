@@ -48,8 +48,9 @@ use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync::{
-    coarse_sync, coarse_sync_from_spectra, compute_spectra, spectra_crop_for, AudioSource, RxGrid,
-    SpectrogramBuilder, SyncCandidate, SyncDims,
+    coarse_sync, coarse_sync_from_sync2d, compute_spectra, fill_sync2d_row, spectra_crop_for,
+    sync2d_shape, AudioSource, RxGrid, Spectrogram, SpectrogramBuilder, Sync2dShape, SyncCandidate,
+    SyncDims,
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::ddc::{
@@ -423,6 +424,100 @@ fn ddc_refine(
     cd0
 }
 
+/// The correlation matrix, as both cores see it while filling it.
+/// Rows are disjoint by construction — index `fi` owns
+/// `sync2d[fi * n_lag ..][.. n_lag]` and nothing else — which is why
+/// this loop needs no lock.
+struct Sync2dCtx {
+    s: *const Spectrogram,
+    shape: *const Sync2dShape,
+    sync2d: *mut f32,
+    n_lag: usize,
+}
+
+/// One row of the correlation matrix. Returns `Option<()>` rather than
+/// a result type because the output *is* the matrix; `Vec<()>` is a ZST
+/// vector, so `run_split`'s result collection allocates nothing.
+fn sync2d_row(ctx: &Sync2dCtx, fi: usize) -> Option<()> {
+    // SAFETY: `run_split`/`drain_single` block until both cores are
+    // done, so all three pointers outlive this call. The write is to
+    // row `fi` alone, and `NEXT_IDX` hands out each `fi` exactly once,
+    // so no two cores ever hold overlapping slices.
+    let s = unsafe { &*ctx.s };
+    let shape = unsafe { &*ctx.shape };
+    let row = unsafe { core::slice::from_raw_parts_mut(ctx.sync2d.add(fi * ctx.n_lag), ctx.n_lag) };
+    fill_sync2d_row::<Fst4s60>(s, shape, fi, row);
+    Some(())
+}
+
+/// `coarse_sync_from_spectra` with its correlation fill spread across
+/// both cores (issue #327).
+///
+/// The fill is the largest post-slot item left in the wideband monitor
+/// — 4039 ms of the 5207 ms first-decode path, once #336 moved the
+/// spectrogram build into the capture window — and every row of it is a
+/// pure function of the finished spectrogram (the host already fills
+/// them through rayon). So it splits exactly the way the candidate loop
+/// does, over the same worker, and the results are **bit-identical**
+/// either way: the split decides only which core writes which row, and
+/// the ranking stage still sees the whole matrix.
+///
+/// Reports the fill/rank split too, which the single-call form cannot.
+/// Only the fill parallelises, so the rank half is the floor this can
+/// approach.
+fn coarse_search(s: &Spectrogram, rx_grid: RxGrid) -> Vec<SyncCandidate> {
+    let Some(shape) = sync2d_shape::<Fst4s60>(
+        CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
+        CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
+        rx_grid,
+    ) else {
+        return Vec::new();
+    };
+
+    let t_fill0 = now_us();
+    let mut sync2d = alloc::vec![0.0f32; shape.len()];
+    {
+        let ctx = Sync2dCtx {
+            s: s as *const Spectrogram,
+            shape: &shape as *const Sync2dShape,
+            sync2d: sync2d.as_mut_ptr(),
+            n_lag: shape.n_lag,
+        };
+        // No deadline: unlike a candidate, a row is not optional — a
+        // row left unfilled is a hole in the search band, not merely a
+        // decode not attempted.
+        if DUAL_CORE {
+            fst4_dual_core::run_split(&ctx, shape.n_freq, i64::MAX, sync2d_row);
+        } else {
+            fst4_dual_core::drain_single(&ctx, shape.n_freq, i64::MAX, sync2d_row);
+        }
+    }
+    let t_fill = now_us() - t_fill0;
+
+    let t_rank0 = now_us();
+    let cands = coarse_sync_from_sync2d::<Fst4s60>(
+        s,
+        &sync2d,
+        &shape,
+        SYNC_MIN,
+        None,
+        MAX_CAND,
+        rx_grid,
+    );
+    let t_rank = now_us() - t_rank0;
+
+    log::info!(
+        "fst4_ddc_bench: [diag] coarse search split — fill {} ms ({} rows x {} lags, {}), \
+         rank {} ms",
+        t_fill / 1000,
+        shape.n_freq,
+        shape.n_lag,
+        if DUAL_CORE { "dual-core" } else { "single-core" },
+        t_rank / 1000,
+    );
+    cands
+}
+
 /// `audio_bin` is the raw golden asset (`include_bytes!`,
 /// `i16[720000]` little-endian — same layout `fst4_bench`'s own
 /// `fst4_60_golden_audio.bin` doc comment describes). Byte-wise, not a
@@ -459,6 +554,14 @@ pub fn run(audio_bin: &[u8]) {
 
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
+
+    if DUAL_CORE {
+        // At boot, not per batch: the correlation fill below is the
+        // first thing that wants the second core, and a real app has
+        // to spawn here anyway — before WiFi, per
+        // `fst4_dual_core::init`'s ordering constraint.
+        fst4_dual_core::init();
+    }
 
     // ---- Stage 1: DDC + coarse_sync ----
     let t0 = now_us();
@@ -576,15 +679,7 @@ pub fn run(audio_bin: &[u8]) {
     let candidates = match &prebuilt {
         // Streaming: the spectrogram was finished during capture, so
         // only the correlation search is post-slot work.
-        Some(s) => coarse_sync_from_spectra::<Fst4s60>(
-            s,
-            CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
-            CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
-            SYNC_MIN,
-            None,
-            MAX_CAND,
-            rx_grid,
-        ),
+        Some(s) => coarse_search(s, rx_grid),
         None => coarse_sync::<Fst4s60>(
             AudioSource::Complex(&coarse_i, &coarse_q),
             CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
@@ -896,7 +991,7 @@ const FULL_DEPTH_RANKS: usize = {
 /// `fn` item so [`fst4_dual_core::run_split`] can hand it to the worker
 /// task — a closure's captures cannot cross that boundary, which is why
 /// every input arrives through [`Ctx`].
-fn monitor_candidate(ctx: &fst4_dual_core::Ctx, i: usize) -> Option<MonitorHit> {
+fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
     // SAFETY: `run_split` blocks until both cores are done, so these
     // outlive the call. Shared read-only across cores.
     let candidates: &[SyncCandidate] =
@@ -969,6 +1064,23 @@ fn monitor_candidate(ctx: &fst4_dual_core::Ctx, i: usize) -> Option<MonitorHit> 
     })
 }
 
+/// Everything one candidate needs that does not vary across the batch,
+/// shared read-only by both cores. Raw pointers rather than slices
+/// because this crosses a FreeRTOS task boundary; `run_split`'s
+/// send → work → blocking-recv discipline is what makes them valid for
+/// the whole batch.
+struct MonitorCtx {
+    candidates: *const core::ffi::c_void,
+    n: usize,
+    coarse_i: *const f32,
+    coarse_q: *const f32,
+    coarse_len: usize,
+    coarse_delay_orig: usize,
+    /// When the batch started, so per-candidate results can report a
+    /// loop-relative timestamp that means the same thing on both cores.
+    t0_us: i64,
+}
+
 /// One candidate's outcome. Carries `rank` because [`run_split`] does
 /// not preserve order — two cores complete interleaved.
 ///
@@ -1025,29 +1137,26 @@ fn run_monitor_loop(
     let front_end_all_us = t_ddc_us + t_coarse_sync_us;
     let front_end_streamed_us = t_search_us;
 
-    if DUAL_CORE {
-        // Spawn before the batch, not at boot: this bench brings up no
-        // WiFi, so there is no allocator pressure to race here. A real
-        // app must call it before WiFi — see `fst4_dual_core::init`.
-        fst4_dual_core::init::<MonitorHit>();
-    }
+    // The worker is already up — `run` spawns it at boot so the
+    // correlation fill can use it too.
 
     let t_loop0 = now_us();
-    let ctx = fst4_dual_core::Ctx {
+    let n = candidates.len();
+    let deadline_us = t_loop0 + MONITOR_DEADLINE_MS * 1000;
+    let ctx = MonitorCtx {
         candidates: candidates.as_ptr() as *const core::ffi::c_void,
-        n: candidates.len(),
+        n,
         coarse_i: coarse_i.as_ptr(),
         coarse_q: coarse_q.as_ptr(),
         coarse_len: coarse_i.len(),
         coarse_delay_orig,
-        deadline_us: t_loop0 + MONITOR_DEADLINE_MS * 1000,
         t0_us: t_loop0,
     };
 
     let mut hits = if DUAL_CORE {
-        fst4_dual_core::run_split(&ctx, monitor_candidate)
+        fst4_dual_core::run_split(&ctx, n, deadline_us, monitor_candidate)
     } else {
-        fst4_dual_core::drain_single(&ctx, monitor_candidate)
+        fst4_dual_core::drain_single(&ctx, n, deadline_us, monitor_candidate)
     };
     hits.sort_by_key(|h| h.rank);
 

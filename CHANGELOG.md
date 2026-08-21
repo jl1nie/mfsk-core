@@ -17,6 +17,24 @@ rather than distributing them across patches.
 
 ### Added
 
+- **`coarse_sync`'s correlation matrix is now a public seam**
+  (issue #327) — `sync2d_shape` / `fill_sync2d_row` /
+  `coarse_sync_from_sync2d`, alongside the existing
+  `coarse_sync_from_spectra`, which is now just those three composed.
+
+  Every row of that matrix is a pure function of the finished
+  spectrogram, and the host has parallelised the fill through rayon
+  since it was written. An embedded caller could not: the loop was
+  buried inside one call. Exposing the seam lets the CoreS3 FST4
+  monitor spread the fill across both cores — measured 1131 → 714 ms on
+  the wideband 100-3000 Hz FST4-60 search — with bit-identical output,
+  since the split decides only which core writes which row.
+
+  This is the same shape as `0.10.0`'s earlier `SpectrogramBuilder`
+  split (#307/#336), which moved the spectrogram *build* out of the
+  post-slot budget: both exist so a receiver can pay a stage somewhere
+  other than "all at once, on one core, after the slot ends".
+
 - **A standalone WSPR receiver application for the CoreS3**
   (`embedded-poc/m5stack-cores3-app/src/bin/wspr_app.rs`). Phase E (#260)
   answered the decoder-level question — `wspr::ddc` exists, the steady-state
@@ -156,6 +174,30 @@ rather than distributing them across patches.
   conceptual and is not addressed by naming the constant. See #307/#309.
 
 ### Fixed
+
+- **`coarse_sync`'s de-duplication is no longer quadratic** (issue #327).
+  It compared every candidate against every earlier one; candidates
+  within 4 Hz are a contiguous run, because the list is
+  frequency-sorted by construction, so it now walks a sliding window
+  instead.
+
+  Output is unchanged — bit-identical, not merely equivalent-in-effect,
+  and that distinction is load-bearing here: the loop zeroes scores as
+  it goes, so which pairs are compared in which order decides the
+  result. Skipped pairs are exactly those that failed the 4 Hz test and
+  mutated nothing, and `dedup_suppress_matches_all_pairs` pins the new
+  loop against a brute-force reference over lists built to stress ties,
+  boundary spacing and suppression chains.
+
+  On a narrow search this was invisible; on a wide one it was most of
+  the search. Real CoreS3 hardware, FST4-60 wideband (1881 bins, ~15k
+  candidates before dedup): the ranking half of `coarse_sync` fell
+  **2989 → 292 ms**, and the whole search 4123 → 1009 ms with the
+  dual-core fill above. It also explains a gap #307 had left open and
+  provisionally attributed to the spectrogram working set — the wideband
+  search cost 2.147 ms/bin against the sniper's 0.671 ms/bin for
+  identical per-bin work. Per-bin *fill* cost is in fact the same for
+  both (0.60 ms/bin); the entire 3.2× was this superlinear stage.
 
 - **`coarse_sync`'s de-duplication decision is now final** (issue #312,
   found by VK3NV). The dedup pass marks the losing near-duplicate (within
