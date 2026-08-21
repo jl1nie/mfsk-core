@@ -59,6 +59,8 @@ use mfsk_core::fst4::ddc::{
 };
 use mfsk_core::msg::wsjt77::unpack77;
 
+use crate::fst4_dual_core;
+
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — see
 /// `fst4_bench`'s identical constant for why it's redeclared here
 /// rather than imported.
@@ -258,14 +260,40 @@ const fn parse_dec(v: Option<&str>) -> i64 {
 /// `wspr_dual_core`'s `DeadlineCell` exactly, including why it is an
 /// `UnsafeCell` rather than an atomic. Single-threaded here (one bench
 /// task), written only between candidates.
-struct DeadlineCell(core::cell::UnsafeCell<i64>);
-// SAFETY: written only by the bench task between candidates, read only
-// by `budget_ok` on that same task. No other task touches it.
-unsafe impl Sync for DeadlineCell {}
-static DEADLINE_US: DeadlineCell = DeadlineCell(core::cell::UnsafeCell::new(i64::MAX));
+/// **Per core**, not one shared cell: under `MFSK_FST4_DDC_BENCH_DUAL=1`
+/// both cores sit inside `monitor_candidate` on *different* candidates
+/// at once, so a single cell would let one core's arming truncate the
+/// other's ladder. Indexed by `xTaskGetCoreID`.
+struct DeadlineCells(core::cell::UnsafeCell<[i64; 2]>);
+// SAFETY: each core writes and reads only its own slot, and only
+// between its own candidates. No slot is ever touched by two cores.
+unsafe impl Sync for DeadlineCells {}
+static DEADLINE_US: DeadlineCells = DeadlineCells(core::cell::UnsafeCell::new([i64::MAX; 2]));
+
+fn core_slot() -> usize {
+    (unsafe { esp_idf_svc::sys::xTaskGetCoreID(core::ptr::null_mut()) } as usize) & 1
+}
+
+fn set_deadline(abs_us: i64) {
+    unsafe { (*DEADLINE_US.0.get())[core_slot()] = abs_us };
+}
 
 fn budget_ok() -> bool {
-    now_us() < unsafe { *DEADLINE_US.0.get() }
+    now_us() < unsafe { (*DEADLINE_US.0.get())[core_slot()] }
+}
+
+/// `MFSK_FST4_DDC_BENCH_DUAL=1` — run the monitor candidate loop across
+/// both cores (issue #327). Same per-candidate function either way.
+const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
+
+const fn is_one(v: Option<&str>) -> bool {
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            b.len() == 1 && b[0] == b'1'
+        }
+        None => false,
+    }
 }
 
 fn now_us() -> i64 {
@@ -712,6 +740,109 @@ pub fn run(audio_bin: &[u8]) {
 /// total, because that is the number a monitoring receiver is actually
 /// judged on.
 #[allow(clippy::too_many_arguments)]
+/// One candidate's full work: refine, sync-search, decode. A plain
+/// `fn` item so [`fst4_dual_core::run_split`] can hand it to the worker
+/// task — a closure's captures cannot cross that boundary, which is why
+/// every input arrives through [`Ctx`].
+fn monitor_candidate(ctx: &fst4_dual_core::Ctx, i: usize) -> Option<MonitorHit> {
+    // SAFETY: `run_split` blocks until both cores are done, so these
+    // outlive the call. Shared read-only across cores.
+    let candidates: &[SyncCandidate] =
+        unsafe { core::slice::from_raw_parts(ctx.candidates as *const SyncCandidate, ctx.n) };
+    let coarse_i: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_i, ctx.coarse_len) };
+    let coarse_q: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_q, ctx.coarse_len) };
+    let cand = &candidates[i];
+
+    let t_r = now_us();
+    let cd0 = ddc_refine(cand, coarse_i, coarse_q, ctx.coarse_delay_orig);
+    let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
+    let refine_us = now_us() - t_r;
+
+    let t_d = now_us();
+    let result = if MONITOR_CAP_MS > 0 {
+        // Per-candidate cap. The deadline cell is **per core** — with
+        // both cores in this function at once on different candidates,
+        // a single shared cell would have one core's arming truncate
+        // the other's ladder.
+        set_deadline(now_us() + MONITOR_CAP_MS * 1000);
+        let inputs = [RungMajorCandidate {
+            cand: cand.clone(),
+            cd0,
+            refined_freq_hz: s2.freq_hz,
+            i0: s2.i0,
+        }];
+        let (mut out, _) = decode_phase_split_timed::<Fst4s60>(
+            &inputs,
+            false,
+            false,
+            &[0],
+            None,
+            Some(budget_ok),
+            12_000.0,
+        );
+        set_deadline(i64::MAX);
+        out.pop().flatten()
+    } else {
+        let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
+        process_candidate_precomputed::<Fst4s60>(
+            cand,
+            &[],
+            &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
+            DecodeDepth::FULL,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+            precomputed,
+            true,
+            false,
+        )
+    };
+    let decode_us = now_us() - t_d;
+
+    let msg = result.and_then(|r| {
+        let m: &[u8; 77] = r.message77().try_into().ok()?;
+        unpack77(m)
+    });
+
+    Some(MonitorHit {
+        rank: i,
+        freq_hz: cand.freq_hz,
+        refined_hz: s2.freq_hz,
+        cscore: cand.score,
+        refine_us,
+        decode_us,
+        t_ms: (now_us() - ctx.t0_us) / 1000,
+        msg,
+    })
+}
+
+/// One candidate's outcome. Carries `rank` because [`run_split`] does
+/// not preserve order — two cores complete interleaved.
+///
+/// [`run_split`]: fst4_dual_core::run_split
+struct MonitorHit {
+    rank: usize,
+    freq_hz: f32,
+    refined_hz: f32,
+    cscore: f32,
+    refine_us: i64,
+    decode_us: i64,
+    t_ms: i64,
+    msg: Option<String>,
+}
+
+/// `MFSK_FST4_DDC_BENCH_MODE=monitor` — see [`MONITOR`] for why this
+/// exists and what it measures. Streaming, coarse-score-ordered,
+/// deadline-bounded; reports **time-to-first-decode** rather than a
+/// total, because that is the number a monitoring receiver is actually
+/// judged on.
+///
+/// `MFSK_FST4_DDC_BENCH_DUAL=1` runs the same candidate list across
+/// both cores via [`fst4_dual_core`] (issue #327). Identical work and
+/// identical per-candidate function either way — only who runs it
+/// differs — so the two are directly comparable on one build pair.
+#[allow(clippy::too_many_arguments)]
 fn run_monitor_loop(
     candidates: &[SyncCandidate],
     coarse_i: &[f32],
@@ -722,9 +853,12 @@ fn run_monitor_loop(
     t_coarse_sync_us: i64,
 ) {
     log::info!(
-        "fst4_ddc_bench: MONITOR mode — {} candidates, coarse-score order, no dedup, deadline {} ms",
+        "fst4_ddc_bench: MONITOR mode — {} candidates, coarse-score order, no dedup, \
+         deadline {} ms, cap {} ms, {}",
         candidates.len(),
         MONITOR_DEADLINE_MS,
+        MONITOR_CAP_MS,
+        if DUAL_CORE { "DUAL-CORE" } else { "single-core" },
     );
 
     // `coarse_sync`'s spectrogram build and the DDC ahead of it are
@@ -738,192 +872,77 @@ fn run_monitor_loop(
     let front_end_all_us = t_ddc_us + t_coarse_sync_us;
     let front_end_streamed_us = t_search_us;
 
-    let mut decoded: Vec<(String, f32, i64)> = Vec::new();
+    if DUAL_CORE {
+        // Spawn before the batch, not at boot: this bench brings up no
+        // WiFi, so there is no allocator pressure to race here. A real
+        // app must call it before WiFi — see `fst4_dual_core::init`.
+        fst4_dual_core::init::<MonitorHit>();
+    }
+
     let t_loop0 = now_us();
-    let mut n_tried = 0usize;
+    let ctx = fst4_dual_core::Ctx {
+        candidates: candidates.as_ptr() as *const core::ffi::c_void,
+        n: candidates.len(),
+        coarse_i: coarse_i.as_ptr(),
+        coarse_q: coarse_q.as_ptr(),
+        coarse_len: coarse_i.len(),
+        coarse_delay_orig,
+        deadline_us: t_loop0 + MONITOR_DEADLINE_MS * 1000,
+        t0_us: t_loop0,
+    };
 
-    for (rank, cand) in candidates.iter().enumerate() {
-        let elapsed_ms = (now_us() - t_loop0) / 1000;
-        if elapsed_ms >= MONITOR_DEADLINE_MS {
-            log::info!(
-                "fst4_ddc_bench: monitor deadline hit after {} candidates ({} ms)",
-                n_tried,
-                elapsed_ms,
-            );
-            break;
-        }
-        n_tried += 1;
+    let mut hits = if DUAL_CORE {
+        fst4_dual_core::run_split(&ctx, monitor_candidate)
+    } else {
+        fst4_dual_core::drain_single(&ctx, monitor_candidate)
+    };
+    hits.sort_by_key(|h| h.rank);
 
-        let t_r = now_us();
-        let t_ddcref0 = now_us();
-        let cd0 = ddc_refine(cand, coarse_i, coarse_q, coarse_delay_orig);
-        let t_ddcref = now_us() - t_ddcref0;
-        let t_sync0 = now_us();
-        let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
-        let t_sync = now_us() - t_sync0;
-        let refine_us = now_us() - t_r;
+    let t_loop_ms = (now_us() - t_loop0) / 1000;
+    let n_tried = hits.len();
 
-        // One-shot A/B: is `fst4_sync_search` compute-bound or bound by
-        // PSRAM reads of `cd0`?
-        //
-        // **Measured 2026-08-22: PSRAM 590 ms vs INTERNAL 589 ms —
-        // the memory hypothesis is falsified.** Kept as a standing
-        // check rather than deleted, because the hypothesis was
-        // plausible enough to be worth stating and is the kind of thing
-        // that gets re-proposed: `fst4_sync_search` does ~3.22M complex
-        // MAC (2235 grid cells x 5 Costas blocks x 288 samples) ~=
-        // 107 ms of arithmetic at 240 MHz but measures ~590 ms, `cd0`
-        // is ~53 KB, and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`
-        // puts it in PSRAM — and this repo had already found exactly
-        // that shape once, in WSPR's `refine_alignment_top_k`
-        // ("97.5% PSRAM re-reads, not FFTs"). It is simply not what is
-        // happening here.
-        //
-        // The ~5.5x gap over the arithmetic floor is therefore in the
-        // scalar kernel itself, which makes it addressable by esp-dsp
-        // PIE (`dsps_dotprod_f32_aes3`, 4-wide f32) rather than by
-        // placement. Note that kernel needs planar I/Q — `cd0` is
-        // interleaved `Complex32` today — whereas
-        // `PolyphaseResampler::dot` is already in the right layout.
-        //
-        // The copy is timed separately and is not part of the
-        // comparison.
-        if n_tried == 1 {
-            const MALLOC_CAP_8BIT_L: u32 = 1 << 2;
-            const MALLOC_CAP_INTERNAL_L: u32 = 1 << 11;
-            let bytes = core::mem::size_of_val(&cd0[..]);
-            let p = unsafe {
-                esp_idf_svc::sys::heap_caps_malloc(
-                    bytes,
-                    MALLOC_CAP_INTERNAL_L | MALLOC_CAP_8BIT_L,
-                ) as *mut Complex32
-            };
-            if p.is_null() {
-                log::info!(
-                    "fst4_ddc_bench: [diag] internal alloc of {} B failed — cd0 stays in PSRAM",
-                    bytes
-                );
-            } else {
-                let t_cp0 = now_us();
-                unsafe { core::ptr::copy_nonoverlapping(cd0.as_ptr(), p, cd0.len()) };
-                let t_cp = now_us() - t_cp0;
-                let internal_cd0: &[Complex32] = unsafe { core::slice::from_raw_parts(p, cd0.len()) };
-                let t_i0 = now_us();
-                let s_int = fst4_sync_search::<Fst4s60>(internal_cd0, cand);
-                let t_int = now_us() - t_i0;
-                log::info!(
-                    "fst4_ddc_bench: [diag] fst4_sync_search cd0 placement — PSRAM {} ms vs \
-                     INTERNAL {} ms ({} KB, copy {} ms) — score {:.1} vs {:.1}",
-                    t_sync / 1000,
-                    t_int / 1000,
-                    bytes / 1024,
-                    t_cp / 1000,
-                    s2.score,
-                    s_int.score,
-                );
-                unsafe { esp_idf_svc::sys::heap_caps_free(p as *mut core::ffi::c_void) };
-            }
-            log::info!(
-                "fst4_ddc_bench: [diag] refine split — ddc_refine {} ms + fst4_sync_search {} ms",
-                t_ddcref / 1000,
-                t_sync / 1000,
-            );
-        }
-
-        let t_d = now_us();
-        let result = if MONITOR_CAP_MS > 0 {
-            // Per-candidate cap: arm the deadline, then let
-            // `decode_phase_split_timed` poll it before every Phase B/C
-            // stage. One candidate per call — passing all 50 at once
-            // would be the "proper" PhaseSplit shape, but it needs every
-            // candidate's `cd0` resident simultaneously (~266 KB each,
-            // ~13 MB for 50) which this board's PSRAM cannot hold; that
-            // is the same constraint the batch path's Stage 2a/2c split
-            // exists for.
-            unsafe { *DEADLINE_US.0.get() = now_us() + MONITOR_CAP_MS * 1000 };
-            let inputs = [RungMajorCandidate {
-                cand: cand.clone(),
-                cd0,
-                refined_freq_hz: s2.freq_hz,
-                i0: s2.i0,
-            }];
-            let (mut out, _) = decode_phase_split_timed::<Fst4s60>(
-                &inputs,
-                false, // skip_llrc — keep the full ladder; the cap, not
-                // a fixed ablation, is what bounds cost here
-                false,
-                &[0],
-                None,
-                Some(budget_ok),
-                12_000.0,
-            );
-            unsafe { *DEADLINE_US.0.get() = i64::MAX };
-            out.pop().flatten()
-        } else {
-            let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
-            process_candidate_precomputed::<Fst4s60>(
-                cand,
-                &[],
-                &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
-                DecodeDepth::FULL,
-                DecodeStrictness::Normal,
-                &[],
-                EqMode::Off,
-                SYNC_Q_MIN,
-                precomputed,
-                true,
-                false,
-            )
-        };
-        let decode_us = now_us() - t_d;
-        let since_loop_ms = (now_us() - t_loop0) / 1000;
-
-        let msg = result.and_then(|r| {
-            let m: &[u8; 77] = r.message77().try_into().ok()?;
-            unpack77(m)
-        });
-
-        match &msg {
+    // Collapse by decoded *message*, not by position — a monitor
+    // reports stations, and two coarse cells for one signal are the
+    // same station. Cheaper than a dedup barrier ahead of the loop and
+    // it cannot delay a first decode.
+    let mut decoded: Vec<(String, f32, i64)> = Vec::new();
+    for h in &hits {
+        match &h.msg {
             Some(text) => {
-                // Collapse by message, not by position — a monitor
-                // reports stations, and two coarse cells for one signal
-                // are the same station. Cheaper than a dedup barrier
-                // ahead of the loop and it cannot delay a first decode.
                 let dup = decoded.iter().any(|(m, _, _)| m == text);
                 log::info!(
                     "fst4_ddc_bench: [monitor] rank {:2}/{} {:8.1} Hz cscore {:5.2} \
                      refine {:4} ms decode {:5} ms  t+{:5} ms  DECODED {:?}{}",
-                    rank + 1,
+                    h.rank + 1,
                     candidates.len(),
-                    cand.freq_hz,
-                    cand.score,
-                    refine_us / 1000,
-                    decode_us / 1000,
-                    since_loop_ms,
+                    h.freq_hz,
+                    h.cscore,
+                    h.refine_us / 1000,
+                    h.decode_us / 1000,
+                    h.t_ms,
                     text,
                     if dup { " (dup)" } else { "" },
                 );
                 if !dup {
-                    decoded.push((text.clone(), s2.freq_hz, since_loop_ms));
+                    decoded.push((text.clone(), h.refined_hz, h.t_ms));
                 }
             }
             None => {
                 log::info!(
                     "fst4_ddc_bench: [monitor] rank {:2}/{} {:8.1} Hz cscore {:5.2} \
                      refine {:4} ms decode {:5} ms  t+{:5} ms",
-                    rank + 1,
+                    h.rank + 1,
                     candidates.len(),
-                    cand.freq_hz,
-                    cand.score,
-                    refine_us / 1000,
-                    decode_us / 1000,
-                    since_loop_ms,
+                    h.freq_hz,
+                    h.cscore,
+                    h.refine_us / 1000,
+                    h.decode_us / 1000,
+                    h.t_ms,
                 );
             }
         }
     }
 
-    let t_loop_ms = (now_us() - t_loop0) / 1000;
     log::info!(
         "fst4_ddc_bench: MONITOR done — {} candidates tried, {} distinct decodes, loop {} ms",
         n_tried,
