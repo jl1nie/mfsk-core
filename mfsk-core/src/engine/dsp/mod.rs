@@ -11,6 +11,7 @@
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod analytic;
 pub mod ddc;
+pub mod dotprod;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod downsample;
 pub mod envelope;

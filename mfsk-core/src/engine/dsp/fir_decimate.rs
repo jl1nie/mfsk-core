@@ -202,24 +202,15 @@ impl FirStage {
         let hq = &self.hist_q[a..a + ntaps];
         let h = &self.taps_rev[..];
 
-        let mut ai = [0.0f32; 4];
-        let mut aq = [0.0f32; 4];
-        let chunks = ntaps / 4;
-        for c in 0..chunks {
-            let b = c * 4;
-            for l in 0..4 {
-                ai[l] += h[b + l] * hi[b + l];
-                aq[l] += h[b + l] * hq[b + l];
-            }
-        }
-        let mut si = ai[0] + ai[1] + ai[2] + ai[3];
-        let mut sq = aq[0] + aq[1] + aq[2] + aq[3];
-        // ntaps is odd, so a remainder of up to 3 is left over.
-        for k in chunks * 4..ntaps {
-            si += h[k] * hi[k];
-            sq += h[k] * hq[k];
-        }
-        (si, sq)
+        // The four-partial-sum unroll this used to spell out inline now
+        // lives in `dotprod::dot_f32_portable`, which `dot_f32` falls
+        // back to when no backend is configured — same arithmetic, and
+        // an embedded build can now route it to esp-dsp instead
+        // (issue #307).
+        (
+            super::dotprod::dot_f32(h, hi),
+            super::dotprod::dot_f32(h, hq),
+        )
     }
 }
 

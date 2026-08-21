@@ -43,6 +43,14 @@ serde        = ["dep:serde"]
 fft-rustfft  = ["std", "dep:rustfft"]
 fft-extern   = ["alloc"]
 
+# Caller-provided real f32 dot-product backend for the DSP hot loops
+# (`engine::dsp::dotprod`). Same extern-hook shape as `fft-extern`: the
+# binary defines `mfsk_core_dotprod_f32`. Exists for embedded builds
+# that can route it to esp-dsp -- measured 3.6-9.2x over the portable
+# loop on ESP32-S3 (issue #307). Host builds have no reason to enable
+# it; without it the portable implementation is used.
+dotprod-extern = []
+
 # Embedded integer pipeline: u16 spectrogram + i16 internal DFT +
 # Q11i16 LLR + integer NMS BP. Off by default — host stays
 # bit-identical to the existing f32 path. Embedded targets turn this

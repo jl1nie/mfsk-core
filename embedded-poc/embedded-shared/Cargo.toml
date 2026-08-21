@@ -57,7 +57,7 @@ fst4-bench = ["mfsk-core/fst4", "mfsk-core/internal-testing"]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "ft8", "fft-extern", "dotprod-extern", "fixed-point", "profile-coarse", "nstep-half"] }
 # `wav_sim::spawn` takes `*mut mfsk_ft8::MfskFt8Stream` from the bin.
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 num-complex = { version = "0.4", default-features = false }
