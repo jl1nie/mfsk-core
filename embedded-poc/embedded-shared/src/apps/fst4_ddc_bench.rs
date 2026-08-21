@@ -137,6 +137,70 @@ const GRID_BANDWIDTH_HZ: f32 = if WIDEBAND { 2900.0 } else { 600.0 };
 const SYNC_MIN: f32 = if WIDEBAND { 0.8 } else { 8.0 };
 const MAX_CAND: usize = 50;
 
+/// `MFSK_FST4_DDC_BENCH_MODE=monitor` replaces the batch
+/// refine-all -> dedup -> decode-survivors pipeline with a **streaming,
+/// coarse-score-ordered** loop: each candidate is refined and decoded
+/// immediately, in the order `coarse_sync` already ranked them, with no
+/// dedup barrier ahead of the first decode.
+///
+/// The batch shape optimises for *completeness* — every survivor gets
+/// the full ladder before anything is reported. A monitor optimises for
+/// **time-to-first-decode**, and the two want opposite orderings.
+/// Measured on the 2026-08-22 wideband run, the batch path's own
+/// numbers show why:
+///
+/// - `coarse_sync` ranked the two real signals **#1 (score 31.43) and
+///   #2 (25.46)** against a noise ceiling of 4.33 — a ~6x margin.
+/// - `dedup_refined_candidates`' rule ranks by *refined* score, where a
+///   near-duplicate cell beat rank 1 by 1107.8 vs 1107.3 (**0.05%**).
+///   That marginal difference overrode the 13x coarse-score difference,
+///   and the surviving representative sat at position 7 of 38.
+/// - Recall was unaffected (both signals decoded either way), but every
+///   decode landed *after* 38.9 s of expensive noise candidates.
+///
+/// Host-verified before building this: refining and decoding the raw
+/// coarse ranks in order yields `CQ N5TM EL29` at rank 1 and
+/// `CQ K9KFR EN71` at rank 2, so the ordering signal is real and the
+/// dedup barrier is what was hiding it.
+///
+/// **No dedup here, deliberately** — duplicates decode to the same
+/// message and are collapsed by message at report time (what
+/// `decode_frame_impl`'s own post-decode dedup does anyway), which
+/// costs a repeat decode but never delays the first one.
+const MONITOR: bool = is_monitor(option_env!("MFSK_FST4_DDC_BENCH_MODE"));
+
+const fn is_monitor(v: Option<&str>) -> bool {
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            b.len() == 7
+                && b[0] == b'm'
+                && b[1] == b'o'
+                && b[2] == b'n'
+                && b[3] == b'i'
+                && b[4] == b't'
+                && b[5] == b'o'
+                && b[6] == b'r'
+        }
+        None => false,
+    }
+}
+
+/// Wall-clock ceiling for the monitor loop, from the moment the
+/// candidate loop starts. Generous by design: a receiver that never
+/// transmits is not bound by FST4-60's ~7.2 s TX-turnaround guard time
+/// (that budget exists to leave room to answer), only by keeping up
+/// with the slot cadence — the same reasoning `wspr_app` already ships
+/// on, decoding 82.8-90.1 s against a 110 s deadline in a 120 s slot.
+/// The summary below reports against *both* bounds so the strict-guard
+/// case stays visible.
+const MONITOR_DEADLINE_MS: i64 = 45_000;
+
+/// FST4-60's post-slot guard budget (`ROADMAP.md`: FST4-15 ~4.9 s,
+/// -30 ~6.6, -60 ~7.2, -120 ~9.7, -300 ~12.3 — the T/R period is *not*
+/// the decode budget). Reported as a marker, not enforced.
+const TX_TURNAROUND_BUDGET_MS: i64 = 7_200;
+
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }
@@ -309,6 +373,7 @@ pub fn run(audio_bin: &[u8]) {
     // (`engine/sync.rs:566-586`) so the timed call crops identically
     // rather than over-reporting on a wider band.
     let rx_grid = RxGrid::complex(grid.fs_c, CENTER_HZ);
+    let mut t_spectra_us = 0i64;
     {
         let d = SyncDims::of::<Fst4s60>(rx_grid.sample_rate_hz);
         let ntones = <Fst4s60 as mfsk_core::engine::ModulationParams>::NTONES as usize;
@@ -337,6 +402,7 @@ pub fn run(audio_bin: &[u8]) {
                 d.nhsym,
             );
             core::hint::black_box(&s);
+            t_spectra_us = t_spec;
         }
     }
     log_heap("post-diag-spectra");
@@ -363,6 +429,19 @@ pub fn run(audio_bin: &[u8]) {
         log::info!("    cand {:8.1} Hz  dt {:+.3} s  score {:.2}", c.freq_hz, c.dt_sec, c.score);
     }
     log_heap("post-coarse-sync");
+
+    if MONITOR {
+        run_monitor_loop(
+            &candidates,
+            &coarse_i,
+            &coarse_q,
+            coarse_delay_orig,
+            t_ddc,
+            t_spectra_us,
+            t_coarse_sync,
+        );
+        return;
+    }
 
     // ---- Stage 2a: refine every raw candidate, metadata only ----
     //
@@ -558,6 +637,157 @@ pub fn run(audio_bin: &[u8]) {
     log::info!("fst4_ddc_bench: stack headroom = {} B", stack_headroom());
     log_heap("post-decode");
     log::info!("=== fst4_ddc_bench complete ===");
+}
+
+/// `MFSK_FST4_DDC_BENCH_MODE=monitor` — see [`MONITOR`] for why this
+/// exists and what it measures. Streaming, coarse-score-ordered,
+/// deadline-bounded; reports **time-to-first-decode** rather than a
+/// total, because that is the number a monitoring receiver is actually
+/// judged on.
+#[allow(clippy::too_many_arguments)]
+fn run_monitor_loop(
+    candidates: &[SyncCandidate],
+    coarse_i: &[f32],
+    coarse_q: &[f32],
+    coarse_delay_orig: usize,
+    t_ddc_us: i64,
+    t_spectra_us: i64,
+    t_coarse_sync_us: i64,
+) {
+    log::info!(
+        "fst4_ddc_bench: MONITOR mode — {} candidates, coarse-score order, no dedup, deadline {} ms",
+        candidates.len(),
+        MONITOR_DEADLINE_MS,
+    );
+
+    // `coarse_sync`'s spectrogram build and the DDC ahead of it are
+    // both row/sample-incremental, so a real receiver computes them as
+    // audio arrives (WSPR ships exactly this: `wspr_app`'s `ddc_loop`
+    // -> `DDC_READY_IDX` -> `scan_loop`). Only the correlation search
+    // needs the completed spectrogram. Report both accountings rather
+    // than picking one, since which applies is an app-architecture
+    // decision this bench doesn't make.
+    let t_search_us = t_coarse_sync_us - t_spectra_us;
+    let front_end_all_us = t_ddc_us + t_coarse_sync_us;
+    let front_end_streamed_us = t_search_us;
+
+    let mut decoded: Vec<(String, f32, i64)> = Vec::new();
+    let t_loop0 = now_us();
+    let mut n_tried = 0usize;
+
+    for (rank, cand) in candidates.iter().enumerate() {
+        let elapsed_ms = (now_us() - t_loop0) / 1000;
+        if elapsed_ms >= MONITOR_DEADLINE_MS {
+            log::info!(
+                "fst4_ddc_bench: monitor deadline hit after {} candidates ({} ms)",
+                n_tried,
+                elapsed_ms,
+            );
+            break;
+        }
+        n_tried += 1;
+
+        let t_r = now_us();
+        let cd0 = ddc_refine(cand, coarse_i, coarse_q, coarse_delay_orig);
+        let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
+        let refine_us = now_us() - t_r;
+
+        let t_d = now_us();
+        let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
+        let result = process_candidate_precomputed::<Fst4s60>(
+            cand,
+            &[],
+            &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
+            DecodeDepth::FULL,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+            precomputed,
+            true,
+            false,
+        );
+        let decode_us = now_us() - t_d;
+        let since_loop_ms = (now_us() - t_loop0) / 1000;
+
+        let msg = result.and_then(|r| {
+            let m: &[u8; 77] = r.message77().try_into().ok()?;
+            unpack77(m)
+        });
+
+        match &msg {
+            Some(text) => {
+                // Collapse by message, not by position — a monitor
+                // reports stations, and two coarse cells for one signal
+                // are the same station. Cheaper than a dedup barrier
+                // ahead of the loop and it cannot delay a first decode.
+                let dup = decoded.iter().any(|(m, _, _)| m == text);
+                log::info!(
+                    "fst4_ddc_bench: [monitor] rank {:2}/{} {:8.1} Hz cscore {:5.2} \
+                     refine {:4} ms decode {:5} ms  t+{:5} ms  DECODED {:?}{}",
+                    rank + 1,
+                    candidates.len(),
+                    cand.freq_hz,
+                    cand.score,
+                    refine_us / 1000,
+                    decode_us / 1000,
+                    since_loop_ms,
+                    text,
+                    if dup { " (dup)" } else { "" },
+                );
+                if !dup {
+                    decoded.push((text.clone(), s2.freq_hz, since_loop_ms));
+                }
+            }
+            None => {
+                log::info!(
+                    "fst4_ddc_bench: [monitor] rank {:2}/{} {:8.1} Hz cscore {:5.2} \
+                     refine {:4} ms decode {:5} ms  t+{:5} ms",
+                    rank + 1,
+                    candidates.len(),
+                    cand.freq_hz,
+                    cand.score,
+                    refine_us / 1000,
+                    decode_us / 1000,
+                    since_loop_ms,
+                );
+            }
+        }
+    }
+
+    let t_loop_ms = (now_us() - t_loop0) / 1000;
+    log::info!(
+        "fst4_ddc_bench: MONITOR done — {} candidates tried, {} distinct decodes, loop {} ms",
+        n_tried,
+        decoded.len(),
+        t_loop_ms,
+    );
+    log::info!(
+        "fst4_ddc_bench: front end — ddc {} ms + spectra {} ms (both streamable during capture) \
+         + search {} ms = {} ms total",
+        t_ddc_us / 1000,
+        t_spectra_us / 1000,
+        t_search_us / 1000,
+        front_end_all_us / 1000,
+    );
+    for (msg, hz, t_ms) in &decoded {
+        let strict = front_end_streamed_us / 1000 + t_ms;
+        let naive = front_end_all_us / 1000 + t_ms;
+        log::info!(
+            "fst4_ddc_bench:   {:?} @ {:.1} Hz — loop t+{} ms | post-slot {} ms (front end streamed) \
+             | {} ms (nothing streamed) | TX-guard budget {} ms -> {}",
+            msg,
+            hz,
+            t_ms,
+            strict,
+            naive,
+            TX_TURNAROUND_BUDGET_MS,
+            if strict <= TX_TURNAROUND_BUDGET_MS { "FITS" } else { "over" },
+        );
+    }
+    log::info!("fst4_ddc_bench: stack headroom = {} B", stack_headroom());
+    log_heap("post-monitor");
+    log::info!("=== fst4_ddc_bench (monitor) complete ===");
 }
 
 /// Stack for the bench task — same starting-guess rationale as
