@@ -509,6 +509,173 @@ pub fn compute_spectra<P: Protocol>(
     }
 }
 
+/// Incremental, capture-time counterpart to [`compute_spectra`] for the
+/// complex (DDC-fed) path.
+///
+/// [`compute_spectra`] needs the whole slot before it can start, which
+/// puts its cost squarely in the post-slot decode budget. But its row
+/// loop only ever reads `xi[j·nstep .. j·nstep + nsps]` — row `j` is
+/// computable the moment those samples exist, and rows are otherwise
+/// independent. A receiver therefore does not have to wait: it can
+/// complete each row as audio arrives and have the finished
+/// spectrogram ready at slot end, exactly as WSPR already runs its
+/// down-converter (`wspr_app`'s `ddc_loop` → `DDC_READY_IDX` →
+/// `scan_loop`).
+///
+/// Measured motivation (issue #307, FST4-60 wideband on CoreS3): the
+/// spectrogram is 2842 ms of `coarse_sync`'s 6934 ms, and the DDC ahead
+/// of it another 1976 ms. Moving both off the post-slot budget is the
+/// difference between a first decode at 10 060 ms and one at 5242 ms,
+/// against a 7.2 s guard.
+///
+/// Output is **bit-identical** to [`compute_spectra`] on the same
+/// input — same FFT, same window, same fftshift, same zero-fill past
+/// the end of the stream — which
+/// `spectrogram_builder_matches_compute_spectra` pins.
+///
+/// Complex input only: this exists for the DDC path, and the real-PCM
+/// path has no streaming caller today.
+pub struct SpectrogramBuilder {
+    d: SyncDims,
+    grid: RxGrid,
+    bin_lo: usize,
+    bin_hi_incl: usize,
+    n_freq: usize,
+    window: Option<Vec<f32>>,
+    fft: alloc::boxed::Box<dyn crate::engine::fft::Fft>,
+    /// Retained tail: samples from `abs_base` onwards that a future row
+    /// still needs. Rows overlap by `nsps - nstep`, so this stays
+    /// bounded at `nsps` regardless of how long the stream runs.
+    hist_i: Vec<f32>,
+    hist_q: Vec<f32>,
+    /// Absolute stream index of `hist_*[0]`.
+    abs_base: usize,
+    /// Next row to emit.
+    j: usize,
+    data: Vec<f32>,
+    buf: Vec<Complex<f32>>,
+}
+
+impl SpectrogramBuilder {
+    pub fn new<P: Protocol>(bin_lo: usize, bin_hi_incl: usize, grid: RxGrid) -> Self {
+        let d = SyncDims::of::<P>(grid.sample_rate_hz);
+        let window: Option<Vec<f32>> = match P::SPECTRUM_WINDOW {
+            SpectrumWindow::Rectangular => None,
+            SpectrumWindow::Nuttall4 => Some(nuttall_window(d.nsps)),
+        };
+        let usable = grid.usable_bins(&d);
+        let bin_lo = bin_lo.min(usable.saturating_sub(1));
+        let bin_hi_incl = bin_hi_incl.min(usable.saturating_sub(1)).max(bin_lo);
+        let n_freq = bin_hi_incl - bin_lo + 1;
+        let mut planner = default_planner();
+        let fft = planner.plan_forward(d.nfft1);
+        let nfft1 = d.nfft1;
+        let nhsym = d.nhsym;
+        Self {
+            d,
+            grid,
+            bin_lo,
+            bin_hi_incl,
+            n_freq,
+            window,
+            fft,
+            hist_i: Vec::new(),
+            hist_q: Vec::new(),
+            abs_base: 0,
+            j: 0,
+            data: vec![0.0f32; n_freq * nhsym],
+            buf: vec![Complex::new(0.0f32, 0.0); nfft1],
+        }
+    }
+
+    /// Feed the next contiguous block of complex baseband, completing
+    /// every row it makes available. Block boundaries are irrelevant to
+    /// the result — one `push` of the whole slot and many small pushes
+    /// produce the same spectrogram.
+    pub fn push(&mut self, xi: &[f32], xq: &[f32]) {
+        debug_assert_eq!(xi.len(), xq.len());
+        self.hist_i.extend_from_slice(xi);
+        self.hist_q.extend_from_slice(xq);
+        self.drain_ready(false);
+    }
+
+    /// Finish the slot: emit every remaining row, zero-filling past the
+    /// end of the stream the way [`compute_spectra`] does.
+    pub fn finish(mut self) -> Spectrogram {
+        self.drain_ready(true);
+        Spectrogram {
+            n_freq: self.n_freq,
+            n_time: self.d.nhsym,
+            freq_offset: self.bin_lo,
+            data: self.data,
+        }
+    }
+
+    fn drain_ready(&mut self, flush: bool) {
+        while self.j < self.d.nhsym {
+            let ia = self.j * self.d.nstep;
+            let need_end = ia + self.d.nsps;
+            let have_end = self.abs_base + self.hist_i.len();
+            if !flush && have_end < need_end {
+                break;
+            }
+            self.emit_row(ia);
+            self.j += 1;
+        }
+        // Drop history no future row can reach. `saturating_sub` covers
+        // the flush case, where `j` has run past the last row.
+        if self.j < self.d.nhsym {
+            let keep_from = self.j * self.d.nstep;
+            let drop = keep_from
+                .saturating_sub(self.abs_base)
+                .min(self.hist_i.len());
+            if drop > 0 {
+                self.hist_i.drain(..drop);
+                self.hist_q.drain(..drop);
+                self.abs_base += drop;
+            }
+        }
+    }
+
+    fn emit_row(&mut self, ia: usize) {
+        let d = &self.d;
+        for (k, c) in self.buf.iter_mut().enumerate() {
+            *c = if k < d.nsps {
+                let abs = ia + k;
+                // Same zero-fill past end-of-stream `compute_spectra`
+                // applies for `ia + k >= xi.len()`.
+                if abs >= self.abs_base && abs - self.abs_base < self.hist_i.len() {
+                    let idx = abs - self.abs_base;
+                    let (mut si, mut sq) = (self.hist_i[idx], self.hist_q[idx]);
+                    if let Some(w) = &self.window {
+                        si *= w[k];
+                        sq *= w[k];
+                    }
+                    Complex::new(si, sq)
+                } else {
+                    Complex::new(0.0, 0.0)
+                }
+            } else {
+                Complex::new(0.0, 0.0)
+            };
+        }
+        self.fft.process(&mut self.buf);
+        let j = self.j;
+        let nhsym = d.nhsym;
+        let nfft1 = d.nfft1;
+        if self.grid.complex_input {
+            for shifted in self.bin_lo..=self.bin_hi_incl {
+                let k = (shifted + nfft1 / 2) % nfft1;
+                self.data[(shifted - self.bin_lo) * nhsym + j] = self.buf[k].norm_sqr();
+            }
+        } else {
+            for i in self.bin_lo..=self.bin_hi_incl {
+                self.data[(i - self.bin_lo) * nhsym + j] = self.buf[i].norm_sqr();
+            }
+        }
+    }
+}
+
 /// Coarse sync: search audio for candidate frames.
 ///
 /// Matches the sync shape of the protocol's `SYNC_BLOCKS`. Returns up to
@@ -558,6 +725,61 @@ pub fn coarse_sync<P: Protocol>(
     max_cand: usize,
     grid: RxGrid,
 ) -> Vec<SyncCandidate> {
+    let Some((bin_lo, bin_hi)) = spectra_crop_for::<P>(freq_min, freq_max, grid) else {
+        return Vec::new();
+    };
+    // Crop to exactly the range the correlation loop and the FST4
+    // stage1 augmentation ever read: candidate bins `ia..=ib` plus
+    // `headroom` bins above `ib` for their reference tones.
+    // `Spectrogram::get` stays absolute-bin-indexed (subtracts
+    // `freq_offset` internally) so nothing downstream needs to change.
+    let s = compute_spectra::<P>(audio, bin_lo, bin_hi, grid);
+    coarse_sync_from_spectra::<P>(&s, freq_min, freq_max, sync_min, freq_hint, max_cand, grid)
+}
+
+/// The bin range [`coarse_sync`] crops its spectrogram to, or `None`
+/// when the requested band is empty. Exposed so a caller building the
+/// spectrogram itself — incrementally, via [`SpectrogramBuilder`] —
+/// crops identically instead of re-deriving this and drifting.
+pub fn spectra_crop_for<P: Protocol>(
+    freq_min: f32,
+    freq_max: f32,
+    grid: RxGrid,
+) -> Option<(usize, usize)> {
+    let d = SyncDims::of::<P>(grid.sample_rate_hz);
+    let ntones = P::NTONES as usize;
+    let usable = grid.usable_bins(&d);
+    let ia = grid.bin_of(&d, freq_min);
+    let headroom = d.nfos * (ntones - 1) + 1;
+    let ib = grid
+        .bin_of(&d, freq_max)
+        .min(usable.saturating_sub(headroom));
+    if ib < ia {
+        return None;
+    }
+    Some((ia, (ib + headroom).min(usable.saturating_sub(1))))
+}
+
+/// [`coarse_sync`]'s second half: everything from a finished
+/// spectrogram to a ranked candidate list.
+///
+/// Split out so a receiver can build the spectrogram **during capture**
+/// with [`SpectrogramBuilder`] and pay only this part after the slot
+/// ends. On FST4-60 wideband that moves 2842 ms of a 6934 ms
+/// `coarse_sync` off the post-slot decode budget (issue #307).
+///
+/// `s` must have been produced with the same `P`/`grid` and the crop
+/// [`spectra_crop_for`] returns; anything else indexes wrongly.
+#[allow(clippy::too_many_arguments)]
+pub fn coarse_sync_from_spectra<P: Protocol>(
+    s: &Spectrogram,
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    max_cand: usize,
+    grid: RxGrid,
+) -> Vec<SyncCandidate> {
     let d = SyncDims::of::<P>(grid.sample_rate_hz);
     let ntones = P::NTONES as usize;
     let pattern_len = P::SYNC_MODE.blocks()[0].pattern.len();
@@ -572,18 +794,6 @@ pub fn coarse_sync<P: Protocol>(
     if ib < ia {
         return Vec::new();
     }
-
-    // Crop to exactly the range the correlation loop below and the
-    // FST4 stage1 augmentation ever read: candidate bins `ia..=ib`
-    // plus `headroom` bins above `ib` for their reference tones.
-    // `Spectrogram::get` stays absolute-bin-indexed (subtracts
-    // `freq_offset` internally) so nothing below needs to change.
-    let s = compute_spectra::<P>(
-        audio,
-        ia,
-        (ib + headroom).min(usable.saturating_sub(1)),
-        grid,
-    );
 
     let n_freq = ib - ia + 1;
     let n_lag = (2 * d.jz + 1) as usize;

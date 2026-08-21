@@ -48,7 +48,8 @@ use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
 use mfsk_core::engine::sync::{
-    AudioSource, RxGrid, SyncCandidate, SyncDims, coarse_sync, compute_spectra,
+    AudioSource, RxGrid, SpectrogramBuilder, SyncCandidate, SyncDims, coarse_sync,
+    coarse_sync_from_spectra, compute_spectra, spectra_crop_for,
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
@@ -286,6 +287,31 @@ fn budget_ok() -> bool {
 /// both cores (issue #327). Same per-candidate function either way.
 const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
 
+/// `MFSK_FST4_DDC_BENCH_STREAM=1` — run the DDC and the spectrogram
+/// **incrementally, block by block**, the way a receiver processes
+/// audio as it arrives, instead of batching both after the slot ends.
+///
+/// This does not make the front end cheaper; it moves it. A receiver
+/// has the whole 60 s capture window to do this work, so what it costs
+/// against is a *duty cycle*, not the post-slot guard budget. WSPR
+/// already ships exactly this shape (`wspr_app`'s `ddc_loop` ->
+/// `DDC_READY_IDX` -> `scan_loop`), measured there at 18.5-24.1 s of
+/// DDC running beside an 82.8-90.1 s decode inside a 110 s deadline.
+///
+/// Measured motivation (2026-08-22, FST4-60 wideband): DDC 1976 ms +
+/// spectrogram 2842 ms = 4818 ms, against a first decode that otherwise
+/// lands at 10 060 ms post-slot versus a 7.2 s guard. Moving both out
+/// is the difference between "over" and "fits".
+const STREAM_FRONTEND: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_STREAM"));
+
+/// Block size the streaming front end is fed in. 12 000 samples = 1 s
+/// of 12 kHz audio, a plausible unit for a real capture path and large
+/// enough that per-block overhead is irrelevant. The spectrogram is
+/// bit-identical at any block size (pinned by
+/// `fst4_spectrogram_builder`), so this is a pacing choice, not a
+/// numerical one.
+const STREAM_BLOCK: usize = 12_000;
+
 const fn is_one(v: Option<&str>) -> bool {
     match v {
         Some(s) => {
@@ -435,8 +461,47 @@ pub fn run(audio_bin: &[u8]) {
     let mut coarse = StreamingComplexDdc::new(&coarse_cfg);
     let mut coarse_i = Vec::new();
     let mut coarse_q = Vec::new();
-    coarse.push_i16(&audio, &mut coarse_i, &mut coarse_q);
-    coarse.flush(&mut coarse_i, &mut coarse_q);
+    let grid = grid_for(GRID_BANDWIDTH_HZ);
+    let rx_grid = RxGrid::complex(grid.fs_c, CENTER_HZ);
+
+    // In streaming mode the spectrogram is built alongside the DDC, one
+    // block at a time, so both finish with the capture rather than
+    // after it. `prebuilt` is what `coarse_sync_from_spectra` then
+    // consumes post-slot.
+    let mut prebuilt = None;
+    if STREAM_FRONTEND {
+        let crop = spectra_crop_for::<Fst4s60>(
+            CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
+            CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
+            rx_grid,
+        );
+        let mut builder =
+            crop.map(|(lo, hi)| SpectrogramBuilder::new::<Fst4s60>(lo, hi, rx_grid));
+        let mut blk_i = Vec::new();
+        let mut blk_q = Vec::new();
+        for chunk in audio.chunks(STREAM_BLOCK) {
+            blk_i.clear();
+            blk_q.clear();
+            coarse.push_i16(chunk, &mut blk_i, &mut blk_q);
+            if let Some(b) = builder.as_mut() {
+                b.push(&blk_i, &blk_q);
+            }
+            coarse_i.extend_from_slice(&blk_i);
+            coarse_q.extend_from_slice(&blk_q);
+        }
+        blk_i.clear();
+        blk_q.clear();
+        coarse.flush(&mut blk_i, &mut blk_q);
+        if let Some(b) = builder.as_mut() {
+            b.push(&blk_i, &blk_q);
+        }
+        coarse_i.extend_from_slice(&blk_i);
+        coarse_q.extend_from_slice(&blk_q);
+        prebuilt = builder.map(|b| b.finish());
+    } else {
+        coarse.push_i16(&audio, &mut coarse_i, &mut coarse_q);
+        coarse.flush(&mut coarse_i, &mut coarse_q);
+    }
     let coarse_delay_orig = coarse.group_delay_input_samples();
     let t_ddc = now_us() - t0;
     log::info!(
@@ -446,8 +511,6 @@ pub fn run(audio_bin: &[u8]) {
         t_ddc / 1000,
     );
     log_heap("post-ddc");
-
-    let grid = grid_for(GRID_BANDWIDTH_HZ);
 
     // Diagnostic split of `coarse_sync`'s cost into its spectrogram
     // build vs its correlation search — the two have completely
@@ -467,9 +530,8 @@ pub fn run(audio_bin: &[u8]) {
     // replicates `coarse_sync`'s own `ia`/`ib`/`headroom` derivation
     // (`engine/sync.rs:566-586`) so the timed call crops identically
     // rather than over-reporting on a wider band.
-    let rx_grid = RxGrid::complex(grid.fs_c, CENTER_HZ);
     let mut t_spectra_us = 0i64;
-    {
+    if !STREAM_FRONTEND {
         let d = SyncDims::of::<Fst4s60>(rx_grid.sample_rate_hz);
         let ntones = <Fst4s60 as mfsk_core::engine::ModulationParams>::NTONES as usize;
         let usable = rx_grid.usable_bins(&d);
@@ -503,15 +565,28 @@ pub fn run(audio_bin: &[u8]) {
     log_heap("post-diag-spectra");
 
     let t1 = now_us();
-    let candidates = coarse_sync::<Fst4s60>(
-        AudioSource::Complex(&coarse_i, &coarse_q),
-        CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
-        CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
-        SYNC_MIN,
-        None,
-        MAX_CAND,
-        rx_grid,
-    );
+    let candidates = match &prebuilt {
+        // Streaming: the spectrogram was finished during capture, so
+        // only the correlation search is post-slot work.
+        Some(s) => coarse_sync_from_spectra::<Fst4s60>(
+            s,
+            CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
+            CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
+            SYNC_MIN,
+            None,
+            MAX_CAND,
+            rx_grid,
+        ),
+        None => coarse_sync::<Fst4s60>(
+            AudioSource::Complex(&coarse_i, &coarse_q),
+            CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
+            CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
+            SYNC_MIN,
+            None,
+            MAX_CAND,
+            rx_grid,
+        ),
+    };
     let t_coarse_sync = now_us() - t1;
     log::info!(
         "fst4_ddc_bench: coarse_sync (via DDC, K={}, nfft1={}) -> {} candidates in {} ms",
@@ -949,14 +1024,29 @@ fn run_monitor_loop(
         decoded.len(),
         t_loop_ms,
     );
-    log::info!(
-        "fst4_ddc_bench: front end — ddc {} ms + spectra {} ms (both streamable during capture) \
-         + search {} ms = {} ms total",
-        t_ddc_us / 1000,
-        t_spectra_us / 1000,
-        t_search_us / 1000,
-        front_end_all_us / 1000,
-    );
+    if STREAM_FRONTEND {
+        // `t_ddc_us` here is DDC *and* spectrogram: the builder was fed
+        // inside the same block loop, so the two are one capture-time
+        // cost and cannot be separated after the fact.
+        let capture_ms = t_ddc_us / 1000;
+        log::info!(
+            "fst4_ddc_bench: front end (STREAMING) — ddc+spectrogram {} ms done during capture \
+             ({}% duty of a 60 s slot) + search {} ms post-slot = {} ms total",
+            capture_ms,
+            capture_ms * 100 / 60_000,
+            t_search_us / 1000,
+            front_end_all_us / 1000,
+        );
+    } else {
+        log::info!(
+            "fst4_ddc_bench: front end (BATCH) — ddc {} ms + spectra {} ms \
+             (both streamable during capture) + search {} ms = {} ms total",
+            t_ddc_us / 1000,
+            t_spectra_us / 1000,
+            t_search_us / 1000,
+            front_end_all_us / 1000,
+        );
+    }
     for (msg, hz, t_ms) in &decoded {
         let strict = front_end_streamed_us / 1000 + t_ms;
         let naive = front_end_all_us / 1000 + t_ms;
