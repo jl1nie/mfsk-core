@@ -828,6 +828,70 @@ pub fn run(audio_bin: &[u8]) {
 /// total, because that is the number a monitoring receiver is actually
 /// judged on.
 #[allow(clippy::too_many_arguments)]
+/// Whether this candidate, at coarse-score `rank`, gets the **full**
+/// decode path or the capped one.
+///
+/// Measured 2026-08-22, and the reason this is tiered by rank rather
+/// than applied uniformly either way:
+///
+/// - The cap (#332) buys band coverage — 13 -> 39 candidates in a 45 s
+///   deadline — but `fst4_monitor_cap_sensitivity` then measured it
+///   costing **~2/3 of threshold recall** at -27 dB, because it
+///   truncates the OSD rung that carries 43 of 65 decodes there.
+/// - Timing diversity (`i0 +/- 1`) is worth a further **10/100** at
+///   -27 dB (`fst4_rung_major_recall_gap`), and the production path
+///   applies it automatically whenever OSD depth is on
+///   (`pipeline.rs:1236`).
+/// - Those two cannot be combined under a cap. `Schedule::PhaseSplit`
+///   puts extra offsets in **Phase C**, which runs last and is the
+///   first thing `budget_ok` cuts — measured directly: adding
+///   `&[0, 1, -1]` under a 150 ms cap changed per-candidate decode
+///   times by <=1 ms and the loop total by 20 ms out of 31.8 s, i.e.
+///   the extra offsets were never reached.
+///
+/// So a uniform cap gives up both mechanisms that carry weak-signal
+/// recall. What makes tiering work instead is that the signal is not
+/// uniformly distributed through the list:
+/// `fst4_monitor_cap_sensitivity` and `fst4_wideband_max_cand`
+/// independently put it at **median coarse-score rank 1 at every SNR**.
+/// Spending the full ladder on the first few candidates and capping the
+/// tail therefore buys threshold sensitivity exactly where the signal
+/// is, and band coverage everywhere else.
+fn full_depth_for_rank(rank: usize) -> bool {
+    rank < FULL_DEPTH_RANKS
+}
+
+/// How many top-ranked candidates get the full, uncapped decode path
+/// (which brings OSD *and* production's automatic `i0 +/- 1` retry).
+/// `MFSK_FST4_DDC_BENCH_FULL_RANKS=<n>`; `0` restores a uniform cap.
+///
+/// Default 8, chosen by measuring both ends rather than by intuition.
+/// The rank at which the golden signal decodes, out of the 68/100
+/// achievable at -27 dB (`fst4_wideband_max_cand`), against the
+/// measured loop cost of extending the tier (real CoreS3, wideband,
+/// dual-core, streaming front end):
+///
+/// | tier | loop | vs uniform cap | recall captured |
+/// |---:|---:|---:|---:|
+/// | 0 (uniform cap) | 31 786 ms | — | ~22 (see #337) |
+/// | 4 | 32 240 ms | +1.4% | 55/68 (81%) |
+/// | **8** | **33 141 ms** | **+4.3%** | **60/68 (88%)** |
+/// | no cap at all | deadline hit at 13 candidates | — | 68/68 |
+///
+/// 8 buys five more decodes than 4 for 0.9 s, and still leaves the 45 s
+/// deadline unreached (all 50 candidates complete) with the first
+/// decode unmoved at 5207 ms post-slot. Past 8 the rank distribution
+/// flattens — ranks 9-50 hold only five of the 68 — so a larger tier
+/// pays the 3x ladder for candidates that are almost all noise.
+const FULL_DEPTH_RANKS: usize = {
+    let v = parse_dec(option_env!("MFSK_FST4_DDC_BENCH_FULL_RANKS"));
+    if v == 0 && option_env!("MFSK_FST4_DDC_BENCH_FULL_RANKS").is_none() {
+        8
+    } else {
+        v as usize
+    }
+};
+
 /// One candidate's full work: refine, sync-search, decode. A plain
 /// `fn` item so [`fst4_dual_core::run_split`] can hand it to the worker
 /// task — a closure's captures cannot cross that boundary, which is why
@@ -847,7 +911,7 @@ fn monitor_candidate(ctx: &fst4_dual_core::Ctx, i: usize) -> Option<MonitorHit> 
     let refine_us = now_us() - t_r;
 
     let t_d = now_us();
-    let result = if MONITOR_CAP_MS > 0 {
+    let result = if MONITOR_CAP_MS > 0 && !full_depth_for_rank(i) {
         // Per-candidate cap. The deadline cell is **per core** — with
         // both cores in this function at once on different candidates,
         // a single shared cell would have one core's arming truncate
@@ -942,15 +1006,12 @@ fn run_monitor_loop(
 ) {
     log::info!(
         "fst4_ddc_bench: MONITOR mode — {} candidates, coarse-score order, no dedup, \
-         deadline {} ms, cap {} ms, {}",
+         deadline {} ms, cap {} ms beyond rank {}, {}",
         candidates.len(),
         MONITOR_DEADLINE_MS,
         MONITOR_CAP_MS,
-        if DUAL_CORE {
-            "DUAL-CORE"
-        } else {
-            "single-core"
-        },
+        FULL_DEPTH_RANKS,
+        if DUAL_CORE { "DUAL-CORE" } else { "single-core" },
     );
 
     // `coarse_sync`'s spectrogram build and the DDC ahead of it are

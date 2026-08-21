@@ -64,7 +64,7 @@ const PROD_MAX_CAND: usize = 50;
 /// production cutoff rather than censored by it.
 const PROBE_MAX_CAND: usize = 200;
 /// Truncation points the recall curve is reported at.
-const CUTOFFS: [usize; 6] = [10, 25, 50, 75, 100, 200];
+const CUTOFFS: [usize; 6] = [1, 2, 4, 8, 50, 200];
 
 fn sweep_dir() -> PathBuf {
     if let Ok(d) = std::env::var("MFSK_FST4_SWEEP_DIR") {
