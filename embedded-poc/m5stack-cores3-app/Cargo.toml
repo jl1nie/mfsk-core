@@ -45,6 +45,16 @@ name = "fst4-bench"
 path = "src/bin/fst4_bench.rs"
 harness = false
 
+# FST4-60 DDC-fed coarse-sync + refine + decode bench —
+# docs/notes/FST4_DDC_DESIGN.md stage 5's first half. The whole chain
+# (DDC -> coarse_sync -> refine -> LLR/BP/OSD) on real audio, not just
+# the decoder half `fst4-bench` above measures. See
+# `embedded-shared::apps::fst4_ddc_bench`'s module doc comment.
+[[bin]]
+name = "fst4-ddc-bench"
+path = "src/bin/fst4_ddc_bench.rs"
+harness = false
+
 # LlrScalar (f32 vs Q11i16 vs Q3i8) microbenchmark — issue #198's
 # deprioritized `FecCodec::decode_soft` genericization premise, checked
 # cheaply before committing to that work. See
