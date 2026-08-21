@@ -36,6 +36,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use super::dotprod::dot_f32;
 use super::fir_decimate::design_lowpass;
 
 /// Streaming `L`/`M` rational resampler over a complex (I, Q) stream.
@@ -171,15 +172,16 @@ impl PolyphaseResampler {
         let depth = self.max_depth;
         let hi = &self.hist_i[start..start + depth];
         let hq = &self.hist_q[start..start + depth];
-        let h = &self.taps_rev[self.phase as usize][..];
+        let h = &self.taps_rev[self.phase as usize][..depth];
 
-        let mut si = 0.0f32;
-        let mut sq = 0.0f32;
-        for k in 0..depth {
-            si += h[k] * hi[k];
-            sq += h[k] * hq[k];
-        }
-        (si, sq)
+        // Two independent real dot products against the same
+        // phase-selected tap table. Routed through
+        // [`dot_f32`](super::dotprod::dot_f32) so an embedded build can
+        // supply an esp-dsp backend: this is the single largest cost in
+        // the FST4 embedded DDC pipeline, and the wideband cascade has
+        // no integer stages at all, so *all* of its filter work lands
+        // here (issue #307 — measured 3.6-9.2x available).
+        (dot_f32(h, hi), dot_f32(h, hq))
     }
 }
 
