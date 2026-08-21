@@ -905,6 +905,16 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// `no8_osd` trade-off) is a real caller choice, not free -- this mode
 /// runs both `false` and `true` so the two totals are directly
 /// comparable to `full` (43.134 s) and `no8_osd` (17.147 s) above.
+///
+/// Also runs [`mfsk_core::fst4::rung_major::decode_phase_split_timed`]
+/// (`Schedule::PhaseSplit`, `budget_ok = None`) over the same candidate
+/// set immediately after -- issue #310's own implementation note
+/// flagged this real-hardware comparison as not yet done, and #327
+/// names it as the prerequisite for the dual-core dispatch design
+/// (whether Phase A's cost is uniform enough on real hardware for plain
+/// work-steal). Decode counts must match the `rung_major[label]` runs
+/// above exactly; only per-stage order (and therefore the wall-clock
+/// total under a hypothetical mid-run budget cutoff) differs.
 fn run_rung_major(refined_bin: &[u8]) {
     use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::rung_major::RungMajorCandidate;
@@ -960,8 +970,51 @@ fn run_rung_major(refined_bin: &[u8]) {
         log_heap(&alloc::format!("post-rung-major-{label}"));
     }
 
-    log::info!("fst4_bench: stack headroom after rung_major = {} B", stack_headroom());
-    log::info!("=== fst4_bench (rung_major) complete ===");
+    // Real-hardware `Schedule::PhaseSplit` comparison — the item #310's
+    // own implementation comment flagged as queued ("Both schedules are
+    // reachable from one build via fst4_bench, deliberately, so a CoreS3
+    // session can measure them side by side") and #327 later named as
+    // the direct prerequisite for the dual-core dispatch design (Phase
+    // A's real-hardware uniformity determines whether simple work-steal
+    // suffices there). `budget_ok = None` runs the whole ladder, so
+    // decode counts must match `decode_rung_major_timed`'s above exactly
+    // — only per-stage *order*, and therefore the wall-clock total under
+    // a hypothetical mid-run cutoff, differs. Same `inputs`, same
+    // (skip_llrc, skip_osd) grid, so each label is directly comparable
+    // to its `rung_major[label]` counterpart above.
+    for (skip_llrc, skip_osd, label) in [
+        (false, false, "full"),
+        (true, false, "no8_osd"),
+        (true, true, "no8_osd_bponly"),
+    ] {
+        let t0 = now_us();
+        let results = mfsk_core::fst4::rung_major::decode_phase_split_timed::<Fst4s60>(
+            &inputs, skip_llrc, skip_osd, &[0], None, None, 12_000.0,
+        )
+        .0;
+        let total_us = now_us() - t0;
+        let decoded_count = results.iter().flatten().count();
+        log::info!(
+            "fst4_bench: phase_split[{label}] TOTAL = {} ms ({} decodes)",
+            total_us / 1000,
+            decoded_count,
+        );
+        for r in results.iter().flatten() {
+            let text = r
+                .message77()
+                .try_into()
+                .ok()
+                .and_then(|m77: &[u8; 77]| unpack77(m77));
+            log::info!("    {:?} | {:.1} Hz | dt {:.2} s", text, r.freq_hz, r.dt_sec);
+        }
+        log_heap(&alloc::format!("post-phase-split-{label}"));
+    }
+
+    log::info!(
+        "fst4_bench: stack headroom after rung_major/phase_split = {} B",
+        stack_headroom()
+    );
+    log::info!("=== fst4_bench (rung_major + phase_split) complete ===");
 }
 
 /// Stack for the bench task. Unmeasured starting point, not a
