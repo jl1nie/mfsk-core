@@ -23,11 +23,7 @@
 //! Palette is a coarse NanoVNA-style 16-step gradient (black → blue
 //! → cyan → green → yellow → orange → red → white).
 
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-    prelude::*,
-    primitives::Rectangle,
-};
+use embedded_graphics::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 
 use crate::ui::state::{WfLine, WF_DEPTH};
 
@@ -40,22 +36,22 @@ pub const WF_FREQ_HI_HZ: f32 = 2700.0;
 /// 16-step palette. Indices 0..15 map magnitude bands; 0 = silence
 /// (black), 15 = peak (white). RGB565 encoded inline.
 const PALETTE: [Rgb565; 16] = [
-    Rgb565::new(0, 0, 0),     //  0  black
-    Rgb565::new(0, 0, 6),     //  1  near-black blue
-    Rgb565::new(0, 0, 12),    //  2  dim blue
-    Rgb565::new(0, 4, 18),    //  3  blue
-    Rgb565::new(0, 12, 24),   //  4  cyan-blue
-    Rgb565::new(0, 24, 24),   //  5  cyan
-    Rgb565::new(0, 36, 16),   //  6  teal-green
-    Rgb565::new(0, 48, 0),    //  7  green
-    Rgb565::new(8, 56, 0),    //  8  yellow-green
-    Rgb565::new(16, 60, 0),   //  9  lime
-    Rgb565::new(24, 60, 0),   // 10  yellow-lime
-    Rgb565::new(31, 56, 0),   // 11  yellow
-    Rgb565::new(31, 40, 0),   // 12  orange-yellow
-    Rgb565::new(31, 24, 0),   // 13  orange
-    Rgb565::new(31, 8, 0),    // 14  red
-    Rgb565::new(31, 31, 31),  // 15  white (peak)
+    Rgb565::new(0, 0, 0),    //  0  black
+    Rgb565::new(0, 0, 6),    //  1  near-black blue
+    Rgb565::new(0, 0, 12),   //  2  dim blue
+    Rgb565::new(0, 4, 18),   //  3  blue
+    Rgb565::new(0, 12, 24),  //  4  cyan-blue
+    Rgb565::new(0, 24, 24),  //  5  cyan
+    Rgb565::new(0, 36, 16),  //  6  teal-green
+    Rgb565::new(0, 48, 0),   //  7  green
+    Rgb565::new(8, 56, 0),   //  8  yellow-green
+    Rgb565::new(16, 60, 0),  //  9  lime
+    Rgb565::new(24, 60, 0),  // 10  yellow-lime
+    Rgb565::new(31, 56, 0),  // 11  yellow
+    Rgb565::new(31, 40, 0),  // 12  orange-yellow
+    Rgb565::new(31, 24, 0),  // 13  orange
+    Rgb565::new(31, 8, 0),   // 14  red
+    Rgb565::new(31, 31, 31), // 15  white (peak)
 ];
 
 /// Repaint the waterfall region from `lines` (oldest first, newest
@@ -75,10 +71,7 @@ where
     // Stream pixels top-to-bottom, left-to-right. The first
     // `blank_rows × WIDTH` pixels are palette[0]; the rest are
     // unpacked from the supplied lines.
-    let rect = Rectangle::new(
-        Point::new(0, ORIGIN_Y),
-        Size::new(WIDTH, HEIGHT),
-    );
+    let rect = Rectangle::new(Point::new(0, ORIGIN_Y), Size::new(WIDTH, HEIGHT));
     let pixels = (0..HEIGHT as usize).flat_map(|row| {
         let row_pixels: &[u8] = if row < blank_rows {
             &[][..]
@@ -89,11 +82,7 @@ where
         // map each palette index to its RGB565 colour.
         let blank = row < blank_rows;
         (0..WIDTH as usize).map(move |col| {
-            let idx = if blank {
-                0
-            } else {
-                row_pixels[col] & 0x0F
-            };
+            let idx = if blank { 0 } else { row_pixels[col] & 0x0F };
             PALETTE[idx as usize]
         })
     });

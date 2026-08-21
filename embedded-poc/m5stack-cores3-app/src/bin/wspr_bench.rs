@@ -58,8 +58,8 @@ const WIFI_PSK: &str = env!("WIFI_PSK");
 /// measured in.
 fn log_internal(label: &str) {
     use esp_idf_svc::sys::{
-        MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL, heap_caps_get_free_size,
-        heap_caps_get_largest_free_block,
+        heap_caps_get_free_size, heap_caps_get_largest_free_block, MALLOC_CAP_8BIT,
+        MALLOC_CAP_INTERNAL,
     };
     let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     let (free, largest) = unsafe {
@@ -77,7 +77,9 @@ fn log_internal(label: &str) {
 
 fn maybe_start_wifi() -> Option<mfsk_app_shared::wifi::WifiHandle> {
     let Some(mode) = option_env!("MFSK_WSPR_BENCH_WIFI") else {
-        log::info!("wspr_bench: WiFi off (MFSK_WSPR_BENCH_WIFI=1 to hold it up, =cycle to up/down)");
+        log::info!(
+            "wspr_bench: WiFi off (MFSK_WSPR_BENCH_WIFI=1 to hold it up, =cycle to up/down)"
+        );
         return None;
     };
     if WIFI_SSID.is_empty() {
@@ -88,13 +90,7 @@ fn maybe_start_wifi() -> Option<mfsk_app_shared::wifi::WifiHandle> {
     let peripherals = esp_idf_hal::peripherals::Peripherals::take().ok()?;
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take().ok()?;
     let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().ok();
-    match mfsk_app_shared::wifi::connect_sta(
-        peripherals.modem,
-        sysloop,
-        nvs,
-        WIFI_SSID,
-        WIFI_PSK,
-    ) {
+    match mfsk_app_shared::wifi::connect_sta(peripherals.modem, sysloop, nvs, WIFI_SSID, WIFI_PSK) {
         Ok(h) => {
             log::info!("wspr_bench: WiFi up, ip {}", h.ip);
             log_internal("wifi-up");
@@ -164,7 +160,7 @@ const GOLDEN_DIAL_MHZ: f64 = 14.095_600;
 /// this station's. `dummy` is what exercises the encoder against real
 /// decoder output; a URL is for pointing at a local receiver.
 fn report_spots(results: &[mfsk_core::wspr::decode::WsprResult]) {
-    use mfsk_app_shared::wsprnet::{Mode, Reporter, Spot, SpotSink, report_slot};
+    use mfsk_app_shared::wsprnet::{report_slot, Mode, Reporter, Spot, SpotSink};
 
     let sink = SpotSink::from_config(option_env!("MFSK_WSPR_SPOT"));
     if !sink.is_enabled() {

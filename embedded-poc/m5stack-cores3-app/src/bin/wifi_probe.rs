@@ -186,7 +186,8 @@ fn probe_loop(mut ctx: ProbeCtx) -> ! {
     loop {
         attempt += 1;
         let t0_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-        let outcome = mfsk_app_shared::wifi::connect_with_retry(&mut ctx.wifi, WIFI_SSID, WIFI_PSK, Some(1));
+        let outcome =
+            mfsk_app_shared::wifi::connect_with_retry(&mut ctx.wifi, WIFI_SSID, WIFI_PSK, Some(1));
         let elapsed_ms = (unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t0_us) / 1000;
 
         match outcome {
@@ -263,6 +264,9 @@ fn decode_loop() -> ! {
         for s in &stats {
             s.log();
         }
-        log::info!("wifi-probe: decode pass {pass} done, {} station(s)", results.len());
+        log::info!(
+            "wifi-probe: decode pass {pass} done, {} station(s)",
+            results.len()
+        );
     }
 }

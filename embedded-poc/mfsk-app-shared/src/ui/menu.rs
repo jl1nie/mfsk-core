@@ -37,17 +37,17 @@ use embedded_graphics::{
 /// Index 4 (20m) is the default for fresh boots — populated into
 /// `UiState::current_band_idx`'s `::new()` initializer.
 pub const BANDS: &[(u32, &str); 11] = &[
-    (  3_573_000, "80m"),
-    (  5_357_000, "60m"),
-    (  7_074_000, "40m"),
-    ( 10_136_000, "30m"),
-    ( 14_074_000, "20m"),
-    ( 18_100_000, "17m"),
-    ( 21_074_000, "15m"),
-    ( 24_915_000, "12m"),
-    ( 28_074_000, "10m"),
-    ( 50_313_000,  "6m"),
-    (144_174_000,  "2m"),
+    (3_573_000, "80m"),
+    (5_357_000, "60m"),
+    (7_074_000, "40m"),
+    (10_136_000, "30m"),
+    (14_074_000, "20m"),
+    (18_100_000, "17m"),
+    (21_074_000, "15m"),
+    (24_915_000, "12m"),
+    (28_074_000, "10m"),
+    (50_313_000, "6m"),
+    (144_174_000, "2m"),
 ];
 
 /// Menu items in display order.
@@ -185,9 +185,13 @@ where
     // Background + border.
     let bg = Rgb565::new(0, 0, 8);
     let border_style = PrimitiveStyle::with_fill(bg);
-    Rectangle::new(ORIGIN, SIZE).into_styled(border_style).draw(display)?;
+    Rectangle::new(ORIGIN, SIZE)
+        .into_styled(border_style)
+        .draw(display)?;
     let border = PrimitiveStyle::with_stroke(Rgb565::WHITE, 1);
-    Rectangle::new(ORIGIN, SIZE).into_styled(border).draw(display)?;
+    Rectangle::new(ORIGIN, SIZE)
+        .into_styled(border)
+        .draw(display)?;
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
@@ -198,18 +202,12 @@ where
     // Values as fixed-cap strings (avoid std::format heap).
     let band_label = BANDS[band_idx as usize].1;
     let mut band_line: heapless::String<16> = heapless::String::new();
-    let _ = core::fmt::Write::write_fmt(
-        &mut band_line,
-        format_args!(" Band: {band_label}"),
-    );
+    let _ = core::fmt::Write::write_fmt(&mut band_line, format_args!(" Band: {band_label}"));
     let mut df_line: heapless::String<16> = heapless::String::new();
     if df_hz == 0 {
         let _ = df_line.push_str(" FindDF: ---");
     } else {
-        let _ = core::fmt::Write::write_fmt(
-            &mut df_line,
-            format_args!(" FindDF:{df_hz}"),
-        );
+        let _ = core::fmt::Write::write_fmt(&mut df_line, format_args!(" FindDF:{df_hz}"));
     }
     let mut autocq_line: heapless::String<16> = heapless::String::new();
     let _ = core::fmt::Write::write_fmt(
@@ -217,10 +215,7 @@ where
         format_args!(" AutoCQ: {}", if auto_cq { "ON" } else { "OFF" }),
     );
     let mut mode_line: heapless::String<16> = heapless::String::new();
-    let _ = core::fmt::Write::write_fmt(
-        &mut mode_line,
-        format_args!(" Mode→:{next_mode_label}"),
-    );
+    let _ = core::fmt::Write::write_fmt(&mut mode_line, format_args!(" Mode→:{next_mode_label}"));
 
     let rows: [&str; 4] = [
         band_line.as_str(),
@@ -233,8 +228,13 @@ where
         let y = ORIGIN.y + 2 + (i as i32) * ROW_H;
         // Cursor column 0 of selected row.
         let cursor_ch = if selected as usize == i { ">" } else { " " };
-        Text::with_baseline(cursor_ch, Point::new(ORIGIN.x + 2, y), text_style, Baseline::Top)
-            .draw(display)?;
+        Text::with_baseline(
+            cursor_ch,
+            Point::new(ORIGIN.x + 2, y),
+            text_style,
+            Baseline::Top,
+        )
+        .draw(display)?;
         Text::with_baseline(text, Point::new(ORIGIN.x + 8, y), text_style, Baseline::Top)
             .draw(display)?;
         // Suppress unused-binding warnings on minimal builds.

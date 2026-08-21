@@ -80,8 +80,7 @@ where
     let visible = s.as_str();
     let visible = &visible[..visible.len().min(22)];
 
-    Text::with_baseline(visible, Point::new(1, 2), style, Baseline::Top)
-        .draw(display)?;
+    Text::with_baseline(visible, Point::new(1, 2), style, Baseline::Top).draw(display)?;
     // Tail-paint the 3 px right margin so the bar background covers
     // the full panel width (132..135).
     Rectangle::new(Point::new(132, ORIGIN_Y), Size::new(3, HEIGHT))

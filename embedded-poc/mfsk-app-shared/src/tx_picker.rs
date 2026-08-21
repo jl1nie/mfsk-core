@@ -34,10 +34,10 @@ pub struct TxCandidate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopReason {
-    Quietest,           // energy が最も低い
-    DiverseFromBest,    // best から GUARD_HZ 以上離れた次善
-    Standard,           // 1500 Hz 中心バイアス採用
-    OppositeParity,     // 自局直近 TX と反対 parity 推奨
+    Quietest,        // energy が最も低い
+    DiverseFromBest, // best から GUARD_HZ 以上離れた次善
+    Standard,        // 1500 Hz 中心バイアス採用
+    OppositeParity,  // 自局直近 TX と反対 parity 推奨
 }
 
 /// Rolling 占有マップ。slot 終端で `commit_slot` を呼んで進める。
@@ -68,12 +68,18 @@ impl OccupancyMap {
     /// このスロットの STFT (200..2700 Hz の bin 当たり magnitude) と
     /// noise floor から energy を更新。`mags_per_bin.len() == NUM_BINS`
     /// に decimate 済みを期待 (caller 側で 10 Hz binning)。
-    pub fn ingest_slot_energy(&mut self, parity: Parity, mags_per_bin: &[f32], noise_floor_lin: f32) {
+    pub fn ingest_slot_energy(
+        &mut self,
+        parity: Parity,
+        mags_per_bin: &[f32],
+        noise_floor_lin: f32,
+    ) {
         let p = parity as usize;
         let nf = noise_floor_lin.max(f32::EPSILON);
         for (i, &m) in mags_per_bin.iter().enumerate().take(NUM_BINS) {
             let new_e = (m / nf).max(0.0);
-            self.energy_norm[p][i] = self.alpha * new_e + (1.0 - self.alpha) * self.energy_norm[p][i];
+            self.energy_norm[p][i] =
+                self.alpha * new_e + (1.0 - self.alpha) * self.energy_norm[p][i];
         }
     }
 
@@ -108,7 +114,11 @@ impl OccupancyMap {
     pub fn propose_candidates(&self, k: usize) -> Vec<TxCandidate, 8> {
         let mut all: Vec<(f32, u16, Parity), { NUM_BINS * 2 }> = Vec::new();
         for p_idx in 0..2 {
-            let parity = if p_idx == 0 { Parity::Even } else { Parity::Odd };
+            let parity = if p_idx == 0 {
+                Parity::Even
+            } else {
+                Parity::Odd
+            };
             for bin in 0..NUM_BINS {
                 let df = BIN_BASE_HZ + (bin as u16) * BIN_HZ;
                 let score = self.score(parity, df);

@@ -73,9 +73,12 @@ where
     // gap (the "bottom white"/"stripes" bugs already found today)
     // shows up as a broken or missing border segment, not just a
     // vague "does it look right" judgement call.
-    Rectangle::new(Point::new(1, 1), Size::new(w.saturating_sub(2), h.saturating_sub(2)))
-        .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 3))
-        .draw(display)?;
+    Rectangle::new(
+        Point::new(1, 1),
+        Size::new(w.saturating_sub(2), h.saturating_sub(2)),
+    )
+    .into_styled(PrimitiveStyle::with_stroke(Rgb565::WHITE, 3))
+    .draw(display)?;
     // Centered text label — legible only if this orientation's rotation
     // is actually right-side-up; backwards/upside-down text is itself
     // a direct answer about rotation, no color-naming required.
@@ -103,7 +106,11 @@ fn main() -> ! {
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 
-    let mut display = match pmic::init(peripherals.i2c0, peripherals.pins.gpio12, peripherals.pins.gpio11) {
+    let mut display = match pmic::init(
+        peripherals.i2c0,
+        peripherals.pins.gpio12,
+        peripherals.pins.gpio11,
+    ) {
         Ok(mut i2c) => {
             // Read AW9523B OUT0 back — rules out a silently-failed
             // write as the reason LCD_BL doesn't visibly light.
@@ -127,7 +134,8 @@ fn main() -> ! {
             let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
             let spi_dev = SpiDeviceDriver::new(driver, Some(peripherals.pins.gpio3), &spi_cfg)
                 .expect("SPI device (CS=3)");
-            let dc = esp_idf_hal::gpio::PinDriver::output(peripherals.pins.gpio35).expect("DC gpio35");
+            let dc =
+                esp_idf_hal::gpio::PinDriver::output(peripherals.pins.gpio35).expect("DC gpio35");
             let di = SPIInterface::new(spi_dev, dc);
 
             // Correct model this time (see `wspr_app.rs`'s 2026-08-15

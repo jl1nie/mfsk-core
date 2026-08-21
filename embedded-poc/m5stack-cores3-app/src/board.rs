@@ -25,8 +25,8 @@ pub const I2C0_SCL: i32 = 11;
 pub const I2C0_SDA: i32 = 12;
 pub const AXP2101_I2C_ADDR: u8 = 0x34;
 pub const AW9523B_I2C_ADDR: u8 = 0x58;
-pub const TOUCH_I2C_ADDR: u8 = 0x38;  // FT6336U (Phase 6-Core)
-pub const IMU_I2C_ADDR: u8 = 0x69;    // BMI270
+pub const TOUCH_I2C_ADDR: u8 = 0x38; // FT6336U (Phase 6-Core)
+pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 
 // AW9523B pin assignments (M5Stack CoreS3 schematic):
 //   P0_0 = TP_INT      (FT6336U interrupt, input)
@@ -56,15 +56,15 @@ pub const IMU_I2C_ADDR: u8 = 0x69;    // BMI270
 //    pattern, but nothing depends on it actually controlling the
 //    backlight anymore.
 pub const AW9523_P0_BUS_OUT_EN: u8 = 1 << 1;
-pub const AW9523_P0_LCD_BL: u8     = 1 << 4;
-pub const AW9523_P0_SPK_EN: u8     = 1 << 7;
-pub const AW9523_P1_TP_RST: u8     = 1 << 0;
-pub const AW9523_P1_LCD_RST: u8    = 1 << 1;
+pub const AW9523_P0_LCD_BL: u8 = 1 << 4;
+pub const AW9523_P0_SPK_EN: u8 = 1 << 7;
+pub const AW9523_P1_TP_RST: u8 = 1 << 0;
+pub const AW9523_P1_LCD_RST: u8 = 1 << 1;
 
 // ── USB OTG (Phase 1-Core) ────────────────────────────────────────────
 pub const USB_OTG_DP: i32 = 20;
 pub const USB_OTG_DM: i32 = 19;
 
 // ── Audio (Phase 3-Core) ──────────────────────────────────────────────
-pub const ES7210_I2C_ADDR: u8  = 0x40;
+pub const ES7210_I2C_ADDR: u8 = 0x40;
 pub const AW88298_I2C_ADDR: u8 = 0x36;

@@ -99,8 +99,8 @@ where
     // the pipeline watermark, use that — otherwise fall back to the
     // legacy "max slot_seq among visible rows" (which makes every
     // row green when no new decodes arrive).
-    let latest_seq = latest_slot_seq
-        .unwrap_or_else(|| visible.iter().map(|r| r.slot_seq).max().unwrap_or(0));
+    let latest_seq =
+        latest_slot_seq.unwrap_or_else(|| visible.iter().map(|r| r.slot_seq).max().unwrap_or(0));
 
     for (i, row) in visible.iter().enumerate() {
         let y = ORIGIN_Y + (i as i32) * ROW_PX as i32;

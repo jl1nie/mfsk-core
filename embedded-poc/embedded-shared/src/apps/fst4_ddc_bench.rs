@@ -46,18 +46,18 @@ use num_complex::Complex32;
 
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
+use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync::{
-    AudioSource, RxGrid, SpectrogramBuilder, SyncCandidate, SyncDims, coarse_sync,
-    coarse_sync_from_spectra, compute_spectra, spectra_crop_for,
+    coarse_sync, coarse_sync_from_spectra, compute_spectra, spectra_crop_for, AudioSource, RxGrid,
+    SpectrogramBuilder, SyncCandidate, SyncDims,
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
-use mfsk_core::fst4::Fst4s60;
-use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
 use mfsk_core::fst4::ddc::{
-    REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade,
-    wideband_refine_recenter,
+    grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade, wideband_refine_recenter,
+    REFINE_DS_RATE_HZ,
 };
+use mfsk_core::fst4::rung_major::{decode_phase_split_timed, RungMajorCandidate};
+use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::fst4_dual_core;
@@ -350,7 +350,8 @@ fn log_heap(tag: &str) {
 }
 
 pub fn init_logger_once() {
-    static LOGGER_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static LOGGER_READY: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
     if LOGGER_READY
         .compare_exchange(
             false,
@@ -432,7 +433,11 @@ pub fn run(audio_bin: &[u8]) {
     log::info!("fst4_ddc_bench: golden asset {} bytes", audio_bin.len());
     log::info!(
         "fst4_ddc_bench: band={} center {:.0} Hz +/-{:.0} Hz, sync_min {:.1}, max_cand {}",
-        if WIDEBAND { "WIDE (100-3000 Hz, production sync_min)" } else { "sniper" },
+        if WIDEBAND {
+            "WIDE (100-3000 Hz, production sync_min)"
+        } else {
+            "sniper"
+        },
         CENTER_HZ,
         SEARCH_HALF_WIDTH_HZ,
         SYNC_MIN,
@@ -446,7 +451,11 @@ pub fn run(audio_bin: &[u8]) {
         .iter()
         .map(|b| i16::from_le_bytes(*b))
         .collect();
-    log::info!("fst4_ddc_bench: loaded {} samples ({} s @ 12 kHz)", audio.len(), audio.len() / 12_000);
+    log::info!(
+        "fst4_ddc_bench: loaded {} samples ({} s @ 12 kHz)",
+        audio.len(),
+        audio.len() / 12_000
+    );
 
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
@@ -475,8 +484,7 @@ pub fn run(audio_bin: &[u8]) {
             CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
             rx_grid,
         );
-        let mut builder =
-            crop.map(|(lo, hi)| SpectrogramBuilder::new::<Fst4s60>(lo, hi, rx_grid));
+        let mut builder = crop.map(|(lo, hi)| SpectrogramBuilder::new::<Fst4s60>(lo, hi, rx_grid));
         let mut blk_i = Vec::new();
         let mut blk_q = Vec::new();
         for chunk in audio.chunks(STREAM_BLOCK) {
@@ -596,7 +604,12 @@ pub fn run(audio_bin: &[u8]) {
         t_coarse_sync / 1000,
     );
     for c in &candidates {
-        log::info!("    cand {:8.1} Hz  dt {:+.3} s  score {:.2}", c.freq_hz, c.dt_sec, c.score);
+        log::info!(
+            "    cand {:8.1} Hz  dt {:+.3} s  score {:.2}",
+            c.freq_hz,
+            c.dt_sec,
+            c.score
+        );
     }
     log_heap("post-coarse-sync");
 
@@ -933,7 +946,11 @@ fn run_monitor_loop(
         candidates.len(),
         MONITOR_DEADLINE_MS,
         MONITOR_CAP_MS,
-        if DUAL_CORE { "DUAL-CORE" } else { "single-core" },
+        if DUAL_CORE {
+            "DUAL-CORE"
+        } else {
+            "single-core"
+        },
     );
 
     // `coarse_sync`'s spectrogram build and the DDC ahead of it are

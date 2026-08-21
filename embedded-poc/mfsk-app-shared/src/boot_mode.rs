@@ -10,7 +10,6 @@
 //! for is "does cfg.toml carry credentials" — actual mode choice is
 //! now data, not code. Users in the field can flip without a host.
 
-
 use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 
 const NVS_NAMESPACE: &str = "mfsk";
@@ -135,7 +134,9 @@ impl BootMode {
 /// Open the `mfsk` namespace in the default NVS partition. Returned
 /// handle is reusable for both reads and writes; held by `main` for
 /// the program's lifetime so the flip path doesn't have to re-open.
-pub fn open_nvs(part: EspDefaultNvsPartition) -> Result<EspNvs<NvsDefault>, esp_idf_svc::sys::EspError> {
+pub fn open_nvs(
+    part: EspDefaultNvsPartition,
+) -> Result<EspNvs<NvsDefault>, esp_idf_svc::sys::EspError> {
     EspNvs::new(part, NVS_NAMESPACE, true)
 }
 
@@ -179,7 +180,7 @@ pub fn write(nvs: &EspNvs<NvsDefault>, mode: BootMode) -> Result<(), esp_idf_svc
 /// `board::BTN_A_PIN`; on Core2 this will be a different GPIO).
 pub fn override_held_at_boot(gpio_pin: i32) -> bool {
     use esp_idf_svc::sys::{
-        ESP_OK, GPIO_MODE_DEF_INPUT, gpio_get_level, gpio_pullup_en, gpio_set_direction,
+        gpio_get_level, gpio_pullup_en, gpio_set_direction, ESP_OK, GPIO_MODE_DEF_INPUT,
     };
     // Check both gpio_set_direction + gpio_pullup_en return codes —
     // silent failure would mean a floating input + a default-mode
@@ -234,9 +235,16 @@ pub fn determine_no_override(nvs: &EspNvs<NvsDefault>) -> BootMode {
 /// previous mode than to brick on a flash-wear failure.
 pub fn flip_and_restart(nvs: &EspNvs<NvsDefault>, current: BootMode) -> ! {
     let next = current.flipped();
-    log::info!("boot_mode: flip {} → {}; restarting", current.label(), next.label());
+    log::info!(
+        "boot_mode: flip {} → {}; restarting",
+        current.label(),
+        next.label()
+    );
     if let Err(e) = write(nvs, next) {
-        log::error!("NVS write failed ({e}); aborting flip — staying in {}", current.label());
+        log::error!(
+            "NVS write failed ({e}); aborting flip — staying in {}",
+            current.label()
+        );
         // Fall through to a busy loop so the caller still sees `!`.
         loop {
             esp_idf_svc::hal::delay::FreeRtos::delay_ms(1000);

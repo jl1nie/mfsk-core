@@ -788,10 +788,10 @@ mod tests {
         let mut m = mgr();
         m.auto_cq_enabled = true;
         m.peer_parity = Some(Parity::Even); // → prefer Odd
-        // Polled on Even → parity mismatch, expect None and state
-        // unchanged (auto-CQ does fire `call_cq()` which transitions
-        // Idle → Calling regardless; the gate is on the parity match
-        // for the *returned* intent only).
+                                            // Polled on Even → parity mismatch, expect None and state
+                                            // unchanged (auto-CQ does fire `call_cq()` which transitions
+                                            // Idle → Calling regardless; the gate is on the parity match
+                                            // for the *returned* intent only).
         assert!(m.pick_tx_intent(Parity::Even).is_none());
     }
 

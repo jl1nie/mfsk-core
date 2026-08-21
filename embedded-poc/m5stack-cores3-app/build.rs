@@ -26,14 +26,22 @@ fn main() {
     let (ssid, psk, pc_ip, port, boot_mode) = if cfg_path.exists() {
         let txt = std::fs::read_to_string(&cfg_path)
             .unwrap_or_else(|e| panic!("read {}: {}", cfg_path.display(), e));
-        let v: toml::Value = toml::from_str(&txt)
-            .unwrap_or_else(|e| panic!("parse {}: {}", cfg_path.display(), e));
+        let v: toml::Value =
+            toml::from_str(&txt).unwrap_or_else(|e| panic!("parse {}: {}", cfg_path.display(), e));
         let wifi = v
             .get("wifi")
             .and_then(|t| t.as_table())
             .unwrap_or_else(|| panic!("{} missing [wifi] section", cfg_path.display()));
-        let ssid = wifi.get("ssid").and_then(|s| s.as_str()).unwrap_or("").to_string();
-        let psk = wifi.get("psk").and_then(|s| s.as_str()).unwrap_or("").to_string();
+        let ssid = wifi
+            .get("ssid")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let psk = wifi
+            .get("psk")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let pc_ip = wifi
             .get("pc_ip")
             .and_then(|s| s.as_str())
@@ -53,7 +61,13 @@ fn main() {
             .to_string();
         (ssid, psk, pc_ip, port, boot_mode)
     } else {
-        (String::new(), String::new(), "255.255.255.255".to_string(), 9999u16, String::new())
+        (
+            String::new(),
+            String::new(),
+            "255.255.255.255".to_string(),
+            9999u16,
+            String::new(),
+        )
     };
 
     println!("cargo:rustc-env=WIFI_SSID={ssid}");

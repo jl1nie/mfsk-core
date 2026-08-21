@@ -235,8 +235,10 @@ fn describe_esp_dsp_err(code: i32) -> &'static str {
     match code {
         0x70001 => "ESP_ERR_DSP_INVALID_LENGTH (not a power of 2?)",
         0x70002 => "ESP_ERR_DSP_INVALID_PARAM",
-        0x70003 => "ESP_ERR_DSP_PARAM_OUTOFRANGE (len > CONFIG_DSP_MAX_FFT_SIZE — \
-                     raise the CONFIG_DSP_MAX_FFT_SIZE_* choice in sdkconfig.defaults)",
+        0x70003 => {
+            "ESP_ERR_DSP_PARAM_OUTOFRANGE (len > CONFIG_DSP_MAX_FFT_SIZE — \
+                     raise the CONFIG_DSP_MAX_FFT_SIZE_* choice in sdkconfig.defaults)"
+        }
         0x70004 => "ESP_ERR_DSP_UNINITIALIZED",
         0x70005 => "ESP_ERR_DSP_REINITIALIZED",
         0x70006 => "ESP_ERR_DSP_ARRAY_NOT_ALIGNED",

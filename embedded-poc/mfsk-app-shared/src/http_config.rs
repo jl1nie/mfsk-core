@@ -30,8 +30,8 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use embedded_svc::http::Headers;
-use esp_idf_svc::http::Method;
 use esp_idf_svc::http::server::{Configuration as HttpConfiguration, EspHttpServer};
+use esp_idf_svc::http::Method;
 use esp_idf_svc::io::{Read, Write};
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
@@ -71,7 +71,8 @@ const HTTP_SERVER_STACK_SIZE: usize = 10240;
 /// sdkconfigs don't set that Kconfig — `EspHttpServer::new` would
 /// simply fail there if it ever became a real constraint, same
 /// graceful-degradation path this crate's callers already handle).
-const HTTP_SERVER_TASK_CAPS: u32 = esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT;
+const HTTP_SERVER_TASK_CAPS: u32 =
+    esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_8BIT;
 
 /// Start the config web server. Bound to the shared NVS handle: the
 /// `GET /` and `POST /save` handlers both lock it independently per
@@ -189,7 +190,11 @@ fn render_form(s: &Settings, banner: Option<&str>) -> String {
 
     let _ = write!(html, "<p><label>Band<br><select name=\"band\">");
     for (i, band) in WSPR_BANDS.iter().enumerate() {
-        let selected = if i as u8 == s.band_idx { " selected" } else { "" };
+        let selected = if i as u8 == s.band_idx {
+            " selected"
+        } else {
+            ""
+        };
         let _ = write!(
             html,
             "<option value=\"{i}\"{selected}>{} ({:.4} MHz)</option>",
@@ -320,11 +325,21 @@ fn parse_form(body: &str) -> FormFields {
 /// writes to NVS on `Ok`, so a rejected submission never partially
 /// overwrites the stored settings.
 fn validate(fields: &FormFields, current: &Settings) -> Result<Settings, String> {
-    let call_raw = fields.call.as_deref().unwrap_or(&current.call).trim().to_uppercase();
+    let call_raw = fields
+        .call
+        .as_deref()
+        .unwrap_or(&current.call)
+        .trim()
+        .to_uppercase();
     let call = heapless::String::<16>::try_from(call_raw.as_str())
         .map_err(|_| "callsign too long (max 16 chars)".to_string())?;
 
-    let grid_raw = fields.grid.as_deref().unwrap_or(&current.grid).trim().to_uppercase();
+    let grid_raw = fields
+        .grid
+        .as_deref()
+        .unwrap_or(&current.grid)
+        .trim()
+        .to_uppercase();
     if !grid_raw.is_empty() && grid_raw.len() != 4 && grid_raw.len() != 6 {
         return Err("grid locator must be empty, 4, or 6 characters".to_string());
     }
@@ -335,9 +350,9 @@ fn validate(fields: &FormFields, current: &Settings) -> Result<Settings, String>
         .map_err(|_| "grid locator too long".to_string())?;
 
     let tx_power_dbm: i8 = match fields.tx_power_dbm.as_deref().map(str::trim) {
-        Some(raw) if !raw.is_empty() => {
-            raw.parse().map_err(|_| "tx power must be a whole number".to_string())?
-        }
+        Some(raw) if !raw.is_empty() => raw
+            .parse()
+            .map_err(|_| "tx power must be a whole number".to_string())?,
         _ => current.tx_power_dbm,
     };
     if !(0..=60).contains(&tx_power_dbm) {
@@ -348,7 +363,9 @@ fn validate(fields: &FormFields, current: &Settings) -> Result<Settings, String>
     let band_idx = if band_raw.is_empty() {
         current.band_idx
     } else {
-        let idx: usize = band_raw.parse().map_err(|_| "invalid band selection".to_string())?;
+        let idx: usize = band_raw
+            .parse()
+            .map_err(|_| "invalid band selection".to_string())?;
         if idx >= WSPR_BANDS.len() {
             return Err("invalid band selection".to_string());
         }

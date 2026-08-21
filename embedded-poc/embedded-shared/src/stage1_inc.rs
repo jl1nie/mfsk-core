@@ -611,33 +611,73 @@ fn compute_pair_into(ctx: &mut WorkerCtx, j_a: usize, j_b: usize) {
             let yn2 = buf[NFFT_SPEC - k - 2];
             let yn3 = buf[NFFT_SPEC - k - 3];
 
-            let (a0r, a0i) = ((yk0.re as i32 + yn0.re as i32) >> 1, (yk0.im as i32 - yn0.im as i32) >> 1);
-            let (b0r, b0i) = ((yk0.im as i32 + yn0.im as i32) >> 1, (yn0.re as i32 - yk0.re as i32) >> 1);
-            let (a1r, a1i) = ((yk1.re as i32 + yn1.re as i32) >> 1, (yk1.im as i32 - yn1.im as i32) >> 1);
-            let (b1r, b1i) = ((yk1.im as i32 + yn1.im as i32) >> 1, (yn1.re as i32 - yk1.re as i32) >> 1);
-            let (a2r, a2i) = ((yk2.re as i32 + yn2.re as i32) >> 1, (yk2.im as i32 - yn2.im as i32) >> 1);
-            let (b2r, b2i) = ((yk2.im as i32 + yn2.im as i32) >> 1, (yn2.re as i32 - yk2.re as i32) >> 1);
-            let (a3r, a3i) = ((yk3.re as i32 + yn3.re as i32) >> 1, (yk3.im as i32 - yn3.im as i32) >> 1);
-            let (b3r, b3i) = ((yk3.im as i32 + yn3.im as i32) >> 1, (yn3.re as i32 - yk3.re as i32) >> 1);
+            let (a0r, a0i) = (
+                (yk0.re as i32 + yn0.re as i32) >> 1,
+                (yk0.im as i32 - yn0.im as i32) >> 1,
+            );
+            let (b0r, b0i) = (
+                (yk0.im as i32 + yn0.im as i32) >> 1,
+                (yn0.re as i32 - yk0.re as i32) >> 1,
+            );
+            let (a1r, a1i) = (
+                (yk1.re as i32 + yn1.re as i32) >> 1,
+                (yk1.im as i32 - yn1.im as i32) >> 1,
+            );
+            let (b1r, b1i) = (
+                (yk1.im as i32 + yn1.im as i32) >> 1,
+                (yn1.re as i32 - yk1.re as i32) >> 1,
+            );
+            let (a2r, a2i) = (
+                (yk2.re as i32 + yn2.re as i32) >> 1,
+                (yk2.im as i32 - yn2.im as i32) >> 1,
+            );
+            let (b2r, b2i) = (
+                (yk2.im as i32 + yn2.im as i32) >> 1,
+                (yn2.re as i32 - yk2.re as i32) >> 1,
+            );
+            let (a3r, a3i) = (
+                (yk3.re as i32 + yn3.re as i32) >> 1,
+                (yk3.im as i32 - yn3.im as i32) >> 1,
+            );
+            let (b3r, b3i) = (
+                (yk3.im as i32 + yn3.im as i32) >> 1,
+                (yn3.re as i32 - yk3.re as i32) >> 1,
+            );
 
-            spec[row_a + k]     = (((a0r*a0r) as u32 + (a0i*a0i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_b + k]     = (((b0r*b0r) as u32 + (b0i*b0i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_a + k + 1] = (((a1r*a1r) as u32 + (a1i*a1i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_b + k + 1] = (((b1r*b1r) as u32 + (b1i*b1i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_a + k + 2] = (((a2r*a2r) as u32 + (a2i*a2i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_b + k + 2] = (((b2r*b2r) as u32 + (b2i*b2i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_a + k + 3] = (((a3r*a3r) as u32 + (a3i*a3i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_b + k + 3] = (((b3r*b3r) as u32 + (b3i*b3i) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
+            spec[row_a + k] = (((a0r * a0r) as u32 + (a0i * a0i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_b + k] = (((b0r * b0r) as u32 + (b0i * b0i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_a + k + 1] = (((a1r * a1r) as u32 + (a1i * a1i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_b + k + 1] = (((b1r * b1r) as u32 + (b1i * b1i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_a + k + 2] = (((a2r * a2r) as u32 + (a2i * a2i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_b + k + 2] = (((b2r * b2r) as u32 + (b2i * b2i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_a + k + 3] = (((a3r * a3r) as u32 + (a3i * a3i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_b + k + 3] = (((b3r * b3r) as u32 + (b3i * b3i) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
 
             k += 4;
         }
         while k < n_freq {
             let yn = buf[NFFT_SPEC - k];
             let yk = buf[k];
-            let (ar, ai) = ((yk.re as i32 + yn.re as i32) >> 1, (yk.im as i32 - yn.im as i32) >> 1);
-            let (br, bi) = ((yk.im as i32 + yn.im as i32) >> 1, (yn.re as i32 - yk.re as i32) >> 1);
-            spec[row_a + k] = (((ar*ar) as u32 + (ai*ai) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
-            spec[row_b + k] = (((br*br) as u32 + (bi*bi) as u32) >> FP_SPEC_SHIFT).min(u16::MAX as u32) as u16;
+            let (ar, ai) = (
+                (yk.re as i32 + yn.re as i32) >> 1,
+                (yk.im as i32 - yn.im as i32) >> 1,
+            );
+            let (br, bi) = (
+                (yk.im as i32 + yn.im as i32) >> 1,
+                (yn.re as i32 - yk.re as i32) >> 1,
+            );
+            spec[row_a + k] = (((ar * ar) as u32 + (ai * ai) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
+            spec[row_b + k] = (((br * br) as u32 + (bi * bi) as u32) >> FP_SPEC_SHIFT)
+                .min(u16::MAX as u32) as u16;
             k += 1;
         }
     }
