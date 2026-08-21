@@ -263,7 +263,9 @@ pub fn connect_with_retry(
     max_attempts: Option<u32>,
 ) -> Result<WifiConnectedInfo> {
     if ssid.is_empty() {
-        return Err(anyhow!("WIFI_SSID empty — cfg.toml missing or [wifi].ssid blank"));
+        return Err(anyhow!(
+            "WIFI_SSID empty — cfg.toml missing or [wifi].ssid blank"
+        ));
     }
 
     let mut last_err;
@@ -273,13 +275,20 @@ pub fn connect_with_retry(
         attempt += 1;
         let outcome = (|| -> Result<()> {
             let ap_infos = wifi.scan()?;
-            channel = ap_infos.iter().find(|ap| ap.ssid.as_str() == ssid).map(|ap| ap.channel);
+            channel = ap_infos
+                .iter()
+                .find(|ap| ap.ssid.as_str() == ssid)
+                .map(|ap| ap.channel);
             if channel.is_none() {
                 log::warn!("WiFi: SSID '{ssid}' not seen in scan; trying anyway");
             }
             wifi.set_configuration(&Configuration::Client(ClientConfiguration {
-                ssid: ssid.try_into().map_err(|_| anyhow!("SSID too long for esp-idf"))?,
-                password: psk.try_into().map_err(|_| anyhow!("PSK too long for esp-idf"))?,
+                ssid: ssid
+                    .try_into()
+                    .map_err(|_| anyhow!("SSID too long for esp-idf"))?,
+                password: psk
+                    .try_into()
+                    .map_err(|_| anyhow!("PSK too long for esp-idf"))?,
                 channel,
                 ..Default::default()
             }))?;
@@ -296,7 +305,9 @@ pub fn connect_with_retry(
             Err(e) => {
                 match max_attempts {
                     Some(max) => log::warn!("WiFi: connect attempt {attempt}/{max} failed: {e:?}"),
-                    None => log::warn!("WiFi: connect attempt {attempt} failed: {e:?} (retrying forever)"),
+                    None => log::warn!(
+                        "WiFi: connect attempt {attempt} failed: {e:?} (retrying forever)"
+                    ),
                 }
                 // Best-effort — the driver may already be back in a
                 // disconnected state (that's the whole problem this
@@ -340,8 +351,15 @@ pub fn connect_with_retry(
 
     log::info!(
         "WiFi STA up: {}/{} (gw {}, bcast {}) ch={:?}",
-        ip, prefix, ip_info.subnet.gateway, subnet_broadcast, channel
+        ip,
+        prefix,
+        ip_info.subnet.gateway,
+        subnet_broadcast,
+        channel
     );
 
-    Ok(WifiConnectedInfo { ip, subnet_broadcast })
+    Ok(WifiConnectedInfo {
+        ip,
+        subnet_broadcast,
+    })
 }

@@ -49,7 +49,9 @@ fn main() -> ! {
     LOGGER.install();
 
     log::info!("=== mfsk-core-m5stack-cores3-app boot ===");
-    log::info!("phase 1-core: UAC host (AW9523B BUS_OUT_EN + usb_host_uac), wav_sim decode, ILI9342C LCD");
+    log::info!(
+        "phase 1-core: UAC host (AW9523B BUS_OUT_EN + usb_host_uac), wav_sim decode, ILI9342C LCD"
+    );
     log::info!("build-stamp 2026-05-23-cores3-phase1");
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
@@ -60,7 +62,11 @@ fn main() -> ! {
         let target = boot_mode::BootMode::from_cfg_str(BOOT_MODE_DEFAULT);
         let current = boot_mode::read(&nvs);
         if current != target {
-            log::info!("boot_mode: cfg override {} → {}", current.label(), target.label());
+            log::info!(
+                "boot_mode: cfg override {} → {}",
+                current.label(),
+                target.label()
+            );
             let _ = boot_mode::write(&nvs, target);
         }
     }

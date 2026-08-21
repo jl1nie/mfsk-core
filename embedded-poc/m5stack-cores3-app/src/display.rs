@@ -91,8 +91,8 @@ pub fn run_log_panel(
     )
     .expect("SPI2 driver");
     let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
-    let spi_dev = SpiDeviceDriver::new(driver, Some(pins.gpio3), &spi_cfg)
-        .expect("SPI device (CS=3)");
+    let spi_dev =
+        SpiDeviceDriver::new(driver, Some(pins.gpio3), &spi_cfg).expect("SPI device (CS=3)");
 
     let dc = PinDriver::output(pins.gpio35).expect("DC gpio35");
     let di = SPIInterface::new(spi_dev, dc);
@@ -142,10 +142,16 @@ pub fn run_log_panel(
     // setup every time it was tried during the wspr-app investigation
     // (see the fix note above); every other draw call in this file
     // already used `Rectangle` fills, so this is the one holdout.
-    Rectangle::new(Point::new(0, 0), Size::new(crate::board::LCD_WIDTH as u32, crate::board::LCD_HEIGHT as u32))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
-        .draw(&mut display)
-        .ok();
+    Rectangle::new(
+        Point::new(0, 0),
+        Size::new(
+            crate::board::LCD_WIDTH as u32,
+            crate::board::LCD_HEIGHT as u32,
+        ),
+    )
+    .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+    .draw(&mut display)
+    .ok();
 
     let tx_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
@@ -154,16 +160,16 @@ pub fn run_log_panel(
         .build();
     let tx_bg = Rgb565::new(0, 0, 8);
 
-    Rectangle::new(Point::new(0, TX_REGION_Y), Size::new(SHARED_UI_WIDTH, TX_REGION_H))
-        .into_styled(PrimitiveStyle::with_fill(tx_bg))
-        .draw(&mut display)
-        .ok();
+    Rectangle::new(
+        Point::new(0, TX_REGION_Y),
+        Size::new(SHARED_UI_WIDTH, TX_REGION_H),
+    )
+    .into_styled(PrimitiveStyle::with_fill(tx_bg))
+    .draw(&mut display)
+    .ok();
     let mode_line: heapless::String<32> = {
         let mut s: heapless::String<32> = heapless::String::new();
-        let _ = core::fmt::Write::write_fmt(
-            &mut s,
-            format_args!("CoreS3 Mode: {}", mode.label()),
-        );
+        let _ = core::fmt::Write::write_fmt(&mut s, format_args!("CoreS3 Mode: {}", mode.label()));
         s
     };
     Text::with_baseline(
@@ -214,10 +220,7 @@ pub fn run_log_panel(
             };
             ui.status.free_heap_kb = (heap / 1024) as u32;
             status_snapshot = ui.status.clone();
-            decoded_snapshot = ui
-                .decoded_iter()
-                .cloned()
-                .collect::<heapless::Vec<_, 16>>();
+            decoded_snapshot = ui.decoded_iter().cloned().collect::<heapless::Vec<_, 16>>();
             wf_snapshot = ui.waterfall_iter().cloned().collect();
             wf_seq = ui.wf_push_seq();
             tx_seq = ui.tx_seq();
@@ -253,10 +256,13 @@ pub fn run_log_panel(
         }
 
         if tx_seq != last_tx_seq {
-            Rectangle::new(Point::new(0, TX_REGION_Y), Size::new(SHARED_UI_WIDTH, TX_REGION_H))
-                .into_styled(PrimitiveStyle::with_fill(tx_bg))
-                .draw(&mut display)
-                .ok();
+            Rectangle::new(
+                Point::new(0, TX_REGION_Y),
+                Size::new(SHARED_UI_WIDTH, TX_REGION_H),
+            )
+            .into_styled(PrimitiveStyle::with_fill(tx_bg))
+            .draw(&mut display)
+            .ok();
             let text = if tx_line_snapshot.is_empty() {
                 "IDLE: ---"
             } else {

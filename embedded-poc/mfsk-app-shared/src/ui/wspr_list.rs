@@ -79,8 +79,15 @@ const FG: Rgb565 = Rgb565::WHITE;
 const HEADER_BG: Rgb565 = Rgb565::new(0, 8, 0); // dark green, matches status_bar's bar colour
 const COL_HEADER_FG: Rgb565 = Rgb565::CSS_GRAY;
 
-fn text_style(fg: Rgb565, bg: Rgb565) -> embedded_graphics::mono_font::MonoTextStyle<'static, Rgb565> {
-    MonoTextStyleBuilder::new().font(&FONT_6X10).text_color(fg).background_color(bg).build()
+fn text_style(
+    fg: Rgb565,
+    bg: Rgb565,
+) -> embedded_graphics::mono_font::MonoTextStyle<'static, Rgb565> {
+    MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(fg)
+        .background_color(bg)
+        .build()
 }
 
 fn fill(display: &mut impl DrawTarget<Color = Rgb565>, y: i32, h: u32, color: Rgb565) {
@@ -109,8 +116,13 @@ where
         ui.band_label, ui.dial_mhz, ui.utc_hhmmss, ui.free_heap_kb
     );
     fill(display, STATUS_ORIGIN_Y, STATUS_HEIGHT, HEADER_BG);
-    Text::with_baseline(s.as_str(), Point::new(2, STATUS_ORIGIN_Y + 3), style, Baseline::Top)
-        .draw(display)?;
+    Text::with_baseline(
+        s.as_str(),
+        Point::new(2, STATUS_ORIGIN_Y + 3),
+        style,
+        Baseline::Top,
+    )
+    .draw(display)?;
     Ok(())
 }
 
@@ -151,7 +163,13 @@ where
     )
     .draw(display)?;
 
-    render_rows(display, ui.stations().iter(), DISCOVERED_ROWS_Y, DISCOVERED_ROWS, false)
+    render_rows(
+        display,
+        ui.stations().iter(),
+        DISCOVERED_ROWS_Y,
+        DISCOVERED_ROWS,
+        false,
+    )
 }
 
 /// "Spot history" header + column header + up to [`HISTORY_ROWS`]
@@ -214,7 +232,8 @@ where
         let y = origin_y + (drawn as i32) * ROW_PX as i32;
         fill(display, y, ROW_PX, BG);
         row.format_row(&mut buf);
-        Text::with_baseline(buf.as_str(), Point::new(2, y + 1), style, Baseline::Top).draw(display)?;
+        Text::with_baseline(buf.as_str(), Point::new(2, y + 1), style, Baseline::Top)
+            .draw(display)?;
         drawn += 1;
     }
     if drawn < max_rows {

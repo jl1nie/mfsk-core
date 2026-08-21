@@ -44,18 +44,18 @@ use esp_idf_hal::{
 };
 
 use crate::board::{
-    AW9523B_I2C_ADDR, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST,
-    AW9523_P1_TP_RST, AXP2101_I2C_ADDR,
+    AW9523B_I2C_ADDR, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST, AW9523_P1_TP_RST,
+    AXP2101_I2C_ADDR,
 };
 
 // AW9523B register map (AW9523B datasheet §6).
-const AW9523_REG_IN0: u8 = 0x00;  // Input port 0 (read)
-const AW9523_REG_IN1: u8 = 0x01;  // Input port 1 (read)
+const AW9523_REG_IN0: u8 = 0x00; // Input port 0 (read)
+const AW9523_REG_IN1: u8 = 0x01; // Input port 1 (read)
 const AW9523_REG_OUT0: u8 = 0x02; // Output port 0 latch
 const AW9523_REG_OUT1: u8 = 0x03; // Output port 1 latch
 const AW9523_REG_CFG0: u8 = 0x04; // Port 0 direction: 0=output, 1=input
 const AW9523_REG_CFG1: u8 = 0x05; // Port 1 direction: 0=output, 1=input
-const AW9523_REG_GCR: u8  = 0x11; // Global config (push-pull vs open-drain)
+const AW9523_REG_GCR: u8 = 0x11; // Global config (push-pull vs open-drain)
 
 // AXP2101 register map (AXP2101 datasheet).
 const AXP2101_REG_CHIP_ID: u8 = 0x03; // Chip ID — 0x4A for AXP2101

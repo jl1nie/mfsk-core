@@ -145,11 +145,7 @@ impl LogFanout {
         }
     }
 
-    fn staging_push(
-        &self,
-        staging: &mut Deque<LogLine, STAGING_LINES>,
-        line: &str,
-    ) {
+    fn staging_push(&self, staging: &mut Deque<LogLine, STAGING_LINES>, line: &str) {
         let mut s: LogLine = String::new();
         let truncated = if line.len() > LINE_MAX {
             &line[..LINE_MAX]
@@ -167,9 +163,15 @@ impl LogFanout {
     /// LCD-pre-init とも兼用 (= UDP-pre-init で積まれた行が混じる)
     /// が、頻度的に問題にならないので分けない。
     pub fn drain_staging_to_udp(&self) {
-        let Ok(udp_guard) = self.udp.try_lock() else { return };
-        let Some(sink) = udp_guard.as_ref() else { return };
-        let Ok(mut staging) = self.staging.try_lock() else { return };
+        let Ok(udp_guard) = self.udp.try_lock() else {
+            return;
+        };
+        let Some(sink) = udp_guard.as_ref() else {
+            return;
+        };
+        let Ok(mut staging) = self.staging.try_lock() else {
+            return;
+        };
         while let Some(line) = staging.pop_front() {
             sink.send_line(&line);
         }

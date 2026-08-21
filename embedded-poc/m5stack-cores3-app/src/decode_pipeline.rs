@@ -21,9 +21,7 @@ use mfsk_app_shared::ui::state::{DecodedRow, UI};
 const MY_CALL: &str = "JL1NIE";
 const MY_GRID: &str = "PM95";
 
-static QSO_WAVS: &[&[u8]] = &[
-    include_bytes!("../../assets/qso3_busy.wav"),
-];
+static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 
 const PASS1_LIMIT: usize = 30;
 const MAX_CAND: usize = 15;
@@ -156,11 +154,13 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
                     ui.push_decode(row);
                     log::info!(
                         "{:4.0}Hz {:+5.1}dB (raw={:+5.1}) {}",
-                        r.freq_hz, calibrated_snr, r.snr_db, text
+                        r.freq_hz,
+                        calibrated_snr,
+                        r.snr_db,
+                        text
                     );
                     qso.set_rx_snr(snr_i8);
-                    let parity_lock_ok =
-                        mfsk_app_shared::parity::framing_settled_for_parity_lock();
+                    let parity_lock_ok = mfsk_app_shared::parity::framing_settled_for_parity_lock();
                     if qso
                         .process_message(&text, wav_idx as u32, parity_lock_ok)
                         .is_some()

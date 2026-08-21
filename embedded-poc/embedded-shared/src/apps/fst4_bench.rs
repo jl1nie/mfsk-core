@@ -440,13 +440,13 @@ use alloc::vec::Vec;
 
 use num_complex::Complex32;
 
-use mfsk_core::engine::ModulationParams;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::llr::{compute_llr_fast, compute_llr_partial, symbol_spectra};
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
+use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync::SyncCandidate;
-use mfsk_core::fst4::Fst4s60;
+use mfsk_core::engine::ModulationParams;
 use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
+use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — WSJT-X's
@@ -534,7 +534,11 @@ fn load_refined_candidates(bin: &[u8]) -> Vec<RefinedCandidate> {
             refined_score,
         });
     }
-    assert_eq!(off, bin.len(), "refined-candidates asset byte accounting mismatch");
+    assert_eq!(
+        off,
+        bin.len(),
+        "refined-candidates asset byte accounting mismatch"
+    );
     out
 }
 
@@ -542,7 +546,8 @@ fn load_refined_candidates(bin: &[u8]) -> Vec<RefinedCandidate> {
 /// `wspr_bench::init_logger_once` uses (`EspLogger::initialize_default`
 /// aborts on a second call).
 pub fn init_logger_once() {
-    static LOGGER_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static LOGGER_READY: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
     if LOGGER_READY
         .compare_exchange(
             false,
@@ -763,7 +768,10 @@ pub fn run_bench(refined_bin: &[u8]) {
             r.dt_sec,
         );
     }
-    log::info!("fst4_bench: stack headroom after candidate loop = {} B", stack_headroom());
+    log::info!(
+        "fst4_bench: stack headroom after candidate loop = {} B",
+        stack_headroom()
+    );
     log_heap("post-decode");
     log::info!("=== fst4_bench complete ===");
 }
@@ -805,8 +813,8 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
     }
     let mut timings: Vec<StageTiming> = Vec::with_capacity(candidates.len());
 
-    let nsym_mid = <Fst4s60 as ModulationParams>::LLR_NSYM_MID
-        .expect("FST4-60A sets LLR_NSYM_MID") as usize;
+    let nsym_mid =
+        <Fst4s60 as ModulationParams>::LLR_NSYM_MID.expect("FST4-60A sets LLR_NSYM_MID") as usize;
     let nsym_max = <Fst4s60 as ModulationParams>::LLR_NSYM_MAX as usize;
 
     let t0 = now_us();
@@ -878,7 +886,10 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
         (s_symspec + s_fast + s_2 + s_mid + s_max) / 1000,
         total_us / 1000,
     );
-    log::info!("fst4_bench: stack headroom after llr_probe = {} B", stack_headroom());
+    log::info!(
+        "fst4_bench: stack headroom after llr_probe = {} B",
+        stack_headroom()
+    );
     log_heap("post-probe");
     log::info!("=== fst4_bench (llr_probe) complete ===");
 }
@@ -916,12 +927,15 @@ fn run_llr_stage_probe(refined_bin: &[u8]) {
 /// above exactly; only per-stage order (and therefore the wall-clock
 /// total under a hypothetical mid-run budget cutoff) differs.
 fn run_rung_major(refined_bin: &[u8]) {
-    use mfsk_core::fst4::Fst4s60;
     use mfsk_core::fst4::rung_major::RungMajorCandidate;
+    use mfsk_core::fst4::Fst4s60;
 
     log_heap("boot");
     let candidates = load_refined_candidates(refined_bin);
-    log::info!("fst4_bench: rung_major over {} candidates", candidates.len());
+    log::info!(
+        "fst4_bench: rung_major over {} candidates",
+        candidates.len()
+    );
     log_heap("post-load");
 
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
@@ -949,7 +963,12 @@ fn run_rung_major(refined_bin: &[u8]) {
     ] {
         let t0 = now_us();
         let results = mfsk_core::fst4::rung_major::decode_rung_major_timed::<Fst4s60>(
-            &inputs, skip_llrc, skip_osd, &[0], None, 12_000.0,
+            &inputs,
+            skip_llrc,
+            skip_osd,
+            &[0],
+            None,
+            12_000.0,
         )
         .0;
         let total_us = now_us() - t0;
@@ -965,7 +984,12 @@ fn run_rung_major(refined_bin: &[u8]) {
                 .try_into()
                 .ok()
                 .and_then(|m77: &[u8; 77]| unpack77(m77));
-            log::info!("    {:?} | {:.1} Hz | dt {:.2} s", text, r.freq_hz, r.dt_sec);
+            log::info!(
+                "    {:?} | {:.1} Hz | dt {:.2} s",
+                text,
+                r.freq_hz,
+                r.dt_sec
+            );
         }
         log_heap(&alloc::format!("post-rung-major-{label}"));
     }
@@ -989,7 +1013,13 @@ fn run_rung_major(refined_bin: &[u8]) {
     ] {
         let t0 = now_us();
         let results = mfsk_core::fst4::rung_major::decode_phase_split_timed::<Fst4s60>(
-            &inputs, skip_llrc, skip_osd, &[0], None, None, 12_000.0,
+            &inputs,
+            skip_llrc,
+            skip_osd,
+            &[0],
+            None,
+            None,
+            12_000.0,
         )
         .0;
         let total_us = now_us() - t0;
@@ -1005,7 +1035,12 @@ fn run_rung_major(refined_bin: &[u8]) {
                 .try_into()
                 .ok()
                 .and_then(|m77: &[u8; 77]| unpack77(m77));
-            log::info!("    {:?} | {:.1} Hz | dt {:.2} s", text, r.freq_hz, r.dt_sec);
+            log::info!(
+                "    {:?} | {:.1} Hz | dt {:.2} s",
+                text,
+                r.freq_hz,
+                r.dt_sec
+            );
         }
         log_heap(&alloc::format!("post-phase-split-{label}"));
     }

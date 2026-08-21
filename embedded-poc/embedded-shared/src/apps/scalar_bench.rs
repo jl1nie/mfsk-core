@@ -54,7 +54,7 @@
 //! input index keeps LLVM from folding the whole loop to a constant —
 //! release + LTO would otherwise see straight through a fixed input.
 
-use mfsk_core::engine::scalar::{LlrScalar, Q3i8, Q11i16};
+use mfsk_core::engine::scalar::{LlrScalar, Q11i16, Q3i8};
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -63,7 +63,8 @@ fn now_us() -> i64 {
 /// Install the ESP-IDF logger, at most once per boot — same guard
 /// `fst4_bench`/`wspr_bench` use.
 pub fn init_logger_once() {
-    static LOGGER_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static LOGGER_READY: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
     if LOGGER_READY
         .compare_exchange(
             false,

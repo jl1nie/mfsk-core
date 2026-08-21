@@ -58,8 +58,8 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use esp_idf_svc::sys::{
-    QueueHandle_t, xQueueGenericCreate, xQueueGenericSend, xQueueReceive,
-    xTaskCreateStaticPinnedToCore, xTaskGetCoreID,
+    xQueueGenericCreate, xQueueGenericSend, xQueueReceive, xTaskCreateStaticPinnedToCore,
+    xTaskGetCoreID, QueueHandle_t,
 };
 
 // Not re-exported by esp-idf-svc; same local declarations

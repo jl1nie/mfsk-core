@@ -70,8 +70,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use esp_idf_svc::sys::{
-    vTaskDelay, xQueueGenericCreate,
-    xQueueGenericSend, xQueueReceive, QueueHandle_t,
+    vTaskDelay, xQueueGenericCreate, xQueueGenericSend, xQueueReceive, QueueHandle_t,
 };
 
 use mfsk_core::wspr::coarse_baseband::BasebandCandidate;
@@ -214,10 +213,7 @@ pub fn init() {
         >()));
         PASS2_RESULT_Q.set(queue_create(core::mem::size_of::<*mut Option<WsprResult>>()));
         // SAFETY: called once at startup, before any other task exists.
-        assert!(
-            spawn_worker_static(),
-            "wspr_dual_core: worker spawn failed"
-        );
+        assert!(spawn_worker_static(), "wspr_dual_core: worker spawn failed");
     }
     log::info!("wspr_dual_core: worker + queues ready");
 }
@@ -331,10 +327,7 @@ unsafe fn drain_pass01_queue(
 /// (issue #260). A task that is created once and blocks on a queue has
 /// none of those: same shape as FT8's `dual_core::worker_main`.
 extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
-    log::info!(
-        "wspr_dual_core: worker started on core {}",
-        current_core()
-    );
+    log::info!("wspr_dual_core: worker started on core {}", current_core());
     loop {
         let job_ptr = unsafe { queue_recv_ptr::<Job>(JOB_Q.get()) };
         match unsafe { *Box::from_raw(job_ptr) } {
@@ -408,7 +401,6 @@ pub fn pass01_split(
     pad: usize,
     cands: Vec<BasebandCandidate>,
 ) -> Option<Vec<(WsprResult, usize)>> {
-
     let mut slots: Vec<Option<BasebandCandidate>> = cands.into_iter().map(Some).collect();
     let next_idx = AtomicUsize::new(0);
     let slots_ptr = slots.as_mut_ptr();

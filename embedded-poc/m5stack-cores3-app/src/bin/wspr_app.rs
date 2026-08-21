@@ -136,10 +136,10 @@ use embedded_shared::wspr_dual_core;
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
 use mfsk_app_shared::settings::{self, Settings};
-use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
+use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 use mfsk_app_shared::{http_config, ntp, udp_log};
 
 const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseband.bin");
@@ -232,11 +232,15 @@ struct SlotBuf {
 
 impl SlotBuf {
     const fn new() -> Self {
-        Self { idat: Vec::new(), qdat: Vec::new() }
+        Self {
+            idat: Vec::new(),
+            qdat: Vec::new(),
+        }
     }
 }
 
-static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] = [Mutex::new(SlotBuf::new()), Mutex::new(SlotBuf::new())];
+static BASEBAND_BUFS: [Mutex<SlotBuf>; 2] =
+    [Mutex::new(SlotBuf::new()), Mutex::new(SlotBuf::new())];
 
 /// Index into [`BASEBAND_BUFS`] the DDC task most recently finished
 /// writing, or `None` if nothing's ready yet. Set by `ddc_loop`,
@@ -449,7 +453,9 @@ fn main() -> ! {
     // sink, NTP, HTTP config server).
     let sysloop = EspSystemEventLoop::take().expect("sysloop");
     let wifi_driver = if WIFI_SSID.is_empty() {
-        log::warn!("wspr_app: WIFI_SSID empty (no cfg.toml) — NTP/HTTP config/wsprnet all unavailable");
+        log::warn!(
+            "wspr_app: WIFI_SSID empty (no cfg.toml) — NTP/HTTP config/wsprnet all unavailable"
+        );
         None
     } else {
         match mfsk_app_shared::wifi::wifi_driver_init(peripherals.modem, sysloop, Some(nvs_part)) {
@@ -688,7 +694,9 @@ fn display_loop(ctx: DisplayCtx) -> ! {
         // a first cut of this fix turned out to have its own bug
         // (see `main`'s doc comment on spawn ordering).
         if tick % 20 == 0 {
-            log::info!("wspr_app::display: alive tick={tick} dirty={dirty} utc={hhmmss} heap={heap_kb}k");
+            log::info!(
+                "wspr_app::display: alive tick={tick} dirty={dirty} utc={hhmmss} heap={heap_kb}k"
+            );
         }
         tick = tick.wrapping_add(1);
         FreeRtos::delay_ms(500);
@@ -782,7 +790,12 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // Blocks until connected — see `connect_with_retry`'s own doc
     // comment. Only returns `Err` for a malformed SSID/PSK (checked
     // once, not worth retrying), not for a transient connect failure.
-    let info = match mfsk_app_shared::wifi::connect_with_retry(&mut ctx.wifi_driver, WIFI_SSID, WIFI_PSK, None) {
+    let info = match mfsk_app_shared::wifi::connect_with_retry(
+        &mut ctx.wifi_driver,
+        WIFI_SSID,
+        WIFI_PSK,
+        None,
+    ) {
         Ok(i) => i,
         Err(e) => {
             log::error!("wspr_app: WiFi setup failed permanently: {e:#}");
@@ -1001,7 +1014,10 @@ fn run_one_slot(
     for s in &stats {
         s.log();
     }
-    log::info!("wspr_app: slot {slot_label} decoded {} station(s)", results.len());
+    log::info!(
+        "wspr_app: slot {slot_label} decoded {} station(s)",
+        results.len()
+    );
 
     let (date, time) = current_date_time();
     let rows: Vec<WsprSpotRow> = results.iter().map(|r| to_row(r, &time)).collect();
@@ -1012,9 +1028,10 @@ fn run_one_slot(
         ui.update_status(|u| {
             u.band_label = heapless::String::try_from(band.label).unwrap_or_default();
             u.dial_mhz = band.dial_mhz;
-            u.wsprnet_enabled =
-                mfsk_app_shared::wsprnet::SpotSink::from_config(Some(&settings.wsprnet_spot_config))
-                    .is_enabled();
+            u.wsprnet_enabled = mfsk_app_shared::wsprnet::SpotSink::from_config(Some(
+                &settings.wsprnet_spot_config,
+            ))
+            .is_enabled();
         });
     }
 
@@ -1042,7 +1059,7 @@ fn spawn_ddc_task() {
             DDC_STACK,
             core::ptr::null_mut(),
             4, // between the display task (3) and wspr_dual_core's
-               // worker (5) — see this section's own doc comment.
+            // worker (5) — see this section's own doc comment.
             core::ptr::null_mut(),
             1, // core 1: pinning DDC to core 0 alongside the scan
                // task would starve it exactly the way the display
@@ -1130,7 +1147,9 @@ fn ddc_loop() -> ! {
         };
 
         {
-            let mut buf = BASEBAND_BUFS[write_idx].lock().expect("ddc buf mutex poisoned");
+            let mut buf = BASEBAND_BUFS[write_idx]
+                .lock()
+                .expect("ddc buf mutex poisoned");
             buf.idat = oi;
             buf.qdat = oq;
         }
@@ -1218,7 +1237,9 @@ impl WsprDdcSink {
         let idat = core::mem::replace(&mut self.out_i, Vec::with_capacity(NBB + 64));
         let qdat = core::mem::replace(&mut self.out_q, Vec::with_capacity(NBB + 64));
         {
-            let mut buf = BASEBAND_BUFS[self.write_idx].lock().expect("ddc buf mutex poisoned");
+            let mut buf = BASEBAND_BUFS[self.write_idx]
+                .lock()
+                .expect("ddc buf mutex poisoned");
             buf.idat = idat;
             buf.qdat = qdat;
         }
@@ -1226,7 +1247,10 @@ impl WsprDdcSink {
             let mut ready = DDC_READY_IDX.lock().expect("ddc ready mutex poisoned");
             *ready = Some(self.write_idx);
         }
-        log::info!("wspr_app::ddc: produced buffer {} (real UAC audio)", self.write_idx);
+        log::info!(
+            "wspr_app::ddc: produced buffer {} (real UAC audio)",
+            self.write_idx
+        );
         self.write_idx = 1 - self.write_idx;
 
         // Fresh cascade per slot, matching `ddc_loop`'s own per-slot
@@ -1249,8 +1273,10 @@ impl uac::AudioSink for WsprDdcSink {
             let room = DDC_SLOT_AUDIO_SAMPLES - self.fed;
             let take = remaining.len().min(room);
             self.scratch.clear();
-            self.scratch.extend(remaining[..take].iter().map(|&s| s as f32 / 32768.0));
-            self.ddc.push(&self.scratch, &mut self.out_i, &mut self.out_q);
+            self.scratch
+                .extend(remaining[..take].iter().map(|&s| s as f32 / 32768.0));
+            self.ddc
+                .push(&self.scratch, &mut self.out_i, &mut self.out_q);
             self.fed += take;
             remaining = &remaining[take..];
             if self.fed >= DDC_SLOT_AUDIO_SAMPLES {
@@ -1293,13 +1319,22 @@ struct DdcTestSource {
 impl DdcTestSource {
     fn new() -> Self {
         let info = mfsk_core::msg::wspr::pack_type1(DDC_TEST_CALL, DDC_TEST_GRID, DDC_TEST_DBM)
-            .expect("DDC_TEST_CALL/DDC_TEST_GRID/DDC_TEST_DBM must pack as a valid WSPR type-1 message");
+            .expect(
+                "DDC_TEST_CALL/DDC_TEST_GRID/DDC_TEST_DBM must pack as a valid WSPR type-1 message",
+            );
         let symbols = mfsk_core::wspr::encode_channel_symbols(&info);
         let nsps = (AUDIO_RATE_HZ as f64
             * <mfsk_core::wspr::Wspr as mfsk_core::engine::ModulationParams>::SYMBOL_DT as f64)
             .round() as usize;
         let nramp = mfsk_core::engine::dsp::envelope::ramp_samples(AUDIO_RATE_HZ as u32, nsps);
-        Self { symbols, nsps, nramp, pos: 0, phase: 0.0, rng: 0x2026_0815 }
+        Self {
+            symbols,
+            nsps,
+            nramp,
+            pos: 0,
+            phase: 0.0,
+            rng: 0x2026_0815,
+        }
     }
 
     fn burst_len(&self) -> usize {
@@ -1333,10 +1368,12 @@ impl DdcTestSource {
                     self.phase += core::f32::consts::TAU;
                 }
                 let env = if i < self.nramp {
-                    (1.0 - (core::f32::consts::TAU * i as f32 / (2.0 * self.nramp as f32)).cos()) / 2.0
+                    (1.0 - (core::f32::consts::TAU * i as f32 / (2.0 * self.nramp as f32)).cos())
+                        / 2.0
                 } else if i >= self.burst_len() - self.nramp {
                     let k = i - (self.burst_len() - self.nramp);
-                    (1.0 + (core::f32::consts::TAU * k as f32 / (2.0 * self.nramp as f32)).cos()) / 2.0
+                    (1.0 + (core::f32::consts::TAU * k as f32 / (2.0 * self.nramp as f32)).cos())
+                        / 2.0
                 } else {
                     1.0
                 };
@@ -1408,7 +1445,13 @@ fn to_row(r: &WsprResult, hhmm: &heapless::String<4>) -> WsprSpotRow {
 /// skip silently by design — `settings.rs`'s own doc comment: an
 /// empty callsign means "not configured," not an error to surface
 /// every 2 minutes in the log.
-fn report_to_wsprnet(results: &[WsprResult], settings: &Settings, band: &WsprBand, date: &str, time: &str) {
+fn report_to_wsprnet(
+    results: &[WsprResult],
+    settings: &Settings,
+    band: &WsprBand,
+    date: &str,
+    time: &str,
+) {
     use mfsk_app_shared::wsprnet::{report_slot, Mode, Reporter, Spot, SpotSink};
 
     let sink = SpotSink::from_config(Some(settings.wsprnet_spot_config.as_str()));
