@@ -62,7 +62,21 @@ const SYNC_Q_MIN: u32 = 16;
 /// comment.
 const CENTER_HZ: f32 = 1216.0;
 const SEARCH_HALF_WIDTH_HZ: f32 = 250.0;
-const SYNC_MIN: f32 = 0.8;
+/// Production default is 0.8 (real weak-signal candidates near FST4-60's
+/// -28 dB threshold score as low as ~1.4-4.5, per the DDC recall
+/// measurement in `fst4::ddc`'s own doc comment) -- **not** what this
+/// bench uses. Raised here, sniper-bench-scoped only: a host-side sweep
+/// against this exact golden recording (issue #307, 2026-08-21) found
+/// the real signals' raw coarse_sync scores (N5TM 38.68, K9KFR 29.79)
+/// sit ~5x above the recording's own noise-floor ceiling (5.85, the
+/// next-highest of 48 false alarms scattered across the whole ±250 Hz/
+/// ±2.5 s search grid -- confirmed *not* near-duplicates of each other
+/// or of the real signals, so `coarse_sync`'s own ±4 Hz/40 ms NMS
+/// legitimately has nothing to collapse there). 8.0 clears that ceiling
+/// with margin while staying ~4x under both real signals' scores. This
+/// is a strong-signal demo recording, not a sensitivity measurement --
+/// do not carry this value into any production/general-search path.
+const SYNC_MIN: f32 = 8.0;
 const MAX_CAND: usize = 50;
 
 fn now_us() -> i64 {
