@@ -50,7 +50,7 @@ use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candida
 use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
-use mfsk_core::fst4::ddc::{grid_for, sniper_cascade, sniper_refine_recenter};
+use mfsk_core::fst4::ddc::{REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter};
 use mfsk_core::msg::wsjt77::unpack77;
 
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — see
@@ -64,11 +64,6 @@ const CENTER_HZ: f32 = 1216.0;
 const SEARCH_HALF_WIDTH_HZ: f32 = 250.0;
 const SYNC_MIN: f32 = 0.8;
 const MAX_CAND: usize = 50;
-/// Same `ds_rate` both `sniper_refine_recenter` configs land on
-/// exactly — see `fst4::ddc::REFINE_DS_RATE_HZ`'s own doc comment
-/// (not reachable from here without importing the const directly,
-/// duplicated as a literal the same way `SYNC_Q_MIN` above is).
-const REFINE_DS_RATE_HZ: f32 = 111.111_11;
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -128,8 +123,14 @@ fn ddc_refine(
     coarse_delay_orig: usize,
 ) -> Vec<Complex32> {
     let mut refine = sniper_refine_recenter(cand.freq_hz, CENTER_HZ);
-    let mut cd0_i = Vec::new();
-    let mut cd0_q = Vec::new();
+    // Sized from the sniper cascade's own fixed L/M=9/64 ratio (plus a
+    // small margin for `flush`'s tail) rather than growing from empty
+    // via repeated reallocation — this runs up to ~90 times per bench
+    // invocation (Stage 2a + 2c), each on a buffer this module's own
+    // doc comment already sizes at up to ~266 KB.
+    let cap = coarse_i.len() * 9 / 64 + 16;
+    let mut cd0_i = Vec::with_capacity(cap);
+    let mut cd0_q = Vec::with_capacity(cap);
     refine.push(coarse_i, coarse_q, &mut cd0_i, &mut cd0_q);
     refine.flush(&mut cd0_i, &mut cd0_q);
     let refine_delay_out = refine.group_delay_output_samples();
