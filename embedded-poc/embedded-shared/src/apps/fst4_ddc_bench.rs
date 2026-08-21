@@ -47,10 +47,15 @@ use num_complex::Complex32;
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
-use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
+use mfsk_core::engine::sync::{
+    AudioSource, RxGrid, SyncCandidate, SyncDims, coarse_sync, compute_spectra,
+};
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
-use mfsk_core::fst4::ddc::{REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter};
+use mfsk_core::fst4::ddc::{
+    REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade,
+    wideband_refine_recenter,
+};
 use mfsk_core::msg::wsjt77::unpack77;
 
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — see
@@ -58,25 +63,78 @@ use mfsk_core::msg::wsjt77::unpack77;
 /// rather than imported.
 const SYNC_Q_MIN: u32 = 16;
 
-/// Midpoint of N5TM (1101 Hz) / K9KFR (1331 Hz) — see the module doc
-/// comment.
-const CENTER_HZ: f32 = 1216.0;
-const SEARCH_HALF_WIDTH_HZ: f32 = 250.0;
+/// `MFSK_FST4_DDC_BENCH_BAND=wide` switches this bench from the
+/// known-target sniper window to the full 100-3000 Hz production search
+/// band — same `option_env!` build-time idiom as `fst4_bench`'s
+/// `MFSK_FST4_BENCH_DEPTH`.
+///
+/// The two are genuinely different questions, not a width knob:
+///
+/// | | sniper (default) | `=wide` |
+/// |---|---|---|
+/// | cascade | `sniper_cascade` (49-tap /3 + L/M 16/81) | `wideband_cascade` (L/M 64/243, no integer stage) |
+/// | `K` / `nfft1` | 256 / 512 | 1024 / 2048 |
+/// | `sync_min` | 8.0 (strong-signal demo, see below) | **0.8, the production value** |
+/// | what it answers | "does the DDC chain work end-to-end on device" | "does a real wideband search fit the slot budget" |
+///
+/// `wideband_cascade`/`wideband_refine_recenter` shipped with the DDC
+/// stages 1-4 work but had **no non-test caller** until this switch —
+/// they were unit-tested against the design doc's own K/Fs_c/nfft1
+/// table and a single-tone smoke test, never measured on hardware.
+const WIDEBAND: bool = is_wide(option_env!("MFSK_FST4_DDC_BENCH_BAND"));
+
+/// `option_env!(..) == Some("wide")` doesn't compile in a `const`
+/// initialiser (`str` equality isn't const-stable), which is why
+/// `fst4_bench`'s equivalent switch reads its env var inside a function
+/// instead. Here the value has to be a `const` — it selects the other
+/// `const`s below — so the comparison is spelled out bytewise.
+const fn is_wide(v: Option<&str>) -> bool {
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            b.len() == 4 && b[0] == b'w' && b[1] == b'i' && b[2] == b'd' && b[3] == b'e'
+        }
+        None => false,
+    }
+}
+
+/// Sniper: midpoint of N5TM (1101 Hz) / K9KFR (1331 Hz) — see the module
+/// doc comment. Wideband: centre of the 100-3000 Hz production band, so
+/// the DDC's own passband spans it.
+const CENTER_HZ: f32 = if WIDEBAND { 1550.0 } else { 1216.0 };
+/// Sniper ±250 Hz around the two known signals; wideband ±1450 Hz, i.e.
+/// 100-3000 Hz, matching `mfsk-ffi`'s own FST4-60A null-options default.
+const SEARCH_HALF_WIDTH_HZ: f32 = if WIDEBAND { 1450.0 } else { 250.0 };
+/// Bandwidth handed to `grid_for` — drives `K` and therefore `nfft1`.
+/// 600 Hz → K=256/nfft1=512; 2900 Hz → K=1024/nfft1=2048. Both radix-2
+/// and both under the configured `CONFIG_DSP_MAX_FFT_SIZE_8192` ceiling.
+const GRID_BANDWIDTH_HZ: f32 = if WIDEBAND { 2900.0 } else { 600.0 };
 /// Production default is 0.8 (real weak-signal candidates near FST4-60's
 /// -28 dB threshold score as low as ~1.4-4.5, per the DDC recall
-/// measurement in `fst4::ddc`'s own doc comment) -- **not** what this
-/// bench uses. Raised here, sniper-bench-scoped only: a host-side sweep
-/// against this exact golden recording (issue #307, 2026-08-21) found
-/// the real signals' raw coarse_sync scores (N5TM 38.68, K9KFR 29.79)
-/// sit ~5x above the recording's own noise-floor ceiling (5.85, the
-/// next-highest of 48 false alarms scattered across the whole ±250 Hz/
-/// ±2.5 s search grid -- confirmed *not* near-duplicates of each other
-/// or of the real signals, so `coarse_sync`'s own ±4 Hz/40 ms NMS
-/// legitimately has nothing to collapse there). 8.0 clears that ceiling
-/// with margin while staying ~4x under both real signals' scores. This
-/// is a strong-signal demo recording, not a sensitivity measurement --
-/// do not carry this value into any production/general-search path.
-const SYNC_MIN: f32 = 8.0;
+/// measurement in `fst4::ddc`'s own doc comment) -- and that **is** what
+/// the `=wide` build uses, deliberately: a wideband measurement taken at
+/// a raised threshold would not be measuring the production search.
+///
+/// The sniper default raises it to 8.0, sniper-bench-scoped only: a
+/// host-side sweep against this exact golden recording (issue #307,
+/// 2026-08-21) found the real signals' raw coarse_sync scores (N5TM
+/// 38.68, K9KFR 29.79) sit ~5x above the recording's own noise-floor
+/// ceiling (5.85, the next-highest of 48 false alarms scattered across
+/// the whole ±250 Hz/±2.5 s search grid -- confirmed *not*
+/// near-duplicates of each other or of the real signals, so
+/// `coarse_sync`'s own ±4 Hz/40 ms NMS legitimately has nothing to
+/// collapse there). 8.0 clears that ceiling with margin while staying
+/// ~4x under both real signals' scores.
+///
+/// **Do not carry 8.0 into any production/general-search path**, and
+/// note it is not merely "a stricter score gate": `sync_min` is reused
+/// as the stage-1 threshold in `engine::sync::coarse_sync`, and
+/// `stage1_norm` is normalised to ~1.0 at the noise floor by
+/// construction -- so a value of 8.0 effectively disables issue #146's
+/// full-slot OR-gate, which is the mechanism that recovers ~3 dB of
+/// FST4 sensitivity. Harmless on a strong-signal recording, ruinous on
+/// weak ones.
+const SYNC_MIN: f32 = if WIDEBAND { 0.8 } else { 8.0 };
 const MAX_CAND: usize = 50;
 
 fn now_us() -> i64 {
@@ -136,13 +194,22 @@ fn ddc_refine(
     coarse_q: &[f32],
     coarse_delay_orig: usize,
 ) -> Vec<Complex32> {
-    let mut refine = sniper_refine_recenter(cand.freq_hz, CENTER_HZ);
-    // Sized from the sniper cascade's own fixed L/M=9/64 ratio (plus a
-    // small margin for `flush`'s tail) rather than growing from empty
-    // via repeated reallocation — this runs up to ~90 times per bench
-    // invocation (Stage 2a + 2c), each on a buffer this module's own
-    // doc comment already sizes at up to ~266 KB.
-    let cap = coarse_i.len() * 9 / 64 + 16;
+    let mut refine = if WIDEBAND {
+        wideband_refine_recenter(cand.freq_hz, CENTER_HZ)
+    } else {
+        sniper_refine_recenter(cand.freq_hz, CENTER_HZ)
+    };
+    // Sized from the cascade's own fixed L/M ratio (plus a small margin
+    // for `flush`'s tail) rather than growing from empty via repeated
+    // reallocation — this runs up to ~90 times per bench invocation
+    // (Stage 2a + 2c), each on a buffer this module's own doc comment
+    // already sizes at up to ~266 KB. Both refine configs share L=9;
+    // only M differs (64 sniper / 256 wideband).
+    let cap = if WIDEBAND {
+        coarse_i.len() * 9 / 256 + 16
+    } else {
+        coarse_i.len() * 9 / 64 + 16
+    };
     let mut cd0_i = Vec::with_capacity(cap);
     let mut cd0_q = Vec::with_capacity(cap);
     refine.push(coarse_i, coarse_q, &mut cd0_i, &mut cd0_q);
@@ -178,6 +245,14 @@ fn ddc_refine(
 pub fn run(audio_bin: &[u8]) {
     log::info!("mfsk-core {}", mfsk_core::VERSION);
     log::info!("fst4_ddc_bench: golden asset {} bytes", audio_bin.len());
+    log::info!(
+        "fst4_ddc_bench: band={} center {:.0} Hz +/-{:.0} Hz, sync_min {:.1}, max_cand {}",
+        if WIDEBAND { "WIDE (100-3000 Hz, production sync_min)" } else { "sniper" },
+        CENTER_HZ,
+        SEARCH_HALF_WIDTH_HZ,
+        SYNC_MIN,
+        MAX_CAND,
+    );
     log_heap("boot");
 
     let audio: Vec<i16> = audio_bin
@@ -193,7 +268,11 @@ pub fn run(audio_bin: &[u8]) {
 
     // ---- Stage 1: DDC + coarse_sync ----
     let t0 = now_us();
-    let coarse_cfg = sniper_cascade(CENTER_HZ);
+    let coarse_cfg = if WIDEBAND {
+        wideband_cascade(CENTER_HZ)
+    } else {
+        sniper_cascade(CENTER_HZ)
+    };
     let mut coarse = StreamingComplexDdc::new(&coarse_cfg);
     let mut coarse_i = Vec::new();
     let mut coarse_q = Vec::new();
@@ -209,8 +288,60 @@ pub fn run(audio_bin: &[u8]) {
     );
     log_heap("post-ddc");
 
+    let grid = grid_for(GRID_BANDWIDTH_HZ);
+
+    // Diagnostic split of `coarse_sync`'s cost into its spectrogram
+    // build vs its correlation search — the two have completely
+    // different architectural options and the wideband measurement
+    // (6869 ms total on the first `=wide` run) doesn't say which
+    // dominates.
+    //
+    // It matters because `compute_spectra`'s per-symbol-window FFT rows
+    // are independent and computable **as audio arrives**, exactly like
+    // the DDC ahead of it — so whatever share it holds could leave the
+    // post-slot budget entirely via the capture-time streaming WSPR
+    // already runs in production (`wspr_app`'s `ddc_loop` ->
+    // `DDC_READY_IDX` -> `scan_loop`). The correlation search cannot:
+    // it needs the completed spectrogram.
+    //
+    // Costs one redundant `compute_spectra` (this is a bench), and
+    // replicates `coarse_sync`'s own `ia`/`ib`/`headroom` derivation
+    // (`engine/sync.rs:566-586`) so the timed call crops identically
+    // rather than over-reporting on a wider band.
+    let rx_grid = RxGrid::complex(grid.fs_c, CENTER_HZ);
+    {
+        let d = SyncDims::of::<Fst4s60>(rx_grid.sample_rate_hz);
+        let ntones = <Fst4s60 as mfsk_core::engine::ModulationParams>::NTONES as usize;
+        let usable = rx_grid.usable_bins(&d);
+        let ia = rx_grid.bin_of(&d, CENTER_HZ - SEARCH_HALF_WIDTH_HZ);
+        let headroom = d.nfos * (ntones - 1) + 1;
+        let ib = rx_grid
+            .bin_of(&d, CENTER_HZ + SEARCH_HALF_WIDTH_HZ)
+            .min(usable.saturating_sub(headroom));
+        if ib >= ia {
+            let t_spec0 = now_us();
+            let s = compute_spectra::<Fst4s60>(
+                AudioSource::Complex(&coarse_i, &coarse_q),
+                ia,
+                (ib + headroom).min(usable.saturating_sub(1)),
+                rx_grid,
+            );
+            let t_spec = now_us() - t_spec0;
+            log::info!(
+                "fst4_ddc_bench: [diag] compute_spectra alone = {} ms (nfft1 {}, bins {}..={}, {} rows) \
+                 -- streamable during capture; coarse_sync total minus this is the search",
+                t_spec / 1000,
+                d.nfft1,
+                ia,
+                ib,
+                d.nhsym,
+            );
+            core::hint::black_box(&s);
+        }
+    }
+    log_heap("post-diag-spectra");
+
     let t1 = now_us();
-    let grid = grid_for(600.0);
     let candidates = coarse_sync::<Fst4s60>(
         AudioSource::Complex(&coarse_i, &coarse_q),
         CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
@@ -218,7 +349,7 @@ pub fn run(audio_bin: &[u8]) {
         SYNC_MIN,
         None,
         MAX_CAND,
-        RxGrid::complex(grid.fs_c, CENTER_HZ),
+        rx_grid,
     );
     let t_coarse_sync = now_us() - t1;
     log::info!(
