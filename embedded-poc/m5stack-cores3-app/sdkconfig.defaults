@@ -121,5 +121,12 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 # simply an audio device that never appeared. Audio class descriptors
 # are long: an audio control interface plus its streaming interfaces
 # and format/endpoint descriptors runs past 256 bytes routinely.
+#
+# 1024 was still not enough — the same error came back — so 4096. The
+# IC-705's audio device carries a long list of alternate settings, one
+# per sample rate and format, and each brings its own interface,
+# format and endpoint descriptors. The buffer is per attached device
+# and comes from internal DMA-capable RAM: hub + CDC + audio is 12 KB
+# against ~56 KB free, which fits.
 # Refs #163.
-CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096

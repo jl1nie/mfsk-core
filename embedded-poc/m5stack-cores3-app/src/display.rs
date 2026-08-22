@@ -47,7 +47,7 @@ const USB_REGION_X: i32 = 140;
 const USB_REGION_Y: i32 = 2;
 
 /// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
-const USB_PANEL_LINES: usize = 12;
+const USB_PANEL_LINES: usize = 17;
 const USB_PANEL_PITCH: i32 = 12;
 
 /// How long the boot waits before installing the USB host driver.
@@ -557,6 +557,30 @@ pub fn run_log_panel(
             line(format_args!("vbus={}mV", crate::pmic::vbus_mv_cached()));
             line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
             line(format_args!("au={sa} sa/s"));
+            // Last ENUM verdict, wrapped across the panel width.
+            // ENUM's own failure first; any other error only as a
+            // fallback. The teardown that follows a failed enumeration
+            // logs errors of its own, and those describe the cleanup,
+            // not the cause.
+            let enum_line = crate::esp_log_bridge::last_enum_line();
+            let enum_line = if enum_line.is_empty() {
+                crate::esp_log_bridge::last_error_line()
+            } else {
+                enum_line
+            };
+            let mut rest: &str = enum_line.as_str();
+            for _ in 0..4 {
+                if rest.is_empty() {
+                    break;
+                }
+                let mut cut = rest.len().min(29);
+                while cut > 0 && !rest.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let (head, tail) = rest.split_at(cut);
+                line(format_args!("{head}"));
+                rest = tail;
+            }
             match rms {
                 Some(db) => line(format_args!("rms={db:.0} dBFS")),
                 None => line(format_args!("rms=--")),

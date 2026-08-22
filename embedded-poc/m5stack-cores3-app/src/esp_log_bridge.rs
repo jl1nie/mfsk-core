@@ -31,6 +31,55 @@ unsafe extern "C" {
 /// C 側ログ1行の最大長。溢れた分は切り捨て。
 const BUF: usize = 240;
 
+/// 直近の `ENUM:` **エラー**行。画面に出す。
+///
+/// 列挙がどの段で失敗したかは `ENUM` タグの1行にしか書かれておらず、
+/// それは C 側から出るうえ、ログパネルではすぐ流れて消える。WiFi が
+/// 落ちていれば UDP でも読めない。判断に要る1行なので、最後の1本を
+/// 保持して固定行に立てておく。Refs #163.
+static LAST_ENUM: std::sync::Mutex<heapless::String<96>> =
+    std::sync::Mutex::new(heapless::String::new());
+
+/// 直近のエラーレベル行 (タグ不問)。
+///
+/// `LAST_ENUM` だけでは足りなかった。列挙が失敗すると理由の行の直後に
+/// 後始末の `[0:0] CANCEL OK` が来て上書きされ、画面には「失敗した」
+/// ことしか残らない。理由を保つには、エラーだけ別に留める必要がある。
+static LAST_ERR: std::sync::Mutex<heapless::String<96>> =
+    std::sync::Mutex::new(heapless::String::new());
+
+/// 画面用: 直近の `ENUM:` 行 (無ければ空)。
+pub fn last_enum_line() -> heapless::String<96> {
+    LAST_ENUM.try_lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// 画面用: 直近のエラー行 (無ければ空)。
+pub fn last_error_line() -> heapless::String<96> {
+    LAST_ERR.try_lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// 起動後、`ENUM` のエラーを既に1本掴んだか。
+///
+/// **最初の1本だけを残す。** 失敗の理由 ("Configuration descriptor
+/// larger than…") の直後に、同じ `ENUM` タグで結果の行
+/// (`CHECK_SHORT_CONFIG_DESC FAILED`) が続き、さらに `EXT_PORT` の
+/// 後始末エラーが続く。最後を残すと、毎回いちばん情報の無い行が
+/// 手元に残ることになる。
+fn enum_err_seen() -> bool {
+    LAST_ENUM.try_lock().map(|g| !g.is_empty()).unwrap_or(true)
+}
+
+fn store(slot: &std::sync::Mutex<heapless::String<96>>, text: &str) {
+    if let Ok(mut s) = slot.try_lock() {
+        s.clear();
+        for c in text.chars() {
+            if s.push(c).is_err() {
+                break;
+            }
+        }
+    }
+}
+
 thread_local! {
     /// 再入ガード。`FANOUT.push` は UDP 送信まで行くので、lwIP が
     /// その中で `ESP_LOGx` を叩くと無限再帰になる。フックは複数タスクから
@@ -54,7 +103,31 @@ unsafe extern "C" fn hook(fmt: *const c_char, args: va_list) -> c_int {
         let len = (n as usize).min(BUF - 1);
         if let Ok(s) = core::str::from_utf8(&buf[..len]) {
             // C 側ログは行末に改行を持つ。fanout は1行1エントリなので剥がす。
-            crate::FANOUT.push(s.trim_end_matches(['\r', '\n']));
+            let line = s.trim_end_matches(['\r', '\n']);
+            // Only ENUM's *errors*. Keeping every ENUM line loses the
+            // one that matters: a failure is immediately followed by
+            // the teardown's `[0:0] CANCEL OK`, and then by EXT_PORT's
+            // own error about disabling the port — so both a
+            // last-ENUM-line slot and a last-error-line slot end up
+            // holding consequences instead of the cause.
+            if line.starts_with("E (") && line.contains("ENUM:") && !enum_err_seen() {
+                // Drop the "E (12345) ENUM: " preamble — the stage name
+                // and its verdict are the whole point, and the panel is
+                // 30 characters wide.
+                store(
+                    &LAST_ENUM,
+                    line.split("ENUM:").nth(1).unwrap_or(line).trim_start(),
+                );
+            }
+            if line.starts_with("E (") {
+                // Keep the tag: at error level, which subsystem spoke
+                // is half the message.
+                store(
+                    &LAST_ERR,
+                    line.splitn(2, ") ").nth(1).unwrap_or(line).trim_start(),
+                );
+            }
+            crate::FANOUT.push(line);
         }
     }
 
