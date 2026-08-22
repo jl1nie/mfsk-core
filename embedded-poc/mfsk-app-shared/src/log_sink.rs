@@ -172,12 +172,24 @@ impl LogFanout {
             Ok(udp) => match udp.as_ref() {
                 Some(sink) => {
                     // Anything staged while the lock was busy goes out
-                    // first, so order survives. `drain_staging_to_udp`
-                    // cannot be used here — it wants this same mutex,
-                    // which this branch is already holding.
+                    // first, so order survives — but only a few per
+                    // call.
+                    //
+                    // This runs in whichever task called `log!`, and
+                    // that includes lwIP's own. Draining the whole ring
+                    // there meant one log line from `tiT` could turn
+                    // into 128 synchronous datagrams, each needing a
+                    // pbuf, which is how the network stack ran itself
+                    // out of memory and aborted. A handful per call
+                    // still empties the backlog quickly, because log
+                    // lines keep coming.
+                    const FLUSH_PER_CALL: usize = 4;
                     if let Ok(mut staging) = self.staging.try_lock() {
-                        while let Some(staged) = staging.pop_front() {
-                            sink.send_line(&staged);
+                        for _ in 0..FLUSH_PER_CALL {
+                            match staging.pop_front() {
+                                Some(staged) => sink.send_line(&staged),
+                                None => break,
+                            }
                         }
                     }
                     sink.send_line(line);

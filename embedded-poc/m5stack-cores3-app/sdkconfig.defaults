@@ -147,18 +147,35 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
 
-# Internal DRAM relief for host mode (#163) — two options tried, both
-# rejected, recorded so they are not tried again:
+# WiFi and lwIP allocate from PSRAM (#163).
 #
-# - CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y costs 32.5 KB of internal
-#   DRAM rather than saving any (measured at boot: 68843 -> 36331).
-#   Letting WiFi take PSRAM forces its TX buffers static and internal,
-#   and that pool is claimed up front.
-# - CONFIG_LWIP_IPV6=n does not build: `esp-idf-svc`'s socket layer
-#   references `sockaddr_in6` / `IPV6_V6ONLY` / `IPV6_JOIN_GROUP`
-#   unconditionally.
+# Judged by free internal DRAM at boot this looks like a regression —
+# 68843 -> 36331 — and it was reverted on that basis, which was a
+# mistake. The bytes go somewhere useful: with the option on, WiFi's TX
+# buffers become a static pool claimed up front instead of dynamic
+# allocations competing with everything else. Reserved is not the same
+# as wasted.
 #
-# What did work was halving the per-device control buffer, above.
+# Judged by whether the board stays up, the verdict reverses cleanly.
+# Boots observed inside a ~100 s capture, same hardware, same evening:
+#
+#   coredump enabled, no PSRAM option ............ 11
+#   + SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y ............  1
+#   control buffer 2048, PSRAM option still on ...  1
+#   PSRAM option removed .........................  11
+#   ... and 7-11 on every build after that
+#
+# Without it the network stack aborts on failed allocations —
+# `esf_buf_alloc_dynamic` under `ieee80211_assoc_req_construct` in task
+# `wifi`, `mem_malloc` under `pbuf_alloc` in task `tiT` — and since
+# every reboot reconnects, the loop sustains itself.
+#
+# SPIRAM_MALLOC_ALWAYSINTERNAL stays at 4096; the dual-core decode path
+# needs it there (see embedded-poc/CLAUDE.md).
+#
+# Not to be confused with CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC, which is
+# genuinely harmful here — see the note above it.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # mbedTLS allocates from PSRAM (#163).
 #
@@ -171,6 +188,17 @@ CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
 #   <- wpa_eapol_key_send
 #
 # Which made the reboot loop self-sustaining: every restart reconnects
-# to WiFi, and every reconnect walks straight back into it. None of
-# this needs internal RAM.
-CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# to WiFi, and every reconnect walks straight back into it.
+#
+# **CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y is NOT the fix — it is worse.**
+# The S3's AES/SHA accelerators are DMA-driven and DMA cannot reach
+# PSRAM, so moving mbedTLS's buffers there breaks hardware crypto
+# outright: every AES operation fails to start its DMA and aborts.
+#
+#   aes_decrypt <- esp_aes_crypt_ecb <- esp_aes_process_dma
+#   <- esp_crypto_shared_gdma_start_axi_ahb <- crypto_shared_gdma_init
+#   <- gdma_new_ahb_channel
+#
+# WiFi uses AES constantly, so the board then crashed with no radio
+# attached at all — seven reboots inside one flash capture, in
+# peripheral mode. Tried and reverted 2026-08-23.
