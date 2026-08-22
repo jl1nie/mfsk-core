@@ -28,47 +28,52 @@ pub const AW9523B_I2C_ADDR: u8 = 0x58;
 pub const TOUCH_I2C_ADDR: u8 = 0x38; // FT6336U (Phase 6-Core)
 pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 
-// AW9523B pin assignments (M5Stack CoreS3 schematic):
+// AW9523B pin assignments (M5Stack CoreS3).
+//
+// **2026-08-23 correction — the USB host power pins were all wrong**,
+// found on hardware chasing "the host stack enumerates nothing" (#163).
+// Checked against M5Stack's own `M5Unified` (`src/utility/Power_Class.cpp`,
+// the `board_M5StackCoreS3` path), which is the authority here:
+//
+// ```cpp
+// static constexpr const uint32_t _core_s3_bus_en = 0b00000010; // port0 bit1
+// static constexpr const uint32_t _core_s3_usb_en = 0b00100000; // port0 bit5
+// static constexpr const uint32_t port1_bitmask_boost = 0b10000000; // port1 bit7
+// // setUsbOutput(true) -> p0 |= _core_s3_usb_en; p1 |= port1_bitmask_boost;
+// // setExtOutput(true) -> p0 |= _core_s3_bus_en; p1 |= port1_bitmask_boost;
+// ```
+//
+// So USB host VBUS needs **two** pins, and neither is the one this file
+// used to name `BUS_OUT_EN`: port1 bit7 runs the 5 V boost converter,
+// port0 bit5 gates that rail onto the USB connector. Port0 bit1 is the
+// *external* 5 V output (M-Bus / Grove) and has nothing to do with USB —
+// yet it was the only bit host mode ever asserted. Its output-register
+// readback duly said HIGH, which is why this looked for a long time like
+// a device-side or cable fault: no converter was running, so no device
+// ever saw VBUS, so nothing pulled up D+, which the host stack cannot
+// distinguish from an empty port.
+//
 //   P0_0 = TP_INT      (FT6336U interrupt, input)
-//   P0_1 = BUS_OUT_EN  (USB host VBUS boost, HIGH=enable; Phase 1-Core)
-//   P0_2 = BOOST_EN    (5V boost for USB VBUS)
-//   P0_4 = LCD_BL      (kept as a documented guess only — see below)
+//   P0_1 = BUS_OUT_EN  (external 5V out — M-Bus/Grove, NOT USB)
+//   P0_5 = USB_OTG_EN  (gates the 5V boost onto the USB connector)
 //   P0_7 = SPK_EN      (AW88298 speaker amp enable; Phase 3-Core)
 //   P1_0 = TP_RST      (FT6336U reset, active LOW; Phase 6-Core)
 //   P1_1 = LCD_RST     (ILI9342C reset, active LOW)
+//   P1_7 = BOOST_EN    (the 5V boost converter itself)
 //
-// **2026-08-15 correction, cross-checked against M5Stack's own
-// `M5GFX.cpp` (`github.com/m5stack/M5GFX`, CoreS3 board section)**:
-// two things this table originally got wrong, found chasing a real
-// "LCD shows nothing" bug on hardware.
-//
-// 1. LCD_RST/TP_RST were swapped (P1_0/P1_1 reversed from M5GFX's
-//    `rst_control`, which uses `1 << 1` for LCD_RST). Harmless in
-//    `pmic::init` today — both bits are driven together — but wrong
-//    if Phase 6-Core ever needs to toggle TP_RST alone.
-// 2. **LCD_BL is not an AW9523 pin at all.** M5GFX's CoreS3
-//    `setBrightness` never touches an AW9523 register — the backlight
-//    is powered by AXP2101's DLDO1 rail (register `0x90` bit `0x80`
-//    to enable, `0x99` for voltage), which `pmic.rs` now writes
-//    directly. `AW9523_P0_LCD_BL` is kept below purely as a
-//    documented "this was the original, apparently-wrong guess";
-//    `pmic::init` still writes it as part of the port-0 safe-default
-//    pattern, but nothing depends on it actually controlling the
-//    backlight anymore.
+// Earlier correction (2026-08-15, same cross-check against M5GFX):
+// LCD_RST/TP_RST were swapped, and **LCD_BL is not an AW9523 pin at
+// all** — the backlight runs off AXP2101's DLDO1 rail (register `0x90`
+// bit `0x80` to enable, `0x99` for voltage), which `pmic.rs` writes
+// directly. `AW9523_P0_LCD_BL` survives below only as a documented
+// wrong guess that `pmic::init` still writes as part of the port-0
+// safe-default pattern; nothing depends on it.
+/// External 5 V output (M-Bus / Grove). **Not** the USB host rail.
 pub const AW9523_P0_BUS_OUT_EN: u8 = 1 << 1;
-/// P0_2 = BOOST_EN — the converter that actually makes the 5 V.
-///
-/// **2026-08-23**: this bit had no constant and nothing drove it, while
-/// `BUS_OUT_EN` (P0_1, the switch that routes the boost output to the
-/// connector) was asserted on its own. The result is the failure mode
-/// that reads as "the host stack sees nothing": the output-register
-/// readback of P0_1 says HIGH, so VBUS looks enabled, but no converter
-/// is running behind it — a phone plugged into the port does not even
-/// charge, and a device that never sees VBUS never pulls up D+, which
-/// is indistinguishable from an empty port. The pin table two lines up
-/// had said `P0_2 = BOOST_EN` since Phase 0-Core; only the code was
-/// missing. Refs #163.
-pub const AW9523_P0_BOOST_EN: u8 = 1 << 2;
+/// Gates the 5 V boost onto the USB connector (M5Unified `_core_s3_usb_en`).
+pub const AW9523_P0_USB_OTG_EN: u8 = 1 << 5;
+/// The 5 V boost converter itself (M5Unified `port1_bitmask_boost`).
+pub const AW9523_P1_BOOST_EN: u8 = 1 << 7;
 pub const AW9523_P0_LCD_BL: u8 = 1 << 4;
 pub const AW9523_P0_SPK_EN: u8 = 1 << 7;
 pub const AW9523_P1_TP_RST: u8 = 1 << 0;

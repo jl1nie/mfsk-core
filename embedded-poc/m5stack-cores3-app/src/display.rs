@@ -107,7 +107,11 @@ pub fn run_log_panel(
                     Ok((present, raw)) => {
                         log::info!(
                             "AXP2101 status1=0x{raw:02x} — VBUS {} (bit5)",
-                            if present { "PRESENT (external power)" } else { "absent (battery)" },
+                            if present {
+                                "PRESENT (external power)"
+                            } else {
+                                "absent (battery)"
+                            },
                         );
                         present
                     }
@@ -288,7 +292,12 @@ pub fn run_log_panel(
         // to work.
         let mut waited_ms = 0u32;
         while waited_ms < LOG_SINK_WAIT_MS {
-            if crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false) {
+            if crate::FANOUT
+                .udp
+                .try_lock()
+                .map(|g| g.is_some())
+                .unwrap_or(false)
+            {
                 log::info!("uac: log sink up after {waited_ms} ms — installing USB host now");
                 break;
             }
@@ -321,7 +330,10 @@ pub fn run_log_panel(
             c"ENUM".as_ptr(),
         ] {
             unsafe {
-                esp_idf_svc::sys::esp_log_level_set(tag, esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG);
+                esp_idf_svc::sys::esp_log_level_set(
+                    tag,
+                    esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG,
+                );
             }
         }
 
@@ -454,7 +466,7 @@ pub fn run_log_panel(
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
             let (dev, cli, evts, err) = crate::uac::usb_counters();
-            let (vbus_tried, p0, st1) = crate::pmic::power_state();
+            let (vbus_tried, p0, p1, st1) = crate::pmic::power_state();
 
             let mut panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
                 heapless::Vec::new();
@@ -471,19 +483,19 @@ pub fn run_log_panel(
             ));
             if vbus_tried {
                 line(format_args!(
-                    "vbus bst={} sw={}",
-                    if p0 & crate::board::AW9523_P0_BOOST_EN != 0 {
+                    "vbus bst={} otg={}",
+                    if p1 & crate::board::AW9523_P1_BOOST_EN != 0 {
                         "1"
                     } else {
                         "0!"
                     },
-                    if p0 & crate::board::AW9523_P0_BUS_OUT_EN != 0 {
+                    if p0 & crate::board::AW9523_P0_USB_OTG_EN != 0 {
                         "1"
                     } else {
                         "0!"
                     }
                 ));
-                line(format_args!("p0=0x{p0:02x} st1=0x{st1:02x}"));
+                line(format_args!("p0={p0:02x} p1={p1:02x} s={st1:02x}"));
             } else {
                 line(format_args!("vbus n/a (peripheral)"));
                 line(format_args!("st1=0x{st1:02x}"));
