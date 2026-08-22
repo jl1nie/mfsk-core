@@ -291,6 +291,12 @@ static SLOT_READY: Mutex<Option<CapturedSlot>> = Mutex::new(None);
 /// Bounded: if the capture task ever stalls, old audio is dropped
 /// rather than growing without limit, and the drop is logged.
 static AUDIO_STAGING: Mutex<Vec<i16>> = Mutex::new(Vec::new());
+/// How long the real-audio path may go silent before the capture task
+/// gives up on the slot. Generous — a USB hiccup should not truncate a
+/// slot — but bounded, because the alternative is a receiver that
+/// stops decoding and gives no reason.
+const AUDIO_STALL_US: i64 = 5_000_000;
+
 /// ~2 s of 12 kHz audio. Enough to absorb scheduling jitter at
 /// [`CAPTURE_PRIORITY`] *and* the inter-slot wait described at
 /// [`SPECTRA_FREE`], far short of a slot.
@@ -513,19 +519,33 @@ fn capture_loop() -> ! {
         let mut cap = SlotCapture::with_input_hint(CFG, true, SLOT_SAMPLES_12K);
         let mut fed = 0usize;
         let mut t_compute = 0i64;
+        let mut last_audio_us = now_us();
 
         while fed < SLOT_SAMPLES_12K {
             let live = UAC_AUDIO_ACTIVE.load(Ordering::Acquire);
             if live {
                 // Real audio: take whatever has arrived and feed it.
-                // The slot still ends on sample count, so a stream
-                // that stops mid-slot ends the slot short rather than
-                // hanging — see this file's alignment caveat.
                 let staged = core::mem::take(&mut *AUDIO_STAGING.lock().expect("staging poisoned"));
                 if staged.is_empty() {
+                    // A stream that stops mid-slot must not hang the
+                    // receiver. The comment this replaces claimed the
+                    // sample count already handled that; it did not —
+                    // this loop would have spun here forever, and the
+                    // first time anyone found out would have been a
+                    // live bring-up session with a radio attached
+                    // (issue #163).
+                    if now_us() - last_audio_us > AUDIO_STALL_US {
+                        log::warn!(
+                            "fst4_app::capture: no UAC audio for {} s — ending slot short at \
+                             {fed}/{SLOT_SAMPLES_12K} samples",
+                            AUDIO_STALL_US / 1_000_000,
+                        );
+                        break;
+                    }
                     FreeRtos::delay_ms(20);
                     continue;
                 }
+                last_audio_us = now_us();
                 let t = now_us();
                 cap.push_i16(&staged);
                 t_compute += now_us() - t;
@@ -804,6 +824,21 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // app then depends on the UDP log sink for its logs, same
             // as `wspr_app` does.
             if USB_HOST {
+                // The console is about to go away. Say whether the
+                // replacement is up *before* it does — the failure
+                // mode this avoids is a board that goes silent with no
+                // way to tell whether it crashed, never enumerated, or
+                // is working perfectly and simply cannot say so.
+                let udp_up = FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false);
+                if udp_up {
+                    log::info!("fst4_app: UDP log sink is up — serial console goes away now");
+                } else {
+                    log::warn!(
+                        "fst4_app: **UDP log sink is NOT up** and the USB host is about to \
+                         detach the serial console — this boot will be silent. Check WiFi, or \
+                         build without MFSK_FST4_APP_USB_HOST=1."
+                    );
+                }
                 log::info!("fst4_app: installing USB host + UAC class driver");
                 if let Err(e) = uac::start_host() {
                     log::error!("fst4_app: UAC host start failed: {e:#}");

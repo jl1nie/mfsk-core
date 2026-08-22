@@ -1577,6 +1577,91 @@ and a hard embedded deadline are different questions — but embedded is
 no longer locked out of the fidelity fix if a given deployment can
 afford it.
 
+## Live UAC bring-up — what to check, in what order (issue #163)
+
+No UAC audio source has ever enumerated on the CoreS3, so every
+receiver on this board — the FT8 controller, `wspr-app`, `fst4-app` —
+decodes a baked golden slot and its real-audio path is dormant. This is
+the procedure for the session that changes that, written before the
+session so that it produces a *result* rather than an ambiguity.
+
+**Any UAC source satisfies checkpoint 1.** The criteria were written
+around an IC-705 because that was the only consumer; for "does real
+PCM reach the pipeline", a USB audio interface fed from a phone or PC
+is easier to arrange and, if you play the golden recording into it,
+gives a **known answer**: the receiver should decode the same two
+stations it decodes from flash. A live antenna is checkpoint 2.
+
+### Before plugging anything in
+
+1. **Build with the host driver on.** It is opt-in precisely because it
+   detaches the console:
+   ```sh
+   MFSK_FST4_APP_USB_HOST=1 cargo build --release --bin fst4-app
+   ```
+2. **Have the UDP log listening.** `embedded-poc/scripts/udp-log-listen.sh`.
+   The app logs, immediately before installing the host driver, whether
+   the UDP sink is up — if it says it is not, stop: that boot will be
+   silent and you will not be able to tell a crash from a success.
+3. Expect the serial console to die the moment the driver installs.
+   That is not a fault.
+
+### What the logs will tell you
+
+`uac.rs`'s reader prints one line per second carrying both halves of
+the question:
+
+```
+uac: rx tick: 192000 B/s (total … / … pkt / 0 err)
+   | audio 12000 sa/s (want 12000), rms -32.4 dBFS, peak 4211, clipped 0
+```
+
+- **`B/s` near 192 000** — the transport is alive (48 kHz stereo × 2 B).
+  Zero means nothing enumerated or the stream never started; well below
+  190 k means dropped frames.
+- **`sa/s` near 12 000** — the resampler is producing at the rate the
+  decoder expects. **~11 025 means the source is 44.1 kHz**, which this
+  build does not configure; **~6 000 means the device is streaming mono**
+  and the stereo de-interleave is taking every other sample of one
+  channel.
+- **`rms`** — the half that byte counters cannot answer. A device
+  happily streaming 192 kB/s of digital silence (muted source, wrong
+  input selected, codec unconfigured) reads `-99.0 dBFS` here and looks
+  perfect everywhere else. Real receiver noise should sit somewhere
+  around −40 to −25 dBFS; a strong signal well above that.
+- **`clipped`** — nonzero means the source level is too high and the
+  decoder is being fed a distorted signal.
+
+Then, per slot, the application says what it did with it:
+
+```
+fst4_app::capture: front end … source UAC
+fst4_app::scan: slot N — 50 candidates in … ms
+```
+
+`source UAC` is the flag that says the golden replay has stepped
+aside. If audio stops mid-slot the capture task ends that slot short
+and says so rather than hanging.
+
+### Checkpoint 1 — real PCM reaches the decoder
+
+Play the golden FST4-60 recording into the source. Expect
+`CQ N5TM EL29` and `CQ K9KFR EN71`, at ~1100.6 and ~1330.6 Hz. Anything
+else — no decodes with healthy `rms`, or decodes at the wrong
+frequencies — is a real finding, not a setup problem, and the
+per-second telemetry above is what tells you which.
+
+### Checkpoint 2 — live antenna
+
+Needs the open item this procedure does *not* cover: **the real-audio
+path has no wall-clock slot alignment**. Slot boundaries are counted in
+samples from whenever the stream started, so a live band decode
+requires the transmission to happen to line up, or the NTP-fed
+alignment hook (`uac.rs`'s own open item, tracked in #313) to land
+first. Checkpoint 1 does not care — the golden recording is a whole
+slot and the decoder finds its own `dt` — which is exactly why it is
+worth doing first.
+
 ## Where to go next
 
 By reader intent:

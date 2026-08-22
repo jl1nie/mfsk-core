@@ -622,6 +622,21 @@ fn reader_thread(handle: DeviceHandle) {
     let mut dst_scratch = [0i16; 512];
     let mut last_log = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
+    // Post-resample signal statistics for the 1 Hz tick — issue #163.
+    //
+    // The byte counter below says the *transport* is alive. It cannot
+    // distinguish a radio streaming real audio from one streaming
+    // 192 kB/s of digital silence, which is what a muted source, a
+    // wrong input selection or an unconfigured codec all look like.
+    // A live bring-up session is expensive enough that "some bytes
+    // arrived" is not a result worth coming away with, so measure the
+    // thing the decoder actually consumes: how many 12 kHz samples per
+    // second (a rate check — it should be 12 000), and how loud they
+    // are.
+    let mut out_samples: u32 = 0;
+    let mut peak: i32 = 0;
+    let mut sum_sq: u64 = 0;
+    let mut clipped: u32 = 0;
     // Track whether we exited via DISCONNECTED so the cleanup path
     // can skip the redundant `device_stop` / `device_close` calls
     // (#35) — the IDF driver already invalidated the handle at
@@ -715,6 +730,17 @@ fn reader_thread(handle: DeviceHandle) {
             let (consumed, produced) =
                 resampler.process(&left_scratch[src_offset..stereo_samples], &mut dst_scratch);
             if produced > 0 {
+                for &v in &dst_scratch[..produced] {
+                    let a = (v as i32).abs();
+                    if a > peak {
+                        peak = a;
+                    }
+                    if a >= 32_000 {
+                        clipped += 1;
+                    }
+                    sum_sq += (a as u64) * (a as u64);
+                }
+                out_samples += produced as u32;
                 sink.push_samples(&dst_scratch[..produced]);
             }
             // Defensive: if process() makes zero progress (shouldn't,
@@ -739,9 +765,29 @@ fn reader_thread(handle: DeviceHandle) {
             // streaming IC-705. The throughput delta is the diagnostic
             // we care about here (anything well below ~190 kB/s
             // suggests packet drops or wrong stream config).
-            log::info!("uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err)");
+            let rms = if out_samples > 0 {
+                ((sum_sq / out_samples as u64) as f64).sqrt()
+            } else {
+                0.0
+            };
+            // dBFS against full scale, so "is there signal" is one
+            // glance rather than an i16 magnitude to interpret.
+            let dbfs = if rms > 0.0 {
+                20.0 * (rms / 32_768.0).log10()
+            } else {
+                -99.0
+            };
+            log::info!(
+                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err) \
+                 | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
+                 clipped {clipped}",
+            );
             last_log = now;
             last_bytes = bytes;
+            out_samples = 0;
+            peak = 0;
+            sum_sq = 0;
+            clipped = 0;
         }
     }
     // Cleanup paths differ by exit reason (#35):
