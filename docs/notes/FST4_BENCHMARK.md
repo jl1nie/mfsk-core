@@ -1526,9 +1526,9 @@ cargo build --release --bin fst4-ddc-bench
 |---|---:|---|
 | DDC + spectrogram | 5753 ms | **during capture** — 9% duty of a 60 s slot |
 | coarse search | **1119 ms** | post-slot (fill 712 ms dual-core, rank 291 ms) |
-| first decode | +1182 ms | post-slot |
-| **first decode, post-slot total** | **2301 ms** | against a 7200 ms TX guard |
-| all 50 candidates | 32.8 s | inside the 60 s slot period |
+| first decode | +847 ms | post-slot |
+| **first decode, post-slot total** | **1966 ms** | against a 7200 ms TX guard |
+| all 50 candidates | 25.7 s | inside the 60 s slot period |
 
 Only the post-slot column competes with the TX guard; the front end is
 paid against a *duty cycle* because a receiver has the whole slot for
@@ -1544,23 +1544,23 @@ streaming front end is on by default for this band too since
 | stage | cost | when |
 |---|---:|---|
 | DDC + spectrogram | 1539 ms | **during capture** — 2.6% duty of a 60 s slot |
-| coarse search | 191 ms | post-slot (dual-core fill) |
-| refine, all candidates | 866 ms | post-slot (dual-core) |
+| coarse search | 192 ms | post-slot (dual-core fill) |
+| refine, all candidates | 552 ms | post-slot (dual-core) |
 | survivor refine + decode (2 decodes) | 130 ms | post-slot |
-| **post-slot total** | **1187 ms** | |
+| **post-slot total** | **874 ms** | |
 
 Three changes got there, and none of them is an algorithm — two
 defaults flipped from opt-in to on (`SlotCapture`, `coarse_search` and
 `refine_all` are band-agnostic, so the switches already reached this
 path and were simply off), and one buffer stopped being thrown away:
 
-| | batch, single-core | streamed | + dual-core | + no double refine |
-|---|---:|---:|---:|---:|
-| DDC + spectrogram | 1314 (post-slot) | 1539 (capture) | 1539 (capture) | 1539 (capture) |
-| coarse search | 394 | 249 | **192** | 191 |
-| refine, all candidates | 1357 | 1348 | **853** | 866 |
-| survivor refine + decode | 300 | 289 | 289 | **130** |
-| **post-slot total** | **3365** | **1886** | **1334** | **1187** |
+| | batch, single-core | streamed | + dual-core | + no double refine | + SIMD sync search |
+|---|---:|---:|---:|---:|---:|
+| DDC + spectrogram | 1314 (post-slot) | 1539 (capture) | 1539 (capture) | 1539 (capture) | 1539 (capture) |
+| coarse search | 394 | 249 | **192** | 191 | 192 |
+| refine, all candidates | 1357 | 1348 | **853** | 866 | **552** |
+| survivor refine + decode | 300 | 289 | 289 | **130** | 130 |
+| **post-slot total** | **3365** | **1886** | **1334** | **1187** | **874** |
 
 Same two decodes at the same frequencies in every column.
 `MFSK_FST4_DDC_BENCH_STREAM=0` / `_DUAL=0` restore the first two.
@@ -1592,11 +1592,43 @@ whatever the two cores cost each other on PSRAM; 1.58x rather than 2x.
 At the wideband path's 50 candidates the split is even and the
 dispatch disappears into the total.
 
-**What is left.** `refine_all` is 73% of the post-slot time —
-per candidate, `ddc_refine` is 80 ms and `fst4_sync_search` ~594 ms,
-the same profile the wideband path has, so that function is the thing
-to attack for either band. Stage 2c is also still single-core, worth
-~60 ms of its remaining 130.
+**`fst4_sync_search` on the dot-product kernel.** Its scorer is
+`Σ cd0[n]·conj(ref[n])` over a 288-sample Costas block, 2 235 times per
+candidate. Written out, its real and imaginary halves are each a *real*
+dot product over the same interleaved memory — the imaginary one
+against a reference whose samples have been rewritten `(re, im)` →
+`(−im, re)` — so one scalar complex loop becomes two calls into
+`dot_f32`, at identical flop count, and on this chip that is
+`dsps_dotprod_f32_aes3`. Per candidate, `fst4_sync_search` went
+**711 → 419 ms**; wideband's whole candidate loop 32.8 → 25.7 s and its
+first decode 2301 → 1966 ms.
+
+Two things that measurement needed:
+
+- **Allocate the references once, not per frequency offset.** The
+  search sweeps 40 offsets per candidate; a fresh pair of buffers per
+  offset is 400 allocations of ~2.3 KB each. With
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL = 4096` those land in internal
+  DRAM while there is any and PSRAM once there is not, so the identical
+  code measured 780 ms per candidate in a bench with DRAM to spare and
+  1131 ms in an application that had spent it on WiFi and task stacks.
+- **The bench and the application now disagree, and the reason has
+  moved.** With the capture task idled (`MFSK_FST4_APP_CAPTURE_SLOTS=1`)
+  the app matches the bench exactly — 25.8 s loop, 419 ms/candidate
+  sync search. With capture running, the same build measures 1060 ms.
+  Earlier in this work that same experiment showed capture
+  concurrency costing *nothing*, and that was true then: internal-DRAM
+  starvation dominated and hid it. Fixing that, and then making the
+  inner loop bandwidth-bound instead of compute-bound, promoted
+  capture/decode PSRAM contention to the top item. **A disproved
+  hypothesis can become the right one when the bottleneck moves.**
+
+**What is left**, in order: capture/decode PSRAM contention (the app
+loop is 43.8 s against the bench's 25.7 s for identical work; first
+decode is unaffected at ~2.0 s because it lands before the next slot's
+capture gets going); then `fst4_sync_search` at 419 ms/candidate, still
+the largest per-candidate item; then stage 2c, still single-core, worth
+~60 ms of its 130.
 
 ### In the receiver application, not the bench
 

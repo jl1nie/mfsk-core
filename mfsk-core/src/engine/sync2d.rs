@@ -33,6 +33,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use crate::engine::Protocol;
+use crate::engine::dsp::dotprod::dot_f32;
 use crate::engine::sync::{SyncCandidate, SyncDims};
 
 /// Output of [`fst4_sync_search`] / [`ft4_sync_search`].
@@ -127,40 +128,98 @@ fn cached_costas_ref_continuous(pattern: &[u8], ds_spb: usize) -> Vec<Complex<f3
     make_costas_ref_continuous(pattern, ds_spb)
 }
 
-/// Apply a carrier twiddle to a flat continuous reference.
-/// Returns a new Vec; if `df_hz ≈ 0` returns the input unchanged.
-fn twiddle_flat_ref(flat_ref: &[Complex<f32>], df_hz: f32, ds_rate: f32) -> Vec<Complex<f32>> {
-    if df_hz.abs() < f32::EPSILON {
-        return flat_ref.to_vec();
+/// A Costas block's reference, laid out for [`dot_f32`].
+///
+/// The scorer wants `Σ cd0[n] · conj(ref[n])`, a complex accumulation.
+/// Written out, its two halves are each a **real** dot product over the
+/// same interleaved `(re, im, re, im, …)` memory the complex arrays
+/// already are:
+///
+/// - `Re z = Σ (c_re·r_re + c_im·r_im)` — the interleaved arrays dotted
+///   directly;
+/// - `Im z = Σ (c_im·r_re − c_re·r_im)` — the same, against a reference
+///   whose every sample has been rewritten as `(−im, re)`.
+///
+/// So one scalar complex loop becomes two calls into whatever
+/// `dot_f32` is backed by, at identical flop count. On the CoreS3 that
+/// backend is `dsps_dotprod_f32_aes3`, measured at 3.6x the portable
+/// loop for a misaligned 288-deep dot — and 288 is exactly this
+/// block's length for FST4-60.
+///
+/// Both layouts are built once per `(block, df)` in the twiddle step,
+/// where the reference is already being rebuilt anyway.
+struct FlatRef {
+    /// The reference, interleaved.
+    plain: Vec<f32>,
+    /// The same reference with each `(re, im)` rewritten as `(−im, re)`.
+    swapped: Vec<f32>,
+}
+
+impl FlatRef {
+    /// Allocated once per block and refilled for every frequency
+    /// offset — **not** rebuilt per offset.
+    ///
+    /// The search sweeps 40 offsets per candidate, so a fresh pair of
+    /// buffers per offset is 400 allocations of ~2.3 KB each, per
+    /// candidate. That is not free on this target: with
+    /// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL = 4096` those land in
+    /// internal DRAM while there is any, and in PSRAM once there is
+    /// not — so the same code measured 780 ms per candidate in a bench
+    /// with internal DRAM to spare and 1131 ms in an application that
+    /// had spent it on WiFi and task stacks. Filling in place removes
+    /// the question.
+    fn with_len(n: usize) -> Self {
+        Self {
+            plain: alloc::vec![0.0; n * 2],
+            swapped: alloc::vec![0.0; n * 2],
+        }
     }
-    let omega = 2.0 * PI * df_hz / ds_rate;
-    flat_ref
-        .iter()
-        .enumerate()
-        .map(|(n, &r)| {
-            let p = omega * n as f32;
-            r * Complex::new(p.cos(), p.sin())
-        })
-        .collect()
+
+    /// Overwrite with `flat_ref` carrier-shifted by `df_hz`.
+    fn fill(&mut self, flat_ref: &[Complex<f32>], df_hz: f32, ds_rate: f32) {
+        debug_assert_eq!(self.plain.len(), flat_ref.len() * 2);
+        let omega = 2.0 * PI * df_hz / ds_rate;
+        let shift = df_hz.abs() >= f32::EPSILON;
+        for (n, &r) in flat_ref.iter().enumerate() {
+            let r = if shift {
+                let p = omega * n as f32;
+                r * Complex::new(p.cos(), p.sin())
+            } else {
+                r
+            };
+            self.plain[2 * n] = r.re;
+            self.plain[2 * n + 1] = r.im;
+            self.swapped[2 * n] = -r.im;
+            self.swapped[2 * n + 1] = r.re;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.plain.len() / 2
+    }
 }
 
 /// Coherent inner product for one Costas block: returns amplitude |z|.
 /// Matches WSJT-X: `abs(sum(cd0 * conjg(csynct))) / nz`
 /// (normalization by block length omitted here — comparison is relative).
 /// Returns 0.0 if the block's samples fall outside `cd0`.
-fn score_flat_coherent(cd0: &[Complex<f32>], flat_ref: &[Complex<f32>], cd0_start: i32) -> f32 {
+fn score_flat_coherent(cd0: &[Complex<f32>], flat_ref: &FlatRef, cd0_start: i32) -> f32 {
     let np = cd0.len() as i32;
     let len = flat_ref.len() as i32;
     if cd0_start < 0 || cd0_start + len > np {
         return 0.0;
     }
     let s0 = cd0_start as usize;
-    let z: Complex<f32> = cd0[s0..s0 + len as usize]
-        .iter()
-        .zip(flat_ref.iter())
-        .map(|(&c, &r)| c * r.conj())
-        .sum();
-    z.norm()
+    // SAFETY: `Complex<f32>` is `#[repr(C)]` over two `f32`, so a
+    // slice of them is exactly the interleaved layout `FlatRef` was
+    // built to match, with the same alignment. The bounds check above
+    // establishes the length.
+    let c: &[f32] = unsafe {
+        core::slice::from_raw_parts(cd0[s0..].as_ptr() as *const f32, flat_ref.plain.len())
+    };
+    let zr = dot_f32(c, &flat_ref.plain);
+    let zi = dot_f32(c, &flat_ref.swapped);
+    (zr * zr + zi * zi).sqrt()
 }
 
 /// FST4-specific sync: faithful port of WSJT-X `fst4_sync_search`
@@ -206,12 +265,25 @@ pub fn fst4_sync_search<P: Protocol>(
         })
         .collect();
 
+    // Scratch for the twiddled references — allocated once here and
+    // refilled per frequency offset; see `FlatRef::with_len`.
+    let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
+        .iter()
+        .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
+        .collect();
+
     // Helper: score all 5 blocks with pre-twiddled refs at given i0.
-    let score_flat = |twiddled: &Vec<(i32, Vec<Complex<f32>>)>, i0: i32| -> f32 {
+    let score_flat = |twiddled: &Vec<(i32, FlatRef)>, i0: i32| -> f32 {
         twiddled
             .iter()
             .map(|(off, flat)| score_flat_coherent(cd0, flat, i0 + off))
             .sum::<f32>()
+    };
+
+    let retwiddle = |twiddled: &mut Vec<(i32, FlatRef)>, df: f32| {
+        for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
+            dst.fill(src, df, ds_rate);
+        }
     };
 
     // Coarse pass: sweep ±ishw time × ±12×0.1·baud freq.
@@ -221,10 +293,7 @@ pub fn fst4_sync_search<P: Protocol>(
 
     for si in -12i32..=12 {
         let df = si as f32 * 0.1 * baud;
-        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = flat_blocks
-            .iter()
-            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
-            .collect();
+        retwiddle(&mut twiddled, df);
 
         let mut di = -ishw;
         while di <= ishw {
@@ -246,10 +315,7 @@ pub fn fst4_sync_search<P: Protocol>(
 
     for si in -7i32..=7 {
         let df = coarse_winner_df + si as f32 * 0.02 * baud;
-        let twiddled: Vec<(i32, Vec<Complex<f32>>)> = flat_blocks
-            .iter()
-            .map(|(off, flat)| (*off, twiddle_flat_ref(flat, df, ds_rate)))
-            .collect();
+        retwiddle(&mut twiddled, df);
 
         for di in -4i32..=4 {
             let i0 = coarse_winner_i0 + di;
@@ -362,9 +428,12 @@ pub fn ft4_sync_search_window<P: Protocol>(
 
     // Twiddle on the fly inside the score rather than materialising a
     // fresh `Vec<Complex<f32>>` per block per (Δf, Δt) grid cell — the
-    // coarse+fine passes below evaluate ~19,900 cells, so the old
-    // per-cell `twiddle_flat_ref` allocation added up to ~90 heap
-    // allocations per `ft4_sync_search_window` call (Gemini PR review).
+    // coarse+fine passes below evaluate ~19,900 cells, so a per-cell
+    // twiddled-reference allocation added up to ~90 heap allocations
+    // per `ft4_sync_search_window` call (Gemini PR review). FST4's own
+    // search materialises its references instead, because it reuses
+    // each one across 84 time positions and wants them in the layout
+    // `dot_f32` reads — see `FlatRef`.
     // Mathematically identical: `score_flat_coherent` on a pre-twiddled
     // reference is the same dot product as twiddling each sample of
     // `cd0` in place here.
