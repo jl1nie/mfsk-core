@@ -1544,26 +1544,43 @@ streaming front end is on by default for this band too since
 | stage | cost | when |
 |---|---:|---|
 | DDC + spectrogram | 1539 ms | **during capture** — 2.6% duty of a 60 s slot |
-| coarse search | 192 ms | post-slot (dual-core fill) |
-| refine, all candidates | 853 ms | post-slot (dual-core) |
-| survivor refine + decode (2 decodes) | 289 ms | post-slot |
-| **post-slot total** | **1334 ms** | |
+| coarse search | 191 ms | post-slot (dual-core fill) |
+| refine, all candidates | 866 ms | post-slot (dual-core) |
+| survivor refine + decode (2 decodes) | 130 ms | post-slot |
+| **post-slot total** | **1187 ms** | |
 
-Two defaults changed to get there, both from opt-in to on, and neither
-needed new code — `SlotCapture`, `coarse_search` and `refine_all` are
-band-agnostic, so the switches already reached this path and were
-simply off:
+Three changes got there, and none of them is an algorithm — two
+defaults flipped from opt-in to on (`SlotCapture`, `coarse_search` and
+`refine_all` are band-agnostic, so the switches already reached this
+path and were simply off), and one buffer stopped being thrown away:
 
-| | batch, single-core | streamed | streamed + dual-core |
-|---|---:|---:|---:|
-| DDC + spectrogram | 1314 (post-slot) | 1539 (capture) | 1539 (capture) |
-| coarse search | 394 | 249 | **192** |
-| refine, all candidates | 1357 | 1348 | **853** |
-| survivor refine + decode | 300 | 289 | 289 |
-| **post-slot total** | **3365** | **1886** | **1334** |
+| | batch, single-core | streamed | + dual-core | + no double refine |
+|---|---:|---:|---:|---:|
+| DDC + spectrogram | 1314 (post-slot) | 1539 (capture) | 1539 (capture) | 1539 (capture) |
+| coarse search | 394 | 249 | **192** | 191 |
+| refine, all candidates | 1357 | 1348 | **853** | 866 |
+| survivor refine + decode | 300 | 289 | 289 | **130** |
+| **post-slot total** | **3365** | **1886** | **1334** | **1187** |
 
-Same two decodes at the same frequencies throughout.
-`MFSK_FST4_DDC_BENCH_STREAM=0` / `_DUAL=0` restore either column.
+Same two decodes at the same frequencies in every column.
+`MFSK_FST4_DDC_BENCH_STREAM=0` / `_DUAL=0` restore the first two.
+
+**The double refine was justified by a number that was wrong by 5×.**
+Stage 2a refined every candidate, kept `(freq, i0, score)` and dropped
+each `cd0` on the stated grounds that keeping them costs "~266 KB
+each"; stage 2c then rebuilt the survivors' at 80 ms apiece. Measured,
+a refined baseband is **52 KB** — every band decimates to the same
+`REFINE_DS_RATE_HZ`, so it is ~6 667 complex samples regardless. At the
+sniper's two candidates that is 104 KB against 1792 KB of budget, and
+`ddc_refine` is a pure function of three unchanged inputs, so the
+rebuild was recomputing a bit-identical buffer. `refine_all` now
+measures the free PSRAM and keeps them when they fit, which is what
+takes stage 2c from 289 to 130 ms.
+
+At the wideband path's 50 candidates the same check declines: 2.7 MB
+against a PSRAM already holding the slot and its spectrogram. The
+budget is a third of the largest free block, not a constant, because
+the point is to answer "is there room" rather than to guess.
 
 The capture-side total is larger than the batch DDC alone — 1539 vs
 1314 ms — because it now includes the spectrogram build that used to
@@ -1575,16 +1592,11 @@ whatever the two cores cost each other on PSRAM; 1.58x rather than 2x.
 At the wideband path's 50 candidates the split is even and the
 dispatch disappears into the total.
 
-**What is left.** `refine_all` is still 64% of the post-slot time —
+**What is left.** `refine_all` is 73% of the post-slot time —
 per candidate, `ddc_refine` is 80 ms and `fst4_sync_search` ~594 ms,
 the same profile the wideband path has, so that function is the thing
-to attack for either band. One structural saving remains untaken:
-stage 2a refines every candidate to get `(freq, i0, score)` for the
-dedup and drops each `cd0`, and stage 2c rebuilds `cd0` for the
-survivors (80 ms each). That second refine is deliberate — keeping 50
-candidates' `cd0` at ~266 KB each does not fit in PSRAM — but at the
-sniper's candidate counts it is pure waste. Stage 2c is also still
-single-core, worth ~150 ms of its 289.
+to attack for either band. Stage 2c is also still single-core, worth
+~60 ms of its remaining 130.
 
 ### In the receiver application, not the bench
 

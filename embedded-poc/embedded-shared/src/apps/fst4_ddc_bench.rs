@@ -565,7 +565,7 @@ pub fn run(audio_bin: &[u8]) {
     // second DDC-recentre pass, cheap next to LLR/BP/OSD, traded for
     // the memory this board doesn't have to spare.
     let t2a = now_us();
-    let refine_meta = fst4_monitor::refine_all(&slot, &candidates);
+    let mut refine_meta = fst4_monitor::refine_all(&slot, &candidates);
     let t_refine_all = now_us() - t2a;
     log::info!(
         "fst4_ddc_bench: refined {} candidates in {} ms",
@@ -635,9 +635,24 @@ pub fn run(audio_bin: &[u8]) {
             cand.dt_sec,
         );
         let t_r = now_us();
-        let cd0 = fst4_monitor::ddc_refine(&cfg, cand, &slot.coarse_i, &slot.coarse_q, coarse_delay_orig);
+        // Reuse the baseband Stage 2a already built, when it kept it.
+        // Rebuilding it is a second full recentre for a result that is
+        // bit-identical to the one just thrown away — `ddc_refine` is a
+        // pure function of the same three inputs — so the only reason
+        // to do it is memory, and `refine_all` is the thing that knows
+        // whether there was any.
+        let m = &mut refine_meta[idx];
+        let cd0 = match m.cd0.take() {
+            Some(cd0) => cd0,
+            None => fst4_monitor::ddc_refine(
+                &cfg,
+                cand,
+                &slot.coarse_i,
+                &slot.coarse_q,
+                coarse_delay_orig,
+            ),
+        };
         let refine_us = now_us() - t_r;
-        let m = &refine_meta[idx];
 
         let t_d = now_us();
         let precomputed = (cd0, m.freq_hz, m.i0, m.score);

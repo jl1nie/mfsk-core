@@ -63,6 +63,8 @@ use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::fst4_dual_core;
 
+const MALLOC_CAP_SPIRAM: u32 = 1 << 10;
+
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN`.
 const SYNC_Q_MIN: u32 = 16;
 
@@ -533,6 +535,8 @@ struct MonitorCtx {
     coarse_len: usize,
     coarse_delay_orig: usize,
     t0_us: i64,
+    /// Whether [`refine_position`] keeps each candidate's baseband.
+    retain_cd0: bool,
 }
 
 /// One candidate's full work: refine, sync-search, decode. A plain `fn`
@@ -658,6 +662,7 @@ pub fn run_candidate_loop(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> 
         coarse_len: slot.coarse_i.len(),
         coarse_delay_orig: slot.delay,
         t0_us: t0,
+        retain_cd0: false,
     };
     let deadline = t0 + slot.cfg.deadline_ms * 1000;
 
@@ -680,6 +685,10 @@ pub struct RefinedPosition {
     pub freq_hz: f32,
     pub i0: i32,
     pub score: f32,
+    /// The refined baseband this position came from, kept when there
+    /// was room for it — see [`refine_all`]. `None` means the caller
+    /// has to rebuild it with [`ddc_refine`] before decoding.
+    pub cd0: Option<Vec<Complex32>>,
 }
 
 /// One candidate's refine, position only. A plain `fn` item so
@@ -700,6 +709,7 @@ fn refine_position(ctx: &MonitorCtx, i: usize) -> Option<RefinedPosition> {
         freq_hz: s2.freq_hz,
         i0: s2.i0,
         score: s2.score,
+        cd0: ctx.retain_cd0.then_some(cd0),
     })
 }
 
@@ -712,17 +722,48 @@ fn refine_position(ctx: &MonitorCtx, i: usize) -> Option<RefinedPosition> {
 /// duplicate is the cost issue #244 already found and fixed on the
 /// host's real-audio path.
 ///
-/// **Deliberately drops each `cd0`.** Keeping every candidate's
-/// refined baseband to reuse after the dedup would be the obvious
-/// saving, and it does not fit: ~266 KB each against a PSRAM that is
-/// also holding the slot and its spectrogram. The survivors' baseband
-/// is rebuilt instead — a second recentre, cheap next to the ladder it
-/// precedes.
+/// **Keeps each candidate's `cd0` when there is room, and says so.**
+/// The alternative — dropping every one and rebuilding the survivors'
+/// after the dedup — is what this used to do unconditionally, on a
+/// comment claiming ~266 KB per candidate. That number was wrong by
+/// 5x: every band refines to the same `REFINE_DS_RATE_HZ`, so one
+/// slot's refined baseband is ~6 667 complex samples, **53 KB**. At the
+/// sniper's candidate counts keeping them costs ~106 KB and saves a
+/// whole second recentre per survivor; at the wideband path's 50 it
+/// would be 2.7 MB against a PSRAM already holding the slot and its
+/// spectrogram — which is why the budget below measures what is
+/// actually free rather than trusting a constant.
 ///
 /// No deadline, unlike [`run_candidate_loop`]: a candidate left
 /// unrefined is not a decode skipped, it is a hole in the dedup.
 pub fn refine_all(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> Vec<RefinedPosition> {
     let n = candidates.len();
+
+    // One refined baseband, in bytes — from the cascade's own fixed
+    // ratio, the same arithmetic `ddc_refine` sizes its buffers with.
+    let per_cd0 = match slot.cfg.band {
+        Band::Wide => slot.coarse_i.len() * 9 / 256,
+        Band::Sniper => slot.coarse_i.len() * 9 / 64,
+    } * core::mem::size_of::<Complex32>();
+    // A third of the largest free PSRAM block: the decode that follows
+    // needs room of its own, and a fragmented heap is exactly when
+    // taking most of the largest block is worst.
+    let budget = unsafe {
+        esp_idf_svc::sys::heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) as usize / 3
+    };
+    let retain_cd0 = n.saturating_mul(per_cd0) <= budget;
+    log::info!(
+        "fst4_monitor: refine_all {n} candidates, cd0 {} KB each — {} ({} KB needed, {} KB budget)",
+        per_cd0 / 1024,
+        if retain_cd0 {
+            "keeping"
+        } else {
+            "rebuilding survivors later"
+        },
+        n * per_cd0 / 1024,
+        budget / 1024,
+    );
+
     let ctx = MonitorCtx {
         cfg: slot.cfg,
         candidates: candidates.as_ptr() as *const core::ffi::c_void,
@@ -732,6 +773,7 @@ pub fn refine_all(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> Vec<Refi
         coarse_len: slot.coarse_i.len(),
         coarse_delay_orig: slot.delay,
         t0_us: now_us(),
+        retain_cd0,
     };
     let mut out = if slot.cfg.dual_core {
         fst4_dual_core::run_split(&ctx, n, i64::MAX, refine_position)
