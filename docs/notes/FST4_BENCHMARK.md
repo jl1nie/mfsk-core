@@ -1536,21 +1536,42 @@ it.
 
 ### Sniper — ±250 Hz around a known target
 
-`fst4-ddc-bench` with no environment switches (batch, single-core,
-`sync_min = 8.0` — bench-only, see that constant's own warning):
+`fst4-ddc-bench` with no environment switches (single-core,
+`sync_min = 8.0` — bench-only, see that constant's own warning). The
+streaming front end is on by default for this band too since
+2026-08-22:
 
-| stage | cost |
-|---|---:|
-| DDC | 1314 ms |
-| `coarse_sync` | 394 ms |
-| refine, all candidates | 1357 ms |
-| survivor refine + decode (2 decodes) | 300 ms |
-| **total** | **3365 ms** |
+| stage | cost | when |
+|---|---:|---|
+| DDC + spectrogram | 1539 ms | **during capture** — 2.6% duty of a 60 s slot |
+| coarse search | 249 ms | post-slot (fill 197 ms, rank 30 ms) |
+| refine, all candidates | 1348 ms | post-slot |
+| survivor refine + decode (2 decodes) | 289 ms | post-slot |
+| **post-slot total** | **1886 ms** | |
 
-This path is not streamed, so all of it is post-slot. Moving it onto
-`fst4_monitor::SlotCapture` would take the 1314 ms DDC off that budget
-the same way the wideband path already does; nothing else about it
-needs to change.
+Against the batch shape it replaced (`MFSK_FST4_DDC_BENCH_STREAM=0`:
+ddc 1314 / coarse_sync 394 / refine-all 1357 / survivor 300, **all**
+post-slot = 3365 ms), streaming halves the post-slot budget for the
+same two decodes at the same frequencies. The capture-side total is
+slightly larger than the batch DDC alone — 1539 vs 1314 ms — because it
+now includes the spectrogram build that used to happen inside
+`coarse_sync`; that is the same work, paid where there is room for it.
+
+**What is left is not the front end.** `refine-all` is 71% of the
+remaining post-slot time, and it is two candidates at ~674 ms each:
+`ddc_refine` is 80 ms of that and `fst4_sync_search` the other ~594 ms
+— the same per-candidate profile the wideband path has. Two obvious
+levers, neither taken yet:
+
+- **Dual-core it.** Stage 2a is a per-candidate loop, exactly the shape
+  `fst4_dual_core::run_split` already serves for the monitor. With two
+  candidates that is a straight halving.
+- **Don't refine twice.** Stage 2a refines every candidate to get
+  `(freq, i0, score)` for the dedup and drops each `cd0`; stage 2c
+  rebuilds `cd0` for the survivors (80 ms each). That second
+  `ddc_refine` is deliberate — keeping every candidate's `cd0` costs
+  ~266 KB each, which PSRAM does not have for 50 of them — but at the
+  sniper's candidate counts it is pure waste.
 
 ### In the receiver application, not the bench
 
@@ -1574,7 +1595,7 @@ Post-slot time to the first decode went **5207 → 2301 ms** over
 
 | change | what moved | PR |
 |---|---|---|
-| capture-time spectrogram | front end (4818 ms) off the post-slot budget entirely | #336 |
+| capture-time spectrogram | front end (4818 ms) off the post-slot budget entirely; sniper 3365 -> 1886 ms post-slot when the same default reached it | #336, #348 |
 | de-quadratic `coarse_sync` dedup | ranking 2989 → 292 ms | #342 |
 | dual-core correlation fill | fill 1131 → 714 ms | #342 |
 | rank-tiered decode depth | first decode unmoved, threshold recall 22 → 60 of 68 | #341 |

@@ -250,9 +250,14 @@ const fn parse_dec(v: Option<&str>) -> i64 {
 /// both cores (issue #327). Same per-candidate function either way.
 const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
 
-/// `MFSK_FST4_DDC_BENCH_STREAM=1` — run the DDC and the spectrogram
-/// **incrementally, block by block**, the way a receiver processes
-/// audio as it arrives, instead of batching both after the slot ends.
+/// Run the DDC and the spectrogram **incrementally, block by block**,
+/// the way a receiver processes audio as it arrives, instead of
+/// batching both after the slot ends.
+///
+/// **On by default; `MFSK_FST4_DDC_BENCH_STREAM=0` restores the batch
+/// shape** for a before/after comparison. It was opt-in while it was
+/// new and wideband-only; a receiver streams, so the default should be
+/// what a receiver does, for both bands.
 ///
 /// This does not make the front end cheaper; it moves it. A receiver
 /// has the whole 60 s capture window to do this work, so what it costs
@@ -261,11 +266,25 @@ const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
 /// `DDC_READY_IDX` -> `scan_loop`), measured there at 18.5-24.1 s of
 /// DDC running beside an 82.8-90.1 s decode inside a 110 s deadline.
 ///
-/// Measured motivation (2026-08-22, FST4-60 wideband): DDC 1976 ms +
-/// spectrogram 2842 ms = 4818 ms, against a first decode that otherwise
-/// lands at 10 060 ms post-slot versus a 7.2 s guard. Moving both out
-/// is the difference between "over" and "fits".
-const STREAM_FRONTEND: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_STREAM"));
+/// Measured, 2026-08-22, on real CoreS3 — what streaming takes off the
+/// post-slot budget:
+///
+/// | band | batch, all post-slot | streamed: during capture | streamed: post-slot |
+/// |---|---:|---:|---:|
+/// | wideband | 4818 + 4039 ms | 5753 ms (9% duty) | **1119 ms + decode** |
+/// | sniper | 1314 + 394 ms | 1539 ms (2.6% duty) | **250 ms + refine/decode** |
+///
+/// The sniper's whole post-slot path goes 3365 -> 1887 ms on that
+/// move, with the same two decodes at the same frequencies; the
+/// wideband's first decode goes 10 060 -> 2301 ms, which is the
+/// difference between missing the 7.2 s TX guard and fitting inside it.
+///
+/// Note the capture-side total is slightly *larger* than the batch
+/// DDC alone (1539 vs 1314 ms for the sniper) because it now includes
+/// the spectrogram build that used to happen inside `coarse_sync`.
+/// That is the point: it is the same work, paid where there is room
+/// for it.
+const STREAM_FRONTEND: bool = !is_zero(option_env!("MFSK_FST4_DDC_BENCH_STREAM"));
 
 /// Block size the streaming front end is fed in. 12 000 samples = 1 s
 /// of 12 kHz audio, a plausible unit for a real capture path and large
@@ -274,6 +293,17 @@ const STREAM_FRONTEND: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_STREAM"));
 /// `fst4_spectrogram_builder`), so this is a pacing choice, not a
 /// numerical one.
 const STREAM_BLOCK: usize = 12_000;
+
+/// `Some("0")` — the opt-*out* form, for switches that default on.
+const fn is_zero(v: Option<&str>) -> bool {
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            b.len() == 1 && b[0] == b'0'
+        }
+        None => false,
+    }
+}
 
 const fn is_one(v: Option<&str>) -> bool {
     match v {
