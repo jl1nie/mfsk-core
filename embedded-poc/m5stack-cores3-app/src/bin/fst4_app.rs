@@ -135,11 +135,16 @@ const REPLAY_BLOCK: usize = 12_000;
 /// this app aborted in `phy_track_pll_init` with `ESP_ERR_NO_MEM`
 /// against 15 KB of internal DRAM left, with a 96 KiB reservation here
 /// as the largest single cause.
-const SCAN_STACK: u32 = 48 * 1024;
-/// Small, and deliberately **not** in PSRAM: this is the DSP-heavy task
-/// (7.9 s per slot of FIR and FFT), and a PSRAM stack would slow every
-/// inner loop that touches a local. The network task is the one that
-/// can afford external memory.
+const SCAN_STACK: u32 = 24 * 1024;
+/// In PSRAM, like the display and network tasks.
+///
+/// The first version of this file argued the opposite — DSP task,
+/// keep its stack fast — and that reasoning was measured and found
+/// backwards. This task's actual working set is the `SlotCapture`'s
+/// heap buffers; its *stack* holds only small locals. Meanwhile every
+/// KiB of internal DRAM it reserves is a KiB the decoder's own small
+/// allocations fall back to PSRAM without, which costs far more (see
+/// `fst4_dual_core::WORKER_STACK_BYTES` for the measurement).
 const CAPTURE_STACK: u32 = 16 * 1024;
 const DISPLAY_STACK: u32 = 24 * 1024;
 const NETWORK_STACK: u32 = 24 * 1024;
@@ -150,6 +155,83 @@ const DISPLAY_PRIORITY: u32 = 7;
 const CAPTURE_PRIORITY: u32 = 6;
 const SCAN_PRIORITY: u32 = 5;
 const NETWORK_PRIORITY: u32 = 2;
+
+/// `MFSK_FST4_APP_CAPTURE_SLOTS=<n>` — stop capturing after `n` slots
+/// (`0`, the default, never stops).
+///
+/// Diagnostic only, and the one knob that isolates the question the
+/// first hardware run raised: the candidate loop takes 52 s in this app
+/// against the bench's 33 s, and the front end 16 s against 5.9 s, but
+/// "they contend" is a hypothesis, not a measurement. With `=1` the
+/// capture task posts slot 0 and then idles, so slot 0's decode runs
+/// with everything else the app does — WiFi, display, the same task
+/// layout — and *only* the capture removed.
+const CAPTURE_SLOTS: usize = {
+    let v = option_env!("MFSK_FST4_APP_CAPTURE_SLOTS");
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            let mut i = 0;
+            let mut acc = 0usize;
+            while i < b.len() {
+                acc = acc * 10 + (b[i] - b'0') as usize;
+                i += 1;
+            }
+            acc
+        }
+        None => 0,
+    }
+};
+
+/// `MFSK_FST4_APP_NO_WIFI=1` — skip WiFi bring-up entirely.
+///
+/// Diagnostic. The WiFi driver's own task runs at FreeRTOS priority 23,
+/// far above anything this app creates, so an association that keeps
+/// retrying preempts the decode at will — and this app's AP is exactly
+/// the one `wifi::connect_with_retry` documents needing unbounded
+/// retry. This switch is what separates "the decode is slow" from "the
+/// radio is eating the decode".
+const NO_WIFI: bool = match option_env!("MFSK_FST4_APP_NO_WIFI") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
+/// `MFSK_FST4_APP_NO_CONNECT=1` — bring the WiFi *driver* up but never
+/// associate. Diagnostic: separates the cost of the radio existing
+/// from the cost of it carrying a network's traffic.
+const NO_CONNECT: bool = match option_env!("MFSK_FST4_APP_NO_CONNECT") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
+/// `MFSK_FST4_APP_HOG_KB=<n>` — reserve `n` KB of **internal** DRAM at
+/// boot and never release it. Diagnostic: reproduces the WiFi driver's
+/// memory footprint without the radio, which is what separates
+/// "internal DRAM starvation" from everything else the driver leaves
+/// behind.
+const HOG_KB: usize = {
+    let v = option_env!("MFSK_FST4_APP_HOG_KB");
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            let mut i = 0;
+            let mut acc = 0usize;
+            while i < b.len() {
+                acc = acc * 10 + (b[i] - b'0') as usize;
+                i += 1;
+            }
+            acc
+        }
+        None => 0,
+    }
+};
+
+/// `MFSK_FST4_APP_WIFI_STOP=1` — with `NO_CONNECT`, also stop the
+/// radio after the driver is up. Diagnostic, see the call site.
+const WIFI_STOP: bool = match option_env!("MFSK_FST4_APP_WIFI_STOP") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
 
 /// `MFSK_FST4_APP_USB_HOST=1` — install the USB host + UAC class
 /// driver, and take real audio from a radio. See the call site for why
@@ -268,6 +350,22 @@ fn main() -> ! {
     // up.
     fst4_dual_core::init();
 
+    if HOG_KB > 0 {
+        const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
+        // 4 KiB blocks, matching what `SPIRAM_MALLOC_ALWAYSINTERNAL`
+        // treats as "small enough to want internal DRAM" — the same
+        // shape the allocations this is meant to crowd out have.
+        let mut got = 0usize;
+        for _ in 0..HOG_KB / 4 {
+            let p = unsafe { esp_idf_svc::sys::heap_caps_malloc(4096, MALLOC_CAP_INTERNAL_8BIT) };
+            if p.is_null() {
+                break;
+            }
+            got += 4;
+        }
+        log::warn!("fst4_app: MFSK_FST4_APP_HOG_KB={HOG_KB} — reserved {got} KB of internal DRAM");
+    }
+
     let peripherals = Peripherals::take().expect("peripherals taken twice");
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = settings::open_nvs(nvs_part.clone()).expect("settings NVS open");
@@ -301,7 +399,10 @@ fn main() -> ! {
     // window the task stacks were. The slow, unbounded half
     // (associate/DHCP retry) is what the network task backgrounds.
     let sysloop = EspSystemEventLoop::take().expect("sysloop");
-    let wifi_driver = if WIFI_SSID.is_empty() {
+    let wifi_driver = if NO_WIFI {
+        log::warn!("fst4_app: MFSK_FST4_APP_NO_WIFI=1 — no radio this boot (diagnostic build)");
+        None
+    } else if WIFI_SSID.is_empty() {
         log::warn!("fst4_app: WIFI_SSID empty (no cfg.toml) — NTP and HTTP config unavailable");
         None
     } else {
@@ -316,7 +417,20 @@ fn main() -> ! {
     log_heap("post-wifi-driver-init");
 
     if let Some(wifi_driver) = wifi_driver {
-        spawn_network_task(NetworkCtx { wifi_driver, nvs });
+        if NO_CONNECT {
+            log::warn!("fst4_app: MFSK_FST4_APP_NO_CONNECT=1 — driver up, no association");
+            if WIFI_STOP {
+                // Separates "the radio is on" from "the radio's memory
+                // is spoken for": `esp_wifi_stop` silences the receiver
+                // while every buffer the driver allocated stays
+                // allocated.
+                let r = unsafe { esp_idf_svc::sys::esp_wifi_stop() };
+                log::warn!("fst4_app: esp_wifi_stop() -> {r} (radio silenced, memory retained)");
+            }
+            core::mem::forget(wifi_driver);
+        } else {
+            spawn_network_task(NetworkCtx { wifi_driver, nvs });
+        }
     }
     log_heap("post-network-spawn");
 
@@ -338,7 +452,7 @@ extern "C" fn capture_task_entry(_arg: *mut core::ffi::c_void) {
 
 fn spawn_capture_task() {
     let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
             Some(capture_task_entry),
             c"fst4_capture".as_ptr(),
             CAPTURE_STACK,
@@ -346,6 +460,7 @@ fn spawn_capture_task() {
             CAPTURE_PRIORITY,
             core::ptr::null_mut(),
             1,
+            MALLOC_CAP_SPIRAM,
         )
     };
     if created != 1 {
@@ -381,6 +496,7 @@ fn capture_loop() -> ! {
     log_heap("capture-start");
 
     let mut block: Vec<i16> = Vec::with_capacity(REPLAY_BLOCK);
+    let mut slots_done = 0usize;
     loop {
         // Wait for the previous slot's spectrogram to be released
         // before claiming memory for this one — see [`SPECTRA_FREE`].
@@ -449,6 +565,16 @@ fn capture_loop() -> ! {
             if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) { "UAC" } else { "golden replay" },
         );
         post_slot(cap);
+        slots_done += 1;
+        if CAPTURE_SLOTS > 0 && slots_done >= CAPTURE_SLOTS {
+            log::info!(
+                "fst4_app::capture: MFSK_FST4_APP_CAPTURE_SLOTS={CAPTURE_SLOTS} reached — idling; \
+                 the decode below runs with no capture beside it"
+            );
+            loop {
+                FreeRtos::delay_ms(10_000);
+            }
+        }
     }
 }
 
@@ -536,21 +662,33 @@ fn scan_loop() -> ! {
 
         for h in &decoded {
             log::info!(
-                "fst4_app::scan: {:?} @ {:.1} Hz dt {:+.2} s — post-slot {} ms",
+                "fst4_app::scan: {:?} @ {:.1} Hz snr {:+.0} dB dt {:+.2} s — post-slot {} ms",
                 h.msg.as_deref().unwrap_or(""),
                 h.refined_hz,
+                h.snr_db,
                 h.dt_sec,
                 h.t_ms + t_search_ms,
             );
         }
+        // Per-candidate cost, split the way the bench splits it, so the
+        // two are directly comparable: the bench logs `refine N ms
+        // decode M ms` per candidate and this is the same pair summed.
+        let recenter_ms: i64 = hits.iter().map(|h| h.recenter_us).sum::<i64>() / 1000;
+        let refine_ms: i64 = hits.iter().map(|h| h.refine_us - h.recenter_us).sum::<i64>() / 1000;
+        let decode_ms: i64 = hits.iter().map(|h| h.decode_us).sum::<i64>() / 1000;
+        let n = hits.len().max(1) as i64;
         log::info!(
             "fst4_app::scan: slot {slot_num} done — {} tried, {} distinct decodes, \
-             search {} ms + loop {} ms, first decode {} ms post-slot",
+             search {} ms + loop {} ms, first decode {} ms post-slot \
+             [recentre {} ms/cand, sync-search {} ms/cand, decode {} ms/cand]",
             hits.len(),
             decoded.len(),
             t_search_ms,
             loop_ms,
             first_ms,
+            recenter_ms / n,
+            refine_ms / n,
+            decode_ms / n,
         );
 
         let rows: Vec<Fst4SpotRow> = decoded.iter().map(|h| to_row(h, t_search_ms)).collect();
@@ -626,7 +764,7 @@ extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
 fn spawn_display_task(ctx: DisplayCtx) {
     let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
     let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
             Some(display_task_entry),
             c"fst4_display".as_ptr(),
             DISPLAY_STACK,
@@ -634,6 +772,7 @@ fn spawn_display_task(ctx: DisplayCtx) {
             DISPLAY_PRIORITY,
             core::ptr::null_mut(),
             1,
+            MALLOC_CAP_SPIRAM,
         )
     };
     if created != 1 {
@@ -798,25 +937,62 @@ fn spawn_network_task(ctx: NetworkCtx) {
     }
 }
 
+/// How long the radio is left alone between association campaigns.
+///
+/// **Bounded attempts, then quiet — not `wspr_app`'s unbounded retry.**
+/// Measured on this hardware (2026-08-22): while the driver is trying
+/// to associate with an AP it cannot reach, the decoder loses ~40% of
+/// its throughput — `fst4_sync_search` goes 711 -> 1395 ms per
+/// candidate and the candidate loop 33 -> 53 s, covering 48 of 50
+/// candidates instead of all 50. The WiFi task runs at FreeRTOS
+/// priority 23, above anything an application creates, so it preempts
+/// at will, and this is *not* something the caller's own retry cadence
+/// controls: a single `connect()` keeps the radio busy for the whole
+/// `ESP_ERR_TIMEOUT` window, which is minutes.
+///
+/// A monitor receiver's job is to decode. WiFi buys it NTP, a config
+/// page and remote logging — all of which can wait three minutes.
+const RECONNECT_IDLE_MS: u32 = 180_000;
+/// Attempts per campaign. Four is what `wifi.rs`'s own bisection
+/// established as the number that beats the AP comeback-time
+/// coin-flip; more than that is what costs decode throughput.
+const CONNECT_ATTEMPTS_PER_CAMPAIGN: u32 = 4;
+
 fn network_loop(mut ctx: NetworkCtx) -> ! {
-    // Blocks until connected; only `Err`s for a malformed SSID/PSK,
-    // not for a transient failure — see `connect_with_retry`'s own doc
-    // comment for why unbounded retry is what this AP needs.
-    let info = match mfsk_app_shared::wifi::connect_with_retry(
-        &mut ctx.wifi_driver,
-        WIFI_SSID,
-        WIFI_PSK,
-        None,
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            log::error!("fst4_app::net: WiFi setup failed permanently: {e:#}");
-            loop {
-                FreeRtos::delay_ms(60_000);
+    let info = loop {
+        match mfsk_app_shared::wifi::connect_with_retry(
+            &mut ctx.wifi_driver,
+            WIFI_SSID,
+            WIFI_PSK,
+            Some(CONNECT_ATTEMPTS_PER_CAMPAIGN),
+        ) {
+            Ok(i) => break i,
+            Err(e) => {
+                log::warn!(
+                    "fst4_app::net: no association after {CONNECT_ATTEMPTS_PER_CAMPAIGN} \
+                     attempts ({e:#}) — leaving the radio alone for {} s so it stops \
+                     preempting the decode",
+                    RECONNECT_IDLE_MS / 1000,
+                );
+                FreeRtos::delay_ms(RECONNECT_IDLE_MS);
             }
         }
     };
     log::info!("fst4_app::net: WiFi up, ip {}", info.ip);
+
+    // Modem power save. The default is `WIFI_PS_NONE`, which keeps the
+    // receiver on continuously and hands every frame on the network —
+    // including all the broadcast and multicast traffic a home LAN
+    // carries — to a driver task running at FreeRTOS priority 23, above
+    // anything this application creates. Measured: an *associated,
+    // otherwise idle* STA cost the candidate loop 33 -> 53 s and
+    // `fst4_sync_search` 711 -> 1500 ms per candidate.
+    //
+    // `MIN_MODEM` lets the radio sleep between DTIM beacons, which is
+    // all a receiver that only needs NTP, a config page and a log sink
+    // ever wanted from the association.
+    let r = unsafe { esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_MIN_MODEM) };
+    log::info!("fst4_app::net: esp_wifi_set_ps(MIN_MODEM) -> {r}");
 
     // UDP log sink — the serial console goes away the moment the USB
     // host driver installs, so this is the only log this app has once

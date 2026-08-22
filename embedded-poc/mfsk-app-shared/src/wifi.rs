@@ -68,6 +68,16 @@ const CONNECT_MAX_ATTEMPTS: u32 = 4;
 /// file's previous, narrower 2000 ms, now that the retry itself also
 /// matches that implementation's shape.
 const CONNECT_RETRY_DELAY_MS: u32 = 3_000;
+/// Ceiling once the retry loop has backed off — see
+/// [`connect_with_retry`]'s doc comment for what the backoff is
+/// protecting.
+const CONNECT_RETRY_MAX_DELAY_MS: u32 = 60_000;
+/// Attempts to make at the fast [`CONNECT_RETRY_DELAY_MS`] cadence
+/// before backing off. Deliberately the same count as
+/// [`CONNECT_MAX_ATTEMPTS`]: that is the window the bisection above
+/// established as what actually fixes the AP's comeback-time
+/// coin-flip, and nothing here should shorten it.
+const CONNECT_FAST_ATTEMPTS: u32 = CONNECT_MAX_ATTEMPTS;
 
 /// Live WiFi STA handle. Drop ends the WiFi association (and any sockets
 /// bound on top stop receiving), so callers must keep this alive.
@@ -256,6 +266,34 @@ where
 /// being pulled in at two different (structurally identical but
 /// nominally distinct) versions via `embedded_svc` vs. this crate's
 /// own direct dependency.
+/// Delay before the next attempt: the established fast cadence for the
+/// first [`CONNECT_FAST_ATTEMPTS`], then doubling to
+/// [`CONNECT_RETRY_MAX_DELAY_MS`].
+///
+/// **Why back off at all, when the whole point of the unbounded mode is
+/// to keep trying**: a retry loop is not free to the rest of the
+/// device. Measured on the CoreS3 FST4 receiver (2026-08-22) against an
+/// AP that never associates, this loop at its fixed 3 s cadence cost
+/// the decoder **40% of its throughput** — `fst4_sync_search` went 711
+/// -> 1380 ms per candidate and the candidate loop 33 -> 54 s, covering
+/// 42 of 50 candidates instead of all 50. The WiFi driver's own task
+/// runs at FreeRTOS priority 23, above anything an application creates,
+/// so it preempts at will; the fix is to ask for the radio less often,
+/// not to ask for a different priority.
+///
+/// Backing off does not change what the unbounded mode promises — it
+/// still retries forever — only how often it interrupts the work the
+/// device exists to do.
+fn retry_delay_ms(attempt: u32) -> u32 {
+    if attempt <= CONNECT_FAST_ATTEMPTS {
+        return CONNECT_RETRY_DELAY_MS;
+    }
+    let steps = (attempt - CONNECT_FAST_ATTEMPTS).min(5);
+    CONNECT_RETRY_DELAY_MS
+        .saturating_mul(1u32 << steps)
+        .min(CONNECT_RETRY_MAX_DELAY_MS)
+}
+
 pub fn connect_with_retry(
     wifi: &mut BlockingWifi<EspWifi<'static>>,
     ssid: &str,
@@ -274,13 +312,22 @@ pub fn connect_with_retry(
     loop {
         attempt += 1;
         let outcome = (|| -> Result<()> {
-            let ap_infos = wifi.scan()?;
-            channel = ap_infos
-                .iter()
-                .find(|ap| ap.ssid.as_str() == ssid)
-                .map(|ap| ap.channel);
-            if channel.is_none() {
-                log::warn!("WiFi: SSID '{ssid}' not seen in scan; trying anyway");
+            // Re-scan only when there is something to learn: with the
+            // channel already known, a scan is pure cost — and an
+            // active scan is the most expensive thing in this loop,
+            // sweeping every channel with the radio and the driver
+            // task (FreeRTOS priority 23) preempting everything the
+            // application is doing. Every fifth attempt anyway, in
+            // case the AP moved.
+            if channel.is_none() || attempt % 5 == 0 {
+                let ap_infos = wifi.scan()?;
+                channel = ap_infos
+                    .iter()
+                    .find(|ap| ap.ssid.as_str() == ssid)
+                    .map(|ap| ap.channel);
+                if channel.is_none() {
+                    log::warn!("WiFi: SSID '{ssid}' not seen in scan; trying anyway");
+                }
             }
             wifi.set_configuration(&Configuration::Client(ClientConfiguration {
                 ssid: ssid
@@ -320,7 +367,7 @@ pub fn connect_with_retry(
                     None => true,
                 };
                 if keep_going {
-                    FreeRtos::delay_ms(CONNECT_RETRY_DELAY_MS);
+                    FreeRtos::delay_ms(retry_delay_ms(attempt));
                 } else {
                     break;
                 }

@@ -198,12 +198,12 @@ pub enum Schedule {
 /// list.
 ///
 /// Returns one slot per input candidate, `Some` for the ones that
-/// decoded. `DecodeResult::snr_db`/`sync_cv` are not computed here (NaN
-/// / 0.0 placeholders) — same convention `process_candidate_precomputed`
-/// establishes for its own `skip_snr` flag: this function answers the
-/// wall-clock/scheduling question, not the SNR-reporting one. Callers
-/// that need real SNR should re-derive it from the returned candidate
-/// positions the way `process_candidate_basic` already does.
+/// decoded. `DecodeResult::sync_cv` is left at `0.0` — this function
+/// answers the wall-clock/scheduling question, and no caller of it has
+/// wanted that field. `snr_db` *is* filled in, from the refined
+/// baseband alone (`fst4::baseline::fst4_ddc_snr_db`); it used to be
+/// `NaN` here only because the estimator that existed needed a
+/// whole-slot FFT no caller of this function has.
 pub fn decode_rung_major<P>(
     candidates: &[RungMajorCandidate],
     skip_llrc: bool,
@@ -400,7 +400,15 @@ where
             sync_score: input.cand.score,
             pass,
             sync_cv: 0.0,
-            snr_db: f32::NAN,
+            // Measurable here after all, and cheap: the refined
+            // baseband this candidate already holds is 111 Hz wide
+            // where the signal occupies ~12, so the noise can be read
+            // straight out of the rest of it — see
+            // `fst4::baseline::fst4_ddc_snr_db`. Was `NaN` because the
+            // only estimator that existed needed a whole-slot FFT this
+            // path never has.
+            snr_db: crate::fst4::baseline::fst4_ddc_snr_db::<P>(&input.cd0, ds_rate)
+                .unwrap_or(f32::NAN),
         }
     }
 

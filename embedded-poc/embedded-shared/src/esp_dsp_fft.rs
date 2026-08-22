@@ -363,11 +363,63 @@ unsafe extern "C" {
 /// concurrent FFT caller.
 static FC32_TABLE_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Serialises the twiddle table against the transforms that read it.
+///
+/// [`FC32_TABLE_LEN`]'s doc comment flagged this hazard and left it
+/// unfixed, on the correct observation that nothing then planned two
+/// fc32 sizes concurrently. The FST4 receiver app does: its capture
+/// task builds the coarse spectrogram at 2048 points on one core while
+/// the decode runs `fst4_ddc_snr_db`'s 512-point Welch periodogram on
+/// the other. The failure is not subtle once you look for it, and not
+/// random either — 111 of 1888 spectrogram bins came back non-finite,
+/// the *same* count every slot, because a 2048-point kernel reading a
+/// 512-entry table walks off the same end of the same allocation every
+/// time. Slot 0 was always clean: nothing had planned the second size
+/// yet.
+///
+/// A plain spin lock rather than a FreeRTOS mutex: this guards a few
+/// hundred microseconds of arithmetic, is never taken from an ISR, and
+/// must work identically on both cores before any scheduler object is
+/// necessarily available.
+static FC32_LOCK: AtomicUsize = AtomicUsize::new(0);
+
+struct Fc32Guard;
+
+impl Fc32Guard {
+    fn acquire() -> Self {
+        while FC32_LOCK
+            .compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+
+impl Drop for Fc32Guard {
+    fn drop(&mut self) {
+        FC32_LOCK.store(0, Ordering::Release);
+    }
+}
+
 /// Force the process-global fc32 twiddle table to be exactly `len`
 /// entries, regenerating it if it currently isn't. See
 /// [`FC32_TABLE_LEN`] for why this can't just be "call init if we
 /// haven't seen this size before" on a per-planner-instance basis.
+///
+/// **Caller must hold [`Fc32Guard`]** and keep holding it until the
+/// transform that reads the table has finished — resizing it is only
+/// half the invariant.
 fn ensure_fc32_table(len: usize) {
+    let _guard = Fc32Guard::acquire();
+    ensure_fc32_table_locked(len);
+}
+
+/// [`ensure_fc32_table`]'s body, for callers already holding
+/// [`Fc32Guard`] because they are about to run a transform against the
+/// table and must not let it change underneath them.
+fn ensure_fc32_table_locked(len: usize) {
     if FC32_TABLE_LEN.load(Ordering::Relaxed) == len {
         return;
     }
@@ -551,6 +603,12 @@ impl Fft for MixedRadix3840Fft {
         assert_eq!(buf.len(), N, "3840 FFT input length mismatch");
         let buf_arr: &mut [Complex32; N] = buf.try_into().expect("buf.len() == N already asserted");
 
+        // Same table discipline as `EspDspFft::process` — see its
+        // comment. Held across every inner 256-pt transform below, not
+        // re-acquired per call, since they are one logical FFT.
+        let _guard = Fc32Guard::acquire();
+        ensure_fc32_table_locked(256);
+
         // Inner 256-pt forward FFT via esp-dsp asm path. Mirrors
         // `EspDspFft::process` but specialised to len=256.
         let run_256 = |slice: &mut [Complex32]| {
@@ -630,6 +688,15 @@ impl EspDspFft {
 impl Fft for EspDspFft {
     fn process(&self, buf: &mut [Complex32]) {
         assert_eq!(buf.len(), self.len, "FFT input length mismatch");
+        // Held across the kernel, not just across the resize: the
+        // table this transform reads is process-global, and another
+        // core planning a different size mid-transform is exactly the
+        // corruption `FC32_LOCK`'s doc comment describes. Re-checking
+        // the size here rather than trusting `plan_forward`'s call is
+        // the other half — a `Box<dyn Fft>` outlives any number of
+        // other plans.
+        let _guard = Fc32Guard::acquire();
+        ensure_fc32_table_locked(self.len);
         // esp-dsp expects an interleaved {re, im, re, im, ...} f32
         // array of length 2*N. Complex32 is repr(C) with this exact
         // layout, so we can cast in place — subject to alignment, see

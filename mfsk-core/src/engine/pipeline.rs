@@ -436,6 +436,17 @@ pub struct SnrCtx<'a> {
     pub cs: &'a [Complex<f32>],
     /// [`encode_tones_for_snr`]`::<P>` output.
     pub itone: &'a [u8],
+    /// The refined baseband the symbol spectra were built from, and
+    /// its sample rate.
+    ///
+    /// FST4's DDC path is this pair's only reader: with no whole-slot
+    /// FFT to take a noise baseline from, it measures the noise in the
+    /// part of *this* buffer the signal does not occupy. Dead in any
+    /// build without `fst4`, like the two fields below.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
+    pub cd0: &'a [Complex<f32>],
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
+    pub ds_rate_hz: f32,
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
     // FT4's `snr_db` override is this field's only reader, so a build
@@ -486,6 +497,17 @@ pub(crate) struct SnrCtx<'a> {
     pub cs: &'a [Complex<f32>],
     /// [`encode_tones_for_snr`]`::<P>` output.
     pub itone: &'a [u8],
+    /// The refined baseband the symbol spectra were built from, and
+    /// its sample rate.
+    ///
+    /// FST4's DDC path is this pair's only reader: with no whole-slot
+    /// FFT to take a noise baseline from, it measures the noise in the
+    /// part of *this* buffer the signal does not occupy. Dead in any
+    /// build without `fst4`, like the two fields below.
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
+    pub cd0: &'a [Complex<f32>],
+    #[cfg_attr(not(feature = "fst4"), allow(dead_code))]
+    pub ds_rate_hz: f32,
     /// Coarse-sync candidate score (`SyncCandidate::score`) — FT4's
     /// `candidate(2,icand)` equivalent.
     // FT4's `snr_db` override is this field's only reader, so a build
@@ -925,6 +947,8 @@ where
                     P::snr_db(SnrCtx {
                         cs,
                         itone: &itone,
+                        cd0: &cd0,
+                        ds_rate_hz: ds_rate,
                         cand_score: cand.score,
                         cand_freq_hz: cand.freq_hz,
                         fft_cache,
@@ -1068,6 +1092,8 @@ where
                             let snr_db = P::snr_db(SnrCtx {
                                 cs,
                                 itone: &itone,
+                                cd0: &cd0,
+                                ds_rate_hz: ds_rate,
                                 cand_score: cand.score,
                                 cand_freq_hz: cand.freq_hz,
                                 fft_cache,
@@ -1108,6 +1134,8 @@ where
                                 let snr_db = P::snr_db(SnrCtx {
                                     cs,
                                     itone: &itone,
+                                    cd0: &cd0,
+                                    ds_rate_hz: ds_rate,
                                     cand_score: cand.score,
                                     cand_freq_hz: cand.freq_hz,
                                     fft_cache,

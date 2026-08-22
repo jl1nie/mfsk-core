@@ -536,6 +536,27 @@ pub fn compute_snr_db<P: Protocol>(cs: &[Cmplx<f32>], itone: &[u8]) -> f32 {
 /// to f32 at the boundary, so a `Cmplx<Q14i16>` cs gives a sane SNR
 /// without intermediate f32 quantisation.
 pub fn compute_snr_db_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> f32 {
+    match snr_ratio::<P, S>(cs, itone) {
+        Some(ratio) => (10.0 * ratio.log10() - 27.0_f32).max(-24.0),
+        None => -24.0,
+    }
+}
+
+/// The scale-free half of [`compute_snr_db`]: `Σ|cs[k][itone[k]]|² /
+/// Σ|cs[k][opposite]|² − 1`, i.e. an estimate of S/N per tone bin.
+/// `None` when the noise reference is empty or the ratio is
+/// degenerate.
+///
+/// Split out because the dB tail is **not** shared across protocols
+/// while this part is: [`compute_snr_db`]'s `−27` is calibrated for
+/// FT8's per-tone bandwidth against WSJT-X's 2500 Hz reference, and
+/// FST4 has its own tail (see `fst4::baseline`). Both want the same
+/// ratio.
+///
+/// Being scale-free is the property that matters for a receiver
+/// without a whole-slot FFT: every term comes from the same `cs`, so
+/// any normalisation applied to the baseband upstream cancels.
+pub fn snr_ratio<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone: &[u8]) -> Option<f32> {
     let ntones = P::NTONES as usize;
     let n_sym = P::N_SYMBOLS as usize;
     let mut xsig = 0.0f32;
@@ -547,13 +568,10 @@ pub fn compute_snr_db_generic<P: Protocol, S: SpecScalar>(cs: &[Cmplx<S>], itone
         xnoi += cs[k * ntones + (t + offset) % ntones].norm_sqr_f32();
     }
     if xnoi < f32::EPSILON {
-        return -24.0;
+        return None;
     }
     let ratio = xsig / xnoi - 1.0;
-    if ratio <= 0.001 {
-        return -24.0;
-    }
-    (10.0 * ratio.log10() - 27.0_f32).max(-24.0)
+    (ratio > 0.001).then_some(ratio)
 }
 
 /// Hard-decision sync quality — count sync symbols whose dominant tone

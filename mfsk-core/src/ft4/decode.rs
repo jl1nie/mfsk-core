@@ -243,6 +243,8 @@ mod tests {
             let via_trait = <Ft4 as pipeline::GenericPipelineProtocol>::snr_db(pipeline::SnrCtx {
                 cs: &cs,
                 itone: &itone,
+                cd0: &[],
+                ds_rate_hz: 0.0,
                 cand_score,
                 cand_freq_hz: 1000.0,
                 fft_cache: &fft_cache,
