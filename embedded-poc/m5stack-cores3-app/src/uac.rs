@@ -236,6 +236,49 @@ static EVENT_SENDER: OnceLock<Sender<DriverEvent>> = OnceLock::new();
 /// second by the same thread for the UDP log line. Atomics
 /// (`Relaxed`) so a future inspector (e.g. LCD overlay) can sample
 /// them lock-free.
+/// What the USB side is doing, for the screen.
+///
+/// A receiver whose only feedback is a log line over WiFi is not a
+/// receiver you can use: plugging the radio in has to show something,
+/// now, on the device itself. This is the state the display renders,
+/// updated at every transition and once a second while streaming.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum UacState {
+    /// Host stack not installed (wrong boot mode, or install failed).
+    Off,
+    /// Installed, nothing attached — the state a bare board sits in.
+    Waiting,
+    /// A device enumerated and its audio interface was opened.
+    Streaming,
+    /// Attached but the stream could not be started, or the reader
+    /// died. Distinct from `Waiting` because the fix is different.
+    Error,
+}
+
+static UAC_STATE: AtomicU32 = AtomicU32::new(0);
+/// Post-resample 12 kHz samples in the last tick — the rate check.
+static UAC_SA_PER_S: AtomicU32 = AtomicU32::new(0);
+/// Signal level in the last tick, as −dBFS × 10 (so 324 = −32.4 dBFS).
+/// `u32::MAX` means "no samples yet".
+static UAC_RMS_MDB: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub(crate) fn set_state(st: UacState) {
+    UAC_STATE.store(st as u32, Ordering::Release);
+}
+
+/// The USB side's current state and its last-second signal figures.
+pub fn status() -> (UacState, u32, Option<f32>) {
+    let st = match UAC_STATE.load(Ordering::Acquire) {
+        1 => UacState::Waiting,
+        2 => UacState::Streaming,
+        3 => UacState::Error,
+        _ => UacState::Off,
+    };
+    let rms = UAC_RMS_MDB.load(Ordering::Acquire);
+    let rms = (rms != u32::MAX).then(|| -(rms as f32) / 10.0);
+    (st, UAC_SA_PER_S.load(Ordering::Acquire), rms)
+}
+
 static RX_BYTES: AtomicU32 = AtomicU32::new(0);
 static RX_PACKETS: AtomicU32 = AtomicU32::new(0);
 static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
@@ -658,6 +701,7 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
         return Err(anyhow!("uac_reader spawn failed: {e}"));
     }
     log::info!("uac: reader thread spawned");
+    set_state(UacState::Streaming);
     Ok(())
 }
 
@@ -710,6 +754,8 @@ fn reader_thread(handle: DeviceHandle) {
         // waiting for the failing read to surface.
         if READER_STOP_REQUESTED.load(Ordering::Acquire) {
             log::info!("uac: reader exiting — DISCONNECTED signaled by device_event_cb");
+            // Hot-unplug: back to waiting, and the screen says so.
+            set_state(UacState::Waiting);
             disconnect_triggered = true;
             break;
         }
@@ -738,6 +784,7 @@ fn reader_thread(handle: DeviceHandle) {
             // sticky-until-reboot so silent reader death is at least
             // observable in the next UDP log tick (rx=0B/s).
             log::error!("uac: device_read err={err:#x}, reader exiting");
+            set_state(UacState::Error);
             break;
         }
         if bytes_read == 0 {
@@ -842,6 +889,15 @@ fn reader_thread(handle: DeviceHandle) {
                 "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err) \
                  | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
                  clipped {clipped}",
+            );
+            UAC_SA_PER_S.store(out_samples, Ordering::Release);
+            UAC_RMS_MDB.store(
+                if out_samples > 0 {
+                    ((-dbfs) * 10.0).clamp(0.0, (u32::MAX - 1) as f64) as u32
+                } else {
+                    u32::MAX
+                },
+                Ordering::Release,
             );
             last_log = now;
             last_bytes = bytes;
@@ -1017,5 +1073,6 @@ pub fn start_host() -> Result<()> {
     log::info!(
         "uac: host + class driver up — waiting for IC-705 enumeration (driver task core={UAC_DRIVER_TASK_CORE}, prio={UAC_DRIVER_TASK_PRIORITY})"
     );
+    set_state(UacState::Waiting);
     Ok(())
 }

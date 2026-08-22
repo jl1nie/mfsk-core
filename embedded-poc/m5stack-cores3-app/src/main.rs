@@ -73,7 +73,6 @@ fn main() -> ! {
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
-    let mut _wifi_slot: Option<wifi::WifiHandle> = None;
     let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
@@ -88,45 +87,103 @@ fn main() -> ! {
         );
     }
     if wifi_should_start {
-        let sysloop = EspSystemEventLoop::take().expect("sysloop");
-        match wifi::connect_sta(
-            peripherals.modem,
-            sysloop,
-            Some(nvs_part.clone()),
-            WIFI_SSID,
-            WIFI_PSK,
-        ) {
-            Ok(handle) => {
-                let target_ip: std::net::IpAddr = if UDP_LOG_TARGET.is_empty()
-                    || UDP_LOG_TARGET == "auto"
-                {
-                    std::net::IpAddr::V4(handle.subnet_broadcast)
-                } else {
-                    match UDP_LOG_TARGET.parse() {
-                        Ok(ip) => ip,
-                        Err(e) => {
-                            log::warn!(
-                                "UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); using subnet bcast"
-                            );
-                            std::net::IpAddr::V4(handle.subnet_broadcast)
-                        }
+        // **Backgrounded.** This used to run inline, and association
+        // took ~30 s — during which the LCD showed nothing and the USB
+        // host was not yet installed, so plugging a radio in did
+        // nothing and the board was indistinguishable from a crashed
+        // one. A receiver has to be up when it is powered on; WiFi
+        // buys it a log sink and a clock, and both can arrive late.
+        //
+        // Same conclusion `wspr_app`/`fst4_app` reached and for the
+        // same reason. The handle has to outlive the association, so
+        // the thread keeps it and never returns.
+        let modem = peripherals.modem;
+        let nvs_for_wifi = nvs_part.clone();
+        let spawned = std::thread::Builder::new()
+            .stack_size(24 * 1024)
+            .spawn(move || {
+                let sysloop = match EspSystemEventLoop::take() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("sysloop take failed: {e:#} — no WiFi this boot");
+                        return;
                     }
                 };
-                let port: u16 = UDP_LOG_PORT.parse().unwrap_or(9999);
-                let addr = std::net::SocketAddr::new(target_ip, port);
-                match udp_log::UdpLogSink::new(addr) {
-                    Ok(sink) => {
-                        if let Ok(mut slot) = FANOUT.udp.try_lock() {
-                            *slot = Some(sink);
+                match wifi::connect_sta(modem, sysloop, Some(nvs_for_wifi), WIFI_SSID, WIFI_PSK) {
+                    Ok(handle) => {
+                        let target_ip: std::net::IpAddr =
+                            if UDP_LOG_TARGET.is_empty() || UDP_LOG_TARGET == "auto" {
+                                std::net::IpAddr::V4(handle.subnet_broadcast)
+                            } else {
+                                match UDP_LOG_TARGET.parse() {
+                                    Ok(ip) => ip,
+                                    Err(e) => {
+                                        log::warn!(
+                                            "UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); \
+                                             using subnet bcast"
+                                        );
+                                        std::net::IpAddr::V4(handle.subnet_broadcast)
+                                    }
+                                }
+                            };
+                        let port: u16 = UDP_LOG_PORT.parse().unwrap_or(9999);
+                        let addr = std::net::SocketAddr::new(target_ip, port);
+                        // Install the sink, and keep trying.
+                        //
+                        // `FANOUT.udp` is an `embassy_sync` mutex with
+                        // only `try_lock`, and every log line anywhere
+                        // in the process takes it. Inline in `main`
+                        // that was safe — nothing else was running
+                        // yet. From a background thread it is not: a
+                        // single missed `try_lock` used to drop the
+                        // sink on the floor and leave the board
+                        // reachable by ping and silent on the log,
+                        // which is exactly what happened the first
+                        // time this moved off the boot path.
+                        //
+                        // The retry also covers a bind that fails
+                        // because the interface is not quite ready.
+                        let mut installed = false;
+                        for attempt in 0..30u32 {
+                            if !installed {
+                                match udp_log::UdpLogSink::new(addr) {
+                                    Ok(sink) => match FANOUT.udp.try_lock() {
+                                        Ok(mut slot) => {
+                                            *slot = Some(sink);
+                                            installed = true;
+                                        }
+                                        Err(_) => {
+                                            // Sink dropped here; rebuilt next round.
+                                        }
+                                    },
+                                    Err(e) => {
+                                        if attempt == 0 {
+                                            log::warn!("UDP socket bind failed: {e} — retrying");
+                                        }
+                                    }
+                                }
+                            }
+                            if installed {
+                                FANOUT.drain_staging_to_udp();
+                                log::info!("UDP log sink up → {addr} (attempt {})", attempt + 1);
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(200));
                         }
-                        FANOUT.drain_staging_to_udp();
-                        log::info!("UDP log sink up → {addr}");
+                        if !installed {
+                            log::error!("UDP log sink never installed — board will be silent");
+                        }
+                        // `handle`'s `Drop` tears the association down,
+                        // so this thread has to hold it forever.
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
                     }
-                    Err(e) => log::warn!("UDP socket bind failed: {e}"),
+                    Err(e) => log::warn!("WiFi STA failed: {e:#} — UDP log disabled"),
                 }
-                _wifi_slot = Some(handle);
-            }
-            Err(e) => log::warn!("WiFi STA failed: {e:#} — UDP log disabled"),
+            });
+        if let Err(e) = spawned {
+            log::error!("wifi thread spawn failed ({e}) — continuing without WiFi");
         }
     }
 

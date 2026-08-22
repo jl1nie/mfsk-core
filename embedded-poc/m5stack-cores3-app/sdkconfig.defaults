@@ -76,3 +76,32 @@ CONFIG_USB_HOST_ENABLED=y
 
 # ── esp-dsp FFT — 8192 twiddle table ─────────────────────────────────
 CONFIG_DSP_MAX_FFT_SIZE_8192=y
+
+# ── USB host: external hub support ────────────────────────────────────
+#
+# The IC-705 does not present its USB audio directly. One cable to the
+# radio enumerates **two USB devices on different hub ports** — Windows
+# `usbipd list` shows `8-2  0c26:0036` (Icom, 2x CDC ACM for CI-V) and
+# `8-4  08bb:2901` (a Texas Instruments PCM2901 audio codec) — so there
+# is a hub inside the radio and the codec sits behind it.
+#
+# ESP-IDF's USB host defaults to no external-hub support, which is why
+# the CoreS3 sat at "host + class driver up — waiting for IC-705
+# enumeration" with the radio attached and never saw a `RxConnected`:
+# not a cable, not VBUS, not a radio setting, and nothing the
+# application could fix. Measured 2026-08-22, issue #163.
+#
+# The audio format behind that hub is exactly what `uac.rs` asks for —
+# interface 2 alt 1, 2 ch / 16 bit / 48 000 Hz isochronous IN — so the
+# hub is the only thing in the way.
+#
+# `USB_HOST_HUB_MULTI_LEVEL` defaults to `y` once hubs are on; the
+# IC-705 needs only one level, but leaving the default costs nothing
+# and covers a radio plugged in through a desk hub.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# `esp_log_level_set` can only raise a tag to a level the build kept.
+# The USB enumeration path logs at DEBUG, and that is the path #163
+# needs to see — a hub whose downstream ports are never walked looks
+# exactly like an empty port from the class driver's side.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

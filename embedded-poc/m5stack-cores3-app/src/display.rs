@@ -41,6 +41,19 @@ const TX_REGION_Y: i32 = 226;
 const TX_REGION_H: u32 = 14;
 const SHARED_UI_WIDTH: u32 = 135;
 
+/// Where the USB status line lives: to the right of the 135 px-wide
+/// shared widgets, which leaves the rest of this 320 px panel unused.
+const USB_REGION_X: i32 = 140;
+const USB_REGION_Y: i32 = 2;
+
+/// How long the boot waits before installing the USB host driver.
+///
+/// Purely a serviceability window: the driver detaches
+/// USB-Serial-JTAG, so this is the only time a flasher can connect.
+/// Six seconds is invisible to an operator and comfortable for
+/// `espflash`, which connects in under one.
+const USB_HOST_DELAY_MS: u32 = 6_000;
+
 /// LCD bring-up + render loop. Returns `!`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_log_panel(
@@ -72,15 +85,6 @@ pub fn run_log_panel(
             }
         }
     }
-    // Phase 1-Core: install USB host + UAC class driver after BUS_OUT_EN is HIGH.
-    if mode == BootMode::Uac {
-        crate::log_free_internal("pre-uac-host-install");
-        if let Err(e) = crate::uac::start_host() {
-            log::error!("UAC host start failed: {e:#}");
-        }
-        crate::log_free_internal("post-uac-host-install");
-    }
-
     // ── SPI2 (FSPI) host for the ILI9342C. ───────────────────────────
     let driver = SpiDriver::new(
         spi2,
@@ -181,7 +185,74 @@ pub fn run_log_panel(
     .draw(&mut display)
     .ok();
 
+    // Phase 1-Core: USB host + UAC class driver. **After the LCD is
+    // up, not before.**
+    //
+    // This used to run before SPI init, so nothing had been drawn when
+    // `usb_host_install()` detached USB-Serial-JTAG — a board that
+    // showed a blank screen and had no console was giving the operator
+    // nothing at all to go on. The panel is painted first now, so
+    // "waiting for device" is on screen from the moment the console
+    // goes away.
+    //
+    // The delay before it is the flashing window. Installing the host
+    // driver takes the serial port with it, and with WiFi no longer
+    // blocking the boot that now happens ~2 s in — too fast to catch
+    // with a flasher. `USB_HOST_DELAY_MS` is the difference between a
+    // board you can re-flash and one that needs the download-mode
+    // button dance.
+    if mode == BootMode::Uac {
+        let mut banner: heapless::String<40> = heapless::String::new();
+        {
+            use core::fmt::Write as _;
+            let _ = write!(&mut banner, "USB: host in {} ms", USB_HOST_DELAY_MS);
+        }
+        Text::with_baseline(
+            banner.as_str(),
+            Point::new(USB_REGION_X + 2, USB_REGION_Y + 1),
+            tx_style,
+            Baseline::Top,
+        )
+        .draw(&mut display)
+        .ok();
+        log::info!(
+            "uac: installing USB host in {USB_HOST_DELAY_MS} ms — serial console goes away then \
+             (this is the window to re-flash)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(USB_HOST_DELAY_MS as u64));
+
+        // Turn up ESP-IDF's own USB enumeration logging before the
+        // stack starts.
+        //
+        // The UAC class driver only reports what it recognises, so a
+        // device that never finishes enumeration — or a hub whose
+        // downstream ports are never walked — is indistinguishable
+        // from nothing being plugged in. These tags are the ones the
+        // host library uses on that path, and they are quiet outside
+        // attach/detach, so leaving them up costs nothing while the
+        // board waits. Issue #163.
+        for tag in [
+            c"USB HOST".as_ptr(),
+            c"USBH".as_ptr(),
+            c"HUB".as_ptr(),
+            c"EXT_HUB".as_ptr(),
+            c"EXT_PORT".as_ptr(),
+            c"ENUM".as_ptr(),
+        ] {
+            unsafe {
+                esp_idf_svc::sys::esp_log_level_set(tag, esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG);
+            }
+        }
+
+        crate::log_free_internal("pre-uac-host-install");
+        if let Err(e) = crate::uac::start_host() {
+            log::error!("UAC host start failed: {e:#}");
+        }
+        crate::log_free_internal("post-uac-host-install");
+    }
+
     let mut tick: u32 = 0;
+    let mut last_usb_line: heapless::String<40> = heapless::String::new();
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
@@ -277,6 +348,43 @@ pub fn run_log_panel(
             .draw(&mut display)
             .ok();
             last_tx_seq = tx_seq;
+        }
+
+        // USB state, always on screen and updated on every transition.
+        // The board spends most of its life waiting for a radio to be
+        // plugged in, and until this line existed there was no way to
+        // tell that state from a crash without a WiFi log.
+        {
+            use core::fmt::Write as _;
+            let (st, sa, rms) = crate::uac::status();
+            let mut line: heapless::String<40> = heapless::String::new();
+            let _ = match st {
+                crate::uac::UacState::Off => write!(&mut line, "USB: off"),
+                crate::uac::UacState::Waiting => write!(&mut line, "USB: waiting for device"),
+                crate::uac::UacState::Error => write!(&mut line, "USB: ERROR"),
+                crate::uac::UacState::Streaming => match rms {
+                    Some(db) => write!(&mut line, "USB: {sa} sa/s  {db:.0} dBFS"),
+                    None => write!(&mut line, "USB: streaming"),
+                },
+            };
+            if line != last_usb_line {
+                Rectangle::new(
+                    Point::new(USB_REGION_X, USB_REGION_Y),
+                    Size::new(320 - USB_REGION_X as u32, 12),
+                )
+                .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
+                .draw(&mut display)
+                .ok();
+                Text::with_baseline(
+                    line.as_str(),
+                    Point::new(USB_REGION_X + 2, USB_REGION_Y + 1),
+                    tx_style,
+                    Baseline::Top,
+                )
+                .draw(&mut display)
+                .ok();
+                last_usb_line = line;
+            }
         }
 
         let _ = fanout;
