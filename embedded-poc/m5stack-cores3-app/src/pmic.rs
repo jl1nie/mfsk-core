@@ -59,6 +59,11 @@ const AW9523_REG_GCR: u8 = 0x11; // Global config (push-pull vs open-drain)
 
 // AXP2101 register map (AXP2101 datasheet).
 const AXP2101_REG_CHIP_ID: u8 = 0x03; // Chip ID — 0x4A for AXP2101
+/// PMU status 1. Bit 5 reads high while VBUS is present and in range
+/// ("VBUS good"), which on this board means *something external is
+/// supplying the USB-C port* — a charger, or a PC.
+const AXP2101_REG_STATUS1: u8 = 0x00;
+const AXP2101_STATUS1_VBUS_GOOD: u8 = 1 << 5;
 const AXP2101_REG_LDO_ONOFF0: u8 = 0x90; // LDOs ON/OFF control 0 — bit 0x80 = DLDO1 enable
 const AXP2101_REG_DLDO1_VOLTAGE: u8 = 0x99; // DLDO1 (LCD backlight) voltage setting
 const AXP2101_DLDO1_ENABLE_BIT: u8 = 0x80;
@@ -168,6 +173,29 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 /// Drive AW9523B P0_1 (BUS_OUT_EN) HIGH to enable USB VBUS boost.
 /// Must be called BEFORE `usb_host_install()` — omission leaves VBUS
 /// floating and the host stack sees no device enumeration.
+/// Is something external powering the USB-C port right now?
+///
+/// This board has one USB-C connector and it cannot both take power in
+/// and hand power out. Asserting `BUS_OUT_EN` while a PC is already
+/// driving VBUS puts the board's boost in opposition to the host's
+/// supply — and on a battery that is not full, the board browns out.
+/// That is not theory: it is how a whole bench session was lost
+/// (2026-08-22, issue #163). The battery ran flat because the host
+/// firmware never charges, then re-flashing failed mid-write with a
+/// broken pipe because the board kept dying as soon as it booted.
+///
+/// So the decision "am I a host or a peripheral" is not a build-time
+/// choice, it is a question about the cable that is plugged in, and
+/// this is how to ask it.
+///
+/// Returns the raw register alongside the verdict — the bit position
+/// is from the AXP2101 datasheet rather than measured on this board,
+/// so the caller logs both and the reader can check the claim.
+pub fn vbus_present(i2c: &mut I2cDriver<'_>) -> Result<(bool, u8)> {
+    let raw = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1)?;
+    Ok((raw & AXP2101_STATUS1_VBUS_GOOD != 0, raw))
+}
+
 pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     let current = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
     let new_val = current | AW9523_P0_BUS_OUT_EN;

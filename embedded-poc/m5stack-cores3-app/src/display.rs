@@ -54,6 +54,14 @@ const USB_REGION_Y: i32 = 2;
 /// `espflash`, which connects in under one.
 const USB_HOST_DELAY_MS: u32 = 6_000;
 
+/// `MFSK_CORES3_FORCE_UAC=1` — run as a USB host even while something
+/// external is powering the port. For a board fed from M5Bus rather
+/// than the USB-C connector, where the two supplies do not collide.
+const FORCE_UAC: bool = match option_env!("MFSK_CORES3_FORCE_UAC") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
 /// LCD bring-up + render loop. Returns `!`.
 #[allow(clippy::too_many_arguments)]
 pub fn run_log_panel(
@@ -64,14 +72,52 @@ pub fn run_log_panel(
     _nvs: EspNvs<NvsDefault>,
     mode: BootMode,
 ) -> ! {
+    // Set false when the board finds itself on external power — see
+    // the VBUS check below.
+    let mut host_mode = mode == BootMode::Uac;
+
     // ── PMIC: AXP2101 + AW9523B → LCD power rails + RST + BL. ──────────
     match crate::pmic::init(i2c0, pins.gpio12, pins.gpio11) {
         Ok(mut i2c) => {
-            // Phase 1-Core: enable USB VBUS boost BEFORE usb_host_install().
-            // AW9523B P0_1 (BUS_OUT_EN) HIGH drives the VBUS switch; omission
-            // leaves VBUS floating and the host stack sees no device.
+            // Phase 1-Core: enable the USB VBUS boost BEFORE
+            // `usb_host_install()`. AW9523B P0_1 (BUS_OUT_EN) HIGH
+            // drives the VBUS switch; omission leaves VBUS floating and
+            // the host stack sees no device.
+            //
+            // **But only when nothing else is driving that port.** One
+            // USB-C connector cannot both take power in and hand it
+            // out, so "host or peripheral" is a question about the
+            // cable, not a build-time choice. Sourcing VBUS into a PC
+            // that is already sourcing it browns the board out on a
+            // battery that is not full — which is how a bench session
+            // was lost, along with the ability to re-flash, since the
+            // host firmware never charges and `cfg.toml` writes
+            // `boot_mode` to NVS on every boot (#163).
             if mode == BootMode::Uac {
-                if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
+                let external = match crate::pmic::vbus_present(&mut i2c) {
+                    Ok((present, raw)) => {
+                        log::info!(
+                            "AXP2101 status1=0x{raw:02x} — VBUS {} (bit5)",
+                            if present { "PRESENT (external power)" } else { "absent (battery)" },
+                        );
+                        present
+                    }
+                    Err(e) => {
+                        log::warn!("AXP2101 VBUS read failed: {e:#} — assuming battery");
+                        false
+                    }
+                };
+                if external && !FORCE_UAC {
+                    // Charging is the useful thing to do while plugged
+                    // in, and it is the thing this firmware could never
+                    // do before.
+                    host_mode = false;
+                    log::warn!(
+                        "external USB power detected — staying a peripheral so the battery \
+                         charges and the port stays flashable. Unplug from the PC and reset to \
+                         run as a host, or build with MFSK_CORES3_FORCE_UAC=1."
+                    );
+                } else if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
                     log::error!("BUS_OUT_EN (Phase 1-Core) failed: {e:#}");
                 }
             }
@@ -201,7 +247,7 @@ pub fn run_log_panel(
     // with a flasher. `USB_HOST_DELAY_MS` is the difference between a
     // board you can re-flash and one that needs the download-mode
     // button dance.
-    if mode == BootMode::Uac {
+    if host_mode {
         let mut banner: heapless::String<40> = heapless::String::new();
         {
             use core::fmt::Write as _;
@@ -359,7 +405,10 @@ pub fn run_log_panel(
             let (st, sa, rms) = crate::uac::status();
             let mut line: heapless::String<40> = heapless::String::new();
             let _ = match st {
-                crate::uac::UacState::Off => write!(&mut line, "USB: off"),
+                crate::uac::UacState::Off if host_mode => write!(&mut line, "USB: off"),
+                // Not an error and not idle — this is the board doing
+                // the right thing with the cable it has.
+                crate::uac::UacState::Off => write!(&mut line, "USB: charging (ext power)"),
                 crate::uac::UacState::Waiting => write!(&mut line, "USB: waiting for device"),
                 crate::uac::UacState::Error => write!(&mut line, "USB: ERROR"),
                 crate::uac::UacState::Streaming => match rms {
