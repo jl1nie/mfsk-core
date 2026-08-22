@@ -42,26 +42,19 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use num_complex::Complex32;
 
-use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync::{
-    coarse_sync, coarse_sync_from_sync2d, compute_spectra, fill_sync2d_row, spectra_crop_for,
-    sync2d_shape, AudioSource, RxGrid, Spectrogram, SpectrogramBuilder, Sync2dShape, SyncCandidate,
-    SyncDims,
+    coarse_sync, compute_spectra, AudioSource, SyncCandidate, SyncDims,
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
-use mfsk_core::fst4::ddc::{
-    grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade, wideband_refine_recenter,
-    REFINE_DS_RATE_HZ,
-};
-use mfsk_core::fst4::rung_major::{decode_phase_split_timed, RungMajorCandidate};
+use mfsk_core::fst4::ddc::grid_for;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::fst4_dual_core;
+use crate::fst4_monitor::{self, Band, CapturedSlot, MonitorConfig, SlotCapture, now_us};
 
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — see
 /// `fst4_bench`'s identical constant for why it's redeclared here
@@ -253,37 +246,6 @@ const fn parse_dec(v: Option<&str>) -> i64 {
     }
 }
 
-/// Absolute `esp_timer` deadline (µs) the [`budget_ok`] `fn` item reads.
-///
-/// `decode_phase_split_timed` takes `Option<fn() -> bool>` — a plain
-/// function pointer, not a closure — so the deadline cannot be captured
-/// and has to travel through a global. Xtensa's `max_atomic_width` is
-/// 32, so there is no `AtomicI64` to use; this mirrors
-/// `wspr_dual_core`'s `DeadlineCell` exactly, including why it is an
-/// `UnsafeCell` rather than an atomic. Single-threaded here (one bench
-/// task), written only between candidates.
-/// **Per core**, not one shared cell: under `MFSK_FST4_DDC_BENCH_DUAL=1`
-/// both cores sit inside `monitor_candidate` on *different* candidates
-/// at once, so a single cell would let one core's arming truncate the
-/// other's ladder. Indexed by `xTaskGetCoreID`.
-struct DeadlineCells(core::cell::UnsafeCell<[i64; 2]>);
-// SAFETY: each core writes and reads only its own slot, and only
-// between its own candidates. No slot is ever touched by two cores.
-unsafe impl Sync for DeadlineCells {}
-static DEADLINE_US: DeadlineCells = DeadlineCells(core::cell::UnsafeCell::new([i64::MAX; 2]));
-
-fn core_slot() -> usize {
-    (unsafe { esp_idf_svc::sys::xTaskGetCoreID(core::ptr::null_mut()) } as usize) & 1
-}
-
-fn set_deadline(abs_us: i64) {
-    unsafe { (*DEADLINE_US.0.get())[core_slot()] = abs_us };
-}
-
-fn budget_ok() -> bool {
-    now_us() < unsafe { (*DEADLINE_US.0.get())[core_slot()] }
-}
-
 /// `MFSK_FST4_DDC_BENCH_DUAL=1` — run the monitor candidate loop across
 /// both cores (issue #327). Same per-candidate function either way.
 const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
@@ -323,10 +285,6 @@ const fn is_one(v: Option<&str>) -> bool {
     }
 }
 
-fn now_us() -> i64 {
-    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
-}
-
 fn stack_headroom() -> u32 {
     unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) }
 }
@@ -364,158 +322,6 @@ pub fn init_logger_once() {
     {
         esp_idf_svc::log::EspLogger::initialize_default();
     }
-}
-
-/// Recentre `cand`'s own frequency out of the coarse DDC baseband
-/// down to the refine (`ds_rate`) baseband, trim the best-effort
-/// combined group delay, RMS-normalise (matching `engine::pipeline::
-/// refine_candidate_position_impl`'s own convention, so `process_
-/// candidate_precomputed`'s LLR scaling sees what it would from
-/// `downsample_cached`), then run the real `fst4_sync_search` refine.
-/// Same recipe `tests/fst4_ddc_sniper_full_decode.rs::ddc_refine_and_
-/// decode` verified against `downsample_cached` on host — see that
-/// test for the delay-trim derivation this mirrors.
-fn ddc_refine(
-    cand: &SyncCandidate,
-    coarse_i: &[f32],
-    coarse_q: &[f32],
-    coarse_delay_orig: usize,
-) -> Vec<Complex32> {
-    let mut refine = if WIDEBAND {
-        wideband_refine_recenter(cand.freq_hz, CENTER_HZ)
-    } else {
-        sniper_refine_recenter(cand.freq_hz, CENTER_HZ)
-    };
-    // Sized from the cascade's own fixed L/M ratio (plus a small margin
-    // for `flush`'s tail) rather than growing from empty via repeated
-    // reallocation — this runs up to ~90 times per bench invocation
-    // (Stage 2a + 2c), each on a buffer this module's own doc comment
-    // already sizes at up to ~266 KB. Both refine configs share L=9;
-    // only M differs (64 sniper / 256 wideband).
-    let cap = if WIDEBAND {
-        coarse_i.len() * 9 / 256 + 16
-    } else {
-        coarse_i.len() * 9 / 64 + 16
-    };
-    let mut cd0_i = Vec::with_capacity(cap);
-    let mut cd0_q = Vec::with_capacity(cap);
-    refine.push(coarse_i, coarse_q, &mut cd0_i, &mut cd0_q);
-    refine.flush(&mut cd0_i, &mut cd0_q);
-    let refine_delay_out = refine.group_delay_output_samples();
-
-    let total_delay_out = (coarse_delay_orig as f32 * REFINE_DS_RATE_HZ / 12_000.0).round()
-        as usize
-        + refine_delay_out;
-    let trim = total_delay_out.min(cd0_i.len());
-
-    let mut cd0: Vec<Complex32> = cd0_i[trim..]
-        .iter()
-        .zip(cd0_q[trim..].iter())
-        .map(|(&i, &q)| Complex32::new(i, q))
-        .collect();
-
-    let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len().max(1) as f32;
-    if sum2 > f32::EPSILON {
-        let inv = 1.0 / sum2.sqrt();
-        for c in cd0.iter_mut() {
-            *c *= inv;
-        }
-    }
-    cd0
-}
-
-/// The correlation matrix, as both cores see it while filling it.
-/// Rows are disjoint by construction — index `fi` owns
-/// `sync2d[fi * n_lag ..][.. n_lag]` and nothing else — which is why
-/// this loop needs no lock.
-struct Sync2dCtx {
-    s: *const Spectrogram,
-    shape: *const Sync2dShape,
-    sync2d: *mut f32,
-    n_lag: usize,
-}
-
-/// One row of the correlation matrix. Returns `Option<()>` rather than
-/// a result type because the output *is* the matrix; `Vec<()>` is a ZST
-/// vector, so `run_split`'s result collection allocates nothing.
-fn sync2d_row(ctx: &Sync2dCtx, fi: usize) -> Option<()> {
-    // SAFETY: `run_split`/`drain_single` block until both cores are
-    // done, so all three pointers outlive this call. The write is to
-    // row `fi` alone, and `NEXT_IDX` hands out each `fi` exactly once,
-    // so no two cores ever hold overlapping slices.
-    let s = unsafe { &*ctx.s };
-    let shape = unsafe { &*ctx.shape };
-    let row = unsafe { core::slice::from_raw_parts_mut(ctx.sync2d.add(fi * ctx.n_lag), ctx.n_lag) };
-    fill_sync2d_row::<Fst4s60>(s, shape, fi, row);
-    Some(())
-}
-
-/// `coarse_sync_from_spectra` with its correlation fill spread across
-/// both cores (issue #327).
-///
-/// The fill is the largest post-slot item left in the wideband monitor
-/// — 4039 ms of the 5207 ms first-decode path, once #336 moved the
-/// spectrogram build into the capture window — and every row of it is a
-/// pure function of the finished spectrogram (the host already fills
-/// them through rayon). So it splits exactly the way the candidate loop
-/// does, over the same worker, and the results are **bit-identical**
-/// either way: the split decides only which core writes which row, and
-/// the ranking stage still sees the whole matrix.
-///
-/// Reports the fill/rank split too, which the single-call form cannot.
-/// Only the fill parallelises, so the rank half is the floor this can
-/// approach.
-fn coarse_search(s: &Spectrogram, rx_grid: RxGrid) -> Vec<SyncCandidate> {
-    let Some(shape) = sync2d_shape::<Fst4s60>(
-        CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
-        CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
-        rx_grid,
-    ) else {
-        return Vec::new();
-    };
-
-    let t_fill0 = now_us();
-    let mut sync2d = alloc::vec![0.0f32; shape.len()];
-    {
-        let ctx = Sync2dCtx {
-            s: s as *const Spectrogram,
-            shape: &shape as *const Sync2dShape,
-            sync2d: sync2d.as_mut_ptr(),
-            n_lag: shape.n_lag,
-        };
-        // No deadline: unlike a candidate, a row is not optional — a
-        // row left unfilled is a hole in the search band, not merely a
-        // decode not attempted.
-        if DUAL_CORE {
-            fst4_dual_core::run_split(&ctx, shape.n_freq, i64::MAX, sync2d_row);
-        } else {
-            fst4_dual_core::drain_single(&ctx, shape.n_freq, i64::MAX, sync2d_row);
-        }
-    }
-    let t_fill = now_us() - t_fill0;
-
-    let t_rank0 = now_us();
-    let cands = coarse_sync_from_sync2d::<Fst4s60>(
-        s,
-        &sync2d,
-        &shape,
-        SYNC_MIN,
-        None,
-        MAX_CAND,
-        rx_grid,
-    );
-    let t_rank = now_us() - t_rank0;
-
-    log::info!(
-        "fst4_ddc_bench: [diag] coarse search split — fill {} ms ({} rows x {} lags, {}), \
-         rank {} ms",
-        t_fill / 1000,
-        shape.n_freq,
-        shape.n_lag,
-        if DUAL_CORE { "dual-core" } else { "single-core" },
-        t_rank / 1000,
-    );
-    cands
 }
 
 /// `audio_bin` is the raw golden asset (`include_bytes!`,
@@ -564,61 +370,34 @@ pub fn run(audio_bin: &[u8]) {
     }
 
     // ---- Stage 1: DDC + coarse_sync ----
-    let t0 = now_us();
-    let coarse_cfg = if WIDEBAND {
-        wideband_cascade(CENTER_HZ)
-    } else {
-        sniper_cascade(CENTER_HZ)
-    };
-    let mut coarse = StreamingComplexDdc::new(&coarse_cfg);
-    let mut coarse_i = Vec::new();
-    let mut coarse_q = Vec::new();
+    //
+    // Both modes go through `SlotCapture`, the same front end a
+    // receiver runs; `STREAM_FRONTEND` decides only whether the
+    // spectrogram is built alongside the DDC (as an app does, during
+    // capture) or left for `compute_spectra` afterwards, and whether
+    // the audio arrives in blocks or one lump. Block size does not
+    // change the spectrogram — that is pinned by
+    // `fst4_spectrogram_builder` — so this is a pacing choice.
+    let cfg = monitor_config();
+    let rx_grid = cfg.rx_grid();
     let grid = grid_for(GRID_BANDWIDTH_HZ);
-    let rx_grid = RxGrid::complex(grid.fs_c, CENTER_HZ);
 
-    // In streaming mode the spectrogram is built alongside the DDC, one
-    // block at a time, so both finish with the capture rather than
-    // after it. `prebuilt` is what `coarse_sync_from_spectra` then
-    // consumes post-slot.
-    let mut prebuilt = None;
+    let t0 = now_us();
+    let mut capture = SlotCapture::new(cfg, STREAM_FRONTEND);
     if STREAM_FRONTEND {
-        let crop = spectra_crop_for::<Fst4s60>(
-            CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
-            CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
-            rx_grid,
-        );
-        let mut builder = crop.map(|(lo, hi)| SpectrogramBuilder::new::<Fst4s60>(lo, hi, rx_grid));
-        let mut blk_i = Vec::new();
-        let mut blk_q = Vec::new();
         for chunk in audio.chunks(STREAM_BLOCK) {
-            blk_i.clear();
-            blk_q.clear();
-            coarse.push_i16(chunk, &mut blk_i, &mut blk_q);
-            if let Some(b) = builder.as_mut() {
-                b.push(&blk_i, &blk_q);
-            }
-            coarse_i.extend_from_slice(&blk_i);
-            coarse_q.extend_from_slice(&blk_q);
+            capture.push_i16(chunk);
         }
-        blk_i.clear();
-        blk_q.clear();
-        coarse.flush(&mut blk_i, &mut blk_q);
-        if let Some(b) = builder.as_mut() {
-            b.push(&blk_i, &blk_q);
-        }
-        coarse_i.extend_from_slice(&blk_i);
-        coarse_q.extend_from_slice(&blk_q);
-        prebuilt = builder.map(|b| b.finish());
     } else {
-        coarse.push_i16(&audio, &mut coarse_i, &mut coarse_q);
-        coarse.flush(&mut coarse_i, &mut coarse_q);
+        capture.push_i16(&audio);
     }
-    let coarse_delay_orig = coarse.group_delay_input_samples();
+    let slot = capture.finish();
+    let coarse_delay_orig = slot.delay;
     let t_ddc = now_us() - t0;
     log::info!(
         "fst4_ddc_bench: DDC {} -> {} complex samples in {} ms",
         audio.len(),
-        coarse_i.len(),
+        slot.coarse_i.len(),
         t_ddc / 1000,
     );
     log_heap("post-ddc");
@@ -654,7 +433,7 @@ pub fn run(audio_bin: &[u8]) {
         if ib >= ia {
             let t_spec0 = now_us();
             let s = compute_spectra::<Fst4s60>(
-                AudioSource::Complex(&coarse_i, &coarse_q),
+                AudioSource::Complex(&slot.coarse_i, &slot.coarse_q),
                 ia,
                 (ib + headroom).min(usable.saturating_sub(1)),
                 rx_grid,
@@ -676,19 +455,28 @@ pub fn run(audio_bin: &[u8]) {
     log_heap("post-diag-spectra");
 
     let t1 = now_us();
-    let candidates = match &prebuilt {
+    let candidates = if slot.spectra.is_some() {
         // Streaming: the spectrogram was finished during capture, so
-        // only the correlation search is post-slot work.
-        Some(s) => coarse_search(s, rx_grid),
-        None => coarse_sync::<Fst4s60>(
-            AudioSource::Complex(&coarse_i, &coarse_q),
+        // only the correlation search is post-slot work — and its fill
+        // half runs on both cores.
+        let (cands, fill_us, rank_us) = fst4_monitor::coarse_search(&slot);
+        log::info!(
+            "fst4_ddc_bench: [diag] coarse search split — fill {} ms ({}), rank {} ms",
+            fill_us / 1000,
+            if DUAL_CORE { "dual-core" } else { "single-core" },
+            rank_us / 1000,
+        );
+        cands
+    } else {
+        coarse_sync::<Fst4s60>(
+            AudioSource::Complex(&slot.coarse_i, &slot.coarse_q),
             CENTER_HZ - SEARCH_HALF_WIDTH_HZ,
             CENTER_HZ + SEARCH_HALF_WIDTH_HZ,
             SYNC_MIN,
             None,
             MAX_CAND,
             rx_grid,
-        ),
+        )
     };
     let t_coarse_sync = now_us() - t1;
     log::info!(
@@ -709,15 +497,7 @@ pub fn run(audio_bin: &[u8]) {
     log_heap("post-coarse-sync");
 
     if MONITOR {
-        run_monitor_loop(
-            &candidates,
-            &coarse_i,
-            &coarse_q,
-            coarse_delay_orig,
-            t_ddc,
-            t_spectra_us,
-            t_coarse_sync,
-        );
+        run_monitor_loop(&slot, &candidates, t_ddc, t_spectra_us, t_coarse_sync);
         return;
     }
 
@@ -759,7 +539,7 @@ pub fn run(audio_bin: &[u8]) {
         .iter()
         .enumerate()
         .map(|(i, cand)| {
-            let cd0 = ddc_refine(cand, &coarse_i, &coarse_q, coarse_delay_orig);
+            let cd0 = fst4_monitor::ddc_refine(&cfg, cand, &slot.coarse_i, &slot.coarse_q, coarse_delay_orig);
             let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
             log::info!(
                 "fst4_ddc_bench: refine-all {}/{} done ({:.1} Hz)",
@@ -843,7 +623,7 @@ pub fn run(audio_bin: &[u8]) {
             cand.dt_sec,
         );
         let t_r = now_us();
-        let cd0 = ddc_refine(cand, &coarse_i, &coarse_q, coarse_delay_orig);
+        let cd0 = fst4_monitor::ddc_refine(&cfg, cand, &slot.coarse_i, &slot.coarse_q, coarse_delay_orig);
         let refine_us = now_us() - t_r;
         let m = &refine_meta[idx];
 
@@ -917,6 +697,26 @@ pub fn run(audio_bin: &[u8]) {
     log::info!("=== fst4_ddc_bench complete ===");
 }
 
+/// What this bench's build-time switches add up to, as the runtime
+/// config [`fst4_monitor`] takes. Every field is one `option_env!`
+/// constant above, so the bench keeps its "change a value, rebuild,
+/// re-measure" shape while the pipeline itself carries no build
+/// switches at all.
+fn monitor_config() -> MonitorConfig {
+    MonitorConfig {
+        band: if WIDEBAND { Band::Wide } else { Band::Sniper },
+        center_hz: CENTER_HZ,
+        half_width_hz: SEARCH_HALF_WIDTH_HZ,
+        grid_bandwidth_hz: GRID_BANDWIDTH_HZ,
+        sync_min: SYNC_MIN,
+        max_cand: MAX_CAND,
+        cap_ms: MONITOR_CAP_MS,
+        full_depth_ranks: FULL_DEPTH_RANKS,
+        deadline_ms: MONITOR_DEADLINE_MS,
+        dual_core: DUAL_CORE,
+    }
+}
+
 /// `MFSK_FST4_DDC_BENCH_MODE=monitor` — see [`MONITOR`] for why this
 /// exists and what it measures. Streaming, coarse-score-ordered,
 /// deadline-bounded; reports **time-to-first-decode** rather than a
@@ -952,10 +752,6 @@ pub fn run(audio_bin: &[u8]) {
 /// Spending the full ladder on the first few candidates and capping the
 /// tail therefore buys threshold sensitivity exactly where the signal
 /// is, and band coverage everywhere else.
-fn full_depth_for_rank(rank: usize) -> bool {
-    rank < FULL_DEPTH_RANKS
-}
-
 /// How many top-ranked candidates get the full, uncapped decode path
 /// (which brings OSD *and* production's automatic `i0 +/- 1` retry).
 /// `MFSK_FST4_DDC_BENCH_FULL_RANKS=<n>`; `0` restores a uniform cap.
@@ -987,115 +783,6 @@ const FULL_DEPTH_RANKS: usize = {
     }
 };
 
-/// One candidate's full work: refine, sync-search, decode. A plain
-/// `fn` item so [`fst4_dual_core::run_split`] can hand it to the worker
-/// task — a closure's captures cannot cross that boundary, which is why
-/// every input arrives through [`Ctx`].
-fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
-    // SAFETY: `run_split` blocks until both cores are done, so these
-    // outlive the call. Shared read-only across cores.
-    let candidates: &[SyncCandidate] =
-        unsafe { core::slice::from_raw_parts(ctx.candidates as *const SyncCandidate, ctx.n) };
-    let coarse_i: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_i, ctx.coarse_len) };
-    let coarse_q: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_q, ctx.coarse_len) };
-    let cand = &candidates[i];
-
-    let t_r = now_us();
-    let cd0 = ddc_refine(cand, coarse_i, coarse_q, ctx.coarse_delay_orig);
-    let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
-    let refine_us = now_us() - t_r;
-
-    let t_d = now_us();
-    let result = if MONITOR_CAP_MS > 0 && !full_depth_for_rank(i) {
-        // Per-candidate cap. The deadline cell is **per core** — with
-        // both cores in this function at once on different candidates,
-        // a single shared cell would have one core's arming truncate
-        // the other's ladder.
-        set_deadline(now_us() + MONITOR_CAP_MS * 1000);
-        let inputs = [RungMajorCandidate {
-            cand: cand.clone(),
-            cd0,
-            refined_freq_hz: s2.freq_hz,
-            i0: s2.i0,
-        }];
-        let (mut out, _) = decode_phase_split_timed::<Fst4s60>(
-            &inputs,
-            false,
-            false,
-            &[0],
-            None,
-            Some(budget_ok),
-            12_000.0,
-        );
-        set_deadline(i64::MAX);
-        out.pop().flatten()
-    } else {
-        let precomputed = (cd0, s2.freq_hz, s2.i0, s2.score);
-        process_candidate_precomputed::<Fst4s60>(
-            cand,
-            &[],
-            &mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE,
-            DecodeDepth::FULL,
-            DecodeStrictness::Normal,
-            &[],
-            EqMode::Off,
-            SYNC_Q_MIN,
-            precomputed,
-            true,
-            false,
-        )
-    };
-    let decode_us = now_us() - t_d;
-
-    let msg = result.and_then(|r| {
-        let m: &[u8; 77] = r.message77().try_into().ok()?;
-        unpack77(m)
-    });
-
-    Some(MonitorHit {
-        rank: i,
-        freq_hz: cand.freq_hz,
-        refined_hz: s2.freq_hz,
-        cscore: cand.score,
-        refine_us,
-        decode_us,
-        t_ms: (now_us() - ctx.t0_us) / 1000,
-        msg,
-    })
-}
-
-/// Everything one candidate needs that does not vary across the batch,
-/// shared read-only by both cores. Raw pointers rather than slices
-/// because this crosses a FreeRTOS task boundary; `run_split`'s
-/// send → work → blocking-recv discipline is what makes them valid for
-/// the whole batch.
-struct MonitorCtx {
-    candidates: *const core::ffi::c_void,
-    n: usize,
-    coarse_i: *const f32,
-    coarse_q: *const f32,
-    coarse_len: usize,
-    coarse_delay_orig: usize,
-    /// When the batch started, so per-candidate results can report a
-    /// loop-relative timestamp that means the same thing on both cores.
-    t0_us: i64,
-}
-
-/// One candidate's outcome. Carries `rank` because [`run_split`] does
-/// not preserve order — two cores complete interleaved.
-///
-/// [`run_split`]: fst4_dual_core::run_split
-struct MonitorHit {
-    rank: usize,
-    freq_hz: f32,
-    refined_hz: f32,
-    cscore: f32,
-    refine_us: i64,
-    decode_us: i64,
-    t_ms: i64,
-    msg: Option<String>,
-}
-
 /// `MFSK_FST4_DDC_BENCH_MODE=monitor` — see [`MONITOR`] for why this
 /// exists and what it measures. Streaming, coarse-score-ordered,
 /// deadline-bounded; reports **time-to-first-decode** rather than a
@@ -1108,10 +795,8 @@ struct MonitorHit {
 /// differs — so the two are directly comparable on one build pair.
 #[allow(clippy::too_many_arguments)]
 fn run_monitor_loop(
+    slot: &CapturedSlot,
     candidates: &[SyncCandidate],
-    coarse_i: &[f32],
-    coarse_q: &[f32],
-    coarse_delay_orig: usize,
     t_ddc_us: i64,
     t_spectra_us: i64,
     t_coarse_sync_us: i64,
@@ -1141,25 +826,7 @@ fn run_monitor_loop(
     // correlation fill can use it too.
 
     let t_loop0 = now_us();
-    let n = candidates.len();
-    let deadline_us = t_loop0 + MONITOR_DEADLINE_MS * 1000;
-    let ctx = MonitorCtx {
-        candidates: candidates.as_ptr() as *const core::ffi::c_void,
-        n,
-        coarse_i: coarse_i.as_ptr(),
-        coarse_q: coarse_q.as_ptr(),
-        coarse_len: coarse_i.len(),
-        coarse_delay_orig,
-        t0_us: t_loop0,
-    };
-
-    let mut hits = if DUAL_CORE {
-        fst4_dual_core::run_split(&ctx, n, deadline_us, monitor_candidate)
-    } else {
-        fst4_dual_core::drain_single(&ctx, n, deadline_us, monitor_candidate)
-    };
-    hits.sort_by_key(|h| h.rank);
-
+    let hits = fst4_monitor::run_candidate_loop(slot, candidates);
     let t_loop_ms = (now_us() - t_loop0) / 1000;
     let n_tried = hits.len();
 
