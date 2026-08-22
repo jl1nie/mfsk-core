@@ -1544,34 +1544,47 @@ streaming front end is on by default for this band too since
 | stage | cost | when |
 |---|---:|---|
 | DDC + spectrogram | 1539 ms | **during capture** — 2.6% duty of a 60 s slot |
-| coarse search | 249 ms | post-slot (fill 197 ms, rank 30 ms) |
-| refine, all candidates | 1348 ms | post-slot |
+| coarse search | 192 ms | post-slot (dual-core fill) |
+| refine, all candidates | 853 ms | post-slot (dual-core) |
 | survivor refine + decode (2 decodes) | 289 ms | post-slot |
-| **post-slot total** | **1886 ms** | |
+| **post-slot total** | **1334 ms** | |
 
-Against the batch shape it replaced (`MFSK_FST4_DDC_BENCH_STREAM=0`:
-ddc 1314 / coarse_sync 394 / refine-all 1357 / survivor 300, **all**
-post-slot = 3365 ms), streaming halves the post-slot budget for the
-same two decodes at the same frequencies. The capture-side total is
-slightly larger than the batch DDC alone — 1539 vs 1314 ms — because it
-now includes the spectrogram build that used to happen inside
-`coarse_sync`; that is the same work, paid where there is room for it.
+Two defaults changed to get there, both from opt-in to on, and neither
+needed new code — `SlotCapture`, `coarse_search` and `refine_all` are
+band-agnostic, so the switches already reached this path and were
+simply off:
 
-**What is left is not the front end.** `refine-all` is 71% of the
-remaining post-slot time, and it is two candidates at ~674 ms each:
-`ddc_refine` is 80 ms of that and `fst4_sync_search` the other ~594 ms
-— the same per-candidate profile the wideband path has. Two obvious
-levers, neither taken yet:
+| | batch, single-core | streamed | streamed + dual-core |
+|---|---:|---:|---:|
+| DDC + spectrogram | 1314 (post-slot) | 1539 (capture) | 1539 (capture) |
+| coarse search | 394 | 249 | **192** |
+| refine, all candidates | 1357 | 1348 | **853** |
+| survivor refine + decode | 300 | 289 | 289 |
+| **post-slot total** | **3365** | **1886** | **1334** |
 
-- **Dual-core it.** Stage 2a is a per-candidate loop, exactly the shape
-  `fst4_dual_core::run_split` already serves for the monitor. With two
-  candidates that is a straight halving.
-- **Don't refine twice.** Stage 2a refines every candidate to get
-  `(freq, i0, score)` for the dedup and drops each `cd0`; stage 2c
-  rebuilds `cd0` for the survivors (80 ms each). That second
-  `ddc_refine` is deliberate — keeping every candidate's `cd0` costs
-  ~266 KB each, which PSRAM does not have for 50 of them — but at the
-  sniper's candidate counts it is pure waste.
+Same two decodes at the same frequencies throughout.
+`MFSK_FST4_DDC_BENCH_STREAM=0` / `_DUAL=0` restore either column.
+
+The capture-side total is larger than the batch DDC alone — 1539 vs
+1314 ms — because it now includes the spectrogram build that used to
+happen inside `coarse_sync`. Same work, paid where there is room.
+
+`refine_all` at two candidates splits 1/1 across the cores, so the
+ideal would be ~674 ms and the measured 853 ms carries the dispatch and
+whatever the two cores cost each other on PSRAM; 1.58x rather than 2x.
+At the wideband path's 50 candidates the split is even and the
+dispatch disappears into the total.
+
+**What is left.** `refine_all` is still 64% of the post-slot time —
+per candidate, `ddc_refine` is 80 ms and `fst4_sync_search` ~594 ms,
+the same profile the wideband path has, so that function is the thing
+to attack for either band. One structural saving remains untaken:
+stage 2a refines every candidate to get `(freq, i0, score)` for the
+dedup and drops each `cd0`, and stage 2c rebuilds `cd0` for the
+survivors (80 ms each). That second refine is deliberate — keeping 50
+candidates' `cd0` at ~266 KB each does not fit in PSRAM — but at the
+sniper's candidate counts it is pure waste. Stage 2c is also still
+single-core, worth ~150 ms of its 289.
 
 ### In the receiver application, not the bench
 

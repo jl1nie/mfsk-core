@@ -670,6 +670,78 @@ pub fn run_candidate_loop(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> 
     hits
 }
 
+/// One candidate's refined position, without its baseband.
+///
+/// Carries `rank` for the same reason [`MonitorHit`] does — the
+/// dual-core split completes out of order — and because the dedup this
+/// feeds is order-sensitive.
+pub struct RefinedPosition {
+    pub rank: usize,
+    pub freq_hz: f32,
+    pub i0: i32,
+    pub score: f32,
+}
+
+/// One candidate's refine, position only. A plain `fn` item so
+/// [`fst4_dual_core::run_split`] can hand it to the worker.
+fn refine_position(ctx: &MonitorCtx, i: usize) -> Option<RefinedPosition> {
+    // SAFETY: as `monitor_candidate` — `run_split` blocks until both
+    // cores are done, and these are read-only for the whole batch.
+    let candidates: &[SyncCandidate] =
+        unsafe { core::slice::from_raw_parts(ctx.candidates as *const SyncCandidate, ctx.n) };
+    let coarse_i: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_i, ctx.coarse_len) };
+    let coarse_q: &[f32] = unsafe { core::slice::from_raw_parts(ctx.coarse_q, ctx.coarse_len) };
+    let cand = &candidates[i];
+
+    let cd0 = ddc_refine(&ctx.cfg, cand, coarse_i, coarse_q, ctx.coarse_delay_orig);
+    let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
+    Some(RefinedPosition {
+        rank: i,
+        freq_hz: s2.freq_hz,
+        i0: s2.i0,
+        score: s2.score,
+    })
+}
+
+/// Refine every candidate for its position only, across both cores,
+/// returning them **in candidate order**.
+///
+/// The step a dedup-then-decode receiver runs before it commits to
+/// anything expensive: several coarse cells routinely refine onto the
+/// same true position, and paying the LLR/BP/OSD ladder once per
+/// duplicate is the cost issue #244 already found and fixed on the
+/// host's real-audio path.
+///
+/// **Deliberately drops each `cd0`.** Keeping every candidate's
+/// refined baseband to reuse after the dedup would be the obvious
+/// saving, and it does not fit: ~266 KB each against a PSRAM that is
+/// also holding the slot and its spectrogram. The survivors' baseband
+/// is rebuilt instead — a second recentre, cheap next to the ladder it
+/// precedes.
+///
+/// No deadline, unlike [`run_candidate_loop`]: a candidate left
+/// unrefined is not a decode skipped, it is a hole in the dedup.
+pub fn refine_all(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> Vec<RefinedPosition> {
+    let n = candidates.len();
+    let ctx = MonitorCtx {
+        cfg: slot.cfg,
+        candidates: candidates.as_ptr() as *const core::ffi::c_void,
+        n,
+        coarse_i: slot.coarse_i.as_ptr(),
+        coarse_q: slot.coarse_q.as_ptr(),
+        coarse_len: slot.coarse_i.len(),
+        coarse_delay_orig: slot.delay,
+        t0_us: now_us(),
+    };
+    let mut out = if slot.cfg.dual_core {
+        fst4_dual_core::run_split(&ctx, n, i64::MAX, refine_position)
+    } else {
+        fst4_dual_core::drain_single(&ctx, n, i64::MAX, refine_position)
+    };
+    out.sort_by_key(|r| r.rank);
+    out
+}
+
 /// The hits that decoded, one per distinct message, in the order they
 /// were first decoded.
 ///

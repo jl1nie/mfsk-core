@@ -48,7 +48,6 @@ use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, De
 use mfsk_core::engine::sync::{
     coarse_sync, compute_spectra, AudioSource, SyncCandidate, SyncDims,
 };
-use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::ddc::grid_for;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -246,9 +245,15 @@ const fn parse_dec(v: Option<&str>) -> i64 {
     }
 }
 
-/// `MFSK_FST4_DDC_BENCH_DUAL=1` — run the monitor candidate loop across
-/// both cores (issue #327). Same per-candidate function either way.
-const DUAL_CORE: bool = is_one(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
+/// Run the per-candidate work across both cores (issue #327) — the
+/// monitor's decode loop, and the sniper path's `refine_all`.
+///
+/// **On by default; `MFSK_FST4_DDC_BENCH_DUAL=0` restores single-core**
+/// for a before/after. Opt-in while it was new; the same per-candidate
+/// function runs either way, it measured 1.67x on the monitor loop, and
+/// the receiver app ships it — so the default should be what a receiver
+/// runs.
+const DUAL_CORE: bool = !is_zero(option_env!("MFSK_FST4_DDC_BENCH_DUAL"));
 
 /// Run the DDC and the spectrogram **incrementally, block by block**,
 /// the way a receiver processes audio as it arrives, instead of
@@ -559,31 +564,8 @@ pub fn run(audio_bin: &[u8]) {
     // immediately; Stage 2c rebuilds `cd0` for survivors only — a
     // second DDC-recentre pass, cheap next to LLR/BP/OSD, traded for
     // the memory this board doesn't have to spare.
-    struct RefineMeta {
-        freq_hz: f32,
-        i0: i32,
-        score: f32,
-    }
     let t2a = now_us();
-    let refine_meta: Vec<RefineMeta> = candidates
-        .iter()
-        .enumerate()
-        .map(|(i, cand)| {
-            let cd0 = fst4_monitor::ddc_refine(&cfg, cand, &slot.coarse_i, &slot.coarse_q, coarse_delay_orig);
-            let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
-            log::info!(
-                "fst4_ddc_bench: refine-all {}/{} done ({:.1} Hz)",
-                i + 1,
-                candidates.len(),
-                cand.freq_hz,
-            );
-            RefineMeta {
-                freq_hz: s2.freq_hz,
-                i0: s2.i0,
-                score: s2.score,
-            }
-        })
-        .collect();
+    let refine_meta = fst4_monitor::refine_all(&slot, &candidates);
     let t_refine_all = now_us() - t2a;
     log::info!(
         "fst4_ddc_bench: refined {} candidates in {} ms",
