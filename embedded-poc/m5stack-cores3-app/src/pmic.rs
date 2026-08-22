@@ -148,7 +148,8 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 
     // Battery-voltage ADC on, so `battery_mv` has something to read.
     let adc = read_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_ADC_EN).unwrap_or(0);
-    write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_ADC_EN, adc | 0x01)?;
+    // bit0 = VBAT, bit2 = VBUS, bit3 = VSYS.
+    write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_ADC_EN, adc | 0x0D)?;
 
     // ── AW9523B init ──────────────────────────────────────────────────
     // Values taken verbatim from M5Stack's own `M5GFX.cpp` (CoreS3 board
@@ -211,10 +212,12 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 /// Returns the raw register alongside the verdict — the bit position
 /// is from the AXP2101 datasheet rather than measured on this board,
 /// so the caller logs both and the reader can check the claim.
-/// AXP2101 ADC channel enable. bit0 = battery-voltage ADC.
+/// AXP2101 ADC channel enable. bit0 = VBAT, bit2 = VBUS, bit3 = VSYS.
 const AXP2101_REG_ADC_EN: u8 = 0x30;
 /// Battery-voltage ADC result, 14-bit, big-endian, already in mV.
 const AXP2101_REG_VBAT_H: u8 = 0x34;
+/// VBUS-voltage ADC result, same encoding.
+const AXP2101_REG_VBUS_H: u8 = 0x38;
 
 /// Battery voltage in mV, or `None` if the read failed.
 ///
@@ -228,6 +231,30 @@ pub fn battery_mv(i2c: &mut I2cDriver<'_>) -> Option<u16> {
     BATTERY_MV.store(mv, Ordering::Relaxed);
     Some(mv)
 }
+
+/// VBUS 電圧 (mV)。
+///
+/// **これがホストモードの決定打になる。** USB-C コネクタの VBUS ピンは
+/// AXP2101 の VBUS 入力と同じネットなので、自前の昇圧出力が本当に
+/// コネクタへ乗っていれば、ここが約 5000 mV を示す。出力レジスタの
+/// 読み戻しは「そう書いた」以上のことを何も保証しないが、これは
+/// 電圧そのものの測定で、テスターを当てるのと同じ意味を持つ。
+///
+/// Refs #163.
+pub fn vbus_mv(i2c: &mut I2cDriver<'_>) -> Option<u16> {
+    let hi = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_VBUS_H).ok()?;
+    let lo = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_VBUS_H + 1).ok()?;
+    let mv = (((hi & 0x3F) as u16) << 8) | lo as u16;
+    VBUS_MV.store(mv, Ordering::Relaxed);
+    Some(mv)
+}
+
+/// 画面用: 直近の VBUS 電圧 (mV)。
+pub fn vbus_mv_cached() -> u16 {
+    VBUS_MV.load(Ordering::Relaxed)
+}
+
+static VBUS_MV: AtomicU16 = AtomicU16::new(0);
 
 /// 直近に読んだ電池電圧 (mV)。0 = まだ読めていない。
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);

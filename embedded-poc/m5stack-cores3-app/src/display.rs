@@ -47,7 +47,7 @@ const USB_REGION_X: i32 = 140;
 const USB_REGION_Y: i32 = 2;
 
 /// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
-const USB_PANEL_LINES: usize = 11;
+const USB_PANEL_LINES: usize = 12;
 const USB_PANEL_PITCH: i32 = 12;
 
 /// How long the boot waits before installing the USB host driver.
@@ -84,6 +84,10 @@ pub fn run_log_panel(
     // Set false when the board finds itself on external power — see
     // the VBUS check below.
     let mut host_mode = mode == BootMode::Uac;
+
+    // Kept alive for the whole display loop so the panel can show
+    // *measured* power state, not just what was written at boot.
+    let mut pmic_i2c;
 
     // ── PMIC: AXP2101 + AW9523B → LCD power rails + RST + BL. ──────────
     match crate::pmic::init(i2c0, pins.gpio12, pins.gpio11) {
@@ -134,16 +138,21 @@ pub fn run_log_panel(
                     log::error!("BUS_OUT_EN (Phase 1-Core) failed: {e:#}");
                 }
             }
-            // One battery reading before the bus goes away. On battery
-            // the 5 V boost behind USB host VBUS runs off this rail, so
-            // a flat pack and a wiring fault produce the same silence
-            // at the port.
-            match crate::pmic::battery_mv(&mut i2c) {
-                Some(mv) => log::info!("AXP2101 battery {mv} mV"),
-                None => log::warn!("AXP2101 battery voltage read failed"),
+            // Let the boost settle, then measure. The output-register
+            // readback only says what was written; this is the voltage
+            // itself, on the net the connector's VBUS pin sits on.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            match (
+                crate::pmic::battery_mv(&mut i2c),
+                crate::pmic::vbus_mv(&mut i2c),
+            ) {
+                (Some(bat), Some(vbus)) => {
+                    log::info!("AXP2101 battery {bat} mV, VBUS {vbus} mV")
+                }
+                _ => log::warn!("AXP2101 voltage read failed"),
             }
 
-            drop(i2c); // Phase 6-Core touch driver reclaims the bus.
+            pmic_i2c = Some(i2c);
         }
         Err(e) => {
             log::error!("PMIC init failed: {e:#}");
@@ -471,6 +480,13 @@ pub fn run_log_panel(
         // are otherwise the same picture.
         //
         // Refs #163.
+        if tick % 10 == 0 {
+            if let Some(i2c) = pmic_i2c.as_mut() {
+                crate::pmic::vbus_mv(i2c);
+                crate::pmic::battery_mv(i2c);
+            }
+        }
+
         {
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
@@ -522,6 +538,7 @@ pub fn run_log_panel(
             line(format_args!("dev={dev} cli={cli}"));
             line(format_args!("drv_evts={evts}"));
             line(format_args!("err=0x{err:x}"));
+            line(format_args!("vbus={}mV", crate::pmic::vbus_mv_cached()));
             line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
             line(format_args!("au={sa} sa/s"));
             match rms {
