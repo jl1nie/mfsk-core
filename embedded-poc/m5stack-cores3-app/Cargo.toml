@@ -51,6 +51,11 @@ harness = false
 # the decoder half `fst4-bench` above measures. See
 # `embedded-shared::apps::fst4_ddc_bench`'s module doc comment.
 [[bin]]
+name = "fst4-app"
+path = "src/bin/fst4_app.rs"
+harness = false
+
+[[bin]]
 name = "fst4-ddc-bench"
 path = "src/bin/fst4_ddc_bench.rs"
 harness = false

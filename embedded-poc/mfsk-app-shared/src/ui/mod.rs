@@ -14,6 +14,7 @@
 //! Phase 0: モジュール宣言のみ。
 
 pub mod decoded_list;
+pub mod fst4_list;
 pub mod menu;
 pub mod state;
 pub mod status_bar;

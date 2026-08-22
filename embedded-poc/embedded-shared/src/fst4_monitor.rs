@@ -212,6 +212,21 @@ impl SlotCapture {
     /// to build it after the slot (which is what the bench's batch mode
     /// measures against).
     pub fn new(cfg: MonitorConfig, with_spectrogram: bool) -> Self {
+        Self::with_input_hint(cfg, with_spectrogram, 0)
+    }
+
+    /// Same, but reserve the baseband buffers up front for a slot of
+    /// `input_samples` 12 kHz samples.
+    ///
+    /// Worth doing on a device: the pair grows by doubling otherwise,
+    /// and at 1.5 MB combined a reallocation near the end of a slot
+    /// transiently needs 3 MB of an 8 MB PSRAM that is also holding a
+    /// spectrogram and, in a receiver, the previous slot.
+    pub fn with_input_hint(
+        cfg: MonitorConfig,
+        with_spectrogram: bool,
+        input_samples: usize,
+    ) -> Self {
         let cascade = match cfg.band {
             Band::Wide => wideband_cascade(cfg.center_hz),
             Band::Sniper => sniper_cascade(cfg.center_hz),
@@ -222,12 +237,18 @@ impl SlotCapture {
         } else {
             None
         };
+        // The cascades' output rates: wideband decimates by 243/64,
+        // sniper by 3 * 81/16. A little slack for `flush`'s tail.
+        let cap = match cfg.band {
+            Band::Wide => input_samples * 64 / 243 + 64,
+            Band::Sniper => input_samples * 16 / 243 + 64,
+        };
         Self {
             cfg,
             ddc: StreamingComplexDdc::new(&cascade),
             builder,
-            coarse_i: Vec::new(),
-            coarse_q: Vec::new(),
+            coarse_i: Vec::with_capacity(cap),
+            coarse_q: Vec::with_capacity(cap),
         }
     }
 
@@ -433,6 +454,11 @@ pub struct MonitorHit {
     /// cores, which is the number a monitor is judged on.
     pub t_ms: i64,
     pub msg: Option<String>,
+    /// From the decode, when there was one — a receiver displays these,
+    /// and both ladder arms return the same `DecodeResult` shape.
+    pub snr_db: f32,
+    pub dt_sec: f32,
+    pub hard_errors: u32,
 }
 
 /// Everything one candidate needs that does not vary across the batch,
@@ -512,7 +538,7 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
     };
     let decode_us = now_us() - t_d;
 
-    let msg = result.and_then(|r| {
+    let msg = result.as_ref().and_then(|r| {
         let m: &[u8; 77] = r.message77().try_into().ok()?;
         unpack77(m)
     });
@@ -526,6 +552,9 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
         decode_us,
         t_ms: (now_us() - ctx.t0_us) / 1000,
         msg,
+        snr_db: result.as_ref().map_or(f32::NAN, |r| r.snr_db),
+        dt_sec: result.as_ref().map_or(f32::NAN, |r| r.dt_sec),
+        hard_errors: result.as_ref().map_or(0, |r| r.hard_errors),
     })
 }
 
@@ -558,19 +587,19 @@ pub fn run_candidate_loop(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> 
     hits
 }
 
-/// Collapse hits into distinct decoded stations, in the order they were
-/// first decoded.
+/// The hits that decoded, one per distinct message, in the order they
+/// were first decoded.
 ///
 /// By decoded *message*, not by position: a monitor reports stations,
 /// and two coarse cells for one signal are the same station. Cheaper
 /// than a dedup barrier ahead of the loop, and it cannot delay a first
 /// decode.
-pub fn distinct_decodes(hits: &[MonitorHit]) -> Vec<(String, f32, i64)> {
-    let mut out: Vec<(String, f32, i64)> = Vec::new();
+pub fn distinct_decodes(hits: &[MonitorHit]) -> Vec<&MonitorHit> {
+    let mut out: Vec<&MonitorHit> = Vec::new();
     for h in hits {
         if let Some(text) = &h.msg {
-            if !out.iter().any(|(m, _, _)| m == text) {
-                out.push((text.clone(), h.refined_hz, h.t_ms));
+            if !out.iter().any(|o| o.msg.as_deref() == Some(text.as_str())) {
+                out.push(h);
             }
         }
     }
