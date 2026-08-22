@@ -14,6 +14,15 @@
 
 use esp_idf_svc::sys;
 
+/// 前回が異常リセットだったか。表示ループが「読める時間だけ止まる」
+/// 判断に使う。
+static ABNORMAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// 前回が異常リセット (パニック / WDT / ブラウンアウト) だったか。
+pub fn was_abnormal_reset() -> bool {
+    ABNORMAL.load(core::sync::atomic::Ordering::Acquire)
+}
+
 /// 直近のクラッシュ要約 (画面用、無ければ空)。
 static SUMMARY: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
 
@@ -40,6 +49,41 @@ fn cause_name(cause: u32) -> &'static str {
 
 /// 起動時に1回呼ぶ。ダンプがあれば要約をログに流す。
 pub fn report_previous_crash() {
+    // Reset reason first. A coredump only exists for a panic or an
+    // abort; a brownout or a watchdog leaves nothing behind, so
+    // "no dump stored" on its own cannot tell a clean boot from a
+    // board whose supply sagged. On battery, powering a radio's VBUS
+    // through the boost converter, that is not a hypothetical.
+    // Refs #163.
+    // SAFETY: 引数なし、副作用なし。
+    let reason = unsafe { sys::esp_reset_reason() };
+    let name = match reason {
+        sys::esp_reset_reason_t_ESP_RST_POWERON => "POWERON",
+        sys::esp_reset_reason_t_ESP_RST_EXT => "EXT",
+        sys::esp_reset_reason_t_ESP_RST_SW => "SW",
+        sys::esp_reset_reason_t_ESP_RST_PANIC => "PANIC",
+        sys::esp_reset_reason_t_ESP_RST_INT_WDT => "INT_WDT",
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => "TASK_WDT",
+        sys::esp_reset_reason_t_ESP_RST_WDT => "WDT",
+        sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "DEEPSLEEP",
+        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "BROWNOUT",
+        sys::esp_reset_reason_t_ESP_RST_SDIO => "SDIO",
+        _ => "unknown",
+    };
+    log::warn!("reset reason: {name} ({reason})");
+    SUMMARY.store(&format!("rst={name}"));
+
+    // Remember whether this was an abnormal reset. The display loop
+    // holds on it once the panel is actually on screen — pausing here
+    // would pause in front of a dark LCD, which helps nobody.
+    ABNORMAL.store(
+        !matches!(
+            reason,
+            sys::esp_reset_reason_t_ESP_RST_POWERON | sys::esp_reset_reason_t_ESP_RST_EXT
+        ),
+        core::sync::atomic::Ordering::Release,
+    );
+
     // SAFETY: どちらも引数なし / 出力専用。
     let has_dump = unsafe { sys::esp_core_dump_image_check() } == sys::ESP_OK;
     if !has_dump {

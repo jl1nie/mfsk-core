@@ -320,8 +320,13 @@ pub fn run_log_panel(
         // in the staging ring and are gone by the time anything can
         // read them. Bounded, because a receiver with no WiFi still has
         // to work.
+        // Only worth waiting if a sink is actually coming. UAC mode
+        // now leaves WiFi off by default, and waiting 45 s for a sink
+        // that will never exist is just a receiver that takes 45 s
+        // longer to start. Refs #163.
+        let sink_expected = crate::wifi_enabled_for_this_boot();
         let mut waited_ms = 0u32;
-        while waited_ms < LOG_SINK_WAIT_MS {
+        while sink_expected && waited_ms < LOG_SINK_WAIT_MS {
             if crate::FANOUT
                 .udp
                 .try_lock()
@@ -334,7 +339,7 @@ pub fn run_log_panel(
             std::thread::sleep(std::time::Duration::from_millis(250));
             waited_ms += 250;
         }
-        if waited_ms >= LOG_SINK_WAIT_MS {
+        if sink_expected && waited_ms >= LOG_SINK_WAIT_MS {
             log::warn!(
                 "uac: no log sink after {waited_ms} ms — installing USB host anyway; \
                  enumeration will only be visible on screen"
@@ -503,6 +508,16 @@ pub fn run_log_panel(
         // with the audio transfer buffer for internal DRAM). So the one
         // line worth reading was reliably the one that got dropped.
         // Refs #163.
+        // Freeze briefly on the reason, once it is on screen.
+        //
+        // A board that reboots a second and a half in gives nobody time
+        // to read why, and with WiFi off in host mode the panel is the
+        // only channel there is. Refs #163.
+        if tick == 1 && crate::coredump::was_abnormal_reset() {
+            log::warn!("holding 10 s so the reset reason stays readable");
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+
         if tick == 300 {
             let crash = crate::coredump::last_crash();
             if !crash.is_empty() {

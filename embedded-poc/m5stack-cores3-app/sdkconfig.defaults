@@ -202,3 +202,17 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # WiFi uses AES constantly, so the board then crashed with no radio
 # attached at all — seven reboots inside one flash capture, in
 # peripheral mode. Tried and reverted 2026-08-23.
+
+# Heap poisoning, temporarily (#163).
+#
+# `heap_caps_get_largest_free_block` in the alive tick crashes inside
+# `tlsf_walk_pool` with LoadProhibited on a garbage address — the heap
+# metadata is damaged, and the tick is merely the thing that walks it.
+# It reproduces on PC power with no USB host, no C-log bridge and no
+# WiFi, so the usual suspects from tonight are all excluded.
+#
+# Comprehensive poisoning checks the guard bytes on every alloc and
+# free, so the abort lands on whoever wrote out of bounds instead of on
+# whoever read the wreckage afterwards. Costs speed and memory; remove
+# once the writer is found.
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y

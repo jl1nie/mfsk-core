@@ -20,7 +20,6 @@
 //! Refs #163.
 
 use core::ffi::{c_char, c_int};
-use std::cell::Cell;
 
 use esp_idf_svc::sys::va_list;
 
@@ -67,17 +66,30 @@ fn enum_err_seen() -> bool {
     !LAST_ENUM.is_empty()
 }
 
-thread_local! {
-    /// 再入ガード。`FANOUT.push` は UDP 送信まで行くので、lwIP が
-    /// その中で `ESP_LOGx` を叩くと無限再帰になる。フックは複数タスクから
-    /// 並行に呼ばれる (`esp_log_set_vprintf` の doc が明記している) ので、
-    /// グローバルなフラグだと他タスクの正当な行まで落ちる。
-    static IN_HOOK: Cell<bool> = const { Cell::new(false) };
-}
+/// 再入ガード。
+///
+/// **`thread_local!` は使えない。** std の TLS は pthread の仕組みで、
+/// 初回アクセス時に確保とデストラクタ登録を行う。ところがこのフックは
+/// FreeRTOS のタスクから呼ばれ、その多くは pthread 経由で作られて
+/// いない。実際、クラッシュのひとつは `pthread_setspecific` を通って
+/// おり、最終的にはヒープが壊れて `tlsf_walk_pool` が無効ポインタを
+/// 読む (`LoadProhibited`) ところまで行った。
+///
+/// グローバルなフラグにする。フックの最中に別タスクが出した行は
+/// 落ちるが、ログ1行のためにヒープを壊すよりはるかにましで、
+/// 確保もしない。Refs #163.
+static IN_HOOK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 unsafe extern "C" fn hook(fmt: *const c_char, args: va_list) -> c_int {
-    let reentered = IN_HOOK.with(|f| f.replace(true));
-    if reentered {
+    if IN_HOOK
+        .compare_exchange(
+            false,
+            true,
+            core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {
         return 0;
     }
 
@@ -112,7 +124,7 @@ unsafe extern "C" fn hook(fmt: *const c_char, args: va_list) -> c_int {
         }
     }
 
-    IN_HOOK.with(|f| f.set(false));
+    IN_HOOK.store(false, core::sync::atomic::Ordering::Release);
     n
 }
 

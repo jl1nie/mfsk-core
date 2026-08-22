@@ -39,6 +39,15 @@ pub fn log_free_internal(label: &str) {
 }
 
 static FANOUT: LogFanout = LogFanout::new();
+
+/// この起動で WiFi を立ち上げるか。`display` が「ログ送信先を待つか」の
+/// 判断に使う — 来ない sink を45秒待つのは、起動が45秒遅い受信機に
+/// なるだけ。Refs #163.
+static WIFI_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn wifi_enabled_for_this_boot() -> bool {
+    WIFI_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+}
 static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, LevelFilter::Info);
 
 const WIFI_SSID: &str = env!("WIFI_SSID");
@@ -116,6 +125,7 @@ fn main() -> ! {
         boot_mode::BootMode::Uac => UAC_WIFI,
         _ => false,
     };
+    WIFI_ENABLED.store(needs_wifi, std::sync::atomic::Ordering::Release);
     if mode == boot_mode::BootMode::Uac && !UAC_WIFI {
         log::warn!(
             "UAC host mode: WiFi stays off so the audio path keeps its internal DRAM. \
