@@ -448,6 +448,11 @@ pub struct MonitorHit {
     pub freq_hz: f32,
     pub refined_hz: f32,
     pub cscore: f32,
+    /// The polyphase recentre alone — [`ddc_refine`].
+    pub recenter_us: i64,
+    /// Recentre plus `fst4_sync_search`. The two are split because
+    /// they are different code with different memory behaviour, and a
+    /// combined number cannot say which of them moved.
     pub refine_us: i64,
     pub decode_us: i64,
     /// Milliseconds after the loop started — the same clock on both
@@ -492,6 +497,7 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
 
     let t_r = now_us();
     let cd0 = ddc_refine(&ctx.cfg, cand, coarse_i, coarse_q, ctx.coarse_delay_orig);
+    let recenter_us = now_us() - t_r;
     let s2 = fst4_sync_search::<Fst4s60>(&cd0, cand);
     let refine_us = now_us() - t_r;
 
@@ -548,6 +554,7 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
         freq_hz: cand.freq_hz,
         refined_hz: s2.freq_hz,
         cscore: cand.score,
+        recenter_us,
         refine_us,
         decode_us,
         t_ms: (now_us() - ctx.t0_us) / 1000,
@@ -564,6 +571,21 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
 /// Results come back **sorted by rank**, which the dual-core path has
 /// to restore explicitly: two cores complete interleaved.
 pub fn run_candidate_loop(slot: &CapturedSlot, candidates: &[SyncCandidate]) -> Vec<MonitorHit> {
+    // Alignment of the buffer every candidate's refine streams, logged
+    // because it is not a constant of the code: it comes from wherever
+    // the allocator put a multi-megabyte PSRAM block, which differs
+    // between a bench that grows the buffer by doubling and an app that
+    // reserves it up front. `engine::dsp::dotprod`'s esp-dsp PIE path
+    // has an alignment requirement, so this is the first thing to look
+    // at when the same refine costs different amounts in two binaries.
+    let addr = slot.coarse_i.as_ptr() as usize;
+    log::info!(
+        "fst4_monitor: baseband at {:#x} (align {} B), {} samples",
+        addr,
+        1usize << addr.trailing_zeros().min(6),
+        slot.coarse_i.len(),
+    );
+
     let t0 = now_us();
     let n = candidates.len();
     let ctx = MonitorCtx {

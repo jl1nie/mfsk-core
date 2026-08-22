@@ -151,6 +151,46 @@ const CAPTURE_PRIORITY: u32 = 6;
 const SCAN_PRIORITY: u32 = 5;
 const NETWORK_PRIORITY: u32 = 2;
 
+/// `MFSK_FST4_APP_CAPTURE_SLOTS=<n>` — stop capturing after `n` slots
+/// (`0`, the default, never stops).
+///
+/// Diagnostic only, and the one knob that isolates the question the
+/// first hardware run raised: the candidate loop takes 52 s in this app
+/// against the bench's 33 s, and the front end 16 s against 5.9 s, but
+/// "they contend" is a hypothesis, not a measurement. With `=1` the
+/// capture task posts slot 0 and then idles, so slot 0's decode runs
+/// with everything else the app does — WiFi, display, the same task
+/// layout — and *only* the capture removed.
+const CAPTURE_SLOTS: usize = {
+    let v = option_env!("MFSK_FST4_APP_CAPTURE_SLOTS");
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            let mut i = 0;
+            let mut acc = 0usize;
+            while i < b.len() {
+                acc = acc * 10 + (b[i] - b'0') as usize;
+                i += 1;
+            }
+            acc
+        }
+        None => 0,
+    }
+};
+
+/// `MFSK_FST4_APP_NO_WIFI=1` — skip WiFi bring-up entirely.
+///
+/// Diagnostic. The WiFi driver's own task runs at FreeRTOS priority 23,
+/// far above anything this app creates, so an association that keeps
+/// retrying preempts the decode at will — and this app's AP is exactly
+/// the one `wifi::connect_with_retry` documents needing unbounded
+/// retry. This switch is what separates "the decode is slow" from "the
+/// radio is eating the decode".
+const NO_WIFI: bool = match option_env!("MFSK_FST4_APP_NO_WIFI") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
 /// `MFSK_FST4_APP_USB_HOST=1` — install the USB host + UAC class
 /// driver, and take real audio from a radio. See the call site for why
 /// this is off by default while #163 is open.
@@ -301,7 +341,10 @@ fn main() -> ! {
     // window the task stacks were. The slow, unbounded half
     // (associate/DHCP retry) is what the network task backgrounds.
     let sysloop = EspSystemEventLoop::take().expect("sysloop");
-    let wifi_driver = if WIFI_SSID.is_empty() {
+    let wifi_driver = if NO_WIFI {
+        log::warn!("fst4_app: MFSK_FST4_APP_NO_WIFI=1 — no radio this boot (diagnostic build)");
+        None
+    } else if WIFI_SSID.is_empty() {
         log::warn!("fst4_app: WIFI_SSID empty (no cfg.toml) — NTP and HTTP config unavailable");
         None
     } else {
@@ -381,6 +424,7 @@ fn capture_loop() -> ! {
     log_heap("capture-start");
 
     let mut block: Vec<i16> = Vec::with_capacity(REPLAY_BLOCK);
+    let mut slots_done = 0usize;
     loop {
         // Wait for the previous slot's spectrogram to be released
         // before claiming memory for this one — see [`SPECTRA_FREE`].
@@ -449,6 +493,16 @@ fn capture_loop() -> ! {
             if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) { "UAC" } else { "golden replay" },
         );
         post_slot(cap);
+        slots_done += 1;
+        if CAPTURE_SLOTS > 0 && slots_done >= CAPTURE_SLOTS {
+            log::info!(
+                "fst4_app::capture: MFSK_FST4_APP_CAPTURE_SLOTS={CAPTURE_SLOTS} reached — idling; \
+                 the decode below runs with no capture beside it"
+            );
+            loop {
+                FreeRtos::delay_ms(10_000);
+            }
+        }
     }
 }
 
@@ -543,14 +597,25 @@ fn scan_loop() -> ! {
                 h.t_ms + t_search_ms,
             );
         }
+        // Per-candidate cost, split the way the bench splits it, so the
+        // two are directly comparable: the bench logs `refine N ms
+        // decode M ms` per candidate and this is the same pair summed.
+        let recenter_ms: i64 = hits.iter().map(|h| h.recenter_us).sum::<i64>() / 1000;
+        let refine_ms: i64 = hits.iter().map(|h| h.refine_us - h.recenter_us).sum::<i64>() / 1000;
+        let decode_ms: i64 = hits.iter().map(|h| h.decode_us).sum::<i64>() / 1000;
+        let n = hits.len().max(1) as i64;
         log::info!(
             "fst4_app::scan: slot {slot_num} done — {} tried, {} distinct decodes, \
-             search {} ms + loop {} ms, first decode {} ms post-slot",
+             search {} ms + loop {} ms, first decode {} ms post-slot \
+             [recentre {} ms/cand, sync-search {} ms/cand, decode {} ms/cand]",
             hits.len(),
             decoded.len(),
             t_search_ms,
             loop_ms,
             first_ms,
+            recenter_ms / n,
+            refine_ms / n,
+            decode_ms / n,
         );
 
         let rows: Vec<Fst4SpotRow> = decoded.iter().map(|h| to_row(h, t_search_ms)).collect();
@@ -798,21 +863,44 @@ fn spawn_network_task(ctx: NetworkCtx) {
     }
 }
 
+/// How long the radio is left alone between association campaigns.
+///
+/// **Bounded attempts, then quiet — not `wspr_app`'s unbounded retry.**
+/// Measured on this hardware (2026-08-22): while the driver is trying
+/// to associate with an AP it cannot reach, the decoder loses ~40% of
+/// its throughput — `fst4_sync_search` goes 711 -> 1395 ms per
+/// candidate and the candidate loop 33 -> 53 s, covering 48 of 50
+/// candidates instead of all 50. The WiFi task runs at FreeRTOS
+/// priority 23, above anything an application creates, so it preempts
+/// at will, and this is *not* something the caller's own retry cadence
+/// controls: a single `connect()` keeps the radio busy for the whole
+/// `ESP_ERR_TIMEOUT` window, which is minutes.
+///
+/// A monitor receiver's job is to decode. WiFi buys it NTP, a config
+/// page and remote logging — all of which can wait three minutes.
+const RECONNECT_IDLE_MS: u32 = 180_000;
+/// Attempts per campaign. Four is what `wifi.rs`'s own bisection
+/// established as the number that beats the AP comeback-time
+/// coin-flip; more than that is what costs decode throughput.
+const CONNECT_ATTEMPTS_PER_CAMPAIGN: u32 = 4;
+
 fn network_loop(mut ctx: NetworkCtx) -> ! {
-    // Blocks until connected; only `Err`s for a malformed SSID/PSK,
-    // not for a transient failure — see `connect_with_retry`'s own doc
-    // comment for why unbounded retry is what this AP needs.
-    let info = match mfsk_app_shared::wifi::connect_with_retry(
-        &mut ctx.wifi_driver,
-        WIFI_SSID,
-        WIFI_PSK,
-        None,
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            log::error!("fst4_app::net: WiFi setup failed permanently: {e:#}");
-            loop {
-                FreeRtos::delay_ms(60_000);
+    let info = loop {
+        match mfsk_app_shared::wifi::connect_with_retry(
+            &mut ctx.wifi_driver,
+            WIFI_SSID,
+            WIFI_PSK,
+            Some(CONNECT_ATTEMPTS_PER_CAMPAIGN),
+        ) {
+            Ok(i) => break i,
+            Err(e) => {
+                log::warn!(
+                    "fst4_app::net: no association after {CONNECT_ATTEMPTS_PER_CAMPAIGN} \
+                     attempts ({e:#}) — leaving the radio alone for {} s so it stops \
+                     preempting the decode",
+                    RECONNECT_IDLE_MS / 1000,
+                );
+                FreeRtos::delay_ms(RECONNECT_IDLE_MS);
             }
         }
     };
