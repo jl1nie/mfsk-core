@@ -339,18 +339,34 @@ pub fn run_log_panel(
         // host library uses on that path, and they are quiet outside
         // attach/detach, so leaving them up costs nothing while the
         // board waits. Issue #163.
+        // `ENUM` alone at DEBUG. It carries the per-stage verdicts —
+        // GET_FULL_DEV_DESC, CHECK_SHORT_CONFIG_DESC, and which one
+        // FAILED — which is the whole diagnostic.
+        //
+        // The rest stay at INFO deliberately. At DEBUG, `EXT_PORT` /
+        // `USBH` / `EXT_HUB` emit a "Processing actions" line per state
+        // transition, so one attach is several hundred lines inside a
+        // few milliseconds. Every one of those becomes a UDP datagram
+        // sent from the USB task, and the board reliably fell off the
+        // network right after enumeration whenever they were on — the
+        // log volume was costing us the log. Refs #163.
+        unsafe {
+            esp_idf_svc::sys::esp_log_level_set(
+                c"ENUM".as_ptr(),
+                esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG,
+            );
+        }
         for tag in [
             c"USB HOST".as_ptr(),
             c"USBH".as_ptr(),
             c"HUB".as_ptr(),
             c"EXT_HUB".as_ptr(),
             c"EXT_PORT".as_ptr(),
-            c"ENUM".as_ptr(),
         ] {
             unsafe {
                 esp_idf_svc::sys::esp_log_level_set(
                     tag,
-                    esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG,
+                    esp_idf_svc::sys::esp_log_level_t_ESP_LOG_INFO,
                 );
             }
         }

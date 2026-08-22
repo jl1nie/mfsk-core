@@ -932,7 +932,8 @@ wire for it). Phase B splits in two:
   6 (buttons), TX keying all roll forward to Phase B-Core.
 - **Phase B-Core** — `m5stack-cores3-app` (NEW crate), the **main
   production controller**. M5Stack CoreS3 has AXP2101 PMIC + AW9523B
-  I/O expander (BUS_OUT_EN pin 1 controls VBUS boost for host mode),
+  I/O expander (USB host VBUS needs three AW9523B bits, not one —
+  see `embedded-poc/CLAUDE.md` "USB host VBUS on CoreS3"),
   so UAC is viable.
 
 Pattern: Phase B-Core reuses the `mfsk-app-shared` + `embedded-shared`
@@ -1018,7 +1019,8 @@ boot-mode work) — removed below rather than left misleading.
   on `qso3_busy.wav` via wav_sim, 137 ms post_slotend.
 - **Phase 1-Core** — DONE (2026-05-23, same day). UAC: `uac.rs`
   cloned from s3-app verbatim; pmic.rs drives **AW9523B P1
-  (BUS_OUT_EN) HIGH** before `usb_host_install()` (omission =
+  (`BOOST_EN` port1 bit7 + `USB_OTG_EN` port0 bit5 + `BUS_OUT_EN`
+  port0 bit1) HIGH** before `usb_host_install()` (omission =
   floating VBUS = floating host capability). `BootMode::Uac`
   dispatch arm wired. `cargo check --release` clean on
   `xtensa-esp32s3-espidf` — not yet flashed/run against real

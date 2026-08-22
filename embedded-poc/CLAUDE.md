@@ -72,10 +72,10 @@ is what the user types under tee / piped redirection.
 | Target triple | `xtensa-esp32-espidf` | `xtensa-esp32s3-espidf` | `xtensa-esp32s3-espidf` |
 | Bench bin | (retired `#61` Phase 3 — `m5stack-core2-app` runs the wav_sim decode loop instead) | `mfsk-core-m5stack-s3` | (none; reuses s3 bench if needed) |
 | Production app | `m5stack-core2-app` (FT8 controller) | `m5stack-s3-app` (FT8 controller, **demo / Phase 1.5 acoustic**) | `m5stack-cores3-app` (FT8 controller, **main UAC target**, planned) |
-| PMIC | AXP192 (0x34) | M5PM1 (0x6E) | AXP2101 + AW9523B I/O expander (0x58); **AW9523B P1 = BUS_OUT_EN for USB host** |
+| PMIC | AXP192 (0x34) | M5PM1 (0x6E) | AXP2101 + AW9523B I/O expander (0x58); **USB host VBUS = AW9523B port1 bit7 (BOOST_EN) + port0 bit5 (USB_OTG_EN) + port0 bit1 (BUS_OUT_EN), all three** |
 | Flash / PSRAM | 16 MB / 8 MB (default) | 8 MB / 8 MB Octal (`CONFIG_SPIRAM_MODE_OCT=y`, ~80 MB/s); Quad on M5Stamp S3 | 16 MB / 8 MB **Quad** (`CONFIG_SPIRAM_MODE_QUAD=y`) |
 | Internal DRAM | ~280 KB usable | ~512 KB | ~512 KB |
-| USB host capable | No (no USB peripheral; flashes via CP210x UART) | **No** (silicon yes, board no — no VBUS source, ID pin unwired, see memory `project_m5stick_s3_no_usb_host`) | **Yes** — AXP2101 + AW9523B BUS_OUT_EN drives VBUS boost |
+| USB host capable | No (no USB peripheral; flashes via CP210x UART) | **No** (silicon yes, board no — no VBUS source, ID pin unwired, see memory `project_m5stick_s3_no_usb_host`) | **Yes**, but see "USB host VBUS on CoreS3" below — the enable pins are not the ones this table used to name |
 | Port enumeration | `/dev/ttyACM0` (CP2104) | `/dev/ttyACM0` (USB-Serial-JTAG, native S3) | `/dev/ttyACM0` (USB-Serial-JTAG via CH9102 bridge on CoreS3) |
 | SIMD | None | esp-dsp `_ae32_` asm (LX6/LX7 shared, scalar single-issue) — LX7 PIE `_aes3_` migration pending, see `docs/notes/PHASE_D_PIE_SIMD.md` | esp-dsp `_ae32_` asm (same Phase D D1 migration applies) |
 | LCD | ILI9342C 320×240 landscape | ST7789P3 135×240 portrait | ILI9342C 320×240 landscape (same as Core2) + FT6336U capacitive touch |
@@ -83,6 +83,83 @@ is what the user types under tee / piped redirection.
 | Buttons / input | none (touch deferred Phase 2.5) | KEY1 / KEY2 GPIO 11/12 | none (touch FT6336U via I2C, Phase 6-Core) |
 | `release.opt-level` | `1` | `1` (shared Xtensa-Rust LLVM regression on `s`/`z` with f32-select patterns — `core::pipeline` ships an arithmetic-form workaround) | `1` (same) |
 | `SPIRAM_MALLOC_ALWAYSINTERNAL` | n/a | `4096` (mandatory for dual-core; `16384` drains internal DRAM with cs Box × 2 workers → tlsf corruption) | `4096` (same dual-core constraint) |
+
+## USB host VBUS on CoreS3
+
+Getting the CoreS3 to power a USB device took most of a session
+(#163, 2026-08-22/23) and cost several wrong turns, all of the same
+shape: **an AW9523B output-register readback tells you what you
+wrote, and nothing about whether a rail came up.** Every check that
+looked like confirmation was one of those.
+
+Three bits, all of them, before `usb_host_install()`:
+
+| bit | name | role |
+|---|---|---|
+| port1 (`0x03`) bit7 | `BOOST_EN` | the 5 V boost converter itself |
+| port0 (`0x02`) bit5 | `USB_OTG_EN` | gates that rail onto the USB-C connector |
+| port0 (`0x02`) bit1 | `BUS_OUT_EN` | external 5 V (M-Bus / Grove) |
+
+M5Unified's `setUsbOutput()` asserts only the first two, and that is
+not enough on this board — measured, not guessed. `BUS_OUT_EN` sounds
+unrelated, and the pin table in `board.rs` called it "the USB host
+VBUS switch" for months; it is the external rail, but the schematic
+shows both enables driving a *bank* of ME1502A load switches
+(U14/U17/U18/U19) with U17/U19 pins on both nets, and empirically the
+IC-705 only sees VBUS with all three high.
+
+Also settled while chasing this, worth not re-deriving:
+
+- **D+/D- are fine.** J10 A6/B6 and A7/B7 run through 22R series
+  resistors (R47/R25) straight to the ESP32-S3's pins 25/26. Nothing
+  in between — no mux, no switch.
+- **The AXP2101's VBUS ADC cannot see the board's own boost output.**
+  It reads a sane voltage when a PC supplies the port (~4.9 V) and
+  rails to full scale (16373, i.e. no valid reading) in host mode
+  even when VBUS is definitely present. Useful as a peripheral-mode
+  instrument, meaningless as a host-mode one.
+- **`CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024`** is required.
+  The 256-byte default cannot hold a UAC device's configuration
+  descriptor; the audio interface enumerates as far as
+  `GET_FULL_DEV_DESC` and then dies on `CHECK_SHORT_CONFIG_DESC`,
+  and the host library tears it down silently. Above the library
+  this is indistinguishable from a radio with no audio interface:
+  the hub and CDC still enumerate, so `num_devices` looks healthy
+  and the class driver is simply never called.
+- **`CONFIG_USB_HOST_HUBS_SUPPORTED=y`** is required too — the
+  IC-705 puts its CDC and audio interfaces behind an internal hub.
+
+### Debugging this at all
+
+The USB host driver takes the PHY, so the serial console dies at the
+moment enumeration starts — every host-mode log before this session
+ends in `Broken pipe` on the line before the interesting one. And the
+firmware refuses host mode while a PC is supplying VBUS (it charges
+instead, which is also what keeps the port flashable), so a board in
+host mode is by definition a board with no cable to a PC.
+
+That leaves WiFi, and two things had to be built before WiFi was
+actually a channel:
+
+1. `esp_log_bridge` — the fanout only ever carried the Rust `log`
+   crate, and `ENUM` / `HUB` / `EXT_PORT` are C-side. Installed in
+   host mode only: it consumes the `va_list`, so the original
+   destination cannot be chained, and a live console is not worth
+   trading.
+2. Keeping the log volume down. `EXT_PORT` / `USBH` / `EXT_HUB` at
+   DEBUG emit a line per state transition — several hundred datagrams
+   inside a few milliseconds, sent from the USB task — and the board
+   fell off the network right after every attach. `ENUM` alone at
+   DEBUG carries the per-stage verdicts, which is the whole
+   diagnostic.
+
+And when neither console exists, the LCD has to carry it: the app
+draws a standing USB panel (tick, mode, both enable bits, raw port0
+/port1, state, device/client counts, driver-event count, last error,
+battery, sample rate, RMS). A log line is not a status display — the
+log panel scrolls, so a value printed once at boot is gone before
+anyone looks at the screen. The tick belongs there too, or a frozen
+panel and an idle one are the same picture.
 
 ## Trouble we've already debugged (cross-board)
 
@@ -128,8 +205,9 @@ is what the user types under tee / piped redirection.
 - **`m5stack-cores3-app/`** — M5Stack CoreS3 FT8 controller (LX7,
   **main production target**, planned 2026-05-17 onward). Same
   `mfsk-app-shared` consumer pattern as core2-app. Distinguishing
-  HW: AXP2101 PMIC + AW9523B I/O expander (P1 = BUS_OUT_EN drives
-  VBUS boost — must be HIGH before `usb_host_install()`), ILI9342C
+  HW: AXP2101 PMIC + AW9523B I/O expander (USB host VBUS needs
+  three bits HIGH before `usb_host_install()` — see "USB host VBUS
+  on CoreS3" below), ILI9342C
   LCD with FT6336U capacitive touch, ES7210 dual-mic codec. See
   Phase B-Core in `docs/notes/ROADMAP.md` for the work breakdown.
   Also hosts `src/bin/wspr_bench.rs`, a **separate** binary for the
