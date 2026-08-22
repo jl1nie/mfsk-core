@@ -11,10 +11,10 @@
 
 mod board;
 mod coredump;
-mod log_slot;
 mod decode_pipeline;
 mod display;
 mod esp_log_bridge;
+mod log_slot;
 mod pmic;
 mod uac;
 
@@ -94,7 +94,34 @@ fn main() -> ! {
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
-    let needs_wifi = matches!(mode, boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac);
+    // WiFi is a debug channel here, not a feature — and in UAC host
+    // mode it is an expensive one.
+    //
+    // Internal DMA-capable DRAM is the scarce resource on this board
+    // once a radio is attached: the host stack, three enumerated USB
+    // devices, the isochronous audio buffer, lwIP and the WiFi driver
+    // all want the same memory, and every one of them aborts rather
+    // than degrades when it cannot get it. With audio running there
+    // was ~22 KB left, and crashes landed in whichever subsystem
+    // allocated next — `esf_buf_alloc_dynamic`, `pbuf_alloc`,
+    // `uac_host_interface_claim_and_prepare_transfer`, and finally
+    // `UdpSocket::bind` inside the log sink itself.
+    //
+    // The product path is radio -> decode -> LCD, which needs none of
+    // it. `MFSK_CORES3_UAC_WIFI=1` puts it back for a debugging
+    // session, at the cost of that headroom. Refs #163.
+    const UAC_WIFI: bool = option_env!("MFSK_CORES3_UAC_WIFI").is_some();
+    let needs_wifi = match mode {
+        boot_mode::BootMode::Wifi => true,
+        boot_mode::BootMode::Uac => UAC_WIFI,
+        _ => false,
+    };
+    if mode == boot_mode::BootMode::Uac && !UAC_WIFI {
+        log::warn!(
+            "UAC host mode: WiFi stays off so the audio path keeps its internal DRAM. \
+             Build with MFSK_CORES3_UAC_WIFI=1 to get the UDP log back."
+        );
+    }
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
     if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(

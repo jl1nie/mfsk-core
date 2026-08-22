@@ -494,6 +494,22 @@ pub fn run_log_panel(
             last_tx_seq = tx_seq;
         }
 
+        // Re-announce the previous boot's crash once the network is
+        // there to hear it.
+        //
+        // `report_previous_crash` runs before anything else can crash,
+        // which is right, but that is ~21 s before the UDP sink exists,
+        // and the staging ring is deliberately small (it was competing
+        // with the audio transfer buffer for internal DRAM). So the one
+        // line worth reading was reliably the one that got dropped.
+        // Refs #163.
+        if tick == 300 {
+            let crash = crate::coredump::last_crash();
+            if !crash.is_empty() {
+                log::error!("coredump (repeat, for the log sink): {crash}");
+            }
+        }
+
         // The USB panel. Everything the USB side knows, on screen,
         // refreshed every loop.
         //
