@@ -54,6 +54,11 @@ const USB_REGION_Y: i32 = 2;
 /// `espflash`, which connects in under one.
 const USB_HOST_DELAY_MS: u32 = 6_000;
 
+/// How long to hold the USB host install waiting for the UDP log sink.
+/// Long enough for a WiFi association (~30 s measured), short enough
+/// that a board with no network still becomes a receiver.
+const LOG_SINK_WAIT_MS: u32 = 45_000;
+
 /// `MFSK_CORES3_FORCE_UAC=1` — run as a USB host even while something
 /// external is powering the port. For a board fed from M5Bus rather
 /// than the USB-C connector, where the two supplies do not collide.
@@ -266,6 +271,32 @@ pub fn run_log_panel(
              (this is the window to re-flash)"
         );
         std::thread::sleep(std::time::Duration::from_millis(USB_HOST_DELAY_MS as u64));
+
+        // Hold until the log sink exists, if it is coming.
+        //
+        // Everything interesting about enumeration is logged in the
+        // few hundred milliseconds after `start_host()`, and on
+        // battery there is no serial console to catch it — the VBUS
+        // gate means a board in host mode is a board with no cable to
+        // a PC. WiFi takes ~30 s, so without this wait those lines land
+        // in the staging ring and are gone by the time anything can
+        // read them. Bounded, because a receiver with no WiFi still has
+        // to work.
+        let mut waited_ms = 0u32;
+        while waited_ms < LOG_SINK_WAIT_MS {
+            if crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false) {
+                log::info!("uac: log sink up after {waited_ms} ms — installing USB host now");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            waited_ms += 250;
+        }
+        if waited_ms >= LOG_SINK_WAIT_MS {
+            log::warn!(
+                "uac: no log sink after {waited_ms} ms — installing USB host anyway; \
+                 enumeration will only be visible on screen"
+            );
+        }
 
         // Turn up ESP-IDF's own USB enumeration logging before the
         // stack starts.

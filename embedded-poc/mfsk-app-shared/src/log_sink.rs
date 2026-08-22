@@ -34,8 +34,14 @@ use heapless::{Deque, String};
 pub const LINE_MAX: usize = 160;
 /// LCD scroll panel に保持する行数。120 px / 10 px = 12 行。
 pub const LCD_LINES: usize = 12;
-/// 起動直後のステージング (LCD/Flash 未初期化時) 行数。
-pub const STAGING_LINES: usize = 32;
+/// 起動直後のステージング (UDP sink 確立前) 行数。
+///
+/// **32 → 128 (2026-08-22)。** WiFi 接続に約30秒かかり、その間のログは
+/// 全部ここに溜まる。USB ホストの導入は起動7秒目なので、32行では
+/// 列挙まわりのログがリングからあふれて消えていた — issue #163 で
+/// 「何も起きていない」のか「ログが届いていないだけ」なのかが
+/// 区別できなくなった原因。
+pub const STAGING_LINES: usize = 128;
 
 pub type LogLine = String<LINE_MAX>;
 

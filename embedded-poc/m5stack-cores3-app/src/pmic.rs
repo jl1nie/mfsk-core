@@ -200,6 +200,20 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     let current = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
     let new_val = current | AW9523_P0_BUS_OUT_EN;
     write_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, new_val)?;
-    log::info!("AW9523B P0_1 (BUS_OUT_EN) HIGH — USB VBUS enabled");
+
+    // Read back. BUS_OUT_EN gates a boost converter that makes the
+    // 5 V VBUS out of the battery, and a device that never sees VBUS
+    // never pulls up D+ — which looks identical, from the host stack's
+    // side, to "nothing is plugged in". Distinguishing "we asked for
+    // VBUS" from "the pin is actually high" is worth one I2C read.
+    let after = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
+    if after & AW9523_P0_BUS_OUT_EN != 0 {
+        log::info!("AW9523B P0_1 (BUS_OUT_EN) HIGH — USB VBUS boost enabled (out0=0x{after:02x})");
+    } else {
+        log::error!(
+            "AW9523B P0_1 (BUS_OUT_EN) readback LOW (out0=0x{after:02x}, wrote 0x{new_val:02x}) \
+             — VBUS boost did not latch; no USB device will enumerate"
+        );
+    }
     Ok(())
 }
