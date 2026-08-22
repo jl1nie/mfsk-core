@@ -46,8 +46,8 @@ use esp_idf_hal::{
 };
 
 use crate::board::{
-    AW9523B_I2C_ADDR, AW9523_P0_LCD_BL, AW9523_P0_USB_OTG_EN, AW9523_P1_BOOST_EN,
-    AW9523_P1_LCD_RST, AW9523_P1_TP_RST, AXP2101_I2C_ADDR,
+    AW9523B_I2C_ADDR, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P0_USB_OTG_EN,
+    AW9523_P1_BOOST_EN, AW9523_P1_LCD_RST, AW9523_P1_TP_RST, AXP2101_I2C_ADDR,
 };
 
 // AW9523B register map (AW9523B datasheet §6).
@@ -307,12 +307,24 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     )?;
     esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
 
+    // Both gates, not just the USB one.
+    //
+    // M5Unified's `setUsbOutput` asserts USB_OTG_EN alone, and doing
+    // exactly that leaves the connector's VBUS net dead (measured: the
+    // AXP2101 VBUS ADC rails at full scale on battery, against 4932 mV
+    // when a PC is supplying the port). The schematic shows the two
+    // enables driving a bank of ME1502A load switches (U14/U17/U18/U19)
+    // rather than one, with pins of U17/U19 appearing on both nets — so
+    // a series arrangement needing both is plausible. BUS_OUT_EN is the
+    // external 5 V rail, which costs nothing extra to have on while the
+    // pack is full, and this is the cheapest remaining experiment that
+    // the on-board voltmeter can settle. Refs #163.
     let p0 = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
     write_reg(
         i2c,
         AW9523B_I2C_ADDR,
         AW9523_REG_OUT0,
-        p0 | AW9523_P0_USB_OTG_EN,
+        p0 | AW9523_P0_USB_OTG_EN | AW9523_P0_BUS_OUT_EN,
     )?;
     esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
 
