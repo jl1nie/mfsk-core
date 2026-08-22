@@ -35,7 +35,7 @@
 //! I2C bus is returned to the caller; display.rs holds it for the reset
 //! delay and then drops it (Phase 6-Core touch driver will reclaim it).
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU8, Ordering};
 
 use anyhow::{anyhow, Result};
 use esp_idf_hal::{
@@ -58,6 +58,8 @@ const AW9523_REG_OUT1: u8 = 0x03; // Output port 1 latch
 const AW9523_REG_CFG0: u8 = 0x04; // Port 0 direction: 0=output, 1=input
 const AW9523_REG_CFG1: u8 = 0x05; // Port 1 direction: 0=output, 1=input
 const AW9523_REG_GCR: u8 = 0x11; // Global config (push-pull vs open-drain)
+const AW9523_REG_LEDMODE0: u8 = 0x12; // Port 0 mode: 1=GPIO, 0=LED (current sink)
+const AW9523_REG_LEDMODE1: u8 = 0x13; // Port 1 mode: 1=GPIO, 0=LED
 
 // AXP2101 register map (AXP2101 datasheet).
 const AXP2101_REG_CHIP_ID: u8 = 0x03; // Chip ID — 0x4A for AXP2101
@@ -144,18 +146,34 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
         log::info!("AXP2101 reg 0x99 = {AXP2101_DLDO1_VOLTAGE_3V3} (DLDO1 ~3.3V, backlight power)");
     }
 
+    // Battery-voltage ADC on, so `battery_mv` has something to read.
+    let adc = read_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_ADC_EN).unwrap_or(0);
+    write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_ADC_EN, adc | 0x01)?;
+
     // ── AW9523B init ──────────────────────────────────────────────────
-    // GCR[4] = 0: push-pull mode for port 0 (default is open-drain on
-    // some silicon revisions; set explicitly to guarantee output drive).
+    // Values taken verbatim from M5Stack's own `M5GFX.cpp` (CoreS3 board
+    // section), rather than derived from the pin table in `board.rs` —
+    // that table has now been wrong twice (LCD_BL, and the whole USB
+    // VBUS group), and the vendor's init sequence is the ground truth
+    // for a board we cannot probe.
+    //
+    //   0x04 CONFIG_P0 = 0b00011000   P0_3/P0_4 input, rest output
+    //   0x05 CONFIG_P1 = 0b00001100   P1_2/P1_3 input, rest output
+    //   0x11 GCR       = 0b00010000   port 0 push-pull
+    //   0x12/0x13 LEDMODE = 0xFF      every pin in GPIO mode
+    //
+    // The LEDMODE registers matter more than they look: a pin left in
+    // LED mode is a constant-current sink, so writing its output latch
+    // does nothing an attached load can feel. Nothing here had ever
+    // written them.
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_GCR, 0x10)?;
+    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG0, 0b0001_1000)?;
+    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG1, 0b0000_1100)?;
+    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_LEDMODE0, 0xFF)?;
+    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_LEDMODE1, 0xFF)?;
 
-    // Port 0 direction: P0_0 (TP_INT) = input (bit=1), rest = output.
-    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG0, 0x01)?;
-    // Port 1 direction: all outputs (P1_0=TP_RST, P1_1=LCD_RST, ...).
-    write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_CFG1, 0x00)?;
-
-    // Safe default output state: BUS_OUT_EN (P0_1)=LOW (no USB VBUS,
-    // Phase 1-Core enables it), SPK_EN (P0_7)=LOW; only LCD_BL on.
+    // Safe default output state: USB VBUS off (host mode turns it on),
+    // speaker amp off.
     let p0_out = AW9523_P0_LCD_BL;
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, p0_out)?;
     log::info!("AW9523B port0 out=0x{p0_out:02x} (LCD_BL=ON, BUS_OUT_EN=OFF, SPK_EN=OFF)");
@@ -193,6 +211,32 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 /// Returns the raw register alongside the verdict — the bit position
 /// is from the AXP2101 datasheet rather than measured on this board,
 /// so the caller logs both and the reader can check the claim.
+/// AXP2101 ADC channel enable. bit0 = battery-voltage ADC.
+const AXP2101_REG_ADC_EN: u8 = 0x30;
+/// Battery-voltage ADC result, 14-bit, big-endian, already in mV.
+const AXP2101_REG_VBAT_H: u8 = 0x34;
+
+/// Battery voltage in mV, or `None` if the read failed.
+///
+/// On battery the 5 V boost that feeds USB host VBUS runs off this
+/// rail, so "the host enumerates nothing" and "the pack is too flat to
+/// boost" are worth being able to tell apart without a meter.
+pub fn battery_mv(i2c: &mut I2cDriver<'_>) -> Option<u16> {
+    let hi = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_VBAT_H).ok()?;
+    let lo = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_VBAT_H + 1).ok()?;
+    let mv = (((hi & 0x3F) as u16) << 8) | lo as u16;
+    BATTERY_MV.store(mv, Ordering::Relaxed);
+    Some(mv)
+}
+
+/// 直近に読んだ電池電圧 (mV)。0 = まだ読めていない。
+static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
+
+/// 画面用: 直近の電池電圧 (mV)。
+pub fn battery_mv_cached() -> u16 {
+    BATTERY_MV.load(Ordering::Relaxed)
+}
+
 pub fn vbus_present(i2c: &mut I2cDriver<'_>) -> Result<(bool, u8)> {
     let raw = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1)?;
     AXP_STATUS1.store(raw, Ordering::Relaxed);
