@@ -122,11 +122,40 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 # are long: an audio control interface plus its streaming interfaces
 # and format/endpoint descriptors runs past 256 bytes routinely.
 #
-# 1024 was still not enough — the same error came back — so 4096. The
-# IC-705's audio device carries a long list of alternate settings, one
-# per sample rate and format, and each brings its own interface,
-# format and endpoint descriptors. The buffer is per attached device
-# and comes from internal DMA-capable RAM: hub + CDC + audio is 12 KB
-# against ~56 KB free, which fits.
+# 1024 was still not enough — the same error came back. 4096 works, but
+# only 1024 and 4096 were ever tested, and the buffer is per attached
+# device out of internal DMA-capable RAM: at 4096 the IC-705's hub plus
+# CDC plus audio take 12 KB out of the ~55 KB left after the host stack
+# installs, which is what pushed lwIP and the WiFi driver into failing
+# allocations. 2048 halves that and is still twice what failed.
+#
+# If enumeration regresses ("Configuration descriptor larger than
+# control transfer max length" under ENUM), the descriptor is between
+# 2048 and 4096 and this goes back up.
 # Refs #163.
-CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+
+# Coredump to flash (#163).
+#
+# The panic handler's only output is the console, and in host mode the
+# USB driver has taken it — so a crash leaves no message at all, which
+# is exactly the state the stream-start reboot is in. The dump survives
+# the reset; `main` reads its summary on the next boot and logs the
+# exception cause, faulting PC and task over UDP/LCD.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
+
+# Internal DRAM relief for host mode (#163) — two options tried, both
+# rejected, recorded so they are not tried again:
+#
+# - CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y costs 32.5 KB of internal
+#   DRAM rather than saving any (measured at boot: 68843 -> 36331).
+#   Letting WiFi take PSRAM forces its TX buffers static and internal,
+#   and that pool is claimed up front.
+# - CONFIG_LWIP_IPV6=n does not build: `esp-idf-svc`'s socket layer
+#   references `sockaddr_in6` / `IPV6_V6ONLY` / `IPV6_JOIN_GROUP`
+#   unconditionally.
+#
+# What did work was halving the per-device control buffer, above.

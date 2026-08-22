@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 mod board;
+mod coredump;
 mod decode_pipeline;
 mod display;
 mod esp_log_bridge;
@@ -49,11 +50,29 @@ fn main() -> ! {
     esp_idf_svc::sys::link_patches();
     LOGGER.install();
 
+    // Catch Rust panics on the way out.
+    //
+    // In host mode there is no serial console — the USB driver has the
+    // PHY — and the ESP-IDF panic handler writes straight to that
+    // console with `esp_rom_printf`, bypassing the log path entirely.
+    // So a panic looks like a spontaneous reboot and nothing else. A
+    // Rust panic at least runs this first; the sleep is to let the UDP
+    // sink actually put the datagram on the wire before the abort.
+    // A hardware exception still slips through — that one shows up as
+    // silence, which is itself a clue. Refs #163.
+    std::panic::set_hook(Box::new(|info| {
+        log::error!("PANIC: {info}");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }));
+
     log::info!("=== mfsk-core-m5stack-cores3-app boot ===");
     log::info!(
         "phase 1-core: UAC host (AW9523B BUS_OUT_EN + usb_host_uac), wav_sim decode, ILI9342C LCD"
     );
     log::info!("build-stamp 2026-05-23-cores3-phase1");
+
+    // Before anything else can crash: say what the last crash was.
+    crate::coredump::report_previous_crash();
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
 

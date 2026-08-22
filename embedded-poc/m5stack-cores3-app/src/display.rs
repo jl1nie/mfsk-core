@@ -47,7 +47,7 @@ const USB_REGION_X: i32 = 140;
 const USB_REGION_Y: i32 = 2;
 
 /// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
-const USB_PANEL_LINES: usize = 17;
+const USB_PANEL_LINES: usize = 10;
 const USB_PANEL_PITCH: i32 = 12;
 
 /// How long the boot waits before installing the USB host driver.
@@ -85,9 +85,21 @@ pub fn run_log_panel(
     // the VBUS check below.
     let mut host_mode = mode == BootMode::Uac;
 
-    // Kept alive for the whole display loop so the panel can show
-    // *measured* power state, not just what was written at boot.
-    let mut pmic_i2c;
+    // Boot-time reading only.
+    //
+    // Polling these from the display loop crashed the board about a
+    // second after audio started, and the coredump named it exactly:
+    // `pmic::vbus_mv` -> `I2cDriver::write_read` ->
+    // `i2c_cmd_link_delete`, aborting in the `main` task. That second
+    // is when three USB devices have just taken a 4 KB control buffer
+    // each out of internal DRAM, and the I2C command link could no
+    // longer be allocated. The audio path had nothing to do with it.
+    //
+    // No loss: the AXP2101's VBUS ADC cannot see the board's own boost
+    // output anyway, so in host mode — the only mode where a live
+    // reading would be interesting — the number is meaningless.
+    // Refs #163.
+    let mut _pmic_i2c;
 
     // ── PMIC: AXP2101 + AW9523B → LCD power rails + RST + BL. ──────────
     match crate::pmic::init(i2c0, pins.gpio12, pins.gpio11) {
@@ -152,7 +164,7 @@ pub fn run_log_panel(
                 _ => log::warn!("AXP2101 voltage read failed"),
             }
 
-            pmic_i2c = Some(i2c);
+            _pmic_i2c = Some(i2c);
         }
         Err(e) => {
             log::error!("PMIC init failed: {e:#}");
@@ -496,13 +508,6 @@ pub fn run_log_panel(
         // are otherwise the same picture.
         //
         // Refs #163.
-        if tick % 10 == 0 {
-            if let Some(i2c) = pmic_i2c.as_mut() {
-                crate::pmic::vbus_mv(i2c);
-                crate::pmic::battery_mv(i2c);
-            }
-        }
-
         {
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
@@ -517,73 +522,72 @@ pub fn run_log_panel(
                 let _ = panel.push(s);
             };
 
-            line(format_args!("USB  t={tick}"));
+            // Compact on purpose: this panel shares the screen with
+            // the scrolling log, and at one field per line it grew
+            // until it covered it. Everything below fits in the 30
+            // characters the 180 px column allows.
             line(format_args!(
-                "mode={}",
-                if host_mode { "host" } else { "peripheral" }
+                "USB t={tick} {}",
+                if host_mode { "host" } else { "periph" }
             ));
             if vbus_tried {
                 line(format_args!(
-                    "vbus bst={} otg={}",
+                    "vbus b{} o{} p0={p0:02x} p1={p1:02x}",
                     if p1 & crate::board::AW9523_P1_BOOST_EN != 0 {
-                        "1"
+                        1
                     } else {
-                        "0!"
+                        0
                     },
                     if p0 & crate::board::AW9523_P0_USB_OTG_EN != 0 {
-                        "1"
+                        1
                     } else {
-                        "0!"
-                    }
+                        0
+                    },
                 ));
-                line(format_args!("p0={p0:02x} p1={p1:02x} s={st1:02x}"));
             } else {
-                line(format_args!("vbus n/a (peripheral)"));
-                line(format_args!("st1=0x{st1:02x}"));
+                line(format_args!("vbus n/a (periph)"));
             }
             line(format_args!(
-                "state={}",
+                "{} dev={dev} cli={cli}",
                 match st {
                     crate::uac::UacState::Off if host_mode => "off",
                     crate::uac::UacState::Off => "charging",
-                    crate::uac::UacState::Waiting => "waiting",
-                    crate::uac::UacState::Streaming => "streaming",
+                    crate::uac::UacState::Waiting => "wait",
+                    crate::uac::UacState::Streaming => "STREAM",
                     crate::uac::UacState::Error => "ERROR",
                 }
             ));
-            line(format_args!("dev={dev} cli={cli}"));
-            line(format_args!("drv_evts={evts}"));
-            line(format_args!("err=0x{err:x}"));
-            line(format_args!("vbus={}mV", crate::pmic::vbus_mv_cached()));
-            line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
-            line(format_args!("au={sa} sa/s"));
-            // Last ENUM verdict, wrapped across the panel width.
-            // ENUM's own failure first; any other error only as a
-            // fallback. The teardown that follows a failed enumeration
-            // logs errors of its own, and those describe the cleanup,
-            // not the cause.
-            let enum_line = crate::esp_log_bridge::last_enum_line();
-            let enum_line = if enum_line.is_empty() {
-                crate::esp_log_bridge::last_error_line()
-            } else {
-                enum_line
-            };
-            let mut rest: &str = enum_line.as_str();
-            for _ in 0..4 {
-                if rest.is_empty() {
-                    break;
-                }
-                let mut cut = rest.len().min(29);
-                while cut > 0 && !rest.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                let (head, tail) = rest.split_at(cut);
-                line(format_args!("{head}"));
-                rest = tail;
-            }
+            line(format_args!("evts={evts} err={err:x} s1={st1:02x}"));
             match rms {
-                Some(db) => line(format_args!("rms={db:.0} dBFS")),
-                None => line(format_args!("rms=--")),
+                Some(db) => line(format_args!("au={sa} rms={db:.0}dBFS")),
+                None => line(format_args!("au={sa} rms=--")),
+            }
+            line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
+
+            // Two standing failure lines, each only when it has
+            // something: the previous boot's crash, and the last
+            // enumeration failure.
+            for text in [crate::coredump::last_crash(), {
+                let e = crate::esp_log_bridge::last_enum_line();
+                if e.is_empty() {
+                    crate::esp_log_bridge::last_error_line()
+                } else {
+                    e
+                }
+            }] {
+                let mut rest: &str = text.as_str();
+                for _ in 0..2 {
+                    if rest.is_empty() {
+                        break;
+                    }
+                    let mut cut = rest.len().min(29);
+                    while cut > 0 && !rest.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    let (head, tail) = rest.split_at(cut);
+                    line(format_args!("{head}"));
+                    rest = tail;
+                }
             }
 
             for (i, text) in panel.iter().enumerate() {

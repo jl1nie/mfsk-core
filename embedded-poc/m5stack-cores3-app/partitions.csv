@@ -16,3 +16,10 @@ nvs,        data, nvs,     0x9000,  0x6000
 phy_init,   data, phy,     0xf000,  0x1000
 factory,    app,  factory, 0x10000, 0x900000
 littlefs,   data, spiffs,  0x910000, 0xC0000
+# Coredump, added 2026-08-23 (#163). In host mode the USB driver owns
+# the USB-Serial-JTAG, so the console the ESP-IDF panic handler writes
+# to does not exist — a crash is a spontaneous reboot and nothing else,
+# no message, no backtrace. Parking the dump in flash lets the next
+# boot read the exception cause, faulting PC and task back out and put
+# them on the log path that does work (UDP / LCD).
+coredump,   data, coredump, 0x9D0000, 0x10000

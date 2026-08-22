@@ -413,9 +413,7 @@ impl AudioSink for Ft8ChunkSink {
         // the grid. Re-checked at every boundary below, which also
         // absorbs the clock jumping when NTP first syncs.
         if !self.aligned {
-            if let Some(remain) =
-                mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS)
-            {
+            if let Some(remain) = mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS) {
                 self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
                 self.aligned = true;
                 log::info!(
@@ -464,9 +462,7 @@ impl AudioSink for Ft8ChunkSink {
                             (remain / 12) as i32
                         };
                         if err_ms.unsigned_abs() > SLOT_DRIFT_REANCHOR_MS {
-                            log::warn!(
-                                "uac: slot phase {err_ms:+} ms off UTC — re-anchoring"
-                            );
+                            log::warn!("uac: slot phase {err_ms:+} ms off UTC — re-anchoring");
                             self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
                         } else if !self.aligned {
                             self.aligned = true;
@@ -886,10 +882,27 @@ fn reader_thread(handle: DeviceHandle) {
             } else {
                 -99.0
             };
+            // Internal DRAM goes in the per-second line, not just the
+            // 6 s alive tick. The board reboots about one second after
+            // the stream starts, with nothing from the Rust panic hook
+            // — which is what an allocation failure or a hardware
+            // exception looks like, both handled in C below the log
+            // path. Three attached devices now hold a 4 KB control
+            // buffer each, and the decode pipeline allocates on top of
+            // that, so "how much was left when it died" is the first
+            // thing worth knowing. Refs #163.
+            let free_internal = unsafe {
+                sys::heap_caps_get_free_size(sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT)
+            };
+            let largest_internal = unsafe {
+                sys::heap_caps_get_largest_free_block(
+                    sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
+                )
+            };
             log::info!(
                 "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err) \
                  | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
-                 clipped {clipped}",
+                 clipped {clipped} | internal={free_internal} largest={largest_internal}",
             );
             UAC_SA_PER_S.store(out_samples, Ordering::Release);
             UAC_RMS_MDB.store(
