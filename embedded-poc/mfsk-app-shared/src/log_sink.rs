@@ -170,14 +170,41 @@ impl LogFanout {
         // 取れない場合は黙って落とす (= 排他で詰まらせない)。
         match self.udp.try_lock() {
             Ok(udp) => match udp.as_ref() {
-                Some(sink) => sink.send_line(line),
+                Some(sink) => {
+                    // Anything staged while the lock was busy goes out
+                    // first, so order survives. `drain_staging_to_udp`
+                    // cannot be used here — it wants this same mutex,
+                    // which this branch is already holding.
+                    if let Ok(mut staging) = self.staging.try_lock() {
+                        while let Some(staged) = staging.pop_front() {
+                            sink.send_line(&staged);
+                        }
+                    }
+                    sink.send_line(line);
+                }
                 None => {
                     if let Ok(mut staging) = self.staging.try_lock() {
                         self.staging_push(&mut staging, line);
                     }
                 }
             },
-            Err(_) => {}
+            // Lock busy — stage it rather than drop it.
+            //
+            // This used to be a silent drop, and it lost exactly the
+            // lines worth having. The contention window is boot: the
+            // sink-install retry loop and the host-mode wait both poll
+            // this mutex while every other thread is logging its
+            // startup, so PMIC state, the LCD result and the previous
+            // boot's coredump summary all fell into it. The symptom is
+            // a UDP capture that shows the first three lines of a boot
+            // and then jumps twenty seconds forward — which reads like
+            // a board that went quiet, not like a logger that threw
+            // the lines away. Refs #163.
+            Err(_) => {
+                if let Ok(mut staging) = self.staging.try_lock() {
+                    self.staging_push(&mut staging, line);
+                }
+            }
         }
     }
 

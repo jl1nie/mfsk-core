@@ -159,3 +159,18 @@ CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
 #   unconditionally.
 #
 # What did work was halving the per-device control buffer, above.
+
+# mbedTLS allocates from PSRAM (#163).
+#
+# The WPA2 four-way handshake computes its MIC through mbedTLS, and
+# with internal DRAM down to ~38 KB during streaming that allocation
+# fails and aborts — coredump, task `wifi`:
+#
+#   esp_mbedtls_mem_calloc <- mbedtls_calloc <- mbedtls_md_setup
+#   <- hmac_vector <- hmac_sha1 <- wpa_eapol_key_mic
+#   <- wpa_eapol_key_send
+#
+# Which made the reboot loop self-sustaining: every restart reconnects
+# to WiFi, and every reconnect walks straight back into it. None of
+# this needs internal RAM.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

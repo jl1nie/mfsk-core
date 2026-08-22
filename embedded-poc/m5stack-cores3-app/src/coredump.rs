@@ -15,12 +15,11 @@
 use esp_idf_svc::sys;
 
 /// 直近のクラッシュ要約 (画面用、無ければ空)。
-static SUMMARY: std::sync::Mutex<heapless::String<96>> =
-    std::sync::Mutex::new(heapless::String::new());
+static SUMMARY: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
 
 /// 画面用: 直近のクラッシュ要約。
 pub fn last_crash() -> heapless::String<96> {
-    SUMMARY.try_lock().map(|g| g.clone()).unwrap_or_default()
+    SUMMARY.read()
 }
 
 /// Xtensa の EXCCAUSE を人が読める名前に。よく出るものだけ。
@@ -91,15 +90,11 @@ pub fn report_previous_crash() {
     }
 
     // 画面用は1行に圧縮 (パネル幅は30文字なので、タスク名と原因と PC だけ)。
-    if let Ok(mut slot) = SUMMARY.try_lock() {
-        slot.clear();
-        let text = format!("{task} {} pc={:08x}", cause_name(cause), summary.exc_pc);
-        for c in text.chars() {
-            if slot.push(c).is_err() {
-                break;
-            }
-        }
-    }
+    SUMMARY.store(&format!(
+        "{task} {} pc={:08x}",
+        cause_name(cause),
+        summary.exc_pc
+    ));
 
     // 次のクラッシュと区別できるよう消しておく。
     // SAFETY: 引数なし。

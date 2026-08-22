@@ -11,6 +11,7 @@
 
 mod board;
 mod coredump;
+mod log_slot;
 mod decode_pipeline;
 mod display;
 mod esp_log_bridge;

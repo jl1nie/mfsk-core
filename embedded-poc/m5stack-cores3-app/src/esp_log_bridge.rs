@@ -37,25 +37,23 @@ const BUF: usize = 240;
 /// それは C 側から出るうえ、ログパネルではすぐ流れて消える。WiFi が
 /// 落ちていれば UDP でも読めない。判断に要る1行なので、最後の1本を
 /// 保持して固定行に立てておく。Refs #163.
-static LAST_ENUM: std::sync::Mutex<heapless::String<96>> =
-    std::sync::Mutex::new(heapless::String::new());
+static LAST_ENUM: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
 
 /// 直近のエラーレベル行 (タグ不問)。
 ///
 /// `LAST_ENUM` だけでは足りなかった。列挙が失敗すると理由の行の直後に
 /// 後始末の `[0:0] CANCEL OK` が来て上書きされ、画面には「失敗した」
 /// ことしか残らない。理由を保つには、エラーだけ別に留める必要がある。
-static LAST_ERR: std::sync::Mutex<heapless::String<96>> =
-    std::sync::Mutex::new(heapless::String::new());
+static LAST_ERR: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
 
 /// 画面用: 直近の `ENUM:` 行 (無ければ空)。
 pub fn last_enum_line() -> heapless::String<96> {
-    LAST_ENUM.try_lock().map(|g| g.clone()).unwrap_or_default()
+    LAST_ENUM.read()
 }
 
 /// 画面用: 直近のエラー行 (無ければ空)。
 pub fn last_error_line() -> heapless::String<96> {
-    LAST_ERR.try_lock().map(|g| g.clone()).unwrap_or_default()
+    LAST_ERR.read()
 }
 
 /// 起動後、`ENUM` のエラーを既に1本掴んだか。
@@ -66,18 +64,7 @@ pub fn last_error_line() -> heapless::String<96> {
 /// 後始末エラーが続く。最後を残すと、毎回いちばん情報の無い行が
 /// 手元に残ることになる。
 fn enum_err_seen() -> bool {
-    LAST_ENUM.try_lock().map(|g| !g.is_empty()).unwrap_or(true)
-}
-
-fn store(slot: &std::sync::Mutex<heapless::String<96>>, text: &str) {
-    if let Ok(mut s) = slot.try_lock() {
-        s.clear();
-        for c in text.chars() {
-            if s.push(c).is_err() {
-                break;
-            }
-        }
-    }
+    !LAST_ENUM.is_empty()
 }
 
 thread_local! {
@@ -114,18 +101,12 @@ unsafe extern "C" fn hook(fmt: *const c_char, args: va_list) -> c_int {
                 // Drop the "E (12345) ENUM: " preamble — the stage name
                 // and its verdict are the whole point, and the panel is
                 // 30 characters wide.
-                store(
-                    &LAST_ENUM,
-                    line.split("ENUM:").nth(1).unwrap_or(line).trim_start(),
-                );
+                LAST_ENUM.store(line.split("ENUM:").nth(1).unwrap_or(line).trim_start());
             }
             if line.starts_with("E (") {
                 // Keep the tag: at error level, which subsystem spoke
                 // is half the message.
-                store(
-                    &LAST_ERR,
-                    line.splitn(2, ") ").nth(1).unwrap_or(line).trim_start(),
-                );
+                LAST_ERR.store(line.splitn(2, ") ").nth(1).unwrap_or(line).trim_start());
             }
             crate::FANOUT.push(line);
         }
