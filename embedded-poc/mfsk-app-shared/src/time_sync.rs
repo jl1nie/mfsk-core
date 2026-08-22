@@ -246,3 +246,46 @@ pub fn reset_capture_slot_for_test() {
         *g = None;
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// UTC slot phase — the bootstrap the two correction sources above cannot
+// provide
+
+/// Below this, the system clock has not been set by NTP and is still
+/// counting from the epoch the ESP-IDF boot left it at. 2020-09-13.
+const PLAUSIBLE_UNIX_SECS: u64 = 1_600_000_000;
+
+/// Wall-clock UTC in milliseconds, or `None` while the clock is still
+/// unset.
+///
+/// The distinction matters more than it looks: a receiver that aligns
+/// its slots to an unset clock is not "roughly aligned", it is aligned
+/// to an arbitrary phase *and cannot tell*. Callers are expected to
+/// say which of the two they are doing.
+pub fn utc_now_ms() -> Option<u64> {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    (d.as_secs() >= PLAUSIBLE_UNIX_SECS).then(|| d.as_millis() as u64)
+}
+
+/// 12 kHz samples from now until the next UTC boundary of a
+/// `slot_len_s`-second slot grid, and how far the current stream
+/// position is from that grid.
+///
+/// This is the phase source a capture path needs and neither
+/// [`slot_dt_offset`] nor GPS currently supplies. The DT-median
+/// correction above is a *refinement*: it needs decodes to exist
+/// before it can say anything, and on FT8 a slot that is more than
+/// ±2.5 s out produces no decodes at all — so it cannot pull itself
+/// up from an arbitrary phase. UTC can, and NTP is already in every
+/// app that has WiFi.
+///
+/// `None` while the clock is unset ([`utc_now_ms`]).
+pub fn samples_to_next_slot_12k(slot_len_s: u64) -> Option<usize> {
+    let now = utc_now_ms()?;
+    let period_ms = slot_len_s * 1_000;
+    let into_slot = now % period_ms;
+    let remain_ms = period_ms - into_slot;
+    Some((remain_ms * 12) as usize)
+}

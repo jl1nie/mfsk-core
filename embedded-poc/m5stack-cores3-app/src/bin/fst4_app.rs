@@ -121,6 +121,8 @@ static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, log::LevelFilter::Info)
 /// same period to finish in.
 const SLOT_SAMPLES_12K: usize = 60 * 12_000;
 const SLOT_US: i64 = 60_000_000;
+/// The same slot in seconds — what the UTC grid is computed from.
+const SLOT_SECS: u64 = 60;
 
 /// Feed size for the replay source. One second of audio — large enough
 /// that per-block overhead is irrelevant, small enough to interleave
@@ -517,7 +519,34 @@ fn capture_loop() -> ! {
 
         let slot_start = now_us();
         let mut cap = SlotCapture::with_input_hint(CFG, true, SLOT_SAMPLES_12K);
-        let mut fed = 0usize;
+        // Anchor the slot grid to UTC when the clock is real. For the
+        // replay source this is cosmetic — a recording is not
+        // real-time — but it is the same call the live path makes, so
+        // the phase source is exercised on every boot rather than only
+        // when a radio is attached.
+        let mut fed = match mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS) {
+            Some(remain) if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) => {
+                log::info!(
+                    "fst4_app::capture: slot anchored to UTC — {} ms to the next boundary",
+                    remain / 12,
+                );
+                SLOT_SAMPLES_12K.saturating_sub(remain)
+            }
+            Some(remain) => {
+                log::info!(
+                    "fst4_app::capture: UTC phase available ({} ms to boundary); replay source \
+                     is not real-time so the grid stays stream-relative",
+                    remain / 12,
+                );
+                0
+            }
+            None => {
+                log::warn!(
+                    "fst4_app::capture: no UTC yet (NTP unsynced) — slot grid is stream-relative"
+                );
+                0
+            }
+        };
         let mut t_compute = 0i64;
         let mut last_audio_us = now_us();
 

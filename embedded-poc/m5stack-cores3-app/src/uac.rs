@@ -328,6 +328,10 @@ struct Ft8ChunkSink {
     chunk: Vec<i16>,
     slot_samples: usize,
     wav_idx: usize,
+    /// Whether the slot grid has been anchored to UTC yet. Until it
+    /// has, boundaries are stream-relative and every decoded `dt` is
+    /// an offset from an arbitrary phase.
+    aligned: bool,
 }
 // SAFETY: `QueueHandle_t` is a raw pointer into IDF-owned state; the
 // IDF queue API is thread-safe by design (that's the whole point of a
@@ -343,6 +347,7 @@ impl Ft8ChunkSink {
             chunk_q,
             chunk: Vec::with_capacity(CHUNK_LEN),
             slot_samples: 0,
+            aligned: false,
             wav_idx: 0,
         }
     }
@@ -350,6 +355,32 @@ impl Ft8ChunkSink {
 
 impl AudioSink for Ft8ChunkSink {
     fn push_samples(&mut self, samples: &[i16]) {
+        // Anchor the slot grid to UTC as soon as the clock is real.
+        //
+        // Without this the boundary is whatever 15 s window the reader
+        // happened to start in, and FT8's coarse sync only searches
+        // ±2.5 s of it — so a real signal is outside the window about
+        // 2/3 of the time and the receiver looks broken for a reason
+        // that has nothing to do with the audio. `uac.rs`'s own note
+        // warned that this failure is "easy to misread as a capture
+        // fault the first time real audio flows" (#313/#163).
+        //
+        // Anchoring costs no samples: the *current* partial slot is
+        // simply given the right length, so the next boundary lands on
+        // the grid. Re-checked at every boundary below, which also
+        // absorbs the clock jumping when NTP first syncs.
+        if !self.aligned {
+            if let Some(remain) =
+                mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS)
+            {
+                self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
+                self.aligned = true;
+                log::info!(
+                    "uac: slot grid anchored to UTC — {} ms to the next boundary",
+                    remain / 12,
+                );
+            }
+        }
         for &s in samples {
             self.chunk.push(s);
             if self.chunk.len() >= CHUNK_LEN {
@@ -374,6 +405,31 @@ impl AudioSink for Ft8ChunkSink {
                     // logging / TX wiring is added.
                     let now_us = unsafe { sys::esp_timer_get_time() };
                     mfsk_app_shared::time_sync::publish_capture_slot(self.wav_idx as u32, now_us);
+
+                    // Drift check against UTC. The sample stream is the
+                    // authority on slot *length* — it is the thing the
+                    // decoder consumes — so this does not re-anchor on
+                    // every wobble; it reports, and only re-anchors
+                    // when the phase error is a fraction of the window
+                    // FT8 can search.
+                    if let Some(remain) =
+                        mfsk_app_shared::time_sync::samples_to_next_slot_12k(SLOT_SECS)
+                    {
+                        let err_ms = if remain > SLOT_SAMPLES_12K / 2 {
+                            -(((SLOT_SAMPLES_12K - remain) / 12) as i32)
+                        } else {
+                            (remain / 12) as i32
+                        };
+                        if err_ms.unsigned_abs() > SLOT_DRIFT_REANCHOR_MS {
+                            log::warn!(
+                                "uac: slot phase {err_ms:+} ms off UTC — re-anchoring"
+                            );
+                            self.slot_samples = SLOT_SAMPLES_12K.saturating_sub(remain);
+                        } else if !self.aligned {
+                            self.aligned = true;
+                            log::info!("uac: slot grid anchored to UTC ({err_ms:+} ms)");
+                        }
+                    }
                 }
             }
         }
@@ -391,19 +447,24 @@ pub fn set_chunk_q(q: sys::QueueHandle_t) {
 }
 
 /// `SlotEnd` cadence in 12 kHz mono samples. Same as `wav_sim`'s
-/// `SLOT_SAMPLES` — 180_000 = 15 s @ 12 kHz, one FT8 slot. UAC
-/// streams continuously so the reader synthesizes the slot boundary
-/// from the post-resample sample count. **No wall-clock alignment**
-/// yet — the slot is bound by sample count, not by UTC :00/:15/:30/:45,
-/// so decode DT reads as an offset from the midpoint of whatever 15 s
-/// window the reader happened to start in, not from the real slot.
-/// Real wall-clock alignment lands with the NTP-fed time_sync hook,
-/// tracked as issue #313 (open item 1); hardware verification of this
-/// path as a whole is #163. Fixing the alignment does not need
-/// hardware and is worth doing before #163 clears — otherwise the
-/// wrong-slot DT is easy to misread as a capture fault the first time
-/// real audio flows.
+/// `SLOT_SAMPLES` — 180_000 = 15 s @ 12 kHz, one FT8 slot. UAC streams
+/// continuously, so the reader synthesises the boundary from the
+/// post-resample sample count.
+///
+/// **Anchored to UTC since 2026-08-22** (#313 open item 1). The count
+/// still sets the slot's *length*; `time_sync::samples_to_next_slot_12k`
+/// sets its *phase*, once at first sight of a real clock and again
+/// whenever the two drift more than [`SLOT_DRIFT_REANCHOR_MS`] apart.
+/// Without NTP there is no phase source and the boundary falls back to
+/// stream-relative — the sink says which of the two it is doing rather
+/// than leaving a reader to guess.
 const SLOT_SAMPLES_12K: usize = 180_000;
+/// The same slot, in seconds — what the UTC grid is computed from.
+const SLOT_SECS: u64 = 15;
+/// Phase error that triggers a re-anchor rather than a note. 250 ms is
+/// a tenth of the ±2.5 s FT8 searches, so this corrects long-term
+/// drift (and the NTP step) without chasing jitter.
+const SLOT_DRIFT_REANCHOR_MS: u32 = 250;
 
 /// Driver event callback. Invoked by the UAC class-driver background
 /// task on every `RX_CONNECTED` / `TX_CONNECTED` notification (i.e.
