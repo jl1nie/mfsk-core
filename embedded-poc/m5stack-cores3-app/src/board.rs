@@ -56,6 +56,19 @@ pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 //    pattern, but nothing depends on it actually controlling the
 //    backlight anymore.
 pub const AW9523_P0_BUS_OUT_EN: u8 = 1 << 1;
+/// P0_2 = BOOST_EN — the converter that actually makes the 5 V.
+///
+/// **2026-08-23**: this bit had no constant and nothing drove it, while
+/// `BUS_OUT_EN` (P0_1, the switch that routes the boost output to the
+/// connector) was asserted on its own. The result is the failure mode
+/// that reads as "the host stack sees nothing": the output-register
+/// readback of P0_1 says HIGH, so VBUS looks enabled, but no converter
+/// is running behind it — a phone plugged into the port does not even
+/// charge, and a device that never sees VBUS never pulls up D+, which
+/// is indistinguishable from an empty port. The pin table two lines up
+/// had said `P0_2 = BOOST_EN` since Phase 0-Core; only the code was
+/// missing. Refs #163.
+pub const AW9523_P0_BOOST_EN: u8 = 1 << 2;
 pub const AW9523_P0_LCD_BL: u8 = 1 << 4;
 pub const AW9523_P0_SPK_EN: u8 = 1 << 7;
 pub const AW9523_P1_TP_RST: u8 = 1 << 0;

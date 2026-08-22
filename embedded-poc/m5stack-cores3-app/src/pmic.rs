@@ -46,7 +46,7 @@ use esp_idf_hal::{
 };
 
 use crate::board::{
-    AW9523B_I2C_ADDR, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST, AW9523_P1_TP_RST,
+    AW9523B_I2C_ADDR, AW9523_P0_BOOST_EN, AW9523_P0_BUS_OUT_EN, AW9523_P0_LCD_BL, AW9523_P1_LCD_RST, AW9523_P1_TP_RST,
     AXP2101_I2C_ADDR,
 };
 
@@ -199,24 +199,40 @@ pub fn vbus_present(i2c: &mut I2cDriver<'_>) -> Result<(bool, u8)> {
     Ok((raw & AXP2101_STATUS1_VBUS_GOOD != 0, raw))
 }
 
-/// `BUS_OUT_EN` の読み戻し結果。2 = まだ試していない、1 = HIGH、0 = LOW。
-/// 画面の USB パネルに出す。
-static VBUS_OUT: AtomicU8 = AtomicU8::new(2);
+/// VBUS 有効化を試みたか (0 = まだ)。ペリフェラルモードでは 0 のまま。
+static VBUS_ATTEMPTED: AtomicU8 = AtomicU8::new(0);
+/// 有効化後に読み戻した AW9523B port0 出力レジスタ。BOOST_EN と
+/// BUS_OUT_EN の両方が立っていることを画面で確認できるように、
+/// 加工せず生のまま持つ。
+static VBUS_OUT0: AtomicU8 = AtomicU8::new(0);
 /// 直近に読んだ AXP2101 STATUS1 (bit5 = VBUS 入力あり)。
 static AXP_STATUS1: AtomicU8 = AtomicU8::new(0);
 
-/// (BUS_OUT_EN 読み戻し, AXP2101 STATUS1)。
-pub fn power_state() -> (u8, u8) {
+/// (VBUS 有効化を試みたか, port0 読み戻し, AXP2101 STATUS1)。
+pub fn power_state() -> (bool, u8, u8) {
     (
-        VBUS_OUT.load(Ordering::Relaxed),
+        VBUS_ATTEMPTED.load(Ordering::Relaxed) != 0,
+        VBUS_OUT0.load(Ordering::Relaxed),
         AXP_STATUS1.load(Ordering::Relaxed),
     )
 }
 
 pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
+    // Boost first, then the switch. P0_2 runs the converter that makes
+    // the 5 V; P0_1 connects its output to the port. Asserting them in
+    // the other order hands the connector a rail that is still ramping.
     let current = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
-    let new_val = current | AW9523_P0_BUS_OUT_EN;
+    write_reg(
+        i2c,
+        AW9523B_I2C_ADDR,
+        AW9523_REG_OUT0,
+        current | AW9523_P0_BOOST_EN,
+    )?;
+    esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
+
+    let new_val = current | AW9523_P0_BOOST_EN | AW9523_P0_BUS_OUT_EN;
     write_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, new_val)?;
+    esp_idf_svc::hal::delay::FreeRtos::delay_ms(20);
 
     // Read back. BUS_OUT_EN gates a boost converter that makes the
     // 5 V VBUS out of the battery, and a device that never sees VBUS
@@ -224,16 +240,19 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     // side, to "nothing is plugged in". Distinguishing "we asked for
     // VBUS" from "the pin is actually high" is worth one I2C read.
     let after = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
-    VBUS_OUT.store(
-        if after & AW9523_P0_BUS_OUT_EN != 0 { 1 } else { 0 },
-        Ordering::Relaxed,
-    );
-    if after & AW9523_P0_BUS_OUT_EN != 0 {
-        log::info!("AW9523B P0_1 (BUS_OUT_EN) HIGH — USB VBUS boost enabled (out0=0x{after:02x})");
+    VBUS_OUT0.store(after, Ordering::Relaxed);
+    VBUS_ATTEMPTED.store(1, Ordering::Relaxed);
+
+    let boost = after & AW9523_P0_BOOST_EN != 0;
+    let sw = after & AW9523_P0_BUS_OUT_EN != 0;
+    if boost && sw {
+        log::info!(
+            "AW9523B P0_2 (BOOST_EN) + P0_1 (BUS_OUT_EN) HIGH — USB VBUS up (out0=0x{after:02x})"
+        );
     } else {
         log::error!(
-            "AW9523B P0_1 (BUS_OUT_EN) readback LOW (out0=0x{after:02x}, wrote 0x{new_val:02x}) \
-             — VBUS boost did not latch; no USB device will enumerate"
+            "AW9523B VBUS readback incomplete: BOOST_EN={boost} BUS_OUT_EN={sw} \
+             (out0=0x{after:02x}, wrote 0x{new_val:02x}) — no USB device will enumerate"
         );
     }
     Ok(())

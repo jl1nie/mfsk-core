@@ -454,7 +454,7 @@ pub fn run_log_panel(
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
             let (dev, cli, evts, err) = crate::uac::usb_counters();
-            let (vbus_out, st1) = crate::pmic::power_state();
+            let (vbus_tried, p0, st1) = crate::pmic::power_state();
 
             let mut panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
                 heapless::Vec::new();
@@ -469,15 +469,25 @@ pub fn run_log_panel(
                 "mode={}",
                 if host_mode { "host" } else { "peripheral" }
             ));
-            line(format_args!(
-                "vbus_out={}",
-                match vbus_out {
-                    1 => "HIGH",
-                    0 => "LOW!",
-                    _ => "n/a",
-                }
-            ));
-            line(format_args!("axp st1=0x{st1:02x}"));
+            if vbus_tried {
+                line(format_args!(
+                    "vbus bst={} sw={}",
+                    if p0 & crate::board::AW9523_P0_BOOST_EN != 0 {
+                        "1"
+                    } else {
+                        "0!"
+                    },
+                    if p0 & crate::board::AW9523_P0_BUS_OUT_EN != 0 {
+                        "1"
+                    } else {
+                        "0!"
+                    }
+                ));
+                line(format_args!("p0=0x{p0:02x} st1=0x{st1:02x}"));
+            } else {
+                line(format_args!("vbus n/a (peripheral)"));
+                line(format_args!("st1=0x{st1:02x}"));
+            }
             line(format_args!(
                 "state={}",
                 match st {
