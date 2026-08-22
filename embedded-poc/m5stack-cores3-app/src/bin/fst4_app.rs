@@ -697,15 +697,23 @@ fn scan_loop() -> ! {
         let refine_ms: i64 = hits.iter().map(|h| h.refine_us - h.recenter_us).sum::<i64>() / 1000;
         let decode_ms: i64 = hits.iter().map(|h| h.decode_us).sum::<i64>() / 1000;
         let n = hits.len().max(1) as i64;
+        // Two lines, not one: the UDP log — the only console once the
+        // USB host driver detaches serial — caps a datagram at
+        // `log_sink::LINE_MAX`, and the combined form ran 195 bytes
+        // against a 160-byte cap, losing the per-candidate breakdown
+        // exactly when it was being read remotely (issue #163).
         log::info!(
             "fst4_app::scan: slot {slot_num} done — {} tried, {} distinct decodes, \
-             search {} ms + loop {} ms, first decode {} ms post-slot \
-             [recentre {} ms/cand, sync-search {} ms/cand, decode {} ms/cand]",
+             search {} ms + loop {} ms, first decode {} ms post-slot",
             hits.len(),
             decoded.len(),
             t_search_ms,
             loop_ms,
             first_ms,
+        );
+        log::info!(
+            "fst4_app::scan: slot {slot_num} per candidate — recentre {} ms, \
+             sync-search {} ms, decode {} ms",
             recenter_ms / n,
             refine_ms / n,
             decode_ms / n,

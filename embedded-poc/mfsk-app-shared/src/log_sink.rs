@@ -21,14 +21,45 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use heapless::{Deque, String};
 
-/// 1 ログ行の最大長 (LCD 6x10 フォントで 22 文字幅 + 余裕)。
-pub const LINE_MAX: usize = 80;
+/// 1 ログ行の最大長。
+///
+/// **160 に拡大 (2026-08-22)。** 元は 80 — LCD の 6x10 フォント 22 文字幅
+/// を基準にした値だが、同じ型が **UDP 送信**にも使われている。USB host を
+/// 入れるとシリアルコンソールが消えるため、UDP はその時点で唯一の観測手段
+/// になる (issue #163)。実測: `uac: rx tick` の音声統計行はちょうど `rms`
+/// の直前で切られていた — 読みたい数値そのものが届かない状態だった。
+///
+/// LCD 側は描画時にどのみち幅で切れるので、拡大による表示上の影響はない。
+/// コストは `LcdPanel` 12 行 + staging 32 行 = +3.5 KB。
+pub const LINE_MAX: usize = 160;
 /// LCD scroll panel に保持する行数。120 px / 10 px = 12 行。
 pub const LCD_LINES: usize = 12;
 /// 起動直後のステージング (LCD/Flash 未初期化時) 行数。
 pub const STAGING_LINES: usize = 32;
 
 pub type LogLine = String<LINE_MAX>;
+
+/// [`LINE_MAX`] に収まるよう切り詰める。**UTF-8 境界を割らない**。
+///
+/// 元は `&line[..LINE_MAX]` — 境界がマルチバイト文字の途中に落ちると
+/// **panic する**。このリポジトリのログ行は em-dash (`—`, 3 バイト) を
+/// 日常的に含むので、これは理論上の話ではない: `LINE_MAX` を 80 から 160
+/// に変えるだけで、どの行のどの位置で切れるかが変わり、以前は無害だった行
+/// が新たに踏みうる。しかも踏む場所がロガー自身なので、落ちたことを報告
+/// する手段ごと失う (issue #163)。
+///
+/// 切り詰めたときは末尾に `~` を付ける。数値が途中で切れた行を、完全な行
+/// と読み違えないため — これも #163 で避けたい「曖昧な結果」の一種。
+fn clip(line: &str) -> &str {
+    if line.len() <= LINE_MAX {
+        return line;
+    }
+    let mut end = LINE_MAX - 1;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
 
 /// LCD scroll panel — `Deque` で末尾追加、容量超過で先頭削除。
 pub struct LcdPanel {
@@ -46,12 +77,11 @@ impl LcdPanel {
 
     pub fn push(&mut self, line: &str) {
         let mut s: LogLine = String::new();
-        let truncated = if line.len() > LINE_MAX {
-            &line[..LINE_MAX]
-        } else {
-            line
-        };
+        let truncated = clip(line);
         let _ = s.push_str(truncated);
+        if truncated.len() < line.len() {
+            let _ = s.push('~');
+        }
         if self.lines.is_full() {
             let _ = self.lines.pop_front();
         }
@@ -147,12 +177,11 @@ impl LogFanout {
 
     fn staging_push(&self, staging: &mut Deque<LogLine, STAGING_LINES>, line: &str) {
         let mut s: LogLine = String::new();
-        let truncated = if line.len() > LINE_MAX {
-            &line[..LINE_MAX]
-        } else {
-            line
-        };
+        let truncated = clip(line);
         let _ = s.push_str(truncated);
+        if truncated.len() < line.len() {
+            let _ = s.push('~');
+        }
         if staging.is_full() {
             let _ = staging.pop_front();
         }
@@ -206,12 +235,27 @@ impl log::Log for FanoutLogger {
         }
         // LCD/flash 用の短い行 (target prefix を捨てる)。
         let mut line: LogLine = String::new();
-        let _ = write!(
+        // `write!` into a full `heapless::String` stops silently — the
+        // formatter's fragment simply fails to push and the `Err` is
+        // the only trace. Mark it, so a line that lost its tail cannot
+        // be misread as a complete one. That distinction is the whole
+        // point during a session where this is the only console
+        // (issue #163): a truncated number read as a whole one is
+        // worse than no number.
+        let complete = write!(
             &mut line,
             "{} {}",
             level_short(record.level()),
             record.args()
-        );
+        )
+        .is_ok();
+        if !complete {
+            // Make room for the marker on a char boundary.
+            while !line.is_empty() && line.len() + 1 > LINE_MAX {
+                line.pop();
+            }
+            let _ = line.push('~');
+        }
         self.inner.push(&line);
 
         // UART にも吐き出す (EspLogger を init していないので自前で)。
