@@ -1623,12 +1623,56 @@ Two things that measurement needed:
   capture/decode PSRAM contention to the top item. **A disproved
   hypothesis can become the right one when the bottleneck moves.**
 
-**What is left**, in order: capture/decode PSRAM contention (the app
-loop is 43.8 s against the bench's 25.7 s for identical work; first
-decode is unaffected at ~2.0 s because it lands before the next slot's
-capture gets going); then `fst4_sync_search` at 419 ms/candidate, still
-the largest per-candidate item; then stage 2c, still single-core, worth
-~60 ms of its 130.
+### Capture/decode PSRAM contention — attacked twice, and a measurement problem
+
+The application's candidate loop is 43-51 s where the bench's is 25.7 s
+for identical work, and idling the capture task closes the gap exactly
+(`MFSK_FST4_APP_CAPTURE_SLOTS=1`: 25.8 s, 419 ms/candidate sync search
+against 1060-1352 with capture running). The effect is real and large —
+2.5-3.2x on that stage — and it is bandwidth, not scheduling: an
+earlier commit established that by silencing the radio, stopping it,
+and reproducing the whole slowdown with a plain internal-DRAM
+reservation and no radio at all.
+
+Two remedies, both measured, neither adopted:
+
+1. **Gather the reachable spans into one contiguous buffer.** The
+   search touches five ~620-sample windows strided across the 53 KB
+   baseband — 25 KB of live data — and copying them together once per
+   candidate costs ~25 µs. Measured 1174 ms/candidate against 1060 for
+   the version without it. **Inconclusive** (see below), and it buys
+   nothing on its own, so it was reverted.
+2. **Put that gathered buffer in internal DRAM**, `.bss`, one per core
+   (51 KB total). This is the buffer the search reads 2 235 times per
+   candidate, so taking it off the contended bus should be the whole
+   fix. It made things **worse, mechanistically**: internal DRAM at
+   capture start fell 159 -> 107 KB and the *polyphase recentre* — a
+   different stage entirely — went 419 -> 861 ms, which is the
+   internal-DRAM starvation signature this file already documents.
+   Reverted. **The binding constraint is internal DRAM, and this
+   system is already spending it where it pays best**; buying speed
+   with more of it loses more than it gains.
+
+**And single-run A/B does not work at this precision.** Two runs of the
+*identical* binary measured the loop at 43.8 s and 51.3 s, with the
+sync search at 1060 and 1352 ms/candidate — a 28% spread, larger than
+the differences above. `recentre` was stable across the same pair
+(421 vs 419 ms), so the variance is specific to the
+bandwidth-contended stage and plausibly depends on the phase between
+the decode and the capture task's block boundaries. Attempt 1's
+"regression" is inside that spread and should not be read as one;
+attempt 2's is not, because its evidence is a different stage doubling
+and 52 KB of internal DRAM disappearing.
+
+Anything further here needs medians over several slots, not one run per
+variant.
+
+**What is left**, in order: capture/decode PSRAM contention (above —
+first decode is unaffected at ~2.0 s either way, because it lands
+before the next slot's capture gets going, so this costs coverage time
+rather than latency); then `fst4_sync_search` at 419 ms/candidate
+uncontended, still the largest per-candidate item; then stage 2c, still
+single-core, worth ~60 ms of its 130.
 
 ### In the receiver application, not the bench
 
