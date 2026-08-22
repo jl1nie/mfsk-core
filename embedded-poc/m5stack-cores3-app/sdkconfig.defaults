@@ -105,3 +105,21 @@ CONFIG_USB_HOST_HUBS_SUPPORTED=y
 # needs to see — a hub whose downstream ports are never walked looks
 # exactly like an empty port from the class driver's side.
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# Enumeration buffer for the default (control) endpoint.
+#
+# The stock 256 bytes cannot hold a UAC device's configuration
+# descriptor. The IC-705's audio interface enumerated as far as
+# GET_FULL_DEV_DESC and then died on the next step:
+#
+#   E ENUM: Configuration descriptor larger than control transfer max length
+#   E ENUM: [1:4] CHECK_SHORT_CONFIG_DESC FAILED
+#     EXT_PORT: [1:4] Port disabled
+#
+# — leaving the hub and the CDC interface enumerated (num_devices=2)
+# and the audio device gone, which from the class driver's side is
+# simply an audio device that never appeared. Audio class descriptors
+# are long: an audio control interface plus its streaming interfaces
+# and format/endpoint descriptors runs past 256 bytes routinely.
+# Refs #163.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
