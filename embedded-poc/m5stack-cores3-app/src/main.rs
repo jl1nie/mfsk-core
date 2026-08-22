@@ -12,6 +12,7 @@
 mod board;
 mod decode_pipeline;
 mod display;
+mod esp_log_bridge;
 mod pmic;
 mod uac;
 

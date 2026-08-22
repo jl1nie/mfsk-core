@@ -58,7 +58,7 @@
 //!   needs a real IC-705 (or other UAC source) connected
 //! - [ ] disconnect/reconnect polish (#35)
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 
@@ -534,6 +534,7 @@ extern "C" fn driver_event_cb(
             return;
         }
     };
+    DRIVER_EVENTS.fetch_add(1, Ordering::Relaxed);
     log::info!("uac: driver event {driver_event:?}");
     if let Some(sender) = EVENT_SENDER.get() {
         if let Err(e) = sender.send(driver_event) {
@@ -1074,5 +1075,78 @@ pub fn start_host() -> Result<()> {
         "uac: host + class driver up — waiting for IC-705 enumeration (driver task core={UAC_DRIVER_TASK_CORE}, prio={UAC_DRIVER_TASK_PRIORITY})"
     );
     set_state(UacState::Waiting);
+    spawn_device_count_probe();
     Ok(())
+}
+
+/// 何秒かおきに USB ホストライブラリが把握しているデバイス数を吐く。
+///
+/// 「列挙されない」には段階があり、どこで止まっているかで打ち手が
+/// まったく変わる — VBUS が出ていないのか、ハブは見えているが下流が
+/// 歩けていないのか、下流まで見えていて UAC ドライバが掴めていないのか。
+/// `usb_host_lib_info()` の `num_devices` は列挙まで終わった台数なので、
+/// IC-705 のように内蔵ハブを持つ機器なら、ハブ + CDC + オーディオで
+/// 複数台に見えるのが正常。0 のまま動かないなら、そもそもポートに
+/// 何も見えていないということで、UAC ドライバより手前の問題になる。
+///
+/// Refs #163.
+fn spawn_device_count_probe() {
+    let _ = std::thread::Builder::new()
+        .stack_size(3072)
+        .name("uac_probe".into())
+        .spawn(|| {
+            let mut last: i32 = -1;
+            let mut since_log = u32::MAX;
+            loop {
+                let mut info = sys::usb_host_lib_info_t::default();
+                // SAFETY: ホストライブラリ導入後にのみ呼ばれる。
+                let err = unsafe { sys::usb_host_lib_info(&mut info) };
+                if err == sys::ESP_OK {
+                    DEVICE_COUNT.store(info.num_devices, Ordering::Relaxed);
+                    CLIENT_COUNT.store(info.num_clients, Ordering::Relaxed);
+                    // 変化時は即、そうでなくても 10 秒おきに。LCD の
+                    // ログパネルは数行しか出ないので、変化時だけだと
+                    // 起動直後の 1 行が流れて消えて読めない。
+                    if info.num_devices != last || since_log >= 5 {
+                        log::info!(
+                            "uac: usb_host_lib_info — num_devices={} num_clients={}",
+                            info.num_devices,
+                            info.num_clients
+                        );
+                        last = info.num_devices;
+                        since_log = 0;
+                    } else {
+                        since_log += 1;
+                    }
+                } else {
+                    log::warn!("uac: usb_host_lib_info failed (err={err:#x})");
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+}
+
+/// ホストライブラリが把握している列挙済みデバイス数。probe 未起動なら `-1`。
+static DEVICE_COUNT: AtomicI32 = AtomicI32::new(-1);
+/// 登録済みクライアント数 (UAC ドライバが 1 つ登録する)。
+static CLIENT_COUNT: AtomicI32 = AtomicI32::new(-1);
+/// クラスドライバのイベント通知回数。0 のままなら UAC ドライバは
+/// 一度も呼ばれていない。
+static DRIVER_EVENTS: AtomicU32 = AtomicU32::new(0);
+/// 直近のエラーコード (0 = なし)。
+static LAST_ERR: AtomicU32 = AtomicU32::new(0);
+
+/// 画面の USB パネルに出す一式: (デバイス数, クライアント数,
+/// ドライバイベント数, 直近エラー)。
+pub fn usb_counters() -> (i32, i32, u32, u32) {
+    (
+        DEVICE_COUNT.load(Ordering::Relaxed),
+        CLIENT_COUNT.load(Ordering::Relaxed),
+        DRIVER_EVENTS.load(Ordering::Relaxed),
+        LAST_ERR.load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn note_err(err: u32) {
+    LAST_ERR.store(err, Ordering::Relaxed);
 }

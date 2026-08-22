@@ -46,6 +46,10 @@ const SHARED_UI_WIDTH: u32 = 135;
 const USB_REGION_X: i32 = 140;
 const USB_REGION_Y: i32 = 2;
 
+/// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
+const USB_PANEL_LINES: usize = 10;
+const USB_PANEL_PITCH: i32 = 12;
+
 /// How long the boot waits before installing the USB host driver.
 ///
 /// Purely a serviceability window: the driver detaches
@@ -322,6 +326,10 @@ pub fn run_log_panel(
         }
 
         crate::log_free_internal("pre-uac-host-install");
+        // Serial is about to go away with the PHY; move the C-side log
+        // output somewhere that survives (see `esp_log_bridge`).
+        crate::esp_log_bridge::install();
+
         if let Err(e) = crate::uac::start_host() {
             log::error!("UAC host start failed: {e:#}");
         }
@@ -329,7 +337,8 @@ pub fn run_log_panel(
     }
 
     let mut tick: u32 = 0;
-    let mut last_usb_line: heapless::String<40> = heapless::String::new();
+    let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
+        heapless::Vec::new();
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
@@ -427,44 +436,89 @@ pub fn run_log_panel(
             last_tx_seq = tx_seq;
         }
 
-        // USB state, always on screen and updated on every transition.
-        // The board spends most of its life waiting for a radio to be
-        // plugged in, and until this line existed there was no way to
-        // tell that state from a crash without a WiFi log.
+        // The USB panel. Everything the USB side knows, on screen,
+        // refreshed every loop.
+        //
+        // This board spends its life on battery with a radio on the
+        // only port it has, which means no serial console (the host
+        // driver takes the PHY) and often no WiFi either. A log line
+        // is not a status display: the log panel holds a handful of
+        // lines and scrolls, so a value printed once at boot is gone
+        // by the time anyone looks. Anything needed to answer "why is
+        // it not enumerating" has to be *standing* somewhere, and the
+        // tick has to be there too — a frozen panel and an idle one
+        // are otherwise the same picture.
+        //
+        // Refs #163.
         {
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
-            let mut line: heapless::String<40> = heapless::String::new();
-            let _ = match st {
-                crate::uac::UacState::Off if host_mode => write!(&mut line, "USB: off"),
-                // Not an error and not idle — this is the board doing
-                // the right thing with the cable it has.
-                crate::uac::UacState::Off => write!(&mut line, "USB: charging (ext power)"),
-                crate::uac::UacState::Waiting => write!(&mut line, "USB: waiting for device"),
-                crate::uac::UacState::Error => write!(&mut line, "USB: ERROR"),
-                crate::uac::UacState::Streaming => match rms {
-                    Some(db) => write!(&mut line, "USB: {sa} sa/s  {db:.0} dBFS"),
-                    None => write!(&mut line, "USB: streaming"),
-                },
+            let (dev, cli, evts, err) = crate::uac::usb_counters();
+            let (vbus_out, st1) = crate::pmic::power_state();
+
+            let mut panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
+                heapless::Vec::new();
+            let mut line = |args: core::fmt::Arguments| {
+                let mut s: heapless::String<30> = heapless::String::new();
+                let _ = s.write_fmt(args);
+                let _ = panel.push(s);
             };
-            if line != last_usb_line {
+
+            line(format_args!("USB  t={tick}"));
+            line(format_args!(
+                "mode={}",
+                if host_mode { "host" } else { "peripheral" }
+            ));
+            line(format_args!(
+                "vbus_out={}",
+                match vbus_out {
+                    1 => "HIGH",
+                    0 => "LOW!",
+                    _ => "n/a",
+                }
+            ));
+            line(format_args!("axp st1=0x{st1:02x}"));
+            line(format_args!(
+                "state={}",
+                match st {
+                    crate::uac::UacState::Off if host_mode => "off",
+                    crate::uac::UacState::Off => "charging",
+                    crate::uac::UacState::Waiting => "waiting",
+                    crate::uac::UacState::Streaming => "streaming",
+                    crate::uac::UacState::Error => "ERROR",
+                }
+            ));
+            line(format_args!("dev={dev} cli={cli}"));
+            line(format_args!("drv_evts={evts}"));
+            line(format_args!("err=0x{err:x}"));
+            line(format_args!("au={sa} sa/s"));
+            match rms {
+                Some(db) => line(format_args!("rms={db:.0} dBFS")),
+                None => line(format_args!("rms=--")),
+            }
+
+            for (i, text) in panel.iter().enumerate() {
+                if last_usb_panel.get(i) == Some(text) {
+                    continue;
+                }
+                let y = USB_REGION_Y + (i as i32) * USB_PANEL_PITCH;
                 Rectangle::new(
-                    Point::new(USB_REGION_X, USB_REGION_Y),
-                    Size::new(320 - USB_REGION_X as u32, 12),
+                    Point::new(USB_REGION_X, y),
+                    Size::new(320 - USB_REGION_X as u32, USB_PANEL_PITCH as u32),
                 )
                 .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
                 .draw(&mut display)
                 .ok();
                 Text::with_baseline(
-                    line.as_str(),
-                    Point::new(USB_REGION_X + 2, USB_REGION_Y + 1),
+                    text.as_str(),
+                    Point::new(USB_REGION_X + 2, y + 1),
                     tx_style,
                     Baseline::Top,
                 )
                 .draw(&mut display)
                 .ok();
-                last_usb_line = line;
             }
+            last_usb_panel = panel;
         }
 
         let _ = fanout;

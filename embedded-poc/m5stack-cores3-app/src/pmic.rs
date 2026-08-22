@@ -35,6 +35,8 @@
 //! I2C bus is returned to the caller; display.rs holds it for the reset
 //! delay and then drops it (Phase 6-Core touch driver will reclaim it).
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use anyhow::{anyhow, Result};
 use esp_idf_hal::{
     delay::FreeRtos,
@@ -193,7 +195,22 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
 /// so the caller logs both and the reader can check the claim.
 pub fn vbus_present(i2c: &mut I2cDriver<'_>) -> Result<(bool, u8)> {
     let raw = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1)?;
+    AXP_STATUS1.store(raw, Ordering::Relaxed);
     Ok((raw & AXP2101_STATUS1_VBUS_GOOD != 0, raw))
+}
+
+/// `BUS_OUT_EN` の読み戻し結果。2 = まだ試していない、1 = HIGH、0 = LOW。
+/// 画面の USB パネルに出す。
+static VBUS_OUT: AtomicU8 = AtomicU8::new(2);
+/// 直近に読んだ AXP2101 STATUS1 (bit5 = VBUS 入力あり)。
+static AXP_STATUS1: AtomicU8 = AtomicU8::new(0);
+
+/// (BUS_OUT_EN 読み戻し, AXP2101 STATUS1)。
+pub fn power_state() -> (u8, u8) {
+    (
+        VBUS_OUT.load(Ordering::Relaxed),
+        AXP_STATUS1.load(Ordering::Relaxed),
+    )
 }
 
 pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
@@ -207,6 +224,10 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     // side, to "nothing is plugged in". Distinguishing "we asked for
     // VBUS" from "the pin is actually high" is worth one I2C read.
     let after = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0)?;
+    VBUS_OUT.store(
+        if after & AW9523_P0_BUS_OUT_EN != 0 { 1 } else { 0 },
+        Ordering::Relaxed,
+    );
     if after & AW9523_P0_BUS_OUT_EN != 0 {
         log::info!("AW9523B P0_1 (BUS_OUT_EN) HIGH — USB VBUS boost enabled (out0=0x{after:02x})");
     } else {
