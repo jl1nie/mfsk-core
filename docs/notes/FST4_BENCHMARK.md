@@ -1501,3 +1501,97 @@ neither is right alone.
 Unmeasured: this models the escalation as sequential units and ignores
 the per-offset setup cost (`symbol_spectra` + bit-metrics rebuild) that
 §13's reason 2 turns on. Phase C's cost is therefore understated here.
+
+## 15. FST4-60 on-device decode time — where it landed (2026-08-22)
+
+Measured on real M5Stack CoreS3 hardware (ESP32-S3, 240 MHz, 8 MB
+PSRAM), FST4-60, golden recording
+(`WSJT-X/samples/FST4+FST4W/210115_0058.wav`, two signals: N5TM at
+−6.9 dB and K9KFR at +16.1 dB per `jt9`). Every number below is one
+run of the binary named beside it, not an average.
+
+### Wideband — 100–3000 Hz at the production `sync_min = 0.8`
+
+`fst4-ddc-bench`, monitor mode, dual-core, streaming front end,
+150 ms per-candidate cap beyond rank 8:
+
+```sh
+MFSK_FST4_DDC_BENCH_BAND=wide MFSK_FST4_DDC_BENCH_MODE=monitor \
+MFSK_FST4_DDC_BENCH_CAP_MS=150 MFSK_FST4_DDC_BENCH_DUAL=1 \
+MFSK_FST4_DDC_BENCH_STREAM=1 MFSK_FST4_DDC_BENCH_FULL_RANKS=8 \
+cargo build --release --bin fst4-ddc-bench
+```
+
+| stage | cost | when |
+|---|---:|---|
+| DDC + spectrogram | 5753 ms | **during capture** — 9% duty of a 60 s slot |
+| coarse search | **1119 ms** | post-slot (fill 712 ms dual-core, rank 291 ms) |
+| first decode | +1182 ms | post-slot |
+| **first decode, post-slot total** | **2301 ms** | against a 7200 ms TX guard |
+| all 50 candidates | 32.8 s | inside the 60 s slot period |
+
+Only the post-slot column competes with the TX guard; the front end is
+paid against a *duty cycle* because a receiver has the whole slot for
+it.
+
+### Sniper — ±250 Hz around a known target
+
+`fst4-ddc-bench` with no environment switches (batch, single-core,
+`sync_min = 8.0` — bench-only, see that constant's own warning):
+
+| stage | cost |
+|---|---:|
+| DDC | 1314 ms |
+| `coarse_sync` | 394 ms |
+| refine, all candidates | 1357 ms |
+| survivor refine + decode (2 decodes) | 300 ms |
+| **total** | **3365 ms** |
+
+This path is not streamed, so all of it is post-slot. Moving it onto
+`fst4_monitor::SlotCapture` would take the 1314 ms DDC off that budget
+the same way the wideband path already does; nothing else about it
+needs to change.
+
+### In the receiver application, not the bench
+
+`fst4-app` with WiFi associated, the LCD rendering and the *next*
+slot's capture running concurrently — i.e. the real operating
+condition:
+
+| | |
+|---|---:|
+| first decode, post-slot | **2392 ms** |
+| all 50 candidates | **37.6 s** |
+| capture front end | 5.5–6.4 s (9–11% duty) |
+
+The 32.8 → 37.6 s difference is the concurrent capture, which is real
+work the bench does not do.
+
+### How it got here
+
+Post-slot time to the first decode went **5207 → 2301 ms** over
+2026-08-21/22. In order of what each was worth:
+
+| change | what moved | PR |
+|---|---|---|
+| capture-time spectrogram | front end (4818 ms) off the post-slot budget entirely | #336 |
+| de-quadratic `coarse_sync` dedup | ranking 2989 → 292 ms | #342 |
+| dual-core correlation fill | fill 1131 → 714 ms | #342 |
+| rank-tiered decode depth | first decode unmoved, threshold recall 22 → 60 of 68 | #341 |
+| internal-DRAM reclamation | app loop 53.6 → 37.6 s, `fst4_sync_search` 1929 → 778 ms/cand | #347 |
+
+Two of those deserve re-reading before optimising anything else here,
+because in both cases the obvious explanation was measured and was
+wrong:
+
+- The wideband search was **not** correlation-bound. Splitting it found
+  the fill at 1131 ms and the *ranking* at 2989 ms — an O(n²) dedup over
+  ~15k candidates. That also explains the 3.2×-per-bin gap against the
+  sniper that §earlier work had provisionally blamed on the spectrogram
+  working set: per-bin fill cost is identical (0.60 ms/bin) for both.
+- The application's slowdown was **not** the radio, and not its own
+  capture task. It was internal DRAM: with
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`, every small allocation
+  prefers internal DRAM and silently falls back to PSRAM once it is
+  gone. Reserving 132 KB of internal DRAM with no radio present
+  reproduces the entire 33 → 54 s slowdown.
