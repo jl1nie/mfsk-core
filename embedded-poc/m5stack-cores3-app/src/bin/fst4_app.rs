@@ -590,9 +590,10 @@ fn scan_loop() -> ! {
 
         for h in &decoded {
             log::info!(
-                "fst4_app::scan: {:?} @ {:.1} Hz dt {:+.2} s — post-slot {} ms",
+                "fst4_app::scan: {:?} @ {:.1} Hz snr {:+.0} dB dt {:+.2} s — post-slot {} ms",
                 h.msg.as_deref().unwrap_or(""),
                 h.refined_hz,
+                h.snr_db,
                 h.dt_sec,
                 h.t_ms + t_search_ms,
             );

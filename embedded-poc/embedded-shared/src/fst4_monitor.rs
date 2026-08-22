@@ -538,7 +538,15 @@ fn monitor_candidate(ctx: &MonitorCtx, i: usize) -> Option<MonitorHit> {
             EqMode::Off,
             SYNC_Q_MIN,
             precomputed,
-            true,
+            // `skip_snr = false`. It was `true` while FST4's only SNR
+            // estimator needed the whole-slot FFT this path does not
+            // build — the flag's original purpose was avoiding a second
+            // `downsample_cached` that would have been pure waste here.
+            // With `fst4_ddc_snr_db` reading the noise out of the
+            // refined baseband instead, the estimate costs a handful of
+            // 512-point FFTs per *decode* and the receiver has a number
+            // to show.
+            false,
             false,
         )
     };

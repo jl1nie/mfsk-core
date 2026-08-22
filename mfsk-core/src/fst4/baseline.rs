@@ -371,3 +371,147 @@ pub(crate) fn fst4_snr_db<P: crate::engine::Protocol>(
         WSJTX_INVALID_SENTINEL
     }
 }
+
+/// Welch segment length for [`fst4_ddc_snr_db`]. 512 bins across the
+/// refine baseband's 111.111 Hz gives 0.217 Hz resolution, and a
+/// 60 s FST4-60 baseband (6667 samples) yields 13 segments to average
+/// — enough that the noise percentile below is stable rather than
+/// reading one realisation's luck.
+const WELCH_N: usize = 512;
+
+/// SNR from the refined baseband alone — no whole-slot FFT, no symbol
+/// spectra, no decode (issue #307/#346).
+///
+/// **Why this exists when `fst4_snr_db_from_cs` already does not need
+/// the big FFT**: that one takes its noise reference from the
+/// non-signal tones of the signal's own comb, and a strong tone leaks
+/// into its neighbours. Measured on the FST4-60 golden, whose two
+/// signals are 25.4 dB apart, it reproduced only 11-14 dB of that
+/// separation regardless of which quantile of the off-tone bins was
+/// used as the reference (tried 1/4, 1/8, 1/16 — the quantile moved
+/// the offset and left the compression). A noise reference inside the
+/// signal's own comb cannot work.
+///
+/// This one takes it from **outside the signal's spectrum but inside
+/// the same buffer**. `wideband_refine_recenter` produces a 111.111 Hz
+/// baseband centred on the candidate, of which FST4-60's four tones
+/// occupy ~12 Hz — so ~90% of the band is signal-free and is measured
+/// in exactly the units the signal is measured in. Nothing has to be
+/// calibrated between two transforms, which is the trap the whole-slot
+/// formula's port fell into twice (see this module's own doc comment).
+///
+/// The arithmetic, with the baseband RMS-normalised upstream so its
+/// mean power is 1:
+///
+/// - `n0` = a low quantile of the Welch periodogram over the
+///   signal-free bins, i.e. noise power per bin;
+/// - `n0 * WELCH_N` = noise power across the whole refine band, so
+///   `1 / (n0 * WELCH_N) - 1` = S/N in that band;
+/// - referring to WSJT-X's 2500 Hz convention costs
+///   `10*log10(111.111 / 2500)`.
+///
+/// Returns `None` when the band looks like noise alone.
+pub(crate) fn fst4_ddc_snr_db<P: crate::engine::Protocol>(
+    cd0: &[Complex<f32>],
+    ds_rate_hz: f32,
+) -> Option<f32> {
+    if cd0.len() < WELCH_N {
+        return None;
+    }
+    let mut planner = crate::engine::fft::default_planner();
+    let fft = planner.plan_forward(WELCH_N);
+
+    // Blackman-Harris, not the rectangular window a plain slice
+    // implies. A rectangular window's sidelobes fall off as 1/f² from
+    // -13 dB,
+    // which on this measurement means a strong signal's own spectrum
+    // sitting on top of the noise floor being measured beside it —
+    // observed directly: with no window the FST4-60 golden's +16.8 dB
+    // signal read 10.3 dB, its floor overestimated ~4.5x, while the
+    // -8.6 dB one was already within 1 dB.
+    let window: Vec<f32> = (0..WELCH_N)
+        .map(|n| {
+            let x = core::f32::consts::TAU * n as f32 / WELCH_N as f32;
+            0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos()
+        })
+        .collect();
+    // The window's mean square, so the periodogram still reads noise
+    // *power* per bin rather than a windowed fraction of it.
+    let win_power = 0.258_0_f32;
+
+    let mut acc = vec![0.0f32; WELCH_N];
+    let mut buf = vec![Complex::new(0.0f32, 0.0); WELCH_N];
+    let nseg = cd0.len() / WELCH_N;
+    for seg in 0..nseg {
+        for (b, (c, w)) in buf
+            .iter_mut()
+            .zip(cd0[seg * WELCH_N..(seg + 1) * WELCH_N].iter().zip(&window))
+        {
+            *b = c * *w;
+        }
+        fft.process(&mut buf);
+        for (a, c) in acc.iter_mut().zip(buf.iter()) {
+            *a += c.norm_sqr();
+        }
+    }
+    // Normalise so the mean over bins equals the baseband's own mean
+    // power — that is what makes `n0 * WELCH_N` a share of the total
+    // and lets the caller's RMS normalisation cancel out.
+    let norm = 1.0 / (nseg as f32 * WELCH_N as f32 * WELCH_N as f32 * win_power);
+    for a in acc.iter_mut() {
+        *a *= norm;
+    }
+
+    // Exclude the signal. The tones run from the candidate frequency
+    // (bin 0 after recentring) upward, so the occupied span is
+    // `NTONES * TONE_SPACING_HZ`; the guard either side covers GFSK
+    // shaping and the fine-frequency offset the sync search has not
+    // applied here.
+    let hz_per_bin = ds_rate_hz / WELCH_N as f32;
+    let guard_hz = P::TONE_SPACING_HZ * 2.0;
+    let hi_bin = ((P::TONE_SPACING_HZ * P::NTONES as f32 + guard_hz) / hz_per_bin) as usize;
+    let lo_bin = WELCH_N - (guard_hz / hz_per_bin) as usize;
+
+    let mut noise: Vec<f32> = acc
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| *k > hi_bin && *k < lo_bin)
+        .map(|(_, &p)| p)
+        .collect();
+    if noise.len() < WELCH_N / 4 {
+        return None;
+    }
+    noise.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+    // Median, not a mean: this reference is outside the signal, but
+    // "outside" is not "clean" — another station inside the same
+    // 111 Hz refine band would land in these bins, and a median
+    // ignores it where a mean would not.
+    //
+    // The median of a Welch periodogram is **not** the noise power,
+    // and the correction depends on how many segments were averaged:
+    // each bin is chi-squared with `2 * nseg` degrees of freedom, whose
+    // median/mean ratio is `(1 - 1/(9 * nseg))³` (Wilson-Hilferty).
+    // Getting this wrong is not subtle — using the single-periodogram
+    // factor `ln 2` here inflated the floor by 1.4x, which is more than
+    // the entire signal-to-noise ratio of a threshold FST4 signal in
+    // this band (-13.5 dB in 111 Hz at -27 dB in 2500 Hz), so every
+    // corpus trial came back "no signal" while the two strong signals
+    // of the golden still looked fine.
+    let median_over_mean = {
+        let c = 1.0 - 1.0 / (9.0 * nseg as f32);
+        c * c * c
+    };
+    let n0 = noise[noise.len() / 2] / median_over_mean;
+    // NaN-safe: a floor that is not a positive number means the band
+    // held nothing measurable.
+    if n0.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) {
+        return None;
+    }
+
+    let mean_power = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+    let snr_band = mean_power / (n0 * WELCH_N as f32) - 1.0;
+    if snr_band <= 0.0 {
+        return None;
+    }
+    Some(10.0 * snr_band.log10() + 10.0 * (ds_rate_hz / 2500.0).log10())
+}

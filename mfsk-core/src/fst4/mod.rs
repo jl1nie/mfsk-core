@@ -153,6 +153,7 @@ macro_rules! fst4_submode {
             /// from anything else — see the `fst4_submode!` invocation
             /// below for this sub-mode's literal.
             pub(crate) const SNR_CALFAC: f32 = $snr_calfac;
+
         }
 
         impl ModulationParams for $name {

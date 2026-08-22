@@ -143,6 +143,20 @@ macro_rules! impl_frame_decodable {
             /// scale-convention mismatch) it took to land within ~1-2
             /// dB of jt9's own reported SNR (issue #255).
             fn snr_db(ctx: pipeline::SnrCtx<'_>) -> f32 {
+                if ctx.fft_cache.is_empty() {
+                    // A DDC receiver: no whole-slot FFT exists, by
+                    // design (`fst4::ddc`), so WSJT-X's own formula has
+                    // no inputs. Measure the noise outside the signal's
+                    // own spectrum in the refined baseband instead —
+                    // see `fst4_ddc_snr_db`, and its doc comment for
+                    // why the symbol spectra cannot supply that
+                    // reference themselves.
+                    return crate::fst4::baseline::fst4_ddc_snr_db::<$proto>(
+                        ctx.cd0,
+                        ctx.ds_rate_hz,
+                    )
+                    .unwrap_or(-99.9);
+                }
                 crate::fst4::baseline::fst4_snr_db::<$proto>(
                     ctx.itone,
                     ctx.cand_freq_hz,
