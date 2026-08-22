@@ -17,6 +17,26 @@ rather than distributing them across patches.
 
 ### Added
 
+- **FST4 reports SNR without a whole-slot FFT** — `fst4::baseline`'s
+  `fst4_ddc_snr_db`, reached automatically when `SnrCtx::fft_cache` is
+  empty. WSJT-X's own formula reads both its noise baseline and its
+  signal power out of the big forward FFT of the raw slot; a DDC
+  receiver never computes that FFT, so on that path `snr_db` was `NaN`.
+
+  The new estimator takes its noise reference from the part of the
+  refined baseband the signal does not occupy — 111.111 Hz wide against
+  ~12 Hz of FST4-60 tones — so every term comes from one buffer and the
+  pipeline's RMS normalisation cancels. Against a corpus whose SNR is
+  known by construction it holds a **1.0 dB bias spread from -20 to
+  -28 dB**, and on the WSJT-X FST4 sample it lands closer to `jt9`'s own
+  probed values than the whole-slot formula does (N5TM -5.7 vs jt9
+  -6.9, K9KFR 15.7 vs 16.1). `fst4::rung_major`'s scheduler fills the
+  field in too, where it also used to write `NaN`.
+
+  `SnrCtx` gains `cd0`/`ds_rate_hz` for this, and
+  `engine::llr::snr_ratio` is split out of `compute_snr_db` — the
+  scale-free half is shared across protocols while the dB tail is not.
+
 - **`coarse_sync`'s correlation matrix is now a public seam**
   (issue #327) — `sync2d_shape` / `fill_sync2d_row` /
   `coarse_sync_from_sync2d`, alongside the existing
