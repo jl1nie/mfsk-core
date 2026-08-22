@@ -271,11 +271,32 @@ impl SlotCapture {
 
     /// End the slot: flush the cascade's tail and finish the
     /// spectrogram.
+    /// How many baseband samples have been produced so far. A caller
+    /// pacing a slot by sample count is measuring the DDC's output,
+    /// not its input, so this is the number that says whether a slot
+    /// is actually full.
+    pub fn produced(&self) -> usize {
+        self.coarse_i.len()
+    }
+
     pub fn finish(mut self) -> CapturedSlot {
         let from = self.coarse_i.len();
         self.ddc.flush(&mut self.coarse_i, &mut self.coarse_q);
         if let Some(b) = self.builder.as_mut() {
             b.push(&self.coarse_i[from..], &self.coarse_q[from..]);
+        }
+        // Where a non-finite value first appears decides what is
+        // broken: the DDC, the spectrogram FFTs, or the correlation
+        // that reads them. Checking both here rather than only after
+        // the correlation is what separates those three.
+        let bad_bb = self
+            .coarse_i
+            .iter()
+            .chain(self.coarse_q.iter())
+            .filter(|v| !v.is_finite())
+            .count();
+        if bad_bb > 0 {
+            log::warn!("fst4_monitor: {bad_bb} non-finite baseband samples out of capture");
         }
         CapturedSlot {
             cfg: self.cfg,
@@ -348,6 +369,23 @@ pub fn coarse_search(slot: &CapturedSlot) -> (Vec<SyncCandidate>, i64, i64) {
     let Some(shape) = sync2d_shape::<Fst4s60>(cfg.freq_lo(), cfg.freq_hi(), cfg.rx_grid()) else {
         return (Vec::new(), 0, 0);
     };
+    {
+        // `avg_power_per_bin` is the only whole-spectrogram view the
+        // public API offers; a non-finite cell anywhere in a bin makes
+        // that bin's average non-finite, which is enough to say
+        // *whether* the spectrogram is the source and *which* bins.
+        let avg = s.avg_power_per_bin();
+        let bad = avg.iter().filter(|v| !v.is_finite()).count();
+        if bad > 0 {
+            let first = avg.iter().position(|v| !v.is_finite()).unwrap_or(0);
+            log::warn!(
+                "fst4_monitor: {bad} of {} spectrogram bins non-finite (first at bin {first}, \
+                 offset {})",
+                avg.len(),
+                s.freq_offset(),
+            );
+        }
+    }
 
     let t_fill0 = now_us();
     let mut sync2d = alloc::vec![0.0f32; shape.len()];
@@ -368,6 +406,21 @@ pub fn coarse_search(slot: &CapturedSlot) -> (Vec<SyncCandidate>, i64, i64) {
         }
     }
     let fill_us = now_us() - t_fill0;
+
+    // A non-finite cell here means the front end produced one, and the
+    // ranking stage downstream cannot rank what it cannot compare.
+    // Counted rather than asserted because a receiver that has been up
+    // for hours should say what it saw and keep going — and because
+    // real hardware produced this on a second slot after a clean first
+    // one, which is exactly the shape a silent check would have hidden.
+    let bad = sync2d.iter().filter(|v| !v.is_finite()).count();
+    if bad > 0 {
+        log::warn!(
+            "fst4_monitor: {bad} of {} correlation cells are non-finite — \
+             the baseband or spectrogram is corrupt",
+            sync2d.len(),
+        );
+    }
 
     let t_rank0 = now_us();
     let cands = coarse_sync_from_sync2d::<Fst4s60>(

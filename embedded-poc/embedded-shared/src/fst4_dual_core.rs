@@ -92,8 +92,19 @@ const APP_CPU: i32 = 1;
 /// `Ldpc174_91`), so it sits near FT8's 16 KB rather than WSPR's.
 ///
 /// [`log_worker_stack`] reports the real high-water mark every batch so
-/// this stays measured rather than reverting to a guess.
-pub const WORKER_STACK_BYTES: usize = 48 * 1024;
+/// this stays measured rather than reverting to a guess. Highest seen
+/// across the bench and the receiver app is 7 440 B.
+///
+/// **Reduced 48 -> 24 KiB, 2026-08-22, and the reason is not tidiness.**
+/// This is a `.bss` reservation in *internal* DRAM, and the FST4
+/// receiver measured what internal DRAM is worth to the decoder: with
+/// 132 KB of it reserved and nothing else changed, the candidate loop
+/// went 33.3 -> 54.3 s and `fst4_sync_search` 711 -> 2212 ms per
+/// candidate, because `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` makes
+/// every small allocation *prefer* internal DRAM and silently fall back
+/// to PSRAM once it is gone. Over-reserving here is not free space; it
+/// is decode throughput.
+pub const WORKER_STACK_BYTES: usize = 24 * 1024;
 
 #[repr(align(16))]
 struct WorkerStack([u8; WORKER_STACK_BYTES]);

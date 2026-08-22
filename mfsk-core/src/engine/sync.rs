@@ -1035,7 +1035,13 @@ pub fn coarse_sync_from_sync2d<P: Protocol>(
 
     let pct = |xs: &[f32]| {
         let mut sorted = xs.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // `total_cmp`, not `partial_cmp().unwrap()`. A NaN reaching
+        // here is a bug upstream, but aborting the whole decoder is
+        // the wrong response to one: real hardware hit exactly this
+        // (CoreS3 FST4 receiver, 2026-08-22, second slot) and the
+        // process died. `total_cmp` sorts NaNs to one end and the
+        // percentile below carries on.
+        sorted.sort_by(f32::total_cmp);
         let pct_idx = (0.40 * n_freq as f32) as usize;
         sorted[pct_idx.min(n_freq - 1)].max(f32::EPSILON)
     };

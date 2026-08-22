@@ -135,11 +135,16 @@ const REPLAY_BLOCK: usize = 12_000;
 /// this app aborted in `phy_track_pll_init` with `ESP_ERR_NO_MEM`
 /// against 15 KB of internal DRAM left, with a 96 KiB reservation here
 /// as the largest single cause.
-const SCAN_STACK: u32 = 48 * 1024;
-/// Small, and deliberately **not** in PSRAM: this is the DSP-heavy task
-/// (7.9 s per slot of FIR and FFT), and a PSRAM stack would slow every
-/// inner loop that touches a local. The network task is the one that
-/// can afford external memory.
+const SCAN_STACK: u32 = 24 * 1024;
+/// In PSRAM, like the display and network tasks.
+///
+/// The first version of this file argued the opposite — DSP task,
+/// keep its stack fast — and that reasoning was measured and found
+/// backwards. This task's actual working set is the `SlotCapture`'s
+/// heap buffers; its *stack* holds only small locals. Meanwhile every
+/// KiB of internal DRAM it reserves is a KiB the decoder's own small
+/// allocations fall back to PSRAM without, which costs far more (see
+/// `fst4_dual_core::WORKER_STACK_BYTES` for the measurement).
 const CAPTURE_STACK: u32 = 16 * 1024;
 const DISPLAY_STACK: u32 = 24 * 1024;
 const NETWORK_STACK: u32 = 24 * 1024;
@@ -187,6 +192,43 @@ const CAPTURE_SLOTS: usize = {
 /// retry. This switch is what separates "the decode is slow" from "the
 /// radio is eating the decode".
 const NO_WIFI: bool = match option_env!("MFSK_FST4_APP_NO_WIFI") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
+/// `MFSK_FST4_APP_NO_CONNECT=1` — bring the WiFi *driver* up but never
+/// associate. Diagnostic: separates the cost of the radio existing
+/// from the cost of it carrying a network's traffic.
+const NO_CONNECT: bool = match option_env!("MFSK_FST4_APP_NO_CONNECT") {
+    Some(v) => matches!(v.as_bytes(), [b'1']),
+    None => false,
+};
+
+/// `MFSK_FST4_APP_HOG_KB=<n>` — reserve `n` KB of **internal** DRAM at
+/// boot and never release it. Diagnostic: reproduces the WiFi driver's
+/// memory footprint without the radio, which is what separates
+/// "internal DRAM starvation" from everything else the driver leaves
+/// behind.
+const HOG_KB: usize = {
+    let v = option_env!("MFSK_FST4_APP_HOG_KB");
+    match v {
+        Some(s) => {
+            let b = s.as_bytes();
+            let mut i = 0;
+            let mut acc = 0usize;
+            while i < b.len() {
+                acc = acc * 10 + (b[i] - b'0') as usize;
+                i += 1;
+            }
+            acc
+        }
+        None => 0,
+    }
+};
+
+/// `MFSK_FST4_APP_WIFI_STOP=1` — with `NO_CONNECT`, also stop the
+/// radio after the driver is up. Diagnostic, see the call site.
+const WIFI_STOP: bool = match option_env!("MFSK_FST4_APP_WIFI_STOP") {
     Some(v) => matches!(v.as_bytes(), [b'1']),
     None => false,
 };
@@ -308,6 +350,22 @@ fn main() -> ! {
     // up.
     fst4_dual_core::init();
 
+    if HOG_KB > 0 {
+        const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
+        // 4 KiB blocks, matching what `SPIRAM_MALLOC_ALWAYSINTERNAL`
+        // treats as "small enough to want internal DRAM" — the same
+        // shape the allocations this is meant to crowd out have.
+        let mut got = 0usize;
+        for _ in 0..HOG_KB / 4 {
+            let p = unsafe { esp_idf_svc::sys::heap_caps_malloc(4096, MALLOC_CAP_INTERNAL_8BIT) };
+            if p.is_null() {
+                break;
+            }
+            got += 4;
+        }
+        log::warn!("fst4_app: MFSK_FST4_APP_HOG_KB={HOG_KB} — reserved {got} KB of internal DRAM");
+    }
+
     let peripherals = Peripherals::take().expect("peripherals taken twice");
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = settings::open_nvs(nvs_part.clone()).expect("settings NVS open");
@@ -359,7 +417,20 @@ fn main() -> ! {
     log_heap("post-wifi-driver-init");
 
     if let Some(wifi_driver) = wifi_driver {
-        spawn_network_task(NetworkCtx { wifi_driver, nvs });
+        if NO_CONNECT {
+            log::warn!("fst4_app: MFSK_FST4_APP_NO_CONNECT=1 — driver up, no association");
+            if WIFI_STOP {
+                // Separates "the radio is on" from "the radio's memory
+                // is spoken for": `esp_wifi_stop` silences the receiver
+                // while every buffer the driver allocated stays
+                // allocated.
+                let r = unsafe { esp_idf_svc::sys::esp_wifi_stop() };
+                log::warn!("fst4_app: esp_wifi_stop() -> {r} (radio silenced, memory retained)");
+            }
+            core::mem::forget(wifi_driver);
+        } else {
+            spawn_network_task(NetworkCtx { wifi_driver, nvs });
+        }
     }
     log_heap("post-network-spawn");
 
@@ -381,7 +452,7 @@ extern "C" fn capture_task_entry(_arg: *mut core::ffi::c_void) {
 
 fn spawn_capture_task() {
     let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
             Some(capture_task_entry),
             c"fst4_capture".as_ptr(),
             CAPTURE_STACK,
@@ -389,6 +460,7 @@ fn spawn_capture_task() {
             CAPTURE_PRIORITY,
             core::ptr::null_mut(),
             1,
+            MALLOC_CAP_SPIRAM,
         )
     };
     if created != 1 {
@@ -692,7 +764,7 @@ extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
 fn spawn_display_task(ctx: DisplayCtx) {
     let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
     let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
             Some(display_task_entry),
             c"fst4_display".as_ptr(),
             DISPLAY_STACK,
@@ -700,6 +772,7 @@ fn spawn_display_task(ctx: DisplayCtx) {
             DISPLAY_PRIORITY,
             core::ptr::null_mut(),
             1,
+            MALLOC_CAP_SPIRAM,
         )
     };
     if created != 1 {
@@ -906,6 +979,20 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
         }
     };
     log::info!("fst4_app::net: WiFi up, ip {}", info.ip);
+
+    // Modem power save. The default is `WIFI_PS_NONE`, which keeps the
+    // receiver on continuously and hands every frame on the network —
+    // including all the broadcast and multicast traffic a home LAN
+    // carries — to a driver task running at FreeRTOS priority 23, above
+    // anything this application creates. Measured: an *associated,
+    // otherwise idle* STA cost the candidate loop 33 -> 53 s and
+    // `fst4_sync_search` 711 -> 1500 ms per candidate.
+    //
+    // `MIN_MODEM` lets the radio sleep between DTIM beacons, which is
+    // all a receiver that only needs NTP, a config page and a log sink
+    // ever wanted from the association.
+    let r = unsafe { esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_MIN_MODEM) };
+    log::info!("fst4_app::net: esp_wifi_set_ps(MIN_MODEM) -> {r}");
 
     // UDP log sink — the serial console goes away the moment the USB
     // host driver installs, so this is the only log this app has once
