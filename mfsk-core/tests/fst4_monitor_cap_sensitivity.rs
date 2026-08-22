@@ -55,12 +55,15 @@ use common::load_wav_i16_opt;
 use num_complex::Complex;
 
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
+use mfsk_core::engine::equalize::EqMode;
+use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
 use mfsk_core::engine::sync::{AudioSource, RxGrid, SyncCandidate, coarse_sync};
 use mfsk_core::engine::sync2d::fst4_sync_search;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::fst4::ddc::{
     REFINE_DS_RATE_HZ, grid_for, wideband_cascade, wideband_refine_recenter,
 };
+use mfsk_core::fst4::decode::FST4_60A_DOWNSAMPLE;
 use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
 use mfsk_core::msg::decode_request::DecodeRequest;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -74,10 +77,22 @@ const CENTER_HZ: f32 = 1550.0;
 const HALF_WIDTH_HZ: f32 = 1450.0;
 const GRID_BW_HZ: f32 = 2900.0;
 const SYNC_MIN: f32 = 0.8;
+/// `fst4::decode`'s own (private) sync-quality floor, redeclared the
+/// same way `fst4_ddc_bench` redeclares it.
+const SYNC_Q_MIN: u32 = 16;
 const MAX_CAND: usize = 50;
 
 /// Stage budgets to sweep. 4 is the uncapped reference.
 const BUDGETS: [i32; 5] = [0, 1, 2, 3, 4];
+
+/// `fst4_ddc_bench`'s shipped `FULL_DEPTH_RANKS` (#341) — how many
+/// top-ranked candidates skip the cap entirely.
+const TIER_RANKS: usize = 8;
+/// What the shipped 150 ms wall-clock cap buys the tail, in this
+/// harness's device-independent unit: everything up to but not
+/// including OSD. #337 measured the two as behaving the same way
+/// (65 -> 22 at -27 dB either way).
+const TIER_TAIL_BUDGET: i32 = 3;
 
 thread_local! {
     /// Remaining Phase B/C stages this candidate may run. A
@@ -185,6 +200,9 @@ struct TrialOutcome {
     /// Rank the golden signal sat at in `coarse_sync`'s output, if it
     /// ever decoded at any budget — the ordering half of the question.
     golden_rank: Option<usize>,
+    /// The shipped tiered monitor (#341): full production ladder for
+    /// the first [`TIER_RANKS`] candidates, capped tail after.
+    tiered: bool,
 }
 
 fn run_trial(audio: &[i16]) -> TrialOutcome {
@@ -221,17 +239,23 @@ fn run_trial(audio: &[i16]) -> TrialOutcome {
 
     // Refine every candidate once and reuse across budgets — refine is
     // the expensive half and is budget-independent.
-    let refined: Vec<RungMajorCandidate> = cands
+    let refined: Vec<(RungMajorCandidate, f32)> = cands
         .iter()
         .map(|c| {
             let cd0 = ddc_refine(c, &ci, &cq, delay);
             let s2 = fst4_sync_search::<Fst4s60>(&cd0, c);
-            RungMajorCandidate {
-                cand: c.clone(),
-                cd0,
-                refined_freq_hz: s2.freq_hz,
-                i0: s2.i0,
-            }
+            (
+                RungMajorCandidate {
+                    cand: c.clone(),
+                    cd0,
+                    refined_freq_hz: s2.freq_hz,
+                    i0: s2.i0,
+                },
+                // `process_candidate_precomputed` wants the sync score
+                // too; `decode_phase_split_timed` does not, which is
+                // why it was dropped before the tiered arm existed.
+                s2.score,
+            )
         })
         .collect();
 
@@ -239,7 +263,7 @@ fn run_trial(audio: &[i16]) -> TrialOutcome {
     let mut golden_rank = None;
     for &b in &BUDGETS {
         let mut hit = None;
-        for (rank, rc) in refined.iter().enumerate() {
+        for (rank, (rc, _)) in refined.iter().enumerate() {
             STAGE_BUDGET.with(|c| c.set(b));
             let inputs = [RungMajorCandidate {
                 cand: rc.cand.clone(),
@@ -271,10 +295,69 @@ fn run_trial(audio: &[i16]) -> TrialOutcome {
         per_budget.push((hit.is_some(), hit));
     }
 
+    // The shipped monitor is neither a uniform cap nor uncapped: since
+    // #341 it gives the top `TIER_RANKS` candidates the full production
+    // ladder — which is what carries OSD *and* production's automatic
+    // `i0 +/- 1` retry — and caps only the tail. Model that exactly, so
+    // the table has a row for what the device actually runs rather than
+    // only for the two ends it sits between.
+    let mut tiered = false;
+    for (rank, (rc, score)) in refined.iter().enumerate() {
+        let hit = if rank < TIER_RANKS {
+            process_candidate_precomputed::<Fst4s60>(
+                &rc.cand,
+                &[],
+                &FST4_60A_DOWNSAMPLE,
+                DecodeDepth::FULL,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                SYNC_Q_MIN,
+                (rc.cd0.clone(), rc.refined_freq_hz, rc.i0, *score),
+                true,
+                false,
+            )
+            .and_then(|r| {
+                r.message77()
+                    .try_into()
+                    .ok()
+                    .and_then(|m: &[u8; 77]| unpack77(m))
+            })
+        } else {
+            STAGE_BUDGET.with(|c| c.set(TIER_TAIL_BUDGET));
+            let inputs = [RungMajorCandidate {
+                cand: rc.cand.clone(),
+                cd0: rc.cd0.clone(),
+                refined_freq_hz: rc.refined_freq_hz,
+                i0: rc.i0,
+            }];
+            let (out, _) = decode_phase_split_timed::<Fst4s60>(
+                &inputs,
+                false,
+                false,
+                &[0],
+                None,
+                Some(budget_ok),
+                12_000.0,
+            );
+            out.first().and_then(|o| o.as_ref()).and_then(|r| {
+                r.message77()
+                    .try_into()
+                    .ok()
+                    .and_then(|m: &[u8; 77]| unpack77(m))
+            })
+        };
+        if hit.as_deref() == Some(GOLDEN_MSG) {
+            tiered = true;
+            break;
+        }
+    }
+
     TrialOutcome {
         baseline,
         per_budget,
         golden_rank,
+        tiered,
     }
 }
 
@@ -334,10 +417,10 @@ fn run_budget_sweep(channel: &str, snr_lo: i32, snr_hi: i32) {
     );
     eprintln!("budget 4 = uncapped reference; 0 = llra only\n");
     eprintln!(
-        "  {:>7}  {:>5}  {:>9}  {:>7} {:>7} {:>7} {:>7} {:>7}  {:>10}",
-        "SNR(dB)", "n", "baseline", "b=0", "b=1", "b=2", "b=3", "b=4", "median rank"
+        "  {:>7}  {:>5}  {:>9}  {:>7} {:>7} {:>7} {:>7} {:>7}  {:>9}  {:>10}",
+        "SNR(dB)", "n", "baseline", "b=0", "b=1", "b=2", "b=3", "b=4", "shipped", "median rank"
     );
-    eprintln!("{:-<86}", "");
+    eprintln!("{:-<98}", "");
 
     for (snr, group) in &groups {
         #[cfg(feature = "parallel")]
@@ -368,10 +451,14 @@ fn run_budget_sweep(channel: &str, snr_lo: i32, snr_hi: i32) {
             format!("{}", ranks[ranks.len() / 2] + 1)
         };
 
+        let tiered = outcomes.iter().filter(|o| o.tiered).count();
         eprintln!(
-            "  {snr:>7}  {n:>5}  {:>4}/{:<4}  {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3}  {:>10}",
-            base, n, per[0], n, per[1], n, per[2], n, per[3], n, per[4], n, median_rank,
+            "  {snr:>7}  {n:>5}  {:>4}/{:<4}  {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3} {:>3}/{:<3}  {:>4}/{:<4}  {:>10}",
+            base, n, per[0], n, per[1], n, per[2], n, per[3], n, per[4], n, tiered, n, median_rank,
         );
     }
-    eprintln!("{:-<86}", "");
+    eprintln!("{:-<98}", "");
+    eprintln!(
+        "shipped = tier {TIER_RANKS} full production ladder + budget-{TIER_TAIL_BUDGET} tail (#341)"
+    );
 }
