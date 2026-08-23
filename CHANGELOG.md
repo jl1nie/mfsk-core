@@ -17,6 +17,13 @@ rather than distributing them across patches.
 
 ### Added
 
+- **The docs say what the hardware does.** README still read "live
+  IC-705 hardware verification hasn't happened yet (issue #163)" and
+  led with the StickS3 as the working receiver; ROADMAP's Phase B-Core
+  and the root notes carried the same claim and listed the touch UI as
+  pending when it is how the mode is chosen. `LIBRARY.md` needed
+  nothing — no public API changed, and its examples are doctests the
+  merge gate runs.
 - **CoreS3 operator manual**, in English and Japanese
   (`docs/reference/MANUAL_M5STACK_CORES3.md` / `.ja.md`), plus the
   crate's first `CLAUDE.md`. The project's main hardware target had no
