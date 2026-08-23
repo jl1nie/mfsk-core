@@ -614,6 +614,12 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 log::info!("wspr_app: installing USB host + UAC class driver");
                 if let Err(e) = crate::uac::start_host() {
                     log::error!("wspr_app: UAC host start failed: {e:#}");
+                    let mut msg: heapless::String<96> = heapless::String::new();
+                    {
+                        use core::fmt::Write as _;
+                        let _ = write!(&mut msg, "start_host FAILED: {e:#}");
+                    }
+                    crate::uac::HOST_RESULT.store(msg.as_str());
                 }
             } else {
                 log::info!(
@@ -714,6 +720,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     // Mode picker: held open, so it costs no layout. Centred on this
     // 320x240 panel.
     let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
+    let mut boot_summary_sent = false;
     let mut last_contact = crate::touch::Contact::default();
     let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
         (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
@@ -782,6 +789,23 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // recently.
             if let Some(i2c) = touch_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
+                // Once, the first frame after a log sink exists. In
+                // host mode there is no serial console, and everything
+                // this reports is printed seconds before WiFi
+                // associates — the staging ring has been overwritten by
+                // then. Same one-shot the FT8 controller does.
+                if !boot_summary_sent
+                    && crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false)
+                {
+                    boot_summary_sent = true;
+                    let (host_attempted, ..) = crate::pmic::power_state();
+                    let r = crate::uac::HOST_RESULT.read();
+                    log::warn!(
+                        "[boot-summary] mode=WSPR host_mode={host_attempted} start_host: {}",
+                        if r.is_empty() { "never called" } else { r.as_str() }
+                    );
+                    crate::pmic::log_boot_summary(i2c);
+                }
             }
             link_bar::render(
                 &mut display,
