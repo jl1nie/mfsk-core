@@ -378,20 +378,32 @@ pub fn run_log_panel(
     // with a flasher. `USB_HOST_DELAY_MS` is the difference between a
     // board you can re-flash and one that needs the download-mode
     // button dance.
-    if host_mode && USB_PANEL {
-        let mut banner: heapless::String<40> = heapless::String::new();
-        {
-            use core::fmt::Write as _;
-            let _ = write!(&mut banner, "USB: host in {} ms", USB_HOST_DELAY_MS);
+    // `host_mode` alone. This block is not the banner — it is the
+    // delay, the wait for a log sink, and `start_host()` itself. It
+    // read `host_mode && USB_PANEL` for one commit, because retiring
+    // the diagnostic panel gated the banner by narrowing the condition
+    // of the block the banner happened to start. The USB host then
+    // never installed at all: VBUS came up, all three enable bits read
+    // back correctly, and nothing was ever asked to enumerate. From the
+    // bench that is indistinguishable from a radio that will not talk.
+    //
+    // Only the drawing is optional.
+    if host_mode {
+        if USB_PANEL {
+            let mut banner: heapless::String<40> = heapless::String::new();
+            {
+                use core::fmt::Write as _;
+                let _ = write!(&mut banner, "USB: host in {} ms", USB_HOST_DELAY_MS);
+            }
+            Text::with_baseline(
+                banner.as_str(),
+                Point::new(USB_REGION_X + 2, USB_REGION_Y + 1),
+                tx_style,
+                Baseline::Top,
+            )
+            .draw(&mut display)
+            .ok();
         }
-        Text::with_baseline(
-            banner.as_str(),
-            Point::new(USB_REGION_X + 2, USB_REGION_Y + 1),
-            tx_style,
-            Baseline::Top,
-        )
-        .draw(&mut display)
-        .ok();
         log::info!(
             "uac: installing USB host in {USB_HOST_DELAY_MS} ms — serial console goes away then \
              (this is the window to re-flash)"
