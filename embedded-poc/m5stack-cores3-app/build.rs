@@ -23,7 +23,7 @@ fn main() {
     let cfg_path = manifest_dir.join("cfg.toml");
     println!("cargo:rerun-if-changed={}", cfg_path.display());
 
-    let (ssid, psk, pc_ip, port, boot_mode) = if cfg_path.exists() {
+    let (ssid, psk, pc_ip, port, boot_mode, my_call, my_grid) = if cfg_path.exists() {
         let txt = std::fs::read_to_string(&cfg_path)
             .unwrap_or_else(|e| panic!("read {}: {}", cfg_path.display(), e));
         let v: toml::Value =
@@ -59,13 +59,31 @@ fn main() {
             .and_then(|s| s.as_str())
             .unwrap_or("")
             .to_string();
-        (ssid, psk, pc_ip, port, boot_mode)
+        // [station] section, optional. Empty values leave the QSO FSM
+        // idle rather than identifying as somebody else — which is what
+        // this app did until 2026-08-23, with a callsign compiled into
+        // `decode_pipeline.rs`. `m5stack-s3-app` has read it from here
+        // since Phase 1.7; this crate was simply never brought across.
+        let station = v.get("station").and_then(|t| t.as_table());
+        let my_call = station
+            .and_then(|s| s.get("call"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let my_grid = station
+            .and_then(|s| s.get("grid"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        (ssid, psk, pc_ip, port, boot_mode, my_call, my_grid)
     } else {
         (
             String::new(),
             String::new(),
             "255.255.255.255".to_string(),
             9999u16,
+            String::new(),
+            String::new(),
             String::new(),
         )
     };
@@ -75,4 +93,6 @@ fn main() {
     println!("cargo:rustc-env=UDP_LOG_TARGET={pc_ip}");
     println!("cargo:rustc-env=UDP_LOG_PORT={port}");
     println!("cargo:rustc-env=BOOT_MODE_DEFAULT={boot_mode}");
+    println!("cargo:rustc-env=MY_CALL={my_call}");
+    println!("cargo:rustc-env=MY_GRID={my_grid}");
 }

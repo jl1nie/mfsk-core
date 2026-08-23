@@ -18,8 +18,17 @@ use esp_idf_svc::sys::QueueHandle_t;
 use mfsk_app_shared::qso::{self, QsoManager, QsoState};
 use mfsk_app_shared::ui::state::{DecodedRow, UI};
 
-const MY_CALL: &str = "JL1NIE";
-const MY_GRID: &str = "PM95";
+/// Operator identity, from `cfg.toml`'s `[station]` section.
+///
+/// These were literals until 2026-08-23 — this repository shipped one
+/// operator's callsign compiled into the source, so anyone else's build
+/// identified as them. `m5stack-s3-app` has taken them from `cfg.toml`
+/// since Phase 1.7; this crate was never brought across.
+///
+/// Empty is a valid value and leaves the QSO FSM idle, which is the
+/// right behaviour for a receiver with no operator configured.
+const MY_CALL: &str = env!("MY_CALL");
+const MY_GRID: &str = env!("MY_GRID");
 
 static QSO_WAVS: &[&[u8]] = &[include_bytes!("../../assets/qso3_busy.wav")];
 

@@ -1,18 +1,61 @@
 # m5stack-cores3-app build-time configuration template.
 #
-# Copy this file to `cfg.toml` (gitignored) and fill in real credentials
-# for your dev environment. See the sibling `m5stack-s3-app/cfg-sample.toml`
-# for full field documentation.
+# Copy this file to `cfg.toml` (gitignored — never commit) and fill in
+# real values. `build.rs` reads it at compile time and injects the
+# values via `cargo:rustc-env=`, so any change needs a rebuild.
+#
+# With no cfg.toml at all the binary still boots: WiFi is skipped, the
+# UDP log is unavailable, and the QSO FSM stays idle.
 
 [wifi]
+# Leave the section out, or set `ssid = ""`, to disable WiFi entirely.
+#
+# WiFi is not a debug convenience on this board. It carries NTP (which
+# the FT8 slot grid needs before it can decode anything), the HTTP
+# settings page, and the UDP log — and in USB host mode that log is the
+# only console there is, because the host driver takes the serial port.
 ssid = "your-ssid-here"
 psk = "your-passphrase-here"
+
+# Where to send UDP log datagrams.
+# - "auto" (default) → directed subnet broadcast from the DHCP lease
+#   (ip=192.168.1.42/24 → 192.168.1.255). More reliable than limited
+#   broadcast: APs often drop 255.255.255.255 for power-save reasons
+#   but pass a directed broadcast through.
+# - "255.255.255.255" → limited broadcast, fine on simple LANs.
+# - "192.168.x.y"     → unicast to one PC. Most reliable, needs a
+#   stable address.
 pc_ip = "auto"
 port = 9999
 
-# Boot mode written to NVS at startup. Overrides the NVS-stored value
-# (CoreS3 has no physical buttons to cycle modes at runtime).
-# Values: "decode" | "uac" | "wifi"
-# Omit or leave empty to keep whatever is already in NVS.
+[station]
+# Operator callsign and 4-character Maidenhead grid, used by the QSO
+# state machine when it composes CQ / report / 73 messages.
+#
+# Leave both empty and the FSM stays idle. That is the correct setting
+# for a receive-only station: it is better to decode anonymously than
+# to identify as someone else.
+#
+# On-device text entry is deliberately not offered — edit this file and
+# rebuild. A mistyped callsign is worse than an inconvenient one.
+#
+#   call = "JA1ABC"
+#   grid = "PM95"
+call = ""
+grid = ""
+
 [app]
-boot_mode = "decode"
+# Which receiver to boot into, as a **seed** for a fresh board.
+#
+# Written to NVS only when NVS has no boot mode yet. It is not an
+# override: the mode picker (hold a finger anywhere for ~0.8 s) writes
+# NVS at runtime, and a value here that reapplied on every boot would
+# undo that choice on the next restart — which is exactly what a single
+# binary carrying four receivers exists to avoid.
+#
+# To change mode deliberately: use the picker, or erase NVS.
+#
+# Values: "uac" (FT8 from a USB radio) | "wspr" | "fst4"
+#       | "decode" (FT8 from the baked WAV — demo, no radio needed)
+# Omit, or leave empty, to keep whatever NVS already holds.
+boot_mode = "uac"
