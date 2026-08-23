@@ -104,13 +104,27 @@ enum Target {
 /// goes to the nearer one rather than nowhere. Taps were landing on
 /// those edges and doing nothing, which reads as a dead panel rather
 /// than a near miss.
+/// Slop below the commit bar, and to either side.
+///
+/// A press just past the bottom edge used to land outside the widget,
+/// and outside means *dismiss* — so the worst possible response to
+/// aiming a few pixels low was the menu vanishing. Measured from the
+/// bench: presses at y=280 and y=282 against a bar ending at y=276,
+/// both dismissals, between two that landed. A fingertip is several
+/// millimetres across and the contact point is not where the operator
+/// thinks it is.
+///
+/// Dismissal still works — it just needs a press that is clearly
+/// elsewhere rather than one that is nearly right.
+const SLOP: i32 = 14;
+
 fn hit(origin: Point, x: u16, y: u16) -> Option<Target> {
     let (x, y) = (x as i32, y as i32);
-    if x < origin.x || x >= origin.x + WIDTH as i32 {
+    if x < origin.x - SLOP || x >= origin.x + WIDTH as i32 + SLOP {
         return None;
     }
     let dy = y - origin.y;
-    if dy < 0 || dy >= height() as i32 {
+    if dy < 0 || dy >= height() as i32 + SLOP {
         return None;
     }
     if dy >= commit_top() {
