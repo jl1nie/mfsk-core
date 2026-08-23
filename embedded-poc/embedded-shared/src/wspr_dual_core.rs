@@ -111,13 +111,29 @@ const APP_CPU: i32 = 1;
 /// its termination list before the same `StaticTask_t` is handed back
 /// to `xTaskCreateStaticPinnedToCore`.
 ///
-/// 80 KB against a measured 63 360 B peak (~29 % headroom). That peak
-/// is higher than the 53 KB / 44 KB the two *per-pass* workers used,
-/// and necessarily so: one task serving both job shapes has a frame
-/// sized for the union of them. Boxing the payloads and passing the
-/// `Box` into `run_pass2_job` recovered most of it (73 616 B → 63 360 B);
-/// what remains is the price of not spawning per pass.
-const WORKER_STACK_BYTES: usize = 81_920;
+/// 48 KB, matching the scan task, because the worker runs the same
+/// decode.
+///
+/// It was 80 KB against a measured 63 360 B peak — within a few hundred
+/// bytes of the scan task's own 63 192 B, and for the same reason: both
+/// go through `refine_cascade` and the jitter ladder. When that path
+/// stopped keeping three 10 368 B `IsQs` alive at once (2026-08-24) the
+/// scan task's measured peak fell to 42 536 B, and this one has no
+/// reason not to have fallen with it. Sized from that and confirmed by
+/// the `stack peak` line this module logs on every teardown.
+///
+/// Earlier history, for context: boxing the payloads into
+/// `run_pass2_job` took it from 73 616 B to 63 360 B, and the peak is
+/// above what either per-pass worker used alone because one task
+/// serving both job shapes has a frame sized for their union.
+///
+/// **Why the number matters.** This and the scan task's stack come out
+/// of one 128 KiB contiguous internal block on the CoreS3, and what is
+/// left over has to hold WiFi, the USB host and the display. At 80 + 72
+/// nothing fit and the receiver never spawned its scan task; at 80 + 48
+/// the scan task spawned and WiFi ran out of memory instead. FST4, a
+/// heavier decoder, asks for 24 + 24.
+const WORKER_STACK_BYTES: usize = 48 * 1024;
 
 // The stack itself lives in `crate::worker_arena` — the same
 // reservation FST4's worker and FT8's cs staging use, because only one
