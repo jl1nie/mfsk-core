@@ -238,7 +238,7 @@ USB H STREAM d1 V111 v---- b3.89 W-36
       │      │  │    └ VBUS 電圧、ADC が読めないときは `----`
       │      │  └ BOOST_EN / USB_OTG_EN / BUS_OUT_EN
       │      └ 開いている USB デバイス数
-      └ chg | no dev | STREAM(緑) | NOHOST(橙) | ERROR(橙)
+      └ CHARGE | NODEV | STREAM(緑) | NOHOST(橙) | ERROR(橙)
 ```
 
 `H`/`P` は**ファームが選んだ役割**で、ドライバが立ち上がったかどうかでは

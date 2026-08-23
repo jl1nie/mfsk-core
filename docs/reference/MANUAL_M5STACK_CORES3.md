@@ -249,7 +249,7 @@ USB H STREAM d1 V111 v---- b3.89 W-36
       │      │  │    └ VBUS volts, `----` when the ADC cannot read it
       │      │  └ BOOST_EN / USB_OTG_EN / BUS_OUT_EN
       │      └ open USB devices
-      └ chg | no dev | STREAM (green) | NOHOST (amber) | ERROR (amber)
+      └ CHARGE | NODEV | STREAM (green) | NOHOST (amber) | ERROR (amber)
 ```
 
 `H`/`P` is host or peripheral — what the firmware chose, not whether
