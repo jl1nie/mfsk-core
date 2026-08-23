@@ -120,7 +120,18 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_sp
         // built with deliberate slack, so an over-budget slot there
         // means a fault. Do not carry this framing across.
         let slot_wait_us = t_slot_recv - t_early_done;
-        if slot_wait_us < 10_000 {
+        // Only judge a full slot.
+        //
+        // The first slots after the grid anchors to UTC are partial by
+        // construction — the anchor shortens the current one so the
+        // next boundary lands on the grid — and comparing a truncated
+        // slot against a whole slot's budget produces a warning about
+        // nothing. Two of them fired within seconds of adding this,
+        // which is exactly how an indicator teaches its reader to skip
+        // it.
+        const FULL_SLOT_SAMPLES: usize = 180_000;
+        let full_slot = slot.audio().len() >= FULL_SLOT_SAMPLES;
+        if full_slot && slot_wait_us < 10_000 {
             log::warn!(
                 "SLOT[{wav_idx}] src={source} OVER BUDGET — no idle before the next slot \
                  ({post_slotend} us past slot end, {n_deferred} candidates deferred)"
