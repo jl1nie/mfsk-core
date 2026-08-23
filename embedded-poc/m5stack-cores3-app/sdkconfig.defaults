@@ -73,6 +73,51 @@ CONFIG_ESP_WIFI_ENABLED=y
 CONFIG_LWIP_TCP_ENABLED=y
 CONFIG_LWIP_UDP_ENABLED=y
 
+# WiFi sized for a beacon, not for throughput (#163).
+#
+# WiFi is not optional on this board — NTP, the HTTP config UI and QSO
+# log upload all ride on it, and an FST4/WSPR beacon has to keep it up
+# while the USB host stack is running. Measured 2026-08-23: bringing
+# WiFi up costs ~105 KB of internal DRAM (173,607 -> 68,499 free) and
+# drops the largest contiguous block from 98,304 to 31,744. That block
+# size, not the total, is what a UAC transfer buffer has to fit in.
+#
+# `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` is already on and cannot move
+# these: the static pools are DMA targets, so they are internal by
+# construction. The only way down is to ask for fewer of them.
+#
+# The defaults this replaces were throughput-tuned (STATIC_RX 16 vs
+# IDF's 10, a static TX pool of 16). This traffic is a few hundred
+# bytes of NTP, an occasional config page and a log upload; none of it
+# is bandwidth-bound. Dynamic TX buffers additionally become eligible
+# for PSRAM, which the static pool never was — that pool is the 32 KB
+# that `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` appeared to "cost" at boot.
+#
+# If WiFi throughput ever matters here, raise these first, and expect
+# the USB host path to start failing its allocations again.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+# Dynamic TX buffers are NOT available here, and this is not a
+# mistake to re-attempt. IDF gates them on
+#
+#   depends on !(SPIRAM_TRY_ALLOCATE_WIFI_LWIP && !SPIRAM_IGNORE_NOTFOUND)
+#
+# and `SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` is mandatory on this board
+# (without it lwIP/WiFi abort into a reboot loop — 7-11 reboots per
+# 100 s, measured). So the TX pool is static by construction and the
+# only lever is how many buffers it holds. Note also that the derived
+# `ESP_WIFI_TX_BUFFER_TYPE` is a read-only int: writing it here is
+# silently ignored, which is how this looked like a working change
+# for one build.
+#
+# 6 x ~1.6 KB instead of 16. `CACHE_TX_BUFFER_NUM` is the overflow
+# queue used when a static buffer cannot be had, and it is
+# PSRAM-eligible, so it absorbs the reduction.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
+
 # ── PSRAM (Quad 8 MB) ─────────────────────────────────────────────────
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_QUAD=y
