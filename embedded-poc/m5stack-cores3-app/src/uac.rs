@@ -316,16 +316,83 @@ static RX_ERRORS: AtomicU32 = AtomicU32::new(0);
 /// exits (normal exit, error exit, or panic).
 static READER_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// How long the reader tolerates a silent device before declaring the
+/// session dead.
+///
+/// `uac_host_device_read` returning `ESP_ERR_TIMEOUT` is routine — the
+/// driver's ring buffer is momentarily empty. What is not routine is
+/// every read timing out forever, which is what a
+/// `USB_TRANSFER_STATUS_OVERFLOW` leaves behind: the isochronous
+/// stream stops, the device stays enumerated, and no error is ever
+/// returned to us. Measured 2026-08-23 — 100 s of clean capture, one
+/// overflow, then silence until the cable was pulled two minutes
+/// later. Three seconds is ~150 missed frames; nothing healthy is
+/// quiet that long at 48 kHz.
+const STALL_TIMEOUT_MS: u64 = 3_000;
+
+/// Pause between a failed session and the re-open attempt.
+const REOPEN_DELAY_MS: u64 = 500;
+
+/// Re-opens allowed without a second of successful streaming in
+/// between. Generous, because the case worth surviving is a device
+/// that works for minutes and hiccups; the cap only exists to stop a
+/// wedged device from spinning open/fail forever.
+const REOPEN_MAX_ATTEMPTS: u32 = 30;
+
+/// Consecutive re-opens since audio last flowed. Reset by the 1 Hz
+/// tick whenever bytes actually moved.
+static REOPEN_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+
 /// RAII guard that releases [`READER_ACTIVE`] on drop. Held by
 /// `reader_thread` for its entire lifetime so the gate gets reset
 /// even on panic — without the guard a panic in the read /
 /// resample / push chain would leave the gate stuck `true` and
 /// every subsequent `RxConnected` would be ignored until reboot
 /// (Gemini PR #98 r4 review).
-struct ReaderActiveGuard;
+struct ReaderActiveGuard {
+    /// `Some((addr, iface))` when the session ended in a way a fresh
+    /// one might survive — a stall or a terminal read error, as
+    /// opposed to the device being unplugged. `None` on a disconnect:
+    /// the driver fires `RxConnected` by itself when it comes back.
+    reopen: Option<(u8, u8)>,
+}
+
 impl Drop for ReaderActiveGuard {
     fn drop(&mut self) {
+        // Release the gate *first*. `app_task` dedups `RxConnected`
+        // against it, so a re-open posted while it is still held gets
+        // dropped as a duplicate and the radio never comes back.
         READER_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+
+        let Some((addr, iface_num)) = self.reopen else {
+            return;
+        };
+
+        let attempt = REOPEN_ATTEMPTS.fetch_add(1, Ordering::AcqRel) + 1;
+        if attempt > REOPEN_MAX_ATTEMPTS {
+            log::error!(
+                "uac: {attempt} re-opens with no audio in between — giving up until the device \
+                 is re-attached"
+            );
+            set_state(UacState::Error);
+            return;
+        }
+
+        // Let the driver settle before asking for the interface again;
+        // the stop/close in the cleanup above has to land first.
+        std::thread::sleep(std::time::Duration::from_millis(REOPEN_DELAY_MS));
+
+        match EVENT_SENDER.get() {
+            Some(tx) => {
+                log::warn!(
+                    "uac: re-opening addr={addr} iface={iface_num} (attempt {attempt}/{REOPEN_MAX_ATTEMPTS})"
+                );
+                if tx.send(DriverEvent::RxConnected { addr, iface_num }).is_err() {
+                    log::error!("uac: re-open send failed — app_task is gone");
+                }
+            }
+            None => log::error!("uac: re-open impossible — EVENT_SENDER not initialised"),
+        }
     }
 }
 
@@ -702,7 +769,7 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
 
     let handle_wrapped = DeviceHandle(handle);
     if let Err(e) = spawn_psram_thread(c"uac_reader", READER_TASK_STACK, move || {
-        reader_thread(handle_wrapped)
+        reader_thread(handle_wrapped, addr, iface_num)
     }) {
         let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
         let close_err = unsafe { sys::uac::uac_host_device_close(handle) };
@@ -733,9 +800,10 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
 ///
 /// Counts iso IN throughput in `RX_BYTES` / `RX_PACKETS` / `RX_ERRORS`
 /// and logs a 1 Hz status line.
-fn reader_thread(handle: DeviceHandle) {
-    // RAII: clears READER_ACTIVE on any exit path including panic.
-    let _gate = ReaderActiveGuard;
+fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
+    // RAII: clears READER_ACTIVE on any exit path including panic,
+    // and — when `reopen` is set below — asks for a fresh session.
+    let mut gate = ReaderActiveGuard { reopen: None };
     let mut buf = [0u8; READER_BUFFER_BYTES];
     let mut resampler = LinearResamplerI16To12k::new(STREAM_SAMPLE_FREQ_HZ);
     // L-channel scratch (one device_read worth of mono samples). At
@@ -746,6 +814,8 @@ fn reader_thread(handle: DeviceHandle) {
     // headroom against the resampler's per-call rounding.
     let mut dst_scratch = [0i16; 512];
     let mut last_log = std::time::Instant::now();
+    // When audio last actually arrived — the stall watchdog's clock.
+    let mut last_data = std::time::Instant::now();
     let mut last_bytes: u32 = 0;
     // Post-resample signal statistics for the 1 Hz tick — issue #163.
     //
@@ -779,6 +849,96 @@ fn reader_thread(handle: DeviceHandle) {
             disconnect_triggered = true;
             break;
         }
+        // 1 Hz throughput log. `Instant::now()` is the FreeRTOS tick
+        // count under the hood — sub-microsecond cost.
+        let now = std::time::Instant::now();
+        if now.duration_since(last_log).as_secs() >= 1 {
+            let bytes = RX_BYTES.load(Ordering::Relaxed);
+            let packets = RX_PACKETS.load(Ordering::Relaxed);
+            let errors = RX_ERRORS.load(Ordering::Relaxed);
+            let bps = bytes.wrapping_sub(last_bytes);
+            // A second of real audio means the last re-open worked, so
+            // the budget resets. A device that hiccups every few
+            // minutes then gets retried forever, which is the point;
+            // the cap is only there for one that never streams at all.
+            if bps > 0 {
+                REOPEN_ATTEMPTS.store(0, Ordering::Relaxed);
+            }
+            // 48 k × stereo × 2 B = 192_000 B/s expected for a fully-
+            // streaming IC-705. The throughput delta is the diagnostic
+            // we care about here (anything well below ~190 kB/s
+            // suggests packet drops or wrong stream config).
+            let rms = if out_samples > 0 {
+                ((sum_sq / out_samples as u64) as f64).sqrt()
+            } else {
+                0.0
+            };
+            // dBFS against full scale, so "is there signal" is one
+            // glance rather than an i16 magnitude to interpret.
+            let dbfs = if rms > 0.0 {
+                20.0 * (rms / 32_768.0).log10()
+            } else {
+                -99.0
+            };
+            // Internal DRAM goes in the per-second line, not just the
+            // 6 s alive tick. The board reboots about one second after
+            // the stream starts, with nothing from the Rust panic hook
+            // — which is what an allocation failure or a hardware
+            // exception looks like, both handled in C below the log
+            // path. Three attached devices now hold a 4 KB control
+            // buffer each, and the decode pipeline allocates on top of
+            // that, so "how much was left when it died" is the first
+            // thing worth knowing. Refs #163.
+            let free_internal = unsafe {
+                sys::heap_caps_get_free_size(sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT)
+            };
+            let largest_internal = unsafe {
+                sys::heap_caps_get_largest_free_block(
+                    sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
+                )
+            };
+            log::info!(
+                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err) \
+                 | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
+                 clipped {clipped} | internal={free_internal} largest={largest_internal}",
+            );
+            crate::board::log_stack_hw("uac_reader");
+            UAC_SA_PER_S.store(out_samples, Ordering::Release);
+            UAC_RMS_MDB.store(
+                if out_samples > 0 {
+                    ((-dbfs) * 10.0).clamp(0.0, (u32::MAX - 1) as f64) as u32
+                } else {
+                    u32::MAX
+                },
+                Ordering::Release,
+            );
+            last_log = now;
+            last_bytes = bytes;
+            out_samples = 0;
+            peak = 0;
+            sum_sq = 0;
+            clipped = 0;
+        }
+
+        // Stall watchdog.
+        //
+        // The timeout path below used to `continue`, which skipped the
+        // log above as well — so a reader whose device had gone quiet
+        // spun at 10 Hz emitting nothing at all, indistinguishable
+        // from a dead thread. Both halves are fixed here: the tick
+        // runs before the read so "0 B/s" is visible, and going quiet
+        // for long enough now ends the session instead of hanging on
+        // to it. Refs #163.
+        if now.duration_since(last_data).as_millis() as u64 >= STALL_TIMEOUT_MS {
+            log::error!(
+                "uac: no audio for {} ms — ending session (addr={addr} iface={iface_num})",
+                now.duration_since(last_data).as_millis()
+            );
+            set_state(UacState::Error);
+            gate.reopen = Some((addr, iface_num));
+            break;
+        }
+
         let mut bytes_read: u32 = 0;
         let err = unsafe {
             sys::uac::uac_host_device_read(
@@ -803,9 +963,13 @@ fn reader_thread(handle: DeviceHandle) {
             // a proper detect+reset path. `BootMode::Uac` is
             // sticky-until-reboot so silent reader death is at least
             // observable in the next UDP log tick (rx=0B/s).
-            log::error!("uac: device_read err={err:#x}, reader exiting");
+            log::error!("uac: device_read err={err:#x}, ending session");
             set_state(UacState::Error);
+            gate.reopen = Some((addr, iface_num));
             break;
+        }
+        if bytes_read > 0 {
+            last_data = std::time::Instant::now();
         }
         if bytes_read == 0 {
             // 0-byte read = timeout-with-no-data (rare); skip the
@@ -881,69 +1045,6 @@ fn reader_thread(handle: DeviceHandle) {
         }
         drop(sink_guard);
 
-        // 1 Hz throughput log. `Instant::now()` is the FreeRTOS tick
-        // count under the hood — sub-microsecond cost.
-        let now = std::time::Instant::now();
-        if now.duration_since(last_log).as_secs() >= 1 {
-            let bytes = RX_BYTES.load(Ordering::Relaxed);
-            let packets = RX_PACKETS.load(Ordering::Relaxed);
-            let errors = RX_ERRORS.load(Ordering::Relaxed);
-            let bps = bytes.wrapping_sub(last_bytes);
-            // 48 k × stereo × 2 B = 192_000 B/s expected for a fully-
-            // streaming IC-705. The throughput delta is the diagnostic
-            // we care about here (anything well below ~190 kB/s
-            // suggests packet drops or wrong stream config).
-            let rms = if out_samples > 0 {
-                ((sum_sq / out_samples as u64) as f64).sqrt()
-            } else {
-                0.0
-            };
-            // dBFS against full scale, so "is there signal" is one
-            // glance rather than an i16 magnitude to interpret.
-            let dbfs = if rms > 0.0 {
-                20.0 * (rms / 32_768.0).log10()
-            } else {
-                -99.0
-            };
-            // Internal DRAM goes in the per-second line, not just the
-            // 6 s alive tick. The board reboots about one second after
-            // the stream starts, with nothing from the Rust panic hook
-            // — which is what an allocation failure or a hardware
-            // exception looks like, both handled in C below the log
-            // path. Three attached devices now hold a 4 KB control
-            // buffer each, and the decode pipeline allocates on top of
-            // that, so "how much was left when it died" is the first
-            // thing worth knowing. Refs #163.
-            let free_internal = unsafe {
-                sys::heap_caps_get_free_size(sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT)
-            };
-            let largest_internal = unsafe {
-                sys::heap_caps_get_largest_free_block(
-                    sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT,
-                )
-            };
-            log::info!(
-                "uac: rx tick: {bps} B/s (total {bytes} B / {packets} pkt / {errors} err) \
-                 | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
-                 clipped {clipped} | internal={free_internal} largest={largest_internal}",
-            );
-            crate::board::log_stack_hw("uac_reader");
-            UAC_SA_PER_S.store(out_samples, Ordering::Release);
-            UAC_RMS_MDB.store(
-                if out_samples > 0 {
-                    ((-dbfs) * 10.0).clamp(0.0, (u32::MAX - 1) as f64) as u32
-                } else {
-                    u32::MAX
-                },
-                Ordering::Release,
-            );
-            last_log = now;
-            last_bytes = bytes;
-            out_samples = 0;
-            peak = 0;
-            sum_sq = 0;
-            clipped = 0;
-        }
     }
     // Cleanup paths differ by exit reason (#35):
     //
