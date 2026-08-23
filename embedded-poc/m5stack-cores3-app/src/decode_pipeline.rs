@@ -118,10 +118,6 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
             t_done - t_slot_recv,
         );
         slot_seq = slot_seq.wrapping_add(1);
-        // Per-slot, because this is the thread that runs the decode:
-        // deep call chains through `dual_core` land here, and this is
-        // the frame that would overflow first. Refs #163.
-        crate::board::log_stack_hw("decode");
 
         for r in results.iter() {
             mfsk_app_shared::time_sync::record_decode_dt(r.dt_sec);
@@ -195,20 +191,12 @@ fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
 }
 
 fn wf_drain(wf_q: esp_idf_svc::sys::QueueHandle_t) -> ! {
-    let mut n: u32 = 0;
+    let n: u32 = 0;
     loop {
         let tick = pipeline::recv_box::<pipeline::WfTick>(wf_q);
         if let Ok(mut ui) = UI.lock() {
             ui.push_waterfall(tick.row);
         }
-        // Every 4th row, not every 64th. A `WfTick` arrives once per
-        // FT8 slot, so the original interval sampled this thread's
-        // stack once every sixteen minutes — which is why a capture
-        // session came away with two readings and no idea whether the
-        // 4 KB was comfortable. Refs #163.
-        if n % 4 == 0 {
-            crate::board::log_stack_hw("wf_drain");
-        }
-        n = n.wrapping_add(1);
+        let _ = n;
     }
 }

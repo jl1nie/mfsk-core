@@ -138,3 +138,98 @@ pub fn log_stack_hw(tag: &str) {
     let hw = unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
     log::info!("[stack] {tag} hw={hw}");
 }
+
+/// Every task's remaining stack, from one place, in one line.
+///
+/// Written after two stack overflows in one day (`display::run_log_panel`
+/// and `uac_reader`, both from stack sizes that had been estimated
+/// rather than measured). The lesson was not "add a probe to the task
+/// you suspect" — the probe added to `uac_reader`'s 1 Hz tick used
+/// enough stack to make its crash *faster*, because `format_args!`
+/// through the fanout is a few hundred bytes and that task had 168.
+///
+/// The high-water mark is monotonic: it is the smallest free space the
+/// task has *ever* had, so one late sample carries as much information
+/// as a thousand frequent ones. That makes a single low-frequency
+/// reporter strictly better than per-task probes — safer, less code,
+/// and it covers the IDF's own tasks (WiFi, lwIP, the USB host) which
+/// no per-task probe of ours could reach.
+///
+/// Needs `CONFIG_FREERTOS_USE_TRACE_FACILITY=y`.
+///
+/// Costs ~1.4 KB of the *caller's* stack for the snapshot array, so
+/// call it from a task with room — a display loop, not an audio
+/// reader. It reports its own caller's headroom too, so if that ever
+/// stops being true it says so.
+pub fn log_task_stacks() {
+    use esp_idf_svc::sys;
+
+    /// Enough for the IDF's own tasks (WiFi, lwIP, USB host, timers,
+    /// idle x2, ipc x2) plus this app's. Overflow is reported rather
+    /// than silently truncated.
+    const MAX_TASKS: usize = 40;
+    /// Anything with less than this much left gets named individually.
+    const TIGHT_BYTES: u32 = 2048;
+
+    let mut tasks: [sys::TaskStatus_t; MAX_TASKS] = unsafe { core::mem::zeroed() };
+    // SAFETY: `tasks` is `MAX_TASKS` correctly-typed entries; a null
+    // run-time pointer is allowed and skips run-time accounting.
+    let n = unsafe {
+        sys::uxTaskGetSystemState(
+            tasks.as_mut_ptr(),
+            MAX_TASKS as sys::UBaseType_t,
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    if n == 0 {
+        log::warn!("[stacks] uxTaskGetSystemState returned 0 — is FREERTOS_USE_TRACE_FACILITY on?");
+        return;
+    }
+
+    let name_of = |t: &sys::TaskStatus_t| -> heapless::String<20> {
+        let mut s: heapless::String<20> = heapless::String::new();
+        if t.pcTaskName.is_null() {
+            let _ = s.push_str("?");
+            return s;
+        }
+        // SAFETY: FreeRTOS keeps the name alive for the task's life,
+        // and these entries were populated moments ago.
+        for i in 0..20 {
+            let c = unsafe { *t.pcTaskName.add(i) };
+            if c == 0 {
+                break;
+            }
+            if s.push(c as u8 as char).is_err() {
+                break;
+            }
+        }
+        s
+    };
+
+    let mut worst = u32::MAX;
+    let mut worst_name: heapless::String<20> = heapless::String::new();
+    let mut tight: heapless::String<96> = heapless::String::new();
+    for t in tasks.iter().take(n) {
+        let hw = t.usStackHighWaterMark;
+        if hw < worst {
+            worst = hw;
+            worst_name = name_of(t);
+        }
+        if hw < TIGHT_BYTES {
+            use core::fmt::Write as _;
+            let _ = write!(&mut tight, " {}:{hw}", name_of(t));
+        }
+    }
+
+    // SAFETY: null = the calling task.
+    let self_hw = unsafe { sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
+    log::info!(
+        "[stacks] {n} tasks{}, min {worst_name}:{worst}, tight(<{TIGHT_BYTES}):{}, self:{self_hw}",
+        if n == MAX_TASKS { " (TRUNCATED)" } else { "" },
+        if tight.is_empty() {
+            " none"
+        } else {
+            tight.as_str()
+        }
+    );
+}

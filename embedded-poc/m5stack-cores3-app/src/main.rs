@@ -237,7 +237,6 @@ fn main() -> ! {
                         // `handle`'s `Drop` tears the association down,
                         // so this thread has to hold it forever.
                         loop {
-                            crate::board::log_stack_hw("wifi");
                             std::thread::sleep(std::time::Duration::from_secs(60));
                         }
                     }

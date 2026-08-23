@@ -902,7 +902,6 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
                  | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
                  clipped {clipped} | internal={free_internal} largest={largest_internal}",
             );
-            crate::board::log_stack_hw("uac_reader");
             UAC_SA_PER_S.store(out_samples, Ordering::Release);
             UAC_RMS_MDB.store(
                 if out_samples > 0 {

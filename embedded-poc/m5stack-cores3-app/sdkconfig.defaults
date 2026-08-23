@@ -63,6 +63,15 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
 # is invisible without it, and the app uses no others.
 CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
+# Let one place report every task's remaining stack (`board::log_task_stacks`).
+#
+# Two stack overflows in one day came from sizes that had been
+# estimated and never measured. `uxTaskGetSystemState` needs this, and
+# it also reaches the IDF's own tasks — WiFi, lwIP, the USB host — which
+# are the ones this app cannot instrument itself and cannot afford to
+# have guessed at either.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
 # ── Bluetooth (off in Phase 0-Core) ─────────────────────────────────
 # CI-V over BLE is a Phase 2-Core item.
 CONFIG_BT_ENABLED=n

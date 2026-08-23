@@ -467,6 +467,13 @@ pub fn run_log_panel(
                 "alive tick={tick} free_heap={heap} internal={internal} \
                  largest={internal_largest} stack_hw={stack_hw}"
             );
+            // Every task's headroom, from here, every 30 s. The
+            // high-water mark is monotonic, so this is not sampling —
+            // one late reading is the whole answer. See
+            // `board::log_task_stacks`.
+            if tick % 300 == 0 {
+                crate::board::log_task_stacks();
+            }
         }
 
         let status_snapshot;
