@@ -333,7 +333,16 @@ fn refine_cascade(
     lag_baseband_init: i32,
     drift_hz: f32,
     refine_drift: bool,
-) -> (f32, i32, f32, f32, super::demod::IsQs) {
+    // The champion buffer, caller-owned.
+    //
+    // Returned by value until 2026-08-24, which put a third 10 368 B
+    // `IsQs` on the stack — the caller's return slot, on top of the two
+    // this function ping-pongs. Writing into the caller's own buffer
+    // makes the champion and the return the same storage. Fully
+    // overwritten below before it is read, so the caller need not
+    // initialise it to anything meaningful.
+    out: &mut super::demod::IsQs,
+) -> (f32, i32, f32, f32) {
     super::instrument::bump(&super::instrument::CANDIDATES);
 
     let mut best_freq = f0_baseband_init;
@@ -349,10 +358,9 @@ fn refine_cascade(
     // doc comment for why that shape is what the embedded stack audit
     // (`docs/notes/WSPR_EMBEDDED_MEASUREMENT_RESULTS.md`, "Stack")
     // found dominating `refine_cascade`'s 93-103 KB peak.
-    let mut best_isqs = super::demod::IsQs::zeroed();
     let mut scratch = super::demod::IsQs::zeroed();
-    super::demod::tone_amplitudes_into(idat, qdat, best_freq, best_lag, best_drift, &mut best_isqs);
-    let mut best_sync = super::demod::sync_score_isqs(&best_isqs);
+    super::demod::tone_amplitudes_into(idat, qdat, best_freq, best_lag, best_drift, out);
+    let mut best_sync = super::demod::sync_score_isqs(out);
 
     // Trial `(f, lag, drift)` into `scratch`; if it beats the current
     // champion, adopt its parameters and swap `scratch` in as the new
@@ -366,7 +374,7 @@ fn refine_cascade(
                 best_freq = $f;
                 best_lag = $lag;
                 best_drift = $drift;
-                core::mem::swap(&mut best_isqs, &mut scratch);
+                core::mem::swap(out, &mut scratch);
             }
         }};
     }
@@ -417,7 +425,7 @@ fn refine_cascade(
         }
     }
 
-    (best_freq, best_lag, best_drift, best_sync, best_isqs)
+    (best_freq, best_lag, best_drift, best_sync)
 }
 
 /// Refined `best_sync` for one candidate — the exact value `minsync2`
@@ -440,6 +448,9 @@ pub fn debug_refined_sync(
     let f0_center_init = freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
     let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
     let lag_baseband_init = start_sample as i32 / 32;
+    // This caller wants `best_sync` alone, but the cascade needs a
+    // champion buffer to work in, so it supplies one and drops it.
+    let mut isqs = super::demod::IsQs::zeroed();
     refine_cascade(
         idat,
         qdat,
@@ -447,6 +458,7 @@ pub fn debug_refined_sync(
         lag_baseband_init,
         drift_hz,
         refine_drift,
+        &mut isqs,
     )
     .3
 }
@@ -480,13 +492,15 @@ pub fn decode_at_baseband_nblocks_gated_drift(
     let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
     let lag_baseband_init = start_sample as i32 / 32;
 
-    let (best_freq, best_lag, best_drift, best_sync, best_isqs) = refine_cascade(
+    let mut best_isqs = super::demod::IsQs::zeroed();
+    let (best_freq, best_lag, best_drift, best_sync) = refine_cascade(
         idat,
         qdat,
         f0_baseband_init,
         lag_baseband_init,
         drift_hz,
         refine_drift,
+        &mut best_isqs,
     );
 
     const MINSYNC2_EARLY: f32 = 0.12;
@@ -596,6 +610,18 @@ fn decode_from_refined(
     // `nblock == 0` is this crate's spelling of wsprd's fourth ladder
     // rung (`ib == 4` → `blocksize = 1, bitmetric = 1`) — see
     // `demod::nblock1_bit_metrics_opt`.
+    // One buffer for the whole ladder, not one per jitter position.
+    //
+    // `tone_amplitudes`'s by-value form put two 10 368 B `IsQs` on this
+    // frame at once — the wrapper's own local and the caller's return
+    // slot — inside a loop, where `opt-level=1` (which the embedded
+    // crates pin for the Xtensa LLVM regression) has no obligation to
+    // coalesce them. `tone_amplitudes_into` fully overwrites its `out`,
+    // so hoisting one buffer here is behaviour-identical and costs a
+    // single zeroing instead of one per position. Same reasoning that
+    // took `refine_cascade` from a 93-103 KB peak to 61.5 KB; see
+    // `tone_amplitudes_into`'s doc comment.
+    let mut jitter_isqs = super::demod::IsQs::zeroed();
     'rungs: for &nblock in nblocks {
         for idt in 0..=N_JITTER {
             if let Some(check) = budget
@@ -612,12 +638,18 @@ fn decode_from_refined(
             let lag = best_lag + IIFAC * ii;
             // Position 0 is the refined alignment, whose `IsQs` the
             // cascade already built.
-            let isqs_owned;
             let isqs = if idt == 0 {
                 best_isqs
             } else {
-                isqs_owned = super::demod::tone_amplitudes(idat, qdat, best_freq, lag, best_drift);
-                &isqs_owned
+                super::demod::tone_amplitudes_into(
+                    idat,
+                    qdat,
+                    best_freq,
+                    lag,
+                    best_drift,
+                    &mut jitter_isqs,
+                );
+                &jitter_isqs
             };
             #[cfg(feature = "std")]
             let t_bm = std::time::Instant::now();
@@ -1000,7 +1032,8 @@ pub fn rank_pass2_candidates<'c>(
         let f0_center_init = c.freq_hz + 1.5 * super::demod::TONE_SPACING_HZ;
         let f0_baseband_init = f0_center_init - super::baseband::CENTER_HZ;
         let lag_baseband_init = c.start_sample as i32 / 32;
-        let (freq, lag, drift, sync, isqs) = refine_cascade(
+        let mut isqs = super::demod::IsQs::zeroed();
+        let (freq, lag, drift, sync) = refine_cascade(
             idat,
             qdat,
             f0_baseband_init,
