@@ -69,6 +69,11 @@ const AXP2101_REG_CHIP_ID: u8 = 0x03; // Chip ID — 0x4A for AXP2101
 const AXP2101_REG_STATUS1: u8 = 0x00;
 const AXP2101_STATUS1_VBUS_GOOD: u8 = 1 << 5;
 const AXP2101_REG_LDO_ONOFF0: u8 = 0x90; // LDOs ON/OFF control 0 — bit 0x80 = DLDO1 enable
+/// The rails this board comes up with, measured on a cold boot:
+/// ALDO1 | ALDO2 | ALDO4. Anything beyond these is something this
+/// firmware chose to turn on, and register 0x90 survives a reset, so
+/// the choice has to be re-made every boot rather than accumulated.
+const AXP2101_RAILS_DEFAULT: u8 = 0b0000_1011;
 const AXP2101_REG_DLDO1_VOLTAGE: u8 = 0x99; // DLDO1 (LCD backlight) voltage setting
 const AXP2101_DLDO1_ENABLE_BIT: u8 = 0x80;
 /// `33 - 5`, matching M5GFX's own encoding for these AXP2101 LDO
@@ -137,22 +142,35 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
         Err(e) => log::warn!("AXP2101 read failed: {e:#}"),
     }
 
-    // ── AXP2101 DLDO1 (LCD backlight power rail) ────────────────────────
-    // Read-modify-write, not a blind overwrite: register 0x90 also
-    // gates other LDOs (ALDO1-4 etc.) that may already be correctly
-    // configured by power-on defaults — only the DLDO1 bit should
-    // change here. Matches M5GFX's `bitOn`/`setBrightness` sequence
-    // for CoreS3 (see this module's doc comment).
+    // ── AXP2101 rails (register 0x90) ───────────────────────────────────
+    //
+    // Written whole, not OR-ed. This used to read-modify-write only the
+    // DLDO1 bit, on the reasoning that whatever else register 0x90 held
+    // was a sensible power-on default — but the AXP2101 keeps this
+    // register across a reset, so it holds whatever the *last boot*
+    // wrote. A driver that only ever sets bits cannot take one back:
+    // one boot with M5GFX's `0x90 = 0xBF` and every later boot inherits
+    // it, no matter what the code says now. That is how the camera and
+    // BLDO rails stayed up after the write that raised them was gone.
+    //
+    // 0x8b is this board's own power-on value, measured, and the value
+    // the #163 capture ran on: ALDO1 (AW88298, 1.8 V), ALDO2 (ES7210,
+    // 3.3 V), ALDO4 (TF card) and DLDO1 (the backlight). The three it
+    // leaves off are ALDO3 (camera) and BLDO1/BLDO2 — nothing this
+    // firmware drives, and current the 5 V VBUS boost needs when the
+    // board is running a radio off its battery.
     match read_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0) {
         Ok(cur) => {
-            let new_val = cur | AXP2101_DLDO1_ENABLE_BIT;
-            if let Err(e) = write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0, new_val) {
-                log::warn!("AXP2101 DLDO1 enable (reg 0x90) failed: {e:#}");
+            let want = AXP2101_RAILS_DEFAULT | AXP2101_DLDO1_ENABLE_BIT;
+            if let Err(e) = write_reg(&mut i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0, want) {
+                log::warn!("AXP2101 rail set (reg 0x90) failed: {e:#}");
             } else {
-                log::info!("AXP2101 reg 0x90: 0x{cur:02x} -> 0x{new_val:02x} (DLDO1 enabled)");
+                log::info!(
+                    "AXP2101 reg 0x90: 0x{cur:02x} -> 0x{want:02x} (DLDO1 + board defaults;                      camera/BLDO off)"
+                );
             }
         }
-        Err(e) => log::warn!("AXP2101 reg 0x90 read failed: {e:#} — DLDO1 enable skipped"),
+        Err(e) => log::warn!("AXP2101 reg 0x90 read failed: {e:#} — rails left as found"),
     }
     if let Err(e) = write_reg(
         &mut i2c,
@@ -206,10 +224,25 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     // settles a stale comment in `board.rs` calling it the touch
     // interrupt input; M5GFX puts TP_INT on GPIO 21, not on the
     // expander at all.
-    const AW9523_P0_M5_REQUIRED: u8 = 0b0000_0101;
-    let p0_out = AW9523_P0_LCD_BL | AW9523_P0_M5_REQUIRED;
+    const AW9523_P0_M5_TOUCH_REQUIRED: u8 = 1 << 0;
+    // P0_0 only — *not* M5GFX's `0b0000_0101`.
+    //
+    // M5GFX raises port0 bits 0 and 2 together in its display init and
+    // this driver copied the pair while chasing the touch panel. Bit 2
+    // is not a display bit: `M5Unified::_speaker_enabled_cb_cores3`
+    // does `bitOn(aw9523, 0x02, 0b00000100)` when the speaker is
+    // enabled and `bitOff` on the same bit when it is disabled, right
+    // beside the AW88298 register writes. It is the speaker amplifier
+    // enable — which this firmware has no use for, since it produces no
+    // audio output, and which `AW9523_P0_SPK_EN` above says should be
+    // LOW by default.
+    //
+    // Bit 0 stays: `board.rs`'s pin table records it as what M5GFX
+    // drives high before the touch controller will answer, which is
+    // the one of the two with a reason to be set here.
+    let p0_out = AW9523_P0_LCD_BL | AW9523_P0_M5_TOUCH_REQUIRED;
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, p0_out)?;
-    log::info!("AW9523B port0 out=0x{p0_out:02x} (LCD_BL + M5GFX bits 0/2, BUS_OUT_EN=OFF)");
+    log::info!("AW9523B port0 out=0x{p0_out:02x} (LCD_BL + P0_0, BUS_OUT_EN=OFF, SPK_EN=OFF)");
 
     // Port 1: assert LCD_RST and TP_RST LOW first (active-low reset).
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT1, 0x00)?;
@@ -225,9 +258,20 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     // the display loop, meant the touch controller had its reset
     // released while it was still unpowered and never saw a reset edge
     // afterwards.
-    if let Err(e) = apply_peripheral_rails(&mut i2c) {
-        log::warn!("peripheral rail bring-up failed: {e:#}");
-    }
+    // `apply_peripheral_rails` is deliberately NOT called here.
+    //
+    // M5Unified names every rail its `0x90 = 0xBF` turns on: ALDO1 at
+    // 1.8 V for the AW88298 speaker amp, ALDO2 at 3.3 V for the ES7210
+    // microphone ADC, ALDO3 for the camera, ALDO4 for the TF card slot.
+    // This firmware uses none of the four — its audio comes from a USB
+    // device — and on battery they draw from the same cell the 5 V VBUS
+    // boost has to supply the radio from. The board that captured ten
+    // unbroken minutes of UAC audio for #163 ran with 0x90 = 0x8b:
+    // DLDO1, the backlight, alone.
+    //
+    // Kept as a function because it is exactly right for Phase 3-Core,
+    // when the on-board codecs are wanted. It is not free, so it is the
+    // caller's call and not something `init` does on every boot.
 
     Ok(i2c)
 }

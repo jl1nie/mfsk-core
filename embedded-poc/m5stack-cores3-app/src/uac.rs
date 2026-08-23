@@ -1331,6 +1331,7 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
             (
                 p1 & crate::board::AW9523_P1_BOOST_EN != 0,
                 p0 & crate::board::AW9523_P0_USB_OTG_EN != 0,
+                p0 & crate::board::AW9523_P0_BUS_OUT_EN != 0,
             )
         }),
     }

@@ -83,7 +83,13 @@ pub struct LinkInfo {
     /// Raw AW9523B enable bits, so "is VBUS actually set" is answerable
     /// from the screen rather than from a serial console that host mode
     /// takes away. `None` on boards that never tried.
-    pub vbus: Option<(bool, bool)>,
+    ///
+    /// **All three**, in the order `BOOST_EN`, `USB_OTG_EN`,
+    /// `BUS_OUT_EN`. #163 established that the IC-705 sees VBUS only
+    /// with every one of them high, and `BUS_OUT_EN` is the one that
+    /// sounds unrelated — showing the first two alone reads as "VBUS is
+    /// set" while the load-bearing bit is unaccounted for.
+    pub vbus: Option<(bool, bool, bool)>,
 }
 
 /// Draw the bar at `origin_y`, spanning `width`.
@@ -124,18 +130,19 @@ where
 
     let mut rest: String<40> = String::new();
     let _ = write!(&mut rest, " d{}", info.devices);
-    if let Some((boost, otg)) = info.vbus {
-        // Written as the two bits they are: a rail that is enabled and
-        // a switch that gates it onto the connector. Both must be 1
-        // before anything can enumerate.
+    if let Some((boost, otg, bus)) = info.vbus {
+        // The boost converter, the switch that gates it onto the
+        // connector, and the external rail — all three high or nothing
+        // enumerates.
         let _ = write!(
             &mut rest,
-            " V{}{}",
+            " V{}{}{}",
             u8::from(boost),
-            u8::from(otg)
+            u8::from(otg),
+            u8::from(bus)
         );
     } else {
-        let _ = rest.push_str(" V--");
+        let _ = rest.push_str(" V---");
     }
     let _ = rest.push_str("  W ");
     match info.wifi_rssi {

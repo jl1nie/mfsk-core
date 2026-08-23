@@ -88,7 +88,13 @@ pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 //          TP_INT on GPIO 21.
 //   P0_1 = BUS_OUT_EN  (external 5V out — M-Bus/Grove, NOT USB)
 //   P0_5 = USB_OTG_EN  (gates the 5V boost onto the USB connector)
-//   P0_7 = SPK_EN      (AW88298 speaker amp enable; Phase 3-Core)
+//   P0_2 = SPK_EN      (AW88298 speaker amp enable; Phase 3-Core).
+//          This table said P0_7 until 2026-08-23. The bit M5Unified
+//          actually toggles is 2: `_speaker_enabled_cb_cores3` does
+//          `bitOn(aw9523, 0x02, 0b00000100)` on enable and `bitOff` on
+//          the same bit on disable. Copying M5GFX's display init, which
+//          raises bits 0 and 2 together, therefore switched the
+//          amplifier on — and the IC-705 stopped enumerating.
 //   P1_0 = TP_RST      (touch reset, active LOW)
 //   P1_1 = LCD_RST     (ILI9342C reset, active LOW)
 //   P1_7 = BOOST_EN    (the 5V boost converter itself)
@@ -107,7 +113,7 @@ pub const AW9523_P0_USB_OTG_EN: u8 = 1 << 5;
 /// The 5 V boost converter itself (M5Unified `port1_bitmask_boost`).
 pub const AW9523_P1_BOOST_EN: u8 = 1 << 7;
 pub const AW9523_P0_LCD_BL: u8 = 1 << 4;
-pub const AW9523_P0_SPK_EN: u8 = 1 << 7;
+pub const AW9523_P0_SPK_EN: u8 = 1 << 2;
 pub const AW9523_P1_TP_RST: u8 = 1 << 0;
 pub const AW9523_P1_LCD_RST: u8 = 1 << 1;
 
