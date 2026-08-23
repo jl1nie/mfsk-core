@@ -1327,6 +1327,8 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
         usb,
         devices: devices.clamp(0, 9) as u8,
         wifi_rssi: mfsk_app_shared::wifi::rssi_cached(),
+        expander_ok: crate::pmic::expander_ok(),
+        battery_mv: crate::pmic::battery_mv_cached(),
         vbus: tried.then(|| {
             (
                 p1 & crate::board::AW9523_P1_BOOST_EN != 0,

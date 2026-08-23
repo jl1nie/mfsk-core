@@ -551,6 +551,15 @@ pub fn run_log_panel(
         // (#163). There is more headroom now, but this is the first
         // flash that tests it, so the rate is low and the alive tick's
         // `internal=` reading is the thing to watch beside it.
+        // Re-read the expander about once a second, from the task that
+        // owns the bus. Without this the panel reports what was written
+        // minutes ago; with it, an expander that has fallen off its
+        // rail shows as `V!!!` on the frame after it happens.
+        if tick % 12 == 0 {
+            if let Some(i2c) = pmic_i2c.as_mut() {
+                crate::pmic::refresh_power_state(i2c);
+            }
+        }
         if touch_int.is_low() {
             if let Some(i2c) = pmic_i2c.as_mut() {
                 match crate::touch::read(i2c) {

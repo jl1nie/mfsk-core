@@ -90,6 +90,14 @@ pub struct LinkInfo {
     /// sounds unrelated — showing the first two alone reads as "VBUS is
     /// set" while the load-bearing bit is unaccounted for.
     pub vbus: Option<(bool, bool, bool)>,
+    /// False once the I/O expander those bits live in has stopped
+    /// answering. The bits are then a memory, not a measurement, and
+    /// the bar says so rather than repeating them.
+    pub expander_ok: bool,
+    /// Cell voltage in millivolts. The 5 V boost that feeds the radio
+    /// comes out of this, so it is the number that explains a port
+    /// which is enabled and still delivering nothing.
+    pub battery_mv: u16,
 }
 
 /// Draw the bar at `origin_y`, spanning `width`.
@@ -130,19 +138,31 @@ where
 
     let mut rest: String<40> = String::new();
     let _ = write!(&mut rest, " d{}", info.devices);
-    if let Some((boost, otg, bus)) = info.vbus {
+    match info.vbus {
+        _ if !info.expander_ok => {
+            // Not "unknown" — a fault. The expander answered once and
+            // has stopped, which on this board means its rail went
+            // down under the boost's load.
+            let _ = rest.push_str(" V!!!");
+        }
         // The boost converter, the switch that gates it onto the
         // connector, and the external rail — all three high or nothing
         // enumerates.
-        let _ = write!(
-            &mut rest,
-            " V{}{}{}",
-            u8::from(boost),
-            u8::from(otg),
-            u8::from(bus)
-        );
-    } else {
-        let _ = rest.push_str(" V---");
+        Some((boost, otg, bus)) => {
+            let _ = write!(
+                &mut rest,
+                " V{}{}{}",
+                u8::from(boost),
+                u8::from(otg),
+                u8::from(bus)
+            );
+        }
+        None => {
+            let _ = rest.push_str(" V---");
+        }
+    }
+    if info.battery_mv > 0 {
+        let _ = write!(&mut rest, " {}.{:02}V", info.battery_mv / 1000, (info.battery_mv % 1000) / 10);
     }
     let _ = rest.push_str("  W ");
     match info.wifi_rssi {

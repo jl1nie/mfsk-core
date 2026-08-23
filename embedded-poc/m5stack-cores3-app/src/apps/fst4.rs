@@ -1043,6 +1043,12 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // Same bar, same place, in every mode — see
             // `link_bar`'s own doc comment for why it is not a field in
             // this receiver's header.
+            // Same 1 Hz re-read the FT8 controller does: the enable
+            // bits are only worth showing if something has looked
+            // recently.
+            if let Some(i2c) = touch_i2c.as_mut() {
+                crate::pmic::refresh_power_state(i2c);
+            }
             link_bar::render(
                 &mut display,
                 &crate::uac::link_info(),

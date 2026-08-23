@@ -530,3 +530,49 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Whether the AW9523B answered the last time anyone looked.
+///
+/// Starts true so a board that has not yet been polled does not report
+/// a fault it has not seen.
+static EXPANDER_OK: AtomicU8 = AtomicU8::new(1);
+
+pub fn expander_ok() -> bool {
+    EXPANDER_OK.load(Ordering::Relaxed) != 0
+}
+
+/// Re-read the expander's output registers and the AXP2101 status.
+///
+/// [`power_state`] alone returns what `enable_usb_host_vbus` wrote and
+/// read back at the instant it ran. That is a claim about the past, and
+/// the screen presented it as the present: on battery the 5 V boost
+/// pulled the 3.3 V rail down far enough that the AW9523B, the RTC and
+/// the IMU all stopped answering, and the panel still read `V111`
+/// because nothing had looked since. Three I2C devices leaving the bus
+/// at once is not something firmware can cause; it is the one fault
+/// this display exists to make visible, and it was the one it hid.
+///
+/// Call at about 1 Hz from a task that owns the bus.
+pub fn refresh_power_state(i2c: &mut I2cDriver<'_>) {
+    match (
+        read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0),
+        read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT1),
+    ) {
+        (Ok(p0), Ok(p1)) => {
+            VBUS_OUT0.store(p0, Ordering::Relaxed);
+            VBUS_OUT1.store(p1, Ordering::Relaxed);
+            EXPANDER_OK.store(1, Ordering::Relaxed);
+        }
+        _ => {
+            if EXPANDER_OK.swap(0, Ordering::Relaxed) != 0 {
+                log::error!(
+                    "AW9523B stopped answering — the 5 V boost has pulled its rail down. \
+                     VBUS is not reaching the connector whatever the enable bits last said."
+                );
+            }
+        }
+    }
+    if let Ok(v) = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1) {
+        AXP_STATUS1.store(v, Ordering::Relaxed);
+    }
+}
