@@ -530,6 +530,80 @@ pub fn run_log_panel(
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
     loop {
+        // Touch, first thing in the frame and only when it changes.
+        //
+        // Input before rendering, because the render path takes an
+        // early `continue` while the picker is up. Reading touch
+        // after it meant that opening the overlay switched off the
+        // only input that could operate it: the menu appeared and
+        // nothing on it could be selected.
+        //
+        // Deliberately slow and deliberately quiet. Every read is an
+        // I2C transaction, every transaction allocates a command link,
+        // and that allocation is what aborted this very loop the last
+        // time it talked to I2C — `pmic::vbus_mv` polled per second,
+        // dying in `i2c_cmd_link_delete` once internal DRAM ran out
+        // (#163). There is more headroom now, but this is the first
+        // flash that tests it, so the rate is low and the alive tick's
+        // `internal=` reading is the thing to watch beside it.
+        if touch_int.is_low() {
+            if let Some(i2c) = pmic_i2c.as_mut() {
+                match crate::touch::read(i2c) {
+                    Some(c) => {
+                        let last_touch_points = last_touch.points;
+                        if c != last_touch {
+                            if c.points > 0 {
+                                log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
+                            } else {
+                                log::info!("touch: released");
+                            }
+                            last_touch = c;
+                        }
+                        let _ = last_touch_points;
+                        {
+                            if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                                log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                                if let Err(e) = boot_mode::write(&nvs, target) {
+                                    log::error!("boot_mode write failed: {e} — not restarting");
+                                } else {
+                                    // Let the line reach the log sink; in
+                                    // UAC mode that is the only channel.
+                                    std::thread::sleep(std::time::Duration::from_millis(400));
+                                    // SAFETY: no arguments, does not return.
+                                    unsafe { esp_idf_svc::sys::esp_restart() };
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        if !touch_read_failed {
+                            log::warn!("touch: read failed — not repeating this");
+                            touch_read_failed = true;
+                        }
+                    }
+                }
+            }
+        } else if last_touch.points > 0 {
+            // The pin going high is the release; there is nothing to
+            // read for it.
+            log::info!("touch: released");
+            last_touch = crate::touch::Contact::default();
+        }
+
+        // With no finger down the picker still needs a frame to let an
+        // arming lapse and to notice a release.
+        if last_touch.points == 0 {
+            let _ = picker.update(false, 0, 0);
+        }
+        picker.render(&mut display, mode).ok();
+        if picker.take_just_closed() {
+            // The overlay covered the panel; force everything back.
+            last_usb_panel.clear();
+            last_wf_seq = u32::MAX;
+            last_decoded_fp = (usize::MAX, u32::MAX);
+            last_tx_seq = last_tx_seq.wrapping_add(1);
+        }
+
         let heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
         if tick % 50 == 0 {
             let internal = unsafe {
@@ -618,16 +692,6 @@ pub fn run_log_panel(
                 .max()
                 .unwrap_or(0);
             decoded_fp = (decoded_snapshot.len(), max_seq);
-        }
-
-        // Nothing underneath repaints while the overlay is up — the
-        // widget only redraws itself on change, so anything drawn over
-        // it stays drawn over it.
-        if picker.is_open() {
-            picker.render(&mut display, mode).ok();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            tick = tick.wrapping_add(1);
-            continue;
         }
 
         // Freeze what is underneath while the overlay is up. The
@@ -856,73 +920,6 @@ pub fn run_log_panel(
             last_usb_panel = panel;
         }
 
-        // Touch, at 2 Hz and only when it changes.
-        //
-        // Deliberately slow and deliberately quiet. Every read is an
-        // I2C transaction, every transaction allocates a command link,
-        // and that allocation is what aborted this very loop the last
-        // time it talked to I2C — `pmic::vbus_mv` polled per second,
-        // dying in `i2c_cmd_link_delete` once internal DRAM ran out
-        // (#163). There is more headroom now, but this is the first
-        // flash that tests it, so the rate is low and the alive tick's
-        // `internal=` reading is the thing to watch beside it.
-        if touch_int.is_low() {
-            if let Some(i2c) = pmic_i2c.as_mut() {
-                match crate::touch::read(i2c) {
-                    Some(c) => {
-                        let last_touch_points = last_touch.points;
-                        if c != last_touch {
-                            if c.points > 0 {
-                                log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
-                            } else {
-                                log::info!("touch: released");
-                            }
-                            last_touch = c;
-                        }
-                        let _ = last_touch_points;
-                        {
-                            if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
-                                log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                                if let Err(e) = boot_mode::write(&nvs, target) {
-                                    log::error!("boot_mode write failed: {e} — not restarting");
-                                } else {
-                                    // Let the line reach the log sink; in
-                                    // UAC mode that is the only channel.
-                                    std::thread::sleep(std::time::Duration::from_millis(400));
-                                    // SAFETY: no arguments, does not return.
-                                    unsafe { esp_idf_svc::sys::esp_restart() };
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        if !touch_read_failed {
-                            log::warn!("touch: read failed — not repeating this");
-                            touch_read_failed = true;
-                        }
-                    }
-                }
-            }
-        } else if last_touch.points > 0 {
-            // The pin going high is the release; there is nothing to
-            // read for it.
-            log::info!("touch: released");
-            last_touch = crate::touch::Contact::default();
-        }
-
-        // With no finger down the picker still needs a frame to let an
-        // arming lapse and to notice a release.
-        if last_touch.points == 0 {
-            let _ = picker.update(false, 0, 0);
-        }
-        picker.render(&mut display, mode).ok();
-        if picker.take_just_closed() {
-            // The overlay covered the panel; force everything back.
-            last_usb_panel.clear();
-            last_wf_seq = u32::MAX;
-            last_decoded_fp = (usize::MAX, u32::MAX);
-            last_tx_seq = last_tx_seq.wrapping_add(1);
-        }
 
         let _ = fanout;
         // 50 ms, not 100.
