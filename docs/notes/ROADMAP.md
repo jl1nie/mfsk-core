@@ -377,11 +377,24 @@ version if you're picking up work.
   both stories under "USB host VBUS on CoreS3" and "Stacks, heaps, and
   the space between them" — read them before the next bench session.
 
-  Still open on this path: the transient-recovery code (a
-  `USB_TRANSFER_STATUS_OVERFLOW` was seen once and stopped the stream
-  dead; a stall watchdog plus re-open now handles it, but has not
-  fired in the field since), and `wspr_app`/`fst4_app` have not been
-  run against a radio at all.
+  The transient-recovery path is proven too, on the same day: a
+  `USB_TRANSFER_STATUS_OVERFLOW` ends the isochronous stream without
+  ever returning an error — every read just times out forever — so the
+  reader used to spin silently until someone pulled the cable. A stall
+  watchdog plus re-open turns that into a **six-second gap**
+  (14:31:58 overflow → 14:32:04 back at 192,512 B/s, observed
+  2026-08-23).
+
+  It has a consequence worth knowing before it is misread as a
+  hardware fault: **a re-open restarts slot alignment.** The FT8
+  pipeline binds slot boundaries to sample count from UAC stream
+  start, not UTC, so every recovery shifts the grid and DT is measured
+  against a different reference afterwards. That is #313's
+  slot-alignment item, and this makes it load-bearing rather than
+  cosmetic.
+
+  Still open: `wspr_app`/`fst4_app` have not been run against a radio
+  at all.
 
 - **#313** — CoreS3 WSPR standalone app, open items left after #260
   closed: no wall-clock slot alignment on the real-audio path (needs
