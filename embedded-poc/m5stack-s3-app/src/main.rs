@@ -285,6 +285,17 @@ fn main() -> ! {
             }
             log_free_internal("post-uac-host-install");
         }
+        // CoreS3-only modes: the shared `BootMode` carries them so the
+        // CoreS3 app can pick its receiver at boot. M5StickS3 has no USB
+        // host (hardware, not software — see `BootMode::Uac`'s own note)
+        // and does not build the WSPR/FST4 decoders, so there is nothing
+        // to start. KEY2 long-press walks back to a usable mode.
+        boot_mode::BootMode::Wspr | boot_mode::BootMode::Fst4 => {
+            log::warn!(
+                "{} selected but this is a CoreS3-only mode — nothing to run on M5StickS3",
+                mode.label()
+            );
+        }
     }
 
     // メインタスクは LCD render loop (返らない)。modem は WiFi が

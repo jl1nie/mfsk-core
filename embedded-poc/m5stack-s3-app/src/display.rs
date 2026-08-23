@@ -398,6 +398,13 @@ pub fn run_log_panel(
         BootMode::Uac => {
             log::info!("audio path skipped (BootMode::Uac: audio via USB host stack)");
         }
+        // CoreS3-only modes. They exist in the shared `BootMode` because
+        // the CoreS3 app selects its receiver at boot; this board has
+        // neither the USB host nor those decoders built in, so there is
+        // no audio path to set up. KEY2 walks back to a usable mode.
+        BootMode::Wspr | BootMode::Fst4 => {
+            log::warn!("audio path skipped ({} is CoreS3-only)", mode.label());
+        }
     }
     drop(i2c);
 

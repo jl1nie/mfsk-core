@@ -67,6 +67,19 @@ pub enum BootMode {
     /// cold boot (`flipped()` で Decode へ戻す) で復帰。詳細は memory
     /// `project_m5stick_s3_no_usb_host`。
     Uac,
+    /// CoreS3 standalone WSPR receiver (`src/bin/wspr_app.rs`, Phase E
+    /// / #260): DDC + Fano decode over 120 s slots, spot list on the
+    /// LCD, settings over HTTP. Shares `uac.rs` with the FT8 line for
+    /// live audio.
+    ///
+    /// Deliberately **not** in [`BootMode::flipped`]'s button cycle —
+    /// CoreS3 has no buttons, and putting a CoreS3-only mode in
+    /// M5StickS3's KEY1/KEY2 walk would offer a mode that board cannot
+    /// run. Selected from `cfg.toml`, NVS, or the HTTP config page.
+    Wspr,
+    /// CoreS3 standalone FST4 receiver (`src/bin/fst4_app.rs`, #306 /
+    /// #307). Same reasoning as [`BootMode::Wspr`] for the cycle.
+    Fst4,
 }
 
 impl BootMode {
@@ -78,6 +91,8 @@ impl BootMode {
             BootMode::CivTest => "civtest",
             BootMode::TxTest => "txtest",
             BootMode::Qso => "qso",
+            BootMode::Wspr => "wspr",
+            BootMode::Fst4 => "fst4",
             BootMode::Uac => "uac",
         }
     }
@@ -91,6 +106,8 @@ impl BootMode {
             BootMode::TxTest => "TXTEST",
             BootMode::Qso => "QSO",
             BootMode::Uac => "UAC",
+            BootMode::Wspr => "WSPR",
+            BootMode::Fst4 => "FST4",
         }
     }
 
@@ -104,6 +121,8 @@ impl BootMode {
             "txtest" => BootMode::TxTest,
             "qso" => BootMode::Qso,
             "uac" => BootMode::Uac,
+            "wspr" => BootMode::Wspr,
+            "fst4" => BootMode::Fst4,
             other => {
                 log::warn!("cfg boot_mode unknown value '{other}'; defaulting to decode");
                 BootMode::Decode
@@ -127,6 +146,9 @@ impl BootMode {
             BootMode::TxTest => BootMode::Qso,
             BootMode::Qso => BootMode::Uac,
             BootMode::Uac => BootMode::Decode,
+            // Not part of the cycle — see their doc comments. A board
+            // that somehow lands here walks back to a mode it can run.
+            BootMode::Wspr | BootMode::Fst4 => BootMode::Decode,
         }
     }
 }
@@ -152,6 +174,8 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
         Ok(Some(s)) if s == "txtest" => BootMode::TxTest,
         Ok(Some(s)) if s == "qso" => BootMode::Qso,
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
+        Ok(Some(s)) if s == "wspr" => BootMode::Wspr,
+        Ok(Some(s)) if s == "fst4" => BootMode::Fst4,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");
             BootMode::Decode

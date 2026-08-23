@@ -366,7 +366,26 @@ const DDC_STACK: u32 = 12 * 1024;
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
     LOGGER.install();
+    let peripherals = Peripherals::take().expect("peripherals taken twice");
+    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
+    run(peripherals, nvs_part)
+}
 
+/// The whole WSPR receiver, given the resources rather than taking them.
+///
+/// Split out of `main` so one binary can carry every mode and pick at
+/// boot from the NVS `boot_mode`, instead of a mode change meaning a
+/// re-flash — which on this board means unplugging the radio, because
+/// the USB host driver owns the port the flasher would use. The
+/// singletons are taken once by whoever calls this.
+///
+/// Everything below is unchanged from when it was `main`, including
+/// the ordering constraints: the worker-stack reservation and the scan
+/// task's stack both have to land before WiFi starts.
+pub fn run(
+    peripherals: esp_idf_hal::peripherals::Peripherals,
+    nvs_part: EspDefaultNvsPartition,
+) -> ! {
     log::info!("=== mfsk-core-m5stack-cores3-app wspr-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
 
@@ -385,8 +404,6 @@ fn main() -> ! {
     }
     wspr_dual_core::init();
 
-    let peripherals = Peripherals::take().expect("peripherals taken twice");
-    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = settings::open_nvs(nvs_part.clone()).expect("settings NVS open");
     let nvs = Arc::new(Mutex::new(nvs));
 

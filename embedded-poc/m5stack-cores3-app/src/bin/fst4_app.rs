@@ -341,7 +341,26 @@ fn log_heap(tag: &str) {
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
     LOGGER.install();
+    let peripherals = Peripherals::take().expect("peripherals taken twice");
+    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
+    run(peripherals, nvs_part)
+}
 
+/// The whole FST4 receiver, given the resources rather than taking them.
+///
+/// Split out of `main` so one binary can carry every mode and pick at
+/// boot from the NVS `boot_mode`, instead of a mode change meaning a
+/// re-flash — which on this board means unplugging the radio, because
+/// the USB host driver owns the port the flasher would use. The
+/// singletons are taken once by whoever calls this.
+///
+/// Everything below is unchanged from when it was `main`, including
+/// the ordering constraints: the worker-stack reservation and the scan
+/// task's stack both have to land before WiFi starts.
+pub fn run(
+    peripherals: esp_idf_hal::peripherals::Peripherals,
+    nvs_part: EspDefaultNvsPartition,
+) -> ! {
     log::info!("=== mfsk-core-m5stack-cores3-app fst4-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
 
@@ -351,11 +370,6 @@ fn main() -> ! {
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
 
-    // **Before WiFi**, per `fst4_dual_core::init`'s ordering
-    // constraint: its stack is a `.bss` reservation the linker makes,
-    // but the TCB and queues are still allocations, and WSPR measured a
-    // worker spawn silently lost to heap fragmentation with the radio
-    // up.
     // Take FST4's worker stack before WiFi, while the heap is still
     // whole — after WiFi and the USB host the largest free internal
     // block is 31,744 B, and this needs far more. See
@@ -381,8 +395,6 @@ fn main() -> ! {
         log::warn!("fst4_app: MFSK_FST4_APP_HOG_KB={HOG_KB} — reserved {got} KB of internal DRAM");
     }
 
-    let peripherals = Peripherals::take().expect("peripherals taken twice");
-    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = settings::open_nvs(nvs_part.clone()).expect("settings NVS open");
     let nvs = Arc::new(Mutex::new(nvs));
 
