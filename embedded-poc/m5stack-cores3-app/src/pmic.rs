@@ -539,8 +539,32 @@ pub fn enable_usb_host_vbus(i2c: &mut I2cDriver<'_>) -> Result<()> {
              (p0=0x{after0:02x} p1=0x{after1:02x}) — no USB device will enumerate"
         );
     }
+
+    // Return only once the rail has had time to come up.
+    //
+    // A device signals attach within 100 ms of seeing VBUS and a host
+    // debounces for another 100 ms; installing the host stack before
+    // the boost has ramped means its root port is enabled against a
+    // dead rail and nothing ever attaches. The FT8 controller never hit
+    // this because it sleeps `USB_HOST_DELAY_MS` between here and
+    // `start_host` — a *serviceability* window, kept open so a flasher
+    // can still reach the port, which happened to cover this as well.
+    // WSPR and FST4 call `start_host` immediately and did not, so the
+    // radio never enumerated for them: `no dev`, `num_devices=0`,
+    // against VBUS bits reading exactly what the working FT8 boot read.
+    //
+    // Here rather than in each caller, because "the boost is up" is
+    // this function's postcondition, and three call sites agreeing by
+    // hand is what produced the asymmetry in the first place.
+    FreeRtos::delay_ms(VBUS_SETTLE_MS);
     Ok(())
 }
+
+/// How long [`enable_usb_host_vbus`] waits before returning.
+///
+/// 500 ms against USB's 100 ms attach signalling plus 100 ms debounce —
+/// five times the specified budget, and free at boot.
+const VBUS_SETTLE_MS: u32 = 500;
 
 /// Whether the AW9523B answered the last time anyone looked.
 ///
