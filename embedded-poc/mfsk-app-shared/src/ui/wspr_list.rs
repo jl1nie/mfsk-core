@@ -114,9 +114,14 @@ where
     let mut s: String<48> = String::new();
     let ntp = if ui.ntp_synced { 'Y' } else { 'N' };
     let net = if ui.wsprnet_enabled { 'Y' } else { 'N' };
+    // The mode name leads, as FST4's does. This line used to open with
+    // the band label, so a WSPR screen carried no way to tell it apart
+    // from any other receiver's — the binary boots into one of four and
+    // the picker is the only other place the mode is named. One space
+    // between band and dial pays for it: 39 characters, 236 px of 240.
     let _ = write!(
         &mut s,
-        "{:<4} {:>8.4}M {} N{ntp} W{net} {:>4}k",
+        "WSPR {:<4}{:>8.4}M {} N{ntp} W{net} {:>4}k",
         ui.band_label, ui.dial_mhz, ui.utc_hhmmss, ui.free_heap_kb
     );
     fill(display, STATUS_ORIGIN_Y, STATUS_HEIGHT, HEADER_BG);
