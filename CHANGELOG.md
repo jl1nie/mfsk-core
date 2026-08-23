@@ -244,6 +244,47 @@ rather than distributing them across patches.
   - **`StatusInfo::utc_sod` was never assigned**, so the panel read
     `--:--:--` whatever the clock was doing — the one indicator that
     would have said why thirty candidates a slot resolved to nothing.
+- **The CoreS3's WSPR receiver never saw the radio.** Its USB host
+  enumerated the IC-705's hub and stopped — `num_devices=1` where FT8
+  reaches 3, the panel reading `NODEV d1 V111` with VBUS bits identical
+  to a working FT8 boot. Three separate omissions, each a thing one of
+  the other two receivers already did:
+  - `start_host` was called the moment VBUS was enabled, before the
+    boost had ramped. "The boost is up" is now
+    `enable_usb_host_vbus`'s postcondition rather than something three
+    call sites agree on by hand.
+  - The ninety-nine lines around `start_host` were not shared, so
+    WSPR and FST4 never installed `esp_log_bridge` — and `ENUM` and
+    `EXT_HUB` are C-side tags, so in those modes a board that would
+    not enumerate had no way to say why. One
+    `uac::start_host_when_ready()` now. Gone with it:
+    `USB_HOST_DELAY_MS`, six seconds on every host boot, whose stated
+    purpose was a re-flash window that cannot exist since the firmware
+    started deciding host-versus-peripheral from VBUS.
+  - With the trace finally reaching the log: `EXT_HUB: Interrupt EP
+    allocation failure: ESP_ERR_NO_MEM`. Endpoint buffers must be
+    DMA-capable internal memory, and WSPR's display task was holding
+    32 KiB of it in a stack that FST4 has kept in PSRAM since it was
+    written.
+- **A receiver with nothing to hear said otherwise.** WSPR decoded a
+  baked 2008 recording at startup and fabricated a `DDC_TEST_CALL`
+  burst every slot when no radio was attached; FST4 replayed a baked
+  slot the same way. Nine real callsigns, and then `K1ABC` every two
+  minutes, on a spot list where nothing distinguished them from
+  received stations. Both are opt-in now (`MFSK_WSPR_SYNTH=1`,
+  `MFSK_FST4_REPLAY=1`), with the fixtures behind Cargo features so
+  the bytes are not linked in: 4 423 632 -> 2 604 128 B of image, off
+  every flash. The FT8 `decode` mode keeps its WAV — that is a mode
+  the operator picks by name, not something that happens when a radio
+  is missing.
+- **The link bar named its USB states three different ways.** `chg`,
+  `no dev`, `NOHOST`, `STREAM`, `ERROR ` read as unrelated fields
+  rather than one state machine, and `no dev` did not say whether it
+  was a fault or a wait. Six characters, upper case, one name each.
+  WSPR's `src=` had the same problem in miniature: three things can
+  produce a slot — a baked recording, a fabricated burst, a radio —
+  and it was computed from a bool, so the golden slot printed
+  `src=uac`.
 - **The CoreS3's WSPR receiver decoded nothing at all.** Its scan task
   asks for a 72 KiB stack and the dual-core worker arena for 80 KiB,
   both out of one 128 KiB contiguous internal block — 152 does not fit
