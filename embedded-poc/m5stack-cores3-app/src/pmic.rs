@@ -575,4 +575,8 @@ pub fn refresh_power_state(i2c: &mut I2cDriver<'_>) {
     if let Ok(v) = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1) {
         AXP_STATUS1.store(v, Ordering::Relaxed);
     }
+    // Both are ADC reads, and both are the numbers that explain a port
+    // whose enables are high and which is delivering nothing.
+    let _ = vbus_mv(i2c);
+    let _ = battery_mv(i2c);
 }

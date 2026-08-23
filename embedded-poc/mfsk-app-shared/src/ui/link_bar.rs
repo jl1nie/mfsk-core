@@ -51,9 +51,20 @@ pub enum UsbLink {
 }
 
 impl UsbLink {
+    /// Host or peripheral, in one character. The word cost six and
+    /// said the least interesting thing on the line — what the port is
+    /// *doing* is the state below, and the volts are what say whether
+    /// it can.
+    fn role(self) -> &'static str {
+        match self {
+            UsbLink::Peripheral => "P",
+            _ => "H",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
-            UsbLink::Peripheral => "periph",
+            UsbLink::Peripheral => "chg   ",
             UsbLink::Waiting => "no dev",
             UsbLink::Streaming => "STREAM",
             UsbLink::Error => "ERROR ",
@@ -98,6 +109,15 @@ pub struct LinkInfo {
     /// comes out of this, so it is the number that explains a port
     /// which is enabled and still delivering nothing.
     pub battery_mv: u16,
+    /// VBUS at the connector, in millivolts.
+    ///
+    /// Trustworthy only while something else is supplying the port. The
+    /// AXP2101's VBUS ADC cannot see this board's own boost output — it
+    /// rails to full scale in host mode even with VBUS definitely
+    /// present (#163, measured) — so anything implausible renders as
+    /// `----` rather than as a number that would be read as a
+    /// measurement.
+    pub vbus_mv: u16,
 }
 
 /// Draw the bar at `origin_y`, spanning `width`.
@@ -126,11 +146,13 @@ where
     // "USB " then the state in its own colour, so the one field worth
     // glancing at reads without parsing the line.
     let y = origin_y + 2;
-    Text::with_baseline("USB ", Point::new(2, y), style(Rgb565::CSS_GRAY), Baseline::Top)
+    let mut head: String<8> = String::new();
+    let _ = write!(&mut head, "USB {} ", info.usb.role());
+    Text::with_baseline(head.as_str(), Point::new(2, y), style(Rgb565::CSS_GRAY), Baseline::Top)
         .draw(display)?;
     Text::with_baseline(
         info.usb.label(),
-        Point::new(2 + 4 * 6, y),
+        Point::new(2 + 6 * 6, y),
         style(info.usb.color()),
         Baseline::Top,
     )
@@ -161,13 +183,30 @@ where
             let _ = rest.push_str(" V---");
         }
     }
-    if info.battery_mv > 0 {
-        let _ = write!(&mut rest, " {}.{:02}V", info.battery_mv / 1000, (info.battery_mv % 1000) / 10);
+    // Anything above ~6 V is the ADC railed, not a reading.
+    match info.vbus_mv {
+        1..=6000 => {
+            let _ = write!(&mut rest, " v{}.{:02}", info.vbus_mv / 1000, (info.vbus_mv % 1000) / 10);
+        }
+        _ => {
+            let _ = rest.push_str(" v----");
+        }
     }
-    let _ = rest.push_str("  W ");
+    if info.battery_mv > 0 {
+        let _ = write!(
+            &mut rest,
+            " b{}.{:02}",
+            info.battery_mv / 1000,
+            (info.battery_mv % 1000) / 10
+        );
+    }
+    // ` W-52`, not `  WiFi -52dBm`. With the volts on the line there
+    // is no room for the unit, and a two-digit negative number after a
+    // W is unambiguous.
+    let _ = rest.push_str(" W");
     match info.wifi_rssi {
         Some(dbm) => {
-            let _ = write!(&mut rest, "{dbm}dBm");
+            let _ = write!(&mut rest, "{dbm}");
         }
         None => {
             let _ = rest.push_str("down");
@@ -180,7 +219,7 @@ where
     };
     Text::with_baseline(
         rest.as_str(),
-        Point::new(2 + 10 * 6, y),
+        Point::new(2 + 12 * 6, y),
         style(wifi_fg),
         Baseline::Top,
     )
