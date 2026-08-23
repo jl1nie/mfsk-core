@@ -130,6 +130,7 @@ use embedded_shared::wspr_dual_core;
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::boot_mode::{self, BootMode};
+use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
 use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
@@ -534,8 +535,21 @@ extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
 
 fn spawn_display_task(ctx: DisplayCtx) {
     let ptr = Box::into_raw(Box::new(ctx)) as *mut core::ffi::c_void;
+    // PSRAM, as FST4's display task already does.
+    //
+    // Drawing is shallow and not on any deadline, and the 32 KiB this
+    // frees is internal DRAM the USB host needs later: the hub's
+    // interrupt endpoint allocation failed with `ESP_ERR_NO_MEM` in
+    // this mode, so the IC-705's hub enumerated and its downstream CDC
+    // and audio interfaces never did — `num_devices` stuck at 1 where
+    // FT8 reaches 3. Endpoint buffers have to be DMA-capable internal
+    // memory; a display stack does not.
+    //
+    // Safe because nothing on this task writes flash. The two mode
+    // commits go through `boot_mode::commit_and_restart`, which exists
+    // precisely because a flash write aborts from a PSRAM stack.
     let created = unsafe {
-        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+        esp_idf_svc::sys::xTaskCreatePinnedToCoreWithCaps(
             Some(display_task_entry),
             c"wspr_display".as_ptr(),
             DISPLAY_STACK,
@@ -544,6 +558,7 @@ fn spawn_display_task(ctx: DisplayCtx) {
             core::ptr::null_mut(),
             1, // core 1 — deliberately NOT the scan task's core 0, see
                // this file's top doc comment.
+            MALLOC_CAP_SPIRAM,
         )
     };
     if created != 1 {
