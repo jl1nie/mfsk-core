@@ -106,7 +106,26 @@ pub fn scan(i2c: &mut I2cDriver<'_>) {
 /// Returns the driver; the caller holds it until LCD SPI init completes,
 /// then may drop it (Phase 6-Core touch will reclaim the bus).
 pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cDriver<'d>> {
-    let cfg = I2cConfig::new().baudrate(400u32.kHz().into());
+    // 100 kHz, not 400.
+    //
+    // The FT5x06 touch controller does not answer at 400 kHz — it
+    // never appeared in a bus scan, at any point in the boot, with its
+    // reset verified released and every rail M5GFX enables turned on.
+    // M5GFX itself runs the bus at 400 kHz but drops to 100 kHz for
+    // every FT5x06 transfer:
+    //
+    // ```c
+    // static constexpr int32_t i2c_freq                = 400000;
+    // static constexpr int32_t ft5x06_version_i2c_freq = 100000;
+    // ```
+    //
+    // esp-idf-hal's `I2cDriver` fixes the clock at construction, so
+    // rather than carry two drivers for one bus, the whole bus runs at
+    // the speed its slowest device needs. Nothing here is
+    // throughput-bound: the AXP2101 and the AW9523B see a handful of
+    // register accesses at boot and a touch poll at 2 Hz, and the LCD
+    // is on SPI. Refs #163.
+    let cfg = I2cConfig::new().baudrate(100u32.kHz().into());
     let mut i2c = I2cDriver::new(i2c0, sda, scl, &cfg)
         .map_err(|e| anyhow!("I2C0 driver init failed: {e}"))?;
 
@@ -173,11 +192,24 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_LEDMODE0, 0xFF)?;
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_LEDMODE1, 0xFF)?;
 
-    // Safe default output state: USB VBUS off (host mode turns it on),
-    // speaker amp off.
-    let p0_out = AW9523_P0_LCD_BL;
+    // Port 0, matching M5GFX's own CoreS3 bring-up.
+    //
+    // It writes `bitOn(0x02, 0b00000101)` — bits 0 and 2 — before it
+    // touches anything else, and this code never set either. Their
+    // names are not in the source (only bit 1, BUS_OUT_EN, is
+    // conditional there, for VBUS), so they are carried across as
+    // "required, purpose unnamed" rather than guessed at. What is
+    // certain is that the FT5x06 does not answer without the rest of
+    // M5's sequence, and this is the part of it that was missing.
+    //
+    // `CFG0 = 0b00011000` above makes P0_0 an *output*, which also
+    // settles a stale comment in `board.rs` calling it the touch
+    // interrupt input; M5GFX puts TP_INT on GPIO 21, not on the
+    // expander at all.
+    const AW9523_P0_M5_REQUIRED: u8 = 0b0000_0101;
+    let p0_out = AW9523_P0_LCD_BL | AW9523_P0_M5_REQUIRED;
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0, p0_out)?;
-    log::info!("AW9523B port0 out=0x{p0_out:02x} (LCD_BL=ON, BUS_OUT_EN=OFF, SPK_EN=OFF)");
+    log::info!("AW9523B port0 out=0x{p0_out:02x} (LCD_BL + M5GFX bits 0/2, BUS_OUT_EN=OFF)");
 
     // Port 1: assert LCD_RST and TP_RST LOW first (active-low reset).
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT1, 0x00)?;
@@ -187,6 +219,15 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     write_reg(&mut i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT1, p1_out)?;
     FreeRtos::delay_ms(100);
     log::info!("AW9523B LCD_RST + TP_RST cycle complete");
+
+    // Rails last, exactly where M5GFX puts them — after the expander
+    // is configured and its outputs are driven. Doing it later, from
+    // the display loop, meant the touch controller had its reset
+    // released while it was still unpowered and never saw a reset edge
+    // afterwards.
+    if let Err(e) = apply_peripheral_rails(&mut i2c) {
+        log::warn!("peripheral rail bring-up failed: {e:#}");
+    }
 
     Ok(i2c)
 }
@@ -281,6 +322,102 @@ static VBUS_OUT1: AtomicU8 = AtomicU8::new(0);
 static AXP_STATUS1: AtomicU8 = AtomicU8::new(0);
 
 /// (VBUS 有効化を試みたか, port0, port1, AXP2101 STATUS1)。
+/// Read every rail and expander pin that could explain a missing
+/// device, and say what is actually in the registers.
+///
+/// Written because the FT6336U does not answer at 0x38 even after
+/// `init` releases TP_RST, and the obvious next move — start guessing
+/// which AW9523B pin the reset really is — is the move that cost a
+/// night on the USB VBUS enables (#163). The pin theory is already
+/// weak: `init` drives `LCD_RST | TP_RST` together, so a swap between
+/// those two bits would release both either way.
+///
+/// The likelier shape is a rail nobody turns on. `init` only touches
+/// DLDO1, for the backlight; the LCD working says nothing about a
+/// panel controller on a different LDO. This dump is read-only and
+/// answers that before anything is written.
+/// Bring the peripheral rails up the way M5GFX does.
+///
+/// Ported from M5GFX's own CoreS3 autodetect (`src/M5GFX.cpp`), which
+/// writes exactly this before it touches the FT5x06:
+///
+/// ```c
+/// writeRegister8(i2c_port, axp_i2c_addr, 0x90, 0xBF);
+/// writeRegister8(i2c_port, axp_i2c_addr, 0x94, 33 - 5);
+/// writeRegister8(i2c_port, axp_i2c_addr, 0x95, 33 - 5);
+/// ```
+///
+/// `init` had only ever enabled DLDO1, for the backlight — enough to
+/// get a picture, and the reason the touch controller never answered
+/// at 0x38. Measured on this board before the fix: `0x90 = 0x8b`
+/// (ALDO1/2/4 + DLDO1), against M5's `0xBF`, so **ALDO3, BLDO1 and
+/// BLDO2 were all off**. Guessing at ALDO3 alone — the one 3.3 V rail
+/// that was configured-but-off — was not enough, which is the whole
+/// argument for reading the vendor's source instead of eliminating
+/// candidates one flash at a time.
+///
+/// 0x94/0x95 set ALDO3/ALDO4 to 3.3 V (code 28); this board already
+/// held 0x1c there, so those two writes are a no-op that is kept for
+/// fidelity to the source they came from.
+///
+/// Bit 6 (CPUSLDO) stays off in M5's value too.
+pub fn apply_peripheral_rails(i2c: &mut I2cDriver<'_>) -> Result<()> {
+    const M5GFX_LDO_ONOFF0: u8 = 0xBF;
+    const ALDO3_VOLT: u8 = 0x94;
+    const ALDO4_VOLT: u8 = 0x95;
+    const VOLT_3V3: u8 = 33 - 5;
+
+    let before = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0)?;
+    write_reg(i2c, AXP2101_I2C_ADDR, ALDO3_VOLT, VOLT_3V3)?;
+    write_reg(i2c, AXP2101_I2C_ADDR, ALDO4_VOLT, VOLT_3V3)?;
+    write_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0, M5GFX_LDO_ONOFF0)?;
+    FreeRtos::delay_ms(50);
+    let after = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0)?;
+    log::info!(
+        "AXP2101 peripheral rails (M5GFX sequence): 0x90 0x{before:02x} -> 0x{after:02x} \
+         (want 0x{M5GFX_LDO_ONOFF0:02x})"
+    );
+    Ok(())
+}
+
+pub fn dump_rails(i2c: &mut I2cDriver<'_>) {
+    // AXP2101 LDO enables: 0x90 bit per rail, 0x91 for DLDO2.
+    // Voltage select regs run 0x92..0x99 in the same order.
+    const NAMES: [&str; 8] = [
+        "ALDO1", "ALDO2", "ALDO3", "ALDO4", "BLDO1", "BLDO2", "CPUSLDO", "DLDO1",
+    ];
+    match read_reg(i2c, AXP2101_I2C_ADDR, 0x90) {
+        Ok(en) => {
+            let mut line = String::new();
+            for (i, name) in NAMES.iter().enumerate() {
+                let on = en & (1 << i) != 0;
+                let mv = read_reg(i2c, AXP2101_I2C_ADDR, 0x92 + i as u8).unwrap_or(0xFF);
+                let _ = core::fmt::Write::write_fmt(
+                    &mut line,
+                    format_args!(" {name}={}({mv:#04x})", if on { "ON" } else { "off" }),
+                );
+            }
+            log::info!("AXP2101 LDO enable 0x90=0x{en:02x}:{line}");
+        }
+        Err(e) => log::warn!("AXP2101 0x90 read failed: {e:#}"),
+    }
+
+    // The expander's real state, not the cached copy `power_state`
+    // returns — that one is only filled when USB host VBUS is enabled,
+    // so in peripheral mode it reads as zeros and means nothing.
+    for (reg, name) in [
+        (AW9523_REG_OUT0, "OUT0"),
+        (AW9523_REG_OUT1, "OUT1"),
+        (AW9523_REG_CFG0, "CFG0"),
+        (AW9523_REG_CFG1, "CFG1"),
+    ] {
+        match read_reg(i2c, AW9523B_I2C_ADDR, reg) {
+            Ok(v) => log::info!("AW9523B {name}=0x{v:02x}"),
+            Err(e) => log::warn!("AW9523B {name} read failed: {e:#}"),
+        }
+    }
+}
+
 pub fn power_state() -> (bool, u8, u8, u8) {
     (
         VBUS_ATTEMPTED.load(Ordering::Relaxed) != 0,

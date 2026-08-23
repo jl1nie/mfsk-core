@@ -25,7 +25,10 @@ pub const I2C0_SCL: i32 = 11;
 pub const I2C0_SDA: i32 = 12;
 pub const AXP2101_I2C_ADDR: u8 = 0x34;
 pub const AW9523B_I2C_ADDR: u8 = 0x58;
-pub const TOUCH_I2C_ADDR: u8 = 0x38; // FT6336U (Phase 6-Core)
+/// FT5x06-family touch controller. Reads `CIPHER:0x64 FIRMID:0x03
+/// VENDID:0x01` on this board — see `touch.rs` for why the vendor byte
+/// not being M5's 0x11 is not a problem.
+pub const TOUCH_I2C_ADDR: u8 = 0x38;
 pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 
 // AW9523B pin assignments (M5Stack CoreS3).
@@ -53,11 +56,15 @@ pub const IMU_I2C_ADDR: u8 = 0x69; // BMI270
 // ever saw VBUS, so nothing pulled up D+, which the host stack cannot
 // distinguish from an empty port.
 //
-//   P0_0 = TP_INT      (FT6336U interrupt, input)
+//   P0_0 = required by M5GFX, purpose unnamed (OUTPUT — `CFG0`'s
+//          0b0001_1000 makes it one, and M5GFX drives it high before
+//          the touch controller will answer). **Not** the touch
+//          interrupt, which this comment used to claim: M5GFX puts
+//          TP_INT on GPIO 21.
 //   P0_1 = BUS_OUT_EN  (external 5V out — M-Bus/Grove, NOT USB)
 //   P0_5 = USB_OTG_EN  (gates the 5V boost onto the USB connector)
 //   P0_7 = SPK_EN      (AW88298 speaker amp enable; Phase 3-Core)
-//   P1_0 = TP_RST      (FT6336U reset, active LOW; Phase 6-Core)
+//   P1_0 = TP_RST      (touch reset, active LOW)
 //   P1_1 = LCD_RST     (ILI9342C reset, active LOW)
 //   P1_7 = BOOST_EN    (the 5V boost converter itself)
 //

@@ -17,6 +17,7 @@ mod display;
 mod esp_log_bridge;
 mod log_slot;
 mod pmic;
+mod touch;
 mod uac;
 
 use esp_idf_hal::peripherals::Peripherals;

@@ -99,7 +99,7 @@ pub fn run_log_panel(
     // output anyway, so in host mode — the only mode where a live
     // reading would be interesting — the number is meaningless.
     // Refs #163.
-    let mut _pmic_i2c;
+    let mut pmic_i2c;
 
     // ── PMIC: AXP2101 + AW9523B → LCD power rails + RST + BL. ──────────
     match crate::pmic::init(i2c0, pins.gpio12, pins.gpio11) {
@@ -164,7 +164,23 @@ pub fn run_log_panel(
                 _ => log::warn!("AXP2101 voltage read failed"),
             }
 
-            _pmic_i2c = Some(i2c);
+            // Scan again, now that TP_RST is released.
+            //
+            // `pmic::init` scans at its start — before it pulses the
+            // reset — so that listing cannot see a device held in
+            // reset, and the touch controller's absence from it means
+            // nothing. This second pass is the one that can answer
+            // whether the panel is on this bus at all, and at which
+            // address. Cheap, once, at boot.
+            crate::pmic::scan(&mut i2c);
+            crate::pmic::dump_rails(&mut i2c);
+            // `pmic::init` now runs M5GFX's full sequence, rails
+            // included, so by here the touch controller should be
+            // powered and configured.
+            esp_idf_hal::delay::FreeRtos::delay_ms(200);
+            crate::pmic::scan(&mut i2c);
+            crate::touch::init(&mut i2c);
+            pmic_i2c = Some(i2c);
         }
         Err(e) => {
             log::error!("PMIC init failed: {e:#}");
@@ -430,6 +446,8 @@ pub fn run_log_panel(
 
     let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
         heapless::Vec::new();
+    let mut last_touch = crate::touch::Contact::default();
+    let mut touch_read_failed = false;
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
     let mut last_tx_seq: u32 = 0;
@@ -659,6 +677,14 @@ pub fn run_log_panel(
                 None => line(format_args!("au={sa} rms=--")),
             }
             line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
+            if last_touch.points > 0 {
+                line(format_args!(
+                    "T {},{} n={}",
+                    last_touch.x, last_touch.y, last_touch.points
+                ));
+            } else {
+                line(format_args!("T --"));
+            }
 
             // Two standing failure lines, each only when it has
             // something: the previous boot's crash, and the last
@@ -708,6 +734,63 @@ pub fn run_log_panel(
                 .ok();
             }
             last_usb_panel = panel;
+        }
+
+        // Touch, at 2 Hz and only when it changes.
+        //
+        // Deliberately slow and deliberately quiet. Every read is an
+        // I2C transaction, every transaction allocates a command link,
+        // and that allocation is what aborted this very loop the last
+        // time it talked to I2C — `pmic::vbus_mv` polled per second,
+        // dying in `i2c_cmd_link_delete` once internal DRAM ran out
+        // (#163). There is more headroom now, but this is the first
+        // flash that tests it, so the rate is low and the alive tick's
+        // `internal=` reading is the thing to watch beside it.
+        if tick % 5 == 0 {
+            if let Some(i2c) = pmic_i2c.as_mut() {
+                match crate::touch::read(i2c) {
+                    Some(c) => {
+                        if c != last_touch {
+                            if c.points > 0 {
+                                log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
+                            } else {
+                                log::info!("touch: released");
+                            }
+                            last_touch = c;
+                        }
+                        // Put it on the glass, not just in the log.
+                        //
+                        // Bring-up ran for several flashes with the
+                        // only evidence of a touch going out over
+                        // serial, so the person doing the touching had
+                        // no way to tell the panel from a dead one —
+                        // the same mistake the USB panel exists to
+                        // avoid ("a log line is not a status display",
+                        // and this board's own docs say so). A dot
+                        // under the finger also shows the coordinate
+                        // mapping instantly: if it lands somewhere
+                        // else, the axes are wrong, and no amount of
+                        // log-reading says that as fast.
+                        if c.points > 0 {
+                            let x = c.x.min(crate::board::LCD_WIDTH as u16 - 1) as i32;
+                            let y = c.y.min(crate::board::LCD_HEIGHT as u16 - 1) as i32;
+                            Rectangle::new(
+                                Point::new((x - 4).max(0), (y - 4).max(0)),
+                                Size::new(9, 9),
+                            )
+                            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(31, 0, 0)))
+                            .draw(&mut display)
+                            .ok();
+                        }
+                    }
+                    None => {
+                        if !touch_read_failed {
+                            log::warn!("touch: read failed — not repeating this");
+                            touch_read_failed = true;
+                        }
+                    }
+                }
+            }
         }
 
         let _ = fanout;
