@@ -100,12 +100,6 @@
 //! really heard on that band.
 #![allow(dead_code)] // board.rs/pmic.rs/uac.rs carry fields/fns this bin doesn't use (no touch, no TX).
 
-#[path = "../board.rs"]
-mod board;
-#[path = "../pmic.rs"]
-mod pmic;
-#[path = "../uac.rs"]
-mod uac;
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -134,7 +128,6 @@ use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLO
 use embedded_shared::wspr_dual_core;
 
 use mfsk_app_shared::civil_time::civil_from_unix;
-use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
@@ -144,20 +137,7 @@ use mfsk_app_shared::{http_config, ntp, udp_log};
 
 const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseband.bin");
 
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PSK: &str = env!("WIFI_PSK");
-/// `"auto"` or empty → the WiFi handle's own subnet broadcast address
-/// (same fallback `main.rs` uses); anything else is parsed as a fixed
-/// unicast/broadcast target. Same `cfg.toml`-sourced env var `main.rs`
-/// already reads — one `cfg.toml` covers every bin in this crate.
-const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
-const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
 
-/// Routes every `log::*!` call through console (guarded by
-/// `usb_serial_jtag_is_connected()`) + UDP datagram, same fanout
-/// `main.rs` installs — see this file's own top doc comment for why.
-static FANOUT: LogFanout = LogFanout::new();
-static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, log::LevelFilter::Info);
 
 /// How long to wait for the boot-time NTP attempt before giving up
 /// and running without absolute time (`ntp_synced` stays false, and
@@ -363,14 +343,6 @@ const DDC_SLOT_AUDIO_SAMPLES: usize = 114 * 12_000;
 /// so this is deliberately much smaller than `SCAN_STACK`.
 const DDC_STACK: u32 = 12 * 1024;
 
-fn main() -> ! {
-    esp_idf_svc::sys::link_patches();
-    LOGGER.install();
-    let peripherals = Peripherals::take().expect("peripherals taken twice");
-    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
-    run(peripherals, nvs_part)
-}
-
 /// The whole WSPR receiver, given the resources rather than taking them.
 ///
 /// Split out of `main` so one binary can carry every mode and pick at
@@ -382,10 +354,7 @@ fn main() -> ! {
 /// Everything below is unchanged from when it was `main`, including
 /// the ordering constraints: the worker-stack reservation and the scan
 /// task's stack both have to land before WiFi starts.
-pub fn run(
-    peripherals: esp_idf_hal::peripherals::Peripherals,
-    nvs_part: EspDefaultNvsPartition,
-) -> ! {
+pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     log::info!("=== mfsk-core-m5stack-cores3-app wspr-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
 
@@ -434,7 +403,7 @@ pub fn run(
     log_heap("post-ddc-spawn");
 
     // Register the real-audio sink **before** `spawn_display_task`
-    // below, whose task body eventually calls `uac::start_host()`
+    // below, whose task body eventually calls `crate::uac::start_host()`
     // (after PMIC/VBUS bring-up — see `display_loop`'s own comment).
     // Same "wire the consumer before installing the driver" ordering
     // `main.rs` relies on for its own `set_chunk_q` call: by the time
@@ -442,7 +411,7 @@ pub fn run(
     // I2C/PMIC work first), this synchronous call here has long since
     // returned, so there is no race despite the two running on
     // different tasks.
-    uac::set_audio_sink(WsprDdcSink::new());
+    crate::uac::set_audio_sink(WsprDdcSink::new());
 
     // Display task: its own LCD bring-up + render loop, pinned to
     // core 1 — see this file's top doc comment for why inline-in-
@@ -476,7 +445,7 @@ pub fn run(
     // and everything downstream of a successful connect (UDP log
     // sink, NTP, HTTP config server).
     let sysloop = EspSystemEventLoop::take().expect("sysloop");
-    let wifi_driver = if WIFI_SSID.is_empty() {
+    let wifi_driver = if crate::WIFI_SSID.is_empty() {
         log::warn!(
             "wspr_app: WIFI_SSID empty (no cfg.toml) — NTP/HTTP config/wsprnet all unavailable"
         );
@@ -568,9 +537,9 @@ fn spawn_display_task(ctx: DisplayCtx) {
 /// branches this app has no use for) followed by the render loop.
 /// Never returns.
 fn display_loop(ctx: DisplayCtx) -> ! {
-    let mut display = match pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
+    let mut display = match crate::pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
         Ok(mut i2c) => {
-            // Enable USB VBUS boost **before** `uac::start_host()` —
+            // Enable USB VBUS boost **before** `crate::uac::start_host()` —
             // AW9523B P0_1 (BUS_OUT_EN) HIGH drives the VBUS switch;
             // omission leaves VBUS floating and the host stack sees no
             // device. Same call/ordering `display.rs`'s FT8-controller
@@ -597,16 +566,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
 
             let driver = SpiDriver::new(
                 ctx.spi2,
-                ctx.pins.gpio36, // SCK  (board::LCD_PIN_SCK)
-                ctx.pins.gpio37, // MOSI (board::LCD_PIN_MOSI)
+                ctx.pins.gpio36, // SCK  (crate::board::LCD_PIN_SCK)
+                ctx.pins.gpio37, // MOSI (crate::board::LCD_PIN_MOSI)
                 Option::<AnyIOPin>::None,
                 &SpiDriverConfig::new(),
             )
             .expect("SPI2 driver");
             let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
-            let spi_dev = SpiDeviceDriver::new(driver, Some(ctx.pins.gpio3), &spi_cfg) // CS (board::LCD_PIN_CS)
+            let spi_dev = SpiDeviceDriver::new(driver, Some(ctx.pins.gpio3), &spi_cfg) // CS (crate::board::LCD_PIN_CS)
                 .expect("SPI device (CS=3)");
-            let dc = PinDriver::output(ctx.pins.gpio35).expect("DC gpio35"); // board::LCD_PIN_DC
+            let dc = PinDriver::output(ctx.pins.gpio35).expect("DC gpio35"); // crate::board::LCD_PIN_DC
             let di = SPIInterface::new(spi_dev, dc);
 
             // **2026-08-15 real-hardware fix**: this board's chip is
@@ -657,7 +626,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    log::info!("LCD init OK ({}x{})", board::LCD_WIDTH, board::LCD_HEIGHT);
+    log::info!("LCD init OK ({}x{})", crate::board::LCD_WIDTH, crate::board::LCD_HEIGHT);
 
     // The 2026-08-15 real-hardware investigation that led here (three
     // real bugs: AXP2101 DLDO1/backlight never enabled, board.rs's
@@ -816,8 +785,8 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // once, not worth retrying), not for a transient connect failure.
     let info = match mfsk_app_shared::wifi::connect_with_retry(
         &mut ctx.wifi_driver,
-        WIFI_SSID,
-        WIFI_PSK,
+        crate::WIFI_SSID,
+        crate::WIFI_PSK,
         None,
     ) {
         Ok(i) => i,
@@ -833,27 +802,28 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // UDP log sink — see this file's top doc comment for why (USB
     // host mode later takes the serial console with it). Same
     // target-resolution + staging-drain sequence `main.rs` uses.
-    let target_ip: std::net::IpAddr = if UDP_LOG_TARGET.is_empty() || UDP_LOG_TARGET == "auto" {
+    let target_ip: std::net::IpAddr = if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
         std::net::IpAddr::V4(info.subnet_broadcast)
     } else {
-        match UDP_LOG_TARGET.parse() {
+        match crate::UDP_LOG_TARGET.parse() {
             Ok(ip) => ip,
             Err(e) => {
                 log::warn!(
-                    "wspr_app: UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); using subnet bcast"
+                    "wspr_app: UDP_LOG_TARGET '{}' parse failed ({e}); using subnet bcast",
+                    crate::UDP_LOG_TARGET
                 );
                 std::net::IpAddr::V4(info.subnet_broadcast)
             }
         }
     };
-    let port: u16 = UDP_LOG_PORT.parse().unwrap_or(9999);
+    let port: u16 = crate::UDP_LOG_PORT.parse().unwrap_or(9999);
     let addr = std::net::SocketAddr::new(target_ip, port);
     match udp_log::UdpLogSink::new(addr) {
         Ok(sink) => {
-            if let Ok(mut slot) = FANOUT.udp.try_lock() {
+            if let Ok(mut slot) = crate::FANOUT.udp.try_lock() {
                 *slot = Some(sink);
             }
-            FANOUT.drain_staging_to_udp();
+            crate::FANOUT.drain_staging_to_udp();
             log::info!("wspr_app: UDP log sink up → {addr}");
         }
         Err(e) => log::warn!("wspr_app: UDP socket bind failed: {e}"),
@@ -1208,7 +1178,7 @@ fn ddc_loop() -> ! {
 
 // ── Real UAC audio sink ──────────────────────────────────────────────
 
-/// [`uac::AudioSink`] implementation that feeds real captured 12 kHz
+/// [`crate::uac::AudioSink`] implementation that feeds real captured 12 kHz
 /// mono audio into a per-slot [`StreamingDdcCascade`], reusing exactly
 /// the shape `ddc_loop`'s synthetic path already used and had
 /// hardware-verified (fresh cascade each slot, [`DDC_SLOT_AUDIO_SAMPLES`]
@@ -1286,7 +1256,7 @@ impl WsprDdcSink {
     }
 }
 
-impl uac::AudioSink for WsprDdcSink {
+impl crate::uac::AudioSink for WsprDdcSink {
     fn push_samples(&mut self, samples_12k_mono: &[i16]) {
         if !UAC_AUDIO_ACTIVE.swap(true, Ordering::AcqRel) {
             log::info!("wspr_app::ddc: real UAC audio arriving — synthetic generator handing off");

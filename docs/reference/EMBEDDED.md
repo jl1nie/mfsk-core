@@ -868,8 +868,7 @@ measurement, neither specific to FST4:
 2. `m5stack-cores3-app/partitions.csv`'s `factory` partition grew
    from 3 MiB to 9 MiB for the ~7.7 MiB app image the baked assets
    produce — shared across every `[[bin]]` in that crate, so
-   re-flashing `wspr-app` after this change resets its
-   littlefs-stored settings.
+   re-flashing after this change resets the littlefs-stored settings.
 
 With both fixed, the app boots and loads its baked assets cleanly
 (1 008 ms for 1.44 MiB audio + 5.7 MiB `fft_cache`, PSRAM headroom
@@ -1582,11 +1581,14 @@ afford it.
 
 ## Live UAC bring-up — what to check, in what order (issue #163)
 
-No UAC audio source has ever enumerated on the CoreS3, so every
-receiver on this board — the FT8 controller, `wspr-app`, `fst4-app` —
-decodes a baked golden slot and its real-audio path is dormant. This is
-the procedure for the session that changes that, written before the
-session so that it produces a *result* rather than an ambiguity.
+**This procedure did its job on 2026-08-23 and #163 is closed** — an
+IC-705 enumerated through its internal hub and the FT8 controller ran
+ten unbroken minutes at 192,512 B/s, zero errors. It is kept because
+the WSPR and FST4 receivers still decode a baked golden slot: they
+share the same `uac.rs`, so the transport is proven, but neither has
+been run against a radio. Written before the first session so that it
+would produce a *result* rather than an ambiguity, which is also why it
+is still the right script for the second.
 
 **Any UAC source satisfies checkpoint 1.** The criteria were written
 around an IC-705 because that was the only consumer; for "does real
@@ -1600,8 +1602,12 @@ stations it decodes from flash. A live antenna is checkpoint 2.
 1. **Build with the host driver on.** It is opt-in precisely because it
    detaches the console:
    ```sh
-   MFSK_FST4_APP_USB_HOST=1 cargo build --release --bin fst4-app
+   MFSK_FST4_APP_USB_HOST=1 cargo build --release
    ```
+   There is one binary now; the receiver is chosen at boot from the NVS
+   `boot_mode` (`decode` / `uac` / `wspr` / `fst4`), because changing
+   mode by re-flashing means unplugging the radio the host driver is
+   holding the port for.
 2. **Have the UDP log listening.** `embedded-poc/scripts/udp-log-listen.sh`.
    The app logs, immediately before installing the host driver, whether
    the UDP sink is up — if it says it is not, stop: that boot will be

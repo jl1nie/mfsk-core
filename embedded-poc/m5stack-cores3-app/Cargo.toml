@@ -30,11 +30,6 @@ harness = false
 # WSPR receiver app (CoreS3 WSPR app plan, steps 1-8) — the actual UI
 # built on top of the WSPR embedded RX work above. See
 # `docs/notes/ROADMAP.md` Phase E and this crate's own CLAUDE.md.
-[[bin]]
-name = "wspr-app"
-path = "src/bin/wspr_app.rs"
-harness = false
-
 # FST4-60 decoder-only bench — issue #306, embedded feasibility
 # question. Separate track from the WSPR bench above: does the FST4
 # decoder (candidate search + LLR/BP/OSD, fed a host-baked FFT cache)
@@ -50,11 +45,6 @@ harness = false
 # (DDC -> coarse_sync -> refine -> LLR/BP/OSD) on real audio, not just
 # the decoder half `fst4-bench` above measures. See
 # `embedded-shared::apps::fst4_ddc_bench`'s module doc comment.
-[[bin]]
-name = "fst4-app"
-path = "src/bin/fst4_app.rs"
-harness = false
-
 [[bin]]
 name = "fst4-ddc-bench"
 path = "src/bin/fst4_ddc_bench.rs"

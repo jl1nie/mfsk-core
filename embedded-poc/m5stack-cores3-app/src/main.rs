@@ -9,6 +9,7 @@
 
 #![allow(dead_code)]
 
+mod apps;
 mod board;
 mod coredump;
 mod decode_pipeline;
@@ -102,6 +103,20 @@ fn main() -> ! {
     }
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
+
+    // WSPR and FST4 are whole receivers, not modes of the FT8
+    // controller — their own tasks, screens, slot grids and stacks.
+    // They get the singletons and never come back.
+    //
+    // This is why they are here at all rather than in their own
+    // binaries: changing mode used to mean re-flashing, and on this
+    // board that means unplugging the radio, because `usb_host_install`
+    // takes the port the flasher would use. Refs #163.
+    match mode {
+        boot_mode::BootMode::Wspr => apps::wspr::run(peripherals, nvs_part),
+        boot_mode::BootMode::Fst4 => apps::fst4::run(peripherals, nvs_part),
+        _ => {}
+    }
 
     // Take the decode scratch now, while the heap is still whole.
     //

@@ -319,7 +319,7 @@ early; a failure is logged loudly rather than degrading in silence.
   #260) — decoder-level, not part of the FT8 controller line above;
   build-time switches `MFSK_WSPR_SPOT`/`MFSK_WSPR_BENCH_WIFI`. See
   `docs/reference/EMBEDDED.md`'s "WSPR on embedded" section. A third
-  bin, `src/bin/wspr_app.rs` (`wspr-app`), is the actual receiver UI
+  receiver, `src/apps/wspr.rs`, is the actual receiver UI
   built on top of that decode work — stations display + spot history
   on the CoreS3's own 320×240 panel, settings edited from a browser
   (`mfsk-app-shared`'s `http_config`/`ntp`/`settings` modules) rather
@@ -341,8 +341,19 @@ early; a failure is logged loudly rather than degrading in silence.
   in `mfsk-core/tests/fst4_wsjtx_samples.rs`. This bin's baked assets
   (~7.16 MiB) are why `partitions.csv`'s `factory` partition grew from
   3 MiB to 9 MiB 2026-08-16 — shared across every `[[bin]]` in this
-  crate, so re-flashing `wspr-app` after that change resets its
-  littlefs-stored settings (re-enter via the HTTP config server).
+  crate, so re-flashing after that change resets the littlefs-stored
+  settings (re-enter via the HTTP config server).
+
+  **One binary, three receivers (2026-08-23).** `wspr_app.rs` and
+  `fst4_app.rs` are no longer their own `[[bin]]`s — they moved to
+  `src/apps/{wspr,fst4}.rs` and `main` dispatches on the NVS
+  `boot_mode` (`decode` / `uac` / `wspr` / `fst4`). Changing mode used
+  to mean re-flashing, and on this board that means unplugging the
+  radio, because `usb_host_install` takes the port the flasher would
+  use. The image is 4.18 MB against a 9 MiB `factory`; static DRAM is
+  86 KB rather than the ~173 KB a naive merge would cost, because the
+  large decode scratches come from `worker_arena` at boot and only the
+  mode that booted allocates one.
 - **`m5stack-core2-app/`** — Core2 (LX6) sibling of the above
   (`#61` Phase 2). Same `mfsk-app-shared` consumer, board-specific
   HW drivers swapped: AXP192 PMIC, ILI9342C LCD (via mipidsi's

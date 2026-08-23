@@ -91,17 +91,10 @@ use embedded_shared::fst4_dual_core;
 use embedded_shared::fst4_monitor::{
     self, CapturedSlot, MonitorConfig, MonitorHit, SlotCapture,
 };
-use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
 use mfsk_app_shared::settings;
 use mfsk_app_shared::{http_config, ntp, udp_log};
 use mfsk_app_shared::ui::fst4_list::{self, Fst4SpotRow, Fst4UiState};
 
-#[path = "../board.rs"]
-mod board;
-#[path = "../pmic.rs"]
-mod pmic;
-#[path = "../uac.rs"]
-mod uac;
 
 /// The same baked golden slot `fst4-ddc-bench` runs — raw `i16` little
 /// endian at 12 kHz, byte-wise rather than transmuted (1-byte
@@ -109,13 +102,7 @@ mod uac;
 /// Xtensa).
 const GOLDEN_AUDIO: &[u8] = include_bytes!("../../../assets/fst4_60_golden_audio.bin");
 
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PSK: &str = env!("WIFI_PSK");
-const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
-const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
 
-static FANOUT: LogFanout = LogFanout::new();
-static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, log::LevelFilter::Info);
 
 /// FST4-60's slot. Capture paces itself to this; the decode has the
 /// same period to finish in.
@@ -338,14 +325,6 @@ fn log_heap(tag: &str) {
     }
 }
 
-fn main() -> ! {
-    esp_idf_svc::sys::link_patches();
-    LOGGER.install();
-    let peripherals = Peripherals::take().expect("peripherals taken twice");
-    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
-    run(peripherals, nvs_part)
-}
-
 /// The whole FST4 receiver, given the resources rather than taking them.
 ///
 /// Split out of `main` so one binary can carry every mode and pick at
@@ -357,10 +336,7 @@ fn main() -> ! {
 /// Everything below is unchanged from when it was `main`, including
 /// the ordering constraints: the worker-stack reservation and the scan
 /// task's stack both have to land before WiFi starts.
-pub fn run(
-    peripherals: esp_idf_hal::peripherals::Peripherals,
-    nvs_part: EspDefaultNvsPartition,
-) -> ! {
+pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     log::info!("=== mfsk-core-m5stack-cores3-app fst4-app boot ===");
     log::info!("mfsk-core {}", mfsk_core::VERSION);
 
@@ -410,7 +386,7 @@ pub fn run(
     // Register the sink before the display task, whose body installs
     // the USB host driver — same "wire the consumer before installing
     // the driver" ordering `wspr_app` relies on.
-    uac::set_audio_sink(Fst4Sink);
+    crate::uac::set_audio_sink(Fst4Sink);
 
     spawn_display_task(DisplayCtx {
         i2c0: peripherals.i2c0,
@@ -429,7 +405,7 @@ pub fn run(
     let wifi_driver = if NO_WIFI {
         log::warn!("fst4_app: MFSK_FST4_APP_NO_WIFI=1 — no radio this boot (diagnostic build)");
         None
-    } else if WIFI_SSID.is_empty() {
+    } else if crate::WIFI_SSID.is_empty() {
         log::warn!("fst4_app: WIFI_SSID empty (no cfg.toml) — NTP and HTTP config unavailable");
         None
     } else {
@@ -650,7 +626,7 @@ fn capture_loop() -> ! {
 /// — see [`AUDIO_STAGING`] for why the DSP is not done here.
 struct Fst4Sink;
 
-impl uac::AudioSink for Fst4Sink {
+impl crate::uac::AudioSink for Fst4Sink {
     fn push_samples(&mut self, samples_12k_mono: &[i16]) {
         if !UAC_AUDIO_ACTIVE.swap(true, Ordering::AcqRel) {
             log::info!("fst4_app: real UAC audio active — golden replay stops at the next slot");
@@ -857,11 +833,11 @@ fn spawn_display_task(ctx: DisplayCtx) {
 }
 
 fn display_loop(ctx: DisplayCtx) -> ! {
-    let mut display = match pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
+    let mut display = match crate::pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
         Ok(mut i2c) => {
             // VBUS boost before the USB host driver, or the host stack
             // sees no device — same sequence `wspr_app` documents.
-            if let Err(e) = pmic::enable_usb_host_vbus(&mut i2c) {
+            if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
                 log::error!("BUS_OUT_EN failed: {e:#}");
             }
             drop(i2c);
@@ -885,7 +861,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 // mode this avoids is a board that goes silent with no
                 // way to tell whether it crashed, never enumerated, or
                 // is working perfectly and simply cannot say so.
-                let udp_up = FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false);
+                let udp_up = crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false);
                 if udp_up {
                     log::info!("fst4_app: UDP log sink is up — serial console goes away now");
                 } else {
@@ -896,7 +872,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                     );
                 }
                 log::info!("fst4_app: installing USB host + UAC class driver");
-                if let Err(e) = uac::start_host() {
+                if let Err(e) = crate::uac::start_host() {
                     log::error!("fst4_app: UAC host start failed: {e:#}");
                 }
             } else {
@@ -945,7 +921,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    log::info!("LCD init OK ({}x{})", board::LCD_WIDTH, board::LCD_HEIGHT);
+    log::info!("LCD init OK ({}x{})", crate::board::LCD_WIDTH, crate::board::LCD_HEIGHT);
 
     {
         let ui = FST4_UI.lock().expect("FST4_UI poisoned");
@@ -1053,8 +1029,8 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     let info = loop {
         match mfsk_app_shared::wifi::connect_with_retry(
             &mut ctx.wifi_driver,
-            WIFI_SSID,
-            WIFI_PSK,
+            crate::WIFI_SSID,
+            crate::WIFI_PSK,
             Some(CONNECT_ATTEMPTS_PER_CAMPAIGN),
         ) {
             Ok(i) => break i,
@@ -1088,27 +1064,28 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // UDP log sink — the serial console goes away the moment the USB
     // host driver installs, so this is the only log this app has once
     // it is running for real.
-    let target_ip: std::net::IpAddr = if UDP_LOG_TARGET.is_empty() || UDP_LOG_TARGET == "auto" {
+    let target_ip: std::net::IpAddr = if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
         std::net::IpAddr::V4(info.subnet_broadcast)
     } else {
-        match UDP_LOG_TARGET.parse() {
+        match crate::UDP_LOG_TARGET.parse() {
             Ok(ip) => ip,
             Err(e) => {
                 log::warn!(
-                    "fst4_app::net: UDP_LOG_TARGET '{UDP_LOG_TARGET}' parse failed ({e}); \
-                     using subnet broadcast"
+                    "fst4_app::net: UDP_LOG_TARGET '{}' parse failed ({e}); \
+                     using subnet broadcast",
+                    crate::UDP_LOG_TARGET
                 );
                 std::net::IpAddr::V4(info.subnet_broadcast)
             }
         }
     };
-    let addr = std::net::SocketAddr::new(target_ip, UDP_LOG_PORT.parse().unwrap_or(9999));
+    let addr = std::net::SocketAddr::new(target_ip, crate::UDP_LOG_PORT.parse().unwrap_or(9999));
     match udp_log::UdpLogSink::new(addr) {
         Ok(sink) => {
-            if let Ok(mut slot) = FANOUT.udp.try_lock() {
+            if let Ok(mut slot) = crate::FANOUT.udp.try_lock() {
                 *slot = Some(sink);
             }
-            FANOUT.drain_staging_to_udp();
+            crate::FANOUT.drain_staging_to_udp();
             log::info!("fst4_app::net: UDP log sink up -> {addr}");
         }
         Err(e) => log::warn!("fst4_app::net: UDP socket bind failed: {e}"),
