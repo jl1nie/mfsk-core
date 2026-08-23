@@ -59,7 +59,13 @@ set -euo pipefail
 
 ELF=${1:?usage: flash-monitor.sh <ELF> <LOG_FILE> [DURATION] [PORT] [PARTITIONS] [FLASH_SIZE]}
 LOG=${2:?usage: flash-monitor.sh <ELF> <LOG_FILE> [DURATION] [PORT] [PARTITIONS] [FLASH_SIZE]}
-DURATION=${3:-90}
+# Default capture window.
+#
+# 180, not the 90 it was: the write itself takes ~41 s for the combined
+# CoreS3 image (4.4 MB), so 90 left barely enough to see the app boot
+# and none to watch it run — and a window that expires mid-write kills
+# `espflash` partway through, which is worse than useless.
+DURATION=${3:-180}
 PORT=${4:-/dev/ttyACM0}
 PARTITIONS=${5:-./partitions.csv}
 FLASH_SIZE=${6:-}
@@ -90,7 +96,16 @@ if [[ -z "$FLASH_SIZE" ]]; then
         FLASH_SIZE="$DETECTED"
         echo "[flash-monitor] auto-detected flash size: $FLASH_SIZE"
     else
-        echo "[flash-monitor] WARNING: could not auto-detect flash size from 'espflash board-info' — falling back to espflash's own default (currently 4mb regardless of chip). Pass FLASH_SIZE explicitly if this board's factory partition exceeds 4 MB." >&2
+        echo "[flash-monitor] ERROR: could not auto-detect flash size from 'espflash board-info'." >&2
+        echo "[flash-monitor]   Falling back would write espflash's default of 4mb into the app" >&2
+        echo "[flash-monitor]   image header regardless of the chip, and the 2nd-stage bootloader" >&2
+        echo "[flash-monitor]   reads *that* field to validate the partition table. Any factory" >&2
+        echo "[flash-monitor]   partition past 4 MB then boot-loops on 'Failed to verify partition" >&2
+        echo "[flash-monitor]   table' forever, and erase-flash does not fix it (issue #306)." >&2
+        echo "[flash-monitor]   That used to be harmless because every image here fit under 4 MB." >&2
+        echo "[flash-monitor]   The combined CoreS3 binary is 4.4 MB, so it is not harmless now." >&2
+        echo "[flash-monitor]   Pass FLASH_SIZE explicitly, e.g. FLASH_SIZE=16mb." >&2
+        exit 1
     fi
 fi
 
@@ -113,5 +128,30 @@ timeout --foreground "$DURATION" \
 
 # Strip CR injected by the pty so logs are pure LF.
 sed -i 's/\r$//' "$LOG"
+
+# Say whether this actually flashed.
+#
+# `espflash` runs under `script` under `timeout`, and `|| true` above
+# swallows every exit code, so a failed connection used to leave a
+# 500-byte log and a script that exited 0 — indistinguishable from a
+# good run unless someone read the transcript. Two sessions'
+# measurements were taken against a board still running the previous
+# binary because of it.
+if grep -q "Serial port not found\|Device or resource busy\|connection_failed" "$LOG"; then
+    echo "[flash-monitor] FAILED: could not open $PORT — the board is not on USB, or another" >&2
+    echo "[flash-monitor]   flash-monitor still holds it. NOTHING WAS WRITTEN." >&2
+    exit 2
+fi
+if ! grep -q "Flashing has completed" "$LOG"; then
+    echo "[flash-monitor] FAILED: no 'Flashing has completed' in the transcript — the write did" >&2
+    echo "[flash-monitor]   not finish (a window shorter than the write does this)." >&2
+    exit 3
+fi
+if grep -q "waiting for download" "$LOG"; then
+    echo "[flash-monitor] WROTE OK, but the board is sitting in DOWNLOAD mode rather than running" >&2
+    echo "[flash-monitor]   the new image. Press reset or power-cycle it." >&2
+    exit 4
+fi
+echo "[flash-monitor] wrote and booted OK."
 
 echo "[flash-monitor] done. $(wc -l <"$LOG") lines captured."
