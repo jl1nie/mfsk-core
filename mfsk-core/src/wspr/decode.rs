@@ -1040,6 +1040,7 @@ pub fn rank_pass2_candidates<'c>(
             lag_baseband_init,
             c.drift_hz,
             false,
+            &mut isqs,
         );
         if sync <= MINSYNC2_FINAL {
             super::instrument::bump(&super::instrument::MINSYNC2_REJECTED);

@@ -320,7 +320,7 @@ fn log_heap(tag: &str) {
 /// still a heap allocation, so a smaller request is a wider margin
 /// against a largest-free-block that moves (see `post_spawn` in
 /// [`run_with_post_spawn`] for the ordering that keeps it wide).
-const SCAN_STACK: u32 = 72 * 1024;
+const SCAN_STACK: u32 = 48 * 1024;
 
 // SLOT_US/SPOT_RESERVE_US/Pass2Budget/PASS2_BUDGET moved to
 // `super::wspr_scan` along with `run_scan`, their only consumer in
@@ -486,6 +486,17 @@ pub fn run_with_hooks(
     // same way and has to make the same call.
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
+    // Reserve the worker stack before `init` claims it.
+    //
+    // `worker_arena` made this a boot-time reservation rather than a
+    // `.bss` one, and this bench was never brought across: `init` found
+    // no owner, `spawn_worker` failed, and the binary panicked in
+    // `fft multisize self-test`'s wake — which is where the arena
+    // change also left `m5stack-cores3-app`'s WSPR receiver unable to
+    // create its scan task. Same commit, two casualties.
+    if !wspr_dual_core::reserve_arena() {
+        log::error!("wspr-bench: worker stack reservation failed — staying single-core");
+    }
     wspr_dual_core::init();
     log_heap("boot");
 

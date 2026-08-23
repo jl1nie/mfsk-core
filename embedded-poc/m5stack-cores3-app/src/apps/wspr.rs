@@ -149,11 +149,22 @@ const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseb
 /// timeouts.
 const NTP_SYNC_TIMEOUT_MS: u32 = 20_000;
 
-/// Stack for the scan task. Same 72 KiB `wspr-bench` settled on after
-/// measuring a 63 192 B peak through `run_scan`'s full pass 0/1/2
-/// sequence (see that bin's own `SCAN_STACK` doc comment) — this app
-/// calls the identical function, so the identical stack applies.
-const SCAN_STACK: u32 = 72 * 1024;
+/// Stack for the scan task.
+///
+/// 48 KiB against a **42 536 B** peak measured 2026-08-24 through
+/// `run_scan`'s full pass 0/1/2 sequence — 13 % margin. It was 72 KiB
+/// against 63 192 B until the decode path stopped keeping three
+/// 10 368 B `IsQs` alive at once (`refine_cascade` returning its
+/// champion by value on top of the two it ping-pongs, and the jitter
+/// ladder building one per position through the by-value
+/// `tone_amplitudes`).
+///
+/// **The 48 is not headroom-shopping, it is the budget.** This stack
+/// and `wspr_dual_core`'s 80 KiB worker arena both come out of one
+/// 128 KiB contiguous internal block, and 72 + 80 did not fit — the
+/// task simply failed to spawn and the receiver decoded nothing, with
+/// the DDC filling buffers nobody consumed. 48 + 80 is exactly 128.
+const SCAN_STACK: u32 = 48 * 1024;
 
 /// Stack for the display task. `embedded_graphics`/`mipidsi` drawing
 /// is shallow compared to the decode path; this is roughly what
