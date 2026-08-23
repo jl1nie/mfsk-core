@@ -1,0 +1,162 @@
+//! Link bar — the bottom 14 px of the panel, in every mode.
+//!
+//! Two facts that decide whether the receiver can work at all, and
+//! neither of which any screen used to carry: is there a radio on the
+//! USB port, and is there a network.
+//!
+//! **Why it is its own bar rather than a field in each header.** The
+//! FT8 controller showed USB state in a ten-line diagnostic panel and
+//! the other two receivers showed none at all — so "the board is not
+//! hearing the radio" looked identical in every mode to "the board is
+//! working". Retiring that panel (it is bring-up instrumentation and
+//! it covered the decodes) removed the last window, which is how a
+//! bench session ended up asking whether VBUS had been set at all with
+//! no way to answer from the screen.
+//!
+//! Each receiver's own header is already full at 40 characters, and
+//! they disagree about what belongs in one. The bottom row is the one
+//! piece of geometry all three can spare and all three can share, so
+//! the same fields sit in the same place whichever mode booted.
+
+use core::fmt::Write as _;
+
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
+    pixelcolor::Rgb565,
+    prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
+    text::{Baseline, Text},
+};
+use heapless::String;
+
+pub const HEIGHT: u32 = 14;
+
+/// What the USB port is doing.
+///
+/// `Peripheral` is not a failure: one USB-C connector cannot both take
+/// power in and hand it out, so a board plugged into a PC charges and
+/// stays flashable instead of running as a host. That is the state the
+/// board is in on the bench, and the state that looked like a broken
+/// UAC stack because nothing said so.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UsbLink {
+    /// Host driver not installed — external power is present.
+    Peripheral,
+    /// Host installed, VBUS up, nothing enumerated yet.
+    Waiting,
+    /// A device is enumerated and audio is flowing.
+    Streaming,
+    /// The host stack reported an error.
+    Error,
+}
+
+impl UsbLink {
+    fn label(self) -> &'static str {
+        match self {
+            UsbLink::Peripheral => "periph",
+            UsbLink::Waiting => "no dev",
+            UsbLink::Streaming => "STREAM",
+            UsbLink::Error => "ERROR ",
+        }
+    }
+
+    fn color(self) -> Rgb565 {
+        // Same three roles `decoded_list` already uses on this panel:
+        // GREEN for live, CSS_ORANGE for actionable, WHITE for inert.
+        match self {
+            UsbLink::Streaming => Rgb565::GREEN,
+            UsbLink::Error => Rgb565::CSS_ORANGE,
+            _ => Rgb565::WHITE,
+        }
+    }
+}
+
+/// Everything the bar draws. Cheap to build once per frame.
+#[derive(Clone, Copy, Debug)]
+pub struct LinkInfo {
+    pub usb: UsbLink,
+    /// Devices the host stack currently has open. Zero with
+    /// [`UsbLink::Waiting`] is the "radio not seen" case.
+    pub devices: u8,
+    /// `None` when the station is not associated.
+    pub wifi_rssi: Option<i8>,
+    /// Raw AW9523B enable bits, so "is VBUS actually set" is answerable
+    /// from the screen rather than from a serial console that host mode
+    /// takes away. `None` on boards that never tried.
+    pub vbus: Option<(bool, bool)>,
+}
+
+/// Draw the bar at `origin_y`, spanning `width`.
+pub fn render<D>(
+    display: &mut D,
+    info: &LinkInfo,
+    width: u32,
+    origin_y: i32,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let bg = Rgb565::new(0, 8, 0);
+    let style = |fg: Rgb565| {
+        MonoTextStyleBuilder::new()
+            .font(&FONT_6X10)
+            .text_color(fg)
+            .background_color(bg)
+            .build()
+    };
+
+    Rectangle::new(Point::new(0, origin_y), Size::new(width, HEIGHT))
+        .into_styled(PrimitiveStyle::with_fill(bg))
+        .draw(display)?;
+
+    // "USB " then the state in its own colour, so the one field worth
+    // glancing at reads without parsing the line.
+    let y = origin_y + 2;
+    Text::with_baseline("USB ", Point::new(2, y), style(Rgb565::CSS_GRAY), Baseline::Top)
+        .draw(display)?;
+    Text::with_baseline(
+        info.usb.label(),
+        Point::new(2 + 4 * 6, y),
+        style(info.usb.color()),
+        Baseline::Top,
+    )
+    .draw(display)?;
+
+    let mut rest: String<40> = String::new();
+    let _ = write!(&mut rest, " d{}", info.devices);
+    if let Some((boost, otg)) = info.vbus {
+        // Written as the two bits they are: a rail that is enabled and
+        // a switch that gates it onto the connector. Both must be 1
+        // before anything can enumerate.
+        let _ = write!(
+            &mut rest,
+            " V{}{}",
+            u8::from(boost),
+            u8::from(otg)
+        );
+    } else {
+        let _ = rest.push_str(" V--");
+    }
+    let _ = rest.push_str("  W ");
+    match info.wifi_rssi {
+        Some(dbm) => {
+            let _ = write!(&mut rest, "{dbm}dBm");
+        }
+        None => {
+            let _ = rest.push_str("down");
+        }
+    }
+    let wifi_fg = if info.wifi_rssi.is_some() {
+        Rgb565::WHITE
+    } else {
+        Rgb565::CSS_GRAY
+    };
+    Text::with_baseline(
+        rest.as_str(),
+        Point::new(2 + 10 * 6, y),
+        style(wifi_fg),
+        Baseline::Top,
+    )
+    .draw(display)?;
+    Ok(())
+}

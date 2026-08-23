@@ -95,7 +95,7 @@ use mfsk_app_shared::settings;
 use mfsk_app_shared::{http_config, ntp, udp_log};
 use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::ui::fst4_list::{self, Fst4SpotRow, Fst4UiState};
-use mfsk_app_shared::ui::mode_picker;
+use mfsk_app_shared::ui::{link_bar, mode_picker};
 
 
 /// The same baked golden slot `fst4-ddc-bench` runs — raw `i16` little
@@ -1040,6 +1040,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
         };
         {
             let ui = FST4_UI.lock().expect("FST4_UI poisoned");
+            // Same bar, same place, in every mode — see
+            // `link_bar`'s own doc comment for why it is not a field in
+            // this receiver's header.
+            link_bar::render(
+                &mut display,
+                &crate::uac::link_info(),
+                fst4_list::PANEL_WIDTH,
+                fst4_list::PANEL_HEIGHT as i32 - link_bar::HEIGHT as i32,
+            )
+            .ok();
             if let Err(e) = fst4_list::render_status(&mut display, &ui) {
                 log::warn!("fst4_app::display: render_status failed: {e:?}");
             }

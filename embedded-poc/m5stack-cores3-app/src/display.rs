@@ -39,12 +39,17 @@ use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
 use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::log_sink::LogFanout;
-use mfsk_app_shared::ui::{decoded_list, mode_picker, state::UI, status_bar, waterfall};
+use mfsk_app_shared::ui::{decoded_list, link_bar, mode_picker, state::UI, status_bar, waterfall};
 
 /// The TX line sits on the last row of the canvas, not at y=226 —
 /// that was where the shared widgets ended on a 240 px-tall panel.
 const TX_REGION_H: u32 = 14;
-const TX_REGION_Y: i32 = crate::board::CANVAS_H as i32 - TX_REGION_H as i32;
+/// The link bar owns the last row, so the TX line sits above it. The
+/// same ordering holds in WSPR and FST4 — whichever mode booted, USB
+/// and WiFi are in the same place.
+const TX_REGION_Y: i32 =
+    crate::board::CANVAS_H as i32 - link_bar::HEIGHT as i32 - TX_REGION_H as i32;
+const LINK_BAR_Y: i32 = crate::board::CANVAS_H as i32 - link_bar::HEIGHT as i32;
 
 /// The decoded list runs from the bottom of the waterfall to the TX
 /// line. On this canvas that is 192 px — twelve rows rather than the
@@ -706,6 +711,17 @@ pub fn run_log_panel(
         }
 
         status_bar::render(&mut display, &status_snapshot, SHARED_UI_WIDTH).ok();
+
+        // Cheap enough to repaint every frame (one 240x14 fill plus
+        // three short strings), and repainting unconditionally is what
+        // keeps it correct after the mode picker closes over it.
+        link_bar::render(
+            &mut display,
+            &crate::uac::link_info(),
+            SHARED_UI_WIDTH,
+            LINK_BAR_Y,
+        )
+        .ok();
 
         if wf_seq != last_wf_seq {
             let wf_refs: heapless::Vec<

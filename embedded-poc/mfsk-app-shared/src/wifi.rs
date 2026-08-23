@@ -410,3 +410,46 @@ pub fn connect_with_retry(
         subnet_broadcast,
     })
 }
+
+/// Station RSSI in dBm, or `None` when not associated.
+///
+/// Read straight from the driver rather than tracked as state, so it
+/// cannot go stale after a silent disassociation — the call succeeds
+/// only while a station connection exists, which is exactly the
+/// question the link bar asks.
+///
+/// Cached for a second because the render loops that want it run at up
+/// to 10 Hz, and every call takes the WiFi driver's own lock. No
+/// allocation and no `std::sync::Mutex`: a `static` one heap-allocates
+/// its pthread mutex on first lock, which has already crashed this
+/// firmware once.
+pub fn rssi_cached() -> Option<i8> {
+    // Milliseconds in a `u32`, not microseconds in an `i64`: Xtensa
+    // has no 64-bit atomics. `wrapping_sub` keeps the comparison right
+    // across the ~49-day wrap.
+    use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+    const UNKNOWN: i32 = i32::MIN;
+    static VALUE: AtomicI32 = AtomicI32::new(UNKNOWN);
+    static AT_MS: AtomicU32 = AtomicU32::new(0);
+    static SEEDED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    let now = (unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 1000) as u32;
+    if !SEEDED.swap(true, Ordering::Relaxed)
+        || now.wrapping_sub(AT_MS.load(Ordering::Relaxed)) > 1_000
+    {
+        let mut ap: esp_idf_svc::sys::wifi_ap_record_t = unsafe { core::mem::zeroed() };
+        let v = if unsafe { esp_idf_svc::sys::esp_wifi_sta_get_ap_info(&mut ap) }
+            == esp_idf_svc::sys::ESP_OK
+        {
+            ap.rssi as i32
+        } else {
+            UNKNOWN
+        };
+        VALUE.store(v, Ordering::Relaxed);
+        AT_MS.store(now, Ordering::Relaxed);
+    }
+    match VALUE.load(Ordering::Relaxed) {
+        UNKNOWN => None,
+        v => Some(v as i8),
+    }
+}

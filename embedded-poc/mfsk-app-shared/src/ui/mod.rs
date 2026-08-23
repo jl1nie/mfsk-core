@@ -15,6 +15,7 @@
 
 pub mod decoded_list;
 pub mod fst4_list;
+pub mod link_bar;
 pub mod menu;
 pub mod mode_picker;
 pub mod state;

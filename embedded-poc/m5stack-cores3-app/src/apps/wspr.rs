@@ -130,7 +130,7 @@ use embedded_shared::wspr_dual_core;
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::settings::{self, Settings};
 use mfsk_app_shared::boot_mode::{self, BootMode};
-use mfsk_app_shared::ui::mode_picker;
+use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
@@ -774,6 +774,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
         };
         {
             let ui = WSPR_UI.lock().expect("WSPR_UI mutex poisoned");
+            // Same bar, same place, in every mode — see
+            // `link_bar`'s own doc comment for why it is not a field in
+            // this receiver's header.
+            link_bar::render(
+                &mut display,
+                &crate::uac::link_info(),
+                wspr_list::PANEL_WIDTH,
+                wspr_list::PANEL_HEIGHT as i32 - link_bar::HEIGHT as i32,
+            )
+            .ok();
             if let Err(e) = wspr_list::render_status(&mut display, &ui) {
                 log::warn!("wspr_app::display: render_status failed: {e:?}");
             }

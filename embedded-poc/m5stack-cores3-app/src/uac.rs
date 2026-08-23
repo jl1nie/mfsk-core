@@ -1137,6 +1137,20 @@ fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
 /// Install the USB host stack + the UAC class driver. Returns once
 /// both are running in their respective background tasks; the caller
 /// (main.rs UAC dispatch arm) falls through to the display loop.
+/// Whether [`start_host`] installed the host driver on this boot.
+///
+/// `UacState::Off` cannot answer this: it means both "the host is
+/// installed and idle" and "there is no host, because a PC is powering
+/// the port". Those are the two states the link bar has to tell apart,
+/// and confusing them is what made a charging board look like a broken
+/// UAC stack.
+static HOST_INSTALLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+pub fn host_installed() -> bool {
+    HOST_INSTALLED.load(core::sync::atomic::Ordering::Acquire)
+}
+
 pub fn start_host() -> Result<()> {
     // Set up the driver→app channel BEFORE installing the class
     // driver — `driver_event_cb` may fire as soon as `uac_host_install`
@@ -1212,6 +1226,7 @@ pub fn start_host() -> Result<()> {
         "uac: host + class driver up — waiting for IC-705 enumeration (driver task core={UAC_DRIVER_TASK_CORE}, prio={UAC_DRIVER_TASK_PRIORITY})"
     );
     set_state(UacState::Waiting);
+    HOST_INSTALLED.store(true, core::sync::atomic::Ordering::Release);
     spawn_device_count_probe();
     Ok(())
 }
@@ -1283,4 +1298,40 @@ pub fn usb_counters() -> (i32, i32, u32, u32) {
 
 pub(crate) fn note_err(err: u32) {
     LAST_ERR.store(err, Ordering::Relaxed);
+}
+
+/// The state of the USB and network links, as the shared
+/// [`link_bar`](mfsk_app_shared::ui::link_bar) draws it.
+///
+/// Built here rather than in each receiver's render loop: all three
+/// need it, the mapping from `UacState` to what an operator should see
+/// is a judgement (`Off` means two different things depending on
+/// whether a host was ever installed), and three copies of a judgement
+/// drift.
+pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
+    use mfsk_app_shared::ui::link_bar::{LinkInfo, UsbLink};
+
+    let (state, _sa, _rms) = status();
+    let (devices, _clients, _events, _err) = usb_counters();
+    let usb = if !host_installed() {
+        UsbLink::Peripheral
+    } else {
+        match state {
+            UacState::Streaming => UsbLink::Streaming,
+            UacState::Error => UsbLink::Error,
+            UacState::Off | UacState::Waiting => UsbLink::Waiting,
+        }
+    };
+    let (tried, p0, p1, _st1) = crate::pmic::power_state();
+    LinkInfo {
+        usb,
+        devices: devices.clamp(0, 9) as u8,
+        wifi_rssi: mfsk_app_shared::wifi::rssi_cached(),
+        vbus: tried.then(|| {
+            (
+                p1 & crate::board::AW9523_P1_BOOST_EN != 0,
+                p0 & crate::board::AW9523_P0_USB_OTG_EN != 0,
+            )
+        }),
+    }
 }

@@ -72,7 +72,11 @@ const DIVIDER_H: u32 = 2;
 const HISTORY_HEADER_Y: i32 = DIVIDER_Y + DIVIDER_H as i32;
 const HISTORY_COL_HEADER_Y: i32 = HISTORY_HEADER_Y + HEADER_H as i32;
 pub const HISTORY_ROWS_Y: i32 = HISTORY_COL_HEADER_Y + COL_HEADER_H as i32;
-pub const HISTORY_ROWS: usize = 12;
+/// Eleven, not twelve: the bottom 14 px of the panel belong to the
+/// shared [`link_bar`](crate::ui::link_bar), which every mode draws in
+/// the same place. One history row is what it costs to be able to see,
+/// in any mode, whether there is a radio on the USB port.
+pub const HISTORY_ROWS: usize = 11;
 
 const BG: Rgb565 = Rgb565::BLACK;
 const FG: Rgb565 = Rgb565::WHITE;
