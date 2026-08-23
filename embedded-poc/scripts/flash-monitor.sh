@@ -68,7 +68,12 @@ LOG=${2:?usage: flash-monitor.sh <ELF> <LOG_FILE> [DURATION] [PORT] [PARTITIONS]
 DURATION=${3:-180}
 PORT=${4:-/dev/ttyACM0}
 PARTITIONS=${5:-./partitions.csv}
-FLASH_SIZE=${6:-}
+# Positional wins, then the environment. It was positional-only, and
+# `FLASH_SIZE=16mb flash-monitor.sh ...` — which is how the name reads —
+# was silently overwritten with empty here, so every such call in the
+# 2026-08-23 session fell through to auto-detection without anyone
+# noticing. Detection happened to work while the port was present.
+FLASH_SIZE=${6:-${FLASH_SIZE:-}}
 
 if [[ ! -f "$ELF" ]]; then
     echo "ELF not found: $ELF" >&2

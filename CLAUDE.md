@@ -76,11 +76,25 @@ Use `embedded-poc/scripts/flash-monitor.sh` — **never** roll your own
 `espflash flash --monitor` + redirect, and never `cat /dev/ttyACM0`. Two
 foot-guns this script avoids:
 
-1. `espflash monitor` defaults to `--before default-reset`, which pulses
-   DTR/RTS and on S3 USB-OTG boards drops the chip into DOWNLOAD mode
-   (`rst:0x15 USB_UART_CHIP_RESET … waiting for download`). The script
-   passes `--before no-reset --after no-reset` so the just-flashed app
-   keeps running.
+1. A **separate** `espflash monitor` invocation resets on connect, and
+   on S3 USB-OTG boards that drops the chip into DOWNLOAD mode
+   (`rst:0x15 USB_UART_CHIP_RESET … waiting for download`) so the
+   just-flashed app never runs. The script avoids it by never starting
+   a second process: one `espflash flash --monitor` covers both.
+
+   It does **not** pass `--before no-reset --after no-reset`, as this
+   note used to claim — those would break flashing outright.
+   `espflash flash`'s own defaults are already what is wanted:
+   `--before default-reset` is how it gets into the bootloader to write
+   at all, and `--after hard-reset` is what starts the new image.
+
+   Boards have still been found parked in DOWNLOAD mode twice
+   (2026-08-23), both times *after* the capture window expired and
+   `timeout` killed the pty rather than after the write itself. The
+   port closing is the suspect, not the flash. Unconfirmed. A short
+   press of the board's button boots the app; nothing is lost, since
+   the image is already in flash and NVS is a different partition.
+
 2. Re-flashing the same ELF prints "Segment … has not changed, skipping
    write" and finishes in ~5 s. **That is not a successful flash** — the
    chip still runs the previous binary. Touch a source file or change a

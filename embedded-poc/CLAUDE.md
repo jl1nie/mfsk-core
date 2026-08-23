@@ -265,6 +265,38 @@ what it needs and costs the other modes nothing. Call
 `<mode>_dual_core::reserve_arena()` / `internal_pool::reserve_arena()`
 early; a failure is logged loudly rather than degrading in silence.
 
+## DOWNLOAD mode: getting out, and getting in on purpose
+
+`rst:0x15 (USB_UART_CHIP_RESET), boot:0x20 (DOWNLOAD(USB/UART0))` and
+`waiting for download` mean the bootloader is parked waiting for a
+flasher. The write may well have succeeded — look for
+`Flashing has completed!` above it — the chip simply never went on to
+run the image.
+
+**Out: press the board's button briefly.** A short press resets and
+boots the app. The state persists across a flash, so a board parked
+here stays parked through the next several writes and every capture
+comes back empty, which reads as "the app is dead" rather than "the app
+never started". Twice in the 2026-08-23 session measurements were taken
+against a board in exactly this state.
+
+**In, deliberately:** hold the same button for ~2 s and release. That
+is M5Stack's documented CoreS3 procedure (green LED lights) — noted
+here as their instruction, not something verified in this tree. The
+board has no separate BOOT button; on ESP32-S3 generally, download mode
+is GPIO0 low at reset release.
+
+You usually do not need the button at all: `espflash`'s default
+`--before default-reset` pulses DTR/RTS and enters download mode by
+itself. `flash-monitor.sh` passes `--before no-reset` precisely to stop
+that happening by accident, so reach for the button only when the port
+does not enumerate.
+
+**If the port does not enumerate at all**, download mode is not the
+problem — nothing is presenting USB. The board is powered off, or it is
+on battery in UAC host mode, where the host driver owns the PHY and
+there is no serial device to find.
+
 ## Trouble we've already debugged (cross-board)
 
 - **`espflash::no_serial`** — device not connected, or
