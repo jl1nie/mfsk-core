@@ -900,8 +900,8 @@ fn display_loop(ctx: DisplayCtx) -> ! {
 
             let mut delay = Ets;
             match Builder::new(ILI9342CRgb565, di)
-                .display_size(320, 240)
-                .orientation(Orientation::new().rotate(Rotation::Deg90))
+                .display_size(crate::board::NATIVE_W, crate::board::NATIVE_H)
+                .orientation(Orientation::new().rotate(crate::board::ROTATION))
                 .invert_colors(ColorInversion::Inverted)
                 .init(&mut delay)
             {
@@ -923,7 +923,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    log::info!("LCD init OK ({}x{})", crate::board::LCD_WIDTH, crate::board::LCD_HEIGHT);
+    log::info!("LCD init OK ({}x{})", crate::board::CANVAS_W, crate::board::CANVAS_H);
 
     {
         let ui = FST4_UI.lock().expect("FST4_UI poisoned");
@@ -936,8 +936,8 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     // 320x240 panel.
     let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
     let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
-        (crate::board::LCD_WIDTH as i32 - mode_picker::WIDTH as i32) / 2,
-        (crate::board::LCD_HEIGHT as i32 - mode_picker::height() as i32) / 2,
+        (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
+        (crate::board::CANVAS_H as i32 - mode_picker::height() as i32) / 2,
     ));
 
     let mut last_dirty = u32::MAX;

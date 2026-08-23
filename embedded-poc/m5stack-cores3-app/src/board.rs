@@ -17,8 +17,33 @@ pub const LCD_PIN_SCK: i32 = 36;
 pub const LCD_PIN_MOSI: i32 = 37;
 pub const LCD_PIN_CS: i32 = 3;
 pub const LCD_PIN_DC: i32 = 35;
-pub const LCD_WIDTH: u16 = 320;
-pub const LCD_HEIGHT: u16 = 240;
+// ── Panel geometry: one statement of the rotation, everything else
+//    derived from it ────────────────────────────────────────────────
+//
+// There are two frames on this board and confusing them is what made
+// the mode picker unpressable: the LCD controller and the FT5x06 both
+// work in the panel's native 320x240, while every receiver draws
+// through mipidsi with a quarter turn applied, giving a 240x320
+// canvas. `LCD_WIDTH`/`LCD_HEIGHT` used to be the only names here and
+// meant the native frame, but layout code read them as the canvas —
+// so the picker was sized against 320 and hung 24 px off a 240-wide
+// screen, and touch coordinates were hit-tested in the wrong frame
+// entirely.
+//
+// Change [`ROTATION`] and both the canvas size and `touch`'s mapping
+// follow. Nothing else should name a rotation.
+
+/// Native panel, and the frame the touch controller reports in
+/// (M5GFX configures the FT5x06 as `x_max=319, y_max=239`).
+pub const NATIVE_W: u16 = 320;
+pub const NATIVE_H: u16 = 240;
+
+/// The quarter turn every receiver applies.
+pub const ROTATION: mipidsi::options::Rotation = mipidsi::options::Rotation::Deg90;
+
+/// The canvas receivers actually draw into, after [`ROTATION`].
+pub const CANVAS_W: u16 = NATIVE_H;
+pub const CANVAS_H: u16 = NATIVE_W;
 
 // ── I2C bus 0 (AXP2101 + AW9523B + FT6336U + BMI270 共有) ────────────
 pub const I2C0_SCL: i32 = 11;

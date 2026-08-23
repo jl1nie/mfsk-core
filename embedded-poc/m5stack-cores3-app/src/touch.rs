@@ -173,9 +173,30 @@ pub fn read(i2c: &mut I2cDriver<'_>) -> Option<Contact> {
     }
     // `data[1]`/`data[2]` are XH/XL and `data[3]`/`data[4]` YH/YL,
     // counting from the status byte — the same indices LovyanGFX uses.
-    Some(Contact {
-        points,
-        x: (((a[1] & 0x0F) as u16) << 8) | a[2] as u16,
-        y: (((a[3] & 0x0F) as u16) << 8) | a[4] as u16,
-    })
+    // The high nibble carries an event flag (XH) and a contact id
+    // (YH); only the low four bits are coordinate.
+    let native_x = (((a[1] & 0x0F) as u16) << 8) | a[2] as u16;
+    let native_y = (((a[3] & 0x0F) as u16) << 8) | a[4] as u16;
+    Some(to_canvas(points, native_x, native_y))
+}
+
+/// Native panel coordinates into the canvas frame, for whichever
+/// [`crate::board::ROTATION`] is configured.
+///
+/// Kept beside the only place that produces raw coordinates so the two
+/// cannot drift. A `Deg90` canvas is 240 wide by 320 tall, so the
+/// native y becomes the canvas x and the native x runs up the canvas y
+/// backwards.
+fn to_canvas(points: u8, native_x: u16, native_y: u16) -> Contact {
+    use mipidsi::options::Rotation;
+    let (x, y) = match crate::board::ROTATION {
+        Rotation::Deg0 => (native_x, native_y),
+        Rotation::Deg90 => (native_y, (crate::board::NATIVE_W - 1).saturating_sub(native_x)),
+        Rotation::Deg180 => (
+            (crate::board::NATIVE_W - 1).saturating_sub(native_x),
+            (crate::board::NATIVE_H - 1).saturating_sub(native_y),
+        ),
+        Rotation::Deg270 => ((crate::board::NATIVE_H - 1).saturating_sub(native_y), native_x),
+    };
+    Contact { points, x, y }
 }

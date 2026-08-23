@@ -49,8 +49,7 @@ const TX_REGION_H: u32 = 14;
 /// draw the shared widgets into the top-left 135x240 corner, because
 /// those widgets were sized for the M5StickS3. WSPR and FST4 already
 /// rotated to 240x320 and used all of it; this now matches them.
-const PANEL_W: u32 = 240;
-const SHARED_UI_WIDTH: u32 = PANEL_W;
+const SHARED_UI_WIDTH: u32 = crate::board::CANVAS_W as u32;
 
 /// Where the USB status line lives: to the right of the 135 px-wide
 /// shared widgets, which leaves the rest of this 320 px panel unused.
@@ -248,10 +247,10 @@ pub fn run_log_panel(
     // rotation hack at all.
     let mut delay = Ets;
     let mut display = match Builder::new(ILI9342CRgb565, di)
-        .display_size(320, 240)
+        .display_size(crate::board::NATIVE_W, crate::board::NATIVE_H)
         // Same rotation `wspr_app` and `fst4_app` use, so all three
         // receivers present the same 240x320 canvas.
-        .orientation(Orientation::new().rotate(Rotation::Deg90))
+        .orientation(Orientation::new().rotate(crate::board::ROTATION))
         .invert_colors(ColorInversion::Inverted) // M5GFX CoreS3: cfg.invert = true
         .init(&mut delay)
     {
@@ -267,8 +266,8 @@ pub fn run_log_panel(
 
     log::info!(
         "LCD init OK (ILI9342C/CoreS3, {}x{})",
-        crate::board::LCD_WIDTH,
-        crate::board::LCD_HEIGHT
+        crate::board::CANVAS_W,
+        crate::board::CANVAS_H
     );
     // Explicit `Rectangle` fill, not `DrawTarget::clear()` — the
     // latter gave unreliable/partial coverage on this mipidsi/SPI
@@ -278,8 +277,8 @@ pub fn run_log_panel(
     Rectangle::new(
         Point::new(0, 0),
         Size::new(
-            crate::board::LCD_WIDTH as u32,
-            crate::board::LCD_HEIGHT as u32,
+            crate::board::CANVAS_W as u32,
+            crate::board::CANVAS_H as u32,
         ),
     )
     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
@@ -479,8 +478,8 @@ pub fn run_log_panel(
     // (140, 134), from when this panel ran unrotated at 320x240 — at
     // 240 wide that put a 208 px widget 108 px off the right edge.
     let mut picker = mode_picker::ModePicker::new(Point::new(
-        (PANEL_W as i32 - mode_picker::WIDTH as i32) / 2,
-        (320 - mode_picker::height() as i32) / 2,
+        (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
+        (crate::board::CANVAS_H as i32 - mode_picker::height() as i32) / 2,
     ));
     let mut touch_read_failed = false;
     let mut last_wf_seq: u32 = u32::MAX;
@@ -598,19 +597,19 @@ pub fn run_log_panel(
             continue;
         }
 
-        status_bar::render(&mut display, &status_snapshot, PANEL_W).ok();
+        status_bar::render(&mut display, &status_snapshot, SHARED_UI_WIDTH).ok();
 
         if wf_seq != last_wf_seq {
             let wf_refs: heapless::Vec<
                 &mfsk_app_shared::ui::state::WfLine,
                 { mfsk_app_shared::ui::state::WF_DEPTH },
             > = wf_snapshot.iter().collect();
-            waterfall::render(&mut display, &wf_refs, PANEL_W).ok();
+            waterfall::render(&mut display, &wf_refs, SHARED_UI_WIDTH).ok();
             last_wf_seq = wf_seq;
         }
 
         if decoded_fp != last_decoded_fp {
-            decoded_list::render(&mut display, &decoded_snapshot, PANEL_W).ok();
+            decoded_list::render(&mut display, &decoded_snapshot, SHARED_UI_WIDTH).ok();
             last_decoded_fp = decoded_fp;
         }
 
@@ -775,7 +774,10 @@ pub fn run_log_panel(
                 let y = USB_REGION_Y + (i as i32) * USB_PANEL_PITCH;
                 Rectangle::new(
                     Point::new(USB_REGION_X, y),
-                    Size::new(320 - USB_REGION_X as u32, USB_PANEL_PITCH as u32),
+                    Size::new(
+                        crate::board::CANVAS_W as u32 - USB_REGION_X as u32,
+                        USB_PANEL_PITCH as u32,
+                    ),
                 )
                 .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
                 .draw(&mut display)
