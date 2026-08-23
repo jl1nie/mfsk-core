@@ -757,10 +757,13 @@ Device (M5Stack CoreS3、WiFi associate 継続、dual-core): 4 スロット
 これらの数字が出てくる実行可能なベンチは
 `embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs`。
 
-**まだ未検証**: 実音声キャプチャ。上記は全て WAV 給餌 / 合成
-ベースバンドに対する計測で、FT8 controller ライン向けに issue
-[#163](https://github.com/jl1nie/mfsk-core/issues/163) が追跡して
-いるのと同じ穴 — UAC 実機検証は両者共通の未解決依存。
+**このバイナリでは未検証**: 実音声キャプチャ。上記は全て WAV 給餌 /
+合成ベースバンドに対する計測。両ラインが依存していた UAC 実機検証
+[#163](https://github.com/jl1nie/mfsk-core/issues/163) は
+**2026-08-23 に完了** — FT8 controller 側で、WiFi 接続を保ったまま
+192,512 B/s・エラー 0 で 10 分連続キャプチャを確認した。`wspr_app` は
+同じ `uac.rs` を共有するので経路自体は実証済みで、未実施なのは
+*このバイナリ*を実機の無線機に繋ぐことのみ。
 `mfsk_app_shared::wsprnet` (wsprnet.org へのスポット送信、WSJT-X
 自身の `Network/wsprnet.cpp` から移植) は実装済みで既定 off。
 `SpotSink::Http` パスは実装済みだが実エンドポイントに対しては未検証。

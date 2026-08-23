@@ -13,11 +13,16 @@ pivot — the StickS3 board can't do USB host),
 peripheral on classic ESP32), and `embedded-poc/m5stack-cores3-app/`
 (S3 LX7, **main UAC controller target** — CoreS3 has AXP2101 +
 AW9523B for proper USB-OTG host mode). Phase 0-Core (board bring-up)
-and Phase 1-Core (UAC host code) both shipped 2026-05-23; what's
-still open is Phase 1-Verify — live IC-705 hardware confirmation,
-tracked as issue #163 and, as of this writing, the single blocker for
-the rest of the Phase B-Core sequence (see `docs/notes/ROADMAP.md`
-Phase B-Core for the live status). `m5stack-s3-app` and
+and Phase 1-Core (UAC host code) both shipped 2026-05-23, and
+Phase 1-Verify — live IC-705 hardware confirmation, issue #163 —
+**cleared 2026-08-23**: ten unbroken minutes of UAC capture, 125 MB,
+zero errors, with WiFi associated throughout (the log is kept at
+`embedded-poc/m5stack-cores3-app/logs/uac_stream_2026-08-23.log`).
+Getting there took three layers off the enumeration path and then two
+stack overflows that presented as heap corruption — read
+`embedded-poc/CLAUDE.md`'s "USB host VBUS on CoreS3" and "Stacks,
+heaps, and the space between them" before touching that board.
+See `docs/notes/ROADMAP.md` Phase B-Core for what #163 unblocks. `m5stack-s3-app` and
 `m5stack-core2-app` each have their own `CLAUDE.md` covering
 board-specific bring-up; `m5stack-cores3-app` does not yet — read
 `docs/notes/ROADMAP.md` Phase B-Core for its status instead. This
@@ -27,13 +32,15 @@ sessions.
 **WSPR embedded RX (Phase E, issue #260) is a separate track from the
 FT8-controller line above** — it never goes through `decode_block` or
 the UAC/controller stack, so it isn't blocked on #163 the way Phase
-B-Core is (both share #163 only for live audio capture; everything
-else already works against WAV-fed/synthetic baseband). Lives in the
+B-Core is (both shared #163 only for live audio capture; everything
+else already works against WAV-fed/synthetic baseband, and #163 itself
+cleared 2026-08-23 on the FT8 controller). Lives in the
 same `m5stack-cores3-app` crate as two separate binaries:
 `src/bin/wspr_bench.rs` (timing measurement) and `src/bin/wspr_app.rs`
 (the standalone receiver — LCD spot list, WiFi, HTTP config, NTP, and
 real UAC audio through `AudioSink`). Note that `wspr_app` *does* now
-share `uac.rs` with the FT8 line, so it shares #163 for that path too
+share `uac.rs` with the FT8 line; that path is proven on the FT8
+controller but `wspr_app` itself has not been run against a radio yet
 — open items in #313. See `docs/reference/EMBEDDED.md`'s "WSPR on
 embedded" section and `docs/notes/ROADMAP.md` Phase E for status.
 

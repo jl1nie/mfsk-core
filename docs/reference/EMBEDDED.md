@@ -785,11 +785,14 @@ pan out, kept rather than deleted so they aren't retried — is
 `embedded-poc/m5stack-cores3-app/src/bin/wspr_bench.rs` is the
 runnable bench these numbers come from.
 
-**Not yet verified**: live audio capture. Everything above is
-measured against a WAV-fed / synthetic baseband, the same gap issue
-[#163](https://github.com/jl1nie/mfsk-core/issues/163) tracks for the
-FT8 controller line — UAC hardware verification is a shared, still-open
-dependency for both. `mfsk_app_shared::wsprnet` (wsprnet.org spot
+**Not yet verified here**: live audio capture. Everything above is
+measured against a WAV-fed / synthetic baseband.
+[#163](https://github.com/jl1nie/mfsk-core/issues/163), the UAC
+hardware verification both lines depend on, **closed 2026-08-23** —
+ten unbroken minutes of capture at 192,512 B/s and zero errors, with
+WiFi associated, on the FT8 controller. `wspr_app` shares that same
+`uac.rs`, so the path is proven; what has not happened is running
+*this* binary against a radio. `mfsk_app_shared::wsprnet` (wsprnet.org spot
 upload, ported from WSJT-X's own `Network/wsprnet.cpp`) exists and is
 off by default; its `SpotSink::Http` path is implemented but untested
 against a real endpoint.

@@ -109,14 +109,17 @@ Three tracks, at very different maturities:
    piece — building further ahead of a consumer risks fixing an API
    shape nothing has validated.
 
-3. **Embedded controller (Phase B-Core) — the real frontier, stalled.**
-   The main production target (M5Stack CoreS3 UAC FT8 controller) has its
-   crate skeleton and UAC host code shipped and compiling clean, but
-   **#163 — live IC-705 hardware verification — has never been done**,
-   and no cores3-app feature commit has landed in ~2 months. The whole
-   downstream sequence (shared UAC hoist → BLE CI-V → ADIF → touch UI →
-   TX keying) is blocked behind that single verification step. #163 is a
-   human-at-the-bench task, which is why it hasn't moved on its own.
+3. **Embedded controller (Phase B-Core) — the real frontier, unblocked
+   2026-08-23.** The main production target (M5Stack CoreS3 UAC FT8
+   controller) had its crate skeleton and UAC host code shipped and
+   compiling clean for months, with **#163 — live IC-705 hardware
+   verification — never done**, because it is a human-at-the-bench task.
+   It is done now: ten unbroken minutes of UAC capture, 125 MB, zero
+   errors, WiFi associated throughout. The downstream sequence (shared
+   UAC hoist → BLE CI-V → ADIF → touch UI → TX keying) is no longer
+   sequenced behind a verification step, and the memory budget that
+   made people doubt WiFi could coexist with the USB host turned out to
+   be a symptom of two stack overflows rather than a real ceiling.
 
 4. **WSPR embedded RX (Phase E, #260) — a separate frontier, and
    unstalled.** Not part of Phase B-Core: WSPR never goes through
@@ -127,16 +130,17 @@ Three tracks, at very different maturities:
    capture, down-conversion, decode — inside the 120 s slot with margin
    (steady state: 82.8–90.1 s against a 110 s deadline, 9/9 golden
    held). See
-   **Phase E** below. Shares #163 as an unverified dependency for live
-   audio (currently WAV-fed/synthetic baseband only) but is otherwise
-   independent — most of what closed here (dual-core safety, task-stack
+   **Phase E** below. Shared #163 as an unverified dependency for live
+   audio (still WAV-fed/synthetic baseband here — the UAC path is proven
+   on the FT8 controller but `wspr_app` has not been run against a radio
+   yet) but is otherwise independent — most of what closed here (dual-core safety, task-stack
    placement, a streaming down-converter) generalizes to any future
    embedded decode-heavy protocol, not just WSPR.
 
 The open strategic question this doc deliberately does **not** decide
 (it's the maintainer's call, not to be inferred from momentum): whether
 the next cycle's centre of gravity is **finishing the embedded product**
-(drive #163 through and unblock Phase B-Core) or **serving the library's
+(build on the now-unblocked Phase B-Core) or **serving the library's
 host-UI consumers** (extend track 2). The two aren't exclusive, but
 attention is.
 
@@ -212,8 +216,8 @@ this doc was substantially updated (0.6.5, 2026-05-18):
 Embedded-line status (M5StickS3 / CoreS3 / Core2) has its own
 detailed writeup under **Phase B** below — the short version: Phase
 B-Core (CoreS3, the main production target) has its crate skeleton
-and UAC host support shipped and compiling clean, but has never been
-verified against live hardware (issue #163); Phase B-Stick
+and UAC host support shipped, and as of 2026-08-23 verified against
+live hardware (issue #163, closed); Phase B-Stick
 (M5StickS3, demo/fallback) and the Core2 sibling are both frozen,
 unchanged since late May.
 
@@ -359,19 +363,25 @@ version if you're picking up work.
 **Embedded (frontier):**
 
 - **#163** — CoreS3 Phase 1-Verify: live UAC hardware RX confirmation.
-  **The bottleneck for the entire Phase B-Core line** — the UAC host
-  code compiles clean but has never run against real hardware.
-  Everything downstream (Phase 1.5 / 2 / 5 / 6 / 7-Core) is sequenced
-  behind it. A human-at-the-bench task (tone injection → PCM reaches
-  the pipeline → candidate in the decoded list → live antenna). See
-  **Phase B-Core** below.
+  **Closed 2026-08-23.** An IC-705 enumerates through its internal hub,
+  the audio interface opens, and the reader sustained 192,512 B/s for
+  ten minutes — 125 MB, 30,520 packets, zero errors — with WiFi
+  associated and the FT8 decode pipeline running slots off the live
+  stream. Log kept at
+  `embedded-poc/m5stack-cores3-app/logs/uac_stream_2026-08-23.log`.
 
-  Two things changed 2026-08-16/17. The `AudioSink` refactor means the
-  FT8 controller and the WSPR receiver now share one unverified UAC
-  path, so this blocks **two** applications rather than one. But the
-  first checkpoint got easier: any UAC audio source will do, and the
-  WSPR app is an independent second route that needs neither a QSO
-  partner nor a band opening to produce a decode.
+  It took three findings on the enumeration path (VBUS needs three
+  AW9523B bits, not two; a 2048 B control-transfer buffer; hub support)
+  and then two stack overflows that presented as heap corruption and
+  cost more time than the USB work did. `embedded-poc/CLAUDE.md` has
+  both stories under "USB host VBUS on CoreS3" and "Stacks, heaps, and
+  the space between them" — read them before the next bench session.
+
+  Still open on this path: the transient-recovery code (a
+  `USB_TRANSFER_STATUS_OVERFLOW` was seen once and stopped the stream
+  dead; a stall watchdog plus re-open now handles it, but has not
+  fired in the field since), and `wspr_app`/`fst4_app` have not been
+  run against a radio at all.
 
 - **#313** — CoreS3 WSPR standalone app, open items left after #260
   closed: no wall-clock slot alignment on the real-audio path (needs
@@ -380,8 +390,9 @@ version if you're picking up work.
   wsprnet endpoint, and the two-stage DDC decimation that was deferred
   rather than rejected.
 
-  Of those four, **only the third is behind #163** — the real
-  UAC → DDC → decode path. Slot alignment is software-only and is a
+  Of those four, the third needed #163, which has now cleared for the
+  shared `uac.rs` — though `wspr_app` itself still has to be run
+  against a radio. Slot alignment is software-only and is a
   correctness bug, not a nicety: the slot boundary is bound to raw
   sample count from UAC stream start rather than UTC :00/:02, so DT
   reads against the wrong slot and every spot inherits that. It is
@@ -704,10 +715,10 @@ un-mechanized floor that would surface as an "unexplained" shift.
 but it was verified recall-neutral through the wideband production
 path, so it should be invisible.
 
-Independent of the queue, and hardware-gated rather than
-machine-gated: **#163 remains the bottleneck for everything embedded**,
-and it got cheaper rather than harder — checkpoint 1 needs any USB
-audio class source, not an IC-705. **#313's slot-alignment fix** is the
+Independent of the queue: **#163 is closed (2026-08-23)** and is no
+ longer the bottleneck for everything embedded — the UAC path is proven
+ on the FT8 controller, leaving `wspr_app`/`fst4_app` to be run against
+ a radio. **#313's slot-alignment fix** is the
 highest-value software item in the embedded set, because it is a real
 correctness bug that will otherwise be misread as a hardware fault the
 first time real audio flows.
@@ -998,11 +1009,11 @@ crate.
 self-contradicted by this file's own Phase D section citing a
 CoreS3 benchmark log)**: Phase 0-Core and Phase 1-Core both shipped
 **2026-05-23** (PR #132, commit `1a93c92`) — CoreS3 hardware has
-been on the bench and flashed since then. What's actually still
-open is **Phase 1-Verify**, tracked as
-[#163](https://github.com/jl1nie/mfsk-core/issues/163): the UAC code
-compiles clean but has never been run against a live IC-705, and
-there's been no cores3-app feature commit since 2026-06-07 (6+
+been on the bench and flashed since then. **Phase 1-Verify**, tracked
+as [#163](https://github.com/jl1nie/mfsk-core/issues/163), closed
+2026-08-23 — the UAC code now has ten unbroken minutes of live IC-705
+capture behind it. Before that there had been no cores3-app feature
+commit since 2026-06-07 (6+
 weeks). The `(tasks #33/#34)` / `(task #48)` / `(task #49)` /
 `(task #50)` / `(task #51)` annotations previously on the phases
 below were leftover placeholder numbers that resolved to unrelated,
@@ -1025,10 +1036,14 @@ boot-mode work) — removed below rather than left misleading.
   dispatch arm wired. `cargo check --release` clean on
   `xtensa-esp32s3-espidf` — not yet flashed/run against real
   hardware.
-- **Phase 1-Verify** — **OPEN, not yet attempted**
-  ([#163](https://github.com/jl1nie/mfsk-core/issues/163)). 1500 Hz
-  tone injection from IC-705 → FT8 candidate appears in decoded
-  list; then live antenna → end-to-end RX confirmed. This is the
+- **Phase 1-Verify** — **DONE 2026-08-23**
+  ([#163](https://github.com/jl1nie/mfsk-core/issues/163)). An IC-705
+  enumerates through its internal hub and the reader sustained
+  192,512 B/s for ten minutes (125 MB, 30,520 packets, 0 errors) with
+  WiFi associated and the decode pipeline running slots off the live
+  stream. What remains on this checkpoint is a decode from a real
+  on-air signal rather than a quiet band — the transport, not the
+  sensitivity, is what was in question. This was the
   actual current bottleneck for the whole Phase B-Core line.
 - **Phase 1.5-Core** — Hoist `uac.rs` into `mfsk-app-shared` (gated
   `cfg(feature = "uac")`); both s3-app and cores3-app consume via
@@ -1098,12 +1113,12 @@ phase was measured against a host-baked baseband as a stand-in.
 | Item | Status |
 |---|---|
 | Streaming down-converter (`wspr::ddc`) | **Done** — single-stage FIR, ~25 KB state. Verified against the reference channelizer: golden 9/9, AWGN sweep within 1 trial/cell of 500, 0 phantoms either way. |
-| Dual-core safety | **Done** — persistent worker + job queue (was spawn-per-pass, which silently fell back to sequential once WiFi held memory); worker stack moved to `.bss`; scan-task stack placed before WiFi starts. |
+| Dual-core safety | **Done** — persistent worker + job queue (was spawn-per-pass, which silently fell back to sequential once WiFi held memory); worker stack reserved at boot before WiFi (was `.bss`, and before that a lazy heap allocation that silently lost the race — see `embedded-shared/src/worker_arena.rs`); scan-task stack placed before WiFi starts. |
 | Fano cycle-budget split | **Done** — host now runs `wsprd`'s own 10 000 cycles/bit (`wsprd.c:799`); embedded keeps 5 000 via `wspr-fano-cap-fast`, paying floor recall for the slot deadline. Swept with a phantom-count column added to `wspr_awgn_snr_sweep` (a false-decode cliff exists above ~200 000; not visible from recall alone). |
 | Coarse-stage perf | **Done** — loop interchange + a redundant-sqrt hoist in `refine_alignment_top_k` (97.5 % of the coarse stage was PSRAM re-reads, not FFTs); bit-exact, no new memory. |
 | wsprnet spot reporting (`mfsk_app_shared::wsprnet`) | **Done**, off by default — ported from WSJT-X's own `Network/wsprnet.cpp`. `SpotSink::Http` upload path implemented but unverified against a real endpoint. |
 | Steady-state pipeline measurement | **Done** — 4 consecutive slots, WiFi associated, front end running at its real duty cycle beside the decoder: decode 82.8–90.1 s against a 110 s deadline (120 s slot − 10 s spot-upload reserve), DDC 18.5–24.1 s under that load. 9/9 golden held every slot. |
-| Live audio capture | **Not done** — shares #163 (UAC hardware verification) as an unverified dependency with Phase B-Core. Everything above is measured against WAV-fed/synthetic baseband. |
+| Live audio capture | **Not done here** — #163 closed 2026-08-23 and the shared `uac.rs` is proven on the FT8 controller (10 min, 0 errors), but `wspr_app` has not been run against a radio. Everything above is still measured against WAV-fed/synthetic baseband. |
 | Two-stage DDC decimation (more margin) | **Deferred, not abandoned** — a first estimate (4× filter-cost reduction) didn't survive re-derivation by hand; steady-state margin measured at 19.9 s made it not worth chasing further this round. |
 
 Full measurement account, including several attempts that measured

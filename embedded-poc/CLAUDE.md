@@ -161,6 +161,110 @@ log panel scrolls, so a value printed once at boot is gone before
 anyone looks at the screen. The tick belongs there too, or a frozen
 panel and an idle one are the same picture.
 
+## Stacks, heaps, and the space between them
+
+**A task stack on these boards is heap memory, and the internal heap
+pool sits directly underneath it.** Overflowing does not fault. It
+rewrites TLSF block headers, and the crash surfaces later, somewhere
+else, in whoever next walks the pool — typically
+`heap_caps_get_largest_free_block` inside `tlsf_walk_pool`, reading a
+garbage pointer. On CoreS3 the main task's stack base is 0x3fcb4d20
+and the pool starts at 0x3fcb1a90.
+
+This cost most of a session (#163, 2026-08-23) because it does not
+look like a stack bug from any angle. It looks like heap corruption,
+it moves when you change allocation sizes (comprehensive poisoning
+"fixed" it — poisoning only shifts the layout), and it survives every
+attempt to eliminate the usual suspects because the guilty code is
+whatever ran with the deepest frame, not whatever allocated last.
+
+Two of them were found in one day, both from stack sizes that had been
+estimated and never measured:
+
+| task | reserved | actually used | how it presented |
+|---|---|---|---|
+| `display::run_log_panel` (main task) | 32 KB | 5 KB, except for a 13.5 KB waterfall snapshot copied twice at `opt-level=1` → 29.6 KB frame | reboot ~15 s in, `tlsf_walk_pool` LoadProhibited |
+| `uac_reader` | 10 KB | 10.2 KB | reboot 40-76 s into every capture, intermittently |
+
+### The three things that make this findable
+
+1. **`CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`.** Turns the silent
+   write into an immediate panic at the instruction that overflows.
+   Without it this class is invisible. Keep it on.
+2. **`board::log_task_stacks()`** (CoreS3 app) — one call, every task's
+   remaining stack, including the IDF's own (WiFi, lwIP, USB host).
+   The high-water mark is *monotonic*, so one late reading is the whole
+   answer; frequent sampling buys nothing. Needs
+   `CONFIG_FREERTOS_USE_TRACE_FACILITY=y`.
+3. **Name the tasks.** `std::thread::Builder::name()` sets a Rust-side
+   name and nothing else — the FreeRTOS task stays `pthread`, and a
+   coredump saying `task 'pthread'` cannot tell four candidates apart.
+   The name has to go through `ThreadSpawnConfiguration.name`
+   (`board::spawn_named` wraps this). `xTaskCreatePinnedToCore*` takes
+   it directly, which is why `wspr_app`/`fst4_app` were never affected.
+
+### Reading a coredump's `cause`
+
+It is not always an EXCCAUSE. `espcoredump`'s Xtensa port adds
+`XCHAL_EXCCAUSE_NUM` (64) for software panics, so `cause=65` is
+`PANIC_RSN_DEBUGEXCEPTION` — with the watchpoint above, that means a
+stack overflow, and the PC will be in `vTaskSwitchContext` /
+`_frxt_setup_switch` because the context switch is what pushes past
+the end.
+
+### Before adding a diagnostic probe
+
+Diagnostic code caused four crashes during #163 — three on the first
+night (per-second I2C from the display loop, a `static
+std::sync::Mutex` whose first lock heap-allocates a pthread mutex, and
+`UdpSocket::bind` itself) and one on the second, when a `log_stack_hw`
+call added to `uac_reader`'s 1 Hz tick used enough stack to make the
+very crash it was measuring arrive sooner. Internal DRAM here is tight
+enough that the measurement perturbs the measurement.
+
+Check all of these before adding a probe; any hit means find another
+way:
+
+- allocates (`format!` / `Box` / `Vec` / `String`)
+- blocks (mutex / channel / I2C / socket)
+- touches a new `static std::sync::Mutex`, `thread_local!` or `OnceLock`
+- **puts more than ~256 B on the stack** — if the stack is what you
+  suspect, `log::info!` is already too heavy
+- emits an unbounded number of lines per event
+- drives a peripheral from a task that does not own it
+
+Alternatives that cost nothing: `uxTaskGetStackHighWaterMark` (4 B, no
+alloc, no block), the allocation-free fixed-length slot in
+`m5stack-cores3-app/src/log_slot.rs`, and the coredump's task name —
+which, once the tasks are named, often answers the question without
+adding any code at all.
+
+## Where the decode scratch comes from
+
+`embedded-shared/src/worker_arena.rs` hands out one internal-DRAM block
+to whichever mode is running: WSPR's worker stack (81,920 B), FST4's
+(24,576 B), or FT8's two cs-staging buffers (10,112 B). Only one mode
+runs per boot, so only one is ever allocated.
+
+It is reserved from `main`, **after the boot mode is known and before
+WiFi starts**, and that ordering is the entire design. Two earlier
+shapes failed for opposite reasons:
+
+- **Lazy heap allocation** (the original): with WiFi associated the
+  largest free internal block is 31,744 B, so an 80 KB request cannot
+  succeed. WSPR's pass 0 got a worker and pass 1 did not — 17,583 ->
+  28,246 ms on that pass, 11 s on the scan, silently (#260).
+- **A `.bss` union sized to the largest**: the linker cannot drop a
+  referenced reservation, so every binary carries the greediest mode's
+  size. Measured, this took the FT8 controller from 79,102 B of static
+  footprint to 150,910 B.
+
+Before WiFi and the USB host take their share there is 155,648 B
+contiguous, so taking the block there costs the running mode exactly
+what it needs and costs the other modes nothing. Call
+`<mode>_dual_core::reserve_arena()` / `internal_pool::reserve_arena()`
+early; a failure is logged loudly rather than degrading in silence.
+
 ## Trouble we've already debugged (cross-board)
 
 - **`espflash::no_serial`** — device not connected, or
@@ -220,8 +324,11 @@ panel and an idle one are the same picture.
   on the CoreS3's own 320×240 panel, settings edited from a browser
   (`mfsk-app-shared`'s `http_config`/`ntp`/`settings` modules) rather
   than any on-device input (CoreS3 has none). Live audio capture is
-  still out of scope (blocked on #163, same as `wspr-bench`) — every
-  slot decodes the same baked golden baseband. See memory
+  wired but unproven here: #163 cleared on the FT8 controller
+  (2026-08-23, 10 min of unbroken UAC capture at 0 errors), and
+  `wspr_app` shares that `uac.rs`, but this bin has not been run
+  against a radio yet — every slot still decodes the same baked golden
+  baseband. See memory
   `project_wspr_app_cores3_ui` for the full design/status. A fourth
   bin, `src/bin/fst4_bench.rs` (`fst4-bench`), is issue #306's
   decoder-only FST4-60 bench — a separate feasibility question from
