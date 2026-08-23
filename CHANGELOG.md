@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + CoreS3 standalone receiver (#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
+## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + the CoreS3 receiver decoding off a radio (#163/#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
 
 **Why a minor bump.** This crate's convention is that new protocols and
 capabilities are patch-level (MSK144 shipped as `0.7.4`); minor bumps mark
@@ -16,6 +16,34 @@ Same handling as `0.8.0`, which collected its breaking changes into a minor
 rather than distributing them across patches.
 
 ### Added
+
+- **CoreS3 operator manual**, in English and Japanese
+  (`docs/reference/MANUAL_M5STACK_CORES3.md` / `.ja.md`), plus the
+  crate's first `CLAUDE.md`. The project's main hardware target had no
+  user-facing documentation: four receivers in one image, mode
+  switching from the touch panel, the host-versus-peripheral power rule
+  that decides at boot whether the board can talk to a radio or be
+  flashed, and why a receiver with no clock decodes nothing.
+- **`scripts/release-status.sh`** — the release state computed from the
+  repository rather than recalled: version against tags, CHANGELOG
+  agreement and freshness, cadence position, and which protocols' own
+  source has changed since `sweep-baseline.json` was refreshed, with
+  commit subjects so clippy drift and a decoder change are
+  distinguishable at a glance.
+- **`[boot-summary]`** on the CoreS3 — the boot-critical state re-emitted
+  once a log sink exists. In USB host mode there is no serial console,
+  and WiFi associates seconds after the power and USB decisions are
+  made, so every line about them lands in the log fanout's staging ring
+  and is overwritten before anything can read it.
+- **A link bar in every CoreS3 mode** carrying USB role and state, open
+  device count, the three VBUS enables, VBUS and battery volts, whether
+  the clock is set, and WiFi RSSI.
+- **Per-slot logging that names its audio source and states its time
+  budget**, in all three CoreS3 receivers. The FT8 controller labelled
+  every slot `WAV[n]` whatever the source. The budget means opposite
+  things per mode: FT8's 15 s slot genuinely runs out on a busy band,
+  while the WSPR and FST4 monitor loops are built with deliberate slack
+  and exceeding it is a fault.
 
 - **FST4 reports SNR without a whole-slot FFT** — `fst4::baseline`'s
   `fst4_ddc_snr_db`, reached automatically when `SnrCtx::fft_cache` is
@@ -195,6 +223,45 @@ rather than distributing them across patches.
 
 ### Fixed
 
+- **The CoreS3 receiver decodes off a radio** (issue #163). Verified
+  2026-08-23 against an IC-705 on 40 m: six to eight FT8 stations per
+  slot, +8 to −24 dB, over USB Audio. Three faults stood between the
+  working USB transport and a decode, and each looked like something
+  else:
+  - **The USB host never installed.** Gating a diagnostic panel behind
+    a build flag narrowed the condition of the block that panel
+    happened to start, and that block ran as far as `start_host()`.
+    VBUS came up, all three enable bits read back correctly, the radio
+    was attached, and nothing was ever asked to enumerate.
+  - **The slot grid never anchored.** The FT8 controller had never
+    started NTP, so the system clock stayed unset and
+    `time_sync::samples_to_next_slot_12k` returned `None`. Unanchored,
+    the 15 s grid free-runs at a phase uniform over 15 s against a mode
+    that tolerates ±2.5 s. The board now reads the CoreS3's
+    battery-backed BM8563 before WiFi exists and writes it back after
+    NTP syncs, so the clock survives a power cycle and works out of
+    range.
+  - **`StatusInfo::utc_sod` was never assigned**, so the panel read
+    `--:--:--` whatever the clock was doing — the one indicator that
+    would have said why thirty candidates a slot resolved to nothing.
+- **The CoreS3 no longer ships one operator's callsign compiled in.**
+  `decode_pipeline.rs` carried `MY_CALL`/`MY_GRID` as literals; they
+  come from `cfg.toml`'s `[station]` section now, as they have in
+  `m5stack-s3-app` since Phase 1.7. Empty leaves the QSO FSM idle,
+  which is correct for a receive-only station.
+- **WSPR and FST4 stay peripherals on external power.** The FT8
+  controller has checked VBUS before taking USB host mode since #163;
+  the other two receivers had not, so a board plugged into a PC boosted
+  VBUS back into it and stopped enumerating — taking the port a flasher
+  would use with it.
+- **The CoreS3 stopped powering hardware it does not use.** Copying
+  M5GFX's display init raised the AW9523B's speaker-amplifier enable
+  and wrote AXP2101 `0x90 = 0xBF`, turning on the AW88298, the ES7210,
+  the camera rail and both BLDOs — on a board sourcing 5 V to a radio
+  from its own cell. Espressif's BSP names every one of those pins.
+  Register `0x90` is written whole now: it survives a reset, so
+  read-modify-write could only ever accumulate what earlier boots
+  turned on.
 - **`coarse_sync`'s de-duplication is no longer quadratic** (issue #327).
   It compared every candidate against every earlier one; candidates
   within 4 Hz are a contiguous run, because the list is

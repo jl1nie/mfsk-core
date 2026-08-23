@@ -51,6 +51,25 @@ case "$changelog_top" in
     *) warn "CHANGELOG's top section does not start with $version" ;;
 esac
 
+# Matching the version is not the same as being current. The top
+# section can name the right version and still predate everything
+# merged since it was written — 77 commits, on 2026-08-23, when this
+# check was added because the first version of this script did not
+# catch it either.
+cl_commit=$(git log -1 --format=%H -- CHANGELOG.md)
+cl_date=$(git log -1 --format=%cs -- CHANGELOG.md)
+cl_behind=$(git rev-list --count "$cl_commit..HEAD" -- . ':(exclude)CHANGELOG.md' 2>/dev/null || echo 0)
+echo "  last edited: $cl_date"
+if (( cl_behind == 0 )); then
+    ok "current — nothing merged since it was last edited"
+else
+    warn "$cl_behind commits have landed since. Unreleased work is unrecorded."
+    warn "   Embedded work belongs here too: 0.10.0's own heading names the"
+    warn "   CoreS3 receiver, and embedded-poc is where most of it lives."
+    git log --format='       %h %s' "$cl_commit..HEAD" -- . ':(exclude)CHANGELOG.md' | head -6
+    (( cl_behind > 6 )) && echo "       … and $(( cl_behind - 6 )) more"
+fi
+
 # ── Cadence ──────────────────────────────────────────────────────────
 bold "== cadence =="
 if [[ -n "$last_tag" ]]; then
