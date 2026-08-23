@@ -1351,6 +1351,7 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
         expander_ok: crate::pmic::expander_ok(),
         battery_mv: crate::pmic::battery_mv_cached(),
         vbus_mv: crate::pmic::vbus_mv_cached(),
+        clock_set: mfsk_app_shared::time_sync::utc_now_ms().is_some(),
         vbus: tried.then(|| {
             (
                 p1 & crate::board::AW9523_P1_BOOST_EN != 0,

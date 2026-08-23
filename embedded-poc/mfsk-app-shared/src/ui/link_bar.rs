@@ -133,6 +133,16 @@ pub struct LinkInfo {
     /// `----` rather than as a number that would be read as a
     /// measurement.
     pub vbus_mv: u16,
+    /// Whether the system clock is set — i.e. whether NTP (or an RTC)
+    /// has run.
+    ///
+    /// Every receiver here anchors its slot grid to UTC and none of
+    /// them can decode without it: FT8 tolerates ±2.5 s against a 15 s
+    /// grid, so an unset clock means a free-running phase and no
+    /// decodes at all, with a waterfall full of signal. That failure
+    /// looks exactly like a broken decoder from every other indicator
+    /// on the screen, which is how it cost an evening.
+    pub clock_set: bool,
 }
 
 /// Draw the bar at `origin_y`, spanning `width`.
@@ -227,6 +237,10 @@ where
             let _ = rest.push_str("down");
         }
     }
+    // One character, because there is room for one: `T` when the clock
+    // is set, `-` when it is not. The receivers' own headers carry the
+    // time itself; this says whether that time means anything.
+    let _ = rest.push_str(if info.clock_set { " T" } else { " -" });
     let wifi_fg = if info.wifi_rssi.is_some() {
         Rgb565::WHITE
     } else {

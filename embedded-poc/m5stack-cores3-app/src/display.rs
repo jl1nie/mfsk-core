@@ -705,6 +705,16 @@ pub fn run_log_panel(
                 continue;
             };
             ui.status.free_heap_kb = (heap / 1024) as u32;
+            // The UTC field has existed in `StatusInfo` since the bar
+            // was written and nothing ever wrote it, so the panel read
+            // `--:--:--` whatever the clock was doing. That mattered
+            // more than a blank field usually does: this receiver's
+            // slot grid can only anchor while the clock is plausible,
+            // and when it is not, thirty candidates a slot decode to
+            // nothing. The one indicator that would have said so was
+            // the one that was never connected.
+            ui.status.utc_sod = mfsk_app_shared::time_sync::utc_now_ms()
+                .map(|ms| ((ms / 1000) % 86_400) as u32);
             status_snapshot = ui.status.clone();
             decoded_snapshot.clear();
             for row in ui.decoded_iter() {
