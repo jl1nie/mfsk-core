@@ -19,18 +19,55 @@ use mfsk_core::engine::scalar::Cmplx;
 pub const CS_LEN_SYMBOLS: usize = 79;
 pub const CS_LEN_TONES: usize = 8;
 
-/// Main-core (PRO_CPU) cs Box staging. `.bss` placement keeps it
-/// in internal DRAM. Initialised to zero by the loader; each Stage 3
-/// iter overwrites it via `*scratch = *cs_box` before use.
-///
-/// SAFETY: only the PRO_CPU side of `dual_core::stage3_split`
-/// reads/writes this. The APP_CPU worker uses [`CS_SCRATCH_WORKER`].
-pub static mut CS_SCRATCH_MAIN: [[Cmplx<f32>; CS_LEN_TONES]; CS_LEN_SYMBOLS] =
-    [[Cmplx { re: 0.0, im: 0.0 }; CS_LEN_TONES]; CS_LEN_SYMBOLS];
+/// One candidate's symbol-spectra block.
+pub type CsScratch = [[Cmplx<f32>; CS_LEN_TONES]; CS_LEN_SYMBOLS];
 
-/// APP_CPU (worker) cs Box staging.
+/// 5,056 B.
+pub const CS_SCRATCH_BYTES: usize = core::mem::size_of::<CsScratch>();
+
+/// Both staging buffers, side by side.
+const CS_TOTAL_BYTES: usize = 2 * CS_SCRATCH_BYTES;
+
+/// Take the FT8 staging pair at boot, before WiFi.
 ///
-/// SAFETY: only the APP_CPU worker (`dual_core::worker_main`)
-/// reads/writes this.
-pub static mut CS_SCRATCH_WORKER: [[Cmplx<f32>; CS_LEN_TONES]; CS_LEN_SYMBOLS] =
-    [[Cmplx { re: 0.0, im: 0.0 }; CS_LEN_TONES]; CS_LEN_SYMBOLS];
+/// Must run before anything fragments internal DRAM — see
+/// [`crate::worker_arena`].
+pub fn reserve_arena() -> bool {
+    crate::worker_arena::reserve(crate::worker_arena::Owner::Ft8Scratch, CS_TOTAL_BYTES)
+}
+
+/// Main-core (PRO_CPU) cs Box staging.
+///
+/// Carved from [`crate::worker_arena`] rather than reserved here: the
+/// same internal-DRAM block backs WSPR's and FST4's worker stacks, and
+/// only one of the three modes runs in a given boot. It is still a
+/// link-time reservation — see that module for why the heap is not an
+/// option once WiFi is up.
+///
+/// Zero-initialised like the `.bss` statics this replaces, and
+/// overwritten by `*scratch = *cs_box` before every use anyway.
+///
+/// # Safety
+///
+/// Only the PRO_CPU side of `dual_core::stage3_split` may touch this;
+/// the APP_CPU worker uses [`cs_scratch_worker`]. The two are distinct,
+/// non-overlapping halves of the same claim.
+pub unsafe fn cs_scratch_main() -> &'static mut CsScratch {
+    let base = crate::worker_arena::claim(crate::worker_arena::Owner::Ft8Scratch, CS_TOTAL_BYTES)
+        .expect("internal_pool: cs scratch arena unavailable");
+    // SAFETY: the arena is 16-byte aligned (`Cmplx<f32>` needs 4) and
+    // the claim covers both halves.
+    unsafe { &mut *(base as *mut CsScratch) }
+}
+
+/// APP_CPU (worker) cs Box staging — the second half of the same claim.
+///
+/// # Safety
+///
+/// Only the APP_CPU worker (`dual_core::worker_main`) may touch this.
+pub unsafe fn cs_scratch_worker() -> &'static mut CsScratch {
+    let base = crate::worker_arena::claim(crate::worker_arena::Owner::Ft8Scratch, CS_TOTAL_BYTES)
+        .expect("internal_pool: cs scratch arena unavailable");
+    // SAFETY: as above, offset past the main half.
+    unsafe { &mut *(base.add(CS_SCRATCH_BYTES) as *mut CsScratch) }
+}

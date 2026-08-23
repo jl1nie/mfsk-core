@@ -376,6 +376,13 @@ fn main() -> ! {
     // this app pays the identical decode cost.
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("task watchdog deinit -> {r}");
+    // Take WSPR's worker stack before WiFi, while the heap is still
+    // whole — after WiFi and the USB host the largest free internal
+    // block is 31,744 B, and this needs far more. See
+    // `embedded_shared::worker_arena` for the measurements.
+    if !wspr_dual_core::reserve_arena() {
+        log::error!("worker stack reservation failed — decoding will run single-core");
+    }
     wspr_dual_core::init();
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");

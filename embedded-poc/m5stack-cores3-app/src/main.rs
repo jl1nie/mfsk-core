@@ -103,6 +103,20 @@ fn main() -> ! {
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
+    // Take the decode scratch now, while the heap is still whole.
+    //
+    // Ordering, not size, is what makes this work: after WiFi and the
+    // USB host have taken their share the largest free internal block
+    // is 31,744 B, and before they start it is 155,648 B (both
+    // measured on this board, #163). Reserving here also means a
+    // binary that carries several modes only ever allocates the one it
+    // booted into — see `embedded_shared::worker_arena`.
+    if matches!(mode, boot_mode::BootMode::Decode | boot_mode::BootMode::Uac)
+        && !embedded_shared::internal_pool::reserve_arena()
+    {
+        log::error!("decode scratch reservation failed — the pipeline will abort on first use");
+    }
+
     // WiFi is not a debug channel. It carries NTP, the HTTP config
     // UI and QSO log upload, and an FST4/WSPR beacon needs all three
     // while the radio is attached — so "host mode" and "networked"

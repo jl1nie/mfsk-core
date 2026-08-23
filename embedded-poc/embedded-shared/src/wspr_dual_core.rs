@@ -119,20 +119,11 @@ const APP_CPU: i32 = 1;
 /// what remains is the price of not spawning per pass.
 const WORKER_STACK_BYTES: usize = 81_920;
 
-/// 16-byte aligned so the Xtensa port never has to shave the base
-/// pointer, and so PIE-aligned buffers placed at the bottom of a frame
-/// keep their alignment.
-#[repr(align(16))]
-struct WorkerStack(
-    // Never read as a normal field — only its address is taken
-    // (`addr_of_mut!(WORKER_STACK) as *mut u8` below) and handed to
-    // FreeRTOS as a raw stack pointer. The field exists purely to
-    // size and align the static allocation, same shape as
-    // `engine::fft::Align16Quad` on the host side.
-    #[allow(dead_code)] [u8; WORKER_STACK_BYTES],
-);
-
-static mut WORKER_STACK: WorkerStack = WorkerStack([0; WORKER_STACK_BYTES]);
+// The stack itself lives in `crate::worker_arena` — the same
+// reservation FST4's worker and FT8's cs staging use, because only one
+// of the three modes runs in a given boot. Still a link-time
+// reservation, for the reason this module's own docs give: with WiFi
+// up there is no 80 KB contiguous block to allocate.
 static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
     core::mem::MaybeUninit::uninit();
 
@@ -144,7 +135,23 @@ static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
 /// SAFETY: caller must guarantee no previously-spawned worker is still
 /// alive — see [`WORKER_STACK`]. Every call site is preceded by the
 /// result-queue receive plus [`TEARDOWN_DELAY_TICKS`].
+/// Take this mode's worker stack at boot, before WiFi.
+///
+/// Must run before anything fragments internal DRAM — see
+/// [`crate::worker_arena`] for the measurements that make the ordering
+/// non-negotiable. Returns `false` if it could not, in which case the
+/// worker never spawns and every pass runs single-core.
+pub fn reserve_arena() -> bool {
+    crate::worker_arena::reserve(crate::worker_arena::Owner::WsprWorker, WORKER_STACK_BYTES)
+}
+
 unsafe fn spawn_worker_static() -> bool {
+    let Some(stack) =
+        crate::worker_arena::claim(crate::worker_arena::Owner::WsprWorker, WORKER_STACK_BYTES)
+    else {
+        log::error!("wspr_dual_core: worker arena unavailable — staying single-core");
+        return false;
+    };
     let h = unsafe {
         esp_idf_svc::sys::xTaskCreateStaticPinnedToCore(
             Some(worker_main),
@@ -152,7 +159,7 @@ unsafe fn spawn_worker_static() -> bool {
             WORKER_STACK_BYTES as u32,
             core::ptr::null_mut(),
             5,
-            core::ptr::addr_of_mut!(WORKER_STACK) as *mut u8,
+            stack,
             core::ptr::addr_of_mut!(WORKER_TCB) as *mut esp_idf_svc::sys::StaticTask_t,
             APP_CPU,
         )

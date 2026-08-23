@@ -16,4 +16,5 @@ pub mod pipeline;
 pub mod stage1_inc;
 pub mod wav_sim;
 #[cfg(feature = "wspr-bench")]
+pub mod worker_arena;
 pub mod wspr_dual_core;

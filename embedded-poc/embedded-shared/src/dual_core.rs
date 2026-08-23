@@ -47,7 +47,7 @@ use mfsk_core::ft8::decode_block::{
     RefinedCandidate, Spectrogram,
 };
 
-use crate::internal_pool::{CS_SCRATCH_MAIN, CS_SCRATCH_WORKER};
+use crate::internal_pool::{cs_scratch_main, cs_scratch_worker};
 use crate::pipeline::{self, Slot, SpecBundle};
 
 /// ±lag window every coarse-sync call on this path pins, instead of
@@ -377,7 +377,7 @@ extern "C" fn worker_main(_arg: *mut core::ffi::c_void) {
                         depth,
                         q_thresh,
                         bp_max_iter,
-                        &mut CS_SCRATCH_WORKER,
+                        cs_scratch_worker(),
                     )
                 };
                 let raw = Box::into_raw(Box::new(result));
@@ -592,7 +592,7 @@ pub fn stage3_split(
             depth,
             q_thresh,
             bp_max_iter,
-            &mut CS_SCRATCH_MAIN,
+            cs_scratch_main(),
         )
     };
 

@@ -106,9 +106,8 @@ const APP_CPU: i32 = 1;
 /// is decode throughput.
 pub const WORKER_STACK_BYTES: usize = 24 * 1024;
 
-#[repr(align(16))]
-struct WorkerStack([u8; WORKER_STACK_BYTES]);
-static mut WORKER_STACK: WorkerStack = WorkerStack([0; WORKER_STACK_BYTES]);
+// The stack lives in `crate::worker_arena`, shared with WSPR's worker
+// and FT8's cs staging — one mode runs per boot, so one reservation.
 static mut WORKER_TCB: core::mem::MaybeUninit<esp_idf_svc::sys::StaticTask_t> =
     core::mem::MaybeUninit::uninit();
 
@@ -302,6 +301,16 @@ static INIT_DONE: AtomicUsize = AtomicUsize::new(0);
 /// Not generic: the worker takes type-erased jobs, so one call serves
 /// every kind of batch [`run_split`] is later asked to run. A second
 /// call is a no-op rather than a second worker.
+/// Take this mode's worker stack at boot, before WiFi.
+///
+/// Must run before anything fragments internal DRAM — see
+/// [`crate::worker_arena`]. [`init`] asserts on a missing reservation
+/// rather than silently going single-core, because FST4's timing
+/// budget assumes the second core.
+pub fn reserve_arena() -> bool {
+    crate::worker_arena::reserve(crate::worker_arena::Owner::Fst4Worker, WORKER_STACK_BYTES)
+}
+
 pub fn init() {
     if INIT_DONE.swap(1, Ordering::AcqRel) != 0 {
         log::warn!("fst4_dual_core: init called twice — ignoring");
@@ -310,13 +319,18 @@ pub fn init() {
     unsafe {
         JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
         RESULT_Q.set(queue_create(core::mem::size_of::<*mut ()>()));
+        let stack = crate::worker_arena::claim(
+            crate::worker_arena::Owner::Fst4Worker,
+            WORKER_STACK_BYTES,
+        )
+        .expect("fst4_dual_core: worker arena unavailable");
         let h = xTaskCreateStaticPinnedToCore(
             Some(worker_main),
             c"fst4_worker".as_ptr(),
             WORKER_STACK_BYTES as u32,
             ptr::null_mut(),
             5,
-            ptr::addr_of_mut!(WORKER_STACK) as *mut u8,
+            stack,
             ptr::addr_of_mut!(WORKER_TCB) as *mut esp_idf_svc::sys::StaticTask_t,
             APP_CPU,
         );

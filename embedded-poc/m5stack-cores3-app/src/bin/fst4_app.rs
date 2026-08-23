@@ -356,6 +356,13 @@ fn main() -> ! {
     // but the TCB and queues are still allocations, and WSPR measured a
     // worker spawn silently lost to heap fragmentation with the radio
     // up.
+    // Take FST4's worker stack before WiFi, while the heap is still
+    // whole — after WiFi and the USB host the largest free internal
+    // block is 31,744 B, and this needs far more. See
+    // `embedded_shared::worker_arena` for the measurements.
+    if !fst4_dual_core::reserve_arena() {
+        log::error!("worker stack reservation failed — decoding will run single-core");
+    }
     fst4_dual_core::init();
 
     if HOG_KB > 0 {
