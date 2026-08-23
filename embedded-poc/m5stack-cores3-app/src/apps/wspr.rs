@@ -714,6 +714,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     // Mode picker: held open, so it costs no layout. Centred on this
     // 320x240 panel.
     let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
+    let mut last_contact = crate::touch::Contact::default();
     let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
         (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
         (crate::board::CANVAS_H as i32 - mode_picker::height() as i32) / 2,
@@ -735,6 +736,20 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 } else {
                     crate::touch::Contact::default()
                 };
+                // One line per change of contact state, so an
+                // otherwise silent capture separates "nothing was
+                // touched" from "touched, but the hold never reached
+                // OPEN_MS". The picker's own log only speaks while the
+                // overlay is up, which is exactly the case that cannot
+                // be reached when the hold is the thing failing.
+                if c != last_contact {
+                    if c.points > 0 {
+                        log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
+                    } else {
+                        log::info!("touch: released");
+                    }
+                    last_contact = c;
+                }
                 if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
                     log::warn!("boot_mode -> {} (touch), restarting", target.label());
                     // Not written here: this task's stack is in
@@ -799,6 +814,20 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 } else {
                     crate::touch::Contact::default()
                 };
+                // One line per change of contact state, so an
+                // otherwise silent capture separates "nothing was
+                // touched" from "touched, but the hold never reached
+                // OPEN_MS". The picker's own log only speaks while the
+                // overlay is up, which is exactly the case that cannot
+                // be reached when the hold is the thing failing.
+                if c != last_contact {
+                    if c.points > 0 {
+                        log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
+                    } else {
+                        log::info!("touch: released");
+                    }
+                    last_contact = c;
+                }
                 if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
                     log::warn!("boot_mode -> {} (touch), restarting", target.label());
                     boot_mode::commit_and_restart(ctx.nvs.clone(), target);

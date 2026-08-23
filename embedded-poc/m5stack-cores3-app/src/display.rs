@@ -41,8 +41,20 @@ use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::log_sink::LogFanout;
 use mfsk_app_shared::ui::{decoded_list, mode_picker, state::UI, status_bar, waterfall};
 
-const TX_REGION_Y: i32 = 226;
+/// The TX line sits on the last row of the canvas, not at y=226 —
+/// that was where the shared widgets ended on a 240 px-tall panel.
 const TX_REGION_H: u32 = 14;
+const TX_REGION_Y: i32 = crate::board::CANVAS_H as i32 - TX_REGION_H as i32;
+
+/// The decoded list runs from the bottom of the waterfall to the TX
+/// line. On this canvas that is 192 px — twelve rows rather than the
+/// seven a 240 px-tall panel fits.
+///
+/// The stations are what the screen is for. Everything else here has
+/// to justify taking a row from them, and the USB/tick panel could
+/// not: it is bring-up instrumentation, and it now only draws when
+/// [`USB_PANEL`] is built in.
+const DECODED_ROWS: usize = ((TX_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize;
 /// Panel width in the portrait orientation the three receivers share.
 ///
 /// The FT8 controller used to run this panel unrotated (320x240) and
@@ -51,15 +63,47 @@ const TX_REGION_H: u32 = 14;
 /// rotated to 240x320 and used all of it; this now matches them.
 const SHARED_UI_WIDTH: u32 = crate::board::CANVAS_W as u32;
 
-/// Where the USB status line lives: to the right of the 135 px-wide
-/// shared widgets, which leaves the rest of this 320 px panel unused.
-const USB_REGION_X: i32 = 140;
-const USB_REGION_Y: i32 = 2;
+/// Where the USB status panel lives: the strip below the shared
+/// widgets.
+///
+/// It used to be a right-hand column at x=140, which was correct while
+/// this panel ran unrotated at 320x240 and the shared widgets occupied
+/// only the left 135 px. Rotating to the 240x320 the other two
+/// receivers use left that column hanging off the side — x=140..240 on
+/// a 240 px canvas, straight over the full-width status bar and
+/// decoded list. Reported from the bench as the tick overlapping the
+/// top-right corner.
+///
+/// The space that is actually free is vertical: `TX_REGION_Y` + its
+/// height ends the shared widgets at y=240, and the canvas is 320
+/// tall. Full width buys 40 characters a line instead of 30, which is
+/// what lets the same fields fit in fewer rows.
+const USB_REGION_X: i32 = 0;
+/// Sits directly above the TX line, so turning it on shortens the
+/// decoded list by exactly its own height and leaves no gap.
+const USB_REGION_Y: i32 = TX_REGION_Y - USB_PANEL_LINES as i32 * USB_PANEL_PITCH;
 
-/// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
-const USB_PANEL_LINES: usize = 10;
+/// Whether to draw the USB/tick diagnostic panel at all.
+///
+/// It was built for #163, when the board ran on battery in host mode
+/// with no serial console and the LCD was the only window — every
+/// enable bit, the driver-event count and the last error had to be on
+/// screen or they could not be seen. That is a bring-up instrument,
+/// not something an operator watching for stations wants over the top
+/// of the list, and on the 240 px-wide rotated canvas it landed
+/// squarely on the status bar and the decodes.
+///
+/// Build with `MFSK_CORES3_USB_PANEL=1` for a bench session; the
+/// decoded list gives up its bottom rows for it while it is on.
+const USB_PANEL: bool = option_env!("MFSK_CORES3_USB_PANEL").is_some();
+
+/// 6 行 × 12 px = 72 px、y=242..314 に収まる (キャンバス高 320)。
+const USB_PANEL_LINES: usize = 6;
 
 const USB_PANEL_PITCH: i32 = 12;
+
+/// Characters a panel line holds, at [`SHARED_UI_WIDTH`] / 6 px.
+const USB_PANEL_COLS: usize = 40;
 
 /// How long the boot waits before installing the USB host driver.
 ///
@@ -329,7 +373,7 @@ pub fn run_log_panel(
     // with a flasher. `USB_HOST_DELAY_MS` is the difference between a
     // board you can re-flash and one that needs the download-mode
     // button dance.
-    if host_mode {
+    if host_mode && USB_PANEL {
         let mut banner: heapless::String<40> = heapless::String::new();
         {
             use core::fmt::Write as _;
@@ -467,7 +511,7 @@ pub fn run_log_panel(
     let mut decoded_snapshot: Box<heapless::Vec<mfsk_app_shared::ui::state::DecodedRow, 16>> =
         Box::new(heapless::Vec::new());
 
-    let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
+    let mut last_usb_panel: heapless::Vec<heapless::String<USB_PANEL_COLS>, USB_PANEL_LINES> =
         heapless::Vec::new();
     let mut last_touch = crate::touch::Contact::default();
     // The way back out of this mode, shared with the other two
@@ -609,7 +653,20 @@ pub fn run_log_panel(
         }
 
         if decoded_fp != last_decoded_fp {
-            decoded_list::render(&mut display, &decoded_snapshot, SHARED_UI_WIDTH).ok();
+            decoded_list::render_in(
+                &mut display,
+                &decoded_snapshot,
+                None,
+                None,
+                SHARED_UI_WIDTH,
+                decoded_list::ORIGIN_Y,
+                if USB_PANEL {
+                    ((USB_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize
+                } else {
+                    DECODED_ROWS
+                },
+            )
+            .ok();
             last_decoded_fp = decoded_fp;
         }
 
@@ -677,27 +734,37 @@ pub fn run_log_panel(
         // are otherwise the same picture.
         //
         // Refs #163.
-        {
+        if USB_PANEL {
             use core::fmt::Write as _;
             let (st, sa, rms) = crate::uac::status();
             let (dev, cli, evts, err) = crate::uac::usb_counters();
             let (vbus_tried, p0, p1, st1) = crate::pmic::power_state();
 
-            let mut panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
+            let mut panel: heapless::Vec<heapless::String<USB_PANEL_COLS>, USB_PANEL_LINES> =
                 heapless::Vec::new();
             let mut line = |args: core::fmt::Arguments| {
-                let mut s: heapless::String<30> = heapless::String::new();
+                let mut s: heapless::String<USB_PANEL_COLS> = heapless::String::new();
                 let _ = s.write_fmt(args);
                 let _ = panel.push(s);
             };
 
             // Compact on purpose: this panel shares the screen with
             // the scrolling log, and at one field per line it grew
-            // until it covered it. Everything below fits in the 30
-            // characters the 180 px column allows.
+            // until it covered it. Everything below fits in the
+            // `USB_PANEL_COLS` characters the full-width strip allows.
+            // Four fixed rows now, not seven: the strip is 6 rows deep
+            // and the two standing failure lines below need the rest.
+            // 40 characters is what makes pairing these fields fit.
             line(format_args!(
-                "USB t={tick} {}",
-                if host_mode { "host" } else { "periph" }
+                "USB t={tick} {} {} dev={dev} cli={cli}",
+                if host_mode { "host" } else { "periph" },
+                match st {
+                    crate::uac::UacState::Off if host_mode => "off",
+                    crate::uac::UacState::Off => "chg",
+                    crate::uac::UacState::Waiting => "wait",
+                    crate::uac::UacState::Streaming => "STREAM",
+                    crate::uac::UacState::Error => "ERROR",
+                }
             ));
             if vbus_tried {
                 line(format_args!(
@@ -716,29 +783,24 @@ pub fn run_log_panel(
             } else {
                 line(format_args!("vbus n/a (periph)"));
             }
-            line(format_args!(
-                "{} dev={dev} cli={cli}",
-                match st {
-                    crate::uac::UacState::Off if host_mode => "off",
-                    crate::uac::UacState::Off => "charging",
-                    crate::uac::UacState::Waiting => "wait",
-                    crate::uac::UacState::Streaming => "STREAM",
-                    crate::uac::UacState::Error => "ERROR",
-                }
-            ));
             line(format_args!("evts={evts} err={err:x} s1={st1:02x}"));
             match rms {
                 Some(db) => line(format_args!("au={sa} rms={db:.0}dBFS")),
                 None => line(format_args!("au={sa} rms=--")),
             }
-            line(format_args!("bat={}mV", crate::pmic::battery_mv_cached()));
             if last_touch.points > 0 {
                 line(format_args!(
-                    "T {},{} n={}",
-                    last_touch.x, last_touch.y, last_touch.points
+                    "bat={}mV T {},{} n={}",
+                    crate::pmic::battery_mv_cached(),
+                    last_touch.x,
+                    last_touch.y,
+                    last_touch.points
                 ));
             } else {
-                line(format_args!("T --"));
+                line(format_args!(
+                    "bat={}mV T --",
+                    crate::pmic::battery_mv_cached()
+                ));
             }
 
             // Two standing failure lines, each only when it has
@@ -757,7 +819,7 @@ pub fn run_log_panel(
                     if rest.is_empty() {
                         break;
                     }
-                    let mut cut = rest.len().min(29);
+                    let mut cut = rest.len().min(USB_PANEL_COLS - 1);
                     while cut > 0 && !rest.is_char_boundary(cut) {
                         cut -= 1;
                     }

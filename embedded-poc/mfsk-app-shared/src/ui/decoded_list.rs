@@ -1,6 +1,7 @@
-//! Decoded message list — 7 rows × 16 px = 112 px tall, drawn at
-//! y ∈ [114, 226). Newest decode at the bottom (= row 6); older rows
-//! scroll up as new decodes land.
+//! Decoded message list. Seven 16 px rows at y ∈ [114, 226) by
+//! default; [`render_in`] takes the region explicitly, which is how the
+//! CoreS3 gives it the full height of its 320 px canvas. Newest decode
+//! at the top; older rows scroll down as new decodes land.
 //!
 //! Each row is `"-NN ffff  message ..."` at FONT_6X10 (22 chars max,
 //! fits 135 px width with 3 px slack). Borderline decodes
@@ -26,8 +27,11 @@ use crate::ui::state::DecodedRow;
 pub const ORIGIN_Y: i32 = 114;
 pub const HEIGHT: u32 = 112;
 pub const ROW_PX: u32 = 16;
-/// Visible rows in the region (HEIGHT / ROW_PX).
+/// Visible rows in the default region (HEIGHT / ROW_PX).
 pub const ROWS: usize = (HEIGHT / ROW_PX) as usize;
+/// Most rows any caller may ask [`render_in`] for. Sizes the scratch
+/// `Vec`; the CoreS3 uses 12 of these, the two 240 px-tall panels 7.
+pub const MAX_ROWS: usize = 16;
 /// FONT_6X10 char width.
 pub const CHAR_W: u32 = 6;
 /// Max characters a row can hold, at the widest panel this renders
@@ -80,6 +84,32 @@ pub fn render_with_cursor<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
+    render_in(display, rows, selected_idx, latest_slot_seq, width, ORIGIN_Y, ROWS)
+}
+
+/// [`render_with_cursor`] with the region given explicitly.
+///
+/// The constants above describe a 240 px-tall panel, which is what the
+/// M5StickS3 and the Core2 have. The CoreS3 draws the same widgets on
+/// a 240x320 canvas, where holding the list to 7 rows leaves 80 px of
+/// blank panel below it — the decoded stations are the reason the
+/// screen exists, so they get the space.
+///
+/// `row_count` is clamped to [`MAX_ROWS`].
+#[allow(clippy::too_many_arguments)]
+pub fn render_in<D>(
+    display: &mut D,
+    rows: &[DecodedRow],
+    selected_idx: Option<u8>,
+    latest_slot_seq: Option<u32>,
+    width: u32,
+    origin_y: i32,
+    row_count: usize,
+) -> Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let row_count = row_count.min(MAX_ROWS);
     // Operator-requested 2026-05-17 final simplification: black bg
     // always (native panel contrast max), distinguish via text color
     // only.
@@ -94,11 +124,12 @@ where
     let cur_fg = Rgb565::CSS_ORANGE;
 
     let n = rows.len();
-    let take = n.min(ROWS);
+    let take = n.min(row_count);
     let start = n - take;
     // Trailing `take` entries = most recently updated. Reverse so
     // the most-recently-updated lands at the *top* of the region.
-    let visible: heapless::Vec<&DecodedRow, ROWS> = rows[start..].iter().rev().collect();
+    let visible: heapless::Vec<&DecodedRow, MAX_ROWS> =
+        rows[start..].iter().rev().take(row_count).collect();
 
     // GREEN = "appeared in pipeline's CURRENT slot". If caller passes
     // the pipeline watermark, use that — otherwise fall back to the
@@ -108,7 +139,7 @@ where
         latest_slot_seq.unwrap_or_else(|| visible.iter().map(|r| r.slot_seq).max().unwrap_or(0));
 
     for (i, row) in visible.iter().enumerate() {
-        let y = ORIGIN_Y + (i as i32) * ROW_PX as i32;
+        let y = origin_y + (i as i32) * ROW_PX as i32;
         let row_y_text = y + 3; // 3 px top padding inside the row band
 
         // "Current slot" = the row was last detected in the latest
@@ -156,9 +187,9 @@ where
     // Blank any rows below the last visible decode (when ring isn't
     // full yet, or a slot dropped older entries off the front).
     let drawn = visible.len();
-    if drawn < ROWS {
-        let blank_y = ORIGIN_Y + (drawn as i32) * ROW_PX as i32;
-        let blank_h = ((ROWS - drawn) as u32) * ROW_PX;
+    if drawn < row_count {
+        let blank_y = origin_y + (drawn as i32) * ROW_PX as i32;
+        let blank_h = ((row_count - drawn) as u32) * ROW_PX;
         Rectangle::new(Point::new(0, blank_y), Size::new(width, blank_h))
             .into_styled(PrimitiveStyle::with_fill(bg))
             .draw(display)?;
