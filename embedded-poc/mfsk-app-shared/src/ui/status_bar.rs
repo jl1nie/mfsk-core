@@ -48,7 +48,22 @@ where
         .background_color(bg)
         .build();
 
+    // 6 px per glyph at FONT_6X10, 1 px of left margin.
+    const CHAR_W: u32 = 6;
+    let cols = ((width.saturating_sub(1)) / CHAR_W) as usize;
+
     let mut s: String<32> = String::new();
+    // The mode name, where the panel can afford it.
+    //
+    // The 22-char core below was sized for the M5StickS3's 135 px, and
+    // on that panel there is no room. The CoreS3 and the Core2 have
+    // 240 and 320, and on the CoreS3 the omission actually mattered:
+    // one binary boots into one of four receivers, WSPR and FST4 name
+    // themselves on their own status lines, and the FT8 screen did not.
+    let named = cols >= 26;
+    if named {
+        let _ = s.push_str("FT8 ");
+    }
     // Freq: kHz, 4-5 digits ("7074", "14074", "144174").
     match status.rig_freq_hz {
         Some(hz) => {
@@ -76,14 +91,15 @@ where
     // Heap KB (4 chars).
     let _ = write!(&mut s, " {:>4}", status.free_heap_kb);
 
-    // Drop chars beyond the 22-char width if formatting overflowed.
+    // Drop chars the panel cannot show, if formatting overflowed.
+    let budget = if named { 26 } else { 22 };
     let visible = s.as_str();
-    let visible = &visible[..visible.len().min(22)];
+    let visible = &visible[..visible.len().min(budget)];
 
     Text::with_baseline(visible, Point::new(1, 2), style, Baseline::Top).draw(display)?;
-    // Tail-paint whatever the 22-char line does not cover, so the bar
+    // Tail-paint whatever the line does not cover, so the bar
     // background reaches the right edge on any panel width.
-    let text_px = 22 * 6 + 1;
+    let text_px = budget as u32 * CHAR_W + 1;
     if width > text_px {
         Rectangle::new(
             Point::new(text_px as i32, ORIGIN_Y),
