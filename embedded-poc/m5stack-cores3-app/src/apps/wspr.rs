@@ -1173,7 +1173,22 @@ fn scan_loop(ctx: ScanCtx) -> ! {
         // dropped once `run_one_slot` returns.
         drop(buf);
 
-        run_one_slot(&ctx, &mut idat, &mut qdat, &slot_num.to_string(), true);
+        // Whether this slot is synthetic is a fact about the audio, not
+        // about which loop produced the buffer.
+        //
+        // It was hardcoded `true` because a DDC-fed slot could only be
+        // `build_ddc_test_track`'s fabricated burst — the receiver had
+        // never been run against a radio. Since 2026-08-23 it has, and
+        // a `true` here suppresses the wsprnet report for real
+        // receptions and labels them `src=synthetic` in the log.
+        let synthetic = !UAC_AUDIO_ACTIVE.load(Ordering::Acquire);
+        run_one_slot(
+            &ctx,
+            &mut idat,
+            &mut qdat,
+            &slot_num.to_string(),
+            synthetic,
+        );
         slot_num = slot_num.wrapping_add(1);
     }
 }
@@ -1183,10 +1198,11 @@ fn scan_loop(ctx: ScanCtx) -> ! {
 /// slot 0 and the DDC-fed slots after it share it exactly rather than
 /// duplicating the reporting/UI plumbing.
 ///
-/// `is_synthetic_source` — `true` for every DDC-fed slot (the audio is
-/// [`build_ddc_test_track`]'s fabricated [`DDC_TEST_CALL`] burst, not
-/// a real reception), `false` for slot 0 (a real, if stale, WAV-derived
-/// recording of real stations). Gates wsprnet reporting: a "station"
+/// `is_synthetic_source` — whether the audio this slot decoded was
+/// fabricated. True while [`build_ddc_test_track`]'s [`DDC_TEST_CALL`]
+/// burst is what the DDC is being fed, false once real UAC audio takes
+/// over and for slot 0 (a real, if stale, WAV-derived recording of
+/// real stations). Gates wsprnet reporting: a "station"
 /// this device fabricated itself has no business appearing in a public
 /// spot database as a real reception, identically every ~2 minutes,
 /// forever — the golden-baseband slot's *is* real (if replayed)
