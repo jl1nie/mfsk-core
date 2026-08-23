@@ -475,7 +475,13 @@ pub fn run_log_panel(
     // receivers so switching is not a one-way trip. Sits under the USB
     // panel (which ends at y=122); the shared widgets own the left
     // 135 px.
-    let mut picker = mode_picker::ModePicker::new(Point::new(140, 134));
+    // Centred, like the other two receivers. The origin used to be
+    // (140, 134), from when this panel ran unrotated at 320x240 — at
+    // 240 wide that put a 208 px widget 108 px off the right edge.
+    let mut picker = mode_picker::ModePicker::new(Point::new(
+        (PANEL_W as i32 - mode_picker::WIDTH as i32) / 2,
+        (320 - mode_picker::height() as i32) / 2,
+    ));
     let mut touch_read_failed = false;
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
@@ -569,6 +575,27 @@ pub fn run_log_panel(
                 .max()
                 .unwrap_or(0);
             decoded_fp = (decoded_snapshot.len(), max_seq);
+        }
+
+        // Nothing underneath repaints while the overlay is up — the
+        // widget only redraws itself on change, so anything drawn over
+        // it stays drawn over it.
+        if picker.is_open() {
+            picker.render(&mut display, mode).ok();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            tick = tick.wrapping_add(1);
+            continue;
+        }
+
+        // Freeze what is underneath while the overlay is up. The
+        // widget only redraws itself on change, so anything painted
+        // over it stays painted over it — which is why the picker
+        // vanished a moment after opening.
+        if picker.is_open() {
+            picker.render(&mut display, mode).ok();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            tick = tick.wrapping_add(1);
+            continue;
         }
 
         status_bar::render(&mut display, &status_snapshot, PANEL_W).ok();

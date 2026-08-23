@@ -676,6 +676,35 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     let mut tick: u32 = 0;
     loop {
 
+        // Freeze the tables while the overlay is up — it only
+        // redraws on change, so a repaint underneath erases it and it
+        // never comes back.
+        if picker.is_open() {
+            picker.render(&mut display, BootMode::Wspr).ok();
+            FreeRtos::delay_ms(50);
+            if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
+                let c = if int.is_low() {
+                    crate::touch::read(i2c).unwrap_or_default()
+                } else {
+                    crate::touch::Contact::default()
+                };
+                if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                    log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                    if let Ok(nvs) = ctx.nvs.lock() {
+                        if boot_mode::write(&nvs, target).is_ok() {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            // SAFETY: no arguments, does not return.
+                            unsafe { esp_idf_svc::sys::esp_restart() };
+                        }
+                    }
+                }
+            }
+            if picker.take_just_closed() {
+                last_dirty = u32::MAX;
+            }
+            continue;
+        }
+
         let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
         let hhmmss = current_hhmmss();
         let dirty = {

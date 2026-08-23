@@ -224,14 +224,6 @@ const WIFI_STOP: bool = match option_env!("MFSK_FST4_APP_WIFI_STOP") {
     None => false,
 };
 
-/// `MFSK_FST4_APP_USB_HOST=1` — install the USB host + UAC class
-/// driver, and take real audio from a radio. See the call site for why
-/// this is off by default while #163 is open.
-const USB_HOST: bool = match option_env!("MFSK_FST4_APP_USB_HOST") {
-    Some(v) => matches!(v.as_bytes(), [b'1']),
-    None => false,
-};
-
 /// The shipped monitor, with one number changed.
 ///
 /// **The candidate loop is slower in an app than in the bench**, and
@@ -859,14 +851,18 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // first and why this is opt-in here rather than
             // unconditional.
             //
-            // Default off, deliberately, for as long as issue #163 is
-            // open: no UAC source has ever enumerated on this board, so
-            // turning it on today costs the only telemetry channel that
-            // works without a WiFi association and buys nothing. Build
-            // with `MFSK_FST4_APP_USB_HOST=1` to attach a radio; the
-            // app then depends on the UDP log sink for its logs, same
-            // as `wspr_app` does.
-            if USB_HOST {
+            // Unconditional now, as `wspr_app` has always been.
+            //
+            // It was behind `MFSK_FST4_APP_USB_HOST=1` on the stated
+            // condition that #163 stayed open — no UAC source had ever
+            // enumerated on this board, so installing the host cost the
+            // only telemetry channel that works without WiFi and bought
+            // nothing. #163 closed 2026-08-23 with ten minutes of live
+            // capture, and a build-time flag cannot work at all in a
+            // binary that picks its receiver at boot: choosing FST4
+            // from the mode picker would land in a receiver whose radio
+            // was compiled out.
+            {
                 // The console is about to go away. Say whether the
                 // replacement is up *before* it does — the failure
                 // mode this avoids is a board that goes silent with no
@@ -879,18 +875,13 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                     log::warn!(
                         "fst4_app: **UDP log sink is NOT up** and the USB host is about to \
                          detach the serial console — this boot will be silent. Check WiFi, or \
-                         build without MFSK_FST4_APP_USB_HOST=1."
+                         pick another mode from the picker."
                     );
                 }
                 log::info!("fst4_app: installing USB host + UAC class driver");
                 if let Err(e) = crate::uac::start_host() {
                     log::error!("fst4_app: UAC host start failed: {e:#}");
                 }
-            } else {
-                log::info!(
-                    "fst4_app: USB host disabled (build with MFSK_FST4_APP_USB_HOST=1) \
-                     — serial console kept, golden slot replayed"
-                );
             }
 
             let driver = SpiDriver::new(
@@ -952,6 +943,35 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     let mut last_dirty = u32::MAX;
     let mut tick: u32 = 0;
     loop {
+
+        // Freeze the tables while the overlay is up — it only
+        // redraws on change, so a repaint underneath erases it and it
+        // never comes back.
+        if picker.is_open() {
+            picker.render(&mut display, BootMode::Fst4).ok();
+            FreeRtos::delay_ms(50);
+            if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
+                let c = if int.is_low() {
+                    crate::touch::read(i2c).unwrap_or_default()
+                } else {
+                    crate::touch::Contact::default()
+                };
+                if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                    log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                    if let Ok(nvs) = ctx.nvs.lock() {
+                        if boot_mode::write(&nvs, target).is_ok() {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            // SAFETY: no arguments, does not return.
+                            unsafe { esp_idf_svc::sys::esp_restart() };
+                        }
+                    }
+                }
+            }
+            if picker.take_just_closed() {
+                last_dirty = u32::MAX;
+            }
+            continue;
+        }
 
         let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
         let hhmmss = current_hhmmss();
