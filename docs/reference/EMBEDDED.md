@@ -1620,7 +1620,7 @@ stations it decodes from flash. A live antenna is checkpoint 2.
 `uac.rs`'s reader prints one line per second carrying both halves of
 the question:
 
-```
+```text
 uac: rx tick: 192000 B/s (total … / … pkt / 0 err)
    | audio 12000 sa/s (want 12000), rms -32.4 dBFS, peak 4211, clipped 0
 ```
@@ -1643,7 +1643,7 @@ uac: rx tick: 192000 B/s (total … / … pkt / 0 err)
 
 Then, per slot, the application says what it did with it:
 
-```
+```text
 fst4_app::capture: front end … source UAC
 fst4_app::scan: slot N — 50 candidates in … ms
 ```
