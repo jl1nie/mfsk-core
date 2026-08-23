@@ -935,31 +935,10 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // from the mode picker would land in a receiver whose radio
             // was compiled out.
             if host_mode {
-                // The console is about to go away. Say whether the
-                // replacement is up *before* it does — the failure
-                // mode this avoids is a board that goes silent with no
-                // way to tell whether it crashed, never enumerated, or
-                // is working perfectly and simply cannot say so.
-                let udp_up = crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false);
-                if udp_up {
-                    log::info!("fst4_app: UDP log sink is up — serial console goes away now");
-                } else {
-                    log::warn!(
-                        "fst4_app: **UDP log sink is NOT up** and the USB host is about to \
-                         detach the serial console — this boot will be silent. Check WiFi, or \
-                         pick another mode from the picker."
-                    );
-                }
-                log::info!("fst4_app: installing USB host + UAC class driver");
-                if let Err(e) = crate::uac::start_host() {
-                    log::error!("fst4_app: UAC host start failed: {e:#}");
-                    let mut msg: heapless::String<96> = heapless::String::new();
-                    {
-                        use core::fmt::Write as _;
-                        let _ = write!(&mut msg, "start_host FAILED: {e:#}");
-                    }
-                    crate::uac::HOST_RESULT.store(msg.as_str());
-                }
+                // `start_host_when_ready` waits for the log sink itself
+                // and says what it found, so this receiver no longer
+                // reports on it separately.
+                crate::uac::start_host_when_ready();
             } else {
                 log::info!(
                     "fst4_app: USB host not installed (peripheral mode) — the serial console \

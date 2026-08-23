@@ -622,16 +622,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // keeps running (see [`UAC_AUDIO_ACTIVE`]'s own doc
             // comment), so this is safe to always attempt.
             if host_mode {
-                log::info!("wspr_app: installing USB host + UAC class driver");
-                if let Err(e) = crate::uac::start_host() {
-                    log::error!("wspr_app: UAC host start failed: {e:#}");
-                    let mut msg: heapless::String<96> = heapless::String::new();
-                    {
-                        use core::fmt::Write as _;
-                        let _ = write!(&mut msg, "start_host FAILED: {e:#}");
-                    }
-                    crate::uac::HOST_RESULT.store(msg.as_str());
-                }
+                crate::uac::start_host_when_ready();
             } else {
                 log::info!(
                     "wspr_app: USB host not installed (peripheral mode) — the serial console \

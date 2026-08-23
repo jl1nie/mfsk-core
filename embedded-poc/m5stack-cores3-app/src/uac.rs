@@ -1361,3 +1361,129 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
         }),
     }
 }
+
+/// Bring the USB host up, once the things that make its failure
+/// legible are in place.
+///
+/// **One sequence, for all three receivers.** `start_host` was always
+/// shared; the steps around it were not, and the difference was not
+/// deliberate — the FT8 controller waited for a log sink and installed
+/// `esp_log_bridge` first, WSPR and FST4 called `start_host` straight
+/// after enabling VBUS. So the two receivers that most needed the
+/// enumeration trace could not produce one: `ENUM` is a C-side tag, and
+/// without the bridge it goes to a console that host mode is about to
+/// take away. A board that would not enumerate had, in those modes, no
+/// way to say why.
+///
+/// **What is not here any more: a serviceability delay.** The FT8 path
+/// slept `USB_HOST_DELAY_MS` (6 s) before installing, on the reasoning
+/// that this was the last window in which a flasher could reach the
+/// port. That was true when the firmware could take host mode with a
+/// PC attached. Since #163 it decides from VBUS and only becomes a host
+/// when nothing is powering the port — which means there is no PC, and
+/// no flasher to wait for. Six seconds of nothing, on every boot,
+/// guarding against a case that can no longer happen.
+///
+/// The wait that remains is for the UDP log sink, and it is bounded:
+/// a receiver with no WiFi still has to start.
+/// How long to wait for the UDP log sink before installing the host
+/// anyway. A receiver with no WiFi still has to start.
+const LOG_SINK_WAIT_MS: u32 = 45_000;
+
+pub fn start_host_when_ready() {
+    log::info!("uac: installing USB host — the serial console goes away when it returns");
+
+    // Hold until the log sink exists, if it is coming.
+    //
+    // Everything interesting about enumeration is logged in the
+    // few hundred milliseconds after `start_host()`, and on
+    // battery there is no serial console to catch it — the VBUS
+    // gate means a board in host mode is a board with no cable to
+    // a PC. WiFi takes ~30 s, so without this wait those lines land
+    // in the staging ring and are gone by the time anything can
+    // read them. Bounded, because a receiver with no WiFi still has
+    // to work.
+    // Only worth waiting if a sink is actually coming. UAC mode
+    // now leaves WiFi off by default, and waiting 45 s for a sink
+    // that will never exist is just a receiver that takes 45 s
+    // longer to start. Refs #163.
+    let sink_expected = crate::wifi_enabled_for_this_boot();
+    let mut waited_ms = 0u32;
+    while sink_expected && waited_ms < LOG_SINK_WAIT_MS {
+        if crate::FANOUT
+            .udp
+            .try_lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
+        {
+            log::info!("uac: log sink up after {waited_ms} ms — installing USB host now");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        waited_ms += 250;
+    }
+    if sink_expected && waited_ms >= LOG_SINK_WAIT_MS {
+        log::warn!(
+            "uac: no log sink after {waited_ms} ms — installing USB host anyway; \
+             enumeration will only be visible on screen"
+        );
+    }
+
+    // Turn up ESP-IDF's own USB enumeration logging before the
+    // stack starts.
+    //
+    // The UAC class driver only reports what it recognises, so a
+    // device that never finishes enumeration — or a hub whose
+    // downstream ports are never walked — is indistinguishable
+    // from nothing being plugged in. These tags are the ones the
+    // host library uses on that path, and they are quiet outside
+    // attach/detach, so leaving them up costs nothing while the
+    // board waits. Issue #163.
+    // `ENUM` alone at DEBUG. It carries the per-stage verdicts —
+    // GET_FULL_DEV_DESC, CHECK_SHORT_CONFIG_DESC, and which one
+    // FAILED — which is the whole diagnostic.
+    //
+    // The rest stay at INFO deliberately. At DEBUG, `EXT_PORT` /
+    // `USBH` / `EXT_HUB` emit a "Processing actions" line per state
+    // transition, so one attach is several hundred lines inside a
+    // few milliseconds. Every one of those becomes a UDP datagram
+    // sent from the USB task, and the board reliably fell off the
+    // network right after enumeration whenever they were on — the
+    // log volume was costing us the log. Refs #163.
+    unsafe {
+        esp_idf_svc::sys::esp_log_level_set(
+            c"ENUM".as_ptr(),
+            esp_idf_svc::sys::esp_log_level_t_ESP_LOG_DEBUG,
+        );
+    }
+    for tag in [
+        c"USB HOST".as_ptr(),
+        c"USBH".as_ptr(),
+        c"HUB".as_ptr(),
+        c"EXT_HUB".as_ptr(),
+        c"EXT_PORT".as_ptr(),
+    ] {
+        unsafe {
+            esp_idf_svc::sys::esp_log_level_set(
+                tag,
+                esp_idf_svc::sys::esp_log_level_t_ESP_LOG_INFO,
+            );
+        }
+    }
+
+    crate::log_free_internal("pre-uac-host-install");
+    // Serial is about to go away with the PHY; move the C-side log
+    // output somewhere that survives (see `esp_log_bridge`).
+    crate::esp_log_bridge::install();
+
+    if let Err(e) = start_host() {
+        log::error!("UAC host start failed: {e:#}");
+        let mut msg: heapless::String<96> = heapless::String::new();
+        {
+            use core::fmt::Write as _;
+            let _ = write!(&mut msg, "start_host FAILED: {e:#}");
+        }
+        HOST_RESULT.store(msg.as_str());
+    }
+    crate::log_free_internal("post-uac-host-install");
+}
