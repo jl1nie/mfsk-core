@@ -952,33 +952,6 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     let mut last_dirty = u32::MAX;
     let mut tick: u32 = 0;
     loop {
-        // The way out of this receiver. Hold anywhere to open it.
-        if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
-            let c = if int.is_low() {
-                crate::touch::read(i2c).unwrap_or_default()
-            } else {
-                crate::touch::Contact::default()
-            };
-            if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
-                log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                match ctx.nvs.lock() {
-                    Ok(nvs) => {
-                        if let Err(e) = boot_mode::write(&nvs, target) {
-                            log::error!("boot_mode write failed: {e} — not restarting");
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(400));
-                            // SAFETY: no arguments, does not return.
-                            unsafe { esp_idf_svc::sys::esp_restart() };
-                        }
-                    }
-                    Err(e) => log::error!("boot_mode NVS lock poisoned: {e}"),
-                }
-            }
-            picker.render(&mut display, BootMode::Fst4).ok();
-            if picker.take_just_closed() {
-                last_dirty = u32::MAX;
-            }
-        }
 
         let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
         let hhmmss = current_hhmmss();
@@ -1012,7 +985,42 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             );
         }
         tick = tick.wrapping_add(1);
-        FreeRtos::delay_ms(500);
+        // Touch at 50 ms while the render cadence stays at 500.
+        //
+        // The picker is only as responsive as whatever calls it, and
+        // this loop redraws spot tables — it has no business running
+        // ten times faster. So the wait polls instead of sleeping
+        // through: a tap or an 800 ms hold lands either way. Checking
+        // costs one GPIO read while no finger is down.
+        for _ in 0..10 {
+            if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
+                let c = if int.is_low() {
+                    crate::touch::read(i2c).unwrap_or_default()
+                } else {
+                    crate::touch::Contact::default()
+                };
+                if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                    log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                    match ctx.nvs.lock() {
+                        Ok(nvs) => {
+                            if let Err(e) = boot_mode::write(&nvs, target) {
+                                log::error!("boot_mode write failed: {e} — not restarting");
+                            } else {
+                                std::thread::sleep(std::time::Duration::from_millis(400));
+                                // SAFETY: no arguments, does not return.
+                                unsafe { esp_idf_svc::sys::esp_restart() };
+                            }
+                        }
+                        Err(e) => log::error!("boot_mode NVS lock poisoned: {e}"),
+                    }
+                }
+                picker.render(&mut display, BootMode::Fst4).ok();
+                if picker.take_just_closed() {
+                    last_dirty = u32::MAX;
+                }
+            }
+            FreeRtos::delay_ms(50);
+        }
     }
 }
 

@@ -49,12 +49,19 @@ pub const MODES: [(BootMode, &str); 4] = [
     (BootMode::Decode, "DECODE (wav)"),
 ];
 
-pub const WIDTH: u32 = 176;
+pub const WIDTH: u32 = 208;
 /// Drawn height of one button.
-pub const BUTTON_H: u32 = 24;
-/// Distance between button tops. The gap is deliberately small; the
+///
+/// 40 px, not the 24 it started at. At 24 with a 26 px pitch the four
+/// buttons spanned 104 px and a fingertip covered more than one — the
+/// bench report was that hitting FT8 or WSPR was hard and taps kept
+/// landing on a neighbour, which reads as "tap again" appearing on the
+/// wrong row. A finger contact is several millimetres across; the
+/// panel is 240x320 and can afford this.
+pub const BUTTON_H: u32 = 40;
+/// Distance between button tops. The gap is drawn but not dead — the
 /// hit test below covers it, so nothing lands between two buttons.
-pub const PITCH: i32 = 26;
+pub const PITCH: i32 = 48;
 
 /// How long a first tap stays armed.
 pub const ARM_MS: u64 = 4_000;
@@ -216,7 +223,8 @@ impl ModePicker {
                 .build();
             Text::with_baseline(
                 if armed { "tap again" } else { label },
-                Point::new(self.origin.x + 6, top + 7),
+                // Vertically centred in the taller button (FONT_6X10).
+                Point::new(self.origin.x + 10, top + (BUTTON_H as i32 - 10) / 2),
                 style,
                 Baseline::Top,
             )
