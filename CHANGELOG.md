@@ -244,6 +244,21 @@ rather than distributing them across patches.
   - **`StatusInfo::utc_sod` was never assigned**, so the panel read
     `--:--:--` whatever the clock was doing — the one indicator that
     would have said why thirty candidates a slot resolved to nothing.
+- **The CoreS3's WSPR receiver decoded nothing at all.** Its scan task
+  asks for a 72 KiB stack and the dual-core worker arena for 80 KiB,
+  both out of one 128 KiB contiguous internal block — 152 does not fit
+  in 128, so `xTaskCreatePinnedToCore` failed and the DDC filled
+  buffers nobody consumed. Both numbers were measured, but against a
+  decode path that kept three 10 368 B `IsQs` alive at once:
+  `refine_cascade` returned its champion by value on top of the two it
+  ping-pongs, and the jitter ladder built one per position through the
+  by-value `tone_amplitudes`. With those gone the measured peak fell
+  63 192 B → **42 536 B**, and both reservations are 48 KiB, confirmed
+  on hardware at 41-43 KB. Pure refactor: the merge gate passes,
+  `wspr_golden_recall_and_precision` is unchanged, and the AWGN
+  sensitivity sweep moves +0.00 dB. `wspr-bench` also never called
+  `reserve_arena` and panicked on worker spawn — same `worker_arena`
+  change, second casualty.
 - **WSPR called every DDC-fed slot synthetic, including real ones.**
   The flag was hardcoded `true`, correct while a DDC-fed slot could
   only be the fabricated test burst — the receiver had never been run
