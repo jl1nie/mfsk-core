@@ -259,6 +259,28 @@ local SHA happens to be CI-green, future releases get sloppier
 when "just publish locally" is in the playbook. Push the tag and
 let CD do it.
 
+**Step 0, before anything else: `scripts/release-status.sh`.**
+
+It prints the release state computed from the repository — whether the
+workspace version is tagged, whether the CHANGELOG's top section agrees
+with it, how the cadence stands, and which protocols' own source has
+changed since `sweep-baseline.json` was last refreshed, with the commit
+subjects so "clippy drift" and "decoder change" are distinguishable at a
+glance.
+
+This exists because release preparation kept failing the same way: the
+state was reconstructed by hand, from memory and inference, and every
+fact involved is mechanically derivable. Three errors in one session on
+2026-08-23 — claiming sweeps were outstanding when a note recorded them
+as done with an explicit re-run condition that was never evaluated;
+naming three protocols as needing re-sweeping on the strength of commits
+that predated the sweep; and not noticing that `0.10.0` had its
+CHANGELOG written and its version bumped but no tag, through an entire
+conversation about preparing a release. The procedure below was already
+written down. What was missing was anything that computed the state, so
+each attempt re-derived it, and re-derivation is where the errors came
+from.
+
 Sequence:
 1. Merge release PR into `main`.
 2. `git checkout main && git pull`.
@@ -268,9 +290,15 @@ Sequence:
 
 ### Step 3: tier-C sensitivity sweeps, before every tag
 
+**Which ones, from `scripts/release-status.sh` — not from recall.** It
+compares each protocol's own source tree against the date
+`sweep-baseline.json` was last refreshed and prints the commit subjects,
+so a clippy sweep and a decoder change are told apart without going to
+look them up.
+
 ```sh
-scripts/run-sensitivity-sweeps.sh              # everything present
-scripts/run-sensitivity-sweeps.sh ft4 fst4     # or just what moved
+scripts/release-status.sh                      # says which, and why
+scripts/run-sensitivity-sweeps.sh fst4         # then just those
 ```
 
 CI never runs these. They need the generated corpora under
