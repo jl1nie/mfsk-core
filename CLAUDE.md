@@ -24,8 +24,9 @@ stack overflows that presented as heap corruption — read
 heaps, and the space between them" before touching that board.
 See `docs/notes/ROADMAP.md` Phase B-Core for what #163 unblocks. `m5stack-s3-app` and
 `m5stack-core2-app` each have their own `CLAUDE.md` covering
-board-specific bring-up; `m5stack-cores3-app` does not yet — read
-`docs/notes/ROADMAP.md` Phase B-Core for its status instead. This
+board-specific bring-up, and `m5stack-cores3-app` now does too —
+alongside the operator manual at
+`docs/reference/MANUAL_M5STACK_CORES3.md`. This
 section captures the shared workflow that's easy to forget between
 sessions.
 

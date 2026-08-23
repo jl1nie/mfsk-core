@@ -8,8 +8,11 @@ scratch バッファが必要か、C ABI の形、現在テストしている対
 の性能。
 
 ホスト専用利用 (no embedded) は [`docs/reference/LIBRARY.ja.md`](LIBRARY.ja.md)、
-本ライブラリで作った既存 FT8 コントローラの操作は
-[`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md) 参照。
+本ライブラリで作った受信機の操作は
+[`docs/reference/MANUAL_M5STACK_CORES3.ja.md`](MANUAL_M5STACK_CORES3.ja.md)
+(CoreS3 — 無線機の USB Audio から受信) または
+[`docs/reference/MANUAL_M5STICKS3.ja.md`](MANUAL_M5STICKS3.ja.md)
+(StickS3 — デモ用ボード) 参照。
 
 ## アーキテクチャ: f32 と固定小数点が 1 つのコードベースを共有する仕組み
 
