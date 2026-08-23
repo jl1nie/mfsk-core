@@ -815,7 +815,7 @@ pub fn run_log_panel(
 
         // Status bar refreshes every loop tick (cheap; no leading
         // wipe in the renderer so it doesn't flicker).
-        status_bar::render(&mut display, &status_snapshot).ok();
+        status_bar::render(&mut display, &status_snapshot, 135).ok();
 
         // Pre-detect menu close (transition from visible → hidden)
         // and force a WF repaint in this same iteration so the
@@ -836,7 +836,7 @@ pub fn run_log_panel(
                 &mfsk_app_shared::ui::state::WfLine,
                 { mfsk_app_shared::ui::state::WF_DEPTH },
             > = wf_snapshot.iter().collect();
-            waterfall::render(&mut display, &wf_refs).ok();
+            waterfall::render(&mut display, &wf_refs, 135).ok();
             last_wf_seq = wf_seq;
             wf_redrawn = true;
         }
@@ -857,6 +857,7 @@ pub fn run_log_panel(
                 &decoded_snapshot,
                 selected_decode_idx,
                 Some(latest_slot_seq_snapshot),
+                135,
             )
             .ok();
             last_decoded_fp_with_cursor = decoded_fp_with_cursor;

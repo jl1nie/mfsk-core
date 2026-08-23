@@ -47,9 +47,13 @@ pub struct StatusInfo {
     pub free_heap_kb: u32,
 }
 
-/// Single waterfall row — 135 palette indices (0..15) covering the
-/// FT8 audio band 200..2700 Hz at ~18.5 Hz/screen-column.
-pub type WfLine = [u8; 135];
+/// Single waterfall row — [`WF_COLS`] palette indices (0..15) covering
+/// the FT8 audio band 200..2700 Hz, ~10.4 Hz per column at 240.
+/// Must match `embedded_shared::pipeline::WF_ROW_LEN`. The two crates
+/// do not depend on each other, so this is a hand-kept pair; the
+/// producer's `decimate_pair_to_wf` fills exactly this many columns.
+pub const WF_COLS: usize = 240;
+pub type WfLine = [u8; WF_COLS];
 
 /// Waterfall depth — 100 rows fits the on-screen 100 px region; with
 /// 1 row per FT8 slot that's ~25 min of band history.

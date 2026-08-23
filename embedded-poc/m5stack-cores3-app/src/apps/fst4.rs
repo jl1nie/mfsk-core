@@ -93,7 +93,9 @@ use embedded_shared::fst4_monitor::{
 };
 use mfsk_app_shared::settings;
 use mfsk_app_shared::{http_config, ntp, udp_log};
+use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::ui::fst4_list::{self, Fst4SpotRow, Fst4UiState};
+use mfsk_app_shared::ui::mode_picker;
 
 
 /// The same baked golden slot `fst4-ddc-bench` runs — raw `i16` little
@@ -392,6 +394,7 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
         i2c0: peripherals.i2c0,
         spi2: peripherals.spi2,
         pins: peripherals.pins,
+        nvs: nvs.clone(),
     });
     log_heap("post-display-spawn");
 
@@ -805,6 +808,9 @@ struct DisplayCtx {
     i2c0: esp_idf_hal::i2c::I2C0<'static>,
     spi2: esp_idf_hal::spi::SPI2<'static>,
     pins: esp_idf_hal::gpio::Pins,
+    /// For `boot_mode::write` when the mode picker commits. Same
+    /// `"mfsk"` namespace `settings` uses, so one handle serves both.
+    nvs: Arc<Mutex<EspNvs<NvsDefault>>>,
 }
 
 extern "C" fn display_task_entry(arg: *mut core::ffi::c_void) {
@@ -833,6 +839,9 @@ fn spawn_display_task(ctx: DisplayCtx) {
 }
 
 fn display_loop(ctx: DisplayCtx) -> ! {
+    // Kept across the whole loop: the touch controller shares this bus
+    // and the mode picker is this receiver's only way back out.
+    let mut touch_i2c: Option<esp_idf_hal::i2c::I2cDriver<'static>> = None;
     let mut display = match crate::pmic::init(ctx.i2c0, ctx.pins.gpio12, ctx.pins.gpio11) {
         Ok(mut i2c) => {
             // VBUS boost before the USB host driver, or the host stack
@@ -840,7 +849,9 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
                 log::error!("BUS_OUT_EN failed: {e:#}");
             }
-            drop(i2c);
+            // The bus is kept, not dropped: the FT5x06 is on it, and
+            // the mode picker is the only way out of this receiver.
+            touch_i2c = Some(i2c);
 
             // Installing the USB host driver **detaches
             // USB-Serial-JTAG**, i.e. the serial console, the moment it
@@ -930,9 +941,45 @@ fn display_loop(ctx: DisplayCtx) -> ! {
         }
     }
 
+    // Mode picker: held open, so it costs no layout. Centred on this
+    // 320x240 panel.
+    let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
+    let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
+        (crate::board::LCD_WIDTH as i32 - mode_picker::WIDTH as i32) / 2,
+        (crate::board::LCD_HEIGHT as i32 - mode_picker::height() as i32) / 2,
+    ));
+
     let mut last_dirty = u32::MAX;
     let mut tick: u32 = 0;
     loop {
+        // The way out of this receiver. Hold anywhere to open it.
+        if let (Some(int), Some(i2c)) = (touch_int.as_ref(), touch_i2c.as_mut()) {
+            let c = if int.is_low() {
+                crate::touch::read(i2c).unwrap_or_default()
+            } else {
+                crate::touch::Contact::default()
+            };
+            if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                match ctx.nvs.lock() {
+                    Ok(nvs) => {
+                        if let Err(e) = boot_mode::write(&nvs, target) {
+                            log::error!("boot_mode write failed: {e} — not restarting");
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(400));
+                            // SAFETY: no arguments, does not return.
+                            unsafe { esp_idf_svc::sys::esp_restart() };
+                        }
+                    }
+                    Err(e) => log::error!("boot_mode NVS lock poisoned: {e}"),
+                }
+            }
+            picker.render(&mut display, BootMode::Fst4).ok();
+            if picker.take_just_closed() {
+                last_dirty = u32::MAX;
+            }
+        }
+
         let heap_kb = (unsafe { esp_idf_svc::sys::esp_get_free_heap_size() } / 1024) as u32;
         let hhmmss = current_hhmmss();
         let dirty = {

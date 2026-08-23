@@ -29,7 +29,9 @@ use crate::ui::state::{WfLine, WF_DEPTH};
 
 pub const ORIGIN_Y: i32 = 14;
 pub const HEIGHT: u32 = 100;
-pub const WIDTH: u32 = 135;
+/// Full row width. Narrow panels pass a smaller `width` to
+/// [`render`] and get the leading columns.
+pub const WIDTH: u32 = crate::ui::state::WF_COLS as u32;
 pub const WF_FREQ_LO_HZ: f32 = 200.0;
 pub const WF_FREQ_HI_HZ: f32 = 2700.0;
 
@@ -58,9 +60,9 @@ const PALETTE: [Rgb565; 16] = [
 /// last). Lines beyond `WF_DEPTH` are ignored. Top rows are filled
 /// with palette[0] (black) when fewer than `WF_DEPTH` slots have
 /// arrived. Caller gates by `UiState::dirty_seq` — single
-/// `fill_contiguous` over the whole 135 × 100 region so the SPI
+/// `fill_contiguous` over the whole `width` × 100 region so the SPI
 /// driver issues one CASET/RASET/RAMWR.
-pub fn render<D>(display: &mut D, lines: &[&WfLine]) -> Result<(), D::Error>
+pub fn render<D>(display: &mut D, lines: &[&WfLine], width: u32) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -69,19 +71,22 @@ where
     let take = &lines[lines.len() - n..];
 
     // Stream pixels top-to-bottom, left-to-right. The first
-    // `blank_rows × WIDTH` pixels are palette[0]; the rest are
+    // `blank_rows × width` pixels are palette[0]; the rest are
     // unpacked from the supplied lines.
-    let rect = Rectangle::new(Point::new(0, ORIGIN_Y), Size::new(WIDTH, HEIGHT));
+    // `width` rather than `WIDTH`: the row carries the production
+    // panel's 240 columns and a 135 px board draws the leading ones.
+    let width = width.min(WIDTH);
+    let rect = Rectangle::new(Point::new(0, ORIGIN_Y), Size::new(width, HEIGHT));
     let pixels = (0..HEIGHT as usize).flat_map(|row| {
         let row_pixels: &[u8] = if row < blank_rows {
             &[][..]
         } else {
             &take[row - blank_rows][..]
         };
-        // For a blank row return a 135-long zero stream; otherwise
+        // For a blank row return a zero stream; otherwise
         // map each palette index to its RGB565 colour.
         let blank = row < blank_rows;
-        (0..WIDTH as usize).map(move |col| {
+        (0..width as usize).map(move |col| {
             let idx = if blank { 0 } else { row_pixels[col] & 0x0F };
             PALETTE[idx as usize]
         })

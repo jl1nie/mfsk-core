@@ -254,19 +254,19 @@ pub fn run_log_panel(
             decoded_fp = (decoded_snapshot.len(), max_seq);
         }
 
-        status_bar::render(&mut display, &status_snapshot).ok();
+        status_bar::render(&mut display, &status_snapshot, 240).ok();
 
         if wf_seq != last_wf_seq {
             let wf_refs: heapless::Vec<
                 &mfsk_app_shared::ui::state::WfLine,
                 { mfsk_app_shared::ui::state::WF_DEPTH },
             > = wf_snapshot.iter().collect();
-            waterfall::render(&mut display, &wf_refs).ok();
+            waterfall::render(&mut display, &wf_refs, 240).ok();
             last_wf_seq = wf_seq;
         }
 
         if decoded_fp != last_decoded_fp {
-            decoded_list::render(&mut display, &decoded_snapshot).ok();
+            decoded_list::render(&mut display, &decoded_snapshot, 240).ok();
             last_decoded_fp = decoded_fp;
         }
 

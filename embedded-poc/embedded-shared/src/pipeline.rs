@@ -225,7 +225,17 @@ impl Slot {
 /// without blocking stage1_inc; if the consumer never drains, the
 /// queue saturates and the next emit is dropped (no back-pressure on
 /// the audio path).
-pub const WF_ROW_LEN: usize = 135;
+/// Waterfall columns per row.
+///
+/// 240, the width of the CoreS3 panel in the portrait orientation the
+/// three receivers use. Was 135, the M5StickS3 panel — the only board
+/// that still wants that is a demo one (StickS3 has no USB audio and
+/// Core2 has no USB peripheral at all), so the shared row is sized for
+/// the production target and narrow panels render a prefix of it.
+///
+/// `decimate_pair_to_wf` derives each column's frequency span from
+/// this, so changing it re-bins correctly with no other edit.
+pub const WF_ROW_LEN: usize = 240;
 pub struct WfTick {
     pub pair_idx: u8,
     pub row: [u8; WF_ROW_LEN],

@@ -30,8 +30,10 @@ pub const ROW_PX: u32 = 16;
 pub const ROWS: usize = (HEIGHT / ROW_PX) as usize;
 /// FONT_6X10 char width.
 pub const CHAR_W: u32 = 6;
-/// Max characters per row at 135 px width.
-const ROW_CHARS: usize = (135 / CHAR_W) as usize;
+/// Max characters a row can hold, at the widest panel this renders
+/// on. Callers pass their own width; this only sizes the buffer.
+pub const MAX_ROW_CHARS: usize = (crate::ui::state::WF_COLS as u32 / CHAR_W) as usize;
+const ROW_CHARS: usize = MAX_ROW_CHARS;
 
 /// Clear + repaint the decoded list. Idempotent — caller gates by
 /// `UiState::dirty_seq`. Rows whose **first** observation lands in
@@ -47,7 +49,7 @@ const ROW_CHARS: usize = (135 / CHAR_W) as usize;
 /// 135 = 2 160 px), and each glyph cell carries `background_color`
 /// so no separate wipe is needed — eliminates the 100 ms-cadence
 /// flicker the full-region clear was causing.
-pub fn render<D>(display: &mut D, rows: &[DecodedRow]) -> Result<(), D::Error>
+pub fn render<D>(display: &mut D, rows: &[DecodedRow], width: u32) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -55,7 +57,7 @@ where
     // rows" (legacy semantic). Newer callers pass an explicit
     // `latest_slot_seq` via `render_with_cursor` so rows go back to
     // white when no new decode arrives.
-    render_with_cursor(display, rows, None, None)
+    render_with_cursor(display, rows, None, None, width)
 }
 
 /// Phase 1.7.2: render variant that overlays a cursor on the
@@ -71,6 +73,9 @@ pub fn render_with_cursor<D>(
     rows: &[DecodedRow],
     selected_idx: Option<u8>,
     latest_slot_seq: Option<u32>,
+    // Panel width in pixels. The row buffer is sized for the widest
+    // panel; this is how much of it actually gets painted.
+    width: u32,
 ) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
@@ -131,7 +136,7 @@ where
         // (135 × 16 = 2160 px) — well under the flicker threshold.
         // Background is always black now; distinction is text-color
         // only.
-        Rectangle::new(Point::new(0, y), Size::new(135, ROW_PX))
+        Rectangle::new(Point::new(0, y), Size::new(width, ROW_PX))
             .into_styled(PrimitiveStyle::with_fill(bg))
             .draw(display)?;
 
@@ -154,7 +159,7 @@ where
     if drawn < ROWS {
         let blank_y = ORIGIN_Y + (drawn as i32) * ROW_PX as i32;
         let blank_h = ((ROWS - drawn) as u32) * ROW_PX;
-        Rectangle::new(Point::new(0, blank_y), Size::new(135, blank_h))
+        Rectangle::new(Point::new(0, blank_y), Size::new(width, blank_h))
             .into_styled(PrimitiveStyle::with_fill(bg))
             .draw(display)?;
     }

@@ -29,17 +29,28 @@ use esp_idf_hal::{
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI2},
     units::FromValueType,
 };
-use mipidsi::{models::ILI9342CRgb565, options::ColorInversion, Builder};
+use mipidsi::{
+    models::ILI9342CRgb565,
+    options::{ColorInversion, Orientation, Rotation},
+    Builder,
+};
 
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
 use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::log_sink::LogFanout;
-use mfsk_app_shared::ui::{decoded_list, state::UI, status_bar, waterfall};
+use mfsk_app_shared::ui::{decoded_list, mode_picker, state::UI, status_bar, waterfall};
 
 const TX_REGION_Y: i32 = 226;
 const TX_REGION_H: u32 = 14;
-const SHARED_UI_WIDTH: u32 = 135;
+/// Panel width in the portrait orientation the three receivers share.
+///
+/// The FT8 controller used to run this panel unrotated (320x240) and
+/// draw the shared widgets into the top-left 135x240 corner, because
+/// those widgets were sized for the M5StickS3. WSPR and FST4 already
+/// rotated to 240x320 and used all of it; this now matches them.
+const PANEL_W: u32 = 240;
+const SHARED_UI_WIDTH: u32 = PANEL_W;
 
 /// Where the USB status line lives: to the right of the 135 px-wide
 /// shared widgets, which leaves the rest of this 320 px panel unused.
@@ -49,38 +60,6 @@ const USB_REGION_Y: i32 = 2;
 /// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
 const USB_PANEL_LINES: usize = 10;
 
-/// Mode buttons, under the USB panel.
-///
-/// The panel occupies y=2..122 (10 lines at 12 px), the shared widgets
-/// own the left 135 px, so this column is free below that.
-const MODE_X: i32 = 140;
-const MODE_W: u32 = 176;
-const MODE_H: u32 = 24;
-const MODE_Y0: i32 = 134;
-const MODE_PITCH: i32 = 26;
-
-/// What this binary can boot into, in the order they are drawn.
-const MODE_BTNS: [(BootMode, &str); 4] = [
-    (BootMode::Uac, "FT8 / UAC"),
-    (BootMode::Wspr, "WSPR"),
-    (BootMode::Fst4, "FST4"),
-    (BootMode::Decode, "DECODE (wav)"),
-];
-
-/// How long a first tap stays armed.
-const MODE_ARM_MS: u64 = 4_000;
-
-/// Which button, if any, a touch landed on.
-fn mode_hit(x: u16, y: u16) -> Option<usize> {
-    let (x, y) = (x as i32, y as i32);
-    if x < MODE_X || x >= MODE_X + MODE_W as i32 {
-        return None;
-    }
-    (0..MODE_BTNS.len()).find(|&i| {
-        let top = MODE_Y0 + i as i32 * MODE_PITCH;
-        y >= top && y < top + MODE_H as i32
-    })
-}
 const USB_PANEL_PITCH: i32 = 12;
 
 /// How long the boot waits before installing the USB host driver.
@@ -270,6 +249,9 @@ pub fn run_log_panel(
     let mut delay = Ets;
     let mut display = match Builder::new(ILI9342CRgb565, di)
         .display_size(320, 240)
+        // Same rotation `wspr_app` and `fst4_app` use, so all three
+        // receivers present the same 240x320 canvas.
+        .orientation(Orientation::new().rotate(Rotation::Deg90))
         .invert_colors(ColorInversion::Inverted) // M5GFX CoreS3: cfg.invert = true
         .init(&mut delay)
     {
@@ -489,12 +471,11 @@ pub fn run_log_panel(
     let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
         heapless::Vec::new();
     let mut last_touch = crate::touch::Contact::default();
-    // Which mode button is armed, and when it was armed. A first tap
-    // arms; a second on the same button commits. Without that, one
-    // stray touch during a capture session reboots the receiver.
-    let mut mode_armed: Option<(usize, std::time::Instant)> = None;
-    let mut mode_drawn: Option<usize> = None;
-    let mut mode_needs_draw = true;
+    // The way back out of this mode, shared with the other two
+    // receivers so switching is not a one-way trip. Sits under the USB
+    // panel (which ends at y=122); the shared widgets own the left
+    // 135 px.
+    let mut picker = mode_picker::ModePicker::new(Point::new(140, 134));
     let mut touch_read_failed = false;
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
@@ -590,19 +571,19 @@ pub fn run_log_panel(
             decoded_fp = (decoded_snapshot.len(), max_seq);
         }
 
-        status_bar::render(&mut display, &status_snapshot).ok();
+        status_bar::render(&mut display, &status_snapshot, PANEL_W).ok();
 
         if wf_seq != last_wf_seq {
             let wf_refs: heapless::Vec<
                 &mfsk_app_shared::ui::state::WfLine,
                 { mfsk_app_shared::ui::state::WF_DEPTH },
             > = wf_snapshot.iter().collect();
-            waterfall::render(&mut display, &wf_refs).ok();
+            waterfall::render(&mut display, &wf_refs, PANEL_W).ok();
             last_wf_seq = wf_seq;
         }
 
         if decoded_fp != last_decoded_fp {
-            decoded_list::render(&mut display, &decoded_snapshot).ok();
+            decoded_list::render(&mut display, &decoded_snapshot, PANEL_W).ok();
             last_decoded_fp = decoded_fp;
         }
 
@@ -807,38 +788,18 @@ pub fn run_log_panel(
                             }
                             last_touch = c;
                         }
-                        // A press edge is what selects a mode; holding
-                        // does nothing more.
-                        if c.points > 0 && last_touch_points == 0 {
-                            if let Some(hit) = mode_hit(c.x, c.y) {
-                                let now = std::time::Instant::now();
-                                let commit = matches!(mode_armed, Some((armed, at))
-                                    if armed == hit
-                                        && now.duration_since(at).as_millis() as u64
-                                            <= MODE_ARM_MS);
-                                if commit {
-                                    let (target, label) = MODE_BTNS[hit];
-                                    log::warn!(
-                                        "boot_mode -> {} (touch), restarting",
-                                        target.label()
-                                    );
-                                    let _ = label;
-                                    if let Err(e) = boot_mode::write(&nvs, target) {
-                                        log::error!("boot_mode write failed: {e} — not restarting");
-                                        mode_armed = None;
-                                        mode_needs_draw = true;
-                                    } else {
-                                        // Let the line reach the log sink; in
-                                        // UAC mode that is the only channel.
-                                        std::thread::sleep(
-                                            std::time::Duration::from_millis(400),
-                                        );
-                                        // SAFETY: no arguments, does not return.
-                                        unsafe { esp_idf_svc::sys::esp_restart() };
-                                    }
+                        let _ = last_touch_points;
+                        {
+                            if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
+                                log::warn!("boot_mode -> {} (touch), restarting", target.label());
+                                if let Err(e) = boot_mode::write(&nvs, target) {
+                                    log::error!("boot_mode write failed: {e} — not restarting");
                                 } else {
-                                    mode_armed = Some((hit, now));
-                                    mode_needs_draw = true;
+                                    // Let the line reach the log sink; in
+                                    // UAC mode that is the only channel.
+                                    std::thread::sleep(std::time::Duration::from_millis(400));
+                                    // SAFETY: no arguments, does not return.
+                                    unsafe { esp_idf_svc::sys::esp_restart() };
                                 }
                             }
                         }
@@ -858,52 +819,18 @@ pub fn run_log_panel(
             last_touch = crate::touch::Contact::default();
         }
 
-        // The mode buttons. Redrawn only when the armed one changes,
-        // and the arming lapses on its own after `MODE_ARM_MS`.
-        if let Some((_, at)) = mode_armed {
-            if at.elapsed().as_millis() as u64 > MODE_ARM_MS {
-                mode_armed = None;
-                mode_needs_draw = true;
-            }
+        // With no finger down the picker still needs a frame to let an
+        // arming lapse and to notice a release.
+        if last_touch.points == 0 {
+            let _ = picker.update(false, 0, 0);
         }
-        let armed_idx = mode_armed.map(|(i, _)| i);
-        if mode_needs_draw || mode_drawn != armed_idx {
-            for (i, (target, label)) in MODE_BTNS.iter().enumerate() {
-                let top = MODE_Y0 + i as i32 * MODE_PITCH;
-                let armed = armed_idx == Some(i);
-                // Green when armed — the same green `decoded_list`
-                // uses for "this slot", and the only colour on this
-                // panel whose rendering is confirmed. The mode this
-                // boot is running gets a lighter frame so the screen
-                // says where it already is.
-                let (bg, fg) = if armed {
-                    (Rgb565::GREEN, Rgb565::BLACK)
-                } else if *target == mode {
-                    (Rgb565::new(0, 8, 0), Rgb565::WHITE)
-                } else {
-                    (Rgb565::BLACK, Rgb565::WHITE)
-                };
-                Rectangle::new(Point::new(MODE_X, top), Size::new(MODE_W, MODE_H))
-                    .into_styled(PrimitiveStyle::with_fill(bg))
-                    .draw(&mut display)
-                    .ok();
-                let style = MonoTextStyleBuilder::new()
-                    .font(&FONT_6X10)
-                    .text_color(fg)
-                    .background_color(bg)
-                    .build();
-                let text = if armed { "tap again" } else { label };
-                Text::with_baseline(
-                    text,
-                    Point::new(MODE_X + 6, top + 7),
-                    style,
-                    Baseline::Top,
-                )
-                .draw(&mut display)
-                .ok();
-            }
-            mode_drawn = armed_idx;
-            mode_needs_draw = false;
+        picker.render(&mut display, mode).ok();
+        if picker.take_just_closed() {
+            // The overlay covered the panel; force everything back.
+            last_usb_panel.clear();
+            last_wf_seq = u32::MAX;
+            last_decoded_fp = (usize::MAX, u32::MAX);
+            last_tx_seq = last_tx_seq.wrapping_add(1);
         }
 
         let _ = fanout;

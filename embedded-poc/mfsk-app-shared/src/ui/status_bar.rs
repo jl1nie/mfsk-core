@@ -27,7 +27,7 @@ use crate::ui::state::StatusInfo;
 pub const ORIGIN_Y: i32 = 0;
 pub const HEIGHT: u32 = 14;
 
-pub fn render<D>(display: &mut D, status: &StatusInfo) -> Result<(), D::Error>
+pub fn render<D>(display: &mut D, status: &StatusInfo, width: u32) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -81,10 +81,16 @@ where
     let visible = &visible[..visible.len().min(22)];
 
     Text::with_baseline(visible, Point::new(1, 2), style, Baseline::Top).draw(display)?;
-    // Tail-paint the 3 px right margin so the bar background covers
-    // the full panel width (132..135).
-    Rectangle::new(Point::new(132, ORIGIN_Y), Size::new(3, HEIGHT))
+    // Tail-paint whatever the 22-char line does not cover, so the bar
+    // background reaches the right edge on any panel width.
+    let text_px = 22 * 6 + 1;
+    if width > text_px {
+        Rectangle::new(
+            Point::new(text_px as i32, ORIGIN_Y),
+            Size::new(width - text_px, HEIGHT),
+        )
         .into_styled(PrimitiveStyle::with_fill(bg))
         .draw(display)?;
+    }
     Ok(())
 }
