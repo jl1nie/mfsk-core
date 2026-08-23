@@ -76,11 +76,21 @@ impl UsbLink {
         matches!(self, UsbLink::NoHost | UsbLink::Error)
     }
 
+    /// One six-character state name, same case, same width, for every
+    /// state.
+    ///
+    /// They used to be `chg`, `no dev`, `NOHOST`, `STREAM`, `ERROR ` —
+    /// three casings and two naming styles across five values on one
+    /// line, which reads as unrelated fields rather than one state
+    /// machine. Fixed width also keeps everything to the right of it
+    /// from shifting as the state changes.
     fn label(self) -> &'static str {
         match self {
-            UsbLink::Peripheral => "chg   ",
+            // Not "IDLE": the board is doing something useful, and the
+            // battery volts two fields along are the reason to care.
+            UsbLink::Peripheral => "CHARGE",
             UsbLink::NoHost => "NOHOST",
-            UsbLink::Waiting => "no dev",
+            UsbLink::Waiting => "NODEV ",
             UsbLink::Streaming => "STREAM",
             UsbLink::Error => "ERROR ",
         }
