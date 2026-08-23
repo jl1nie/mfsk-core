@@ -130,6 +130,19 @@ esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys.git" }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 
+[features]
+# Baked audio fixtures, off by default.
+#
+# A receiver that takes audio from a radio never reads either of these,
+# and together they are 1.7 MB of flash. They exist so the decode paths
+# can be exercised on a desk with no radio attached — and, until #163
+# cleared, that was the only way to exercise them at all. Turning them
+# on also changes what the screen shows: replayed and fabricated
+# stations land on the spot list looking exactly like received ones,
+# which is why the default is off rather than merely unread.
+fst4-replay = []
+wspr-golden = []
+
 [dependencies]
 log = "0.4"
 anyhow = "1"

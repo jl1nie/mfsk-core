@@ -138,7 +138,13 @@ use mfsk_app_shared::ui::wspr_state::WSPR_UI;
 use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 use mfsk_app_shared::{http_config, ntp, udp_log};
 
+/// Linked in only for the synthetic/bench build. 360 KB of flash that a
+/// receiver taking audio from a radio never reads.
+#[cfg(feature = "wspr-golden")]
 const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseband.bin");
+#[cfg(not(feature = "wspr-golden"))]
+#[allow(dead_code)]
+const GOLDEN_BASEBAND: &[u8] = &[];
 
 
 
@@ -1153,12 +1159,17 @@ fn scan_loop(ctx: ScanCtx) -> ! {
     // reasoning `wspr-bench` documents for its own manually-placed
     // buffers, just without the manual `heap_caps_malloc` call since
     // this app isn't choosing between SRAM/PSRAM on purpose.
-    {
-        let mut idat = vec![0.0f32; NBB];
-        let mut qdat = vec![0.0f32; NBB];
-        load_baseband(GOLDEN_BASEBAND, &mut idat, &mut qdat);
-        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)", false, "golden");
-    }
+    // The baked golden slot is no longer decoded at startup.
+    //
+    // It put nine real callsigns from a 2008 WSJT-X recording on the
+    // spot list within seconds of boot, indistinguishable on screen
+    // from anything the antenna had heard. Useful while the receiver
+    // had no way to get real audio; actively misleading now that it
+    // does. A receiver with nothing to hear should say so.
+    //
+    // `GOLDEN_BASEBAND` stays in the image: `wspr-bench` decodes it,
+    // and it is the only fixture that exercises this path without a
+    // radio.
 
     let mut slot_num = 1u32;
     loop {
@@ -1343,6 +1354,15 @@ fn spawn_ddc_task() {
 /// it lands in internal DRAM automatically — no manual placement
 /// needed here at all, unlike the old `DdcBufs`/`new_in` API this
 /// replaces.
+/// Whether to fabricate a slot's audio when no radio is attached.
+///
+/// **Off by default.** Build with `MFSK_WSPR_SYNTH=1` for bench work
+/// without a radio; the generator is the only way to exercise the DDC
+/// and decode path end to end on a desk. On a receiver it produces
+/// `DDC_TEST_CALL` every two minutes forever, on a spot list where it
+/// is indistinguishable from something the antenna heard.
+const SYNTHETIC_AUDIO: bool = option_env!("MFSK_WSPR_SYNTH").is_some();
+
 fn ddc_loop() -> ! {
     while !SCAN_GO.load(Ordering::Acquire) {
         FreeRtos::delay_ms(200);
@@ -1363,7 +1383,19 @@ fn ddc_loop() -> ! {
         // rather than exit, in case a future generation-counter fix
         // ever wants this task back; today it simply never wakes up
         // again once real audio starts.
-        if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) {
+        // Wait for a radio rather than inventing one.
+        //
+        // This used to fabricate a `DDC_TEST_CALL` burst every slot
+        // whenever no real audio was arriving, and the decoder — which
+        // cannot tell — put `K1ABC` on the spot list every two minutes,
+        // forever. Asked at the bench whether that was a real decode,
+        // the honest answer took a code read. The generator existed
+        // because the receiver was written before it could get audio
+        // from a radio (#163); it can now, and a fabricated station on
+        // a spot list is worse than an empty one.
+        //
+        // `build_ddc_test_track` stays for `wspr-bench`.
+        if !SYNTHETIC_AUDIO || UAC_AUDIO_ACTIVE.load(Ordering::Acquire) {
             FreeRtos::delay_ms(1000);
             continue;
         }

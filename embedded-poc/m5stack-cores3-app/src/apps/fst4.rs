@@ -102,7 +102,19 @@ use mfsk_app_shared::ui::{link_bar, mode_picker};
 /// endian at 12 kHz, byte-wise rather than transmuted (1-byte
 /// `include_bytes!` alignment faults an unaligned `i16` load on
 /// Xtensa).
+/// Whether to replay a baked slot when no radio is attached.
+///
+/// **Off by default**, and the 1.4 MB of samples are not linked in when
+/// it is off. Build with `MFSK_FST4_REPLAY=1` for bench work without a
+/// radio. On a receiver the replay decodes the same stations from a
+/// recording every slot, on a screen where nothing distinguishes them
+/// from something the antenna heard.
+const REPLAY_GOLDEN: bool = option_env!("MFSK_FST4_REPLAY").is_some();
+
+#[cfg(feature = "fst4-replay")]
 const GOLDEN_AUDIO: &[u8] = include_bytes!("../../../assets/fst4_60_golden_audio.bin");
+#[cfg(not(feature = "fst4-replay"))]
+const GOLDEN_AUDIO: &[u8] = &[];
 
 
 
@@ -569,6 +581,11 @@ fn capture_loop() -> ! {
                 cap.push_i16(&staged);
                 t_compute += now_us() - t;
                 fed += staged.len();
+            } else if !REPLAY_GOLDEN || GOLDEN_AUDIO.is_empty() {
+                // No radio and no replay: wait, rather than decode a
+                // recording onto a live spot list.
+                esp_idf_svc::hal::delay::FreeRtos::delay_ms(200);
+                continue;
             } else {
                 let take = REPLAY_BLOCK.min(SLOT_SAMPLES_12K - fed);
                 let samples = GOLDEN_AUDIO.len() / 2;
