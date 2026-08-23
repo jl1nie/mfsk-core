@@ -58,6 +58,14 @@ const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
 const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
 const BOOT_MODE_DEFAULT: &str = env!("BOOT_MODE_DEFAULT");
 
+/// SNTP server for the FT8 controller. WSPR and FST4 take theirs from
+/// NVS settings, which this app has no page for; `pool.ntp.org` is what
+/// their own default is.
+const NTP_SERVER: &str = "pool.ntp.org";
+/// Long enough for a first sync over WiFi, short enough that a boot
+/// with no route still reaches the decode loop.
+const NTP_SYNC_TIMEOUT_MS: u32 = 20_000;
+
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
     LOGGER.install();
@@ -268,8 +276,54 @@ fn main() -> ! {
                         if !installed {
                             log::error!("UDP log sink never installed — board will be silent");
                         }
-                        // `handle`'s `Drop` tears the association down,
-                        // so this thread has to hold it forever.
+
+                        // NTP, which the FT8 controller has never
+                        // started and cannot decode reliably without.
+                        //
+                        // `Ft8ChunkSink` anchors its 15 s slot grid
+                        // with `time_sync::samples_to_next_slot_12k`,
+                        // and that returns `None` until the system
+                        // clock is plausible — which only NTP makes it.
+                        // Unanchored, the grid free-runs from whenever
+                        // the first USB sample arrived, at a phase
+                        // uniform over 15 s, against a mode that
+                        // tolerates ±2.5 s: about a one-in-three chance
+                        // of decoding anything at all, per boot.
+                        //
+                        // Measured 2026-08-23 against a real antenna:
+                        // audio at -26 dBFS, thirty candidates a slot,
+                        // `dec=0` every slot. `slot grid anchored to
+                        // UTC` appears exactly once in an evening of
+                        // logs — on the one boot that followed a soft
+                        // restart out of FST4, which runs NTP, and
+                        // whose clock survives `esp_restart` but not
+                        // the power-on reset the button performs.
+                        //
+                        // WSPR and FST4 have done this since they were
+                        // written. `time_sync`'s own doc comment says
+                        // "NTP is already in every app that has WiFi";
+                        // this was the app where that was not true.
+                        let _sntp = match mfsk_app_shared::ntp::start(NTP_SERVER) {
+                            Ok(sntp) => {
+                                if mfsk_app_shared::ntp::wait_synced(&sntp, NTP_SYNC_TIMEOUT_MS) {
+                                    log::info!("NTP synced — FT8 slot grid can anchor to UTC");
+                                } else {
+                                    log::warn!(
+                                        "NTP never synced in {NTP_SYNC_TIMEOUT_MS} ms — the slot \
+                                         grid stays free-running and decodes are unlikely"
+                                    );
+                                }
+                                Some(sntp)
+                            }
+                            Err(e) => {
+                                log::warn!("NTP start failed: {e:#} — slot grid free-running");
+                                None
+                            }
+                        };
+
+                        // `handle`'s `Drop` tears the association down
+                        // and `_sntp`'s stops the periodic re-sync, so
+                        // this thread has to hold both forever.
                         loop {
                             std::thread::sleep(std::time::Duration::from_secs(60));
                         }
