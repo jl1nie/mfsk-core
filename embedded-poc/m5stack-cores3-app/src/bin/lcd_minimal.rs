@@ -20,6 +20,10 @@
 mod board;
 #[path = "../pmic.rs"]
 mod pmic;
+// `pmic::init` reads the RTC to set the system clock. This bin has no
+// use for the time, but it shares the driver.
+#[path = "../rtc.rs"]
+mod rtc;
 
 use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyleBuilder};
 use embedded_graphics::pixelcolor::Rgb565;

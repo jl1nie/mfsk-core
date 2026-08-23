@@ -273,6 +273,17 @@ pub fn init<'d>(i2c0: I2C0<'d>, sda: Gpio12<'d>, scl: Gpio11<'d>) -> Result<I2cD
     // when the on-board codecs are wanted. It is not free, so it is the
     // caller's call and not something `init` does on every boot.
 
+    // The clock, before anything asks for the time.
+    //
+    // Here rather than in each receiver because all three call this and
+    // all three need it: every one of them anchors a slot grid to UTC,
+    // and none of them decode without one. Costs a 7-byte read on a bus
+    // this function already owns, and it happens seconds before WiFi
+    // exists — which is the point, since NTP is not available on a boot
+    // out of range and never survives the power-on reset the button
+    // performs.
+    let _ = crate::rtc::read_into_system_clock(&mut i2c);
+
     Ok(i2c)
 }
 

@@ -987,6 +987,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     // 320x240 panel.
     let touch_int = PinDriver::input(ctx.pins.gpio21, esp_idf_hal::gpio::Pull::Up).ok();
     let mut boot_summary_sent = false;
+    let mut rtc_stored = false;
     let mut last_contact = crate::touch::Contact::default();
     let mut picker = mode_picker::ModePicker::new(embedded_graphics::prelude::Point::new(
         (crate::board::CANVAS_W as i32 - mode_picker::WIDTH as i32) / 2,
@@ -1055,6 +1056,15 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // recently.
             if let Some(i2c) = touch_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
+                // Store the clock once it becomes real, so the next
+                // boot has one before WiFi does. NTP is what makes it
+                // real; this is what makes it survive a power cycle.
+                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                    rtc_stored = true;
+                    if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
+                        log::warn!("rtc: could not store the clock: {e:#}");
+                    }
+                }
                 // Once, the first frame after a log sink exists. In
                 // host mode there is no serial console, and everything
                 // this reports is printed seconds before WiFi

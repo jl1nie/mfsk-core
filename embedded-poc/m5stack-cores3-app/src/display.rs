@@ -507,6 +507,7 @@ pub fn run_log_panel(
 
     let mut tick: u32 = 0;
     let mut boot_summary_sent = false;
+    let mut rtc_stored = false;
 
     // The two render snapshots live on the heap, allocated once.
     //
@@ -577,6 +578,15 @@ pub fn run_log_panel(
         if tick % 12 == 0 {
             if let Some(i2c) = pmic_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
+                // Store the clock once it becomes real, so the next
+                // boot has one before WiFi does. NTP is what makes it
+                // real; this is what makes it survive a power cycle.
+                if !rtc_stored && mfsk_app_shared::time_sync::utc_now_ms().is_some() {
+                    rtc_stored = true;
+                    if let Err(e) = crate::rtc::write_from_system_clock(i2c) {
+                        log::warn!("rtc: could not store the clock: {e:#}");
+                    }
+                }
                 // Once, the first frame after a sink exists to receive
                 // it. In host mode this is the only record there will
                 // ever be of how the boot went.

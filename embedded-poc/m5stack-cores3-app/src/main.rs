@@ -17,6 +17,7 @@ mod display;
 mod esp_log_bridge;
 mod log_slot;
 mod pmic;
+mod rtc;
 mod touch;
 mod uac;
 
