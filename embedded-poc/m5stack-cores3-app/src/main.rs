@@ -103,33 +103,38 @@ fn main() -> ! {
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());
 
-    // WiFi is a debug channel here, not a feature — and in UAC host
-    // mode it is an expensive one.
+    // WiFi is not a debug channel. It carries NTP, the HTTP config
+    // UI and QSO log upload, and an FST4/WSPR beacon needs all three
+    // while the radio is attached — so "host mode" and "networked"
+    // are not alternatives.
     //
-    // Internal DMA-capable DRAM is the scarce resource on this board
-    // once a radio is attached: the host stack, three enumerated USB
-    // devices, the isochronous audio buffer, lwIP and the WiFi driver
-    // all want the same memory, and every one of them aborts rather
-    // than degrades when it cannot get it. With audio running there
-    // was ~22 KB left, and crashes landed in whichever subsystem
-    // allocated next — `esf_buf_alloc_dynamic`, `pbuf_alloc`,
-    // `uac_host_interface_claim_and_prepare_transfer`, and finally
-    // `UdpSocket::bind` inside the log sink itself.
+    // They were treated as alternatives for one night. Bringing WiFi
+    // up costs ~105 KB of internal DRAM, the USB host stack another
+    // 14 KB, and with a display loop quietly overflowing its stack
+    // into the heap on top of that, the board aborted in whichever
+    // subsystem allocated next. Turning WiFi off made the crashes
+    // stop, which looked like a diagnosis and was not: the overflow
+    // was the bug (see `display::run_log_panel`), and once it was
+    // fixed the budget was never the problem. Measured 2026-08-23
+    // with a radio streaming and WiFi associated: 73 KB of internal
+    // DRAM still free, no allocation failures, audio at full rate.
     //
-    // The product path is radio -> decode -> LCD, which needs none of
-    // it. `MFSK_CORES3_UAC_WIFI=1` puts it back for a debugging
-    // session, at the cost of that headroom. Refs #163.
-    const UAC_WIFI: bool = option_env!("MFSK_CORES3_UAC_WIFI").is_some();
-    let needs_wifi = match mode {
-        boot_mode::BootMode::Wifi => true,
-        boot_mode::BootMode::Uac => UAC_WIFI,
-        _ => false,
-    };
+    // WiFi buffers were also sized down for this workload — see
+    // `sdkconfig.defaults`. Refs #163.
+    let needs_wifi = matches!(
+        mode,
+        boot_mode::BootMode::Wifi | boot_mode::BootMode::Uac
+    );
     WIFI_ENABLED.store(needs_wifi, std::sync::atomic::Ordering::Release);
-    if mode == boot_mode::BootMode::Uac && !UAC_WIFI {
+    if needs_wifi && WIFI_SSID.is_empty() {
         log::warn!(
-            "UAC host mode: WiFi stays off so the audio path keeps its internal DRAM. \
-             Build with MFSK_CORES3_UAC_WIFI=1 to get the UDP log back."
+            "boot_mode={} but WIFI_SSID empty (no cfg.toml) — UDP log unavailable{}",
+            mode.label(),
+            if mode == boot_mode::BootMode::Uac {
+                "; serial console also gone in UAC mode (USB-Serial-JTAG detached on usb_host_install)"
+            } else {
+                ""
+            }
         );
     }
     let wifi_should_start = needs_wifi && !WIFI_SSID.is_empty();
