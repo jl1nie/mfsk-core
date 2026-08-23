@@ -28,6 +28,16 @@ use esp_idf_hal::i2c::I2cDriver;
 
 pub const RTC_I2C_ADDR: u8 = 0x51;
 
+/// What [`read_into_system_clock`] concluded, for `[boot-summary]`.
+///
+/// This runs inside `pmic::init`, seconds before WiFi exists, so its
+/// own log line lands in the fanout's staging ring and is overwritten
+/// long before a UDP sink can replay it. In host mode that is the only
+/// channel there is, which makes "did the clock come from the chip or
+/// from the network" unanswerable from the record — exactly the
+/// question this feature exists to settle.
+pub static RTC_RESULT: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
+
 const REG_SECONDS: u8 = 0x02;
 /// Seconds register bit 7: contents invalid since the last write.
 const VL_MASK: u8 = 0x80;
@@ -70,10 +80,12 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
     let mut buf = [0u8; 7];
     if let Err(e) = i2c.write_read(RTC_I2C_ADDR, &[REG_SECONDS], &mut buf, I2C_TIMEOUT_TICKS) {
         log::warn!("rtc: BM8563 read failed: {e} — clock stays unset");
+        RTC_RESULT.store("BM8563 unreadable");
         return None;
     }
     if buf[0] & VL_MASK != 0 {
         log::info!("rtc: BM8563 reports VL — never set, or the backup cell is flat");
+        RTC_RESULT.store("BM8563 VL (never set / flat cell)");
         return None;
     }
 
@@ -121,6 +133,15 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
         "rtc: system clock set from BM8563 — {year:04}-{month:02}-{day:02} \
          {hour:02}:{min:02}:{sec:02} UTC"
     );
+    {
+        let mut msg: heapless::String<64> = heapless::String::new();
+        use core::fmt::Write as _;
+        let _ = write!(
+            &mut msg,
+            "clock from BM8563 {year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}Z"
+        );
+        RTC_RESULT.store(msg.as_str());
+    }
     Some(unix)
 }
 

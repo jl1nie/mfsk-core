@@ -18,6 +18,8 @@
 
 #[path = "../board.rs"]
 mod board;
+#[path = "../log_slot.rs"]
+mod log_slot;
 #[path = "../pmic.rs"]
 mod pmic;
 // `pmic::init` reads the RTC to set the system clock. This bin has no

@@ -814,6 +814,11 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                         "[boot-summary] mode=WSPR host_mode={host_attempted} start_host: {}",
                         if r.is_empty() { "never called" } else { r.as_str() }
                     );
+                    let rt = crate::rtc::RTC_RESULT.read();
+                    log::warn!(
+                        "[boot-summary] rtc: {}",
+                        if rt.is_empty() { "no result recorded" } else { rt.as_str() }
+                    );
                     crate::pmic::log_boot_summary(i2c);
                 }
             }
