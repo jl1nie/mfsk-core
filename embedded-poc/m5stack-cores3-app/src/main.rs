@@ -90,17 +90,21 @@ fn main() -> ! {
 
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
-    if !BOOT_MODE_DEFAULT.is_empty() {
+    // `cfg.toml`'s `boot_mode` seeds a board that has never been told,
+    // and nothing more.
+    //
+    // It used to be reapplied on every boot, which made the stored
+    // value unwritable in practice: picking a mode from the touch
+    // panel wrote NVS, restarted, and the restart put `cfg.toml`'s
+    // value straight back. A binary that carries every receiver is
+    // pointless if the choice cannot outlive a reboot — re-flashing to
+    // change mode is exactly what it exists to avoid.
+    //
+    // Change it deliberately by erasing NVS, or from the panel.
+    if !BOOT_MODE_DEFAULT.is_empty() && !boot_mode::is_set(&nvs) {
         let target = boot_mode::BootMode::from_cfg_str(BOOT_MODE_DEFAULT);
-        let current = boot_mode::read(&nvs);
-        if current != target {
-            log::info!(
-                "boot_mode: cfg override {} → {}",
-                current.label(),
-                target.label()
-            );
-            let _ = boot_mode::write(&nvs, target);
-        }
+        log::info!("boot_mode: unset, seeding from cfg.toml → {}", target.label());
+        let _ = boot_mode::write(&nvs, target);
     }
     let mode = boot_mode::determine_no_override(&nvs);
     log::info!("boot_mode: {} (NVS-only on CoreS3)", mode.label());

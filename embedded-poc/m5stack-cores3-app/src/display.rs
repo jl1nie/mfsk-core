@@ -33,7 +33,7 @@ use mipidsi::{models::ILI9342CRgb565, options::ColorInversion, Builder};
 
 use esp_idf_svc::nvs::{EspNvs, NvsDefault};
 
-use mfsk_app_shared::boot_mode::BootMode;
+use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::log_sink::LogFanout;
 use mfsk_app_shared::ui::{decoded_list, state::UI, status_bar, waterfall};
 
@@ -48,6 +48,39 @@ const USB_REGION_Y: i32 = 2;
 
 /// USB パネルの行数と行間 (px)。右側 180 px × 240 px に余裕で収まる。
 const USB_PANEL_LINES: usize = 10;
+
+/// Mode buttons, under the USB panel.
+///
+/// The panel occupies y=2..122 (10 lines at 12 px), the shared widgets
+/// own the left 135 px, so this column is free below that.
+const MODE_X: i32 = 140;
+const MODE_W: u32 = 176;
+const MODE_H: u32 = 24;
+const MODE_Y0: i32 = 134;
+const MODE_PITCH: i32 = 26;
+
+/// What this binary can boot into, in the order they are drawn.
+const MODE_BTNS: [(BootMode, &str); 4] = [
+    (BootMode::Uac, "FT8 / UAC"),
+    (BootMode::Wspr, "WSPR"),
+    (BootMode::Fst4, "FST4"),
+    (BootMode::Decode, "DECODE (wav)"),
+];
+
+/// How long a first tap stays armed.
+const MODE_ARM_MS: u64 = 4_000;
+
+/// Which button, if any, a touch landed on.
+fn mode_hit(x: u16, y: u16) -> Option<usize> {
+    let (x, y) = (x as i32, y as i32);
+    if x < MODE_X || x >= MODE_X + MODE_W as i32 {
+        return None;
+    }
+    (0..MODE_BTNS.len()).find(|&i| {
+        let top = MODE_Y0 + i as i32 * MODE_PITCH;
+        y >= top && y < top + MODE_H as i32
+    })
+}
 const USB_PANEL_PITCH: i32 = 12;
 
 /// How long the boot waits before installing the USB host driver.
@@ -78,7 +111,7 @@ pub fn run_log_panel(
     spi2: SPI2<'static>,
     pins: Pins,
     fanout: &'static LogFanout,
-    _nvs: EspNvs<NvsDefault>,
+    nvs: EspNvs<NvsDefault>,
     mode: BootMode,
 ) -> ! {
     // Set false when the board finds itself on external power — see
@@ -456,6 +489,12 @@ pub fn run_log_panel(
     let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
         heapless::Vec::new();
     let mut last_touch = crate::touch::Contact::default();
+    // Which mode button is armed, and when it was armed. A first tap
+    // arms; a second on the same button commits. Without that, one
+    // stray touch during a capture session reboots the receiver.
+    let mut mode_armed: Option<(usize, std::time::Instant)> = None;
+    let mut mode_drawn: Option<usize> = None;
+    let mut mode_needs_draw = true;
     let mut touch_read_failed = false;
     let mut last_wf_seq: u32 = u32::MAX;
     let mut last_decoded_fp: (usize, u32) = (usize::MAX, u32::MAX);
@@ -759,6 +798,7 @@ pub fn run_log_panel(
             if let Some(i2c) = pmic_i2c.as_mut() {
                 match crate::touch::read(i2c) {
                     Some(c) => {
+                        let last_touch_points = last_touch.points;
                         if c != last_touch {
                             if c.points > 0 {
                                 log::info!("touch: {} pt at ({}, {})", c.points, c.x, c.y);
@@ -767,39 +807,40 @@ pub fn run_log_panel(
                             }
                             last_touch = c;
                         }
-                        // Put it on the glass, not just in the log.
-                        //
-                        // `GREEN` because `decoded_list` already uses
-                        // it and it is confirmed to render as green on
-                        // this panel — not a colour invented for this
-                        // dot. (A red drawn here came out blue, which
-                        // is consistent with an R/B swap and equally
-                        // consistent with green being unaffected by
-                        // one. `bin/lcd_minimal.rs` has a colour test
-                        // pattern for settling that; it is not this
-                        // code's question.)
-                        //
-                        // Bring-up ran for several flashes with the
-                        // only evidence of a touch going out over
-                        // serial, so the person doing the touching had
-                        // no way to tell the panel from a dead one —
-                        // the same mistake the USB panel exists to
-                        // avoid ("a log line is not a status display",
-                        // and this board's own docs say so). A dot
-                        // under the finger also shows the coordinate
-                        // mapping instantly: if it lands somewhere
-                        // else, the axes are wrong, and no amount of
-                        // log-reading says that as fast.
-                        if c.points > 0 {
-                            let x = c.x.min(crate::board::LCD_WIDTH as u16 - 1) as i32;
-                            let y = c.y.min(crate::board::LCD_HEIGHT as u16 - 1) as i32;
-                            Rectangle::new(
-                                Point::new((x - 4).max(0), (y - 4).max(0)),
-                                Size::new(9, 9),
-                            )
-                            .into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN))
-                            .draw(&mut display)
-                            .ok();
+                        // A press edge is what selects a mode; holding
+                        // does nothing more.
+                        if c.points > 0 && last_touch_points == 0 {
+                            if let Some(hit) = mode_hit(c.x, c.y) {
+                                let now = std::time::Instant::now();
+                                let commit = matches!(mode_armed, Some((armed, at))
+                                    if armed == hit
+                                        && now.duration_since(at).as_millis() as u64
+                                            <= MODE_ARM_MS);
+                                if commit {
+                                    let (target, label) = MODE_BTNS[hit];
+                                    log::warn!(
+                                        "boot_mode -> {} (touch), restarting",
+                                        target.label()
+                                    );
+                                    let _ = label;
+                                    if let Err(e) = boot_mode::write(&nvs, target) {
+                                        log::error!("boot_mode write failed: {e} — not restarting");
+                                        mode_armed = None;
+                                        mode_needs_draw = true;
+                                    } else {
+                                        // Let the line reach the log sink; in
+                                        // UAC mode that is the only channel.
+                                        std::thread::sleep(
+                                            std::time::Duration::from_millis(400),
+                                        );
+                                        // SAFETY: no arguments, does not return.
+                                        unsafe { esp_idf_svc::sys::esp_restart() };
+                                    }
+                                } else {
+                                    mode_armed = Some((hit, now));
+                                    mode_needs_draw = true;
+                                }
+                            }
                         }
                     }
                     None => {
@@ -815,6 +856,54 @@ pub fn run_log_panel(
             // read for it.
             log::info!("touch: released");
             last_touch = crate::touch::Contact::default();
+        }
+
+        // The mode buttons. Redrawn only when the armed one changes,
+        // and the arming lapses on its own after `MODE_ARM_MS`.
+        if let Some((_, at)) = mode_armed {
+            if at.elapsed().as_millis() as u64 > MODE_ARM_MS {
+                mode_armed = None;
+                mode_needs_draw = true;
+            }
+        }
+        let armed_idx = mode_armed.map(|(i, _)| i);
+        if mode_needs_draw || mode_drawn != armed_idx {
+            for (i, (target, label)) in MODE_BTNS.iter().enumerate() {
+                let top = MODE_Y0 + i as i32 * MODE_PITCH;
+                let armed = armed_idx == Some(i);
+                // Green when armed — the same green `decoded_list`
+                // uses for "this slot", and the only colour on this
+                // panel whose rendering is confirmed. The mode this
+                // boot is running gets a lighter frame so the screen
+                // says where it already is.
+                let (bg, fg) = if armed {
+                    (Rgb565::GREEN, Rgb565::BLACK)
+                } else if *target == mode {
+                    (Rgb565::new(0, 8, 0), Rgb565::WHITE)
+                } else {
+                    (Rgb565::BLACK, Rgb565::WHITE)
+                };
+                Rectangle::new(Point::new(MODE_X, top), Size::new(MODE_W, MODE_H))
+                    .into_styled(PrimitiveStyle::with_fill(bg))
+                    .draw(&mut display)
+                    .ok();
+                let style = MonoTextStyleBuilder::new()
+                    .font(&FONT_6X10)
+                    .text_color(fg)
+                    .background_color(bg)
+                    .build();
+                let text = if armed { "tap again" } else { label };
+                Text::with_baseline(
+                    text,
+                    Point::new(MODE_X + 6, top + 7),
+                    style,
+                    Baseline::Top,
+                )
+                .draw(&mut display)
+                .ok();
+            }
+            mode_drawn = armed_idx;
+            mode_needs_draw = false;
         }
 
         let _ = fanout;

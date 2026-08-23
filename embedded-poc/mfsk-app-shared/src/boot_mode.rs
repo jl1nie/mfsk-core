@@ -164,6 +164,20 @@ pub fn open_nvs(
 
 /// Read the stored mode, defaulting to Decode if the key is absent
 /// (first boot) or the stored value is malformed.
+/// Whether a mode has ever been stored.
+///
+/// [`read`] cannot answer this: it returns `Decode` both for "the key
+/// says decode" and for "there is no key". The difference matters
+/// because `cfg.toml`'s `boot_mode` is a *seed* — something to apply
+/// on a fresh board — and not an override to reapply on every boot.
+/// Reapplying it means a mode chosen at runtime, from the touch panel
+/// or the HTTP page, survives exactly until the next restart, which is
+/// the opposite of what a persisted setting is for.
+pub fn is_set(nvs: &EspNvs<NvsDefault>) -> bool {
+    let mut buf = [0u8; 16];
+    matches!(nvs.get_str(NVS_KEY, &mut buf), Ok(Some(_)))
+}
+
 pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
     let mut buf = [0u8; 16];
     match nvs.get_str(NVS_KEY, &mut buf) {
