@@ -61,6 +61,12 @@ answering. Do not surface a cached value as a live one.
 |---|---|
 | `MFSK_CORES3_FORCE_UAC=1` | take USB host mode even with external power. Back-powers a PC; for bench use only |
 | `MFSK_CORES3_USB_PANEL=1` | draw the ten-line USB diagnostic panel. Off by default — it covers the decodes, and the link bar carries what an operator needs |
+| `MFSK_WSPR_SYNTH=1` | fabricate a WSPR slot when no radio is attached. Off by default: it puts `DDC_TEST_CALL` on the spot list every two minutes, indistinguishable from a real decode |
+| `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached. Same reasoning |
+
+Cargo features `wspr-golden` and `fst4-replay` link the fixtures those
+two read. Off by default, which is 1.8 MB of image: a receiver taking
+audio from a radio never reads either.
 
 `cfg.toml` (gitignored, never committed) carries `[wifi]`, `[station]`
 and `[app] boot_mode`. `boot_mode` is a **seed**, written only when NVS
@@ -89,11 +95,21 @@ reapplied every boot would undo it.
 
 ## Status (2026-08-23)
 
-Live FT8 reception verified against an IC-705 on 40 m: six to eight
-decodes per slot, +8 to −24 dB, callsigns and grids consistent. USB
-host, enumeration and audio transport verified in all three radio
-modes; WSPR confirmed taking live audio. Not yet confirmed: WSPR and
-FST4 producing decodes from live audio over a full slot.
+Live reception verified against an IC-705 on 40 m. **FT8**: six to
+eight decodes per slot, +8 to −24 dB, callsigns and grids consistent.
+**WSPR**: `slot 1 src=uac decoded 1 station(s)` — enumeration, audio
+and decode, after the memory work below. USB host and audio transport
+verified in all three radio modes. Not yet confirmed: FST4 producing
+decodes from live audio over a full slot.
+
+WSPR took four fixes to get there, and each was a thing one of the
+other two receivers already did: the scan task could not get its stack
+(the decode path was keeping three 10 368 B `IsQs` alive at once, so
+both it and the worker arena were sized against a peak 20 KB larger
+than necessary); `start_host` ran before the boost had ramped; the
+sequence around it was not shared, so `esp_log_bridge` never reached
+this mode and `EXT_HUB: ESP_ERR_NO_MEM` was invisible; and the display
+task held 32 KiB of internal DRAM in a stack FST4 keeps in PSRAM.
 
 Open: FT8 `coarse` alternates cleanly between ~100 ms and ~180 ms with
 slot parity and the slow side exhausts its budget. Cause not

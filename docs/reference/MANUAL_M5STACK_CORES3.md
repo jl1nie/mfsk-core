@@ -178,6 +178,28 @@ reapplied on every boot would undo that choice on the next restart.
 Values: `uac` | `wspr` | `fst4` | `decode`. Omit to keep whatever NVS
 holds.
 
+### Build-time switches
+
+Environment variables read at compile time. All default to off.
+
+| Variable | Effect |
+|---|---|
+| `MFSK_CORES3_FORCE_UAC=1` | take USB host mode even with external power. Back-powers a PC; bench use only |
+| `MFSK_CORES3_USB_PANEL=1` | draw the ten-line USB diagnostic panel, at the cost of decoded rows |
+| `MFSK_WSPR_SYNTH=1` | fabricate a WSPR slot when no radio is attached |
+| `MFSK_FST4_REPLAY=1` | replay a baked FST4 slot when no radio is attached |
+
+The last two exist for desk work with no radio. **They are off by
+default because what they produce is indistinguishable from a real
+decode**: a fabricated `K1ABC` lands on the spot list every two
+minutes, and a replayed slot shows the same stations forever. A
+receiver with nothing to hear should say so.
+
+Their fixtures are behind Cargo features (`wspr-golden`,
+`fst4-replay`) so the bytes are not linked in when off — 1.8 MB of
+image, off every flash.
+
+
 ---
 
 ## 5. Changing mode

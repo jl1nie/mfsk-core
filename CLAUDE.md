@@ -22,11 +22,18 @@ Getting there took three layers off the enumeration path and then two
 stack overflows that presented as heap corruption — read
 `embedded-poc/CLAUDE.md`'s "USB host VBUS on CoreS3" and "Stacks,
 heaps, and the space between them" before touching that board.
+
+**It decodes off the air now (2026-08-23/24)**: FT8 at six to eight
+stations per slot against an IC-705 on 40 m, WSPR at
+`slot 1 src=uac decoded 1 station(s)`. The board carries all four
+receivers in one image, chosen from the touch panel. Operating notes
+are in `docs/reference/MANUAL_M5STACK_CORES3.md` (and `.ja.md`); the
+crate has its own `CLAUDE.md` for what breaks a session.
 See `docs/notes/ROADMAP.md` Phase B-Core for what #163 unblocks. `m5stack-s3-app` and
 `m5stack-core2-app` each have their own `CLAUDE.md` covering
 board-specific bring-up, and `m5stack-cores3-app` now does too —
 alongside the operator manual at
-`docs/reference/MANUAL_M5STACK_CORES3.md`. This
+`docs/reference/MANUAL_M5STACK_CORES3.md` / `.ja.md`. This
 section captures the shared workflow that's easy to forget between
 sessions.
 

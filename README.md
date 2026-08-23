@@ -22,11 +22,16 @@ primitives (DSP, sync correlation, LLR, LDPC / convolutional /
 Reed-Solomon / QRA FEC, message codecs). It runs anywhere Rust runs:
 desktop, WASM in the browser, Android/iOS, and `no_std` embedded MCUs.
 
-The [`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
-crate shipped with the source tree is a **working M5StickS3 FT8
-controller** running the same library on Xtensa LX7 — LCD UI, BLE CI-V to
-IC-705, acoustic mic capture, QSO FSM. The image above is one of its
-decode slots.
+Two working receivers ship with the source tree, both running this
+library on Xtensa LX7.
+[`embedded-poc/m5stack-cores3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-cores3-app/)
+is the main target: one image carrying **four receivers** — FT8 over
+USB Audio from a radio, WSPR, FST4, and a radio-free demo — chosen from
+the touch panel. Verified on 2026-08-23 against an IC-705 on 40 m: six
+to eight FT8 stations per slot, +8 to −24 dB.
+[`embedded-poc/m5stack-s3-app`](https://github.com/jl1nie/mfsk-core/tree/main/embedded-poc/m5stack-s3-app/)
+is the M5StickS3 demo path — LCD UI, BLE CI-V to an IC-705, acoustic
+mic capture, QSO FSM. The image above is one of its decode slots.
 
 Every algorithm is a Rust re-implementation of
 [WSJT-X](https://sourceforge.net/projects/wsjt/) (Joe Taylor K1JT and
@@ -690,12 +695,13 @@ StickS3 board can't do USB host) and `embedded-poc/m5stack-core2-app/`
 (wav_sim-only LX6 sibling) are production FT8 controller crates (LCD
 UI + QSO FSM + WiFi-UDP log streaming), both consuming the
 board-agnostic `embedded-poc/mfsk-app-shared/`.
-`embedded-poc/m5stack-cores3-app/` is the **main UAC controller
-target** (M5Stack CoreS3 has the PMIC/IO-expander wiring StickS3
-lacks) — board bring-up and UAC host code are shipped, but live
-IC-705 hardware verification hasn't happened yet (issue #163). See
-`docs/notes/ROADMAP.md`'s Phase B-Core section for the current
-status. `embedded-poc/m5stack-s3/` is a
+`embedded-poc/m5stack-cores3-app/` is the **main target** (M5Stack
+CoreS3 has the PMIC/IO-expander wiring the StickS3 lacks) — one image
+carrying four receivers, chosen from the touch panel, taking audio
+from a radio over USB Audio. Live IC-705 verification cleared
+2026-08-23 (issue #163); FT8 and WSPR have both decoded off the air.
+See `docs/reference/MANUAL_M5STACK_CORES3.md` to operate it, and
+`docs/notes/ROADMAP.md`'s Phase B-Core section for what it unblocks. `embedded-poc/m5stack-s3/` is a
 decoder-only compute-bench crate for S3 timing-regression tracking.
 See
 [`docs/reference/EMBEDDED.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/EMBEDDED.md)

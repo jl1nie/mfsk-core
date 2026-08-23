@@ -121,6 +121,15 @@ Three tracks, at very different maturities:
    made people doubt WiFi could coexist with the USB host turned out to
    be a symptom of two stack overflows rather than a real ceiling.
 
+   **And it decodes off the air (2026-08-23/24).** FT8: six to eight
+   stations per slot against an IC-705 on 40 m, +8 to −24 dB. WSPR:
+   `slot 1 src=uac decoded 1 station(s)`, after four fixes that were
+   each a thing one of the other two receivers already did. The touch
+   UI is done rather than pending — one image carries all four
+   receivers and the mode is chosen from the panel, which matters
+   because installing the USB host takes the port a flasher would use.
+   What remains of the sequence above is BLE CI-V, ADIF and TX keying.
+
 4. **WSPR embedded RX (Phase E, #260) — a separate frontier, and
    unstalled.** Not part of Phase B-Core: WSPR never goes through
    `decode_block`/`fixed-point`/the UAC controller stack, so this is a
