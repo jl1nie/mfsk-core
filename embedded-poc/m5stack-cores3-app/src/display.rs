@@ -24,7 +24,7 @@ use embedded_graphics::{
 use display_interface_spi::SPIInterface;
 use esp_idf_hal::{
     delay::Ets,
-    gpio::{AnyIOPin, PinDriver, Pins},
+    gpio::{AnyIOPin, PinDriver, Pins, Pull},
     i2c::I2C0,
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SpiDriverConfig, SPI2},
     units::FromValueType,
@@ -202,6 +202,15 @@ pub fn run_log_panel(
     let spi_cfg = SpiConfig::new().baudrate(20_u32.MHz().into());
     let spi_dev =
         SpiDeviceDriver::new(driver, Some(pins.gpio3), &spi_cfg).expect("SPI device (CS=3)");
+
+    // Touch interrupt, as an input with a pull-up — `Touch_FT5x06::init`
+    // does `pinMode(_cfg.pin_int, input_pullup)` and `getTouchRaw`
+    // reads it before it will touch I2C at all. Without it the only
+    // way to notice a tap is to poll the bus, and polling the bus
+    // slowly is why the panel felt broken: at 2 Hz, any tap shorter
+    // than half a second fell between reads. M5GFX puts this on
+    // GPIO 21 (not on the expander, whatever `board.rs` used to say).
+    let touch_int = PinDriver::input(pins.gpio21, Pull::Up).expect("TP_INT gpio21");
 
     let dc = PinDriver::output(pins.gpio35).expect("DC gpio35");
     let di = SPIInterface::new(spi_dev, dc);
@@ -746,7 +755,7 @@ pub fn run_log_panel(
         // (#163). There is more headroom now, but this is the first
         // flash that tests it, so the rate is low and the alive tick's
         // `internal=` reading is the thing to watch beside it.
-        if tick % 5 == 0 {
+        if touch_int.is_low() {
             if let Some(i2c) = pmic_i2c.as_mut() {
                 match crate::touch::read(i2c) {
                     Some(c) => {
@@ -759,6 +768,16 @@ pub fn run_log_panel(
                             last_touch = c;
                         }
                         // Put it on the glass, not just in the log.
+                        //
+                        // `GREEN` because `decoded_list` already uses
+                        // it and it is confirmed to render as green on
+                        // this panel — not a colour invented for this
+                        // dot. (A red drawn here came out blue, which
+                        // is consistent with an R/B swap and equally
+                        // consistent with green being unaffected by
+                        // one. `bin/lcd_minimal.rs` has a colour test
+                        // pattern for settling that; it is not this
+                        // code's question.)
                         //
                         // Bring-up ran for several flashes with the
                         // only evidence of a touch going out over
@@ -778,7 +797,7 @@ pub fn run_log_panel(
                                 Point::new((x - 4).max(0), (y - 4).max(0)),
                                 Size::new(9, 9),
                             )
-                            .into_styled(PrimitiveStyle::with_fill(Rgb565::new(31, 0, 0)))
+                            .into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN))
                             .draw(&mut display)
                             .ok();
                         }
@@ -791,10 +810,22 @@ pub fn run_log_panel(
                     }
                 }
             }
+        } else if last_touch.points > 0 {
+            // The pin going high is the release; there is nothing to
+            // read for it.
+            log::info!("touch: released");
+            last_touch = crate::touch::Contact::default();
         }
 
         let _ = fanout;
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // 50 ms, not 100.
+        //
+        // With the INT pin gating the I2C read, this loop's period is
+        // what decides whether a tap is seen at all, and 100 ms was
+        // long enough to miss quick ones. The extra iterations cost a
+        // GPIO read each; the bus is only touched when a finger is
+        // actually down.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         tick = tick.wrapping_add(1);
     }
 }
