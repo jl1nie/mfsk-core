@@ -354,7 +354,7 @@ fn main() -> ! {
             // after pmic::init() drives BUS_OUT_EN HIGH.
             log_free_internal("pre-thread-spawn");
             let pipeline_spawn = crate::board::spawn_named(c"decode", 32 * 1024, || {
-                decode_pipeline::run_with_source(|q| uac::set_chunk_q(q))
+                decode_pipeline::run_with_source("uac", |q| uac::set_chunk_q(q))
             });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Uac) spawn failed ({e})");

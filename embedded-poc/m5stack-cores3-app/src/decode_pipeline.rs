@@ -30,7 +30,7 @@ const MAX_CAND: usize = 15;
 /// `QSO_WAVS` playlist as the audio source. Thin wrapper around
 /// [`run_with_source`].
 pub fn run() -> ! {
-    run_with_source(|q| wav_sim::spawn(QSO_WAVS, q))
+    run_with_source("wav", |q| wav_sim::spawn(QSO_WAVS, q))
 }
 
 /// Source-agnostic entry. Allocates the pipeline queues, spawns
@@ -41,7 +41,7 @@ pub fn run() -> ! {
 /// `Decode` mode passes `|q| wav_sim::spawn(QSO_WAVS, q)`.
 /// `Uac` mode passes `|q| uac::set_chunk_q(q)` — the UAC reader thread
 /// starts pushing once it sees the queue handle land in its static slot.
-pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
+pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source: &'static str, source_spawn: F) -> ! {
     crate::log_free_internal("pre-decode-loop (post-Goertzel: no BASIS alloc)");
 
     unsafe {
@@ -122,12 +122,12 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
         let slot_wait_us = t_slot_recv - t_early_done;
         if slot_wait_us < 10_000 {
             log::warn!(
-                "WAV[{wav_idx}] OVER BUDGET — no idle before the next slot \
+                "SLOT[{wav_idx}] src={source} OVER BUDGET — no idle before the next slot \
                  ({post_slotend} us past slot end, {n_deferred} candidates deferred)"
             );
         }
         log::info!(
-            "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
+            "SLOT[{wav_idx}] src={source} p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
              tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \
              slot_wait={}us late={}us",
             results.len(),

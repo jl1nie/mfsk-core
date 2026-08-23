@@ -1209,8 +1209,15 @@ fn run_one_slot(
     for s in &stats {
         s.log();
     }
+    // The source belongs on the line that reports the result, not on a
+    // separate one that only appears when it is synthetic. Reading a
+    // decode count without knowing whether the audio came from a radio
+    // is how a baked test signal gets mistaken for a live one — the FT8
+    // controller labelled every slot `WAV[n]` whatever the source, and
+    // that cost real time on 2026-08-23.
     log::info!(
-        "wspr_app: slot {slot_label} decoded {} station(s)",
+        "wspr_app: slot {slot_label} src={} decoded {} station(s)",
+        if is_synthetic_source { "synthetic" } else { "uac" },
         results.len()
     );
 
