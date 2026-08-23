@@ -244,6 +244,12 @@ rather than distributing them across patches.
   - **`StatusInfo::utc_sod` was never assigned**, so the panel read
     `--:--:--` whatever the clock was doing — the one indicator that
     would have said why thirty candidates a slot resolved to nothing.
+- **WSPR called every DDC-fed slot synthetic, including real ones.**
+  The flag was hardcoded `true`, correct while a DDC-fed slot could
+  only be the fabricated test burst — the receiver had never been run
+  against a radio. It gates wsprnet reporting, so real receptions were
+  being withheld from the spot database and labelled `src=synthetic`.
+  It comes from `UAC_AUDIO_ACTIVE` now.
 - **The CoreS3 no longer ships one operator's callsign compiled in.**
   `decode_pipeline.rs` carried `MY_CALL`/`MY_GRID` as literals; they
   come from `cfg.toml`'s `[station]` section now, as they have in
