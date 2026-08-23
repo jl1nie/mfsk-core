@@ -68,6 +68,20 @@ pub fn report_previous_crash() {
         sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "DEEPSLEEP",
         sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "BROWNOUT",
         sys::esp_reset_reason_t_ESP_RST_SDIO => "SDIO",
+        // 11 and 12 are the ones a development board actually sees.
+        //
+        // `espflash` resets through the USB peripheral, so every single
+        // flash came back as "unknown (11)" — and because the abnormal
+        // test below was "not POWERON and not EXT", every flash also
+        // tripped the ten-second hold and left `rst=unknown` standing
+        // on the panel as if the last boot had crashed. A reset-reason
+        // display that cries wolf on the most common reset there is
+        // costs more than it tells. Refs #163.
+        sys::esp_reset_reason_t_ESP_RST_USB => "USB",
+        sys::esp_reset_reason_t_ESP_RST_JTAG => "JTAG",
+        sys::esp_reset_reason_t_ESP_RST_EFUSE => "EFUSE",
+        sys::esp_reset_reason_t_ESP_RST_PWR_GLITCH => "PWR_GLITCH",
+        sys::esp_reset_reason_t_ESP_RST_CPU_LOCKUP => "CPU_LOCKUP",
         _ => "unknown",
     };
     log::warn!("reset reason: {name} ({reason})");
@@ -76,10 +90,18 @@ pub fn report_previous_crash() {
     // Remember whether this was an abnormal reset. The display loop
     // holds on it once the panel is actually on screen — pausing here
     // would pause in front of a dark LCD, which helps nobody.
+    // A flasher's reset is not a crash. `ESP_RST_USB` / `ESP_RST_JTAG`
+    // are what a debug cable produces, and `ESP_RST_SW` is
+    // `esp_restart`, so none of them should stop the display loop for
+    // ten seconds.
     ABNORMAL.store(
         !matches!(
             reason,
-            sys::esp_reset_reason_t_ESP_RST_POWERON | sys::esp_reset_reason_t_ESP_RST_EXT
+            sys::esp_reset_reason_t_ESP_RST_POWERON
+                | sys::esp_reset_reason_t_ESP_RST_EXT
+                | sys::esp_reset_reason_t_ESP_RST_USB
+                | sys::esp_reset_reason_t_ESP_RST_JTAG
+                | sys::esp_reset_reason_t_ESP_RST_SW
         ),
         core::sync::atomic::Ordering::Release,
     );

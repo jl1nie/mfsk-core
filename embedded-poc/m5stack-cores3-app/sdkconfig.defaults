@@ -7,7 +7,22 @@
 #      BLE deferred to Phase 2-Core.
 #   4. No SPIRAM_MODE_OCT block (unlike s3-app sdkconfig).
 
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+# 32768 was sized for a `display::run_log_panel` that put a 13.5 KB
+# waterfall snapshot (and the `.collect()` temporary behind it) on the
+# stack. With those boxed, the function's high-water mark measured
+# 5,080 B — so 32 KB was 27 KB of internal DRAM held to cover a bug.
+#
+# That DRAM is the resource the USB host path is actually short of:
+# host stack + three enumerated devices + the isochronous audio buffer
+# + lwIP + the WiFi driver all want the same DMA-capable region, and
+# WiFi is not optional here (NTP, the HTTP config UI, and QSO log
+# upload all ride on it). 16 KB leaves ~11 KB of headroom over the
+# measured mark, which is room for the panel to grow without being
+# room for another overflow to hide in.
+#
+# `stack_hw` in the alive tick is the number to check before changing
+# this either way.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # ── Clocks ───────────────────────────────────────────────────────────
 # ESP-IDF's default for esp32s3 is 160 MHz, and no crate in this tree
@@ -30,6 +45,23 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=4096
+
+# Catch a stack overflow at the instruction that overflows (#163).
+#
+# The default canary check only looks at a context switch, so by the
+# time it fires the writer is long gone and the backtrace names the
+# victim. This puts a hardware watchpoint on the last words of each
+# task's stack, which panics on the store itself.
+#
+# It matters here because a task stack on this board is heap memory
+# with the internal heap pool immediately below it: an overflow does
+# not fault, it silently rewrites TLSF block headers, and the crash
+# surfaces later and elsewhere (`tlsf_walk_pool`, LoadProhibited on a
+# garbage address). That is exactly the shape of the 2026-08-23 bug.
+#
+# Costs one of the debug watchpoints. Keep it — this class of failure
+# is invisible without it, and the app uses no others.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
 # ── Bluetooth (off in Phase 0-Core) ─────────────────────────────────
 # CI-V over BLE is a Phase 2-Core item.
@@ -203,16 +235,18 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # attached at all — seven reboots inside one flash capture, in
 # peripheral mode. Tried and reverted 2026-08-23.
 
-# Heap poisoning, temporarily (#163).
+# Heap poisoning was here, and is deliberately gone (#163).
 #
-# `heap_caps_get_largest_free_block` in the alive tick crashes inside
-# `tlsf_walk_pool` with LoadProhibited on a garbage address — the heap
-# metadata is damaged, and the tick is merely the thing that walks it.
-# It reproduces on PC power with no USB host, no C-log bridge and no
-# WiFi, so the usual suspects from tonight are all excluded.
+# It was added to find whoever was damaging the heap metadata that
+# `tlsf_walk_pool` chokes on, and it "fixed" the symptom — which was
+# the actual clue. Poisoning changes every allocation's size and
+# therefore the whole layout; a bug that disappears under it is a bug
+# that depends on where things landed. The writer was not a heap user
+# at all: `display::run_log_panel` was overflowing the main task's
+# stack into the internal heap pool immediately below it. See that
+# function's snapshot buffers, and `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK`
+# above, which catches this class of failure at the store instead of
+# at the next reader.
 #
-# Comprehensive poisoning checks the guard bytes on every alloc and
-# free, so the abort lands on whoever wrote out of bounds instead of on
-# whoever read the wreckage afterwards. Costs speed and memory; remove
-# once the writer is found.
-CONFIG_HEAP_POISONING_COMPREHENSIVE=y
+# Do not reintroduce it as a first move. Check `stack_hw` in the alive
+# tick first — it costs nothing and it answered this in one flash.

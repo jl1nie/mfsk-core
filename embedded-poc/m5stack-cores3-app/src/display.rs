@@ -400,6 +400,34 @@ pub fn run_log_panel(
     }
 
     let mut tick: u32 = 0;
+
+    // The two render snapshots live on the heap, allocated once.
+    //
+    // They used to be stack locals in this loop, and they are the
+    // reason the board was corrupting its own heap. `WfLine` is
+    // `[u8; 135]` and `WF_DEPTH` is 100, so the waterfall snapshot is
+    // 13,500 B; at `opt-level = 1` (forced on this target by the
+    // Xtensa LLVM regression) the `.collect()` temporary does not fold
+    // into the destination, so it cost roughly twice that. The
+    // 2026-08-23 coredump measured this function's frame at 29,616 B
+    // of a 32,768 B main-task stack — 448 B of margin — and a task
+    // stack here is heap memory with the internal pool sitting
+    // directly below it (stack base 0x3fcb4d20, pool start
+    // 0x3fcb1a90). Overflowing did not fault: it rewrote TLSF block
+    // headers, and the crash surfaced later and elsewhere, in
+    // `tlsf_walk_pool` reading a smashed size field. Every diagnostic
+    // probe added to this loop that night made the margin smaller.
+    //
+    // Boxed and reused, so there is no per-frame allocation either.
+    // 13.5 KB is well past `SPIRAM_MALLOC_ALWAYSINTERNAL = 4096`, so
+    // this lands in PSRAM and costs no internal DRAM — the resource
+    // the USB host path is actually short of. Refs #163.
+    let mut wf_snapshot: Box<
+        heapless::Vec<mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }>,
+    > = Box::new(heapless::Vec::new());
+    let mut decoded_snapshot: Box<heapless::Vec<mfsk_app_shared::ui::state::DecodedRow, 16>> =
+        Box::new(heapless::Vec::new());
+
     let mut last_usb_panel: heapless::Vec<heapless::String<30>, USB_PANEL_LINES> =
         heapless::Vec::new();
     let mut last_wf_seq: u32 = u32::MAX;
@@ -418,17 +446,30 @@ pub fn run_log_panel(
                     esp_idf_svc::sys::MALLOC_CAP_INTERNAL | esp_idf_svc::sys::MALLOC_CAP_8BIT,
                 )
             };
+            // Stack headroom, in the same line as the heap numbers.
+            //
+            // The crash this is here to catch is not a heap bug: the
+            // main task's 32 KB stack sits directly above the internal
+            // heap pool (stack base 0x3fcb4d20, pool start 0x3fcb1a90),
+            // and this very loop's frame measured 29,616 B in the
+            // 2026-08-23 coredump — 448 B of margin. Overflowing it
+            // writes into the pool's first blocks, and the *next*
+            // `heap_caps_get_largest_free_block` faults inside
+            // `tlsf_walk_pool` on a smashed size field. The heap walk
+            // is the detector; this number is the cause.
+            //
+            // `uxTaskGetStackHighWaterMark` allocates nothing, blocks
+            // on nothing and costs 4 B of the very stack it measures.
+            // SAFETY: null = the calling task.
+            let stack_hw =
+                unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
             log::info!(
-                "alive tick={tick} free_heap={heap} internal={internal} largest={internal_largest}"
+                "alive tick={tick} free_heap={heap} internal={internal} \
+                 largest={internal_largest} stack_hw={stack_hw}"
             );
         }
 
         let status_snapshot;
-        let decoded_snapshot;
-        let wf_snapshot: heapless::Vec<
-            mfsk_app_shared::ui::state::WfLine,
-            { mfsk_app_shared::ui::state::WF_DEPTH },
-        >;
         let decoded_fp;
         let wf_seq;
         let tx_seq;
@@ -440,9 +481,26 @@ pub fn run_log_panel(
             };
             ui.status.free_heap_kb = (heap / 1024) as u32;
             status_snapshot = ui.status.clone();
-            decoded_snapshot = ui.decoded_iter().cloned().collect::<heapless::Vec<_, 16>>();
-            wf_snapshot = ui.waterfall_iter().cloned().collect();
+            decoded_snapshot.clear();
+            for row in ui.decoded_iter() {
+                if decoded_snapshot.push(row.clone()).is_err() {
+                    break;
+                }
+            }
             wf_seq = ui.wf_push_seq();
+            // Copy the waterfall only when it moved.
+            //
+            // The `wf_seq` gate below was already skipping the *draw*;
+            // the 13.5 KB copy ran every frame regardless, ten times a
+            // second, for a surface that changes once per slot.
+            if wf_seq != last_wf_seq {
+                wf_snapshot.clear();
+                for line in ui.waterfall_iter() {
+                    if wf_snapshot.push(*line).is_err() {
+                        break;
+                    }
+                }
+            }
             tx_seq = ui.tx_seq();
             let mut buf: heapless::String<48> = heapless::String::new();
             for ch in ui.tx_line().chars() {
