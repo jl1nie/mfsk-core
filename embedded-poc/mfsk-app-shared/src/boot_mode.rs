@@ -296,3 +296,75 @@ pub fn flip_and_restart(nvs: &EspNvs<NvsDefault>, current: BootMode) -> ! {
     #[allow(unreachable_code)]
     loop {}
 }
+
+/// Persist `mode` and restart, from a task whose stack is safe to hold
+/// a flash write.
+///
+/// **Why this is not just `write` + `esp_restart`.** NVS writes to SPI
+/// flash, and a flash write disables the flash cache — which also
+/// unmaps PSRAM. ESP-IDF therefore asserts that the calling task's
+/// stack is not in PSRAM (`esp_task_stack_is_sane_cache_disabled`,
+/// `cache_utils.c`). The WSPR and FST4 receivers draw from a display
+/// task whose stack is deliberately `MALLOC_CAP_SPIRAM`, to leave
+/// internal DRAM for the decoder — so calling `write` from there does
+/// not fail, it aborts:
+///
+/// ```text
+/// assert failed: spi_flash_disable_interrupts_caches_and_other_cpu
+///     cache_utils.c:127 (esp_task_stack_is_sane_cache_disabled())
+/// ```
+///
+/// The abort reboots the board, which is indistinguishable from the
+/// restart the caller intended — except NVS never changed, so the same
+/// mode comes back. From the panel it reads as a button that does
+/// nothing, and that is how it read from the bench for several
+/// sessions: the touch, the hit test, the arming and the commit were
+/// all working, and the log line announcing the switch was printed
+/// immediately before the abort.
+///
+/// A short-lived task created with `xTaskCreatePinnedToCore` (rather
+/// than the `WithCaps` variant) gets an internal-DRAM stack, which is
+/// the only requirement. It costs that stack for a few hundred
+/// milliseconds and then the board is gone.
+pub fn commit_and_restart(nvs: std::sync::Arc<std::sync::Mutex<EspNvs<NvsDefault>>>, mode: BootMode) {
+    struct Req {
+        nvs: std::sync::Arc<std::sync::Mutex<EspNvs<NvsDefault>>>,
+        mode: BootMode,
+    }
+
+    extern "C" fn entry(arg: *mut core::ffi::c_void) {
+        // SAFETY: `commit_and_restart` leaked exactly this pointer.
+        let req = unsafe { Box::from_raw(arg as *mut Req) };
+        match req.nvs.lock() {
+            Ok(nvs) => match write(&nvs, req.mode) {
+                Ok(()) => log::warn!("boot_mode: committed {} — restarting", req.mode.label()),
+                Err(e) => log::error!("boot_mode write failed: {e} — not restarting"),
+            },
+            Err(e) => log::error!("boot_mode: NVS lock poisoned: {e} — not restarting"),
+        }
+        drop(req);
+        // Let the line reach the log sink; in UAC host mode that is the
+        // only channel there is.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // SAFETY: no arguments, does not return.
+        unsafe { esp_idf_svc::sys::esp_restart() };
+    }
+
+    let ptr = Box::into_raw(Box::new(Req { nvs, mode })) as *mut core::ffi::c_void;
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(entry),
+            c"boot_commit".as_ptr(),
+            6144,
+            ptr,
+            5,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    if created != 1 {
+        log::error!("boot_mode: could not spawn the commit task — mode not saved");
+        // SAFETY: the task was never created, so nothing else owns it.
+        drop(unsafe { Box::from_raw(ptr as *mut Req) });
+    }
+}

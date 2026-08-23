@@ -800,8 +800,10 @@ struct DisplayCtx {
     i2c0: esp_idf_hal::i2c::I2C0<'static>,
     spi2: esp_idf_hal::spi::SPI2<'static>,
     pins: esp_idf_hal::gpio::Pins,
-    /// For `boot_mode::write` when the mode picker commits. Same
-    /// `"mfsk"` namespace `settings` uses, so one handle serves both.
+    /// For `boot_mode::commit_and_restart` when the mode picker
+    /// commits — this task cannot write flash itself, its stack is in
+    /// PSRAM. Same `"mfsk"` namespace `settings` uses, so one handle
+    /// serves both.
     nvs: Arc<Mutex<EspNvs<NvsDefault>>>,
 }
 
@@ -1001,22 +1003,10 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 };
                 if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
                     log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                    if let Ok(nvs) = ctx.nvs.lock() {
-                        // A swallowed failure here is exactly the
-                        // reported symptom — the bar is pressed and
-                        // nothing happens — with nothing on any channel
-                        // to say why. The other commit site in this
-                        // file has always logged it; this one did not.
-                        if let Err(e) = boot_mode::write(&nvs, target) {
-                            log::error!("boot_mode write failed: {e} — not restarting");
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(400));
-                            // SAFETY: no arguments, does not return.
-                            unsafe { esp_idf_svc::sys::esp_restart() };
-                        }
-                    } else {
-                        log::error!("boot_mode: NVS lock unavailable — not restarting");
-                    }
+                    // Not written here: this task's stack is in
+                    // PSRAM, and a flash write aborts from one. See
+                    // `boot_mode::commit_and_restart`.
+                    boot_mode::commit_and_restart(ctx.nvs.clone(), target);
                 }
             }
             if picker.take_just_closed() {
@@ -1073,18 +1063,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 };
                 if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
                     log::warn!("boot_mode -> {} (touch), restarting", target.label());
-                    match ctx.nvs.lock() {
-                        Ok(nvs) => {
-                            if let Err(e) = boot_mode::write(&nvs, target) {
-                                log::error!("boot_mode write failed: {e} — not restarting");
-                            } else {
-                                std::thread::sleep(std::time::Duration::from_millis(400));
-                                // SAFETY: no arguments, does not return.
-                                unsafe { esp_idf_svc::sys::esp_restart() };
-                            }
-                        }
-                        Err(e) => log::error!("boot_mode NVS lock poisoned: {e}"),
-                    }
+                    boot_mode::commit_and_restart(ctx.nvs.clone(), target);
                 }
                 picker.render(&mut display, BootMode::Fst4).ok();
                 if picker.take_just_closed() {

@@ -129,6 +129,19 @@ pub struct ModePicker {
     /// When the current press began, for the hold-to-open gesture.
     press_since: Option<std::time::Instant>,
     armed: Option<(usize, std::time::Instant)>,
+    /// What the finger is currently on, for the pressed highlight.
+    ///
+    /// Without this the widget repaints only when the *selection*
+    /// changes, so pressing the commit bar changed nothing on screen —
+    /// and the press that mattered most was the one with no feedback at
+    /// all. A control that does not acknowledge being touched is
+    /// indistinguishable from a control that is not there, which is how
+    /// this one was reported from the bench.
+    pressed: Option<Target>,
+    /// Set once the commit fires. The caller is on its way to a reboot;
+    /// until it arrives, the bar says so rather than sitting there
+    /// looking unpressed.
+    committing: bool,
     drawn: Option<usize>,
     needs_draw: bool,
 }
@@ -141,6 +154,8 @@ impl ModePicker {
             just_closed: false,
             press_since: None,
             armed: None,
+            pressed: None,
+            committing: false,
             drawn: None,
             needs_draw: false,
         }
@@ -168,6 +183,9 @@ impl ModePicker {
 
         if !pressed {
             self.press_since = None;
+            if self.pressed.take().is_some() {
+                self.needs_draw = true;
+            }
         } else if !was_pressed {
             self.press_since = Some(now);
             if self.open {
@@ -185,6 +203,10 @@ impl ModePicker {
                     self.origin.y,
                     self.armed.map(|(i, _)| MODES[i].1),
                 );
+                if self.pressed != t {
+                    self.pressed = t;
+                    self.needs_draw = true;
+                }
                 match t {
                     Some(Target::Mode(idx)) => {
                         // Selecting only selects. The label stays
@@ -195,6 +217,8 @@ impl ModePicker {
                     }
                     Some(Target::Commit) => {
                         if let Some((idx, _)) = self.armed {
+                            self.committing = true;
+                            self.needs_draw = true;
                             return Some(MODES[idx].0);
                         }
                         // Pressing commit with nothing selected is a
@@ -231,6 +255,8 @@ impl ModePicker {
     fn close(&mut self) {
         self.open = false;
         self.armed = None;
+        self.pressed = None;
+        self.committing = false;
         self.drawn = None;
         self.needs_draw = false;
         self.just_closed = true;
@@ -245,6 +271,9 @@ impl ModePicker {
             return Ok(());
         }
         let armed_idx = self.armed.map(|(i, _)| i);
+        // `needs_draw` is what carries a pressed/released edge here —
+        // neither changes `armed_idx`, so gating on the selection alone
+        // is exactly what made a press invisible.
         if !self.needs_draw && self.drawn == armed_idx {
             return Ok(());
         }
@@ -259,9 +288,13 @@ impl ModePicker {
         for (i, (target, label)) in MODES.iter().enumerate() {
             let top = self.origin.y + i as i32 * PITCH;
             let selected = armed_idx == Some(i);
-            // Green from `decoded_list`'s palette — already known to
-            // render as green on this panel.
-            let (bg, fg) = if selected {
+            // Palette borrowed whole from `decoded_list`, which is
+            // already proven on this panel: GREEN for the current
+            // slot, CSS_ORANGE for the actionable row. Here GREEN is
+            // the standing selection and CSS_ORANGE is the finger.
+            let (bg, fg) = if self.pressed == Some(Target::Mode(i)) {
+                (Rgb565::CSS_ORANGE, Rgb565::BLACK)
+            } else if selected {
                 (Rgb565::GREEN, Rgb565::BLACK)
             } else {
                 (Rgb565::BLACK, Rgb565::WHITE)
@@ -293,15 +326,25 @@ impl ModePicker {
         // The commit bar names what it will do, so nothing depends on
         // remembering which row was tapped.
         let ctop = self.origin.y + commit_top();
-        let (cbg, cfg) = match armed_idx {
-            Some(_) => (Rgb565::new(0, 24, 0), Rgb565::WHITE),
-            None => (Rgb565::BLACK, Rgb565::CSS_GRAY),
+        let (cbg, cfg) = if self.committing {
+            (Rgb565::GREEN, Rgb565::BLACK)
+        } else if self.pressed == Some(Target::Commit) {
+            (Rgb565::CSS_ORANGE, Rgb565::BLACK)
+        } else {
+            match armed_idx {
+                Some(_) => (Rgb565::new(0, 24, 0), Rgb565::WHITE),
+                None => (Rgb565::BLACK, Rgb565::CSS_GRAY),
+            }
         };
         Rectangle::new(Point::new(self.origin.x, ctop), Size::new(WIDTH, COMMIT_H))
             .into_styled(PrimitiveStyle::with_fill(cbg))
             .draw(display)?;
         let mut line: heapless::String<32> = heapless::String::new();
         match armed_idx {
+            Some(i) if self.committing => {
+                let _ = line.push_str("SWITCHING TO ");
+                let _ = line.push_str(MODES[i].1);
+            }
             Some(i) => {
                 let _ = line.push_str("SWITCH TO ");
                 let _ = line.push_str(MODES[i].1);
