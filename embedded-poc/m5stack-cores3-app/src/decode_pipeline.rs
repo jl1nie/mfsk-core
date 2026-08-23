@@ -201,7 +201,12 @@ fn wf_drain(wf_q: esp_idf_svc::sys::QueueHandle_t) -> ! {
         if let Ok(mut ui) = UI.lock() {
             ui.push_waterfall(tick.row);
         }
-        if n % 64 == 0 {
+        // Every 4th row, not every 64th. A `WfTick` arrives once per
+        // FT8 slot, so the original interval sampled this thread's
+        // stack once every sixteen minutes — which is why a capture
+        // session came away with two readings and no idea whether the
+        // 4 KB was comfortable. Refs #163.
+        if n % 4 == 0 {
             crate::board::log_stack_hw("wf_drain");
         }
         n = n.wrapping_add(1);
