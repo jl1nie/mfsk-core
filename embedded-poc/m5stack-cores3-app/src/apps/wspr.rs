@@ -1151,7 +1151,7 @@ fn scan_loop(ctx: ScanCtx) -> ! {
         let mut idat = vec![0.0f32; NBB];
         let mut qdat = vec![0.0f32; NBB];
         load_baseband(GOLDEN_BASEBAND, &mut idat, &mut qdat);
-        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)", false);
+        run_one_slot(&ctx, &mut idat, &mut qdat, "0 (golden)", false, "golden");
     }
 
     let mut slot_num = 1u32;
@@ -1199,6 +1199,7 @@ fn scan_loop(ctx: ScanCtx) -> ! {
             &mut qdat,
             &slot_num.to_string(),
             synthetic,
+            if synthetic { "synthetic" } else { "uac" },
         );
         slot_num = slot_num.wrapping_add(1);
     }
@@ -1225,6 +1226,14 @@ fn run_one_slot(
     qdat: &mut [f32],
     slot_label: &str,
     is_synthetic_source: bool,
+    // What produced this slot's audio, for the log.
+    //
+    // Three things can, and a bool cannot name them: the baked golden
+    // recording (real stations, but a replay), the fabricated
+    // `DDC_TEST_CALL` burst, and a radio. Deriving the label from
+    // `is_synthetic_source` printed the golden slot as `src=uac`,
+    // which is the exact confusion the field was added to remove.
+    source: &str,
 ) {
     let settings = {
         let g = ctx.nvs.lock().expect("settings NVS mutex poisoned");
@@ -1243,8 +1252,7 @@ fn run_one_slot(
     // controller labelled every slot `WAV[n]` whatever the source, and
     // that cost real time on 2026-08-23.
     log::info!(
-        "wspr_app: slot {slot_label} src={} decoded {} station(s)",
-        if is_synthetic_source { "synthetic" } else { "uac" },
+        "wspr_app: slot {slot_label} src={source} decoded {} station(s)",
         results.len()
     );
 
