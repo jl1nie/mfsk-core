@@ -161,6 +161,60 @@ log panel scrolls, so a value printed once at boot is gone before
 anyone looks at the screen. The tick belongs there too, or a frozen
 panel and an idle one are the same picture.
 
+## AW9523B pin names: use Espressif's BSP, not M5GFX
+
+`bsp/m5stack_core_s3/include/bsp/m5stack_core_s3.h` names every pin on
+this expander. Nothing here needs deriving from behaviour:
+
+| expander pin | BSP name | what this firmware wants |
+|---|---|---|
+| P0_0 | `BSP_TOUCH_EN` | HIGH — the FT5x06 does not answer without it |
+| P0_1 | (`_core_s3_bus_en` in M5Unified) | HIGH only in host mode |
+| P0_2 | `BSP_SPEAKER_EN` / `BSP_MIC_EN` | **LOW** — no audio output here |
+| P0_4 | `BSP_SD_EN` | as found |
+| P0_5 | `BSP_USB_EN` | HIGH only in host mode |
+| P1_0 | `BSP_CAMERA_EN` | — |
+| P1_1 | `BSP_LCD_EN` | HIGH |
+| P1_7 | BOOST_EN (SY7088) | HIGH only in host mode |
+
+**M5GFX is not a reference for what to enable.** It brings up a whole
+board, including parts this firmware never drives. Copying its display
+init verbatim (2026-08-23) raised P0_2 and wrote AXP2101 `0x90 = 0xBF`,
+which switched on the speaker amplifier, the ES7210, the camera rail
+and both BLDOs — on a board whose job is to source 5 V to a radio out
+of its own cell. M5Unified names the rails `0xBF` adds: ALDO1 for the
+AW88298 at 1.8 V, ALDO2 for the ES7210, ALDO3 for the camera, ALDO4 for
+the TF card. This board's own power-on value is `0x8b`.
+
+**Register `0x90` survives a reset.** Read-modify-write can only ever
+set bits, so a single boot that wrote `0xBF` leaves every later boot
+inheriting it, however the code reads afterwards. Write it whole.
+
+## Instrumentation on a board with no console
+
+Three separate hours went into hardware theories today that the logs
+had already disproved, because the logs were not reaching anyone.
+
+- **The staging ring is small and the alive tick fills it.** On battery
+  the power decision, the VBUS writes and `start_host()` all happen
+  seconds before WiFi associates, so every line about them is gone by
+  the time the UDP sink can replay it. `[boot-summary]` re-emits the
+  lot once a sink exists — same trick `coredump` already used. It found
+  a two-hour bug on its first boot.
+- **A readback is a claim about the past.** `power_state()` returned
+  what `enable_usb_host_vbus` wrote and the link bar displayed it as
+  the present, so the panel read `V111` regardless of what was true
+  since. Re-read at 1 Hz; show a fault when the expander stops
+  answering.
+- **Missing log lines are not missing hardware.** An I2C scan that
+  listed three devices instead of six was read as a rail collapse and
+  cost an evening. The devices were all present; the datagrams were
+  dropped in a boot-time burst. Before concluding a device is gone,
+  make it report twice.
+- **A scan added today is not a baseline.** There was no
+  before-and-after for that measurement at all, because the probe was
+  younger than the working configuration it was being compared to.
+
 ## Stacks, heaps, and the space between them
 
 **A task stack on these boards is heap memory, and the internal heap
