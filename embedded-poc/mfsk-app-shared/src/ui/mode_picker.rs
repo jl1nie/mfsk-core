@@ -171,7 +171,21 @@ impl ModePicker {
         } else if !was_pressed {
             self.press_since = Some(now);
             if self.open {
-                match hit(self.origin, x, y) {
+                let t = hit(self.origin, x, y);
+                // One line per press, only while the overlay is up, so
+                // it is bounded by how fast a finger can tap. Every
+                // remaining way this widget can fail to commit is
+                // distinguishable from this line alone: whether the
+                // press arrived, where it landed, and whether a
+                // selection was standing when it did. Three flashes
+                // were spent guessing between those instead.
+                log::info!(
+                    "picker: press ({x}, {y}) origin=({}, {}) -> {t:?}, armed={:?}",
+                    self.origin.x,
+                    self.origin.y,
+                    self.armed.map(|(i, _)| MODES[i].1),
+                );
+                match t {
                     Some(Target::Mode(idx)) => {
                         // Selecting only selects. The label stays
                         // readable; the commit bar below says what
@@ -183,6 +197,12 @@ impl ModePicker {
                         if let Some((idx, _)) = self.armed {
                             return Some(MODES[idx].0);
                         }
+                        // Pressing commit with nothing selected is a
+                        // real state (the bar says "pick a mode
+                        // above"), not a fault — but it is also
+                        // indistinguishable on screen from a press
+                        // that was never seen, so say which it was.
+                        log::info!("picker: commit pressed with no selection standing");
                     }
                     None => self.close(),
                 }

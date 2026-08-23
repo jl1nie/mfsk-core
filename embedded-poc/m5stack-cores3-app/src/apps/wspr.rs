@@ -117,7 +117,7 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use display_interface_spi::SPIInterface;
 use mipidsi::{
     models::ILI9342CRgb565,
-    options::{ColorInversion, Orientation, Rotation},
+    options::{ColorInversion, Orientation},
     Builder,
 };
 
@@ -554,7 +554,45 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // device. Same call/ordering `display.rs`'s FT8-controller
             // sequence makes for `BootMode::Uac`, just unconditional
             // here since this app has no other boot mode to gate on.
-            if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
+            // Stay a peripheral while something else is powering the
+            // port.
+            //
+            // One USB-C connector cannot both take power in and hand it
+            // out, so "host or peripheral" is a question about the
+            // cable, not the build. The FT8 controller has checked this
+            // since #163; this receiver did not, and the moment its USB
+            // host stopped being opt-in that gap became the board
+            // refusing to enumerate on a PC at all — the app takes the
+            // PHY before a flasher can reach it, and the only way back
+            // is holding the button into DOWNLOAD mode. On WSL every
+            // one of those costs a `usbipd attach` as well.
+            //
+            // Charging is also the useful thing to do while plugged in.
+            let external = match crate::pmic::vbus_present(&mut i2c) {
+                Ok((present, raw)) => {
+                    log::info!(
+                        "AXP2101 status1=0x{raw:02x} — VBUS {} (bit5)",
+                        if present {
+                            "PRESENT (external power)"
+                        } else {
+                            "absent (battery)"
+                        },
+                    );
+                    present
+                }
+                Err(e) => {
+                    log::warn!("AXP2101 VBUS read failed: {e:#} — assuming battery");
+                    false
+                }
+            };
+            let host_mode = !external;
+            if external {
+                log::warn!(
+                    "external USB power detected — staying a peripheral so the battery charges \
+                     and the port stays flashable. Unplug from the PC and reset to take audio \
+                     from a radio."
+                );
+            } else if let Err(e) = crate::pmic::enable_usb_host_vbus(&mut i2c) {
                 log::error!("BUS_OUT_EN failed: {e:#}");
             }
             // The bus is kept, not dropped: the FT5x06 is on it, and
@@ -570,9 +608,16 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             // ever enumerates, `ddc_loop`'s synthetic generator just
             // keeps running (see [`UAC_AUDIO_ACTIVE`]'s own doc
             // comment), so this is safe to always attempt.
-            log::info!("wspr_app: installing USB host + UAC class driver");
-            if let Err(e) = crate::uac::start_host() {
-                log::error!("wspr_app: UAC host start failed: {e:#}");
+            if host_mode {
+                log::info!("wspr_app: installing USB host + UAC class driver");
+                if let Err(e) = crate::uac::start_host() {
+                    log::error!("wspr_app: UAC host start failed: {e:#}");
+                }
+            } else {
+                log::info!(
+                    "wspr_app: USB host not installed (peripheral mode) — the serial console \
+                     stays up and audio falls back to the synthetic generator"
+                );
             }
 
             let driver = SpiDriver::new(
@@ -691,11 +736,20 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 if let Some(target) = picker.update(c.points > 0, c.x, c.y) {
                     log::warn!("boot_mode -> {} (touch), restarting", target.label());
                     if let Ok(nvs) = ctx.nvs.lock() {
-                        if boot_mode::write(&nvs, target).is_ok() {
+                        // A swallowed failure here is exactly the
+                        // reported symptom — the bar is pressed and
+                        // nothing happens — with nothing on any channel
+                        // to say why. The other commit site in this
+                        // file has always logged it; this one did not.
+                        if let Err(e) = boot_mode::write(&nvs, target) {
+                            log::error!("boot_mode write failed: {e} — not restarting");
+                        } else {
                             std::thread::sleep(std::time::Duration::from_millis(400));
                             // SAFETY: no arguments, does not return.
                             unsafe { esp_idf_svc::sys::esp_restart() };
                         }
+                    } else {
+                        log::error!("boot_mode: NVS lock unavailable — not restarting");
                     }
                 }
             }

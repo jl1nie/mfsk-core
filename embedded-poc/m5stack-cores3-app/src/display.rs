@@ -31,7 +31,7 @@ use esp_idf_hal::{
 };
 use mipidsi::{
     models::ILI9342CRgb565,
-    options::{ColorInversion, Orientation, Rotation},
+    options::{ColorInversion, Orientation},
     Builder,
 };
 
