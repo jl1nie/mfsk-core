@@ -580,3 +580,42 @@ pub fn refresh_power_state(i2c: &mut I2cDriver<'_>) {
     let _ = vbus_mv(i2c);
     let _ = battery_mv(i2c);
 }
+
+/// Print the boot-critical hardware state once, after the log sink is
+/// up.
+///
+/// Everything here is already logged during boot. On battery none of it
+/// survives: WiFi associates seconds after the PMIC and USB work is
+/// done, and the fanout's staging ring — deliberately small, it was
+/// eating the audio transfer buffer — has been overwritten by then. So
+/// the one boot that matters is the one boot with no record, and every
+/// question about it costs another reboot. `coredump` already re-emits
+/// itself for exactly this reason; this is the same trick for the rest.
+///
+/// Live reads, not cached values: the point is what is true *now*, once
+/// the boost has been running for a while.
+pub fn log_boot_summary(i2c: &mut I2cDriver<'_>) {
+    let ldo = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0);
+    let out0 = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT0);
+    let out1 = read_reg(i2c, AW9523B_I2C_ADDR, AW9523_REG_OUT1);
+    let st1 = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1);
+    log::warn!(
+        "[boot-summary] AXP 0x90={} status1={} | AW9523 OUT0={} OUT1={} | bat={}mV vbus={}mV",
+        ldo.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
+        st1.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
+        out0.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
+        out1.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
+        battery_mv_cached(),
+        vbus_mv_cached(),
+    );
+    // Which devices are on the bus right now is the question a readback
+    // cannot answer — an expander that has lost its rail still has a
+    // shadow register full of the bits somebody wrote.
+    let mut present: heapless::String<64> = heapless::String::new();
+    for addr in 0x08u8..0x78 {
+        if read_reg(i2c, addr, 0x00).is_ok() {
+            let _ = core::fmt::Write::write_fmt(&mut present, format_args!(" {addr:02x}"));
+        }
+    }
+    log::warn!("[boot-summary] i2c:{present}");
+}

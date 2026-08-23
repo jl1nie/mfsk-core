@@ -483,11 +483,18 @@ pub fn run_log_panel(
 
         if let Err(e) = crate::uac::start_host() {
             log::error!("UAC host start failed: {e:#}");
+            let mut msg: heapless::String<96> = heapless::String::new();
+            {
+                use core::fmt::Write as _;
+                let _ = write!(&mut msg, "start_host FAILED: {e:#}");
+            }
+            crate::uac::HOST_RESULT.store(msg.as_str());
         }
         crate::log_free_internal("post-uac-host-install");
     }
 
     let mut tick: u32 = 0;
+    let mut boot_summary_sent = false;
 
     // The two render snapshots live on the heap, allocated once.
     //
@@ -558,6 +565,21 @@ pub fn run_log_panel(
         if tick % 12 == 0 {
             if let Some(i2c) = pmic_i2c.as_mut() {
                 crate::pmic::refresh_power_state(i2c);
+                // Once, the first frame after a sink exists to receive
+                // it. In host mode this is the only record there will
+                // ever be of how the boot went.
+                if !boot_summary_sent
+                    && crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false)
+                {
+                    boot_summary_sent = true;
+                    let r = crate::uac::HOST_RESULT.read();
+                    log::warn!(
+                        "[boot-summary] mode={} host_mode={host_mode} start_host: {}",
+                        mode.label(),
+                        if r.is_empty() { "never called" } else { r.as_str() }
+                    );
+                    crate::pmic::log_boot_summary(i2c);
+                }
             }
         }
         if touch_int.is_low() {

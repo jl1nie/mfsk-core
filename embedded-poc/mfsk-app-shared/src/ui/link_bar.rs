@@ -40,8 +40,18 @@ pub const HEIGHT: u32 = 14;
 /// UAC stack because nothing said so.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UsbLink {
-    /// Host driver not installed — external power is present.
+    /// Host driver not installed *by choice* — external power is
+    /// present, so the board charges and stays flashable.
     Peripheral,
+    /// Host mode was chosen — VBUS was enabled — and the host driver is
+    /// not up. Install pending, or it failed.
+    ///
+    /// This used to render as `Peripheral`, because the role was
+    /// derived from "is the host installed" rather than from what the
+    /// firmware decided. A board on battery trying to power a radio
+    /// therefore displayed `P chg`: peripheral, charging. Both halves
+    /// false, and it hid the actual fault.
+    NoHost,
     /// Host installed, VBUS up, nothing enumerated yet.
     Waiting,
     /// A device is enumerated and audio is flowing.
@@ -62,9 +72,14 @@ impl UsbLink {
         }
     }
 
+    fn is_fault(self) -> bool {
+        matches!(self, UsbLink::NoHost | UsbLink::Error)
+    }
+
     fn label(self) -> &'static str {
         match self {
             UsbLink::Peripheral => "chg   ",
+            UsbLink::NoHost => "NOHOST",
             UsbLink::Waiting => "no dev",
             UsbLink::Streaming => "STREAM",
             UsbLink::Error => "ERROR ",
@@ -76,7 +91,7 @@ impl UsbLink {
         // GREEN for live, CSS_ORANGE for actionable, WHITE for inert.
         match self {
             UsbLink::Streaming => Rgb565::GREEN,
-            UsbLink::Error => Rgb565::CSS_ORANGE,
+            UsbLink::Error | UsbLink::NoHost => Rgb565::CSS_ORANGE,
             _ => Rgb565::WHITE,
         }
     }

@@ -1151,6 +1151,17 @@ pub fn host_installed() -> bool {
     HOST_INSTALLED.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// What `start_host` concluded, kept for re-emission once a log sink
+/// exists.
+///
+/// The result is printed the moment it happens, which on battery is
+/// before WiFi has associated — so it goes into the fanout's staging
+/// ring, and the ring is small enough that the alive tick pushes it out
+/// before the UDP sink can replay it. The single most important line of
+/// the boot was therefore never seen on the only channel that works in
+/// host mode. Allocation-free slot, same one the diagnostic probes use.
+pub static HOST_RESULT: crate::log_slot::LogSlot = crate::log_slot::LogSlot::new();
+
 pub fn start_host() -> Result<()> {
     // Set up the driver→app channel BEFORE installing the class
     // driver — `driver_event_cb` may fire as soon as `uac_host_install`
@@ -1227,6 +1238,7 @@ pub fn start_host() -> Result<()> {
     );
     set_state(UacState::Waiting);
     HOST_INSTALLED.store(true, core::sync::atomic::Ordering::Release);
+    HOST_RESULT.store("host+class driver installed OK");
     spawn_device_count_probe();
     Ok(())
 }
@@ -1313,8 +1325,17 @@ pub fn link_info() -> mfsk_app_shared::ui::link_bar::LinkInfo {
 
     let (state, _sa, _rms) = status();
     let (devices, _clients, _events, _err) = usb_counters();
+    let (tried_vbus, ..) = crate::pmic::power_state();
+    // The role comes from what the firmware *decided*, which is exactly
+    // "did it enable VBUS", not from whether the driver came up. A
+    // board that chose host mode and has no host is a fault, and has to
+    // read as one.
     let usb = if !host_installed() {
-        UsbLink::Peripheral
+        if tried_vbus {
+            UsbLink::NoHost
+        } else {
+            UsbLink::Peripheral
+        }
     } else {
         match state {
             UacState::Streaming => UsbLink::Streaming,
