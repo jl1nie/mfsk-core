@@ -141,18 +141,31 @@ pub fn report_previous_crash() {
 
     let depth = (summary.exc_bt_info.depth as usize).min(summary.exc_bt_info.bt.len());
     if depth > 0 {
-        let mut bt = String::new();
-        for pc in &summary.exc_bt_info.bt[..depth] {
-            bt.push_str(&format!("0x{pc:08x} "));
-        }
-        log::error!(
-            "coredump: backtrace{} {bt}",
-            if summary.exc_bt_info.corrupted {
-                " (corrupted)"
-            } else {
-                ""
+        // Six frames per line, not one line of sixteen.
+        //
+        // `log_sink::LINE_MAX` is 160 bytes and the fanout clips to it,
+        // so a full backtrace arrived over UDP as
+        // `coredump: backtrace ~` — the one line that would have named
+        // the faulting task's call chain, gone. Raising LINE_MAX would
+        // widen the staging ring (`String<160>` x 32) in the internal
+        // DRAM the USB host path is competing for; splitting costs
+        // nothing. Refs #163.
+        const PER_LINE: usize = 6;
+        for (i, chunk) in summary.exc_bt_info.bt[..depth].chunks(PER_LINE).enumerate() {
+            let mut bt = String::new();
+            for pc in chunk {
+                bt.push_str(&format!("0x{pc:08x} "));
             }
-        );
+            log::error!(
+                "coredump: bt[{}..]{} {bt}",
+                i * PER_LINE,
+                if summary.exc_bt_info.corrupted {
+                    " (corrupted)"
+                } else {
+                    ""
+                }
+            );
+        }
     }
 
     // 画面用は1行に圧縮 (パネル幅は30文字なので、タスク名と原因と PC だけ)。

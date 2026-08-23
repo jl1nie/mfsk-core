@@ -157,9 +157,7 @@ fn main() -> ! {
         // the thread keeps it and never returns.
         let modem = peripherals.modem;
         let nvs_for_wifi = nvs_part.clone();
-        let spawned = std::thread::Builder::new()
-            .stack_size(24 * 1024)
-            .spawn(move || {
+        let spawned = crate::board::spawn_named(c"wifi", 24 * 1024, move || {
                 let sysloop = match EspSystemEventLoop::take() {
                     Ok(s) => s,
                     Err(e) => {
@@ -234,12 +232,13 @@ fn main() -> ! {
                         // `handle`'s `Drop` tears the association down,
                         // so this thread has to hold it forever.
                         loop {
+                            crate::board::log_stack_hw("wifi");
                             std::thread::sleep(std::time::Duration::from_secs(60));
                         }
                     }
                     Err(e) => log::warn!("WiFi STA failed: {e:#} — UDP log disabled"),
                 }
-            });
+        });
         if let Err(e) = spawned {
             log::error!("wifi thread spawn failed ({e}) — continuing without WiFi");
         }
@@ -248,9 +247,7 @@ fn main() -> ! {
     match mode {
         boot_mode::BootMode::Decode => {
             log_free_internal("pre-thread-spawn");
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(|| decode_pipeline::run());
+            let pipeline_spawn = crate::board::spawn_named(c"decode", 32 * 1024, || decode_pipeline::run());
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline spawn failed ({e})");
             }
@@ -263,9 +260,9 @@ fn main() -> ! {
             // Note: uac::start_host() itself is called in display::run_log_panel
             // after pmic::init() drives BUS_OUT_EN HIGH.
             log_free_internal("pre-thread-spawn");
-            let pipeline_spawn = std::thread::Builder::new()
-                .stack_size(32 * 1024)
-                .spawn(|| decode_pipeline::run_with_source(|q| uac::set_chunk_q(q)));
+            let pipeline_spawn = crate::board::spawn_named(c"decode", 32 * 1024, || {
+                decode_pipeline::run_with_source(|q| uac::set_chunk_q(q))
+            });
             if let Err(e) = pipeline_spawn {
                 log::error!("decode_pipeline (Uac) spawn failed ({e})");
             }

@@ -59,10 +59,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
     source_spawn(chunk_q);
 
     let wf_q_addr = wf_q as usize;
-    std::thread::Builder::new()
-        .stack_size(4 * 1024)
-        .spawn(move || wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t))
-        .expect("spawn wf drainer");
+    crate::board::spawn_named(c"wf_drain", 4 * 1024, move || {
+        wf_drain(wf_q_addr as esp_idf_svc::sys::QueueHandle_t)
+    })
+    .expect("spawn wf drainer");
 
     log::info!("decode pipeline ready (q_thresh={DEFAULT_Q_THRESH}, band 200..3000 Hz, cores3-app phase 0)");
 
@@ -118,6 +118,10 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
             t_done - t_slot_recv,
         );
         slot_seq = slot_seq.wrapping_add(1);
+        // Per-slot, because this is the thread that runs the decode:
+        // deep call chains through `dual_core` land here, and this is
+        // the frame that would overflow first. Refs #163.
+        crate::board::log_stack_hw("decode");
 
         for r in results.iter() {
             mfsk_app_shared::time_sync::record_decode_dt(r.dt_sec);
@@ -191,10 +195,15 @@ fn push_tx_line(qso: &QsoManager, intent: Option<&qso::TxIntent>) {
 }
 
 fn wf_drain(wf_q: esp_idf_svc::sys::QueueHandle_t) -> ! {
+    let mut n: u32 = 0;
     loop {
         let tick = pipeline::recv_box::<pipeline::WfTick>(wf_q);
         if let Ok(mut ui) = UI.lock() {
             ui.push_waterfall(tick.row);
         }
+        if n % 64 == 0 {
+            crate::board::log_stack_hw("wf_drain");
+        }
+        n = n.wrapping_add(1);
     }
 }

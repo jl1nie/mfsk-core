@@ -86,3 +86,55 @@ pub const USB_OTG_DM: i32 = 19;
 // ── Audio (Phase 3-Core) ──────────────────────────────────────────────
 pub const ES7210_I2C_ADDR: u8 = 0x40;
 pub const AW88298_I2C_ADDR: u8 = 0x36;
+
+/// Spawn a `std::thread` under a name FreeRTOS actually keeps.
+///
+/// `std::thread::Builder::name()` sets a Rust-side name and nothing
+/// else: the FreeRTOS task is still called "pthread". That is fine
+/// until something crashes, at which point the coredump reports
+/// `task 'pthread'` and cannot say *which* of them — which is exactly
+/// where the 2026-08-23 stack-overflow hunt stalled, with four
+/// candidate threads and no way to tell them apart. The task name
+/// lives in `esp_pthread_cfg_t`, so it has to be set through the
+/// spawn configuration instead.
+///
+/// Starting from `Default::default()` (i.e. `esp_pthread_get_default_config`)
+/// keeps priority and affinity exactly as a plain `Builder` spawn
+/// would have them; only the name and the stack size are ours.
+pub fn spawn_named<F>(
+    name: &'static core::ffi::CStr,
+    stack_size: usize,
+    f: F,
+) -> std::io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
+
+    let cfg = ThreadSpawnConfiguration {
+        name: Some(name),
+        stack_size,
+        ..Default::default()
+    };
+    if let Err(e) = cfg.set() {
+        log::warn!("spawn_named: config set failed for {name:?}: {e:?} — task will be 'pthread'");
+    }
+    let result = std::thread::Builder::new().stack_size(stack_size).spawn(f);
+    // Restore, so a later plain spawn does not inherit this name.
+    if let Err(e) = ThreadSpawnConfiguration::default().set() {
+        log::warn!("spawn_named: config restore failed: {e:?}");
+    }
+    result
+}
+
+/// This task's remaining stack, in bytes.
+///
+/// Allocates nothing, blocks on nothing, and costs four bytes of the
+/// stack it measures — which is why it is the first thing to reach for
+/// here rather than the last. The main task's own overflow was found
+/// with one of these in a single flash.
+pub fn log_stack_hw(tag: &str) {
+    // SAFETY: null = the calling task.
+    let hw = unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
+    log::info!("[stack] {tag} hw={hw}");
+}

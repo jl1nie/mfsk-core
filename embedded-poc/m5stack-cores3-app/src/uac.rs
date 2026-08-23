@@ -110,25 +110,28 @@ use mfsk_core::engine::dsp::resample::LinearResamplerI16To12k;
 /// stack, and anything it spawns later without going through this
 /// helper, is unaffected.
 fn spawn_psram_thread<F>(
-    name: &str,
+    name: &'static core::ffi::CStr,
     stack_size: usize,
     f: F,
 ) -> std::io::Result<std::thread::JoinHandle<()>>
 where
     F: FnOnce() + Send + 'static,
 {
+    // `name` goes into the spawn configuration, not into
+    // `Builder::name()`. The latter is Rust-side only, so every task
+    // here reported as 'pthread' — and a coredump that says
+    // `task 'pthread'` cannot tell four candidate threads apart, which
+    // is where a stack-overflow hunt stalls. Refs #163.
     let psram_cfg = ThreadSpawnConfiguration {
+        name: Some(name),
         stack_size,
         stack_alloc_caps: MallocCap::Spiram | MallocCap::Cap8bit,
         ..Default::default()
     };
     if let Err(e) = psram_cfg.set() {
-        log::warn!("uac: ThreadSpawnConfiguration::set (PSRAM stack) failed for {name}: {e:?} — falling back to internal-DRAM stack");
+        log::warn!("uac: ThreadSpawnConfiguration::set (PSRAM stack) failed for {name:?}: {e:?} — falling back to internal-DRAM stack");
     }
-    let result = std::thread::Builder::new()
-        .stack_size(stack_size)
-        .name(name.into())
-        .spawn(f);
+    let result = std::thread::Builder::new().stack_size(stack_size).spawn(f);
     // Restore the default (internal-DRAM) config regardless of
     // whether the spawn above succeeded, so this calling thread's
     // own subsequent spawns (if any) aren't silently left on PSRAM.
@@ -166,14 +169,34 @@ const UAC_DRIVER_TASK_CORE: sys::BaseType_t = 0;
 /// + sender state and any future device-cleanup paths.
 const APP_TASK_STACK: usize = 4096;
 
-/// `uac_reader` task stack. 10 KB: 4 KB for the `READER_BUFFER_BYTES`
-/// stack array, the rest for the function's frame, `Instant`, the
-/// format machinery for the 1 Hz log line (Rust's `format_args!` +
-/// `write!` chain is surprisingly stack-heavy on Xtensa), and the
-/// IDF `uac_host_device_read` call's own stack usage. Earlier sizes
-/// at 4 KB (= buffer alone) and 8 KB both flagged by Gemini PR #98
-/// as tight; 10 KB gives the log path real headroom.
-const READER_TASK_STACK: usize = 10240;
+/// `uac_reader` task stack.
+///
+/// **Measured, finally, rather than estimated.** This constant went
+/// 4 KB -> 8 KB -> 10 KB, each step a review comment saying the
+/// previous looked tight (PR #98), and each step still an estimate.
+/// With a radio actually streaming, `uxTaskGetStackHighWaterMark`
+/// reported **36 bytes** free at the low-water point: the true usage
+/// is ~10.2 KB against a 10,240 B stack.
+///
+/// That is what was rebooting the board 40-76 s into every capture
+/// session on 2026-08-23. It never showed as a stack overflow because
+/// nothing was checking — until `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK`
+/// turned it into an immediate panic naming this task, instead of a
+/// silent write past the end of the stack. Whether a given boot
+/// survived came down to how deeply interrupts happened to be nested
+/// at the next context switch, which is why it looked intermittent.
+///
+/// What actually lives here: `READER_BUFFER_BYTES` (4 KB) plus
+/// `left_scratch` (2 KB) plus `dst_scratch` (1 KB) as stack arrays,
+/// the resampler, and the 1 Hz log line — `format_args!` through the
+/// fanout is far heavier on Xtensa than it looks, and it is on this
+/// path once a second.
+///
+/// 24 KB, and it is free: this task is spawned through
+/// [`spawn_psram_thread`], so its stack is PSRAM and none of this
+/// competes with the internal DRAM the USB host stack needs.
+/// Re-check `[stack] uac_reader hw=` in the log before trimming it.
+const READER_TASK_STACK: usize = 24576;
 
 /// Read buffer size per `uac_host_device_read` call. 4 KB = 1024
 /// stereo i16 samples = ~21 ms at 48 kHz stereo — short enough that
@@ -678,7 +701,7 @@ fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     RX_ERRORS.store(0, Ordering::Relaxed);
 
     let handle_wrapped = DeviceHandle(handle);
-    if let Err(e) = spawn_psram_thread("uac_reader", READER_TASK_STACK, move || {
+    if let Err(e) = spawn_psram_thread(c"uac_reader", READER_TASK_STACK, move || {
         reader_thread(handle_wrapped)
     }) {
         let stop_err = unsafe { sys::uac::uac_host_device_stop(handle) };
@@ -904,6 +927,7 @@ fn reader_thread(handle: DeviceHandle) {
                  | audio {out_samples} sa/s (want 12000), rms {dbfs:.1} dBFS, peak {peak}, \
                  clipped {clipped} | internal={free_internal} largest={largest_internal}",
             );
+            crate::board::log_stack_hw("uac_reader");
             UAC_SA_PER_S.store(out_samples, Ordering::Release);
             UAC_RMS_MDB.store(
                 if out_samples > 0 {
@@ -1021,7 +1045,7 @@ pub fn start_host() -> Result<()> {
     EVENT_SENDER
         .set(tx)
         .map_err(|_| anyhow!("uac: EVENT_SENDER double init — start_host called twice?"))?;
-    spawn_psram_thread("uac_app", APP_TASK_STACK, move || app_task(rx))
+    spawn_psram_thread(c"uac_app", APP_TASK_STACK, move || app_task(rx))
         .map_err(|e| anyhow!("uac_app spawn failed: {e}"))?;
     log::info!("uac: app_task spawned (stack={APP_TASK_STACK} B)");
 
@@ -1043,7 +1067,7 @@ pub fn start_host() -> Result<()> {
         return Err(anyhow!("usb_host_install failed (err={err:#x})"));
     }
 
-    if let Err(e) = spawn_psram_thread("usb_events", USB_EVENTS_TASK_STACK, usb_events_task) {
+    if let Err(e) = spawn_psram_thread(c"usb_events", USB_EVENTS_TASK_STACK, usb_events_task) {
         let uninstall_err = unsafe { sys::usb_host_uninstall() };
         if uninstall_err != sys::ESP_OK as sys::esp_err_t {
             log::error!(
@@ -1104,10 +1128,7 @@ pub fn start_host() -> Result<()> {
 ///
 /// Refs #163.
 fn spawn_device_count_probe() {
-    let _ = std::thread::Builder::new()
-        .stack_size(3072)
-        .name("uac_probe".into())
-        .spawn(|| {
+    let _ = crate::board::spawn_named(c"uac_probe", 3072, || {
             let mut last: i32 = -1;
             let mut since_log = u32::MAX;
             loop {
