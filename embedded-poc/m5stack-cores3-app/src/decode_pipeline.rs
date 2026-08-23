@@ -104,6 +104,28 @@ pub fn run_with_source<F: FnOnce(QueueHandle_t)>(source_spawn: F) -> ! {
         let coarse_us = t_coarse_done - t_post_recv;
         let tail_use = (slotend.min(t_early_done) - t_coarse_done).max(0);
         let post_slotend = (t_done - slotend).max(0);
+        // `slot_wait` near zero means the pipeline never got to wait for
+        // the next slot — it was still working when the slot ended.
+        //
+        // On FT8 that is an operating limit rather than a fault: 15 s
+        // is genuinely tight, `coarse` scales with how much signal is
+        // on the band, and stations transmit in alternating periods, so
+        // the busier of the two runs out of time and defers candidates.
+        // Measured 2026-08-23 on 40 m: seven decodes on one period,
+        // one or two on the other, with `coarse` at 101 ms against
+        // 180 ms. Worth surfacing precisely because it is expected —
+        // the alternative is reading it out of one field in seven.
+        //
+        // WSPR and FST4 are the other case: their monitor loops are
+        // built with deliberate slack, so an over-budget slot there
+        // means a fault. Do not carry this framing across.
+        let slot_wait_us = t_slot_recv - t_early_done;
+        if slot_wait_us < 10_000 {
+            log::warn!(
+                "WAV[{wav_idx}] OVER BUDGET — no idle before the next slot \
+                 ({post_slotend} us past slot end, {n_deferred} candidates deferred)"
+            );
+        }
         log::info!(
             "WAV[{wav_idx}] p1={n_pass1} ready={n_ready} defer={n_deferred} dec={} \
              tail_win={}us coarse={}us early={}us tail_use={}us post_slotend={}us \

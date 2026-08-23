@@ -730,6 +730,38 @@ fn scan_loop() -> ! {
             loop_ms,
             first_ms,
         );
+        // The budget, stated rather than left to be derived from the
+        // numbers above.
+        //
+        // **This receiver is designed to sit far inside it.** A monitor
+        // running FST4-60 has a 60 s slot against a candidate loop
+        // measured in seconds, and that slack is deliberate — it is
+        // what absorbs a crowded slot, a WiFi burst and the display
+        // task without dropping candidates. A low occupancy figure here
+        // is the design working, not headroom to reclaim.
+        //
+        // Which is why the over-budget branch is a `warn`: unlike FT8,
+        // where a 15 s slot on a busy band genuinely runs out of time
+        // and losing candidates is the operating limit, this one
+        // exceeding its slot means something is wrong rather than
+        // something is busy.
+        let used_ms = t_search_ms + loop_ms;
+        let budget_ms = SLOT_US / 1000;
+        if used_ms > budget_ms {
+            log::warn!(
+                "fst4_app::scan: slot {slot_num} OVER BUDGET — {used_ms} ms of {budget_ms} ms \
+                 ({:.0}%). This receiver is built with slack; exceeding the slot means a fault, \
+                 not a busy band",
+                used_ms as f64 / budget_ms as f64 * 100.0,
+            );
+        } else {
+            log::info!(
+                "fst4_app::scan: slot {slot_num} budget — {used_ms} ms of {budget_ms} ms \
+                 ({:.0}%), {} ms spare",
+                used_ms as f64 / budget_ms as f64 * 100.0,
+                budget_ms - used_ms,
+            );
+        }
         log::info!(
             "fst4_app::scan: slot {slot_num} per candidate — recentre {} ms, \
              sync-search {} ms, decode {} ms",
