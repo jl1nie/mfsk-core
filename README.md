@@ -641,6 +641,12 @@ reference:
   apples-to-apples verification against a real WSJT-X `jt9` build
   (building `jt9`/`msk144sim`/Hamlib from source, `msk144sim`'s SNR
   convention, and the measured baseline results).
+- **M5Stack CoreS3 receiver manual:**
+  [`docs/reference/MANUAL_M5STACK_CORES3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STACK_CORES3.md)
+  — the main hardware target: four receivers in one image (FT8 over USB
+  Audio, WSPR, FST4, and a radio-free demo), mode switching from the
+  touch panel, the host-versus-peripheral power rule, the RTC, and why
+  a board with no clock decodes nothing.
 - **M5StickS3 FT8 controller manual:**
   [English `docs/reference/MANUAL_M5STICKS3.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.md)
   / [日本語 `docs/reference/MANUAL_M5STICKS3.ja.md`](https://github.com/jl1nie/mfsk-core/blob/main/docs/reference/MANUAL_M5STICKS3.ja.md)

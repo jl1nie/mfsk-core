@@ -9,8 +9,11 @@ needed, how the C ABI is shaped, and what performance to expect on
 the targets we exercise today.
 
 For host-only usage (no embedded) see [`docs/reference/LIBRARY.md`](LIBRARY.md);
-for operating an existing FT8 controller built on this library see
-[`docs/reference/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md).
+for operating a receiver built on this library see
+[`docs/reference/MANUAL_M5STACK_CORES3.md`](MANUAL_M5STACK_CORES3.md)
+(the CoreS3, which takes audio from a radio over USB) or
+[`docs/reference/MANUAL_M5STICKS3.md`](MANUAL_M5STICKS3.md)
+(the StickS3 demo board).
 
 ## Architecture: how f32 and fixed-point share one codebase
 
