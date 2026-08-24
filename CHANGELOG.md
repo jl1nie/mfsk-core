@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.1 — ハムフェア2026 booth material, release tooling that runs on macOS
+## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS
 
 **Why a patch bump.** Documentation and tooling. No public API change,
 no decoder behaviour change, no measured sensitivity movement. This
@@ -35,6 +35,14 @@ cadence".
   and why, and the fact that there is no `src/core/`. A cold start had
   to rediscover all of it.
 
+- **`jt9::softsym::TONE_SPACING` reads the trait constant.** It and
+  `<Jt9 as ModulationParams>::TONE_SPACING_HZ` were both written out as
+  `12_000.0 / 6912.0` — identical `f32` to the bit, so nothing was
+  wrong, but they agreed by coincidence rather than by construction,
+  and a change to JT9's modulation geometry would have moved one and
+  left the other behind. Same value, same public name, no call site
+  touched.
+
 ### Fixed
 
 - **`scripts/release-status.sh`'s cadence section died on macOS.**
@@ -50,6 +58,51 @@ cadence".
   the same commit's timestamp already in seconds, from the same source
   as the `%cs` on the line above. `find -newermt` further down was
   checked and is fine — BSD `find` supports it.
+
+### Documentation
+
+- **The remaining bare `12_000.0` literals are classified** (issue
+  #323, closing out #321's deferral). #321 consolidated three misnamed
+  constants into `engine::protocol::SAMPLE_RATE_HZ` and left the rest
+  as literals, calling a mechanical replacement churn — that decision
+  stands. What it left undone was the distinction #307/#309 actually
+  need: a definitional rate is not an analysis-grid rate.
+
+  All 120 sites are now classified (47 test, 13 prose, 60 production),
+  and the production sites are modulation spec, synthesiser output
+  rate, raw-PCM ingest grid, or analysis grid. **Only the last would
+  have to move for a receiver analysing at another rate, and it is
+  seven sites, not a hundred**: `ft8::params::DF`,
+  `engine::ft4_coarse::DF_HZ`, `jt9::softsym::FSAMPLE_DOWN`,
+  `jt9::softsym`'s two `df1`, `wspr::baseband`'s `df`, and
+  `msk144::spd`'s `fs`/`df`. FST4's own are already parametrised
+  (`SyncDims::of(sample_rate_hz)`, `DdcCascadeConfig::input_rate_hz`)
+  because #307 needed them to be.
+
+  None of the seven is wrong today, and that is checkable rather than
+  assumed: `RxGrid` — the only way a non-12 kHz analysis rate enters
+  the crate — is constructed in exactly three places (`fst4::ddc`, one
+  `engine::sync` test, the embedded FST4 monitor), so no
+  FT8/FT4/JT9/WSPR/MSK144 path can reach a rate other than the
+  canonical ingest one. They are annotated rather than parametrised:
+  two are `pub const`, so parametrising would cost a breaking change
+  for a rate nothing varies, and #321's own note — "classifying the
+  sites is work that refactor should do with the measurement in hand" —
+  is borne out by what #307 produced, where the right shape turned out
+  to be a split rather than a rate threaded through everything.
+
+  One finding ran opposite to the issue's expectation. `wspr::ddc` —
+  the one place outside FST4 where a non-12 kHz analysis rate is
+  already real production behaviour — is correctly *named* but not
+  parametrised: `mixer_table()`'s eight entries exist because
+  `1500 / AUDIO_RATE_HZ` is exactly `1/8`, so another input rate
+  changes the mixer's period and leaves the table silently wrong
+  rather than failing to compile. Nothing needs it to vary, so this is
+  recorded at the site rather than fixed.
+
+  The classification itself lives on `SAMPLE_RATE_HZ`'s own doc
+  comment, with a one-line marker at each analysis-grid site so grep
+  finds them too.
 
 ## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + the CoreS3 receiver decoding off a radio (#163/#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
 
