@@ -43,6 +43,29 @@ cadence".
   left the other behind. Same value, same public name, no call site
   touched.
 
+- **`scripts/release-status.sh` tells a documentation pass from a
+  decoder change.** The tier-C section listed every protocol whose
+  directory had commits since the sweep baseline, which meant a
+  comment-only commit read exactly like a decoder change — and a
+  tier-C sweep is tens of minutes to hours per protocol. #323's own
+  classification pass demonstrated it: one commit added a doc comment
+  to `ft8/params.rs`, `jt9/softsym.rs`, `wspr/baseband.rs` and
+  `msk144/spd.rs`, and four protocols appeared as needing re-sweeping
+  against a diff that adds and removes no executable line.
+
+  Each commit's diff under the protocol's own directory is now checked
+  for a non-comment changed line. Prose-only commits are printed with
+  a `[comments only]` marker rather than hidden — "nothing to sweep"
+  should be visibly derived, not silently assumed — and a protocol
+  whose commits are all prose-only drops out of the
+  `run-sensitivity-sweeps.sh` line. The same filter applies to the
+  shared-code (`engine`/`dsp`) warning.
+
+  Rust line comments only: a `/* … */` body reads as code, and a merge
+  commit is treated as code because plain `git show` renders it as an
+  empty diff. Both err toward re-sweeping something that did not need
+  it, never toward skipping something that did.
+
 ### Fixed
 
 - **`scripts/release-status.sh`'s cadence section died on macOS.**

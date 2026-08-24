@@ -95,12 +95,41 @@ if [[ -n "$last_tag" ]]; then
 fi
 
 # ── Which sensitivity sweeps are actually needed ─────────────────────
+
+# True when `$1` changes nothing but comments and blank lines under
+# `$2`.
+#
+# A tier-C sweep is tens of minutes to hours per protocol, so a
+# documentation pass that happens to touch a protocol directory must
+# not read the same as a decoder change. #323 classified the crate's
+# 12 kHz literals and added a doc comment to `ft8/params.rs`,
+# `jt9/softsym.rs`, `wspr/baseband.rs` and `msk144/spd.rs` in one
+# commit — which showed up here as four protocols "whose own source
+# changed", against a diff that adds and removes no executable line.
+#
+# Rust line comments only. A `/* … */` body reads as code and the
+# commit is reported as a code change: this errs toward re-sweeping
+# something that did not need it, never toward skipping something that
+# did, which is the only direction that is safe to be wrong in.
+is_prose_only() {
+    local sha="$1"; shift
+    # A merge commit shows no diff under plain `git show`, which would
+    # read as "no code changed". Treat it as code.
+    [[ -n "$(git rev-list --parents -n1 "$sha" | cut -d' ' -f3-)" ]] && return 1
+    ! git show --format='' --unified=0 "$sha" -- "$@" \
+        | grep -E '^[+-]' \
+        | grep -Ev '^(\+\+\+|---)' \
+        | sed -E 's/^[+-][[:space:]]*//' \
+        | grep -qEv '^(//.*)?$'
+}
+
 bold "== tier-C sweeps =="
 baseline=docs/notes/sweep-baseline.json
 base_date=$(git log -1 --format=%cs -- "$baseline")
 echo "  baseline last updated: $base_date ($baseline)"
 echo "  protocols whose own source changed since then:"
 needed=()
+shared=0
 for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144; do
     d="mfsk-core/src/$proto"
     [[ -d "$d" ]] || continue
@@ -108,13 +137,23 @@ for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144; do
     # them up, which is the hand-reconstruction this script exists to
     # remove — and a clippy sweep counts the same as a decoder change.
     mapfile -t subjects < <(git log --since="$base_date" --format='%h %s' -- "$d")
-    if (( ${#subjects[@]} > 0 )); then
-        printf '    %-8s %d commit(s)\n' "$proto" "${#subjects[@]}"
-        for line in "${subjects[@]}"; do
-            printf '               %s\n' "${line:0:88}"
-        done
-        needed+=("$proto")
-    fi
+    (( ${#subjects[@]} > 0 )) || continue
+    code=0
+    rendered=()
+    for line in "${subjects[@]}"; do
+        if is_prose_only "${line%% *}" "$d"; then
+            rendered+=("               ${line:0:72}  [comments only]")
+        else
+            rendered+=("               ${line:0:88}")
+            code=$(( code + 1 ))
+        fi
+    done
+    printf '    %-8s %d commit(s), %d touching code\n' \
+        "$proto" "${#subjects[@]}" "$code"
+    printf '%s\n' "${rendered[@]}"
+    # Prose-only commits are printed, not hidden — "nothing to sweep"
+    # should be visibly derived rather than silently assumed.
+    (( code > 0 )) && needed+=("$proto")
 done
 if (( ${#needed[@]} == 0 )); then
     ok "none — the recorded sweep still stands"
@@ -124,7 +163,11 @@ else
 fi
 
 # Shared code is the part a protocol list cannot decide for you.
-shared=$(git log --since="$base_date" --oneline -- mfsk-core/src/engine mfsk-core/src/dsp 2>/dev/null | wc -l)
+while IFS= read -r sha; do
+    [[ -n "$sha" ]] || continue
+    is_prose_only "$sha" mfsk-core/src/engine mfsk-core/src/dsp && continue
+    shared=$(( shared + 1 ))
+done < <(git log --since="$base_date" --format=%h -- mfsk-core/src/engine mfsk-core/src/dsp 2>/dev/null)
 if (( shared > 0 )); then
     echo
     warn "$shared commits touched mfsk-core/src/{engine,dsp} — shared code."
