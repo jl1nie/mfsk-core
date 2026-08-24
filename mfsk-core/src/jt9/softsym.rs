@@ -38,7 +38,13 @@ pub const NDOWN: usize = NFFT1 / NFFT2;
 pub const FSAMPLE_DOWN: f32 = 12_000.0 / NDOWN as f32;
 /// JT9 tone spacing in Hz at 12 kHz. Definitional — a property of the
 /// transmitted signal (#323).
-pub const TONE_SPACING: f32 = 12_000.0 / 6912.0;
+///
+/// Taken from the trait constant rather than respelling
+/// `12_000.0 / 6912.0` a second time: both expressions are the same
+/// f32 to the bit, so this said the same thing by coincidence rather
+/// than by construction, and a change to `Jt9`'s modulation geometry
+/// would have moved one and not the other.
+pub const TONE_SPACING: f32 = <super::Jt9 as crate::engine::ModulationParams>::TONE_SPACING_HZ;
 
 const SCALE: f32 = 10.0;
 /// LLR clamp matching WSJT-X (it uses int8 = ±127).
