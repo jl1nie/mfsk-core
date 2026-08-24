@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>mfsk-core — 配布用リーフレット（A4 両面）</title>
+<style>
+  :root{--ink:#12233b;--muted:#5b6b7f;--accent:#b45309;--accent2:#0f766e;
+        --rule:#d5dbe3;--tint:#f3f6f9;--tint2:#fdf6ec}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic","Noto Sans CJK JP",Meiryo,sans-serif;
+       color:var(--ink);background:#8a929c;-webkit-print-color-adjust:exact;print-color-adjust:exact;
+       font-feature-settings:"palt" 1}
+  code,.mono{font-family:"SFMono-Regular",Consolas,"Noto Sans Mono CJK JP",monospace;font-size:.92em}
+
+  .page{position:relative;width:210mm;height:297mm;padding:13mm 14mm 10mm;background:#fff;
+        overflow:hidden;page-break-after:always;break-after:page;display:flex;flex-direction:column}
+  .page:last-child{page-break-after:auto;break-after:auto}
+  @media screen{body{padding:16px 0}.page{margin:0 auto 16px;box-shadow:0 3px 16px rgba(0,0,0,.35)}}
+  @page{size:A4 portrait;margin:0}
+  @media print{body{background:#fff;padding:0}.page{margin:0;box-shadow:none}}
+
+  h2.sec{font-size:11pt;margin:0 0 2mm;padding-bottom:1.1mm;border-bottom:2px solid var(--ink);
+         letter-spacing:.01em}
+  h3{font-size:9.2pt;margin:0 0 1.4mm;color:var(--accent2)}
+  p{margin:0 0 2mm;font-size:8.1pt;line-height:1.56}
+  ul{margin:0;padding-left:4.8mm}
+  li{font-size:8.1pt;line-height:1.5;margin-bottom:.9mm}
+  li::marker{color:var(--accent)}
+  .note{font-size:7.1pt;color:var(--muted);line-height:1.45}
+  .blk{margin-bottom:3mm}
+  .blk:last-child{margin-bottom:0}
+  .cols{display:grid;gap:5mm}
+  .c2{grid-template-columns:1fr 1fr}
+  .c3{grid-template-columns:1fr 1fr 1fr}
+  .card{border:1px solid var(--rule);border-radius:2mm;padding:2.8mm 3.2mm;background:var(--tint)}
+  .card.warm{background:var(--tint2);border-color:#e8d4b4}
+  .card h3{margin-top:0}
+  .hl{background:linear-gradient(transparent 62%,#fde3c3 62%);font-weight:600}
+
+  table{width:100%;border-collapse:collapse;font-size:7.6pt}
+  th,td{text-align:left;padding:1mm 1.6mm;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{background:var(--ink);color:#fff;font-weight:600;font-size:7.2pt;border-bottom:none}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  tbody tr:nth-child(even){background:#f8fafc}
+
+  /* front masthead */
+  .mast{display:flex;align-items:flex-start;gap:6mm;border-bottom:3px solid var(--ink);
+        padding-bottom:4mm;margin-bottom:5mm;flex:none}
+  .mast .kick{font-size:8pt;letter-spacing:.2em;color:var(--accent);font-weight:700}
+  .mast h1{font-size:27pt;margin:1mm 0 0;line-height:1;letter-spacing:-.01em}
+  .mast .tl{font-size:10.2pt;font-weight:700;line-height:1.48;margin-top:3mm}
+  .mast .tl em{font-style:normal;color:var(--accent)}
+  .mast .url{font-size:8pt;color:var(--muted);margin-top:2.5mm;letter-spacing:.02em}
+  .qrbox{flex:none;text-align:center;margin-left:auto}
+  .qrbox svg{width:21mm;height:21mm;display:block}
+  .qrbox .qcap{font-size:6.8pt;color:var(--muted);margin-top:1.2mm}
+
+  .kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}
+  .kpi .k{border-left:3px solid var(--accent);padding:.5mm 0 .5mm 3mm}
+  .kpi .kv{font-size:12.5pt;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums}
+  .kpi .kv small{font-size:9pt;font-weight:600}
+  .kpi .kl{font-size:6.9pt;color:var(--muted);line-height:1.4;margin-top:.6mm}
+
+  .chain{display:flex;align-items:stretch;gap:0;margin-bottom:3mm}
+  .chain .box{flex:1;border:1.4px solid var(--ink);border-radius:1.8mm;padding:2.2mm 2.2mm;text-align:center;background:#fff}
+  .chain .box.hot{border-color:var(--accent);background:var(--tint2)}
+  .chain .box .bt{font-size:8.8pt;font-weight:700;line-height:1.25}
+  .chain .box .bs{font-size:6.8pt;color:var(--muted);margin-top:1mm;line-height:1.4}
+  .chain .arr{flex:none;width:12mm;display:flex;flex-direction:column;align-items:center;justify-content:center;
+              font-size:7pt;color:var(--accent);font-weight:700;line-height:1.25;text-align:center}
+  .chain .arr .a{font-size:13pt;line-height:1}
+
+  .pf{flex:none;margin-top:auto;padding-top:3mm;border-top:1px solid var(--rule);
+      font-size:7.4pt;color:var(--muted);display:flex;justify-content:space-between;gap:6mm;line-height:1.5}
+
+  .backhead{display:flex;align-items:baseline;gap:4mm;border-bottom:3px solid var(--ink);
+            padding-bottom:3mm;margin-bottom:4mm;flex:none}
+  .backhead h1{font-size:15.5pt;margin:0;line-height:1.1}
+  .backhead .s{margin-left:auto;font-size:8.6pt;color:var(--muted)}
+
+  .cta{border:2px solid var(--accent);border-radius:2mm;background:var(--tint2);padding:3.2mm 4mm;
+       display:flex;gap:6mm;align-items:center}
+  .cta .t{font-size:10.2pt;font-weight:700;line-height:1.5}
+  .cta .u{font-size:10pt;font-weight:700;margin-top:2mm}
+  .cta .d{font-size:7.6pt;color:var(--muted);margin-top:1.5mm;line-height:1.6}
+</style>
+</head>
+<body>
+
+<!-- ===================== FRONT ===================== -->
+<section class="page">
+  <div class="mast">
+    <div>
+      <div class="kick">WSJT-X MODES, IN PURE RUST</div>
+      <h1>mfsk-core</h1>
+      <div class="tl">WSJT-X のデコーダを、<em>まるごと Rust で</em>書き直しました。<br>
+      デスクトップにも、ブラウザにも、スマホにも、<em>マイコンにも</em>。</div>
+      <div class="url">github.com/jl1nie/mfsk-core &nbsp;·&nbsp; crates.io/crates/mfsk-core &nbsp;·&nbsp; GPL-3.0-or-later &nbsp;·&nbsp; JL1NIE</div>
+    </div>
+    <div class="qrbox"><svg width="290" height="290" viewBox="0 0 290 290" class="segno"><path transform="scale(10)" class="qrline" stroke="#12233b" d="M0 0.5h7m1 0h1m2 0h1m2 0h3m1 0h1m3 0h7m-29 1h1m5 0h1m6 0h2m2 0h2m1 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m1 0h2m2 0h7m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m1 0h2m1 0h1m2 0h2m1 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h1m1 0h5m1 0h1m1 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h1m3 0h1m3 0h1m5 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-20 1h1m2 0h1m1 0h1m1 0h1m1 0h1m1 0h1m-21 1h1m1 0h1m3 0h2m2 0h1m1 0h5m3 0h1m2 0h1m2 0h1m1 0h1m-28 1h3m1 0h1m1 0h2m4 0h4m2 0h5m3 0h2m-28 1h3m1 0h5m1 0h2m2 0h3m1 0h2m1 0h5m1 0h1m-28 1h1m2 0h2m1 0h1m2 0h1m2 0h1m1 0h1m2 0h2m1 0h1m2 0h2m-25 1h3m2 0h3m1 0h2m1 0h1m1 0h1m2 0h1m1 0h1m1 0h2m4 0h1m-29 1h3m6 0h2m4 0h3m1 0h2m1 0h2m3 0h2m-29 1h1m1 0h1m1 0h3m1 0h1m2 0h1m1 0h3m3 0h1m1 0h4m3 0h1m-27 1h3m2 0h3m4 0h3m1 0h3m1 0h2m-24 1h1m1 0h1m3 0h2m1 0h3m1 0h2m1 0h1m3 0h3m5 0h1m-27 1h1m1 0h2m2 0h2m3 0h5m1 0h1m2 0h2m2 0h3m-29 1h7m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h1m4 0h2m2 0h1m-26 1h3m1 0h3m2 0h2m1 0h1m2 0h1m1 0h1m1 0h1m1 0h1m-25 1h2m2 0h3m4 0h1m1 0h1m1 0h2m3 0h6m1 0h1m-20 1h2m1 0h1m3 0h2m3 0h1m3 0h3m1 0h1m-29 1h7m1 0h1m1 0h6m4 0h1m1 0h1m1 0h1m3 0h1m-29 1h1m5 0h1m7 0h1m1 0h1m2 0h2m3 0h1m2 0h2m-29 1h1m1 0h3m1 0h1m3 0h1m1 0h3m1 0h1m2 0h7m1 0h2m-29 1h1m1 0h3m1 0h1m2 0h2m2 0h3m2 0h4m2 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m3 0h2m1 0h1m2 0h1m2 0h1m2 0h1m2 0h2m-29 1h1m5 0h1m2 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m2 0h3m-26 1h7m1 0h2m1 0h3m2 0h1m3 0h1m3 0h2m2 0h1"/></svg><div class="qcap">github.com/jl1nie/mfsk-core</div></div>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">これは何か</h2>
+    <p>FT8・FT4・FST4・WSPR・JT9・JT65・Q65・MSK144 — WSJT 系デジタルモードの復調と変調を、ひとつの純 Rust ライブラリにまとめたものです。
+    DSP、同期相関、LLR、誤り訂正（LDPC / 畳み込み / Reed-Solomon / QRA）、メッセージ符号を共通の土台として共有し、その上に各モードが載っています。</p>
+    <p style="margin-bottom:0"><b>WSJT-X はこれからも基準実装です。</b>各ファイルは移植元の <code>lib/*.f90</code> / <code>lib/*.c</code> を明記しています。
+    このライブラリの存在理由は WSJT-X を置き換えることではなく、
+    <span class="hl">Fortran + C + Qt のデスクトップアプリが行けない場所へ、同じアルゴリズムを持っていくこと</span>です。</p>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">ブースで動いているもの</h2>
+    <div class="chain">
+      <div class="box"><div class="bt">IC-705</div><div class="bs">40 m<br>USB Audio Class</div></div>
+      <div class="arr"><div class="a">→</div>USB-C<br>1本</div>
+      <div class="box hot"><div class="bt">M5Stack CoreS3</div><div class="bs">ESP32-S3 LX7 240 MHz 2コア<br>8 MB PSRAM / 16 MB Flash</div></div>
+      <div class="arr"><div class="a">→</div>約1.2秒<br>スロット後</div>
+      <div class="box"><div class="bt">LCD にコールサイン</div><div class="bs">タッチでモード切替<br>WiFi / NTP / HTTP 設定</div></div>
+    </div>
+    <p style="font-size:7.8pt;text-align:center;color:var(--accent);font-weight:700;margin-bottom:3.5mm">
+      この経路に PC は 1台も入っていません。復調はすべて CoreS3 の中で完結しています。</p>
+    <div class="kpi">
+      <div class="k"><div class="kv">6–8<small> 局</small></div><div class="kl">1スロット（15秒）あたりの FT8 デコード数<br>2026-08-23、IC-705 実機 40 m</div></div>
+      <div class="k"><div class="kv">−24<small> dB</small></div><div class="kl">到達した最弱信号<br>（+8 〜 −24 dB）</div></div>
+      <div class="k"><div class="kv">4<small> 受信機</small></div><div class="kl">1つのイメージに FT8 / WSPR / FST4 /<br>無線機不要のデモを同梱、タッチで切替</div></div>
+    </div>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">対応モード</h2>
+    <table>
+      <thead><tr><th style="width:30%">モード</th><th style="width:15%">スロット</th>
+        <th style="width:40%">誤り訂正</th><th style="width:15%">メッセージ</th></tr></thead>
+      <tbody>
+        <tr><td><b>FT8</b></td><td>15 s</td><td>LDPC(174, 91) + CRC-14</td><td>77 bit</td></tr>
+        <tr><td><b>FT4</b></td><td>7.5 s</td><td>LDPC(174, 91) + CRC-14</td><td>77 bit</td></tr>
+        <tr><td><b>FST4</b> -15/-30/-60A/-120/-300</td><td>15–300 s</td><td>LDPC(240, 101) + CRC-24</td><td>77 bit</td></tr>
+        <tr><td><b>WSPR</b></td><td>120 s</td><td>畳み込み r=½ K=32 + Fano</td><td>50 bit</td></tr>
+        <tr><td><b>JT9</b></td><td>60 s</td><td>畳み込み r=½ K=32 + Fano</td><td>72 bit</td></tr>
+        <tr><td><b>JT65</b></td><td>60 s</td><td>Reed-Solomon(63, 12) GF(2⁶)</td><td>72 bit</td></tr>
+        <tr><td><b>Q65</b> -30A / -60A‥E</td><td>30 / 60 s</td><td>QRA(15, 65) GF(2⁶) + CRC-12</td><td>77 bit</td></tr>
+        <tr><td><b>MSK144</b></td><td>15 s</td><td>LDPC(128, 90) + CRC-13</td><td>77 bit</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">感度は WSJT-X と同等、あるいはそれ以上</h2>
+    <div class="cols c2">
+      <div>
+        <table>
+          <thead><tr><th style="width:26%">モード</th><th style="width:30%">実録音での再現率</th><th style="width:44%">AWGN 50% 交差</th></tr></thead>
+          <tbody>
+            <tr><td><b>FT8</b></td><td>8/8 · JTDX 18/18</td><td>約 −21.6 dB</td></tr>
+            <tr><td><b>FT4</b></td><td>6/6</td><td>約 −16.9 dB</td></tr>
+            <tr><td><b>WSPR</b></td><td>9/9</td><td>約 −31.5 dB</td></tr>
+            <tr><td><b>JT9</b></td><td>7/7</td><td>約 −26.6 dB</td></tr>
+            <tr><td><b>MSK144</b></td><td>3/3（SNR も一致）</td><td>約 −5.2〜−5.8 dB</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card warm">
+        <h3>「再現率だけ」はベンチマークではない</h3>
+        <p style="font-size:7.7pt;margin:0">かつてこの表には再現率しか載っていませんでした。「WSPR 8/8、パリティ達成」と書かれていたデコーダは、
+        <span class="hl">同時に8個の存在しないコールサインを出していました</span>。いまは誤デコードが常設の列で、上表はいずれも <b>0</b>。
+        数字はテストが assert しており、下回れば CI が落ちます。FST4・Q65 を含む全モードは <code>docs/notes/BENCHMARKS.md</code> に。</p>
+      </div>
+    </div>
+  </div>
+
+  <footer class="pf">
+    <span>mfsk-core — ハムフェア2026 / JL1NIE 友部 稔</span>
+    <span>裏面：マルチプラットフォーム・組み込み・設計・参加のしかた &nbsp;▶</span>
+  </footer>
+</section>
+
+<!-- ===================== BACK ===================== -->
+<section class="page">
+  <div class="backhead">
+    <h1>どこでも動く、という設計</h1>
+    <span class="s">mfsk-core（裏面）</span>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">マルチプラットフォーム — ソースは1つ</h2>
+    <table>
+      <thead><tr><th style="width:21%">行き先</th><th style="width:30%">ターゲット</th>
+        <th style="width:49%">状態と備考</th></tr></thead>
+      <tbody>
+        <tr><td><b>デスクトップ / サーバ</b></td><td>x86_64, aarch64</td><td>既定構成。rustfft + rayon。<code>cargo add mfsk-core</code> ですぐ使えます</td></tr>
+        <tr><td><b>ブラウザ</b></td><td><code>wasm32-unknown-unknown</code></td><td>rustfft の WASM SIMD。<code>+simd128</code> の明示を忘れずに（既定では付きません）</td></tr>
+        <tr><td><b>Android / iOS</b></td><td>NDK arm64-v8a ほか</td><td>NEON。C ABI 経由で、Fortran ランタイム不要</td></tr>
+        <tr><td><b>マイコン</b></td><td><code>no_std + alloc</code> — ESP32-S3 / RP2350 / Cortex-M</td><td>実運用中。<code>fft-extern</code> + <code>fixed-point</code>、FFT は呼び出し側が注入</td></tr>
+        <tr><td><b>C / C++ から</b></td><td>staticlib</td><td><code>mfsk-ffi</code>（全モード）／<code>mfsk-ffi-ft8</code>（FT8 のみ）。ヘッダは cbindgen 生成</td></tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:2mm"><b>差し替えられるのは行き先だけではありません。</b>DSP と FEC 全体がスカラ型トレイトで抽象化され、ホストは f32、
+    マイコンは u16 スペクトログラム + i16 DFT + Q11i16 LLR + 整数 BP — コードは同じ一本です。FFT も外部注入。モードはすべて feature フラグです。</p>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">組み込み対応の中身</h2>
+    <div class="kpi" style="margin-bottom:4mm">
+      <div class="k"><div class="kv">約150<small> KB</small></div><div class="kl">FT8 復調に必要な使用可能 RAM<br>（FFT を呼び出し側が用意する場合）</div></div>
+      <div class="k"><div class="kv">150–200<small> KB</small></div><div class="kl">ライブラリ分のフラッシュ使用量<br>（実測、アプリのグルー込み）</div></div>
+      <div class="k"><div class="kv">0<small> バイト</small></div><div class="kl">内部 DRAM の常駐スクラッチ<br>／要求する extern シンボル</div></div>
+    </div>
+    <div class="cols c2">
+      <div>
+        <h3>呼び出し側が用意するもの</h3>
+        <ul>
+          <li><b>FFT の実装ひとつ</b> — <code>fft-extern</code> でファクトリ関数を1つ提供するだけ</li>
+          <li><b>アロケータ</b> — <code>no_std + alloc</code>。スロット単位の作業領域は PSRAM で構いません</li>
+        </ul>
+        <p class="note" style="margin-top:2mm">求めるのはこの2つだけで、スクラッチバッファの配置に悩む必要はありません。
+        スロットあたりの作業領域：スペクトログラム 約360 KB（PSRAM 可）、候補セット 約120 KB、LDPC BP スクラッチ 約12 KB。</p>
+      </div>
+      <div>
+        <h3>速度 — 同じ整数パイプラインで</h3>
+        <table>
+          <tbody>
+            <tr><td>Ryzen 9 9900X（固定小数点）</td><td class="num">約 6 ms</td></tr>
+            <tr><td><b>ESP32-S3 LX7 実機</b></td><td class="num"><b>1.19 s</b></td></tr>
+            <tr><td>ESP32 Core2 LX6 実機</td><td class="num">約 2.8 s</td></tr>
+          </tbody>
+        </table>
+        <p class="note" style="margin-top:2mm">16局が混み合う WSJT-X 参照録音での実測。差はほぼ純粋な CPU 性能比で、<b>アルゴリズム上のオーバーヘッドはありません</b>。
+        WSPR も 1214秒 → 101.6秒まで詰め、9/9 を維持したまま 120秒スロットに収まりました。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">設計 — Protocol トレイト</h2>
+    <p>1つのモードは <b>実行時に1バイトも占めない型</b>として書かれ、その上に
+    <code>ModulationParams</code>（トーン数・シンボルレート・Gray 写像・GFSK 整形）、
+    <code>FrameLayout</code>（シンボル数・スロット長・同期配置）、
+    <code>Protocol</code>（どの FEC と、どのメッセージ符号を使うか）を実装します。
+    共通パイプラインはすべて <code>P: Protocol</code> にジェネリックで、コンパイル時に各モードへ単相化されます —
+    <span class="hl">vtable なし、動的ディスパッチなし</span>。抽象化のコストはコンパイル時間だけで、実行時にはゼロです。
+    実測で <code>src/</code> の約3分の1（58.9k 行中 18.7k 行）が全モード共通のジェネリックコードです。</p>
+    <p style="margin-bottom:0"><b>これが効くということ：FST4-60A の追加は、ZST 1つへの trait 実装 + レジストリ1行でした</b>（共通コードには一切触れていません）。
+    Fortran では、モード間の「同じであり得たはずの部分」はソースファイル間のコピー＆ペーストとして現れます。ここではそれを型で表現しています。</p>
+  </div>
+
+  <div class="blk">
+    <h2 class="sec">一緒に作りませんか</h2>
+    <div class="cols c2">
+      <ul style="margin:0">
+        <li><b>ブラウザで動く FT8</b> — WASM PWA のフロントエンド（ライブラリ側は wasm32 で動きます）</li>
+        <li><b>Android / iOS アプリ</b> — C ABI は用意済み、JNI の骨組みもあります</li>
+        <li><b>ESP32 以外のマイコン</b> — RP2350、Cortex-M。FFT を1つ渡せば動くはずですが、まだ誰も試していません</li>
+      </ul>
+      <ul style="margin:0">
+        <li><b>CoreS3 の送信側</b> — 残るは BLE CI-V、ADIF ログ、送信キーイング</li>
+        <li><b>JT65 の残差</b> — 自前コーパスでは差ゼロ、実バイナリにはまだ届かず。原因未特定 — 面白い問題です</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <div class="cta">
+    <div class="qrbox" style="margin-left:0"><svg width="290" height="290" viewBox="0 0 290 290" class="segno"><path transform="scale(10)" class="qrline" stroke="#12233b" d="M0 0.5h7m1 0h1m2 0h1m2 0h3m1 0h1m3 0h7m-29 1h1m5 0h1m6 0h2m2 0h2m1 0h1m1 0h1m5 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m1 0h2m2 0h7m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m2 0h1m1 0h2m1 0h1m2 0h2m1 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m3 0h1m1 0h5m1 0h1m1 0h1m1 0h1m1 0h3m1 0h1m-29 1h1m5 0h1m1 0h1m3 0h1m3 0h1m5 0h1m5 0h1m-29 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-20 1h1m2 0h1m1 0h1m1 0h1m1 0h1m1 0h1m-21 1h1m1 0h1m3 0h2m2 0h1m1 0h5m3 0h1m2 0h1m2 0h1m1 0h1m-28 1h3m1 0h1m1 0h2m4 0h4m2 0h5m3 0h2m-28 1h3m1 0h5m1 0h2m2 0h3m1 0h2m1 0h5m1 0h1m-28 1h1m2 0h2m1 0h1m2 0h1m2 0h1m1 0h1m2 0h2m1 0h1m2 0h2m-25 1h3m2 0h3m1 0h2m1 0h1m1 0h1m2 0h1m1 0h1m1 0h2m4 0h1m-29 1h3m6 0h2m4 0h3m1 0h2m1 0h2m3 0h2m-29 1h1m1 0h1m1 0h3m1 0h1m2 0h1m1 0h3m3 0h1m1 0h4m3 0h1m-27 1h3m2 0h3m4 0h3m1 0h3m1 0h2m-24 1h1m1 0h1m3 0h2m1 0h3m1 0h2m1 0h1m3 0h3m5 0h1m-27 1h1m1 0h2m2 0h2m3 0h5m1 0h1m2 0h2m2 0h3m-29 1h7m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m1 0h1m4 0h2m2 0h1m-26 1h3m1 0h3m2 0h2m1 0h1m2 0h1m1 0h1m1 0h1m1 0h1m-25 1h2m2 0h3m4 0h1m1 0h1m1 0h2m3 0h6m1 0h1m-20 1h2m1 0h1m3 0h2m3 0h1m3 0h3m1 0h1m-29 1h7m1 0h1m1 0h6m4 0h1m1 0h1m1 0h1m3 0h1m-29 1h1m5 0h1m7 0h1m1 0h1m2 0h2m3 0h1m2 0h2m-29 1h1m1 0h3m1 0h1m3 0h1m1 0h3m1 0h1m2 0h7m1 0h2m-29 1h1m1 0h3m1 0h1m2 0h2m2 0h3m2 0h4m2 0h3m1 0h1m-29 1h1m1 0h3m1 0h1m1 0h1m3 0h2m1 0h1m2 0h1m2 0h1m2 0h1m2 0h2m-29 1h1m5 0h1m2 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m2 0h3m-26 1h7m1 0h2m1 0h3m2 0h1m3 0h1m3 0h2m2 0h1"/></svg><div class="qcap">リポジトリ</div></div>
+    <div>
+      <div class="t">Issue も PR も歓迎します。</div>
+      <div class="u">github.com/jl1nie/mfsk-core</div>
+      <div class="d">crates.io / docs.rs — <code>mfsk-core</code>（最新リリース v0.9.1、0.10.0 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ — <b>JL1NIE 友部 稔</b><br>
+      まず読むもの：<code>README.md</code>／<code>LIBRARY.md</code>（ホスト API）／<code>EMBEDDED.md</code>（組み込み・C ABI）／<code>BENCHMARKS.md</code>（本紙の数字の出どころ）。<code>docs/reference/</code> は全文書に日本語版があります。</div>
+    </div>
+  </div>
+
+  <footer class="pf">
+    <span>本ライブラリは WSJT-X（K1JT Joe Taylor 氏ほか）の Rust 再実装です。すべてのアルゴリズムの出典は WSJT-X にあり、基準実装はこれからも WSJT-X です。</span>
+  </footer>
+</section>
+
+</body>
+</html>
