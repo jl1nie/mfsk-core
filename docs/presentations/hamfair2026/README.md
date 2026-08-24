@@ -1,49 +1,92 @@
 # ハムフェア2026 ブース資料（mfsk-core）
 
-印刷を前提にした2種類の配布・説明資料。どちらも 1ファイル完結の HTML で、
-ブラウザから直接印刷しても、同梱の PDF をそのまま印刷しても同じ結果になる。
+印刷を前提にした2種類の配布・説明資料。文言は `content.md` に外出ししてあり、
+そこを直して `build.py` を走らせると HTML と PDF が作り直される。
 
 | ファイル | 判型 | 用途 |
 |---|---|---|
+| `content.md` | — | **文言の正本。** 直すのは基本ここだけ |
+| `build.py`   | — | `content.md` → HTML → PDF。はみ出し検査つき |
 | `flipchart.html` / `.pdf` | A4 横 · 10ページ | ブースで手元に置いてめくる説明資料。1ページ1トピックで、各ページ下端に「この1枚のまとめ」の帯がある |
 | `leaflet.html` / `.pdf`   | A4 縦 · 2ページ（両面1枚） | 来場者の持ち帰り用リーフレット。表＝概要・デモ・対応モード・感度、裏＝マルチプラットフォーム・組み込み・設計・参加のしかた |
-| `qr-github.svg`           | — | 両資料に埋め込んである `https://github.com/jl1nie/mfsk-core` の QR コード |
+| `qr-github.svg` | — | 両資料に埋め込んである `https://github.com/jl1nie/mfsk-core` の QR コード |
 
 想定：ブースでの随時説明（5〜10分）、デモ機は M5Stack CoreS3 + IC-705（USB Audio 直結）。
 
-## 印刷
+## 文言を直す
+
+```sh
+cd docs/presentations/hamfair2026
+$EDITOR content.md          # 好きなエディタでまとめて直す
+python3 build.py build      # HTML と PDF を作り直す + はみ出し検査
+```
+
+`content.md` は「ID 見出し + 本文」の並びになっている。
+
+```markdown
+### F02-02 · 右肩の補足
+
+M5Stack CoreS3
+```
+
+- `### F02-02 · 右肩の補足` の**次の行から次の見出しまで**が、その箇所の文言。
+  **見出しの行は変えないこと** — `F02-02` が HTML 側の `data-t="F02-02"` と対応していて、
+  これを見失うと差し込み先が分からなくなる。
+- ID の読み方：`F` がフリップ資料、`L` がリーフレット。続く2桁がページ、末尾がページ内の順番。
+- 装飾は `**太字**` / `` `等幅` `` / `==マーカー==` / `++アクセント色++` / `^小さめ^`（数値の単位）。
+- **改行したいところで改行する。** そのまま改行として出る。ただし表と箇条書きの中だけは
+  行が壊れるので `<br>` を使う。
+- 表は Markdown の表のまま編集でき、行の増減もできる（列は増やせない）。
+- 箇条書きは `- ` で始まる行。項目の増減もできる。
+- ここに書いていない HTML タグはそのまま素通しする。分からないものは触らないのが安全。
+
+**レイアウト（判型・段組・色・列幅・文字寸法）は HTML 側が持っている。** 文言では足りない
+調整はそちらを直す。HTML を直したあとで文言側に反映したいときは:
+
+```sh
+python3 build.py extract    # HTML の現在の文言で content.md を作り直す
+```
+
+`build` は `content.md` を正、`extract` は HTML を正として上書きする。逆向きに走らせると
+直したほうが消えるので、どちらを走らせるかは意識すること。
+
+## はみ出しは目視でなく機械で見る
+
+どちらの資料も `.page` に `overflow:hidden` が掛かっていて、溢れた分は**警告なしに切り捨てられる**。
+`build` は毎回チェックして、次のどちらかを報告する。
+
+```
+  ✓ flipchart.html: 全ページ収まっています
+  ⚠ flipchart.html p3: 「versus 44mm」分が箱に収まらず欠けています
+```
+
+ページ全体の溢れだけでなく、**中の箱が潰れて欠けた場合も検出する**（`.body` が flex なので、
+文言を足したときの被害はページではなく内側のカードや表に出ることが多い）。⚠ が出たら、
+その分だけ文言を削るか、HTML 側でそのページに `class="page dense"` を付けて寸法を一段落とす。
+フリップ資料は情報量の多い4ページ（04・05・06・08）が既に `dense`。
+
+検査には Playwright が要る（`pip install playwright`）。入っていなければ検査だけ飛ばして
+PDF は作られるので、その場合は自分で PDF を見て確認すること。
+
+## PDF について
+
+`build.py` が Chromium のヘッドレス印刷で焼く。判型・ページ送り・余白はすべて HTML 側の
+`@page` と `.page` で決まるので、コマンドラインで用紙を指定する必要はない。手で焼くなら:
+
+```sh
+chromium --headless --disable-gpu --no-pdf-header-footer \
+         --print-to-pdf=flipchart.pdf file://$PWD/flipchart.html
+```
+
+PDF は Noto Sans CJK JP をサブセット埋め込みしてあるので、印刷環境に日本語フォントがなくても崩れない。
+
+### 印刷
 
 - **フリップ資料** — A4 横・片面・10枚。等倍（「ページに合わせる」ではなく100%）で印刷する。
 - **リーフレット** — A4 縦・**両面**・短辺綴じでも長辺綴じでもよい（裏面は独立した1ページとして読める）。
 
-PDF は Noto Sans CJK JP をサブセット埋め込みしてあるので、印刷環境に日本語フォントがなくても崩れない。
-HTML から直接印刷する場合は、ブラウザの印刷ダイアログで **余白なし** / **背景グラフィックを印刷する** を指定する
-（`@page` で余白 0 を指定しているが、既定を上書きしてくるブラウザがある）。
-
-## PDF の再生成
-
-HTML を編集したら、Chromium のヘッドレス印刷でそのまま焼き直せる。
-
-```sh
-cd docs/presentations/hamfair2026
-chromium --headless --disable-gpu --no-pdf-header-footer \
-         --print-to-pdf=flipchart.pdf file://$PWD/flipchart.html
-chromium --headless --disable-gpu --no-pdf-header-footer \
-         --print-to-pdf=leaflet.pdf   file://$PWD/leaflet.html
-```
-
-判型・ページ数・余白はすべて HTML 側の `@page` と `.page` で決まるので、コマンドラインで用紙を指定する必要はない。
-
-**ページからはみ出していないかは、目視ではなく測ること。** どちらの資料も
-`.page` に `overflow:hidden` が掛かっていて、溢れた分は警告なしに切り捨てられる。
-文言を足したあとは、印刷メディアで各ページの `scrollHeight` と `clientHeight` を比べる:
-
-```js
-[...document.querySelectorAll('.page')].map(el => el.scrollHeight - el.clientHeight)  // 全部 0 なら収まっている
-```
-
-フリップ資料は情報量の多い4ページ（04・05・06・08）だけ `class="page dense"` で
-一段小さい文字寸法を当てている。文言を足して溢れたら、まず `dense` を付けるか外すかで調整する。
+HTML から直接印刷する場合は、ブラウザの印刷ダイアログで **余白なし** / **背景グラフィックを印刷する**
+を指定する（`@page` で余白 0 を指定しているが、既定を上書きしてくるブラウザがある）。
 
 ## QR コードを差し替える
 
@@ -51,7 +94,7 @@ chromium --headless --disable-gpu --no-pdf-header-footer \
 python3 -c "import segno; segno.make('https://example.com', error='m').save('qr-github.svg', scale=10, border=0, dark='#12233b')"
 ```
 
-生成した SVG に `viewBox=\"0 0 290 290\"` を足してから HTML に貼り込むこと。
+生成した SVG に `viewBox="0 0 290 290"` を足してから HTML に貼り込むこと。
 `viewBox` がないと、CSS で `width` を指定したときに縮小ではなく**左上の切り抜き**になり、
 読み取れない QR が刷り上がる。
 
@@ -70,5 +113,5 @@ python3 -c "import segno; segno.make('https://example.com', error='m').save('qr-
 | 4受信機を1イメージ・タッチ切替・USB ホストの電源規則 | `docs/reference/MANUAL_M5STACK_CORES3.md` |
 | `src/` の 18.7k / 58.9k 行がジェネリック | `README.md`「Why a `Protocol` trait」 |
 
-crates.io の最新リリースは資料本文に版数を書いてある。リリースを打ったら両ファイルの
-「最新リリース v0.9.1、0.10.0 準備中」の記述を更新すること。
+crates.io の最新リリースは資料本文に版数を書いてある。リリースを打ったら `content.md` の
+「最新リリース v0.9.1、0.10.0 準備中」の記述（`F10-09` と `L02-28`）を更新すること。
