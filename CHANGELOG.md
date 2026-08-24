@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.1 — ハムフェア2026 booth material
+## 0.10.1 — ハムフェア2026 booth material, release tooling that runs on macOS
 
 **Why a patch bump.** Documentation and tooling. No public API change,
 no decoder behaviour change, no measured sensitivity movement. This
@@ -34,6 +34,22 @@ cadence".
   crate map, `mfsk-core`'s own module layout, which feature flags bite
   and why, and the fact that there is no `src/core/`. A cold start had
   to rediscover all of it.
+
+### Fixed
+
+- **`scripts/release-status.sh`'s cadence section died on macOS.**
+  `date -d` is GNU-only; this repository's development machine moved to
+  macOS, where BSD `date` rejects the flag and the whole `== cadence ==`
+  block failed with `illegal option -- d` followed by an arithmetic
+  error on the empty operand — so the one check that says how long it
+  has been since the last tag printed nothing at all. `CLAUDE.md` calls
+  this script "step 0, before anything else" precisely because release
+  state kept being reconstructed by hand, so a section that silently
+  stops working is the failure mode the script exists to remove. Fixed
+  by not parsing a date string at all: `git log -1 --format=%ct` yields
+  the same commit's timestamp already in seconds, from the same source
+  as the `%cs` on the line above. `find -newermt` further down was
+  checked and is fine — BSD `find` supports it.
 
 ## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + the CoreS3 receiver decoding off a radio (#163/#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
 
