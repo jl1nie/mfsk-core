@@ -74,7 +74,14 @@ fi
 bold "== cadence =="
 if [[ -n "$last_tag" ]]; then
     tag_date=$(git log -1 --format=%cs "$last_tag")
-    days=$(( ( $(date +%s) - $(date -d "$tag_date" +%s) ) / 86400 ))
+    # Epoch straight from git rather than re-parsing `$tag_date` with
+    # `date -d`: that flag is GNU-only and this repo's development
+    # machine is macOS, where BSD `date` rejects it and the whole
+    # cadence section died in an arithmetic error (2026-08-24). `%ct`
+    # is the same commit's date as `%cs` above, already in seconds, so
+    # nothing has to parse a date string at all.
+    tag_epoch=$(git log -1 --format=%ct "$last_tag")
+    days=$(( ( $(date +%s) - tag_epoch ) / 86400 ))
     n=$(git rev-list --count "$last_tag..HEAD" 2>/dev/null || echo '?')
     echo "  $last_tag was $days days ago ($tag_date), $n commits since"
     # Biweekly by convention; see CLAUDE.md "Release cadence".
