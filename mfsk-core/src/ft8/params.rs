@@ -67,6 +67,11 @@ pub const SYMBOL_DT: f32 = NSPS as f32 / 12000.0; // 0.16 s
 pub const TSTEP: f32 = SYMBOL_DT / 4.0; // 0.04 s
 
 /// Frequency resolution at NFFT1 (Hz/bin)
+///
+/// #323 analysis-grid: this is the *receiver's* coarse-sync bin width,
+/// not a property of the transmitted signal, so a front end analysing
+/// at a rate other than 12 kHz has to parametrise it. FT8 has no such
+/// front end today (#309 is FST4's).
 pub const DF: f32 = 12000.0 / NFFT1 as f32; // 3.125 Hz
 
 /// Gray code map for 8-FSK (tone index → 3-bit Gray code)

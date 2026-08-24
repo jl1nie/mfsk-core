@@ -83,6 +83,9 @@ const NH1: usize = NFFT1 / 2;
 /// the generic Costas-lag search this module replaces for FT4).
 const NSTEP: usize = NSPS;
 /// `df = 12000/NFFT1` — `getcandidates4.f90:27`.
+///
+/// #323 analysis-grid: receiver resolution, not signal geometry —
+/// unlike [`F_OFFSET_HZ`] below, which is `-1.5 ×` the tone spacing.
 const DF_HZ: f32 = 12_000.0 / NFFT1 as f32;
 /// `f_offset = -1.5*12000/NSPS` — `getcandidates4.f90:51`.
 const F_OFFSET_HZ: f32 = -1.5 * 12_000.0 / NSPS as f32;

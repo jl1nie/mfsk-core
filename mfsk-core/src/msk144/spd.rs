@@ -128,6 +128,9 @@ pub fn detect_burst_candidates(cbig: &[Complex32], fc: f32, ntol: f32) -> Vec<Bu
     }
 
     let rcw = raised_cosine_window();
+    // #323 analysis-grid: MSK144's detector runs on the raw ingest
+    // stream — it has no downsample stage — so `fs` is both the ingest
+    // rate and the analysis rate here, and only the latter would move.
     let fs = 12_000.0f32;
     let df = fs / NFFT as f32;
 

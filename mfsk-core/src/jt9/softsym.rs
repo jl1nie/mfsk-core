@@ -30,8 +30,14 @@ pub const NZ3: usize = 1360;
 /// Decimation factor: NFFT1 / NFFT2 = 432.
 pub const NDOWN: usize = NFFT1 / NFFT2;
 /// Sample rate of the downsampled signal: 12000 / 432 = 27.778 Hz.
+///
+/// #323 analysis-grid: derived from the *ingest* rate, so it moves if
+/// a front end ever feeds `downsam9` something other than 12 kHz.
+/// Contrast [`TONE_SPACING`] directly below, which is the same
+/// arithmetic on the same constant and is nonetheless definitional.
 pub const FSAMPLE_DOWN: f32 = 12_000.0 / NDOWN as f32;
-/// JT9 tone spacing in Hz at 12 kHz.
+/// JT9 tone spacing in Hz at 12 kHz. Definitional — a property of the
+/// transmitted signal (#323).
 pub const TONE_SPACING: f32 = 12_000.0 / 6912.0;
 
 const SCALE: f32 = 10.0;
@@ -76,6 +82,8 @@ impl AudioFft {
             .expect("fixed NFFT1-length input/output, shape always matches");
 
         // 1 Hz-resolution power envelope across 0..5 kHz.
+        // #323 analysis-grid: `NFFT1` bin width, same kind as
+        // `FSAMPLE_DOWN` above.
         let df1 = 12_000.0 / NFFT1 as f32;
         let nadd = (1.0 / df1).round() as usize;
         let env_len = 5000usize;
@@ -98,6 +106,8 @@ impl AudioFft {
     /// `downsam9`: extract a 27.78 Hz complex baseband centred at `fpk` Hz.
     /// Returns NFFT2 = 1512 complex samples.
     pub fn downsam9(&self, fpk: f32) -> Vec<Complex<f32>> {
+        // #323 analysis-grid: must match the `df1` the envelope was
+        // built on — `fpk` is in Hz, `i0` indexes that same grid.
         let df1 = 12_000.0 / NFFT1 as f32;
         let i0 = (fpk / df1) as i64;
         let nh2 = (NFFT2 / 2) as i64;

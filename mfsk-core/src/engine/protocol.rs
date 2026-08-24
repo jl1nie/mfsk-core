@@ -30,12 +30,55 @@
 /// of which is `pub` and so advertised the crate's sample rate under a
 /// name suggesting it belonged to MSK144.
 ///
-/// **The ~100 remaining bare `12_000.0` literals are deliberately left
-/// alone.** Each reads unambiguously in its own context, and replacing
-/// them was measured against the churn and declined — see #321 for that
-/// reasoning, and #307/#309 for the distinction (definitional rate vs
-/// analysis-grid rate) that a future refactor would actually need to
-/// draw, which naming this constant does *not* address.
+/// **The remaining bare `12_000.0` literals are still literals, but
+/// they are no longer unclassified** (issue #323, closing out #321's
+/// deferral). #321 declined to replace them mechanically and that
+/// stands — each reads unambiguously in its own context. What was
+/// missing was the distinction #307/#309 actually need, and it has now
+/// been drawn over all 120 sites: 47 are in test code and 13 in prose,
+/// leaving 60 in production, each one of four kinds. Only the last
+/// would have to change for a receiver that analyses at something
+/// other than 12 kHz.
+///
+/// - **Modulation spec.** `SYMBOL_DT = NSPS / 12_000`,
+///   `TONE_SPACING_HZ = 12_000 / NSPS`, and the per-sub-mode
+///   `DownsampleCfg::tone_spacing_hz` literals in `fst4::decode`. Fixed
+///   properties of the *transmitted* signal; correct to hardcode
+///   however a receiver chooses to sample it.
+/// - **Synthesiser output rate.** `sample_rate: 12_000.0` on every
+///   `GfskCfg` / wave-gen config. The rate this crate *writes*, which
+///   is the same WSJT-X convention seen from the other side.
+/// - **Raw-PCM ingest grid.** Sample-count↔seconds conversions and
+///   mixer phase increments — `ft8::refine_fine`'s `0.5 * 12_000`,
+///   `ft8::decode`'s `dt_fit_limit_b`, `jt9::baseband`,
+///   `msk144::{sync, decode, spd}`. Correct only while ingest is
+///   12 kHz, which `engine::dsp::resample::resample_to_12k` guarantees
+///   at the decode entry point. That guarantee has one owner, which is
+///   why a hundred call sites can assume it.
+/// - **Analysis grid.** The receiver's own FFT resolution and
+///   downsample rate — the kind #309's streaming DDC front end would
+///   have to parametrise. These are the sites a rate-varying refactor
+///   must visit, so they are named here rather than rediscovered:
+///
+///   | site | what it is |
+///   |---|---|
+///   | `ft8::params::DF` | FT8 coarse-sync bin width (`12_000/NFFT1`) |
+///   | `engine::ft4_coarse::DF_HZ` | FT4 coarse-sync bin width |
+///   | `jt9::softsym::FSAMPLE_DOWN` | JT9 downsampled rate (`12_000/NDOWN`) |
+///   | `jt9::softsym`'s two `df1` | JT9 `NFFT1` bin width, envelope + `downsam9` |
+///   | `wspr::baseband`'s `df` | WSPR whole-slot FFT bin width |
+///   | `msk144::spd`'s `fs` / `df` | MSK144 spectral-detector grid |
+///   | `engine::sync::SyncDims::ds_rate` | see that field's own note |
+///
+///   FST4's analysis-grid sites are already parametrised
+///   (`SyncDims::of(sample_rate_hz)`, `DdcCascadeConfig::input_rate_hz`)
+///   because #307 needed them to be. No other protocol has that
+///   requirement in flight today.
+///
+/// One result worth stating separately, because #323 assumed the
+/// opposite: `wspr::ddc` — the one place outside FST4 where a
+/// non-12 kHz analysis rate is already real production behaviour — is
+/// correctly *named* but not parametrised. See `wspr::ddc::mixer_table`.
 pub const SAMPLE_RATE_HZ: f32 = 12_000.0;
 
 use alloc::string::String;

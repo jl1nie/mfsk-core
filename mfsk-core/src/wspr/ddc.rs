@@ -105,6 +105,18 @@ pub const GROUP_DELAY: usize = (NTAPS - 1) / 2;
 pub const REFERENCE_GAIN: f32 = NFFT1 as f32 / 1000.0;
 
 /// `exp(-j2π·1500·n/12000) = exp(-jπn/4)`, period 8.
+///
+/// The table is eight entries long *because* `CENTER_HZ /
+/// AUDIO_RATE_HZ` is exactly `1/8`. So [`AUDIO_RATE_HZ`] names this
+/// module's input rate and every cutoff below is expressed as a ratio
+/// of it, but the module is not rate-agnostic: feed it anything else
+/// and the mixer's period changes while this table does not, which is
+/// wrong silently rather than failing to compile.
+///
+/// Recorded for #323, which expected the one already-real non-12 kHz
+/// analysis path in the crate to be parametrised and found it named
+/// instead. Nothing needs it to vary today — the DDC's whole purpose
+/// is to take the canonical 12 kHz ingest stream.
 fn mixer_table() -> [(f32, f32); 8] {
     let mut t = [(0.0f32, 0.0f32); 8];
     for (n, e) in t.iter_mut().enumerate() {

@@ -59,6 +59,9 @@ pub fn decimate_to_baseband(audio: &[f32]) -> (Vec<f32>, Vec<f32>) {
 
     with_default_planner(|planner| planner.plan_forward(NFFT1)).process(&mut buf);
 
+    // #323 analysis-grid: the whole-slot FFT's bin width. This is the
+    // exact quantity `wspr::ddc` exists to avoid computing, so it is
+    // the WSPR site a rate-varying front end would have to reach.
     let df = 12_000.0 / NFFT1 as f32;
     let i0 = (CENTER_HZ / df).round() as usize;
     let nh2 = NFFT2 / 2;
