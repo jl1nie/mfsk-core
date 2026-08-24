@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.1 — ハムフェア2026 booth material
+
+**Why a patch bump.** Documentation and tooling. No public API change,
+no decoder behaviour change, no measured sensitivity movement. This
+section accumulates until the next tag — see `CLAUDE.md`'s "Release
+cadence".
+
+### Added
+
+- **ハムフェア2026 booth material** (`docs/presentations/hamfair2026/`)
+  — a twelve-page flipchart and a leaflet for demonstrating the M5Stack
+  CoreS3 receiver at the show. Most visitors are operators rather than
+  developers, so the front half is "what is happening in front of you"
+  and the back half is for the smaller number of people who might
+  actually build on the crate.
+
+  The wording lives in `content.md` rather than in the HTML, with
+  `build.py` running the round trip: `stamp` gives each slot a `data-t`
+  attribute, `extract` pulls HTML → Markdown, `build` pushes Markdown →
+  HTML → PDF. `build` also checks for overflow every time, because
+  `.page` is `overflow:hidden` and `.body` is a flex container — text
+  that does not fit is dropped silently, and as a clipped card or table
+  rather than a visibly short page. Round-trip losslessness is verified
+  by pixel comparison: an `extract` → `build` cycle with no edits
+  reproduces all twelve pages exactly.
+
+### Changed
+
+- **`CLAUDE.md` describes the codebase, not just the workflow.** The
+  agent notes had accumulated procedure — how to run the tests, how to
+  cut a release — without ever saying what the repository *is*: the
+  crate map, `mfsk-core`'s own module layout, which feature flags bite
+  and why, and the fact that there is no `src/core/`. A cold start had
+  to rediscover all of it.
+
 ## 0.10.0 — search windows denominated in seconds (#282, breaking), FT8 coarse-sync lag window matches WSJT-X (#278/#280), early-frame decode (#283), WSPR host/embedded parity + streaming front end + the CoreS3 receiver decoding off a radio (#163/#260), FST4 npre1/npre2 OSD + i0±1 timing retry + rung-major scheduling (#198/#306/#308), code-sharing audit + cleanup (#290-298), FT8/generic OSD-gate ratchet (#285)
 
 **Why a minor bump.** This crate's convention is that new protocols and
