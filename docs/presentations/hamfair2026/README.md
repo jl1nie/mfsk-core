@@ -83,7 +83,6 @@ PDF は作られるので、その場合は自分で PDF を見て確認する�
 ```sh
 pip install beautifulsoup4          # 必須。これが無いと import で落ちる
 pip install playwright && playwright install chromium   # PDF 生成 + はみ出し検査
-brew install poppler                # フォントのサブセット化（Linux なら apt install poppler-utils）
 ```
 
 Chromium は `$CHROME` → Playwright のブラウザキャッシュ → `PATH` → macOS/Windows の
@@ -103,8 +102,13 @@ brew install --cask font-noto-sans-cjk-jp
 
 **PDF のサイズは環境で大きく変わる。** Chromium の PDF 出力は、Linux では日本語グリフを
 パス化して flipchart が約 1.5 MB になり、macOS では 2.19 MB のフォントを7本そのまま
-埋め込んで約 11.6 MB になる。描画結果は同じで、格納方法が違うだけ。`build` は
-`pdftocairo` があれば自動でサブセット化して 2.8 MB 程度まで落とす。
+埋め込んで約 11.6 MB になる。描画結果は同じで、格納方法が違うだけ。成果物なので
+そのままでよい。
+
+**縮めようとしないこと。** `pdftocairo -pdf` でサブセット化すると 2.7 MB まで落ちるが、
+`.hl` のマーカー（`linear-gradient(transparent 62%,#fde3c3 62%)`）が暗いグレーの帯に
+化けて文字に被る。Chromium がソフトマスク付きシェーディングとして書いたものを
+poppler/cairo が再現できていない。2026-08-25 に試して撤回した。
 
 手で焼くなら:
 

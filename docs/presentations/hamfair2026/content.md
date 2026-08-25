@@ -43,7 +43,7 @@ github.com/jl1nie/mfsk-core &nbsp;·&nbsp; crates.io/crates/mfsk-core &nbsp;·&n
 ### F01-04 · キャッチ
 
 WSJT-X のデコーダを、++まるごと Rust で++書き直しました。
-いま目の前の小さな箱が、それで復調しています。
+M5Stack CoreS3でリアルタイムでFT8が動きます。
 
 ### F01-05 · モード一覧
 
@@ -79,7 +79,7 @@ FT8 の復調に必要な RAM。
 
 ### F01-12 · 署名
 
-<span class="u">JL1NIE</span> / 友部 稔
+<span class="u">JL1NIE</span> / 友部 実
 <span class="note" style="font-size:10.5pt">デモ機：M5Stack CoreS3 + IC-705（USB Audio 直結、PC なし）</span>
 
 ### F01-13 · QRの説明
@@ -90,7 +90,7 @@ github.com/jl1nie/mfsk-core
 
 ### F02-01 · 見出し
 
-デモ：いま目の前で起きていること
+デモ：組み込み機器で動作するFT8デコーダ
 
 ### F02-02 · 右肩の補足
 
@@ -135,7 +135,7 @@ WiFi / NTP / HTTP 設定
 
 ### F02-11 · 図の注記
 
-この経路に PC は 1台も入っていません。復調はすべて CoreS3 の中で完結しています。
+デコードはすべて CoreS3 の中で完結しています。
 
 ### F02-12 · 小見出し
 

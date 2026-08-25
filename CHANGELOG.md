@@ -74,15 +74,19 @@ cadence".
   is the half that gets printed. Now in `.gitignore`; run
   `python3 build.py build` before printing.
 
-  `build` also subsets the fonts afterwards when `pdftocairo` (poppler)
-  is available. Chromium's PDF backend does not do it for CJK on every
-  platform: on Linux it emits the glyphs as paths and the flipchart
-  comes to 1.5 MB, on macOS it embeds seven whole 2.19 MB faces, one per
-  weight, for 11.6 MB. Both render identically — every page of the two
-  matches to within 0.4 % of pixels, which is antialiasing — so this is
-  storage, not appearance. Subsetting brings the pair to 2.7 MB and
-  1.1 MB. Optional: without poppler the PDF is left as Chromium wrote
-  it, correct and larger.
+  File size varies a lot by platform and is left alone. Chromium's PDF
+  backend does not subset CJK fonts everywhere: on Linux it emits the
+  glyphs as paths and the flipchart comes to 1.5 MB, on macOS it embeds
+  seven whole 2.19 MB faces, one per weight, for 11.6 MB. Same document
+  either way. Subsetting it afterwards with `pdftocairo` was tried and
+  reverted the same day — it takes the pair to 2.7 MB and 1.1 MB, and
+  it also turns the `.hl` marker
+  (`linear-gradient(transparent 62%, #fde3c3 62%)`) into a dark grey
+  band across the text it is supposed to sit behind, because Chromium
+  writes it as a soft-masked shading that poppler/cairo does not
+  reproduce. `build.py` carries the note so it is not re-attempted.
+  Since the PDFs are no longer committed, nothing wanted the smaller
+  file in the first place.
 
   `README.md` gains the prerequisites this all implies — including that
   the static Noto Sans JP is the one to install, since Homebrew's
