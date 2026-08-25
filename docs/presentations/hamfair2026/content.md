@@ -711,7 +711,7 @@ GPL-3.0-or-later
 ### F10-09 · テキスト
 
 **github.com/jl1nie/mfsk-core**
-<span style="color:var(--muted);font-size:10.2pt">crates.io / docs.rs — `mfsk-core`（最新リリース v0.9.1、0.10.0 準備中）</span>
+<span style="color:var(--muted);font-size:10.2pt">crates.io / docs.rs — `mfsk-core`（最新リリース v0.10.0、0.10.1 準備中）</span>
 <span style="font-size:10.2pt">Issue も PR も歓迎します。
 ブースで直接どうぞ — **JL1NIE**</span>
 
@@ -1010,7 +1010,7 @@ github.com/jl1nie/mfsk-core
 
 ### L02-28 · CTA・補足
 
-crates.io / docs.rs — `mfsk-core`（最新リリース v0.9.1、0.10.0 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ — **JL1NIE 友部 稔**
+crates.io / docs.rs — `mfsk-core`（最新リリース v0.10.0、0.10.1 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ — **JL1NIE 友部 稔**
 まず読むもの：`README.md`／`LIBRARY.md`（ホスト API）／`EMBEDDED.md`（組み込み・C ABI）／`BENCHMARKS.md`（本紙の数字の出どころ）。`docs/reference/` は全文書に日本語版があります。
 
 ### L02-29 · フッタ
