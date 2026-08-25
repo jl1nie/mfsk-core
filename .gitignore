@@ -18,3 +18,10 @@ Cargo.lock
 # Claude Code scheduled-task lock (ephemeral per-session runtime state)
 /.claude/scheduled_tasks.lock
 __pycache__
+
+# Booth-material PDFs are build output, not sources: `content.md` and the
+# HTML are what get edited, and `docs/presentations/hamfair2026/build.py`
+# regenerates the PDFs from them. Committed until 2026-08-25, which meant
+# a text fix silently left a stale printable artifact behind unless the
+# same machine could also re-bake it.
+docs/presentations/*/*.pdf

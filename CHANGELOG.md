@@ -66,6 +66,29 @@ cadence".
   empty diff. Both err toward re-sweeping something that did not need
   it, never toward skipping something that did.
 
+- **The ハムフェア PDFs are generated, not committed.** They are build
+  output — `content.md` and the HTML are the sources — and keeping them
+  in the tree meant a text fix silently left a stale printable artifact
+  behind. That is exactly what happened to the version line: the HTML
+  said v0.10.0 while the committed PDFs still said v0.9.1, and the PDF
+  is the half that gets printed. Now in `.gitignore`; run
+  `python3 build.py build` before printing.
+
+  `build` also subsets the fonts afterwards when `pdftocairo` (poppler)
+  is available. Chromium's PDF backend does not do it for CJK on every
+  platform: on Linux it emits the glyphs as paths and the flipchart
+  comes to 1.5 MB, on macOS it embeds seven whole 2.19 MB faces, one per
+  weight, for 11.6 MB. Both render identically — every page of the two
+  matches to within 0.4 % of pixels, which is antialiasing — so this is
+  storage, not appearance. Subsetting brings the pair to 2.7 MB and
+  1.1 MB. Optional: without poppler the PDF is left as Chromium wrote
+  it, correct and larger.
+
+  `README.md` gains the prerequisites this all implies — including that
+  the static Noto Sans JP is the one to install, since Homebrew's
+  `font-noto-sans-jp` is a single variable-weight file that Chromium
+  handles badly.
+
 ### Fixed
 
 - **The ハムフェア build script found no browser outside its author's

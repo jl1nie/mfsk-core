@@ -7,9 +7,14 @@
 |---|---|---|
 | `content.md` | — | **文言の正本。** 直すのは基本ここだけ |
 | `build.py`   | — | `content.md` → HTML → PDF。はみ出し検査つき |
-| `flipchart.html` / `.pdf` | A4 横 · 10ページ | ブースで手元に置いてめくる説明資料。1ページ1トピックで、各ページ下端に「この1枚のまとめ」の帯がある |
-| `leaflet.html` / `.pdf`   | A4 縦 · 2ページ（両面1枚） | 来場者の持ち帰り用リーフレット。表＝概要・デモ・対応モード・感度、裏＝マルチプラットフォーム・組み込み・設計・参加のしかた |
+| `flipchart.html` | A4 横 · 10ページ | ブースで手元に置いてめくる説明資料。1ページ1トピックで、各ページ下端に「この1枚のまとめ」の帯がある |
+| `leaflet.html`   | A4 縦 · 2ページ（両面1枚） | 来場者の持ち帰り用リーフレット。表＝概要・デモ・対応モード・感度、裏＝マルチプラットフォーム・組み込み・設計・参加のしかた |
 | `qr-github.svg` | — | 両資料に埋め込んである `https://github.com/jl1nie/mfsk-core` の QR コード |
+
+**PDF はリポジトリに入っていない。** 印刷する前に `build` を走らせて手元で焼く。
+2026-08-25 まではコミットしていたが、文言を直しても同じマシンで焼き直せないと
+古い PDF がそのまま残り、しかもそれが印刷される側だという状態になっていた。
+成果物なので `.gitignore` に入れてある。
 
 想定：ブースでの随時説明（5〜10分）、デモ機は M5Stack CoreS3 + IC-705（USB Audio 直結）。
 
@@ -71,14 +76,45 @@ PDF は作られるので、その場合は自分で PDF を見て確認する�
 ## PDF について
 
 `build.py` が Chromium のヘッドレス印刷で焼く。判型・ページ送り・余白はすべて HTML 側の
-`@page` と `.page` で決まるので、コマンドラインで用紙を指定する必要はない。手で焼くなら:
+`@page` と `.page` で決まるので、コマンドラインで用紙を指定する必要はない。
+
+**必要なもの**（`build` はどれが欠けても、その工程だけ飛ばして先に進む）:
+
+```sh
+pip install beautifulsoup4          # 必須。これが無いと import で落ちる
+pip install playwright && playwright install chromium   # PDF 生成 + はみ出し検査
+brew install poppler                # フォントのサブセット化（Linux なら apt install poppler-utils）
+```
+
+Chromium は `$CHROME` → Playwright のブラウザキャッシュ → `PATH` → macOS/Windows の
+アプリバンドル、の順に探すので、どのマシンでも置き場所を書き換える必要はない。
+
+**フォントを先に入れること。** 本文は `Noto Sans JP` で組んである。CSS は Hiragino /
+Yu Gothic / Meiryo へフォールバックするので画面で読む分には困らないが、PDF を焼くなら
+Noto が要る。無ければ `build` が警告する。macOS なら:
+
+```sh
+brew install --cask font-noto-sans-cjk-jp
+```
+
+加えて **静的**な `Noto Sans JP`（`notofonts/noto-cjk` リリースの `16_NotoSansJP.zip`）を
+`~/Library/Fonts` に入れる。Homebrew の `font-noto-sans-jp` は可変ウェイト1ファイルで、
+これだと Chromium が上手く扱えない。
+
+**PDF のサイズは環境で大きく変わる。** Chromium の PDF 出力は、Linux では日本語グリフを
+パス化して flipchart が約 1.5 MB になり、macOS では 2.19 MB のフォントを7本そのまま
+埋め込んで約 11.6 MB になる。描画結果は同じで、格納方法が違うだけ。`build` は
+`pdftocairo` があれば自動でサブセット化して 2.8 MB 程度まで落とす。
+
+手で焼くなら:
 
 ```sh
 chromium --headless --disable-gpu --no-pdf-header-footer \
          --print-to-pdf=flipchart.pdf file://$PWD/flipchart.html
 ```
 
-PDF は Noto Sans CJK JP をサブセット埋め込みしてあるので、印刷環境に日本語フォントがなくても崩れない。
+焼いた PDF はどちらのやり方でも日本語を自前で持っている（Linux ではグリフがパスとして、
+macOS ではフォントが埋め込まれて入る）ので、印刷環境に日本語フォントが無くても崩れない。
 
 ### 印刷
 
@@ -114,4 +150,4 @@ python3 -c "import segno; segno.make('https://example.com', error='m').save('qr-
 | `src/` の 18.7k / 58.9k 行がジェネリック | `README.md`「Why a `Protocol` trait」 |
 
 crates.io の最新リリースは資料本文に版数を書いてある。リリースを打ったら `content.md` の
-「最新リリース v0.9.1、0.10.0 準備中」の記述（`F10-09` と `L02-28`）を更新すること。
+「最新リリース …」の2箇所（`F10-09` と `L02-28`）を更新すること。現在は v0.10.0。

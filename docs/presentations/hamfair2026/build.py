@@ -424,6 +424,48 @@ def check_fonts(pg):
         print("    先にフォントを入れてください。")
 
 
+def shrink(pdf):
+    """Re-write `pdf` with its fonts subset, when a tool for it exists.
+
+    Chromium's PDF backend does not subset CJK fonts on every platform.
+    On Linux it emits the glyphs as paths and the flipchart comes to
+    1.5 MB; on macOS it embeds seven whole 2.19 MB faces, one per
+    weight, and the same document comes to 11.6 MB. Both render
+    identically — this is how the glyphs are stored, not what they look
+    like — but a 12 MB flipchart is an unpleasant thing to move around
+    on the day.
+
+    `pdftocairo` (poppler) re-writes it with proper subsetting:
+    11.6 MB → 2.83 MB and 5.4 MB → 1.18 MB, with every page matching
+    the input to within 0.4 % of pixels at a 24/255 threshold, which is
+    antialiasing and nothing else (measured 2026-08-25).
+
+    Optional by design: without poppler the PDF is simply left as
+    Chromium wrote it, which is correct, just larger.
+    """
+    tool = shutil.which("pdftocairo")
+    if not tool:
+        print("  （poppler 未導入のため、フォントのサブセット化はスキップ）")
+        return
+    tmp = pdf.with_suffix(".subset.pdf")
+    try:
+        subprocess.run([tool, "-pdf", str(pdf), str(tmp)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        print(f"  ⚠ {pdf.name}: pdftocairo が失敗したので原本を残します")
+        tmp.unlink(missing_ok=True)
+        return
+    before, after = pdf.stat().st_size, tmp.stat().st_size
+    # Only adopt it if it actually helped; a failed subset that happens
+    # to exit 0 should not replace a good file.
+    if after < before:
+        tmp.replace(pdf)
+        print(f"    {pdf.name}: {before/1048576:.1f} MB → "
+              f"{after/1048576:.1f} MB（フォントをサブセット化）")
+    else:
+        tmp.unlink()
+
+
 def check_fit(html):
     try:
         from playwright.sync_api import sync_playwright
@@ -490,6 +532,7 @@ def cmd_build():
                         f"file://{html}"], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"build: {html.name} ← {used} 箇所 / {pdf.name} を生成")
+        shrink(pdf)
         check_fit(html)
 
 
