@@ -879,7 +879,7 @@ WiFi / NTP / HTTP 設定
 
 ### L01-31 · フッタ
 
-<span>mfsk-core — ハムフェア2026 / JL1NIE 友部 稔</span> <span>裏面：マルチプラットフォーム・組み込み・設計・参加のしかた &nbsp;▶</span>
+<span>mfsk-core — ハムフェア2026 / JL1NIE 友部 実</span> <span>裏面：マルチプラットフォーム・組み込み・設計・参加のしかた &nbsp;▶</span>
 
 ## L02 — どこでも動く、という設計
 
@@ -1010,7 +1010,7 @@ github.com/jl1nie/mfsk-core
 
 ### L02-28 · CTA・補足
 
-crates.io / docs.rs — `mfsk-core`（最新リリース v0.10.0、0.10.1 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ — **JL1NIE 友部 稔**
+crates.io / docs.rs — `mfsk-core`（最新リリース v0.10.0、0.10.1 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ — **JL1NIE 友部 実**
 まず読むもの：`README.md`／`LIBRARY.md`（ホスト API）／`EMBEDDED.md`（組み込み・C ABI）／`BENCHMARKS.md`（本紙の数字の出どころ）。`docs/reference/` は全文書に日本語版があります。
 
 ### L02-29 · フッタ
