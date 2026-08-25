@@ -10,8 +10,8 @@ cadence".
 ### Added
 
 - **ハムフェア2026 booth material** (`docs/presentations/hamfair2026/`)
-  — a twelve-page flipchart and a leaflet for demonstrating the M5Stack
-  CoreS3 receiver at the show. Most visitors are operators rather than
+  — a ten-page A4-landscape flipchart and a two-page A4 leaflet for
+  demonstrating the M5Stack CoreS3 receiver at the show. Most visitors are operators rather than
   developers, so the front half is "what is happening in front of you"
   and the back half is for the smaller number of people who might
   actually build on the crate.
@@ -67,6 +67,31 @@ cadence".
   it, never toward skipping something that did.
 
 ### Fixed
+
+- **The ハムフェア build script found no browser outside its author's
+  machine.** `docs/presentations/hamfair2026/build.py` shells out to
+  headless Chromium to print the PDFs, and looked for it in a fixed
+  list headed by `/opt/pw-browsers/chromium-1194/chrome-linux/chrome` —
+  one machine's Playwright cache root *and* one build number — followed
+  by `shutil.which` on the usual names. On macOS that finds nothing at
+  all, because Chrome lives inside an `.app` bundle, which is a
+  directory and never on `PATH`.
+
+  Resolved from the environment now, most specific first: `$CHROME` /
+  `$CHROMIUM`, then Playwright's own cache globbed rather than pinned
+  (so the build number does not matter and `PLAYWRIGHT_BROWSERS_PATH`
+  is followed), then `PATH`, then known application-bundle locations on
+  macOS and Windows.
+
+  `build.py` also warns now when the intended body font is missing.
+  Rendering is only reproducible if the font is: the CSS stack falls
+  through to Hiragino / Yu Gothic / Meiryo, which is right for reading
+  the HTML anywhere and wrong for regenerating an artifact — on a Mac
+  without Noto, two boxes overflowed that do not overflow with it, and
+  the PDF came out 12 MB against the committed 1.5 MB. Detected by
+  measuring rendered text width against each generic family;
+  `document.fonts.check()` is no use here, as it answers "available"
+  for any non-webfont family, including one that does not exist.
 
 - **`scripts/release-status.sh`'s cadence section died on macOS.**
   `date -d` is GNU-only; this repository's development machine moved to

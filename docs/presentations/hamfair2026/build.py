@@ -7,16 +7,34 @@
 
 content.md が文言の正本. build は HTML の文字列を content.md で上書きする.
 """
-import re, sys, subprocess, shutil
+import re, os, sys, subprocess, shutil
 from pathlib import Path
 from bs4 import BeautifulSoup, NavigableString, Tag
 
 HERE = Path(__file__).resolve().parent
 CONTENT = HERE / "content.md"
-CHROME_CANDIDATES = [
-    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
-    shutil.which("chromium"), shutil.which("chromium-browser"),
-    shutil.which("google-chrome"), shutil.which("chrome"),
+# Where a Chromium build sits inside a Playwright browser cache, per
+# platform. The cache root itself is resolved at call time — see
+# `chrome()`.
+PW_BROWSER_GLOBS = [
+    "chromium-*/chrome-linux/chrome",
+    "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+    "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/"
+    "Google Chrome for Testing",
+    "chromium-*/chrome-win/chrome.exe",
+    # Headless shell last: it prints PDFs fine but is not a full browser.
+    "chromium_headless_shell-*/chrome-*/headless_shell",
+    "chromium_headless_shell-*/chrome-*/headless_shell.exe",
+]
+
+# Installed browsers, for a machine that has one without Playwright.
+CHROME_NAMES = ["chromium", "chromium-browser", "google-chrome",
+                "google-chrome-stable", "chrome"]
+CHROME_BUNDLES = [
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
 
 DOCS = [
@@ -279,11 +297,131 @@ def apply_list(el, md):
         el.append(li)
 
 
+def pw_roots():
+    """Playwright browser-cache roots, in search order.
+
+    `PLAYWRIGHT_BROWSERS_PATH` is how the cache gets relocated, and is
+    what put the browser under `/opt/pw-browsers` on the machine this
+    script was written on.
+    """
+    roots = []
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if env and env != "0":
+        roots.append(Path(env))
+    roots += [
+        Path.home() / "Library/Caches/ms-playwright",   # macOS
+        Path.home() / ".cache/ms-playwright",           # Linux
+        Path(os.environ.get("LOCALAPPDATA", "~")) / "ms-playwright",
+        Path("/opt/pw-browsers"),
+    ]
+    return roots
+
+
 def chrome():
-    for c in CHROME_CANDIDATES:
-        if c and Path(c).exists():
-            return c
-    sys.exit("Chromium が見つかりません（PDF 生成に必要）")
+    """A Chromium binary for headless PDF printing.
+
+    Until 2026-08-25 this was a fixed list whose first entry was
+    `/opt/pw-browsers/chromium-1194/chrome-linux/chrome` — one machine's
+    cache root *and* one Playwright build number — followed by
+    `shutil.which` on the usual names. On macOS that finds nothing at
+    all: Chrome lives inside an `.app` bundle, which is a directory, so
+    it is not on `PATH` and `which` never sees it. Same shape of bug as
+    `scripts/release-status.sh`'s `date -d`.
+
+    Resolved from the environment instead, in order of how specific the
+    answer is:
+
+    1. `$CHROME` / `$CHROMIUM` — an explicit override always wins.
+    2. Playwright's own browser cache, globbed rather than pinned, so
+       the build number does not matter and a relocated cache
+       (`PLAYWRIGHT_BROWSERS_PATH`) is followed. Highest build wins.
+    3. Anything named like Chromium on `PATH` — the Linux case.
+    4. Known application-bundle locations on macOS and Windows.
+    """
+    for var in ("CHROME", "CHROMIUM"):
+        p = os.environ.get(var)
+        if p and Path(p).exists():
+            return p
+
+    for root in pw_roots():
+        if not root.is_dir():
+            continue
+        for pattern in PW_BROWSER_GLOBS:
+            # Sorted so a cache holding several builds yields the
+            # newest, not whichever the filesystem happened to list.
+            hits = sorted(root.glob(pattern))
+            if hits:
+                return str(hits[-1])
+
+    for name in CHROME_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+
+    for bundle in CHROME_BUNDLES:
+        if Path(bundle).exists():
+            return bundle
+
+    sys.exit(
+        "Chromium が見つかりません（PDF 生成に必要）。\n"
+        "  python3 -m playwright install chromium\n"
+        "  もしくは環境変数 CHROME に実行ファイルのパスを設定してください。"
+    )
+
+
+# The first family in the body stack. Everything after it in the CSS is
+# a per-platform substitute, and substituting silently is the problem —
+# see `check_fonts`.
+BODY_FONT = "Noto Sans JP"
+
+
+def check_fonts(pg):
+    """Warn when the intended font is missing from this machine.
+
+    Rendering, and therefore the fit check and the committed PDFs, are
+    only reproducible if the font is. The CSS stack falls through to
+    `Hiragino Kaku Gothic ProN` / `Yu Gothic` / `Meiryo`, which is right
+    for viewing the HTML anywhere and wrong for regenerating an
+    artifact: on a Mac without Noto (2026-08-25) the flipchart picked up
+    Hiragino, two boxes overflowed that do not overflow with Noto, and
+    the PDF came out 12 MB against the committed 1.5 MB.
+
+    Nothing here can install a font, and the fallbacks are deliberate,
+    so this warns rather than refusing — but it does not let the
+    difference pass unremarked.
+    """
+    # Not `document.fonts.check()`: for a family that is not a loaded
+    # webfont it answers "yes" regardless, because there is always some
+    # fallback to render with. Verified 2026-08-25 — it returned true
+    # for the family name "No Such Font ZZZ".
+    #
+    # Measure instead. Ask for the family backed by each generic in
+    # turn; if the family is missing, every measurement collapses onto
+    # its generic's own width.
+    ok = pg.evaluate(
+        """f => {
+            const w = family => {
+                const s = document.createElement('span');
+                s.textContent = '日本語ABCあいう0123';
+                s.style.cssText = 'position:absolute;left:-9999px;'
+                                + 'font-size:72px;white-space:nowrap';
+                s.style.fontFamily = family;
+                document.body.appendChild(s);
+                const px = s.offsetWidth;
+                s.remove();
+                return px;
+            };
+            return ['monospace', 'serif', 'sans-serif']
+                .every(g => w(`'${f}', ${g}`) !== w(g));
+        }""",
+        BODY_FONT,
+    )
+    if not ok:
+        print(f"  ⚠ 「{BODY_FONT}」が見つかりません。CSS のフォールバック"
+              f"（Hiragino / Yu Gothic / Meiryo）で描画されます。")
+        print("    表示は問題ありませんが、はみ出し検査の結果と PDF は")
+        print("    コミット済みのものと一致しません。PDF を作り直すなら")
+        print("    先にフォントを入れてください。")
 
 
 def check_fit(html):
@@ -296,6 +434,7 @@ def check_fit(html):
         b = p.chromium.launch(executable_path=chrome(), args=["--no-sandbox"])
         pg = b.new_page(); pg.emulate_media(media="print")
         pg.goto("file://" + str(html))
+        check_fonts(pg)
         rows = pg.evaluate("""()=>[...document.querySelectorAll('.page')].map((page,i)=>{
           const mm = px => Math.round(px / 3.7795);
           // ページ自体の溢れと、中で潰れて欠けた要素の両方を見る。
