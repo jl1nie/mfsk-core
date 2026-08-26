@@ -1,4 +1,4 @@
-//! USB Audio Class host capture — Phase 1 iso IN streaming (#30 + #31).
+//! USB Audio Class host capture — Phase 1 iso IN streaming (#163).
 //!
 //! `start_host()` installs the ESP-IDF USB host stack + the
 //! `espressif/usb_host_uac` class driver, registers a driver event
@@ -17,14 +17,16 @@
 //!
 //! The reader resamples 48 k stereo → 12 k mono and pushes into
 //! whichever [`AudioSink`] the running binary registered via
-//! [`set_audio_sink`] (#32) — `main.rs`'s FT8 controller wires
+//! [`set_audio_sink`] — `main.rs`'s FT8 controller wires
 //! [`set_chunk_q`] (its pre-existing chunk-queue sink, now
 //! [`Ft8ChunkSink`] under the hood), `wspr_app.rs` wires its own DDC
 //! push sink. Samples are dropped on the floor only while no sink is
-//! registered yet (race window at boot, bounded). Disconnect /
-//! reconnect polish is #35 (reader exits on any read error and the
-//! device handle leaks — acceptable for #31 since `BootMode::Uac` is
-//! sticky until reboot).
+//! registered yet (race window at boot, bounded). Disconnect and
+//! re-open are handled: `DISCONNECTED` sets [`READER_STOP_REQUESTED`],
+//! a stall watchdog covers the overflow case that ends the stream
+//! without ever returning an error, and the re-open gate retries the
+//! interface. What is left is telling "same device returned" from
+//! "new device" in [`app_task`] — no issue filed for it.
 //!
 //! ## 接続方式 (確定済)
 //!
@@ -34,7 +36,7 @@
 //! - IC-705 USB Audio は **固定 48 kHz / stereo / 16-bit** (16 kHz は
 //!   selectable ではない)。S3 側で stereo → mono (L ch 抽出 / R ch 破棄)
 //!   + 48 kHz → 12 kHz の 4:1 decimation を `embedded_shared` 経由で
-//!   行う (#32)。
+//!   行う。
 //! - Reference example は esp-usb 上流の
 //!   `host/class/uac/usb_host_uac/examples/audio_player/main/main.c`。
 //!   init 順序 (`usb_host_install` → events task spawn →
@@ -49,14 +51,19 @@
 //!
 //! ## 進捗
 //!
-//! - [x] managed component + bindings (#29)
-//! - [x] host install + hot-plug callback (#30)
-//! - [x] iso IN streaming + stats logging (#31, このファイル)
-//! - [x] 48 kHz stereo → 12 kHz mono resampler + sink push (#32, FT8
+//! - [x] managed component + bindings
+//! - [x] host install + hot-plug callback
+//! - [x] iso IN streaming + stats logging (このファイル)
+//! - [x] 48 kHz stereo → 12 kHz mono resampler + sink push (FT8
 //!   side; `wspr_app.rs` wires its own DDC-push sink the same way)
-//! - [ ] verification on hardware (#33-#34) — blocked on issue #163,
-//!   needs a real IC-705 (or other UAC source) connected
-//! - [ ] disconnect/reconnect polish (#35)
+//! - [x] verification on hardware — #163, closed 2026-08-23: an
+//!   IC-705 sustained 192,512 B/s for ten minutes (125 MB, 30,520
+//!   packets, zero errors) with the FT8 decode pipeline running slots
+//!   off the live stream. `wspr_app` / `fst4_app` share this file but
+//!   have not been run against a radio (#313).
+//! - [x] disconnect/reconnect — the DISCONNECTED signal, the stall
+//!   watchdog and the re-open gate all shipped with #163; "same device
+//!   returned" detection in [`app_task`] is what remains.
 
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
@@ -202,13 +209,15 @@ const READER_TASK_STACK: usize = 24576;
 /// stereo i16 samples = ~21 ms at 48 kHz stereo — short enough that
 /// disconnect detection latency stays under one FT8 symbol period
 /// (160 ms), large enough that we're not paying ring-buffer overhead
-/// per-sample. #32 may tune this once the resample chain is wired
-/// (FT8 symbol-block sized chunks reduce intermediate buffering).
+/// per-sample. Sizing it to the sink's own chunk geometry would cut
+/// one round of intermediate buffering; unmeasured, and the geometry
+/// it would have to match is per-sink now.
 const READER_BUFFER_BYTES: usize = 4096;
 
 /// Read call timeout — short enough that a disconnect surfaces quickly
-/// (we currently exit the reader on any non-OK return; #35 will
-/// distinguish recoverable from terminal errors), long enough that
+/// (`ESP_ERR_TIMEOUT` is routine ringbuf-empty and continues; every
+/// other error ends the session and routes to the re-open gate),
+/// long enough that
 /// the loop doesn't poll-spin when the IDF ringbuf is briefly empty.
 /// 100 ms ≈ half an FT8 symbol period; matches the audio_player
 /// reference example's default.
@@ -243,7 +252,7 @@ const STREAM_BUFFER_THRESHOLD: u32 = STREAM_BUFFER_BYTES / 2;
 enum DriverEvent {
     /// A streaming-IN interface enumerated on `addr.iface_num`.
     /// We open + start the first RxConnected we see; subsequent ones
-    /// (e.g. multi-channel devices) are logged but ignored for #31.
+    /// (e.g. multi-channel devices) are logged but ignored.
     RxConnected { addr: u8, iface_num: u8 },
     /// A streaming-OUT interface enumerated. IC-705 exposes one for
     /// CW/mod injection; we don't use it for FT8 RX.
@@ -633,10 +642,11 @@ extern "C" fn driver_event_cb(
 
 /// Device-level event callback. Set in `uac_host_device_config_t` at
 /// `uac_host_device_open` time, fires on `RX_DONE` / `TX_DONE` /
-/// `TRANSFER_ERROR` / `DRIVER_EVENT_DISCONNECTED`. #31 only logs
-/// these — the reader thread polls `uac_host_device_read` rather
-/// than waiting on the callback. #35 will use `DISCONNECTED` here
-/// to signal the reader to stop and clean up the handle.
+/// `TRANSFER_ERROR` / `DRIVER_EVENT_DISCONNECTED`. The reader thread
+/// polls `uac_host_device_read` rather than waiting on the callback,
+/// so the first three are logged and nothing else; `DISCONNECTED`
+/// sets [`READER_STOP_REQUESTED`], which is how the reader learns to
+/// stop and to skip the cleanup the IDF driver has already done.
 extern "C" fn device_event_cb(
     _handle: sys::uac::uac_host_device_handle_t,
     event: sys::uac::uac_host_device_event_t,
@@ -664,7 +674,7 @@ extern "C" fn device_event_cb(
     // iteration (≤ 100 ms latency) instead of waiting for the failing
     // read to surface — and lets the reader skip the
     // `device_stop` / `device_close` cleanup since the IDF already
-    // released the underlying state (#35 disconnect polish).
+    // released the underlying state.
     if event == sys::uac::uac_host_device_event_t_UAC_HOST_DRIVER_EVENT_DISCONNECTED {
         READER_STOP_REQUESTED.store(true, Ordering::Release);
     }
@@ -693,8 +703,8 @@ fn usb_events_task() {
 
 /// Convert a `(addr, iface_num)` `RxConnected` into an open + started
 /// UAC device + reader thread. Returns the device handle on success
-/// (currently unused — the handle moves into the reader thread; #35
-/// will need a way to signal it on disconnect).
+/// The handle moves into the reader thread; a disconnect reaches it
+/// through [`READER_STOP_REQUESTED`], not through the handle.
 fn handle_rx_connected(addr: u8, iface_num: u8) -> Result<()> {
     log::info!("uac: opening device addr={addr} iface={iface_num}");
     // Clear any stale stop-request BEFORE `uac_host_device_open` —
@@ -834,11 +844,11 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
     let mut clipped: u32 = 0;
     // Track whether we exited via DISCONNECTED so the cleanup path
     // can skip the redundant `device_stop` / `device_close` calls
-    // (#35) — the IDF driver already invalidated the handle at
+    // — the IDF driver already invalidated the handle at
     // callback time, so calling them just logs spurious INVALID_ARG.
     let mut disconnect_triggered = false;
     loop {
-        // Top-of-loop disconnect check (#35). `device_event_cb` sets
+        // Top-of-loop disconnect check. `device_event_cb` sets
         // the flag immediately on DISCONNECTED; we exit on the next
         // iteration (≤ `READER_READ_TIMEOUT_MS` latency) rather than
         // waiting for the failing read to surface.
@@ -958,10 +968,12 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
             }
             RX_ERRORS.fetch_add(1, Ordering::Relaxed);
             // Other errors (INVALID_STATE on disconnect, INVALID_ARG,
-            // ringbuf failures) are terminal — exit so #35 can swap in
-            // a proper detect+reset path. `BootMode::Uac` is
-            // sticky-until-reboot so silent reader death is at least
-            // observable in the next UDP log tick (rx=0B/s).
+            // ringbuf failures) are terminal — end the session and
+            // hand the interface to the re-open gate below, which
+            // retries it up to `REOPEN_MAX_ATTEMPTS` times.
+            // `BootMode::Uac` is sticky-until-reboot, so a reader that
+            // dies past that is at least observable in the next UDP
+            // log tick (rx=0B/s).
             log::error!("uac: device_read err={err:#x}, ending session");
             set_state(UacState::Error);
             gate.reopen = Some((addr, iface_num));
@@ -1045,7 +1057,7 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
         drop(sink_guard);
 
     }
-    // Cleanup paths differ by exit reason (#35):
+    // Cleanup paths differ by exit reason:
     //
     // - Disconnect-triggered exit: the IDF driver already invalidated
     //   the handle when DISCONNECTED fired in `device_event_cb`.
@@ -1091,8 +1103,9 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
 /// `RxConnected` opens the device + starts the stream + spawns the
 /// reader. Subsequent `RxConnected` events (e.g. a hub adds another
 /// audio device, or IC-705 re-enumerates after a USB reset) are
-/// re-handled — #35 will refine this to detect "same device returned"
-/// vs "new device" and clean up the previous handle.
+/// re-handled — telling "same device returned" from "new device" and
+/// closing the previous handle is still open, with no issue of its
+/// own.
 fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
     while let Ok(event) = rx.recv() {
         match event {

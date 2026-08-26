@@ -166,10 +166,11 @@ fn main() -> ! {
     //   - BootMode::Decode: BASIS heap alloc (120 KB) + decode_pipeline +
     //     stage1_inc + dsp_worker + wav_sim
     //   - BootMode::Wifi:   pipeline skip、WiFi STA + UDP のみ
-    //   - BootMode::Uac:    pipeline skip (#32 で UAC ringbuf に差し替えて
-    //     再 spawn 予定)、USB host stack を install。#30 段階では
-    //     uac_host_install + driver event callback まで。実際の device
-    //     open / streaming は #31 以降。
+    //   - BootMode::Uac:    decode_pipeline を先に spawn し、その
+    //     chunk_q を `uac::set_chunk_q` で UAC reader に渡してから USB
+    //     host stack を install。StickS3 は board 配線が device-only な
+    //     ため `usb_host_install()` がここで hang する (2026-05-17 実機
+    //     確認) — 実際に動くのは CoreS3 側 (#163)。
     match mode {
         boot_mode::BootMode::Decode => {
             // Phase 0.7c: BASIS の `heap_caps_aligned_alloc` は thread の中で

@@ -51,7 +51,7 @@ pub enum BootMode {
     /// `Acoustic` (no TX) or `TxTest` (no RX) separately. CoreS3
     /// (Phase B-Core) is the long-term canonical platform for QSO.
     Qso,
-    /// Phase 1 (#30 onward, m5stack-s3-app only): USB-OTG host で
+    /// Phase 1 (#163): USB-OTG host で
     /// IC-705 を UAC class device として認識し audio capture。
     /// `usb_host_install()` を呼んだ瞬間に USB-Serial-JTAG が detach
     /// されるため、UDP log 経路を必ず up させる (main.rs dispatch arm
