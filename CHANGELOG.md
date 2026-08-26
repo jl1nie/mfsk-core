@@ -35,6 +35,14 @@ cadence".
   and why, and the fact that there is no `src/core/`. A cold start had
   to rediscover all of it.
 
+- **README no longer names the published version.** The Status section
+  read "Latest published tag: `v0.9.0`" — stale through both `v0.9.1`
+  and `v0.10.0`, on the page most readers see first. The crates.io
+  badge at the top of the same file has always shown the right number,
+  so the hardcoded one is gone rather than corrected; a fact with two
+  sources only stays true by luck. The release-mechanism bullet's
+  `v0.6.x` example is now `vX.Y.Z` for the same reason.
+
 - **`jt9::softsym::TONE_SPACING` reads the trait constant.** It and
   `<Jt9 as ModulationParams>::TONE_SPACING_HZ` were both written out as
   `12_000.0 / 6912.0` — identical `f32` to the bit, so nothing was

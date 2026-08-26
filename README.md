@@ -581,7 +581,7 @@ strictness controls, and the FT8 wide-band AP path. The local-fence
   preset, `cargo test` + the C++ driver for `mfsk-ffi` and `cargo test`
   for `mfsk-ffi-ft8`, rustdoc with `-D warnings`, and a
   `cargo publish --dry-run` for `mfsk-core`.
-- **Release**: tag-driven (`v0.6.x`). Pushing a tag that matches the
+- **Release**: tag-driven (`vX.Y.Z`). Pushing a tag that matches the
   workspace version (`Cargo.toml::[workspace.package].version`,
   inherited by `mfsk-core`/`mfsk-ffi`/`mfsk-ffi-ft8` alike) and is
   reachable from `main` triggers `release.yml`, which publishes
@@ -661,7 +661,9 @@ reference:
 
 ## Status
 
-**Latest published tag: `v0.9.0`** — API is deliberately not frozen:
+**The published version is the crates.io badge at the top** — no
+number is repeated here, because this line said `v0.9.0` through two
+releases before anyone noticed. API is deliberately not frozen:
 breaking changes follow cargo-style minor bumps, while a new
 protocol/mode addition on its own is patch-level (e.g. MSK144 shipped
 as `0.7.4`, not `0.8.0`) — minor bumps mark more structural changes.
