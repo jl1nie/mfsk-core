@@ -12,6 +12,13 @@
 # Run build_fst4sim.sh first if the binary doesn't exist.
 # Existing files are skipped (safe to re-run after adding modes/conditions).
 # Jobs run in parallel (JOBS env var, default: nproc).
+# Trials per cell: TRIALS env var, default 20. Raising it does not
+# extend an existing corpus: a cell is skipped only when every trial is
+# already there, so an incomplete one is regenerated whole (the
+# simulator is invoked once for all TRIALS) and the files already
+# present are overwritten with a fresh set of realisations. A trial
+# index therefore names a different signal afterwards. Generate into a
+# separate out-dir (2nd positional arg) rather than in place.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,7 +39,7 @@ mkdir -p "$OUT_DIR"
 MSG="CQ JL1NIE PM95"
 F0=1500
 DT=0.0
-TRIALS=20
+TRIALS="${TRIALS:-20}"
 
 declare -A MODE_SNRS
 MODE_SNRS[15]="-5 -10 -14 -15 -16 -17 -18 -19 -20 -21 -22 -23"

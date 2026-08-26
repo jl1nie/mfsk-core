@@ -30,6 +30,13 @@
 #
 # Run existing files are skipped (safe to re-run after widening the grid).
 # Jobs run in parallel (JOBS env var, default: nproc).
+# Trials per cell: TRIALS env var, default 20. Raising it does not
+# extend an existing corpus: a cell is skipped only when every trial is
+# already there, so an incomplete one is regenerated whole (the
+# simulator is invoked once for all TRIALS) and the files already
+# present are overwritten with a fresh set of realisations. A trial
+# index therefore names a different signal afterwards. Generate into a
+# separate out-dir (2nd positional arg) rather than in place.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,7 +57,7 @@ mkdir -p "$OUT_DIR"
 
 MSG="CQ JL1NIE PM95"
 F0=1500
-TRIALS=20
+TRIALS="${TRIALS:-20}"
 
 # JT65A hard-decision (no kvasd) sensitivity floor is roughly -15 to -20 dB
 # in this reference bandwidth (see docs/notes/ — grid centres on the steep

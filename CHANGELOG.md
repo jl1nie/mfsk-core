@@ -140,6 +140,26 @@ cadence".
 
 ### Fixed
 
+- **`TRIALS` never reached the sweep corpus generators.** All seven
+  `scripts/gen_*_sweep_wavs.sh` assigned `TRIALS=20` (q65: 15)
+  unconditionally, so the `TRIALS=100 scripts/gen_fst4_sweep_wavs.sh`
+  that `FST4_BENCHMARK.md` §11.3 prescribes for #311's n=100 re-run
+  silently generated a 20-trial corpus. Nothing announces it: the
+  script prints the count it is using per cell, and the sweeps skip
+  absent trial indices without complaint, so the only symptom is a
+  measurement quietly answering a smaller question than the one asked
+  — and #311's whole open item is that its n=20 answer needs n=100.
+  `"${TRIALS:-20}"` now, defaults unchanged.
+
+  The generators' headers gained the corollary, which is the part that
+  bites even with the override working: a cell is skipped only when
+  every trial is already present, so raising the count regenerates an
+  existing cell whole — the simulator is invoked once for all `TRIALS`
+  — and overwrites the files already there with fresh realisations.
+  In place, that both perturbs the tier-C corpus and re-shuffles the
+  trial indices (`FST4_BENCHMARK.md`'s trap 1). Generate into a
+  separate out-dir; the second positional argument is there for it.
+
 - **The ハムフェア build script found no browser outside its author's
   machine.** `docs/presentations/hamfair2026/build.py` shells out to
   headless Chromium to print the PDFs, and looked for it in a fixed

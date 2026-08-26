@@ -12,6 +12,13 @@
 # Run build_ft4sim.sh first if the binary doesn't exist.
 # Existing files are skipped (safe to re-run after widening the grid).
 # Jobs run in parallel (JOBS env var, default: nproc).
+# Trials per cell: TRIALS env var, default 20. Raising it does not
+# extend an existing corpus: a cell is skipped only when every trial is
+# already there, so an incomplete one is regenerated whole (the
+# simulator is invoked once for all TRIALS) and the files already
+# present are overwritten with a fresh set of realisations. A trial
+# index therefore names a different signal afterwards. Generate into a
+# separate out-dir (2nd positional arg) rather than in place.
 #
 # Mirrors scripts/gen_fst4_sweep_wavs.sh (see docs/notes/FT4_BENCHMARK.md).
 # FT4 has no sub-modes, so there's one SNR grid instead of one per period.
@@ -35,7 +42,7 @@ mkdir -p "$OUT_DIR"
 MSG="CQ JL1NIE PM95"
 F0=1500
 DT=0.0
-TRIALS=20
+TRIALS="${TRIALS:-20}"
 
 # Published WSJT-X AWGN threshold (2500 Hz ref BW) is ~-17.5 dB (vs FT8's
 # -21 dB — FT4 trades sensitivity for the shorter 7.5 s slot / less FEC

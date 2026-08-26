@@ -865,9 +865,24 @@ per cell. Not testable on the laptop — `fst4sim` is not installed there.
 
 On a box that has WSJT-X built:
 
+**`TRIALS` was silently ignored until 2026-08-27.** The generator
+assigned `TRIALS=20` unconditionally, so the command below produced a
+20-trial corpus and said so nowhere; it is `${TRIALS:-20}` now (in all
+seven `gen_*_sweep_wavs.sh`). Anyone who ran this before that date
+measured 20 trials, whatever they passed.
+
+Generate into a **separate out-dir** — the second positional argument.
+A cell is skipped only when every trial is already present, so an
+existing 20-trial cell is regenerated whole at the new count and the
+files already there are overwritten with fresh realisations: in-place,
+this both perturbs the fst4 tier-C corpus and re-shuffles the trial
+indices (trap 1 above).
+
 ```sh
 # 100 trials per cell, at least the crossing band
-TRIALS=100 scripts/gen_fst4_sweep_wavs.sh
+TRIALS=100 scripts/gen_fst4_sweep_wavs.sh \
+    "$HOME/src/WSJT-X/build_jt9/fst4sim" \
+    embedded-poc/assets/fst4_sweep_n100
 
 cargo test -p mfsk-core --features full,internal-testing --release \
     --test fst4_sweep fst4_60_diag_npre_baseline_scan \

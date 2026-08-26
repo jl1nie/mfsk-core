@@ -25,6 +25,13 @@
 #
 # Existing files are skipped (safe to re-run after widening the grid).
 # Jobs run in parallel (JOBS env var, default: nproc).
+# Trials per cell: TRIALS env var, default 20. Raising it does not
+# extend an existing corpus: a cell is skipped only when every trial is
+# already there, so an incomplete one is regenerated whole (the
+# simulator is invoked once for all TRIALS) and the files already
+# present are overwritten with a fresh set of realisations. A trial
+# index therefore names a different signal afterwards. Generate into a
+# separate out-dir (2nd positional arg) rather than in place.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +55,7 @@ fi
 
 # WSPR message: "call grid dBm" -- no CQ form, unlike FT8/JT65/JT9/Q65.
 MSG="JL1NIE PM95 37"
-TRIALS=20
+TRIALS="${TRIALS:-20}"
 
 # WSJT-X's published WSPR sensitivity floor is around -28 to -33 dB in
 # a 2500 Hz reference bandwidth (K1JT's WSPR papers cite decodes down
