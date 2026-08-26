@@ -102,7 +102,7 @@
 <div class="blk">
 <h2 class="sec" data-t="L01-06">これは何か</h2>
 <p data-t="L01-07">FT8・FT4・FST4・WSPR・JT9・JT65・Q65・MSK144 &mdash; WSJT 系デジタルモードの復調と変調を、ひとつの純 Rust ライブラリにまとめたものです。 DSP、同期相関、LLR、誤り訂正（LDPC / 畳み込み / Reed-Solomon / QRA）、メッセージ符号を共通の土台として共有し、その上に各モードが載っています。</p>
-<p data-t="L01-08" style="margin-bottom:0"><b>WSJT-X はこれからも基準実装です。</b>各ファイルは移植元の <code>lib/*.f90</code> / <code>lib/*.c</code> を明記しています。 このライブラリの存在理由は WSJT-X を置き換えることではなく、 <span class="hl">Fortran + C + Qt のデスクトップアプリが行けない場所へ、同じアルゴリズムを持っていくこと</span>です。</p>
+<p data-t="L01-08" style="margin-bottom:0"><b>WSJT-X はこれからも参照実装です。</b>各ファイルは移植元の <code>lib/*.f90</code> / <code>lib/*.c</code> を明記しています。 このライブラリの存在理由は WSJT-X を置き換えることではなく、 <span class="hl">Fortran + C + Qt のデスクトップアプリが対応できない環境で、同じデコーダを動かすこと</span>です。</p>
 </div>
 <div class="blk">
 <h2 class="sec" data-t="L01-09">ブースで動いているもの</h2>
@@ -140,8 +140,8 @@
 </table>
 </div>
 <div class="card warm">
-<h3 data-t="L01-29">「再現率だけ」はベンチマークではない</h3>
-<p data-t="L01-30" style="font-size:7.7pt;margin:0">かつてこの表には再現率しか載っていませんでした。「WSPR 8/8、パリティ達成」と書かれていたデコーダは、 <span class="hl">同時に8個の存在しないコールサインを出していました</span>。いまは誤デコードが常設の列で、上表はいずれも <b>0</b>。 数字はテストが assert しており、下回れば CI が落ちます。FST4・Q65 を含む全モードは <code>docs/notes/BENCHMARKS.md</code> に。</p>
+<h3 data-t="L01-29">テストで性能を担保</h3>
+<p data-t="L01-30" style="font-size:7.7pt;margin:0">WSJT-X 配布の実録音に対する golden テストと、AWGN 掃引による感度測定。 <b>再現率（recall）だけでなく誤デコード（precision）も</b>常に測ります。<br>数字はテストが assert しており、下回ればリリース前テストで落ちます。FST4・Q65 を含む全モードは <code>docs/notes/BENCHMARKS.md</code> に。</p>
 </div>
 </div>
 </div>
@@ -206,10 +206,10 @@
 <div>
 <div class="t" data-t="L02-26">Issue も PR も歓迎します。</div>
 <div class="u" data-t="L02-27">github.com/jl1nie/mfsk-core</div>
-<div class="d" data-t="L02-28">crates.io / docs.rs &mdash; <code>mfsk-core</code>（最新リリース v0.10.0、0.10.1 準備中）／ GPL-3.0-or-later ／ ブースで直接どうぞ &mdash; <b>JL1NIE 友部 実</b><br>まず読むもの：<code>README.md</code>／<code>LIBRARY.md</code>（ホスト API）／<code>EMBEDDED.md</code>（組み込み・C ABI）／<code>BENCHMARKS.md</code>（本紙の数字の出どころ）。<code>docs/reference/</code> は全文書に日本語版があります。</div>
+<div class="d" data-t="L02-28">crates.io / docs.rs &mdash; <code>mfsk-core</code>（最新リリース v0.10.0、0.10.1 準備中）／ GPL-3.0-or-later <br>参考資料：<code>README.md</code>／<code>LIBRARY.md</code>（ホスト API）／<code>EMBEDDED.md</code>（組み込み・C ABI）／<code>BENCHMARKS.md</code>（本紙の数字の出どころ）。<code>docs/reference/</code> は全文書に日本語版があります。</div>
 </div>
 </div>
-<footer class="pf" data-t="L02-29"><span>本ライブラリは WSJT-X（K1JT Joe Taylor 氏ほか）の Rust 再実装です。すべてのアルゴリズムの出典は WSJT-X にあり、基準実装はこれからも WSJT-X です。</span></footer>
+<footer class="pf" data-t="L02-29"><span>本ライブラリは WSJT-X（K1JT Joe Taylor 氏ほか）の Rust 再実装です。すべてのアルゴリズムの出典は WSJT-X にあり、参照実装はこれからも WSJT-X です。</span></footer>
 </section>
 </body>
 </html>

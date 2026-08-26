@@ -146,12 +146,12 @@
 <div class="kicker" data-t="F01-01">HAM FAIR 2026 &mdash; BOOTH</div>
 <h1 data-t="F01-02">mfsk-core</h1>
 <div class="h1sub" data-t="F01-03">github.com/jl1nie/mfsk-core &nbsp;&middot;&nbsp; crates.io/crates/mfsk-core &nbsp;&middot;&nbsp; GPL-3.0-or-later</div>
-<div class="tagline" data-t="F01-04">WSJT-X のデコーダを、<em>まるごと Rust で</em>書き直しました。<br>M5Stack CoreS3でリアルタイムでFT8が動きます。</div>
+<div class="tagline" data-t="F01-04">WSJT-X のデコーダを、<em>まるごと Rust で</em>書き直しました。<br>M5Stack CoreS3 上で、リアルタイムに FT8 が動きます。</div>
 <div class="modes" data-t="F01-05"><b>FT8 &middot; FT4 &middot; FST4 &middot; WSPR &middot; JT9 &middot; JT65 &middot; Q65 &middot; MSK144</b><br>8つのモードファミリを、ひとつのライブラリで。デスクトップにも、ブラウザにも、スマホにも、マイコンにも。</div>
 <div class="coverstrip">
-<div class="s"><div class="sv" data-t="F01-06">WSJT-X と同等</div><div class="sl" data-t="F01-07">実録音での再現率も、AWGN 感度も、<br>実バイナリと突き合わせて確認しています</div></div>
-<div class="s"><div class="sv" data-t="F01-08">1つのソース</div><div class="sl" data-t="F01-09">デスクトップ / WASM / Android・iOS /<br>no_std マイコン &mdash; 同じコードが動きます</div></div>
-<div class="s"><div class="sv" data-t="F01-10">約150 KB で動く</div><div class="sl" data-t="F01-11">FT8 の復調に必要な RAM。<br>実機で、実際に電波を復調しています</div></div>
+<div class="s"><div class="sv" data-t="F01-06">WSJT-X と同等の性能</div><div class="sl" data-t="F01-07">実録音での再現率も、AWGN 感度も、<br>実バイナリと突き合わせて確認しています</div></div>
+<div class="s"><div class="sv" data-t="F01-08">1つのソース</div><div class="sl" data-t="F01-09">デスクトップ / WASM / Android・iOS /<br>マイコン &mdash; 同じコードが動きます</div></div>
+<div class="s"><div class="sv" data-t="F01-10">約150 KB で動く</div><div class="sl" data-t="F01-11">FT8 の復調に必要な RAM。<br>実機で、リアルタイムで復調しています</div></div>
 </div>
 <div class="coverfoot">
 <div class="whoami" data-t="F01-12"><span class="u">JL1NIE</span> / 友部 実<br><span class="note" style="font-size:10.5pt">デモ機：M5Stack CoreS3 + IC-705（USB Audio 直結、PC なし）</span></div>
@@ -200,15 +200,15 @@
 <footer class="pf" data-t="F02-30"><span>mfsk-core &mdash; ハムフェア2026 ブース資料</span><span>02 / 10</span></footer>
 </section>
 <!-- ============ 03 WHY ============ -->
-<section class="page">
+<section class="page dense">
 <header class="ph"><span class="pnum">03</span><h2 data-t="F03-01">なぜ書き直したのか</h2>
-<span class="sub" data-t="F03-02">WSJT-X は基準実装であり続けます</span></header>
+<span class="sub" data-t="F03-02">WSJT-X は参照実装です</span></header>
 <div class="body">
 <div class="versus">
 <div class="l">
-<h3 data-t="F03-03">WSJT-X が素晴らしいこと</h3>
+<h3 data-t="F03-03">WSJT-X の特長</h3>
 <ul data-t="F03-04">
-<li>K1JT Joe Taylor 氏らによる、実戦で鍛えられた実装</li><li>本プロジェクトのプロトコル定数は、すべてここが出典</li><li>デスクトップでは徹底的に最適化されている</li><li><b>基準実装の座は、これからも WSJT-X のもの</b></li></ul>
+<li>K1JT Joe Taylor 氏らによる、実戦で鍛えられた実装</li><li>本プロジェクトのプロトコル定数は、すべてここが出典</li><li>デスクトップでは徹底的に最適化されている</li><li><b>参照実装の座は揺るがず</b></li></ul>
 </div>
 <div class="r">
 <h3 data-t="F03-05">それでも困ること</h3>
@@ -217,22 +217,22 @@
 </div>
 </div>
 <div class="arrowdown" data-t="F03-07">▼</div>
-<div class="punch" data-t="F03-08">アルゴリズムはそのまま。<span style="color:var(--accent)">載る場所を増やす。</span></div>
+<div class="punch" data-t="F03-08">アルゴリズムはそのまま。<span style="color:var(--accent)">動く場所を増やす。</span></div>
 <div class="cols c3" style="margin-top:6mm">
 <div class="card plain">
 <h3 data-t="F03-09">1:1 の移植</h3>
 <p data-t="F03-10" style="font-size:10.4pt">全アルゴリズムファイルが、移植元の <code>lib/*.f90</code> / <code>lib/*.c</code> を明記しています。 意図的に WSJT-X と変えた箇所は、必ずコメントでそう書く決まりです。</p>
 </div>
 <div class="card plain">
-<h3 data-t="F03-11">再現性で守る</h3>
-<p data-t="F03-12" style="font-size:10.4pt">WSJT-X 配布の実録音に対する golden テストと、AWGN 掃引による感度測定。 <b>再現率（recall）だけでなく誤デコード（precision）も</b>常に測ります。</p>
+<h3 data-t="F03-11">テストで性能を担保</h3>
+<p data-t="F03-12" style="font-size:10.4pt">WSJT-X 配布の実録音に対する golden テストと、AWGN 掃引による感度測定。 <b>再現率（recall）だけでなく誤デコード（precision）も</b>常に測ります。<br>数字はテストが assert しており、下回ればテストで落ちます。</p>
 </div>
 <div class="card plain">
 <h3 data-t="F03-13">依存を持たない</h3>
-<p data-t="F03-14" style="font-size:10.4pt">純 Rust。FFT すら外部から差し替え可能。 <code>no_std + alloc</code> でビルドでき、C からも呼べる ABI を用意しています。</p>
+<p data-t="F03-14" style="font-size:10.4pt">純 Rust。FFT も外部から差し替え可能。 <code>no_std + alloc</code> でビルドでき、C からも呼べる ABI を用意しています。</p>
 </div>
 </div>
-<div class="takeaway" data-t="F03-15">基準実装を置き換えるのではなく、基準実装が行けない場所へ持っていくためのライブラリです。</div>
+<div class="takeaway" data-t="F03-15">参照実装を置き換えるのではなく、対応できないユースケースに対応するためのライブラリです。</div>
 </div>
 <footer class="pf" data-t="F03-16"><span>mfsk-core &mdash; ハムフェア2026 ブース資料</span><span>03 / 10</span></footer>
 </section>
@@ -283,7 +283,7 @@
 <div class="cols c2v" style="margin-top:5mm">
 <div class="card warm">
 <h3 data-t="F05-04">「再現率だけ」はベンチマークではない</h3>
-<p data-t="F05-05" style="font-size:11pt;margin:0">2026-08-11 まで、この表には再現率しか載っていませんでした。 当時「WSPR 8/8、パリティ達成」と書かれていたデコーダは、 <span class="hl">同時に1スロットあたり8個の存在しないコールサインを出していました</span> &mdash; 誤検出率 50%。 再現率だけの表では、それを正常なデコーダと区別できません。 いまは precision が列として常設されています。</p>
+<p data-t="F05-05" style="font-size:11pt;margin:0">再現率だけではベンチマークにはなりません。 デコーダは原理上存在しないコールサインを出力します。正常なデコーダと区別するために適合率(precision) も常にベンチマークしています。</p>
 </div>
 <div>
 <h3 data-t="F05-06">数字は「観測」ではなく「表明」</h3>
@@ -291,7 +291,7 @@
 <li>各モードの <code>*_wsjtx_samples</code> テストが、上の数字を <b>assert しています</b>。下回れば CI が落ちます。</li><li><code>MFSK_REQUIRE_CORPUS=1</code> &mdash; 録音が見つからないときは「スキップ」ではなく「失敗」。静かに緑になる事故を潰すため。</li><li>「余分なデコード」は必ずしも誤りではありません。FT8 の混雑バンドでは WSJT-X の 8 に対し 20 出ますが、 <b>超過分 12 はすべて JTDX の正解表に載っています</b> &mdash; 発明ではなく、WSJT-X が取り逃した信号です。</li></ul>
 </div>
 </div>
-<div class="takeaway" data-t="F05-08">速いことより、正しいこと。取り逃さないことと、でっち上げないことを、同時に測っています。</div>
+<div class="takeaway" data-t="F05-08">速さと正しさをバランスよく。取り逃さないことと、でっち上げないことを、同時に測っています。</div>
 </div>
 <footer class="pf" data-t="F05-09"><span>mfsk-core &mdash; ハムフェア2026 ブース資料</span><span>05 / 10</span></footer>
 </section>
@@ -308,7 +308,7 @@
 <tbody>
 <tr><td>Q65-60D（10 GHz EME）</td><td>60 s</td><td class="num">0.05 s</td></tr><tr><td>FT8（組み込み構成）</td><td>15 s</td><td class="num">0.07 s</td></tr><tr><td>FST4-60A</td><td>60 s</td><td class="num">0.08 s</td></tr><tr><td>FT4</td><td>7.5 s</td><td class="num">0.10 s</td></tr><tr><td>JT9</td><td>60 s</td><td class="num">0.16 s</td></tr><tr><td>FT8（ホスト全力構成）</td><td>15 s</td><td class="num">0.18 s</td></tr><tr><td>WSPR</td><td>120 s</td><td class="num">0.76 s</td></tr><tr><td>MSK144</td><td>15 s</td><td class="num">0.88 s</td></tr></tbody>
 </table>
-<p class="note" data-t="F06-05" style="margin-top:2.5mm">AMD Ryzen 9 9900X (12C/24T) / <code>--release --features full</code>。 WSPR が他より遅いのは意図的で、<code>wsprd</code> の DT ピーク探索を入れて約 1 dB の感度と引き換えにしています。</p>
+<p class="note" data-t="F06-05" style="margin-top:2.5mm">AMD Ryzen 9 9900X (12C/24T) / <code>--release --features full</code>。 WSPR が他より遅いのは意図的です。<code>wsprd</code> の DT ピーク探索を入れて約 1 dB の感度と引き換えにしています。</p>
 </div>
 <div>
 <h3 data-t="F06-06">組み込み &mdash; 同じ整数パイプライン</h3>
@@ -324,7 +324,7 @@
 </div>
 </div>
 </div>
-<p class="note" data-t="F06-11" style="margin-top:4mm"><b>FT8 は2つの構成を持ち、決して混ぜません。</b> ホスト構成（<code>DecodeDepth::FULL</code>）は研究用の全力設定。組み込み構成（<code>EMBEDDED</code>）は ESP32 の時間予算に合わせて意図的に軽くした別のデコーダで、劣化版ではありません。 FT8 の QSO 折り返し予算はスロット終了後 <b>約2秒</b> &mdash; その中で復調・ウォーターフォール描画・次スロットの送信準備まで済ませる必要があります。</p>
+<p class="note" data-t="F06-11" style="margin-top:4mm"><b>FT8 は2つの構成があります。</b> ホスト構成（<code>DecodeDepth::FULL</code>）は研究用の全力設定。組み込み構成（<code>EMBEDDED</code>）は ESP32 の時間予算に合わせて意図的に軽くした別のデコーダで、劣化版ではありません。 FT8 の QSO 折り返し予算はスロット終了後 <b>約2秒</b> &mdash; その中で復調・ウォーターフォール描画・次スロットの送信準備まで済ませる必要があります。</p>
 <div class="takeaway" data-t="F06-12">Ryzen で 6 ミリ秒、ESP32-S3 で 1.19 秒 &mdash; 差は純粋な CPU 性能比です。走っているコードは同じものです。</div>
 </div>
 <footer class="pf" data-t="F06-13"><span>mfsk-core &mdash; ハムフェア2026 ブース資料</span><span>06 / 10</span></footer>
@@ -332,7 +332,7 @@
 <!-- ============ 07 MULTIPLATFORM ============ -->
 <section class="page">
 <header class="ph"><span class="pnum">07</span><h2 data-t="F07-01">マルチプラットフォーム</h2>
-<span class="sub" data-t="F07-02">ソースは1つ。feature で行き先を変えるだけ</span></header>
+<span class="sub" data-t="F07-02">ソースは1つ。feature で実装先を変えるだけ</span></header>
 <div class="body">
 <table class="tight" data-t="F07-03">
 <thead><tr>
@@ -374,7 +374,7 @@
 <div>
 <h3 data-t="F08-09">ライブラリが呼び出し側に求めるもの</h3>
 <ul class="small" data-t="F08-10">
-<li><b>FFT の実装ひとつ</b> &mdash; <code>fft-extern</code> でファクトリ関数を1つ提供するだけ。ESP32 なら esp-dsp をそのまま使えます。</li><li><b>アロケータ</b> &mdash; <code>no_std + alloc</code>。スロット単位の作業領域は PSRAM で構いません。</li><li>それ以外は何もありません。<b>スクラッチバッファの配置に悩む必要はもうありません</b> &mdash; 0.8.0 で最後の外部スクラッチ引数を削除しました。</li></ul>
+<li><b>FFT の外部実装</b> &mdash; <code>fft-extern</code> でファクトリ関数を1つ提供するだけ。ESP32 なら esp-dsp をそのまま使えます。</li><li><b>アロケータ</b> &mdash; <code>no_std + alloc</code>。スロット単位の作業領域は PSRAM で構いません。</li><li>それ以外は何もありません。<b>スクラッチバッファの配置に悩む必要はもうありません</b> &mdash; 0.8.0 で最後の外部スクラッチ引数を削除しました。</li></ul>
 <h3 data-t="F08-11" style="margin-top:6mm">スロットあたりの作業領域</h3>
 <table class="tight" data-t="F08-12">
 <tbody>
@@ -383,11 +383,11 @@
 </div>
 <div>
 <div class="card warm">
-<h3 data-t="F08-13">教訓：120 KB を返してもらった話</h3>
+<h3 data-t="F08-13">教訓：120 KB を削る努力</h3>
 <p data-t="F08-14" style="font-size:10.2pt;margin:0">初期実装は FT8 のトーン基底を Q15 の sin/cos 表として持っていました。 アセンブラの内積が本来の速度を出すには、この表が<b>高速な内部 SRAM</b>に居る必要がある &mdash; 30 KB &times; 2軸 &times; 2コア = <b>120 KB の内部 DRAM</b>。 そしてそれは、M5StickS3 の双方向 I2S DMA が必要とする領域そのものでした。QSO モードは起動に失敗しました。</p>
-<p data-t="F08-15" style="font-size:10.2pt;margin:2.5mm 0 0">解決は Goertzel 再帰への置き換え。<span class="hl">スクラッチ 0、速度は据え置き、 精度はむしろ +0.16〜+0.63 dB 改善</span>。表を消したら全部よくなりました。</p>
+<p data-t="F08-15" style="font-size:10.2pt;margin:2.5mm 0 0">解決は Goertzel 再帰への置き換え。<span class="hl">スクラッチ 0、速度は据え置き、 精度はむしろ +0.16〜+0.63 dB 改善</span>。</p>
 </div>
-<h3 data-t="F08-16" style="margin-top:6mm">動いている実機</h3>
+<h3 data-t="F08-16" style="margin-top:6mm">現在動作するM5シリーズ</h3>
 <ul class="small" data-t="F08-17">
 <li><b>M5Stack CoreS3</b>（ESP32-S3 LX7）&mdash; メインの受信機。USB Audio で無線機直結、4受信機を1イメージに。</li><li><b>M5StickS3</b>（ESP32-S3 LX7）&mdash; デモ／音響入力機。LCD UI、BLE CI-V、QSO ステートマシン。</li><li><b>M5Stack Core2</b>（ESP32 LX6）&mdash; LX6 側の検証機。USB ペリフェラルを持たないので WAV 再生での確認用。</li></ul>
 </div>
@@ -431,7 +431,7 @@
 </section>
 <!-- ============ 10 JOIN ============ -->
 <section class="page">
-<header class="ph"><span class="pnum">10</span><h2 data-t="F10-01">一緒に作りませんか</h2>
+<header class="ph"><span class="pnum">10</span><h2 data-t="F10-01">GitHub でオープンソースとして共同開発しています</h2>
 <span class="sub" data-t="F10-02">GPL-3.0-or-later</span></header>
 <div class="body">
 <div class="cols c2v">
@@ -455,8 +455,8 @@
 </div>
 </div>
 </div>
-<p class="note" data-t="F10-10" style="margin-top:5mm;text-align:center">本ライブラリは WSJT-X（K1JT Joe Taylor 氏および共同開発者の皆さん）の Rust 再実装です。 すべてのアルゴリズムの出典は WSJT-X にあり、基準実装はこれからも WSJT-X です。</p>
-<div class="takeaway" data-t="F10-11">電波を受けるコードが、Rust で、オープンに、誰の手元にもある状態を目指しています。</div>
+<p class="note" data-t="F10-10" style="margin-top:5mm;text-align:center">本ライブラリは WSJT-X（K1JT Joe Taylor 氏および共同開発者の皆さん）の Rust 再実装です。 すべてのアルゴリズムの出典は WSJT-X にあり、参照実装はこれからも WSJT-X です。</p>
+<div class="takeaway" data-t="F10-11">WSJT-X のデコーダを Rust で、オープンに、どのような環境でも動かせることを目指しています。</div>
 </div>
 <footer class="pf" data-t="F10-12"><span>mfsk-core &mdash; ハムフェア2026 ブース資料</span><span>10 / 10</span></footer>
 </section>
