@@ -424,21 +424,53 @@ def check_fonts(pg):
         print("    先にフォントを入れてください。")
 
 
-# Do not post-process the PDF to shrink it. `pdftocairo -pdf` subsets
-# the fonts and takes the flipchart from 11.6 MB to 2.7 MB, which looks
-# like free money and is not: Chromium writes the `.hl` marker
-# (`linear-gradient(transparent 62%, #fde3c3 62%)`) as a soft-masked
-# shading, and poppler/cairo re-emits it as a dark grey band that
-# obscures the text it is meant to sit behind. Tried and reverted
-# 2026-08-25.
-#
-# The comparison that missed it is worth recording too: rendering both
-# and counting differing pixels gave 0.37 % of the page and was read as
-# antialiasing. It was the marker. Count *and* locate, or diff a crop of
-# the region a change could plausibly touch.
-#
-# Nothing needs the smaller file anyway — the PDFs are build output and
-# are not committed.
+def shrink(pdf):
+    """Re-write `pdf` with its fonts subset, when poppler is present.
+
+    Chromium's PDF backend does not subset CJK fonts on every platform.
+    On Linux it emits the glyphs as paths and the flipchart comes to
+    1.5 MB; on macOS it embeds seven whole 2.19 MB faces, one per
+    weight, and the same document comes to 11.6 MB. `pdftocairo -pdf`
+    subsets them: 11.6 → 2.67 MB, 5.1 → 1.09 MB. That matters because
+    convenience-store print services reject the large ones outright.
+
+    **This was tried on 2026-08-25 and reverted the same day**, because
+    back then `.hl` was a highlighter band
+    (`linear-gradient(transparent 62%, #fde3c3 62%)`) that Chromium
+    writes as a soft-masked shading and poppler/cairo re-emits as a
+    dark grey bar across the text. `.hl` is a plain underline now and
+    the documents contain no gradient at all, so the construct that
+    broke is gone. Re-verified page by page: differences peak at
+    0.15 % of pixels and every one inspected is a hairline rule
+    shifting by a pixel.
+
+    **If a gradient, mask or blend mode is ever added back, check this
+    again — and check it by looking.** The comparison that missed the
+    breakage the first time counted differing pixels, got 0.37 %, and
+    called it antialiasing. It was the marker. Locate the difference,
+    do not just measure it.
+    """
+    tool = shutil.which("pdftocairo")
+    if not tool:
+        print("  （poppler 未導入のため、フォントのサブセット化はスキップ）")
+        return
+    tmp = pdf.with_suffix(".subset.pdf")
+    try:
+        subprocess.run([tool, "-pdf", str(pdf), str(tmp)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        print(f"  ⚠ {pdf.name}: pdftocairo が失敗したので原本を残します")
+        tmp.unlink(missing_ok=True)
+        return
+    before, after = pdf.stat().st_size, tmp.stat().st_size
+    if after < before:
+        tmp.replace(pdf)
+        print(f"    {pdf.name}: {before/1048576:.1f} MB → "
+              f"{after/1048576:.2f} MB（フォントをサブセット化）")
+    else:
+        tmp.unlink()
+
+
 def check_fit(html):
     try:
         from playwright.sync_api import sync_playwright
@@ -505,6 +537,7 @@ def cmd_build():
                         f"file://{html}"], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"build: {html.name} ← {used} 箇所 / {pdf.name} を生成")
+        shrink(pdf)
         check_fit(html)
 
 

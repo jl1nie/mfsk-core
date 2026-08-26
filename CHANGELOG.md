@@ -74,19 +74,25 @@ cadence".
   is the half that gets printed. Now in `.gitignore`; run
   `python3 build.py build` before printing.
 
-  File size varies a lot by platform and is left alone. Chromium's PDF
-  backend does not subset CJK fonts everywhere: on Linux it emits the
-  glyphs as paths and the flipchart comes to 1.5 MB, on macOS it embeds
-  seven whole 2.19 MB faces, one per weight, for 11.6 MB. Same document
-  either way. Subsetting it afterwards with `pdftocairo` was tried and
-  reverted the same day — it takes the pair to 2.7 MB and 1.1 MB, and
-  it also turns the `.hl` marker
-  (`linear-gradient(transparent 62%, #fde3c3 62%)`) into a dark grey
-  band across the text it is supposed to sit behind, because Chromium
-  writes it as a soft-masked shading that poppler/cairo does not
-  reproduce. `build.py` carries the note so it is not re-attempted.
-  Since the PDFs are no longer committed, nothing wanted the smaller
-  file in the first place.
+  `build` subsets the fonts afterwards when `pdftocairo` (poppler) is
+  present. Chromium's PDF backend does not subset CJK everywhere: on
+  Linux it emits the glyphs as paths and the flipchart comes to 1.5 MB,
+  on macOS it embeds seven whole 2.19 MB faces, one per weight, for
+  11.6 MB. Subsetting gives 2.67 MB and 1.09 MB — which is what makes
+  the files small enough for convenience-store print services to accept
+  at all.
+
+  Worth knowing that this was tried and reverted once. While `.hl` was
+  a highlighter band (`linear-gradient(transparent 62%, #fde3c3 62%)`),
+  Chromium wrote it as a soft-masked shading and poppler/cairo re-emitted
+  it as a dark grey bar across the text. `.hl` is a plain underline now
+  and the documents contain no gradient at all, so the construct that
+  broke is gone; re-verified page by page, with differences peaking at
+  0.15 % of pixels and every one inspected being a hairline rule moving
+  by a pixel. `build.py` carries the warning to re-check by *looking* if
+  a gradient or blend mode is ever added back — the comparison that
+  missed the breakage the first time measured 0.37 % and called it
+  antialiasing.
 
   `README.md` gains the prerequisites this all implies — including that
   the static Noto Sans JP is the one to install, since Homebrew's
