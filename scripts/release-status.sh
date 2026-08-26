@@ -116,11 +116,29 @@ is_prose_only() {
     # A merge commit shows no diff under plain `git show`, which would
     # read as "no code changed". Treat it as code.
     [[ -n "$(git rev-list --parents -n1 "$sha" | cut -d' ' -f3-)" ]] && return 1
-    ! git show --format='' --unified=0 "$sha" -- "$@" \
+
+    # The changed lines, stripped of their +/- and leading space.
+    #
+    # Collected into a variable rather than piped straight into the
+    # test below, because the obvious `… | grep -qEv` is a race under
+    # this script's own `set -o pipefail`: `grep -q` exits on its first
+    # match, `git show` and `sed` upstream then die of SIGPIPE (141),
+    # and pipefail hands that 141 back as the pipeline's status — which
+    # the `!` turns into "prose only". Whether the kill lands before
+    # the upstream stages finish writing is pure timing, so the same
+    # commit classified either way run to run: 84c3159 (367 new lines
+    # in fst4/ddc.rs) came back "[comments only]" on 34 of 40 runs on
+    # 2026-08-27, and the here-string version on 0 of 40. That is the
+    # unsafe direction — a decoder change read as a comment skips a
+    # sweep that was needed — and it is exactly what the contract
+    # above promises cannot happen. A here-string has no upstream
+    # process to signal.
+    local body
+    body=$(git show --format='' --unified=0 "$sha" -- "$@" \
         | grep -E '^[+-]' \
         | grep -Ev '^(\+\+\+|---)' \
-        | sed -E 's/^[+-][[:space:]]*//' \
-        | grep -qEv '^(//.*)?$'
+        | sed -E 's/^[+-][[:space:]]*//')
+    ! grep -qEv '^(//.*)?$' <<<"$body"
 }
 
 bold "== tier-C sweeps =="
