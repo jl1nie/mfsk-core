@@ -52,9 +52,10 @@
         "groups": 20
       },
       "wspr": {
-        "date": "2026-08-20",
-        "commit": "c757d32",
+        "date": "2026-08-27",
+        "commit": "b9b4850",
         "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "trials": 500,
         "groups": 1
       }
     }
