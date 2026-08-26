@@ -74,6 +74,37 @@ cadence".
   empty diff. Both err toward re-sweeping something that did not need
   it, never toward skipping something that did.
 
+- **The tier-C sweep baseline records where its numbers came from.**
+  `docs/notes/sweep-baseline.json` held 54 crossing SNRs and nothing
+  about their provenance, so `release-status.sh` had to date the whole
+  file by its last commit. One date for nine protocols is wrong in
+  both directions: refreshing two of them
+  (`run-sensitivity-sweeps.sh ft4 fst4`) marked all nine as current,
+  while a documentation commit touching the file aged nothing and
+  still reset the comparison. Both mistakes end the same way — a sweep
+  that was needed gets skipped before a tag.
+
+  The file now carries a `_meta` key holding, per protocol, the date,
+  commit, machine and trial count its numbers were measured at.
+  `sweep-regression-check.py --update-baseline` stamps only the
+  protocols in that run, so a partial re-sweep cannot backdate the
+  groups it never measured, and `release-status.sh` compares each
+  protocol's own source against its own baseline date. With `_meta`
+  (or python3) absent, both fall back to the previous file-date
+  behaviour.
+
+  The check also prints the baseline's provenance above its diff — a
+  `+0.00 dB` line otherwise says the number matches without saying
+  what it matches — and takes `--machine` to override the recorded
+  box. The machine is recorded because the sweeps are rayon-scheduled
+  under `parallel`, and a differing core count has been mistaken for a
+  regression before; `BENCHMARKS.md` records it for the same reason.
+
+  No measured value changed: all 54 crossings are identical. The
+  seeded `_meta` entries name c757d32 / 2026-08-20, the commit and
+  date that last wrote them, and carry no trial count because those
+  CSVs were not kept; every later entry is written by the run itself.
+
 - **The ハムフェア PDFs are generated, not committed.** They are build
   output — `content.md` and the HTML are the sources — and keeping them
   in the tree meant a text fix silently left a stale printable artifact
