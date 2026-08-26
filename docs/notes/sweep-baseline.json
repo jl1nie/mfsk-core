@@ -1,4 +1,64 @@
 {
+  "_meta": {
+    "schema": 1,
+    "note": "Provenance for the 50%-recall crossing SNRs below. Written and read by scripts/sweep-regression-check.py; scripts/release-status.sh uses each protocol's own date to decide what a release actually needs re-swept. Entries stamped c757d32 were seeded before this block existed and carry no trial count \u2014 the CSVs were not kept. Every later entry is written by --update-baseline from the run itself.",
+    "protocols": {
+      "fst4": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 20
+      },
+      "ft4": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 4
+      },
+      "ft8": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 4
+      },
+      "jt65": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 1
+      },
+      "jt65_chase": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 1
+      },
+      "jt9": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 1
+      },
+      "msk144": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 2
+      },
+      "q65": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 20
+      },
+      "wspr": {
+        "date": "2026-08-20",
+        "commit": "c757d32",
+        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "groups": 1
+      }
+    }
+  },
   "fst4/120/awgn": -30.636363636363637,
   "fst4/120/ccir_good": -29.0,
   "fst4/120/ccir_moderate": -27.6,

@@ -555,6 +555,16 @@ target/sweep-csv/*.csv`, and update `docs/notes/BENCHMARKS.md` too if
 the reason is one worth recording there (new hardware counts — the
 table records the machine).
 
+`--update-baseline` also stamps the JSON's `_meta.protocols` block —
+date, commit, machine, trial count — **for the protocols in that run
+only**, which is what `release-status.sh` reads to decide what is
+actually outstanding. So a partial refresh
+(`run-sensitivity-sweeps.sh ft4 fst4`) silences ft4 and fst4 and
+leaves the other seven still flagged, instead of the whole file
+looking current because one date moved. Don't hand-edit those dates:
+the point is that the number and its provenance are written by the
+same run.
+
 A nightly workflow was considered and rejected: on a solo, bursty repo
 most nights would re-measure unchanged code, and this project already
 deleted one scheduled tier for precisely that reason (see `ci.yml`'s

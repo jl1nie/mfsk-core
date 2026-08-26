@@ -47,6 +47,12 @@ def main():
     ft8_crossings = []
     ft4_crossings = []
     for label, crossing in data.items():
+        # `_`-prefixed keys are the file's `_meta` provenance block, not
+        # a group (see sweep-regression-check.py). None of the branches
+        # below would match it anyway, but relying on that is one
+        # renamed protocol away from a TypeError on a dict.
+        if label.startswith("_"):
+            continue
         parts = label.split("/")
         if parts[0] == "fst4" and len(parts) == 3:
             fst4_by_mode[parts[1]].append(crossing)

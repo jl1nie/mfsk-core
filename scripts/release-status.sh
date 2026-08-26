@@ -143,18 +143,55 @@ is_prose_only() {
 
 bold "== tier-C sweeps =="
 baseline=docs/notes/sweep-baseline.json
-base_date=$(git log -1 --format=%cs -- "$baseline")
-echo "  baseline last updated: $base_date ($baseline)"
-echo "  protocols whose own source changed since then:"
+file_date=$(git log -1 --format=%cs -- "$baseline")
+
+# Per-protocol baseline dates out of the JSON's `_meta` block, so a
+# partial re-sweep ("run-sensitivity-sweeps.sh ft4 fst4") only silences
+# the protocols it actually measured. Before `_meta` existed there was
+# one date for the whole file — the file's own last-commit date — which
+# meant refreshing two protocols marked all nine as current, and
+# conversely a docs commit touching the file aged nothing but still
+# reset the comparison. Falls back to the file date when `_meta` is
+# absent or python3 isn't available, which is the old behaviour.
+declare -A base_dates=()
+if command -v python3 >/dev/null 2>&1; then
+    while IFS='=' read -r k v; do
+        [[ -n "$k" ]] && base_dates["$k"]="$v"
+    done < <(python3 - "$baseline" <<'PY' 2>/dev/null
+import json, sys
+try:
+    meta = json.load(open(sys.argv[1])).get("_meta", {})
+except (OSError, ValueError):
+    sys.exit(0)
+for proto, m in meta.get("protocols", {}).items():
+    if m.get("date"):
+        print(f"{proto}={m['date']}")
+PY
+    )
+fi
+
+if (( ${#base_dates[@]} == 0 )); then
+    echo "  baseline last updated: $file_date ($baseline, no per-protocol _meta)"
+else
+    oldest=$(printf '%s\n' "${base_dates[@]}" | sort | head -1)
+    newest=$(printf '%s\n' "${base_dates[@]}" | sort | tail -1)
+    if [[ "$oldest" == "$newest" ]]; then
+        echo "  baseline last updated: $oldest ($baseline, all ${#base_dates[@]} protocols)"
+    else
+        echo "  baseline last updated: $oldest .. $newest ($baseline, per protocol)"
+    fi
+fi
+echo "  protocols whose own source changed since their own baseline:"
 needed=()
 shared=0
 for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144; do
     d="mfsk-core/src/$proto"
     [[ -d "$d" ]] || continue
+    since="${base_dates[$proto]:-$file_date}"
     # Subjects, not just a count. A count sends the reader off to look
     # them up, which is the hand-reconstruction this script exists to
     # remove — and a clippy sweep counts the same as a decoder change.
-    mapfile -t subjects < <(git log --since="$base_date" --format='%h %s' -- "$d")
+    mapfile -t subjects < <(git log --since="$since" --format='%h %s' -- "$d")
     (( ${#subjects[@]} > 0 )) || continue
     code=0
     rendered=()
@@ -166,8 +203,8 @@ for proto in ft8 ft4 fst4 wspr jt65 jt9 q65 msk144; do
             code=$(( code + 1 ))
         fi
     done
-    printf '    %-8s %d commit(s), %d touching code\n' \
-        "$proto" "${#subjects[@]}" "$code"
+    printf '    %-8s since %s: %d commit(s), %d touching code\n' \
+        "$proto" "$since" "${#subjects[@]}" "$code"
     printf '%s\n' "${rendered[@]}"
     # Prose-only commits are printed, not hidden — "nothing to sweep"
     # should be visibly derived rather than silently assumed.
@@ -185,7 +222,7 @@ while IFS= read -r sha; do
     [[ -n "$sha" ]] || continue
     is_prose_only "$sha" mfsk-core/src/engine mfsk-core/src/dsp && continue
     shared=$(( shared + 1 ))
-done < <(git log --since="$base_date" --format=%h -- mfsk-core/src/engine mfsk-core/src/dsp 2>/dev/null)
+done < <(git log --since="${oldest:-$file_date}" --format=%h -- mfsk-core/src/engine mfsk-core/src/dsp 2>/dev/null)
 if (( shared > 0 )); then
     echo
     warn "$shared commits touched mfsk-core/src/{engine,dsp} — shared code."
@@ -196,7 +233,7 @@ if (( shared > 0 )); then
 fi
 
 if [[ -d target/sweep-csv ]]; then
-    fresh=$(find target/sweep-csv -name '*.csv' -newermt "$base_date" 2>/dev/null | wc -l)
+    fresh=$(find target/sweep-csv -name '*.csv' -newermt "${oldest:-$file_date}" 2>/dev/null | wc -l)
     echo
     echo "  target/sweep-csv: $(ls target/sweep-csv/*.csv 2>/dev/null | wc -l) CSVs, $fresh newer than the baseline"
     echo "  compare with: python3 scripts/sweep-regression-check.py target/sweep-csv/*.csv"
