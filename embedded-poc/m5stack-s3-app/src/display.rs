@@ -511,6 +511,34 @@ pub fn run_log_panel(
     // KEY2 (= 2 s) flips boot mode and restarts; KEY1 is reserved for
     // the boot-time invert override (already consumed at boot).
     let mut buttons = Buttons::init();
+
+    // The two render snapshots live on the heap, allocated once.
+    //
+    // They used to be stack locals inside this loop, and that is what
+    // was overflowing the main task's stack (実測 2026-08-28: DECODE
+    // モードで毎回 boot loop、FreeRTOS の
+    // `vApplicationStackOverflowHook` が `main` を名指し。
+    // logs/heappoison_2026-08-28.log)。`WfLine` は `WF_COLS` が
+    // 135 → 240 になって以降 240 B、`WF_DEPTH` が 100 なので snapshot
+    // は 24,000 B。さらに `opt-level = 1` (Xtensa LLVM regression で
+    // この target は固定) では `.collect()` の一時領域が宛先に畳まれず
+    // 約2倍積まれるため、32 KB でも 48 KB でも足りなかった。
+    //
+    // 溢れてもその場では fault しない: タスクスタックはヒープ上にあり、
+    // 直下の内部プールの TLSF ブロックヘッダを書き潰すので、クラッシュは
+    // 後で別の場所 (`tlsf_walk_pool`) に出る。
+    //
+    // CoreS3 の `display::run_log_panel` が 2026-08-23 に同じ理由で同じ
+    // 修正を受けている (#163) — こちらだけ取り残されていた。Box にして
+    // 再利用するので毎フレームの確保も無い。24 KB は
+    // `SPIRAM_MALLOC_ALWAYSINTERNAL = 4096` を超えるため PSRAM に載り、
+    // 内部 DRAM (BLE と USB が奪い合う希少資源) を消費しない。
+    let mut wf_snapshot: Box<
+        heapless::Vec<mfsk_app_shared::ui::state::WfLine, { mfsk_app_shared::ui::state::WF_DEPTH }>,
+    > = Box::new(heapless::Vec::new());
+    let mut decoded_snapshot: Box<heapless::Vec<mfsk_app_shared::ui::state::DecodedRow, 16>> =
+        Box::new(heapless::Vec::new());
+
     loop {
         buttons.poll();
         if let Some(ev) = buttons.take_event() {
@@ -760,11 +788,6 @@ pub fn run_log_panel(
         //    status struct here so the UTC / heap stay current even
         //    when no new decodes land.
         let status_snapshot;
-        let decoded_snapshot;
-        let wf_snapshot: heapless::Vec<
-            mfsk_app_shared::ui::state::WfLine,
-            { mfsk_app_shared::ui::state::WF_DEPTH },
-        >;
         let decoded_fp;
         let wf_seq;
         let tx_seq;
@@ -779,9 +802,25 @@ pub fn run_log_panel(
             let mut ui = UI.lock().expect("UI mutex poisoned");
             ui.status.free_heap_kb = (heap / 1024) as u32;
             status_snapshot = ui.status.clone();
-            decoded_snapshot = ui.decoded_iter().cloned().collect::<heapless::Vec<_, 16>>();
-            wf_snapshot = ui.waterfall_iter().cloned().collect();
+            decoded_snapshot.clear();
+            for row in ui.decoded_iter() {
+                if decoded_snapshot.push(row.clone()).is_err() {
+                    break;
+                }
+            }
             wf_seq = ui.wf_push_seq();
+            // The redraw below is already gated on `wf_seq`; copying
+            // unconditionally ran 24 KB ten times a second for a
+            // surface that changes once per FFT pair. Same gate as
+            // CoreS3's copy.
+            if wf_seq != last_wf_seq {
+                wf_snapshot.clear();
+                for line in ui.waterfall_iter() {
+                    if wf_snapshot.push(*line).is_err() {
+                        break;
+                    }
+                }
+            }
             tx_seq = ui.tx_seq();
             menu_snapshot = (
                 ui.menu_visible,
