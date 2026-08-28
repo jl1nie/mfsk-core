@@ -426,10 +426,11 @@ pub fn fill_symbol_spectra_generic<Sc: crate::engine::scalar::SpecScalar, S: Aud
 /// been the sole production path on every embedded target for
 /// several releases.
 ///
-/// Same output (`Σ x[n] exp(-jωn)` for each tone at `ω = 2π·f/Fs`
-/// across NSPS=1920 samples), produced via a 2-tap IIR recursion
-/// instead of a sin/cos dot-product. Needs no basis scratch at all —
-/// the whole point of Phase 1.7.7-Stick.
+/// Same **magnitude** as `Σ x[n] exp(-jωn)` for each tone at
+/// `ω = 2π·f/Fs` across NSPS=1920 samples (see "Phase convention"
+/// below for the complex-value caveat), produced via a 2-tap IIR
+/// recursion instead of a sin/cos dot-product. Needs no basis
+/// scratch at all — the whole point of Phase 1.7.7-Stick.
 ///
 /// Algorithm (per `(sym, tone)`):
 /// ```text
@@ -454,6 +455,36 @@ pub fn fill_symbol_spectra_generic<Sc: crate::engine::scalar::SpecScalar, S: Aud
 /// per-tone-outer layout. The sample fetch is also done once per
 /// `n` instead of `NTONES × NSPS` times — 8× less audio-buffer
 /// traffic, friendlier to the LX7 L1.
+///
+/// **Phase convention.** The generalised-Goertzel extraction does
+/// not return the DFT bin itself but `X_goertzel = exp(jω(N-1)) ·
+/// X_dft`. Measured against [`fill_symbol_spectra_generic`] (the
+/// rotator-based direct DFT) on a tone-plus-noise buffer, at
+/// `f0 = 1000 Hz` and `f0 = 1003 Hz`:
+///
+/// - `|X_goertzel / X_dft| = 1.0000` — max deviation `7.3e-5` across
+///   every filled cell, i.e. the magnitudes are the same number.
+/// - `arg(X_goertzel / X_dft)` is constant across symbols and tilts
+///   by exactly `-ω` per tone step: `-0.1875°` per tone, `1.3°`
+///   across all eight. `NSPS × TONE_SPACING_HZ / Fs = 1` exactly
+///   (the MFSK orthogonality condition), so the `exp(jωN)` half of
+///   the factor is common to every tone and only `exp(-jω_tone)`
+///   survives as a tone-dependent term.
+///
+/// Consequence, by consumer: [`sync_quality`](crate::ft8::llr::sync_quality),
+/// the `xsnr2` / [`snr_ratio`](crate::engine::llr::snr_ratio)
+/// estimators, and the `nsym = 1` LLRs (llra / llrd) read magnitudes
+/// only, so the rotation is exactly irrelevant to them — and
+/// `DecodeDepth::EMBEDDED` (`LlrEffort::Minimal`) stops there, which
+/// is why this is the ship configuration's whole story. The
+/// `nsym ≥ 2` LLRs (llrb / llrc) do **not**: `engine::llr::
+/// build_group_amplitudes` sums complex cells across a symbol group
+/// and takes `|a + b|`, so the `1.3°` tilt across the tone axis is
+/// carried into that coherent sum. It is far below the phase error
+/// the channel itself contributes, and no golden test has ever moved
+/// on it, but it is not zero — earlier notes (0.6.4's CHANGELOG
+/// entry) that called the rotation irrelevant because "downstream
+/// consumes `|cs|²`" were describing the `Minimal` path only.
 ///
 /// **Numerics**: f32 internal arithmetic. Host validation on
 /// qso3_busy.wav (pre-0.8.0, against the now-removed BASIS Q15 path)

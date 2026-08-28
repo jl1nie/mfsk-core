@@ -578,6 +578,23 @@ consumes `|cs|²` so the rotation is irrelevant. **Zero caller-
 provided scratch**, +0.16..+0.63 dB SNR improvement (f32 Goertzel
 has more precision than the pre-existing Q15 BASIS dot product).
 
+> **Correction (2026-08-28).** "FT8 downstream consumes `|cs|²` so
+> the rotation is irrelevant" describes the shipping embedded
+> configuration, not the whole decoder. It holds exactly for
+> `sync_quality`, the `xsnr2` / `snr_ratio` estimators and the
+> `nsym = 1` LLRs (llra / llrd) — which is everything
+> `DecodeDepth::EMBEDDED` (`LlrEffort::Minimal`) reaches. It does
+> not hold for the `nsym ≥ 2` LLRs (llrb / llrc): `engine::llr::
+> build_group_amplitudes` sums complex cells across a symbol group
+> and only then takes a magnitude, so a phase difference does reach
+> that path. Measured, the factor is `exp(jω(N-1))` — magnitudes
+> agree to `7.3e-5`, and because `NSPS × 6.25 / 12000 = 1` exactly
+> the `exp(jωN)` half is common to all eight tones, leaving a
+> `-0.1875°`-per-tone-step tilt (`1.3°` across the tone axis) as the
+> only tone-dependent term. Small enough that no golden test has
+> ever moved on it, but not zero. See
+> `fill_symbol_spectra_goertzel`'s "Phase convention" doc section.
+
 The 120 KB internal-DRAM win unblocks downstream embedded work that
 couldn't fit alongside BASIS — most immediately, M5StickS3 Qso-mode
 I2S bidirectional DMA descriptor allocation (`i2s_alloc_dma_desc:

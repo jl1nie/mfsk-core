@@ -28,6 +28,44 @@ cadence".
 
 ### Changed
 
+- **`ft8::decode_block`'s module doc described a decoder that no
+  longer exists.** It claimed an 8192-pt spectrogram FFT with a
+  `≈ 1.465 Hz` bin width, Costas tone positions "computed at
+  fractional bins and rounded to the nearest integer", and a
+  resulting `≤ 0.7 Hz` alignment jitter. All of that predates the
+  move to `NFFT_SPEC = 3840 = 2 × NSPS` (WSJT-X `sync8.f90`'s own
+  `NFFT1`), where `tone_step_bins` is **2.0 exactly** and there is no
+  fractional-bin rounding or Hann window left to compensate. Rewritten
+  to say what the module actually does, and to state why the embedded
+  path runs two different frequency analyses rather than reusing one:
+  the 3840-pt spectrogram is the *search* grid (`coarse_sync` wants
+  every bin, so an FFT is the right shape), while
+  `fill_symbol_spectra_goertzel` is the *extraction* step at each
+  candidate's own continuous `(freq_hz, dt_sec)`, where only 8 of 1920
+  bins are wanted. The spectrogram cannot stand in for the second:
+  its time grid is quantised to `NSTEP`, its frequency grid to
+  `3.125 Hz`, and under `fixed-point` it stores `u16` magnitude-squared
+  with the phase already gone.
+
+- **The generalised-Goertzel phase rotation is documented as measured,
+  not as "irrelevant".** 0.6.4's CHANGELOG entry justified the
+  rotation with "FT8 downstream consumes `|cs|²`", which is true of
+  the shipping embedded configuration and not of the decoder as a
+  whole — `engine::llr::build_group_amplitudes` sums complex cells
+  across a symbol group and only then takes a magnitude, so the
+  `nsym ≥ 2` LLRs (llrb / llrc) do see phase.
+  `fill_symbol_spectra_goertzel` now carries a "Phase convention"
+  section with the measurement: the factor is `exp(jω(N-1))`,
+  magnitudes agree to `7.3e-5`, and since `NSPS × 6.25 / 12000 = 1`
+  exactly, the `exp(jωN)` half is common to every tone, leaving a
+  `-0.1875°`-per-tone-step tilt (`1.3°` across the tone axis) as the
+  only tone-dependent term. Below the channel's own phase error and
+  never observed to move a golden test, but not zero — and
+  `DecodeDepth::EMBEDDED` (`LlrEffort::Minimal`) stops at `nsym = 1`,
+  so it does not reach that path at all. The 0.6.4 entry in
+  `docs/historical/CHANGELOG-0.6-0.7.md` gains a correction note
+  rather than a rewrite.
+
 - **`CLAUDE.md` describes the codebase, not just the workflow.** The
   agent notes had accumulated procedure — how to run the tests, how to
   cut a release — without ever saying what the repository *is*: the
