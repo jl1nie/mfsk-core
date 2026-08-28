@@ -85,6 +85,35 @@ fn main() -> ! {
     let mode = boot_mode::determine(&nvs, board::BTN_A_PIN);
     log::info!("boot_mode: {}", mode.label());
 
+    // Take the decode scratch now, while the heap is still whole.
+    //
+    // `internal_pool::cs_scratch_main` / `_worker` claim this arena on
+    // the first coarse-sync candidate and `expect()` on failure, so
+    // without this call the pipeline aborts the moment it decodes
+    // anything — observed 2026-08-28 on this board as a reset loop that
+    // reached `[coarse_sync prof]` and then
+    // `worker_arena: Ft8Scratch claimed but owner is 0 — was reserve()
+    // called at boot?` (logs/boxfix_2026-08-28.log). CoreS3 has had the
+    // matching call since #163 (`m5stack-cores3-app/src/main.rs`); this
+    // crate never got one, and nothing caught it because host CI does
+    // not build these crates.
+    //
+    // Ordering, not size, is what makes it work: reserving before WiFi
+    // and the audio threads run means the claim comes out of an
+    // unfragmented heap. Only the modes that actually run the FT8
+    // pipeline reserve, so a boot into Wifi/CivTest/TxTest keeps the
+    // internal DRAM for what that mode needs instead.
+    if matches!(
+        mode,
+        boot_mode::BootMode::Decode
+            | boot_mode::BootMode::Acoustic
+            | boot_mode::BootMode::Qso
+            | boot_mode::BootMode::Uac
+    ) && !embedded_shared::internal_pool::reserve_arena()
+    {
+        log::error!("decode scratch reservation failed — the pipeline will abort on first use");
+    }
+
     // ── Phase 0.6+: WiFi STA + UDP log sink. 起動条件:
     //   - mode == Wifi かつ WIFI_SSID が空でない (cfg.toml がある)
     //   - mode == Uac (UAC host install で USB-Serial-JTAG console が
