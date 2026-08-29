@@ -56,6 +56,10 @@ use crate::msg::Wsjt77Message;
 // `crate::ft4::*` reference from `engine::pipeline` would force the
 // `ft4` feature on for every build (same reason `engine::sync2d::
 // ft4_sync_search` lives in `engine`, not `ft4`, despite being FT4-only).
+// `ddc` is the FIR/mixer alternative to `decode`'s `downsample_cached`
+// front end (see its module doc): pure filtering, no transform, so it
+// carries none of the FFT gating the rest of this module does.
+pub mod ddc;
 #[cfg(any(feature = "fft-rustfft", feature = "fft-extern"))]
 pub mod decode;
 pub mod encode;
