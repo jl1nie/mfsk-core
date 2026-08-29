@@ -120,6 +120,37 @@ cadence".
   the impulse test cannot see a transposition error and a tone can.
   Nothing has run it on hardware; the bench still reads the baked list.
 
+- **FT4's candidate budget, measured for the first time — and the search
+  parameter was never WSJT-X's.** Every stage after `ft4_coarse_sync`
+  is per-candidate, so the candidate count multiplies every other lever;
+  nothing had measured it. `getcandidates4.f90` baseline-normalises the
+  smoothed spectrum, which puts noise at ~1.0, so the bench's
+  `sync_min = 0.05` (and the sweep harness's 0.8) admitted **every peak
+  in the band**. Upstream passes `syncmin = 1.2`
+  (`ft4_decode.f90:195`).
+
+  Measured across 560 sweep files straddling four channels' 50%
+  crossings, plus the WSJT-X golden: 0.05 → 1.2 cuts the candidate count
+  from 67.1 to 1.6 (sweep) and 31 to 12 (golden) **with identical recall
+  on both**. The knee is at 1.4 (−2 of 237) — the faithful value is
+  where the cliff isn't. `max_cand` is bounded by the golden's deepest
+  decoding candidate, rank 11 of 31; the sweep corpus cannot answer that
+  question at all, since one signal per file puts every decode at rank 0.
+
+  `bench_assets::SYNC_MIN` is now 1.2 and
+  `embedded-poc/assets/ft4_golden_candidates.bin` was re-baked: 31
+  candidates → 12, same 11 decodes at both `DecodeDepth::EMBEDDED` and
+  `FULL`. **Device numbers in `docs/notes/FT4_BENCHMARK.md` §17-19 were
+  all measured over 31 candidates**; per-candidate figures carry over,
+  slot totals do not. New test: `tests/ft4_candidate_budget.rs`, one
+  ratchet on the ranking and one tier-C measurement of both curves.
+
+  The same pass corrected a claim in the other direction: the bench's
+  "`EMBEDDED` and `FULL` decode identically" holds on the golden and
+  **not** on weak data — 237 vs 179 of 560 at the crossing, so skipping
+  OSD costs about a quarter of the recall an embedded receiver would
+  otherwise have. See `docs/notes/FT4_BENCHMARK.md` §21.
+
 ### Changed
 
 - **`ft4_sync_search` rebuilt its frequency-shift phasor once per grid

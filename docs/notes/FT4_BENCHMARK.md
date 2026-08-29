@@ -1204,3 +1204,101 @@ Every disagreement is in a cell already sitting on its own crossing.
 - **Not wired into `decode_frame`.** Same choice `fst4::ddc` made: a
   library building block callers reach for, not a feature flag that
   silently swaps the host's front end.
+
+## 21. The candidate budget — the search parameter was never WSJT-X's (2026-08-30)
+
+Every stage after `ft4_coarse_sync` is per-candidate: the Δt search, the
+LLR ladder, BP, OSD. The candidate count is therefore not one lever
+among several, it multiplies all of them — and nothing had ever measured
+it. `tests/ft4_candidate_budget.rs` does.
+
+### 21.1 `sync_min` below 1.0 is not a threshold at all
+
+`getcandidates4.f90` divides the smoothed spectrum by a fitted baseline
+(`ft4_baseline.f90`, ported at `engine::baseline::fit_baseline`), which
+puts **noise at ~1.0 by construction**. Any `sync_min` below that admits
+every peak in the band. WSJT-X passes `syncmin = 1.2`
+(`ft4_decode.f90:195`); this crate's bench had been passing **0.05** and
+its sweep harness **0.8**.
+
+Measured — one pass per file, since `sync_min` only filters and never
+reorders:
+
+| `sync_min` | mean candidates, 560 sweep files | golden, 14 signals | decodes (of 237) |
+|---:|---:|---:|---:|
+| 0.05 | 67.1 | 31 | 237 |
+| 0.80 | 67.1 | 31 | 237 |
+| 1.00 | 54.8 | 28 | 237 |
+| 1.10 | 12.1 | 12 | 237 |
+| **1.20** (upstream) | **1.6** | **12** | **237** |
+| 1.30 | 1.0 | 12 | 237 |
+| 1.40 | 0.8 | 12 | 235 |
+| 1.50 | 0.6 | 12 | 226 |
+| 1.70 | 0.4 | 11 | 174 |
+| 2.00 | 0.1 | 11 | 77 |
+
+The sweep column is 4 channels × 7 SNR tags × 20 trials straddling every
+channel's 50% crossing — i.e. exactly where a threshold would bite if it
+were going to. It does not, until 1.4.
+
+So the faithful value is also **2.6× cheaper on a crowded real recording
+and 42× cheaper on a sparse one, at zero measured recall cost on
+either**. This is not a tuning knob to push further: the knee is at 1.4.
+
+### 21.2 `max_cand` is bounded by the golden, and the sweep cannot see it
+
+On the WSJT-X golden the eleven single-pass decodes come from ranks 0-11
+of 31, so `max_cand = 12` reproduces all of them:
+
+```text
+rank  0   1147.7 Hz  score 1067.27   KB0VHA KA1YQC R 539 MA
+rank  1   2066.6 Hz  score  104.29   VE3LON K7RL R 549 WA
+...
+rank 11   2412.8 Hz  score    1.55   W7BOB KJ7G RR73
+```
+
+On the sweep corpus **every** decode is at rank 0 — which is a property
+of the fixture (one signal per file, so it is always the strongest peak),
+not a finding about ranking. The same trap `gen_ft4_sweep_wavs.sh`'s
+fixed `DT=0.0` set for the §18 window question. `max_cand` is therefore
+bounded only by the golden's 12, and the honest instrument for a weak
+signal in a *crowded* band does not exist yet — injecting a swept-SNR
+signal into the real golden recording would build one.
+
+### 21.3 What changed
+
+`ft4_wsjtx_samples::bench_assets::SYNC_MIN` is now 1.2, and
+`embedded-poc/assets/ft4_golden_candidates.bin` was re-baked: **31
+candidates → 12**, same 11 decodes at both `DecodeDepth::EMBEDDED` and
+`FULL`. Every device number in sections 17-19 was measured over 31
+candidates; per-candidate figures carry over unchanged, slot totals do
+not.
+
+Projected slot, combining this with §20's DDC (which removes the
+2 251 ms downsample stage outright):
+
+```text
+(2 492 search + 1 943 LLR/BP) × 12/31 ≈ 1 717 ms   vs 1 960 ms budget
+```
+
+**On paper that is inside the budget for the first time.** On paper is
+the operative phrase: neither the DDC nor the smaller candidate list has
+run on the board, and this file's own §19.2 is the standing reminder of
+what a projection is worth before a measurement.
+
+### 21.4 Aside: OSD does earn its keep, just not on the golden
+
+The same pass measured both depths. On the golden, `EMBEDDED` and `FULL`
+decode identically — which is where the bench's "OSD buys nothing" line
+came from. On the 560 weak sweep files:
+
+| depth | decodes of 560 |
+|---|---:|
+| `DecodeDepth::FULL` | 237 |
+| `DecodeDepth::EMBEDDED` | 179 |
+
+So the ship config gives up **58 decodes, a quarter of its recall**, at
+the crossing. The golden's signals are simply strong enough not to need
+OSD. Whether an embedded FT4 receiver should pay for OSD is now a real
+question rather than a settled one, and it belongs with the budget above:
+the candidate-count saving is roughly the size of the OSD cost.

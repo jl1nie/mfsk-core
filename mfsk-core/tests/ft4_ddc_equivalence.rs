@@ -69,7 +69,7 @@ const SLOT_SAMPLES: usize = 90_000;
 /// baked device assets were generated for.
 const FREQ_MIN_HZ: f32 = 100.0;
 const FREQ_MAX_HZ: f32 = 2700.0;
-const SYNC_MIN: f32 = 0.05;
+const SYNC_MIN: f32 = 1.2;
 const MAX_CAND: usize = 100;
 /// `ft4::decode`'s own private `SYNC_Q_MIN`.
 const SYNC_Q_MIN: u32 = 8;

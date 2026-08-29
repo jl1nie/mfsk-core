@@ -1766,6 +1766,33 @@ step (1 Hz) away. On the tier-C sweep, paired on the same 560 noise
 realisations across four channels' 50% crossings: **FFT 237 decodes,
 DDC 238**, five disagreements split three/two. The swap costs 0.0 dB.
 
+### The candidate budget was 2.6x too big (2026-08-30)
+
+Every stage after `ft4_coarse_sync` is per-candidate, and the bench's
+search had been passing `sync_min = 0.05`. That is *below the noise
+floor*: `getcandidates4.f90` divides the smoothed spectrum by a fitted
+baseline, so noise sits at ~1.0 and any lower threshold admits every
+peak in the band. WSJT-X's own value is 1.2 (`ft4_decode.f90:195`).
+
+Measured over 560 sweep files straddling four channels' 50% crossings
+plus the golden recording: 0.05 → 1.2 takes the candidate count from
+67.1 to 1.6 (sweep) and 31 to 12 (golden) **with identical recall on
+both**; the knee is at 1.4, where the first decodes start dropping.
+`bench_assets::SYNC_MIN` is now 1.2 and the baked candidate list was
+re-generated — 31 → 12, same 11 decodes at both depths. Sections 17-19
+of `FT4_BENCHMARK.md` were all measured over 31 candidates.
+
+Combined with the DDC, the projection is
+`(2 492 + 1 943) × 12/31 ≈ 1 717 ms` against a 1 960 ms budget — inside
+it for the first time, **on paper**, with neither change measured on the
+board.
+
+The same measurement corrected a claim in the other direction: the
+bench's "`EMBEDDED` and `FULL` decode identically" is true on the golden
+and false on weak data (237 vs 179 of 560 at the crossing), so the ship
+depth does give up about a quarter of its recall to skip OSD. See
+`docs/notes/FT4_BENCHMARK.md` §21.
+
 **What is still missing before a board can run it**: no hardware
 measurement (the ~2.3 M complex MACs per candidate is arithmetic, and
 this section's own PSRAM hypothesis is what arithmetic about cost is

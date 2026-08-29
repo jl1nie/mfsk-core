@@ -44,14 +44,29 @@
 //! - `engine::llr::symbol_spectra`'s per-symbol DFT: `ds_spb =
 //!   NSPS/NDOWN = 32`, a power of two, so no new kernel needed.
 //!
-//! ## Host reference for the same 31 candidates
+//! ## Host reference for the same 12 candidates
 //!
 //! Measured 2026-08-29 by the bake test itself, on the WSJT-X golden
 //! `000000_000002.wav`, single pass, this exact search:
 //!
 //! - **11 distinct decodes**, *identical* under `DecodeDepth::EMBEDDED`
 //!   and `DecodeDepth::FULL` — OSD and full LLR effort buy nothing on
-//!   this file, so the ship config gives up no recall here.
+//!   *this file*. That does not generalise: on the 560-file sweep
+//!   corpus at the 50 % crossing, `FULL` reaches 237 and `EMBEDDED`
+//!   179 (`tests/ft4_candidate_budget.rs`, 2026-08-30), so the ship
+//!   config does give up recall on weak signals even though it gives
+//!   up none here.
+//!
+//! **The candidate count changed on 2026-08-30: 31 -> 12.** The baked
+//! list was generated with `sync_min = 0.05`, which is below the noise
+//! floor (`getcandidates4.f90` baseline-normalises, putting noise at
+//! ~1.0), so two thirds of those candidates were noise peaks. The
+//! generator now passes WSJT-X's own `syncmin = 1.2`
+//! (`ft4_decode.f90:195`) and the same 11 decodes come out of 12
+//! candidates. **Every device number recorded before that date
+//! (`docs/notes/FT4_BENCHMARK.md` sections 17-19) was measured over 31
+//! candidates**; per-candidate figures carry over unchanged, slot
+//! totals do not.
 //! - (The 14/14 golden the host recall test asserts needs
 //!   `.sic_rounds(3)`; embedded FT8 ships a single pass, so a
 //!   multi-pass figure would not describe what a board would run.)

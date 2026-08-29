@@ -145,6 +145,22 @@ fn symbol_spectra_avg(audio: &[i16]) -> Vec<f32> {
 /// downstream: `engine::sync2d::ft4_sync_search` (called next in
 /// `process_candidate_basic` for `P::ID == Ft4`) searches the absolute
 /// time window regardless of the candidate's own `dt_sec`.
+///
+/// ## `sync_min` is not a loose knob — 1.2 is the floor, not a ceiling
+///
+/// WSJT-X passes `syncmin = 1.2` (`ft4_decode.f90:195`), and the number
+/// means something specific here: `savsm` is divided by the fitted
+/// baseline above, so **noise sits at ~1.0 by construction** and any
+/// threshold below that admits every peak in the band. Measured
+/// (`tests/ft4_candidate_budget.rs`, 2026-08-30): 0.05 and 1.2 return
+/// 67.1 vs 1.6 candidates on average over 560 weak sweep files, and 31
+/// vs 12 on the WSJT-X golden — with **identical recall** on both. Since
+/// every stage downstream is per-candidate, a caller passing 0.05 pays
+/// 2.6× to 42× for nothing.
+///
+/// The knee is close on the other side: 1.4 loses 2 decodes of 237 and
+/// 1.7 loses 63, so this is a value to keep at upstream's rather than to
+/// tune.
 pub fn ft4_coarse_sync(
     audio: &[i16],
     freq_min: f32,

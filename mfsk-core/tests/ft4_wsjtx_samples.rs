@@ -346,7 +346,16 @@ fn ft4_wsjtx_sample_reaches_jt9_parity_with_sic() {
 mod bench_assets {
     pub const FREQ_MIN_HZ: f32 = 100.0;
     pub const FREQ_MAX_HZ: f32 = 2700.0;
-    pub const SYNC_MIN: f32 = 0.05;
+    /// WSJT-X's own (`ft4_decode.f90:195` `syncmin=1.2`). Was 0.05,
+    /// which is *below the noise floor*: `getcandidates4.f90` divides
+    /// the smoothed spectrum by a fitted baseline, so noise sits at
+    /// ~1.0 and any lower threshold admits every peak in the band.
+    /// Measured (`tests/ft4_candidate_budget.rs`, 2026-08-30): 31
+    /// candidates at 0.05 against 12 at 1.2 on this recording, with the
+    /// same 11 decodes — and 67.1 vs 1.6 on the 560-file sweep corpus,
+    /// also with identical recall. Every stage downstream is
+    /// per-candidate, so the device was paying 2.6x here for nothing.
+    pub const SYNC_MIN: f32 = 1.2;
     pub const MAX_CAND: usize = 100;
     /// `ft4::decode`'s own private `SYNC_Q_MIN` — FT4 has 16 sync
     /// symbols (4 × Costas-4) and requires at least half correct.
