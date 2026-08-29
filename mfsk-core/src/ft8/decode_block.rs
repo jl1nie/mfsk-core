@@ -1,18 +1,46 @@
-//! Embedded-friendly FT8 decode (esp-dsp pow-of-2 FFT only).
+//! Embedded-friendly FT8 decode (no 192 k FFT cache, no cd0 chain).
 //!
-//! Mirrors the host `decode_frame` pipeline but skips the 192_000-pt
-//! wide-band FFT cache and the 3_840-pt per-symbol FFT — both of
-//! which are non-power-of-two. Uses an 8192-pt per-symbol FFT for
-//! the spectrogram (1920-sample input zero-padded) and a brute-force
-//! per-tone DFT for the per-candidate LLR pass. Calls `bp_decode_kind`
-//! with `BpKind::NormalizedMinSum` so the BP step skips the
-//! `tanh`/`atanh` cache.
+//! Mirrors the host `decode_frame` pipeline but skips the whole
+//! `ft8b.f90:154-161` route the host takes to build a candidate's
+//! symbol spectra — 192_000-pt wide-band FFT → tapered LPF →
+//! 3_200-pt inverse FFT to a 200 sps `cd0` baseband → per-symbol
+//! 32-pt FFT. Neither 192_000 nor 3_200 is a power of two, so
+//! neither fits esp-dsp's radix-2 kernels, and a 192 k complex FFT
+//! does not fit the memory budget either.
 //!
-//! Because the FFT bin width (≈ 1.465 Hz at 8192-pt) does not divide
-//! the 6.25 Hz tone spacing evenly, Costas tone positions are computed
-//! at fractional bins and rounded to the nearest integer. The
-//! resulting bin-alignment jitter (≤ 0.7 Hz) is below FT8's
-//! frequency-search tolerance.
+//! Two frequency analyses replace it, and they are not redundant:
+//!
+//! 1. **Spectrogram** ([`compute_spectrogram`]) —
+//!    `NFFT_SPEC = 3840 = 2 × NSPS`, matching WSJT-X `sync8.f90`'s
+//!    `NFFT1`, over 1920-sample slices zero-padded to 3840. This is
+//!    the *search* grid: `coarse_sync` needs every bin, so an FFT is
+//!    the right shape. 3840 is not a power of two either — it goes
+//!    through the 256 × 15 mixed-radix wrapper
+//!    (`embedded-shared::esp_dsp_fft::MixedRadix3840Fft`, with the
+//!    15-pt PFA factor in `engine::dsp::fft_15`). Keeping WSJT-X's
+//!    own NFFT is what makes `savg` / `sbase` / `xsig` / `xsnr2`
+//!    comparable bin-for-bin against reference output.
+//! 2. **Per-symbol DFT** ([`fill_symbol_spectra_goertzel`]) — the
+//!    *extraction* step, run at each surviving candidate's own
+//!    `(freq_hz, dt_sec)` rather than on the shared grid. Only 8 of
+//!    1920 bins are wanted per symbol, which is exactly the regime
+//!    where a Goertzel recursion beats an FFT, and it needs no
+//!    caller scratch.
+//!
+//! The spectrogram cannot serve as the second stage: its time grid
+//! is quantised to `NSTEP`, its frequency grid to `df = 3.125 Hz`
+//! (a candidate's carrier is a continuous value between bins), and
+//! under `fixed-point` it stores `u16` magnitude-squared with the
+//! phase already discarded.
+//!
+//! `tone_step_bins = TONE_SPACING_HZ / df = 6.25 / (12000/3840)` is
+//! **2.0 exactly**, so each FT8 tone falls on a single bin and the
+//! rectangular window's sidelobes do not leak onto adjacent tones —
+//! no fractional-bin rounding, and no Hann window (see
+//! [`NFFT_SPEC`] for the history of both).
+//!
+//! Calls `bp_decode_kind` with `BpKind::NormalizedMinSum` so the BP
+//! step skips the `tanh`/`atanh` cache.
 //!
 //! Same FFT trait, same compute path on host (rustfft) and on target
 //! (esp-dsp) — sensitivity sweeps run on host and the result transfers
