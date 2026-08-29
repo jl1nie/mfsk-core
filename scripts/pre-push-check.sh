@@ -38,6 +38,8 @@ FEATURE_MATRIX=(
   "alloc ft8"
   "alloc ft8 fft-extern"
   "alloc ft8 fft-extern fixed-point"
+  "alloc ft4 fft-extern"
+  "alloc ft4 fft-extern fixed-point"
   "full"
 )
 for features in "${FEATURE_MATRIX[@]}"; do

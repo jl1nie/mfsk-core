@@ -514,6 +514,8 @@ jobs:
           - "alloc ft8"            # no_std + alloc baseline (TX-side host compile)
           - "alloc ft8 fft-extern" # no_std + alloc + caller-supplied FFT (RX preset)
           - "alloc ft8 fft-extern fixed-point" # full embedded integer pipeline
+          - "alloc ft4 fft-extern"             # FT4 through the generic pipeline, no_std
+          - "alloc ft4 fft-extern fixed-point" # same, with the integer implications on
           - "wspr wspr-pass2-topn" # embedded WSPR pass-2 candidate-ladder truncation + budget
           - "full"
     steps:

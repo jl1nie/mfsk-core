@@ -28,6 +28,8 @@
 //! All values are reused from [`super::decode::FT4_SUBTRACT`] so any
 //! retuning lands in one place.
 
+use alloc::vec::Vec;
+
 use super::{decode::DecodeResult, encode::message_to_tones};
 use crate::engine::dsp::subtract::{subtract_tones, subtract_tones_lpf};
 
