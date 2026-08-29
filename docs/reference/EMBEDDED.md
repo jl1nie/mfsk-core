@@ -1591,8 +1591,11 @@ afford it.
 
 ## FT4 on embedded
 
-**Status (2026-08-29): builds, decodes correctly on hardware, and is
-8.8× over its slot budget.** The bottleneck is a single function.
+**Status (2026-08-30): builds, decodes correctly on hardware, and is
+3.4× over its slot budget** after the 2026-08-29 optimisations (8.8×
+before them). The remaining excess is spread across three stages, one
+of which — `downsample_cached` — a host-verified DDC front end now
+removes outright.
 
 ### What it took to build at all
 
@@ -1721,9 +1724,56 @@ projection is ~6 686 ms against 1 960 ms — **3.4× over, from 8.8×**.
 What is left is no longer one thing: downsample 34 % / search 37 % /
 LLR+BP 29 %. `downsample_cached` has become co-equal with the search,
 and that is a stage a DDC front end removes rather than speeds up —
-`mfsk_core::ft4::ddc`, for which FST4 already has the template
-(`docs/notes/FST4_DDC_DESIGN.md`), and which would also retire the
-host-baked wideband FFT this bench still depends on.
+which is what the next section is.
+
+### The DDC front end (host-verified 2026-08-30, not yet on hardware)
+
+`mfsk_core::ft4::ddc` builds the per-candidate `cd0` by mixing and
+filtering, so the 92 160-point transform this bench bakes on a host has
+nothing left to feed. Full account in `docs/notes/FT4_BENCHMARK.md` §20.
+
+**FT4 is the easy case.** `fst4::ddc` needs a rational resampler
+because `NSPS = 3888 = 2⁴·3⁵` leaves a `3⁵` denominator; FT4's
+`NDOWN = 18` divides 12 kHz exactly, `666.667 Hz` is already
+`SyncDims::ds_rate`, and `ds_spb = 32` is a power of two. The module is
+two `FirStage`s and two mixers — no `PolyphaseResampler`, no `RxGrid`,
+nothing downstream of `cd0` changed:
+
+```text
+12 kHz real i16
+  → Mixer(f0 + 31.25 Hz)                   complex @ 12 kHz
+  → FirStage A: 199 taps, fc 320 Hz, ÷18   complex @ 666.667 Hz
+  → FirStage B: 263 taps, fc 56 Hz,  ÷1    complex @ 666.667 Hz
+  → Mixer(−31.25 Hz)                       cd0, f0 at DC
+```
+
+**The passband is a decode parameter, not a filter-design free choice.**
+`downsample_cached` keeps `[f0 − 31.25, f0 + 93.75] Hz` and zeroes the
+rest — asymmetric about `f0`, because the tones run upward from it.
+`process_candidate_basic_impl` then RMS-normalises `cd0` over its whole
+length, and `LLR_SCALE` is calibrated against that, so noise admitted
+outside the reference band rescales every LLR feeding BP (the full
+±333 Hz baseband would have been ~2.3× high). Hence the mixer pair:
+centre the *band*, filter symmetrically with real taps, rotate `f0`
+back to DC. Measured equivalent noise bandwidth against the reference:
+**+0.021 dB**.
+
+**Equivalence.** On the WSJT-X golden, from the same 31 candidates:
+11 distinct decodes on both front ends, identical sets, at both
+`DecodeDepth::EMBEDDED` and `FULL`; the refined sync position never
+moves, and one candidate of eleven lands one `ft4_sync_search` grid
+step (1 Hz) away. On the tier-C sweep, paired on the same 560 noise
+realisations across four channels' 50% crossings: **FFT 237 decodes,
+DDC 238**, five disagreements split three/two. The swap costs 0.0 dB.
+
+**What is still missing before a board can run it**: no hardware
+measurement (the ~2.3 M complex MACs per candidate is arithmetic, and
+this section's own PSRAM hypothesis is what arithmetic about cost is
+worth); no esp-dsp binding for `FirStage::push_block`
+(`dsps_fird_f32_aes3`); and `ft4_coarse_sync`'s `NFFT1 = 2304` is still
+baked — a `fft_mixed_2304` (256 × 9) would close that without any DDC.
+Like `fst4::ddc`, this is a building block callers reach for, not a
+feature flag that swaps the host's front end.
 
 ## Live UAC bring-up — what to check, in what order (issue #163)
 

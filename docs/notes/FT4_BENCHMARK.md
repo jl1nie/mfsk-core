@@ -1084,3 +1084,120 @@ stage a DDC front end removes outright rather than speeds up, which is
 the `mfsk_core::ft4::ddc` work FST4 already has the template for
 (`docs/notes/FST4_DDC_DESIGN.md`) — and it would also retire the
 host-baked wideband FFT this bench still depends on.
+
+## 20. The DDC front end — `downsample_cached` replaced, and it costs nothing (2026-08-30)
+
+§19.4's handoff, taken: `mfsk_core::ft4::ddc` builds the per-candidate
+`cd0` by mixing and filtering, so the 92 160-point forward FFT that the
+`ft4-bench` assets still bake on a host has nothing left to feed.
+
+**Host work only.** Nothing here has run on the board yet; §20.4 says
+what is still missing before it can.
+
+### 20.1 Why FT4 is the easy case
+
+`fst4::ddc` needs a rational resampler (`FST4_DDC_DESIGN.md` §4.2)
+because `NSPS = 3888 = 2⁴·3⁵` leaves a `3⁵` denominator no integer
+decimation reaches. FT4's `NDOWN = 18` divides 12 kHz exactly:
+`12 000/18 = 666.667 Hz` is already `SyncDims::ds_rate`, and
+`ds_spb = NSPS/NDOWN = 32` is a power of two. So the whole module is two
+`FirStage`s and two mixers — no `PolyphaseResampler`, no `RxGrid`, and
+no change to anything downstream of `cd0`:
+
+```text
+12 kHz real i16
+  → Mixer(f0 + 31.25 Hz)                   complex @ 12 kHz
+  → FirStage A: 199 taps, fc 320 Hz, ÷18   complex @ 666.667 Hz
+  → FirStage B: 263 taps, fc 56 Hz,  ÷1    complex @ 666.667 Hz
+  → Mixer(−31.25 Hz)                       cd0, f0 at DC
+```
+
+Sample alignment needs no trimming: `FirStage` starts its counter at
+`group_delay + 1`, so each stage's output 0 is centred on its own input
+0 and `cd0[0]` stays aligned with `audio[0]` — which is what lets
+`ft4_sync_search`'s absolute `[-344, 1012]` window mean the same thing
+on both front ends.
+
+### 20.2 The passband is a decode parameter
+
+`downsample_cached` keeps `[f0 − 1.5·Δf, f0 + 4.5·Δf]` =
+`[−31.25, +93.75] Hz` and **zeroes the rest**. That band is asymmetric
+about `f0` (the tones run upward from it), so a low-pass centred on the
+candidate does not reproduce it — hence the mixer pair, centring the
+*band* and rotating `f0` back to DC afterwards, which keeps every tap
+real.
+
+Getting this wrong is not a cosmetic error.
+`process_candidate_basic_impl` RMS-normalises `cd0` over its whole
+length (WSJT-X `ft4_decode.f90:231-232`) and `compute_llr`'s `LLR_SCALE`
+is calibrated against that unit-RMS input, so noise admitted outside the
+reference band rescales every LLR feeding BP. Passing the full ±333 Hz
+baseband would have put the RMS ~2.3× high.
+
+Measured, as equivalent noise bandwidth — the one number the
+normalisation sees, with each path's arbitrary gain divided out by its
+own tone response (`ft4::ddc::tests::noise_bandwidth_matches_the_
+reference_band`):
+
+| path | noise/tone power ratio |
+|---|---:|
+| `downsample_cached` | 2.150e-3 |
+| `ft4::ddc` | 2.161e-3 |
+| difference | **+0.021 dB** |
+
+The reference's 101-bin raised-cosine taper is 13.0 Hz at
+`12 000/92 160` Hz per bin — flat to ±49.5 Hz, zero at ±62.5. Stage B is
+flat to ~49 Hz and null by ~63. The match is by construction, not by
+tuning.
+
+### 20.3 Equivalence, on the golden and across the crossing
+
+**WSJT-X golden** (`ft4_ddc_equivalence::ft4_ddc_baseband_decodes_the_
+golden_like_the_fft_path`), same 31 candidates from `ft4_coarse_sync`,
+everything downstream held identical:
+
+| depth | FFT path | DDC path | max Δfreq | max Δi0 |
+|---|---:|---:|---:|---:|
+| `EMBEDDED` | 11 distinct | 11 distinct, same set | 1.00 Hz (1 of 11) | 0 |
+| `FULL` | 11 distinct | 11 distinct, same set | 1.00 Hz (1 of 11) | 0 |
+
+1.00 Hz is `ft4_sync_search_window`'s own grid step (`df = idf as f32`),
+i.e. the smallest disagreement expressible — one candidate sits between
+two equally good cells. Ten of eleven agree exactly, and the sync
+position never moves at all.
+
+**Tier-C paired sweep** (`ft4_ddc_recall_matches_the_fft_path_across_
+the_crossing`, `#[ignore]`), 4 channels × 7 SNR tags × 20 trials = 560
+files straddling every channel's 50% crossing. Paired: both arms decode
+the same file from the same candidate list, so the noise realisation
+cancels and 20 trials per cell are enough to resolve a real difference.
+
+| | decodes of 560 |
+|---|---:|
+| FFT front end | 237 |
+| DDC front end | **238** |
+| disagreements | 5 (3 for the DDC, 2 against) |
+
+Every disagreement is in a cell already sitting on its own crossing.
+**The front-end swap costs 0.0 dB.**
+
+### 20.4 What this does *not* yet do
+
+- **Not measured on hardware.** The projected per-candidate cost is
+  `5000 × 199` + `5120 × 263` ≈ 2.3 M complex MACs against the 2 251 ms
+  / 31 candidates ≈ 72 ms that `downsample_cached` measured on the
+  CoreS3 (§19.3). That is arithmetic, and §19.2 is this file's own
+  reminder of what arithmetic about cost is worth before a measurement:
+  the last hypothesis of that shape predicted 5–10× and delivered 1.12×.
+- **No esp-dsp FIR backend.** `FirStage::push_block` exists
+  (`FST4_DDC_DESIGN.md` §4.5) but nothing binds `dsps_fird_f32_aes3`
+  yet, so a device run today would use the scalar path.
+- **The coarse stage is untouched.** `ft4_coarse_sync`'s
+  `NFFT1 = 2304` (= 256·9) is still not a power of two, and the bench
+  still bakes the candidate list. It is 0.3 ms on host, so it is a
+  feasibility gap rather than a budget one — and a `fft_mixed_2304`
+  (256 × 9, the same shape as the existing `fft_mixed_3840` and
+  `fft_mixed_5120`) would close it without any DDC at all.
+- **Not wired into `decode_frame`.** Same choice `fst4::ddc` made: a
+  library building block callers reach for, not a feature flag that
+  silently swaps the host's front end.

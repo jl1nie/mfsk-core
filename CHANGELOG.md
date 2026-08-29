@@ -64,6 +64,46 @@ cadence".
   loss at any width — a property of the fixture, not the decoder. See
   `docs/notes/FT4_BENCHMARK.md` §18.
 
+- **`mfsk_core::ft4::ddc` — FT4's per-candidate baseband without the
+  92 160-point FFT.** `downsample_cached` is the stage that keeps FT4
+  off a board: its `fft1_size = 92_160` forward transform is neither a
+  power of two nor within an order of magnitude of ESP-DSP's 8192 limit,
+  so the `ft4-bench` numbers above depend on a 737 KB FFT cache baked on
+  a host. The new module builds the same `cd0` by mixing and filtering
+  instead — two `FirStage`s and two mixers, no transform at all.
+
+  FT4 is the easy case, and this is why it was worth doing before
+  finishing `fst4::ddc`'s harder one: `NDOWN = 18` divides 12 kHz
+  exactly, `666.667 Hz` is already `SyncDims::ds_rate`, and
+  `ds_spb = 32` is a power of two, so no rational resampler and no
+  `RxGrid` are needed and nothing downstream of `cd0` changes.
+
+  The non-obvious constraint is the passband. `downsample_cached` keeps
+  `[f0 − 31.25, f0 + 93.75] Hz` and zeroes the rest — asymmetric about
+  `f0` — and `process_candidate_basic_impl` RMS-normalises `cd0` over
+  its whole length against a `LLR_SCALE` calibrated on that band, so a
+  wider filter rescales every LLR feeding BP (the full ±333 Hz baseband
+  would have been ~2.3× high). The chain therefore centres the *band*,
+  filters symmetrically with real taps, and rotates `f0` back to DC.
+  Measured equivalent noise bandwidth against the reference:
+  **+0.021 dB**.
+
+  Verified twice, on host. On the WSJT-X golden from the same 31
+  candidates: **11 distinct decodes on both front ends, identical
+  sets**, at both `DecodeDepth::EMBEDDED` and `FULL`, with the refined
+  sync position unmoved and one candidate of eleven landing one 1 Hz
+  `ft4_sync_search` grid step away. On a new tier-C paired sweep over
+  560 files spanning four channels' 50% crossings: **FFT 237 decodes,
+  DDC 238**, five disagreements split three/two — the swap costs
+  0.0 dB. Tests: `tests/ft4_ddc_equivalence.rs`.
+
+  Not yet measured on hardware, not bound to esp-dsp's FIR
+  (`dsps_fird_f32_aes3`), and — like `fst4::ddc` — not wired into
+  `decode_frame`: a building block callers reach for, not a feature
+  flag that swaps the host's front end. `ft4_coarse_sync`'s
+  `NFFT1 = 2304` is still baked; a `fft_mixed_2304` (256 × 9) would
+  close that without any DDC. See `docs/notes/FT4_BENCHMARK.md` §20.
+
 ### Changed
 
 - **`ft4_sync_search` rebuilt its frequency-shift phasor once per grid
