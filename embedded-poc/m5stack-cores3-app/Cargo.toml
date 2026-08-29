@@ -50,6 +50,17 @@ name = "fst4-ddc-bench"
 path = "src/bin/fst4_ddc_bench.rs"
 harness = false
 
+# FT4 per-candidate bench — FT4 had no embedded path at all before
+# this (`docs/reference/EMBEDDED.md`'s per-protocol table), and its
+# `fft1_size = 92_160` wideband transform is one ESP-DSP cannot serve.
+# Same shape and the same reason as `fst4-bench` above; see
+# `embedded-shared::apps::ft4_bench`'s module doc for the budget and
+# for what is baked versus computed on-device.
+[[bin]]
+name = "ft4-bench"
+path = "src/bin/ft4_bench.rs"
+harness = false
+
 # esp-dsp dot-product microbenchmark — checks whether PIE
 # (`dsps_dotprod_f32_aes3`) is worth the alignment/layout work that
 # `PolyphaseResampler::dot` and `fst4_sync_search` would need, before
@@ -162,11 +173,11 @@ num-complex = { version = "0.4", default-features = false }
 # depends on). Crate-wide like `wspr-bench`'s features below, not
 # scoped to just the `fst4-bench` bin — Cargo has no per-bin feature
 # sets within one crate.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fst4", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "ft4", "fst4", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 # Shared decode-pipeline layer (streaming, dual_core, stage1_inc, esp_dsp_fft).
-embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench", "fst4-bench"] }
+embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench", "fst4-bench", "ft4-bench"] }
 
 # Board-agnostic app logic (QSO FSM, time sync, TX picker, SNR norm,
 # NVS boot mode, log fanout, WiFi + UDP, UI draw routines).

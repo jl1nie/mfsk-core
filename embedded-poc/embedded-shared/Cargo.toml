@@ -53,6 +53,16 @@ wspr-bench = ["mfsk-core/wspr", "mfsk-core/std", "mfsk-core/wspr-pass2-topn", "m
 # that feature (issue #203's visibility escape hatch).
 fst4-bench = ["mfsk-core/fst4", "mfsk-core/internal-testing"]
 
+# `apps::ft4_bench` — the FT4 embedded-feasibility measurement, the
+# same question issue #306 asked of FST4 and for the same reason: FT4
+# had no embedded path at all, and its `fft1_size = 92_160` wideband
+# transform is one ESP-DSP cannot serve. Needs `internal-testing` for
+# the identical reason `fst4-bench` does — `process_candidate_basic`
+# and `decode_frame`'s `precomputed_fft` seam are only `pub` under it
+# (issue #203). No `mfsk-core/std`: FT4 routes entirely through the
+# backend-agnostic `engine::pipeline`, same as FST4.
+ft4-bench = ["mfsk-core/ft4", "mfsk-core/internal-testing"]
+
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }

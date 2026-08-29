@@ -327,3 +327,231 @@ fn ft4_wsjtx_sample_reaches_jt9_parity_with_sic() {
         },
     );
 }
+
+// ── On-device bench assets (issue-TBD, FT4 embedded feasibility) ─────────
+
+/// Search parameters the baked assets — and therefore the on-device
+/// `ft4-bench` — are generated for.
+///
+/// Deliberately the same band / `sync_min` / `max_cand` as
+/// `ft4_wsjtx_sample_recall_and_precision` above, minus its
+/// `.sic_rounds(3)`: embedded FT8 ships a single pass (`dual_core` has
+/// no subtract path at all), so a multi-pass number would not describe
+/// what the board would actually run.
+///
+/// **Mirrored in `embedded-shared::apps::ft4_bench`.** Changing one
+/// without the other makes the device measure a different search than
+/// the assets were baked for, which no assertion here can catch.
+#[cfg(feature = "internal-testing")]
+mod bench_assets {
+    pub const FREQ_MIN_HZ: f32 = 100.0;
+    pub const FREQ_MAX_HZ: f32 = 2700.0;
+    pub const SYNC_MIN: f32 = 0.05;
+    pub const MAX_CAND: usize = 100;
+    /// `ft4::decode`'s own private `SYNC_Q_MIN` — FT4 has 16 sync
+    /// symbols (4 × Costas-4) and requires at least half correct.
+    pub const SYNC_Q_MIN: u32 = 8;
+}
+
+/// Bake the FT4 golden's slot audio, wideband FFT cache and
+/// coarse-candidate list for the on-device `ft4-bench`.
+///
+/// Same shape and the same reason as
+/// `fst4_wsjtx_samples.rs::fst4_bake_golden_precomputed`: the wideband
+/// transform `build_fft_cache` runs — `fft1_size = 92_160` for FT4 — is
+/// not a power of two and is far past `CONFIG_DSP_MAX_FFT_SIZE_8192`,
+/// so ESP-DSP cannot serve it at all. Baking it here and feeding it
+/// back through `decode_frame`'s `precomputed_fft` seam (which
+/// `ft4/decode.rs` already threads) is what lets the device measure the
+/// per-candidate work without that stage existing on-device first.
+///
+/// What the device still computes for itself, and why this is a
+/// different split from FST4's decoder-only bench:
+///
+/// - `downsample_cached`'s inverse transform (`fft2_size = 5120`) —
+///   served by `engine::dsp::fft_mixed_5120` (1024 × 5), added for
+///   exactly this.
+/// - `engine::sync2d::ft4_sync_search` — no FFT at all, and the
+///   dominant per-candidate cost by a wide margin on host
+///   (`ft4_diag_candidate_cost_split`: ~123 ms of ~150 ms over 50
+///   candidates). Measuring it is the whole point.
+/// - `engine::llr::symbol_spectra`'s per-symbol DFT: `ds_spb =
+///   NSPS/NDOWN = 32`, a power of two, so no new kernel needed.
+///
+/// The one stage neither computed nor baked is `ft4_coarse_sync`'s own
+/// `NFFT1 = 2304` (= 256 × 9) periodogram — the candidate *list* is
+/// baked instead. It measured 0.3 ms on host over the whole slot, so
+/// excluding it understates the device total by roughly that times the
+/// device/host ratio; the bench says so in its own output rather than
+/// leaving the reader to assume the number is a whole slot.
+///
+/// Three files, all little-endian (host and Xtensa are both LE):
+///
+/// ```text
+/// ft4_golden_audio.bin:      i16[90000]                  =   180 000 bytes
+/// ft4_golden_fft_cache.bin:  (f32 re, f32 im)[92160]     =   737 280 bytes
+/// ft4_golden_candidates.bin: u32 n, then n × 3 × f32     =  12 + 12·n bytes
+/// ```
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full,internal-testing --release \
+///  --test ft4_wsjtx_samples ft4_bake_golden_precomputed -- --ignored --nocapture`
+#[test]
+#[ignore = "asset generator — writes embedded-poc/assets/ft4_golden_{audio,fft_cache,candidates}.bin"]
+#[cfg(feature = "internal-testing")]
+fn ft4_bake_golden_precomputed() {
+    use mfsk_core::engine::dsp::downsample::build_fft_cache;
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+    use mfsk_core::engine::sync::SyncCandidate;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+
+    use bench_assets::*;
+
+    let Some(path) = sample_path() else {
+        panic!("FT4 golden not found — this generator needs the real recording");
+    };
+    let raw = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let mut audio = vec![0i16; SLOT_SAMPLES];
+    let copy = raw.len().min(SLOT_SAMPLES);
+    audio[..copy].copy_from_slice(&raw[..copy]);
+
+    let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
+    assert!(
+        !candidates.is_empty(),
+        "coarse stage found nothing — the assets would be useless"
+    );
+
+    let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+    assert_eq!(
+        fft_cache.len(),
+        FT4_DOWNSAMPLE.fft1_size,
+        "fft_cache length is fixed by fft1_size"
+    );
+
+    let asset = |name: &str| {
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../embedded-poc/assets/"
+        ))
+        .join(name)
+    };
+
+    let mut audio_bytes = Vec::with_capacity(audio.len() * 2);
+    for &s in &audio {
+        audio_bytes.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(asset("ft4_golden_audio.bin"), &audio_bytes).expect("write audio asset");
+
+    let mut cache_bytes = Vec::with_capacity(fft_cache.len() * 8);
+    for c in &fft_cache {
+        cache_bytes.extend_from_slice(&c.re.to_le_bytes());
+        cache_bytes.extend_from_slice(&c.im.to_le_bytes());
+    }
+    std::fs::write(asset("ft4_golden_fft_cache.bin"), &cache_bytes).expect("write fft cache asset");
+
+    let mut cand_bytes = Vec::with_capacity(4 + candidates.len() * 12);
+    cand_bytes.extend_from_slice(&(candidates.len() as u32).to_le_bytes());
+    for c in &candidates {
+        cand_bytes.extend_from_slice(&c.freq_hz.to_le_bytes());
+        cand_bytes.extend_from_slice(&c.dt_sec.to_le_bytes());
+        cand_bytes.extend_from_slice(&c.score.to_le_bytes());
+    }
+    std::fs::write(asset("ft4_golden_candidates.bin"), &cand_bytes).expect("write candidate asset");
+
+    eprintln!(
+        "wrote audio {} B ({} samples), fft_cache {} B ({} bins), candidates {} B ({} cands)",
+        audio_bytes.len(),
+        audio.len(),
+        cache_bytes.len(),
+        fft_cache.len(),
+        cand_bytes.len(),
+        candidates.len(),
+    );
+
+    // Round-trip: reload all three exactly as the device bench will,
+    // and confirm the candidate loop over the reloaded assets reaches
+    // the same decodes as the loop over the in-memory originals. This
+    // validates the *assets*, not the decoder — a fixed decode count
+    // would belong in a recall test, and there are three above.
+    let reloaded_audio: Vec<i16> = audio_bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
+        .collect();
+    assert_eq!(reloaded_audio, audio, "audio asset round-trip mismatch");
+
+    let reloaded_cache: Vec<num_complex::Complex32> = cache_bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|b| {
+            num_complex::Complex32::new(
+                f32::from_le_bytes(b[0..4].try_into().unwrap()),
+                f32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reloaded_cache.len(),
+        fft_cache.len(),
+        "fft_cache asset round-trip length mismatch"
+    );
+
+    let n = u32::from_le_bytes(cand_bytes[0..4].try_into().unwrap()) as usize;
+    let reloaded_cands: Vec<SyncCandidate> = cand_bytes[4..]
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .take(n)
+        .map(|b| SyncCandidate {
+            freq_hz: f32::from_le_bytes(b[0..4].try_into().unwrap()),
+            dt_sec: f32::from_le_bytes(b[4..8].try_into().unwrap()),
+            score: f32::from_le_bytes(b[8..12].try_into().unwrap()),
+        })
+        .collect();
+    assert_eq!(reloaded_cands.len(), candidates.len(), "candidate count");
+
+    // The exact loop `decode_frame_impl` runs for FT4 — including its
+    // `known = &[]` (FT4 decodes raw candidates directly and dedups
+    // afterwards), so the bench is not accidentally cheaper.
+    let run = |cands: &[SyncCandidate], cache: &[num_complex::Complex32], depth: DecodeDepth| {
+        let mut msgs: Vec<String> = cands
+            .iter()
+            .filter_map(|cand| {
+                let r = process_candidate_basic::<Ft4>(
+                    cand,
+                    cache,
+                    &FT4_DOWNSAMPLE,
+                    depth,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    SYNC_Q_MIN,
+                )?;
+                let m77: &[u8; 77] = r.message77().try_into().ok()?;
+                unpack77(m77)
+            })
+            .collect();
+        msgs.sort();
+        msgs.dedup();
+        msgs
+    };
+
+    for (label, depth) in [
+        ("FULL", DecodeDepth::FULL),
+        ("EMBEDDED", DecodeDepth::EMBEDDED),
+    ] {
+        let fresh = run(&candidates, &fft_cache, depth);
+        let baked = run(&reloaded_cands, &reloaded_cache, depth);
+        assert_eq!(
+            baked, fresh,
+            "{label}: the baked assets must decode to exactly what the \
+             freshly-computed ones do — a mismatch means the device \
+             bench will not be running the search these assets describe"
+        );
+        eprintln!("{label}: {} distinct decodes {:?}", fresh.len(), fresh);
+    }
+}
