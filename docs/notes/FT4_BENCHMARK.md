@@ -851,3 +851,236 @@ now-irreducible cost (21 `ls_amp_mag_tweaked` evaluations + one
 `subtract_tones_lpf` FFT pair per real decode), a deliberate
 recall-quality addition per section 13's original update, not redundant
 work.
+
+## 17. First hardware measurement — M5Stack CoreS3 (2026-08-29)
+
+FT4 had never been compiled for a board, let alone run on one. This
+section is the first device number and the reason it does not yet fit.
+Full write-up, including what had to be built to get there, is
+`docs/reference/EMBEDDED.md`'s "FT4 on embedded"; this is the
+benchmark-side record.
+
+**Setup.** `ft4-bench` (`embedded-poc/m5stack-cores3-app/src/bin/`),
+M5Stack CoreS3 @ 240 MHz, `opt-level = 3`, single core, no WiFi. The
+31 coarse candidates `ft4_coarse_sync` finds on the in-tree WSJT-X
+golden `000000_000002.wav` over 100–2700 Hz, `sync_min = 0.05`,
+`max_cand = 100` — the same search
+`ft4_wsjtx_sample_recall_and_precision` runs, minus its
+`.sic_rounds(3)` (embedded FT8 ships a single pass, so a multi-pass
+figure would not describe what a board would run). Assets baked by
+`ft4_bake_golden_precomputed`. Log:
+`embedded-poc/m5stack-cores3-app/logs/ft4-bench_clean_2026-08-29.log`.
+
+**Budget**: 7.5 s slot − (0.5 s TX offset + 105 × 48 ms) = **1.96 s**.
+
+| stage | total | per candidate | share |
+|---|---:|---:|---:|
+| `downsample_cached` (5120-pt inverse FFT) | 2 252 ms | 72.7 ms | 13 % |
+| **`ft4_sync_search`** | **13 225 ms** | **424 ms** | **76 %** |
+| LLR + BP (`DecodeDepth::EMBEDDED`) | ~1 861 ms | ~60 ms | 11 % |
+| **total (production `process_candidate_basic`)** | **17 339 ms** | 559 ms | — |
+| same at `DecodeDepth::FULL` | 19 684 ms | 635 ms | — |
+
+**11 distinct decodes on device, identical to the host on the same
+assets, at both depths.** So `DecodeDepth::EMBEDDED` costs no recall
+here and OSD earns nothing on this file — worth knowing before anyone
+proposes dropping OSD as the optimisation. (The 14/14 the golden test
+asserts needs `sic_rounds(3)`; single-pass tops out at 11 on host too.)
+
+**17 339 ms against 1 960 ms is 8.8× over**, and the excess is one
+function.
+
+**The cost is structural.** `ft4_sync_search` per candidate across all
+31: **min 423 835 µs, p50 423 897 µs, max 424 684 µs** — 0.2 % spread.
+That is a fixed grid, not anything candidate-dependent, and it follows
+directly from section 7's own design: the search walks the absolute
+`[-344, 1012]` downsampled-sample window for every candidate regardless
+of its `dt_sec`, ~19 900 (Δf, Δt) cells × 4 Costas blocks × 4 symbols ×
+32 samples ≈ 10.2 M complex MACs. 424 ms of that is ~10 cycles per
+complex MAC — a scalar f32 loop with an on-the-fly phasor rotation.
+
+Two levers, neither tried, both measurable against this bench:
+`dsps_dotprod_f32_aes3` on the inner product, and narrowing the search
+window (WSJT-X searches the full slot because it cannot assume a clock;
+a UTC-anchored board can, and `wspr-fano-cap-fast` / `wspr-pass2-topn`
+are the precedent for an embedded-only trade documented with the recall
+it costs).
+
+Host reference for the same 31 candidates, sequential
+(`ft4_diag_candidate_cost_split`, `tests/ft4_sweep.rs`): ~89 ms, so the
+device/host ratio is ~195×. For scale, FST4-60's first embedded number
+(issue #306) was ~1728× before its optimisation passes.
+
+**Not measured here**: `ft4_coarse_sync` itself (`NFFT1 = 2304` = 256 ×
+9, no ESP-DSP kernel yet — the candidate list is baked instead). It is
+0.3 ms of the host slot, so it does not change the conclusion.
+
+## 18. Δt-window narrowing — what it costs in recall (2026-08-29)
+
+§17 put `ft4_sync_search` at 76 % of an 8.8×-over budget, at a 0.2 %
+per-candidate spread — a fixed grid whose cost is set by the Δt window
+alone. Narrowing it is the obvious lever, and WSJT-X cannot take it
+(it searches wide because it cannot assume a clock) while a
+UTC-anchored receiver can. This section is the price.
+
+**Window arithmetic.** `i0` counts downsampled samples at
+`ds_rate = 12 000/NDOWN = 666.67 Hz`, and `dt = i0/ds_rate −
+TX_START_OFFSET_S`, so `dt = 0` sits at `i0 = 333` and production's
+`[-344, 1012]` is **±1.0 s**, not a full slot. Coarse cost is
+`9 × ceil(n_i0/4)` cells plus a fixed 99-cell fine pass.
+
+### On the real off-air golden
+
+`ft4_diag_sync_window_recall` (`tests/ft4_wsjtx_samples.rs`),
+`000000_000002.wav`, 31 coarse candidates, `DecodeDepth::EMBEDDED`.
+The control asserts that the harness at the production window decodes
+exactly what `process_candidate_basic` does, so the table measures the
+window and not the harness. "search ms" is measured host wall-clock of
+`ft4_sync_search_window` alone, summed over all 31 candidates.
+
+| half-width | i0 window | cells | predicted | measured | decodes | first loss |
+|---:|---|---:|---:|---:|---:|---|
+| ±1.000 s | [-344, 1012] | 3159 | 1.00× | 76.6 ms | 11 | — |
+| ±0.750 s | [-167, 833] | 2358 | 1.34× | 1.35× | 11 | — |
+| **±0.500 s** | **[0, 667]** | **1602** | **1.97×** | **1.91×** | **11** | **—** |
+| ±0.375 s | [83, 583] | 1233 | 2.56× | 2.40× | 10 | `N1TRK KB7RUQ RR73` (dt −0.44) |
+| ±0.300 s | [133, 533] | 1008 | 3.13× | 2.92× | 9 | + `W7BOB KJ7G RR73` (dt −0.36) |
+| ±0.250 s | [167, 500] | 855 | 3.69× | 3.43× | 8 | + `VE3LON K7RL R 549 WA` (dt +0.29) |
+| ±0.200 s | [200, 467] | 702 | 4.50× | 4.18× | 4 | |
+| ±0.150 s | [233, 433] | 558 | 5.66× | 5.24× | 3 | |
+| ±0.100 s | [267, 400] | 405 | 7.80× | 7.16× | 2 | |
+
+Measured speedup tracks the cell count, short by the fixed fine pass.
+The 11 real signals span dt −0.44 … +0.30 s, and **±0.5 s is free**.
+
+### Isolating the mechanism
+
+`ft4_diag_dt_window_reach` (`tests/ft4_sweep.rs`) sweeps the *true* DT
+against the window with nothing else varying. **This deliberately does
+not use the tier-C corpus**: `gen_ft4_sweep_wavs.sh` fixes `DT=0.0`, so
+every signal in it sits dead centre of every window and it would report
+no loss at any width — a property of the fixture, not the decoder. A
+separate `ft4sim` corpus was generated at DT ∈ [−0.5, +0.5] in 0.05 s
+steps, 20 trials/cell, AWGN. (The grid stops at ±0.5 s because `ft4sim`
+writes a 6.048 s file and the frame occupies `[0.5+DT, 5.54+DT]` —
+beyond that the signal is truncated by the file rather than missed by
+the window, and the two are not separable. The golden above covers the
+wider tail with real captures.)
+
+At −14 dB the result is a **hard cliff at the nominal window edge**:
+100 % inside, 0 % outside, no soft shoulder. ±0.500 s holds 100 % across
+the whole ±0.5 s grid; ±0.375 s holds to |DT| ≈ 0.35; ±0.250 s to
+|DT| ≈ 0.25.
+
+At −17 dB (near the −16.9 dB AWGN crossing) recall is 10–55 % as
+expected — and **identical column-to-column wherever the DT is inside
+the window**. Narrowing costs *reach*, not *sensitivity*: a signal the
+narrow window can still see decodes exactly as often as the wide one
+saw it.
+
+### What this leaves
+
+The largest lossless width on both instruments is **±0.5 s, worth
+1.91×** on the dominant stage. Applied to §17's device numbers that is
+13 225 ms → ~6.9 s, and the slot total 17 339 ms → ~11.1 s against a
+1 960 ms budget: **5.7× over instead of 8.8×**. Necessary, not
+sufficient — the remaining factor has to come from the arithmetic
+inside the grid (`dsps_dotprod_f32_aes3`, untested) or from where `cd0`
+lives (40 KB per candidate, currently a PSRAM `Vec`; `internal_pool`
+already documents ~5–10× for exactly this move on FT8's scratch). Both
+are device-side measurements, not host ones.
+
+## 19. Two optimisations against §17's device number (2026-08-29)
+
+§17 measured FT4 at 8.8× over its 1.96 s slot budget with
+`ft4_sync_search` at 76 % of it; §18 measured what narrowing that
+search's Δt window costs (nothing, to ±0.5 s). This section is the two
+remaining levers, both applied and measured.
+
+### 19.1 The inner product — `FlatRef` + `dot_f32` (host + device)
+
+`ft4_sync_search_window` applied its frequency shift to `cd0` **inside**
+the innermost sample loop, as a rotating phasor (`twid *= step`)
+restarted at every `(df, i0)` cell. But `twid[n] = step^n` is indexed by
+the offset *within the Costas block*, not by `i0` — so it is identical
+across the ~340 `i0` positions each `df` sweeps, and rebuilding it per
+cell was that many times redundant.
+
+`fst4_sync_search` was already on the right side of this: its `FlatRef`
+folds the shift into the reference once per `(block, df)`, leaving a
+plain complex inner product that `dot_f32` — and therefore
+`dotprod-extern`'s `dsps_dotprod_f32_aes3` on LX7 — can serve. FT4 now
+uses the same machinery. This function's own comment had already
+recorded the identity ("the same dot product as twiddling each sample
+of `cd0` in place"); nothing new was derived.
+
+**Not bit-identical**, deliberately: the products reassociate, and
+`FlatRef::fill` evaluates the phasor per sample rather than
+accumulating a recurrence — so it carries *less* rounding error.
+Verified before landing:
+
+| check | result |
+|---|---|
+| `ft4_wsjtx_samples` golden | 14/14 total, 6/6 golden, 0 phantoms — unchanged |
+| `run-sensitivity-sweeps.sh ft4` | awgn/ccir_good/moderate/poor all **+0.00 dB** vs baseline, 160 trials each |
+| golden stage counters | `nsync_fail`/`nsync_pass`/`osd_attempt`/`n_new` identical on all 3 SIC passes |
+| merge gate | green |
+
+**Host**, `ft4_diag_sync_window_recall`, 31 candidates:
+`ft4_sync_search` **76.6 ms → 27.9 ms (2.75×)**. Golden 3-pass
+`decode_loop`, median of 3: **36.5 ms → 26.6 ms (1.37×)** — diluted
+because that path is rayon-parallel and the search is only part of it.
+
+### 19.2 Where `cd0` lives — measured, and the hypothesis was wrong
+
+§18 closed by suggesting `cd0`'s PSRAM residency as a third lever:
+40 KB per candidate, ~13 MB of reads per candidate across the grid, and
+`internal_pool`'s own doc comment recording ~5–10× for moving exactly
+this kind of hot buffer into internal DRAM on FT8's `cs` scratch.
+
+**Measured: 1.12×.** The arithmetic about byte counts was right; the
+inference that they were the bottleneck was not. After §19.1 the access
+pattern is a sequential `dot_f32` over 2 KB slices, which the S3's PSRAM
+data cache serves well — the earlier code was compute-bound on its
+per-sample complex multiply, not bandwidth-bound, and moving the buffer
+could not fix what was not broken. Worth keeping (it is ~40 KB and it is
+free once reserved at boot), but it is not the lever it looked like.
+
+Note the production path would have to take this buffer through
+`worker_arena` at boot, not allocate it on demand: with WiFi up the
+largest free internal block on this board is 31 744 B.
+
+### 19.3 Combined, on hardware
+
+`ft4-bench`, CoreS3 @ 240 MHz, `opt-level = 3`, single core, same 31
+candidates. Log: `logs/ft4-bench_opt_2026-08-29.log`.
+
+| configuration | search | cumulative |
+|---|---:|---:|
+| §17 baseline | 13 225 ms | 1.00× |
+| + `FlatRef`/`dot_f32` (§19.1) | 4 447 ms | **2.97×** |
+| + `cd0` in internal DRAM (§19.2) | 3 937 ms | 3.36× |
+| + ±0.5 s window (§18) | **2 492 ms** | **5.31×** |
+
+Per-candidate spread stays flat throughout (pass 2: min 142.5 ms, p50
+142.9 ms, max 145.5 ms) — still a fixed grid, just a cheaper one.
+
+**Slot total, production path** (`process_candidate_basic`, which builds
+its own PSRAM `cd0` at the full window, so it carries §19.1 only):
+**17 339 ms → 8 642 ms, 2.01×**, still **11 distinct decodes matching
+the host exactly** at both `DecodeDepth::EMBEDDED` and `FULL`.
+
+Projecting all three onto the stage split gives 2 251 (downsample) +
+2 492 (search) + 1 943 (LLR/BP) = **~6 686 ms against 1 960 ms — 3.4×
+over, down from 8.8×.**
+
+### 19.4 What is left
+
+The search is no longer dominant. The projected split is downsample
+34 % / search 37 % / LLR+BP 29 % — no single term to attack, and
+`downsample_cached` (the 5120-pt inverse FFT plus the 92 160-bin
+extraction and taper, per candidate) has become co-equal. That is the
+stage a DDC front end removes outright rather than speeds up, which is
+the `mfsk_core::ft4::ddc` work FST4 already has the template for
+(`docs/notes/FST4_DDC_DESIGN.md`) — and it would also retire the
+host-baked wideband FFT this bench still depends on.

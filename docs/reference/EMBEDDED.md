@@ -63,14 +63,21 @@ and optimisations land once and apply everywhere.
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — works for FT8 LDPC(174,91) and FST4/uvpacket LDPC(240,101) |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
-| **FT4 / Q65 / JT9 / JT65** | (host f32 only) | ❌ — these protocols don't go through `decode_block` today, and have no embedded path at all yet |
+| **FT4** | (host f32 only) | ❌ — and it does not need to be. FT4 routes through the generic `engine::pipeline`, like FST4; `fixed-point` would be a no-op on that path, and on LX7 it measured *slower* than f32 anyway (issue #198). It now **builds and decodes on hardware** — see [FT4 on embedded](#ft4-on-embedded) below. |
+| **Q65 / JT9 / JT65** | (host f32 only) | ❌ — these are host-only (`fft-rustfft`, therefore `std`) and have no embedded path at all yet |
 
 So: **the trait infrastructure is protocol-agnostic, but the only
 protocol that actually flips into the integer path on the embedded
-build is FT8.** Adding FT4 (next-most-likely candidate, since it
-shares the same Costas/Gray/LDPC pieces) is a port of the
-`decode_block` shape to FT4-specific symbol layout — nothing new
-in the trait layer.
+build is FT8.**
+
+An earlier version of this paragraph said adding FT4 meant "a port of
+the `decode_block` shape to FT4-specific symbol layout". That was
+wrong, and issue #306 is what showed why: the generic
+`engine::pipeline` *is* an embedded route — FST4 reached hardware
+through it without any `decode_block` port, and FT4 has now done the
+same. `decode_block` exists because FT8's own downsample chain needs a
+192 000-point FFT; it is a way around one specific FFT, not the
+definition of "runs on a chip".
 
 WSPR reached embedded by a different route entirely (below), worth
 noting here since the table above could otherwise be read as "only
@@ -1581,6 +1588,142 @@ and embedded's *default* are still allowed to diverge — WSJT-X-fidelity
 and a hard embedded deadline are different questions — but embedded is
 no longer locked out of the fidelity fix if a given deployment can
 afford it.
+
+## FT4 on embedded
+
+**Status (2026-08-29): builds, decodes correctly on hardware, and is
+8.8× over its slot budget.** The bottleneck is a single function.
+
+### What it took to build at all
+
+`ft4 = []` in `mfsk-core/Cargo.toml` has always claimed FT4 is
+backend-agnostic, and it is — `src/ft4/` is 745 lines of trait impls
+and config over `engine::pipeline`, with no `rustfft` and no
+FT8-specific reference anywhere. But no embedded crate had ever
+enabled the feature, and neither `scripts/pre-push-check.sh` nor
+`ci.yml` carried an `alloc ft4 fft-extern` rung, so the claim had
+never been tested. The first `cargo check` against it failed on
+exactly one line — `ft4/subtract.rs`'s `Vec` with no
+`use alloc::vec::Vec;`, byte-for-byte the gap issue #306 found twice
+in FST4. Both matrices now carry the rung.
+
+Two FFT lengths stood between FT4 and a board, both non-power-of-two:
+
+| length | where | resolution |
+|---|---|---|
+| `fft1_size = 92_160` | `build_fft_cache`, once per slot | **baked on host**, fed through `decode_frame`'s `precomputed_fft` seam — the same escape FST4 uses |
+| `fft2_size = 5_120` | `downsample_cached`, once per candidate | `engine::dsp::fft_mixed_5120` — Cooley-Tukey 1024 × 5, reusing the existing `fft_15::fft_5` kernel, the same shape as `fft_mixed_3840`'s 256 × 15 |
+
+`engine::llr::symbol_spectra`'s per-symbol DFT needs no new kernel:
+FT4's `ds_spb = NSPS/NDOWN = 32` is a power of two. (`ft4_coarse_sync`'s
+own `NFFT1 = 2304` = 256 × 9 would need one more wrapper of the same
+shape; the bench bakes the candidate list instead, and that stage is
+0.3 ms of the host slot.)
+
+### The budget
+
+FT4's slot is 7.5 s. Transmission starts at 0.5 s and runs 105 symbols
+× 48 ms = 5.04 s, so the frame ends at 5.54 s and **1.96 s** is left to
+decode in. Unlike WSPR's and FST4's monitor loops — built with
+deliberate slack, where an overrun is a fault — this is the same shape
+of budget FT8's 15 s slot has: genuinely tight, and an overrun is an
+operating limit.
+
+### Measured
+
+`ft4-bench`, M5Stack CoreS3 @ 240 MHz, `opt-level = 3`, single core, no
+WiFi. 31 coarse candidates from the WSJT-X golden `000000_000002.wav`,
+single pass. Log: `embedded-poc/m5stack-cores3-app/logs/
+ft4-bench_clean_2026-08-29.log`.
+
+| stage | total | per candidate | share |
+|---|---:|---:|---:|
+| `downsample_cached` (5120-pt inverse FFT) | 2 252 ms | 72.7 ms | 13 % |
+| **`ft4_sync_search`** | **13 225 ms** | **424 ms** | **76 %** |
+| LLR + BP (`DecodeDepth::EMBEDDED`) | ~1 861 ms | ~60 ms | 11 % |
+| **total, production call** | **17 339 ms** | 559 ms | — |
+| same at `DecodeDepth::FULL` | 19 684 ms | 635 ms | — |
+
+**11 distinct decodes, identical to the host on the same assets**, at
+both depths — so the ship config gives up no recall here, and OSD buys
+nothing on this file. Memory was never in question: 7.47 MB PSRAM and
+240 KB internal DRAM free throughout, and the bench task used 16.7 KB
+of its 96 KB stack.
+
+**17 339 ms against 1 960 ms is 8.8× over.**
+
+### The bottleneck is structural, not statistical
+
+`ft4_sync_search`'s per-candidate cost across all 31: **min 423 835 µs,
+p50 423 897 µs, max 424 684 µs** — a 0.2 % spread. That is the
+signature of a fixed grid, not of anything candidate-dependent:
+`ft4_sync_search_window` walks the same absolute `[-344, 1012]`
+downsampled-sample window for every candidate regardless of its own
+`dt_sec` (a faithful port — WSJT-X's FT4 decoder determines Δt here and
+nowhere else), scoring ~19 900 (Δf, Δt) cells of 4 Costas blocks × 4
+symbols × 32 samples each. That is ~10.2 M complex MACs per candidate,
+and 424 ms of it works out to roughly 10 cycles per complex MAC — a
+scalar f32 inner loop with an on-the-fly phasor rotation.
+
+So the levers are the grid and the arithmetic inside it, and both are
+measurable before either is attempted:
+
+- **`dsps_dotprod_f32_aes3`** (LX7 PIE) on the inner product. The
+  `dotprod-bench` in this crate already measured what PIE is worth on
+  this chip; ~10 cycles/MAC is a long way from what the kernel can do.
+- **Narrowing the window** — **measured on host, 2026-08-29**, see
+  `docs/notes/FT4_BENCHMARK.md` §18. The production window is ±1.0 s,
+  not a full slot (`i0` is downsampled samples; `dt = 0` sits at
+  `i0 = 333`). Two instruments agree on **±0.5 s being free**: on the
+  real off-air golden all 11 decodes survive (their true DTs span
+  −0.44 … +0.30 s) at a measured **1.91×** on the search, and an
+  `ft4sim` DT sweep shows a hard cliff exactly at the window edge —
+  100 % inside, 0 % outside, and *identical* recall column-to-column
+  near threshold wherever the DT is inside. Narrowing costs **reach,
+  not sensitivity**.
+
+### Both levers applied, and a third that measured smaller than it looked
+
+All three are in, measured on the same 31 candidates
+(`logs/ft4-bench_opt_2026-08-29.log`, full account in
+`docs/notes/FT4_BENCHMARK.md` §19):
+
+| configuration | search | cumulative |
+|---|---:|---:|
+| baseline | 13 225 ms | 1.00× |
+| + `FlatRef` / `dot_f32` | 4 447 ms | **2.97×** |
+| + `cd0` in internal DRAM | 3 937 ms | 3.36× |
+| + ±0.5 s window | **2 492 ms** | **5.31×** |
+
+**The arithmetic was the win.** `ft4_sync_search_window` applied its
+frequency shift inside the innermost sample loop, restarting a rotating
+phasor at every `(df, i0)` cell — but that phasor is indexed by offset
+*within the Costas block*, so it was identical across all ~340 `i0`
+positions per `df`. `fst4_sync_search` was already folding it into the
+reference (`FlatRef`), which also leaves a plain inner product that
+`dot_f32` — hence `dsps_dotprod_f32_aes3` — can serve. FT4 now does the
+same. Sensitivity unmoved (all four sweep channels +0.00 dB) and the
+golden's stage counters identical.
+
+**The PSRAM hypothesis was wrong: 1.12×, not the 5–10× predicted.** The
+byte count was right and the inference was not — after the change the
+access is a sequential `dot_f32` over 2 KB slices, which the S3's PSRAM
+cache serves well; the old loop was compute-bound, not bandwidth-bound.
+Kept (40 KB, free once reserved at boot) but it is not a lever. A
+production FT4 mode would need it through `worker_arena` at boot
+regardless: with WiFi up the largest free internal block here is
+31 744 B.
+
+**Slot total, production path: 17 339 ms → 8 642 ms (2.01×)**, still 11
+decodes matching the host at both depths. With all three applied the
+projection is ~6 686 ms against 1 960 ms — **3.4× over, from 8.8×**.
+
+What is left is no longer one thing: downsample 34 % / search 37 % /
+LLR+BP 29 %. `downsample_cached` has become co-equal with the search,
+and that is a stage a DDC front end removes rather than speeds up —
+`mfsk_core::ft4::ddc`, for which FST4 already has the template
+(`docs/notes/FST4_DDC_DESIGN.md`), and which would also retire the
+host-baked wideband FFT this bench still depends on.
 
 ## Live UAC bring-up — what to check, in what order (issue #163)
 

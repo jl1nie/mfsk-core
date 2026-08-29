@@ -9,6 +9,99 @@ cadence".
 
 ### Added
 
+- **FT4 runs on hardware for the first time, and does not yet fit.**
+  `docs/reference/EMBEDDED.md` said FT4 had "no embedded path at all
+  yet"; no embedded crate enabled `mfsk-core/ft4`, and neither
+  `scripts/pre-push-check.sh` nor CI carried an `alloc ft4 fft-extern`
+  rung, so the `ft4 = []` feature's long-standing claim that FT4 is
+  backend-agnostic had never been tested. It was very nearly true: the
+  first build failed on one missing `use alloc::vec::Vec;` in
+  `ft4/subtract.rs`, the same latent gap issue #306 found twice in
+  FST4. Both feature matrices now carry the rung.
+
+  Getting a candidate decoded on an ESP32-S3 needed one new FFT:
+  `engine::dsp::fft_mixed_5120` (Cooley-Tukey 1024 × 5, reusing the
+  existing `fft_15::fft_5` kernel and shaped exactly like
+  `fft_mixed_3840`'s 256 × 15) serves `downsample_cached`'s
+  per-candidate `fft2_size = 5120` inverse transform, which is not a
+  power of two and so had no radix-2 kernel. The once-per-slot
+  `fft1_size = 92_160` transform is baked on the host and fed through
+  `decode_frame`'s existing `precomputed_fft` seam, as FST4 does.
+
+  New `ft4-bench` bin on the CoreS3 measures the per-candidate work
+  against the 1.96 s an FT4 slot leaves after the frame ends.
+  **Measured 2026-08-29, 31 candidates from the WSJT-X golden: 17 339
+  ms, 8.8× over budget, with 11 decodes matching the host exactly at
+  both `DecodeDepth::EMBEDDED` and `FULL`.** `ft4_sync_search` is 76 %
+  of it (13 225 ms) at a 0.2 % spread across candidates — a fixed
+  ~19 900-cell grid, not anything candidate-dependent. Memory was never
+  the constraint: 7.47 MB PSRAM free throughout. Full account in
+  `docs/reference/EMBEDDED.md` "FT4 on embedded" and
+  `docs/notes/FT4_BENCHMARK.md` §17.
+
+- **What narrowing FT4's Δt search window costs: nothing, up to
+  ±0.5 s.** `ft4_sync_search`'s cost is set by its Δt window alone, and
+  the production window turns out to be ±1.0 s rather than the full
+  slot it reads as (`i0` counts downsampled samples; `dt = 0` sits at
+  `i0 = 333`). WSJT-X searches that wide because it cannot assume a
+  clock; a UTC-anchored receiver can. Two new host diagnostics measure
+  the trade: `ft4_diag_sync_window_recall`
+  (`tests/ft4_wsjtx_samples.rs`) on the real off-air golden, and
+  `ft4_diag_dt_window_reach` (`tests/ft4_sweep.rs`) on a DT-swept
+  `ft4sim` corpus.
+
+  **±0.5 s keeps all 11 golden decodes** — whose true DTs span
+  −0.44 … +0.30 s — at a measured **1.91×** on the search, and the DT
+  sweep shows a hard cliff exactly at the window edge: 100 % inside,
+  0 % outside, with recall *identical* column-to-column near threshold
+  wherever the DT is inside. Narrowing costs reach, not sensitivity.
+  Applied to the device numbers that is 8.8× over budget → 5.7× over:
+  necessary, not sufficient.
+
+  The DT sweep deliberately does not use the tier-C corpus:
+  `gen_ft4_sweep_wavs.sh` fixes `DT=0.0`, so every signal in it sits
+  dead centre of every window under test and it would have reported no
+  loss at any width — a property of the fixture, not the decoder. See
+  `docs/notes/FT4_BENCHMARK.md` §18.
+
+### Changed
+
+- **`ft4_sync_search` rebuilt its frequency-shift phasor once per grid
+  cell, and did not need to.** The shift was applied to `cd0` inside
+  the innermost sample loop as a rotating phasor restarted at every
+  `(df, i0)` cell — but `twid[n] = step^n` is indexed by the offset
+  *within the Costas block*, not by `i0`, so it was identical across
+  all ~340 `i0` positions each `df` sweeps. `fst4_sync_search` already
+  folded it into the reference (`FlatRef`), which also leaves a plain
+  inner product that `dot_f32` — and so `dotprod-extern`'s
+  `dsps_dotprod_f32_aes3` on LX7 — can serve; FT4 now uses the same
+  machinery. The identity was already recorded in this function's own
+  comment ("the same dot product as twiddling each sample of `cd0` in
+  place"); nothing new was derived.
+
+  Not bit-identical (the products reassociate, and `FlatRef::fill`
+  evaluates the phasor per sample instead of accumulating a recurrence,
+  so it carries *less* rounding error). Verified before landing: golden
+  14/14 total / 6/6 / 0 phantoms unchanged, every stage counter
+  identical on all three SIC passes, and
+  `run-sensitivity-sweeps.sh ft4` **+0.00 dB on all four channels**
+  (160 trials each).
+
+  **Host**: `ft4_sync_search` over 31 candidates 76.6 → 27.9 ms
+  (2.75×); golden 3-pass `decode_loop` 36.5 → 26.6 ms (1.37×).
+  **CoreS3**: search 13 225 → 4 447 ms (2.97×), and the production
+  slot total 17 339 → 8 642 ms (2.01×) with the same 11 decodes.
+
+  Stacking the ±0.5 s window from the entry above and a 40 KB
+  internal-DRAM `cd0` buffer takes the search to 2 492 ms — **5.31×
+  cumulative**, and the slot from 8.8× over budget to ~3.4× over. The
+  `cd0` placement was expected to be worth 5–10× on `internal_pool`'s
+  precedent and **measured 1.12×**: the byte count was right, the
+  inference that it was the bottleneck was not. The search is no longer
+  dominant (downsample 34 % / search 37 % / LLR+BP 29 %), which points
+  the next work at `ft4::ddc` rather than at more of this. See
+  `docs/notes/FT4_BENCHMARK.md` §19.
+
 - **ハムフェア2026 booth material** (`docs/presentations/hamfair2026/`)
   — a ten-page A4-landscape flipchart and a two-page A4 leaflet for
   demonstrating the M5Stack CoreS3 receiver at the show. Most visitors are operators rather than
