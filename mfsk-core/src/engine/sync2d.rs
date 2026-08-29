@@ -417,7 +417,8 @@ pub fn ft4_sync_search_window<P: Protocol>(
     let ds_rate = d.ds_rate;
     const COARSE_DT_STEP: i32 = 4;
 
-    let blocks_ref: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
+    // Pre-built phase-continuous references, one per Costas block.
+    let flat_blocks: Vec<(i32, Vec<Complex<f32>>)> = P::SYNC_MODE
         .blocks()
         .iter()
         .map(|b| {
@@ -426,85 +427,67 @@ pub fn ft4_sync_search_window<P: Protocol>(
         })
         .collect();
 
-    // Twiddle on the fly inside the score rather than materialising a
-    // fresh `Vec<Complex<f32>>` per block per (Δf, Δt) grid cell — the
-    // coarse+fine passes below evaluate ~19,900 cells, so a per-cell
-    // twiddled-reference allocation added up to ~90 heap allocations
-    // per `ft4_sync_search_window` call (Gemini PR review). FST4's own
-    // search materialises its references instead, because it reuses
-    // each one across 84 time positions and wants them in the layout
-    // `dot_f32` reads — see `FlatRef`.
-    // Mathematically identical: `score_flat_coherent` on a pre-twiddled
-    // reference is the same dot product as twiddling each sample of
-    // `cd0` in place here.
-    // `df` is constant across all samples in a block, so the per-sample
-    // twiddle phasor is a fixed rotation `step = exp(iω)` applied
-    // incrementally (one complex multiply per sample) rather than
-    // recomputing `cos`/`sin` from scratch at every sample — same
-    // values, ~128x fewer transcendental calls per `score_at` call
-    // (Gemini PR review, second pass after the allocation fix above).
-    // `step`/`has_df` themselves are hoisted one level further out (per
-    // `df`, not per `(i0, df)` cell) by the two loops below — `df` only
-    // changes in the outer loop, so recomputing them inside `score_at`
-    // on every inner-loop `i0` was still >99% redundant `cos`/`sin`
-    // calls (Gemini PR review, third pass).
-    let score_at = |i0: i32, step: Complex<f32>, has_df: bool| -> f32 {
-        blocks_ref
+    // Scratch for the carrier-shifted references, allocated once and
+    // refilled per `df` — the same `FlatRef` machinery
+    // `fst4_sync_search` uses, adopted here 2026-08-29 after the first
+    // FT4 hardware measurement put this function at 76% of a slot
+    // budget it overran 8.8x (`docs/notes/FT4_BENCHMARK.md` §17).
+    //
+    // What changed, and why it is the same arithmetic: this loop used
+    // to apply the frequency shift to `cd0` *inside* the innermost
+    // sample loop, as a rotating phasor (`twid *= step`) restarted at
+    // every `(df, i0)` cell. But `twid[n] = step^n` is indexed by the
+    // offset **within the block**, not by `i0` — so it is identical
+    // across the ~340 `i0` positions each `df` sweeps, and rebuilding
+    // it per cell was that many times redundant. Folding it into the
+    // reference instead (`FlatRef::fill`) hoists it out of the `i0`
+    // loop entirely and leaves a plain complex inner product, which is
+    // what `dot_f32` — and therefore `dotprod-extern`'s
+    // `dsps_dotprod_f32_aes3` on LX7 — can serve. This function's own
+    // earlier comment already recorded the identity ("the same dot
+    // product as twiddling each sample of `cd0` in place"); FST4 was
+    // simply on the right side of it and FT4 was not.
+    //
+    // **Not bit-identical**, deliberately: the products reassociate
+    // (`c*conj(r)*twid` becomes `c*conj(r*e^{jp})`), and `fill`
+    // evaluates the phasor per sample instead of accumulating a
+    // recurrence, so it carries *less* rounding error, not more.
+    // Verified against the WSJT-X golden and the full AWGN/CCIR sweep
+    // before landing — see `docs/notes/FT4_BENCHMARK.md` §19.
+    let mut twiddled: Vec<(i32, FlatRef)> = flat_blocks
+        .iter()
+        .map(|(off, flat)| (*off, FlatRef::with_len(flat.len())))
+        .collect();
+
+    let score_flat = |twiddled: &Vec<(i32, FlatRef)>, i0: i32| -> f32 {
+        twiddled
             .iter()
-            .map(|(off, flat)| {
-                let cd0_start = i0 + off;
-                let np = cd0.len() as i32;
-                let len = flat.len() as i32;
-                if cd0_start < 0 || cd0_start + len > np {
-                    return 0.0;
-                }
-                let s0 = cd0_start as usize;
-                if !has_df {
-                    let z: Complex<f32> = cd0[s0..s0 + len as usize]
-                        .iter()
-                        .zip(flat.iter())
-                        .map(|(&c, &r)| c * r.conj())
-                        .sum();
-                    z.norm()
-                } else {
-                    let mut twid = Complex::new(1.0f32, 0.0f32);
-                    let z: Complex<f32> = cd0[s0..s0 + len as usize]
-                        .iter()
-                        .zip(flat.iter())
-                        .map(|(&c, &r)| {
-                            let val = c * r.conj() * twid;
-                            twid *= step;
-                            val
-                        })
-                        .sum();
-                    z.norm()
-                }
-            })
+            .map(|(off, flat)| score_flat_coherent(cd0, flat, i0 + off))
             .sum::<f32>()
+    };
+
+    // `FlatRef::fill` applies `e^{+j.2pi.df.n/ds_rate}` to the reference
+    // and `score_flat_coherent` conjugates it, giving
+    // `sum c[n].conj(r[n]).e^{-j.2pi.df.n/ds_rate}` — exactly the sign
+    // convention the replaced `phasor_for` used
+    // (`omega = -2pi.df/ds_rate`).
+    let retwiddle = |twiddled: &mut Vec<(i32, FlatRef)>, df: f32| {
+        for ((_, dst), (_, src)) in twiddled.iter_mut().zip(flat_blocks.iter()) {
+            dst.fill(src, df, ds_rate);
+        }
     };
 
     let mut best_df = 0.0f32;
     let mut best_i0 = ((candidate.dt_sec + P::TX_START_OFFSET_S) * ds_rate).round() as i32;
     let mut best_score = f32::NEG_INFINITY;
 
-    let phasor_for = |df: f32| -> (Complex<f32>, bool) {
-        let has_df = df.abs() >= f32::EPSILON;
-        let step = if has_df {
-            let omega = -2.0 * PI * df / ds_rate;
-            Complex::new(omega.cos(), omega.sin())
-        } else {
-            Complex::new(1.0f32, 0.0f32)
-        };
-        (step, has_df)
-    };
-
     let mut idf = -12i32;
     while idf <= 12 {
         let df = idf as f32;
-        let (step, has_df) = phasor_for(df);
+        retwiddle(&mut twiddled, df);
         let mut i0 = ib_min;
         while i0 <= ib_max {
-            let s = score_at(i0, step, has_df);
+            let s = score_flat(&twiddled, i0);
             if s > best_score {
                 best_score = s;
                 best_df = df;
@@ -522,10 +505,10 @@ pub fn ft4_sync_search_window<P: Protocol>(
 
     for si in -4i32..=4 {
         let df = coarse_winner_df + si as f32;
-        let (step, has_df) = phasor_for(df);
+        retwiddle(&mut twiddled, df);
         for di in -5i32..=5 {
             let i0 = coarse_winner_i0 + di;
-            let s = score_at(i0, step, has_df);
+            let s = score_flat(&twiddled, i0);
             if s > best_score {
                 best_score = s;
                 best_df = df;
