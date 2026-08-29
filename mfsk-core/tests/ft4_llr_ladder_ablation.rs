@@ -438,6 +438,30 @@ fn ft4_llr_ladder_ablation_across_the_crossing() {
          not a wall-clock."
     );
 
+    // Per-cell, for the two configs that bracket the OSD question —
+    // 56 decodes is not a currency anything else in this file is
+    // quoted in, and a per-SNR breakdown converts it into one.
+    for (label, ci) in [("FULL (abcd+OSD)", 0usize), ("EMBEDDED (abcd)", 5)] {
+        eprintln!("\n{label}: recall of {TRIALS} per cell");
+        eprint!("{:<16}", "channel");
+        for t in TAGS {
+            eprint!("{t:>5}");
+        }
+        eprintln!();
+        for (chi, ch) in CHANNELS.iter().enumerate() {
+            eprint!("{ch:<16}");
+            for ti in 0..TAGS.len() {
+                let base = (chi * TAGS.len() + ti) * TRIALS as usize;
+                let n = per_file[base..base + TRIALS as usize]
+                    .iter()
+                    .filter(|f| f.1.get(ci).is_some_and(|c| c.0))
+                    .count();
+                eprint!("{n:>5}");
+            }
+            eprintln!();
+        }
+    }
+
     assert!(
         full_hits > 0,
         "the FULL config decoded nothing — harness is broken"

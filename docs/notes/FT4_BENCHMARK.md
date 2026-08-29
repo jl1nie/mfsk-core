@@ -1356,6 +1356,25 @@ Three findings, in order of size:
   against 8 642 ms at `EMBEDDED` over 31 candidates, i.e. ~2 345 ms of
   OSD, which at 12 candidates is ~900 ms of a 1 960 ms budget.
 
+  56 decodes is not a currency the rest of this file is quoted in, so
+  the per-cell recall converts it. Interpolating each channel's 50 %
+  crossing from the tables in §22.4:
+
+  | channel | `FULL` | `EMBEDDED` | OSD is worth |
+  |---|---:|---:|---:|
+  | awgn | −16.89 dB | −16.62 dB | 0.27 dB |
+  | ccir_good | −17.42 dB | −17.00 dB | 0.42 dB |
+  | ccir_moderate | −15.67 dB | −14.75 dB | 0.92 dB |
+  | ccir_poor | −16.00 dB | −14.33 dB | **1.67 dB** |
+
+  The `FULL` column reproduces `sweep-baseline.json`'s stored crossings
+  (−16.89 / −17.46 / −15.71 / −16.00) to within 0.04 dB from a
+  completely separate harness, which is the check that the numbers
+  above mean what they say. **OSD is a fading-channel stage**: a
+  quarter of a dB on AWGN, most of two dB on CCIR-poor. An embedded
+  FT4 receiver that drops it to fit the budget is trading roughly
+  0.3-1.7 dB depending on the path, not a uniform 25 %.
+
 ### 22.2 Dropping `llrd` for FT4 is a fidelity fix, not a trade
 
 WSJT-X's FT4 decoder has no fourth *blind* variant.
@@ -1371,6 +1390,24 @@ So `process_candidate_basic_impl` now skips the blind `llrd` rung when
 Verified: golden 11/14 single-pass and 14/14 with SIC unchanged, zero
 phantoms; the ablation above; and `run-sensitivity-sweeps.sh ft4`
 **+0.00 dB on all four channels** (160 trials each).
+
+### 22.4 Per-cell recall behind the OSD number
+
+Recall of 20 trials per cell, same 560 files:
+
+```text
+FULL (abcd+OSD)          m14  m15  m16  m17  m18  m19  m20
+awgn                      20   20   18    9    5    1    0
+ccir_good                 20   20   19   15    3    0    0
+ccir_moderate             19   14    8    3    3    0    0
+ccir_poor                 17   11   10    0    0    0    0
+
+EMBEDDED (abcd)          m14  m15  m16  m17  m18  m19  m20
+awgn                      20   20   18    5    2    0    0
+ccir_good                 20   20   15   10    0    0    0
+ccir_moderate             16    8    2    2    0    0    0
+ccir_poor                 12    6    3    0    0    0    0
+```
 
 ### 22.3 A stale claim, corrected
 
