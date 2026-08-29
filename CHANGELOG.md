@@ -104,6 +104,22 @@ cadence".
   `NFFT1 = 2304` is still baked; a `fft_mixed_2304` (256 × 9) would
   close that without any DDC. See `docs/notes/FT4_BENCHMARK.md` §20.
 
+- **`engine::dsp::fft_mixed_2304` — the last non-power-of-two length in
+  FT4's path.** `ft4_coarse_sync` runs a Nuttall-windowed
+  `NFFT1 = 4·NSPS = 2304`-point transform over every one-symbol step of
+  the slot (~152 per slot), and 2304 = 2⁸·3² has no radix-2 kernel, so
+  the CoreS3 bench shipped a candidate *list* baked on a host. Third
+  member of the `fft_mixed_3840` / `fft_mixed_5120` family and built the
+  same way — 256 × 9 Cooley-Tukey, the power-of-two factor served by the
+  external backend, the 9-point factor a further 3 × 3 over the existing
+  `fft_15::fft_3`. `EspDspPlanner` wires both directions.
+
+  Verified against rustfft (the 9-point kernel alone, then the full
+  transform forward and inverse on impulse and pseudorandom input) plus
+  a single-tone test across seven bins spanning both index dimensions —
+  the impulse test cannot see a transposition error and a tone can.
+  Nothing has run it on hardware; the bench still reads the baked list.
+
 ### Changed
 
 - **`ft4_sync_search` rebuilt its frequency-shift phasor once per grid

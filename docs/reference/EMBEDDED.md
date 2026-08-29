@@ -1619,9 +1619,9 @@ Two FFT lengths stood between FT4 and a board, both non-power-of-two:
 
 `engine::llr::symbol_spectra`'s per-symbol DFT needs no new kernel:
 FT4's `ds_spb = NSPS/NDOWN = 32` is a power of two. (`ft4_coarse_sync`'s
-own `NFFT1 = 2304` = 256 × 9 would need one more wrapper of the same
-shape; the bench bakes the candidate list instead, and that stage is
-0.3 ms of the host slot.)
+own `NFFT1 = 2304` = 256 × 9 needed one more wrapper of the same shape;
+`engine::dsp::fft_mixed_2304` is it, added 2026-08-30 — the bench still
+bakes the candidate list, and that stage is 0.3 ms of the host slot.)
 
 ### The budget
 
@@ -1770,8 +1770,11 @@ DDC 238**, five disagreements split three/two. The swap costs 0.0 dB.
 measurement (the ~2.3 M complex MACs per candidate is arithmetic, and
 this section's own PSRAM hypothesis is what arithmetic about cost is
 worth); no esp-dsp binding for `FirStage::push_block`
-(`dsps_fird_f32_aes3`); and `ft4_coarse_sync`'s `NFFT1 = 2304` is still
-baked — a `fft_mixed_2304` (256 × 9) would close that without any DDC.
+(`dsps_fird_f32_aes3`); and although `ft4_coarse_sync`'s
+`NFFT1 = 2304` now has a kernel of its own
+(`engine::dsp::fft_mixed_2304`, 256 × 9, wired into `EspDspPlanner`),
+the bench still reads its baked candidate list, so no device run has
+exercised it.
 Like `fst4::ddc`, this is a building block callers reach for, not a
 feature flag that swaps the host's front end.
 

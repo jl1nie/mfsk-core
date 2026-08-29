@@ -1192,12 +1192,15 @@ Every disagreement is in a cell already sitting on its own crossing.
 - **No esp-dsp FIR backend.** `FirStage::push_block` exists
   (`FST4_DDC_DESIGN.md` §4.5) but nothing binds `dsps_fird_f32_aes3`
   yet, so a device run today would use the scalar path.
-- **The coarse stage is untouched.** `ft4_coarse_sync`'s
-  `NFFT1 = 2304` (= 256·9) is still not a power of two, and the bench
-  still bakes the candidate list. It is 0.3 ms on host, so it is a
-  feasibility gap rather than a budget one — and a `fft_mixed_2304`
-  (256 × 9, the same shape as the existing `fft_mixed_3840` and
-  `fft_mixed_5120`) would close it without any DDC at all.
+- **The coarse stage now has a kernel, and no device run has used
+  it.** `ft4_coarse_sync`'s `NFFT1 = 2304` (= 256·9) was the last
+  non-power-of-two length; `engine::dsp::fft_mixed_2304` serves it the
+  same way `fft_mixed_5120` serves the per-candidate inverse (256 × 9
+  Cooley-Tukey, the 9-point factor a further 3 × 3 over `fft_15::
+  fft_3`), and `EspDspPlanner` wires both directions. The bench still
+  reads its baked candidate list, so nothing has exercised it on
+  hardware. Host cost of the stage is 0.3 ms; on the S3 the ~152
+  transforms per slot are the number to measure.
 - **Not wired into `decode_frame`.** Same choice `fst4::ddc` made: a
   library building block callers reach for, not a feature flag that
   silently swaps the host's front end.
