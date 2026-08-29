@@ -11,8 +11,8 @@
       },
       "ft4": {
         "date": "2026-08-30",
-        "commit": "8102bdf",
-        "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "commit": "b27bea0",
+        "machine": "AMD Ryzen 9 9900X 12-Core Processor",
         "trials": 640,
         "groups": 4
       },
