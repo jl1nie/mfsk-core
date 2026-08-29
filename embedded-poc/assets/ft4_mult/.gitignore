@@ -1,0 +1,4 @@
+# ft4sim_mult-generated crowded-band WAVs and their ground truth —
+# regenerate with scripts/gen_ft4_mult_wavs.sh
+*.wav
+manifest.tsv

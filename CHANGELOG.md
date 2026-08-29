@@ -151,6 +151,41 @@ cadence".
   OSD costs about a quarter of the recall an embedded receiver would
   otherwise have. See `docs/notes/FT4_BENCHMARK.md` §21.
 
+### Added
+
+- **A crowded-band FT4 corpus, and what it says about the embedded
+  budget.** Every FT4 measurement in this crate had been made on either
+  one real recording or a corpus with exactly one signal per slot at
+  `DT = 0.0`. FT4 is a contest mode. `scripts/build_ft4sim.sh` now also
+  links WSJT-X's own multi-signal simulator (`lib/ft4/ft4sim_mult.f90`)
+  and `scripts/gen_ft4_mult_wavs.sh` builds a corpus from it: 3
+  occupancies × 50 slots × (10/20/30) signals, each at its own SNR and
+  frequency and a random DT in ±0.5 s, with a `manifest.tsv` of ground
+  truth — 3 000 signals in 22 MB, generated in under 3 s. New test:
+  `tests/ft4_crowded_band.rs`.
+
+  Three results, in order of how much they change:
+
+  - **The candidate count that the embedded budget projection was built
+    on is a quiet-band number.** The golden's 12 corresponds to ~15
+    signals in the band; 20-30 signals give 15-18 on average and up to
+    25, and the decodes reach rank 22-24 — so `max_cand = 12` would
+    truncate real signals. The projected slot goes from "inside the
+    1 960 ms budget" to **1.2-1.7× over** at contest occupancy.
+  - **In a crowded band the limit is interference, not sensitivity.** A
+    signal at +5 dB — 22 dB above FT4's own threshold — decodes 30 % of
+    the time at occupancy 30 without SIC and 91 % with it. Totals:
+    75/57/43 % single-pass against 87/74/58 % with `sic_rounds(2)` at
+    occupancy 10/20/30. An embedded receiver has no subtract path, so
+    this is a larger effect on a busy band than every optimisation in
+    `docs/notes/FT4_BENCHMARK.md` §19-22 combined.
+  - **Zero phantoms**, 0 of 3 635 decodes across both arms — the first
+    precision measurement FT4 has had beyond the single golden file.
+
+  What the corpus still cannot see is written down with it: no fading,
+  an SNR floor of −17 dB, DT confined to ±0.5 s, and synthetic mixing.
+  See `docs/notes/FT4_BENCHMARK.md` §23.
+
 ### Changed
 
 - **FT4 no longer climbs the blind `llrd` rung — a fidelity fix that is

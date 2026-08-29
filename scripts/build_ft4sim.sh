@@ -111,6 +111,28 @@ gfortran "${FFLAGS[@]}" \
   "$LIB/ft4/ft4sim.f90" \
   -o "$OUT_DIR/ft4sim" -lfftw3f -lm -lstdc++
 
+# `ft4sim_mult` is the *multi-signal* sibling: it reads a `messages.txt`
+# of (SNR, DT, frequency, message) rows and lays several signals into
+# one slot, each at its own SNR and a **random DT in +/-0.5 s**. Same
+# objects, one more link step.
+#
+# Why it is worth building: `ft4sim` puts exactly one signal in a slot
+# at DT=0.0, which makes it blind to every question about a *crowded*
+# band -- candidate counts, ranking depth, phantom decodes -- and to
+# timing spread (see `docs/notes/FT4_BENCHMARK.md` sections 18 and 21.2,
+# where both gaps bit).
+echo "  [link] ft4sim_mult"
+gfortran "${FFLAGS[@]}" \
+  wavhdr.o prog_args.o crc.o crc14.o sgran.o init_random_seed.o \
+  deg2grid.o grid2deg.o fmtmsg.o chkcall.o \
+  packjt.o packjt77.o \
+  gfsk_pulse.o fftw3mod.o four2a.o \
+  encode174_91.o gen_ft4wave.o genft4.o watterson.o gran.o \
+  "$LIB/ft4/ft4sim_mult.f90" \
+  -o "$OUT_DIR/ft4sim_mult" -lfftw3f -lm -lstdc++
+
 echo ""
 echo "Built: $OUT_DIR/ft4sim"
-echo "Run 'scripts/gen_ft4_sweep_wavs.sh' to generate the SNR sweep WAV corpus."
+echo "Built: $OUT_DIR/ft4sim_mult"
+echo "Run 'scripts/gen_ft4_sweep_wavs.sh' to generate the SNR sweep WAV corpus,"
+echo "or 'scripts/gen_ft4_mult_wavs.sh' for the crowded-band corpus."
