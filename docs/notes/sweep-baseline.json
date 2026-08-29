@@ -10,9 +10,10 @@
         "groups": 20
       },
       "ft4": {
-        "date": "2026-08-20",
-        "commit": "c757d32",
+        "date": "2026-08-30",
+        "commit": "8102bdf",
         "machine": "AMD Ryzen 9 9900X (12C/24T), Ubuntu 24.04 under WSL2",
+        "trials": 640,
         "groups": 4
       },
       "ft8": {
