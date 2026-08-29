@@ -555,3 +555,244 @@ fn ft4_bake_golden_precomputed() {
         eprintln!("{label}: {} distinct decodes {:?}", fresh.len(), fresh);
     }
 }
+
+/// Recall cost of narrowing `ft4_sync_search`'s Δt window, on the real
+/// off-air golden.
+///
+/// **Why this question exists.** The first FT4 hardware measurement
+/// (`docs/notes/FT4_BENCHMARK.md` §17) put `ft4_sync_search` at 76 % of
+/// a per-slot budget it overran 8.8×, at a 0.2 % spread across
+/// candidates — a fixed grid, so its cost is set by the window width
+/// alone. WSJT-X searches wide because it cannot assume a clock; a
+/// UTC-anchored receiver can. What that trade costs in recall is a
+/// measurement, not a judgement call.
+///
+/// **Window arithmetic.** `i0` counts downsampled samples at
+/// `ds_rate = 12_000/NDOWN = 666.67 Hz`, and
+/// `dt = i0/ds_rate − TX_START_OFFSET_S`, so `dt = 0` sits at
+/// `i0 = 333`. Production's `[-344, 1012]` is therefore **±1.0 s**, not
+/// a full slot. Coarse cost is `9 × ceil(n_i0 / COARSE_DT_STEP)` cells;
+/// the ±4 df × ±5 i0 fine pass (99 cells) is fixed regardless.
+///
+/// **Why this file and not `ft4_sweep.rs`.** The tier-C corpus is
+/// generated with `DT=0.0` (`scripts/gen_ft4_sweep_wavs.sh`), so every
+/// signal in it sits dead centre of every window under test — it would
+/// report zero recall loss at any width, which is an artefact of the
+/// fixture, not a property of the decoder. This recording is real
+/// off-air capture: its 14 signals carry the DT spread a receiver
+/// actually sees.
+///
+/// Run:
+/// `cargo test -p mfsk-core --features full,internal-testing --release \
+///  --test ft4_wsjtx_samples ft4_diag_sync_window_recall -- --ignored --nocapture`
+#[test]
+#[ignore = "diagnostic — prints a recall-vs-window table, asserts only the control"]
+#[cfg(feature = "internal-testing")]
+fn ft4_diag_sync_window_recall() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_basic, process_candidate_precomputed,
+    };
+    use mfsk_core::engine::sync2d::ft4_sync_search_window;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+
+    use bench_assets::*;
+
+    // `Ft4::NDOWN`, kept literal so the arithmetic above is checkable
+    // without chasing the trait.
+    const DS_RATE: f32 = 12_000.0 / 18.0;
+    const TX_START_OFFSET_S: f32 = 0.5;
+    /// `ft4_sync_search`'s own hardcoded window, the control.
+    const FULL: (i32, i32) = (-344, 1012);
+    /// `COARSE_DT_STEP` × the 9 `df` values the coarse pass sweeps.
+    fn coarse_cells(ib: (i32, i32)) -> i32 {
+        9 * ((ib.1 - ib.0) / 4 + 1) + 99
+    }
+    fn window_for(half_s: f32) -> (i32, i32) {
+        let lo = ((-half_s + TX_START_OFFSET_S) * DS_RATE).round() as i32;
+        let hi = ((half_s + TX_START_OFFSET_S) * DS_RATE).round() as i32;
+        (lo, hi)
+    }
+
+    let Some(path) = sample_path() else {
+        eprintln!("FT4 golden not found — skipping");
+        return;
+    };
+    let raw = read_wsjtx_wav_i16(&path).expect("WAV must be 12 kHz mono PCM-16");
+    let mut audio = vec![0i16; SLOT_SAMPLES];
+    let copy = raw.len().min(SLOT_SAMPLES);
+    audio[..copy].copy_from_slice(&raw[..copy]);
+
+    let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
+    let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+
+    // Production path, for the control assertion below.
+    let mut production: Vec<(String, f32)> = candidates
+        .iter()
+        .filter_map(|cand| {
+            let r = process_candidate_basic::<Ft4>(
+                cand,
+                &fft_cache,
+                &FT4_DOWNSAMPLE,
+                DecodeDepth::EMBEDDED,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                SYNC_Q_MIN,
+            )?;
+            let m77: &[u8; 77] = r.message77().try_into().ok()?;
+            Some((unpack77(m77)?, r.dt_sec))
+        })
+        .collect();
+    production.sort_by(|a, b| a.0.cmp(&b.0));
+    production.dedup_by(|a, b| a.0 == b.0);
+
+    // Per-window run, substituting the windowed search for
+    // `process_candidate_basic`'s own internal call and handing the
+    // result back through `precomputed_refine` — the same seam
+    // `dedup_refined_candidates` uses, so everything downstream of
+    // refine is byte-for-byte the production path.
+    let run = |ib: (i32, i32)| -> Vec<(String, f32)> {
+        let mut out: Vec<(String, f32)> = candidates
+            .iter()
+            .filter_map(|cand| {
+                let mut cd0 = downsample_cached(&fft_cache, cand.freq_hz, &FT4_DOWNSAMPLE);
+                let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+                if sum2 > f32::EPSILON {
+                    let inv = 1.0 / sum2.sqrt();
+                    for c in cd0.iter_mut() {
+                        *c *= inv;
+                    }
+                }
+                let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, ib.0, ib.1);
+                let r = process_candidate_precomputed::<Ft4>(
+                    cand,
+                    &fft_cache,
+                    &FT4_DOWNSAMPLE,
+                    DecodeDepth::EMBEDDED,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    SYNC_Q_MIN,
+                    (cd0, s2.freq_hz, s2.i0, s2.score),
+                    false,
+                    false,
+                )?;
+                let m77: &[u8; 77] = r.message77().try_into().ok()?;
+                Some((unpack77(m77)?, r.dt_sec))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out.dedup_by(|a, b| a.0 == b.0);
+        out
+    };
+
+    // Control: the full window through this harness must reproduce the
+    // production path exactly. Without this the table below would be
+    // measuring the harness, not the window.
+    let control = run(FULL);
+    let control_msgs: Vec<&str> = control.iter().map(|(m, _)| m.as_str()).collect();
+    let production_msgs: Vec<&str> = production.iter().map(|(m, _)| m.as_str()).collect();
+    assert_eq!(
+        control_msgs, production_msgs,
+        "the windowed harness at the production window must decode exactly what \
+         `process_candidate_basic` does — otherwise the recall-vs-window table \
+         below is measuring the harness"
+    );
+
+    eprintln!(
+        "\nFT4 Δt-window recall, {} ({} coarse candidates, DecodeDepth::EMBEDDED)",
+        path.file_name().unwrap().to_string_lossy(),
+        candidates.len()
+    );
+    eprintln!(
+        "baseline window {FULL:?} = ±1.0 s, {} coarse cells",
+        coarse_cells(FULL)
+    );
+    eprintln!(
+        "\n{:>8}  {:>14}  {:>7}  {:>8}  {:>9}  {:>7}  lost",
+        "half-dt", "i0 window", "cells", "pred x", "search ms", "decodes"
+    );
+
+    // Wall-clock of `ft4_sync_search_window` alone, summed over all
+    // candidates — so the speedup column is measured rather than
+    // inferred from the cell count. `downsample_cached` is excluded
+    // (it is outside the loop the window controls) and the cd0 buffers
+    // are prepared once up front so the timing is the search only.
+    let cd0s: Vec<Vec<num_complex::Complex32>> = candidates
+        .iter()
+        .map(|cand| {
+            let mut cd0 = downsample_cached(&fft_cache, cand.freq_hz, &FT4_DOWNSAMPLE);
+            let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
+            if sum2 > f32::EPSILON {
+                let inv = 1.0 / sum2.sqrt();
+                for c in cd0.iter_mut() {
+                    *c *= inv;
+                }
+            }
+            cd0
+        })
+        .collect();
+    let time_search = |ib: (i32, i32)| -> f64 {
+        // Three passes, best-of — this is a ~10 ms measurement on a
+        // busy box and a single reading is mostly scheduler noise.
+        (0..3)
+            .map(|_| {
+                let t0 = std::time::Instant::now();
+                let mut sink = 0i64;
+                for (cand, cd0) in candidates.iter().zip(cd0s.iter()) {
+                    sink += ft4_sync_search_window::<Ft4>(cd0, cand, ib.0, ib.1).i0 as i64;
+                }
+                std::hint::black_box(sink);
+                t0.elapsed().as_secs_f64() * 1000.0
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+
+    let base_cells = coarse_cells(FULL) as f32;
+    let base_ms = time_search(FULL);
+    // The `±1.00s` row re-times the same window, so its measured ratio
+    // is this column's own repeatability, not a speedup — read it as
+    // the noise floor for every row below it.
+    eprintln!(
+        "baseline search {base_ms:.1} ms over {} candidates (the ±1.00s row re-measures it)",
+        candidates.len()
+    );
+    for half_s in [1.0f32, 0.75, 0.5, 0.375, 0.3, 0.25, 0.2, 0.15, 0.1] {
+        let ib = if (half_s - 1.0).abs() < 1e-6 {
+            FULL
+        } else {
+            window_for(half_s)
+        };
+        let got = run(ib);
+        let got_msgs: Vec<&str> = got.iter().map(|(m, _)| m.as_str()).collect();
+        let lost: Vec<String> = control
+            .iter()
+            .filter(|(m, _)| !got_msgs.contains(&m.as_str()))
+            .map(|(m, dt)| format!("{m} (dt {dt:+.2})"))
+            .collect();
+        let ms = time_search(ib);
+        eprintln!(
+            "{:>7.2}s  {:>14}  {:>7}  {:>7.2}x  {:>6.1} ({:>4.2}x)  {:>7}  {}",
+            half_s,
+            format!("[{}, {}]", ib.0, ib.1),
+            coarse_cells(ib),
+            base_cells / coarse_cells(ib) as f32,
+            ms,
+            base_ms / ms,
+            got.len(),
+            if lost.is_empty() {
+                "—".to_string()
+            } else {
+                lost.join(", ")
+            }
+        );
+    }
+
+    eprintln!("\nDT of every decode at the baseline window:");
+    for (m, dt) in &control {
+        eprintln!("  {dt:+.3} s  {m}");
+    }
+}

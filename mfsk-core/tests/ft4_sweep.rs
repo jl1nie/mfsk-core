@@ -1288,3 +1288,182 @@ fn ft4_diag_smax_calibration() {
         100.0 * below_200 as f32 / other_scores.len() as f32
     );
 }
+
+/// How far off nominal a signal's true DT can sit before a narrowed
+/// `ft4_sync_search` window stops reaching it.
+///
+/// **Companion to `ft4_wsjtx_samples.rs::ft4_diag_sync_window_recall`,
+/// which measures the same trade on the real off-air golden.** That one
+/// answers "what does narrowing cost on a real band"; this one isolates
+/// the mechanism — recall as a function of (true DT, window width) with
+/// nothing else varying — so the operating point can be chosen against
+/// a DT budget rather than against one recording's particular spread.
+///
+/// **This deliberately does not use the tier-C corpus.**
+/// `scripts/gen_ft4_sweep_wavs.sh` fixes `DT=0.0`, so every signal in
+/// it sits dead centre of every window under test and the answer would
+/// come back "no loss at any width" — a property of the fixture, not
+/// of the decoder. Generate a DT-swept corpus instead and point
+/// `MFSK_FT4_DT_DIR` at it:
+///
+/// ```sh
+/// for DT in -0.50 -0.45 ... 0.50; do
+///   ft4sim "CQ JL1NIE PM95" 1500 $DT 0.0 0.0 20 -14
+/// done   # renamed to ft4_dt<m|p>NNN_<snrtag>_<trial>.wav
+/// ```
+///
+/// **Range limit, and why the grid stops at ±0.5 s**: `ft4sim` writes a
+/// 6.048 s file and the frame occupies `[0.5+DT, 5.54+DT]`, so past
+/// about |DT| = 0.5 s the signal is truncated by the file rather than
+/// missed by the window, and the two are not separable. The real-golden
+/// companion covers the wider tail with genuine captures.
+///
+/// Only candidates within 20 Hz of the transmitted 1500 Hz are decoded.
+/// `ft4_coarse_sync` still runs over the full 100–2700 Hz band, because
+/// `fit_baseline` needs real off-signal content to fit against (see
+/// `docs/notes/FT4_BENCHMARK.md` §13) — the filter is applied after it,
+/// and only skips decoding noise peaks that cannot produce the golden
+/// message anyway.
+///
+/// Run:
+/// `MFSK_FT4_DT_DIR=<dir> cargo test -p mfsk-core --features full,internal-testing \
+///  --release --test ft4_sweep ft4_diag_dt_window_reach -- --ignored --nocapture`
+#[test]
+#[ignore = "diagnostic — needs a DT-swept ft4sim corpus in MFSK_FT4_DT_DIR"]
+#[cfg(feature = "internal-testing")]
+fn ft4_diag_dt_window_reach() {
+    use mfsk_core::engine::dsp::downsample::{build_fft_cache, downsample_cached};
+    use mfsk_core::engine::equalize::EqMode;
+    use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+    use mfsk_core::engine::pipeline::{
+        DecodeDepth, DecodeStrictness, process_candidate_precomputed,
+    };
+    use mfsk_core::engine::sync2d::ft4_sync_search_window;
+    use mfsk_core::ft4::Ft4;
+    use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+    use mfsk_core::msg::wsjt77::unpack77;
+    use rayon::prelude::*;
+
+    const SLOT_SAMPLES: usize = 90_000;
+    const SYNC_Q_MIN: u32 = 8;
+    const DS_RATE: f32 = 12_000.0 / 18.0;
+    const TX_START_OFFSET_S: f32 = 0.5;
+    const FULL: (i32, i32) = (-344, 1012);
+    const AIM_TOL_HZ: f32 = 20.0;
+
+    fn window_for(half_s: f32) -> (i32, i32) {
+        if (half_s - 1.0).abs() < 1e-6 {
+            return FULL;
+        }
+        (
+            ((-half_s + TX_START_OFFSET_S) * DS_RATE).round() as i32,
+            ((half_s + TX_START_OFFSET_S) * DS_RATE).round() as i32,
+        )
+    }
+
+    let Ok(dir) = std::env::var("MFSK_FT4_DT_DIR") else {
+        eprintln!("MFSK_FT4_DT_DIR unset — skipping (see this test's doc comment)");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+
+    let halves = [1.0f32, 0.75, 0.5, 0.375, 0.25];
+    let dt_tags: Vec<(String, f32)> = (-10i32..=10)
+        .map(|k| {
+            let v = k as f32 * 0.05;
+            let tag = format!("{}{:03}", if k < 0 { 'm' } else { 'p' }, k.abs() * 5);
+            (tag, v)
+        })
+        .collect();
+
+    for snr_tag in ["m14", "m17"] {
+        eprintln!("\nFT4 Δt-window reach — SNR {snr_tag}, AWGN, 20 trials/cell");
+        eprint!("{:>8}", "true DT");
+        for h in halves {
+            eprint!("{:>10}", format!("+/-{h:.3}s"));
+        }
+        eprintln!();
+
+        for (tag, dt_val) in &dt_tags {
+            let files: Vec<PathBuf> = (1..=20)
+                .map(|t| dir.join(format!("ft4_dt{tag}_{snr_tag}_{t:02}.wav")))
+                .filter(|p| p.exists())
+                .collect();
+            if files.is_empty() {
+                continue;
+            }
+
+            // One (coarse, fft_cache) pair per file, reused across all
+            // windows — the window only changes what happens after
+            // downsample, so recomputing them per window would just be
+            // slower, not different.
+            let per_file: Vec<Vec<u32>> = files
+                .par_iter()
+                .filter_map(|p| {
+                    let raw = load_wav_i16_opt(p)?;
+                    let mut audio = vec![0i16; SLOT_SAMPLES];
+                    let n = raw.len().min(SLOT_SAMPLES);
+                    audio[..n].copy_from_slice(&raw[..n]);
+
+                    let cands = ft4_coarse_sync(&audio, 100.0, 2700.0, 0.05, None, 100);
+                    let aimed: Vec<_> = cands
+                        .into_iter()
+                        .filter(|c| (c.freq_hz - GOLDEN_FREQ_HZ).abs() <= AIM_TOL_HZ)
+                        .collect();
+                    if aimed.is_empty() {
+                        return Some(vec![0u32; halves.len()]);
+                    }
+                    let cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+
+                    let hits = halves
+                        .iter()
+                        .map(|&h| {
+                            let ib = window_for(h);
+                            let ok = aimed.iter().any(|cand| {
+                                let mut cd0 =
+                                    downsample_cached(&cache, cand.freq_hz, &FT4_DOWNSAMPLE);
+                                let sum2 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>()
+                                    / cd0.len() as f32;
+                                if sum2 > f32::EPSILON {
+                                    let inv = 1.0 / sum2.sqrt();
+                                    for c in cd0.iter_mut() {
+                                        *c *= inv;
+                                    }
+                                }
+                                let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, ib.0, ib.1);
+                                process_candidate_precomputed::<Ft4>(
+                                    cand,
+                                    &cache,
+                                    &FT4_DOWNSAMPLE,
+                                    DecodeDepth::EMBEDDED,
+                                    DecodeStrictness::Normal,
+                                    &[],
+                                    EqMode::Off,
+                                    SYNC_Q_MIN,
+                                    (cd0, s2.freq_hz, s2.i0, s2.score),
+                                    false,
+                                    false,
+                                )
+                                .and_then(|r| {
+                                    let m77: &[u8; 77] = r.message77().try_into().ok()?;
+                                    unpack77(m77)
+                                })
+                                .is_some_and(|m| m == GOLDEN_MSG)
+                            });
+                            u32::from(ok)
+                        })
+                        .collect();
+                    Some(hits)
+                })
+                .collect();
+
+            let n = per_file.len() as f32;
+            eprint!("{:>+7.2}s", dt_val);
+            for i in 0..halves.len() {
+                let hits: u32 = per_file.iter().map(|v| v[i]).sum();
+                eprint!("{:>9.0}%", 100.0 * hits as f32 / n);
+            }
+            eprintln!();
+        }
+    }
+}
