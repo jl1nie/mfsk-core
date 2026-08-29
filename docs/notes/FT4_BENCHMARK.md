@@ -1302,3 +1302,82 @@ the crossing. The golden's signals are simply strong enough not to need
 OSD. Whether an embedded FT4 receiver should pay for OSD is now a real
 question rather than a settled one, and it belongs with the budget above:
 the candidate-count saving is roughly the size of the OSD cost.
+
+## 22. Which rungs of the ladder earn their cost (2026-08-30)
+
+§21 halved the candidate count; this section takes the other half of the
+projected slot, the 1 943 ms of LLR + BP + OSD. FT4 climbs four BP rungs
+— `llra` (nsym=1), `llrb` (nsym=2), `llrc` (nsym=`LLR_NSYM_MAX`=4),
+`llrd` (nsym=1 bit-normalised) — and then, if `depth.osd`, re-tries all
+four through OSD at depth 2 or 3.
+
+FST4's own ablation found its `nsym=8` rung was ~99 % of the BP cost and
+that `llrd` never contributed recall. Neither statement is portable:
+FT4's `nsym=4` rung enumerates 4⁴ = 256 tone hypotheses per group
+against FST4's 4⁸ = 65 536.
+
+### 22.1 Measured, on weak data
+
+`tests/ft4_llr_ladder_ablation.rs`, 560 sweep files (4 channels × 7 SNR
+tags × 20 trials) straddling every channel's 50 % crossing, one shared
+front end per file, candidates oracle-filtered to the golden frequency
+so candidate selection cannot contaminate a rung question:
+
+| config | decodes | vs FULL | CPU |
+|---|---:|---:|---:|
+| `abcd`+OSD (= `FULL`) | 235 | +0 | 1.00× |
+| **`abc`+OSD** | **235** | **+0** | **0.78×** |
+| `abd`+OSD | 189 | −46 | 0.87× |
+| `ab`+OSD | 189 | −46 | 0.59× |
+| `a`+OSD | 132 | −103 | 0.48× |
+| `abcd` (= `EMBEDDED`) | 179 | −56 | 0.10× |
+| **`abc`** | **179** | **+0 vs `abcd`** | **0.08×** |
+| `abd` | 136 | −99 | 0.07× |
+| `ab` | 136 | −99 | 0.05× |
+| `a` | 79 | −156 | 0.03× |
+
+Self-check on the harness: its `abcd`+OSD reaches 235 against the
+pipeline's own 237 and its `abcd` reaches 179 exactly. The two missing
+decodes are the depth-4 Top-K OSD stage the harness does not
+reimplement — which incidentally measures that stage at +2 of 237.
+
+Three findings, in order of size:
+
+- **`llrd` contributes nothing.** 235 → 235 with OSD, 179 → 179 without,
+  and 11 → 11 distinct on the real golden. It costs 22 % of the ladder
+  with OSD and 20 % without. Its own LLR is free (`compute_llr_fast`
+  returns it alongside `llra`); what it costs is a BP call and an OSD
+  variant.
+- **`llrc` is the recall rung** — dropping it costs 46 decodes with OSD
+  and 43 without. The opposite of FST4's `nsym=8`, and the reason the
+  FST4 result could not simply be assumed here.
+- **OSD is +56 decodes for ~10× the BP-side cost.** On hardware that
+  ratio is already measured: `ft4-bench` reported 10 987 ms at `FULL`
+  against 8 642 ms at `EMBEDDED` over 31 candidates, i.e. ~2 345 ms of
+  OSD, which at 12 candidates is ~900 ms of a 1 960 ms budget.
+
+### 22.2 Dropping `llrd` for FT4 is a fidelity fix, not a trade
+
+WSJT-X's FT4 decoder has no fourth *blind* variant.
+`ft4_decode.f90:341-342` builds `llrd` only for `ipass > 3`, as
+`llrd = llrc` with the first 29 bits overwritten by an a-priori pattern
+— it is the **AP** variant. A fourth blind `llrd = scalefac*bmetd` is
+FT8's shape (`ft8c.f90:192`), which the generic ladder inherited and
+applied to FT4 as well. This crate's own AP path (`msg::pipeline_ap`)
+uses `llr_set.llrd` for exactly WSJT-X's purpose and is untouched.
+
+So `process_candidate_basic_impl` now skips the blind `llrd` rung when
+`P::ID == Ft4`, both in the BP staircase and in OSD's variant list.
+Verified: golden 11/14 single-pass and 14/14 with SIC unchanged, zero
+phantoms; the ablation above; and `run-sensitivity-sweeps.sh ft4`
+**+0.00 dB on all four channels** (160 trials each).
+
+### 22.3 A stale claim, corrected
+
+`DecodeDepth::osd`'s doc comment said OSD was "host-only", "compiled out
+of non-`fft-rustfft` builds entirely", and "a permanent architectural
+boundary". None of it is in the code — neither `fec::ldpc::osd` nor the
+pipeline's OSD block carries an FFT-backend `cfg` — and both the FST4
+(#306) and FT4 benches have run `DecodeDepth::FULL` on an ESP32-S3 and
+reported its cost. OSD on embedded is a budget decision, and after §21
+it is a live one: ~900 ms for 56/560 decodes at the crossing.

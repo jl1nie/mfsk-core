@@ -153,6 +153,41 @@ cadence".
 
 ### Changed
 
+- **FT4 no longer climbs the blind `llrd` rung — a fidelity fix that is
+  also 20-22 % of the LLR/BP/OSD ladder.** WSJT-X's FT4 decoder has no
+  fourth *blind* LLR variant: `ft4_decode.f90:341-342` builds `llrd`
+  only for `ipass > 3`, as `llrd = llrc` with the first 29 bits
+  overwritten by an a-priori pattern — it is the **AP** variant. A
+  fourth blind `llrd = scalefac*bmetd` is FT8's shape
+  (`ft8c.f90:192`), which the generic ladder inherited and applied to
+  FT4 as well. This crate's AP path (`msg::pipeline_ap`) uses
+  `llr_set.llrd` for exactly WSJT-X's purpose and is untouched.
+
+  Measured before removing it (`tests/ft4_llr_ladder_ablation.rs`, new):
+  over 560 sweep files straddling four channels' 50% crossings the rung
+  contributes **zero** decodes in both regimes — 235 with OSD and 179
+  without, with or without it — and zero on the real WSJT-X golden.
+  Verified after: golden 11/14 single-pass and 14/14 with SIC unchanged
+  with zero phantoms, and `run-sensitivity-sweeps.sh ft4` **+0.00 dB on
+  all four channels** (160 trials each).
+
+  The same ablation says what *does* pay, which is the reason it was run
+  rather than assumed from FST4's result: `llrc` (nsym=4) is worth 46
+  decodes and OSD 56, so neither is a candidate for the same treatment.
+  FST4's `nsym=8` conclusion does not port — its rung enumerates
+  4⁸ = 65 536 tone hypotheses per group against FT4's 4⁴ = 256. See
+  `docs/notes/FT4_BENCHMARK.md` §22.
+
+- **`DecodeDepth::osd`'s doc comment was wrong about embedded.** It said
+  OSD is "host-only", "compiled out of non-`fft-rustfft` builds
+  entirely", and "a permanent architectural boundary". Neither
+  `fec::ldpc::osd` nor the pipeline's OSD block carries an FFT-backend
+  `cfg`, and both the FST4 (#306) and FT4 embedded benches have run
+  `DecodeDepth::FULL` on an ESP32-S3 and reported its cost (`ft4-bench`:
+  10 987 ms against `EMBEDDED`'s 8 642 ms over 31 candidates). OSD on
+  embedded is a budget decision, not an impossibility — and it is worth
+  56 decodes of 560 at the crossing.
+
 - **`ft4_sync_search` rebuilt its frequency-shift phasor once per grid
   cell, and did not need to.** The shift was applied to `cd0` inside
   the innermost sample loop as a rotating phasor restarted at every

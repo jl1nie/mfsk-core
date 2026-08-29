@@ -122,11 +122,24 @@ pub enum LlrEffort {
 /// Decode cost/recall configuration: [`LlrEffort`] plus whether to escalate
 /// to OSD when the BP staircase fails.
 ///
-/// `osd` is host-only: the OSD dispatch code is compiled out of
-/// non-`fft-rustfft` builds entirely, so `osd: true` is a silent no-op on
-/// embedded rather than a footgun. OSD has never shipped on an ESP32 target
-/// and there is no plan to add it there — this isn't a current tuning
-/// choice, it's a permanent architectural boundary.
+/// `osd` is a **cost choice on every target, embedded included** —
+/// correcting what this comment claimed until 2026-08-30 ("host-only",
+/// "compiled out of non-`fft-rustfft` builds entirely", "a permanent
+/// architectural boundary"). None of that is true of the code: neither
+/// `fec::ldpc::osd` nor the OSD block in
+/// `process_candidate_basic_impl` carries an FFT-backend `cfg`, and
+/// both the FST4 (#306) and FT4 embedded benches have run
+/// `DecodeDepth::FULL` on an ESP32-S3 and reported its cost —
+/// `ft4-bench` measured 10 987 ms against `EMBEDDED`'s 8 642 ms over 31
+/// candidates, i.e. ~2 345 ms of OSD.
+///
+/// What it buys is worth stating next to what it costs, because the
+/// two are close: on 560 FT4 sweep files straddling four channels' 50 %
+/// crossings, `FULL` decodes 237 against `EMBEDDED`'s 179
+/// (`tests/ft4_llr_ladder_ablation.rs`). On the WSJT-X FT4 golden the
+/// two are identical, which is how "OSD buys nothing" got recorded in
+/// the first place — the golden's signals are simply strong enough not
+/// to need it.
 ///
 /// Redesigned in 0.8.0 (issue #182 follow-up, then issue #191) from
 /// FT8-local 3-/4-variant enums (`BpAll`/`BpAllOsd`/…) into this single
@@ -1023,7 +1036,29 @@ where
                 }
             }
 
-            if let Some(r) = try_bp(&llr_set.llrd, 3) {
+            // FT4 skips the blind `llrd` rung, and that is a fidelity
+            // fix rather than a trade. In WSJT-X's FT4 decoder `llrd`
+            // is the **a-priori** variant, not a fourth blind metric:
+            // `ft4_decode.f90:341-342` builds it only for `ipass > 3`
+            // as `llrd = llrc` with the first 29 bits overwritten by
+            // the AP pattern. A fourth *blind* `llrd` is FT8's shape
+            // (`ft8c.f90:192`, `llrd = scalefac*bmetd`), which this
+            // generic ladder inherited and applied to FT4 as well.
+            // (This crate's own AP path, `msg::pipeline_ap`, uses
+            // `llr_set.llrd` for exactly WSJT-X's purpose and is
+            // untouched.)
+            //
+            // Measured before removing it (`tests/ft4_llr_ladder_
+            // ablation.rs`, 2026-08-30): over 560 sweep files
+            // straddling four channels' 50% crossings the rung
+            // contributes **zero** decodes in both regimes — 235 with
+            // OSD and 179 without, with or without it — and zero on
+            // the real WSJT-X golden, while costing 22% of the ladder
+            // with OSD and 20% without. `llrc` next to it is worth 46
+            // decodes, so this is not a general "the deep rungs don't
+            // pay" claim; it is about this one variant.
+            let skip_llrd = P::ID == super::ProtocolId::Ft4;
+            if !skip_llrd && let Some(r) = try_bp(&llr_set.llrd, 3) {
                 return Some(r);
             }
 
@@ -1041,7 +1076,9 @@ where
             if !skip_llr_nsym_max {
                 variants.push((&llr_set.llrc, 2));
             }
-            variants.push((&llr_set.llrd, 3));
+            if !skip_llrd {
+                variants.push((&llr_set.llrd, 3));
+            }
 
             // WSJT-X's own FST4 decoder (`fst4_decode.f90`) has no
             // post-OSD hard-error gate: `decode240_101` is called
