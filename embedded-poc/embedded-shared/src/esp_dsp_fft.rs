@@ -550,6 +550,15 @@ impl FftPlanner for EspDspPlanner {
             self.ensure_table(256);
             return Box::new(MixedRadix3840Fft::new());
         }
+        // 5120 = 1024 x 5 mixed-radix path: `FT4_DOWNSAMPLE.fft2_size`,
+        // i.e. the inverse transform `downsample_cached` runs once per
+        // FT4 candidate. Wired in both directions even though only the
+        // inverse has a caller today -- the wrapper is direction-agnostic
+        // and a forward-only plan would be a trap for the next reader.
+        if len == mfsk_core::engine::dsp::fft_mixed_5120::N {
+            self.ensure_table(1024);
+            return Box::new(MixedRadix5120Fft::new(true));
+        }
         if !len.is_power_of_two() && len <= DIRECT_DFT_MAX_LEN {
             return Box::new(DirectDft::new(len));
         }
@@ -566,6 +575,13 @@ impl FftPlanner for EspDspPlanner {
             unimplemented!(
                 "inverse 3840-pt FFT not wired (current FT8 spectrogram path is forward only)"
             );
+        }
+        // See `plan_forward`'s 5120 arm. This is the direction FT4
+        // actually needs: `downsample_cached`'s
+        // `plan_inverse(cfg.fft2_size)`.
+        if len == mfsk_core::engine::dsp::fft_mixed_5120::N {
+            self.ensure_table(1024);
+            return Box::new(MixedRadix5120Fft::new(false));
         }
         assert!(
             len.is_power_of_two() && len >= 4,
@@ -646,6 +662,97 @@ impl Fft for MixedRadix3840Fft {
         mfsk_core::engine::dsp::fft_mixed_3840::N
     }
 }
+
+/// 5120-pt FFT via Cooley-Tukey 1024 x 5 mixed-radix, either
+/// direction. 1024-pt: esp-dsp `dsps_fft2r_fc32_ae32_`/`_aes3_` (asm).
+/// 5-pt: [`mfsk_core::engine::dsp::fft_15::fft_5`]. Inter-stage
+/// twiddles cached.
+///
+/// Exists because `FT4_DOWNSAMPLE.fft2_size = 5120` is not a power of
+/// two, so `downsample_cached`'s per-candidate inverse transform has no
+/// radix-2 kernel -- the FT4 half of the wall this module's header
+/// comment describes. The wideband `fft1_size = 92_160` half stays
+/// unsolved here and is supplied pre-baked through `decode_frame`'s
+/// `precomputed_fft` seam, the same way FST4 does it (issue #306).
+struct MixedRadix5120Fft {
+    forward: bool,
+    twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_5120::N]>,
+    /// 1024-`Complex32` staging for the PIE kernel -- see
+    /// [`Align16Quad`]. Same inheritance argument as
+    /// [`MixedRadix3840Fft`]: rows sit at a multiple of 1024
+    /// `Complex32` from the caller's base pointer, so if the caller's
+    /// buffer lands 4-mod-8 every row does.
+    staging: core::cell::UnsafeCell<AlignedStaging>,
+}
+
+impl MixedRadix5120Fft {
+    fn new(forward: bool) -> Self {
+        Self {
+            forward,
+            twiddles: mfsk_core::engine::dsp::fft_mixed_5120::build_twiddles(),
+            staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
+        }
+    }
+}
+
+impl Fft for MixedRadix5120Fft {
+    fn process(&self, buf: &mut [Complex32]) {
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_5120::N;
+        assert_eq!(buf.len(), N, "5120 FFT input length mismatch");
+        let buf_arr: &mut [Complex32; N] = buf.try_into().expect("buf.len() == N already asserted");
+
+        // Same table discipline as `MixedRadix3840Fft::process`: one
+        // guard held across all five inner 1024-pt transforms, since
+        // they are one logical FFT over a process-global twiddle table.
+        let _guard = Fc32Guard::acquire();
+        ensure_fc32_table_locked(1024);
+
+        let run_1024 = |slice: &mut [Complex32]| {
+            let ptr = slice.as_mut_ptr() as *mut f32;
+            unsafe {
+                #[cfg(not(feature = "aes3"))]
+                dsps_fft2r_fc32_ae32_(ptr, 1024, dsps_fft_w_table_fc32);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_fc32_aes3_(ptr, 1024, dsps_fft_w_table_fc32);
+                dsps_bit_rev_fc32_ansi(ptr, 1024);
+            }
+        };
+        let mut esp_dsp_1024 = |row: &mut [Complex32; 1024]| {
+            if cfg!(feature = "aes3") && !pie_aligned(row) {
+                // SAFETY: `dyn Fft` carries no `Sync` bound and a
+                // planned instance is owned by a single caller.
+                let staging = unsafe { &mut *self.staging.get() };
+                let work = staging.as_slice(1024);
+                work.copy_from_slice(row);
+                run_1024(work);
+                row.copy_from_slice(work);
+            } else {
+                run_1024(row);
+            }
+        };
+
+        // The inner kernel is forward in both cases --
+        // `ifft_5120_with` conjugates around the whole transform.
+        if self.forward {
+            mfsk_core::engine::dsp::fft_mixed_5120::fft_5120_with(
+                buf_arr,
+                &mut esp_dsp_1024,
+                &self.twiddles,
+            );
+        } else {
+            mfsk_core::engine::dsp::fft_mixed_5120::ifft_5120_with(
+                buf_arr,
+                &mut esp_dsp_1024,
+                &self.twiddles,
+            );
+        }
+    }
+
+    fn len(&self) -> usize {
+        mfsk_core::engine::dsp::fft_mixed_5120::N
+    }
+}
+
 
 struct EspDspFft {
     len: usize,
