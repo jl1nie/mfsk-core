@@ -559,6 +559,15 @@ impl FftPlanner for EspDspPlanner {
             self.ensure_table(1024);
             return Box::new(MixedRadix5120Fft::new(true));
         }
+        // 2304 = 256 x 9 mixed-radix path: `ft4_coarse::NFFT1`, the
+        // windowed periodogram `ft4_coarse_sync` runs once per symbol
+        // step (~152 per slot). Forward is the direction FT4 needs;
+        // the inverse arm below exists for the same reason 5120's
+        // forward one does.
+        if len == mfsk_core::engine::dsp::fft_mixed_2304::N {
+            self.ensure_table(256);
+            return Box::new(MixedRadix2304Fft::new(true));
+        }
         if !len.is_power_of_two() && len <= DIRECT_DFT_MAX_LEN {
             return Box::new(DirectDft::new(len));
         }
@@ -582,6 +591,11 @@ impl FftPlanner for EspDspPlanner {
         if len == mfsk_core::engine::dsp::fft_mixed_5120::N {
             self.ensure_table(1024);
             return Box::new(MixedRadix5120Fft::new(false));
+        }
+        // See `plan_forward`'s 2304 arm.
+        if len == mfsk_core::engine::dsp::fft_mixed_2304::N {
+            self.ensure_table(256);
+            return Box::new(MixedRadix2304Fft::new(false));
         }
         assert!(
             len.is_power_of_two() && len >= 4,
@@ -660,6 +674,93 @@ impl Fft for MixedRadix3840Fft {
 
     fn len(&self) -> usize {
         mfsk_core::engine::dsp::fft_mixed_3840::N
+    }
+}
+
+/// 2304-pt FFT via Cooley-Tukey 256 x 9 mixed-radix, either direction.
+/// 256-pt: esp-dsp `dsps_fft2r_fc32_ae32_`/`_aes3_` (asm). 9-pt:
+/// [`mfsk_core::engine::dsp::fft_mixed_2304::fft_9`]. Inter-stage
+/// twiddles cached.
+///
+/// Exists because `engine::ft4_coarse`'s `NFFT1 = 4*NSPS = 2304`
+/// (= 2^8 * 3^2) is not a power of two, so FT4's coarse-candidate
+/// periodogram -- ~152 transforms per slot -- has no radix-2 kernel.
+/// This is the last of the three FT4 lengths: `fft_mixed_5120` covers
+/// the per-candidate inverse, `mfsk_core::ft4::ddc` removes the
+/// 92 160-point slot transform outright, and this one lets the board
+/// find its own candidates instead of reading a list baked on a host
+/// (`embedded-poc/assets/ft4_golden_candidates.bin`).
+struct MixedRadix2304Fft {
+    forward: bool,
+    twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_2304::N]>,
+    /// 256-`Complex32` staging for the PIE kernel -- same inheritance
+    /// argument as [`MixedRadix3840Fft`]'s, and the same inner length.
+    staging: core::cell::UnsafeCell<AlignedStaging>,
+}
+
+impl MixedRadix2304Fft {
+    fn new(forward: bool) -> Self {
+        Self {
+            forward,
+            twiddles: mfsk_core::engine::dsp::fft_mixed_2304::build_twiddles(),
+            staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
+        }
+    }
+}
+
+impl Fft for MixedRadix2304Fft {
+    fn process(&self, buf: &mut [Complex32]) {
+        const N: usize = mfsk_core::engine::dsp::fft_mixed_2304::N;
+        assert_eq!(buf.len(), N, "2304 FFT input length mismatch");
+        let buf_arr: &mut [Complex32; N] = buf.try_into().expect("buf.len() == N already asserted");
+
+        // One guard across all nine inner 256-pt transforms -- they are
+        // one logical FFT over a process-global twiddle table, same
+        // discipline as `MixedRadix3840Fft::process`.
+        let _guard = Fc32Guard::acquire();
+        ensure_fc32_table_locked(256);
+
+        let run_256 = |slice: &mut [Complex32]| {
+            let ptr = slice.as_mut_ptr() as *mut f32;
+            unsafe {
+                #[cfg(not(feature = "aes3"))]
+                dsps_fft2r_fc32_ae32_(ptr, 256, dsps_fft_w_table_fc32);
+                #[cfg(feature = "aes3")]
+                dsps_fft2r_fc32_aes3_(ptr, 256, dsps_fft_w_table_fc32);
+                dsps_bit_rev_fc32_ansi(ptr, 256);
+            }
+        };
+        let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
+            if cfg!(feature = "aes3") && !pie_aligned(row) {
+                // SAFETY: `dyn Fft` carries no `Sync` bound and a
+                // planned instance is owned by a single caller.
+                let staging = unsafe { &mut *self.staging.get() };
+                let work = staging.as_slice(256);
+                work.copy_from_slice(row);
+                run_256(work);
+                row.copy_from_slice(work);
+            } else {
+                run_256(row);
+            }
+        };
+
+        if self.forward {
+            mfsk_core::engine::dsp::fft_mixed_2304::fft_2304_with(
+                buf_arr,
+                &mut esp_dsp_256,
+                &self.twiddles,
+            );
+        } else {
+            mfsk_core::engine::dsp::fft_mixed_2304::ifft_2304_with(
+                buf_arr,
+                &mut esp_dsp_256,
+                &self.twiddles,
+            );
+        }
+    }
+
+    fn len(&self) -> usize {
+        mfsk_core::engine::dsp::fft_mixed_2304::N
     }
 }
 
