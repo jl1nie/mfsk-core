@@ -63,4 +63,3 @@ pub const NTP_SERVER: &str = "pool.ntp.org";
 /// Long enough for a first sync over WiFi, short enough that a boot
 /// with no route still reaches the decode loop.
 pub const NTP_SYNC_TIMEOUT_MS: u32 = 20_000;
-

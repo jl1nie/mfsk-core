@@ -135,6 +135,10 @@ pub struct Ft4SavgBuilder {
     fft: alloc::boxed::Box<dyn crate::engine::fft::Fft>,
     savg: Vec<f32>,
     buf: Vec<Complex<f32>>,
+    /// One row's power spectrum, handed to `push_with_rows`'s callback.
+    /// Reused across rows: a waterfall consumer turns it into 240
+    /// palette indices immediately and keeps nothing.
+    row_pow: Vec<f32>,
     /// Samples from `abs_base` onwards that a future row still needs.
     /// Rows overlap by `NFFT1 - NSTEP`, so this stays bounded by
     /// `NFFT1` plus one push, however long the stream runs.
@@ -164,6 +168,7 @@ impl Ft4SavgBuilder {
             fft: with_default_planner(|planner| planner.plan_forward(NFFT1)),
             savg: vec![0.0f32; NH1],
             buf: vec![Complex::new(0.0f32, 0.0); NFFT1],
+            row_pow: vec![0.0f32; NH1],
             hist: Vec::with_capacity(NFFT1 + NSTEP),
             abs_base: 0,
             j: 0,
@@ -190,6 +195,22 @@ impl Ft4SavgBuilder {
     /// 1 906 ms, i.e. the "streaming" rewrite made the non-streaming
     /// path 2.5x worse before anything had been moved off the budget.
     pub fn push(&mut self, audio: &[i16]) {
+        self.push_with_rows(audio, &mut |_| {});
+    }
+
+    /// [`push`](Self::push), calling `on_row` with each completed row's
+    /// power spectrum (`NH1` bins, `DF_HZ` apart, DC first).
+    ///
+    /// The rows are computed either way — they are what `savg`
+    /// averages — so a waterfall built from them costs no transform of
+    /// its own. That is the whole reason this hook exists rather than
+    /// a second spectrogram: a receiver that is already paying 152
+    /// transforms per slot should not pay 152 more to draw them.
+    ///
+    /// The slice is the builder's internal buffer and is valid only for
+    /// the call; a consumer that wants to keep a row must copy it,
+    /// which is what turning it into 240 palette indices does anyway.
+    pub fn push_with_rows(&mut self, audio: &[i16], on_row: &mut dyn FnMut(&[f32])) {
         let base = self.stream_len;
         self.stream_len += audio.len();
 
@@ -199,6 +220,7 @@ impl Ft4SavgBuilder {
                 fft,
                 savg,
                 buf,
+                row_pow,
                 j,
                 nhsym,
                 count,
@@ -212,7 +234,15 @@ impl Ft4SavgBuilder {
                 if lo + NFFT1 > audio.len() {
                     break;
                 }
-                Self::row(&audio[lo..lo + NFFT1], window, fft.as_ref(), buf, savg);
+                Self::row(
+                    &audio[lo..lo + NFFT1],
+                    window,
+                    fft.as_ref(),
+                    buf,
+                    savg,
+                    row_pow,
+                    on_row,
+                );
                 *count += 1;
                 *j += 1;
             }
@@ -230,6 +260,7 @@ impl Ft4SavgBuilder {
             fft,
             savg,
             buf,
+            row_pow,
             hist,
             abs_base,
             j,
@@ -245,7 +276,15 @@ impl Ft4SavgBuilder {
             if lo + NFFT1 > hist.len() {
                 break;
             }
-            Self::row(&hist[lo..lo + NFFT1], window, fft.as_ref(), buf, savg);
+            Self::row(
+                &hist[lo..lo + NFFT1],
+                window,
+                fft.as_ref(),
+                buf,
+                savg,
+                row_pow,
+                on_row,
+            );
             *count += 1;
             *j += 1;
         }
@@ -268,6 +307,8 @@ impl Ft4SavgBuilder {
         fft: &dyn crate::engine::fft::Fft,
         buf: &mut [Complex<f32>],
         savg: &mut [f32],
+        row_pow: &mut [f32],
+        on_row: &mut dyn FnMut(&[f32]),
     ) {
         let fac = 1.0f32 / 300.0;
         for k in 0..NFFT1 {
@@ -275,12 +316,15 @@ impl Ft4SavgBuilder {
         }
         fft.process(buf);
         for i in 0..NH1 {
-            savg[i] += buf[i].norm_sqr();
+            let p = buf[i].norm_sqr();
+            savg[i] += p;
+            row_pow[i] = p;
         }
+        on_row(row_pow);
     }
 
-    /// The averaged periodogram. Identical to
-    /// `symbol_spectra_avg` over the same samples.
+    /// The averaged periodogram. Identical to `symbol_spectra_avg`
+    /// over the same samples.
     pub fn finish(mut self) -> Vec<f32> {
         if self.count > 0 {
             let inv = 1.0 / self.count as f32;
@@ -463,6 +507,43 @@ mod tests {
             assert_eq!(got.len(), want.len(), "chunk {chunk}: length");
             for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
                 assert_eq!(g.to_bits(), w.to_bits(), "chunk {chunk}, bin {i}");
+            }
+        }
+    }
+
+    /// The row hook must emit exactly the rows `savg` averages.
+    ///
+    /// `push_with_rows` exists so a waterfall can be drawn from the
+    /// transforms the coarse stage is already doing. If it emitted a
+    /// different set — one short at a block boundary, say — the
+    /// waterfall would disagree with the decoder about what was on the
+    /// band, which is the one thing a waterfall must not do.
+    #[test]
+    fn ft4_savg_row_hook_emits_every_averaged_row() {
+        let audio = tone_slot();
+        let expect_rows = (audio.len() - NFFT1) / NSTEP;
+
+        for &chunk in &[1usize, 577, 1024, 90_000] {
+            let mut rows = 0usize;
+            let mut acc = vec![0.0f32; NH1];
+            let mut b = Ft4SavgBuilder::new(audio.len());
+            for c in audio.chunks(chunk) {
+                b.push_with_rows(c, &mut |row| {
+                    assert_eq!(row.len(), NH1, "chunk {chunk}: row width");
+                    for (a, &p) in acc.iter_mut().zip(row.iter()) {
+                        *a += p;
+                    }
+                    rows += 1;
+                });
+            }
+            assert_eq!(rows, expect_rows, "chunk {chunk}: row count");
+
+            // Averaging the emitted rows must reproduce `finish`
+            // exactly — same values, same order, same divisor.
+            let got = b.finish();
+            let inv = 1.0 / rows as f32;
+            for (i, (g, a)) in got.iter().zip(acc.iter()).enumerate() {
+                assert_eq!(g.to_bits(), (a * inv).to_bits(), "chunk {chunk}, bin {i}");
             }
         }
     }

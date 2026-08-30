@@ -324,8 +324,9 @@ pub fn reserve_mixed_scratch() -> bool {
     // SAFETY: `heap_caps_aligned_alloc` returns null or a 16-byte
     // aligned block of at least `bytes`; `Complex32` is `repr(C)` over
     // two `f32`, needing 4. Never freed: it lives for the process.
-    let p = unsafe { esp_idf_svc::sys::heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL_8BIT) }
-        as *mut Complex32;
+    let p =
+        unsafe { esp_idf_svc::sys::heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL_8BIT) }
+            as *mut Complex32;
     if p.is_null() {
         // SAFETY: read-only query.
         let largest =

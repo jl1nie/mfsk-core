@@ -153,7 +153,7 @@ use num_traits::Float;
 
 use mfsk_core::engine::dsp::downsample::downsample_cached;
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::ft4_coarse::{Ft4SavgBuilder, ft4_coarse_sync, ft4_coarse_sync_from_savg};
+use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync, ft4_coarse_sync_from_savg, Ft4SavgBuilder};
 use mfsk_core::engine::pipeline::{
     process_candidate_basic, process_candidate_precomputed, DecodeDepth, DecodeStrictness,
 };
@@ -1114,14 +1114,8 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     let build_us = now_us() - t0;
 
     let t0 = now_us();
-    let streamed = ft4_coarse_sync_from_savg(
-        &savg,
-        FREQ_MIN_HZ,
-        FREQ_MAX_HZ,
-        SYNC_MIN,
-        None,
-        MAX_CAND,
-    );
+    let streamed =
+        ft4_coarse_sync_from_savg(&savg, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
     let pick_us = now_us() - t0;
 
     let same = streamed.len() == candidates.len()

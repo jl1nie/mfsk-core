@@ -15,10 +15,9 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use mfsk_app_shared::{boot_mode, udp_log, wifi};
 
 use mfsk_core_m5stack_cores3_app::{
-    log_free_internal,
-    apps, board, coredump, decode_pipeline, display, uac, BOOT_MODE_DEFAULT, FANOUT, LOGGER,
-    NTP_SERVER, NTP_SYNC_TIMEOUT_MS, UDP_LOG_PORT, UDP_LOG_TARGET, WIFI_ENABLED, WIFI_PSK,
-    WIFI_SSID,
+    apps, board, coredump, decode_pipeline, display, log_free_internal, uac, BOOT_MODE_DEFAULT,
+    FANOUT, LOGGER, NTP_SERVER, NTP_SYNC_TIMEOUT_MS, UDP_LOG_PORT, UDP_LOG_TARGET, WIFI_ENABLED,
+    WIFI_PSK, WIFI_SSID,
 };
 
 fn main() -> ! {

@@ -3,24 +3,46 @@
 //! Replays the vendored WSJT-X golden at 12 kHz in real time and runs
 //! the shipping FT4 slot pipeline over it: the coarse periodogram
 //! accumulated **during** capture, then DDC / Δt search / decode after
-//! the slot closes. The FT8 controller has had `wav_sim` for this since
-//! the beginning; FT4 had nothing, which is why every FT4 number in
-//! `docs/notes/FT4_BENCHMARK.md` up to §33 came from a bench feeding
-//! whole buffers rather than a receiver.
+//! the slot closes, held to the slot budget. The FT8 controller has had
+//! `wav_sim` for this since the beginning; FT4 had nothing, which is
+//! why every FT4 number in `docs/notes/FT4_BENCHMARK.md` up to §33 came
+//! from a bench feeding whole buffers rather than a receiver.
+//!
+//! ## The screen is the FT8 controller's
+//!
+//! Waterfall, decoded list and status bar all go through
+//! `mfsk_app_shared::ui::state::UI` and are drawn by
+//! `display::run_log_panel` — the same state and the same loop the FT8
+//! path uses, not a second implementation of either. FT4 only supplies
+//! rows and decodes.
+//!
+//! The one thing FT4 brings is *rate*: the coarse stage transforms 152
+//! rows per 7.5 s slot and [`Ft4SavgBuilder::push_with_rows`] hands
+//! each one over on the way past, so the waterfall flows at one row
+//! per 48 ms during capture. The FT8 controller pushes one row per
+//! 15 s slot. No extra transform either way — these are the rows the
+//! decoder is already computing.
 //!
 //! **This is a separate bin rather than a boot mode** so it can be
 //! flashed and re-flashed freely: it brings up no USB host, so the
-//! serial console stays attached. `apps::ft4::run` is the boot-mode
-//! entry point that takes a radio.
-//!
-//! What the timing means: the feeder paces itself to 12 kHz, so
-//! `slot` lines arrive 7.5 s apart and `decode` is real post-slot
-//! latency against the 1 960 ms budget — the same quantity `ft4-bench`
-//! reports, but measured end to end by a receiver.
+//! serial console stays attached. `BootMode::Decode` is passed to the
+//! panel for exactly that reason — it is the mode that does not take
+//! the PHY.
 //!
 //! Build: `cargo build --release --features ft4 --bin ft4-demo`.
+//!
+//! [`Ft4SavgBuilder::push_with_rows`]:
+//!     mfsk_core::engine::ft4_coarse::Ft4SavgBuilder::push_with_rows
 
 use embedded_shared::apps::ft4_rx as ft4;
+
+use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+
+use mfsk_app_shared::boot_mode::{self, BootMode};
+use mfsk_app_shared::ui::state::{DecodedRow, UI};
+
+use mfsk_core_m5stack_cores3_app as app;
 
 /// The same slot `ft4-bench` uses: WSJT-X's `FT4/000000_000002.wav`,
 /// baked to raw `i16` by `ft4_bake_golden_precomputed`. 19 signals, of
@@ -41,11 +63,13 @@ const BUDGET_MS: i64 = ft4::TX_TURNAROUND_BUDGET_MS;
 /// will, rather than a friendlier one.
 const BLOCK: usize = 256;
 
-/// `" — cut N weakest at score S"`, or empty. A helper only because
-/// the format arm above needs an owned `String` either way.
-fn alloc_fmt(score: f32, dropped: usize) -> String {
-    format!(" — cut {dropped} weakest at score {score:.2}")
-}
+/// Stack for the feed/decode thread.
+///
+/// The candidate loop's own frames are modest, but `decode_slot` holds
+/// a slot of audio and a `cd0` per candidate — those are heap. 32 KB
+/// is what `decode_pipeline` asks for on the FT8 path and there is no
+/// reason FT4 needs more.
+const FEED_STACK: usize = 32 * 1024;
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
@@ -60,15 +84,40 @@ fn main() -> ! {
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("ft4-demo: task watchdog deinit -> {r}");
 
-    // Before anything plans a transform — the coarse stage's 2304-point
-    // workspace is 41 % faster in internal DRAM, and this is the only
-    // moment the block is available. See `esp_dsp_fft`'s own docs.
+    // Before anything plans a transform, and before the panel's SPI
+    // driver can fragment internal DRAM — the coarse stage's
+    // 2304-point workspace is 41 % faster there. See `esp_dsp_fft`.
     let internal = embedded_shared::esp_dsp_fft::reserve_mixed_scratch();
     log::info!(
         "ft4-demo: mixed-radix FFT scratch in {} DRAM",
         if internal { "INTERNAL" } else { "PSRAM" }
     );
 
+    let peripherals = Peripherals::take().expect("peripherals taken twice");
+    let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
+    let nvs = boot_mode::open_nvs(nvs_part).expect("NVS open mfsk namespace");
+
+    let spawn = app::board::spawn_named(c"ft4feed", FEED_STACK, feed_loop);
+    if let Err(e) = spawn {
+        log::error!("ft4-demo: feed thread spawn failed ({e})");
+    }
+
+    // The FT8 controller's own panel, unchanged. `BootMode::Decode`
+    // keeps it out of USB host mode, which is what leaves the console
+    // attached and the board flashable.
+    app::display::run_log_panel(
+        peripherals.i2c0,
+        peripherals.spi2,
+        peripherals.pins,
+        &app::FANOUT,
+        nvs,
+        BootMode::Decode,
+    )
+}
+
+/// Replay the golden forever, decoding each slot and feeding the
+/// shared UI.
+fn feed_loop() {
     let audio: Vec<i16> = GOLDEN_AUDIO
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
@@ -90,54 +139,76 @@ fn main() -> ! {
     // Absolute pacing: sleeping `BLOCK/12` ms per block would drift by
     // whatever each block's work cost. Anchor to the start instead so
     // the feed stays at 12 kHz however long a block takes.
-    let t_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+    let t_start = now_us();
     let mut fed: u64 = 0;
 
     loop {
         for chunk in audio.chunks(BLOCK) {
-            if let Some(slot) = accum.push(chunk) {
+            // The rows the coarse stage is already transforming, turned
+            // into palette indices on the way past and handed to the
+            // shared UI. No extra FFT — see `push_with_rows`.
+            let slot = accum.push_with_rows(chunk, &mut |row| {
+                let cells = ft4::wf_row(row);
+                if let Ok(mut ui) = UI.lock() {
+                    ui.push_waterfall(cells);
+                }
+            });
+
+            if let Some(slot) = slot {
                 slot_no += 1;
                 let o = ft4::decode_slot(&slot, BUDGET_MS);
-                let ms = o.elapsed_us / 1000;
                 log::info!(
-                    "ft4-demo: slot {slot_no} — {} of {} candidates tried, {} decodes in {ms} ms \
+                    "ft4-demo: slot {slot_no} — {} of {} candidates tried, {} decodes in {} ms \
                      of {BUDGET_MS} ms{}",
                     o.tried,
                     o.cands,
                     o.decodes.len(),
+                    o.elapsed_us / 1000,
                     match o.cut_at_score {
                         // Coarse scores are baseline-normalised, so 1.2
                         // is WSJT-X's own threshold: a cut landing near
                         // it gave up almost nothing.
-                        Some(sc) => alloc_fmt(sc, o.cands - o.tried),
+                        Some(sc) => format!(" — cut {} weakest at score {sc:.2}", o.cands - o.tried),
                         None => String::new(),
                     },
                 );
-                for d in &o.decodes {
-                    log::info!(
-                        "    {:>6.1} Hz  {:>+5.2} s  {:>3.0} dB  {}",
-                        d.freq_hz,
-                        d.dt_sec,
-                        d.snr_db,
-                        d.msg,
-                    );
+                if let Ok(mut ui) = UI.lock() {
+                    for d in &o.decodes {
+                        let mut msg: heapless::String<22> = heapless::String::new();
+                        let _ = msg.push_str(&d.msg[..d.msg.len().min(22)]);
+                        ui.push_decode(DecodedRow {
+                            df_hz: d.freq_hz.round().clamp(0.0, 65_535.0) as u16,
+                            snr_db: d.snr_db.round().clamp(-128.0, 127.0) as i8,
+                            hard_errors: d.hard_errors.min(255) as u8,
+                            msg,
+                            slot_seq: slot_no,
+                            first_seq: slot_no,
+                        });
+                        log::info!(
+                            "    {:>6.1} Hz  {:>+5.2} s  {:>3.0} dB  {}",
+                            d.freq_hz,
+                            d.dt_sec,
+                            d.snr_db,
+                            d.msg,
+                        );
+                    }
                 }
             }
+
             fed += chunk.len() as u64;
 
             // Sleep only if the pipeline is ahead of real time; if it
-            // is behind, the next block goes straight out and the log
-            // above will show the overrun rather than this hiding it.
+            // is behind, the next block goes straight out and the slot
+            // line above shows the overrun rather than this hiding it.
             let due_us = (fed * 1_000_000 / 12_000) as i64;
-            let now = unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_start;
+            let now = now_us() - t_start;
             if due_us > now {
-                unsafe {
-                    esp_idf_svc::sys::vTaskDelay(
-                        (((due_us - now) as u32) / 1_000).max(1)
-                            / (1_000 / esp_idf_svc::sys::configTICK_RATE_HZ).max(1),
-                    )
-                };
+                esp_idf_hal::delay::FreeRtos::delay_ms(((due_us - now) / 1_000).max(1) as u32);
             }
         }
     }
+}
+
+fn now_us() -> i64 {
+    unsafe { esp_idf_svc::sys::esp_timer_get_time() }
 }

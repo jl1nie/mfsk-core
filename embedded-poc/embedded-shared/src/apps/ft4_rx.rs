@@ -40,14 +40,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::ft4_coarse::{Ft4SavgBuilder, ft4_coarse_sync_from_savg};
-use mfsk_core::engine::pipeline::{
-    DecodeDepth, DecodeStrictness, process_candidate_precomputed,
-};
+use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync_from_savg, Ft4SavgBuilder};
+use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
-use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::ddc::candidate_baseband;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
 use num_complex::Complex;
 
@@ -124,13 +122,25 @@ impl SlotAccum {
     /// size never shifts the slot grid — which matters because a UAC
     /// read is not a divisor of 90 000.
     pub fn push(&mut self, samples: &[i16]) -> Option<CapturedSlot> {
+        self.push_with_rows(samples, &mut |_| {})
+    }
+
+    /// [`push`](Self::push), forwarding each completed spectrum row to
+    /// `on_row` — see [`Ft4SavgBuilder::push_with_rows`]. This is how a
+    /// waterfall gets 152 rows a slot without a transform of its own;
+    /// [`wf_row`] turns one into palette indices.
+    pub fn push_with_rows(
+        &mut self,
+        samples: &[i16],
+        on_row: &mut dyn FnMut(&[f32]),
+    ) -> Option<CapturedSlot> {
         let mut rest = samples;
         let mut done = None;
         while !rest.is_empty() {
             let room = SLOT_SAMPLES - self.audio.len();
             let take = room.min(rest.len());
             self.audio.extend_from_slice(&rest[..take]);
-            self.savg.push(&rest[..take]);
+            self.savg.push_with_rows(&rest[..take], on_row);
             rest = &rest[take..];
             if self.audio.len() == SLOT_SAMPLES {
                 let prev = core::mem::replace(self, Self::new());
@@ -151,6 +161,9 @@ pub struct Ft4Decode {
     pub freq_hz: f32,
     pub dt_sec: f32,
     pub snr_db: f32,
+    /// BP hard-error count, as `DecodedRow::hard_errors` wants it —
+    /// the shared FT8 screen marks a row borderline at 24 or more.
+    pub hard_errors: u32,
 }
 
 /// Milliseconds between the end of an FT4 frame and the end of its
@@ -275,6 +288,7 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
             freq_hz: r.freq_hz,
             dt_sec: r.dt_sec,
             snr_db: r.snr_db,
+            hard_errors: r.hard_errors,
         });
     }
     SlotOutcome {
@@ -284,6 +298,93 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
         elapsed_us: now_us() - slot.closed_us,
         cut_at_score,
     }
+}
+
+/// Frequency span the waterfall covers, matching `ui::waterfall`'s
+/// own `WF_FREQ_LO_HZ`/`HI` and FT8's row builder — the panel is
+/// shared, so the axis has to be.
+pub const WF_FREQ_LO_HZ: f32 = 200.0;
+/// See [`WF_FREQ_LO_HZ`].
+pub const WF_FREQ_HI_HZ: f32 = 2_700.0;
+
+/// Bin spacing of a row from [`Ft4SavgBuilder`]: `12 000 / 2304`.
+const ROW_DF_HZ: f32 = 12_000.0 / 2_304.0;
+
+/// Turn one row's power spectrum into [`crate::pipeline::WF_ROW_LEN`]
+/// palette indices, 0..15.
+///
+/// Rows come from [`Ft4SavgBuilder::push_with_rows`], which hands over
+/// the spectra it is already averaging — so a waterfall costs no
+/// transform of its own. 152 of them per 7.5 s slot, one per 48 ms,
+/// against FT8's one per 15 s slot: the FT4 screen flows during
+/// capture rather than stepping once a slot.
+///
+/// **Per-column maximum, not mean.** A column is ~2 bins wide
+/// (2 500 Hz over 240 columns is 10.4 Hz, against 5.2 Hz bins) and an
+/// FT4 tone is narrower than that, so averaging would halve every
+/// signal against its neighbouring noise bin while leaving the noise
+/// floor alone — visible as a waterfall where the signals are dimmer
+/// than the background is bright.
+///
+/// **The scale is per-row and relative.** `floor` is the row's own
+/// mean power, which on a band with a handful of signals is a decent
+/// noise proxy, and the palette spans [`WF_SPAN_DB`] above it. An
+/// absolute scale would need a calibrated input level, which a
+/// receiver taking whatever a radio's USB audio hands it does not
+/// have; this instead shows the band the way an operator reads one,
+/// relative to its own noise.
+pub fn wf_row(spectrum: &[f32]) -> [u8; crate::pipeline::WF_ROW_LEN] {
+    const N: usize = crate::pipeline::WF_ROW_LEN;
+    let mut out = [0u8; N];
+    if spectrum.is_empty() {
+        return out;
+    }
+    let mean: f32 = spectrum.iter().sum::<f32>() / spectrum.len() as f32;
+    // A silent input (all zero) has no scale to speak of; leave the
+    // row black rather than dividing by it.
+    if !(mean > 0.0) {
+        return out;
+    }
+    let floor_db = 10.0 * log10(mean);
+    for (col, cell) in out.iter_mut().enumerate() {
+        let f0 = WF_FREQ_LO_HZ + col as f32 * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / N as f32;
+        let f1 = WF_FREQ_LO_HZ + (col + 1) as f32 * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / N as f32;
+        let lo = (f0 / ROW_DF_HZ) as usize;
+        let hi = (((f1 / ROW_DF_HZ) as usize) + 1).min(spectrum.len());
+        if hi <= lo {
+            continue;
+        }
+        let mut peak = 0.0f32;
+        for &p in &spectrum[lo..hi] {
+            if p > peak {
+                peak = p;
+            }
+        }
+        if !(peak > 0.0) {
+            continue;
+        }
+        let db = 10.0 * log10(peak) - floor_db;
+        let idx = (db / WF_SPAN_DB * 15.0).clamp(0.0, 15.0);
+        *cell = idx as u8;
+    }
+    out
+}
+
+/// Palette range above the row's noise floor. 30 dB puts a strong FT4
+/// signal at white and leaves the floor at black; wider washes the
+/// band out, narrower saturates every signal to the same colour.
+pub const WF_SPAN_DB: f32 = 30.0;
+
+/// `log10` without pulling `std` in — `no_std` here, and `libm` is not
+/// a dependency of this crate.
+fn log10(x: f32) -> f32 {
+    // `f32::log10` resolves through the `Float` trait that esp-idf's
+    // std brings into the graph for every build this crate has today,
+    // the same way `esp_dsp_fft`'s trig does; the import is explicit
+    // for the same reason.
+    #[allow(unused_imports)]
+    use num_traits::Float;
+    x.log10()
 }
 
 /// Unit-power normalisation, matching what
