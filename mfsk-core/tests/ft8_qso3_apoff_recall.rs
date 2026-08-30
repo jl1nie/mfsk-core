@@ -38,15 +38,34 @@ use common::load_wav_i16;
 const QSO3_PATH: &str = asset_path!("qso3_busy.wav");
 
 /// Ship-config recall floor against the 20-entry known-real-signal
-/// union. Measured 2026-08-14: host f32 **14/20**, host fixed-point
-/// (= bit-identical to embedded Q3i8 LLR build) **12/20** — ship
-/// config (`DecodeDepth::EMBEDDED`) never runs OSD, so the weakest
-/// signals (e.g. `K1BZM DK8NE -10` at -17..-19 dB) are structurally
-/// out of reach; see `ft8_qso3_full_parity_recall.rs` for the
-/// OSD-enabled host config that reaches all 20.
-#[cfg(not(feature = "fixed-point"))]
+/// union. Ship config (`DecodeDepth::EMBEDDED`) never runs OSD, so the
+/// weakest signals (e.g. `K1BZM DK8NE -10` at -17..-19 dB) are
+/// structurally out of reach; see `ft8_qso3_full_parity_recall.rs` for
+/// the OSD-enabled host config that reaches all 20.
+///
+/// **The floor keys off `nstep-half`, not `fixed-point`** (corrected
+/// 2026-08-30). This said "host f32 14/20, host fixed-point 12/20" and
+/// gated on `fixed-point`, which measured the two together: that
+/// feature *implies* `nstep-half`, and nothing had ever built one
+/// without the other. Separated with `ft8_qso3_decode_set`:
+///
+/// | build | decodes |
+/// |---|---:|
+/// | `full` (f32, NSTEP = NSPS/4) | 14 |
+/// | `full,nstep-half` (f32, NSTEP = NSPS/2) | **12** |
+/// | `full,fixed-point` (implies `nstep-half`) | **12** |
+///
+/// The last two decode the **same twelve messages**, not merely the
+/// same number of them. So the whole 14 → 12 gap is the coarse time
+/// grid, and Q11i16 quantisation costs nothing here — which also means
+/// a build with `nstep-half` and no `fixed-point` used to fail this
+/// test for holding it to a floor it cannot reach.
+///
+/// The two the halved grid gives up are `K1JT EA3AGB -15` and
+/// `W0RSJ EA3BMU RR73`.
+#[cfg(not(feature = "nstep-half"))]
 const MIN_GOLDEN_HITS: usize = 14;
-#[cfg(feature = "fixed-point")]
+#[cfg(feature = "nstep-half")]
 const MIN_GOLDEN_HITS: usize = 12;
 
 #[test]
