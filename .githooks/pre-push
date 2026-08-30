@@ -25,13 +25,22 @@ cd "$(git rev-parse --show-toplevel)"
 # nothing, so a bulk stale-branch cleanup (19 of them in one go, once)
 # shouldn't pay for a 15-combo feature matrix.
 have_update=0
+have_ref=0
 while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  have_ref=1
   case "$local_sha" in
     *[!0]*) have_update=1 ;;
   esac
 done
 if [ "$have_update" -eq 0 ]; then
-  echo "==> pre-push: deletions only, skipping checks"
+  # Distinguish the two ways this happens, because "deletions only" on
+  # an up-to-date push is a confusing thing to read while debugging a
+  # failed commit.
+  if [ "$have_ref" -eq 0 ]; then
+    echo "==> pre-push: nothing to push, skipping checks"
+  else
+    echo "==> pre-push: deletions only, skipping checks"
+  fi
   exit 0
 fi
 

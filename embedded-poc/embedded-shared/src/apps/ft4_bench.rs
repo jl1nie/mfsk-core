@@ -475,6 +475,127 @@ fn pie_delta(
     (now, t)
 }
 
+/// Is the DDC's dot product taking esp-dsp's PIE path, and what would
+/// it take to make it?
+///
+/// `FirStage::dot` already routes through `dotprod::dot_f32`, which
+/// under `dotprod-extern` is `dsps_dotprod_f32_aes3` — so the FIR is
+/// *on* esp-dsp and "bind esp-dsp" is not the outstanding item it was
+/// assumed to be (`docs/notes/FT4_BENCHMARK.md` §25.5's lever list).
+/// But that kernel's PIE path wants both pointers 16-byte aligned and
+/// `n % 4 == 0`, and `ft4::ddc`'s tap counts are **199 and 263** —
+/// neither divisible by 4 — while the history window slides by one
+/// sample per input, so its alignment cycles through every residue.
+///
+/// If that is what is costing the DDC its 1 848 ms, the fix is cheap:
+/// zero-pad the taps to a multiple of four (zero taps contribute
+/// nothing, and the extra history samples they multiply are real but
+/// multiplied by zero). If it is not, padding is churn. So: time
+/// `dot_f32` across the lengths and offsets that matter, and let the
+/// numbers pick.
+///
+/// Reported as ns per call so lengths are comparable, and per tap so
+/// the per-call FFI overhead shows up as a rising cost at short
+/// lengths.
+fn dotprod_probe() {
+    const MALLOC_CAP_INTERNAL_8BIT: u32 = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const BUF: usize = 512;
+    const ITERS: usize = 20_000;
+
+    // 16-byte-aligned so `off` below is the only thing perturbing
+    // alignment. Leaked; this is a single-shot bench.
+    // SAFETY: `heap_caps_aligned_alloc` returns null or a 16-byte
+    // aligned block of at least the requested size; `f32` needs 4.
+    let mk = || unsafe {
+        let p = esp_idf_svc::sys::heap_caps_aligned_alloc(
+            16,
+            BUF * core::mem::size_of::<f32>(),
+            MALLOC_CAP_INTERNAL_8BIT,
+        ) as *mut f32;
+        if p.is_null() {
+            None
+        } else {
+            Some(core::slice::from_raw_parts_mut(p, BUF))
+        }
+    };
+    let (Some(a), Some(b)) = (mk(), mk()) else {
+        log::warn!("ft4_bench: dotprod probe skipped — internal alloc failed");
+        return;
+    };
+    for k in 0..BUF {
+        a[k] = (k as f32) * 0.001 - 0.25;
+        b[k] = 0.5 - (k as f32) * 0.002;
+    }
+
+    log::info!("ft4_bench: dot_f32 probe (aligned base {:p})", a.as_ptr());
+    let mut sink = 0.0f32;
+    // `off = 0` keeps both operands 16-byte aligned; `off = 1` puts
+    // them 4-mod-16, which is what a sliding FIR window actually sees
+    // three times out of four.
+    for &n in &[196usize, 199, 200, 204, 260, 263, 264] {
+        for &off in &[0usize, 1] {
+            let t0 = now_us();
+            for _ in 0..ITERS {
+                sink += mfsk_core::engine::dsp::dotprod::dot_f32(&a[off..off + n], &b[off..off + n]);
+            }
+            let us = now_us() - t0;
+            log::info!(
+                "    n={n:3} off={off} {:5} ns/call  {:5} ps/tap  {}",
+                us * 1000 / ITERS as i64,
+                us * 1_000_000 / (ITERS * n) as i64,
+                if n % 4 == 0 && off == 0 { "<- PIE-eligible" } else { "" },
+            );
+        }
+    }
+    log::info!("ft4_bench: dot_f32 probe sink {sink:e}");
+}
+
+/// Which of the DDC's stages the 1 848 ms is in.
+///
+/// `CandidateDdc` interleaves mixer, both FIRs and the derotator one
+/// input sample at a time and keeps them private, so this rebuilds the
+/// two `FirStage`s — the only public part, and the only part with real
+/// arithmetic in it — and times them separately over one slot's worth
+/// of samples. The mixer, derotator and per-sample plumbing are then
+/// the difference against `candidate_baseband`'s own measurement.
+fn ddc_stage_probe(audio: &[i16]) {
+    use mfsk_core::engine::dsp::fir_decimate::FirStage;
+
+    // Mirrors `ft4::ddc`'s private constants. If those move this
+    // measurement quietly stops describing the shipped chain — same
+    // trade `SYNC_Q_MIN` above makes, and stated for the same reason.
+    const A_NTAPS: usize = 199;
+    const A_FC: f32 = 320.0 / 12_000.0;
+    const B_NTAPS: usize = 263;
+    const B_FC: f32 = 56.0 / (12_000.0 / 18.0);
+    const HIST_MARGIN: usize = 512;
+
+    let xi: Vec<f32> = audio.iter().map(|&s| s as f32).collect();
+    let xq: Vec<f32> = xi.clone();
+
+    let mut a = FirStage::new(A_NTAPS, 18, A_FC, HIST_MARGIN);
+    let (mut ai, mut aq) = (Vec::with_capacity(5_120), Vec::with_capacity(5_120));
+    let t0 = now_us();
+    a.push_block(&xi, &xq, &mut ai, &mut aq);
+    let a_us = now_us() - t0;
+
+    let mut b = FirStage::new(B_NTAPS, 1, B_FC, HIST_MARGIN);
+    let (mut bi, mut bq) = (Vec::with_capacity(5_120), Vec::with_capacity(5_120));
+    let t1 = now_us();
+    b.push_block(&ai, &aq, &mut bi, &mut bq);
+    let b_us = now_us() - t1;
+
+    log::info!(
+        "ft4_bench: DDC stages for one candidate: A ({A_NTAPS} taps, /18) {} ms -> {} out | \
+         B ({B_NTAPS} taps, /1) {} ms -> {} out | FIR total {} ms",
+        a_us / 1000,
+        ai.len(),
+        b_us / 1000,
+        bi.len(),
+        (a_us + b_us) / 1000,
+    );
+}
+
 /// RMS-normalise a downsampled baseband to unit power, matching what
 /// `process_candidate_basic_impl` does to its own `downsample_cached`
 /// output (WSJT-X `ft4_decode.f90:231-232`). Both the search passes and
@@ -710,6 +831,8 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // above are not isolating what this report claims they isolate.
     pie = pie_delta("pass1d DDC (expect no transforms)", ddc_us, pie);
     let _ = pie;
+    ddc_stage_probe(&audio);
+    dotprod_probe();
 
     // ── Passes 2*: the Δt search, one variable at a time ─────────────
     //
