@@ -51,7 +51,19 @@ use crate::board::{
 };
 
 // AW9523B register map (AW9523B datasheet §6).
+//
+// The two input registers are kept for the same reason `board.rs`
+// keeps `AW9523_P0_LCD_BL`: this map is read as documentation when
+// someone is working out which bit does what, and a half-transcribed
+// datasheet table is worse than a complete one. Nothing reads a port
+// back today — `power_state` reads the *output latches* (0x02/0x03),
+// which is what "what did we write" means; reading 0x00/0x01 would
+// answer "what is the pin actually at", a question this firmware has
+// not needed yet. (Surfaced by the 2026-08-30 lib split: in a bin
+// crate these were never flagged.)
+#[allow(dead_code)]
 const AW9523_REG_IN0: u8 = 0x00; // Input port 0 (read)
+#[allow(dead_code)]
 const AW9523_REG_IN1: u8 = 0x01; // Input port 1 (read)
 const AW9523_REG_OUT0: u8 = 0x02; // Output port 0 latch
 const AW9523_REG_OUT1: u8 = 0x03; // Output port 1 latch

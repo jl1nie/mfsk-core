@@ -9,64 +9,17 @@
 
 #![allow(dead_code)]
 
-mod apps;
-mod audio_out;
-mod board;
-mod coredump;
-mod decode_pipeline;
-mod display;
-mod esp_log_bridge;
-mod log_slot;
-mod pmic;
-mod rtc;
-mod touch;
-mod uac;
-
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::sys::{
-    heap_caps_get_free_size, heap_caps_get_largest_free_block, MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL,
+use mfsk_app_shared::{boot_mode, udp_log, wifi};
+
+use mfsk_core_m5stack_cores3_app::{
+    log_free_internal,
+    apps, board, coredump, decode_pipeline, display, uac, BOOT_MODE_DEFAULT, FANOUT, LOGGER,
+    NTP_SERVER, NTP_SYNC_TIMEOUT_MS, UDP_LOG_PORT, UDP_LOG_TARGET, WIFI_ENABLED, WIFI_PSK,
+    WIFI_SSID,
 };
-use log::LevelFilter;
-
-use mfsk_app_shared::boot_mode;
-use mfsk_app_shared::log_sink::{FanoutLogger, LogFanout};
-use mfsk_app_shared::udp_log;
-use mfsk_app_shared::wifi;
-
-pub fn log_free_internal(label: &str) {
-    let caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    let free = unsafe { heap_caps_get_free_size(caps) };
-    let largest = unsafe { heap_caps_get_largest_free_block(caps) };
-    log::info!("[mem] {label} free_internal={free} largest={largest}");
-}
-
-static FANOUT: LogFanout = LogFanout::new();
-
-/// この起動で WiFi を立ち上げるか。`display` が「ログ送信先を待つか」の
-/// 判断に使う — 来ない sink を45秒待つのは、起動が45秒遅い受信機に
-/// なるだけ。Refs #163.
-static WIFI_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-pub(crate) fn wifi_enabled_for_this_boot() -> bool {
-    WIFI_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-}
-static LOGGER: FanoutLogger = FanoutLogger::new(&FANOUT, LevelFilter::Info);
-
-const WIFI_SSID: &str = env!("WIFI_SSID");
-const WIFI_PSK: &str = env!("WIFI_PSK");
-const UDP_LOG_TARGET: &str = env!("UDP_LOG_TARGET");
-const UDP_LOG_PORT: &str = env!("UDP_LOG_PORT");
-const BOOT_MODE_DEFAULT: &str = env!("BOOT_MODE_DEFAULT");
-
-/// SNTP server for the FT8 controller. WSPR and FST4 take theirs from
-/// NVS settings, which this app has no page for; `pool.ntp.org` is what
-/// their own default is.
-const NTP_SERVER: &str = "pool.ntp.org";
-/// Long enough for a first sync over WiFi, short enough that a boot
-/// with no route still reaches the decode loop.
-const NTP_SYNC_TIMEOUT_MS: u32 = 20_000;
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();

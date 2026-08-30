@@ -1322,6 +1322,15 @@ pub fn usb_counters() -> (i32, i32, u32, u32) {
     )
 }
 
+/// Record the last USB host error for the link bar.
+///
+/// **Nothing calls this**, which means `LAST_ERR` is always 0 and the
+/// link bar's error field has never shown anything. Surfaced by the
+/// 2026-08-30 lib split — in a bin crate a `pub(crate)` item that is
+/// never used is not flagged. Kept rather than deleted because the
+/// counter it feeds *is* displayed, so the gap is a missing call site
+/// somewhere in the host-event path, not a redundant setter.
+#[allow(dead_code)]
 pub(crate) fn note_err(err: u32) {
     LAST_ERR.store(err, Ordering::Relaxed);
 }
