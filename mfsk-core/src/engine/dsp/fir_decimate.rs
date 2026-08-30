@@ -286,6 +286,57 @@ impl FirStage {
         }
     }
 
+    /// [`push_block`](Self::push_block) for a **real** stream: one
+    /// channel in, one out, and the Q half of the history untouched.
+    ///
+    /// A stage fed real audio through `push_block` pays for a second
+    /// dot product against a history of zeros. Measured on a CoreS3:
+    /// a 165-tap decimate-by-2 over a 90 000-sample slot is 202 ms
+    /// complex and half that real, and the shared front end
+    /// `docs/notes/FT4_BENCHMARK.md` §37.1 proposes is exactly that
+    /// stage — 100 ms once per slot against ~30 ms saved on each of a
+    /// dozen candidates.
+    ///
+    /// Identical to `push_block` on the I channel: same history, same
+    /// window positions, same taps, same `dot_f32`. Only the Q dot is
+    /// skipped. `push_block_real_matches_push_block` pins that.
+    ///
+    /// The two must not be mixed on one stage — the Q history would be
+    /// stale wherever the real path had run — and nothing needs to, so
+    /// it is a documented precondition rather than a runtime check.
+    pub fn push_block_real(&mut self, x: &[f32], out: &mut Vec<f32>) {
+        let ntaps = self.ntaps();
+        let mut k = 0usize;
+        while k < x.len() {
+            let take = (self.hist_cap - self.hist_len).min(x.len() - k);
+            debug_assert!(take > 0);
+
+            let hl = self.hist_len;
+            self.hist_i.as_mut_slice()[hl..hl + take].copy_from_slice(&x[k..k + take]);
+
+            let mut consumed = 0usize;
+            while self.to_next_out <= take - consumed {
+                let step = self.to_next_out;
+                consumed += step;
+                self.hist_len += step;
+                self.win_start += step;
+                self.to_next_out = self.decim;
+                out.push(self.dot_i());
+            }
+
+            let rest = take - consumed;
+            self.to_next_out -= rest;
+            self.hist_len += rest;
+            self.win_start += rest;
+            debug_assert_eq!(self.hist_len, self.win_start + ntaps);
+
+            k += take;
+            if self.hist_len == self.hist_cap {
+                self.compact();
+            }
+        }
+    }
+
     fn compact(&mut self) {
         // `win_start` is the same quantity `hist_len - ntaps` would
         // give, already maintained without the constant-folded
@@ -310,6 +361,25 @@ impl FirStage {
     /// of its cycles waiting on itself; independent partials fill the
     /// issue slots (same reasoning `wspr::ddc::StreamingDdc::dot`
     /// documents, which this mirrors).
+    /// [`dot`](Self::dot)'s I channel alone, for
+    /// [`push_block_real`](Self::push_block_real).
+    #[cfg(not(feature = "dotprod-extern"))]
+    fn dot_i(&mut self) -> f32 {
+        let ntaps = self.ntaps();
+        let a = self.win_start;
+        super::dotprod::dot_f32(&self.taps_rev[..], &self.hist_i.as_slice()[a..a + ntaps])
+    }
+
+    /// See the other arm.
+    #[cfg(feature = "dotprod-extern")]
+    fn dot_i(&mut self) -> f32 {
+        let a = self.win_start;
+        let phase = a % 4;
+        let h = self.taps_phase[phase].as_slice();
+        let (lo, len) = (a - phase, h.len());
+        super::dotprod::dot_f32(h, &self.hist_i.as_slice()[lo..lo + len])
+    }
+
     #[cfg(not(feature = "dotprod-extern"))]
     fn dot(&mut self) -> (f32, f32) {
         let ntaps = self.ntaps();
@@ -381,6 +451,47 @@ mod tests {
 
         assert_eq!(oi, bi);
         assert_eq!(oq, bq);
+    }
+
+    /// The real path must equal the complex one on its I channel.
+    ///
+    /// `push_block_real` exists to stop a real-input stage paying for a
+    /// dot against a history of zeros, and the only way that is safe is
+    /// if it is otherwise the same filter: same history, same window
+    /// positions, same taps. Compared bit-for-bit, across the shapes
+    /// the block loop branches on, including the FT4 shared stage's own
+    /// 165 taps / decim 2.
+    #[test]
+    fn push_block_real_matches_push_block() {
+        let audio: Vec<f32> = (0..4000).map(|k| (k as f32 * 0.013).sin()).collect();
+        let zeros = vec![0.0f32; audio.len()];
+
+        for &(ntaps, decim, margin, chunk) in &[
+            (31usize, 1usize, 32usize, 500usize),
+            (31, 4, 32, 500),
+            (165, 2, 512, 1024),
+            (199, 18, 512, 4000),
+            (15, 3, 4, 3),
+        ] {
+            let mut cx = FirStage::new(ntaps, decim, 0.1, margin);
+            let (mut ci, mut cq) = (Vec::new(), Vec::new());
+            for (a, z) in audio.chunks(chunk).zip(zeros.chunks(chunk)) {
+                cx.push_block(a, z, &mut ci, &mut cq);
+            }
+
+            let mut re = FirStage::new(ntaps, decim, 0.1, margin);
+            let mut ri = Vec::new();
+            for a in audio.chunks(chunk) {
+                re.push_block_real(a, &mut ri);
+            }
+
+            let label = format!("ntaps={ntaps} decim={decim} chunk={chunk}");
+            assert_eq!(ci.len(), ri.len(), "{label}: output count");
+            assert!(!ri.is_empty(), "{label}: produced nothing");
+            for (i, (c, r)) in ci.iter().zip(ri.iter()).enumerate() {
+                assert_eq!(c.to_bits(), r.to_bits(), "{label}: sample {i}");
+            }
+        }
     }
 
     /// The same equivalence across the shapes the 2026-08-30 block-mode

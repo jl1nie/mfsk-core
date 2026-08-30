@@ -741,26 +741,40 @@ fn shared_decim_probe(audio: &[i16]) {
     // 12 kHz, which a Blackman window buys at ~165 taps rather than
     // the 111 first assumed (that number came from a 2 700 -> 3 300
     // transition that does not protect the top of the band).
-    let mut shared = 0i64;
     for &n in &[111usize, 165, 231] {
-        let us = run("shared /2 (once, complex)", n, 2, 2_800.0 / 12_000.0, 90_000);
-        if n == 165 {
-            shared = us;
-        }
+        run("shared /2 (once, complex)", n, 2, 2_800.0 / 12_000.0, 90_000);
     }
+
+    // The real-input path, which is what the shared stage would
+    // actually use — one channel in, one out, and no dot against a
+    // history of zeros. `push_block_real_matches_push_block` pins it
+    // bit-identical to the complex path's I channel.
+    let shared = {
+        let mut st = FirStage::new(165, 2, 2_800.0 / 12_000.0, 512);
+        let mut out = Vec::with_capacity(45_000);
+        let t0 = now_us();
+        st.push_block_real(&xi, &mut out);
+        let us = now_us() - t0;
+        log::info!(
+            "    {:<34} {:>7} us  (165 taps, /2, 90000 in -> {} out)",
+            "shared /2 (once, REAL)",
+            us,
+            out.len(),
+        );
+        us
+    };
 
     const CANDS: i64 = 12;
     let today = now_a * CANDS;
-    // The shared leg halved: real input needs one channel, not two.
-    let proposed = shared / 2 + then_a * CANDS;
+    let proposed = shared + then_a * CANDS;
     log::info!(
         "ft4_bench: shared-decimation — today {} ms ({} x {} ms) | proposed {} ms \
-         (shared {} ms at 165 taps + {} x {} ms) | {}",
+         (shared {} ms real at 165 taps + {} x {} ms) | {}",
         today / 1000,
         CANDS,
         now_a / 1000,
         proposed / 1000,
-        shared / 2000,
+        shared / 1000,
         CANDS,
         then_a / 1000,
         if proposed < today {

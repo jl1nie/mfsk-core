@@ -2778,3 +2778,36 @@ So the 252 ms stays. §37.1's shared decimation is 278 ms for
 comparable money and is **recall-neutral** — it changes the filter
 chain, not the search or the decision — which is why it goes first.
 Equal milliseconds, and one of them has no side effects to re-verify.
+
+### 37.2 The real-input path, measured (2026-08-31)
+
+§37.1's 83 ms was `shared / 2` — a complex-input measurement halved on
+the assumption that dropping the unused Q channel would exactly halve
+the cost. Rather than assume that, `FirStage` grew a real-input entry
+point (`push_block_real`, one dot per output instead of two, pinned
+bit-identical to `push_block`'s I channel by
+`push_block_real_matches_push_block` across five shapes including this
+stage's own 165 taps / decim 2) and the probe was pointed at it
+directly:
+
+```
+A now (12k, per candidate)          61 011 us  (199 taps, /18, 90 000 in -> 4 995 out)
+A after /2 (6k, per cand)           30 843 us  (101 taps,  /9, 45 000 in -> 4 995 out)
+shared /2 (once, REAL)             108 699 us  (165 taps,  /2, 90 000 in -> 44 959 out)
+
+today    732 ms (12 x 61)
+proposed 478 ms (shared 108 + 12 x 30)
+```
+
+108.7 ms, not 83 — halving the complex cost undersold it by ~30 %
+(a real dot is one multiply-accumulate loop, not half of two; the
+fixed per-sample overhead in `push_block_real`'s history bookkeeping
+doesn't halve just because one channel does). The saving is smaller
+than §37.1 estimated but still real: **254 ms, ~1.3 candidates** at
+§37's ~197 ms/candidate rate, against §37.1's 278 ms/1.4. Still a win
+at every occupancy §23 measured, still second in line behind wiring
+the streamed coarse into the receiver.
+
+`push_block_real` and its equivalence test are the only new code so
+far — `ft4::ddc`'s `CandidateDdc` itself is unchanged, so this is a
+measurement, not yet a shipped optimization.
