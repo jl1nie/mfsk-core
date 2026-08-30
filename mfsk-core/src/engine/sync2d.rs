@@ -33,7 +33,7 @@ use num_complex::Complex;
 use num_traits::Float;
 
 use crate::engine::Protocol;
-use crate::engine::dsp::dotprod::dot_f32;
+use crate::engine::dsp::dotprod::{AlignedF32, dot_f32};
 use crate::engine::sync::{SyncCandidate, SyncDims};
 
 /// Output of [`fst4_sync_search`] / [`ft4_sync_search`].
@@ -149,10 +149,43 @@ fn cached_costas_ref_continuous(pattern: &[u8], ds_spb: usize) -> Vec<Complex<f3
 /// Both layouts are built once per `(block, df)` in the twiddle step,
 /// where the reference is already being rebuilt anyway.
 struct FlatRef {
+    /// Reference length in complex samples. Not derived from
+    /// `plain.len()`: [`AlignedF32`] rounds its allocation up to a
+    /// multiple of four, so that would over-report for odd block
+    /// lengths.
+    n: usize,
     /// The reference, interleaved.
-    plain: Vec<f32>,
+    ///
+    /// 16-byte aligned, which a plain `Vec<f32>` is not: `dot_f32`'s
+    /// esp-dsp backend needs **both** operands aligned and the length a
+    /// multiple of four, or it silently takes a scalar body ~2.3x
+    /// slower. The length is already fine (a Costas block is
+    /// `nsym · ds_spb · 2` f32), so alignment was the whole gap —
+    /// measured on a CoreS3 at **22 % of this scorer's 284 688 dots per
+    /// slot reaching the fast path**, the other 78 % failing on
+    /// alignment alone (`docs/notes/FT4_BENCHMARK.md` §29).
+    plain: AlignedF32,
     /// The same reference with each `(re, im)` rewritten as `(−im, re)`.
-    swapped: Vec<f32>,
+    swapped: AlignedF32,
+    /// The same two, shifted right by one complex sample (two leading
+    /// zero `f32`), for windows that start at an **odd** `cd0` index.
+    ///
+    /// `score_flat_coherent` reads `cd0[s0..]` reinterpreted as `f32`,
+    /// so its byte offset is `s0 · 8` and it is 16-byte aligned only
+    /// when `s0` is even. Rather than copy the window — which loses,
+    /// measured: the same trade cost more than it saved in
+    /// `ft4::ddc`'s FIR (§27) — the odd case reads from `s0 - 1`,
+    /// which *is* aligned, against a reference whose first sample is
+    /// zero. Every added term is exactly `0.0 · x`; only the rounding
+    /// of the sum moves.
+    ///
+    /// Same trick as `FirStage`'s per-phase tap tables, with two
+    /// phases instead of four because the unit here is a complex
+    /// sample rather than a single `f32`.
+    #[cfg(feature = "dotprod-extern")]
+    plain_odd: AlignedF32,
+    #[cfg(feature = "dotprod-extern")]
+    swapped_odd: AlignedF32,
 }
 
 impl FlatRef {
@@ -170,14 +203,19 @@ impl FlatRef {
     /// the question.
     fn with_len(n: usize) -> Self {
         Self {
-            plain: alloc::vec![0.0; n * 2],
-            swapped: alloc::vec![0.0; n * 2],
+            n,
+            plain: AlignedF32::new(n * 2),
+            swapped: AlignedF32::new(n * 2),
+            // Two leading zeros, then the same `n * 2` samples.
+            #[cfg(feature = "dotprod-extern")]
+            plain_odd: AlignedF32::new(n * 2 + 2),
+            #[cfg(feature = "dotprod-extern")]
+            swapped_odd: AlignedF32::new(n * 2 + 2),
         }
     }
 
     /// Overwrite with `flat_ref` carrier-shifted by `df_hz`.
     fn fill(&mut self, flat_ref: &[Complex<f32>], df_hz: f32, ds_rate: f32) {
-        debug_assert_eq!(self.plain.len(), flat_ref.len() * 2);
         let omega = 2.0 * PI * df_hz / ds_rate;
         let shift = df_hz.abs() >= f32::EPSILON;
         for (n, &r) in flat_ref.iter().enumerate() {
@@ -187,15 +225,22 @@ impl FlatRef {
             } else {
                 r
             };
-            self.plain[2 * n] = r.re;
-            self.plain[2 * n + 1] = r.im;
-            self.swapped[2 * n] = -r.im;
-            self.swapped[2 * n + 1] = r.re;
+            self.plain.as_mut_slice()[2 * n] = r.re;
+            self.plain.as_mut_slice()[2 * n + 1] = r.im;
+            self.swapped.as_mut_slice()[2 * n] = -r.im;
+            self.swapped.as_mut_slice()[2 * n + 1] = r.re;
+            #[cfg(feature = "dotprod-extern")]
+            {
+                self.plain_odd.as_mut_slice()[2 * n + 2] = r.re;
+                self.plain_odd.as_mut_slice()[2 * n + 3] = r.im;
+                self.swapped_odd.as_mut_slice()[2 * n + 2] = -r.im;
+                self.swapped_odd.as_mut_slice()[2 * n + 3] = r.re;
+            }
         }
     }
 
     fn len(&self) -> usize {
-        self.plain.len() / 2
+        self.n
     }
 }
 
@@ -210,15 +255,46 @@ fn score_flat_coherent(cd0: &[Complex<f32>], flat_ref: &FlatRef, cd0_start: i32)
         return 0.0;
     }
     let s0 = cd0_start as usize;
+
+    // Odd `s0` puts the `f32` view at an 8-mod-16 address, which costs
+    // the backend its PIE path. Start one complex sample earlier —
+    // aligned — against the zero-led reference instead. Needs one more
+    // complex sample in range than the plain path, so the last legal
+    // window still takes the plain one.
+    // How many complex samples the zero-led reference spans: its
+    // padded `f32` length halved. Stated from the buffer rather than
+    // as `n + 1`, because `AlignedF32` rounds up to a multiple of four
+    // and how much it adds depends on the parity of `n` — which is
+    // `ds_spb`-dependent and so differs between FT4 and FST4.
+    #[cfg(feature = "dotprod-extern")]
+    let odd_span = (flat_ref.plain_odd.as_slice().len() / 2) as i32;
+    #[cfg(feature = "dotprod-extern")]
+    if s0 % 2 == 1 && cd0_start - 1 + odd_span <= np {
+        // The *padded* length, not `n * 2 + 2`. A length that is not a
+        // multiple of four fails the backend's other precondition, and
+        // slicing back to 258 is exactly what the first flash of this
+        // did: 5 184 calls still on the scalar path. The tail of the
+        // reference is zero, and `odd_span` above is what puts the
+        // extra `cd0` samples in range.
+        //
+        // SAFETY: as the plain branch below, starting one sample
+        // earlier; the `odd_span` test establishes the length.
+        let pad = flat_ref.plain_odd.as_slice().len();
+        let c: &[f32] =
+            unsafe { core::slice::from_raw_parts(cd0[s0 - 1..].as_ptr() as *const f32, pad) };
+        let zr = dot_f32(c, flat_ref.plain_odd.as_slice());
+        let zi = dot_f32(c, flat_ref.swapped_odd.as_slice());
+        return (zr * zr + zi * zi).sqrt();
+    }
+
     // SAFETY: `Complex<f32>` is `#[repr(C)]` over two `f32`, so a
     // slice of them is exactly the interleaved layout `FlatRef` was
     // built to match, with the same alignment. The bounds check above
     // establishes the length.
-    let c: &[f32] = unsafe {
-        core::slice::from_raw_parts(cd0[s0..].as_ptr() as *const f32, flat_ref.plain.len())
-    };
-    let zr = dot_f32(c, &flat_ref.plain);
-    let zi = dot_f32(c, &flat_ref.swapped);
+    let c: &[f32] =
+        unsafe { core::slice::from_raw_parts(cd0[s0..].as_ptr() as *const f32, flat_ref.n * 2) };
+    let zr = dot_f32(c, &flat_ref.plain.as_slice()[..flat_ref.n * 2]);
+    let zi = dot_f32(c, &flat_ref.swapped.as_slice()[..flat_ref.n * 2]);
     (zr * zr + zi * zi).sqrt()
 }
 

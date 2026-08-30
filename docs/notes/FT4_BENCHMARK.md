@@ -2160,3 +2160,61 @@ Two caveats, both important:
   win in the real app means reserving the buffer through `worker_arena`
   at boot, the way `internal_pool` already does for `cs`, not allocating
   it on demand.
+
+## 29. The coherent scorer was 78 % off the fast path (2026-08-30)
+
+§27 fixed `ft4::ddc`'s FIR on the strength of a micro-benchmark.
+Counting the *real* `dot_f32` call sites — new counters in the
+`dotprod-extern` backend, split by which precondition failed — showed
+where that had and had not landed:
+
+| call site | calls / slot | PIE | slow: alignment | slow: length |
+|---|---:|---:|---:|---:|
+| front ends (FIR) | 248 904 | **100 %** | 0 | 0 |
+| `ft4_sync_search` (±1.0 s) | 284 688 | **22 %** | 219 456 | 0 |
+
+The FIR work landed completely. `engine::sync2d`'s coherent scorer —
+`ft4_sync_search`'s entire inner loop, and `fst4_sync_search`'s — was
+78 % on the scalar path, **purely on alignment**. Its length was never
+the problem: a Costas block is `nsym · ds_spb · 2` f32, 256 for FT4.
+
+Two operands, both failing:
+
+- `FlatRef::plain` / `swapped` were plain `Vec<f32>`, guaranteed only
+  4-byte aligned;
+- `c` is `cd0[s0..]` viewed as `f32`, so its byte offset is `s0 · 8` —
+  16-byte aligned only when `s0` is even, and `s0` sweeps the grid.
+
+**And here the copy that lost in §27 wins.** The FIR's staging copy was
+per dot; this one would be per candidate, amortised over ~25 000 dots.
+In the event it was not needed at all: aligning `FlatRef`'s buffers and
+adding a **zero-led odd-phase pair** — read from `s0 - 1`, which is
+aligned, against a reference whose first complex sample is zero — takes
+both operands to aligned without copying anything. Two phases rather
+than the FIR's four, because the unit here is a complex sample.
+
+```
+pass2 ft4_sync_search dot_f32: 284 688 calls | 284 688 PIE (100 %)
+search ±1.0 s  1 593 -> 1 048 ms
+search ±0.5 s    960 ->   700 ms
+ship slot      3 516 -> 3 288 ms, 1.79x -> 1.67x
+```
+
+`i0_sum` is unchanged across every run, so the search is selecting the
+same positions; 11 decodes in every arm.
+
+One mistake worth keeping: the first flash still showed 5 184 calls on
+the scalar path, because the odd-phase reference was sliced back to
+`n·2 + 2` = 258 — not a multiple of four. `AlignedF32` had already
+padded it to 260 with zeros; using the padded length is both correct
+and what the precondition wants. The bound is now expressed from that
+padded length rather than as `n + 1`, since how much padding it adds
+depends on the parity of `n`, which differs between FT4 and FST4.
+
+Host is untouched — the odd phase is behind `dotprod-extern` and a
+build with no backend keeps the single reference it always had. Tier
+A+B green (82 binaries).
+
+**FST4 gets this for free.** `score_flat_coherent` is shared, and
+`fst4_sync_search` is the FST4 wideband monitor's binding stage
+(`docs/notes/FST4_BENCHMARK.md`). Not measured here.

@@ -52,6 +52,68 @@
 //! `engine::fft`'s ESP-DSP backend, where misalignment corrupted an
 //! allocator block header.
 
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
+
+/// Four `f32` under a 16-byte alignment guarantee — the backing unit
+/// for [`AlignedF32`].
+#[repr(align(16))]
+#[derive(Clone, Copy)]
+pub(crate) struct AlignedQuad(
+    // Read only through the reinterpreting slices in
+    // [`AlignedF32::as_slice`] / [`AlignedF32::as_mut_slice`] — the
+    // field exists to size and align the backing store. Same shape and
+    // same `allow` as `embedded-shared`'s `Align16Quad`.
+    #[allow(dead_code)] [f32; 4],
+);
+
+/// A zero-filled `f32` buffer whose base is 16-byte aligned and whose
+/// length is a multiple of four.
+///
+/// Both are preconditions of `dsps_dotprod_f32_aes3`'s PIE path;
+/// missing either drops it to a scalar loop. Measured on a CoreS3
+/// (`docs/notes/FT4_BENCHMARK.md` §27): **7 900 ps/tap when both hold,
+/// 18 080 when either does not** — 2.3x, and `ft4::ddc`'s 199- and
+/// 263-tap stages satisfied *neither*, so every dot the DDC has ever
+/// done took the slow path.
+///
+/// Lives here rather than with any one caller because it exists
+/// purely to satisfy [`dot_f32`]'s backend preconditions;
+/// `fir_decimate` and `sync2d` both build on it.
+///
+/// The FIR's history buffers use it unconditionally: a `Vec<f32>` is
+/// only guaranteed 4-byte aligned, so a window starting at a
+/// four-multiple index would still not be 16-byte aligned and the
+/// backend would take the slow path anyway. Making the base aligned
+/// costs nothing and changes no arithmetic.
+pub(crate) struct AlignedF32 {
+    quads: Vec<AlignedQuad>,
+    len: usize,
+}
+
+impl AlignedF32 {
+    /// Rounds `len` **up** to a multiple of four and zero-fills.
+    pub(crate) fn new(len: usize) -> Self {
+        let quads = len.div_ceil(4);
+        Self {
+            quads: vec![AlignedQuad([0.0; 4]); quads],
+            len: quads * 4,
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[f32] {
+        // SAFETY: `AlignedQuad` is `repr(align(16))` over `[f32; 4]`,
+        // so the store is exactly `self.len` contiguous `f32`.
+        unsafe { core::slice::from_raw_parts(self.quads.as_ptr() as *const f32, self.len) }
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [f32] {
+        // SAFETY: as `as_slice`.
+        unsafe { core::slice::from_raw_parts_mut(self.quads.as_mut_ptr() as *mut f32, self.len) }
+    }
+}
+
 /// Backend hook: `Σ a[k]·b[k]`, where `a.len() == b.len()`.
 ///
 /// With `dotprod-extern`, the binary supplies:

@@ -741,7 +741,11 @@ impl MixedRadix3840Fft {
                 let got = core::ptr::NonNull::new(p);
                 log::info!(
                     "fft_mixed_3840: scratch in {} DRAM",
-                    if got.is_some() { "INTERNAL" } else { "PSRAM (internal alloc failed)" }
+                    if got.is_some() {
+                        "INTERNAL"
+                    } else {
+                        "PSRAM (internal alloc failed)"
+                    }
                 );
                 got
             },
@@ -904,7 +908,11 @@ impl MixedRadix2304Fft {
                 let got = core::ptr::NonNull::new(p);
                 log::info!(
                     "fft_mixed_2304: scratch in {} DRAM",
-                    if got.is_some() { "INTERNAL" } else { "PSRAM (internal alloc failed)" }
+                    if got.is_some() {
+                        "INTERNAL"
+                    } else {
+                        "PSRAM (internal alloc failed)"
+                    }
                 );
                 got
             },

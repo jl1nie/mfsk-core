@@ -556,14 +556,19 @@ fn dotprod_probe() {
         for &off in &[0usize, 1] {
             let t0 = now_us();
             for _ in 0..ITERS {
-                sink += mfsk_core::engine::dsp::dotprod::dot_f32(&a[off..off + n], &b[off..off + n]);
+                sink +=
+                    mfsk_core::engine::dsp::dotprod::dot_f32(&a[off..off + n], &b[off..off + n]);
             }
             let us = now_us() - t0;
             log::info!(
                 "    n={n:3} off={off} {:5} ns/call  {:5} ps/tap  {}",
                 us * 1000 / ITERS as i64,
                 us * 1_000_000 / (ITERS * n) as i64,
-                if n % 4 == 0 && off == 0 { "<- PIE-eligible" } else { "" },
+                if n % 4 == 0 && off == 0 {
+                    "<- PIE-eligible"
+                } else {
+                    ""
+                },
             );
         }
     }
