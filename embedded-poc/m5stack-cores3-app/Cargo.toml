@@ -26,6 +26,7 @@ harness = false
 name = "wspr-bench"
 path = "src/bin/wspr_bench.rs"
 harness = false
+required-features = ["wspr"]
 
 # WSPR receiver app (CoreS3 WSPR app plan, steps 1-8) — the actual UI
 # built on top of the WSPR embedded RX work above. See
@@ -39,6 +40,7 @@ harness = false
 name = "fst4-bench"
 path = "src/bin/fst4_bench.rs"
 harness = false
+required-features = ["fst4"]
 
 # FST4-60 DDC-fed coarse-sync + refine + decode bench —
 # docs/notes/FST4_DDC_DESIGN.md stage 5's first half. The whole chain
@@ -49,6 +51,7 @@ harness = false
 name = "fst4-ddc-bench"
 path = "src/bin/fst4_ddc_bench.rs"
 harness = false
+required-features = ["fst4"]
 
 # FT4 per-candidate bench — FT4 had no embedded path at all before
 # this (`docs/reference/EMBEDDED.md`'s per-protocol table), and its
@@ -99,6 +102,7 @@ harness = false
 name = "wifi-probe"
 path = "src/bin/wifi_probe.rs"
 harness = false
+required-features = ["wspr"]
 
 [profile.release]
 # **Changed 2026-08-13, verified on hardware** — issue #260. Was `1`,
@@ -151,8 +155,30 @@ esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 # on also changes what the screen shows: replayed and fabricated
 # stations land on the spot list looking exactly like received ones,
 # which is why the default is off rather than merely unread.
-fst4-replay = []
-wspr-golden = []
+fst4-replay = ["fst4"]
+wspr-golden = ["wspr"]
+
+# The two non-FT8 receiver modes, **off by default**.
+#
+# Each is a whole receiver — `apps/fst4.rs` and `apps/wspr.rs` are 1 382
+# and 1 815 lines, with their own tasks, screens, slot grids and worker
+# stacks — plus the decoder behind it (`mfsk-core/fst4`, or
+# `mfsk-core/wspr` and its three embedded tuning features) and the
+# benches that exercise them. A board booted into `decode`/`uac` never
+# reaches any of it, and one image cannot boot into two modes at once,
+# so carrying both by default charges every FT8 controller for two
+# receivers it will not run.
+#
+# `boot_mode` still *has* `Wspr` and `Fst4` variants when they are
+# compiled out — an NVS setting outlives a reflash, so a board can ask
+# for a mode this image does not have. `main` says so plainly rather
+# than falling through to FT8 in silence.
+#
+# Turn on with `--features fst4` / `--features wspr`; the benches that
+# need them carry `required-features` so `cargo build` skips rather
+# than fails.
+fst4 = ["embedded-shared/fst4-bench"]
+wspr = ["embedded-shared/wspr-bench"]
 
 [dependencies]
 log = "0.4"
@@ -173,11 +199,11 @@ num-complex = { version = "0.4", default-features = false }
 # depends on). Crate-wide like `wspr-bench`'s features below, not
 # scoped to just the `fst4-bench` bin — Cargo has no per-bin feature
 # sets within one crate.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "ft4", "fst4", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "ft4", "fft-extern", "fixed-point", "profile-coarse", "nstep-half", "internal-testing"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 # Shared decode-pipeline layer (streaming, dual_core, stage1_inc, esp_dsp_fft).
-embedded-shared = { path = "../embedded-shared", features = ["aes3", "wspr-bench", "fst4-bench", "ft4-bench"] }
+embedded-shared = { path = "../embedded-shared", features = ["aes3", "ft4-bench"] }
 
 # Board-agnostic app logic (QSO FSM, time sync, TX picker, SNR norm,
 # NVS boot mode, log fanout, WiFi + UDP, UI draw routines).

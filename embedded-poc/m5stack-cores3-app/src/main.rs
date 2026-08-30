@@ -129,9 +129,26 @@ fn main() -> ! {
     // binaries: changing mode used to mean re-flashing, and on this
     // board that means unplugging the radio, because `usb_host_install`
     // takes the port the flasher would use. Refs #163.
+    //
+    // `Wspr` and `Fst4` are behind default-off features. The NVS
+    // setting outlives a reflash, so a board can ask for a mode this
+    // image does not carry; say which and carry on into the FT8 path
+    // rather than appearing to ignore the setting.
     match mode {
+        #[cfg(feature = "wspr")]
         boot_mode::BootMode::Wspr => apps::wspr::run(peripherals, nvs_part),
+        #[cfg(feature = "fst4")]
         boot_mode::BootMode::Fst4 => apps::fst4::run(peripherals, nvs_part),
+        #[cfg(not(feature = "wspr"))]
+        boot_mode::BootMode::Wspr => log::error!(
+            "boot_mode=wspr but this image was built without --features wspr — \
+             continuing as an FT8 controller"
+        ),
+        #[cfg(not(feature = "fst4"))]
+        boot_mode::BootMode::Fst4 => log::error!(
+            "boot_mode=fst4 but this image was built without --features fst4 — \
+             continuing as an FT8 controller"
+        ),
         _ => {}
     }
 

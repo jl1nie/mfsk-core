@@ -1123,7 +1123,9 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // above are not isolating what this report claims they isolate.
     pie = pie_delta("pass1d DDC (expect no transforms)", ddc_us, pie);
     let _ = pie;
-    dots = dot_delta("pass1f+1d front ends (FIR)", dots);
+    // Not re-bound: the baseline for pass 2 is retaken below, after
+    // the probes, so carrying this one forward would be dead anyway.
+    let _ = dot_delta("pass1f+1d front ends (FIR)", dots);
     ddc_stage_probe(&audio);
     dotprod_probe();
     fft3840_probe();

@@ -430,6 +430,19 @@ there is no serial device to find.
   crate, so re-flashing after that change resets the littlefs-stored
   settings (re-enter via the HTTP config server).
 
+  **The two non-FT8 receivers are default-off features (2026-08-30).**
+  `apps/fst4.rs` and `apps/wspr.rs` are 1 382 and 1 815 lines each,
+  with their own tasks, screens, slot grids and worker stacks, plus the
+  decoder behind each — and one image can only boot into one mode, so
+  carrying both by default charged every FT8 controller for two
+  receivers it would never run. `--features fst4` / `--features wspr`
+  bring them back; the benches that need them carry `required-features`
+  so a plain `cargo build --bins` skips rather than fails. Default ELF
+  2 770 968 B against 3 412 112 with both, i.e. **626 KB**. `boot_mode`
+  keeps its `Wspr`/`Fst4` variants either way — NVS outlives a reflash,
+  so a board can ask for a mode the image lacks, and `main` logs
+  exactly that instead of silently continuing.
+
   **One binary, three receivers (2026-08-23).** `wspr_app.rs` and
   `fst4_app.rs` are no longer their own `[[bin]]`s — they moved to
   `src/apps/{wspr,fst4}.rs` and `main` dispatches on the NVS
