@@ -397,6 +397,142 @@ fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
     }
 }
 
+/// One candidate's SHIP-configuration work, factored so the
+/// single-core and dual-core passes run byte-identical code.
+fn ship_candidate(audio: &[i16], cand: &SyncCandidate) -> Option<alloc::string::String> {
+    let mut cd0 = candidate_baseband(audio, cand.freq_hz);
+    rms_normalise(&mut cd0);
+    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
+    let r = process_candidate_precomputed::<Ft4>(
+        cand,
+        &[],
+        &FT4_DOWNSAMPLE,
+        DecodeDepth::EMBEDDED,
+        DecodeStrictness::Normal,
+        &[],
+        EqMode::Off,
+        SYNC_Q_MIN,
+        (cd0, s2.freq_hz, s2.i0, s2.score),
+        false,
+        false,
+    )?;
+    r.message77()
+        .try_into()
+        .ok()
+        .and_then(|m77: &[u8; 77]| unpack77(m77))
+}
+
+struct HalfArgs {
+    audio: *const i16,
+    audio_len: usize,
+    cands: *const SyncCandidate,
+    n: usize,
+    decodes: core::sync::atomic::AtomicUsize,
+    done: core::sync::atomic::AtomicBool,
+}
+// SAFETY: the pointers address a leaked audio buffer and a leaked
+// candidate slice, both immutable and outliving the task; the two
+// atomics are the only mutation and are the handshake itself.
+unsafe impl Sync for HalfArgs {}
+
+extern "C" fn half_worker(arg: *mut core::ffi::c_void) {
+    // SAFETY: `dualcore_probe` leaks the `HalfArgs` and does not return
+    // until `done` is set.
+    let a: &'static HalfArgs = unsafe { &*(arg as *const HalfArgs) };
+    let audio = unsafe { core::slice::from_raw_parts(a.audio, a.audio_len) };
+    let cands = unsafe { core::slice::from_raw_parts(a.cands, a.n) };
+    let mut got = 0usize;
+    for c in cands {
+        if ship_candidate(audio, c).is_some() {
+            got += 1;
+        }
+    }
+    a.decodes.store(got, core::sync::atomic::Ordering::Relaxed);
+    a.done.store(true, core::sync::atomic::Ordering::Release);
+    unsafe { esp_idf_svc::sys::vTaskDelete(core::ptr::null_mut()) };
+}
+
+/// Can the candidate loop use the second core, and by how much?
+///
+/// Feasibility probe, not a production path — `dual_core.rs` and
+/// `wspr_dual_core.rs` are ~650-720 lines each, and building that for
+/// FT4 on a prediction is exactly the mistake §26.1 and §27 already
+/// paid for twice today.
+///
+/// **The reason it might not be 2x**: `esp_dsp_fft`'s `Fc32Guard` is a
+/// process-global spinlock held across every transform, because the
+/// esp-dsp fc32 twiddle table is one global that has to be *resized*
+/// per length. The DDC (FIR) and the Δt search use no FFT at all, but
+/// `symbol_spectra`'s per-symbol 32-point transforms do — ~19 % of the
+/// SHIP candidate time — and those serialise. This measures what is
+/// left after that.
+fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let n = candidates.len();
+    if n < 2 {
+        return;
+    }
+    let split = n / 2;
+
+    // Single-core reference over the same work, same code path.
+    let t0 = now_us();
+    let mut serial = 0usize;
+    for c in candidates {
+        if ship_candidate(audio, c).is_some() {
+            serial += 1;
+        }
+    }
+    let serial_us = now_us() - t0;
+
+    let args: &'static HalfArgs = alloc::boxed::Box::leak(alloc::boxed::Box::new(HalfArgs {
+        audio: audio.as_ptr(),
+        audio_len: audio.len(),
+        cands: candidates[split..].as_ptr(),
+        n: n - split,
+        decodes: AtomicUsize::new(0),
+        done: AtomicBool::new(false),
+    }));
+
+    const WORKER_STACK: u32 = 32 * 1024;
+    let t1 = now_us();
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(half_worker),
+            c"ft4_half".as_ptr(),
+            WORKER_STACK,
+            args as *const _ as *mut core::ffi::c_void,
+            5,
+            core::ptr::null_mut(),
+            1,
+        )
+    };
+    if created != 1 {
+        log::warn!("ft4_bench: dual-core probe skipped — could not create the core-1 task");
+        return;
+    }
+    let mut here = 0usize;
+    for c in &candidates[..split] {
+        if ship_candidate(audio, c).is_some() {
+            here += 1;
+        }
+    }
+    while !args.done.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    let par_us = now_us() - t1;
+    let total = here + args.decodes.load(Ordering::Relaxed);
+
+    log::info!(
+        "ft4_bench: dual-core probe — {n} candidates | 1 core {} ms | 2 cores {} ms | \
+         {}.{:02}x | decodes {total} (serial {serial})",
+        serial_us / 1000,
+        par_us / 1000,
+        serial_us / par_us.max(1),
+        (serial_us * 100 / par_us.max(1)) % 100,
+    );
+}
+
 /// `dot_f32` fast/slow-path counts around one stage.
 ///
 /// The FIR was fixed on the strength of a micro-benchmark; this says
@@ -1048,6 +1184,13 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
             ((coarse_us + ship_us) / 1000 * 100 / DECODE_BUDGET_MS) % 100,
         );
     }
+
+    // Leaked so the core-1 task's slices are `'static`; single-shot
+    // bench, and this is the last thing it does.
+    let audio_s: &'static [i16] = alloc::boxed::Box::leak(audio.clone().into_boxed_slice());
+    let cands_s: &'static [SyncCandidate] =
+        alloc::boxed::Box::leak(candidates.clone().into_boxed_slice());
+    dualcore_probe(audio_s, cands_s);
 
     log::info!(
         "ft4_bench: stack headroom {} B of {} B",

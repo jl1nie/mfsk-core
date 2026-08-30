@@ -2218,3 +2218,68 @@ A+B green (82 binaries).
 **FST4 gets this for free.** `score_flat_coherent` is shared, and
 `fst4_sync_search` is the FST4 wideband monitor's binding stage
 (`docs/notes/FST4_BENCHMARK.md`). Not measured here.
+
+## 30. Dual-core is worth 1.33x, not 2x (2026-08-30)
+
+`dual_core.rs` and `wspr_dual_core.rs` are ~650 and ~715 lines. Writing
+that for FT4 on the strength of "the candidate loop is embarrassingly
+parallel" is the mistake §26.1 and §27 each paid for once already, so
+this is a feasibility probe first: split the 12 candidates across two
+pinned tasks running byte-identical code, against a single-core
+reference over the same work.
+
+```
+dual-core probe — 12 candidates | 1 core 2906 ms | 2 cores 2182 ms
+                | 1.33x | decodes 11 (serial 11)
+```
+
+**1.33×.** The candidate loop is parallel in structure but not in
+practice, for two reasons that were visible beforehand and one that was
+not:
+
+- `esp_dsp_fft`'s `Fc32Guard` is a process-global spinlock held across
+  every transform, because the esp-dsp fc32 twiddle table is a single
+  global that has to be *resized* per length. The DDC and the Δt search
+  use no FFT, but `symbol_spectra`'s per-symbol 32-point transforms do —
+  ~19 % of the SHIP candidate time — and they serialise. A spinlock also
+  means the waiting core burns cycles rather than yielding them.
+- Both cores stream `cd0` (40 KB per candidate) and the slot audio from
+  PSRAM, so they contend for the bus that §26.3 already showed is this
+  board's real constraint.
+- Candidates are not equal cost, so a 6/6 split leaves one core idle at
+  the end.
+
+Projected onto the ship slot: candidates 2 530 → ~1 902 ms, slot →
+~2 660 ms, **1.67× → 1.36×**. Real, but against ~700 lines of production
+machinery and a worker stack in internal DRAM — which is the same 31 744
+B block the 2304 scratch (18 KB, §26.3) and FT8's 3840 scratch (30 KB,
+§28) are already competing for. That is a poor trade next to what the
+alignment work returned for a fraction of the code.
+
+### 30.1 What to do instead, on the same evidence
+
+The SHIP slot's 2 530 ms of candidate work now splits as DDC 1 339 (53 %),
+Δt search 700 (28 %), LLR+BP 491 (19 %). Every `dot_f32` in it is on the
+PIE path (§29), so the dots are done.
+
+What is left in the DDC is **not** arithmetic. Stage A is 70 ms per
+candidate of which the dots are ~16; the other ~54 ms is
+`FirStage::push_one` called 90 000 times — two stores, a counter, and a
+compaction test per input sample, for a stage that produces 4 995
+outputs. That is ~648 ms per slot, 20 % of the budget, spent on
+bookkeeping.
+
+(It is not a regression from §27's rework: the same split measured 52 ms
+before those changes and 54 after, while the dots went 36 → 16.)
+
+`FirStage::push_block` exists and documents itself as the block-mode
+entry point, but its body is still `push_one` in a loop, and
+`CandidateDdc` never reaches it anyway — `push_i16` mixes and pushes one
+sample at a time, so stage A never sees a block. Mixing in chunks and
+giving `push_block` a real body (append the block to the history, then
+compute outputs at their strides) is pure data movement, bit-identical
+by construction, and contained to two files.
+
+**That is the better next move**: comparable or larger than dual-core,
+at a fraction of the code, and it does not spend internal DRAM that
+FT8 and a future dual-core worker both need.
