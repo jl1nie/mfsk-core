@@ -99,41 +99,197 @@ const FREQ_HARD_MAX_HZ: f32 = 4910.0;
 /// `NSTEP`-strided, `NFFT1`-wide (overlapping) segments of raw 12 kHz
 /// PCM, averaged across all segments.
 fn symbol_spectra_avg(audio: &[i16]) -> Vec<f32> {
-    let window = nuttall_window(NFFT1);
-    let fac = 1.0f32 / 300.0;
-    let fft = with_default_planner(|planner| planner.plan_forward(NFFT1));
+    let mut b = Ft4SavgBuilder::new(audio.len());
+    b.push(audio);
+    b.finish()
+}
 
-    let nhsym = if audio.len() > NFFT1 {
-        (audio.len() - NFFT1) / NSTEP
-    } else {
-        0
-    };
+/// `symbol_spectra_avg` fed a slot at a time instead of all at once.
+///
+/// **Why**: this stage is the FT4 receiver's largest single
+/// non-per-candidate cost — 758 ms of a 3 119 ms slot on a CoreS3, 39 %
+/// of the 1 960 ms budget, measured after the internal-DRAM scratch fix
+/// (`docs/notes/FT4_BENCHMARK.md` §26, §31.2) — and every one of its
+/// ~152 transforms depends only on samples that have already arrived.
+/// A receiver can complete each row as its audio lands and have `savg`
+/// ready at slot end, so the whole stage leaves the post-slot budget
+/// rather than being paid out of it. WSPR already ships exactly this
+/// shape (`wspr_app`'s `ddc_loop` -> `DDC_READY_IDX` -> `scan_loop`),
+/// and [`engine::sync::SpectrogramBuilder`] is the same idea for
+/// FST4's 2-D spectrogram.
+///
+/// It is also the stage that *cannot* be parallelised instead: it is
+/// pure FFT, and the esp-dsp backend serialises every transform behind
+/// one global twiddle-table lock (§30).
+///
+/// [`engine::sync::SpectrogramBuilder`]: crate::engine::sync::SpectrogramBuilder
+///
+/// **The total length is required up front** and is not a convenience.
+/// `getcandidates4.f90` averages exactly `(nz - NFFT1) / NSTEP` rows,
+/// which is *not* the same as "every row that fits": for a 90 000-sample
+/// slot that is 152, while row 152 would still lie entirely inside the
+/// audio. A builder that emitted rows greedily would average 153 and
+/// produce a different `savg`.
+pub struct Ft4SavgBuilder {
+    window: Vec<f32>,
+    fft: alloc::boxed::Box<dyn crate::engine::fft::Fft>,
+    savg: Vec<f32>,
+    buf: Vec<Complex<f32>>,
+    /// Samples from `abs_base` onwards that a future row still needs.
+    /// Rows overlap by `NFFT1 - NSTEP`, so this stays bounded by
+    /// `NFFT1` plus one push, however long the stream runs.
+    hist: Vec<i16>,
+    /// Absolute stream index of `hist[0]`.
+    abs_base: usize,
+    /// Next row to emit.
+    j: usize,
+    /// Total samples pushed so far; `hist` holds `[abs_base,
+    /// stream_len)`.
+    stream_len: usize,
+    nhsym: usize,
+    count: usize,
+}
 
-    let mut savg = vec![0.0f32; NH1];
-    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT1];
-    let mut count = 0usize;
-    for j in 0..nhsym {
-        let ia = j * NSTEP;
-        if ia + NFFT1 > audio.len() {
-            break;
+impl Ft4SavgBuilder {
+    /// `total_samples` is the slot length the finished `savg` must
+    /// match — see the type's doc comment for why it is not optional.
+    pub fn new(total_samples: usize) -> Self {
+        let nhsym = if total_samples > NFFT1 {
+            (total_samples - NFFT1) / NSTEP
+        } else {
+            0
+        };
+        Self {
+            window: nuttall_window(NFFT1),
+            fft: with_default_planner(|planner| planner.plan_forward(NFFT1)),
+            savg: vec![0.0f32; NH1],
+            buf: vec![Complex::new(0.0f32, 0.0); NFFT1],
+            hist: Vec::with_capacity(NFFT1 + NSTEP),
+            abs_base: 0,
+            j: 0,
+            stream_len: 0,
+            nhsym,
+            count: 0,
         }
+    }
+
+    /// Feed the next contiguous block of 12 kHz PCM, completing every
+    /// row it makes available. Block boundaries do not affect the
+    /// result — one push of the whole slot and many small pushes give
+    /// the same `savg`, which `ft4_savg_builder_matches_whole_slot`
+    /// pins bit-for-bit.
+    ///
+    /// Rows are read **straight out of the caller's block** whenever
+    /// nothing is retained, which is every push in the whole-slot case
+    /// and most of them in the streaming one; only a row straddling
+    /// two blocks needs the retained tail. The first version of this
+    /// buffered unconditionally and compacted with `drain` after every
+    /// row, which is quadratic when the caller hands over a whole slot
+    /// at once — 152 rows each memmoving what was left of 90 000
+    /// samples. Measured on a CoreS3: `ft4_coarse_sync` went 758 ms to
+    /// 1 906 ms, i.e. the "streaming" rewrite made the non-streaming
+    /// path 2.5x worse before anything had been moved off the budget.
+    pub fn push(&mut self, audio: &[i16]) {
+        let base = self.stream_len;
+        self.stream_len += audio.len();
+
+        if self.hist.is_empty() {
+            let Self {
+                window,
+                fft,
+                savg,
+                buf,
+                j,
+                nhsym,
+                count,
+                ..
+            } = self;
+            while *j < *nhsym {
+                let ia = *j * NSTEP;
+                let Some(lo) = ia.checked_sub(base) else {
+                    break;
+                };
+                if lo + NFFT1 > audio.len() {
+                    break;
+                }
+                Self::row(&audio[lo..lo + NFFT1], window, fft.as_ref(), buf, savg);
+                *count += 1;
+                *j += 1;
+            }
+            // Retain only what a later row still needs.
+            let keep = (self.j * NSTEP).clamp(base, self.stream_len);
+            self.hist.extend_from_slice(&audio[keep - base..]);
+            self.abs_base = keep;
+            return;
+        }
+
+        // A row straddles the previous block and this one.
+        self.hist.extend_from_slice(audio);
+        let Self {
+            window,
+            fft,
+            savg,
+            buf,
+            hist,
+            abs_base,
+            j,
+            nhsym,
+            count,
+            ..
+        } = self;
+        while *j < *nhsym {
+            let ia = *j * NSTEP;
+            let Some(lo) = ia.checked_sub(*abs_base) else {
+                break;
+            };
+            if lo + NFFT1 > hist.len() {
+                break;
+            }
+            Self::row(&hist[lo..lo + NFFT1], window, fft.as_ref(), buf, savg);
+            *count += 1;
+            *j += 1;
+        }
+        let dead = (*j * NSTEP).saturating_sub(*abs_base).min(hist.len());
+        if dead > 0 {
+            hist.drain(..dead);
+            *abs_base += dead;
+        }
+    }
+
+    /// One windowed transform, accumulated into `savg`.
+    ///
+    /// Free-standing over the fields it touches so both arms of
+    /// [`push`](Self::push) can call it while holding a borrow of the
+    /// samples — which live in the caller's block on one arm and in
+    /// `hist` on the other.
+    fn row(
+        src: &[i16],
+        window: &[f32],
+        fft: &dyn crate::engine::fft::Fft,
+        buf: &mut [Complex<f32>],
+        savg: &mut [f32],
+    ) {
+        let fac = 1.0f32 / 300.0;
         for k in 0..NFFT1 {
-            let sample = audio[ia + k] as f32 * fac * window[k];
-            buf[k] = Complex::new(sample, 0.0);
+            buf[k] = Complex::new(src[k] as f32 * fac * window[k], 0.0);
         }
-        fft.process(&mut buf);
+        fft.process(buf);
         for i in 0..NH1 {
             savg[i] += buf[i].norm_sqr();
         }
-        count += 1;
     }
-    if count > 0 {
-        let inv = 1.0 / count as f32;
-        for s in savg.iter_mut() {
-            *s *= inv;
+
+    /// The averaged periodogram. Identical to
+    /// `symbol_spectra_avg` over the same samples.
+    pub fn finish(mut self) -> Vec<f32> {
+        if self.count > 0 {
+            let inv = 1.0 / self.count as f32;
+            for s in self.savg.iter_mut() {
+                *s *= inv;
+            }
         }
+        self.savg
     }
-    savg
 }
 
 /// FT4 coarse-candidate stage: one candidate per frequency-domain local
@@ -170,6 +326,29 @@ pub fn ft4_coarse_sync(
     max_cand: usize,
 ) -> Vec<SyncCandidate> {
     let savg = symbol_spectra_avg(audio);
+    ft4_coarse_sync_from_savg(&savg, freq_min, freq_max, sync_min, freq_hint, max_cand)
+}
+
+/// [`ft4_coarse_sync`]'s second half: everything after the
+/// periodogram.
+///
+/// Split out so a receiver that accumulated `savg` during capture with
+/// [`Ft4SavgBuilder`] pays only this part after the slot. On a CoreS3
+/// the two halves are ~750 ms and ~10 ms, so which side of slot end
+/// the transforms fall on decides 39 % of the decode budget
+/// (`docs/notes/FT4_BENCHMARK.md` §32).
+///
+/// `savg` must be `NH1` long — the periodogram over the whole slot,
+/// already averaged.
+pub fn ft4_coarse_sync_from_savg(
+    savg: &[f32],
+    freq_min: f32,
+    freq_max: f32,
+    sync_min: f32,
+    freq_hint: Option<f32>,
+    max_cand: usize,
+) -> Vec<SyncCandidate> {
+    assert_eq!(savg.len(), NH1, "savg must be NH1 bins");
 
     // 15-bin boxcar smooth (`getcandidates4.f90:39-42`: `savsm(i) =
     // sum(savg(i-7:i+7))/15` for 1-indexed `i` in `[8, NH1-7]`; the
@@ -202,7 +381,7 @@ pub fn ft4_coarse_sync(
     // back to linear power to match `ft4_baseline.f90:46`'s
     // `sbase(i)=10**(sbase(i)/10.0)` before dividing `savsm` by it
     // (`getcandidates4.f90:50`).
-    let sbase_db = fit_baseline(&savg, nfa, nfb);
+    let sbase_db = fit_baseline(savg, nfa, nfb);
     for (k, i) in (nfa..=nfb).enumerate() {
         let sbase_lin = 10f32.powf(sbase_db[k] / 10.0);
         savsm[i] = if sbase_lin > f32::EPSILON {
@@ -240,4 +419,67 @@ pub fn ft4_coarse_sync(
     // than up to 8 lag peaks per bin, so it could not hit #257's
     // annulus as hard, but there is no reason for the two to disagree.
     crate::engine::sync::rank_candidates(out, freq_hint, max_cand)
+}
+
+#[cfg(test)]
+#[cfg(feature = "fft-rustfft")]
+mod tests {
+    use super::*;
+    extern crate std;
+    use std::vec::Vec as StdVec;
+
+    fn tone_slot() -> StdVec<i16> {
+        (0..90_000)
+            .map(|k| {
+                let t = k as f32 / 12_000.0;
+                let v = (2.0 * core::f32::consts::PI * 1234.0 * t).sin() * 6000.0
+                    + (2.0 * core::f32::consts::PI * 2100.0 * t).sin() * 2500.0;
+                v as i16
+            })
+            .collect()
+    }
+
+    /// Chunked accumulation must equal the whole-slot one, bit for bit.
+    ///
+    /// The point of [`Ft4SavgBuilder`] is that a receiver runs it during
+    /// capture, where the chunk size is whatever the audio source hands
+    /// over — so "block boundaries do not matter" is the property, not
+    /// an implementation detail. Covers chunks that do not divide
+    /// `NSTEP`, one either side of it, one larger than `NFFT1`, and a
+    /// single whole-slot push.
+    #[test]
+    fn ft4_savg_builder_matches_whole_slot() {
+        let audio = tone_slot();
+        let want = symbol_spectra_avg(&audio);
+        assert_eq!(want.len(), NH1);
+        assert!(want.iter().any(|&v| v > 0.0), "reference savg is all zero");
+
+        for &chunk in &[1usize, 7, 512, 576, 1000, 1024, 2304, 3000, 90_000] {
+            let mut b = Ft4SavgBuilder::new(audio.len());
+            for c in audio.chunks(chunk) {
+                b.push(c);
+            }
+            let got = b.finish();
+            assert_eq!(got.len(), want.len(), "chunk {chunk}: length");
+            for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+                assert_eq!(g.to_bits(), w.to_bits(), "chunk {chunk}, bin {i}");
+            }
+        }
+    }
+
+    /// The split entry point must reproduce the all-in-one one.
+    #[test]
+    fn ft4_coarse_from_savg_matches_the_combined_call() {
+        let audio = tone_slot();
+        let want = ft4_coarse_sync(&audio, 100.0, 2700.0, 1.2, None, 100);
+        let savg = symbol_spectra_avg(&audio);
+        let got = ft4_coarse_sync_from_savg(&savg, 100.0, 2700.0, 1.2, None, 100);
+
+        assert!(!want.is_empty(), "no candidates to compare");
+        assert_eq!(want.len(), got.len());
+        for (a, b) in want.iter().zip(got.iter()) {
+            assert_eq!(a.freq_hz.to_bits(), b.freq_hz.to_bits());
+            assert_eq!(a.score.to_bits(), b.score.to_bits());
+        }
+    }
 }

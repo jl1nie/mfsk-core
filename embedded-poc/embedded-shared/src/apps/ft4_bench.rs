@@ -153,7 +153,7 @@ use num_traits::Float;
 
 use mfsk_core::engine::dsp::downsample::downsample_cached;
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+use mfsk_core::engine::ft4_coarse::{Ft4SavgBuilder, ft4_coarse_sync, ft4_coarse_sync_from_savg};
 use mfsk_core::engine::pipeline::{
     process_candidate_basic, process_candidate_precomputed, DecodeDepth, DecodeStrictness,
 };
@@ -1020,6 +1020,58 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         baked.len(),
     );
     pie = pie_delta("pass0 coarse (2304 = 256 x 9)", coarse_us, pie);
+
+    // ── Pass 0s: the same stage, split the way a receiver would ──────
+    //
+    // `Ft4SavgBuilder` accumulates the periodogram from audio blocks,
+    // so a receiver completes each row as its samples land and has
+    // `savg` ready at slot end. What is left after the slot is only
+    // `ft4_coarse_sync_from_savg`. Fed here in 1 024-sample blocks —
+    // the result is bit-identical at any block size, pinned on host by
+    // `ft4_savg_builder_matches_whole_slot`, so the size is a pacing
+    // choice and not a numerical one.
+    //
+    // The build half is timed too, but as information rather than as
+    // budget: on a real receiver it overlaps capture, and 7.5 s of
+    // wall-clock is what it has to fit inside.
+    let t0 = now_us();
+    let mut b = Ft4SavgBuilder::new(audio.len());
+    for chunk in audio.chunks(1_024) {
+        b.push(chunk);
+    }
+    let savg = b.finish();
+    let build_us = now_us() - t0;
+
+    let t0 = now_us();
+    let streamed = ft4_coarse_sync_from_savg(
+        &savg,
+        FREQ_MIN_HZ,
+        FREQ_MAX_HZ,
+        SYNC_MIN,
+        None,
+        MAX_CAND,
+    );
+    let pick_us = now_us() - t0;
+
+    let same = streamed.len() == candidates.len()
+        && streamed
+            .iter()
+            .zip(candidates.iter())
+            .all(|(a, b)| a.freq_hz == b.freq_hz && a.score == b.score);
+    log::info!(
+        "ft4_bench: pass0s streamed coarse — build {} ms (overlaps capture, 7500 ms of it) \
+         + pick {} ms (post-slot) | {} candidates, {} whole-slot pass0",
+        build_us / 1000,
+        pick_us / 1000,
+        streamed.len(),
+        if same { "identical to" } else { "DIFFERS FROM" },
+    );
+    log::info!(
+        "ft4_bench: pass0s post-slot coarse cost {} ms -> {} ms ({} ms leaves the budget)",
+        coarse_us / 1000,
+        pick_us / 1000,
+        (coarse_us - pick_us) / 1000,
+    );
     compare_candidates(&candidates, &baked);
     if candidates.is_empty() {
         log::error!("ft4_bench: coarse stage found nothing — the rest of the run is meaningless");

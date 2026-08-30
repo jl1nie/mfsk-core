@@ -244,6 +244,62 @@ impl FlatRef {
     }
 }
 
+/// `cd0` with its base guaranteed 16-byte aligned, copying only if it
+/// is not already.
+///
+/// [`score_flat_coherent`]'s odd-phase reference handles the *parity*
+/// of `s0`, but only if the buffer's base is aligned to start with: at
+/// an 8-mod-16 base **no** `s0` works and every dot falls to the scalar
+/// path. `cd0` reaches here as a `Vec<Complex<f32>>` from
+/// `downsample_cached` or `ft4::ddc`, and `Complex<f32>` has alignment
+/// 4, so nothing guarantees it.
+///
+/// This was not hypothetical. The §29 measurement showed 100 % of the
+/// scorer's 284 688 dots on the PIE path — and that held only because
+/// the allocator happened to hand back an aligned 40 KB block. Leaking
+/// one more 18 KB internal buffer elsewhere in the same binary shifted
+/// the heap, and the next run measured **0 %**, with the search back at
+/// 1 789 ms from 1 049 (`docs/notes/FT4_BENCHMARK.md` §32). A measured
+/// 100 % that depends on an uncontrolled allocator is not a guarantee.
+///
+/// The copy is per *call* — once per candidate, amortised over the
+/// ~25 000 dots the grid search then does — which is the case §29
+/// identified as affordable, unlike `ft4::ddc`'s per-dot staging that
+/// §27 measured and rejected.
+struct AlignedCd0 {
+    store: Option<AlignedF32>,
+}
+
+impl AlignedCd0 {
+    fn new(cd0: &[Complex<f32>]) -> Self {
+        if (cd0.as_ptr() as usize).is_multiple_of(16) {
+            return Self { store: None };
+        }
+        let n2 = cd0.len() * 2;
+        let mut a = AlignedF32::new(n2);
+        // SAFETY: `Complex<f32>` is `repr(C)` over two `f32`, so this
+        // is exactly the interleaved view of the same samples.
+        let src = unsafe { core::slice::from_raw_parts(cd0.as_ptr() as *const f32, n2) };
+        a.as_mut_slice()[..n2].copy_from_slice(src);
+        Self { store: Some(a) }
+    }
+
+    fn get<'a>(&'a self, orig: &'a [Complex<f32>]) -> &'a [Complex<f32>] {
+        match &self.store {
+            // SAFETY: the store holds `orig.len() * 2` `f32` copied
+            // from `orig`, 16-byte aligned; reinterpreting back to
+            // `Complex<f32>` is the inverse of the view taken in `new`.
+            Some(a) => unsafe {
+                core::slice::from_raw_parts(
+                    a.as_slice().as_ptr() as *const Complex<f32>,
+                    orig.len(),
+                )
+            },
+            None => orig,
+        }
+    }
+}
+
 /// Coherent inner product for one Costas block: returns amplitude |z|.
 /// Matches WSJT-X: `abs(sum(cd0 * conjg(csynct))) / nz`
 /// (normalization by block length omitted here — comparison is relative).
@@ -320,6 +376,12 @@ pub fn fst4_sync_search<P: Protocol>(
     // `downsample_cached`'s own rate, not `SyncDims::of`'s
     // `sample_rate_hz` parameter (see that doc comment), so the
     // argument here is inert.
+    // Aligned once per call, before anything reads it — see
+    // [`AlignedCd0`]. Copies only when the caller's buffer is not
+    // already 16-byte aligned.
+    let aligned = AlignedCd0::new(cd0);
+    let cd0 = aligned.get(cd0);
+
     let d = SyncDims::of::<P>(12_000.0);
     let ds_spb = d.ds_spb;
     let ds_rate = d.ds_rate;
@@ -486,6 +548,10 @@ pub fn ft4_sync_search_window<P: Protocol>(
     ib_min: i32,
     ib_max: i32,
 ) -> Sync2dResult {
+    // See [`AlignedCd0`]; same reasoning as `fst4_sync_search`.
+    let aligned = AlignedCd0::new(cd0);
+    let cd0 = aligned.get(cd0);
+
     // Only `d.ds_spb`/`d.ds_rate` are read below — see
     // `fst4_sync_search`'s identical comment.
     let d = SyncDims::of::<P>(12_000.0);

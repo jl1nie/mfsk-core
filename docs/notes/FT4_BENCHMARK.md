@@ -2350,3 +2350,77 @@ as its samples arrive, and `wspr_app` already ships this shape
 (`ddc_loop` -> `DDC_READY_IDX` -> `scan_loop`). It is also the stage
 that *cannot* be parallelised, since it is pure FFT behind the global
 guard — so moving it off the budget is the only lever it has.
+
+## 32. Streaming the coarse stage, and a 100 % that was luck (2026-08-30)
+
+`symbol_spectra_avg` is ~152 windowed transforms over the slot, each
+depending only on samples that have already arrived. [`Ft4SavgBuilder`]
+accumulates `savg` from audio blocks so a receiver completes each row
+during capture, and `ft4_coarse_sync_from_savg` is what is left to pay
+afterwards. Bit-identical at any block size, pinned on host across nine
+chunk sizes including ones that do not divide `NSTEP`.
+
+```
+pass0s streamed coarse — build 798 ms (overlaps capture, 7 500 ms of it)
+                       + pick    6 ms (post-slot)
+                       | 12 candidates, identical to whole-slot pass0
+post-slot coarse cost 761 ms -> 6 ms  (754 ms leaves the budget)
+```
+
+**The total length has to be known up front**, and that is not a
+convenience: `getcandidates4.f90` averages exactly `(nz − NFFT1)/NSTEP`
+rows, which is *not* "every row that fits". For a 90 000-sample slot
+that is 152, while row 152 would still lie entirely inside the audio. A
+builder that emitted greedily would average 153 rows and produce a
+different `savg`.
+
+### 32.1 Two mistakes, both caught by the bench
+
+**The rewrite made the non-streaming path 2.5× worse.** The first
+version buffered every push and compacted with `drain` after each row —
+quadratic when the caller hands over a whole slot, which is exactly what
+`symbol_spectra_avg` does: 152 rows each memmoving what was left of
+90 000 samples. `ft4_coarse_sync` went 758 → 1 906 ms. Rows are now read
+straight out of the caller's block whenever nothing is retained, and
+only a row straddling two blocks touches the history.
+
+**And the §29 result turned out to be luck.** In the same run the
+scorer's dots went from 100 % on the PIE path to **0 %**, search 1 049 →
+1 789 ms — with no change to `sync2d` at all. The odd-phase reference
+handles the *parity* of `s0`, but only if `cd0`'s base is 16-byte
+aligned; at an 8-mod-16 base no `s0` works. `cd0` is a
+`Vec<Complex<f32>>`, alignment 4, so nothing guaranteed it — §29 simply
+got an aligned 40 KB block, and leaking one more 18 KB internal buffer
+elsewhere in the binary shifted the heap enough to lose it.
+
+`AlignedCd0` now aligns it explicitly, copying once per call when
+needed. That costs ~7 ms per candidate (search 1 049 → 1 129 ms at
+±1.0 s) and is the difference between a 2.3× win and a coin flip.
+**A measured 100 % that depends on an uncontrolled allocator is not a
+guarantee** — and this one had already been written up as a result.
+
+### 32.2 The budget, with the coarse stage off it
+
+| | whole-slot coarse | streamed coarse |
+|---|---:|---:|
+| post-slot coarse | 761 ms | 6 ms |
+| candidates (12) | 2 431 ms | 2 431 ms |
+| **slot** | **3 192 (1.63×)** | **2 437 (1.24×)** |
+
+At 203 ms per candidate, against §23's occupancy figures:
+
+| occupancy | candidates | slot | vs budget |
+|---|---:|---:|---:|
+| 5 signals | 5.3 | ~1 082 ms | **0.55×** |
+| 10 signals | 9.2 | ~1 874 ms | **0.96×** |
+| 14 (FT8 density) | 12.3 | ~2 503 ms | 1.28× |
+
+**The whole of FT4's realistic occupancy range now fits**, with the
+FT8-density pessimum 1.28× over. This morning the same measurement was
+2.33× at the design point and over everywhere.
+
+What remains is not a decode-speed problem: `Ft4SavgBuilder` is a
+library part, and no embedded binary calls it yet. Wiring it to the UAC
+capture path — the way `wspr_app` already runs `ddc_loop` →
+`DDC_READY_IDX` → `scan_loop` — is what turns the 754 ms into a real
+receiver's headroom.
