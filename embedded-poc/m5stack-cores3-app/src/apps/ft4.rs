@@ -54,6 +54,57 @@ use mfsk_app_shared::ui::state::{DecodedRow, UI};
 /// listen-only board should try every candidate.
 const BUDGET_MS: i64 = rx::TX_TURNAROUND_BUDGET_MS;
 
+/// Replay the baked golden slot when no radio is feeding audio.
+///
+/// **On by default for FT4**, unlike FST4's, whose equivalent is behind
+/// `MFSK_FST4_REPLAY`. The reason is the band, not the code: FT4
+/// activity is thin enough that a receiver pointed at a real antenna
+/// can sit for a long time decoding nothing, which is
+/// indistinguishable from a receiver that is broken. FST4's own doc
+/// warns that replayed stations look exactly like received ones on
+/// screen — that is true here too, and the log line below is what
+/// tells them apart.
+///
+/// Set `MFSK_FT4_REPLAY=0` for a build that only ever decodes what the
+/// antenna heard.
+const REPLAY_GOLDEN: bool = match option_env!("MFSK_FT4_REPLAY") {
+    Some(v) => !matches!(v.as_bytes(), [b'0']),
+    None => true,
+};
+
+/// One FT4 slot of 12 kHz PCM — the WSJT-X golden, baked by
+/// `ft4_bake_golden_precomputed`. 19 signals, 14 in the search band,
+/// 11 decoding in a single pass at `DecodeDepth::EMBEDDED`.
+#[cfg(feature = "ft4-replay")]
+const GOLDEN_AUDIO: &[u8] = include_bytes!("../../../assets/ft4_golden_audio.bin");
+#[cfg(not(feature = "ft4-replay"))]
+const GOLDEN_AUDIO: &[u8] = &[];
+
+/// Replay feed size — the ~256 samples a UAC read produces, so the
+/// replay exercises the block cadence a radio will rather than a
+/// friendlier one.
+const REPLAY_BLOCK: usize = 256;
+
+/// Spectrogram rows per waterfall row.
+///
+/// The coarse stage produces one row per 48 ms — 152 a slot — and the
+/// shared waterfall was built for FT8, which pushes **one per 15 s
+/// slot**. Feeding it all 152 turns the 100-row ring over 1.5 times
+/// per slot, so the display shows about 4.8 s of band and races; and
+/// since every `push_waterfall` bumps `wf_push_seq`, the display loop
+/// repaints its 48 KB region ~20 times a second chasing them. On the
+/// panel that reads as the waterfall overflowing, which is exactly
+/// what it is.
+///
+/// Every 6th row is ~one per 288 ms: still visibly flowing during
+/// capture, which is the point of having the rows at all, but 100 rows
+/// is now ~29 s of history and the repaint rate is ~3.5 Hz.
+///
+/// The rows themselves are not thrown away cheaply — they are free, and
+/// the decoder consumes all of them. This decimates the *drawing*
+/// only.
+const WF_ROW_DECIM: usize = 6;
+
 /// Stack for the decode task. `decode_slot` keeps a slot of audio and
 /// one `cd0` per candidate, both heap; the frames themselves are
 /// modest. Matches what `decode_pipeline` asks for on the FT8 path.
@@ -160,7 +211,8 @@ fn spawn_slot_task() {
 }
 
 /// Drain captured audio into the accumulator, and decode each slot it
-/// completes.
+/// completes. Falls back to replaying the golden while no radio is
+/// feeding it — see [`REPLAY_GOLDEN`].
 ///
 /// One task, not two: the accumulation is ~12 % duty (§33) and the
 /// decode ~2.4 s of a 7.5 s slot, so they fit in series with room, and
@@ -172,20 +224,63 @@ fn spawn_slot_task() {
 fn slot_loop() -> ! {
     let mut accum = rx::SlotAccum::new();
     let mut block: Vec<i16> = Vec::with_capacity(STAGING_CAP);
+
+    // The replay source, decoded from the baked asset once.
+    let golden: Vec<i16> = GOLDEN_AUDIO
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let replaying = REPLAY_GOLDEN && !golden.is_empty();
+    if replaying {
+        log::warn!(
+            "ft4_app: no radio yet — replaying {} baked samples. Decodes below are from a \
+             recording, not the antenna; they read identically on screen. \
+             MFSK_FT4_REPLAY=0 disables this.",
+            golden.len(),
+        );
+    } else if REPLAY_GOLDEN {
+        log::info!("ft4_app: replay requested but no golden linked — build with --features ft4-replay");
+    }
+    let mut gpos = 0usize;
+    let mut row_seq: usize = 0;
+    // Paces the replay to 12 kHz. Absolute, not per-block, so a slow
+    // decode does not make the replay drift slower than real time.
+    let t_start = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+    let mut fed: u64 = 0;
+
     loop {
         block.clear();
         if let Ok(mut staging) = STAGING.lock() {
             core::mem::swap(&mut *staging, &mut block);
         }
+
         if block.is_empty() {
-            unsafe { esp_idf_svc::sys::vTaskDelay(50 / port_tick_ms()) };
-            continue;
+            if !replaying || AUDIO_LIVE.load(Ordering::Acquire) {
+                unsafe { esp_idf_svc::sys::vTaskDelay(50 / port_tick_ms()) };
+                continue;
+            }
+            // One UAC-sized block of the golden, at 12 kHz.
+            let take = REPLAY_BLOCK.min(golden.len() - gpos);
+            block.extend_from_slice(&golden[gpos..gpos + take]);
+            gpos = (gpos + take) % golden.len();
+            fed += take as u64;
+            let due_us = (fed * 1_000_000 / 12_000) as i64;
+            let now = unsafe { esp_idf_svc::sys::esp_timer_get_time() } - t_start;
+            if due_us > now {
+                unsafe {
+                    esp_idf_svc::sys::vTaskDelay((((due_us - now) / 1_000).max(1) as u32) / port_tick_ms())
+                };
+            }
         }
 
         // The rows the coarse stage is already transforming, mapped to
         // palette indices on the way past. §35.2: 174 us a row after
         // the mapping was made integer.
         let done = accum.push_with_rows(&block, &mut |row| {
+            row_seq += 1;
+            if !row_seq.is_multiple_of(WF_ROW_DECIM) {
+                return;
+            }
             let cells = rx::wf_row(row);
             if let Ok(mut ui) = UI.lock() {
                 ui.push_waterfall(cells);

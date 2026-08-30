@@ -199,6 +199,11 @@ wspr-golden = ["wspr"]
 fst4 = ["embedded-shared/fst4-bench"]
 # The FT4 receiver and its WAV demo bin.
 ft4 = ["embedded-shared/ft4"]
+# Bakes one FT4 slot (180 KB) so the FT4 receiver has something to
+# decode with no radio attached. On by default with `ft4`, unlike
+# `fst4-replay`: FT4 activity is thin enough that a receiver on a real
+# antenna can sit decoding nothing, which looks the same as broken.
+ft4-replay = ["ft4"]
 # FT8's per-stage bench (`ft8-bench` bin). The 360 KB `qso3_busy.wav`
 # it bakes is why this is opt-in rather than always linked.
 ft8-bench = []
