@@ -596,6 +596,42 @@ fn savg_realtime_probe(audio: &[i16]) {
     }
 }
 
+/// What the waterfall costs, as opposed to what the decoder costs.
+///
+/// `Ft4SavgBuilder::push_with_rows` hands over rows the coarse stage
+/// was computing anyway, so the *spectra* are free. `wf_row` is not:
+/// it runs 240 `log10` per row and 152 rows a slot, and that is
+/// display-only work on the capture thread, where §33 measured the
+/// budget as 21.3 ms per block.
+///
+/// Added 2026-08-30 after the question was put directly — the row hook
+/// was justified as free and the mapping on top of it never measured,
+/// which is not the same claim.
+fn wf_row_probe(audio: &[i16]) {
+    let mut b = Ft4SavgBuilder::new(audio.len());
+    let mut rows = 0usize;
+    let mut map_us = 0i64;
+    let mut sink = 0u32;
+    let t0 = now_us();
+    b.push_with_rows(audio, &mut |row| {
+        let t = now_us();
+        let r = crate::apps::ft4_rx::wf_row(row);
+        map_us += now_us() - t;
+        sink = sink.wrapping_add(r[120] as u32);
+        rows += 1;
+    });
+    let total_us = now_us() - t0;
+    let _ = b.finish();
+    log::info!(
+        "ft4_bench: waterfall — {rows} rows | transforms {} ms | wf_row {} ms ({} us/row, \
+         {} % of the stage) | sink {sink}",
+        (total_us - map_us) / 1000,
+        map_us / 1000,
+        map_us / rows.max(1) as i64,
+        map_us * 100 / total_us.max(1),
+    );
+}
+
 /// `dot_f32` fast/slow-path counts around one stage.
 ///
 /// The FIR was fixed on the strength of a micro-benchmark; this says
@@ -1184,6 +1220,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // the probes, so carrying this one forward would be dead anyway.
     let _ = dot_delta("pass1f+1d front ends (FIR)", dots);
     savg_realtime_probe(&audio);
+    wf_row_probe(&audio);
     ddc_stage_probe(&audio);
     dotprod_probe();
     fft3840_probe();

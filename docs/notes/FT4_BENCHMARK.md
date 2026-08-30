@@ -2525,3 +2525,65 @@ with nothing dropped — §31.2's 0.55× and 0.96×. `RX_ONLY_BUDGET_MS`
 (7 500 ms) is there for a receiver that never transmits, where the only
 thing an overrun costs is the next slot, and nothing needs cutting at
 all.
+
+## 35. FT8's stage split, and what the waterfall was costing (2026-08-30)
+
+Two measurements prompted by one question: is converting i16 audio to
+f32 done so esp-dsp's f32 FFT can be used, and is that a reasonable
+price for a display?
+
+### 35.1 FT8 does not convert, and stage 1 is not a display cost
+
+`fixed-point`'s `compute_spectrogram` reads `audio[k].to_i16() as i32`
+and stays integer into the sc16 kernel — the i16 path exists precisely
+so the conversion does not happen. And `stage1_inc` feeds `wf_q`
+alongside the coarse search, so the spectrogram serves both; the
+waterfall is a free rider on it, not its reason.
+
+First per-stage breakdown of FT8 on the board it ships on (CoreS3,
+`qso3_busy.wav`, ship config, 7 decodes):
+
+| stage | ms | share |
+|---|---:|---:|
+| **1 — spectrogram** | **1 403** | **51 %** |
+| 2 — coarse sync | 236 | 9 % |
+| pass 2 — re-rank | 166 | 6 % |
+| 3 — refine + LLR/BP | 915 | 34 % |
+| **total** | **2 726** | |
+
+Every FT8 stage figure in this tree until now came from a StickS3 or
+from the app's own logs.
+
+### 35.2 The FT4 waterfall was costing 10 % of the stage it rides on
+
+FT4's `wf_row` was a different matter, and the question landed
+squarely on it. The *rows* are free — `push_with_rows` hands over
+spectra the coarse stage is already computing — but the mapping on top
+of them had never been measured, and "the rows are free" is not the
+same claim.
+
+| version | per row | per slot | of the coarse stage |
+|---|---:|---:|---:|
+| `10 * log10` per column | 623 µs | 94 ms | **10 %** |
+| integer log2 (`leading_zeros`) | 384 µs | 58 ms | 6 % |
+| …and the bin mapping folded into two constants | **174 µs** | **26 ms** | **3 %** |
+
+`f32::log10` is ~620 cycles here and there were 240 per row. Replacing
+it with the exponent — bit position of the MSB plus one fractional bit
+for half-octave resolution, which is what FT8's `decimate_pair_to_wf`
+has always done — took a third of it.
+
+The rest was worse and less excusable: **four float divides per column
+to work out which bins it covers**, 960 a row, for a mapping that
+depends on nothing but constants and never changes. Folded into a
+start and a step, so the loop is one add and two truncations.
+
+The palette is 16 coarse steps over 30 dB, so quantising the level to
+half-octaves (~1.5 dB) is below what it can show — the picture is
+unchanged.
+
+**The lesson is the framing, not the microseconds.** "The transforms
+are free" was true and was allowed to stand in for "the waterfall is
+free", which was never measured and was not true. 94 ms a slot is not
+fatal, but it is a tenth of the stage it was riding on, spent on a
+picture.

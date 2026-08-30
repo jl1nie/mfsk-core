@@ -314,10 +314,25 @@ const ROW_DF_HZ: f32 = 12_000.0 / 2_304.0;
 /// palette indices, 0..15.
 ///
 /// Rows come from [`Ft4SavgBuilder::push_with_rows`], which hands over
-/// the spectra it is already averaging — so a waterfall costs no
-/// transform of its own. 152 of them per 7.5 s slot, one per 48 ms,
-/// against FT8's one per 15 s slot: the FT4 screen flows during
-/// capture rather than stepping once a slot.
+/// the spectra it is already averaging — so the *transforms* are free.
+/// This mapping is not, and it runs on the capture thread: 152 rows a
+/// slot against §33's 21.3 ms per-block budget.
+///
+/// **Integer log2, not `log10`.** The first version took
+/// `10 * log10(p)` per column and measured **623 µs per row, 94 ms a
+/// slot, 10 % of the coarse stage** — display-only work costing a
+/// tenth of the stage it rides on, which is not a reasonable price for
+/// a picture. `f32::log10` is ~620 cycles on this core and there are
+/// 240 of them per row.
+///
+/// So the level comes from the exponent instead, the way FT8's own
+/// `decimate_pair_to_wf` has always done it: scale the power by the
+/// row's mean, take the bit position of the MSB, and keep one
+/// fractional bit for half-octave resolution. One float multiply per
+/// column and the rest is integer.
+///
+/// The palette is 16 coarse steps over [`WF_SPAN_DB`], so quantising
+/// the level to half-octaves (~1.5 dB) is below what it can show.
 ///
 /// **Per-column maximum, not mean.** A column is ~2 bins wide
 /// (2 500 Hz over 240 columns is 10.4 Hz, against 5.2 Hz bins) and an
@@ -326,15 +341,25 @@ const ROW_DF_HZ: f32 = 12_000.0 / 2_304.0;
 /// floor alone — visible as a waterfall where the signals are dimmer
 /// than the background is bright.
 ///
-/// **The scale is per-row and relative.** `floor` is the row's own
-/// mean power, which on a band with a handful of signals is a decent
-/// noise proxy, and the palette spans [`WF_SPAN_DB`] above it. An
-/// absolute scale would need a calibrated input level, which a
-/// receiver taking whatever a radio's USB audio hands it does not
-/// have; this instead shows the band the way an operator reads one,
-/// relative to its own noise.
+/// **The scale is per-row and relative**, against the row's own mean
+/// power. An absolute scale would need a calibrated input level, which
+/// a receiver taking whatever a radio's USB audio hands it does not
+/// have; this shows the band the way an operator reads one, relative
+/// to its own noise.
 pub fn wf_row(spectrum: &[f32]) -> [u8; crate::pipeline::WF_ROW_LEN] {
     const N: usize = crate::pipeline::WF_ROW_LEN;
+    /// `1.0` in the fixed-point ratio below, i.e. `2^SCALE_LOG2`.
+    const SCALE_LOG2: u32 = 10;
+    /// Half-octaves the palette spans. [`WF_SPAN_DB`] dB of *power* is
+    /// `WF_SPAN_DB / 3.01` octaves, doubled.
+    const HALF_OCTAVES: u32 = 20;
+    /// First column's low bin, and the bin step per column — the whole
+    /// frequency mapping, folded into two constants so the loop is an
+    /// add and two truncations rather than four divides.
+    const BIN0: f32 = WF_FREQ_LO_HZ / ROW_DF_HZ;
+    /// See [`BIN0`].
+    const BIN_STEP: f32 = (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / (N as f32) / ROW_DF_HZ;
+
     let mut out = [0u8; N];
     if spectrum.is_empty() {
         return out;
@@ -345,12 +370,20 @@ pub fn wf_row(spectrum: &[f32]) -> [u8; crate::pipeline::WF_ROW_LEN] {
     if !(mean > 0.0) {
         return out;
     }
-    let floor_db = 10.0 * log10(mean);
-    for (col, cell) in out.iter_mut().enumerate() {
-        let f0 = WF_FREQ_LO_HZ + col as f32 * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / N as f32;
-        let f1 = WF_FREQ_LO_HZ + (col + 1) as f32 * (WF_FREQ_HI_HZ - WF_FREQ_LO_HZ) / N as f32;
-        let lo = (f0 / ROW_DF_HZ) as usize;
-        let hi = (((f1 / ROW_DF_HZ) as usize) + 1).min(spectrum.len());
+    // One divide per row, not per column.
+    let inv = (1u32 << SCALE_LOG2) as f32 / mean;
+
+    // Column -> bin range, walked rather than computed. The mapping is
+    // fixed — it depends on nothing but the constants — yet the first
+    // version recomputed it per row with four float divides per
+    // column, 960 a row. Dropping `log10` only took 623 us/row to 384;
+    // this is the rest of it.
+    let mut edge = BIN0;
+
+    for cell in out.iter_mut() {
+        let lo = edge as usize;
+        edge += BIN_STEP;
+        let hi = ((edge as usize) + 1).min(spectrum.len());
         if hi <= lo {
             continue;
         }
@@ -360,31 +393,20 @@ pub fn wf_row(spectrum: &[f32]) -> [u8; crate::pipeline::WF_ROW_LEN] {
                 peak = p;
             }
         }
-        if !(peak > 0.0) {
+        // Ratio to the row's mean, in units of `2^SCALE_LOG2`.
+        let scaled = peak * inv;
+        if !(scaled >= 1.0) {
             continue;
         }
-        let db = 10.0 * log10(peak) - floor_db;
-        let idx = (db / WF_SPAN_DB * 15.0).clamp(0.0, 15.0);
-        *cell = idx as u8;
+        let q = scaled as u32;
+        // `31 - leading_zeros` is floor(log2), and the bit below the
+        // MSB is the half-octave.
+        let e = 31 - q.leading_zeros();
+        let frac = if e > 0 { (q >> (e - 1)) & 1 } else { 0 };
+        let half_oct = (e * 2 + frac).saturating_sub(SCALE_LOG2 * 2);
+        *cell = ((half_oct * 15) / HALF_OCTAVES).min(15) as u8;
     }
     out
-}
-
-/// Palette range above the row's noise floor. 30 dB puts a strong FT4
-/// signal at white and leaves the floor at black; wider washes the
-/// band out, narrower saturates every signal to the same colour.
-pub const WF_SPAN_DB: f32 = 30.0;
-
-/// `log10` without pulling `std` in — `no_std` here, and `libm` is not
-/// a dependency of this crate.
-fn log10(x: f32) -> f32 {
-    // `f32::log10` resolves through the `Float` trait that esp-idf's
-    // std brings into the graph for every build this crate has today,
-    // the same way `esp_dsp_fft`'s trig does; the import is explicit
-    // for the same reason.
-    #[allow(unused_imports)]
-    use num_traits::Float;
-    x.log10()
 }
 
 /// Unit-power normalisation, matching what
