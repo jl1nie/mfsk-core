@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 mod apps;
+mod audio_out;
 mod board;
 mod coredump;
 mod decode_pipeline;
