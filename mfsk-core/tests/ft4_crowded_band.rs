@@ -27,7 +27,10 @@
 //!
 //! What it does **not** add: fading (the simulator is AWGN-only, so
 //! `ft4_sweep`'s CCIR channels stay the instrument for that) and real
-//! off-air artefacts (the WSJT-X golden stays the instrument for those).
+//! off-air artefacts — the WSJT-X golden does not supply those either,
+//! being `ft4sim_mult` output itself (`docs/notes/FT4_BENCHMARK.md`
+//! §23.5). This crate has no off-air FT4 recording; closing that needs
+//! a radio, not another simulator.
 //!
 //! `#[ignore]` — tier C, needs the generated corpus:
 //!

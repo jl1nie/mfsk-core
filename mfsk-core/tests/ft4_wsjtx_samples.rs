@@ -1,15 +1,26 @@
-//! FT4 real-world signal validation against the WSJT-X sample
-//! recording shipped under `WSJT-X/samples/FT4/000000_000002.wav`.
+//! FT4 multi-signal validation against the WSJT-X sample shipped under
+//! `WSJT-X/samples/FT4/000000_000002.wav`.
 //!
 //! The sample is 12 kHz mono PCM-16, 6.048 s long (shorter than the
 //! nominal 7.5 s FT4 slot — we zero-pad to `SLOT_SAMPLES = 90 000`
 //! before running the decoder). WSJT-X's own GUI decode of this file
 //! yields six FT4 messages (`reference_ft4_wsjtx_sample_decode.md`);
 //! a real `jt9 -5 -p 15 -L 300 -H 2700 -d 3` CLI run over the full
-//! 300–2700 Hz band finds all 14 signals actually present, with
-//! freq/dt/SNR — that fuller set is `FT4_FULL_REFERENCE` below, and
-//! is what every test in this file checks against via
-//! `common::golden::assert_golden`.
+//! 300–2700 Hz band finds 14, with freq/dt/SNR — that fuller set is
+//! `FT4_FULL_REFERENCE` below, and is what every test in this file
+//! checks against via `common::golden::assert_golden`.
+//!
+//! **Not an off-air recording, and it holds 19 signals rather than
+//! 14.** It is `ft4sim_mult` output, generated from upstream's
+//! `lib/ft4/messages.txt` `File 2` block — a rendering of a real
+//! 7.080 MHz decode log, which is why the scene (occupancy, SNR
+//! spread, message mix) is realistic while the artefacts of a real
+//! receiver are absent. The five signals `FT4_FULL_REFERENCE` does not
+//! list sit above 2700 Hz, outside the band both `jt9 -H 2700` and
+//! these tests search, so "14/14 parity with jt9" is parity over a
+//! shared band rather than 100 % of the file. Ground truth per signal
+//! — SNR, DT, frequency — is in that `messages.txt`; see
+//! `docs/notes/FT4_BENCHMARK.md` §23.5.
 //!
 //! This is the FT4 counterpart to `q65_wsjtx_samples.rs`. It exists
 //! to catch regressions in the *generic* DSP path that FT4 shares

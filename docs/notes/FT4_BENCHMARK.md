@@ -1425,7 +1425,7 @@ pipeline's OSD block carries an FFT-backend `cfg` — and both the FST4
 reported its cost. OSD on embedded is a budget decision, and after §21
 it is a live one: ~900 ms for 56/560 decodes at the crossing.
 
-## 23. The crowded band — where §21's budget projection breaks (2026-08-30)
+## 23. Band occupancy — the design point, and where the budget actually sits (2026-08-30)
 
 §21.2 closed by naming what was missing: "the honest instrument for a
 weak signal in a *crowded* band does not exist yet". It does now, and it
@@ -1433,98 +1433,148 @@ was already in the WSJT-X tree — `lib/ft4/ft4sim_mult.f90` lays N
 signals into one slot, each at its own SNR and frequency, each at a
 **random DT in ±0.5 s**, and prints the ground truth.
 `scripts/build_ft4sim.sh` now links it and
-`scripts/gen_ft4_mult_wavs.sh` builds a corpus from it — 3 occupancies ×
-50 slots × (10 / 20 / 30) signals = 3 000 ground-truth signals in 22 MB,
-generated in 2.6 s, with `manifest.tsv` carrying every signal's SNR, DT,
-frequency and message. Messages come from upstream's own
-`lib/ft4/messages.txt`, i.e. real contest traffic. Frequencies are drawn
-over 300-2600 Hz with a 15 Hz floor on separation, so at occupancy 30
-the band is saturated: 2 300 Hz of space for signals 83 Hz wide.
+`scripts/gen_ft4_mult_wavs.sh` builds a corpus from it: 5 occupancies ×
+50 slots × (5 / 10 / 14 / 20 / 30) signals over 300-2600 Hz = 3 950
+ground-truth signals in 45 MB, generated in ~5 s, with a `manifest.tsv`
+carrying every signal's SNR, DT, frequency and message. Messages come
+from upstream's own `lib/ft4/messages.txt` — a real 40 m decode log.
 
 AWGN only — the simulator has no fading, so `ft4_sweep`'s CCIR channels
 stay the instrument for that.
 
-### 23.1 The candidate count from the golden was a light-band number
+### 23.1 What occupancy to design for
+
+**Not a contest.** An ESP32 receiver is not going to work a contest
+band, and recall there is a trade rather than a requirement. But a busy
+40 m evening is ordinary operation, and there is an empirical anchor for
+exactly that: §23.5 shows the WSJT-X FT4 sample this repo uses as its
+golden is a rendering of a real 7.080 MHz decode log — **14 signals in
+the 300-2700 Hz search band**, 5 more above it. That is the design
+point. Occupancy 30 is kept below as a stress bound, not a target.
 
 | signals/slot | mean candidates | max | deepest decoding rank | rank p90 |
 |---:|---:|---:|---:|---:|
-| 10 | 9.2 | 12 | 9 | 7 |
-| 20 | 14.9 | 23 | 22 | 12 |
-| 30 | 17.6 | 25 | 24 | 15 |
+| 5 | 5.3 | 8 | 6 | 4 |
+| 10 | 9.2 | 13 | 10 | 7 |
+| **14 — the 40 m snapshot** | **12.3** | 18 | 15 | 10 |
+| 20 | 14.8 | 21 | 19 | 12 |
+| 30 (contest stress) | 17.3 | 23 | 22 | 14 |
 
-The WSJT-X golden's 12 candidates — the number §21.3's budget projection
-is built on — corresponds to about 15 signals in the band. A contest
-slot needs 18-25. And the decodes come from *nearly the whole list*:
-`max_cand = 12` would truncate real signals at occupancy 20 and above,
-which is why §21.2's "`max_cand` is bounded by the golden's 12" was
-stated as a bound and not applied as a setting.
-
-**Correcting §21.3.** With `llrd` gone (§22) and the DDC removing the
-downsample stage (§20), the slot projection scales with candidate count:
+**The golden's 12 candidates is the right number after all** — it is
+what a 14-signal band produces, which is what the golden is. §21.3's
+projection therefore stands at the design point:
 
 | band | candidates | projected slot | vs 1 960 ms |
 |---|---:|---:|---|
-| golden / quiet | 12 | ~1 570 ms | inside |
-| occupancy 20 | ~18 | ~2 350 ms | **1.2× over** |
-| occupancy 30 | ~25 | ~3 260 ms | **1.7× over** |
+| quiet (5 signals) | ~5 | ~700 ms | inside |
+| **40 m busy (14)** | **~12** | **~1 570 ms** | **inside** |
+| 20 signals | ~15 | ~1 960 ms | at the line |
+| contest stress (30) | ~17 | ~2 220 ms | 1.1× over |
 
-So "inside the budget for the first time" holds for a quiet band and not
-for the band FT4 is designed for. That is the honest version.
+The candidate count grows far more slowly than the signal count —
+sub-linearly, because `sync_min = 1.2` is a threshold on a
+baseline-normalised spectrum, not a cap. Doubling the band's occupancy
+from 14 to 30 costs 40 % more candidates, not 110 %.
 
-### 23.2 In a crowded band the limit is interference, not sensitivity
+**`max_cand` is the parameter that does not survive.** Decodes reach
+rank 15 at the design point and 22 under stress, so the bound §21.2
+derived from the golden (12) must not be applied as a setting — at
+occupancy 20 it would truncate real signals. It stays at 100.
+
+### 23.2 What occupancy costs is interference, not sensitivity
 
 Recall against ground truth, single pass (the shape `dual_core` runs —
 no subtract path) against the production `sic_rounds(2)`:
 
+| signals/slot | single pass | `sic_rounds(2)` | SIC is worth |
+|---:|---:|---:|---:|
+| 5 | 217/250 (87 %) | 241/250 (96 %) | +9 pts |
+| 10 | 371/500 (74 %) | 438/500 (88 %) | +14 pts |
+| **14** | **477/700 (68 %)** | **568/700 (81 %)** | **+13 pts** |
+| 20 | 565/1000 (56 %) | 721/1000 (72 %) | +16 pts |
+| 30 | 626/1500 (42 %) | 888/1500 (59 %) | +17 pts |
+
+In operator terms at the design point: a board without a subtract path
+reports about **9.5 of the 14 stations** in a busy 40 m slot where a
+full decoder reports **11.3**.
+
+The mechanism is visible in the strong end of the per-SNR table, not
+the weak end:
+
 ```text
                  -17  -16  -15  -14  -13  -12  -11  -10   -8   -6   -3    0   +5  +10
-single pass
-  10 signals     47%  83%  75%  78%  67%  83%  77%  77%  80%  80%  53%  75%  81% 100%
-  20 signals     18%  44%  54%  65%  58%  62%  60%  53%  64%  56%  54%  58%  54% 100%
-  30 signals      3%  21%  35%  46%  50%  58%  49%  43%  43%  42%  39%  38%  30% 100%
-sic_rounds(2)
-  10 signals     56%  72%  83%  81%  89%  83%  91% 100%  94%  86%  89%  94% 100% 100%
-  20 signals     30%  54%  72%  77%  72%  77%  76%  72%  74%  72%  79%  78%  97% 100%
-  30 signals     13%  31%  44%  53%  63%  70%  63%  55%  63%  61%  58%  54%  91% 100%
+single pass, 14   47%  61%  63%  70%  71%  72%  71%  66%  70%  62%  61%  70%  76% 100%
+sic_rounds(2), 14 56%  66%  72%  80%  86%  82%  88%  82%  88%  76%  78%  84%  98% 100%
 ```
 
-| occupancy | single pass | `sic_rounds(2)` |
-|---:|---:|---:|
-| 10 | 377/500 (75 %) | 435/500 (87 %) |
-| 20 | 570/1000 (57 %) | 736/1000 (74 %) |
-| 30 | 641/1500 (43 %) | 876/1500 (58 %) |
+A signal at +5 dB is 22 dB above FT4's own threshold and is still missed
+a quarter of the time without SIC. That is not sensitivity — it is one
+signal sitting inside another's 83 Hz occupied bandwidth, the same
+effect the golden's 11/14 → 14/14 records on three signals instead of
+hundreds.
 
-Read the `+5 dB` column. A signal 22 dB above FT4's own threshold is
-decoded 30 % of the time at occupancy 30 without SIC and 91 % with it.
-**Nothing about that is a sensitivity problem** — it is one signal
-sitting inside another's 83 Hz occupied bandwidth, which is exactly what
-successive interference cancellation exists to undo (the same effect the
-golden test's 11/14 → 14/14 records, on three signals instead of
-hundreds).
-
-The consequence for the embedded line is larger than any of the
-optimisations in §19-22: **an embedded FT4 receiver without a subtract
-path would miss a third to a half of a contest band regardless of how
-well the budget is met**, and SIC costs another whole decode pass per
-round. `dual_core` has no subtract path today. That is now a
-measured trade rather than an assumption, and it belongs in the Phase
-decision for FT4 on hardware, not in the optimisation backlog.
+So the embedded trade is now quantified rather than assumed: **no
+subtract path costs ~13 points of recall on a busy 40 m band**, roughly
+2 stations a slot, and buying it back costs a whole extra decode pass
+per round. That is a phase decision for FT4 on hardware, not an
+optimisation.
 
 ### 23.3 Precision, measured for the first time beyond one file
 
-**Zero phantoms** — 0 of 3 635 decodes across both arms and all three
-occupancies, against 3 000 ground-truth signals. FT4's `max_extra: 0`
-budget had only ever been checked on the single WSJT-X golden; it now
-holds on 150 synthetic slots with up to 30 overlapping signals each.
+**6 phantoms of 5 118 decodes (0.12 %)** across both arms and all five
+occupancies, against 3 950 ground-truth signals — about one false
+decode every 50 slots at the design point and every 12 at contest
+stress. FT4's `max_extra: 0` budget had only ever been checked on the
+single golden file; the true rate is small but not zero, which is worth
+knowing before an operator sees one.
 
 ### 23.4 What this corpus still cannot see
 
 - **No fading.** `ft4sim_mult` adds Gaussian noise only.
 - **SNR floor of −17 dB** — the simulator clamps `isnr` there, which is
   FT4's own threshold, so the deep-weak tail is out of reach.
-- **DT is uniform in ±0.5 s**, which happens to sit exactly inside
-  §18's narrowed search window, so this corpus cannot test that window
-  either — it is not a replacement for a DT sweep.
-- **Synthetic mixing.** Real off-air artefacts (drift, splatter, LO
-  offsets, non-flat noise) are still represented only by the one WSJT-X
-  golden recording.
+- **DT is uniform in ±0.5 s**, which sits exactly inside §18's narrowed
+  search window, so this corpus cannot test that window either.
+- **It is the same generator as the golden** (§23.5), so it is not an
+  independent instrument — it is a way to vary one scene parameter at a
+  time around a scene upstream already chose.
+
+### 23.5 The "real off-air golden" is a simulated scene
+
+Worth stating plainly because several comments in this tree said
+otherwise: `WSJT-X/samples/FT4/000000_000002.wav` is **`ft4sim_mult`
+output**, generated from `lib/ft4/messages.txt`'s `File 2` block. The
+filename is the simulator's own `000000_%06d.wav` pattern, and the 19
+rows of that block reproduce the file exactly:
+
+```text
+   297 Hz   -9 dB  N1TRK N4FKH 569 VA        2300 Hz  -13 dB  AC6BW KR9A R 559 WI
+   422 Hz   -9 dB  N1TRK KB7RUQ RR73         2310 Hz   -1 dB  WD9IGY KX1X 73
+   520 Hz   -9 dB  W9JA PY2APK RRR           2413 Hz  -17 dB  W7BOB KJ7G RR73
+   560 Hz   -8 dB  CQ RU AB5XS EM12          2560 Hz  -12 dB  CQ RU W0FRC DM79
+   727 Hz  -12 dB  NZ7P WA7JAY 589 CA        2567 Hz   -7 dB  NI6G W7DRW 569 AZ
+  1148 Hz  +16 dB  KB0VHA KA1YQC R 539 MA    ─── above the 300-2700 search band ───
+  1640 Hz   -3 dB  CQ RU N9OY EN43           2725 Hz   +3 dB  K4SQC VE3RX RR73
+  1910 Hz  -10 dB  K1JT WB4HXE 559 GA        2813 Hz   -5 dB  CQ RU W1QA FN32
+  2067 Hz   +6 dB  VE3LON K7RL R 549 WA      2995 Hz   +1 dB  CQ RU WS4WW FM17
+                                             3158 Hz  +14 dB  HB9BUN KG4W R 549 VA
+                                             3337 Hz   -7 dB  W9TO KN3ILZ 529 PA
+```
+
+Three consequences:
+
+- **The file holds 19 signals, not 14.** The 14 in `FT4_FULL_REFERENCE`
+  are the ones inside the searched band; the other five sit above
+  2700 Hz, which is why neither `jt9 -H 2700` nor this crate ever
+  reports them. "14/14 parity with jt9" is parity with a reference
+  decoder over a shared band, not 100 % of what is in the file.
+- **Its ground truth is exact** — SNR, DT and frequency per signal, from
+  the same `messages.txt`. The reported SNRs agree with the truth to
+  within a couple of dB across the 14, which is an independent check on
+  `pipeline::ft4_snr_db` that nobody had noticed was available.
+- **This repo has no real off-air FT4 recording at all.** Every FT4
+  claim about "real signals" rests on a rendering of a real decode log,
+  which captures the *scene* (occupancy, SNR spread, message mix at
+  7.080 MHz) but none of the artefacts — drift, splatter, LO offsets,
+  non-flat noise. Closing that needs a capture from a radio, not another
+  simulator.

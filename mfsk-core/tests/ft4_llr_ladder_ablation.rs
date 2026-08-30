@@ -15,9 +15,9 @@
 //! against 4⁸ = 65 536) — so the answer is not portable and has to be
 //! measured here.
 //!
-//! **Measured on weak data, not on the golden.** The golden recording's
-//! signals are strong enough that the whole ladder collapses to its
-//! first rung: `EMBEDDED` and `FULL` decode identically there, which is
+//! **Measured on weak data, not on the golden.** The golden's signals
+//! are strong enough that the whole ladder collapses to its first
+//! rung: `EMBEDDED` and `FULL` decode identically there, which is
 //! exactly how the bench came to record "OSD buys nothing". The same
 //! comparison over 560 sweep files straddling four channels' 50 %
 //! crossings gives 237 against 179 (§21.4). A rung question answered on
@@ -468,9 +468,14 @@ fn ft4_llr_ladder_ablation_across_the_crossing() {
     );
 }
 
-/// The same configs on the WSJT-X golden — the real off-air file the
-/// sweep corpus cannot substitute for, and the one a "drop this rung"
-/// proposal has to survive before it is worth making.
+/// The same configs on the WSJT-X golden — a 19-signal slot (14 of
+/// them inside the searched band) that the single-signal sweep corpus
+/// cannot substitute for, and the scene a "drop this rung" proposal has
+/// to survive before it is worth making.
+///
+/// Not an off-air recording: it is `ft4sim_mult` output from upstream's
+/// `lib/ft4/messages.txt`, a rendering of a real 7.080 MHz decode log.
+/// See `docs/notes/FT4_BENCHMARK.md` §23.5.
 ///
 /// Reported as distinct messages rather than trial counts, since this
 /// is one slot with fourteen signals in it. Not `#[ignore]`: it needs
@@ -535,8 +540,9 @@ fn ft4_llr_ladder_ablation_on_the_golden() {
     );
     // `abc+OSD` is index 1 and `abc` index 6 — the two `llrd`-free
     // configs. On the sweep corpus they cost nothing; if they cost
-    // something *here*, on real off-air signals, that is what decides
-    // whether dropping the rung is a real option.
+    // something *here*, in a 19-signal slot where every decode has
+    // neighbours, that is what decides whether dropping the rung is a
+    // real option.
     assert_eq!(
         per_config[1].len(),
         full,
