@@ -79,6 +79,43 @@
 /// for correctness of the general contract, not as a tuned threshold.
 const MIN_FFI_LEN: usize = 16;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// How many `dot_f32` calls actually reach the PIE path, split by which
+/// precondition failed.
+///
+/// `dsps_dotprod_f32_aes3` selects its scalar body unless **both**
+/// pointers are 16-byte aligned and `len % 4 == 0`, and it does so
+/// silently — from the caller there is no difference but a 2.3x one in
+/// wall-clock (measured on a CoreS3: 7 900 vs 18 080 ps/tap,
+/// `docs/notes/FT4_BENCHMARK.md` §27). Every consumer of `dot_f32` has
+/// therefore been guessing about its own hot loop.
+///
+/// `ft4::ddc`'s FIR turned out to fail the length test on every call
+/// (199 and 263 taps) and was fixed by padding plus per-phase tap
+/// tables. `engine::sync2d`'s coherent scorer is the other big
+/// consumer and has never been checked: its length is fine (a Costas
+/// block is `4 · ds_spb · 2` = 256 f32 for FT4) but both its operands
+/// are plain `Vec<f32>`, so neither is guaranteed past 4-byte
+/// alignment. These counters are how that stops being a guess.
+///
+/// Two relaxed atomics per call, on a path that is already an FFI hop.
+static DOT_FAST: AtomicUsize = AtomicUsize::new(0);
+static DOT_SLOW_ALIGN: AtomicUsize = AtomicUsize::new(0);
+static DOT_SLOW_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// `(fast, slow_because_alignment, slow_because_length)`.
+///
+/// A call failing both is counted under length, which is the one a
+/// caller can always fix; alignment is the harder half.
+pub fn dotprod_path_report() -> (usize, usize, usize) {
+    (
+        DOT_FAST.load(Ordering::Relaxed),
+        DOT_SLOW_ALIGN.load(Ordering::Relaxed),
+        DOT_SLOW_LEN.load(Ordering::Relaxed),
+    )
+}
+
 unsafe extern "C" {
     /// `*dest = Σ src1[i]·src2[i]`, `i ∈ [0, len)`.
     ///
@@ -97,6 +134,13 @@ pub extern "Rust" fn mfsk_core_dotprod_f32(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
     if n < MIN_FFI_LEN {
         return mfsk_core::engine::dsp::dotprod::dot_f32_portable(&a[..n], &b[..n]);
+    }
+    if n % 4 != 0 {
+        DOT_SLOW_LEN.fetch_add(1, Ordering::Relaxed);
+    } else if (a.as_ptr() as usize) % 16 != 0 || (b.as_ptr() as usize) % 16 != 0 {
+        DOT_SLOW_ALIGN.fetch_add(1, Ordering::Relaxed);
+    } else {
+        DOT_FAST.fetch_add(1, Ordering::Relaxed);
     }
     let mut out = 0.0f32;
     // SAFETY: both pointers are valid for `n` f32 reads (taken from

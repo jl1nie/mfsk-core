@@ -397,6 +397,26 @@ fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
     }
 }
 
+/// `dot_f32` fast/slow-path counts around one stage.
+///
+/// The FIR was fixed on the strength of a micro-benchmark; this says
+/// what the *real* call sites do. `engine::sync2d`'s coherent scorer is
+/// the one that has never been checked, and it is `ft4_sync_search`'s
+/// entire inner loop — ~960 ms of the ship slot.
+fn dot_delta(label: &str, before: (usize, usize, usize)) -> (usize, usize, usize) {
+    let now = crate::esp_dsp_dotprod::dotprod_path_report();
+    let fast = now.0.saturating_sub(before.0);
+    let slow_a = now.1.saturating_sub(before.1);
+    let slow_l = now.2.saturating_sub(before.2);
+    let total = fast + slow_a + slow_l;
+    log::info!(
+        "ft4_bench: {label} dot_f32: {total} calls | {fast} PIE ({} %) | \
+         {slow_a} slow:alignment | {slow_l} slow:length",
+        if total > 0 { fast * 100 / total } else { 0 },
+    );
+    now
+}
+
 /// PIE-alignment counters around one stage.
 ///
 /// `pie_alignment_report` is process-global and its length mask cannot
@@ -848,6 +868,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         crate::esp_dsp_fft::pie_alignment_report(),
         crate::esp_dsp_fft::pie_timing_report(),
     );
+    let mut dots = crate::esp_dsp_dotprod::dotprod_path_report();
     let t0 = now_us();
     let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
     let coarse_us = now_us() - t0;
@@ -901,6 +922,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // above are not isolating what this report claims they isolate.
     pie = pie_delta("pass1d DDC (expect no transforms)", ddc_us, pie);
     let _ = pie;
+    dots = dot_delta("pass1f+1d front ends (FIR)", dots);
     ddc_stage_probe(&audio);
     dotprod_probe();
     fft3840_probe();
@@ -949,7 +971,15 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         search_us
     };
 
+    // Re-baseline here, not after pass 1d: `dotprod_probe` alone makes
+    // 280 000 `dot_f32` calls, 80 000 of them at deliberately
+    // non-multiple-of-four lengths, and counting those as the search's
+    // is exactly the mistake the first run of this made — it reported
+    // "80 000 slow:length" for a scorer whose length is a constant 256.
+    dots = crate::esp_dsp_dotprod::dotprod_path_report();
     let psram_full = search_pass("pass2  [PSRAM cd0,    +/-1.0s]", FULL_WINDOW, None);
+    dots = dot_delta("pass2 ft4_sync_search (+/-1.0s)", dots);
+    let _ = dots;
     let (internal_full, internal_narrow) = match internal_cd0 {
         Some(buf) => {
             let a = search_pass("pass2i [internal cd0, +/-1.0s]", FULL_WINDOW, Some(buf));
