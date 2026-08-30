@@ -452,3 +452,94 @@ fn ft4_ddc_recall_matches_the_fft_path_across_the_crossing() {
         "DDC recall {tot_ddc} against FFT {tot_fft} — below the {floor} floor"
     );
 }
+
+// ── What the swap is actually worth on embedded ──────────────────────────
+
+/// The DDC arm decodes the golden with **no wideband cache at all**.
+///
+/// This is the claim the whole embedded FT4 line rests on, and it is
+/// not the same claim as
+/// `ft4_ddc_baseband_decodes_the_golden_like_the_fft_path` above. That
+/// one shows the DDC's `cd0` is as good as `downsample_cached`'s; it
+/// still hands `process_candidate_precomputed` a real `fft_cache`,
+/// because the parameter is not optional. If anything downstream reads
+/// that slice, the 92 160-point transform is still on the critical path
+/// and the device still needs the 737 280-byte baked asset — the DDC
+/// would have removed a cost and not a dependency.
+///
+/// Reading the code says it does not: `precomputed_refine = Some(..)`
+/// takes the branch that skips `downsample_cached`
+/// (`engine/pipeline.rs`), and the only other consumer is
+/// `P::snr_db(SnrCtx { fft_cache, .. })`, which for FT4 is
+/// `pipeline::ft4_snr_db(ctx.cand_score)` — a closed form over the
+/// *coarse* candidate score (`ft4_decode.f90:226,452-457`, issue #255)
+/// that never touches the spectrum. FST4 is the counter-example that
+/// makes this worth pinning rather than assuming: `fst4_snr_db` calls
+/// `downsample_cached` a second time on purpose, which is why
+/// `process_candidate_precomputed` grew its `skip_snr` flag for issue
+/// #306 in the first place.
+///
+/// So this test passes an **empty** slice. Reading it would panic on
+/// the first index rather than quietly return something plausible, and
+/// the results are compared field-by-field against the same arm run
+/// with the real cache — a difference either way means FT4 does depend
+/// on it and the embedded bench must keep baking it.
+#[test]
+fn ft4_ddc_arm_never_reads_the_wideband_cache() {
+    let Some(audio) = slot_audio() else {
+        if std::env::var("MFSK_REQUIRE_CORPUS").is_ok() {
+            panic!("MFSK_REQUIRE_CORPUS=1 but the FT4 golden recording is missing");
+        }
+        eprintln!("skipping: FT4 golden recording not found");
+        return;
+    };
+
+    let cands = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
+    assert!(!cands.is_empty(), "coarse stage found nothing");
+    let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+    let empty: [Complex<f32>; 0] = [];
+
+    for (depth_name, depth) in [
+        ("EMBEDDED", DecodeDepth::EMBEDDED),
+        ("FULL", DecodeDepth::FULL),
+    ] {
+        let mut with_cache: Vec<DecodeResult> = Vec::new();
+        let mut without_cache: Vec<DecodeResult> = Vec::new();
+        for c in &cands {
+            if let (Some(r), _, _) = ddc_arm(c, &audio, &fft_cache, depth) {
+                with_cache.push(r);
+            }
+            if let (Some(r), _, _) = ddc_arm(c, &audio, &empty, depth) {
+                without_cache.push(r);
+            }
+        }
+
+        eprintln!(
+            "[{depth_name}] DDC arm: {} decodes with the wideband cache, {} with an empty slice",
+            with_cache.len(),
+            without_cache.len()
+        );
+        assert_eq!(
+            with_cache.len(),
+            without_cache.len(),
+            "[{depth_name}] dropping the wideband cache changed how many candidates decoded"
+        );
+        for (a, b) in with_cache.iter().zip(&without_cache) {
+            assert_eq!(msg_of(a), msg_of(b), "[{depth_name}] message differs");
+            assert_eq!(a.freq_hz, b.freq_hz, "[{depth_name}] freq differs");
+            assert_eq!(a.dt_sec, b.dt_sec, "[{depth_name}] dt differs");
+            // Not `assert_eq!` on the whole struct: `snr_db` is the
+            // field that would move if `ft4_snr_db` ever started
+            // reading the spectrum, so it is named explicitly.
+            assert_eq!(a.snr_db, b.snr_db, "[{depth_name}] snr_db differs");
+        }
+        // Guards against the whole test passing vacuously if the coarse
+        // stage or the DDC front end silently stopped producing
+        // anything — 11 is what the arm-A/arm-B test above pins.
+        assert_eq!(
+            sorted_messages(&without_cache).len(),
+            11,
+            "[{depth_name}] cacheless DDC arm should reach the same 11 distinct decodes"
+        );
+    }
+}
