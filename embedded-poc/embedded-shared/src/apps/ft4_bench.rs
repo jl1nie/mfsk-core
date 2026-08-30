@@ -422,10 +422,15 @@ fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
 ///
 /// Returns the fresh reading so the caller can chain it as the next
 /// stage's baseline.
-fn pie_delta(label: &str, before: (usize, usize, usize, usize)) -> (usize, usize, usize, usize) {
+fn pie_delta(
+    label: &str,
+    stage_us: i64,
+    before: ((usize, usize, usize, usize), (usize, usize, usize)),
+) -> ((usize, usize, usize, usize), (usize, usize, usize)) {
     let now = crate::esp_dsp_fft::pie_alignment_report();
-    let aligned = now.0.saturating_sub(before.0);
-    let staged = now.2.saturating_sub(before.2);
+    let t = crate::esp_dsp_fft::pie_timing_report();
+    let aligned = now.0.saturating_sub(before.0.0);
+    let staged = now.2.saturating_sub(before.0.2);
     let total = aligned + staged;
     log::info!(
         "ft4_bench: {label} PIE inner rows: {aligned} in-place / {staged} staged \
@@ -434,7 +439,40 @@ fn pie_delta(label: &str, before: (usize, usize, usize, usize)) -> (usize, usize
         now.1,
         now.3,
     );
-    now
+
+    // The layer split. `process` is the whole mixed-radix transform;
+    // `kernel` is esp-dsp's assembly inside it; `staging` is the
+    // copy-in/copy-out. Combine (twiddles + gather/scatter, scalar Rust
+    // in `mfsk_core::engine::dsp::fft_mixed_*`) is what is left, and
+    // `outside` is the caller's own work around the transform — for
+    // pass 0 that is the Nuttall window and the magnitude accumulation
+    // in `symbol_spectra_avg`.
+    let process = t.0.saturating_sub(before.1.0) as i64;
+    let kernel = t.1.saturating_sub(before.1.1) as i64;
+    let staging = t.2.saturating_sub(before.1.2) as i64;
+    let combine = process - kernel - staging;
+    let outside = stage_us - process;
+    let pct = |v: i64| {
+        if stage_us > 0 {
+            v * 100 / stage_us
+        } else {
+            0
+        }
+    };
+    log::info!(
+        "ft4_bench: {label} split of {} ms: kernel {} ms ({} %) | staging {} ms ({} %) \
+         | combine {} ms ({} %) | outside transform {} ms ({} %)",
+        stage_us / 1000,
+        kernel / 1000,
+        pct(kernel),
+        staging / 1000,
+        pct(staging),
+        combine / 1000,
+        pct(combine),
+        outside / 1000,
+        pct(outside),
+    );
+    (now, t)
 }
 
 /// RMS-normalise a downsampled baseband to unit power, matching what
@@ -611,7 +649,10 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // Baseline the PIE counters here, not at boot: `prewarm` and the
     // asset load run transforms of their own, and they are not what is
     // being attributed.
-    let mut pie = crate::esp_dsp_fft::pie_alignment_report();
+    let mut pie = (
+        crate::esp_dsp_fft::pie_alignment_report(),
+        crate::esp_dsp_fft::pie_timing_report(),
+    );
     let t0 = now_us();
     let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
     let coarse_us = now_us() - t0;
@@ -621,7 +662,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         candidates.len(),
         baked.len(),
     );
-    pie = pie_delta("pass0 coarse (2304 = 256 x 9)", pie);
+    pie = pie_delta("pass0 coarse (2304 = 256 x 9)", coarse_us, pie);
     compare_candidates(&candidates, &baked);
     if candidates.is_empty() {
         log::error!("ft4_bench: coarse stage found nothing — the rest of the run is meaningless");
@@ -644,7 +685,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         downsample_us / 1000,
         downsample_us / n,
     );
-    pie = pie_delta("pass1f downsample (5120 = 1024 x 5)", pie);
+    pie = pie_delta("pass1f downsample (5120 = 1024 x 5)", downsample_us, pie);
 
     let t0 = now_us();
     let mut checksum = 0.0f32;
@@ -663,7 +704,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // Expect 0 rows: the DDC is two FIR stages and two mixers, no
     // transform anywhere. A non-zero count here would mean the passes
     // above are not isolating what this report claims they isolate.
-    pie = pie_delta("pass1d DDC (expect no transforms)", pie);
+    pie = pie_delta("pass1d DDC (expect no transforms)", ddc_us, pie);
     let _ = pie;
 
     // ── Passes 2*: the Δt search, one variable at a time ─────────────

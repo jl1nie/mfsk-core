@@ -168,6 +168,92 @@ fn record_pie_path(len: usize, aligned: bool) {
     mask.fetch_or(len, Ordering::Relaxed);
 }
 
+/// Microseconds attributed to the three parts of a mixed-radix
+/// transform, so a slow one can be blamed on the right layer.
+///
+/// `docs/notes/FT4_BENCHMARK.md` §25.4 established that
+/// `ft4_coarse_sync`'s 1 288 ms is not the PIE staging copy — all
+/// 1 368 of its inner rows already run in place — which leaves "the
+/// wrapper" as the answer by elimination. Elimination is not a
+/// measurement, and "the wrapper" is three different things: the
+/// esp-dsp kernel itself, the staging copies when they do happen, and
+/// the Cooley-Tukey combine (twiddles, gather/scatter) in
+/// `mfsk_core::engine::dsp::fft_mixed_*`. These split them:
+///
+/// - [`PIE_PROCESS_US`] — whole `Fft::process` call
+/// - [`PIE_KERNEL_US`] — inside `dsps_fft2r_fc32_*` + `bit_rev`
+/// - [`PIE_STAGING_US`] — the copy-in/copy-out, when taken
+///
+/// so combine = process − kernel − staging, and anything the caller
+/// spends *outside* `process` (for the coarse stage: the Nuttall
+/// window and the magnitude accumulation) is its own wall-clock minus
+/// process.
+///
+/// Cost of the probe itself: two `esp_timer_get_time` reads per inner
+/// row and two per transform. At the coarse stage's 1 368 rows that is
+/// under a millisecond against 1 288 — checked against the
+/// "diagnostic probe must not perturb" list in `embedded-poc/CLAUDE.md`:
+/// no allocation, no locking, no new `static` mutex, nothing on the
+/// stack beyond a couple of `i64`.
+#[cfg(feature = "aes3")]
+static PIE_PROCESS_US: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "aes3")]
+static PIE_KERNEL_US: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "aes3")]
+static PIE_STAGING_US: AtomicUsize = AtomicUsize::new(0);
+
+/// Monotonic microseconds, or 0 when the probe is compiled out.
+#[inline(always)]
+fn probe_us() -> i64 {
+    #[cfg(feature = "aes3")]
+    {
+        unsafe { esp_idf_svc::sys::esp_timer_get_time() }
+    }
+    #[cfg(not(feature = "aes3"))]
+    {
+        0
+    }
+}
+
+#[inline(always)]
+#[allow(unused_variables)]
+fn add_kernel_us(us: i64) {
+    #[cfg(feature = "aes3")]
+    PIE_KERNEL_US.fetch_add(us.max(0) as usize, Ordering::Relaxed);
+}
+
+#[inline(always)]
+#[allow(unused_variables)]
+fn add_staging_us(us: i64) {
+    #[cfg(feature = "aes3")]
+    PIE_STAGING_US.fetch_add(us.max(0) as usize, Ordering::Relaxed);
+}
+
+#[inline(always)]
+#[allow(unused_variables)]
+fn add_process_us(us: i64) {
+    #[cfg(feature = "aes3")]
+    PIE_PROCESS_US.fetch_add(us.max(0) as usize, Ordering::Relaxed);
+}
+
+/// `(process_us, kernel_us, staging_us)` — see [`PIE_PROCESS_US`].
+/// Mixed-radix kernels only; the plain radix-2 path does not time
+/// itself. All zero when `aes3` is off.
+pub fn pie_timing_report() -> (usize, usize, usize) {
+    #[cfg(feature = "aes3")]
+    {
+        (
+            PIE_PROCESS_US.load(Ordering::Relaxed),
+            PIE_KERNEL_US.load(Ordering::Relaxed),
+            PIE_STAGING_US.load(Ordering::Relaxed),
+        )
+    }
+    #[cfg(not(feature = "aes3"))]
+    {
+        (0, 0, 0)
+    }
+}
+
 /// `(aligned_calls, aligned_len_mask, staged_calls, staged_len_mask)`
 /// — see [`record_pie_path`]. All zero when `aes3` is off, where the
 /// non-PIE kernel has no alignment requirement to begin with.
@@ -671,19 +757,29 @@ impl Fft for MixedRadix3840Fft {
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };
                 let work = staging.as_slice(256);
+                let t0 = probe_us();
                 work.copy_from_slice(row);
+                let t1 = probe_us();
                 run_256(work);
+                let t2 = probe_us();
                 row.copy_from_slice(work);
+                let t3 = probe_us();
+                add_kernel_us(t2 - t1);
+                add_staging_us((t1 - t0) + (t3 - t2));
             } else {
+                let t0 = probe_us();
                 run_256(row);
+                add_kernel_us(probe_us() - t0);
             }
         };
 
+        let t_proc = probe_us();
         mfsk_core::engine::dsp::fft_mixed_3840::fft_3840_with(
             buf_arr,
             &mut esp_dsp_256,
             &self.twiddles,
         );
+        add_process_us(probe_us() - t_proc);
     }
 
     fn len(&self) -> usize {
@@ -753,14 +849,23 @@ impl Fft for MixedRadix2304Fft {
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };
                 let work = staging.as_slice(256);
+                let t0 = probe_us();
                 work.copy_from_slice(row);
+                let t1 = probe_us();
                 run_256(work);
+                let t2 = probe_us();
                 row.copy_from_slice(work);
+                let t3 = probe_us();
+                add_kernel_us(t2 - t1);
+                add_staging_us((t1 - t0) + (t3 - t2));
             } else {
+                let t0 = probe_us();
                 run_256(row);
+                add_kernel_us(probe_us() - t0);
             }
         };
 
+        let t_proc = probe_us();
         if self.forward {
             mfsk_core::engine::dsp::fft_mixed_2304::fft_2304_with(
                 buf_arr,
@@ -774,6 +879,7 @@ impl Fft for MixedRadix2304Fft {
                 &self.twiddles,
             );
         }
+        add_process_us(probe_us() - t_proc);
     }
 
     fn len(&self) -> usize {
@@ -844,16 +950,25 @@ impl Fft for MixedRadix5120Fft {
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };
                 let work = staging.as_slice(1024);
+                let t0 = probe_us();
                 work.copy_from_slice(row);
+                let t1 = probe_us();
                 run_1024(work);
+                let t2 = probe_us();
                 row.copy_from_slice(work);
+                let t3 = probe_us();
+                add_kernel_us(t2 - t1);
+                add_staging_us((t1 - t0) + (t3 - t2));
             } else {
+                let t0 = probe_us();
                 run_1024(row);
+                add_kernel_us(probe_us() - t0);
             }
         };
 
         // The inner kernel is forward in both cases --
         // `ifft_5120_with` conjugates around the whole transform.
+        let t_proc = probe_us();
         if self.forward {
             mfsk_core::engine::dsp::fft_mixed_5120::fft_5120_with(
                 buf_arr,
@@ -867,6 +982,7 @@ impl Fft for MixedRadix5120Fft {
                 &self.twiddles,
             );
         }
+        add_process_us(probe_us() - t_proc);
     }
 
     fn len(&self) -> usize {

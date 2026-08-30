@@ -1862,3 +1862,59 @@ is recorded because it is true, not because it is on the path. Left
 unfixed pending evidence it costs anything: 60 rows of 8 KB is ~1 MB of
 copying against an 803 ms stage, so the same "it is the wrapper, not the
 kernel" conclusion probably applies here too.
+
+### 25.5 The layer split — it is the combine stage (2026-08-30)
+
+§25.4 reached "the wrapper" by elimination, which is not a measurement,
+and "the wrapper" is three different things. The mixed-radix kernels now
+time them separately — whole `Fft::process`, esp-dsp's assembly inside
+it, and the staging copies — so combine = process − kernel − staging,
+and whatever the caller spends around the transform is its own
+wall-clock minus process. Two `esp_timer_get_time` reads per inner row;
+under 1 ms against 1 290. Log:
+`ft4-bench_layersplit_2026-08-30.log`.
+
+| stage | total | kernel | staging | **combine** | outside transform |
+|---|---:|---:|---:|---:|---:|
+| pass 0 coarse (2304) | 1 290 ms | 201 (15 %) | **0** | **853 (66 %)** | 236 (18 %) |
+| pass 1f `downsample_cached` (5120) | 803 ms | 29 (3 %) | 34 (4 %) | **508 (63 %)** | 231 (28 %) |
+| pass 1d DDC (FIR) | 1 848 ms | 0 | 0 | 0 | 1 848 (100 %) |
+
+**The answer is the combine stage: 66 % of the coarse stage and 63 % of
+`downsample_cached`.** That is `fft_2304_with` / `fft_5120_with`'s
+Cooley-Tukey recombination — the twiddle multiplies and the strided
+gather/scatter between inner rows — scalar Rust in
+`mfsk_core::engine::dsp::fft_mixed_*`. 853 ms and 508 ms, 1 361 ms
+across the two stages, against a 1 960 ms budget.
+
+Its throughput is the tell: the 2304 combine is ~5.6 ms per transform
+for roughly 30 k flops, i.e. **~5 Mflop/s on a 240 MHz FPU**. Nothing
+about the arithmetic is expensive; the access pattern is. This is the
+shape [`reference_fft_loop_interleave_trick`] already addressed once on
+this silicon (−40 % on serial DSP recursions by interleaving loops to
+give the FPU independent chains).
+
+Three corrections this forces on §25.4, which guessed rather than
+measured:
+
+- **the kernel is 15 %, not "~2 %"**. 201 ms over 1 368 rows is 147 µs
+  per 256-point row — reasonable once `dsps_bit_rev_fc32_ansi`, which
+  is C and not assembly, is counted in it, but four times my estimate.
+  Guessing the number it had just built the instrument to measure was
+  not defensible.
+- **the 5120 staging defect is real and negligible**: 34 ms of 803, 4 %.
+  It was worth confirming and is not worth fixing — and it is on the
+  control arm the shipping receiver never calls, so the honest value of
+  fixing it is zero.
+- **`outside transform` is 18-28 %** and was not on the suspect list at
+  all: the Nuttall window plus magnitude accumulation for coarse
+  (236 ms), the 92 160-bin extraction for `downsample_cached` (231 ms).
+
+pass 1d's 100 %-outside row is the self-check: the DDC runs no
+transform, so every microsecond of its 1 848 ms is FIR, and
+`dsps_fird_f32_aes3` remains its untouched lever.
+
+**Where FT4 embedded now stands.** Two levers, both measured rather than
+projected: the mixed-radix combine (1 361 ms, and shared with
+`fft_mixed_3840`, so FT8 on this board is paying the same tax) and the
+DDC's scalar FIR (1 848 ms). Neither has been attempted.
