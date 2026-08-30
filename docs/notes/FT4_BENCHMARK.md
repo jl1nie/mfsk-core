@@ -2468,3 +2468,60 @@ the "did this block do a transform" test was a fraction of the block's
 own budget, and at 512 a row block lands either side of it. A fixed
 threshold separates 5 400 µs from 40 µs unambiguously. Fixed, and noted
 because a diagnostic that quietly miscounts is worse than none.)
+
+## 34. A slot budget the candidate loop actually respects (2026-08-30)
+
+§33's receiver ran every candidate the coarse stage produced and took
+2 412 ms, which is fine for a monitor and not fine for a transceiver:
+the 1 960 ms budget is the gap between the frame ending and the slot
+ending, and a radio that has to key up does not have 2 412 ms.
+
+`decode_slot` now takes a `budget_ms` and stops starting candidates
+once it has passed, the same shape `fst4_monitor::run_candidate_loop`
+uses — check before each candidate rather than predicting whether the
+next one fits. **The deadline is measured from
+`CapturedSlot::closed_us`, not from entry**: a decoder that started
+late because it was still finishing the previous slot gets
+correspondingly less time, which is the accounting that keeps a
+receiver current rather than progressively behind.
+
+**The cut takes the weakest.** `ft4_coarse_sync` returns candidates in
+descending coarse score, so truncation drops the tail.
+
+Measured, `ft4-demo` at `TX_TURNAROUND_BUDGET_MS`:
+
+```
+slot 1 — 11 of 12 candidates tried, 10 decodes in 2146 ms of 1960 ms — cut 1 weakest at score 1.55
+slot 2 — 10 of 12 candidates tried,  9 decodes in 1963 ms of 1960 ms — cut 2 weakest at score 2.63
+```
+
+What it gives up on this slot is `W7BOB KJ7G RR73` at −17 dB, the
+weakest of the eleven, and on the tighter slots `NZ7P WA7JAY` at −13 dB
+as well. The alternation is the deadline doing its job: the demo's
+pacing lands slot close 7 490 or 7 510 ms apart, and the decoder gets
+whatever is left.
+
+### 34.1 The overshoot is one candidate, and it is structural
+
+2 146 ms against a 1 960 ms deadline is a 186 ms overrun — the
+candidate that was already running when the deadline passed. Checking
+before starting cannot do better than that, and one FT4 candidate is
+~10 % of the whole budget, against ~1 % for an FST4 monitor candidate
+of a 52 s deadline. The shape that works there is looser here.
+
+It is still tolerable: the next slot's transmission starts at
+`TX_START_OFFSET_S = 0.5`, so a 186 ms overrun leaves 314 ms. Whether
+to close it by predicting from a running per-candidate mean is a real
+question, and deliberately not answered yet — a prediction that is
+wrong stops a candidate early, which costs a decode outright, while the
+overshoot costs only margin. Measure before choosing.
+
+### 34.2 This is the pessimum, not the design point
+
+The golden is the 14-signal FT8-density scene (§23.5), which is why
+there is anything to cut. At FT4's own 5-10 signal occupancy the coarse
+stage produces 5-9 candidates and the loop finishes inside the budget
+with nothing dropped — §31.2's 0.55× and 0.96×. `RX_ONLY_BUDGET_MS`
+(7 500 ms) is there for a receiver that never transmits, where the only
+thing an overrun costs is the next slot, and nothing needs cutting at
+all.

@@ -28,11 +28,24 @@ use embedded_shared::apps::ft4_rx as ft4;
 /// single pass at `DecodeDepth::EMBEDDED`.
 const GOLDEN_AUDIO: &[u8] = include_bytes!("../../../assets/ft4_golden_audio.bin");
 
+/// The deadline the candidate loop is held to, measured from slot
+/// close. `TX_TURNAROUND_BUDGET_MS` is what a transceiver has; a
+/// receive-only demo could use `RX_ONLY_BUDGET_MS` and try every
+/// candidate. This runs the transceiver budget because that is the
+/// constraint worth seeing.
+const BUDGET_MS: i64 = ft4::TX_TURNAROUND_BUDGET_MS;
+
 /// One UAC read's worth of resampled audio — `uac::reader_thread`'s
 /// `dst_scratch` is sized for ~256 samples at 48 k → 12 k. Feeding the
 /// same size means the demo exercises the block cadence the radio path
 /// will, rather than a friendlier one.
 const BLOCK: usize = 256;
+
+/// `" — cut N weakest at score S"`, or empty. A helper only because
+/// the format arm above needs an owned `String` either way.
+fn alloc_fmt(score: f32, dropped: usize) -> String {
+    format!(" — cut {dropped} weakest at score {score:.2}")
+}
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();
@@ -84,15 +97,23 @@ fn main() -> ! {
         for chunk in audio.chunks(BLOCK) {
             if let Some(slot) = accum.push(chunk) {
                 slot_no += 1;
-                let (decodes, cands, us) = ft4::decode_slot(&slot);
+                let o = ft4::decode_slot(&slot, BUDGET_MS);
+                let ms = o.elapsed_us / 1000;
                 log::info!(
-                    "ft4-demo: slot {slot_no} — {cands} candidates, {} decodes in {} ms \
-                     (budget 1960 ms -> {})",
-                    decodes.len(),
-                    us / 1000,
-                    if us / 1000 <= 1_960 { "FITS" } else { "OVER" },
+                    "ft4-demo: slot {slot_no} — {} of {} candidates tried, {} decodes in {ms} ms \
+                     of {BUDGET_MS} ms{}",
+                    o.tried,
+                    o.cands,
+                    o.decodes.len(),
+                    match o.cut_at_score {
+                        // Coarse scores are baseline-normalised, so 1.2
+                        // is WSJT-X's own threshold: a cut landing near
+                        // it gave up almost nothing.
+                        Some(sc) => alloc_fmt(sc, o.cands - o.tried),
+                        None => String::new(),
+                    },
                 );
-                for d in &decodes {
+                for d in &o.decodes {
                     log::info!(
                         "    {:>6.1} Hz  {:>+5.2} s  {:>3.0} dB  {}",
                         d.freq_hz,

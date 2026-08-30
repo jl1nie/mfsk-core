@@ -153,23 +153,74 @@ pub struct Ft4Decode {
     pub snr_db: f32,
 }
 
-/// Decode one captured slot.
+/// Milliseconds between the end of an FT4 frame and the end of its
+/// slot: `7.5 s − (0.5 s TX offset + 105 × 48 ms)`.
+///
+/// The budget a **transceiver** has, and the one `ft4-bench` reports
+/// against. A receiver that never transmits has until the next slot
+/// closes instead — see [`decode_slot`]'s `budget_ms`.
+pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_960;
+
+/// A whole FT4 slot, so a receive-only monitor can spend one.
+///
+/// Nothing is lost by overrunning [`TX_TURNAROUND_BUDGET_MS`] unless
+/// the radio has to key up: slot `N + 1`'s audio is accumulating on
+/// the capture side while slot `N` decodes, and only running past
+/// *this* costs a slot.
+pub const RX_ONLY_BUDGET_MS: i64 = 7_500;
+
+/// What one slot's decode produced, and what it cost.
+pub struct SlotOutcome {
+    pub decodes: Vec<Ft4Decode>,
+    /// Candidates the coarse stage produced.
+    pub cands: usize,
+    /// How many of them the loop actually started before the deadline.
+    /// `tried < cands` is the cut.
+    pub tried: usize,
+    /// Microseconds from slot close to the loop returning — including
+    /// the overshoot of the candidate that was already running when
+    /// the deadline passed.
+    pub elapsed_us: i64,
+    /// Coarse score of the first candidate that was skipped, if any.
+    /// The number that says what the cut actually gave up: these are
+    /// baseline-normalised, so 1.2 is WSJT-X's own threshold and a cut
+    /// landing near it dropped almost nothing.
+    pub cut_at_score: Option<f32>,
+}
+
+/// Decode one captured slot, stopping when `budget_ms` after the slot
+/// closed have passed.
+///
+/// The deadline is measured from [`CapturedSlot::closed_us`], not from
+/// entry: a decoder that started late because it was still finishing
+/// the previous slot has correspondingly less time, which is the
+/// honest accounting and the one that keeps a receiver current.
+///
+/// **The cut takes the weakest candidates.** `ft4_coarse_sync` returns
+/// them in descending coarse score, so truncation drops the tail —
+/// which is both the cheapest thing to lose and, on the golden slot,
+/// the candidates that decode last. Same shape as `fst4_monitor`'s
+/// `run_candidate_loop`, which checks the deadline before starting each
+/// candidate rather than trying to predict whether the next one fits;
+/// predicting needs a per-candidate estimate that is itself wrong
+/// whenever the band changes, and stopping one candidate early is worse
+/// than overshooting by part of one.
 ///
 /// This is the production per-candidate path `ft4-bench`'s SHIP arm
 /// measures: DDC baseband, RMS normalise, narrowed Δt search, then
 /// `process_candidate_precomputed`. The wideband `fft_cache` argument
 /// is an **empty slice** — FT4's `snr_db` is a closed form over the
 /// coarse candidate score (`pipeline::ft4_snr_db`) and never reads a
-/// spectrum, which is what lets this receiver exist without the
+/// spectrum, which is what lets a receiver exist without the
 /// 92 160-point transform no embedded backend can serve.
 ///
-/// `depth` is [`DecodeDepth::EMBEDDED`] here. On the 560-file sweep
-/// corpus `FULL` reaches 237 decodes against `EMBEDDED`'s 179, so this
-/// gives up about a quarter of the recall on weak signals — the OSD
-/// ladder is what costs, and at 12 candidates it is ~900 ms of a
-/// 1 960 ms budget. Revisit when the budget has room, not before.
-pub fn decode_slot(slot: &CapturedSlot) -> (Vec<Ft4Decode>, usize, i64) {
-    let t0 = now_us();
+/// `depth` is [`DecodeDepth::EMBEDDED`]. On the 560-file sweep corpus
+/// `FULL` reaches 237 decodes against `EMBEDDED`'s 179, so this gives
+/// up about a quarter of the recall on weak signals — the OSD ladder is
+/// what costs, and at 12 candidates it is ~900 ms of a 1 960 ms budget.
+/// Revisit when the budget has room, not before.
+pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
+    let deadline = slot.closed_us + budget_ms * 1_000;
     let cands = ft4_coarse_sync_from_savg(
         &slot.savg,
         FREQ_MIN_HZ,
@@ -179,7 +230,14 @@ pub fn decode_slot(slot: &CapturedSlot) -> (Vec<Ft4Decode>, usize, i64) {
         MAX_CAND,
     );
     let mut out: Vec<Ft4Decode> = Vec::new();
+    let mut tried = 0usize;
+    let mut cut_at_score = None;
     for cand in &cands {
+        if now_us() >= deadline {
+            cut_at_score = Some(cand.score);
+            break;
+        }
+        tried += 1;
         let mut cd0 = candidate_baseband(&slot.audio, cand.freq_hz);
         rms_normalise(&mut cd0);
         let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
@@ -219,7 +277,13 @@ pub fn decode_slot(slot: &CapturedSlot) -> (Vec<Ft4Decode>, usize, i64) {
             snr_db: r.snr_db,
         });
     }
-    (out, cands.len(), now_us() - t0)
+    SlotOutcome {
+        decodes: out,
+        cands: cands.len(),
+        tried,
+        elapsed_us: now_us() - slot.closed_us,
+        cut_at_score,
+    }
 }
 
 /// Unit-power normalisation, matching what
