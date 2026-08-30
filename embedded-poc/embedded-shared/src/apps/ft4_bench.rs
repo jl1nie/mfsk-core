@@ -1,10 +1,10 @@
-//! FT4 per-candidate bench (M5Stack CoreS3 / ESP32-S3 / LX7).
+//! FT4 whole-slot bench (M5Stack CoreS3 / ESP32-S3 / LX7).
 //!
 //! **The question**: FT4 has never been built for, let alone run on,
 //! any board in this tree — `docs/reference/EMBEDDED.md`'s per-protocol
 //! table said "no embedded path at all yet", and no embedded crate
-//! enabled `mfsk-core/ft4`. Does FT4's per-candidate work fit the
-//! ~1.96 s a 7.5 s slot leaves after the signal ends?
+//! enabled `mfsk-core/ft4`. Does FT4's slot work fit the ~1.96 s a
+//! 7.5 s slot leaves after the signal ends?
 //!
 //! ## The budget
 //!
@@ -17,56 +17,66 @@
 //! operating limit rather than a bug. See `m5stack-cores3-app/CLAUDE.md`
 //! "Slot-budget logs mean opposite things per mode".
 //!
-//! ## What runs here, and what is baked
+//! ## Nothing is baked any more except the audio
 //!
-//! Baked on the host by `mfsk-core/tests/ft4_wsjtx_samples.rs::
-//! ft4_bake_golden_precomputed`:
+//! The 2026-08-29 revision of this bench shipped two host-computed
+//! assets because two stages could not run here at all, and said so:
+//! the wideband FFT cache (`fft1_size = 92_160` — not a power of two
+//! and 11× past `CONFIG_DSP_MAX_FFT_SIZE_8192`) and the coarse
+//! candidate list (`ft4_coarse_sync`'s own `NFFT1 = 2304`). It measured
+//! per-candidate work and was explicitly *not a receiver*.
 //!
-//! - **the wideband FFT cache** (`fft1_size = 92_160`). Not a power of
-//!   two, and 11× past `CONFIG_DSP_MAX_FFT_SIZE_8192` — ESP-DSP cannot
-//!   serve it at all. Fed back through `decode_frame`'s
-//!   `precomputed_fft` seam, exactly as FST4 does (issue #306).
-//! - **the coarse-candidate list**, so `ft4_coarse_sync`'s own `NFFT1 =
-//!   2304` (= 256 × 9) periodogram doesn't need a kernel that doesn't
-//!   exist yet either. That stage measured **0.3 ms on host** over the
-//!   whole slot, so its absence understates the device total by roughly
-//!   that times whatever device/host ratio the rest of this bench
-//!   reports — small, but stated rather than left to be assumed.
+//! Both holes closed on 2026-08-30, and this revision runs the whole
+//! slot from `ft4_golden_audio.bin` — 180 000 bytes of `i16[90_000]`,
+//! the same 12 kHz slot a UAC capture would hand it:
 //!
-//! Everything else is the production code path, unmodified:
+//! - `engine::dsp::fft_mixed_2304` (256 × 9, the 9 over `fft_15::fft_3`)
+//!   lets **`ft4_coarse_sync` run here**, so the candidate list is
+//!   computed rather than shipped. The baked list is kept and compared
+//!   against — see [`compare_candidates`] — because that comparison is
+//!   the only check that the device's mixed-radix kernel finds what
+//!   rustfft found.
+//! - `ft4::ddc::candidate_baseband` replaces `downsample_cached`
+//!   outright: mixing to the band centre and decimating by an integer
+//!   18 needs no transform, so the 92 160-point stage is *gone* rather
+//!   than accelerated. `ft4_ddc_equivalence` holds it to the same
+//!   decodes on the golden and to 0.0 dB across a 560-file sweep.
 //!
-//! - `downsample_cached`'s inverse transform (`fft2_size = 5120`),
-//!   served by `engine::dsp::fft_mixed_5120` (1024 × 5, added for this)
-//! - `engine::sync2d::ft4_sync_search` — FT4's coherent absolute-Δt
-//!   search, no FFT at all, and by far the dominant per-candidate cost
-//!   on host (`ft4_diag_candidate_cost_split`: ~123 ms of ~150 ms over
-//!   50 candidates). Measuring it is the point of this bench.
-//! - `engine::llr::symbol_spectra`'s per-symbol DFT: `ds_spb =
-//!   NSPS/NDOWN = 32`, a power of two, so no new kernel needed.
+//! The FFT cache asset is still `include_bytes!`d, and this bench still
+//! runs a `downsample_cached` arm beside the DDC one — as the control
+//! that makes the swap's cost a measured delta on this silicon rather
+//! than a host projection. A receiver would ship neither: FT4's
+//! `snr_db` is a closed form over the coarse candidate score
+//! (`pipeline::ft4_snr_db`, `ft4_decode.f90:226,452-457`), so on the
+//! DDC arm nothing reads the cache at all, and the arm below passes an
+//! **empty slice** to prove it on the board the same way
+//! `ft4_ddc_equivalence::ft4_ddc_arm_never_reads_the_wideband_cache`
+//! proves it on host.
 //!
-//! ## Host reference for the same 12 candidates
+//! ## Host reference for this recording
 //!
-//! Measured 2026-08-29 by the bake test itself, on the WSJT-X golden
-//! `000000_000002.wav`, single pass, this exact search:
+//! Measured 2026-08-29/30 by the bake test itself, on the WSJT-X golden
+//! `000000_000002.wav` (itself an `ft4sim_mult` scene, not an off-air
+//! capture — `docs/notes/FT4_BENCHMARK.md` §23.5), single pass, this
+//! exact search:
 //!
-//! - **11 distinct decodes**, *identical* under `DecodeDepth::EMBEDDED`
-//!   and `DecodeDepth::FULL` — OSD and full LLR effort buy nothing on
-//!   *this file*. That does not generalise: on the 560-file sweep
-//!   corpus at the 50 % crossing, `FULL` reaches 237 and `EMBEDDED`
-//!   179 (`tests/ft4_candidate_budget.rs`, 2026-08-30), so the ship
-//!   config does give up recall on weak signals even though it gives
-//!   up none here.
-//!
-//! **The candidate count changed on 2026-08-30: 31 -> 12.** The baked
-//! list was generated with `sync_min = 0.05`, which is below the noise
-//! floor (`getcandidates4.f90` baseline-normalises, putting noise at
-//! ~1.0), so two thirds of those candidates were noise peaks. The
-//! generator now passes WSJT-X's own `syncmin = 1.2`
-//! (`ft4_decode.f90:195`) and the same 11 decodes come out of 12
-//! candidates. **Every device number recorded before that date
-//! (`docs/notes/FT4_BENCHMARK.md` sections 17-19) was measured over 31
-//! candidates**; per-candidate figures carry over unchanged, slot
-//! totals do not.
+//! - **12 candidates, 11 distinct decodes**, *identical* under
+//!   `DecodeDepth::EMBEDDED` and `DecodeDepth::FULL` — OSD and full LLR
+//!   effort buy nothing on *this file*. That does not generalise: on
+//!   the 560-file sweep corpus at the 50 % crossing, `FULL` reaches 237
+//!   and `EMBEDDED` 179 (`tests/ft4_candidate_budget.rs`), so the ship
+//!   config does give up recall on weak signals even though it gives up
+//!   none here. Which is why both depths are still timed below: the
+//!   OSD decision is a cost question, and this is where the cost comes
+//!   from.
+//! - **Every device number recorded before 2026-08-30
+//!   (`docs/notes/FT4_BENCHMARK.md` §17-19) was measured over 31
+//!   candidates**, from a list generated with `sync_min = 0.05` —
+//!   *below* the noise floor, since `getcandidates4.f90`
+//!   baseline-normalises and puts noise at ~1.0. The generator now
+//!   passes WSJT-X's own `syncmin = 1.2` (`ft4_decode.f90:195`) and the
+//!   same 11 decodes come out of 12 candidates. Per-candidate figures
+//!   carry over unchanged across that revision; slot totals do not.
 //! - (The 14/14 golden the host recall test asserts needs
 //!   `.sic_rounds(3)`; embedded FT8 ships a single pass, so a
 //!   multi-pass figure would not describe what a board would run.)
@@ -75,22 +85,24 @@
 //!   comparison for an MCU projection — `parallel` is always off on
 //!   embedded.
 //!
-//! ## Three passes, so the total has a split
+//! ## The passes, and why the total has a split
 //!
-//! Timing only `process_candidate_basic` gives one number and no way to
-//! act on it. This runs three passes over the same candidate list and
-//! reports each, the same "inferred by subtraction" framing the host
-//! diagnostic `ft4_diag_candidate_cost_split` already uses:
+//! Timing one production call gives a number and no way to act on it.
+//! This runs the stages separately as well, the same "inferred by
+//! subtraction" framing the host diagnostic
+//! `ft4_diag_candidate_cost_split` uses:
 //!
 //! | pass | what it calls | what it isolates |
 //! |---|---|---|
-//! | 1 | `downsample_cached` | the 5120-pt inverse FFT |
-//! | 2 | pass 1 + RMS-norm + `ft4_sync_search` | the Δt search |
-//! | 3 | `process_candidate_basic` (production) | everything |
+//! | 0 | `ft4_coarse_sync` | the 2304-pt periodogram, once per slot |
+//! | 1f | `downsample_cached` | the 5120-pt inverse FFT (control) |
+//! | 1d | `candidate_baseband` | the DDC front end that replaces it |
+//! | 2* | pass 1f + RMS-norm + `ft4_sync_search_window` | the Δt search |
+//! | 3 | the production per-candidate call, four ways | everything |
 //!
-//! LLR/BP/OSD is then `pass3 − pass2`. Passes 1 and 2 repeat work pass
-//! 3 also does — that is what makes them a *split* rather than a
-//! breakdown, and the total to quote is pass 3 alone.
+//! LLR/BP/OSD is then `pass3 − pass2 − pass1`. Passes 1 and 2 repeat
+//! work pass 3 also does — that is what makes them a *split* rather
+//! than a breakdown, and the total to quote is pass 0 + pass 3.
 
 extern crate alloc;
 
@@ -107,10 +119,14 @@ use num_traits::Float;
 
 use mfsk_core::engine::dsp::downsample::downsample_cached;
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_basic};
+use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
+use mfsk_core::engine::pipeline::{
+    DecodeDepth, DecodeStrictness, process_candidate_basic, process_candidate_precomputed,
+};
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
 use mfsk_core::ft4::Ft4;
+use mfsk_core::ft4::ddc::candidate_baseband;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -123,6 +139,32 @@ use mfsk_core::msg::wsjt77::unpack77;
 /// Kept in step with `ft4_wsjtx_samples.rs`'s `bench_assets` module,
 /// which is what the baked assets were generated against.
 const SYNC_Q_MIN: u32 = 8;
+
+/// The coarse search this bench runs, mirroring `ft4_wsjtx_samples.rs`'s
+/// `bench_assets` module — which is what the baked control list was
+/// generated against, so a divergence in [`compare_candidates`] means
+/// the *kernel* differs and not the parameters.
+///
+/// `SYNC_MIN` is WSJT-X's own (`ft4_decode.f90:195` `syncmin = 1.2`).
+/// It was 0.05 until 2026-08-30, which is below the noise floor:
+/// `getcandidates4.f90` divides the smoothed spectrum by a fitted
+/// baseline, so noise sits at ~1.0 and any lower threshold admits every
+/// peak in the band. 31 candidates at 0.05 against 12 at 1.2 on this
+/// recording, same 11 decodes; 67.1 against 1.6 on the 560-file sweep
+/// corpus, also identical recall (`tests/ft4_candidate_budget.rs`).
+/// Every stage below is per-candidate, so the device was paying 2.6×
+/// for nothing.
+const FREQ_MIN_HZ: f32 = 100.0;
+/// See [`FREQ_MIN_HZ`].
+const FREQ_MAX_HZ: f32 = 2700.0;
+/// See [`FREQ_MIN_HZ`].
+const SYNC_MIN: f32 = 1.2;
+/// See [`FREQ_MIN_HZ`].
+const MAX_CAND: usize = 100;
+
+/// One 7.5 s slot at 12 kHz — the length of `ft4_golden_audio.bin`, and
+/// what `ft4_coarse_sync` and `candidate_baseband` are both handed.
+const SLOT_SAMPLES: usize = 90_000;
 
 /// Milliseconds between the end of an FT4 frame and the end of its
 /// slot: `7.5 s − (0.5 s TX offset + 105 × 48 ms)` = 1.96 s.
@@ -174,8 +216,10 @@ const CD0_BYTES: usize = CD0_LEN * core::mem::size_of::<Complex32>();
 /// `Complex32` per grid cell across ~3159 cells — about 13 MB of reads
 /// per candidate, all of it over the PSRAM bus. `internal_pool`'s doc
 /// comment records ~5-10x for moving exactly this kind of hot buffer
-/// into internal DRAM on FT8's `cs` scratch; whether it holds here is
-/// what pass 2i measures.
+/// into internal DRAM on FT8's `cs` scratch; **it does not hold here —
+/// measured 1.12× on 2026-08-29**, which is why the projection lives
+/// in `feedback_bottleneck_hypothesis_measure_first` and the pass is
+/// kept rather than promoted.
 ///
 /// 16-byte aligned so `dot_f32`'s esp-dsp backend can take its PIE
 /// path where the sub-slice offset also lands even
@@ -202,6 +246,20 @@ fn alloc_internal_cd0() -> Option<&'static mut [Complex32]> {
             Some(core::slice::from_raw_parts_mut(p, CD0_LEN))
         }
     }
+}
+
+/// Parse `ft4_golden_audio.bin`: `i16 × 90_000`, LE.
+fn load_audio(bin: &[u8]) -> Vec<i16> {
+    assert_eq!(
+        bin.len(),
+        SLOT_SAMPLES * 2,
+        "audio asset is {} B, expected {} B — re-run the bake test",
+        bin.len(),
+        SLOT_SAMPLES * 2
+    );
+    bin.chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect()
 }
 
 /// Parse `ft4_golden_fft_cache.bin`: `(f32 re, f32 im) × fft1_size`, LE.
@@ -240,11 +298,79 @@ fn load_candidates(bin: &[u8]) -> Vec<SyncCandidate> {
         .collect()
 }
 
+/// Does the device's `fft_mixed_2304` find the candidates rustfft
+/// found?
+///
+/// This is the whole reason the baked list survives now that
+/// `ft4_coarse_sync` runs here: it is no longer an *input*, it is the
+/// control. `NFFT1 = 2304` is served on host by rustfft's own
+/// mixed-radix planner and here by `engine::dsp::fft_mixed_2304`
+/// (256 × 9), two different factorisations of the same transform, so
+/// bit-equality is not on offer and is not what matters. What matters
+/// is that the same peaks clear `SYNC_MIN` in the same places.
+///
+/// Reported, not asserted — a panic here would lose every timing
+/// number in the run, and the interesting outcome is the size and
+/// shape of a disagreement rather than its existence. `freq_hz` is
+/// quantised to `DF_HZ` by `getcandidates4.f90`'s bin search, so a
+/// non-zero Δfreq means a *different bin won*, not rounding.
+fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
+    if device.len() != baked.len() {
+        log::warn!(
+            "ft4_bench: coarse MISMATCH — device found {} candidates, host baked {}",
+            device.len(),
+            baked.len()
+        );
+    }
+    let mut max_dfreq = 0.0f32;
+    let mut max_dscore_pct = 0.0f32;
+    let mut paired = 0usize;
+    for d in device {
+        // Nearest baked candidate in frequency; the lists are both
+        // score-ordered, so index-wise pairing would mis-attribute a
+        // single reordering as a wholesale disagreement.
+        let mut best = f32::INFINITY;
+        let mut best_score = 0.0f32;
+        for b in baked {
+            let df = (d.freq_hz - b.freq_hz).abs();
+            if df < best {
+                best = df;
+                best_score = b.score;
+            }
+        }
+        if best.is_finite() {
+            paired += 1;
+            max_dfreq = max_dfreq.max(best);
+            if best_score.abs() > f32::EPSILON {
+                max_dscore_pct =
+                    max_dscore_pct.max(100.0 * (d.score - best_score).abs() / best_score.abs());
+            }
+        }
+    }
+    log::info!(
+        "ft4_bench: coarse vs baked — {} device / {} baked, {paired} paired, \
+         max Δfreq {max_dfreq:.2} Hz, max Δscore {max_dscore_pct:.2} %",
+        device.len(),
+        baked.len(),
+    );
+    for c in device {
+        log::info!(
+            "    cand {:7.2} Hz  dt {:+.3} s  score {:.3}",
+            c.freq_hz,
+            c.dt_sec,
+            c.score
+        );
+    }
+}
+
 /// RMS-normalise a downsampled baseband to unit power, matching what
 /// `process_candidate_basic_impl` does to its own `downsample_cached`
-/// output (WSJT-X `ft4_decode.f90:231-232`). Pass 2 needs it because
-/// `ft4_sync_search`'s score is scale-dependent; without it that pass
-/// would measure the same arithmetic on differently-scaled data.
+/// output (WSJT-X `ft4_decode.f90:231-232`). Both the search passes and
+/// the DDC arm need it explicitly: `ft4_sync_search`'s score is
+/// scale-dependent, and `compute_llr`'s `LLR_SCALE` is calibrated
+/// against unit-RMS input. `candidate_baseband` deliberately does not
+/// do it itself, so every caller does — same contract the host test
+/// `ft4_ddc_equivalence` works under.
 fn rms_normalise(cd0: &mut [Complex32]) {
     let sum2: f32 = cd0.iter().map(|c| c.norm_sqr()).sum::<f32>() / cd0.len() as f32;
     if sum2 > f32::EPSILON {
@@ -255,7 +381,112 @@ fn rms_normalise(cd0: &mut [Complex32]) {
     }
 }
 
-fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
+/// Production window: WSJT-X `ft4_decode.f90`'s three segments unioned,
+/// `[-344, 1012]` downsampled samples = ±1.0 s about `dt = 0`
+/// (`i0 = 333` at `ds_rate = 12_000/18`).
+const FULL_WINDOW: (i32, i32) = (-344, 1012);
+/// ±0.5 s — the largest width measured lossless on both the WSJT-X
+/// golden (itself an `ft4sim_mult` scene, not an off-air capture —
+/// §23.5) and an ft4sim DT sweep (`docs/notes/FT4_BENCHMARK.md` §18).
+/// WSJT-X searches wide because it cannot assume a clock; a
+/// UTC-anchored receiver can, so this is the shipping width.
+const NARROW_WINDOW: (i32, i32) = (0, 667);
+
+/// One production decode pass over the candidate list, front end
+/// selectable.
+///
+/// The two arms are not symmetric and cannot be made so. The FFT arm is
+/// `process_candidate_basic`, which builds its own `cd0` internally and
+/// therefore always searches [`FULL_WINDOW`] — it is the unmodified
+/// production call, kept as the control. The DDC arm has to build the
+/// `cd0` and refine the position itself before handing both to
+/// `process_candidate_precomputed`, which is exactly what gives it a
+/// window parameter the FFT arm has no way to accept.
+///
+/// So the honest comparison is DDC-at-[`FULL_WINDOW`] against the FFT
+/// arm; DDC-at-[`NARROW_WINDOW`] is the ship configuration and is
+/// reported separately rather than compared against anything.
+///
+/// `fft_cache` is `&[]` on the DDC arm. Not a shortcut — the assertion.
+/// If anything downstream read it, this would panic on the first index
+/// instead of quietly costing 737 280 bytes of flash on a board that
+/// does not need them.
+fn decode_pass(
+    label: &str,
+    audio: &[i16],
+    fft_cache: &[Complex32],
+    candidates: &[SyncCandidate],
+    depth: DecodeDepth,
+    ddc: Option<(i32, i32)>,
+) -> i64 {
+    let t0 = now_us();
+    let mut msgs: Vec<alloc::string::String> = Vec::new();
+    for cand in candidates {
+        // `known = &[]` is what `decode_frame_impl`'s own FT4 arm
+        // passes — FT4 decodes raw candidates and dedups afterwards.
+        // Passing accumulated results here would make the bench
+        // cheaper than the code it is measuring.
+        let r = match ddc {
+            Some((ib_min, ib_max)) => {
+                let mut cd0 = candidate_baseband(audio, cand.freq_hz);
+                rms_normalise(&mut cd0);
+                let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, ib_min, ib_max);
+                process_candidate_precomputed::<Ft4>(
+                    cand,
+                    &[],
+                    &FT4_DOWNSAMPLE,
+                    depth,
+                    DecodeStrictness::Normal,
+                    &[],
+                    EqMode::Off,
+                    SYNC_Q_MIN,
+                    (cd0, s2.freq_hz, s2.i0, s2.score),
+                    false,
+                    false,
+                )
+            }
+            None => process_candidate_basic::<Ft4>(
+                cand,
+                fft_cache,
+                &FT4_DOWNSAMPLE,
+                depth,
+                DecodeStrictness::Normal,
+                &[],
+                EqMode::Off,
+                SYNC_Q_MIN,
+            ),
+        };
+        if let Some(r) = r {
+            if let Some(text) = r
+                .message77()
+                .try_into()
+                .ok()
+                .and_then(|m77: &[u8; 77]| unpack77(m77))
+            {
+                log::info!(
+                    "    {text} | {:.1} Hz | dt {:.2} s | {:.0} dB",
+                    r.freq_hz,
+                    r.dt_sec,
+                    r.snr_db
+                );
+                if !msgs.contains(&text) {
+                    msgs.push(text);
+                }
+            }
+        }
+    }
+    let total_us = now_us() - t0;
+    log::info!(
+        "ft4_bench: pass3[{label}] = {} ms ({} us/cand) | {} distinct decodes \
+         (host reference for this asset: 11)",
+        total_us / 1000,
+        total_us / candidates.len().max(1) as i64,
+        msgs.len(),
+    );
+    total_us
+}
+
+fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     log_heap("boot");
 
     // Take the internal-DRAM search buffer first, while the heap is
@@ -280,12 +511,14 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     }
 
     let t_load = now_us();
+    let audio = load_audio(audio_bin);
     let fft_cache = load_fft_cache(fft_cache_bin);
-    let candidates = load_candidates(cand_bin);
+    let baked = load_candidates(cand_bin);
     log::info!(
-        "ft4_bench: loaded {} FFT bins + {} candidates in {} ms",
+        "ft4_bench: loaded {} audio samples + {} FFT bins + {} baked candidates in {} ms",
+        audio.len(),
         fft_cache.len(),
-        candidates.len(),
+        baked.len(),
         (now_us() - t_load) / 1000,
     );
     log_heap("post-load");
@@ -299,9 +532,25 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     let r = unsafe { esp_idf_svc::sys::esp_task_wdt_deinit() };
     log::info!("ft4_bench: task watchdog deinit -> {r}");
 
+    // ── Pass 0: the coarse stage, on-device for the first time ───────
+    let t0 = now_us();
+    let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
+    let coarse_us = now_us() - t0;
+    log::info!(
+        "ft4_bench: pass0 ft4_coarse_sync = {} ms ({} candidates; host: 0.3 ms, {} baked)",
+        coarse_us / 1000,
+        candidates.len(),
+        baked.len(),
+    );
+    compare_candidates(&candidates, &baked);
+    if candidates.is_empty() {
+        log::error!("ft4_bench: coarse stage found nothing — the rest of the run is meaningless");
+        return;
+    }
     let n = candidates.len() as i64;
+    log_heap("post-coarse");
 
-    // ── Pass 1: downsample only ──────────────────────────────────────
+    // ── Pass 1: the two front ends, alone ────────────────────────────
     let t0 = now_us();
     let mut checksum = 0.0f32;
     for cand in &candidates {
@@ -311,9 +560,24 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     }
     let downsample_us = now_us() - t0;
     log::info!(
-        "ft4_bench: pass1 downsample_cached = {} ms ({} us/cand, checksum {checksum:e})",
+        "ft4_bench: pass1f downsample_cached  = {} ms ({} us/cand, checksum {checksum:e})",
         downsample_us / 1000,
         downsample_us / n,
+    );
+
+    let t0 = now_us();
+    let mut checksum = 0.0f32;
+    for cand in &candidates {
+        let cd0 = candidate_baseband(&audio, cand.freq_hz);
+        checksum += cd0[0].re;
+    }
+    let ddc_us = now_us() - t0;
+    log::info!(
+        "ft4_bench: pass1d candidate_baseband = {} ms ({} us/cand, checksum {checksum:e}) \
+         | front-end delta {} ms over the slot",
+        ddc_us / 1000,
+        ddc_us / n,
+        (ddc_us - downsample_us) / 1000,
     );
 
     // ── Passes 2*: the Δt search, one variable at a time ─────────────
@@ -323,8 +587,10 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // optionally copies it into internal DRAM, and times
     // `ft4_sync_search_window` alone. The copy is counted, so the
     // internal-DRAM rows are honest about what they cost as well as
-    // what they save.
-    let mut search_pass = |label: &str, ib: (i32, i32), internal: Option<&mut [Complex32]>| {
+    // what they save. Fed by the FFT front end deliberately: these
+    // ratios are the ones §18-19 recorded, and changing two things at
+    // once would make them incomparable.
+    let search_pass = |label: &str, ib: (i32, i32), internal: Option<&mut [Complex32]>| {
         let mut dst = internal;
         let mut per_cand: Vec<i64> = Vec::with_capacity(candidates.len());
         let mut i0_sum = 0i64;
@@ -358,13 +624,6 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
         search_us
     };
 
-    const FULL_WINDOW: (i32, i32) = (-344, 1012);
-    // ±0.5 s — the largest width measured lossless on both the WSJT-X
-    // golden (itself an `ft4sim_mult` scene, not an off-air capture —
-    // §23.5) and an ft4sim DT sweep (`docs/notes/FT4_BENCHMARK.md`
-    // §18).
-    const NARROW_WINDOW: (i32, i32) = (0, 667);
-
     let psram_full = search_pass("pass2  [PSRAM cd0,    +/-1.0s]", FULL_WINDOW, None);
     let (internal_full, internal_narrow) = match internal_cd0 {
         Some(buf) => {
@@ -387,66 +646,43 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     }
     log_heap("post-search");
 
-    // ── Pass 3: the production per-candidate call ────────────────────
-    //
-    // `process_candidate_basic` builds its own cd0 internally, so this
-    // pass cannot use the internal-DRAM buffer — it is the unmodified
-    // production path, kept for the slot total and for the decode
-    // check. Project the placement/window wins onto it using the
-    // ratios above rather than reading them into this number.
-    for (label, depth) in [
-        ("EMBEDDED", DecodeDepth::EMBEDDED),
-        ("FULL", DecodeDepth::FULL),
+    // ── Pass 3: the production per-candidate call, four ways ─────────
+    let mut ship_us = 0i64;
+    for (label, depth, ddc) in [
+        ("FFT EMBEDDED", DecodeDepth::EMBEDDED, None),
+        ("FFT FULL    ", DecodeDepth::FULL, None),
+        ("DDC EMBEDDED", DecodeDepth::EMBEDDED, Some(FULL_WINDOW)),
+        ("DDC FULL    ", DecodeDepth::FULL, Some(FULL_WINDOW)),
+        ("DDC EMB +-0.5s (SHIP)", DecodeDepth::EMBEDDED, Some(NARROW_WINDOW)),
     ] {
-        let t0 = now_us();
-        let mut msgs: Vec<alloc::string::String> = Vec::new();
-        for cand in &candidates {
-            // `known = &[]` is what `decode_frame_impl`'s own FT4 arm
-            // passes — FT4 decodes raw candidates and dedups afterwards.
-            // Passing accumulated results here would make the bench
-            // cheaper than the code it is measuring.
-            if let Some(r) = process_candidate_basic::<Ft4>(
-                cand,
-                &fft_cache,
-                &FT4_DOWNSAMPLE,
-                depth,
-                DecodeStrictness::Normal,
-                &[],
-                EqMode::Off,
-                SYNC_Q_MIN,
-            ) {
-                if let Some(text) = r
-                    .message77()
-                    .try_into()
-                    .ok()
-                    .and_then(|m77: &[u8; 77]| unpack77(m77))
-                {
-                    log::info!("    {text} | {:.1} Hz | dt {:.2} s", r.freq_hz, r.dt_sec);
-                    if !msgs.contains(&text) {
-                        msgs.push(text);
-                    }
-                }
-            }
-        }
-        let total_us = now_us() - t0;
-        let total_ms = total_us / 1000;
+        let us = decode_pass(label, &audio, &fft_cache, &candidates, depth, ddc);
+        let slot_ms = (coarse_us + us) / 1000;
         log::info!(
-            "ft4_bench: pass3[{label}] TOTAL = {} ms ({} us/cand) | {} distinct decodes \
-             (host reference for this asset: 11) | llr+bp+osd inferred ~{} ms",
-            total_ms,
-            total_us / n,
-            msgs.len(),
-            (total_us - psram_full - downsample_us) / 1000,
-        );
-        log::info!(
-            "ft4_bench: pass3[{label}] budget {DECODE_BUDGET_MS} ms -> {}",
-            if total_ms <= DECODE_BUDGET_MS {
+            "ft4_bench: pass3[{label}] slot = coarse {} ms + candidates {} ms = {} ms \
+             vs {DECODE_BUDGET_MS} ms budget -> {}",
+            coarse_us / 1000,
+            us / 1000,
+            slot_ms,
+            if slot_ms <= DECODE_BUDGET_MS {
                 "FITS"
             } else {
-                "over"
+                "OVER"
             },
         );
-        log_heap(&alloc::format!("post-pass3-{label}"));
+        if ddc == Some(NARROW_WINDOW) {
+            ship_us = us;
+        }
+        log_heap("post-pass3");
+    }
+
+    if ship_us > 0 {
+        log::info!(
+            "ft4_bench: SHIP configuration — DDC front end, EMBEDDED depth, +/-0.5 s window, \
+             no baked assets but the audio: {} ms of a {DECODE_BUDGET_MS} ms budget ({}.{:02}x)",
+            (coarse_us + ship_us) / 1000,
+            (coarse_us + ship_us) / 1000 / DECODE_BUDGET_MS,
+            ((coarse_us + ship_us) / 1000 * 100 / DECODE_BUDGET_MS) % 100,
+        );
     }
 
     log::info!(
@@ -455,12 +691,11 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
         BENCH_STACK,
     );
     log::info!(
-        "ft4_bench: NOTE — ft4_coarse_sync (NFFT1=2304) is baked, not run here; \
-         it is 0.3 ms of the host slot, so the totals above are the per-candidate \
-         work only, not a whole slot."
+        "ft4_bench: NOTE — the DDC arms pass an EMPTY fft_cache, so nothing they \
+         report depends on the 737 280-byte baked transform; the FFT arms are the \
+         control and are the only reason it is still linked in."
     );
 }
-
 
 /// Installs the `EspLogger` exactly once. Must be used instead of
 /// `EspLogger::initialize_default` — a second install aborts.
@@ -486,6 +721,7 @@ pub fn init_logger_once() {
 pub const BENCH_STACK: u32 = 96 * 1024;
 
 struct BenchArgs {
+    audio: &'static [u8],
     fft_cache: &'static [u8],
     candidates: &'static [u8],
 }
@@ -494,20 +730,27 @@ extern "C" fn bench_task(arg: *mut core::ffi::c_void) {
     // SAFETY: `run` leaks the `BenchArgs` so it outlives this task —
     // same arg-passing shape as `fst4_bench`/`wspr_bench`.
     let args: &'static BenchArgs = unsafe { &*(arg as *const BenchArgs) };
-    run_bench(args.fft_cache, args.candidates);
+    run_bench(args.audio, args.fft_cache, args.candidates);
     loop {
         unsafe { esp_idf_svc::sys::vTaskDelay(1000) };
     }
 }
 
-/// Both arguments are the baked golden assets (`include_bytes!`).
-/// Spawns [`bench_task`] on a dedicated stack pinned to core 0, then
-/// idles forever.
-pub fn run(fft_cache: &'static [u8], candidates: &'static [u8]) -> ! {
+/// All three arguments are the baked golden assets (`include_bytes!`).
+/// Only `audio` is an input — see the module doc: `fft_cache` feeds the
+/// control arm and `candidates` is the control for the on-device coarse
+/// stage. Spawns [`bench_task`] on a dedicated stack pinned to core 0,
+/// then idles forever.
+pub fn run(
+    audio: &'static [u8],
+    fft_cache: &'static [u8],
+    candidates: &'static [u8],
+) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 
     let args: &'static BenchArgs = alloc::boxed::Box::leak(alloc::boxed::Box::new(BenchArgs {
+        audio,
         fft_cache,
         candidates,
     }));
