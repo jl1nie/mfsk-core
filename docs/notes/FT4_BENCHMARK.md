@@ -1444,13 +1444,31 @@ stay the instrument for that.
 
 ### 23.1 What occupancy to design for
 
-**Not a contest.** An ESP32 receiver is not going to work a contest
-band, and recall there is a trade rather than a requirement. But a busy
-40 m evening is ordinary operation, and there is an empirical anchor for
-exactly that: §23.5 shows the WSJT-X FT4 sample this repo uses as its
-golden is a rendering of a real 7.080 MHz decode log — **14 signals in
-the 300-2700 Hz search band**, 5 more above it. That is the design
-point. Occupancy 30 is kept below as a stress bound, not a target.
+**Not a contest**, and the honest answer is that **nobody here knows
+what FT4 occupancy actually is.** An ESP32 receiver is not going to work
+a saturated contest band, and recall there is a trade rather than a
+requirement. What matters is an ordinary busy evening on 40 m.
+
+The one anchor available is weaker than it looks. §23.5 shows the
+WSJT-X FT4 sample is a rendering of a real 7.080 MHz decode log with
+**14 signals in the 300-2700 Hz search band** — but that log is dated
+`190106`, its own rows say `Rx FT8`, and FT4 did not exist publicly
+until WSJT-X 2.1 on 15 July 2019 (`Release_Notes.txt`). So 14 is **FT8's
+40 m occupancy rendered as FT4**, which for FT4 is an upper bound rather
+than a design point: FT4's user base is a fraction of FT8's, and outside
+a contest its sub-band is usually sparse.
+
+Nothing in this repo, or in the WSJT-X tree, measures real FT4 band
+occupancy. The corpus therefore *brackets* it rather than targeting a
+number, and the rows to read for an embedded receiver are the sparse
+ones:
+
+- **5-10 signals** — the plausible ordinary case for FT4
+- **14** — FT8 density on 40 m, i.e. a pessimistic FT4 case
+- **20-30** — an upper bound with no evidence that FT4 ever reaches it
+
+Settling this needs a capture from a radio tuned to an FT4 sub-band,
+which is the same missing measurement §23.5 ends on.
 
 | signals/slot | mean candidates | max | deepest decoding rank | rank p90 |
 |---:|---:|---:|---:|---:|
@@ -1462,14 +1480,16 @@ point. Occupancy 30 is kept below as a stress bound, not a target.
 
 **The golden's 12 candidates is the right number after all** — it is
 what a 14-signal band produces, which is what the golden is. §21.3's
-projection therefore stands at the design point:
+projection therefore stands across the whole plausible range, and only
+reaches the budget line at a density there is no evidence FT4 sees:
 
 | band | candidates | projected slot | vs 1 960 ms |
 |---|---:|---:|---|
-| quiet (5 signals) | ~5 | ~700 ms | inside |
-| **40 m busy (14)** | **~12** | **~1 570 ms** | **inside** |
-| 20 signals | ~15 | ~1 960 ms | at the line |
-| contest stress (30) | ~17 | ~2 220 ms | 1.1× over |
+| **5 signals — plausible FT4** | **~5** | **~700 ms** | **inside, 2.8× margin** |
+| **10 signals — plausible FT4** | **~9** | **~1 180 ms** | **inside, 1.7× margin** |
+| 14 (FT8 density, pessimistic) | ~12 | ~1 570 ms | inside |
+| 20 | ~15 | ~1 960 ms | at the line |
+| 30 (no evidence it occurs) | ~17 | ~2 220 ms | 1.1× over |
 
 The candidate count grows far more slowly than the signal count —
 sub-linearly, because `sync_min = 1.2` is a threshold on a
@@ -1494,9 +1514,15 @@ no subtract path) against the production `sic_rounds(2)`:
 | 20 | 565/1000 (56 %) | 721/1000 (72 %) | +16 pts |
 | 30 | 626/1500 (42 %) | 888/1500 (59 %) | +17 pts |
 
-In operator terms at the design point: a board without a subtract path
-reports about **9.5 of the 14 stations** in a busy 40 m slot where a
-full decoder reports **11.3**.
+In operator terms, at the occupancies FT4 plausibly sees: a board
+without a subtract path reports about **4.4 of 5** stations, or **7.4
+of 10**, where a full decoder reports 4.8 and 8.8. That is **half a
+station to one and a half per slot** — and at the pessimistic
+FT8-density row, 9.5 of 14 against 11.3.
+
+Which reframes the embedded subtract question. At a saturated band it
+would be indispensable; at the density FT4 plausibly runs at, it buys
+roughly one station per slot for a whole extra decode pass.
 
 The mechanism is visible in the strong end of the per-SNR table, not
 the weak end:
@@ -1513,11 +1539,13 @@ signal sitting inside another's 83 Hz occupied bandwidth, the same
 effect the golden's 11/14 → 14/14 records on three signals instead of
 hundreds.
 
-So the embedded trade is now quantified rather than assumed: **no
-subtract path costs ~13 points of recall on a busy 40 m band**, roughly
-2 stations a slot, and buying it back costs a whole extra decode pass
-per round. That is a phase decision for FT4 on hardware, not an
-optimisation.
+So the embedded trade is quantified rather than assumed, and it points
+the opposite way from where §23's first draft left it: **at plausible
+FT4 occupancy, no subtract path costs 9-14 points of recall — about one
+station per slot — for a saving of a whole decode pass.** For a
+receiver whose slot budget is 1 960 ms that is a defensible trade, not
+a blocker. It becomes a blocker only at a band density FT4 has not been
+shown to reach.
 
 ### 23.3 Precision, measured for the first time beyond one file
 
@@ -1539,13 +1567,31 @@ knowing before an operator sees one.
   independent instrument — it is a way to vary one scene parameter at a
   time around a scene upstream already chose.
 
-### 23.5 The "real off-air golden" is a simulated scene
+### 23.5 The "real off-air golden" is a simulated scene — and upstream had no other
 
 Worth stating plainly because several comments in this tree said
 otherwise: `WSJT-X/samples/FT4/000000_000002.wav` is **`ft4sim_mult`
-output**, generated from `lib/ft4/messages.txt`'s `File 2` block. The
-filename is the simulator's own `000000_%06d.wav` pattern, and the 19
-rows of that block reproduce the file exactly:
+output**, generated from `lib/ft4/messages.txt`'s `File 2` block.
+
+Four pieces of in-tree evidence, none of which needs an outside source:
+
+1. The filename is the simulator's own `000000_%06d.wav` pattern. Every
+   *other* protocol's sample in `WSJT-X/samples/` carries a real UTC
+   capture timestamp — `FT8/210703_133430.wav`,
+   `JT9/130418_1742.wav`, `WSPR/150426_0918.wav`,
+   `FST4+FST4W/210115_0058.wav`, `MSK144/181211_120500.wav`. FT4 is the
+   only one that does not.
+2. The 19 rows of `File 2` reproduce the file exactly (below).
+3. Those rows are dated `190106` and say `Rx FT8` in their own text.
+4. FT4 was introduced in **WSJT-X 2.1, 15 July 2019**
+   (`Release_Notes.txt`) — six months *after* that log was recorded.
+
+So the scene is a real 40 m **FT8** band snapshot, rendered as FT4
+because at the time there was no FT4 traffic to record. That is not a
+criticism of upstream; it is the only thing they could have done for a
+brand-new mode. But it means the widely-quoted "FT4 sample recording"
+is not evidence about FT4 band occupancy, and neither this repo nor the
+WSJT-X tree contains any.
 
 ```text
    297 Hz   -9 dB  N1TRK N4FKH 569 VA        2300 Hz  -13 dB  AC6BW KR9A R 559 WI
@@ -1572,9 +1618,12 @@ Three consequences:
   the same `messages.txt`. The reported SNRs agree with the truth to
   within a couple of dB across the 14, which is an independent check on
   `pipeline::ft4_snr_db` that nobody had noticed was available.
-- **This repo has no real off-air FT4 recording at all.** Every FT4
-  claim about "real signals" rests on a rendering of a real decode log,
-  which captures the *scene* (occupancy, SNR spread, message mix at
-  7.080 MHz) but none of the artefacts — drift, splatter, LO offsets,
-  non-flat noise. Closing that needs a capture from a radio, not another
-  simulator.
+- **Neither this repo nor upstream has a real off-air FT4 recording.**
+  Every FT4 claim about "real signals" rests on a rendering of a real
+  *FT8* decode log, which carries a plausible scene (occupancy, SNR
+  spread, message mix at 7.080 MHz) but none of the artefacts — drift,
+  splatter, LO offsets, non-flat noise — and describes a mode with far
+  more users than FT4 has. Closing that needs a capture from a radio
+  tuned to an FT4 sub-band. This project has one (an IC-705 already
+  feeding the CoreS3 over USB audio), which makes it the cheapest
+  outstanding measurement in the whole FT4 line.

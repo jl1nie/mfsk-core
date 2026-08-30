@@ -163,9 +163,12 @@ cadence".
   with a `manifest.tsv` of ground truth — 3 950 signals in 45 MB. New
   test: `tests/ft4_crowded_band.rs`.
 
-  The design point is 14 signals in the 300-2700 Hz band, which is what
-  the WSJT-X FT4 sample itself contains (see the next entry). A contest
-  band is a stress bound, not a target for an ESP32.
+  There is no design point to target, because **nobody has measured FT4
+  band occupancy** — not this repo and not upstream (see the next
+  entry). The corpus brackets it instead: 5-10 signals is the plausible
+  ordinary case for FT4, 14 is FT8's 40 m density rendered as FT4 and so
+  a pessimistic bound, and 20-30 is an upper bound with no evidence that
+  FT4 reaches it.
 
   - **Candidate count grows sub-linearly with occupancy**: 5.3 / 9.2 /
     12.3 / 14.8 / 17.3 for 5 / 10 / 14 / 20 / 30 signals, because
@@ -178,11 +181,14 @@ cadence".
     rank 15 at the design point and 22 under stress.
   - **What occupancy costs is interference, not sensitivity.** Recall
     single-pass against `sic_rounds(2)`: 87→96 % (5 signals), 74→88 %
-    (10), 68→81 % (14), 56→72 % (20), 42→59 % (30). At the design point
-    a board with no subtract path — which `dual_core` is — reports
-    about 9.5 of 14 stations where a full decoder reports 11.3. A
-    signal at +5 dB, 22 dB above FT4's threshold, is still missed a
-    quarter of the time.
+    (10), 68→81 % (14), 56→72 % (20), 42→59 % (30). At the occupancies
+    FT4 plausibly sees, a board with no subtract path — which
+    `dual_core` is — reports 4.4 of 5 or 7.4 of 10 stations where a full
+    decoder reports 4.8 and 8.8: **about one station a slot for a whole
+    extra decode pass**, which is a defensible trade rather than a
+    blocker. It only becomes a blocker at a density FT4 has not been
+    shown to reach. A signal at +5 dB, 22 dB above FT4's threshold, is
+    still missed a quarter of the time at 14 signals.
   - **Precision, measured beyond one file for the first time**: 6
     phantoms of 5 118 decodes (0.12 %), about one every 50 slots at the
     design point.
@@ -191,19 +197,27 @@ cadence".
   floor of −17 dB, DT confined to ±0.5 s, and the fact that it shares a
   generator with the golden. See `docs/notes/FT4_BENCHMARK.md` §23.
 
-- **The FT4 "real off-air golden" is a simulated scene, and holds 19
-  signals rather than 14.** `WSJT-X/samples/FT4/000000_000002.wav` is
-  `ft4sim_mult` output from upstream's `lib/ft4/messages.txt` `File 2`
-  block — the filename is the simulator's own pattern and the 19 rows
-  reproduce the file. The five signals `FT4_FULL_REFERENCE` does not
-  list all sit above 2700 Hz, outside the band `jt9 -H 2700` and these
-  tests search, so "14/14 parity with jt9" is parity over a shared band
-  rather than 100 % of the file. The scene is real (a 7.080 MHz decode
-  log: occupancy, SNR spread and message mix), the artefacts are not.
-  **This crate has no off-air FT4 recording at all** — comments in
-  three test files said otherwise and now say this. Its per-signal
-  ground truth (SNR, DT, frequency) is exact, which is an independent
-  check on `pipeline::ft4_snr_db` nobody had noticed was available.
+- **The FT4 "real off-air golden" is a simulated scene, it holds 19
+  signals rather than 14, and upstream had no other.**
+  `WSJT-X/samples/FT4/000000_000002.wav` is `ft4sim_mult` output from
+  upstream's `lib/ft4/messages.txt` `File 2` block. Four in-tree
+  checks: the filename is the simulator's own `000000_%06d.wav` pattern
+  while every other protocol's sample carries a real UTC timestamp
+  (`FT8/210703_133430.wav`, `JT9/130418_1742.wav`, …); the 19 rows
+  reproduce the file; those rows are dated `190106` and say `Rx FT8`;
+  and FT4 was introduced in WSJT-X 2.1 on 15 July 2019, six months
+  later. The scene is a real 40 m **FT8** snapshot rendered as FT4 —
+  the only thing upstream could do for a brand-new mode, and the reason
+  the file is not evidence about FT4 band occupancy.
+
+  The five signals `FT4_FULL_REFERENCE` does not list all sit above
+  2700 Hz, outside the band `jt9 -H 2700` and these tests search, so
+  "14/14 parity with jt9" is parity over a shared band rather than
+  100 % of the file. **Neither this crate nor upstream has an off-air
+  FT4 recording** — comments in three test files said otherwise and now
+  say this. Its per-signal ground truth (SNR, DT, frequency) is exact,
+  which is an independent check on `pipeline::ft4_snr_db` nobody had
+  noticed was available.
 
 ### Changed
 
