@@ -776,7 +776,6 @@ fn ddc_stage_probe(audio: &[i16]) {
 /// the scratch differs, which is the whole claim.
 fn fft3840_probe() {
     use mfsk_core::engine::dsp::fft_mixed_3840 as f3840;
-    use mfsk_core::engine::fft::Fft;
 
     const ITERS: usize = 200;
     let tw = f3840::build_twiddles();
@@ -952,6 +951,15 @@ fn decode_pass(
 
 fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     log_heap("boot");
+
+    // Before anything plans a transform, and before the 40 KB internal
+    // `cd0` below — the same ordering discipline `worker_arena`
+    // documents, for the same reason.
+    let internal_fft = crate::esp_dsp_fft::reserve_mixed_scratch();
+    log::info!(
+        "ft4_bench: mixed-radix FFT scratch in {} DRAM",
+        if internal_fft { "INTERNAL" } else { "PSRAM" }
+    );
 
     // Take the internal-DRAM search buffer first, while the heap is
     // whole — the same ordering discipline `worker_arena` documents.

@@ -36,7 +36,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use mfsk_core::engine::fft::{Fft, Fft16, FftPlanner, FftPlanner16};
 use num_complex::{Complex, Complex32};
@@ -271,6 +271,93 @@ pub fn pie_alignment_report() -> (usize, usize, usize, usize) {
     {
         (0, 0, 0, 0)
     }
+}
+
+/// One internal-DRAM scratch for every mixed-radix wrapper, taken once.
+///
+/// `fft_2304_with_scratch` and `fft_3840_with_scratch` each need an
+/// N-element workspace, and having it in internal DRAM rather than
+/// PSRAM is worth 41 % of `ft4_coarse_sync` and 2.44x of the 3840
+/// transform (`docs/notes/FT4_BENCHMARK.md` §26, §28): the working set
+/// otherwise exceeds this chip's ~32 KB data cache.
+///
+/// **Why global rather than per plan.** The first version allocated in
+/// `MixedRadix2304Fft::new` and leaked it, so every `plan_forward` cost
+/// another 18 KB of internal DRAM. Two planners in one binary was
+/// enough to shift the heap and cost `engine::sync2d`'s dot products
+/// their 16-byte alignment — 100 % of them on the PIE path became 0 %
+/// and the Δt search went 1 049 -> 1 789 ms, from a change that touched
+/// neither (§32.1). One block, taken once, removes the leak and that
+/// coupling together.
+///
+/// **Why one block for both lengths.** Every mixed-radix `process`
+/// holds [`Fc32Guard`] for its whole body — it must, since the esp-dsp
+/// twiddle table is a single global that gets *resized* per length — so
+/// two of them can never be inside one at the same time, whichever core
+/// they run on. The scratch inherits that exclusion. Sized for the
+/// longest user (3 840) and sliced for the rest.
+///
+/// Deliberately **not** `worker_arena`: that block is single-owner by
+/// design ("only one mode runs per boot"), and this is a second,
+/// concurrent need that belongs to the FFT backend rather than to any
+/// mode.
+static MIXED_SCRATCH: AtomicPtr<Complex32> = AtomicPtr::new(core::ptr::null_mut());
+/// Largest N any mixed-radix wrapper asks for.
+const MIXED_SCRATCH_N: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
+
+/// Take the mixed-radix scratch in internal DRAM, once, at boot.
+///
+/// Call from `main` **before WiFi or the USB host start**, for the
+/// reason `worker_arena`'s module docs set out at length: with WiFi
+/// associated the largest free internal block on a CoreS3 is 31 744 B
+/// and this asks for 30 720; at boot there is 155 648 B.
+///
+/// Falling back to PSRAM is not a failure — it is what happens without
+/// this call and it still decodes, just at the speed §26.3 measured.
+/// Returns whether internal DRAM was obtained so a caller can say so.
+pub fn reserve_mixed_scratch() -> bool {
+    if !MIXED_SCRATCH.load(Ordering::Acquire).is_null() {
+        return true;
+    }
+    const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
+    let bytes = MIXED_SCRATCH_N * core::mem::size_of::<Complex32>();
+    // SAFETY: `heap_caps_aligned_alloc` returns null or a 16-byte
+    // aligned block of at least `bytes`; `Complex32` is `repr(C)` over
+    // two `f32`, needing 4. Never freed: it lives for the process.
+    let p = unsafe { esp_idf_svc::sys::heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL_8BIT) }
+        as *mut Complex32;
+    if p.is_null() {
+        // SAFETY: read-only query.
+        let largest =
+            unsafe { esp_idf_svc::sys::heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL_8BIT) };
+        log::warn!(
+            "esp_dsp_fft: mixed-radix scratch could not take {bytes} B of internal DRAM \
+             (largest free {largest} B) — falling back to PSRAM; reserve_mixed_scratch() \
+             has to run before WiFi starts"
+        );
+        return false;
+    }
+    MIXED_SCRATCH.store(p, Ordering::Release);
+    log::info!("esp_dsp_fft: mixed-radix scratch {bytes} B of INTERNAL DRAM at {p:p}");
+    true
+}
+
+/// The shared scratch, sliced to `len`.
+///
+/// # Safety
+///
+/// The caller must hold [`Fc32Guard`] for as long as it uses the
+/// slice; that is what makes one buffer safe for every wrapper and
+/// every core. See [`MIXED_SCRATCH`].
+unsafe fn mixed_scratch(len: usize) -> Option<&'static mut [Complex32]> {
+    debug_assert!(len <= MIXED_SCRATCH_N);
+    let p = MIXED_SCRATCH.load(Ordering::Acquire);
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: `p` covers `MIXED_SCRATCH_N >= len` elements, and the
+    // caller holds the guard, so this is the only live borrow.
+    Some(unsafe { core::slice::from_raw_parts_mut(p, len) })
 }
 
 /// Factory called by `mfsk_core::engine::fft::default_planner()` when
@@ -707,12 +794,6 @@ impl FftPlanner for EspDspPlanner {
 /// 256-pt: esp-dsp `dsps_fft2r_fc32_ae32_` (asm). 15-pt: see
 /// [`mfsk_core::engine::dsp::fft_15`]. Inter-stage twiddles cached.
 struct MixedRadix3840Fft {
-    /// 3 840-element scratch in internal DRAM when one can be had, as
-    /// [`MixedRadix2304Fft::internal`]. 30 KB — half again the 2304
-    /// sibling's, and against a 31 744 B largest free internal block
-    /// once WiFi is up, so the `None` fallback is the likely case in a
-    /// full app and not a formality.
-    internal: Option<core::ptr::NonNull<Complex32>>,
     /// PSRAM fallback, and still better than the `vec![…; 3840]` per
     /// call it replaces.
     scratch: core::cell::UnsafeCell<AlignedStaging>,
@@ -727,28 +808,6 @@ struct MixedRadix3840Fft {
 impl MixedRadix3840Fft {
     fn new() -> Self {
         Self {
-            internal: {
-                const N: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
-                const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
-                // SAFETY / leak: as `MixedRadix2304Fft::new`.
-                let p = unsafe {
-                    esp_idf_svc::sys::heap_caps_aligned_alloc(
-                        16,
-                        N * core::mem::size_of::<Complex32>(),
-                        MALLOC_CAP_INTERNAL_8BIT,
-                    )
-                } as *mut Complex32;
-                let got = core::ptr::NonNull::new(p);
-                log::info!(
-                    "fft_mixed_3840: scratch in {} DRAM",
-                    if got.is_some() {
-                        "INTERNAL"
-                    } else {
-                        "PSRAM (internal alloc failed)"
-                    }
-                );
-                got
-            },
             scratch: core::cell::UnsafeCell::new(AlignedStaging::new()),
             twiddles: mfsk_core::engine::dsp::fft_mixed_3840::build_twiddles(),
             staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
@@ -806,9 +865,10 @@ impl Fft for MixedRadix3840Fft {
         };
 
         const N3840: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
-        // SAFETY: as `MixedRadix2304Fft::process`.
-        let scratch: &mut [Complex32] = match self.internal {
-            Some(p) => unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), N3840) },
+        // SAFETY: as `MixedRadix2304Fft::process` — `_guard` is held
+        // for the rest of this function.
+        let scratch: &mut [Complex32] = match unsafe { mixed_scratch(N3840) } {
+            Some(s) => s,
             None => unsafe { &mut *self.scratch.get() }.as_slice(N3840),
         };
         let t_proc = probe_us();
@@ -857,24 +917,6 @@ struct MixedRadix2304Fft {
     /// different one. 16-byte alignment here makes every 256-element
     /// row inherit it.
     scratch: core::cell::UnsafeCell<AlignedStaging>,
-    /// The same scratch in **internal** DRAM, when one could be had.
-    ///
-    /// `symbol_spectra_avg` keeps three 18 KB buffers live per
-    /// transform — its input, this module's twiddle table, and the
-    /// scratch — so ~54 KB of working set against an S3 data cache of
-    /// ~32 KB. That is the standing explanation for why §25.6's
-    /// blocking made things *worse*: improving locality inside one
-    /// buffer cannot help a working set that does not fit, and the
-    /// blocking's extra staged copy is then pure cost. Taking one of
-    /// the three out of PSRAM is the test of that.
-    ///
-    /// 18 KB of internal DRAM is not free — with WiFi up the largest
-    /// free internal block on this board is 31 744 B
-    /// (`embedded-poc/CLAUDE.md`) — so this is `None` when the
-    /// allocation fails and the PSRAM path above carries on. A
-    /// production FT4 mode would reserve it through `worker_arena` at
-    /// boot rather than allocate it here.
-    internal: Option<core::ptr::NonNull<Complex32>>,
     forward: bool,
     twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_2304::N]>,
     /// 256-`Complex32` staging for the PIE kernel -- same inheritance
@@ -889,33 +931,6 @@ impl MixedRadix2304Fft {
             twiddles: mfsk_core::engine::dsp::fft_mixed_2304::build_twiddles(),
             staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
             scratch: core::cell::UnsafeCell::new(AlignedStaging::new()),
-            internal: {
-                const N: usize = mfsk_core::engine::dsp::fft_mixed_2304::N;
-                const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
-                // SAFETY: `heap_caps_aligned_alloc` returns null or a
-                // 16-byte-aligned block of at least the requested size;
-                // `Complex32` is `repr(C)` over two `f32` (align 4), so
-                // the block is validly typed and long enough for N.
-                // Deliberately leaked: it lives as long as the plan,
-                // and plans are made once per `symbol_spectra_avg`.
-                let p = unsafe {
-                    esp_idf_svc::sys::heap_caps_aligned_alloc(
-                        16,
-                        N * core::mem::size_of::<Complex32>(),
-                        MALLOC_CAP_INTERNAL_8BIT,
-                    )
-                } as *mut Complex32;
-                let got = core::ptr::NonNull::new(p);
-                log::info!(
-                    "fft_mixed_2304: scratch in {} DRAM",
-                    if got.is_some() {
-                        "INTERNAL"
-                    } else {
-                        "PSRAM (internal alloc failed)"
-                    }
-                );
-                got
-            },
         }
     }
 }
@@ -970,12 +985,11 @@ impl Fft for MixedRadix2304Fft {
         // SAFETY: same argument as `staging` above — `dyn Fft` carries
         // no `Sync` bound, so a planned instance is owned by a single
         // caller and this is the only live borrow.
-        let scratch: &mut [Complex32] = match self.internal {
-            // SAFETY: the block was allocated for exactly N
-            // `Complex32` in `new` and is never freed; `dyn Fft` has no
-            // `Sync` bound, so this instance has a single caller and
-            // this is the only live borrow of it.
-            Some(p) => unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), N) },
+        // SAFETY: `_guard` above is held for the rest of this
+        // function, which is the precondition `mixed_scratch`
+        // documents.
+        let scratch: &mut [Complex32] = match unsafe { mixed_scratch(N) } {
+            Some(s) => s,
             None => unsafe { &mut *self.scratch.get() }.as_slice(N),
         };
         let t_proc = probe_us();

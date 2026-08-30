@@ -123,7 +123,7 @@ use mipidsi::{
 use mfsk_core::wspr::ddc::{StreamingDdcCascade, AUDIO_RATE_HZ};
 use mfsk_core::wspr::decode::WsprResult;
 
-use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
+use embedded_shared::apps::wspr_scan::{now_us, run_scan, NBB, SLOT_US};
 use embedded_shared::wspr_dual_core;
 
 use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;

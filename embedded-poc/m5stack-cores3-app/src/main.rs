@@ -149,6 +149,19 @@ fn main() -> ! {
         log::error!("decode scratch reservation failed — the pipeline will abort on first use");
     }
 
+    // The mixed-radix FFT wrappers' shared workspace, on the same
+    // ordering argument and for every mode: FT8's `NFFT_SPEC = 3840`
+    // and FT4's coarse `NFFT1 = 2304` both run through them, and in
+    // PSRAM the 3840 transform is 2.44x slower and FT4's coarse stage
+    // 1.7x (`docs/notes/FT4_BENCHMARK.md` §26, §28). Unlike the block
+    // above this is not mode-gated — whichever mode boots, if it plans
+    // a non-power-of-two transform it wants this, and if it never does
+    // the 30 KB is the price of not having to know which modes will.
+    //
+    // A failure here is slow, not fatal, so it logs at warn from
+    // inside and is not repeated as an error out here.
+    let _ = embedded_shared::esp_dsp_fft::reserve_mixed_scratch();
+
     // WiFi is not a debug channel. It carries NTP, the HTTP config
     // UI and QSO log upload, and an FST4/WSPR beacon needs all three
     // while the radio is attached — so "host mode" and "networked"
