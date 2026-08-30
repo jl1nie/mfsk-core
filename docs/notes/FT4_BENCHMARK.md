@@ -2424,3 +2424,47 @@ library part, and no embedded binary calls it yet. Wiring it to the UAC
 capture path — the way `wspr_app` already runs `ddc_loop` →
 `DDC_READY_IDX` → `scan_loop` — is what turns the 754 ms into a real
 receiver's headroom.
+
+## 33. Does the streamed coarse stage keep up with capture? (2026-08-30)
+
+§32 moved 754 ms off the post-slot budget on the strength of a 10 %
+duty cycle. The average is close to irrelevant to whether it works.
+`uac::reader_thread` calls `AudioSink::push_samples` with one read's
+worth of resampled audio — `dst_scratch` is sized for ~256 samples at
+48 k → 12 k — **from the reader thread, holding the sink mutex**, so a
+slow block delays the next `uac_host_device_read` rather than queueing
+behind it. And the work is not spread evenly: rows land every
+`NSTEP = 576` samples, so one block in a few pays a whole 2 304-point
+transform while its neighbours pay tens of microseconds.
+
+| block | audio/block | blocks | with a transform | min | p50 | **max** | max / budget | duty |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 10.7 ms | 704 | 152 | 4 µs | 18 µs | 5 485 µs | **51 %** | 10 % |
+| **256** | **21.3 ms** | 352 | 152 | 19 µs | 38 µs | **5 508 µs** | **25 %** | 10 % |
+| 512 | 42.7 ms | 176 | 152 | 39 µs | 5 393 µs | 5 659 µs | **13 %** | 10 % |
+
+**At the UAC's actual block size the worst block is 25 % of its own
+real-time budget**, and even at 128 samples it is 51 %. The builder can
+be driven straight from the reader thread; it does not need a task of
+its own behind a queue.
+
+152 rows at every block size, and `savg[100]` identical to the last
+digit across all three — the host test's block-independence holds on the
+device as well.
+
+Two things this does **not** establish, and neither is closable without
+a radio on the bench:
+
+- it measures the builder alone on an otherwise-idle core. In the app
+  that thread also resamples, and the core carries WiFi and the USB
+  host.
+- whether 5.5 ms of extra latency in the reader loop costs the USB host
+  driver a packet is a property of its buffering, not of this
+  measurement. The margin says it should not; that is not the same as
+  knowing.
+
+(The first run of this reported 129 rows at n = 512 rather than 152 —
+the "did this block do a transform" test was a fraction of the block's
+own budget, and at 512 a row block lands either side of it. A fixed
+threshold separates 5 400 µs from 40 µs unambiguously. Fixed, and noted
+because a diagnostic that quietly miscounts is worse than none.)

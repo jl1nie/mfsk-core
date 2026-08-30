@@ -533,6 +533,69 @@ fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
     );
 }
 
+/// Can `Ft4SavgBuilder` keep up with live capture, block by block?
+///
+/// Streaming the coarse stage only takes 754 ms off the post-slot
+/// budget (§32) if the work actually fits *inside* capture, and the
+/// average says almost nothing about that. `uac::reader_thread` calls
+/// `AudioSink::push_samples` with one read's worth of resampled audio —
+/// `dst_scratch` is sized for ~256 samples at 48 k → 12 k — **from the
+/// reader thread, holding the sink mutex**, so a slow block delays the
+/// next `uac_host_device_read` rather than queueing behind it.
+///
+/// The shape of the risk: rows land every `NSTEP = 576` samples, a
+/// block is ~256, so at most one row falls in a block — but the block
+/// that carries it pays a whole 2 304-point transform (~5 ms) against
+/// the 21.3 ms of audio time it represents, while its neighbours pay
+/// almost nothing. What matters is the **maximum**, not the 11 % duty
+/// cycle the total implies.
+///
+/// Reported against each block size's own real-time budget,
+/// `n / 12 000` seconds. Anything at or above 100 % means the builder
+/// cannot be driven straight from the reader thread and needs a task
+/// of its own behind a queue.
+fn savg_realtime_probe(audio: &[i16]) {
+    for &n in &[128usize, 256, 512] {
+        let budget_us = (n as i64 * 1_000_000) / 12_000;
+        let mut b = Ft4SavgBuilder::new(audio.len());
+        let mut per_block: Vec<i64> = Vec::with_capacity(audio.len() / n + 1);
+        let mut with_row = 0usize;
+        for chunk in audio.chunks(n) {
+            let t0 = now_us();
+            b.push(chunk);
+            let dt = now_us() - t0;
+            // A block that triggered a transform costs ~5 400 us; one
+            // that only buffers costs tens. A fixed threshold
+            // separates them unambiguously — scaling it to the block's
+            // budget does not, and at n = 512 that undercounted 152
+            // rows as 129 because a row block lands just either side of
+            // budget/8.
+            if dt > 1_000 {
+                with_row += 1;
+            }
+            per_block.push(dt);
+        }
+        let savg = b.finish();
+        let total: i64 = per_block.iter().sum();
+        per_block.sort_unstable();
+        let max = per_block[per_block.len() - 1];
+        log::info!(
+            "ft4_bench: savg realtime n={n:3} ({} ms audio/block) — {} blocks, {with_row} with a \
+             transform | per block min {} us p50 {} us max {} us | max is {} % of budget | \
+             total {} ms ({} % duty) | savg[100] {:e}",
+            budget_us / 1000,
+            per_block.len(),
+            per_block[0],
+            per_block[per_block.len() / 2],
+            max,
+            max * 100 / budget_us,
+            total / 1000,
+            total * 100 / (audio.len() as i64 * 1_000_000 / 12_000),
+            savg[100],
+        );
+    }
+}
+
 /// `dot_f32` fast/slow-path counts around one stage.
 ///
 /// The FIR was fixed on the strength of a micro-benchmark; this says
@@ -1126,6 +1189,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     // Not re-bound: the baseline for pass 2 is retaken below, after
     // the probes, so carrying this one forward would be dead anyway.
     let _ = dot_delta("pass1f+1d front ends (FIR)", dots);
+    savg_realtime_probe(&audio);
     ddc_stage_probe(&audio);
     dotprod_probe();
     fft3840_probe();
