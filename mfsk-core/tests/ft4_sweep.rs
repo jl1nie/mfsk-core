@@ -1293,8 +1293,9 @@ fn ft4_diag_smax_calibration() {
 /// `ft4_sync_search` window stops reaching it.
 ///
 /// **Companion to `ft4_wsjtx_samples.rs::ft4_diag_sync_window_recall`,
-/// which measures the same trade on the real off-air golden.** That one
-/// answers "what does narrowing cost on a real band"; this one isolates
+/// which measures the same trade on the WSJT-X golden.** That one
+/// answers "what does narrowing cost on a populated slot whose DTs
+/// were drawn at random"; this one isolates
 /// the mechanism — recall as a function of (true DT, window width) with
 /// nothing else varying — so the operating point can be chosen against
 /// a DT budget rather than against one recording's particular spread.

@@ -929,7 +929,12 @@ TX_START_OFFSET_S`, so `dt = 0` sits at `i0 = 333` and production's
 `[-344, 1012]` is **±1.0 s**, not a full slot. Coarse cost is
 `9 × ceil(n_i0/4)` cells plus a fixed 99-cell fine pass.
 
-### On the real off-air golden
+### On the WSJT-X golden
+
+(§23.5 established that this file is `ft4sim_mult` output, not an
+off-air capture. It still carries a DT spread — the simulator draws
+each signal's DT uniformly over ±0.5 s — which is what this section
+needs; it is not evidence about on-air DT distributions.)
 
 `ft4_diag_sync_window_recall` (`tests/ft4_wsjtx_samples.rs`),
 `000000_000002.wav`, 31 coarse candidates, `DecodeDepth::EMBEDDED`.

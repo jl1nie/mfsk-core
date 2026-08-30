@@ -576,8 +576,8 @@ fn ft4_bake_golden_precomputed() {
     }
 }
 
-/// Recall cost of narrowing `ft4_sync_search`'s Δt window, on the real
-/// off-air golden.
+/// Recall cost of narrowing `ft4_sync_search`'s Δt window, on the
+/// WSJT-X golden.
 ///
 /// **Why this question exists.** The first FT4 hardware measurement
 /// (`docs/notes/FT4_BENCHMARK.md` §17) put `ft4_sync_search` at 76 % of
@@ -598,9 +598,16 @@ fn ft4_bake_golden_precomputed() {
 /// generated with `DT=0.0` (`scripts/gen_ft4_sweep_wavs.sh`), so every
 /// signal in it sits dead centre of every window under test — it would
 /// report zero recall loss at any width, which is an artefact of the
-/// fixture, not a property of the decoder. This recording is real
-/// off-air capture: its 14 signals carry the DT spread a receiver
-/// actually sees.
+/// fixture, not a property of the decoder. This recording carries a
+/// DT spread — `ft4sim_mult` draws each signal's DT uniformly over
+/// ±0.5 s (`lib/ft4/ft4sim_mult.f90`), and the 14 in band land between
+/// −0.44 s and +0.30 s — so the window under test is the variable and
+/// the DT is not held at zero. It is **not** an off-air capture: this
+/// file is itself simulator output (§23.5 of
+/// `docs/notes/FT4_BENCHMARK.md`), so the spread it exercises is the
+/// simulator's uniform draw rather than a measured on-air
+/// distribution. Nobody has measured the latter — see
+/// `ft4_crowded_band.rs`.
 ///
 /// Run:
 /// `cargo test -p mfsk-core --features full,internal-testing --release \

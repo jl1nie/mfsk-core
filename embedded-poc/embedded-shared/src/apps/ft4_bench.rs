@@ -359,9 +359,10 @@ fn run_bench(fft_cache_bin: &[u8], cand_bin: &[u8]) {
     };
 
     const FULL_WINDOW: (i32, i32) = (-344, 1012);
-    // ±0.5 s — the largest width measured lossless on both the real
-    // off-air golden and an ft4sim DT sweep
-    // (`docs/notes/FT4_BENCHMARK.md` §18).
+    // ±0.5 s — the largest width measured lossless on both the WSJT-X
+    // golden (itself an `ft4sim_mult` scene, not an off-air capture —
+    // §23.5) and an ft4sim DT sweep (`docs/notes/FT4_BENCHMARK.md`
+    // §18).
     const NARROW_WINDOW: (i32, i32) = (0, 667);
 
     let psram_full = search_pass("pass2  [PSRAM cd0,    +/-1.0s]", FULL_WINDOW, None);
