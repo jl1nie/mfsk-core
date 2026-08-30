@@ -2739,3 +2739,42 @@ applies — the +0.021 dB equivalent-noise-bandwidth match would have to
 be re-established, and `ft4_ddc_equivalence`'s 560-file 0.0 dB result
 re-run, since a third stage changes the rounding and nothing will be
 bit-identical.
+
+## 38. Inside the LLR/BP tail — it is BP (2026-08-31)
+
+The ship slot's third component had only ever been a subtraction:
+`pass3 − pass1d − pass2` ≈ 479 ms. Decomposed with the public pieces
+`process_candidate_precomputed` calls, on the strongest candidate:
+
+| stage | µs / candidate | × 12 |
+|---|---:|---:|
+| `symbol_spectra` (per-symbol DFT) | 1 696 | 20 ms |
+| `compute_llr` | 1 370 | 16 ms |
+| **the rest — BP, its ladder, SNR** | **21 060** | **252 ms** |
+| whole tail | 24 126 | 290 ms |
+
+**87 % is BP.** The DFT and the LLR computation together are 13 %.
+
+290 ms is 189 ms *below* the subtraction it replaces, and the gap is
+itself informative: this is rank 0, the strongest candidate, measured
+over 20 repeats. Weaker candidates take more BP iterations, so 252 ms
+is a floor and the slot's real figure is above it — which is another
+way of saying the iteration count is what costs.
+
+### 38.1 There is nothing here to take
+
+Every lever on this stage is either spent or measured shut:
+
+- **Quantisation** — §36.3 measured FT8's BP at 0.85× in Q11i16, i.e.
+  *slower* than f32 on this core. FT4 is f32 already. Nothing to win,
+  and the reason FT4 was right not to follow.
+- **`llrd`** — §22 found it contributes zero recall in both regimes
+  while costing 20-22 % of the ladder. Already removed (`b27bea0`).
+- **`llrc` (nsym = 4)** — §22 measured −46 decodes without it. Not
+  available.
+- **Iteration cap** — directly a recall knob.
+
+So the 252 ms stays. §37.1's shared decimation is 278 ms for
+comparable money and is **recall-neutral** — it changes the filter
+chain, not the search or the decision — which is why it goes first.
+Equal milliseconds, and one of them has no side effects to re-verify.

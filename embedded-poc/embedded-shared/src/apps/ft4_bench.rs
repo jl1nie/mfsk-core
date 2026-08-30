@@ -596,6 +596,84 @@ fn savg_realtime_probe(audio: &[i16]) {
     }
 }
 
+/// Where the 479 ms after the Δt search actually goes.
+///
+/// The SHIP slot is DDC 1 167 + search 700 + "LLR/BP ~479", and that
+/// last figure has only ever been a subtraction —
+/// `pass3 - pass1d - pass2`. Nothing has looked inside it, which after
+/// today is reason enough to look: §36.3 found FT8's BP *slower* in
+/// fixed-point than f32, and FT4's is f32 already, so if BP dominates
+/// here there is nothing to win, while if the per-symbol DFT does the
+/// answer is somewhere else entirely.
+///
+/// Decomposed with the public pieces rather than by instrumenting
+/// `process_candidate_precomputed`: `symbol_spectra` and
+/// `compute_llr_fast` are what it calls, and BP is what is left when
+/// they are subtracted from the whole. Same candidate, same `cd0`, so
+/// the three add up.
+fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
+    use mfsk_core::engine::llr::{compute_llr_fast, symbol_spectra};
+
+    let Some(cand) = candidates.first() else {
+        return;
+    };
+    // The strongest candidate, prepared exactly as the ship path does.
+    let mut cd0 = candidate_baseband(audio, cand.freq_hz);
+    rms_normalise(&mut cd0);
+    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
+
+    const ITERS: usize = 20;
+
+    let t0 = now_us();
+    let mut cs = Vec::new();
+    for _ in 0..ITERS {
+        cs = symbol_spectra::<Ft4>(&cd0, s2.i0);
+    }
+    let spectra_us = (now_us() - t0) / ITERS as i64;
+
+    let t0 = now_us();
+    let mut sink = 0.0f32;
+    for _ in 0..ITERS {
+        let set = compute_llr_fast::<Ft4, f32>(&cs);
+        sink += set.llra[0];
+    }
+    let llr_us = (now_us() - t0) / ITERS as i64;
+
+    // The whole per-candidate tail, same call the receiver makes.
+    let t0 = now_us();
+    for _ in 0..ITERS {
+        let _ = process_candidate_precomputed::<Ft4>(
+            cand,
+            &[],
+            &FT4_DOWNSAMPLE,
+            DecodeDepth::EMBEDDED,
+            DecodeStrictness::Normal,
+            &[],
+            EqMode::Off,
+            SYNC_Q_MIN,
+            (cd0.clone(), s2.freq_hz, s2.i0, s2.score),
+            false,
+            false,
+        );
+    }
+    let whole_us = (now_us() - t0) / ITERS as i64;
+
+    log::info!(
+        "ft4_bench: LLR/BP for one candidate — symbol_spectra {} us | compute_llr {} us | \
+         rest (BP + ladder + SNR) {} us | whole tail {} us | sink {sink:e}",
+        spectra_us,
+        llr_us,
+        whole_us - spectra_us - llr_us,
+        whole_us,
+    );
+    log::info!(
+        "ft4_bench: LLR/BP over 12 candidates — spectra {} ms | llr {} ms | rest {} ms",
+        spectra_us * 12 / 1000,
+        llr_us * 12 / 1000,
+        (whole_us - spectra_us - llr_us) * 12 / 1000,
+    );
+}
+
 /// Would a shared coarse decimation pay for itself?
 ///
 /// **The structural observation.** FT8 computes its spectrogram once
@@ -1317,6 +1395,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     wf_row_probe(&audio);
     ddc_stage_probe(&audio);
     shared_decim_probe(&audio);
+    llr_bp_probe(&audio, &candidates);
     dotprod_probe();
     fft3840_probe();
 
