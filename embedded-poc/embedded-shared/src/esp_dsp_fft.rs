@@ -135,6 +135,17 @@ fn pie_aligned(buf: &[Complex32]) -> bool {
 /// length this backend plans is a power of two, so the mask reads back
 /// as an exact set of lengths without needing a per-length table.
 ///
+/// **The three mixed-radix kernels report their inner rows too**
+/// (added 2026-08-30). Until then only the plain radix-2 path did, so
+/// this report was blind to `fft_mixed_2304` / `_3840` / `_5120` —
+/// i.e. to every transform FT4 and FT8 actually run on this board, and
+/// to the one whose 1 288 ms coarse stage prompted the question
+/// (`docs/notes/FT4_BENCHMARK.md` §25). Their inner lengths collide in
+/// the mask (256 for 2304 and 3840, 1024 for 5120, both also legal
+/// standalone plans), so attribution comes from *when* the counters
+/// move rather than from the mask: read the report either side of a
+/// stage that runs only one kernel.
+///
 /// Two relaxed atomics per call, and only under `aes3` — negligible
 /// against even the 256-point kernel they sit in front of.
 #[cfg(feature = "aes3")]
@@ -652,7 +663,10 @@ impl Fft for MixedRadix3840Fft {
             }
         };
         let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
-            if cfg!(feature = "aes3") && !pie_aligned(row) {
+            let staged = cfg!(feature = "aes3") && !pie_aligned(row);
+            #[cfg(feature = "aes3")]
+            record_pie_path(256, !staged);
+            if staged {
                 // SAFETY: `dyn Fft` carries no `Sync` bound and a
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };
@@ -731,7 +745,10 @@ impl Fft for MixedRadix2304Fft {
             }
         };
         let mut esp_dsp_256 = |row: &mut [Complex32; 256]| {
-            if cfg!(feature = "aes3") && !pie_aligned(row) {
+            let staged = cfg!(feature = "aes3") && !pie_aligned(row);
+            #[cfg(feature = "aes3")]
+            record_pie_path(256, !staged);
+            if staged {
                 // SAFETY: `dyn Fft` carries no `Sync` bound and a
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };
@@ -819,7 +836,10 @@ impl Fft for MixedRadix5120Fft {
             }
         };
         let mut esp_dsp_1024 = |row: &mut [Complex32; 1024]| {
-            if cfg!(feature = "aes3") && !pie_aligned(row) {
+            let staged = cfg!(feature = "aes3") && !pie_aligned(row);
+            #[cfg(feature = "aes3")]
+            record_pie_path(1024, !staged);
+            if staged {
                 // SAFETY: `dyn Fft` carries no `Sync` bound and a
                 // planned instance is owned by a single caller.
                 let staging = unsafe { &mut *self.staging.get() };

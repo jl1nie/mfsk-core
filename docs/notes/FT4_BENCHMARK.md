@@ -1813,3 +1813,52 @@ when their 256-point inner passes are already esp-dsp's — so 2.33× is a
 starting point, not a verdict. Nothing here changes §23's conclusion
 that the *candidate count* is well behaved at realistic occupancy; it
 changes which stages the remaining work is in.
+
+### 25.4 It is not the PIE staging copy (2026-08-30)
+
+The cheapest of the three suspects behind the coarse stage's 8.5 ms per
+transform was that none of its inner rows reach esp-dsp's in-place PIE
+path: `MixedRadix2304Fft::process` copies through `AlignedStaging`
+whenever the caller's buffer is not 16-byte aligned, and
+`symbol_spectra_avg` hands it a plain `vec![Complex::new(0.0, 0.0);
+NFFT1]`, whose *guaranteed* alignment is `align_of::<Complex32>() = 4`.
+Whether esp-idf's allocator returns 16 anyway is not a question host
+code can answer.
+
+`pie_alignment_report()` already existed for issue #260 but **only the
+plain radix-2 path ever called `record_pie_path`** — the three
+mixed-radix kernels, i.e. every transform FT4 and FT8 actually run on
+this board, were invisible to it. Wiring them up and reading the
+counters either side of each pass (log:
+`ft4-bench_piealign_2026-08-30.log`):
+
+| pass | inner rows | in-place | staged |
+|---|---:|---:|---:|
+| pass 0 — coarse, 2304 = 256 × 9 | 1 368 | **1 368** | **0** |
+| pass 1f — `downsample_cached`, 5120 = 1024 × 5 | 60 | 0 | **60** |
+| pass 1d — DDC (FIR only) | 0 | 0 | 0 |
+
+1 368 = 152 × 9 and 60 = 12 × 5, so the counters see exactly the rows
+they should; pass 1d's zero is the self-check that each pass runs one
+kernel and only one.
+
+**The hypothesis is dead for the coarse stage**: every one of its 1 368
+inner rows already runs in place on the PIE assembly. The 1 288 ms is
+therefore in the *wrapper*, not the kernel — the Nuttall window over
+2 304 points, the strided gather/scatter of nine 256-point rows, the
+2 304 twiddle multiplies, and the magnitude accumulation over 1 152
+bins, all scalar Rust. Nine 256-point esp-dsp transforms are on the
+order of 0.2 ms of the 8.5. **The next probe times the combine stage
+directly**; there is no point optimising a kernel that is already ~2 %
+of the cost.
+
+**And it turned up a separate defect**: `fft_mixed_5120` stages **100 %**
+of its rows. Its 5 120-element buffer lands 8-mod-16, so every
+1 024-point row pays a copy in and a copy out. That is real, with a
+known fix (align the buffer), but note what it is *not*:
+`downsample_cached` is the control arm here. The shipping receiver uses
+the DDC and never calls it, so fixing this does not move the budget — it
+is recorded because it is true, not because it is on the path. Left
+unfixed pending evidence it costs anything: 60 rows of 8 KB is ~1 MB of
+copying against an 803 ms stage, so the same "it is the wrapper, not the
+kernel" conclusion probably applies here too.

@@ -397,6 +397,46 @@ fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
     }
 }
 
+/// PIE-alignment counters around one stage.
+///
+/// `pie_alignment_report` is process-global and its length mask cannot
+/// tell `fft_mixed_2304`'s 256-point inner rows from `fft_mixed_3840`'s,
+/// so attribution has to come from *when* the counters move. That works
+/// here because each pass runs exactly one kernel: pass 0 nothing but
+/// the coarse stage's 2304s, pass 1f nothing but `downsample_cached`'s
+/// 5120s, and pass 1d — a FIR chain — no transform at all, which makes
+/// its row count a self-check on this reasoning rather than a
+/// measurement.
+///
+/// **The question this exists to settle** (`FT4_BENCHMARK.md` §25,
+/// follow-up 2): `ft4_coarse_sync` costs 1 288 ms, ~8.5 ms for each of
+/// 152 transforms, even though the nine inner 256-point passes are
+/// already esp-dsp's PIE assembly. One suspect is that none of them
+/// take that assembly's in-place path: `MixedRadix2304Fft::process`
+/// falls back to a copy-in/copy-out through `AlignedStaging` whenever
+/// the caller's buffer is not 16-byte aligned, and the buffer is a
+/// plain `vec![Complex::new(0.0, 0.0); NFFT1]`, whose guaranteed
+/// alignment is `align_of::<Complex32>() = 4`. Whether esp-idf's
+/// allocator happens to return 16 for it is not something host code
+/// can answer — hence a counter rather than an argument.
+///
+/// Returns the fresh reading so the caller can chain it as the next
+/// stage's baseline.
+fn pie_delta(label: &str, before: (usize, usize, usize, usize)) -> (usize, usize, usize, usize) {
+    let now = crate::esp_dsp_fft::pie_alignment_report();
+    let aligned = now.0.saturating_sub(before.0);
+    let staged = now.2.saturating_sub(before.2);
+    let total = aligned + staged;
+    log::info!(
+        "ft4_bench: {label} PIE inner rows: {aligned} in-place / {staged} staged \
+         of {total} ({} % staged) | len mask: in-place {:#x}, staged {:#x}",
+        if total > 0 { staged * 100 / total } else { 0 },
+        now.1,
+        now.3,
+    );
+    now
+}
+
 /// RMS-normalise a downsampled baseband to unit power, matching what
 /// `process_candidate_basic_impl` does to its own `downsample_cached`
 /// output (WSJT-X `ft4_decode.f90:231-232`). Both the search passes and
@@ -567,6 +607,11 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     log::info!("ft4_bench: task watchdog deinit -> {r}");
 
     // ── Pass 0: the coarse stage, on-device for the first time ───────
+    //
+    // Baseline the PIE counters here, not at boot: `prewarm` and the
+    // asset load run transforms of their own, and they are not what is
+    // being attributed.
+    let mut pie = crate::esp_dsp_fft::pie_alignment_report();
     let t0 = now_us();
     let candidates = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
     let coarse_us = now_us() - t0;
@@ -576,6 +621,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         candidates.len(),
         baked.len(),
     );
+    pie = pie_delta("pass0 coarse (2304 = 256 x 9)", pie);
     compare_candidates(&candidates, &baked);
     if candidates.is_empty() {
         log::error!("ft4_bench: coarse stage found nothing — the rest of the run is meaningless");
@@ -598,6 +644,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         downsample_us / 1000,
         downsample_us / n,
     );
+    pie = pie_delta("pass1f downsample (5120 = 1024 x 5)", pie);
 
     let t0 = now_us();
     let mut checksum = 0.0f32;
@@ -613,6 +660,11 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         ddc_us / n,
         (ddc_us - downsample_us) / 1000,
     );
+    // Expect 0 rows: the DDC is two FIR stages and two mixers, no
+    // transform anywhere. A non-zero count here would mean the passes
+    // above are not isolating what this report claims they isolate.
+    pie = pie_delta("pass1d DDC (expect no transforms)", pie);
+    let _ = pie;
 
     // ── Passes 2*: the Δt search, one variable at a time ─────────────
     //
