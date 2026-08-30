@@ -138,7 +138,7 @@ fn ffi_smoke_one(slot: &[i16]) {
     };
     // issue #205: the five positional tuning knobs are now behind an
     // MfskDecodeOptions handle.
-    let options = unsafe { mfsk_ft8_options_new(100.0, 3_000.0, 1.0, 30, MfskDecodeDepth::BpAll) };
+    let options = mfsk_ft8_options_new(100.0, 3_000.0, 1.0, 30, MfskDecodeDepth::BpAll);
     let t0 = now_us();
     let st = unsafe { mfsk_ft8_decode_i16(slot.as_ptr(), slot.len(), options, &mut results) };
     unsafe { mfsk_ft8_options_free(options) };

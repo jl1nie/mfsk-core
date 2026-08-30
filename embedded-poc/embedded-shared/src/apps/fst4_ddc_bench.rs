@@ -310,16 +310,6 @@ const fn is_zero(v: Option<&str>) -> bool {
     }
 }
 
-const fn is_one(v: Option<&str>) -> bool {
-    match v {
-        Some(s) => {
-            let b = s.as_bytes();
-            b.len() == 1 && b[0] == b'1'
-        }
-        None => false,
-    }
-}
-
 fn stack_headroom() -> u32 {
     unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) }
 }
