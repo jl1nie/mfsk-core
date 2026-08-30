@@ -71,8 +71,8 @@
 
 #![allow(dead_code)] // board.rs/pmic.rs/uac.rs carry items this bin doesn't use (no touch, no TX).
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use esp_idf_hal::delay::{Ets, FreeRtos};
 use esp_idf_hal::gpio::{AnyIOPin, PinDriver};
@@ -88,15 +88,12 @@ use mipidsi::options::{ColorInversion, Orientation};
 use mipidsi::{models::ILI9342CRgb565, Builder};
 
 use embedded_shared::fst4_dual_core;
-use embedded_shared::fst4_monitor::{
-    self, CapturedSlot, MonitorConfig, MonitorHit, SlotCapture,
-};
-use mfsk_app_shared::settings;
-use mfsk_app_shared::{http_config, ntp, udp_log};
+use embedded_shared::fst4_monitor::{self, CapturedSlot, MonitorConfig, MonitorHit, SlotCapture};
 use mfsk_app_shared::boot_mode::{self, BootMode};
+use mfsk_app_shared::settings;
 use mfsk_app_shared::ui::fst4_list::{self, Fst4SpotRow, Fst4UiState};
 use mfsk_app_shared::ui::{link_bar, mode_picker};
-
+use mfsk_app_shared::{http_config, ntp, udp_log};
 
 /// The same baked golden slot `fst4-ddc-bench` runs — raw `i16` little
 /// endian at 12 kHz, byte-wise rather than transmuted (1-byte
@@ -115,8 +112,6 @@ const REPLAY_GOLDEN: bool = option_env!("MFSK_FST4_REPLAY").is_some();
 const GOLDEN_AUDIO: &[u8] = include_bytes!("../../../assets/fst4_60_golden_audio.bin");
 #[cfg(not(feature = "fst4-replay"))]
 const GOLDEN_AUDIO: &[u8] = &[];
-
-
 
 /// FST4-60's slot. Capture paces itself to this; the decode has the
 /// same period to finish in.
@@ -618,7 +613,11 @@ fn capture_loop() -> ! {
             t_compute / 1000,
             SLOT_US / 1000,
             t_compute as f64 / SLOT_US as f64 * 100.0,
-            if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) { "UAC" } else { "golden replay" },
+            if UAC_AUDIO_ACTIVE.load(Ordering::Acquire) {
+                "UAC"
+            } else {
+                "golden replay"
+            },
         );
         post_slot(cap);
         slots_done += 1;
@@ -730,7 +729,11 @@ fn scan_loop() -> ! {
         // two are directly comparable: the bench logs `refine N ms
         // decode M ms` per candidate and this is the same pair summed.
         let recenter_ms: i64 = hits.iter().map(|h| h.recenter_us).sum::<i64>() / 1000;
-        let refine_ms: i64 = hits.iter().map(|h| h.refine_us - h.recenter_us).sum::<i64>() / 1000;
+        let refine_ms: i64 = hits
+            .iter()
+            .map(|h| h.refine_us - h.recenter_us)
+            .sum::<i64>()
+            / 1000;
         let decode_ms: i64 = hits.iter().map(|h| h.decode_us).sum::<i64>() / 1000;
         let n = hits.len().max(1) as i64;
         // Two lines, not one: the UDP log — the only console once the
@@ -808,7 +811,10 @@ fn to_row(h: &MonitorHit, search_ms: i64) -> Fst4SpotRow {
     Fst4SpotRow {
         utc_hhmm: current_hhmm(),
         freq_hz: h.refined_hz,
-        snr_db: h.snr_db.is_finite().then(|| h.snr_db.clamp(-99.0, 99.0) as i8),
+        snr_db: h
+            .snr_db
+            .is_finite()
+            .then(|| h.snr_db.clamp(-99.0, 99.0) as i8),
         dt_sec: h.dt_sec,
         msg,
         t_s: (h.t_ms + search_ms) as f32 / 1000.0,
@@ -1002,7 +1008,11 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    log::info!("LCD init OK ({}x{})", crate::board::CANVAS_W, crate::board::CANVAS_H);
+    log::info!(
+        "LCD init OK ({}x{})",
+        crate::board::CANVAS_W,
+        crate::board::CANVAS_H
+    );
 
     {
         let ui = FST4_UI.lock().expect("FST4_UI poisoned");
@@ -1025,7 +1035,6 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     let mut last_dirty = u32::MAX;
     let mut tick: u32 = 0;
     loop {
-
         // Freeze the tables while the overlay is up — it only
         // redraws on change, so a repaint underneath erases it and it
         // never comes back.
@@ -1099,19 +1108,31 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 // associates — the staging ring has been overwritten by
                 // then. Same one-shot the FT8 controller does.
                 if !boot_summary_sent
-                    && crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false)
+                    && crate::FANOUT
+                        .udp
+                        .try_lock()
+                        .map(|g| g.is_some())
+                        .unwrap_or(false)
                 {
                     boot_summary_sent = true;
                     let (host_attempted, ..) = crate::pmic::power_state();
                     let r = crate::uac::HOST_RESULT.read();
                     log::warn!(
                         "[boot-summary] mode=FST4 host_mode={host_attempted} start_host: {}",
-                        if r.is_empty() { "never called" } else { r.as_str() }
+                        if r.is_empty() {
+                            "never called"
+                        } else {
+                            r.as_str()
+                        }
                     );
                     let rt = crate::rtc::RTC_RESULT.read();
                     log::warn!(
                         "[boot-summary] rtc: {}",
-                        if rt.is_empty() { "no result recorded" } else { rt.as_str() }
+                        if rt.is_empty() {
+                            "no result recorded"
+                        } else {
+                            rt.as_str()
+                        }
                     );
                     crate::pmic::log_boot_summary(i2c);
                 }
@@ -1276,27 +1297,30 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // `MIN_MODEM` lets the radio sleep between DTIM beacons, which is
     // all a receiver that only needs NTP, a config page and a log sink
     // ever wanted from the association.
-    let r = unsafe { esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_MIN_MODEM) };
+    let r = unsafe {
+        esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_MIN_MODEM)
+    };
     log::info!("fst4_app::net: esp_wifi_set_ps(MIN_MODEM) -> {r}");
 
     // UDP log sink — the serial console goes away the moment the USB
     // host driver installs, so this is the only log this app has once
     // it is running for real.
-    let target_ip: std::net::IpAddr = if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
-        std::net::IpAddr::V4(info.subnet_broadcast)
-    } else {
-        match crate::UDP_LOG_TARGET.parse() {
-            Ok(ip) => ip,
-            Err(e) => {
-                log::warn!(
-                    "fst4_app::net: UDP_LOG_TARGET '{}' parse failed ({e}); \
+    let target_ip: std::net::IpAddr =
+        if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
+            std::net::IpAddr::V4(info.subnet_broadcast)
+        } else {
+            match crate::UDP_LOG_TARGET.parse() {
+                Ok(ip) => ip,
+                Err(e) => {
+                    log::warn!(
+                        "fst4_app::net: UDP_LOG_TARGET '{}' parse failed ({e}); \
                      using subnet broadcast",
-                    crate::UDP_LOG_TARGET
-                );
-                std::net::IpAddr::V4(info.subnet_broadcast)
+                        crate::UDP_LOG_TARGET
+                    );
+                    std::net::IpAddr::V4(info.subnet_broadcast)
+                }
             }
-        }
-    };
+        };
     let addr = std::net::SocketAddr::new(target_ip, crate::UDP_LOG_PORT.parse().unwrap_or(9999));
     match udp_log::UdpLogSink::new(addr) {
         Ok(sink) => {

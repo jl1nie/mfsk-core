@@ -326,7 +326,10 @@ pub fn flip_and_restart(nvs: &EspNvs<NvsDefault>, current: BootMode) -> ! {
 /// than the `WithCaps` variant) gets an internal-DRAM stack, which is
 /// the only requirement. It costs that stack for a few hundred
 /// milliseconds and then the board is gone.
-pub fn commit_and_restart(nvs: std::sync::Arc<std::sync::Mutex<EspNvs<NvsDefault>>>, mode: BootMode) {
+pub fn commit_and_restart(
+    nvs: std::sync::Arc<std::sync::Mutex<EspNvs<NvsDefault>>>,
+    mode: BootMode,
+) {
     struct Req {
         nvs: std::sync::Arc<std::sync::Mutex<EspNvs<NvsDefault>>>,
         mode: BootMode,

@@ -42,18 +42,15 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
-use mfsk_core::engine::sync::{
-    coarse_sync, compute_spectra, AudioSource, SyncCandidate, SyncDims,
-};
+use mfsk_core::engine::sync::{coarse_sync, compute_spectra, AudioSource, SyncCandidate, SyncDims};
 use mfsk_core::fst4::ddc::grid_for;
 use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::fst4_dual_core;
-use crate::fst4_monitor::{self, Band, CapturedSlot, MonitorConfig, SlotCapture, now_us};
+use crate::fst4_monitor::{self, now_us, Band, CapturedSlot, MonitorConfig, SlotCapture};
 
 /// Matches `fst4::decode`'s own (private) `SYNC_Q_MIN` — see
 /// `fst4_bench`'s identical constant for why it's redeclared here
@@ -488,7 +485,11 @@ pub fn run(audio_bin: &[u8]) {
         log::info!(
             "fst4_ddc_bench: [diag] coarse search split — fill {} ms ({}), rank {} ms",
             fill_us / 1000,
-            if DUAL_CORE { "dual-core" } else { "single-core" },
+            if DUAL_CORE {
+                "dual-core"
+            } else {
+                "single-core"
+            },
             rank_us / 1000,
         );
         cands
@@ -825,7 +826,11 @@ fn run_monitor_loop(
         MONITOR_DEADLINE_MS,
         MONITOR_CAP_MS,
         FULL_DEPTH_RANKS,
-        if DUAL_CORE { "DUAL-CORE" } else { "single-core" },
+        if DUAL_CORE {
+            "DUAL-CORE"
+        } else {
+            "single-core"
+        },
     );
 
     // `coarse_sync`'s spectrogram build and the DDC ahead of it are

@@ -801,6 +801,41 @@ impl Fft for MixedRadix3840Fft {
 /// find its own candidates instead of reading a list baked on a host
 /// (`embedded-poc/assets/ft4_golden_candidates.bin`).
 struct MixedRadix2304Fft {
+    /// The transform's own 2 304-element scratch, allocated once here
+    /// instead of `vec![…; 2304]`-ed inside every call.
+    ///
+    /// `ft4_coarse_sync` runs ~152 transforms per slot, so the
+    /// allocating entry point costs 152 mallocs of 18 KB *and* 152
+    /// zero-fills of the same, none of which the algorithm needs — the
+    /// buffer is fully overwritten by step 1. Measured: 1 290 -> 1 165 ms
+    /// on the coarse stage (`docs/notes/FT4_BENCHMARK.md` §25.7).
+    ///
+    /// [`AlignedStaging`] rather than a plain `Vec` because the rows the
+    /// inner kernel sees are slices *of this buffer*: a plain
+    /// `vec![…; 2304]` hoisted here landed 8-mod-16 and put 29 ms of
+    /// staging copies back — the very tax §25.4 measured on
+    /// `fft_mixed_5120`, reintroduced by accident while removing a
+    /// different one. 16-byte alignment here makes every 256-element
+    /// row inherit it.
+    scratch: core::cell::UnsafeCell<AlignedStaging>,
+    /// The same scratch in **internal** DRAM, when one could be had.
+    ///
+    /// `symbol_spectra_avg` keeps three 18 KB buffers live per
+    /// transform — its input, this module's twiddle table, and the
+    /// scratch — so ~54 KB of working set against an S3 data cache of
+    /// ~32 KB. That is the standing explanation for why §25.6's
+    /// blocking made things *worse*: improving locality inside one
+    /// buffer cannot help a working set that does not fit, and the
+    /// blocking's extra staged copy is then pure cost. Taking one of
+    /// the three out of PSRAM is the test of that.
+    ///
+    /// 18 KB of internal DRAM is not free — with WiFi up the largest
+    /// free internal block on this board is 31 744 B
+    /// (`embedded-poc/CLAUDE.md`) — so this is `None` when the
+    /// allocation fails and the PSRAM path above carries on. A
+    /// production FT4 mode would reserve it through `worker_arena` at
+    /// boot rather than allocate it here.
+    internal: Option<core::ptr::NonNull<Complex32>>,
     forward: bool,
     twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_2304::N]>,
     /// 256-`Complex32` staging for the PIE kernel -- same inheritance
@@ -814,6 +849,30 @@ impl MixedRadix2304Fft {
             forward,
             twiddles: mfsk_core::engine::dsp::fft_mixed_2304::build_twiddles(),
             staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
+            scratch: core::cell::UnsafeCell::new(AlignedStaging::new()),
+            internal: {
+                const N: usize = mfsk_core::engine::dsp::fft_mixed_2304::N;
+                const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
+                // SAFETY: `heap_caps_aligned_alloc` returns null or a
+                // 16-byte-aligned block of at least the requested size;
+                // `Complex32` is `repr(C)` over two `f32` (align 4), so
+                // the block is validly typed and long enough for N.
+                // Deliberately leaked: it lives as long as the plan,
+                // and plans are made once per `symbol_spectra_avg`.
+                let p = unsafe {
+                    esp_idf_svc::sys::heap_caps_aligned_alloc(
+                        16,
+                        N * core::mem::size_of::<Complex32>(),
+                        MALLOC_CAP_INTERNAL_8BIT,
+                    )
+                } as *mut Complex32;
+                let got = core::ptr::NonNull::new(p);
+                log::info!(
+                    "fft_mixed_2304: scratch in {} DRAM",
+                    if got.is_some() { "INTERNAL" } else { "PSRAM (internal alloc failed)" }
+                );
+                got
+            },
         }
     }
 }
@@ -865,19 +924,40 @@ impl Fft for MixedRadix2304Fft {
             }
         };
 
+        // SAFETY: same argument as `staging` above — `dyn Fft` carries
+        // no `Sync` bound, so a planned instance is owned by a single
+        // caller and this is the only live borrow.
+        let scratch: &mut [Complex32] = match self.internal {
+            // SAFETY: the block was allocated for exactly N
+            // `Complex32` in `new` and is never freed; `dyn Fft` has no
+            // `Sync` bound, so this instance has a single caller and
+            // this is the only live borrow of it.
+            Some(p) => unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), N) },
+            None => unsafe { &mut *self.scratch.get() }.as_slice(N),
+        };
         let t_proc = probe_us();
         if self.forward {
-            mfsk_core::engine::dsp::fft_mixed_2304::fft_2304_with(
+            mfsk_core::engine::dsp::fft_mixed_2304::fft_2304_with_scratch(
                 buf_arr,
                 &mut esp_dsp_256,
                 &self.twiddles,
+                scratch,
             );
         } else {
-            mfsk_core::engine::dsp::fft_mixed_2304::ifft_2304_with(
+            // `ifft_2304_with` has no scratch form; conjugate around
+            // the forward one, which is all it does.
+            for c in buf_arr.iter_mut() {
+                c.im = -c.im;
+            }
+            mfsk_core::engine::dsp::fft_mixed_2304::fft_2304_with_scratch(
                 buf_arr,
                 &mut esp_dsp_256,
                 &self.twiddles,
+                scratch,
             );
+            for c in buf_arr.iter_mut() {
+                c.im = -c.im;
+            }
         }
         add_process_us(probe_us() - t_proc);
     }
@@ -989,7 +1069,6 @@ impl Fft for MixedRadix5120Fft {
         mfsk_core::engine::dsp::fft_mixed_5120::N
     }
 }
-
 
 struct EspDspFft {
     len: usize,

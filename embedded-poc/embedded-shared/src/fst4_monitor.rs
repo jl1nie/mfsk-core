@@ -47,18 +47,18 @@ use num_complex::Complex32;
 
 use mfsk_core::engine::dsp::ddc::StreamingComplexDdc;
 use mfsk_core::engine::equalize::EqMode;
-use mfsk_core::engine::pipeline::{DecodeDepth, DecodeStrictness, process_candidate_precomputed};
+use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync::{
-    RxGrid, Spectrogram, SpectrogramBuilder, Sync2dShape, SyncCandidate, coarse_sync_from_sync2d,
-    fill_sync2d_row, spectra_crop_for, sync2d_shape,
+    coarse_sync_from_sync2d, fill_sync2d_row, spectra_crop_for, sync2d_shape, RxGrid, Spectrogram,
+    SpectrogramBuilder, Sync2dShape, SyncCandidate,
 };
 use mfsk_core::engine::sync2d::fst4_sync_search;
-use mfsk_core::fst4::Fst4s60;
 use mfsk_core::fst4::ddc::{
-    REFINE_DS_RATE_HZ, grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade,
-    wideband_refine_recenter,
+    grid_for, sniper_cascade, sniper_refine_recenter, wideband_cascade, wideband_refine_recenter,
+    REFINE_DS_RATE_HZ,
 };
-use mfsk_core::fst4::rung_major::{RungMajorCandidate, decode_phase_split_timed};
+use mfsk_core::fst4::rung_major::{decode_phase_split_timed, RungMajorCandidate};
+use mfsk_core::fst4::Fst4s60;
 use mfsk_core::msg::wsjt77::unpack77;
 
 use crate::fst4_dual_core;

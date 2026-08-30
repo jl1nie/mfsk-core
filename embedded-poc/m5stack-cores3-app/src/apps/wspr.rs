@@ -100,7 +100,6 @@
 //! really heard on that band.
 #![allow(dead_code)] // board.rs/pmic.rs/uac.rs carry fields/fns this bin doesn't use (no touch, no TX).
 
-
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -127,14 +126,14 @@ use mfsk_core::wspr::decode::WsprResult;
 use embedded_shared::apps::wspr_scan::{load_baseband, now_us, run_scan, NBB, SLOT_US};
 use embedded_shared::wspr_dual_core;
 
+use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
+use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::civil_time::civil_from_unix;
 use mfsk_app_shared::settings::{self, Settings};
-use mfsk_app_shared::boot_mode::{self, BootMode};
-use esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
-use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::ui::wspr_list;
 use mfsk_app_shared::ui::wspr_row::WsprSpotRow;
 use mfsk_app_shared::ui::wspr_state::WSPR_UI;
+use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::wspr_bands::{WsprBand, WSPR_BANDS};
 use mfsk_app_shared::{http_config, ntp, udp_log};
 
@@ -145,8 +144,6 @@ const GOLDEN_BASEBAND: &[u8] = include_bytes!("../../../assets/wspr_golden_baseb
 #[cfg(not(feature = "wspr-golden"))]
 #[allow(dead_code)]
 const GOLDEN_BASEBAND: &[u8] = &[];
-
-
 
 /// How long to wait for the boot-time NTP attempt before giving up
 /// and running without absolute time (`ntp_synced` stays false, and
@@ -563,7 +560,7 @@ fn spawn_display_task(ctx: DisplayCtx) {
             DISPLAY_PRIORITY,
             core::ptr::null_mut(),
             1, // core 1 — deliberately NOT the scan task's core 0, see
-               // this file's top doc comment.
+            // this file's top doc comment.
             MALLOC_CAP_SPIRAM,
         )
     };
@@ -713,7 +710,11 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             }
         }
     };
-    log::info!("LCD init OK ({}x{})", crate::board::CANVAS_W, crate::board::CANVAS_H);
+    log::info!(
+        "LCD init OK ({}x{})",
+        crate::board::CANVAS_W,
+        crate::board::CANVAS_H
+    );
 
     // The 2026-08-15 real-hardware investigation that led here (three
     // real bugs: AXP2101 DLDO1/backlight never enabled, board.rs's
@@ -754,7 +755,6 @@ fn display_loop(ctx: DisplayCtx) -> ! {
     let mut last_dirty = u32::MAX;
     let mut tick: u32 = 0;
     loop {
-
         // Freeze the tables while the overlay is up — it only
         // redraws on change, so a repaint underneath erases it and it
         // never comes back.
@@ -828,19 +828,31 @@ fn display_loop(ctx: DisplayCtx) -> ! {
                 // associates — the staging ring has been overwritten by
                 // then. Same one-shot the FT8 controller does.
                 if !boot_summary_sent
-                    && crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false)
+                    && crate::FANOUT
+                        .udp
+                        .try_lock()
+                        .map(|g| g.is_some())
+                        .unwrap_or(false)
                 {
                     boot_summary_sent = true;
                     let (host_attempted, ..) = crate::pmic::power_state();
                     let r = crate::uac::HOST_RESULT.read();
                     log::warn!(
                         "[boot-summary] mode=WSPR host_mode={host_attempted} start_host: {}",
-                        if r.is_empty() { "never called" } else { r.as_str() }
+                        if r.is_empty() {
+                            "never called"
+                        } else {
+                            r.as_str()
+                        }
                     );
                     let rt = crate::rtc::RTC_RESULT.read();
                     log::warn!(
                         "[boot-summary] rtc: {}",
-                        if rt.is_empty() { "no result recorded" } else { rt.as_str() }
+                        if rt.is_empty() {
+                            "no result recorded"
+                        } else {
+                            rt.as_str()
+                        }
                     );
                     crate::pmic::log_boot_summary(i2c);
                 }
@@ -1026,20 +1038,21 @@ fn network_loop(mut ctx: NetworkCtx) -> ! {
     // UDP log sink — see this file's top doc comment for why (USB
     // host mode later takes the serial console with it). Same
     // target-resolution + staging-drain sequence `main.rs` uses.
-    let target_ip: std::net::IpAddr = if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
-        std::net::IpAddr::V4(info.subnet_broadcast)
-    } else {
-        match crate::UDP_LOG_TARGET.parse() {
-            Ok(ip) => ip,
-            Err(e) => {
-                log::warn!(
-                    "wspr_app: UDP_LOG_TARGET '{}' parse failed ({e}); using subnet bcast",
-                    crate::UDP_LOG_TARGET
-                );
-                std::net::IpAddr::V4(info.subnet_broadcast)
+    let target_ip: std::net::IpAddr =
+        if crate::UDP_LOG_TARGET.is_empty() || crate::UDP_LOG_TARGET == "auto" {
+            std::net::IpAddr::V4(info.subnet_broadcast)
+        } else {
+            match crate::UDP_LOG_TARGET.parse() {
+                Ok(ip) => ip,
+                Err(e) => {
+                    log::warn!(
+                        "wspr_app: UDP_LOG_TARGET '{}' parse failed ({e}); using subnet bcast",
+                        crate::UDP_LOG_TARGET
+                    );
+                    std::net::IpAddr::V4(info.subnet_broadcast)
+                }
             }
-        }
-    };
+        };
     let port: u16 = crate::UDP_LOG_PORT.parse().unwrap_or(9999);
     let addr = std::net::SocketAddr::new(target_ip, port);
     match udp_log::UdpLogSink::new(addr) {

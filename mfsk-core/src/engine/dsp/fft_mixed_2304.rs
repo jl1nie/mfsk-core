@@ -108,9 +108,41 @@ pub fn fft_2304_with(
     fft_256: &mut dyn FnMut(&mut [Complex32; N1]),
     twiddles: &[Complex32; N],
 ) {
+    let mut m: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); N];
+    fft_2304_with_scratch(buf, fft_256, twiddles, &mut m);
+}
+
+/// [`fft_2304_with`] with a caller-owned scratch buffer.
+///
+/// Exists so an embedded backend can hoist the `vec![…; 2304]` — an
+/// 18 KB allocation, zero-filled, on each of the ~152 transforms a slot
+/// of `ft4_coarse_sync` runs — out of the per-call path.
+///
+/// **The body is deliberately the plain, non-blocked order.** Blocking
+/// the two transposing passes into stack-staged 32-column strips was
+/// tried on hardware 2026-08-30 and made the combine stage *worse*:
+/// 853 ms -> 1 033 ms, +21 % (`docs/notes/FT4_BENCHMARK.md` §25.6). The
+/// reasoning it was built on — ~6 900 stride-2 048-byte accesses per
+/// transform, >200 KB of PSRAM traffic to move 18 KB, ~5 ms at
+/// 40 MB/s against a measured 5.6 ms — was arithmetic that happened to
+/// land on the right number for the wrong reason. The scratch is 18 KB
+/// and the S3's PSRAM cache holds it, so the strided access was already
+/// being served from cache and the blocking bought nothing while
+/// costing an extra staged copy each way.
+pub fn fft_2304_with_scratch(
+    buf: &mut [Complex32; N],
+    fft_256: &mut dyn FnMut(&mut [Complex32; N1]),
+    twiddles: &[Complex32; N],
+    scratch: &mut [Complex32],
+) {
+    assert!(
+        scratch.len() >= N,
+        "fft_2304 scratch must hold at least N elements"
+    );
+    let m = &mut scratch[..N];
+
     // Step 1: `m[n2][n1] = x[9·n1 + n2]`, transposed so each row is
     //         contiguous for the 256-pt FFT.
-    let mut m: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); N];
     for n1 in 0..N1 {
         for n2 in 0..N2 {
             m[n2 * N1 + n1] = buf[N2 * n1 + n2];
@@ -240,6 +272,32 @@ mod tests {
             got.copy_from_slice(&x);
             fft_9(&mut got);
             assert_close(&got, &want, 1e-5, "fft_9");
+        }
+    }
+
+    /// The scratch entry point must agree with the allocating one, and
+    /// must tolerate a scratch longer than `N` — an embedded caller
+    /// sizing one buffer for several transform lengths.
+    #[test]
+    fn fft2304_scratch_matches_allocating_entry_point() {
+        let tw = build_twiddles();
+        let x = random_input(5, N);
+
+        let mut want = [Complex32::new(0.0, 0.0); N];
+        want.copy_from_slice(&x);
+        fft_2304_with(&mut want, &mut rustfft_256, &tw);
+
+        let mut scratch = vec![Complex32::new(0.0, 0.0); N + 64];
+        let mut got = [Complex32::new(0.0, 0.0); N];
+        got.copy_from_slice(&x);
+        fft_2304_with_scratch(&mut got, &mut rustfft_256, &tw, &mut scratch);
+
+        for (k, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(
+                (g.re.to_bits(), g.im.to_bits()),
+                (w.re.to_bits(), w.im.to_bits()),
+                "bin {k}"
+            );
         }
     }
 

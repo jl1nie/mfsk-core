@@ -1918,3 +1918,106 @@ transform, so every microsecond of its 1 848 ms is FIR, and
 projected: the mixed-radix combine (1 361 ms, and shared with
 `fft_mixed_3840`, so FT8 on this board is paying the same tax) and the
 DDC's scalar FIR (1 848 ms). Neither has been attempted.
+
+## 26. The combine stage: two wrong theories and a 41 % win (2026-08-30)
+
+§25.5 put 66 % of `ft4_coarse_sync`'s 1 290 ms in the Cooley-Tukey
+combine — `fft_mixed_2304`'s transposes, twiddles and 9-point columns,
+scalar Rust around esp-dsp's 256-point rows. This section is what
+happened when that was attacked. Two of the three attempts failed, and
+the order matters more than the result.
+
+Only `embedded-shared`'s planner and the modules' own unit tests call
+`fft_*_with`; the host uses rustfft directly for 2304 and 5120. So this
+is embedded-only code, and every change below was additionally pinned
+**bit-identical** on host before flashing — the decodes cannot move, and
+they did not: 11 in every arm of every run, and `compare_candidates`
+paired 12 of 12 at max Δfreq 0.00 Hz throughout.
+
+| step | coarse | combine | ship slot | |
+|---|---:|---:|---:|---|
+| §25 baseline | 1 290 | 853 | 4 576 (2.33×) | |
+| blocked transposes | 1 496 | 1 033 | 4 790 (2.44×) | **worse — reverted** |
+| scratch hoisted out of the call | 1 165 | 774 | 4 460 (2.27×) | |
+| …and 16-byte aligned | 1 138 | 777 | 4 434 (2.26×) | |
+| **…in internal DRAM** | **758** | **404** | **4 055 (2.06×)** | **−41 % coarse** |
+
+### 26.1 The blocking attempt, which was wrong
+
+The theory: `m[n2·256 + n1]` and the column gather touch ~6 900
+addresses 2 048 bytes apart per transform, and an 18 KB scratch is past
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` so it lives in Quad PSRAM. At
+~32 bytes a line that is >200 KB of bus traffic to move 18 KB — 5.1 ms
+at 40 MB/s, against a measured 5.6 ms. The arithmetic landed on the
+right number.
+
+Blocking both transposes into stack-staged 32-column strips made it
+**21 % worse** (853 → 1 033 ms). The arithmetic was right about the
+quantity and wrong about the mechanism: the strided access was already
+being served, so the blocking bought nothing and its extra staged copy
+each way was pure cost. Reverted; the surviving artefact is the
+`fft_2304_with_scratch` seam it needed, and a `#[test]` pinning
+bit-identity, which is what made reverting cheap.
+
+Third time this line has produced an "arithmetic that predicted the
+right magnitude for the wrong reason" — see also
+`feedback_bottleneck_hypothesis_measure_first`. The lesson is
+apparently not that the estimates are bad but that a matching estimate
+is not evidence.
+
+### 26.2 The allocation, which was a tenth of it
+
+`vec![Complex32::new(0.0, 0.0); 2304]` per call is 152 mallocs and 152
+zero-fills of 18 KB per slot, for a buffer step 1 fully overwrites.
+Hoisting it into the planner: 1 290 → 1 165 ms.
+
+It also *reintroduced* the §25.4 staging tax — the hoisted `Vec` landed
+8-mod-16, so 29 ms of copies appeared where the per-call one had had
+none. Allocating it through `AlignedStaging` instead took it back to
+zero and to 1 138 ms. Worth recording as a hazard: the alignment of a
+buffer is a property of how it was allocated, and moving an allocation
+changes it silently.
+
+### 26.3 It was the working set
+
+`symbol_spectra_avg` keeps three 18 KB buffers live per transform — its
+input, the twiddle table, and the scratch — about 54 KB against an S3
+data cache of ~32 KB. That is why improving locality *inside* one
+buffer could not help: the set does not fit, so each pass streams from
+PSRAM regardless of the order it walks.
+
+Taking one of the three out: `heap_caps_aligned_alloc(16, 18 432,
+MALLOC_CAP_INTERNAL)` for the scratch, falling back to the PSRAM path
+when it fails. **Combine 777 → 404 ms, coarse 1 138 → 758 ms.**
+Cumulatively against §25: coarse −41 %, combine −53 %, and the ship slot
+2.33× → 2.06× of budget.
+
+This is the same effect `internal_pool` documents for FT8's `cs` scratch
+and that §19.2 measured at only 1.12× for `cd0` — the difference being
+what the buffer is *for*. `cd0` is streamed once per grid cell, which a
+cache serves happily; this one is traversed five times per transform
+with a stride, which it does not.
+
+**The cost is 18 KB of internal DRAM**, and the receiver needs exactly
+one: the shipping path is coarse + DDC, and `fft_mixed_5120` — still at
+508 ms, untouched in every run above, which is what makes it the control
+that shows the change was isolated — belongs to `downsample_cached` on
+the control arm. With WiFi up the largest free internal block on this
+board is 31 744 B, so a production FT4 mode must reserve this through
+`worker_arena` at boot, not allocate it on demand.
+
+### 26.4 Where this leaves the budget
+
+Ship slot 4 055 ms against 1 960. Remaining, in order:
+
+| stage | ms |
+|---|---:|
+| DDC (`candidate_baseband`, scalar FIR) | ~1 848 |
+| `ft4_sync_search` @ ±0.5 s | ~960 |
+| coarse (combine 404 + kernel 144 + window/magnitude 208) | 758 |
+| LLR + BP | ~479 |
+
+The DDC is now the largest single item and `dsps_fird_f32_aes3` is still
+untried. `fft_mixed_3840` shares the structure fixed here, so FT8's
+`NFFT_SPEC` path on this board is presumably paying the same PSRAM tax —
+not measured, and stated as a hypothesis this time.

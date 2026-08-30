@@ -32,7 +32,7 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyleBuilder, ascii::FONT_6X10},
+    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -312,7 +312,13 @@ where
     )
     .draw(display)?;
 
-    render_rows(display, ui.slot_rows().iter(), SLOT_ROWS_Y, SLOT_ROWS, false)
+    render_rows(
+        display,
+        ui.slot_rows().iter(),
+        SLOT_ROWS_Y,
+        SLOT_ROWS,
+        false,
+    )
 }
 
 /// Decode history, newest at the top.

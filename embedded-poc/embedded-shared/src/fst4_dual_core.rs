@@ -319,11 +319,9 @@ pub fn init() {
     unsafe {
         JOB_Q.set(queue_create(core::mem::size_of::<*mut Job>()));
         RESULT_Q.set(queue_create(core::mem::size_of::<*mut ()>()));
-        let stack = crate::worker_arena::claim(
-            crate::worker_arena::Owner::Fst4Worker,
-            WORKER_STACK_BYTES,
-        )
-        .expect("fst4_dual_core: worker arena unavailable");
+        let stack =
+            crate::worker_arena::claim(crate::worker_arena::Owner::Fst4Worker, WORKER_STACK_BYTES)
+                .expect("fst4_dual_core: worker arena unavailable");
         let h = xTaskCreateStaticPinnedToCore(
             Some(worker_main),
             c"fst4_worker".as_ptr(),

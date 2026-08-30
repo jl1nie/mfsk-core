@@ -396,7 +396,10 @@ impl Drop for ReaderActiveGuard {
                 log::warn!(
                     "uac: re-opening addr={addr} iface={iface_num} (attempt {attempt}/{REOPEN_MAX_ATTEMPTS})"
                 );
-                if tx.send(DriverEvent::RxConnected { addr, iface_num }).is_err() {
+                if tx
+                    .send(DriverEvent::RxConnected { addr, iface_num })
+                    .is_err()
+                {
                     log::error!("uac: re-open send failed — app_task is gone");
                 }
             }
@@ -1055,7 +1058,6 @@ fn reader_thread(handle: DeviceHandle, addr: u8, iface_num: u8) {
             src_offset += consumed;
         }
         drop(sink_guard);
-
     }
     // Cleanup paths differ by exit reason:
     //
@@ -1157,8 +1159,7 @@ fn app_task(rx: std::sync::mpsc::Receiver<DriverEvent>) {
 /// the port". Those are the two states the link bar has to tell apart,
 /// and confusing them is what made a charging board look like a broken
 /// UAC stack.
-static HOST_INSTALLED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static HOST_INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn host_installed() -> bool {
     HOST_INSTALLED.load(core::sync::atomic::Ordering::Acquire)
@@ -1269,35 +1270,35 @@ pub fn start_host() -> Result<()> {
 /// Refs #163.
 fn spawn_device_count_probe() {
     let _ = crate::board::spawn_named(c"uac_probe", 3072, || {
-            let mut last: i32 = -1;
-            let mut since_log = u32::MAX;
-            loop {
-                let mut info = sys::usb_host_lib_info_t::default();
-                // SAFETY: ホストライブラリ導入後にのみ呼ばれる。
-                let err = unsafe { sys::usb_host_lib_info(&mut info) };
-                if err == sys::ESP_OK {
-                    DEVICE_COUNT.store(info.num_devices, Ordering::Relaxed);
-                    CLIENT_COUNT.store(info.num_clients, Ordering::Relaxed);
-                    // 変化時は即、そうでなくても 10 秒おきに。LCD の
-                    // ログパネルは数行しか出ないので、変化時だけだと
-                    // 起動直後の 1 行が流れて消えて読めない。
-                    if info.num_devices != last || since_log >= 5 {
-                        log::info!(
-                            "uac: usb_host_lib_info — num_devices={} num_clients={}",
-                            info.num_devices,
-                            info.num_clients
-                        );
-                        last = info.num_devices;
-                        since_log = 0;
-                    } else {
-                        since_log += 1;
-                    }
+        let mut last: i32 = -1;
+        let mut since_log = u32::MAX;
+        loop {
+            let mut info = sys::usb_host_lib_info_t::default();
+            // SAFETY: ホストライブラリ導入後にのみ呼ばれる。
+            let err = unsafe { sys::usb_host_lib_info(&mut info) };
+            if err == sys::ESP_OK {
+                DEVICE_COUNT.store(info.num_devices, Ordering::Relaxed);
+                CLIENT_COUNT.store(info.num_clients, Ordering::Relaxed);
+                // 変化時は即、そうでなくても 10 秒おきに。LCD の
+                // ログパネルは数行しか出ないので、変化時だけだと
+                // 起動直後の 1 行が流れて消えて読めない。
+                if info.num_devices != last || since_log >= 5 {
+                    log::info!(
+                        "uac: usb_host_lib_info — num_devices={} num_clients={}",
+                        info.num_devices,
+                        info.num_clients
+                    );
+                    last = info.num_devices;
+                    since_log = 0;
                 } else {
-                    log::warn!("uac: usb_host_lib_info failed (err={err:#x})");
+                    since_log += 1;
                 }
-                std::thread::sleep(std::time::Duration::from_secs(2));
+            } else {
+                log::warn!("uac: usb_host_lib_info failed (err={err:#x})");
             }
-        });
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
 }
 
 /// ホストライブラリが把握している列挙済みデバイス数。probe 未起動なら `-1`。

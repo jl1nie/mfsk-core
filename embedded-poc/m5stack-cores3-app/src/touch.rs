@@ -191,12 +191,18 @@ fn to_canvas(points: u8, native_x: u16, native_y: u16) -> Contact {
     use mipidsi::options::Rotation;
     let (x, y) = match crate::board::ROTATION {
         Rotation::Deg0 => (native_x, native_y),
-        Rotation::Deg90 => (native_y, (crate::board::NATIVE_W - 1).saturating_sub(native_x)),
+        Rotation::Deg90 => (
+            native_y,
+            (crate::board::NATIVE_W - 1).saturating_sub(native_x),
+        ),
         Rotation::Deg180 => (
             (crate::board::NATIVE_W - 1).saturating_sub(native_x),
             (crate::board::NATIVE_H - 1).saturating_sub(native_y),
         ),
-        Rotation::Deg270 => ((crate::board::NATIVE_H - 1).saturating_sub(native_y), native_x),
+        Rotation::Deg270 => (
+            (crate::board::NATIVE_H - 1).saturating_sub(native_y),
+            native_x,
+        ),
     };
     Contact { points, x, y }
 }

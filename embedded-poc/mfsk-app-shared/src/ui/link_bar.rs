@@ -183,8 +183,13 @@ where
     let y = origin_y + 2;
     let mut head: String<8> = String::new();
     let _ = write!(&mut head, "USB {} ", info.usb.role());
-    Text::with_baseline(head.as_str(), Point::new(2, y), style(Rgb565::CSS_GRAY), Baseline::Top)
-        .draw(display)?;
+    Text::with_baseline(
+        head.as_str(),
+        Point::new(2, y),
+        style(Rgb565::CSS_GRAY),
+        Baseline::Top,
+    )
+    .draw(display)?;
     Text::with_baseline(
         info.usb.label(),
         Point::new(2 + 6 * 6, y),
@@ -221,7 +226,12 @@ where
     // Anything above ~6 V is the ADC railed, not a reading.
     match info.vbus_mv {
         1..=6000 => {
-            let _ = write!(&mut rest, " v{}.{:02}", info.vbus_mv / 1000, (info.vbus_mv % 1000) / 10);
+            let _ = write!(
+                &mut rest,
+                " v{}.{:02}",
+                info.vbus_mv / 1000,
+                (info.vbus_mv % 1000) / 10
+            );
         }
         _ => {
             let _ = rest.push_str(" v----");

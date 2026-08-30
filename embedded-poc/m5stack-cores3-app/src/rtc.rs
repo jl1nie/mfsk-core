@@ -94,7 +94,12 @@ pub fn read_into_system_clock(i2c: &mut I2cDriver<'_>) -> Option<i64> {
     let hour = bcd_to_u8(buf[2] & 0x3f) as u32;
     let day = bcd_to_u8(buf[3] & 0x3f) as u32;
     let month = bcd_to_u8(buf[5] & 0x1f) as u32;
-    let year = bcd_to_u8(buf[6]) as i64 + if buf[5] & CENTURY_MASK != 0 { 1900 } else { 2000 };
+    let year = bcd_to_u8(buf[6]) as i64
+        + if buf[5] & CENTURY_MASK != 0 {
+            1900
+        } else {
+            2000
+        };
 
     // Decode first, commit second. An I2C glitch or a half-written
     // register set produces values like 45:00:80, and BCD nibbles above
@@ -156,7 +161,9 @@ pub fn write_from_system_clock(i2c: &mut I2cDriver<'_>) -> Result<()> {
         .map_err(|e| anyhow!("system clock is before the epoch: {e}"))?
         .as_secs() as i64;
     if now < 1_600_000_000 {
-        return Err(anyhow!("system clock is not set ({now}) — nothing worth storing"));
+        return Err(anyhow!(
+            "system clock is not set ({now}) — nothing worth storing"
+        ));
     }
     let (y, mo, d, h, mi, s) = mfsk_app_shared::civil_time::civil_from_unix(now);
 

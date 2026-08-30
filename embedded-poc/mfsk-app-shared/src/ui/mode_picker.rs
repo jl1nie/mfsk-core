@@ -329,7 +329,10 @@ impl ModePicker {
             if *target == current {
                 Text::with_baseline(
                     "*",
-                    Point::new(self.origin.x + WIDTH as i32 - 14, top + (BUTTON_H as i32 - 10) / 2),
+                    Point::new(
+                        self.origin.x + WIDTH as i32 - 14,
+                        top + (BUTTON_H as i32 - 10) / 2,
+                    ),
                     text(fg, bg),
                     Baseline::Top,
                 )

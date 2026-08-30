@@ -425,7 +425,12 @@ pub fn apply_peripheral_rails(i2c: &mut I2cDriver<'_>) -> Result<()> {
     let before = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0)?;
     write_reg(i2c, AXP2101_I2C_ADDR, ALDO3_VOLT, VOLT_3V3)?;
     write_reg(i2c, AXP2101_I2C_ADDR, ALDO4_VOLT, VOLT_3V3)?;
-    write_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0, M5GFX_LDO_ONOFF0)?;
+    write_reg(
+        i2c,
+        AXP2101_I2C_ADDR,
+        AXP2101_REG_LDO_ONOFF0,
+        M5GFX_LDO_ONOFF0,
+    )?;
     FreeRtos::delay_ms(50);
     let after = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_LDO_ONOFF0)?;
     log::info!(
@@ -636,10 +641,14 @@ pub fn log_boot_summary(i2c: &mut I2cDriver<'_>) {
     let st1 = read_reg(i2c, AXP2101_I2C_ADDR, AXP2101_REG_STATUS1);
     log::warn!(
         "[boot-summary] AXP 0x90={} status1={} | AW9523 OUT0={} OUT1={} | bat={}mV vbus={}mV",
-        ldo.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
-        st1.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
-        out0.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
-        out1.map(|v| format!("0x{v:02x}")).unwrap_or_else(|_| "ERR".into()),
+        ldo.map(|v| format!("0x{v:02x}"))
+            .unwrap_or_else(|_| "ERR".into()),
+        st1.map(|v| format!("0x{v:02x}"))
+            .unwrap_or_else(|_| "ERR".into()),
+        out0.map(|v| format!("0x{v:02x}"))
+            .unwrap_or_else(|_| "ERR".into()),
+        out1.map(|v| format!("0x{v:02x}"))
+            .unwrap_or_else(|_| "ERR".into()),
         battery_mv_cached(),
         vbus_mv_cached(),
     );

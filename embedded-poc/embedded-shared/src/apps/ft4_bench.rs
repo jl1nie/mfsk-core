@@ -155,13 +155,13 @@ use mfsk_core::engine::dsp::downsample::downsample_cached;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::ft4_coarse::ft4_coarse_sync;
 use mfsk_core::engine::pipeline::{
-    DecodeDepth, DecodeStrictness, process_candidate_basic, process_candidate_precomputed,
+    process_candidate_basic, process_candidate_precomputed, DecodeDepth, DecodeStrictness,
 };
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
-use mfsk_core::ft4::Ft4;
 use mfsk_core::ft4::ddc::candidate_baseband;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
+use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
 
 /// Mirrors `ft4::decode`'s own (private) `SYNC_Q_MIN`: FT4 has 16 sync
@@ -429,8 +429,8 @@ fn pie_delta(
 ) -> ((usize, usize, usize, usize), (usize, usize, usize)) {
     let now = crate::esp_dsp_fft::pie_alignment_report();
     let t = crate::esp_dsp_fft::pie_timing_report();
-    let aligned = now.0.saturating_sub(before.0.0);
-    let staged = now.2.saturating_sub(before.0.2);
+    let aligned = now.0.saturating_sub(before.0 .0);
+    let staged = now.2.saturating_sub(before.0 .2);
     let total = aligned + staged;
     log::info!(
         "ft4_bench: {label} PIE inner rows: {aligned} in-place / {staged} staged \
@@ -447,9 +447,9 @@ fn pie_delta(
     // `outside` is the caller's own work around the transform — for
     // pass 0 that is the Nuttall window and the magnitude accumulation
     // in `symbol_spectra_avg`.
-    let process = t.0.saturating_sub(before.1.0) as i64;
-    let kernel = t.1.saturating_sub(before.1.1) as i64;
-    let staging = t.2.saturating_sub(before.1.2) as i64;
+    let process = t.0.saturating_sub(before.1 .0) as i64;
+    let kernel = t.1.saturating_sub(before.1 .1) as i64;
+    let staging = t.2.saturating_sub(before.1 .2) as i64;
     let combine = process - kernel - staging;
     let outside = stage_us - process;
     let pct = |v: i64| {
@@ -615,7 +615,11 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
             "ft4_bench: internal cd0 buffer {} B at {:p} ({}16-byte aligned)",
             CD0_BYTES,
             b.as_ptr(),
-            if (b.as_ptr() as usize) % 16 == 0 { "" } else { "NOT " }
+            if (b.as_ptr() as usize) % 16 == 0 {
+                ""
+            } else {
+                "NOT "
+            }
         ),
         None => log::warn!(
             "ft4_bench: internal cd0 allocation failed — the placement passes will be skipped"
@@ -780,7 +784,11 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         ("FFT FULL    ", DecodeDepth::FULL, None),
         ("DDC EMBEDDED", DecodeDepth::EMBEDDED, Some(FULL_WINDOW)),
         ("DDC FULL    ", DecodeDepth::FULL, Some(FULL_WINDOW)),
-        ("DDC EMB +-0.5s (SHIP)", DecodeDepth::EMBEDDED, Some(NARROW_WINDOW)),
+        (
+            "DDC EMB +-0.5s (SHIP)",
+            DecodeDepth::EMBEDDED,
+            Some(NARROW_WINDOW),
+        ),
     ] {
         let us = decode_pass(label, &audio, &fft_cache, &candidates, depth, ddc);
         let slot_ms = (coarse_us + us) / 1000;
@@ -868,11 +876,7 @@ extern "C" fn bench_task(arg: *mut core::ffi::c_void) {
 /// control arm and `candidates` is the control for the on-device coarse
 /// stage. Spawns [`bench_task`] on a dedicated stack pinned to core 0,
 /// then idles forever.
-pub fn run(
-    audio: &'static [u8],
-    fft_cache: &'static [u8],
-    candidates: &'static [u8],
-) -> ! {
+pub fn run(audio: &'static [u8], fft_cache: &'static [u8], candidates: &'static [u8]) -> ! {
     esp_idf_svc::sys::link_patches();
     init_logger_once();
 

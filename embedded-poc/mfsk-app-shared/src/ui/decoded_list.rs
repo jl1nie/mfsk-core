@@ -84,7 +84,15 @@ pub fn render_with_cursor<D>(
 where
     D: DrawTarget<Color = Rgb565>,
 {
-    render_in(display, rows, selected_idx, latest_slot_seq, width, ORIGIN_Y, ROWS)
+    render_in(
+        display,
+        rows,
+        selected_idx,
+        latest_slot_seq,
+        width,
+        ORIGIN_Y,
+        ROWS,
+    )
 }
 
 /// [`render_with_cursor`] with the region given explicitly.

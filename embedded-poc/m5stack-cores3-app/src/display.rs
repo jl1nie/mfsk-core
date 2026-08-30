@@ -59,7 +59,8 @@ const LINK_BAR_Y: i32 = crate::board::CANVAS_H as i32 - link_bar::HEIGHT as i32;
 /// to justify taking a row from them, and the USB/tick panel could
 /// not: it is bring-up instrumentation, and it now only draws when
 /// [`USB_PANEL`] is built in.
-const DECODED_ROWS: usize = ((TX_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize;
+const DECODED_ROWS: usize =
+    ((TX_REGION_Y - decoded_list::ORIGIN_Y) as u32 / decoded_list::ROW_PX) as usize;
 /// Panel width in the portrait orientation the three receivers share.
 ///
 /// The FT8 controller used to run this panel unrotated (320x240) and
@@ -109,8 +110,6 @@ const USB_PANEL_PITCH: i32 = 12;
 
 /// Characters a panel line holds, at [`SHARED_UI_WIDTH`] / 6 px.
 const USB_PANEL_COLS: usize = 40;
-
-
 
 /// `MFSK_CORES3_FORCE_UAC=1` — run as a USB host even while something
 /// external is powering the port. For a board fed from M5Bus rather
@@ -314,10 +313,7 @@ pub fn run_log_panel(
     // already used `Rectangle` fills, so this is the one holdout.
     Rectangle::new(
         Point::new(0, 0),
-        Size::new(
-            crate::board::CANVAS_W as u32,
-            crate::board::CANVAS_H as u32,
-        ),
+        Size::new(crate::board::CANVAS_W as u32, crate::board::CANVAS_H as u32),
     )
     .into_styled(PrimitiveStyle::with_fill(Rgb565::BLACK))
     .draw(&mut display)
@@ -482,19 +478,31 @@ pub fn run_log_panel(
                 // it. In host mode this is the only record there will
                 // ever be of how the boot went.
                 if !boot_summary_sent
-                    && crate::FANOUT.udp.try_lock().map(|g| g.is_some()).unwrap_or(false)
+                    && crate::FANOUT
+                        .udp
+                        .try_lock()
+                        .map(|g| g.is_some())
+                        .unwrap_or(false)
                 {
                     boot_summary_sent = true;
                     let r = crate::uac::HOST_RESULT.read();
                     log::warn!(
                         "[boot-summary] mode={} host_mode={host_mode} start_host: {}",
                         mode.label(),
-                        if r.is_empty() { "never called" } else { r.as_str() }
+                        if r.is_empty() {
+                            "never called"
+                        } else {
+                            r.as_str()
+                        }
                     );
                     let rt = crate::rtc::RTC_RESULT.read();
                     log::warn!(
                         "[boot-summary] rtc: {}",
-                        if rt.is_empty() { "no result recorded" } else { rt.as_str() }
+                        if rt.is_empty() {
+                            "no result recorded"
+                        } else {
+                            rt.as_str()
+                        }
                     );
                     crate::pmic::log_boot_summary(i2c);
                 }
@@ -619,8 +627,8 @@ pub fn run_log_panel(
             // and when it is not, thirty candidates a slot decode to
             // nothing. The one indicator that would have said so was
             // the one that was never connected.
-            ui.status.utc_sod = mfsk_app_shared::time_sync::utc_now_ms()
-                .map(|ms| ((ms / 1000) % 86_400) as u32);
+            ui.status.utc_sod =
+                mfsk_app_shared::time_sync::utc_now_ms().map(|ms| ((ms / 1000) % 86_400) as u32);
             status_snapshot = ui.status.clone();
             decoded_snapshot.clear();
             for row in ui.decoded_iter() {
@@ -894,7 +902,6 @@ pub fn run_log_panel(
             }
             last_usb_panel = panel;
         }
-
 
         let _ = fanout;
         // 50 ms, not 100.
