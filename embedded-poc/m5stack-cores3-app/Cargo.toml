@@ -59,6 +59,16 @@ required-features = ["fst4"]
 # Same shape and the same reason as `fst4-bench` above; see
 # `embedded-shared::apps::ft4_bench`'s module doc for the budget and
 # for what is baked versus computed on-device.
+# FT8's per-stage bench on this board. `compute_bench` drives
+# `decode_block` and already separates spectrogram / coarse sync /
+# re-rank / LLR+BP, which is the breakdown the `fixed-point` question
+# needs.
+[[bin]]
+name = "ft8-bench"
+path = "src/bin/ft8_bench.rs"
+harness = false
+required-features = ["ft8-bench"]
+
 # The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
 # and runs the shipping slot pipeline over it. No USB host, so the
 # serial console survives and the board stays flashable.
@@ -189,6 +199,9 @@ wspr-golden = ["wspr"]
 fst4 = ["embedded-shared/fst4-bench"]
 # The FT4 receiver and its WAV demo bin.
 ft4 = ["embedded-shared/ft4"]
+# FT8's per-stage bench (`ft8-bench` bin). The 360 KB `qso3_busy.wav`
+# it bakes is why this is opt-in rather than always linked.
+ft8-bench = []
 wspr = ["embedded-shared/wspr-bench"]
 
 [dependencies]

@@ -41,11 +41,33 @@ fn load_wav_slot(wav: &[u8]) -> Box<[i16]> {
 }
 
 /// Run the compute bench. `target_name` is purely for the boot log
+/// Installs the `EspLogger` exactly once.
+///
+/// Must be used instead of `EspLogger::initialize_default` — a second
+/// install `abort()`s the process, which is what a bin that wanted to
+/// log something *before* calling [`run`] used to cause: boot loop,
+/// panic at `esp-idf-svc/src/log.rs`, and nothing to say the two calls
+/// were the problem. Same guard, same reason, as `ft4_bench`'s.
+pub fn init_logger_once() {
+    static READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if READY
+        .compare_exchange(
+            false,
+            true,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        esp_idf_svc::log::EspLogger::initialize_default();
+    }
+}
+
 /// (e.g. "m5stack-core2", "m5stack-s3"). `qso_wavs` is a
 /// `&[(label, wav_bytes)]` slice the bench iterates over.
 pub fn run(target_name: &str, qso_wavs: &'static [(&'static str, &'static [u8])]) -> ! {
     esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    init_logger_once();
 
     log::info!("mfsk-core-{target_name} PoC starting");
     log::info!("mfsk-core version: {}", mfsk_core::VERSION);
