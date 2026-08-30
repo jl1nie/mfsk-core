@@ -914,6 +914,8 @@ device/host ratio is ~195×. For scale, FST4-60's first embedded number
 **Not measured here**: `ft4_coarse_sync` itself (`NFFT1 = 2304` = 256 ×
 9, no ESP-DSP kernel yet — the candidate list is baked instead). It is
 0.3 ms of the host slot, so it does not change the conclusion.
+(**Superseded — §25**: on hardware that stage is 1 288 ms, and it does
+change the conclusion.)
 
 ## 18. Δt-window narrowing — what it costs in recall (2026-08-29)
 
@@ -1206,6 +1208,11 @@ Every disagreement is in a cell already sitting on its own crossing.
   reads its baked candidate list, so nothing has exercised it on
   hardware. Host cost of the stage is 0.3 ms; on the S3 the ~152
   transforms per slot are the number to measure.
+  **Measured 2026-08-30 (§25): 1 288 ms, i.e. 8.5 ms per transform and
+  66 % of the whole decode budget on its own.** The "0.3 ms on host so
+  it cannot matter" reasoning in this bullet and in §20 was wrong —
+  whatever that host figure timed, the device/host ratio for this stage
+  is nothing like the ~30x the per-candidate stages show.
 - **Not wired into `decode_frame`.** Same choice `fst4::ddc` made: a
   library building block callers reach for, not a feature flag that
   silently swaps the host's front end.
@@ -1697,7 +1704,7 @@ does**, and every recall number in §21-23 is the board's number as well.
 | band occupancy / interference / precision | `ft4sim_mult` (§23) | measured, 3 950 signals |
 | numeric path host vs board | feature audit + fixed-point sweep (§24.1) | **identical for FT4** |
 | FFT kernel host vs board | `ft4-bench` on the golden (§17) | identical decodes |
-| slot timing on hardware | `ft4-bench` | measured at 31 candidates; 12-candidate + DDC re-run outstanding |
+| slot timing on hardware | `ft4-bench` | measured end-to-end, 12 candidates + DDC (§25): **2.33x over budget** |
 | real receiver artefacts | — | **no instrument, here or upstream** |
 | true FT4 band occupancy | — | **no instrument, here or upstream** |
 
@@ -1705,3 +1712,104 @@ The last two rows are not work items that a better simulator closes.
 They are the honest boundary of what this line can claim, and the
 corpus is built to bracket them rather than to pretend they are
 answered.
+
+## 25. The whole slot on hardware — three projections, all wrong (2026-08-30)
+
+`ft4-bench` ran an FT4 slot end to end on a CoreS3 for the first time:
+`ft4_coarse_sync` computed on-device through `fft_mixed_2304`, the
+per-candidate baseband built by `ft4::ddc`, no baked asset in the path
+but the 90 000-sample audio. Log:
+`m5stack-cores3-app/logs/ft4-bench_wholeslot_2026-08-30.log`.
+240 MHz, `opt-level = 3`, single core, 12 candidates.
+
+### 25.1 What was right
+
+**Decodes: 11 in all five arms**, identical to host, at every depth and
+both windows. The one difference against the FFT arm is `K1JT WB4HXE`
+at 1910.6 Hz against 1909.6 Hz — the single 1 Hz search-grid step that
+`ft4_ddc_equivalence` already pins as 1-of-11 on host.
+
+**The coarse kernel is exact.** `compare_candidates` paired all 12
+device candidates against the host-baked list with **max Δfreq 0.00 Hz
+and max Δscore 0.00 %**. Two different factorisations of a 2304-point
+transform — rustfft's planner on host, 256 × 9 over esp-dsp's
+`dsps_fft2r_fc32_aes3_` here — and the peak selection does not move at
+all. Bit-equality was never on offer; this is better than the section
+that predicted "the same peaks clear `SYNC_MIN` in the same places"
+had any right to expect.
+
+**The wideband cache is genuinely gone.** The DDC arms pass an empty
+`fft_cache` and decode the same 11. What `ft4_ddc_arm_never_reads_the_
+wideband_cache` asserts on host holds on the board.
+
+### 25.2 What was wrong — the budget
+
+| arm | coarse | candidates | slot | vs 1 960 ms |
+|---|---:|---:|---:|---:|
+| FFT EMBEDDED | 1 288 | 2 839 | 4 127 | 2.11× |
+| FFT FULL | 1 288 | 2 831 | 4 119 | 2.10× |
+| DDC EMBEDDED (±1.0 s) | 1 288 | 3 856 | 5 144 | 2.62× |
+| DDC FULL (±1.0 s) | 1 288 | 3 853 | 5 141 | 2.62× |
+| **DDC EMBEDDED (±0.5 s, ship)** | **1 288** | **3 287** | **4 576** | **2.33×** |
+
+§21.3 projected `(2492 + 1943) × 12/31 ≈ 1717 ms` and called it "the
+first time inside the budget on paper". The measured ship configuration
+is **4 576 ms — 2.7× that projection**. Three independent errors, none
+of them in the arithmetic:
+
+**1. The coarse stage was never in the projection.** It was baked, and
+this file (§20) and the bench's own doc dismissed it as "0.3 ms on host,
+so its absence understates the device total by roughly that times the
+device/host ratio — small". It is **1 288 ms**: 28 % of the slot, and
+66 % of the entire budget on its own. 152 transforms per slot at ~8.5 ms
+each. Whatever the host figure was measuring, the device/host ratio for
+this stage is nothing like the ~30× the per-candidate stages show, so
+the extrapolation that licensed ignoring it was unfounded. This is
+[`feedback_bottleneck_hypothesis_measure_first`] a third time: a stage
+excluded by an argument rather than a measurement.
+
+**2. The DDC is 2.3× *slower* than the FFT front end here, not faster.**
+`candidate_baseband` costs 154 006 µs/cand against `downsample_cached`'s
+66 974 — **+1 044 ms over the slot**. §20 measured the DDC's *fidelity*
+(0.0 dB, same decodes) and its host cost, and the embedded case for it
+was that it removes a transform the board cannot run. That case still
+stands exactly as stated — it is what makes a receiver possible at all —
+but it is a **feasibility** win, not a speed one, and §21.3's projection
+quietly treated the 2 251 ms `downsample_cached` line as recovered. It
+is not: the DDC replaces it with something more expensive. 199 + 263
+scalar f32 taps over 90 000 samples per candidate is the reason, and
+`dsps_fird_f32_aes3` is the obvious unexploited lever.
+
+**3. Narrowing is worth less than §19 implied.** 1.58× on the search
+alone (1 547 → 960 ms) reproduces §18-19, but the search is now 21 % of
+the slot rather than most of it, so the ship arm gains only 569 ms —
+1.17× on the total.
+
+Also settled: **internal-DRAM `cd0` placement is dead**, 1.01× here
+against the 1.12× of §19.2 — no longer worth the 40 KB reservation a
+production mode would have to make. And **OSD is free on a clean
+candidate list**: `FULL` and `EMBEDDED` differ by 8 ms and 3 ms on the
+two front ends. §22 put OSD at ~2 345 ms over 31 candidates, but that
+was 19 noise candidates each running the full ladder and failing into
+OSD. At `sync_min = 1.2` almost every candidate is a real signal that
+BP decodes, and OSD never runs. **OSD's cost scales with failures, not
+with candidates** — which means the §21 "does embedded keep OSD" question
+is much cheaper than the ladder ablation made it look.
+
+### 25.3 Where the 4 576 ms actually is
+
+| stage | ms | share |
+|---|---:|---:|
+| `ft4_coarse_sync` | 1 288 | 28 % |
+| `candidate_baseband` (DDC) | ~1 848 | 40 % |
+| `ft4_sync_search` @ ±0.5 s | ~960 | 21 % |
+| LLR + BP | ~479 | 10 % |
+
+Search and LLR/BP together are 1 439 ms and fit the 1 960 ms budget with
+room. The whole overrun is the two stages that had never been measured
+on hardware. Both have an untried lever — esp-dsp FIR for the DDC, and
+for the coarse stage the question of why 152 transforms cost 8.5 ms each
+when their 256-point inner passes are already esp-dsp's — so 2.33× is a
+starting point, not a verdict. Nothing here changes §23's conclusion
+that the *candidate count* is well behaved at realistic occupancy; it
+changes which stages the remaining work is in.

@@ -400,10 +400,14 @@ mod bench_assets {
 ///
 /// The one stage neither computed nor baked is `ft4_coarse_sync`'s own
 /// `NFFT1 = 2304` (= 256 × 9) periodogram — the candidate *list* is
-/// baked instead. It measured 0.3 ms on host over the whole slot, so
-/// excluding it understates the device total by roughly that times the
-/// device/host ratio; the bench says so in its own output rather than
-/// leaving the reader to assume the number is a whole slot.
+/// baked instead. It measured 0.3 ms on host over the whole slot, and
+/// this comment used to argue that excluding it therefore understated
+/// the device total by something negligible. **That was wrong**: the
+/// bench now runs the stage on-device through
+/// `engine::dsp::fft_mixed_2304` and measures 1 288 ms for it, 66 % of
+/// the whole decode budget (`docs/notes/FT4_BENCHMARK.md` §25). The
+/// list is still baked here, but as the *control* the device output is
+/// compared against — not as a stand-in for the stage.
 ///
 /// Three files, all little-endian (host and Xtensa are both LE):
 ///

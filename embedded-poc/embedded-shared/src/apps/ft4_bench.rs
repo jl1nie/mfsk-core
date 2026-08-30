@@ -53,6 +53,40 @@
 //! `ft4_ddc_equivalence::ft4_ddc_arm_never_reads_the_wideband_cache`
 //! proves it on host.
 //!
+//! ## Measured, 2026-08-30 (CoreS3, 240 MHz, opt-level 3, 12 candidates)
+//!
+//! `logs/ft4-bench_wholeslot_2026-08-30.log`, full analysis in
+//! `docs/notes/FT4_BENCHMARK.md` §25.
+//!
+//! | arm | coarse | candidates | slot | vs 1 960 ms |
+//! |---|---:|---:|---:|---:|
+//! | FFT EMBEDDED | 1 288 | 2 839 | 4 127 | 2.11x |
+//! | FFT FULL | 1 288 | 2 831 | 4 119 | 2.10x |
+//! | DDC EMBEDDED | 1 288 | 3 856 | 5 144 | 2.62x |
+//! | DDC FULL | 1 288 | 3 853 | 5 141 | 2.62x |
+//! | **DDC EMBEDDED +/-0.5 s (SHIP)** | 1 288 | 3 287 | **4 576** | **2.33x** |
+//!
+//! 11 decodes in every arm, matching host. `compare_candidates`: 12/12
+//! paired, max dfreq 0.00 Hz, max dscore 0.00 % — the device's 256 x 9
+//! factorisation selects exactly the peaks rustfft's planner does.
+//!
+//! Three things this contradicts, all of them projections made before
+//! anything ran:
+//!
+//! - **`ft4_coarse_sync` is 1 288 ms**, not the "0.3 ms on host, so
+//!   negligible" this doc used to claim — 66 % of the budget alone.
+//! - **the DDC is 2.3x slower than `downsample_cached`** here (154 006
+//!   vs 66 974 us/cand). It is what makes a receiver possible, since
+//!   the 92 160-point transform cannot run at all; it is not a saving,
+//!   and the budget projection had treated it as one.
+//! - **internal-DRAM `cd0` placement is 1.01x** (was 1.12x) and
+//!   **OSD is free** on this candidate list (8 ms across all 12) —
+//!   its cost scales with BP *failures*, and `sync_min = 1.2` removed
+//!   the noise candidates that were failing.
+//!
+//! Search (960 ms) + LLR/BP (479 ms) fit the budget with room. The
+//! overrun is entirely the two stages nothing had measured.
+//!
 //! ## Host reference for this recording
 //!
 //! Measured 2026-08-29/30 by the bake test itself, on the WSJT-X golden
