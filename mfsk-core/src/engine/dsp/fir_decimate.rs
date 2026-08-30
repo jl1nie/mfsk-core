@@ -146,21 +146,31 @@ pub struct FirStage {
     /// and 16-byte aligned, plus matching staging for the two history
     /// windows.
     ///
-    /// The taps could be padded in place, but the *window* cannot be
-    /// aligned by construction: `win_start` advances by `decim` per
-    /// output, so its 16-byte residue cycles — every residue for
-    /// `decim = 1`, alternating for `decim = 18`. Copying the window
-    /// into an aligned buffer costs `ntaps` moves and buys a dot that
-    /// is 2.3x faster, which for these tap counts is a clear win.
+    /// One zero-padded, 16-byte-aligned tap table **per window phase**.
     ///
-    /// Padding is exact arithmetic in the added terms (`0.0 · x`), but
-    /// the PIE kernel accumulates in a different order from the scalar
-    /// one, so results move in the last bits or two. That is why this
-    /// is behind `dotprod-extern` rather than unconditional: a host
-    /// build has no backend to satisfy, would pay the copy for nothing,
-    /// and keeps its existing arithmetic exactly.
+    /// `win_start` advances by `decim` per output, so the window's
+    /// 16-byte residue cycles — every residue for `decim = 1`,
+    /// alternating for `decim = 18` — and the backend's PIE path needs
+    /// both operands aligned. Phase `p` carries `p` leading zeros, so
+    /// the dot can start at `win_start - p`, which *is* 4-aligned, and
+    /// still multiply tap `j` by history `win_start + j`. Every other
+    /// term is exactly `0.0 · x`.
+    ///
+    /// This is the "four pre-shifted tap tables" `esp_dsp_dotprod`'s
+    /// module doc weighs and rejects — at 168 KB for FST4's wideband
+    /// coarse cascade (L = 64) against ~190 KB of free internal DRAM.
+    /// That arithmetic does not carry to here: `ft4::ddc` runs 199 and
+    /// 263 taps, so four phases is **about 7.4 KB for both stages**.
+    /// The measurement it was weighed against — copying the window
+    /// instead, "roughly a third of the gain" — was confirmed the hard
+    /// way on 2026-08-30, where the copy cost more than the dot saved
+    /// (`docs/notes/FT4_BENCHMARK.md` §27).
+    ///
+    /// Behind `dotprod-extern` because a host build has no backend to
+    /// satisfy: it would carry four tables and different rounding for
+    /// nothing, so it keeps the single reversed-tap dot it always had.
     #[cfg(feature = "dotprod-extern")]
-    taps_pad: AlignedF32,
+    taps_phase: [AlignedF32; 4],
 }
 
 impl FirStage {
@@ -187,23 +197,27 @@ impl FirStage {
         // also the zeros the filter would have seen before the stream
         // started.
         let hist_cap = ntaps + hist_margin;
-        // Slack so a padded window starting at the last legal
-        // `win_start` still lies inside the allocation.
-        let hist_alloc = hist_cap + ntaps.next_multiple_of(4) - ntaps;
+        // Slack so the longest phase-shifted window — three leading
+        // zeros, then `ntaps`, rounded up to a multiple of four —
+        // starting at the last legal `win_start` still lies inside the
+        // allocation. The window starts *below* `win_start` by the
+        // phase, which never underflows since the phase is
+        // `win_start % 4`.
+        let hist_alloc = hist_cap + (3 + ntaps).next_multiple_of(4) - ntaps;
         let hist_i = AlignedF32::new(hist_alloc);
         let hist_q = AlignedF32::new(hist_alloc);
         let group_delay = (ntaps - 1) / 2;
         #[cfg(feature = "dotprod-extern")]
-        let taps_pad = {
-            // Padded with zeros, so the extra terms are exactly
-            // `0.0 · x` and the window may safely overrun `ntaps`.
-            let mut p = AlignedF32::new(ntaps);
-            p.as_mut_slice()[..ntaps].copy_from_slice(&taps_rev);
-            p
-        };
+        let taps_phase = core::array::from_fn(|phase| {
+            // Zeros before and after, so every added term is exactly
+            // `0.0 · x` and only the rounding of the sum differs.
+            let mut t = AlignedF32::new(phase + ntaps);
+            t.as_mut_slice()[phase..phase + ntaps].copy_from_slice(&taps_rev);
+            t
+        });
         Self {
             #[cfg(feature = "dotprod-extern")]
-            taps_pad,
+            taps_phase,
             taps_rev,
             hist_i,
             hist_q,
@@ -328,11 +342,15 @@ impl FirStage {
     #[cfg(feature = "dotprod-extern")]
     fn dot(&mut self) -> (f32, f32) {
         let a = self.win_start;
-        let h = self.taps_pad.as_slice();
-        let pad = h.len();
+        // 16 bytes is four `f32`, so the phase is the window start's
+        // residue mod 4 and `a - phase` is always 16-byte aligned given
+        // an aligned base — which is why `hist_i` is `AlignedF32`.
+        let phase = a % 4;
+        let h = self.taps_phase[phase].as_slice();
+        let (lo, len) = (a - phase, h.len());
         (
-            super::dotprod::dot_f32(h, &self.hist_i.as_slice()[a..a + pad]),
-            super::dotprod::dot_f32(h, &self.hist_q.as_slice()[a..a + pad]),
+            super::dotprod::dot_f32(h, &self.hist_i.as_slice()[lo..lo + len]),
+            super::dotprod::dot_f32(h, &self.hist_q.as_slice()[lo..lo + len]),
         )
     }
 }

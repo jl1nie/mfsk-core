@@ -2075,9 +2075,52 @@ Boot loop, `range end index 777 out of range for slice of length 776`.
 The trigger is now an explicit cap and the allocation carries the
 padding as slack beyond it.
 
-Still untried: `dsps_fird_f32_aes3` proper, which would take the whole
-block and own the sliding window — the only route left to the other
-half of those dots.
+### 27.1 Attempt 3: four pre-shifted tap tables (2026-08-30)
+
+The other half of those dots needed the window aligned on *every* call,
+not the fraction that happens to land right. `esp_dsp_dotprod`'s own
+module doc had already weighed the way to do that — one tap table per
+window phase, so phase `p` carries `p` leading zeros and the dot starts
+at `win_start - p`, which is 4-aligned — and rejected it: **168 KB** for
+FST4's wideband coarse cascade (L = 64) against ~190 KB of free internal
+DRAM.
+
+That arithmetic does not carry to FT4. These stages are 199 and 263
+taps, so four phases is **about 7.4 KB for both**. The rejection was
+sound for the cascade it was written about and simply does not apply
+here — worth noting, because the note read as a general verdict on the
+technique.
+
+  DDC 1 659 -> **1 306 ms** (-21 %, and -29 % against the 1 848 ms §25
+  measured). FIR stages 122 -> 94 ms, stage B alone 43 -> 23 ms — the
+  biggest single move, since `decim = 1` meant only a quarter of its
+  windows had been landing aligned. Ship slot 3 876 -> **3 516 ms,
+  1.97x -> 1.79x**.
+
+Predicted ~1 300 ms beforehand, measured 1 306.
+
+Every added term is exactly `0.0 · x`, so only the rounding of the sum
+moves; decodes stayed at 11 in every arm. Host is unaffected — the
+phase tables are behind `dotprod-extern`, and a build with no backend
+keeps the single reversed-tap dot it always had. Tier A+B green (82
+binaries) and the `wspr-ddc-cascade` golden green.
+
+`dsps_fird_f32_aes3` proper — which would take the whole block and own
+the sliding window — remains untried, and is now a smaller prize than
+it looked: the dots it would absorb are already on the fast path.
+
+### 27.2 Where FT4 stands after the day
+
+| stage | §25 | now |
+|---|---:|---:|
+| `ft4_coarse_sync` | 1 288 | 758 |
+| DDC front end | 1 848 | 1 306 |
+| `ft4_sync_search` @ ±0.5 s | ~960 | ~960 |
+| LLR + BP | ~479 | ~479 |
+| **ship slot** | **4 576 (2.33x)** | **3 516 (1.79x)** |
+
+The two stages nobody had measured are now the two that moved. The Δt
+search is untouched and is next by size.
 
 ## 28. FT8 was paying the same tax (2026-08-30)
 
