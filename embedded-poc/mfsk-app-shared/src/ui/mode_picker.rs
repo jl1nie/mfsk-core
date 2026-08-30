@@ -52,8 +52,12 @@ use embedded_graphics::{
 use crate::boot_mode::BootMode;
 
 /// The receivers this binary can boot into, in draw order.
-pub const MODES: [(BootMode, &str); 4] = [
+/// Five rows is 5 x [`PITCH`] + [`COMMIT_H`] = 280 px, against a
+/// 240x320 panel — it fits, with the widget's top moving from y=44 to
+/// y=20 as it centres. A sixth would not.
+pub const MODES: [(BootMode, &str); 5] = [
     (BootMode::Uac, "FT8 / UAC"),
+    (BootMode::Ft4, "FT4"),
     (BootMode::Wspr, "WSPR"),
     (BootMode::Fst4, "FST4"),
     (BootMode::Decode, "DECODE (wav)"),

@@ -80,6 +80,17 @@ pub enum BootMode {
     /// CoreS3 standalone FST4 receiver (`src/bin/fst4_app.rs`, #306 /
     /// #307). Same reasoning as [`BootMode::Wspr`] for the cycle.
     Fst4,
+    /// CoreS3 standalone FT4 receiver (`apps/ft4.rs`). Same reasoning
+    /// as [`BootMode::Wspr`] for the cycle.
+    ///
+    /// Unlike the three above, its coarse stage runs **during**
+    /// capture: `Ft4SavgBuilder` accumulates the periodogram from the
+    /// audio callback so only the peak search is left after the slot,
+    /// 754 ms of a 1 960 ms budget that stops being spent
+    /// (`docs/notes/FT4_BENCHMARK.md` §32). At ~197 ms a candidate that
+    /// is about four more stations on a crowded band — the budget is
+    /// what bounds the candidate list, not headroom (§37).
+    Ft4,
 }
 
 impl BootMode {
@@ -93,6 +104,7 @@ impl BootMode {
             BootMode::Qso => "qso",
             BootMode::Wspr => "wspr",
             BootMode::Fst4 => "fst4",
+            BootMode::Ft4 => "ft4",
             BootMode::Uac => "uac",
         }
     }
@@ -108,6 +120,7 @@ impl BootMode {
             BootMode::Uac => "UAC",
             BootMode::Wspr => "WSPR",
             BootMode::Fst4 => "FST4",
+            BootMode::Ft4 => "FT4",
         }
     }
 
@@ -123,6 +136,7 @@ impl BootMode {
             "uac" => BootMode::Uac,
             "wspr" => BootMode::Wspr,
             "fst4" => BootMode::Fst4,
+            "ft4" => BootMode::Ft4,
             other => {
                 log::warn!("cfg boot_mode unknown value '{other}'; defaulting to decode");
                 BootMode::Decode
@@ -148,7 +162,7 @@ impl BootMode {
             BootMode::Uac => BootMode::Decode,
             // Not part of the cycle — see their doc comments. A board
             // that somehow lands here walks back to a mode it can run.
-            BootMode::Wspr | BootMode::Fst4 => BootMode::Decode,
+            BootMode::Wspr | BootMode::Fst4 | BootMode::Ft4 => BootMode::Decode,
         }
     }
 }
@@ -190,6 +204,7 @@ pub fn read(nvs: &EspNvs<NvsDefault>) -> BootMode {
         Ok(Some(s)) if s == "uac" => BootMode::Uac,
         Ok(Some(s)) if s == "wspr" => BootMode::Wspr,
         Ok(Some(s)) if s == "fst4" => BootMode::Fst4,
+        Ok(Some(s)) if s == "ft4" => BootMode::Ft4,
         Ok(Some(other)) => {
             log::warn!("NVS boot_mode unrecognised value '{other}'; defaulting to decode");
             BootMode::Decode

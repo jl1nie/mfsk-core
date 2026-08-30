@@ -629,7 +629,7 @@ fn shared_decim_probe(audio: &[i16]) {
     // pays double what it needs. The shared leg is reported as measured
     // and again halved, since a real-input variant is the thing that
     // would actually be written.
-    let mut run = |label: &str, ntaps: usize, decim: usize, fc: f32, n_in: usize| -> i64 {
+    let run = |label: &str, ntaps: usize, decim: usize, fc: f32, n_in: usize| -> i64 {
         let mut st = FirStage::new(ntaps, decim, fc, 512);
         let (mut oi, mut oq) = (Vec::with_capacity(n_in / decim + 2), Vec::new());
         oq.reserve(n_in / decim + 2);
@@ -1206,7 +1206,9 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
         candidates.len(),
         baked.len(),
     );
-    pie = pie_delta("pass0 coarse (2304 = 256 x 9)", coarse_us, pie);
+    // Not re-bound: pass 1's baseline is retaken below, after pass 0s
+    // has run its own transforms.
+    let _ = pie_delta("pass0 coarse (2304 = 256 x 9)", coarse_us, pie);
 
     // ── Pass 0s: the same stage, split the way a receiver would ──────
     //

@@ -92,6 +92,13 @@ fn main() -> ! {
         boot_mode::BootMode::Wspr => apps::wspr::run(peripherals, nvs_part),
         #[cfg(feature = "fst4")]
         boot_mode::BootMode::Fst4 => apps::fst4::run(peripherals, nvs_part),
+        #[cfg(feature = "ft4")]
+        boot_mode::BootMode::Ft4 => apps::ft4::run(peripherals, nvs_part),
+        #[cfg(not(feature = "ft4"))]
+        boot_mode::BootMode::Ft4 => log::error!(
+            "boot_mode=ft4 but this image was built without --features ft4 — \
+             continuing as an FT8 controller"
+        ),
         #[cfg(not(feature = "wspr"))]
         boot_mode::BootMode::Wspr => log::error!(
             "boot_mode=wspr but this image was built without --features wspr — \

@@ -14,5 +14,7 @@
 //! receivers it cannot boot into.
 #[cfg(feature = "fst4")]
 pub mod fst4;
+#[cfg(feature = "ft4")]
+pub mod ft4;
 #[cfg(feature = "wspr")]
 pub mod wspr;
