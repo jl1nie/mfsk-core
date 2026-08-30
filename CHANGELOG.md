@@ -86,7 +86,33 @@ streaming coarse stage below.)
   All of it is behind `dotprod-extern`; a build with no backend keeps
   the exact arithmetic it had.
 
+### Changed
+
+- **The CoreS3 app's FST4 and WSPR receiver modes are behind default-off
+  cargo features.** Each is a whole receiver — 1 382 and 1 815 lines
+  with its own tasks, screens, slot grids and worker stacks — and pulls
+  its decoder in behind it, while one image can only boot into one
+  mode. `--features fst4` / `--features wspr` bring them back, and the
+  four bins that need one carry `required-features` so a plain `cargo
+  build --bins` skips rather than fails. Default ELF 2 770 968 B against
+  3 412 112 with both, i.e. **626 KB**. `boot_mode` keeps its `Wspr` and
+  `Fst4` variants either way, since an NVS setting outlives a reflash:
+  `main` names the missing mode and continues as an FT8 controller
+  rather than appearing to ignore it.
+
 ### Fixed
+
+- **The mixed-radix FFT wrappers leaked their scratch, once per plan.**
+  `MixedRadix2304Fft`/`MixedRadix3840Fft` each allocated an
+  internal-DRAM workspace in `new` and never freed it, so every
+  `plan_forward` cost another 18 or 30 KB. Two planners in one binary
+  was enough to shift the heap and cost `engine::sync2d`'s dot products
+  their 16-byte alignment — 100 % of them on esp-dsp's PIE path became
+  0 %, and FT4's Δt search went 1 049 → 1 789 ms, from a change that
+  touched neither. There is now one process-global block, sized for the
+  longest user and shared under the `Fc32Guard` every mixed-radix
+  transform already holds for its whole body, reserved from `main`
+  before WiFi starts.
 
 - **`scripts/pre-push-check.sh` never ran as a hook.** It installed
   itself into `.git/hooks/pre-push`, while README.md and
