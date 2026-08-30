@@ -2283,3 +2283,70 @@ by construction, and contained to two files.
 **That is the better next move**: comparable or larger than dual-core,
 at a fraction of the code, and it does not spend internal DRAM that
 FT8 and a future dual-core worker both need.
+
+## 31. Block-mode FIR: 172 ms, not the 648 predicted (2026-08-30)
+
+§30.1 pointed at `FirStage::push_one` being called 90 000 times per
+candidate to produce 4 995 outputs, and put ~54 ms of stage A's 70 ms
+there — ~648 ms per slot. `push_block` had documented itself as the
+block entry point since `wspr::ddc` needed one, but its body was still
+`push_one` in a loop and `CandidateDdc::push_i16` never called it.
+
+Both fixed: `push_block` now bulk-appends each run with
+`copy_from_slice` and emits the outputs whose windows close inside it,
+and `push_i16` mixes in 1 024-sample chunks so the stages actually see
+blocks.
+
+```
+DDC        1 339 -> 1 167 ms  (-13 %)
+stage A       70 ->    61 ms
+ship slot  3 288 -> 3 119 ms  1.67x -> 1.59x
+```
+
+**172 ms, against ~648 predicted.** The estimate mis-attributed the
+gap: stage A's non-dot 54 ms was not all bookkeeping. `ddc_stage_probe`
+feeds the stage two 90 000-sample `Vec<f32>` — 720 KB of PSRAM — and a
+good part of that 54 ms was reading them, which no amount of batching
+removes. Fourth miss of the day, and the same root cause as §26.1:
+attributing a measured residual to the mechanism that happens to be in
+view.
+
+Kept regardless — it is bit-identical by construction, pinned across
+seven `(ntaps, decim, margin, chunk)` shapes including the DDC's own
+199/18 and 263/1, and 172 ms is 5 % of the slot for a contained change
+that spends no internal DRAM.
+
+### 31.1 Dual-core is now worth less, not more
+
+Re-measured in the same run: **1.33x -> 1.17x**. Amdahl, exactly as it
+should be — the parallel part (FIR) got cheaper while the serialised
+part (`symbol_spectra`'s FFTs behind `Fc32Guard`) did not. Every
+optimisation that lands on the parallel side makes the case for §30's
+~700 lines worse. Treat dual-core as closed.
+
+### 31.2 Where the budget actually stands
+
+Ship slot 3 119 ms against 1 960: coarse 758, DDC 1 167, Δt search 700,
+LLR+BP ~494.
+
+But that is the **14-signal** scene, and §23 put realistic FT4 occupancy
+at 5-10. At 197 ms per candidate:
+
+| occupancy | candidates | slot | vs budget |
+|---|---:|---:|---:|
+| 5 signals | 5.3 | ~1 801 ms | **0.92x** |
+| 10 signals | 9.2 | ~2 570 ms | 1.31x |
+| 14 (measured) | 12.3 | 3 119 ms | 1.59x |
+
+**FT4 now fits at the low end of its own design range**, which it did
+not this morning at any point in it. The remaining gap is the top of
+that range and the FT8-density pessimum.
+
+Streaming the coarse stage during capture (§25's list, item 2) takes
+758 ms out of the post-slot budget and would put **the whole realistic
+range under**: 10 signals becomes ~1 812 ms, 0.92x. `symbol_spectra_avg`
+is 152 independent windowed transforms over the slot, each computable
+as its samples arrive, and `wspr_app` already ships this shape
+(`ddc_loop` -> `DDC_READY_IDX` -> `scan_loop`). It is also the stage
+that *cannot* be parallelised, since it is pure FFT behind the global
+guard — so moving it off the budget is the only lever it has.

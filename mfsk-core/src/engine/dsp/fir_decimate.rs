@@ -216,14 +216,22 @@ impl FirStage {
     }
 
     /// Block-mode counterpart to [`push_one`](Self::push_one): consume
-    /// `xi.len()` complex input samples at once, appending any
-    /// outputs this stage completes. Behaviourally identical to
-    /// calling [`push_one`](Self::push_one) once per sample — exists
-    /// so callers can amortise per-call overhead over a block rather
-    /// than a sample, which is what an esp-dsp-backed `FirDecimator`
-    /// (`docs/notes/FST4_DDC_DESIGN.md` §4.5) needs: `dsps_fird_f32_aes3`
-    /// is itself block-shaped, so a sample-at-a-time `push_one` there
-    /// would pay the FFI hop per sample instead of per block.
+    /// `xi.len()` complex input samples at once, appending any outputs
+    /// this stage completes. Behaviourally identical to calling
+    /// [`push_one`](Self::push_one) once per sample, and pinned that
+    /// way bit-for-bit by `push_block_matches_repeated_push_one` —
+    /// the dots see the same windows in the same order, only the
+    /// stores are batched.
+    ///
+    /// **Why it has its own body.** Until 2026-08-30 this *was*
+    /// `push_one` in a loop, and `ft4::ddc` never called it at all —
+    /// `CandidateDdc::push_i16` mixed and pushed one sample at a time,
+    /// so stage A saw 90 000 individual pushes to produce 4 995
+    /// outputs. Measured on a CoreS3, that stage cost 70 ms per
+    /// candidate of which the dot products were ~16: the other ~54 ms,
+    /// **about 648 ms per FT4 slot and 20 % of its decode budget**, was
+    /// two bounds-checked stores, a counter and a compaction test per
+    /// input sample (`docs/notes/FT4_BENCHMARK.md` §30.1).
     pub fn push_block(
         &mut self,
         xi: &[f32],
@@ -232,10 +240,48 @@ impl FirStage {
         out_q: &mut Vec<f32>,
     ) {
         assert_eq!(xi.len(), xq.len(), "I/Q blocks must be the same length");
-        for (&i, &q) in xi.iter().zip(xq.iter()) {
-            if let Some((oi, oq)) = self.push_one(i, q) {
+        let ntaps = self.ntaps();
+        let mut k = 0usize;
+        while k < xi.len() {
+            // Never write past `hist_cap`; that is where `compact`
+            // triggers, and the allocation's slack past it belongs to
+            // the padded dot window, not to input.
+            let take = (self.hist_cap - self.hist_len).min(xi.len() - k);
+            debug_assert!(take > 0);
+
+            // The point of the whole function: one bulk append instead
+            // of `take` separate stores with their own bounds checks.
+            let hl = self.hist_len;
+            self.hist_i.as_mut_slice()[hl..hl + take].copy_from_slice(&xi[k..k + take]);
+            self.hist_q.as_mut_slice()[hl..hl + take].copy_from_slice(&xq[k..k + take]);
+
+            // Emit every output whose window closes inside this run.
+            // `hist_len`/`win_start` are advanced by addition only,
+            // never recomputed as `hist_len - ntaps` — see the field
+            // comment on `win_start` for the Xtensa codegen reason.
+            let mut consumed = 0usize;
+            while self.to_next_out <= take - consumed {
+                let step = self.to_next_out;
+                consumed += step;
+                self.hist_len += step;
+                self.win_start += step;
+                self.to_next_out = self.decim;
+                let (oi, oq) = self.dot();
                 out_i.push(oi);
                 out_q.push(oq);
+            }
+
+            // The tail of the run produced no output; it still advances
+            // the history and the countdown.
+            let rest = take - consumed;
+            self.to_next_out -= rest;
+            self.hist_len += rest;
+            self.win_start += rest;
+            debug_assert_eq!(self.hist_len, self.win_start + ntaps);
+
+            k += take;
+            if self.hist_len == self.hist_cap {
+                self.compact();
             }
         }
     }
@@ -335,5 +381,58 @@ mod tests {
 
         assert_eq!(oi, bi);
         assert_eq!(oq, bq);
+    }
+
+    /// The same equivalence across the shapes the 2026-08-30 block-mode
+    /// body actually branches on, which one 500-sample / `decim = 4`
+    /// case does not reach.
+    ///
+    /// `push_block` splits its input into runs bounded by the next
+    /// compaction, emits every output whose window closes inside a run,
+    /// then carries the remainder in `to_next_out`. The cases that
+    /// exercise the seams are: a decimation of 1 (an output per input,
+    /// so the inner loop runs `take` times), a large decimation with a
+    /// long startup delay (`to_next_out` exceeds a whole run and the
+    /// inner loop never runs), a block far larger than the history
+    /// capacity (many runs), and a block of exactly one sample.
+    ///
+    /// The FT4 DDC's own two stages — 199 taps / `decim = 18` and 263
+    /// taps / `decim = 1` — are in the list on purpose: this is the
+    /// pair the change was made for.
+    #[test]
+    fn push_block_matches_push_one_across_shapes() {
+        let audio: Vec<f32> = (0..4000).map(|k| (k as f32 * 0.011).sin()).collect();
+        let neg: Vec<f32> = audio.iter().map(|&s| -s).collect();
+
+        for &(ntaps, decim, margin, chunk) in &[
+            (31usize, 1usize, 32usize, 500usize),
+            (31, 4, 32, 500),
+            (31, 7, 16, 1),
+            (199, 18, 512, 1024),
+            (263, 1, 512, 1024),
+            (63, 5, 8, 4000),
+            (15, 3, 4, 3),
+        ] {
+            let mut one = FirStage::new(ntaps, decim, 0.1, margin);
+            let (mut oi, mut oq) = (Vec::new(), Vec::new());
+            for (&i, &q) in audio.iter().zip(neg.iter()) {
+                if let Some((a, b)) = one.push_one(i, q) {
+                    oi.push(a);
+                    oq.push(b);
+                }
+            }
+
+            let mut block = FirStage::new(ntaps, decim, 0.1, margin);
+            let (mut bi, mut bq) = (Vec::new(), Vec::new());
+            for (ci, cq) in audio.chunks(chunk).zip(neg.chunks(chunk)) {
+                block.push_block(ci, cq, &mut bi, &mut bq);
+            }
+
+            let label = format!("ntaps={ntaps} decim={decim} margin={margin} chunk={chunk}");
+            assert_eq!(oi.len(), bi.len(), "{label}: output count");
+            assert_eq!(oi, bi, "{label}: I");
+            assert_eq!(oq, bq, "{label}: Q");
+            assert!(!oi.is_empty(), "{label}: produced nothing to compare");
+        }
     }
 }

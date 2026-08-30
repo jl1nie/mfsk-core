@@ -164,6 +164,17 @@ const STAGE_A_FC_HZ: f32 = 320.0;
 const STAGE_B_NTAPS: usize = 263;
 const STAGE_B_FC_HZ: f32 = 56.0;
 
+/// Input samples mixed per block in [`CandidateDdc::push_i16`].
+///
+/// Two `f32` scratch buffers of this length, so 8 KB at 1 024 — small
+/// enough to stay off PSRAM under
+/// `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL = 4096`'s successor thresholds
+/// and to keep the working set near the caches, large enough that the
+/// per-block overhead is ~88 iterations over a 90 000-sample slot
+/// rather than 90 000. Not a tuned value: the cost it removes is
+/// per-*sample*, so anything well above one is most of the win.
+const MIX_CHUNK: usize = 1_024;
+
 /// History margin for both stages, matching `fst4::ddc`'s: the stages
 /// are small enough that a generous fixed margin costs little and keeps
 /// `FirStage`'s compaction well amortised.
@@ -222,9 +233,49 @@ impl CandidateDdc {
     }
 
     /// Push a block of 12 kHz PCM.
+    ///
+    /// Mixes in chunks and hands each stage a *block*, rather than
+    /// walking [`push_one`](Self::push_one) once per sample. Same
+    /// arithmetic — [`FirStage::push_block`] is pinned bit-identical to
+    /// repeated `push_one` — but stage A now appends 90 000 samples in
+    /// `MIX_CHUNK`-sized `copy_from_slice`s instead of 90 000
+    /// individually bounds-checked stores, each with its own counter
+    /// update and compaction test, to produce 4 995 outputs.
+    ///
+    /// That bookkeeping was measured at ~54 ms of stage A's 70 ms per
+    /// candidate on a CoreS3 — about 648 ms per FT4 slot, 20 % of the
+    /// decode budget, with the dot products themselves only ~16 ms
+    /// (`docs/notes/FT4_BENCHMARK.md` §30.1). The block entry point had
+    /// existed since `wspr::ddc` needed it and nothing here called it.
     pub fn push_i16(&mut self, audio: &[i16], out: &mut Vec<Complex<f32>>) {
-        for &s in audio {
-            self.push_one(s as f32, out);
+        let mut mi: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
+        let mut mq: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
+        // Stage A decimates by 18, so a chunk yields at most
+        // `MIX_CHUNK / 18 + 1` samples; stage B passes those through.
+        let inner = MIX_CHUNK / Ft4::NDOWN as usize + 2;
+        let mut ai: Vec<f32> = Vec::with_capacity(inner);
+        let mut aq: Vec<f32> = Vec::with_capacity(inner);
+        let mut bi: Vec<f32> = Vec::with_capacity(inner);
+        let mut bq: Vec<f32> = Vec::with_capacity(inner);
+
+        for chunk in audio.chunks(MIX_CHUNK) {
+            mi.clear();
+            mq.clear();
+            for &s in chunk {
+                let (i, q) = self.mixer.mix(s as f32);
+                mi.push(i);
+                mq.push(q);
+            }
+            ai.clear();
+            aq.clear();
+            self.stage_a.push_block(&mi, &mq, &mut ai, &mut aq);
+            bi.clear();
+            bq.clear();
+            self.stage_b.push_block(&ai, &aq, &mut bi, &mut bq);
+            for (&i, &q) in bi.iter().zip(bq.iter()) {
+                let (i, q) = self.derotate.mix_complex(i, q);
+                out.push(Complex::new(i, q));
+            }
         }
     }
 
