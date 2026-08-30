@@ -91,7 +91,7 @@ use embedded_shared::fst4_dual_core;
 use embedded_shared::fst4_monitor::{self, CapturedSlot, MonitorConfig, MonitorHit, SlotCapture};
 use mfsk_app_shared::boot_mode::{self, BootMode};
 use mfsk_app_shared::settings;
-use mfsk_app_shared::ui::fst4_list::{self, Fst4SpotRow, Fst4UiState};
+use mfsk_app_shared::ui::slot_list::{self, SlotSpotRow, SlotUiState};
 use mfsk_app_shared::ui::{link_bar, mode_picker};
 use mfsk_app_shared::{http_config, ntp, udp_log};
 
@@ -307,7 +307,7 @@ const STAGING_CAP: usize = 24_000;
 /// slot; real audio arriving during it is held in [`AUDIO_STAGING`].
 static SPECTRA_FREE: AtomicBool = AtomicBool::new(true);
 
-static FST4_UI: Mutex<Fst4UiState> = Mutex::new(Fst4UiState::new());
+static FST4_UI: Mutex<SlotUiState> = Mutex::new(SlotUiState::new());
 
 fn now_us() -> i64 {
     unsafe { esp_idf_svc::sys::esp_timer_get_time() }
@@ -790,7 +790,7 @@ fn scan_loop() -> ! {
             decode_ms / n,
         );
 
-        let rows: Vec<Fst4SpotRow> = decoded.iter().map(|h| to_row(h, t_search_ms)).collect();
+        let rows: Vec<SlotSpotRow> = decoded.iter().map(|h| to_row(h, t_search_ms)).collect();
         {
             let mut ui = FST4_UI.lock().expect("FST4_UI poisoned");
             ui.last_slot_cands = candidates.len();
@@ -804,11 +804,11 @@ fn scan_loop() -> ! {
     }
 }
 
-fn to_row(h: &MonitorHit, search_ms: i64) -> Fst4SpotRow {
+fn to_row(h: &MonitorHit, search_ms: i64) -> SlotSpotRow {
     let mut msg: heapless::String<22> = heapless::String::new();
     let text = h.msg.as_deref().unwrap_or("");
     let _ = msg.push_str(&text[..text.len().min(22)]);
-    Fst4SpotRow {
+    SlotSpotRow {
         utc_hhmm: current_hhmm(),
         freq_hz: h.refined_hz,
         snr_db: h
@@ -1016,7 +1016,7 @@ fn display_loop(ctx: DisplayCtx) -> ! {
 
     {
         let ui = FST4_UI.lock().expect("FST4_UI poisoned");
-        if let Err(e) = fst4_list::render_all(&mut display, &ui) {
+        if let Err(e) = slot_list::render_all(&mut display, &ui) {
             log::error!("fst4_app::display: render_all FAILED: {e:?}");
         }
     }
@@ -1140,18 +1140,18 @@ fn display_loop(ctx: DisplayCtx) -> ! {
             link_bar::render(
                 &mut display,
                 &crate::uac::link_info(),
-                fst4_list::PANEL_WIDTH,
-                fst4_list::PANEL_HEIGHT as i32 - link_bar::HEIGHT as i32,
+                slot_list::PANEL_WIDTH,
+                slot_list::PANEL_HEIGHT as i32 - link_bar::HEIGHT as i32,
             )
             .ok();
-            if let Err(e) = fst4_list::render_status(&mut display, &ui) {
+            if let Err(e) = slot_list::render_status(&mut display, &ui) {
                 log::warn!("fst4_app::display: render_status failed: {e:?}");
             }
             if dirty != last_dirty {
-                if let Err(e) = fst4_list::render_slot(&mut display, &ui) {
+                if let Err(e) = slot_list::render_slot(&mut display, &ui) {
                     log::warn!("fst4_app::display: render_slot failed: {e:?}");
                 }
-                if let Err(e) = fst4_list::render_history(&mut display, &ui) {
+                if let Err(e) = slot_list::render_history(&mut display, &ui) {
                     log::warn!("fst4_app::display: render_history failed: {e:?}");
                 }
                 last_dirty = dirty;

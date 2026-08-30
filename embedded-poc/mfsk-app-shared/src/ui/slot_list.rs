@@ -1,6 +1,7 @@
-//! FST4 monitor screen for the CoreS3's panel, run **portrait**
+//! Slotted-mode decode screen for the CoreS3's panel, run **portrait**
 //! (240×320) — the same geometry, chrome and repaint discipline
-//! `wspr_list` established, carrying FST4 rows instead of WSPR spots.
+//! `wspr_list` established, carrying decoded rows instead of WSPR
+//! spots. Used by the FST4 monitor and the FT4 receiver.
 //!
 //! ```text
 //! y=0..16     status bar        (mode / dial freq / UTC / NTP / heap)
@@ -26,7 +27,15 @@
 //! What it does share, structurally: per-region wipe-then-draw with no
 //! full-frame clear (avoids flicker), an explicit `Rectangle` fill
 //! rather than `clear()`, and a caller that gates repaints on
-//! [`Fst4UiState::dirty_seq`].
+//! [`SlotUiState::dirty_seq`].
+//!
+//! **Not FST4-specific**, despite where it started: the columns are
+//! UTC / frequency / SNR / DT / message / post-slot latency, which is
+//! what every slotted mode in this tree decodes into. FT4's receiver
+//! renders through the same types (`apps/ft4.rs`), which is why they
+//! were renamed off `Fst4*` on 2026-08-30. The one place the origin
+//! still shows is [`SlotSpotRow::snr_db`] being optional — see its
+//! comment; FT4 always has one, FST4's DDC monitor path does not.
 
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -81,7 +90,7 @@ const COL_HEADER_FG: Rgb565 = Rgb565::CSS_GRAY;
 
 /// One decoded FST4 transmission, sized for a 40-char panel row.
 #[derive(Clone, Debug)]
-pub struct Fst4SpotRow {
+pub struct SlotSpotRow {
     /// Slot start, UTC, `HHMM`.
     pub utc_hhmm: String<4>,
     /// Decoded audio frequency, Hz — the refined offset, not the
@@ -105,10 +114,10 @@ pub struct Fst4SpotRow {
     pub t_s: f32,
 }
 
-/// Column header matching [`Fst4SpotRow::format_row`]'s field order.
+/// Column header matching [`SlotSpotRow::format_row`]'s field order.
 pub const ROW_HEADER: &str = "UTC  FREQ  SNR   DT  MESSAGE      T+";
 
-impl Fst4SpotRow {
+impl SlotSpotRow {
     /// One fixed-width line: `HHMM freq snr dt message t+`.
     ///
     /// `snr` renders as `--` when absent, which on the DDC monitor
@@ -143,9 +152,9 @@ impl Fst4SpotRow {
 /// What the FST4 screen renders. Mutated by the scan task once a slot,
 /// read by the display task at its own tick — [`Self::dirty_seq`] is
 /// what keeps the expensive panes from repainting in between.
-pub struct Fst4UiState {
-    slot: heapless::Vec<Fst4SpotRow, SLOT_CAP>,
-    history: heapless::Deque<Fst4SpotRow, HISTORY_CAP>,
+pub struct SlotUiState {
+    slot: heapless::Vec<SlotSpotRow, SLOT_CAP>,
+    history: heapless::Deque<SlotSpotRow, HISTORY_CAP>,
     last_slot_hhmm: Option<String<4>>,
     /// Decodes the last slot produced before [`SLOT_CAP`] truncation,
     /// so a truncated slot is visible rather than looking like a quiet
@@ -166,13 +175,13 @@ pub struct Fst4UiState {
     dirty_seq: AtomicU32,
 }
 
-impl Default for Fst4UiState {
+impl Default for SlotUiState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Fst4UiState {
+impl SlotUiState {
     pub const fn new() -> Self {
         Self {
             slot: heapless::Vec::new(),
@@ -192,7 +201,7 @@ impl Fst4UiState {
     }
 
     /// Replace this slot's decodes and append them to the history.
-    pub fn set_slot(&mut self, hhmm: &str, rows: &[Fst4SpotRow]) {
+    pub fn set_slot(&mut self, hhmm: &str, rows: &[SlotSpotRow]) {
         self.slot.clear();
         for r in rows.iter().take(SLOT_CAP) {
             let _ = self.slot.push(r.clone());
@@ -213,7 +222,7 @@ impl Fst4UiState {
     pub fn dirty_seq(&self) -> u32 {
         self.dirty_seq.load(Ordering::Acquire)
     }
-    pub fn slot_rows(&self) -> &[Fst4SpotRow] {
+    pub fn slot_rows(&self) -> &[SlotSpotRow] {
         &self.slot
     }
     pub fn slot_counts(&self) -> (usize, usize) {
@@ -225,7 +234,7 @@ impl Fst4UiState {
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
-    pub fn history_iter(&self) -> impl Iterator<Item = &Fst4SpotRow> {
+    pub fn history_iter(&self) -> impl Iterator<Item = &SlotSpotRow> {
         self.history.iter()
     }
 }
@@ -250,7 +259,7 @@ fn fill(display: &mut impl DrawTarget<Color = Rgb565>, y: i32, h: u32, color: Rg
 /// Status bar: mode, dial frequency, UTC, NTP and live-audio flags,
 /// free heap. `A` is the flag that says whether the decodes on screen
 /// came from a radio or from the built-in golden slot.
-pub fn render_status<D>(display: &mut D, ui: &Fst4UiState) -> Result<(), D::Error>
+pub fn render_status<D>(display: &mut D, ui: &SlotUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -276,7 +285,7 @@ where
 /// This slot's decodes, headed by the two numbers that say whether the
 /// monitor kept up: candidates reached out of candidates found, and
 /// how long the first decode took.
-pub fn render_slot<D>(display: &mut D, ui: &Fst4UiState) -> Result<(), D::Error>
+pub fn render_slot<D>(display: &mut D, ui: &SlotUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -322,7 +331,7 @@ where
 }
 
 /// Decode history, newest at the top.
-pub fn render_history<D>(display: &mut D, ui: &Fst4UiState) -> Result<(), D::Error>
+pub fn render_history<D>(display: &mut D, ui: &SlotUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {
@@ -346,7 +355,7 @@ where
     )
     .draw(display)?;
 
-    let all: heapless::Vec<&Fst4SpotRow, HISTORY_CAP> = ui.history_iter().collect();
+    let all: heapless::Vec<&SlotSpotRow, HISTORY_CAP> = ui.history_iter().collect();
     let take = all.len().min(HISTORY_ROWS);
     let start = all.len() - take;
     let visible = all[start..].iter().rev().copied();
@@ -356,7 +365,7 @@ where
 
 fn render_rows<'a, D>(
     display: &mut D,
-    rows: impl Iterator<Item = &'a Fst4SpotRow>,
+    rows: impl Iterator<Item = &'a SlotSpotRow>,
     origin_y: i32,
     max_rows: usize,
     divider_after: bool,
@@ -390,7 +399,7 @@ where
 /// Explicit `Rectangle` fill rather than `DrawTarget::clear()`, which
 /// real-hardware testing found unreliable on this mipidsi/SPI setup
 /// (see `wspr_list::render_all` for the full finding).
-pub fn render_all<D>(display: &mut D, ui: &Fst4UiState) -> Result<(), D::Error>
+pub fn render_all<D>(display: &mut D, ui: &SlotUiState) -> Result<(), D::Error>
 where
     D: DrawTarget<Color = Rgb565>,
 {

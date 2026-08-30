@@ -59,6 +59,15 @@ required-features = ["fst4"]
 # Same shape and the same reason as `fst4-bench` above; see
 # `embedded-shared::apps::ft4_bench`'s module doc for the budget and
 # for what is baked versus computed on-device.
+# The FT4 receiver's desk demo: replays the vendored golden at 12 kHz
+# and runs the shipping slot pipeline over it. No USB host, so the
+# serial console survives and the board stays flashable.
+[[bin]]
+name = "ft4-demo"
+path = "src/bin/ft4_demo.rs"
+harness = false
+required-features = ["ft4"]
+
 [[bin]]
 name = "ft4-bench"
 path = "src/bin/ft4_bench.rs"
@@ -178,6 +187,8 @@ wspr-golden = ["wspr"]
 # need them carry `required-features` so `cargo build` skips rather
 # than fails.
 fst4 = ["embedded-shared/fst4-bench"]
+# The FT4 receiver and its WAV demo bin.
+ft4 = ["embedded-shared/ft4"]
 wspr = ["embedded-shared/wspr-bench"]
 
 [dependencies]

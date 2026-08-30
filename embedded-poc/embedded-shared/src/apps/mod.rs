@@ -12,6 +12,8 @@ pub mod fst4_bench;
 pub mod fst4_ddc_bench;
 #[cfg(feature = "ft4-bench")]
 pub mod ft4_bench;
+#[cfg(feature = "ft4")]
+pub mod ft4_rx;
 pub mod rx_wavsim;
 pub mod scalar_bench;
 #[cfg(feature = "wspr-bench")]

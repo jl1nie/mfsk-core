@@ -61,7 +61,11 @@ fst4-bench = ["mfsk-core/fst4", "mfsk-core/internal-testing"]
 # and `decode_frame`'s `precomputed_fft` seam are only `pub` under it
 # (issue #203). No `mfsk-core/std`: FT4 routes entirely through the
 # backend-agnostic `engine::pipeline`, same as FST4.
-ft4-bench = ["mfsk-core/ft4", "mfsk-core/internal-testing"]
+# The FT4 receive pipeline (`apps::ft4_rx`) — the decode half of a
+# receiver, board-agnostic. `internal-testing` is what makes
+# `process_candidate_precomputed` public, the seam the DDC path needs.
+ft4 = ["mfsk-core/ft4", "mfsk-core/internal-testing"]
+ft4-bench = ["ft4"]
 
 [dependencies]
 log = "0.4"
