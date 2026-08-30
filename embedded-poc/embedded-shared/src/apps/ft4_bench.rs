@@ -728,9 +728,26 @@ fn shared_decim_probe(audio: &[i16]) {
     // Leg 2: what it would cost after a shared /2 — half the samples,
     // half the taps for the same transition in Hz.
     let then_a = run("A after /2 (6k, per cand)", 101, 9, 320.0 / 6_000.0, 45_000);
-    // Leg 3: the shared stage itself, paid once for the whole slot.
-    // 111 taps for a 2 700 -> 3 300 Hz transition at 12 kHz.
-    let shared = run("shared /2 (once, complex)", 111, 2, 2_700.0 / 12_000.0, 90_000);
+    // Leg 3: the shared stage, paid once for the whole slot — swept,
+    // because its tap count is the whole question and the first
+    // estimate was wrong.
+    //
+    // Decimating 12 kHz -> 6 kHz folds everything above 3 000 Hz. But
+    // the search band tops out at 2 700 Hz and a candidate's own band
+    // reaches `f0 + 93.75`, so content from 3 000 to 3 200 Hz folds to
+    // 2 800-3 000 Hz — outside every candidate's band, where stage A'
+    // rejects it anyway. What actually has to be stopped is **above
+    // 3 200 Hz**: pass to 2 800, stop at 3 200, a 400 Hz transition at
+    // 12 kHz, which a Blackman window buys at ~165 taps rather than
+    // the 111 first assumed (that number came from a 2 700 -> 3 300
+    // transition that does not protect the top of the band).
+    let mut shared = 0i64;
+    for &n in &[111usize, 165, 231] {
+        let us = run("shared /2 (once, complex)", n, 2, 2_800.0 / 12_000.0, 90_000);
+        if n == 165 {
+            shared = us;
+        }
+    }
 
     const CANDS: i64 = 12;
     let today = now_a * CANDS;
@@ -738,7 +755,7 @@ fn shared_decim_probe(audio: &[i16]) {
     let proposed = shared / 2 + then_a * CANDS;
     log::info!(
         "ft4_bench: shared-decimation — today {} ms ({} x {} ms) | proposed {} ms \
-         (shared {} ms + {} x {} ms) | {}",
+         (shared {} ms at 165 taps + {} x {} ms) | {}",
         today / 1000,
         CANDS,
         now_a / 1000,
