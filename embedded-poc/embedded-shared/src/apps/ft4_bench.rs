@@ -596,6 +596,86 @@ fn savg_realtime_probe(audio: &[i16]) {
     }
 }
 
+/// Would a shared coarse decimation pay for itself?
+///
+/// **The structural observation.** FT8 computes its spectrogram once
+/// and every candidate reads it; `downsample_cached` does the same with
+/// one 92 160-point transform. `ft4::ddc` shares nothing — it mixes and
+/// filters the whole 90 000-sample slot **per candidate**, and stage A
+/// alone is 61 ms of the 96 ms, 732 ms of a slot across 12 candidates.
+/// The filter shape is identical for every candidate; only the mixer
+/// frequency differs.
+///
+/// **The proposal this tests.** One shared decimate-by-2 over the real
+/// audio (12 kHz -> 6 kHz, keeping the whole 100-2700 Hz search band),
+/// then per-candidate mixing and a decimate-by-9 on half as many
+/// samples with about half the taps — the anti-alias transition is the
+/// same in Hz and half as wide relative to 6 kHz.
+///
+/// **Why it is a probe and not a patch.** The arithmetic says
+/// 12 x 61 ms -> shared + 12 x ~30 ms. Arithmetic said the blocked
+/// transpose would win (§26.1), that staging each dot's window would
+/// win (§27), and that block-mode `push_block` was worth 648 ms
+/// (§31 — it was 172). Three of today's four wrong predictions were
+/// bandwidth or work-count arithmetic of exactly this shape, so this
+/// measures the three legs before anything is built on them.
+fn shared_decim_probe(audio: &[i16]) {
+    use mfsk_core::engine::dsp::fir_decimate::FirStage;
+
+    let xi: Vec<f32> = audio.iter().map(|&s| s as f32).collect();
+    let xq = xi.clone();
+
+    // `FirStage` filters I and Q together, so a stage fed real audio
+    // pays double what it needs. The shared leg is reported as measured
+    // and again halved, since a real-input variant is the thing that
+    // would actually be written.
+    let mut run = |label: &str, ntaps: usize, decim: usize, fc: f32, n_in: usize| -> i64 {
+        let mut st = FirStage::new(ntaps, decim, fc, 512);
+        let (mut oi, mut oq) = (Vec::with_capacity(n_in / decim + 2), Vec::new());
+        oq.reserve(n_in / decim + 2);
+        let t0 = now_us();
+        st.push_block(&xi[..n_in], &xq[..n_in], &mut oi, &mut oq);
+        let us = now_us() - t0;
+        log::info!(
+            "    {label:<34} {:>7} us  ({ntaps} taps, /{decim}, {n_in} in -> {} out)",
+            us,
+            oi.len(),
+        );
+        us
+    };
+
+    log::info!("ft4_bench: shared-decimation probe");
+    // Leg 1: what a candidate costs today.
+    let now_a = run("A now (12k, per candidate)", 199, 18, 320.0 / 12_000.0, 90_000);
+    // Leg 2: what it would cost after a shared /2 — half the samples,
+    // half the taps for the same transition in Hz.
+    let then_a = run("A after /2 (6k, per cand)", 101, 9, 320.0 / 6_000.0, 45_000);
+    // Leg 3: the shared stage itself, paid once for the whole slot.
+    // 111 taps for a 2 700 -> 3 300 Hz transition at 12 kHz.
+    let shared = run("shared /2 (once, complex)", 111, 2, 2_700.0 / 12_000.0, 90_000);
+
+    const CANDS: i64 = 12;
+    let today = now_a * CANDS;
+    // The shared leg halved: real input needs one channel, not two.
+    let proposed = shared / 2 + then_a * CANDS;
+    log::info!(
+        "ft4_bench: shared-decimation — today {} ms ({} x {} ms) | proposed {} ms \
+         (shared {} ms + {} x {} ms) | {}",
+        today / 1000,
+        CANDS,
+        now_a / 1000,
+        proposed / 1000,
+        shared / 2000,
+        CANDS,
+        then_a / 1000,
+        if proposed < today {
+            "WORTH BUILDING"
+        } else {
+            "not worth it"
+        },
+    );
+}
+
 /// What the waterfall costs, as opposed to what the decoder costs.
 ///
 /// `Ft4SavgBuilder::push_with_rows` hands over rows the coarse stage
@@ -1182,6 +1262,18 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     log_heap("post-coarse");
 
     // ── Pass 1: the two front ends, alone ────────────────────────────
+    //
+    // Re-baseline first. Pass 0s just ran 152 more 2304-point
+    // transforms, and attributing them to pass 1f made its split read
+    // "combine 114 %, outside -38 %" — a diagnostic reporting an
+    // impossibility rather than an inconvenient truth. Same mistake the
+    // `dot_f32` counters made one probe earlier, for the same reason:
+    // a global counter differenced across a span that grew work inside
+    // it.
+    pie = (
+        crate::esp_dsp_fft::pie_alignment_report(),
+        crate::esp_dsp_fft::pie_timing_report(),
+    );
     let t0 = now_us();
     let mut checksum = 0.0f32;
     for cand in &candidates {
@@ -1222,6 +1314,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     savg_realtime_probe(&audio);
     wf_row_probe(&audio);
     ddc_stage_probe(&audio);
+    shared_decim_probe(&audio);
     dotprod_probe();
     fft3840_probe();
 

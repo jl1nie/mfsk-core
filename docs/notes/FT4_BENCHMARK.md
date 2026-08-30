@@ -2666,3 +2666,76 @@ Nothing here proposes ripping it out. It says the simpler route was
 available for more of FT8 than was assumed, and that the LLR/BP half in
 particular is carrying a quantisation that costs 18 % and buys nothing
 measurable.
+
+## 37. Budget is decodes, not headroom (2026-08-31)
+
+§31.2 and §32.2 concluded that FT4 fits its budget at realistic
+occupancy, and that was allowed to stand in for "so freeing more budget
+buys little". Those are different claims and the second is false.
+
+§34's cutoff is **firing right now**:
+
+```
+slot — 11 of 12 candidates tried, 10 decodes — cut 1 at score 1.55
+slot — 10 of 12 candidates tried,  9 decodes — cut 2 at score 2.63
+```
+
+Eleven decode without a deadline; nine or ten with one. And §23's
+occupancy table says that is not an artefact of this recording — the
+**deepest decoding rank tracks the candidate count**:
+
+| signals/slot | mean candidates | deepest decoding rank |
+|---:|---:|---:|
+| 5 | 5.3 | 6 |
+| 10 | 9.2 | **10** |
+| 14 | 12.3 | **15** |
+| 20 | 14.8 | **19** |
+
+The tail of the candidate list is not dead weight. Truncating it costs
+decodes, at every occupancy that has been measured.
+
+So milliseconds convert to stations. At ~197 ms per candidate a 1 960 ms
+budget reaches 9.9 candidates; every 197 ms saved is one more, and the
+saving matters **most on a crowded band**, which is exactly when the
+decodes are wanted. That inverts §36's ranking of what is worth doing.
+
+| lever | saving | candidates |
+|---|---:|---:|
+| wire the streamed coarse into the receiver (built, unwired) | **754 ms** | **+3.9** |
+| shared decimation (§37.1) | 278 ms | +1.4 |
+| LLR/BP — 479 ms, never broken down | ? | ? |
+
+### 37.1 The shared decimation, measured
+
+`ft4::ddc` shares nothing between candidates: it mixes and filters the
+whole 90 000-sample slot per candidate, where FT8's spectrogram and
+`downsample_cached`'s wideband transform are each computed once and
+read by all of them. Stage A alone is 61 ms of a candidate's 96.
+
+One shared decimate-by-2 over the real audio, then per-candidate mixing
+and a decimate-by-9 on half the samples with half the taps:
+
+```
+A now (12k, per candidate)   60 986 us  (199 taps, /18, 90 000 in -> 4 995 out)
+A after /2 (6k, per cand)    30 828 us  (101 taps,  /9, 45 000 in -> 4 995 out)
+shared /2 (once, complex)   167 130 us  (111 taps,  /2, 90 000 in -> 44 973 out)
+
+today    731 ms (12 x 60)
+proposed 453 ms (shared 83 + 12 x 30)
+```
+
+The per-candidate half came out exactly as predicted, which after §26.1,
+§27 and §31 is worth noting rather than assuming. The shared leg is
+dearer than hoped — 83 ms is 1.4 candidates — so the break-even is
+about **2.7 candidates**: always a win at §23's 5-10 signal occupancy,
+roughly neutral on a dead band.
+
+Not yet built, and it is not a drop-in. The shared stage wants a
+real-input `FirStage` (the current one filters I and Q, so half its
+work would be wasted, and the 83 ms above assumes that half removed);
+the passband becomes three stages rather than two, and §20's point that
+"the passband is a decode parameter, not a filter-design free choice"
+applies — the +0.021 dB equivalent-noise-bandwidth match would have to
+be re-established, and `ft4_ddc_equivalence`'s 560-file 0.0 dB result
+re-run, since a third stage changes the rounding and nothing will be
+bit-identical.
