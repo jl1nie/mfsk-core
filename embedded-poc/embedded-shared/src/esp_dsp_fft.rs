@@ -707,6 +707,15 @@ impl FftPlanner for EspDspPlanner {
 /// 256-pt: esp-dsp `dsps_fft2r_fc32_ae32_` (asm). 15-pt: see
 /// [`mfsk_core::engine::dsp::fft_15`]. Inter-stage twiddles cached.
 struct MixedRadix3840Fft {
+    /// 3 840-element scratch in internal DRAM when one can be had, as
+    /// [`MixedRadix2304Fft::internal`]. 30 KB — half again the 2304
+    /// sibling's, and against a 31 744 B largest free internal block
+    /// once WiFi is up, so the `None` fallback is the likely case in a
+    /// full app and not a formality.
+    internal: Option<core::ptr::NonNull<Complex32>>,
+    /// PSRAM fallback, and still better than the `vec![…; 3840]` per
+    /// call it replaces.
+    scratch: core::cell::UnsafeCell<AlignedStaging>,
     twiddles: Box<[Complex32; mfsk_core::engine::dsp::fft_mixed_3840::N]>,
     /// 256-`Complex32` staging for the PIE kernel — see
     /// [`Align16Quad`]. Rows sit at a multiple of 256 `Complex32` from
@@ -718,6 +727,25 @@ struct MixedRadix3840Fft {
 impl MixedRadix3840Fft {
     fn new() -> Self {
         Self {
+            internal: {
+                const N: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
+                const MALLOC_CAP_INTERNAL_8BIT: u32 = (1 << 11) | (1 << 2);
+                // SAFETY / leak: as `MixedRadix2304Fft::new`.
+                let p = unsafe {
+                    esp_idf_svc::sys::heap_caps_aligned_alloc(
+                        16,
+                        N * core::mem::size_of::<Complex32>(),
+                        MALLOC_CAP_INTERNAL_8BIT,
+                    )
+                } as *mut Complex32;
+                let got = core::ptr::NonNull::new(p);
+                log::info!(
+                    "fft_mixed_3840: scratch in {} DRAM",
+                    if got.is_some() { "INTERNAL" } else { "PSRAM (internal alloc failed)" }
+                );
+                got
+            },
+            scratch: core::cell::UnsafeCell::new(AlignedStaging::new()),
             twiddles: mfsk_core::engine::dsp::fft_mixed_3840::build_twiddles(),
             staging: core::cell::UnsafeCell::new(AlignedStaging::new()),
         }
@@ -773,11 +801,18 @@ impl Fft for MixedRadix3840Fft {
             }
         };
 
+        const N3840: usize = mfsk_core::engine::dsp::fft_mixed_3840::N;
+        // SAFETY: as `MixedRadix2304Fft::process`.
+        let scratch: &mut [Complex32] = match self.internal {
+            Some(p) => unsafe { core::slice::from_raw_parts_mut(p.as_ptr(), N3840) },
+            None => unsafe { &mut *self.scratch.get() }.as_slice(N3840),
+        };
         let t_proc = probe_us();
-        mfsk_core::engine::dsp::fft_mixed_3840::fft_3840_with(
+        mfsk_core::engine::dsp::fft_mixed_3840::fft_3840_with_scratch(
             buf_arr,
             &mut esp_dsp_256,
             &self.twiddles,
+            scratch,
         );
         add_process_us(probe_us() - t_proc);
     }

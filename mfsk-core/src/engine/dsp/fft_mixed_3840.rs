@@ -60,10 +60,36 @@ pub fn fft_3840_with(
     fft_256: &mut dyn FnMut(&mut [Complex32; N1]),
     twiddles: &[Complex32; N],
 ) {
+    let mut m: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); N];
+    fft_3840_with_scratch(buf, fft_256, twiddles, &mut m);
+}
+
+/// [`fft_3840_with`] with a caller-owned scratch buffer.
+///
+/// Same seam, and the same reason, as
+/// [`fft_2304_with_scratch`](super::fft_mixed_2304::fft_2304_with_scratch):
+/// a `vec![…; 3840]` is 30 KB, which on an ESP32-S3 lands in PSRAM, and
+/// the transform walks it five times — twice with a stride of `N1`.
+/// Measured for the 2304 sibling, whose structure is identical: hoisting
+/// the allocation and putting it in internal DRAM took that transform's
+/// combine stage from 853 ms to 404 ms over a slot
+/// (`docs/notes/FT4_BENCHMARK.md` §26). This length is FT8's, and had
+/// never been measured; §28 is that measurement.
+pub fn fft_3840_with_scratch(
+    buf: &mut [Complex32; N],
+    fft_256: &mut dyn FnMut(&mut [Complex32; N1]),
+    twiddles: &[Complex32; N],
+    scratch: &mut [Complex32],
+) {
+    assert!(
+        scratch.len() >= N,
+        "fft_3840 scratch must hold at least N elements"
+    );
+    let m = &mut scratch[..N];
+
     // Step 1: reshape input so row n2 holds `x[n2], x[n2+15], x[n2+30], …`.
     //         Equivalently `m[n2][n1] = x[15·n1 + n2]`. We transpose into
-    //         a Vec to keep each row contiguous for the 256-pt FFT.
-    let mut m: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); N];
+    //         the scratch to keep each row contiguous for the 256-pt FFT.
     for n1 in 0..N1 {
         for n2 in 0..N2 {
             m[n2 * N1 + n1] = buf[15 * n1 + n2];

@@ -2021,3 +2021,99 @@ The DDC is now the largest single item and `dsps_fird_f32_aes3` is still
 untried. `fft_mixed_3840` shares the structure fixed here, so FT8's
 `NFFT_SPEC` path on this board is presumably paying the same PSRAM tax —
 not measured, and stated as a hypothesis this time.
+
+## 27. The DDC: the premise was wrong, and the fix was 10 % (2026-08-30)
+
+§25.5 listed the DDC's lever as "bind esp-dsp FIR
+(`dsps_fird_f32_aes3`), untried". Measuring before writing anything
+showed the premise was already false: `FirStage::dot` has routed through
+`dotprod::dot_f32` since issue #307, and under `dotprod-extern` that
+**is** `dsps_dotprod_f32_aes3`. The FIR has been on esp-dsp the whole
+time.
+
+What it was not on is that kernel's PIE path, which needs both operands
+16-byte aligned and `n % 4 == 0`. `ft4-bench`'s new `dotprod_probe`, on
+internal-DRAM buffers so alignment is the only variable:
+
+| n | aligned | offset by one f32 |
+|---:|---:|---:|
+| 196 | **7 936 ps/tap** | 18 104 |
+| 199 | 18 082 | 18 081 |
+| 200 | **7 900** | 18 073 |
+| 204 | **7 869** | 18 046 |
+| 260 | **7 520** | 17 751 |
+| 263 | 17 740 | 17 739 |
+| 264 | **7 501** | 17 736 |
+
+2.3×, and `ft4::ddc`'s stages are **199 and 263 taps** — so no call has
+ever qualified on length, whatever the alignment. Dots are ~81 ms of the
+DDC's 154 ms per candidate.
+
+**Attempt 1, rejected: stage each window into an aligned padded buffer.**
+Satisfies both preconditions on every call. Measured **1 848 → 1 937 ms**
+— the copy costs ~2.7 µs against ~2.0 µs of saved dot. Reverted.
+
+**Attempt 2, kept: pad the taps, align the history, copy nothing.** Taps
+zero-padded to a multiple of four (the added terms are exactly `0.0·x`),
+and the history moved off `Vec<f32>` — only 4-byte aligned, so even a
+four-multiple index would not have been 16-byte aligned — onto a
+`repr(align(16))` store. The window's alignment still cycles with
+`win_start`, so this wins on the fraction that lands right: half of stage
+A (`decim = 18`), a quarter of stage B (`decim = 1`).
+
+**1 848 → 1 659 ms, −10.2 %.** Ship slot 4 055 → 3 876 ms, 2.06× →
+1.97×. Predicted ~200 ms beforehand and measured 189 — worth recording
+as the estimate that held, after §26.1's did not.
+
+Host keeps its exact arithmetic: the padded dot is behind
+`dotprod-extern`, and the alignment change moves placement, not values.
+
+A bug on the way, since the shape recurs: sizing the history to the
+*padded* tap count let `win_start + pad` run one past the end at the
+last legal window, because `compact` triggered on the buffer length.
+Boot loop, `range end index 777 out of range for slice of length 776`.
+The trigger is now an explicit cap and the allocation carries the
+padding as slack beyond it.
+
+Still untried: `dsps_fird_f32_aes3` proper, which would take the whole
+block and own the sliding window — the only route left to the other
+half of those dots.
+
+## 28. FT8 was paying the same tax (2026-08-30)
+
+§26 fixed `fft_mixed_2304` and noted that `fft_mixed_3840` — FT8's
+`NFFT_SPEC` kernel — has the identical structure and is "presumably
+paying the same PSRAM tax", explicitly flagged as an unmeasured
+hypothesis. It is now measured, and as an A/B **inside one run** rather
+than across two flashes, because the two entry points differ in exactly
+one thing:
+
+- `fft_3840_with` allocates `vec![…; 3840]` per call — 30 KB, PSRAM,
+  and what every FT8 decode on this board has used;
+- the planner's `Fft::process` hands `fft_3840_with_scratch` a hoisted
+  internal-DRAM buffer.
+
+Same inner 256-point kernel, same twiddles, same arithmetic.
+
+```
+fft_mixed_3840 x200 — per-call vec (PSRAM) 15 808 µs/xform
+                    | hoisted internal      6 478 µs/xform
+                    | 2.44x | max |A-B| 0e0
+```
+
+**2.44×**, and the outputs are bit-for-bit equal, which is the check
+that it is a placement change and nothing else.
+
+Two caveats, both important:
+
+- **This is the transform, not an FT8 slot.** How much of a slot it is
+  worth has not been measured — `ft4-bench` is an FT4 harness and there
+  is no FT8 bench on this board. Do not quote 2.44× as an FT8 decode
+  speedup.
+- **30 KB of internal DRAM against a 31 744 B largest free block once
+  WiFi is up.** It succeeded here because this bench brings up neither
+  WiFi nor USB host. In the controller it will very likely fail and fall
+  back to PSRAM — silently, apart from the log line. FT8 getting this
+  win in the real app means reserving the buffer through `worker_arena`
+  at boot, the way `internal_pool` already does for `cs`, not allocating
+  it on demand.

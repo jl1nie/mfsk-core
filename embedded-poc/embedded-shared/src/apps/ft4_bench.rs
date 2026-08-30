@@ -596,6 +596,76 @@ fn ddc_stage_probe(audio: &[i16]) {
     );
 }
 
+/// FT8's transform length, both placements, in one run.
+///
+/// `fft_mixed_3840` is `NFFT_SPEC`'s kernel and has the same structure
+/// as the 2304 one that §26 sped up by 41 % — five walks of a scratch
+/// too big to be anything but PSRAM, two of them strided. That the same
+/// fix applies to FT8 was stated there as a hypothesis and explicitly
+/// not measured. This measures it, and does so as an A/B **inside one
+/// flash** rather than across two, because the two entry points differ
+/// exactly in the buffer:
+///
+/// - `fft_3840_with` allocates its own `vec![…; 3840]` per call — 30 KB,
+///   PSRAM, and the shape every FT8 decode on this board has used.
+/// - the planner's `Fft::process` now hands `fft_3840_with_scratch` a
+///   hoisted, internal-DRAM buffer.
+///
+/// Same arithmetic, same inner 256-point kernel, same twiddles. Only
+/// the scratch differs, which is the whole claim.
+fn fft3840_probe() {
+    use mfsk_core::engine::dsp::fft_mixed_3840 as f3840;
+    use mfsk_core::engine::fft::Fft;
+
+    const ITERS: usize = 200;
+    let tw = f3840::build_twiddles();
+
+    let mut x = alloc::boxed::Box::new([Complex32::new(0.0, 0.0); f3840::N]);
+    for (k, c) in x.iter_mut().enumerate() {
+        *c = Complex32::new((k as f32 * 0.001).sin(), (k as f32 * 0.002).cos());
+    }
+
+    // Arm A: the allocating entry point, i.e. what FT8 has always run.
+    // Its inner 256-point FFT has to come from somewhere; use the same
+    // planned kernel the other arm uses, so the only difference is the
+    // scratch.
+    let mut planner = mfsk_core::engine::fft::default_planner();
+    let inner = planner.plan_forward(256);
+    let mut fft_256 = |row: &mut [Complex32; 256]| inner.process(row);
+
+    let mut a = x.clone();
+    let t0 = now_us();
+    for _ in 0..ITERS {
+        f3840::fft_3840_with(&mut a, &mut fft_256, &tw);
+    }
+    let psram_us = now_us() - t0;
+
+    // Arm B: through the planner, which owns an internal-DRAM scratch.
+    let planned = planner.plan_forward(3840);
+    let mut b = x.clone();
+    let t1 = now_us();
+    for _ in 0..ITERS {
+        planned.process(&mut b[..]);
+    }
+    let internal_us = now_us() - t1;
+
+    // Same transform either way — a divergence would mean the scratch
+    // is being read before it is written somewhere.
+    let mut max_d = 0.0f32;
+    for (p, q) in a.iter().zip(b.iter()) {
+        max_d = max_d.max((p - q).norm());
+    }
+
+    log::info!(
+        "ft4_bench: fft_mixed_3840 x{ITERS} — per-call vec (PSRAM) {} us/xform | \
+         hoisted internal {} us/xform | {}.{:02}x | max |A-B| {max_d:e}",
+        psram_us / ITERS as i64,
+        internal_us / ITERS as i64,
+        psram_us / internal_us.max(1),
+        (psram_us * 100 / internal_us.max(1)) % 100,
+    );
+}
+
 /// RMS-normalise a downsampled baseband to unit power, matching what
 /// `process_candidate_basic_impl` does to its own `downsample_cached`
 /// output (WSJT-X `ft4_decode.f90:231-232`). Both the search passes and
@@ -833,6 +903,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     let _ = pie;
     ddc_stage_probe(&audio);
     dotprod_probe();
+    fft3840_probe();
 
     // ── Passes 2*: the Δt search, one variable at a time ─────────────
     //
