@@ -1,11 +1,110 @@
 # Changelog
 
-## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS
+## 0.10.1 — ハムフェア2026 booth material, the 12 kHz literal classification (#323), release tooling that runs on macOS, FT4 embedded fits its slot
 
-**Why a patch bump.** Documentation and tooling. No public API change,
-no decoder behaviour change, no measured sensitivity movement. This
-section accumulates until the next tag — see `CLAUDE.md`'s "Release
-cadence".
+**Why a patch bump.** Additive public API (four new functions, no
+signature changed and nothing removed), embedded-only performance work,
+documentation and tooling. **No host decoder behaviour change**: every
+numeric change below is behind `dotprod-extern`, and the paths that are
+shared with host are pinned bit-identical by test. No measured
+sensitivity movement. This section accumulates until the next tag — see
+`CLAUDE.md`'s "Release cadence".
+
+(An earlier revision of this paragraph said "no public API change".
+That was true when it was written and stopped being true with the
+streaming coarse stage below.)
+
+### Added
+
+- **FT4's embedded decode fits its slot at realistic band occupancy.**
+  A day of hardware measurement on a CoreS3 took the FT4 ship
+  configuration from **2.33× over its 1 960 ms post-slot budget to
+  1.24×**, and with the coarse stage streamed during capture the whole
+  of the 5-10 signal occupancy range §23 established as realistic is
+  now inside it (0.55× and 0.96×; FT8 density is 1.28×). Decodes are
+  unchanged throughout — 11 on the WSJT-X golden in every arm of every
+  run, and the coarse stage's candidate list matches the host's to
+  0.00 Hz and 0.00 %.
+
+  What moved it, in order of size, each measured rather than projected
+  (`docs/notes/FT4_BENCHMARK.md` §25-32):
+
+  - the 2304-point transform's scratch into internal DRAM — the coarse
+    stage's 54 KB working set does not fit the S3's ~32 KB data cache,
+    so **coarse 1 290 → 758 ms**;
+  - `dot_f32` reaching esp-dsp's PIE path at all. It needs both operands
+    16-byte aligned and `len % 4 == 0`, silently taking a 2.3×-slower
+    scalar body otherwise, and *nothing* in FT4's hot loops satisfied
+    it: the DDC's 199- and 263-tap FIRs failed on length, and the
+    coherent sync scorer failed on alignment for 78 % of its 284 688
+    dots per slot. **DDC 1 848 → 1 166 ms, Δt search 960 → 700 ms**;
+  - a real block-mode body for `FirStage::push_block`, which had
+    documented itself as one since `wspr::ddc` needed it while its body
+    stayed `push_one` in a loop — and which `ft4::ddc` had never called;
+  - streaming the coarse periodogram, below, which takes another
+    **754 ms out of the post-slot budget entirely**.
+
+- **`engine::ft4_coarse::Ft4SavgBuilder` and `ft4_coarse_sync_from_savg`**
+  — the coarse stage split so a receiver can accumulate its periodogram
+  *during* capture and pay only the peak search after the slot, the
+  shape `wspr_app` already ships (`ddc_loop` → `DDC_READY_IDX` →
+  `scan_loop`). On hardware that is 761 ms → 6 ms of post-slot cost.
+  Output is bit-identical to the all-at-once path at any block size,
+  pinned across nine chunk sizes. The builder requires the slot length
+  up front, which is not a convenience: `getcandidates4.f90` averages
+  exactly `(nz − NFFT1)/NSTEP` rows, not every row that fits, and a
+  greedy builder would average one row more and change the result. No
+  embedded binary wires this to a capture path yet.
+
+- **`engine::dsp::fft_mixed_2304::fft_2304_with_scratch` and
+  `fft_mixed_3840::fft_3840_with_scratch`** — the same transforms with a
+  caller-owned scratch buffer, so an embedded backend can place and
+  align it deliberately instead of paying a `vec![…; N]` per call. The
+  existing entry points are unchanged and now delegate.
+
+- **`.githooks/pre-push`**, and the FT4 embedded measurement harness:
+  PIE-path counters in the esp-dsp dot-product and FFT backends, a
+  layer split (kernel / staging / combine) for the mixed-radix
+  transforms, and `ft4-bench` passes for the coarse stage, both DDC
+  front ends, and a dual-core feasibility probe.
+
+### Changed
+
+- **`mfsk-core/ft4` now has a complete embedded path.** `ft4-bench`
+  runs a whole FT4 slot on a CoreS3 from nothing but 12 kHz audio: the
+  coarse stage computes its own candidates through
+  `engine::dsp::fft_mixed_2304`, and `ft4::ddc` replaces the
+  92 160-point wideband transform that no embedded backend can serve —
+  the DDC arm passes an **empty** `fft_cache` and decodes the same 11
+  messages, since FT4's `snr_db` is a closed form over the coarse
+  candidate score and never reads the spectrum.
+
+- **`engine::dsp::fir_decimate::FirStage`** keeps its history in a
+  16-byte-aligned store and carries one zero-padded tap table per
+  window phase; **`engine::sync2d`'s `FlatRef`** does the same with two
+  phases, and `AlignedCd0` aligns the caller's `cd0` once per search.
+  All of it is behind `dotprod-extern`; a build with no backend keeps
+  the exact arithmetic it had.
+
+### Fixed
+
+- **`scripts/pre-push-check.sh` never ran as a hook.** It installed
+  itself into `.git/hooks/pre-push`, while README.md and
+  CONTRIBUTING.md tell you to set `core.hooksPath .githooks` — which
+  makes git ignore `$GIT_DIR/hooks` entirely. Following the documented
+  setup therefore disabled the 15-combo feature matrix silently, and
+  README/CONTRIBUTING never mentioned the installer at all, so
+  contributors never had that gate. The hook now lives in `.githooks/`
+  where the same one-line config finds it, and `install-hooks.sh` is a
+  wrapper for that line.
+
+- **Two warnings in `embedded-poc/embedded-shared`** that nothing was
+  gating — that tree is outside the host workspace, so neither the
+  pre-commit hook nor CI ever compiles it.
+
+- **Four more places calling the FT4 golden a real off-air recording.**
+  `000000_000002.wav` is `ft4sim_mult` output; the previous pass caught
+  three files and missed these.
 
 ### Added
 
