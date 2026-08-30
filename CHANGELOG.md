@@ -197,6 +197,30 @@ cadence".
   floor of −17 dB, DT confined to ±0.5 s, and the fact that it shares a
   generator with the golden. See `docs/notes/FT4_BENCHMARK.md` §23.
 
+- **`fixed-point` does not apply to FT4 — the board runs the same f32
+  arithmetic the host does.** The CoreS3 build enables
+  `mfsk-core/fixed-point`, which reads as "host f32 numbers do not
+  transfer to the device". They do, for every protocol on the generic
+  `engine::pipeline`. The feature is gated into six files — five in
+  `ft8/` and one site in `engine/fft.rs` (`default_planner_16`, which
+  only `decode_block` consumes) — and none of them is on FT4's path.
+  Confirmed by measurement as well as by reading: the tier-C FT4 sweep
+  run with the feature on reproduces the f32 crossings to the digit
+  (−16.89 / −17.46 / −15.71 / −16.00 dB, +0.00 dB on all four
+  channels).
+
+  `run-sensitivity-sweeps.sh` now takes `MFSK_SWEEP_FEATURES` so that
+  kind of run is a one-liner, with a comment recording what the
+  override does and does not cover.
+
+  Consequence: every recall figure measured on host for FT4 is the
+  board's figure too, and what remains between them is the FFT kernel
+  (esp-dsp vs rustfft, already shown to give identical decodes on the
+  golden), `dotprod-extern`, and everything that is not arithmetic —
+  slot timing, capture, memory. `docs/notes/FT4_BENCHMARK.md` §24 also
+  tabulates the FT4 evidence base and names the two rows no simulator
+  closes: real receiver artefacts, and true FT4 band occupancy.
+
 - **The FT4 "real off-air golden" is a simulated scene, it holds 19
   signals rather than 14, and upstream had no other.**
   `WSJT-X/samples/FT4/000000_000002.wav` is `ft4sim_mult` output from

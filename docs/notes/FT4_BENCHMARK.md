@@ -1627,3 +1627,76 @@ Three consequences:
   tuned to an FT4 sub-band. This project has one (an IC-705 already
   feeding the CoreS3 over USB audio), which makes it the cheapest
   outstanding measurement in the whole FT4 line.
+
+## 24. Does the host simulation stand in for the board? For FT4, yes (2026-08-30)
+
+Real off-air FT4 is hard to capture — FT4 activity is thin enough that
+upstream did not have a recording either (§23.5), which is why their own
+sample is simulated. So simulation is the instrument, and the question
+worth answering is not "when can we get real data" but **how much of the
+device does the host reproduce**.
+
+For FT4 the answer turns out to be: all of the arithmetic.
+
+### 24.1 `fixed-point` is a no-op for FT4
+
+The CoreS3 build enables `mfsk-core/fixed-point` (`cargo tree -f '{f}'`
+on `m5stack-cores3-app` lists it), which reads as "the board decodes
+with `SpecCell = u16` quantisation, so host f32 numbers do not
+transfer". It does not, for FT4.
+
+```sh
+grep -rl 'feature = "fixed-point"' mfsk-core/src --include=*.rs
+```
+
+returns six files: `ft8/decode.rs`, `ft8/decode_block.rs`,
+`ft8/decode_block/{spectrogram,coarse_sync,process_candidates}.rs`, and
+`engine/fft.rs` — where the single site is `default_planner_16()`, the
+i16 planner that only `decode_block` consumes. **Nothing on the generic
+`engine::pipeline` path is gated by it**, and FT4 (like FST4) is
+entirely on that path: `ft4_coarse_sync`'s own f32 periodogram,
+`downsample_cached`, `ft4_sync_search`, `symbol_spectra`, the LLR
+ladder, BP and OSD.
+
+Measured rather than only read: `run-sensitivity-sweeps.sh ft4` under
+`MFSK_SWEEP_FEATURES=full,internal-testing,fixed-point` reproduces the
+f32 crossings to the digit — −16.89 / −17.46 / −15.71 / −16.00 dB, 160
+trials each, `+0.00 dB` on all four channels. The golden tests pass
+unchanged too. That is a fact about the feature, not a coincidence.
+
+The board therefore runs FT4 in **the same f32 arithmetic the host
+does**, and every recall number in §21-23 is the board's number as well.
+
+### 24.2 What is left between host and board
+
+- **The FFT kernel.** Host uses rustfft; the board uses esp-dsp's
+  radix-2 asm plus this crate's `fft_mixed_5120` / `fft_mixed_2304`
+  wrappers. Both f32, differing only in rounding and operation order.
+  The evidence that it does not matter is already on record: `ft4-bench`
+  decoded **11 distinct messages, identical to host, at both
+  `DecodeDepth::EMBEDDED` and `FULL`** (§17).
+- **`dotprod-extern`.** `ft4_sync_search`'s inner product goes through
+  `dsps_dotprod_f32_aes3` on LX7 and a scalar loop on host. Same
+  reassociation argument as the `FlatRef` change in §19.1, which was
+  checked against the full sweep at +0.00 dB.
+- **Everything above the arithmetic** — slot timing, audio capture,
+  memory pressure — which is what a device run measures and no host
+  test can.
+
+### 24.3 The FT4 evidence base, as it stands
+
+| question | instrument | status |
+|---|---|---|
+| sensitivity curve, 4 channels | `ft4sim` sweep, 160 trials/channel | measured, baseline-tracked |
+| Δt reach | `ft4sim` DT sweep (§18) | measured |
+| band occupancy / interference / precision | `ft4sim_mult` (§23) | measured, 3 950 signals |
+| numeric path host vs board | feature audit + fixed-point sweep (§24.1) | **identical for FT4** |
+| FFT kernel host vs board | `ft4-bench` on the golden (§17) | identical decodes |
+| slot timing on hardware | `ft4-bench` | measured at 31 candidates; 12-candidate + DDC re-run outstanding |
+| real receiver artefacts | — | **no instrument, here or upstream** |
+| true FT4 band occupancy | — | **no instrument, here or upstream** |
+
+The last two rows are not work items that a better simulator closes.
+They are the honest boundary of what this line can claim, and the
+corpus is built to bracket them rather than to pretend they are
+answered.

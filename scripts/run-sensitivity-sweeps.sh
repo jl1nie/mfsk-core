@@ -36,7 +36,20 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 LOG="${MFSK_SWEEP_LOG:-}"
-FEATURES="full,internal-testing"
+# Overridable so a suite can be run through a different numeric path than
+# the host default, e.g. `MFSK_SWEEP_FEATURES=full,internal-testing,
+# fixed-point`. Note what that does and does not cover: `fixed-point`
+# is gated into `ft8/decode_block` and `engine::fft`'s i16 planner
+# **only** (six files, all FT8 or planner — `grep -rl 'feature =
+# "fixed-point"' mfsk-core/src`), so it changes FT8 and leaves every
+# protocol on the generic `engine::pipeline` — FT4, FST4 — bit-identical.
+# An FT4 sweep run this way reproduces the f32 crossings exactly, which
+# is a fact about the feature rather than a measurement.
+#
+# The CSVs land in the same place, so `sweep-regression-check.py` will
+# compare such a run against the stored baseline — useful, but never
+# `--update-baseline` from one.
+FEATURES="${MFSK_SWEEP_FEATURES:-full,internal-testing}"
 
 # Tier-C binaries, grouped so a caller can ask for one protocol.
 #
