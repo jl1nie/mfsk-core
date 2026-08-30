@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Pre-push quality gate — mirrors what CI's rustfmt+clippy, rustdoc, and
 # feature-matrix jobs check.
-# Install once with:  scripts/install-hooks.sh
+# Runs automatically as `.githooks/pre-push`; enable with
+#   git config core.hooksPath .githooks
+# (or `bash scripts/install-hooks.sh`, which sets exactly that).
+# Also safe to run by hand at any time.
 #
 # The feature-matrix and rustdoc steps were added after PR #233 (2026-08)
 # shipped code that only compiled clean under `--features full` and

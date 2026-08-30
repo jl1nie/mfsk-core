@@ -13,9 +13,14 @@ After cloning:
 git config core.hooksPath .githooks
 ```
 
-This wires `.githooks/pre-commit` (`cargo fmt --check` +
-`cargo clippy --workspace --all-targets -- -D warnings`) so your
-commits match what CI will check.
+That one line wires up both hooks in `.githooks/`, so your commits and
+pushes match what CI will check:
+
+- `pre-commit` — `cargo fmt --check` + `cargo clippy --workspace
+  --all-targets -- -D warnings` + rustdoc.
+- `pre-push` — the above plus `-D clippy::perf` and the feature matrix
+  (`scripts/pre-push-check.sh`, also runnable by hand). Skipped when
+  the push is deletions only.
 
 The heavy test suite is CI-only to keep the hook fast. Run it locally
 before pushing anything non-trivial:

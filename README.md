@@ -561,18 +561,24 @@ PRs welcome — recent forks have shipped FT4 SIC, FT4/FST4 depth +
 strictness controls, and the FT8 wide-band AP path. The local-fence
 + CI gates are uniform across direct commits and fork PRs:
 
-- **Pre-commit hook**: `.githooks/pre-commit` runs `cargo fmt --check`,
-  `cargo clippy --workspace --all-targets --features full -- -D warnings`,
-  and `RUSTDOCFLAGS=-D warnings cargo doc -p mfsk-core --features full
-  --no-deps` (~10–20 s on a warm cache). Enable once per clone:
+- **Git hooks**: enable both once per clone —
 
   ```sh
   git config core.hooksPath .githooks
   ```
 
-  The hook deliberately skips the full `cargo test` suite (kept in
-  CI to keep commits snappy); fmt / clippy / rustdoc each catch a
-  failure mode that would otherwise trip CI after the push.
+  `.githooks/pre-commit` runs `cargo fmt --check`, `cargo clippy
+  --workspace --all-targets --features full -- -D warnings`, and
+  `RUSTDOCFLAGS=-D warnings cargo doc -p mfsk-core --features full
+  --no-deps` (~10–20 s on a warm cache). It deliberately skips the full
+  `cargo test` suite (kept in CI to keep commits snappy); fmt / clippy /
+  rustdoc each catch a failure mode that would otherwise trip CI after
+  the push.
+
+  `.githooks/pre-push` then runs `scripts/pre-push-check.sh` — the same
+  three, plus `-D clippy::perf` and the full feature matrix, which is
+  the part that catches code compiling only under `--features full`. A
+  deletions-only push skips it.
 - **CI gates** (`.github/workflows/ci.yml`): same fmt + clippy
   fence, plus `cargo test -p mfsk-core --features full --release --
   --include-ignored` (slow synthetic-SNR / AP / fast-fading sweeps

@@ -75,7 +75,8 @@ Everything else:
 - `scripts/` — `build_*sim.sh` / `gen_*_sweep_wavs.sh` build WSJT-X's
   Fortran simulators and generate the tier-C corpora;
   `run-sensitivity-sweeps.sh` + `sweep-regression-check.py` run and diff
-  them; `release-status.sh` computes release state; `install-hooks.sh` /
+  them; `release-status.sh` computes release state; `install-hooks.sh`
+  (a wrapper for `git config core.hooksPath .githooks`) and
   `pre-push-check.sh` are the local gates.
 - `embedded-poc/assets/` — test audio. `golden/` holds the vendored tier-B
   recordings (with a README mapping each to its WSJT-X upstream);
@@ -178,13 +179,22 @@ flag carries the measurement that justified it. The traps:
 
 ## Local checks — two hooks, and they are different
 
-There are two, installed two different ways, and each catches things the
-other doesn't:
+There are two, and **one line enables both** — they live side by side in
+`.githooks/`. Each catches things the other doesn't:
 
 ```sh
-git config core.hooksPath .githooks     # pre-commit: fmt + clippy + rustdoc
-bash scripts/install-hooks.sh           # pre-push:   the above + feature matrix
+git config core.hooksPath .githooks     # pre-commit AND pre-push
 ```
+
+(`bash scripts/install-hooks.sh` does exactly this and lists what it
+enabled. It used to *copy* a pre-push shim into `.git/hooks/` instead,
+which git never ran: `core.hooksPath` makes git read hooks from that
+directory **instead of** `$GIT_DIR/hooks`, never both. Following the
+old two-line instruction therefore left the feature matrix silently
+disabled — for however long both were configured, pushes went through
+with no matrix and nothing said so. Fixed 2026-08-30 by moving the
+pre-push hook into `.githooks/` where the same config line picks it
+up.)
 
 - `.githooks/pre-commit` — `cargo fmt --all --check`, `cargo clippy
   --workspace --all-targets --features full,internal-testing --no-deps --
