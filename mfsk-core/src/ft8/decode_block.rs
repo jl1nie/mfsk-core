@@ -105,6 +105,11 @@ pub(in crate::ft8) use process_candidates::{
 };
 #[cfg(all(feature = "fft-rustfft", not(feature = "fixed-point")))]
 pub(in crate::ft8) use process_candidates::{apply_wsjtx_xsnr2, compute_xsig_wsjtx};
+/// See [`spectrogram::compute_spectrogram_f32_timed`] — the f32 build
+/// of this stage, exposed in every configuration so a `fixed-point`
+/// binary can measure the alternative it was compiled against.
+#[cfg(feature = "internal-testing")]
+pub use spectrogram::compute_spectrogram_f32_timed;
 pub use spectrogram::{SpecCell, Spectrogram, compute_spectrogram};
 pub use types::{AudioSample, DEFAULT_Q_THRESH, NFFT_SPEC};
 

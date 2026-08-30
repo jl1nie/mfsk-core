@@ -2587,3 +2587,82 @@ are free" was true and was allowed to stand in for "the waterfall is
 free", which was never measured and was not true. 94 ms a slot is not
 fatal, but it is a tenth of the stage it was riding on, spent on a
 picture.
+
+## 36. What `fixed-point` actually buys FT8 (2026-08-30)
+
+Three measurements, prompted by the question "could FT8 have taken
+FT4's simpler route?". FT4 runs f32 end to end on this board; FT8's
+embedded build quantises the spectrogram to u16 and the LLR/BP ladder
+to Q11i16, and the recorded rationale is halved PSRAM bandwidth.
+
+### 36.1 Recall: it costs nothing
+
+`fixed-point` implies `nstep-half`, so no measurement had separated
+them. `nstep-half` is standalone, so they can be:
+
+| build | decodes |
+|---|---:|
+| `full` (f32, NSTEP = NSPS/4) | 14 |
+| `full,nstep-half` (f32, NSTEP = NSPS/2) | 12 |
+| `full,fixed-point` | 12 |
+
+The last two decode the **same twelve messages**. The whole 14 → 12 is
+the coarse time grid; quantisation costs nothing here. See
+`ft8_qso3_decode_set` and `ft8_qso3_apoff_recall`'s corrected floor.
+
+### 36.2 Spectrogram: 1.11× for half the memory
+
+Both builders instantiated in one binary
+(`compute_spectrogram_f32_timed`), same audio, same allocator state:
+
+```
+stage 1 (spec, u16)   1 403 ms   351 KB
+stage 1 f32 (A/B)     1 563 ms   702 KB   → fixed-point is 1.11x
+```
+
+The memory halves as designed. **The time does not**: 11 %, where a
+bandwidth-bound stage handed half the data should approach half the
+time. So stage 1 is not bandwidth-bound — it is the 184 transforms and
+the windowing/magnitude/store around them.
+
+Not a pure cell-type contrast: the f32 path windows rectangular, the
+fixed-point one Hann, and the latter also scans the slot to choose its
+shift. It is what each path costs.
+
+### 36.3 BP: fixed-point is **slower**
+
+`LlrScalar` is a trait and `BpScratch`/`bp_decode_nms_with_scratch` are
+generic over it, so unlike the spectrogram both can simply be
+instantiated. Same LLRs, same iteration count, same binary:
+
+```
+BP Q11i16   22 813 us/run
+BP f32      19 455 us/run   → Q11i16 is 0.85x f32
+```
+
+**18 % slower.** The LX7 has an f32 FPU; doing the check-node
+arithmetic in i16 does not save anything and costs the saturating
+helpers. This is the same result `#198` recorded for FST4 and FT4 — on
+LX7 `fixed-point` measured *slower* than f32 — now shown for FT8's own
+BP, which is the reason it was never revisited there.
+
+### 36.4 So the answer is mostly yes
+
+| claim | measured |
+|---|---|
+| costs recall | **no** — identical decode set |
+| avoids an i16 → f32 conversion | no conversion exists either way |
+| halves the spectrogram | **yes**, 702 → 351 KB |
+| speeds up the spectrogram | 1.11× |
+| speeds up BP | **0.85× — it is slower** |
+
+What `fixed-point` defends is **memory**, not speed: 351 KB of PSRAM
+against 702 KB, on a board with 8 MB of it. The one place it is clearly
+right is the streaming `stage1_inc`, whose whole design is an
+incremental u16 spectrogram — and that path is **not** what §36.2
+measured, so this does not say it is wrong there.
+
+Nothing here proposes ripping it out. It says the simpler route was
+available for more of FT8 than was assumed, and that the LLR/BP half in
+particular is carrying a quantisation that costs 18 % and buys nothing
+measurable.

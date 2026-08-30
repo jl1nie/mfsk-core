@@ -190,7 +190,79 @@ fn ffi_smoke_one(slot: &[i16]) {
     unsafe { mfsk_ft8_result_list_free(&mut results) };
 }
 
+/// Belief propagation in each scalar, same LLRs, same binary.
+///
+/// The other half of the `fixed-point` question. Stage 3 is 34 % of an
+/// FT8 slot on this board (`docs/notes/FT4_BENCHMARK.md` §35.1) and
+/// `fixed-point` puts the LLR ladder and the NMS check node in Q11i16
+/// — but `LlrScalar` is a trait, `f32` implements it, and
+/// `bp_decode_nms_with_scratch` and `BpScratch` are generic over it, so
+/// unlike the spectrogram both versions can simply be instantiated.
+///
+/// FT4 runs its LLR/BP in f32 on this same board inside 479 ms, which
+/// is why "the quantisation is not needed here" is a live question
+/// rather than a rhetorical one.
+///
+/// The LLRs are synthetic — a scaled ramp, not a decode — because what
+/// is being compared is the arithmetic, and both scalars see exactly
+/// the same input. The iteration count is pinned so neither can win by
+/// converging sooner: with `verify = None` and no valid codeword, both
+/// run the full `max_iter`.
+fn bp_scalar_ab() {
+    use mfsk_core::engine::scalar::LlrScalar;
+    use mfsk_core::fec::ldpc::bp::{BpScratch, bp_decode_nms_with_scratch};
+    use mfsk_core::fec::ldpc::{LDPC_N, Ldpc174_91Params};
+
+    const ITERS: usize = 200;
+    const MAX_ITER: u32 = 30;
+    const ALPHA: f32 = 0.75;
+
+    // Same numeric values into both, converted through the trait.
+    let mut src = [0.0f32; LDPC_N];
+    for (i, v) in src.iter_mut().enumerate() {
+        *v = ((i % 17) as f32 - 8.0) * 0.35;
+    }
+
+    fn run<T: LlrScalar>(src: &[f32; LDPC_N], label: &str) -> i64 {
+        let mut llr = [T::default(); LDPC_N];
+        for (d, &s) in llr.iter_mut().zip(src.iter()) {
+            *d = T::from_f32(s);
+        }
+        let mut scratch: BpScratch<Ldpc174_91Params, T> = BpScratch::new();
+        let t0 = now_us();
+        let mut hits = 0usize;
+        for _ in 0..ITERS {
+            if bp_decode_nms_with_scratch::<T>(&mut scratch, &llr, None, MAX_ITER, None, ALPHA)
+                .is_some()
+            {
+                hits += 1;
+            }
+        }
+        let us = now_us() - t0;
+        log::info!(
+            "  BP {label:<8} {:>8} us / {ITERS} runs = {:>6} us/run  ({hits} converged)",
+            us,
+            us / ITERS as i64,
+        );
+        us
+    }
+
+    log::info!("  BP scalar A/B — {LDPC_N} LLRs, NMS a={ALPHA}, max_iter={MAX_ITER}");
+    // Named directly rather than through `process_candidates`'s
+    // private `LlrT` alias — which is what the shipped path resolves
+    // to under `fixed-point`, and the type this probe is about.
+    let fixed = run::<mfsk_core::engine::scalar::Q11i16>(&src, "Q11i16");
+    let float = run::<f32>(&src, "f32");
+    log::info!(
+        "  BP scalar A/B — Q11i16 is {}.{:02}x f32",
+        float / fixed.max(1),
+        (float * 100 / fixed.max(1)) % 100,
+    );
+}
+
 fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thresh: u32) {
+    bp_scalar_ab();
+
     let t0 = now_us();
     let spec = compute_spectrogram(slot, 3_000.0);
     let t1 = now_us();
@@ -200,6 +272,30 @@ fn decode_one(slot: &[i16], max_cand: usize, _dt_grid: u8, _df_grid: u8, _q_thre
         spec.n_time,
         spec.n_freq,
     );
+
+    // The same build, the other cell type. `fixed-point` exists to
+    // halve this stage's PSRAM bandwidth and this stage is 51 % of an
+    // FT8 slot, but the two builders are `#[cfg]` alternatives so no
+    // binary ever held both — and the feature cannot be turned off to
+    // compare, because `stage1_inc` needs the `Fft16` planner that
+    // only exists under it.
+    //
+    // Not a clean u16-vs-f32 contrast: the f32 path windows
+    // rectangular and the fixed-point one Hann, and the latter also
+    // scans the slot to pick its shift. It is what each path costs.
+    let t_f32 = now_us();
+    let (nf, nt, data) =
+        mfsk_core::ft8::decode_block::compute_spectrogram_f32_timed(slot, 3_000.0);
+    let t_f32_end = now_us();
+    log::info!(
+        "  stage 1 f32 (A/B):    {:>8} us  ({nt}× FFT, {nf} freq bins, {} KB vs {} KB)          → fixed-point is {}.{:02}x",
+        t_f32_end - t_f32,
+        nf * nt * 4 / 1024,
+        spec.n_freq * spec.n_time * core::mem::size_of_val(&spec.data[0]) / 1024,
+        (t_f32_end - t_f32) / (t1 - t0).max(1),
+        ((t_f32_end - t_f32) * 100 / (t1 - t0).max(1)) % 100,
+    );
+    drop(data);
 
     let t2 = now_us();
     let pass1 = dual_core::coarse_sync_split(&spec, 100.0, 3_000.0, 1.0, PASS1_LIMIT);

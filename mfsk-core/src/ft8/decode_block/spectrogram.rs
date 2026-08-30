@@ -22,7 +22,10 @@ use num_traits::Float;
 use super::super::params::{NMAX, NSPS, NTONES};
 use super::types::{AudioSample, NFFT_SPEC, NSTEP, SAMPLE_RATE_HZ, TONE_SPACING_HZ};
 
-#[cfg(not(feature = "fixed-point"))]
+// Needed by the f32 builder below, which exists in a `fixed-point`
+// build too — `compute_spectrogram_f32_timed` is how such a build
+// measures what it would otherwise have paid.
+#[cfg(any(not(feature = "fixed-point"), feature = "internal-testing"))]
 use crate::engine::fft::default_planner;
 
 /// Spectrogram cell type. f32 (4 bytes) by default; u16 (2 bytes)
@@ -135,6 +138,70 @@ impl Spectrogram {
 /// ESP32 (4 MB PSRAM ceiling).
 ///
 /// Public as of v0.6 (#48): `compute_spectrogram` is the canonical
+/// The f32 spectrogram build, timed rather than used — available in
+/// **every** build so a `fixed-point` binary can measure what it would
+/// have cost.
+///
+/// `fixed-point` exists to halve this stage's PSRAM bandwidth, and on
+/// a CoreS3 the stage is 51 % of an FT8 slot
+/// (`docs/notes/FT4_BENCHMARK.md` §35.1). Whether the halving actually
+/// buys anything had never been measured either way: the two builders
+/// are `#[cfg]` alternatives, so no binary ever contained both, and
+/// the feature cannot simply be turned off — `stage1_inc` needs the
+/// `Fft16` planner that only exists under it.
+///
+/// Returns `(n_freq, n_time, data)` rather than a [`Spectrogram`],
+/// whose `data` is `Vec<SpecCell>` and therefore `Vec<u16>` in the
+/// build that most wants to call this. Nothing consumes the result;
+/// the point is the wall-clock.
+///
+/// **Not a pure cell-type comparison.** The two paths differ in their
+/// window as well — rectangular here, Hann in the fixed-point builder
+/// — and the fixed-point one additionally scans the slot for a peak to
+/// pick its shift. What this measures is what each path costs, which
+/// is the question, but it is not "u16 versus f32" in isolation.
+#[cfg(feature = "internal-testing")]
+pub fn compute_spectrogram_f32_timed<S: AudioSample>(
+    audio: &[S],
+    max_freq_hz: f32,
+) -> (usize, usize, Vec<f32>) {
+    let df = SAMPLE_RATE_HZ / NFFT_SPEC as f32;
+    let band_top_hz = max_freq_hz + (NTONES as f32) * TONE_SPACING_HZ;
+    let n_freq_full = NFFT_SPEC / 2;
+    let n_freq = ((band_top_hz / df).ceil() as usize + 1).min(n_freq_full);
+    let n_time = NMAX / NSTEP - 3;
+    let scale = 1.0f32 / 300.0;
+
+    let mut planner = default_planner();
+    let fft = planner.plan_forward(NFFT_SPEC);
+
+    let mut data = vec![0.0f32; n_freq * n_time];
+    let mut buf = vec![Complex::new(0.0f32, 0.0); NFFT_SPEC];
+
+    for j in 0..n_time {
+        let ia = j * NSTEP;
+        for (k, c) in buf.iter_mut().enumerate() {
+            *c = if k < NSPS {
+                let sample = if ia + k < audio.len() {
+                    audio[ia + k].to_f32() * scale
+                } else {
+                    0.0
+                };
+                Complex::new(sample, 0.0)
+            } else {
+                Complex::new(0.0, 0.0)
+            };
+        }
+        fft.process(&mut buf);
+        let row_base = j * n_freq;
+        for i in 0..n_freq {
+            data[row_base + i] = buf[i].norm_sqr();
+        }
+    }
+
+    (n_freq, n_time, data)
+}
+
 /// FT8 spectrogram builder for both the embedded path and the host
 /// `decode_frame*` pipeline (the latter routes coarse-sync through
 /// this module after #46 / #48 step B).
