@@ -55,7 +55,7 @@ use mfsk_core::engine::pipeline::{
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search;
 use mfsk_core::ft4::Ft4;
-use mfsk_core::ft4::ddc::candidate_baseband;
+use mfsk_core::ft4::ddc::{candidate_baseband, candidate_baseband_shared, shared_baseband};
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::msg::wsjt77::unpack77;
 
@@ -101,18 +101,23 @@ fn rms_normalise(cd0: &mut [Complex<f32>]) {
     }
 }
 
-/// Arm B: DDC baseband → refined position → decode.
+/// Arm B/C: a DDC baseband → refined position → decode.
+///
+/// `cd0` is whichever front end is under test — [`candidate_baseband`]
+/// for the direct two-stage chain, or
+/// [`candidate_baseband_shared`] behind the slot-wide decimate-by-2.
+/// Everything after it is identical, which is what makes the two arms
+/// comparable to each other as well as to the FFT path.
 ///
 /// Returns the refined `(freq_hz, i0)` alongside the result so a
 /// divergence can be attributed to the sync search rather than to the
 /// decoder.
 fn ddc_arm(
     cand: &SyncCandidate,
-    audio: &[i16],
+    mut cd0: Vec<Complex<f32>>,
     fft_cache: &[Complex<f32>],
     depth: DecodeDepth,
 ) -> (Option<DecodeResult>, f32, i32) {
-    let mut cd0 = candidate_baseband(audio, cand.freq_hz);
     rms_normalise(&mut cd0);
     let s2 = ft4_sync_search::<Ft4>(&cd0, cand);
     let (freq_hz, i0) = (s2.freq_hz, s2.i0);
@@ -166,6 +171,9 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
     let cands = ft4_coarse_sync(&audio, FREQ_MIN_HZ, FREQ_MAX_HZ, SYNC_MIN, None, MAX_CAND);
     assert!(!cands.is_empty(), "coarse stage found nothing");
     let fft_cache = build_fft_cache(&audio, &FT4_DOWNSAMPLE);
+    // Arm C's shared leg: computed once for the slot, exactly as a
+    // receiver would (`FT4_BENCHMARK.md` §37.2).
+    let pre = shared_baseband(&audio);
 
     for (depth_name, depth) in [
         ("EMBEDDED", DecodeDepth::EMBEDDED),
@@ -173,6 +181,8 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
     ] {
         let mut fft_results: Vec<DecodeResult> = Vec::new();
         let mut ddc_results: Vec<DecodeResult> = Vec::new();
+        let mut shared_results: Vec<DecodeResult> = Vec::new();
+        let mut max_shared_dfreq = 0.0f32;
         // Refined-position disagreement, over candidates *both* arms
         // decode — the diagnostic that separates "the filter moved the
         // sync peak" from "the decoder gave up".
@@ -192,7 +202,20 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
                 EqMode::Off,
                 SYNC_Q_MIN,
             );
-            let (ddc_r, ddc_freq, ddc_i0) = ddc_arm(c, &audio, &fft_cache, depth);
+            let (ddc_r, ddc_freq, ddc_i0) =
+                ddc_arm(c, candidate_baseband(&audio, c.freq_hz), &fft_cache, depth);
+            let (shared_r, shared_freq, _) = ddc_arm(
+                c,
+                candidate_baseband_shared(&pre, c.freq_hz),
+                &fft_cache,
+                depth,
+            );
+            if ddc_r.is_some() && shared_r.is_some() {
+                max_shared_dfreq = max_shared_dfreq.max((ddc_freq - shared_freq).abs());
+            }
+            if let Some(r) = shared_r {
+                shared_results.push(r);
+            }
 
             if let (Some(a), Some(_)) = (&fft_r, &ddc_r) {
                 both += 1;
@@ -218,14 +241,17 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
 
         let fft_msgs = sorted_messages(&fft_results);
         let ddc_msgs = sorted_messages(&ddc_results);
+        let shared_msgs = sorted_messages(&shared_results);
 
         eprintln!(
             "[{depth_name}] {} candidates | FFT path {} distinct | DDC path {} distinct | \
-             max Δfreq {max_dfreq:.2} Hz ({freq_steps_off}/{both} candidates one step off), \
-             max Δi0 {max_di0}",
+             shared path {} distinct | max Δfreq {max_dfreq:.2} Hz \
+             ({freq_steps_off}/{both} candidates one step off), max Δi0 {max_di0}, \
+             max Δfreq DDC-vs-shared {max_shared_dfreq:.2} Hz",
             cands.len(),
             fft_msgs.len(),
-            ddc_msgs.len()
+            ddc_msgs.len(),
+            shared_msgs.len()
         );
         for m in &fft_msgs {
             let mark = if ddc_msgs.contains(m) { "  " } else { "!!" };
@@ -248,6 +274,23 @@ fn ft4_ddc_baseband_decodes_the_golden_like_the_fft_path() {
         assert_eq!(
             ddc_msgs, fft_msgs,
             "[{depth_name}] DDC front end decoded a different set than the FFT front end"
+        );
+        // Arm C is the same front end with a slot-wide decimate-by-2
+        // ahead of it (`ft4::ddc::shared_baseband`). It is a third
+        // filter stage, so it is not bit-identical to arm B — but it
+        // reproduces the same band to +0.021 dB of noise bandwidth
+        // (`ft4::ddc::tests::noise_bandwidth_matches_the_reference_band`),
+        // and the decodes are what say whether that is enough.
+        assert_eq!(
+            shared_msgs, fft_msgs,
+            "[{depth_name}] the shared decimate-by-2 front end decoded a different \
+             set than the FFT front end"
+        );
+        assert!(
+            max_shared_dfreq <= 1.0,
+            "[{depth_name}] the shared front end moved the refined frequency \
+             {max_shared_dfreq:.2} Hz against the direct DDC — more than \
+             ft4_sync_search's own 1 Hz grid step"
         );
         // The two front ends are different filters, so the refined
         // position may land one search cell away — but only one.
@@ -397,10 +440,15 @@ fn ft4_ddc_recall_matches_the_fft_path_across_the_crossing() {
                     .is_some_and(is_golden);
                 }
                 if !ddc_hit {
-                    ddc_hit = ddc_arm(c, &audio, &fft_cache, DecodeDepth::FULL)
-                        .0
-                        .as_ref()
-                        .is_some_and(is_golden);
+                    ddc_hit = ddc_arm(
+                        c,
+                        candidate_baseband(&audio, c.freq_hz),
+                        &fft_cache,
+                        DecodeDepth::FULL,
+                    )
+                    .0
+                    .as_ref()
+                    .is_some_and(is_golden);
                 }
                 if fft_hit && ddc_hit {
                     break;
@@ -506,10 +554,14 @@ fn ft4_ddc_arm_never_reads_the_wideband_cache() {
         let mut with_cache: Vec<DecodeResult> = Vec::new();
         let mut without_cache: Vec<DecodeResult> = Vec::new();
         for c in &cands {
-            if let (Some(r), _, _) = ddc_arm(c, &audio, &fft_cache, depth) {
+            if let (Some(r), _, _) =
+                ddc_arm(c, candidate_baseband(&audio, c.freq_hz), &fft_cache, depth)
+            {
                 with_cache.push(r);
             }
-            if let (Some(r), _, _) = ddc_arm(c, &audio, &empty, depth) {
+            if let (Some(r), _, _) =
+                ddc_arm(c, candidate_baseband(&audio, c.freq_hz), &empty, depth)
+            {
                 without_cache.push(r);
             }
         }

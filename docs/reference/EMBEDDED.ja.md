@@ -984,6 +984,38 @@ DDC と合わせた投影は `(2 492 + 1 943) × 12/31 ≈ 1 717 ms` で
 焼いた候補リストを読んでおり実機では一度も動かしていない。`fst4::ddc` と同様、呼び出し側が使う部品で
 あって、ホストのフロントエンドを差し替える feature flag ではない。
 
+### 共有フロントエンドと、受信機が実際に動かしている形 (2026-09-01)
+
+上の 2 節はどれも実機で走らせる前に書かれたもの。その後実機で走って
+おり（経過は `docs/notes/FT4_BENCHMARK.md` §25-39）、出荷される形は上の
+図とは少し違う。
+
+音声と候補ごとのチェーンの間に 2 つの段が入り、どちらも
+**スロット終了後ではなくキャプチャ側でストリーム処理**される:
+
+```text
+12 kHz real i16、UAC read 単位
+  ├─ Ft4SavgBuilder                       -> savg, 粗候補 (スロット後 6 ms)
+  └─ ft4::ddc::SharedFrontEnd             -> 6 kHz real, 165 taps, /2
+        (候補ごと、スロット後)
+        -> Mixer(f0 + 31.25 Hz)           complex @ 6 kHz
+        -> FirStage A: 101 taps, /9       complex @ 666.667 Hz
+        -> FirStage B: 263 taps, /1       complex @ 666.667 Hz
+        -> Mixer(-31.25 Hz)               cd0, f0 が DC
+```
+
+`CandidateDdc::new` と `candidate_baseband` は従来どおり 12 kHz の
+2 段チェーンのまま。`new_predecimated` / `candidate_baseband_shared`
+が 6 kHz 版で、`shared_baseband` が共有する脚。受信機が欲しいのは
+後者——そうしないと候補ごとに同じ音声をフルレートで filter し直す
+ことになり、それが候補 96 ms のうち 61 ms だった。
+
+配線の参照実装は `embedded_shared::apps::ft4_rx`:
+`SlotAccum` が音声コールバックから両方の accumulator を回し、
+`CapturedSlot` は 12 kHz 音声ではなく 6 kHz ストリームを持つ。CoreS3
+実測で候補あたり 192.5 ms → 165.6 ms、12 候補すべてが 1 960 ms の
+スロット後予算に収まる。
+
 ## 次に読むべきもの
 
 読者の意図別:

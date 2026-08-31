@@ -43,7 +43,7 @@ use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync_from_savg, Ft4SavgBuilder};
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
-use mfsk_core::ft4::ddc::candidate_baseband;
+use mfsk_core::ft4::ddc::{SharedFrontEnd, candidate_baseband_shared};
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -51,6 +51,13 @@ use num_complex::Complex;
 
 /// One FT4 slot at 12 kHz: 7.5 s.
 pub const SLOT_SAMPLES: usize = 90_000;
+
+/// The same slot after the shared decimate-by-2, at 6 kHz.
+///
+/// This is what a captured slot actually carries — see
+/// [`CapturedSlot::pre`]. Same 180 KB the raw `i16` audio occupied
+/// (45 000 `f32` against 90 000 `i16`), so the buffer swap is free.
+pub const PRE_SAMPLES: usize = SLOT_SAMPLES / 2;
 
 /// `ft4::decode`'s own private `SYNC_Q_MIN` — 16 sync symbols
 /// (4 × Costas-4), at least half correct. Mirrored the same way
@@ -75,10 +82,21 @@ const MAX_CAND: usize = 100;
 /// (§18-19): what it gives up is reach, not sensitivity.
 const NARROW_WINDOW: (i32, i32) = (0, 667);
 
-/// A finished slot: its audio, and the periodogram accumulated while
-/// that audio was arriving.
+/// A finished slot: its audio at 6 kHz, and the periodogram
+/// accumulated while that audio was arriving.
 pub struct CapturedSlot {
-    pub audio: Vec<i16>,
+    /// The slot's audio, already through `ft4::ddc`'s shared
+    /// decimate-by-2 — the *only* copy kept, because nothing
+    /// downstream of the candidate loop wants 12 kHz.
+    ///
+    /// `ft4::ddc`'s per-candidate stage A was 61 ms of a candidate's
+    /// 96 and every candidate ran it over the same audio
+    /// (`FT4_BENCHMARK.md` §37). Halving the rate once first makes each
+    /// candidate's stage A a 101-tap decimate-by-9 at ~30 ms; the
+    /// shared leg is 108 ms — and, run a block at a time from the
+    /// capture side the way [`Ft4SavgBuilder`] already is, it is 108 ms
+    /// that never lands on the post-slot budget at all.
+    pub pre: Vec<f32>,
     /// Already averaged — [`Ft4SavgBuilder::finish`] has run.
     pub savg: Vec<f32>,
     /// `esp_timer` microseconds at the moment the slot closed, so the
@@ -97,8 +115,16 @@ fn now_us() -> i64 {
 /// needs the rows, so the builder cannot simply be run over the buffer
 /// afterwards — that is the 758 ms this receiver exists to avoid.
 pub struct SlotAccum {
-    audio: Vec<i16>,
+    /// The shared decimate-by-2's output, accumulated as the audio
+    /// arrives — see [`CapturedSlot::pre`].
+    pre: Vec<f32>,
+    front: SharedFrontEnd,
     savg: Ft4SavgBuilder,
+    /// 12 kHz samples taken so far. `pre.len()` cannot stand in for
+    /// this: the front end's own group delay means it trails the input
+    /// by half a filter, so the slot boundary has to be counted on the
+    /// input side.
+    n_in: usize,
 }
 
 impl Default for SlotAccum {
@@ -110,8 +136,10 @@ impl Default for SlotAccum {
 impl SlotAccum {
     pub fn new() -> Self {
         Self {
-            audio: Vec::with_capacity(SLOT_SAMPLES),
+            pre: Vec::with_capacity(PRE_SAMPLES),
+            front: SharedFrontEnd::new(),
             savg: Ft4SavgBuilder::new(SLOT_SAMPLES),
+            n_in: 0,
         }
     }
 
@@ -137,15 +165,21 @@ impl SlotAccum {
         let mut rest = samples;
         let mut done = None;
         while !rest.is_empty() {
-            let room = SLOT_SAMPLES - self.audio.len();
+            let room = SLOT_SAMPLES - self.n_in;
             let take = room.min(rest.len());
-            self.audio.extend_from_slice(&rest[..take]);
+            self.front.push_i16(&rest[..take], &mut self.pre);
             self.savg.push_with_rows(&rest[..take], on_row);
+            self.n_in += take;
             rest = &rest[take..];
-            if self.audio.len() == SLOT_SAMPLES {
-                let prev = core::mem::replace(self, Self::new());
+            if self.n_in == SLOT_SAMPLES {
+                let mut prev = core::mem::replace(self, Self::new());
+                // The tail the front end's group delay still holds,
+                // and the zero padding the reference's `fft1_size`
+                // buffer carries — the same flush `shared_baseband`
+                // does in one call.
+                prev.front.flush_to(PRE_SAMPLES, &mut prev.pre);
                 done = Some(CapturedSlot {
-                    audio: prev.audio,
+                    pre: prev.pre,
                     savg: prev.savg.finish(),
                     closed_us: now_us(),
                 });
@@ -251,7 +285,7 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
             break;
         }
         tried += 1;
-        let mut cd0 = candidate_baseband(&slot.audio, cand.freq_hz);
+        let mut cd0 = candidate_baseband_shared(&slot.pre, cand.freq_hz);
         rms_normalise(&mut cd0);
         let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
         let Some(r) = process_candidate_precomputed::<Ft4>(
@@ -412,7 +446,7 @@ pub fn wf_row(spectrum: &[f32]) -> [u8; crate::pipeline::WF_ROW_LEN] {
 /// Unit-power normalisation, matching what
 /// `process_candidate_basic_impl` applies to its own
 /// `downsample_cached` output (WSJT-X `ft4_decode.f90:231-232`).
-/// `candidate_baseband` deliberately does not do it, so every caller
+/// `candidate_baseband_shared` deliberately does not do it, so every caller
 /// must — `compute_llr`'s `LLR_SCALE` is calibrated against unit-RMS
 /// input.
 fn rms_normalise(cd0: &mut [Complex<f32>]) {

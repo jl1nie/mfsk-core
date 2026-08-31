@@ -2811,3 +2811,99 @@ the streamed coarse into the receiver.
 `push_block_real` and its equivalence test are the only new code so
 far — `ft4::ddc`'s `CandidateDdc` itself is unchanged, so this is a
 measurement, not yet a shipped optimization.
+
+## 39. The shared decimation, wired — and the cut stopped firing (2026-09-01)
+
+§37.2 left the shared front end as a measurement: `push_block_real`
+existed, `CandidateDdc` did not use it. This wires it, and the wiring
+turns out to be worth more than the arithmetic in §37.1 predicted —
+not because the filters are faster than measured, but because the
+shared leg does not have to be paid **after** the slot.
+
+`ft4::ddc` grew three pieces:
+
+- `SharedFrontEnd` — the 165-tap decimate-by-2 over the slot's real
+  audio, fed a block at a time (`push_i16`) and flushed to exactly
+  `SLOT_SAMPLES / 2`;
+- `CandidateDdc::new_predecimated` / `push_f32` — the same chain with
+  stage A cut to 101 taps and decimate-by-9 at 6 kHz, stage B and the
+  derotation untouched;
+- `shared_baseband` / `candidate_baseband_shared` — the block helpers,
+  matching `candidate_baseband`'s contract exactly (`CD0_LEN` samples,
+  un-normalised, `f0` at DC).
+
+**The shared leg streams, the way the coarse stage already does.**
+`ft4_rx::SlotAccum` runs `SharedFrontEnd` beside `Ft4SavgBuilder` on
+the capture side, and `CapturedSlot` carries the 6 kHz stream *instead
+of* the 12 kHz audio — 45 000 `f32` against 90 000 `i16`, the same
+180 KB, and nothing downstream of the candidate loop ever wanted
+12 kHz. So §37.2's 108 ms shared leg lands on the capture thread at
+~0.3 ms per 256-sample block (against §33's 21.3 ms budget for that
+block) rather than on the 1 960 ms that decides how many candidates
+get tried.
+
+### 39.1 A/B on the board, same day, same baked slot
+
+`ft4-demo` on a CoreS3, eleven slots each, `main` at `dec61dfa`
+against the same tree with the wiring:
+
+```
+before   slot N — 11 of 12 candidates tried, 10 decodes in 2 067-2 118 ms — cut 1 at score 1.55
+after    slot N — 12 of 12 candidates tried, 11 decodes in 1 932-1 987 ms
+```
+
+| | before | after |
+|---|---:|---:|
+| candidates tried | 11 of 12 | **12 of 12** |
+| decodes | 10 | **11** |
+| post-slot | 2 118 ms | **1 987 ms** |
+| per candidate | 192.5 ms | **165.6 ms** |
+
+**26.9 ms per candidate**, against the 30.2 ms §37.2's leg measurement
+projected (61.0 → 30.8 for stage A) — the rest of the chain is
+unchanged, so the shortfall is the shared stage's own effect on cache
+and the per-block bookkeeping the projection ignored. And one whole
+candidate more inside a budget that is 131 ms *shorter* than before:
+§34's cut, which had fired on every slot since it was built, does not
+fire at all.
+
+The eleventh decode is `W7BOB KJ7G RR73` at −17 dB — the weakest
+signal on the golden, and precisely the one the cut was giving up.
+This is §37's claim ("milliseconds convert to stations") arriving as a
+station.
+
+### 39.2 What says it is the same decoder
+
+A third filter stage is a different filter, so none of this is
+bit-identical to §20's chain and it cannot be:
+
+- **Noise bandwidth**: the measurement the RMS normalisation actually
+  sees. `noise_bandwidth_matches_the_reference_band` now measures all
+  three paths against `downsample_cached`'s band — direct DDC
+  2.1610e-3, shared 2.1608e-3, reference 2.1503e-3. Both DDC paths sit
+  at **+0.021 dB**, i.e. the shared front end changes the band by less
+  than the four digits printed.
+- **Decodes**: `ft4_ddc_equivalence` grew a third arm. On the golden,
+  at both `EMBEDDED` and `FULL`, the shared path decodes the same 11
+  messages as the FFT path, and its refined frequency matches the
+  direct DDC's to **0.00 Hz** on every candidate.
+- **Aliasing**: the one failure mode the decimate-by-2 introduces is
+  content above 3 200 Hz folding onto the search band.
+  `shared_stage_stops_what_would_fold_onto_the_band` fires a tone at
+  3 400 Hz (which would land on 2 600 Hz, a legal candidate) and holds
+  the rejection past 50 dB. This is what the 165 taps buy, and why
+  §37.1's first estimate of 111 was wrong.
+- **Block independence**: the stage runs from a capture callback, so
+  `shared_front_end_is_block_size_independent` pins one-shot output
+  against seven chunk sizes, including ones that do not divide the
+  decimation.
+
+Not closed: the tier-C 560-file recall test
+(`ft4_ddc_recall_matches_the_fft_path_across_the_crossing`) has **not**
+been re-run — the `ft4_sweep` corpus is not present on this machine.
+§37.1 called for it, and it is still owed before this can be called
+sensitivity-neutral rather than golden-neutral.
+
+Cost: 8.9 KB of internal heap (`free_heap` 8 124 400 → 8 115 476,
+`internal` 216 107 → 207 183) for the front end's history buffers and
+scratch. The slot buffer itself is a wash.

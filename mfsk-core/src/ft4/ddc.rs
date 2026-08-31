@@ -180,6 +180,36 @@ const MIX_CHUNK: usize = 1_024;
 /// `FirStage`'s compaction well amortised.
 const HIST_MARGIN: usize = 512;
 
+/// Shared front end — one decimate-by-2 over the slot's real audio,
+/// ahead of every candidate's own mixer (`FT4_BENCHMARK.md` §37.1-37.2).
+///
+/// The per-candidate chain above pays stage A's 199 taps at 12 kHz
+/// *per candidate*, 61 ms each, and every candidate filters the same
+/// audio. Halving the rate once first makes each candidate's stage A a
+/// 101-tap decimate-by-9 over 45 000 samples — 30 ms — for one shared
+/// 108 ms leg (measured on a CoreS3, §37.2). Break-even is ~2.7
+/// candidates; §23's occupancy table never sits below 5.
+///
+/// `2 800 Hz` pass / `3 200 Hz` stop is not a round number. Decimating
+/// to 6 kHz folds everything above 3 000 Hz down; the search band tops
+/// out at 2 700 Hz and a candidate's own band reaches `f0 + 93.75`, so
+/// content between 3 000 and 3 200 Hz folds to 2 800-3 000 Hz, which is
+/// outside every candidate's band and which stage A' rejects anyway.
+/// What has to be stopped is above 3 200 Hz — a 400 Hz transition at
+/// 12 kHz, which a Blackman window buys at 165 taps.
+const SHARED_DECIM: usize = 2;
+const SHARED_NTAPS: usize = 165;
+const SHARED_FC_HZ: f32 = 2_800.0;
+
+/// Rate the shared front end hands the per-candidate chain: 6 kHz.
+pub const PRE_RATE_HZ: f32 = INPUT_RATE_HZ / SHARED_DECIM as f32;
+
+/// Stage A when the input is already decimated — same transition width
+/// in Hz as [`STAGE_A_NTAPS`]/[`STAGE_A_FC_HZ`] at half the rate, so
+/// half the taps, and the remaining decimation is `NDOWN / 2 = 9`.
+const STAGE_A_PRE_NTAPS: usize = 101;
+const STAGE_A_PRE_DECIM: usize = Ft4::NDOWN as usize / SHARED_DECIM;
+
 /// Streaming per-candidate down-converter — one instance per candidate
 /// frequency, fed the slot's 12 kHz PCM.
 ///
@@ -194,6 +224,10 @@ pub struct CandidateDdc {
     stage_a: FirStage,
     stage_b: FirStage,
     derotate: Mixer,
+    /// Stage A's decimation — 18 fed 12 kHz audio, 9 fed the shared
+    /// front end's 6 kHz. Read by the block and flush paths, which size
+    /// their scratch and their zero budget from it.
+    stage_a_decim: usize,
 }
 
 impl CandidateDdc {
@@ -214,6 +248,31 @@ impl CandidateDdc {
             // this stage has to undo the `+BAND_CENTER_OFFSET_HZ` the
             // input mixer applied, moving `f0` from `-31.25 Hz` to DC.
             derotate: Mixer::new(-BAND_CENTER_OFFSET_HZ, DS_RATE_HZ),
+            stage_a_decim: Ft4::NDOWN as usize,
+        }
+    }
+
+    /// The same converter, fed the shared front end's 6 kHz real
+    /// stream instead of the raw 12 kHz audio.
+    ///
+    /// Everything downstream of stage A is unchanged — same 263-tap
+    /// stage B at the same 666.667 Hz, same derotation — and stage A
+    /// keeps its transition width in Hz at half the rate with half the
+    /// taps. Feed this one [`push_f32`](Self::push_f32) (whose mixer
+    /// runs at [`PRE_RATE_HZ`]), never [`push_i16`](Self::push_i16);
+    /// the rate is baked into the phasor at construction.
+    pub fn new_predecimated(f0_hz: f32) -> Self {
+        Self {
+            mixer: Mixer::new(f0_hz + BAND_CENTER_OFFSET_HZ, PRE_RATE_HZ),
+            stage_a: FirStage::new(
+                STAGE_A_PRE_NTAPS,
+                STAGE_A_PRE_DECIM,
+                STAGE_A_FC_HZ / PRE_RATE_HZ,
+                HIST_MARGIN,
+            ),
+            stage_b: FirStage::new(STAGE_B_NTAPS, 1, STAGE_B_FC_HZ / DS_RATE_HZ, HIST_MARGIN),
+            derotate: Mixer::new(-BAND_CENTER_OFFSET_HZ, DS_RATE_HZ),
+            stage_a_decim: STAGE_A_PRE_DECIM,
         }
     }
 
@@ -248,21 +307,39 @@ impl CandidateDdc {
     /// (`docs/notes/FT4_BENCHMARK.md` §30.1). The block entry point had
     /// existed since `wspr::ddc` needed it and nothing here called it.
     pub fn push_i16(&mut self, audio: &[i16], out: &mut Vec<Complex<f32>>) {
+        self.push_blocks(audio, out);
+    }
+
+    /// Push a block of the shared front end's 6 kHz real stream — the
+    /// [`new_predecimated`](Self::new_predecimated) entry point.
+    ///
+    /// Same arithmetic as [`push_i16`](Self::push_i16) with a different
+    /// stage A and a mixer at [`PRE_RATE_HZ`]; the sample type differs
+    /// only because [`SharedFrontEnd`] has already left the integer
+    /// domain.
+    pub fn push_f32(&mut self, pre: &[f32], out: &mut Vec<Complex<f32>>) {
+        self.push_blocks(pre, out);
+    }
+
+    /// The block loop both entry points share: mix `n` samples in
+    /// `MIX_CHUNK`-sized pieces, hand each stage a block, derotate.
+    fn push_blocks<T: Copy + Into<f32>>(&mut self, input: &[T], out: &mut Vec<Complex<f32>>) {
         let mut mi: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
         let mut mq: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
-        // Stage A decimates by 18, so a chunk yields at most
-        // `MIX_CHUNK / 18 + 1` samples; stage B passes those through.
-        let inner = MIX_CHUNK / Ft4::NDOWN as usize + 2;
+        // Stage A decimates by 18 (or 9 behind the shared front end),
+        // so a chunk yields at most `MIX_CHUNK / decim + 1` samples;
+        // stage B passes those through.
+        let inner = MIX_CHUNK / self.stage_a_decim + 2;
         let mut ai: Vec<f32> = Vec::with_capacity(inner);
         let mut aq: Vec<f32> = Vec::with_capacity(inner);
         let mut bi: Vec<f32> = Vec::with_capacity(inner);
         let mut bq: Vec<f32> = Vec::with_capacity(inner);
 
-        for chunk in audio.chunks(MIX_CHUNK) {
+        for chunk in input.chunks(MIX_CHUNK) {
             mi.clear();
             mq.clear();
             for &s in chunk {
-                let (i, q) = self.mixer.mix(s as f32);
+                let (i, q) = self.mixer.mix(s.into());
                 mi.push(i);
                 mq.push(q);
             }
@@ -288,7 +365,7 @@ impl CandidateDdc {
     /// rather than a hard stop, and so does this one.
     pub fn flush_to(&mut self, want: usize, out: &mut Vec<Complex<f32>>) {
         let max_zeros =
-            (want + 1) * Ft4::NDOWN as usize + STAGE_A_NTAPS + STAGE_B_NTAPS * Ft4::NDOWN as usize;
+            (want + 1) * self.stage_a_decim + STAGE_A_NTAPS + STAGE_B_NTAPS * self.stage_a_decim;
         let mut pushed = 0usize;
         while out.len() < want && pushed < max_zeros {
             self.push_one(0.0, out);
@@ -315,6 +392,95 @@ pub fn candidate_baseband(audio: &[i16], f0_hz: f32) -> Vec<Complex<f32>> {
     let mut ddc = CandidateDdc::new(f0_hz);
     let mut out = Vec::with_capacity(CD0_LEN);
     ddc.push_i16(audio, &mut out);
+    ddc.flush_to(CD0_LEN, &mut out);
+    out.resize(CD0_LEN, Complex::new(0.0, 0.0));
+    out
+}
+
+/// The slot's decimate-by-2, paid once and read by every candidate.
+///
+/// Real in, real out: [`FirStage::push_block_real`] is one dot product
+/// per output rather than two, which is the difference between 108 ms
+/// and 202 ms for this stage on a CoreS3 (§37.2). The stage is
+/// otherwise an ordinary [`FirStage`], so its output 0 is centred on
+/// its input 0 and the cascade below it keeps `cd0[0]` aligned with
+/// `audio[0]` exactly as the direct path does.
+pub struct SharedFrontEnd {
+    stage: FirStage,
+}
+
+impl Default for SharedFrontEnd {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedFrontEnd {
+    pub fn new() -> Self {
+        Self {
+            stage: FirStage::new(
+                SHARED_NTAPS,
+                SHARED_DECIM,
+                SHARED_FC_HZ / INPUT_RATE_HZ,
+                HIST_MARGIN,
+            ),
+        }
+    }
+
+    /// Push a block of 12 kHz PCM, appending the 6 kHz samples it
+    /// completes.
+    pub fn push_i16(&mut self, audio: &[i16], out: &mut Vec<f32>) {
+        let mut mi: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
+        for chunk in audio.chunks(MIX_CHUNK) {
+            mi.clear();
+            mi.extend(chunk.iter().map(|&s| s as f32));
+            self.stage.push_block_real(&mi, out);
+        }
+    }
+
+    /// Feed zeros until `out` holds `want` samples — the filter flush,
+    /// and the front half of the reference's zero-padding.
+    pub fn flush_to(&mut self, want: usize, out: &mut Vec<f32>) {
+        let zeros = [0.0f32; 64];
+        let mut budget = (want + 1) * SHARED_DECIM + SHARED_NTAPS;
+        while out.len() < want && budget > 0 {
+            let n = zeros.len().min(budget);
+            self.stage.push_block_real(&zeros[..n], out);
+            budget -= n;
+        }
+        out.truncate(want);
+    }
+}
+
+/// Block helper: the slot in at 12 kHz, the shared 6 kHz stream out —
+/// exactly `audio.len() / 2` samples, the slot as the reference sees
+/// it (real audio, then the zero padding its `fft1_size` buffer
+/// carries), so what each candidate's chain reads is the same signal
+/// [`candidate_baseband`] reads, at half the rate.
+pub fn shared_baseband(audio: &[i16]) -> Vec<f32> {
+    let want = audio.len() / SHARED_DECIM;
+    let mut front = SharedFrontEnd::new();
+    let mut out = Vec::with_capacity(want);
+    front.push_i16(audio, &mut out);
+    front.flush_to(want, &mut out);
+    out
+}
+
+/// [`candidate_baseband`] behind the shared front end: same `cd0`
+/// contract — [`CD0_LEN`] samples, un-normalised, `f0` at DC — from a
+/// stream [`shared_baseband`] produced once for the whole slot.
+///
+/// Not bit-identical to [`candidate_baseband`]: three filter stages
+/// are not two, so the passband shape and the rounding both move a
+/// little. What is held is the band, and therefore the noise power the
+/// RMS normalisation divides by — `shared_path_noise_bandwidth_matches`
+/// pins that against the reference, the same way
+/// `noise_bandwidth_matches_the_reference_band` does for the direct
+/// path.
+pub fn candidate_baseband_shared(pre: &[f32], f0_hz: f32) -> Vec<Complex<f32>> {
+    let mut ddc = CandidateDdc::new_predecimated(f0_hz);
+    let mut out = Vec::with_capacity(CD0_LEN);
+    ddc.push_f32(pre, &mut out);
     ddc.flush_to(CD0_LEN, &mut out);
     out.resize(CD0_LEN, Complex::new(0.0, 0.0));
     out
@@ -363,6 +529,85 @@ mod tests {
         assert!((BAND_CENTER_OFFSET_HZ - 31.2495).abs() < 1e-3);
         assert!((BAND_HALF_WIDTH_HZ - 62.499).abs() < 1e-3);
         assert!((BAND_CENTER_OFFSET_HZ - BAND_HALF_WIDTH_HZ + 31.2495).abs() < 1e-2);
+    }
+
+    /// Same three properties for the shared front end, since a third
+    /// stage is a different filter: full length, flat tones, and the
+    /// band edges rejected.
+    #[test]
+    fn shared_path_holds_the_band() {
+        let f0 = 1500.0f32;
+        let cd0 = |audio: &[i16]| candidate_baseband_shared(&shared_baseband(audio), f0);
+
+        assert_eq!(cd0(&tone(f0, 8000.0, 90_000)).len(), CD0_LEN);
+
+        let mut powers = vec![];
+        for k in 0..Ft4::NTONES {
+            let audio = tone(f0 + k as f32 * Ft4::TONE_SPACING_HZ, 8000.0, 90_000);
+            powers.push(mean_power(&cd0(&audio)[1000..4000]));
+        }
+        let max = powers.iter().cloned().fold(f32::MIN, f32::max);
+        let min = powers.iter().cloned().fold(f32::MAX, f32::min);
+        let ripple_db = 10.0 * (max / min).log10();
+        assert!(
+            ripple_db < 1.0,
+            "passband ripple {ripple_db} dB: {powers:?}"
+        );
+
+        let in_band = mean_power(&cd0(&tone(f0, 8000.0, 90_000))[1000..4000]);
+        for offset in [-125.0f32, -100.0, 160.0, 200.0, 400.0, 700.0] {
+            let p = mean_power(&cd0(&tone(f0 + offset, 8000.0, 90_000))[1000..4000]);
+            let rej_db = 10.0 * (in_band / p).log10();
+            assert!(
+                rej_db > 50.0,
+                "tone at f0{offset:+} Hz only {rej_db:.1} dB down"
+            );
+        }
+    }
+
+    /// The shared stage runs from a capture callback, a UAC read at a
+    /// time, so its output must not depend on how the audio is cut up.
+    /// [`FirStage::push_block_real`] carries that property; this is the
+    /// statement at the level a receiver uses it, across block sizes
+    /// that do and do not divide the decimation.
+    #[test]
+    fn shared_front_end_is_block_size_independent() {
+        let audio = tone(1500.0, 8000.0, 90_000);
+        let one_shot = shared_baseband(&audio);
+        for chunk in [1usize, 2, 3, 128, 256, 333, 1024] {
+            let mut front = SharedFrontEnd::new();
+            let mut out = Vec::with_capacity(one_shot.len());
+            for block in audio.chunks(chunk) {
+                front.push_i16(block, &mut out);
+            }
+            front.flush_to(one_shot.len(), &mut out);
+            assert_eq!(out.len(), one_shot.len(), "chunk {chunk}: length");
+            assert_eq!(out, one_shot, "chunk {chunk}: samples differ");
+        }
+    }
+
+    /// The decimate-by-2's own job: content above 3 200 Hz folds onto
+    /// the search band and nothing else does. A 3 400 Hz tone would
+    /// alias to 2 600 Hz — a legal candidate frequency — so this is the
+    /// one failure mode the shared stage introduces and the reason it
+    /// carries 165 taps rather than the 111 first assumed.
+    #[test]
+    fn shared_stage_stops_what_would_fold_onto_the_band() {
+        let f0 = 2600.0f32;
+        let in_band = mean_power(
+            &candidate_baseband_shared(&shared_baseband(&tone(f0, 8000.0, 90_000)), f0)[1000..4000],
+        );
+        for f in [3400.0f32, 3600.0, 4000.0, 5000.0] {
+            let aliased = mean_power(
+                &candidate_baseband_shared(&shared_baseband(&tone(f, 8000.0, 90_000)), f0)
+                    [1000..4000],
+            );
+            let rej_db = 10.0 * (in_band / aliased).log10();
+            assert!(
+                rej_db > 50.0,
+                "{f} Hz folds onto {f0} Hz only {rej_db:.1} dB down"
+            );
+        }
     }
 
     #[test]
@@ -471,11 +716,27 @@ mod tests {
         // Tone at the band centre, where both paths are flat.
         let probe = tone(f0 + BAND_CENTER_OFFSET_HZ, 8000.0, 90_000);
 
-        let path_ratio = |audio_n: &[i16], audio_t: &[i16], ddc_path: bool| -> f32 {
-            let (pn, pt) = if ddc_path {
+        /// Which front end the ratio is measured through.
+        enum Path {
+            Ddc,
+            Reference,
+            Shared,
+        }
+
+        let path_ratio = |audio_n: &[i16], audio_t: &[i16], path: Path| -> f32 {
+            let (pn, pt) = if let Path::Ddc = path {
                 (
                     mean_power(&candidate_baseband(audio_n, f0)[1000..4000]),
                     mean_power(&candidate_baseband(audio_t, f0)[1000..4000]),
+                )
+            } else if let Path::Shared = path {
+                (
+                    mean_power(
+                        &candidate_baseband_shared(&shared_baseband(audio_n), f0)[1000..4000],
+                    ),
+                    mean_power(
+                        &candidate_baseband_shared(&shared_baseband(audio_t), f0)[1000..4000],
+                    ),
                 )
             } else {
                 let cn = build_fft_cache(audio_n, &FT4_DOWNSAMPLE);
@@ -488,10 +749,16 @@ mod tests {
             pn / pt
         };
 
-        let ddc_enbw = path_ratio(&noise, &probe, true);
-        let ref_enbw = path_ratio(&noise, &probe, false);
+        let ddc_enbw = path_ratio(&noise, &probe, Path::Ddc);
+        let ref_enbw = path_ratio(&noise, &probe, Path::Reference);
+        let shared_enbw = path_ratio(&noise, &probe, Path::Shared);
         let ratio = ddc_enbw / ref_enbw;
         let db = 10.0 * ratio.log10();
+        let shared_db = 10.0 * (shared_enbw / ref_enbw).log10();
+        std::eprintln!(
+            "ENBW: ddc {ddc_enbw:.4e} ({db:+.3} dB)  shared {shared_enbw:.4e} \
+             ({shared_db:+.3} dB)  ref {ref_enbw:.4e}"
+        );
         // Measured **+0.021 dB** (DDC 2.161e-3, reference 2.150e-3) at
         // the tap counts above — the two bands integrate to the same
         // noise power to within half a percent, which is the whole
@@ -504,6 +771,15 @@ mod tests {
             db.abs() < 1.0,
             "DDC noise bandwidth is {db:+.2} dB against the reference band \
              (ddc {ddc_enbw:.4e}, ref {ref_enbw:.4e})"
+        );
+        // The shared front end is the same claim for the three-stage
+        // chain: a decimate-by-2 flat to 2 800 Hz changes nothing
+        // inside a ±62.5 Hz band at 1 500 Hz, and the measurement is
+        // what says so rather than the intent.
+        assert!(
+            shared_db.abs() < 1.0,
+            "shared-front-end noise bandwidth is {shared_db:+.2} dB against the \
+             reference band (shared {shared_enbw:.4e}, ref {ref_enbw:.4e})"
         );
     }
 }

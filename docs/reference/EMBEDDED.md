@@ -1805,6 +1805,39 @@ exercised it.
 Like `fst4::ddc`, this is a building block callers reach for, not a
 feature flag that swaps the host's front end.
 
+### The shared front end, and what the receiver actually runs (2026-09-01)
+
+Both paragraphs above were written before any of this ran on a board.
+It has since run: `docs/notes/FT4_BENCHMARK.md` §25-39 is the hardware
+sequence, and the shape that ships is not quite the diagram above.
+
+Two stages were added between the audio and the per-candidate chain,
+and both are **streamed from the capture side** rather than paid after
+the slot closes:
+
+```text
+12 kHz real i16, a UAC read at a time
+  ├─ Ft4SavgBuilder                       -> savg, coarse candidates (6 ms post-slot)
+  └─ ft4::ddc::SharedFrontEnd             -> 6 kHz real, 165 taps, /2
+        (per candidate, post-slot)
+        -> Mixer(f0 + 31.25 Hz)           complex @ 6 kHz
+        -> FirStage A: 101 taps, /9       complex @ 666.667 Hz
+        -> FirStage B: 263 taps, /1       complex @ 666.667 Hz
+        -> Mixer(-31.25 Hz)               cd0, f0 at DC
+```
+
+`CandidateDdc::new` and `candidate_baseband` still build the two-stage
+12 kHz chain, unchanged; `new_predecimated` / `candidate_baseband_shared`
+are the 6 kHz one, and `shared_baseband` is the leg they share. A
+receiver wants the second pair: every candidate was otherwise
+re-filtering the same audio at full rate, 61 ms of a candidate's 96.
+
+`embedded_shared::apps::ft4_rx` is the reference wiring —
+`SlotAccum` feeds both accumulators from the audio callback and
+`CapturedSlot` carries the 6 kHz stream, not the 12 kHz audio. On a
+CoreS3 that is 165.6 ms per candidate against 192.5, and the whole
+12-candidate list inside the 1 960 ms post-slot budget.
+
 ## Live UAC bring-up — what to check, in what order (issue #163)
 
 **This procedure did its job on 2026-08-23 and #163 is closed** — an

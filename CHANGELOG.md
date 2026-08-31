@@ -16,6 +16,38 @@ streaming coarse stage below.)
 
 ### Added
 
+- **FT4's candidate loop stopped being truncated: 12 of 12 candidates
+  and 11 decodes, where it had been 11 and 10.** `ft4::ddc` gained a
+  slot-wide decimate-by-2 (`SharedFrontEnd`, `shared_baseband`) ahead
+  of the per-candidate chain, and `CandidateDdc::new_predecimated` /
+  `candidate_baseband_shared` are that chain at 6 kHz — stage A drops
+  from 199 taps and decimate-by-18 to 101 and 9. Every candidate had
+  been filtering the same audio at full rate: 61 ms of a candidate's
+  96.
+
+  The shared leg is **streamed from the capture side**, beside
+  `Ft4SavgBuilder`, so it costs the post-slot budget nothing at all —
+  `ft4_rx::CapturedSlot` now carries the 6 kHz stream instead of the
+  12 kHz audio (45 000 `f32` against 90 000 `i16`, the same 180 KB;
+  nothing below the candidate loop wanted 12 kHz). On a CoreS3, A/B on
+  the same baked golden slot: **192.5 → 165.6 ms per candidate**, and
+  the whole 12-candidate list now finishes in 1 987 ms where 11 of them
+  took 2 118. The decode that appears is `W7BOB KJ7G RR73` at −17 dB,
+  the weakest signal on the recording and the one the deadline had been
+  giving up.
+
+  A third filter stage is not bit-identical to two, so the equivalence
+  is measured rather than asserted: noise bandwidth **+0.021 dB**
+  against `downsample_cached`'s band — the same figure as the direct
+  DDC path, to four digits — the same 11 golden decodes at both
+  `EMBEDDED` and `FULL` with refined frequencies matching the direct
+  DDC to 0.00 Hz, >50 dB rejection of the 3 200 Hz+ content the
+  decimation would otherwise fold onto the search band, and
+  block-size-independent output across seven chunk sizes. The tier-C
+  560-file recall comparison has not been re-run (no `ft4_sweep` corpus
+  on this machine), so this is golden-neutral, not yet
+  sensitivity-neutral. `docs/notes/FT4_BENCHMARK.md` §39.
+
 - **FT4's embedded decode fits its slot at realistic band occupancy.**
   A day of hardware measurement on a CoreS3 took the FT4 ship
   configuration from **2.33× over its 1 960 ms post-slot budget to
