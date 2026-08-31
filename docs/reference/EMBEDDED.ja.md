@@ -53,8 +53,8 @@ DSP / FEC パイプライン全体は **scalar trait** でパラメータ化さ�
 
 | Component | Generic over | Fixed-point switch 配線済み? |
 |---|---|---|
-| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ `fixed-point` 経由 |
-| LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point` 経由 |
+| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ **`fixed-point-llr`** 経由 — #349 以降は独立した opt-in feature。LX7 では i16 ループは f32 の 0.85 倍（＝遅い） |
+| LLR 計算 (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ `fixed-point`（スペクトル）× `fixed-point-llr`（LLR 型） |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — FT8 LDPC(174,91) と FST4/uvpacket LDPC(240,101) で機能 |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ `fixed-point` 経由 |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — 組込でも host と同じ plain f32 を `fft-extern` 経由で実行。整数パスを一度も必要としていない。下記 [WSPR on embedded](#wspr-on-embedded) 参照 |
@@ -123,7 +123,8 @@ mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — decode 必須
     "ft8",              # FT8 protocol glue
     "fft-extern",       # 呼び出し側が FFT バックエンドを供給
-    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + 整数 NMS BP
+    "fixed-point",      # u16 spec + i16 DFT（LLR/BP は #349 以降 f32。
+                        # i16 の LLR/BP が要るなら "fixed-point-llr" を追加）
     # オプション:
     # "profile-coarse", # stage-2 sub-stage timing 常時出力
 ] }

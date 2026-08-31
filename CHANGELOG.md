@@ -16,6 +16,32 @@ streaming coarse stage below.)
 
 ### Added
 
+- **`fixed-point` no longer implies the Q11i16 LLR/BP hot loop
+  (issue #349).** The scalar is its own feature, `fixed-point-llr`,
+  **off by default** — a `fixed-point` build keeps the u16 spectrogram
+  (702 → 351 KB, which is what the feature actually defends) and runs
+  LLR/BP in `f32`. The coupling had never been measured; when it was,
+  on the LX7 this exists for, the integer BP came out **0.85× f32**
+  (22 813 vs 19 456 µs, same LLRs and `max_iter`) because the core has
+  an f32 FPU and the saturating i16 helpers cost more than the narrower
+  loads save.
+
+  End-to-end on a CoreS3 (`ft8-bench`, `qso3_busy.wav`), stage 3
+  (refine + LLR + BP + OSD) drops **3.2-3.9 %** across three re-rank
+  widths and the whole slot **0.7 %** — 4.355 → 4.325 s at the ship
+  width. That is well short of #349's own "18 % of a stage that is
+  34 % of a slot": the 18 % is a kernel that in the pipeline exits
+  early on a CRC hit rather than running to `max_iter`, inside a stage
+  that is more than BP. Decodes unchanged — 7 on the board in every
+  arm, and the same 12 golden messages on host across both features
+  (`ft8_qso3_decode_set`, which now reports the LLR type separately
+  from the spectrogram's).
+
+  `m5stack-core2-app` pins `fixed-point-llr` on: it is an LX6, the
+  measurement is an LX7, and its logs were all taken with the integer
+  loop. Consumers on a target without an FPU should do the same.
+  `docs/notes/FT4_BENCHMARK.md` §40.
+
 - **FT4's embedded decode fits its slot at realistic band occupancy.**
   A day of hardware measurement on a CoreS3 took the FT4 ship
   configuration from **2.33× over its 1 960 ms post-slot budget to

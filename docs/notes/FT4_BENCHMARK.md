@@ -2811,3 +2811,62 @@ the streamed coarse into the receiver.
 `push_block_real` and its equivalence test are the only new code so
 far — `ft4::ddc`'s `CandidateDdc` itself is unchanged, so this is a
 measurement, not yet a shipped optimization.
+
+## 40. FT8's LLR/BP in f32 — the projection was 6 %, the slot moved 0.7 % (2026-09-01)
+
+§36 measured FT8's BP at **0.85× in Q11i16** on this board and issue
+#349's first suggested step read: "18 % of a stage that is 34 % of an
+FT8 slot". That is a projection, and this is what it is worth.
+
+`fixed-point` stopped implying the i16 LLR/BP hot loop. The scalar is
+now its own feature, `fixed-point-llr`, off by default — so a build
+gets the u16 spectrogram (which is where the 702 → 351 KB comes from)
+without the integer BP, and a target that wants the narrower scratch
+asks for it. Two type aliases move; nothing else in the pipeline
+changes.
+
+A/B on a CoreS3, `ft8-bench`, `qso3_busy.wav`, three re-rank widths:
+
+| pass-2 width | stage 3, Q11i16 | stage 3, f32 | Δ | slot total |
+|---|---:|---:|---:|---:|
+| top 15 | 909 904 µs | 874 858 µs | **−3.9 %** | 4.333 → 4.298 s |
+| top 20 | 932 529 µs | 897 881 µs | **−3.7 %** | 4.355 → 4.325 s |
+| top 30 | 1 135 751 µs | 1 099 570 µs | **−3.2 %** | 4.560 → 4.530 s |
+
+Seven decodes in every arm of both builds, and on host the golden set
+is identical — twelve messages, `ft8_qso3_decode_set` diffed across
+the two features.
+
+**Stage 3 moves 3.5 %, not 18 %, and the slot moves 0.7 %.** The
+18 % is real and is not the whole stage: `bp_decode_nms` in the A/B
+harness runs to `max_iter = 30` on LLRs that never converge (the
+bench prints `0 converged`), while in the pipeline most BP calls exit
+on a CRC hit long before that, and stage 3 also carries the refine
+pass, the DFT, the LLR computation and OSD. A per-kernel ratio
+applied to a stage that only partly runs that kernel overstates it by
+5×.
+
+So the change is worth taking — 35 ms a slot, no recall cost, and it
+removes a coupling that was never measured — but "18 % of 34 %" was
+not what it bought, and #349 should be read with this correction
+attached.
+
+The 12 KB the i16 scratch saves is heap (`BpScratch`'s buffers are
+`Vec`s), so nothing moves on the stack. `m5stack-core2-app` keeps
+`fixed-point-llr` pinned on: that board is an LX6, the A/B above is an
+LX7, and its own history was measured with the integer loop.
+
+### 40.1 What #349 still asks for, and one thing it asks for that is wrong
+
+Untouched here: step 2 (measure `stage1_inc`, the streaming u16
+spectrogram, the same way — §36 timed the *batch* builder and said so).
+
+Step 3's "`fixed-point` should stop implying `nstep-half`" is not
+done, and should not be. `nstep-half` is coupled deliberately
+(Phase 1.7.7b, and `mfsk-core/Cargo.toml` carries the reason): a host
+`fixed-point` build exists to simulate the embedded pipeline, and with
+a different NSTEP it simulates a different one — 4 vs 7 decodes on
+`qso3_busy` single-pass when they were independent. The coupling is
+between *a simulation and the thing it simulates*, not between a
+numeric format and a search parameter. What was wrong was tying the
+BP scalar to the spectrogram's, and that is what this changes.

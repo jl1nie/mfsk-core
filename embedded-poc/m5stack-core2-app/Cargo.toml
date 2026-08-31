@@ -44,7 +44,12 @@ heapless = "0.8"
 num-complex = { version = "0.4", default-features = false }
 
 # mfsk-core / FFI: same feature set as the sibling app + bench crates.
-mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "profile-coarse", "nstep-half"] }
+# `fixed-point-llr` is pinned on here and *not* on the S3 crates: the
+# f32-BP measurement behind #349 was taken on an LX7 (CoreS3), and this
+# board is an LX6. Its FPU is a different unit, nobody has run the A/B
+# on it, and the numbers in this crate's own logs were all taken with
+# the i16 hot loop. Drop it when someone measures the LX6.
+mfsk-core = { path = "../../mfsk-core", default-features = false, features = ["alloc", "std", "ft8", "fft-extern", "fixed-point", "fixed-point-llr", "profile-coarse", "nstep-half"] }
 mfsk-ffi-ft8 = { path = "../../mfsk-ffi-ft8", default-features = false, features = ["embedded-fixed-point"] }
 
 embedded-shared = { path = "../embedded-shared" }

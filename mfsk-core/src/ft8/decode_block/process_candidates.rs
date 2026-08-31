@@ -1293,9 +1293,18 @@ where
 ///   budget.
 ///
 /// `Q3i8` stays in `engine::scalar` for the comparison path.
-#[cfg(feature = "fixed-point")]
+///
+/// - 0.10.x: `fixed-point` stopped implying it (issue #349). On the
+///   board this was built for, `Q11i16` BP measures **0.85x f32** —
+///   22 813 us against 19 455 on a CoreS3, same LLRs and same
+///   `max_iter` — because the LX7 has an f32 FPU and the saturating
+///   i16 helpers cost more than the narrower loads save. The scalar
+///   is now `fixed-point-llr`, off by default; `fixed-point` keeps
+///   the u16 spectrogram, which is where its 351 KB actually comes
+///   from.
+#[cfg(feature = "fixed-point-llr")]
 type LlrT = crate::engine::scalar::Q11i16;
-#[cfg(not(feature = "fixed-point"))]
+#[cfg(not(feature = "fixed-point-llr"))]
 type LlrT = f32;
 
 /// BP-kind switch (host-only). **Default `tanh`** (= WSJT-X

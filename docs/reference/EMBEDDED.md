@@ -58,8 +58,8 @@ and optimisations land once and apply everywhere.
 
 | Component | Generic over | Fixed-point switch wired? |
 |---|---|---|
-| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ via `fixed-point` |
-| LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` |
+| LDPC BP NMS (`fec::ldpc::bp`) | `LlrScalar` | ✅ via **`fixed-point-llr`** — a separate, opt-in feature since #349; on an LX7 the i16 loop measures 0.85× f32 |
+| LLR computation (`engine::llr`) | `SpecScalar` × `LlrScalar` | ✅ via `fixed-point` (spectra) × `fixed-point-llr` (LLR type) |
 | BP scratch pool (`BpScratch<P, T>`) | `LdpcParams` × `LlrScalar` | ✅ — works for FT8 LDPC(174,91) and FST4/uvpacket LDPC(240,101) |
 | FT8 spectrogram + DFT (`ft8::decode_block`) | `SpecScalar` × `AudioSample` | ✅ via `fixed-point` |
 | WSPR (`wspr::decode`, `wspr::ddc`) | — | ❌ — runs plain host f32 on embedded too, via `fft-extern`; never needed the integer path. See [WSPR on embedded](#wspr-on-embedded) below. |
@@ -132,7 +132,8 @@ mfsk-core = { version = "0.8", default-features = false, features = [
     "alloc",            # Vec / Box / String — required for decode
     "ft8",              # FT8 protocol glue
     "fft-extern",       # caller supplies the FFT backend
-    "fixed-point",      # u16 spec + i16 DFT + Q11i16 LLR + integer NMS BP
+    "fixed-point",      # u16 spec + i16 DFT (LLR/BP are f32 since #349;
+                        # add "fixed-point-llr" for the i16 hot loop)
     # Optional:
     # "profile-coarse", # always-on stage-2 sub-stage timing
 ] }
@@ -161,7 +162,7 @@ Feature reference:
 | `alloc` | `extern crate alloc` + Vec / Box. | All decode paths. |
 | `fft-extern` | FFT backend via `mfsk_core_make_default_fft_planner` extern fn (and the i16 variant `_planner16`). | Any embedded target. |
 | `fft-rustfft` | rustfft as the FFT backend. | Host only. |
-| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT + Q11i16 LLR + integer NMS BP. Implies `nstep-half`. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
+| `fixed-point` | Embedded integer pipeline: u16 spectrogram + i16 internal DFT. Implies `nstep-half`. **No longer implies the Q11i16 LLR/BP hot loop** — that is `fixed-point-llr`, opt-in since #349, because on an LX7 the i16 BP measures 0.85× f32 (22 813 vs 19 456 µs) and what `fixed-point` actually defends is the spectrogram's 702 → 351 KB. (Was `Q3i8` in 0.5.x — 0.6.2 widened the LLR to `Q11i16` because host fixed-point + rustfft hit 16/18 on `qso3_busy.wav` with f32 but only 9/18 with `Q3i8`; the resolution step was the recall ceiling, not anything DSP-side. `Q3i8` stays in `engine::scalar` for the comparison path.) | Any embedded target — close to host f32 recall (1/2048 LSB LLR resolution), halved PSRAM bandwidth, ~12 KB BP scratch (Q11i16, post-0.6.2). |
 | `nstep-half` | NSTEP = NSPS/2 (vs WSJT-X-faithful NSPS/4) for the spectrogram column rate. | Auto-enabled by `fixed-point`. Don't enable independently on a host build unless you're explicitly simulating the embedded path. |
 | `parallel` | Rayon-parallel candidate processing. | Host only. Always off on embedded (no `std::thread`). |
 | `profile-coarse` | Always emits coarse_sync sub-stage timings to stderr. | Diagnosis only. |
@@ -259,7 +260,7 @@ never need to think about scratch placement here at all.
 |---|---|---|---|
 | Spectrogram cell | u16 (mag²) | `>> FP_SPEC_SHIFT (12)`, saturated since 0.6.4 | `ft8::decode_block::spectrogram::Spectrogram` |
 | Symbol cs | `Cmplx<f32>` (default) or `Cmplx<Q14i16>` (`fixed-point`) | f32 unbounded; Q14 ±2 | `engine::scalar::Cmplx` (type alias for `num_complex::Complex`) |
-| LLR | f32 (host) or **Q11i16** (`fixed-point`, since 0.6.2 — was `Q3i8` in 0.5.x; widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `engine::scalar` for the comparison path) | `engine::scalar::LlrScalar` |
+| LLR | f32 (host **and embedded by default since #349**) or **Q11i16** (`fixed-point-llr`, opt-in; the type has been Q11i16 since 0.6.2 — was `Q3i8` in 0.5.x, widened to address the resolution-limited recall ceiling) | f32 unbounded; Q11i16 ±16 with ~1/2048 LSB (Q3i8 ±16 with ~1/8 LSB stays in `engine::scalar` for the comparison path) | `engine::scalar::LlrScalar` |
 | BP messages | T (same as LLR) | — | `fec::ldpc::bp::bp_decode_generic_nms_with_scratch` |
 
 ## Using from C / C++ / non-Rust ESP-IDF projects (`mfsk-ffi-ft8`)

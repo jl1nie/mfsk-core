@@ -79,6 +79,25 @@ dotprod-extern = []
 # decodes on qso3_busy single-pass). Coupling them removes the trap.
 fixed-point  = ["nstep-half"]
 
+# The LLR/BP hot loop in `Q11i16` rather than `f32` — **opt-in, and
+# `fixed-point` no longer implies it** (issue #349, 2026-09-01).
+#
+# It was implied, on the assumption that an integer BP is faster on a
+# board. Measured on a CoreS3 (LX7, the target this exists for), it is
+# not: same LLRs, same `max_iter`, same binary, BP runs **22 813 us in
+# Q11i16 against 19 455 in f32 — 0.85x, i.e. 18 % slower**. The LX7 has
+# an f32 FPU; i16 check-node arithmetic saves no cycles and pays for
+# the saturating helpers. #198 recorded the same for FST4 and FT4,
+# which is why neither adopted `fixed-point` — FT8's own BP had never
+# been checked.
+#
+# What `fixed-point` still buys is memory, and that is the spectrogram
+# (`SpecCell = u16`, 702 -> 351 KB), not this. So the two are now
+# separate: turn this on to get the i16 BP scratch (~12 KB against
+# ~24 KB in f32) if a target is that tight, and leave it off
+# otherwise.
+fixed-point-llr = ["fixed-point"]
+
 # Halve coarse_sync time-axis resolution (NSTEP = NSPS/2 instead of
 # NSPS/4 = WSJT-X reference). Embedded targets enable this — at NSPS/4
 # the spec memory and stage-1 FFT count both double, which exceeds
