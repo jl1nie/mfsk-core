@@ -885,6 +885,90 @@ fn shared_decim_probe(audio: &[i16]) {
     };
 
     log::info!("ft4_bench: shared-decimation probe");
+
+    // How much of a FIR stage is *not* the dot product (issue #352).
+    //
+    // §37.2 measured the shared stage at 108.7 ms for 44 959 outputs of
+    // 165 taps — 7.42 M MAC, ~3.5 cycles/MAC at 240 MHz — where this
+    // chip's aligned `dsps_dotprod_f32_aes3` measures ~2.0
+    // (`esp_dsp_dotprod`'s own bench table). That difference is either
+    // real bookkeeping or an arithmetic error about what the dot costs
+    // in situ, and the way to tell is to remove the dot and re-time the
+    // stage, which is what `set_dot_stub` is for. Same technique
+    // `esp_dsp_dotprod`'s "why the remaining ~2.5x was costed and
+    // declined" used, made repeatable.
+    let stage_floor = |label: &str, ntaps: usize, decim: usize, fc: f32, n_in: usize| {
+        let real = ntaps == 165; // the shared stage is the real-input one
+        let mut run = |stub: bool| -> i64 {
+            let mut st = FirStage::new(ntaps, decim, fc, 512);
+            let mut oi = Vec::with_capacity(n_in / decim + 2);
+            let mut oq = Vec::with_capacity(n_in / decim + 2);
+            let was = crate::esp_dsp_dotprod::set_dot_stub(stub);
+            let t0 = now_us();
+            if real {
+                st.push_block_real(&xi[..n_in], &mut oi);
+            } else {
+                st.push_block(&xi[..n_in], &xq[..n_in], &mut oi, &mut oq);
+            }
+            let us = now_us() - t0;
+            crate::esp_dsp_dotprod::set_dot_stub(was);
+            us
+        };
+        let full = run(false);
+        let floor = run(true);
+        let macs = (n_in / decim) as i64 * ntaps as i64;
+        log::info!(
+            "    {label:<34} {full:>7} us full | {floor:>7} us with the dot stubbed              ({}% not-dot) | {} ps/MAC",
+            floor * 100 / full.max(1),
+            full * 1_000_000 / macs.max(1),
+        );
+    };
+    stage_floor("floor: shared /2 (165t, REAL)", 165, 2, 2_800.0 / 12_000.0, 90_000);
+    stage_floor("floor: stage A' (101t, /9)", 101, 9, 320.0 / 6_000.0, 45_000);
+    stage_floor("floor: stage A  (199t, /18)", 199, 18, 320.0 / 12_000.0, 90_000);
+
+    // The same split *in situ* (issue #352). The probe above feeds a
+    // bare `FirStage` from a 90 000-sample `Vec<f32>` in PSRAM;
+    // `CandidateDdc` feeds it 1 024-sample mixed chunks written moments
+    // before, and `decimate_slot` reads the slot's `i16` audio. If the
+    // floor is the stage's own bookkeeping it survives that change of
+    // source; if it was the probe's PSRAM traffic, it does not.
+    {
+        let f0 = 1_500.0f32;
+        let audio_i16: Vec<i16> = audio[..90_000.min(audio.len())].to_vec();
+        let mut timed = |label: &str, stub: bool| -> (i64, i64) {
+            let was = crate::esp_dsp_dotprod::set_dot_stub(stub);
+            let t0 = now_us();
+            let half = mfsk_core::ft4::ddc::decimate_slot(&audio_i16);
+            let t1 = now_us();
+            let cd0 = candidate_baseband_half(&half, f0);
+            let t2 = now_us();
+            crate::esp_dsp_dotprod::set_dot_stub(was);
+            core::hint::black_box(&cd0);
+            log::info!(
+                "    {label:<34} shared {:>7} us | candidate {:>7} us",
+                t1 - t0,
+                t2 - t1
+            );
+            (t1 - t0, t2 - t1)
+        };
+        let (sh_full, cand_full) = timed("in situ: full", false);
+        let (sh_stub, cand_stub) = timed("in situ: dot stubbed", true);
+        log::info!(
+            "    in situ not-dot: shared {}% ({} us of {}), candidate {}% ({} us of {})",
+            sh_stub * 100 / sh_full.max(1),
+            sh_stub,
+            sh_full,
+            cand_stub * 100 / cand_full.max(1),
+            cand_stub,
+            cand_full,
+        );
+    }
+
+    let (fast, slow_align, slow_len) = crate::esp_dsp_dotprod::dotprod_path_report();
+    log::info!(
+        "    dot path so far: fast {fast}, slow(align) {slow_align}, slow(len) {slow_len}"
+    );
     // Leg 1: what a candidate costs today.
     let now_a = run("A now (12k, per candidate)", 199, 18, 320.0 / 12_000.0, 90_000);
     // Leg 2: what it would cost after a shared /2 — half the samples,

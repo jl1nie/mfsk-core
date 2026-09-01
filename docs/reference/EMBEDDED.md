@@ -1815,14 +1815,17 @@ summary is:
 | streaming that decimation from the capture path (§42.1) | slot 2 067-2 118 ms → **1 998-2 000** |
 | re-deriving the budget from key-up, not the slot end (§43) | the QSO-capable budget was **500 ms**, not 1 960 |
 | two cores, candidates from a shared cursor (§44) | 1.40× on the candidate loop |
-| task stacks sized from measurement (§45) | **1 290-1 401 ms with WiFi associated** |
+| task stacks sized from measurement (§45) | 1 290-1 401 ms with WiFi associated |
+| WSJT-X's own ±1.0 s Δt window restored (§46) | budget 1 750 → **1 225 ms**; 11 decodes → 9-10 |
 
 **The budget is key-up, not the slot boundary.** FT4 is a fast-QSO
 mode, so the deadline is the moment the station must transmit — 0.5 s
 into the next slot — and the capture window closes as soon as the
-audio the search can reach has arrived (6.25 s of 7.5 s, including the
-DDC chain's group delay). Anchored to the slot end instead, a
-transmitting build had 500 ms to decode in. See §43 for the timeline.
+audio the search can reach has arrived (6.775 s of 7.5 s with WSJT-X's
+full ±1.0 s Δt window, including the DDC chain's group delay).
+Anchored to the slot end instead, a transmitting build had 500 ms to
+decode in. See §43 for the timeline and §46 for why the window is
+WSJT-X's and what that costs.
 
 **Stacks are internal DRAM, and internal DRAM is what WiFi takes.**
 The decode tasks asked for 32 KB each and used 2.6-4.5 KB; with WiFi

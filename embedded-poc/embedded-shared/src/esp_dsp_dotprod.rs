@@ -79,7 +79,30 @@
 /// for correctness of the general contract, not as a tuned threshold.
 const MIN_FFI_LEN: usize = 16;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Make [`mfsk_core_dotprod_f32`] return without computing anything.
+///
+/// **A measurement tool, not a knob.** Every stage built on `dot_f32`
+/// is part dot product and part bookkeeping — history stores, window
+/// bounds, the per-output call — and the only way to know the split is
+/// to remove one side and re-time the whole. Stubbing the dot is how
+/// this module's own "why the remaining ~2.5x was costed and declined"
+/// numbers were obtained (2026-08-22); this makes the technique a
+/// switch instead of a local edit, so the two arms can be timed in one
+/// run and cannot drift apart between builds.
+///
+/// The results are garbage while it is on. Callers are benches.
+///
+/// Costs one relaxed load per call in the normal path — a few cycles
+/// against the ~330 a 165-tap dot takes, and it is on both arms of any
+/// comparison made with it.
+static DOT_STUB: AtomicBool = AtomicBool::new(false);
+
+/// Turn the stub on or off, returning the previous state.
+pub fn set_dot_stub(on: bool) -> bool {
+    DOT_STUB.swap(on, Ordering::Relaxed)
+}
 
 /// How many `dot_f32` calls actually reach the PIE path, split by which
 /// precondition failed.
@@ -131,6 +154,9 @@ unsafe extern "C" {
 /// definition may exist in the dependency closure.
 #[unsafe(no_mangle)]
 pub extern "Rust" fn mfsk_core_dotprod_f32(a: &[f32], b: &[f32]) -> f32 {
+    if DOT_STUB.load(Ordering::Relaxed) {
+        return 0.0;
+    }
     let n = a.len().min(b.len());
     if n < MIN_FFI_LEN {
         return mfsk_core::engine::dsp::dotprod::dot_f32_portable(&a[..n], &b[..n]);

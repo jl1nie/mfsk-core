@@ -76,11 +76,12 @@ const FREQ_MAX_HZ: f32 = 2700.0;
 const SYNC_MIN: f32 = 1.2;
 const MAX_CAND: usize = 100;
 const SYNC_Q_MIN: u32 = 8;
-const NARROW_WINDOW: (i32, i32) = (0, 667);
+/// WSJT-X's own Δt window, which `ft4_rx` searches.
+const WSJTX_WINDOW: (i32, i32) = (-344, 1012);
 
 /// The last input sample `ft4_sync_search_window` can reach:
 /// `(i0_max + 105 symbols x 32) x NDOWN`.
-const NEEDED_SAMPLES: usize = (667 + 105 * 32) * 18;
+const NEEDED_SAMPLES: usize = (1012 + 105 * 32) * 18;
 
 fn slot_audio() -> Option<Vec<i16>> {
     let path = common::corpus::golden_path_or_upstream(
@@ -114,7 +115,7 @@ fn decode(audio: &[i16]) -> (usize, Vec<String>) {
     for c in &cands {
         let mut cd0 = candidate_baseband_half(&half, c.freq_hz);
         rms_normalise(&mut cd0);
-        let s2 = ft4_sync_search_window::<Ft4>(&cd0, c, NARROW_WINDOW.0, NARROW_WINDOW.1);
+        let s2 = ft4_sync_search_window::<Ft4>(&cd0, c, WSJTX_WINDOW.0, WSJTX_WINDOW.1);
         let Some(r) = process_candidate_precomputed::<Ft4>(
             c,
             &[],
@@ -159,7 +160,7 @@ fn decode_short(audio: &[i16], keep: usize) -> (usize, Vec<String>) {
     for c in &cands {
         let mut cd0 = candidate_baseband_half(&half, c.freq_hz);
         rms_normalise(&mut cd0);
-        let s2 = ft4_sync_search_window::<Ft4>(&cd0, c, NARROW_WINDOW.0, NARROW_WINDOW.1);
+        let s2 = ft4_sync_search_window::<Ft4>(&cd0, c, WSJTX_WINDOW.0, WSJTX_WINDOW.1);
         let Some(r) = process_candidate_precomputed::<Ft4>(
             c,
             &[],
@@ -218,7 +219,7 @@ fn ft4_early_close_costs_nothing_on_the_golden() {
         "needed by the search: {NEEDED_SAMPLES} samples = {:.3} s",
         NEEDED_SAMPLES as f32 / 12_000.0
     );
-    for keep in [NEEDED_SAMPLES, 73_200, 75_000, 78_000, 84_000] {
+    for keep in [NEEDED_SAMPLES, 79_500, 81_300, 84_000, 87_000] {
         let (c, msgs) = decode(&truncated(&audio, keep));
         let missing: Vec<&String> = full_msgs.iter().filter(|m| !msgs.contains(m)).collect();
         let extra: Vec<&String> = msgs.iter().filter(|m| !full_msgs.contains(m)).collect();
@@ -244,7 +245,7 @@ fn ft4_early_close_costs_nothing_on_the_golden() {
     // filtered against real history rather than against the flush's
     // zeros. If this ever costs a decode on the golden, the receiver's
     // window is wrong and not merely tight.
-    const SHIPPED_CLOSE: usize = 75_000;
+    const SHIPPED_CLOSE: usize = 81_300;
     let (_, shipped) = decode_short(&audio, SHIPPED_CLOSE);
     assert_eq!(
         shipped,
@@ -254,7 +255,7 @@ fn ft4_early_close_costs_nothing_on_the_golden() {
     );
 
     eprintln!("-- and the same closes with the periodogram finished short --");
-    for keep in [NEEDED_SAMPLES, 73_200, 75_000, 78_000, 84_000] {
+    for keep in [NEEDED_SAMPLES, 79_500, 81_300, 84_000, 87_000] {
         let (c, msgs) = decode_short(&audio, keep);
         let missing: Vec<&String> = full_msgs.iter().filter(|m| !msgs.contains(m)).collect();
         let extra: Vec<&String> = msgs.iter().filter(|m| !full_msgs.contains(m)).collect();

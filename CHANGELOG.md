@@ -16,6 +16,30 @@ streaming coarse stage below.)
 
 ### Added
 
+- **FT4 searches WSJT-X's own ±1.0 s Δt window again, and the mixer
+  stopped pushing one sample at a time.** The embedded receiver had
+  narrowed the search to ±0.5 s (measured lossless on the golden, worth
+  1.5-1.9× on the stage). The golden could not have said otherwise —
+  its DTs span −0.44…+0.30 s, inside the narrow window by construction
+  — and what the narrowing gives up is every station whose clock is off
+  by more than half a second, which on a real band outnumbers the
+  marginal-SNR stations the saved time buys. The errors add, too: this
+  receiver's own slot alignment is still open (#313).
+
+  Restoring it moves `CAPTURE_CLOSE_SAMPLES` to 6.775 s and the budget
+  to 1 225 ms, and costs one to two of the weakest candidates on the
+  14-signal golden (11 decodes → 9-10). The doubled search stage itself
+  barely shows — it is a smaller share of a candidate than it was
+  before the shared decimation and the second core, so §19's pricing no
+  longer holds.
+
+  Separately, `CandidateDdc`'s mixer wrote its output with `Vec::push`
+  per input sample — 45 000 capacity-and-length tests per candidate for
+  5 000 outputs. Writing through pre-sized slices instead is
+  bit-identical and measured **63.1 → 57.4 ms per candidate in situ**,
+  1 290-1 401 → 1 259-1 360 ms end to end. `docs/notes/FT4_BENCHMARK.md`
+  §46, issue #352.
+
 - **FT4's decode budget is now derived from key-up, and the receiver
   fits inside it with two cores and honestly-sized stacks.** Three
   changes that only make sense together, all measured on a CoreS3:

@@ -323,8 +323,20 @@ impl CandidateDdc {
     }
 
     fn push_samples<T: Copy + Into<f32>>(&mut self, audio: &[T], out: &mut Vec<Complex<f32>>) {
-        let mut mi: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
-        let mut mq: Vec<f32> = Vec::with_capacity(MIX_CHUNK);
+        // **Pre-sized, and written through slices.** These used to be
+        // `Vec::with_capacity` + `clear()` + `push` per sample, which
+        // costs a capacity test and a length update on every input
+        // sample — 45 000 of them per candidate against 5 000 outputs.
+        // That is the same per-sample overhead §30.1 found inside
+        // `FirStage::push_one` and §31 removed at the block level;
+        // measured in situ, `CandidateDdc`'s non-dot floor is 31.8 ms
+        // of a candidate's 63.1 (issue #352), and this is the cheap
+        // half of it.
+        //
+        // Bit-identical by construction: same values, same order, same
+        // arithmetic — only the stores change.
+        let mut mi: Vec<f32> = vec![0.0; MIX_CHUNK];
+        let mut mq: Vec<f32> = vec![0.0; MIX_CHUNK];
         // Stage A decimates by at most 18, so a chunk yields at most
         // `MIX_CHUNK / decim + 1` samples; stage B passes those through.
         let inner = MIX_CHUNK / self.decim_a + 2;
@@ -334,16 +346,19 @@ impl CandidateDdc {
         let mut bq: Vec<f32> = Vec::with_capacity(inner);
 
         for chunk in audio.chunks(MIX_CHUNK) {
-            mi.clear();
-            mq.clear();
-            for &s in chunk {
+            let n = chunk.len();
+            // `zip` over three slices of known length: the bounds
+            // checks fold away, where indexing would keep one per
+            // sample and `push` kept two tests.
+            for ((d_i, d_q), &s) in mi[..n].iter_mut().zip(mq[..n].iter_mut()).zip(chunk.iter()) {
                 let (i, q) = self.mixer.mix(s.into());
-                mi.push(i);
-                mq.push(q);
+                *d_i = i;
+                *d_q = q;
             }
             ai.clear();
             aq.clear();
-            self.stage_a.push_block(&mi, &mq, &mut ai, &mut aq);
+            self.stage_a
+                .push_block(&mi[..n], &mq[..n], &mut ai, &mut aq);
             bi.clear();
             bq.clear();
             self.stage_b.push_block(&ai, &aq, &mut bi, &mut bq);

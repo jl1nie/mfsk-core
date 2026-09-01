@@ -3266,3 +3266,56 @@ denominator is its own error message.)
 | **now** | **12 of 12** | **11** | **1 290-1 401 ms** | **1 750 ms, anchored to key-up** |
 
 With WiFi associated throughout, which the earlier figure never was.
+
+## 46. The Δt window goes back to WSJT-X's (2026-09-02)
+
+§18-19 narrowed this receiver's Δt search from WSJT-X's `[-344, 1012]`
+(±1.0 s) to `(0, 667)` (±0.5 s), measured it lossless on the golden and
+on an `ft4sim` DT sweep, and priced it at 1.5-1.9x on the search stage.
+The measurements were right. The conclusion drawn from them was not.
+
+**What the narrow window actually gives up is stations whose clock is
+off**, and on a real band those outnumber the marginal-SNR stations
+the extra budget buys. The two clock errors add, too: this receiver's
+own wall-clock slot alignment is still open (#313), so a station well
+inside ±0.5 s of UTC can be outside ±0.5 s of *us*.
+
+**The fixture could never have shown this.** The golden's DTs span
+−0.44…+0.30 s — inside the narrow window by construction. "Lossless on
+the golden" was a statement about that file. The instrument that does
+speak is §18's own DT sweep, where recall is 100 % inside the window
+and 0 % outside: reach is a cliff, and everything past the edge is
+lost outright rather than degraded.
+
+### What it costs, measured
+
+`ft4-demo`, same golden, same build except the window:
+
+| window | candidates | decodes | slot | budget |
+|---|---:|---:|---:|---:|
+| ±0.5 s | 12 of 12 | 11 | 1 259-1 360 ms | 1 750 ms |
+| **±1.0 s (WSJT-X)** | **10-11 of 12** | **9-10** | 1 245-1 435 ms | **1 225 ms** |
+
+**The cost is not where §19 put it.** The search stage doubling barely
+moves the slot — it is a smaller share of a candidate than it was
+before §42's shared decimation and §44's second core. What costs is
+the *budget*: covering `i0 = 1012` pushes `CAPTURE_CLOSE_SAMPLES` from
+6.25 s to 6.775 s, and 525 ms is one to two candidates at ~115 ms
+each.
+
+So the deadline cuts one or two of the weakest candidates, which is
+the trade taken deliberately: weak-SNR stations lost, off-DT stations
+regained.
+
+### Where the 525 ms comes back from
+
+§45's accounting says 419 ms a slot is not dot product, and issue #352
+has the decomposition: ~21 ms per candidate is `FirStage` copying
+every input sample into its history before dotting out of it, which a
+zero-copy path over the caller's buffer would remove. That is 254 ms
+of the 525 — about half of what the window cost, from a change that
+does not touch the search at all.
+
+(The other half of #352's floor, `CandidateDdc`'s per-sample
+`Vec::push`, is already taken: 63.1 → 57.4 ms per candidate in situ,
+1 290-1 401 → 1 259-1 360 ms end to end, bit-identical.)

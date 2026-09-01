@@ -64,9 +64,9 @@ pub const SLOT_SAMPLES: usize = 90_000;
 /// ```text
 ///   0.50 s  the other station's transmission starts
 ///   5.54 s  its frame ends (105 symbols x 48 ms)
-///   6.04 s  ...plus the +0.5 s of DT `NARROW_WINDOW` allows: every
+///   6.56 s  ...plus the +1.0 s of DT `WSJTX_WINDOW` allows: every
 ///           sample `ft4_sync_search_window` can read has arrived
-///   6.25 s  ...plus the DDC chain's group delay, so those samples are
+///   6.77 s  ...plus the DDC chain's group delay, so those samples are
 ///           filtered against real history and not against the zero
 ///           tail  <- CLOSE HERE
 ///   7.50 s  slot boundary
@@ -78,8 +78,8 @@ pub const SLOT_SAMPLES: usize = 90_000;
 /// 1.96 s the budget claimed, because the 1.96 s was anchored to the
 /// slot end rather than to the transmission that follows it. The last
 /// 1.25 s of the slot is audio no candidate can reach: the search tops
-/// out at `i0 = 667` and a frame is 105 x 32 = 3 360 downsampled
-/// samples, so 4 027 of a slot's 5 000.
+/// out at `i0 = 1012` and a frame is 105 x 32 = 3 360 downsampled
+/// samples, so 4 372 of a slot's 5 000.
 ///
 /// Measured lossless on the WSJT-X golden — same 12 candidates and the
 /// same 11 decodes as the whole slot, both with the periodogram
@@ -87,7 +87,7 @@ pub const SLOT_SAMPLES: usize = 90_000;
 /// (`tests/ft4_early_close.rs`). One recording is not a sensitivity
 /// statement; the 560-file sweep is the arm that would be, and it has
 /// not been run.
-pub const CAPTURE_CLOSE_SAMPLES: usize = 75_000;
+pub const CAPTURE_CLOSE_SAMPLES: usize = 81_300;
 
 /// `ft4::decode`'s own private `SYNC_Q_MIN` — 16 sync symbols
 /// (4 × Costas-4), at least half correct. Mirrored the same way
@@ -104,13 +104,44 @@ const FREQ_MAX_HZ: f32 = 2700.0;
 const SYNC_MIN: f32 = 1.2;
 const MAX_CAND: usize = 100;
 
-/// Δt search window, ±0.5 s about `dt = 0` in downsampled samples.
+/// Δt search window — **WSJT-X's own**, `[-344, 1012]` in downsampled
+/// samples, i.e. ±1.0 s about `dt = 0` at `i0 = 333`.
 ///
-/// Narrower than WSJT-X's `[-344, 1012]` (±1.0 s), which it searches
-/// because it cannot assume a clock. Measured lossless on both the
-/// golden and an `ft4sim` DT sweep, and worth 1.5x on the stage
-/// (§18-19): what it gives up is reach, not sensitivity.
-const NARROW_WINDOW: (i32, i32) = (0, 667);
+/// This receiver used to narrow it to `(0, 667)` (±0.5 s), which §18-19
+/// measured as lossless on the golden and on an `ft4sim` DT sweep and
+/// worth 1.5-1.9x on the search stage: what it gave up was *reach*,
+/// not sensitivity. It is restored anyway. WSJT-X is this crate's
+/// reference implementation and searches ±1.0 s because it cannot
+/// assume the other station has a clock — a receiver that quietly
+/// searches half of that decodes a different set of stations on a
+/// real band, and "the ones inside ±0.5 s" is not a property anyone
+/// operating the radio can see.
+///
+/// It is not free, and the price turned out to be somewhere other than
+/// where §19 measured it. The search stage roughly doubling barely
+/// shows — it is a smaller share of a candidate than it was before the
+/// shared decimation and the second core — but
+/// [`CAPTURE_CLOSE_SAMPLES`] has to extend to cover `i0 = 1012`, and
+/// **that** costs 525 ms of budget, which on the 14-signal golden is
+/// one to two candidates: 11 decodes become 9-10.
+///
+/// **Why that trade is still right, and why the fixture cannot show
+/// it.** What the deadline cuts is the *weakest* candidates, so the
+/// narrow window buys marginal-SNR stations. What the narrow window
+/// gives up is every station whose clock is off by more than half a
+/// second — and on a real band those are more common than the
+/// marginal-SNR ones. The two errors also add: this receiver's own
+/// slot alignment is still an open item (#313), so a station well
+/// inside ±0.5 s of UTC can sit outside ±0.5 s of *us*.
+///
+/// The golden recording cannot weigh in on this. Its DTs span
+/// -0.44…+0.30 s, so it fits inside the narrow window by
+/// construction — which is exactly why §18-19's "lossless" was a
+/// statement about that file rather than about the band. The
+/// instrument that does speak is §18's `ft4sim` DT sweep, where recall
+/// is 100 % inside the window and 0 % outside it: reach is a cliff,
+/// not a curve, and every station past the edge is lost outright.
+const WSJTX_WINDOW: (i32, i32) = (-344, 1012);
 
 /// A finished slot: its audio, and the periodogram accumulated while
 /// that audio was arriving.
@@ -247,7 +278,7 @@ pub struct Ft4Decode {
 }
 
 /// Milliseconds from [`CAPTURE_CLOSE_SAMPLES`] to the moment this
-/// station must be transmitting: `8.0 s − 6.25 s`.
+/// station must be transmitting: `8.0 s − 6.775 s`.
 ///
 /// The budget a **transceiver** has. Derived from key-up, not from the
 /// slot boundary — see [`CAPTURE_CLOSE_SAMPLES`] for the timeline and
@@ -255,10 +286,13 @@ pub struct Ft4Decode {
 /// never transmits has until the next slot instead — see
 /// [`decode_slot`]'s `budget_ms` and [`RX_ONLY_BUDGET_MS`].
 ///
-/// It is 210 ms narrower than the old number and it is the real one:
-/// a QSO-capable build had 500 ms under the previous anchoring, not
-/// 1 960.
-pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_750;
+/// Two things narrowed it from the 1 960 ms this used to claim: the
+/// anchor moved to key-up (which is what the number always should have
+/// meant), and [`WSJTX_WINDOW`] restored WSJT-X's full ±1.0 s DT
+/// search, which pushes the capture window out by 0.52 s. Both are
+/// deliberate. A QSO-capable build had 500 ms under the old
+/// anchoring — the budget did not shrink, it was measured.
+pub const TX_TURNAROUND_BUDGET_MS: i64 = 1_225;
 
 /// A whole FT4 slot, so a receive-only monitor can spend one.
 ///
@@ -416,7 +450,7 @@ extern "C" fn par_worker(arg: *mut core::ffi::c_void) {
 fn decode_candidate(half: &[f32], cand: &SyncCandidate) -> Option<Ft4Decode> {
     let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
     rms_normalise(&mut cd0);
-    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
+    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, WSJTX_WINDOW.0, WSJTX_WINDOW.1);
     let r = process_candidate_precomputed::<Ft4>(
         cand,
         &[],
