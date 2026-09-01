@@ -86,8 +86,10 @@ fn main() -> ! {
     // completed" writes with the board parked in DOWNLOAD mode and no
     // boot log to say which one was running).
     log::info!(
-        "ft4-demo: front end = shared /2 streamed during capture \
-         (SlotDecimator -> CandidateDdc::new_half_rate)"
+        "ft4-demo: front end = shared /2 streamed during capture; window closes at \
+         {} samples, budget {} ms to key-up",
+        ft4::CAPTURE_CLOSE_SAMPLES,
+        ft4::TX_TURNAROUND_BUDGET_MS
     );
 
     // The candidate loop is compute-bound for hundreds of milliseconds
@@ -107,7 +109,48 @@ fn main() -> ! {
 
     let peripherals = Peripherals::take().expect("peripherals taken twice");
     let nvs_part = EspDefaultNvsPartition::take().expect("NVS partition take");
-    let nvs = boot_mode::open_nvs(nvs_part).expect("NVS open mfsk namespace");
+    let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
+
+    // WiFi, through the same `crate::net` path the receivers use, and
+    // for one measurement in particular: the candidate worker's stack
+    // has to come out of internal DRAM, and §30 recorded the largest
+    // free internal block with WiFi up as 31 744 B against a 32 KB
+    // ask. This bin is where that gets measured, because the app
+    // installs the USB host driver and takes the serial console with
+    // it — the same conditions, minus the console this measurement
+    // needs. `MFSK_FT4_DEMO_WIFI=1` opts in; the demo is silent by
+    // default so a desk without an AP still runs it.
+    // Runtime condition, not a build-time one: `option_env!` is not
+    // tracked by cargo, so a flag set on one build and not the next is
+    // exactly the kind of difference that makes a measurement lie
+    // about which arm it measured. cfg.toml's presence is the switch.
+    if app::WIFI_SSID.is_empty() {
+        log::info!("ft4-demo: no cfg.toml WiFi credentials — running without the network");
+    } else {
+        log::info!("ft4-demo: bringing WiFi up (measuring the worker stack against it)");
+        let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take().expect("sysloop");
+        match mfsk_app_shared::wifi::wifi_driver_init(
+            peripherals.modem,
+            sysloop,
+            Some(nvs_part.clone()),
+        ) {
+            Ok(driver) => {
+                let settings_nvs = mfsk_app_shared::settings::open_nvs(nvs_part.clone())
+                    .expect("settings NVS open");
+                app::net::spawn(
+                    driver,
+                    std::sync::Arc::new(std::sync::Mutex::new(settings_nvs)),
+                    app::net::Config {
+                        name: "ft4-demo::net",
+                        policy: app::net::DECODE_FIRST,
+                        power_save: true,
+                        on_ntp: |synced| log::info!("ft4-demo: NTP synced = {synced}"),
+                    },
+                );
+            }
+            Err(e) => log::error!("ft4-demo: WiFi driver init failed: {e:#}"),
+        }
+    }
 
     let spawn = app::board::spawn_named(c"ft4feed", FEED_STACK, feed_loop);
     if let Err(e) = spawn {

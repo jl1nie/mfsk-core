@@ -39,6 +39,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 
 use embedded_shared::apps::ft4_rx as rx;
@@ -152,6 +153,55 @@ pub fn run(peripherals: Peripherals, nvs_part: EspDefaultNvsPartition) -> ! {
     );
 
     let nvs = boot_mode::open_nvs(nvs_part.clone()).expect("NVS open mfsk namespace");
+
+    // WiFi, through the same path `fst4_app` and `wspr_app` use
+    // (`crate::net`). FT4 did not bring the network up at all until
+    // 2026-09-01, which was survivable for a receiver replaying a
+    // baked slot and is not for a QSO: the slot grid needs absolute
+    // time, and NTP is where it comes from.
+    //
+    // Driver construction is synchronous and stays here — `modem` is
+    // consumed by value and is not returned on `Err` — while the slow,
+    // flaky half is what `net::spawn` backgrounds. It runs **before**
+    // the slot task so that the internal DRAM WiFi wants is claimed
+    // before the decoder's own worker asks for its stack, rather than
+    // after: which of the two loses is a fact worth having on the log,
+    // not a race worth hiding.
+    let modem = peripherals.modem;
+    if crate::WIFI_SSID.is_empty() {
+        log::warn!("ft4_app: WIFI_SSID empty (no cfg.toml) — no NTP, no UDP log, no config page");
+    } else {
+        let sysloop = EspSystemEventLoop::take().expect("sysloop");
+        match mfsk_app_shared::wifi::wifi_driver_init(modem, sysloop, Some(nvs_part.clone())) {
+            Ok(driver) => {
+                let settings_nvs = mfsk_app_shared::settings::open_nvs(nvs_part.clone())
+                    .expect("settings NVS open");
+                crate::net::spawn(
+                    driver,
+                    std::sync::Arc::new(std::sync::Mutex::new(settings_nvs)),
+                    crate::net::Config {
+                        name: "ft4_app::net",
+                        // FT4's decode budget is 1 750 ms from window
+                        // close to key-up, and the WiFi task runs at
+                        // priority 23: an association campaign in the
+                        // middle of a slot is a missed QSO, not a slow
+                        // log.
+                        policy: crate::net::DECODE_FIRST,
+                        power_save: true,
+                        // The shared `StatusInfo` has no NTP field —
+                        // the FT8 panel shows time through `utc_sod`,
+                        // which NTP sets by setting the clock. So this
+                        // only says whether it happened; putting it on
+                        // the status bar is part of moving the other
+                        // two receivers onto this panel, not of this
+                        // change.
+                        on_ntp: |synced| log::info!("ft4_app: NTP synced = {synced}"),
+                    },
+                );
+            }
+            Err(e) => log::error!("ft4_app: WiFi driver init failed (permanent this boot): {e:#}"),
+        }
+    }
 
     spawn_slot_task();
 

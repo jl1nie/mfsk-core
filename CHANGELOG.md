@@ -57,6 +57,26 @@ streaming coarse stage below.)
   and 10 at the start of the day. `docs/notes/FT4_BENCHMARK.md`
   §43-§45.
 
+- **One network bring-up for every receiver on the CoreS3
+  (`crate::net`).** `wspr_app` and `fst4_app` each carried their own
+  copy of associate → UDP log → NTP → HTTP config, and the copies had
+  drifted in ways that were real: unbounded retry versus bounded
+  campaigns, and `WIFI_PS_MIN_MODEM` on one but not the other. Those
+  are now `Policy` and `power_save` parameters, each app keeping the
+  behaviour it had. **FT4 gains the network it never had** — it is the
+  reason this was consolidated rather than copied a third time, since
+  a QSO needs absolute time and NTP is where it comes from. 324 lines
+  net removed from the two apps.
+
+- **`embedded-poc/scripts/capture.sh`** wraps `flash-monitor.sh` with
+  the five things that went wrong repeatedly in one session: waiting
+  for another capture to release the serial port, re-attaching a board
+  that `usbipd` reports as attached while `lsusb` cannot see it, never
+  overwriting an existing log, failing loudly when a capture produced
+  no marker line, and naming the physical step (a short RST press, or
+  a 2 s hold for an image that installs the USB host driver) instead of
+  retrying into the same wall.
+
 - **`ft4::ddc` gained a shared front end, and FT4 stopped cutting
   candidates on the board.** The per-candidate chain filtered all
   90 000 samples of the slot at 12 kHz — 61 ms of a candidate's ~96 —

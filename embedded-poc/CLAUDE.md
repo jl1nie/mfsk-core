@@ -51,14 +51,41 @@ source ~/export-esp.sh
 cd embedded-poc/<crate>
 cargo build --release
 
-# 3. Flash and capture, via the wrapper that gets the espflash
-#    reset flags right (avoids dropping S3 USB-OTG boards into
-#    DOWNLOAD mode on the second flash).
-../scripts/flash-monitor.sh \
+# 3. Flash and capture. `capture.sh` wraps `flash-monitor.sh` and is
+#    what to reach for by default; the inner script is still there for
+#    the cases the wrapper's checks would get in the way of.
+../scripts/capture.sh \
     target/<triple>/release/<bin> \
     logs/<bin>_<tag>_$(date +%Y-%m-%d).log \
-    90    # capture seconds (optional, default 90)
+    90 \                     # capture seconds (optional, default 120)
+    "expected: some line"     # marker: absent → non-zero exit
 ```
+
+**Use `capture.sh`, not `flash-monitor.sh` directly.** The inner
+script gets the espflash flags right; the wrapper handles everything
+around the call, all of it learned the expensive way in one session
+(2026-09-01):
+
+- **Waits for the serial port.** A previous capture's espflash holds
+  it for its whole window; a flash launched into that dies with
+  "Failed to open serial port", and a naive guard makes it look like
+  it ran. (Check with `pgrep -x espflash` — `pgrep -f 'espflash flash'`
+  matches the waiting shell's own command line.)
+- **Re-attaches the board.** `usbipd list` can report `Attached` while
+  `lsusb` sees nothing and `/dev/ttyACM0` is a stale node; espflash
+  then says "Error while connecting to device". The wrapper detaches
+  and re-attaches, and when it cannot fix it from WSL it names the
+  physical step instead of retrying.
+- **Never overwrites a log.** A rerun that reuses a filename destroys
+  the measurement it was meant to compare against.
+- **Fails when nothing was captured.** With a marker regex, an empty
+  log is an error, not a result.
+- **Names the download-mode case.** The `ft4`/`fst4`/`wspr` *apps*
+  install the USB host driver through the display panel, which
+  detaches USB-Serial-JTAG — the running image cannot then be
+  re-flashed without holding RST ~2 s first. Benches and `ft4-demo` do
+  not do this, which is why a measurement that needs many flashes
+  belongs in a bench.
 
 `cargo run --release` works the same when the runner in
 `.cargo/config.toml` is set up and the shell is interactive
