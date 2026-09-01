@@ -1813,6 +1813,23 @@ summary is:
 | a candidate loop held to a slot deadline (§34) | the overrun became an operating choice instead of a fact |
 | the shared decimation (§42) | ~188 → ~168 ms per candidate |
 | streaming that decimation from the capture path (§42.1) | slot 2 067-2 118 ms → **1 998-2 000** |
+| re-deriving the budget from key-up, not the slot end (§43) | the QSO-capable budget was **500 ms**, not 1 960 |
+| two cores, candidates from a shared cursor (§44) | 1.40× on the candidate loop |
+| task stacks sized from measurement (§45) | **1 290-1 401 ms with WiFi associated** |
+
+**The budget is key-up, not the slot boundary.** FT4 is a fast-QSO
+mode, so the deadline is the moment the station must transmit — 0.5 s
+into the next slot — and the capture window closes as soon as the
+audio the search can reach has arrived (6.25 s of 7.5 s, including the
+DDC chain's group delay). Anchored to the slot end instead, a
+transmitting build had 500 ms to decode in. See §43 for the timeline.
+
+**Stacks are internal DRAM, and internal DRAM is what WiFi takes.**
+The decode tasks asked for 32 KB each and used 2.6-4.5 KB; with WiFi
+associated that waste pushed the largest free internal block to
+31 744 B and the decoder's own allocations into PSRAM, costing
+400-580 ms a slot. Stopping the radio does *not* fix it
+(`esp_wifi_stop` frees nothing); sizing the stacks does. §45.
 
 `ft4-demo` on the replayed golden slot — the 14-signal, FT8-density
 pessimum — now runs **12 of 12 candidates and decodes 11**, against 11

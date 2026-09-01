@@ -159,7 +159,8 @@ use mfsk_core::engine::pipeline::{
 };
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
-use mfsk_core::ft4::ddc::candidate_baseband;
+use mfsk_core::ft4::ddc::{candidate_baseband, candidate_baseband_half, decimate_slot};
+use num_complex::Complex;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
@@ -397,11 +398,24 @@ fn compare_candidates(device: &[SyncCandidate], baked: &[SyncCandidate]) {
     }
 }
 
-/// One candidate's SHIP-configuration work, factored so the
-/// single-core and dual-core passes run byte-identical code.
-fn ship_candidate(audio: &[i16], cand: &SyncCandidate) -> Option<alloc::string::String> {
-    let mut cd0 = candidate_baseband(audio, cand.freq_hz);
+/// A candidate's front end: the half-rate DDC and the normalisation.
+///
+/// Split out from [`ship_tail`] so the pipeline probe can run the two
+/// halves on different cores while every arm executes byte-identical
+/// code. **No transforms happen here** — the DDC is FIR and mixers
+/// only — which is the whole reason a pipeline split might beat a
+/// candidate split: `Fc32Guard` is a process-global spinlock, and if
+/// only one core ever runs a transform there is nothing to contend
+/// for.
+fn ship_ddc(half: &[f32], cand: &SyncCandidate) -> alloc::vec::Vec<Complex<f32>> {
+    let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
     rms_normalise(&mut cd0);
+    cd0
+}
+
+/// The rest of a candidate: Δt search, LLR, BP. `symbol_spectra`'s
+/// per-symbol transforms live in here.
+fn ship_tail(cd0: alloc::vec::Vec<Complex<f32>>, cand: &SyncCandidate) -> Option<alloc::string::String> {
     let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
     let r = process_candidate_precomputed::<Ft4>(
         cand,
@@ -422,9 +436,14 @@ fn ship_candidate(audio: &[i16], cand: &SyncCandidate) -> Option<alloc::string::
         .and_then(|m77: &[u8; 77]| unpack77(m77))
 }
 
+/// Both halves, as the receiver runs them.
+fn ship_candidate(half: &[f32], cand: &SyncCandidate) -> Option<alloc::string::String> {
+    ship_tail(ship_ddc(half, cand), cand)
+}
+
 struct HalfArgs {
-    audio: *const i16,
-    audio_len: usize,
+    half: *const f32,
+    half_len: usize,
     cands: *const SyncCandidate,
     n: usize,
     decodes: core::sync::atomic::AtomicUsize,
@@ -439,11 +458,11 @@ extern "C" fn half_worker(arg: *mut core::ffi::c_void) {
     // SAFETY: `dualcore_probe` leaks the `HalfArgs` and does not return
     // until `done` is set.
     let a: &'static HalfArgs = unsafe { &*(arg as *const HalfArgs) };
-    let audio = unsafe { core::slice::from_raw_parts(a.audio, a.audio_len) };
+    let half = unsafe { core::slice::from_raw_parts(a.half, a.half_len) };
     let cands = unsafe { core::slice::from_raw_parts(a.cands, a.n) };
     let mut got = 0usize;
     for c in cands {
-        if ship_candidate(audio, c).is_some() {
+        if ship_candidate(half, c).is_some() {
             got += 1;
         }
     }
@@ -466,7 +485,7 @@ extern "C" fn half_worker(arg: *mut core::ffi::c_void) {
 /// `symbol_spectra`'s per-symbol 32-point transforms do — ~19 % of the
 /// SHIP candidate time — and those serialise. This measures what is
 /// left after that.
-fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
+fn dualcore_probe(half: &'static [f32], candidates: &'static [SyncCandidate]) {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let n = candidates.len();
@@ -479,15 +498,15 @@ fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
     let t0 = now_us();
     let mut serial = 0usize;
     for c in candidates {
-        if ship_candidate(audio, c).is_some() {
+        if ship_candidate(half, c).is_some() {
             serial += 1;
         }
     }
     let serial_us = now_us() - t0;
 
     let args: &'static HalfArgs = alloc::boxed::Box::leak(alloc::boxed::Box::new(HalfArgs {
-        audio: audio.as_ptr(),
-        audio_len: audio.len(),
+        half: half.as_ptr(),
+        half_len: half.len(),
         cands: candidates[split..].as_ptr(),
         n: n - split,
         decodes: AtomicUsize::new(0),
@@ -513,7 +532,7 @@ fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
     }
     let mut here = 0usize;
     for c in &candidates[..split] {
-        if ship_candidate(audio, c).is_some() {
+        if ship_candidate(half, c).is_some() {
             here += 1;
         }
     }
@@ -530,6 +549,149 @@ fn dualcore_probe(audio: &'static [i16], candidates: &'static [SyncCandidate]) {
         par_us / 1000,
         serial_us / par_us.max(1),
         (serial_us * 100 / par_us.max(1)) % 100,
+    );
+}
+
+/// Depth of the pipeline probe's hand-off. Two is enough to keep both
+/// stages busy and costs 2 x 40 KB of `cd0`; deeper only buys slack
+/// against a variance the measurement does not show.
+const PIPE_DEPTH: usize = 2;
+
+struct PipeArgs {
+    half: *const f32,
+    half_len: usize,
+    cands: *const SyncCandidate,
+    n: usize,
+    /// The hand-off. Written only by the producer while
+    /// `produced - consumed < PIPE_DEPTH`, read (and emptied) only by
+    /// the consumer while `produced > consumed` — the two counters are
+    /// the whole protocol.
+    slots: [core::cell::UnsafeCell<alloc::vec::Vec<Complex<f32>>>; PIPE_DEPTH],
+    produced: core::sync::atomic::AtomicUsize,
+    consumed: core::sync::atomic::AtomicUsize,
+}
+// SAFETY: the pointers address leaked immutable slices; each slot is
+// touched by exactly one side at a time, and the Acquire/Release pair
+// on `produced`/`consumed` is what establishes that.
+unsafe impl Sync for PipeArgs {}
+
+extern "C" fn pipe_producer(arg: *mut core::ffi::c_void) {
+    use core::sync::atomic::Ordering;
+    // SAFETY: `pipeline_probe` leaks the args and waits for the
+    // consumer to drain every slot before returning.
+    let a: &'static PipeArgs = unsafe { &*(arg as *const PipeArgs) };
+    let half = unsafe { core::slice::from_raw_parts(a.half, a.half_len) };
+    let cands = unsafe { core::slice::from_raw_parts(a.cands, a.n) };
+    for (i, c) in cands.iter().enumerate() {
+        while i - a.consumed.load(Ordering::Acquire) >= PIPE_DEPTH {
+            core::hint::spin_loop();
+        }
+        let cd0 = ship_ddc(half, c);
+        // SAFETY: the consumer has not been told about slot `i` yet.
+        unsafe { *a.slots[i % PIPE_DEPTH].get() = cd0 };
+        a.produced.store(i + 1, Ordering::Release);
+    }
+    unsafe { esp_idf_svc::sys::vTaskDelete(core::ptr::null_mut()) };
+}
+
+/// The other way to use the second core: **split the stages, not the
+/// candidates**.
+///
+/// §30 measured a candidate split at 1.33x and §31.1 re-measured it at
+/// 1.17x once the FIR got cheaper, and named the reasons: `Fc32Guard`
+/// is a process-global spinlock held across every transform, and a
+/// spinning core burns cycles rather than yielding them; and both
+/// cores stream `cd0` from PSRAM.
+///
+/// A pipeline attacks exactly those two. The DDC half runs no
+/// transform at all, so if it is the only thing on core 1 then
+/// **nothing contends for the FFT guard** — one core owns every
+/// transform. The hand-off is one `cd0` at a time rather than two
+/// candidates' worth of streaming.
+///
+/// Its ceiling is lower: a candidate split can approach 2x, a two-stage
+/// pipeline can only reach `total / max(stage)`. Which ceiling is
+/// closer to the real number is the measurement, not the argument.
+fn pipeline_probe(half: &'static [f32], candidates: &'static [SyncCandidate]) {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    let n = candidates.len();
+    if n < 2 {
+        return;
+    }
+
+    // Stage timings first: a pipeline's throughput is its slowest
+    // stage, so these say what the ceiling is before the run says what
+    // was reached.
+    let t = now_us();
+    for c in candidates {
+        core::hint::black_box(ship_ddc(half, c));
+    }
+    let ddc_us = now_us() - t;
+
+    let t = now_us();
+    let mut serial = 0usize;
+    for c in candidates {
+        if ship_candidate(half, c).is_some() {
+            serial += 1;
+        }
+    }
+    let serial_us = now_us() - t;
+    let tail_us = serial_us - ddc_us;
+
+    let args: &'static PipeArgs = alloc::boxed::Box::leak(alloc::boxed::Box::new(PipeArgs {
+        half: half.as_ptr(),
+        half_len: half.len(),
+        cands: candidates.as_ptr(),
+        n,
+        slots: [const { core::cell::UnsafeCell::new(alloc::vec::Vec::new()) }; PIPE_DEPTH],
+        produced: AtomicUsize::new(0),
+        consumed: AtomicUsize::new(0),
+    }));
+
+    const WORKER_STACK: u32 = 32 * 1024;
+    let t0 = now_us();
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(pipe_producer),
+            c"ft4_pipe".as_ptr(),
+            WORKER_STACK,
+            args as *const _ as *mut core::ffi::c_void,
+            5,
+            core::ptr::null_mut(),
+            1,
+        )
+    };
+    if created != 1 {
+        log::warn!("ft4_bench: pipeline probe skipped — could not create the core-1 task");
+        return;
+    }
+
+    let mut got = 0usize;
+    for (i, c) in candidates.iter().enumerate() {
+        while args.produced.load(Ordering::Acquire) <= i {
+            core::hint::spin_loop();
+        }
+        // SAFETY: the producer published slot `i` and will not touch it
+        // again until `consumed` passes it.
+        let cd0 = unsafe { core::mem::take(&mut *args.slots[i % PIPE_DEPTH].get()) };
+        args.consumed.store(i + 1, Ordering::Release);
+        if ship_tail(cd0, c).is_some() {
+            got += 1;
+        }
+    }
+    let pipe_us = now_us() - t0;
+
+    log::info!(
+        "ft4_bench: pipeline probe — {n} candidates | stages: DDC {} ms + tail {} ms          (ceiling {}.{:02}x) | 1 core {} ms | pipelined {} ms | {}.{:02}x |          decodes {got} (serial {serial})",
+        ddc_us / 1000,
+        tail_us / 1000,
+        serial_us / ddc_us.max(tail_us).max(1),
+        (serial_us * 100 / ddc_us.max(tail_us).max(1)) % 100,
+        serial_us / 1000,
+        pipe_us / 1000,
+        serial_us / pipe_us.max(1),
+        (serial_us * 100 / pipe_us.max(1)) % 100,
     );
 }
 
@@ -1552,7 +1714,10 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     let audio_s: &'static [i16] = alloc::boxed::Box::leak(audio.clone().into_boxed_slice());
     let cands_s: &'static [SyncCandidate] =
         alloc::boxed::Box::leak(candidates.clone().into_boxed_slice());
-    dualcore_probe(audio_s, cands_s);
+    let half_s: &'static [f32] =
+        alloc::boxed::Box::leak(decimate_slot(audio_s).into_boxed_slice());
+    dualcore_probe(half_s, cands_s);
+    pipeline_probe(half_s, cands_s);
 
     log::info!(
         "ft4_bench: stack headroom {} B of {} B",

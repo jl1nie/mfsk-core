@@ -105,10 +105,15 @@ const REPLAY_BLOCK: usize = 256;
 /// only.
 const WF_ROW_DECIM: usize = 6;
 
-/// Stack for the decode task. `decode_slot` keeps a slot of audio and
-/// one `cd0` per candidate, both heap; the frames themselves are
-/// modest. Matches what `decode_pipeline` asks for on the FT8 path.
-const DECODE_STACK: u32 = 32 * 1024;
+/// Stack for the decode task.
+///
+/// **8 KB, measured** — the same code in `ft4-demo`'s feed thread used
+/// 2 584 B of 32 KB (2026-09-01, `board::log_task_stacks`). Everything
+/// large is heap: a slot of audio, one `cd0` per candidate. The 32 KB
+/// this used to ask for came from the FT8 path and cost internal DRAM
+/// the decoder's own allocations needed more (`ft4_rx::WORKER_STACK`
+/// carries the argument).
+const DECODE_STACK: u32 = 8 * 1024;
 
 /// Raw 12 kHz samples between the audio callback and the slot task.
 ///

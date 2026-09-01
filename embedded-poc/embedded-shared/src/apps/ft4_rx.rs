@@ -47,6 +47,9 @@ use mfsk_core::ft4::ddc::{SlotDecimator, candidate_baseband_half};
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use mfsk_core::engine::sync::SyncCandidate;
 use num_complex::Complex;
 
 /// One FT4 slot at 12 kHz: 7.5 s.
@@ -322,6 +325,125 @@ pub struct SlotOutcome {
 /// up about a quarter of the recall on weak signals — the OSD ladder is
 /// what costs, and at 12 candidates it is ~900 ms of a 1 960 ms budget.
 /// Revisit when the budget has room, not before.
+/// Stack for the core-1 candidate worker.
+///
+/// **8 KB, from a measurement rather than a guess.** The first version
+/// asked for 32 KB because the app's decode task did; then
+/// `board::log_task_stacks` was made to report every task's headroom
+/// instead of only the tight ones, and the task running exactly this
+/// code — `ft4-demo`'s feed thread — turned out to use **2 584 B of
+/// its 32 KB**. The per-candidate buffers are all heap (`cd0` alone is
+/// 40 KB); the stack holds small locals.
+///
+/// That is not a tidiness point. This stack comes out of **internal
+/// DRAM**, which is the board's scarce resource: with WiFi's driver
+/// buffers live the largest free internal block measured 31 744 B
+/// (2026-09-01, and §30 recorded the same number), against a 32 KB
+/// ask. Sizing from the measurement takes the worker off that cliff
+/// and hands 24 KB back to the allocations the decoder makes for
+/// itself, whose fallback to PSRAM is what an FT4 slot actually pays
+/// for (§26.3: 41 % on the 2 304-point workspace).
+///
+/// [`decode_slot`] still falls back to one core when the task cannot
+/// be created — a receiver that decodes fewer candidates is a
+/// receiver; one that panics at slot 1 is not.
+const WORKER_STACK: u32 = 8 * 1024;
+
+/// Everything the two cores share for one slot.
+///
+/// Candidates are taken from `next` rather than split in half:
+/// `ft4_coarse_sync` returns them in descending score and they are not
+/// equal cost, so a fixed split leaves one core idle at the end (§30
+/// named this as one of the three reasons its probe reached 1.33x and
+/// not 2x). Taking from a cursor also makes the deadline work
+/// per-core with no coordination: whichever core notices first simply
+/// stops taking.
+struct ParShared {
+    half: *const f32,
+    half_len: usize,
+    cands: *const SyncCandidate,
+    n: usize,
+    next: AtomicUsize,
+    deadline: i64,
+    /// One slot per candidate, written by whichever core took that
+    /// index. No lock: the cursor hands out each index exactly once,
+    /// so the writes are disjoint, and `done`'s Release/Acquire pair
+    /// publishes them all at the join.
+    res: *const UnsafeCell<Option<Ft4Decode>>,
+    done: AtomicBool,
+    stack_hw_bytes: AtomicU32,
+}
+// SAFETY: `half` and `cands` address buffers owned by `decode_slot`'s
+// frame, which does not return until `done` is set; every mutation
+// goes through the atomics or the mutex.
+unsafe impl Sync for ParShared {}
+
+/// The candidate loop, run by both cores against the same cursor.
+fn run_candidates(s: &ParShared) {
+    // SAFETY: see the `Sync` impl — both slices outlive this call.
+    let half = unsafe { core::slice::from_raw_parts(s.half, s.half_len) };
+    let cands = unsafe { core::slice::from_raw_parts(s.cands, s.n) };
+    loop {
+        if now_us() >= s.deadline {
+            return;
+        }
+        let i = s.next.fetch_add(1, Ordering::AcqRel);
+        if i >= cands.len() {
+            return;
+        }
+        let d = decode_candidate(half, &cands[i]);
+        // SAFETY: index `i` came from `fetch_add`, so this core is the
+        // only one that has it, and nothing reads the slots until
+        // `done` is observed.
+        unsafe { *(*s.res.add(i)).get() = d };
+    }
+}
+
+extern "C" fn par_worker(arg: *mut core::ffi::c_void) {
+    // SAFETY: `decode_slot` waits for `done` before its frame goes
+    // away, so the reference is live for the whole call.
+    let s: &ParShared = unsafe { &*(arg as *const ParShared) };
+    run_candidates(s);
+    let hw = unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
+    s.stack_hw_bytes.store(hw, Ordering::Relaxed);
+    s.done.store(true, Ordering::Release);
+    unsafe { esp_idf_svc::sys::vTaskDelete(core::ptr::null_mut()) };
+}
+
+/// One candidate, end to end: half-rate DDC, RMS normalise, narrowed
+/// Δt search, decode. No shared mutable state beyond the global FFT
+/// planner's own guard, which is what lets two cores run it at once.
+fn decode_candidate(half: &[f32], cand: &SyncCandidate) -> Option<Ft4Decode> {
+    let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
+    rms_normalise(&mut cd0);
+    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
+    let r = process_candidate_precomputed::<Ft4>(
+        cand,
+        &[],
+        &FT4_DOWNSAMPLE,
+        DecodeDepth::EMBEDDED,
+        DecodeStrictness::Normal,
+        &[],
+        EqMode::Off,
+        SYNC_Q_MIN,
+        (cd0, s2.freq_hz, s2.i0, s2.score),
+        false,
+        false,
+    )?;
+    let text = r
+        .message77()
+        .try_into()
+        .ok()
+        .and_then(|m77: &[u8; 77]| unpack77(m77))?;
+    Some(Ft4Decode {
+        msg: text,
+        freq_hz: r.freq_hz,
+        dt_sec: r.dt_sec,
+        snr_db: r.snr_db,
+        hard_errors: r.hard_errors,
+    })
+}
+
 pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
     let deadline = slot.closed_us + budget_ms * 1_000;
     let cands = ft4_coarse_sync_from_savg(
@@ -332,69 +454,100 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
         None,
         MAX_CAND,
     );
+
     // The shared half of the front end costs nothing here: `SlotAccum`
-    // decimated the slot while it was arriving. `ft4::ddc`'s stage A
+    // decimated the window while it was arriving. `ft4::ddc`'s stage A
     // used to filter all 90 000 samples per candidate at 12 kHz
-    // (61.0 ms) and now sees 45 000 at 6 kHz with half the taps
-    // (30.8 ms), with the ÷2 that makes that possible (108.7 ms) off
-    // the post-slot budget entirely — the same move §32 made for the
-    // coarse stage, and for the same reason: on this receiver the
-    // budget is candidates, and candidates are decodes
-    // (`docs/notes/FT4_BENCHMARK.md` §37, §42).
-    let half = &slot.half;
-    let mut out: Vec<Ft4Decode> = Vec::new();
-    let mut tried = 0usize;
-    let mut cut_at_score = None;
-    for cand in &cands {
-        if now_us() >= deadline {
-            cut_at_score = Some(cand.score);
-            break;
-        }
-        tried += 1;
-        let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
-        rms_normalise(&mut cd0);
-        let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
-        let Some(r) = process_candidate_precomputed::<Ft4>(
-            cand,
-            &[],
-            &FT4_DOWNSAMPLE,
-            DecodeDepth::EMBEDDED,
-            DecodeStrictness::Normal,
-            &[],
-            EqMode::Off,
-            SYNC_Q_MIN,
-            (cd0, s2.freq_hz, s2.i0, s2.score),
-            false,
-            false,
-        ) else {
-            continue;
-        };
-        let Some(text) = r
-            .message77()
-            .try_into()
-            .ok()
-            .and_then(|m77: &[u8; 77]| unpack77(m77))
-        else {
-            continue;
-        };
-        // FT4 decodes raw candidates and dedups afterwards, the way
-        // `decode_frame_impl`'s own FT4 arm does — two candidates can
-        // land on one signal.
-        if out.iter().any(|d| d.msg == text) {
-            continue;
-        }
-        out.push(Ft4Decode {
-            msg: text,
-            freq_hz: r.freq_hz,
-            dt_sec: r.dt_sec,
-            snr_db: r.snr_db,
-            hard_errors: r.hard_errors,
-        });
+    // (61.0 ms) and now sees 6.25 s of it at 6 kHz with half the taps
+    // (30.8 ms), with the ÷2 that makes that possible off the
+    // post-window budget entirely (`docs/notes/FT4_BENCHMARK.md` §37,
+    // §42).
+    let res: Vec<UnsafeCell<Option<Ft4Decode>>> =
+        (0..cands.len()).map(|_| UnsafeCell::new(None)).collect();
+    let shared = ParShared {
+        half: slot.half.as_ptr(),
+        half_len: slot.half.len(),
+        cands: cands.as_ptr(),
+        n: cands.len(),
+        next: AtomicUsize::new(0),
+        deadline,
+        res: res.as_ptr(),
+        done: AtomicBool::new(false),
+        stack_hw_bytes: AtomicU32::new(0),
+    };
+
+    // Core 1 takes candidates from the same cursor this core does.
+    // Measured on the golden's 12: 1 923 ms on one core, 1 367 on two
+    // (1.40x, `ft4-bench`'s dual-core probe), which is what brings the
+    // whole list inside `TX_TURNAROUND_BUDGET_MS`. §31.1 had measured
+    // the same probe at 1.17x and called dual-core closed; the shared
+    // decimation is what changed that, by taking most of the PSRAM
+    // streaming out of the per-candidate half.
+    let created = unsafe {
+        esp_idf_svc::sys::xTaskCreatePinnedToCore(
+            Some(par_worker),
+            c"ft4_cand".as_ptr(),
+            WORKER_STACK,
+            &shared as *const ParShared as *mut core::ffi::c_void,
+            5,
+            core::ptr::null_mut(),
+            1,
+        )
+    } == 1;
+    if !created {
+        // Not fatal, and not silent: this is the internal-DRAM
+        // constraint biting, and the receiver keeps working at the
+        // single-core rate with a shorter candidate list.
+        log::warn!("ft4_rx: core-1 worker not created ({WORKER_STACK} B stack) — decoding on one core");
     }
+
+    run_candidates(&shared);
+
+    if created {
+        // The frame this `ParShared` lives in must outlive the worker.
+        while !shared.done.load(Ordering::Acquire) {
+            unsafe { esp_idf_svc::sys::vTaskDelay(1) };
+        }
+    }
+
+    let started = shared.next.load(Ordering::Acquire).min(cands.len());
+    let cut_at_score = cands.get(started).map(|c| c.score);
+
+    // Back into candidate order — descending coarse score, the order a
+    // single core produced and the screen expects — and dedup there,
+    // because two candidates can land on one signal and which core
+    // finished first must not decide which copy survives.
+    let mut out: Vec<Ft4Decode> = Vec::new();
+    for cell in &res {
+        // SAFETY: both cores are finished — the worker through `done`,
+        // this one by returning from `run_candidates`.
+        let Some(d) = (unsafe { (*cell.get()).take() }) else {
+            continue;
+        };
+        if out.iter().any(|k| k.msg == d.msg) {
+            continue;
+        }
+        out.push(d);
+    }
+
+    if created {
+        let stack_hw = shared.stack_hw_bytes.load(Ordering::Relaxed);
+        // At info, not debug: this is the number that justifies
+        // `WORKER_STACK`, and a size chosen from a measurement should
+        // keep reporting whether it is still true.
+        //
+        // **Bytes, not words.** ESP-IDF's `uxTaskGetStackHighWaterMark`
+        // returns bytes, unlike vanilla FreeRTOS where it is words; the
+        // first version of this line multiplied by four and printed
+        // "14624 B free of 8192", which is its own proof that the unit
+        // was wrong.
+        log::info!("ft4_rx: core-1 worker stack {stack_hw} B free of {WORKER_STACK}");
+    }
+
     SlotOutcome {
         decodes: out,
         cands: cands.len(),
-        tried,
+        tried: started,
         elapsed_us: now_us() - slot.closed_us,
         cut_at_score,
     }

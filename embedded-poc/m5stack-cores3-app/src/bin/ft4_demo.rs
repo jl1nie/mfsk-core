@@ -65,11 +65,14 @@ const BLOCK: usize = 256;
 
 /// Stack for the feed/decode thread.
 ///
-/// The candidate loop's own frames are modest, but `decode_slot` holds
-/// a slot of audio and a `cd0` per candidate — those are heap. 32 KB
-/// is what `decode_pipeline` asks for on the FT8 path and there is no
-/// reason FT4 needs more.
-const FEED_STACK: usize = 32 * 1024;
+/// **8 KB, measured.** This thread runs the whole decode — coarse
+/// stage, DDC, Δt search, BP — and `board::log_task_stacks` reported
+/// it using **2 584 B of its previous 32 KB** (2026-09-01). The big
+/// buffers are heap: a slot of audio, a `cd0` per candidate. 32 KB was
+/// inherited from `decode_pipeline`'s FT8 path without ever being
+/// checked against this workload, and on this board an unused KiB of
+/// internal DRAM is not free — see `ft4_rx::WORKER_STACK`.
+const FEED_STACK: usize = 8 * 1024;
 
 fn main() -> ! {
     esp_idf_svc::sys::link_patches();

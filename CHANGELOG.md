@@ -16,6 +16,47 @@ streaming coarse stage below.)
 
 ### Added
 
+- **FT4's decode budget is now derived from key-up, and the receiver
+  fits inside it with two cores and honestly-sized stacks.** Three
+  changes that only make sense together, all measured on a CoreS3:
+
+  **The budget was anchored to the wrong end of the slot.** The
+  deadline had been 1 960 ms from the *slot boundary*; for a station
+  that has to transmit, the deadline is key-up at 0.5 s into the next
+  slot. That left a QSO-capable build **500 ms**, not 1 960. The
+  capture window now closes at `ft4_rx::CAPTURE_CLOSE_SAMPLES`
+  (6.25 s — everything `ft4_sync_search_window` can reach, plus the DDC
+  chain's group delay) and the budget is `8.0 − 6.25 = 1 750 ms`. The
+  1.25 s that used to be waited out is audio no candidate reads;
+  `SlotAccum` discards it so the slot grid stays a 7.5 s grid. Measured
+  lossless on the WSJT-X golden at every close point from 6.041 s up,
+  with the periodogram averaged over the shorter span
+  (`tests/ft4_early_close.rs`, new).
+
+  **Dual-core is worth 1.40×, not the 1.17× that closed it.** §31.1's
+  conclusion was correct on its evidence; the shared decimation changed
+  the evidence by taking most of the per-candidate PSRAM streaming out
+  of the loop. `decode_slot` now runs a worker pinned to core 1, with
+  both cores taking candidates from a shared cursor rather than
+  splitting the list (candidates are not equal cost, and a cursor makes
+  the deadline per-core with no coordination). A stage pipeline was
+  measured beside it and **lost** — 1.32× against a 1.70× ceiling —
+  which disproves the premise it was built on, that the global FFT
+  guard was the binding constraint.
+
+  **The stacks were the memory problem.** With WiFi associated the slot
+  went 1 387-1 585 → 1 789-1 969 ms, and stopping the radio after NTP
+  changed nothing (`esp_wifi_stop` frees no buffers), because the cost
+  was internal DRAM, not CPU: the largest free block fell to 31 744 B
+  and the decoder's allocations went to PSRAM. `board::log_task_stacks`
+  now reports every task's headroom rather than only the tight ones,
+  and the decode tasks turned out to use **2 584 B and 4 536 B of their
+  32 KB**. At 8 KB each the slot runs **1 290-1 401 ms with WiFi up**,
+  faster than it ever ran without it, and all 12 candidates fit inside
+  the 1 750 ms budget: **12 of 12 tried, 11 decodes**, against 11 of 12
+  and 10 at the start of the day. `docs/notes/FT4_BENCHMARK.md`
+  §43-§45.
+
 - **`ft4::ddc` gained a shared front end, and FT4 stopped cutting
   candidates on the board.** The per-candidate chain filtered all
   90 000 samples of the slot at 12 kHz — 61 ms of a candidate's ~96 —

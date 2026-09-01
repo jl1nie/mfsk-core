@@ -3161,3 +3161,108 @@ So the honest picture at this point was **worse** than §42's, because
 §42 was measuring against a deadline that a transmitting station does
 not have. 12 candidates cost ~2 000 ms; the real budget is 1 750.
 
+## 44. Dual-core, re-measured — and a pipeline that lost (2026-09-01)
+
+§30 measured a candidate split at 1.33x, §31.1 re-measured it at 1.17x
+after the FIR work and concluded "treat dual-core as closed". That
+conclusion was correct on its evidence and is no longer correct: §42's
+shared decimation took most of the per-candidate PSRAM streaming out
+of the loop, which was one of the three reasons the split fell short.
+
+Re-run on the same 12 candidates, plus a second design measured
+alongside it:
+
+| arrangement | 12 candidates | vs 1 core |
+|---|---:|---:|
+| single core | 1 923 ms | 1.00x |
+| **candidate split, two cores** | **1 367 ms** | **1.40x** |
+| stage pipeline (DDC ‖ search+BP) | 1 456 ms | 1.32x |
+
+**The pipeline's premise was wrong.** It was built because
+`Fc32Guard` is a process-global spinlock held across every transform,
+so putting the transform-free half (the DDC) on its own core should
+have left nothing to contend for. Its stages measured DDC 792 ms
+against tail 1 130 ms — a 1.70x ceiling — and it reached 1.32x, below
+the candidate split it was supposed to beat. The guard was not the
+binding constraint.
+
+### 44.1 What the production path does
+
+`ft4_rx::decode_slot` spawns one worker pinned to core 1 and both
+cores take candidates from a shared cursor rather than splitting the
+list in half — candidates are not equal cost (§30's third reason), and
+a cursor also makes the deadline work per-core with no coordination.
+Results land in per-index slots with no lock (the cursor hands out
+each index once), and are re-sorted into candidate order before dedup
+so that which core finished first cannot change what the screen shows.
+Worker creation failing is not fatal: the loop runs single-core and
+says so.
+
+## 45. The stacks were the memory problem, and WiFi exposed it
+
+Adding a second decode task made the internal-DRAM question urgent:
+FreeRTOS stacks come out of internal DRAM, and §30 had recorded the
+largest free internal block with WiFi up as 31 744 B — against a 32 KB
+ask.
+
+**The first attempt blamed the wrong thing.** With WiFi associated,
+`ft4-demo`'s slot went from 1 387-1 585 ms to 1 789-1 969, and the
+obvious suspect was the WiFi driver task at FreeRTOS priority 23 —
+which is what `fst4_app` had measured for its own decoder. So the
+network path grew a mode that stopped the radio once NTP had set the
+clock. Measured: **1 786-1 919 ms with the radio stopped**, i.e. no
+change. `esp_wifi_stop` silences the receiver and frees nothing, and
+the degradation had in any case started before association, at driver
+*init*.
+
+It was memory. The largest free internal block tracked the whole
+story: 69 632 B idle, 47 104 B after the driver initialised, 31 744 B
+with the association up — and the decoder's own allocations fall to
+PSRAM at that point, which §26.3 already priced at 41 % on the
+2 304-point workspace.
+
+**So the fix was to stop wasting internal DRAM on stacks.**
+`board::log_task_stacks` was reporting only the tasks in danger of
+overflowing; made to report every task's headroom, it said:
+
+| task | asked for | actually used |
+|---|---:|---:|
+| `ft4feed` (the demo's whole decode) | 32 KB | **2 584 B** |
+| `ft4_slot` (the app's decode) | 32 KB | same code |
+| `ft4_cand` (the core-1 worker) | 32 KB | **4 536 B** |
+| `net` (PSRAM-backed) | 24 KB | 1 480 B |
+
+Every one of those numbers was inherited from `decode_pipeline`'s FT8
+path and never checked against this workload. The buffers that matter
+are heap — `cd0` alone is 40 KB per candidate — and the stacks hold
+small locals.
+
+At 8 KB each, with WiFi associated and the radio never stopped:
+
+```
+slot 1 — 12 of 12 candidates tried, 11 decodes in 1298 ms of 1750 ms
+slot 2 — 12 of 12 ...                11 decodes in 1290 ms
+slot 3 — 12 of 12 ...                11 decodes in 1315 ms
+slot 4 — 12 of 12 ...                11 decodes in 1401 ms
+slot 5 — 12 of 12 ...                11 decodes in 1375 ms
+core-1 worker stack 3 644-3 656 B free of 8 192
+```
+
+**Faster with the network up than it had ever been without it**, and
+the stop/resync machinery was deleted rather than kept: it had been
+built on a diagnosis the measurement disproved.
+
+(The high-water logging had its own unit bug on the way through —
+ESP-IDF's `uxTaskGetStackHighWaterMark` returns bytes where vanilla
+FreeRTOS returns words, and the first version multiplied by four and
+printed "14624 B free of 8192". A number that large against that
+denominator is its own error message.)
+
+### 45.1 Where FT4 stands
+
+| | candidates | decodes | slot | budget |
+|---|---:|---:|---:|---|
+| start of 2026-09-01 | 11 of 12 | 10 | 2 067-2 118 ms | 1 960 ms, anchored to the slot end |
+| **now** | **12 of 12** | **11** | **1 290-1 401 ms** | **1 750 ms, anchored to key-up** |
+
+With WiFi associated throughout, which the earlier figure never was.
