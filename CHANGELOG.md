@@ -16,6 +16,26 @@ streaming coarse stage below.)
 
 ### Added
 
+- **The Δt search's carrier phasors are computed once per slot, and
+  the 1-2 candidates §46 gave up are back.** `ft4_sync_search_window`
+  spent 30 % of itself in `FlatRef::fill` — 18 calls per candidate,
+  each with a `cos`/`sin` per sample — for references that depend only
+  on `df`, `ds_spb` and `ds_rate`, so twelve candidates built the same
+  nine references twelve times. New `Ft4CoarsePhasors` (~9 KB) holds
+  the phasor tables; `ft4_sync_search_window_cached` takes them and is
+  **bit-identical** to the uncached path, pinned by test on `i0`,
+  `freq_hz` and `score` bit patterns. On the board: 10-11 candidates
+  and 9-10 decodes become **11-12 and 10-11**.
+
+  **Caching the references themselves (~144 KB) instead was a 2.6×
+  regression**, and the reason is worth more than the fix: the
+  *uncached* path in the same binary slowed from 87 to 223 ms, because
+  144 KB displaced the per-call `FlatRef`s (~1 KB, and so
+  internal-DRAM-resident under `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`)
+  into PSRAM. The dots never left the PIE path. Before caching
+  anything on this board, ask what it evicts.
+  `docs/notes/FT4_BENCHMARK.md` §47.
+
 - **FT4 searches WSJT-X's own ±1.0 s Δt window again, and the mixer
   stopped pushing one sample at a time.** The embedded receiver had
   narrowed the search to ±0.5 s (measured lossless on the golden, worth

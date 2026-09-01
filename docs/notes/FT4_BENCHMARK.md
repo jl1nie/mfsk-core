@@ -3319,3 +3319,113 @@ does not touch the search at all.
 (The other half of #352's floor, `CandidateDdc`'s per-sample
 `Vec::push`, is already taken: 63.1 → 57.4 ms per candidate in situ,
 1 290-1 401 → 1 259-1 360 ms end to end, bit-identical.)
+
+## 47. Inside the Δt search, and a cache that made everything slower (2026-09-02)
+
+§46 put WSJT-X's ±1.0 s window back and paid 525 ms of budget for it.
+This section is where some of that came from, and the route is worth
+the space because two of the three steps were wrong.
+
+### The decomposition, measured
+
+`ft4-bench`, CoreS3, the golden's strongest candidate. The search's
+cost is `fixed + cells × per_cell`, and a degenerate window
+(`ib_min == ib_max`) measures `fixed` without any new API:
+
+| window | time | cells |
+|---|---:|---:|
+| ±1.0 s (WSJT-X) | 86.7 ms | 3 159 |
+| ±0.5 s | 57.7 ms | 1 602 |
+| degenerate | 28.2 ms | 108 |
+
+→ **18.6 µs per cell, 26.2 ms fixed.**
+
+A cell is four Costas blocks of 128 complex samples, i.e. 2 048 real
+MACs, so 18.6 µs is **2.18 cycles/MAC** — what this chip's aligned
+`dsps_dotprod_f32_aes3` does. The grid scan has nothing left in it.
+
+The fixed 26.2 ms is `FlatRef::fill`, and only that:
+
+    18 FlatRef fills   25 718 us
+    AlignedCd0 copy         3 us
+
+`fill` evaluates `cos` and `sin` **per sample** — 4 blocks × 128
+samples × 18 calls (nine coarse `df`, nine fine). The `cd0` alignment
+copy, the other suspect, is three microseconds: it copies only when
+`cd0` is misaligned, and it usually is not.
+
+### The obvious fix, which was a 2.6× regression
+
+The nine coarse references depend on `df`, `ds_spb` and `ds_rate` —
+not on `cd0`, not on the candidate. Twelve candidates rebuilt the same
+nine references twelve times. So: build them once per slot, ~144 KB of
+`FlatRef`, hand both cores a `&Ft4CoarseRefs`.
+
+Measured on the board: **4-6 candidates instead of 10-11**, slot
+1 275-1 855 ms. Staging the cached references into the local scratch
+first — on the theory that a freshly-written buffer is cache-warm and
+a precomputed one is not — was worse still: 3-4 candidates,
+1 569-2 295 ms.
+
+Neither theory survived contact with the diagnosis:
+
+```text
+coarse refs at 0x3fcea190 (INTERNAL) .. 0x3c273760 (PSRAM)
+uncached 223 024 us (dots fast 23724 align 0 len 0)
+cached   216 941 us (dots fast 23724 align 0 len 0)
+```
+
+**The uncached path in the same binary had slowed from 87 ms to
+223 ms.** The cache's own code was innocent; allocating 144 KB was
+not. The per-call `FlatRef`s are ~1 KB each, small enough that
+`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` keeps them in internal DRAM;
+144 KB of cache displaced them into PSRAM, and the search runs at its
+measured speed only while its working set is internal. §29 recorded
+the same mechanism from the other direction ("leaking one more 18 KB
+internal buffer shifted the heap, and the next run measured 0 % [fast
+dots]") — this is that lesson arriving as a 2.6× regression rather
+than as a lucky escape.
+
+Note what the counters rule out: the dots stayed on the PIE path
+throughout (23 724 fast, zero slow), so this was not an alignment
+failure.
+
+### What worked: cache the phasors, not the references
+
+The expensive part of `fill` is the transcendentals, and the thing
+worth holding is therefore the phasor `e^{j·2π·df·n/ds_rate}` — not
+the reference it builds. All four Costas blocks are the same length,
+so one table per `df` serves all of them: **128 complex × 9 df ≈ 9 KB**
+against 144 KB.
+
+```text
+coarse refs at 0x3fcedaac (INTERNAL) .. 0x3fceb184 (INTERNAL)
+uncached 86 485 us | cached 79 293 us | same result true
+```
+
+The uncached path is back at 86.5 ms — the displacement is gone — and
+the cached path saves **7.2 ms per candidate**. The fills still run and
+still write into the caller's scratch; only `cos`/`sin` are replaced by
+a table lookup and a complex multiply, with the table built from the
+same expression, so the result is bit-identical
+(`cached_coarse_refs_are_bit_identical` pins `i0`, `freq_hz` and
+`score` by bit pattern).
+
+On the board:
+
+| | candidates | decodes | slot |
+|---|---:|---:|---:|
+| ±1.0 s window, no cache | 10-11 of 12 | 9-10 | 1 355-1 435 ms |
+| **+ phasor table** | **11-12 of 12** | **10-11** | 1 286-1 458 ms |
+
+The one to two candidates §46 gave up to search WSJT-X's full window
+are back, and nothing about what the decoder computes has changed.
+
+### The transferable part
+
+"Precompute the expensive thing" is the reasoning that produced both
+the 144 KB regression and the 9 KB win. What separated them was not
+the idea but the **size**: on this board a table large enough to
+displace the internal-DRAM working set makes unrelated code slower,
+and the code it slowed was in the same function, two call sites away.
+Before caching anything here, ask what it evicts.

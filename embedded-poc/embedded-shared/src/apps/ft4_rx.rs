@@ -42,7 +42,7 @@ use alloc::vec::Vec;
 use mfsk_core::engine::equalize::EqMode;
 use mfsk_core::engine::ft4_coarse::{ft4_coarse_sync_from_savg, Ft4SavgBuilder};
 use mfsk_core::engine::pipeline::{process_candidate_precomputed, DecodeDepth, DecodeStrictness};
-use mfsk_core::engine::sync2d::ft4_sync_search_window;
+use mfsk_core::engine::sync2d::{Ft4CoarsePhasors, ft4_sync_search_window_cached};
 use mfsk_core::ft4::ddc::{SlotDecimator, candidate_baseband_half};
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
@@ -404,6 +404,10 @@ struct ParShared {
     /// so the writes are disjoint, and `done`'s Release/Acquire pair
     /// publishes them all at the join.
     res: *const UnsafeCell<Option<Ft4Decode>>,
+    /// The coarse Δt references, built once for the slot and read by
+    /// both cores. Immutable after construction, which is what makes
+    /// sharing it sound.
+    refs: *const Ft4CoarsePhasors,
     done: AtomicBool,
     stack_hw_bytes: AtomicU32,
 }
@@ -425,7 +429,10 @@ fn run_candidates(s: &ParShared) {
         if i >= cands.len() {
             return;
         }
-        let d = decode_candidate(half, &cands[i]);
+        // SAFETY: built in `decode_slot`'s frame, which outlives every
+        // worker (it waits for `done`), and never mutated after.
+        let refs = unsafe { &*s.refs };
+        let d = decode_candidate(half, &cands[i], refs);
         // SAFETY: index `i` came from `fetch_add`, so this core is the
         // only one that has it, and nothing reads the slots until
         // `done` is observed.
@@ -447,10 +454,20 @@ extern "C" fn par_worker(arg: *mut core::ffi::c_void) {
 /// One candidate, end to end: half-rate DDC, RMS normalise, narrowed
 /// Δt search, decode. No shared mutable state beyond the global FFT
 /// planner's own guard, which is what lets two cores run it at once.
-fn decode_candidate(half: &[f32], cand: &SyncCandidate) -> Option<Ft4Decode> {
+fn decode_candidate(
+    half: &[f32],
+    cand: &SyncCandidate,
+    refs: &Ft4CoarsePhasors,
+) -> Option<Ft4Decode> {
     let mut cd0 = candidate_baseband_half(half, cand.freq_hz);
     rms_normalise(&mut cd0);
-    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, WSJTX_WINDOW.0, WSJTX_WINDOW.1);
+    let s2 = ft4_sync_search_window_cached::<Ft4>(
+        &cd0,
+        cand,
+        WSJTX_WINDOW.0,
+        WSJTX_WINDOW.1,
+        Some(refs),
+    );
     let r = process_candidate_precomputed::<Ft4>(
         cand,
         &[],
@@ -496,6 +513,11 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
     // (30.8 ms), with the ÷2 that makes that possible off the
     // post-window budget entirely (`docs/notes/FT4_BENCHMARK.md` §37,
     // §42).
+    // Built once for the slot: the coarse sweep's nine references do
+    // not depend on `cd0` or on the candidate, and rebuilding them per
+    // candidate was 30 % of the Δt search (25.7 ms of 86.7 measured on
+    // a CoreS3, `docs/notes/FT4_BENCHMARK.md` §47).
+    let coarse_refs = Ft4CoarsePhasors::new::<Ft4>();
     let res: Vec<UnsafeCell<Option<Ft4Decode>>> =
         (0..cands.len()).map(|_| UnsafeCell::new(None)).collect();
     let shared = ParShared {
@@ -506,6 +528,7 @@ pub fn decode_slot(slot: &CapturedSlot, budget_ms: i64) -> SlotOutcome {
         next: AtomicUsize::new(0),
         deadline,
         res: res.as_ptr(),
+        refs: &coarse_refs,
         done: AtomicBool::new(false),
         stack_hw_bytes: AtomicU32::new(0),
     };

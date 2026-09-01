@@ -779,12 +779,122 @@ fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
     let Some(cand) = candidates.first() else {
         return;
     };
-    // The strongest candidate, prepared exactly as the ship path does.
-    let mut cd0 = candidate_baseband(audio, cand.freq_hz);
+    // The strongest candidate, prepared exactly as the ship path does
+    // *today*: the shared decimation's half-rate baseband, and
+    // WSJT-X's own ±1.0 s Δt window. §38 measured this decomposition
+    // before either existed, which is the reason for re-running it.
+    let half = decimate_slot(audio);
+    let mut cd0 = candidate_baseband_half(&half, cand.freq_hz);
     rms_normalise(&mut cd0);
-    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
+    let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, -344, 1012);
 
     const ITERS: usize = 20;
+
+    // The Δt search, both windows, on this same candidate — the stage
+    // that grew when the receiver went back to WSJT-X's ±1.0 s (§46),
+    // and the one piece of the candidate that has never been timed
+    // since §29 put its inner product on the PIE path.
+    {
+        const SEARCH_ITERS: usize = 5;
+        let mut time_window = |lo: i32, hi: i32| -> i64 {
+            let t0 = now_us();
+            let mut sink = 0.0f32;
+            for _ in 0..SEARCH_ITERS {
+                let r = ft4_sync_search_window::<Ft4>(&cd0, cand, lo, hi);
+                sink += r.score;
+            }
+            let us = (now_us() - t0) / SEARCH_ITERS as i64;
+            core::hint::black_box(sink);
+            us
+        };
+        let wide = time_window(-344, 1012);
+        let narrow = time_window(0, 667);
+        // One coarse `i0` per `df`: the coarse grid collapses to 9
+        // cells and what is left is the window-independent part —
+        // `AlignedCd0::new`, the 18 `FlatRef::fill`s, and the 99-cell
+        // fine pass. Measuring it needs no new API, only a degenerate
+        // window.
+        let fixed = time_window(0, 0);
+        // Cells: 9 df x ((hi-lo)/4 + 1) coarse, plus the 99-cell fine
+        // pass. The degenerate window collapses the coarse grid to one
+        // i0 per df, so what is left is the window-independent part:
+        // `AlignedCd0::new`, 18 `FlatRef::fill`s, and the fine pass.
+        // What the fixed cost is made of. 18 fills per search call
+        // (9 coarse df + 9 fine), each over 4 Costas blocks x 128
+        // samples, with a `cos`/`sin` per sample; plus `cd0`'s
+        // alignment copy, once per candidate.
+        {
+            const N: usize = 18;
+            let t0 = now_us();
+            let sink = mfsk_core::engine::sync2d::ft4_sync_ref_prep_bench::<Ft4>(N);
+            let fills_us = now_us() - t0;
+            let t0 = now_us();
+            let mut sink2 = 0.0f32;
+            for _ in 0..5 {
+                sink2 += mfsk_core::engine::sync2d::ft4_aligned_cd0_bench(&cd0);
+            }
+            let align_us = (now_us() - t0) / 5;
+            log::info!(
+                "ft4_bench: search fixed cost — {N} FlatRef fills {fills_us} us | \
+                 AlignedCd0 copy {align_us} us | sink {sink:e}/{sink2:e}"
+            );
+        }
+
+        // Where did the cached references land, and do the dots still
+        // take the PIE path when they are read from there? Two
+        // measurements, because a 2.6x regression with no mechanism is
+        // not a finding (issue #352 / §47).
+        {
+            use mfsk_core::engine::sync2d::{Ft4CoarsePhasors, ft4_sync_search_window_cached};
+            let refs = Ft4CoarsePhasors::new::<Ft4>();
+            let (a0, a1) = refs.buffer_addrs();
+            let where_ = |a: usize| {
+                if (0x3FC8_0000..0x3FD0_0000).contains(&a) {
+                    "INTERNAL"
+                } else if (0x3C00_0000..0x3E00_0000).contains(&a) {
+                    "PSRAM"
+                } else {
+                    "?"
+                }
+            };
+            log::info!(
+                "ft4_bench: coarse refs at {a0:#x} ({}) .. {a1:#x} ({})",
+                where_(a0),
+                where_(a1),
+            );
+
+            let (f0, sa0, sl0) = crate::esp_dsp_dotprod::dotprod_path_report();
+            let t0 = now_us();
+            let r_plain = ft4_sync_search_window::<Ft4>(&cd0, cand, -344, 1012);
+            let plain_us = now_us() - t0;
+            let (f1, sa1, sl1) = crate::esp_dsp_dotprod::dotprod_path_report();
+            let t0 = now_us();
+            let r_cached =
+                ft4_sync_search_window_cached::<Ft4>(&cd0, cand, -344, 1012, Some(&refs));
+            let cached_us = now_us() - t0;
+            let (f2, sa2, sl2) = crate::esp_dsp_dotprod::dotprod_path_report();
+            log::info!(
+                "ft4_bench: uncached {plain_us} us (dots fast {} align {} len {}) | \
+                 cached {cached_us} us (dots fast {} align {} len {}) | same result {}",
+                f1 - f0,
+                sa1 - sa0,
+                sl1 - sl0,
+                f2 - f1,
+                sa2 - sa1,
+                sl2 - sl1,
+                r_plain.i0 == r_cached.i0 && r_plain.score.to_bits() == r_cached.score.to_bits(),
+            );
+        }
+
+        let cells = |lo: i32, hi: i32| 9 * (((hi - lo) / 4 + 1) as i64) + 99;
+        let (cw, cn) = (cells(-344, 1012), cells(0, 667));
+        let per_cell_ns = (wide - narrow) * 1000 / (cw - cn);
+        log::info!(
+            "ft4_bench: dt search — wide {wide} us ({cw} cells) | narrow {narrow} us ({cn} cells) | degenerate window {fixed} us ({} cells) | per cell {per_cell_ns} ns | fixed {} us",
+            cells(0, 0),
+            fixed - cells(0, 0) * per_cell_ns / 1000,
+        );
+    }
 
     let t0 = now_us();
     let mut cs = Vec::new();
@@ -962,6 +1072,69 @@ fn shared_decim_probe(audio: &[i16]) {
             cand_stub * 100 / cand_full.max(1),
             cand_stub,
             cand_full,
+        );
+    }
+
+    // Is the floor per *input* or per *output*? (issue #352)
+    //
+    // The zero-copy idea assumes the former: `push_block` copies every
+    // input sample into the history and dots out of it, so a ÷9 stage
+    // copies nine samples per dot. But 21.2 ms for 45 000 inputs is
+    // 112 cycles a sample, which a 512-sample `copy_from_slice` cannot
+    // account for — so the assumption is worth one probe before it is
+    // worth any code. Same taps, same input length, only the
+    // decimation changes: a per-input floor is flat across the row, a
+    // per-output floor falls with it.
+    {
+        log::info!("ft4_bench: floor scaling — 101 taps, 45 000 inputs, dot stubbed");
+        for &decim in &[1usize, 3, 9, 45] {
+            let mut st = FirStage::new(101, decim, 320.0 / 6_000.0, 512);
+            let mut oi = Vec::with_capacity(45_000 / decim + 2);
+            let mut oq = Vec::with_capacity(45_000 / decim + 2);
+            let was = crate::esp_dsp_dotprod::set_dot_stub(true);
+            let t0 = now_us();
+            st.push_block(&xi[..45_000], &xq[..45_000], &mut oi, &mut oq);
+            let us = now_us() - t0;
+            crate::esp_dsp_dotprod::set_dot_stub(was);
+            log::info!(
+                "    /{decim:<3} {us:>7} us floor | {} outputs | {} ns/input | {} ns/output",
+                oi.len(),
+                us * 1000 / 45_000,
+                us * 1000 / oi.len().max(1) as i64,
+            );
+        }
+    }
+
+    // Is the per-input term the stage's bookkeeping, or the probe
+    // reading its own source out of PSRAM? (issue #352)
+    //
+    // The row above feeds a 45 000-sample slice of a 90 000-sample
+    // `Vec<f32>` — 360 KB across I and Q, none of it cache-resident.
+    // `CandidateDdc` feeds the same stage from a 1 024-sample scratch
+    // it has just written. Same stage, same input count, same
+    // decimation; only where the samples come from changes. If the
+    // per-input cost survives, it is the stage. If it collapses, the
+    // 88 cycles/sample above were this probe's own memory traffic and
+    // the zero-copy idea is aimed at nothing.
+    {
+        const CHUNK: usize = 1_024;
+        let mut st = FirStage::new(101, 9, 320.0 / 6_000.0, 512);
+        let (mut oi, mut oq) = (Vec::with_capacity(5_100), Vec::with_capacity(5_100));
+        let was = crate::esp_dsp_dotprod::set_dot_stub(true);
+        let t0 = now_us();
+        let mut fed = 0usize;
+        while fed < 45_000 {
+            let n = CHUNK.min(45_000 - fed);
+            // The same slice every time: 8 KB of I and Q that stays in
+            // cache, standing in for the mixer's scratch.
+            st.push_block(&xi[..n], &xq[..n], &mut oi, &mut oq);
+            fed += n;
+        }
+        let us = now_us() - t0;
+        crate::esp_dsp_dotprod::set_dot_stub(was);
+        log::info!(
+            "ft4_bench: floor from a cache-warm source — /9, 101 taps, 45 000 inputs in              {CHUNK}-sample chunks: {us} us ({} ns/input), against 21365 us from PSRAM",
+            us * 1000 / 45_000,
         );
     }
 
