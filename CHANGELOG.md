@@ -16,6 +16,32 @@ streaming coarse stage below.)
 
 ### Added
 
+- **The FST4 and WSPR screens stopped being two copies of one screen
+  (issue #353).** `slot_list` (FST4) and `wspr_list`/`wspr_state`
+  (WSPR) held the same container twice — latest-slot `Vec`, history
+  `Deque`, `last_slot_hhmm`, the pre-truncation count that makes a
+  truncated slot read as `16/23` rather than as a quiet band, and the
+  `AtomicU32` the render loop polls — and the same three drawing
+  helpers, with identical layout constants written out twice. Now
+  `ui::spot_state::SpotState<Row, SLOT_CAP, HIST_CAP>` and
+  `ui::spot_render` (`FormatRow`, `text_style`, `fill`, `render_rows`,
+  the panel geometry). What stays per screen is what differs: region
+  offsets, the header line, and the columns of a row.
+
+  413 + 289 + 179 lines become 332 + 233 + 130, plus 282 shared — and
+  the container is now `heapless` and one atomic with no draw stack, so
+  `hosttest/mfsk-app-shared` compiles it and its truncation,
+  history-rolling and dirty-seq rules have tests **that run**. They had
+  none before, in either copy.
+
+  Verified on the board: FT4 unaffected (11-12 candidates, 10-11
+  decodes, 1 276-1 444 ms), FST4 and WSPR screens checked by eye
+  through the mode picker.
+
+  Not done here, deliberately: FT8/FT4's `run_log_panel` is a
+  waterfall-and-decode-ring panel, not a spot list, and stays where it
+  is (#353 has the reasoning).
+
 - **The Δt search's carrier phasors are computed once per slot, and
   the 1-2 candidates §46 gave up are back.** `ft4_sync_search_window`
   spent 30 % of itself in `FlatRef::fill` — 18 calls per candidate,

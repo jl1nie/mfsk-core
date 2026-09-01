@@ -18,6 +18,8 @@ pub mod link_bar;
 pub mod menu;
 pub mod mode_picker;
 pub mod slot_list;
+pub mod spot_render;
+pub mod spot_state;
 pub mod state;
 pub mod status_bar;
 pub mod waterfall;

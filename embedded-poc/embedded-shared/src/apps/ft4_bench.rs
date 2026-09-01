@@ -160,10 +160,10 @@ use mfsk_core::engine::pipeline::{
 use mfsk_core::engine::sync::SyncCandidate;
 use mfsk_core::engine::sync2d::ft4_sync_search_window;
 use mfsk_core::ft4::ddc::{candidate_baseband, candidate_baseband_half, decimate_slot};
-use num_complex::Complex;
 use mfsk_core::ft4::decode::FT4_DOWNSAMPLE;
 use mfsk_core::ft4::Ft4;
 use mfsk_core::msg::wsjt77::unpack77;
+use num_complex::Complex;
 
 /// Mirrors `ft4::decode`'s own (private) `SYNC_Q_MIN`: FT4 has 16 sync
 /// symbols (4 × Costas-4) and requires at least half correct. Same
@@ -415,7 +415,10 @@ fn ship_ddc(half: &[f32], cand: &SyncCandidate) -> alloc::vec::Vec<Complex<f32>>
 
 /// The rest of a candidate: Δt search, LLR, BP. `symbol_spectra`'s
 /// per-symbol transforms live in here.
-fn ship_tail(cd0: alloc::vec::Vec<Complex<f32>>, cand: &SyncCandidate) -> Option<alloc::string::String> {
+fn ship_tail(
+    cd0: alloc::vec::Vec<Complex<f32>>,
+    cand: &SyncCandidate,
+) -> Option<alloc::string::String> {
     let s2 = ft4_sync_search_window::<Ft4>(&cd0, cand, NARROW_WINDOW.0, NARROW_WINDOW.1);
     let r = process_candidate_precomputed::<Ft4>(
         cand,
@@ -796,7 +799,7 @@ fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
     // since §29 put its inner product on the PIE path.
     {
         const SEARCH_ITERS: usize = 5;
-        let mut time_window = |lo: i32, hi: i32| -> i64 {
+        let time_window = |lo: i32, hi: i32| -> i64 {
             let t0 = now_us();
             let mut sink = 0.0f32;
             for _ in 0..SEARCH_ITERS {
@@ -845,7 +848,7 @@ fn llr_bp_probe(audio: &[i16], candidates: &[SyncCandidate]) {
         // measurements, because a 2.6x regression with no mechanism is
         // not a finding (issue #352 / §47).
         {
-            use mfsk_core::engine::sync2d::{Ft4CoarsePhasors, ft4_sync_search_window_cached};
+            use mfsk_core::engine::sync2d::{ft4_sync_search_window_cached, Ft4CoarsePhasors};
             let refs = Ft4CoarsePhasors::new::<Ft4>();
             let (a0, a1) = refs.buffer_addrs();
             let where_ = |a: usize| {
@@ -1009,7 +1012,7 @@ fn shared_decim_probe(audio: &[i16]) {
     // declined" used, made repeatable.
     let stage_floor = |label: &str, ntaps: usize, decim: usize, fc: f32, n_in: usize| {
         let real = ntaps == 165; // the shared stage is the real-input one
-        let mut run = |stub: bool| -> i64 {
+        let run = |stub: bool| -> i64 {
             let mut st = FirStage::new(ntaps, decim, fc, 512);
             let mut oi = Vec::with_capacity(n_in / decim + 2);
             let mut oq = Vec::with_capacity(n_in / decim + 2);
@@ -1033,9 +1036,27 @@ fn shared_decim_probe(audio: &[i16]) {
             full * 1_000_000 / macs.max(1),
         );
     };
-    stage_floor("floor: shared /2 (165t, REAL)", 165, 2, 2_800.0 / 12_000.0, 90_000);
-    stage_floor("floor: stage A' (101t, /9)", 101, 9, 320.0 / 6_000.0, 45_000);
-    stage_floor("floor: stage A  (199t, /18)", 199, 18, 320.0 / 12_000.0, 90_000);
+    stage_floor(
+        "floor: shared /2 (165t, REAL)",
+        165,
+        2,
+        2_800.0 / 12_000.0,
+        90_000,
+    );
+    stage_floor(
+        "floor: stage A' (101t, /9)",
+        101,
+        9,
+        320.0 / 6_000.0,
+        45_000,
+    );
+    stage_floor(
+        "floor: stage A  (199t, /18)",
+        199,
+        18,
+        320.0 / 12_000.0,
+        90_000,
+    );
 
     // The same split *in situ* (issue #352). The probe above feeds a
     // bare `FirStage` from a 90 000-sample `Vec<f32>` in PSRAM;
@@ -1046,7 +1067,7 @@ fn shared_decim_probe(audio: &[i16]) {
     {
         let f0 = 1_500.0f32;
         let audio_i16: Vec<i16> = audio[..90_000.min(audio.len())].to_vec();
-        let mut timed = |label: &str, stub: bool| -> (i64, i64) {
+        let timed = |label: &str, stub: bool| -> (i64, i64) {
             let was = crate::esp_dsp_dotprod::set_dot_stub(stub);
             let t0 = now_us();
             let half = mfsk_core::ft4::ddc::decimate_slot(&audio_i16);
@@ -1139,11 +1160,15 @@ fn shared_decim_probe(audio: &[i16]) {
     }
 
     let (fast, slow_align, slow_len) = crate::esp_dsp_dotprod::dotprod_path_report();
-    log::info!(
-        "    dot path so far: fast {fast}, slow(align) {slow_align}, slow(len) {slow_len}"
-    );
+    log::info!("    dot path so far: fast {fast}, slow(align) {slow_align}, slow(len) {slow_len}");
     // Leg 1: what a candidate costs today.
-    let now_a = run("A now (12k, per candidate)", 199, 18, 320.0 / 12_000.0, 90_000);
+    let now_a = run(
+        "A now (12k, per candidate)",
+        199,
+        18,
+        320.0 / 12_000.0,
+        90_000,
+    );
     // Leg 2: what it would cost after a shared /2 — half the samples,
     // half the taps for the same transition in Hz.
     let then_a = run("A after /2 (6k, per cand)", 101, 9, 320.0 / 6_000.0, 45_000);
@@ -1161,7 +1186,13 @@ fn shared_decim_probe(audio: &[i16]) {
     // the 111 first assumed (that number came from a 2 700 -> 3 300
     // transition that does not protect the top of the band).
     for &n in &[111usize, 165, 231] {
-        run("shared /2 (once, complex)", n, 2, 2_800.0 / 12_000.0, 90_000);
+        run(
+            "shared /2 (once, complex)",
+            n,
+            2,
+            2_800.0 / 12_000.0,
+            90_000,
+        );
     }
 
     // The real-input path, which is what the shared stage would
@@ -1971,8 +2002,7 @@ fn run_bench(audio_bin: &[u8], fft_cache_bin: &[u8], cand_bin: &[u8]) {
     let audio_s: &'static [i16] = alloc::boxed::Box::leak(audio.clone().into_boxed_slice());
     let cands_s: &'static [SyncCandidate] =
         alloc::boxed::Box::leak(candidates.clone().into_boxed_slice());
-    let half_s: &'static [f32] =
-        alloc::boxed::Box::leak(decimate_slot(audio_s).into_boxed_slice());
+    let half_s: &'static [f32] = alloc::boxed::Box::leak(decimate_slot(audio_s).into_boxed_slice());
     dualcore_probe(half_s, cands_s);
     pipeline_probe(half_s, cands_s);
 

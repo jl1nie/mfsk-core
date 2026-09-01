@@ -38,27 +38,24 @@
 //! comment; FT4 always has one, FST4's DDC monitor path does not.
 
 use core::fmt::Write as _;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::Rgb565,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
     text::{Baseline, Text},
 };
 use heapless::String;
 
-pub const PANEL_WIDTH: u32 = 240;
-pub const PANEL_HEIGHT: u32 = 320;
-
-pub const STATUS_ORIGIN_Y: i32 = 0;
-pub const STATUS_HEIGHT: u32 = 16;
+use super::spot_render::{
+    fill, render_rows, text_style, FormatRow, BG, COL_HEADER_FG, COL_HEADER_H, DIVIDER_H, FG,
+    HEADER_H, ROW_PX,
+};
+/// Panel geometry lives in [`super::spot_render`] now; re-exported so
+/// the app's own layout maths keeps referring to this screen's module.
+pub use super::spot_render::{PANEL_HEIGHT, PANEL_WIDTH, STATUS_HEIGHT, STATUS_ORIGIN_Y};
+use super::spot_state::SpotState;
 
 const SLOT_HEADER_Y: i32 = STATUS_HEIGHT as i32;
-const HEADER_H: u32 = 11;
-const COL_HEADER_H: u32 = 10;
-const ROW_PX: u32 = 12;
 
 const SLOT_COL_HEADER_Y: i32 = SLOT_HEADER_Y + HEADER_H as i32;
 pub const SLOT_ROWS_Y: i32 = SLOT_COL_HEADER_Y + COL_HEADER_H as i32;
@@ -66,7 +63,6 @@ pub const SLOT_ROWS: usize = 9;
 const SLOT_REGION_H: u32 = SLOT_ROWS as u32 * ROW_PX;
 
 const DIVIDER_Y: i32 = SLOT_ROWS_Y + SLOT_REGION_H as i32;
-const DIVIDER_H: u32 = 2;
 
 const HISTORY_HEADER_Y: i32 = DIVIDER_Y + DIVIDER_H as i32;
 const HISTORY_COL_HEADER_Y: i32 = HISTORY_HEADER_Y + HEADER_H as i32;
@@ -83,10 +79,7 @@ pub const HISTORY_ROWS: usize = 11;
 pub const SLOT_CAP: usize = 16;
 pub const HISTORY_CAP: usize = 48;
 
-const BG: Rgb565 = Rgb565::BLACK;
-const FG: Rgb565 = Rgb565::WHITE;
 const HEADER_BG: Rgb565 = Rgb565::new(0, 8, 0);
-const COL_HEADER_FG: Rgb565 = Rgb565::CSS_GRAY;
 
 /// One decoded FST4 transmission, sized for a 40-char panel row.
 #[derive(Clone, Debug)]
@@ -116,6 +109,12 @@ pub struct SlotSpotRow {
 
 /// Column header matching [`SlotSpotRow::format_row`]'s field order.
 pub const ROW_HEADER: &str = "UTC  FREQ  SNR   DT  MESSAGE      T+";
+
+impl FormatRow for SlotSpotRow {
+    fn format_row(&self, out: &mut heapless::String<56>) {
+        SlotSpotRow::format_row(self, out);
+    }
+}
 
 impl SlotSpotRow {
     /// One fixed-width line: `HHMM freq snr dt message t+`.
@@ -153,26 +152,21 @@ impl SlotSpotRow {
 /// read by the display task at its own tick — [`Self::dirty_seq`] is
 /// what keeps the expensive panes from repainting in between.
 pub struct SlotUiState {
-    slot: heapless::Vec<SlotSpotRow, SLOT_CAP>,
-    history: heapless::Deque<SlotSpotRow, HISTORY_CAP>,
-    last_slot_hhmm: Option<String<4>>,
-    /// Decodes the last slot produced before [`SLOT_CAP`] truncation,
-    /// so a truncated slot is visible rather than looking like a quiet
-    /// band.
-    last_slot_count: usize,
-    /// Candidates the last slot's coarse search produced, and how many
-    /// of them the loop actually reached before its deadline — the two
-    /// numbers that say whether the monitor is keeping up.
+    /// This slot's rows and the rolling history — the half that is
+    /// identical to WSPR's screen, and so lives in
+    /// [`super::spot_state`] where a host test can reach it.
+    spots: SpotState<SlotSpotRow, SLOT_CAP, HISTORY_CAP>,
+    /// Candidates the coarse stage produced for the last slot.
     pub last_slot_cands: usize,
+    /// How many of them the decode loop started.
     pub last_slot_tried: usize,
-    /// Post-slot milliseconds to the first decode of the last slot.
+    /// Milliseconds from slot close to the first decode.
     pub last_first_decode_ms: i64,
     pub dial_mhz: f64,
     pub utc_hhmmss: String<8>,
     pub ntp_synced: bool,
     pub audio_live: bool,
     pub free_heap_kb: u32,
-    dirty_seq: AtomicU32,
 }
 
 impl Default for SlotUiState {
@@ -184,10 +178,7 @@ impl Default for SlotUiState {
 impl SlotUiState {
     pub const fn new() -> Self {
         Self {
-            slot: heapless::Vec::new(),
-            history: heapless::Deque::new(),
-            last_slot_hhmm: None,
-            last_slot_count: 0,
+            spots: SpotState::new(),
             last_slot_cands: 0,
             last_slot_tried: 0,
             last_first_decode_ms: 0,
@@ -196,64 +187,32 @@ impl SlotUiState {
             ntp_synced: false,
             audio_live: false,
             free_heap_kb: 0,
-            dirty_seq: AtomicU32::new(0),
         }
     }
 
     /// Replace this slot's decodes and append them to the history.
     pub fn set_slot(&mut self, hhmm: &str, rows: &[SlotSpotRow]) {
-        self.slot.clear();
-        for r in rows.iter().take(SLOT_CAP) {
-            let _ = self.slot.push(r.clone());
-        }
-        self.last_slot_count = rows.len();
-        let mut h: String<4> = String::new();
-        let _ = h.push_str(&hhmm[..hhmm.len().min(4)]);
-        self.last_slot_hhmm = Some(h);
-        for r in rows {
-            if self.history.is_full() {
-                let _ = self.history.pop_front();
-            }
-            let _ = self.history.push_back(r.clone());
-        }
-        self.dirty_seq.fetch_add(1, Ordering::Release);
+        self.spots.set_slot(hhmm, rows);
     }
 
     pub fn dirty_seq(&self) -> u32 {
-        self.dirty_seq.load(Ordering::Acquire)
+        self.spots.dirty_seq()
     }
     pub fn slot_rows(&self) -> &[SlotSpotRow] {
-        &self.slot
+        self.spots.rows()
     }
     pub fn slot_counts(&self) -> (usize, usize) {
-        (self.slot.len(), self.last_slot_count)
+        self.spots.counts()
     }
     pub fn last_slot_hhmm(&self) -> Option<&str> {
-        self.last_slot_hhmm.as_deref()
+        self.spots.last_slot_hhmm()
     }
     pub fn history_len(&self) -> usize {
-        self.history.len()
+        self.spots.history_len()
     }
     pub fn history_iter(&self) -> impl Iterator<Item = &SlotSpotRow> {
-        self.history.iter()
+        self.spots.history_iter()
     }
-}
-
-fn text_style(
-    fg: Rgb565,
-    bg: Rgb565,
-) -> embedded_graphics::mono_font::MonoTextStyle<'static, Rgb565> {
-    MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(fg)
-        .background_color(bg)
-        .build()
-}
-
-fn fill(display: &mut impl DrawTarget<Color = Rgb565>, y: i32, h: u32, color: Rgb565) {
-    let _ = Rectangle::new(Point::new(0, y), Size::new(PANEL_WIDTH, h))
-        .into_styled(PrimitiveStyle::with_fill(color))
-        .draw(display);
 }
 
 /// Status bar: mode, dial frequency, UTC, NTP and live-audio flags,
@@ -321,13 +280,7 @@ where
     )
     .draw(display)?;
 
-    render_rows(
-        display,
-        ui.slot_rows().iter(),
-        SLOT_ROWS_Y,
-        SLOT_ROWS,
-        false,
-    )
+    render_rows(display, ui.slot_rows().iter(), SLOT_ROWS_Y, SLOT_ROWS, None)
 }
 
 /// Decode history, newest at the top.
@@ -360,39 +313,7 @@ where
     let start = all.len() - take;
     let visible = all[start..].iter().rev().copied();
 
-    render_rows(display, visible, HISTORY_ROWS_Y, HISTORY_ROWS, true)
-}
-
-fn render_rows<'a, D>(
-    display: &mut D,
-    rows: impl Iterator<Item = &'a SlotSpotRow>,
-    origin_y: i32,
-    max_rows: usize,
-    divider_after: bool,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = Rgb565>,
-{
-    let style = text_style(FG, BG);
-    let mut buf: String<56> = String::new();
-    let mut drawn = 0usize;
-    for row in rows.take(max_rows) {
-        let y = origin_y + (drawn as i32) * ROW_PX as i32;
-        fill(display, y, ROW_PX, BG);
-        row.format_row(&mut buf);
-        Text::with_baseline(buf.as_str(), Point::new(2, y + 1), style, Baseline::Top)
-            .draw(display)?;
-        drawn += 1;
-    }
-    if drawn < max_rows {
-        let blank_y = origin_y + (drawn as i32) * ROW_PX as i32;
-        let blank_h = ((max_rows - drawn) as u32) * ROW_PX;
-        fill(display, blank_y, blank_h, BG);
-    }
-    if divider_after {
-        fill(display, DIVIDER_Y, DIVIDER_H, COL_HEADER_FG);
-    }
-    Ok(())
+    render_rows(display, visible, HISTORY_ROWS_Y, HISTORY_ROWS, None)
 }
 
 /// Paint every region — the first frame, before any slot completes.
