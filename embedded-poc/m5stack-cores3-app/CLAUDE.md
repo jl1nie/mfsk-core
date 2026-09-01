@@ -93,6 +93,76 @@ reapplied every boot would undo it.
   WSPR and FST4 monitor loops are built with deliberate slack, so
   exceeding the slot there is a fault. Do not carry one framing across.
 
+## FT4 live audio — the experiment that has not been run (2026-09-02)
+
+**Every FT4 number in this repo comes from a baked replay slot, not
+from a radio.** `apps/ft4.rs` registers `Ft4Sink` with
+`uac::set_audio_sink`, but until 2026-09-02 `display.rs` set
+`host_mode = mode == BootMode::Uac`, so in FT4 mode the VBUS boost was
+never enabled and `usb_host_install()` never ran — the sink existed
+and nothing fed it, and the receiver fell back to
+`ft4_golden_audio.bin` every slot without that being wrong anywhere.
+`host_mode` now includes `BootMode::Ft4`; the run itself is still
+outstanding.
+
+### Powering it
+
+The obstacle was never the code. One USB-C connector cannot both take
+power in and hand it out, and sourcing VBUS into a PC that is already
+sourcing it browns the board out — that cost a bench session and the
+ability to re-flash (#163). **The DIN Base solves it**: the M5Bus
+feeds the board, so the USB-C port is free to source VBUS to the
+radio.
+
+Watch for one thing. If the AXP2101 reports the M5Bus supply as
+VBUS-present, `display.rs`'s safety check refuses host mode and says
+so:
+
+```text
+external USB power detected — staying a peripheral so the battery charges …
+```
+
+`MFSK_CORES3_FORCE_UAC=1` is the documented way past it, and its own
+doc comment names exactly this case ("for a board fed from M5Bus
+rather than the USB-C connector, where the two supplies do not
+collide").
+
+### Running it
+
+```sh
+cd embedded-poc/m5stack-cores3-app
+source ~/export-esp.sh
+# MFSK_FT4_REPLAY=0 so a decode cannot have come from the recording.
+MFSK_FT4_REPLAY=0 cargo build --release --features ft4
+../scripts/capture.sh target/xtensa-esp32s3-espidf/release/mfsk-core-m5stack-cores3-app     logs/ft4_live_$(date +%Y-%m-%d).log 240 "uac: rx tick"
+```
+
+Boot mode is in NVS; the picker is a ~0.8 s press anywhere on the
+panel. Re-flashing a running app needs a 2 s RST hold, because the USB
+host driver takes the console with it.
+
+### What to read in the log, in order
+
+1. `host` and not `periph` in the status line — otherwise the check
+   above fired and the rest of the log means nothing.
+2. `uac: rx tick: 192000 B/s … audio 12000 sa/s … rms -XX dBFS`.
+   ~11 025 sa/s means the source is 44.1 kHz; ~6 000 means it is
+   streaming mono. `rms -99.0` with healthy byte counts is digital
+   silence — a muted or unselected input, which looks perfect
+   everywhere else.
+3. `source UAC` on the slot line, which is what says the replay has
+   stepped aside.
+4. Decodes. Against the replay's 11-on-a-14-signal-scene, a real 40 m
+   band will give fewer and they will change every slot.
+
+### What it will *not* settle
+
+The slot grid is still counted from stream start (#354): FT4's capture
+window closes at 6.775 s of the slot, so a grid that is off by more
+than a second cuts the frame rather than shifting it. A live decode is
+therefore partly luck until the RTC + DT-median alignment lands, and a
+*failure* to decode is not evidence about the decoder until it does.
+
 ## Status (2026-08-23)
 
 Live reception verified against an IC-705 on 40 m. **FT8**: six to

@@ -131,7 +131,13 @@ pub fn run_log_panel(
 ) -> ! {
     // Set false when the board finds itself on external power — see
     // the VBUS check below.
-    let mut host_mode = mode == BootMode::Uac;
+    // Which receivers take audio from a radio over USB host. FT4 was
+    // missing here until 2026-09-02, which is why `apps::ft4`'s
+    // `Ft4Sink` had never been fed: it registered a sink in a mode
+    // where the host driver was never installed, so the receiver
+    // silently ran on its baked replay slot and every number measured
+    // for it came from a recording.
+    let mut host_mode = matches!(mode, BootMode::Uac | BootMode::Ft4);
 
     // Boot-time reading only.
     //
@@ -166,7 +172,14 @@ pub fn run_log_panel(
             // was lost, along with the ability to re-flash, since the
             // host firmware never charges and `cfg.toml` writes
             // `boot_mode` to NVS on every boot (#163).
-            if mode == BootMode::Uac {
+            //
+            // **A board fed from the DIN Base does not have that
+            // problem**: the M5Bus supplies it, so the USB-C port is
+            // free to source VBUS to the radio. If the AXP2101 reports
+            // that supply as VBUS-present and this check therefore
+            // refuses host mode, `MFSK_CORES3_FORCE_UAC=1` is the
+            // documented way past it — see `FORCE_UAC`.
+            if host_mode {
                 let external = match crate::pmic::vbus_present(&mut i2c) {
                     Ok((present, raw)) => {
                         log::info!(
